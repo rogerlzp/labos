@@ -1,0 +1,58 @@
+# 构建产物
+labos-kernel/out/
+labos-kernel/target/
+labos-gateway/out/
+# Python 脚本的字节码缓存（scripts/ 下有多个 .py）
+__pycache__/
+*.pyc
+# sidecar 的构建产能在子目录里（Labos.Sidecar/bin），必须用 ** 才匹配得到
+sidecar-dotnet/**/bin/
+sidecar-dotnet/**/obj/
+# 注意：不要带尾斜杠 —— 带斜杠只匹配目录，匹配不到符号链接。
+# 曾经因为这个，node_modules 的软链被 git add -A 带进了仓库（自指软链，
+# 新克隆直接坏掉）。
+webapp/node_modules
+webapp/dist/
+out/
+*.class
+
+# 运行产物
+# 截图默认不入库（避免误提交设备实物照）；文档里的界面截图单独白名单
+*.png
+!docs/images/run-detail-*.png
+!docs/images/plates-*.png
+!docs/images/preflight-*.png
+!docs/images/*-ui.png
+*.log
+/tmp/
+
+# 本地私有参考（不入库）
+_private-refs/
+
+# 不方便开源的私有材料（市场研究、竞品情报、客户/供应商资料…）
+# 放在仓库根的 private/ 下，只留本地，不进版本库，也不推远端。
+# ⚠ 注意：已经推过的文件，移到这里只是让它**不再更新**；
+#    要让它从 GitHub 历史里彻底消失，需要 git filter-repo 重写历史（见 docs/en/INDEX.md §7）
+/private/
+
+# IDE / 工具
+.DS_Store
+.codebuddy/
+.idea/
+.vscode/
+
+# 密钥
+*.pem
+*.key
+# TS 增量编译缓存（每次构建都变，不该入库）
+*.tsbuildinfo
+
+# 浏览器自动化快照（工具产物，不入库）
+.playwright-cli/
+
+# 设备手册原文：标注"内部资料"，只在本机留存，不进仓库
+docs/设备/*.pdf
+docs/设备/*.docx
+
+# 本地并行工作树（IDE/自动化创建），不该进仓库
+.worktrees/

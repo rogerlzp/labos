@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实验室中控 v0.1 · 内核控制台</title>
+<style>
+  :root {
+    --bg: #0d1014;
+    --panel: #151920;
+    --panel-2: #1b202a;
+    --line: #262c38;
+    --text: #e6e9ef;
+    --muted: #8b93a7;
+    --dim: #5b6376;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --err: #ef4444;
+    --info: #38bdf8;
+    --run: #3b82f6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 20px;
+    height: 52px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    flex-shrink: 0;
+  }
+  .brand { font-size: 14px; font-weight: 600; letter-spacing: .02em; }
+  .brand span { color: var(--dim); font-weight: 400; margin-left: 8px; font-size: 12px; }
+  .spacer { flex: 1; }
+  .status {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--muted);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px rgba(34,197,94,.6); }
+  .dot.bad { background: var(--err); box-shadow: 0 0 8px rgba(239,68,68,.6); }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer;
+    font-family: inherit; transition: .15s;
+  }
+  button:hover { background: #232936; border-color: #333b4a; }
+  button.primary { background: #1d4ed8; border-color: #2563eb; }
+  button.primary:hover { background: #2563eb; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+
+  aside {
+    width: 320px; border-right: 1px solid var(--line);
+    background: var(--panel); display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .tab {
+    flex: 1; padding: 10px 0; text-align: center; font-size: 12px;
+    color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--text); border-bottom-color: var(--run); background: var(--panel-2); }
+  .list { flex: 1; overflow-y: auto; }
+
+  .item {
+    padding: 10px 16px; border-bottom: 1px solid #1e232d; cursor: pointer;
+  }
+  .item:hover { background: var(--panel-2); }
+  .item.active { background: #1c2534; border-left: 2px solid var(--run); padding-left: 14px; }
+  .item-row { display: flex; align-items: center; gap: 8px; }
+  .item-title { font-size: 12px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item-sub { font-size: 11px; color: var(--dim); margin-top: 3px; display: flex; gap: 10px; }
+
+  section { flex: 1; overflow-y: auto; padding: 20px 24px; min-width: 0; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 16px 18px; margin-bottom: 16px;
+  }
+  .card-title {
+    font-size: 12px; color: var(--muted); margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card-title::before {
+    content: ''; width: 2px; height: 11px; background: var(--run); border-radius: 1px;
+  }
+
+  .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 24px; }
+  .kv div { display: flex; gap: 8px; font-size: 12px; }
+  .kv span:first-child { color: var(--dim); min-width: 64px; }
+  .kv span:last-child { color: var(--text); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    text-align: left; color: var(--dim); font-weight: 400;
+    padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 11px;
+  }
+  td { padding: 8px 10px; border-bottom: 1px solid #1c212b; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); }
+
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 11px; line-height: 18px;
+  }
+  .s-completed { background: rgba(34,197,94,.14); color: var(--ok); }
+  .s-skipped   { background: rgba(100,116,139,.18); color: #94a3b8; }
+  .s-manual    { background: rgba(245,158,11,.14); color: var(--warn); }
+  .s-failed    { background: rgba(239,68,68,.14); color: var(--err); }
+  .s-aborted   { background: rgba(239,68,68,.14); color: var(--err); }
+  .s-running   { background: rgba(59,130,246,.14); color: var(--run); }
+  .s-pending   { background: rgba(139,147,167,.12); color: var(--muted); }
+
+  .step-row td { background: #12161d; }
+  .act { color: #3b82f6; text-decoration: none; margin-right: 10px; font-size: 11px; }
+  .act:hover { text-decoration: underline; }
+  .att { font-size: 10px; color: #f59e0b; margin-left: 4px; }
+  .step-row:hover td { background: #161b24; }
+  .bar { height: 3px; background: #232936; border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: #3b82f6; transition: width .3s; }
+  .timeline { font-size: 12px; }
+  .tl {
+    display: grid; grid-template-columns: 40px 130px 74px 1fr;
+    gap: 10px; padding: 5px 0; border-bottom: 1px solid #1a1e27;
+    align-items: baseline;
+  }
+  .tl:last-child { border-bottom: none; }
+  .tl .seq { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .tl .ty { color: var(--info); font-family: ui-monospace, monospace; font-size: 11px; }
+  .tl .nd { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .tl .dt { color: var(--muted); word-break: break-all; }
+  .ty.E { color: var(--err); }
+  .ty.W { color: var(--warn); }
+  .ty.S { color: var(--ok); }
+
+  .empty { color: var(--dim); text-align: center; padding: 40px 0; font-size: 12px; }
+  .err-box {
+    background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.3);
+    color: #fca5a5; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 12px;
+  }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #2a313d; border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">实验室中控 v0.1 <span>内核控制台</span></div>
+  <div class="spacer"></div>
+  <div class="status">
+    <div class="dot" id="dot"></div>
+    <span id="statusText">连接中…</span>
+  </div>
+  <select id="attendance" title="值守模式">
+    <option value="attended">有人值守</option>
+    <option value="unattended">无人值守</option>
+  </select>
+  <button id="btnDemo" class="primary">触发执行</button>
+  <button id="btnRefresh">刷新</button>
+</header>
+
+<main>
+  <aside>
+    <div class="tabs">
+      <div class="tab active" data-tab="runs">执行</div>
+      <div class="tab" data-tab="workflows">工艺</div>
+      <div class="tab" data-tab="status">状态</div>
+      <div class="tab" data-tab="alerts">告警</div>
+      <div class="tab" data-tab="policies">策略</div>
+    </div>
+    <div class="list" id="list"></div>
+  </aside>
+  <section id="detail">
+    <div class="empty">选择左侧条目查看详情</div>
+  </section>
+</main>
+
+<script>
+const API = (location.protocol === 'file:' || !location.port) ? 'http://localhost:18080' : '';
+let tab = 'runs';
+let selectedRun = null;
+
+const $ = id => document.getElementById(id);
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function api(path, opt) {
+  const r = await fetch(API + path, opt);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => '')}`);
+  return r.json();
+}
+
+// ---------------- 健康状态
+async function loadHealth() {
+  try {
+    const h = await api('/health');
+    $('dot').className = 'dot ok';
+    $('statusText').textContent = `${h.database} · ${h.version.replace(/^PostgreSQL\s*/, 'PG ')}`;
+  } catch (e) {
+    $('dot').className = 'dot bad';
+    $('statusText').textContent = '服务未连接';
+  }
+}
+
+// ---------------- 左侧列表
+function renderList(items) {
+  const el = $('list');
+  if (!items.length) { el.innerHTML = '<div class="empty">暂无数据</div>'; return; }
+  el.innerHTML = items.join('');
+  el.querySelectorAll('[data-id]').forEach(n => {
+    n.onclick = () => selectRun(Number(n.dataset.id));
+  });
+}
+
+async function loadRuns() {
+  const d = await api('/api/runs?limit=40');
+  renderList(d.items.map(r => `
+    <div class="item ${selectedRun === r.id ? 'active' : ''}" data-id="${r.id}">
+      <div class="item-row">
+        <div class="item-title">${esc(r.runNo)}</div>
+        <span class="badge s-${esc(r.status)}">${esc(r.status)}</span>
+      </div>
+      <div class="item-sub">
+        <span>#${r.id}</span>
+        <span>${r.nodeCount} 节点</span>
+        <span>${esc(r.runType)}</span>
+      </div>
+    </div>`));
+  if (selectedRun === null && d.items.length) selectRun(d.items[0].id);
+}
+
+// ---------------- 运行状态（Process Status View）
+async function loadStatus() {
+  const d = await api('/api/process-status');
+  const items = d.items || [];
+
+  $('list').innerHTML = items.length ? items.map(x => {
+    const c = x.current || {};
+    const pct = x.total ? Math.round(x.done * 100 / x.total) : 0;
+    return `
+      <div class="item" data-run="${x.runId}">
+        <div class="item-row">
+          <div class="item-title">#${x.runId}</div>
+          <span class="badge ${x.attendance === 'unattended' ? 's-manual' : 's-running'}">
+            ${x.attendance === 'unattended' ? '无人' : '有人'}</span>
+        </div>
+        <div class="item-sub">
+          <span>${x.done}/${x.total}</span>
+          <span>${esc((c.name || '等待').slice(0, 16))}</span>
+        </div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+      </div>`;
+  }).join('') : '<div class="empty">当前没有正在执行的流程</div>';
+
+  document.querySelectorAll('[data-run]').forEach(n => {
+    n.onclick = () => selectRun(Number(n.dataset.run));
+  });
+
+  if (items.length) {
+    const x = items[0];
+    const c = x.current || {};
+    $('detail').innerHTML = `
+      <div class="card">
+        <div class="card-title">运行中 #${x.runId}</div>
+        <div class="kv">
+          <div><span>单号</span><span class="mono">${esc(x.runNo)}</span></div>
+          <div><span>值守</span><span>${x.attendance === 'unattended' ? '无人值守' : '有人值守'}</span></div>
+          <div><span>进度</span><span>${x.done} / ${x.total}</span></div>
+          <div><span>来源</span><span>${d.source === 'memory' ? '实时内存态' : '数据库'}</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">当前节点</div>
+        <div class="kv">
+          <div><span>节点</span><span class="mono">${esc(c.name || '—')}</span></div>
+          <div><span>状态</span><span class="badge s-${esc(c.status || 'pending')}">${esc(c.status || '—')}</span></div>
+          <div><span>设备</span><span class="mono">${c.resourceId ?? '—'}</span></div>
+          <div><span>最近事件</span><span class="mono">${esc(c.lastEvent || '—')}</span></div>
+        </div>
+        ${c.reason ? `<div class="err-box" style="margin-top:10px">${esc(c.reason)}</div>` : ''}
+      </div>`;
+  } else {
+    $('detail').innerHTML = '<div class="empty">没有正在执行的流程；去「工艺」页触发一次（选无人值守更好观察）</div>';
+  }
+}
+
+// ---------------- 工艺
+async function loadWorkflows() {
+  const d = await api('/api/workflows?limit=80');
+  const el = $('list');
+  if (!d.items.length) { el.innerHTML = '<div class="empty">暂无工艺</div>'; return; }
+  el.innerHTML = d.items.map(w => `
+    <div class="item" data-wf="${w.id}">
+      <div class="item-row">
+        <div class="item-title">${esc(w.name)}</div>
+        <span class="badge s-running">${esc(w.category)}</span>
+      </div>
+      <div class="item-sub"><span>#${w.id}</span><span class="mono">${esc(w.code)}</span></div>
+    </div>`).join('');
+  el.querySelectorAll('[data-wf]').forEach(n => {
+    n.onclick = () => selectWorkflow(Number(n.dataset.wf));
+  });
+  $('detail').innerHTML = '<div class="empty">选择左侧工艺查看节点，可一键执行</div>';
+}
+
+async function selectWorkflow(id) {
+  document.querySelectorAll('[data-wf]').forEach(n =>
+    n.classList.toggle('active', Number(n.dataset.wf) === id));
+  try {
+    const d = await api('/api/workflows/' + id);
+    const rows = (d.tasks || []).map(t => `
+      <tr>
+        <td class="mono">${esc(t.name)}</td>
+        <td>${esc(t.capability)}</td>
+        <td><span class="badge ${t.source === 'explicit' ? 's-completed' : 's-pending'}">${esc(t.source)}</span></td>
+        <td class="mono">${esc(t.method)}</td>
+      </tr>`).join('') || '<tr><td colspan="4" class="empty">无节点</td></tr>';
+
+    $('detail').innerHTML = `
+      <div class="card">
+        <div class="card-title">${esc(d.workflow.name)}</div>
+        <div class="kv">
+          <div><span>编号</span><span class="mono">${esc(d.workflow.code)}</span></div>
+          <div><span>流程 id</span><span class="mono">${d.workflow.id}</span></div>
+          <div><span>节点</span><span>${d.tasks.length}</span></div>
+          <div><span>边</span><span>${d.edgeCount}</span></div>
+        </div>
+        <div style="margin-top:16px">
+          <button class="primary" onclick="runWorkflow(${d.workflow.id})">执行这个工艺</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">节点（${d.tasks.length}）</div>
+        <table>
+          <thead><tr><th>节点</th><th>所需能力</th><th>能力来源</th><th>驱动方法</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch (e) {
+    $('detail').innerHTML = `<div class="err-box">${esc(e.message)}</div>`;
+  }
+}
+
+async function runWorkflow(id) {
+  $('detail').innerHTML = '<div class="empty">执行中…（真实工艺 → 状态机 → 驱动）</div>';
+  try {
+    const mode = document.getElementById('attendance')?.value || 'attended';
+    const r = await api(`/api/workflows/${id}/run?mode=${mode}`, { method: 'POST' });
+    if (r.error) {
+      $('detail').innerHTML = `<div class="err-box">${esc(r.error)}</div>`;
+      return;
+    }
+    const alertRows = (r.alerts || []).map(a => `
+      <tr>
+        <td class="mono">${esc(a.kind)}</td>
+        <td class="mono">${esc(a.fingerprint)}</td>
+        <td>${a.count}</td>
+        <td>${esc(a.severity)}</td>
+        <td>${a.notify ? '<span class="badge s-manual">推送</span>' : '<span class="badge s-skipped">仅归档</span>'}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="empty">本次执行无异常</td></tr>';
+
+    const rows = r.nodes.map(n => `
+      <tr>
+        <td class="mono">${esc(n.name)}</td>
+        <td>${esc(n.capability)}</td>
+        <td><span class="badge s-${String(n.status).toLowerCase()}">${esc(n.status)}</span></td>
+        <td class="mono">${n.attempt}</td>
+        <td class="mono">${n.resourceId ?? '—'}</td>
+        <td class="mono" style="font-size:10px;color:#8b93a7">${esc(String(n.rawResponse || '').slice(0, 70))}</td>
+      </tr>`).join('');
+
+    $('detail').innerHTML = `
+      <div class="card">
+        <div class="card-title">执行结果 #${r.runId}</div>
+        <div class="kv">
+          <div><span>工艺</span><span>${esc(r.workflowName)}</span></div>
+          <div><span>完成</span><span>${r.completed} / ${r.total}</span></div>
+          <div><span>转人工</span><span>${r.manual}</span></div>
+          <div><span>执行器</span><span>${r.viaDriver ? '真实驱动 (TCP)' : '内置模拟'}</span></div>
+          <div><span>值守</span><span>${r.attendance === 'unattended' ? '无人值守（MANUAL 记 error 告警）' : '有人值守'}</span></div>
+          <div><span>事件</span><span>${r.eventsWritten}</span></div>
+        </div>
+        <div style="margin-top:16px">
+          <button onclick="selectWorkflow(${id})">返回工艺</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">节点执行明细（含设备原文）</div>
+        <table>
+          <thead><tr><th>节点</th><th>能力</th><th>状态</th><th>尝试</th><th>设备</th><th>设备原文</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-title">告警聚合（${(r.alerts||[]).length} 条，需推送 ${r.notifyCount} 条）</div>
+        <table>
+          <thead><tr><th>类型</th><th>指纹（错误码|设备）</th><th>节点数</th><th>级别</th><th>处置</th></tr></thead>
+          <tbody>${alertRows}</tbody>
+        </table>
+        <div style="margin-top:12px;font-size:11px;color:#5b6376">
+          同一「错误码|设备」在 15 分钟静默期内合并；info 级只留痕不推送。
+        </div>
+      </div>`;
+  } catch (e) {
+    $('detail').innerHTML = `<div class="err-box">执行失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function loadAlerts() {
+  const d = await api('/api/alerts?limit=60');
+  renderList(d.items.map(a => `
+    <div class="item">
+      <div class="item-row">
+        <div class="item-title mono">${esc(a.fingerprint)}</div>
+        <span class="badge s-${a.severity === 'error' ? 'failed' : 'manual'}">${a.hitCount}</span>
+      </div>
+      <div class="item-sub">
+        <span>${esc(a.lastOutcome)}</span>
+        <span>${esc((a.lastAt || '').slice(5, 19))}</span>
+      </div>
+      <div class="item-sub">
+        <span class="badge ${a.state === 'closed' ? 's-completed' : (a.state === 'acked' ? 's-running' : 's-pending')}">
+          ${a.state === 'closed' ? '已关闭' : (a.state === 'acked' ? '已认领' : '待处理')}
+        </span>
+        ${a.assignee ? `<span>${esc(a.assignee)}</span>` : ''}
+        ${a.state !== 'closed' ? `<span>
+          <a href="#" class="act" onclick="alertAct(event,'${esc(a.fingerprint)}','ack')">认领</a>
+          <a href="#" class="act" onclick="alertAct(event,'${esc(a.fingerprint)}','close')">关闭</a>
+        </span>` : ''}
+      </div>
+    </div>`));
+  $('detail').innerHTML = '<div class="empty">告警按「错误码 | 设备」聚合，已排除 info 级别（跳过类只留痕不告警）</div>';
+}
+
+async function alertAct(ev, fingerprint, action) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const who = (action === 'ack')
+      ? (prompt('认领人（可留空）', '值守') || '值守') : null;
+  const note = prompt('备注（可留空）', '') || null;
+  try {
+    const body = {};
+    if (who) body.assignee = who;
+    if (note) body.note = note;
+    await api('/api/alerts/' + encodeURIComponent(fingerprint) + '/' + action, {
+      method: 'POST', body: JSON.stringify(body)
+    });
+    await loadAlerts();
+  } catch (e) {
+    alert('处置失败：' + e.message);
+  }
+}
+
+async function loadPolicies() {
+  const d = await api('/api/policies');
+  renderList(d.items.map(p => `
+    <div class="item">
+      <div class="item-row">
+        <div class="item-title mono">${esc(p.errorCode)}</div>
+        <span class="badge ${p.origin === 'manual' ? 's-running' : 's-pending'}">${esc(p.strategy)}</span>
+      </div>
+      <div class="item-sub">
+        <span>${esc(p.scope)}</span>
+        <span>上限 ${p.maxAttempts}</span>
+        <span>P${p.priority}</span>
+      </div>
+    </div>`));
+  $('detail').innerHTML = `
+    <div class="card">
+      <div class="card-title">策略总览（${d.total} 条）</div>
+      <div class="kv">
+        <div><span>手工配置</span><span>${d.items.filter(x => x.origin === 'manual').length} 条</span></div>
+        <div><span>历史推导</span><span>${d.items.filter(x => x.origin !== 'manual').length} 条</span></div>
+        <div><span>说明</span><span>人工配置优先级高于机器推导</span></div>
+      </div>
+    </div>`;
+}
+
+// ---------------- 详情
+async function selectRun(id) {
+  selectedRun = id;
+  document.querySelectorAll('[data-id]').forEach(n =>
+    n.classList.toggle('active', Number(n.dataset.id) === id));
+  if (tab !== 'runs') return;
+
+  try {
+    const d = await api('/api/runs/' + id);
+    renderRun(d);
+  } catch (e) {
+    $('detail').innerHTML = `<div class="err-box">加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+function renderRun(d) {
+  const r = d.run;
+  const nodes = d.nodes || [];
+  const events = d.events || [];
+
+  // 父子嵌套：level=0 是业务节点，level=1 是它的子步骤（1:1 对应命令）
+  // 子步骤记录会因重试而重复（每 attempt 一条），按 step_seq 去重才是"几步"
+  const stepLabel = kids => {
+    if (!kids.length) return '';
+    const uniq = new Set(kids.map(k => k.stepSeq));
+    const attempts = new Set(kids.map(k => k.attempt ?? 0));
+    return ` <span class="badge s-pending">${uniq.size} 步` +
+           (attempts.size > 1 ? ` × ${attempts.size} 次` : '') + '</span>';
+  };
+
+  const roots = nodes.filter(n => !n.parentNodeId);
+  const kidsOf = id => nodes.filter(n => n.parentNodeId === id);
+
+  const nodeRows = (roots.length ? roots : nodes).map(n => {
+    const kids = kidsOf(n.id);
+    const main = `
+      <tr>
+        <td class="mono">${esc(n.nodeKey)}</td>
+        <td>${esc(n.name)}${stepLabel(kids)}</td>
+        <td><span class="badge s-${esc(n.status)}">${esc(n.status)}</span></td>
+        <td class="mono">${n.attempt ?? 0}</td>
+        <td class="mono">${n.resourceId ?? '—'}</td>
+        <td class="mono" style="font-size:10px;color:#8b93a7">${esc(String(n.reason || '').slice(0, 46))}</td>
+      </tr>`;
+    const sub = kids.map(c => `
+      <tr class="step-row">
+        <td class="mono" style="padding-left:24px;color:#5b6376">└ ${c.stepSeq}</td>
+        <td style="color:#8b93a7">${esc(c.name)}${c.attempt ? ` <span class="att">第${c.attempt + 1}次</span>` : ''}</td>
+        <td><span class="badge s-${esc(c.status)}">${esc(c.status)}</span></td>
+        <td class="mono">${c.attempt ?? '—'}</td>
+        <td class="mono">${c.resourceId ?? '—'}</td>
+        <td class="mono" style="font-size:10px;color:#8b93a7">${esc(String(c.reason || '').slice(0, 46))}</td>
+      </tr>`).join('');
+    return main + sub;
+  }).join('') || '<tr><td colspan="6" class="empty">无节点</td></tr>';
+
+  const evRows = events.map(e => {
+    const p = e.payload || {};
+    const t = e.type || '';
+    const cls = t.includes('FAILED') || t.includes('MANUAL') || t.includes('ABORT') ? 'E'
+              : t.includes('SKIPPED') || t.includes('COMPLETED') ? 'S'
+              : t.includes('DECIDED') || t.includes('SWITCHED') ? 'W' : '';
+    return `<div class="tl">
+      <span class="seq">#${p.seq ?? ''}</span>
+      <span class="ty ${cls}">${esc(t)}</span>
+      <span class="nd">node=${p.nodeId ?? ''}</span>
+      <span class="dt">${esc(p.detail || '')}</span>
+    </div>`;
+  }).join('') || '<div class="empty">无事件</div>';
+
+  $('detail').innerHTML = `
+    <div class="card">
+      <div class="card-title">执行 #${r.id}</div>
+      <div class="kv">
+        <div><span>单号</span><span class="mono">${esc(r.runNo)}</span></div>
+        <div><span>状态</span><span class="badge s-${esc(r.status)}">${esc(r.status)}</span></div>
+        <div><span>类型</span><span>${esc(r.runType)}</span></div>
+        <div><span>值守</span><span>${r.attendance === 'unattended' ? '无人值守' : '有人值守'}</span></div>
+        <div><span>优先级</span><span>${r.priority}</span></div>
+        <div><span>节点</span><span>${roots.length || nodes.length}</span></div>
+        <div><span>事件</span><span>${events.length}</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">节点（${roots.length || nodes.length}）</div>
+      <table>
+        <thead><tr><th>节点</th><th>名称</th><th>状态</th><th>尝试</th><th>设备</th><th>失败原因</th></tr></thead>
+        <tbody>${nodeRows}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <div class="card-title">事件流（${events.length}）</div>
+      <div class="timeline">${evRows}</div>
+    </div>`;
+}
+
+// ---------------- 交互
+document.querySelectorAll('.tab').forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    tab = t.dataset.tab;
+    selectedRun = null;
+    switchTab();
+  };
+});
+
+async function switchTab() {
+  try {
+    if (tab === 'runs') { await loadRuns(); }
+    else if (tab === 'workflows') { await loadWorkflows(); }
+    else if (tab === 'status') { await loadStatus(); }
+    else if (tab === 'alerts') { await loadAlerts(); }
+    else { await loadPolicies(); }
+  } catch (e) {
+    $('list').innerHTML = `<div class="err-box">${esc(e.message)}</div>`;
+  }
+}
+
+$('btnRefresh').onclick = () => { loadHealth(); switchTab(); };
+
+$('btnDemo').onclick = async () => {
+  const b = $('btnDemo');
+  b.disabled = true; b.textContent = '执行中…';
+  try {
+    const r = await api('/api/demo/run', { method: 'POST' });
+    tab = 'runs';
+    document.querySelectorAll('.tab').forEach(x =>
+      x.classList.toggle('active', x.dataset.tab === 'runs'));
+    selectedRun = r.runId;
+    await loadRuns();
+    await selectRun(r.runId);
+  } catch (e) {
+    $('detail').innerHTML = `<div class="err-box">触发失败：${esc(e.message)}</div>`;
+  } finally {
+    b.disabled = false; b.textContent = '触发执行';
+  }
+};
+
+// ---------------- 启动
+loadHealth();
+switchTab();
+setInterval(loadHealth, 15000);
+</script>
+</body>
+</html>

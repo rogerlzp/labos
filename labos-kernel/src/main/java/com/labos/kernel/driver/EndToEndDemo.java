@@ -1,0 +1,247 @@
+package com.labos.kernel.driver;
+
+import com.labos.kernel.engine.NodeProgress;
+import com.labos.kernel.engine.NodeStatus;
+import com.labos.kernel.engine.RecoverableNode;
+import com.labos.kernel.engine.RunProgress;
+import com.labos.kernel.engine.RunStateMachine;
+import com.labos.kernel.engine.Sleeper;
+import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.JdbcRecoveryPolicyRepository;
+import com.labos.kernel.recovery.RecoveryDecider;
+import com.labos.kernel.recovery.RecoveryPolicyResolver;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * 端到端：真实工艺定义 → 状态机 → 驱动契约。
+ *
+ * <p>这条链打通后，从「一个 workflow 定义」到「驱动返回设备原文」不再有断点。
+ *
+ * <pre>
+ *   java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.driver.EndToEndDemo
+ * </pre>
+ */
+public final class EndToEndDemo {
+
+    private static final long TENANT = 1L;
+
+    record TaskNode(long id, String key, String name, String capability, String method) {
+    }
+
+    public static void main(String[] args) throws Exception {
+        DbConfig db = DbConfig.fromEnv();
+
+        // ---------- 1. 驱动
+        DriverRegistry registry = new DriverRegistry();
+        Map<String, VirtualDriver> drivers = loadDrivers(db, registry);
+
+        section("1. 驱动注册");
+        System.out.print(registry.healthReport());
+
+        // ---------- 2. 真实工艺节点
+        List<TaskNode> nodes = loadTasks(db, 648L, 6);
+        section("2. 真实工艺节点（workflow 648 前 6 个 task）");
+        System.out.printf("  %-4s %-28s %-12s %s%n", "#", "节点", "能力", "方法");
+        System.out.println("  " + "-".repeat(70));
+        for (TaskNode n : nodes) {
+            System.out.printf("  %-4d %-28s %-12s %s%n",
+                    n.id(), truncate(n.name(), 28), n.capability(), n.method());
+        }
+
+        // ---------- 3. 执行
+        section("3. 执行（状态机 -> DriverStepExecutor -> 驱动）");
+        RunProgress progress = run(db, registry, nodes);
+
+        System.out.printf("  %-4s %-24s %-12s %-6s %-8s %s%n",
+                "#", "节点", "能力", "尝试", "设备", "结果");
+        System.out.println("  " + "-".repeat(76));
+        for (NodeProgress np : progress.all()) {
+            TaskNode n = nodes.stream().filter(t -> t.id() == np.nodeId()).findFirst().orElse(null);
+            System.out.printf("  %-4d %-24s %-12s %-6d %-8s %s%n",
+                    np.nodeId(),
+                    n == null ? "?" : truncate(n.name(), 24),
+                    n == null ? "?" : n.capability(),
+                    np.attempt(),
+                    np.currentResourceId() == null ? "—" : np.currentResourceId(),
+                    np.status());
+        }
+        System.out.println();
+        System.out.println("  结果: " + progress.summary());
+
+        // ---------- 4. 设备原文
+        section("4. 设备原始回包（老系统 99.7% 缺失）");
+        DriverStepExecutor exec = lastExecutor;
+        for (TaskNode n : nodes) {
+            exec.rawResponse(n.id()).ifPresent(raw ->
+                    System.out.printf("  node %-3d %s%n", n.id(), raw));
+        }
+
+        // ---------- 5. 故障 -> 自动换机
+        section("5. 注入故障：第一台设备永久失败");
+        long deadDevice = findDeviceFor(registry, nodes.get(0).capability());
+        for (VirtualDriver v : drivers.values()) {
+            if (v.describe().deviceInstanceIds().contains(deadDevice)) {
+                v.fault(deadDevice, nodes.get(0).method(), Integer.MAX_VALUE, "EC-08-0001");
+                break;
+            }
+        }
+        System.out.printf("  设备 %d 在方法 %s 上永久失败%n%n", deadDevice, nodes.get(0).method());
+
+        RunProgress p2 = run(db, registry, nodes);
+        System.out.printf("  %-4s %-24s %-6s %-8s %s%n", "#", "节点", "尝试", "设备", "结果");
+        System.out.println("  " + "-".repeat(70));
+        for (NodeProgress np : p2.all()) {
+            System.out.printf("  %-4d %-24s %-6d %-8s %s%n",
+                    np.nodeId(),
+                    nodes.stream().filter(t -> t.id() == np.nodeId())
+                            .map(t -> truncate(t.name(), 24)).findFirst().orElse("?"),
+                    np.attempt(),
+                    np.currentResourceId() == null ? "—" : np.currentResourceId(),
+                    np.status());
+        }
+        System.out.println();
+        System.out.println("  结果: " + p2.summary());
+        NodeProgress first = p2.all().iterator().next();
+        if (first.attempt() > 0) {
+            if (first.status() == NodeStatus.COMPLETED) {
+                System.out.printf("%n  第 1 个节点换了 %d 次设备：%d -> %d，最终 COMPLETED%n",
+                        first.attempt(), deadDevice, first.currentResourceId());
+                System.out.println("  ★ 工艺没改一行，设备坏了自动换");
+            } else {
+                System.out.printf("%n  第 1 个节点尝试 %d 次，最终 %s：%s%n",
+                        first.attempt(), first.status(), first.lastReason());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- 执行
+
+    private static DriverStepExecutor lastExecutor;
+
+    private static RunProgress run(DbConfig db, DriverRegistry registry, List<TaskNode> nodes)
+            throws SQLException {
+        JdbcRecoveryPolicyRepository repo = new JdbcRecoveryPolicyRepository(db, TENANT);
+        RecoveryDecider decider = new RecoveryDecider(new RecoveryPolicyResolver(repo.loadAll()));
+
+        List<RecoverableNode> rec = new ArrayList<>();
+        for (TaskNode n : nodes) {
+            List<Long> cands = registry.candidates(n.capability(), Set.of());
+            if (cands.isEmpty()) {
+                continue;
+            }
+            // 用真实节点 id，保证与 workflow_node 对得上（也便于回查设备原文）
+            rec.add(RecoverableNode.of(n.id(), n.key(), n.name(), n.capability(),
+                    n.method(), cands.get(0), cands));
+        }
+
+        DriverStepExecutor exec = new DriverStepExecutor(registry);
+        lastExecutor = exec;
+        RunStateMachine sm = new RunStateMachine(decider, e -> { },
+                Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+        return sm.executeAll(rec, exec);
+    }
+
+    private static long findDeviceFor(DriverRegistry registry, String capability) {
+        List<Long> list = registry.candidates(capability, Set.of());
+        return list.isEmpty() ? 0L : list.get(0);
+    }
+
+    // ---------------------------------------------------------------- 数据
+
+    private static List<TaskNode> loadTasks(DbConfig db, long workflowId, int limit) throws SQLException {
+        List<TaskNode> out = new ArrayList<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT n.id, n.node_key, n.name, c.code AS capability,
+                            COALESCE(n.params->>'protocol_name', c.code) AS method
+                     FROM workflow_node n
+                     LEFT JOIN capability c ON c.id = n.capability_id
+                     WHERE n.workflow_id = ? AND n.node_type = 'task' AND c.code IS NOT NULL
+                     ORDER BY n.id LIMIT ?
+                     """)) {
+            ps.setLong(1, workflowId);
+            ps.setInt(2, limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new TaskNode(rs.getLong(1), rs.getString(2), rs.getString(3),
+                            rs.getString(4), rs.getString(5)));
+                }
+            }
+        }
+        return out;
+    }
+
+    private static Map<String, VirtualDriver> loadDrivers(DbConfig db, DriverRegistry registry)
+            throws SQLException {
+        Map<Long, String[]> drv = new LinkedHashMap<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT id, code, endpoint, protocol::text FROM driver WHERE tenant_id=? ORDER BY id")) {
+            ps.setLong(1, TENANT);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    drv.put(rs.getLong(1), new String[]{rs.getString(2), rs.getString(3), rs.getString(4)});
+                }
+            }
+        }
+
+        Map<Long, Map<Long, Set<String>>> devCaps = new LinkedHashMap<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT di.driver_id, di.id, cap.code
+                     FROM device_instance di
+                     JOIN resource_capability rc ON rc.resource_id = di.resource_id
+                     JOIN capability cap ON cap.id = rc.capability_id
+                     WHERE di.driver_id IS NOT NULL
+                     """);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                devCaps.computeIfAbsent(rs.getLong(1), k -> new LinkedHashMap<>())
+                        .computeIfAbsent(rs.getLong(2), k -> new LinkedHashSet<>())
+                        .add(rs.getString(3));
+            }
+        }
+
+        Map<String, VirtualDriver> out = new LinkedHashMap<>();
+        for (Map.Entry<Long, String[]> e : drv.entrySet()) {
+            Map<Long, Set<String>> dc = devCaps.getOrDefault(e.getKey(), Map.of());
+            if (dc.isEmpty()) {
+                continue;
+            }
+            String[] v = e.getValue();
+            VirtualDriver d = new VirtualDriver(v[0], v[1], v[2], dc);
+            registry.register(d);
+            out.put(v[0], d);
+        }
+        return out;
+    }
+
+    private static void section(String title) {
+        System.out.println();
+        System.out.println("=".repeat(84));
+        System.out.println("  " + title);
+        System.out.println("=".repeat(84));
+        System.out.println();
+    }
+
+    private static String truncate(String s, int n) {
+        if (s == null) {
+            return "";
+        }
+        return s.length() <= n ? s : s.substring(0, n - 1) + "…";
+    }
+
+    private EndToEndDemo() {
+    }
+}

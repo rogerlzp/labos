@@ -1,0 +1,16 @@
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: system-ui, -apple-system, "PingFang SC", sans-serif;
+  background: #0d1014;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #2a313d; border-radius: 4px; }
+
+/* 正在执行的行：左边一条蓝条 + 淡蓝底，一眼看出跑到哪 */
+.row-running > td {
+  background: #e6f4ff !important;
+}
+.row-running > td:first-child {
+  box-shadow: inset 3px 0 0 #1677ff;
+}

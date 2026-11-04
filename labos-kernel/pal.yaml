@@ -1,0 +1,44 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - button "← 返回" [ref=e3] [cursor=pointer]
+    - generic [ref=e4]: "流程设计器 Test-Incubator进板 #239"
+    - generic [ref=e5]: 可拖拽编辑 · 左侧工具栏添加节点
+    - button "适应屏幕" [ref=e6] [cursor=pointer]
+    - button "导出 XML" [ref=e7] [cursor=pointer]
+    - button "保存" [ref=e8] [cursor=pointer]
+  - generic [ref=e14]:
+    - link "Powered by bpmn.io" [ref=e15] [cursor=pointer]:
+      - /url: http://bpmn.io
+      - img [ref=e16]
+    - generic [ref=e19]:
+      - img [ref=e20]:
+        - generic [ref=e22]:
+          - generic [ref=e30]:
+            - generic:
+              - generic: Deposit1
+          - generic [ref=e33]:
+            - generic:
+              - generic: Withdraw1
+      - generic [ref=e42]:
+        - generic [ref=e43]:
+          - generic "Activate hand tool" [ref=e44]: 
+          - generic "Activate lasso tool" [ref=e45]: 
+          - generic "Activate create/remove space tool" [ref=e46]: 
+          - generic "Activate global connect tool" [ref=e47]: 
+          - separator [ref=e48]
+        - generic:
+          - generic "Create start event" [ref=e49]: 
+          - generic "Create intermediate/boundary event" [ref=e50]: 
+          - generic "Create end event" [ref=e51]: 
+        - generic "Create gateway" [ref=e52]: 
+        - generic:
+          - generic "Create task" [ref=e53]: 
+          - generic "Create expanded sub-process" [ref=e54]: 
+        - generic "Create data object reference" [ref=e55]: 
+        - generic "Create data store reference" [ref=e56]: 
+        - generic "Create pool/participant" [ref=e57]: 
+        - generic "Create group" [ref=e58]: 
+  - generic [ref=e10]:
+    - generic [ref=e11]: 节点 4
+    - generic [ref=e12]: 连线 3
+    - generic [ref=e13]: 引擎 bpmn-js 17.11.1

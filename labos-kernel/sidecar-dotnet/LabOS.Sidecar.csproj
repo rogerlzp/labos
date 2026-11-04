@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>LabOS.Sidecar</RootNamespace>
+    <AssemblyName>LabOS.Sidecar</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.AspNetCore" Version="2.62.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.62.0" PrivateAssets="All" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.62.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 契约直接引用内核目录里的 proto，保证两边同源 -->
+    <Protobuf Include="../proto/driver.proto" GrpcServices="Both" />
+  </ItemGroup>
+
+</Project>

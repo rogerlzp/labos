@@ -1,0 +1,89 @@
+{
+  "generatedBy": "com.labos.kernel.device.DeviceModelExport",
+  "note": "由型号库自动生成，不要手改；改 DeviceModels 后重跑",
+  "models": [
+    {
+      "id": "aspin-2k",
+      "type": "centrifuge",
+      "vendor": "上海爱翱生物科技",
+      "model": "ASpin 2K",
+      "protocol": "xml-dll",
+      "transport": "CAN 卡 / 串口（经 Cluster.dll）",
+      "evidence": "MANUAL",
+      "doorCount": 2,
+      "actionTimeoutMs": 120000,
+      "errorBlock": 65,
+      "note": "① 必须先 PcCreateModules 建模块实例，否则任何指令都发不出去；② 手册示例的等待时间是 120000 + 离心秒数*1000，中控超时若按 30 秒会每次误判超时；③ 手册没写重复命令怎么处理 —— 动作类（Start）超时后不要自动重发；④ 手册没写离心中能否开门（安全互锁），模拟器按\"拒绝\"处理，现场需确认。",
+      "methods": [
+        { "cmd": "PcCreateModules", "alias": "CreateModules", "args": "<PcRefreshModulesArgs nCreateModulesMode=\"0\"></PcRefreshModulesArgs>", "delayMs": 500, "documented": true },
+        { "cmd": "Init", "alias": "Home", "args": "<PlateCentrifugeInitArgs nLength=\"0\" byInitMode=\"0\"></PlateCentrifugeInitArgs>", "delayMs": 3000, "documented": true },
+        { "cmd": "ControlCover", "alias": "CloseDoor", "args": "<PlateCentrifugeSetCoverModeArgs nLength=\"0\" byOpenCoverMode=\"0\"></PlateCentrifugeSetCoverModeArgs>", "delayMs": 1500, "documented": true },
+        { "cmd": "ControlCover", "alias": "OpenDoorA", "args": "<PlateCentrifugeSetCoverModeArgs nLength=\"0\" byOpenCoverMode=\"1\"></PlateCentrifugeSetCoverModeArgs>", "delayMs": 1500, "documented": true },
+        { "cmd": "ControlCover", "alias": "OpenDoorB", "args": "<PlateCentrifugeSetCoverModeArgs nLength=\"0\" byOpenCoverMode=\"2\"></PlateCentrifugeSetCoverModeArgs>", "delayMs": 1500, "documented": true },
+        { "cmd": "ControlCover", "alias": "OpenDoor", "args": "<PlateCentrifugeSetCoverModeArgs nLength=\"0\" byOpenCoverMode=\"1\"></PlateCentrifugeSetCoverModeArgs>", "delayMs": 1500, "documented": true },
+        { "cmd": "Start", "alias": "RunProgram", "args": "<PlateCentrifugeSetStateArgs nLength=\"0\" byCentriMode=\"0\" wCentriSec=\"{time}\" wCentriSpeed=\"{speed}\" byCentriRamp=\"{ramp}\"></PlateCentrifugeSetStateArgs>", "delayMs": 300000, "documented": true },
+        { "cmd": "Stop", "alias": "Stop", "args": "", "delayMs": 2000, "documented": true },
+        { "cmd": "CurrSpeed", "alias": "CurrSpeed", "args": "", "delayMs": 300, "documented": true },
+        { "cmd": "CurrTime", "alias": "CurrTime", "args": "", "delayMs": 300, "documented": true },
+        { "cmd": "GetStatus", "alias": "GetStatus", "args": null, "delayMs": 300, "documented": false }
+      ],
+      "errors": [
+        { "vendorCode": "EC-05-2001", "meaning": "SendData 返回 0（设备拒绝或通讯异常）", "disposition": "MANUAL", "kernelCode": "EC-05-2001", "action": "看 AOutResult 里的 XML 错误；核对 CAN/串口与模块节点配置" },
+        { "vendorCode": "EC-05-2002", "meaning": "未创建模块实例就下发了指令", "disposition": "ABORT", "kernelCode": "EC-05-2002", "action": "流程/适配层先发 PcCreateModules，再发其它指令" },
+        { "vendorCode": "EC-05-2003", "meaning": "模块未初始化就下发了动作指令", "disposition": "ABORT", "kernelCode": "EC-05-2003", "action": "动作前先发 Init（回原点），否则设备状态未知" }
+      ]
+    },
+    {
+      "id": "s100",
+      "type": "sealer",
+      "vendor": "（手册未标注厂商）",
+      "model": "S100",
+      "protocol": "binary-serial",
+      "transport": "串口 115200 8N1",
+      "evidence": "MANUAL",
+      "doorCount": 0,
+      "actionTimeoutMs": 0,
+      "errorBlock": 64,
+      "note": "① 封膜指令 0x04 没有温度/时间参数，参数必须先用 0x00 预先设置；② 托盘不在原点直接封膜会回 0x8000001A —— 流程里封膜前要有 MoveTray(0)；③ 错误帧只有第 5 字节是识别字节，完整码是 0x8000000|第5字节；④ 封膜一次要多久手册没写，模拟器按 12 秒，现场实测后改。",
+      "methods": [
+        { "cmd": "SetParam", "alias": "SetParam", "args": "0x00 + 参数索引 + 参数值（低字节在前）", "delayMs": 500, "documented": true },
+        { "cmd": "ReadParam", "alias": "ReadParam", "args": "0x01 + 参数索引", "delayMs": 300, "documented": true },
+        { "cmd": "SaveParam", "alias": "SaveParam", "args": "0x02（不存则断电丢失）", "delayMs": 1000, "documented": true },
+        { "cmd": "PrintParams", "alias": "PrintParams", "args": "0x03 以字符串打印全部参数", "delayMs": 1000, "documented": true },
+        { "cmd": "Seal", "alias": "Seal", "args": "0x04：aa 04 00 … 00 ff", "delayMs": 12000, "documented": true },
+        { "cmd": "SealWithPlateType", "alias": "SealWithType", "args": "0x04 + 索引 0xA5 + 板型 1–8", "delayMs": 12000, "documented": true },
+        { "cmd": "QueryPlateType", "alias": "GetPlateType", "args": "0x04 + 索引 0x5A", "delayMs": 300, "documented": true },
+        { "cmd": "Reset", "alias": "Reset", "args": "0x05 复位一次", "delayMs": 5000, "documented": true },
+        { "cmd": "ClearFault", "alias": "ClearFault", "args": "0x06 清除故障标识", "delayMs": 1000, "documented": true },
+        { "cmd": "GetVersion", "alias": "GetVersion", "args": "0x07 + 索引 0x08", "delayMs": 300, "documented": true },
+        { "cmd": "MoveTray", "alias": "MoveTray", "args": "0x0C + 托盘 Y 轴绝对位置（0=回原点）", "delayMs": 3000, "documented": true },
+        { "cmd": "GetStatus", "alias": "GetStatus", "args": null, "delayMs": 300, "documented": false }
+      ],
+      "errors": [
+        { "vendorCode": "0x80000001", "meaning": "信号量溢出", "disposition": "RETRY", "kernelCode": "EC-08-4001", "action": "自动重试 3 次，仍失败转人工" },
+        { "vendorCode": "0x80000002", "meaning": "错误消息类型", "disposition": "ABORT", "kernelCode": "EC-08-4002", "action": "协议版本不匹配：核对帧格式与固件版本，不要重试" },
+        { "vendorCode": "0x80000003", "meaning": "参数范围有误", "disposition": "FIX_PARAM", "kernelCode": "EC-08-4003", "action": "检查板型/参数值是否在 1–8 或手册范围内" },
+        { "vendorCode": "0x80000004", "meaning": "CAN 通信错误", "disposition": "RETRY", "kernelCode": "EC-08-4004", "action": "重试 2 次，持续出现检查串口线/CAN 卡" },
+        { "vendorCode": "0x80000005", "meaning": "电机堵转", "disposition": "MANUAL", "kernelCode": "EC-08-4005", "action": "人工排查堵转原因，排除后关机重启设备" },
+        { "vendorCode": "0x80000006", "meaning": "未检测到孔板", "disposition": "MANUAL", "kernelCode": "EC-08-4006", "action": "上板后发 0x06 清除故障，再重跑该节点" },
+        { "vendorCode": "0x80000007", "meaning": "刀片脱落", "disposition": "MANUAL", "kernelCode": "EC-08-4007", "action": "故障维护界面进刀换刀片，完成后重启设备" },
+        { "vendorCode": "0x80000008", "meaning": "收到错误指令", "disposition": "ABORT", "kernelCode": "EC-08-4008", "action": "指令码/索引不被支持：核对协议版本，不要重试" },
+        { "vendorCode": "0x80000009", "meaning": "数值错误", "disposition": "FIX_PARAM", "kernelCode": "EC-08-4009", "action": "检查参数数值（位置/板型）" },
+        { "vendorCode": "0x8000000A", "meaning": "存储参数出错", "disposition": "MANUAL", "kernelCode": "EC-08-400A", "action": "人工确认参数存储，必要时复位后重新存参数" },
+        { "vendorCode": "0x8000000B", "meaning": "传感器失效", "disposition": "MANUAL", "kernelCode": "EC-08-400B", "action": "人工检查传感器（原点/到位信号）" },
+        { "vendorCode": "0x8000000C", "meaning": "无纸", "disposition": "MANUAL", "kernelCode": "EC-08-400C", "action": "更换耗材；新卷装上仍报错时弯折从动轮固定金属片" },
+        { "vendorCode": "0x8000000E", "meaning": "事件等待超时", "disposition": "RETRY", "kernelCode": "EC-08-400E", "action": "自动重试 3 次（固定间隔 1 秒）" },
+        { "vendorCode": "0x8000001A", "meaning": "托盘不在原点，无法封膜", "disposition": "FIX_PARAM", "kernelCode": "EC-08-401A", "action": "先发 0x0C 回原点（流程里封膜前加 MoveTray(0)）" }
+      ]
+    }
+  ],
+  "planned": [
+    { "id": "hettich-rotanta-460r", "type": "centrifuge", "model": "Hettich Rotanta 460R（库里 model=360R）", "missing": "缺通信接口说明；库里 1 台在用。拿到手册后按 aspin-2k 的结构补一条即可" },
+    { "id": "agilent-placeloc", "type": "sealer", "model": "Agilent PlateLoc（库里 model=PlateLoc）", "missing": "缺通信接口说明；库里 2 台在用。它是半自动热封，和 S100 协议不同源" },
+    { "id": "eppendorf-5810r", "type": "centrifuge", "model": "Eppendorf 5810 / 5810 R", "missing": "缺通信接口说明（现有资料只有转速/温控等公开规格）" },
+    { "id": "thermo-multifuge-x1r", "type": "centrifuge", "model": "Thermo Multifuge X1/X3", "missing": "缺通信接口说明" },
+    { "id": "beckman-allegra-x15r", "type": "centrifuge", "model": "Beckman Coulter Allegra X-15R", "missing": "缺通信接口说明" },
+    { "id": "domestic-centrifuge-generic", "type": "centrifuge", "model": "国产全自动离心机（通用占位）", "missing": "缺具体厂商型号；先用类型画像跑流程，接真机前必须补手册" }
+  ]
+}
+

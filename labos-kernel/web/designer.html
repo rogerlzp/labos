@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>流程设计器 · 实验室中控 v0.1</title>
+<link rel="stylesheet" href="/vendor/bpmn/bpmn-js.css">
+<link rel="stylesheet" href="/vendor/bpmn/diagram-js.css">
+<link rel="stylesheet" href="/vendor/bpmn/bpmn-font.css">
+<style>
+  :root {
+    --bg: #0d1014; --panel: #151920; --panel2: #1b202a; --line: #262c38;
+    --text: #e6e9ef; --muted: #8b93a7; --dim: #5b6376;
+    --run: #3b82f6; --ok: #22c55e; --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.6 system-ui, -apple-system, "PingFang SC", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 52px;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0;
+  }
+  .brand { font-size: 14px; font-weight: 600; }
+  .brand span { color: var(--dim); font-weight: 400; margin-left: 8px; font-size: 12px; }
+  .spacer { flex: 1; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    padding: 6px 13px; border-radius: 6px; font-size: 12px; cursor: pointer;
+    font-family: inherit; transition: .15s;
+  }
+  button:hover { background: #232936; border-color: #333b4a; }
+  button.primary { background: #1d4ed8; border-color: #2563eb; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #canvas { flex: 1; background: #f7f8fa; min-width: 0; }
+  aside {
+    width: 310px; flex-shrink: 0; background: var(--panel);
+    border-left: 1px solid var(--line); display: flex; flex-direction: column;
+  }
+  .p-head {
+    padding: 12px 14px; border-bottom: 1px solid var(--line);
+    font-size: 12px; color: var(--muted);
+  }
+  .p-body { flex: 1; overflow-y: auto; padding: 14px; }
+  .p-empty { color: var(--dim); font-size: 12px; text-align: center; padding: 30px 10px; }
+
+  .kv { display: flex; gap: 8px; font-size: 12px; margin-bottom: 7px; }
+  .kv span:first-child { color: var(--dim); min-width: 62px; }
+  .kv span:last-child { color: var(--text); word-break: break-all; }
+
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 11px; line-height: 18px;
+  }
+  .b-ok { background: rgba(34,197,94,.14); color: var(--ok); }
+  .b-warn { background: rgba(245,158,11,.14); color: var(--warn); }
+  .b-dim { background: rgba(139,147,167,.12); color: var(--muted); }
+
+  .steps { margin-top: 12px; }
+  .steps-title {
+    font-size: 11px; color: var(--dim); margin-bottom: 8px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .step {
+    display: flex; gap: 8px; padding: 6px 8px; border-radius: 5px;
+    background: var(--panel2); margin-bottom: 4px; font-size: 12px;
+  }
+  .step .n {
+    color: var(--dim); font-variant-numeric: tabular-nums; min-width: 16px;
+  }
+  .step .m { font-family: ui-monospace, monospace; font-size: 11px; }
+  .hint { color: var(--dim); font-size: 11px; }
+  .status {
+    height: 26px; display: flex; align-items: center; gap: 14px; padding: 0 16px;
+    background: var(--panel); border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--dim); flex-shrink: 0;
+  }
+  .status b { color: var(--muted); font-weight: 500; }
+  .err { color: #fca5a5; }
+  /* bpmn-js 的 SVG 标记 */
+  .pf-unreachable .djs-visual > :nth-child(1) {
+    stroke: #ef4444 !important;
+    stroke-width: 2.5px !important;
+    stroke-dasharray: 6 4 !important;
+  }
+  .pf-deadlock .djs-visual > :nth-child(1) {
+    stroke: #f59e0b !important;
+    stroke-width: 2.5px !important;
+    stroke-dasharray: 4 3 !important;
+  }
+  .pf-box {
+    margin-top: 12px; padding: 10px; border-radius: 6px;
+    background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.25);
+    font-size: 11px; color: #fca5a5; line-height: 1.5;
+  }
+  .pf-box.warn {
+    background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.25); color: #fcd34d;
+  }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2a313d; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <button onclick="location.href='/'">← 返回</button>
+  <div class="brand">流程设计器 <span id="wfName"></span></div>
+  <div class="spacer"></div>
+  <span class="hint" id="hint">加载中…</span>
+  <button onclick="fitViewport()">适应屏幕</button>
+  <button onclick="downloadXml()">导出 XML</button>
+  <button class="primary" onclick="save()" id="btnSave" disabled>保存</button>
+</header>
+
+<main>
+  <div id="canvas"></div>
+  <aside>
+    <div class="p-head">节点编译预览</div>
+    <div class="p-body" id="props">
+      <div class="p-empty">选中一个节点，查看它会展开成哪几步</div>
+    </div>
+  </aside>
+</main>
+
+<div class="status">
+  <span>节点 <b id="nodeCount">-</b></span>
+  <span>连线 <b id="edgeCount">-</b></span>
+  <span>总步骤 <b id="totalSteps">-</b></span>
+  <span>预检 <b id="pfState">-</b></span>
+  <span id="dirty" style="color:#f59e0b"></span>
+</div>
+
+<script src="/vendor/bpmn/bpmn-modeler.js"></script>
+<script>
+const qs = new URLSearchParams(location.search);
+const wfId = Number(qs.get('id') || 239);
+let modeler = null;
+let dirty = false;
+let planByKey = {};
+
+async function boot() {
+  try {
+    const meta = await fetch(`/api/workflows/${wfId}`).then(r => r.json());
+    document.getElementById('wfName').textContent =
+      `${meta.workflow.name}  #${meta.workflow.id}`;
+    document.title = `${meta.workflow.name} · 流程设计器`;
+
+    // 先取编译结果（节点 -> 步骤）
+    await loadCompile();
+    try {
+      window.caps = (await fetch('/api/capabilities').then(r => r.json())).items || [];
+    } catch (e) {
+      window.caps = [];
+    }
+
+    modeler = new BpmnJS({ container: '#canvas' });
+
+    modeler.on('commandStack.changed', () => {
+      dirty = true;
+      document.getElementById('dirty').textContent = '● 未保存';
+    });
+
+    modeler.on('selection.changed', e => {
+      const el = e.newSelection && e.newSelection[0];
+      renderProps(el);
+    });
+
+    const res = await fetch(`/api/workflows/${wfId}/graph?steps=1`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const xml = normalize(await res.text());
+
+    await modeler.importXML(xml);
+    fitViewport();
+    refreshCounts();
+    await loadPreflightAndMark();
+
+    document.getElementById('hint').textContent = '可拖拽编辑';
+    document.getElementById('btnSave').disabled = false;
+  } catch (e) {
+    document.getElementById('canvas').innerHTML =
+      `<div style="padding:40px;color:#c00">加载失败：${e.message}</div>`;
+    document.getElementById('hint').textContent = '加载失败';
+  }
+}
+
+async function loadCompile() {
+  try {
+    const d = await fetch(`/api/workflows/${wfId}/compile`).then(r => r.json());
+    planByKey = {};
+    (d.nodes || []).forEach(n => { planByKey[n.nodeKey] = n; });
+    document.getElementById('totalSteps').textContent = d.totalSteps;
+  } catch (e) {
+    document.getElementById('totalSteps').textContent = '?';
+  }
+}
+
+/**
+ * customDevice -> task 的兼容转换。
+ * 老库 10,614 个节点都是 customDevice（带 protocolName / resource），
+ * 标准 BPMN 不认识，直接 import 会失败。
+ */
+function normalize(xml) {
+  return xml
+    .replace(/<customDevice\b([^>]*?)(\/?)>/g, (m, attrs, selfClose) => {
+      const proto = /protocolName="([^"]*)"/.exec(attrs);
+      const hasName = /\sname="/.test(attrs);
+      let out = '<task' + attrs;
+      if (!hasName && proto && proto[1]) {
+        out += ` name="${proto[1]}"`;
+      }
+      return out + (selfClose ? '/>' : '>');
+    })
+    .replace(/<\/customDevice>/g, '</task>');
+}
+
+/**
+ * 把展开视图还原成扁平结构：subProcess(含 __s 子节点) -> 普通 task。
+ *
+ * 库里的 workflow.graph 只存业务节点，步骤由 capability_recipe 在运行时编译，
+ * 所以编辑保存前必须还原，否则节点会被重复落库。
+ */
+function collapse(xml) {
+  const NS = 'http://www.omg.org/spec/BPMN/20100524/MODEL';
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+
+  const all = [...doc.getElementsByTagName('*')];
+  const stepIds = new Set();
+
+  for (const sub of all) {
+    if (sub.localName !== 'subProcess') continue;
+    const id = sub.getAttribute('id');
+    if (!id) continue;
+
+    const kids = [...sub.childNodes].filter(n => n.nodeType === 1 && n.localName === 'task');
+    const auto = kids.filter(k => (k.getAttribute('id') || '').includes('__s'));
+    if (auto.length === 0) continue;   // 用户自己画的子流程，不动
+
+    const task = doc.createElementNS(NS, 'bpmn:task');
+    task.setAttribute('id', id);
+    task.setAttribute('name', sub.getAttribute('name') || id);
+    for (const a of ['protocolName', 'protocolId', 'resource', 'resourceName', 'variablesValue']) {
+      const v = sub.getAttribute(a);
+      if (v) task.setAttribute(a, v);
+    }
+    auto.forEach(k => stepIds.add(k.getAttribute('id')));
+    sub.parentNode.replaceChild(task, sub);
+  }
+
+  // 删内部节点的 DI 与连线 DI
+  for (const el of [...doc.getElementsByTagName('*')]) {
+    const be = el.getAttribute && el.getAttribute('bpmnElement');
+    if (be && (stepIds.has(be) || /__[sf]\d+$/.test(be))) {
+      el.parentNode.removeChild(el);
+    }
+    if (el.localName === 'BPMNShape' && be) {
+      el.removeAttribute('isExpanded');
+    }
+  }
+  return new XMLSerializer().serializeToString(doc);
+}
+
+function renderProps(el) {
+  const box = document.getElementById('props');
+  if (!el) {
+    box.innerHTML = '<div class="p-empty">选中一个节点，查看它会展开成哪几步</div>';
+    return;
+  }
+  const plan = planByKey[el.id];
+  if (!plan) {
+    box.innerHTML = `<div class="p-empty">
+      ${esc(el.id)}<br><span class="hint">该元素不在编译结果里（可能是网关/事件）</span>
+    </div>`;
+    return;
+  }
+
+  const curCap = plan.capability && plan.capability !== 'UNKNOWN' ? plan.capability : '';
+  const badge = plan.fromRecipe
+    ? `<span class="badge b-warn">模板展开 ${plan.sampleCount} 样本</span>`
+    : `<span class="badge b-dim">单步</span>`;
+
+  const steps = plan.steps.map(s => `
+    <div class="step">
+      <span class="n">${s.seq}</span>
+      <span class="m">${esc(s.method)}</span>
+    </div>`).join('');
+
+  const pf = (window.preflight && window.preflight.issues || [])
+      .filter(i => i.nodeKey === plan.nodeKey || i.nodeKey === el.id);
+
+  box.innerHTML = `
+    ${pf.length ? `<div class="pf-box${pf.some(i => i.level === 'ERROR') ? '' : ' warn'}">
+      ${pf.map(i => `· [${i.code}] ${esc(i.message)}`).join('<br>')}
+    </div>` : ''}
+    <div class="kv"><span>节点</span><span>${esc(plan.name)}</span></div>
+    <div class="kv"><span>key</span><span style="font-size:11px;color:#8b93a7">${esc(plan.nodeKey)}</span></div>
+    <div class="kv"><span>能力</span><span>${esc(plan.capability)} ${badge}</span></div>
+    <div class="kv"><span>能力来源</span><span>${esc(plan.capabilitySource)}</span></div>
+    ${capEditor(plan, el)}
+    <div class="steps">
+      <div class="steps-title">
+        <span>将执行 ${plan.stepCount} 步</span>
+        <span>1 步 = 1 条设备命令</span>
+      </div>
+      ${steps}
+    </div>
+    ${plan.fromRecipe ? `<div class="hint" style="margin-top:10px">
+      该能力有编译模板，执行时按顺序下发给设备。任一步失败 → 整节点失败。
+    </div>` : `<div class="hint" style="margin-top:10px">
+      节点已指定具体方法，直接下发一条命令。
+    </div>`}`;
+
+  // 已有能力时把方法列表也填上（不能只依赖 change 事件）
+  if (curCap) {
+    fillMethods(curCap, plan.steps && plan.steps.length ? plan.steps[0].method : '');
+  }
+}
+
+async function loadPreflightAndMark() {
+  try {
+    const r = await fetch(`/api/workflows/${wfId}/preflight`).then(x => x.json());
+    window.preflight = r;
+
+    const canvas = modeler.get('canvas');
+    const reg = modeler.get('elementRegistry');
+
+    let unreachable = 0;
+    let deadlock = 0;
+    (r.issues || []).forEach(i => {
+      if (!i.nodeKey || !reg.get(i.nodeKey)) return;
+      if (i.code === 'PF-03') { canvas.addMarker(i.nodeKey, 'pf-unreachable'); unreachable++; }
+      if (i.code === 'PF-05') { canvas.addMarker(i.nodeKey, 'pf-deadlock'); deadlock++; }
+    });
+
+    const parts = [];
+    if (unreachable) parts.push(`${unreachable} 个节点走不到`);
+    if (deadlock) parts.push(`${deadlock} 个汇合点会卡住`);
+    if (!parts.length) parts.push(r.warnings ? `${r.warnings} 条告警` : '通过');
+
+    const el = document.getElementById('pfState');
+    el.textContent = parts.join(' · ');
+    el.style.color = r.blocking ? '#ef4444' : (r.warnings ? '#f59e0b' : '#22c55e');
+  } catch (e) {
+    document.getElementById('pfState').textContent = '预检失败';
+  }
+}
+
+/** 能力与方法编辑器：让拖出来的新节点也能标注"它是什么动作"。 */
+function capEditor(plan, el) {
+  const caps = window.caps || [];
+  if (!caps.length) return '';
+
+  const cur = plan.capability && plan.capability !== 'UNKNOWN' ? plan.capability : '';
+  const opts = caps.map(c =>
+      `<option value="${esc(c.code)}"${c.code === cur ? ' selected' : ''}>`
+      + `${esc(c.code)}（${c.devices} 台）</option>`).join('');
+
+  return `
+    <div class="kv"><span>标注能力</span><span>
+      <select id="selCap" onchange="onCapChange('${esc(plan.nodeKey)}')"
+              style="background:#1b202a;color:#e6e9ef;border:1px solid #262c38;
+                     border-radius:5px;padding:4px 8px;font-size:12px;width:100%">
+        <option value="">（未标注）</option>${opts}
+      </select></span></div>
+    <div class="kv"><span>设备方法</span><span>
+      <select id="selMethod" onchange="onMethodChange('${esc(plan.nodeKey)}')"
+              style="background:#1b202a;color:#e6e9ef;border:1px solid #262c38;
+                     border-radius:5px;padding:4px 8px;font-size:12px;width:100%">
+        <option value="">（加载中…）</option>
+      </select></span></div>`;
+}
+
+async function onCapChange(nodeKey) {
+  const cap = document.getElementById('selCap').value;
+  if (!cap) {
+    document.getElementById('selMethod').innerHTML = '<option value="">（未标注）</option>';
+    applyCapability(nodeKey, '', '');
+    return;
+  }
+  await fillMethods(cap, '');
+  applyCapability(nodeKey, cap, '');
+}
+
+/** 拉取某能力的设备方法并填充下拉；preselect 是当前已有的方法名。 */
+async function fillMethods(cap, preselect) {
+  const sel = document.getElementById('selMethod');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">（加载中…）</option>';
+  try {
+    const d = await fetch(`/api/capabilities/${cap}/methods`).then(r => r.json());
+    const cur = preselect || '';
+    sel.innerHTML = ['<option value="">（不指定方法，按能力展开）</option>']
+        .concat((d.methods || []).map(m =>
+            `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`)).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">（加载失败）</option>';
+  }
+}
+
+function onMethodChange(nodeKey) {
+  const cap = document.getElementById('selCap').value;
+  applyCapability(nodeKey, cap, document.getElementById('selMethod').value);
+}
+
+/** 写回 bpmn-js 的自定义属性（保存时会进 XML）。 */
+function applyCapability(nodeKey, capCode, method) {
+  try {
+    const el = modeler.get('elementRegistry').get(nodeKey);
+    if (!el) return;
+    const bo = el.businessObject;
+    bo.$attrs = bo.$attrs || {};
+    if (capCode) { bo.$attrs.capabilityCode = capCode; } else { delete bo.$attrs.capabilityCode; }
+    if (method) { bo.$attrs.protocolName = method; } else { delete bo.$attrs.protocolName; }
+    dirty = true;
+    document.getElementById('dirty').textContent = '● 未保存';
+  } catch (e) {
+    // 忽略
+  }
+}
+
+function fitViewport() {
+  try { modeler.get('canvas').zoom('fit-viewport'); } catch (e) { /* 未就绪 */ }
+}
+
+function refreshCounts() {
+  try {
+    const reg = modeler.get('elementRegistry');
+    let nodes = 0, edges = 0;
+    reg.forEach(el => {
+      if (el.type === 'bpmn:SequenceFlow' || el.type === 'bpmn:Association') edges++;
+      else if (['bpmn:Task','bpmn:ServiceTask','bpmn:StartEvent','bpmn:EndEvent','bpmn:SubProcess'].includes(el.type)
+            || el.type.startsWith('bpmn:Gateway')) nodes++;
+    });
+    document.getElementById('nodeCount').textContent = nodes;
+    document.getElementById('edgeCount').textContent = edges;
+  } catch (e) { /* 忽略 */ }
+}
+
+async function downloadXml() {
+  const { xml } = await modeler.saveXML({ format: true });
+  const blob = new Blob([xml], { type: 'application/xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `workflow-${wfId}.bpmn`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function save() {
+  document.getElementById('hint').textContent = '保存中…';
+  try {
+    const { xml } = await modeler.saveXML({ format: true });
+    // 展开视图要还原成普通节点再存——库里不保留"步骤子图"
+    const res = await fetch(`/api/workflows/${wfId}/graph`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/xml' },
+      body: collapse(xml)
+    });
+    const out = await res.json();
+    if (out.error) throw new Error(out.error);
+    dirty = false;
+    document.getElementById('dirty').textContent = '';
+    document.getElementById('hint').textContent =
+      `已保存（节点 ${out.nodes} / 连线 ${out.edges}）`;
+    await loadCompile();
+    refreshCounts();
+    await loadPreflightAndMark();
+  } catch (e) {
+    document.getElementById('hint').textContent = '保存失败：' + e.message;
+  }
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+window.addEventListener('beforeunload', e => {
+  if (dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
+boot();
+</script>
+</body>
+</html>

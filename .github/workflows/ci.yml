@@ -1,0 +1,44 @@
+name: CI
+
+# M8 门禁：把"改完有没有坏"从"记得测一下"变成必须过。
+# 这里只跑**不需要数据库**的部分（纯逻辑单测 + 前端类型），
+# 设备链路和 e2e 要模拟器/前端在跑，放在本地 ./scripts/ci-gate.sh --all。
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: 编译内核
+        working-directory: labos-kernel
+        run: |
+          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
+            $(find src/main -name '*.java')
+
+      - name: 前端依赖
+        working-directory: webapp
+        run: npm ci
+
+      - name: 门禁（纯逻辑 378 + tsc）
+        run: ./scripts/ci-gate.sh

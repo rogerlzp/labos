@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package labos.driver.v1;
+
+option java_package = "com.labos.kernel.driver.grpc";
+option java_multiple_files = true;
+option go_package = "github.com/rogerlzp/labos/driver/v1;driverv1";
+
+// =============================================================================
+// LabOS · 设备驱动契约 v1
+//
+// 设计目标（对照老系统）：
+//   1. 驱动自描述 + 能力声明   -> 新增设备不改中控代码
+//   2. 强类型错误码            -> 禁止 EC-00-0000，让恢复引擎能决策
+//   3. 设备原始回包必回传      -> 老系统 99.7% 的执行记录没有设备原文
+//   4. 幂等键                  -> 重试不等于重做（机械臂不能搬两次）
+//
+// .NET 现有 DLL 通过 Adapter Sidecar 实现本契约，无需重写驱动逻辑。
+// =============================================================================
+
+service DeviceDriver {
+  // 驱动自描述：能力、管辖设备、协议类型。启动时调用一次。
+  rpc Describe(DescribeRequest) returns (DriverDescriptor);
+
+  // 健康检查（心跳）。中控每 10s 调用一次。
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // 执行一条指令。
+  // 必须幂等：同一 command_id 重复调用不得重复物理动作；
+  // 若上次已成功，直接返回上次结果。
+  rpc Execute(CommandRequest) returns (CommandResult);
+
+  // 中止正在执行的指令（尽力而为，设备可能已完成）。
+  rpc Abort(AbortRequest) returns (AbortResponse);
+
+  // 设备事件流：状态变化、错误、进度上报。
+  rpc Subscribe(SubscribeRequest) returns (stream DeviceEvent);
+}
+
+message DescribeRequest {}
+
+message DriverDescriptor {
+  string code = 1;                         // DRV-19200200196-8501
+  string endpoint = 2;                     // tcp://192.0.2.10.196:8501
+  string protocol = 3;                     // tcp / serial / http / native
+  string driver_kind = 4;                  // dotnet-dll / java / python
+  repeated string capabilities = 5;        // TRANSFER / INCUBATE / ...
+  repeated int64 device_instance_ids = 6;  // 该驱动管辖的设备实例
+  map<string, string> metadata = 7;        // 版本、厂商、分隔符等
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  string detail = 2;
+  int64 uptime_seconds = 3;
+  int32 pending_commands = 4;
+}
+
+message CommandRequest {
+  // 幂等键。中控生成，重试必须复用同一个值。
+  string command_id = 1;
+  int64 device_instance_id = 2;
+  string method = 3;                       // 协议名，如 Deposit1
+  map<string, string> params = 4;          // 参数（值统一按字符串传，驱动自行解析）
+  int64 timeout_ms = 5;
+  string trace_id = 6;                     // 链路追踪
+}
+
+message CommandResult {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    SUCCESS = 1;
+    FAILED = 2;
+    TIMEOUT = 3;
+    REJECTED = 4;
+  }
+
+  string command_id = 1;
+  Status status = 2;
+
+  // 语义化错误码。禁止使用 EC-00-0000。
+  // 建议分段：
+  //   EC-05-10xx  通讯类（超时/未就绪/断连）  -> 可重试
+  //   EC-07-xxxx  资源占用类                  -> 可重试
+  //   EC-08-xxxx  设备执行失败                -> 视情况换机
+  //   EC-09-xxxx  脚本/参数错误               -> 不可重试
+  string error_code = 3;
+  string message = 4;
+
+  // ★ 设备原始回包（原始字符串，不做结构化）。
+  // 出问题时唯一的真相来源。老系统缺这个，导致 11 万条执行记录无法复盘。
+  string device_raw_response = 5;
+
+  int64 duration_ms = 6;
+  map<string, string> outputs = 7;         // 结构化产出（读板结果等）
+  bool retryable = 8;                      // 驱动自身判断是否值得重试
+}
+
+message AbortRequest {
+  string command_id = 1;
+  int64 device_instance_id = 2;
+}
+
+message AbortResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message SubscribeRequest {
+  repeated int64 device_instance_ids = 1;
+}
+
+message DeviceEvent {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    STATUS_CHANGED = 1;
+    ERROR = 2;
+    PROGRESS = 3;
+    HEARTBEAT = 4;
+  }
+
+  Kind kind = 1;
+  int64 device_instance_id = 2;
+  int64 at_unix_ms = 3;
+  string command_id = 4;
+  string detail = 5;
+  map<string, string> attributes = 6;
+}
