@@ -87,6 +87,8 @@ PURE=(
   "device.DeviceModelLibrarySelfTest"
   # 权限收口：角色白名单 / 写权限矩阵 / 最后管理员保护判定（纯逻辑）
   "api.RbacRulesSelfTest"
+  # JSON 取值转义解码：Unicode 转义（\uXXXX）解成中文 / 脏数据不崩（纯逻辑）
+  "api.JsonFieldSelfTest"
   "sim.SimulatorBehaviorSelfTest"
   "driver.DeviceErrorChainSelfTest"
 )

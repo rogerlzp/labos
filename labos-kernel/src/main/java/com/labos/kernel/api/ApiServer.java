@@ -226,7 +226,53 @@ public final class ApiServer {
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("\"" + key + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
                 .matcher(body);
-        return m.find() ? m.group(1) : null;
+        return m.find() ? unescapeJson(m.group(1)) : null;
+    }
+
+    /**
+     * 解码 JSON 字符串里的转义序列（含 Unicode 转义）。
+     *
+     * <p>不解码的话，按标准 JSON 编码中文的客户端（如 Python json.dumps 默认
+     * {@code ensure_ascii=True}）会让中文名落库成字面的转义序列（&#92;uXXXX），
+     * 而不是真正的中文。
+     */
+    static String unescapeJson(String s) {
+        if (s == null || s.indexOf('\\') < 0) {
+            return s;
+        }
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != '\\' || i + 1 >= s.length()) {
+                sb.append(c);
+                continue;
+            }
+            char n = s.charAt(++i);
+            switch (n) {
+                case '"' -> sb.append('"');
+                case '\\' -> sb.append('\\');
+                case '/' -> sb.append('/');
+                case 'b' -> sb.append('\b');
+                case 'f' -> sb.append('\f');
+                case 'n' -> sb.append('\n');
+                case 'r' -> sb.append('\r');
+                case 't' -> sb.append('\t');
+                case 'u' -> {
+                    if (i + 4 < s.length()) {
+                        try {
+                            sb.append((char) Integer.parseInt(s.substring(i + 1, i + 5), 16));
+                            i += 4;
+                        } catch (NumberFormatException e) {
+                            sb.append("\\u");
+                        }
+                    } else {
+                        sb.append("\\u");
+                    }
+                }
+                default -> sb.append('\\').append(n);
+            }
+        }
+        return sb.toString();
     }
 
     /** 写一条审计（取当前会话，失败静默）。 */
