@@ -32,7 +32,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Constant | Value | Coverage |
 |---|---|---|
-| `MIN_PURE` | 536 | Pure-logic unit tests (fewer = red) |
+| `MIN_PURE` | 547 | Pure-logic unit tests (fewer = red) |
 | `MIN_CHAIN` | 41 | Full device chain |
 | `MIN_PFLOW` / `MIN_PEXP` | 4 / 3 | In-flow parallelism / same-island concurrency |
 | `MIN_MATRIX` | 45 | Full flow matrix (`verify-flow-matrix.py`) |
@@ -167,6 +167,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | Case / script | Coverage | Layer | In CI |
 |---|---|---|---|
 | `scripts/check-schema-sync.sh` | Schema artifact vs shards (`loop_index` / 4-column unique key / parent FK) | L1 | ✅ |
+| `api.JsonFieldSelfTest` | Minimal JSON value extraction: Unicode escape decoding (Chinese names are no longer stored as literal escapes), malformed data does not crash | L1 | ✅ |
 | `scripts/verify-en-docs.py` | Chinese/English documents, pair by pair (structure / links / residual Chinese) | — | ⬜ |
 | `scripts/scan-i18n.py` | Frontend i18n: key parity / code coverage / residual Chinese | — | ⬜ |
 | `scripts/test-sidecar.sh` | Standalone Sidecar protocol | L3 | ⬜ |

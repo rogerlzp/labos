@@ -32,16 +32,16 @@
 | **M3** | 启动准入（主链粗筛）：跑之前先判断资源够不够 | `verify-m3.sh` **9 项** |
 | **M4** | 暂停/恢复/故障处理：三种暂停态、板位 UNKNOWN 封锁、回程承诺 | `verify-m4.sh` **14 项** + `PauseManagerSelfTest` **10 项** |
 | **M5** | 多流程并发：同设备排队、门状态、通道释放、等待图无残留 | `verify-m5.sh` |
-| **本轮（M6–M9.5）** | 设备接入闭环、流程/实验编排、条件分支/循环/变量、错误码策略管理、崩溃恢复、数据完整性 / 运维 / 门禁 / 调度 / 编排统一 | `test-all` **907/0**（纯逻辑 536/0）、`verify-device-chain` **41/41** |
+| **本轮（M6–M9.5）** | 设备接入闭环、流程/实验编排、条件分支/循环/变量、错误码策略管理、崩溃恢复、数据完整性 / 运维 / 门禁 / 调度 / 编排统一 | `test-all` **917/0**（纯逻辑 547/0）、`verify-device-chain` **41/41** |
 
 ### 1.2 当前基线（可复跑，不是估计）
 
 ```
-./scripts/test-all.sh --pure-only     → 536 / 0        （确定性，不连库）
-./scripts/test-all.sh                 → 907 / 0        （带库全跑）
+./scripts/test-all.sh --pure-only     → 547 / 0        （确定性，不连库）
+./scripts/test-all.sh                 → 917 / 0        （带库全跑）
 ./scripts/verify-device-chain.sh      → 41 / 0         （中控→sidecar→模拟器→库）
 cd webapp && npx tsc -b --force       → 0 错误
-./scripts/ci-gate.sh --e2e            → 通过（纯逻辑 536 + tsc + e2e 24）
+./scripts/ci-gate.sh --e2e            → 通过（纯逻辑 547 + tsc + e2e 24）
 
 代码：labos-kernel 36,595 行 / 11 包；webapp 12,830 行 / 23 页
 数据：116 表；流程 1009 / 节点 14033 / 实验 678 / 执行 10710 / 命令 116724；`run_node` 120,268（parent 悬空 0）
@@ -187,7 +187,7 @@ PUT /api/settings/heartbeat     {"intervalMs":5000,"offlineMs":20000} → 库里
 
 ```
 ./scripts/ci-gate.sh --e2e
-  1. 纯逻辑单测   通过 536 / 0（阈值 536，只许涨不许跌）
+  1. 纯逻辑单测   通过 547 / 0（阈值 547，只许涨不许跌）
   2. 前端类型     tsc 0 错误
   4. 前端 e2e     通过 24 / 0（5 条主链路）
   门禁通过
@@ -205,7 +205,7 @@ PUT /api/settings/heartbeat     {"intervalMs":5000,"offlineMs":20000} → 库里
 
 **范围（功能清单）**
 
-- [x] GitHub Actions（或本地 pre-push 钩子）跑 `test-all --pure-only`，**少于 536 直接失败** — ✅ `ci.yml` 跑 `ci-gate.sh`（纯逻辑，阈值现 536）
+- [x] GitHub Actions（或本地 pre-push 钩子）跑 `test-all --pure-only`，**少于 547 直接失败** — ✅ `ci.yml` 跑 `ci-gate.sh`（纯逻辑，阈值现 547）
 - [ ] `verify-device-chain.sh` 进 CI（起模拟器 + sidecar），**少于 41 直接失败** — ⏳ 未做：GitHub Actions 只跑纯逻辑 + tsc；设备链仅本地 `ci-gate.sh --with-db`（见 `02-后续规划.md` A3）
 - [x] Playwright 覆盖 5 条主链路： — ✅ 由 `scripts/e2e-smoke.py` 覆盖（Python httpx 断言，非 Playwright；现 24 条）
       执行→图着色 / 暂停→继续 / 实验执行历史展开 / 错误码编辑 / 空实验引导
@@ -215,7 +215,7 @@ PUT /api/settings/heartbeat     {"intervalMs":5000,"offlineMs":20000} → 库里
 **验收**
 
 ```
-PR 检查：test-all 536+ / tsc 0 错误（CI 只跑不需要库的两道）；本地收口：verify-device-chain 41 / e2e 24，任一红灯不可合并
+PR 检查：test-all 547+ / tsc 0 错误（CI 只跑不需要库的两道）；本地收口：verify-device-chain 41 / e2e 24，任一红灯不可合并
 ```
 
 **依赖**：M6（数据结构稳定，否则 e2e 断言会反复改） ｜ **预估**：4 天
@@ -391,7 +391,7 @@ S1 之后**画布已不再骗人**（保存即编译落库）；但批次（S3�
 | **P1** | 表达式算术 | M7 | ✅ 完成（`+ - * /`，含优先级与一元负号） |
 | **P1** | 告警阈值页面可配、热生效 | M7 | ✅ 完成（`sys_setting` + 告警页卡片，改完下个周期生效） |
 | **P1** | 批量忽略支持筛选 | M7 | ✅ 完成（`835aa43` 批量忽略 + `73dc4f4` 按暂停类型 + 时间范围筛选；暂停队列页可勾选/按筛选忽略） |
-| **P1** | CI 门禁（硬阈值；现 536 / 41 / 24） | M8 | ✅ 完成（`scripts/ci-gate.sh` + GitHub Actions；阈值随用例数上涨，见 `ci-gate.sh` 顶部常量） |
+| **P1** | CI 门禁（硬阈值；现 547 / 41 / 24） | M8 | ✅ 完成（`scripts/ci-gate.sh` + GitHub Actions；阈值随用例数上涨，见 `ci-gate.sh` 顶部常量） |
 | **P1** | 前端 e2e 5 条主链路 | M8 | ✅ 完成（`scripts/e2e-smoke.py`，24 条断言） |
 | **P1** | 长稳压测 | M8 | ✅ 完成（`scripts/soak-test.sh`，热身后再取内存基线） |
 | **P1** | `workflow_node` 落 `resource_id` / `seq`（消除对 XML 的解析依赖） | M9（前置） | ✅ 完成（双写 + 1009 条流程回填 + 一致性断言进设备链） |
@@ -418,7 +418,7 @@ S1 之后**画布已不再骗人**（保存即编译落库）；但批次（S3�
 | 1 | 功能可演示 | 页面上能点出来（不是只有接口） |
 | 2 | 有自动化断言 | 单测或脚本；**数字要能复跑** |
 | 3 | 文档同步 | 功能/技术/设计/测试四份里至少改对一份，数字同步 |
-| 4 | 不破坏基线 | `test-all --pure-only` ≥ 536 且 0 失败；`verify-device-chain` ≥ 41 且 0 失败；`tsc` 0 错误 |
+| 4 | 不破坏基线 | `test-all --pure-only` ≥ 547 且 0 失败；`verify-device-chain` ≥ 41 且 0 失败；`tsc` 0 错误 |
 | 5 | 已知缺口写清 | 在对应文档 §"没覆盖的"里列出来，不许口头带过 |
 
 > 第 4 条是硬门槛。**数字下降 = 阶段不算完成**（评审 20261103-01 的阻断项就是这么来的：
