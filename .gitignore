@@ -24,6 +24,7 @@ out/
 !docs/images/run-detail-*.png
 !docs/images/plates-*.png
 !docs/images/preflight-*.png
+!docs/images/paused-*.png
 !docs/images/*-ui.png
 *.log
 /tmp/
