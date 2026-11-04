@@ -5,9 +5,11 @@ labos-gateway/out/
 # Python 脚本的字节码缓存（scripts/ 下有多个 .py）
 __pycache__/
 *.pyc
-# sidecar 的构建产能在子目录里（Labos.Sidecar/bin），必须用 ** 才匹配得到
-sidecar-dotnet/**/bin/
-sidecar-dotnet/**/obj/
+# sidecar 的构建产能在子目录里（Labos.Sidecar/bin），必须用 ** 才匹配得到。
+# 🔴 但带斜杠的模式会锚定到 .gitignore 所在目录，所以必须写成 **/sidecar-dotnet/...，
+#    否则匹配不到 labos-kernel/sidecar-dotnet/obj/（构建产物会混进仓库）。
+**/sidecar-dotnet/**/bin/
+**/sidecar-dotnet/**/obj/
 # 注意：不要带尾斜杠 —— 带斜杠只匹配目录，匹配不到符号链接。
 # 曾经因为这个，node_modules 的软链被 git add -A 带进了仓库（自指软链，
 # 新克隆直接坏掉）。
