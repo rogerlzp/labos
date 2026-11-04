@@ -11,6 +11,7 @@
 #   · 可选：前端 e2e 24 条（要前端/API 在跑）
 #   · 可选：页面流程矩阵 21 条（设计器 palette/变量节点/运行详情/页面暂停恢复，要前端+API+库）
 #   · 可选：实验运行控制 22 条（页面暂停/恢复/停止，要前端+API+库）
+#   · 可选：仿真机联调 24 条（页面建流程→绑真机→建实验→执行→真回包，要仿真机+前端+API+库）
 #
 # 用法：
 #   ./scripts/ci-gate.sh                 # 纯逻辑 + tsc（不需要数据库）
@@ -46,6 +47,7 @@ MIN_MATRIX=45   # 完整流程矩阵（verify-flow-matrix.py --force-online）�
 MIN_E2E=24        # 2026-11-03：权限收口 +Header 角色断言（23 → 24）
 MIN_E2EFM=21      # 2026-11-04：页面流程矩阵（登录1/设计器装配6/变量节点4/运行详情5/页面暂停恢复5）
 MIN_EXPCTL=22     # 实验运行控制：页面暂停/恢复/停止（verify-exp-control.py）
+MIN_E2ESIM=24     # 2026-11-04：仿真机联调（页面建流程+绑真机+建实验+执行+真回包，e2e-sim-flow.py）
 
 FAIL=0
 note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -227,8 +229,30 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "实验运行控制 $CN / 0（页面暂停=现场扣留 / 恢复 / 停止）"
     fi
   fi
+
+  # 4.7 仿真机联调：补齐"设备那一段"的端到端缺口 —— 前面几节要么只到 API、
+  # 要么用占位设备；这一节是**页面建流程 → 设计器绑真机 → 页面建实验 → 页面执行
+  # → 断言设备真回包**。只复用已跑起来的 DeviceSimulator（19500..19506），
+  # 没起来就整体 SKIP（去 labos-kernel/scripts/sim-up.sh 起）。
+  note "4.7 仿真机联调（e2e-sim-flow.py）"
+  SOUT=$(python3 scripts/e2e-sim-flow.py --base "$E2E_BASE" 2>&1)
+  if echo "$SOUT" | grep -qE '^SKIP|没有仿真机在监听'; then
+    echo "  跳过（仿真机没起 / API 不可用）"
+  else
+    SN=$(echo "$SOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+    SF=$(echo "$SOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+    SN=${SN:-0}; SF=${SF:-1}
+    if [[ "$SF" != "0" ]]; then
+      fail "仿真机联调有失败（$SF 条）"
+      echo "$SOUT" | grep '✗' | head -8
+    elif (( SN < MIN_E2ESIM )); then
+      fail "仿真机联调断言 $SN < 阈值 ${MIN_E2ESIM}"
+    else
+      pass "仿真机联调 $SN / 0（页面建流程·绑真机·建实验·执行·真回包）"
+    fi
+  fi
 else
-  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制：跳过（没给 --e2e）"
+  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调：跳过（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果
