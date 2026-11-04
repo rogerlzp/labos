@@ -169,6 +169,7 @@ queued.
 | `docs/流程控制-功能说明.md` | `docs/en/workflow-control-guide.md` | ✅ |
 | `docs/流程控制-技术设计.md` | `docs/en/workflow-control-design.md` | ✅ |
 | `docs/流程控制-测试报告.md` | `docs/en/workflow-control-test-report.md` | ✅ |
+| `docs/完整流程测试矩阵-设计.md` | `docs/en/full-flow-test-matrix-design.md` | ✅ |
 | `docs/测试与上线策略.md` | `docs/en/testing-and-release-strategy.md` | ✅ |
 | `docs/混合调度方案-设计.md` | `docs/en/hybrid-scheduling-design.md` | ✅ |
 | `docs/点位编号规范.md` | `docs/en/position-numbering-standard.md` | ✅ |
