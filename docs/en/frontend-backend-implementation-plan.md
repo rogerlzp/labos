@@ -21,8 +21,8 @@
 
 | Feature | The core difficulty | Dependency | Estimate |
 |---|---|---|---|
-| **Automatic compilation** | The quality of the templates (whether they can cover the real nodes) | 6 templates already mined from the history | 1 week |
-| **Gantt forecast** | The duration model (historical time fields contain dirty data) | Use only cleaned completed samples | 1.5 weeks |
+| **Automatic compilation** | The quality of the templates (whether they can cover the real nodes) | 6 templates available | 1 week |
+| **Gantt forecast** | The duration model | Use only cleaned completed samples | 1.5 weeks |
 | **Ready pull** | **The plate-level model is missing** (we have no concept of "where the plate is") | The plate tracking has to be built anew | 2-3 weeks |
 
 **It has to be said up front**: the full form of the ready pull depends
@@ -43,11 +43,10 @@ the plate), as a guard before the execution; the plate-level tracking goes into 
 ### 1.1 What is already done
 
 ```sql
--- The templates mined from the 110,000 historical commands
 capability_recipe (tenant_id, capability_id, seq, method, param_expr, criteria, origin, sample_count)
 ```
 
-The 6 templates (origin=mined, with the number of historical samples):
+The 6 templates (with the number of samples):
 
 | Capability | Template | Samples |
 |---|---|---:|
@@ -108,7 +107,7 @@ Add a **properties panel** on the right of the designer: select a node → it sh
 ```
 Node: Activity_0b8t6do
 Capability: READ_PLATE        [source: explicit]
-Will expand into 7 steps (based on 198 historical samples):
+Will expand into 7 steps (based on 198 samples):
   1. OpenDoor
   2. Transfer
   3. CloseDoor
@@ -146,7 +145,7 @@ existing recovery policy; with REASSIGN the device is changed and all the steps 
 
 ### 2.1 Where the durations come from
 
-**The historical measurement is preferred**; if there is none, `estimate_sec` is used; if there is
+**The measurement is preferred**; if there is none, `estimate_sec` is used; if there is
 none either, the capability default is used.
 
 ```sql
@@ -331,7 +330,7 @@ run_command rows are produced.
 | The SVG Gantt on the frontend | The forecast/actual dual tab |
 
 **Acceptance**: click "Forecast" on any workflow, the Gantt chart comes out, and the deviation of
-the total duration from the actual history is < 30%.
+the total duration from the actual value is < 30%.
 
 ### Week 3: the device readiness + the pull scheduling (the first version)
 
@@ -356,7 +355,7 @@ A business confirmation is needed on where the "plate" lands in the database (we
 **1. After the compilation, what is the relation between `run_node` and `run_command`?**
 
 Suggestion: `run_node` remains "one business node" (such as READ_PLATE), and `run_command` is the
-7 commands under it. This way the historical data (113,570 run_node) and the new multi-step
+7 commands under it. This way the data in the database (113,570 run_node) and the new multi-step
 execution can be aligned.
 
 **2. When the device is changed and it is re-run, from which step does it start?**
