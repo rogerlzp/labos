@@ -31,6 +31,20 @@ Workflow execution (BPMN graph → nodes → device commands)
 Plate tracking (which position holds which plate + atomic reservation)
 ```
 
+## Demo — one plate, two devices, one workflow
+
+A gantry arm carries a single plate from the storage rack through the centrifuge
+(**ASpin 2K**) and the sealer (**S100**) to the outfeed. The command trace shows the
+real sidecar commands and their real timeouts: `MoveTray` 3 s, `Seal` 12 s,
+`RunProgram` 300 s (compressed for the demo).
+
+![LabOS orchestration demo: a gantry arm moves plate PL-001 from storage through the ASpin 2K centrifuge and the S100 sealer to the outfeed](docs/media/labos-flow.gif)
+
+> The device models, commands and timeouts shown here are the ones in
+> [`sidecar-dotnet/models.json`](sidecar-dotnet/models.json) — the same file the
+> kernel exports from its device library. The animation source is
+> [`docs/media/labos-flow-source.html`](docs/media/labos-flow-source.html).
+
 ---
 
 ## What it does
@@ -248,6 +262,7 @@ intelligence rather than product documentation; they live in the local, git-igno
 | [`docs/en/local-simulation-guide.md`](docs/en/local-simulation-guide.md) | One simulator per device, run the whole island locally |
 | [`docs/en/devices/model-library-and-error-code-mapping.md`](docs/en/devices/model-library-and-error-code-mapping.md) | **How to onboard a new device**: device code → LabOS code → recovery action |
 | [`sidecar-dotnet/README.en.md`](sidecar-dotnet/README.en.md) | **Real-device sidecar**: serial framing / Cluster.dll / forwarding simulator |
+| [`docs/media/labos-flow-source.html`](docs/media/labos-flow-source.html) | Source of the demo animation at the top of this page (self-contained HTML/SVG, no build step) |
 | [`docs/en/development-log.md`](docs/en/development-log.md) | Where every decision and every pitfall came from |
 | [`docs/en/review-20261104/00-index.md`](docs/en/review-20261104/00-index.md) | **Latest review entry point** |
 | [`docs/en/review-20261103/00-index.md`](docs/en/review-20261103/00-index.md) | Functional / technical / design / test review bundle |

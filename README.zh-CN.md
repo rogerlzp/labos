@@ -24,6 +24,19 @@
 板位跟踪（哪个位置有哪块板 + 抢占防冲突）
 ```
 
+## 演示 — 一块板、两台设备、一条工作流
+
+龙门机械臂把一块板从板位存储位，经离心机（**ASpin 2K**）、封膜机（**S100**），
+一路搬到出料位。右下角的指令轨迹是 sidecar 的**真实指令与真实超时**：
+`MoveTray` 3 秒、`Seal` 12 秒、`RunProgram` 300 秒（演示中已压缩）。
+
+![LabOS 编排演示：龙门机械臂把 PL-001 号板从存储位经 ASpin 2K 离心机、S100 封膜机搬到出料位](docs/media/labos-flow.gif)
+
+> 图中的设备型号、指令与超时都取自
+> [`sidecar-dotnet/models.json`](sidecar-dotnet/models.json) —— 与内核从型号库导出的
+> 是同一份文件。动画源码见
+> [`docs/media/labos-flow-source.html`](docs/media/labos-flow-source.html)。
+
 ---
 
 ## 能做什么
@@ -192,6 +205,7 @@ LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar" \
 | [`docs/操作手册-岛屿与搬运.md`](docs/操作手册-岛屿与搬运.md) | 现场操作 |
 | [`docs/设备/型号库与错误码映射.md`](docs/设备/型号库与错误码映射.md) | **接一台新设备怎么改**；设备码→中控码→恢复动作 |
 | [`sidecar-dotnet/README.md`](sidecar-dotnet/README.md) | **真机 sidecar**：串口帧 / Cluster.dll / 转发模拟器 |
+| [`docs/media/labos-flow-source.html`](docs/media/labos-flow-source.html) | 页面顶部演示动画的源文件（单文件 HTML/SVG，无需构建） |
 | [`docs/设备/现场确认清单.md`](docs/设备/现场确认清单.md) | 手册没写、接真机前必须测的项 |
 | [`docs/初始化与设备接入指南.md`](docs/初始化与设备接入指南.md) | 设备接入 |
 

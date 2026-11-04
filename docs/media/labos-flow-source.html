@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1280px; height:640px; overflow:hidden; background:#060d18; }
+  #stage { position:relative; width:1280px; height:640px;
+           font-family:"SF Mono",Menlo,Consolas,monospace; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <svg id="scene" width="1280" height="640" viewBox="0 0 1280 640"></svg>
+</div>
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("scene");
+
+const C = {
+  bg0:"#060d18", bg1:"#0c1c31", rail:"#1e3a5f", railHi:"#2b5580",
+  cyan:"#5eead4", cyanDim:"#2dd4bf", amber:"#fbbf24",
+  plate:"#e8eef7", plateEdge:"#93a4bd", text:"#e6edf7", textDim:"#6b7f99",
+  grid:"#152439", ok:"#34d399", panel:"#0a1729", body:"#132743", bodyEdge:"#24466e"
+};
+
+const STATIONS = [
+  { id:"src",  name:"板位存储",  sub:"Plate storage", x:165 },
+  { id:"aspin",name:"ASpin 2K",   sub:"Centrifuge",    x:455 },
+  { id:"s100", name:"S100",       sub:"Sealer",        x:755 },
+  { id:"out",  name:"出料位",     sub:"Outfeed",       x:1055 }
+];
+const BENCH_Y   = 486;   // 台面高度
+const RAIL_Y    = 168;   // 轨道
+const GRIP_Y    = 428;   // 抓取时板子中心（台面上方一点）
+const CARRY_Y   = 300;   // 搬运时板子中心
+
+function el(tag, attrs={}, parent=null){
+  const e = document.createElementNS(NS, tag);
+  for(const k in attrs) e.setAttribute(k, attrs[k]);
+  (parent||svg).appendChild(e);
+  return e;
+}
+function txt(s, x, y, attrs={}, parent=null){
+  const t = el("text", Object.assign({x,y,fill:C.text,"font-size":"13"}, attrs), parent||svg);
+  t.textContent = s; return t;
+}
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp01 = v => v<0?0:(v>1?1:v);
+const ease = t => t<0.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+
+// ---------------- 背景 ----------------
+(function(){
+  const defs = el("defs");
+  const lg = el("linearGradient",{id:"bgGrad",x1:"0",y1:"0",x2:"0.7","y2":"1"},defs);
+  el("stop",{offset:"0%","stop-color":C.bg1},lg);
+  el("stop",{offset:"100%","stop-color":C.bg0},lg);
+  el("rect",{x:0,y:0,width:1280,height:640,fill:"url(#bgGrad)"});
+  const gg = el("g",{opacity:"0.55"});
+  for(let x=0;x<=1280;x+=40) el("line",{x1:x,y1:420,x2:x,y2:640,stroke:C.grid,"stroke-width":"1"},gg);
+  for(let y=420;y<=640;y+=40) el("line",{x1:0,y1:y,x2:1280,y2:y,stroke:C.grid,"stroke-width":"1"},gg);
+
+  txt("LabOS", 56, 66, {"font-size":"32","font-weight":"700","letter-spacing":"0.5"});
+  txt("laboratory automation orchestration", 56, 90, {"font-size":"12",fill:C.textDim,"letter-spacing":"2.4"});
+  el("line",{x1:56,y1:104,x2:292,y2:104,stroke:C.cyanDim,"stroke-width":"2"});
+})();
+
+// ---------------- 状态条 ----------------
+const statusG = el("g",{});
+let statusMsg="", statusColor=C.cyan;
+function setStatus(m,c){ statusMsg=m; statusColor=c||C.cyan; }
+function drawStatus(){
+  while(statusG.firstChild) statusG.removeChild(statusG.firstChild);
+  el("rect",{x:56,y:118,width:6,height:22,rx:3,fill:statusColor},statusG);
+  txt(statusMsg, 72, 135, {"font-size":"14","font-weight":"600",fill:C.text}, statusG);
+}
+
+// ---------------- 台面 + 轨道 ----------------
+(function(){
+  el("rect",{x:60,y:BENCH_Y,width:1160,height:12,rx:3,fill:"#1c2b42"});
+  el("rect",{x:60,y:BENCH_Y,width:1160,height:3,fill:"#2f4666"});
+  // 轨道（双梁）
+  el("rect",{x:80,y:RAIL_Y,width:1120,height:14,rx:3,fill:"#16273e"});
+  el("rect",{x:80,y:RAIL_Y,width:1120,height:3,fill:C.railHi});
+  for(const x of [96,1172]){
+    el("rect",{x:x,y:RAIL_Y+14,width:11,height:BENCH_Y-RAIL_Y-14,fill:"#13223a"});
+  }
+})();
+
+// ---------------- 工位 ----------------
+const stations = {};
+function makeStation(s){
+  const g = el("g",{});
+  const p = {};
+
+  if(s.id==="src"){
+    // 存储架：立柱 + 层板
+    el("rect",{x:s.x-70,y:BENCH_Y-186,width:140,height:186,rx:5,fill:"#0c1a2e",stroke:C.bodyEdge,"stroke-width":"1.5"},g);
+    for(let i=0;i<3;i++){
+      const y = BENCH_Y-30-i*52;
+      el("rect",{x:s.x-62,y:y,width:124,height:5,rx:2,fill:"#24466e"},g);
+    }
+    p.plates=[];
+    // 顶层板位：抓取时抓的就是最左边那块
+    for(let i=0;i<4;i++){
+      const y=BENCH_Y-42;
+      const pg=el("g",{},g);
+      el("rect",{x:s.x-46+i*24,y:y,width:20,height:9,rx:2,fill:C.plate,opacity:"0.92"},pg);
+      el("rect",{x:s.x-46+i*24,y:y,width:20,height:9,rx:2,fill:"none",stroke:C.plateEdge,"stroke-width":"0.8"},pg);
+      p.plates.push(pg);
+    }
+    // 抓取后：从架上取走最左一块（用不透明度表示）
+    p.taken = p.plates[0];
+    // 顶部标牌
+    el("rect",{x:s.x+40,y:BENCH_Y-150,width:76,height:22,rx:4,fill:"#0a1729",stroke:C.bodyEdge,"stroke-width":"1"},g);
+    txt("PL-001…", s.x+78, BENCH_Y-134, {"font-size":"11","text-anchor":"middle",fill:C.cyan,"font-weight":"600"});
+  }
+  else if(s.id==="out"){
+    el("rect",{x:s.x-56,y:BENCH_Y-24,width:112,height:24,rx:4,fill:"#0c1a2e",stroke:C.bodyEdge,"stroke-width":"1.5"},g);
+    p.outGroup = g;
+    p.plates=[];
+    for(let i=0;i<3;i++){
+      const pg=el("g",{},g);
+      const yy = BENCH_Y-44+i*9;
+      el("rect",{x:s.x-34,y:yy,width:68,height:8,rx:2,fill:C.plate,opacity:"0.92"},pg);
+      el("rect",{x:s.x-34,y:yy,width:68,height:8,rx:2,fill:"none",stroke:C.plateEdge,"stroke-width":"0.8"},pg);
+      p.plates.push(pg);
+    }
+  }
+  else {
+    // 设备机箱
+    const w=190, h=150, top=BENCH_Y-h;
+    el("rect",{x:s.x-w/2,y:top,width:w,height:h,rx:9,fill:C.body,stroke:C.bodyEdge,"stroke-width":"2"},g);
+    el("rect",{x:s.x-w/2+3,y:top+3,width:w-6,height:6,rx:3,fill:"#2f5480"},g);
+
+    // 显示屏
+    el("rect",{x:s.x-w/2+16,y:top+22,width:88,height:40,rx:4,fill:"#050f1c",stroke:C.bodyEdge,"stroke-width":"1"},g);
+    p.screenLine = el("line",{x1:s.x-w/2+24,y1:top+36,x2:s.x-w/2+96,y2:top+36,stroke:C.cyanDim,"stroke-width":"2"},g);
+    p.screenLine2= el("line",{x1:s.x-w/2+24,y1:top+48,x2:s.x-w/2+80,y2:top+48,stroke:C.cyanDim,"stroke-width":"2"},g);
+
+    // 舱门（可开合）
+    p.door = el("g",{},g);
+    el("rect",{x:s.x-30,y:top+74,width:120,height:58,rx:5,fill:"#08131f",stroke:C.bodyEdge,"stroke-width":"1.5"},p.door);
+    el("rect",{x:s.x-24,y:top+80,width:108,height:46,rx:4,fill:"#0e2138"},p.door);
+    // 舱门把手 + 高光边
+    el("rect",{x:s.x+62,y:top+98,width:16,height:6,rx:3,fill:"#2f5480"},p.door);
+    el("rect",{x:s.x-24,y:top+80,width:108,height:2,fill:"#1c3a5c"},p.door);
+    // 舱内导轨
+    el("line",{x1:s.x-20,y1:top+112,x2:s.x+80,y2:top+112,stroke:"#1c3a5c","stroke-width":"1.5"},p.door);
+    // 舱内板子：必须画在舱门**之前**（否则被门挡住看不见）
+    p.innerPlate = el("g",{},g);
+    el("rect",{x:s.x-20,y:top+100,width:100,height:9,rx:2,fill:C.plate,opacity:"0.95"},p.innerPlate);
+    el("rect",{x:s.x-20,y:top+100,width:100,height:9,rx:2,fill:"none",stroke:C.plateEdge,"stroke-width":"0.8"},p.innerPlate);
+    p.innerPlate.setAttribute("opacity","0");
+    g.insertBefore(p.innerPlate, p.door);
+
+    // 状态灯
+    p.lamp = el("circle",{cx:s.x+w/2-24,cy:top+40,r:8,fill:"#1b2b40",stroke:"#2f4666","stroke-width":"1.5"},g);
+    p.glow = el("circle",{cx:s.x+w/2-24,cy:top+40,r:16,fill:"none",stroke:C.cyan,"stroke-width":"2",opacity:"0"},g);
+
+    // 设备名（只在箱体上方标一次）
+    txt(s.name, s.x, top-16, {"font-size":"17","font-weight":"700","text-anchor":"middle",fill:C.text});
+    txt(s.sub,  s.x, top+2, {"font-size":"11","text-anchor":"middle",fill:C.textDim});
+  }
+
+  // 台面标签
+  if(s.id!=="src" && s.id!=="out"){
+    // 设备工位下方标工位号
+    txt(s.id.toUpperCase(), s.x, BENCH_Y+42, {"font-size":"12","text-anchor":"middle",fill:"#4b607d"});
+  } else {
+    txt(s.name, s.x, BENCH_Y+44, {"font-size":"13","text-anchor":"middle",fill:"#8fa3bd"});
+    txt(s.sub,  s.x, BENCH_Y+60, {"font-size":"10","text-anchor":"middle",fill:"#526981"});
+  }
+  stations[s.id]={s,g,parts:p};
+}
+STATIONS.forEach(makeStation);
+
+// ---------------- 龙门机械臂 ----------------
+// 结构：滑块(在轨道上) → 竖臂 → 伸缩横臂 → [末端工具组：抓手 + 携带的板子]
+// 关键：工具组必须挂在**横臂末端**，否则板子不会跟着伸缩走。
+const arm = el("g",{});
+const A = {};
+(function(){
+  A.carriage = el("g",{},arm);
+  // 滑块主体
+  el("rect",{x:-24,y:-18,width:48,height:32,rx:5,fill:"#24466e",stroke:"#3a6a9e","stroke-width":"1.5"},A.carriage);
+  el("rect",{x:-24,y:-18,width:48,height:5,rx:2,fill:"#3a6a9e"},A.carriage);
+  // 竖臂
+  A.upper = el("rect",{x:-9,y:12,width:18,height:118,rx:3,fill:"#1d3b5e"},A.carriage);
+  // 伸缩横臂（宽度 = ext）
+  A.lower = el("rect",{x:0,y:52,width:60,height:14,rx:3,fill:"#2f5480"},A.carriage);
+
+  // 末端工具组 —— 随 ext 平移
+  A.tool = el("g",{},A.carriage);
+  // 横臂端头
+  el("rect",{x:-10,y:44,width:20,height:30,rx:4,fill:"#3a6a9e"},A.tool);
+  // 抓手主体
+  el("rect",{x:-22,y:70,width:44,height:20,rx:4,fill:"#33557d",stroke:"#4a7cb5","stroke-width":"1.2"},A.tool);
+  A.fingerL = el("rect",{x:-36,y:104,width:7,height:24,rx:3,fill:C.cyan},A.tool);
+  A.fingerR = el("rect",{x:29,y:104,width:7,height:24,rx:3,fill:C.cyan},A.tool);
+  // 携带的板子：画在手指**之后**（视觉上手指夹住板子两侧，板子清晰可见）
+  A.carried = el("g",{},A.tool);
+  el("rect",{x:-31,y:110,width:62,height:12,rx:2,fill:C.plate},A.carried);
+  el("rect",{x:-31,y:110,width:62,height:12,rx:2,fill:"none",stroke:C.plateEdge,"stroke-width":"1.1"},A.carried);
+  // 板子上的孔位（像培养皿的孔）
+  for(let i=0;i<5;i++) el("circle",{cx:-22+i*11,cy:116,r:2.1,fill:"#aab9cf"},A.carried);
+  A.carried.setAttribute("opacity","0");
+  A.tool.appendChild(A.carried);
+  // 抓取光晕
+  A.halo = el("ellipse",{cx:0,cy:118,rx:38,ry:11,fill:"none",stroke:C.cyan,"stroke-width":"1.5",opacity:"0"},A.tool);
+})();
+
+const kin = { x:STATIONS[0].x, ext:0, carry:false, done:false, t:0 };
+function renderArm(){
+  A.carriage.setAttribute("transform",`translate(${kin.x},${RAIL_Y})`);
+  const e = Math.max(40, kin.ext);
+  A.lower.setAttribute("width", e);
+  A.tool.setAttribute("transform",`translate(${e},0)`);
+  A.carried.setAttribute("opacity", kin.carry?1:0);
+  A.halo.setAttribute("opacity", kin.carry?0.45+0.25*Math.sin(kin.t*7):0);
+  // 抓手开合：抓着时收拢
+  const open = kin.carry? 0 : 9;
+  A.fingerL.setAttribute("y", 104+open);
+  A.fingerR.setAttribute("y", 104+open);
+}
+
+// ---------------- 指令日志 ----------------
+const logLines=[], logG=el("g",{});
+function drawLog(){
+  while(logG.firstChild) logG.removeChild(logG.firstChild);
+  el("rect",{x:300,y:520,width:322,height:100,rx:7,fill:"rgba(7,16,29,0.92)",stroke:C.bodyEdge,"stroke-width":"1"},logG);
+  txt("COMMAND TRACE", 314, 538, {"font-size":"10",fill:"#4b607d","letter-spacing":"1.6"}, logG);
+  logLines.slice(-5).forEach((l,i)=>{
+    txt(l.t, 314, 556+i*15, {"font-size":"11",fill:l.c||"#8fa3bd"}, logG);
+  });
+}
+function log(t,c){ logLines.push({t,c}); if(logLines.length>50) logLines.shift(); drawLog(); }
+
+// ---------------- 时间线 ----------------
+const T = { pick:1300, lift:800, move:1700, place:1100, process:2400 };
+const timeline=[];
+function build(){
+  let t=0;
+  const push=(dur,fn)=>{ timeline.push({t0:t,dur,fn}); t+=dur; };
+  const S=STATIONS;
+
+  // 1) 取板
+  push(600, ()=>{ kin.x=S[0].x; kin.ext=0; });
+  push(T.pick, p=>{
+    const k=ease(p);
+    kin.ext = 54 + 104*k;         // 下探到板位 ext=158 (板 y=444)
+    if(p>0.62){ kin.carry=true; }
+    // 架上那块被取走 → 变淡
+    const tk = clamp01((p-0.55)/0.25);
+    stations.src.parts.taken.setAttribute("opacity", (1-tk*0.92).toFixed(3));
+    setStatus("Pick plate PL-001 from storage","#5eead4");
+    if(p>0.55 && !timeline._a){ timeline._a=1; log("Gripper → PL-001","#5eead4"); }
+  });
+  push(T.lift, p=>{ kin.ext = 158 - 104*ease(p); });   // 抬起 → 54
+  push(T.move, p=>{
+    kin.x = lerp(S[0].x, S[1].x, ease(p));
+    kin.ext = 54;
+    setStatus("MoveTray → ASpin 2K","#5eead4");
+    if(p>0.4 && !timeline._b){ timeline._b=1; log("MoveTray(0) → centrifuge","#5eead4"); }
+  });
+
+  // 2) 离心
+  push(T.place, p=>{
+    kin.x=S[1].x;
+    kin.ext = lerp(150,54,ease(p));
+    if(p>0.35){
+      // 交接：手上的板子淡出，设备内的淡入（重叠，不留空窗）
+      const h = clamp01((p-0.35)/0.4);
+      kin.carry = h < 0.5;
+      stations.aspin.parts.innerPlate.setAttribute("opacity", h.toFixed(3));
+    }
+    setStatus("Load plate into centrifuge","#5eead4");
+  });
+  push(T.process, p=>{
+    kin.ext=0;
+    const st=stations.aspin.parts;
+    const doorOpen = p<0.18 ? ease(p/0.18) : (p<0.34 ? 1-ease((p-0.18)/0.16) : 0);
+    st.door.setAttribute("transform",`translate(0,${-doorOpen*30})`);
+    const busy = p<0.82;
+    st.lamp.setAttribute("fill", busy?C.amber:"#1b2b40");
+    st.glow.setAttribute("stroke",C.amber);
+    st.glow.setAttribute("opacity", busy?0.85:0);
+    st.innerPlate.setAttribute("opacity", p<0.82?"1":"0.3");
+    setStatus("ASpin 2K · RunProgram · 300 s (演示压缩)","#fbbf24");
+    if(p>0.05 && !timeline._c){ timeline._c=1; log("ASpin 2K  Start → 300 s","#fbbf24"); }
+  });
+
+  // 3) 取出 → 封膜
+  push(T.place, p=>{
+    kin.x=S[1].x;
+    // 伸入舱内（ext 大 = 板子低）→ 夹住 → 缩回（ext 小 = 板子高）
+    const reach = ease(Math.min(1,p/0.45));
+    kin.ext = lerp(54,150,reach);
+    if(p>0.45){
+      kin.carry=true;
+      // 舱内那块随抓爪提出而淡出（与手上那块重叠交接，不留空窗）
+      const h = clamp01((p-0.45)/0.3);
+      stations.aspin.parts.innerPlate.setAttribute("opacity",(1-h).toFixed(3));
+    }
+    setStatus("Unload plate from centrifuge","#5eead4");
+  });
+  push(T.lift, p=>{ kin.ext = 164 - 110*ease(p); });
+  push(T.move, p=>{
+    kin.x = lerp(S[1].x, S[2].x, ease(p));
+    kin.ext = 54;
+    setStatus("MoveTray → S100 sealer","#5eead4");
+    if(p>0.4 && !timeline._d){ timeline._d=1; log("MoveTray(1) → sealer","#5eead4"); }
+  });
+  push(T.place, p=>{
+    kin.x=S[2].x;
+    kin.ext = lerp(150,54,ease(p));
+    if(p>0.35){
+      // 交接：手上的板子淡出，设备内的淡入（重叠，不留空窗）
+      const h = clamp01((p-0.35)/0.4);
+      kin.carry = h < 0.5;
+      stations.s100.parts.innerPlate.setAttribute("opacity", h.toFixed(3));
+    }
+    setStatus("Load plate into sealer","#5eead4");
+  });
+  push(T.process, p=>{
+    kin.ext=0;
+    const st=stations.s100.parts;
+    const busy=p<0.8;
+    st.lamp.setAttribute("fill", busy?C.amber:"#1b2b40");
+    st.glow.setAttribute("stroke",C.amber);
+    st.glow.setAttribute("opacity", busy?0.85:0);
+    setStatus("S100 · Seal · 12 s","#fbbf24");
+    if(p>0.05 && !timeline._e){ timeline._e=1; log("S100  Seal → 12 s","#fbbf24"); }
+  });
+
+  // 4) 取出 → 出料
+  push(T.place, p=>{
+    kin.x=S[2].x;
+    const reach = ease(Math.min(1,p/0.45));
+    kin.ext = lerp(54,150,reach);
+    if(p>0.45){
+      kin.carry=true;
+      const h = clamp01((p-0.45)/0.3);
+      stations.s100.parts.innerPlate.setAttribute("opacity",(1-h).toFixed(3));
+    }
+    setStatus("Unload plate from sealer","#5eead4");
+  });
+  push(T.lift, p=>{ kin.ext = 164 - 110*ease(p); });
+  push(T.move, p=>{
+    kin.x = lerp(S[2].x, S[3].x, ease(p));
+    kin.ext = 54;
+    setStatus("MoveTray → outfeed","#5eead4");
+  });
+  push(T.place, p=>{
+    kin.x=S[3].x; kin.ext = lerp(54,147,ease(p));
+    if(p>0.68) kin.carry=false;
+    setStatus("Place plate at outfeed","#34d399");
+  });
+  push(900, p=>{
+    kin.ext = lerp(147,54,ease(p));
+    kin.done=true;
+    // 放到出料位：在堆叠上新增一块
+    const st = stations.out.parts;
+    const ox = stations.out.s.x;
+    if(!st.delivered){
+      st.delivered = true;
+      const pg = el("g",{},st.outGroup);
+      el("rect",{x:ox-34,y:BENCH_Y-53,width:68,height:8,rx:2,fill:C.plate},pg);
+      el("rect",{x:ox-34,y:BENCH_Y-53,width:68,height:8,rx:2,fill:"none",stroke:C.plateEdge,"stroke-width":"0.8"},pg);
+      pg.setAttribute("opacity","0");
+      st.deliveredEl = pg;
+    }
+    if(st.deliveredEl) st.deliveredEl.setAttribute("opacity", clamp01((p-0.2)/0.4).toFixed(3));
+    setStatus("✓ Workflow complete — PL-001 sealed & delivered","#34d399");
+    if(!timeline._f){ timeline._f=1; log("✓ PL-001 → outfeed","#34d399"); }
+  });
+}
+build();
+const TOTAL = timeline.reduce((a,s)=>Math.max(a,s.t0+s.dur),0);
+const FPS=25, FRAMES=Math.ceil(TOTAL/1000*FPS);
+
+// 关键：帧渲染必须**按时间顺序重放**所有段。
+// 若只调用"当前活跃段"，已结束段留下的状态（如机械臂的 x 位置）会丢失 ——
+// 表现为机械臂明明在跑离心却停在存储位。
+function frameAt(ms){
+  kin.carry=false; kin.done=false; kin.ext=0;
+  for(const st of Object.values(stations)){
+    const p=st.parts;
+    if(p.lamp){ p.lamp.setAttribute("fill","#1b2b40"); p.glow.setAttribute("opacity","0"); }
+    if(p.door) p.door.setAttribute("transform","translate(0,0)");
+    if(p.innerPlate) p.innerPlate.setAttribute("opacity","0");
+    if(p.taken) p.taken.setAttribute("opacity","1");
+    if(p.deliveredEl) p.deliveredEl.setAttribute("opacity","0");
+  }
+  for(const s of timeline){
+    if(ms >= s.t0 + s.dur){
+      s.fn(1);                       // 已结束：以结束态重放
+    } else if(ms >= s.t0){
+      s.fn((ms-s.t0)/s.dur);         // 进行中
+    }
+    // 尚未开始：不执行
+  }
+  kin.t=ms/1000;
+  renderArm(); drawStatus();
+}
+window.__renderFrame=frameAt; window.__total=TOTAL; window.__frames=FRAMES; window.__fps=FPS;
+</script>
+</body>
+</html>
