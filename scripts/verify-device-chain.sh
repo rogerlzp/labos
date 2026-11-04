@@ -343,9 +343,11 @@ fi
 #
 # 事故经过：前端把 workflowIds 放 body、后端只读 query → 解析成空数组 →
 # 某实验的两条流程被删光，而接口返回 200。
-# 现在三道防线：缺参数 400 / 非法 id 400 / 不存在的 id 400，且都必须**先校验再删**。
+# 后续方案升级（见 docs/设计-实验编排统一-*）：这条写路径**整个只读** ——
+#   真源是画布编译，保存图时同步落 experiment_process；本接口只读，写一律 409。
+# 断言：无论怎么传参（缺参 / 非法 id / 不存在的 id），都必须 409 且条数不变。
 # ============================================================================
-step "10. 实验编排保存的防护"
+step "10. 实验编排表只读（改编排一律 409，且不清空）"
 
 EID=$(q "SELECT experiment_id FROM experiment_process
           GROUP BY 1 HAVING count(*) > 0 ORDER BY 1 DESC LIMIT 1")
@@ -359,27 +361,27 @@ else
     code=$(curl -s -o /tmp/orch-noparam.json -w '%{http_code}' -X POST \
         "$API/api/experiments/$EID/processes" -H "Authorization: Bearer $TOKEN")
     after=$(q "SELECT count(*) FROM experiment_process WHERE experiment_id = $EID")
-    [[ "$code" == "400" && "$after" == "$BEFORE" ]] \
-        && ok "缺 workflowIds → 400，编排未被清空（$BEFORE 条）" \
-        || bad "缺参数没被拦住" "HTTP $code，条数 $BEFORE→$after"
+    [[ "$code" == "409" && "$after" == "$BEFORE" ]] \
+        && ok "缺 workflowIds → 409（只读镜像），编排未被清空（${BEFORE} 条）" \
+        || bad "缺参数没被拦住" "HTTP ${code}，条数 ${BEFORE}→${after}"
 
     code=$(curl -s -o /tmp/orch-badid.json -w '%{http_code}' -X POST \
         "$API/api/experiments/$EID/processes?workflowIds=-1" -H "Authorization: Bearer $TOKEN")
     after=$(q "SELECT count(*) FROM experiment_process WHERE experiment_id = $EID")
-    [[ "$code" == "400" && "$after" == "$BEFORE" ]] \
-        && ok "非法流程 id（-1，哨兵值）→ 400，编排未被清空" \
-        || bad "非法 id 没被拦住" "HTTP $code，条数 $BEFORE→$after"
+    [[ "$code" == "409" && "$after" == "$BEFORE" ]] \
+        && ok "非法流程 id（-1，哨兵值）→ 409，编排未被清空" \
+        || bad "非法 id 没被拦住" "HTTP ${code}，条数 ${BEFORE}→${after}"
 
     if [[ -n "$VID" ]]; then
         code=$(curl -s -o /tmp/orch-missing.json -w '%{http_code}' -X POST \
             "$API/api/experiments/$EID/processes?workflowIds=$VID,999999" \
             -H "Authorization: Bearer $TOKEN")
         after=$(q "SELECT count(*) FROM experiment_process WHERE experiment_id = $EID")
-        [[ "$code" == "400" && "$after" == "$BEFORE" ]] \
-            && ok "引用不存在的流程 → 400（先校验再删），编排未被清空" \
-            || bad "不存在的 id 没被拦住" "HTTP $code，条数 $BEFORE→$after"
+        [[ "$code" == "409" && "$after" == "$BEFORE" ]] \
+            && ok "引用不存在的流程 → 409（只读，删除风险已消除），编排未被清空" \
+            || bad "不存在的 id 没被拦住" "HTTP ${code}，条数 ${BEFORE}→${after}"
     else
-        bad "库里没有流程样本，跳过"不存在 id"这条"
+        bad "库里没有流程样本，跳过「不存在的 id」这条"
     fi
 fi
 
