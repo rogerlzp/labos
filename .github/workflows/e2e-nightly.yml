@@ -1,0 +1,128 @@
+name: E2E Nightly
+
+# 为什么单独一个 workflow：
+#   .github/workflows/ci.yml 只跑**不需要数据库**的部分（纯逻辑 547 + tsc）。
+#   页面轨 e2e 要整套服务（PostgreSQL + API + 前端）在跑，长期处于
+#   "从未在 CI 执行过"的盲区（见 docs/测试规范.md §六）。
+#   这个 workflow 每晚把整套服务拉起来，补上这一段。
+#
+# 覆盖（./scripts/ci-gate.sh --e2e）：
+#   · 4        前端 e2e 主链路（e2e-smoke.py）
+#   · 4.5      页面流程矩阵（e2e-flow-matrix.py）
+#   · 4.6      实验运行控制（verify-exp-control.py）
+#   · 4.7      仿真机联调（e2e-sim-flow.py，仿真机起来才跑，否则 SKIP）
+#   · 4.8-4.11 页面 P0 四页（告警 / 策略 / 暂停队列 / 实验画布）
+#   纯逻辑 547 + tsc 也照跑（ci-gate.sh 的无参部分恒跑）。
+#
+# 不覆盖：设备链路 / 流程矩阵（2.6/2.7/3）要 .NET sidecar，本 workflow 不拉，
+#         它们留在本地 ./scripts/ci-gate.sh --all（见 .githooks/pre-push）。
+
+on:
+  schedule:
+    # 每天 18:00 UTC = 次日 02:00 北京时间
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: labos
+          POSTGRES_PASSWORD: Labos@Nightly
+          POSTGRES_DB: labdb
+        ports:
+          - 5432:5432
+        # 等库真的能连上再往下走，否则灌库会偶发 connection refused
+        options: >-
+          --health-cmd "pg_isready -U labos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      LABOS_DB_HOST: 127.0.0.1
+      LABOS_DB_PORT: '5432'
+      LABOS_DB_NAME: labdb
+      LABOS_DB_USER: labos
+      LABOS_DB_PASS: Labos@Nightly
+      LABOS_API: http://127.0.0.1:18080
+      LABOS_WEB: http://127.0.0.1:5173
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: 灌库（90_all_in_one + seed + 自检）
+        env:
+          PGPASSWORD: Labos@Nightly
+        run: |
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/90_all_in_one.sql
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/95_seed_data.sql
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/99_verify.sql
+
+      - name: 编译内核并起 ApiServer（18080）
+        run: |
+          cd labos-kernel
+          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
+            $(find src/main -name '*.java')
+          nohup java -cp "out:lib/postgresql-42.7.3.jar" \
+            com.labos.kernel.api.ApiServer 18080 >/tmp/labos-api.log 2>&1 &
+          cd "$GITHUB_WORKSPACE"
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:18080/health >/dev/null \
+            || { echo "API 没起来"; tail -60 /tmp/labos-api.log; exit 1; }
+
+      - name: 前端依赖 + 起 dev server（5173）
+        run: |
+          cd webapp
+          npm ci
+          nohup npm run dev >/tmp/labos-web.log 2>&1 &
+          cd "$GITHUB_WORKSPACE"
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:5173 >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:5173 >/dev/null \
+            || { echo "前端没起来"; tail -60 /tmp/labos-web.log; exit 1; }
+
+      - name: 起仿真机（19500-19506，供 4.7）
+        # 起不来也不阻断：4.7 小节会整体 SKIP（门禁把 SKIP 单独打印，不静默算通过）
+        run: |
+          cd labos-kernel
+          bash scripts/sim-up.sh || echo "仿真机没起来，4.7 小节将 SKIP"
+
+      - name: 安装 Playwright（Chromium）
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: 门禁（纯逻辑 547 + tsc + 页面轨 e2e）
+        run: ./scripts/ci-gate.sh --e2e
+
+      - name: 失败时附日志
+        if: failure()
+        run: |
+          echo "==== API 日志 ===="; tail -80 /tmp/labos-api.log || true
+          echo "==== 前端日志 ===="; tail -80 /tmp/labos-web.log || true
+          echo "==== 仿真机日志 ===="; tail -40 /tmp/sim-*.log 2>/dev/null || true

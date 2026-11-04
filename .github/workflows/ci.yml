@@ -52,5 +52,5 @@ jobs:
         working-directory: webapp
         run: npm ci
 
-      - name: 门禁（纯逻辑 542 + tsc）
+      - name: 门禁（纯逻辑 547 + tsc）
         run: ./scripts/ci-gate.sh

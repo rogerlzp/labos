@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# ============================================================================
+# pre-push 钩子：推送前跑一遍完整门禁（./scripts/ci-gate.sh --all）
+#
+# 为什么需要：GitHub CI（.github/workflows/ci.yml）只跑**不需要数据库**的部分，
+# 页面轨 / 链路 / 流程矩阵 / 仿真机联调都不在 CI 里，最容易"本地看着绿了直接推"。
+# 这个钩子在 `git push` 之前先把完整的跑一遍，不过就挡下。
+#
+# 启用（每个克隆各做一次）：
+#   git config core.hooksPath .githooks
+#
+# 临时跳过（确实要推一个已知红灯的 WIP 分支）：
+#   SKIP_GATE=1 git push        # 或 git push --no-verify
+# ============================================================================
+set -uo pipefail
+
+if [[ "${SKIP_GATE:-0}" == "1" ]]; then
+  echo "pre-push：SKIP_GATE=1，跳进门禁（本次未验证）"
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT" || exit 1
+
+echo "pre-push：跑完整门禁 ./scripts/ci-gate.sh --all"
+echo "          （要库 / 前端 / 仿真机；缺环境的小节会 SKIP，不静默算通过）"
+echo
+
+if ./scripts/ci-gate.sh --all; then
+  echo
+  echo "pre-push：门禁通过，放行推送"
+  exit 0
+fi
+
+echo
+echo "pre-push：门禁未通过，推送已挡下。"
+echo "          修完再推；确要跳过用：SKIP_GATE=1 git push"
+exit 1

@@ -3,7 +3,7 @@
 # CI 门禁（M8）
 #
 # 解决的问题：以前"改完有没有坏"靠人点。现在把可自动化的部分变成**硬阈值**：
-#   · 纯逻辑单测必须 ≥ 536 且 0 失败（数字下降 = 有人删了用例，也算红灯）
+#   · 纯逻辑单测必须 ≥ 547 且 0 失败（数字下降 = 有人删了用例，也算红灯）
 #   · 前端 tsc 必须 0 错误
 #   · 可选：并行能力（流程内并行 4 条 / 同岛并发 3 条，要库 + 模拟器 + API）
 #   · 可选：完整流程矩阵 45 条（节点/网关/变量/循环/回边/并行/端口/暂停，要库 + 模拟器 + API）
@@ -12,6 +12,7 @@
 #   · 可选：页面流程矩阵 21 条（设计器 palette/变量节点/运行详情/页面暂停恢复，要前端+API+库）
 #   · 可选：实验运行控制 22 条（页面暂停/恢复/停止，要前端+API+库）
 #   · 可选：仿真机联调 24 条（页面建流程→绑真机→建实验→执行→真回包，要仿真机+前端+API+库）
+#   · 可选：页面 P0 四页（告警/策略/暂停队列/实验画布，要前端+API；见 4.8-4.11）
 #
 # 用法：
 #   ./scripts/ci-gate.sh                 # 纯逻辑 + tsc（不需要数据库）
@@ -37,7 +38,7 @@ for a in "$@"; do
 done
 
 # 阈值：只许涨不许跌。改了用例要同步改这里，逼着人想清楚"少的那几条去哪了"。
-MIN_PURE=536    # 2026-11-03：权限收口 RbacRulesSelfTest 15 条（521 → 536）
+MIN_PURE=547    # 2026-11-05：JSON 取值转义解码 JsonFieldSelfTest 11 条（536 → 547）
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
@@ -48,6 +49,10 @@ MIN_E2E=24        # 2026-11-03：权限收口 +Header 角色断言（23 → 24�
 MIN_E2EFM=21      # 2026-11-04：页面流程矩阵（登录1/设计器装配6/变量节点4/运行详情5/页面暂停恢复5）
 MIN_EXPCTL=22     # 实验运行控制：页面暂停/恢复/停止（verify-exp-control.py）
 MIN_E2ESIM=24     # 2026-11-04：仿真机联调（页面建流程+绑真机+建实验+执行+真回包，e2e-sim-flow.py）
+MIN_ALERTS=8      # 2026-11-05：告警页（心跳参数 + 告警表/空态；认领/关闭弹窗是有数据时的增量断言）
+MIN_POLICIES=12   # 2026-11-05：策略页（表 + 编辑弹窗 + 生效校验；需 recovery_policy 有种子数据）
+MIN_PAUSED=7      # 2026-11-05：暂停队列（统计卡 + 空态/队列形态自洽；空队列时即此下限）
+MIN_CANVAS=12     # 2026-11-05：实验画布（岛屿/六类节点/reactflow/三按钮/属性面板）
 
 FAIL=0
 note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -257,8 +262,69 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "仿真机联调 $SN / 0（页面建流程·绑真机·建实验·执行·真回包）"
     fi
   fi
+
+  # 4.8 告警页：心跳参数 + 告警表/空态 + 认领/关闭弹窗
+  # 补 CI 盲区 —— 这四页（/alerts /policies /paused /canvas）此前零页面级断言。
+  note "4.8 告警页（e2e-alerts.py）"
+  AOUT=$(python3 scripts/e2e-alerts.py --base "$E2E_BASE" 2>&1)
+  AN=$(echo "$AOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  AF=$(echo "$AOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  AN=${AN:-0}; AF=${AF:-1}
+  if [[ "$AF" != "0" ]]; then
+    fail "告警页有失败（$AF 条）"
+    echo "$AOUT" | grep '✗' | head -6
+  elif (( AN < MIN_ALERTS )); then
+    fail "告警页断言 $AN < 阈值 ${MIN_ALERTS}"
+  else
+    pass "告警页 $AN / 0（心跳参数·告警表/空态·认领/关闭弹窗）"
+  fi
+
+  # 4.9 策略页：表 + 编辑弹窗 + 生效校验
+  note "4.9 策略页（e2e-policies.py）"
+  POUT=$(python3 scripts/e2e-policies.py --base "$E2E_BASE" 2>&1)
+  PN=$(echo "$POUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  PF=$(echo "$POUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  PN=${PN:-0}; PF=${PF:-1}
+  if [[ "$PF" != "0" ]]; then
+    fail "策略页有失败（$PF 条）"
+    echo "$POUT" | grep '✗' | head -6
+  elif (( PN < MIN_POLICIES )); then
+    fail "策略页断言 $PN < 阈值 ${MIN_POLICIES}"
+  else
+    pass "策略页 $PN / 0（恢复策略表·编辑弹窗·生效校验）"
+  fi
+
+  # 4.10 暂停队列：统计卡 + 空态/队列形态自洽
+  note "4.10 暂停队列（e2e-paused.py）"
+  QOUT=$(python3 scripts/e2e-paused.py --base "$E2E_BASE" 2>&1)
+  QN=$(echo "$QOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  QF=$(echo "$QOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  QN=${QN:-0}; QF=${QF:-1}
+  if [[ "$QF" != "0" ]]; then
+    fail "暂停队列有失败（$QF 条）"
+    echo "$QOUT" | grep '✗' | head -6
+  elif (( QN < MIN_PAUSED )); then
+    fail "暂停队列断言 $QN < 阈值 ${MIN_PAUSED}"
+  else
+    pass "暂停队列 $QN / 0（四格统计·空态或队列·形态自洽）"
+  fi
+
+  # 4.11 实验画布：岛屿/六类节点/reactflow/三按钮/属性面板
+  note "4.11 实验画布（e2e-canvas.py）"
+  VOUT=$(python3 scripts/e2e-canvas.py --base "$E2E_BASE" 2>&1)
+  VN=$(echo "$VOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  VF=$(echo "$VOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  VN=${VN:-0}; VF=${VF:-1}
+  if [[ "$VF" != "0" ]]; then
+    fail "实验画布有失败（$VF 条）"
+    echo "$VOUT" | grep '✗' | head -6
+  elif (( VN < MIN_CANVAS )); then
+    fail "实验画布断言 $VN < 阈值 ${MIN_CANVAS}"
+  else
+    pass "实验画布 $VN / 0（岛屿·六类节点·reactflow·按箭头执行/保存/返回）"
+  fi
 else
-  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调：跳过（没给 --e2e）"
+  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调 / 4.8-4.11 页面 P0：跳过（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果
