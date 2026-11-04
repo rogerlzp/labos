@@ -87,12 +87,12 @@ Once it is declared explicitly:
 Set<Long> required = Set.of(experiment.islandId());
 ```
 
-**One experiment occupies only one island** (1.0). If a cross-island experiment really does occur, split
+**One experiment occupies only one island** (2.0). If a cross-island experiment really does occur, split
 it into several experiments + dependencies.
 
 ---
 
-## 2. Scheduling algorithm (1.0)
+## 2. Scheduling algorithm (2.0)
 
 ### 2.1 The overall structure
 
@@ -167,7 +167,7 @@ while (running) {
         executor.submit(() -> executeExperiment(r));
 
         // ⑤ dispatch one at a time, or fill a whole round?
-        // 1.0 fills a whole round (different islands can start at the same time)
+        // 2.0 fills a whole round (different islands can start at the same time)
     }
 
     sleep(2_000);   // one round every 2 seconds
@@ -179,7 +179,7 @@ while (running) {
 Filling a whole round (different islands starting in parallel) raises the throughput. But it also means
 "26 experiments start at the same moment", which puts pressure on the logs and the monitoring.
 
-**1.0 takes the middle ground**: at most `min(idle islands, 4)` are dispatched per round, to avoid an
+**2.0 takes the middle ground**: at most `min(idle islands, 4)` are dispatched per round, to avoid an
 instantaneous spike.
 
 ### 2.4 Release
@@ -212,7 +212,7 @@ forever.
 **The rule: an experiment requests all the resources it needs at once, all or nothing.**
 
 ```java
-// 1.0 each experiment only needs 1 island → satisfied naturally
+// 2.0 each experiment only needs 1 island → satisfied naturally
 if (!islandLock.tryAcquire(island, r.id())) {
     continue;   // if it cannot be taken, nothing is held at all, no partial hold
 }
@@ -451,11 +451,11 @@ paused is estimated as "it will run to completion".
 
 | Phase | Content |
 |---|---|
-| **1.0** | Island-level mutual exclusion, EDD + priority ordering, TTL fallback, the state machine, the observability interface |
-| 1.1 | Cross-island experiments (several locks requested in id order) |
-| 1.2 | Automatic alert on a stall + automatic release |
-| 2.0 | Multiple experiments in parallel inside one island (needs second-accurate duration data) |
-| 2.1 | Priority preemption, dynamic re-ordering |
+| **2.0** | Island-level mutual exclusion, EDD + priority ordering, TTL fallback, the state machine, the observability interface |
+| 2.1 | Cross-island experiments (several locks requested in id order) |
+| 2.2 | Automatic alert on a stall + automatic release |
+| 2.3 | Multiple experiments in parallel inside one island (needs second-accurate duration data) |
+| 2.4 | Priority preemption, dynamic re-ordering |
 
 ---
 

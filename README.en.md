@@ -163,13 +163,13 @@ Full module map: [`docs/技术架构与模块地图.md`](docs/技术架构与模
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | **Position-level mutual exclusion > island-level** | Positions are shared across islands and plates already in the lab may still exist; island-level exclusion was the 1.0 simplification |
+| 1 | **Position-level mutual exclusion > island-level** | Positions are shared across islands and plates already in the lab may still exist; island-level exclusion was the 2.0 simplification |
 | 2 | **Atomic reservation** (`INSERT ON CONFLICT DO UPDATE WHERE`) | SELECT-then-UPDATE leaves a window in which two experiments both believe the position is free |
 | 3 | **Plate moves take both locks in ascending id order** | Removes circular wait (one of the four deadlock conditions); the second failure releases the first |
 | 4 | **No `eval` for condition evaluation** | Canvas content comes from user input — `eval` hands the browser to someone else |
 | 5 | **An unresolved variable keeps `${name}` verbatim** | Errors stay obvious and debuggable; substituting an empty string makes it look like a missing parameter |
 | 6 | **Fail fast, never skip** | Skipping a step leaves the plate position unknown, and every later step is then wrong |
-| 7 | **No pure DP scheduling** | State space 2^50, work-time variance 13.5×; a rolling time horizon is used instead (1.0 implements only the greedy variant) |
+| 7 | **No pure DP scheduling** | State space 2^50, work-time variance 13.5×; a rolling time horizon is used instead (2.0 implements only the greedy variant) |
 | 8 | **The gateway is a pipe, not a decision maker** | The cleverer it gets, the harder it is to locate a problem |
 | 9 | **Three-tier plate-ID resolution**: parameter → device response → `AUTO-<runId>` | The fallback is not a UUID: `AUTO-` makes it obvious at a glance that the plate was never scanned |
 

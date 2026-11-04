@@ -177,7 +177,7 @@ Three sources, in order of decreasing priority:
 | Environment-variable fallback | `LABOS_DEFAULT_DEVICE_MODEL=s100` | Single-machine demo (**do not use in production**: it treats every device as the same model) |
 
 **What happens when no model is bound**: the device code is passed through unchanged
-(the 1.0 behaviour), `recovery_policy` finds no policy ⇒ everything is handed over to an operator.
+(the 2.0 behaviour), `recovery_policy` finds no policy ⇒ everything is handed over to an operator.
 This is not a crash, it is a silent degradation, which is why the startup log prints
 `已绑定型号 {...}` / `未绑定型号` ("model bound {...}" / "model not bound").
 

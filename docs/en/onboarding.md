@@ -240,7 +240,7 @@ variable-substitution logic are two separate code bases**.
 
 **Risk**: you change one and forget the other.
 
-### 🟡 The scheduler is the 1.0 simplified version
+### 🟡 The scheduler is the 2.0 simplified version
 
 - Island-level mutual exclusion (parallelism = number of islands)
 - Greedy ordering (EDD → priority → FIFO)
@@ -341,7 +341,7 @@ but has not become a routine check.
 > reservation-based conflict prevention.
 >
 > **But there is one unresolved bug in plate persistence, the scheduler implements only
-> the 1.0 simplified version, and the two ID schemes mixed up have caused repeated
+> the 2.0 simplified version, and the two ID schemes mixed up have caused repeated
 > errors.**
 >
 > **Please focus the review on these three points, and on the gap between "what the

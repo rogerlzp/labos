@@ -64,7 +64,7 @@ These are resources on two different axes:
 ## 2. The four-level resource model
 
 ```
-Island (island)               capacity 1  → recommended to release it in 2.0
+Island (island)               capacity 1  → recommended to release it in 2.3
  └ Device (device)             capacity 1  → action-level mutual exclusion
      └ Position (nest)         capacity 1  → **occupancy-level mutual exclusion (the focus of this document)**
          └ Plate (plate)       → a plate can only be in one position
@@ -290,9 +290,9 @@ WHERE ps.plate_id IS NOT NULL AND p.plate_id IS NULL;
 |---|---|---|---|
 | **A. Island-level mutual exclusion** (the previous approach) | The number of islands (26) | ✅ They never collide | Low |
 | **B. Position level + robot arm level** (the approach in this document) | Much higher | ✅ The positions are safe | High |
-| **C. Both** (recommended for 1.0) | 26 | ✅ Double insurance | Medium |
+| **C. Both** (recommended for 2.0) | 26 | ✅ Double insurance | Medium |
 
-### 6.2 Why 1.0 recommends C
+### 6.2 Why 2.0 recommends C
 
 **Only A**: a conflict on a shared position across islands cannot be prevented.
 
@@ -307,7 +307,7 @@ WHERE ps.plate_id IS NOT NULL AND p.plate_id IS NULL;
 
 > **A is the safety net, B is correctness.** First correctness, then loosen the safety net step by step.
 
-### 6.3 The preconditions for releasing island-level mutual exclusion in 2.0
+### 6.3 The preconditions for releasing island-level mutual exclusion in 2.3
 
 | Precondition | Today |
 |---|---|
@@ -406,8 +406,8 @@ experiment_position (experiment_id, resource_id, action)
 
 | Phase | Content |
 |---|---|
-| **1.0** | Position table + reservation lock + transport atomicity + runtime check + island-level mutual exclusion (double insurance) |
-| 1.1 | Plate-level tracking + position visualisation (which positions on the island hold a plate) |
-| 1.2 | Pre-check interface (which positions the workflow will occupy) |
-| 2.0 | Release the island-level mutual exclusion (position level + robot arm level) |
-| 2.1 | Automatic position optimisation (which position becomes free the soonest) |
+| **2.0** | Position table + reservation lock + transport atomicity + runtime check + island-level mutual exclusion (double insurance) |
+| 2.1 | Plate-level tracking + position visualisation (which positions on the island hold a plate) |
+| 2.2 | Pre-check interface (which positions the workflow will occupy) |
+| 2.3 | Release the island-level mutual exclusion (position level + robot arm level) |
+| 2.4 | Automatic position optimisation (which position becomes free the soonest) |

@@ -7,7 +7,7 @@
 
   <groupId>com.labos</groupId>
   <artifactId>labos-gateway</artifactId>
-  <version>0.1.0</version>
+  <version>2.0.0</version>
   <name>labos-gateway</name>
   <description>实验室中控 - 设备网关（长连接 + Redis 状态中心）</description>
 

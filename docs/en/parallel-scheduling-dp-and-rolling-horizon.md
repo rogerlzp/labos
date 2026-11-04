@@ -72,8 +72,8 @@ second-best solution is smaller than the error in the processing times themselve
 
 If all of the following hold:
 
-- Each experiment occupies only 1 island (✅ our 1.0 constraint)
-- There is no ordering dependency between experiments (✅ fully independent in 1.0)
+- Each experiment occupies only 1 island (✅ our 2.0 constraint)
+- There is no ordering dependency between experiments (✅ fully independent in 2.0)
 - The only objective is to minimise the makespan
 
 then it degenerates into **P||Cmax (parallel machine scheduling)**, which has a DP
@@ -280,7 +280,7 @@ One experiment is a few workflows run in sequence. The inside of a workflow is B
 > **Recommendation: adopt the explicit declaration.** In the interface, default to "the
 > island with the most devices", to reduce the operating cost.
 
-### Decision 2: 1.0 uses island-level mutual exclusion (parallelism = number of islands)
+### Decision 2: 2.0 uses island-level mutual exclusion (parallelism = number of islands)
 
 | Option | Parallelism | Risk |
 |---|---|---|
@@ -294,25 +294,25 @@ One experiment is a few workflows run in sequence. The inside of a workflow is B
 > **Recommendation: adopt island-level mutual exclusion.** This is the safety floor. After
 > accumulating 3 months of real duration data, evaluate parallelism inside an island.
 
-### Decision 3: 1.0 does not support dependencies across workflows (the `runAfter` field
+### Decision 3: 2.0 does not support dependencies across workflows (the `runAfter` field
 is kept but unused)
 
 | Option | Complexity | Benefit |
 |---|---|---|
 | Total order | Low | It already covers the scenarios (from the `run_mode` statistics of the workflow instances) |
-| Supporting a `runAfter` DAG | High (it needs topological sorting + cycle detection + partial failure handling) | 1.0 does not need it |
+| Supporting a `runAfter` DAG | High (it needs topological sorting + cycle detection + partial failure handling) | 2.0 does not need it |
 
 **Cost**: for now it is not possible to express "workflows A and B run in parallel, and C
 runs once both are done".
 
 **Benefit**: the executor stays simple, and errors are easy to investigate.
 
-> **Recommendation: a total order for 1.0.** If a real parallel requirement appears, use
+> **Recommendation: a total order for 2.0.** If a real parallel requirement appears, use
 > "split it into two experiments + island-level parallelism" instead.
 
 ---
 
-## 6. The implementation route (1.0)
+## 6. The implementation route (2.0)
 
 | No. | Content | Depends on | Estimate |
 |---|---|---|---|
@@ -331,7 +331,7 @@ runs once both are done".
 
 ## 7. The validation criteria
 
-When 1.0 is done, it has to be able to answer:
+When 2.0 is done, it has to be able to answer:
 
 | Question | How it is validated |
 |---|---|

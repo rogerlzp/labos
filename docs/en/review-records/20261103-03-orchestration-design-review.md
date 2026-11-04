@@ -289,7 +289,7 @@ but only after all the second-review gates written in `ROADMAP` are met is a con
 | Residual 1: the title / status line of the draft still says "awaiting review" | ✅ Fixed: the title and the status line have been changed to "**second review passed (2026-11-03 15:36), entered the implementation**", the wording "awaiting review / awaiting the second review" is no longer used |
 | Residual 2: the batch summary in §0 does not explicitly mention `experiment_batch_run` | ✅ Fixed: the 4th line of §0 is now `experiment_batch + experiment_batch_run`, and it makes explicit that "each batch can have several attempts, the history is kept" |
 | Suggestion 2: the pre-implementation design breakdown | ✅ Split: §2/§3/§4 of the implementation checklist give the backend / frontend / test / risk / exit conditions of S1/S2/S3; the D1-D7 decisions and the interface contract of S3 are in §8 |
-| Suggestion 3: the S2 wording is one of the two | ✅ Written down as **S2-A** (only a partial order is promised, physically serial); **S2-B** (real concurrency + three-layer resource + wait graph) is listed as an independent upgrade, not part of the 1.0 delivery |
+| Suggestion 3: the S2 wording is one of the two | ✅ Written down as **S2-A** (only a partial order is promised, physically serial); **S2-B** (real concurrency + three-layer resource + wait graph) is listed as an independent upgrade, not part of the 2.0 delivery |
 | The second-review gate | ✅ All 4 have been checked and met item by item (the evidence is in the M9.5 section of `ROADMAP.md`), and `M9.5` can be scheduled from 2026-11-03 |
 
 **Implementation progress**: S1 (`86ef1c1`), S2-A (`ae06025`) are live and have pure-logic / live-database regressions;

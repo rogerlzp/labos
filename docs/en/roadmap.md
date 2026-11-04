@@ -382,7 +382,7 @@ has to touch the data model and the executor.
 **Second-review gate (2026-11-03 15:36, passed; verified item by item)**:
 
 1. ✅ **B1 / B2 / H1** are closed (review record in [`20261103-03-编排设计评审.md`](../评审记录/20261103-03-编排设计评审.md) §7);
-2. ✅ the `S2` scope is fixed as **partial order only (S2-A)**; true concurrency + three-tier resources + the wait graph are listed as an **independent upgrade** (S2-B), not in 1.0;
+2. ✅ the `S2` scope is fixed as **partial order only (S2-A)**; true concurrency + three-tier resources + the wait graph are listed as an **independent upgrade** (S2-B), not in 2.0;
 3. ✅ the `S3` data model is defined (`experiment_batch` + `experiment_batch_run`, implementation checklist §4.2 and §8.2);
 4. ✅ the `S1` regression cases are defined and passing: a linear graph saves → `graph`/`process` stay in sync; an illegal graph → neither side is written;
    a simulated `process` write failure → the `graph` is rolled back (`ExperimentGraphPersistenceSelfTest` covers it with a database).

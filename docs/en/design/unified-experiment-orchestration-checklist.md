@@ -254,7 +254,7 @@ But when the development really starts, it is recommended to proceed in the orde
 | D4 | The re-run: `POST /api/experiments/{id}/batches/{batchNo}/run` only runs that batch, with a new `attempt_no`, and the historical attempts are kept; only batches that are not `completed` are allowed | It corresponds to §4.1 / §4.3 #5 / §4.4 #2 |
 | D5 | The variable injection: the variables of each batch run get `batchNo` (a numeric string) and `batchSamples` (a comma-separated string of the sample barcodes) appended; **the variables the user passed explicitly with the same name are not overwritten** | It does not break the existing variable semantics; the workflow parameters can use ${batchNo} |
 | D6 | The state aggregation: a `running/queued` batch → experiment=running; a `paused` batch and no running one → paused; all `completed` → finished; no running/paused and any `failed/aborted` → failed; when `batch_split` is NULL the default logic applies | §4.7 #3 requires the rules to be written down clearly and covered by tests |
-| D7 | The batches are **serial** to each other (1.0 does not run them in parallel); the batch boundary checks `RuntimeHold` / `stop_requested` | There is only one device; S2-A only promises a partial order |
+| D7 | The batches are **serial** to each other (2.0 does not run them in parallel); the batch boundary checks `RuntimeHold` / `stop_requested` | There is only one device; S2-A only promises a partial order |
 
 ### 8.2 The data model
 

@@ -97,7 +97,7 @@ Experiment (Experiment)           ← the scope of this document
 | `"3"` | It runs 3 times |
 | `"${plateCount}"` | It runs as many times as the value of the variable |
 
-**1.0 only does single-level loops.** Nested loops (a loop inside a loop) lead to:
+**2.0 only does single-level loops.** Nested loops (a loop inside a loop) lead to:
 - the number of steps explodes after the expansion (3×3=9, 3×3×3=27)
 - they are hard to express and to debug in the UI
 
@@ -334,9 +334,9 @@ Island (island)        ← coarse: the robot arms inside an island are shared
 
 **Why there has to be an island-level lock**: the robot arms inside an island carry the plates, and when two experiments run on the same island at the same time the robot arms fight each other — even if they are using different incubators.
 
-### 5.3 The parallel strategy of 1.0 (conservative)
+### 5.3 The parallel strategy of 2.0 (conservative)
 
-| Strategy | 1.0 | Explanation |
+| Strategy | 2.0 | Explanation |
 |---|---|---|
 | Island-level mutual exclusion | ✅ | **Only one experiment runs on an island at a time** |
 | Device-level mutual exclusion | ✅ | A lock is added when a device is shared across islands (rare) |
@@ -411,11 +411,11 @@ experiment_run_step (
 
 | Phase | Content | Depends on |
 |---|---|---|
-| **1.0** | Variables, single-level loops, sequential execution, island-level mutual exclusion, the schedule dry run | Nothing |
-| 1.1 | Changing the variables during the execution, retrying after a failure | 1.0 |
-| 1.2 | Priority preemption, deadline scheduling | 1.1 |
-| 2.0 | Several experiments in parallel inside an island (it needs real duration data) | 1.2 + 3 months of data |
-| 2.1 | Nested loops, conditional blocks | 2.0 |
+| **2.0** | Variables, single-level loops, sequential execution, island-level mutual exclusion, the schedule dry run | Nothing |
+| 2.1 | Changing the variables during the execution, retrying after a failure | 2.0 |
+| 2.2 | Priority preemption, deadline scheduling | 2.1 |
+| 2.3 | Several experiments in parallel inside an island (it needs real duration data) | 2.2 + 3 months of data |
+| 2.4 | Nested loops, conditional blocks | 2.3 |
 
 ---
 
@@ -437,7 +437,7 @@ experiment_run_step (
 | Risk | Impact | Mitigation |
 |---|---|---|
 | The duration accuracy is 10 seconds | The schedule dry run is inaccurate | Use p90 instead of p50 |
-| The island-level mutual exclusion lowers the parallelism | At most 26 experiments in parallel with 26 islands | Acceptable in 1.0 |
+| The island-level mutual exclusion lowers the parallelism | At most 26 experiments in parallel with 26 islands | Acceptable in 2.0 |
 | The variables are substituted before the start | Changing a variable during the execution has no effect | It is stated explicitly on the interface |
 | The number of steps explodes after the expansion | 100 steps × 10 rounds = 1000 steps | Limit `loopCount ≤ 20`, the total number of steps ≤ 500 |
 
@@ -576,7 +576,7 @@ Resolve the 2nd step
 | The granularity of the failure retry | The whole workflow | A single step |
 | The execution records | One run | N runs (or one run with several nodes) |
 
-**Conclusion**: to have a data flow, the execution has to be step by step. 1.0 accepts the loss of speed.
+**Conclusion**: to have a data flow, the execution has to be step by step. 2.0 accepts the loss of speed.
 
 ### 11.6 The format of the output variable configuration
 
@@ -654,7 +654,7 @@ and separate tables mean the schema has to be changed frequently; the graph is o
    ├ device      → collect (resourceId, method, output)
    ├ loop        → record loopFrom + the number of repetitions
    ├ fork        → evaluate the condition, choose one outgoing edge
-   └ parallel    → skipped in 1.0
+   └ parallel    → skipped in 2.0
 ③ Expand the loops: after the main chain has been walked, copy steps[loopFrom..] (n-1) times
 ④ Execute step by step, passing the variables between the steps
 ```
@@ -694,7 +694,7 @@ and changing the signature backwards would mean touching 4 methods; one executio
 | The execution speed | Fast | Slow (one dispatch per step) |
 | The granularity of the failure | The whole workflow | A single step |
 
-**Conclusion**: to have a data flow between the nodes, the execution has to be step by step, 1.0 accepts the loss of speed.
+**Conclusion**: to have a data flow between the nodes, the execution has to be step by step, 2.0 accepts the loss of speed.
 
 ### 12.6 The safety boundary
 

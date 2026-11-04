@@ -169,7 +169,7 @@ Three reasons:
 
 **D214. "Hold and wait" is eliminated to prevent deadlocks**
 
-The experiment requests all the resources at once, all or nothing. In 1.0 every experiment only needs 1 island, so this holds naturally.
+The experiment requests all the resources at once, all or nothing. In 2.0 every experiment only needs 1 island, so this holds naturally.
 
 In the future, when it goes across islands, the requests are made in ascending `island_id` order (a global order), which eliminates the circular wait.
 
@@ -201,15 +201,15 @@ Deriving the island backwards from the workflow nodes is unreliable (an ordinary
 
 The cost: the user has to pick the island. The mitigation: the island with the most devices is selected by default.
 
-**D218. 1.0 uses island-level mutual exclusion, the parallelism = the number of islands** (decided)
+**D218. 2.0 uses island-level mutual exclusion, the parallelism = the number of islands** (decided)
 
 The physical fact: an island usually has 1 robot arm, two experiments running at the same time fight each other and the ownership of the plates cannot be told apart.
 
 The island-level capacity=1 is the safe lower bound. The cost is that the parallelism is limited by the number of islands (26), the benefit is that the robot arms never collide.
 
-**D219. 1.0 does not do cross-workflow dependencies** (decided)
+**D219. 2.0 does not do cross-workflow dependencies** (decided)
 
-The workflows in the database run sequentially. Supporting a DAG needs a topological sort + cycle detection + partial failure handling, none of which 1.0 uses.
+The workflows in the database run sequentially. Supporting a DAG needs a topological sort + cycle detection + partial failure handling, none of which 2.0 uses.
 
 When a parallel requirement really appears, use "split it into two experiments + island-level parallelism" instead.
 
@@ -247,7 +247,7 @@ Two rules:
 1. **All or nothing** (if the target cannot be taken, give the source back)
 2. **Request in ascending resource_id order** (it eliminates the circular wait)
 
-**D223. 1.0 uses island-level mutual exclusion + the position lock as double insurance**
+**D223. 2.0 uses island-level mutual exclusion + the position lock as double insurance**
 
 | Option | Parallelism | Safety |
 |---|---|---|
@@ -257,7 +257,7 @@ Two rules:
 
 **The island level is the safety net, the position level is the correctness.** First correctness, then loosen the safety net step by step.
 
-The precondition for loosening the island level in 2.0: a second-level duration + the position initialisation + the robot arm time slices + the position lock running stably for 3 months.
+The precondition for loosening the island level in 2.3: a second-level duration + the position initialisation + the robot arm time slices + the position lock running stably for 3 months.
 
 **D224. The cold start of the positions has to be emptied by hand**
 
@@ -423,7 +423,7 @@ run    status      progress  duration  start                error
 ```
 
 **Note**: `current_seq` is "which step is currently running" (1-3), not "how many steps have been completed".
-The progress is displayed as `current_seq/expanded_steps`, which is slightly off semantically, and 1.0 accepts it.
+The progress is displayed as `current_seq/expanded_steps`, which is slightly off semantically, and 2.0 accepts it.
 
 ### To do (orchestration related)
 
@@ -667,7 +667,7 @@ What the user wants is: **pick an island and the devices come with it, and the d
 | The automatic avoidance | When there are already nodes the devices are moved down as a whole, they do not overlap the logic nodes |
 | Executing in the order of the arrows | They are collected in order: the variables are noted down, the devices are collected (device, method), the loops / forks / parallels are skipped first |
 
-### The execution semantics (1.0)
+### The execution semantics (2.0)
 
 ```
 Variable node → note down k=v (right now it is only recorded, it is not substituted into the method parameters)
