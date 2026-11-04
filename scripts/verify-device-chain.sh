@@ -169,7 +169,7 @@ bind_driver() {  # $1=driver code $2=port $3=instance id
     echo "$did"
 }
 # 能力行：驱动注册表按 resource_capability 分能力，缺了整条驱动会被跳过
-# （deployModel 已修成部署时自动写，这里兜底老实例）
+# （deployModel 已修成部署时自动写，这里兜底存量实例）
 q "INSERT INTO resource_capability (resource_id, capability_id)
    SELECT di.resource_id, d.capability_id
      FROM device_instance di JOIN device d ON d.id = di.device_id

@@ -172,7 +172,7 @@ the real completion can only be earlier. This is a deliberate trade-off, not an 
 
 | Form | Suitable for | Explanation |
 |---|---|---|
-| Experiment orchestration (list) | Sequential execution | The list is more intuitive and less easy to wire up wrongly (the old database has `run_mode` at 99.7% `sequential`, see the code comment) |
+| Experiment orchestration (list) | Sequential execution | The list is more intuitive and less easy to wire up wrongly (in the stored workflows `run_mode` is `sequential` for 99.7%, see the code comment) |
 | Experiment canvas (graph) | When branching / parallelism / variables are needed | From the experiment orchestration, click "Canvas" to jump over with the selected experiment |
 
 **Key constraints**
@@ -205,7 +205,7 @@ the real completion can only be earlier. This is a deliberate trade-off, not an 
 | Continue | **Resume from the breakpoint**: the completed nodes are skipped, only the rest is done | Not skipping means the execution is repeated → the plate is moved a second time |
 | Dismiss / Dismiss selected | Marks `aborted` + `EC-HUMAN-DISMISS`, **sends no device command at all** | All the records are kept, you can change your mind |
 | Abort | Also `aborted`, but with a different error code | The report can tell "nobody answered it" apart from "somebody terminated it on purpose" |
-| Crash recovery | After the process crashes, the whole job is marked `failed` + `recoverable`, and the board shows an "Interrupted by the last crash" card | Only the **last 7 days** are listed; resuming something older re-runs it with the old state, which is an incident |
+| Crash recovery | After the process crashes, the whole job is marked `failed` + `recoverable`, and the board shows an "Interrupted by the last crash" card | Only the **last 7 days** are listed; resuming something older re-runs it with the expired state, which is an incident |
 
 ---
 

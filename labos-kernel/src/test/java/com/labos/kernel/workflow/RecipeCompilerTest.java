@@ -10,7 +10,7 @@ import java.util.Map;
  * 编译规则测试：什么该展开、什么不该。
  *
  * <p>核心规则：**已指定具体方法的节点不展开**——
- * 老库 13,944 个节点都已经落到具体方法（Deposit1/Transfer），
+ * 存量库 已落库的节点都已经落到具体方法（Deposit1/Transfer），
  * 再按能力展开会变成"放入培养箱 = 振荡+孵育+转运"这种荒谬结果。
  */
 public final class RecipeCompilerTest {

@@ -19,46 +19,25 @@ The current interface is **split by data table** (execution / process / status /
 policies) — an operator who wants to know "why did it stop" has to jump across 3 pages and
 piece the information together.
 
-This document reorganises the navigation **by role and task**, based on how comparable
-product A does it.
+This document reorganises the navigation **by role and task**.
 
 ---
 
-## 1. Reference basis and trade-offs
+## 1. How the navigation is split
 
-### 1.1 The actual shape of the three interfaces
+Split by what a person is doing, not by data table. When the same person changes task, the
+information should stay in one group of pages, instead of being scattered across execution,
+alerts and policies.
 
-| System | Shape | How the navigation is organised | What we take |
-|---|---|---|---|
-| **Comparable product A** (a certain vendor) | WinForms desktop | **6 tabs by work stage**: Process (design the process) → Schedule (scheduling) → Run (running) → Advanced (debugging) → System (configuration) → Help | ✅ **Take this one**: split by "what a person is doing", not by data |
-| **Comparable product B** | React web | No complete interface material seen; the brochure only emphasises "modern web + visualisation" | ⚠️ Not taken (no material — do not invent) |
-| **LabOS legacy system** | Vue 2 + Element | Split by business object: experiment / sub-experiment / workflow / plate / device | 🟡 Only the **bpmn-js canvas** is taken (verified compatible with the existing XML) |
+### 1.1 Five top-level entries
 
-### 1.2 Why we take comparable product A's organisation
-
-The 6 tabs of comparable product A correspond to 6 **work states**:
-
-```
-I am designing a process   → Process
-I am scheduling production → Schedule
-I am watching a run        → Run
-I am troubleshooting       → Advanced
-I am configuring the system  → System
-```
-
-When the user switches tabs, **the mode of their thinking switches too**. Splitting by data
-(execution / alerts / policies) instead scatters the information for one task across
-several pages.
-
-### 1.3 Mapping onto our 5 top-level navigation entries
-
-| Our navigation | Comparable product A | Main role | One-line responsibility |
-|---|---|---|---|
-| **Authoring** | Process + Schedule + Advanced | Process engineer | Draw the method up, compile it, preflight it |
-| **Run** | Run | Operator | Watch what is running now, and where it is stuck |
-| **Analysis** | (the reference implementation has no separate entry) | Process / device engineer | Whether it runs fast, and where the time goes |
-| **Operations** | System (partly) | Operations / supervisor | How alerts are handled, how policies are changed |
-| **System** | System | Administrator | Users, permissions, audit |
+| Navigation | Main role | One-line responsibility |
+|---|---|---|
+| **Authoring** | Process engineer | Draw the method up, compile it, preflight it |
+| **Run** | Operator | Watch what is running now, and where it is stuck |
+| **Analysis** | Process / device engineer | Whether it runs fast, and where the time goes |
+| **Operations** | Operations / supervisor | How alerts are handled, how policies are changed |
+| **System** | Administrator | Users, permissions, audit |
 
 > **The difference from today's state**: there is no "Analysis" entry point yet (the Gantt
 > has nowhere to go), and "Alerts" and "Policies" are split into two tabs (they are really
@@ -133,7 +112,7 @@ Each page specifies 6 items: **who uses it / what it solves / what you see / wha
 | **What you see** | ① Header: run no., status, attendance, progress<br>② Node tree: parent node + sub-steps (`└1 OpenDoor completed 200200`), failed steps marked in red<br>③ Event stream: `#2 STEP_FAILED 第 3 步 CloseDoor device=200` (the detail is printed by the backend verbatim; "第 3 步" = "step 3") |
 | **What you can do** | Switch attendance, re-run, view the raw device text |
 | **Empty state** | — |
-| **Error state** | Event stream is empty → the hint "No event records" (this run has no event records — possibly legacy data) |
+| **Error state** | Event stream is empty → the hint "No event records" (this run has no event records — possibly migrated data) |
 
 **Key**: a sub-step has to show the **device code** and the **attempt count**
 (`Attempt 2`), otherwise you cannot tell "it moved to another device and still failed".
@@ -190,7 +169,7 @@ Each page specifies 6 items: **who uses it / what it solves / what you see / wha
 | **Error state** | The check fails → a red "never applies" hint; saving is still allowed (but requires a confirmation) |
 
 **Key**: editing a policy is a **dangerous operation** and must have a second confirmation
-+ show the scope of impact ("will affect 4,412 historical errors").
++ show the scope of impact ("this policy applies to existing historical errors").
 
 ### 3.7 Gantt (Analysis)
 
@@ -255,7 +234,7 @@ Three kinds must have a **second confirmation + an explanation of the consequenc
 | Operation | Example confirmation copy |
 |---|---|
 | Saving a workflow (when there are ERRORs) | "The preflight found 2 blocking problems; after saving, the workflow may not be able to run. Save anyway?" |
-| Changing a policy | "This policy applies to 4,412 historical errors and takes effect immediately. Confirm the change?" |
+| Changing a policy | "This policy applies to existing historical errors and takes effect immediately. Confirm the change?" |
 | Aborting a run | "After the abort, the device actions already executed are not undone. Confirm aborting #204888?" |
 
 ### 4.4 Feedback for long-running tasks
@@ -264,7 +243,7 @@ Three kinds must have a **second confirmation + an explanation of the consequenc
 |---|---|
 | Executing a process (synchronous, <5s) | Button loading + disabled |
 | Executing a process (asynchronous) | Returns the runId immediately + jumps to the detail + polls the progress |
-| Full preflight (~90s) | A progress bar + "checked 320/993" + cancellable |
+| Full preflight (~90s) | A progress bar + the number already checked + cancellable |
 | Saving a workflow | Button loading + a toast on success |
 
 ### 4.5 Time display

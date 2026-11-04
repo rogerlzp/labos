@@ -23,8 +23,8 @@ public static class Framing
 }
 
 /// <summary>
-/// 下行指令（对应老库 MethodMessage）。
-/// 注意字段名必须与驱动端一致——驱动反序列化时按原字段名匹配。
+/// 下行指令（对应 MethodMessage）。
+/// 注意字段名必须与驱动端一致——驱动反序列化时按字段名匹配。
 /// </summary>
 public sealed class MethodMessage
 {
@@ -39,7 +39,7 @@ public sealed class MethodMessage
 }
 
 /// <summary>
-/// 上行结果（对应老库 FinishMessage）。
+/// 上行结果（对应 FinishMessage）。
 /// 字段比 Java DTO 精简，但保留了适配必需的：message_id / message_type / method_status / error。
 /// </summary>
 public sealed class FinishMessage
@@ -57,7 +57,7 @@ public sealed class FinishMessage
     [JsonPropertyName("checksum")] public string Checksum { get; set; } = "";
     [JsonPropertyName("connected")] public int Connected { get; set; }
 
-    /// <summary>是否执行成功。老协议里 method_status=2 表示成功。</summary>
+    /// <summary>是否执行成功。协议里 method_status=2 表示成功。</summary>
     [JsonIgnore] public bool IsSuccess => MethodStatus == 2;
 }
 

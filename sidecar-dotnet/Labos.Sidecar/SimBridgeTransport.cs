@@ -40,7 +40,7 @@ public sealed class SimBridgeTransport : ITransport
     {
         lock (_lock)
         {
-            // 连一次可能踩在"对端刚重启"上（旧连接还挂在半开状态）。
+            // 连一次可能踩在"对端刚重启"上（残余连接还挂在半开状态）。
             // 这类失败**重试一次**就好，不要让一次抖动变成一条业务失败记录。
             var first = SendOnce(req);
             if (first.Ok || first.VendorCode != "EC-05-1006")

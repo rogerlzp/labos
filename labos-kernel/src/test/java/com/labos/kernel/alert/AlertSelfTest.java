@@ -30,7 +30,7 @@ public final class AlertSelfTest {
             AlertAggregator agg = new AlertAggregator(GAP);
             agg.offer(sig("EC-05-1006", 100L, "warn", T0));
             agg.offer(sig("EC-05-1006", 100L, "error", T0.plusSeconds(10)));
-            // 隔很久再发一条 -> 触发旧窗口结算（SUMMARY）
+            // 隔很久再发一条 -> 触发先前的窗口结算（SUMMARY）
             List<Alert> out = agg.offer(
                     sig("EC-05-1006", 100L, "warn", T0.plus(Duration.ofMinutes(20))));
             boolean hasError = out.stream()
@@ -125,9 +125,9 @@ public final class AlertSelfTest {
             Alert sum = all.stream().filter(a -> a.kind() == AlertKind.SUMMARY).findFirst().orElseThrow();
             eq("摘要里记录了完整次数", total, sum.count());
 
-            double reduction = (1 - all.size() / (double) (total * 2)) * 100;
-            System.out.printf("      → %d 次报错(老系统约 %d 条日志) 压成 %d 条告警，降幅 %.2f%%%n",
-                    total, total * 2, all.size(), reduction);
+            double reduction = (1 - all.size() / (double) total) * 100;
+            System.out.printf("      → %d 次报错 压成 %d 条告警，降幅 %.2f%%%n",
+                    total, all.size(), reduction);
         });
 
         run("间歇抖动（间隔 > 静默期）各算一次", () -> {

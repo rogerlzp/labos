@@ -112,7 +112,7 @@ for t in recovery.RecoverySelfTest engine.EngineSelfTest alert.AlertSelfTest \
   java -cp out com.labos.kernel.$t
 done
 
-# Full process set (993 workflows walked on the simulation bus)
+# Full process set (the workflows walked on the simulation bus)
 # Note: this is SimulatedBus walking the graph, not real-device verification
 java -cp "out:lib/postgresql-42.7.3.jar" \
      com.labos.kernel.workflow.RealWorkflowRunner --all
@@ -179,7 +179,7 @@ webapp/src/pages/
 | # | Decision | Where documented | Why decided this way |
 |---|---|---|---|
 | D301 | **Two layers of responsibility**: BPMN governs actions/conditions; the experiment layer governs variables and multi-round loops | Experiment orchestration §3 | Mixing them makes both unusable |
-| D302 | **Position-level mutual exclusion is more fundamental than island-level** | Plate-position occupancy §2 | Positions are shared across islands, and legacy plates exist |
+| D302 | **Position-level mutual exclusion is more fundamental than island-level** | Plate-position occupancy §2 | Positions are shared across islands, and plates already in the lab may still exist |
 | D303 | **No pure DP scheduling** | Dynamic programming §4 | State space 2^50, work-time variance 13.5× |
 | D304 | **Rolling time horizon**: commitment window + frozen zone + event-driven reorder | Dynamic programming §6 | The replacement after DP proved infeasible |
 | D305 | **Atomic reservation**: `INSERT ON CONFLICT DO UPDATE WHERE` | Plate-position occupancy §4 | SELECT-then-UPDATE leaves a window |
@@ -290,7 +290,7 @@ can count how many `if (path.equals(...))` it has.
 | A false sense of compilation | `grep error` does not match the Chinese "错误", so several rounds passed falsely |
 | Wrong parameter ordinal | `ps.setLong(13, ...)` is actually the 12th, so it silently wrote NULL |
 | `replace` anchor did not match | `s.replace(old, new)` silently returns the original string (3 times) |
-| Several processes fighting over a driver | `pkill -f` did not kill everything, and the old process kept the connection |
+| Several processes fighting over a driver | `pkill -f` did not kill everything, and the lingering process kept the connection |
 
 **The hard checks in place now**:
 
@@ -336,7 +336,7 @@ but has not become a routine check.
 
 ## 9. One-paragraph summary
 
-> **This is a laboratory control kernel that runs**: 993 real workflows pass at 100 %,
+> **This is a laboratory control kernel that runs**: workflows are walked on the simulation bus,
 > multiple experiments can safely run in parallel, and plate positions have
 > reservation-based conflict prevention.
 >

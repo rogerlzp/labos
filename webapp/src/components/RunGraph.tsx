@@ -132,7 +132,7 @@ export default function RunGraph({ runId }: { runId: number }) {
     };
   }, [data?.xml]);
 
-  // 打 marker：每次状态变化重打一遍（先清旧的）
+  // 打 marker：每次状态变化重打一遍（先清先前的）
   const paint = useCallback((nodes: RunGraphNode[]) => {
     const canvas = viewerRef.current?.get('canvas') as {
       addMarker?: (id: string, cls: string) => void;

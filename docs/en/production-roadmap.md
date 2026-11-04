@@ -303,7 +303,7 @@ curl -X POST "/api/shadow/probe?resourceId=<设备id>&method=Home"
 
 ---
 
-## 7. One-line summary of the gap to comparable products
+## 7. One-line summary of the capability gap
 
 | Dimension | Gap |
 |---|---|

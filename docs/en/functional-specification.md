@@ -20,7 +20,7 @@
 ## 0. Reading guide
 
 - Chapter 1 is the **delivery boundary of 2.0**
-- Chapter 4 is **what is taken from comparable product A and from comparable product B each, and what is explicitly not included**
+- Chapter 4 is **what this version includes, and what it explicitly does not**
 - Chapters 6–7 are the **operating modes and the control semantics** — this is the body of this version relative to v0.3
 - Chapter 8 is the **feature ledger**. P0 equals the 2.0 release gate; P1 are the items that follow immediately and do not block the release
 - Chapter 12 is the **default decisions already written into the specification**. Later changes are recorded in `决策记录.md`, append-only
@@ -35,11 +35,11 @@ The product name is LabOS 2.0. The current code and database are the implementat
 
 When all six of the following hold at the same time, this file changes from `2.0-draft` to `2.0`:
 
-1. **Existing workflows execute by the graph.** A workflow containing `parallelGateway` waits at the join until all branches are finished; a workflow containing `exclusiveGateway` takes only one outgoing edge. Use the 193 parallel-gateway workflows and the 55 exclusive-gateway workflows in the library for the regression.
+1. **Existing workflows execute by the graph.** A workflow containing `parallelGateway` waits at the join until all branches are finished; a workflow containing `exclusiveGateway` takes only one outgoing edge. Regression uses the workflows in the library that contain either gateway.
 2. **Attended / unattended can be switched while running.** Unattended follows only the recovery policy; attended raises a dialog whose defaults come from the policy.
 3. **The operations loop closes.** Preflight before saving, policies that can be changed and can be replayed against historical errors, alerts that can be claimed and closed, and one status view that answers "why is it stopped".
 4. **Time is predictable.** Command-level durations come from historical samples, a total-duration forecast can be given, and the longest interval between two steps can be checked.
-5. **One real driver endpoint has been exercised in shadow mode.** The definition of shadow mode is in section 6.3. The main driver is a single point of failure; commissioning all 239 machines at the same time is not required.
+5. **One real driver endpoint has been exercised in shadow mode.** The definition of shadow mode is in section 6.3. Commissioning every device at the same time is not required.
 6. **A run is not aborted when a device goes offline.** If there is a substitute in the same capability pool, reassign; if not, escalate to a human and record the reason.
 
 ### 1.2 What already holds in the baseline
@@ -48,7 +48,7 @@ These capabilities stay in appendix B and are struck off the P0 list: data migra
 
 ### 1.3 What this version explicitly does not do
 
-Orchestration between experiment blocks other than "sequence", global makespan optimisation, nest-level plate-position scheduling, a React rewrite, a Spring Boot wrapper, the teaching pendant, the permission matrix, SiLA integration, regulatory compliance (CFR 21-11 / CLIA). The reasons are in section 4.4.
+Orchestration between experiment blocks other than "sequence", global makespan optimisation, nest-level plate-position scheduling, a React rewrite, a Spring Boot wrapper, the teaching pendant, the permission matrix, treating any one device-interoperability standard as this period's interface, and regulatory certification. The reasons are in section 4.3.
 
 ---
 
@@ -56,22 +56,11 @@ Orchestration between experiment blocks other than "sequence", global makespan o
 
 ### 2.1 Current state
 
-LabOS (internal code name labos) is the scheduling software of the laboratory automation production line and has been running for about 4 years. The original system's stack was Java 8 + Spring + MyBatis + Redis + the old data source 5.7.
-
-| Asset | Count | Basis |
-|---|---:|---|
-| Process workflows (workflow) | existing | workflow definitions |
-| Workflow nodes | existing | all diagram elements of `workflow_node` |
-| of which device-action nodes | existing | tasks advanced on the simulation bus |
-| Resource nodes | 2,828 | |
-| Device instances | 239 | the capability dictionary covers the annotated devices; `THERMOCYCLE` and `MIX` have no device in the dictionary |
-| Driver endpoints | 5 | .NET DLL + private TCP. `192.0.2.10:8501` carries 121/239 of them |
-| Historical errors | tens of thousands | |
-| Capability kinds | 16 | see the data dictionary §3.1. Only capabilities that have a template expand into several steps; the rest degrade to a single step |
+LabOS is the scheduling software of a laboratory automation line. The current baseline can load existing workflow definitions, advance them structurally on the simulation bus, and pick a device by capability. A capability with a template expands into several steps; otherwise it degrades to a single step.
 
 ### 2.2 Problems
 
-The core problem of the original system is that **the kernel cannot be verified**.
+The core problem is that **the kernel cannot be verified**.
 
 | Problem | Evidence |
 |---|---|
@@ -79,8 +68,8 @@ The core problem of the original system is that **the kernel cannot be verified*
 | Errors cannot be decided on | The error codes are too broad — one code covers many causes, so the handling policy can only be written as "retry" or "ignore" |
 | Execution cannot be replayed | Command records generally lack the device's raw response, so the scene cannot be reconstructed when something goes wrong |
 | The code is not maintainable | Scheduling / execution / communication / retry are concentrated in one giant class |
-| The data is not trustworthy | 82% of the `run_node` time fields are dirty data (negative durations or bulk-written to the same instant) |
-| The diagram and the execution are disconnected | 193 workflows drew a parallel gateway and 55 drew an exclusive gateway; the old executor only advances along `sequenceFlow`. The new kernel `kernel-0.3` likewise does not execute the gateway semantics — see section 7.6 |
+| The data is not trustworthy | `run_node` time fields contain dirty data (negative durations or bulk-written to the same instant) |
+| The diagram and the execution are disconnected | The diagrams contain parallel gateways and exclusive gateways, but the executor only advances along `sequenceFlow`. The new kernel `kernel-0.3` likewise does not execute the gateway semantics — see section 7.6 |
 
 ### 2.3 Goals
 
@@ -91,92 +80,52 @@ The core problem of the original system is that **the kernel cannot be verified*
 
 ---
 
-## 3. How the evidence determines the priority
+## 3. Priority
 
-The numbers come from the three reports under `pg_rebuild/scheduler/`, with a sample of 96 days and 21,167 tasks.
-
-| Metric | Median | p75 | p90 | Max |
-|---|---:|---:|---:|---:|
-| Window occupancy | 10.0% | 15.4% | 25.5% | 56.9% |
-| 24h whole-day utilisation | 0.8% | 1.3% | 2.2% | 6.7% |
-
-Devices are running for 3.5% of the calendar time. The median share of the downtime inside the daily working window is 69.2%. There were 124 outages longer than 8 hours, the longest 11.7 days. On the same equipment set, on 2023-06-22 the window was active 99.3% of the time (7 segments), on 2023-06-25 only 21.9% (27 segments), and on 2023-07-10 the average interruption was every 2.4 minutes.
-
-The downtime report infers the gaps by duration (the cause itself was never recorded by the original implementation):
-
-| Gap | Count | Share of the gap time | What software can do |
-|---|---:|---:|---|
-| Over 8 hours | 124 | 92.6% | Business gap — software cannot solve it |
-| 0.5–2 hours + 5–30 minutes | 621 | 4.9% (291.8 hours) | Self-healing on anomalies, less waiting for people |
-
-Hence the priority of this version:
-
-| Judgement | What it becomes in 2.0 |
-|---|---|
-| Global scheduling optimisation has a low payoff | The makespan prototype (-45.8%) is kept as evidence and does not enter the release gate |
-| Intra-day interruptions are worth doing | Unattended mode, reassignment, alert handling, time constraints |
-| Semantics that were drawn but never executed are worth doing | The parallel and the exclusive gateway |
-| The time fields must be cleaned before prediction can be discussed | The duration model uses only the 38,422 cleaned `completed` samples |
-
-The limits of the scheduler prototype are stated in `SCHEDULER_REPORT.md`; this document does not repeat its experimental conditions.
+This version does not put global schedule optimisation into the release gate. Executing parallel gateways and exclusive gateways by the graph does enter the release gate. Duration forecasts use only cleaned completed samples.
 
 ---
 
-## 4. Reference systems
+## 4. Scope
 
-The division of labour between the two references:
+This version chooses its scope from the needs of laboratory scheduling. It does not compare with, or excerpt, another product's manual, brochure or demo material.
 
-- **Comparable product A** constrains how a person develops a method and how they handle things while standing next to it. The source is the feature-identification draft of the 2019 user manual; it does not copy that product's scheduling algorithm.
-- **Comparable product B** constrains how the system continues after the person walks away, which primitives the flow control has, and how many layers the errors have. The source is the Top 25 of the 2014 brochure, plus the scheduling, the flow control and the PARS that can be read out of the comparable product B 5.0 demo deck of 2017-10. The brochure states a driver library of 175+. The title of the demo deck says "10 flow controls", 9 are identifiable in the body, and 5.0 adds Add Work.
+### 4.1 Mechanisms included in this version
 
-The existing LabOS workflows and their utilisation are used to trim; capabilities that appear on both sides do not automatically enter 2.0.
-
-### 4.1 Mechanisms adopted from comparable product A
-
-| Mechanism | Behaviour in comparable product A | The LabOS 2.0 counterpart |
-|---|---|---|
-| Automatic compilation | On the Process page you drag the instrument workflow; on Play it generates Procedure and Command; on the Advanced page it is visible and editable | The canvas keeps one business node. The expansion result is a preview projection. At execution time it is expanded according to `capability_recipe`. The steps a user changes are recorded as overrides on that node and are not written back as extra BPMN nodes |
-| Simulation is an attribute of the command | The duration and the simulated error are generated together with the command. The throttle only shortens the simulated wait; the Gantt still shows the predicted real time. Commands that read the data table and would influence later branches are not simulated | The same executor; simulation only swaps the clock and the driver. The total-duration forecast uses the real duration model. An accelerated run does not rewrite the predicted Gantt |
-| The error window when someone is next to it | Ignore / Retry / Stop / Modify / Error Manager / Call Stack | The attended window. The default item comes from `recovery_policy` (the counterpart of Error Manager). Modify means pausing and then continuing from the failed command. Call Stack is only for troubleshooting |
-| Diagnosing "why is it not moving" | Process Status View: what status each workflow reported last time | The status vocabulary is in section 7.7. 2.0 uses the running states, not the three nest states |
-| Blocking it at compile time | Validation before the run, double-click to locate in the error panel | Preflight before saving. Double-click to locate is P1 |
-
-### 4.2 Mechanisms adopted from comparable product B
-
-The demo deck condenses reliability into four layers, called PARS. This version uses them to organise the errors and the validation and does not add a module named PARS.
-
-| Layer | What it means in comparable product B | LabOS 2.0 |
-|---|---|---|
-| Prevent | Find the missing parameters at design time; a bulk capacity check before loading the samples | Preflight before saving (does the capability have a device, is the gateway missing a join or a condition). The bulk capacity check waits until there are plate positions |
-| Anticipate | Avoid in advance the actions that will fail (the robot arm's visual self-calibration is hardware and is not included) | The existing retry, the back-off, and the escalation when the attempt count is exhausted |
-| React | One instrument goes offline, another one in the pool continues; this batch of work is not aborted. On a deadlock the lower priority gives way | 2.0 does "reassign by capability when offline or failed, the run is not aborted". The yielding-style deadlock recovery stays outside the release |
-| Solve | When attended, prompt with the recovery policy; when unattended, automatically execute the applicable recovery action. Switchable while running | The two modes of chapter 6 |
-
-The flow control adopts the primitives of the demo deck that match the existing graphs or are necessary for the laboratory's time windows; the vocabulary is used in chapter 7 and the storage format is still BPMN.
+| Mechanism | LabOS 2.0 |
+|---|---|
+| Automatic compilation | The canvas keeps one business node. The expansion result is a preview projection. At execution time it is expanded according to `capability_recipe`. The steps a user changes are recorded as overrides on that node and are not written back as extra BPMN nodes |
+| Simulation | The same executor; simulation only swaps the clock and the driver. The total-duration forecast uses the duration model. An accelerated run does not rewrite the predicted Gantt |
+| Handling while a person is present | The attended window. The default item comes from `recovery_policy`. After a pause, execution can continue from the failed command |
+| Diagnosing "why is it not moving" | The status vocabulary is in section 7.7. 2.0 uses the running states |
+| Blocking it before save | Preflight before saving. Double-click to locate is P1 |
+| A device going offline | Reassign by capability; the run is not aborted. If there is no substitute, escalate to a human |
+| Design-time checks | Preflight before saving (does the capability have a device, is the gateway missing a join or a condition) |
 
 Two further product rules:
 
-- **Containers are inventory, not hidden scheduler state.** A container can be identified across workflows by barcode or by attribute. The live position on a nest is a later capability.
-- **Simulation is another clock on the same scheduling and execution path**, plus a set of virtual drivers. The brochure's wording is realtime / accelerated simulation.
+- **Containers are inventory, not hidden scheduler state.** A container can be identified across workflows by barcode or by attribute. The live position is a later capability.
+- **Simulation is another clock on the same scheduling and execution path**, plus a set of virtual drivers.
 
-### 4.3 The result after trimming with the LabOS data
+### 4.2 What was trimmed
 
 | Topic | Trim |
 |---|---|
-| Global optimisation, static scheduling, multi-path scheduling | The median window occupancy is 10% — it stays outside 2.0 |
-| Parallel and choose-one | The 193 and 55 existing workflows have already been drawn on the graph and are currently ignored; they enter the release gate |
-| Conditions, loops, timers, semaphores between experiment blocks | Of 4,412 instances, 99.73% are sequence; the remaining fields are essentially reserved. 2.0 guarantees sequence only |
-| The shortest / longest interval between two steps | The existing BPMN has no `timerEventDefinition`, but the incubation and plate-reading windows need it. It enters the release gate and is checked with the duration model |
-| The three-state readiness of a nest on the plate | The original implementation has no "which device holds the plate". 2.0 first does the device busy/idle and the offline reassignment |
-| Arbitrary scripts overriding the readiness decision | Comparable product A writes `Status` in C# scripts. This version forbids executing arbitrary code in the readiness or in the conditions |
+| Global optimisation, static scheduling, multi-path scheduling | Stays outside 2.0 |
+| Parallel and choose-one | Semantics already drawn on the graph but not yet executed by the graph enter the release gate |
+| Conditions, loops, timers, semaphores between experiment blocks | 2.0 guarantees sequence only |
+| The shortest / longest interval between two steps | It enters the release gate and is checked with the duration model |
+| Three-state readiness on a nest | 2.0 first does device busy/idle and offline reassignment |
+| Arbitrary scripts overriding the readiness decision | This version forbids executing arbitrary code in the readiness or in the conditions |
 
-### 4.4 Not included in this version
+### 4.3 Not included in this version
 
-Kept in the reference material, but not entering the P0/P1 of the feature ledger:
+Not entering the P0/P1 of the feature ledger:
 
-- From comparable product A: the six desktop tabs, the arbitrary C# readiness scripts, static and multi-path scheduling, the teaching pendant, the Hotels/Stacks interpolation, and organising the workflow by "one column per plate type".
-- From comparable product B: throughput-oriented global optimisation, CFR 21-11 / CLIA, the 175+ driver market, treating SiLA as this period's device interface, the visual self-calibration, the standalone touch screen, and the Add Work across workflows while running.
-- Turning the LabOS workflows into the three object layers of comparable product A (Workcell / Plate Process / Instrument Process). A plate is a container; a workflow is still a BPMN workflow.
+- Orchestration between experiment blocks other than sequence, global schedule optimisation, and nest-level scheduling.
+- Arbitrary scripts in readiness or conditions, and the teaching pendant.
+- Treating any one device-interoperability standard, or a regulatory certification, as a required delivery of this period.
+- Turning a workflow into an object model of "one column per plate type". A plate is a container; a workflow is still a BPMN workflow.
 
 ---
 
@@ -250,9 +199,9 @@ The duration is taken from the model of L5 in chapter 8. The acceleration only c
 
 Shadow mode is used for the commissioning of the real drivers; it does not replace the simulation.
 
-Definition: the new kernel computes the commands that are about to be issued according to the workflow and records them into the event; the calls that go to the on-site endpoints travel over a channel that only observes and does not drive real actions. The original system can keep producing in the same period. The acceptance looks at three things: the contract fields are complete (capability, error code, device raw response, idempotency key), the command sequence is consistent with the compilation result, and the kernel has not written any action to a production device.
+Definition: the new kernel computes the commands that are about to be issued according to the workflow and records them into the event; the calls that go to the on-site endpoints travel over a channel that only observes and does not drive real actions. The acceptance looks at three things: the contract fields are complete (capability, error code, device raw response, idempotency key), the command sequence is consistent with the compilation result, and the kernel has not written any action to a production device.
 
-2.0 only requires 1 of the 5 endpoints. `192.0.2.10:8501` carries 121/239 devices and is recorded as a risk, not as the inevitable choice for the first shadow endpoint.
+2.0 only requires one driver endpoint to be exercised first.
 
 ---
 
@@ -260,18 +209,16 @@ Definition: the new kernel computes the commands that are about to be issued acc
 
 ### 7.1 The three object layers
 
-| LabOS | What the person edits | The closest layer in comparable product A | The closest layer in comparable product B |
-|---|---|---|---|
-| Experiment | The order of several workflows | Method, plus Run After from Schedule | Several processes; the container can cross the processes |
-| Node | One business step (read plate, incubate, transfer) | Instrument Process | The outer frame of the instrument operation inside a flow-control block |
-| Command | The device call after the node is expanded | Command | A single instrument operation inside a block |
-| Container | A physical item such as a plate, with a barcode and a plate type | Labware, `{Current Labware}` | Inventory container |
+| LabOS | What the person edits |
+|---|---|
+| Experiment | The order of several workflows |
+| Node | One business step (read plate, incubate, transfer) |
+| Command | The device call after the node is expanded |
+| Container | A physical item such as a plate, with a barcode and a plate type |
 
 The editing altitude of 2.0: the designer maintains the nodes and the connections. The command sequence is a compilation projection, generated at run time. The container identity is in section 7.5 and does not occupy a column of the workflow.
 
 ### 7.2 Layer A: between experiment blocks
-
-The `run_mode` of the original implementation (4,412 workflow instances): sequence 4,400 (99.73%), semaphore 12 (0.27%), timer 0.
 
 2.0 only delivers the sequence: the next workflow starts after the previous one has ended. Parallel, conditional, loop, dependency, timer, semaphore and sub-experiment keep their names but do not enter the release gate.
 
@@ -279,21 +226,21 @@ The `run_mode` of the original implementation (4,412 workflow instances): sequen
 
 The storage continues to use BPMN XML, so that the existing workflow definitions can be opened. The execution semantics use the table below, not "every `sequenceFlow` is walked once".
 
-| Semantics | Existing BPMN | Usage scale | 2.0 |
-|---|---|---:|---|
-| Sequence | `sequenceFlow` | all workflows | Delivered |
-| Parallel, fork and join | `parallelGateway` | 193 workflows (19.4%) | Delivered |
-| Decision, one branch only | `exclusiveGateway` | 55 workflows (5.5%) | Delivered |
-| Time Constraint, the shortest or longest interval between two steps | No equivalent element, a new annotation is needed | 0 on the graph; used in the business for the incubation and plate-reading windows | Delivered |
-| Sub-process | `subProcess` | 123 workflows (12.4%) | P1, executed as a subgraph |
-| Loop, Wait Until | `loopCharacteristics` etc. | 0 | Outside the release, the model keeps the field |
-| Exclusively holding a device until it is released | None | 0 | Outside the release |
-| Executing a set of containers one by one and assigning variables | None | 0 | Together with the containers and the variables, outside the release |
-| Inclusive gateway, event gateway, boundary events | Corresponding elements | 0 | Outside the release |
+| Semantics | Existing BPMN | 2.0 |
+|---|---|---|
+| Sequence | `sequenceFlow` | Delivered |
+| Parallel, fork and join | `parallelGateway` | Delivered |
+| Decision, one branch only | `exclusiveGateway` | Delivered |
+| Time Constraint, the shortest or longest interval between two steps | No equivalent element, a new annotation is needed | Delivered. Used for incubation and plate-reading windows |
+| Sub-process | `subProcess` | P1, executed as a subgraph |
+| Loop, Wait Until | `loopCharacteristics` etc. | Outside the release, the model keeps the field |
+| Exclusively holding a device until it is released | None | Outside the release |
+| Executing a set of containers one by one and assigning variables | None | Together with the containers and the variables, outside the release |
+| Inclusive gateway, event gateway, boundary events | Corresponding elements | Outside the release |
 
 The acceptance criterion of the parallel: both branches are executed; the join does not continue while any branch is unfinished. 2.0 does not require the two branches to overlap on the wall clock. The wall-clock overlap is device scheduling and does not block the gateway semantics.
 
-The acceptance criterion of the exclusive: only one outgoing edge is executed. The number of uses of `conditionExpression` in the existing graphs is 0, so the rule is split into two:
+The acceptance criterion of the exclusive: only one outgoing edge is executed. An outgoing edge in a stored graph may have no `conditionExpression`, so the rule is split into two:
 
 - When an outgoing edge carries a condition expression, the one that matches after the evaluation is taken. The evaluation only allows the whitelist limited in chapter 12; arbitrary code is not allowed.
 - When an outgoing edge has no condition, the preflight before saving flags it as "missing condition". The execution takes one default edge (the BPMN default outgoing edge; when there is no default, the first one after a stable sort), and the event records "no condition, the default edge was taken". Executing both outgoing edges counts as a failure.
@@ -322,7 +269,7 @@ The container answers "which plate", the position answers "where the plate is". 
 
 2.0 requires that a container can at least be referenced across runs by barcode and by plate type. The data lands on the existing `plate` / `plate_well` capability, and the product semantics add "a run can point at these containers". The gripper offsets, the replenishment during a run and the live nest position are not in the release gate.
 
-The ReadyToGive / ReadyToTake of the readiness decision depend on the nest position, so that whole passage goes after 2.0. Until then the device side only uses busy, idle, offline and error.
+The three-state readiness that depends on a nest position goes after 2.0. Until then the device side only uses busy, idle, offline and error.
 
 ### 7.6 The gap between the current baseline and the semantics above
 
@@ -348,7 +295,7 @@ The Process Status and the device map share one vocabulary; each status carries 
 | Blocked | The preflight or a time constraint decided that it cannot continue; the reason is in the event |
 | Completed / Aborted | Terminal states |
 
-2.0 does not use ReadyToGivePlate / ReadyToTakePlate. Those two words are added once the nest position exists.
+2.0 does not use nest-position readiness states. They are added once the nest position exists.
 
 ---
 
@@ -366,12 +313,12 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 1.4 | Decision (exclusive, including the default edge when there is no condition) | ⬜ | P0 |
 | 1.5 | Parallel (fork and join) | ⬜ | P0 |
 | 1.6 | Time Constraint (the shortest / longest interval) | ⬜ | P0 |
-| 1.7 | Experiment blocks executed in sequence | 🟡 the old data is a sequence array | P1 |
+| 1.7 | Experiment blocks executed in sequence | 🟡 the existing data is a sequence array | P1 |
 | 1.8 | Sub-processes executed as a subgraph | 🟡 already on the graph | P1 |
 | 1.9 | Loop, Wait Until, variables, and the conditions / loops / timers / semaphores of the experiment blocks | ⬜ | Outside the release |
 | 1.10 | Plate types and gripper offsets | ⬜ | Outside the release |
 
-### L2 Validation (Prevent)
+### L2 Validation
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
@@ -402,7 +349,7 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 4.1 | When the device is busy, wait or reassign (not depending on which nest holds the plate) | ⬜ | P1 |
 | 4.2 | The three-state readiness and the pull loop | ⬜ | Outside the release |
 | 4.3 | Static scheduling, dependencies other than Run After | ⬜ | Outside the release |
-| 4.4 | Global makespan optimisation | 🟡 prototype -45.8% | Outside the release |
+| 4.4 | Global makespan optimisation | 🟡 a prototype exists | Outside the release |
 
 ### L5 Simulation
 
@@ -410,21 +357,21 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 |---|---|---|---|
 | 5.1 | Virtual driver | ✅ | — |
 | 5.2 | Command-level duration model | ⬜ | P0 |
-| 5.3 | Import the durations from the history (38,422 usable `completed`) | ⬜ | P0 |
+| 5.3 | Import the durations from the history (cleaned completed samples only) | ⬜ | P0 |
 | 5.4 | Total-duration forecast | ⬜ | P0 |
 | 5.5 | Gantt chart (forecast and actual) | ⬜ | P1 |
 | 5.6 | Throttle: accelerate the waiting, the forecast duration does not change | ⬜ | P1 |
 | 5.7 | The interface for the simulated errors | 🟡 the driver can inject | P1 |
 | 5.8 | Switching a single device between simulation and reality | ⬜ | P1 |
 
-The basis of the duration: only the `completed` records whose cleaned duration is positive, giving p50 and p90 per capability and per method. The forecast uses p50 by default. The "can it be finished within the longest interval" of the time constraint uses p90 as a conservative judgement. At acceptance, sample the workflows that already have a history; the target for the deviation between the predicted total duration and the historical actual is first reported as a baseline on those 38,422 records at implementation time, and the threshold is then frozen; this draft does not pre-write a percentage that has not been recomputed.
+The basis of the duration: only the `completed` records whose cleaned duration is positive, giving p50 and p90 per capability and per method. The forecast uses p50 by default. The "can it be finished within the longest interval" of the time constraint uses p90 as a conservative judgement. At acceptance, report a baseline on the cleaned samples first, then freeze the threshold; this draft does not pre-write a percentage that has not been recomputed.
 
-### L6 Errors and recovery (Anticipate / React / Solve)
+### L6 Errors and recovery
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
 | 6.1 | A pure function from the error code to the action. Actions: `RETRY` `REASSIGN` `SKIP` `ABORT` `MANUAL` | ✅ | — |
-| 6.2 | The graded evidence and the alert aggregation | ✅ the history replay denoises by 95.2%, see `ALERT_REPORT.md` | — |
+| 6.2 | The graded evidence and the alert aggregation | ✅ history replay reduces the alert count, see `ALERT_REPORT.md` | — |
 | 6.3 | The contract layer rejects the catch-all codes | ✅ | — |
 | 6.4 | When a policy is replayed, show the distribution of the hits; it is forbidden to make the coverage 100% by using a large number of `SKIP` | 🟡 the coverage report has recorded the problem | P0 |
 | 6.5 | The attended window | ⬜ | P0 |
@@ -448,8 +395,8 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 | 8.1 | The driver contract (capability, error code, raw response, idempotency) | ✅ | — |
 | 8.2 | .NET Sidecar local mock | ✅ | — |
 | 8.3 | The shadow mode for one real endpoint | ⬜ | P0 |
-| 8.4 | The remaining endpoints and the 239 devices | ⬜ | Outside the release |
-| 8.5 | The teaching pendant, the Hotels interpolation | ⬜ | Outside the release |
+| 8.4 | The remaining driver endpoints | ⬜ | Outside the release |
+| 8.5 | The teaching pendant | ⬜ | Outside the release |
 
 ### L9 Operations
 
@@ -472,8 +419,6 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 ## 9. Data
 
 
-Migration scale: the original implementation had 185 tables; 415,178 source rows have been migrated; 286,712 business rows have landed in the database. The main reason the row count fell is de-duplication, not the dropping of the processes; chapter 2 of the data dictionary is the authority for the explanation.
-
 The objects that are directly related to this specification:
 
 | Object | Role | What 2.0 needs to change |
@@ -483,9 +428,9 @@ The objects that are directly related to this specification:
 | `run` / `run_node` / `run_command` / `run_event` | The execution and the events | The events gain the mode, the default edge and the time-constraint decision |
 | `recovery_policy` / `error_code` / `error_occurrence` | The policies and the evidence | The policies can be written; the replay only reads the history |
 | `plate` / `plate_well` | The containers | P1 connected to the run |
-| The duration statistics | Derived from the 38,422 samples | The derived result can be rebuilt, it is not written into the specification by hand |
+| The duration statistics | Derived from the cleaned completed samples | The derived result can be rebuilt, it is not written into the specification by hand |
 
-The `protocol` of the original implementation is a device method, not a process template. Chapter 1 of the data dictionary is the authority for this semantics.
+The `protocol` is a device method, not a process template. Chapter 1 of the data dictionary is the authority for this semantics.
 
 ---
 
@@ -517,15 +462,7 @@ The completion criterion of each period is the acceptance of the corresponding r
 
 ### B.1 Execution by the graph (added 2026-10-29, kernel-0.4)
 
-Gate 1 is met:
-
-```
-Total workflows 993, elapsed 2.2 s
-All completed  993 of them  100.0%
-Node level      10,024 completed  100.0%, handed to an operator 0
-With a parallel gateway  193 workflows
-With an exclusive gateway  55 workflows, the default edge taken 59 times
-```
+Gate 1 is met: the full workflow set is walked on the simulation bus by the graph. Execution by the graph follows only the activated path; a branch that was not selected is not executed.
 
 All three semantics hold:
 
@@ -535,9 +472,7 @@ All three semantics hold:
 | A parallel join waits for all the incoming edges | Case 3: the exclusive takes only A, the in-degree of the JOIN goes from 2 to 1 and the following node is not executed |
 | An exclusive takes only one branch | Cases 4/5: the default wins, otherwise the first one after a stable sort |
 
-> **The drop from 10,615 to 10,024 nodes is correct behaviour**, it is not a loss:
-> the old implementation executed **all** the nodes in topological order (including the branches of an exclusive that were not selected);
-> the execution by the graph only walks the **activated** path. The difference of 591 is exactly the nodes that "are drawn on the graph but cannot be reached by the path".
+Executing every node in topological order (including branches that were not selected) and executing only the activated path produce different node counts. The nodes that drop out are drawn on the graph but not reachable. They are not lost.
 
 The implementation points:
 
@@ -547,17 +482,7 @@ The implementation points:
 
 ### B.2 Preflight before saving (2026-10-29, the same round)
 
-```
-993 workflows dry-run in full, 87 s
-
-Executable                896   90.2%
-Executable but with warnings  97    9.8%
-Blocked (with ERROR)         0     0%
-
-PF-04 exclusive without a condition and without a default edge  96 times
-PF-03 a node that will never be executed  94 times
-PF-05 the incoming edges of a parallel join do not arrive  24 times
-```
+A full dry run of the workflows can finish, with zero blocked. Preflight reports: an exclusive missing both a condition and a default edge, a node that will never be executed, and a parallel join whose incoming edges do not all arrive.
 
 How it checks: static rules (capability / device, exclusive exits, start events) + a **dry run with an empty executor**.
 The dry run reuses the advancement logic of `GraphRunner`, so it can find the **structural deadlocks** that are hard to find by static analysis.
@@ -566,12 +491,10 @@ A single-workflow preflight takes < 1 s and can be used as a pre-save validation
 
 #### One business problem the preflight exposed
 
-`#326 Inheco_温度满足后震荡`: the three nodes `StartShaking / Incubate / StopShaking` are **never reachable**.
+Some workflows contain nodes whose connections never reach them. The reason is not a program defect, it is that **the connections on the graph cannot reach those nodes**.
 
-There are 94 workflows of this kind. The reason is not a program defect, it is that **the connections on the graph cannot reach those nodes**.
-
-The old executor executed **all** the nodes in topological order, so those nodes were always running — **the "execute everything" of the original system masked the structural defects of the graph**.
-After the switch to the execution by the graph they no longer execute, and the behaviour changes.
+If the executor walks every node in topological order, those unreachable nodes still run, and the structural defect of the graph is hidden.
+After the switch to execution by the graph they no longer execute, and the behaviour changes.
 
 > Business confirmation needed: is the semantics of these workflows when they were drawn "run only the connected path", or "everything that is drawn should run"?
 > If it is the latter, these nodes should be connected into the main path when saving, rather than letting the executor ignore the graph.
@@ -603,7 +526,7 @@ The interfaces:
 `POST /api/workflows/{id}/run?async=1` returns the `runId` immediately, a background thread keeps executing,
 and `run.status` stays `running` in the meantime.
 
-Measured (workflow 648, 65 nodes):
+Measured (one multi-node workflow):
 
 ```
 runId=204871
@@ -621,7 +544,7 @@ and after `EC-06-0001` (the driver is not loaded) is raised they are judged as a
 
 The fix: when `resourceId == 0` or `capability == LOGIC` the kernel completes them directly, without going into the driver registry.
 
-> This is a recurrence of the "logic node" problem on the **second execution path** —— it was fixed once in the previous round (with the pseudo resource 0), in `RealWorkflowRunner`, but `DriverStepExecutor` did not make the same judgement.
+> This is a recurrence of the "logic node" problem on the **second execution path** —— it had already been fixed once (with the pseudo resource 0), in `RealWorkflowRunner`, but `DriverStepExecutor` did not make the same judgement.
 > Once the two paths share one capability resolution, this kind of inconsistency decreases, but the branch of the executor still has to be checked on its own.
 
 ### B.4 Process Status View (2026-10-29, the same round)
@@ -696,7 +619,7 @@ The following rulings are part of the specification. When one of them is overtur
 | D5 | The frontend framework | 2.0 keeps the existing console and bpmn-js. React is decided when the experiment-block canvas is started as a project |
 | D6 | Spring Boot | Not introduced in the 2.0 kernel. The HttpServer is only a demo shell |
 | D7 | Where the plate is | 2.0 does not implement the nest tracking. The container identity is P1. The three-state readiness waits until there is a position |
-| D8 | How the real devices are connected | Shadow mode with one endpoint first. There is no plan to take all 239 machines down at the same time |
+| D8 | How the real devices are connected | Shadow mode with one endpoint first. It is not required to take every device down at the same time |
 | D9 | From which step a re-run after a device switch starts | From the first step of that node |
 | D10 | The conservative basis of the time constraint | Whether the forecast will time out uses the duration p90; the total duration that is displayed uses p50 |
 | D11 | The policy coverage | The replay must show the distribution of the actions. Deriving a historical Ignore into a `SKIP` does not count as the recovery capability being finished |
@@ -718,18 +641,16 @@ The following rulings are part of the specification. When one of them is overtur
 | Container | A physical item such as a plate, identified by a barcode and a plate type |
 | Run mode | Attended or unattended |
 | Shadow | Shadow mode: the commands are computed and recorded, no production device is driven |
-| PARS | Comparable product B's name for the layers of prevention, self-healing, rerouting while running and handing over to a person. In this specification they land in L2, L6, L3.5 and chapter 6 |
-
 ## Appendix B: The proven scope
 
 | Statement | Evidence | Must not be extrapolated into |
 |---|---|---|
 | The existing workflows and all the device-action nodes can be walked to the end on the simulation bus, with no cycle and no isolated task | `BATCH_VALIDATION_REPORT.md` | The gateway semantics are executed; the durations are correct; it is concurrency-safe; the bulk path covers the fault recovery |
-| A recovery decision yields the same action for the same input, and it carries the reason | The decision engine of `labos-kernel` and `COVERAGE_REPORT.md` | A historical coverage of 100% means that the site will self-heal. A large number of `SKIP` results when it is derived from the old handling |
-| Tens of thousands of historical errors are aggregated and the alert volume falls by 95.2% | `ALERT_REPORT.md` | The on-site alerts can already be claimed and closed |
+| A recovery decision yields the same action for the same input, and it carries the reason | The decision engine of `labos-kernel` and `COVERAGE_REPORT.md` | A historical coverage of 100% means that the site will self-heal. When the action is derived from historical handling, a large number of results become `SKIP` |
+| Historical errors are aggregated and the alert count falls | `ALERT_REPORT.md` | The on-site alerts can already be claimed and closed |
 | A node can be expanded according to `capability_recipe` and a failure can be located at step N | `RecipeCompiler` and the multi-step execution | The projection in the designer and the node overrides are already product behaviour |
 | The driver contract has been walked through on the virtual driver and on the local Sidecar mock | `DRIVER_CONTRACT.md` | The real endpoint has been commissioned |
-| The median window occupancy is 10%, the makespan of the scheduling prototype is -45.8% | `UTILIZATION_REPORT.md`, `SCHEDULER_REPORT.md` | The global optimisation should be scheduled into 2.0 |
+| The payoff of the scheduling prototype is not enough to put global optimisation into 2.0 | `SCHEDULER_REPORT.md` | The global optimisation should be scheduled into 2.0 |
 
 The reproduction steps are in chapter 9 of `LabOS_新一代中控实现总纲_20261029.md`. The master plan is the implementation snapshot of kernel-0.3; where its use of "executable" conflicts with this appendix, this appendix wins.
 
@@ -743,6 +664,6 @@ The reproduction steps are in chapter 9 of `LabOS_新一代中控实现总纲_20
 | `LabOS_新一代中控实现总纲_20261029.md` | The kernel-0.3 snapshot |
 | The reports `labos-kernel/BATCH_VALIDATION_REPORT.md` etc. | Evidence; the specification cites them and does not copy the tables |
 | `archive/LabOS2.0_功能规格说明书_v0.3.md` | The draft that this document supersedes |
-| `目标功能文档_三方合并版.md` | The feature list and the phasing are superseded. The principle of the three-way division of labour has been absorbed into chapter 4 |
+| `目标功能文档_三方合并版.md` | The feature list and the phasing are superseded. The scope choices are written in chapter 4 |
 | `前后端实施方案_编译甘特就绪调度.md` | The weekly plan is superseded. The compilation "expanded at run time, not landed as a node" has been absorbed into section 7.4 |
 | `LabOS系统_现状诊断与新一代架构方案_20261029.md` | The diagnosis is kept. The roadmap of chapters 5–7 is superseded |

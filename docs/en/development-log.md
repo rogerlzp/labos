@@ -209,7 +209,7 @@ The island-level capacity=1 is the safe lower bound. The cost is that the parall
 
 **D219. 1.0 does not do cross-workflow dependencies** (decided)
 
-In the existing implementation `run_mode` counts 99.7% as sequential. Supporting a DAG needs a topological sort + cycle detection + partial failure handling, none of which 1.0 uses.
+In the stored workflows `run_mode` counts 99.7% as sequential. Supporting a DAG needs a topological sort + cycle detection + partial failure handling, none of which 1.0 uses.
 
 When a parallel requirement really appears, use "split it into two experiments + island-level parallelism" instead.
 
@@ -261,11 +261,11 @@ The precondition for loosening the island level in 2.0: a second-level duration 
 
 **D224. The cold start of the positions has to be emptied by hand**
 
-At go-live all the positions are treated as "empty". But the plates the old system ran may still be in them.
+At go-live all the positions are treated as "empty". But plates already in the lab may still be in them.
 
-**Operating the devices with the old and the new system at the same time is absolutely forbidden** — the position lock does not know that the old system put a plate down.
+**Operating the devices from two control instances at the same time is absolutely forbidden** — the position lock does not know that the other one put a plate down.
 
-The transition: stop the old system → empty by hand → bring the new system online → inventory → start running.
+The transition: stop the running instance → empty by hand → bring the new instance online → inventory → start running.
 
 ### New documents
 
@@ -486,7 +486,7 @@ But the tasks of `GET /api/workflows/{id}` do not return that field.
    Fix: move the plate block after the cards + zIndex 999 + a stronger look (44×30, a white border, a glow, the letters "PL").
 2. **You cannot see whether it is rendered**: first verify with fixed initial coordinates that "it can be drawn", and only then look at the timing —
    this step is crucial, otherwise you cannot tell "it was not rendered" apart from "it was rendered but covered".
-3. **The async closure gets the old coordinates**: `runFlow` is async, `pos` is a rendering snapshot.
+3. **The async closure gets the stale coordinates**: `runFlow` is async, `pos` is a rendering snapshot.
    Fix: `posRef` is updated every time `pos` changes, and the async part reads the ref.
 
 **The measurement as it is now**:
@@ -559,7 +559,7 @@ and separate tables would mean changing the schema frequently; and the graph is 
 
 ### Bugs
 
-**B9. "no route" again — the service was running the old classes**
+**B9. "no route" again — the service was running the stale classes**
 
 `javac` compiled successfully and the route was grepped, but the interface returned a 404. The reason is that **the service process was not restarted** (changing a .java means restarting).
 
@@ -970,7 +970,7 @@ A symbol is also added in front of the title: `◇ Fork` / `∥ Parallel` / `↻
 
 **④ The start/end nodes are always there**
 
-Before they were only placed automatically on an **empty graph**. An old graph (or a graph that was stored directly through the API) did not have them and never did.
+Before they were only placed automatically on an **empty graph**. An existing graph (or a graph that was stored directly through the API) did not have them and never did.
 
 It is changed to a check when it is loaded: if the start is missing it is added at the top, if the end is missing it is added 140px below the bottom-most node.
 
@@ -1130,7 +1130,7 @@ ID1183 goes from 420.5/120.25/0 to 444.4/555.5/66.6
 
 | Layer | What it verifies | The pass criterion |
 |---|---|---|
-| L1 unit + integration | The logic of the code, the state machine, the database | All green + the processes 993/993 |
+| L1 unit + integration | The logic of the code, the state machine, the database | All green + the processes the full set |
 | L2 the single command probe | **Whether the contract is right** | All 4 contract items are true |
 | L3 the shadow run of a whole workflow | **Whether the command sequence is right** | The device allocation / method name / parameters / order are all right |
 | L4 the segmented integration | **Whether the cooperation is right** | Single device→single workflow→several devices→the whole island |
@@ -1139,7 +1139,7 @@ ID1183 goes from 420.5/120.25/0 to 444.4/555.5/66.6
 **The core points**:
 - if a layer fails, it does not go further down
 - if the shadow run does not work, the real run certainly does not work (it reuses the same allocation and substitution logic)
-- the old and the new system must never operate the same batch of devices at the same time
+- two control instances must never operate the same batch of devices at the same time
 
 ### Features (the thumbnail in the device list)
 
@@ -1267,7 +1267,7 @@ HGETALL labos:dev:state:214
 
 | Item | Type | Explanation |
 |---|---|---|
-| The duration accuracy is 10 seconds | Data | The old system only recorded down to 10 seconds, the prediction upper limit is bound by it |
+| The duration accuracy is 10 seconds | Data | The source data only has a 10-second resolution, the prediction upper limit is bound by it |
 | The link between the experiment and the workflow is empty | Data | All 650 experiments have no workflow link |
 | 63 devices have no IP | Data | It has to be filled in on site |
 | The 26 islands include the test islands | Data | `测试岛屿1`, `12345` and the like, the interface has to tell them apart |
@@ -1319,7 +1319,7 @@ Withdraw1  → ID1775     ← finally not the same one
 
 **The symptom**: the workflow execution timed out stably at 30007ms, but `/api/shadow/probe` with the same device and the same method succeeded in 62ms.
 
-**The root cause**: `lsof -i :19301` showed **two Java processes** connected to the mock at the same time (the old process 48441 held 3 connections that it did not release).
+**The root cause**: `lsof -i :19301` showed **two Java processes** connected to the mock at the same time (the leftover process 48441 held 3 connections that it did not release).
 The mock handles them one at a time, so the commands of a new connection wait for a response that never comes.
 
 **Why the probe succeeds**: the probe uses its own short connection, and it may happen to be the one that gets served.
@@ -1519,19 +1519,19 @@ refreshHasPlate derives the device-level has_plate
 | `docs/评审规范.md` | The format of the review records (number/time/model/scope/conclusion), the severity grading (P0-P3), the rules of the response, the rules of the documentation layers |
 | `docs/提交规范.md` | When to commit, the format of the commit message (type/scope/description/body), the known problems that have to be written down, the set of counter-examples |
 
-### The refactoring (the brand and the package names)
+### Naming
 
-The package names, the Redis prefix, the frontend storage, the environment variables and the documents are unified to `labos`.
+The package names, the Redis prefix, the frontend storage and the environment variables use `labos`.
 
-| Item | Before | After |
-|---|---|---|
-| The kernel package | `com.<oldName>.kernel` | `com.labos.kernel` |
-| The gateway package | `com.<oldName>.gateway` | `com.labos.gateway` |
-| The project directory | The directories with the old prefix | `labos-kernel` / `labos-gateway` |
-| The Redis prefix | The old prefix | `labos:dev:state:` and the like |
-| The frontend storage | The old prefix | `labos_token` / `labos_canvas_exp` |
-| Environment variable prefix | legacy prefix | `LABOS_*` |
-| The default database name | The old database name | `labdb` (on site it is overridden with `LABOS_DB_NAME`) |
+| Item | Name |
+|---|---|
+| The kernel package | `com.labos.kernel` |
+| The gateway package | `com.labos.gateway` |
+| The project directory | `labos-kernel` / `labos-gateway` |
+| The Redis prefix | `labos:dev:state:` and the like |
+| The frontend storage | `labos_token` / `labos_canvas_exp` |
+| Environment variable prefix | `LABOS_*` |
+| The default database name | `labdb` (on site it is overridden with `LABOS_DB_NAME`) |
 
 **The trap that was stepped on**: `pkill -f` does not support the `\|` syntax of grep, and neither of the two processes was killed,
 so the new service reported `Address already in use`. It was changed to `pkill -f ApiServer` + `lsof -i :port` to confirm.
@@ -1604,7 +1604,7 @@ Testing the mock by hand: frame 1 status=1, frame 2 status=2  ✅
 The driver probe:         ok=true, method_status=2, 13ms  ✅
 ```
 
-**The trap**: at first it was assumed that 19301 was the Java mock, but in fact it is the **.NET sidecar** (the `LegacySidecar.` process).
+**The trap**: at first it was assumed that 19301 was the Java mock, but in fact it is the **.NET sidecar** process.
 The code of the Java mock was changed for a long time without any effect — because it was not the one that was connected.
 
 **The lesson**: before changing anything, use `lsof -i :port` to see **who is listening**,
@@ -1910,7 +1910,7 @@ The expressions:
    Fix: `has()` looks at `varName + ".__exists"` and at `results.` + `varName + ".__exists"` as well.
 
 2. After the code was changed the unit tests passed, but the test class had not been recompiled
-   `T3.class` was the old one, so the old logic was still running. Deleting the class and running javac again was what made it work.
+   `T3.class` was the stale one, so the stale logic was still running. Deleting the class and running javac again was what made it work.
    **This is the Nth time of "I thought it was changed, but it was not".**
 
 ### Features (M1.4 the resource acquisition protocol is done)
@@ -2109,7 +2109,7 @@ Leaving it in the sim package would make "the control console depend on the simu
 
 **The places where the S100 was made more detailed following the manual**:
 
-- the error codes are **14 and not 15** (`0x0D`/`0x0F` are not in the manual, the previous document was wrong);
+- the error codes are **14 and not 15** (`0x0D`/`0x0F` are not in the manual, the earlier document was wrong);
 - one command code of `0x04` hangs off three usages (sealing / changing the plate type / querying the plate type), they are told apart by the index `0x00`/`0xA5`/`0x5A`;
 - **it cannot seal when the tray is not at the origin** → `0x8000001A`. Now that this is implemented,
   a workflow that misses `MoveTray(0)` shows up in the simulation phase, there is no need to wait for the site;
@@ -2176,8 +2176,8 @@ paste the output of `DeviceErrorSql --emit-sql` into `95_seed_data.sql` → run 
 The previous round wrote the INSERT of `error_code`/`recovery_policy` into `95_seed_data.sql`, but it **was never executed**.
 This round the current state online was checked first, and three things turned up that had to be dealt with first:
 
-- **`EC-08-3010` already exists** (the old system created it automatically from the raw error frames, and the `title` is the whole JSON).
-  My original `EC-08-30xx` numbering would have collided with this range —— and the more fundamental problem is:
+- **`EC-08-3010` already exists** (it was created automatically from the raw error frames, and the `title` is the whole JSON).
+  My initial `EC-08-30xx` numbering would have collided with this range —— and the more fundamental problem is:
   **two different models may both report `0x8000000C` with a completely different meaning**, and numbering only by the byte makes the two models fight over the same control console code.
 - So it was changed to **`EC-08-<the model block><the manual byte>`**: `40`=S100, `41`=ASpin 2K, the new models from `42` onwards.
   `0x8000000C` → `EC-08-400C`. The block is allocated in `DeviceModel.errorBlock`,
@@ -2267,34 +2267,34 @@ A few key decisions:
 **There is still no real machine**: the serial frames and the `Cluster.dll` only have the manual as their basis, and they have never been run against a real device.
 The 5th section of `sidecar-dotnet/README.md` lists "what has not been verified" item by item.
 
-### The data governance (52 old error codes are deleted) + the features (the registration in the device pool: one command with an image)
+### The data governance (52 existing error codes are deleted) + the features (the registration in the device pool: one command with an image)
 
-#### 1. What those 60 "old codes" in the database really are
+#### 1. What those 60 "existing codes" in the database really are
 
 Looking at the `attr` revealed the origin:
 
 ```json
-{"origin":"legacy_error_log","devices":28,"occurrences":12220,"top_shooting":"Ignore"}
+{"origin":"error_log","devices":28,"occurrences":12220,"top_shooting":"Ignore"}
 ```
 
-They are **the migration of the error_log of the old system**, and the `code` was dug out of the **raw error frames**
+They are **the migration of the existing error log**, and the `code` was dug out of the **raw error frames**
 (the `title` field stores the whole JSON directly: `{"checksum":"...","equipment_id":"ID1131"...}`),
-and `top_shooting` records the disposition of the old system —— a lot of them are `Ignore` (which corresponds to the
-sentence "the old system ignored 91.2% of them directly" in the comment of `JdbcErrorOccurrenceStore`).
+and `top_shooting` records how they were disposed of —— a lot of them are `Ignore` (which corresponds to the
+sentence "91.2% of them were ignored directly" in the comment of `JdbcErrorOccurrenceStore`).
 
 The problem is not that it is ugly, it is that it **cannot be used**:
 
 - the `title` is not human language, and the site cannot understand it when the alert is pushed out;
 - the `code` (`EC-00-xxxx` / `EC-23-xxxx` / `Transfer-001` / `Script Error`) runs in parallel with the `EC-08-40xx` of the model library,
-  and the lookup of the recovery policy hits the old rows;
-- of the 52 codes, **0 of them have an `error_occurrence` record** (the history stayed in the old system), so deleting them does not lose the history of the control console.
+  and the lookup of the recovery policy hits the existing rows;
+- of the 52 codes, **0 of them have an `error_occurrence` record** (that history was not migrated), so deleting them does not lose the history of the control console.
 
 **The handling**: the 52 dirty codes are deleted (`title LIKE '{%'`), the `recovery_policy` takes 52 of them with it through the CASCADE of the foreign key;
 `error_code` 77 → 25, `recovery_policy` 79 → 27.
-The rows as they were (including the id, the severity and the `attr` statistics) are all archived in **`pg_rebuild/archive/20261102_legacy_error_codes.sql`**,
-and the file contains both the DELETE (which can be run again) and the INSERT for the recovery (commented out by default) —— when they are needed in the future, they are in that file.
+The rows as they were (including the id, the severity and the `attr` statistics) are kept locally and are not shipped with the repository,
+and the kept copy contains both the DELETE (which can be run again) and the INSERT for the recovery (commented out by default) —— when they are needed in the future, they are in that copy.
 
-The 25 that are kept = the 8 old codes with a proper Chinese title (`设备未就绪`/`设备通讯超时`/`驱动未加载`…)
+The 25 that are kept = the 8 existing codes with a proper Chinese title (`设备未就绪`/`设备通讯超时`/`驱动未加载`…)
 + the 17 new codes (14 for the S100 + 3 for the adaptation layer).
 
 **The policies that were not changed**: no mapping is added for these 52. The error codes of the machines without a manual (`Rotanta 460R`/`PlateLoc`)
@@ -2325,7 +2325,7 @@ java ... DeviceRegistrar --list
 
 While at it, the icons of the pool were connected: `/api/device-models` returns the `icon`,
 and the frontend `PoolIcon` shows it first, **and it falls back to the capability icon automatically when the loading fails**
-(the `icon` of the old devices points at the old server `/image/device/...`, which is a 404 in the new environment, so a plain img would be a broken image).
+(the `icon` of the existing devices points at an earlier server `/image/device/...`, which is a 404 in the new environment, so a plain img would be a broken image).
 
 #### 3. The two that were added
 
@@ -2376,14 +2376,14 @@ if (allCaps.isEmpty()) {
 
 And `QueryService.deployModel()` only creates the `resource_node` + `device_instance`,
 **it has never written a `resource_capability`**. A `grep` over the whole repository confirms it: no code writes this table,
-it was brought over by the migration from the old system.
+it was brought over by the migration.
 
 ⇒ **For a device that is dragged into an island from the frontend, the capability rows are empty and the whole driver cannot be registered**.
 This bug cannot be found by the unit tests (they construct the `DriverDescriptor` directly), only the path "deploy → send a command" exposes it.
 
 **The fix**: `deployModel()` writes the capability rows at the deployment as well
 (`INSERT ... SELECT capability_id FROM device WHERE id = ?`, `ON CONFLICT DO NOTHING`).
-**The data is topped up**: of the 247 instances in the whole database 5 were missing it (our 2 + 3 old ones), and they have been filled in.
+**The data is topped up**: of the 247 instances in the whole database 5 were missing it (our 2 + 3 migrated ones), and they have been filled in.
 
 #### 3. The traps that were stepped on
 
@@ -2393,7 +2393,7 @@ This bug cannot be found by the unit tests (they construct the `DriverDescriptor
 2. **The bash 3.2 of macOS swallows the Chinese character that follows `$var` into the name of the variable**:
    `echo "$v），复用"` → `v?: unbound variable`. It has to be written as `${v}`.
    The whole repository was scanned, `verify-device-chain.sh` (6 places) and `verify-m4.sh` (1 place) are fixed.
-   **This is a trap that has been lurking in the old scripts for a long time**, it simply never blew up before because the thing after `$var` happened to be ASCII.
+   **This is a trap that has been lurking in the scripts for a long time**, it simply never blew up before because the thing after `$var` happened to be ASCII.
 3. **The 60s cache of the driver registry** (`REGISTRY_TTL_MS`): probing right after the driver is bound always gives `EC-06-0001`,
    so you either wait 62 seconds or restart the ApiServer. The script sleeps explicitly and prints the reason.
 
@@ -2449,7 +2449,7 @@ if (deviceId == 0L || "LOGIC".equalsIgnoreCase(ctx.capabilityCode())) {
 ```
 
 **That is where the false green comes from.** This bug cannot be found by the unit tests (they do not go through the path "deploy → the resource id grows").
-The fix: the upper bound becomes 99_999_999 (it only stops the fake 9 digit ids of the old data); and the real reason is written into the comment.
+The fix: the upper bound becomes 99_999_999 (it only stops the fake 9 digit ids of the existing data); and the real reason is written into the comment.
 
 #### 2. `bound_resource_id` was not used at all to pin the device
 
@@ -2870,7 +2870,7 @@ and the database is synchronised to `command|retry|5`.
 #### Fixed along the way: `jsonInt` does not accept a number in quotes (it returns 200 but the value does not change)
 
 The value of the frontend `InputNumber` is often sent as a string (`{"maxAttempts":"2"}`),
-and the regular expression of `jsonInt` only accepts a bare number → it parses out null → `COALESCE(?::smallint, ...)` keeps the old value
+and the regular expression of `jsonInt` only accepts a bare number → it parses out null → `COALESCE(?::smallint, ...)` keeps the existing value
 → **the interface returns 200 and the database does not change**. This trap is the hardest to find when it comes to "the save succeeded but it did not take effect".
 
 It was changed to `"?(-?\d+)"?`, so it accepts it with and without the quotes. It affects every interface that uses `jsonInt`.
@@ -2889,7 +2889,7 @@ The way it is handled: through the **product interface** `POST /api/runs/dismiss
 
 **All the records are kept**: only `status=aborted` + `error_code=EC-HUMAN-DISMISS` is changed,
 not a single row of `run_node` / `run_command` is touched (a spot check of 205358 still shows 7 nodes and 6 commands).
-The list is archived in `pg_rebuild/archive/20261102_paused_runs_dismissed.csv`.
+The list is kept locally and is not shipped with the repository (a CSV).
 
 If you change your mind: `where id in (...)` changes those 88 back to `status='paused'` (the CSV has all the ids).
 
@@ -2906,7 +2906,7 @@ An `Input` search was added: the model name / the code / the capability all matc
 
 `/api/topology` did not return the `icon` before, so the cards on the island could only draw a colour block for the capability.
 Now the SQL brings out `dev.icon` and the frontend extracted a `DevIcon` (`PoolIcon` reuses it),
-**and it falls back to the colour block automatically when the loading fails** (the icon of the old devices points at the old server, and it is a 404 in the new environment).
+**and it falls back to the colour block automatically when the loading fails** (the icon of the existing devices points at an earlier server, and it is a 404 in the new environment).
 Measured: in `Device_Test · 8 units` both `S100-1` and `ASPIN_2K-1` now render an `img`.
 
 #### 3. The device nodes of the experiment canvas no longer 404
@@ -2958,7 +2958,7 @@ The fix: when `DeviceRegistrar` puts a device into the pool it synchronises the 
 - the `param_schema.params[0].desc` holds the parameter description of the manual
 - the `estimate_sec` / `timeout_sec` are derived from the `delayMs` / `actionTimeoutMs` of the model
 
-**The old methods that are no longer in the model library are not deleted**: the methods of the old database may be referenced by historic workflows, and deleting them would make those workflows report "the method does not exist".
+**The methods that are no longer in the model library are not deleted**: the methods of the existing database may be referenced by historic workflows, and deleting them would make those workflows report "the method does not exist".
 
 Measured: `S100 12 entries / ASPIN_2K 8 entries`, and the "methods (8)" drop-down of the page has CloseDoor / CreateModules / Home / RunProgram …
 
@@ -3081,7 +3081,7 @@ The legend: completed 1    waiting for a person 1    not executed 1
 
 The colours: green=completed, red=failed/terminated, orange=waiting for a person, yellow=skipped, blue=running, grey dashed=not executed.
 
-An old workflow without a BPMN graph shows "this workflow was not built from a graph (the old data has no BPMN graph), you can only see the node table below",
+An existing workflow without a BPMN graph shows "this workflow was not built from a graph (the existing data has no BPMN graph), you can only see the node table below",
 it is not a blank screen.
 
 ### The fix (the flowchart does not refresh: after it has finished it still shows "not executed")
@@ -3250,7 +3250,7 @@ So "if both sides can be treated as numbers it compares the values", and for the
 
 - in `choose()` the conditions of the outgoing edges are evaluated one by one and the one that holds is chosen; if the evaluation fails → `unevaluatedConditionCount` is recorded and the default is taken (**it does not block the production**)
 - `done` changed from "an absolute deduplication" to "**a re-entry is only allowed when the graph really has a cycle**": the DFS with the three colours computes a `hasCycle` once,
-  and a graph without a cycle keeps the old semantics (it prevents a parallel join from activating twice and running the device action twice)
+  and a graph without a cycle keeps the deduplication semantics (it prevents a parallel join from activating twice and running the device action twice)
 - The protection: 10 rounds for a single node, 500 steps in total, and when it is exceeded it records the log and stops
 
 #### 3. The variables: two sources
@@ -3329,7 +3329,7 @@ The fix: when `DeviceRegistrar` puts a device into the pool it synchronises the 
 - the `param_schema.params[0].desc` holds the parameter description of the manual
 - the `estimate_sec` / `timeout_sec` are derived from the `delayMs` / `actionTimeoutMs` of the model
 
-**The old methods that are no longer in the model library are not deleted**: the methods of the old database may be referenced by historic workflows, and deleting them would make those workflows report "the method does not exist".
+**The methods that are no longer in the model library are not deleted**: the methods of the existing database may be referenced by historic workflows, and deleting them would make those workflows report "the method does not exist".
 
 Measured: `S100 12 entries / ASPIN_2K 8 entries`; the "methods (8)" drop-down of the page has CloseDoor / CreateModules / Home / RunProgram / CurrSpeed / Stop / GetStatus / CurrTime.
 
@@ -3366,7 +3366,7 @@ Three things were deliberately done while writing it:
 
 Two untruths that were found on the way:
 - The frontend is really **React 18.3** (not 19) and the sidecar is really **.NET 10** (not 8) —— they were corrected according to the `package.json` / `csproj`.
-- "99.7% of the existing experiments are sequential" is a statistic of the old database (it is in a comment in the code); in the current environment `experiment_process` only has 13 rows, and the 659 historic experiments only filled in `experiment.workflow_id`. The document was changed to give the source.
+- "99.7% of the existing experiments are sequential" is a statistic of the existing database (it is in a comment in the code); in the current environment `experiment_process` only has 13 rows, and the 659 historic experiments only filled in `experiment.workflow_id`. The document was changed to give the source.
 
 ### The review remediation (20261103-01): 1 blocking + 2 high severity + 5 untrue statements in the documents
 
@@ -3388,7 +3388,7 @@ The review said it was "derived statically", and I **ran it out with the databas
 After the pause: level1=2  cmd=2
 Change the paper → continue: the simulator received 2 Seals, level1 is still =2  cmd is still =2
 The log: 2 entries of [WARN] 步骤落库失败: duplicate key ... uk_run_node
-And the old S2 (failed) was UPDATEd to completed —— the failure history is covered up
+And the S2 from before the change (failed) was UPDATEd to completed —— the failure history is covered up
 ```
 
 There are two root causes:
@@ -3446,7 +3446,7 @@ The M6 of the ROADMAP, which are the two P0 of the list after the review.
 Before, a business node only had one row (the unique key `(run_id,node_key,attempt)`), and a loop that ran 5 rounds also only had the final state ——
 "why did the 3rd round fail" can never be looked up.
 
-The approach (**purely additive, the old semantics are not touched**):
+The approach (**purely additive, the existing semantics are not touched**):
 
 | The row | loop_index | The meaning |
 |---|---|---|
@@ -3522,7 +3522,7 @@ Before, only the environment variable could be changed and then a restart was ne
 
 The trap that was stepped on: `sys_setting` has **no** `(tenant_id, scope, setting_key)` unique constraint in the live database,
 and `ON CONFLICT` reports directly "no unique or exclusion constraint matching". It was changed to the two step form of "first UPDATE,
-and if it did not hit, INSERT" —— so the old database can run without a migration.
+and if it did not hit, INSERT" —— so an existing database can run without a migration.
 
 #### Along the way: the experiment variables were moved
 
@@ -3618,7 +3618,7 @@ The unit test: `GraphRunnerTest` gets "a built-in node does not touch the device
 #### The traps that were stepped on
 
 The first run went straight to `SET manual 无可执行资源：节点未给出初始设备` ——
-**the API was not restarted after the code was changed**, so it was still running the old class. This kind of "it was changed but it did not take effect" is the easiest to misjudge as a design problem.
+**the API was not restarted after the code was changed**, so it was still running the stale class. This kind of "it was changed but it did not take effect" is the easiest to misjudge as a design problem.
 
 #### What is still not done (the next step)
 
@@ -3668,7 +3668,7 @@ The editing of the **method parameters** of the device tasks (the same interface
 
 The root cause of the last review falling over was exactly that "the numbers in the document do not match the measurement", so everything was measured again before the delivery:
 
-| Item | The original value in the document | The measurement | The handling |
+| Item | The value in the document | The measurement | The handling |
 |---|---|---|---|
 | The lines of the backend Java | 30,241 | **29,671** (107 files) | Changed. The reason for the difference: the 7 self-test classes moved to `src/test` |
 | The lines of the frontend | 8,048 | **8,393** | Changed |
@@ -3694,11 +3694,11 @@ it is missing the foreign key of `parent_node_id`, and `uk_run_node` still has 3
 The fix:
 
 1. `merge.sh` is run again and the artefact is produced (2531 → 2536 lines).
-2. In addition **5 lost `ALTER TABLE ONLY plate_well`** are put back —— the old artefact had 4 entries of
+2. In addition **5 lost `ALTER TABLE ONLY plate_well`** are put back —— the stale artefact had 4 entries of
    `syntax error at or near "ADD"`, because that line was swallowed in the fragment (it is not the fault of the merge, it is a hole in the fragment itself).
 3. The new `scripts/check-schema-sync.sh`: it runs the merge again and compares it with the artefact of the repository (it fails and restores the working tree when they differ),
    and at the same time it asserts that the artefact contains `loop_index` / the 4 column unique key / the foreign key of the parent. It has been merged into the 2.5th gate of `ci-gate.sh`.
-   A negative test was done: putting the old artefact back makes it report "the artefact is stale" and it lists the diff, and putting it back again makes it pass.
+   A negative test was done: putting the stale artefact back makes it report "the artefact is stale" and it lists the diff, and putting it back again makes it pass.
 
 The verification with the database (the new schema executes the artefact in full):
 
@@ -3722,7 +3722,7 @@ and `deploy.sh:112` uses `ON_ERROR_STOP=1` —— a completely new deployment in
 The root cause: in `30_business.sql` the **hand-written DDL** and the **pg_dump style tail** are interleaved,
 and both of them define the same batch of tables (the tail also has 23 tables of its own, so it cannot be deleted as a whole).
 
-The approach: `guard_legacy_tail.py` was added to `merge.sh`, and it wraps the **duplicate declaration type** statements
+The approach: `guard_dup_decl.py` was added to `merge.sh`, and it wraps the **duplicate declaration type** statements
 (`ALTER … ADD GENERATED`, `ALTER TABLE [ONLY] … ADD CONSTRAINT`) into
 `DO $$ … EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition`.
 59 statements were wrapped —— if the object does not exist it is created, if it exists it is skipped and a NOTICE is left, and the semantics are unchanged.
@@ -3739,7 +3739,7 @@ The re-check of the review pointed out: in the artefact 5 tables have two defini
 and `IF NOT EXISTS` makes the second one skip silently, **and since the column sets are equivalent there is no side effect**, but "editing the wrong one does not report an error" is a latent hazard.
 
 The approach: the duplicated section is deleted from `30_business.sql` (the `CREATE TABLE` + the `ADD GENERATED` right after it + the `pkey` of that table),
-and the original is kept (`plate_well`/`experiment_sample` are in the 30, `resource_booking`/`run_variable`/`run_artifact` are in the 20).
+and the canonical copy is kept (`plate_well`/`experiment_sample` are in the 30, `resource_booking`/`run_variable`/`run_artifact` are in the 20).
 **The foreign keys are kept** —— they only appear in the dump section, and deleting them would lose the constraints.
 
 The way of verifying is worth recording: before and after the change a schema is created from scratch each time and `pg_dump --schema-only` compares them,
@@ -3850,7 +3850,7 @@ The data model diagram of the 02 technical document also carries this sentence, 
 The task that was dragged out is called 「Task」 on the canvas, and after the device is bound it is still 「Task」 —— at a glance you cannot see what this workflow is doing.
 
 The approach (it is done on the side in `patchNodeAttrs`, no extra interface): **only the "placeholder name" is changed**, and the criterion is threefold
-—— the name is empty / the name equals the original method name / it is still the placeholder name of bpmn-js (`Task`, `Activity`, `任务`, `活动`).
+—— the name is empty / the name equals the name from before / it is still the placeholder name of bpmn-js (`Task`, `Activity`, `任务`, `活动`).
 If it does not hold, the name that the user gave it is kept (for example "我的封膜").
 
 The built-in nodes get a Chinese name (`__setVar` → variable, `__expr` → expression), otherwise strings like `__setVar` appear on the graph.
@@ -3859,7 +3859,7 @@ The three cases were measured (the N1/N2 of 1255):
 
 | The scenario | The result |
 |---|---|
-| `Seal` → `GetStatus` (the original name equals the method name) | `name="GetStatus"` ✅ |
+| `Seal` → `GetStatus` (the name equals the method name) | `name="GetStatus"` ✅ |
 | Then it is changed back to `Seal` | `name="Seal"` ✅ |
 | The N2 is named 「我的封膜」 by hand and then it is changed to `GetStatus` | `name="我的封膜"` **it stays unchanged** ✅ |
 
@@ -3889,7 +3889,7 @@ and the three features each wrote their own regular expression, and the Gantt wo
 #### What was found on the data side
 
 The XML of the workflow 1248 is broken itself (the prefix of `di:waypoint` is not bound), and it is skipped with a message during the backfill.
-This kind of dirty data has to be fixed separately, but it does not affect the other 1008.
+This kind of dirty data has to be fixed separately, but it does not affect the other stored workflows.
 
 #### The verification
 
@@ -3942,7 +3942,7 @@ It was changed into two levels:
 | The route | The page | The content |
 |---|---|---|
 | `/experiments` | The list | The number / the name / **the island** / **the version** / the number of workflows / the status / the planned time / the remark; the search, click a row to go into the details, the new experiment |
-| `/experiments/:id` | The details (the old orchestration page) | The workflow orchestration + the variables + the execution history; the "← back to the list" at the top, the drop-down switches via the route |
+| `/experiments/:id` | The details (the former orchestration page) | The workflow orchestration + the variables + the execution history; the "← back to the list" at the top, the drop-down switches via the route |
 
 The accompanying changes:
 - `experiment` gets `version int default 1`, and it is **incremented by 1 on every save of the orchestration** (the list shows v2/v3, and at a glance you see how many versions there have been)
@@ -3951,7 +3951,7 @@ The accompanying changes:
 
 The trap that was stepped on: the patch of `experimentsJson` and the "save the orchestration bumps the version" were written in one script,
 and the assertion of the latter failed with a `SystemExit` → **the content that had already been changed was not written to disk** (the write is at the end of the script).
-As a result the interface still had the old fields and a whole round of troubleshooting was wasted. The lesson: when one script changes several things, it has to write in stages.
+As a result the interface still had the fields from before the change and a whole round of troubleshooting was wasted. The lesson: when one script changes several things, it has to write in stages.
 
 ### Features (the scheduling Gantt · the read-only first version)
 
@@ -3970,7 +3970,7 @@ At first I wrote the new page directly as `pages/Gantt.tsx` —— **that file a
 "the timeline of the nodes of one execution", it goes through `/api/runs/{id}/timeline` and it draws a dark bar chart in SVG).
 It was only noticed because `git status` showed `M Gantt.tsx`.
 
-The handling: the original file was restored from HEAD, the new page was renamed `ScheduleGantt.tsx` with the route `/schedule`,
+The handling: the file from before the change was restored from HEAD, the new page was renamed `ScheduleGantt.tsx` with the route `/schedule`,
 and the two Gantts coexist in the menu and are clearly distinguished:
 
 | The menu | The route | What it shows |
@@ -3996,7 +3996,7 @@ The scheduling is still the serial lower bound (only one experiment runs at a ti
 
 #### Two device identifiers were fixed on the way
 
-While looking at the device view it turned out that all 63 steps were piled up in "the unbound device", and looking into it **the resource ids of the old data are no longer in `resource_node`**
+While looking at the device view it turned out that all 63 steps were piled up in "the unbound device", and looking into it **the resource ids of the existing data are no longer in `resource_node`**
 (example: the workflow 1239 is bound to 383/387/398…, and these ids cannot be looked up for a code any more).
 
 - `resource_id = 0` is the "no device" of the historic data → it is treated as `null`, and it is not treated as a device with the name 0
@@ -4076,7 +4076,7 @@ The scheduling Gantt could only be looked at before. Now the rows of the "by exp
 
 - The row has a `⠿` handle; the rows that cannot be dragged (the ones that have run / that are running) get `cursor: not-allowed` and they are made semi-transparent
 - The drag source is put into a **ref** and not into the state: the `dragstart` and the `drop` may arrive in the same round of events
-  (an automated test, a synthetic event), and with the state you would read the old value that has not been committed yet
+  (an automated test, a synthetic event), and with the state you would read a stale value that has not been committed yet
 - Before the submission **only "the part that can be dragged" is taken**: the page mixes in the experiments that have already run, and a full submission is rejected by the backend
 
 #### Measured
@@ -4170,7 +4170,7 @@ which is the same as requiring the user to know the parameter names and the form
 Measured: the Seal node of `S100 封膜验证` is selected → the input field of the parameter `args` (the placeholder `0x04: aa 04 00 … 00 ff`)
 → `0x04 AA 04` is filled in → it is saved → in the database `{"args": "0x04 AA 04"}` ✅
 
-**The trap that was fixed**: the `method_params` of this node is the number `0` in the database (the old data is not an object),
+**The trap that was fixed**: the `method_params` of this node is the number `0` in the database (the existing data is not an object),
 and the first version put `JSON.stringify(0)` into the input field → the structured input was all empty. Now it is normalised to `{}` when it is loaded.
 
 #### 2. An explicit "＋ new workflow" button is added to the details of an experiment
@@ -4262,12 +4262,12 @@ so it did not render as a table; only the position of the rows was adjusted, the
 | `test-all.sh` with the database, in full | **passed 500 / failed 0** |
 | `ci-gate.sh --e2e` | The gate passed (the pure logic 423/0, tsc 0 errors, the creation artefacts the same source, the e2e **16/0**) |
 | The new script `scripts/verify-exp-control.py` | **22/22** (it borrows an empty experiment → it inserts 2 queued runs → the UI goes through pause → resume → stop → it deletes the data and restores the state, `3ab54a3`) |
-| The leftovers of the self-tests | `experiment_run` 39 (the original value), `runtime_hold` 0, the experiment #813 is restored to `created` |
+| The leftovers of the self-tests | `experiment_run` 39 (the baseline value), `runtime_hold` 0, the experiment #813 is restored to `created` |
 
 #### A note about the environment (it is easy to step on)
 
 The API 18080 of this machine was originally **a process from 14:46**, and it does not contain the routes of M9.5 —— `GET /api/runtime/holds`
-returned a 404 straight away. It was restarted with the current `out/` (the DB connection string was taken from the environment variables of the old process).
+returned a 404 straight away. It was restarted with the current `out/` (the DB connection string was taken from the environment variables of the leftover process).
 From now on, either restart it after changing the backend, or do not blame "the interface is not there".
 
 #### What was explicitly not done
@@ -4290,7 +4290,7 @@ From now on, either restart it after changing the backend, or do not blame "the 
 - The compilation rules: start → the chain of the workflows → end; the non workflow nodes (the variables / the forks) are rejected or ignored according to the S1 rule,
   and the error message says clearly "only a linear main chain is supported at the moment".
 - The workflow table of the details page of the experiment is demoted to a **read-only mirror** (it says "change it in the canvas orchestration", and it is recompiled automatically afterwards);
-  the old table could still click "add a workflow / move it up / move it down", that was a second write entry point, and it was deleted.
+  the table that was there before could still click "add a workflow / move it up / move it down", that was a second write entry point, and it was deleted.
 
 **The verification**: `ExperimentGraphCompileSelfTest` (pure logic: a linear main chain / an empty experiment / an illegal graph, case by case),
 `ExperimentGraphPersistenceSelfTest` (with the database: the save succeeds and the three tables are updated together; a constructed save failure → the three tables stay as they were,
@@ -4306,13 +4306,13 @@ The counterexample is right next to it: the field `experiment_process.run_after`
 - The new table `experiment_process_edge` (`tenant_id, experiment_id, from_id, to_id`, PK `(from_id,to_id)`),
   it is replaced as a whole when the canvas is saved (deleting a process cascades to the edges), and the dependencies of the workflows on the canvas are compiled into the edges.
 - The executor changes to the Kahn topological ordering: an in-degree of 0 goes into the ready set, on the same level it is ordered stably by `seq`; **a cycle is rejected outright**
-  ("the experiment orchestration contains a cycle, the execution order cannot be determined"), it does not guess. The old data without edges is ordered by ascending `seq`, exactly as before the change.
+  ("the experiment orchestration contains a cycle, the execution order cannot be determined"), it does not guess. Data without edges is ordered by ascending `seq`, exactly as before the change.
 - **The wording fixes S2-A**: only a partial order is promised, physically serial (one is taken from the ready set at a time), wall-clock concurrency is not promised;
   real concurrency (S2-B) has to connect the three resource layers + the wait-for graph first, otherwise the premise of "the device lock is already enough" does not hold (review B1).
 
 **The verification**: `ExperimentOrderSelfTest` (pure logic: no edges = the seq order, a linear chain, a diamond on the same level by seq, a cycle is rejected);
 `ExperimentGraphPersistenceSelfTest` gets the assertion "after the canvas is saved the edges agree with the graph".
-**The side effect**: if the workflow graph of an old experiment had already drawn a fork, it is now refused when it is saved —— that is deliberate (if the executor cannot run it, do not store it).
+**The side effect**: if the workflow graph of an existing experiment had already drawn a fork, it is now refused when it is saved —— that is deliberate (if the executor cannot run it, do not store it).
 
 ### The prerequisite of M9.5-S3 (`runtime_hold` the scoped hold + the experiment level pause / stop / resume, `ce3eaf0`/`4458c88`)
 
@@ -4339,7 +4339,7 @@ so the **experiment level** pause / stop / resume is built first, otherwise the 
 **What it has to solve**: one experiment has 96 samples, the device only handles 24 at a time → it has to be split into 4 batches; every batch can be run on its own,
 a failure only re-runs that batch, and **the re-run must not overwrite the history** (the explicit requirement of the review 20261103-03 · B2).
 
-**The decisions when the work started (the implementation checklist §8, proposed by the implementer)**: D1 the switch `experiment.batch_split` (NULL = the old behaviour is completely unchanged); D2 at the first execution the batches are cut by `experiment_sample.sample_id` in ascending order and the `[{sampleId,barcode}]` is snapshotted into
+**The decisions when the work started (the implementation checklist §8, proposed by the implementer)**: D1 the switch `experiment.batch_split` (NULL = the behaviour is completely unchanged); D2 at the first execution the batches are cut by `experiment_sample.sample_id` in ascending order and the `[{sampleId,barcode}]` is snapshotted into
 `experiment_batch.samples`, and the re-run only uses the snapshot; D3 one execution = all the batches that have not succeeded yet are run serially by the batch number, one
 `experiment_run` + one attempt per batch, and a failed batch **continues** with the later batches; D4 the attempt of the re-run of a single batch is incremented, and the successful batches are rejected; D5 `batchNo`/`batchSamples` are injected and they do not overwrite the variables of the user; D6 the status of the experiment is aggregated over the batches
 (running/paused/all of them succeeded=finished/any one failed=failed); D7 the batches are serial and the batch boundary looks up the `RuntimeHold`.
@@ -4349,9 +4349,9 @@ a failure only re-runs that batch, and **the re-run must not overwrite the histo
 - `BatchOrchestrator` (new): it creates the batches idempotently + the snapshot of the samples, `runAll` (serially by batch), `runBatch` (the re-run of a single batch),
   `batchesJson` (the view of the batches), and the self-healing of the read side (the status of a batch is based on the **most recent run**, so changing the status of a run when it is continued is also reflected).
 - The new overload `syncExperimentStatus=false` of `ExperimentExecutor`: when it is batched it **does not** write the terminal state of a single run into the table of the experiment,
-  otherwise "the 1st batch is finished = the whole order is finished". The old signature delegates true, and not a single character of the behaviour changes.
+  otherwise "the 1st batch is finished = the whole order is finished". The existing signature delegates true, and not a single character of the behaviour changes.
 - The APIs: `GET /api/experiments/{id}/batches`, `POST /api/experiments/{id}/batches/{no}/run`,
-  and the existing `POST /run` appends `batchSplit` + `batches` when it is batched (the original fields are kept); a batched `async=1` is an explicit 400
+  and the existing `POST /run` appends `batchSplit` + `batches` when it is batched (the existing fields are kept); a batched `async=1` is an explicit 400
   (the scheduler only knows one run for the whole order, it must not silently run the wrong thing).
 - The frontend: a "batches" card on the details page of the experiment (the whole block is not rendered when `batch_split` is null), a "re-run that batch" on the failed / paused / terminated batches,
   and the expansion of a row shows every attempt and the run that belongs to it.
@@ -4362,7 +4362,7 @@ a failure only re-runs that batch, and **the re-run must not overwrite the histo
 |---|---|
 | The pure logic | **458 / 0** (the new `BatchPlannerSelfTest` with 35 cases) |
 | The full run with the database | **631 / 0** (the new `BatchDbSelfTest` with 96 cases; a fake execution body is injected, **it does not really touch the device**, negative synthetic ids + a finally cleanup) |
-| The integration script | `scripts/verify-exp-batch.py` **24/24**: 3 samples / `batch_split=2` really created on the database → the real API runs 2 batches (a failure continues) → the snapshot / the attempt are checked → the re-run of the failed batch has attempt=2 and the old history is kept → a successful batch is a 400 → Playwright asserts the batch card / the number of attempts / the expanded history; the data is cleaned up in the finally, 0 leftovers |
+| The integration script | `scripts/verify-exp-batch.py` **24/24**: 3 samples / `batch_split=2` really created on the database → the real API runs 2 batches (a failure continues) → the snapshot / the attempt are checked → the re-run of the failed batch has attempt=2 and the existing history is kept → a successful batch is a 400 → Playwright asserts the batch card / the number of attempts / the expanded history; the data is cleaned up in the finally, 0 leftovers |
 | The gate | `ci-gate.sh --e2e` passed: the pure logic 458/0, tsc 0, the creation artefacts the same source, the e2e 16/0 |
 | curl | The three interfaces with 24 assertions (the batched execution / the view of the batches / 0 attempts during a hold / a successful batch is rejected / the NULL regression) |
 
@@ -4384,7 +4384,7 @@ while the other batches are still pending); a concurrent re-run of the same batc
 
 **The approach (the decisions D8-D13 of the implementation checklist §10)**:
 - **D8 the unified write-back point** `BatchOrchestrator.onRunStatusChanged(runId)`: a run that is not a batch run returns false directly and
-  **writes nothing** (the behaviour of the old path does not change); a batch run writes the attempt row back in one transaction (the status / the error / the finished_at,
+  **writes nothing** (the behaviour of the path before the change does not change); a batch run writes the attempt row back in one transaction (the status / the error / the finished_at,
   the terminal time uses COALESCE so it stays idempotent) and recomputes the status of the batch according to the wording of the self-healing of the read side, and then aggregates the status of the experiment according to D6.
 - **D9 the scheduler**: `executeOne` first probes whether the run is a batch run → a batch run is run with `syncExperimentStatus=false`,
   and after it has finished D8 is called; after the fallback of the exception `markStatus(failed)` D8 is called again. A failure of D8 itself is only logged —— it must not bubble up to the outer catch
@@ -4424,7 +4424,7 @@ and the list of the experiments could not show "how long do I have to wait after
 - **The backend**: the new `Snapshot` of `ExperimentScheduler` (one snapshot serves both the status and the eta, so that the two do not get out of step);
   the `queue` carries the `position` in the **actual dispatch order** (EDD: deadline ASC → priority DESC → submittedAt ASC);
   the `islandLocks` get the code of the island / the number of the experiment, and the `queue` gets the number of the experiment, all of them are looked up in a batch with `= ANY(array)` (no N+1);
-  the `status()` gets `workers`, `started`=the cumulative number of dispatches (a number) and `loopStarted` (the old boolean semantics is kept for compatibility).
+  the `status()` gets `workers`, `started`=the cumulative number of dispatches (a number) and `loopStarted` (the boolean semantics from before the change is kept for compatibility).
 - **SchedulerEta** (pure logic + the estimation): `estimateWait` (running→0, not in the queue→null, the remaining time of the holder + the estimation of the experiments in front of it on the same island,
   a negative number is clamped to 0), `estimateExperimentSec` (the sum of the task nodes `COALESCE(NULLIF(estimate_sec,0),60)`),
   `estimateRunRemainSec`; the new interface `GET /api/experiments/eta?limit=` (100 by default / 500 as the upper limit).
@@ -4433,10 +4433,10 @@ and the list of the experiments could not show "how long do I have to wait after
   a "scheduler" is added to the "Run" group of the left hand side; `formatWait/formatTime` are extracted into a common utils (the list and the scheduler page have the same wording).
 
 **The three wordings that were fixed during the integration** (the document and the implementation are synchronised):
-1. **The position in the queue has to be in the same order as the real dispatch**: the original §7.1 of the design gave the priority the precedence, while the `dispatch()` is actually EDD
+1. **The position in the queue has to be in the same order as the real dispatch**: §7.1 of the design gave the priority the precedence, while the `dispatch()` is actually EDD
    (the deadline has the precedence) —— it was unified to **EDD first**, and `QUEUE_ORDER` + the design document were changed. The position is only used to answer "how many more until it is my turn",
    and if the sorting rule is inconsistent the position is a false number.
-2. **The semantics of `started`**: the contract of §7.1 has `started`=the cumulative number of dispatches (a number); the old boolean "has the scheduling loop started"
+2. **The semantics of `started`**: the contract of §7.1 has `started`=the cumulative number of dispatches (a number); the boolean from before the change "has the scheduling loop started"
    was moved to `loopStarted` and kept for compatibility; the `dispatched` alias that the backend had added temporarily was deleted (two names for one set of fields are bound to drift).
 3. **The judgement of "running"**: it is now based on **the holder of the island lock of the scheduler** + `experiment.status` as the fallback, and it **does not look at**
    `experiment_run.status` —— during the integration it turned out that EXP0812 has two leftover running runs from 11-01, and that would make the ETA judge an experiment that ended long ago
@@ -4542,7 +4542,7 @@ are not enqueued by anybody and **are never executed**, and the page keeps sayin
 
 #### 2. The automatic continuation of the queue after the hold is released (§11.3-1)
 
-When the batch boundary hits a hold the candidate batch is marked paused and no attempt is created (D7), and the old wording is that a person has to release the hold and then manually POST async for it to continue.
+When the batch boundary hits a hold the candidate batch is marked paused and no attempt is created (D7), and the wording from before the change is that a person has to release the hold and then manually POST async for it to continue.
 - The scheduling loop calls `autoContinueHeldBatches()` every 5 ticks (about 10s): as long as any hold is in effect nothing is touched; it scans
   the batches that are "paused and have **no attempt at all**" and whose experiment is not in a terminal state, and then it judges the coveringFor one by one (the three scopes),
   it calls `createNextBatchAttempt` → only when it is CREATED does it call `resumeRun` to enqueue it (at most 5 per tick, a failure of a single one is only logged).
@@ -4578,7 +4578,7 @@ The default semantics: when a batch is stuck at the boundary / waiting for a per
 2. When the scheduler executes a queued run it reads the run.variables as the overrides (**the semantics of a snapshot**): a restart / a recovery uses the variables of the submission,
    and it does not fetch the current default values of the experiment again (if the review asks for "the latest default values are fetched again when it is recovered", it has to be discussed);
 3. `loadBatches` only changes the derivation on the read side; the write side `derivedBatchStatus` (D8) still lands the status of the most recent run in the table,
-   and a paused batch that has a failed attempt is changed by D8, which changes the original value in the table —— the candidates of the automatic continuation of the queue are limited to the ones with "no attempt", so it is not normally triggered, and it is recorded as a known boundary.
+   and a paused batch that has a failed attempt is changed by D8, which changes the existing value in the table —— the candidates of the automatic continuation of the queue are limited to the ones with "no attempt", so it is not normally triggered, and it is recorded as a known boundary.
 
 #### What is still left (§11.3-3)
 
@@ -4628,7 +4628,7 @@ the root of BUG-13/14 (problems like "the list shows it is finished, the details
 
 **The display differences that were converged according to the contract after the unification (the places where the pages disagreed with each other)**:
 
-| The location | The old | The new |
+| The location | Before | The new |
 |---|---|---|
 | RunDetail, the node bypassed | not selected | the branch was not selected |
 | ExperimentList, paused | paused | already paused |
@@ -4668,10 +4668,10 @@ The last item of the ROADMAP P2. The ApiServer used to be 3331 lines with one gi
 - It was split into 8 domain controllers in the same package: AuthApi 127 / DeviceApi 478 / SchedulerApi 164 / RunApi 509 /
   WorkflowApi 909 / OpsApi 553 / ExperimentApi 638 / MetaApi 109 lines; the ApiServer went from **3331 → 679 lines**
   (only the bootstrap / the CORS / the authentication / the exceptions / the dispatch + the shared helpers are left, and the helper changed from private to visible for the package);
-- the order of the dispatch = the order in which the routes of the domains first appear in the original route() (Auth→Device→Scheduler→Run→Workflow→Ops→Experiment→Meta),
-  and inside the controller the original if/else and the relative order of the Matchers are strictly kept (it is written into the javadoc of every controller);
+- the order of the dispatch = the order in which the routes of the domains first appear in the pre-split route() (Auth→Device→Scheduler→Run→Workflow→Ops→Experiment→Meta),
+  and inside the controller the pre-split if/else and the relative order of the Matchers are strictly kept (it is written into the javadoc of every controller);
 - **the evidence**: the grep snapshot before the split shows that all 58 compilation points of the Pattern have an owner (the business route blocks 156/156, the ones that were not moved =0;
-  the Pattern literals 58→58, the equals/startsWith 54→54 are completely identical); the original version before the split was compiled separately and started on 18081,
+  the Pattern literals 58→58, the equals/startsWith 54→54 are completely identical); the version before the split was compiled separately and started on 18081,
   and it was compared route by route with the one after the split on 18080 with the same database and the same data: **34/34 GET responses have an identical status code + JSON**,
   and the 401×4 / 405 / OPTIONS 204 / the structure of the login are identical as well;
 - the regression: javac 0 errors, the full run with the database **860/0**, the e2e **20/0**, verify-exp-batch **35/0**,
@@ -4682,7 +4682,7 @@ The last item of the ROADMAP P2. The ApiServer used to be 3331 lines with one gi
 
 The new `docs/设备/M10-手册到型号库接入准备清单-v0.1.md`:
 - an inventory of the current state: the four layer structure of the model library, the MANUAL that already exist (aspin-2k / s100), the three PLANNED ones
-  (**360R = Hettich Rotanta 460R, 1 unit on the production line; PlateLoc = Agilent PlateLoc, 2 units on the production line**; plus the Eppendorf 5810R);
+  (**360R = Hettich Rotanta 460R; PlateLoc = Agilent PlateLoc**; plus the Eppendorf 5810R);
   **no device of the current production database is bound to a model** (without a manual it is not bound blindly, to avoid the error codes getting the wrong meaning); the error code blocks 0x40/0x41 are taken, 360R=0x42 and PlateLoc=0x43 are recommended;
 - a list of 18 documents (10 general + 4 for the 360R + 4 for the PlateLoc, all of them requested as a "communication interface specification / an error code table / the units of the parameters", not as an operation manual);
 - a template for the parameter extraction with 7 tables (A the master of the model / B the mapping of the methods / C the error codes / D the type and the parameter boundaries / E the behaviour of the model / F the on-site measurement / G the binding and the acceptance);
@@ -4712,7 +4712,7 @@ and the first item of the M10 scope got the link to the checklist.
   the detail of the manual (the evidence / the manual / the number of the commands including the unproven ones / the number of the error codes / the timeouts) + the detail of the planned ones (what is missing / the identification name / the number of the units running on the production line, one GROUP BY statistic on the device table);
   the pure logic self-test `DeviceModelLibrarySelfTest` with 22 cases.
 - The frontend page "model library" `/models` (`a1b21ef`, the operations menu): the statistic cards (2 can be connected / 6 waiting for a manual / 3 running on the production line and waiting to be connected, in red),
-  the MANUAL table, the PLANNED table (360R with 1 unit running, PlateLoc with 2 units running highlighted in red + waiting for a manual), the explanation of the M10 blocker at the top;
+  the MANUAL table, the PLANNED table (360R and PlateLoc already have instances but no manual, highlighted in red + waiting for a manual), the explanation of the M10 blocker at the top;
   the e2e gets a 7th step of assertions (20→23).
 - The script `scripts/device-go-live-check.py` (`4196f1c`): a PASS/WARN/FAIL per item for the on-site integration / before the go-live
   (the API / the DB, the freshness of the heartbeat and the number of the online drivers, the driver endpoints, the coverage of the model manuals, the rate of the device→model binding, the coverage of the error codes EC-08, the list of the capabilities, the topology),
@@ -4733,7 +4733,7 @@ the backend middleware says "a write operation needs operator or above, /api/use
 - **The backend** (`afddf5b`): the new pure logic `RbacRules` (the whitelist of the roles / the write permission / the right of the user management / the wording of the roles / `lastAdminGuard`);
   `QueryService.createUser/updateUser` get the role validation (an illegal one → a 400 「the role is not valid: xxx (the options are admin/operator/viewer)」);
   updateUser reads the state of the target on the same connection + `countEnabledAdmins()`, and **the protection of the last administrator is raised before the UPDATE** (it is refused and nothing is written).
-  The decision: the old tables `app_role`/`role_permission` are **not** enabled (that avoids two tracks, `sys_user.role` is used).
+  The decision: the currently-unused tables `app_role`/`role_permission` are **not** enabled (that avoids two tracks, `sys_user.role` is used).
 - **The frontend** (`3339606`): `AuthProvider/useAuth/useReadOnly` (the session is restored with `/api/auth/me` when the token exists, it listens to the 401 event, logout);
   the Header shows the role Tag + the displayName (the username); the user management menu is only visible for admin, and `/users` shows 「only an administrator can manage the accounts」 for a non admin;
   the read-only experience for a viewer: the write operations of the Experiments / PausedRuns / ExperimentList / ErrorCodes / Policies / Workflows /
@@ -4791,7 +4791,7 @@ the frontend Playwright self-check **22/22** (the read-only of a viewer on every
 All of them were fixed and re-verified. After the cleanup `sys_user`=3, `experiment`=678; `e2e-smoke.py` 24/0, `ci-gate.sh --e2e` passed.
 The details are in `docs/评审记录/20261104-01-评审包复核.md` §七 and in `BUG台账.md` (`BUG-20261104-01`~`-05` have been closed).
 
-**The A2 document and ROADMAP consistency closure** (the original plan is in `docs/评审包-20261104/02-后续规划.md` A2):
+**The A2 document and ROADMAP consistency closure** (the plan is in `docs/评审包-20261104/02-后续规划.md` A2):
 - The historical ticks of the M6 / M7 / M8 of `ROADMAP.md` are checked one by one: the 6 items of the M6 and the 5 items of the M7 are ticked after they were verified against the source / the scripts;
   the 3 items of the M8 are ticked, and **2 items are confirmed as not done** (the coverage baseline, the device chain in the CI) keep the `[ ]`, and the status of the M8 is changed to 「the main part is done」.
 - The baseline of §1.1 / §1.2 of `ROADMAP.md` is refreshed: the pure logic 536 / the database 907 / the device chain 41 / the e2e 24;

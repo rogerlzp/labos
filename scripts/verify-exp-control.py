@@ -186,7 +186,7 @@ def main():
                 ok(f"扣留范围标出 #{exp_id}") if f"#{exp_id}" in body else bad("扣留范围没标实验")
                 ok("扣留原因可读") if "实验级入口联调" in body else bad("扣留原因没显示")
                 row_a = page.locator(".ant-table-tbody tr.ant-table-row", has_text="#" + str(run_a))
-                # 状态列走统一词表后显示中文（P2 状态映射收口）；兼容旧版原始码
+                # 状态列走统一词表后显示中文（P2 状态映射收口）；兼容原始码
                 row_a_text = row_a.inner_text()
                 ok(f"run#{run_a} 状态变 paused") if ("paused" in row_a_text or "已暂停" in row_a_text) \
                     else bad("run 状态未变", row_a_text[:100])
@@ -213,7 +213,7 @@ def main():
                     else bad("run 未终止", row_b_text[:100])
 
                 step("5. 控制台")
-                # antd 静态 message/Modal 的 context 警告是全站既有写法（PausedRuns/RunDetail
+                # antd 静态 message/Modal 的 context 警告是全站全站通用写法（PausedRuns/RunDetail
                 # 同样用 Modal.confirm），不是本功能引入；只留真正的错误。
                 errs = [e for e in console_errors
                         if "favicon" not in e and "Static function can not consume context" not in e]

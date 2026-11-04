@@ -30,14 +30,12 @@ runs**.
 | Data layer | **51 business tables** in the database; resource / workflow / execution / plate position in four clear layers |
 | Kernel | **55 Java files / 6,070 lines**, 6 modules, **50 unit tests all green** |
 | Process validation | The workflows and the device-action nodes **ran to the end on the simulation bus**, no cycle, no isolated task |
-| Alert denoising | Tens of thousands of errors → **682 pushes (-95.2%)** |
+| Alert denoising | After historical errors are aggregated, the number of pushes falls |
 
 **The core judgement: do not tear down and rewrite the business; what has to be rewritten is the
 kernel.**
-The business model inherits the accumulated assets of labos (the process semantics, the error
-codes, the existing real nodes), and the architectural paradigm is benchmarked against comparable
-product B (the separation of decision and execution, the pure-function scheduling, simulable and
-replayable).
+The business model keeps the existing process semantics and error codes.
+The kernel separates decision from execution: scheduling is a pure function, and execution can be simulated and replayed.
 
 ---
 
@@ -117,7 +115,7 @@ it can be optimised, because "what the system intends to do" can be computed and
 | Basis | Value |
 |---|---:|
 | Entity tables | **51** + 2 partitioned parent tables + 3 views |
-| Business rows | **286,712** |
+| Business data | Landed in the database and rebuildable by table |
 | Partitions | `device_log` / `run_event` are split by month |
 
 ### 3.2 The key design changes
@@ -136,12 +134,12 @@ it can be optimised, because "what the system intends to do" can be computed and
 
 Three pieces of evidence:
 1. The `protocol.name` values are all `Stop` / `RailXMove` / `Decapper` / `Dispense`
-2. The `protocol.protocol_type` only has `action`(283) / `json`(49) — these are technical types, not business semantics
+2. The `protocol.protocol_type` only has `action` / `json` — these are technical types, not business semantics
 3. `protocol.equipment_id NOT NULL` —— every protocol must be bound to one device
 
 The real process definition is in the two tables `workflow` (BPMN XML) + `workflow_node`.
 
-**So `protocol`(336) → `device_method`(333), and not to the `protocol` table.**
+**So `protocol` lands in `device_method`, and is not treated as a process template.**
 If the literal reading is kept, the orchestration logic afterwards is bound to be entirely wrong.
 
 ---
@@ -188,24 +186,16 @@ the abbreviation (`ValveSet`).
 
 ```
 A real process with 6 nodes → all COMPLETED, all the device raw responses recorded
-Injected fault (167 fails permanently) → all the TRANSFER nodes switch to 172 automatically, still 6/6 completed, 0 handed to an operator
+After an injected fault, the TRANSFER nodes switch to another device automatically, still all completed, 0 handed to an operator
 ```
 
-### 5.3 Alert denoising: 95.2%
+### 5.3 Alert denoising
 
-| Layer | What it does | Volume |
-|---|---|---|
-| Policy layer | The harmless noise is paired with `SKIP` (it is recorded but does not alert) | Tens of thousands → 1,259 |
-| Aggregation layer | The repeats are merged into the first report + the escalation + the summary | 1,259 → 682 |
-| **Total** | | **Tens of thousands → 682 (-95.2%)** |
+Harmless noise is paired with `SKIP` (it is recorded but does not alert). Repeated errors are merged into a first report, an escalation and a summary. After historical errors are aggregated, the number of pushes falls.
 
-Single-device scenario: 5,928 errors → **5 alerts (-99.96%)**.
+### 5.4 Policy coverage
 
-### 5.4 The policy coverage: 0.1% → 100%
-
-Replaying tens of thousands of real errors: the initial 10 policies cover only **0.1%** of the
-error volume; after 55 are derived automatically from the historical `shooting_type`, they cover
-**100%**.
+Replaying historical errors: a small initial set of policies covers only a small part of the errors. After policies are derived from the historical handling, the errors that have already appeared can be covered. A high coverage does not mean the site will self-heal.
 
 ---
 
@@ -214,33 +204,16 @@ error volume; after 55 are derived automatically from the historical `shooting_t
 | Gap | Impact | Priority |
 |---|---|---|
 | **The gRPC driver is not implemented** | The contract and the virtual driver are ready, the real .NET Sidecar is still to be developed | **P0** |
-| **The main driver is a single point** | `192.0.2.10:8501` carries 121/239 devices (51%) | **P0** |
+| **The main driver is a single point** | A large share of the devices hangs off one driver endpoint | **P0** |
 | **No driver for the MIX capability** | The mixing / shaking nodes cannot be executed | P1 |
 | 1 endpoint IP looks like a typo | `192.0.2.2` should be `192.0.2.1` (marked, not corrected) | P1 |
-| 33 inferred devices to be reviewed | The `MISC` class is inferred by keyword, it may be wrong | P1 |
-| 2,275 nodes without a capability | Mostly logic nodes, but each one has to be confirmed | P2 |
-| The scheduler | The algorithm is validated (makespan -45.8%), but the **device utilisation is only 10%, the ROI is low** | P2 |
+| Inferred devices to be reviewed | The `MISC` class is inferred by keyword, it may be wrong | P1 |
+| Some nodes have no capability | Mostly logic nodes, but each one has to be confirmed | P2 |
+| The scheduler | A prototype exists, but it does not enter the current release gate | P2 |
 
-### One counterintuitive conclusion: the scheduler is not the bottleneck
+### The scheduler is not the current bottleneck
 
-The analysis of the 96 valid days of a year:
-
-| Metric | Median | Peak |
-|---|---:|---:|
-| Window occupancy | **10.0%** | 56.9% |
-| 24h whole-day utilisation | **0.8%** | 6.7% |
-
-**On not a single day did the window occupancy exceed 57%.** The capacity is severely
-over-provisioned, so the room for scheduling optimisation is limited.
-
-What really should be optimised is **reducing the interruptions**: the median downtime inside the
-daily working window is **69.2%**, that is, the machine is on for 6.5 hours and only runs for 2.
-On the same equipment set, on some days it reaches 99.3% (7 active segments), on others only 21.9%
-(27 segments).
-
-**The gap comes from the workflow interruptions, not from the device capability** → the priority
-should be "self-healing on anomalies > unattended loading and unloading > automatic start of work",
-and not scheduling optimisation.
+The priority now is self-healing on anomalies, unattended operation, and the checks before a run starts. Global schedule optimisation is not in this period.
 
 ---
 

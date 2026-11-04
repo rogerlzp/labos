@@ -18,7 +18,7 @@ import java.sql.SQLException;
  *   <li>{@link QueryService#countEnabledAdmins()} 口径可用，且"最后管理员"保护按
  *       <b>剩余启用 admin 数</b>判定——有别的 admin 时降级某个 admin 必须允许
  *       （这条最容易被写成"目标是 admin 就拒"，那样多管理员场景就永远改不了人）；</li>
- *   <li>用户不存在时保持原语义：返回 0，不抛异常。</li>
+ *   <li>用户不存在时保持语义不变：返回 0，不抛异常。</li>
  * </ol>
  *
  * <p>所有账号用 {@code selftest_rbac_} 前缀，finally 里物理删除；不碰真实账号。

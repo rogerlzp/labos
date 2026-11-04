@@ -187,7 +187,7 @@ public final class RunControlDbSelfTest {
         check("恢复后回到 queued", "queued".equals(statusOf(RUN_F)), statusOf(RUN_F));
         check("恢复后清掉停止请求", !ex.stopRequested(RUN_F), ex.stopRequested(RUN_F));
         check("恢复后清掉暂停类型", strOf(RUN_F, "pause_kind") == null, strOf(RUN_F, "pause_kind"));
-        check("恢复后清掉旧错误", strOf(RUN_F, "error") == null, strOf(RUN_F, "error"));
+        check("恢复后清掉变更前的错误", strOf(RUN_F, "error") == null, strOf(RUN_F, "error"));
 
         Set<String> keysAfter = ex.completedStepKeys(RUN_F);
         check("恢复不清步记录（断点续跑前提）", keysAfter.size() == 2, keysAfter);

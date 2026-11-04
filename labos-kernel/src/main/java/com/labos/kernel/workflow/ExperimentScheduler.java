@@ -85,8 +85,8 @@ public final class ExperimentScheduler {
     /**
      * 调度器某一刻的自述（一次快照，避免 status 与 ETA 各拍各的）。
      *
-     * <p>{@code started} 按 §7.1 口径是<b>累计派发次数</b>（number；原 boolean
-     * "调度循环是否已启动"语义保留在新字段 {@code loopStarted}，避免读旧字段的
+     * <p>{@code started} 按 §7.1 口径是<b>累计派发次数</b>（number；boolean
+     * "调度循环是否已启动"语义保留在新字段 {@code loopStarted}，避免读取现有字段的
      * 客户端把 true/false 当计数）。
      */
     public record Snapshot(List<LockEntry> islandLocks, List<QueueEntry> queue,
@@ -100,7 +100,7 @@ public final class ExperimentScheduler {
      * deadline ASC（无截止最后，EDD 优先）→ priority DESC → submittedAt ASC。
      *
      * <p>为什么必须和 dispatch() 同口径：页面上的「位次」唯一的用途是回答
-     * "我还要等几个才轮到"；快照按别的规则排，位次就是假的。§7.1 草稿原先把 priority
+     * "我还要等几个才轮到"；快照按别的规则排，位次就是假的。§7.1 草稿把 priority
      * 写在 deadline 前面，与实际派发不一致，2026-11-03 统一为 EDD 优先。
      */
     private static final Comparator<Queued> QUEUE_ORDER = Comparator
@@ -121,7 +121,7 @@ public final class ExperimentScheduler {
     /**
      * 当前**正在跑**的实验数。
      *
-     * <p><b>P1-6 修复（评审 20261102-03）</b>：tick 里原来是
+     * <p><b>P1-6 修复（评审 20261102-03）</b>：tick 里改动前是
      * {@code int dispatched = 0} —— 每次调度都从 0 数，
      * <b>上一轮提交、仍在跑的实验完全不计入</b>。
      * 于是每轮都能再塞 4 个，固定线程池的队列无限增长，
@@ -311,7 +311,7 @@ public final class ExperimentScheduler {
      *
      * <h3>解决什么问题</h3>
      * 批边界遇现场扣留时，候选批标 paused、<b>不建 attempt</b>（D7：闸门没解除不能放板子）。
-     * 旧口径要求人解除扣留后再手动 {@code POST /run?async=1} 从该批继续 ——
+     * 改动前的口径要求人解除扣留后再手动 {@code POST /run?async=1} 从该批继续 ——
      * 忘了点就永远停在 paused。本方法在扣留全部解除后自动补建 attempt 并入队。
      *
      * <h3>口径</h3>
@@ -430,7 +430,7 @@ public final class ExperimentScheduler {
         // D9：先探测这条 run 是不是批次 run。批次 run 不能让单条 run 的 settle
         // 覆盖 experiment.status（那会把"某批跑完"显示成"整单完成"），
         // 实验状态必须按 D6 用所有批次聚合 —— 由 D8 统一回写。
-        // 非批次 run 保持原调用（sync=true）与原行为，一个字不变。
+        // 非批次 run 保持现有调用（sync=true），行为一个字不变。
         BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
         Long batchRunId = null;
         BatchOrchestrator.BatchContext batchCtx = null;
@@ -441,7 +441,7 @@ public final class ExperimentScheduler {
             batchRunId = orchestrator.batchRunIdFor(q.experimentRunId());
             // S3.2-C：异步提交时用户传的 vars 落在 experiment_run.variables；执行前读出来
             // 作为执行器的用户 overrides（与同步 run 的变量语义一致）。
-            // 读不到（老数据 '{}'）就是空 overrides，行为与改动前一样按默认值跑。
+            // 读不到（存量数据 '{}'）就是空 overrides，行为与改动前一样按默认值跑。
             Map<String, String> userVars = orchestrator.runVariables(q.experimentRunId());
             // 异步分批的 run 是"先建 queued、后由调度器执行"，D5 的 batchNo/batchSamples
             // 没人替它注入 —— 按批次快照反查后在这里补上（同步分批路径由 executeBatch 注入）。
@@ -454,7 +454,7 @@ public final class ExperimentScheduler {
                         : userVars;
             }
             ExperimentExecutor.Result r = batchRunId == null
-                    // 非批次路径：保持原语义（sync=true，执行器自己同步实验状态）
+                    // 非批次路径：保持语义不变（sync=true，执行器自己同步实验状态）
                     ? exec.run(q.experimentId(), userVars, q.experimentRunId())
                     : exec.run(q.experimentId(), batchVars, q.experimentRunId(), false);
             if (batchRunId != null) {
@@ -491,7 +491,7 @@ public final class ExperimentScheduler {
             System.err.println("[调度] 实验 " + q.experimentId() + " 失败: " + e.getMessage());
         } finally {
             // 必须释放，否则岛永久卡住
-            // P1-5 修复（评审 20261102-03）：原来的 remove(islandId) 是**无条件删**——
+            // P1-5 修复（评审 20261102-03）：改动前的 remove(islandId) 是**无条件删**——
             // 如果本实验的锁已因 TTL 过期被清理、岛又被别的实验占了，
             // 这一句会把**别人的锁删掉**，于是同岛两个实验并行跑。
             // 改成带值比较：只有"当前持有者仍是自己"时才删。
@@ -718,7 +718,7 @@ public final class ExperimentScheduler {
      *
      * <p>返回结构与改动前**向后兼容**（字段都在）：running / queued / maxConcurrent /
      * stalled / lastDispatchAt / islandLocks 原样保留；started 由 boolean 改为
-     * **累计派发次数 number**（§7.1 契约，示例 41），原 boolean 语义挪到新增的
+     * **累计派发次数 number**（§7.1 契约，示例 41），boolean 语义挪到新增的
      * loopStarted；另新增 queue / workers。
      */
     public Map<String, Object> status() throws SQLException {
@@ -770,7 +770,7 @@ public final class ExperimentScheduler {
         m.put("lastDispatchAt", s.lastDispatchAt());
         m.put("stalled", s.stalled());
         m.put("started", s.started());          // §7.1：累计派发次数
-        m.put("loopStarted", s.loopStarted());  // 兼容旧语义：调度循环是否已启动
+        m.put("loopStarted", s.loopStarted());  // 兼容语义：调度循环是否已启动
         return m;
     }
 

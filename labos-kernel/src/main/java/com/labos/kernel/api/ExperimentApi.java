@@ -65,12 +65,12 @@ import static com.labos.kernel.api.ApiServer.*;
  * <p>路径：{@code /api/experiments}、{@code /api/experiments/eta}、{@code /api/experiments/flow-run}、{@code /api/experiments/reorder}
  * <p>正则路由：{@code EXP_BATCHES}、{@code EXP_BATCH_RUN}、{@code EXP_BATCH_SPLIT}、{@code EXP_GRAPH}、{@code EXP_LOOP}、{@code EXP_PROC}、{@code EXP_RUN}、{@code EXP_RUNS}、{@code EXP_RUN_ACTION}、{@code EXP_RUN_STEPS}、{@code EXP_VARS}
  *
- * <p><b>拆分约定</b>：路由顺序与原 ApiServer.route() 中完全一致；命中即 return true。
+ * <p><b>拆分约定</b>：路由顺序按首次出现顺序分发（跨 controller 稳定）；命中即 return true。
  * 共享 helper 仍由 ApiServer 提供（static import + {@code s.xxx}），不重复实现。
  */
 final class ExperimentApi {
 
-    /** 宿主：提供库连接/服务与共享 helper（与原 ApiServer 内部调用等价）。 */
+    /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
     ExperimentApi(ApiServer s) {
@@ -267,7 +267,7 @@ final class ExperimentApi {
             int batchNo = Integer.parseInt(expBatchRun.group(2));
             String bodyB = new String(s.readBody(ex), StandardCharsets.UTF_8);
             Map<String, String> varsB = experimentRunVars(bodyB);
-            // D4：只跑这一批，新 attempt，旧尝试保留；已完成/不存在 -> 400
+            // D4：只跑这一批，新 attempt，历史尝试保留；已完成/不存在 -> 400
             BatchOrchestrator.BatchResult rb = new BatchOrchestrator(
                     s.db, TENANT, s.workflows).runBatch(eidB, batchNo, varsB);
             s.audited("experiment.batch_run", "experiment", eidB, "batch#" + batchNo,
@@ -375,7 +375,7 @@ final class ExperimentApi {
                 }
             }
 
-            // D1：batch_split 为空 -> runAll 内部原样走老逻辑（一次 run 跑整单）；
+            // D1：batch_split 为空 -> runAll 内部原样走非分批路径（一次 run 跑整单）；
             //     非空 -> 按批串行跑所有未成功批，响应追加 batchSplit + batches。
             BatchOrchestrator.RunAllResult r = orchestrator.runAll(eid2, overrides);
             s.audited("experiment.run", "experiment", eid2,

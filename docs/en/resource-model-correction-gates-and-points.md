@@ -4,7 +4,7 @@
 > a line-for-line translation. Numbers, commit hashes and file paths are identical to
 > the Chinese source — if they ever disagree, the Chinese original wins.
 
-> The **L2 "one entrance/exit per device" of the original design is wrong**.
+> The **L2 "one entrance/exit per device" is wrong**.
 > In reality there are three forms of entrance/exit + one resource I missed: **the gate**.
 
 ---

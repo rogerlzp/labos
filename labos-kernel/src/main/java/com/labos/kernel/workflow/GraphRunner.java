@@ -27,10 +27,10 @@ import java.util.function.Consumer;
 /**
  * 按图推进：支持并行分叉/汇合与异或二选一。
  *
- * <p>与老系统的差别（这是 2.0 的核心修正）：
+ * <p>与改动前实现的差别（这是 2.0 的核心修正）：
  * <ul>
- *   <li>老执行器只按 {@code sequenceFlow} 顺序推进，**网关被完全忽略**</li>
- *   <li>结果：193 个并行流程实际串行执行；55 个异或流程两条分支都执行</li>
+ *   <li>改动前只按 {@code sequenceFlow} 顺序推进，**网关被完全忽略**</li>
+ *   <li>结果：并行流程被当成串行执行；异或流程两条分支都会执行</li>
  * </ul>
  *
  * <p>本实现的三条规则：
@@ -184,12 +184,12 @@ public final class GraphRunner {
     /**
      * 暂停检查器。
      *
-     * <p><b>P1-8 修复（评审 20261102-03）</b>：原来执行循环<b>没有任何暂停检查点</b> ——
+     * <p><b>P1-8 修复（评审 20261102-03）</b>：改动前执行循环<b>没有任何暂停检查点</b> ——
      * {@code PauseManager.pause()} 把 run 标成 paused，但正在跑的那个线程毫不知情，
      * 会一路跑到结束再把状态覆盖回 completed/failed。
      * <b>M4 的整套暂停机制因此完全没有生效过。</b>
      *
-     * <p>默认永不暂停（保持既有行为），由调用方注入查库实现。
+     * <p>默认永不暂停（保持现有行为），由调用方注入查库实现。
      */
     private java.util.function.BooleanSupplier pauseChecker = () -> false;
 
@@ -368,7 +368,7 @@ public final class GraphRunner {
                     }
                 }
                 if (st == NodeStatus.MANUAL || st == NodeStatus.ABORTED) {
-                    break;   // 转人工/终止：整图停下，与老系统"卡住等人"一致
+                    break;   // 转人工/终止：整图停下，保持"卡住等人"语义不变
                 }
                 if (st == NodeStatus.SKIPPED) {
                     // P1-11 修复（评审 20261102-03）：
@@ -595,8 +595,8 @@ public final class GraphRunner {
     /**
      * 节点能力：直接复用 {@link RealWorkflowRunner} 的六级解析。
      *
-     * <p>早期版本自己实现了一份，漏了逻辑节点识别（Increment/SetVariable）
-     * 和拼写纠错（RunProcotol），导致 3 个流程误判转人工。
+     * <p>自行实现会漏掉逻辑节点识别（Increment/SetVariable）和拼写纠错（RunProcotol），
+     * 导致 3 个流程误判转人工；直接复用可避免这两类问题。
      */
     private CapabilitySource resolveCapability(GNode n) {
         return RealWorkflowRunner.resolveCapability(

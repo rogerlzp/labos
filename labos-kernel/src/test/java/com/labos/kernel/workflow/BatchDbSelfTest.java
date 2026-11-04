@@ -22,10 +22,10 @@ import java.util.Objects;
  * <ol>
  *   <li><b>建批幂等 + 样品快照</b>：首次按 sample_id 升序切批、快照入库；
  *       再次调用不重切；改了 batch_split / 后来又加样品也不重切（D2）。</li>
- *   <li><b>一批失败后重跑</b>：attempt_no=2，旧尝试与旧 run 保留（两条历史），
+ *   <li><b>一批失败后重跑</b>：attempt_no=2，历史尝试与历史 run 保留（两条历史），
  *       成功批不受影响（D3/D4，评审 B2 的落库形态）。</li>
  *   <li><b>成功批重跑被拒</b>：只允许非 completed 批（D4）。</li>
- *   <li><b>batch_split=NULL 回归</b>：不分批时走老逻辑（一次 run + 执行器同步实验状态），
+ *   <li><b>batch_split=NULL 回归</b>：不分批时走非分批路径（一次 run + 执行器同步实验状态），
  *       不建任何批次（D1）。</li>
  *   <li><b>状态聚合规则</b>：D6 四条优先级逐条覆盖。</li>
  *   <li><b>批边界扣留</b>：有现场扣留时一批都不启动、该批 status=paused（D7）。</li>
@@ -204,13 +204,13 @@ public final class BatchDbSelfTest {
         check("attempt_no 依次 1,2",
                 b2.runs().get(0).attemptNo() == 1 && b2.runs().get(1).attemptNo() == 2,
                 b2.runs().stream().map(BatchOrchestrator.AttemptRow::attemptNo).toList());
-        check("旧尝试仍是 failed 且 run 不变",
+        check("历史尝试仍是 failed 且 run 不变",
                 "failed".equals(b2.runs().get(0).status())
                         && b2.runs().get(0).runId() == runBatch2,
                 b2.runs().get(0));
         check("新尝试 completed", "completed".equals(b2.runs().get(1).status()),
                 b2.runs().get(1).status());
-        check("旧 run 记录保留且仍是 failed",
+        check("历史 run 记录保留且仍是 failed",
                 "failed".equals(runStatus(runBatch2)), runStatus(runBatch2));
         check("批当前状态 = completed", "completed".equals(b2.status()), b2.status());
 
@@ -288,7 +288,7 @@ public final class BatchDbSelfTest {
     // ================================================================ 5. NULL 回归
 
     private static void unbatchedGoesOldPath() throws Exception {
-        section("5. batch_split=NULL 回归：完全走老逻辑（D1）");
+        section("5. batch_split=NULL 回归：完全走非分批路径（D1）");
         FakeRunner runner = new FakeRunner().statuses("completed");
         BatchOrchestrator orch = new BatchOrchestrator(db, TENANT, runner);
 
@@ -300,12 +300,12 @@ public final class BatchDbSelfTest {
                 r.doneSteps() + "/" + r.totalSteps());
         check("不带 batchSplit / batches", r.batchSplit() == null && r.batches().isEmpty(),
                 r.batchSplit());
-        check("老路径用一次 run 跑整单（existingRunId=0）",
+        check("非分批路径用一次 run 跑整单（existingRunId=0）",
                 runner.runIds.size() == 1 && runner.runIds.get(0) == 0L, runner.runIds);
-        check("老路径不建批", countBatches(EXP_UNBATCHED) == 0, countBatches(EXP_UNBATCHED));
-        check("老路径变量原样传执行器",
+        check("非分批路径不建批", countBatches(EXP_UNBATCHED) == 0, countBatches(EXP_UNBATCHED));
+        check("非分批路径变量原样传执行器",
                 "bar".equals(runner.calls.get(0).get("foo")), runner.calls.get(0));
-        check("老路径允许执行器同步实验状态（sync=true）",
+        check("非分批路径允许执行器同步实验状态（sync=true）",
                 Boolean.TRUE.equals(runner.syncFlags.get(0)), runner.syncFlags);
         String json = orch.batchesJson(EXP_UNBATCHED);
         check("批次视图 batchSplit=null", json.contains("\"batchSplit\":null"), json);
@@ -317,7 +317,7 @@ public final class BatchDbSelfTest {
         FakeRunner runner = new FakeRunner().statuses("completed");
         BatchOrchestrator orch = new BatchOrchestrator(db, TENANT, runner);
         BatchOrchestrator.RunAllResult r = orch.runAll(EXP_ZERO, null);
-        check("batch_split=0 走老逻辑", !r.batched(), r.batched());
+        check("batch_split=0 走非分批路径", !r.batched(), r.batched());
         check("batch_split=0 不建批", countBatches(EXP_ZERO) == 0, countBatches(EXP_ZERO));
         check("batch_split=0 仍是一次 run", runner.runIds.size() == 1, runner.runIds);
         check("batch_split=0 时批量接口返回 null",
@@ -520,7 +520,7 @@ public final class BatchDbSelfTest {
                 attemptCol(RUN_WB, "status"));
         check("attempt 落 finished_at", attemptCol(RUN_WB, "finished_at") != null,
                 attemptCol(RUN_WB, "finished_at"));
-        check("attempt 清掉旧 error", attemptCol(RUN_WB, "error") == null,
+        check("attempt 清掉先前的 error", attemptCol(RUN_WB, "error") == null,
                 attemptCol(RUN_WB, "error"));
         check("批次 completed", "completed".equals(batchStoredStatus(EXP_WRITEBACK)),
                 batchStoredStatus(EXP_WRITEBACK));
@@ -543,7 +543,7 @@ public final class BatchDbSelfTest {
                 "finished".equals(strOfExperiment(EXP_WRITEBACK, "status")),
                 strOfExperiment(EXP_WRITEBACK, "status"));
 
-        // 非批次 run：老路径零变化（不写批次表、实验状态不由它同步）
+        // 非批次 run：非分批路径零变化（不写批次表、实验状态不由它同步）
         exec("UPDATE experiment SET status = 'planned', finished_at = NULL "
                 + "WHERE tenant_id = ? AND id = ?", TENANT, EXP_UNBATCHED);
         insertRunRow(RUN_NONBATCH, EXP_UNBATCHED, "completed", null);
@@ -898,7 +898,7 @@ public final class BatchDbSelfTest {
 
         BatchOrchestrator.NextBatchAttempt notBatched =
                 orch.createNextBatchAttempt(EXP_UNBATCHED, 0);
-        check("未配置分批 -> NOT_BATCHED（走老逻辑）",
+        check("未配置分批 -> NOT_BATCHED（走非分批路径）",
                 notBatched.outcome() == BatchOrchestrator.NextBatchOutcome.NOT_BATCHED,
                 notBatched.outcome());
 

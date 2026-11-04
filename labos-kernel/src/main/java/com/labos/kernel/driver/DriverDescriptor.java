@@ -10,7 +10,7 @@ import java.util.Set;
  * 驱动自描述：驱动启动时必须说清"我是谁、我能干什么、我管哪些设备"。
  *
  * <p>这是「新接一台设备不改中控代码」的前提——中控只依赖能力声明，
- * 不依赖任何设备型号知识。老系统每接一台设备都要改 {@code WorkflowClientImpl}。
+ * 不依赖任何设备型号知识。每接一台设备都要改接入层代码。
  */
 public record DriverDescriptor(
         String code,

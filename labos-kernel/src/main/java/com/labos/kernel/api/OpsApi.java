@@ -65,12 +65,12 @@ import static com.labos.kernel.api.ApiServer.*;
  * <p>路径：{@code /api/alerts}、{@code /api/audit}、{@code /api/demo/run}、{@code /api/device-alerts}、{@code /api/error-codes}、{@code /api/errors}、{@code /api/policies}、{@code /api/policies/validate}、{@code /api/settings/heartbeat}、{@code /api/users}
  * <p>正则路由：{@code ALERT_ACT}、{@code ERROR_CODE_ONE}、{@code ERROR_CODE_POLICIES}、{@code ERROR_CODE_POLICY}、{@code POLICY_ONE}、{@code USER_ONE}
  *
- * <p><b>拆分约定</b>：路由顺序与原 ApiServer.route() 中完全一致；命中即 return true。
+ * <p><b>拆分约定</b>：路由顺序按首次出现顺序分发（跨 controller 稳定）；命中即 return true。
  * 共享 helper 仍由 ApiServer 提供（static import + {@code s.xxx}），不重复实现。
  */
 final class OpsApi {
 
-    /** 宿主：提供库连接/服务与共享 helper（与原 ApiServer 内部调用等价）。 */
+    /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
     OpsApi(ApiServer s) {

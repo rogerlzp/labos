@@ -167,7 +167,7 @@ public final class TransferPlan implements AutoCloseable {
 
     private void acquirePort(long resourceId, String direction, String label) {
         if (!portLock.hasPorts(resourceId)) {
-            return;   // 没配通道（老数据），跳过
+            return;   // 没配通道（存量数据），跳过
         }
         Long portId = portLock.findAvailablePort(resourceId, direction);
         if (portId == null) {

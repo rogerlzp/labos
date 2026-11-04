@@ -162,23 +162,23 @@ COMMENT ON COLUMN run_node.level IS
 --   experiment_batch_run  = 这一批实际跑过的每一次（run_id / attempt_no / status）
 --
 -- 语义边界（实施清单 §8 · D1-D7）：
---   · experiment.batch_split = 每批样品数；NULL = 不分批（**老行为完全不变**）
+--   · experiment.batch_split = 每批样品数；NULL = 不分批（走非分批路径）
 --   · 样品快照在**首次执行时**按 experiment_sample.sample_id 升序切分，
 --     把该批 [{sampleId,barcode}] 写进 experiment_batch.samples；
 --     此后重跑只用快照（样品集合不漂移，§4.6 第二风险）
 --   · 每批一个 experiment_run + 一条 experiment_batch_run，attempt_no 从 1 递增；
---     某批失败继续后续批，只有成功/失败都**不覆盖**旧尝试
+--     某批失败继续后续批，成功/失败都**不覆盖**历史尝试
 --   · 批次之间串行（D7）；批边界检查 RuntimeHold，有扣留就停在下一边界
 --
 -- 幂等：ADD COLUMN IF NOT EXISTS + CREATE TABLE IF NOT EXISTS + 内联唯一约束，
 -- 可重复执行（与 97/98 分片同口径）。
 -- ---------------------------------------------------------------------------
 
--- 批次开关：每批样品数；NULL = 不分批（D1：零老数据迁移，老行为不变）
+-- 批次开关：每批样品数；NULL = 不分批（D1：加列即可开关，无需数据迁移）
 ALTER TABLE experiment ADD COLUMN IF NOT EXISTS batch_split int;
 
 COMMENT ON COLUMN experiment.batch_split IS
-    '每批样品数；NULL=不分批（老逻辑）。首次执行时按 sample_id 升序切成 N 个逻辑批；'
+    '每批样品数；NULL=不分批（走非分批路径）。首次执行时按 sample_id 升序切成 N 个逻辑批；'
     '改这个值不会重切已建批次（快照固化，D2）。';
 
 -- ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ COMMENT ON COLUMN experiment_batch.samples IS
 
 COMMENT ON COLUMN experiment_batch.status IS
     '当前汇总状态：取该批**最近一次尝试**的终态；还没跑过 = pending。
-     重跑不覆盖旧尝试，历史在 experiment_batch_run。';
+     重跑不覆盖历史尝试，历史在 experiment_batch_run。';
 
 -- 按实验整体读取批次（批次视图/建批幂等）走这个索引。
 CREATE INDEX IF NOT EXISTS ix_experiment_batch_exp
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS experiment_batch_run (
 
 COMMENT ON TABLE experiment_batch_run IS
     '批次的一次实际执行（M9.5 S3）。同一批重跑会新增一行，attempt_no 递增，
-     旧行及其 experiment_run_id 不动 —— 这是"重跑不覆盖历史"的落库形态（评审 B2）。';
+     历史行及其 experiment_run_id 不动 —— 这是"重跑不覆盖历史"的落库形态（评审 B2）。';
 
 COMMENT ON COLUMN experiment_batch_run.experiment_run_id IS
     '本次尝试对应的 experiment_run。一个 run 只属于一条尝试（每批一次 run）。';

@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 真实场景演示：用生产日志里的实例，对比老系统与新引擎的行为。
+ * 真实场景演示：用生产日志里的实例，对比「机械重试」与本引擎的行为。
  *
  * <pre>
  *   javac -d out $(find src -name '*.java')
@@ -72,9 +72,8 @@ public final class RecoveryDemo {
         }
 
         System.out.println();
-        System.out.println("  老系统：5,928 次重试 → 11,856 条 ERROR 日志 → 真人从日志海洋里捞问题");
-        System.out.printf("  新引擎：%d 次重试 + %d 次告警升级 → 日志量下降 %.2f%%%n",
-                retried, alerts, (1 - ((double) retried + alerts) / 11856) * 100);
+        System.out.println("  机械重试：数千次重试 → 上万条 ERROR 日志 → 真人从日志海洋里捞问题");
+        System.out.printf("  新引擎：%d 次重试 + %d 次告警升级%n", retried, alerts);
         System.out.println("  关键：不是「重试得更聪明」，而是「知道什么时候该停」。");
         System.out.println();
     }
@@ -116,7 +115,7 @@ public final class RecoveryDemo {
             }
         }
         System.out.println();
-        System.out.println("  老系统：节点写死 equipment_instance_id，设备坏了只能停下来等人。");
+        System.out.println("  若节点写死 equipment_instance_id：设备坏了只能停下来等人。");
         System.out.println("  新引擎：工艺只声明「需要 TRANSFER 能力」，坏了自动换同能力设备继续跑。");
         System.out.println();
     }

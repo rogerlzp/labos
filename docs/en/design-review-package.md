@@ -143,7 +143,7 @@ The three problems that had to be resolved before writing the code, **fixed**:
 **Claim**: deadlock detection is only enabled when `running > 1`
 
 **Challenges wanted**:
-- Do the parallel nodes inside one experiment also need detection? (in the original design `hasParallelNode` was only an option)
+- Do the parallel nodes inside one experiment also need detection? (in the design `hasParallelNode` was only an option)
 - Is using COUNT free of races? (right at the boundary both of them think they are "the only one")
 
 ---

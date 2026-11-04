@@ -75,7 +75,7 @@ into handlers?
 | `ExperimentExecutor` | Experiment execution (variables + loops) | `run(expId, vars, existingRunId)` |
 | `ExperimentScheduler` | Multi-experiment parallelism (island lock + queueing) | `submit()`、`status()` |
 | `ExperimentFlowRunner` | Canvas step-by-step execution | `run(name, steps, vars)` |
-| `RealWorkflowRunner` | Process regression test | `--all` runs 993 of them |
+| `RealWorkflowRunner` | Process regression test | `--all` runs the full workflow set |
 | `WorkflowBuilder` | Generates a workflow from a transport sequence | `build()` |
 | `PositionLock` | Position lock (lives in the driver package, but is business logic) | `tryReserve()`、`notePlateMove()` |
 

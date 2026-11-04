@@ -26,8 +26,8 @@ import java.util.Set;
  *   <li>{@code sequenceFlow} 的 {@code conditionExpression} 与网关的 {@code default}</li>
  * </ul>
  *
- * <p>老库实测：193 个流程用了 parallelGateway，55 个用了 exclusiveGateway，
- * 但老执行器只按 sequenceFlow 顺序推进，网关被完全忽略。
+ * <p>存量流程里有 parallelGateway 和 exclusiveGateway，
+ * 但改动前的执行器只按 sequenceFlow 顺序推进，网关被完全忽略。
  */
 public final class WorkflowGraphParser {
 
@@ -146,9 +146,9 @@ public final class WorkflowGraphParser {
     /**
      * 任务节点。
      *
-     * <p>老库用的是自定义元素 {@code <customDevice protocolName="..." resource="..."/>}，
+     * <p>存量流程用的是自定义元素 {@code <customDevice protocolName="..." resource="..."/>}，
      * 不是标准 {@code <bpmn:task>}；bpmn-js 保存后又是标准 task。
-     * 两种都要认，否则 992 个存量流程会解析出 0 个可执行节点。
+     * 两种都要认，否则 存量流程会解析出 0 个可执行节点。
      */
     private static void addTasks(Document doc, Map<String, GNode> nodes,
                                  Map<String, List<GEdge>> in,
@@ -162,7 +162,7 @@ public final class WorkflowGraphParser {
             }
             String id = el.getAttribute("id");
             // 只跳过「多步节点投影」产生的步骤节点（id 带 __s）。
-            // 老库的 subProcess 是真业务分组，里面的节点仍要执行。
+            // 存量流程的 subProcess 是真业务分组，里面的节点仍要执行。
             if (id.isBlank() || id.contains(BpmnExpander.STEP_INFIX)
                     || nodes.containsKey(id)) {
                 continue;
@@ -182,8 +182,8 @@ public final class WorkflowGraphParser {
     /**
      * 是否算任务节点。
      *
-     * <p>老库实测元素：{@code customDevice}(989 流程)、{@code custom_Scripts}(29)、
-     * {@code custom_176/177/179}(个别)，以及 bpmn-js 保存后的标准 task。
+     * <p>存量流程里常见 {@code custom} 前缀元素（如 {@code customDevice}），
+     * 以及 bpmn-js 保存后的标准 task。
      * 统一按「custom 前缀 + 标准 task 系」判定。
      */
     private static boolean isTaskLike(String localName) {

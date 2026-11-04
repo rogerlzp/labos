@@ -83,7 +83,7 @@ public final class TimeConstraintExecutor implements StepExecutor {
                 }
                 if (c.hasMin() && gapSec < c.minSec()) {
                     long needMs = (c.minSec() - gapSec) * 1000L;
-                    // P1-15 修复（评审 20261102-03）：原来是
+                    // P1-15 修复（评审 20261102-03）：改动前是
                     //     Thread.sleep(Math.min(needMs, waitRealMs))
                     // —— waitRealMs 被当成了"最多等多久"（装配时传 60_000）。
                     // 工艺要求间隔 5 分钟，代码只等 60 秒就放行，

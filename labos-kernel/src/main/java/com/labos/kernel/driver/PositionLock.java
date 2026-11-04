@@ -67,7 +67,7 @@ public final class PositionLock {
     /**
      * 占位**无期限**（回程承诺专用）。
      *
-     * <p><b>P1-4 修复（评审 20261102-03）</b>：回程位原来用 30 分钟 TTL，
+     * <p><b>P1-4 修复（评审 20261102-03）</b>：回程位改动前用 30 分钟 TTL，
      * 而 D5 明确要求"回程承诺不可释放"。TTL 到期后 {@code sweepExpired}
      * 会把它清掉，回程位被别的板占走 → <b>D5 要解决的死锁原样复现</b>。
      *
@@ -142,7 +142,7 @@ public final class PositionLock {
                     updated_at = now()
                 WHERE (position_state.plate_id IS NULL OR position_state.plate_id = '')
                   -- P1-4：判定能不能占，必须看**谁占着**，不能只看 reserved_until。
-                  -- 原条件 `reserved_until IS NULL` 认为空闲，但"回程承诺"正是
+                  -- 只按 `reserved_until IS NULL` 判空闲会出错："回程承诺"恰恰是
                   -- reserved_until=NULL + reserved_by_run 非空 —— 于是承诺位被当成空位抢走。
                   -- 新三态：
                   --   reserved_by_run IS NULL              → 真空闲，可占
@@ -507,8 +507,7 @@ public final class PositionLock {
     /**
      * 标记板"在途"。
      *
-     * <p><b>P0-6 修复（评审 20261102-03）</b>：原实现更新
-     * {@code plate.current_pos / current_run / plate_id} —— <b>这三列都不存在</b>
+     * <p><b>P0-6 修复（评审 20261102-03）</b>：更新 {@code plate.current_pos / current_run / plate_id} —— <b>这三列都不存在</b>
      * （实际列是 {@code barcode}、{@code position_status}）。
      *
      * <p>更致命的是：SQL 失败后 {@code catch (SQLException ignore)} 吞掉异常，
@@ -634,7 +633,7 @@ public final class PositionLock {
     /**
      * 按方法名自动登记板位变化。
      *
-     * <p>为什么按方法名前缀判断：老系统没有"这一步是放板还是取板"的显式标记，
+     * <p>为什么按方法名前缀判断：没有"这一步是放板还是取板"的显式标记，
      * 但方法命名有强约定（Deposit/Input/Put/Load = 放入，Withdraw/Output/Get/Unload = 取出）。
      *
      * <p>局限：一台设备有多个层位时，只能取"第一个空的"或"第一个有板的"，
@@ -754,7 +753,7 @@ public final class PositionLock {
                        AND r.kind IN ('incubator', 'storage', 'transfer_point')
                        AND (ps.plate_id IS NULL OR ps.plate_id = '')
                        -- A2 修复（评审 20261102-04 Trae 指出）：
-                       -- 这里原来还是旧二态 `reserved_until IS NULL OR < now()`，
+                       -- 这里改动前还是二态 `reserved_until IS NULL OR < now()`，
                        -- 而 tryReserve 已改成看 reserved_by_run。
                        -- 两处判定不一致的后果：**永久承诺位（reserved_by_run 非空
                        -- + reserved_until 为 NULL）会被这里当成空位选出来**，
@@ -798,7 +797,7 @@ public final class PositionLock {
              PreparedStatement ps = c.prepareStatement("""
                      SELECT count(*) FILTER (WHERE plate_id IS NOT NULL) AS with_plate,
                             -- A2 残留修复（评审 20261102-05 Trae 指出）：
-                            -- 这里原来只数 `reserved_until > now()`，
+                            -- 这里改动前只数 `reserved_until > now()`，
                             -- **漏掉永久承诺位**（reserved_by_run 非空 + reserved_until 为 NULL）。
                             -- 于是"已预约"这个监控数字恒比实际少，运维看着"还有很多位子"。
                             count(*) FILTER (WHERE reserved_by_run IS NOT NULL

@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 全量预检：993 个流程逐个干跑，统计"能不能跑"。
+ * 全量预检：全量流程逐个干跑，统计"能不能跑"。
  *
  * <pre>
  *   java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.workflow.PreflightDemo
@@ -29,7 +29,7 @@ public final class PreflightDemo {
         long ms = System.currentTimeMillis() - t0;
 
         System.out.println("=".repeat(84));
-        System.out.println("  全量预检：993 个流程能不能跑");
+        System.out.println("  全量预检：全量流程能不能跑");
         System.out.println("=".repeat(84));
         System.out.printf("  流程总数 %s，耗时 %d ms%n%n", all.get("total"), ms);
 

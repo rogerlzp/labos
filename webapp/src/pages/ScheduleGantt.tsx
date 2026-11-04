@@ -72,7 +72,7 @@ export default function ScheduleGanttPage() {
   /** 拖拽后的本地顺序（null = 用服务端的 priority 顺序） */
   const [orderIds, setOrderIds] = useState<number[] | null>(null);
   // 拖拽源放 ref：dragstart 与 drop 可能在同一轮事件里到达（自动化测试/合成事件），
-  // 用 state 会读到还没提交的旧值。state 只负责视觉反馈。
+  // 用 state 会读到还没提交的过期值。state 只负责视觉反馈。
   const dragFromRef = useRef<number | null>(null);
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);

@@ -200,7 +200,7 @@ async function loadCompile() {
 
 /**
  * customDevice -> task 的兼容转换。
- * 老库 10,614 个节点都是 customDevice（带 protocolName / resource），
+ * 存量流程 存量节点都是 customDevice（带 protocolName / resource），
  * 标准 BPMN 不认识，直接 import 会失败。
  */
 function normalize(xml) {

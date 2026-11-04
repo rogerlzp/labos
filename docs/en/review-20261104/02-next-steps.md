@@ -19,7 +19,7 @@
 | 3 | Reporting / BI | M11 | Not done (the permission basics are closed) | The definitions need business sign-off; simulation data can be used first |
 | 4 | Multi-instance deployment | M11 | Not done | The scheduler's in-memory queue/locks, sessions and the startup settle definition all have to change |
 | 5 | Stale documentation items | ROADMAP M6/M7/M8 historical checkboxes, review-package updates | ✅ Closed (2026-11-04, A2) | None |
-| 6 | Technical debt | The `app_role` legacy-table decision, the silence API UI, uncovered write entry points, the coverage baseline (not yet ticked in M8), gating the device chain with `--with-db` in CI | Small items accumulate | None |
+| 6 | Technical debt | The `app_role` unused-table decision, the silence API UI, uncovered write entry points, the coverage baseline (not yet ticked in M8), gating the device chain with `--with-db` in CI | Small items accumulate | None |
 | 7 | Review loop | BUG ledger + AI review | Continuous | A review package per round |
 
 ## 2. Phased plan
@@ -101,7 +101,7 @@ scheduler's in-memory queue / island locks (DB / Redis), changing the startup se
 from a single-instance definition to owner / heartbeat, token sharing (Redis),
 de-duplicating scheduled jobs.
 **C3 Reporting depth / BI + finer permissions**: multi-tenant reporting, the "enable or
-delete" decision for the legacy `app_role` tables, approval flows (if needed).
+delete" decision for the currently-unused `app_role` tables, approval flows (if needed).
 - Dependencies: start once the deployment shape / customer requirements are clear, to
   avoid rework.
 
@@ -109,7 +109,7 @@ delete" decision for the legacy `app_role` tables, approval flows (if needed).
 
 - D1 Review loop: AI review + BUG ledger + development log per round; this round's
   review conclusions land in the ROADMAP.
-- D2 Technical debt: the `app_role` legacy-table cleanup decision, the two-track error
+- D2 Technical debt: the `app_role` unused-table cleanup decision, the two-track error
   codes, test maintenance cost, further slimming of `ApiServer` (the main body is
   done).
 - D3 Operations experience: notification channels (alert silence / email / webhook),

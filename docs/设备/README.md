@@ -68,7 +68,7 @@ java -cp out com.labos.kernel.sim.DeviceSimulator --list-models
 
 ### 已经对齐的三处（原来对不上）
 
-| 我们的（旧） | 真实的 ASpin 2K | 现状 |
+| 我们的 | 真实的 ASpin 2K | 现状 |
 |---|---|---|
 | `OpenDoor` / `CloseDoor` | `ControlCover`，**两扇门 A/B** | ✅ `OpenDoorA` / `OpenDoorB` / `CloseDoor` 三个别名 |
 | `RunProgram(rpm, minutes)` | `Start(时间, 速度, 加速度)` | ✅ 三个参数，`rpm` 不再用 |

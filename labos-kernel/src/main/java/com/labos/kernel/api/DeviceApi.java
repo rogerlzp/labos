@@ -65,12 +65,12 @@ import static com.labos.kernel.api.ApiServer.*;
  * <p>路径：{@code /api/device-models}、{@code /api/devices}、{@code /api/devices/pool}、{@code /api/devices/unassigned}、{@code /api/drivers}、{@code /api/heartbeat}、{@code /api/islands}、{@code /api/positions}、{@code /api/positions/stats}、{@code /api/topology}
  * <p>正则路由：{@code DEVICE_CLONE}、{@code DEVICE_ISLAND}、{@code DEVICE_METHODS}、{@code DEVICE_ONE}、{@code DEVICE_POS}、{@code ISLAND_FLOW}、{@code ISLAND_ONE}、{@code METHOD_PARAMS}、{@code MODEL_DEPLOY}、{@code ROBOT_CAPTURE}、{@code ROBOT_CSV}、{@code ROBOT_POINTS}、{@code ROBOT_POINT_ONE}、{@code ROBOT_SYNC}
  *
- * <p><b>拆分约定</b>：路由顺序与原 ApiServer.route() 中完全一致；命中即 return true。
+ * <p><b>拆分约定</b>：路由顺序按首次出现顺序分发（跨 controller 稳定）；命中即 return true。
  * 共享 helper 仍由 ApiServer 提供（static import + {@code s.xxx}），不重复实现。
  */
 final class DeviceApi {
 
-    /** 宿主：提供库连接/服务与共享 helper（与原 ApiServer 内部调用等价）。 */
+    /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
     DeviceApi(ApiServer s) {

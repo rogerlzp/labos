@@ -72,7 +72,7 @@ note "2.5 建库产物一致性（90_all_in_one vs 分片）"
 if ./scripts/check-schema-sync.sh >/tmp/ci-schema.log 2>&1; then
   pass "产物与分片同源（含 loop_index / 4 列唯一键 / parent 外键）"
 else
-  fail "建库产物陈旧（BUG-20261103-01 会复发）"
+  fail "建库产物过期（BUG-20261103-01 会复发）"
   grep '✗' /tmp/ci-schema.log | head -6
 fi
 

@@ -77,11 +77,11 @@ exercised on the page.
   DeviceApi 478 / SchedulerApi 164 / RunApi 509 / WorkflowApi 909 / OpsApi 553 /
   ExperimentApi 638 / MetaApi 132 (3,510 lines in total; after the split MetaApi grew
   from 109 to 132 with `f2d7e8e`).
-- The dispatch order equals the original first-occurrence order of `route()`; inside a
-  controller the original if/else and Matcher order is preserved.
+- The dispatch order equals the pre-split first-occurrence order of `route()`; inside a
+  controller the pre-split if/else and Matcher order is preserved.
 - **Equivalence evidence**: a pre-split grep snapshot shows all 58 Pattern compile
   points and 156/156 business route blocks have an owner (0 unmoved; Pattern 58 → 58,
-  equals/startsWith 54 → 54 identical); the pre-split original was started separately
+  equals/startsWith 54 → 54 identical); the pre-split version was started separately
   on 18081 against the new one on 18080, on the same database, and compared route by
   route: **34/34** GET response status codes + JSON identical
   (401×4 / 405 / OPTIONS / login structure identical).
@@ -115,7 +115,7 @@ exercised on the page.
   of the last administrator (the only enabled admin cannot be disabled or demoted);
   **transaction lock added**: `pg_advisory_xact_lock(hashtext('labos:user-role'))` +
   read-modify-write in a single transaction (concurrent demotions: at most one
-  succeeds). Decision: do not enable the legacy `app_role` / `role_permission` tables
+  succeeds). Decision: do not enable the currently-unused `app_role` / `role_permission` tables
   (avoid two tracks).
 - Frontend: AuthProvider/useAuth (session restored via `/api/auth/me`); a role Tag and
   displayName in the header; the user-management menu is admin-only; the viewer's
@@ -151,7 +151,7 @@ exercised on the page.
 | 3 | Tooling for error-code feedback | The process is written down, but there is no automated intake / simulator injection | On-site codes still have to be entered by hand |
 | 4 | Uncovered write entry points (frontend read-only experience) | The alert silence API exists in the backend but has no UI; a few pages can still be covered | Viewers still hit 403s (safe, but the experience is incomplete) |
 | 5 | Stale documentation items | ROADMAP M6/M7/M8 still contain completed items that are not ticked | A reviewer can misread the progress |
-| 6 | The legacy `app_role` / `role_permission` tables | Decision: not enabled (`sys_user.role` is in effect) | The legacy tables can confuse a reviewer; the documentation has to be explicit |
+| 6 | The currently-unused `app_role` / `role_permission` tables | Decision: not enabled (`sys_user.role` is in effect) | The currently-unused tables can confuse a reviewer; the documentation has to be explicit |
 | 7 | Session-restore failure policy | A non-401 failure stops on the retry page (the token is kept) | Not operable while the kernel is restarting (acceptable; open question whether it should become read-only) |
 | 8 | Multi-tenancy / reporting / multi-instance | Not done (the remaining M11 items) | A platformisation gap |
 

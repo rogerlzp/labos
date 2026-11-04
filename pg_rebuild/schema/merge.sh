@@ -50,6 +50,6 @@ rm -f /tmp/_schema_header.sql
 # ★ BUG-20261103-08：分片里同时有手写 DDL 和 pg_dump 风格尾部，两套定义同一批表，
 #   全新库执行会撞 "already exists"（deploy.sh 用 ON_ERROR_STOP=1，直接中断）。
 #   这里把重复声明型语句（ADD GENERATED / ADD CONSTRAINT）包成可跳过的 DO 块。
-python3 guard_legacy_tail.py   # 已在 schema/ 目录下（脚本开头 cd 过）
+python3 guard_dup_decl.py   # 已在 schema/ 目录下（脚本开头 cd 过）
 
 echo "已生成 90_all_in_one.sql: $(wc -l < 90_all_in_one.sql) 行, $(du -h 90_all_in_one.sql | cut -f1)"

@@ -9,7 +9,7 @@ import java.util.Map;
  *
  * <p><b>{@code commandId} 是幂等键</b>：重试必须复用同一个 id，驱动据此判断
  * "这条我已经执行过了"，避免机械臂把同一块板搬两次。
- * 老系统靠 150ms 轮询 + ack 超时重发，没有幂等键，重发就是真重做。
+ * 靠 150ms 轮询 + ack 超时重发，没有幂等键，重发就是真重做。
  */
 public record DriverCommand(
         String commandId,

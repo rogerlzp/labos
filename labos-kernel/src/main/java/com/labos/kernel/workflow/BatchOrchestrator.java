@@ -27,8 +27,8 @@ import java.util.Objects;
  * <h3>硬口径（实施清单 §8 · D1-D7）</h3>
  * <ol>
  *   <li><b>D1</b>：{@code experiment.batch_split} 为 NULL / {@code <= 0} 时
- *       <b>完全走老逻辑</b>（一次 run 跑整单，实验状态由执行器同步）——
- *       老实验行为一个字都不许变。</li>
+ *       <b>完全走非分批路径</b>（一次 run 跑整单，实验状态由执行器同步）——
+ *       非分批实验行为一个字都不许变。</li>
  *   <li><b>D2</b>：首次执行时按 {@code experiment_sample.sample_id} 升序切批，
  *       把 {@code [{sampleId,barcode}]} 快照写进 {@code experiment_batch.samples}；
  *       重跑只用快照，不再读 {@code experiment_sample}（样品集合不漂移）。</li>
@@ -36,7 +36,7 @@ import java.util.Objects;
  *       每批一个 {@code experiment_run} + 一条 {@code experiment_batch_run}，
  *       {@code attempt_no} 从 1 递增；某批失败<b>继续</b>后续批；
  *       遇暂停扣留停在批边界、不启动下一批。</li>
- *   <li><b>D4</b>：单批重跑只跑该批，新 attempt，旧尝试保留；只允许非 completed 批。</li>
+ *   <li><b>D4</b>：单批重跑只跑该批，新 attempt，历史尝试保留；只允许非 completed 批。</li>
  *   <li><b>D5</b>：每批 run 追加 {@code batchNo} / {@code batchSamples} 变量，
  *       不覆盖用户显式传入的同名变量（见 {@link BatchPlanner#batchVariables}）。</li>
  *   <li><b>D6</b>：实验状态按 {@link BatchPlanner#aggregateExperimentStatus} 聚合；
@@ -45,10 +45,10 @@ import java.util.Objects;
  * </ol>
  *
  * <h3>与运行控制（暂停/停止/恢复）的边界</h3>
- * 批次执行中间，暂停/停止仍由既有 {@link RunControl} + 执行器在<b>动作边界</b>生效
+ * 批次执行中间，暂停/停止仍由 {@link RunControl} + 执行器在<b>动作边界</b>生效
  * （执行器 per-run 的检查不受分批影响）。本类只保证：一旦某批以 paused/aborted 结束，
  * <b>不再启动后续批</b> —— 现场闸门没解除时不能继续往设备上放板子。
- * 批内断点续跑仍走既有"恢复同一条 run"的路径；本版本不把它并进分批编排
+ * 批内断点续跑仍走"恢复同一条 run"的路径；本版本不把它并进分批编排
  * （见实施清单 §8 的本轮范围，记录为残余风险）。
  */
 public final class BatchOrchestrator {
@@ -61,8 +61,8 @@ public final class BatchOrchestrator {
     /**
      * 一次「执行实验」的结果。
      *
-     * <p>{@code batched=false} 表示 batch_split 为空、走的是老逻辑：
-     * 此时 {@code oldResult} 就是执行器原样返回的结果，接口照旧只回原字段。
+     * <p>{@code batched=false} 表示 batch_split 为空、走的是非分批路径：
+     * 此时返回的就是执行器原样给出的结果，接口保持只回相同字段。
      */
     public record RunAllResult(boolean batched, long experimentRunId, String status,
                                int totalSteps, int doneSteps, String error,
@@ -158,10 +158,10 @@ public final class BatchOrchestrator {
     }
 
     /**
-     * 这条 run 属于哪条批次尝试；<b>非批次 run（老路径）返回 {@code null}</b>。
+     * 这条 run 属于哪条批次尝试；<b>非批次 run（非分批路径）返回 {@code null}</b>。
      *
      * <p>调度器（D9）与运行控制（D10）用它探测"要不要走批次回写"：
-     * <b>只读</b>，不写任何表；返回 null 就保持改动前的老行为。
+     * <b>只读</b>，不写任何表；返回 null 就保持改动前的行为。
      */
     public Long batchRunIdFor(long experimentRunId) throws SQLException {
         BatchRef ref = findBatchRef(experimentRunId);
@@ -391,7 +391,7 @@ public final class BatchOrchestrator {
      * 批次视图（GET /api/experiments/{id}/batches，形状严格按实施清单 §8.3）。
      *
      * <p>{@code batchSplit} 为 null 时 items 为空数组（前端据此隐藏批次卡片，
-     * 老实验页面零变化）。summary 只有契约里的 5 个桶；paused/queued 这类"还没结束"
+     * 非分批实验页面零变化）。summary 只有契约里的 5 个桶；paused/queued 这类"还没结束"
      * 的状态归入 pending，aborted 与 failed 同归 failed（与 D6 的失败口径一致）。
      */
     public String batchesJson(long experimentId) throws SQLException {
@@ -449,13 +449,13 @@ public final class BatchOrchestrator {
 
     /**
      * 一次「执行实验」：分批时按 batch_no 串行跑所有未成功批（D3）；
-     * 不分批时<b>原样委托</b>老逻辑（D1，行为与改动前完全一致）。
+     * 不分批时<b>原样委托</b>非分批路径（D1，行为与改动前完全一致）。
      */
     public RunAllResult runAll(long experimentId, Map<String, String> overrides)
             throws SQLException {
         Integer split = batchSplit(experimentId);
         if (split == null) {
-            // D1：batch_split 为 NULL -> 老逻辑，接口字段/落库/状态同步都不变
+            // D1：batch_split 为 NULL -> 非分批路径，接口字段/落库/状态同步都不变
             ExperimentExecutor.Result old = runner.run(experimentId, overrides, 0L, true);
             return new RunAllResult(false, old.experimentRunId(), old.status(),
                     old.totalSteps(), old.doneSteps(), old.error(), null, List.of());
@@ -470,7 +470,7 @@ public final class BatchOrchestrator {
             for (BatchRow b : batches) {
                 if ("completed".equals(b.status())) {
                     // D3：只跑未成功批。成功批的重跑入口在 runBatch（且会被拒）。
-                    // 顺带把"派生状态已完成但表里还是旧值"的情况自愈掉。
+                    // 顺带把"派生状态已完成但表里还是变更前的值"的情况自愈掉。
                     if (!"completed".equals(b.storedStatus())) {
                         updateBatchStatus(b.id(), "completed");
                     }
@@ -513,7 +513,7 @@ public final class BatchOrchestrator {
     }
 
     /**
-     * 单批重跑（D4）：只跑该批，新 attempt，旧尝试保留。
+     * 单批重跑（D4）：只跑该批，新 attempt，历史尝试保留。
      *
      * @throws IllegalArgumentException 批不存在 / 批已完成 / 现场扣留中（接口回 400）
      */
@@ -568,7 +568,7 @@ public final class BatchOrchestrator {
         NO_MORE,
         /** 现场扣留：批边界停住，未建尝试（候选批已标 paused）。 */
         HELD,
-        /** 未配置分批（batch_split 为空），调用方走老逻辑。 */
+        /** 未配置分批（batch_split 为空），调用方走非分批路径。 */
         NOT_BATCHED
     }
 
@@ -885,7 +885,7 @@ public final class BatchOrchestrator {
      * 统一回写点（D8）：一条 run 的状态变了（调度器恢复后跑完 / 人工停止 / 恢复），
      * 把批次层与实验聚合状态补齐。
      *
-     * <p><b>非批次 run 直接返回 false，且不写任何表</b> —— 老路径（{@code batch_split=NULL}）
+     * <p><b>非批次 run 直接返回 false，且不写任何表</b> —— 非分批路径（{@code batch_split=NULL}）
      * 的状态同步仍由执行器/运行控制自己做，行为与改动前完全一致。
      *
      * <p>批次 run 做三件事：
@@ -894,7 +894,7 @@ public final class BatchOrchestrator {
      *       （终态落 {@code finished_at}，非终态清掉）；</li>
      *   <li>按该批<b>最新尝试</b>重算 {@code experiment_batch.status}，
      *       并沿用读侧自愈口径：任一次尝试 completed ⇒ 该批 completed；</li>
-     *   <li>按 D6 聚合 {@code experiment.status}（复用既有
+     *   <li>按 D6 聚合 {@code experiment.status}（复用
      *       {@link #syncExperimentStatusFromBatches}，与读侧同一条规则）。</li>
      * </ol>
      *
@@ -1355,7 +1355,7 @@ public final class BatchOrchestrator {
      *   <li>否则取最新尝试的状态；没有尝试时取表里的 storedStatus。</li>
      * </ol>
      *
-     * <p>暂停/停止/恢复也会直接改 {@code experiment_run.status}（既有运行控制路径），
+     * <p>暂停/停止/恢复也会直接改 {@code experiment_run.status}（运行控制路径），
      * 只信 {@code experiment_batch_run.status} 会读到过期值，所以最新尝试以 run 状态优先。
      */
     private List<BatchRow> loadBatches(long experimentId) throws SQLException {

@@ -7,7 +7,7 @@ import java.util.random.RandomGenerator;
 /**
  * 异常自愈决策引擎。
  *
- * <p>这是整个恢复子系统的核心，也是与老系统最本质的差异：
+ * <p>这是整个恢复子系统的核心，也是本子系统最本质的差异：
  * <b>它是一个纯函数</b>——不查库、不发消息、不碰设备，
  * 输入 {@link ErrorContext}，输出 {@link RecoveryDecision}。
  * 因此它可以被单元测试、被历史事件回放、被仿真推演。

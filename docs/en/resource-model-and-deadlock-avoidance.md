@@ -250,7 +250,7 @@ Workflow 1 takes B → finishes
 
 ## 5. Detection is always on, there is no switch (R6 correction)
 
-**The original design wanted a `LABOS_DEADLOCK_GUARD=auto/on/off` switch; it was cancelled after the review.**
+**The design stage planned a `LABOS_DEADLOCK_GUARD=auto/on/off` switch; it was cancelled after the review.**
 
 ### The reason it was cancelled
 

@@ -29,7 +29,7 @@ interface NodeData {
   /** 设备节点用：资源 id、能力、IP */
   resourceId?: number;
   capability?: string;
-  /** 设备示意图；没有就退回"按能力名猜"的老路径 */
+  /** 设备示意图；没有就退回"按能力名猜"的兜底路径 */
   icon?: string | null;
   ip?: string | null;
   /** 设备节点用：执行哪个方法（留空则自动选第一个 Deposit 类） */
@@ -369,7 +369,7 @@ export default function ExperimentCanvasPage() {
             } as Edge, t)]);
           }
         } else {
-          // 老图可能没有开始/结束，补上——不然用户找不到执行入口
+          // 现有图可能没有开始/结束，补上——不然用户找不到执行入口
           const hasStart = loadedNodes.some((n) => n.data.kind === 'start');
           const hasEnd = loadedNodes.some((n) => n.data.kind === 'end');
           const extra: Node<NodeData>[] = [];

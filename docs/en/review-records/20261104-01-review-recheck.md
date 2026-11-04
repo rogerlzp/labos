@@ -186,7 +186,7 @@ and the **experiments have no "fallback by name"** (asymmetric with the accounts
 - Remediation: the re-run command of [00:33](../../评审包-20261104/00-索引与评审指引.md#L33) gained the DB env precondition, and both yardsticks are annotated.
 - Verification: without the env **PASS 8 / WARN 3**, with the env **PASS 9 / WARN 2 / FAIL 0** — both reproduced by measurement.
 
-> All three P2 items **rewrite the body directly**, they do not use "keep the old text and add an erratum" (which conforms to the review guidelines §8 "document self-consistency").
+> All three P2 items **rewrite the body directly**, they do not use "keep the original text and add an erratum" (which conforms to the review guidelines §8 "document self-consistency").
 
 ### 7.3 The items not handled / kept
 

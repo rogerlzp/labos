@@ -41,9 +41,9 @@ interface Proc {
 }
 
 /**
- * 实验编排：把 992 个流程按顺序拼成一个实验。
+ * 实验编排：把 已有流程按顺序拼成一个实验。
  *
- * 1.0 只做顺序（老库 run_mode 99.7% 是 sequential）。
+ * 1.0 只做顺序（存量流程 99.7% 是顺序执行）。
  * 用列表 + 上下移而不是画布：顺序场景下，列表比画布更快、更不容易连错。
  * 等有条件分支/并行时再上画布（React Flow）。
  */
@@ -288,8 +288,8 @@ export default function ExperimentsPage() {
   /**
    * 分批实验的批次视图（S3）。
    *
-   * <p>单独请求、不塞进实验详情：batch_split 是后加的列，老实验没有批次；
-   * 接口在 batchSplit 为 null 时返回空 items，卡片据此整块隐藏 —— 老实验零变化。
+   * <p>单独请求、不塞进实验详情：batch_split 是后加的列，非分批实验没有批次；
+   * 接口在 batchSplit 为 null 时返回空 items，卡片据此整块隐藏 —— 非分批实验零变化。
    * 批次状态由执行器推进，刷新方式与「现场扣留/执行历史」保持一致（手动刷新）。
    */
   const batchesQuery = useQuery({
@@ -297,7 +297,7 @@ export default function ExperimentsPage() {
     queryFn: () => api.experimentBatches(expId!),
     enabled: expId != null,
   });
-  /** null = 不分批（老实验）：整个批次卡片不渲染 */
+  /** null = 不分批（非分批实验）：整个批次卡片不渲染 */
   const batchSplit = batchesQuery.data?.batchSplit ?? null;
 
   /** 分批设置弹窗（S3.1）：入口必须在页面上，否则 batch_split 只能改库（功能不可演示） */
@@ -471,7 +471,7 @@ export default function ExperimentsPage() {
         + t('experiments.toast.expResult', {
           status: j.status, done: j.doneSteps, total: j.totalSteps, note: batchNote,
         }));
-      // 分批执行会按批串行推进：不刷批次列表和执行历史，用户点完执行看到的还是旧状态
+      // 分批执行会按批串行推进：不刷批次列表和执行历史，用户点完执行看到的还是变更前的状态
       await Promise.all([batchesQuery.refetch(), runsQuery.refetch()]);
     } catch (e) {
       message.error(String((e as Error).message));
@@ -516,7 +516,7 @@ export default function ExperimentsPage() {
   /**
    * 重跑单批（D4）。
    *
-   * <p>确认框必须把"只跑这一批、旧尝试保留"说清楚：用户最怕的是点一下
+   * <p>确认框必须把"只跑这一批、历史尝试保留"说清楚：用户最怕的是点一下
    * 把整个实验连同已成功批次重跑一遍，或把失败历史覆盖掉。
    * pending 批不开放重跑 —— 它还没跑过，应该用「执行实验」按批串行跑。
    */
@@ -751,7 +751,7 @@ export default function ExperimentsPage() {
               )}
             </Card>
 
-            {/* 分批执行（S3）：只有 batch_split 非空才有这一卡，老实验整块不渲染。
+            {/* 分批执行（S3）：只有 batch_split 非空才有这一卡，非分批实验整块不渲染。
                 批次以"逻辑批"为主语，runs 是这批的每次尝试 —— 只看 run 列表
                 分不清"哪批、第几次、成没成"；重跑按钮就落在对应批这一行。 */}
             {batchSplit != null && (

@@ -64,12 +64,12 @@ import static com.labos.kernel.api.ApiServer.*;
  *
  * <p>路径：{@code /api/scheduler/status}
  *
- * <p><b>拆分约定</b>：路由顺序与原 ApiServer.route() 中完全一致；命中即 return true。
+ * <p><b>拆分约定</b>：路由顺序按首次出现顺序分发（跨 controller 稳定）；命中即 return true。
  * 共享 helper 仍由 ApiServer 提供（static import + {@code s.xxx}），不重复实现。
  */
 final class SchedulerApi {
 
-    /** 宿主：提供库连接/服务与共享 helper（与原 ApiServer 内部调用等价）。 */
+    /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
     SchedulerApi(ApiServer s) {
@@ -84,7 +84,7 @@ final class SchedulerApi {
     boolean handle(HttpExchange ex, String path, String method) throws Exception {
         if ("/api/scheduler/status".equals(path)) {
             s.requireGet(method, ex);
-            // §7.1（2026-11-03）：在原有计数字段上补 queue 明细 / 岛锁主体 / workers。
+            // §7.1（2026-11-03）：在计数字段上补 queue 明细 / 岛锁主体 / workers。
             // 快照只拍一次 —— 与 /api/experiments/eta 共用同一份内存态口径。
             ExperimentScheduler.Snapshot st = s.scheduler.snapshot();
             s.send(ex, 200, Jsons.obj(
@@ -92,7 +92,7 @@ final class SchedulerApi {
                     "queued", st.queued(),
                     "maxConcurrent", st.maxConcurrent(),
                     "stalled", st.stalled(),
-                    // §7.1：started = 累计派发次数（原 boolean 语义挪到 loopStarted）
+                    // §7.1：started = 累计派发次数（boolean 语义挪到 loopStarted）
                     "started", st.started(),
                     "loopStarted", st.loopStarted(),
                     "lastDispatchAt", st.lastDispatchAt(),

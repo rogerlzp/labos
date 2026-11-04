@@ -209,7 +209,7 @@ void rollingSchedule() {
 | **Explainable** | "Its deadline is the earliest, so it gets the earliest island" |
 | **Incremental** | A new experiment only affects what comes after it; what came before does not move |
 | **Interruptible** | Stopping at any moment leaves the existing schedule valid |
-| **O(N·M)** | 50 experiments × 26 islands = 1300 computations, in milliseconds |
+| **O(N·M)** | experiments × islands, computed in milliseconds |
 
 **The key insight**: under a **rolling** framework, "a locally optimal step" is more
 useful than "a one-off global optimum" — because the premise of a one-off optimum (that
@@ -229,7 +229,7 @@ Set<Long> affected = findAffected(event);
 // an experiment failure → only affects the one on the same island
 // a device going offline → only affects the ones that use that island
 
-// everything else keeps its original schedule (it is already in committed)
+// everything else keeps its existing schedule (it is already in committed)
 ```
 
 **Benefit**: the schedule stability improves a great deal, and the person on duty no
@@ -237,58 +237,26 @@ longer sees "the schedule keeps changing".
 
 ---
 
-## 4. Standing on the shoulders of others: what each of them contributed
+## 4. What the experiment layer adds
 
-### 4.1 A line-by-line comparison
+One experiment is a few workflows run in sequence. The inside of a workflow is BPMN: nodes, edges and gateways. The experiment layer adds:
 
-| Capability | Peer product A | Peer product B | LabOS | Us |
-|---|---|---|---|---|
-| The order of workflows within one experiment | ✅ Process list | ✅ | 🟡 Manual | ✅ |
-| Experiment variables | ❌ | 🟡 Parameter table | ❌ | ✅ The design is settled |
-| Loops across workflows | ❌ | ❌ | ❌ | ✅ The design is settled |
-| Visualisation of the schedule | ❌ | ✅ **The core selling point** | ❌ | ✅ Dry-run scheduling |
-| Multiple experiments in parallel | ❌ | 🟡 Serial on a single device | ❌ | ✅ Island-level mutual exclusion |
-| Dynamic re-ordering | ❌ | ❌ | ❌ | ✅ Rolling horizon |
-| Resource conflict early warning | ❌ | 🟡 Visible while scheduling | ❌ | ✅ Reported by the dry run |
-| Deadlock protection | — | — | — | ✅ All-or-nothing + TTL |
-
-### 4.2 What we take from each of them
-
-**What we take from peer product A**:
-
-- **The simplicity of composing Processes**: one experiment is just a few workflows run in
-  sequence, no complicated DAG
-- This "simplicity" is deliberate — a laboratory operator does not need to understand
-  graph theory
-
-**What we take from peer product B**:
-
-- **The product form of the schedule view (Schedule View)**: visualise the future instead
-  of waiting for it to happen
-- Our "dry-run scheduling" is a simplified version of it
-
-**What we take from LabOS**:
-
-- **The BPMN canvas expresses the inside of a workflow**: nodes, edges, gateways
-- Our workflow designer is built on bpmn-js
-
-**What we add (none of the three has it)**:
-
-| What we add | Why it has to be added |
+| What is added | Why it has to be added |
 |---|---|
 | **Experiment variables** | Running the same workflow at different temperatures should not mean duplicating the workflow |
 | **Loops across workflows** | "3 workflows × 5 rounds" is the norm on the night shift |
 | **Island-level resource mutual exclusion** | Two robot arms fighting is a physical accident, not a logic error |
 | **Rolling re-ordering** | The site always changes; a schedule that never moves after it is made is a fake one |
 | **Resource conflict early warning** | Tell you at the dry-run stage that there will be a collision, instead of halfway through the run |
+| **Dry-run scheduling** | Draw what is going to run |
 
-### 4.3 What we do not do (equally important)
+### 4.2 What we do not do (equally important)
 
 | Not done | Reason |
 |---|---|
-| Dragging the Gantt chart to re-order the schedule | Peer product B has it, but our processing times are inaccurate, so dragging it would be fake anyway |
+| Dragging the Gantt chart to re-order the schedule | Processing times are inaccurate, so dragging it would be fake anyway |
 | An automatic optimisation algorithm (CPLEX/GA) | The data is inaccurate + not explainable |
-| Multiple experiments in parallel inside one island | It needs second-accurate duration data; the original implementation only has 10-second precision |
+| Multiple experiments in parallel inside one island | It needs second-accurate duration data; the time data only has 10-second precision |
 | Nested loops | The number of steps explodes after expansion |
 | Conditional blocks (if/else) | Use BPMN gateways at the workflow layer, to avoid expressing conditions in two places |
 
@@ -331,7 +299,7 @@ is kept but unused)
 
 | Option | Complexity | Benefit |
 |---|---|---|
-| Total order | Low | It already covers 99.7% of the scenarios (from the `run_mode` statistics of the original implementation) |
+| Total order | Low | It already covers 99.7% of the scenarios (from the `run_mode` statistics of the stored workflow instances) |
 | Supporting a `runAfter` DAG | High (it needs topological sorting + cycle detection + partial failure handling) | 1.0 does not need it |
 
 **Cost**: for now it is not possible to express "workflows A and B run in parallel, and C

@@ -31,9 +31,9 @@ public final class RunStateMachine {
     private final Sleeper sleeper;
     private final Clock clock;
     private long seq = 0;
-    /** 节点 -> 子步骤序列；未设置时按单步执行（老流程 99% 是这种）。 */
+    /** 节点 -> 子步骤序列；未设置时按单步执行（99% 的流程是这种）。 */
     private java.util.function.Function<Long, java.util.List<String>> stepPlanner;
-    /** 节点 -> 设备方法参数；未设置时为空（老流程没有参数）。 */
+    /** 节点 -> 设备方法参数；未设置时为空（流程本身不带参数）。 */
     private java.util.function.Function<Long, java.util.Map<String, Object>> paramPlanner;
 
     public RunStateMachine(RecoveryDecider decider) {

@@ -159,7 +159,7 @@ public final class WorkflowService {
     /**
      * 把 {@code ${...}} 求值并替换。
      *
-     * <p>原来只做纯替换（{@code ${i}} → 值），现在支持表达式：
+     * <p>改动前只做纯替换（{@code ${i}} → 值），现在支持表达式：
      * <ul>
      *   <li>{@code ID1183-L${i}} —— 循环生成点位</li>
      *   <li>{@code ID1183-L${usedSlots + 1}} —— 算出下一个位置</li>
@@ -189,7 +189,7 @@ public final class WorkflowService {
      * 限定从某个岛选设备。
      *
      * <p>用途：岛内演示时希望"板子在这几台之间流转"，
-     * 而不是被全库 239 台设备里的任意一台接管。
+     * 而不是被设备池里任意一台其他设备接管。
      */
     public WorkflowService withIsland(Long islandId) {
         if (islandId == null) {
@@ -236,7 +236,7 @@ public final class WorkflowService {
         Map<String, List<Long>> out = new LinkedHashMap<>();
         for (Map.Entry<String, List<Long>> e : capPool.entrySet()) {
             List<Long> ids = new ArrayList<>(e.getValue());
-            // 稳定的：空设备在前，有板的在后（保持原有相对顺序）
+            // 稳定的：空设备在前，有板的在后（保持相对顺序）
             ids.sort(java.util.Comparator.comparing(busy::contains));
             out.put(e.getKey(), ids);
         }
@@ -286,7 +286,7 @@ public final class WorkflowService {
                 WHERE w.tenant_id = ?
                 """
                 + (byCategory ? " AND w.category = ?" : "")
-                // **最近改动的在前**。原来按 task_count DESC 排 —— 结果新建的
+                // **最近改动的在前**。改动前按 task_count DESC 排 —— 结果新建的
                 // 单步流程（任务数少）永远落在 limit 之外，界面上根本搜不到，
                 // 现象是"刚建的流程不见了"。复杂流程并不等于更该被看见。
                 + " ORDER BY w.updated_at DESC NULLS LAST, w.id DESC LIMIT ?";
@@ -697,7 +697,7 @@ public final class WorkflowService {
         // 只影响顺序，不改变候选集合——没有空设备时仍会复用有板的。
         capPool = preferEmptyDevices(capPool);
 
-        // 限定岛：只保留该岛内的设备；岛内没有该能力的设备时保留原池（避免跑不动）
+        // 限定岛：只保留该岛内的设备；岛内没有该能力的设备时保留候选池（避免跑不动）
         if (islandFilter != null) {
             Long islFilter = islandFilter.get();
             java.util.Set<Long> islandDevs = islFilter == null ? java.util.Set.of()
@@ -777,7 +777,7 @@ public final class WorkflowService {
         RunProgress progress;
         int eventsWritten = 0;
         try (JdbcEventStore store = new JdbcEventStore(db, tenantId, runId, "api-wf", 100)) {
-            // ⚠️ 这里原来传的是 Sleeper.recording(...)：只**记录**退避时间，没人真睡。
+            // ⚠️ 这里改动前传的是 Sleeper.recording(...)：只**记录**退避时间，没人真睡。
             // 后果：策略写 retry 3 次（500ms/1s/2s），实际 50ms 内就把三次机会用光，
             // 设备"忙两秒"这种瞬时故障必然判失败 → 转人工。退避形同虚设。
             // 生产必须真睡；只有 CI/批量验证嫌慢时才用 LABOS_FAST_RECOVERY=1 关掉。
@@ -908,7 +908,7 @@ public final class WorkflowService {
 
     public DriverRegistry buildDriverRegistry() throws SQLException {
         // **两种模式都要缓存**。
-        // 原来只在长连接模式缓存，短连接每次都重建 7 个 adapter + 查一遍驱动表，
+        // 改动前只在长连接模式缓存，短连接每次都重建 7 个 adapter + 查一遍驱动表，
         // 实测吃掉 4.7 秒（命令本身只要 312ms）——压测时才暴露。
         if (cachedRegistry != null
                 && System.currentTimeMillis() - registryBuiltAt < REGISTRY_TTL_MS) {
@@ -917,7 +917,7 @@ public final class WorkflowService {
 
         // **从库里读所有 active 驱动，逐个注册**。
         // 这样"每台设备一个模拟器"才成立：每个模拟器一条 driver 记录、一个端点。
-        // 找不到任何配置时才回退到单端点的老路径（兼容单机演示）。
+        // 找不到任何配置时才回退到单端点路径（兼容单机演示）。
         DriverRegistry reg = new DriverRegistry();
         int registered = registerAllDriversFromDb(reg);
 
@@ -1576,7 +1576,7 @@ public final class WorkflowService {
         for (RecoverableNode n : defs) {
             byId.put(n.id(), n);
         }
-        // error_code 单独落一列（原来是塞进 input.reason 的字符串里）：
+        // error_code 单独落一列（改动前是塞进 input.reason 的字符串里）：
         //   · 前端要显示得用正则从"策略[EC-08-400C@NODE] 指定直接转人工"里抠；
         //   · SQL 没法统计"哪台设备最常报无纸"。
         // 列本来就存在（varchar(64)），只是一直没人写。
@@ -1676,11 +1676,11 @@ public final class WorkflowService {
      *
      * <p>{@code run_node} 每个业务节点只有一行（唯一键按 node_key），
      * 循环跑 5 圈也只有最后一圈的最终状态。这里按圈补一行：
-     * {@code loop_index=0} 仍是**汇总行**（最终状态，所有既有查询都只看它），
+     * {@code loop_index=0} 仍是**汇总行**（最终状态，所有现有查询都只看它），
      * {@code loop_index=1..N} 是每一圈的实际执行。
      *
      * <p>为什么不改汇总行：一改就要动"节点数 / 90% 报表 / 流程图着色"一堆查询。
-     * 加行是纯增量，老查询加一条 {@code loop_index = 0} 就等价于改造前。
+     * 加行是纯增量，现有查询加一条 {@code loop_index = 0} 就等价于改造前。
      */
     private void recordNodeRound(long runId, String nodeKey, int round, NodeStatus status,
                                  String errorCode, java.time.Instant start, java.time.Instant end) {
@@ -1726,8 +1726,8 @@ public final class WorkflowService {
     /**
      * 本 run 已有的最大步骤序号（node_key = "S<数字>"）。
      *
-     * <p>续跑时用它给新步骤接着编号，避免与"已完成的旧步骤"撞
-     * uk_run_node(run_id, node_key, attempt)。解析不出来（老数据不是 S+n）就当 0。
+     * <p>续跑时用它给新步骤接着编号，避免与"已完成的已完成步骤"撞
+     * uk_run_node(run_id, node_key, attempt)。解析不出来（存量数据不是 S+n）就当 0。
      */
     private int maxStepSeq(long runId) {
         try (Connection c = db.open();
@@ -1941,7 +1941,7 @@ public final class WorkflowService {
                     deviceToResource, validResources);
             try (Connection c = db.open()) {
                 long stepNodeId;
-                // error_code 也写进步骤节点：原来只有 run_command 有，
+                // error_code 也写进步骤节点：改动前只有 run_command 有，
                 // 业务节点又被标成 manual（不是 failed），
                 // 于是"第几步、因为什么码失败"只能去 run_command 表里翻。
                 try (PreparedStatement ps = c.prepareStatement("""
@@ -2336,7 +2336,7 @@ public final class WorkflowService {
     private void markPlatePosition(long runId, RunProgress progress) throws SQLException {
         // 已废弃（2026-11-01）：设备级 has_plate 改由 position_state 派生。
         //
-        // 原来是"流程结束时把最后一个执行过的设备标记为有板"，和层位级逻辑并行，
+        // 改动前是"流程结束时把最后一个执行过的设备标记为有板"，和层位级逻辑并行，
         // 结果是一台设备 has_plate=true 但所有层位都空——后续 Withdraw 取不到板。
         //
         // 现在规则单一：**该设备下任一层位有板 → has_plate=true**（PositionLock.refreshHasPlate）。
@@ -2426,7 +2426,7 @@ public final class WorkflowService {
     /**
      * 新建一张空白流程（只有 开始 → 结束），返回 id。
      *
-     * <p>为什么需要：界面里原来**没有任何创建流程的入口** —— 流程库只能看、
+     * <p>为什么需要：界面里改动前**没有任何创建流程的入口** —— 流程库只能看、
      * 实验编排的"添加流程"只能选已有的。用户建完实验想顺手画一条流程，无处可去。
      *
      * <p>code 不传就用 {@code AUTO-<时间戳>}：流程编号在库里是唯一键，人工编号容易撞。
@@ -2510,7 +2510,7 @@ public final class WorkflowService {
                             + "请在设计器里保存，它会把步骤折叠回业务节点");
         }
 
-        // ② 保存前备份旧图：出问题能查回上一版
+        // ② 保存前备份上一版图：出问题能查回上一版
         backupGraph(workflowId);
 
         Map<String, Long> methodCap = loadMethodCapability();
@@ -2536,7 +2536,7 @@ public final class WorkflowService {
                     }
                 }
 
-                // 2) 清掉旧边
+                // 2) 清掉上一版边
                 try (PreparedStatement ps = c.prepareStatement(
                         "DELETE FROM workflow_edge WHERE workflow_id = ?")) {
                     ps.setLong(1, workflowId);

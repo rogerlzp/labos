@@ -163,7 +163,7 @@ Full module map: [`docs/技术架构与模块地图.md`](docs/技术架构与模
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | **Position-level mutual exclusion > island-level** | Positions are shared across islands and legacy plates still exist; island-level exclusion was the 1.0 simplification |
+| 1 | **Position-level mutual exclusion > island-level** | Positions are shared across islands and plates already in the lab may still exist; island-level exclusion was the 1.0 simplification |
 | 2 | **Atomic reservation** (`INSERT ON CONFLICT DO UPDATE WHERE`) | SELECT-then-UPDATE leaves a window in which two experiments both believe the position is free |
 | 3 | **Plate moves take both locks in ascending id order** | Removes circular wait (one of the four deadlock conditions); the second failure releases the first |
 | 4 | **No `eval` for condition evaluation** | Canvas content comes from user input — `eval` hands the browser to someone else |
@@ -260,7 +260,7 @@ intelligence rather than product documentation; they live in the local, git-igno
 
 | Item | Description |
 |---|---|
-| **Verification level** | 993 workflows are walked end-to-end on the **simulation bus**; **no real device has been verified** |
+| **Verification level** | the workflows are walked end-to-end on the **simulation bus**; **no real device has been verified** |
 | **Scheduler** | Island-level mutual exclusion + greedy ordering; the rolling time horizon exists only in the design document |
 | **Two ID spaces** | `device_instance.id` and `resource_node.id` are both `long`, and callers must convert (this has caused five separate bugs) |
 | **Two execution paths** | `WorkflowService` and `ExperimentFlowRunner` each have their own device-allocation logic |
@@ -278,7 +278,7 @@ Status: **pre-alpha**. The kernel runs workflows, scheduling, position-level occ
 Interoperability is a roadmap item, not a shipped feature:
 
 - **SiLA 2 adapter** — consume/expose SiLA 2 features as a separate adapter process, so the kernel keeps zero framework dependencies.
-- **SiLA Converter pattern** — wrap legacy .NET / private-TCP instruments as standard features instead of rewriting drivers.
+- **SiLA Converter pattern** — wrap existing .NET / private-TCP instruments as standard features instead of rewriting drivers.
 - **OPC UA LADS** — evaluated as a companion interface, not a replacement for SiLA 2.
 - **MCP** — an outbound agent-facing interface, complementary to SiLA 2. MCP does not replace device standards.
 
@@ -286,13 +286,13 @@ There is **no SiLA 2 implementation and no SiLA certification** today, and nothi
 
 ## Historical documents
 
-The repository root also holds early documents (`LabOS功能规格说明书.md`,
+The repository root also holds historical documents (`LabOS功能规格说明书.md`,
 `LabOS实现总纲_20261029.md`, `决策记录.md`,
 `前后端实施方案_编译甘特就绪调度.md`).
 
 **They record the design reasoning, not an accurate description of the current
 implementation.** Where they conflict with the code or with the documents under
-`docs/`, trust the code — do not treat the old documents as the yardstick.
+`docs/`, trust the code — do not treat the existing documents as the yardstick.
 
 ## Device photos (optional)
 

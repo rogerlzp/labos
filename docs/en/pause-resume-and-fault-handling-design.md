@@ -424,7 +424,7 @@ experiments have to be recalculated when a fault occurs?"** — **yes**.
 ```
 Originally: the resources { A, B, C } are all available, a safe sequence exists
 After the fault: B is unavailable → the resources { A, C }
-  → the original safe sequence may no longer hold
+  → the previously computed safe sequence may no longer hold
   → **it has to be recalculated**
 ```
 

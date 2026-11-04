@@ -355,7 +355,7 @@ export interface ExperimentResumeResult {
 /**
  * 一次批次尝试（experiment_batch_run）。
  *
- * <p>同一批重跑会新增一行，旧行不动 —— 这是"重跑不覆盖历史"的落库形态。
+ * <p>同一批重跑会新增一行，历史行不动 —— 这是"重跑不覆盖历史"的落库形态。
  * 字段与实施清单 §8.3 的 {@code runs[]} 一一对应，后端改名这里要编译不过。
  */
 export interface ExperimentBatchAttempt {
@@ -385,8 +385,8 @@ export interface ExperimentBatchItem {
 /**
  * GET /api/experiments/{id}/batches 的响应。
  *
- * <p>{@code batchSplit} 为 null = 不分批（老实验），此时 items 为空数组，
- * 前端据此整个批次卡片不渲染 —— 老实验页面零变化（D1）。
+ * <p>{@code batchSplit} 为 null = 不分批（非分批实验），此时 items 为空数组，
+ * 前端据此整个批次卡片不渲染 —— 非分批实验页面零变化（D1）。
  */
 export interface ExperimentBatches {
   experimentId: number;
@@ -510,11 +510,11 @@ export interface SchedulerStatus {
   /**
    * 累计派发次数（§7.1 契约，示例 `started: 41`）。
    *
-   * <p>注意语义是**次数**，不是"是否已启动"——旧实现里同名字段是 boolean，
+   * <p>注意语义是**次数**，不是"是否已启动"——同名字段是 boolean，
    * 2026-11-03 起按 §7.1 改成计数；"循环起没起"看 {@link SchedulerStatus.loopStarted}。
    */
   started: number;
-  /** 调度循环是否已启动（旧 boolean 语义，向后兼容保留；旧内核可能没有该字段） */
+  /** 调度循环是否已启动（boolean 语义，向后兼容保留；内核可能没有该字段） */
   loopStarted?: boolean;
   lastDispatchAt: string | null;
   islandLocks: SchedulerIslandLock[];
@@ -666,7 +666,7 @@ export const api = {
   /**
    * 保存流程图。
    *
-   * <p><b>P0-7 修复（评审 20261102-03）</b>：原实现
+   * <p><b>P0-7 修复（评审 20261102-03）</b>：修复以下问题
    * <ul>
    *   <li><b>不带 Authorization</b> —— 鉴权打开后必然 401</li>
    *   <li><b>不校验 r.ok</b> —— 401/500 时 `.json()` 仍能解析出错误对象，
@@ -792,7 +792,7 @@ export const api = {
    * <p>为什么批次要单独查：拆批后"执行历史"里每条 run 只是**某批的一次尝试**，
    * 只看 run 列表分不清"这批到底成没成、试过几次"。批次以 experiment_batch
    * 为主语展示才有可读性；{@code batchSplit} 为 null 时后端返回空 items，
-   * 调用方据此隐藏整张卡片，老实验不受影响。
+   * 调用方据此隐藏整张卡片，非分批实验不受影响。
    */
   experimentBatches: (experimentId: number) =>
     req<ExperimentBatches>(`/api/experiments/${experimentId}/batches`),
@@ -800,7 +800,7 @@ export const api = {
   /**
    * 只重跑某一批（D4）。
    *
-   * <p>不是重跑整个实验：已成功的批不动，旧尝试保留，新尝试递增 attempt_no。
+   * <p>不是重跑整个实验：已成功的批不动，历史尝试保留，新尝试递增 attempt_no。
    * 这样"第 2 批失败只补第 2 批"才是真的；后端只允许非 completed 批，
    * 前端按同一口径决定按钮是否出现。vars 与整实验执行同口径。
    */

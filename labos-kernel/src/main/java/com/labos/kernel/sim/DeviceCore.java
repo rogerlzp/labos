@@ -90,7 +90,7 @@ public final class DeviceCore {
      */
     private final DeviceBehavior behavior;
 
-    // ---- 设备状态机（原来完全不维护，任何命令都回 OK）----
+    // ---- 设备状态机（改动前完全不维护，任何命令都回 OK）----
     /** 门是否开着。真实设备：门开着不能运行。 */
     private volatile boolean doorOpen;
     /** 是否正在跑长任务。真实设备：运行中不能开门。 */
@@ -225,7 +225,7 @@ public final class DeviceCore {
         // 有型号就用型号专属行为；没有就走通用状态机
         this.behavior = model == null ? null : newBehavior(model);
         // delay 传负数表示"用该类型的默认值"（离心 5 分钟 vs 扫描 0.4 秒，
-        // 原来一律 150ms，测出来的耗时没有参考意义）
+        // 改动前一律 150ms，测出来的耗时没有参考意义）
         // 负数/0 = 用画像的分方法延迟；正数 = 所有方法统一用这个值（自动化测试想跑快）
         this.delayMs = delayMs > 0 ? delayMs : -1;
     }
@@ -562,7 +562,7 @@ public final class DeviceCore {
         if (id != null && !id.isEmpty()) {
             String cached = doneCache.get(id);
             if (cached != null) {
-                // 缓存值格式：方法名 \u0000 完成时刻 \u0000 原响应帧
+                // 缓存值格式：方法名 \u0000 完成时刻 \u0000 响应帧原文
                 String[] parts = cached.split("\u0000", 3);
                 String cachedMethod = parts.length > 0 ? parts[0] : "";
                 String cachedAt = parts.length > 1 ? parts[1] : "?";
@@ -570,7 +570,7 @@ public final class DeviceCore {
                     duplicated.incrementAndGet();
                     log("重复命令 id=" + id + "（" + method + "）→ 不重复执行；"
                             + "当前状态：" + stateText());
-                    // **不能把旧帧原样返回**。旧帧只说明"上次那一刻成功了"，
+                    // **不能把上一帧原样返回**。上一帧只说明"上次那一刻成功了"，
                     // 而现在设备状态可能已经变了（离心转完、门被开过、板被取走）。
                     // 中控收到重发结果后要能判断"设备现在到底什么状态"，
                     // 所以这里重建一帧：保持成功语义（method_status=2），
@@ -710,7 +710,7 @@ public final class DeviceCore {
         sleep(waited);
 
         // ① 故障注入优先：真机是先失败、不是先成功。
-        //    放在成功分支之前 —— 原来放在 RunProgram 之后，导致离心永远测不出失败。
+        //    放在成功分支之前 —— 改动前放在 RunProgram 之后，导致离心永远测不出失败。
         String injected = pickInjection(alias);
         if (injected != null) {
             failed.incrementAndGet();
@@ -813,7 +813,7 @@ public final class DeviceCore {
      * <p>判定是**排除法**而不是穷举：查询类（{@code GetStatus}/{@code GetPoints}）
      * 与清除类（{@code ClearFault}/{@code Reset}）之外的都算动作类。
      * 穷举法踩过坑 —— 一开始只列了 Seal/Start，结果机器人 {@code Transfer}
-     * 完全不响应 {@code --fail}，老脚本的故障注入静默失效。
+     * 完全不响应 {@code --fail}，现有脚本的故障注入静默失效。
      */
     private static boolean isActionMethod(String method) {
         if (method == null || method.isBlank()) {

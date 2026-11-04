@@ -23,8 +23,8 @@
 | `BUG-20261103-11` | **中** | 前端 e2e 主链路 4「实验编排」自 `051f4d1`（菜单改名「实验列表」+ 拆列表/详情两层）起**一直失败**：脚本仍在找「实验编排」菜单。而门禁从不带 `--e2e` 跑，等于"5 条主链路"长期不可信 | `scripts/e2e-smoke.py` | ✅ 已修（`f335a10`：改为 列表→点行进详情，并覆盖「现场扣留」/运行控制列；16 条全过） | 执行方本轮自测发现（2026-11-03） |
 | `BUG-20261103-12` | **中** | 实验级暂停接口回**请求的**作用域而非**实际生效**的：未分配岛的实验请求 `island` 时后端退化为 `experiment`，响应仍写 `"scope":"island"` —— 界面提示"作用域：岛"、库里只有实验级扣留，值班员会误判整岛已停 | `RunControl.java` `RunControl.pause`、`ApiServer.java` EXP_RUN_ACTION pause 分支 | ✅ 已修（`046836d`：`pause` 返回实际生效作用域，接口回该值） | 执行方本轮联调发现（2026-11-03） |
 | `BUG-20261103-13` | P2(自洽) | 状态词表两套混用：`experiment_run.status` 用 `completed`，`experiment.status` 用 `finished`；分批执行把**聚合实验状态**写在 `POST /experiments/{id}/run` 顶层 `status` 后，前端 `runExp` 只认 `completed`，全部成功会弹 **warning**（"分批全成功却报黄"） | `webapp/src/pages/Experiments.tsx` `runExp` | ✅ 已修（`fd59d90`：`completed` / `finished` 都判成功，分批提示附带批数） | 执行方联调发现（2026-11-03） |
-| `BUG-20261103-14` | **中** | 历史遗留 `experiment_run.status='running'`（EXP0812 的 run#2/#3，2026-11-01 启动）让新的「实验预计等待」把早已结束的实验误判成**运行中**：wait=0，且排在它后面的实验全按"它占着岛"估算。根因是 ETA 早期按 `experiment_run.status` 判 running，而 run 状态本身可能陈旧 | `labos-kernel/src/main/java/com/labos/kernel/workflow/SchedulerEta.java`、`docs/多实验并行调度-设计.md` §7.2 | ✅ **已关闭**：判定 `f7120a2`（running=调度器岛锁持有者 + `experiment.status` 兜底，不看 run.status）+ 启动兜底 settle `3aa4837`（首次重启自动把 run#2/#3 落 failed，二次重启 0 条幂等）；现存 running=0、EXP0812 不再误判 | 执行方联调发现（2026-11-03） |
-| `BUG-20261103-15` | **中** | 设备链测试脚本**进程泄漏**：`test-sidecar.sh` 用 `( cd … && java … ) &` 启动（`$!` 是子 shell，kill 杀不到 java）、`dotnet run` 还会再起子进程；`verify-device-chain.sh` 同样 → 每跑一次自测/验收漏模拟器+sidecar，本次清理累积 **150 个孤儿进程**（PPID=1，最老 19:02） | `scripts/test-sidecar.sh`、`scripts/verify-device-chain.sh` | ✅ 已修（`e378b91`：一律 exec 启动真进程、sidecar 改 `exec dotnet <dll>` 不依赖 apphost/DOTNET_ROOT、cleanup 加 `pkill -P` 兜底；实测跑完 test-all 前后进程数不变、清理后 0 且不复生） | 执行方环境清理发现（2026-11-03） |
+| `BUG-20261103-14` | **中** | 历史遗留 `experiment_run.status='running'`（EXP0812 的 run#2/#3，2026-11-01 启动）让新的「实验预计等待」把早已结束的实验误判成**运行中**：wait=0，且排在它后面的实验全按"它占着岛"估算。根因是 ETA 按 `experiment_run.status` 判 running，而 run 状态本身可能过期 | `labos-kernel/src/main/java/com/labos/kernel/workflow/SchedulerEta.java`、`docs/多实验并行调度-设计.md` §7.2 | ✅ **已关闭**：判定 `f7120a2`（running=调度器岛锁持有者 + `experiment.status` 兜底，不看 run.status）+ 启动兜底 settle `3aa4837`（首次重启自动把 run#2/#3 落 failed，二次重启 0 条幂等）；现存 running=0、EXP0812 不再误判 | 执行方联调发现（2026-11-03） |
+| `BUG-20261103-15` | **中** | 设备链测试脚本**进程泄漏**：`test-sidecar.sh` 用 `( cd … && java … ) &` 启动（`$!` 是子 shell，kill 杀不到 java）、`dotnet run` 还会再起子进程；`verify-device-chain.sh` 同样 → 每跑一次自测/验收漏模拟器+sidecar，本次清理累积 **150 个孤儿进程**（PPID=1，最早 19:02） | `scripts/test-sidecar.sh`、`scripts/verify-device-chain.sh` | ✅ 已修（`e378b91`：一律 exec 启动真进程、sidecar 改 `exec dotnet <dll>` 不依赖 apphost/DOTNET_ROOT、cleanup 加 `pkill -P` 兜底；实测跑完 test-all 前后进程数不变、清理后 0 且不复生） | 执行方环境清理发现（2026-11-03） |
 | `BUG-20261103-16` | **中** | 权限收口三缺口：① 角色无白名单（可建 role=boss 的账号）；② 无最后管理员保护（可停用/降级唯一 admin → 系统锁死）；③ 前端无角色感知（viewer 点写操作只吃 403、用户管理菜单仍可见） | `labos-kernel/.../api/RbacRules.java`、`QueryService.java`、`webapp/src/auth.tsx` | ✅ 已修（`afddf5b` 后端 RbacRules+白名单+最后管理员保护；`3339606` 前端 AuthProvider/角色 Header/只读体验；`19bb67b` 联调脚本 20/20；实测真实 admin 降级/停用均 400 且 DB 未变；收尾 `4e3baec` 事务锁 + `ec28d02` 会话失败重试/只读覆盖补齐） | 执行方权限收口盘点（2026-11-03） |
 | `BUG-20261104-01` | **阻断** | e2e「24/0」不可复现（实测 **23/1**，两次同结果）：实验列表首行（`ORDER BY id DESC`）为残留实验 962（**0 条 run**），执行历史表无可展开行 → 断言失败；脚本对列表首行数据分布**强依赖** | `scripts/e2e-smoke.py` | ✅ **已关闭**（2026-11-04：脚本第 4 步改为按行遍历取“有可展开执行历史”的实验，最多试 8 行，消除首行依赖；清残留后复跑 **24/0**） | `20261104-01` |
 | `BUG-20261104-02` | **高** | RBAC 联调残留污染库：`sys_user` = 5（多 `rbac_op_22244` / `rbac_viewer_22244`）+ 残留实验 962；违反 `01` §9「无 rbac 测试残留」；根因 `verify-rbac.py` 清理只按 `created_exp` 列表删实验、进程被强杀即漏删（实验未做按名兜底） | `scripts/verify-rbac.py`、`docs/评审包-20261104/01-本轮交付清单与验证.md` §9 | ✅ **已关闭**（2026-11-04：`verify-rbac.py` finally 加按名兜底删实验；并已清残留 → `sys_user` 5→**3**、`experiment` 679→**678**，与 `01` §9 快照一致） | `20261104-01` |
@@ -32,13 +32,13 @@
 | `BUG-20261104-04` | P2(自洽) | 评审包写 `MetaApi 109`（合计 **3487**）；HEAD 上 MetaApi 已随 `f2d7e8e` 增至 **132**（合计 **3510**） | `docs/评审包-20261104/01-本轮交付清单与验证.md` §4 | ✅ **已关闭**（2026-11-04：`01` §4 改为 `MetaApi 132`（合计 **3510**），注明 109→132 由 `f2d7e8e` 引入；实测 8 控制器合计 3510） | `20261104-01` |
 | `BUG-20261104-05` | P2(自洽) | go-live 复跑命令（`00` §2）**未带 DB env**，但 `01` §7 报的是**带 DB** 的 9/2；不带 env 实为 **8/3**（“绑定覆盖率”跳过），命令与结果不同口径 | `docs/评审包-20261104/00-索引与评审指引.md` §2、`01-本轮交付清单与验证.md` §7 | ✅ **已关闭**（2026-11-04：`00` §2 go-live 命令补 DB env 前置并标注不带 env 为 8/3、带 env 为 PASS 9 / WARN 2 / FAIL 0；两口径实测复现） | `20261104-01` |
 
-> **表结构修复（2026-11-03 晚）**：`-08` / `-09` 原来被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
+> **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
 #### 处置：BUG-20261103-08（执行方 · 2026-11-03）
 
 | 项 | 结果 |
 |---|---|
-| 手段 | `merge.sh` 增加 `guard_legacy_tail.py`：把**重复声明型**语句（`ALTER … ADD GENERATED`、`ALTER TABLE [ONLY] … ADD CONSTRAINT`）包成 `DO $$ … EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition`，命中即 `RAISE NOTICE` 跳过 |
+| 手段 | `merge.sh` 增加 `guard_dup_decl.py`：把**重复声明型**语句（`ALTER … ADD GENERATED`、`ALTER TABLE [ONLY] … ADD CONSTRAINT`）包成 `DO $$ … EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition`，命中即 `RAISE NOTICE` 跳过 |
 | 为什么不是删重复定义 | 分片里手写 DDL 与 dump 尾部**交错**，删块容易误删只存在于尾部的那 23 张表；用守卫则"对象不存在照建、已存在不炸"，语义不变 |
 | 全新库验证 | 空 schema 全量执行产物，`ON_ERROR_STOP=1`：**exit=0，ERROR=0**（原 22 条） |
 | 建出对象 | 105 张表 + 5 个视图（线上 107 = 105 + 2 个 2026-09 历史月分区），`run_node.loop_index` / 4 列 uk / parent 外键均在 |
@@ -50,7 +50,7 @@
 |---|---|
 | -11 怎么坏的 | `051f4d1` 把菜单「实验编排」改成「实验列表」，并把实验折成"列表页 → 详情页"两层；`e2e-smoke.py` 的 T4 仍在点「实验编排」菜单，0 个匹配 → 15s 超时 |
 | -11 为什么一直没人发现 | `ci-gate.sh` 的 e2e 段默认不跑（要 `--e2e` 且前后端在跑）；`051f4d1` 之后几轮门禁只跑「纯逻辑 + tsc」，"5 条主链路"只在文档里是绿的 |
-| -11 修复 | T4 改为：实验列表 → 点行进详情 → 断言「现场扣留」卡片 / 运行控制列 → 展开执行历史；实测 16 条 / 失败 0（阈值 14，原脚本 14 条） |
+| -11 修复 | T4 改为：实验列表 → 点行进详情 → 断言「现场扣留」卡片 / 运行控制列 → 展开执行历史；实测 16 条 / 失败 0（阈值 14，脚本 14 条） |
 | -12 现象 | 未分配岛的实验请求 `island` 暂停：后端 `effectiveScope` 退化为 `experiment`，但接口把请求值 `island` 原样回给前端 |
 | -12 修复与实测 | `pause` 返回实际生效作用域；联调该实验提示"作用域：本实验"，扣留表范围=「本实验 #813」，与库里那道实验级扣留一致 |
 | 复跑方式 | `scripts/verify-exp-control.py`（本轮新增，`3ab54a3`）：自动借空实验、插 2 条 queued run、从界面走 暂停→恢复→停止，finally 删数据并还原状态；22 条断言 |
@@ -63,7 +63,7 @@
 
 ## 二、明细
 
-### 🟥 BUG-20261103-01（阻断）建库产物陈旧，被部署的那一路没跟上 M6
+### 🟥 BUG-20261103-01（阻断）建库产物过期，被部署的那一路没跟上 M6
 
 **现象**：`pg_rebuild/deploy.sh:27` 部署的是合并产物 `90_all_in_one.sql`，但该文件停留在 **M6 修复之前**。
 
@@ -73,7 +73,7 @@
 |---|---|---|---|---|
 | `schema/20_kernel.sql`（分片，正确） | `6fb38d3` 11-03 11:18 | 有（:309） | 4 列 `(…,loop_index)`（:310） | — |
 | `schema/96_schema_fix.sql`（补丁，正确） | `6fb38d3` 11-03 11:18 | 有（:120） | 重建为 4 列（:127） | 有（:112-115） |
-| **`schema/90_all_in_one.sql`（部署产物，陈旧）** | **`43317da` 11-02 21:33（早于 M6）** | **无** | **3 列**（:557） | **无**（:2488 仅加列） |
+| **`schema/90_all_in_one.sql`（部署产物，过期）** | **`43317da` 11-02 21:33（早于 M6）** | **无** | **3 列**（:557） | **无**（:2488 仅加列） |
 
 **根因**：M6（`6fb38d3`）改了分片与 `merge.sh`，但**未重跑 `merge.sh`** 再生合并产物。
 
@@ -99,9 +99,9 @@
 | 产物含 4 列 uk | ✅ `CONSTRAINT uk_run_node UNIQUE (run_id, node_key, attempt, loop_index)` |
 | 产物含 parent 外键 | ✅ `run_node_parent_node_id_fkey ... ON DELETE CASCADE` |
 | **连库验证**（新 schema 全量执行产物） | ✅ `run_node.loop_index` 存在；`uk_run_node = UNIQUE (run_id,node_key,attempt,loop_index)`；`run_node_parent_node_id_fkey = FOREIGN KEY (parent_node_id) REFERENCES run_node(id) ON DELETE CASCADE` |
-| 防漂移断言 | ✅ 新增 `scripts/check-schema-sync.sh`（重跑 merge 比对 + 断言三要素），已并入 `ci-gate.sh` 第 2.5 道门；负向测试通过（塞回旧产物即报错并还原工作区） |
+| 防漂移断言 | ✅ 新增 `scripts/check-schema-sync.sh`（重跑 merge 比对 + 断言三要素），已并入 `ci-gate.sh` 第 2.5 道门；负向测试通过（塞回过期产物即报错并还原工作区） |
 
-> 附带：全新库执行原有的 22 条 `already exists` 已在 `BUG-20261103-08` 里一并修掉
+> 附带：全新库执行的 22 条 `already exists` 已在 `BUG-20261103-08` 里一并修掉
 > （`merge.sh` 加守卫），现在空库执行 **0 错误**，部署路径也干净了。
 
 ---
@@ -161,7 +161,7 @@
 | `run` 连续段 | id **1..197 连续**，**198 起有空洞**（`first_missing_run_id = 198`） |
 | 触发条件 | `experiment_run.id` 涨到 198 时，起跑处即抛 `23503`（当前 39 → 再跑约 **158** 次实验） |
 
-**根因**：`experiment_run` 与 `run` 两张表**各自独立自增**，不是一个 id 空间；`experiment_run.id` 恰好仍落在 `run` 的连续段内，所以线上一直没炸，属**延迟必炸**。由既有提交 `862f52a`（"feat: 错误码落库 + 实验状态同步"）引入，**非本轮工作**。
+**根因**：`experiment_run` 与 `run` 两张表**各自独立自增**，不是一个 id 空间；`experiment_run.id` 恰好仍落在 `run` 的连续段内，所以线上一直没炸，属**延迟必炸**。由提交 `862f52a`（"feat: 错误码落库 + 实验状态同步"）引入，**非本轮工作**。
 
 **修复**：两处均移除 `run_id = r.id`，保留 `status / started_at / finished_at / updated_at` 同步，并加注释说明。全仓检索确认无消费者读 `experiment.run_id`（`QueryService` / `webapp` / `docs` 均无命中），删除安全。
 

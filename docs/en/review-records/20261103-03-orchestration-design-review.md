@@ -143,7 +143,7 @@ Of these two, I recommend **#1** more strongly, because it naturally supports th
 
 The draft's judgement about "who is the single source of truth" is right, but S1 is written as "can be released independently", and one key condition is still missing:
 
-> **The graph saving + the process compilation result saving must be completed at the same backend entry point and in the same transaction; and the old direct-edit entry point of the process must be closed at the same time.**
+> **The graph saving + the process compilation result saving must be completed at the same backend entry point and in the same transaction; and the direct-edit entry point of the process must be closed at the same time.**
 
 In the actual code today:
 
@@ -154,7 +154,7 @@ In the actual code today:
 If S1 is only "the frontend triggers one compilation from the canvas", but the server still keeps two independent write paths, the following will still happen:
 
 1. the graph is written successfully, the process write fails;
-2. the process is changed by the old entry point, the graph does not follow;
+2. the process is changed by the direct-edit entry point, the graph does not follow;
 3. the transaction succeeds but the version / audit yardstick only updated one of the two sides.
 
 This is exactly the kind of problem you just caught in §1 of the draft, except that it has changed from "historically occasional" to "kept by design".
@@ -165,7 +165,7 @@ Make the Definition of Done of S1 explicitly:
 
 1. add a single save entry point: `saveExperimentGraphAndCompile(...)`
 2. that entry point writes `experiment_graph` + `experiment_process` + `experiment.version` in **one transaction**
-3. the old direct-edit entry point of the workflow table is **closed for writing in the same version, or kept read-only**
+3. the direct-edit entry point of the workflow table is **closed for writing in the same version, or kept read-only**
 4. the regression test has to cover "the whole thing rolls back when either the graph or the process write fails"
 
 Otherwise S1 cannot count as truly "eliminating that the canvas has no effect", only as "lowering the probability of the split".
@@ -218,7 +218,7 @@ Do not rewrite the whole text, just fix the three most important wordings:
 2. **Then change §5 / §6**
    Make explicit that the relation between a batch and a run is one-to-many, and add "how the re-run history is stored"
 3. **Finally change §7 S1**
-   Change the premise of "released independently" to "a single entry point + a single transaction + the old entry point closed for writing"
+   Change the premise of "released independently" to "a single entry point + a single transaction + the entry point closed for writing"
 
 Only after these three are changed is it worth deciding whether to put it on the ROADMAP timeline.
 

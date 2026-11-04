@@ -53,7 +53,7 @@ Get rid of the state where "the canvas only stores the drawing and the execution
 | 2 | Graph validator | Validates the required fields, the isolated nodes, the illegal edges and the cycles (at least S1 must not save a graph that "cannot be linearised") |
 | 3 | Graph compiler | `graph -> experiment_process`; to begin with it only supports the linear / linearisable scenarios |
 | 4 | Single-transaction write | `experiment_graph` / `experiment_process` / `experiment.version` are completed in the same transaction |
-| 5 | Close the old write entry point | The workflow table on the detail page becomes read-only; if the old API is called it returns a clear error instead of silently accepting it |
+| 5 | Close the existing write entry point | The workflow table on the detail page becomes read-only; if the existing API is called it returns a clear error instead of silently accepting it |
 
 ### 2.3 Frontend tasks
 
@@ -77,12 +77,12 @@ Get rid of the state where "the canvas only stores the drawing and the execution
 
 ### 2.5 Risks
 
-- **The biggest risk**: the old entry point is not write-closed, which produces "looks unified, actually a dual write"
+- **The biggest risk**: the existing entry point is not write-closed, which produces "looks unified, actually a dual write"
 - **The secondary risk**: the validator is too lax and lets the S2/S3 semantics leak into S1 too early
 
 ### 2.6 Exit conditions
 
-1. The old workflow table can no longer be edited
+1. The existing workflow table can no longer be edited
 2. The execution order after the canvas save matches the workflow table on the detail page
 3. A failed save never leaves a half-finished result
 
@@ -248,12 +248,12 @@ But when the development really starts, it is recommended to proceed in the orde
 
 | # | Decision | Reason |
 |---|---|---|
-| D1 | The batch switch: `experiment.batch_split int NULL` = the number of samples per batch; `NULL` = no batching (**the old behaviour is completely unchanged**) | One column switches it on, no migration of the old data |
+| D1 | The batch switch: `experiment.batch_split int NULL` = the number of samples per batch; `NULL` = no batching (**the default behaviour is completely unchanged**) | One column switches it on, no stored-data migration |
 | D2 | The sample mapping: **on the first execution**, in ascending `experiment_sample.sample_id` order, cut off a batch every `batch_split` samples; snapshot that batch's `[{sampleId, barcode}]` into `experiment_batch.samples jsonb`; from then on a re-run only uses the snapshot | The snapshot = the sample set does not drift on a re-run (the second risk of §4.6), and no separate mapping table has to be built |
 | D3 | The run semantics: one 「Execute experiment」 of a batched experiment = run **all the batches that have not succeeded yet** serially by `batch_no`; one `experiment_run` per batch + one `experiment_batch_run(attempt_no)`; when a batch fails, **continue** with the following batches; when a pause hold is encountered, stop at the **batch boundary** and do not start the next batch | It reuses the existing `ExperimentExecutor` (one run per batch) and does not build a new executor; draft §5: any failure = the experiment failed, but the remaining batches can continue |
-| D4 | The re-run: `POST /api/experiments/{id}/batches/{batchNo}/run` only runs that batch, with a new `attempt_no`, and the old attempts are kept; only batches that are not `completed` are allowed | It corresponds to §4.1 / §4.3 #5 / §4.4 #2 |
+| D4 | The re-run: `POST /api/experiments/{id}/batches/{batchNo}/run` only runs that batch, with a new `attempt_no`, and the historical attempts are kept; only batches that are not `completed` are allowed | It corresponds to §4.1 / §4.3 #5 / §4.4 #2 |
 | D5 | The variable injection: the variables of each batch run get `batchNo` (a numeric string) and `batchSamples` (a comma-separated string of the sample barcodes) appended; **the variables the user passed explicitly with the same name are not overwritten** | It does not break the existing variable semantics; the workflow parameters can use ${batchNo} |
-| D6 | The state aggregation: a `running/queued` batch → experiment=running; a `paused` batch and no running one → paused; all `completed` → finished; no running/paused and any `failed/aborted` → failed; when `batch_split` is NULL the old logic applies | §4.7 #3 requires the rules to be written down clearly and covered by tests |
+| D6 | The state aggregation: a `running/queued` batch → experiment=running; a `paused` batch and no running one → paused; all `completed` → finished; no running/paused and any `failed/aborted` → failed; when `batch_split` is NULL the default logic applies | §4.7 #3 requires the rules to be written down clearly and covered by tests |
 | D7 | The batches are **serial** to each other (1.0 does not run them in parallel); the batch boundary checks `RuntimeHold` / `stop_requested` | There is only one device; S2-A only promises a partial order |
 
 ### 8.2 The data model
@@ -308,7 +308,7 @@ An already-succeeded batch / a batch that does not exist → 400 `{"error": "...
 
 **POST `/api/experiments/{id}/run` (the existing interface, extended for batching)**
 
-The original fields are kept (`status / doneSteps / totalSteps / error`); when batching, the following is appended:
+The existing fields are kept (`status / doneSteps / totalSteps / error`); when batching, the following is appended:
 
 ~~~json
 {"batchSplit": 24,
@@ -377,7 +377,7 @@ e2e 16/0; the full run with the database **631/0**.
 
 | # | Decision |
 |---|---|
-| D8 | **The unified write-back point** @@BatchOrchestrator.onRunStatusChanged(long runId)@@: a non-batch run returns false straight away (zero change on the old path); a batch run updates the attempt row (status/error/finished_at) + the aggregated batch state + the aggregated experiment state (D6). **Idempotent**. |
+| D8 | **The unified write-back point** @@BatchOrchestrator.onRunStatusChanged(long runId)@@: a non-batch run returns false straight away (zero change on the default path); a batch run updates the attempt row (status/error/finished_at) + the aggregated batch state + the aggregated experiment state (D6). **Idempotent**. |
 | D9 | **The scheduler recovery**: @@ExperimentScheduler.executeOne@@ first probes whether the run belongs to a batch → a batch run runs with @@syncExperimentStatus=false@@ and calls D8 at the end; the exception fallback that marks it failed also calls D8. |
 | D10 | **The run control**: @@RunControl.stop/resume@@ **skips** the single-run @@syncExperimentStatus@@ for a batch run and goes through D8 instead (after a resume status=queued; a stop on a non-running state lands aborted and then status=aborted). The branch in which the stop request is set (running) does not change the state and needs no write-back. |
 | D11 | **The configuration entry point**: @@PUT /api/experiments/{id}/batch-split@@, body @@{"batchSplit": N}@@ or @@{"batchSplit": null}@@; N must be >0 (0 is treated as null = clear); **the modification is refused when batch rows already exist** (the snapshot of D2 is fixed), 400 explains "clear the batch data first". The frontend action row gets a 「Batch settings」 dialog. |

@@ -57,7 +57,7 @@ public final class MainPathSelector {
             return "task".equals(type) || "subprocess".equals(type);
         }
 
-        /** 有明确设备实例（老数据/强绑定场景）。 */
+        /** 有明确设备实例（存量数据/强绑定场景）。 */
         public boolean needsDevice() {
             return equipmentId != null && isTask();
         }

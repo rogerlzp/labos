@@ -50,8 +50,8 @@ public final class EndToEndDemo {
         System.out.print(registry.healthReport());
 
         // ---------- 2. 真实工艺节点
-        List<TaskNode> nodes = loadTasks(db, 648L, 6);
-        section("2. 真实工艺节点（workflow 648 前 6 个 task）");
+        List<TaskNode> nodes = loadTasks(db, 6);
+        section("2. 一条流程的前 6 个 task");
         System.out.printf("  %-4s %-28s %-12s %s%n", "#", "节点", "能力", "方法");
         System.out.println("  " + "-".repeat(70));
         for (TaskNode n : nodes) {
@@ -80,7 +80,7 @@ public final class EndToEndDemo {
         System.out.println("  结果: " + progress.summary());
 
         // ---------- 4. 设备原文
-        section("4. 设备原始回包（老系统 99.7% 缺失）");
+        section("4. 设备原始回包");
         DriverStepExecutor exec = lastExecutor;
         for (TaskNode n : nodes) {
             exec.rawResponse(n.id()).ifPresent(raw ->
@@ -159,7 +159,7 @@ public final class EndToEndDemo {
 
     // ---------------------------------------------------------------- 数据
 
-    private static List<TaskNode> loadTasks(DbConfig db, long workflowId, int limit) throws SQLException {
+    private static List<TaskNode> loadTasks(DbConfig db, int limit) throws SQLException {
         List<TaskNode> out = new ArrayList<>();
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
@@ -167,11 +167,14 @@ public final class EndToEndDemo {
                             COALESCE(n.params->>'protocol_name', c.code) AS method
                      FROM workflow_node n
                      LEFT JOIN capability c ON c.id = n.capability_id
-                     WHERE n.workflow_id = ? AND n.node_type = 'task' AND c.code IS NOT NULL
+                     WHERE n.node_type = 'task' AND c.code IS NOT NULL
+                       AND n.workflow_id = (
+                           SELECT workflow_id FROM workflow_node
+                           WHERE node_type = 'task' AND capability_id IS NOT NULL
+                           GROUP BY workflow_id ORDER BY count(*) DESC LIMIT 1)
                      ORDER BY n.id LIMIT ?
                      """)) {
-            ps.setLong(1, workflowId);
-            ps.setInt(2, limit);
+            ps.setInt(1, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     out.add(new TaskNode(rs.getLong(1), rs.getString(2), rs.getString(3),

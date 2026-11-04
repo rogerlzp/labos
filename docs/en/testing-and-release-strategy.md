@@ -36,10 +36,10 @@ of time.
 | `AlertSelfTest` | Alert generation, deduplication, merging | `... alert.AlertSelfTest` |
 | `WorkflowAlertTest` | Missing plate, timeout and failure alerts | `... workflow.WorkflowAlertTest` |
 | `GraphRunnerTest` | Parallel, exclusive gateway, compilation | `... workflow.GraphRunnerTest` |
-| `RecipeCompilerTest` | Compiling 993 real processes | `... workflow.RecipeCompilerTest` |
-| `RealWorkflowRunner --all` | 993 workflows running end to end | `... workflow.RealWorkflowRunner --all` |
+| `RecipeCompilerTest` | Compiling workflows on the simulation bus | `... workflow.RecipeCompilerTest` |
+| `RealWorkflowRunner --all` | the workflows running end to end | `... workflow.RealWorkflowRunner --all` |
 
-**Pass criterion**: everything green + the processes at 993/993 = 100%.
+**Pass criterion**: everything green + the processes at the full set = 100%.
 
 ### Self-tests for the new capabilities (recommended additions)
 
@@ -207,12 +207,12 @@ Week 4   the 2nd island
 
 | The wrong thing | The consequence |
 |---|---|
-| **The old and the new system operate on the same devices at the same time** | Both think the plate is in their hands, a collision |
+| **Two systems operating on the same set of devices at the same time** | Both think the plate is in their hands, a collision |
 | Skipping the shadow and going straight to the real run | A wrong parameter is only discovered afterwards |
 | Changing several endpoints and then going live | When something goes wrong you do not know which endpoint it was |
 
-**The transition must be**: stop the old system → a human empties the devices → bring up
-the new system.
+**The transition must be**: stop any other software that is controlling these devices → a human empties the devices → bring up
+this system.
 
 ---
 
@@ -223,7 +223,7 @@ the new system.
 | Requirement | How |
 |---|---|
 | Verify the command format | `sidecar-dotnet --mock`, returns a fixed JSON |
-| Verify the workflow logic | `RealWorkflowRunner --all` (993 real processes) |
+| Verify the workflow logic | `RealWorkflowRunner --all` (workflows on the simulation bus) |
 | Verify the plate-position logic | Change `device_state.has_plate` directly with SQL |
 | Verify the robot-arm positions | `POST /robot-points/sync` generates them per device |
 

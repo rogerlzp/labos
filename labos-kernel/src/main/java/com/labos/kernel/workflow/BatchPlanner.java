@@ -15,7 +15,7 @@ import java.util.Map;
  * <h3>口径（实施清单 §8 · D1/D2/D5/D6）</h3>
  * <ol>
  *   <li><b>切批</b>：{@code batchSplit} 为 NULL 或 {@code <= 0} = 不分批（返回空列表，
- *       调用方走老逻辑）；否则按入参顺序每 {@code batchSplit} 个切一批，
+ *       调用方走非分批路径）；否则按入参顺序每 {@code batchSplit} 个切一批，
  *       <b>余数单独成一批</b>（96/24 = 4 批；100/24 = 5 批，最后一批 4 个）。</li>
  *   <li><b>样品快照</b>：入参顺序即快照顺序。调用方按
  *       {@code experiment_sample.sample_id} 升序传入，切出来的批次及其样品顺序
@@ -24,7 +24,7 @@ import java.util.Map;
  *       注意这与“不分批”（{@code batchSplit} 为空）是<b>两种不同情况</b>：
  *       前者是配置错误（配了分批却没有样品），由调用方
  *       {@link BatchOrchestrator} 明确报错，<b>不许</b>默默按不分批跑一遍；
- *       后者才是老行为。</li>
+ *       后者才是非分批路径。</li>
  *   <li><b>批变量</b>：{@code batchNo}（数字串）、{@code batchSamples}（条码逗号串）
  *       追加进本次 run 的变量；<b>不覆盖用户显式传入的同名变量</b>（D5）。</li>
  *   <li><b>状态聚合</b>：批次状态 -> 实验状态，见

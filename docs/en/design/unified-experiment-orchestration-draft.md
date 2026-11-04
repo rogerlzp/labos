@@ -233,7 +233,7 @@ Three possible landing points:
    - `experiment_batch` = the logical batch (which batch, the sample set, the current aggregated state)
    - `experiment_batch_run` = every actual run of that batch (`run_id / attempt_no / status`)
 5. The experiment state = the aggregation of the logical batches (all succeeded = success; any failed = failed, but **the remaining batches can continue**)
-6. Re-running after a failure: create a new `experiment_batch_run`, re-run only the failed batch, and do not overwrite the old `run_id`
+6. Re-running after a failure: create a new `experiment_batch_run`, re-run only the failed batch, and do not overwrite the historical `run_id`
 7. Variable scope: the experiment-level variables are shared globally; the batch variables (e.g. the sample list of the current batch) are injected at the start of each batch run
 
 ### 5.3 What I have not thought through
@@ -297,7 +297,7 @@ COMMENT ON COLUMN experiment_graph.graph IS '仅布局（节点坐标/连线样�
    - save `experiment_graph`
    - compile and replace `experiment_process` as a whole
    - update `experiment.version`
-3. The old entry point that writes the workflow table directly is **write-closed** in the same version (at least the UI no longer exposes it, and the backend rejects external writes)
+3. The existing entry point that writes the workflow table directly is **write-closed** in the same version (at least the UI no longer exposes it, and the backend rejects external writes)
 4. If any sub-step fails, everything is rolled back; "the graph was updated but the process was not", or the other way round, is not allowed
 5. The regression tests cover at least:
    - a linear graph is saved successfully → `graph/process` are updated in sync

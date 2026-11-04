@@ -132,7 +132,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  // 任意接口 401（client 统一 broadcast）：会话立即失效，回登录页（原有自动回登录保留）
+  // 任意接口 401（client 统一 broadcast）：会话立即失效，回登录页（自动回登录保留）
   useEffect(() => {
     const onUnauthorized = () => {
       setSession(null);

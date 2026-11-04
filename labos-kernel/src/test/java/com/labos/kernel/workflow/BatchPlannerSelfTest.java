@@ -12,7 +12,7 @@ import java.util.Objects;
  * <p>对应实施清单 §4.5 / §8.4 必须逐条覆盖的规则：
  * <ol>
  *   <li>96 样品 / batch_split=24 -> 4 批；余数单独成批；</li>
- *   <li>batch_split 为 null / {@code <= 0} -> 不分批（返回空计划，调用方走老逻辑）；</li>
+ *   <li>batch_split 为 null / {@code <= 0} -> 不分批（返回空计划，调用方走非分批路径）；</li>
  *   <li>空样品集合 -> 空计划（由编排层报配置错误，不静默降级）；</li>
  *   <li>样品顺序 = 快照顺序（sample_id 升序由调用方保证）；</li>
  *   <li>D5 批变量注入不覆盖用户显式变量；</li>

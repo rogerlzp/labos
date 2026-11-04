@@ -584,7 +584,7 @@ more.
 
 ### The relationship to the banker's algorithm
 
-A fault changes the available resources, so **the previous safe sequence may no longer
+A fault changes the available resources, so **the previously computed safe sequence may no longer
 hold and has to be recomputed**.
 
 But **you cannot abort a running action just because "recomputing says it is unsafe"**:
@@ -1277,7 +1277,7 @@ if (requirement can be expressed as "arithmetic over existing variables") {
 
 ## Appendix B. Known unimplemented items (continuously updated)
 
-> The original number was D9. Review 20261102-02 R1 found that "how to use this
+> The number was originally D9. Review 20261102-02 R1 found that "how to use this
 > document" had wrongly taken D109, and that this section had jumped to the end; it was
 > changed to Appendix A / Appendix B. **The number D9 is deliberately left unused** to
 > avoid renumbering (D109-D119 are referenced heavily by the review packages and the

@@ -50,7 +50,7 @@ public final class BpmnExpander {
     private static final double SUB_H = 220;
 
     /**
-     * 老库的 XML 用默认命名空间（{@code <definitions xmlns="...">}），
+     * 存量 XML 用默认命名空间（{@code <definitions xmlns="...">}），
      * 而本类创建的元素带 {@code bpmn:} 前缀。
      *
      * <p>两者混在一起序列化后，前缀没有声明，bpmn-js 直接解析失败。

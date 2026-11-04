@@ -73,7 +73,7 @@ spring:
 | 基础与平台 | `10_base_platform.sql` | 8 | `tenant` `app_user` `app_role` `permission` `user_role` `role_permission` `dict_item` `sys_setting` |
 | 内核 | `20_kernel.sql` | 23 | **资源与能力(4)**：`capability` `resource_node` `resource_capability` `resource_booking`<br>**驱动(3)**：`driver` `driver_capability` `driver_health`<br>**工艺编排(5)**：`protocol` `protocol_step` `workflow` `workflow_node` `workflow_edge`<br>**执行(6)**：`run` `run_node` `run_command` `run_event`(分区) `run_variable` `run_artifact`<br>**调度(2)**：`schedule_plan` `schedule_item`<br>**恢复(3)**：`error_code` `recovery_policy` `error_occurrence` |
 | 业务 | `30_business.sql` | 18 | 样本 `sample` `sample_aliquot` `plate` `plate_well` `sample_order` `sample_order_item`；耗材试剂 `consumable` `consumable_lot` `reagent` `reagent_lot`；项目实验 `project` `experiment` `experiment_sample`；设备 `device` `device_method` `device_instance` `device_log`(分区)；文件 `file_blob` |
-| 运维 | `40_ops.sql` | 4 + 3 视图 | `notify_channel` `notification` `notify_log` `audit_log`；视图 `v_legacy_wf_process_instance` `v_legacy_equipment_instance` `v_schema_health` |
+| 运维 | `40_ops.sql` | 4 + 3 视图 | `notify_channel` `notification` `notify_log` `audit_log`；视图 `v_wf_process_instance_ro` `v_equipment_instance_ro` `v_schema_health` |
 
 ## 六、执行状态：✅ 已在真实库验证通过
 

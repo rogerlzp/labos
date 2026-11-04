@@ -62,7 +62,7 @@ ON CONFLICT DO NOTHING;
 --
 -- 三处都是错的：
 --   ① user_role 的 JOIN 找 ROLE1/2/4，而 app_role 种的是 admin/operator/viewer
---      —— **永不匹配**，一条 user_role 也插不进去（原 P0-11）。
+--      —— **永不匹配**，一条 user_role 也插不进去（P0-11）。
 --   ② 认证链路读的是 `sys_user`（AuthService.java:73,130），
 --      app_user 那套**没有任何 Java 代码读**（grep 已确认）。
 --      种子灌进去的账号在登录页根本用不了（A1）。

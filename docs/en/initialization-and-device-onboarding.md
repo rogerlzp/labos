@@ -73,7 +73,7 @@ So the actual purposes of `device_instance.ip` are:
 |---|---|
 | **Identifying the ownership** | Which subnet the machine holding this device is on |
 | **Troubleshooting** | Knowing which cabinet to go to during on-site debugging |
-| **Deriving the driver endpoint** | The comment in the original implementation says `"source": "equipment_instance.ip_address + serial_port"` |
+| **Deriving the driver endpoint** | The comment says `"source": "equipment_instance.ip_address + serial_port"` |
 
 **What really determines the communication is `driver.endpoint`**, not
 `device_instance.ip`.
@@ -193,7 +193,7 @@ Two routes:
 | Route | Suitable for | Operation |
 |---|---|---|
 | **Dragging in the designer** | A new workflow | "Authoring → Workflows → New" → draw it in bpmn-js → save |
-| **Importing the XML of the existing implementation** | Migration | `INSERT INTO workflow (graph)` directly |
+| **Importing stored workflow XML** | Migration | `INSERT INTO workflow (graph)` directly |
 
 Once the workflow node is created, the **preflight** tells you whether it can run:
 

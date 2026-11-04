@@ -157,7 +157,7 @@ Taking "workflow library → Execute" as the example (the experiment path adds o
         ⚠️ this must be idempotent: a resume comes in here a second time (D4)
 
 3. If workflow.graph->>'xml' has content → GraphRunner.run(graph, executor)
-   → otherwise it degrades to sequential execution (old data)
+   → otherwise it degrades to sequential execution (stored data)
 
 4. GraphRunner main loop:
    - take a node from the ready queue → decide the type

@@ -45,7 +45,7 @@ import java.util.Set;
  * 所以能发现「异或只走一条，但下游并行汇合等两条」这种结构性死锁，
  * 静态分析很难查出来。
  *
- * <p>性能：993 个流程全量干跑约 2 秒（纯内存，不碰设备）。
+ * <p>性能：全量流程全量干跑约 2 秒（纯内存，不碰设备）。
  */
 public final class PreflightChecker {
 
@@ -82,7 +82,7 @@ public final class PreflightChecker {
     private final DbConfig db;
     private final long tenantId;
 
-    // 全量预检时这些数据只该加载一次，否则 993 个流程会做 993 次全表查询
+    // 全量预检时这些数据只该加载一次，否则每个流程都会做一次全表查询
     private Map<String, List<Long>> capPoolCache;
     private Map<String, String> protocolCapCache;
     private RecoveryDecider deciderCache;

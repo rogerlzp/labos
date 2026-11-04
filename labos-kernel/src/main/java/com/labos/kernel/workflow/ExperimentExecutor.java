@@ -122,7 +122,7 @@ public final class ExperimentExecutor {
      * @param existingRunId       复用已有的 experiment_run（每批一个 run，调度器/分批编排
      *                            先建 queued 行再传进来），传 0 则新建
      * @param syncExperimentStatus 是否把<b>这一条 run</b> 的状态同步到 {@code experiment} 表。
-     *                            <p>老路径（整单一次 run）传 {@code true}，与改动前完全一致。
+     *                            <p>非分批路径（整单一次 run）传 {@code true}，与改动前完全一致。
      *                            <p>分批执行传 {@code false}：实验状态必须按 D6 用<b>所有批次</b>
      *                            聚合（{@link BatchPlanner#aggregateExperimentStatus}），
      *                            否则"第 1 批跑完"会把实验改成 finished，后面批次还没跑 ——
@@ -214,7 +214,7 @@ public final class ExperimentExecutor {
     /**
      * 展开：先按偏序求执行序，循环块再按 loopCount 复制，同时替换参数里的 {@code ${var}}。
      *
-     * <p>执行序来自 {@code experiment_process_edge}（前驱 -> 后继）；没有边的老数据
+     * <p>执行序来自 {@code experiment_process_edge}（前驱 -> 后继）；没有边的存量数据
      * 退化为按 {@code seq} 升序 —— 与改动前完全一致。
      */
     public List<Step> expand(long experimentId, Map<String, String> vars) throws SQLException {
@@ -496,7 +496,7 @@ public final class ExperimentExecutor {
     /**
      * 落终态。
      *
-     * <p>与旧 {@code finish} 的差别：除了 {@code status/error}，还要写暂停信息
+     * <p>与改动前的 {@code finish} 的差别：除了 {@code status/error}，还要写暂停信息
      * （{@code pause_kind/pause_reason/paused_at}）与终态时间 {@code finished_at}。
      * <b>暂停不是终态</b>——所以 paused 时只记 paused_at，不写 finished_at，
      * 这样"停过又恢复"不会被当成"跑完了"。
@@ -533,7 +533,7 @@ public final class ExperimentExecutor {
                 ps.executeUpdate();
             }
 
-            // **实验本身的状态也要跟着走**。原来只更新 experiment_run，
+            // **实验本身的状态也要跟着走**。改动前只更新 experiment_run，
             // experiment.status 永远停在 created —— 实验列表上分不出"跑过"和"没跑过"，
             // 现场点完"执行实验"回列表还是一排"待执行"。
             //

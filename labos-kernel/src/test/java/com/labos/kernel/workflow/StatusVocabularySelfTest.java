@@ -144,12 +144,12 @@ public final class StatusVocabularySelfTest {
         // 对全部 run 状态求值，与改前的三行 CASE 规则逐状态比对。
         List<String> mismatch = new ArrayList<>();
         List<String> probe = new ArrayList<>(codes("run"));
-        probe.add("legacy_unknown_status");
+        probe.add("prior_unknown_status");
         for (String s : probe) {
             String got = evaluateGeneratedCase(sql, s);
-            String legacy = legacyCase(s);
-            if (!Objects.equals(legacy, got)) {
-                mismatch.add(s + ": 改前=" + legacy + ", 生成=" + got);
+            String baseline = baselineCase(s);
+            if (!Objects.equals(baseline, got)) {
+                mismatch.add(s + ": 改前=" + baseline + ", 生成=" + got);
             }
         }
         eq("全部 11 个 run 状态 + 未知码求值 = 改前规则", List.of(), mismatch);
@@ -301,7 +301,7 @@ public final class StatusVocabularySelfTest {
     }
 
     /** 改前 ExperimentExecutor.syncExperimentStatus 里的硬编码规则（行为基线）。 */
-    private static String legacyCase(String runStatus) {
+    private static String baselineCase(String runStatus) {
         return switch (runStatus) {
             case "completed" -> "finished";
             case "failed" -> "failed";

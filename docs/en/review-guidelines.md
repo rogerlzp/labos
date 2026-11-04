@@ -105,7 +105,7 @@ review, the reviewed party must have ready:
 | Problem | The lesson |
 |---|---|
 | Only saying "completed", never saying "what was not done" | The reviewer cannot judge maturity |
-| Presenting simulation results as a real pass rate | "993 workflows at 100 %" is actually `SimulatedBus` walking the graph, not a real device |
+| Presenting simulation results as a real pass rate | A simulation-bus walk is not a real-device pass |
 | The "next step" for a known problem is a guess | Comparing with the source showed the direction was completely wrong |
 | Several sets of documents each telling their own story | The reviewer does not know which one to believe |
 
@@ -132,7 +132,7 @@ unable to decide. The rule is now:
 ① Code + database schema        ← the only truth about landed behaviour
 ② Design documents in docs/ (newer than the specification)  ← designed, partly not landed
 ③ LabOS2.0_功能规格说明书   ← constrains only "what is still not in the release gate"
-④ Old scheduling documents in the root / docs/modules/README.md  ← obsolete, historical background only
+④ Existing scheduling documents in the root / docs/modules/README.md  ← obsolete, historical background only
 ```
 
 **How to handle a conflict**:
@@ -141,7 +141,7 @@ unable to decide. The rule is now:
   implemented in code" or "the code differs from the design"
 - ② vs ③ → **change the specification first**; do not keep two stories
 - Decision numbers are allocated **in blocks**, and no number may be reused globally
-  (in force since 2026-11-02; the old "each document invents its own D1-Dn" is void):
+  (in force since 2026-11-02; the "each document invents its own D1-Dn" is void):
 
   | Number block | Owner | Count |
   |---|---|---|

@@ -140,7 +140,7 @@ late response is discarded as an "orphan".
 
 ### 3.3 But resending has a fatal flaw (already fixed)
 
-**The original implementation**:
+**The implementation before the change**:
 
 ```java
 new DriverCommand(UUID.randomUUID().toString(), ...)   // every retry gets a new id

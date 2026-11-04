@@ -100,7 +100,7 @@ public final class DriverContractDemo {
             System.out.println("  尝试构造「失败但无错误码」的结果 -> 被拒绝");
             System.out.println("    " + e.getMessage());
         }
-        System.out.println("  ★ 契约层就堵死了老库 绝大多数 的万能码问题");
+        System.out.println("  ★ 契约层就堵死了万能码问题");
 
         section("6. 能力覆盖：这 5 个驱动能支撑多少工艺能力");
         Set<String> covered = registry.capabilities();

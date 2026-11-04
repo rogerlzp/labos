@@ -34,10 +34,10 @@ The historical designs and topic documents (52 of them) are still under `docs/`;
 
 | Dimension | Value | How it was verified |
 |---|---|---|
-| Backend code | `labos-kernel` **29,671 lines** of Java (107 files), 11 packages | `find src/main/java -name '*.java' \| xargs wc -l` (7 self-test classes have moved to `src/test`, so it is fewer than in the previous version) |
+| Backend code | `labos-kernel` **29,671 lines** of Java (107 files), 11 packages | `find src/main/java -name '*.java' \| xargs wc -l` (7 self-test classes have moved to `src/test`, so it is fewer than in the last version) |
 | Frontend code | **8,393 lines** of TypeScript/TSX, 19 pages | `find webapp/src -name '*.ts*' \| xargs wc -l` |
 | Database | 112 tables (including the two monthly-partitioned groups `device_log` / `run_event`, 15 tables each) | `information_schema.tables` |
-| Stored data | workflow 1008 / node 14028 / experiment 659 / run 10642 / node execution 120043 / command 116626 | direct `count(*)` |
+| Stored data | stored workflows and run records | direct `count(*)` |
 | Error codes | 25 codes / 27 recovery policies | same |
 | Devices | 76 device models / 248 deployed instances | same |
 | Automated tests | **379 pure-logic cases** (`--pure-only`, deterministic) / 397 with the database | `scripts/test-all.sh --pure-only` |

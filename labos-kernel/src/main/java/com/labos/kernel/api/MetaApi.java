@@ -67,12 +67,12 @@ import static com.labos.kernel.api.ApiServer.*;
  * {@code /api/meta/status-vocabulary}
  * <p>正则路由：{@code CAP_METHODS}
  *
- * <p><b>拆分约定</b>：路由顺序与原 ApiServer.route() 中完全一致；命中即 return true。
+ * <p><b>拆分约定</b>：路由顺序按首次出现顺序分发（跨 controller 稳定）；命中即 return true。
  * 共享 helper 仍由 ApiServer 提供（static import + {@code s.xxx}），不重复实现。
  */
 final class MetaApi {
 
-    /** 宿主：提供库连接/服务与共享 helper（与原 ApiServer 内部调用等价）。 */
+    /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
     MetaApi(ApiServer s) {

@@ -30,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li><b>token 放内存</b>：进程重启要重新登录。对中控台可接受（本来就要值守交接），
  *       换来的是不用维护 token 表、不用考虑撤销。</li>
  *   <li><b>PBKDF2 + 每人独立 salt</b>：JDK 自带，不引第三方。</li>
- *   <li><b>审计复用老库的 {@code audit_log}</b>：结构已经够用（before/after/ip/result），
+ *   <li><b>审计复用 {@code audit_log}</b>：结构已经够用（before/after/ip/result），
  *       只是从来没写过数据。</li>
  * </ul>
  */
@@ -81,7 +81,7 @@ public final class AuthService {
 
             String user = envOr("LABOS_ADMIN_USER", "admin");
 
-            // P0-2 修复（评审 20261102-03）：原来默认口令硬编码 admin123，
+            // P0-2 修复（评审 20261102-03）：改动前默认口令硬编码 admin123，
             // 且把明文打印到 stdout —— 日志、终端历史、截图都会泄漏。
             //
             // 现在：生产环境（LABOS_ENV=prod）**必须**显式设 LABOS_ADMIN_PASS；
@@ -189,7 +189,7 @@ public final class AuthService {
     }
 
     /**
-     * 写审计。复用老库 {@code audit_log}。
+     * 写审计。复用 {@code audit_log}。
      *
      * <p>失败不影响主流程——审计写不进去不该阻止业务，但要打日志。
      */

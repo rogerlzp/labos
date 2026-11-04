@@ -260,7 +260,7 @@ the four parsing rules would eventually drift apart.
 1. Add `resource_id bigint` and `seq int` (nullable, backfilled later) to `workflow_node`
 2. On `saveGraph`, **write both**: the XML stays authoritative (bpmn-js still has to open it), and the parsed result is persisted
 3. Switch the read side to the table: ETA / timeline / binding panel / Gantt all query `workflow_node`
-4. Backfill script: parse the XML of the existing 1008 workflows and write it back (idempotent, re-runnable)
+4. Backfill script: parse the XML of the stored workflows and write it back (idempotent, re-runnable)
 5. Add an assertion: after `saveGraph`, `workflow_node.resource_id/seq` must match the XML parse result (drift guard, same idea as `check-schema-sync`)
 
 **Landed result (2026-11-03)**:
@@ -301,7 +301,7 @@ served"; with a dozen experiments queueing you can neither see nor adjust anythi
 order (log completion order + queue position); across 3 islands maxRunning=3 was observed
 in every round (concurrency holds, MAX_CONCURRENT=4), no island was ever concurrently
 occupied; the Gantt page renders correctly.
-The original acceptance condition — "3 experiments run concurrently, order is consistent,
+The acceptance condition — "3 experiments run concurrently, order is consistent,
 mutual exclusion is not broken" — **is met**.
 
 **M9 conclusion (2026-11-03)**: all 4 scope items are done (Gantt / EDD + manual
@@ -341,14 +341,14 @@ same-batch re-run concurrency guard (remainder in the implementation checklist �
   is written.
   Regression: `ExperimentGraphCompileSelfTest` (pure logic) + `ExperimentGraphPersistenceSelfTest` (with database).
 - `S2-A` ✅ (`ae06025`): dependencies become an `experiment_process_edge` edge table, the
-  executor orders them with Kahn's topological sort and rejects cycles; legacy data
+  executor orders them with Kahn's topological sort and rejects cycles; existing data
   without edges is ordered by ascending `seq` (same as before the change). **Only partial
   order and physical serialisation are promised, not wall-clock concurrency.**
   Regression: `ExperimentOrderSelfTest` (pure logic).
 - `S3` ✅ (backend `bbcc5bc` + frontend `fd59d90`): a `batch_split` switch plus the two
   tables `experiment_batch` / `experiment_batch_run`; batches run serially, a failed batch
   does not stop the rest, a single batch can be re-run with an incrementing attempt and
-  the old history kept (the persistence shape agreed in review item B2); frontend batch
+  the existing history kept (the persistence shape agreed in review item B2); frontend batch
   cards, "re-run this batch" and the per-attempt history.
 - `S3.1` ✅ (backend `c915948` + frontend `5f12696`): in-batch run resume/stop write back
   to the batch layer (D8–D10), `PUT /api/experiments/{id}/batch-split` plus the frontend
@@ -421,7 +421,7 @@ reporting / BI, multi-instance deployment (locks currently live in-process).
 
 **Permissions (basic) were closed on 2026-11-03**: the existing `sys_user.role`
 (admin/operator/viewer) is reused + backend role whitelist / last-administrator protection +
-frontend role awareness / read-only experience; the legacy `app_role`/`role_permission`
+frontend role awareness / read-only experience; the currently-unused `app_role`/`role_permission`
 tables are **not enabled** (to avoid two tracks — see the development log for 2026-11-03).
 Remaining: multi-tenant isolation, reporting / BI, multi-instance deployment.
 

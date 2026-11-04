@@ -225,7 +225,7 @@ public final class PauseManager {
         // **崩溃中断的 run 也要能续跑**。
         // StartupRecovery 会把崩溃时还在 running 的单子标成 failed 并打上
         // input.recoverable=true，界面（/api/runs/recoverable）也列出来了，
-        // 但原来这里只认 status='paused' —— 点"继续"直接回"该执行不在暂停状态"，
+        // 但改动前这里只认 status='paused' —— 点"继续"直接回"该执行不在暂停状态"，
         // 那 40 多条可恢复记录等于只能看不能用。
         boolean crashed = false;
         if (kind == null) {
@@ -266,7 +266,7 @@ public final class PauseManager {
                     WHERE tenant_id = ? AND id = ?
                     """;
         } else {
-            // P0-5 修复（评审 20261102-03）：原来直接置 running，
+            // P0-5 修复（评审 20261102-03）：改动前直接置 running，
             // 但执行体（同步阻塞在 WorkflowService.execute 里的那个线程）
             // 早在暂停时就已经退出了 —— DB 说 running，实际没人在跑，
             // 形成"僵尸 running"：看板显示在跑，进度永远不动。
@@ -356,7 +356,7 @@ public final class PauseManager {
      * @param beforeHours  只忽略「最后更新早于 N 小时前」的单子（null = 不限时间）
      *
      * <p>为什么要条件：队列里堆着 89 条历史残留，运维想"只清掉 24 小时前的联调垃圾"，
-     * 原来的"全部忽略"要么清光（可能带走真在等人的单）要么一条条点。
+     * 改动前的"全部忽略"要么清光（可能带走真在等人的单）要么一条条点。
      */
     public int dismissBatch(java.util.List<Long> ids, String kind, Integer beforeHours)
             throws SQLException {
@@ -638,7 +638,7 @@ public final class PauseManager {
     /**
      * 位置未知的板。
      *
-     * <p><b>2026-11-02 修复</b>：原来直接把 {@code possible_locations}
+     * <p><b>2026-11-02 修复</b>：改动前直接把 {@code possible_locations}
      * （类型 {@code bigint[]}，存的是 {@code resource_node.id}）返回给前端，
      * 于是盘点页显示的是 {@code [504821, 504822]} —— <b>操作员看不懂</b>。
      * 现在 JOIN {@code resource_node} 把 id 翻成 {@code code}（如 {@code TP412}），

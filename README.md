@@ -3,7 +3,7 @@
 > 本仓库提供中英双语文档：界面已支持运行时切换中/英文（右上角），
 > 英文文档索引与翻译台账见 [`docs/en/INDEX.md`](docs/en/INDEX.md)。
 >
-> **English summary** — LabOS is an Apache-2.0 open-source orchestration kernel for laboratory automation: BPMN workflow execution, multi-experiment scheduling, position-level plate occupancy, device contracts and a plate-movement audit trail. It is **pre-alpha**: there is no SiLA 2 implementation and no SiLA certification yet. The interoperability roadmap (SiLA 2 adapter / SiLA Converter for legacy devices / OPC UA LADS) is in [README.en.md](README.en.md#status-and-interoperability-roadmap).
+> **English summary** — LabOS is an Apache-2.0 open-source orchestration kernel for laboratory automation: BPMN workflow execution, multi-experiment scheduling, position-level plate occupancy, device contracts and a plate-movement audit trail. It is **pre-alpha**: there is no SiLA 2 implementation and no SiLA certification yet. The interoperability roadmap (SiLA 2 adapter / SiLA Converter for existing devices / OPC UA LADS) is in [README.en.md](README.en.md#status-and-interoperability-roadmap).
 
 # LabOS · 实验室自动化中控系统
 
@@ -199,7 +199,7 @@ LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar" \
 
 | 项 | 说明 |
 |---|---|
-| **验证程度** | 993 个工艺在**仿真总线**上按图走通，**未经真设备验证** |
+| **验证程度** | 流程在**仿真总线**上按图走通，**未经真设备验证** |
 | **调度器** | 岛级互斥 + 贪心排序；滚动时域只在设计文档里，未实现 |
 | **两套 ID** | `device_instance.id` 与 `resource_node.id` 都是 `long`，靠调用方转换（踩过 5 次坑） |
 | **双执行路径** | `WorkflowService` 与 `ExperimentFlowRunner` 各有一套设备分配 |
@@ -212,11 +212,11 @@ LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar" \
 
 ## 历史文档
 
-根目录还有几份早期文档（`LabOS功能规格说明书.md`、`LabOS实现总纲_20261029.md`、
+根目录还有几份历史文档（`LabOS功能规格说明书.md`、`LabOS实现总纲_20261029.md`、
 `LabOS系统_现状诊断与架构方案_20261029.md`、`决策记录.md`、`前后端实施方案_编译甘特就绪调度.md`）。
 
 **它们记录的是设计推演过程，不是当前实现的准确描述。**
-当前行为以代码和 `docs/` 下的设计文档为准——冲突时不要拿旧文档当准绳。
+当前行为以代码和 `docs/` 下的设计文档为准——冲突时不要拿现有文档当准绳。
 
 ## 设备照片（可选）
 

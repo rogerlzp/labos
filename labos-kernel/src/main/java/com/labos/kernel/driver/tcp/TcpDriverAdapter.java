@@ -42,8 +42,7 @@ import java.util.regex.Pattern;
  */
 public final class TcpDriverAdapter implements DeviceDriver {
 
-    // 分帧标记。早期版本用的是别的前缀，品牌中性化时一并改了。
-    // **升级注意**：厂商驱动侧必须同步改成同一个标记，否则通信会失败。
+    // 分帧标记。驱动侧必须用同一个标记，否则通信会失败。
     static final String DELIMITER = "#!LABSEP!#";
     private static final int MSG_TYPE_TASK = 1;
     private static final int MSG_TYPE_FINISH = 5;
@@ -51,7 +50,7 @@ public final class TcpDriverAdapter implements DeviceDriver {
     private final DriverDescriptor descriptor;
     private final String host;
     private final int port;
-    /** deviceInstanceId -> 老库 equipment_id（驱动认的是 code 不是 id） */
+    /** deviceInstanceId -> equipment_id（驱动认的是 code 不是 id） */
     private final Map<Long, String> deviceCodes;
 
     /**
@@ -59,7 +58,7 @@ public final class TcpDriverAdapter implements DeviceDriver {
      *
      * <p>不翻译的后果：设备码一路透传到 {@code recovery_policy}，
      * 查不到任何策略 → 所有设备故障都变成"未知错误，转人工"。
-     * 默认 passthrough（不改变老行为），生产装配时由 {@code WorkflowService} 注入。
+     * 默认 passthrough（行为与该开关引入前一致），生产装配时由 {@code WorkflowService} 注入。
      */
     private final DeviceErrorMapper errorMapper;
 
@@ -127,7 +126,7 @@ public final class TcpDriverAdapter implements DeviceDriver {
                 // **读超时 ≠ 连接坏了**。离心跑 30 分钟、孵育几小时都正常，
                 // 设备只是还没回话。
                 //
-                // 原来这里被下面的 IOException 分支一起吞掉：
+                // 改动前这里被下面的 IOException 分支一起吞掉：
                 //   ① 错误码错成 EC-05-1006（通讯失败）而不是 EC-05-1007（超时）
                 //   ② **把 healthy 置 false** —— 一次超时就把设备判死，
                 //      后续所有命令都走重连/拒绝，等于设备掉线
@@ -146,7 +145,7 @@ public final class TcpDriverAdapter implements DeviceDriver {
 
     @Override
     public void abort(String commandId) {
-        // 老协议无 Abort 消息类型，只能靠上层超时
+        // 协议没有 Abort 消息类型，只能靠上层超时
     }
 
     @Override
@@ -203,7 +202,7 @@ public final class TcpDriverAdapter implements DeviceDriver {
      * FinishMessage -> DriverResult。
      *
      * <p>关键：整个原始 JSON 塞进 {@code deviceRawResponse}——
-     * 这是老系统 99.7% 缺失的东西，也是唯一能复盘的证据。
+     * 这是 99.7% 缺失的东西，也是唯一能复盘的证据。
      */
     private DriverResult toResult(String raw, String commandId, long durationMs,
                                   long deviceInstanceId) {

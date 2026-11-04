@@ -62,7 +62,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 |---|---|---|---|
 | `device.DeviceModelSelfTest` | 196 | The model library: method names, aliases, manual evidence, error-code mapping | A command that is not in the manual must be marked `undocumented`; every error code can be translated |
 | `sim.SimulatorBehaviorSelfTest` | 41 | Simulator behaviour (real protocol): Seal/Home/RunProgram, fault injection | Injecting `0x8000000C` must return "no paper"; a normal call must return ok |
-| `expr.ExpressionSelfTest` | 30 | The old expression component (historical) | — |
+| `expr.ExpressionSelfTest` | 30 | The existing expression component (historical) | — |
 | `engine.ConditionEvaluatorSelfTest` | **32** | **The condition evaluator**: comparison / logic / variables / **arithmetic** / rejecting injection | `(a+b)/2>=5` holds; string arithmetic `${s}+1` throws; `1/0` throws; `Runtime.exec` is rejected |
 | `driver.DeviceErrorChainSelfTest` | **14** (+5 real-database assertions, only run with the database) | The error-code chain: device code → console code → policy | `0x8000000C → EC-08-400C → manual` |
 | `recovery.RecoverySelfTest` | 17 | Policy matching, back-off computation, scope | Exact > code-level > wildcard; the exponential back-off does not exceed the cap |

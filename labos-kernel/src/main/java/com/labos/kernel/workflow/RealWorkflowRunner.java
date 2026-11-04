@@ -334,15 +334,15 @@ public final class RealWorkflowRunner {
      * </ol>
      */
     /**
-     * 合法资源/实例 id 的上界。**只用来识别"伪 id"**（老数据里的 100000000/101000001）。
+     * 合法资源/实例 id 的上界。**只用来识别"伪 id"**（存量数据里的 100000000/101000001）。
      *
-     * <p>⚠️ 原来写的是 10_000，注释说"真实 id 只有三位数(162~405)" —— 这个假设早就失效了：
+     * <p>⚠️ 改动前写的是 10_000，注释说"真实 id 只有三位数(162~405)" —— 这个假设早就失效了：
      * 现在部署出来的设备 resource_node.id 是 **5xxxxx**（如 504830）。
      * 于是任何"节点绑定了真实资源"的流程，都会被当成逻辑节点 ⇒
      * {@code DriverStepExecutor} 直接跳过设备调用、把每一步标成功 ⇒
      * **界面上一片绿，设备根本没动**（这个 bug 2026-11-02 在页面上抓到）。
      *
-     * <p>现在的判据只拦 9 位数的老伪 id（100000000 起）。
+     * <p>现在的判据只拦 9 位数的历史遗留伪 id（100000000 起）。
      */
     public static final long MAX_PLAUSIBLE_RESOURCE_ID = 99_999_999L;
 
@@ -374,7 +374,7 @@ public final class RealWorkflowRunner {
         if (explicitCapability != null && !explicitCapability.isBlank()) {
             return new CapabilitySource(explicitCapability, "explicit");
         }
-        // 4) 按 protocol_name 反查（含拼写纠错，老数据有 RunProcotol 这类笔误）
+        // 4) 按 protocol_name 反查（含拼写纠错，存量数据有 RunProcotol 这类笔误）
         String byProtocol = protocolName == null ? null : protocolCap.get(protocolName);
         if (byProtocol == null && protocolName != null) {
             String fixed = normalizeProtocolName(protocolName);
@@ -385,7 +385,7 @@ public final class RealWorkflowRunner {
         if (byProtocol != null) {
             return new CapabilitySource(byProtocol, "protocol");
         }
-        // 5) 简称匹配：老数据里有略写（ValveSet -> IOMessage_ValveSet），仅唯一命中才采用
+        // 5) 简称匹配：存量数据里有略写（ValveSet -> IOMessage_ValveSet），仅唯一命中才采用
         if (protocolName != null && !protocolName.isBlank()) {
             List<String> hits = new ArrayList<>();
             for (String m : protocolCap.keySet()) {
@@ -404,7 +404,7 @@ public final class RealWorkflowRunner {
                 : new CapabilitySource(guess, "heuristic");
     }
 
-    /** 常见拼写错误归一化（老库实测出现过 Procotol / Protocal）。 */
+    /** 常见拼写错误归一化（实测出现过 Procotol / Protocal）。 */
     static String normalizeProtocolName(String name) {
         if (name == null) {
             return null;
@@ -505,7 +505,7 @@ public final class RealWorkflowRunner {
 
     // ---------------------------------------------------------------- 批量验收
 
-    /** 一次性装载全部节点（避免 992 次查询）。 */
+    /** 一次性装载全部节点（避免按流程逐条查询）。 */
     private static Map<Long, List<NodeDef>> loadAllNodes(DbConfig db) throws SQLException {
         Map<Long, List<NodeDef>> out = new HashMap<>();
         try (Connection c = db.open();

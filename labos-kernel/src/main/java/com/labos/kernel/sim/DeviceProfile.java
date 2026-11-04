@@ -8,7 +8,7 @@ import java.util.regex.Pattern;
 /**
  * 设备类型画像：一类设备"该有哪些方法、参数范围是多少、默认要跑多久"。
  *
- * <p><b>为什么要这个</b>：原来的模拟器只有 4 种类型、方法集写死在 switch 里、
+ * <p><b>为什么要这个</b>：改动前的模拟器只有 4 种类型、方法集写死在 switch 里、
  * 参数完全不校验、延迟固定 150ms。结果是中控把离心机配成 20000 rpm、
  * 把酶标仪波长配成 2000 nm，模拟器照样回 OK —— <b>错到现场才发现</b>。
  *
@@ -167,7 +167,7 @@ public final class DeviceProfile {
                     true, false))
     );
 
-    /** generic：不校验方法也不校验参数（保持老行为，用于临时调试）。 */
+    /** generic：不校验方法也不校验参数（行为与画像引入前一致，用于临时调试）。 */
     public static final DeviceProfile GENERIC = new DeviceProfile("generic", 150,
             Set.of(), 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false);
 
@@ -274,7 +274,7 @@ public final class DeviceProfile {
      * 单个方法的模拟耗时。
      *
      * <p><b>为什么不能全用一个延迟</b>：真实设备开门 2 秒、回原点 3 秒、
-     * 离心 30 分钟。原来所有方法共用一个 delay，导致"开门"也要等 5 分钟，
+     * 离心 30 分钟。改动前所有方法共用一个 delay，导致"开门"也要等 5 分钟，
      * 自动化测试直接超时 —— 而且完全不符合现场观感。
      *
      * <p>规则：

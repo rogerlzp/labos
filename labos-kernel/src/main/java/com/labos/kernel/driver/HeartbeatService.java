@@ -77,7 +77,7 @@ public final class HeartbeatService {
         this.intervalMs = intervalMs;
         this.timeoutMs = timeoutMs;
         // 离线阈值：默认 3 个探测周期（10s 间隔 → 30s 判离线）。
-        // 原来写死 30 秒，改探测间隔后阈值不跟着变，会出现
+        // 若写死 30 秒，改探测间隔后阈值不跟着变，会出现
         // "探测 60 秒一次、30 秒判离线" —— 每台设备每次探测前都被判一次离线。
         this.offlineAlertMs = envLong("LABOS_OFFLINE_ALERT_MS", Math.max(intervalMs * 3, 30_000L));
     }
@@ -114,7 +114,7 @@ public final class HeartbeatService {
                 }
 
                 // P0-4 修复（评审 20261102-03）：paused_fault 的自动恢复
-                // 原来只有实现、**没有任何调用者** —— 设备恢复了流程也不会继续，
+                // 改动前只有实现、**没有任何调用者** —— 设备恢复了流程也不会继续，
                 // 表现是"设备好了但实验一直停着，要人手动点继续"。
                 // 心跳每轮顺带扫一次：所有设备在线 → 把 paused_fault 的执行放回 running。
                 try {
@@ -206,7 +206,7 @@ public final class HeartbeatService {
      */
     private void checkOfflineAlerts() throws SQLException {
         // ① 开告警：离线超阈值且没有未关闭的告警
-        // ⚠️ 这里原来是 INSERT ... WHERE NOT EXISTS(open 告警)。看起来对，其实会撞主键：
+        // ⚠️ 这里改动前是 INSERT ... WHERE NOT EXISTS(open 告警)。看起来对，其实会撞主键：
         // alert_state 的唯一键是 (tenant_id, fingerprint)，一个设备只留一行；
         // 上一轮离线关掉后那行还在（status=closed），下次再离线 NOT EXISTS 不成立 ⇒
         // 走 INSERT ⇒ duplicate key，**每次心跳刷一条 ERROR**。

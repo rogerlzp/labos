@@ -22,10 +22,10 @@
 | Feature | The core difficulty | Dependency | Estimate |
 |---|---|---|---|
 | **Automatic compilation** | The quality of the templates (whether they can cover the real nodes) | 6 templates already mined from the history | 1 week |
-| **Gantt forecast** | The duration model (82% of the historical data is dirty) | 38,422 usable samples already available | 1.5 weeks |
+| **Gantt forecast** | The duration model (historical time fields contain dirty data) | Use only cleaned completed samples | 1.5 weeks |
 | **Ready pull** | **The plate-level model is missing** (we have no concept of "where the plate is") | The plate tracking has to be built anew | 2-3 weeks |
 
-**It has to be said up front**: the full form of the ready pull (like comparable product A) depends
+**It has to be said up front**: the full form of the ready pull depends
 on "the plate as a first-class citizen" —— which nest holds each plate and where it goes next all
 have to be queryable.
 
@@ -62,7 +62,7 @@ The 6 templates (origin=mined, with the number of historical samples):
 
 | Option | Advantage | Disadvantage |
 |---|---|---|
-| Expanded into sub-nodes at compile time (the comparable product A style) | Visible and editable in the Advanced tab | **It changes the data structure of the existing workflows**, which is risky |
+| Expanded into sub-nodes at compile time | Visible and editable in the Advanced tab | **It changes the data structure of the existing workflows**, which is risky |
 | **Expanded at run time** | The existing data is untouched and the templates can evolve independently | The expansion result is only visible at execution time |
 
 **Choose the run-time expansion**, but provide a **compilation preview** (the frontend can see
@@ -136,7 +136,7 @@ existing recovery policy; with REASSIGN the device is changed and all the steps 
 
 > There is a real problem here: **after the 3rd step fails and the device is changed, do the first
 > 2 steps have to be re-run?**
-> Comparable product A re-runs the whole procedure (the idempotency is guaranteed by the driver).
+> One approach is to re-run the whole procedure (the idempotency is guaranteed by the driver).
 > We do the same: changing the device = the state of the new device may differ, so it has to run
 > from the beginning.
 
@@ -244,12 +244,12 @@ CREATE TABLE device_state (
 );
 ```
 
-**The three-state decision** (the counterpart of comparable product A):
+**The three-state decision**:
 
 ```
-if (status='busy')          → Busy
-else if (has_plate)         → ReadyToGivePlate
-else                        → ReadyToTakePlate
+if (status='busy')          → busy
+else if (has_plate)         → a plate is present and can be taken
+else                        → the nest is empty and can receive a plate
 ```
 
 ### 3.2 The readiness decision (as a guard, not involving the plate flow)
@@ -257,7 +257,7 @@ else                        → ReadyToTakePlate
 Before a node is executed:
 
 ```java
-// The target device must be ReadyToTake
+// The target device must be able to receive a plate
 if (!deviceState.readyToTake(resourceId)) {
     throw new StepFailure("EC-07-0002", RecoveryScope.NODE,
         "The device " + resourceId + " is not ready (busy/has_plate)");
@@ -271,7 +271,7 @@ This step comes first; it blocks "stuffing a task into a busy device".
 ```java
 while (running) {
     for (each node waiting to be executed) {
-        if (the node's predecessors are complete && the target device is ReadyToTake) {
+        if (the node's predecessors are complete && the target device can receive a plate) {
             allocate the device → submit the execution
         }
     }
@@ -287,7 +287,7 @@ while (running) {
 | Suitable for | Serial workflows | Multi-plate parallelism, device pipelining |
 | Deadlock | Possible | Averted by nature by the readiness decision |
 
-### 3.4 The plate tracking (the third phase, only then the real comparable product A style scheduling)
+### 3.4 The plate tracking (the third phase)
 
 New tables are needed:
 

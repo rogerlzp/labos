@@ -168,7 +168,7 @@ For the §3 blocking item `BUG-20261103-01`, as required **re-ran the merge and 
 | Action | Result |
 |---|---|
 | `bash pg_rebuild/schema/merge.sh` | the artifact was regenerated: 2531 → 2536 lines |
-| Artifact diff (against the repository's old version) | only 30 related changes: the `loop_index` definition, the 4-column `uk_run_node`, the parent foreign-key DO block, **plus 5 restored `ALTER TABLE ONLY plate_well`** (those 5 lines had been lost in the old artifact, which caused 4 `syntax error at or near "ADD"`, fixed together) |
+| Artifact diff (against the repository's prior version) | only 30 related changes: the `loop_index` definition, the 4-column `uk_run_node`, the parent foreign-key DO block, **plus 5 restored `ALTER TABLE ONLY plate_well`** (those 5 lines had been lost in the stale artifact, which caused 4 `syntax error at or near "ADD"`, fixed together) |
 | Live-database verification (the artifact fully executed in a new schema) | `run_node.loop_index` ✓ / `uk_run_node UNIQUE (run_id,node_key,attempt,loop_index)` ✓ / `run_node_parent_node_id_fkey ... ON DELETE CASCADE` ✓ |
 
 The re-check command (anyone can re-run it):
@@ -185,7 +185,7 @@ psql -tc "select pg_get_constraintdef(oid) from pg_constraint
 New `scripts/check-schema-sync.sh`: it re-runs `merge.sh` and compares the result with the repository's artifact (a mismatch fails, and the working tree is restored so that nothing is polluted),
 and at the same time asserts that the artifact contains the three elements `loop_index` / the 4-column unique key / the parent foreign key. It has been merged into the 2.5th gate of `scripts/ci-gate.sh`.
 
-**Negative test**: put the old artifact back → the script reports 「产物陈旧」 ("the artifact is stale") and lists the diff, exit code 1; put the new artifact back → it passes.
+**Negative test**: put the stale artifact back → the script reports 「产物过期」 ("the artifact is stale") and lists the diff, exit code 1; put the new artifact back → it passes.
 ```bash
 ./scripts/ci-gate.sh
   ✓ passed 379 / failed 0 (threshold 379)
@@ -224,7 +224,7 @@ The previous section wrote `-08` as "to be handled in the next round", the user 
 #### The approach: do not delete the duplicate definitions, add a guard instead
 
 The hand-written DDL and the pg_dump tail are **interleaved** in the shards (the tail also has 23 tables of its own), so deleting a block easily deletes the wrong thing;
-instead, a step `guard_legacy_tail.py` was added to `merge.sh`: it wraps the **duplicate-declaration** statements ——
+instead, a step `guard_dup_decl.py` was added to `merge.sh`: it wraps the **duplicate-declaration** statements ——
 
 ```sql
 DO $$ BEGIN

@@ -25,7 +25,7 @@ interface RegistryApi {
   forEach: (fn: (el: { id: string }) => void) => void;
 }
 
-/** 老库用 customDevice 表示设备动作，标准 modeler 不认，转成 task 并补 name。 */
+/** 用 customDevice 表示设备动作，标准 modeler 不认，转成 task 并补 name。 */
 function normalize(xml: string): string {
   return xml
     .replace(/<customDevice\b([^>]*?)(\/?)>/g, (_m, attrs: string, selfClose: string) => {
@@ -166,7 +166,7 @@ function NodeSettings({ wfId, nodeKey, onSaved }: {
       if (!builtin) {
         setDeviceId(j.resourceId ?? null);
         setMethodName(m);
-        // 老数据里 method_params 可能是 0 / 字符串（不是对象）——
+        // 存量数据里 method_params 可能是 0 / 字符串（不是对象）——
         // 直接 stringify 会把 "0" 塞进输入框，结构化输入就全空了。统一归一成对象。
         const p0 = j.params as unknown;
         setParamsText(p0 && typeof p0 === "object" && !Array.isArray(p0)

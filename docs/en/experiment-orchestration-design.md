@@ -13,17 +13,11 @@
 
 ---
 
-## 0. First, "who do we take as the reference"
+## 0. What the experiment layer has to solve
 
-| System | Form of the experiment orchestration | Several experiments in parallel | What can be learned from it |
-|---|---|---|---|
-| **A comparable product A** | A single experiment, the Process list runs in order | ❌ None | The simplicity of the process composition |
-| **A comparable product B** | It has a scheduler (Scheduler), it schedules by time slice | 🟡 It has a schedule table, but a single device is serial | **The "schedule table"** as a product form |
-| **LabOS** | The experiments are triggered by hand, there is no orchestration concept | ❌ None | Nothing (this area is blank) |
+The experiment layer composes several workflows into one experiment in sequence, and draws "what is going to run" before it starts, instead of discovering the conflict only after it has started.
 
-**Conclusion: none of the three systems has a complete answer for the parallel scheduling of several experiments**, we have to design it ourselves.
-
-What can be copied is the "schedule table" form of comparable product B: **visualise "what is going to run later" instead of finding out about the conflict once it has started running**.
+Parallel runs of several experiments have to be designed here. The inside of a workflow already has BPMN; the experiment layer only guarantees sequence, and that the schedule is visible.
 
 ---
 
@@ -40,7 +34,7 @@ Experiment (Experiment)           ← the scope of this document
 | Capability | Which layer | Why |
 |---|---|---|
 | The order of the device actions | Workflow | Already there, native to BPMN |
-| The conditional branch | Workflow (gateway) | Already there, verified with 55 exclusive workflows |
+| The conditional branch | Workflow (gateway) | Already there; an exclusive gateway takes one outgoing edge |
 | The loop inside a single workflow | Workflow (loop back) | Natively supported by BPMN |
 | **The experiment variables** | **Experiment** | The inputs shared across workflows (temperature, number of plates) |
 | **The loop across workflows** | **Experiment** | "N workflows run M rounds", BPMN cannot express it |
@@ -111,14 +105,14 @@ When nesting really is needed, use the BPMN loop back at the workflow level.
 
 ### 2.4 The dependencies (S2-A is already in effect)
 
-The dependencies are no longer expressed with the old `runAfter` field, they land in the `experiment_process_edge` edge table (predecessor → successor):
+The dependencies are no longer expressed with the `runAfter` field, they land in the `experiment_process_edge` edge table (from → to):
 
 ```sql
 -- experiment_process_edge(tenant_id, experiment_id, from_id, to_id)
 ```
 
 **The execution order = the Kahn topological sort** (on the same level it is ordered stably by `seq`), a cycle is rejected outright.
-The old data without edges degrades to ascending `seq` order — exactly the same as before the change.
+Stored data without edges degrades to ascending `seq` order — exactly the same as before the change.
 
 **The current position is S2-A: only a partial order is promised, the advance is physically serial, wall-clock concurrency is not promised**;
 for real concurrency the three resource layers + the wait-for graph have to be connected first. See §4.4.
@@ -166,7 +160,7 @@ Click "Schedule dry run" → nothing is executed, it only computes:
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**This is the schedule-table idea of comparable product B put into practice**: **the conflict is visible before it runs**, instead of getting stuck half-way through.
+**The conflict is visible before it runs**, instead of getting stuck half-way through.
 
 ### 3.3 The experiment list (with the status)
 
@@ -229,7 +223,7 @@ The robot arm is holding a plate, a hard stop in the middle only creates an unkn
 | The remaining unfinished nodes | FAILED | **failed** | ✅ After a person has dealt with it, it continues from the step that failed |
 
 **`MANUAL`/`SKIPPED` is a "pause" and not a "failure"**: waiting for human intervention in attended mode is a normal path,
-and it must not be judged as failed and then be unable to be picked up again (that was the old defect before the change).
+and it must not be judged as failed and then be unable to be picked up again (that was the defect before the change).
 
 **There is no "skip the failure and carry on"**: in a laboratory, skipping a step means the position of the plate is unknown and all the later steps are wrong.
 
@@ -352,7 +346,7 @@ Island (island)        ← coarse: the robot arms inside an island are shared
 
 **The cost of the island-level mutual exclusion**: the parallelism = the number of islands (26). But this is the **safe lower bound** — the robot arms never fight each other.
 
-**Why there is no parallelism of several experiments inside an island**: it needs a precise model of the "time window in which the robot arm is occupied", and the accuracy of the duration of the existing implementation is only 10 seconds (a known issue), it cannot be done accurately.
+**Why there is no parallelism of several experiments inside an island**: it needs a precise model of the "time window in which the robot arm is occupied", and the time data only has 10-second accuracy (a known issue), it cannot be done accurately.
 
 > Wait until the new system has collected 3 months of real duration data, then release the parallelism inside the island.
 

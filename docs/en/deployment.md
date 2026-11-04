@@ -15,7 +15,7 @@
 | The driver service is running | `nc -z <IP> 8501` or `telnet <IP> 8501` |
 | The database is reachable | `psql -h <DB_IP> -U <用户> -d labdb -c "select 1"` |
 | The clock on the control console machine is accurate | `date` (an inaccurate clock causes wrong timeout decisions) |
-| There is a rollback plan | The old system is still running and the data is backed up |
+| There is a rollback plan | The data is backed up, and there is a way back to the control setup from before go-live |
 
 ---
 
@@ -266,11 +266,11 @@ pkill -f ApiServer
 # 2. clear the devices by hand (take the plates out, home the robot arm)
 #    this step must be done by hand — the system does not know the actual state on site
 
-# 3. switch back to the old system (if it is still running)
+# 3. switch back to the control setup from before go-live (if it is still available)
 # 4. notify the duty officer
 ```
 
-**Never**: the control console and the old system operating on the same set of devices at
+**Never**: the control console and another control program operating on the same set of devices at
 the same time — both sides think the plate is in their own hands, and they will collide.
 
 ---
@@ -313,6 +313,6 @@ history log had been wiped and the error lines were gone.
 [ ] A real run of one workflow passes, run_command contains the real raw response and the duration
 [ ] The same workflow ran 20 times, with no sporadic failures
 [ ] The duty officer has been trained and knows how to read the alerts and how to stop
-[ ] The old system is stopped, the devices have been cleared by hand
+[ ] Any other control software is stopped, and the devices have been cleared by hand
 [ ] The rollback plan has been rehearsed
 ```

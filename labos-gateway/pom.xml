@@ -16,7 +16,7 @@
     网关是"管道"，职责只有三件——维持连接、收发字节、写状态。
     引 Spring 会带来 ~30MB 依赖和 2-3 秒启动时间，现场重启不方便。
 
-    参考实现（biosen-tcp-client）用 Spring Boot + Netty + Redisson，
+    同类实现若用 Spring Boot + Netty + Redisson，
     那套适合"已经全公司用 Spring"的场景；这里是独立进程，裸 JDK 更合适。
   -->
   <properties>

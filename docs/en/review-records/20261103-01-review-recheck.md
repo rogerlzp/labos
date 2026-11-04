@@ -109,8 +109,8 @@ This directly conflicts with the project's hard constraint "an inconsistent stat
 4. When the run is continued and re-executed, the [`seq` of `PersistingStepSink`](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1651-L1652)
    is a **newly created `AtomicInteger`**, and the step keys start again from `S1`
    ([writeStep:1841](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1841) `"S" + seq.incrementAndGet()`),
-   and they collide with the **old `S1/S2` that were not deleted** on `uk_run_node(run_id,node_key,attempt)` ([20_kernel.sql:308](../../../pg_rebuild/schema/20_kernel.sql#L308)).
-   `attempt` is 0 the first time (the initial value of [NodeProgress](../../../labos-kernel/src/main/java/com/labos/kernel/engine/NodeProgress.java) is 0), so the old and the new have the same value → a collision is certain.
+   and they collide with the **`S1/S2` that were not deleted** on `uk_run_node(run_id,node_key,attempt)` ([20_kernel.sql:308](../../../pg_rebuild/schema/20_kernel.sql#L308)).
+   `attempt` is 0 the first time (the initial value of [NodeProgress](../../../labos-kernel/src/main/java/com/labos/kernel/engine/NodeProgress.java) is 0), so the existing rows have the same value → a collision is certain.
 5. That `SQLException` is [caught in `onStepDone` and turned into one `[WARN] 步骤落库失败`](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1789),
    and **the execution is not interrupted** → this stretch of the resumed run — "which step, what was sent, what came back" — is simply missing from the database.
 
@@ -177,11 +177,11 @@ Whether the option offered to operations in the UI should be renamed, or should 
 
 ## 7. The shortest action list for the fixing party (by priority)
 
-1. **[B1]** Change the `19` of [04:59](../../评审包-20261103/04-测试文档.md#L59) to the measured `14`; change the 8 `373` in the whole document to `368`. **Rewrite the body directly** — "keep the old text and add an erratum" is not allowed.
+1. **[B1]** Change the `19` of [04:59](../../评审包-20261103/04-测试文档.md#L59) to the measured `14`; change the 8 `373` in the whole document to `368`. **Rewrite the body directly** — "keep the original text and add an erratum" is not allowed.
 2. **[H1]** Pick one of the two and do **run-level** verification: (a) make the resume deletion **cover the `level=1` step rows as well** (using `run_id + level>=0 + status<>'completed'`, or add a cascading foreign key to `parent_node_id`); (b) make the `seq` of [PersistingStepSink](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1645-L1652) continue from the `max` in the database. After the change you **must** add **a `run_command` row-count assertion** to the resume case of `verify-device-chain.sh`, otherwise the hole is still there.
 3. **[H2]** Add `SKIPPED` to the exclusion condition of [markBypassedNodes](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1511-L1517); or unify the success criterion of `settleRun` into one function.
 4. **[Document P2]** Fix all 5 items of §6, all by **rewriting the body directly**.
-5. **[Unverified items]** The `count(*)` yardsticks — 112 tables / 25 error codes / 248 device instances / 1008 workflows — have to be re-checked by a reviewer **with database access** before they are taken on trust.
+5. **[Unverified items]** The `count(*)` yardsticks — table count, error-code count, device-instance count, workflow count — have to be re-checked by a reviewer **with database access** before they are taken on trust.
 
 ---
 
@@ -201,7 +201,7 @@ Whether the option offered to operations in the UI should be renamed, or should 
 | Review item | Review conclusion | Reviewed party | Remediation | How it was re-verified |
 |---|---|---|---|---|
 | **B1** test count 373≠368 | Blocking | Accepted (the root cause is environment-dependent, not a typo) | `--pure-only` forcibly clears `LABOS_DB_*` → constantly **368/0**; with the database **386/0**; 8 places in the document changed to 368, 19 changed to 14 | `./scripts/test-all.sh --pure-only` |
-| **H1** incomplete row deletion on resume | High | Accepted, **reproduced at run level**, and one more thing was found (the old S2 was overwritten to completed, hiding the failure history) | Delete `level=1` first, then `level=0` (the commands cascade with the FK); the step sequence continues from the `max` in the database; the script gains 3 assertions | `verify-device-chain.sh` 37/0 |
+| **H1** incomplete row deletion on resume | High | Accepted, **reproduced at run level**, and one more thing was found (S2 was overwritten to completed, hiding the failure history) | Delete `level=1` first, then `level=0` (the commands cascade with the FK); the step sequence continues from the `max` in the database; the script gains 3 assertions | `verify-device-chain.sh` 37/0 |
 | **H2** `bypassed` does not exclude SKIPPED | High | Accepted | The exclusion condition gains `SKIPPED`; measured, with a `skip` policy the downstream nodes stay `pending` | Temporarily change the policy and run a three-step flow once |
 | **P2-1** `.NET 8` left over | Self-consistency | Accepted | Changed to `net10.0` | — |
 | **P2-2** "this package contains a password" contradicts the body | Self-consistency | Accepted | That entry changed to "only placeholders are used" | — |
@@ -244,10 +244,10 @@ After the pause: level1=2  cmd=2
 Change the paper → continue: the simulator received 2 Seals
 After the resume: level1=2  cmd=2      ← the command was sent, but nothing was recorded in the database
 The log: 2 entries of [WARN] 步骤落库失败: duplicate key ... uk_run_node
-The additional finding: the old S2 (failed) was UPDATEd to completed —— the failure history is covered up
+The additional finding: S2 (failed) was UPDATEd to completed —— the failure history is covered up
 ```
 
-**The additional finding** is more serious than the original judgement: it is not just "less was recorded", it is **that old records were overwritten**.
+**The additional finding** is more serious than the original judgement: it is not just "less was recorded", it is **that records were overwritten**.
 
 | Item | Remediation |
 |---|---|
@@ -307,7 +307,7 @@ The reviewer marking the in-database yardsticks as "unverified" is right. The re
 | 112 tables | `information_schema.tables where table_schema='public'` = **112** |
 | 25 error codes / 27 policies | `error_code` = **25**, `recovery_policy` = **27** |
 | 76 device models / 248 instances | `device` = **76**, `device_instance` = **248** (including soft deletes) |
-| 1008 workflows / 14028 nodes | `workflow` = **1008**, `workflow_node` = **14028** |
+| workflows / nodes | Take `count(*)` from the database; do not freeze the scale in the document |
 | 659 experiments / 10642 runs | `experiment` = **659**, `run` = **10642** |
 | 120043 node executions / 116626 commands | `run_node` = **120043**, `run_command` = **116626** |
 | 15 partitions each for `device_log`/`run_event` | **15** each (202609–202711 + `_default`) |

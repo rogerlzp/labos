@@ -151,7 +151,7 @@ def main():
     code, lib = api.call("GET", "/api/meta/device-models")
     planned_deployed_models = []
     if code != 200:
-        rec("FAIL", "型号库 /api/meta/device-models", "http=%s（M10 新接口，未部署说明环境旧）" % code)
+        rec("FAIL", "型号库 /api/meta/device-models", "http=%s（M10 新接口，未部署说明环境过期）" % code)
     else:
         totals = lib.get("totals") or {}
         manual = lib.get("manual") or []

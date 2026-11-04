@@ -87,8 +87,8 @@ export default function SchedulerPage() {
   const workers = st?.workers;
   const stalled = !!st?.stalled;
 
-  // §7.1：started = 累计派发次数（number），"调度循环是否已启动"是 loopStarted（旧 boolean 语义）。
-  // 旧内核拿不到数字就显示「—」，不把 true / NaN 显示出来误导值班。
+  // §7.1：started = 累计派发次数（number），"调度循环是否已启动"是 loopStarted（boolean 语义）。
+  // 内核拿不到数字就显示「—」，不把 true / NaN 显示出来误导值班。
   const dispatchCount = typeof st?.started === 'number' ? st.started : '—';
   const loopStarted = st?.loopStarted;
 

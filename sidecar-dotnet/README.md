@@ -100,7 +100,7 @@ java -cp out com.labos.kernel.device.DeviceModelExport > ../sidecar-dotnet/model
 
 生成的 `models.json` **进版本库**（工控机上没有 Java 环境）。
 `scripts/test-sidecar.sh` 会比对导出结果与仓库里的文件，不一致直接报错 ——
-防止"改了型号库忘了导出，现场 sidecar 还在用旧指令表"。
+防止"改了型号库忘了导出，现场 sidecar 还在用过时的指令表"。
 
 ---
 

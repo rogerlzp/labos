@@ -153,7 +153,7 @@ public final class ApiServer {
 
             // ---------- 鉴权拦截（必须在所有业务路由之前） ----------
             //
-            // P0-1 修复（评审 20261102-03）：原来这段代码在路由链中段，
+            // P0-1 修复（评审 20261102-03）：改动前这段代码在路由链中段，
             // 前面注册的 ~500 行路由（workflows / runs / devices / topology …）
             // 全部绕过鉴权 —— 无 token 也能读全部数据、执行流程。
             //
@@ -177,9 +177,9 @@ public final class ApiServer {
                 }
             }
 
-            // ---------- 业务路由：拆到同包 controller（按原 route() 首次出现顺序分发） ----------
+            // ---------- 业务路由：拆到同包 controller（按首次出现顺序分发） ----------
             // 各 controller 的 path 前缀互不重叠（/api/runs、/api/experiments、…），
-            // 因此跨 controller 的顺序不改变语义；controller 内部保持原 if/else 顺序。
+            // 因此跨 controller 的顺序不改变语义；controller 内部保持 if/else 顺序。
             // 任一 controller 命中即 return，未命中落到下面的静态资源/健康检查/404。
             if (authApi.handle(ex, path, method)
                     || deviceApi.handle(ex, path, method)
@@ -343,7 +343,7 @@ public final class ApiServer {
         }
         // **带不带引号都要认**：前端有时发 {"maxAttempts":2}，
         // 有时发 {"maxAttempts":"2"}（表单里的 InputNumber 常被当字符串）。
-        // 原来只认裸数字，导致"保存成功但值没变"——返回 200，库里没动。
+        // 改动前只认裸数字，导致"保存成功但值没变"——返回 200，库里没动。
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("\"" + key + "\"\\s*:\\s*\"?(-?\\d+)\"?").matcher(body);
         return m.find() ? Integer.valueOf(m.group(1)) : null;
@@ -474,7 +474,7 @@ public final class ApiServer {
     /**
      * CORS：不再回 {@code *}。
      *
-     * <p>原来 {@code Access-Control-Allow-Origin: *} 意味着**内网任意网页都能跨域调本服务**，
+     * <p>改动前 {@code Access-Control-Allow-Origin: *} 意味着**内网任意网页都能跨域调本服务**，
      * 而 {@code Content-Type: text/plain} 属于 simple request 免预检，
      * 于是一个恶意页面就能 POST {@code /api/workflows/{id}/run} 去驱动真实设备。
      *

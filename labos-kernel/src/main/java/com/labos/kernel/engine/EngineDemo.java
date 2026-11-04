@@ -84,7 +84,7 @@ public final class EngineDemo {
         printResult(progress, bus, slept);
 
         System.out.println("  ★ 没有替代设备时，引擎一次把话说清楚（候选/已失败/原因），");
-        System.out.println("    直接进人工队列，而不是像老系统那样重试 5,928 次刷 11,856 条日志。\n");
+        System.out.println("    直接进人工队列，而不是反复重试 5,928 次刷 11,856 条日志。\n");
     }
 
     // ---------------------------------------------------------------- 组装

@@ -205,7 +205,7 @@ def main():
             ok("第 1 批 attemptCount=1") if items[0]["attemptCount"] == 1 \
                 else bad("attemptCount 不对", items[0]["attemptCount"])
 
-        # ---- 3. 只重跑失败批：attempt 递增、旧历史保留 ----
+        # ---- 3. 只重跑失败批：attempt 递增、已有历史保留 ----
         step("3. POST /batches/1/run：只重跑第 1 批")
         code, rb = api.call("POST", "/api/experiments/%d/batches/1/run" % exp_id, {"vars": {}})
         ok("HTTP 200") if code == 200 else bad("HTTP 非 200", code)
@@ -217,7 +217,7 @@ def main():
         b1 = (view2.get("items") or [{}])[0]
         ok("第 1 批 attemptCount=2") if b1.get("attemptCount") == 2 \
             else bad("历史没保留", b1.get("attemptCount"))
-        ok("两条尝试都还在（旧 run 不覆盖）") \
+        ok("两条尝试都还在（历史 run 不覆盖）") \
             if len(b1.get("runs") or []) == 2 and b1["runs"][0]["runId"] == run1 \
             else bad("尝试历史不对", b1.get("runs"))
         ok("currentRunId 指向第 2 次尝试") if b1.get("currentRunId") == rb.get("runId") \

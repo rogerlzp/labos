@@ -127,7 +127,7 @@ Opening the gate fails → throws AcquireException
 
 ### Problem 1: the open-gate command was sent to the robot arm's driver
 
-**The original code**:
+**The code**:
 ```java
 AccessOpener opener = m -> driver.execute(buildCommand(ctx, deviceId, m));
 //                            ↑ the robot arm's driver

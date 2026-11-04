@@ -75,7 +75,7 @@ the counter-examples are all ones I hit myself, none of them are hypothetical.
 | # | Action | The criterion for deciding |
 |---|---|---|
 | C1 | Before changing the decision logic, **search for every implementation of the same semantics** | `grep` the key condition fragment and list all the hit points |
-| C2 | After the change, `grep` **the characteristic fragment of the old logic** and confirm nothing is left | The old fragment has 0 hits (or it is only in a comment) |
+| C2 | After the change, `grep` **the characteristic fragment of the logic before the change** and confirm nothing is left | The fragment from before the change has 0 hits (or it is only in a comment) |
 | C3 | When you change an interface / a constructor, search **all the call sites** and confirm no `null` assembly is left behind | Every call site has been looked at |
 | C4 | "Fixed" = **the call chain works + it can be verified**, not "I changed the code" | You can point at who calls it |
 | C5 | Before deleting dead code, `grep` first to confirm there is no caller | Only the definition itself is left |

@@ -76,7 +76,7 @@ See [`model-library-and-error-code-mapping.md`](model-library-and-error-code-map
 
 ### The three places that are already aligned (they did not match before)
 
-| Ours (old) | The real ASpin 2K | Current state |
+| Ours | The real ASpin 2K | Current state |
 |---|---|---|
 | `OpenDoor` / `CloseDoor` | `ControlCover`, **two doors A/B** | ✅ Three aliases: `OpenDoorA` / `OpenDoorB` / `CloseDoor` |
 | `RunProgram(rpm, minutes)` | `Start(time, speed, acceleration)` (`Start(时间, 速度, 加速度)`) | ✅ Three parameters, `rpm` is no longer used |

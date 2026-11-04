@@ -40,7 +40,7 @@ public final class DriverStepExecutor implements StepExecutor {
     /**
      * 搬运资源保护（门 + 通道）。
      *
-     * <p>为 null 时走老路径（不保护）。开关：{@code LABOS_TRANSFER_PLAN=1}。
+     * <p>为 null 时走非保护路径。开关：{@code LABOS_TRANSFER_PLAN=1}。
      * 默认关 —— 改动搬运核心逻辑风险大，先让现场验证现有流程不受影响。
      */
     private final com.labos.kernel.persistence.DbConfig db;
@@ -71,7 +71,7 @@ public final class DriverStepExecutor implements StepExecutor {
 
     /** "nodeId:stepSeq" -> 设备原始回包 */
     private final Map<String, String> rawByStep = new LinkedHashMap<>();
-    /** nodeId -> 最后一步的原始回包（兼容旧调用） */
+    /** nodeId -> 最后一步的原始回包（兼容调用） */
     private final Map<Long, String> lastRawByNode = new LinkedHashMap<>();
 
     public DriverStepExecutor(DriverRegistry registry) {
@@ -88,7 +88,7 @@ public final class DriverStepExecutor implements StepExecutor {
     /**
      * 生产装配用：**同时**要落库 sink 和资源保护 db。
      *
-     * <p><b>P1-1 修复（评审 20261102-03）</b>：原来没有这个构造，
+     * <p><b>P1-1 修复（评审 20261102-03）</b>：改动前没有这个构造，
      * {@code WorkflowService} 只能选 {@code (registry, sink)} —— 那条路径
      * {@code db = null}，于是 {@code executeWithPlan} 开头判
      * {@code protect = db != null && ...} 恒为 false，
@@ -402,7 +402,7 @@ public final class DriverStepExecutor implements StepExecutor {
      *
      * <p><b>为什么命令 id 不是随机 UUID</b>（2026-11-02 修）：
      *
-     * <p>原来每次重试都生成新 UUID。而设备侧的重试策略是
+     * <p>改动前每次重试都生成新 UUID。而设备侧的重试策略是
      * {@code EC-05-1007(超时) → retry ×3}、{@code EC-05-1006(通讯失败) → retry ×5}。
      * 一旦设备<b>已经执行完、只是响应丢了</b>，中控超时重试时带的是<b>新 id</b>，
      * 设备会当成一条<b>全新命令再执行一次</b>——
@@ -436,7 +436,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 traceId);
     }
 
-    /** 某节点最后一步的设备原始回包（兼容旧调用）。 */
+    /** 某节点最后一步的设备原始回包（兼容调用）。 */
     public Optional<String> rawResponse(long nodeId) {
         return Optional.ofNullable(lastRawByNode.get(nodeId));
     }

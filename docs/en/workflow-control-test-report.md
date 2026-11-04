@@ -14,7 +14,7 @@
 | Layer | Content | Number of cases |
 |---|---|---|
 | Unit | The condition expression evaluator (comparison / logic / variables / refusing injection) | 23 |
-| Unit | The graph runner (fork / join / de-duplication, pre-existing) | 6 |
+| Unit | The graph runner (fork / join / de-duplication) | 6 |
 | End to end | The XOR branch (both the true and the false case) | 2 |
 | End to end | The back-edge loop (triggered / not triggered) | 2 |
 | End to end | Parallel fork + join / one of the parallel branches failing | 2 |
@@ -186,7 +186,7 @@ with the workflow attr `maxIterations=2`.
 
 1. `run_command` hangs on the **step node** (`level=1`), and the business node is its
    parent.
-   The old query searched by `node_key=? AND level=0`, so **it found nothing at all**, and
+   The query searched by `node_key=? AND level=0`, so **it found nothing at all**, and
    the variables were always empty.
 2. `run_command.result` only has `{ok,durationMs}`, the device's business fields are in
    `device_raw_response.data`, and they are stored as an escaped JSON string.

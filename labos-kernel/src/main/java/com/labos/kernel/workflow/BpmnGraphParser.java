@@ -18,7 +18,7 @@ import java.util.Map;
  *
  * <p>要同时应付两种格式：
  * <ul>
- *   <li><b>老系统</b>的 {@code <customDevice protocolName="Deposit1" resource="155"/>}</li>
+ *   <li><b>存量流程</b>的 {@code <customDevice protocolName="Deposit1" resource="155"/>}</li>
  *   <li><b>bpmn-js</b> 编辑后的标准 {@code <task name="Deposit1"/>}</li>
  * </ul>
  *
@@ -31,7 +31,7 @@ public final class BpmnGraphParser {
                              /** 设备方法参数（JSON 字符串），来自 BPMN 自定义属性 methodParams。 */
                              String methodParams) {
 
-        /** 兼容旧构造：没有参数。 */
+        /** 兼容无参构造。 */
         public ParsedNode(String key, String name, String type,
                           String protocolName, Long resourceId) {
             this(key, name, type, protocolName, resourceId, null);
@@ -72,7 +72,7 @@ public final class BpmnGraphParser {
     public record ParsedGraph(List<ParsedNode> nodes, List<ParsedEdge> edges) {
     }
 
-    /** 老库 node_type 取值，与 workflow_node.node_type 保持一致。 */
+    /** node_type 取值，与 workflow_node.node_type 保持一致。 */
     private static final Map<String, String> TYPE_MAP = Map.ofEntries(
             Map.entry("startEvent", "start"),
             Map.entry("endEvent", "end"),
@@ -114,7 +114,7 @@ public final class BpmnGraphParser {
                         continue;
                     }
                     String name = el.getAttribute("name");
-                    // 老数据 name 为空，用 protocolName 兜底
+                    // 存量数据 name 为空，用 protocolName 兜底
                     String protocol = el.getAttribute("protocolName");
                     if ((name == null || name.isBlank()) && protocol != null && !protocol.isBlank()) {
                         name = protocol;

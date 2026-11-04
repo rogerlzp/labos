@@ -379,14 +379,14 @@ After binding, look at the startup log: `[驱动] DRV-xxx → tcp://…（N 台�
 
 ### 8.3 What to do with the 60 codes that are already live
 
-They were **created automatically from the raw error frames** by the old system (the
+They were **created automatically from the raw error frames** (the
 `title` stores the whole JSON segment, e.g. `EC-08-3010`). This round **did not touch them**:
 
-- The new codes use the `4xxx` block and do not mix with the old ones;
-- The `title` of the old codes is dirty data, but `error_occurrence` hangs historical records off them
+- The new codes use the `4xxx` block and do not mix with the existing ones;
+- The `title` of the existing codes is dirty data, but `error_occurrence` hangs historical records off them
   (105 rows), and cleaning it up would have to handle the foreign keys as well — that is
   data-governance work and is out of scope for this round;
-- It is recommended to use the mapping table of `DeviceErrorSql --list` afterwards to converge the old
+- It is recommended to use the mapping table of `DeviceErrorSql --list` afterwards to converge the existing
   codes that "can be matched against the manual" onto the new ones, step by step.
 
 ---
@@ -463,7 +463,7 @@ java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.device.DeviceRegistrar \
 |---|---|---|---|---|
 | `S100` | S100 sealer | Sealing | SEAL | `s100` |
 | `ASPIN_2K` | Shanghai Aiao Biotechnology ASpin 2K | Centrifugation | CENTRIFUGE | `aspin-2k` |
-| `EQ150` | Rotanta 460R (legacy data) | Centrifugation | CENTRIFUGE | — manual missing |
+| `EQ150` | Rotanta 460R (migrated data) | Centrifugation | CENTRIFUGE | — manual missing |
 
 > `EQ150` is the one that is really running on the production line (Hettich), and it has
 > **no model bound** — it stays unbound until the manual arrives; binding it wrongly

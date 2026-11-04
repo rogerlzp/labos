@@ -28,7 +28,7 @@ public final class ExperimentFlowRunner {
     /** 一步：在哪台设备上、做什么、带什么参数、产出什么变量。 */
     public record Step(long resourceId, String method, String output, String paramsExpr) {
 
-        /** 兼容旧调用：没有参数。 */
+        /** 兼容调用：没有参数。 */
         public Step(long resourceId, String method, String output) {
             this(resourceId, method, output, null);
         }
@@ -350,7 +350,7 @@ public final class ExperimentFlowRunner {
 
     private void finishNode(long nodeId, boolean ok, long ms, String raw, String errCode)
             throws SQLException {
-        // 原来这里写 duration_ms —— **run_node 根本没有这个列**，
+        // 改动前这里写 duration_ms —— **run_node 根本没有这个列**，
         // 所以每次都抛 SQLException，再退化到"只更新状态"：
         // 表面上流程能跑完，实际上错误码和耗时全丢了（日志里那行注释就是当年踩的坑）。
         // 现在写真正存在的 error_code，耗时放进 input（jsonb 里随便加字段）。

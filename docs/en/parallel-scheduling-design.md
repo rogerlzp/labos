@@ -15,7 +15,7 @@
 
 ## 0. Definition of the problem
 
-**Scenario**: the night shift has to run 20 experiments, and the lab has 26 islands and 239 devices. How
+**Scenario**: the night shift has to run a batch of experiments, and the lab has several islands and many devices. How
 do you schedule them?
 
 This is not a new problem, it is the classic **Job Shop Scheduling**:
@@ -30,8 +30,7 @@ This is not a new problem, it is the classic **Job Shop Scheduling**:
 
 **How it differs from the textbook Job Shop**:
 
-1. Our processing times are **inaccurate** (the original implementation has 10-second
-   precision, and the fluctuation is up to 13.5×)
+1. Our processing times are **inaccurate** (the precision is only 10 seconds, and the fluctuation is up to 13.5×)
 2. Our resources have **physical constraints** (two robot arms fighting = a real crash)
 3. Our failures **cannot be undone** (once the lid is open, it is open)
 
@@ -385,9 +384,9 @@ GET /api/scheduler/status
 }
 ~~~
 
-**Field semantics**: `started` = **the cumulative number of dispatches** (number; the old implementation
+**Field semantics**: `started` = **the cumulative number of dispatches** (number; the implementation before the change
 used a boolean field of the same name meaning "whether the scheduling loop has started"; from 2026-11-03
-this contract makes it a count, and the old boolean semantics are kept for compatibility in
+this contract makes it a count, and that boolean semantics is kept for compatibility in
 `loopStarted`).
 
 **Ordering rule**: `queue` is ordered by **the actual dispatch order** (`deadline` ASC (no deadline
@@ -416,7 +415,7 @@ GET /api/experiments/eta?limit=100
 1. The experiment is in the **set of scheduler island-lock holders** (the in-memory state
    of "who really is running"), or the experiment table has `status=running` →
    `estimatedWaitSec=0`, `queued=false`; **it does not look at `experiment_run.status`** —
-   the legacy running rows would misjudge a finished experiment as "running";
+   the stale running rows would misjudge a finished experiment as "running";
 2. Not in the scheduling queue and not running → `estimatedWaitSec=null` (not applicable,
    the frontend shows " —");
 3. In the queue: `estimatedWaitSec = max(0, the estimated remainder of the island's current

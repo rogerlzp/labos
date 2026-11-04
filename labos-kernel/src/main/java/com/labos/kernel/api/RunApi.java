@@ -65,12 +65,12 @@ import static com.labos.kernel.api.ApiServer.*;
  * <p>路径：{@code /api/process-status}、{@code /api/runs}、{@code /api/runs/dismiss}、{@code /api/runs/recoverable}、{@code /api/runtime/holds}
  * <p>正则路由：{@code PLATES_UNKNOWN}、{@code PLATE_LOCATE}、{@code RUNS_PAUSED}、{@code RUN_ATTENDANCE}、{@code RUN_DETAIL}、{@code RUN_DISMISS}、{@code RUN_GRAPH}、{@code RUN_PAUSE}、{@code RUN_RESUME}、{@code RUN_TIMELINE}
  *
- * <p><b>拆分约定</b>：路由顺序与原 ApiServer.route() 中完全一致；命中即 return true。
+ * <p><b>拆分约定</b>：路由顺序按首次出现顺序分发（跨 controller 稳定）；命中即 return true。
  * 共享 helper 仍由 ApiServer 提供（static import + {@code s.xxx}），不重复实现。
  */
 final class RunApi {
 
-    /** 宿主：提供库连接/服务与共享 helper（与原 ApiServer 内部调用等价）。 */
+    /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
     RunApi(ApiServer s) {

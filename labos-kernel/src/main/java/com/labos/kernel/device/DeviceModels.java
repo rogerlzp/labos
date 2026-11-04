@@ -77,7 +77,7 @@ public final class DeviceModels {
                 .method("ControlCover", "OpenDoorB",
                         "<PlateCentrifugeSetCoverModeArgs nLength=\"0\" byOpenCoverMode=\"2\"></PlateCentrifugeSetCoverModeArgs>",
                         1_500)
-                // 兼容老流程：OpenDoor 默认当 A 门
+                // 兼容流程：OpenDoor 默认当 A 门
                 .method("ControlCover", "OpenDoor",
                         "<PlateCentrifugeSetCoverModeArgs nLength=\"0\" byOpenCoverMode=\"1\"></PlateCentrifugeSetCoverModeArgs>",
                         1_500)

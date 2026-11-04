@@ -3,7 +3,7 @@ package com.labos.kernel.engine;
 /**
  * 节点执行状态。
  *
- * <p>{@link #MANUAL} 是新增的关键状态：老系统只有「成功/失败」，
+ * <p>{@link #MANUAL} 是新增的关键状态：状态机最初只有「成功/失败」，
  * 分不清「失败后自动恢复成功」与「需要人来处理」。这个区分决定了告警量和人机边界。
  */
 public enum NodeStatus {

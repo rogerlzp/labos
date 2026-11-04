@@ -52,7 +52,7 @@ TPcUnInitEx = procedure (); stdcall;
 |---|---|---|---|---|
 | `PcCreateModules` | `Cluster` | `<PcRefreshModulesArgs nCreateModulesMode="0"/>` | **创建模块实例（必须先做）** | `CreateModules` |
 | `Init` | `PlateCtri` | `<PlateCentrifugeInitArgs nLength="0" byInitMode="0"/>` | 初始化（回原点） | `Home` |
-| `ControlCover` | `PlateCtri` | `<PlateCentrifugeSetCoverModeArgs nLength="0" byOpenCoverMode="{0\|1\|2}"/>` | 门：**0=关 / 1=开 A / 2=开 B** | `CloseDoor` / `OpenDoorA` / `OpenDoorB`（`OpenDoor` 兼容老的，等同 A） |
+| `ControlCover` | `PlateCtri` | `<PlateCentrifugeSetCoverModeArgs nLength="0" byOpenCoverMode="{0\|1\|2}"/>` | 门：**0=关 / 1=开 A / 2=开 B** | `CloseDoor` / `OpenDoorA` / `OpenDoorB`（`OpenDoor` 兼容现有行为，等同 A） |
 | `Start` | `PlateCtri` | `<PlateCentrifugeSetStateArgs nLength="0" byCentriMode="0" wCentriSec="{time}" wCentriSpeed="{speed}" byCentriRamp="{ramp}"/>` | 开始离心（**时间/速度/加速度**） | `RunProgram` |
 | `Stop` | `PlateCtri` | 空 | 停止离心 | `Stop` |
 | `CurrSpeed` | `PlateCtri` | 空 | 查当前转速（结果在 `nRetValue`） | `CurrSpeed` |
@@ -66,7 +66,7 @@ TPcUnInitEx = procedure (); stdcall;
 ### 三个必须知道的坑
 
 1. **`ControlCover` 是一扇门三条指令**，不是三条独立指令。
-   早期版本按"Open/Close 两条指令"建模，还编了个 `ControlCoverClose` —— 那是错的，已删。
+   按"Open/Close 两条指令"建模，还编了个 `ControlCoverClose` —— 那是错的，已删。
 2. **两扇门（A/B）**。手册的操作界面就是"打开 A 门 / 打开 B 门"。
    流程里写 `OpenDoor` 只开 A 门；要开 B 门必须写 `OpenDoorB`。
 3. **`Start` 没有 rpm 名义值**，是 `wCentriSpeed`（示例 1500）。
@@ -130,7 +130,7 @@ java -cp out com.labos.kernel.sim.DeviceSimulator --model aspin-2k --device 601 
 ## 7. 未解问题（接真机前必须确认）
 
 - **`nControType`/`byOpenCoverMode` 的取值**：手册写 0=关、1=开 A、2=开 B（V2.0 明确）。
-  早期版本怀疑"开=1/关=0 需现场确认"，**V2.0 已给出答案**，不必再问。
+  "开=1/关=0 需现场确认"的疑点，**V2.0 已给出答案**，不必再问。
 - **`Start` 的加速度单位与范围**（示例 `byCentriRamp=150`）—— 手册没给单位。
 - **离心过程中能否 `ControlCover`**（安全互锁）—— 手册没写。
   模拟器按"拒绝"处理，现场必须验证一次。

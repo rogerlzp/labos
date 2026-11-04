@@ -16,7 +16,7 @@ import java.util.List;
 /**
  * 用真实历史错误回放告警聚合效果。
  *
- * <p>输入：{@code error_timeline.csv}（从老库 error_log 导出，含时间/错误码/设备）
+ * <p>输入：{@code error_timeline.csv}（从 error_log 导出的存量数据，含时间/错误码/设备）
  * <p>输出：聚合后的告警统计，与原始错误量对比
  *
  * <pre>

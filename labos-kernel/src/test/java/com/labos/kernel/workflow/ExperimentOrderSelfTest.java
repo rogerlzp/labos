@@ -8,7 +8,7 @@ import java.util.Map;
  *
  * <p>锁住两件事：
  * <ol>
- *   <li>没有边（老数据 / 线性实验）时，求序结果必须与按 {@code seq} 升序完全一致；</li>
+ *   <li>没有边（存量数据 / 线性实验）时，求序结果必须与按 {@code seq} 升序完全一致；</li>
  *   <li>有边时按前驱 -> 后继推进，同层按 {@code seq} 稳定排序；有环要明确拒绝而不是猜。</li>
  * </ol>
  *
@@ -20,7 +20,7 @@ public final class ExperimentOrderSelfTest {
     private static int failed;
 
     public static void main(String[] args) {
-        section("1. 线性 / 无边（老数据）");
+        section("1. 线性 / 无边（存量数据）");
         order("无边：按 seq 升序（与改动前一致）",
                 List.of(1L, 2L, 3L),
                 Map.of(),

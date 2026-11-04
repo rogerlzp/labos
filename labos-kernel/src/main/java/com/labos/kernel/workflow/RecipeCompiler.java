@@ -86,7 +86,7 @@ public final class RecipeCompiler {
         CapabilitySource cs = RealWorkflowRunner.resolveCapability(node, protocolCap);
         String cap = cs.capability();
 
-        // ★ 已指定具体方法 → 单步（老库 13,944 个节点都是这种，不能再展开）
+        // ★ 已指定具体方法 → 单步（存量流程 已落库的节点都是这种，不能再展开）
         if (node.protocolName() != null && !node.protocolName().isBlank()) {
             return new NodePlan(node.id(), node.key(), node.name(), cap, cs.source(),
                     List.of(new Step(1, node.protocolName())), 0, false);

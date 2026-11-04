@@ -341,10 +341,10 @@ All positions → empty
 
 **The transition plan**:
 ```
-Stop the old system → empty by hand → bring the new system online → inventory → start running
+Stop any other software that is controlling these devices → empty by hand → bring this system online → inventory → start running
 ```
 
-It is not possible to "let the old system run island A and the new system run island B" — the position lock does not know that the old system put a plate down.
+It is not possible to let two control programs each run one island — the position lock does not know about a plate placed by the other program.
 
 ---
 

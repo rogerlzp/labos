@@ -44,7 +44,7 @@
 
 | Item | Result |
 |---|---|
-| Means | `merge.sh` gained a `guard_legacy_tail.py`: it wraps the **duplicate-declaration** statements (`ALTER … ADD GENERATED`, `ALTER TABLE [ONLY] … ADD CONSTRAINT`) in `DO $$ … EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition`, and on a hit it `RAISE NOTICE`s and skips |
+| Means | `merge.sh` gained a `guard_dup_decl.py`: it wraps the **duplicate-declaration** statements (`ALTER … ADD GENERATED`, `ALTER TABLE [ONLY] … ADD CONSTRAINT`) in `DO $$ … EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition`, and on a hit it `RAISE NOTICE`s and skips |
 | Why not delete the duplicate definitions | The hand-written DDL and the dump tail are **interleaved** in the shards, so deleting a block easily deletes the 23 tables that only exist in the tail; with a guard, "the object does not exist → create it, it exists → do not blow up", the semantics are unchanged |
 | Brand-new-database verification | Full execution of the artifact in an empty schema, `ON_ERROR_STOP=1`: **exit=0, ERROR=0** (was 22) |
 | Objects created | 105 tables + 5 views (the live 107 = 105 + 2 historical monthly partitions from 2026-09), `run_node.loop_index` / the 4-column uk / the parent foreign key are all present |
@@ -56,7 +56,7 @@
 |---|---|
 | How -11 broke | `051f4d1` renamed the menu "experiment orchestration" to "experiment list", and folded the experiment into two layers, "list page → detail page"; T4 of `e2e-smoke.py` still clicked the "experiment orchestration" menu, 0 matches → 15s timeout |
 | Why nobody noticed -11 for so long | The e2e stage of `ci-gate.sh` does not run by default (it needs `--e2e` and a running frontend/backend); in the rounds after `051f4d1` the gate only ran "pure logic + tsc", so the "5 main chains" were green only on paper |
-| The -11 fix | T4 changed to: experiment list → click the row → detail → assert the "on-site hold" card / the run-control column → expand the run history; measured 16 items / 0 failures (threshold 14, the old script had 14) |
+| The -11 fix | T4 changed to: experiment list → click the row → detail → assert the "on-site hold" card / the run-control column → expand the run history; measured 16 items / 0 failures (threshold 14, the script has 14) |
 | The -12 symptom | An experiment with no island assigned requests an `island` pause: the backend's `effectiveScope` degrades to `experiment`, but the interface echoes the requested value `island` straight back to the frontend |
 | The -12 fix and its measurement | `pause` returns the scope that actually took effect; the joint debugging of that experiment showed "Scope: this experiment", the hold table's range = "this experiment #813", matching the experiment-level hold in the database |
 | How to re-run | `scripts/verify-exp-control.py` (added this round, `3ab54a3`): it automatically borrows an empty experiment, inserts 2 queued runs, walks pause → resume → stop through the interface, deletes the data in the finally block and restores the state; 22 assertions |
@@ -105,16 +105,16 @@ This is exactly the **"dual paths"** defect the project keeps repeating: the cod
 | The artifact contains the 4-column uk | ✅ `CONSTRAINT uk_run_node UNIQUE (run_id, node_key, attempt, loop_index)` |
 | The artifact contains the parent foreign key | ✅ `run_node_parent_node_id_fkey ... ON DELETE CASCADE` |
 | **Live-database verification** (full execution of the artifact in a new schema) | ✅ `run_node.loop_index` exists; `uk_run_node = UNIQUE (run_id,node_key,attempt,loop_index)`; `run_node_parent_node_id_fkey = FOREIGN KEY (parent_node_id) REFERENCES run_node(id) ON DELETE CASCADE` |
-| Drift assertion | ✅ new `scripts/check-schema-sync.sh` (re-run merge + compare + assert the three elements), merged into the 2.5th gate of `ci-gate.sh`; the negative test passes (putting the old artifact back raises an error and restores the working tree) |
+| Drift assertion | ✅ new `scripts/check-schema-sync.sh` (re-run merge + compare + assert the three elements), merged into the 2.5th gate of `ci-gate.sh`; the negative test passes (putting the stale artifact back raises an error and restores the working tree) |
 
-> Incidentally: the 22 `already exists` that a brand-new database produced when executing the original artifact have been fixed together with `BUG-20261103-08`
+> Incidentally: the 22 `already exists` that a brand-new database produced when executing the stale artifact have been fixed together with `BUG-20261103-08`
 > (a guard was added to `merge.sh`), so an empty database now executes with **0 errors** and the deployment path is clean too.
 
 ---
 
 ### ✅ BUG-20261103-02 ~ 07 (document self-consistency, fixed)
 
-| Id | Old value → new text | Explanation |
+| Id | Original value → new text | Explanation |
 |---|---|---|
 | `-02` | Device-chain assertion `34` → `37` | Aligned with the other 4 places in the same document (37) and with `ci-gate.sh MIN_CHAIN=37` |
 | `-03` | driver 25→23 / workflow 21→20 / sim 8→7 / device 7→6 / expr 6→5 | Consistent with the measured `find … \| wc -l` per package, the itemised total = 107 |

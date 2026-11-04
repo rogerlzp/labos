@@ -68,7 +68,7 @@ The `reason` line is the literal string the backend builds (`资源不足：INCU
 
 ## 4. ⚠ A design mistake: a failed preflight must not execute automatically
 
-**The original implementation**:
+**The initial implementation**:
 
 ```tsx
 } catch (e) {

@@ -209,7 +209,7 @@ public final class QueryService {
     /**
      * Process Status View：正在跑的 run 卡在哪。
      *
-     * <p>回答"为什么不动"——老系统只有日志，没有这个视图。
+     * <p>回答"为什么不动"——只有日志、没有这个视图时很难定位。
      */
     public String processStatusJson() throws SQLException {
         // 优先用内存态：执行期间 run_node 还没落库，查库看不到"卡在哪"
@@ -493,7 +493,7 @@ public final class QueryService {
                         resFree = freeAt.computeIfAbsent(rid, r -> remainingOf(r));
                         if (!resCode.containsKey(rid)) {
                             String code = resourceCodeOf(rid);
-                            // 老流程里的资源 id 可能已经不在 resource_node 了（换过设备/清过池）：
+                            // 存量流程里的资源 id 可能已经不在 resource_node 了（换过设备/清过池）：
                             // 显示 "设备#387" 比显示 "未绑定" 诚实 —— 它确实绑了，只是绑的东西没了
                             resCode.put(rid, code == null ? "设备#" + rid + "（已失效）" : code);
                         }
@@ -591,7 +591,7 @@ public final class QueryService {
      */
     public String workflowEtaJson(long workflowId) throws SQLException {
         // ① 这条流程要用哪些资源 —— 直接查 workflow_node.resource_id。
-        // 这两列是 M9 前置债补的：原来只能解析图 XML，ETA / 时间条 / 绑定面板各写了一遍正则。
+        // 这两列是 M9 前置债补的：改动前只能解析图 XML，ETA / 时间条 / 绑定面板各写了一遍正则。
         java.util.Set<Long> resources = new java.util.LinkedHashSet<>();
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
@@ -1551,7 +1551,7 @@ public final class QueryService {
      *       这个 advisory lock 依然有效（它本来就是库级原语）。</li>
      * </ul>
      *
-     * <p>纯改密码不触发"最后管理员"保护（保持原行为）；用户不存在返回 0（保持）。
+     * <p>纯改密码不触发"最后管理员"保护（保持行为不变）；用户不存在返回 0（保持）。
      */
     public int updateUser(long id, String role, Boolean enabled, String password)
             throws SQLException {
@@ -2550,7 +2550,7 @@ public final class QueryService {
      * 改一个错误码：码本身的属性（scope/severity/title）+
      * 它的**主策略**（strategy/max_attempts/params/enabled）。
      *
-     * <p>一次事务：码改了但策略没改，运行时就还是老行为，排查会更难。
+     * <p>一次事务：码改了但策略没改，运行时就还是改动前的行为，排查会更难。
      */
     public boolean updateErrorCode(long id, Map<String, String> fields) throws SQLException {
         try (Connection c = db.open()) {
@@ -2623,7 +2623,7 @@ public final class QueryService {
      * 改一个节点的**方法绑定 + 方法参数**。
      *
      * <p>为什么需要这个接口：内置节点（`__setVar` / `__expr`）和普通任务参数，
-     * 原来只能改库 —— 设计器里拖出来的 task 没有 `protocolName`，而 bpmn-js 的 modeling
+     * 改动前只能改库 —— 设计器里拖出来的 task 没有 `protocolName`，而 bpmn-js 的 modeling
      * 对未声明的自定义属性支持不稳。这里**以库为准**改两处：
      * <ol>
      *   <li>{@code workflow_node.protocol_name} + {@code params.method_params}</li>
@@ -2640,7 +2640,7 @@ public final class QueryService {
     /**
      * 同 {@link #updateNodeBinding(long, String, String, String)}，额外绑定设备。
      *
-     * @param resourceId 设备资源 id（null = 不动原有绑定）
+     * @param resourceId 设备资源 id（null = 不改动绑定）
      *
      * <p>为什么设备也要走这个方法：设备绑定只存在图 XML 的 {@code resource="…"} 属性里，
      * `workflow_node` 没有这一列（见 ROADMAP「表结构没表达流程怎么跑」那条债）。
@@ -2850,7 +2850,7 @@ public final class QueryService {
             } else {
                 attrs.put("protocolName", method);
                 // 节点名跟着方法名走 —— 但只在"用户没自己起过名"时改：
-                //   名字为空 / 名字等于原方法名 / 还是 bpmn-js 的占位名（Task 之类）
+                //   名字为空 / 名字等于方法名 / 还是 bpmn-js 的占位名（Task 之类）
                 // 否则会把用户写的"封膜第一步"覆盖掉。
                 boolean placeholder = oldName == null || oldName.isBlank()
                         || oldName.equals(oldMethod)
@@ -3158,7 +3158,7 @@ public final class QueryService {
                 // **能力必须一起写**：驱动注册表是按 resource_capability 分能力的。
                 // 只建实例不建能力，驱动会因为"名下设备都没有声明能力"被整条跳过，
                 // 现象是设备在界面上有、点不动，报 EC-06-0001（驱动未加载）。
-                // 原来这里没有这一段 —— 部署出来的设备一台都驱动不了。
+                // 改动前这里没有这一段 —— 部署出来的设备一台都驱动不了。
                 try (PreparedStatement ps = c.prepareStatement("""
                         INSERT INTO resource_capability (resource_id, capability_id)
                         SELECT ?, capability_id FROM device
@@ -3684,7 +3684,7 @@ public final class QueryService {
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
 
-    /** 某能力下可选的设备方法（老库 device_method）。 */
+    /** 某能力下可选的设备方法（{@code device_method}）。 */
     public String methodsJson(String capability) throws SQLException {
         List<String> items = new ArrayList<>();
         String sql = """
@@ -4114,12 +4114,12 @@ public final class QueryService {
         return new CompiledGraph(steps, edges);
     }
 
-    /** 只取流程 id（老调用方用）。 */
+    /** 只取流程 id（调用方用）。 */
     static java.util.List<Long> compileExperimentGraphWorkflowIds(String graphJson) {
         return compileExperimentGraph(graphJson).workflowIds();
     }
 
-    /** 由线性流程 id 列表构造"链式"编译结果（老写入口 / 新建实验用）。 */
+    /** 由线性流程 id 列表构造"链式"编译结果（写入口 / 新建实验用）。 */
     static CompiledGraph linearGraph(java.util.List<Long> workflowIds) {
         java.util.List<CompiledStep> steps = new java.util.ArrayList<>();
         java.util.List<String> nodeIds = new java.util.ArrayList<>();

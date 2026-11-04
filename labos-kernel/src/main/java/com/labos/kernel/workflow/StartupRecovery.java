@@ -51,8 +51,8 @@ public final class StartupRecovery {
                        count(n.id) FILTER (WHERE n.level = 0 AND n.status IN ('failed','manual')) AS bad
                 FROM run r
                 LEFT JOIN run_node n ON n.run_id = r.id
-                -- P1-7 修复（评审 20261102-03）：原来只看 running。
-                -- queued/pending 在进程崩溃后同样是僵尸（排队排到天荒地老），
+                -- P1-7 修复（评审 20261102-03）：改动前只看 running。
+                -- queued/pending 在进程崩溃后同样是僵尸（排队排到遥遥无期），
                 -- 但**不能立刻判失败**——刚入队几秒的正常记录也会被误杀。
                 -- 折中：running 立刻收；queued/pending 超过 1 小时才收。
                 WHERE r.tenant_id = ?
@@ -128,7 +128,7 @@ public final class StartupRecovery {
                   AND r.status = 'failed'
                   AND (r.input->>'recoverable')::boolean IS TRUE
                   -- **只列近 7 天被中断的**。
-                  -- 全量列出来是 42 条（10 月底那批老数据），界面上一直挂着
+                  -- 全量列出来是 42 条（存量数据），界面上一直挂着
                   -- "有可恢复"的提示；更糟的是这些十天前的单子点"继续"会真的重跑，
                   -- 而设备状态、板位、配方早就变了 —— 那不是恢复，是制造事故。
                   AND COALESCE((r.input->>'interruptedAt')::timestamptz, r.actual_end)
@@ -210,7 +210,7 @@ public final class StartupRecovery {
      *   <li>批次 run（{@code experiment_batch_run} 有归属）→ 交给
      *       {@link BatchOrchestrator#onRunStatusChanged(long)} 统一回写
      *       attempt + 批次汇总 + 按 D6 聚合实验状态；</li>
-     *   <li>非批次 run（老路径整单一条 run）→ 走
+     *   <li>非批次 run（非分批路径整单一条 run）→ 走
      *       {@link ExperimentExecutor#syncExperimentStatus} 把实验表同步成 failed，
      *       与执行器 settle 的映射一致。</li>
      * </ol>

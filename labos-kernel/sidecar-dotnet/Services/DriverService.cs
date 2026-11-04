@@ -170,11 +170,11 @@ public sealed class DriverService : DeviceDriver.DeviceDriverBase
 
     public override Task<AbortResponse> Abort(AbortRequest request, ServerCallContext context)
     {
-        // 老协议没有 Abort 消息类型，只能靠上层超时
+        // 协议没有 Abort 消息类型，只能靠上层超时
         return Task.FromResult(new AbortResponse
         {
             Accepted = false,
-            Message = "老协议不支持 Abort，请依赖超时"
+            Message = "协议不支持 Abort，请依赖超时"
         });
     }
 }

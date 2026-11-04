@@ -390,7 +390,7 @@ methods should exist".
 | **centrifuge** | `OpenDoor` `CloseDoor` `Load` `Unload` `RunProgram` | Centrifuge |
 | **incubator** | `OpenDoor` `CloseDoor` `Deposit1` `Withdraw1` `SetTemp` | Incubator |
 | **reader** | `OpenDoor` `CloseDoor` `Read` `GetResult` | Plate reader |
-| **generic** | Unlimited (the old behaviour) | Fallback |
+| **generic** | Unlimited (the existing behaviour) | Fallback |
 
 **A wrong method produces an explicit error**:
 

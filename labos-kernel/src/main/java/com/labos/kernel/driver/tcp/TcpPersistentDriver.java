@@ -79,7 +79,7 @@ public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
     /**
      * 设备错误码翻译器。默认不翻译（保持 1.0 行为：原样透传）。
      *
-     * <p>长连接**同样要翻译**：原来这里把所有失败都压成 {@code EC-05-0001}，
+     * <p>长连接**同样要翻译**：改动前这里把所有失败都压成 {@code EC-05-0001}，
      * 设备说的 {@code 0x8000000C}（无纸）在长连接模式下完全丢失，
      * 恢复引擎只能看到"未知错误"。
      */
@@ -201,7 +201,7 @@ public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
             writer = s.getOutputStream();
 
             // P1-2 修复（评审 20261102-03）：
-            // 原来用 `running.compareAndSet(false, true)` 判断要不要起读线程。
+            // 改动前用 `running.compareAndSet(false, true)` 判断要不要起读线程。
             // 但 readerLoop 退出时**没有把 running 置回 false**，
             // 于是断线重连后 CAS 永远失败 → **新 socket 没有人读** →
             // 请求发得出去、响应读不到，表现为"永久假超时"。
@@ -374,7 +374,7 @@ public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
     /**
      * 关闭连接。
      *
-     * <p><b>P1-20 修复（评审 20261102-03）</b>：原来没有同步，
+     * <p><b>P1-20 修复（评审 20261102-03）</b>：改动前没有同步，
      * 而 {@code ensureConnected} 是 {@code synchronized}。
      * 读线程退出调本方法时，可能正好撞上另一个线程在 {@code ensureConnected}
      * 里新建 socket —— 刚连上就被这一个关掉，然后所有请求超时。

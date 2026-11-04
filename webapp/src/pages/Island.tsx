@@ -39,7 +39,7 @@ interface DeviceModel {
 /**
  * 设备池里的缩略图：优先用登记的示意图/照片，**加载失败自动退回能力图标**。
  *
- * <p>为什么要退：老设备的 icon 指向老服务器的 /image/device/... ，那些文件在
+ * <p>为什么要退：存量设备的 icon 指向一个已不可达的服务器路径 /image/device/...，那些文件在
  * 新环境里 404，直接 img 会显示成破图，比没有图更难看。
  */
 function DevIcon({ icon, cap, name, size }: {
@@ -158,7 +158,7 @@ export default function IslandPage() {
   const [pos, setPos] = useState<Record<number, { x: number; y: number }>>({});
   /** 选中的两台设备，用于画搬运路径。 */
   const [pathTo, setPathTo] = useState<Dev | null>(null);
-  /** 最新坐标快照：回放是 async 的，闭包里的 pos 可能是旧的。 */
+  /** 最新坐标快照：回放是 async 的，闭包里的 pos 可能已过期。 */
   const posRef = useRef<Record<number, { x: number; y: number }>>({});
   useEffect(() => { posRef.current = pos; }, [pos]);
 
@@ -247,7 +247,7 @@ export default function IslandPage() {
   }, [poolReload]);
 
   // 默认选"已布局设备最多"的岛：说明这个岛是有人认真摆过的，
-  // 比"设备最多"（可能是老库脏数据）或"最新"（可能刚建还没设备）更贴近意图。
+  // 比"设备最多"（可能是存量脏数据）或"最新"（可能刚建还没设备）更贴近意图。
   const laidOut = (i: Island) => (i.devices ?? []).filter((d) => d.x != null).length;
   const current = islands.find((i) => i.code === code)
     ?? [...islands].sort((a, b) => laidOut(b) - laidOut(a))[0];

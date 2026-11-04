@@ -96,7 +96,7 @@ cd webapp && npx tsc -b --force       → 0 错误
 
 ```
 run 205411（T-LOOP，maxIterations=3）
-  A loop=0 completed   ← 汇总行（所有既有查询只看它）
+  A loop=0 completed   ← 汇总行（所有现有查询只看它）
   A loop=1 completed
   A loop=2 completed
   A loop=3 completed
@@ -246,7 +246,7 @@ PR 检查：test-all 536+ / tsc 0 错误（CI 只跑不需要库的两道）；�
 1. `workflow_node` 加 `resource_id bigint`、`seq int`（可空，先回填）
 2. `saveGraph` 保存时**双写**：XML 保持权威（bpmn-js 还得能打开），同时把解析结果落表
 3. 读侧切到表：ETA / 时间条 / 绑定面板 / 甘特统一查 `workflow_node`
-4. 回填脚本：对存量 1008 条流程解析 XML 写回（幂等，可重跑）
+4. 回填脚本：对存量 已有流程解析 XML 写回（幂等，可重跑）
 5. 加断言：`saveGraph` 后 `workflow_node.resource_id/seq` 必须与 XML 解析结果一致（防漂移，同 `check-schema-sync` 思路）
 
 **落地结果（2026-11-03）**：
@@ -280,7 +280,7 @@ PR 检查：test-all 536+ / tsc 0 错误（CI 只跑不需要库的两道）；�
 **验收（2026-11-03 实测，`scripts/verify-scheduler-acceptance.py`，8/8）**：
 同岛 3 实验严格互斥、派发顺序 == 提交顺序（日志完成序 + 队列位次）；
 跨岛 3 轮均观测到 maxRunning=3（并发成立，MAX_CONCURRENT=4），任何岛无并发占用；甘特页渲染正常。
-原验收条件"3 个实验并发跑、顺序一致、不破坏互斥"**已达成**。
+验收条件"3 个实验并发跑、顺序一致、不破坏互斥"**已达成**。
 
 **M9 结论（2026-11-03）**：范围 4 项全部完成（甘特 / EDD+插队 / 预计等待回填 / 调度器页面化），
 验收脚本可复跑。
@@ -313,11 +313,11 @@ S3 分批已上线：`experiment_batch` + `experiment_batch_run`，每批一次 
   编译后的 `experiment_process`、`experiment.version`；非法图拒绝保存、两边都不落库。
   回归：`ExperimentGraphCompileSelfTest`（纯逻辑）+ `ExperimentGraphPersistenceSelfTest`（连库）。
 - `S2-A` ✅（`ae06025`）：依赖落成 `experiment_process_edge` 边表，执行器 Kahn 拓扑求序、
-  有环拒绝；无边老数据按 `seq` 升序（与改动前一致）。**只承诺偏序、物理串行，不承诺墙钟并发**。
+  有环拒绝；无边存量数据按 `seq` 升序（与改动前一致）。**只承诺偏序、物理串行，不承诺墙钟并发**。
   回归：`ExperimentOrderSelfTest`（纯逻辑）。
 - `S3` ✅（后端 `bbcc5bc` + 前端 `fd59d90`）：`batch_split` 开关 + 两层表
   `experiment_batch` / `experiment_batch_run`；按批串行、批失败继续、单批重跑 attempt 递增且
-  旧历史保留（评审 B2 的落库形态）；前端批次卡片/重跑该批/每次尝试历史。
+  已有历史保留（评审 B2 的落库形态）；前端批次卡片/重跑该批/每次尝试历史。
 - `S3.1` ✅（后端 `c915948` + 前端 `5f12696`）：批内 run 恢复/停止回写批次层（D8-D10）、
   `PUT /api/experiments/{id}/batch-split` + 前端「分批设置」入口（D11）、同批重跑行锁（D12）。
   回归：`BatchPlannerSelfTest` 39 + `BatchDbSelfTest` 155 + `verify-exp-batch.py` 35/35；
@@ -371,7 +371,7 @@ S1 之后**画布已不再骗人**（保存即编译落库）；但批次（S3�
 
 **范围**：多租户隔离、角色权限（`app_role` 目前没用起来）、报表/BI、多实例部署（现在锁在进程内）。
 
-**权限（基础）已于 2026-11-03 收口**：沿用 `sys_user.role`（admin/operator/viewer）+ 后端角色白名单/最后管理员保护 + 前端角色感知/只读体验；`app_role`/`role_permission` 旧表**不启用**（避免双轨，决策见开发日志 2026-11-03）。余下：多租户隔离、报表/BI、多实例部署。
+**权限（基础）已于 2026-11-03 收口**：沿用 `sys_user.role`（admin/operator/viewer）+ 后端角色白名单/最后管理员保护 + 前端角色感知/只读体验；`app_role`/`role_permission` 现有表**不启用**（避免双轨，决策见开发日志 2026-11-03）。余下：多租户隔离、报表/BI、多实例部署。
 
 **不做在此列**：报表要等真机数据积累够才有意义。
 

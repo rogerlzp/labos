@@ -12,8 +12,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # 端口默认随机挑空闲的：写死 19501 会和"手工留着的模拟器"撞，
-# 撞上之后现象极隐蔽 —— 新模拟器 bind 失败退出，sidecar 连到旧的那个，
-# 而旧模拟器的幂等缓存里已经有同样的 message_id，于是"重复命令→直接回旧结果"。
+# 撞上之后现象极隐蔽 —— 新模拟器 bind 失败退出，sidecar 连到残留的那个，
+# 而残留模拟器的幂等缓存里已经有同样的 message_id，于是"重复命令→直接回过期结果"。
 SIM_PORT=${SIM_PORT:-$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')}
 SIDE_PORT=${SIDE_PORT:-$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')}
 DEVICE=${DEVICE:-501}
@@ -45,7 +45,7 @@ echo "  编译 sidecar…"
   || { echo "  编译失败，见 /tmp/sidecar-build.log"; exit 1; }
 ok "sidecar 编译通过"
 
-# 型号库必须是"从型号库导出的最新版"，否则 sidecar 会拿旧指令表
+# 型号库必须是"从型号库导出的最新版"，否则 sidecar 会拿过期的指令表
 CUR=$(cd "$ROOT/labos-kernel" && java -cp out com.labos.kernel.device.DeviceModelExport | md5)
 REG=$(md5 -q "$ROOT/sidecar-dotnet/models.json" 2>/dev/null || md5sum "$ROOT/sidecar-dotnet/models.json" | cut -d' ' -f1)
 if [[ "$CUR" == "$REG" ]]; then

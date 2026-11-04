@@ -5,7 +5,7 @@ package com.labos.kernel.recovery;
  *
  * <p>比 {@link RecoveryStrategy} 多了 {@link #MANUAL}：当策略缺失、
  * 重试耗尽、或没有可用替代资源时，引擎**不猜**，直接交给人。
- * 这是与老系统最大的区别——老系统会一直机械重试并刷日志，
+ * 这是核心差异——机械重试只会一直刷卡并刷日志，
  * 新引擎在无法安全自愈时立刻升级，并在 reason 里说明原因。
  */
 public enum RecoveryAction {

@@ -99,7 +99,7 @@ public final class ExperimentGraphPersistenceSelfTest {
                 versionBefore + " -> " + experimentVersion());
     }
 
-    /** 重存更短的编排：旧边必须随 process 一起消失，不能留孤儿。 */
+    /** 重存更短的编排：先前边必须随 process 一起消失，不能留孤儿。 */
     private static void testResaveShrinksEdgesAndDropsOrphans() throws Exception {
         int compiled = query.saveExperimentGraph(experimentId, oneWorkflowGraph(workflowIds.get(0)));
         check("重存为单流程：编译 1 条流程", compiled == 1, compiled);

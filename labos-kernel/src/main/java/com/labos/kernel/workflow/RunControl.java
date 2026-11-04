@@ -175,7 +175,7 @@ public final class RunControl {
         }
         // D10：批次 run 的实验状态必须按 D6 用所有批次聚合（走 D8 回写），
         // 不能让"这一条 run aborted"直接覆盖 experiment.status；
-        // 非批次 run 保持原逻辑（同连接里 syncExperimentStatus，行为不变）。
+        // 非批次 run 保持现有逻辑（同连接里 syncExperimentStatus，行为不变）。
         BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
         boolean changed;
         boolean batchRun;

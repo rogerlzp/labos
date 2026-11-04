@@ -23,7 +23,7 @@ import java.time.ZoneId;
  *   <tr><td>ABORTED</td><td>ABORTED</td><td>error</td><td>是</td></tr>
  * </table>
  *
- * <p>这是对老系统「91.2% 直接 Ignore、什么都不留」的修正：
+ * <p>这是对「91.2% 直接 Ignore、什么都不留」的修正：
  * 跳过的错误确实不该打扰人，但<b>必须可追溯</b>——否则三个月后又变成"出过什么问题没人知道"。
  */
 public final class JdbcErrorOccurrenceStore {

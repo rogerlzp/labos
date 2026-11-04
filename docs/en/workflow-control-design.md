@@ -80,7 +80,7 @@ for (GEdge e : outs) {
         log("网关 %s 条件求值失败（%s），按默认边处理：%s", ...);
     }
 }
-// Reached here: the default edge → the first one in a stable sort (the original logic is unchanged)
+// Reached here: the default edge → the first one in a stable sort (the logic is unchanged)
 ```
 
 Two new counters (for acceptance / diagnostics): `conditionHitCount()`, `unevaluatedConditionCount()`.
@@ -94,7 +94,7 @@ boolean hasCycle = hasCycle(graph);        // DFS with three colours, computed o
 ...
 
 int visit = visits.merge(key, 1, Integer::sum);
-if (done.contains(key) && !hasCycle) continue;   // an acyclic graph: the original de-duplication semantics are kept
+if (done.contains(key) && !hasCycle) continue;   // an acyclic graph: the de-duplication semantics are kept
 if (visit > maxVisits) { log("[循环] 达到上限"); continue; }
 if (++steps > maxSteps) { log("[循环] 总步数超限"); break; }
 ```

@@ -4,11 +4,11 @@
 #
 # 背景：deploy.sh 部署的是合并产物 `pg_rebuild/schema/90_all_in_one.sql`，
 # 但改的是分片（20_kernel / 96_schema_fix…）。**忘了重跑 merge.sh** 时，
-# 分片是对的、被部署的那份是旧的 —— 新环境装出来的库就缺列/缺约束，
+# 分片是对的、被部署的那份过期了 —— 新环境装出来的库就缺列/缺约束，
 # 而本地库一切正常，最难发现。
 #
 # 这个脚本做两件事：
-#   ① 重跑 merge.sh，产物必须与仓库里提交的一致（否则说明产物陈旧）
+#   ① 重跑 merge.sh，产物必须与仓库里提交的一致（否则说明产物过期）
 #   ② 产物里必须有 run_node.loop_index / 4 列唯一键 / parent 外键
 #
 # 用法：./scripts/check-schema-sync.sh
@@ -34,7 +34,7 @@ else
   if diff -q /tmp/_schema_product_backup.sql "$PRODUCT" >/dev/null 2>&1; then
     ok "产物与分片同源（重跑 merge.sh 无变化）"
   else
-    bad "产物陈旧：分片改过但没重跑 merge.sh"
+    bad "产物过期：分片改过但没重跑 merge.sh"
     diff /tmp/_schema_product_backup.sql "$PRODUCT" | head -20
     # 还原成仓库里那份：CI 不该改工作区；本地跑的人自己重跑 merge.sh 并提交
     cp /tmp/_schema_product_backup.sql "$PRODUCT"

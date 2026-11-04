@@ -12,7 +12,7 @@ import java.util.Set;
  * {@code candidateResourceIds} 是调度器给出的「能提供该能力的设备」。
  * 节点**不绑定某一台具体设备**——这是工艺与设备解耦的核心。
  *
- * <p>{@code method} 是驱动侧方法名（老库 protocol_name）。为 null 时驱动回退到能力码。
+ * <p>{@code method} 是驱动侧方法名（{@code protocol_name}）。为 null 时驱动回退到能力码。
  */
 public record RecoverableNode(
         long id,

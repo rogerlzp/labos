@@ -11,7 +11,7 @@ import java.util.Map;
 /**
  * 告警聚合器：把"一台设备反复报同一个错"压成有限的几条告警。
  *
- * <p>背景：老系统一台离线设备一天产生 11,856 条 ERROR 日志，运维完全无法从中发现问题。
+ * <p>背景：设备离线时一台会一天刷出 11,856 条 ERROR 日志，运维完全无法从中发现问题。
  *
  * <h2>为什么用「静默期」而不是「固定时间窗」</h2>
  * 固定窗口（如每 15 分钟切一刀）在**持续故障**场景下会每 15 分钟吐一条摘要——
@@ -53,7 +53,7 @@ public final class AlertAggregator {
     /**
      * 投递一条信号。
      *
-     * @return 需要发出的告警（0~2 条：旧窗口摘要 + 新窗口首报）
+     * @return 需要发出的告警（0~2 条：上一窗口摘要 + 新窗口首报）
      */
     public List<Alert> offer(AlertSignal signal) {
         if (signal == null) {
@@ -71,7 +71,7 @@ public final class AlertAggregator {
             return out;
         }
 
-        // 静默期已过 -> 结算旧窗口，开新窗口
+        // 静默期已过 -> 结算上一窗口，开新窗口
         if (signal.at().isAfter(w.last.plus(silenceGap))) {
             out.add(w.toSummary());
             Window fresh = new Window(signal);
@@ -133,7 +133,7 @@ public final class AlertAggregator {
         /**
          * 窗口内**最高**的严重级别。
          *
-         * <p><b>P1-17 修复（评审 20261102-03）</b>：原来是 {@code final}，
+         * <p><b>P1-17 修复（评审 20261102-03）</b>：改动前是 {@code final}，
          * 由窗口第一条信号定死。同一 fingerprint 先来一条 warn、
          * 后来真正的 error，告警级别仍是 warn —— <b>高危信号被降级淹没</b>。
          * 现在改为取窗口内最高级。

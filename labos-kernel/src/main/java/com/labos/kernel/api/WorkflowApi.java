@@ -65,12 +65,12 @@ import static com.labos.kernel.api.ApiServer.*;
  * <p>路径：{@code /api/choreographies}、{@code /api/choreography}、{@code /api/durations}、{@code /api/runs/}、{@code /api/shadow/probe}、{@code /api/workflows}、{@code /api/workflows/}
  * <p>正则路由：{@code NODE_BINDING}、{@code WF_CAN_START}、{@code WF_COMPILE}、{@code WF_DETAIL}、{@code WF_GRAPH}、{@code WF_HISTORY}、{@code WF_PREDICT}、{@code WF_PREFLIGHT}、{@code WF_RESTORE}、{@code WF_RUN}、{@code WF_SHADOW}、{@code WORKFLOW_ETA}、{@code WORKFLOW_RUNS}、{@code WORKFLOW_TIMELINE}
  *
- * <p><b>拆分约定</b>：路由顺序与原 ApiServer.route() 中完全一致；命中即 return true。
+ * <p><b>拆分约定</b>：路由顺序按首次出现顺序分发（跨 controller 稳定）；命中即 return true。
  * 共享 helper 仍由 ApiServer 提供（static import + {@code s.xxx}），不重复实现。
  */
 final class WorkflowApi {
 
-    /** 宿主：提供库连接/服务与共享 helper（与原 ApiServer 内部调用等价）。 */
+    /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
     WorkflowApi(ApiServer s) {
@@ -853,7 +853,7 @@ final class WorkflowApi {
 
     private String workflowsJson(int limit, String category) throws SQLException {
         // 节点数：前端「添加流程」下拉和流程库列表都要显示。
-        // 原来这个字段没返回，界面上显示成"(AUTO-7659, undefined 节点)"。
+        // 改动前这个字段没返回，界面上显示成"(AUTO-7659, undefined 节点)"。
         java.util.Map<Long, Integer> counts = workflowTaskCounts();
         List<String> items = new ArrayList<>();
         for (WorkflowDef w : s.workflows.list(limit)) {

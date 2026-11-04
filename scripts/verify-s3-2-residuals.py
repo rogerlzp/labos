@@ -187,7 +187,7 @@ def port_free(port=18080):
 def restart_api(log_path):
     """kill 所有 API 实例 -> 等端口真正释放 -> 起新进程 -> 等健康。
 
-    为什么必须等端口释放：kill -9 后旧 JVM 可能还握着 18080 一小会儿，
+    为什么必须等端口释放：kill -9 后残留 JVM 可能还握着 18080 一小会儿，
     立刻起新进程会 HttpServer.create 绑定失败（脚本第二轮重启就踩过）。
     """
     env = dict(os.environ)
@@ -357,7 +357,7 @@ def main():
         conn.commit()
         offset = log_size(args.api_log)
         ok("API 已重启") if restart_api(args.api_log) else bad("API 重启失败")
-        # 重启后旧 token 可能失效，重新登录
+        # 重启后先前 token 可能失效，重新登录
         api = Api(args.api, login_api(args.api, args.user, args.pwd))
         time.sleep(0.5)
         new_log = log_since(args.api_log, offset)

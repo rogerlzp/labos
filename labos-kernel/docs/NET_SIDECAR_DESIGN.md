@@ -89,7 +89,7 @@ public enum MessageType {
 
 ### 2.2 一个 Sidecar 服务多个端点
 
-原有系统里 5 个驱动端点 = 5 个独立 TCP 连接。Sidecar 内部维护**连接池**：
+若不复用连接，5 个驱动端点 = 5 个独立 TCP 连接。Sidecar 内部维护**连接池**：
 
 ```csharp
 // 伪代码
@@ -278,7 +278,7 @@ Sidecar 维护一个 **LRU 缓存（id → CommandResult）**，重复 id 直接
    但首次调用时连接还没建立，导致直接 MANUAL。
    → 改为不在执行前检查，由 `execute` 自己连，连不上返回 `EC-05-1006`。
 
-2. **方法名回退成能力码**：节点用旧构造（method=null），`effectiveMethod()` 回退到
+2. **方法名回退成能力码**：节点用不带 method 的构造（method=null），`effectiveMethod()` 回退到
    `capabilityCode`（`TRANSFER` 大写），而驱动认的是 `protocol_name`（`Transfer`），
    导致 mock 的故障配置匹配不上。
    → 真实工艺里 method 本来就是 protocol_name，用带 method 的构造即可。
@@ -361,7 +361,7 @@ builder.Services.AddSingleton<IdempotentCache>();
 
 > 这个坑很隐蔽：代码逻辑完全正确，单元测试也发现不了，
 > **只有"看驱动侧实际收到几次指令"才暴露**。
-> 和之前 Java 侧的"事件序号字符串排序""驱动级 vs 设备级能力"是同一类问题——
+> 和 Java 侧的"事件序号字符串排序""驱动级 vs 设备级能力"是同一类问题——
 > **必须验证外部可观测的结果，而不是看内部状态对不对**。
 
 ---

@@ -8,11 +8,11 @@ import java.util.Map;
  * 驱动返回的执行结果。
  *
  * <p><b>{@code deviceRawResponse} 是这份契约最重要的字段</b>：
- * 老系统 十余万 条执行记录里 99.7% 没有保存设备原始回包，
+ * 十余万条执行记录里 99.7% 没有保存设备原始回包，
  * 出问题只能靠猜。新契约强制驱动回传原文，落库到 {@code run_command.device_raw_response}。
  *
  * <p><b>{@code errorCode} 必须是有语义的码</b>，禁止一律返回 {@code 宽泛错误码}——
- * 老库 绝大多数 的错误都归到这个万能码，导致 91% 被无脑 Ignore。
+ * 绝大多数错误都归到这个万能码，导致 91% 被无脑 Ignore。
  */
 public record DriverResult(
         String commandId,

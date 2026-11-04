@@ -7,7 +7,7 @@ import java.util.random.RandomGenerator;
  * 退避时长计算。
  *
  * <p>指数退避 + 抖动，避免多台设备同时故障时所有重试在同一毫秒打过去。
- * 老系统在设备离线时以 150ms 轮询、每秒重试，一天打了 5,928 次 —— 这就是没有退避的代价。
+ * 设备离线时若以 150ms 轮询、每秒重试，一天会打 5,928 次 —— 这就是没有退避的代价。
  */
 public final class BackoffCalculator {
 

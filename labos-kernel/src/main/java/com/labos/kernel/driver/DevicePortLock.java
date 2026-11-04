@@ -107,7 +107,7 @@ public final class DevicePortLock {
         }
     }
 
-    /** 设备有没有配通道（没配说明是老数据，跳过通道锁）。 */
+    /** 设备有没有配通道（没配说明是存量数据，跳过通道锁）。 */
     public boolean hasPorts(long resourceId) {
         String sql = "SELECT 1 FROM device_port WHERE tenant_id = ? AND resource_id = ? LIMIT 1";
         try (Connection c = db.open();

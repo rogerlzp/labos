@@ -28,8 +28,7 @@ import java.util.regex.Pattern;
  */
 public final class MockDriverServer implements AutoCloseable {
 
-    // 分帧标记。早期版本用的是别的前缀，品牌中性化时一并改了。
-    // **升级注意**：厂商驱动侧必须同步改成同一个标记，否则通信会失败。
+    // 分帧标记。驱动侧必须用同一个标记，否则通信会失败。
     private static final String DELIMITER = "#!LABSEP!#";
     private static final Pattern MSG_ID = Pattern.compile("\"message_id\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern METHOD = Pattern.compile("\"method\"\\s*:\\s*\"([^\"]*)\"");

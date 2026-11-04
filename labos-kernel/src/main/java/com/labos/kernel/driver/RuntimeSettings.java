@@ -10,7 +10,7 @@ import java.sql.SQLException;
 /**
  * 运行期可调参数（心跳间隔 / 离线阈值）。
  *
- * <p>为什么要有这个东西：这两个值原来是**环境变量 + final 字段**，改一次要重启 API。
+ * <p>为什么要有这个东西：这两个值改动前是**环境变量 + final 字段**，改一次要重启 API。
  * 现场调"这台设备多久没响应算掉线"是日常动作，重启会打断正在跑的实验 ——
  * 所以改成：启动时从 {@code sys_setting} 读一次，页面上改完**立即生效**（下一个探测周期）。
  *
@@ -88,7 +88,7 @@ public final class RuntimeSettings {
      * <p>不用 {@code ON CONFLICT} 是因为线上 `sys_setting` 没有
      * `(tenant_id, scope, setting_key)` 的唯一约束（历史表结构缺），
      * 直接 ON CONFLICT 会报 "no unique or exclusion constraint matching"，
-     * 而给老库补唯一索引要担心已有重复行 —— 这种两段式写法在哪都能跑。
+     * 而给 sys_setting 补唯一索引要担心已有重复行 —— 这种两段式写法在哪都能跑。
      */
     private static void upsert(Connection c, long tenantId, String key, long value)
             throws SQLException {

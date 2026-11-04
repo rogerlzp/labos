@@ -162,7 +162,7 @@ not "the branch was not selected" (the first version missed `SKIPPED`; the 2026-
 **Choice**:
 
 1. At startup, a DFS decides whether the graph has a cycle (`hasCycle`)
-2. **Only a graph with a cycle** allows a node to be entered again; an acyclic graph keeps the original deduplication semantics
+2. **Only a graph with a cycle** allows a node to be entered again; an acyclic graph keeps the deduplication semantics
 3. Two safeguards: at most 10 iterations per node (`workflow.attr.maxIterations` is configurable), 500 total steps
 
 **Why re-entry is not simply allowed**: a parallel join point is hit by several edges, and the same node can be "activated again". Unguarded re-entry makes a device action run twice — that is a physical side effect (sealing twice, moving the plate twice).
@@ -207,7 +207,7 @@ Two traps (both found the hard way):
 
 ## D10. Experiment orchestration (list) and the experiment canvas (graph) are **two views of the same data**
 
-**Background**: in the old database `run_mode` is `sequential` for 99.7% (recorded in the comment of `ExperimentCanvas.tsx`). Note that in the current environment `experiment_process` has only 13 rows — the 659 historical experiments only filled in `experiment.workflow_id`, they did not go through the new table.
+**Background**: in the stored workflows `run_mode` is `sequential` for 99.7% (recorded in the comment of `ExperimentCanvas.tsx`). Note that in the current environment `experiment_process` has only 13 rows — the 659 historical experiments only filled in `experiment.workflow_id`, they did not go through the new table.
 
 **Choice**: two editing forms, both reading and writing `experiment_process` (the list) and `experiment_graph` (the canvas).
 
@@ -229,13 +229,13 @@ Two traps (both found the hard way):
 
 ---
 
-## D12. The device methods are persisted (`device_method`), and the **old methods are not deleted**
+## D12. The device methods are persisted (`device_method`), and the **existing methods are not deleted**
 
 **Background**: the "Details" of the UI reads `device_method`, while `DeviceRegistrar` used to write only the `device` row → the method list was always empty.
 
 **Choice**: when a device enters the pool, upsert the methods of the model library into `device_method`; **do not delete** the methods that are no longer in the model library.
 
-**Why**: an old method may be referenced by a historical workflow, and deleting it would make those workflows report "method does not exist" as soon as they are opened. Adding and updating only is safer.
+**Why**: an existing method may be referenced by a historical workflow, and deleting it would make those workflows report "method does not exist" as soon as they are opened. Adding and updating only is safer.
 
 **Cost**: after a method is deleted from the model library, "orphan methods" are left in the database (they need a periodic manual comparison, or a "mark as deprecated" field).
 

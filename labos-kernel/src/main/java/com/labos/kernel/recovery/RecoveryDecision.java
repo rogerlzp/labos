@@ -4,7 +4,7 @@ package com.labos.kernel.recovery;
  * 决策输出：引擎算出的处置方案。
  *
  * <p>{@code reason} 是必填的——它同时用于告警文案、审计轨迹和事后复盘。
- * 老系统最大的问题是「出错了但不知道为什么、也不知道系统打算怎么办」，
+ * <p>最大的问题是「出错了但不知道为什么、也不知道系统打算怎么办」，
  * 这里要求每一次决策都必须能自解释。
  */
 public record RecoveryDecision(

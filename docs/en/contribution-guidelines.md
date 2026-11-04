@@ -164,7 +164,7 @@ Important changes (especially bug fixes) must state **how it was verified**:
 ```
 验证：
 - 单测 51 个全绿
-- 工艺 993/993（SimulatedBus 走图，非真设备）
+- 工艺 the full set（SimulatedBus 走图，非真设备）
 - 执行 239，层位写入 I4495，has_plate 一致
 ```
 

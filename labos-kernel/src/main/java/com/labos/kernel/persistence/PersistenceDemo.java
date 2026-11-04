@@ -120,7 +120,7 @@ public final class PersistenceDemo {
         }
         System.out.printf("错误留痕: 跳过 %d 条(info) / 转人工 %d 条(warn) / 终止 %d 条(error)%n",
                 skipped, manual, aborted);
-        System.out.println("  ↑ 跳过的也留痕，但不告警——这是对老系统\"91% 直接 Ignore、什么都不留\"的修正");
+        System.out.println("  ↑ 跳过的也留痕，但不告警——这是对「91% 直接 Ignore、什么都不留」的修正");
         System.out.println();
 
         // ---------- 5. 查询验证 ----------
