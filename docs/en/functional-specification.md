@@ -660,7 +660,7 @@ The reproduction steps are in chapter 9 of `LabOS_新一代中控实现总纲_20
 |---|---|
 | This document | The functional specification, a living document |
 | `决策记录.md` | The changes after chapter 12, append-only |
-| `README.md` | The directory entry point |
+| `README.zh-CN.md` | The directory entry point |
 | `LabOS_新一代中控实现总纲_20261029.md` | The kernel-0.3 snapshot |
 | The reports `labos-kernel/BATCH_VALIDATION_REPORT.md` etc. | Evidence; the specification cites them and does not copy the tables |
 | `archive/LabOS2.0_功能规格说明书_v0.3.md` | The draft that this document supersedes |

@@ -2,74 +2,81 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](ROADMAP.md)
 
-> **[English](README.en.md)** · 简体中文
+> **English** · **[简体中文](README.zh-CN.md)**
 >
-> 本仓库提供中英双语文档：界面已支持运行时切换中/英文（右上角），
-> 英文文档索引与翻译台账见 [`docs/en/INDEX.md`](docs/en/INDEX.md)。
->
-> **English summary** — LabOS is an Apache-2.0 open-source orchestration kernel for laboratory automation: BPMN workflow execution, multi-experiment scheduling, position-level plate occupancy, device contracts and a plate-movement audit trail. It is **pre-alpha**: there is no SiLA 2 implementation and no SiLA certification yet. The interoperability roadmap (SiLA 2 adapter / SiLA Converter for existing devices / OPC UA LADS) is in [README.en.md](README.en.md#status-and-interoperability-roadmap).
+> This repository ships bilingual documentation: the console switches between
+> Chinese and English at runtime (top-right selector), and the English
+> documentation index and translation ledger live in
+> [`docs/en/INDEX.md`](docs/en/INDEX.md).
 
-# LabOS · 实验室自动化中控系统
+# LabOS · Laboratory Automation Control System
 
-面向生物医药实验室的自动化控制内核。把「实验怎么跑」翻译成「设备怎么动」，
-并在多个实验并行时保证板子不出错、设备不撞车。
+> **English edition.** The Chinese README is [`README.zh-CN.md`](README.zh-CN.md); this file is the
+> English counterpart. Nothing in the Chinese documentation was modified to produce it.
+> See [`docs/en/INDEX.md`](docs/en/INDEX.md) for the full English documentation index
+> and the translation ledger.
+
+LabOS is a control kernel for automated bio-pharma laboratories. It translates
+*“how an experiment runs”* into *“how the devices move”*, and — when several
+experiments run in parallel — it guarantees that plates never get mixed up and
+devices never collide.
 
 ```
-实验定义（多流程 + 变量 + 循环）
+Experiment definition (multi-workflow + variables + loops)
     ↓
-调度（多实验并行，岛级互斥）
+Scheduling (parallel experiments, island-level mutual exclusion)
     ↓
-流程执行（BPMN 图 → 节点 → 设备动作）
+Workflow execution (BPMN graph → nodes → device commands)
     ↓
-板位跟踪（哪个位置有哪块板 + 抢占防冲突）
+Plate tracking (which position holds which plate + atomic reservation)
 ```
 
 ---
 
-## 能做什么
+## What it does
 
-| 能力 | 说明 |
+| Capability | Description |
 |---|---|
-| **流程执行** | 解析 BPMN 图，按图执行节点；支持并行网关、异或网关、回环 |
-| **多实验并行** | 岛级互斥 + EDD 排序 + 排队；同岛不并行，不同岛互不影响 |
-| **板位管理** | 位置级抢占（原子写入）、搬运双锁（防死锁）、板号三级解析 |
-| **设备驱动** | 短连接 / 长连接两种模式；契约校验（回包四字段） |
-| **影子模式** | 单命令探针 + 整流程试跑，不发命令只看"会发什么" |
-| **崩溃恢复** | 幂等键（同一命令重发不重复执行）+ 启动收尾 |
-| **告警** | 漏板、超时、失败、契约不符；去重合并 |
-| **双画布编排** | 岛屿编排（设备连线=搬板）+ 实验画布（设备+变量+循环+分叉） |
+| **Workflow execution** | Parses a BPMN graph and executes node by node; supports parallel gateways, exclusive gateways and loops |
+| **Parallel experiments** | Island-level mutual exclusion + EDD ordering + queueing; no two experiments share an island, separate islands never interfere |
+| **Plate & position management** | Position-level reservation (atomic write), dual locks for plate moves (deadlock-free), three-tier plate-ID resolution |
+| **Device drivers** | Short-connection and persistent-connection modes; contract validation (four required response fields) |
+| **Shadow mode** | Single-command probe + whole-workflow dry run: issues no commands, only reports *what would be sent* |
+| **Crash recovery** | Idempotency keys (resending a command never re-executes it) + startup reconciliation |
+| **Alerts** | Missing plate, timeout, failure, contract mismatch; deduplicated and merged |
+| **Dual canvases** | Island canvas (device wiring = plate moves) + experiment canvas (devices + variables + loops + branches) |
 
 ---
 
-## 快速开始
+## Quick start
 
-### 依赖
+### Requirements
 
-- **JDK 17**（无框架依赖，只用 JDK 标准库 + PostgreSQL JDBC）
-- **PostgreSQL**（默认库名 `labdb`，可用 `LABOS_DB_NAME` 覆盖）
-- **Node 18+**（前端）
-- **Redis**（可选，只有网关模式需要）
+- **JDK 17** (no framework dependency — JDK standard library + PostgreSQL JDBC only)
+- **PostgreSQL** (default database `labdb`, override with `LABOS_DB_NAME`)
+- **Node 18+** (frontend)
+- **Redis** (optional, only needed in gateway mode)
 
-### 启动内核
+### Run the kernel
 
 ```bash
 cd labos-kernel
 javac -encoding UTF-8 -d out $(find src -name '*.java')
-LABOS_DB_NAME=<你的库名> java -Dfile.encoding=UTF-8 \
+LABOS_DB_NAME=<your-db> java -Dfile.encoding=UTF-8 \
      -cp "out:lib/postgresql-42.7.3.jar" \
      com.labos.kernel.api.ApiServer 18080
 ```
 
-### 启动前端
+### Run the frontend
 
 ```bash
 cd webapp
 npm install && npm run dev      # http://localhost:5173
 ```
 
-默认账号 `admin` / `admin123`。
+Default account: `admin` / `admin123`.
 
-### 启动设备网关（可选）
+### Run the device gateway (optional)
 
 ```bash
 cd labos-gateway
@@ -79,160 +86,228 @@ LABOS_GATEWAY_DRIVERS="DRV-A=tcp://192.0.2.10:8501" \
 java -cp out com.labos.gateway.GatewayMain
 ```
 
-### 环境变量
+### Environment variables
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
 | `LABOS_DB_HOST` | 127.0.0.1 | |
 | `LABOS_DB_PORT` | 5432 | |
-| `LABOS_DB_NAME` | labdb | **现场必须指定** |
+| `LABOS_DB_NAME` | labdb | **Must be set on site** |
 | `LABOS_DB_USER` | postgres | |
-| `LABOS_DB_PASS` | 空 | |
-| `LABOS_AUTH` | 1 | 设 0 关闭鉴权（仅联调） |
-| `LABOS_DRIVER_PORT` | 19301 | 厂商驱动服务端口 |
-| `LABOS_EXEC_GRAPH` | 1 | 设 0 退回顺序执行 |
-| `LABOS_DRIVER_MODE` | 短连接 | `persistent` 走长连接 |
-| `LABOS_REDIS_HOST` | 127.0.0.1 | 网关用 |
-| `LABOS_GATEWAY_DRIVERS` | 必填 | `code=tcp://host:port` 逗号分隔 |
+| `LABOS_DB_PASS` | empty | |
+| `LABOS_AUTH` | 1 | Set to 0 to disable authentication (integration only) |
+| `LABOS_DRIVER_PORT` | 19301 | Vendor driver service port |
+| `LABOS_EXEC_GRAPH` | 1 | Set to 0 to fall back to sequential execution |
+| `LABOS_DRIVER_MODE` | short connection | `persistent` for long-lived connections |
+| `LABOS_REDIS_HOST` | 127.0.0.1 | Used by the gateway |
+| `LABOS_GATEWAY_DRIVERS` | required | `code=tcp://host:port`, comma-separated |
+| `VITE_DEFAULT_LOCALE` | `zh-CN` | Frontend build-time default language (`zh-CN` / `en-US`) |
 
-### 验证
+### Verify
 
 ```bash
 cd labos-kernel
-LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.recovery.RecoverySelfTest
-LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.engine.EngineSelfTest
-LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.workflow.GraphRunnerTest
-LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar" \
+LABOS_DB_NAME=<your-db> java -cp out com.labos.kernel.recovery.RecoverySelfTest
+LABOS_DB_NAME=<your-db> java -cp out com.labos.kernel.engine.EngineSelfTest
+LABOS_DB_NAME=<your-db> java -cp out com.labos.kernel.workflow.GraphRunnerTest
+LABOS_DB_NAME=<your-db> java -cp "out:lib/postgresql-42.7.3.jar" \
      com.labos.kernel.workflow.RealWorkflowRunner --all
 ```
 
-**注意**：`RealWorkflowRunner --all` 是**仿真总线按图走**，会统计并行网关与异或网关走了几条边，
-**不是真设备验证**。
+**Note:** `RealWorkflowRunner --all` walks the graph on the **simulation bus**. It
+reports which branches the parallel and exclusive gateways took — it is **not**
+a real-device verification.
+
+The frontend has its own gates:
+
+```bash
+cd webapp && npx tsc -b --force     # type check, must be 0 errors
+python3 scripts/scan-i18n.py        # i18n ledger: key parity + code coverage
+```
 
 ---
 
-## 架构
+## Architecture
 
 ```
 ┌─────────────────────────────────────┐
-│ 浏览器（React 18 + TS + Antd）        │
+│  Browser (React 18 + TS + Ant Design) │
 └──────────────┬──────────────────────┘
                │ HTTP/JSON  :18080
 ┌──────────────▼──────────────────────┐
-│ 内核 labos-kernel（纯 Java 17）       │
-│  api/      路由与参数解析             │
-│  workflow/ 流程 · 实验 · 调度         │
-│  engine/   状态机（重试/转人工/幂等）  │
-│  driver/   设备驱动 · 位置锁          │
-│  recovery/ 崩溃恢复决策               │
-│  alert/    告警                       │
+│  Kernel `labos-kernel` (pure Java 17)  │
+│  api/      routing + parameter parsing │
+│  workflow/ workflow · experiment · sched │
+│  engine/   state machine (retry/manual/ │
+│            idempotency)                 │
+│  driver/   device drivers · position lock│
+│  recovery/ crash-recovery decisions    │
+│  alert/    alerts                       │
 └──────────────┬──────────────────────┘
                │ TCP + JSON
 ┌──────────────▼──────────────────────┐
-│ 厂商驱动服务（.NET Sidecar / Mock）    │
+│  Vendor driver service (.NET sidecar / mock) │
 └──────────────┬──────────────────────┘
-               │ 厂商 DLL / 串口
+               │ vendor DLL / serial port
 ┌──────────────▼──────────────────────┐
-│ 设备 / 机械臂                         │
+│  Devices / robot arms                │
 └─────────────────────────────────────┘
 ```
 
-**可选网关路径**：内核 → Redis → `labos-gateway` → 设备。
-网关常驻长连接，内核重启不影响设备执行。
+**Optional gateway path**: kernel → Redis → `labos-gateway` → devices. The gateway
+keeps long-lived connections, so restarting the kernel does not interrupt a running
+device command.
 
-详细模块地图见 [`docs/技术架构与模块地图.md`](docs/技术架构与模块地图.md)。
+Full module map: [`docs/技术架构与模块地图.md`](docs/en/architecture.md)
+(Chinese).
 
 ---
 
-## 关键设计决策
+## Key design decisions
 
-| # | 决策 | 为什么 |
+| # | Decision | Why |
 |---|---|---|
-| 1 | **位置级互斥 > 岛级互斥** | 跨岛共享位置、既有板；岛级互斥是 2.0 的简化 |
-| 2 | **原子抢占**（`INSERT ON CONFLICT DO UPDATE WHERE`） | 先 SELECT 再 UPDATE 有窗口，两个实验会同时认为位置空闲 |
-| 3 | **搬运双锁按 id 升序** | 消除循环等待（死锁四条件之一）；第二个失败就释放第一个 |
-| 4 | **不用 eval 求值条件** | 画布内容来自用户输入，eval 等于把浏览器交给别人 |
-| 5 | **变量找不到保留 `${name}` 原样** | 报错更直观，好排查；替换成空串会让人以为参数漏填 |
-| 6 | **失败即停，不跳过** | 跳过一步意味着板子位置未知，后续步骤全是错的 |
-| 7 | **不用纯 DP 调度** | 状态空间 2^50、工时波动 13.5×；改用滚动时域（**2.0 只实现贪心**） |
-| 8 | **网关只做管道，不判断业务** | 越聪明越难定位问题 |
-| 9 | **板号三级解析**：参数 → 设备返回 → `AUTO-<runId>` | 兜底不用 UUID：`AUTO-` 一眼看出"这板没扫描" |
+| 1 | **Position-level mutual exclusion > island-level** | Positions are shared across islands and plates already in the lab may still exist; island-level exclusion was the 2.0 simplification |
+| 2 | **Atomic reservation** (`INSERT ON CONFLICT DO UPDATE WHERE`) | SELECT-then-UPDATE leaves a window in which two experiments both believe the position is free |
+| 3 | **Plate moves take both locks in ascending id order** | Removes circular wait (one of the four deadlock conditions); the second failure releases the first |
+| 4 | **No `eval` for condition evaluation** | Canvas content comes from user input — `eval` hands the browser to someone else |
+| 5 | **An unresolved variable keeps `${name}` verbatim** | Errors stay obvious and debuggable; substituting an empty string makes it look like a missing parameter |
+| 6 | **Fail fast, never skip** | Skipping a step leaves the plate position unknown, and every later step is then wrong |
+| 7 | **No pure DP scheduling** | State space 2^50, work-time variance 13.5×; a rolling time horizon is used instead (2.0 implements only the greedy variant) |
+| 8 | **The gateway is a pipe, not a decision maker** | The cleverer it gets, the harder it is to locate a problem |
+| 9 | **Three-tier plate-ID resolution**: parameter → device response → `AUTO-<runId>` | The fallback is not a UUID: `AUTO-` makes it obvious at a glance that the plate was never scanned |
 
 ---
 
-## 文档
+## Internationalization
 
-| 文档 | 内容 |
+The web console ships with a **runtime** i18n layer (no i18n library, no build-time
+split) and two language packs:
+
+- `webapp/src/i18n/messages/zh-CN.ts` — the **master pack**: it defines the complete
+  key set.
+- `webapp/src/i18n/messages/en-US.ts` — typed as
+  `Record<keyof typeof zhCN, string>`, so a missing, extra or misspelled key is a
+  **compile error**, not a runtime surprise.
+- `webapp/src/i18n/codes.ts` — English labels for **domain codes** (run/node/step/
+  experiment/batch statuses, pause kinds, on-site hold kinds and scopes).
+
+Two rules govern how text is looked up:
+
+1. **UI text is looked up by key.** Pages call `t('runs.col.progress')`; they never
+   branch on the Chinese string.
+2. **Domain codes are looked up by code, never by Chinese text.** The backend
+   vocabulary (`GET /api/meta/status-vocabulary`) is the authority for the Chinese
+   label, so a status added on the backend appears immediately in the Chinese UI.
+   The English side resolves the same **code** against the local table and falls
+   back to the raw code — an English screen never shows a Chinese label.
+
+Switching language at runtime: the header has a `中文 / English` selector; the
+choice is stored in `localStorage` and survives reloads. The build-time default is
+`VITE_DEFAULT_LOCALE` (defaults to `zh-CN`).
+
+`scripts/scan-i18n.py` is the ledger tool. It loads the packs with esbuild, runs
+the real localisation code over the backend vocabulary, and fails when:
+
+- the two packs are not key-aligned, or an English value contains Chinese;
+- a backend code has no English entry (it would render as a bare code);
+- the English UI would display any Chinese text.
+
+**Current state: all 26 console pages are fully translated — 1 176 message keys
+(zh/en aligned), 58 domain codes covered, 1 238 reachable English strings with zero
+Chinese characters, and 0 residual user-facing Chinese in `webapp/src`.**
+The Chinese console is unchanged: the default locale is still `zh-CN`.
+
+---
+
+## Documentation
+
+**Every document in this repository now has an English edition.** The index and the
+translation ledger live in [`docs/en/INDEX.md`](docs/en/INDEX.md); the Chinese
+originals remain the authoritative reference for implementation detail, and the
+English files are kept in step with them.
+
+**Overseas market research is deliberately not published.** Buyer maps, competitor
+positioning, pricing intelligence and the standards-alignment analysis are market
+intelligence rather than product documentation; they live in the local, git-ignored
+`private/` directory and are not part of this repository.
+
+| Document | Contents |
 |---|---|
-| **[`docs/en/INDEX.md`](docs/en/INDEX.md)** | **英文文档索引 + 翻译台账**：全部中文文档的英文名对照表（已译 / 待译状态） |
-| **[`ROADMAP.md`](ROADMAP.md)** | **⭐ 后续规划唯一权威**：M6–M11 阶段、功能清单、验收标准、P0/P1/P2 落位、完成定义 |
-| **[`docs/评审包-20261103/`](docs/评审包-20261103/00-索引与评审须知.md)** | **最新评审入口（四件套）**：[功能](docs/评审包-20261103/01-功能文档.md) · [技术](docs/评审包-20261103/02-技术文档.md) · [设计](docs/评审包-20261103/03-设计文档.md) · [测试](docs/评审包-20261103/04-测试文档.md) |
-| [`docs/评审指引.md`](docs/评审指引.md) | 新读者从这里开始：30 分钟理解项目 + 已知问题清单 |
-| [`docs/复核包-20261102-审后.md`](docs/复核包-20261102-审后.md) | **审后复核入口：P0 18/18、P1 26/33、6 条重点复核项** |
-| [`docs/评审包-20261102.md`](docs/评审包-20261102.md) | **本轮评审入口：做了什么/验证结果/7 个待审点** |
-| [`docs/设计审核包.md`](docs/设计审核包.md) | **要审设计？从这里进**：7 个待审点 + 状态对照 |
-| [`docs/技术架构与模块地图.md`](docs/技术架构与模块地图.md) | 包结构、关键类职责、数据流 |
-| [`docs/开发日志.md`](docs/开发日志.md) | 每个决策和每个坑的来龙去脉 |
-| [`docs/实验编排-功能设计.md`](docs/实验编排-功能设计.md) | 实验编排、画布、变量传递、执行模型 |
-| [`docs/流程控制-功能说明.md`](docs/流程控制-功能说明.md) | **条件分支 / 循环 / 变量**：怎么配、页面上怎么看、已知限制 |
-| [`docs/流程控制-技术设计.md`](docs/流程控制-技术设计.md) | 求值器语法与安全边界、`bypassed`、回边重入、变量数据流 |
-| [`docs/流程控制-测试报告.md`](docs/流程控制-测试报告.md) | 23 条求值器用例 + 6 个端到端场景 + 未覆盖清单 |
-| [`docs/多实验并行调度-设计.md`](docs/多实验并行调度-设计.md) | 岛锁、EDD、死锁避免 |
-| [`docs/板位级占用与位置互斥-设计.md`](docs/板位级占用与位置互斥-设计.md) | 位置锁、搬运原子性 |
-| [`docs/设备网关与Redis状态中心-设计.md`](docs/设备网关与Redis状态中心-设计.md) | 网关架构与 Redis 结构 |
-| [`docs/设备状态与心跳-设计.md`](docs/设备状态与心跳-设计.md) | **在线/离线、三态流转、结果怎么取** |
-| [`docs/本机仿真指南.md`](docs/本机仿真指南.md) | **每台设备一个模拟器，本机跑通全岛** |
-| [`docs/全链路验证报告-模拟器.md`](docs/全链路验证报告-模拟器.md) | **P0 八步验证的实测结果（13 项全过）** |
-| [`docs/压测报告-多实验并行.md`](docs/压测报告-多实验并行.md) | **16 并发零失败，但发现岛锁可绕过** |
-| [`docs/仿真与验证指南.md`](docs/仿真与验证指南.md) | 三层仿真、怎么看到结果 |
-| [`docs/现场部署手册.md`](docs/现场部署手册.md) | **上现场的完整步骤与通过标准** |
-| [`docs/测试与上线策略.md`](docs/测试与上线策略.md) | 五层验证模型 |
-| [`docs/生产化路线图.md`](docs/生产化路线图.md) | **离生产还差多远、分阶段估时** |
-| [`docs/评审规范.md`](docs/评审规范.md) / [`docs/提交规范.md`](docs/提交规范.md) | 协作规范 |
-| [`docs/操作手册-岛屿与搬运.md`](docs/操作手册-岛屿与搬运.md) | 现场操作 |
-| [`docs/设备/型号库与错误码映射.md`](docs/设备/型号库与错误码映射.md) | **接一台新设备怎么改**；设备码→中控码→恢复动作 |
-| [`sidecar-dotnet/README.md`](sidecar-dotnet/README.md) | **真机 sidecar**：串口帧 / Cluster.dll / 转发模拟器 |
-| [`docs/设备/现场确认清单.md`](docs/设备/现场确认清单.md) | 手册没写、接真机前必须测的项 |
-| [`docs/初始化与设备接入指南.md`](docs/初始化与设备接入指南.md) | 设备接入 |
+| **[`docs/en/INDEX.md`](docs/en/INDEX.md)** | **English documentation index + translation ledger** — every Chinese document has an English edition |
+| **[`docs/en/roadmap.md`](docs/en/roadmap.md)** | **Single source of truth for what comes next**: phases M6–M11, feature list, acceptance criteria, P0/P1/P2 placement, definition of done |
+| [`docs/en/onboarding.md`](docs/en/onboarding.md) | Start here for a new reader: 30 minutes to understand the project + the known-issue list |
+| [`docs/en/functional-specification.md`](docs/en/functional-specification.md) | The functional specification — authoritative for what the features are |
+| [`docs/en/architecture.md`](docs/en/architecture.md) | Package layout, key classes, data flow |
+| [`docs/en/deployment.md`](docs/en/deployment.md) | Complete on-site deployment steps and pass criteria |
+| [`docs/en/production-roadmap.md`](docs/en/production-roadmap.md) | How far production is, and staged estimates |
+| [`docs/en/experiment-orchestration-design.md`](docs/en/experiment-orchestration-design.md) | Experiment orchestration, canvas, variable passing, execution model |
+| [`docs/en/workflow-control-guide.md`](docs/en/workflow-control-guide.md) | Conditional branches / loops / variables: how to configure them and what the UI shows |
+| [`docs/en/parallel-scheduling-design.md`](docs/en/parallel-scheduling-design.md) | Island locks, EDD, deadlock avoidance |
+| [`docs/en/position-occupancy-and-mutual-exclusion-design.md`](docs/en/position-occupancy-and-mutual-exclusion-design.md) | Position locks, move atomicity |
+| [`docs/en/local-simulation-guide.md`](docs/en/local-simulation-guide.md) | One simulator per device, run the whole island locally |
+| [`docs/en/devices/model-library-and-error-code-mapping.md`](docs/en/devices/model-library-and-error-code-mapping.md) | **How to onboard a new device**: device code → LabOS code → recovery action |
+| [`sidecar-dotnet/README.en.md`](sidecar-dotnet/README.en.md) | **Real-device sidecar**: serial framing / Cluster.dll / forwarding simulator |
+| [`docs/en/development-log.md`](docs/en/development-log.md) | Where every decision and every pitfall came from |
+| [`docs/en/review-20261104/00-index.md`](docs/en/review-20261104/00-index.md) | **Latest review entry point** |
+| [`docs/en/review-20261103/00-index.md`](docs/en/review-20261103/00-index.md) | Functional / technical / design / test review bundle |
+| [`docs/en/contribution-guidelines.md`](docs/en/contribution-guidelines.md) | How a commit message is written, when to commit, what must not be committed |
+| [`docs/en/review-guidelines.md`](docs/en/review-guidelines.md) | How to review, how to record a review, how the reviewed party responds |
 
 ---
 
-## 已知限制
+## Known limitations
 
-**当前状态是实现基线，不是生产发布物。**
+**The current state is an implementation baseline, not a production release.**
 
-| 项 | 说明 |
+| Item | Description |
 |---|---|
-| **验证程度** | 流程在**仿真总线**上按图走通，**未经真设备验证** |
-| **调度器** | 岛级互斥 + 贪心排序；滚动时域只在设计文档里，未实现 |
-| **两套 ID** | `device_instance.id` 与 `resource_node.id` 都是 `long`，靠调用方转换（踩过 5 次坑） |
-| **双执行路径** | `WorkflowService` 与 `ExperimentFlowRunner` 各有一套设备分配 |
-| **长连接「运行中」** | `method_status=1` 直接判失败，长任务（孵育 30 分钟）会误判 |
-| **设备照片** | 仓库**不含图片**（避免版权问题），可自行放入 `webapp/public/devices/` |
+| **Verification level** | the workflows are walked end-to-end on the **simulation bus**; **no real device has been verified** |
+| **Scheduler** | Island-level mutual exclusion + greedy ordering; the rolling time horizon exists only in the design document |
+| **Two ID spaces** | `device_instance.id` and `resource_node.id` are both `long`, and callers must convert (this has caused five separate bugs) |
+| **Two execution paths** | `WorkflowService` and `ExperimentFlowRunner` each have their own device-allocation logic |
+| **Persistent “running”** | `method_status=1` is judged a failure directly, so long tasks (a 30-minute incubation) are misjudged |
+| **Device photos** | The repository contains **no images** (copyright); drop them into `webapp/public/devices/` yourself |
 
-完整清单见 [`docs/评审指引.md`](docs/评审指引.md) 第六节。
-
----
-
-## 根目录文档
-
-根目录还有几份文档（`LabOS功能规格说明书.md`、`LabOS实现总纲_20261029.md`、
-`LabOS系统_现状梳理与架构方案_20261029.md`、`决策记录.md`、`前后端实施方案_编译甘特就绪调度.md`）。
-
-**它们记录的是设计推演过程，不是当前实现的准确描述。**
-当前行为以代码和 `docs/` 下的设计文档为准——冲突时不要拿现有文档当准绳。
-
-## 设备照片（可选）
-
-仓库**不含任何设备图片**。`webapp/public/devices/` 目录为空，
-界面会退化为"色块 + 编号"显示，功能不受影响。
-
-想加的话，把照片按能力命名放进该目录即可（`INCUBATE.jpg`、`TRANSFER.jpg` 等），
-**不需要改代码**。详见该目录下的 README。
+The full list is in section 6 of [`docs/评审指引.md`](docs/en/onboarding.md) (Chinese).
 
 ---
 
-## 许可证
+## Status and interoperability roadmap
+
+Status: **pre-alpha**. The kernel runs workflows, scheduling, position-level occupancy and the audit trail today; device coverage is small and there is **no independent real-hardware validation report** yet.
+
+Interoperability is a roadmap item, not a shipped feature:
+
+- **SiLA 2 adapter** — consume/expose SiLA 2 features as a separate adapter process, so the kernel keeps zero framework dependencies.
+- **SiLA Converter pattern** — wrap existing .NET / private-TCP instruments as standard features instead of rewriting drivers.
+- **OPC UA LADS** — evaluated as a companion interface, not a replacement for SiLA 2.
+- **MCP** — an outbound agent-facing interface, complementary to SiLA 2. MCP does not replace device standards.
+
+There is **no SiLA 2 implementation and no SiLA certification** today, and nothing in this repository should be read as a compliance claim.
+
+## Historical documents
+
+The repository root also holds historical documents (`LabOS功能规格说明书.md`,
+`LabOS实现总纲_20261029.md`, `决策记录.md`,
+`前后端实施方案_编译甘特就绪调度.md`).
+
+**They record the design reasoning, not an accurate description of the current
+implementation.** Where they conflict with the code or with the documents under
+`docs/`, trust the code — do not treat the existing documents as the yardstick.
+
+## Device photos (optional)
+
+The repository contains **no device images**. `webapp/public/devices/` is empty and
+the UI degrades to "colour block + identifier"; functionality is unaffected.
+
+To add photos, drop files named after the capability into that directory
+(`INCUBATE.jpg`, `TRANSFER.jpg`, …) — **no code change required**. See the README
+in that directory.
+
+---
+
+## License
 
 [Apache License 2.0](LICENSE)
 

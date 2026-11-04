@@ -3433,7 +3433,7 @@ The reason for the order is written into the document: **first the hole that los
 M6 happens to cover the first two points of §8.8 of the review (loop_index, the foreign key of the parent), and both of them are of the nature of "the data is not kept completely", so they have to be fixed first.
 
 The synchronised updates:
-- the document table of the `README.md`: the ROADMAP is put on top (the single authority), the four documents are demoted to "the entry point of the review"
+- the document table of the `README.zh-CN.md`: the ROADMAP is put on top (the single authority), the four documents are demoted to "the entry point of the review"
 - §8 of `docs/评审包-20261103/00-索引与评审须知.md`: it was changed to refer to the ROADMAP + a summary of 6 lines
 - §8.8 / §8.9 of the review record: they are marked as "merged into the ROADMAP", so that there is not a second copy in two places
 

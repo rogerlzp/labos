@@ -168,7 +168,7 @@ curl -s "$API/api/runs/<id>" -H "Authorization: Bearer $TOKEN" | jq '.run.status
 ## 7. How the documents relate to each other
 
 ```
-README.md (project overview)
+README.zh-CN.md (project overview)
   └─ docs/评审包-20261103/
        ├─ 00-索引与评审须知.md   ← you are reading this
        ├─ 01-功能文档.md

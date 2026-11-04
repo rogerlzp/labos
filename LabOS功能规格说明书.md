@@ -655,7 +655,7 @@ GET /api/process-status
 |---|---|
 | 本文 | 功能规格，活文档 |
 | `决策记录.md` | 第 12 章之后的变更，只追加 |
-| `README.md` | 目录入口 |
+| `README.zh-CN.md` | 目录入口 |
 | `LabOS_新一代中控实现总纲_20261029.md` | kernel-0.3 快照 |
 | `labos-kernel/BATCH_VALIDATION_REPORT.md` 等报告 | 证据，规格引用而不抄表 |
 | `archive/LabOS2.0_功能规格说明书_v0.3.md` | 被本文取代的草案 |

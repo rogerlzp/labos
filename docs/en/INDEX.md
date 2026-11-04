@@ -1,4 +1,4 @@
-> **English edition** · [简体中文](../../README.md) · Chinese documents live under [`docs/`](../)
+> **English edition** · [简体中文](../../README.zh-CN.md) · Chinese documents live under [`docs/`](../)
 
 # LabOS — English Documentation Index & Translation Ledger
 
@@ -17,7 +17,7 @@
 
 | English document | Contents | Status |
 |---|---|---|
-| [`README.en.md`](../../README.en.md) | Project facade: capabilities, quick start, architecture, design decisions, i18n model, known limitations | ✅ Complete |
+| [`README.md`](../../README.md) | Project facade: capabilities, quick start, architecture, design decisions, i18n model, known limitations | ✅ Complete |
 | [`docs/en/INDEX.md`](INDEX.md) | This document: index + ledger + glossary | ✅ Complete |
 | [`docs/en/roadmap.md`](roadmap.md) | The authoritative roadmap (English edition of `ROADMAP.md`) | ✅ Complete |
 | [`docs/en/architecture.md`](architecture.md) | Package layout, key classes, data flow | ✅ Complete |
@@ -128,7 +128,7 @@ queued.
 | Chinese source | English target | Status |
 |---|---|---|
 | `ROADMAP.md` | `docs/en/roadmap.md` | ✅ |
-| `README.md` | `README.en.md` | ✅ |
+| `README.zh-CN.md` | `README.md` | ✅ |
 | `docs/技术架构与模块地图.md` | `docs/en/architecture.md` | ✅ |
 | `docs/现场部署手册.md` | `docs/en/deployment.md` | ✅ |
 | `docs/生产化路线图.md` | `docs/en/production-roadmap.md` | ✅ |
@@ -234,7 +234,7 @@ queued.
 
 | Batch | Documents | Status |
 |---|---|---|
-| D0 | `README.md`, `ROADMAP.md`, the three engineering docs | ✅ |
+| D0 | `README.zh-CN.md`, `ROADMAP.md`, the three engineering docs | ✅ |
 | D1 | `评审指引.md` (onboarding) + the 20261104 / 20261103 review packages | ✅ |
 | D2 | `评审规范.md`, `提交规范.md`, `开发日志.md`, `决策记录.md` | ✅ |
 | D3 | The design documents (the `-设计.md` series) | ✅ |

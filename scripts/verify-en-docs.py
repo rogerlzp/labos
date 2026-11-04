@@ -92,7 +92,8 @@ def structure(text: str) -> dict:
 
 # 不是"逐行对照翻译"的文档：两份 README 各自独立成文（英文版多了 i18n 说明与
 # 不同的文档表），结构本就不该相等。这类不参与结构对齐检查。
-EXEMPT = {"README.md": "两份 README 独立成文，不是一一对照翻译"}
+# 键是**中文源**的路径：根 README 的中文版是 README.zh-CN.md，英文版是 README.md。
+EXEMPT = {"README.zh-CN.md": "两份 README 独立成文，不是一一对照翻译"}
 
 
 def registry() -> list[tuple[str, str, str]]:
@@ -227,11 +228,11 @@ def main() -> int:
             tbl_bad += 1
 
     # 链接可解析。**必须覆盖根目录的英文文件**：
-    # README.en.md 的链接最容易漏检，而它恰恰是英文读者看到的第一份文件。
+    # 根 README（英文版，README.md）的链接最容易漏检，而它恰恰是英文读者看到的第一份文件。
     link_bad = 0
     link_total = 0
     english_files = sorted(EN_DIR.rglob("*.md"))
-    for extra in (ROOT / "README.en.md", ROOT / "sidecar-dotnet" / "README.en.md"):
+    for extra in (ROOT / "README.md", ROOT / "sidecar-dotnet" / "README.en.md"):
         if extra.exists():
             english_files.append(extra)
     for f in english_files:

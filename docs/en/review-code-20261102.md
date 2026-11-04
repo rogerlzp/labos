@@ -127,7 +127,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.api.ApiServer 18080
 
 ## 6. Known risks disclosed by me (please verify whether they hold / whether they are worse)
 
-> Source: the "Known limitations" section of `README.md`, `评审包-20261102.md`, `开发日志.md`, `20261101-01-grok.md`.
+> Source: the "Known limitations" section of `README.zh-CN.md`, `评审包-20261102.md`, `开发日志.md`, `20261101-01-grok.md`.
 > **Listing these is not a disclaimer; it is asking the reviewer to hit these points first.**
 
 | # | Disclosed item | To be verified |
