@@ -9,9 +9,10 @@
 用法：
     export LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=...
     python3 scripts/verify-parallel-flow.py
-    python3 scripts/verify-parallel-flow.py --device 504830 --device2 504831 --method2 CurrSpeed
+    python3 scripts/verify-parallel-flow.py --device 504830 --device2 504831 --method2 Seal
 
-不传设备就用库里第一台有方法的设备；`--device2` 用来验证"不同设备是否真并行"。
+不传设备就自动挑一台**真能跑命令**的设备，并在它上挑两个能跑的方法；
+`--device2` 用来验证"不同设备是否真并行"。
 """
 import argparse
 import json
@@ -58,6 +59,11 @@ XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 PASS, FAIL = 0, 0
 
+# 探方法时按"有时长的动作类"优先：同设备串行断言要靠命令真的占一段时长，
+# 查询类/无参放最后（它们可能瞬时完成，断言会变成永远成立的空断言）。
+METHOD_CANDIDATES = ["Seal", "OpenDoor", "Grip", "Mix", "SetTemp", "Deposit1",
+                     "Transfer", "Home", "GetStatus"]
+
 
 def ok(msg):
     global PASS
@@ -93,6 +99,9 @@ def api(path, method="GET", body=None, token=None, raw=None):
 def q(sql):
     env = dict(os.environ)
     env.setdefault("PATH", "/opt/homebrew/opt/libpq/bin:/usr/bin:/bin")
+    # 口令只从 LABOS_DB_PASS 来：不设 PGPASSWORD 时 psql 会要交互口令，
+    # 非 tty 下直接失败并返回空串 —— 会被当成"环境没设备"而静默跳过。
+    env.setdefault("PGPASSWORD", os.environ.get("LABOS_DB_PASS", ""))
     psql = os.environ.get("PSQL", "psql")
     out = subprocess.run(
         [psql, "-h", os.environ["LABOS_DB_HOST"], "-U", os.environ["LABOS_DB_USER"],
@@ -105,8 +114,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", type=int, default=0)
     ap.add_argument("--device2", type=int, default=0)
-    ap.add_argument("--method1", default="Seal")
-    ap.add_argument("--method2", default="GetStatus")
+    ap.add_argument("--method1", default="")
+    ap.add_argument("--method2", default="")
     args = ap.parse_args()
 
     for k in ("LABOS_DB_HOST", "LABOS_DB_NAME", "LABOS_DB_USER", "LABOS_DB_PASS"):
@@ -117,28 +126,78 @@ def main():
     token = api("/api/auth/login", "POST",
                 {"username": "admin", "password": "admin123"})["token"]
 
-    # 默认用"历史上真的跑成功过命令的那台设备"——
-    # 随便取一台很可能没接模拟器，跑出来全是 failed，看着像并发问题其实不是。
-    recent = q("""
-        SELECT n.resource_id
-          FROM run_command c JOIN run_node n ON n.id = c.run_node_id
-         WHERE c.status = 'completed' AND n.resource_id IS NOT NULL
-           AND c.finished_at > now() - interval '2 hours'
-         GROUP BY 1 ORDER BY count(*) DESC LIMIT 1""")
-    if not args.device and not recent:
-        # 环境里没有"最近真的跑通过"的设备（干净 CI / 没起模拟器）——跳过而不是报红
-        print("SKIP: 没有近 2 小时内成功执行过的设备，无法验证流程内并行")
-        return 0
-    d1 = args.device or int(recent)
+    def probe(rid, method):
+        """单命令真下发一次：ok=True 才算"这台设备真的能跑这个方法"。"""
+        try:
+            r = api(f"/api/shadow/probe?resourceId={rid}&method={method}", "POST", {}, token)
+            return bool(r.get("ok"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def working_methods(rid):
+        return [m for m in METHOD_CANDIDATES if probe(rid, m)]
+
+    # 选设备：按"最近成功过命令 + 本地端点 + 库里顺序"排，逐台**真探**。
+    #
+    # 不要用 device_state.online 选：心跳只证明 TCP 连得上，不代表中控发下去的指令
+    # 会被设备接受。实测环境里就有"心跳绿但驱动端口已关"（连接被拒）和"型号不支持
+    # 该方法"（EC-06-0004）的设备，挑中它们跑出来全是 manual/failed ——
+    # 看着像并发坏了，其实是选错了设备。
+    def candidates():
+        return [int(x) for x in q("""
+            SELECT r.id FROM resource_node r
+              JOIN device_instance di ON di.resource_id = r.id AND di.deleted_at IS NULL
+              LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
+             WHERE r.kind = 'device' AND r.tenant_id = 1 AND r.deleted_at IS NULL
+             ORDER BY (SELECT count(*) FROM run_command c
+                         JOIN run_node n ON n.id = c.run_node_id
+                        WHERE n.resource_id = r.id AND c.status = 'completed'
+                          AND c.finished_at > now() - interval '2 hours') DESC,
+                      -- endpoint 为 NULL 的行 LIKE 出来是 NULL，DESC 会把它们排在最前，
+                      -- 白占候选名额；用 coalesce 归成 false。
+                      COALESCE(dr.endpoint LIKE 'tcp://127.0.0.1%', false) DESC,
+                      r.id
+             LIMIT 12""").split()]
+
+    picked, ms = 0, []
+    if args.device:
+        ms = working_methods(args.device)
+        if not ms:
+            print(f"SKIP: 设备 {args.device} 对候选方法一个都不回 ok，无法验证流程内并行")
+            return 0
+        picked = args.device
+    else:
+        for rid in candidates():
+            ms = working_methods(rid)
+            if ms:
+                picked = rid
+                break
+        if not picked:
+            print("SKIP: 库里没有真能跑命令的设备（CI 没起模拟器？），无法验证流程内并行")
+            return 0
+
+    d1 = picked
+    m1 = args.method1 if args.method1 in ms else ms[0]
+    if args.method2 in ms and args.method2 != m1:
+        m2 = args.method2
+    else:
+        m2 = next((m for m in ms if m != m1), m1)
+
     d2 = args.device2 or d1
     same_device = d1 == d2
+    if not same_device:
+        ms2 = working_methods(d2)
+        if args.method2 in ms2:
+            m2 = args.method2
+        elif ms2:
+            m2 = ms2[0]
 
-    print(f"设备：T1={d1}（{args.method1}） T2={d2}（{args.method2}）"
+    print(f"设备：T1={d1}（{m1}） T2={d2}（{m2}）"
           f"{'  [同一台]' if same_device else '  [不同设备]'}")
 
     wf = api("/api/workflows", "POST", {"name": "verify-并行分支"}, token)["id"]
     api(f"/api/workflows/{wf}/graph", "PUT",
-        raw=XML % {"m1": args.method1, "d1": d1, "m2": args.method2, "d2": d2}, token=token)
+        raw=XML % {"m1": m1, "d1": d1, "m2": m2, "d2": d2}, token=token)
 
     run = api(f"/api/workflows/{wf}/run?async=1", "POST", {}, token)
     rid = run.get("runId") or q("SELECT max(id) FROM run")
@@ -179,6 +238,14 @@ def main():
     q(f"DELETE FROM run_command WHERE run_id={rid}; DELETE FROM run_node WHERE run_id={rid};")
     q(f"DELETE FROM run WHERE id={rid};")
     q(f"DELETE FROM workflow_node WHERE workflow_id={wf}; DELETE FROM workflow WHERE id={wf};")
+    # 整单若停在 paused，会留下**岛级扣留**；不释放下一次在同一个岛排不到队（假红），
+    # 而且调度器是全局闸门（RuntimeHold.anyActive()）—— 任何一条未释放的扣留会让
+    # **所有岛**的新实验都派发不出去。
+    # released_by 是 bigint，写字符串会 invalid input syntax 而静默失败（q() 只取 stdout）。
+    q(f"UPDATE runtime_hold SET released_at=now(), released_by=coalesce(held_by, 1), "
+      f"release_note='用例收尾复位' WHERE scope='island' AND released_at IS NULL "
+      f"AND scope_id=(SELECT parent_id FROM resource_node WHERE id={d1})")
+    print(f"     已释放设备 {d1} 所在岛上的扣留（若有）")
 
     print(f"\n通过 {PASS} / 失败 {FAIL}")
     return 0 if FAIL == 0 else 1

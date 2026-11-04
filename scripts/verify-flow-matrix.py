@@ -89,6 +89,9 @@ def api(path, method="GET", body=None, token=None, raw=None):
 def q(sql):
     env = dict(os.environ)
     env.setdefault("PATH", "/opt/homebrew/opt/libpq/bin:/usr/bin:/bin")
+    # 口令只从 LABOS_DB_PASS 来：不设 PGPASSWORD 时 psql 会要交互口令，
+    # 非 tty 下直接失败并返回空串 —— 会被当成"库里没有设备实例"而静默跳过。
+    env.setdefault("PGPASSWORD", os.environ.get("LABOS_DB_PASS", ""))
     psql = os.environ.get("PSQL", "psql")
     out = subprocess.run(
         [psql, "-h", os.environ["LABOS_DB_HOST"], "-p",
