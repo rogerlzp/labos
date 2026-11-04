@@ -1,0 +1,79 @@
+name: Bug report
+description: Something behaves differently from what the documentation says
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this. LabOS is **pre-alpha** — behaviour
+        that differs from the docs is a real bug, please report it.
+
+        中文贡献者请同时说明复现步骤，中文回复同样欢迎。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe, and what did you expect instead?
+      placeholder: |
+        Expected: the workflow pauses when the plate is missing.
+        Actual: it fails with `MISSING_PLATE` and no plate-level log.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, starting from a fresh kernel.
+      placeholder: |
+        1. Start the kernel against a fresh `labdb`.
+        2. Import `docs/` sample workflow ...
+        3. Run ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "e.g. 865d343, or `git rev-parse HEAD`"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which part of the system
+      options:
+        - Workflow execution (BPMN)
+        - Scheduling / multi-experiment parallelism
+        - Plate & position management
+        - Device driver / gateway
+        - Front-end console
+        - Database / migrations
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: verified
+    attributes:
+      label: How was this verified
+      options:
+        - Reproduced on the simulation bus
+        - Reproduced on real hardware
+        - Not reproduced — suspected from reading the code
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: |
+        Paste the relevant log lines. **Redact credentials, customer data and
+        internal network addresses before pasting.**
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this.
+        - label: The report contains no credentials, customer data or internal network addresses.

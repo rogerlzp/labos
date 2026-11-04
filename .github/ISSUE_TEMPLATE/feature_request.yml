@@ -1,0 +1,56 @@
+name: Feature request
+description: Suggest a capability LabOS does not have yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        LabOS is an orchestration kernel for laboratory automation. Before proposing
+        a feature, please check whether the behaviour belongs to the kernel at all —
+        device-specific drivers usually belong in a device adapter, not in the core.
+
+        中文贡献者请用中文描述需求，同样欢迎。
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can you not do today? Describe the situation, not the solution.
+      placeholder: |
+        Today, when two experiments want plates on the same island, the second one
+        is rejected instead of being queued.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area
+      options:
+        - Workflow execution (BPMN)
+        - Scheduling / multi-experiment parallelism
+        - Plate & position management
+        - Device driver / gateway
+        - Front-end console
+        - Interoperability (SiLA 2 / OPC UA LADS)
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds, or approaches you rejected and why.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this.
+        - label: I checked the roadmap (ROADMAP.md) and the design docs under docs/.

@@ -1,0 +1,93 @@
+name: Device onboarding
+description: Connect a real instrument to LabOS, or report a device driver problem
+labels: ["device"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Device work is the part of LabOS most likely to differ from your setup.
+        Please fill in the sections below — an issue missing the protocol summary and
+        the simulation evidence usually cannot be acted on.
+
+        中文贡献者请填写同样字段；协议细节请勿上传无再分发权的厂商手册原文。
+  - type: input
+    id: model
+    attributes:
+      label: Instrument model
+      description: Vendor and model. Describe the protocol family if the model is unknown.
+      placeholder: "e.g. Vendor ABC / Model XYZ, serial-over-TCP frame protocol"
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection mode
+      options:
+        - Short connection (connect, send, close)
+        - Persistent connection (long-lived)
+        - Gateway mode (via labos-gateway + Redis)
+        - Not connected yet
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Protocol family
+      options:
+        - Vendor-private text/frame protocol
+        - Vendor-private binary protocol
+        - SiLA 2
+        - OPC UA / LADS
+        - Modbus / serial
+        - Other
+  - type: textarea
+    id: contract
+    attributes:
+      label: Command contract
+      description: |
+        The four response fields the kernel validates, and how your instrument fills
+        them in. Describe the shape — do **not** paste a vendor manual.
+      placeholder: |
+        Command: `INCUBATE(device, seconds)` -> reply fields:
+          status: "OK" | "BUSY" | "ERROR"
+          code:   integer
+          message: string
+          result: JSON payload
+    validations:
+      required: true
+  - type: textarea
+    id: idempotency
+    attributes:
+      label: Idempotency & retry safety
+      description: |
+        If the same command is sent twice, what does the instrument do? Is a retry
+        safe, or does it double-execute?
+    validations:
+      required: true
+  - type: dropdown
+    id: simulation
+    attributes:
+      label: Simulation evidence
+      description: Did the flow pass against a simulator first?
+      options:
+        - Passed end-to-end on the simulator bus
+        - Partially — specify in the description which steps passed
+        - Not yet
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Real-hardware run
+      description: |
+        If you have run it against real hardware, paste the command sequence and the
+        replies. Redact credentials and internal network addresses.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I did not paste a vendor manual or any copyrighted protocol document.
+        - label: The description contains no credentials, customer data or internal network addresses.
+        - label: The issue links to a design doc under docs/ if one exists.
