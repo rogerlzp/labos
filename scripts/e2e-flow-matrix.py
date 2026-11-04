@@ -275,11 +275,15 @@ def sec_run_detail(page, ctx, base):
         return
     # 借一条**真的画得出图**的执行：有 run_node，且 /graph 返回非空 xml。
     # 优先挑**有循环圈次**的（才能顺带验「圈次」列）。
+    # 注意：带圈次的执行很稀少（全库可能就几条），会被正常执行挤出"最近 60 条"
+    # 窗口 —— 只按窗口取会让「圈次」断言时有时无（曾出现 20 < 阈值 21）。所以把
+    # **全库带圈次的执行**也并进候选，再按"循环优先 + id 新优先"排序。
     cand = [int(x) for x in q(
         "SELECT r.id FROM run r JOIN run_node n ON n.run_id=r.id "
         "WHERE r.tenant_id=1 GROUP BY r.id ORDER BY r.id DESC LIMIT 60").split() if x]
     loop_ids = {int(x) for x in q(
         "SELECT DISTINCT run_id FROM run_node WHERE level=0 AND loop_index>0").split() if x}
+    cand = list(dict.fromkeys(cand + sorted(loop_ids, reverse=True)))
     cand.sort(key=lambda c: (0 if c in loop_ids else 1, -c))
     rid = 0
     for c in cand:
