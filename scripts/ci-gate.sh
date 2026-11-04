@@ -6,14 +6,18 @@
 #   · 纯逻辑单测必须 ≥ 536 且 0 失败（数字下降 = 有人删了用例，也算红灯）
 #   · 前端 tsc 必须 0 错误
 #   · 可选：并行能力（流程内并行 4 条 / 同岛并发 3 条，要库 + 模拟器 + API）
+#   · 可选：完整流程矩阵 45 条（节点/网关/变量/循环/回边/并行/端口/暂停，要库 + 模拟器 + API）
 #   · 可选：设备链路 41 条（要库 + 模拟器）
 #   · 可选：前端 e2e 24 条（要前端/API 在跑）
+#   · 可选：页面流程矩阵 21 条（设计器 palette/变量节点/运行详情/页面暂停恢复，要前端+API+库）
+#   · 可选：实验运行控制 22 条（页面暂停/恢复/停止，要前端+API+库）
 #
 # 用法：
 #   ./scripts/ci-gate.sh                 # 纯逻辑 + tsc（不需要数据库）
 #   ./scripts/ci-gate.sh --with-db       # 再加设备链路（需要 LABOS_DB_*）
 #   ./scripts/ci-gate.sh --e2e           # 再加前端 e2e（需要 5173/18080）
 #   ./scripts/ci-gate.sh --all           # 全跑
+# 前端地址可用 LABOS_WEB 覆盖（默认 http://localhost:5173，nginx 8080 亦可）。
 # ============================================================================
 set -uo pipefail
 
@@ -36,7 +40,12 @@ MIN_PURE=536    # 2026-11-03：权限收口 RbacRulesSelfTest 15 条（521 → 5
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
+MIN_MATRIX=45   # 完整流程矩阵（verify-flow-matrix.py --force-online）：
+                # serial4/builtin4/outvar2/xor6/xor3 3/loop3/loopback2/parallel3/pause10/ports4/experiment3/concurrent1
+                # 前置：内核以 LABOS_TRANSFER_PLAN=1 启动（否则 ports 4 条整节 SKIP）
 MIN_E2E=24        # 2026-11-03：权限收口 +Header 角色断言（23 → 24）
+MIN_E2EFM=21      # 2026-11-04：页面流程矩阵（登录1/设计器装配6/变量节点4/运行详情5/页面暂停恢复5）
+MIN_EXPCTL=22     # 实验运行控制：页面暂停/恢复/停止（verify-exp-control.py）
 
 FAIL=0
 note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -120,6 +129,31 @@ else
   note "2.6 并行能力：跳过（没给 --with-db）"
 fi
 
+# ---------------------------------------------------------------- 2.7 完整流程矩阵
+# 覆盖：节点 / 网关 / 变量 / 循环 / 回边跨越并行 / 并行 / 端口拓扑 / 暂停恢复 / 实验 / 并发
+# 前置：库 + 模拟器 + API；内核建议以 LABOS_TRANSFER_PLAN=1 启动（否则 ports 4 条 SKIP）
+if [[ $WITH_DB -eq 1 ]]; then
+  note "2.7 完整流程矩阵（verify-flow-matrix.py）"
+  MOUT=$(python3 scripts/verify-flow-matrix.py --force-online 2>&1)
+  if echo "$MOUT" | grep -q '^SKIP'; then
+    echo "  跳过（库里没有设备实例）"
+  else
+    MN=$(echo "$MOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+    MF=$(echo "$MOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+    MN=${MN:-0}; MF=${MF:-1}
+    if [[ "$MF" != "0" ]]; then
+      fail "流程矩阵有失败（$MF 条）"
+      echo "$MOUT" | grep '✗' | head -8
+    elif (( MN < MIN_MATRIX )); then
+      fail "流程矩阵断言 $MN < 阈值 ${MIN_MATRIX}（ports 需 LABOS_TRANSFER_PLAN=1）"
+    else
+      pass "流程矩阵 $MN / 0（覆盖矩阵见 docs/完整流程测试矩阵-设计.md）"
+    fi
+  fi
+else
+  note "2.7 完整流程矩阵：跳过（没给 --with-db）"
+fi
+
 # ---------------------------------------------------------------- 3. 设备链路
 if [[ $WITH_DB -eq 1 ]]; then
   note "3. 设备全链路（中控 → sidecar → 模拟器 → 库）"
@@ -140,9 +174,10 @@ else
 fi
 
 # ---------------------------------------------------------------- 4. e2e
+E2E_BASE="${LABOS_WEB:-http://localhost:5173}"
 if [[ $WITH_E2E -eq 1 ]]; then
   note "4. 前端 e2e（5 条主链路）"
-  OUT=$(python3 scripts/e2e-smoke.py 2>&1)
+  OUT=$(python3 scripts/e2e-smoke.py --base "$E2E_BASE" 2>&1)
   EN=$(echo "$OUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
   EF=$(echo "$OUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
   EN=${EN:-0}; EF=${EF:-1}
@@ -154,8 +189,46 @@ if [[ $WITH_E2E -eq 1 ]]; then
   else
     pass "通过 $EN / 失败 0（阈值 ${MIN_E2E}）"
   fi
+
+  # 4.5 页面流程矩阵：设计器 palette/变量节点 + 运行详情着色 + 页面暂停恢复
+  note "4.5 页面流程矩阵（e2e-flow-matrix.py）"
+  MOUT=$(python3 scripts/e2e-flow-matrix.py --base "$E2E_BASE" 2>&1)
+  if echo "$MOUT" | grep -q '^SKIP'; then
+    echo "  跳过（API 不可用）"
+  else
+    MN=$(echo "$MOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+    MF=$(echo "$MOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+    MN=${MN:-0}; MF=${MF:-1}
+    if [[ "$MF" != "0" ]]; then
+      fail "页面流程矩阵有失败（$MF 条）"
+      echo "$MOUT" | grep '✗' | head -8
+    elif (( MN < MIN_E2EFM )); then
+      fail "页面流程矩阵断言 $MN < 阈值 ${MIN_E2EFM}"
+    else
+      pass "页面流程矩阵 $MN / 0（设计器装配·变量节点·运行详情·页面暂停恢复）"
+    fi
+  fi
+
+  # 4.6 实验运行控制：页面暂停（现场扣留）/恢复/停止
+  note "4.6 实验运行控制（verify-exp-control.py）"
+  COUT=$(python3 scripts/verify-exp-control.py --base "$E2E_BASE" 2>&1)
+  if echo "$COUT" | grep -qE '找不到可用空实验'; then
+    echo "  跳过（库里没有可借用的空实验）"
+  else
+    CN=$(echo "$COUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+    CF=$(echo "$COUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+    CN=${CN:-0}; CF=${CF:-1}
+    if [[ "$CF" != "0" ]]; then
+      fail "实验运行控制有失败（$CF 条）"
+      echo "$COUT" | grep '✗' | head -8
+    elif (( CN < MIN_EXPCTL )); then
+      fail "实验运行控制断言 $CN < 阈值 ${MIN_EXPCTL}"
+    else
+      pass "实验运行控制 $CN / 0（页面暂停=现场扣留 / 恢复 / 停止）"
+    fi
+  fi
 else
-  note "4. 前端 e2e：跳过（没给 --e2e）"
+  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制：跳过（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果

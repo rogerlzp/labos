@@ -15,9 +15,12 @@
   xor       异或网关（条件真 / 条件假走 default）
   xor3      三分支异或（按声明顺序求值）
   loop      回边循环 + maxIterations + loop_index
+  loopback  回边跨越并行分叉（循环体里再进并行）
   parallel  并行分叉/汇合（同设备串行 / 跨设备并行）
   pause     暂停三态 + 恢复 + 异常暂停自动续（heartbeat）
   ports     设备进出口拓扑（both / in+out 分开 / 多进口）—— 需内核开 LABOS_TRANSFER_PLAN
+  experiment 实验内多个流程（拓扑展开：多个 workflow 依次跑）
+  concurrent 多流程并发（多个独立 run 同时跑）
 
 用法：
     export LABOS_DB_HOST=... LABOS_DB_PORT=5432 LABOS_DB_NAME=... \
@@ -31,6 +34,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -153,6 +157,7 @@ class Ctx:
         self.token = token
         self.made_wf = []
         self.made_run = []
+        self.made_exp = []
 
     def new_wf(self, name, nodes, edges, attr=None):
         xml = build_xml(nodes, edges)
@@ -193,6 +198,11 @@ class Ctx:
                  f"WHERE run_id={rid} AND level=0 ORDER BY id")
 
     def cleanup(self):
+        for eid in self.made_exp:
+            q(f"DELETE FROM experiment_process_edge WHERE experiment_id={eid};"
+              f"DELETE FROM experiment_process WHERE experiment_id={eid};"
+              f"DELETE FROM experiment_run WHERE experiment_id={eid};"
+              f"DELETE FROM experiment WHERE id={eid};")
         for rid in self.made_run:
             q(f"DELETE FROM run_command WHERE run_id={rid};"
               f"DELETE FROM run_node WHERE run_id={rid};"
@@ -359,6 +369,74 @@ def sec_loop(ctx, d1, m1):
         bad("条件为假仍循环", f"st={st} cmds={c2}")
 
 
+def sec_loopback(ctx, d1, d2, m1):
+    step("loopback · 回边跨越并行分叉（循环体里再进并行）")
+    da, db = d1, (d2 or d1)
+
+    # 支持形态：回边指向并行区**之前**的任务 —— 循环体整段包含并行区
+    wid = ctx.new_wf("MTRX-回边并行",
+                     [("S", "开始", "startEvent", ""),
+                      ("T0", "循环入口", "task", f'protocolName="{m1}" resource="{da}"'),
+                      ("SP", "分叉", "parallelGateway", ""),
+                      ("T1", "分支一", "task", f'protocolName="{m1}" resource="{da}"'),
+                      ("T2", "分支二", "task", f'protocolName="{m1}" resource="{db}"'),
+                      ("JN", "汇合", "parallelGateway", ""),
+                      ("X", "还继续?", "exclusiveGateway", 'default="f_end"'),
+                      ("E", "结束", "endEvent", "")],
+                     [("f0", "S", "T0", None), ("f1", "T0", "SP", None),
+                      ("f2", "SP", "T1", None), ("f3", "SP", "T2", None),
+                      ("f4", "T1", "JN", None), ("f5", "T2", "JN", None),
+                      ("f6", "JN", "X", None),
+                      ("f_back", "X", "T0", "${go} == 'yes'"),
+                      ("f_end", "X", "E", None)],
+                     attr={"maxIterations": 2})
+    rid, st = ctx.run(wid, {"go": "yes"})
+    rows = q(f"SELECT node_key||':loop='||loop_index||':'||status::text "
+             f"FROM run_node WHERE run_id={rid} AND level=0 "
+             f"AND node_key IN ('T0','T1','T2') ORDER BY id")
+    print("      节点圈次：\n" + "\n".join("        " + x for x in rows.splitlines()))
+    ok("整单 completed（循环体含并行区不死锁）") if st == "completed" \
+        else bad("回边并行未完成", f"st={st}；{ctx.nodes(rid)}")
+    # 关键：每一圈里并行两支都必须 completed —— 若汇合计数器未按圈复位，
+    # 会出现某圈只有一个分支完成（或整单卡死）
+    pairs = q(f"""SELECT count(*) FROM (
+                   SELECT loop_index,
+                          count(*) FILTER (WHERE node_key='T1' AND status='completed') a,
+                          count(*) FILTER (WHERE node_key='T2' AND status='completed') b
+                     FROM run_node WHERE run_id={rid} AND level=0
+                    GROUP BY loop_index) t
+                  WHERE a=1 AND b=1""")
+    ok(f"每圈并行两分支都 completed（{pairs} 圈成对完成）") if int(pairs or 0) >= 2 \
+        else bad("某圈并行分支未配齐（汇合可能未按圈汇合）", pairs)
+
+    # 边界观察：回边**直接指向并行分叉网关**时，并行体被整体 bypass（已知限制）
+    widc = ctx.new_wf("MTRX-回边直入网关",
+                      [("S", "开始", "startEvent", ""),
+                       ("SP", "分叉", "parallelGateway", ""),
+                       ("T1", "分支一", "task", f'protocolName="{m1}" resource="{da}"'),
+                       ("T2", "分支二", "task", f'protocolName="{m1}" resource="{db}"'),
+                       ("JN", "汇合", "parallelGateway", ""),
+                       ("X", "还继续?", "exclusiveGateway", 'default="f_end"'),
+                       ("E", "结束", "endEvent", "")],
+                      [("f1", "S", "SP", None),
+                       ("f2", "SP", "T1", None), ("f3", "SP", "T2", None),
+                       ("f4", "T1", "JN", None), ("f5", "T2", "JN", None),
+                       ("f6", "JN", "X", None),
+                       ("f_back", "X", "SP", "${go} == 'yes'"),
+                       ("f_end", "X", "E", None)],
+                      attr={"maxIterations": 2})
+    ridc, stc = ctx.run(widc, {"go": "yes"})
+    exc = q(f"SELECT count(*) FROM run_command WHERE run_id={ridc}")
+    if stc == "completed" and exc == "0":
+        print("  \033[33m·\033[0m 观察：回边**直接指向并行分叉网关**时整单报 completed，但并行体被整体 "
+              "bypass（0 条命令）→ 已知限制；回边应指向并行区之前的任务 "
+              "（见 docs/完整流程测试矩阵-设计.md C 类边界）")
+    elif int(exc or 0) > 0:
+        ok(f"回边直入并行网关也可执行（{exc} 条命令）")
+    else:
+        bad("回边直入并行网关行为异常", f"st={stc} cmds={exc}")
+
+
 def sec_parallel(ctx, d1, d2, m1):
     step("parallel · 并行分叉/汇合（同设备串行 / 跨设备并行）")
     def mk(name, da, db):
@@ -489,6 +567,7 @@ def sec_pause(ctx, d1, args):
         skip(f"autoResumeFaulted 要求租户内无离线设备才自动续，当前有 {offline} 台离线 → 不触发；"
              f"--force-online 可临时停用不可达 driver 实测（见 docs/完整流程测试矩阵-设计.md C 类边界）")
     else:
+        # 快照：被离线设备牵连的 driver（跑完按原样还原）
         snap = [x for x in q("""SELECT DISTINCT di.driver_id || '|' || d.status
                                   FROM device_state ds
                                   JOIN device_instance di ON di.resource_id = ds.resource_id
@@ -496,23 +575,42 @@ def sec_pause(ctx, d1, args):
                                   JOIN driver d ON d.id = di.driver_id
                                  WHERE ds.tenant_id = 1 AND ds.online = false""").split() if x]
         drv_ids = [s.split("|")[0] for s in snap]
-        flipped = [x for x in q("SELECT resource_id FROM device_state "
-                                "WHERE tenant_id=1 AND online=false").split() if x]
+        offline_ids = [x for x in q("SELECT resource_id FROM device_state "
+                                    "WHERE tenant_id=1 AND online=false").split() if x]
         if drv_ids:
             q("UPDATE driver SET status = 0 WHERE id IN (" + ",".join(drv_ids) + ")")
-        if flipped:
-            q("UPDATE device_state SET online = true WHERE tenant_id = 1 AND resource_id IN ("
-              + ",".join(flipped) + ")")
-        print(f"      · 临时停用 {len(drv_ids)} 个不可达 driver、置在线 {len(flipped)} 台设备（跑完还原）")
-        ok("设备侧全在线 → 心跳自动恢复（无需人工）") if wait_running(rid) \
-            else bad("未自动恢复（检查心跳服务）")
+
+        # 规避与「在途心跳周期」的写竞争：
+        # 心跳 probeOnce() 先 loadDrivers() 再 writeDeviceOnline()。若在它两步之间
+        # 才停用 driver，这一轮仍会把旧 driver 名下设备写回离线；而 driver 已停用，
+        # 后续轮次不再覆盖 → 离线值永久卡住。先等一个周期让在途轮次落完，再置在线并确认稳定为 0。
+        def settle_online(tries=8):
+            for _ in range(tries):
+                q("UPDATE device_state SET online = true WHERE tenant_id = 1 AND online = false")
+                time.sleep(2)
+                if int(q("SELECT count(*) FROM device_state WHERE tenant_id=1 "
+                         "AND online=false") or 0) == 0:
+                    return True
+            return False
+
+        time.sleep(6)
+        settled = settle_online()
+        print(f"      · 临时停用 {len(drv_ids)} 个不可达 driver、置在线 {len(offline_ids)} 台设备"
+              f"（稳定={'是' if settled else '否'}，跑完还原）")
+        if not settled:
+            bad("无法把租户内离线设备清零（心跳写竞争未收敛）")
+        else:
+            ok("设备侧全在线 → 心跳自动恢复（无需人工）") if wait_running(rid) \
+                else bad("未自动恢复（检查心跳服务）")
+
+        # 还原
         for s in snap:
             did, st = s.split("|")
             q(f"UPDATE driver SET status = {st} WHERE id = {did}")
-        if flipped:
+        if offline_ids:
             q("UPDATE device_state SET online = false WHERE tenant_id = 1 AND resource_id IN ("
-              + ",".join(flipped) + ")")
-        print(f"      · 已还原 {len(drv_ids)} 个 driver、{len(flipped)} 台设备")
+              + ",".join(offline_ids) + ")")
+        print(f"      · 已还原 {len(drv_ids)} 个 driver、{len(offline_ids)} 台设备")
 
 
 def sec_ports(ctx, robot, m1):
@@ -596,6 +694,73 @@ def sec_ports(ctx, robot, m1):
     q(f"DELETE FROM device_port WHERE code LIKE '{tag}%';")
 
 
+def sec_experiment(ctx, island, d1, m1):
+    step("experiment · 实验内多个流程（拓扑展开）")
+    if not island:
+        skip("没有可用的岛，跳过实验节")
+        return
+
+    def one(name, dev):
+        return ctx.new_wf(name,
+                          [("S", "开始", "startEvent", ""),
+                           ("T", "任务", "task", f'protocolName="{m1}" resource="{dev}"'),
+                           ("E", "结束", "endEvent", "")],
+                          [("f1", "S", "T", None), ("f2", "T", "E", None)])
+
+    w1, w2 = one("MTRX-实验-流程1", d1), one("MTRX-实验-流程2", d1)
+    base = int(q("SELECT COALESCE(max(id),0) FROM run") or 0)
+    eid = api("/api/experiments", "POST",
+              {"name": f"MTRX-实验-{int(time.time()*1000)}", "islandId": island,
+               "workflowIds": [w1, w2]}, ctx.token)["id"]
+    ctx.made_exp.append(eid)
+    procs = q(f"SELECT count(*) FROM experiment_process WHERE tenant_id=1 AND experiment_id={eid}")
+    ok(f"实验内登记了两个流程（process={procs}）") if procs == "2" else bad("实验流程数不对", procs)
+
+    r = api(f"/api/experiments/{eid}/run?async=1", "POST", {}, ctx.token)
+    erid = int(r.get("experimentRunId") or r.get("id") or 0)
+    st = ""
+    deadline = time.time() + 120
+    while erid and time.time() < deadline:
+        st = q(f"SELECT status::text FROM experiment_run WHERE id={erid}")
+        if st in ("completed", "failed", "aborted"):
+            break
+        time.sleep(1)
+    ok(f"实验整单 {st}") if st == "completed" else bad("实验未完成", f"st={st} erid={erid}")
+    n = q(f"SELECT count(DISTINCT workflow_id) FROM run "
+          f"WHERE id>{base} AND workflow_id IN ({w1},{w2})")
+    ok("实验内两个流程都产生了执行单") if n == "2" else bad("流程未全部执行", n)
+    for rid in [x for x in q(f"SELECT id FROM run WHERE id>{base} AND workflow_id IN ({w1},{w2})").split() if x]:
+        ctx.made_run.append(int(rid))
+
+
+def sec_concurrent(ctx, d1, d2, m1):
+    step("concurrent · 多流程并发（多个独立 run 同时跑）")
+
+    def one(name, dev):
+        return ctx.new_wf(name,
+                          [("S", "开始", "startEvent", ""),
+                           ("T", "任务", "task", f'protocolName="{m1}" resource="{dev}"'),
+                           ("E", "结束", "endEvent", "")],
+                          [("f1", "S", "T", None), ("f2", "T", "E", None)])
+
+    w1, w2 = one("MTRX-并发-1", d1), one("MTRX-并发-2", d2)
+    res, lock = {}, threading.Lock()
+
+    def go(tag, wid):
+        _rid, st = ctx.run(wid)
+        with lock:
+            res[tag] = st
+
+    ths = [threading.Thread(target=go, args=("A", w1)),
+           threading.Thread(target=go, args=("B", w2))]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    ok("两个流程并发提交、各自完成") if res.get("A") == "completed" and res.get("B") == "completed" \
+        else bad("并发流程未全部完成", str(res))
+
+
 def kernel_env():
     try:
         pid = subprocess.run(["pgrep", "-f", "ApiServer"], capture_output=True, text=True).stdout.split()
@@ -612,7 +777,7 @@ def kernel_env():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--section", default="all",
-                    help="serial,builtin,outvar,xor,xor3,loop,parallel,pause,ports | all")
+                    help="serial,builtin,outvar,xor,xor3,loop,loopback,parallel,pause,ports,experiment,concurrent | all")
     ap.add_argument("--device", type=int, default=0)
     ap.add_argument("--device2", type=int, default=0)
     ap.add_argument("--method", default="Home")
@@ -647,11 +812,15 @@ def main():
                   "JOIN capability c ON c.id=rc.capability_id "
                   f"JOIN ({online}) ds ON ds.resource_id=rc.resource_id "
                   "WHERE c.code='TRANSFER' ORDER BY rc.resource_id LIMIT 1") or 0)
+    island = int(q("""SELECT p.id FROM resource_node d JOIN resource_node p ON p.id = d.parent_id
+                       WHERE d.kind = 'device' AND d.tenant_id = 1
+                       GROUP BY p.id ORDER BY count(*) DESC LIMIT 1""") or 0)
 
     if not d1:
         print("SKIP: 库里没有任何设备实例")
         return 0
-    print(f"设备：D1={d1} D2={d2} robot={robot or '-'}  方法={args.method}  场景={args.section}")
+    print(f"设备：D1={d1} D2={d2} robot={robot or '-'} island={island or '-'}  "
+          f"方法={args.method}  场景={args.section}")
 
     ctx = Ctx(token)
     sections = {
@@ -661,9 +830,12 @@ def main():
         "xor": lambda: sec_xor(ctx, d1, args.method),
         "xor3": lambda: sec_xor3(ctx, d1, args.method),
         "loop": lambda: sec_loop(ctx, d1, args.method),
+        "loopback": lambda: sec_loopback(ctx, d1, d2, args.method),
         "parallel": lambda: sec_parallel(ctx, d1, d2, args.method),
         "pause": lambda: sec_pause(ctx, d1, args),
         "ports": lambda: sec_ports(ctx, robot, args.method),
+        "experiment": lambda: sec_experiment(ctx, island, d1, args.method),
+        "concurrent": lambda: sec_concurrent(ctx, d1, d2, args.method),
     }
     try:
         for name, fn in sections.items():
