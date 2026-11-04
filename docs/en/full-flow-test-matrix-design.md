@@ -61,6 +61,7 @@ matrix** and the main-path e2e (see §10, `scripts/e2e-smoke.py`).
 | Device chain (driver / protocol) | `verify-device-chain.sh` | — | ✅ 41 assertions |
 | Frontend main paths | `e2e-smoke.py` | — | ✅ 24 assertions |
 | Page-side: designer assembly / variable node / run detail / page pause-resume | `e2e-flow-matrix.py` | — | ✅ 21 assertions |
+| Simulator integration: build workflow on the page → bind a real device → build experiment → run → real response | `e2e-sim-flow.py` | — | ✅ 24 assertions |
 
 ## 4. Entry points and how to run
 
@@ -124,6 +125,7 @@ LABOS_TRANSFER_PLAN=1 ... java -cp out:lib/postgresql-42.7.3.jar com.labos.kerne
 | `verify-exp-control.py` | 22 experiment-level pause / resume / stop assertions | Experiment-level pause |
 | `verify-device-chain.sh` | 41 device-chain assertions | Driver / protocol layer |
 | `e2e-smoke.py` | 24 frontend main-path assertions | End to end |
+| `e2e-sim-flow.py` | 24 simulator-integration assertions | Build workflow on the page → bind a real device → build experiment → run → real response |
 | `e2e-flow-matrix.py` | 21 page-side matrix assertions | Designer / run detail / page pause-resume |
 
 ## 9. Corrections
@@ -158,8 +160,46 @@ python3 scripts/e2e-flow-matrix.py --base http://127.0.0.1:8080
 it). Parallel structures can only be built from XML / the API side — the page only
 “looks at” them. This matches the parallel boundary in §7.
 
-## 11. Open items
+## 11. Simulator integration (`e2e-sim-flow.py`)
+
+The page-side matrix in §10 uses **placeholder devices**, so it only reaches "the page can
+build it and click it"; `verify-device-chain.sh` starts from the driver side and bypasses the
+page. Between the two there is an untested gap: **does the real-device segment actually run end
+to end from the page**. `scripts/e2e-sim-flow.py` adds that slice — it only **reuses**
+already-running `DeviceSimulator` instances (ports 19500..19506) and never starts them; with
+none listening the whole section is skipped and points at `labos-kernel/scripts/sim-up.sh`.
+
+| Section | Assertions | Coverage | Key assertions |
+|---|---|---|---|
+| 0 Simulator present | 2 | Precondition | 19500..19506 are listening; demo-island devices with `device_state.online=true` > 0 |
+| 0b Pre-reset | 1 | Test hygiene | Release a leftover island-level runtime hold (`runtime_hold`) on the demo island |
+| A Build workflow → bind real device | 8 | Designer + node settings | Create a workflow from the UI and enter the designer; palette drop lands; connect nodes; save persists 3 `sequenceFlow`; bind `ID1731`/`Home`; after re-saving the compile plan carries the device method; `workflow_node.params.protocol_name='Home'` |
+| B Build experiment | 4 | Experiment orchestration | Pick island `LAB-DEMO-02`; attach the workflow; create the experiment; orchestrate 1 workflow |
+| C Run → assert | 6 | End-to-end real interaction | One `run` row appears; `run.status=completed`; `experiment.status=finished`; `run_command` carries the device-raw response; the persisted command method = `Home`; the run shows up in the page's run history |
+
+```bash
+python3 scripts/e2e-sim-flow.py --base http://127.0.0.1:8080
+# Expected: 24 passed / 0 failed
+```
+
+**Test trap (leftover runtime hold)**: as soon as one workflow in a previous round ends up
+"handover to human / skipped", the executor treats "a site pause is a safety event" and holds
+the **whole island** (`raise ISLAND` in `ExperimentExecutor`); that `runtime_hold` never clears
+by itself. Every later experiment on the same island then lands straight in `paused` at the
+action boundary and **no workflow-level `run` is created at all** — it looks like the execution
+path is broken, when in fact it is leftover site state from the previous round. The script
+therefore **resets before it runs and resets once more at the end** (`reset_island_holds()`), so
+no residue is left for the next round. This is test residue, not the behaviour under test.
+
+**Product-side consistency fix (surfaced by this matrix)**: `WorkflowService.saveGraph` writes
+`workflow_node.params.protocol_name` for **new** nodes (INSERT branch) but originally wrote only
+`method_params` for **existing** nodes (UPDATE branch). In the page flow a node is saved once,
+then the device is bound and it is saved again → the UPDATE branch runs → `protocol_name` never
+lands in the DB (present in the graph XML, missing in the table). The UPDATE branch now writes
+`protocol_name` too, and section A pins this with an assertion.
+
+## 12. Open items
 
 None open: the Class A item (a back edge spanning a parallel region) is the `loopback`
-section; the backend matrix is wired into `ci-gate.sh` (`MIN_MATRIX=45`) and the page-side
-matrix too (`MIN_E2EFM=21`).
+section; the backend matrix is wired into `ci-gate.sh` (`MIN_MATRIX=45`), the page-side matrix
+too (`MIN_E2EFM=21`), and so is the simulator integration (`MIN_E2ESIM=24`).
