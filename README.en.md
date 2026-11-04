@@ -1,3 +1,7 @@
+[![CI](https://github.com/rogerlzp/labos/actions/workflows/ci.yml/badge.svg)](https://github.com/rogerlzp/labos/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](ROADMAP.md)
+
 > **English** · **[简体中文](README.md)**
 >
 > This repository ships bilingual documentation: the console switches between
@@ -7,7 +11,7 @@
 
 # LabOS · Laboratory Automation Control System
 
-> **English edition.** The Chinese README is [`README.md`](README.en.md); this file is the
+> **English edition.** The Chinese README is [`README.md`](README.md); this file is the
 > English counterpart. Nothing in the Chinese documentation was modified to produce it.
 > See [`docs/en/INDEX.md`](docs/en/INDEX.md) for the full English documentation index
 > and the translation ledger.

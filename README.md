@@ -1,3 +1,7 @@
+[![CI](https://github.com/rogerlzp/labos/actions/workflows/ci.yml/badge.svg)](https://github.com/rogerlzp/labos/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](ROADMAP.md)
+
 > **[English](README.en.md)** · 简体中文
 >
 > 本仓库提供中英双语文档：界面已支持运行时切换中/英文（右上角），
