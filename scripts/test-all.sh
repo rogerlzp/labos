@@ -138,17 +138,28 @@ for t in "${PURE[@]}"; do
   run_one "$t"
 done
 
-# 中控 → sidecar → 模拟器 全链路（没有 dotnet 就跳过，不影响其它结论）
+# 中控 → sidecar → 模拟器 全链路（没有 dotnet 或 SDK 版本不够就跳过，不影响其它结论）
 # 注意：本脚本已 cd 到 labos-kernel，路径要回到仓库根
 if command -v dotnet >/dev/null 2>&1 && [[ -x ../scripts/test-sidecar.sh ]]; then
   if out=$(../scripts/test-sidecar.sh 2>&1); then
-    PASS=$((PASS + 1))
-    printf "  %-28s %s\n" "SidecarChainTest" "$(echo "$out" | grep -E '^通过 [0-9]+ / 失败' | tail -1)"
+    line=$(echo "$out" | grep -E '^通过 [0-9]+ / 失败' | tail -1)
+    if [[ -z "$line" ]]; then
+      # 脚本退出码 0 但没有通过统计 = 它跳过了（环境不满足），不能算成通过，
+      # 也不能虚增用例数 —— 否则阈值 536 会因为"跳过"而被误判成"删了用例"。
+      SKIP=$((SKIP + 1))
+      printf "  %-28s %s\n" "SidecarChainTest" "$(echo "$out" | grep -E '跳过' | tail -1)"
+    else
+      p=$(echo "$line" | grep -oE '通过 [0-9]+' | grep -oE '[0-9]+')
+      PASS=$((PASS + p))
+      printf "  %-28s %s\n" "SidecarChainTest" "$line"
+    fi
   else
     FAIL=$((FAIL + 1))
     printf "  %-28s %s\n" "SidecarChainTest" "FAIL（单独跑 scripts/test-sidecar.sh 看详情）"
+    echo "$out" | tail -8 | sed 's/^/      /'
   fi
 else
+  SKIP=$((SKIP + 1))
   printf "  %-28s %s\n" "SidecarChainTest" "跳过（没有 dotnet）"
 fi
 

@@ -28,7 +28,16 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: webapp/package-lock.json
+          cache-dependity-path: webapp/package-lock.json
+
+      # sidecar 是 .NET 程序（目标框架 net10.0），runner 镜像预装的 SDK
+      # 不保证满足这个版本 —— 缺版本时 test-sidecar.sh 会跳过，
+      # 于是 CI 上最关键的「中控 → sidecar → 模拟器」链路等于没被测过。
+      # 显式装 10.x，把这条链路真正纳入 CI 覆盖。
+      - name: 安装 .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
 
       - name: 编译内核
         working-directory: labos-kernel

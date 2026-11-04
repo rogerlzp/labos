@@ -38,6 +38,15 @@ if ! command -v dotnet >/dev/null; then
     echo "  没有 dotnet，跳过（sidecar 是 .NET 程序）"
     exit 0
 fi
+# 版本判定：sidecar 目标框架是 net10.0，需要 SDK 10.x。
+# 只判"命令在不在"是不够的 —— 有 dotnet 8/9 的机器上会走进注定编译失败的
+# 路径，把"环境不满足"报成"测试失败"。不满足就明确跳过（退出码 0）。
+# 用 awk 取版本号：BSD sed（macOS）不认 \+ 这个 GNU 扩展。
+DOTNET_SDK_MAJOR=$(dotnet --list-sdks 2>/dev/null | awk '{print $1}' | cut -d. -f1 | sort -rn | head -1)
+if [[ -z "$DOTNET_SDK_MAJOR" ]] || (( DOTNET_SDK_MAJOR < 10 )); then
+    echo "  dotnet SDK 版本不满足（需要 10.x，当前 ${DOTNET_SDK_MAJOR:-无}），跳过"
+    exit 0
+fi
 
 echo "  编译 sidecar…"
 ( cd "$ROOT/sidecar-dotnet/Labos.Sidecar" \
@@ -46,8 +55,24 @@ echo "  编译 sidecar…"
 ok "sidecar 编译通过"
 
 # 型号库必须是"从型号库导出的最新版"，否则 sidecar 会拿过期的指令表
-CUR=$(cd "$ROOT/labos-kernel" && java -cp out com.labos.kernel.device.DeviceModelExport | md5)
-REG=$(md5 -q "$ROOT/sidecar-dotnet/models.json" 2>/dev/null || md5sum "$ROOT/sidecar-dotnet/models.json" | cut -d' ' -f1)
+# md5 命令 macOS 有、Linux 没有（Linux 只有 md5sum）——两处都必须降级，
+# 否则 CI 上 CUR 为空 → 误判"models.json 过期" → sidecar 链路整条失败。
+md5_of() {
+  if command -v md5 >/dev/null 2>&1; then
+    md5 -q "$1" 2>/dev/null || md5sum "$1" | cut -d' ' -f1
+  else
+    md5sum "$1" | cut -d' ' -f1
+  fi
+}
+md5_of_stdin() {
+  if command -v md5 >/dev/null 2>&1; then
+    md5 2>/dev/null || md5sum | cut -d' ' -f1
+  else
+    md5sum | cut -d' ' -f1
+  fi
+}
+CUR=$(cd "$ROOT/labos-kernel" && java -cp out com.labos.kernel.device.DeviceModelExport | md5_of_stdin)
+REG=$(md5_of "$ROOT/sidecar-dotnet/models.json")
 if [[ "$CUR" == "$REG" ]]; then
     ok "models.json 与型号库一致"
 else
