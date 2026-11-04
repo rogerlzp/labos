@@ -120,7 +120,9 @@ run_one() {
   if [[ -z "$line" ]]; then
     printf "  %-28s 无法解析输出\n" "${t##*.}"
     FAIL=$((FAIL + 1))
-    echo "$out" | tail -3 | sed 's/^/      /'
+    # 点名是哪个类出的问题：CI 里这行是唯一的线索（外层脚本会吞掉细节）
+    echo "      ↓ 失败详情：${t}"
+    echo "$out" | tail -8 | sed 's/^/      /'
     return
   fi
   local p f
