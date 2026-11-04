@@ -171,6 +171,8 @@ queued.
 | `docs/流程控制-测试报告.md` | `docs/en/workflow-control-test-report.md` | ✅ |
 | `docs/完整流程测试矩阵-设计.md` | `docs/en/full-flow-test-matrix-design.md` | ✅ |
 | `docs/测试与上线策略.md` | `docs/en/testing-and-release-strategy.md` | ✅ |
+| `docs/测试规范.md` | `docs/en/test-specification.md` | ✅ |
+| `docs/测试用例总表.md` | `docs/en/test-case-master-table.md` | ✅ |
 | `docs/混合调度方案-设计.md` | `docs/en/hybrid-scheduling-design.md` | ✅ |
 | `docs/点位编号规范.md` | `docs/en/position-numbering-standard.md` | ✅ |
 | `docs/自定义脚本节点-设计.md` | `docs/en/custom-script-node-design.md` | ✅ |
