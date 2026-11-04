@@ -132,7 +132,7 @@ as they are** (`0x8000000C`),
 and `recovery_policy` finds no policy ⇒ every fault becomes an "unknown error, hand over to
 an operator".
 The principle is explained in section 4 of
-[`设备/型号库与错误码映射.md`](../设备/型号库与错误码映射.md).
+[docs/en/devices/model-library-and-error-code-mapping.md](devices/model-library-and-error-code-mapping.md).
 
 ### Step 3: create the device instance (attach it to the island, fill in the IP)
 

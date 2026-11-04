@@ -5,7 +5,7 @@
 > the Chinese source — if they ever disagree, the Chinese original wins.
 
 > For: the people maintaining the execution engine
-> Related: [Functional guide](workflow-control-guide.md) · [Test report](workflow-control-test-report.md) · [Development log](../开发日志.md)
+> Related: [Functional guide](workflow-control-guide.md) · [Test report](workflow-control-test-report.md) · [Development log](development-log.md)
 
 ---
 

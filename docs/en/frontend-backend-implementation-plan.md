@@ -8,7 +8,7 @@
 > described in [`docs/en/roadmap.md`](roadmap.md) and in the code.
 
 > **The weekly plan is superseded (2026-10-29).** The scheduling is governed by chapter 11 of
-> [`LabOS功能规格说明书.md`](../../LabOS功能规格说明书.md). The automatic compilation's "expanded at run
+> [docs/en/functional-specification.md](functional-specification.md). The automatic compilation's "expanded at run
 > time, not landed as BPMN nodes" is still valid and has been written into section 7.4 of the
 > specification. The Gantt and the nest-level ready scheduling are not in the 2.0 release gate.
 

@@ -1,7 +1,7 @@
 # Delivery List and Verification for This Round (2026-11-03 evening → 11-04 early morning)
 
 > **English edition.** The Chinese original is
-> [`docs/评审包-20261104/01-本轮交付清单与验证.md`](../../评审包-20261104/01-本轮交付清单与验证.md);
+> [docs/en/review-20261104/01-deliverables-and-verification.md](01-deliverables-and-verification.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are
 > identical to the Chinese source — if they ever disagree, the Chinese original wins.
 

@@ -150,7 +150,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.api.ApiServer 18080
 
 ## 7. Review record requirements
 
-Per [`评审规范.md`](../评审规范.md): all fields present (id / time / model / scope / method / conclusion / list of comments / response / disposition),
+Per [docs/en/review-guidelines.md](review-guidelines.md): all fields present (id / time / model / scope / method / conclusion / list of comments / response / disposition),
 comments graded **P0 blocking / P1 serious / P2 normal / P3 suggestion**, **every comment must give a `file:line`**,
 every disposition answered item by item, and both the documents and the code **have to be covered**.
 

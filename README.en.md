@@ -7,7 +7,7 @@
 
 # LabOS · Laboratory Automation Control System
 
-> **English edition.** The Chinese README is [`README.md`](README.md); this file is the
+> **English edition.** The Chinese README is [`README.md`](README.en.md); this file is the
 > English counterpart. Nothing in the Chinese documentation was modified to produce it.
 > See [`docs/en/INDEX.md`](docs/en/INDEX.md) for the full English documentation index
 > and the translation ledger.
@@ -154,7 +154,7 @@ python3 scripts/scan-i18n.py        # i18n ledger: key parity + code coverage
 keeps long-lived connections, so restarting the kernel does not interrupt a running
 device command.
 
-Full module map: [`docs/技术架构与模块地图.md`](docs/技术架构与模块地图.md)
+Full module map: [`docs/技术架构与模块地图.md`](docs/en/architecture.md)
 (Chinese).
 
 ---
@@ -218,10 +218,10 @@ The Chinese console is unchanged: the default locale is still `zh-CN`.
 
 ## Documentation
 
-The English documentation index and the translation ledger live in
-[`docs/en/INDEX.md`](docs/en/INDEX.md). The Chinese documentation set is
-authoritative for implementation detail; the English edition is being rolled out
-batch by batch, in the order the ledger records.
+**Every document in this repository now has an English edition.** The index and the
+translation ledger live in [`docs/en/INDEX.md`](docs/en/INDEX.md); the Chinese
+originals remain the authoritative reference for implementation detail, and the
+English files are kept in step with them.
 
 **Overseas market research is deliberately not published.** Buyer maps, competitor
 positioning, pricing intelligence and the standards-alignment analysis are market
@@ -230,27 +230,25 @@ intelligence rather than product documentation; they live in the local, git-igno
 
 | Document | Contents |
 |---|---|
-| **[`docs/en/INDEX.md`](docs/en/INDEX.md)** | **English documentation index + translation ledger** — the registry gives **every** Chinese document its reserved English path |
-| **[`docs/en/roadmap.md`](docs/en/roadmap.md)** | The authoritative roadmap (English edition of `ROADMAP.md`) |
+| **[`docs/en/INDEX.md`](docs/en/INDEX.md)** | **English documentation index + translation ledger** — every Chinese document has an English edition |
+| **[`docs/en/roadmap.md`](docs/en/roadmap.md)** | **Single source of truth for what comes next**: phases M6–M11, feature list, acceptance criteria, P0/P1/P2 placement, definition of done |
+| [`docs/en/onboarding.md`](docs/en/onboarding.md) | Start here for a new reader: 30 minutes to understand the project + the known-issue list |
+| [`docs/en/functional-specification.md`](docs/en/functional-specification.md) | The functional specification — authoritative for what the features are |
 | [`docs/en/architecture.md`](docs/en/architecture.md) | Package layout, key classes, data flow |
-| [`docs/en/deployment.md`](docs/en/deployment.md) | On-site deployment steps and pass criteria |
-| [`docs/en/production-roadmap.md`](docs/en/production-roadmap.md) | How far production is, staged estimates |
-| [`docs/en/overseas/00-summary.md`](docs/en/overseas/00-summary.md) · [`01-scenarios.md`](docs/en/overseas/01-scenarios.md) · [`02-roadmap.md`](docs/en/overseas/02-roadmap.md) | Overseas market, buyers and standards alignment |
-| **[`ROADMAP.md`](ROADMAP.md)** | **Single source of truth for what comes next**: phases M6–M11, feature list, acceptance criteria, P0/P1/P2 placement, definition of done (Chinese) |
-| [`docs/评审包-20261104/00-索引与评审指引.md`](docs/评审包-20261104/00-索引与评审指引.md) | **Latest review entry point** (Chinese) |
-| [`docs/评审包-20261103/00-索引与评审须知.md`](docs/评审包-20261103/00-索引与评审须知.md) | Functional / technical / design / test review bundle (Chinese) |
-| [`docs/评审指引.md`](docs/评审指引.md) | Start here for a new reader: 30 minutes to understand the project + the known-issue list (Chinese) |
-| [`docs/技术架构与模块地图.md`](docs/技术架构与模块地图.md) | Package layout, key classes, data flow (Chinese) |
-| [`docs/开发日志.md`](docs/开发日志.md) | Where every decision and every pitfall came from (Chinese) |
-| [`docs/实验编排-功能设计.md`](docs/实验编排-功能设计.md) | Experiment orchestration, canvas, variable passing, execution model (Chinese) |
-| [`docs/流程控制-功能说明.md`](docs/流程控制-功能说明.md) | Conditional branches / loops / variables: how to configure them and what the UI shows (Chinese) |
-| [`docs/多实验并行调度-设计.md`](docs/多实验并行调度-设计.md) | Island locks, EDD, deadlock avoidance (Chinese) |
-| [`docs/板位级占用与位置互斥-设计.md`](docs/板位级占用与位置互斥-设计.md) | Position locks, move atomicity (Chinese) |
-| [`docs/本机仿真指南.md`](docs/本机仿真指南.md) | One simulator per device, run the whole island locally (Chinese) |
-| [`docs/现场部署手册.md`](docs/现场部署手册.md) | Complete on-site deployment steps and pass criteria (Chinese) |
-| [`docs/生产化路线图.md`](docs/生产化路线图.md) | How far production is, and staged estimates (Chinese) |
-| [`docs/设备/型号库与错误码映射.md`](docs/设备/型号库与错误码映射.md) | **How to onboard a new device**: device code → LabOS code → recovery action (Chinese) |
-| [`sidecar-dotnet/README.md`](sidecar-dotnet/README.md) | **Real-device sidecar**: serial framing / Cluster.dll / forwarding simulator (Chinese) |
+| [`docs/en/deployment.md`](docs/en/deployment.md) | Complete on-site deployment steps and pass criteria |
+| [`docs/en/production-roadmap.md`](docs/en/production-roadmap.md) | How far production is, and staged estimates |
+| [`docs/en/experiment-orchestration-design.md`](docs/en/experiment-orchestration-design.md) | Experiment orchestration, canvas, variable passing, execution model |
+| [`docs/en/workflow-control-guide.md`](docs/en/workflow-control-guide.md) | Conditional branches / loops / variables: how to configure them and what the UI shows |
+| [`docs/en/parallel-scheduling-design.md`](docs/en/parallel-scheduling-design.md) | Island locks, EDD, deadlock avoidance |
+| [`docs/en/position-occupancy-and-mutual-exclusion-design.md`](docs/en/position-occupancy-and-mutual-exclusion-design.md) | Position locks, move atomicity |
+| [`docs/en/local-simulation-guide.md`](docs/en/local-simulation-guide.md) | One simulator per device, run the whole island locally |
+| [`docs/en/devices/model-library-and-error-code-mapping.md`](docs/en/devices/model-library-and-error-code-mapping.md) | **How to onboard a new device**: device code → LabOS code → recovery action |
+| [`sidecar-dotnet/README.en.md`](sidecar-dotnet/README.en.md) | **Real-device sidecar**: serial framing / Cluster.dll / forwarding simulator |
+| [`docs/en/development-log.md`](docs/en/development-log.md) | Where every decision and every pitfall came from |
+| [`docs/en/review-20261104/00-index.md`](docs/en/review-20261104/00-index.md) | **Latest review entry point** |
+| [`docs/en/review-20261103/00-index.md`](docs/en/review-20261103/00-index.md) | Functional / technical / design / test review bundle |
+| [`docs/en/contribution-guidelines.md`](docs/en/contribution-guidelines.md) | How a commit message is written, when to commit, what must not be committed |
+| [`docs/en/review-guidelines.md`](docs/en/review-guidelines.md) | How to review, how to record a review, how the reviewed party responds |
 
 ---
 
@@ -267,7 +265,7 @@ intelligence rather than product documentation; they live in the local, git-igno
 | **Persistent “running”** | `method_status=1` is judged a failure directly, so long tasks (a 30-minute incubation) are misjudged |
 | **Device photos** | The repository contains **no images** (copyright); drop them into `webapp/public/devices/` yourself |
 
-The full list is in section 6 of [`docs/评审指引.md`](docs/评审指引.md) (Chinese).
+The full list is in section 6 of [`docs/评审指引.md`](docs/en/onboarding.md) (Chinese).
 
 ---
 

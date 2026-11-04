@@ -55,7 +55,7 @@
 | Device-chain assertions | 37 | the assertion count of [verify-device-chain.sh](../../../scripts/verify-device-chain.sh) = 37, including the new "resume steps=3 / cmds=3 / no uk conflict" added for H1 | ✅ |
 | e2e assertions | 14 | [e2e-smoke.py](../../../scripts/e2e-smoke.py) = 14 | ✅ |
 | Number of historical documents | 52 | `ls docs/*.md \| wc -l` = 52 | ✅ |
-| ADR numbering | rearranged into D1–D15 | [03-设计文档.md](../../评审包-20261103/03-设计文档.md) D1…D14 in order without duplicates; **the position of D15 is the exception, see §5.5** | ⚠ Partial |
+| ADR numbering | rearranged into D1–D15 | [docs/en/review-20261103/03-design.md](../review-20261103/03-design.md) D1…D14 in order without duplicates; **the position of D15 is the exception, see §5.5** | ⚠ Partial |
 
 ### Regression of the first round's blocking items (all passed)
 
@@ -110,11 +110,11 @@ This round **found** no new code-level high/medium severity defects. The three u
 
 | # | Location | Problem | Evidence |
 |---|---|---|---|
-| 1 | [04-测试文档.md](../../评审包-20261103/04-测试文档.md#L165) | §8 writes `verify-device-chain.sh # **34** / 0`, which conflicts with the **37** at [:17](../../评审包-20261103/04-测试文档.md#L17) / [:42](../../评审包-20261103/04-测试文档.md#L42) / [:83](../../评审包-20261103/04-测试文档.md#L83) / [:89](../../评审包-20261103/04-测试文档.md#L89) of the same file | 34≠37 inside the same file |
-| 2 | [02-技术文档.md](../../评审包-20261103/02-技术文档.md#L64-L76) §2.1 | The package file counts are untrue: it writes driver **25** / workflow **21** / sim **8** / device **7** / expr **6**; the measurement gives driver **23** / workflow **20** / sim **7** / device **6** / expr **5**. The itemised total is **113** ≠ the header total **107** | `find … \| wc -l` per package |
-| 3 | [02-技术文档.md](../../评审包-20261103/02-技术文档.md#L78) | It cites "**design document §6**", but `03-设计文档.md` has no §6 (the sections are 0 / D1-D15 / 3 / 4 / 5) | A dangling reference |
-| 4 | [02-技术文档.md:128](../../评审包-20261103/02-技术文档.md#L128) and [00-索引与评审须知.md:118](../../评审包-20261103/00-索引与评审须知.md#L118) | It still writes the `run_node` unique key as `(run_id, node_key, attempt)` (**`loop_index` is missing**); while [:192](../../评审包-20261103/00-索引与评审须知.md#L192) of the same 00 document writes "`run_node.loop_index` has been completed" | Does not match `20_kernel.sql:310` / M6, and the document contradicts itself |
-| 5 | [03-设计文档.md:318](../../评审包-20261103/03-设计文档.md#L318) | **D15** sits **after** §3([:284](../../评审包-20261103/03-设计文档.md#L284)) / §4([:297](../../评审包-20261103/03-设计文档.md#L297)) / §5([:310](../../评审包-20261103/03-设计文档.md#L310)) —— the ADR section and the conclusion section are out of order | The document structure |
+| 1 | [docs/en/review-20261103/04-testing.md](../review-20261103/04-testing.md) | §8 writes `verify-device-chain.sh # **34** / 0`, which conflicts with the **37** at [:17](../review-20261103/04-testing.md) / [:42](../review-20261103/04-testing.md) / [:83](../review-20261103/04-testing.md) / [:89](../review-20261103/04-testing.md) of the same file | 34≠37 inside the same file |
+| 2 | [docs/en/review-20261103/02-technical.md](../review-20261103/02-technical.md) §2.1 | The package file counts are untrue: it writes driver **25** / workflow **21** / sim **8** / device **7** / expr **6**; the measurement gives driver **23** / workflow **20** / sim **7** / device **6** / expr **5**. The itemised total is **113** ≠ the header total **107** | `find … \| wc -l` per package |
+| 3 | [docs/en/review-20261103/02-technical.md](../review-20261103/02-technical.md) | It cites "**design document §6**", but `03-设计文档.md` has no §6 (the sections are 0 / D1-D15 / 3 / 4 / 5) | A dangling reference |
+| 4 | [docs/en/review-20261103/02-technical.md](../review-20261103/02-technical.md) and [docs/en/review-20261103/00-index.md](../review-20261103/00-index.md) | It still writes the `run_node` unique key as `(run_id, node_key, attempt)` (**`loop_index` is missing**); while [:192](../review-20261103/00-index.md) of the same 00 document writes "`run_node.loop_index` has been completed" | Does not match `20_kernel.sql:310` / M6, and the document contradicts itself |
+| 5 | [docs/en/review-20261103/03-design.md](../review-20261103/03-design.md) | **D15** sits **after** §3([:284](../review-20261103/03-design.md)) / §4([:297](../review-20261103/03-design.md)) / §5([:310](../review-20261103/03-design.md)) —— the ADR section and the conclusion section are out of order | The document structure |
 
 > In addition: the user said "the link check has no failures", but **no link-checking script could be found in the repository** (no `*link*` / `*consistency*`). That claim **has no reproducible means**, this record does not accept it, and records it as "unverified".
 
@@ -147,7 +147,7 @@ The user instructed "do all of the above": ① write the P2 of §5 straight into
   - 02 §3 and 00 §5.1: the `run_node` unique key gains `loop_index` → `(run_id, node_key, attempt, loop_index)`;
   - 03: D15 moved from after §5 to between D14 and §3.
 - **Incidental self-consistency corrections (because they contradict M6, handled together)**: 00 §5.1 #2 and 03 §5 priority 2 —— marked **completed (M6)** (`run_node.loop_index` gets one row per iteration).
-- **New ledger**: [BUG台账.md](../../评审记录/BUG台账.md), registering B1 (`BUG-20261103-01`, 🟥 to fix) + the 6 self-consistency items (already fixed).
+- **New ledger**: [docs/en/review-records/bug-ledger.md](bug-ledger.md), registering B1 (`BUG-20261103-01`, 🟥 to fix) + the 6 self-consistency items (already fixed).
 
 > ⚠️ Boundary statement: the above is a **document self-consistency correction**, a record-keeping action carried out by the reviewer under the user's authorisation; **no code / SQL was changed**.
 > The fix of the §3 blocking item `BUG-20261103-01` (re-running `merge.sh`) is to be done by the **implementer**, and it **must be re-checked against a live database**.

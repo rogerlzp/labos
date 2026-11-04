@@ -226,10 +226,15 @@ def main() -> int:
             errors.append(b)
             tbl_bad += 1
 
-    # 链接可解析
+    # 链接可解析。**必须覆盖根目录的英文文件**：
+    # README.en.md 的链接最容易漏检，而它恰恰是英文读者看到的第一份文件。
     link_bad = 0
     link_total = 0
-    for f in sorted(EN_DIR.rglob("*.md")):
+    english_files = sorted(EN_DIR.rglob("*.md"))
+    for extra in (ROOT / "README.en.md", ROOT / "sidecar-dotnet" / "README.en.md"):
+        if extra.exists():
+            english_files.append(extra)
+    for f in english_files:
         for t in LINK.findall(read(f)):
             if t.startswith(("http://", "https://", "#", "mailto:")):
                 continue
@@ -240,6 +245,32 @@ def main() -> int:
             if not (f.parent / p).resolve().exists():
                 errors.append(f"{f.relative_to(ROOT)}: 链接失效 → {t}")
                 link_bad += 1
+
+    # 英文版文件是否还指向中文文档（而那份中文文档其实有英文版）
+    # —— 这是英文读者最直接的踩坑点：点进去全是中文。
+    zh2en = {zh: en for zh, en, _ in reg}
+    MDLINK = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")
+    for f in english_files:
+        for lineno, line in enumerate(read(f).split("\n"), 1):
+            # 出处说明里的"中文原文"反向链接是有意保留的，豁免
+            if "Chinese original" in line or "中文原文" in line:
+                continue
+            for _text, t in MDLINK.findall(line):
+                if t.startswith(("http://", "https://", "#", "mailto:")):
+                    continue
+                p = t.split("#")[0]
+                if not p:
+                    continue
+                # 从英文文件所在目录反推仓库根的相对路径
+                try:
+                    rel = (f.parent / p).resolve().relative_to(ROOT)
+                except ValueError:
+                    continue
+                rel = str(rel)
+                if rel in zh2en and rel not in EXEMPT:
+                    errors.append(
+                        f"{f.relative_to(ROOT)}:{lineno} 指向了中文文档 `{rel}`，"
+                        f"但它有英文版 `{zh2en[rel]}`")
 
     # 中文残留（只统计"无法归类"的）
     unclear = 0

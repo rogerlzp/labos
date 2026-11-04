@@ -8,7 +8,7 @@
 > described in [`docs/en/roadmap.md`](roadmap.md) and in the code.
 
 > **An implementation snapshot of kernel-0.3 (2026-10-29); it is no longer treated as a feature
-> plan.** The later scope is in [`LabOS功能规格说明书.md`](../../LabOS功能规格说明书.md).
+> plan.** The later scope is in [docs/en/functional-specification.md](functional-specification.md).
 >
 > The "the workflow runs through" that this document describes is **structural advancement**
 > (the graph can be walked to the end in order, the nodes can be allocated to a device

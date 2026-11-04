@@ -1,5 +1,5 @@
 > **⚠ This document is outdated (2026-11-01)**: the content corresponds to the early "specification level 9" design,
-> the actual code structure is in [`docs/技术架构与模块地图.md`](../../技术架构与模块地图.md).
+> the actual code structure is in [docs/en/architecture.md](../architecture.md).
 > It is kept only as historical background.
 
 # Module Design Document Index

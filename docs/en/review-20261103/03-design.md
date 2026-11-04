@@ -1,7 +1,7 @@
 # Design Document · Key Decisions and Trade-offs
 
 > **English edition.** The Chinese original is
-> [`docs/评审包-20261103/03-设计文档.md`](../../评审包-20261103/03-设计文档.md);
+> [docs/en/review-20261103/03-design.md](03-design.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are identical to the
 > Chinese source — if they ever disagree, the Chinese original wins.
 

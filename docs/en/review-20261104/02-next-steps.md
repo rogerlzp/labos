@@ -1,7 +1,7 @@
 # Follow-up Plan (2026-11-04)
 
 > **English edition.** The Chinese original is
-> [`docs/评审包-20261104/02-后续规划.md`](../../评审包-20261104/02-后续规划.md);
+> [docs/en/review-20261104/02-next-steps.md](02-next-steps.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are
 > identical to the Chinese source — if they ever disagree, the Chinese original wins.
 

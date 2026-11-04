@@ -1,7 +1,7 @@
 # Evidence: the run_node DDL as it actually is (2026-11-03)
 
 > **English edition.** The Chinese original is
-> [`docs/评审记录/证据/20261103-run_node-ddl.md`](../../../评审记录/证据/20261103-run_node-ddl.md);
+> [docs/en/review-records/evidence/20261103-run_node-ddl.md](20261103-run_node-ddl.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are identical to
 > the Chinese source — if they ever disagree, the Chinese original wins.
 

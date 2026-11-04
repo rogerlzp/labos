@@ -6,7 +6,7 @@
 
 > Updated: 2026-11-04 (review 20261104-01 remediation + A2 documentation-consistency pass)
 > Baseline: `main @ b91e4d8`
-> Related: [Review bundle 20261103](../评审包-20261103/00-索引与评审须知.md) · [Review package 20261104](../评审包-20261104/00-索引与评审指引.md) · [Production roadmap (gap analysis)](production-roadmap.md) · [Development log](../开发日志.md)
+> Related: [Review bundle 20261103](review-20261103/00-index.md) · [Review package 20261104](review-20261104/00-index.md) · [Production roadmap (gap analysis)](production-roadmap.md) · [Development log](development-log.md)
 
 ---
 
@@ -373,15 +373,15 @@ different kind of work from M9's "dashboard / drag-and-drop". After S1 **the can
 longer lies** (saving compiles into the database); but batching (S3) is still a layer that
 has to touch the data model and the executor.
 
-**Design document**: [`docs/设计-实验编排统一-v0.1-草稿.md`](../设计-实验编排统一-v0.1-草稿.md)
+**Design document**: [docs/en/design/unified-experiment-orchestration-draft.md](design/unified-experiment-orchestration-draft.md)
 (option comparison, costs, open questions, prompts for the reviewing AI)
 
-**Implementation checklist**: [`docs/设计-实验编排统一-v0.1-实施清单.md`](../设计-实验编排统一-v0.1-实施清单.md)
+**Implementation checklist**: [docs/en/design/unified-experiment-orchestration-checklist.md](design/unified-experiment-orchestration-checklist.md)
 (splits `S1/S2/S3` into backend / frontend / tests / risks / exit conditions, ready to schedule)
 
 **Second-review gate (2026-11-03 15:36, passed; verified item by item)**:
 
-1. ✅ **B1 / B2 / H1** are closed (review record in [`20261103-03-编排设计评审.md`](../评审记录/20261103-03-编排设计评审.md) §7);
+1. ✅ **B1 / B2 / H1** are closed (review record in [docs/en/review-records/20261103-03-orchestration-design-review.md](review-records/20261103-03-orchestration-design-review.md) §7);
 2. ✅ the `S2` scope is fixed as **partial order only (S2-A)**; true concurrency + three-tier resources + the wait graph are listed as an **independent upgrade** (S2-B), not in 2.0;
 3. ✅ the `S3` data model is defined (`experiment_batch` + `experiment_batch_run`, implementation checklist §4.2 and §8.2);
 4. ✅ the `S1` regression cases are defined and passing: a linear graph saves → `graph`/`process` stay in sync; an illegal graph → neither side is written;
@@ -504,12 +504,12 @@ When a phase closes, all of the following must hold at the same time:
 
 ## 7. Relationship to the reviews
 
-The remediation from review [20261103-01](../评审记录/20261103-01-评审包复核.md) is
+The remediation from review [20261103-01](review-records/20261103-01-review-recheck.md) is
 complete (B1/H1/H2/P2 fully closed); its §8.8 "not handled in this round" and §8.9
 "recommendations for the next review" have been merged into **M6** and **§5 DoD** above
 respectively.
 
-The follow-up review [20261104-01](../评审记录/20261104-01-评审包复核.md) is fully
+The follow-up review [20261104-01](review-records/20261104-01-review-recheck.md) is fully
 remediated (1 blocking + 1 high + 3 P2 all closed; `BUG-20261104-01`~`-05` are closed);
 this round also included a documentation-consistency pass (A2, see
 `docs/评审包-20261104/02-后续规划.md`).

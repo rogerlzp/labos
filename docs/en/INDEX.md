@@ -216,6 +216,7 @@ queued.
 | `LabOS实现总纲_20261029.md` | `docs/en/implementation-master-plan.md` | ✅ |
 | `决策记录.md` | `docs/en/decision-log.md` | ✅ |
 | `前后端实施方案_编译甘特就绪调度.md` | `docs/en/frontend-backend-implementation-plan.md` | ✅ |
+| `sidecar-dotnet/README.md` | `sidecar-dotnet/README.en.md` | ✅ |
 
 **Rules for the ledger**
 

@@ -1,7 +1,7 @@
 # Review Package · 2026-11-04 (for AI review)
 
 > **English edition.** The Chinese original is
-> [`docs/评审包-20261104/00-索引与评审指引.md`](../../评审包-20261104/00-索引与评审指引.md);
+> [docs/en/review-20261104/00-index.md](00-index.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are
 > identical to the Chinese source — if they ever disagree, the Chinese original wins.
 

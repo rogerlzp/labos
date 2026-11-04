@@ -1,7 +1,7 @@
 # Review Package · 2026-11-03 · Index and Review Notes
 
 > **English edition.** The Chinese original is
-> [`docs/评审包-20261103/00-索引与评审须知.md`](../../评审包-20261103/00-索引与评审须知.md);
+> [docs/en/review-20261103/00-index.md](00-index.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are identical to the
 > Chinese source — if they ever disagree, the Chinese original wins.
 
@@ -190,7 +190,7 @@ README.md (project overview)
 
 ## 8. Next-phase plan
 
-> **The authoritative version is [`ROADMAP.md`](../../../ROADMAP.md) at the repository root** (phase breakdown, feature lists, acceptance criteria, P0/P1/P2 placement).
+> **The authoritative version is [`ROADMAP.md`](../roadmap.md) at the repository root** (phase breakdown, feature lists, acceptance criteria, P0/P1/P2 placement).
 > This section only gives the reviewer a summary; the details and the changes are governed by ROADMAP — so that two places do not each keep a copy that drifts apart.
 
 | Phase | Goal | Key deliverable |

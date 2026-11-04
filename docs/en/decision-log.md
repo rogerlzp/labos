@@ -4,7 +4,7 @@
 > line-for-line translation. Numbers, commit hashes and file paths are identical to
 > the Chinese source — if they ever disagree, the Chinese original wins.
 
-The functional specification [`LabOS功能规格说明书.md`](../../LabOS功能规格说明书.md) chapter 12 (D1–D11) holds the decisions that were written into **2.0-draft** on 2026-10-29. This chapter does not repeat that table.
+The functional specification [docs/en/functional-specification.md](functional-specification.md) chapter 12 (D1–D11) holds the decisions that were written into **2.0-draft** on 2026-10-29. This chapter does not repeat that table.
 
 If a decision is overturned or narrowed afterwards: append a row below and change the corresponding chapter in the specification at the same time. The rows that are already written are never edited or deleted.
 

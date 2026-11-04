@@ -123,9 +123,9 @@ and the **experiments have no "fallback by name"** (asymmetric with the accounts
 
 | # | Location | Problem | Evidence |
 |---|---|---|---|
-| 1 | [00-索引与评审指引.md:11](../../评审包-20261104/00-索引与评审指引.md#L11)、[01:3](../../评审包-20261104/01-本轮交付清单与验证.md#L3) | It writes "the range `3aa4837..ec28d02`, **25** commits"; the git semantics of `A..B` **do not include A**, the real number is **24** | `git rev-list --count 3aa4837..ec28d02` = 24 (it is 25 only when the base `3aa4837` is included) |
-| 2 | [01:44](../../评审包-20261104/01-本轮交付清单与验证.md#L44) | It writes `MetaApi 109` (total **3487**); on HEAD MetaApi has grown to **132** (total **3510**) with `f2d7e8e` (device-models) | `wc -l MetaApi.java` = 132; at the time of the split `deb6aed` it was 109 |
-| 3 | [00:33](../../评审包-20261104/00-索引与评审指引.md#L33) | The re-run command `python3 scripts/device-go-live-check.py` **carries no DB env**, but `01` §7 reports the 9/2 **with** the DB; without the env it is really 8/3 (the "binding coverage rate" is skipped) | The two runs compared in §2 |
+| 1 | [docs/en/review-20261104/00-index.md](../review-20261104/00-index.md)、[01:3](../review-20261104/01-deliverables-and-verification.md) | It writes "the range `3aa4837..ec28d02`, **25** commits"; the git semantics of `A..B` **do not include A**, the real number is **24** | `git rev-list --count 3aa4837..ec28d02` = 24 (it is 25 only when the base `3aa4837` is included) |
+| 2 | [01:44](../review-20261104/01-deliverables-and-verification.md) | It writes `MetaApi 109` (total **3487**); on HEAD MetaApi has grown to **132** (total **3510**) with `f2d7e8e` (device-models) | `wc -l MetaApi.java` = 132; at the time of the split `deb6aed` it was 109 |
+| 3 | [00:33](../review-20261104/00-index.md) | The re-run command `python3 scripts/device-go-live-check.py` **carries no DB env**, but `01` §7 reports the 9/2 **with** the DB; without the env it is really 8/3 (the "binding coverage rate" is skipped) | The two runs compared in §2 |
 
 ---
 
@@ -173,17 +173,17 @@ and the **experiments have no "fallback by name"** (asymmetric with the accounts
 
 **P2-1 the commit count 25 → 24 → fixed**
 - Conclusion / reason: true; the git semantics of `A..B` do not include A.
-- Remediation: [00:11](../../评审包-20261104/00-索引与评审指引.md#L11)、[00:64](../../评审包-20261104/00-索引与评审指引.md#L64)、[01:3](../../评审包-20261104/01-本轮交付清单与验证.md#L3) all changed to **24 commits**.
+- Remediation: [00:11](../review-20261104/00-index.md)、[00:64](../review-20261104/00-index.md)、[01:3](../review-20261104/01-deliverables-and-verification.md) all changed to **24 commits**.
 - Verification: `git rev-list --count 3aa4837..ec28d02` = **24**.
 
 **P2-2 MetaApi 109 / total 3487 → 132 / 3510 → fixed**
 - Conclusion / reason: true; at the time of the split `deb6aed` it was 109, and afterwards `f2d7e8e` (device-models) grew it to 132.
-- Remediation: [01:44](../../评审包-20261104/01-本轮交付清单与验证.md#L44) changed to `MetaApi 132（合计 3510 行；… 由 109 增至 132）` ("MetaApi 132 (3510 lines in total; … grew from 109 to 132)").
+- Remediation: [01:44](../review-20261104/01-deliverables-and-verification.md) changed to `MetaApi 132（合计 3510 行；… 由 109 增至 132）` ("MetaApi 132 (3510 lines in total; … grew from 109 to 132)").
 - Verification: the 8 controllers `wc -l` total **3510**.
 
 **P2-3 the go-live command yardstick is inconsistent → fixed**
 - Conclusion / reason: true; the `00` §2 command lacks the DB env, while `01` §7 reports the 9/2 with the DB.
-- Remediation: the re-run command of [00:33](../../评审包-20261104/00-索引与评审指引.md#L33) gained the DB env precondition, and both yardsticks are annotated.
+- Remediation: the re-run command of [00:33](../review-20261104/00-index.md) gained the DB env precondition, and both yardsticks are annotated.
 - Verification: without the env **PASS 8 / WARN 3**, with the env **PASS 9 / WARN 2 / FAIL 0** — both reproduced by measurement.
 
 > All three P2 items **rewrite the body directly**, they do not use "keep the original text and add an erratum" (which conforms to the review guidelines §8 "document self-consistency").

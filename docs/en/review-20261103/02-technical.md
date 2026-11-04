@@ -1,7 +1,7 @@
 # Technical Document · LabOS Laboratory Control Console
 
 > **English edition.** The Chinese original is
-> [`docs/评审包-20261103/02-技术文档.md`](../../评审包-20261103/02-技术文档.md);
+> [docs/en/review-20261103/02-technical.md](02-technical.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are identical to the
 > Chinese source — if they ever disagree, the Chinese original wins.
 

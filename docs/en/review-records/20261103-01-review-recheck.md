@@ -52,7 +52,7 @@ The following were confirmed by reading the code / measuring, item by item, to b
 | Focus #1 | A failed tolerance plan must fall back to the driver-domain scope | [DriverStepExecutor.java](../../../labos-kernel/src/main/java/com/labos/kernel/driver/DriverStepExecutor.java#L230-L255) `scopeOf` lazy loading + a sub-domain-prefix fallback; all 5 `throw`s use it | ✅ |
 | Focus #2 | The fan-out is "parallel in the interface, serial in reality" | [GraphRunner.java](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/GraphRunner.java#L223-L288) a single-threaded ready queue, so it really is **logically parallel** | ✅ |
 | Focus #6 | The back-edge cap: 10 rounds per node + 500 steps in total | [GraphRunner.java](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/GraphRunner.java#L116-L126) `maxVisits=10` (clamp 1–100); [:223](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/GraphRunner.java#L223) `maxSteps=500` | ✅ |
-| Focus #7 | The page state matches `run_command` | [QueryService.runGraphJson](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L658-L733) converts `running→pending` for a single child that is not `running` ([:688-733](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L688-L733)); the colour mapping is consistent with the table in [02 §4](../../评审包-20261103/02-技术文档.md#L174-L181) | ✅ (the only gap is H2) |
+| Focus #7 | The page state matches `run_command` | [QueryService.runGraphJson](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L658-L733) converts `running→pending` for a single child that is not `running` ([:688-733](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L688-L733)); the colour mapping is consistent with the table in [02 §4](../review-20261103/02-technical.md) | ✅ (the only gap is H2) |
 | Idempotence / unique key | `createNodeShells` is idempotent | [WorkflowService.java](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1432-L1520) reuses the rows that already exist | ✅ |
 | Unique key / cascade | `uk_run_node`, the `run_command` cascade | [20_kernel.sql:308](../../../pg_rebuild/schema/20_kernel.sql#L308) `UNIQUE(run_id,node_key,attempt)`; [:320](../../../pg_rebuild/schema/20_kernel.sql#L320) `REFERENCES run_node(id) ON DELETE CASCADE` | ✅ |
 
@@ -71,7 +71,7 @@ The following were confirmed by reading the code / measuring, item by item, to b
 ```
 
 **Attribution of the difference (down to the single place)**: after comparing the case lists of the four documents category by category, **only one place is wrong** —
-[04 §3](../../评审包-20261103/04-测试文档.md#L59) marks
+[04 §3](../review-20261103/04-testing.md) marks
 `driver.DeviceErrorChainSelfTest` as **19**, the actual run gives **14**. The other 10 categories all match
 (196 / 41 / 30 / 23 / 17 / 14 / 13 / 13 / 6, + `SidecarChainTest` 7 counted as 1):
 
@@ -83,13 +83,13 @@ The following were confirmed by reading the code / measuring, item by item, to b
 That is, **373 − 368 = 5 = 19 − 14**: a single typo cut through the whole document.
 
 **Impact (not only that the number is off)**: the document writes "expectation: 373 passed / 0 failed" in
-[04 §2](../../评审包-20261103/04-测试文档.md#L30),
-[04 §8](../../评审包-20261103/04-测试文档.md#L151),
-[00 §6](../../评审包-20261103/00-索引与评审须知.md#L146).
+[04 §2](../review-20261103/04-testing.md),
+[04 §8](../review-20261103/04-testing.md),
+[00 §6](../review-20261103/00-index.md).
 A third party executing it by the document sees 368, and **the first reaction is "5 are missing, a regression is suspected"**.
 This directly conflicts with the project's hard constraint "an inconsistent statistic in the internal documents = a blocking review finding".
 
-**Where it occurs**: [00:36](../../评审包-20261103/00-索引与评审须知.md#L36), [00:146](../../评审包-20261103/00-索引与评审须知.md#L146), [02:96](../../评审包-20261103/02-技术文档.md#L96), [04:6](../../评审包-20261103/04-测试文档.md#L6), [04:30](../../评审包-20261103/04-测试文档.md#L30), [04:51](../../评审包-20261103/04-测试文档.md#L51), [04:69](../../评审包-20261103/04-测试文档.md#L69), [04:151](../../评审包-20261103/04-测试文档.md#L151).
+**Where it occurs**: [00:36](../review-20261103/00-index.md), [00:146](../review-20261103/00-index.md), [02:96](../review-20261103/02-technical.md), [04:6](../review-20261103/04-testing.md), [04:30](../review-20261103/04-testing.md), [04:51](../review-20261103/04-testing.md), [04:69](../review-20261103/04-testing.md), [04:151](../review-20261103/04-testing.md).
 
 ---
 
@@ -101,7 +101,7 @@ This directly conflicts with the project's hard constraint "an inconsistent stat
 
 1. The condition of the [deletion in `resumeAsync`](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L547-L554) is
    `LEVEL = 0 AND status <> 'completed'` —— **only the business nodes are deleted**.
-2. But according to [03 D8](../../评审包-20261103/03-设计文档.md#L158-L172), `run_command` hangs on the **`level=1` step nodes**;
+2. But according to [03 D8](../review-20261103/03-design.md), `run_command` hangs on the **`level=1` step nodes**;
    and the `run_node.parent_node_id` of [96_schema_fix.sql:103](../../../pg_rebuild/schema/96_schema_fix.sql#L103) is only a bare `bigint`, **with no foreign key**.
 3. So: deleting a `level=0` row **does not cascade** to the `level=1` rows, and neither to any `run_command`
    (their FK points at the id of `level=1`, see [20_kernel.sql:320](../../../pg_rebuild/schema/20_kernel.sql#L320)).
@@ -117,7 +117,7 @@ This directly conflicts with the project's hard constraint "an inconsistent stat
 **Why the existing acceptance test cannot find it**: the [resume assertion of `verify-device-chain.sh`](../../../scripts/verify-device-chain.sh#L280-L286)
 checks only two things — three `completed` at `level=0`, and exactly 2 `收到 Seal` entries in the simulator log.
 **It looks at "was the command sent" and "did the business node complete", and never at whether `run_command`/`level=1` was persisted**,
-so the hole is covered by a green light. It lands right on the general principle of "traceability" ([03 §0](../../评审包-20261103/03-设计文档.md#L10-L20)).
+so the hole is covered by a green light. It lands right on the general principle of "traceability" ([03 §0](../review-20261103/03-design.md)).
 
 **Boundary of the evidence**: this item is **derived statically from the schema + the code**, and **was not run against a live database**.
 **The cheapest way to re-check it**: run a three-step resume once and then execute
@@ -139,7 +139,7 @@ If after the resume the number of `level=1` rows has not grown, or the number of
    settle the whole run as `paused / pause_kind='waiting_human'` (which is right in itself).
 3. The two stack up: in a run that "stopped to wait for a human because of a skip", **the nodes that have not executed yet are changed from `running` straight to `bypassed`**
    ([:1522](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1522) `SET status='bypassed'`).
-4. And [01 §4.2](../../评审包-20261103/01-功能文档.md#L93-L101) defines it itself:
+4. And [01 §4.2](../review-20261103/01-functional.md) defines it itself:
    a light grey dotted line (`bypassed`) = the branch was not selected, a grey dashed line (`pending`) = it has not come up yet.
    → The page draws "it has not come up yet, it is waiting for a human" as "this branch does not have to be taken", **the display does not match the truth** (exactly the counter-example of focus #7).
 
@@ -167,17 +167,17 @@ Whether the option offered to operations in the UI should be renamed, or should 
 
 | # | Location | Problem |
 |---|---|---|
-| 1 | [02:94](../../评审包-20261103/02-技术文档.md#L94) | It still writes `.NET 8`, but [02:47](../../评审包-20261103/02-技术文档.md#L47) and [00:47](../../评审包-20261103/00-索引与评审须知.md#L47) in the same documents both write `.NET 10`, and the `csproj` really is `net10.0`. **It contradicts itself inside one document**, and it does not match the author's "already changed" claim |
-| 2 | [00:127](../../评审包-20261103/00-索引与评审须知.md#L127) | The risk list says "this package is known to contain a password", but [00:56-57](../../评审包-20261103/00-索引与评审须知.md#L56-L57) explicitly writes placeholders and notes that "this repository **does not store** any database password", and [04:33](../../评审包-20261103/04-测试文档.md#L33) is also `...`. **Two sentences of the same document contradict each other** (either drop the risk entry, or the body really does contain a password) |
-| 3 | [00:4](../../评审包-20261103/00-索引与评审须知.md#L4) | It writes `main @ 4570113`, which does not match the `30cfc51` of the opening prompt (`4570113` is the parent commit of `30cfc51`). The two should be unified |
-| 4 | [04:20](../../评审包-20261103/04-测试文档.md#L20) | It claims "any machine can `git clone` and verify immediately". **The measurement does not hold**: [test-all.sh:30](../../../scripts/test-all.sh#L30) compiles only `src/test`, not `src/main`, so on a clean checkout (without `out/`) `javac` reports "cannot find symbol" and exits. [00 §3.3①](../../评审包-20261103/00-索引与评审须知.md#L47) has to be run first. Also: 7 self-test classes sit in `src/main/java` (so they end up in the artifact) — it is worth noting that, or moving them to `src/test` |
-| 5 | [02:88](../../评审包-20261103/02-技术文档.md#L88) | It marks `react-router 6.27` / `react-query 5.59` as "verified versions", but those are only the **lower bounds** of `package.json`; `package-lock.json` actually installs `6.30.6` / `5.105.0` |
+| 1 | [02:94](../review-20261103/02-technical.md) | It still writes `.NET 8`, but [02:47](../review-20261103/02-technical.md) and [00:47](../review-20261103/00-index.md) in the same documents both write `.NET 10`, and the `csproj` really is `net10.0`. **It contradicts itself inside one document**, and it does not match the author's "already changed" claim |
+| 2 | [00:127](../review-20261103/00-index.md) | The risk list says "this package is known to contain a password", but [00:56-57](../review-20261103/00-index.md) explicitly writes placeholders and notes that "this repository **does not store** any database password", and [04:33](../review-20261103/04-testing.md) is also `...`. **Two sentences of the same document contradict each other** (either drop the risk entry, or the body really does contain a password) |
+| 3 | [00:4](../review-20261103/00-index.md) | It writes `main @ 4570113`, which does not match the `30cfc51` of the opening prompt (`4570113` is the parent commit of `30cfc51`). The two should be unified |
+| 4 | [04:20](../review-20261103/04-testing.md) | It claims "any machine can `git clone` and verify immediately". **The measurement does not hold**: [test-all.sh:30](../../../scripts/test-all.sh#L30) compiles only `src/test`, not `src/main`, so on a clean checkout (without `out/`) `javac` reports "cannot find symbol" and exits. [00 §3.3①](../review-20261103/00-index.md) has to be run first. Also: 7 self-test classes sit in `src/main/java` (so they end up in the artifact) — it is worth noting that, or moving them to `src/test` |
+| 5 | [02:88](../review-20261103/02-technical.md) | It marks `react-router 6.27` / `react-query 5.59` as "verified versions", but those are only the **lower bounds** of `package.json`; `package-lock.json` actually installs `6.30.6` / `5.105.0` |
 
 ---
 
 ## 7. The shortest action list for the fixing party (by priority)
 
-1. **[B1]** Change the `19` of [04:59](../../评审包-20261103/04-测试文档.md#L59) to the measured `14`; change the 8 `373` in the whole document to `368`. **Rewrite the body directly** — "keep the original text and add an erratum" is not allowed.
+1. **[B1]** Change the `19` of [04:59](../review-20261103/04-testing.md) to the measured `14`; change the 8 `373` in the whole document to `368`. **Rewrite the body directly** — "keep the original text and add an erratum" is not allowed.
 2. **[H1]** Pick one of the two and do **run-level** verification: (a) make the resume deletion **cover the `level=1` step rows as well** (using `run_id + level>=0 + status<>'completed'`, or add a cascading foreign key to `parent_node_id`); (b) make the `seq` of [PersistingStepSink](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1645-L1652) continue from the `max` in the database. After the change you **must** add **a `run_command` row-count assertion** to the resume case of `verify-device-chain.sh`, otherwise the hole is still there.
 3. **[H2]** Add `SKIPPED` to the exclusion condition of [markBypassedNodes](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1511-L1517); or unify the success criterion of `settleRun` into one function.
 4. **[Document P2]** Fix all 5 items of §6, all by **rewriting the body directly**.
@@ -322,7 +322,7 @@ It is recommended that the next round be run by a reviewer from a **non-DeepSeek
 
 ### 8.8 What this round did **not** handle (explicitly out of the remediation scope, already in the ROADMAP)
 
-> The items below have been merged into the repository-root [`ROADMAP.md`](../../../ROADMAP.md): M6 (one row per loop iteration, the `parent` foreign key),
+> The items below have been merged into the repository-root [`ROADMAP.md`](../roadmap.md): M6 (one row per loop iteration, the `parent` foreign key),
 > M7 (expression arithmetic, adding/deleting error codes), M10 (the real device). **The ROADMAP is the only authoritative source for the plan**, this table is only a review record.
 
 | Item | Why it is not touched | Plan |

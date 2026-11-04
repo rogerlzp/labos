@@ -42,11 +42,11 @@ In other words: **the problem identification is right, the migration direction i
 ### B1. The judgement of §4.4 "DAG concurrency + `DeviceLock` is already safe enough" does not hold
 
 **Location:**
-- the draft [§4.4](../../设计-实验编排统一-v0.1-草稿.md#L186-L192)
+- the draft [§4.4](../design/unified-experiment-orchestration-draft.md)
 - the existing device-lock implementation [DeviceLock.java:L58-L103](../../../labos-kernel/src/main/java/com/labos/kernel/driver/DeviceLock.java#L58-L103)
 - taking / releasing the device lock at execution time [WorkflowService.java:L1847-L1885](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1847-L1885)
 - the existing position dual lock only covers a two-position transport [PositionLock.java:L205-L215](../../../labos-kernel/src/main/java/com/labos/kernel/driver/PositionLock.java#L205-L215)
-- the project's existing deadlock design conclusion [资源模型与死锁避免-设计.md:L273-L307](../../资源模型与死锁避免-设计.md#L273-L307)
+- the project's existing deadlock design conclusion [docs/en/resource-model-and-deadlock-avoidance.md](../resource-model-and-deadlock-avoidance.md)
 
 **The problem:**
 
@@ -92,8 +92,8 @@ Change the wording of §4.4 / §8.4 to:
 ### B2. The batch model of §5 / §6 cannot carry the history and the retries of "only re-run that batch on failure"
 
 **Location:**
-- the draft [§5.2](../../设计-实验编排统一-v0.1-草稿.md#L212-L216)
-- the draft [§6 batch table draft](../../设计-实验编排统一-v0.1-草稿.md#L235-L244)
+- the draft [§5.2](../design/unified-experiment-orchestration-draft.md)
+- the draft [§6 batch table draft](../design/unified-experiment-orchestration-draft.md)
 
 **The problem:**
 
@@ -134,8 +134,8 @@ Of these two, I recommend **#1** more strongly, because it naturally supports th
 ### H1. S1 cannot be only "compile the canvas into the database", it must simultaneously converge the save entry point; otherwise the "dual paths" remain
 
 **Location:**
-- the draft [§2.2 rules 1-5](../../设计-实验编排统一-v0.1-草稿.md#L78-L90)
-- the draft [§7 S1](../../设计-实验编排统一-v0.1-草稿.md#L252-L259)
+- the draft [§2.2 rules 1-5](../design/unified-experiment-orchestration-draft.md)
+- the draft [§7 S1](../design/unified-experiment-orchestration-draft.md)
 - the existing `experiment_process` saving [QueryService.java:L1393-L1425](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L1393-L1425)
 - the existing `experiment_graph` saving [QueryService.java:L2156-L2172](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L2156-L2172)
 
@@ -249,15 +249,15 @@ This round converged the draft and `ROADMAP.md` according to the review comments
 
 | Item | Original problem | Current status | Evidence |
 |---|---|---|---|
-| `B1` | Building the safety of real DAG concurrency on `DeviceLock` | ✅ **Closed** | The draft has been changed to "`DeviceLock` only guarantees single-device mutual exclusion; if real concurrency is done, the three-layer resource + the wait graph must be brought in at the same time" ([draft:L186-L201](../../设计-实验编排统一-v0.1-草稿.md#L186-L201)); `ROADMAP` has been converged accordingly to "only a partial order is promised today" ([ROADMAP.md:L299-L305](../../../ROADMAP.md#L299-L305)) |
-| `B2` | The batch model cannot hold the history of "only re-run that batch on failure" | ✅ **Closed** | The draft has been changed to the two-layer model `experiment_batch + experiment_batch_run`, and it makes explicit that "a re-run after a failure of the same batch must keep the history" ([draft:L221-L267](../../设计-实验编排统一-v0.1-草稿.md#L221-L267)); `ROADMAP` has been written in as well ([ROADMAP.md:L297-L305](../../../ROADMAP.md#L297-L305)) |
-| `H1` | If S1 does not have a single entry point / a single transaction, the dual paths remain | ✅ **Closed** | The draft has converged S1 into "a single save entry point + a single transaction + a rollback case" ([draft:L276-L297](../../设计-实验编排统一-v0.1-草稿.md#L276-L297)); `ROADMAP` has added the "second-review gate", and it does not enter the timeline before that is met ([ROADMAP.md:L313-L325](../../../ROADMAP.md#L313-L325)) |
+| `B1` | Building the safety of real DAG concurrency on `DeviceLock` | ✅ **Closed** | The draft has been changed to "`DeviceLock` only guarantees single-device mutual exclusion; if real concurrency is done, the three-layer resource + the wait graph must be brought in at the same time" ([draft:L186-L201](../design/unified-experiment-orchestration-draft.md)); `ROADMAP` has been converged accordingly to "only a partial order is promised today" ([ROADMAP.md:L299-L305](../roadmap.md)) |
+| `B2` | The batch model cannot hold the history of "only re-run that batch on failure" | ✅ **Closed** | The draft has been changed to the two-layer model `experiment_batch + experiment_batch_run`, and it makes explicit that "a re-run after a failure of the same batch must keep the history" ([draft:L221-L267](../design/unified-experiment-orchestration-draft.md)); `ROADMAP` has been written in as well ([ROADMAP.md:L297-L305](../roadmap.md)) |
+| `H1` | If S1 does not have a single entry point / a single transaction, the dual paths remain | ✅ **Closed** | The draft has converged S1 into "a single save entry point + a single transaction + a rollback case" ([draft:L276-L297](../design/unified-experiment-orchestration-draft.md)); `ROADMAP` has added the "second-review gate", and it does not enter the timeline before that is met ([ROADMAP.md:L313-L325](../roadmap.md)) |
 
 ### The residual problems (not blocking)
 
-1. The title and the status line of the draft still say "awaiting review" ([draft:L1-L3](../../设计-实验编排统一-v0.1-草稿.md#L1-L3)), while the content has actually entered the "converged after the first review, awaiting the second review" state.
+1. The title and the status line of the draft still say "awaiting review" ([draft:L1-L3](../design/unified-experiment-orchestration-draft.md)), while the content has actually entered the "converged after the first review, awaiting the second review" state.
    This is a **copy label that has not kept up**, it does not affect the design judgement.
-2. The 4th line of the summary in §0 of the draft still says "adds `experiment_batch`" ([draft:L20-L23](../../设计-实验编排统一-v0.1-草稿.md#L20-L23)), and does not explicitly mention `experiment_batch_run`.
+2. The 4th line of the summary in §0 of the draft still says "adds `experiment_batch`" ([draft:L20-L23](../design/unified-experiment-orchestration-draft.md)), and does not explicitly mention `experiment_batch_run`.
    This is **the summary not being fully in sync with the body**, it does not affect the scheduling judgement, but it would be good to align it the next time the draft is revised.
 
 ### The re-check ruling

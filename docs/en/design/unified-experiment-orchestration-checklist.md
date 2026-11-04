@@ -4,7 +4,7 @@
 > a line-for-line translation. Numbers, commit hashes and file paths are identical to
 > the Chinese source — if they ever disagree, the Chinese original wins.
 
-> Companion design: [`docs/设计-实验编排统一-v0.1-草稿.md`](../../设计-实验编排统一-v0.1-草稿.md)
+> Companion design: [docs/en/design/unified-experiment-orchestration-draft.md](unified-experiment-orchestration-draft.md)
 >  
 > Purpose: to break the `S1/S2/S3` of `M9.5` down from a "direction" into executable tasks, so that scheduling, division of labour and a second review become possible.
 >  
