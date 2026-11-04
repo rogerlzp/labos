@@ -1,7 +1,7 @@
 # 证据：run_node DDL 实况（2026-11-03）
 
 > 用途：为 `BUG-20261103-01` / `-08` 的关闭留一份**有库环境**的输出存档。
-> 环境：PostgreSQL `PostgreSQL 17.10 (Ubuntu 17.10-1.pgdg24.04+1) on x86_64-pc-l`，库 `labos_demo@192.0.2.10`。
+> 环境：PostgreSQL `PostgreSQL 17.10 (Ubuntu 17.10-1.pgdg24.04+1) on x86_64-pc-l`，库 `labdb@192.0.2.10`。
 > 说明：这是**执行方本机可访问的测试库**，不是第三方独立环境；权威签收仍建议由持库复核方再跑一次。
 
 ## 1. 用建库产物从零装出来的表（schema_check）

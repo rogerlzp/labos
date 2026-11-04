@@ -173,7 +173,7 @@ public final class DeviceModels {
      * 而是"型号在清单里，缺 X"。补的时候只需在 {@link #TABLE} 加一条。
      */
     private static final List<Planned> PLANNED = List.of(
-            // —— 下面两条是**从生产库里捞出来的真实设备**（labos_demo 库 device 表），
+            // —— 下面两条是**从生产库里捞出来的真实设备**（labdb 库 device 表），
             //    它们现在就在产线上跑，但我们还没有它们的手册。
             //    注意：不要把它们硬套到 aspin-2k / s100 上——错误码会翻译成另一台机器的含义。
             //    dbModelAlias 填库里的 device.model 写法，用来统计"产线上有几台在跑"。

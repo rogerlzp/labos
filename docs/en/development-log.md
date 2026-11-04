@@ -1530,8 +1530,8 @@ The package names, the Redis prefix, the frontend storage, the environment varia
 | The project directory | The directories with the old prefix | `labos-kernel` / `labos-gateway` |
 | The Redis prefix | The old prefix | `labos:dev:state:` and the like |
 | The frontend storage | The old prefix | `labos_token` / `labos_canvas_exp` |
-| The environment variables | `LABOS_*` | `LABOS_*` |
-| The default database name | The old database name | `labos` (on site it is overridden with `LABOS_DB_NAME`) |
+| Environment variable prefix | legacy prefix | `LABOS_*` |
+| The default database name | The old database name | `labdb` (on site it is overridden with `LABOS_DB_NAME`) |
 
 **The trap that was stepped on**: `pkill -f` does not support the `\|` syntax of grep, and neither of the two processes was killed,
 so the new service reported `Address already in use`. It was changed to `pkill -f ApiServer` + `lsof -i :port` to confirm.
@@ -2171,7 +2171,7 @@ paste the output of `DeviceErrorSql --emit-sql` into `95_seed_data.sql` → run 
 
 **This round finished the three things of the previous round that were "only a definition, nothing landed".**
 
-#### 1. The seed went into the real database (`labos_demo` @ 192.0.2.10)
+#### 1. The seed went into the real database (`labdb` @ 192.0.2.10)
 
 The previous round wrote the INSERT of `error_code`/`recovery_policy` into `95_seed_data.sql`, but it **was never executed**.
 This round the current state online was checked first, and three things turned up that had to be dealt with first:

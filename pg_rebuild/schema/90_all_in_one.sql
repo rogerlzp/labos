@@ -3,7 +3,7 @@
 -- 目标版本: PostgreSQL 17（兼容 15+）
 --
 -- 执行:
---   psql -h <HOST> -U <USER> -d labos -v ON_ERROR_STOP=1 -f 90_all_in_one.sql
+--   psql -h <HOST> -U <USER> -d labdb -v ON_ERROR_STOP=1 -f 90_all_in_one.sql
 --
 -- 结构: 76 张表 + 5 个视图（纯 DDL，不含任何数据）
 --   10 基础与平台  : 租户/用户/角色/权限/字典/配置          (8 表)

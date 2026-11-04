@@ -15,7 +15,7 @@ set -euo pipefail
 
 HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-5432}
-DB=${DB:-labos}
+DB=${DB:-labdb}
 SU_USER=${SU_USER:-postgres}
 SU_PASS=${SU_PASS:-}
 APP_USER=${APP_USER:-labos}

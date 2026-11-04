@@ -140,7 +140,7 @@ public final class DbConfig {
     /**
      * 从环境变量读取配置。
      *
-     * <p><b>默认值只放"本地开发"级别的信息</b>：地址 127.0.0.1、库名 labos、
+     * <p><b>默认值只放"本地开发"级别的信息</b>：地址 127.0.0.1、库名 labdb、
      * 用户名 labos、密码空。
      * 内网地址、真实账号、真实密码一律不写进代码——仓库要能公开，
      * 而部署环境各不相同，写死的值既泄密又不通用。
@@ -150,7 +150,7 @@ public final class DbConfig {
     public static DbConfig fromEnv() {
         String host = env("LABOS_DB_HOST", "127.0.0.1");
         int port = Integer.parseInt(env("LABOS_DB_PORT", "5432"));
-        String db = env("LABOS_DB_NAME", "labos");
+        String db = env("LABOS_DB_NAME", "labdb");
         String user = env("LABOS_DB_USER", "labos");
         String pass = env("LABOS_DB_PASS", "");
         return new DbConfig(host, port, db, user, pass);

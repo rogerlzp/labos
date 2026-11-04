@@ -42,7 +42,7 @@ types), `docs/设备/现场确认清单.md` (the items the manual does not write
 > `PLANNED` has **6 entries** in total; of those, **360R (1 unit on the production line) / PlateLoc (2 units)** are the M10 blockers that
 > are running on the line but have no manual.
 
-### 1.3 The current state in the database (labos_demo)
+### 1.3 The current state in the database (labdb)
 
 - The device table holds 76 model records; the production database has real device instances with model=360R / model=PlateLoc;
 - Currently **not a single device has a model bound** (deliberate: without a manual, nothing is bound at random, to avoid

@@ -8,7 +8,7 @@
 > Purpose: keep an archived copy of the output from an environment **with a live database**, to
 > support the closure of `BUG-20261103-01` / `-08`.
 > Environment: PostgreSQL `PostgreSQL 17.10 (Ubuntu 17.10-1.pgdg24.04+1) on x86_64-pc-l`,
-> database `labos_demo@192.0.2.10`.
+> database `labdb@192.0.2.10`.
 > Note: this is the **test database reachable from the implementer's own machine**, not an
 > independent third-party environment; the authoritative sign-off should still be done by a
 > reviewer with database access running it once more.

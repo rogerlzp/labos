@@ -16,7 +16,7 @@
 |---|---|
 | Repository | `github.com/rogerlzp/labos` (main) |
 | Range of the round | `3aa4837..ec28d02`, **24 commits** (M9 closure / S3.2 batched asynchronous execution / P2 status vocabulary / ApiServer split / M10 groundwork / RBAC permission closure) |
-| Runtime environment | macOS, Java 17 (no Maven, compiled with `javac` in full), PostgreSQL `"192.0.2.10:5432/labos_demo"` (tenant 1), API `127.0.0.1:18080`, frontend dev `localhost:5173` |
+| Runtime environment | macOS, Java 17 (no Maven, compiled with `javac` in full), PostgreSQL `"192.0.2.10:5432/labdb"` (tenant 1), API `127.0.0.1:18080`, frontend dev `localhost:5173` |
 | Data snapshot | experiments 678 / experiment_run 39 / sys_user 3 / running=queued=0 |
 | Test baseline | Full run with database **907/0**; pure logic **536/0**; frontend e2e **24/0** |
 
@@ -29,7 +29,7 @@ cd <repo>
 # 2) Full run with database (needs a reachable DB)
 #    Note: the password is not written down here — use your own environment
 #    variables (LABOS_DB_HOST/PORT/NAME/USER/PASS)
-LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labos_demo LABOS_DB_USER=labos \
+LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labdb LABOS_DB_USER=labos \
 LABOS_DB_PASS='<DB_PASSWORD>' ./scripts/test-all.sh
 # 3) Gate (pure logic + tsc + schema-artifact consistency + 24 e2e assertions)
 ./scripts/ci-gate.sh --e2e
@@ -40,7 +40,7 @@ python3 scripts/verify-exp-control.py          # 22: experiment-level pause / st
 python3 scripts/verify-scheduler-acceptance.py # 8: M9 scheduling acceptance (mutual exclusion / ordering / concurrency / Gantt page)
 python3 scripts/verify-s3-2-residuals.py       # 18: async vars / automatic re-queue / restart rehydrate / UI
 # Pre-go-live check on site: the "binding coverage" item needs the DB env (without it: PASS 8 / WARN 3)
-LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labos_demo LABOS_DB_USER=labos \
+LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labdb LABOS_DB_USER=labos \
 LABOS_DB_PASS='<DB_PASSWORD>' python3 scripts/device-go-live-check.py   # PASS 9 / WARN 2 / FAIL 0
 ~~~
 

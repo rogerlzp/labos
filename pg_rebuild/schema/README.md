@@ -35,10 +35,10 @@ GRANT ALL PRIVILEGES ON DATABASE labos TO labos;
 
 ```bash
 # 全量建表（幂等，可重复执行）
-psql -h 192.0.2.1 -U XXX -d labos -v ON_ERROR_STOP=1 -f 90_all_in_one.sql
+psql -h 192.0.2.1 -U XXX -d labdb -v ON_ERROR_STOP=1 -f 90_all_in_one.sql
 
 # 自检（对象计数 + 约束检查 + 资源冲突功能验证）
-psql -h 192.0.2.1 -U XXX -d labos -f 99_verify.sql
+psql -h 192.0.2.1 -U XXX -d labdb -f 99_verify.sql
 ```
 
 分模块执行（可选，顺序不能变）：
@@ -53,14 +53,14 @@ psql ... -f 40_ops.sql
 ## 四、连接串
 
 ```
-postgresql://labos:CHANGE_ME@192.0.2.1:5432/labos
+postgresql://labos:CHANGE_ME@192.0.2.1:5432/labdb
 ```
 
 Java (Spring Boot) 示例：
 ```yaml
 spring:
   datasource:
-    url: jdbc:postgresql://192.0.2.1:5432/labos
+    url: jdbc:postgresql://192.0.2.1:5432/labdb
     username: labos
     password: CHANGE_ME
     driver-class-name: org.postgresql.Driver
@@ -77,7 +77,7 @@ spring:
 
 ## 六、执行状态：✅ 已在真实库验证通过
 
-**2026-10-29 已在 `192.0.2.1:5432/labos`（PostgreSQL 17.10 Ubuntu pgdg）实际执行成功**：
+**2026-10-29 已在 `192.0.2.1:5432/labdb`（PostgreSQL 17.10 Ubuntu pgdg）实际执行成功**：
 
 | 检查项 | 结果 |
 |---|---|
@@ -103,7 +103,7 @@ spring:
 ## 七、验证方法
 
 ```bash
-psql -h 192.0.2.1 -U XXX -d labos -f 99_verify.sql
+psql -h 192.0.2.1 -U XXX -d labdb -f 99_verify.sql
 ```
 
 期望输出：

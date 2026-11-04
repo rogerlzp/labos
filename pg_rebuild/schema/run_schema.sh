@@ -10,7 +10,7 @@ set -euo pipefail
 
 HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-5432}
-DB=${DB:-labos}
+DB=${DB:-labdb}
 USER=${USER_DB:-labos}
 PASS=${PASS_DB:-}   # 必须通过环境变量传入，不设默认值
 

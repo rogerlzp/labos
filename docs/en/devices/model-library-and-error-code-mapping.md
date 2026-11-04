@@ -323,7 +323,7 @@ whether the control-console workflow really returns to the origin.
 
 ## 8. State of the real database (checked 2026-11-02)
 
-**Database**: `192.0.2.10:5432/labos_demo` (user `labos`) — this is exactly what the local ApiServer connects to.
+**Database**: `192.0.2.10:5432/labdb` (user `labos`) — this is exactly what the local ApiServer connects to.
 
 ### 8.1 What has already been loaded
 
@@ -337,14 +337,14 @@ How it is executed (idempotent, can be re-run):
 
 ```bash
 cd pg_rebuild
-psql -h <DB> -U labos -d labos_demo -v ON_ERROR_STOP=1 --single-transaction -f schema/95_seed_data.sql
+psql -h <DB> -U labos -d labdb -v ON_ERROR_STOP=1 --single-transaction -f schema/95_seed_data.sql
 ```
 
 Verification (the first 4 items run without a database; the last 5 only run when `LABOS_DB_*` is
 set):
 
 ```bash
-LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labos_demo LABOS_DB_USER=labos LABOS_DB_PASS=*** \
+LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labdb LABOS_DB_USER=labos LABOS_DB_PASS=*** \
   java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.driver.DeviceErrorChainSelfTest
 # → the database shows 无纸 → hand over to an operator = MANUAL ...
 ```
@@ -402,7 +402,7 @@ sides are needed before a device counts as "added".
 
 ```bash
 cd labos-kernel
-export LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labos_demo LABOS_DB_USER=labos LABOS_DB_PASS=***
+export LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labdb LABOS_DB_USER=labos LABOS_DB_PASS=***
 
 # Already in the model library (recommended): name / vendor / type / capability / model binding all automatic
 java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.device.DeviceRegistrar \
@@ -480,7 +480,7 @@ if any one of them is wired wrongly the symptom is always "the device shows up i
 but does not respond".
 
 ```bash
-export LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labos_demo LABOS_DB_USER=labos LABOS_DB_PASS=***
+export LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labdb LABOS_DB_USER=labos LABOS_DB_PASS=***
 ./scripts/verify-device-chain.sh
 ```
 

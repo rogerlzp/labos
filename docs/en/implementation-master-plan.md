@@ -275,8 +275,8 @@ and not scheduling optimisation.
 
 ```bash
 # 1) Create the database (needs the XXX role and the labos database)
-psql -h 192.0.2.1 -U XXX -d labos -f pg_rebuild/schema/90_all_in_one.sql
-psql -h 192.0.2.1 -U XXX -d labos -f pg_rebuild/schema/99_verify.sql
+psql -h 192.0.2.1 -U XXX -d labdb -f pg_rebuild/schema/90_all_in_one.sql
+psql -h 192.0.2.1 -U XXX -d labdb -f pg_rebuild/schema/99_verify.sql
 
 # 2) Migrate the data (in this order)
 cd pg_rebuild/etl
@@ -310,7 +310,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.api.ApiServer 18080
 # Open http://localhost:18080/
 ```
 
-The default connection is `192.0.2.1:5432/labos`, the user is `XXX` / `XXX`,
+The default connection is `192.0.2.1:5432/labdb`, the user is `XXX` / `XXX`,
 and it can be overridden with `LABOS_DB_HOST` / `LABOS_DB_PORT` / `LABOS_DB_NAME` / `LABOS_DB_USER` /
 `LABOS_DB_PASS`.
 

@@ -13,7 +13,7 @@
 |---|---|
 | The laboratory network is reachable | `ping <驱动服务IP>` |
 | The driver service is running | `nc -z <IP> 8501` or `telnet <IP> 8501` |
-| The database is reachable | `psql -h <DB_IP> -U <用户> -d labos -c "select 1"` |
+| The database is reachable | `psql -h <DB_IP> -U <用户> -d labdb -c "select 1"` |
 | The clock on the control console machine is accurate | `date` (an inaccurate clock causes wrong timeout decisions) |
 | There is a rollback plan | The old system is still running and the data is backed up |
 
@@ -52,7 +52,7 @@ cd /opt/labos/labos-kernel
 javac -encoding UTF-8 -d out $(find src -name '*.java')
 
 LABOS_DB_HOST=<DB_IP> \
-LABOS_DB_NAME=labos \
+LABOS_DB_NAME=labdb \
 LABOS_DB_USER=<用户> \
 LABOS_DB_PASS=<密码> \
 nohup java -Dfile.encoding=UTF-8 \

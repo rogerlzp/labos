@@ -187,9 +187,9 @@ PUT /api/settings/heartbeat     {"intervalMs":5000,"offlineMs":20000} → 库里
 
 ```
 ./scripts/ci-gate.sh --e2e
-  1. 纯逻辑单测   通过 378 / 0（阈值 378，只许涨不许跌）
+  1. 纯逻辑单测   通过 536 / 0（阈值 536，只许涨不许跌）
   2. 前端类型     tsc 0 错误
-  4. 前端 e2e     通过 14 / 0（5 条主链路）
+  4. 前端 e2e     通过 24 / 0（5 条主链路）
   门禁通过
 
 ./scripts/soak-test.sh --count 10

@@ -78,7 +78,7 @@
 **根因**：M6（`6fb38d3`）改了分片与 `merge.sh`，但**未重跑 `merge.sh`** 再生合并产物。
 
 **影响**：用新库启动后——
-1. [QueryService.java](file:///path/to/labos/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java) 中约 22 处引用 `run_node.loop_index` 的查询（运行列表/详情/流程图/时间线）直接 SQL 报错（列不存在）；
+1. `labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java` 中约 22 处引用 `run_node.loop_index` 的查询（运行列表/详情/流程图/时间线）直接 SQL 报错（列不存在）；
 2. `parent_node_id` 无外键 → 步骤行级联删除的结构前提缺失（H1 类孤儿行风险重现）；
 3. `uk_run_node` 回到 3 列 → 循环场景下同一节点跨圈插入**撞唯一键**（M6 被抵消）。
 
@@ -148,9 +148,9 @@
 
 ### BUG-20261103-10 处置（执行方 · 2026-11-03）
 
-**现象**：[ExperimentExecutor.java](file:///path/to/labos/labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentExecutor.java) 的 `markRunning` 与 `syncExperimentStatus` **两处**都把 `experiment_run.id` 写进 `experiment.run_id`。
+**现象**：`labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentExecutor.java` 的 `markRunning` 与 `syncExperimentStatus` **两处**都把 `experiment_run.id` 写进 `experiment.run_id`。
 
-**证据（连库实测 `192.0.2.10:5432/labos_demo`）**：
+**证据（连库实测 `192.0.2.10:5432/labdb`）**：
 
 | 项 | 值 |
 |---|---|

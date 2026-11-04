@@ -50,6 +50,19 @@ ALLOW_CTX = re.compile(
 # 反引号包裹的内容一律视为标识符 / 路径 / 程序原文输出
 BACKTICK = re.compile(r"`[^`]*`")
 
+# 引号包裹的内容是**被引用的原文**（后端返回的字面量 / 命令输出 / 界面文案），
+# 译文中刻意保留，不算"翻译残留"。
+QUOTED = re.compile(r"「[^」]*」|『[^』]*』|“[^”]*”|\"[^\"]*\"|'[^']*[一-鿿][^']*'")
+# 章节号 / 附录号（§十二、§三-§六、附A、附B）里的中文数字不是未翻译正文。
+SECTION_REF = re.compile(r"§[一二三四五六七八九十百零〇0-9]+(?:[-–~][一二三四五六七八九十百零〇0-9]+)*")
+ANNEX_REF = re.compile(r"附\s*[A-Za-z甲乙丙丁戊]")
+# 少数无引号包裹的"中文残留"其实是后端 / SQL 原文，逐条登记；
+# 按（文件, 片段）匹配而非行号，避免文档增删行后失效。
+ALLOW_RESIDUAL = {
+    ("docs/en/acceptance/m3-start-admission.md", "资源不足"),
+    ("docs/en/load-test-report.md", "总秒"),
+}
+
 
 def read(p: Path) -> str:
     return io.open(p, encoding="utf-8").read()
@@ -236,11 +249,19 @@ def main() -> int:
             continue
         for i, line in cjk_hits(ROOT / en_rel):
             cjk_total += 1
-            bare = BACKTICK.sub("", line)   # 去掉反引号内的标识符/路径/原文输出
-            # 反引号里出现的中文是标识符，不算残留；脱掉反引号后还剩中文才算
-            if re.search(r"[一-鿿]", bare) and not ALLOW_CTX.search(bare):
-                unclear += 1
-                warns.append(f"{en_rel}:{i} 中文残留无法自动归类：{line[:90]}")
+            bare = BACKTICK.sub("", line)     # 去掉反引号内的标识符 / 路径 / 原文输出
+            bare = QUOTED.sub("", bare)       # 去掉引号内被引用的原文
+            bare = SECTION_REF.sub("", bare)  # 去掉 §十二 / §三-§六 这类章节号
+            bare = ANNEX_REF.sub("", bare)    # 去掉 附A / 附B 这类附录号
+            # 反引号 / 引号里的中文是标识符或引用原文，不算残留；脱掉后还剩中文才算
+            if not re.search(r"[一-鿿]", bare):
+                continue
+            if ALLOW_CTX.search(bare):
+                continue
+            if any(en_rel == f and frag in line for f, frag in ALLOW_RESIDUAL):
+                continue
+            unclear += 1
+            warns.append(f"{en_rel}:{i} 中文残留无法自动归类：{line[:90]}")
 
     # ---------------------------------------------------------------- 收割
     # 把"英文文件已存在且结构核对全过"的条目在登记表里标记为 ✅。

@@ -49,7 +49,7 @@ Plate tracking (which position holds which plate + atomic reservation)
 ### Requirements
 
 - **JDK 17** (no framework dependency — JDK standard library + PostgreSQL JDBC only)
-- **PostgreSQL** (default database `labos`, override with `LABOS_DB_NAME`)
+- **PostgreSQL** (default database `labdb`, override with `LABOS_DB_NAME`)
 - **Node 18+** (frontend)
 - **Redis** (optional, only needed in gateway mode)
 
@@ -88,7 +88,7 @@ java -cp out com.labos.gateway.GatewayMain
 |---|---|---|
 | `LABOS_DB_HOST` | 127.0.0.1 | |
 | `LABOS_DB_PORT` | 5432 | |
-| `LABOS_DB_NAME` | labos | **Must be set on site** |
+| `LABOS_DB_NAME` | labdb | **Must be set on site** |
 | `LABOS_DB_USER` | postgres | |
 | `LABOS_DB_PASS` | empty | |
 | `LABOS_AUTH` | 1 | Set to 0 to disable authentication (integration only) |

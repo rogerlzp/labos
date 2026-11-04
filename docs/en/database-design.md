@@ -12,7 +12,7 @@
 
 ## 1. Overview
 
-The database name defaults to `labos` (environment variable `LABOS_DB_NAME`); there are
+The database name defaults to `labdb` (environment variable `LABOS_DB_NAME`); there are
 **98 tables** in total, grouped into seven groups by responsibility:
 
 | Group | Tables | Explanation |

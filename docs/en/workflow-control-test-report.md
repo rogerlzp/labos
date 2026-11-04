@@ -96,7 +96,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 
 ## 4. The end-to-end tests (the simulator + the real execution chain)
 
-Environment: API `18080`, simulator `19601` (S100), sidecar `18501`, real database `labos_demo`
+Environment: API `18080`, simulator `19601` (S100), sidecar `18501`, real database `labdb`
 
 ### 4.1 The XOR branch: the condition is true
 

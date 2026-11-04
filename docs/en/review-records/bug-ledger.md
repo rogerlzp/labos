@@ -156,7 +156,7 @@ Number of table definitions in the artifact: 86 → **80** (the 5 duplicates are
 
 **Symptom**: both `markRunning` and `syncExperimentStatus` in [ExperimentExecutor.java](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentExecutor.java) write `experiment_run.id` into `experiment.run_id`.
 
-**Evidence (measured against a live database `192.0.2.10:5432/labos_demo`)**:
+**Evidence (measured against a live database `192.0.2.10:5432/labdb`)**:
 
 | Item | Value |
 |---|---|

@@ -9,7 +9,7 @@
 | **Review id** | `20261104-01` |
 | **Review time** | 2026-11-04 00:14 (UTC+8) |
 | **Reviewing model** | Trae AI (underlying model family: DeepSeek-V4.1-Flash) |
-| **Review target** | `docs/评审包-20261104/` (`00` / `01` / `02`), `scripts/` (test-all / ci-gate / e2e-smoke / verify-rbac), `labos-kernel/src` (ApiServer + 8 controllers, QueryService, RbacRules, StatusVocabulary, ExperimentScheduler), the real database `192.0.2.10:5432/labos_demo`; the code `main @ 21329cf` |
+| **Review target** | `docs/评审包-20261104/` (`00` / `01` / `02`), `scripts/` (test-all / ci-gate / e2e-smoke / verify-rbac), `labos-kernel/src` (ApiServer + 8 controllers, QueryService, RbacRules, StatusVocabulary, ExperimentScheduler), the real database `192.0.2.10:5432/labdb`; the code `main @ 21329cf` |
 | **Review scope** | **All the numeric claims** of the three documents, the 8 review focus points of `00` §3, the 10 review questions of `00` §4 (answered by sampling) |
 | **Review method** | **Code-reading level + reproducible command measurement against a live database** (this time PostgreSQL `192.0.2.10` was reachable; the API `18080` and the frontend `5173` were both running) |
 | **Conclusion** | **Fail** |

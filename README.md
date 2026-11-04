@@ -42,7 +42,7 @@
 ### 依赖
 
 - **JDK 17**（无框架依赖，只用 JDK 标准库 + PostgreSQL JDBC）
-- **PostgreSQL**（默认库名 `labos`，可用 `LABOS_DB_NAME` 覆盖）
+- **PostgreSQL**（默认库名 `labdb`，可用 `LABOS_DB_NAME` 覆盖）
 - **Node 18+**（前端）
 - **Redis**（可选，只有网关模式需要）
 
@@ -81,7 +81,7 @@ java -cp out com.labos.gateway.GatewayMain
 |---|---|---|
 | `LABOS_DB_HOST` | 127.0.0.1 | |
 | `LABOS_DB_PORT` | 5432 | |
-| `LABOS_DB_NAME` | labos | **现场必须指定** |
+| `LABOS_DB_NAME` | labdb | **现场必须指定** |
 | `LABOS_DB_USER` | postgres | |
 | `LABOS_DB_PASS` | 空 | |
 | `LABOS_AUTH` | 1 | 设 0 关闭鉴权（仅联调） |
