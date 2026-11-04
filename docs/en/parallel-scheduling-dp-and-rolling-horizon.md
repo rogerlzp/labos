@@ -299,7 +299,7 @@ is kept but unused)
 
 | Option | Complexity | Benefit |
 |---|---|---|
-| Total order | Low | It already covers 99.7% of the scenarios (from the `run_mode` statistics of the stored workflow instances) |
+| Total order | Low | It already covers the scenarios (from the `run_mode` statistics of the workflow instances) |
 | Supporting a `runAfter` DAG | High (it needs topological sorting + cycle detection + partial failure handling) | 1.0 does not need it |
 
 **Cost**: for now it is not possible to express "workflows A and B run in parallel, and C

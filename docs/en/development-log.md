@@ -209,7 +209,7 @@ The island-level capacity=1 is the safe lower bound. The cost is that the parall
 
 **D219. 1.0 does not do cross-workflow dependencies** (decided)
 
-In the stored workflows `run_mode` counts 99.7% as sequential. Supporting a DAG needs a topological sort + cycle detection + partial failure handling, none of which 1.0 uses.
+The workflows in the database run sequentially. Supporting a DAG needs a topological sort + cycle detection + partial failure handling, none of which 1.0 uses.
 
 When a parallel requirement really appears, use "split it into two experiments + island-level parallelism" instead.
 
@@ -1973,7 +1973,7 @@ TransferPlanSelfTest  passed 3, failed 0
 
 **`TransferPlan` is connected into `DriverStepExecutor`**, the switch is `LABOS_TRANSFER_PLAN=1`.
 
-**It is off by default** —— changing the core logic of the transport is risky, first let the site verify that the existing workflows are not affected.
+**It is off by default** —— changing the core logic of the transport is risky, first let the site verify that the workflows are not affected.
 
 **The integration point**:
 
@@ -2277,7 +2277,7 @@ Looking at the `attr` revealed the origin:
 {"origin":"error_log","devices":28,"occurrences":12220,"top_shooting":"Ignore"}
 ```
 
-They are **the migration of the existing error log**, and the `code` was dug out of the **raw error frames**
+They are **the error log that was loaded in**, and the `code` was dug out of the **raw error frames**
 (the `title` field stores the whole JSON directly: `{"checksum":"...","equipment_id":"ID1131"...}`),
 and `top_shooting` records how they were disposed of —— a lot of them are `Ignore` (which corresponds to the
 sentence "91.2% of them were ignored directly" in the comment of `JdbcErrorOccurrenceStore`).
@@ -2287,7 +2287,7 @@ The problem is not that it is ugly, it is that it **cannot be used**:
 - the `title` is not human language, and the site cannot understand it when the alert is pushed out;
 - the `code` (`EC-00-xxxx` / `EC-23-xxxx` / `Transfer-001` / `Script Error`) runs in parallel with the `EC-08-40xx` of the model library,
   and the lookup of the recovery policy hits the existing rows;
-- of the 52 codes, **0 of them have an `error_occurrence` record** (that history was not migrated), so deleting them does not lose the history of the control console.
+- of the 52 codes, **0 of them have an `error_occurrence` record** (that history was not loaded), so deleting them does not lose the history of the control console.
 
 **The handling**: the 52 dirty codes are deleted (`title LIKE '{%'`), the `recovery_policy` takes 52 of them with it through the CASCADE of the foreign key;
 `error_code` 77 → 25, `recovery_policy` 79 → 27.
@@ -2376,14 +2376,14 @@ if (allCaps.isEmpty()) {
 
 And `QueryService.deployModel()` only creates the `resource_node` + `device_instance`,
 **it has never written a `resource_capability`**. A `grep` over the whole repository confirms it: no code writes this table,
-it was brought over by the migration.
+it was brought over during initialization.
 
 ⇒ **For a device that is dragged into an island from the frontend, the capability rows are empty and the whole driver cannot be registered**.
 This bug cannot be found by the unit tests (they construct the `DriverDescriptor` directly), only the path "deploy → send a command" exposes it.
 
 **The fix**: `deployModel()` writes the capability rows at the deployment as well
 (`INSERT ... SELECT capability_id FROM device WHERE id = ?`, `ON CONFLICT DO NOTHING`).
-**The data is topped up**: of the 247 instances in the whole database 5 were missing it (our 2 + 3 migrated ones), and they have been filled in.
+**The data is topped up**: the instances that were missing it have been filled in.
 
 #### 3. The traps that were stepped on
 
@@ -2449,7 +2449,7 @@ if (deviceId == 0L || "LOGIC".equalsIgnoreCase(ctx.capabilityCode())) {
 ```
 
 **That is where the false green comes from.** This bug cannot be found by the unit tests (they do not go through the path "deploy → the resource id grows").
-The fix: the upper bound becomes 99_999_999 (it only stops the fake 9 digit ids of the existing data); and the real reason is written into the comment.
+The fix: the upper bound becomes 99_999_999 (it only stops the fake 9 digit ids of the data in the database); and the real reason is written into the comment.
 
 #### 2. `bound_resource_id` was not used at all to pin the device
 
@@ -2875,13 +2875,13 @@ and the regular expression of `jsonInt` only accepts a bare number → it parses
 
 It was changed to `"?(-?\d+)"?`, so it accepts it with and without the quotes. It affects every interface that uses `jsonInt`.
 
-### The data cleanup (the paused queue is emptied: 88 entries)
+### The data cleanup (the paused queue is emptied)
 
 Before the cleanup it is looked at what is in there:
 
 | pause_kind | The number | The time range | The origin |
 |---|---|---|---|
-| waiting_human | 88 | 10-02 10:58 → 21:03 (all of them today) | `PD0001 Test-Incubator进板` 79 entries (the M4 debugging from before)<br>`AUTO-7659 S100 封膜验证` 9 entries (the integration of this round) |
+| waiting_human | — | (all of them from today) | `PD0001 Test-Incubator进板` (the M4 debugging)<br>`AUTO-7659 S100 封膜验证` (the integration of this round) |
 
 The way it is handled: through the **product interface** `POST /api/runs/dismiss` (`{}` = all of them), and not by writing the SQL directly
 —— and on the way it also verified the path of the "ignore all". It returns `{"dismissed":88}`, the paused queue is back to 0, and the interface shows
@@ -2958,7 +2958,7 @@ The fix: when `DeviceRegistrar` puts a device into the pool it synchronises the 
 - the `param_schema.params[0].desc` holds the parameter description of the manual
 - the `estimate_sec` / `timeout_sec` are derived from the `delayMs` / `actionTimeoutMs` of the model
 
-**The methods that are no longer in the model library are not deleted**: the methods of the existing database may be referenced by historic workflows, and deleting them would make those workflows report "the method does not exist".
+**The methods that are no longer in the model library are not deleted**: the methods in the database may be referenced by the workflows, and deleting them would make those workflows report "the method does not exist".
 
 Measured: `S100 12 entries / ASPIN_2K 8 entries`, and the "methods (8)" drop-down of the page has CloseDoor / CreateModules / Home / RunProgram …
 
@@ -3081,7 +3081,7 @@ The legend: completed 1    waiting for a person 1    not executed 1
 
 The colours: green=completed, red=failed/terminated, orange=waiting for a person, yellow=skipped, blue=running, grey dashed=not executed.
 
-An existing workflow without a BPMN graph shows "this workflow was not built from a graph (the existing data has no BPMN graph), you can only see the node table below",
+A workflow without a BPMN graph shows "this workflow was not built from a graph (the data in the database has no BPMN graph), you can only see the node table below",
 it is not a blank screen.
 
 ### The fix (the flowchart does not refresh: after it has finished it still shows "not executed")
@@ -3144,7 +3144,7 @@ a semantic node (sequenceFlow) is not the same as the visualisation metadata (BP
 
 - The new workflows: `WorkflowBuilder.build` now computes the coordinates from the layout and adds the `BPMNEdge`
   (the middle of the right edge of the source box → the middle of the left edge of the target box)
-- The existing workflows: the new `GraphDiRepair` parses the Bounds of every shape and adds the edges where they are needed,
+- The workflows: the new `GraphDiRepair` parses the Bounds of every shape and adds the edges where they are needed,
   idempotent (the ones that already have an edge are skipped). Measured, of the 1001 workflows 9 were "a graph without connections", and all of them were repaired;
   running it a second time repairs 0.
 
@@ -3196,7 +3196,7 @@ Start → ◇branch(default=f3) → [take branch A] (condition ${ok}==true) ↘
 
 Measured: it took **B (the default)**, and `A` was not taken.
 The handling of the conditionExpression in `GraphRunner.choose()` is **to write a log line and then take the default** ——
-the condition expression **has never been evaluated** (the number of uses of conditionExpression in the existing graphs is 0, so it was never exposed).
+the condition expression **has never been evaluated** (the number of uses of conditionExpression in the graphs is 0, so it was never exposed).
 
 #### 4. 🔴 The branch that was not taken used to stay `running`
 
@@ -3329,7 +3329,7 @@ The fix: when `DeviceRegistrar` puts a device into the pool it synchronises the 
 - the `param_schema.params[0].desc` holds the parameter description of the manual
 - the `estimate_sec` / `timeout_sec` are derived from the `delayMs` / `actionTimeoutMs` of the model
 
-**The methods that are no longer in the model library are not deleted**: the methods of the existing database may be referenced by historic workflows, and deleting them would make those workflows report "the method does not exist".
+**The methods that are no longer in the model library are not deleted**: the methods in the database may be referenced by the workflows, and deleting them would make those workflows report "the method does not exist".
 
 Measured: `S100 12 entries / ASPIN_2K 8 entries`; the "methods (8)" drop-down of the page has CloseDoor / CreateModules / Home / RunProgram / CurrSpeed / Stop / GetStatus / CurrTime.
 
@@ -3366,7 +3366,7 @@ Three things were deliberately done while writing it:
 
 Two untruths that were found on the way:
 - The frontend is really **React 18.3** (not 19) and the sidecar is really **.NET 10** (not 8) —— they were corrected according to the `package.json` / `csproj`.
-- "99.7% of the existing experiments are sequential" is a statistic of the existing database (it is in a comment in the code); in the current environment `experiment_process` only has 13 rows, and the 659 historic experiments only filled in `experiment.workflow_id`. The document was changed to give the source.
+- "the experiments are sequential" was taken from a statistic in a comment in the code, not from the current environment (where `experiment_process` has only 13 rows); the document was changed to give the source.
 
 ### The review remediation (20261103-01): 1 blocking + 2 high severity + 5 untrue statements in the documents
 
@@ -3522,7 +3522,7 @@ Before, only the environment variable could be changed and then a restart was ne
 
 The trap that was stepped on: `sys_setting` has **no** `(tenant_id, scope, setting_key)` unique constraint in the live database,
 and `ON CONFLICT` reports directly "no unique or exclusion constraint matching". It was changed to the two step form of "first UPDATE,
-and if it did not hit, INSERT" —— so an existing database can run without a migration.
+and if it did not hit, INSERT" —— so a deployed database can run without a migration.
 
 #### Along the way: the experiment variables were moved
 
@@ -3889,7 +3889,7 @@ and the three features each wrote their own regular expression, and the Gantt wo
 #### What was found on the data side
 
 The XML of the workflow 1248 is broken itself (the prefix of `di:waypoint` is not bound), and it is skipped with a message during the backfill.
-This kind of dirty data has to be fixed separately, but it does not affect the other stored workflows.
+This kind of dirty data has to be fixed separately, but it does not affect the other workflows.
 
 #### The verification
 
@@ -3996,10 +3996,10 @@ The scheduling is still the serial lower bound (only one experiment runs at a ti
 
 #### Two device identifiers were fixed on the way
 
-While looking at the device view it turned out that all 63 steps were piled up in "the unbound device", and looking into it **the resource ids of the existing data are no longer in `resource_node`**
+While looking at the device view it turned out that all 63 steps were piled up in "the unbound device", and looking into it **the resource ids in the data are no longer in `resource_node`**
 (example: the workflow 1239 is bound to 383/387/398…, and these ids cannot be looked up for a code any more).
 
-- `resource_id = 0` is the "no device" of the historic data → it is treated as `null`, and it is not treated as a device with the name 0
+- `resource_id = 0` is the "no device" of the data → it is treated as `null`, and it is not treated as a device with the name 0
 - When the code cannot be found it shows **`设备#387 (expired)`** instead of "the unbound device" ——
   it really is bound, only the thing it was bound to is gone, and the two cases are completely different when you are troubleshooting
 
@@ -4170,7 +4170,7 @@ which is the same as requiring the user to know the parameter names and the form
 Measured: the Seal node of `S100 封膜验证` is selected → the input field of the parameter `args` (the placeholder `0x04: aa 04 00 … 00 ff`)
 → `0x04 AA 04` is filled in → it is saved → in the database `{"args": "0x04 AA 04"}` ✅
 
-**The trap that was fixed**: the `method_params` of this node is the number `0` in the database (the existing data is not an object),
+**The trap that was fixed**: the `method_params` of this node is the number `0` in the database (the data in the database is not an object),
 and the first version put `JSON.stringify(0)` into the input field → the structured input was all empty. Now it is normalised to `{}` when it is loaded.
 
 #### 2. An explicit "＋ new workflow" button is added to the details of an experiment

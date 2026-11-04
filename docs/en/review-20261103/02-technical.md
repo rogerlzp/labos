@@ -5,7 +5,7 @@
 > this is a line-for-line translation. Numbers, commit hashes and file paths are identical to the
 > Chinese source — if they ever disagree, the Chinese original wins.
 
-> Audience: the people who take over / review the code
+> Audience: the people who read / review the code
 > Companions: [Functional document](01-functional.md) · [Design document](03-design.md) · [Testing document](04-testing.md)
 > For the finer package structure and class responsibilities see the historical document `docs/技术架构与模块地图.md` (this document covers the main line and does not enumerate every class)
 
@@ -157,7 +157,7 @@ Taking "workflow library → Execute" as the example (the experiment path adds o
         ⚠️ this must be idempotent: a resume comes in here a second time (D4)
 
 3. If workflow.graph->>'xml' has content → GraphRunner.run(graph, executor)
-   → otherwise it degrades to sequential execution (stored data)
+   → otherwise it degrades to sequential execution (the data in the database)
 
 4. GraphRunner main loop:
    - take a node from the ready queue → decide the type

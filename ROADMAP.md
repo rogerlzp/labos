@@ -116,7 +116,7 @@ run 205411（T-LOOP，maxIterations=3）
 - [x] `run_node` 增加 `loop_index`（0 起），唯一键改为 `(run_id, node_key, attempt, loop_index)` — ✅ `20_kernel.sql:312-313`（声明）+ `96_schema_fix.sql:129-136`（迁移）
 - [x] `run_command` 关联到 `(run_node_id)` 不变；`GraphRunner` 每圈写独立行 — ✅ `GraphRunnerTest`「循环：每圈都上报圈次」（3 圈=3 次回调）
 - [x] `run_node.parent_node_id` 补外键 `REFERENCES run_node(id) ON DELETE CASCADE` — ✅ `96_schema_fix.sql:104-116`（幂等补约束）
-- [x] 历史脏数据清理脚本（12 万行节点里 parent 悬空的要归零或补全） — ✅ 实测 `run_node` 120,268 行、parent 悬空 0 条，无需清理
+- [x] 库内脏数据清理脚本（12 万行节点里 parent 悬空的要归零或补全） — ✅ 实测 `run_node` 120,268 行、parent 悬空 0 条，无需清理
 - [x] 运行详情/流程图按圈次展示（前端聚合折叠，默认看最新一圈） — ✅ `RunDetail.tsx`：`loopIndex>0` 渲染「第 N 圈」Tag；顶层只计 `loopIndex=0`
 - [x] `verify-device-chain.sh` 补"循环 3 圈 → 节点行数 = 3×"断言 — ✅ 断言落在纯逻辑侧：`GraphRunnerTest`「循环：每圈都上报圈次」（3 圈=3 次回调）；设备链脚本本身未加此断言
 
@@ -227,7 +227,7 @@ PR 检查：test-all 536+ / tsc 0 错误（CI 只跑不需要库的两道）；�
 **前置债 1：`workflow_node` 不表达"流程怎么跑" — ✅ 已完成 2026-11-03**
 
 **前置债 2：每步耗时估算链 — ✅ 已完成 2026-11-03**
-（人工 `estimate_sec` > 历史 P50（样本≥20）> 型号库 `device_method.estimate_sec` > 60s 兜底；
+（人工 `estimate_sec` > 库内 P50（样本≥20）> 型号库 `device_method.estimate_sec` > 60s 兜底；
 库里已有 11.6 万条 `run_command` 实测时长可用，不是"没有数据"）
 
 现在节点的**设备绑定**和**执行顺序**都不在表里：
@@ -246,7 +246,7 @@ PR 检查：test-all 536+ / tsc 0 错误（CI 只跑不需要库的两道）；�
 1. `workflow_node` 加 `resource_id bigint`、`seq int`（可空，先回填）
 2. `saveGraph` 保存时**双写**：XML 保持权威（bpmn-js 还得能打开），同时把解析结果落表
 3. 读侧切到表：ETA / 时间条 / 绑定面板 / 甘特统一查 `workflow_node`
-4. 回填脚本：对存量 已有流程解析 XML 写回（幂等，可重跑）
+4. 回填脚本：对库内已有流程解析 XML 写回（幂等，可重跑）
 5. 加断言：`saveGraph` 后 `workflow_node.resource_id/seq` 必须与 XML 解析结果一致（防漂移，同 `check-schema-sync` 思路）
 
 **落地结果（2026-11-03）**：
@@ -313,7 +313,7 @@ S3 分批已上线：`experiment_batch` + `experiment_batch_run`，每批一次 
   编译后的 `experiment_process`、`experiment.version`；非法图拒绝保存、两边都不落库。
   回归：`ExperimentGraphCompileSelfTest`（纯逻辑）+ `ExperimentGraphPersistenceSelfTest`（连库）。
 - `S2-A` ✅（`ae06025`）：依赖落成 `experiment_process_edge` 边表，执行器 Kahn 拓扑求序、
-  有环拒绝；无边存量数据按 `seq` 升序（与改动前一致）。**只承诺偏序、物理串行，不承诺墙钟并发**。
+  有环拒绝；无边库内数据按 `seq` 升序（与改动前一致）。**只承诺偏序、物理串行，不承诺墙钟并发**。
   回归：`ExperimentOrderSelfTest`（纯逻辑）。
 - `S3` ✅（后端 `bbcc5bc` + 前端 `fd59d90`）：`batch_split` 开关 + 两层表
   `experiment_batch` / `experiment_batch_run`；按批串行、批失败继续、单批重跑 attempt 递增且
@@ -385,7 +385,7 @@ S1 之后**画布已不再骗人**（保存即编译落库）；但批次（S3�
 |---|---|---|---|
 | **P0** | 循环按圈次落 `run_node`（`loop_index`） | M6 | ✅ 完成 |
 | **P0** | `run_node.parent_node_id` 补外键级联 | M6 | ✅ 已完成：线上库本来就有 FK，**建库脚本漏了**，已补进 `96_schema_fix.sql` |
-| **P0** | 历史脏数据清理（parent 悬空） | M6 | ✅ 无需清理：实测 120,268 行里悬空 0 条 |
+| **P0** | 库内脏数据清理（parent 悬空） | M6 | ✅ 无需清理：实测 120,268 行里悬空 0 条 |
 | **P1** | 错误码新增/删除 | M7 | ✅ 完成（POST/DELETE + 页面） |
 | **P1** | `scope` 一致性校验 | M7 | ✅ 完成（列表标"未覆盖本作用域"，保存策略回 warning） |
 | **P1** | 表达式算术 | M7 | ✅ 完成（`+ - * /`，含优先级与一元负号） |

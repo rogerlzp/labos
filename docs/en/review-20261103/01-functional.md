@@ -78,7 +78,7 @@ Split into three things:
 
 | Constraint | Why |
 |---|---|
-| The method list comes from the `device_method` table (not read straight from the model library) | Devices can add or remove methods according to the real site; the historical workflows reference the records in this table |
+| The method list comes from the `device_method` table (not read straight from the model library) | Devices can add or remove methods according to the real site; the workflows reference the records in this table |
 | Methods **not** in the manual are marked "(not provided by the manual, to be confirmed on site)" | The model library has undocumented commands such as `GetStatus`, which may not exist on the real device |
 | Before deleting a device, confirm that no workflow references it | Otherwise opening the workflow reports "method does not exist" |
 
@@ -172,7 +172,7 @@ the real completion can only be earlier. This is a deliberate trade-off, not an 
 
 | Form | Suitable for | Explanation |
 |---|---|---|
-| Experiment orchestration (list) | Sequential execution | The list is more intuitive and less easy to wire up wrongly (in the stored workflows `run_mode` is `sequential` for 99.7%, see the code comment) |
+| Experiment orchestration (list) | Sequential execution | The list is more intuitive and less easy to wire up wrongly (in the workflows in the database `run_mode` is `sequential` for 99.7%, see the code comment) |
 | Experiment canvas (graph) | When branching / parallelism / variables are needed | From the experiment orchestration, click "Canvas" to jump over with the selected experiment |
 
 **Key constraints**

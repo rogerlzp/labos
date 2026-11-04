@@ -178,7 +178,7 @@ LABOS_TRANSFER_PLAN=1   # turn it on
 ```
 
 **Why it is off by default**: changing the core transfer logic is risky.
-First let the site verify that "the existing workflows are unaffected while the switch is off", then turn it on step by step.
+First let the site verify that "the workflows are unaffected while the switch is off", then turn it on step by step.
 
 **The regression while the switch is off**:
 

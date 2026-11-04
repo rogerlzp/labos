@@ -193,7 +193,7 @@ Two routes:
 | Route | Suitable for | Operation |
 |---|---|---|
 | **Dragging in the designer** | A new workflow | "Authoring → Workflows → New" → draw it in bpmn-js → save |
-| **Importing stored workflow XML** | Migration | `INSERT INTO workflow (graph)` directly |
+| **Importing workflow XML** | Migration | `INSERT INTO workflow (graph)` directly |
 
 Once the workflow node is created, the **preflight** tells you whether it can run:
 

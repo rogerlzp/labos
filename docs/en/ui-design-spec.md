@@ -9,7 +9,7 @@
 | Version | v0.1 |
 | Date | 2026-10-31 |
 | Status | Pending review |
-| Companions | `LabOS2.0_功能规格说明书.md` (features), `webapp/` (implementation) |
+| Companions | `LabOS功能规格说明书.md` (features), `webapp/` (implementation) |
 
 ---
 
@@ -50,7 +50,7 @@ alerts and policies.
 ```
 LabOS 2.0
 ├── Authoring                  (process engineer)
-│   ├── Workflows              list / search / filter of the existing processes
+│   ├── Workflows              list / search / filter of the processes in the database
 │   ├── Workflow designer      bpmn-js canvas + compilation preview + preflight result
 │   └── Experiment Canvas      React Flow block canvas (drag workflows to assemble an experiment)
 ├── Run                        (operator)
@@ -112,7 +112,7 @@ Each page specifies 6 items: **who uses it / what it solves / what you see / wha
 | **What you see** | ① Header: run no., status, attendance, progress<br>② Node tree: parent node + sub-steps (`└1 OpenDoor completed 200200`), failed steps marked in red<br>③ Event stream: `#2 STEP_FAILED 第 3 步 CloseDoor device=200` (the detail is printed by the backend verbatim; "第 3 步" = "step 3") |
 | **What you can do** | Switch attendance, re-run, view the raw device text |
 | **Empty state** | — |
-| **Error state** | Event stream is empty → the hint "No event records" (this run has no event records — possibly migrated data) |
+| **Error state** | Event stream is empty → the hint "No event records" (this run has no event records — possibly loaded data) |
 
 **Key**: a sub-step has to show the **device code** and the **attempt count**
 (`Attempt 2`), otherwise you cannot tell "it moved to another device and still failed".

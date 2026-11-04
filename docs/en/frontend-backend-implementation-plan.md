@@ -8,7 +8,7 @@
 > described in [`docs/en/roadmap.md`](roadmap.md) and in the code.
 
 > **The weekly plan is superseded (2026-10-29).** The scheduling is governed by chapter 11 of
-> [`LabOS2.0_功能规格说明书.md`](../../LabOS功能规格说明书.md). The automatic compilation's "expanded at run
+> [`LabOS功能规格说明书.md`](../../LabOS功能规格说明书.md). The automatic compilation's "expanded at run
 > time, not landed as BPMN nodes" is still valid and has been written into section 7.4 of the
 > specification. The Gantt and the nest-level ready scheduling are not in the 2.0 release gate.
 
@@ -62,8 +62,8 @@ The 6 templates (origin=mined, with the number of historical samples):
 
 | Option | Advantage | Disadvantage |
 |---|---|---|
-| Expanded into sub-nodes at compile time | Visible and editable in the Advanced tab | **It changes the data structure of the existing workflows**, which is risky |
-| **Expanded at run time** | The existing data is untouched and the templates can evolve independently | The expansion result is only visible at execution time |
+| Expanded into sub-nodes at compile time | Visible and editable in the Advanced tab | **It changes the data structure of the workflows**, which is risky |
+| **Expanded at run time** | The data is untouched and the templates can evolve independently | The expansion result is only visible at execution time |
 
 **Choose the run-time expansion**, but provide a **compilation preview** (the frontend can see
 "this node will expand into 7 steps"), so that both are covered.

@@ -82,7 +82,7 @@ Get rid of the state where "the canvas only stores the drawing and the execution
 
 ### 2.6 Exit conditions
 
-1. The existing workflow table can no longer be edited
+1. The workflow table can no longer be edited
 2. The execution order after the canvas save matches the workflow table on the detail page
 3. A failed save never leaves a half-finished result
 
@@ -248,7 +248,7 @@ But when the development really starts, it is recommended to proceed in the orde
 
 | # | Decision | Reason |
 |---|---|---|
-| D1 | The batch switch: `experiment.batch_split int NULL` = the number of samples per batch; `NULL` = no batching (**the default behaviour is completely unchanged**) | One column switches it on, no stored-data migration |
+| D1 | The batch switch: `experiment.batch_split int NULL` = the number of samples per batch; `NULL` = no batching (**the default behaviour is completely unchanged**) | One column switches it on, no migration of the data |
 | D2 | The sample mapping: **on the first execution**, in ascending `experiment_sample.sample_id` order, cut off a batch every `batch_split` samples; snapshot that batch's `[{sampleId, barcode}]` into `experiment_batch.samples jsonb`; from then on a re-run only uses the snapshot | The snapshot = the sample set does not drift on a re-run (the second risk of §4.6), and no separate mapping table has to be built |
 | D3 | The run semantics: one 「Execute experiment」 of a batched experiment = run **all the batches that have not succeeded yet** serially by `batch_no`; one `experiment_run` per batch + one `experiment_batch_run(attempt_no)`; when a batch fails, **continue** with the following batches; when a pause hold is encountered, stop at the **batch boundary** and do not start the next batch | It reuses the existing `ExperimentExecutor` (one run per batch) and does not build a new executor; draft §5: any failure = the experiment failed, but the remaining batches can continue |
 | D4 | The re-run: `POST /api/experiments/{id}/batches/{batchNo}/run` only runs that batch, with a new `attempt_no`, and the historical attempts are kept; only batches that are not `completed` are allowed | It corresponds to §4.1 / §4.3 #5 / §4.4 #2 |

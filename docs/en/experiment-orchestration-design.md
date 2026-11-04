@@ -112,7 +112,7 @@ The dependencies are no longer expressed with the `runAfter` field, they land in
 ```
 
 **The execution order = the Kahn topological sort** (on the same level it is ordered stably by `seq`), a cycle is rejected outright.
-Stored data without edges degrades to ascending `seq` order — exactly the same as before the change.
+Data in the database without edges degrades to ascending `seq` order — exactly the same as before the change.
 
 **The current position is S2-A: only a partial order is promised, the advance is physically serial, wall-clock concurrency is not promised**;
 for real concurrency the three resource layers + the wait-for graph have to be connected first. See §4.4.
@@ -419,7 +419,7 @@ experiment_run_step (
 
 ---
 
-## 9. The connection to the existing system
+## 9. The connection to the current system
 
 | Existing capability | How it is reused |
 |---|---|
@@ -452,7 +452,7 @@ experiment_run_step (
 | **Start** | Green | The entry into the workflow | None |
 | **End** | Grey | The exit from the workflow | None |
 | **Device** | Cyan | Executes one method on a device | It really calls the driver |
-| **Workflow** | Blue | Runs an existing workflow | A sub-workflow |
+| **Workflow** | Blue | Runs a workflow | A sub-workflow |
 | **Variable** | Purple | Defines / assigns | It writes the variable table |
 | **Fork** | Orange | Takes one of two paths according to a condition | The condition is evaluated |
 | **Parallel** | Green | Runs several paths at the same time | It is constrained by the island-level mutual exclusion |

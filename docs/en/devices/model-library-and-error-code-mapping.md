@@ -463,7 +463,7 @@ java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.device.DeviceRegistrar \
 |---|---|---|---|---|
 | `S100` | S100 sealer | Sealing | SEAL | `s100` |
 | `ASPIN_2K` | Shanghai Aiao Biotechnology ASpin 2K | Centrifugation | CENTRIFUGE | `aspin-2k` |
-| `EQ150` | Rotanta 460R (migrated data) | Centrifugation | CENTRIFUGE | — manual missing |
+| `EQ150` | Rotanta 460R (loaded data) | Centrifugation | CENTRIFUGE | — manual missing |
 
 > `EQ150` is the one that is really running on the production line (Hettich), and it has
 > **no model bound** — it stays unbound until the manual arrives; binding it wrongly
@@ -524,9 +524,7 @@ That is: **a device dragged in from the frontend has empty capability rows, and 
 whole driver never registers.** A unit test cannot find this bug (the unit test passes a
 driver descriptor directly); it only shows up on the "deploy → send a command" path.
 
-Fixed: `deployModel()` now writes `resource_capability` when it deploys (`INSERT ... SELECT capability_id FROM device WHERE id = modelId`). The historical data was fixed
-too: of the 247 instances in the whole database, 5 were missing their capability row,
-and they have been filled in.
+Fixed: `deployModel()` now writes `resource_capability` when it deploys (`INSERT ... SELECT capability_id FROM device WHERE id = modelId`). The data in the database was fixed too: the instances that were missing their capability row have been filled in.
 
 ### 10.2 Why the script waits 60 seconds
 

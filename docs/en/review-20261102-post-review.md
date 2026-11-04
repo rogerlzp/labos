@@ -113,7 +113,7 @@ AND (position_state.reserved_by_run IS NULL
 **What to re-check**:
 1. Is a permanent commitment (`reserved_by_run` not null + `reserved_until` NULL) **really impossible to take**?
 2. Can an expired reservation (`until < now()`) **really be taken**?
-3. Is there any **historical dirty data** in the existing data where `reserved_by_run` is not null but `reserved_until` is NULL?
+3. Is there any **historical dirty data** in the data where `reserved_by_run` is not null but `reserved_until` is NULL?
    If there is, those positions become **permanently locked**.
 
 ```sql
@@ -129,7 +129,7 @@ Permanently locked count: 0
 State distribution: 9 idle records (no historical dirty data)
 ```
 
-The current database is clean. **But this still has to be checked when the production database is imported and migrated.**
+The current database is clean. **But this still has to be checked when the production database is imported.**
 
 ### 4.3 P1-15 Catch-up wait for the shortest interval (the behaviour changed)
 
@@ -141,10 +141,10 @@ The process requires an interval of 30 minutes; now it really waits 30 minutes, 
 **Self-checked** (2026-11-02):
 
 ```
-min_sec of the existing workflows: max=3 s / avg=3.0 s / only 1 record has a constraint
+min_sec of the workflows: max=3 s / avg=3.0 s / only 1 record has a constraint
 ```
 
-**The impact is negligible** — there are almost no time constraints in the database, so the change will not slow the existing workflows down.
+**The impact is negligible** — there are almost no time constraints in the database, so the change will not slow the workflows down.
 But **if a new workflow is configured with a large interval, the behaviour differs from before** (before it was released after 60 s, now it waits the full amount).
 
 **What to re-check**:

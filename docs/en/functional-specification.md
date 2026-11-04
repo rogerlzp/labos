@@ -11,7 +11,7 @@
 | Status | Draft. The conditions for dropping "draft" are in chapter 1 |
 | Implementation baseline | `kernel-0.3` (2026-10-29, the kernel and the migrations that already run) |
 | Purpose | For external review. This document is self-contained and does not rely on conversational context |
-| Supersedes | `archive/LabOS2.0_功能规格说明书_v0.3.md`; the feature list and the phasing of `目标功能文档_三方合并版.md`; the weekly plan of `前后端实施方案_编译甘特就绪调度.md`; the roadmap in chapters 5–7 of `LabOS系统_现状诊断与新一代架构方案_20261029.md` |
+| Supersedes | `archive/LabOS2.0_功能规格说明书_v0.3.md`; the feature list and the phasing of `目标功能文档_三方合并版.md`; the weekly plan of `前后端实施方案_编译甘特就绪调度.md`; the roadmap in chapters 5–7 of `LabOS系统_现状梳理与新一代架构方案_20261029.md` |
 
 **Status markers**: ✅ implemented in the baseline and measured　🟡 partly implemented　⬜ not started
 
@@ -35,7 +35,7 @@ The product name is LabOS 2.0. The current code and database are the implementat
 
 When all six of the following hold at the same time, this file changes from `2.0-draft` to `2.0`:
 
-1. **Existing workflows execute by the graph.** A workflow containing `parallelGateway` waits at the join until all branches are finished; a workflow containing `exclusiveGateway` takes only one outgoing edge. Regression uses the workflows in the library that contain either gateway.
+1. **The workflows execute by the graph.** A workflow containing `parallelGateway` waits at the join until all branches are finished; a workflow containing `exclusiveGateway` takes only one outgoing edge. Regression uses the workflows in the library that contain either gateway.
 2. **Attended / unattended can be switched while running.** Unattended follows only the recovery policy; attended raises a dialog whose defaults come from the policy.
 3. **The operations loop closes.** Preflight before saving, policies that can be changed and can be replayed against historical errors, alerts that can be claimed and closed, and one status view that answers "why is it stopped".
 4. **Time is predictable.** Command-level durations come from historical samples, a total-duration forecast can be given, and the longest interval between two steps can be checked.
@@ -56,7 +56,7 @@ Orchestration between experiment blocks other than "sequence", global makespan o
 
 ### 2.1 Current state
 
-LabOS is the scheduling software of a laboratory automation line. The current baseline can load existing workflow definitions, advance them structurally on the simulation bus, and pick a device by capability. A capability with a template expands into several steps; otherwise it degrades to a single step.
+LabOS is the scheduling software of a laboratory automation line. The current baseline can load workflow definitions, advance them structurally on the simulation bus, and pick a device by capability. A capability with a template expands into several steps; otherwise it degrades to a single step.
 
 ### 2.2 Problems
 
@@ -74,7 +74,7 @@ The core problem is that **the kernel cannot be verified**.
 ### 2.3 Goals
 
 1. **The kernel is verifiable**: recovery decisions are pure functions, execution is an event stream, drivers are a replaceable contract, and simulation and real execution share one executor.
-2. **The existing assets can be carried**: existing workflows can be loaded on the new kernel. 2.0 further requires that the gateway semantics match the graph. What `kernel-0.3` has already proven is the structural advancement — see appendix B.
+2. **The assets carry over**: the workflows can be loaded on the new kernel. 2.0 further requires that the gateway semantics match the graph. What `kernel-0.3` has already proven is the structural advancement — see appendix B.
 3. **Work continues when nobody is there**: attended and unattended are two operating modes. A device failure is handled first by reassigning or retrying; only when the policy is exhausted is a human called.
 4. **Onboarding a new device does not change the control console's business code**: drivers declare capabilities. 2.0 accepts this path through the shadow mode of one real endpoint.
 
@@ -224,7 +224,7 @@ The editing altitude of 2.0: the designer maintains the nodes and the connection
 
 ### 7.3 Layer B: inside the workflow
 
-The storage continues to use BPMN XML, so that the existing workflow definitions can be opened. The execution semantics use the table below, not "every `sequenceFlow` is walked once".
+The storage continues to use BPMN XML, so that the workflow definitions can be opened. The execution semantics use the table below, not "every `sequenceFlow` is walked once".
 
 | Semantics | Existing BPMN | 2.0 |
 |---|---|---|
@@ -240,7 +240,7 @@ The storage continues to use BPMN XML, so that the existing workflow definitions
 
 The acceptance criterion of the parallel: both branches are executed; the join does not continue while any branch is unfinished. 2.0 does not require the two branches to overlap on the wall clock. The wall-clock overlap is device scheduling and does not block the gateway semantics.
 
-The acceptance criterion of the exclusive: only one outgoing edge is executed. An outgoing edge in a stored graph may have no `conditionExpression`, so the rule is split into two:
+The acceptance criterion of the exclusive: only one outgoing edge is executed. An outgoing edge in a graph in the database may have no `conditionExpression`, so the rule is split into two:
 
 - When an outgoing edge carries a condition expression, the one that matches after the evaluation is taken. The evaluation only allows the whitelist limited in chapter 12; arbitrary code is not allowed.
 - When an outgoing edge has no condition, the preflight before saving flags it as "missing condition". The execution takes one default edge (the BPMN default outgoing edge; when there is no default, the first one after a stable sort), and the event records "no condition, the default edge was taken". Executing both outgoing edges counts as a failure.
@@ -277,7 +277,7 @@ The `WorkflowService.execute` of `kernel-0.3` only takes out the nodes with `typ
 
 Therefore:
 
-- The "existing/existing, all device-action nodes advance" of the bulk acceptance proves that the structure can be walked to the end; it does not prove the branch selection and the joining.
+- The "all the device-action nodes advance" of the bulk acceptance proves that the structure can be walked to the end; it does not prove the branch selection and the joining.
 - The "conditional branches are already supported by the backend" written in v0.3 is void.
 - The first implementation task of 2.0 is to make the executor recognise the Decision, the Parallel and the default edge, and not to build the experiment-block canvas first.
 
@@ -313,7 +313,7 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 1.4 | Decision (exclusive, including the default edge when there is no condition) | ⬜ | P0 |
 | 1.5 | Parallel (fork and join) | ⬜ | P0 |
 | 1.6 | Time Constraint (the shortest / longest interval) | ⬜ | P0 |
-| 1.7 | Experiment blocks executed in sequence | 🟡 the existing data is a sequence array | P1 |
+| 1.7 | Experiment blocks executed in sequence | 🟡 the data is a sequence array | P1 |
 | 1.8 | Sub-processes executed as a subgraph | 🟡 already on the graph | P1 |
 | 1.9 | Loop, Wait Until, variables, and the conditions / loops / timers / semaphores of the experiment blocks | ⬜ | Outside the release |
 | 1.10 | Plate types and gripper offsets | ⬜ | Outside the release |
@@ -410,7 +410,7 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
-| 10.1 | The container identity: the barcode and the plate type can be referenced by a run | 🟡 `plate` / `plate_well` are migrated, the product semantics are not connected | P1 |
+| 10.1 | The container identity: the barcode and the plate type can be referenced by a run | 🟡 `plate` / `plate_well` are initialized, the product semantics are not connected | P1 |
 | 10.2 | The nest-level position, the replenishment during a run, picking the containers by attribute | ⬜ | Outside the release |
 | 10.3 | The plate-type propagation and the gripper offsets | ⬜ | Outside the release |
 
@@ -443,7 +443,7 @@ The `protocol` is a device method, not a process template. Chapter 1 of the data
 | Kernel language | Java 17 | Already in use |
 | Kernel dependencies | No dependency on a web framework | The decisions, the execution and the compilation stay unit-testable |
 | Demo service | JDK HttpServer | Continues to wrap the kernel |
-| Database | PostgreSQL 17 | Already migrated |
+| Database | PostgreSQL 17 | Already in use |
 | Driver | gRPC + .NET Sidecar | The contract is fixed, the real endpoint is in 8.3 |
 | Real-time push | SSE | P1, the status view can poll first |
 | Workflow designer | The existing bpmn-js page | Opens the existing XML |
@@ -645,7 +645,7 @@ The following rulings are part of the specification. When one of them is overtur
 
 | Statement | Evidence | Must not be extrapolated into |
 |---|---|---|
-| The existing workflows and all the device-action nodes can be walked to the end on the simulation bus, with no cycle and no isolated task | `BATCH_VALIDATION_REPORT.md` | The gateway semantics are executed; the durations are correct; it is concurrency-safe; the bulk path covers the fault recovery |
+| The workflows and all the device-action nodes can be walked to the end on the simulation bus, with no cycle and no isolated task | `BATCH_VALIDATION_REPORT.md` | The gateway semantics are executed; the durations are correct; it is concurrency-safe; the bulk path covers the fault recovery |
 | A recovery decision yields the same action for the same input, and it carries the reason | The decision engine of `labos-kernel` and `COVERAGE_REPORT.md` | A historical coverage of 100% means that the site will self-heal. When the action is derived from historical handling, a large number of results become `SKIP` |
 | Historical errors are aggregated and the alert count falls | `ALERT_REPORT.md` | The on-site alerts can already be claimed and closed |
 | A node can be expanded according to `capability_recipe` and a failure can be located at step N | `RecipeCompiler` and the multi-step execution | The projection in the designer and the node overrides are already product behaviour |
@@ -666,4 +666,4 @@ The reproduction steps are in chapter 9 of `LabOS_新一代中控实现总纲_20
 | `archive/LabOS2.0_功能规格说明书_v0.3.md` | The draft that this document supersedes |
 | `目标功能文档_三方合并版.md` | The feature list and the phasing are superseded. The scope choices are written in chapter 4 |
 | `前后端实施方案_编译甘特就绪调度.md` | The weekly plan is superseded. The compilation "expanded at run time, not landed as a node" has been absorbed into section 7.4 |
-| `LabOS系统_现状诊断与新一代架构方案_20261029.md` | The diagnosis is kept. The roadmap of chapters 5–7 is superseded |
+| `LabOS系统_现状梳理与新一代架构方案_20261029.md` | The review is kept. The roadmap of chapters 5–7 is superseded |

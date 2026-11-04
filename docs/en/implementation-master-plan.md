@@ -15,7 +15,7 @@
 > capability), not "the gateway semantics have been verified on a real device".
 
 > 2026-10-29
-> Companion: `LabOS系统_现状诊断与新一代架构方案_20261029.md` (the design of the solution)
+> Companion: `LabOS系统_现状梳理与新一代架构方案_20261029.md` (the design of the solution)
 > This document is the **implementation result**, the solution document is the **design intent**
 
 ---
@@ -32,8 +32,7 @@ runs**.
 | Process validation | The workflows and the device-action nodes **ran to the end on the simulation bus**, no cycle, no isolated task |
 | Alert denoising | After historical errors are aggregated, the number of pushes falls |
 
-**The core judgement: do not tear down and rewrite the business; what has to be rewritten is the
-kernel.**
+**The core judgement: the business model stays; the change is concentrated in the kernel.**
 The business model keeps the existing process semantics and error codes.
 The kernel separates decision from execution: scheduling is a pure function, and execution can be simulated and replayed.
 
@@ -224,7 +223,7 @@ The priority now is self-healing on anomalies, unattended operation, and the che
 | File | Content |
 |---|---|
 | This document | The implementation master plan |
-| `LabOS系统_现状诊断与新一代架构方案_20261029.md` | The design of the solution |
+| `LabOS系统_现状梳理与新一代架构方案_20261029.md` | The design of the solution |
 | `labos-kernel/README.md` | The general description of the kernel |
 | `labos-kernel/COVERAGE_REPORT.md` | The policy coverage analysis |
 | `labos-kernel/ALERT_REPORT.md` | The measured alert aggregation |
@@ -251,7 +250,7 @@ The priority now is self-healing on anomalies, unattended operation, and the che
 psql -h 192.0.2.1 -U XXX -d labdb -f pg_rebuild/schema/90_all_in_one.sql
 psql -h 192.0.2.1 -U XXX -d labdb -f pg_rebuild/schema/99_verify.sql
 
-# 2) Migrate the data (in this order)
+# 2) Load the data (in this order)
 cd pg_rebuild/etl
 python3 etl_p0.py && psql ... -f out/load.sql
 python3 etl_p1_enrich.py && psql ... -f out/load_enrich.sql

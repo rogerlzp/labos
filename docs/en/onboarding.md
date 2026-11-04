@@ -48,7 +48,7 @@ Plate tracking (which position holds which plate + reservation to prevent confli
 | # | Document | Why read it |
 |---|---|---|
 | 1 | **This document** | The map + the known problems |
-| 2 | `LabOS2.0_功能规格说明书.md` | **The functional spec is authoritative** (2.0-draft) |
+| 2 | `LabOS功能规格说明书.md` | **The functional spec is authoritative** (2.0-draft) |
 | 3 | [`docs/en/architecture.md`](architecture.md) | Code directories → responsibility mapping |
 | 4 | [`docs/开发日志.md`](../开发日志.md) | Where every decision and every pitfall came from (4,788 lines — read it when debugging) |
 

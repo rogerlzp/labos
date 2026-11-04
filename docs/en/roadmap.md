@@ -260,7 +260,7 @@ the four parsing rules would eventually drift apart.
 1. Add `resource_id bigint` and `seq int` (nullable, backfilled later) to `workflow_node`
 2. On `saveGraph`, **write both**: the XML stays authoritative (bpmn-js still has to open it), and the parsed result is persisted
 3. Switch the read side to the table: ETA / timeline / binding panel / Gantt all query `workflow_node`
-4. Backfill script: parse the XML of the stored workflows and write it back (idempotent, re-runnable)
+4. Backfill script: parse the XML of the workflows and write it back (idempotent, re-runnable)
 5. Add an assertion: after `saveGraph`, `workflow_node.resource_id/seq` must match the XML parse result (drift guard, same idea as `check-schema-sync`)
 
 **Landed result (2026-11-03)**:
@@ -341,14 +341,14 @@ same-batch re-run concurrency guard (remainder in the implementation checklist �
   is written.
   Regression: `ExperimentGraphCompileSelfTest` (pure logic) + `ExperimentGraphPersistenceSelfTest` (with database).
 - `S2-A` ✅ (`ae06025`): dependencies become an `experiment_process_edge` edge table, the
-  executor orders them with Kahn's topological sort and rejects cycles; existing data
+  executor orders them with Kahn's topological sort and rejects cycles; the data
   without edges is ordered by ascending `seq` (same as before the change). **Only partial
   order and physical serialisation are promised, not wall-clock concurrency.**
   Regression: `ExperimentOrderSelfTest` (pure logic).
 - `S3` ✅ (backend `bbcc5bc` + frontend `fd59d90`): a `batch_split` switch plus the two
   tables `experiment_batch` / `experiment_batch_run`; batches run serially, a failed batch
   does not stop the rest, a single batch can be re-run with an incrementing attempt and
-  the existing history kept (the persistence shape agreed in review item B2); frontend batch
+  the history kept (the persistence shape agreed in review item B2); frontend batch
   cards, "re-run this batch" and the per-attempt history.
 - `S3.1` ✅ (backend `c915948` + frontend `5f12696`): in-batch run resume/stop write back
   to the batch layer (D8–D10), `PUT /api/experiments/{id}/batch-split` plus the frontend

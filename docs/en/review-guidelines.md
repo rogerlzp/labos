@@ -131,7 +131,7 @@ unable to decide. The rule is now:
 ```
 ① Code + database schema        ← the only truth about landed behaviour
 ② Design documents in docs/ (newer than the specification)  ← designed, partly not landed
-③ LabOS2.0_功能规格说明书   ← constrains only "what is still not in the release gate"
+③ LabOS功能规格说明书   ← constrains only "what is still not in the release gate"
 ④ Existing scheduling documents in the root / docs/modules/README.md  ← obsolete, historical background only
 ```
 
