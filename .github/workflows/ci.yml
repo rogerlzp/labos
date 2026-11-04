@@ -23,23 +23,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 诊断：setup-node 的 npm 缓存步骤会去解析 lock 文件，解析不到就直接
-      # 失败（报错只说"lock file is not found"，看不出缺的是哪个路径）。
-      # 这一步把实际状态打出来 —— 文件在不在、有没有被 git 跟踪、
-      # 会不会被 .gitignore 挡掉，一次看清。
-      - name: 诊断 lock 文件
-        run: |
-          pwd
-          ls -la webapp/package-lock.json || echo "MISSING: webapp/package-lock.json"
-          git ls-files webapp/package-lock.json
-          git check-ignore -v webapp/package-lock.json || echo "(未被 gitignore 忽略)"
-
       - name: 安装 Node 20
         uses: actions/setup-node@v7
         with:
           node-version: '20'
           # 用 glob 而不是单个相对路径：lock 文件在 webapp/ 子目录，
-          # 单路径写法在某些 action 版本下解析不到而静默跳过缓存。
+          # 单路径写法在某些 action 版本下解析不到（会报
+          # "Dependencies lock file is not found"，而文件其实在）。
           cache: npm
           cache-dependency-path: '**/package-lock.json'
 
@@ -62,5 +52,5 @@ jobs:
         working-directory: webapp
         run: npm ci
 
-      - name: 门禁（纯逻辑 536 + tsc）
+      - name: 门禁（纯逻辑 542 + tsc）
         run: ./scripts/ci-gate.sh
