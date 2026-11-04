@@ -19,8 +19,8 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Track | Entry point | Assertions today | In CI |
 |---|---|---|---|
-| L1 pure logic | `./scripts/test-all.sh --pure-only` | 547 | ✅ every push |
-| L1+L2 with DB | `./scripts/test-all.sh` | 917 | ⬜ local `--with-db` |
+| L1 pure logic | `./scripts/test-all.sh --pure-only` | 553 | ✅ every push |
+| L1+L2 with DB | `./scripts/test-all.sh` | 923 | ⬜ local `--with-db` |
 | L3 chain | `./scripts/verify-device-chain.sh` | 41 | ⬜ local `--all` |
 | L3 flow matrix | `./scripts/verify-flow-matrix.py --force-online` | 45 | ⬜ local `--all` |
 | L3 parallel | `verify-parallel-flow.py` / `verify-parallel-experiments.py` | 4 / 3 | ⬜ local `--all` |
@@ -32,7 +32,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Constant | Value | Coverage |
 |---|---|---|
-| `MIN_PURE` | 547 | Pure-logic unit tests (fewer = red) |
+| `MIN_PURE` | 553 | Pure-logic unit tests (fewer = red) |
 | `MIN_CHAIN` | 41 | Full device chain |
 | `MIN_PFLOW` / `MIN_PEXP` | 4 / 3 | In-flow parallelism / same-island concurrency |
 | `MIN_MATRIX` | 45 | Full flow matrix (`verify-flow-matrix.py`) |

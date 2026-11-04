@@ -8,7 +8,7 @@
 > Audience: review (to judge how credible it is), maintainers (how to verify after a change)
 > Companions: [Functional document](01-functional.md) · [Technical document](02-technical.md) · [Design document](03-design.md)
 >
-> The conclusion in one sentence: **all 547 pure-logic tests are green (`--pure-only`, deterministic); the full run with the database is 917 cases;
+> The conclusion in one sentence: **all 553 pure-logic tests are green (`--pure-only`, deterministic); the full run with the database is 923 cases;
 > end to end it rests on shell / Python scripts + 8 Playwright page-track scripts**.
 > Page-level automation has gone from "zero" to 8 scripts (the four P0 pages are covered, see §4 and §7).
 
@@ -35,13 +35,13 @@
 # L1: needs no environment at all (the recommended first step of a review)
 cd /path/to/labos
 ./scripts/test-all.sh --pure-only
-# Expected: 547 passed / 0 failed (9 tests that need the database are skipped)
+# Expected: 553 passed / 0 failed (9 tests that need the database are skipped)
 # Note: --pure-only clears LABOS_DB_*, so the assertions of the branch that needs the database never run — that is why this number is deterministic
 
 # L1+L2: needs the database
 export LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=...
 ./scripts/test-all.sh
-# Expected: 917 passed / 0 failed (measured against a reachable database)
+# Expected: 923 passed / 0 failed (measured against a reachable database)
 
 # L3: the full device chain (needs the simulator + sidecar, the script starts them itself)
 export LABOS_DB_HOST=... (the same as above)
@@ -58,7 +58,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 
 ---
 
-## 3. The L1/L2 test-case list (`--pure-only`, **547** cases in total)
+## 3. The L1/L2 test-case list (`--pure-only`, **553** cases in total)
 
 | Test class | Cases | What it covers | Example of a key assertion |
 |---|---|---|---|
@@ -93,8 +93,8 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 | **L2** `api.UserRoleDbSelfTest` | 10 | RBAC closure persistence: the role allow-list + last-admin protection (created and cleaned up by itself) | — |
 | **L2** `driver.TransferPlanSelfTest` | 2 | The transport plan and the position lock | A target position that is occupied must be refused |
 
-> The pure logic adds up to **547** (the 7 cases of SidecarChainTest count as 1 item).
-> The full run with the database (`./scripts/test-all.sh`) = 547 + 5 (the real-database section of DeviceErrorChainSelfTest, 14→19) + 365 (the 9 L2 classes: 244+36+26+14+13+10+10+10+2) = **917**.
+> The pure logic adds up to **553** (the 7 cases of SidecarChainTest are counted individually).
+> The full run with the database (`./scripts/test-all.sh`) = 553 + 5 (the real-database section of DeviceErrorChainSelfTest, 14→19) + 365 (the 9 L2 classes: 244+36+26+14+13+10+10+10+2) = **923**.
 > Only DeviceErrorChainSelfTest produces two different numbers depending on the environment, so **`LABOS_DB_*` is forcibly cleared** in `--pure-only` to keep it at 14.
 > The 9 L2 classes show "9 tests that need the database are skipped" under `--pure-only`.
 
@@ -111,7 +111,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 | `test-sidecar.sh` | 7 | The standalone protocol test of the sidecar |
 | `load-test.sh` | — | The load test (multiple experiments in parallel) |
 | **`check-schema-sync.sh`** | 4 | The schema artefacts vs the shards: re-run the merge and compare + assert `loop_index` / the 4-column uk / the parent foreign key (regression of BUG-20261103-01) |
-| **`ci-gate.sh`** | 13 gates | The unified gate: pure logic ≥547 / tsc / **the schema artefacts agree** / **the parallel capability ≥4+3** / **the full flow matrix ≥45** / device chain ≥41 / e2e ≥24 / **the page flow matrix ≥21** / **experiment run control ≥22** / **the simulator integration ≥24** / **the four P0 pages** (alerts ≥8 / policies ≥12 / paused queue ≥7 / canvas ≥12), any failure exits with a non-0 code |
+| **`ci-gate.sh`** | 13 gates | The unified gate: pure logic ≥553 / tsc / **the schema artefacts agree** / **the parallel capability ≥4+3** / **the full flow matrix ≥45** / device chain ≥41 / e2e ≥24 / **the page flow matrix ≥21** / **experiment run control ≥22** / **the simulator integration ≥24** / **the four P0 pages** (alerts ≥8 / policies ≥12 / paused queue ≥7 / canvas ≥12), any failure exits with a non-0 code |
 | **`verify-parallel-flow.py`** | **4** | Parallelism inside a workflow: build a fork/join graph automatically → execute → assert that both branches complete + the commands on the same device do not overlap (the device lock serialises them) → clean up |
 | **`verify-parallel-experiments.py`** | **3** | Concurrency on the same island: build N experiments and submit them asynchronously at the same time → sample the number of `running` → assert that the **peak parallelism = 1**, that there is queueing, and that everything completes → clean up |
 | **`verify-flow-matrix.py`** | **45** | The full flow matrix: nodes / gateways / variables / loops / back edges / parallelism / port topology / pause-resume / experiments / concurrency |
@@ -196,7 +196,7 @@ The full record is in `docs/流程控制-测试报告.md`, the summary:
 
 ```bash
 # 1. The pure logic must be all green, the number of cases must not drop
-./scripts/test-all.sh --pure-only        # 547 / 0
+./scripts/test-all.sh --pure-only        # 553 / 0
 
 # 2. The frontend types must be clean
 cd webapp && npx tsc -b --force          # 0 errors

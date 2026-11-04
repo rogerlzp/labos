@@ -147,7 +147,7 @@ if command -v dotnet >/dev/null 2>&1 && [[ -x ../scripts/test-sidecar.sh ]]; the
     line=$(echo "$out" | grep -E '^通过 [0-9]+ / 失败' | tail -1)
     if [[ -z "$line" ]]; then
       # 脚本退出码 0 但没有通过统计 = 它跳过了（环境不满足），不能算成通过，
-      # 也不能虚增用例数 —— 否则阈值 536 会因为"跳过"而被误判成"删了用例"。
+      # 也不能虚增用例数 —— 否则阈值 553 会因为"跳过"而被误判成"删了用例"。
       SKIP=$((SKIP + 1))
       printf "  %-28s %s\n" "SidecarChainTest" "$(echo "$out" | grep -E '跳过' | tail -1)"
     else
