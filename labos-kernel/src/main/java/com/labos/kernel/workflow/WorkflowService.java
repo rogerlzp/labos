@@ -2567,10 +2567,19 @@ public final class WorkflowService {
                         if (existing.contains(n.key())) {
                             up.setString(1, n.name());
                             up.setString(2, n.type());
+                            // protocol_name 必须和 INSERT 分支一样回写：节点设置里选完
+                            // 设备/方法只 patch 了图 XML（见 QueryService.patchNodeAttrs），
+                            // 再点页面级保存时走的是这条 UPDATE 分支。若这里不回写，
+                            // XML 里的 protocolName 就永远进不了 workflow_node ——
+                            // 读侧 RealWorkflowRunner/RecipeCompiler 按 XML 走没问题，
+                            // 但库里字段与图长期不一致（实测：绑完设备再保存，
+                            // params->>'protocol_name' 仍是空串）。
                             String mpU = n.methodParams();
+                            String protoU = n.protocolName() == null ? "" : n.protocolName();
                             up.setString(3, mpU == null || mpU.isBlank()
-                                    ? "{}"
-                                    : Jsons.obj("method_params", new Jsons.Raw(mpU)));
+                                    ? Jsons.obj("protocol_name", protoU)
+                                    : Jsons.obj("protocol_name", protoU,
+                                            "method_params", new Jsons.Raw(mpU)));
                             if (n.resourceId() == null) {
                                 up.setNull(4, java.sql.Types.BIGINT);
                             } else {
