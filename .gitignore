@@ -26,6 +26,8 @@ out/
 !docs/images/preflight-*.png
 !docs/images/paused-*.png
 !docs/images/*-ui.png
+# 设计器界面截图（网关对照图等）：文档里引用的**示意图**，不是设备实物照
+!docs/media/designer-*.png
 *.log
 /tmp/
 

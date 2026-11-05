@@ -30,7 +30,33 @@ This round closes that.
 
 ---
 
-## 2. The shape of the graph (really dragged on the page)
+## 2. What the two gateways look like (real screenshots)
+
+The designer palette has two gateway entries — **the icon is the fastest way to tell them apart**:
+
+| palette label | Icon | Parser type | Execution semantics |
+|---|---|---|---|
+| **Create gateway** | **✕-shaped** diamond (hollow X) | `exclusiveGateway` | **exclusive**: when splitting it takes **only one** branch; when joining, any arriving branch releases it |
+| **Create parallel gateway** | **＋-shaped** diamond | `parallelGateway` | **parallel**: when splitting it takes **all** branches; when joining, it waits until **every incoming branch** has arrived |
+
+The two pictures below were **really dragged in the designer** (captured by
+`scripts/shot-gateways.py`; the flow shape is identical, only the gateway differs):
+
+**A · Exclusive gateway (Create gateway, ✕ shape)**
+
+![Exclusive gateway](../media/designer-gateways-A.png)
+
+**B · Parallel gateway (Create parallel gateway, ＋ shape)**
+
+![Parallel gateway](../media/designer-gateways-B.png)
+
+> Look at the 6th and 7th icons in the left palette: **hollow diamond = exclusive (✕)**,
+> **diamond with a cross = parallel (＋)**. The ＋-shaped parallel gateway entry is what this
+> project added in batch 2 (`webapp/src/bpmn/WorkflowPalette.ts`, `create.parallel-gateway`) —
+> bpmn-js only offered the exclusive one by default, so a parallel split previously had to be
+> written as raw XML.
+
+## 3. The shape of the graph (really dragged on the page)
 
 ```
    S ── SET ── P1 ──┬── A ── X ── C ──┐
@@ -60,9 +86,9 @@ This round closes that.
 
 ---
 
-## 3. Evidence from the real run
+## 4. Evidence from the real run
 
-### 3.1 Structure after saving
+### 4.1 Structure after saving
 
 ```
 13 条连线全部连上并落库（13 条）
@@ -76,7 +102,7 @@ This round closes that.
 > `parallelGateway ×4` / `exclusiveGateway ×4` counts the **open and close tag** of each
 > gateway, so the real node count is 2 (the assertion checks `>= 2`).
 
-### 3.2 Real execution result
+### 4.2 Real execution result
 
 ```
 触发真执行（run #207135 → completed）
@@ -108,9 +134,9 @@ Activity_0riptu9 | completed     ← F
 
 ---
 
-## 4. Four pitfalls hit along the way (all real UI-layer fragilities)
+## 5. Four pitfalls hit along the way (all real UI-layer fragilities)
 
-### 4.1 The canvas is only ~690px wide, and an out-of-range coordinate **silently** drops the node
+### 5.1 The canvas is only ~690px wide, and an out-of-range coordinate **silently** drops the node
 
 The "devices by island" panel on the left squeezes `.djs-container` down to `width≈691.9`
 (at a 1500px viewport). Measured: `x=900` succeeded, `x=980` returned `None`, and `x=90`
@@ -120,7 +146,7 @@ version of the layout was spaced logically (x up to 1120), so nodes C / D / E ju
 **Fix**: all coordinates squeezed into `x ∈ [140, 700]`, and the constraint documented in
 the script.
 
-### 4.2 Clicking the source inside the shape's own box → that edge never connects
+### 5.2 Clicking the source inside the shape's own box → that edge never connects
 
 bpmn-js's `global-connect-tool` is a two-step "click source → click target". When the
 source click lands on the shape's own frame it hits its own connection anchor. Measured:
@@ -132,7 +158,7 @@ if the edge is missing, press `Esc` to leave the connection context and retry, u
 times. The criterion is "the edge in the database after saving", not the canvas DOM,
 because "present in the DOM" does not mean "visible to the execution side".
 
-### 4.3 A plain `task` node looks for a device, and turns manual when it cannot find one
+### 5.3 A plain `task` node looks for a device, and turns manual when it cannot find one
 
 The first version set A / B / C / D as plain tasks (device tasks). The real run produced
 `manual` nodes and a run stuck in `paused`, with `run_node` holding a mix of `manual` and
@@ -146,7 +172,7 @@ addressing.
 **Fix**: A / B / C / D / F all switched to **built-in nodes** (`__setVar` / `__expr`),
 which never touch a device.
 
-### 4.4 The join point E is an end event and **never enters `run_node` at all**
+### 5.4 The join point E is an end event and **never enters `run_node` at all**
 
 The first version asserted "E is `completed` in `run_node`", which can never hold. Reason:
 `WorkflowGraphParser.java:208` builds `endEvent` as `Kind.END`, while `GraphRunner` only
@@ -160,7 +186,7 @@ stronger claim than asserting on the end event.
 
 ---
 
-## 5. A real bug fixed along the way: `q()` failing silently
+## 6. A real bug fixed along the way: `q()` failing silently
 
 While investigating 4.3 I was misled for a full round: the script reported "the run did not
 finish", yet the run in the database was actually `completed`.
@@ -182,7 +208,7 @@ instead of silently returning an empty string. Verified: deliberately withholdin
 
 ---
 
-## 6. Boundaries and what is still uncovered (honest list)
+## 7. Boundaries and what is still uncovered (honest list)
 
 | Item | Status | Note |
 |---|---|---|
@@ -195,7 +221,7 @@ instead of silently returning an empty string. Verified: deliberately withholdin
 
 ---
 
-## 7. How to re-run
+## 8. How to re-run
 
 ```bash
 export LABOS_DB_HOST=192.168.124.2 LABOS_DB_NAME=labdb \
@@ -214,7 +240,7 @@ test residue.
 
 ---
 
-## 8. Gate integration
+## 9. Gate integration
 
 `scripts/ci-gate.sh` gains a new **section 4.14**, threshold `MIN_MULTIPAR=21`:
 
