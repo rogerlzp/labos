@@ -37,7 +37,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_PFLOW` / `MIN_PEXP` | 4 / 3 | In-flow parallelism / same-island concurrency |
 | `MIN_MATRIX` | 45 | Full flow matrix (`verify-flow-matrix.py`) |
 | `MIN_E2E` | 24 | Page main paths (`e2e-smoke.py`) |
-| `MIN_E2EFM` | 30 | Page flow matrix (`e2e-flow-matrix.py`) |
+| `MIN_E2EFM` | 33 | Page flow matrix (`e2e-flow-matrix.py`) |
 | `MIN_EXPCTL` | 22 | Experiment run control (`verify-exp-control.py`) |
 | `MIN_E2ESIM` | 24 | Simulator integration (`e2e-sim-flow.py`) |
 | `MIN_ALERTS` | 8 | Page alert ack/close (`e2e-alerts.py`); gate lower bound, measured value in review package 04 |
@@ -58,7 +58,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 1.2 | Multi-step node collapsible in the UI | `e2e-flow-matrix.py` section A (reopen after save) | L4 | ✅ | ✅ |
 | 1.3 | Auto-compile (runtime expansion) | `api.ExperimentGraphCompileSelfTest`; `workflow.RecipeCompilerTest` | L1 | ✅ | ✅ |
 | 1.4 | Decision (XOR, with default edge) | `verify-flow-matrix.py` xor / xor3; `workflow.GraphRunnerTest`; `e2e-flow-matrix.py` section E (sequence-flow condition + gateway default) | L1+L3+L4 | ✅ | ✅ |
-| 1.5 | Parallel (fork and join) | `verify-flow-matrix.py` parallel; `verify-parallel-flow.py`; `workflow.GraphRunnerTest` | L1+L3 | ✅ | ✅ |
+| 1.5 | Parallel (fork and join) | `verify-flow-matrix.py` parallel; `verify-parallel-flow.py`; `workflow.GraphRunnerTest`; `e2e-flow-matrix.py` section A (palette parallel gateway entry + persistence + palette trim) | L1+L3+L4 | ✅ | ✅ |
 | 1.6 | Time Constraint (min / max interval) | `engine.TimeConstraintSelfTest` (25 cases, pure logic); `engine.TimeConstraintExecutor` | L1 | ✅ | ✅ |
 | 1.7 | Sequential execution of experiment blocks | `workflow.ExperimentOrderSelfTest`; `verify-flow-matrix.py` experiment | L1+L3 | ✅ | ✅ |
 | 1.8 | Sub-process executes as a sub-graph | `e2e-sim-flow.py` section A (page assembly) | L4 | ✅ | ✅ |
@@ -219,7 +219,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 8 | Correctness under load (not just throughput) | State corruption under lock contention | The load test only measured throughput |
 | 9 | Rolling schedule (spec §14.8: commit window / 15-minute freeze zone / greedy) | A broken commit window or freeze zone scrambles the experiments already committed | Out of scope, not yet implemented enough to be testable |
 | 10 | Backend run-path automatic robot-arm insertion + a combined plate-move assertion | The designer inserts `Transfer` while a graph is built, but `WorkflowBuilder` / `GraphRunner` / `flow-run` do not add it at run time; whether a plate really moves from position A to B via the arm is not asserted (`position_state` only covers the UNKNOWN lock-out) | The §14.2/§14.3 expansion rule has to move from the frontend into the executor and depends on taught `robot_point.code`; recorded in the decision log and D16, a separate batch |
-| 11 | Logic nodes on the experiment canvas cannot be saved, and parallel does not execute | Dragging fork/parallel/loop/join/variable/device nodes on `/canvas` makes saving fail in `compileExperimentGraph` (only start/end/workflow are accepted), while `runFlow` skips parallel, treats join as a visual marker and ignores workflow nodes; "drawn but not executed" misleads more than a missing feature | Settled as "the canvas only does cross-workflow orchestration"; batch 1 has stopped the bleeding - the `/canvas` palette now offers only "workflow", start/end are laid out automatically, and the canvas no longer calls `flow-run`; adding parallel/condition/loop limits to the designer is in `docs/en/design/logic-nodes-by-layer.md` §5 - batch 3 (condition expression) and batch 4 (loop limit) are done, batch 2 (parallel gateway) has not started |
+| 11 | Logic nodes on the experiment canvas cannot be saved, and parallel does not execute | Dragging fork/parallel/loop/join/variable/device nodes on `/canvas` makes saving fail in `compileExperimentGraph` (only start/end/workflow are accepted), while `runFlow` skips parallel, treats join as a visual marker and ignores workflow nodes; "drawn but not executed" misleads more than a missing feature | Settled as "the canvas only does cross-workflow orchestration"; batch 1 has stopped the bleeding - the `/canvas` palette now offers only "workflow", start/end are laid out automatically, and the canvas no longer calls `flow-run`; adding parallel/condition/loop limits to the designer is in `docs/en/design/logic-nodes-by-layer.md` §5 - batch 2 (parallel gateway, including palette trimming), batch 3 (condition expression) and batch 4 (loop limit) are all done |
 
 ---
 

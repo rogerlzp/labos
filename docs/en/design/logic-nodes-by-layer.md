@@ -52,7 +52,7 @@ Legend: ✅ supported / 🟡 partial / ⬜ not supported. Evidence is in `Experi
 Three boundaries follow:
 
 1. The experiment canvas **no longer offers** node types that cannot be saved or run; either make them fully work or remove them from the palette.
-2. The workflow designer gains three editing entry points: parallel gateway, condition expression and loop limit (condition expression and loop limit are done; the parallel gateway awaits Batch 2); it does not pull in `bpmn-js-properties-panel` and reuses the lightweight `NodeSettings` panel.
+2. The workflow designer gains three editing entry points: parallel gateway, condition expression and loop limit (parallel gateway, condition expression and loop limit are all done as of 2026-11-05); it does not pull in `bpmn-js-properties-panel` and reuses the lightweight `NodeSettings` panel.
 3. Both condition syntaxes converge on the backend `ConditionEvaluator`; the canvas's home-grown `evalCondition` is retired so it cannot "look fine and take the wrong branch".
 
 ## 5. Implementation route (onboarding guide)
@@ -64,12 +64,12 @@ Three boundaries follow:
 - Update `scripts/e2e-canvas.py`: the assertion changes from "six kinds" to "workflow + start/end", lower `MIN_CANVAS` accordingly and state the reason in the commit message (required by the test specification).
 - Documents: section 11 of `docs/实验编排-功能设计.md` and `docs/技术架构与模块地图.md:231-237` change "the canvas supports fork/parallel" to "the canvas only does cross-workflow orchestration".
 
-### Batch 2 · Add the parallel gateway to the designer (1 day, not started)
+### Batch 2 · Add the parallel gateway to the designer (1 day) ✅ done (2026-11-05)
 
-- Add `webapp/src/bpmn/ParallelGatewayPalette.ts` (a custom PaletteProvider extension: `create.parallel-gateway` → `modeling.createShape({type:'bpmn:ParallelGateway'})`) and register it in `additionalModules`.
+- Add `webapp/src/bpmn/WorkflowPalette.ts` (a custom PaletteProvider extension at priority 900; `getPaletteEntries()` returns an updater that adds/removes on top of the default entries) and register it in the `BpmnModeler` `additionalModules`. It is not named `Parallel*` because it both adds the parallel gateway and removes the parser-unsupported entries.
 - Also trim the palette: remove entries the parser does not accept (intermediate/boundary events, data objects, data stores, lanes/participants, groups). Such a node dropped on the chain is silently skipped by `GraphRunner` (`node == null → continue`, and it does not enqueue its successor), so the whole stretch after it never runs and no error is raised.
 - Acceptance: it can be dragged out, connected with two outgoing and two incoming edges, saved, and `PreflightChecker` PF-05 (missing join edge) can report it; the three parallel assertions of `verify-flow-matrix.py` do not regress.
-- UI test: add "drag out a parallel gateway" and "saved XML contains parallelGateway" to `e2e-flow-matrix.py`.
+- UI test: section A of `e2e-flow-matrix.py` gains 3 assertions - "the parallel gateway can be dragged out", "the saved XML contains bpmn:parallelGateway" and "the parser-unsupported palette entries are gone" (a missing entry fails on its own line).
 
 ### Batch 3 · Condition-expression UI (1–1.5 days) ✅ done (2026-11-05)
 
@@ -101,6 +101,6 @@ Three boundaries follow:
 ## 7. Where to start
 
 - Key files: `webapp/src/pages/ExperimentCanvas.tsx`, `webapp/src/pages/Designer.tsx`, `webapp/src/bpmn/`, `labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowGraphParser.java`, `GraphRunner.java` in the same package, `api/QueryService.java:4003-4130`, `workflow/PreflightChecker.java:202-269`.
-- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (45); `python3 scripts/e2e-flow-matrix.py` (30); `python3 scripts/e2e-canvas.py` (12).
+- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (45); `python3 scripts/e2e-flow-matrix.py` (33); `python3 scripts/e2e-canvas.py` (12).
 - Number discipline: changing cases requires updating the `MIN_*` constants in `scripts/ci-gate.sh`, `docs/测试用例总表.md`, `ROADMAP.md` and review package 04 in both languages; thresholds may only go up, and a real reduction must be explained in the commit message.
 - Do not touch the body of historical snapshots: `docs/评审包-20261103/`, `docs/评审包-20261104/`, `LabOS实现总纲_20261029.md`.
