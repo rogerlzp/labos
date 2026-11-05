@@ -97,7 +97,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 4.2 | Ready three-state and pull loop | `verify-parallel-experiments.py` | L3 | ✅ | ✅ |
 | 4.3 | Static scheduling, dependencies other than Run After | Static scheduling not implemented (outside the release); the `Run After` order is covered by `verify-scheduler-acceptance.py` | — | ⬜ | ⬜ |
 | 4.4 | Global makespan optimisation | Out of scope, no case | — | ⬜ | ⬜ |
-| — | Scheduler queue rehydrate after restart | `workflow.SchedulerRehydrateSelfTest`; `verify-s3-2-residuals.py` | L2+L3 | ✅ | ⬜ |
+| — | Scheduler queue rehydrate after restart | `workflow.SchedulerRehydrateSelfTest`; `verify-s3-2-residuals.py` | L2+L3 | ✅ | ✅ |
 
 ### L5 Simulation
 
@@ -149,7 +149,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | Item | Feature | Case / script | Layer | Automated | In CI |
 |---|---|---|---|---|---|
 | 9.1 | Policy create/edit/delete + replay hits before save | `e2e-policies.py` | L4 | ✅ | ✅ |
-| 9.2 | Run recovery after a crash | `workflow.StartupSettleSelfTest`; `verify-s3-2-residuals.py` | L2+L3 | ✅ | ⬜ |
+| 9.2 | Run recovery after a crash | `workflow.StartupSettleSelfTest`; `verify-s3-2-residuals.py` (kill -9 → restart, end to end) | L2+L3 | ✅ | ✅ |
 | 9.3 | Roles, permissions, audit log | `api.RbacRulesSelfTest`; `api.UserRoleDbSelfTest`; `verify-rbac.py` | L1+L2+L3 | ✅ | ⬜ |
 | — | On-site hold (pause / resume / stop) | `verify-exp-control.py`; `e2e-flow-matrix.py` section D | L4 | ✅ | ✅ |
 
@@ -169,9 +169,9 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 13.2 | run→experiment status mapping + the persisted SQL CASE pinned word for word | `workflow.StatusVocabularySelfTest` | L1 | ✅ | ✅ |
 | 13.3 | Three pause kinds: grammar and semantics | `workflow.StatusVocabularySelfTest` (contract); `workflow.PauseManagerSelfTest` (an unknown plate position must be reconciled before resume) | L1+L2 | ✅ | L1 in CI |
 | 13.4 | On-site hold (kind × scope, priority experiment>island>site) + return position kept | `workflow.RuntimeHoldSelfTest`; `workflow.RuntimeHoldDbSelfTest`; `workflow.PauseManagerSelfTest` | L1+L2 | ✅ | L1 in CI |
-| 13.5 | Crash recovery (orphan running→failed + `recoverable` + 7-day window) | `workflow.StartupSettleSelfTest` | L2 | ✅ | ⬜ local |
+| 13.5 | Crash recovery (orphan running→failed + `recoverable` + 7-day window) | `workflow.StartupSettleSelfTest` (L2, the method); `verify-s3-2-residuals.py` (L3, end to end: kill -9 → restart → startup fallback settle) | L2+L3 | ✅ | ✅ |
 | 13.6 | Batched execution S3.2 (split / `attempt_no` rerun / a completed batch refuses a rerun) | `workflow.BatchPlannerSelfTest`; `workflow.BatchDbSelfTest`; `verify-exp-batch.py` | L1+L2+L3 | ✅ | L1 in CI |
-| 13.7 | Resume from a breakpoint (`seq:loop_index` + `skipKeys`) | `verify-device-chain.sh` §6; `workflow.RunControlDbSelfTest` | L3+L2 | ✅ | ⬜ local |
+| 13.7 | Resume from a breakpoint (`seq:loop_index` + `skipKeys`) | `verify-device-chain.sh` §6; `workflow.RunControlDbSelfTest`; `workflow.GraphRunnerTest` (a hit is skipped / a rename mismatch re-runs) | L3+L2+L1 | ✅ | L1 in CI |
 | 13.8 | Attendance mode (attended/unattended) switching and alert level | `workflow.RunControlSelfTest`; `e2e-smoke.py` §1 | L1+L4 | ✅ | L1 in CI |
 
 ### L12 Concurrency, resources and scheduling (spec §14)

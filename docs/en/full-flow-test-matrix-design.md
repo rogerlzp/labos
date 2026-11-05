@@ -208,4 +208,4 @@ lands in the DB (present in the graph XML, missing in the table). The UPDATE bra
 
 None open: the Class A item (a back edge spanning a parallel region) is the `loopback`
 section; the backend matrix is wired into `ci-gate.sh` (`MIN_MATRIX=45`), the page-side matrix
-too (`MIN_E2EFM=45`), and so is the simulator integration (`MIN_E2ESIM=24`).
+too (`MIN_E2EFM=45`), the simulator integration (`MIN_E2ESIM=24`), and the crash-recovery end-to-end check (`MIN_CRASH=31`).

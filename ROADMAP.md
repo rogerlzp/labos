@@ -40,6 +40,8 @@
 
 **2026-11-05 补（批次 2 · 设计器并行网关 + 接缝断言）**：批 2（`WorkflowPalette.ts` 补并行网关入口 + 收敛解析器不认的 palette 项）已落地；并补上此前系统性缺失的「设计器画的图 → 真跑」接缝断言（`e2e-flow-matrix.py` F 节 12 条：页面画异或分支图 + 连线条件 + 变量节点参数 → 真执行 → 命中分支 `completed`、落空分支 `bypassed`）。页面流程矩阵 **33 → 45**，门禁 `MIN_E2EFM=45`。subProcess 静默跳过按 2026-11-05 裁定仅登记、暂不动代码；批 5（跨流程并行）维持挂起。见 `docs/设计-逻辑节点分层与编辑器分工.md` §5。
 
+**2026-11-05 补（崩溃恢复端到端）**：既有 L2 自测（`workflow.StartupSettleSelfTest` / `workflow.SchedulerRehydrateSelfTest`）在进程内 `new` 实例、包内重载造数，只证明方法本身对，证明不了 ApiServer 启动入口真调了 settle/rehydrate。本轮把 `verify-s3-2-residuals.py` 扩到 **31** 条端到端：真 `kill -9` 内核进程 → 重启 → 断言 queued run 被启动 rehydrate 装回队列并派发到终态；崩溃时 `running` 的 `run` / `experiment_run` 孤儿被启动兜底 settle 成 `failed`（`interrupted` / `recoverable` / `completedNodes` 回写、`experiment` 状态同步、合法 `completed` run 不被触碰）；二次重启幂等。日志路径改为 pgrep + lsof 反查，避免写死路径的假红。接入 CI 门禁 `MIN_CRASH=31`（gate 4.13，见 `ci-gate.sh`）。台账 9.2 / 13.5 由 ⬜ 改 ✅。
+
 ### 1.2 当前基线（可复跑，不是估计）
 
 ```
