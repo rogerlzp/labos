@@ -90,6 +90,16 @@ Three boundaries follow:
 - To keep canvas parallel/join: first allow those two kinds in `QueryService.compileExperimentGraph` and make the experiment executor really run sub-workflows in parallel; otherwise keep them hidden.
 - Risk: logical parallelism is not wall-clock parallelism; the island lock serialises devices on the same island.
 
+### Backlog · subProcess silently skipped (decided 2026-11-05: park it, do it later)
+
+- Problem: `subProcess` is not in the parser whitelist (`WorkflowGraphParser.java:189-197`), so an empty sub-process wired into the chain makes its successors silently **bypassed** (the run still reports `completed`). Measured evidence in §5 Batch 2 "known risk" above and honesty list item 12 of `docs/en/test-case-master-table.md`.
+- Three candidate fixes (pick one when scheduled):
+  1. **Preflight block**: add a generic rule to `PreflightChecker` - a node the parser does not recognise on the chain is `Level.ERROR` (keeps sub-process grouping, turns the silent skip into an explicit block);
+  2. **Remove from the palette**: add `create.subprocess-expanded` to the trim list in `WorkflowPalette.ts` (most thorough, at the cost of no longer being able to group with a sub-process);
+  3. **Make the parser transparent**: treat `subProcess` as a transparent container (in edges to the inner start, out edges from the inner end) for real sub-graph semantics (highest cost, changes runtime behaviour).
+- Dependency: if option 3 is chosen, `GraphRunner` and the `verify-flow-matrix.py` (45) cases must be updated in step, and two contrasting assertions ("empty sub-process" / "sub-process with content") must be added.
+- Why unscheduled: it does not affect the current main path (the designer normally wires start/task/gateway directly), and each of the three fixes has its own trade-off, so the approach must be agreed first.
+
 ## 6. Decisions needed
 
 | # | Question | Recommended default |
