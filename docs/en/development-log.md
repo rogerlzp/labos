@@ -4935,3 +4935,54 @@ task node-settings card — that is a different card, and a task's name is curre
 from its device/method); the "double border" of `rg-join` is simulated with a drop-shadow
 rather than a true double stroke; cross-workflow parallelism is still not implemented
 (P2 batch 5, see the review bundle 02).
+
+### 2026-11-06 (gateway pairs + N-value coverage: exclusive/parallel at N=2 and N=3)
+
+**Background**: after the gateway-readability work the user pointed at a substantive problem
+with the exclusive gateway: **"the exclusive one is wrong — after it there should be more than
+two running together, and it should be tested with two or three-plus scenarios; and the
+exclusive one is the same: it needs an exclusive start and an exclusive end as a pair to be
+readable."** Checking the previous graph (`e2e-multi-parallel.py`) against the backend rule showed
+the **names did not match the structure**:
+
+| Gateway | Actual in/out | Real role | Name given back then |
+|---|---|---|---|
+| P1 | in 1 / out 2 | split | parallel split ✓ |
+| P2 | in 1 / out 2 | split | parallel split ✓ |
+| **X** | **in 1 / out 1** | **straight through** | ~~exclusive split~~ ✗ |
+| **X2** | **in 1 / out 1** | **straight through** | ~~exclusive split~~ ✗ |
+
+**The whole graph had no join at all**, and the two "exclusive" gateways were straight-through
+rather than splits; the names were hard-coded by the script and never checked against anything —
+so the user was right, and it was worse than legibility: **the graph was lying.**
+
+**What was done**: added `scripts/e2e-gateway-pairs.py` (gate 4.15, threshold `MIN_GWPAIR=34`):
+two graphs — N=2 and N=3 — **each containing both an "exclusive split + exclusive join" pair
+and a "parallel split + parallel join" pair**, i.e. eight role checks in total. Three key
+design decisions: ① **naming is not hard-coded — it goes through the page's "use the suggested
+name" button**, so the assertion is that "the role the engine derives from the edge counts"
+matches "the name shown on the graph" (hard-coding was the root cause of the mismatch);
+② the role rule is the same source as the backend `WorkflowGraphParser` (more than one incoming
+→ join, more than one outgoing → split, both → join, one in / one out → straight through);
+③ execution semantics asserted separately: **all N parallel branches run**, the **exclusive split
+takes exactly one** and the rest are `bypassed`.
+
+**Verification**: all eight role checks correct and every one derived from the page button; all
+four names landed in the graph XML; edge counts exactly as expected; two real runs both
+`completed` (all parallel branches ran, the exclusive split took one); **34 passed / 0 failed**.
+
+**Pitfalls**: ① **which branch the exclusive split takes is not deterministic** — with no
+condition and no default, `choose()` takes the first edge by **target node id lexicographic
+order**, and node ids are generated randomly by bpmn-js (`Activity_0ajn4aq` and the like). The
+first version asserted "branch B ran"; two runs took A and C respectively ⇒ the assertion can
+only be "exactly one branch ran". ② **every branch node must be turned into a built-in node** —
+the first version only converted the *expected* branches, so the node on the branch the exclusive
+split actually took was still a plain task (a device task) → it looked for a device → none found
+→ turned `manual` and stopped → the run sat in `paused` (both N=2 and N=3 failed this way).
+③ The gate section count goes **18 → 19** (adding 4.15), and the review bundle and master table
+were synchronised (Chinese/English).
+
+**Boundary**: only gateways **within one workflow** are covered, with their N values; **cross-
+workflow parallelism is still not implemented** (P2 batch 5); an exclusive join is an OR join
+(any arriving branch releases it) while a parallel join is an AND join (every incoming branch
+must arrive first) — and that difference is exactly what this section asserts.

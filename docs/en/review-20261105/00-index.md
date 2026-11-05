@@ -19,7 +19,7 @@
 | Range of this round | `2c62ac3..bb97b62`, **33 commits** (including `2c62ac3` itself); earlier commits are the repository rebuild, de-narration and version-alignment work and are out of scope |
 | Runtime environment | macOS, Java 17 (no Maven, full `javac` build); PostgreSQL 17.10 (database `labdb`); API `127.0.0.1:18080`; frontend dev `localhost:5173`; device simulator `19500+` |
 | Test baseline | Pure logic **624/0**; full run with database **1005/0**; device chain **41/0**; flow matrix **45/0**; page flow matrix **45/0**; frontend e2e **24/0**; crash-recovery end to end **31/0** |
-| Gate | `./scripts/ci-gate.sh --all` **18 gates green** (thresholds may only rise — enforced by the gate's own "thresholds may only rise" check: any `MIN_*` below its historical value turns the gate red; the thresholds live at the top of `scripts/ci-gate.sh`) |
+| Gate | `./scripts/ci-gate.sh --all` **19 gates green** (thresholds may only rise — enforced by the gate's own "thresholds may only rise" check: any `MIN_*` below its historical value turns the gate red; the thresholds live at the top of `scripts/ci-gate.sh`) |
 
 ## 2. How to reproduce (the reviewing AI can execute each item)
 
@@ -31,7 +31,7 @@ cd <repo>
 #    down here — use your own environment variables)
 LABOS_DB_HOST=<host> LABOS_DB_NAME=labdb LABOS_DB_USER=labos \
 LABOS_DB_PASS='<password>' ./scripts/test-all.sh          # 1005/0
-# 3) Full gate (needs DB + simulator + frontend + API running) — 18 gates
+# 3) Full gate (needs DB + simulator + frontend + API running) — 19 gates
 ./scripts/ci-gate.sh --all
 # 4) Key scripts of this round (real DB + real API + real pages)
 python3 scripts/verify-s3-2-residuals.py --base http://localhost:5173   # 31: crash recovery end to end (kill -9 → restart → startup fallback settle)

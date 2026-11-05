@@ -47,6 +47,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_METHOD_DROP` | 17 | Device images / a method node with its image / automatic robot-arm insertion across devices / deletion (`e2e-method-drop.py`); 17 resident assertions without a DB, 20 with one |
 | `MIN_CRASH` | 34 | Crash recovery end to end (`verify-s3-2-residuals.py`); kill -9 → restart → queued rehydrate + orphan running settled by the startup fallback + `paused` not killed by mistake + queued zombie (queued for over 1 hour) collected |
 | `MIN_MULTIPAR` | 21 | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables (`e2e-multi-parallel.py`); drag 12 nodes / 13 edges on the page → save → really run → all three parallel branches completed |
+| `MIN_GWPAIR` | 34 | Gateway pairs · exclusive and parallel each at N=2 and N=3 (`e2e-gateway-pairs.py`); the four gateway roles come from the page's "use the suggested name" button and must match the incoming/outgoing edge counts → split and join appear **as a pair** → really run: all N parallel branches run, the exclusive split takes exactly one branch and the rest are bypassed |
 
 ---
 
@@ -206,6 +207,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `scripts/e2e-method-drop.py` | Island devices → drag a method to create a node: XML binding / compile recognition / persistence (skipped when the island is empty or the device has no methods) | L4 | ✅ |
 | `scripts/e2e-multi-parallel.py` | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables: drag 12 nodes / 13 edges on the page → the graph holds 2 parallelGateway + 2 exclusiveGateway → really run → all three parallel branches completed | L4 | ✅ |
 | `scripts/shot-gateway-labels.py` | Gateway readability · naming + role labels + a visible end marker: drag "exclusive split → parallel split → parallel join" on the page and name them → all three names land in the graph XML → screenshots confirm legible labels, an orange join marker and a dark end event | L4 | ⬜ reviewed by eye |
+| `scripts/e2e-gateway-pairs.py` | Gateway pairs · exclusive/parallel at N=2 and N=3: drag two graphs → roles come from "use the suggested name" and must match the edge counts → names land in the graph XML → really run: all parallel branches run, the exclusive split takes exactly one | L4 | ✅ |
 
 ---
 

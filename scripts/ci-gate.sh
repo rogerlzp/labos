@@ -57,6 +57,7 @@ MIN_CANVAS=12     # 2026-11-05：实验画布（跨流程编排：仅「流程�
 MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / 跨设备自动插机械臂 / 删除（无库 17 条常驻，有库 20）
 MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle + paused 不被误杀 + 排队僵尸被收，31 → 34）
 MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
+MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 
 FAIL=0
 SKIP=0
@@ -417,8 +418,30 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "多并行多网关 $M2N / 0（2 并行网关 + 2 异或网关 + 变量节点，页面拖→真跑）"
     fi
   fi
+
+  # 4.15 网关「成对」与多分支（e2e-gateway-pairs.py）
+  # 补的是「异或/并行分叉必须与汇合成对出现」+「N=2 与 N=3 都要测」：
+  # 上一版 4.14 的图按后端口径一算是 2 个分叉 + 2 个**直通**（X/X2 入1出1），
+  # 名字叫「异或分叉」却名实不符，也没有任何一个汇合点（2026-11-06 用户指出）。
+  note "4.15 网关成对 · N=2/N=3（e2e-gateway-pairs.py）"
+  GOUT=$(python3 scripts/e2e-gateway-pairs.py --base "$E2E_BASE" 2>&1)
+  if echo "$GOUT" | grep -q '^SKIP'; then
+    skip "网关成对（没给库连接）"
+  else
+    GN=$(echo "$GOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+    GF=$(echo "$GOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+    GN=${GN:-0}; GF=${GF:-1}
+    if [[ "$GF" != "0" ]]; then
+      fail "网关成对有失败（$GF 条）"
+      echo "$GOUT" | grep '✗' | head -8
+    elif (( GN < MIN_GWPAIR )); then
+      fail "网关成对断言 $GN < 阈值 ${MIN_GWPAIR}"
+    else
+      pass "网关成对 $GN / 0（异或/并行各 N=2+N=3，分叉与汇合成对）"
+    fi
+  fi
 else
-  skip "前端 e2e / 4.5-4.14 页面轨（没给 --e2e）"
+  skip "前端 e2e / 4.5-4.15 页面轨（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果

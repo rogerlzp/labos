@@ -311,7 +311,88 @@ at a glance), and a join (more than one incoming edge) gets an orange stroke:
 
 ---
 
-## 10. Gate integration
+## 10. Gateway "pairs" and multiple branches (added 2026-11-06)
+
+The user pushed further: **"the exclusive one is wrong — after it there should be more than two
+running together, and it should be tested with two or three-plus scenarios; and the exclusive
+one is the same: it needs an exclusive start and an exclusive end as a pair to be readable."**
+
+Checking that turned up something worse than "hard to read" in the graph from §3:
+
+| Gateway | Actual in/out edges | Real role | Name given back then |
+|---|---|---|---|
+| P1 | in 1 / out 2 | split | parallel split ✓ |
+| P2 | in 1 / out 2 | split | parallel split ✓ |
+| **X** | **in 1 / out 1** | **straight through** | ~~exclusive split~~ ✗ name did not match |
+| **X2** | **in 1 / out 1** | **straight through** | ~~exclusive split~~ ✗ name did not match |
+
+In other words: **the whole graph had no join at all**, and the two "exclusive" gateways were
+straight-through rather than splits — the names were hard-coded by the script and never checked
+against anything. The user was right, and it was worse than legibility: **the graph was lying.**
+
+### 10.1 New test: gateway pairs · N=2 and N=3
+
+`scripts/e2e-gateway-pairs.py` (gate section 4.15, threshold `MIN_GWPAIR=34`):
+
+```
+Graph 1 (N=2)                       Graph 2 (N=3)
+S ─ XS ─┬─ A ─┐                    S ─ XS ─┬─ A ─┐
+         └─ B ─┴─ XJ ─ PS ─┬─ C ─┐          ├─ B ─┼─ XJ ─ PS ─┬─ P ─┐
+                            └─ D ─┴─ PJ ─ E  └─ C ─┘           ├─ Q ─┼─ PJ ─ E
+                                                                    └─ R ─┘
+XS=exclusive split  XJ=exclusive join  PS=parallel split  PJ=parallel join
+```
+
+**All four graphs (N=2/N=3 × exclusive/parallel) satisfy: split and join appear as a pair.**
+
+**The real N=3 screenshot** (the four gateways stand in pairs, the structure reads at a glance):
+
+![Gateway pairs N=3](../media/designer-gateway-pairs-N3.png)
+
+![Gateway pairs N=2](../media/designer-gateway-pairs-N2.png)
+
+### 10.2 Three key design decisions
+
+1. **Naming is not hard-coded — it goes through the page's "use the suggested name" button** —
+   so the assertion is that "**the role the engine derives from the edge counts**" matches "the
+   name shown on the graph". The previous version hard-coded the names, which is exactly how it
+   ended up calling a straight-through node an "exclusive split".
+2. **The role rule is the same source as the backend** — more than one incoming edge → join, more
+   than one outgoing → split, both → join (wait first, then split), one in / one out → straight
+   through (`WorkflowGraphParser`).
+3. **Execution semantics asserted separately** — all N parallel branches run; the exclusive
+   split takes **exactly one** branch, the rest are `bypassed`.
+
+### 10.3 Pitfall: which branch the exclusive split takes is **not deterministic**
+
+`choose()` with no condition and no default picks the first edge by **target node id
+lexicographic order** (`GraphRunner.choose`), and node ids are generated randomly by bpmn-js
+(`Activity_0ajn4aq` and the like) — **which branch runs may differ every time**. So the assertion
+can only be "exactly one branch ran", never "branch B ran" (the first version said exactly that,
+and two runs took A and C respectively).
+
+### 10.4 Pitfall: every branch node must be a **built-in** node
+
+The first version only turned the *expected* branches into built-in nodes, so the node on the
+branch the exclusive split actually took was still a plain task (a device task) → it looked for
+a device → none found → turned `manual` and stopped → the whole run sat in `paused`
+(both N=2 and N=3 failed this way: nodes were `manual`/`running`, not `completed`).
+**All** branch nodes must be built-in nodes.
+
+### 10.5 Verification
+
+- Two graphs × four gateways = **8 role checks all correct**, every one derived from the page's
+  "use the suggested name"
+- All four names (exclusive split / exclusive join / parallel split / parallel join) **landed in
+  the graph XML**
+- Edge counts exactly as expected (N=2: in1/out2 and in2/out1; N=3: in1/out3 and in3/out1)
+- Two real runs both `completed`: all N parallel branches ran, the exclusive split took exactly
+  one and the rest were `bypassed`
+- **34 passed / 0 failed**
+
+---
+
+## 11. Gate integration
 
 `scripts/ci-gate.sh` gains a new **section 4.14**, threshold `MIN_MULTIPAR=21`:
 
