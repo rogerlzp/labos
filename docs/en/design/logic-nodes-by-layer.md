@@ -7,7 +7,7 @@
 ## 0. One-line conclusion
 
 - Logic nodes (exclusive, parallel, conditions, loops, variables) **belong inside a workflow** and belong to the bpmn-js designer; the experiment canvas only does "cross-workflow orchestration".
-- The real state today is a **capability mismatch**: the designer **can execute but has no editing entry point** (no parallel gateway in the palette, no condition-expression UI, no loop-limit UI), while the experiment canvas **has entry points but can neither save nor execute** (`fork/parallel/loop/variable/device/join` all return 400 on save, and `parallel` is skipped at run time).
+- The real state today is a **capability mismatch**: the designer **still has entry-point gaps** (still no parallel-gateway entry in the palette; the condition-expression and loop-limit entry points were closed in Batch 3 / Batch 4), while the experiment canvas **has entry points but can neither save nor execute** (`fork/parallel/loop/variable/device/join` all return 400 on save, and `parallel` is skipped at run time).
 - So the task is not "move the canvas model into the designer" but: **give the designer the editing entry points, and shrink the canvas to what it can actually run**.
 
 ## 1. The user's wording (the constraint of this document)
@@ -20,10 +20,10 @@
 
 | Logic capability | Experiment canvas `/canvas` | Workflow designer `/designer/:id` | Backend executor | Existing assertions |
 |---|---|---|---|---|
-| Exclusive branch | 🟡 a `fork` node plus one condition box; `runFlow` picks an edge; **save returns 400** | 🟡 can create an `exclusiveGateway`; **no UI for condition/default** | ✅ `SPLIT_XOR` + condition → default → first by order | ✅ xor 6 / xor3 3 |
+| Exclusive branch | 🟡 a `fork` node plus one condition box; `runFlow` picks an edge; **save returns 400** | ✅ can create an `exclusiveGateway`; condition/default have UI (right column "Sequence flow · condition") | ✅ `SPLIT_XOR` + condition → default → first by order | ✅ xor 6 / xor3 3 |
 | Parallel fork/join | ⬜ `parallel` is skipped, `join` is visual only; save returns 400 | ⬜ **no palette entry**, XML must be hand-edited | ✅ `SPLIT_PARALLEL` activates every outgoing edge + `JOIN_PARALLEL` waits for all incoming edges | ✅ parallel 3 / loopback 2 |
-| Condition expression | 🟡 a home-grown `evalCondition`: spaces required, no arithmetic/logic/parentheses, parse failure means true | ⬜ no UI | ✅ `conditionExpression` + `default`, `ConditionEvaluator` supports comparisons/logic/parentheses/plus-minus | ✅ builtin/outvar/xor |
-| Loop | 🟡 a `loop` node that duplicates steps in the frontend (≤20); no back edge; save returns 400 | 🟡 a back edge can be drawn by hand, **no loop marker / maxIterations UI** | ✅ back edge + DFS cycle detection + `maxVisits` (default 10) + `loop_index` | ✅ loop 3 / loopback 2 |
+| Condition expression | 🟡 a home-grown `evalCondition`: spaces required, no arithmetic/logic/parentheses, parse failure means true | ✅ sequence-flow condition UI (writes `bpmn:conditionExpression` + gateway `default`) | ✅ `conditionExpression` + `default`, `ConditionEvaluator` supports comparisons/logic/parentheses/plus-minus | ✅ builtin/outvar/xor |
+| Loop | 🟡 a `loop` node that duplicates steps in the frontend (≤20); no back edge; save returns 400 | ✅ a back edge can be drawn by hand; workflow-level `maxIterations` UI (right column "Workflow options") | ✅ back edge + DFS cycle detection + `maxVisits` (default 10) + `loop_index` | ✅ loop 3 / loopback 2 |
 | Variables | 🟡 a `variable` node with `k=v`, request-only; save returns 400 | ✅ `__setVar` / `__expr` panel | ✅ `Kind.BUILTIN` + device output write-back | ✅ builtin 4 / outvar 2 |
 | Sub-workflow | 🟡 a `workflow` node can pick a workflow and save; **`runFlow` ignores it** | ✅ multi-step collapsible subProcess | 🟡 `BpmnExpander` expands it; `callActivity` not done | 🟡 experiment 3 |
 | Manual pause | ⬜ runs synchronously, no pause | ⬜ palette has an intermediate event, the executor does not accept it | ✅ node-boundary pauseChecker + MANUAL stops the graph | ✅ pause 10 |
@@ -52,7 +52,7 @@ Legend: ✅ supported / 🟡 partial / ⬜ not supported. Evidence is in `Experi
 Three boundaries follow:
 
 1. The experiment canvas **no longer offers** node types that cannot be saved or run; either make them fully work or remove them from the palette.
-2. The workflow designer gains three editing entry points: parallel gateway, condition expression and loop limit; it does not pull in `bpmn-js-properties-panel` and reuses the lightweight `NodeSettings` panel.
+2. The workflow designer gains three editing entry points: parallel gateway, condition expression and loop limit (condition expression and loop limit are done; the parallel gateway awaits Batch 2); it does not pull in `bpmn-js-properties-panel` and reuses the lightweight `NodeSettings` panel.
 3. Both condition syntaxes converge on the backend `ConditionEvaluator`; the canvas's home-grown `evalCondition` is retired so it cannot "look fine and take the wrong branch".
 
 ## 5. Implementation route (onboarding guide)
@@ -64,21 +64,24 @@ Three boundaries follow:
 - Update `scripts/e2e-canvas.py`: the assertion changes from "six kinds" to "workflow + start/end", lower `MIN_CANVAS` accordingly and state the reason in the commit message (required by the test specification).
 - Documents: section 11 of `docs/实验编排-功能设计.md` and `docs/技术架构与模块地图.md:231-237` change "the canvas supports fork/parallel" to "the canvas only does cross-workflow orchestration".
 
-### Batch 2 · Add the parallel gateway to the designer (1 day)
+### Batch 2 · Add the parallel gateway to the designer (1 day, not started)
 
 - Add `webapp/src/bpmn/ParallelGatewayPalette.ts` (a custom PaletteProvider extension: `create.parallel-gateway` → `modeling.createShape({type:'bpmn:ParallelGateway'})`) and register it in `additionalModules`.
+- Also trim the palette: remove entries the parser does not accept (intermediate/boundary events, data objects, data stores, lanes/participants, groups). Such a node dropped on the chain is silently skipped by `GraphRunner` (`node == null → continue`, and it does not enqueue its successor), so the whole stretch after it never runs and no error is raised.
 - Acceptance: it can be dragged out, connected with two outgoing and two incoming edges, saved, and `PreflightChecker` PF-05 (missing join edge) can report it; the three parallel assertions of `verify-flow-matrix.py` do not regress.
 - UI test: add "drag out a parallel gateway" and "saved XML contains parallelGateway" to `e2e-flow-matrix.py`.
 
-### Batch 3 · Condition-expression UI (1–1.5 days)
+### Batch 3 · Condition-expression UI (1–1.5 days) ✅ done (2026-11-05)
 
-- When a `bpmn:SequenceFlow` is selected, `NodeSettings` shows a condition-expression input and a "default edge" checkbox, writing `bpmn:conditionExpression` and the `default` attribute.
+- When a `bpmn:SequenceFlow` is selected, a condition-expression input and a "default edge" checkbox appear; they write `bpmn:conditionExpression` and the `default` attribute.
+- Where it landed: the panel is a **separate "Sequence flow · condition" card in the right column** (a sequence flow is not a task, so it does not enter the `NodeSettings` kind tri-state); saving goes through `modeling.updateProperties` + `moddle.create('bpmn:FormalExpression')`, and when the source is a gateway it writes the gateway's `default`.
 - Syntax hints reuse the backend `ConditionEvaluator` set; the frontend only lightly checks parentheses and spaces and does not build a second evaluator.
 - Acceptance: the true and false branches of an exclusive gateway each run, the default edge catches the rest; a UI assertion covers "write a condition → save → execute takes the right branch".
 
-### Batch 4 · Loop-limit UI (0.5 day)
+### Batch 4 · Loop-limit UI (0.5 day) ✅ done (2026-11-05)
 
-- Selecting a back edge or a node offers `maxIterations` (written to `workflow.attr.max_iterations`, already supported by `loadMaxIterations`); the page states "workflow-level cap, not per gateway".
+- Offers `maxIterations` (written to `workflow.attr.maxIterations`, **camelCase**; the backend uses the same key in `loadMaxIterations` / `setMaxIterations`, validated 1..100); the page states "workflow-level cap, not per gateway".
+- Where it landed: a "Workflow options" card in the right column (workflow-level, independent of back-edge/node selection) plus `GET/PUT /api/workflows/{id}/options`.
 - Acceptance: the number of `loop_index` rounds matches the setting.
 
 ### Batch 5 · Cross-workflow parallelism (optional, needs decision Q2 first)
@@ -98,6 +101,6 @@ Three boundaries follow:
 ## 7. Where to start
 
 - Key files: `webapp/src/pages/ExperimentCanvas.tsx`, `webapp/src/pages/Designer.tsx`, `webapp/src/bpmn/`, `labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowGraphParser.java`, `GraphRunner.java` in the same package, `api/QueryService.java:4003-4130`, `workflow/PreflightChecker.java:202-269`.
-- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (45); `python3 scripts/e2e-flow-matrix.py` (21); `python3 scripts/e2e-canvas.py` (12).
+- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (45); `python3 scripts/e2e-flow-matrix.py` (30); `python3 scripts/e2e-canvas.py` (12).
 - Number discipline: changing cases requires updating the `MIN_*` constants in `scripts/ci-gate.sh`, `docs/测试用例总表.md`, `ROADMAP.md` and review package 04 in both languages; thresholds may only go up, and a real reduction must be explained in the commit message.
 - Do not touch the body of historical snapshots: `docs/评审包-20261103/`, `docs/评审包-20261104/`, `LabOS实现总纲_20261029.md`.
