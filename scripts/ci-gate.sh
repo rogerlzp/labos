@@ -53,6 +53,7 @@ MIN_ALERTS=8      # 2026-11-05：告警页（心跳参数 + 告警表/空态；�
 MIN_POLICIES=12   # 2026-11-05：策略页（表 + 编辑弹窗 + 生效校验；需 recovery_policy 有种子数据）
 MIN_PAUSED=7      # 2026-11-05：暂停队列（统计卡 + 空态/队列形态自洽；空队列时即此下限）
 MIN_CANVAS=12     # 2026-11-05：实验画布（岛屿/六类节点/reactflow/三按钮/属性面板）
+MIN_METHOD_DROP=9  # 2026-11-05：按岛设备 → 拖方法生成节点（无库时 9 条常驻，有库时 10）
 
 FAIL=0
 note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -323,8 +324,22 @@ if [[ $WITH_E2E -eq 1 ]]; then
   else
     pass "实验画布 $VN / 0（岛屿·六类节点·reactflow·按箭头执行/保存/返回）"
   fi
+  # 4.12 按岛设备 → 拖方法生成节点（设计器主路径，e2e-method-drop.py）
+  note "4.12 拖方法生成节点（e2e-method-drop.py）"
+  DOUT=$(python3 scripts/e2e-method-drop.py --base "$E2E_BASE" 2>&1)
+  DN=$(echo "$DOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  DF=$(echo "$DOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  DN=${DN:-0}; DF=${DF:-1}
+  if [[ "$DF" != "0" ]]; then
+    fail "拖方法用例有失败（$DF 条）"
+    echo "$DOUT" | grep '✗' | head -6
+  elif (( DN < MIN_METHOD_DROP )); then
+    fail "拖方法断言 $DN < 阈值 $MIN_METHOD_DROP"
+  else
+    pass "拖方法 $DN / 0（岛→设备→方法→XML/compile/落库）"
+  fi
 else
-  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调 / 4.8-4.11 页面 P0：跳过（没给 --e2e）"
+  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调 / 4.8-4.12 页面轨：跳过（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果

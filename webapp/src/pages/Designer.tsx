@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { DragEvent as ReactDragEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -23,6 +24,120 @@ interface CanvasApi {
 interface RegistryApi {
   get: (id: string) => unknown;
   forEach: (fn: (el: { id: string }) => void) => void;
+}
+
+/** 拖入方法节点时用到的 bpmn-js / diagram-js 服务能力。 */
+interface BpmnDragApi {
+  // 注意：这个 bpmn-js/diagram-js 版本没有 canvas.getAbsoluteOrigin()，
+  // 坐标换算只能用 viewbox() + 容器 rect。
+  viewbox: () => { x: number; y: number; width: number; height: number; scale: number } | undefined;
+  getContainer?: () => { getBoundingClientRect?: () => { left: number; top: number } } | undefined;
+  getRootElement: () => unknown;
+}
+interface BpmnModelingApi {
+  createShape: (shape: unknown, position: { x: number; y: number }, parent: unknown) => unknown;
+}
+interface BpmnElementFactoryApi {
+  createShape: (opts: { type: string }) => {
+    id: string;
+    businessObject: { name?: string; $attrs?: Record<string, string> };
+  };
+}
+interface BpmnSelectionApi {
+  select: (el: unknown) => void;
+}
+
+interface PaletteDevice {
+  resourceId: number;
+  code: string;
+  name?: string;
+  capability?: string;
+  islandId?: number;
+  islandCode?: string;
+}
+
+/** 拖进画布的一条「设备方法」：落节点时直接带上绑定，不用再选设备/方法。 */
+interface DroppedMethod {
+  resourceId: number;
+  code: string;
+  method: string;
+  islandId?: number;
+  islandCode?: string;
+}
+
+/** 左侧「按岛设备」面板里的一台设备：点开才懒加载它的方法。 */
+function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  // 与 NodeSettings 共用 queryKey，选中同一台设备时不会重复请求
+  const methods = useQuery({
+    queryKey: ['device-methods', d.resourceId],
+    queryFn: () => apiFetch(`/api/devices/${d.resourceId}/methods`)
+      .then((r) => r.json()) as Promise<{
+        items?: Array<{ method: string; name?: string }>;
+      }>,
+    enabled: open,
+  });
+  const list = methods.data?.items ?? [];
+
+  return (
+    <div style={{ marginBottom: 4, border: '1px solid #ffffff14', borderRadius: 4 }}>
+      <div
+        data-testid="palette-device"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px',
+          cursor: 'pointer', fontSize: 12, userSelect: 'none',
+        }}
+      >
+        <span style={{ color: '#8b93a7' }}>{open ? '▾' : '▸'}</span>
+        <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {d.code}
+        </span>
+        <span style={{ color: '#8b93a7', fontSize: 10, marginLeft: 'auto' }}>
+          {d.capability ?? '—'}
+        </span>
+      </div>
+      {open && (
+        <div style={{ padding: '2px 6px 6px 18px' }}>
+          {methods.isLoading && <Spin size="small" />}
+          {!methods.isLoading && list.length === 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              {t('designer.palette.noMethods')}
+            </Typography.Text>
+          )}
+          {list.map((m) => (
+            <div
+              key={m.method}
+              data-testid="palette-method"
+              data-method={m.method}
+              data-resource-id={d.resourceId}
+              draggable={!disabled}
+              onDragStart={(e) => {
+                const payload: DroppedMethod = {
+                  resourceId: d.resourceId,
+                  code: d.code,
+                  method: m.method,
+                  islandId: d.islandId,
+                  islandCode: d.islandCode,
+                };
+                e.dataTransfer.setData('application/x-labos-method', JSON.stringify(payload));
+                e.dataTransfer.effectAllowed = 'copy';
+              }}
+              title={disabled ? t('designer.palette.readonly') : t('designer.palette.dragHint')}
+              style={{
+                padding: '4px 7px', marginBottom: 3, borderRadius: 3,
+                border: '1px dashed #0ea5e955', background: '#0ea5e914',
+                fontSize: 11, cursor: disabled ? 'not-allowed' : 'grab',
+              }}
+            >
+              ⠿ {m.method}{m.name ? ' · ' + m.name : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** 用 customDevice 表示设备动作，标准 modeler 不认，转成 task 并补 name。 */
@@ -56,7 +171,10 @@ function collapse(xml: string): string {
     const task = doc.createElementNS(NS, 'bpmn:task');
     task.setAttribute('id', id);
     task.setAttribute('name', sub.getAttribute('name') ?? id);
-    for (const a of ['protocolName', 'protocolId', 'resource', 'resourceName', 'variablesValue']) {
+    // methodParams 必须一起搬：拖入的方法节点参数写在 XML 属性上，展开视图
+    // 把它变成 subProcess 时若白名单漏了，保存就会把参数丢掉。
+    for (const a of ['protocolName', 'protocolId', 'resource', 'resourceName',
+                     'variablesValue', 'methodParams']) {
       const v = sub.getAttribute(a);
       if (v) task.setAttribute(a, v);
     }
@@ -503,6 +621,12 @@ export default function DesignerPage() {
       islands?: Array<{ id: number; code: string; name?: string }>;
     }>,
   });
+  // 左侧设备面板：与 NodeSettings 共用 ['device-pool', islandId] 缓存，不额外发请求
+  const paletteDevices = useQuery({
+    queryKey: ['device-pool', islandId],
+    queryFn: () => apiFetch(`/api/devices/pool${islandId ? `?islandId=${islandId}` : ''}`)
+      .then((r) => r.json()) as Promise<{ items?: PaletteDevice[] }>,
+  });
   const qc = useQueryClient();
   const wfId = Number(id);
 
@@ -697,13 +821,97 @@ export default function DesignerPage() {
       { businessObject?: { $attrs?: Record<string, string> } } | undefined;
     if (!el?.businessObject) return;
     const bo = el.businessObject as { $attrs?: Record<string, string> };
-    bo.$attrs = bo.$attrs ?? {};
+    // 同 onDropMethod：$attrs 可能是只读 getter，不能整体赋值
+    let attrs = bo.$attrs;
+    if (!attrs) {
+      attrs = {};
+      Object.defineProperty(bo, '$attrs', {
+        value: attrs, writable: true, configurable: true, enumerable: false,
+      });
+    }
     if (Object.keys(next).length === 0) {
-      delete bo.$attrs.methodParams;
+      delete attrs.methodParams;
     } else {
-      bo.$attrs.methodParams = JSON.stringify(next);
+      attrs.methodParams = JSON.stringify(next);
     }
     setDirty(true);
+  };
+
+  /** 拖入方法节点后立刻落库并刷新 compile，让右侧参数面板出现。 */
+  const persistAfterDrop = async (nodeKey: string) => {
+    const m = modelerRef.current;
+    if (!m) return;
+    setSaving(true);
+    try {
+      const { xml } = await m.saveXML({ format: true }) as { xml: string };
+      // 故意不走 save()：它带「必填参数」守卫，而刚拖入的节点还没有参数定义。
+      // saveGraph 的 INSERT 分支会直接把 protocolName/resource 写进 workflow_node，
+      // 也就避开了 e2e-sim-flow 里「绑完设备还要再点一次保存」的老坑。
+      await api.saveGraph(wfId, collapse(xml));
+      setDirty(false);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['compile', wfId] }),
+        qc.invalidateQueries({ queryKey: ['preflight', wfId] }),
+        qc.invalidateQueries({ queryKey: ['node-binding', String(wfId), nodeKey] }),
+      ]);
+      message.success(t('designer.toast.methodDropped'));
+    } catch (e) {
+      message.error(t('designer.error.saveFailedDetail', { msg: String((e as Error).message) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /** 把左侧的「设备方法」拖到画布：直接生成已绑定设备+方法的 bpmn:Task。 */
+  const onDropMethod = async (e: ReactDragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (ro.disabled) return;
+    const raw = e.dataTransfer.getData('application/x-labos-method');
+    if (!raw) return;
+    let p: DroppedMethod;
+    try {
+      p = JSON.parse(raw) as DroppedMethod;
+    } catch {
+      return;
+    }
+    const m = modelerRef.current;
+    if (!m || !p?.resourceId || !p?.method) return;
+
+    const factory = m.get('elementFactory') as unknown as BpmnElementFactoryApi;
+    const modeling = m.get('modeling') as unknown as BpmnModelingApi;
+    const canvasApi = m.get('canvas') as unknown as BpmnDragApi;
+    const selection = m.get('selection') as unknown as BpmnSelectionApi;
+
+    // 标准 bpmn:Task（customDevice 标准 Modeler 不认）。属性名/大小写必须与
+    // BpmnGraphParser.getAttribute 完全一致，写错会静默失效。
+    const shape = factory.createShape({ type: 'bpmn:Task' });
+    const bo = shape.businessObject;
+    // bpmn-moddle 的 $attrs 在新建 shape 上是**只读 getter**，整体赋值会抛
+    // "Cannot set property $attrs ... which has only a getter"。取回它指向的
+    // 对象逐个写；没有该对象时用 defineProperty 兜底（与 applyParams() 同口径）。
+    let attrs = bo.$attrs as Record<string, string> | undefined;
+    if (!attrs) {
+      attrs = {};
+      Object.defineProperty(bo, '$attrs', {
+        value: attrs, writable: true, configurable: true, enumerable: false,
+      });
+    }
+    attrs.protocolName = p.method;
+    attrs.resource = String(p.resourceId);
+    attrs.methodParams = '{}';
+    bo.name = p.method;
+
+    // 屏幕坐标 → diagram 坐标；createShape 的 position 是形状中心（Task 100×80）
+    const vb = canvasApi.viewbox();
+    const scale = vb?.scale && vb.scale > 0 ? vb.scale : 1;
+    const rect = canvasApi.getContainer?.()?.getBoundingClientRect?.()
+      ?? (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = (e.clientX - rect.left) / scale + (vb?.x ?? 0) + 50;
+    const y = (e.clientY - rect.top) / scale + (vb?.y ?? 0) + 40;
+    // modeling.createShape 自动生成 BPMNShape/dc:Bounds；手拼 XML 会缺 DI 画不出来
+    modeling.createShape(shape, { x, y }, canvasApi.getRootElement());
+    selection.select(shape);
+    await persistAfterDrop(shape.id);
   };
 
   const save = async () => {
@@ -751,29 +959,40 @@ export default function DesignerPage() {
           )}
         />
       )}
-      {/* 岛屿过滤：决定右侧「节点设置」设备下拉的范围，换岛即写回 URL */}
-      <Space size={8} style={{ marginBottom: 8 }}>
-        <Typography.Text type="secondary">{t('designer.field.island')}</Typography.Text>
-        <Select
-          size="small" allowClear style={{ minWidth: 220 }}
-          placeholder={t('designer.field.allIslands')}
-          value={islandId ?? undefined}
-          onChange={(v: number | undefined) => {
-            setIslandId(v ?? null);
-            const next = new URLSearchParams(sp);
-            if (v) next.set('islandId', String(v)); else next.delete('islandId');
-            nav({ pathname: `/designer/${wfId}`, search: next.toString() }, { replace: true });
-          }}
-          options={(islandsQ.data?.islands ?? []).map((i) => ({
-            value: i.id,
-            label: `${i.code}${i.name ? ' · ' + i.name : ''}`,
-          }))}
-        />
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('designer.hint.islandFilter')}
-        </Typography.Text>
-      </Space>
-      <Row gutter={16} style={{ height: fromExpId ? 'calc(100vh - 64px - 64px - 40px)' : 'calc(100vh - 64px - 40px)' }}>
+      <Row gutter={16} style={{ height: fromExpId ? 'calc(100vh - 64px - 64px)' : 'calc(100vh - 64px)' }}>
+      {/* 按岛设备：岛 → 设备 → 方法；把方法拖进画布直接生成已绑定节点 */}
+      <Col flex="240px" style={{ minHeight: 0 }}>
+        <Card size="small" title={t('designer.palette.title')}>
+          <Select
+            size="small" allowClear style={{ width: '100%', marginBottom: 6 }}
+            placeholder={t('designer.field.allIslands')}
+            value={islandId ?? undefined}
+            onChange={(v: number | undefined) => {
+              setIslandId(v ?? null);
+              const next = new URLSearchParams(sp);
+              if (v) next.set('islandId', String(v)); else next.delete('islandId');
+              nav({ pathname: `/designer/${wfId}`, search: next.toString() }, { replace: true });
+            }}
+            options={(islandsQ.data?.islands ?? []).map((i) => ({
+              value: i.id,
+              label: `${i.code}${i.name ? ' · ' + i.name : ''}`,
+            }))}
+          />
+          <Typography.Paragraph type="secondary" style={{ fontSize: 10, marginBottom: 8 }}>
+            {t('designer.palette.hint')}
+          </Typography.Paragraph>
+          <div style={{ maxHeight: 'calc(100vh - 250px)', overflow: 'auto' }}>
+            {paletteDevices.isLoading && <Spin size="small" />}
+            {(paletteDevices.data?.items ?? []).length === 0 && !paletteDevices.isLoading && (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={t('designer.palette.noDevices')} />
+            )}
+            {(paletteDevices.data?.items ?? []).map((d) => (
+              <DeviceMethodRow key={d.resourceId} d={d} disabled={ro.disabled} />
+            ))}
+          </div>
+        </Card>
+      </Col>
       <Col flex="auto" style={{ display: 'flex', flexDirection: 'column' }}>
         <Card
           size="small"
@@ -819,10 +1038,14 @@ export default function DesignerPage() {
           )}
         </Card>
 
+        {/* 拖放挂在外层 wrapper：bpmn-js 的 SVG 会吞掉 drop 事件 */}
         <div
-          ref={containerRef}
-          style={{ flex: 1, minHeight: 420, background: '#fff', borderRadius: 6, overflow: 'hidden' }}
-        />
+          style={{ flex: 1, minHeight: 420, position: 'relative', background: '#fff', borderRadius: 6 }}
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+          onDrop={onDropMethod}
+        >
+          <div ref={containerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }} />
+        </div>
       </Col>
 
       <Col flex="320px">

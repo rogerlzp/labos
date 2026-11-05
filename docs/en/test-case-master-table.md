@@ -44,6 +44,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_POLICIES` | 12 | Page policy edit + validation (`e2e-policies.py`); gate lower bound, measured value in review package 04 |
 | `MIN_PAUSED` | 7 | Page paused queue filter and actions (`e2e-paused.py`); gate lower bound, measured value in review package 04 |
 | `MIN_CANVAS` | 12 | Experiment orchestration canvas (`e2e-canvas.py`); gate lower bound, measured value in review package 04 |
+| `MIN_METHOD_DROP` | 9 | Island devices → drag a method to create a node (`e2e-method-drop.py`); 9 resident assertions without a DB, 10 with one |
 
 ---
 
@@ -200,6 +201,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `scripts/load-test.sh` / `soak-test.sh` | Load test / soak test | L3 | ⬜ |
 | `scripts/device-go-live-check.py` | Device go-live pre-checks | L3 | ⬜ |
 | `scripts/verify-all.sh` / `verify-m1..m5.sh` | Milestone acceptance (historical) | L3 | ⬜ |
+| `scripts/e2e-method-drop.py` | Island devices → drag a method to create a node: XML binding / compile recognition / persistence (skipped when the island is empty or the device has no methods) | L4 | ✅ |
 
 ---
 

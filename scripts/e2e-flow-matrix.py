@@ -117,7 +117,10 @@ def place(page, action, x, y):
     page.locator(f'.djs-palette .entry[data-action="{action}"]').first.click()
     page.wait_for_timeout(150)
     box = page.locator(".djs-container").bounding_box()
-    page.mouse.click(box["x"] + x, box["y"] + y)
+    # 设计器加了左侧「按岛设备」面板后画布会变窄；固定 x=700/900 会点到容器外，
+    # 节点静默不生成（曾表现为「保存落库缺 exclusiveGateway」）。按容器宽度等比缩放。
+    scale = min(1.0, (box["width"] - 40) / 900) if box["width"] < 940 else 1.0
+    page.mouse.click(box["x"] + x * scale, box["y"] + y)
     page.wait_for_timeout(350)
 
 

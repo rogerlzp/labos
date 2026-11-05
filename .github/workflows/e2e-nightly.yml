@@ -12,6 +12,7 @@ name: E2E Nightly
 #   · 4.6      实验运行控制（verify-exp-control.py）
 #   · 4.7      仿真机联调（e2e-sim-flow.py，仿真机起来才跑，否则 SKIP）
 #   · 4.8-4.11 页面 P0 四页（告警 / 策略 / 暂停队列 / 实验画布）
+#   · 4.12     按岛设备 → 拖方法生成节点（e2e-method-drop.py，需岛上有设备）
 #   纯逻辑 624 + tsc 也照跑（ci-gate.sh 的无参部分恒跑）。
 #
 # 不覆盖：设备链路 / 流程矩阵（2.6/2.7/3）要 .NET sidecar，本 workflow 不拉，

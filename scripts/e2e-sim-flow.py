@@ -154,7 +154,10 @@ def place(page, action, x, y):
     page.locator(f'.djs-palette .entry[data-action="{action}"]').first.click()
     page.wait_for_timeout(150)
     box = page.locator(".djs-container").bounding_box()
-    page.mouse.click(box["x"] + x, box["y"] + y)
+    # 设计器加了左侧「按岛设备」面板后画布变窄，固定 x=950 会点到容器外，
+    # 节点静默不生成（曾表现为「palette 落点失败 end=None」）。按容器宽度等比缩放。
+    scale = min(1.0, (box["width"] - 40) / 950) if box["width"] < 990 else 1.0
+    page.mouse.click(box["x"] + x * scale, box["y"] + y)
     page.wait_for_timeout(400)
     new = [i for i in sorted(set(canvas_ids(page)) - before) if not i.endswith("_label")]
     return new[0] if len(new) == 1 else None

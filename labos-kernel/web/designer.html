@@ -242,7 +242,7 @@ function collapse(xml) {
     const task = doc.createElementNS(NS, 'bpmn:task');
     task.setAttribute('id', id);
     task.setAttribute('name', sub.getAttribute('name') || id);
-    for (const a of ['protocolName', 'protocolId', 'resource', 'resourceName', 'variablesValue']) {
+    for (const a of ['protocolName', 'protocolId', 'resource', 'resourceName', 'variablesValue', 'methodParams']) {
       const v = sub.getAttribute(a);
       if (v) task.setAttribute(a, v);
     }
