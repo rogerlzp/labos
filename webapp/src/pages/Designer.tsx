@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import DeviceImageRenderer, { iconFor, isArm } from '../bpmn/DeviceImageRenderer';
+import { workflowPaletteModule } from '../bpmn/WorkflowPalette';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -827,7 +828,9 @@ export default function DesignerPage() {
       additionalModules: [{
         __init__: ['deviceImageRenderer'],
         deviceImageRenderer: ['type', DeviceImageRenderer],
-      }],
+      },
+      // palette：补并行网关入口 + 移除解析器不认的入口（见 WorkflowPalette.ts 注释）
+      workflowPaletteModule],
     } as any);
     modelerRef.current = modeler;
 
