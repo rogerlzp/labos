@@ -163,6 +163,8 @@ python3 scripts/e2e-flow-matrix.py --base http://127.0.0.1:8080
 none of them can be dropped on the chain and silently skipped by `GraphRunner`. The
 “logical parallelism, not wall-clock” boundary still stands in §7.
 
+**Also (known risk, recorded only on 2026-11-05)**: the palette keeps `create.subprocess-expanded`, but `subProcess` is not in the parser whitelist - an empty sub-process wired into the chain silently `bypassed`es its successors (the run still reports `completed`); see the measured evidence in `docs/en/design/logic-nodes-by-layer.md` §5 Batch 2 and honesty list item 12 of `docs/en/test-case-master-table.md`.
+
 ## 11. Simulator integration (`e2e-sim-flow.py`)
 
 The page-side matrix in §10 uses **placeholder devices**, so it only reaches "the page can
