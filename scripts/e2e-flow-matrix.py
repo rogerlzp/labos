@@ -10,16 +10,16 @@
   这里补上**页面侧**那一段。
 
 覆盖（页面侧，对应后端矩阵的分类）：
-  A. 设计器：palette 装配 start / task / 异或网关 / end + 保存 + 预检 + 重开仍在
+  A. 设计器：palette 装配 start / task / 异或网关 / 并行网关 / end + 保存 + 预检 + 重开仍在
   B. 设计器：节点设置 —— 把 task 设成「变量节点（__setVar）」并落库
   C. 运行详情：流程图按状态着色 + 图例 + 节点表（有循环时出「圈次」）
   D. 运行控制：运行详情页点「暂停」→ 点「继续」，页面与库状态一致
   E. 设计器：左面板「逻辑节点」Tab 拖出 __setVar；连线条件表达式落库；
      流程级循环上限（maxIterations）落库
 
-边界（C 类，只观察不判失败）：
-  · 设计器 palette **没有并行网关入口**（只有 exclusiveGateway）——
-    并行结构只能在 XML / 接口侧建立，页面上只负责「看」（见 C 节与设计文档）。
+边界：设计器 palette 已按 `webapp/src/bpmn/WorkflowPalette.ts` 收敛 —— 只留解析器认得的
+  入口（start / end / task / 子流程 / 异或网关 / 并行网关 + 工具），中间/边界事件、
+  数据对象、数据存储、泳道、分组已移除，避免拖到链路上被 `GraphRunner` 静默跳过。
 
 前置：
   · 前端可访问（默认 http://localhost:5173；nginx 8080 也行，用 --base 指定）；
@@ -186,11 +186,7 @@ def sec_designer_palette(page, ctx, base):
     else:
         bad("palette 落点没生效", f"{before} → {after}")
 
-    # palette 是否提供并行网关（真实边界，只观察）
-    pgw = page.locator('.djs-palette .entry[data-action="create.parallel-gateway"]').count()
-    if pgw == 0:
-        print("  \033[33m·\033[0m 观察：设计器 palette 只有 exclusiveGateway，"
-              "**没有并行网关入口** → 并行结构只能在 XML/接口侧建立（C 类边界）")
+    # 并行网关：入口在批 2 补齐，末尾做「拖出 + 落库」两条断言（见下）
 
     # 保存
     page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
@@ -222,6 +218,32 @@ def sec_designer_palette(page, ctx, base):
     n2 = page.locator(".djs-element[data-element-id]").count()
     ok(f"刷新后画布仍有 {n2} 个图元（保存=可重开）") if n2 >= after \
         else bad("刷新后图元变少", f"{n2} < {after}")
+
+    # 批 2 · 并行网关：palette 有入口 + 能拖出（后端 WorkflowGraphParser 完整支持）
+    pw = page.locator('.djs-palette .entry[data-action="create.parallel-gateway"]')
+    if pw.count() == 0:
+        bad("设计器 palette 没有并行网关入口（批 2 未生效）")
+    else:
+        place(page, "create.parallel-gateway", 700, 320)
+        page.wait_for_timeout(1200)
+        n3 = page.locator(".djs-element[data-element-id]").count()
+        ok(f"并行网关能拖出：画布图元 {n2} → {n3}") if n3 > n2 \
+            else bad("拖出并行网关没生效", f"{n2} → {n3}")
+
+        # palette 收敛：解析器不认的入口不该出现（否则拖上去会被 GraphRunner 静默跳过）
+        gone = [a for a in ("create.intermediate-event", "create.data-object",
+                            "create.data-store", "create.participant-expanded",
+                            "create.group")
+                if page.locator(f'.djs-palette .entry[data-action="{a}"]').count() > 0]
+        ok("palette 已移除解析器不认的入口（中间/边界事件·数据对象·数据存储·泳道·分组）") if not gone \
+            else bad("palette 仍有解析器不认的入口", ",".join(gone))
+
+        page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+        page.wait_for_timeout(2500)
+        xml3 = api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+        xml3 = xml3 if isinstance(xml3, str) else json.dumps(xml3)
+        ok("并行网关已落库（XML 含 bpmn:parallelGateway）") if "bpmn:parallelGateway" in xml3 \
+            else bad("并行网关没落库", xml3[-200:])
 
     tasks = re.findall(r'<bpmn:task[^>]*id="([^"]+)"', xml)
     return wf_id, tasks
