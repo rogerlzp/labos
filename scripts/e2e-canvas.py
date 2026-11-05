@@ -4,9 +4,9 @@
 实验画布 e2e（P0 页面轨）。
 
 覆盖 /canvas：顶部说明（保存画布会自动编译流程顺序）、左面板「节点」卡
-（岛屿选择 + 六类可拖逻辑节点：流程/变量/分叉/并行/循环/汇合）、中卡
-（实验画布标题 + 选实验下拉 + reactflow 画布 + 返回/按箭头执行/保存）、
-右面板「属性」卡。
+（可拖节点只剩「流程」一类 + 提示「流程内逻辑去流程设计器」）、中卡
+（实验画布标题 + 选实验下拉 + reactflow 画布 + 开始/结束自动铺 + 返回/保存
+两个按钮）、右面板「属性」卡。
 
 为什么要有这个：画布是实验编排的入口，保存会同时落 graph 与 process。
 此前 /canvas 零页面级断言。规范见 docs/测试规范.md。
@@ -90,26 +90,25 @@ def main():
             else:
                 bad("缺画布顶部说明")
 
-            # ---------------- 2. 左面板：岛屿 + 六类逻辑节点 ----------------
-            step("2. 左面板（岛屿选择 + 六类逻辑节点）")
-            left = page.locator(".ant-card", has_text="逻辑节点（拖到画布）").first
+            # ---------------- 2. 左面板：只剩「流程」一类可拖节点 ----------------
+            step("2. 左面板（只提供「流程」一类节点）")
+            left = page.locator(".ant-card", has_text="可拖节点").first
             if left.count() > 0 and "节点" in left.inner_text():
                 ok("左面板「节点」卡渲染")
             else:
                 bad("缺左面板节点卡")
-            if page.locator(".ant-select-selection-placeholder:has-text(\"选一个岛\")").count() > 0 \
-                    or "岛屿" in body:
-                ok("岛屿选择已渲染（选一个岛）")
+            palette = left.locator('div[draggable="true"]')
+            if palette.count() == 1 and "流程" in palette.first.inner_text():
+                ok("可拖节点只剩「流程」一类")
             else:
-                bad("缺岛屿选择")
-            ltxt = left.inner_text() if left.count() > 0 else ""
-            if all(k in ltxt for k in ("流程", "变量", "◇ 分叉", "∥ 并行", "↻ 循环", "⌄ 汇合")):
-                ok("六类可拖逻辑节点齐（流程/变量/分叉/并行/循环/汇合）")
+                bad("可拖节点不是只有「流程」一类", f"count={palette.count()}")
+            if "流程设计器" in left.inner_text():
+                ok("左面板提示：流程内逻辑去「流程设计器」")
             else:
-                bad("逻辑节点面板缺项", ltxt[:120])
+                bad("缺「流程内逻辑去流程设计器」提示")
 
             # ---------------- 3. 中卡：标题 + 选实验 + 画布 + 按钮 ----------------
-            step("3. 中卡（实验画布 + 选实验 + reactflow + 三个按钮）")
+            step("3. 中卡（实验画布 + 选实验 + reactflow + 两个按钮）")
             center = page.locator(".ant-card", has_text="实验画布").first
             if center.count() > 0:
                 ok("中卡标题渲染（实验画布）")
@@ -128,14 +127,20 @@ def main():
                 ok("有「返回」按钮")
             else:
                 bad("缺返回按钮")
-            if center.locator("button").filter(has_text=re.compile(r"按箭头执行")).count() > 0:
-                ok("有「按箭头执行」按钮")
-            else:
-                bad("缺按箭头执行按钮")
             if center.locator("button").filter(has_text=re.compile(r"保\s*存")).count() > 0:
                 ok("有「保存」按钮")
             else:
                 bad("缺保存按钮")
+            # 开始 / 结束由画布自动铺好（不依赖用户拖拽）
+            try:
+                page.wait_for_selector(".react-flow__node", timeout=8000)
+                ntext = page.inner_text("body")
+                if "开始" in ntext and "结束" in ntext:
+                    ok("开始 / 结束节点自动铺好")
+                else:
+                    bad("自动节点缺「开始」或「结束」")
+            except PWTimeout:
+                bad("画布没有自动铺出开始/结束节点（库里没有实验？）")
 
             # ---------------- 4. 右面板：属性 ----------------
             step("4. 右面板属性卡")

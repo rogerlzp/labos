@@ -52,7 +52,7 @@ MIN_E2ESIM=24     # 2026-11-04：仿真机联调（页面建流程+绑真机+建
 MIN_ALERTS=8      # 2026-11-05：告警页（心跳参数 + 告警表/空态；认领/关闭弹窗是有数据时的增量断言）
 MIN_POLICIES=12   # 2026-11-05：策略页（表 + 编辑弹窗 + 生效校验；需 recovery_policy 有种子数据）
 MIN_PAUSED=7      # 2026-11-05：暂停队列（统计卡 + 空态/队列形态自洽；空队列时即此下限）
-MIN_CANVAS=12     # 2026-11-05：实验画布（岛屿/六类节点/reactflow/三按钮/属性面板）
+MIN_CANVAS=12     # 2026-11-05：实验画布（跨流程编排：仅「流程」可拖/设计器提示/reactflow/两按钮/开始结束自动铺/属性卡）
 MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / 跨设备自动插机械臂 / 删除（无库 17 条常驻，有库 20）
 
 FAIL=0
@@ -310,7 +310,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
     pass "暂停队列 $QN / 0（四格统计·空态或队列·形态自洽）"
   fi
 
-  # 4.11 实验画布：岛屿/六类节点/reactflow/三按钮/属性面板
+  # 4.11 实验画布：跨流程编排（仅「流程」节点/reactflow/两按钮/属性面板）
   note "4.11 实验画布（e2e-canvas.py）"
   VOUT=$(python3 scripts/e2e-canvas.py --base "$E2E_BASE" 2>&1)
   VN=$(echo "$VOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -322,7 +322,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   elif (( VN < MIN_CANVAS )); then
     fail "实验画布断言 $VN < 阈值 ${MIN_CANVAS}"
   else
-    pass "实验画布 $VN / 0（岛屿·六类节点·reactflow·按箭头执行/保存/返回）"
+    pass "实验画布 $VN / 0（跨流程编排·仅流程节点·reactflow·返回/保存）"
   fi
   # 4.12 按岛设备 → 拖方法生成节点（设计器主路径，e2e-method-drop.py）
   note "4.12 拖方法生成节点（e2e-method-drop.py）"
