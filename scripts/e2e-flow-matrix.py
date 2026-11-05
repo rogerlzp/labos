@@ -73,6 +73,14 @@ def step(title):
 # ---------------------------------------------------------------- 基础设施
 
 def q(sql):
+    """跑一条 SQL，返回 stdout（去空白）。
+
+    ⚠ 连不上库时**必须报错**，不能静默返回空串：
+    空串会被后面的断言当成「状态为空 / 没查到」，表现为「整单没跑完」这种
+    看起来像产品缺陷的失败，实际上是查询本身没跑成（2026-11-05 实踩：
+    缺 PGPASSWORD 时 psql 报 "no password supplied"，q() 返回空，
+    整段断言全红，差点被误判成执行侧坏了）。
+    """
     env = dict(os.environ)
     env.setdefault("PATH", "/opt/homebrew/opt/libpq/bin:/usr/bin:/bin")
     out = subprocess.run(
@@ -80,6 +88,10 @@ def q(sql):
          os.environ.get("LABOS_DB_PORT", "5432"), "-U", os.environ["LABOS_DB_USER"],
          "-d", os.environ["LABOS_DB_NAME"], "-tAc", sql],
         env=env, capture_output=True, text=True)
+    if out.returncode != 0:
+        # 连接失败 / SQL 报错：把原因带出来，别让调用方拿到一个空串
+        raise RuntimeError("SQL 执行失败：%s | stderr: %s"
+                           % (sql[:120], (out.stderr or "").strip()[:300]))
     return out.stdout.strip()
 
 

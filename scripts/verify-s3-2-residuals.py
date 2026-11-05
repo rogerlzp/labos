@@ -427,6 +427,33 @@ def main():
                     "VALUES (1, %s, 'workflow', 'completed') RETURNING id", (keep_run_no,))
         keep_run = cur.fetchone()[0]
         runs_created.append(keep_run)
+
+        # --- 3d. 现场扣留态 paused：重启兜底**不许**误杀 ---
+        # StartupRecovery.settle 只收 running（及超 1 小时的 queued/pending）；
+        # paused 是人工处置中的单子，被自动判死就是事故。必须钉住。
+        paused_run_no = "S3RES-PAUSED-%d" % tag
+        cur.execute("INSERT INTO run (tenant_id, run_no, run_type, status) "
+                    "VALUES (1, %s, 'workflow', 'paused') RETURNING id", (paused_run_no,))
+        paused_run = cur.fetchone()[0]
+        runs_created.append(paused_run)
+
+        # --- 3e. 排队僵尸：queued 且 created_at 超过 1 小时 ---
+        # settle 的扫描条件：
+        #   status='running' OR (status IN ('queued','pending') AND created_at < now()-1 hour)
+        # 「刚入队几秒的正常记录」不能被误杀，但排了 1 小时以上的僵尸必须被收。
+        # 这条分支此前无任何断言覆盖（2026-11-05 评审 P2-1）。
+        zombie_run_no = "S3RES-ZOMBIE-%d" % tag
+        cur.execute("INSERT INTO run (tenant_id, run_no, run_type, status, created_at) "
+                    "VALUES (1, %s, 'workflow', 'queued', now() - interval '2 hours') "
+                    "RETURNING id", (zombie_run_no,))
+        zombie_run = cur.fetchone()[0]
+        runs_created.append(zombie_run)
+        # 反例对照：刚入队的 queued（几秒内）**不许**被收——否则会把正常排队误杀
+        fresh_run_no = "S3RES-FRESH-%d" % tag
+        cur.execute("INSERT INTO run (tenant_id, run_no, run_type, status) "
+                    "VALUES (1, %s, 'workflow', 'queued') RETURNING id", (fresh_run_no,))
+        fresh_run = cur.fetchone()[0]
+        runs_created.append(fresh_run)
         conn.commit()
 
         offset = log_size(args.api_log)
@@ -489,6 +516,24 @@ def main():
         cur.execute("SELECT status FROM run WHERE id=%s", (keep_run,))
         ok("合法 completed run 未被触碰") if cur.fetchone()[0] == "completed" \
             else bad("合法 run 被改")
+
+        # 3d 断言：paused（现场扣留态）不得被启动兜底 settle 误杀
+        cur.execute("SELECT status FROM run WHERE id=%s", (paused_run,))
+        p1 = cur.fetchone()
+        ok("paused（现场扣留态）run 未被兜底 settle 误杀，仍是 paused") \
+            if p1 and p1[0] == "paused" else bad("paused run 被误杀", p1)
+
+        # 3e 断言：排队僵尸（queued 超 1 小时）必须被收成 failed
+        cur.execute("SELECT status FROM run WHERE id=%s", (zombie_run,))
+        z1 = cur.fetchone()
+        ok("排队僵尸 run（queued 超 1 小时）被收成 failed") \
+            if z1 and z1[0] == "failed" else bad("僵尸 run 没被收", z1)
+        # 反例：刚入队的 queued 不得被误杀（settle 的 1 小时宽限在此生效）
+        cur.execute("SELECT status FROM run WHERE id=%s", (fresh_run,))
+        f1 = cur.fetchone()
+        ok("刚入队的 queued run 未被误杀（1 小时宽限生效，仍是 queued）") \
+            if f1 and f1[0] == "queued" else bad("刚入队的 queued 被误杀", f1)
+
         ok("API 重启后仍可用") if health(args.api) else bad("重启后 API 不可用")
 
         # 再重启一次：验证启动兜底 settle 幂等——已被收掉的孤儿不会被二次改判/重复收。

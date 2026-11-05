@@ -4808,8 +4808,72 @@ The details are in `docs/评审记录/20261104-01-评审包复核.md` §七 and 
 
 **What was done**: ① Delete: bpmn-js's native contextPad trash icon and Delete key always worked, but "only after selection + no hint + save again afterwards" made it look impossible; an always-visible "Delete selected node" button was added on the right, calling `modeling.removeElements` and persisting immediately just like a drop, with a guard against deleting every node (`saveGraph` rejects an empty diagram). ② Images: 62 of 76 device models have `device.icon`, but almost all point at the source server `/image/device/<uuid>.png` (404 in a new environment), and the repository had only 2 placeholder SVGs; `scripts/gen-device-icons.py` now generates 15 local drawings for 14 capabilities plus a generic fallback, `/api/devices/pool` returns `icon`, and `iconFor()` maps dead paths back to `/devices/<CAP>.svg`. Nodes use the custom renderer `webapp/src/bpmn/DeviceImageRenderer.ts` (`additionalModules`, priority 2000) to draw "image card + method name"; images scale and export with the SVG. `icon` is stored in `$attrs.icon` and was added to the whitelists in `collapse()`, `BpmnExpander` and the static designer. ③ Robot arm: per §14.2/§14.3 of the orchestration design, dragging methods from two different devices inserts a `Transfer` node for the island's TRANSFER device and connects A → arm → B with `modeling.connect`, with `source/target` set to the two device codes. ④ A demo flow was kept with `--demo` (workflow 1885, island `LAB-DEMO-02`, `ID0000` → `ID1731` → `ID1183`, all three nodes with images). ⑤ Documentation: decision log, development log, D16 ADR, UI / functional / design / test / roadmap / onboarding documents were updated 1:1 in Chinese and English, including "option 2 was rejected", the bpmn palette provider vs React Flow trade-off, and the three implementation pitfalls.
 
-**Verification**: `scripts/e2e-method-drop.py` grew from 10 to **20 / 0** assertions (17 resident without a database), covering device-row thumbnails, local `data-icon` paths, the `<image>` in a node's SVG, `icon` in the XML, automatic Transfer insertion and connections across devices, the Transfer row in `workflow_node`, and canvas/database deletion; `MIN_METHOD_DROP` 9→17. `tsc` reports 0 errors, the English mirror has 0 hard errors, and `ci-gate.sh --all` passes all 14 gates with zero SKIPs.
+**Verification**: `scripts/e2e-method-drop.py` grew from 10 to **20 / 0** assertions (17 resident without a database), covering device-row thumbnails, local `data-icon` paths, the `<image>` in a node's SVG, `icon` in the XML, automatic Transfer insertion and connections across devices, the Transfer row in `workflow_node`, and canvas/database deletion; `MIN_METHOD_DROP` 9→17. `tsc` reports 0 errors, the English mirror has 0 hard errors, and `ci-gate.sh --all` passes all 18 gates with zero SKIPs.
 
 **Boundary / open items**: ① automatic transport insertion currently exists only in the **designer's graph-building path**; the backend `WorkflowBuilder` / `GraphRunner` / `POST /api/experiments/flow-run` still do not add a transfer at run time (`ExperimentCanvas.runFlow()` is a separate frontend-only path); this is now in the test master table's honest list and needs its own batch. ② `source/target` still use device codes while §15.1 requires `robot_point.code`; taught coordinates are not filled in. ③ Always the island's first TRANSFER device (known §14.7 limitation); A unload / B load actions are still user-configured. ④ The 15 drawings are schematic SVGs, not photographs; real ones can replace them under the same names. ⑤ Multi-step nodes expanded into subProcess fall back to native rendering, so images are temporarily hidden. ⑥ `position_state` / `plate_location_audit` still cover only the UNKNOWN block; there is no combined assertion of "source position → target position + `run_command` containing Transfer". **Addendum (same day): the literal `\uXXXX` mojibake in experiment names is fixed**. Symptom: names such as `verify-\u5e76\u53d1-1` appeared in the `/experiments` list. The root cause was **dirty historical data**: the early kernel's `jsonField` did not decode JSON Unicode escapes, so Chinese text sent by a standard client (Python `json.dumps`, `ensure_ascii=True` by default) was stored as a plain string. Since 2026-11-04 `ApiServer.unescapeJson` decodes it and `JsonFieldSelfTest` covers `\uXXXX`, surrogate-pair emoji and malformed escapes, so **new writes are correct** (sending `\u9a8c\u8bc1` stores the real characters, with no literal escapes). **19 experiment rows and 2 workflow rows** were restored with `scripts/fix-unicode-escapes.sql`: it only matches `\u[0-9a-fA-F]{4}`, skips the surrogate range and control characters, self-checks before and after, and is idempotent; zero rows remained and samples read `并发验证-1`, `probe-中文-A`, `verify-并行分支`. `resource_node` had no such rows. This is a data fix and does not change the API contract.
 
 ⑦ A pre-existing e2e weakness surfaced in pre-push: `e2e-smoke.py` assumed the **first row** of the workflow list always has run history, while a newly created workflow (this round's demo flow, or the gate's own `test` workflow) takes that row → the run-history dialog is empty, and because it was left open its mask blocked the next menu click with a 15s timeout. The script now walks the first 12 rows to find one with history and closes an empty dialog explicitly. This is test data-order dependence, not a regression of this round's feature, but new workflows triggered it, so it was fixed in the same batch.
+
+### 2026-11-05 (review-bundle re-review + gate hardening + live page exercise with multiple parallel gateways)
+
+**Background**: after the review bundle `docs/评审包-20261105/` was handed over, it went through an
+independent re-review (`docs/评审记录/20261105-01-评审包复核.md`; reviewer MiniMax-M3.1-Flash, a
+different model family from the previous round's DeepSeek). The verdict was "conditional pass":
+no regression in the product code, with the problems concentrated in **document precision** and
+**the strength of the gate mechanism itself**. The user then added: follow the review guidelines,
+fix the remaining items, and then really **drag a graph with multiple parallel branches, multiple
+gateways and variables on the page**, run it, and put the results into the test documentation.
+
+**What was done**: ① **Traceability per the guidelines**: added
+`docs/评审记录/20261105-01-评审包复核.md` with every field the guidelines require (review id / time
+/ model / scope / method / conclusion / comment list / per-item response / remediation status); all
+six comments get a "conclusion · reason · remediation · verification" entry; the file is
+append-only. ② **P0 number fix**: the bundle claimed "14 gates", but this round added sections
+4.12 and 4.13, so the real count was 16; the four places in the bundle (Chinese and English),
+`开发日志` and `评审包-20261103/04` were all synchronised. ③ **"Thresholds may only rise" turned
+into a mechanism**: it used to be only a comment at the top of `ci-gate.sh` plus commit
+discipline — lowering `MIN_PURE` went unchallenged and CI stayed green. A new gate section
+"0. thresholds-may-only-rise check" now scans every historical version of `ci-gate.sh` in git and
+takes the **highest historical value** of each `MIN_*` as the baseline (not the "previous version",
+which may itself be the one that was lowered); any value below the baseline turns the gate red and
+names the offending key. ④ **SKIP made visible**: the five SKIP branches used to only `echo`
+without counting towards `FAIL`, so "did not run" was scored as "green", while the comment in
+`.githooks/pre-push` claimed "not silently counted as a pass" — **the comment contradicted the
+code**. They now use a `skip()` counter, and the summary prints "gate passed (with N sections
+skipped — those did not run, not a pass)"; the comment was rewritten to match reality. ⑤ **Crash
+recovery boundaries**: `StartupRecovery.settle` scans for zombies that are `queued`/`pending` with
+`created_at` older than 1 hour, and the `paused` site-hold state **must not** be killed by
+mistake — both had **zero coverage**. Three assertions were added (paused stays paused / the
+zombie is collected as failed / a freshly queued run is not killed), taking the count 31→34.
+⑥ **Live page exercise**: added `scripts/e2e-multi-parallel.py`, which really drags 12 nodes /
+13 edges on the page (2 parallel gateways P1+P2 nested + 2 exclusive gateways X/X2 + 5
+variable/expression nodes), saves them, and then triggers a real run, asserting that all three
+parallel branches end `completed` and the whole run ends `completed`; the gate gains section 4.14
+with threshold `MIN_MULTIPAR=21`.
+
+**Verification**: `ci-gate.sh --all` passes all **18 gates with zero SKIPs** (including the new
+section 0 threshold check and the section 4.14 live page exercise); `verify-en-docs.py` reports
+**98** registry entries / **0** hard errors / 437 links all resolving; `e2e-multi-parallel.py`
+gives **21/0** across 3 consecutive runs; the `e2e-flow-matrix.py` regression is **45/0**;
+`verify-s3-2-residuals.py` is **34/0**; the threshold mechanism was verified in reverse
+(lowering `MIN_PURE` to 500 makes the gate report exactly `MIN_PURE(500 < 624)`).
+
+**Boundary / open items**: ① **Four live-page pitfalls** (see
+`docs/页面实操验证报告-多并行多网关-20261105.md`): the canvas container is only ~690px wide, so an
+out-of-range coordinate **silently** drops the node; clicking the source inside a shape's own box
+makes that edge fail to connect (needs save + verify-against-the-database, then retry); a plain
+`task` is a device task and turns `manual` when no device is found (verifying orchestration
+semantics requires built-in nodes); and `endEvent` is `Kind.END`, which **never enters
+`run_node`**, so a join can only be asserted as "all branches completed + whole run completed".
+② **A real bug fixed along the way**: the `q()` helper in `e2e-flow-matrix.py` queries the
+database through a `psql` subprocess; without `PGPASSWORD`, psql asks for the password
+interactively → the query fails → it returns an **empty string**, which the caller reads as
+"status is empty" ⇒ a whole block of assertions goes red and looks like a broken product; it now
+raises an exception carrying stderr whenever psql exits non-zero (this misled one full round of
+debugging — worth recording). ③ **Not covered**: real devices, device tasks + parallelism, the
+**elapsed-time overlap of parallel branches** (built-in nodes are too fast to show real
+parallelism), loop + parallelism combinations, and `subProcess` + parallelism. ④ "Thresholds may
+only rise" currently covers `MIN_*` only; the "case count holds but coverage shrinks" loophole
+still needs human review, and "numbers match the code" is not yet a machine check — **suggested
+for the next round**. ⑤ The L2 with-database layer (1005) is **not covered by the gate**
+(`ci-gate.sh` only runs `--pure-only`); this is now noted in the master table.

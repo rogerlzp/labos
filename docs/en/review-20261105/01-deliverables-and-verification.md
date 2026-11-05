@@ -46,10 +46,10 @@ workflow**, and the main battleground is the workflow designer; the experiment c
 
 | Item | Content |
 |---|---|
-| Main script | `scripts/verify-s3-2-residuals.py`, extended this round from 18 to **31** assertions |
+| Main script | `scripts/verify-s3-2-residuals.py`, extended this round from 18 to **34** assertions (31 → 34 adds the three assertions from the 2026-11-05 review: `paused` not killed by mistake / queued zombie collected / freshly queued not killed by mistake) |
 | Mechanism | `pgrep` finds `ApiServer` → `kill -9` → wait for the port to be released → `nohup java ... ApiServer 18080` restart (inheriting this process's environment) |
 | Assertions | A queued run is rehydrated into the queue on startup and dispatched to a terminal state; the `running` orphans of `run` / `experiment_run` at crash time are settled to `failed` by the startup fallback (`interrupted` / `recoverable` / `completedNodes` written back, `experiment` status synced); a legitimate `completed` run is untouched; a second restart is idempotent |
-| Gate | `MIN_CRASH=31` + gate 4.13 (see `scripts/ci-gate.sh`) |
+| Gate | `MIN_CRASH=34` + gate 4.13 (see `scripts/ci-gate.sh`) |
 | Incidental fix | `kernel_env()` in `verify-flow-matrix.py` now aggregates `ps eww` of all pids (fixing "picking up the `bash -c` wrapper, not reading `LABOS_TRANSFER_PLAN` → four ports assertions falsely SKIP") |
 
 Why it had to be done: the existing L2 self-tests (`workflow.StartupSettleSelfTest` /
@@ -70,7 +70,8 @@ the `ApiServer` startup entry really calls settle / rehydrate**. The startup ord
 | Parallel capability | `verify-parallel-flow.py` / `verify-parallel-experiments.py` | 4 / 3 | local `--all` |
 | Page flow matrix | `python3 scripts/e2e-flow-matrix.py` | 45 / 0 | local `--all` |
 | Simulator integration | `python3 scripts/e2e-sim-flow.py` | 24 / 0 | local `--all` |
-| Crash recovery | `python3 scripts/verify-s3-2-residuals.py` | 31 / 0 | local `--all` |
+| Crash recovery | `python3 scripts/verify-s3-2-residuals.py` | 34 / 0 | local `--all` |
+| Live page exercise · multi-parallel + multi-gateway | `python3 scripts/e2e-multi-parallel.py` | 21 / 0 | local `--all` |
 | Chinese / English docs | `python3 scripts/verify-en-docs.py` | hard errors 0 | ⬜ |
 
 ## 5. Known gaps (honest-list summary)
@@ -107,3 +108,15 @@ The full list of 12 items is in `docs/en/test-case-master-table.md` §5. Those r
    idempotency assertion; a hard-coded log path turns red, so it is resolved via `pgrep` + `lsof`.
 6. **JDK 17 scripting limit**: Nashorn is removed, so running user scripts in the same JVM needs
    JSR-223 or GraalVM isolation (relevant to the script-node design).
+7. **Four live-page pitfalls** (added 2026-11-05, see
+   `docs/页面实操验证报告-多并行多网关-20261105.md`): the canvas container is only ~690px wide, so
+   an out-of-range coordinate **silently** drops the node; clicking the source inside the shape's own
+   box makes that edge fail to connect (needs save + verify-against-the-database, then retry); a
+   plain `task` is a device task and turns `manual` when no device is found (verifying orchestration
+   semantics requires built-in nodes); and `endEvent` is `Kind.END`, which **never enters
+   `run_node`**, so the join must be asserted as "all branches completed + whole run completed".
+8. **`q()` failing silently** (fixed 2026-11-05): the `q()` helper in `e2e-flow-matrix.py` queries
+   the database through a `psql` subprocess; without `PGPASSWORD`, psql asks for the password
+   interactively → the query fails → it returns an **empty string**, which the caller reads as
+   "status is empty" → a whole block of assertions goes red, which looks like a broken product. It
+   now raises an exception carrying stderr whenever psql exits non-zero.

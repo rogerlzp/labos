@@ -55,12 +55,44 @@ MIN_POLICIES=12   # 2026-11-05：策略页（表 + 编辑弹窗 + 生效校验�
 MIN_PAUSED=7      # 2026-11-05：暂停队列（统计卡 + 空态/队列形态自洽；空队列时即此下限）
 MIN_CANVAS=12     # 2026-11-05：实验画布（跨流程编排：仅「流程」可拖/设计器提示/reactflow/两按钮/开始结束自动铺/属性卡）
 MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / 跨设备自动插机械臂 / 删除（无库 17 条常驻，有库 20）
-MIN_CRASH=31      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle）
+MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle + paused 不被误杀 + 排队僵尸被收，31 → 34）
+MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 
 FAIL=0
+SKIP=0
 note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
+skip() { printf '  \033[33m⏭\033[0m %s\n' "$1"; SKIP=$((SKIP + 1)); }
+
+# ---------------------------------------------------------------- 0. 阈值只许涨
+# 为什么必须机器校验：阈值「只许涨」原本只是本文件顶部的一句注释 + 提交纪律。
+# 纪律不是机制——把 MIN_PURE=624 改成 500，没有任何检查会拦，CI 照绿。
+# 这里把历史里每个 MIN_* 出现过的最高值当基线，当前值低于它即红灯。
+#
+# 基线怎么取：扫 git 历史里所有版本的 ci-gate.sh，对每个 MIN_* 取最大值。
+# 用「历史最高」而不是「上一版」：上一版可能正好是被下调过的那版，比它还宽松；
+# 历史最高才是这条阈值曾经承诺过的最强约束。
+note "0. 阈值只许涨校验（MIN_* 不得低于历史最高值）"
+threshold_drops=""
+while read -r key cur; do
+  [[ -z "$key" || -z "$cur" ]] && continue
+  hist_max=$(for c in $(git log --format=%H --all -- scripts/ci-gate.sh 2>/dev/null); do
+    git show "$c:scripts/ci-gate.sh" 2>/dev/null \
+      | grep -E "^${key}=" | head -1 \
+      | sed -E "s/^${key}=([0-9]+).*/\1/"
+  done | sort -n | tail -1)
+  [[ -z "$hist_max" ]] && continue
+  if (( cur < hist_max )); then
+    threshold_drops="${threshold_drops}${key}(${cur} < ${hist_max}) "
+  fi
+done < <(grep -E "^MIN_[A-Z_]+=" scripts/ci-gate.sh \
+  | sed -E "s/^(MIN_[A-Z_]+)=([0-9]+).*/\1 \2/")
+if [[ -z "$threshold_drops" ]]; then
+  pass "所有 MIN_* 阈值均不低于历史最高值"
+else
+  fail "阈值被下调：${threshold_drops}（只许涨：下调会掩盖用例被删）"
+fi
 
 # ---------------------------------------------------------------- 1. 纯逻辑
 note "1. 纯逻辑单测（不需要数据库）"
@@ -110,7 +142,7 @@ if [[ $WITH_DB -eq 1 ]]; then
 
   POUT=$(python3 scripts/verify-parallel-flow.py 2>&1)
   if echo "$POUT" | grep -q '^SKIP'; then
-    echo "  跳过（环境里没有可用设备）"
+    skip "流程内并行（环境里没有可用设备）"
   else
     PN=$(echo "$POUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
     PF=$(echo "$POUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
@@ -127,7 +159,7 @@ if [[ $WITH_DB -eq 1 ]]; then
 
   EOUT=$(python3 scripts/verify-parallel-experiments.py --count 4 2>&1)
   if echo "$EOUT" | grep -q '^SKIP'; then
-    echo "  跳过（API 不可用）"
+    skip "同岛并发（API 不可用）"
   else
     EN=$(echo "$EOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
     EF=$(echo "$EOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
@@ -142,7 +174,7 @@ if [[ $WITH_DB -eq 1 ]]; then
     fi
   fi
 else
-  note "2.6 并行能力：跳过（没给 --with-db）"
+  skip "并行能力（没给 --with-db）"
 fi
 
 # ---------------------------------------------------------------- 2.7 完整流程矩阵
@@ -152,7 +184,7 @@ if [[ $WITH_DB -eq 1 ]]; then
   note "2.7 完整流程矩阵（verify-flow-matrix.py）"
   MOUT=$(python3 scripts/verify-flow-matrix.py --force-online 2>&1)
   if echo "$MOUT" | grep -q '^SKIP'; then
-    echo "  跳过（库里没有设备实例）"
+    skip "完整流程矩阵（库里没有设备实例）"
   else
     MN=$(echo "$MOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
     MF=$(echo "$MOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
@@ -167,7 +199,7 @@ if [[ $WITH_DB -eq 1 ]]; then
     fi
   fi
 else
-  note "2.7 完整流程矩阵：跳过（没给 --with-db）"
+  skip "完整流程矩阵（没给 --with-db）"
 fi
 
 # ---------------------------------------------------------------- 3. 设备链路
@@ -186,7 +218,7 @@ if [[ $WITH_DB -eq 1 ]]; then
     pass "通过 $CN / 失败 0（阈值 ${MIN_CHAIN}）"
   fi
 else
-  note "3. 设备全链路：跳过（没给 --with-db）"
+  skip "设备全链路（没给 --with-db）"
 fi
 
 # ---------------------------------------------------------------- 4. e2e
@@ -210,7 +242,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   note "4.5 页面流程矩阵（e2e-flow-matrix.py）"
   MOUT=$(python3 scripts/e2e-flow-matrix.py --base "$E2E_BASE" 2>&1)
   if echo "$MOUT" | grep -q '^SKIP'; then
-    echo "  跳过（API 不可用）"
+    skip "页面流程矩阵（API 不可用）"
   else
     MN=$(echo "$MOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
     MF=$(echo "$MOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
@@ -251,7 +283,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   note "4.7 仿真机联调（e2e-sim-flow.py）"
   SOUT=$(python3 scripts/e2e-sim-flow.py --base "$E2E_BASE" 2>&1)
   if echo "$SOUT" | grep -qE '^SKIP|没有仿真机在监听'; then
-    echo "  跳过（仿真机没起 / API 不可用）"
+    skip "仿真机联调（仿真机没起 / API 不可用）"
   else
     SN=$(echo "$SOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
     SF=$(echo "$SOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
@@ -363,15 +395,47 @@ if [[ $WITH_E2E -eq 1 ]]; then
   else
     pass "崩溃恢复 $RN / 0（kill -9 → 重启 → queued rehydrate + running 孤儿 settle）"
   fi
+
+  # 4.14 页面实操 · 多并行网关 + 多异或网关 + 变量节点（e2e-multi-parallel.py）
+  # 补的是「多个网关共存」这条接缝：F 节只画了单异或，后端矩阵的 parallel
+  # 又是 build_xml() 直 POST 绕过界面 —— 页面上同时出现 2 个并行网关 +
+  # 2 个异或网关 + 变量节点，从没被拖过。
+  note "4.14 页面实操 · 多并行+多网关+变量（e2e-multi-parallel.py）"
+  MOUT2=$(python3 scripts/e2e-multi-parallel.py --base "$E2E_BASE" 2>&1)
+  if echo "$MOUT2" | grep -q '^SKIP'; then
+    skip "多并行多网关（没给库连接）"
+  else
+    M2N=$(echo "$MOUT2" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+    M2F=$(echo "$MOUT2" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+    M2N=${M2N:-0}; M2F=${M2F:-1}
+    if [[ "$M2F" != "0" ]]; then
+      fail "多并行多网关有失败（$M2F 条）"
+      echo "$MOUT2" | grep '✗' | head -8
+    elif (( M2N < MIN_MULTIPAR )); then
+      fail "多并行多网关断言 $M2N < 阈值 ${MIN_MULTIPAR}"
+    else
+      pass "多并行多网关 $M2N / 0（2 并行网关 + 2 异或网关 + 变量节点，页面拖→真跑）"
+    fi
+  fi
 else
-  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调 / 4.8-4.13 页面轨：跳过（没给 --e2e）"
+  skip "前端 e2e / 4.5-4.14 页面轨（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果
 note "结果"
 if [[ $FAIL -eq 0 ]]; then
-  printf '  \033[32m门禁通过\033[0m\n'
+  if [[ $SKIP -gt 0 ]]; then
+    # 关键：跳过不等于通过。缺环境时也要让「哪些没跑」显式可见，
+    # 否则「门禁通过」会被误读成「全绿」（2026-11-05 评审 P1-2）。
+    printf '  \033[32m门禁通过\033[0m（但有 %d 段跳过——这些没跑，不算通过）\n' "$SKIP"
+    exit 0
+  fi
+  printf '  \033[32m门禁通过\033[0m（无跳过）\n'
   exit 0
 fi
-printf '  \033[31m门禁失败：%d 项\033[0m\n' "$FAIL"
+printf '  \033[31m门禁失败：%d 项\033[0m' "$FAIL"
+if [[ $SKIP -gt 0 ]]; then
+  printf '（另有 %d 段跳过）' "$SKIP"
+fi
+printf '\n'
 exit 1

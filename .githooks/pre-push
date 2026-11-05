@@ -23,7 +23,8 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT" || exit 1
 
 echo "pre-push：跑完整门禁 ./scripts/ci-gate.sh --all"
-echo "          （要库 / 前端 / 仿真机；缺环境的小节会 SKIP，不静默算通过）"
+echo "          （要库 / 前端 / 仿真机；缺环境的小节会 SKIP，"
+echo "            跳过的段会单独计数并在结尾提示——它们没跑，不算通过）"
 echo
 
 if ./scripts/ci-gate.sh --all; then

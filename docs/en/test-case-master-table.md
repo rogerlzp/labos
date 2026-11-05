@@ -20,7 +20,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | Track | Entry point | Assertions today | In CI |
 |---|---|---|---|
 | L1 pure logic | `./scripts/test-all.sh --pure-only` | 624 | ✅ every push |
-| L1+L2 with DB | `./scripts/test-all.sh` | 1005 | ⬜ local `--with-db` |
+| L1+L2 with DB | `./scripts/test-all.sh` | 1005 | ⬜ **not covered by the gate** (`ci-gate.sh` only runs `--pure-only`; this number moving up or down is invisible to the gate) |
 | L3 chain | `./scripts/verify-device-chain.sh` | 41 | ⬜ local `--all` |
 | L3 flow matrix | `./scripts/verify-flow-matrix.py --force-online` | 45 | ⬜ local `--all` |
 | L3 parallel | `verify-parallel-flow.py` / `verify-parallel-experiments.py` | 4 / 3 | ⬜ local `--all` |
@@ -45,7 +45,8 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_PAUSED` | 7 | Page paused queue filter and actions (`e2e-paused.py`); gate lower bound, measured value in review package 04 |
 | `MIN_CANVAS` | 12 | Experiment orchestration canvas · cross-workflow orchestration (`e2e-canvas.py`); gate lower bound, measured value in review package 04 |
 | `MIN_METHOD_DROP` | 17 | Device images / a method node with its image / automatic robot-arm insertion across devices / deletion (`e2e-method-drop.py`); 17 resident assertions without a DB, 20 with one |
-| `MIN_CRASH` | 31 | Crash recovery end to end (`verify-s3-2-residuals.py`); kill -9 → restart → queued rehydrate + orphan running settled by the startup fallback |
+| `MIN_CRASH` | 34 | Crash recovery end to end (`verify-s3-2-residuals.py`); kill -9 → restart → queued rehydrate + orphan running settled by the startup fallback + `paused` not killed by mistake + queued zombie (queued for over 1 hour) collected |
+| `MIN_MULTIPAR` | 21 | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables (`e2e-multi-parallel.py`); drag 12 nodes / 13 edges on the page → save → really run → all three parallel branches completed |
 
 ---
 
@@ -203,6 +204,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `scripts/device-go-live-check.py` | Device go-live pre-checks | L3 | ⬜ |
 | `scripts/verify-all.sh` / `verify-m1..m5.sh` | Milestone acceptance (historical) | L3 | ⬜ |
 | `scripts/e2e-method-drop.py` | Island devices → drag a method to create a node: XML binding / compile recognition / persistence (skipped when the island is empty or the device has no methods) | L4 | ✅ |
+| `scripts/e2e-multi-parallel.py` | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables: drag 12 nodes / 13 edges on the page → the graph holds 2 parallelGateway + 2 exclusiveGateway → really run → all three parallel branches completed | L4 | ✅ |
 
 ---
 

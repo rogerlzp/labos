@@ -264,7 +264,8 @@ intelligence rather than product documentation; they live in the local, git-igno
 | [`sidecar-dotnet/README.en.md`](sidecar-dotnet/README.en.md) | **Real-device sidecar**: serial framing / Cluster.dll / forwarding simulator |
 | [`docs/media/labos-flow-source.html`](docs/media/labos-flow-source.html) | Source of the demo animation at the top of this page (self-contained HTML/SVG, no build step) |
 | [`docs/en/development-log.md`](docs/en/development-log.md) | Where every decision and every pitfall came from |
-| [`docs/en/review-20261104/00-index.md`](docs/en/review-20261104/00-index.md) | **Latest review entry point** |
+| [`docs/en/review-20261105/00-index.md`](docs/en/review-20261105/00-index.md) | **Latest review entry point** |
+| [`docs/en/review-20261104/00-index.md`](docs/en/review-20261104/00-index.md) | Previous review bundle |
 | [`docs/en/review-20261103/00-index.md`](docs/en/review-20261103/00-index.md) | Functional / technical / design / test review bundle |
 | [`docs/en/contribution-guidelines.md`](docs/en/contribution-guidelines.md) | How a commit message is written, when to commit, what must not be committed |
 | [`docs/en/review-guidelines.md`](docs/en/review-guidelines.md) | How to review, how to record a review, how the reviewed party responds |
