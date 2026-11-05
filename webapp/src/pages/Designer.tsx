@@ -4,8 +4,8 @@ import DeviceImageRenderer, { iconFor, isArm } from '../bpmn/DeviceImageRenderer
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Alert, Button, Card, Col, Descriptions, Empty, Input, InputNumber, Modal,
-  Row, Select, Space, Spin, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Descriptions, Empty, Input, InputNumber, Modal,
+  Row, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message,
 } from 'antd';
 import BpmnModeler from 'bpmn-js/lib/Modeler';
 import 'bpmn-js/dist/assets/diagram-js.css';
@@ -49,6 +49,22 @@ interface BpmnElementFactoryApi {
 interface BpmnSelectionApi {
   select: (el: unknown) => void;
 }
+/** modeling.updateProperties / moddle.create：写连线条件与网关默认边要用。 */
+interface BpmnUpdateApi {
+  updateProperties: (el: unknown, props: Record<string, unknown>) => void;
+}
+interface BpmnModdleApi {
+  create: (type: string, props: Record<string, unknown>) => unknown;
+}
+/** 受控选中元素：id 用来查编译结果，type 用来区分「连线」与「节点」。 */
+interface SelectedElement {
+  id: string;
+  type: string;
+  businessObject?: {
+    conditionExpression?: { body?: string };
+    sourceRef?: { id: string; $type?: string; default?: { id?: string } };
+  };
+}
 interface BpmnRegistryApi {
   get: (id: string) => unknown;
   forEach: (fn: (el: { id: string; type: string; waypoints?: unknown }) => void) => void;
@@ -66,9 +82,11 @@ interface PaletteDevice {
 
 /** 拖进画布的一条「设备方法」：落节点时直接带上绑定，不用再选设备/方法。 */
 interface DroppedMethod {
-  resourceId: number;
+  resourceId?: number;
   code: string;
   method: string;
+  /** 逻辑节点（__setVar / __expr）：没有设备，不参与机械臂搬运。 */
+  builtin?: boolean;
   capability?: string;
   icon?: string | null;
   islandId?: number;
@@ -78,8 +96,9 @@ interface DroppedMethod {
 /** 上一次拖入的节点：用于判断「板子换设备了」并自动插入机械臂搬运。 */
 interface LastDropped {
   shapeId: string;
-  resourceId: number;
+  resourceId?: number;
   code: string;
+  builtin?: boolean;
   capability?: string;
   icon: string;
   x: number;
@@ -166,6 +185,35 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 左侧「逻辑节点」面板里的一行：拖到画布生成内置节点（不带设备）。 */
+function LogicNodeRow({ method, label, disabled }: {
+  method: '__setVar' | '__expr';
+  label: string;
+  disabled: boolean;
+}) {
+  const t = useT();
+  return (
+    <div
+      data-testid="palette-logic"
+      data-method={method}
+      draggable={!disabled}
+      onDragStart={(e) => {
+        const payload: DroppedMethod = { code: method, method, builtin: true };
+        e.dataTransfer.setData('application/x-labos-method', JSON.stringify(payload));
+        e.dataTransfer.effectAllowed = 'copy';
+      }}
+      title={disabled ? t('designer.palette.readonly') : t('designer.palette.dragHint')}
+      style={{
+        padding: '5px 7px', marginBottom: 4, borderRadius: 3,
+        border: '1px dashed #a855f755', background: '#a855f714',
+        fontSize: 11, cursor: disabled ? 'not-allowed' : 'grab',
+      }}
+    >
+      ⠿ {label}
     </div>
   );
 }
@@ -532,6 +580,61 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
 }
 
 /**
+ * 流程选项：目前只有**流程级**的循环圈数上限（回边最多走几圈）。
+ *
+ * <p>为什么不放在节点设置里：`maxIterations` 存在 {@code workflow.attr}，
+ * 是整条流程的属性，不是某个网关/节点的属性。放这里避免"设了某条回边却没生效"。
+ */
+function FlowOptionsCard({ wfId }: { wfId: number }) {
+  const t = useT();
+  const ro = useReadOnly();
+  const qc = useQueryClient();
+  const [n, setN] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const q = useQuery({
+    queryKey: ['wf-options', wfId],
+    queryFn: () => api.workflowOptions(wfId),
+    enabled: Number.isFinite(wfId),
+  });
+  useEffect(() => { if (q.data) setN(q.data.maxIterations); }, [q.data]);
+
+  const save = async () => {
+    if (n == null) return;
+    setSaving(true);
+    try {
+      await api.saveWorkflowOptions(wfId, n);
+      message.success(t('designer.toast.optionsSaved'));
+      qc.invalidateQueries({ queryKey: ['wf-options', wfId] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card size="small" title={t('designer.options.title')} style={{ marginBottom: 12 }}>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('designer.options.maxIterations')}
+        </Typography.Text>
+        <InputNumber
+          size="small" min={1} max={100} style={{ width: '100%' }}
+          value={n ?? undefined}
+          onChange={(v) => setN(v ?? null)}
+        />
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.options.hint')}
+        </Typography.Text>
+        <Button size="small" type="primary" loading={saving} {...ro} onClick={save}>
+          {t('designer.action.save')}
+        </Button>
+      </Space>
+    </Card>
+  );
+}
+
+/**
  * 时间条：把每个节点画成一根按时间比例定位的条。
  *
  * <p>故意不引图表库：甘特还没成型，先用 div + 百分比把"谁在什么时候占哪台设备"画出来，
@@ -665,6 +768,14 @@ export default function DesignerPage() {
   // 上一次拖入的节点：判断「板子换设备」→ 自动插入机械臂 Transfer 并连线
   const lastDroppedRef = useRef<LastDropped | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  /** 选中元素的 bpmn 类型：用来区分「节点」与「连线」（连线不在 compile 结果里）。 */
+  const [selType, setSelType] = useState('');
+  /** 连线的条件表达式（选中 SequenceFlow 时才有意义） */
+  const [flowCond, setFlowCond] = useState('');
+  /** 这条连线是否为源网关的默认边（无条件兜底） */
+  const [flowDefault, setFlowDefault] = useState(false);
+  /** 源节点是不是「网关」：只有网关的 default 属性会被解析器认 */
+  const [flowSrcGateway, setFlowSrcGateway] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [ready, setReady] = useState(false);
@@ -721,8 +832,10 @@ export default function DesignerPage() {
     modelerRef.current = modeler;
 
     modeler.on('commandStack.changed', () => setDirty(true));
-    modeler.on('selection.changed', (e: { newSelection: Array<{ id: string }> }) => {
-      setSelected(e.newSelection?.[0]?.id ?? null);
+    modeler.on('selection.changed', (e: { newSelection: Array<{ id: string; type: string }> }) => {
+      const el = e.newSelection?.[0];
+      setSelected(el?.id ?? null);
+      setSelType(el?.type ?? '');
     });
     return () => {
       modeler.destroy();
@@ -819,6 +932,20 @@ export default function DesignerPage() {
       setParamValues({});
     }
   }, [selected]);
+
+  // 选中连线时：读回它现有的条件表达式与「默认边」归属
+  useEffect(() => {
+    if (selType !== 'bpmn:SequenceFlow') return;
+    const m = modelerRef.current;
+    if (!m || !selected) return;
+    const reg = m.get('elementRegistry') as { get: (id: string) => SelectedElement | undefined };
+    const bo = reg.get(selected)?.businessObject;
+    setFlowCond(bo?.conditionExpression?.body ?? '');
+    const src = bo?.sourceRef;
+    setFlowDefault(!!src?.default && src.default.id === selected);
+    setFlowSrcGateway(!!src && (src.$type === 'bpmn:ExclusiveGateway'
+      || src.$type === 'bpmn:ParallelGateway'));
+  }, [selected, selType]);
 
   // 参数定义加载后，用 default 回填空值（只在明确是简单值时，避免把 JSON 片段填进去）
   useEffect(() => {
@@ -935,7 +1062,9 @@ export default function DesignerPage() {
       return;
     }
     const m = modelerRef.current;
-    if (!m || !p?.resourceId || !p?.method) return;
+    const isBuiltin = !!p?.builtin;
+    // 逻辑节点（__setVar / __expr）没有设备，只要求 method；设备方法还要求 resourceId
+    if (!m || !p?.method || (!isBuiltin && !p.resourceId)) return;
 
     const factory = m.get('elementFactory') as unknown as BpmnElementFactoryApi;
     const modeling = m.get('modeling') as unknown as BpmnModelingApi;
@@ -954,23 +1083,26 @@ export default function DesignerPage() {
     // 连续拖入自动横向排布，避免节点重叠（机械臂插在两者中间）
     const x = prev ? Math.max(dropX, prev.x + 300) : dropX;
     const root = canvasApi.getRootElement();
-    const icon = iconFor(p.icon, p.capability);
+    const icon = isBuiltin ? '' : iconFor(p.icon, p.capability);
 
-    // 板子换设备必须由机械臂搬运；岛上的 TRANSFER 设备从同一个设备池取
-    const arm = (paletteDevices.data?.items ?? []).find((d) =>
+    // 板子换设备必须由机械臂搬运；岛上的 TRANSFER 设备从同一个设备池取。
+    // 逻辑节点不占设备，也不参与搬运（否则会在变量节点和真设备之间插一台机械臂）。
+    const arm = isBuiltin ? undefined : (paletteDevices.data?.items ?? []).find((d) =>
       isArm(d.capability) && (!p.islandId || d.islandId === p.islandId));
-    const needTransfer = !!(prev && prev.resourceId !== p.resourceId
+    const needTransfer = !!(prev && !prev.builtin && !isBuiltin
+      && prev.resourceId !== p.resourceId
       && !isArm(prev.capability) && !isArm(p.capability) && arm);
     const prevEl = prev ? registry.get(prev.shapeId) : null;
 
     const shape = factory.createShape({ type: 'bpmn:Task' });
-    setShapeAttrs(shape, {
-      protocolName: p.method,
-      resource: String(p.resourceId),
-      methodParams: '{}',
-      icon,
-    });
-    shape.businessObject.name = p.method;
+    // resource / icon 只在设备任务上写：内置节点的判定只认 protocolName 的 __ 前缀，
+    // 多写一个 resource=0 反而会让"没绑设备"和"绑了 0 号设备"看起来一样。
+    setShapeAttrs(shape, isBuiltin
+      ? { protocolName: p.method, methodParams: '{}' }
+      : { protocolName: p.method, resource: String(p.resourceId), methodParams: '{}', icon });
+    shape.businessObject.name = isBuiltin
+      ? t(p.method === '__setVar' ? 'designer.node.setVar' : 'designer.node.expr')
+      : p.method;
     modeling.createShape(shape, { x, y }, root);
 
     if (needTransfer && arm && prev && prevEl) {
@@ -991,11 +1123,64 @@ export default function DesignerPage() {
     }
 
     lastDroppedRef.current = {
-      shapeId: shape.id, resourceId: p.resourceId, code: p.code,
+      shapeId: shape.id, resourceId: p.resourceId, code: p.code, builtin: isBuiltin,
       capability: p.capability, icon, x,
     };
     selection.select(shape);
-    await persistAfterDrop(shape.id);
+    await persistAfterDrop(shape.id, isBuiltin ? t('designer.toast.logicDropped') : undefined);
+  };
+
+  /** 轻校验：括号成对、${ 都闭合。真正的求值在后端 ConditionEvaluator，不在这里做第二套。 */
+  const condLooksValid = (s: string): boolean => {
+    let depth = 0;
+    for (const ch of s) {
+      if (ch === '(') depth += 1;
+      else if (ch === ')') { depth -= 1; if (depth < 0) return false; }
+    }
+    if (depth !== 0) return false;
+    return (s.match(/\$\{/g) ?? []).length === (s.match(/\}/g) ?? []).length;
+  };
+
+  /**
+   * 保存连线的条件表达式与「默认边」标记。
+   *
+   * <p>写的是 bpmn:conditionExpression 子元素与源网关的 default 属性 ——
+   * 这正是 {@code WorkflowGraphParser} 读条件（conditionExpression 文本）与
+   * 默认边（任意元素上的 default 属性）的两处入口，写别的形式运行时读不到。
+   */
+  const saveFlow = async () => {
+    const m = modelerRef.current;
+    if (!m || !selected || ro.disabled) return;
+    const reg = m.get('elementRegistry') as { get: (id: string) => SelectedElement | undefined };
+    const el = reg.get(selected);
+    const bo = el?.businessObject;
+    if (!el || !bo) return;
+    const body = flowCond.trim();
+    if (body && !condLooksValid(body)) {
+      message.warning(t('designer.error.badCondition'));
+      return;
+    }
+    const modeling = m.get('modeling') as unknown as BpmnUpdateApi;
+    const moddle = m.get('moddle') as unknown as BpmnModdleApi;
+    setSaving(true);
+    try {
+      modeling.updateProperties(el, {
+        conditionExpression: body
+          ? moddle.create('bpmn:FormalExpression', { body })
+          : undefined,
+      });
+      // default 只有挂在网关（或其它元素）上才会被解析器收；挂在连线上无人读。
+      const src = bo.sourceRef;
+      if (src && (src.$type === 'bpmn:ExclusiveGateway' || src.$type === 'bpmn:ParallelGateway')) {
+        const srcEl = reg.get(src.id);
+        if (srcEl) {
+          modeling.updateProperties(srcEl, { default: flowDefault ? bo : undefined });
+        }
+      }
+      await persistAfterDrop(selected, t('designer.toast.flowSaved'));
+    } finally {
+      setSaving(false);
+    }
   };
 
   /**
@@ -1090,19 +1275,48 @@ export default function DesignerPage() {
               label: `${i.code}${i.name ? ' · ' + i.name : ''}`,
             }))}
           />
-          <Typography.Paragraph type="secondary" style={{ fontSize: 10, marginBottom: 8 }}>
-            {t('designer.palette.hint')}
-          </Typography.Paragraph>
-          <div style={{ maxHeight: 'calc(100vh - 250px)', overflow: 'auto' }}>
-            {paletteDevices.isLoading && <Spin size="small" />}
-            {(paletteDevices.data?.items ?? []).length === 0 && !paletteDevices.isLoading && (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={t('designer.palette.noDevices')} />
-            )}
-            {(paletteDevices.data?.items ?? []).map((d) => (
-              <DeviceMethodRow key={d.resourceId} d={d} disabled={ro.disabled} />
-            ))}
-          </div>
+          <Tabs
+            size="small"
+            defaultActiveKey="devices"
+            items={[
+              {
+                key: 'devices',
+                label: t('designer.palette.tabDevices'),
+                children: (
+                  <>
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 10, marginBottom: 8 }}>
+                      {t('designer.palette.hint')}
+                    </Typography.Paragraph>
+                    <div style={{ maxHeight: 'calc(100vh - 330px)', overflow: 'auto' }}>
+                      {paletteDevices.isLoading && <Spin size="small" />}
+                      {(paletteDevices.data?.items ?? []).length === 0 && !paletteDevices.isLoading && (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          description={t('designer.palette.noDevices')} />
+                      )}
+                      {(paletteDevices.data?.items ?? []).map((d) => (
+                        <DeviceMethodRow key={d.resourceId} d={d} disabled={ro.disabled} />
+                      ))}
+                    </div>
+                  </>
+                ),
+              },
+              {
+                key: 'logic',
+                label: t('designer.palette.tabLogic'),
+                children: (
+                  <>
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 10, marginBottom: 8 }}>
+                      {t('designer.palette.logicHint')}
+                    </Typography.Paragraph>
+                    <LogicNodeRow method="__setVar" label={t('designer.kind.setVar')}
+                      disabled={ro.disabled} />
+                    <LogicNodeRow method="__expr" label={t('designer.kind.expr')}
+                      disabled={ro.disabled} />
+                  </>
+                ),
+              },
+            ]}
+          />
         </Card>
       </Col>
       <Col flex="auto" style={{ display: 'flex', flexDirection: 'column' }}>
@@ -1161,6 +1375,7 @@ export default function DesignerPage() {
       </Col>
 
       <Col flex="320px">
+        <FlowOptionsCard wfId={wfId} />
         <Card size="small" style={{ marginBottom: 12 }}>
           <Typography.Text type="secondary"
             style={{ fontSize: 11, display: 'block', marginBottom: 6 }}>
@@ -1174,6 +1389,38 @@ export default function DesignerPage() {
         {!selected ? (
           <Card size="small">
             <Empty description={t('designer.empty.selectNode')} />
+          </Card>
+        ) : selType === 'bpmn:SequenceFlow' ? (
+          <Card size="small" title={t('designer.flow.title')}
+            extra={<Button size="small" type="primary" loading={saving} {...ro} onClick={saveFlow}>
+              {t('designer.action.save')}
+            </Button>}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('designer.flow.condition')}
+              </Typography.Text>
+              <Input.TextArea
+                size="small" rows={2}
+                placeholder={'${counter} > 3'}
+                value={flowCond}
+                onChange={(e) => setFlowCond(e.target.value)}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {t('designer.flow.hint')}
+              </Typography.Text>
+              <Checkbox
+                checked={flowDefault}
+                disabled={!flowSrcGateway}
+                onChange={(e) => setFlowDefault(e.target.checked)}
+              >
+                {t('designer.flow.default')}
+              </Checkbox>
+              {!flowSrcGateway && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {t('designer.flow.notGateway')}
+                </Typography.Text>
+              )}
+            </Space>
           </Card>
         ) : !plan ? (
           <Card size="small">
