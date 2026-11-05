@@ -18,8 +18,6 @@ pg_rebuild/
 │   ├── 99_verify.sql          # 建完自检
 │   ├── merge.sh               # 重新生成 90_all_in_one.sql
 │   └── run_schema.sh          # 一键建库
-├── scheduler/
-│   └── scheduler_prototype.py # 排程试算原型（独立脚本，不参与建表）
 └── deploy.sh                  # 部署脚本
 ```
 

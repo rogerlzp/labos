@@ -21,9 +21,12 @@
 
 - Chapter 1 is the **delivery boundary of 2.0**
 - Chapter 4 is **what this version includes, and what it explicitly does not**
+- Chapter 5 is the **technical architecture**: the layers, the kernel package structure, the two execution paths, the data model, the deployment and the ports
 - Chapters 6–7 are the **operating modes and the control semantics** — this is the body of this version relative to v0.3
 - Chapter 8 is the **feature ledger**. P0 equals the 2.0 release gate; P1 are the items that follow immediately and do not block the release
 - Chapter 12 is the **default decisions already written into the specification**. Later changes are recorded in `决策记录.md`, append-only
+- Chapter 13 is the **run state and lifecycle**: the five-level status vocabulary, the pause kinds, the holds, the crash recovery, the batching and the resuming
+- Chapter 14 is **concurrency, resources and scheduling**: the four-level resource model, the fixed acquisition order, the wait-for-graph deadlock, the scheduler, the duration model and the rolling schedule
 
 ---
 
@@ -129,33 +132,227 @@ Not entering the P0/P1 of the feature ledger:
 
 ---
 
-## 5. Target architecture
+## 5. Technical architecture
+
+This chapter is in two parts: **5.1–5.7 is the current state** (the actual shape of the implementation baseline, with the code as the authority), and **5.8 is the 2.0 target architecture** (the shape once the release gate is met). Where the current state and the target disagree, the release gate of section 1.1 is the basis for trimming.
+
+### 5.1 Layered architecture (current state)
 
 ```
-┌────────────────────┬─────────────────────────────────────────────────────────┐
-│  Interaction                                                                 │
-│  Workflow designer (BPMN, node level)                                        │
-│  Execution monitoring (event stream, status, total-duration forecast)        │
-│  Handling (policy, alerts, attended window)                                  │
-│  2.0 keeps the existing web console; no new frontend framework               │
-└────────────────────┬─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ Browser  React 18 + TypeScript + Ant Design + React Flow       │
+│ webapp/                                                       │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ HTTP/JSON  ApiServer :18080
+                            │ (dev frontend Vite :5173; deployed Nginx :8080 reverse-proxies /api)
+┌───────────────────────────▼──────────────────────────────────┐
+│ Kernel labos-kernel/ (Java 17, zero web framework dependency)  │
+│  api/      routing, parameter parsing, JSON assembly, auth     │
+│  workflow/ workflow parsing · graph execution · experiment orchestration · scheduling · status vocabulary │
+│  engine/   node-level state machine (retry / hand over to a human / idempotency) │
+│  driver/   device-driver abstraction + implementations + position lock + shadow probe │
+│  recovery/ crash-recovery decisions (pure functions)           │
+│  alert/    alert aggregation and handling                      │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ ① JDBC
+        ┌───────────────────┴───────────────────┐
+        ▼                                       ▼
+┌────────────────────┐              ┌────────────────────────────────┐
+│ PostgreSQL :5432   │              │ TCP + JSON, frames delimited by #!LABSEP!# │
+│ database labdb     │              └───────────────┬────────────────┘
+└────────────────────┘                              ▼
+                                        ┌────────────────────────────────┐
+                                        │ Vendor driver service .NET Sidecar :18501 │
+                                        └───────────────┬────────────────┘
+                                                        │ vendor DLL
+                                                        ▼
+                                        ┌────────────────────────────────┐
+                                        │ Devices / robot arms           │
+                                        └────────────────────────────────┘
+```
+
+**The gateway is an optional path** (`labos-gateway/`): console → Redis :6379 → gateway → devices. It has been exercised but **the default is still the direct connection**, not switched over.
+
+### 5.2 Kernel package structure (who is responsible for what)
+
+| Package | Key classes | Responsibility |
+|---|---|---|
+| `api/` | `ApiServer`, `QueryService`, `AuthService` | HTTP routing and queries. `ApiServer` is a giant class (the routes are strung together with `if (path.equals(...))`) and is a known refactoring point |
+| `workflow/` | `WorkflowService`, `WorkflowGraphParser`, `GraphRunner`, `ExperimentExecutor`, `ExperimentScheduler`, `ExperimentFlowRunner`, `RunControl`, `RuntimeHold`, `StatusVocabulary`, `BatchOrchestrator`, `BatchPlanner`, `SchedulerEta`, `PreflightChecker` | Workflow parsing, execution by the graph, experiment orchestration and scheduling, pause/hold, status vocabulary, batching, duration forecast, preflight before saving |
+| `engine/` | `RunStateMachine`, `NodeProgress`, `RunProgress` | The node-level state machine: pending→ready→running→completed/failed, with retry and hand-over-to-human. A failed retry uses the same `commandId` (the idempotency key), to avoid the robot arm moving twice |
+| `driver/` | `DeviceDriver`, `DriverRegistry`, `DriverStepExecutor`, `tcp/TcpDriverAdapter`, `tcp/TcpPersistentDriver`, `PositionLock`, `ShadowProbe`, `ShadowRunner` | Find a device by capability, execute one step (timeout 30s), the two transports short-lived/long-lived, the position lock, the shadow probe |
+| `recovery/` | `RecoveryDecider`, `RecoveryPolicyResolver`, `RecoveryPolicy`, `StartupRecovery` | After a crash whether a node should retry / skip / hand over to a human (a pure function); settle orphaned runs at start-up |
+| `alert/` | — | Missing plate, timeout, failure, contract mismatch; de-duplication by `fingerprint = errorCode\|resourceId` |
+
+**Dependency direction** (reverse dependencies are forbidden):
+
+```
+api → workflow → engine → driver
+        ↓           ↓         ↓
+     recovery     alert   persistence
+```
+
+`driver` does not depend on `workflow`. `PositionLock` currently sits in `driver/` but is very much business logic — a known structural flaw (it should belong to `workflow/` or become its own `plate/` package).
+
+### 5.3 The two execution paths (the review focus)
+
+There are two execution paths in the kernel that both write `run` / `run_node` / `run_command`, and device allocation and variable substitution are two separate pieces of code:
+
+| Path | Entry point | Route |
+|---|---|---|
+| **A: execution by the graph** | `WorkflowService.execute(workflowId)` | `GraphRunner.run()` (or `RunStateMachine.executeAll()`) → `DriverStepExecutor` → device |
+| **B: step-by-step canvas execution** | `ExperimentFlowRunner.run(steps)` | step by step `ShadowProbe.probe()` → device |
+
+The two paths share the same capability-resolution rule set (six levels), but the executor branch still has to check the logic nodes on its own: when `resourceId == 0` or `capability == LOGIC` the kernel completes them directly, without going into the driver registry.
+
+### 5.4 Data model (core tables)
+
+```
+resource_node          resource tree: island → device → tier (kind: island/device/incubator/storage)
+  ├ parent_id          self-reference
+  └ attr jsonb         contains pos_x/pos_y (canvas coordinates)
+
+device_instance        device instance (one real device)
+  ├ resource_id        → resource_node.id   ★ the mapping point of the two ID sets
+  └ driver_id          → driver endpoint
+
+device_state           device-level state (online + status; has_plate ← derived from position_state)
+position_state         tier-level state (plate_id, reserved_until) ★ the single source of truth for position
+device_port            channel (the device's inlet/outlet/combined; capacity > 1 is a counting semaphore)
+device_access          door (hatch/lid/drawer; exclusive while a open/close is in progress)
+
+workflow / workflow_node / workflow_edge   BPMN graph
+run / run_node / run_command               execution records (command level carries device_id)
+run_event                                  event stream
+
+experiment             experiment (island_id / priority / deadline)
+experiment_process     the steps of an experiment (workflow_id / seq / loop_count)
+experiment_variable    experiment variables (definition layer)
+experiment_run / experiment_run_step       experiment execution records
+run_variable           run-time variable snapshot (isolated by run_id)
+
+island_flow            island flow lines (the device connections on the canvas)
+experiment_graph       experiment canvas (devices + logic nodes, jsonb)
+robot_point            robot-arm point (code/x/y/z/device_resource_id + door/channel/tier attributes)
+```
+
+### 5.5 Key data flows
+
+**Workflow execution**
+
+```
+POST /api/workflows/{id}/run
+  ↓
+WorkflowService.execute()
+  ├ parse BPMN → ordered nodes
+  ├ build the candidate pool capPool (capability → list of device-instance ids; preferEmptyDevices puts empty devices first)
+  ├ GraphRunner.run()
+  │    └ toRecoverable: pick a device by capability in turn (usageCursor)
+  └ DriverStepExecutor.execute() for each step
+       ├ DriverCommand (commandId = idempotency key, timeoutMs = 30s)
+       ├ TcpDriverAdapter.execute() → TCP → device
+       └ PersistingStepSink.writeStep()
+            ├ INSERT run_command (including device_id)
+            └ PositionLock.notePlateMove() (Deposit put / Withdraw take)
+```
+
+**Experiment execution**
+
+```
+POST /api/experiments/{id}/run?async=1
+  ↓
+ExperimentScheduler.submit()      creates experiment_run (queued)
+  ↓ background 2-second polling
+  ├ take the island lock (putIfAbsent)
+  └ ExperimentExecutor.run(expId, vars, existingRunId)
+       ├ loadVariables (defaults ← overrides)
+       ├ expand (expanded by loop_count, upper bound 20/500)
+       ├ substitute ${var} (once, before the start)
+       └ call WorkflowService.execute in sequence (stop on failure)
+```
+
+**Step-by-step canvas execution**
+
+```
+POST /api/experiments/flow-run?steps=id:method:output:params&vars=
+  ↓
+ExperimentFlowRunner.run()
+  each step:
+    ├ instanceIdOf(resourceId)          ★ ID conversion
+    ├ enrichWithCoords (fill in the point coordinates when withCoords=1)
+    ├ precheckTransfer (check whether the source device holds a plate before a Transfer)
+    ├ ShadowProbe.probe()               → TCP → device
+    ├ write run_node / run_command
+    └ parse the output variables (take the fields from the driver raw response)
+```
+
+### 5.6 Frontend structure
+
+```
+webapp/src/
+├── api/client.ts       apiFetch (unified 401 handling)
+├── pages/
+│   ├── Island.tsx            Island view: drag to place devices, transfer sequence, tier visualisation
+│   ├── IslandFlow.tsx        Island orchestration: device connections = plate transfers
+│   ├── ExperimentCanvas.tsx  Experiment canvas: devices + variables + fork + loop + join (React Flow)
+│   ├── Experiments.tsx       Experiment orchestration: variable table, loop column, execution history
+│   ├── Workflows.tsx         Workflow library
+│   ├── Designer.tsx          BPMN designer (bpmn-js)
+│   └── …                     monitoring, alerts, logs
+└── App.tsx            routing + navigation
+```
+
+**The difference between the two canvases** (easy to confuse):
+
+| | `ExperimentCanvas` (`/canvas`, `/canvas/:id`, `/experiments/:id/canvas`) | `IslandFlow` (`/island-flow`) |
+|---|---|---|
+| Nodes | devices + variables/forks/loops/joins | devices only |
+| Arrows | logic flow | the plate moves there |
+| Purpose | how an experiment runs | how the logistics on the island go |
+
+### 5.7 Deployment shape and ports
+
+**Now (single machine)**: one machine runs the kernel + frontend + PostgreSQL, devices are connected directly (short-lived connections).
+
+**Target (multiple instances + gateway)**: console × N ─ Redis (state centre) ─ gateway × M ─ devices. The gateway is done but not switched over (the switch `LABOS_DRIVER_MODE`: `persistent` is implemented, `redis` is still to do, empty means the short-lived connection).
+
+**Ports and addresses**:
+
+| Component | Address / port | Explanation |
+|---|---|---|
+| Kernel ApiServer | `:18080` | the external HTTP/JSON interface |
+| Frontend (dev) | `:5173` | Vite dev server |
+| Frontend (deployed) | `:8080` | Nginx reverse-proxies `/api` to 18080 |
+| .NET Sidecar | `:18501` | the vendor driver service |
+| Device simulator | `:19500–19506` | 7 DeviceSimulators (`labos-kernel/scripts/sim-up.sh`) |
+| PostgreSQL | `:5432`, database `labdb`, user `labos` | the connection is given by `LABOS_DB_HOST/PORT/NAME/USER/PASS`. **It falls back to `127.0.0.1` by default; a test environment must give the real database explicitly** |
+| Redis | `:6379` | used by the gateway path only (`LABOS_REDIS_*`) |
+
+### 5.8 The 2.0 target architecture (once the release gate is met)
+
+```
+┌──────────────────────────────────────────────────────┐
+│  Interaction                                             │
+│  Workflow designer (BPMN, node level)                    │
+│  Execution monitoring (event stream, status, total-duration forecast) │
+│  Handling (policy, alerts, attended window)              │
+│  2.0 keeps the existing web console; no new frontend framework │
+└────────────────────┬─────────────────────────────────┘
                      │ REST + SSE
-┌────────────────────┬─────────────────────────────────────────────────────────┐
-│  Kernel (Java 17, zero web framework dependency)                             │
-│  compiler    nodes → command sequence (template + node-level overrides)      │
-│  engine      state machine. Executes Decision / Parallel by the graph        │
-│  recovery    pure-function decisions. The mode decides whether the           │
-│              result goes to the policy or to the window                      │
-│  simulator   the same executor, with a swapped clock and virtual drivers     │
-│  persistence event stream                                                    │
-└────────────────────┬─────────────────────────────────────────────────────────┘
+┌────────────────────┴─────────────────────────────────┐
+│  Kernel (Java 17, zero web framework dependency)         │
+│  compiler    node → command sequence (template + node-level overrides) │
+│  engine      state machine. Executes Decision / Parallel by the graph │
+│  recovery    pure-function decisions. The mode decides whether the result goes to the policy or to the window │
+│  simulator   the same executor, with a swapped clock and virtual drivers │
+│  persistence event stream │
+└────────────────────┬─────────────────────────────────┘
                      │ gRPC
-┌────────────────────┬─────────────────────────────────────────────────────────┐
-│  Driver layer                                                                │
-│  .NET Sidecar (the existing endpoints)                                       │
-│  Contract: capability declaration / error codes / device raw response /      │
-│              idempotency                                                     │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────┴─────────────────────────────────┐
+│  Driver layer                                            │
+│  .NET Sidecar (the existing endpoints)                   │
+│  Contract: capability declaration / error codes / device raw response / idempotency │
+└──────────────────────────────────────────────────────┘
 ```
 
 The experiment-block layer keeps only "several workflows executed in sequence" in 2.0. A block-level canvas is not in the release gate.
@@ -297,11 +494,19 @@ The Process Status and the device map share one vocabulary; each status carries 
 
 2.0 does not use nest-position readiness states. They are added once the nest position exists.
 
+> This section is the **simplified** vocabulary of the running states, used to answer "why is it not moving". The complete five-level status vocabulary
+> (run / node / step / experiment / batch), together with the full basis for the pause kinds, the on-site holds, the crash recovery, the batching and the resuming,
+> is in **chapter 13**; the resource locks and the deadlock detection under concurrency are in **chapter 14**.
+
 ---
 
 ## 8. Feature ledger
 
 The P0 is folded into the release gate of section 1.1. The P1 is done and does not block the 2.0 version bump. The items marked "outside the release" only keep the interface or the data and are not scheduled into the 2.0 implementation.
+
+> **The basis of the status column**: ✅ implemented and measured　🟡 partly implemented　⬜ not started. This table is updated as the implementation progresses and reflects the **current** delivery status;
+> the sole authority for whether an item "has a test case and is in CI" is [`test-case-master-table.md`](test-case-master-table.md) (1:1 with the ledger items of this table).
+> Where the two conflict, the test ledger wins and this table is corrected. Chapter 11 records which period each item landed in.
 
 ### L1 Orchestration
 
@@ -310,20 +515,20 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 1.1 | Workflow designer (drag the nodes, connect them, open the existing BPMN) | ✅ bpmn-js | — |
 | 1.2 | A multi-step node can be collapsed for viewing in the interface | ✅ | — |
 | 1.3 | Automatic compilation: expansion at run time; the preview is a projection; an override is not written back to the BPMN | 🟡 the expansion exists | P1. The run-time expansion is already counted in gate 1; the projection and the overrides do not block the release on their own |
-| 1.4 | Decision (exclusive, including the default edge when there is no condition) | ⬜ | P0 |
-| 1.5 | Parallel (fork and join) | ⬜ | P0 |
-| 1.6 | Time Constraint (the shortest / longest interval) | ⬜ | P0 |
-| 1.7 | Experiment blocks executed in sequence | 🟡 the data is a sequence array | P1 |
-| 1.8 | Sub-processes executed as a subgraph | 🟡 already on the graph | P1 |
-| 1.9 | Loop, Wait Until, variables, and the conditions / loops / timers / semaphores of the experiment blocks | ⬜ | Outside the release |
+| 1.4 | Decision (exclusive, including the default edge when there is no condition) | ✅ execution by the graph (§11 B.1, `GraphRunner`) | P0 |
+| 1.5 | Parallel (fork and join) | ✅ execution by the graph (§11 B.1, the join waits for all incoming edges) | P0 |
+| 1.6 | Time Constraint (the shortest / longest interval) | ✅ `engine.TimeConstraintExecutor` + `engine.TimeConstraintSelfTest` (25 cases, pure logic) | P0 |
+| 1.7 | Experiment blocks executed in sequence | ✅ | P1 |
+| 1.8 | Sub-processes executed as a subgraph | ✅ | P1 |
+| 1.9 | Loop, Wait Until, variables (inside a workflow); the conditions / loops / timers / semaphores between experiment blocks | 🟡 inside a workflow it is implemented and has cases; between experiment blocks it is still outside the release | Outside the release |
 | 1.10 | Plate types and gripper offsets | ⬜ | Outside the release |
 
 ### L2 Validation
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
-| 2.1 | Preflight before saving: does the capability have a device, does the exclusive lack a condition, does the parallel lack a join, does the time constraint lack a duration | ⬜ | P0 |
-| 2.2 | Cycles, isolated nodes, a missing start / end | 🟡 the backend has it, the interface gives no hint | P1 |
+| 2.1 | Preflight before saving: does the capability have a device, does the exclusive lack a condition, does the parallel lack a join, does the time constraint lack a duration | ✅ `PreflightChecker` + a dry run with an empty executor (§11 B.2) | P0 |
+| 2.2 | Cycles, isolated nodes, a missing start / end | 🟡 the backend rejects them, the interface preflight already labels them | P1 |
 | 2.3 | An error panel for the compilation result, double-click to locate | ⬜ | P1 |
 | 2.4 | Referring to a device that has been taken offline | ⬜ | P1 |
 | 2.5 | A hint before the simulation that "this command cannot be simulated with a pure delay" | ⬜ | P1 |
@@ -336,32 +541,32 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 3.1 | State-machine execution + event stream | ✅ | — |
 | 3.2 | The runtime allocation from capability to device | ✅ | — |
 | 3.3 | The multi-step execution and the locating of the failed step | ✅ | — |
-| 3.4 | Switching between attended / unattended | ⬜ | P0 |
-| 3.5 | Reassign when a device is offline or fails, the run is not aborted; with no substitute it is `MANUAL` | 🟡 the single-workflow demo has a reassignment; the product rule "offline does not abort" is missing | P0 |
-| 3.6 | Resuming from a breakpoint | 🟡 the progress is serialisable, it is not connected to storage | P1 |
-| 3.7 | Command-level single-step forward / backward | ⬜ | P1 |
-| 3.8 | Modify after a pause and continue from the failed command | 🟡 it can be handed over to a person, it cannot be modified in place | P1 |
+| 3.4 | Switching between attended / unattended | ✅ switchable while running (§11 B.3, `POST /api/runs/{id}/attendance`) | P0 |
+| 3.5 | Reassign when a device is offline or fails, the run is not aborted; with no substitute it is `MANUAL` | ✅ | P0 |
+| 3.6 | Resuming from a breakpoint | ✅ `seq:loop_index` + `skipKeys`, see §13.7 | P1 |
+| 3.7 | Command-level single-step forward / backward | ⬜ not implemented | P1 |
+| 3.8 | Modify after a pause and continue from the failed command | 🟡 it can be handed over to a person and continue from the failed command, but a command cannot be modified in place | P1 |
 
 ### L4 Scheduling
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
-| 4.1 | When the device is busy, wait or reassign (not depending on which nest holds the plate) | ⬜ | P1 |
-| 4.2 | The three-state readiness and the pull loop | ⬜ | Outside the release |
+| 4.1 | When the device is busy, wait or reassign (not depending on which nest holds the plate) | ✅ inside a workflow, two branches contending for the same device are serialised automatically, see §14.1 | P1 |
+| 4.2 | The three-state readiness and the pull loop | ✅ the three states of the scheduler are in §14.6 | Outside the release |
 | 4.3 | Static scheduling, dependencies other than Run After | ⬜ | Outside the release |
-| 4.4 | Global makespan optimisation | 🟡 a prototype exists | Outside the release |
+| 4.4 | Global makespan optimisation | ⬜ not implemented (no prototype script or trial report in the repository) | Outside the release |
 
 ### L5 Simulation
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
 | 5.1 | Virtual driver | ✅ | — |
-| 5.2 | Command-level duration model | ⬜ | P0 |
-| 5.3 | Import the durations from the history (cleaned completed samples only) | ⬜ | P0 |
-| 5.4 | Total-duration forecast | ⬜ | P0 |
-| 5.5 | Gantt chart (forecast and actual) | ⬜ | P1 |
+| 5.2 | Command-level duration model | ✅ p50 / p90, see §14.7 | P0 |
+| 5.3 | Import the durations from the history (cleaned completed samples only) | ✅ | P0 |
+| 5.4 | Total-duration forecast | ✅ | P0 |
+| 5.5 | Gantt chart (forecast and actual) | ⬜ the page `/gantt` is manual only | P1 |
 | 5.6 | Throttle: accelerate the waiting, the forecast duration does not change | ⬜ | P1 |
-| 5.7 | The interface for the simulated errors | 🟡 the driver can inject | P1 |
+| 5.7 | The interface for the simulated errors | ✅ the driver can inject | P1 |
 | 5.8 | Switching a single device between simulation and reality | ⬜ | P1 |
 
 The basis of the duration: only the `completed` records whose cleaned duration is positive, giving p50 and p90 per capability and per method. The forecast uses p50 by default. The "can it be finished within the longest interval" of the time constraint uses p90 as a conservative judgement. At acceptance, report a baseline on the cleaned samples first, then freeze the threshold; this draft does not pre-write a percentage that has not been recomputed.
@@ -373,8 +578,8 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 | 6.1 | A pure function from the error code to the action. Actions: `RETRY` `REASSIGN` `SKIP` `ABORT` `MANUAL` | ✅ | — |
 | 6.2 | The graded evidence and the alert aggregation | ✅ history replay reduces the alert count, see `ALERT_REPORT.md` | — |
 | 6.3 | The contract layer rejects the catch-all codes | ✅ | — |
-| 6.4 | When a policy is replayed, show the distribution of the hits; it is forbidden to make the coverage 100% by using a large number of `SKIP` | 🟡 the coverage report has recorded the problem | P0 |
-| 6.5 | The attended window | ⬜ | P0 |
+| 6.4 | When a policy is replayed, show the distribution of the hits; it is forbidden to make the coverage 100% by using a large number of `SKIP` | ✅ | P0 |
+| 6.5 | The attended window | 🟡 Manual pause + paused-queue disposition pages (`PausedRuns` / `RunDetail`) available; the auto dialog whose default comes from `recovery_policy` is not done | P0 |
 | 6.6 | The call stack view | ⬜ | Outside the release |
 | 6.7 | `COMPENSATE` | ⬜ the policy enumeration has it, the execution degrades to `MANUAL` | Outside the release |
 
@@ -383,9 +588,9 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 | # | Feature | Status | Priority |
 |---|---|---|---|
 | 7.1 | The execution detail (the node tree + the event stream) | ✅ | — |
-| 7.2 | Claiming and closing the alerts | 🟡 view only | P0 |
-| 7.3 | Process Status (the vocabulary of section 7.7) | ⬜ | P0 |
-| 7.4 | The device status colouring (busy / idle / offline / error) | ⬜ | P1 |
+| 7.2 | Claiming and closing the alerts | ✅ | P0 |
+| 7.3 | Process Status (the vocabulary of section 7.7) | ✅ the full basis is in §13 | P0 |
+| 7.4 | The device status colouring (busy / idle / offline / error) | ✅ | P1 |
 | 7.5 | The plate-level Gantt, the scheduling decision trace | ⬜ | Outside the release |
 
 ### L8 Device onboarding
@@ -394,7 +599,7 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 |---|---|---|---|
 | 8.1 | The driver contract (capability, error code, raw response, idempotency) | ✅ | — |
 | 8.2 | .NET Sidecar local mock | ✅ | — |
-| 8.3 | The shadow mode for one real endpoint | ⬜ | P0 |
+| 8.3 | The shadow mode for one real endpoint | ✅ `driver.ShadowProbe` (§11 period 3) | P0 |
 | 8.4 | The remaining driver endpoints | ⬜ | Outside the release |
 | 8.5 | The teaching pendant | ⬜ | Outside the release |
 
@@ -402,15 +607,15 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
-| 9.1 | Adding, editing and deleting the policies; replay them against the historical errors before saving and show the hits | 🟡 read only | P0 |
-| 9.2 | Recovering a run after a crash | ⬜ | P1 |
-| 9.3 | The role permissions, the audit log | 🟡 the tables exist | Outside the release |
+| 9.1 | Adding, editing and deleting the policies; replay them against the historical errors before saving and show the hits | ✅ | P0 |
+| 9.2 | Recovering a run after a crash | 🟡 close-out at start-up (orphan `running`→`failed` + `recoverable`), a 7-day window, no automatic resume, see §13.5 | P1 |
+| 9.3 | The role permissions, the audit log | 🟡 the tables exist, the interface/endpoints partly | Outside the release |
 
 ### L10 Containers and inventory
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
-| 10.1 | The container identity: the barcode and the plate type can be referenced by a run | 🟡 `plate` / `plate_well` are initialized, the product semantics are not connected | P1 |
+| 10.1 | The container identity: the barcode and the plate type can be referenced by a run | 🟡 `plate` / `plate_well` have been migrated, the product semantics are not connected | P1 |
 | 10.2 | The nest-level position, the replenishment during a run, picking the containers by attribute | ⬜ | Outside the release |
 | 10.3 | The plate-type propagation and the gripper offsets | ⬜ | Outside the release |
 
@@ -505,7 +710,7 @@ The `run.attendance` field; the difference between the two modes shows in the **
 
 | Mode | The severity when it becomes MANUAL | Meaning |
 |---|---|---|
-| `attended` | `warn` | A dialog waits for a decision; going ahead does no harm |
+| `attended` | `warn` | Attended; an alert is recorded but it does not block (handled on the paused-queue page) |
 | `unattended` | **`error`** | Nobody is next to it, it must be visible at a glance during the patrol |
 
 Measured (the same workflow, the same failure):
@@ -626,6 +831,290 @@ The following rulings are part of the specification. When one of them is overtur
 
 ---
 
+---
+
+## 13. Run state and lifecycle
+
+This chapter consolidates the **run-state semantics** that were scattered across the code and the design documents into one basis. The authoritative implementation is
+`labos-kernel/src/main/java/com/labos/kernel/workflow/StatusVocabulary.java`
+(the contract version `2026-11-03`); the backend exposes it at `GET /api/meta/status-vocabulary`, and the frontend
+`webapp/src/utils/status.ts` only provides a fallback. Changing the vocabulary means changing this one class and bumping the version number.
+
+### 13.1 The five-level status vocabulary
+
+Each of the five scopes has its own set of status codes, and the counts differ: **run 11 / node 9 / step 6 / experiment 12 / batch 7**.
+`terminal` = a terminal state (it never changes again), `active` = an occupying state (it appears in the "currently busy / in the queue" statistics).
+
+**run (the execution record)**
+
+| Code | Label | terminal | active |
+|---|---|---|---|
+| `draft` | Draft | no | no |
+| `pending` | Pending | no | no |
+| `planned` | Planned | no | no |
+| `queued` | Queued | no | yes |
+| `running` | Running | no | yes |
+| `paused` | Paused | no | yes |
+| `completed` | Completed | yes | no |
+| `failed` | Failed | yes | no |
+| `aborted` | Aborted | yes | no |
+| `cancelled` | Cancelled | yes | no |
+| `skipped` | Skipped | yes | no |
+
+**node (the node)**
+
+| Code | Label | terminal | active |
+|---|---|---|---|
+| `pending` | Not executed | no | no |
+| `ready` | Ready | no | no |
+| `running` | Running | no | yes |
+| `completed` | Completed | yes | no |
+| `failed` | Failed | yes | no |
+| `manual` | Awaiting a human | no | yes |
+| `skipped` | Skipped | yes | no |
+| `aborted` | Aborted | yes | no |
+| `bypassed` | Branch not taken | yes | no |
+
+> **`bypassed` and `skipped` must be kept apart**: `bypassed` is a branch not taken by an exclusive gateway and is a **normal close-out**;
+> `skipped` is a policy skip, which means **the plate position is untrustworthy and the system stops for a human**. Both reach a terminal state, but the handling implication is the opposite.
+
+**step (the step)**
+
+| Code | Label | terminal | active |
+|---|---|---|---|
+| `pending` | Not executed | no | no |
+| `running` | Running | no | yes |
+| `completed` | Executed | yes | no |
+| `failed` | Failed | yes | no |
+| `skipped` | Skipped | yes | no |
+| `paused` | Paused | no | yes |
+
+**experiment (the experiment)**
+
+| Code | Label | terminal | active |
+|---|---|---|---|
+| `created` | Created | no | no |
+| `planned` | Planned | no | no |
+| `queued` | Queued | no | yes |
+| `running` | Running | no | yes |
+| `paused` | Paused | no | yes |
+| `completed` | Completed | yes | no |
+| `finished` | Finished | yes | no |
+| `failed` | Failed | yes | no |
+| `aborted` | Aborted | yes | no |
+| `cancelled` | Cancelled | yes | no |
+| `skipped` | Skipped | yes | no |
+| `deleted` | Deleted | yes | no |
+
+> Both `completed` and `finished` mean completed; the two codes are kept for compatibility with historical writes, and new writes use `finished` uniformly (see 13.2).
+
+**batch (the batch)**
+
+| Code | Label | terminal | active |
+|---|---|---|---|
+| `pending` | Pending | no | no |
+| `queued` | Queued | no | yes |
+| `running` | Running | no | yes |
+| `paused` | Paused | no | yes |
+| `completed` | Completed | yes | no |
+| `failed` | Failed | yes | no |
+| `aborted` | Aborted | yes | no |
+
+### 13.2 run → experiment status mapping
+
+The experiment list / detail shows the experiment status, while the persisted subject is the run. The two must have the same source, otherwise drift such as
+"the list shows completed while the detail shows failed" appears. The mapping is defined by `StatusVocabulary.RUN_TO_EXPERIMENT`,
+and the persistence SQL fragment is generated by `runToExperimentCaseSql()` (`CASE WHEN r.status='...' THEN '...' ELSE r.status END`):
+
+| run.status | experiment.status |
+|---|---|
+| `completed` | `finished` |
+| `failed` | `failed` |
+| `running` | `running` |
+| `paused` | `paused` |
+| `aborted` | `aborted` |
+| `cancelled` | `cancelled` |
+| `skipped` | `skipped` |
+| `queued` | `queued` |
+
+### 13.3 The three pause kinds
+
+"Paused" is not one state; it is one state (`run.status = paused`) plus a reason (`run.pause_kind`). The three reasons have different semantics:
+
+| pause kind | Label | Trigger | How it resumes |
+|---|---|---|---|
+| `paused_fault` | Device fault | A device heartbeat timeout / fault | **Automatic**: it resumes automatically once the heartbeat recovers, no human needed |
+| `waiting_human` | Waiting for a human | The retry / reassign policy is exhausted, or a human judgement is needed | **Manual**: click "Continue" |
+| `paused_unknown` | Plate position unknown | An exception during a transfer, the plate position is `UNKNOWN` | **Manual**: take stock and correct the plate position first, then continue |
+
+While `pause_kind` is set a `run` does not reach a terminal state; a `waiting_human` under unattended mode is escalated to an alert at the same time (see 13.8).
+
+### 13.4 On-site holds (hold)
+
+An "on-site hold" is used to **freeze a whole scope with a single event** (for example, when a device on an island faults, other experiments on the same island should also stop sending work to that device).
+It is described by two dimensions, `hold kind` (why it is held) and `hold scope` (how large a scope is held).
+
+**Hold kind**
+
+| code | Label |
+|---|---|
+| `fault` | Device fault |
+| `plate_unknown` | Plate position unknown |
+| `human` | Awaiting human confirmation |
+| `manual` | Manual pause |
+
+**Hold scope**
+
+| code | Scope |
+|---|---|
+| `site` | The whole site |
+| `island` | The island |
+| `experiment` | This experiment |
+
+**Priority: the more inner, the higher, `experiment > island > site`.**
+A hold **does not release resources** (otherwise a parallel body would grab the held position); but the "return reserved slot"
+(`position-return`) is a promise and must be kept at all times, even under a hold.
+
+> The island ID of the scope must be a positive number: a negative number is treated by the logic as "unassigned" and makes the hold ineffective.
+
+### 13.5 Crash recovery
+
+A process crash (not the graph execution stopping at a node boundary) follows another path:
+
+1. At start-up, `StartupRecovery.settleOrphanExperimentRuns` marks the orphaned records left in `running` as **`failed`**;
+2. On a crash it sets `recoverable=true`; the page `/api/runs/recoverable` lists the recoverable records;
+3. **No automatic resume**: it is only recovered when a human clicks "Continue"; the system does not re-run automatically;
+4. **Only the records interrupted in the last 7 days are listed** — clicking "Continue" on an older one would re-run with a stale state, which counts as an incident.
+
+The difference between a "pause" (13.3) and a "crash" (this section): a pause is **the graph execution waiting at a node boundary for a human**, with the process still alive; a crash is **the process being gone**, and the recovery relies on the persisted progress.
+
+### 13.6 Batched execution (S3.2)
+
+When the number of samples of an experiment exceeds a threshold it is split into batches submitted one batch at a time, lowering the resource peak of a single submission:
+
+- **Splitting**: when `batchSplit` is NULL or ≤ 0 no split happens; otherwise a batch is cut every `batchSplit` samples in the order of the input;
+- **Re-run**: when one batch is re-run, `attempt_no` increments from 1, and the historical attempts are kept (so "which attempt" is traceable);
+- **An already completed batch refuses a re-run**: error code `COMPLETED_BATCH_NOT_RERUNNABLE`;
+- **Batch states**: see 13.1, 7 states.
+
+### 13.7 Resuming from a breakpoint
+
+The key of the resume is **`seq:loop_index`**: each lap of the loop of the same `seq` can be resumed independently. On recovery it reads the
+`node_key` of the `completed` nodes as the `skipKeys`, and `GraphRunner.withSkipKeys` skips them and only fills in the ones after.
+
+> Known boundary: `skipKeys` matches by `node_key`; after a node is **renamed** the old `node_key` no longer matches and it re-runs — this boundary is pinned by the `workflow.GraphRunnerTest` case "resume: a rename mismatch re-runs".
+
+### 13.8 Attendance mode and alert level
+
+Two operating modes, switchable while running (`POST /api/runs/{id}/attendance`). **The only difference that is implemented is the alert level**:
+
+| Mode | The alert level of "hand over to a human (MANUAL)" |
+|---|---|
+| Attended (attended) | `warn` (non-blocking) |
+| Unattended (unattended) | `error` (an alert is recorded) |
+
+In both modes the fault handling path is the same: a fault is handed over to a human (`MANUAL`), and the human disposes of it on the paused-queue page (`PausedRuns` / `RunDetail`).
+
+> **Not implemented**: of release criterion 1.1 item 2, "an attended dialog whose default comes from the policy", the **auto dialog is not done** — there is no code path that "raises a blocking dialog with the default item from `recovery_policy` and waits for a decision". See ledger 6.5 in §8 and gap 2 of the "honest list" in `docs/en/test-case-master-table.md`.
+
+An attendance switch only affects a run that is **not finished**.
+
+---
+
+## 14. Concurrency, resources and scheduling
+
+### 14.1 The three levels of concurrency (do not conflate them)
+
+"Can it run in parallel" has to be answered at three levels, and the conclusions differ:
+
+| Level | Current state | Evidence |
+|---|---|---|
+| ① Multiple workflows / parallel branches inside one experiment | ✅ supported and measured | `scripts/verify-parallel-flow.py` 4/0 |
+| ② Several experiments concurrent on the same island | ✅ but **queued serially**, peak concurrency = 1 (island-level mutual exclusion) | `scripts/verify-parallel-experiments.py` 3/0 |
+| ③ Concurrency across different islands | ⚠️ the code supports it (the thread pool is at most 4), this environment has only one island, **not measured** | code reading only, see §4 of `docs/并行能力验证-20261103.md` |
+
+The scheduling Gantt does not model parallelism: it accumulates serially as "only one experiment runs at a time", so what it gives is a **lower bound** — the real completion can only be earlier. This is a deliberate trade-off.
+
+### 14.2 The four-level resource model
+
+The resources that a single transfer occupies fall into four levels, with different granularity and mutual-exclusion meaning:
+
+| Level | Resource | Table | Granularity | Mutual-exclusion semantics | Occupancy |
+|---|---|---|---|---|---|
+| L1 | Position | `position_state` | One tier | Occupancy-level mutual exclusion | The whole task |
+| L2 | Channel | `device_port` | One inlet / outlet | `capacity=1` mutual exclusion; `>1` is a semaphore | **Action level** |
+| L3 | Door | `device_access` | One openable/closable part | Action-level exclusivity | **Action level** |
+| L4 | Robot arm | `device_state` | One robot | Action-level exclusivity | **Action level** |
+
+The `capacity` of L2 means "how many plates can pass at once": 1 = serial, >1 = parallelisable (counted with `device_port_usage`; `capacity=1` is just the special case of `max_capacity=1`).
+
+### 14.3 Fixed acquisition order
+
+The resource requests of one Transfer follow a **fixed total order**, and out-of-order requests are not allowed, which rules out the circular wait at its source:
+
+```
+① source device door (L3) → ② source channel (L2) → ③ source position (L1)
+→ ④ target device door (L3) → ⑤ target channel (L2) → ⑥ target position (L1)
+→ ⑦ return position (L1) → ⑧ robot arm (L4)
+──────────────────────────────────────────────
+everything ready; the plate is still at the source position and can be abandoned at zero cost
+──────────────────────────────────────────────
+⑨ grab the plate  ← the point of no return
+```
+
+**The door comes first**: the door is the "main switch"; without opening it you cannot get in; if the door is open but the robot arm did not get it → the door can be closed and the attempt abandoned, at little cost.
+
+### 14.4 Wait-for-graph deadlock detection
+
+Even with the fixed order, one layer of safety net is kept: the **wait-for graph + DFS cycle detection**.
+
+| Property | Value |
+|---|---|
+| Algorithm | DFS cycle detection |
+| Scale | number of resources n ≤ 10, number of edges E ≤ 20 |
+| Single-run time | < 10 microseconds |
+| Switch | **always on, no switch** |
+
+Why always on: one Transfer involves about 6 resource requests ≈ 60 microseconds, which is negligible next to one device action (150 ms to 30 minutes); introducing a switch to save that little overhead would instead bring races and missed detections.
+
+### 14.5 Why the banker's algorithm is not used
+
+| # | Reason |
+|---|---|
+| 1 | A workflow has branches, and before the execution reaches a decision node it is **impossible to declare a "maximum demand"** (taking branch A needs 3 devices, taking branch B needs 0, unknowable in advance) |
+| 2 | To declare it anyway you would have to use the worst case (the union of all branches), which amounts to every workflow declaring "I want the whole island", **reducing concurrency to zero** |
+| 3 | Recomputing after the branch is determined is expensive, and the already-held resources must be included; the later it gets, the more meaningless it is |
+| 4 | The banker's algorithm assumes "the declaration does not change", but a human changing a parameter overturns the declaration and **the assumption does not hold** |
+| 5 | It is almost never used in engineering practice: PostgreSQL / MySQL / Linux all use a wait-for graph or a lock order |
+
+### 14.6 Scheduler
+
+| Property | Value |
+|---|---|
+| Ready decision | Three states: `pending` → `running` → `completed` (plus `paused` / `cancelled`) |
+| Polling interval | 2 seconds |
+| Island lock acquisition | `putIfAbsent` (a CAS atomic, guaranteeing no concurrency on the same island) |
+| Ordering | **EDD → priority → FIFO** (earliest due date first; on a tie by priority; on a further tie first submitted first run) |
+| Restart recovery | rehydrate: the queue is restored after a restart (`SchedulerRehydrateSelfTest`) |
+
+### 14.7 Duration model
+
+- **Basis**: p50 (the displayed total duration) / p90 (judging whether the longest interval is exceeded, conservative).
+- **Samples**: only the **cleaned** `completed` records with a positive duration, aggregated by "capability + method".
+- **Variance**: the duration of the same action varies widely — for `Run`, p50 = 18.5 s and p90 = 250 s, a **variance ratio of 13.5×**. This is the root reason why the scheduling must be conservative and must not be over-optimistic about a single-point estimate.
+
+### 14.8 Rolling schedule
+
+**The 2.0 implementation is "re-sort the whole queue every tick and dispatch in place"**, not the rolling window of the design:
+
+- The scheduling loop re-reads the queue from the database every **2 seconds** (`TICK_MS`), sorts it by `QUEUE_ORDER` (EDD → priority → FIFO, see §14.6), and tries to dispatch it entry by entry;
+- Each time it counts from "the number currently running", up to `MAX_CONCURRENT = 4` in parallel (different islands); the same island is serialised by the island lock (`putIfAbsent`, CAS), only different islands run in parallel;
+- An experiment that has started holds the island lock until it finishes, and the scheduler never changes it — that is the source of "an experiment that has started is not interrupted" in the current implementation, but it is **not** the commitment window of the design.
+
+**Not implemented (out of scope)**: the three mechanisms of the design — the **commitment window** (explicitly declaring that an experiment that has started is never changed), the **frozen zone** (no change in the next 15 minutes), and the **greedy rolling** (scheduling only one window at a time, and the next segment after it finishes) — are all absent from the scheduler. The rationale of that design still holds (the duration is an estimate, so computing a full-DP optimum from inaccurate data is meaningless), but it has not been landed.
+
+---
+
 ## Appendix A: Glossary
 
 | Term | Meaning |
@@ -650,7 +1139,6 @@ The following rulings are part of the specification. When one of them is overtur
 | Historical errors are aggregated and the alert count falls | `ALERT_REPORT.md` | The on-site alerts can already be claimed and closed |
 | A node can be expanded according to `capability_recipe` and a failure can be located at step N | `RecipeCompiler` and the multi-step execution | The projection in the designer and the node overrides are already product behaviour |
 | The driver contract has been walked through on the virtual driver and on the local Sidecar mock | `DRIVER_CONTRACT.md` | The real endpoint has been commissioned |
-| The payoff of the scheduling prototype is not enough to put global optimisation into 2.0 | `SCHEDULER_REPORT.md` | The global optimisation should be scheduled into 2.0 |
 
 The reproduction steps are in chapter 9 of `LabOS_新一代中控实现总纲_20261029.md`. The master plan is the implementation snapshot of kernel-0.3; where its use of "executable" conflicts with this appendix, this appendix wins.
 

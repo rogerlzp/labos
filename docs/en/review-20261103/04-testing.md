@@ -8,7 +8,7 @@
 > Audience: review (to judge how credible it is), maintainers (how to verify after a change)
 > Companions: [Functional document](01-functional.md) · [Technical document](02-technical.md) · [Design document](03-design.md)
 >
-> The conclusion in one sentence: **all 553 pure-logic tests are green (`--pure-only`, deterministic); the full run with the database is 923 cases;
+> The conclusion in one sentence: **all 589 pure-logic tests are green (`--pure-only`, deterministic); the full run with the database is 959 cases;
 > end to end it rests on shell / Python scripts + 8 Playwright page-track scripts**.
 > Page-level automation has gone from "zero" to 8 scripts (the four P0 pages are covered, see §4 and §7).
 
@@ -35,13 +35,13 @@
 # L1: needs no environment at all (the recommended first step of a review)
 cd /path/to/labos
 ./scripts/test-all.sh --pure-only
-# Expected: 553 passed / 0 failed (9 tests that need the database are skipped)
+# Expected: 589 passed / 0 failed (9 tests that need the database are skipped)
 # Note: --pure-only clears LABOS_DB_*, so the assertions of the branch that needs the database never run — that is why this number is deterministic
 
 # L1+L2: needs the database
 export LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=...
 ./scripts/test-all.sh
-# Expected: 923 passed / 0 failed (measured against a reachable database)
+# Expected: 959 passed / 0 failed (measured against a reachable database)
 
 # L3: the full device chain (needs the simulator + sidecar, the script starts them itself)
 export LABOS_DB_HOST=... (the same as above)
@@ -58,7 +58,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 
 ---
 
-## 3. The L1/L2 test-case list (`--pure-only`, **553** cases in total)
+## 3. The L1/L2 test-case list (`--pure-only`, **589** cases in total)
 
 | Test class | Cases | What it covers | Example of a key assertion |
 |---|---|---|---|
@@ -66,6 +66,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 | `sim.SimulatorBehaviorSelfTest` | 41 | Simulator behaviour (real protocol): Seal/Home/RunProgram, fault injection | Injecting `0x8000000C` must return "no paper"; a normal call must return ok |
 | `workflow.BatchPlannerSelfTest` | 39 | S3 batching: batch size / remainder batched / empty set / D5 batch variables / D6 status aggregation | 96/24=4 batches; the remainder forms its own batch |
 | `engine.ConditionEvaluatorSelfTest` | **32** | **The condition evaluator**: comparison / logic / variables / **arithmetic** / rejecting injection | `(a+b)/2>=5` holds; string arithmetic `${s}+1` throws; `1/0` throws; `Runtime.exec` is rejected |
+| `engine.TimeConstraintSelfTest` | **25** | **Time constraint (L1-1.6, P0)**: min-interval top-up wait / max-interval overrun / a predecessor that has not run is not checked / the top-up cap guard | An interval of 120s > max 60s throws `EC-11-0001`; `minSec` 3h → `EC-11-0003` without hanging; in simulation mode (`waitRealMs<=0`) it only records, no real wait |
 | `expr.ExpressionSelfTest` | 30 | The existing expression component (historical) | — |
 | `device.DeviceModelLibrarySelfTest` | 22 | M10 model-library metadata: manual/planned semantics, production-database aliases, the libraryJson contract | — |
 | `workflow.StatusVocabularySelfTest` | 20 | The single source of the status vocabulary (backend `StatusVocabulary` ↔ page wording) | — |
@@ -80,7 +81,8 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 | `alert.AlertSelfTest` | 13 | Alert aggregation and handling | The same fingerprint is merged, after the ack it is no longer escalated |
 | `api.ExperimentGraphCompileSelfTest` | 10 | Experiment-orchestration ordering: no edges = sequence order / with edges = topological order / a cycle must be rejected | — |
 | `workflow.RunControlSelfTest` | 10 | Experiment-level run control: scope degradation + a `site` hold cannot be lifted incidentally | — |
-| `workflow.GraphRunnerTest` | **8** | Graph execution: split / join / deduplication / one report per loop iteration / **built-in nodes** | Both parallel branches execute; a loop of 3 iterations calls back with `[1,2,3]`; `__setVar`/`__expr` run through and produce **no device command** |
+| `workflow.GraphRunnerTest` | **10** | Graph execution: split / join / deduplication / one report per loop iteration / **built-in nodes** / **resume skipKeys** | Both parallel branches execute; a loop of 3 iterations calls back with `[1,2,3]`; `__setVar`/`__expr` run through and produce **no device command**; a skipped node sends no command, and a rename makes it re-run |
+| `workflow.SchedulerOrderSelfTest` | **9** | **Scheduling queue ordering (spec §14.6)**: EDD → priority DESC → FIFO, sorting `QUEUE_ORDER` directly | 09:00 before 10:00; no deadline (null) sorts last; equal deadlines break by priority then by submission time; all three equal stays stable |
 | `driver.SidecarChainTest` | 7 | Control console ↔ sidecar protocol | The frame format, the error-code pass-through (skipped when there is no dotnet) |
 | `workflow.ExperimentOrderSelfTest` | 6 | Partial ordering of experiment blocks (the S2-A migration boundary) | — |
 | **L2** `workflow.BatchDbSelfTest` | 244 | S3 batch persistence: idempotent batch creation / snapshot, a failed batch is retried with `attempt_no=2`, a successful batch refuses a re-run, batch-boundary holds (a fake executor, no real device is touched) | — |
@@ -93,8 +95,8 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 | **L2** `api.UserRoleDbSelfTest` | 10 | RBAC closure persistence: the role allow-list + last-admin protection (created and cleaned up by itself) | — |
 | **L2** `driver.TransferPlanSelfTest` | 2 | The transport plan and the position lock | A target position that is occupied must be refused |
 
-> The pure logic adds up to **553** (the 7 cases of SidecarChainTest are counted individually).
-> The full run with the database (`./scripts/test-all.sh`) = 553 + 5 (the real-database section of DeviceErrorChainSelfTest, 14→19) + 365 (the 9 L2 classes: 244+36+26+14+13+10+10+10+2) = **923**.
+> The pure logic adds up to **589** (the 7 cases of SidecarChainTest are counted individually).
+> The full run with the database (`./scripts/test-all.sh`) = 589 + 5 (the real-database section of DeviceErrorChainSelfTest, 14→19) + 365 (the 9 L2 classes: 244+36+26+14+13+10+10+10+2) = **959**.
 > Only DeviceErrorChainSelfTest produces two different numbers depending on the environment, so **`LABOS_DB_*` is forcibly cleared** in `--pure-only` to keep it at 14.
 > The 9 L2 classes show "9 tests that need the database are skipped" under `--pure-only`.
 
@@ -111,7 +113,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 | `test-sidecar.sh` | 7 | The standalone protocol test of the sidecar |
 | `load-test.sh` | — | The load test (multiple experiments in parallel) |
 | **`check-schema-sync.sh`** | 4 | The schema artefacts vs the shards: re-run the merge and compare + assert `loop_index` / the 4-column uk / the parent foreign key (regression of BUG-20261103-01) |
-| **`ci-gate.sh`** | 13 gates | The unified gate: pure logic ≥553 / tsc / **the schema artefacts agree** / **the parallel capability ≥4+3** / **the full flow matrix ≥45** / device chain ≥41 / e2e ≥24 / **the page flow matrix ≥21** / **experiment run control ≥22** / **the simulator integration ≥24** / **the four P0 pages** (alerts ≥8 / policies ≥12 / paused queue ≥7 / canvas ≥12), any failure exits with a non-0 code |
+| **`ci-gate.sh`** | 13 gates | The unified gate: pure logic ≥589 / tsc / **the schema artefacts agree** / **the parallel capability ≥4+3** / **the full flow matrix ≥45** / device chain ≥41 / e2e ≥24 / **the page flow matrix ≥21** / **experiment run control ≥22** / **the simulator integration ≥24** / **the four P0 pages** (alerts ≥8 / policies ≥12 / paused queue ≥7 / canvas ≥12), any failure exits with a non-0 code |
 | **`verify-parallel-flow.py`** | **4** | Parallelism inside a workflow: build a fork/join graph automatically → execute → assert that both branches complete + the commands on the same device do not overlap (the device lock serialises them) → clean up |
 | **`verify-parallel-experiments.py`** | **3** | Concurrency on the same island: build N experiments and submit them asynchronously at the same time → sample the number of `running` → assert that the **peak parallelism = 1**, that there is queueing, and that everything completes → clean up |
 | **`verify-flow-matrix.py`** | **45** | The full flow matrix: nodes / gateways / variables / loops / back edges / parallelism / port topology / pause-resume / experiments / concurrency |
@@ -135,7 +137,7 @@ The full record is in `docs/流程控制-测试报告.md`, the summary:
 
 | Feature | How it was tested | Result |
 |---|---|---|
-| Condition expression evaluation | 23 unit tests + end to end | All pass; `vars=ok=true` takes A, `ok=false` takes default |
+| Condition expression evaluation | 32 unit tests + end to end | All pass; `vars=ok=true` takes A, `ok=false` takes default |
 | The branch that is not selected, `bypassed` | End to end (3 branches) | `v=1/2/9` take A/B/default respectively, the other two are `bypassed` |
 | Back-edge loop | End to end | `go=yes` runs to the cap (default 10 / configured 3 / configured 2 were all verified) |
 | Loop + parallelism | End to end (T-PLOOP) | A 1 time + B 2 iterations = 3 Seal commands, the join behaves normally, no deadlock |
@@ -154,12 +156,13 @@ The full record is in `docs/流程控制-测试报告.md`, the summary:
 |---|---|---|---|---|
 | Device model library / error-code mapping | ✅ 196+14 | — | ✅ | ✅ |
 | Device onboarding / deployment / method list | — | — | ✅ | ✅ |
-| Workflow preflight (reachability / deadlock / condition syntax) | — | — | — | ✅ |
-| Sequential execution | ✅ 8 | — | ✅ | ✅ |
-| Parallel split / join | ✅ 8 | — | ✅ | ✅ |
-| Conditional branch | ✅ 32 | — | — | ✅ |
-| Loop (back edge) | ✅ 8 (one report per iteration) | — | — | ✅ |
-| Variables (passed in at start / node output) | ✅ 32 (the evaluation side) | — | — | ✅ |
+| Workflow preflight (reachability / deadlock / condition syntax) | — | — | ✅ | ✅ |
+| Sequential execution | ✅ 10 | — | ✅ | ✅ |
+| Parallel split / join | ✅ 10 | — | ✅ | ✅ |
+| Conditional branch | ✅ 32 | — | ✅ | ✅ |
+| Loop (back edge) | ✅ 10 (one report per iteration) | — | ✅ | ✅ |
+| Scheduling queue ordering (EDD→priority→FIFO, spec §14.6) | ✅ 9 | — | ✅ | — |
+| Variables (passed in at start / node output) | ✅ 32 (the evaluation side) | — | ✅ | ✅ |
 | Error code → policy → action | ✅ 17+14 | — | ✅ | ✅ |
 | The paused queue's "dismiss in filter" (by kind / time) | — | — | ✅ | ✅ page |
 | The designer's "estimated wait" (by device occupancy) | — | — | ✅ manual | — |
@@ -180,15 +183,15 @@ The full record is in `docs/流程控制-测试报告.md`, the summary:
 
 | # | Gap | Risk | Why it has not been done yet |
 |---|---|---|---|
-| 1 | **The page track is still not exhaustive** | A wrong page state on `/gantt`, `/duration`, `/plates`, `/island`, `/island-flow`, `/topology`, `/audit` or the home dashboard can only be found by clicking by hand | Not P0; the four P0 pages (`/alerts` `/policies` `/paused` `/canvas`) are covered by `e2e-alerts/policies/paused/canvas.py`; the rest come later |
-| 2 | A loop **across a parallel split** | The combined scenario may deadlock | The combinations explode; a single scenario is guaranteed first |
-| 3 | The **trace of the iteration number** of a loop re-entry | The intermediate state of the N-th iteration is not visible | It needs a change to the `run_node` table structure |
-| 4 | Arithmetic inside a condition | Writing `${a}+1 > 3` on site fails | The evaluator does not support it |
-| 5 | Multi-tenant isolation | Only a single tenant has ever been run | There is no second set of data |
-| 6 | The real device (not the simulator) | The timing, the concurrency and the abnormal behaviour differ | There is no real-device environment |
-| 7 | Long stability (running for days) | Memory / connection leaks | There is no long-stability environment |
-| 8 | The **correctness** under a concurrent load test (not just the throughput) | The state gets confused under lock contention | The load test only looked at the throughput |
-| 9 | The resume after a node was renamed | skipKeys matches on `node_key`, a rename makes it miss | No test case has been constructed |
+| 1 | `/gantt`, `/duration`, `/plates`, `/island`, `/island-flow`, `/topology`, `/audit`, the home dashboard | A wrong rendering can only be found by hand | Not P0; the four P0 pages (`/alerts` `/policies` `/paused` `/canvas`) are covered by `e2e-*`; the rest come later |
+| 2 | The attended auto dialog (item 6.5, P0: a dialog whose default comes from `recovery_policy`) | Unattended only raises an alert and shows no dialog; attended needs a person to go to the paused-queue page, the default action is never offered automatically | Not implemented; the manual pause + disposition pages (`PausedRuns` / `RunDetail`) exist and are covered by `e2e-paused.py` |
+| 3 | A loop crossing a parallel fork | The combined scenario may deadlock | Combinatorial explosion; single scenarios first |
+| 4 | The trace of the iteration number of a loop re-entry | The intermediate state of the N-th iteration is not visible | It needs a change to the `run_node` table structure |
+| 5 | Multi-tenant isolation | Only one tenant has been run | No second data set |
+| 6 | Real hardware (not simulators) | Timing / concurrency / exception differences | No real device environment |
+| 7 | Soak (running for days) | Memory / connection leaks | No soak environment |
+| 8 | Correctness under load (not just throughput) | State corruption under lock contention | The load test only measured throughput |
+| 9 | Rolling schedule (spec §14.8: commit window / 15-minute freeze zone / greedy) | A broken commit window or freeze zone scrambles the experiments already committed | Out of scope, not yet implemented enough to be testable |
 
 ---
 
@@ -196,7 +199,7 @@ The full record is in `docs/流程控制-测试报告.md`, the summary:
 
 ```bash
 # 1. The pure logic must be all green, the number of cases must not drop
-./scripts/test-all.sh --pure-only        # 553 / 0
+./scripts/test-all.sh --pure-only        # 589 / 0
 
 # 2. The frontend types must be clean
 cd webapp && npx tsc -b --force          # 0 errors

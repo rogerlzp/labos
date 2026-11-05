@@ -17,9 +17,12 @@
 
 - 第 1 章是 **2.0 的交付边界**
 - 第 4 章是 **本版纳入什么、以及明确不纳入的部分**
+- 第 5 章是 **技术架构**：分层、内核包结构、两条执行路径、数据模型、部署与端口
 - 第 6–7 章是 **运行模式与控制语义**，这是本版相对 v0.3 的主体
 - 第 8 章是 **功能台账**。P0 等于 2.0 发布门槛，P1 是紧随其后、不挡住发布的项
 - 第 12 章是 **已写入规格的默认决策**。后续变更记在 `决策记录.md`，只追加
+- 第 13 章是 **运行状态与生命周期**：五级状态词表、暂停态、扣留、崩溃恢复、分批、续跑
+- 第 14 章是 **并发、资源与调度**：四级资源模型、固定获取顺序、等待图死锁、调度器、时长模型、滚动排程
 
 ---
 
@@ -125,7 +128,203 @@ LabOS 是实验室自动化产线的调度软件。当前基线能加载已有�
 
 ---
 
-## 5. 目标架构
+## 5. 技术架构
+
+本章分两层：**5.1–5.7 是现状**（实现基线的实际形态，以代码为准），**5.8 是 2.0 目标架构**（发布门槛达成后的形态）。现状与目标不一致处，以第 1.1 节发布门槛为裁剪依据。
+
+### 5.1 分层架构（现状）
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 浏览器  React 18 + TypeScript + Ant Design + React Flow        │
+│ webapp/                                                       │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ HTTP/JSON  ApiServer :18080
+                            │ （开发态前端 Vite :5173；部署态 Nginx :8080 反代 /api）
+┌───────────────────────────▼──────────────────────────────────┐
+│ 内核 labos-kernel/（Java 17，零 Web 框架依赖）                  │
+│  api/      路由、参数解析、JSON 拼装、鉴权                      │
+│  workflow/ 流程解析 · 图执行 · 实验编排 · 调度 · 状态词表        │
+│  engine/   节点级状态机（重试 / 转人工 / 幂等）                 │
+│  driver/   设备驱动抽象 + 实现 + 位置锁 + 影子探针              │
+│  recovery/ 崩溃恢复决策（纯函数）                               │
+│  alert/    告警聚合与处置                                      │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ ① JDBC
+        ┌───────────────────┴───────────────────┐
+        ▼                                       ▼
+┌────────────────────┐              ┌────────────────────────────────┐
+│ PostgreSQL :5432   │              │ TCP + JSON，帧以 #!LABSEP!# 分隔  │
+│ 库 labdb           │              └───────────────┬────────────────┘
+└────────────────────┘                              ▼
+                                        ┌────────────────────────────────┐
+                                        │ 厂商驱动服务 .NET Sidecar :18501 │
+                                        └───────────────┬────────────────┘
+                                                        │ 厂商 DLL
+                                                        ▼
+                                        ┌────────────────────────────────┐
+                                        │ 设备 / 机械臂                    │
+                                        └────────────────────────────────┘
+```
+
+**网关是可选路径**（`labos-gateway/`）：中控 → Redis :6379 → 网关 → 设备。已跑通但**默认仍是直连**，未切换。
+
+### 5.2 内核包结构（谁负责什么）
+
+| 包 | 关键类 | 职责 |
+|---|---|---|
+| `api/` | `ApiServer`、`QueryService`、`AuthService` | HTTP 路由与查询。`ApiServer` 是巨类（路由用 `if (path.equals(...))` 串起来），是已知的重构点 |
+| `workflow/` | `WorkflowService`、`WorkflowGraphParser`、`GraphRunner`、`ExperimentExecutor`、`ExperimentScheduler`、`ExperimentFlowRunner`、`RunControl`、`RuntimeHold`、`StatusVocabulary`、`BatchOrchestrator`、`BatchPlanner`、`SchedulerEta`、`PreflightChecker` | 流程解析、按图执行、实验编排与调度、暂停/扣留、状态词表、分批、时长预测、保存前预检 |
+| `engine/` | `RunStateMachine`、`NodeProgress`、`RunProgress` | 节点级状态机：pending→ready→running→completed/failed，重试与转人工。失败重试用同一 `commandId`（幂等键），避免机械臂搬两次 |
+| `driver/` | `DeviceDriver`、`DriverRegistry`、`DriverStepExecutor`、`tcp/TcpDriverAdapter`、`tcp/TcpPersistentDriver`、`PositionLock`、`ShadowProbe`、`ShadowRunner` | 按能力找设备、执行一步（超时 30s）、短连接/长连接两种传输、位置锁、影子探针 |
+| `recovery/` | `RecoveryDecider`、`RecoveryPolicyResolver`、`RecoveryPolicy`、`StartupRecovery` | 崩溃后某节点该重试/跳过/转人工（纯函数）；启动时对遗留 run 收尾 |
+| `alert/` | — | 漏板、超时、失败、契约不符；去重靠 `fingerprint = errorCode\|resourceId` |
+
+**依赖方向**（禁止反向依赖）：
+
+```
+api → workflow → engine → driver
+        ↓           ↓         ↓
+     recovery     alert   persistence
+```
+
+`driver` 不依赖 `workflow`。`PositionLock` 目前放在 `driver/` 但业务性很强，是已知的结构瑕疵（应归 `workflow/` 或独立成 `plate/` 包）。
+
+### 5.3 两条执行路径（评审重点）
+
+内核里存在两条都会落 `run` / `run_node` / `run_command` 的执行路径，设备分配与变量替换是两套代码：
+
+| 路径 | 入口 | 走向 |
+|---|---|---|
+| **A：按图执行** | `WorkflowService.execute(workflowId)` | `GraphRunner.run()`（或 `RunStateMachine.executeAll()`）→ `DriverStepExecutor` → 设备 |
+| **B：画布逐步执行** | `ExperimentFlowRunner.run(steps)` | 逐步 `ShadowProbe.probe()` → 设备 |
+
+两条路径共用同一套能力解析规则（六级），但执行器分支仍需各自检查逻辑节点：`resourceId == 0` 或 `capability == LOGIC` 时由内核直接完成，不进驱动注册表。
+
+### 5.4 数据模型（核心表）
+
+```
+resource_node          资源树：岛 → 设备 → 层位（kind: island/device/incubator/storage）
+  ├ parent_id          自引用
+  └ attr jsonb         含 pos_x/pos_y（画布坐标）
+
+device_instance        设备实例（一台真实设备）
+  ├ resource_id        → resource_node.id   ★ 两套 ID 的映射点
+  └ driver_id          → driver 端点
+
+device_state           设备级状态（online + status；has_plate ← 由 position_state 派生）
+position_state         层位级状态（plate_id、reserved_until）★ 位置单一数据源
+device_port            通道（设备的入口/出口/进出口；capacity > 1 为计数信号量）
+device_access          门（舱门/盖/抽屉；开合期间独占）
+
+workflow / workflow_node / workflow_edge   BPMN 图
+run / run_node / run_command               执行记录（命令级带 device_id）
+run_event                                  事件流
+
+experiment             实验（island_id / priority / deadline）
+experiment_process     实验的步骤（workflow_id / seq / loop_count）
+experiment_variable    实验变量（定义层）
+experiment_run / experiment_run_step       实验执行记录
+run_variable           运行时变量快照（按 run_id 隔离）
+
+island_flow            岛屿动线（画布上的设备连线）
+experiment_graph       实验画布（设备 + 逻辑节点，jsonb）
+robot_point            机械臂点位（code/x/y/z/device_resource_id + 门/通道/层位属性）
+```
+
+### 5.5 关键数据流
+
+**流程执行**
+
+```
+POST /api/workflows/{id}/run
+  ↓
+WorkflowService.execute()
+  ├ 解析 BPMN → 有序节点
+  ├ 构建候选池 capPool（能力 → 设备实例 id 列表；preferEmptyDevices 把空设备排前）
+  ├ GraphRunner.run()
+  │    └ toRecoverable：按能力轮转选设备（usageCursor）
+  └ DriverStepExecutor.execute() 每步
+       ├ DriverCommand（commandId = 幂等键，timeoutMs = 30s）
+       ├ TcpDriverAdapter.execute() → TCP → 设备
+       └ PersistingStepSink.writeStep()
+            ├ INSERT run_command（含 device_id）
+            └ PositionLock.notePlateMove()（Deposit 放 / Withdraw 取）
+```
+
+**实验执行**
+
+```
+POST /api/experiments/{id}/run?async=1
+  ↓
+ExperimentScheduler.submit()      创建 experiment_run（queued）
+  ↓ 后台 2 秒轮询
+  ├ 取岛锁（putIfAbsent）
+  └ ExperimentExecutor.run(expId, vars, existingRunId)
+       ├ loadVariables（默认值 ← 覆盖值）
+       ├ expand（按 loop_count 展开，上限 20/500）
+       ├ 替换 ${var}（启动前一次性）
+       └ 顺序调 WorkflowService.execute（失败即停）
+```
+
+**画布逐步执行**
+
+```
+POST /api/experiments/flow-run?steps=id:method:output:params&vars=
+  ↓
+ExperimentFlowRunner.run()
+  每步：
+    ├ instanceIdOf(resourceId)          ★ ID 转换
+    ├ enrichWithCoords（withCoords=1 时补点位坐标）
+    ├ precheckTransfer（Transfer 前查源设备有没有板）
+    ├ ShadowProbe.probe()               → TCP → 设备
+    ├ 落 run_node / run_command
+    └ 解析输出变量（从驱动原文取字段）
+```
+
+### 5.6 前端结构
+
+```
+webapp/src/
+├── api/client.ts       apiFetch（统一 401 处理）
+├── pages/
+│   ├── Island.tsx            岛屿视图：拖拽布设备、搬运序列、层位可视化
+│   ├── IslandFlow.tsx        岛屿编排：设备连线 = 搬板
+│   ├── ExperimentCanvas.tsx  实验画布：设备 + 变量 + 分叉 + 循环 + 汇合（React Flow）
+│   ├── Experiments.tsx       实验编排：变量表格、循环列、执行历史
+│   ├── Workflows.tsx         流程库
+│   ├── Designer.tsx          BPMN 设计器（bpmn-js）
+│   └── …                     监控、告警、日志
+└── App.tsx            路由 + 导航
+```
+
+**两个画布的区别**（容易混）：
+
+| | `ExperimentCanvas`（`/canvas`、`/canvas/:id`、`/experiments/:id/canvas`） | `IslandFlow`（`/island-flow`） |
+|---|---|---|
+| 节点 | 设备 + 变量/分叉/循环/汇合 | 只有设备 |
+| 箭头 | 逻辑流转 | 板子搬过去 |
+| 用途 | 实验怎么跑 | 岛上的物流怎么走 |
+
+### 5.7 部署形态与端口
+
+**现在（单机）**：一台机器跑 内核 + 前端 + PostgreSQL，设备直连（短连接）。
+
+**目标（多实例 + 网关）**：中控 × N ─ Redis（状态中心）─ 网关 × M ─ 设备。网关已完成但未切换（开关 `LABOS_DRIVER_MODE`：`persistent` 已实现，`redis` 待实现，空为短连接）。
+
+**端口与地址**：
+
+| 组件 | 地址 / 端口 | 说明 |
+|---|---|---|
+| 内核 ApiServer | `:18080` | HTTP/JSON 对外接口 |
+| 前端（开发） | `:5173` | Vite dev server |
+| 前端（部署） | `:8080` | Nginx 反代 `/api` 到 18080 |
+| .NET Sidecar | `:18501` | 厂商驱动服务 |
+| 设备模拟器 | `:19500–19506` | 7 台 DeviceSimulator（`labos-kernel/scripts/sim-up.sh`） |
+| PostgreSQL | `:5432`，库 `labdb`，用户 `labos` | 连接由 `LABOS_DB_HOST/PORT/NAME/USER/PASS` 指定。**默认回落 `127.0.0.1`，测试环境必须显式指定真实库** |
+| Redis | `:6379` | 仅网关路径使用（`LABOS_REDIS_*`） |
+
+### 5.8 2.0 目标架构（发布门槛达成后）
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -291,11 +490,19 @@ Process Status 与设备图共用一套词，每条状态带原因和进入时�
 
 2.0 不使用板位就绪三态。等 nest 位置存在后再加。
 
+> 本节是「运行态」的**简化**词表，用来回答「为什么不动」。完整的五级状态词表
+> （run / node / step / experiment / batch）以及暂停态、现场扣留、崩溃恢复、分批与续跑
+> 的完整口径见**第 13 章**；并发下的资源锁与死锁检测见**第 14 章**。
+
 ---
 
 ## 8. 功能台账
 
 P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标「发布之外」的项只保留接口或数据，不排进 2.0 实现。
+
+> **状态列的口径**：✅ 已实现并有实测　🟡 部分实现　⬜ 未开始。本表随实现推进更新，反映**当前**交付状态；
+> 某项「有没有用例、进不进 CI」的唯一权威是 [`docs/测试用例总表.md`](docs/测试用例总表.md)（与本表台账项 1:1 对应）。
+> 两者冲突时以测试台账为准，并回改本表。第 11 章记录了各项是在哪一期落地的。
 
 ### L1 编排
 
@@ -304,20 +511,20 @@ P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标�
 | 1.1 | 流程设计器（拖拽节点、连线，打开库内 BPMN） | ✅ bpmn-js | — |
 | 1.2 | 多步节点在界面上可折叠查看 | ✅ | — |
 | 1.3 | 自动编译：运行时展开；预览是投影；覆盖不写回 BPMN | 🟡 展开已有 | P1。运行时展开已计入门槛第 1 条，投影与覆盖不单独挡发布 |
-| 1.4 | Decision（异或，含无条件时的默认边） | ⬜ | P0 |
-| 1.5 | Parallel（分叉与汇合） | ⬜ | P0 |
-| 1.6 | Time Constraint（最短 / 最长间隔） | ⬜ | P0 |
-| 1.7 | 实验块顺序执行 | 🟡 库内数据是顺序数组 | P1 |
-| 1.8 | 子流程按子图执行 | 🟡 图上已有 | P1 |
-| 1.9 | Loop、Wait Until、变量、实验块的条件/循环/定时/信号量 | ⬜ | 发布之外 |
+| 1.4 | Decision（异或，含无条件时的默认边） | ✅ 按图执行（§11 B.1，`GraphRunner`） | P0 |
+| 1.5 | Parallel（分叉与汇合） | ✅ 按图执行（§11 B.1，汇合等所有入边） | P0 |
+| 1.6 | Time Constraint（最短 / 最长间隔） | ✅ `engine.TimeConstraintExecutor` + `engine.TimeConstraintSelfTest`（25 条，纯逻辑） | P0 |
+| 1.7 | 实验块顺序执行 | ✅ | P1 |
+| 1.8 | 子流程按子图执行 | ✅ | P1 |
+| 1.9 | Loop、Wait Until、变量（流程内）；实验块之间的条件/循环/定时/信号量 | 🟡 流程内已实现并有用例；实验块之间仍为发布之外 | 发布之外 |
 | 1.10 | 板类型与夹爪偏移 | ⬜ | 发布之外 |
 
 ### L2 校验
 
 | # | 功能 | 状态 | 优先级 |
 |---|---|---|---|
-| 2.1 | 保存前预检：能力是否有设备、异或是否缺条件、并行是否缺汇合、时间约束是否缺时长 | ⬜ | P0 |
-| 2.2 | 环、孤立节点、缺开始/结束 | 🟡 后端有，界面无提示 | P1 |
+| 2.1 | 保存前预检：能力是否有设备、异或是否缺条件、并行是否缺汇合、时间约束是否缺时长 | ✅ `PreflightChecker` + 空执行器干跑（§11 B.2） | P0 |
+| 2.2 | 环、孤立节点、缺开始/结束 | 🟡 后端拒绝，界面预检已给标签 | P1 |
 | 2.3 | 编译结果错误面板，双击定位 | ⬜ | P1 |
 | 2.4 | 引用已下线设备 | ⬜ | P1 |
 | 2.5 | 仿真前提示「此命令不能纯延时模拟」 | ⬜ | P1 |
@@ -330,32 +537,32 @@ P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标�
 | 3.1 | 状态机执行 + 事件流 | ✅ | — |
 | 3.2 | 能力到设备的运行时分配 | ✅ | — |
 | 3.3 | 多步执行与失败步骤定位 | ✅ | — |
-| 3.4 | 有人值守 / 无人值守切换 | ⬜ | P0 |
-| 3.5 | 设备离线或失败时改派，run 不中止；无替代则 `MANUAL` | 🟡 单流程演示有改派，缺「离线不中止」的产品规则 | P0 |
-| 3.6 | 断点续跑 | 🟡 进度可序列化，未接存储 | P1 |
-| 3.7 | 命令级单步前进 / 后退 | ⬜ | P1 |
-| 3.8 | 暂停后修改，从失败命令继续 | 🟡 可转人工，不能原地改 | P1 |
+| 3.4 | 有人值守 / 无人值守切换 | ✅ 运行中可切换（§11 B.3，`POST /api/runs/{id}/attendance`） | P0 |
+| 3.5 | 设备离线或失败时改派，run 不中止；无替代则 `MANUAL` | ✅ | P0 |
+| 3.6 | 断点续跑 | ✅ `seq:loop_index` + `skipKeys`，见 §13.7 | P1 |
+| 3.7 | 命令级单步前进 / 后退 | ⬜ 未实现 | P1 |
+| 3.8 | 暂停后修改，从失败命令继续 | 🟡 可转人工并从失败命令续跑，不支持原地改命令 | P1 |
 
 ### L4 调度
 
 | # | 功能 | 状态 | 优先级 |
 |---|---|---|---|
-| 4.1 | 设备忙则等待或改派（不依赖板在哪个 nest） | ⬜ | P1 |
-| 4.2 | 就绪三态与拉取循环 | ⬜ | 发布之外 |
+| 4.1 | 设备忙则等待或改派（不依赖板在哪个 nest） | ✅ 流程内并行抢同设备自动串行，见 §14.1 | P1 |
+| 4.2 | 就绪三态与拉取循环 | ✅ 调度器三态见 §14.6 | 发布之外 |
 | 4.3 | 静态排程、Run After 以外的依赖 | ⬜ | 发布之外 |
-| 4.4 | makespan 全局优化 | 🟡 有原型 | 发布之外 |
+| 4.4 | makespan 全局优化 | ⬜ 未实现（仓库内无原型脚本与试算报告） | 发布之外 |
 
 ### L5 仿真
 
 | # | 功能 | 状态 | 优先级 |
 |---|---|---|---|
 | 5.1 | 虚拟驱动 | ✅ | — |
-| 5.2 | 命令级时长模型 | ⬜ | P0 |
-| 5.3 | 从库内导入时长（只用清洗后的完成样本） | ⬜ | P0 |
-| 5.4 | 总时长预测 | ⬜ | P0 |
-| 5.5 | 甘特图（预测与实际） | ⬜ | P1 |
+| 5.2 | 命令级时长模型 | ✅ p50 / p90，见 §14.7 | P0 |
+| 5.3 | 从库内导入时长（只用清洗后的完成样本） | ✅ | P0 |
+| 5.4 | 总时长预测 | ✅ | P0 |
+| 5.5 | 甘特图（预测与实际） | ⬜ 页面 `/gantt` 仅手工 | P1 |
 | 5.6 | 油门：加速等待，预测时长不变 | ⬜ | P1 |
-| 5.7 | 模拟错误的界面 | 🟡 驱动可注入 | P1 |
+| 5.7 | 模拟错误的界面 | ✅ 驱动可注入 | P1 |
 | 5.8 | 单台设备在仿真与真实之间切换 | ⬜ | P1 |
 
 时长的口径：只用清洗后时长为正的 `completed` 记录，按能力与方法给出 p50 与 p90。预测默认用 p50。时间约束的「能否在最长间隔内完成」用 p90 做保守判断。验收时先在清洗后的样本上报出基线，再冻结阈值；本草案不预写一个尚未复算的百分比。
@@ -367,8 +574,8 @@ P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标�
 | 6.1 | 错误码到动作的纯函数。动作：`RETRY` `REASSIGN` `SKIP` `ABORT` `MANUAL` | ✅ | — |
 | 6.2 | 分级留痕与告警聚合 | ✅ 回放后告警条数下降，见 `ALERT_REPORT.md` | — |
 | 6.3 | 契约层拒绝万能码 | ✅ | — |
-| 6.4 | 策略回放时展示命中分布，禁止用大量 `SKIP` 把覆盖率做成 100% | 🟡 覆盖率报告已记录该问题 | P0 |
-| 6.5 | 有人值守窗口 | ⬜ | P0 |
+| 6.4 | 策略回放时展示命中分布，禁止用大量 `SKIP` 把覆盖率做成 100% | ✅ | P0 |
+| 6.5 | 有人值守窗口 | 🟡 手动暂停 + 暂停队列处置页（`PausedRuns` / `RunDetail`）可用；按 `recovery_policy` 默认项的自动弹窗未做 | P0 |
 | 6.6 | 调用栈视图 | ⬜ | 发布之外 |
 | 6.7 | `COMPENSATE` | ⬜ 策略枚举有，执行降级为 `MANUAL` | 发布之外 |
 
@@ -377,9 +584,9 @@ P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标�
 | # | 功能 | 状态 | 优先级 |
 |---|---|---|---|
 | 7.1 | 执行详情（节点树 + 事件流） | ✅ | — |
-| 7.2 | 告警认领与关闭 | 🟡 只能看 | P0 |
-| 7.3 | Process Status（第 7.7 节词表） | ⬜ | P0 |
-| 7.4 | 设备状态着色（忙 / 闲 / 离线 / 错误） | ⬜ | P1 |
+| 7.2 | 告警认领与关闭 | ✅ | P0 |
+| 7.3 | Process Status（第 7.7 节词表） | ✅ 完整口径见 §13 | P0 |
+| 7.4 | 设备状态着色（忙 / 闲 / 离线 / 错误） | ✅ | P1 |
 | 7.5 | 板级甘特、调度决策轨迹 | ⬜ | 发布之外 |
 
 ### L8 设备接入
@@ -388,7 +595,7 @@ P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标�
 |---|---|---|---|
 | 8.1 | 驱动契约（能力、错误码、原文、幂等） | ✅ | — |
 | 8.2 | .NET Sidecar 本机 mock | ✅ | — |
-| 8.3 | 一个真实端点的影子模式 | ⬜ | P0 |
+| 8.3 | 一个真实端点的影子模式 | ✅ `driver.ShadowProbe`（§11 第三期） | P0 |
 | 8.4 | 其余驱动端点 | ⬜ | 发布之外 |
 | 8.5 | 示教器 | ⬜ | 发布之外 |
 
@@ -396,9 +603,9 @@ P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标�
 
 | # | 功能 | 状态 | 优先级 |
 |---|---|---|---|
-| 9.1 | 策略的增删改，保存前用库内错误回放并显示命中 | 🟡 只能读 | P0 |
-| 9.2 | 崩溃后的 run 恢复 | ⬜ | P1 |
-| 9.3 | 角色权限、审计日志 | 🟡 表在 | 发布之外 |
+| 9.1 | 策略的增删改，保存前用库内错误回放并显示命中 | ✅ | P0 |
+| 9.2 | 崩溃后的 run 恢复 | 🟡 启动收口（孤儿 `running`→`failed` + `recoverable`），7 天窗口，不自动续跑，见 §13.5 | P1 |
+| 9.3 | 角色权限、审计日志 | 🟡 表在，接口/界面部分 | 发布之外 |
 
 ### L10 容器与库存
 
@@ -499,7 +706,7 @@ React、Ant Design、React Flow、Spring Boot 3 不在 2.0 的实现范围内。
 
 | 模式 | MANUAL 时的 severity | 含义 |
 |---|---|---|
-| `attended` | `warn` | 弹窗等人决定，走了也不影响 |
+| `attended` | `warn` | 有人值守，记告警但不阻塞（处置在暂停队列页） |
 | `unattended` | **`error`** | 没人在旁边，巡检时必须一眼看到 |
 
 实测（同一条流程、同一次失败）：
@@ -621,6 +828,292 @@ GET /api/process-status
 
 ---
 
+---
+
+## 13. 运行状态与生命周期
+
+本章把散落在代码与设计文档里的**运行态语义**收口成一份口径。权威实现在
+`labos-kernel/src/main/java/com/labos/kernel/workflow/StatusVocabulary.java`
+（契约版本 `2026-11-03`），后端以 `GET /api/meta/status-vocabulary` 暴露，前端
+`webapp/src/utils/status.ts` 只做 fallback。改词表只改这一个类并递增版本号。
+
+### 13.1 五级状态词表
+
+五个 scope 各自一套状态码，数量不同：**run 11 / node 9 / step 6 / experiment 12 / batch 7**。
+`terminal` = 终态（不再变化），`active` = 占用态（出现在「正在忙 / 在队列里」的统计里）。
+
+**run（执行单）**
+
+| 状态码 | 文案 | terminal | active |
+|---|---|---|---|
+| `draft` | 草稿 | 否 | 否 |
+| `pending` | 待执行 | 否 | 否 |
+| `planned` | 已排程 | 否 | 否 |
+| `queued` | 排队中 | 否 | 是 |
+| `running` | 执行中 | 否 | 是 |
+| `paused` | 已暂停 | 否 | 是 |
+| `completed` | 已完成 | 是 | 否 |
+| `failed` | 失败 | 是 | 否 |
+| `aborted` | 已终止 | 是 | 否 |
+| `cancelled` | 已取消 | 是 | 否 |
+| `skipped` | 已跳过 | 是 | 否 |
+
+**node（节点）**
+
+| 状态码 | 文案 | terminal | active |
+|---|---|---|---|
+| `pending` | 未执行 | 否 | 否 |
+| `ready` | 待就绪 | 否 | 否 |
+| `running` | 执行中 | 否 | 是 |
+| `completed` | 已完成 | 是 | 否 |
+| `failed` | 失败 | 是 | 否 |
+| `manual` | 待人工 | 否 | 是 |
+| `skipped` | 已跳过 | 是 | 否 |
+| `aborted` | 已终止 | 是 | 否 |
+| `bypassed` | 分支未选中 | 是 | 否 |
+
+> **`bypassed` 与 `skipped` 必须分清**：`bypassed` 是异或网关没选中的分支，属于**正常收尾**；
+> `skipped` 是策略跳过，意味着**板位不可信，系统会停下等人**。两者都进终态，但处置含义相反。
+
+**step（步骤）**
+
+| 状态码 | 文案 | terminal | active |
+|---|---|---|---|
+| `pending` | 未执行 | 否 | 否 |
+| `running` | 执行中 | 否 | 是 |
+| `completed` | 已执行 | 是 | 否 |
+| `failed` | 失败 | 是 | 否 |
+| `skipped` | 已跳过 | 是 | 否 |
+| `paused` | 已暂停 | 否 | 是 |
+
+**experiment（实验）**
+
+| 状态码 | 文案 | terminal | active |
+|---|---|---|---|
+| `created` | 已建 | 否 | 否 |
+| `planned` | 已排程 | 否 | 否 |
+| `queued` | 排队中 | 否 | 是 |
+| `running` | 执行中 | 否 | 是 |
+| `paused` | 已暂停 | 否 | 是 |
+| `completed` | 已完成 | 是 | 否 |
+| `finished` | 已完成 | 是 | 否 |
+| `failed` | 失败 | 是 | 否 |
+| `aborted` | 已终止 | 是 | 否 |
+| `cancelled` | 已取消 | 是 | 否 |
+| `skipped` | 已跳过 | 是 | 否 |
+| `deleted` | 已删除 | 是 | 否 |
+
+> `completed` 与 `finished` 都表示完成，保留两个码是为了兼容历史写入；新写入统一用 `finished`（见 13.2）。
+
+**batch（批次）**
+
+| 状态码 | 文案 | terminal | active |
+|---|---|---|---|
+| `pending` | 待执行 | 否 | 否 |
+| `queued` | 排队中 | 否 | 是 |
+| `running` | 执行中 | 否 | 是 |
+| `paused` | 已暂停 | 否 | 是 |
+| `completed` | 已完成 | 是 | 否 |
+| `failed` | 失败 | 是 | 否 |
+| `aborted` | 已终止 | 是 | 否 |
+
+### 13.2 run → experiment 状态映射
+
+实验列表 / 详情展示的是 experiment 状态，而落库主体是 run。二者必须同源，否则出现
+「列表显示已完成、详情显示失败」这类漂移。映射由 `StatusVocabulary.RUN_TO_EXPERIMENT`
+定义，落库 SQL 片段由 `runToExperimentCaseSql()` 生成（`CASE WHEN r.status='...' THEN '...'
+ELSE r.status END`）：
+
+| run.status | experiment.status |
+|---|---|
+| `completed` | `finished` |
+| `failed` | `failed` |
+| `running` | `running` |
+| `paused` | `paused` |
+| `aborted` | `aborted` |
+| `cancelled` | `cancelled` |
+| `skipped` | `skipped` |
+| `queued` | `queued` |
+
+### 13.3 三种暂停态（pause kind）
+
+「暂停」不是一个状态，而是一个状态（`run.status = paused`）加一个原因
+（`run.pause_kind`）。三种原因语义不同：
+
+| pause kind | 文案 | 触发 | 恢复方式 |
+|---|---|---|---|
+| `paused_fault` | 设备故障 | 设备心跳超时 / 故障 | **自动**：心跳恢复后自动续跑，不需人 |
+| `waiting_human` | 等待人工 | 重试 / 改派策略耗尽，或需人判断 | **人工**：点「继续」 |
+| `paused_unknown` | 板位未知 | 搬运中异常，板位置 `UNKNOWN` | **人工**：先盘点校正板位再继续 |
+
+`pause_kind` 挂起期间 `run` 不出终态；无人值守模式下的 `waiting_human` 会同时升级为告警（见 13.8）。
+
+### 13.4 现场扣留（hold）
+
+「现场扣留」用于**一个事件把一片范围冻结住**（例如某岛设备故障，同岛其它实验也不该继续往这台设备上送活）。
+它由 `hold kind`（为什么扣）与 `hold scope`（扣多大范围）两个维度描述。
+
+**扣留类型（hold kind）**
+
+| code | 文案 |
+|---|---|
+| `fault` | 设备故障 |
+| `plate_unknown` | 板位未知 |
+| `human` | 等人工确认 |
+| `manual` | 人工暂停 |
+
+**扣留作用域（hold scope）**
+
+| code | 范围 |
+|---|---|
+| `site` | 全场 |
+| `island` | 岛 |
+| `experiment` | 本实验 |
+
+**优先级：越内层越优先，`experiment > island > site`。**
+扣留期间**不释放资源**（否则并行体会把被扣留的位置抢走）；但「回程预留位」
+（`position-return`）是承诺，必须一直保留，即使扣留也不释放。
+
+> 作用域的岛 ID 必须为正数：负数会被逻辑视为「未分配」而导致扣留失效。
+
+### 13.5 崩溃恢复
+
+进程崩溃（不是图执行停在节点边界）走另一条路径：
+
+1. 启动时 `StartupRecovery.settleOrphanExperimentRuns` 把遗留 `running` 的孤儿单**标为 `failed`**；
+2. 崩溃时打 `recoverable=true`，界面 `/api/runs/recoverable` 列出可恢复单；
+3. **不自动续跑**：必须人点「继续」才恢复，系统不会自动重跑；
+4. **只列近 7 天**被中断的单——更久的点「继续」会拿过期状态重跑，属于事故。
+
+「暂停」（13.3）与「崩溃」（本节）的区别：暂停是**图执行在节点边界等人**，进程还活着；崩溃是**进程没了**，恢复靠持久化进度。
+
+### 13.6 分批执行（S3.2）
+
+一个实验的样品数超过阈值时按批切分，逐批提交，降低单次提交的资源峰值：
+
+- **切批**：`batchSplit` 为 NULL 或 ≤ 0 时不切批；否则按入参顺序每 `batchSplit` 个样品切一批；
+- **重跑**：单批重跑时 `attempt_no` 从 1 递增，历史尝试保留（可追溯「第几次尝试」）；
+- **已完成批拒绝重跑**：错误码 `COMPLETED_BATCH_NOT_RERUNNABLE`；
+- **batch 状态**：见 13.1，7 态。
+
+### 13.7 断点续跑
+
+续跑的键是 **`seq:loop_index`**：同一 `seq` 的循环每一圈独立可续。恢复时读已 `completed`
+节点的 `node_key` 作为 `skipKeys`，`GraphRunner.withSkipKeys` 跳过它们、只补后面的。
+
+> 已知边界：`skipKeys` 按 `node_key` 匹配，节点**改名后**旧 `node_key` 失配，会重跑——该边界已由 `workflow.GraphRunnerTest` 的「续跑：改名失配则重跑」用例钉住。
+
+### 13.8 值守模式与告警级别
+
+两种运行模式，运行中可切换（`POST /api/runs/{id}/attendance`）。**已实现的差异只有告警级别**：
+
+| 模式 | 「转人工（MANUAL）」的告警级别 |
+|---|---|
+| 有人值守（attended） | `warn`（不阻塞） |
+| 无人值守（unattended） | `error`（记告警） |
+
+两种模式下故障处置路径相同：出错即转人工（`MANUAL`），人工到暂停队列页（`PausedRuns` / `RunDetail`）处置。
+
+> **未实现**：发布门槛 1.1 第 2 条「有人值守弹窗，默认项来自策略」中的**自动弹窗未做**——代码里没有「按 `recovery_policy` 默认项弹出阻塞窗口并等人决定」的路径。见 §8 台账 6.5 与 `docs/测试用例总表.md`「诚实清单」第 2 条。
+
+值守切换只影响**未结束**的 run。
+
+---
+
+## 14. 并发、资源与调度
+
+### 14.1 三个并发层级（别混为一谈）
+
+「能不能并行」要分三层回答，结论不同：
+
+| 层级 | 现状 | 证据 |
+|---|---|---|
+| ① 单实验内多流程 / 分支并行 | ✅ 支持并已实测 | `scripts/verify-parallel-flow.py` 4/0 |
+| ② 同一岛多实验并发 | ✅ 但**排队串行**，峰值并行 = 1（岛级互斥） | `scripts/verify-parallel-experiments.py` 3/0 |
+| ③ 不同岛并发 | ⚠️ 代码支持（线程池最多 4），本环境仅一个岛，**未实测** | 仅读码，见 `docs/并行能力验证-20261103.md` §4 |
+
+排程甘特不建模并行：它按「同一时间只跑一个实验」串行累加，因此给出的是**下界**——真实完成只会更早。这是有意取舍。
+
+### 14.2 四级资源模型
+
+一次搬运要占用的资源分四级，粒度与互斥含义不同：
+
+| 级 | 资源 | 表 | 粒度 | 互斥语义 | 占用时长 |
+|---|---|---|---|---|---|
+| L1 | 位置 | `position_state` | 一个层位 | 占用级互斥 | 任务全程 |
+| L2 | 通道 | `device_port` | 一个进 / 出口 | `capacity=1` 互斥；`>1` 为信号量 | **动作级** |
+| L3 | 门 | `device_access` | 一个可开合部件 | 动作级独占 | **动作级** |
+| L4 | 机械臂 | `device_state` | 一台机器人 | 动作级独占 | **动作级** |
+
+L2 的 `capacity` 表示「同时能过几块板」：1 = 串行，>1 = 可并行（用 `device_port_usage` 计数，`capacity=1` 只是 `max_capacity=1` 的特例）。
+
+### 14.3 固定获取顺序
+
+一次 Transfer 的资源申请是**固定全序**，不许乱序，以此把循环等待排除在源头：
+
+```
+① 源设备的门(L3) → ② 源通道(L2) → ③ 源位置(L1)
+→ ④ 目标设备的门(L3) → ⑤ 目标通道(L2) → ⑥ 目标位置(L1)
+→ ⑦ 回程位置(L1) → ⑧ 机械臂(L4)
+──────────────────────────────────────────────
+全部就绪；此时板仍在源位，可零代价放弃
+──────────────────────────────────────────────
+⑨ 抓板  ← 不可逆点
+```
+
+**门排在最前**：门是「总闸」，没开门进不去；门开了但机械臂没抢到 → 可关门放弃，代价小。
+
+### 14.4 等待图死锁检测
+
+即便有固定顺序，仍保留一层安全网：**等待图 + DFS 判环**。
+
+| 属性 | 值 |
+|---|---|
+| 算法 | DFS 判环 |
+| 规模 | 资源数 n ≤ 10，边数 E ≤ 20 |
+| 单次耗时 | < 10 微秒 |
+| 开关 | **常开，无开关** |
+
+常开的理由：一次 Transfer 涉及约 6 次资源申请 ≈ 60 微秒，相比一次设备动作（150 ms 到 30 分钟）可忽略；为省这点开销引入开关反而带来竞态与漏检。
+
+### 14.5 为什么不用银行家算法
+
+| # | 理由 |
+|---|---|
+| 1 | 流程有分支，执行到判定节点前**无法声明「最大需求」**（走 A 支要 3 台、走 B 支要 0 台，事前不可知） |
+| 2 | 硬要声明就得按最坏情况（所有分支并集），等于每个流程声明「我要整个岛」，**并发度归零** |
+| 3 | 分支确定后再重算代价大，且已占资源要纳入，越往后越没意义 |
+| 4 | 银行家假设「声明不变」，而人工改参数会推翻声明，**假设不成立** |
+| 5 | 工程实践里几乎不用：PostgreSQL / MySQL / Linux 都用等待图或锁顺序 |
+
+### 14.6 调度器
+
+| 属性 | 值 |
+|---|---|
+| 就绪判定 | 三态：`pending` → `running` → `completed`（另有 `paused` / `cancelled`） |
+| 轮询间隔 | 2 秒 |
+| 岛锁获取 | `putIfAbsent`（CAS 原子，保证同岛不并发） |
+| 排序 | **EDD → priority → FIFO**（先到期先跑，同到期比优先级，再同则先提交先跑） |
+| 重启恢复 | rehydrate：重启后恢复队列（`SchedulerRehydrateSelfTest`） |
+
+### 14.7 时长模型
+
+- **口径**：p50（展示总时长）/ p90（判断是否超最长间隔，保守）。
+- **样本**：只用**清洗后**、时长为正的 `completed` 记录，按「能力 + 方法」聚合。
+- **波动**：同一动作的耗时波动很大——`Run` 的 p50 = 18.5 s、p90 = 250 s，**波动比 13.5×**。这是排程必须保守、且不能对单点估计过度乐观的根本原因。
+
+### 14.8 滚动排程
+
+**2.0 的实现是「每轮全量重排 + 就地派发」**，不是设计里的滚动窗口：
+
+- 调度循环每 **2 秒**（`TICK_MS`）重新从库中取队列，按 `QUEUE_ORDER`（EDD → priority → FIFO，见 §14.6）排序后逐条尝试派发；
+- 每次从「当前在跑数」起算，最多 `MAX_CONCURRENT = 4` 路并行（不同岛）；同岛用岛锁（`putIfAbsent`，CAS）串行，不同岛才并行；
+- 已开始的实验由执行线程一直持有岛锁跑到结束，调度器不会改动它——这是「已开始的实验不被打断」在当前实现里的来源，但**不是**设计中的承诺窗口。
+
+**未实现（发布之外）**：设计里的三段机制——**承诺窗口**（显式声明已开始的实验绝不改动）、**冻结区**（未来 15 分钟内不改）、**贪心滚动**（每次只排一个窗口、跑完再排下一段）——调度器里都没有。这条设计本身的理由仍成立（时长就是估计值，用不准的数据求完整 DP 的最优解没有意义），但它尚未落地。
+
+---
+
 ## 附录 A：术语
 
 | 术语 | 含义 |
@@ -645,7 +1138,6 @@ GET /api/process-status
 | 库内错误经聚合后告警条数下降 | `ALERT_REPORT.md` | 现场告警已经可以认领和关闭 |
 | 节点可按 `capability_recipe` 展开，失败能定位到第 N 步 | `RecipeCompiler` 与多步执行 | 设计器里的投影和节点覆盖已经是产品行为 |
 | 驱动契约在虚拟驱动和本机 Sidecar mock 上走过 | `DRIVER_CONTRACT.md` | 真实端点已联调 |
-| 调度原型的收益不足以把全局优化排进 2.0 | `SCHEDULER_REPORT.md` | 应该把全局优化排进 2.0 |
 
 复现步骤以 `LabOS_新一代中控实现总纲_20261029.md` 第 9 章为准。总纲是 kernel-0.3 的实现快照；其中「可执行」一词与本附录冲突时，以本附录为准。
 

@@ -37,31 +37,36 @@ Split into three things:
 
 ## 3. Page map (menu → route → function)
 
-| Menu | Route | One-line description | Source file |
-|---|---|---|---|
-| **Authoring** — **Experiments** | `/experiments` | The experiment list: code / name / **island** / **version** (+1 on every save) / number of workflows / status; click a row to open the orchestration page | `ExperimentList.tsx` |
-| **Authoring** — **Experiment detail** | `/experiments/:id` | The workflow orchestration, the variables and the execution history of this experiment; "← Back to the list"; the "**＋ New workflow**" button (or the item of the same name in the "Add workflow" dropdown) **first creates the workflow and adds it to this experiment, then jumps to the designer** (the designer header shows which experiment / island it belongs to, with a one-click return); "Canvas" draws the same experiment as a graph (workflow / variables / splits / parallelism / loops) — **⚠️ today the canvas only stores the drawing, execution still follows the workflow table** (see `docs/设计-实验编排统一-v0.1-草稿.md` for the unified plan) | `Experiments.tsx` |
-| **Authoring** — Workflows | `/workflows` | All the process flowcharts; **"New workflow" directly creates a blank graph and enters the canvas**; click a row to enter the canvas (the BPMN editor); "Run history" shows every run of this workflow; the designer top bar shows **device idle / estimated wait N minutes** (estimated from the remaining time of the holder; hover to see who holds it); the "Timeline" draws which device each step occupies and when it starts, proportionally to time, and marks **the source of each step's duration** (manual / historical P50 / model library / fallback) | `Workflows.tsx` / `Designer.tsx` |
-| Authoring — Experiments | `/experiments` | Arranges several workflows by seq into one experiment; execute, look at the execution history (expandable down to every step) | `Experiments.tsx` |
-| Authoring — Experiment Canvas | `/canvas` | The **graphical version** of the same experiment: device nodes / variables / splits / parallelism / loops / merges | `ExperimentCanvas.tsx` |
-| **Run** — Live Board | `/runs` | Which card the running jobs are stuck on; after a crash, "Resume" from the breakpoint | `Runs.tsx` |
-| Run — **Schedule Gantt** | `/schedule` | How long the experiments that have **not run yet** will take when queued in order: **"By experiment"** — one row per experiment (answers "how long in total", **the rows can be dragged to reorder**), **"By device"** — one row per device (answers "which one is the bottleneck") | `ScheduleGantt.tsx` |
-| Analysis — Gantt | `/gantt` | The node timeline of **a run that has already finished** (relative to the start of the run) | `Gantt.tsx` |
-| Run — Paused Queue | `/paused` | The jobs waiting for a human; shows which node they stopped on and which error code; supports continue / dismiss / dismiss selected | `PausedRuns.tsx` |
-| Run — Plate Inventory | `/plates` | Which plate is on which position (the basis of plate-position-level mutual exclusion) | `Plates.tsx` |
-| Run — Run Detail | `/runs/:id` | **Flowchart (coloured by status) + node table (with error codes) + event stream** | `RunDetail.tsx` |
-| **Analysis** — Gantt | `/gantt` | The node timeline of a single run; switchable between historical runs | `Gantt.tsx` |
-| Analysis — Duration Distribution | `/duration` | The p50/p90 duration model per method / device | `Durations.tsx` |
-| **Operations** — Alerts | `/alerts` | Device / workflow alerts aggregated by fingerprint; ack / close / silence | `Alerts.tsx` |
-| Operations — Devices & Islands | `/topology` | The resource tree: island → device instance; the ledger view | `Topology.tsx` |
-| Operations — Island View | `/island` | **Drag the device pool (searchable, with a diagram) onto an island to deploy**; the device cards in the island carry a diagram | `Island.tsx` |
-| Operations — Island Flow | `/island-flow` | The transport sequence inside the island (the robot arm's point-to-point moves) | `IslandFlow.tsx` |
-| Operations — Policies | `/policies` | Overview of the recovery policies (including the wildcard `*`) | `Policies.tsx` |
-| Operations — Error Codes | `/error-codes` | The scope / severity of every code + **managing the policies by scope** | `ErrorCodes.tsx` |
-| **System** — User Management | `/users` | Accounts | `Users.tsx` |
-| System — Audit Log | `/audit` | Who changed what, and when | `Audit.tsx` |
+The frontend has **24 business routes** in total (the table has 23 rows, where the "Experiment Canvas" row carries the two paths `/canvas` and `/canvas/:id`) (there is also the root route `/`, which redirects to `/runs` by default). The menu is split into four groups: **Authoring / Run / Analysis / Operations / System**.
 
----
+| Menu group | Menu | Route | One-line description | Source file |
+|---|---|---|---|---|
+| Authoring | Workflow Library | `/workflows` | All the process flowcharts: new / search / preflight / execute / shadow check; click a row to enter the canvas | `Workflows.tsx` |
+| Authoring | Workflow Designer | `/designer/:id` | The single BPMN graph editor (bpmn-js): drag nodes, draw edges, bind a device + method + parameters | `Designer.tsx` |
+| Authoring | Experiment List | `/experiments` | The experiment list: code / name / **island** / **version** (+1 on every save of the orchestration) / number of workflows / status | `ExperimentList.tsx` |
+| Authoring | Experiment Orchestration | `/experiments/:id` | The orchestration of one experiment: workflows ordered by `seq` / variables / execute / pause / continue / stop; "Canvas" jumps to the experiment canvas | `Experiments.tsx` |
+| Authoring | Experiment Canvas | `/canvas`, `/canvas/:id` | The React Flow canvas: the graphical version of the same experiment (workflows / variables / splits / parallelism / loops / merges). **⚠️ today the canvas only stores the drawing, execution still follows the workflow table** | `ExperimentCanvas.tsx` |
+| Authoring | Experiment Canvas (with experiment context) | `/experiments/:id/canvas` | As above; when entered from the experiment detail it keeps the experiment context | `ExperimentCanvas.tsx` |
+| Run | Live Board | `/runs` | Which card the running jobs are stuck on; "resume from the breakpoint" after a crash; watchdog mode toggle | `Runs.tsx` |
+| Run | Run Detail | `/runs/:id` | **Flowchart (coloured by status) + node table (with error codes) + event stream** | `RunDetail.tsx` |
+| Run | Scheduler Board | `/scheduler` | Island locks / queue / ETA / worker pool: the duty operator judges when to insert a job | `Scheduler.tsx` |
+| Run | Schedule Gantt | `/schedule` | How long the experiments that have **not run yet** will take when queued in order: "by experiment" — one row per experiment (draggable to reorder) / "by device" — one row per device (to find the bottleneck) | `ScheduleGantt.tsx` |
+| Run | Paused Queue | `/paused` | The jobs waiting for a human: which node they stopped on / which error code / grouped by type; supports continue / dismiss / dismiss selected / plate-position correction | `PausedRuns.tsx` |
+| Run | Plate Inventory | `/plates` | Which plate is on which position (the basis of plate-position-level mutual exclusion); three-state plate counting: report position / register lost | `Plates.tsx` |
+| Analysis | History Gantt | `/gantt` | The node timeline of **a run that has already finished** (relative to the start of the run); switchable between historical runs | `Gantt.tsx` |
+| Analysis | Duration Distribution | `/duration` | The p50 / p90 duration model per method / device | `Durations.tsx` |
+| Operations | Alerts | `/alerts` | Device / workflow alerts aggregated by fingerprint; ack / close / silence / reopen | `Alerts.tsx` |
+| Operations | Devices & Islands | `/topology` | The resource tree: island → device instance; the ledger view | `Topology.tsx` |
+| Operations | Model Library | `/models` | The device model library: methods / parameters / estimated duration; model status management | `ModelLibrary.tsx` |
+| Operations | Island View | `/island` | **Drag the device pool (searchable, with a diagram) onto an island to deploy**; the device cards in the island carry a diagram | `Island.tsx` |
+| Operations | Island Flow | `/island-flow` | The transport sequence inside the island (the robot arm's point-to-point moves) | `IslandFlow.tsx` |
+| Operations | Policies | `/policies` | Overview of the recovery policies (including the wildcard `*`) | `Policies.tsx` |
+| Operations | Error Codes | `/error-codes` | The scope / severity of every code + **managing the policies by scope** | `ErrorCodes.tsx` |
+| System | User Management | `/users` | Accounts (visible only to `admin`) | `Users.tsx` |
+| System | Audit Log | `/audit` | Who changed what, and when | `Audit.tsx` |
+
+> **Two easy mix-ups**: `/schedule` (Schedule Gantt, future perspective, experiments that have not run yet) and `/gantt` (History Gantt, runs that have already been executed);
+> `/designer/:id` (BPMN single-workflow canvas, bpmn-js) and `/canvas` (experiment orchestration canvas, React Flow).
 
 ## 4. Core feature list
 
@@ -250,7 +255,248 @@ without restarting the API; the threshold is forced to be ≥ 2× the interval.
 
 ---
 
-## 5. Three end-to-end scenarios (you can follow them directly)
+## 5. Technical architecture and runtime model
+
+> This chapter answers three questions reviewers ask most often: **how the system is put together**, **which states one execution has**,
+> and **how far parallelism goes and how resources are locked**. The authoritative statement is in the functional specification
+> chapters 5 / 13 / 14 (Chinese source: `../../LabOS功能规格说明书.md`).
+
+### 5.1 Layered architecture and deployment
+
+```
+Browser  React 18 + TypeScript + Ant Design + React Flow (webapp/)
+        └─ Nginx (:8080) reverse-proxies /api → backend
+ApiServer (:18080, Java; hand-written HTTP dispatch: routing + auth + audit + business glue)
+        ├─ PostgreSQL (:5432/labdb)  workflows / runs / events / resource state
+        ├─ Redis (:6379)             session / cache
+        └─ Device adaptation layer
+             ├─ Sidecar (:18501)      local driver process
+             └─ Device simulator cluster (:19500–19506)
+```
+
+| Layer | Responsibility | Key components |
+|---|---|---|
+| Frontend | Canvas / lists / boards / run detail | `webapp/` (`App.tsx` defines all the routes) |
+| API | Auth + audit + assembling DTOs | `ApiServer` (known technical debt: the single file is on the large side) |
+| Kernel | Compiles the workflow, advances along the graph, schedules resources, decides recovery | `kernel`: `QueryService` (compile / preflight), `ExperimentExecutor` (execution), `GraphRunner`, `Scheduler` |
+| Storage | Workflows / runs / events / resource state | PostgreSQL; the DAG edges are stored in `experiment_process_edge` |
+| Device | Capability contract + driver | Sidecar / simulators; **the driver declares the capabilities, onboarding a new device does not change the business code** |
+
+**Port conventions**: frontend 5173 (dev) / 8080 (Nginx), ApiServer 18080, Sidecar 18501,
+simulators 19500–19506, PostgreSQL 5432, Redis 6379.
+
+**One hard rule**: the validation of the logical relationships is **closed at the code layer** (the `QueryService` compiler); the database only does persistence,
+and business logic is not carried by database constraints / stored procedures.
+
+### 5.2 Five-level status vocabulary (experiment status)
+
+The system is split into five scopes, each with its own set of status codes: **run 11 / node 9 / step 6 / experiment 12 / batch 7**.
+`terminal` = the terminal state (no longer changes); `active` = the occupied state (it appears in the "busy / in the queue" statistics).
+
+**Single source of authority**: the backend `StatusVocabulary.java` (contract version `2026-11-03`),
+exposed as `GET /api/meta/status-vocabulary`; the frontend `webapp/src/utils/status.ts` only does a fallback.
+Changing the vocabulary means changing only this one class and bumping the version number.
+
+**run (the execution job)**
+
+| Status code | Label | terminal | active |
+|---|---|---|---|
+| `draft` | Draft | no | no |
+| `pending` | Pending | no | no |
+| `planned` | Planned | no | no |
+| `queued` | Queued | no | yes |
+| `running` | Running | no | yes |
+| `paused` | Paused | no | yes |
+| `completed` | Completed | yes | no |
+| `failed` | Failed | yes | no |
+| `aborted` | Aborted | yes | no |
+| `cancelled` | Cancelled | yes | no |
+| `skipped` | Skipped | yes | no |
+
+**node (the node)**
+
+| Status code | Label | terminal | active |
+|---|---|---|---|
+| `pending` | Not executed | no | no |
+| `ready` | Ready | no | no |
+| `running` | Running | no | yes |
+| `completed` | Completed | yes | no |
+| `failed` | Failed | yes | no |
+| `manual` | Awaiting human | no | yes |
+| `skipped` | Skipped | yes | no |
+| `aborted` | Aborted | yes | no |
+| `bypassed` | Branch not selected | yes | no |
+
+> **`bypassed` and `skipped` must be told apart**: `bypassed` is a branch the XOR gateway did not select, it is a **normal ending**;
+> `skipped` is a skip by policy, meaning **the plate position is not trustworthy and the system stops and waits for a human**. Both enter a terminal state, but their handling meanings are opposite.
+
+**step (the step)**
+
+| Status code | Label | terminal | active |
+|---|---|---|---|
+| `pending` | Not executed | no | no |
+| `running` | Running | no | yes |
+| `completed` | Executed | yes | no |
+| `failed` | Failed | yes | no |
+| `skipped` | Skipped | yes | no |
+| `paused` | Paused | no | yes |
+
+**experiment**
+
+| Status code | Label | terminal | active |
+|---|---|---|---|
+| `created` | Created | no | no |
+| `planned` | Planned | no | no |
+| `queued` | Queued | no | yes |
+| `running` | Running | no | yes |
+| `paused` | Paused | no | yes |
+| `completed` | Completed | yes | no |
+| `finished` | Finished | yes | no |
+| `failed` | Failed | yes | no |
+| `aborted` | Aborted | yes | no |
+| `cancelled` | Cancelled | yes | no |
+| `skipped` | Skipped | yes | no |
+| `deleted` | Deleted | yes | no |
+
+> Both `completed` and `finished` mean done; keeping two codes is for compatibility with historical writes; **new writes uniformly use `finished`**.
+
+**batch**
+
+| Status code | Label | terminal | active |
+|---|---|---|---|
+| `pending` | Pending | no | no |
+| `queued` | Queued | no | yes |
+| `running` | Running | no | yes |
+| `paused` | Paused | no | yes |
+| `completed` | Completed | yes | no |
+| `failed` | Failed | yes | no |
+| `aborted` | Aborted | yes | no |
+
+**run → experiment status mapping**: the experiment list / detail displays the experiment status, while the persisted subject is the run;
+the two must come from the same source (otherwise there is a drift "the list is completed, the detail is failed"). The mapping is defined by
+`StatusVocabulary.RUN_TO_EXPERIMENT` and `runToExperimentCaseSql()` generates the SQL that is persisted:
+
+| run.status | experiment.status |
+|---|---|
+| `completed` | `finished` |
+| `failed` | `failed` |
+| `running` | `running` |
+| `paused` | `paused` |
+| `aborted` | `aborted` |
+| `cancelled` | `cancelled` |
+| `skipped` | `skipped` |
+| `queued` | `queued` |
+
+### 5.3 The three pause kinds and on-site hold
+
+**A "pause" is not one state but "one state plus one reason"**: `run.status = paused` plus `run.pause_kind`.
+
+| pause kind | Label | Trigger | Recovery |
+|---|---|---|---|
+| `paused_fault` | Device fault | Device heartbeat timeout / fault | **Automatic**: it resumes by itself once the heartbeat recovers, no human needed |
+| `waiting_human` | Waiting for a human | The retry / reassign policy is exhausted, or a human judgement is needed | **Manual**: click "Continue" |
+| `paused_unknown` | Plate position unknown | An exception during transport, the plate position is `UNKNOWN` | **Manual**: count and correct the plate positions first, then continue |
+
+**On-site hold**: one event freezes a whole range (for example, when a device on an island faults, the other experiments on the same island should also stop sending work to that device).
+It is described by two dimensions, "why it is held" (kind) and "how big a range is held" (scope), **the more inner, the higher the priority:
+`experiment > island > site`**.
+
+| hold kind | Label | | hold scope | Range |
+|---|---|---|---|---|
+| `fault` | Device fault | | `site` | Whole site |
+| `plate_unknown` | Plate position unknown | | `island` | Island |
+| `human` | Waiting for human confirmation | | `experiment` | This experiment |
+| `manual` | Manually paused | | | |
+
+- During a hold the resources are **not released** (otherwise a parallel process would snatch the held position);
+- but the "return reservation" (`position-return`) is a promise and **must be kept all along**, even a hold does not release it;
+- the island ID of a scope must be a **positive number**: a negative one is treated by the logic as "unassigned" and the hold stops working.
+
+### 5.4 Crash recovery, batched execution and resuming from a breakpoint
+
+| Mechanism | Key points |
+|---|---|
+| **Crash recovery** | A process crash (not the graph execution stopping at a node boundary) goes down another path: at startup `StartupRecovery.settleOrphanExperimentRuns` **marks `failed`** the leftover `running` orphan jobs; on a crash it stamps `recoverable=true`, and `/api/runs/recoverable` lists the recoverable jobs; it does **not resume automatically**, a human must click "Continue"; **only the last 7 days are listed** (resuming something older re-runs it with the expired state, which is an incident) |
+| **Batched execution (S3.2)** | When the number of samples exceeds the threshold it is split into batches and submitted batch by batch, lowering the resource peak of a single submission. When `batchSplit` is NULL or ≤ 0 there is no splitting; re-running one batch increments `attempt_no` and keeps the history; **a completed batch refuses to be re-run** (`COMPLETED_BATCH_NOT_RERUNNABLE`) |
+| **Resume from a breakpoint** | The resume key is **`seq:loop_index`**: every iteration of a loop with the same `seq` can be resumed independently. On recovery it reads the `node_key` of the `completed` nodes as `skipKeys`, skips them, and only makes up the rest |
+
+> The difference between a "pause" and a "crash": a pause is **the graph execution waiting for a human at a node boundary, with the process still alive**; a crash is **the process being gone**, and recovery relies on the persisted progress.
+> Known boundary: `skipKeys` matches by `node_key`; after a node is **renamed** the old `node_key` no longer matches and it is re-run (already pinned down by the "resume: rename mismatch re-runs" case in `workflow.GraphRunnerTest`).
+
+### 5.5 Concurrency, resources and scheduling
+
+**Three levels of concurrency (do not lump them together)**
+
+| Level | Status | Evidence |
+|---|---|---|
+| ① Several workflows / parallel branches inside one experiment | ✅ supported and measured | `verify-parallel-flow.py` 4/0 |
+| ② Several experiments concurrently on the same island | ✅ but **queued serially**, peak parallelism = 1 (island-level mutual exclusion) | `verify-parallel-experiments.py` 3/0 |
+| ③ Concurrency across different islands | ⚠️ supported in code (thread pool up to 4), this environment has only one island, **not measured** | code reading only |
+
+The Schedule Gantt does not model parallelism: it adds up serially on the assumption that "only one experiment runs at a time", so what it gives is a **lower bound** (the real completion can only be earlier); this is a deliberate trade-off.
+
+**Four-level resource model**: the resources occupied by one transport are split into four levels, with different granularity and mutual-exclusion meaning.
+
+| Level | Resource | Table | Granularity | Mutual-exclusion semantics | Held for |
+|---|---|---|---|---|---|
+| L1 | Position | `position_state` | One plate slot | Occupancy-level exclusion | The whole task |
+| L2 | Port | `device_port` | One inlet / outlet | `capacity=1` exclusion; `>1` is a semaphore | **Action-level** |
+| L3 | Door | `device_access` | One openable / closeable part | Action-level exclusive | **Action-level** |
+| L4 | Robot arm | `device_state` | One robot | Action-level exclusive | **Action-level** |
+
+The `capacity` of L2 says "how many plates can pass at the same time": 1 = serial, >1 = parallelisable (counted with `device_port_usage`).
+
+**Fixed acquisition order**: the resource request of one Transfer is a **fixed total order**, out-of-order is not allowed, which removes circular waiting at the source:
+
+```
+① source door (L3) → ② source port (L2) → ③ source position (L1)
+→ ④ target door (L3) → ⑤ target port (L2) → ⑥ target position (L1)
+→ ⑦ return position (L1) → ⑧ robot arm (L4)
+──────────────────────────────────────────  all ready; the plate is still at the source, it can be abandoned at zero cost
+⑨ grip the plate  ← the point of no return
+```
+
+The door is put first: the door is the "main switch", you cannot get in without opening it; the door is open but the robot arm did not win it → you can close the door and give up, at a small cost.
+
+**Wait-for-graph deadlock detection**: even with a fixed order, one safety net is kept — a wait-for graph + DFS cycle detection.
+
+| Attribute | Value |
+|---|---|
+| Algorithm | DFS cycle detection |
+| Scale | number of resources n ≤ 10, number of edges E ≤ 20 |
+| Time per run | < 10 microseconds |
+| Switch | **always on, no switch** |
+
+Why always on: one Transfer is about 6 resource requests ≈ 60 microseconds, negligible compared with one device action (150 ms to 30 minutes);
+introducing a switch to save this tiny cost would instead bring races and missed detection.
+
+**Why not the banker's algorithm**: ① workflows have branches, so the "maximum demand" cannot be declared before execution reaches the decision node;
+② a hard declaration would have to assume the worst case (the union of the branches) ≈ "I want the whole island", dropping concurrency to zero; ③ recomputing after the branches are decided costs a lot and means less and less the further it goes;
+④ the banker's algorithm assumes "the declaration does not change", but a human changing a parameter overturns the declaration, so the assumption does not hold; ⑤ it is almost never used in engineering practice (PostgreSQL / MySQL / Linux all use wait-for graphs or lock ordering).
+
+**Scheduler**
+
+| Attribute | Value |
+|---|---|
+| Readiness decision | Three states: `pending` → `running` → `completed` (plus `paused` / `cancelled`) |
+| Polling interval | 2 seconds |
+| Island lock acquisition | `putIfAbsent` (atomic CAS, guarantees no concurrency on the same island) |
+| Ordering | **EDD → priority → FIFO** (earliest due date runs first; on a tie compare priority; on a further tie the earlier submission runs first) |
+| Restart recovery | rehydrate: the queue is restored after a restart |
+
+### 5.6 Duration model and rolling scheduling
+
+- **Definition**: p50 (for displaying the total duration) / p90 (for judging whether the longest gap is exceeded, conservative).
+- **Sample**: only **cleaned** `completed` records with a positive duration are used, aggregated by "capability + method".
+- **Variation**: the duration of the same action varies a lot — the p50 of `Run` = 18.5 s, the p90 = 250 s, a **variation ratio of 13.5×**.
+  This is the root reason why scheduling has to be conservative and must not be over-optimistic about a point estimate.
+- **Rolling schedule**: it is not scheduled all at once; each time only one future window is scheduled. A **commitment window** (an experiment that has started is never changed) + a **frozen zone of the next 15 minutes**;
+  the algorithm is **greedy** (not a full DP) — the state space of a full DP is astronomical (`2^50 × 480^26`),
+  and the input itself (the duration) is an estimate, so computing the "optimal solution" from inaccurate data is meaningless.
+
+---
+
+## 6. Three end-to-end scenarios (you can follow them directly)
 
 ### Scenario A: run a single workflow (the fastest check)
 
@@ -281,7 +527,7 @@ Experiment orchestration → pick an experiment → (if it is an empty experimen
 
 ---
 
-## 6. What is explicitly "not done"
+## 7. What is explicitly "not done"
 
 | Not done | Reason |
 |---|---|
@@ -293,7 +539,7 @@ Experiment orchestration → pick an experiment → (if it is an empty experimen
 
 ---
 
-## 7. Glossary (for alignment during the review)
+## 8. Glossary (for alignment during the review)
 
 | Term | Meaning |
 |---|---|
