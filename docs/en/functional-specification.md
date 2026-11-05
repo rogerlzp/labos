@@ -294,7 +294,7 @@ webapp/src/
 ├── pages/
 │   ├── Island.tsx            Island view: drag to place devices, transfer sequence, tier visualisation
 │   ├── IslandFlow.tsx        Island orchestration: device connections = plate transfers
-│   ├── ExperimentCanvas.tsx  Experiment canvas: devices + variables + fork + loop + join (React Flow)
+│   ├── ExperimentCanvas.tsx  Experiment canvas: cross-workflow orchestration (start / end / workflow, React Flow)
 │   ├── Experiments.tsx       Experiment orchestration: variable table, loop column, execution history
 │   ├── Workflows.tsx         Workflow library
 │   ├── Designer.tsx          BPMN designer (bpmn-js)
@@ -306,9 +306,9 @@ webapp/src/
 
 | | `ExperimentCanvas` (`/canvas`, `/canvas/:id`, `/experiments/:id/canvas`) | `IslandFlow` (`/island-flow`) |
 |---|---|---|
-| Nodes | devices + variables/forks/loops/joins | devices only |
-| Arrows | logic flow | the plate moves there |
-| Purpose | how an experiment runs | how the logistics on the island go |
+| Nodes | start / end / workflow (cross-workflow orchestration) | devices only |
+| Arrows | workflow order | the plate moves there |
+| Purpose | in what workflow order the experiment runs | how the logistics on the island go |
 
 ### 5.7 Deployment shape and ports
 

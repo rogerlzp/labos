@@ -43,7 +43,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_ALERTS` | 8 | Page alert ack/close (`e2e-alerts.py`); gate lower bound, measured value in review package 04 |
 | `MIN_POLICIES` | 12 | Page policy edit + validation (`e2e-policies.py`); gate lower bound, measured value in review package 04 |
 | `MIN_PAUSED` | 7 | Page paused queue filter and actions (`e2e-paused.py`); gate lower bound, measured value in review package 04 |
-| `MIN_CANVAS` | 12 | Experiment orchestration canvas (`e2e-canvas.py`); gate lower bound, measured value in review package 04 |
+| `MIN_CANVAS` | 12 | Experiment orchestration canvas · cross-workflow orchestration (`e2e-canvas.py`); gate lower bound, measured value in review package 04 |
 | `MIN_METHOD_DROP` | 17 | Device images / a method node with its image / automatic robot-arm insertion across devices / deletion (`e2e-method-drop.py`); 17 resident assertions without a DB, 20 with one |
 
 ---
@@ -219,7 +219,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 8 | Correctness under load (not just throughput) | State corruption under lock contention | The load test only measured throughput |
 | 9 | Rolling schedule (spec §14.8: commit window / 15-minute freeze zone / greedy) | A broken commit window or freeze zone scrambles the experiments already committed | Out of scope, not yet implemented enough to be testable |
 | 10 | Backend run-path automatic robot-arm insertion + a combined plate-move assertion | The designer inserts `Transfer` while a graph is built, but `WorkflowBuilder` / `GraphRunner` / `flow-run` do not add it at run time; whether a plate really moves from position A to B via the arm is not asserted (`position_state` only covers the UNKNOWN lock-out) | The §14.2/§14.3 expansion rule has to move from the frontend into the executor and depends on taught `robot_point.code`; recorded in the decision log and D16, a separate batch |
-| 11 | Logic nodes on the experiment canvas cannot be saved, and parallel does not execute | Dragging fork/parallel/loop/join/variable/device nodes on `/canvas` makes saving fail in `compileExperimentGraph` (only start/end/workflow are accepted), while `runFlow` skips parallel, treats join as a visual marker and ignores workflow nodes; "drawn but not executed" misleads more than a missing feature | Decided that "the canvas only does cross-workflow orchestration"; the stop-the-bleeding plan (shrink the palette) and the route for adding parallel/condition/loop to the designer are in `docs/en/design/logic-nodes-by-layer.md`, to be implemented in the next batch |
+| 11 | Logic nodes on the experiment canvas cannot be saved, and parallel does not execute | Dragging fork/parallel/loop/join/variable/device nodes on `/canvas` makes saving fail in `compileExperimentGraph` (only start/end/workflow are accepted), while `runFlow` skips parallel, treats join as a visual marker and ignores workflow nodes; "drawn but not executed" misleads more than a missing feature | Settled as "the canvas only does cross-workflow orchestration"; batch 1 has stopped the bleeding - the `/canvas` palette now offers only "workflow", start/end are laid out automatically, and the canvas no longer calls `flow-run`; adding parallel/condition/loop limits to the designer is in `docs/en/design/logic-nodes-by-layer.md` §5 batches 2-4 |
 
 ---
 

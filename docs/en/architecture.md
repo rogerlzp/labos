@@ -230,7 +230,7 @@ webapp/src/
 ├── pages/
 │   ├── Island.tsx            island view: place devices by drag, transport sequences, position visualisation
 │   ├── IslandFlow.tsx        island orchestration: device links = plate moves
-│   ├── ExperimentCanvas.tsx  experiment canvas: devices + variables + branching + loops + merges (React Flow)
+│   ├── ExperimentCanvas.tsx  experiment canvas: cross-workflow orchestration (start / end / workflow, React Flow)
 │   ├── Experiments.tsx       experiment orchestration: variable table, loop column, execution history
 │   ├── Workflows.tsx         workflow library
 │   ├── Designer.tsx          BPMN designer (bpmn-js)
@@ -243,9 +243,9 @@ webapp/src/
 
 | | `ExperimentCanvas` | `IslandFlow` |
 |---|---|---|
-| Node | Device + variable / branch / loop / merge | Device only |
-| Arrow | Logical flow | The plate is moved there |
-| Purpose | How the experiment runs | How the logistics move around the island |
+| Node | Start / end / workflow (cross-workflow orchestration) | Device only |
+| Arrow | Workflow order | The plate is moved there |
+| Purpose | In what workflow order the experiment runs | How the logistics move around the island |
 
 ---
 

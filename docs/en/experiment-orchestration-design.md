@@ -445,18 +445,19 @@ experiment_run_step (
 
 ## 11. Canvas orchestration (added in v0.2)
 
+The canvas (`/canvas`) does **cross-workflow orchestration** only: the nodes are just "Start / End / Workflow", and saving compiles the workflow nodes into the experiment's workflow order. The device methods, conditions, parallelism, loops and variables inside a workflow all belong to the Workflow Designer (`/designer/:id`, bpmn-js). See the design note on layered logic nodes and the division of labour between the editors (see the Chinese original `docs/设计-逻辑节点分层与编辑器分工.md`) for the layering, the capability comparison table and the rollout plan.
+
 ### 11.1 The complete set of node types
 
 | Type | Colour | Purpose | Execution semantics |
 |---|---|---|---|
 | **Start** | Green | The entry into the workflow | None |
 | **End** | Grey | The exit from the workflow | None |
-| **Device** | Cyan | Executes one method on a device | It really calls the driver |
 | **Workflow** | Blue | Runs a workflow | A sub-workflow |
-| **Variable** | Purple | Defines / assigns | It writes the variable table |
-| **Fork** | Orange | Takes one of two paths according to a condition | The condition is evaluated |
-| **Parallel** | Green | Runs several paths at the same time | It is constrained by the island-level mutual exclusion |
-| **Loop** | Pink | Repeats N times | It is expanded |
+
+**Why there are only three**: saving goes through `QueryService.compileExperimentGraph`, whose whitelist only accepts `start` / `end` / `workflow`; any other type is rejected with 400. It also requires a linear main chain (exactly one start and one end, every workflow node with one incoming and one outgoing edge, a cycle is 400).
+
+**Where the in-workflow nodes went**: the six node kinds — device, variable, fork, parallel, loop, merge — have been removed from the canvas palette: on the canvas they "can be drawn but not saved (400) / can be saved but not executed". Their editing entry point is now the Workflow Designer, see §2 of the design note on layered logic nodes (see the Chinese original `docs/设计-逻辑节点分层与编辑器分工.md`).
 
 ### 11.2 Why the start/end nodes have to be brought in automatically
 
@@ -479,23 +480,13 @@ const start = nodes.find(n => !incoming.has(n.id));
 
 **The UI rules out the illegal operations right away**, which is better than validating at execution time.
 
-### 11.3 Dragging a device in inserts it automatically
+### 11.3 The canvas only drags "Workflow" nodes
 
-**The problem**: dragging in 5 devices means drawing 6 lines, and a missing one shows up as "the later steps are not executed", without a visible reason.
+The left panel only offers one draggable node kind, "Workflow" (the `PALETTE` of `ExperimentCanvas.tsx` is down to `workflow`); "Start / End" are laid out automatically on load, the user does not drag them. Device methods, variables, forks, parallelism, loops and merges are dragged in the Workflow Designer instead, and the canvas panel points the user there with a hint.
 
-**The approach**:
+### 11.4 The variable passing inside a workflow (the three levels)
 
-```
-Drag the device N in
-  ↓ Find the edge that points to the "End"
-  ↓ Change it to point to N
-  ↓ Add an edge N → End
-  ↓ Move the End node down by 130px
-```
-
-The visual effect is "it is plugged in", and the user does not have to understand the reconnection of the edges.
-
-### 11.4 The three levels of variable passing (the core)
+> These semantics are built by the **Workflow Designer** and executed by the **workflow executor**; the canvas does not carry them. The full document on the variable mechanism is the design note on variable passing and point initialisation (see the Chinese original `docs/变量传递与点位初始化-设计.md`).
 
 This is what distinguishes the experiment orchestration from "a list of actions".
 
@@ -595,7 +586,7 @@ plateId=plate
 
 For a single output `k=v` is shorter and one input field on the interface is enough. Several outputs are separated by commas.
 
-### 11.7 The shape at execution time
+### 11.7 The shape at workflow execution time
 
 ```
 Start
@@ -618,7 +609,9 @@ End
 
 ---
 
-## 12. The technical implementation (the execution model)
+## 12. The technical implementation (canvas compilation + execution model)
+
+> The first half of this section (§12.1–§12.2) is about how the experiment-level graph of the canvas is stored and compiled into the workflow order; the second half (§12.3–§12.6) is the generic semantics of the **workflow executor**, which the canvas does not carry.
 
 ### 12.1 The storage of the graph
 
@@ -632,37 +625,37 @@ experiment_graph (
 ```json
 {
   "nodes": [
-    {"id":"dev-1","type":"kindNode","position":{"x":240,"y":80},
-     "data":{"kind":"device","label":"ID0000","resourceId":200206,
-             "capability":"ALIQUOT","ip":"192.0.2.10",
-             "method":"LoadFile","output":"plateId=plate"}}
+    {"id":"start-1","type":"kindNode","position":{"x":240,"y":-60},
+     "data":{"kind":"start","label":"Start"}},
+    {"id":"wf-1-239","type":"kindNode","position":{"x":240,"y":80},
+     "data":{"kind":"workflow","label":"Load workflow","workflowId":239}},
+    {"id":"end-1","type":"kindNode","position":{"x":240,"y":220},
+     "data":{"kind":"end","label":"End"}}
   ],
-  "edges": [{"id":"e1","source":"start-1","target":"dev-1"}]
+  "edges": [{"id":"e1","source":"start-1","target":"wf-1-239"}]
 }
 ```
 
-**Why jsonb and not separate tables**: the shape of the graph changes with the requirements (later there may be "merge", "wait", "sub-workflow"),
+**Why jsonb and not separate tables**: the shape of the graph changes with the requirements (later there may be "cross-workflow parallelism", "wait", "sub-workflow"),
 and separate tables mean the schema has to be changed frequently; the graph is only read and written as a whole, it is not queried per node, so jsonb is enough.
 
-### 12.2 The execution pipeline
+### 12.2 The compilation pipeline when the canvas is saved
 
 ```
-① Start from the start node, traverse along source→target (the seen set prevents cycles)
-② Handle it according to the type
-   ├ start/end   → skip
-   ├ variable    → write the variable table (the ${x} in the value is substituted first)
-   ├ device      → collect (resourceId, method, output)
-   ├ loop        → record loopFrom + the number of repetitions
-   ├ fork        → evaluate the condition, choose one outgoing edge
-   └ parallel    → skipped in 2.0
-③ Expand the loops: after the main chain has been walked, copy steps[loopFrom..] (n-1) times
-④ Execute step by step, passing the variables between the steps
+① Read {nodes, edges} of experiment_graph
+② Validate the node types: whitelist start / end / workflow, anything else is 400
+③ Validate the main chain: one start and one end; every workflow node has one incoming and one outgoing edge; a cycle is 400
+④ Take the workflow nodes in source→target order → write experiment_process (seq = the order)
+⑤ Write experiment_graph back
 ```
 
-**Why ③ is done outside the main loop**: a jump back has to change `cur`, and a repeated `cur` is blocked by `seen`,
-so the main loop would exit immediately. So the single chain is walked first and the copy is made at the end.
+**Why it is compiled on save**: a "Workflow" node on the canvas is only a reference (`workflowId`); what actually runs is the workflow order (seq) in `experiment_process`. It is compiled once on save, the experiment executor only knows `experiment_process`, and the canvas is decoupled from the executor.
 
-### 12.3 The variable substitution
+**The graph inside a workflow goes through another compilation chain**: the designer saves BPMN XML, which `WorkflowBuilder` / `GraphRunner` compiles into nodes/edges; it does not interfere with this experiment-level pipeline of the canvas.
+
+### 12.3 The variable substitution of the workflow executor
+
+> §12.3–§12.6 are the generic semantics of the **workflow executor** (`WorkflowBuilder` / `GraphRunner`), which the canvas does not carry — the canvas only compiles the "Workflow" nodes into the workflow order (see §12.2). The full document on the variable mechanism is the design note on variable passing and point initialisation (see the Chinese original `docs/变量传递与点位初始化-设计.md`).
 
 ```java
 "${plate}"  →  vars.get("plate")
@@ -673,7 +666,7 @@ at execution time seeing `${plate}` shows at a glance that "the variable is not 
 
 **After the substitution a purely numeric value is turned into a Long**: the driver is sensitive to the type, `"7"` and `7` are not the same thing in some protocols.
 
-### 12.4 The state management of the executor
+### 12.4 The state management of the workflow executor
 
 ```java
 workflows.withIsland(isl).withVars(vars).execute(id);
@@ -686,7 +679,7 @@ finally {
 **Why a field of the Service and not passing the parameters through every layer**: the parameters are already turned into a Map in `loadMethodParams`,
 and changing the signature backwards would mean touching 4 methods; one execution is the lifetime of one Service instance.
 
-### 12.5 Step-by-step execution vs generating in one go
+### 12.5 The workflow executor: step-by-step execution vs generating in one go
 
 | Dimension | Generate in one go | Step by step |
 |---|---|---|
@@ -696,29 +689,24 @@ and changing the signature backwards would mean touching 4 methods; one executio
 
 **Conclusion**: to have a data flow between the nodes, the execution has to be step by step, 2.0 accepts the loss of speed.
 
-### 12.6 The safety boundary
+### 12.6 The safety boundary of the workflow executor
 
 **`eval` / `Function()` is not used to evaluate the conditions and expressions**:
 
-The content of the canvas comes from the user input (it is stored in the database, it may be copied and pasted), `eval` is handing the browser over to somebody else to write code.
+The conditions inside a workflow come from the user input (they are stored in BPMN XML, they may be copied and pasted), `eval` is handing the browser over to somebody else to write code.
 
-Only the fixed form is supported:
+Condition evaluation is unified in the backend `ConditionEvaluator` — it supports brackets, logic and addition/subtraction, the full grammar is in the design note on the expression engine (see the Chinese original `docs/表达式引擎-设计.md`). The canvas's earlier hand-rolled evaluator (spaces required, no brackets/logic, a failed parse defaulting to `true` and silently taking the wrong branch) has been taken offline along with the canvas's logic nodes, see M4 of the design note on layered logic nodes.
 
-```
-left operand  operator  right operand                (a condition)
-"${a} > 37"  → parse → a > 37
-```
-
-**The limit of 20 on the number of repetitions**: `Math.min(20, ...)`, it prevents a `${n}` of 10000 from blowing up the workflow.
+**The loop limit**: the canvas's earlier expansion-style loop `Math.min(20, ...)` (to keep a `${n}` of 10000 from blowing up) has been taken offline along with the loop node; a loop inside a workflow becomes a loopback edge + `maxVisits` + `loop_index`, see batch 4 of the design note on layered logic nodes.
 
 ### 12.7 What is still to be implemented
 
 | Item | Explanation |
 |---|---|
 | Writing the output variables back | After each step, the fields are parsed out of the raw driver response and written into the variable table |
-| The evaluation of expressions | The arithmetic of `${a} + ${b}`, it needs an expression engine |
-| The merge point of a fork | Right now the two paths of the fork both point to the end, there is no "carry on after the merge" |
-| Parallel | It is constrained by the island-level mutual exclusion |
+| The evaluation of expressions | The arithmetic of `${a} + ${b}`, see the design note on the expression engine (the Chinese original `docs/表达式引擎-设计.md`) |
+| Cross-workflow parallelism | The canvas does not provide experiment-level parallelism for now (see batch 5 of the design note on layered logic nodes) |
+| Running from the canvas | The `POST /api/experiments/flow-run` endpoint is still in the backend, but the canvas no longer calls it |
 
 ---
 
@@ -731,21 +719,25 @@ left operand  operator  right operand                (a condition)
 │ ExperimentCanvas.tsx                                                │
 │   ├ Node state nodes[] (with position/data)                         │
 │   ├ Edge state edges[] (with source/target/marker)                  │
-│   └ Property panel (select a node → edit data)                      │
+│   └ Property panel (select a workflow node → pick workflowId)       │
 └───────────────┬────────────────────────────────────────────────────┘
                 │ GET/PUT /api/experiments/{id}/graph
                 ↓
 ┌─ Backend ──────────────────────────────────────────────────────────┐
 │ experiment_graph table (jsonb: {nodes, edges})                      │
+│   └ compileExperimentGraph: whitelist start/end/workflow            │
+│     + linear main chain validation (see §12.2)                      │
 └───────────────┬────────────────────────────────────────────────────┘
-                │ POST /api/experiments/flow-run
+                │ write experiment_process (seq = the order)
                 ↓
-┌─ Execution ────────────────────────────────────────────────────────┐
-│ ExperimentFlowRunner                                                │
-│   ├ Step by step: substitute ${var} → ShadowProbe → parse the output│
-│   └ Persist: run + run_node + run_command                           │
+┌─ Experiment execution ─────────────────────────────────────────────┐
+│ ExperimentExecutor: run the workflows in seq order                  │
 └────────────────────────────────────────────────────────────────────┘
 ```
+
+**The graph inside a workflow does not go through this chain**: the device methods / conditions / parallelism / loops / variables are built by the Workflow Designer (bpmn-js) and executed by `WorkflowBuilder` / `GraphRunner`.
+
+**Running from the canvas has been taken offline**: the `POST /api/experiments/flow-run` endpoint is still in the backend (`ExperimentApi.java:86`) and `ExperimentFlowRunner` is still there (see §13.8), but the canvas no longer calls it; the canvas only does cross-workflow orchestration.
 
 ### 13.2 The state design of the frontend
 
@@ -761,48 +753,28 @@ left operand  operator  right operand                (a condition)
 
 ```ts
 interface NodeData {
-  kind: 'start' | 'end' | 'device' | 'workflow' | 'variable'
-      | 'fork' | 'parallel' | 'loop';
+  kind: 'start' | 'end' | 'workflow';
   label: string;
-  // A device node
-  resourceId?: number;       // resource_node.id
-  capability?: string;       // used to pick the photo
-  ip?: string | null;
-  method?: string;           // which method is executed
-  params?: Record<string, string>;  // the method parameters, the values support ${var}
-  output?: string;           // "plateId=plate": take the returned field and store it in a variable
-  // A variable node
-  value?: string;            // "plateCount=2"
-  // A fork node
-  condition?: string;        // "${eq} == 214"
+  workflowId?: number;       // which workflow the node is bound to
 }
 ```
 
-### 13.3 Dragging and the automatic connection
+The canvas has only three node kinds (`start` / `end` / `workflow`), consistent with the backend's save whitelist (§12.2). The six kinds of fields — device, variable, fork, parallel, loop, merge — have been removed from the canvas along with the palette; their editing entry point is the Workflow Designer.
 
-**Dragging a logic node in** (`onDrop`):
+### 13.3 Dragging and the automatic node layout
+
+**Dragging a workflow node in** (`onDrop`):
 
 ```ts
-const kind = e.dataTransfer.getData('application/x-node-kind');
+const kind = e.dataTransfer.getData('application/x-node-kind');  // always 'workflow'
 // the drop point = the mouse position - the container offset - half the width and height of the node
+// a workflow node is added at the drop point, the connection is drawn by the user
 ```
 
-**Dragging a device in** (the other branch of `onDrop` + the automatic insertion):
-
-```ts
-const rid = e.dataTransfer.getData('application/x-device');
-// autoInsert:
-//   1. Find the edge that points to end
-//   2. Change it to point to the new node
-//   3. Add an edge new node → end
-//   4. Move end down by 130px
-```
+**Start / End are not dragged out**: on load the canvas lays out the "Start" and "End" nodes automatically and connects them (a new experiment gets start→end directly; an existing experiment gets the missing start/end added), the user only inserts workflow nodes and draws the connections by hand, so the main chain is always `start → workflow* → end`.
 
 **Why the HTML5 drag and not the drag API of React Flow**: the panel on the left is not part of the canvas,
 the HTML5 drag is more direct and it does not depend on the internal state of React Flow.
-
-**A device can be dragged in repeatedly**: the node id uses `dev-{rid}-{Date.now()}`.
-The robot arm can be used 5 times in one workflow, so the resource id must not be used to deduplicate.
 
 ### 13.4 The design of the edges
 
@@ -826,37 +798,15 @@ const EDGE_STYLE = {
 
 ### 13.5 The shape of the nodes
 
-| Type | Implementation |
-|---|---|
-| Fork | `clipPath: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px)` |
-| Parallel | `borderStyle: 'double', borderWidth: 4` |
-| Loop | `borderLeftWidth: 6` |
-| Device | A thumbnail + a colour bar for the capability |
+All three canvas node kinds are rendered by the same `KindNode` component: a colour bar tinted by the kind + a title + a description + the top/bottom connection points (`start` has no top point, `end` has no bottom point, which physically rules out illegal edges). The shapes and symbols of the fork / parallel / loop / device nodes (`◇`/`∥`/`↻`) have been removed along with the palette.
 
-**A symbol is also added in front of the title** (`◇`/`∥`/`↻`) — the pure shapes cannot be told apart when they are small, the symbol is more reliable.
+### 13.6 The device thumbnail (moved out of the canvas)
 
-### 13.6 The device thumbnail
+The canvas no longer has device nodes, so the device thumbnail has moved out with them — the photo rendering of the device and method nodes now belongs to the Workflow Designer (`webapp/src/bpmn/DeviceImageRenderer.ts`: pick the image by capability, hide it when missing). The canvas nodes are only tinted by kind, they do not show device photos.
 
-```tsx
-{data.capability && PHOTO_CAPS.has(data.capability) && (
-  <img src={`/devices/${data.capability}.jpg`}
-       onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-)}
-```
+### 13.7 The workflow executor: the transport format of the steps
 
-**Where the photos come from**: the repository contains no images. `public/devices/` is named after the capability, you can put the photos in yourself; when a photo is missing the card hides the image area automatically
-(`INCUBATE.jpg` / `TRANSFER.jpg` / ...).
-
-**Hide it when it fails**: the capabilities without a photo (`SENSE`/`WASH`) or a failed load are not shown, they do not take up space.
-
-### 13.7 The execution: the frontend computes the path, the backend runs the steps
-
-**Why this division of labour**:
-
-| Logic | Where it goes | The reason |
-|---|---|---|
-| The evaluation of the fork, the expansion of the loops, the substitution of the variables | Frontend | It has to give the user immediate feedback ("the parallel node is skipped") |
-| The real execution, the persistence to the database | Backend | It has to write run/run_node/run_command, the frontend cannot do that |
+> The canvas no longer calls the direct-run endpoint; the `steps` transport format below belongs to the workflow executor (`ExperimentFlowRunner`).
 
 **The transport format of the steps**:
 
@@ -866,10 +816,14 @@ id:method:output:k1=v1;k2=v2
 200210:Deposit1::plate_id=${plate};cycles=5
 ```
 
+**Four segments**: `id:method:output:params`, an empty `output` leaves an empty segment (see the trap in §15.5).
+
 **Why a compact string and not JSON**: passing JSON in a URL query means double encoding,
 and what you see while debugging is all `%7B%22`, so every change means decoding it once. The compact format is much more readable.
 
-### 13.8 The backend: ExperimentFlowRunner
+### 13.8 The backend endpoint: ExperimentFlowRunner (the canvas no longer calls it)
+
+> Below is the backend implementation of the direct-run endpoint `POST /api/experiments/flow-run`; the endpoint is still there, but the canvas no longer calls it (see §13.1).
 
 ```java
 public Result run(String name, List<Step> steps, Map<String, String> vars)
@@ -925,9 +879,9 @@ because after one extra level of escaping `\\s` becomes "a literal backslash + s
 
 | Item | The impact on the frontend and the backend |
 |---|---|
-| The merge point of a fork | The frontend gets a "merge" node type; the path algorithm of the backend has to support merging several paths |
-| The evaluation of expressions | The frontend already has a condition evaluator, it is extended to arithmetic |
-| The refinement of the parameter types | The frontend already renders by control_type, the source of the options of `select` still has to be confirmed |
+| Cross-workflow parallelism | The canvas gains experiment-level parallelism (it first has to open up the `compileExperimentGraph` whitelist and hook up the experiment executor, see batch 5 of the design note on layered logic nodes) |
+| The evaluation of expressions | The conditions are unified in the backend `ConditionEvaluator`, extended to arithmetic, see the design note on the expression engine |
+| The refinement of the parameter types | The designer already renders by control_type, the source of the options of `select` still has to be confirmed |
 | Real concurrency for the parallel nodes | The scheduler of the backend has to release the island-level mutual exclusion |
 
 ---
@@ -991,14 +945,16 @@ The execution records:
 ### 14.5 How the robot arm is found
 
 ```ts
-const arm = islandDevices.find((x) => x.capability === 'TRANSFER');
+// Designer.tsx:959-963: take the island's arm-capable device from the device pool
+const arm = (paletteDevices.data?.items ?? []).find((d) =>
+  isArm(d.capability) && (!p.islandId || d.islandId === p.islandId));
 ```
 
-**It takes the first device with the TRANSFER capability on the current island**.
+**It takes the first robot arm of the island from the device pool** (`isArm()` checks the capability, and the device has to be on the same island). This automatic insertion happens in the **designer's graph-building path** (it adds a `Transfer` when two methods from different devices are dropped in sequence), not at execution time.
 
 **Limitation**: when an island has several robot arms, the first one is always used. To control it precisely you need:
 - a configuration "which robot arm carries it" on the device node
-- or to insert a robot arm node explicitly on the canvas (`A → robot arm → B`)
+- or to insert a robot arm node explicitly in the designer (`A → robot arm → B`)
 
 ### 14.6 Which value is used for source/target
 
@@ -1120,17 +1076,9 @@ The format of `steps` is `id:method:output:params`, **four segments**.
 
 **This trap is very well hidden**: it does not raise an error, the pre-check simply is not triggered.
 
-### 15.6 The teaching of the points (the interface)
+### 15.6 The teaching of the points (the interface, currently no entry point)
 
-At the bottom of the property panel of a device node:
-
-```
-Robot arm point (teaching)
-Point code = device code, fill in the coordinates where the robot arm is currently standing in front of that device
-  [X: ____] [Y: ____] [Z: ____]  [Record point]
-```
-
-Click "Record point" →
+**The canvas teaching interface has been removed along with the device nodes** — there is no `robot-points` / point-teaching code left in `webapp/src` (the device nodes were moved out of the canvas, so the point panel lost its host). The interfaces in this section really exist, but for now they can only be called directly:
 
 ```bash
 PUT /api/islands/{id}/robot-points/{code}
@@ -1139,17 +1087,16 @@ PUT /api/islands/{id}/robot-points/{code}
 → {"updated": 1, "code": "ID1775"}
 ```
 
-**How it is used on site**:
+**How it is used on site** (called by hand):
 
 ```
 ① On the teaching device of the robot arm, drag the robot arm in front of ID1775
-② Read the coordinates on the teaching device (or click "read the current position")
-③ Select the ID1775 node on the canvas, fill in the coordinates, click "Record point"
+② Read the coordinates on the teaching device
+③ Call the PUT above and fill in the coordinates
 ④ The x/y/z of that entry in the point table are updated
 ```
 
-**Why the coordinates are not drawn on the canvas**: the robot arm is three-dimensional (x/y/z + the pose),
-the canvas is two-dimensional and drawing it would mislead. **Filling in the values is more accurate**.
+**Why the coordinates are not drawn on the 2D canvas**: the robot arm is three-dimensional (x/y/z + the pose), drawing it would mislead; filling in the values is more accurate. The UI entry point will be added once the point teaching is attached to the device node of the Workflow Designer.
 
 **The meaning of `updated=0`**: this point does not exist yet. You first have to click "Sync points" in the island view,
 or call `POST /robot-points/sync` directly.

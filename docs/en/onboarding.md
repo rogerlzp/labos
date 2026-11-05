@@ -155,7 +155,7 @@ labos-gateway/src/main/java/com/labos/gateway/
 webapp/src/pages/
 ├── Island.tsx          island view (drag devices onto the canvas, transfer sequence, plate visualisation)
 ├── Experiments.tsx     experiment orchestration (variable table, loops, run history)
-├── ExperimentCanvas    experiment canvas (React Flow: devices + variables + fork + loop + join)
+├── ExperimentCanvas    experiment canvas (React Flow: cross-workflow orchestration - start / end / workflow)
 ├── IslandFlow.tsx      island orchestration (device links = plate transfers)
 └── ...                 workflow library, designer, execution monitoring, alerts, etc.
 ```

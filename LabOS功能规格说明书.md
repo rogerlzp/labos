@@ -228,7 +228,7 @@ experiment_run / experiment_run_step       实验执行记录
 run_variable           运行时变量快照（按 run_id 隔离）
 
 island_flow            岛屿动线（画布上的设备连线）
-experiment_graph       实验画布（设备 + 逻辑节点，jsonb）
+experiment_graph       实验画布（跨流程编排：开始/结束/流程，jsonb）
 robot_point            机械臂点位（code/x/y/z/device_resource_id + 门/通道/层位属性）
 ```
 
@@ -290,7 +290,7 @@ webapp/src/
 ├── pages/
 │   ├── Island.tsx            岛屿视图：拖拽布设备、搬运序列、层位可视化
 │   ├── IslandFlow.tsx        岛屿编排：设备连线 = 搬板
-│   ├── ExperimentCanvas.tsx  实验画布：设备 + 变量 + 分叉 + 循环 + 汇合（React Flow）
+│   ├── ExperimentCanvas.tsx  实验画布：跨流程编排（开始 / 结束 / 流程，React Flow）
 │   ├── Experiments.tsx       实验编排：变量表格、循环列、执行历史
 │   ├── Workflows.tsx         流程库
 │   ├── Designer.tsx          BPMN 设计器（bpmn-js）
@@ -302,9 +302,9 @@ webapp/src/
 
 | | `ExperimentCanvas`（`/canvas`、`/canvas/:id`、`/experiments/:id/canvas`） | `IslandFlow`（`/island-flow`） |
 |---|---|---|
-| 节点 | 设备 + 变量/分叉/循环/汇合 | 只有设备 |
-| 箭头 | 逻辑流转 | 板子搬过去 |
-| 用途 | 实验怎么跑 | 岛上的物流怎么走 |
+| 节点 | 开始 / 结束 / 流程（跨流程编排） | 只有设备 |
+| 箭头 | 流程先后顺序 | 板子搬过去 |
+| 用途 | 实验按什么流程顺序跑 | 岛上的物流怎么走 |
 
 ### 5.7 部署形态与端口
 
