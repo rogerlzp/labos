@@ -60,7 +60,7 @@ matrix** and the main-path e2e (see §10, `scripts/e2e-smoke.py`).
 | Experiment-level pause / resume / stop (UI) | `verify-exp-control.py` | — | ✅ 22 assertions |
 | Device chain (driver / protocol) | `verify-device-chain.sh` | — | ✅ 41 assertions |
 | Frontend main paths | `e2e-smoke.py` | — | ✅ 24 assertions |
-| Page-side: designer assembly / variable node / logic nodes and sequence-flow conditions / run detail / page pause-resume | `e2e-flow-matrix.py` | — | ✅ 33 assertions |
+| Page-side: designer assembly (with parallel gateway) / variable node / logic nodes and sequence-flow conditions / seam run / run detail / page pause-resume | `e2e-flow-matrix.py` | — | ✅ 45 assertions |
 | Simulator integration: build workflow on the page → bind a real device → build experiment → run → real response | `e2e-sim-flow.py` | — | ✅ 24 assertions |
 
 ## 4. Entry points and how to run
@@ -126,7 +126,7 @@ LABOS_TRANSFER_PLAN=1 ... java -cp out:lib/postgresql-42.7.3.jar com.labos.kerne
 | `verify-device-chain.sh` | 41 device-chain assertions | Driver / protocol layer |
 | `e2e-smoke.py` | 24 frontend main-path assertions | End to end |
 | `e2e-sim-flow.py` | 24 simulator-integration assertions | Build workflow on the page → bind a real device → build experiment → run → real response |
-| `e2e-flow-matrix.py` | 33 page-side matrix assertions | Designer / logic nodes and sequence-flow conditions / run detail / page pause-resume |
+| `e2e-flow-matrix.py` | 45 page-side matrix assertions | Designer / logic nodes and sequence-flow conditions / seam run / run detail / page pause-resume |
 
 ## 9. Corrections
 
@@ -150,10 +150,11 @@ these is visible to it. `scripts/e2e-flow-matrix.py` adds the **page-side** slic
 | C Run detail | 5 | Graph / legend / node table / round | The run detail opens; the graph card is there; the legend renders; the node table renders; a looping run shows the round column |
 | D Page pause / resume | 5 | Run control | A “Pause” button appears; clicking it sets the database to `paused` and the page shows paused; a “Resume” button appears; clicking it leaves `paused` |
 | E Logic node / sequence-flow condition / workflow options | 9 | `__setVar` tab / `conditionExpression` / `maxIterations` | The “Logic nodes” tab is always visible and within the first screen; a dropped logic node is persisted; selecting a flow and writing a condition is persisted; the workflow-level `maxIterations` is persisted |
+| F Seam: designer-drawn XOR branch graph → real run | 12 | Build on the page + real execution | Draw `S → variable node → exclusive gateway → two branches → end` on the page (set `__setVar` params in node settings, write conditions `${counter} == 1` / `== 2` on the flows); click the page-level “Save” to persist the settings back into `workflow_node`, then run for real; the run is `completed`; the matching branch `A=completed`, the other `B=bypassed` |
 
 ```bash
 python3 scripts/e2e-flow-matrix.py --base http://127.0.0.1:8080
-# Expected: 33 passed / 0 failed
+# Expected: 45 passed / 0 failed
 ```
 
 **Boundary (Class C)**: the designer palette is now aligned with the parser whitelist
@@ -207,4 +208,4 @@ lands in the DB (present in the graph XML, missing in the table). The UPDATE bra
 
 None open: the Class A item (a back edge spanning a parallel region) is the `loopback`
 section; the backend matrix is wired into `ci-gate.sh` (`MIN_MATRIX=45`), the page-side matrix
-too (`MIN_E2EFM=33`), and so is the simulator integration (`MIN_E2ESIM=24`).
+too (`MIN_E2EFM=45`), and so is the simulator integration (`MIN_E2ESIM=24`).

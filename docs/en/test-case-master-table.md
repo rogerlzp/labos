@@ -37,7 +37,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_PFLOW` / `MIN_PEXP` | 4 / 3 | In-flow parallelism / same-island concurrency |
 | `MIN_MATRIX` | 45 | Full flow matrix (`verify-flow-matrix.py`) |
 | `MIN_E2E` | 24 | Page main paths (`e2e-smoke.py`) |
-| `MIN_E2EFM` | 33 | Page flow matrix (`e2e-flow-matrix.py`) |
+| `MIN_E2EFM` | 45 | Page flow matrix (`e2e-flow-matrix.py`) |
 | `MIN_EXPCTL` | 22 | Experiment run control (`verify-exp-control.py`) |
 | `MIN_E2ESIM` | 24 | Simulator integration (`e2e-sim-flow.py`) |
 | `MIN_ALERTS` | 8 | Page alert ack/close (`e2e-alerts.py`); gate lower bound, measured value in review package 04 |
@@ -57,7 +57,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 1.1 | Workflow designer (drag nodes, connect, open stored BPMN) | `e2e-flow-matrix.py` section A; `e2e-smoke.py` §2 | L4 | ✅ | ✅ |
 | 1.2 | Multi-step node collapsible in the UI | `e2e-flow-matrix.py` section A (reopen after save) | L4 | ✅ | ✅ |
 | 1.3 | Auto-compile (runtime expansion) | `api.ExperimentGraphCompileSelfTest`; `workflow.RecipeCompilerTest` | L1 | ✅ | ✅ |
-| 1.4 | Decision (XOR, with default edge) | `verify-flow-matrix.py` xor / xor3; `workflow.GraphRunnerTest`; `e2e-flow-matrix.py` section E (sequence-flow condition + gateway default) | L1+L3+L4 | ✅ | ✅ |
+| 1.4 | Decision (XOR, with default edge) | `verify-flow-matrix.py` xor / xor3; `workflow.GraphRunnerTest`; `e2e-flow-matrix.py` section E (sequence-flow condition + gateway default); section F (designer-drawn XOR branch graph → real run → matching branch completed / non-matching branch bypassed) | L1+L3+L4 | ✅ | ✅ |
 | 1.5 | Parallel (fork and join) | `verify-flow-matrix.py` parallel; `verify-parallel-flow.py`; `workflow.GraphRunnerTest`; `e2e-flow-matrix.py` section A (palette parallel gateway entry + persistence + palette trim) | L1+L3+L4 | ✅ | ✅ |
 | 1.6 | Time Constraint (min / max interval) | `engine.TimeConstraintSelfTest` (25 cases, pure logic); `engine.TimeConstraintExecutor` | L1 | ✅ | ✅ |
 | 1.7 | Sequential execution of experiment blocks | `workflow.ExperimentOrderSelfTest`; `verify-flow-matrix.py` experiment | L1+L3 | ✅ | ✅ |

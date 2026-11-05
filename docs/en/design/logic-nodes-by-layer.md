@@ -7,7 +7,7 @@
 ## 0. One-line conclusion
 
 - Logic nodes (exclusive, parallel, conditions, loops, variables) **belong inside a workflow** and belong to the bpmn-js designer; the experiment canvas only does "cross-workflow orchestration".
-- The real state today is a **capability mismatch**: the designer **still has entry-point gaps** (still no parallel-gateway entry in the palette; the condition-expression and loop-limit entry points were closed in Batch 3 / Batch 4), while the experiment canvas **has entry points but can neither save nor execute** (`fork/parallel/loop/variable/device/join` all return 400 on save, and `parallel` is skipped at run time).
+- The capability mismatch is the **starting point**, now converged by Batch 1–4: the designer's **entry points are in place** (parallel gateway = Batch 2, condition expression = Batch 3, loop cap = Batch 4), and the experiment canvas **has been shrunk** to cross-workflow orchestration only (`fork/parallel/loop/variable/device/join` are gone from the palette — on the canvas they "save 400 / are skipped at run time"; see §5 Batch 1). **Remaining**: `subProcess` silently skipped (registered only) and Batch 5 cross-workflow parallelism (parked).
 - So the task is not "move the canvas model into the designer" but: **give the designer the editing entry points, and shrink the canvas to what it can actually run**.
 
 ## 1. The user's wording (the constraint of this document)
@@ -21,12 +21,12 @@
 | Logic capability | Experiment canvas `/canvas` | Workflow designer `/designer/:id` | Backend executor | Existing assertions |
 |---|---|---|---|---|
 | Exclusive branch | 🟡 a `fork` node plus one condition box; `runFlow` picks an edge; **save returns 400** | ✅ can create an `exclusiveGateway`; condition/default have UI (right column "Sequence flow · condition") | ✅ `SPLIT_XOR` + condition → default → first by order | ✅ xor 6 / xor3 3 |
-| Parallel fork/join | ⬜ `parallel` is skipped, `join` is visual only; save returns 400 | ⬜ **no palette entry**, XML must be hand-edited | ✅ `SPLIT_PARALLEL` activates every outgoing edge + `JOIN_PARALLEL` waits for all incoming edges | ✅ parallel 3 / loopback 2 |
+| Parallel fork/join | ⬜ `parallel` is skipped, `join` is visual only; save returns 400 | ✅ can drag out a `parallelGateway` (entry added in Batch 2; the palette is aligned with the parser whitelist) | ✅ `SPLIT_PARALLEL` activates every outgoing edge + `JOIN_PARALLEL` waits for all incoming edges | ✅ parallel 3 / loopback 2 |
 | Condition expression | 🟡 a home-grown `evalCondition`: spaces required, no arithmetic/logic/parentheses, parse failure means true | ✅ sequence-flow condition UI (writes `bpmn:conditionExpression` + gateway `default`) | ✅ `conditionExpression` + `default`, `ConditionEvaluator` supports comparisons/logic/parentheses/plus-minus | ✅ builtin/outvar/xor |
 | Loop | 🟡 a `loop` node that duplicates steps in the frontend (≤20); no back edge; save returns 400 | ✅ a back edge can be drawn by hand; workflow-level `maxIterations` UI (right column "Workflow options") | ✅ back edge + DFS cycle detection + `maxVisits` (default 10) + `loop_index` | ✅ loop 3 / loopback 2 |
 | Variables | 🟡 a `variable` node with `k=v`, request-only; save returns 400 | ✅ `__setVar` / `__expr` panel | ✅ `Kind.BUILTIN` + device output write-back | ✅ builtin 4 / outvar 2 |
 | Sub-workflow | 🟡 a `workflow` node can pick a workflow and save; **`runFlow` ignores it** | ✅ multi-step collapsible subProcess | 🟡 `BpmnExpander` expands it; `callActivity` not done | 🟡 experiment 3 |
-| Manual pause | ⬜ runs synchronously, no pause | ⬜ palette has an intermediate event, the executor does not accept it | ✅ node-boundary pauseChecker + MANUAL stops the graph | ✅ pause 10 |
+| Manual pause | ⬜ runs synchronously, no pause | ⬜ the designer palette no longer has intermediate events (the parser rejects them); manual pause goes through the paused queue / run-control API | ✅ node-boundary pauseChecker + MANUAL stops the graph | ✅ pause 10 |
 
 Legend: ✅ supported / 🟡 partial / ⬜ not supported. Evidence is in `ExperimentCanvas.tsx:184-191,750-753`, `PaletteProvider.js:161-211`, `WorkflowGraphParser.java:215-220`, `GraphRunner.java:385-394,489-500`, `QueryService.java:4069-4094`, `verify-flow-matrix.py:295-472`.
 
@@ -40,6 +40,8 @@ Legend: ✅ supported / 🟡 partial / ⬜ not supported. Evidence is in `Experi
 | M4 | Two condition-expression syntaxes; the canvas one treats a parse failure as true (silently taking the wrong branch) | `ExperimentCanvas.tsx:229-259`; `ConditionEvaluator`; `WorkflowGraphParser.java:96-121` |
 | M5 | Three loop semantics: canvas duplicates steps, the backend uses a back edge plus a workflow-level cap, and the designer has no entry point | `ExperimentCanvas.tsx:734-741,761-766`; `GraphRunner.java:145-161`; `WorkflowService.java:815` |
 | M6 | Two variable models that do not recognise each other: the canvas `k=v` string vs the backend `__setVar` `params{var,value}` | `ExperimentCanvas.tsx:1228-1235`; `WorkflowGraphParser.java:174`; `GraphRunner.java:449-453` |
+
+> Status (2026-11-05): M3 (no parallel-gateway entry) was resolved in Batch 2; the designer-side entries for M4 (two condition syntaxes) and M5 (three loop semantics) landed in Batch 3 / Batch 4, with the syntax unified on the backend `ConditionEvaluator`; the canvas-side "drawable but not executed" was converged in Batch 1 by removing the entries. M2 / M6 (executor-side unification) are handled together with Batch 5.
 
 ## 4. Target split (what this document argues for)
 
@@ -85,6 +87,14 @@ Three boundaries follow:
 - Where it landed: a "Workflow options" card in the right column (workflow-level, independent of back-edge/node selection) plus `GET/PUT /api/workflows/{id}/options`.
 - Acceptance: the number of `loop_index` rounds matches the setting.
 
+### Batch 2.5 · Seam assertion: a graph drawn in the designer → a real run (2026-11-05) ✅ done
+
+- The gap: sections A / E only proved "it can be dragged out and saved"; the `xor` / `parallel` cases in `verify-flow-matrix.py` POST `build_xml()` directly (bypassing the UI); section C borrows a historical run — so **"does a graph drawn on the page get recognised by the execution side" had no assertion at all**.
+- Where it landed: `scripts/e2e-flow-matrix.py` gains a **section F** (12 assertions) — draw `S → variable node → exclusive gateway → two branches → end` on the page, set `__setVar` params (`counter=1` / `hit`) in node settings, write conditions `${counter} == 1` / `${counter} == 2` on the two outgoing flows; **click the page-level "Save" once more to persist the settings back into `workflow_node`** (same trap as `e2e-sim-flow.py`: node/flow settings only patch the graph XML, while the execution side reads the XML), then run for real.
+- Assertions: the run is `completed`; `SET` actually executed (the `__setVar` set on the page is seen by the execution side); the matching branch `A=completed` and the non-matching `B=bypassed` (`markBypassedNodes` semantics).
+- Trap: a newly created workflow ships with a seed graph `S → E` (`WorkflowService.blankGraphXml`); without deleting it first the flow count is off by one and both `S`/`E` ids are taken → section F calls `delete_node(S/E)` before drawing.
+- Numbers: the page flow matrix goes **33 → 45**, gate `MIN_E2EFM=45` (may only go up).
+
 ### Batch 5 · Cross-workflow parallelism (optional, needs decision Q2 first)
 
 - To keep canvas parallel/join: first allow those two kinds in `QueryService.compileExperimentGraph` and make the experiment executor really run sub-workflows in parallel; otherwise keep them hidden.
@@ -112,6 +122,6 @@ Three boundaries follow:
 ## 7. Where to start
 
 - Key files: `webapp/src/pages/ExperimentCanvas.tsx`, `webapp/src/pages/Designer.tsx`, `webapp/src/bpmn/`, `labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowGraphParser.java`, `GraphRunner.java` in the same package, `api/QueryService.java:4003-4130`, `workflow/PreflightChecker.java:202-269`.
-- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (45); `python3 scripts/e2e-flow-matrix.py` (33); `python3 scripts/e2e-canvas.py` (12).
+- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (45); `python3 scripts/e2e-flow-matrix.py` (45); `python3 scripts/e2e-canvas.py` (12).
 - Number discipline: changing cases requires updating the `MIN_*` constants in `scripts/ci-gate.sh`, `docs/测试用例总表.md`, `ROADMAP.md` and review package 04 in both languages; thresholds may only go up, and a real reduction must be explained in the commit message.
 - Do not touch the body of historical snapshots: `docs/评审包-20261103/`, `docs/评审包-20261104/`, `LabOS实现总纲_20261029.md`.
