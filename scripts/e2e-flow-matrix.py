@@ -16,6 +16,8 @@
   D. 运行控制：运行详情页点「暂停」→ 点「继续」，页面与库状态一致
   E. 设计器：左面板「逻辑节点」Tab 拖出 __setVar；连线条件表达式落库；
      流程级循环上限（maxIterations）落库
+  F. 接缝：设计器里画出来的异或分支图（连线条件 + 变量节点参数）→ 真跑 →
+     断言分支按页面写的条件走（A 命中、B bypassed）
 
 边界：设计器 palette 已按 `webapp/src/bpmn/WorkflowPalette.ts` 收敛 —— 只留解析器认得的
   入口（start / end / task / 子流程 / 异或网关 / 并行网关 + 工具），中间/边界事件、
@@ -115,7 +117,11 @@ def login(page, base, user, pwd):
 
 
 def place(page, action, x, y):
-    """点 palette 项 → 在画布落点。bpmn-js：先选工具，再在画布上点一下。"""
+    """点 palette 项 → 在画布落点；返回新图元 id（排除 *_label 附属图元）。
+
+    bpmn-js：先选工具，再在画布上点一下。
+    """
+    before = set(canvas_ids(page))
     page.locator(f'.djs-palette .entry[data-action="{action}"]').first.click()
     page.wait_for_timeout(150)
     box = page.locator(".djs-container").bounding_box()
@@ -123,13 +129,36 @@ def place(page, action, x, y):
     # 节点静默不生成（曾表现为「保存落库缺 exclusiveGateway」）。按容器宽度等比缩放。
     scale = min(1.0, (box["width"] - 40) / 900) if box["width"] < 940 else 1.0
     page.mouse.click(box["x"] + x * scale, box["y"] + y)
-    page.wait_for_timeout(350)
+    page.wait_for_timeout(400)
+    new = [i for i in sorted(set(canvas_ids(page)) - before) if not i.endswith("_label")]
+    return new[0] if len(new) == 1 else None
 
 
 def canvas_ids(page):
     """画布上所有图元的 data-element-id（含连线；连线也是 .djs-element）。"""
     return page.locator(".djs-element[data-element-id]").evaluate_all(
         "els => els.map(e => e.getAttribute('data-element-id'))")
+
+
+def center(page, eid):
+    bb = page.locator(f'.djs-element[data-element-id="{eid}"]').first.bounding_box()
+    return bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2
+
+
+def connect(page, src, tgt):
+    """global-connect-tool：点源图元 → 点目标图元。
+
+    用裸鼠标点（bounding_box 求中心）而不是 locator.click()：bpmn-js 的图元
+    带 transform，Playwright 的可点性检查会一直等（元素"不可点"）。
+    """
+    page.locator('.djs-palette .entry[data-action="global-connect-tool"]').first.click()
+    page.wait_for_timeout(180)
+    x, y = center(page, src)
+    page.mouse.click(x, y)
+    page.wait_for_timeout(280)
+    x, y = center(page, tgt)
+    page.mouse.click(x, y)
+    page.wait_for_timeout(400)
 
 
 class Ctx:
@@ -508,6 +537,211 @@ def sec_logic_and_flow(page, ctx, base, wf_id):
         bad("循环上限没落库", json.dumps(o, ensure_ascii=False)[:160])
 
 
+# ---------------------------------------------------------------- F. 设计器 → 真跑接缝
+
+def graph_edges(xml):
+    """从图 XML 取连线：{id: (sourceRef, targetRef)}。不假设属性顺序。"""
+    out = {}
+    for m in re.finditer(r"<bpmn:sequenceFlow\b([^>]*)>", xml):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        if attrs.get("id"):
+            out[attrs["id"]] = (attrs.get("sourceRef"), attrs.get("targetRef"))
+    return out
+
+
+def set_node_builtin(page, label, key, var, value):
+    """选中图元 → 节点设置 → 切内置节点（变量节点/表达式）→ 填两个参数 → 卡内保存。"""
+    page.locator(f'.djs-element[data-element-id="{key}"]').first.click()
+    page.wait_for_timeout(1200)
+    card = page.locator(".ant-card", has_text="节点设置").first
+    if card.count() == 0:
+        return False
+    card.locator(".ant-select-selector").first.click()
+    page.wait_for_timeout(400)
+    page.locator(".ant-select-item-option", has_text=label).first.click()
+    page.wait_for_timeout(700)
+    inputs = card.locator("input.ant-input")
+    if inputs.count() < 2:
+        return False
+    inputs.nth(0).fill(var)
+    inputs.nth(1).fill(value)
+    card.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+    page.wait_for_timeout(1600)
+    return True
+
+
+def set_edge_condition(page, fid, cond):
+    """选中连线 → 「连线 · 条件」→ 写表达式 → 卡内保存。"""
+    conn = page.locator(f'g.djs-connection[data-element-id="{fid}"]').first
+    if conn.count() == 0:
+        return False
+    # 直线连线 bbox 中心就在线上；拐弯（曼哈顿路由）的 bbox 中心不在线上，
+    # 点空会让面板不出现 —— 所以取 path 中点，用 getScreenCTM 换算到屏幕坐标。
+    # 换算失败再退回 bbox 中心。
+    try:
+        pt = page.locator(
+            f'g.djs-connection[data-element-id="{fid}"] path').first.evaluate(
+                """p => {
+                     const q = p.getPointAtLength(p.getTotalLength() / 2);
+                     const m = p.getScreenCTM();
+                     return [m.a * q.x + m.c * q.y + m.e, m.b * q.x + m.d * q.y + m.f];
+                   }""")
+    except Exception:  # noqa: BLE001
+        pt = None
+    if not pt:
+        cbox = conn.bounding_box()
+        pt = [cbox["x"] + cbox["width"] / 2, cbox["y"] + cbox["height"] / 2]
+    page.mouse.click(pt[0], pt[1])
+    page.wait_for_timeout(1200)
+    card = page.locator(".ant-card", has_text="连线 · 条件").first
+    if card.count() == 0:
+        cbox = conn.bounding_box()
+        page.mouse.click(cbox["x"] + cbox["width"] / 2,
+                         cbox["y"] + cbox["height"] / 2)
+        page.wait_for_timeout(1200)
+        if card.count() == 0:
+            return False
+    card.locator("textarea").first.fill(cond)
+    card.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+    page.wait_for_timeout(1500)
+    return True
+
+
+def delete_node(page, key):
+    """选中图元 → 点「删除选中节点」（设计器的显式按钮，删除即时落库）。"""
+    el = page.locator(f'.djs-element[data-element-id="{key}"]')
+    if el.count() == 0:
+        return False
+    el.first.click(force=True)
+    page.wait_for_timeout(800)
+    btn = page.get_by_role("button", name="删除选中节点")
+    if btn.count() == 0:
+        return False
+    btn.first.click()
+    page.wait_for_timeout(2500)
+    return page.locator(f'.djs-element[data-element-id="{key}"]').count() == 0
+
+
+def run_workflow(ctx, wf_id, wait=90):
+    """触发一次真执行（与页面「执行实验」同一条执行链），返回 (run_id, status)。"""
+    r = api(f"/api/workflows/{wf_id}/run?async=1", "POST", {}, ctx.token)
+    rid = 0
+    if isinstance(r, dict) and r.get("runId"):
+        rid = int(r["runId"])
+    if not rid:
+        rid = int(q("SELECT COALESCE(max(id),0) FROM run WHERE tenant_id=1") or 0)
+    if not rid:
+        return 0, ""
+    ctx.made_run.append(rid)
+    deadline, st = time.time() + wait, ""
+    while time.time() < deadline:
+        st = q(f"SELECT COALESCE(status::text,'') FROM run WHERE id={rid}")
+        if st in ("completed", "failed", "aborted", "paused"):
+            break
+        time.sleep(1)
+    return rid, st
+
+
+def sec_designer_to_run(page, ctx, base):
+    """F. 接缝 · 设计器里画出来的异或分支图 → 真跑 → 分支走对。
+
+    为什么单独有它：A / E 两节只验到「拖得出、存得下」，C 节借的是历史执行，
+    后端矩阵的 xor/parallel 又是 build_xml() 直 POST —— **「页面上画的图，
+    执行侧认不认」这条接缝一直没有断言**。这里把图从 palette 画出来（含连线
+    条件、变量节点参数），再触发一次真执行，看分支是不是按页面上写的条件走。
+
+    布局（全部横平竖直，便于点中连线中点写条件）：
+        S(110,130) - SET(300,130) - X(480,130) - A(660,130)
+                                      |
+                                   B(480,330) --- E(660,330)
+    """
+    step("F. 接缝 · 设计器画异或分支图 → 真跑 → 分支走对")
+    if not have_db():
+        skip("没给库连接，跳过（要断言 run_node 必须连库）")
+        return
+    wf_id = make_workflow(page, ctx, "EFM-接缝-异或-临时")
+
+    # 新建流程自带种子图 start(S) → end(E)（WorkflowService.blankGraphXml），
+    # 不删掉它，画布上就多一条 S→E 连线（它会淹没连线计数断言，也占着 S/E 两个 id）。
+    # 先清空种子，再按自己的布局从头画。
+    for seed in ("S", "E"):
+        delete_node(page, seed)
+
+    ids = {}
+    for name, action, x, y in (("S", "create.start-event", 110, 130),
+                               ("SET", "create.task", 300, 130),
+                               ("X", "create.exclusive-gateway", 480, 130),
+                               ("A", "create.task", 660, 130),
+                               ("B", "create.task", 480, 330),
+                               ("E", "create.end-event", 660, 330)):
+        ids[name] = place(page, action, x, y)
+    miss = [k for k, v in ids.items() if not v]
+    if miss:
+        bad("palette 落点失败（没拿到新图元 id）", ",".join(miss))
+        return
+    ok("按异或分支布局落 6 个节点（S/SET/X/A/B/E）")
+
+    for a, b in (("S", "SET"), ("SET", "X"), ("X", "A"), ("X", "B"),
+                 ("A", "E"), ("B", "E")):
+        connect(page, ids[a], ids[b])
+    page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+    page.wait_for_timeout(2500)
+    xml = api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+    xml = xml if isinstance(xml, str) else json.dumps(xml)
+    edges = graph_edges(xml)
+    ok(f"6 条连线都落了库（{len(edges)} 条）") if len(edges) == 6 \
+        else bad("连线数不对", f"{len(edges)}：{list(edges.values())}")
+
+    if not set_node_builtin(page, "变量节点", ids["SET"], "counter", "1"):
+        bad("SET 没切成「变量节点」（节点设置面板不配合）")
+        return
+    ok("SET 设为变量节点 counter=1（走节点设置面板）")
+    set_node_builtin(page, "变量节点", ids["A"], "hit", "yes")
+    set_node_builtin(page, "变量节点", ids["B"], "hit", "no")
+    ok("A/B 两分支设为变量节点 hit=yes / hit=no")
+
+    # 两条出边都写条件、都不设 default：靠声明顺序求值（counter=1 → 只命中 X→A）
+    fa = next((f for f, e in edges.items()
+               if e == (ids["X"], ids["A"])), None)
+    fb = next((f for f, e in edges.items()
+               if e == (ids["X"], ids["B"])), None)
+    if not fa or not set_edge_condition(page, fa, "${counter} == 1"):
+        bad("X→A 的连线条件没写上", str(fa))
+        return
+    if not fb or not set_edge_condition(page, fb, "${counter} == 2"):
+        bad("X→B 的连线条件没写上", str(fb))
+        return
+    ok("两条出边的条件都在页面上写好（${counter} == 1 / == 2）")
+
+    # ★ 关键顺序（与 e2e-sim-flow 同坑）：节点设置/连线条件只 patch 了图 XML，
+    #   执行侧读的是 XML 里的 methodParams / conditionExpression，必须再点一次
+    #   页面级「保存」把设置固化回 workflow_node。
+    page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+    page.wait_for_timeout(2500)
+    xml2 = api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+    xml2 = xml2 if isinstance(xml2, str) else json.dumps(xml2)
+    n_cond = xml2.count("conditionExpression")
+    ok(f"两条连线条件进了图（conditionExpression ×{n_cond}）") if n_cond >= 2 \
+        else bad("条件没进图 XML", xml2[-260:])
+    ok("变量节点参数进了图（methodParams 带 counter）") if "counter" in xml2 \
+        else bad("__setVar 参数没进图 XML", xml2[-260:])
+
+    rid, st = run_workflow(ctx, wf_id)
+    if not rid:
+        bad("触发执行失败（没有新 run 落库）")
+        return
+    ok(f"触发真执行（run #{rid} → {st or '未终态'}）")
+    nodes = q(f"SELECT node_key||'='||status::text FROM run_node "
+              f"WHERE run_id={rid} AND level=0 ORDER BY id")
+    ok("整单 completed") if st == "completed" else bad("整单没跑完", f"{st}；{nodes}")
+    ok("SET 执行过（页面上设的 __setVar 被执行侧认到）") if f"{ids['SET']}=completed" in nodes \
+        else bad("SET 没执行", nodes)
+    ok("条件命中：走了 A（${counter} == 1 生效）") if f"{ids['A']}=completed" in nodes \
+        else bad("没走 A", nodes)
+    ok("条件落空：B 标 bypassed") if f"{ids['B']}=bypassed" in nodes \
+        else bad("B 状态不是 bypassed", nodes)
+
+
 # ---------------------------------------------------------------- 路由
 
 def nav(page, menu):
@@ -545,6 +779,7 @@ def main():
             wf_id, tasks = sec_designer_palette(page, ctx, args.base)
             sec_designer_varnode(page, ctx, wf_id, tasks)
             sec_logic_and_flow(page, ctx, args.base, wf_id)
+            sec_designer_to_run(page, ctx, args.base)
             sec_run_detail(page, ctx, args.base)
             sec_run_control(page, ctx, args.base, wf_id)
             page.screenshot(path="/tmp/e2e-flow-matrix.png")
