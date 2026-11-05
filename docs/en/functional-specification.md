@@ -512,7 +512,7 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 
 | # | Feature | Status | Priority |
 |---|---|---|---|
-| 1.1 | Workflow designer (drag the nodes, connect them, open the existing BPMN) | ✅ bpmn-js | — |
+| 1.1 | Workflow designer (bpmn-js): an island-device panel "island → device → method" drags a method into a `bpmn:Task` with the device image and persists it automatically; changing device inserts a robot-arm `Transfer` node and connects it; devices and nodes show drawings; an always-visible delete button persists immediately; dragging connections, opening stored BPMN and the node settings panel are still supported | ✅ bpmn-js | `scripts/e2e-method-drop.py` (20 assertions) |
 | 1.2 | A multi-step node can be collapsed for viewing in the interface | ✅ | — |
 | 1.3 | Automatic compilation: expansion at run time; the preview is a projection; an override is not written back to the BPMN | 🟡 the expansion exists | P1. The run-time expansion is already counted in gate 1; the projection and the overrides do not block the release on their own |
 | 1.4 | Decision (exclusive, including the default edge when there is no condition) | ✅ execution by the graph (§11 B.1, `GraphRunner`) | P0 |

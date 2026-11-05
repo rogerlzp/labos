@@ -129,9 +129,17 @@ LabOS 2.0
 
 **关键交互**：多步节点显示成**可折叠 subProcess**（已实现），点开能看到内部 7 步。
 
-**按岛找设备（2026-11-05）**：新建流程时可先选「所属岛屿」（存进 `workflow.attr.island_id`，留空 = 全部岛，兼容旧流程）；设计器左侧「按岛设备 · 方法」面板顶部选岛，右侧「节点设置」的设备下拉按该岛过滤，选项带 `@岛code` 避免跨岛误选。后端 `GET /api/devices/pool?islandId=` 是可选过滤，不传仍是全量池（岛屿视图与既有用例不回归）。
+**按岛找设备（2026-11-05）**：新建流程时可先选「所属岛屿」（存进 `workflow.attr.island_id`，留空 = 全部岛，兼容旧流程）；设计器左侧「按岛设备 · 方法」面板顶部选岛，右侧「节点设置」的设备下拉按该岛过滤，选项带 `@岛code` 避免跨岛误选。后端 `GET /api/devices/pool?islandId=` 是可选过滤，不传仍是全量池（岛屿视图与既有用例不回归）。新拖出、尚未保存的节点原本只显示「不在编译结果里」，设备/方法下拉完全不出现；现在给出「保存并继续设置」按钮，保存后刷新编译结果即可绑定。
 
 **拖方法生成节点（2026-11-05，推荐主路径）**：左侧面板按「岛 → 设备 → 方法」三层展开，点开设备才懒加载它的方法（`GET /api/devices/{id}/methods`）；把方法直接拖到画布，立即生成一个 `bpmn:Task`，XML 属性带 `protocolName`（方法）、`resource`（设备）、`methodParams`，并自动落库一次、刷新编译结果。因此不再需要「先拖 task → 保存 → 再选设备 → 再选方法 → 再保存」这条低效率链路；选中该节点即可在右侧设置参数。属性名/大小写与 `BpmnGraphParser` 一致，`modeling.createShape` 自动生成 DI；`collapse()` / `BpmnExpander` / 静态设计器三处白名单同步补了 `methodParams`，避免展开视图保存时丢参数。只读账号禁用拖拽；无设备/无方法时给出空态而不是报错。
+
+**删除节点（2026-11-05）**：bpmn-js 原生 contextPad 垃圾桶与 Delete/Backspace 键一直可用，但「选中才出现、无引导、删完还要再点保存」让用户找不到入口。右侧属性栏顶部增加**常驻「删除选中节点」按钮**，走 `modeling.removeElements` 后与拖入一样立即落库并刷新 compile；`saveGraph` 会删掉不在图里的 `workflow_node` 并重建 `workflow_edge`。删空整张图会被拦住并提示至少保留一个节点，viewer 只读禁用。
+
+**设备图片（2026-11-05）**：左侧设备行显示 `<img>` 缩略图，拖进画布的节点由 `DeviceImageRenderer` 画成「设备图片卡片 + 方法名」，不再是统一矩形；图片随 SVG 缩放、可被导出。库里 `device.icon` 多数指向失效的源服务器 `/image/device/<uuid>.png`，由 `scripts/gen-device-icons.py` 按 14 个能力 + 通用兜底生成 15 张本地示意图，`iconFor()` 把失效路径映射回 `/devices/<CAP>.svg`（现场实物照片同名替换即可）。图片路径写进节点 `$attrs.icon`，`collapse()` / `BpmnExpander` / 静态设计器三处白名单同步放行；展开成 subProcess 的多步节点回落原生渲染，图片暂时不显示。
+
+**板子换设备自动插入机械臂（2026-11-05）**：按 `docs/实验编排-功能设计.md` §14.2/§14.3，连续拖入两台不同设备的方法时，自动取该岛 `TRANSFER` 能力的设备插入 `Transfer` 节点，用 `modeling.connect` 串成「设备 A → 机械臂 → 设备 B」，参数带 `source/target`（当前用两端设备编号）。这条只覆盖**设计器建图链路**；后端 `WorkflowBuilder` / `GraphRunner` / `flow-run` 运行时不自动补搬运，仍属已知差距，见测试总表诚实清单。
+
+**实现约束与踩坑（2026-11-05）**：bpmn-moddle 新建 shape 的 `$attrs` 是只读 getter，整体赋值会抛异常，必须取回对象逐属性写；本版本没有 `canvas.getAbsoluteOrigin()`，坐标换算改用 `viewbox()` + 容器 `getBoundingClientRect()`；左侧面板挤窄画布后，既有 `e2e-flow-matrix.py` / `e2e-sim-flow.py` 的固定 x=700/950 落点越界，两脚本改为按容器宽度等比缩放。这些取舍的完整版本见 `决策记录.md` 2026-11-05 行与 `评审包-20261103/03-设计文档.md` D16。
 
 ### 3.5 告警
 

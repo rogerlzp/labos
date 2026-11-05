@@ -1019,6 +1019,9 @@ Passing the device code is the most intuitive — the robot arm knows "where the
 | The choice of the robot arm | The first TRANSFER on the island is always used |
 | The format of the source/target values | The device code is passed, whether the driver accepts it still has to be verified on site |
 | The protection against a wrong grab | The plate should not be carried when it is on an empty device — a `has_plate` pre-check is needed |
+| Automatic transport insertion in the backend run path | The designer inserts `Transfer` per §14.2/§14.3 when a graph is built, but `WorkflowBuilder` / `GraphRunner` / `POST /api/experiments/flow-run` do not add it at run time; a separate batch is needed |
+
+**Added on 2026-11-05 (the designer's graph-building path)**: `webapp/src/pages/Designer.tsx`, when methods from two different devices are dropped in sequence, takes the island's TRANSFER device from the same device pool, inserts a `Transfer` node and connects "device A → robot arm → device B" with `modeling.connect`, with `source/target` set to the two device codes (still the format caveat in the table above). `scripts/e2e-method-drop.py` now asserts "cross-device → Transfer inserted + connected + persisted" as a resident check. Note this is **not** the same as automatic transport insertion during execution: the new backend row above remains open, and there is still no combined assertion of "source position → target position + `run_command` containing Transfer" for `position_state` / `plate_location_audit`. Demo: workflow 1885 (island `LAB-DEMO-02`, `ID0000` → `ID1731` → `ID1183`).
 
 ---
 

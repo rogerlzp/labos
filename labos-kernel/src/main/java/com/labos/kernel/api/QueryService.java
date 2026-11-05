@@ -3192,6 +3192,7 @@ public final class QueryService {
         String sql = """
                 SELECT d.id AS resource_id, d.code, d.name, di.ip,
                        c.code AS capability,
+                       dev.icon AS icon,
                        (SELECT p.id FROM resource_node p
                          WHERE p.id = d.parent_id AND p.kind = 'island')   AS island_id,
                        (SELECT p.code FROM resource_node p
@@ -3223,6 +3224,10 @@ public final class QueryService {
                             "name", rs.getString("name"),
                             "ip", rs.getString("ip"),
                             "capability", rs.getString("capability"),
+                            // 型号库登记的原始图片路径。多数存量值指向源服务器
+                            // /image/device/<uuid>.png（换环境 404），前端 iconFor()
+                            // 会按 capability 映射回本地 /devices/<CAP>.svg。
+                            "icon", rs.getString("icon"),
                             "islandId", isl,
                             "islandCode", rs.getString("island_code")));
                 }

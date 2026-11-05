@@ -56,6 +56,8 @@ were found by clicking through the page — the script track sees none of them.
 
 ## 3. Changing a feature means changing its cases
 
+**Execution record, 2026-11-05 (designer main path)**: after adding "device images / automatic robot-arm insertion across devices / explicit delete", `scripts/e2e-method-drop.py` grew from 10 to 20 assertions (17 resident without a database), `MIN_METHOD_DROP` in `ci-gate.sh` rose from 9 to 17, and section 4.12 covers the new assertions; the constants table, script list and item 10 of the honest list in `test-case-master-table.md`, plus the script table and the 14-gate description in `review-20261103/04-testing.md`, were updated in the same batch. This record shows that "changing a feature means changing its cases" is not a slogan: all four number/list locations are committed together.
+
 | Scenario | What you must do |
 |---|---|
 | New feature | Add cases; add a `MIN_*` threshold at the top of `scripts/ci-gate.sh` and wire the section |

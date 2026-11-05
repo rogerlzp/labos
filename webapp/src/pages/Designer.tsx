@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
+import DeviceImageRenderer, { iconFor, isArm } from '../bpmn/DeviceImageRenderer';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -36,6 +37,8 @@ interface BpmnDragApi {
 }
 interface BpmnModelingApi {
   createShape: (shape: unknown, position: { x: number; y: number }, parent: unknown) => unknown;
+  connect: (source: unknown, target: unknown) => unknown;
+  removeElements: (elements: unknown[]) => void;
 }
 interface BpmnElementFactoryApi {
   createShape: (opts: { type: string }) => {
@@ -46,12 +49,17 @@ interface BpmnElementFactoryApi {
 interface BpmnSelectionApi {
   select: (el: unknown) => void;
 }
+interface BpmnRegistryApi {
+  get: (id: string) => unknown;
+  forEach: (fn: (el: { id: string; type: string; waypoints?: unknown }) => void) => void;
+}
 
 interface PaletteDevice {
   resourceId: number;
   code: string;
   name?: string;
   capability?: string;
+  icon?: string | null;
   islandId?: number;
   islandCode?: string;
 }
@@ -61,8 +69,20 @@ interface DroppedMethod {
   resourceId: number;
   code: string;
   method: string;
+  capability?: string;
+  icon?: string | null;
   islandId?: number;
   islandCode?: string;
+}
+
+/** 上一次拖入的节点：用于判断「板子换设备了」并自动插入机械臂搬运。 */
+interface LastDropped {
+  shapeId: string;
+  resourceId: number;
+  code: string;
+  capability?: string;
+  icon: string;
+  x: number;
 }
 
 /** 左侧「按岛设备」面板里的一台设备：点开才懒加载它的方法。 */
@@ -84,6 +104,7 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
     <div style={{ marginBottom: 4, border: '1px solid #ffffff14', borderRadius: 4 }}>
       <div
         data-testid="palette-device"
+        data-icon={iconFor(d.icon, d.capability)}
         onClick={() => setOpen((v) => !v)}
         style={{
           display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px',
@@ -91,6 +112,13 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
         }}
       >
         <span style={{ color: '#8b93a7' }}>{open ? '▾' : '▸'}</span>
+        <img
+          src={iconFor(d.icon, d.capability)}
+          alt={d.code}
+          style={{ width: 34, height: 24, objectFit: 'cover', borderRadius: 3,
+                   flexShrink: 0, border: '1px solid #ffffff22' }}
+          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+        />
         <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {d.code}
         </span>
@@ -118,6 +146,8 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
                   resourceId: d.resourceId,
                   code: d.code,
                   method: m.method,
+                  capability: d.capability,
+                  icon: d.icon,
                   islandId: d.islandId,
                   islandCode: d.islandCode,
                 };
@@ -174,7 +204,7 @@ function collapse(xml: string): string {
     // methodParams 必须一起搬：拖入的方法节点参数写在 XML 属性上，展开视图
     // 把它变成 subProcess 时若白名单漏了，保存就会把参数丢掉。
     for (const a of ['protocolName', 'protocolId', 'resource', 'resourceName',
-                     'variablesValue', 'methodParams']) {
+                     'variablesValue', 'methodParams', 'icon']) {
       const v = sub.getAttribute(a);
       if (v) task.setAttribute(a, v);
     }
@@ -632,6 +662,8 @@ export default function DesignerPage() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const modelerRef = useRef<BpmnModeler | null>(null);
+  // 上一次拖入的节点：判断「板子换设备」→ 自动插入机械臂 Transfer 并连线
+  const lastDroppedRef = useRef<LastDropped | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -677,7 +709,15 @@ export default function DesignerPage() {
   // 初始化 modeler（只跑一次）
   useEffect(() => {
     if (!containerRef.current || modelerRef.current) return;
-    const modeler = new BpmnModeler({ container: containerRef.current });
+    // 自定义 renderer：带 $attrs.icon 的设备节点画成设备图片卡片，而不是统一矩形。
+    // 优先级 2000 > bpmnRenderer 默认 1000；只对 bpmn:Task 接管，展开视图回落原生渲染。
+    const modeler = new BpmnModeler({
+      container: containerRef.current,
+      additionalModules: [{
+        __init__: ['deviceImageRenderer'],
+        deviceImageRenderer: ['type', DeviceImageRenderer],
+      }],
+    } as any);
     modelerRef.current = modeler;
 
     modeler.on('commandStack.changed', () => setDirty(true));
@@ -837,15 +877,15 @@ export default function DesignerPage() {
     setDirty(true);
   };
 
-  /** 拖入方法节点后立刻落库并刷新 compile，让右侧参数面板出现。 */
-  const persistAfterDrop = async (nodeKey: string) => {
+  /** 图变更后立刻落库并刷新 compile（拖入 / 插机械臂 / 删除共用）。 */
+  const persistAfterDrop = async (nodeKey: string, toast?: string) => {
     const m = modelerRef.current;
     if (!m) return;
     setSaving(true);
     try {
       const { xml } = await m.saveXML({ format: true }) as { xml: string };
       // 故意不走 save()：它带「必填参数」守卫，而刚拖入的节点还没有参数定义。
-      // saveGraph 的 INSERT 分支会直接把 protocolName/resource 写进 workflow_node，
+      // saveGraph 的 INSERT 分支直接把 protocolName/resource 写进 workflow_node，
       // 也就避开了 e2e-sim-flow 里「绑完设备还要再点一次保存」的老坑。
       await api.saveGraph(wfId, collapse(xml));
       setDirty(false);
@@ -854,7 +894,7 @@ export default function DesignerPage() {
         qc.invalidateQueries({ queryKey: ['preflight', wfId] }),
         qc.invalidateQueries({ queryKey: ['node-binding', String(wfId), nodeKey] }),
       ]);
-      message.success(t('designer.toast.methodDropped'));
+      message.success(toast ?? t('designer.toast.methodDropped'));
     } catch (e) {
       message.error(t('designer.error.saveFailedDetail', { msg: String((e as Error).message) }));
     } finally {
@@ -862,7 +902,27 @@ export default function DesignerPage() {
     }
   };
 
-  /** 把左侧的「设备方法」拖到画布：直接生成已绑定设备+方法的 bpmn:Task。 */
+  /** $attrs 在新建 shape 上是只读 getter，只能取回对象逐属性写。 */
+  const setShapeAttrs = (
+    shape: ReturnType<BpmnElementFactoryApi['createShape']>,
+    kv: Record<string, string>,
+  ) => {
+    const bo = shape.businessObject;
+    let attrs = bo.$attrs as Record<string, string> | undefined;
+    if (!attrs) {
+      attrs = {};
+      Object.defineProperty(bo, '$attrs', {
+        value: attrs, writable: true, configurable: true, enumerable: false,
+      });
+    }
+    Object.assign(attrs, kv);
+  };
+
+  /**
+   * 把左侧的「设备方法」拖到画布：生成已绑定设备 + 方法 + 图片的 bpmn:Task。
+   * 若板子从设备 A 换到设备 B，按设计 §14.2/§14.3 在中间自动插入岛上机械臂的
+   * Transfer 节点并用 SequenceFlow 串起来 —— 否则板子永远搬不过去。
+   */
   const onDropMethod = async (e: ReactDragEvent<HTMLDivElement>) => {
     e.preventDefault();
     if (ro.disabled) return;
@@ -881,37 +941,89 @@ export default function DesignerPage() {
     const modeling = m.get('modeling') as unknown as BpmnModelingApi;
     const canvasApi = m.get('canvas') as unknown as BpmnDragApi;
     const selection = m.get('selection') as unknown as BpmnSelectionApi;
-
-    // 标准 bpmn:Task（customDevice 标准 Modeler 不认）。属性名/大小写必须与
-    // BpmnGraphParser.getAttribute 完全一致，写错会静默失效。
-    const shape = factory.createShape({ type: 'bpmn:Task' });
-    const bo = shape.businessObject;
-    // bpmn-moddle 的 $attrs 在新建 shape 上是**只读 getter**，整体赋值会抛
-    // "Cannot set property $attrs ... which has only a getter"。取回它指向的
-    // 对象逐个写；没有该对象时用 defineProperty 兜底（与 applyParams() 同口径）。
-    let attrs = bo.$attrs as Record<string, string> | undefined;
-    if (!attrs) {
-      attrs = {};
-      Object.defineProperty(bo, '$attrs', {
-        value: attrs, writable: true, configurable: true, enumerable: false,
-      });
-    }
-    attrs.protocolName = p.method;
-    attrs.resource = String(p.resourceId);
-    attrs.methodParams = '{}';
-    bo.name = p.method;
+    const registry = m.get('elementRegistry') as unknown as BpmnRegistryApi;
 
     // 屏幕坐标 → diagram 坐标；createShape 的 position 是形状中心（Task 100×80）
     const vb = canvasApi.viewbox();
     const scale = vb?.scale && vb.scale > 0 ? vb.scale : 1;
     const rect = canvasApi.getContainer?.()?.getBoundingClientRect?.()
       ?? (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = (e.clientX - rect.left) / scale + (vb?.x ?? 0) + 50;
+    const dropX = (e.clientX - rect.left) / scale + (vb?.x ?? 0) + 50;
     const y = (e.clientY - rect.top) / scale + (vb?.y ?? 0) + 40;
-    // modeling.createShape 自动生成 BPMNShape/dc:Bounds；手拼 XML 会缺 DI 画不出来
-    modeling.createShape(shape, { x, y }, canvasApi.getRootElement());
+    const prev = lastDroppedRef.current;
+    // 连续拖入自动横向排布，避免节点重叠（机械臂插在两者中间）
+    const x = prev ? Math.max(dropX, prev.x + 300) : dropX;
+    const root = canvasApi.getRootElement();
+    const icon = iconFor(p.icon, p.capability);
+
+    // 板子换设备必须由机械臂搬运；岛上的 TRANSFER 设备从同一个设备池取
+    const arm = (paletteDevices.data?.items ?? []).find((d) =>
+      isArm(d.capability) && (!p.islandId || d.islandId === p.islandId));
+    const needTransfer = !!(prev && prev.resourceId !== p.resourceId
+      && !isArm(prev.capability) && !isArm(p.capability) && arm);
+    const prevEl = prev ? registry.get(prev.shapeId) : null;
+
+    const shape = factory.createShape({ type: 'bpmn:Task' });
+    setShapeAttrs(shape, {
+      protocolName: p.method,
+      resource: String(p.resourceId),
+      methodParams: '{}',
+      icon,
+    });
+    shape.businessObject.name = p.method;
+    modeling.createShape(shape, { x, y }, root);
+
+    if (needTransfer && arm && prev && prevEl) {
+      const armShape = factory.createShape({ type: 'bpmn:Task' });
+      setShapeAttrs(armShape, {
+        protocolName: 'Transfer',
+        resource: String(arm.resourceId),
+        methodParams: JSON.stringify({ source: prev.code, target: p.code }),
+        icon: iconFor(arm.icon, arm.capability),
+      });
+      armShape.businessObject.name = t('designer.node.armTransfer');
+      modeling.createShape(armShape, { x: (prev.x + x) / 2, y }, root);
+      modeling.connect(prevEl, armShape);
+      modeling.connect(armShape, shape);
+      message.info(t('designer.toast.armInserted', { from: prev.code, to: p.code }));
+    } else if (prev && prevEl) {
+      modeling.connect(prevEl, shape);
+    }
+
+    lastDroppedRef.current = {
+      shapeId: shape.id, resourceId: p.resourceId, code: p.code,
+      capability: p.capability, icon, x,
+    };
     selection.select(shape);
     await persistAfterDrop(shape.id);
+  };
+
+  /**
+   * 显式删除入口。bpmn-js 原生的 contextPad 垃圾桶 / Delete 键一直可用，但
+   * 「选中才出现 + 无引导 + 删完还要点保存」让用户以为不能删。这里给常驻按钮，
+   * 删除后与拖入一样立即落库，并拦住「删空」（saveGraph 拒绝 0 节点图）。
+   */
+  const deleteSelected = async () => {
+    const m = modelerRef.current;
+    if (!m || !selected || ro.disabled) return;
+    const registry = m.get('elementRegistry') as unknown as BpmnRegistryApi;
+    const modeling = m.get('modeling') as unknown as BpmnModelingApi;
+    const el = registry.get(selected);
+    if (!el) return;
+    let nodes = 0;
+    registry.forEach((n) => {
+      if (n.type !== 'bpmn:Process' && !n.waypoints) nodes += 1;
+    });
+    if (nodes <= 1) {
+      message.warning(t('designer.warn.keepOneNode'));
+      return;
+    }
+    modeling.removeElements([el]);
+    if (lastDroppedRef.current?.shapeId === selected) {
+      lastDroppedRef.current = null;
+    }
+    await persistAfterDrop(selected, t('designer.toast.nodeDeleted'));
+    setSelected(null);
   };
 
   const save = async () => {
@@ -1049,6 +1161,16 @@ export default function DesignerPage() {
       </Col>
 
       <Col flex="320px">
+        <Card size="small" style={{ marginBottom: 12 }}>
+          <Typography.Text type="secondary"
+            style={{ fontSize: 11, display: 'block', marginBottom: 6 }}>
+            {t('designer.hint.delete')}
+          </Typography.Text>
+          <Button size="small" danger block {...ro}
+            disabled={!selected || ro.disabled} onClick={deleteSelected}>
+            {t('designer.action.deleteNode')}
+          </Button>
+        </Card>
         {!selected ? (
           <Card size="small">
             <Empty description={t('designer.empty.selectNode')} />

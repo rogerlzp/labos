@@ -44,7 +44,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_POLICIES` | 12 | Page policy edit + validation (`e2e-policies.py`); gate lower bound, measured value in review package 04 |
 | `MIN_PAUSED` | 7 | Page paused queue filter and actions (`e2e-paused.py`); gate lower bound, measured value in review package 04 |
 | `MIN_CANVAS` | 12 | Experiment orchestration canvas (`e2e-canvas.py`); gate lower bound, measured value in review package 04 |
-| `MIN_METHOD_DROP` | 9 | Island devices → drag a method to create a node (`e2e-method-drop.py`); 9 resident assertions without a DB, 10 with one |
+| `MIN_METHOD_DROP` | 17 | Device images / a method node with its image / automatic robot-arm insertion across devices / deletion (`e2e-method-drop.py`); 17 resident assertions without a DB, 20 with one |
 
 ---
 
@@ -218,6 +218,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 7 | Soak (running for days) | Memory / connection leaks | No soak environment |
 | 8 | Correctness under load (not just throughput) | State corruption under lock contention | The load test only measured throughput |
 | 9 | Rolling schedule (spec §14.8: commit window / 15-minute freeze zone / greedy) | A broken commit window or freeze zone scrambles the experiments already committed | Out of scope, not yet implemented enough to be testable |
+| 10 | Backend run-path automatic robot-arm insertion + a combined plate-move assertion | The designer inserts `Transfer` while a graph is built, but `WorkflowBuilder` / `GraphRunner` / `flow-run` do not add it at run time; whether a plate really moves from position A to B via the arm is not asserted (`position_state` only covers the UNKNOWN lock-out) | The §14.2/§14.3 expansion rule has to move from the frontend into the executor and depends on taught `robot_point.code`; recorded in the decision log and D16, a separate batch |
 
 ---
 

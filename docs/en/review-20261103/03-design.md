@@ -312,6 +312,18 @@ can only be seen in the XML; `builtin=true` is written into params to make the l
 
 ---
 
+## D16. The designer main path stays in bpmn-js, not React Flow; the user drags a "method", not a node
+
+**Background**: the 2.0 workflow designer is bpmn-js while the experiment canvas `/canvas` is React Flow (see the two-editor wording in `design/unified-experiment-orchestration-draft.md`). The original binding chain was "drop a task → save → pick a device on the right → pick a method → save again". On 2026-11-05 the user found this inefficient and required: open the designer → see the devices of the selected island → expand a device → drag **that device's method** onto the canvas → set that method's parameters. Devices and nodes must both show device images.
+
+**Choice**: keep bpmn-js as the workflow designer, add a three-level "island → device → method" panel on the left, use HTML5 drag & drop plus `modeling.createShape` to create a standard `bpmn:Task`, write `protocolName/resource/methodParams/icon` into `$attrs` and persist once automatically; draw the image card with a custom renderer (not an HTML overlay). When a plate changes device, insert a `Transfer` node for the island's TRANSFER device and connect it, per §14.2/§14.3. Deletion becomes an always-visible button with immediate persistence.
+
+**Rejected options**: ① **Option 2: make the experiment canvas `/canvas` the official place for dragging devices** — it already had an "island devices" drag list and would have been the smallest change, but the user required the interaction inside the workflow designer, so it was rejected; `/canvas` keeps its original purpose. ② **A custom bpmn palette provider** — devices would appear in the official palette, but it needs custom element types, a moddle extension, and extra compatibility work when `BpmnExpander` turns a task into a subProcess; not worth the cost. ③ **Move everything to React Flow** — a unified frontend, but BPMN parsing / compilation / execution / import-export would have to be rewritten and bpmn-js's mature connections, DI, keyboard and undo would be lost (draft §7 already judged this "not recommended"). ④ **HTML overlays for images** — no contract changes, but images would not scale with zoom, would be absent from exported SVG/PNG, and would need rebinding when element ids change; the renderer's cost is that it only applies to `bpmn:Task`, so the expanded view falls back to native rendering.
+
+**Costs**: `$attrs` is a read-only getter on a new shape, so properties must be written one by one (assigning the object throws `Cannot set property $attrs`); this version has no `canvas.getAbsoluteOrigin()`, so coordinates use `viewbox()` plus the container's `getBoundingClientRect()`; the left panel narrows the canvas and pushed the fixed x=700/950 drop points of `e2e-flow-matrix.py` / `e2e-sim-flow.py` outside the container, so both scripts now scale their drop points to the container width; `icon` and `methodParams` had to be added to the whitelists in `collapse()`, `BpmnExpander` and the static designer; most `device.icon` values are dead source-server paths, so local capability-mapped drawings are required.
+
+---
+
 ## 3. The boundary: what is explicitly not done
 
 | Not done | Reason |

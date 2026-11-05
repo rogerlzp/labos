@@ -332,3 +332,16 @@ COMMENT ON COLUMN experiment_graph.graph IS '仅布局（节点坐标/连线样�
 > 5. Whether the three migration steps (S1/S2/S3) can go live independently, and whether there is an implicit coupling that forces them to be changed together
 >
 > The code is authoritative on `main`; the file line numbers quoted in the text may change with the commits, so please search for them.
+
+## Addendum (2026-11-05): where the designer's "drag a device / drag a method" belongs
+
+The A/B/C discussion in §2 of this document is about **orchestration unification** (whether graph or process is authoritative); conclusion B, "keep two editors for now", still holds. A more local set of trade-offs arose in this round and is recorded here so it is not confused with §2:
+
+| Option | Approach | Benefit | Cost | Outcome |
+|---|---|---|---|---|
+| A | Add a custom palette provider to the bpmn designer so devices appear in the official palette | The most "native" interaction | Needs custom element types and a moddle extension, plus extra compatibility when `BpmnExpander` turns a task into a subProcess | Rejected |
+| B | Make the experiment canvas `/canvas` (React Flow) the official place for dragging devices | It already had an "island devices" list; smallest change | The user required the interaction inside the workflow designer; the semantics of the two editors would become further entangled | **Rejected by the user** (the former option 2) |
+| C | Move everything to React Flow | A unified frontend | BPMN parsing / compilation / execution / import-export would have to be rewritten and mature bpmn-js features lost | Already judged not recommended in §2 |
+| D | Keep the bpmn designer and add a separate "island → device → method" panel on the left with HTML5 drag & drop + `modeling.createShape` + a custom renderer | The execution chain and XML contract stay untouched; images scale and export with the SVG | `$attrs` read-only getter, no `getAbsoluteOrigin()`, the panel narrows the canvas and broke fixed e2e drop points | **Chosen** |
+
+The full cost list and the product wording (a workflow is optionally bound to an island, cross-island devices remain allowed, a plate changing device inserts a robot arm) are in the 2026-11-05 row of `decision-log.md` and D16 of `review-20261103/03-design.md`.

@@ -5,13 +5,16 @@
 用户要的主路径不是「先拖 task → 保存 → 选设备 → 选方法 → 再保存」，而是：
   打开设计器 → 左侧选岛 → 展开设备 → 把方法拖进画布 → 直接设参数。
 
-本用例把这条链路钉住，重点验证三件容易静默失效的事：
-  · 拖进去的节点 XML 里真的带 protocolName / resource / methodParams；
-  · 拖入后的自动保存让 compile 立刻认得这个节点（避开「还要再点一次保存」的老坑）；
-  · workflow_node 里 resource_id 与 params->>'protocol_name' 与拖的 payload 一致。
+本用例把这条链路钉住，重点验证：
+  · 设备行与节点都显示**该设备的图片**（自定义 bpmn-js renderer，不是统一矩形）；
+  · 节点 XML 带 protocolName / resource / icon，compile 立刻认得（避开老坑）；
+  · workflow_node 的 resource_id / protocol_name 与 payload 一致；
+  · **板子换设备时自动插入岛上机械臂 Transfer 并连线**（设计 §14.2/§14.3），
+    以及 Transfer 带 source/target、节点已落库；
+  · **显式删除按钮**能删掉节点并同步删库（原生 contextPad 太隐蔽）。
 
-空态容错：库里没有岛 / 该岛没设备 / 该设备没方法时跳过，不判失败。
-自建流程在 finally 里清理（与 e2e-sim-flow.py 同口径）。
+空态容错：库里没有岛 / 该岛没设备 / 该设备没方法 / 岛上只有一台设备时跳过，不判失败。
+自建流程在 finally 里清理（与 e2e-sim-flow.py 同口径）；`--demo` 时保留流程供人工查看。
 
 前置：ApiServer 18080、前端 5173；库断言与清理需要 LABOS_DB_*（缺失则跳过）。
 
@@ -111,6 +114,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=os.environ.get("LABOS_WEB", "http://localhost:5173"))
     ap.add_argument("--headed", action="store_true")
+    ap.add_argument("--demo", action="store_true",
+                    help="保留最后创建的流程（含设备图片与机械臂节点）供人工查看，不清理")
     args = ap.parse_args()
 
     wf_id = None
@@ -139,15 +144,17 @@ def main():
             ok(f"目标岛 {island['code']}（id={island['id']}）")
 
             step("1. 建流程并打开设计器")
+            wf_name = ("示例｜岛内设备图片与机械臂搬运（2026-11-05）"
+                       if args.demo else "拖方法 e2e 冒烟")
             w = api("/api/workflows", "POST",
-                    {"name": "拖方法 e2e 冒烟", "islandId": island["id"]}, token)
+                    {"name": wf_name, "islandId": island["id"]}, token)
             wf_id = w["id"]
             ok(f"新建流程 wfId={wf_id}，已绑定该岛")
             page.goto(f"{args.base}/designer/{wf_id}?islandId={island['id']}",
                       wait_until="networkidle")
             page.wait_for_selector(".djs-container", timeout=25000)
 
-            step("2. 左侧「按岛设备 · 方法」三层面板")
+            step("2. 左侧「按岛设备 · 方法」三层面板 + 设备图片")
             panel = page.locator(".ant-card", has_text="按岛设备")
             if panel.count() == 0:
                 bad("左侧「按岛设备」面板没有出现")
@@ -159,6 +166,15 @@ def main():
                 skip("该岛暂无设备，跳过拖拽")
                 return
             ok(f"面板列出 {devs.count()} 台该岛设备")
+            icons = page.locator('[data-testid="palette-device"][data-icon^="/devices/"]')
+            if icons.count() == devs.count() and icons.count() > 0:
+                ok(f"{icons.count()} 台设备都有本地示意图（失效 /image/device 路径已映射）")
+            else:
+                bad("设备行缺本地示意图", f"{icons.count()}/{devs.count()}")
+            if page.locator('[data-testid="palette-device"] img').count() > 0:
+                ok("设备行渲染了 <img> 缩略图")
+            else:
+                bad("设备行没有 <img> 缩略图")
             devs.first.click()
             page.wait_for_timeout(1200)
             methods = page.locator('[data-testid="palette-method"]')
@@ -167,7 +183,7 @@ def main():
                 return
             ok(f"展开设备后出现 {methods.count()} 个可拖方法")
 
-            step("3. 把方法拖进画布")
+            step("3. 把方法拖进画布（节点带设备图片）")
             method = methods.first.get_attribute("data-method")
             rid = int(methods.first.get_attribute("data-resource-id"))
             before = set(canvas_ids(page))
@@ -182,15 +198,27 @@ def main():
                 return
             node_key = new[0]
             ok(f"拖方法生成节点 {node_key}（{method} @ resourceId={rid}）")
+            node_img = page.locator(f'.djs-element[data-element-id="{node_key}"] image')
+            if node_img.count() > 0:
+                ok("节点 SVG 里有 <image>（自定义 renderer 生效，不是统一矩形）")
+            else:
+                bad("节点没有渲染设备图片")
+            href = node_img.first.get_attribute("href") if node_img.count() else None
+            if href and href.startswith("/devices/"):
+                ok(f"节点图片指向本地示意图 {href}")
+            else:
+                bad("节点图片路径不对", str(href))
 
             step("4. 绑定随节点一起落库")
             xml = api(f"/api/workflows/{wf_id}/graph", token=token)
             xml = xml if isinstance(xml, str) else json.dumps(xml)
-            if f'protocolName="{method}"' in xml and f'resource="{rid}"' in xml:
-                ok("XML 里带 protocolName / resource（DI 由 modeling.createShape 生成）")
+            if f'protocolName="{method}"' in xml and f'resource="{rid}"' in xml \
+                    and 'icon="/devices/' in xml:
+                ok("XML 里带 protocolName / resource / icon（DI 由 modeling.createShape 生成）")
             else:
                 bad("XML 缺绑定属性",
-                    f"protocolName={'protocolName=' in xml} resource={'resource=' in xml}")
+                    f"protocolName={'protocolName=' in xml} "
+                    f"resource={'resource=' in xml} icon={'icon=' in xml}")
 
             comp = api(f"/api/workflows/{wf_id}/compile", token=token)
             nodes = comp.get("nodes", []) if isinstance(comp, dict) else []
@@ -218,8 +246,87 @@ def main():
                         f"row='{row}' 全部节点='{allrows}'")
             else:
                 skip("没给 LABOS_DB_*，跳过库断言")
+
+            step("4.5 板子换设备 → 自动插入机械臂搬运")
+            last_key = node_key
+            if devs.count() < 2:
+                skip("该岛只有一台设备，跳过跨设备搬运")
+            else:
+                devs.nth(1).click()
+                page.wait_for_timeout(1200)
+                all_m = page.locator('[data-testid="palette-method"]')
+                target = None
+                for i in range(all_m.count()):
+                    mm = all_m.nth(i)
+                    if mm.get_attribute("data-resource-id") != str(rid) \
+                            and mm.get_attribute("data-method") != "Transfer":
+                        target = mm
+                        break
+                if target is None:
+                    skip("第二台设备没有可用方法，跳过跨设备搬运")
+                else:
+                    before2 = set(canvas_ids(page))
+                    target.drag_to(page.locator(".djs-container"),
+                                   target_position={"x": 620, "y": 240})
+                    page.wait_for_timeout(3500)
+                    xml2 = api(f"/api/workflows/{wf_id}/graph", token=token)
+                    xml2 = xml2 if isinstance(xml2, str) else json.dumps(xml2)
+                    if 'protocolName="Transfer"' in xml2:
+                        ok("跨设备拖入后自动插入机械臂 Transfer 节点")
+                    else:
+                        bad("跨设备拖入没有插入机械臂搬运")
+                    flows = xml2.count("bpmn:sequenceFlow")
+                    if flows >= 2:
+                        ok(f"节点间自动连线（sequenceFlow 标记 {flows} 处）")
+                    else:
+                        bad("节点间没有自动连线", f"flows={flows}")
+                    if "source" in xml2 and "target" in xml2:
+                        ok("Transfer 带 source/target（两端设备编号）")
+                    else:
+                        bad("Transfer 缺 source/target")
+                    if have_db():
+                        armrow = q(
+                            "select count(*) from workflow_node "
+                            f"where workflow_id={wf_id} "
+                            "and params->>'protocol_name'='Transfer'")
+                        if armrow.strip() == "1":
+                            ok("机械臂节点已落库")
+                        else:
+                            bad("机械臂节点未落库", armrow)
+                    added2 = [i for i in sorted(set(canvas_ids(page)) - before2)
+                              if not i.endswith("_label")]
+                    if added2:
+                        last_key = added2[-1]
+
+            step("5. 删除节点（显式按钮 + 即时落库）")
+            if args.demo:
+                skip("演示模式：保留全部节点，跳过删除用例")
+                print("\n  \033[1m演示流程（已落库，不会清理）:\033[0m "
+                      f"{args.base}/designer/{wf_id}?islandId={island['id']}")
+                return
+            page.locator(f'.djs-element[data-element-id="{last_key}"]').first.click(force=True)
+            page.wait_for_timeout(600)
+            del_btn = page.get_by_role("button", name="删除选中节点")
+            if del_btn.count() == 0:
+                bad("没有删除按钮入口")
+            else:
+                cnt_before = len(canvas_ids(page))
+                del_btn.first.click()
+                page.wait_for_timeout(3000)
+                if len(canvas_ids(page)) < cnt_before:
+                    ok("点删除按钮后节点从画布消失")
+                else:
+                    bad("点删除按钮后节点仍在")
+                if have_db():
+                    left = q(
+                        "select count(*) from workflow_node "
+                        f"where workflow_id={wf_id} and node_key='{last_key}'")
+                    if left.strip() == "0":
+                        ok("删除后 workflow_node 同步删除（无需再点保存）")
+                    else:
+                        bad("删除后库里仍有该节点", left)
         finally:
-            if wf_id and have_db():
+            if wf_id and have_db() and not args.demo:
                 try:
                     q(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}")
                     q(f"DELETE FROM workflow WHERE id={wf_id}")

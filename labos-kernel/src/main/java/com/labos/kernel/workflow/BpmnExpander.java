@@ -131,7 +131,7 @@ public final class BpmnExpander {
         // methodParams 必须一起搬：拖入的方法节点把参数写在 XML 属性上，
         // 展开成 subProcess 时漏掉它，保存就会把参数丢掉。
         for (String a : new String[]{"protocolName", "protocolId", "resource",
-                "resourceName", "variablesValue", "methodParams"}) {
+                "resourceName", "variablesValue", "methodParams", "icon"}) {
             String v = task.getAttribute(a);
             if (v != null && !v.isBlank()) {
                 sub.setAttribute(a, v);

@@ -278,3 +278,9 @@ SELECT code, name FROM device_instance WHERE ip IS NULL OR ip = '' ORDER BY code
 -- Which devices are not linked to a driver
 SELECT count(*) FROM device_instance WHERE driver_id IS NULL;
 ```
+
+## 4. Finding devices by island, and device images, in the designer (2026-11-05)
+
+When a workflow is created, an island can be selected (stored in `workflow.attr.island_id`; empty = all islands, so existing workflows are unchanged). The designer's "Island devices · methods" panel on the left lists that island's devices via `GET /api/devices/pool?islandId=`; expanding a device lazily loads its methods (`GET /api/devices/{id}/methods`), and dragging a method onto the canvas creates a node with the device image and the device/method binding already persisted. When a plate changes device, a `Transfer` node for the island's TRANSFER device is inserted and connected per §14.2/§14.3 of the orchestration design.
+
+Device image convention: `device.icon` stores a web-root-relative path `/devices/<code>.<ext>`, with the files in `webapp/public/devices/`. Most existing values still point at the source server `/image/device/<uuid>.png` (404 in a new environment), so the frontend's `iconFor()` maps them by capability back to local drawings; `scripts/gen-device-icons.py` generates 15 schematic SVGs for 14 capabilities plus a generic fallback. These are **not photographs**; real ones can replace them under the same names. How many devices an island has and what robot points they correspond to is available from `islands[].devices[]` in `/api/topology` and `/api/islands/{id}/robot-points`; an island usually has one shared robot arm, see the resource-model and deadlock-avoidance design.
