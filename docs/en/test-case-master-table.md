@@ -205,6 +205,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `scripts/verify-all.sh` / `verify-m1..m5.sh` | Milestone acceptance (historical) | L3 | ⬜ |
 | `scripts/e2e-method-drop.py` | Island devices → drag a method to create a node: XML binding / compile recognition / persistence (skipped when the island is empty or the device has no methods) | L4 | ✅ |
 | `scripts/e2e-multi-parallel.py` | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables: drag 12 nodes / 13 edges on the page → the graph holds 2 parallelGateway + 2 exclusiveGateway → really run → all three parallel branches completed | L4 | ✅ |
+| `scripts/shot-gateway-labels.py` | Gateway readability · naming + role labels + a visible end marker: drag "exclusive split → parallel split → parallel join" on the page and name them → all three names land in the graph XML → screenshots confirm legible labels, an orange join marker and a dark end event | L4 | ⬜ reviewed by eye |
 
 ---
 

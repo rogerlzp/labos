@@ -14,3 +14,21 @@ body {
 .row-running > td:first-child {
   box-shadow: inset 3px 0 0 #1677ff;
 }
+
+/* ---------------------------------------------------------------- 网关可读性
+ *
+ * 两种网关（异或 ✕ / 并行 ＋）在页面上都是菱形，缩小后几乎分不出；
+ * 而「分叉」还是「汇合」光看形状也看不出来 —— 引擎是按连线数自动判定的。
+ * 所以给网关起了名字（设计器「网关设置」卡），名字要**清晰可读**：
+ * 默认的标签宽度会按节点框算，中文名字会被挤成竖排或截断。
+ */
+.djs-label {
+  /* 不换行：中文标签挤成竖排就没法看了 */
+  white-space: nowrap !important;
+}
+/* 网关标签：字号略大一点、加粗，和节点的矩形/圆形区分开 */
+.djs-element[data-element-id$="_label"] .djs-label {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: #1f2937 !important;
+}

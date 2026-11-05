@@ -771,6 +771,10 @@ export default function DesignerPage() {
   const [selected, setSelected] = useState<string | null>(null);
   /** 选中元素的 bpmn 类型：用来区分「节点」与「连线」（连线不在 compile 结果里）。 */
   const [selType, setSelType] = useState('');
+  /** 选中网关的显示名（写进 BPMN 的 name 属性） */
+  const [nodeName, setNodeName] = useState('');
+  /** 选中网关的角色建议：并行分叉 / 并行汇合 / 异或分叉 / 异或汇合 */
+  const [gatewayHint, setGatewayHint] = useState('');
   /** 连线的条件表达式（选中 SequenceFlow 时才有意义） */
   const [flowCond, setFlowCond] = useState('');
   /** 这条连线是否为源网关的默认边（无条件兜底） */
@@ -839,12 +843,84 @@ export default function DesignerPage() {
       const el = e.newSelection?.[0];
       setSelected(el?.id ?? null);
       setSelType(el?.type ?? '');
+      // 网关的显示名与角色建议：选中即读一次（角色由入/出边数推出，与后端同一口径）
+      if (el?.id) {
+        const r = readNodeName(el.id);
+        setNodeName(r.name);
+        setGatewayHint(r.hint);
+      } else {
+        setNodeName('');
+        setGatewayHint('');
+      }
     });
     return () => {
       modeler.destroy();
       modelerRef.current = null;
     };
   }, []);
+
+  /**
+   * 读节点的显示名 + 算网关默认名建议。
+   *
+   * <p>为什么需要：两种网关在页面上都是菱形（✕ / ＋），缩小后几乎分不出；
+   * 而「分叉」还是「汇合」光看形状也看不出来 —— 引擎是按连线数自动判定的
+   * （后端 `WorkflowGraphParser`：入边 > 1 是汇合、出边 > 1 是分叉、
+   * 都 > 1 按汇合先等再分、单进单出等价于直通）。
+   * 给个默认名，图上一眼就知道这个菱形在干什么。
+   *
+   * <p>推导规则**必须和后端一致**，否则名字会骗人。
+   */
+  const readNodeName = (key: string): { name: string; hint: string } => {
+    const m = modelerRef.current;
+    if (!m || !key) return { name: '', hint: '' };
+    const reg = m.get('elementRegistry') as {
+      get: (id: string) => {
+        type?: string;
+        businessObject?: {
+          name?: string;
+          /** incoming / outgoing 挂在 businessObject 上（bpmn-moddle 的关联属性），
+           *  **不在 element 上** —— 读错位置会拿到 undefined，边数恒为 0，
+           *  于是所有网关都被判成「直通」（2026-11-05 实测踩到）。 */
+          incoming?: unknown[];
+          outgoing?: unknown[];
+        };
+      } | undefined;
+    };
+    const el = reg.get(key);
+    const bo = el?.businessObject;
+    const type = el?.type ?? '';
+    const ins = bo?.incoming?.length ?? 0;
+    const outs = bo?.outgoing?.length ?? 0;
+    let hint = '';
+    if (type === 'bpmn:ExclusiveGateway') {
+      // 异或：二选一（分叉）/ 任一条到达即放行（汇合）
+      hint = ins > 1 ? '异或汇合' : outs > 1 ? '异或分叉' : '';
+    } else if (type === 'bpmn:ParallelGateway') {
+      // 并行：全走（分叉）/ 所有入边到齐才放行（汇合）
+      hint = ins > 1 ? '并行汇合' : outs > 1 ? '并行分叉' : '';
+    }
+    return { name: el?.businessObject?.name ?? '', hint };
+  };
+
+  /**
+   * 把显示名写回 BPMN 的 name 属性。
+   *
+   * <p>走 bpmn-js 的 `modeling.updateProperties` 而不是直接改 businessObject：
+   * 前者进 commandStack，上面监听的 `commandStack.changed` 会自动把页面标脏，
+   * 「保存」按钮才会亮；直接赋值不会。
+   */
+  const writeNodeName = (key: string, name: string) => {
+    const m = modelerRef.current;
+    if (!m || !key) return;
+    const modeling = m.get('modeling') as {
+      updateProperties: (el: unknown, props: Record<string, unknown>) => void;
+    } | undefined;
+    const reg = m.get('elementRegistry') as { get: (id: string) => unknown };
+    const el = reg.get(key);
+    if (!modeling || !el) return;
+    const next = name.trim();
+    modeling.updateProperties(el, { name: next || undefined });
+  };
 
   // 加载图（steps=1 让多步节点显示为可折叠 subProcess）
   useEffect(() => {
@@ -1392,6 +1468,55 @@ export default function DesignerPage() {
         {!selected ? (
           <Card size="small">
             <Empty description={t('designer.empty.selectNode')} />
+          </Card>
+        ) : selType === 'bpmn:ExclusiveGateway'
+          || selType === 'bpmn:ParallelGateway' ? (
+          /* 网关专用卡片。
+             为什么单独一张：网关**不需要**绑定设备/方法，而「节点设置」卡挂在
+             compile 结果上（compile 只认 task），所以网关选中后右栏只会显示
+             「还没保存，先保存画布才能绑定设备与方法」—— 想给网关起个名都做不到。
+             而网关恰恰最需要名字：两种网关都是菱形（✕ / ＋），缩小后分不出，
+             「分叉」还是「汇合」光看形状也看不出来（引擎按连线数自动判）。 */
+          <Card size="small" title={t('designer.gateway.title')}
+            extra={<Button size="small" type="primary" loading={saving} {...ro} onClick={save}>
+              {t('designer.action.save')}
+            </Button>}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('designer.gateway.kindLabel')}
+              </Typography.Text>
+              <Tag color={selType === 'bpmn:ParallelGateway' ? 'blue' : 'default'}>
+                {selType === 'bpmn:ParallelGateway'
+                  ? t('designer.gateway.parallel')
+                  : t('designer.gateway.exclusive')}
+              </Tag>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('designer.gateway.roleLabel')}
+              </Typography.Text>
+              <Tag color={gatewayHint.includes('汇合') ? 'orange' : 'green'}>
+                {gatewayHint || t('designer.gateway.roleUnknown')}
+              </Tag>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('designer.field.nodeName')}
+              </Typography.Text>
+              <Input
+                size="small"
+                placeholder={t('designer.placeholder.nodeName')}
+                value={nodeName}
+                onChange={(e) => setNodeName(e.target.value)}
+                onBlur={() => writeNodeName(String(selected), nodeName)}
+                onPressEnter={() => writeNodeName(String(selected), nodeName)}
+              />
+              {gatewayHint && (
+                <Button size="small" type="link" style={{ padding: 0, alignSelf: 'flex-start' }}
+                  onClick={() => writeNodeName(String(selected), gatewayHint)} {...ro}>
+                  {t('designer.action.useSuggestedName', { name: gatewayHint })}
+                </Button>
+              )}
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {t('designer.gateway.hint')}
+              </Typography.Text>
+            </Space>
           </Card>
         ) : selType === 'bpmn:SequenceFlow' ? (
           <Card size="small" title={t('designer.flow.title')}

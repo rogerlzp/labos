@@ -4877,3 +4877,61 @@ only rise" currently covers `MIN_*` only; the "case count holds but coverage shr
 still needs human review, and "numbers match the code" is not yet a machine check — **suggested
 for the next round**. ⑤ The L2 with-database layer (1005) is **not covered by the gate**
 (`ci-gate.sh` only runs `--pure-only`); this is now noted in the master table.
+
+### 2026-11-06 (gateway readability: naming + role labels + a visible end marker)
+
+**Background**: while working through the review bundle the user asked what the difference
+between "Create Gateway" and "Create parallel gateway" is, and after looking at the
+screenshots raised a real problem: **"these two are easy to confuse just sitting there like
+that. Especially at the end — without a matching end marker, it is hard to see clearly."**
+Checking the code showed this was not a badly drawn picture but the product missing three
+things:
+
+1. **Both gateways are diamonds** (✕ / ＋), nearly indistinguishable when zoomed out;
+2. **The designer had no naming UI at all** — the node-settings card hangs off the compile
+   result (compile only knows tasks), so selecting a gateway shows only "not saved yet, save
+   the canvas first before you can bind a device and method"; **you could not even give a
+   gateway a name**;
+3. **The end event's fill was `#f8fafc` (near-white)**, nearly identical to `rg-bypassed` —
+   on a light canvas it was impossible to see where the flow ended.
+
+**What was done**: ① **A dedicated gateway card** (not a reuse of the task node-settings
+card): the right panel gains "gateway settings" showing the gateway type (parallel/exclusive
+plus a one-line explanation), **the role it plays in this graph**, and a display-name input.
+② **A default name derived from the number of incoming/outgoing edges**: parallel split /
+parallel join / exclusive split / exclusive join, with a one-click "use the suggested name".
+The derivation rule **must match the backend** (`WorkflowGraphParser`: more than one
+incoming edge → join, more than one outgoing → split, both → join (wait first, then split),
+one in / one out → straight through) — a misleading name is worse than no name. The name is
+stored in the BPMN `name` attribute (the parser already read it, and the run detail shows it
+as the node-name column). ③ **Run view**: the end event becomes a dark filled circle
+(`#334155` with a 3px dark border), gateways get a different stroke width per type, and a
+gateway with more than one incoming edge gets an **orange marker** (BPMN's convention is a
+double border for joins). ④ **Label styling**: `.djs-label` is forced not to wrap and
+gateway labels are bolded and enlarged, otherwise Chinese names get squeezed into a
+vertical strip.
+
+**Verification**: really dragged "exclusive split → parallel split → parallel join" on the page
+and named them — **3/3 succeeded and all three names landed in the XML**; the screenshots
+confirm the three labels are legible and do not overlap, and the panel correctly shows
+"parallel join" for the role. `ci-gate.sh --all` passes all 18 gates with zero SKIPs;
+`verify-en-docs.py` reports 0 hard errors.
+
+**Pitfalls (all three worth recording)**:
+① **`incoming` / `outgoing` live on the `businessObject`, not on the element** — reading the
+wrong place yields undefined, the edge count is always 0, and **every gateway is then judged
+"straight through (one in, one out)"**. When the first version showed "straight through" I
+briefly suspected the backend rule was wrong; it was the frontend reading the wrong object.
+② **bpmn-js's context-pad covers the palette** — the floating toolbar that pops up on
+selection blocks the next palette click, and Playwright retries until timeout ("text-annotation
+entry intercepts pointer events"). Clicking empty canvas does **not** help (it is mounted on
+the canvas); the reliable approach is `Esc` plus removing `.djs-context-pad-parent` from the DOM.
+③ **A gateway had no place to say "join or split" at all** — this is not a matter of adding
+an input field; it first needs a card **of its own** (a gateway binds no device or method,
+so it can never reach the task card).
+
+**Boundary**: naming was implemented for **gateways only** (no name field was added to the
+task node-settings card — that is a different card, and a task's name is currently derived
+from its device/method); the "double border" of `rg-join` is simulated with a drop-shadow
+rather than a true double stroke; cross-workflow parallelism is still not implemented
+(P2 batch 5, see the review bundle 02).

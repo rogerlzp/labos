@@ -58,10 +58,24 @@ const STYLE = `
 .rg-bypassed  .djs-visual > :first-child { fill: #f8fafc !important; stroke: #cbd5e1 !important;
                                               stroke-dasharray: 2 3 !important; opacity: .85; }
 .rg-failed .djs-visual text, .rg-manual .djs-visual text { font-weight: 700; }
-/* 起止节点：不是"任务"，不该和待执行混淆 —— 给它们固定的蓝/灰底 */
-.rg-start .djs-visual > :first-child { fill: #e0f2fe !important; stroke: #0284c7 !important; }
-.rg-end   .djs-visual > :first-child { fill: #f8fafc !important; stroke: #475569 !important;
+/* 起止节点：不是"任务"，不该和待执行混淆 —— 给它们固定的蓝/灰底。
+   ⚠ end 原来是 #f8fafc（近白），和 rg-bypassed 的 #f8fafc 几乎一样 ——
+   在浅色画布上「流程在哪结束」根本看不出来（2026-11-05 用户反馈：
+   "结束哪里如果没有对应的结束标识，不容易看清楚"）。改成深底白字边 + 更粗的描边。 */
+.rg-start .djs-visual > :first-child { fill: #e0f2fe !important; stroke: #0284c7 !important;
                                         stroke-width: 2px !important; }
+.rg-end   .djs-visual > :first-child { fill: #334155 !important; stroke: #0f172a !important;
+                                        stroke-width: 3px !important; }
+/* 网关：两种都是菱形，缩小后分不出 —— 给「并行」描粗边 + 暖色，
+   「异或」保持细边冷色，配合图上的名字，一眼能分辨。 */
+.rg-parallel .djs-visual > :first-child { stroke-width: 3px !important; }
+.rg-exclusive .djs-visual > :first-child { stroke-width: 1.5px !important; }
+/* 汇合点：BPMN 惯例是汇合用**双线边框**（分叉单线）。用外描边模拟：
+   加一圈半透明的深色外框，视觉上就是"双线"。 */
+.rg-join .djs-visual > :first-child { stroke: #b45309 !important; }
+.rg-join .djs-visual > :first-child {
+  filter: drop-shadow(0 0 0 #b45309) drop-shadow(1px 1px 0 #b45309);
+}
 `;
 
 export default function RunGraph({ runId }: { runId: number }) {
@@ -116,11 +130,25 @@ export default function RunGraph({ runId }: { runId: number }) {
         canvas.zoom('fit-viewport');
         // 起止节点不是任务，没有执行状态；单独染一色，避免和"未执行"的灰虚线混在一起
         const registry = viewer.get('elementRegistry') as {
-          forEach: (fn: (el: { id: string; type: string }) => void) => void;
+          forEach: (fn: (el: {
+            id: string;
+            type: string;
+            /** incoming / outgoing 挂在 businessObject 上（bpmn-moddle 的关联属性），
+             *  **不在 element 上** —— 读错位置恒为 0，汇合点就永远识别不出来。 */
+            businessObject?: { incoming?: unknown[]; outgoing?: unknown[] };
+          }) => void) => void;
         };
         registry.forEach((el) => {
           if (el.type === 'bpmn:StartEvent') canvas.addMarker(el.id, 'rg-start');
           if (el.type === 'bpmn:EndEvent') canvas.addMarker(el.id, 'rg-end');
+          // 网关：两种都是菱形，靠形状分不出 —— 按类型给不同的描边粗细；
+          // 入边 > 1 的按后端口径是「汇合」（WorkflowGraphParser 同规则），再加双线标记。
+          if (el.type === 'bpmn:ParallelGateway') canvas.addMarker(el.id, 'rg-parallel');
+          if (el.type === 'bpmn:ExclusiveGateway') canvas.addMarker(el.id, 'rg-exclusive');
+          if ((el.type === 'bpmn:ParallelGateway' || el.type === 'bpmn:ExclusiveGateway')
+              && (el.businessObject?.incoming?.length ?? 0) > 1) {
+            canvas.addMarker(el.id, 'rg-join');
+          }
         });
       })
       .catch((e) => { if (!disposed) setErr(t('runGraph.error.render', { err: String(e) })); });
