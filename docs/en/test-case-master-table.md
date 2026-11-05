@@ -20,7 +20,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | Track | Entry point | Assertions today | In CI |
 |---|---|---|---|
 | L1 pure logic | `./scripts/test-all.sh --pure-only` | 624 | ✅ every push |
-| L1+L2 with DB | `./scripts/test-all.sh` | 994 | ⬜ local `--with-db` |
+| L1+L2 with DB | `./scripts/test-all.sh` | 1005 | ⬜ local `--with-db` |
 | L3 chain | `./scripts/verify-device-chain.sh` | 41 | ⬜ local `--all` |
 | L3 flow matrix | `./scripts/verify-flow-matrix.py --force-online` | 45 | ⬜ local `--all` |
 | L3 parallel | `verify-parallel-flow.py` / `verify-parallel-experiments.py` | 4 / 3 | ⬜ local `--all` |

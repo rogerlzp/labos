@@ -38,13 +38,13 @@ wins (it is updated more recently).
 | **M3** | Start admission (coarse main-chain screening): decide before running whether resources suffice | `verify-m3.sh` **9 items** |
 | **M4** | Pause / resume / fault handling: three pause kinds, plate-position UNKNOWN lock-out, return-leg promise | `verify-m4.sh` **14 items** + `PauseManagerSelfTest` **10 items** |
 | **M5** | Multi-workflow concurrency: same-device queueing, gate state, channel release, no residue in the wait graph | `verify-m5.sh` |
-| **This round (M6–M9.5)** | Device-onboarding loop, workflow/experiment orchestration, conditional branches/loops/variables, error-code policy management, crash recovery, data integrity / operability / gating / scheduling / unified orchestration | `test-all` **994/0** (pure logic 624/0), `verify-device-chain` **41/41** |
+| **This round (M6–M9.5)** | Device-onboarding loop, workflow/experiment orchestration, conditional branches/loops/variables, error-code policy management, crash recovery, data integrity / operability / gating / scheduling / unified orchestration | `test-all` **1005/0** (pure logic 624/0), `verify-device-chain` **41/41** |
 
 ### 1.2 Current baseline (reproducible, not an estimate)
 
 ```
 ./scripts/test-all.sh --pure-only     → 624 / 0        (deterministic, no database)
-./scripts/test-all.sh                 → 994 / 0        (full run with database)
+./scripts/test-all.sh                 → 1005 / 0        (full run with database)
 ./scripts/verify-device-chain.sh      → 41 / 0         (console→sidecar→simulator→database)
 cd webapp && npx tsc -b --force       → 0 errors
 ./scripts/ci-gate.sh --e2e            → pass (pure logic 624 + tsc + e2e 24)

@@ -32,13 +32,13 @@
 | **M3** | 启动准入（主链粗筛）：跑之前先判断资源够不够 | `verify-m3.sh` **9 项** |
 | **M4** | 暂停/恢复/故障处理：三种暂停态、板位 UNKNOWN 封锁、回程承诺 | `verify-m4.sh` **14 项** + `PauseManagerSelfTest` **10 项** |
 | **M5** | 多流程并发：同设备排队、门状态、通道释放、等待图无残留 | `verify-m5.sh` |
-| **本轮（M6–M9.5）** | 设备接入闭环、流程/实验编排、条件分支/循环/变量、错误码策略管理、崩溃恢复、数据完整性 / 运维 / 门禁 / 调度 / 编排统一 | `test-all` **994/0**（纯逻辑 624/0）、`verify-device-chain` **41/41** |
+| **本轮（M6–M9.5）** | 设备接入闭环、流程/实验编排、条件分支/循环/变量、错误码策略管理、崩溃恢复、数据完整性 / 运维 / 门禁 / 调度 / 编排统一 | `test-all` **1005/0**（纯逻辑 624/0）、`verify-device-chain` **41/41** |
 
 ### 1.2 当前基线（可复跑，不是估计）
 
 ```
 ./scripts/test-all.sh --pure-only     → 624 / 0        （确定性，不连库）
-./scripts/test-all.sh                 → 994 / 0        （带库全跑）
+./scripts/test-all.sh                 → 1005 / 0        （带库全跑）
 ./scripts/verify-device-chain.sh      → 41 / 0         （中控→sidecar→模拟器→库）
 cd webapp && npx tsc -b --force       → 0 错误
 ./scripts/ci-gate.sh --e2e            → 通过（纯逻辑 624 + tsc + e2e 24）

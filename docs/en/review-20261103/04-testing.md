@@ -8,7 +8,7 @@
 > Audience: review (to judge how credible it is), maintainers (how to verify after a change)
 > Companions: [Functional document](01-functional.md) · [Technical document](02-technical.md) · [Design document](03-design.md)
 >
-> The conclusion in one sentence: **all 624 pure-logic tests are green (`--pure-only`, deterministic); the full run with the database is 994 cases;
+> The conclusion in one sentence: **all 624 pure-logic tests are green (`--pure-only`, deterministic); the full run with the database is 1005 cases;
 > end to end it rests on shell / Python scripts + 8 Playwright page-track scripts**.
 > Page-level automation has gone from "zero" to 8 scripts (the four P0 pages are covered, see §4 and §7).
 
@@ -41,7 +41,7 @@ cd /path/to/labos
 # L1+L2: needs the database
 export LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=...
 ./scripts/test-all.sh
-# Expected: 994 passed / 0 failed (measured against a reachable database)
+# Expected: 1005 passed / 0 failed (measured against a reachable database)
 
 # L3: the full device chain (needs the simulator + sidecar, the script starts them itself)
 export LABOS_DB_HOST=... (the same as above)
@@ -95,9 +95,10 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.engine.ConditionEvalua
 | **L2** `workflow.PauseManagerSelfTest` | 10 | The database state of pause / resume | A run that is not paused cannot be resumed |
 | **L2** `api.UserRoleDbSelfTest` | 10 | RBAC closure persistence: the role allow-list + last-admin protection (created and cleaned up by itself) | — |
 | **L2** `driver.TransferPlanSelfTest` | 2 | The transport plan and the position lock | A target position that is occupied must be refused |
+| **L2** `workflow.ManualWindowDbSelfTest` | 11 | Attended-window persistence (ledger 6.5): idempotent open / optimistic decision / timeout only marks the window / the settleRun wiring and the policy default (created and cleaned up by itself, only its own prefix is counted) | A repeated windowKey is refused; a second decision returns false; attended + MANUAL opens a window whose default comes from the @command policy |
 
 > The pure logic adds up to **624** (the 7 cases of SidecarChainTest are counted individually).
-> The full run with the database (`./scripts/test-all.sh`) = 624 + 5 (the real-database section of DeviceErrorChainSelfTest, 14→19) + 365 (the 9 L2 classes: 244+36+26+14+13+10+10+10+2) = **994**.
+> The full run with the database (`./scripts/test-all.sh`) = 624 + 5 (the real-database section of DeviceErrorChainSelfTest, 14→19) + 376 (the 10 L2 classes: 244+36+26+14+13+10+10+10+2+11) = **1005**.
 > Only DeviceErrorChainSelfTest produces two different numbers depending on the environment, so **`LABOS_DB_*` is forcibly cleared** in `--pure-only` to keep it at 14.
 > The 9 L2 classes show "9 tests that need the database are skipped" under `--pure-only`.
 
