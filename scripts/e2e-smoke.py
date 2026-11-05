@@ -116,20 +116,54 @@ def main():
 
             # ---------------- 3. 执行 → 运行详情 ----------------
             step("3. 执行流程 → 运行详情流程图")
+
+            def open_runs():
+                """打开「执行记录」并返回第一行；空弹窗返回 None。"""
+                btn = page.get_by_role("button", name="执行记录")
+                if btn.count() == 0:
+                    return None
+                btn.click()
+                page.wait_for_timeout(1400)
+                row = page.locator(
+                    ".ant-modal .ant-table-row, .ant-drawer .ant-table-row").first
+                return row if row.count() > 0 else None
+
+            def close_runs():
+                c = page.locator(".ant-modal-close, .ant-drawer-close")
+                if c.count() > 0:
+                    c.first.click()
+                    page.wait_for_timeout(400)
+
             rec = page.get_by_role("button", name="执行记录")
-            if rec.count() > 0:
-                rec.click()
-                page.wait_for_timeout(1500)
-                # 抽屉/弹窗里第一行 → 运行详情
-                first_run = page.locator(".ant-modal .ant-table-row, .ant-drawer .ant-table-row").first
-                if first_run.count() > 0:
+            if rec.count() == 0:
+                bad("设计器上没有「执行记录」按钮")
+            else:
+                first_run = open_runs()
+                # 流程库首行可能是刚建、还没跑过的流程（例：门禁自建的 test /
+                # 演示流程），此时执行记录是空的。不能把它当成功能缺陷，也不能
+                # 把空弹窗留在页面上——否则下一步点菜单会被遮罩挡住而超时。
+                if first_run is None:
+                    close_runs()
+                    nav(page, "流程库")
+                    page.wait_for_timeout(1200)
+                    rows2 = page.locator(".ant-table-tbody tr.ant-table-row")
+                    for i in range(min(rows2.count(), 12)):
+                        rows2.nth(i).click()
+                        page.wait_for_url("**/designer/**", timeout=15000)
+                        page.wait_for_timeout(1000)
+                        first_run = open_runs()
+                        if first_run is not None:
+                            break
+                        close_runs()
+                        nav(page, "流程库")
+                        page.wait_for_timeout(900)
+                        rows2 = page.locator(".ant-table-tbody tr.ant-table-row")
+                if first_run is None:
+                    bad("前若干条流程都没有执行记录")
+                else:
                     first_run.click()
                     page.wait_for_url("**/runs/**", timeout=15000)
                     ok("从执行记录进入运行详情")
-                else:
-                    bad("执行记录里没有历史单")
-            else:
-                bad("设计器上没有「执行记录」按钮")
 
             # 运行详情：流程图卡片 + 图例
             if "/runs/" in page.url:
