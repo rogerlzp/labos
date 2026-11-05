@@ -22,10 +22,14 @@ import com.labos.kernel.engine.StepSink;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.JdbcErrorOccurrenceStore;
 import com.labos.kernel.persistence.JdbcEventStore;
+import com.labos.kernel.persistence.JdbcManualWindowStore;
 import com.labos.kernel.persistence.JdbcRecoveryPolicyRepository;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.persistence.Occurrence;
+import com.labos.kernel.recovery.ErrorContext;
+import com.labos.kernel.recovery.ManualWindow;
 import com.labos.kernel.recovery.RecoveryDecider;
+import com.labos.kernel.recovery.RecoveryPolicy;
 import com.labos.kernel.recovery.RecoveryPolicyResolver;
 import com.labos.kernel.recovery.RecoveryScope;
 import com.labos.kernel.recovery.RecoveryStrategy;
@@ -2323,6 +2327,66 @@ public final class WorkflowService {
             ps.setLong(2, tenantId);
             ps.setLong(3, runId);
             ps.executeUpdate();
+        }
+        if (manual) {
+            // 台账 6.5：有人值守时落一条待决窗口。放在状态 UPDATE 之后 ——
+            // run 已经是 paused/waiting_human，开窗失败也不能把主流程带崩；
+            // 执行线程随即返回，不占岛锁、不阻塞调度器。
+            openManualWindow(runId, p);
+        }
+    }
+
+    /**
+     * 有人值守窗口（台账 6.5 / §13.8）：只有 attended 且转人工才落窗口。
+     *
+     * <p>默认项取命中的 {@code recovery_policy.strategy}：触发开窗时决策结果恒为
+     * MANUAL，若拿它当默认项，弹窗就没有「可改选」的意义（§2.2）。
+     * 无人值守沿用原路径：只由 {@code recordOccurrences} 记 error 告警，不写窗口。
+     */
+    /** 包可见：连库自测直接验证「转人工 → 落窗口」这条接线。 */
+    void openManualWindow(long runId, RunProgress p) {
+        try {
+            if (!ManualWindow.isAttended(liveAttendance(runId, ManualWindow.ATTENDED))) {
+                return;
+            }
+            NodeProgress hit = p.all().stream()
+                    .filter(n -> n.status() == NodeStatus.MANUAL
+                            || n.status() == NodeStatus.SKIPPED)
+                    .reduce((a, b) -> b)
+                    .orElse(null);
+            String errorCode = (hit == null || hit.lastErrorCode() == null
+                    || hit.lastErrorCode().isBlank()) ? "EC-UNKNOWN" : hit.lastErrorCode();
+            String nodeKey = hit == null ? "" : String.valueOf(hit.nodeId());
+            String reason = (hit == null || hit.lastReason().isBlank())
+                    ? "执行到需要人工确认的节点" : hit.lastReason();
+
+            List<RecoveryPolicy> policies =
+                    new JdbcRecoveryPolicyRepository(db, tenantId).loadAll();
+            // 策略可能配在 command / node / run / device 任一层级；固定在 NODE 上解析
+            // 会让库里 @command 的策略永远匹配不上，默认项就退化成恒定 MANUAL。
+            // 逐层级试，取第一条命中的（resolver 已按精度 + priority 排序，确定性可回放）。
+            var resolver = new RecoveryPolicyResolver(policies);
+            RecoveryPolicy matched = null;
+            for (RecoveryScope scope : RecoveryScope.values()) {
+                var found = resolver.resolve(ErrorContext.of(errorCode, scope, 0));
+                if (found.isPresent()) {
+                    matched = found.get();
+                    break;
+                }
+            }
+            String strategy = matched == null ? null : matched.strategy().name();
+
+            new JdbcManualWindowStore(db, tenantId).open(
+                    runId,
+                    ManualWindow.windowKey(runId, errorCode, nodeKey),
+                    errorCode, nodeKey, strategy,
+                    ManualWindow.defaultActionOf(matched),
+                    ManualWindow.allowedActions(),
+                    reason,
+                    30);
+        } catch (Exception e) {
+            // 开窗是旁路：失败只留日志，人仍可到暂停队列页处置，不影响 run 的暂停态
+            System.err.println("[manual-window] 开窗失败 run=" + runId + ": " + e);
         }
     }
 

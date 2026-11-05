@@ -115,6 +115,8 @@ DB=(
   "workflow.SchedulerRehydrateSelfTest"
   # 权限收口落库：建/改用户的角色白名单 + 最后管理员保护按剩余数判定（自建自清）
   "api.UserRoleDbSelfTest"
+  # 台账 6.5 有人值守窗口落库：开窗幂等 / 决策乐观锁 / 超时只标记（自建自清）
+  "workflow.ManualWindowDbSelfTest"
 )
 
 run_one() {

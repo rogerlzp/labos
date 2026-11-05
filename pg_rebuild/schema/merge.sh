@@ -18,9 +18,9 @@ cat > /tmp/_schema_header.sql <<'HDR'
 --   30 业务层      : 样本/板/孔位/订单/耗材试剂批次/
 --                    项目实验/设备/文件                    (18 表)
 --   40 运维层      : 通知/审计/兼容视图/健康自检            (4 表 + 3 视图)
---   92/93/94/96/97/98 : 增量分片：实验室档案 / M1 并行基础设施 /
+--   92/93/94/96/97/98/98b : 增量分片：实验室档案 / M1 并行基础设施 /
 --                    M4 暂停补列 / schema 补齐 / M9.5 实验流程偏序 /
---                    M9.5 作用域扣留 / M9.5 分批执行 (26 表 + 2 视图)
+--                    M9.5 作用域扣留 / M9.5 分批执行 / 有人值守窗口 (26 表 + 2 视图)
 --
 -- 幂等: 全部 DDL 使用 IF NOT EXISTS，可重复执行
 -- 数据: **本文件不含任何 INSERT**。初始数据在 95_seed_data.sql，按需执行。
@@ -44,6 +44,7 @@ cat /tmp/_schema_header.sql \
     96_schema_fix.sql \
     97_m95_process_edge.sql \
     98_m95_run_hold.sql \
+    98b_manual_window.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

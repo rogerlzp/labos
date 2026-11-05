@@ -10,9 +10,11 @@ import com.labos.kernel.engine.Sleeper;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.JdbcErrorOccurrenceStore;
 import com.labos.kernel.persistence.JdbcEventStore;
+import com.labos.kernel.persistence.JdbcManualWindowStore;
 import com.labos.kernel.persistence.JdbcRecoveryPolicyRepository;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.persistence.Occurrence;
+import com.labos.kernel.recovery.ManualWindow;
 import com.labos.kernel.recovery.RecoveryDecider;
 import com.labos.kernel.recovery.RecoveryPolicy;
 import com.labos.kernel.recovery.RecoveryPolicyResolver;
@@ -83,6 +85,78 @@ final class RunApi {
      * @return true = 已处理（调用方直接 return）；false = 不归本域，交给下一个 controller
      */
     boolean handle(HttpExchange ex, String path, String method) throws Exception {
+        // ---- 台账 6.5：有人值守窗口（待决列表 / 决策回写）----
+        if ("/api/manual-windows".equals(path)) {
+            s.requireGet(method, ex);
+            JdbcManualWindowStore store = new JdbcManualWindowStore(s.db, TENANT);
+            store.expireOverdue();
+            List<String> items = new ArrayList<>();
+            for (JdbcManualWindowStore.Window w : store.pending(20)) {
+                items.add(Jsons.obj(
+                        "windowId", w.id(),
+                        "runId", w.runId(),
+                        "windowKey", w.windowKey(),
+                        "errorCode", w.errorCode(),
+                        "nodeKey", w.nodeKey(),
+                        "strategy", w.strategy(),
+                        "defaultAction", w.defaultAction(),
+                        "allowedActions", new Jsons.Raw(w.allowedActions()),
+                        "decisionReason", w.decisionReason(),
+                        "status", w.status(),
+                        "openedAt", w.openedAt(),
+                        "timeoutAt", w.timeoutAt()));
+            }
+            s.send(ex, 200, Jsons.obj("total", items.size(),
+                    "items", new Jsons.Raw(Jsons.arr(items))));
+            return true;
+        }
+        Matcher manualWindowDecide = MANUAL_WINDOW_DECIDE.matcher(path);
+        if (manualWindowDecide.matches()) {
+            if (!"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            long wid = Long.parseLong(manualWindowDecide.group(1));
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            String action;
+            try {
+                action = ManualWindow.normalizeAction(jsonField(body, "action"));
+            } catch (IllegalArgumentException e) {
+                s.send(ex, 400, Jsons.obj("ok", false, "error", e.getMessage()));
+                return true;
+            }
+            JdbcManualWindowStore store = new JdbcManualWindowStore(s.db, TENANT);
+            store.expireOverdue();
+            JdbcManualWindowStore.Window w = store.byId(wid);
+            if (w == null || !"pending".equals(w.status())) {
+                s.send(ex, 409, Jsons.obj("ok", false, "error", "窗口已被处置或已超时"));
+                return true;
+            }
+            if (!store.decide(wid, action, "api", jsonField(body, "note"))) {
+                s.send(ex, 409, Jsons.obj("ok", false, "error", "窗口已被处置或已超时"));
+                return true;
+            }
+            // MANUAL = 仍交人工：保持 run 的 waiting_human，不触发续跑。
+            // 其余动作复用既有 resume 路径（CONTINUE 会真的 resumeAsync）。
+            String resume = "{\"ok\":true,\"paused\":true}";
+            if (!"MANUAL".equals(action)) {
+                String a = switch (action) {
+                    case "RETRY" -> "retry";
+                    case "SKIP" -> "skip";
+                    case "ABORT" -> "abort";
+                    default -> "continue";
+                };
+                resume = resumeRunJson(w.runId(), "action=" + a, body);
+            }
+            s.audited("manual_window.decide", "manual_window", wid,
+                    action + " run=" + w.runId(), null, ex);
+            s.send(ex, 200, Jsons.obj(
+                    "ok", true,
+                    "windowId", wid,
+                    "runId", w.runId(),
+                    "action", action,
+                    "resume", new Jsons.Raw(resume)));
+            return true;
+        }
         if ("/api/runtime/holds".equals(path)) {
             s.requireGet(method, ex);
             RuntimeHold holds = new RuntimeHold(s.db, TENANT);
@@ -494,6 +568,10 @@ final class RunApi {
 
     /** 当前所有暂停的执行。 */
     private static final Pattern RUNS_PAUSED = Pattern.compile("^/api/runs/paused$");
+
+    /** 台账 6.5：POST /api/manual-windows/{id}/decide */
+    private static final Pattern MANUAL_WINDOW_DECIDE =
+            Pattern.compile("^/api/manual-windows/(\\d+)/decide$");
 
     /** 位置未知的板。 */
     private static final Pattern PLATES_UNKNOWN = Pattern.compile("^/api/plates/unknown$");
