@@ -523,3 +523,171 @@ time. If a workflow has 10 script nodes, the startup alone costs 2-5 seconds.
 the isolation again.
 
 **Trade-off**: isolation vs performance.
+
+---
+
+## 11. The ruling of 2026-11-05: Java first, Python second; upload a script and reference it
+
+> This section records the target approach given by the user side. It conflicts with the
+> existing security trade-off in §2, so every conflict is named explicitly.
+
+**The approach of the user side (the gist of their words)**:
+
+1. They used to do it in Java — calling Java classes directly, so as to obtain **the
+   attributes of the experiment that is currently being run**, look up results and process
+   them, in order to control the workflow more finely.
+2. **Java first, Python second**.
+3. A Java script is **uploaded first**, then the node **references the script** and runs it.
+4. They welcome a discussion of better ways, and want the public implementation methods
+   recorded as well.
+
+**The conflicts with the existing design (they have to be named, not skirted)**:
+
+| The user side's approach | The existing trade-off in §2 | The conflict |
+|---|---|---|
+| Calling Java classes directly to obtain the experiment attributes | §2.2: inside one JVM any sandbox can be bypassed | **Calling internal classes in-process is option A/B of §2**; `ConditionEvaluator.java:8-11` explicitly rejected that option |
+| Executing after uploading | §2.3: a separate process plus a restricted API | The two do not conflict, but "where the uploaded code runs" has to be stated first |
+| Java first, Python second | — | The language and the sandbox are orthogonal: Java can run in-process or out of process, while Python can only run out of process |
+
+**The single most important sentence**: "**be able to read the experiment attributes with
+plain Java classes**" and "**execute after uploading the code**" are **two different
+things**, and they can be split apart — the former is built as a **compile-time plugin**
+(no sandbox needed), and only the latter needs a separate-process sandbox. §13 gives a
+three-tier ladder on that basis.
+
+---
+
+## 12. The public implementation methods (a survey, 2026-11-05)
+
+| Product | How it is done | Language | The sandbox boundary | What this project can borrow |
+|---|---|---|---|---|
+| Camunda 8 Script Task | A built-in **FEEL** engine; running another language goes through a **job worker** (an external process the user implements) | FEEL / custom | Built into the engine (FEEL has no side effects) | The layering of "the built-in expressiveness is limited, so move complex logic out" |
+| Camunda 7 **Script Connector** | A **JSR-223** engine registration framework (JS/Kotlin/Groovy + SPI extensions) | Multiple | **None** (the same JVM) | Languages are pluggable; but this project does not adopt the same-JVM option |
+| Flowable | A **JSR-223** scripting API that exposes a `flw` context object | Multiple | None (the same JVM) | The API shape of "a context object plus a restricted facade" |
+| n8n **Function Node** | Runs inside a **V8 isolate** sandbox (memory and CPU capped, no file system, no network) | JavaScript | A V8 isolate (a capability sandbox) | Hard isolation with the language built in; the price is that only JS works |
+| n8n **Code Node (Python)** | Starts a **separate child process** | Python | A process plus a container | Identical to this project's "file protocol + child process" in §4 |
+| General sandbox boundaries | **WASM** (no syscall by default) / **gVisor** (a user-space kernel intercepts syscalls) / **microVM** (Firecracker, about 125 ms and about 5 MB per VM) | Any | WASM / syscall interception / hardware virtualisation | The three choices for production-grade hard isolation |
+| GraalVM | `Context` plus **`SandboxPolicy.ISOLATED`** (a separate heap, a separate VM) | JS/Python/Ruby … | GraalVM ISOLATED | If multi-language in one process is insisted on, this is the only respectable tier |
+| **The runtime fact** | **Nashorn was removed in JDK 15 by JEP 372** (deprecated since JDK 11 by JEP 335); the replacements are GraalJS / GraalPy | — | — | **On JDK 17 there is no built-in scripting engine at all** |
+
+**The conclusion**:
+
+- The "**run user scripts in the same JVM**" tier is **not taken** by this project: JDK 17 has no built-in engine (Nashorn is gone), and pulling in GraalJS/Jython amounts to handing out `ScriptEngine`, which directly conflicts with the trade-off in `ConditionEvaluator.java:8-11`.
+- Among the public products, the "zero-risk" approaches are only two kinds: **pre-installed plugins + an external worker** (a Camunda 7 custom Connector can be written this way too), or **a hard sandbox** (a V8 isolate / WASM / a microVM).
+- This project takes **the former** first (§13 T1), and when arbitrary uploaded code is really needed it adds **a lightweight version of the latter** (a separate JVM child process, §13 T2).
+
+---
+
+## 13. The recommendation: a three-tier ladder (T1 compiled in / T2 uploaded sandbox / T3 external service)
+
+**The core recommendation: split the user side's two things into three tiers. The first
+tier needs no sandbox, yet it is exactly what delivers the "call Java classes directly"
+experience.**
+
+| Tier | Shape | Where the code comes from | Isolation | Can it use Java classes | Startup cost | When it fits |
+|---|---|---|---|---|---|---|
+| **T1 A registered Java step** ⭐ | A class implementing `StepScript` is **compiled and packaged together with the kernel**; a node only references a `code` | The developer submits a PR and goes through ordinary code review | None (in process, but the code itself is trusted) | ✅ the full power of Java | 0 (an in-process call) | **Java first**, the starting point of this project |
+| **T2 An uploaded sandboxed script** | Upload a `.java` → compile it into a jar → run it in a **separate JVM child process** | Uploaded from the page | A process plus a restricted API plus timeout/memory/CPU | 🟡 only `labos-script-api` | 200–500 ms per call | When "change the logic without shipping a release" is needed |
+| **T3 An external algorithm service** | The kernel makes an **HTTP call** to an external service that implements it | Deployed separately | A network boundary | ✅ anything | one RPC | Many dependencies, heavy computation, an existing service |
+
+**Why T1 is "the better way"**:
+
+- What the user side wants is "**the script can call Java classes directly and read the experiment attributes**". The essence of that is **the code is trusted and has the same lifecycle as the kernel** — so there is no such word as "upload"; the code was always in the repository.
+- T1 needs no sandbox, no compilation service and no approval process (it goes through ordinary PR review), so **both the effort and the risk are far below L2 in §8**.
+- T1 and T2 share **exactly the same node model and context protocol**: upgrading to "upload from the page" later only changes `code` from resolving in a "compile-time registry" to resolving to a "runtime jar", while `StepScriptContext` stays the same.
+
+**The node model of T1** (following §3.1, with versioning and approval removed):
+
+```json
+{
+  "nodeType": "scriptTask",
+  "name": "Compute the next free slot",
+  "protocolName": "__script",
+  "method_params": {
+    "code": "calc_next_slot",
+    "inputs": ["plateId", "deviceCode"],
+    "outputs": ["nextSlot"],
+    "timeoutMs": 500
+  }
+}
+```
+
+**The registry of T1** (compile time, written in the code):
+
+```java
+// The code is trusted: compiled, reviewed and released together with the kernel
+StepScriptRegistry.register("calc_next_slot", (ctx) -> {
+    String plate = ctx.var("plateId");
+    List<String> free = ctx.freeSlots(ctx.var("deviceCode"));
+    return Map.of("nextSlot", free.get(0));
+});
+```
+
+**The only difference between T2 and T1**: `code` goes from "a registry" to "a jar file", and execution goes from "an in-process call" to "start a child process plus the file protocol" (§4). **The node XML and the variable protocol do not change** — that is the most important payoff of this design: **doing T1 first wastes nothing.**
+
+---
+
+## 14. How the script obtains the experiment context (the landing point in this project)
+
+**The status quo (hard facts)**:
+
+| Fact | Location | Impact |
+|---|---|---|
+| The constructor parameters of `GraphRunner` contain **no** `runId` / `workflowId` / `experimentId` / `tenantId` | `GraphRunner.java:210-237` | The runner itself cannot tell which run it is executing |
+| The runtime variables are a `Map<String, String>` — **the values can only be String** — and they are **in-memory state for a single run** | `GraphRunner.java:93` | The script output has to be **flattened** into String→String |
+| The assembly point for the context is `WorkflowService`: it holds `runId` and injects the variables and the output reader in the same place | `WorkflowService.java:746,811-824` | **This is the right place to inject a `ScriptContext`** |
+| `scriptTask` is already in the parser whitelist | `WorkflowGraphParser.java:194` | The node can enter the graph, so **the parser does not have to change** |
+| The built-in dispatch only recognises `__setVar` / `__expr` and throws for anything else | `GraphRunner.java:442-461` | Adding one `__script` branch connects it up |
+| A `protocolName` starting with `__` → `Kind.BUILTIN` (no device lookup, no driver) | `WorkflowGraphParser.java:172-174` | `protocolName="__script"` naturally lands in the built-in channel |
+
+**The context snapshot (read-only, limited, auditable)** — assembled by `WorkflowService` and handed to the script:
+
+```java
+// Assembled by WorkflowService (it holds runId)
+public interface ScriptContext {
+    String var(String name);                  // a runtime variable (a read-only snapshot)
+    Map<String, String> vars();               // all the variables
+    long runId();                             // the current run (for the audit)
+    String nodeKey();                         // the current node
+    String experimentId();                    // the current experiment (may be empty)
+    List<String> freeSlots(String deviceCode); // a controlled query (looked up by the kernel)
+    String deviceStatus(String deviceCode);   // a controlled query (looked up by the kernel)
+    void log(String msg);                     // it goes into run_event
+}
+```
+
+**Why the script is not given a direct database connection**: §2.4 already settled it — "**the user code can only request; it cannot send the request itself**". `freeSlots` / `deviceStatus` are looked up by the kernel and passed in; the script only sees the result.
+
+**The hard constraint on writing variables back**: `variables` is a `Map<String, String>` (`GraphRunner.java:93`).
+
+| The value the script returns | How it is written back | Result |
+|---|---|---|
+| `{"nextSlot": "L3"}` | used directly | ✅ |
+| `{"scores": {"A": 1, "B": 2}}` | it **must** be serialised into a string (such as `{"A":1,"B":2}`) | 🟡 a later expression can only compare it as a string |
+| an attempt to write a variable that was not declared in `outputs` | rejected with an error | ❌ (§6.3 item 4) |
+
+**Supporting "structured variables" would mean changing the runtime type** — that is a
+separate piece of work (`Map<String,String>` → `Map<String,Object>`), and it ripples into
+`ConditionEvaluator` and `substitute()`. **The recommendation is not to do it in this
+phase**; keep the script output flat.
+
+---
+
+## 15. Phasing and acceptance
+
+| Phase | Content | The acceptance entry point | The gate |
+|---|---|---|---|
+| **T1-a** | The `StepScript` / `ScriptContext` interfaces + `StepScriptRegistry` + an `__script` branch in `GraphRunner.executeBuiltin` | `GraphRunnerTest` gains `caseScriptRegistry` (register one script, run `S → a device → the script → E`, assert the variable was written) | `MIN_PURE` |
+| **T1-b** | `WorkflowService` assembles and injects the snapshot (`freeSlots` / `deviceStatus` looked up by the kernel) | 2 more cases in the `builtin` section of `verify-flow-matrix.py` (the script writes a variable → the condition takes the right branch) | `MIN_CHAIN` |
+| **T1-c** | The designer: a right-hand panel for `__script` (choose `code`, declare `inputs`/`outputs`, the timeout) | 1 more case in section E of `e2e-flow-matrix.py` (the panel can be filled in and it persists) | `MIN_E2EFM` |
+| **T2** | Upload → compile → execute in a separate process (§4) | A new `verify-script-sandbox.py`: a timeout is killed / an undeclared `outputs` is rejected / the audit lands in `script_execution` | a new `MIN_SCRIPT` |
+| **T3** | An external algorithm service (HTTP) | To be decided by demand | — |
+
+**Number discipline**: every added assertion has to be mirrored into the `MIN_*` values of
+`scripts/ci-gate.sh`, into `docs/测试用例总表.md` and into `ROADMAP.md`, and **the thresholds
+only ever go up** (the convention already in force in this document's directory).
+
+**Out of scope for this phase**: the OS-level isolation of `Runtime.exec` and of reading
+and writing absolute paths (§5.2), the `Map<String,String>` structured-variable rework, and
+the approval-process UI.
+
