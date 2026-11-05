@@ -210,6 +210,8 @@ Replaying historical errors: a small initial set of policies covers only a small
 | Some nodes have no capability | Mostly logic nodes, but each one has to be confirmed | P2 |
 | The scheduler | A prototype exists, but it does not enter the current release gate | P2 |
 
+> **Correction (2026-11-05)**: the "prototype exists" statement in this row does not hold — the repository has no scheduling prototype script, no trial report, and no `pg_rebuild/scheduler/` directory. The original kernel-0.3 snapshot text is kept unchanged; the current wording is in [functional-specification.md](functional-specification.md) §8 ledger 4.4 (⬜ not implemented: no prototype script or trial report in the repository) and §14.8 (the rolling schedule is not implemented, outside the release).
+
 ### The scheduler is not the current bottleneck
 
 The priority now is self-healing on anomalies, unattended operation, and the checks before a run starts. Global schedule optimisation is not in this period.
@@ -230,6 +232,8 @@ The priority now is self-healing on anomalies, unattended operation, and the che
 | The bulk acceptance | All the workflows ran to the end on the simulation bus |
 | `labos-kernel/DRIVER_CONTRACT.md` | The driver contract and the end to end |
 | `pg_rebuild/scheduler/*.md` | The scheduler prototype / the annual utilisation / the downtime diagnosis |
+
+> **Correction (2026-11-05)**: neither the `pg_rebuild/scheduler/` directory nor the three reports above exist in the repository. This row is a list of artefacts that were planned at the time, not evidence of delivery.
 
 ### Code
 

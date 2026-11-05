@@ -38,16 +38,16 @@ wins (it is updated more recently).
 | **M3** | Start admission (coarse main-chain screening): decide before running whether resources suffice | `verify-m3.sh` **9 items** |
 | **M4** | Pause / resume / fault handling: three pause kinds, plate-position UNKNOWN lock-out, return-leg promise | `verify-m4.sh` **14 items** + `PauseManagerSelfTest` **10 items** |
 | **M5** | Multi-workflow concurrency: same-device queueing, gate state, channel release, no residue in the wait graph | `verify-m5.sh` |
-| **This round (M6–M9.5)** | Device-onboarding loop, workflow/experiment orchestration, conditional branches/loops/variables, error-code policy management, crash recovery, data integrity / operability / gating / scheduling / unified orchestration | `test-all` **959/0** (pure logic 589/0), `verify-device-chain` **41/41** |
+| **This round (M6–M9.5)** | Device-onboarding loop, workflow/experiment orchestration, conditional branches/loops/variables, error-code policy management, crash recovery, data integrity / operability / gating / scheduling / unified orchestration | `test-all` **994/0** (pure logic 624/0), `verify-device-chain` **41/41** |
 
 ### 1.2 Current baseline (reproducible, not an estimate)
 
 ```
-./scripts/test-all.sh --pure-only     → 589 / 0        (deterministic, no database)
-./scripts/test-all.sh                 → 959 / 0        (full run with database)
+./scripts/test-all.sh --pure-only     → 624 / 0        (deterministic, no database)
+./scripts/test-all.sh                 → 994 / 0        (full run with database)
 ./scripts/verify-device-chain.sh      → 41 / 0         (console→sidecar→simulator→database)
 cd webapp && npx tsc -b --force       → 0 errors
-./scripts/ci-gate.sh --e2e            → pass (pure logic 589 + tsc + e2e 24)
+./scripts/ci-gate.sh --e2e            → pass (pure logic 624 + tsc + e2e 24)
 
 Code: labos-kernel 36,595 lines / 11 packages; webapp 12,830 lines / 23 pages
 Data: 116 tables; workflows 1009 / nodes 14033 / experiments 678 / runs 10710 / commands 116724; `run_node` 120,268 (0 dangling parents)
@@ -217,7 +217,7 @@ Actions runs the two that do not need a database.
 
 **Scope (feature list)**
 
-- [x] GitHub Actions (or a local pre-push hook) runs `test-all --pure-only`, **failing outright below 589** — ✅ `ci.yml` runs `ci-gate.sh` (pure logic, threshold now 589)
+- [x] GitHub Actions (or a local pre-push hook) runs `test-all --pure-only`, **failing outright below 624** — ✅ `ci.yml` runs `ci-gate.sh` (pure logic, threshold now 624)
 - [ ] `verify-device-chain.sh` in CI (start simulator + sidecar), **failing outright below 41** — ⏳ not done: GitHub Actions only runs pure logic + tsc; the device chain only runs locally via `ci-gate.sh --with-db` (see `02-后续规划.md` item A3)
 - [x] Playwright covers 5 main chains: — ✅ covered by `scripts/e2e-smoke.py` (Python httpx assertions, not Playwright; 24 assertions today)
       execute→graph colouring / pause→resume / experiment run-history expansion / error-code editing / empty-experiment guidance
@@ -227,7 +227,7 @@ Actions runs the two that do not need a database.
 **Acceptance**
 
 ```
-PR check: test-all 589+ / tsc 0 errors (CI runs only the two gates that need no database); local closure: verify-device-chain 41 / e2e 24 — a red light in any of them blocks the merge
+PR check: test-all 624+ / tsc 0 errors (CI runs only the two gates that need no database); local closure: verify-device-chain 41 / e2e 24 — a red light in any of them blocks the merge
 ```
 
 **Dependencies**: M6 (data structures must be stable, otherwise the e2e assertions change over and over) | **Estimate**: 4 days
@@ -445,7 +445,7 @@ accumulated.
 | **P1** | Expression arithmetic | M7 | ✅ Done (`+ - * /`, including precedence and unary minus) |
 | **P1** | Alert thresholds configurable in the UI, effective immediately | M7 | ✅ Done (`sys_setting` + a card on the alert page; effective on the next cycle) |
 | **P1** | Bulk ignore supports filters | M7 | ✅ Done (`835aa43` bulk ignore + `73dc4f4` filter by pause kind + time range; the paused-queue page supports selection and filtered ignore) |
-| **P1** | CI gate (hard thresholds; currently 589 / 41 / 24) | M8 | ✅ Done (`scripts/ci-gate.sh` + GitHub Actions; the thresholds rise with the case count — see the constants at the top of `ci-gate.sh`) |
+| **P1** | CI gate (hard thresholds; currently 624 / 41 / 24) | M8 | ✅ Done (`scripts/ci-gate.sh` + GitHub Actions; the thresholds rise with the case count — see the constants at the top of `ci-gate.sh`) |
 | **P1** | Frontend e2e, 5 main chains | M8 | ✅ Done (`scripts/e2e-smoke.py`, 24 assertions) |
 | **P1** | Long-stability soak | M8 | ✅ Done (`scripts/soak-test.sh`, memory baseline taken after warm-up) |
 | **P1** | `workflow_node` gains `resource_id` / `seq` (removing the XML parsing dependency) | M9 (prerequisite) | ✅ Done (dual write + backfill of 1009 workflows + a consistency assertion in the device chain) |
@@ -476,7 +476,7 @@ When a phase closes, all of the following must hold at the same time:
 | 1 | The feature can be demonstrated | You can click it in the UI (not just an API) |
 | 2 | There are automated assertions | Unit tests or a script; **the numbers must be re-runnable** |
 | 3 | The documentation is in sync | At least one of the four (functional / technical / design / test) documents is corrected, with the numbers in sync |
-| 4 | The baseline is not broken | `test-all --pure-only` ≥ 589 with 0 failures; `verify-device-chain` ≥ 41 with 0 failures; `tsc` 0 errors |
+| 4 | The baseline is not broken | `test-all --pure-only` ≥ 624 with 0 failures; `verify-device-chain` ≥ 41 with 0 failures; `tsc` 0 errors |
 | 5 | Known gaps are written down | Listed in the "not covered" section of the corresponding document; not to be waved through verbally |
 
 > Item 4 is a hard gate. **A falling number means the phase is not done** (that is exactly

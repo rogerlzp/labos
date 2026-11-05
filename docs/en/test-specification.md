@@ -129,7 +129,7 @@ simulators (19500–19506).
 
 | Gate | Location | When it runs |
 |---|---|---|
-| `./scripts/ci-gate.sh` | Local + GitHub CI | Every push / PR (pure logic 589 + tsc + schema-artifact consistency) |
+| `./scripts/ci-gate.sh` | Local + GitHub CI | Every push / PR (pure logic 624 + tsc + schema-artifact consistency) |
 | `./scripts/ci-gate.sh --all` | Local | Before committing; page track + chain + flow matrix + simulator integration |
 | `.githooks/pre-push` | Local git hook | Before every `git push`; runs `--all` and blocks the push on failure |
 | `.github/workflows/e2e-nightly.yml` | GitHub | Runs the page track on a schedule, covering the "CI only runs pure logic" blind spot |
