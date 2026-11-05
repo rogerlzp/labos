@@ -45,6 +45,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_PAUSED` | 7 | Page paused queue filter and actions (`e2e-paused.py`); gate lower bound, measured value in review package 04 |
 | `MIN_CANVAS` | 12 | Experiment orchestration canvas · cross-workflow orchestration (`e2e-canvas.py`); gate lower bound, measured value in review package 04 |
 | `MIN_METHOD_DROP` | 17 | Device images / a method node with its image / automatic robot-arm insertion across devices / deletion (`e2e-method-drop.py`); 17 resident assertions without a DB, 20 with one |
+| `MIN_CRASH` | 31 | Crash recovery end to end (`verify-s3-2-residuals.py`); kill -9 → restart → queued rehydrate + orphan running settled by the startup fallback |
 
 ---
 
