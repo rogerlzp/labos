@@ -60,8 +60,12 @@ public final class ExperimentScheduler {
     private record Lock(long experimentRunId, Instant at) {
     }
 
-    private record Queued(long experimentRunId, long experimentId, long islandId,
-                          int priority, String deadline, long submittedAt) {
+    /**
+     * 队列里的一条待派发实验。包内可见：{@code workflow.SchedulerOrderSelfTest} 直接构造它
+     * 来钉住 {@link #QUEUE_ORDER} 的三级排序，不必起调度循环。
+     */
+    record Queued(long experimentRunId, long experimentId, long islandId,
+                  int priority, String deadline, long submittedAt) {
     }
 
     /**
@@ -103,7 +107,7 @@ public final class ExperimentScheduler {
      * "我还要等几个才轮到"；快照按别的规则排，位次就是假的。§7.1 草稿把 priority
      * 写在 deadline 前面，与实际派发不一致，2026-11-03 统一为 EDD 优先。
      */
-    private static final Comparator<Queued> QUEUE_ORDER = Comparator
+    static final Comparator<Queued> QUEUE_ORDER = Comparator
             .comparing((Queued q) -> q.deadline() == null ? "9999" : q.deadline())
             .thenComparing(Comparator.comparingInt(Queued::priority).reversed())
             .thenComparingLong(Queued::submittedAt);
@@ -393,10 +397,9 @@ public final class ExperimentScheduler {
             // 读不到扣留状态不阻断调度（宁可少停，不能把调度卡死）
         }
 
-        snapshot.sort(Comparator
-                .comparing((Queued q) -> q.deadline() == null ? "9999" : q.deadline())
-                .thenComparing(Comparator.comparingInt(Queued::priority).reversed())
-                .thenComparingLong(Queued::submittedAt));
+        // 单一来源：直接复用 QUEUE_ORDER，避免页面位次（同样用 QUEUE_ORDER）与
+        // 实际出队顺序各写一份比较器、日后只改一份导致两边分叉。
+        snapshot.sort(QUEUE_ORDER);
 
         // P1-6：从"当前在跑数"起算，而不是每轮归零
         int runningNow = running.get();

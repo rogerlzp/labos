@@ -46,6 +46,7 @@ public final class GraphRunnerTest {
         testPauseCheckpoint();
         caseLoopRounds();
         caseBuiltinNodes();
+        caseSkipKeysResume();
 
         System.out.println();
         System.out.printf("通过 %d, 失败 %d%n", passed, failed);
@@ -291,6 +292,60 @@ public final class GraphRunnerTest {
             RunProgress p = runner.run(g, bus);
             eq("两个内置节点都完成", 2, p.count(NodeStatus.COMPLETED));
             eq("没有产生任何设备命令", 0, bus.callLog().size());
+        });
+    }
+
+    /**
+     * 断点续跑：`skipKeys` 按 `node_key` 匹配。
+     *
+     * <p>钉住两件事：
+     * <ol>
+     *   <li>命中：上一轮已完成的节点这一轮不执行、也不再发设备命令（这才是真续跑）；</li>
+     *   <li>失配：节点**改名后**旧 key 对不上，节点会被重跑 —— 这是已知边界，
+     *       必须被测出来，而不是被当成"续跑成功"。</li>
+     * </ol>
+     */
+    private static void caseSkipKeysResume() {
+        String xml = bpmn("""
+                <startEvent id="S"/>
+                <task id="A" name="Transfer"/>
+                <task id="B" name="Transfer"/>
+                <endEvent id="E"/>
+                <sequenceFlow id="F1" sourceRef="S" targetRef="A"/>
+                <sequenceFlow id="F2" sourceRef="A" targetRef="B"/>
+                <sequenceFlow id="F3" sourceRef="B" targetRef="E"/>
+                """);
+
+        check("断点续跑：命中的节点跳过、不驱动设备", () -> {
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSkipKeys(java.util.Set.of("A"));
+            RunProgress p = runner.run(g, bus);
+            eq("只执行 B 一个节点", 1, p.all().size());
+            checkTrue("跳过的是 A（A 不在执行记录里）", p.all().stream()
+                    .noneMatch(np -> np.nodeId() == Math.abs((long) "A".hashCode())));
+            eq("只发 1 条设备命令（B）", 1, bus.callLog().size());
+        });
+
+        check("断点续跑：节点改名后旧 key 失配，节点会重跑（已知边界）", () -> {
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSkipKeys(java.util.Set.of("A_RENAMED"));
+            RunProgress p = runner.run(g, bus);
+            eq("A/B 都执行（旧 key 没对上）", 2, p.all().size());
+            eq("发 2 条设备命令", 2, bus.callLog().size());
         });
     }
 

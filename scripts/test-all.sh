@@ -79,7 +79,11 @@ PURE=(
   "engine.EngineSelfTest"
   # 条件表达式求值：比较/逻辑/变量/拒绝注入
   "engine.ConditionEvaluatorSelfTest"
+  # 时间约束（L1-1.6，P0）：最短补等 / 最长超限 EC-11-0001 / 前驱未跑不检查 / 补等上限守卫
+  "engine.TimeConstraintSelfTest"
   "workflow.GraphRunnerTest"
+  # 调度队列排序收口（规格 §14.6）：EDD → priority DESC → FIFO，直接排 QUEUE_ORDER
+  "workflow.SchedulerOrderSelfTest"
   "recovery.RecoverySelfTest"
   # 设备型号库 / 错误码映射（起模拟器，但不连库）
   "device.DeviceModelSelfTest"
@@ -147,7 +151,7 @@ if command -v dotnet >/dev/null 2>&1 && [[ -x ../scripts/test-sidecar.sh ]]; the
     line=$(echo "$out" | grep -E '^通过 [0-9]+ / 失败' | tail -1)
     if [[ -z "$line" ]]; then
       # 脚本退出码 0 但没有通过统计 = 它跳过了（环境不满足），不能算成通过，
-      # 也不能虚增用例数 —— 否则阈值 553 会因为"跳过"而被误判成"删了用例"。
+      # 也不能虚增用例数 —— 否则阈值 589 会因为"跳过"而被误判成"删了用例"。
       SKIP=$((SKIP + 1))
       printf "  %-28s %s\n" "SidecarChainTest" "$(echo "$out" | grep -E '跳过' | tail -1)"
     else

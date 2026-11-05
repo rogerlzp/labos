@@ -19,8 +19,8 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Track | Entry point | Assertions today | In CI |
 |---|---|---|---|
-| L1 pure logic | `./scripts/test-all.sh --pure-only` | 553 | ✅ every push |
-| L1+L2 with DB | `./scripts/test-all.sh` | 923 | ⬜ local `--with-db` |
+| L1 pure logic | `./scripts/test-all.sh --pure-only` | 589 | ✅ every push |
+| L1+L2 with DB | `./scripts/test-all.sh` | 959 | ⬜ local `--with-db` |
 | L3 chain | `./scripts/verify-device-chain.sh` | 41 | ⬜ local `--all` |
 | L3 flow matrix | `./scripts/verify-flow-matrix.py --force-online` | 45 | ⬜ local `--all` |
 | L3 parallel | `verify-parallel-flow.py` / `verify-parallel-experiments.py` | 4 / 3 | ⬜ local `--all` |
@@ -32,7 +32,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Constant | Value | Coverage |
 |---|---|---|
-| `MIN_PURE` | 553 | Pure-logic unit tests (fewer = red) |
+| `MIN_PURE` | 589 | Pure-logic unit tests (fewer = red) |
 | `MIN_CHAIN` | 41 | Full device chain |
 | `MIN_PFLOW` / `MIN_PEXP` | 4 / 3 | In-flow parallelism / same-island concurrency |
 | `MIN_MATRIX` | 45 | Full flow matrix (`verify-flow-matrix.py`) |
@@ -58,7 +58,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 1.3 | Auto-compile (runtime expansion) | `api.ExperimentGraphCompileSelfTest`; `workflow.RecipeCompilerTest` | L1 | ✅ | ✅ |
 | 1.4 | Decision (XOR, with default edge) | `verify-flow-matrix.py` xor / xor3; `workflow.GraphRunnerTest` | L1+L3 | ✅ | ✅ |
 | 1.5 | Parallel (fork and join) | `verify-flow-matrix.py` parallel; `verify-parallel-flow.py`; `workflow.GraphRunnerTest` | L1+L3 | ✅ | ✅ |
-| 1.6 | Time Constraint (min / max interval) | Only `engine.TimeConstraintExecutor` exists, no case | — | ⬜ | ⬜ |
+| 1.6 | Time Constraint (min / max interval) | `engine.TimeConstraintSelfTest` (25 cases, pure logic); `engine.TimeConstraintExecutor` | L1 | ✅ | ✅ |
 | 1.7 | Sequential execution of experiment blocks | `workflow.ExperimentOrderSelfTest`; `verify-flow-matrix.py` experiment | L1+L3 | ✅ | ✅ |
 | 1.8 | Sub-process executes as a sub-graph | `e2e-sim-flow.py` section A (page assembly) | L4 | ✅ | ✅ |
 | 1.9 | Loop, Wait Until, variables, conditional / loop | `verify-flow-matrix.py` loop / loopback; `workflow.GraphRunnerTest` | L1+L3 | ✅ | ✅ |
@@ -71,7 +71,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 2.1 | Pre-save preflight (capability without device / XOR without condition / parallel without join) | `verify-device-chain.sh` §10 save guard; `e2e-flow-matrix.py` section A preflight tag | L3+L4 | ✅ | ✅ |
 | 2.2 | Cycle, isolated node, missing start / end | `workflow.ExperimentOrderSelfTest` (cycle rejected); `GraphDiRepair` | L1 | ✅ | ✅ |
 | 2.3 | Compile error panel, double-click to locate | No case | — | ⬜ | ⬜ |
-| 2.4 | Reference to a retired device | No case | — | ⬜ | ⬜ |
+| 2.4 | Reference to a retired device | Partially implemented: the heartbeat can detect offline and opens a `DEVICE-OFFLINE` alert, but preflight does not block; no case | — | ⬜ | ⬜ |
 | 2.5 | "This command cannot be simulated by pure delay" hint | No case | — | ⬜ | ⬜ |
 | 2.6 | Batch capacity (enough plate positions) | Out of scope, no case | — | ⬜ | ⬜ |
 
@@ -94,7 +94,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 |---|---|---|---|---|---|
 | 4.1 | Wait or reassign when a device is busy | `verify-parallel-flow.py` (same device serialised) | L3 | ✅ | ✅ |
 | 4.2 | Ready three-state and pull loop | `verify-parallel-experiments.py` | L3 | ✅ | ✅ |
-| 4.3 | Static scheduling, dependencies before Run After | `workflow.SchedulerEtaSelfTest`; `verify-scheduler-acceptance.py` | L1+L3 | ✅ | ⬜ |
+| 4.3 | Static scheduling, dependencies other than Run After | Static scheduling not implemented (outside the release); the `Run After` order is covered by `verify-scheduler-acceptance.py` | — | ⬜ | ⬜ |
 | 4.4 | Global makespan optimisation | Out of scope, no case | — | ⬜ | ⬜ |
 | — | Scheduler queue rehydrate after restart | `workflow.SchedulerRehydrateSelfTest`; `verify-s3-2-residuals.py` | L2+L3 | ✅ | ⬜ |
 
@@ -109,7 +109,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 5.5 | Gantt (predicted vs actual) | Page `/gantt`, manual only | L4 | ⬜ | ⬜ |
 | 5.6 | Throttle: speed up waiting | No case | — | ⬜ | ⬜ |
 | 5.7 | Simulated-error UI | `sim.SimulatorBehaviorSelfTest` (injectable in the driver) | L1 | ✅ | ✅ |
-| 5.8 | Switch one device between simulation and real | No case | — | ⬜ | ⬜ |
+| 5.8 | Switch one device between simulation and real | Partially implemented: `VirtualDriver` exists (with `simulated` metadata), but there is no per-device toggle; no case | — | ⬜ | ⬜ |
 
 ### L6 Errors and recovery
 
@@ -119,7 +119,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 6.2 | Tiered trace and alert aggregation | `alert.AlertSelfTest`; `workflow.WorkflowAlertTest` | L1 | ✅ | ✅ |
 | 6.3 | Contract layer rejects catch-all codes | `driver.DeviceErrorChainSelfTest` | L1 | ✅ | ✅ |
 | 6.4 | Policy replay hit distribution (no SKIP-padding coverage) | `e2e-policies.py` effective validation; `api.validatePolicy` | L4 | ✅ | ✅ |
-| 6.5 | Attended window | No case | — | ⬜ | ⬜ |
+| 6.5 | Attended window (the auto dialog from `recovery_policy` is not done; manual pause / disposition pages available) | `verify-exp-control.py`; `e2e-paused.py`; `e2e-flow-matrix.py` §Run detail | L4 | 🟡 | ✅ |
 | 6.6 | Call-stack view | Out of scope, no case | — | ⬜ | ⬜ |
 | 6.7 | `COMPENSATE` | Out of scope, no case | — | ⬜ | ⬜ |
 
@@ -160,6 +160,32 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | 10.2 | Nest-level position, replenishment while running | Out of scope, no case | — | ⬜ | ⬜ |
 | 10.3 | Plate-type propagation and gripper offset | Out of scope, no case | — | ⬜ | ⬜ |
 
+### L11 Run state and lifecycle (spec §13)
+
+| Spec section | Feature | Case / script | Layer | Automated | In CI |
+|---|---|---|---|---|---|
+| 13.1 | Five-level status vocabulary (run/node/step/experiment/batch contract, terminal/active sets) | `workflow.StatusVocabularySelfTest` | L1 | ✅ | ✅ |
+| 13.2 | run→experiment status mapping + the persisted SQL CASE pinned word for word | `workflow.StatusVocabularySelfTest` | L1 | ✅ | ✅ |
+| 13.3 | Three pause kinds: grammar and semantics | `workflow.StatusVocabularySelfTest` (contract); `workflow.PauseManagerSelfTest` (an unknown plate position must be reconciled before resume) | L1+L2 | ✅ | L1 in CI |
+| 13.4 | On-site hold (kind × scope, priority experiment>island>site) + return position kept | `workflow.RuntimeHoldSelfTest`; `workflow.RuntimeHoldDbSelfTest`; `workflow.PauseManagerSelfTest` | L1+L2 | ✅ | L1 in CI |
+| 13.5 | Crash recovery (orphan running→failed + `recoverable` + 7-day window) | `workflow.StartupSettleSelfTest` | L2 | ✅ | ⬜ local |
+| 13.6 | Batched execution S3.2 (split / `attempt_no` rerun / a completed batch refuses a rerun) | `workflow.BatchPlannerSelfTest`; `workflow.BatchDbSelfTest`; `verify-exp-batch.py` | L1+L2+L3 | ✅ | L1 in CI |
+| 13.7 | Resume from a breakpoint (`seq:loop_index` + `skipKeys`) | `verify-device-chain.sh` §6; `workflow.RunControlDbSelfTest` | L3+L2 | ✅ | ⬜ local |
+| 13.8 | Attendance mode (attended/unattended) switching and alert level | `workflow.RunControlSelfTest`; `e2e-smoke.py` §1 | L1+L4 | ✅ | L1 in CI |
+
+### L12 Concurrency, resources and scheduling (spec §14)
+
+| Spec section | Feature | Case / script | Layer | Automated | In CI |
+|---|---|---|---|---|---|
+| 14.1 | Three levels of concurrency (parallel within one experiment / serial on the same island, peak = 1 / across islands) | `verify-parallel-flow.py`; `verify-parallel-experiments.py` | L3 | ✅ | ⬜ local |
+| 14.2 | Four-level resource model (L1 position / L2 channel / L3 door / L4 robot arm) | `driver.TransferPlanSelfTest` (acquire / release / rollback on failure) | L2 | ✅ | ⬜ local |
+| 14.3 | Fixed acquisition order (source door→source channel→source position→target door→…→robot arm) + return-position exemption | `driver.TransferPlanSelfTest` | L2 | ✅ | ⬜ local |
+| 14.4 | Wait-for graph deadlock detection (DFS cycle check, always on, no switch) | `driver.WaitForGraphSelfTest` | L1 | ✅ | ✅ |
+| 14.5 | Why not Banker's algorithm | Design note, no case needed | — | — | — |
+| 14.6 | Scheduler (ready three-state / island-lock CAS / EDD→priority→FIFO / rehydrate) | `workflow.SchedulerOrderSelfTest` (the three ordering tiers, one by one); `workflow.SchedulerRehydrateSelfTest`; `workflow.SchedulerEtaSelfTest`; `verify-scheduler-acceptance.py` | L1+L2+L3 | ✅ | L1 in CI |
+| 14.7 | Duration model (p50 / p90, cleaned samples only) | `workflow.SchedulerEtaSelfTest` | L1 | ✅ | ✅ |
+| 14.8 | Rolling schedule (commit window / 15-minute freeze zone / greedy) | No case (out of scope) | — | ⬜ | ⬜ |
+
 ---
 
 ## 4. Cross-cutting and infrastructure
@@ -181,14 +207,15 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | # | Gap | Risk | Why it is not done |
 |---|---|---|---|
-| 1 | `/gantt`, `/duration`, `/plates`, `/island`, `/island-flow`, `/topology`, `/audit`, the home dashboard | A wrong rendering is only found by hand | Not P0; the four P0 pages (`/alerts` `/policies` `/paused` `/canvas`) are now covered (4.8-4.11) |
-| 2 | Loop crossing a parallel fork | Possible deadlock | Combinatorial explosion; single scenarios first |
-| 3 | Arithmetic inside a condition | `${a}+1 > 3` fails on site | The evaluator does not support it |
-| 4 | Multi-tenant isolation | Only one tenant has been run | No second data set |
-| 5 | Real hardware (not simulators) | Timing / concurrency / exception differences | No real device environment |
-| 6 | Soak (running for days) | Memory / connection leaks | No soak environment |
-| 7 | Correctness under load (not just throughput) | State corruption under lock contention | The load test only measured throughput |
-| 8 | Resume after renaming a node | skipKeys match on `node_key`; a rename breaks it | No case constructed |
+| 1 | `/gantt`, `/duration`, `/plates`, `/island`, `/island-flow`, `/topology`, `/audit`, the home dashboard | A wrong rendering can only be found by hand | Not P0; the four P0 pages (`/alerts` `/policies` `/paused` `/canvas`) are covered by `e2e-*`; the rest come later |
+| 2 | The attended auto dialog (item 6.5, P0: a dialog whose default comes from `recovery_policy`) | Unattended only raises an alert and shows no dialog; attended needs a person to go to the paused-queue page, the default action is never offered automatically | Not implemented; the manual pause + disposition pages (`PausedRuns` / `RunDetail`) exist and are covered by `e2e-paused.py` |
+| 3 | A loop crossing a parallel fork | The combined scenario may deadlock | Combinatorial explosion; single scenarios first |
+| 4 | The trace of the iteration number of a loop re-entry | The intermediate state of the N-th iteration is not visible | It needs a change to the `run_node` table structure |
+| 5 | Multi-tenant isolation | Only one tenant has been run | No second data set |
+| 6 | Real hardware (not simulators) | Timing / concurrency / exception differences | No real device environment |
+| 7 | Soak (running for days) | Memory / connection leaks | No soak environment |
+| 8 | Correctness under load (not just throughput) | State corruption under lock contention | The load test only measured throughput |
+| 9 | Rolling schedule (spec §14.8: commit window / 15-minute freeze zone / greedy) | A broken commit window or freeze zone scrambles the experiments already committed | Out of scope, not yet implemented enough to be testable |
 
 ---
 
