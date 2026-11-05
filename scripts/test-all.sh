@@ -25,15 +25,13 @@ cd labos-kernel || exit 1
 
 CP="out:lib/postgresql-42.7.3.jar"
 
-# 干净检出（没有 out/）时先编主代码，否则 src/test 引用不到主类。
-# 原来只编 src/test，`git clone` 后直接跑会报"找不到符号"。
-if [[ ! -d out ]] || [[ -z "$(ls -A out 2>/dev/null)" ]]; then
-  echo "（首次运行：先编译 src/main）"
-  if ! javac -encoding UTF-8 -d out -cp "$CP" $(find src/main -name '*.java') 2>/tmp/main-compile.err; then
-    echo "主代码编译失败："
-    head -20 /tmp/main-compile.err
-    exit 1
-  fi
+# 每轮都编 src/main：原来只在 out/ 为空时编，本机 out/ 已存在时新增的主类
+# 不会进 out，src/test 就会报"找不到符号"，而且脚本只把它算成一次失败，
+# 看不出是"没编译"还是"真挂了"（2026-11-05 台账 6.5 新增 ManualWindow 时踩到）。
+if ! javac -encoding UTF-8 -d out -cp "$CP" $(find src/main -name '*.java') 2>/tmp/main-compile.err; then
+  echo "主代码编译失败："
+  head -20 /tmp/main-compile.err
+  exit 1
 fi
 
 # 再把 src/test 的用例编进 out —— 否则新加的测试类"找不到主类"，
@@ -84,6 +82,8 @@ PURE=(
   "workflow.GraphRunnerTest"
   # 调度队列排序收口（规格 §14.6）：EDD → priority DESC → FIFO，直接排 QUEUE_ORDER
   "workflow.SchedulerOrderSelfTest"
+  # 有人值守窗口（台账 6.5）：开窗条件 / 默认项来自策略 / 动作白名单 / 超时降级 / 幂等键
+  "recovery.ManualWindowSelfTest"
   "recovery.RecoverySelfTest"
   # 设备型号库 / 错误码映射（起模拟器，但不连库）
   "device.DeviceModelSelfTest"
@@ -151,7 +151,7 @@ if command -v dotnet >/dev/null 2>&1 && [[ -x ../scripts/test-sidecar.sh ]]; the
     line=$(echo "$out" | grep -E '^通过 [0-9]+ / 失败' | tail -1)
     if [[ -z "$line" ]]; then
       # 脚本退出码 0 但没有通过统计 = 它跳过了（环境不满足），不能算成通过，
-      # 也不能虚增用例数 —— 否则阈值 589 会因为"跳过"而被误判成"删了用例"。
+      # 也不能虚增用例数 —— 否则阈值 624 会因为"跳过"而被误判成"删了用例"。
       SKIP=$((SKIP + 1))
       printf "  %-28s %s\n" "SidecarChainTest" "$(echo "$out" | grep -E '跳过' | tail -1)"
     else

@@ -19,8 +19,8 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Track | Entry point | Assertions today | In CI |
 |---|---|---|---|
-| L1 pure logic | `./scripts/test-all.sh --pure-only` | 589 | ✅ every push |
-| L1+L2 with DB | `./scripts/test-all.sh` | 959 | ⬜ local `--with-db` |
+| L1 pure logic | `./scripts/test-all.sh --pure-only` | 624 | ✅ every push |
+| L1+L2 with DB | `./scripts/test-all.sh` | 994 | ⬜ local `--with-db` |
 | L3 chain | `./scripts/verify-device-chain.sh` | 41 | ⬜ local `--all` |
 | L3 flow matrix | `./scripts/verify-flow-matrix.py --force-online` | 45 | ⬜ local `--all` |
 | L3 parallel | `verify-parallel-flow.py` / `verify-parallel-experiments.py` | 4 / 3 | ⬜ local `--all` |
@@ -32,7 +32,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Constant | Value | Coverage |
 |---|---|---|
-| `MIN_PURE` | 589 | Pure-logic unit tests (fewer = red) |
+| `MIN_PURE` | 624 | Pure-logic unit tests (fewer = red) |
 | `MIN_CHAIN` | 41 | Full device chain |
 | `MIN_PFLOW` / `MIN_PEXP` | 4 / 3 | In-flow parallelism / same-island concurrency |
 | `MIN_MATRIX` | 45 | Full flow matrix (`verify-flow-matrix.py`) |
@@ -40,10 +40,10 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_E2EFM` | 21 | Page flow matrix (`e2e-flow-matrix.py`) |
 | `MIN_EXPCTL` | 22 | Experiment run control (`verify-exp-control.py`) |
 | `MIN_E2ESIM` | 24 | Simulator integration (`e2e-sim-flow.py`) |
-| `MIN_ALERTS` | see script | Page alert ack/close (`e2e-alerts.py`) |
-| `MIN_POLICIES` | see script | Page policy edit + validation (`e2e-policies.py`) |
-| `MIN_PAUSED` | see script | Page paused queue filter and actions (`e2e-paused.py`) |
-| `MIN_CANVAS` | see script | Experiment orchestration canvas (`e2e-canvas.py`) |
+| `MIN_ALERTS` | 8 | Page alert ack/close (`e2e-alerts.py`); gate lower bound, measured value in review package 04 |
+| `MIN_POLICIES` | 12 | Page policy edit + validation (`e2e-policies.py`); gate lower bound, measured value in review package 04 |
+| `MIN_PAUSED` | 7 | Page paused queue filter and actions (`e2e-paused.py`); gate lower bound, measured value in review package 04 |
+| `MIN_CANVAS` | 12 | Experiment orchestration canvas (`e2e-canvas.py`); gate lower bound, measured value in review package 04 |
 
 ---
 

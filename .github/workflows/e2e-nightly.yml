@@ -1,7 +1,7 @@
 name: E2E Nightly
 
 # 为什么单独一个 workflow：
-#   .github/workflows/ci.yml 只跑**不需要数据库**的部分（纯逻辑 589 + tsc）。
+#   .github/workflows/ci.yml 只跑**不需要数据库**的部分（纯逻辑 624 + tsc）。
 #   页面轨 e2e 要整套服务（PostgreSQL + API + 前端）在跑，长期处于
 #   "从未在 CI 执行过"的盲区（见 docs/测试规范.md §六）。
 #   这个 workflow 每晚把整套服务拉起来，补上这一段。
@@ -12,7 +12,7 @@ name: E2E Nightly
 #   · 4.6      实验运行控制（verify-exp-control.py）
 #   · 4.7      仿真机联调（e2e-sim-flow.py，仿真机起来才跑，否则 SKIP）
 #   · 4.8-4.11 页面 P0 四页（告警 / 策略 / 暂停队列 / 实验画布）
-#   纯逻辑 589 + tsc 也照跑（ci-gate.sh 的无参部分恒跑）。
+#   纯逻辑 624 + tsc 也照跑（ci-gate.sh 的无参部分恒跑）。
 #
 # 不覆盖：设备链路 / 流程矩阵（2.6/2.7/3）要 .NET sidecar，本 workflow 不拉，
 #         它们留在本地 ./scripts/ci-gate.sh --all（见 .githooks/pre-push）。
@@ -117,7 +117,7 @@ jobs:
           python3 -m pip install playwright
           python3 -m playwright install --with-deps chromium
 
-      - name: 门禁（纯逻辑 589 + tsc + 页面轨 e2e）
+      - name: 门禁（纯逻辑 624 + tsc + 页面轨 e2e）
         run: ./scripts/ci-gate.sh --e2e
 
       - name: 失败时附日志
