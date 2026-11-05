@@ -1348,7 +1348,7 @@ public final class WorkflowService {
      * <p>放流程维度而不是节点维度：一个流程里的回边通常不止一条，
      * 按节点配会让运维记不清"这条到底受谁管"。
      */
-    private int loadMaxIterations(long workflowId) {
+    public int loadMaxIterations(long workflowId) {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(
                      "SELECT attr->>'maxIterations' AS n FROM workflow WHERE tenant_id = ? AND id = ?")) {
@@ -1366,6 +1366,29 @@ public final class WorkflowService {
             System.err.println("[WARN] 读取 maxIterations 失败，用默认 10: " + e.getMessage());
         }
         return 10;
+    }
+
+    /**
+     * 写流程级的循环圈数上限（{@code workflow.attr.maxIterations}）。
+     *
+     * <p>与 {@link #loadMaxIterations} 同一个键：设计器里改一处，
+     * 运行时 {@code withMaxVisits} 立刻按新值走，不需要重发布流程。
+     * 范围由调用方（API 层）校验，这里只负责落库。
+     */
+    public void setMaxIterations(long workflowId, int value) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE workflow
+                        SET attr = jsonb_set(coalesce(attr, '{}'::jsonb),
+                                             '{maxIterations}', to_jsonb(?::int), true),
+                            updated_at = now()
+                      WHERE tenant_id = ? AND id = ?
+                     """)) {
+            ps.setInt(1, value);
+            ps.setLong(2, tenantId);
+            ps.setLong(3, workflowId);
+            ps.executeUpdate();
+        }
     }
 
     private Map<String, String> loadRunVars(long runId) {

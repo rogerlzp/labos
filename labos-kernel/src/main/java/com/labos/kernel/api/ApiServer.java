@@ -659,6 +659,7 @@ public final class ApiServer {
         System.out.println("  GET  /api/workflows/{id}/graph  BPMN XML");
         System.out.println("  GET  /api/workflows/{id}/compile 编译预览（节点→步骤）");
         System.out.println("  GET  /api/workflows/{id}/preflight 保存前预检（能不能跑）");
+        System.out.println("  GET/PUT /api/workflows/{id}/options  流程选项（循环上限 maxIterations）");
         System.out.println("  POST /api/runs/{id}/attendance   切换值守模式");
         System.out.println("  GET  /api/process-status         正在跑的 run 卡在哪");
         System.out.println("  PUT  /api/policies/{id}          改策略");

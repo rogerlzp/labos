@@ -647,6 +647,16 @@ export const api = {
 
   preflight: (id: number) => req<PreflightReport>(`/api/workflows/${id}/preflight`),
 
+  /** 流程级选项：目前只有循环圈数上限（回边最多走几圈，1..100，后端默认 10）。 */
+  workflowOptions: (id: number) =>
+    req<{ maxIterations: number }>(`/api/workflows/${id}/options`),
+
+  saveWorkflowOptions: (id: number, maxIterations: number) =>
+    req<{ maxIterations: number }>(`/api/workflows/${id}/options`, {
+      method: 'PUT',
+      body: JSON.stringify({ maxIterations }),
+    }),
+
   /** withSteps=true 时多步节点返回为可折叠 subProcess（只影响展示，不改库） */
   graphXml: async (id: number, withSteps = false) => {
     const token = tokenStore.get();

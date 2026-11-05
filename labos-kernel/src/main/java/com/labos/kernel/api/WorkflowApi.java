@@ -324,6 +324,30 @@ final class WorkflowApi {
                     Long.parseLong(wfRuns.group(1)), intParam(ex, "limit", 20)));
             return true;
         }
+        Matcher wfOptions = WORKFLOW_OPTIONS.matcher(path);
+        if (wfOptions.matches()) {
+            long oid = Long.parseLong(wfOptions.group(1));
+            if ("GET".equals(method)) {
+                s.send(ex, 200, Jsons.obj("maxIterations", s.workflows.loadMaxIterations(oid)));
+                return true;
+            }
+            if (!"PUT".equals(method) && !"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            String obody = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            Long n = jsonLong(obody, "maxIterations");
+            // 上限与 GraphRunner.withMaxVisits 的钳位一致（1..100）：
+            // 在入口就拦下来，免得存了 0 或 999 而运行时悄悄被改成别的数。
+            if (n == null || n < 1 || n > 100) {
+                s.send(ex, 400, err("maxIterations 需为 1..100 的整数"));
+                return true;
+            }
+            s.workflows.setMaxIterations(oid, n.intValue());
+            s.audited("workflow.options", "workflow", oid,
+                    "maxIterations=" + n, null, ex);
+            s.send(ex, 200, Jsons.obj("maxIterations", n));
+            return true;
+        }
         Matcher wfShadow = WF_SHADOW.matcher(path);
         if (wfShadow.matches()) {
             if (!"POST".equals(method)) {
@@ -902,6 +926,16 @@ final class WorkflowApi {
 
     /** 某条流程的执行记录（点进去看每次的节点状态）。 */
     private static final Pattern WORKFLOW_RUNS = Pattern.compile("^/api/workflows/(\\d+)/runs$");
+
+    /**
+     * 流程级选项（目前只有循环圈数上限 maxIterations）。
+     *
+     * <p>为什么不挂在 {@code /api/workflows/{id}}：那条路由是只读详情
+     * （{@code requireGet}），而循环上限是流程属性、要可写；
+     * 另起一条语义更清楚，也不会把详情页的返回体撑大。
+     */
+    private static final Pattern WORKFLOW_OPTIONS =
+            Pattern.compile("^/api/workflows/(\\d+)/options$");
 
     private static final Pattern WF_HISTORY = Pattern.compile("^/api/workflows/(\\d+)/history$");
 
