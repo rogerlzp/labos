@@ -182,6 +182,7 @@ queued.
 | `docs/设备网关与Redis状态中心-设计.md` | `docs/en/device-gateway-and-redis-design.md` | ✅ |
 | `docs/设计-实验编排统一-v0.1-实施清单.md` | `docs/en/design/unified-experiment-orchestration-checklist.md` | ✅ |
 | `docs/设计-实验编排统一-v0.1-草稿.md` | `docs/en/design/unified-experiment-orchestration-draft.md` | ✅ |
+| `docs/设计-逻辑节点分层与编辑器分工.md` | `docs/en/design/logic-nodes-by-layer.md` | ✅ |
 | `docs/设计审核包.md` | `docs/en/design-review-package.md` | ✅ |
 | `docs/评审包-20261102.md` | `docs/en/review-20261102.md` | ✅ |
 | `docs/评审包-代码-20261102.md` | `docs/en/review-code-20261102.md` | ✅ |
