@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-S3.2 残余收尾联调：async 变量持久化 / 扣留解除自动续队 / 重启 rehydrate 待派发。
+S3.2 残余收尾联调 + 崩溃恢复端到端（BUG-14）：
+  · async 变量持久化；
+  · 扣留解除自动续队；
+  · 重启 rehydrate 待派发（S3.2-A）；
+  · 崩溃时 running 孤儿 → 重启后启动兜底 settle（BUG-14 端到端，见 Case 3 §3b/§3c）。
 
 全部用"没有编排任何流程的空实验"（执行器展开为空立即失败，不碰设备），
-走的却是真实调度链路（排队/派发/批续队/rehydrate）。
+走的却是真实调度链路（排队/派发/批续队/rehydrate/启动兜底）。
+
+为什么这一节必须端到端：StartupSettleSelfTest 直接调包内重载、进程内造数，
+只证明「方法本身」对；证明不了「生产入口」（ApiServer 启动时那三行
+settle/rehydrate）真的被调用。本脚本 kill 真进程 → 重启 → 断言库里 running
+孤儿真被收掉，补的就是这段接线。
 
 用法：
   LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=... \
     python3 scripts/verify-s3-2-residuals.py [--api http://127.0.0.1:18080] [--api-log /tmp/labos-api.log]
 
 注意：Case 3 会 kill 并重启 18080 的 API 进程（用同一组 LABOS_DB_* 环境变量），
-      跑之前确认没有别的测试/验收在跑。
+      跑之前确认没有别的测试/验收在跑。重启继承本进程环境变量，所以调用方要
+      保证 LABOS_TRANSFER_PLAN / LABOS_EXEC_GRAPH / LABOS_DRIVER_MODE / LABOS_AUTH
+      已导出（ci-gate.sh 会兜底设默认值），否则重启后的内核能力与重启前不一致。
 """
 import argparse
 import json
@@ -134,6 +145,15 @@ def cleanup_workflow(cur, conn, wf_id):
         conn.rollback()
 
 
+def cleanup_run(cur, conn, run_id):
+    """删测试用的 run（run_node/run_command 级联）。"""
+    try:
+        cur.execute("DELETE FROM run WHERE id=%s", (run_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+
 def submit_async(api, eid, vars_=None):
     body = {"vars": vars_ or {}}
     return api.call("POST", "/api/experiments/%d/run?async=1" % eid, body)
@@ -172,6 +192,28 @@ def api_pids():
     out = subprocess.run(["pgrep", "-f", "com.labos.kernel.api.ApiServer"],
                          capture_output=True, text=True).stdout.strip()
     return [int(x) for x in out.split()] if out else []
+
+
+def detect_api_log(fallback):
+    """当前 ApiServer 进程的 stdout 落到哪个文件（pgrep + lsof 反查）。
+
+    为什么需要：脚本要在启动日志里找"待派发 rehydrate"/"启动收尾"这类行，
+    但内核是运维手工起的，日志位置随启动方式而变（/tmp/apiserver.log、
+    /tmp/api.log…）。写死 --api-log 会让日志类断言在别人的环境里假红。
+    反查不到就退回 fallback（重启会 `>> fallback` 建出来，仍是自洽的）。
+    """
+    for pid in api_pids():
+        try:
+            out = subprocess.run(["lsof", "-p", str(pid)],
+                                 capture_output=True, text=True).stdout
+        except Exception:  # noqa: BLE001
+            continue
+        for line in out.splitlines():
+            parts = line.split()
+            # lsof 行：COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+            if len(parts) >= 9 and parts[3] in ("1w", "2w") and parts[-1].endswith(".log"):
+                return parts[-1]
+    return fallback
 
 
 def port_free(port=18080):
@@ -223,12 +265,17 @@ def main():
     ap.add_argument("--pass", dest="pwd", default="admin123")
     args = ap.parse_args()
 
+    # 日志路径自适应：内核多是运维手工起的，stdout 落到哪个文件得反查（pgrep+lsof）。
+    # 写死 --api-log 会让"扣留解除自动续跑""启动兜底 settle"这类日志断言在别人的环境里假红。
+    args.api_log = detect_api_log(args.api_log)
+
     conn = db_connect()
     cur = conn.cursor()
     api = Api(args.api, login_api(args.api, args.user, args.pwd))
     tag = int(time.time())
     created = []
     workflows_created = []
+    runs_created = []
 
     try:
         # ================= 1. async 变量持久化（S3.2-C） =================
@@ -347,20 +394,49 @@ def main():
             page.screenshot(path="/tmp/m9-async-batch.png")
             b.close()
 
-        # ================= 3. 重启 rehydrate 待派发（S3.2-A） =================
-        step("3. 重启 rehydrate 待派发（S3.2-A）")
+        # ================= 3. 重启恢复（S3.2-A rehydrate + BUG-14 启动兜底 settle） =================
+        step("3. 重启恢复（queued rehydrate + 崩溃时 running 孤儿 settle，BUG-14 端到端）")
+
+        # --- 3a. queued run：重启后 rehydrate 装回内存队列（S3.2-A） ---
         eid3 = create_exp(api, "S3.2残余-rehydrate-%d" % tag)
         created.append(eid3)
         cur.execute("INSERT INTO experiment_run (tenant_id, experiment_id, status) "
                     "VALUES (1, %s, 'queued') RETURNING id", (eid3,))
         queued_run = cur.fetchone()[0]
+
+        # --- 3b. 崩溃时"实验还在跑"：experiment_run=running + experiment=running ---
+        # 这是进程被 kill -9 时最真实的残留形态（库里有 running，但没有任何线程持有）。
+        eid5 = create_exp(api, "S3.2残余-崩溃实验-%d" % tag)
+        created.append(eid5)
+        cur.execute("INSERT INTO experiment_run (tenant_id, experiment_id, status, started_at) "
+                    "VALUES (1, %s, 'running', now()) RETURNING id", (eid5,))
+        orphan_exp_run = cur.fetchone()[0]
+        cur.execute("UPDATE experiment SET status='running' WHERE id=%s", (eid5,))
+
+        # --- 3c. 崩溃时"流程还在跑"：run=running + 一个已完成节点（→ 可恢复） ---
+        crash_run_no = "S3RES-CRASH-%d" % tag
+        cur.execute("INSERT INTO run (tenant_id, run_no, run_type, status) "
+                    "VALUES (1, %s, 'workflow', 'running') RETURNING id", (crash_run_no,))
+        orphan_run = cur.fetchone()[0]
+        runs_created.append(orphan_run)
+        cur.execute("INSERT INTO run_node (tenant_id, run_id, node_key, name, seq, status, level) "
+                    "VALUES (1, %s, 'S1', 'S1', 0, 'completed', 0)", (orphan_run,))
+        # 合法已完成（不许被兜底 settle 碰到），用来对照"只收 running"
+        keep_run_no = "S3RES-KEEP-%d" % tag
+        cur.execute("INSERT INTO run (tenant_id, run_no, run_type, status) "
+                    "VALUES (1, %s, 'workflow', 'completed') RETURNING id", (keep_run_no,))
+        keep_run = cur.fetchone()[0]
+        runs_created.append(keep_run)
         conn.commit()
+
         offset = log_size(args.api_log)
         ok("API 已重启") if restart_api(args.api_log) else bad("API 重启失败")
         # 重启后先前 token 可能失效，重新登录
         api = Api(args.api, login_api(args.api, args.user, args.pwd))
         time.sleep(0.5)
         new_log = log_since(args.api_log, offset)
+
+        # 3a 断言：rehydrate
         m = re.search(r"待派发 rehydrate：(\d+) 条", new_log)
         ok("启动日志报 rehydrate >=1 条") if m and int(m.group(1)) >= 1 \
             else bad("启动日志没有 rehydrate 记录", m.group(0) if m else new_log[-300:])
@@ -374,17 +450,63 @@ def main():
             time.sleep(0.4)
         ok("rehydrate 后的 queued run 被派发并跑到终态（%s）" % status) \
             if status not in ("queued", "running") else bad("run 一直 queued", status)
+
+        # 3b/3c 断言：启动兜底 settle（BUG-14）——running 孤儿必须被收掉
+        ok("启动日志报被中断的 run >=1（run 表兜底）") \
+            if re.search(r"发现 [1-9]\d* 个被中断的 run", new_log) \
+            else bad("启动日志没有被中断 run 记录", new_log[-300:])
+        ok("启动日志报孤儿 running settle >=1（experiment_run 兜底）") \
+            if re.search(r"孤儿 running settle：[1-9]\d* 条", new_log) \
+            else bad("启动日志没有 settle 记录", new_log[-300:])
+
+        cur.execute("SELECT status, actual_end, input->>'interrupted', "
+                    "input->>'recoverable', input->>'completedNodes' FROM run WHERE id=%s",
+                    (orphan_run,))
+        row = cur.fetchone()
+        ok("崩溃时 running 的 run 落 failed") if row and row[0] == "failed" \
+            else bad("run 没收尾", row)
+        ok("run.actual_end 已落库") if row and row[1] is not None else bad("actual_end 为空", row)
+        ok("run 标记 interrupted=true（被中断）") if row and row[2] == "true" \
+            else bad("未标 interrupted", row)
+        ok("有已完成节点 → recoverable=true") if row and row[3] == "true" \
+            else bad("未标 recoverable", row)
+        ok("completedNodes 计数正确（=1）") if row and row[4] == "1" \
+            else bad("completedNodes 不对", row)
+
+        cur.execute("SELECT status, error, finished_at FROM experiment_run WHERE id=%s",
+                    (orphan_exp_run,))
+        r2 = cur.fetchone()
+        ok("崩溃时 running 的 experiment_run 落 failed") if r2 and r2[0] == "failed" \
+            else bad("experiment_run 没收尾", r2)
+        ok("experiment_run.error 写启动兜底文案") \
+            if r2 and r2[1] == "API 重启：遗留 running 由启动兜底 settle（无活动线程持有）" \
+            else bad("error 文案不对", r2)
+        ok("experiment_run.finished_at 落库") if r2 and r2[2] is not None \
+            else bad("finished_at 为空", r2)
+        cur.execute("SELECT status FROM experiment WHERE id=%s", (eid5,))
+        ok("实验状态同步 failed") if cur.fetchone()[0] == "failed" \
+            else bad("实验状态没同步")
+        cur.execute("SELECT status FROM run WHERE id=%s", (keep_run,))
+        ok("合法 completed run 未被触碰") if cur.fetchone()[0] == "completed" \
+            else bad("合法 run 被改")
         ok("API 重启后仍可用") if health(args.api) else bad("重启后 API 不可用")
 
-        # 再重启一次：无残留 -> rehydrate 0 条（幂等）
+        # 再重启一次：验证启动兜底 settle 幂等——已被收掉的孤儿不会被二次改判/重复收。
+        # 为什么不断言"全局 rehydrate=0"：那是全库计数，库里任何一条合法 queued run
+        # 都会让它非 0，断言全局为 0 会把"别人有排队"误判成本用例失败。幂等性必须落到
+        # 本用例自己造的实体上。
         offset = log_size(args.api_log)
         ok("二次重启成功") if restart_api(args.api_log) else bad("二次重启失败")
         api = Api(args.api, login_api(args.api, args.user, args.pwd))
         time.sleep(0.5)
-        new_log = log_since(args.api_log, offset)
-        m2 = re.search(r"待派发 rehydrate：(\d+) 条", new_log)
-        ok("二次重启 rehydrate=0（幂等）") if m2 and int(m2.group(1)) == 0 \
-            else bad("二次重启 rehydrate 非 0", m2.group(0) if m2 else new_log[-200:])
+        cur.execute("SELECT status FROM run WHERE id=%s", (orphan_run,))
+        row = cur.fetchone()
+        ok("二次重启后孤儿 run 仍是 failed（幂等，不重复收）") \
+            if row and row[0] == "failed" else bad("孤儿 run 状态漂移", row)
+        cur.execute("SELECT status, error FROM experiment_run WHERE id=%s", (orphan_exp_run,))
+        r3 = cur.fetchone()
+        ok("二次重启后孤儿 experiment_run 仍是 failed（幂等）") \
+            if r3 and r3[0] == "failed" else bad("孤儿 experiment_run 状态漂移", r3)
     except Exception as e:  # noqa: BLE001
         bad("异常", str(e)[:240])
     finally:
@@ -394,7 +516,9 @@ def main():
                 cleanup_exp(cur, conn, eid)
             for wf in workflows_created:
                 cleanup_workflow(cur, conn, wf)
-            print("\n已清理联调数据（含测试用空白流程）")
+            for rid in runs_created:
+                cleanup_run(cur, conn, rid)
+            print("\n已清理联调数据（含测试用空白流程与 run）")
         except Exception as e:  # noqa: BLE001
             print("清理失败：" + str(e))
         conn.close()

@@ -765,12 +765,19 @@ def sec_concurrent(ctx, d1, d2, m1):
 
 
 def kernel_env():
+    """聚合**所有** ApiServer 相关进程的环境变量。
+
+    为什么不能只取第一个 pid：内核常以 `bash -c '... java ... ApiServer ...'` 两层起，
+    pgrep 会同时命中外壳与 java，而环境只挂在 java 那层；取 pid[0] 若恰是外壳，
+    就读不到 LABOS_TRANSFER_PLAN，ports 一节会假 SKIP（45 → 41 条）。
+    """
     try:
-        pid = subprocess.run(["pgrep", "-f", "ApiServer"], capture_output=True, text=True).stdout.split()
-        if not pid:
+        pids = subprocess.run(["pgrep", "-f", "ApiServer"], capture_output=True, text=True).stdout.split()
+        if not pids:
             return ""
-        out = subprocess.run(["ps", "eww", pid[0]], capture_output=True, text=True).stdout
-        return out
+        return "\n".join(
+            subprocess.run(["ps", "eww", p], capture_output=True, text=True).stdout for p in pids
+        )
     except Exception:  # noqa: BLE001
         return ""
 

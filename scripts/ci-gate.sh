@@ -13,6 +13,7 @@
 #   · 可选：实验运行控制 22 条（页面暂停/恢复/停止，要前端+API+库）
 #   · 可选：仿真机联调 24 条（页面建流程→绑真机→建实验→执行→真回包，要仿真机+前端+API+库）
 #   · 可选：页面 P0 四页（告警/策略/暂停队列/实验画布，要前端+API；见 4.8-4.11）
+#   · 可选：崩溃恢复端到端 31 条（kill -9 内核进程 → 重启 → 启动兜底 settle，要库+前端+API；见 4.13）
 #
 # 用法：
 #   ./scripts/ci-gate.sh                 # 纯逻辑 + tsc（不需要数据库）
@@ -54,6 +55,7 @@ MIN_POLICIES=12   # 2026-11-05：策略页（表 + 编辑弹窗 + 生效校验�
 MIN_PAUSED=7      # 2026-11-05：暂停队列（统计卡 + 空态/队列形态自洽；空队列时即此下限）
 MIN_CANVAS=12     # 2026-11-05：实验画布（跨流程编排：仅「流程」可拖/设计器提示/reactflow/两按钮/开始结束自动铺/属性卡）
 MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / 跨设备自动插机械臂 / 删除（无库 17 条常驻，有库 20）
+MIN_CRASH=31      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle）
 
 FAIL=0
 note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -338,8 +340,31 @@ if [[ $WITH_E2E -eq 1 ]]; then
   else
     pass "拖方法 $DN / 0（岛→设备→方法→XML/compile/落库）"
   fi
+
+  # 4.13 崩溃恢复端到端：真 kill -9 内核进程 → 重启 → 断言启动兜底 settle 收掉 running 孤儿。
+  # 补的是 BUG-14 的**生产入口接线**：L2 的 StartupSettleSelfTest 直接调包内重载、
+  # 进程内造数，只证明方法本身对，证明不了 ApiServer 启动时真的调了 settle/rehydrate。
+  # 重启继承本进程环境，故先兜底设内核能力开关，避免重启后能力与重启前不一致
+  # （丢了 LABOS_TRANSFER_PLAN=1 会让 2.7 的 ports 4 条整节 SKIP）。
+  note "4.13 崩溃恢复（verify-s3-2-residuals.py：kill -9 → 重启 → 启动兜底 settle）"
+  export LABOS_TRANSFER_PLAN="${LABOS_TRANSFER_PLAN:-1}"
+  export LABOS_EXEC_GRAPH="${LABOS_EXEC_GRAPH:-1}"
+  export LABOS_DRIVER_MODE="${LABOS_DRIVER_MODE:-persistent}"
+  export LABOS_AUTH="${LABOS_AUTH:-1}"
+  ROUT=$(python3 scripts/verify-s3-2-residuals.py --base "$E2E_BASE" 2>&1)
+  RN=$(echo "$ROUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  RF=$(echo "$ROUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  RN=${RN:-0}; RF=${RF:-1}
+  if [[ "$RF" != "0" ]]; then
+    fail "崩溃恢复有失败（$RF 条）"
+    echo "$ROUT" | grep '✗' | head -8
+  elif (( RN < MIN_CRASH )); then
+    fail "崩溃恢复断言 $RN < 阈值 ${MIN_CRASH}"
+  else
+    pass "崩溃恢复 $RN / 0（kill -9 → 重启 → queued rehydrate + running 孤儿 settle）"
+  fi
 else
-  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调 / 4.8-4.12 页面轨：跳过（没给 --e2e）"
+  note "4. 前端 e2e / 4.5 页面流程矩阵 / 4.6 实验运行控制 / 4.7 仿真机联调 / 4.8-4.13 页面轨：跳过（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果
