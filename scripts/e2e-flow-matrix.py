@@ -14,6 +14,8 @@
   B. 设计器：节点设置 —— 把 task 设成「变量节点（__setVar）」并落库
   C. 运行详情：流程图按状态着色 + 图例 + 节点表（有循环时出「圈次」）
   D. 运行控制：运行详情页点「暂停」→ 点「继续」，页面与库状态一致
+  E. 设计器：左面板「逻辑节点」Tab 拖出 __setVar；连线条件表达式落库；
+     流程级循环上限（maxIterations）落库
 
 边界（C 类，只观察不判失败）：
   · 设计器 palette **没有并行网关入口**（只有 exclusiveGateway）——
@@ -122,6 +124,12 @@ def place(page, action, x, y):
     scale = min(1.0, (box["width"] - 40) / 900) if box["width"] < 940 else 1.0
     page.mouse.click(box["x"] + x * scale, box["y"] + y)
     page.wait_for_timeout(350)
+
+
+def canvas_ids(page):
+    """画布上所有图元的 data-element-id（含连线；连线也是 .djs-element）。"""
+    return page.locator(".djs-element[data-element-id]").evaluate_all(
+        "els => els.map(e => e.getAttribute('data-element-id'))")
 
 
 class Ctx:
@@ -369,6 +377,115 @@ def sec_run_control(page, ctx, base, wf_id):
         else bad("点继续后仍停在 paused")
 
 
+# ---------------------------------------------------------------- E. 逻辑节点 / 连线条件 / 流程选项
+
+def sec_logic_and_flow(page, ctx, base, wf_id):
+    """批 3+4：左面板「逻辑节点」Tab、连线条件表达式、流程级循环上限。
+
+    这一节盯的是「设计器有没有入口」——后端能跑不等于页面上拖得出来：
+      E1 左面板 Tabs 常驻可见，逻辑节点能拖出并落库（无需再点保存）；
+      E2 选中 SequenceFlow → 写条件 → 落进 bpmn:conditionExpression；
+      E3 流程选项卡改 maxIterations → 落进 workflow.attr->>'maxIterations'。
+    """
+    step("E. 设计器 · 逻辑节点 Tab / 连线条件 / 流程选项（批 3+4）")
+    if not wf_id:
+        skip("没有可借用的流程，跳过")
+        return
+
+    page.goto(f"{base}/designer/{wf_id}", wait_until="networkidle")
+    page.wait_for_selector(".djs-container", timeout=25000)
+    page.wait_for_timeout(1500)
+
+    # E1 左面板「逻辑节点」Tab
+    tab = page.locator(".ant-tabs-tab", has_text="逻辑节点")
+    if tab.count() == 0:
+        bad("左面板没有「逻辑节点」Tab（入口被设备列表挤掉了？）")
+        return
+    ok("左面板「逻辑节点」Tab 常驻可见（与设备列表平级，不被设备数量顶掉）")
+    tbox = tab.first.bounding_box()
+    if tbox and tbox["y"] < 900:
+        ok(f"Tab 入口在首屏可视区内（y={int(tbox['y'])}）")
+    else:
+        bad("Tab 入口不在首屏可视区", str(tbox))
+
+    tab.first.click()
+    page.wait_for_timeout(400)
+    rows = page.locator('[data-testid="palette-logic"]')
+    if rows.count() < 2:
+        bad("「逻辑节点」Tab 里没有 __setVar / __expr 两项", str(rows.count()))
+        return
+    ok(f"「逻辑节点」Tab 提供 {rows.count()} 个可拖逻辑节点")
+
+    before = set(canvas_ids(page))
+    rows.first.drag_to(page.locator(".djs-container"), target_position={"x": 300, "y": 420})
+    page.wait_for_timeout(3500)
+    new = [i for i in sorted(set(canvas_ids(page)) - before) if not i.endswith("_label")]
+    if not new:
+        bad("拖出逻辑节点后画布没有新节点")
+        return
+    key = new[0]
+    ok(f"拖出逻辑节点 {key}（无需手动点保存）")
+    j = api(f"/api/workflows/{wf_id}/nodes/{key}", token=ctx.token)
+    if isinstance(j, dict) and j.get("method") == "__setVar":
+        ok("逻辑节点已落库（method=__setVar）")
+    else:
+        bad("逻辑节点没落库", json.dumps(j, ensure_ascii=False)[:160])
+
+    # 再拖一个 → 自动连线，产生一条可写条件的 sequenceFlow
+    rows.nth(1).drag_to(page.locator(".djs-container"), target_position={"x": 700, "y": 420})
+    page.wait_for_timeout(3500)
+    xml = api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+    xml = xml if isinstance(xml, str) else json.dumps(xml)
+    flows = re.findall(r'<bpmn:sequenceFlow[^>]*id="([^"]+)"', xml)
+    if not flows:
+        bad("连续拖入逻辑节点后没有自动连线", xml[-200:])
+        return
+    fid = flows[-1]
+    ok(f"连续拖入自动生成连线 {fid}")
+
+    # E2 选中连线 → 写条件 → 落库
+    conn = page.locator(f'g.djs-connection[data-element-id="{fid}"]').first
+    if conn.count() == 0:
+        bad("画布上找不到该连线图元", fid)
+        return
+    cbox = conn.bounding_box()
+    page.mouse.click(cbox["x"] + cbox["width"] / 2, cbox["y"] + cbox["height"] / 2)
+    page.wait_for_timeout(1200)
+    if "连线 · 条件" not in page.inner_text("body"):
+        bad("选中连线后没有「连线 · 条件」面板", page.inner_text("body")[:160])
+        return
+    ok("选中连线后出现「连线 · 条件」面板")
+    fcard = page.locator(".ant-card", has_text="连线 · 条件").first
+    fcard.locator("textarea").first.fill("${counter} > 3")
+    fcard.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+    page.wait_for_timeout(3000)
+    xml2 = api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+    xml2 = xml2 if isinstance(xml2, str) else json.dumps(xml2)
+    # XML 里 '>' 会被转义成 &gt;，两种形式都认
+    if "conditionExpression" in xml2 and ("&gt; 3" in xml2 or "> 3" in xml2):
+        ok("连线条件已写进图（bpmn:conditionExpression 落库）")
+    else:
+        bad("连线条件没落库", xml2[-260:])
+
+    # E3 流程选项 · 循环上限
+    card = page.locator(".ant-card", has_text="流程选项").first
+    if card.count() == 0:
+        bad("右侧没有「流程选项」卡片")
+        return
+    inp = card.locator("input").first
+    inp.click()
+    inp.fill("5")
+    inp.press("Enter")
+    page.wait_for_timeout(300)
+    card.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+    page.wait_for_timeout(2500)
+    o = api(f"/api/workflows/{wf_id}/options", token=ctx.token)
+    if isinstance(o, dict) and o.get("maxIterations") == 5:
+        ok("流程级循环上限已落库（maxIterations=5）")
+    else:
+        bad("循环上限没落库", json.dumps(o, ensure_ascii=False)[:160])
+
+
 # ---------------------------------------------------------------- 路由
 
 def nav(page, menu):
@@ -405,6 +522,7 @@ def main():
             ok("登录成功")
             wf_id, tasks = sec_designer_palette(page, ctx, args.base)
             sec_designer_varnode(page, ctx, wf_id, tasks)
+            sec_logic_and_flow(page, ctx, args.base, wf_id)
             sec_run_detail(page, ctx, args.base)
             sec_run_control(page, ctx, args.base, wf_id)
             page.screenshot(path="/tmp/e2e-flow-matrix.png")

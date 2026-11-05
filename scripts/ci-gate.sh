@@ -46,7 +46,7 @@ MIN_MATRIX=45   # 完整流程矩阵（verify-flow-matrix.py --force-online）�
                 # serial4/builtin4/outvar2/xor6/xor3 3/loop3/loopback2/parallel3/pause10/ports4/experiment3/concurrent1
                 # 前置：内核以 LABOS_TRANSFER_PLAN=1 启动（否则 ports 4 条整节 SKIP）
 MIN_E2E=24        # 2026-11-03：权限收口 +Header 角色断言（23 → 24）
-MIN_E2EFM=21      # 2026-11-04：页面流程矩阵（登录1/设计器装配6/变量节点4/运行详情5/页面暂停恢复5）
+MIN_E2EFM=30      # 2026-11-05：页面流程矩阵（登录1/设计器装配6/变量节点4/E 逻辑节点Tab+连线条件+流程选项9/运行详情5/页面暂停恢复5）
 MIN_EXPCTL=22     # 实验运行控制：页面暂停/恢复/停止（verify-exp-control.py）
 MIN_E2ESIM=24     # 2026-11-04：仿真机联调（页面建流程+绑真机+建实验+执行+真回包，e2e-sim-flow.py）
 MIN_ALERTS=8      # 2026-11-05：告警页（心跳参数 + 告警表/空态；认领/关闭弹窗是有数据时的增量断言）
@@ -219,7 +219,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
     elif (( MN < MIN_E2EFM )); then
       fail "页面流程矩阵断言 $MN < 阈值 ${MIN_E2EFM}"
     else
-      pass "页面流程矩阵 $MN / 0（设计器装配·变量节点·运行详情·页面暂停恢复）"
+      pass "页面流程矩阵 $MN / 0（设计器装配·变量节点·逻辑节点Tab/连线条件/流程选项·运行详情·页面暂停恢复）"
     fi
   fi
 
