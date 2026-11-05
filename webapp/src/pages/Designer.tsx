@@ -133,9 +133,11 @@ function RunsTable({ wfId, onOpen }: { wfId: number; onOpen: (runId: number) => 
  * 未声明的自定义属性支持不稳，直接在画布上改可能把它丢掉。这里走服务端接口
  * （改 workflow_node.params + patch XML 里那一个属性），保存后**重新导入 XML**。</p>
  */
-function NodeSettings({ wfId, nodeKey, onSaved }: {
+function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
   wfId: string;
   nodeKey: string;
+  /** 只显示这个岛的设备；null = 全部岛（旧流程回落） */
+  islandId: number | null;
   onSaved: () => void;
 }) {
   const t = useT();
@@ -177,11 +179,13 @@ function NodeSettings({ wfId, nodeKey, onSaved }: {
     },
   });
 
-  // 设备池：与「岛屿视图」同一份数据（resource_node.kind='device'）
+  // 设备池：按所属岛过滤（islandId 为空 = 全部岛，兼容旧流程与岛屿视图）
   const pool = useQuery({
-    queryKey: ['device-pool'],
-    queryFn: () => apiFetch('/api/devices/pool').then((r) => r.json()) as Promise<{
-      items: Array<{ resourceId: number; code: string; name?: string; capability?: string }>;
+    queryKey: ['device-pool', islandId],
+    queryFn: () => apiFetch(`/api/devices/pool${islandId ? `?islandId=${islandId}` : ''}`)
+      .then((r) => r.json()) as Promise<{
+      items: Array<{ resourceId: number; code: string; name?: string;
+                     capability?: string; islandCode?: string }>;
     }>,
     enabled: kind === 'device',
   });
@@ -302,7 +306,7 @@ function NodeSettings({ wfId, nodeKey, onSaved }: {
               onChange={(v: number) => { setDeviceId(v); setMethodName(''); }}
               options={(pool.data?.items ?? []).map((d) => ({
                 value: d.resourceId,
-                label: `${d.code}${d.name ? ' · ' + d.name : ''}（${d.capability ?? '—'}）`,
+                label: `${d.code}${d.name ? ' · ' + d.name : ''}（${d.capability ?? '—'}）@${d.islandCode ?? '—'}`,
               }))}
             />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('designer.field.method')}</Typography.Text>
@@ -488,6 +492,17 @@ export default function DesignerPage() {
   const fromExpId = sp.get('expId');
   const fromExpName = sp.get('expName') ?? '';
   const fromIsland = sp.get('island') ?? '';
+  // 新建流程时选的岛（URL 透传，刷新后仍在）；旧流程未选岛 → null = 全部岛
+  const [islandId, setIslandId] = useState<number | null>(() => {
+    const v = Number(sp.get('islandId'));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  });
+  const islandsQ = useQuery({
+    queryKey: ['designer-islands'],
+    queryFn: () => apiFetch('/api/topology').then((r) => r.json()) as Promise<{
+      islands?: Array<{ id: number; code: string; name?: string }>;
+    }>,
+  });
   const qc = useQueryClient();
   const wfId = Number(id);
 
@@ -736,7 +751,29 @@ export default function DesignerPage() {
           )}
         />
       )}
-      <Row gutter={16} style={{ height: fromExpId ? 'calc(100vh - 64px - 64px)' : 'calc(100vh - 64px)' }}>
+      {/* 岛屿过滤：决定右侧「节点设置」设备下拉的范围，换岛即写回 URL */}
+      <Space size={8} style={{ marginBottom: 8 }}>
+        <Typography.Text type="secondary">{t('designer.field.island')}</Typography.Text>
+        <Select
+          size="small" allowClear style={{ minWidth: 220 }}
+          placeholder={t('designer.field.allIslands')}
+          value={islandId ?? undefined}
+          onChange={(v: number | undefined) => {
+            setIslandId(v ?? null);
+            const next = new URLSearchParams(sp);
+            if (v) next.set('islandId', String(v)); else next.delete('islandId');
+            nav({ pathname: `/designer/${wfId}`, search: next.toString() }, { replace: true });
+          }}
+          options={(islandsQ.data?.islands ?? []).map((i) => ({
+            value: i.id,
+            label: `${i.code}${i.name ? ' · ' + i.name : ''}`,
+          }))}
+        />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('designer.hint.islandFilter')}
+        </Typography.Text>
+      </Space>
+      <Row gutter={16} style={{ height: fromExpId ? 'calc(100vh - 64px - 64px - 40px)' : 'calc(100vh - 64px - 40px)' }}>
       <Col flex="auto" style={{ display: 'flex', flexDirection: 'column' }}>
         <Card
           size="small"
@@ -798,13 +835,26 @@ export default function DesignerPage() {
             <Empty
               description={selected.includes('__s')
                 ? t('designer.empty.substep', { key: selected })
-                : t('designer.empty.notInResult', { key: selected })}
+                : t('designer.empty.notSavedYet', { key: selected })}
             />
+            {/* 新拖出来的节点还没进库 → compile 里没有它 → 原来只显示一句
+                「不在编译结果里」，设备/方法下拉彻底不出现。给一条明确的出路。 */}
+            {!selected.includes('__s') && (
+              <Button
+                size="small" type="primary" block loading={saving} {...ro}
+                onClick={async () => {
+                  await save();
+                  qc.invalidateQueries({ queryKey: ['compile', wfId] });
+                }}
+              >
+                {t('designer.action.saveAndBind')}
+              </Button>
+            )}
           </Card>
         ) : (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <NodeSettings
-              wfId={String(wfId)} nodeKey={String(selected)}
+              wfId={String(wfId)} nodeKey={String(selected)} islandId={islandId}
               onSaved={() => {
                 // 重新导入 XML，让画布上的属性/名称跟库一致
                 apiFetch(`/api/workflows/${wfId}/graph`)

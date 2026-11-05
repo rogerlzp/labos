@@ -142,6 +142,8 @@ Each page specifies 6 items: **who uses it / what it solves / what you see / wha
 **Key interaction**: a multi-step node is displayed as a **collapsible subProcess**
 (already implemented); opening it shows the 7 steps inside.
 
+**Finding devices by island (2026-11-05)**: when a workflow is created, an island can be selected (stored in `workflow.attr.island_id`; empty = all islands, so existing workflows are unchanged). The designer has an island filter at the top, and the device dropdown in Node settings on the right is filtered by that island; each option carries `@islandCode` to prevent picking a device from another island. `GET /api/devices/pool?islandId=` is an optional filter; without it the full pool is returned, so the island view and existing tests do not regress. A newly dropped node that has not been saved used to show only "not in the compilation result", with no device or method dropdown at all; it now offers a "Save and continue" button that saves the canvas and refreshes the compilation result.
+
 ### 3.5 Alerts
 
 | Item | Content |

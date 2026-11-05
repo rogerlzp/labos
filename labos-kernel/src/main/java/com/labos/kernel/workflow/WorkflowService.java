@@ -2495,7 +2495,8 @@ public final class WorkflowService {
      *
      * <p>code 不传就用 {@code AUTO-<时间戳>}：流程编号在库里是唯一键，人工编号容易撞。
      */
-    public long createWorkflow(String name, String code, String category) throws SQLException {
+    public long createWorkflow(String name, String code, String category, Long islandId)
+            throws SQLException {
         String nm = (name == null || name.isBlank()) ? "未命名流程" : name.trim();
         String cd = (code == null || code.isBlank())
                 ? "AUTO-" + System.currentTimeMillis() % 100000000L
@@ -2519,6 +2520,24 @@ public final class WorkflowService {
         }
         // 建完立刻落一张最小可用的图，否则设计器打开是空的、保存也无从谈起
         saveGraph(id, blankGraphXml(id, nm));
+        // 记录所属岛：设计器据此默认只显示「这个岛」的设备。
+        // 写 attr 而不是加列，避免为展示偏好改 DDL；旧流程 attr 里没有这个键，
+        // 设计器回落「全部岛」，不回归既有流程与 e2e-sim-flow。
+        if (islandId != null && islandId > 0) {
+            try (Connection c = db.open();
+                 PreparedStatement ps = c.prepareStatement("""
+                         UPDATE workflow
+                            SET attr = jsonb_set(coalesce(attr, '{}'::jsonb),
+                                                 '{island_id}', to_jsonb(?::bigint), true),
+                                updated_at = now()
+                          WHERE tenant_id = ? AND id = ?
+                         """)) {
+                ps.setLong(1, islandId);
+                ps.setLong(2, tenantId);
+                ps.setLong(3, id);
+                ps.executeUpdate();
+            }
+        }
         return id;
     }
 

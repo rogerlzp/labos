@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Alert, Button, Card, Descriptions, Input, Modal, Space, Table, Tag,
+  Alert, Button, Card, Descriptions, Input, Modal, Select, Space, Table, Tag,
   Typography, message,
 } from 'antd';
 import { apiFetch } from '../api/client';
@@ -20,8 +20,16 @@ export default function WorkflowsPage() {
   /** 新建流程：原来界面里没有任何创建入口，流程库只能看 */
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
+  // 新建时选岛：设计器据此只显示「这个岛」的设备；留空 = 全部岛（兼容旧流程）
+  const [newIslandId, setNewIslandId] = useState<number | null>(null);
   const [busyCreate, setBusyCreate] = useState(false);
   const qc = useQueryClient();
+  const islandsQ = useQuery({
+    queryKey: ['islands-for-create'],
+    queryFn: () => apiFetch('/api/topology').then((r) => r.json()) as Promise<{
+      islands?: Array<{ id: number; code: string; name?: string }>;
+    }>,
+  });
 
   const createWorkflow = async () => {
     if (!newName.trim()) {
@@ -32,7 +40,7 @@ export default function WorkflowsPage() {
     try {
       const r = await apiFetch('/api/workflows', {
         method: 'POST',
-        body: JSON.stringify({ name: newName.trim() }),
+        body: JSON.stringify({ name: newName.trim(), islandId: newIslandId }),
       });
       const j = await r.json();
       if (!r.ok) {
@@ -43,7 +51,10 @@ export default function WorkflowsPage() {
       setCreating(false);
       setNewName('');
       qc.invalidateQueries({ queryKey: ['workflows'] });
-      nav(`/designer/${j.id}`);   // 建完直接进画布，不用再去列表里找
+      // 把岛带到设计器，否则刷新后又要重选；不传时设计器回落「全部岛」
+      const q = newIslandId ? `?islandId=${newIslandId}` : '';
+      nav(`/designer/${j.id}${q}`);
+      setNewIslandId(null);
     } finally {
       setBusyCreate(false);
     }
@@ -146,6 +157,17 @@ export default function WorkflowsPage() {
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           onPressEnter={createWorkflow}
+        />
+        <Select
+          allowClear
+          style={{ width: '100%', marginTop: 10 }}
+          placeholder={t('workflows.placeholder.island')}
+          value={newIslandId ?? undefined}
+          onChange={(v: number | undefined) => setNewIslandId(v ?? null)}
+          options={(islandsQ.data?.islands ?? []).map((i) => ({
+            value: i.id,
+            label: `${i.code}${i.name ? ' · ' + i.name : ''}`,
+          }))}
         />
       </Modal>
 

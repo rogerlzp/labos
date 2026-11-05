@@ -140,7 +140,7 @@ final class WorkflowApi {
                 try {
                     long nid = s.workflows.createWorkflow(
                             jsonField(body, "name"), jsonField(body, "code"),
-                            jsonField(body, "category"));
+                            jsonField(body, "category"), jsonLong(body, "islandId"));
                     s.audited("workflow.create", "workflow", nid,
                             jsonField(body, "name"), null, ex);
                     s.send(ex, 200, Jsons.obj("id", nid));

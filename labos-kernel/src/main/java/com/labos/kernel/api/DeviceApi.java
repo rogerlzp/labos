@@ -210,7 +210,9 @@ final class DeviceApi {
         }
         if ("/api/devices/pool".equals(path)) {
             s.requireGet(method, ex);
-            s.send(ex, 200, s.query.devicePoolJson());
+            // 可选 ?islandId=：设计器按「这个岛」找设备；不传仍是全量池（岛屿视图 / e2e 回归）
+            long islandId = paramLong(ex.getRequestURI().getQuery(), "islandId");
+            s.send(ex, 200, s.query.devicePoolJson(islandId > 0 ? islandId : null));
             return true;
         }
         if ("/api/devices/unassigned".equals(path)) {

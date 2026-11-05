@@ -3180,6 +3180,14 @@ public final class QueryService {
     }
 
     public String devicePoolJson() throws SQLException {
+        return devicePoolJson(null);
+    }
+
+    /**
+     * 设备池，可按岛过滤（设计器「按岛找设备」）。
+     * islandId 为 null / <=0 时保持全量，保证岛屿视图与 e2e-sim-flow 不回归。
+     */
+    public String devicePoolJson(Long islandId) throws SQLException {
         List<String> items = new ArrayList<>();
         String sql = """
                 SELECT d.id AS resource_id, d.code, d.name, di.ip,
@@ -3193,11 +3201,19 @@ public final class QueryService {
                 LEFT JOIN device dev ON dev.id = di.device_id
                 LEFT JOIN capability c ON c.id = dev.capability_id
                 WHERE d.tenant_id = ? AND d.kind = 'device'
+                  AND (?::bigint IS NULL OR d.parent_id = ?)
                 ORDER BY d.code
                 """;
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, tenantId);
+            if (islandId == null || islandId <= 0) {
+                ps.setNull(2, java.sql.Types.BIGINT);
+                ps.setNull(3, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(2, islandId);
+                ps.setLong(3, islandId);
+            }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Long isl = (Long) rs.getObject("island_id");
