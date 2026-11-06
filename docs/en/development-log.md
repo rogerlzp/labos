@@ -5388,3 +5388,26 @@ was guaranteed to be killed at 30 s**; now it completes normally.
 confirm two things: **who writes it** (the write timing decides what it can prove) and
 **whether anything actually reads it** (`timeout_sec` sat there for three years unread, and
 those "looks configured" fields are the most dangerous ones).
+
+**Addendum (2026-11-06, evening): the orphan-lock cleanup was skipped by an early return**
+
+Above I wrote that "the startup fallback settle releases orphan device locks (those
+pointing at deleted runs)" — **the first version put that UPDATE in the wrong place**:
+it sat **after** `if (found.isEmpty()) return orphans;`, and "there is no orphan run to
+settle this time" is by far the **common** case
+⇒ **the early return ⇒ the orphan lock is never released**.
+
+Hit in practice: after the gate run the robot arm's lock pointed at
+`current_run_id=208017`, and that run **no longer exists** in the `run` table (the test
+deleted it) ⇒ an orphan lock. After an API restart it was **still there** ⇒ the device
+could not be acquired ⇒ exactly the symptom we are fixing.
+
+Fixed: the orphan-lock cleanup now runs **before the scan**, so it happens whether or not
+there are orphan runs. And the self-test now covers **the early-return path**
+(restricting the settle to a run id that does not exist ⇒ `found` is empty) — the old
+self-test only covered the "there is an orphan run" path, which is precisely why it
+missed this bug.
+
+**Lesson (cross-project)**: when adding an early return to a block of logic, go back and
+check whether **every cleanup action after it** also gets skipped; and write self-tests
+that cover **each exit path**, not just the main line.

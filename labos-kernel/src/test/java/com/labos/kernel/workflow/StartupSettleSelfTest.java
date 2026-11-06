@@ -71,6 +71,7 @@ public final class StartupSettleSelfTest {
             settleBatchOrphan();
             idempotentAndDoesNotTouchOthers();
             releasesGhostDeviceLock();
+            releasesOrphanLockWithoutOrphanRuns();
         } finally {
             cleanup();
         }
@@ -173,6 +174,38 @@ public final class StartupSettleSelfTest {
         check("空筛选集合 -> 0 条（防御分支）",
                 StartupRecovery.settleOrphanExperimentRuns(db, TENANT, List.of()).isEmpty(),
                 "non-empty");
+    }
+
+    /**
+     * 孤儿设备锁：**即使本次没有要 settle 的孤儿 run**，也必须被清。
+     *
+     * <p>这是踩过的坑：孤儿锁的清理一度放在
+     * {@code if (found.isEmpty()) return orphans;} 的**后面** ——
+     * 于是「本次没有孤儿 run」（最常见的情况）时，孤儿锁永远清不掉，
+     * 那台设备就一直被占着。实测：机械臂的锁指向一个已被删除的 run，
+     * 重启后仍然占着 ⇒ 设备又拿不到。
+     */
+    private static void releasesOrphanLockWithoutOrphanRuns() throws Exception {
+        section("5. 没有孤儿 run 时，孤儿设备锁也要被清");
+        try (Connection c = db.open()) {
+            // 重新造一把孤儿锁
+            exec(c, "INSERT INTO device_state (tenant_id, resource_id, status, current_run_id, "
+                    + "current_method, online) VALUES (?, ?, 'running', ?, 'Home', true) "
+                    + "ON CONFLICT (tenant_id, resource_id) DO UPDATE "
+                    + "SET current_run_id = EXCLUDED.current_run_id, "
+                    + "    current_method = EXCLUDED.current_method, "
+                    + "    status = 'running', online = true",
+                    TENANT, RES_LOCK_ORPHAN, WF_RUN_GONE);
+        }
+        // 限定一个**不存在的 run id** ⇒ found 为空 ⇒ 走提前返回那条路
+        StartupRecovery.settle(db, TENANT, List.of(-993499L));
+        try (Connection c = db.open()) {
+            String owner = scalar(c,
+                    "SELECT COALESCE(current_run_id::text, '(null)') FROM device_state "
+                            + "WHERE tenant_id = ? AND resource_id = ?",
+                    TENANT, RES_LOCK_ORPHAN);
+            check("提前返回时孤儿设备锁也被释放", "(null)".equals(owner), owner);
+        }
     }
 
     /**

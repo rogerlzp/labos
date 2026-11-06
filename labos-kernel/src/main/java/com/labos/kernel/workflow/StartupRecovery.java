@@ -149,6 +149,16 @@ public final class StartupRecovery {
                 """;
 
         try (Connection c = db.open()) {
+            // ⚠ 孤儿设备锁的清理必须放在**扫描之前**：
+            //   下面有 `if (found.isEmpty()) return orphans;` 的提前返回 ——
+            //   放在后面的话，「本次没有孤儿 run」时孤儿锁就永远清不掉
+            //   （2026-11-06 实测：机械臂的锁指向一个已被删除的 run，
+            //    重启后仍然占着，那台设备又拿不到了）。
+            try (PreparedStatement op = c.prepareStatement(releaseOrphanLockSql)) {
+                op.setLong(1, tenantId);
+                op.executeUpdate();
+            }
+
             List<Orphan> found = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement(scan)) {
                 ps.setLong(1, tenantId);
@@ -172,8 +182,7 @@ public final class StartupRecovery {
             }
 
             try (PreparedStatement ps = c.prepareStatement(settleSql);
-                 PreparedStatement lp = c.prepareStatement(releaseLockSql);
-                 PreparedStatement op = c.prepareStatement(releaseOrphanLockSql)) {
+                 PreparedStatement lp = c.prepareStatement(releaseLockSql)) {
                 for (Orphan o : found) {
                     ps.setString(1, Jsons.obj(
                             "interrupted", true,
@@ -191,10 +200,6 @@ public final class StartupRecovery {
                     lp.setLong(2, o.runId());
                     lp.executeUpdate();
                 }
-
-                // 孤儿锁（指向已删除的 run）：与本次 settle 无关，也要清
-                op.setLong(1, tenantId);
-                op.executeUpdate();
             }
 
             orphans.addAll(found);
