@@ -179,7 +179,7 @@ class Ctx:
         self.made_wf = []
         self.made_run = []
 
-    def wait_devices_idle(self, limit=120):
+    def wait_devices_idle(self, limit=420):
         """等设备回到 idle 再删数据。
 
         ⚠ 为什么必须等：设备方法耗时随机 30–300 秒（真机时序），

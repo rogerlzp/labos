@@ -1878,17 +1878,26 @@ public final class WorkflowService {
         public void onStepStart(long nodeId, int stepSeq, String method,
                                 long resourceId, int attempt) {
             resourceByStep.put(nodeId + ":" + stepSeq + ":" + attempt, resourceId);
-            // 设备锁：抢不到就等（最多 60 秒）。
+            // 设备锁：抢不到就等。
             // resourceId 这里是 device_instance.id，DeviceLock 要 resource_node.id，
             // 所以先用 instanceId 查出 resource_id。
+            //
+            // ⚠ 等待预算**不再写死 60 秒**（2026-11-06）：
+            //   改动前是 60_000 —— 与驱动层固定 30 秒超时是同一类 bug：
+            //   设备方法耗时随机 30–300 秒（真机时序）时，前一条流程还占着设备，
+            //   下一条流程等 60 秒就放弃 ⇒ 「设备被占用超过 60 秒」⇒ 节点转人工。
+            //   现在按**该设备自己登记的方法超时上限**取：设备最多可能被合法占用
+            //   多久（离心 900s / 孵育 1800s / 通用 600s），就等多久，
+            //   下限 60 秒、上限 15 分钟。
             try {
                 Long resNodeId = resourceIdOfInstance(resourceId);
                 if (resNodeId != null) {
+                    long waitMs = deviceLockWaitMs(resourceId);
                     com.labos.kernel.driver.DeviceLock lock =
                             new com.labos.kernel.driver.DeviceLock(db, tenantId);
-                    if (!lock.acquireWithWait(resNodeId, runIdOf(), 60_000)) {
+                    if (!lock.acquireWithWait(resNodeId, runIdOf(), waitMs)) {
                         throw new IllegalStateException(
-                                "设备被占用超过 60 秒：" + resourceId);
+                                "设备被占用超过 " + (waitMs / 1000) + " 秒：" + resourceId);
                     }
                 }
             } catch (SQLException e) {
@@ -2168,6 +2177,43 @@ public final class WorkflowService {
             // 读不到就用启动时的值
         }
         return fallback;
+    }
+
+    /** 设备锁等待的下限（毫秒）：与改动前一致。 */
+    private static final long DEVICE_LOCK_WAIT_MIN_MS = 60_000L;
+    /** 设备锁等待的上限（毫秒）：15 分钟，再久就转人工更合适。 */
+    private static final long DEVICE_LOCK_WAIT_MAX_MS = 900_000L;
+
+    /**
+     * 抢设备锁要等多久（毫秒）。
+     *
+     * <p>依据：<b>该设备登记的方法里最长的那个超时</b>
+     * （{@code device_method.timeout_sec} 的最大值）——
+     * 设备正被别的流程占用时，它最多可能被**合法**占用这么久
+     * （离心 900s / 孵育 1800s / 通用保底 600s），
+     * 等不到这个时长就不该再等，直接转人工。
+     *
+     * <p>为什么不再写死 60 秒：慢设备（真机时序 30–300 秒/次）会让
+     * 紧接着的流程全部抢不到锁 ⇒ 「设备被占用超过 60 秒」⇒ 节点转人工。
+     */
+    private long deviceLockWaitMs(long instanceId) {
+        Long sec = null;
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method "
+                             + "WHERE tenant_id = ? AND device_id = ?")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, instanceId);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    sec = rs.getLong(1);
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            sec = null;
+        }
+        long ms = (sec == null ? 0L : sec) * 1000L;
+        return Math.min(DEVICE_LOCK_WAIT_MAX_MS, Math.max(DEVICE_LOCK_WAIT_MIN_MS, ms));
     }
 
     /**
