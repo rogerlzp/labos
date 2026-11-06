@@ -34,6 +34,12 @@ KEEP=0
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  ✓ $1"; }
 bad() { FAIL=$((FAIL+1)); echo "  ✗ $1${2:+（$2）}"; }
+
+# 本次运行开始时 API 日志的行数：后面查「步骤落库失败」只看这之后的增量。
+# 不能 grep 整个累积日志 —— /tmp/labos-api.log 长期累积，历史上有过一次
+# duplicate key，这条断言就会永远红（2026-11-06 实测踩到）。
+LOG_BASE_LINE=0
+[[ -f /tmp/labos-api.log ]] && LOG_BASE_LINE=$(wc -l < /tmp/labos-api.log | tr -d ' ')
 step(){ echo; echo "════════ $1 ════════"; }
 
 free_port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'; }
@@ -306,10 +312,14 @@ if [[ -n "$WF3" ]]; then
     [[ "$cmds" == "3" ]] && ok "命令行 3 条（1 暂停前 + 2 续跑）" \
         || bad "命令行=$cmds，应 3 条（续跑的命令没落库）"
     # 注意 grep -c 在 0 匹配时退出码是 1，直接 `|| echo 0` 会拼成 "0\n0" —— 断言会假失败
-    dup=$(grep -c "步骤落库失败" /tmp/labos-api.log 2>/dev/null | head -1)
+    # ⚠ 只查**本次运行新增**的日志行，不能 grep 整个累积日志：
+    #   /tmp/labos-api.log 是长期累积的，一旦历史上出现过一次 duplicate key，
+    #   这条断言就**永远红**（2026-11-06 实测：日志里 7 条历史记录导致门禁持续失败）。
+    dup=$(tail -n "+$((LOG_BASE_LINE + 1))" /tmp/labos-api.log 2>/dev/null \
+          | grep -c "步骤落库失败" || true)
     dup=${dup:-0}
-    [[ "$dup" == "0" ]] && ok "没有 uk_run_node 冲突" \
-        || bad "日志里有 $dup 条步骤落库失败（duplicate key）"
+    [[ "$dup" == "0" ]] && ok "没有 uk_run_node 冲突（本次运行新增 $dup 条）" \
+        || bad "本次运行日志里有 $dup 条步骤落库失败（duplicate key）"
 fi
 
 # ---------------------------------------------------------------- 7. 策略

@@ -16,6 +16,9 @@
 #   ./scripts/sim-up.sh                     # 用默认岛（端口模式：127.0.0.1 + 不同端口）
 #   ./scripts/sim-up.sh LAB-DEMO-02         # 指定岛编号
 #   ./scripts/sim-up.sh LAB-DEMO-02 300     # 指定每台模拟耗时（0=用设备类型默认）
+#   ./scripts/sim-up.sh LAB-DEMO-02 0 30000:300000
+#                                        # 方法耗时随机在 30–300 秒（真机时序）；
+#                                        # 测「设备还在执行时来暂停」用这个
 #
 #   # 多 IP 模式：每台设备一个独立 IP、**同一端口**，最接近真实现场
 #   ./scripts/sim-up.sh --setup-ip 20       # 先打印加 IP 的命令（需 sudo，跑一次）
@@ -63,6 +66,10 @@ fi
 
 ISLAND_CODE="${1:-LAB-DEMO-02}"
 DELAY_MS="${2:-0}"     # 0 = 让模拟器按设备类型用默认耗时
+# 第三个参数：随机耗时区间（毫秒，MIN:MAX[:SEED]）。空 = 不随机。
+# 为什么需要：默认耗时只有几百毫秒，命令早回来了 —— 暂停信号根本来不及
+# 在「设备正在执行」时到达，测不出动作中间的暂停/续跑语义。
+RAND_DELAY="${3:-}"
 
 : "${LABOS_DB_HOST:?请设置 LABOS_DB_HOST}"
 : "${LABOS_DB_NAME:?请设置 LABOS_DB_NAME}"
@@ -154,9 +161,13 @@ while IFS='|' read -r DEV_ID RES_ID CODE CAP; do
         SIM_MAIN="com.labos.kernel.sim.SimulatorApp"
     fi
 
+    RAND_ARGS=()
+    if [[ -n "${RAND_DELAY}" ]]; then
+        RAND_ARGS=(--rand-delay "${RAND_DELAY}")
+    fi
     nohup java -cp out ${SIM_MAIN} \
         --port "${PORT}" --device "${DEV_ID}" --code "${CODE}" --cap "${CAP}" \
-        --profile "${PROFILE}" --delay "${DELAY_MS}" \
+        --profile "${PROFILE}" --delay "${DELAY_MS}" "${RAND_ARGS[@]}" \
         >> "/tmp/sim-${CODE}.log" 2>&1 &
     # 脱离当前 shell 的作业控制：否则脚本退出时某些执行环境会把子进程一起收掉
     # （表现为"启动日志有了，一会儿进程全没了，日志只剩一句模拟器退出"）

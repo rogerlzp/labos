@@ -4986,3 +4986,167 @@ were synchronised (Chinese/English).
 workflow parallelism is still not implemented** (P2 batch 5); an exclusive join is an OR join
 (any arriving branch releases it) while a parallel join is an AND join (every incoming branch
 must arrive first) — and that difference is exactly what this section asserts.
+
+### 2026-11-06 (pause point and resume origin across exclusive / parallel / device / variable nodes)
+
+**Background**: the user asked a very practical question: **"if there are exclusive, parallel,
+device nodes and variable nodes, when a pause happens will it stop at those nodes? And when it
+resumes, does it continue from the next node or run from the current one? And is there any
+difference in how device nodes and logic nodes are handled?"**
+
+**The source-level answers** (`GraphRunner` / `WorkflowService`):
+
+| Question | Answer | Basis |
+|---|---|---|
+| Which nodes can a pause stop at | **Only device task nodes.** Exclusive gateways, parallel gateways **and logic nodes** never can | `pauseChecker` is consulted only in the `Kind.TASK` branch; `Kind.BUILTIN` takes a **separate branch** and that branch has **no** `pauseChecker` |
+| Where does the resume continue | **From the node that had not finished yet** — neither the next one nor from the beginning | `resumeAsync` takes the previous round's `level=0 AND status='completed'` node keys as `skipKeys` → completed ones are skipped, unfinished ones are re-run |
+| Device vs logic difference | **No difference** in how the pause point is chosen; the difference is the **side effect of re-running** | re-running a logic node is pure computation with zero side effects, while re-running a device node **issues the command again** (the robot arm moves the plate again) |
+
+Key source locations:
+- `GraphRunner.java:333` — the only `pauseChecker` call, inside the `Kind.TASK` branch and
+  **before** `executeNode` (action boundary — "the robot arm would drop the plate")
+- `GraphRunner.java:333-338` — `ready.offer(key); done.remove(key);` → the stopped node goes
+  back on the queue and leaves `done` ⇒ "this node is not done; resume continues here"
+- `WorkflowService.java:824` — `.withPauseChecker(() -> isRunPaused(runId))` → one DB check per node boundary
+- `WorkflowService.resumeAsync` — collect completed node keys → delete the non-completed rows → `execute(..., doneKeys)`
+- `WorkflowService.java:825-827` — "**do not** decide to fall back based on the execution result.
+  Falling back means re-running, and re-running on a real device means opening the lid twice
+  (physical side effects are irreversible)"
+
+**What was done**: added `scripts/e2e-pause-resume-nodes.py` (gate 4.16, threshold
+`MIN_PAUSERES=25`): drag "S → variable node → **real device node** → exclusive → parallel → end"
+on the page, pause while the device node runs, and assert ① the pause point is not a gateway,
+② **nor a logic node**, ③ it is a device task node; then go through the **real resumeAsync**
+(the same path as the page's "continue" button) and assert ④ the completed logic node was **not
+re-run** (still one `run_node` row), ⑤ the unfinished device node **was re-run**, ⑥ the **device
+command was issued exactly once** and really got a response back.
+
+**Verification**: **25 passed / 0 failed**.
+
+**Two points clarified by measurement (more accurate than reading the source alone; both are now
+asserted)**:
+① **A pause takes effect *after* the previous node has already finished** — `pauseChecker` is
+called *before* `executeNode`, so a node that was mid-flight when the signal arrived still runs
+to completion; the stop happens at the **next boundary**. The code that runs on stopping is
+`ready.offer(key); done.remove(key);` (put back on the queue but not executed this round) —
+**"put back on the queue" does not mean "will be re-run"**: on resume, if it is `completed` it
+lands in `skipKeys` → skipped. Measured: the device node was **already completed** when the
+pause took effect → the resume skipped it → **the device command was issued exactly once**
+(with a real response back).
+② **`run_node.status` cannot be used as an "in progress" signal during execution** —
+`WorkflowService.java:1523` creates **all** business nodes with status 'running' **before
+execution starts**, and the final states are written in one go by `persistNodes` at the end.
+The first version used "the node turned running" as its timing signal and thus caught a **fake
+signal** (every node starts out running). The correct signal is **run_command has a row**
+(the device command really went out).
+
+**Pitfalls (all three worth recording)**:
+① **The device dropdown holds 247 devices but renders only the first 10** — you must
+**type to search** to reach `ID1731`; scrolling the options never finds it (the first version's
+device binding silently failed and it took a while to spot).
+② **Selecting a node needs a raw `page.mouse.click`** — `locator.click()` is blocked by
+bpmn-js's **direct-editing box** (`.djs-direct-editing`) and retries until timeout.
+③ **`run_command` hangs off the level=1 step rows** — you must join through `parent_node_id`
+to reach the level=0 business node; the first version joined on level=0 directly, counted 0 rows,
+and **nearly concluded "the device never ran"**. Also `device_raw_response` is a json type and
+cannot be compared with `<> ''` (that raises invalid input syntax).
+
+**Boundary**: not covered — pausing in the middle of a device command (the source guarantees it
+cannot stop there), pausing under a `runtime_hold` site hold, pausing inside a loop body,
+pausing on an exclusive branch **with conditions**, real-device timing, and pausing on a
+`subProcess` node.
+
+### 2026-11-06 (pausing during a device command: measured reality + random simulator delays + how to really stop)
+
+**Background**: the user described a very specific phenomenon: **"most of the time the pause
+command goes out, but the method the device is executing keeps going; only the robot arm
+receives the pause command and stops right there — see how that should be implemented."**
+
+**The measured reality (more thorough than the impression)**:
+**Today a pause does nothing to a device command that is already executing — and the robot arm
+stops neither.**
+
+Measured (simulator delay set to 8–15 s, pause issued while the command was mid-flight):
+
+```
+run 最终状态      : completed        ← the pause never took effect
+设备指令最终状态  : completed        ← the device finished; it was not interrupted
+节点状态          : ARM=completed
+暂停生效延迟      : 未观测到 run 变 paused（它直接跑到了终态）
+```
+
+**Root cause (located by reading the code)**:
+① `GraphRunner.java:333` consults `pauseChecker` **only at an action boundary** (before
+`executeNode`); while a device command is in flight the thread is **blocked waiting for the
+reply** and never reaches that check. ⇒ a pause is structurally ineffective against a
+**running** command (by design: "the robot arm would drop the plate").
+② "the robot arm stops" is a **misreading**: `PauseManager.releaseResources` releases
+resources that are *reserved but not in use*, while the **robot arm holding a plate is
+exempt** (letting go would drop it) — the semantics is precisely "the robot arm keeps
+carrying". The robot arm and ordinary devices behave **identically** here.
+③ **The abort capability exists but is not wired up**: `DeviceDriver.abort(commandId)`
+("abort the command in flight, best effort") genuinely interrupts the wait in
+`TcpPersistentDriver` (it removes the pending future); `TcpDriverAdapter` is a no-op (the
+protocol has no Abort message). **There is no caller anywhere** — measured:
+`run_command.error_code='EC-99-0005'` (aborted) occurs **zero times in the whole database**.
+④ **A real bug found along the way**: the driver's timeout is a **fixed 30 seconds at the
+executor level**, while `device_method.timeout_sec` / `workflow_node.timeout_sec` **store the
+value but the driver never reads it** (`grep timeout_sec` under `driver/` and `workflow/`
+returns nothing). ⇒ **any real-device method taking longer than 30 s (a 5-minute centrifuge,
+a 30-minute incubation) is judged as a timeout by the control plane** — unrelated to pausing.
+Measured: with the simulator delay set to 20–40 s, the runs that exceeded 30 s came back
+`failed`.
+
+**Companion change · random simulator delays** (needed to test "pause during execution" — with
+the fixed few-hundred-millisecond delays the pause signal never gets a chance to arrive while
+a command is in flight):
+- `DeviceCore`: new `randDelayMinMs / randDelayMaxMs / randDelaySeed`; each call takes a
+  value from the range; precedence `--rand-delay` > `--delay` > the profile/model's fixed
+  delay. **Off by default** (`randDelayMaxMs=0`) ⇒ existing behaviour is completely unchanged.
+- `DeviceSimulator`: new `--rand-delay MIN:MAX[:SEED]` (ms); omit SEED for a different value
+  every call, pass SEED for a reproducible sequence.
+- `scripts/sim-up.sh`: third argument — `./scripts/sim-up.sh LAB-DEMO-02 0 30000:300000`.
+- Measured (10–20 s, seed 42): four commands took **17.3 / 16.8 / 13.1 / 12.8 s** — inside
+  the range and different every time.
+
+**New tests**:
+- `scripts/e2e-pause-resume-nodes.py` (gate 4.16, threshold `MIN_PAUSERES=25`) — the pause
+  point and the resume origin across exclusive / parallel / device / variable nodes, **25/0**.
+- `scripts/e2e-pause-during-device.py` — measures the current behaviour of "pause while a
+  device command is in flight" (not in the gate: it asserts today's behaviour, which will
+  change once a real interrupt is implemented).
+
+**Solution document**: `docs/设备执行中暂停-现状实测与实现方案-20261106.md`. The
+recommendations, ordered by risk:
+1. **Take the timeout from the method** (low risk, immediate): read `device_method.timeout_sec`
+   (already stored), fall back to 30 s; long tasks stop being killed spuriously.
+2. **Record the current commandId on pause** (low risk): paving the way for a real interrupt.
+3. **Make the execution side interruptible** (medium-high risk, involves real-device safety):
+   replace the blocking `driver.execute` with "own the future + poll for pause + call
+   `driver.abort(cmdId)` on a hit"; **let each method declare whether it can be interrupted**
+   (`device_method.interruptible`: robot-arm transport = false, long processes = true) — the
+   robot arm must not stop (the plate would drop), but a centrifuge or incubator can.
+4. State it in the UI ("the current action will finish" / "interrupted, retryable") to remove
+   the misunderstanding.
+
+**A gate defect fixed along the way (2026-11-06)**:
+the assertion "no uk_run_node conflict" in `scripts/verify-device-chain.sh` was
+`grep -c "步骤落库失败" /tmp/labos-api.log` — it counts the **entire accumulated log**.
+`/tmp/labos-api.log` grows forever, so **once a duplicate key had ever occurred, that
+assertion would stay red forever** (measured: 7 historical records kept the gate failing
+while the actual execution was fine). It now only looks at the log lines **added by this
+run** (the script records `LOG_BASE_LINE` at startup as the baseline). After the fix,
+`verify-device-chain.sh` runs **41 / 0** (it was 39 / 2 before).
+
+⚠ The first attempt also added "clean the reused workflow's previous run data before
+triggering" — and **that broke the script** (the cleanup ran before the trigger, so
+`RID=$(SELECT max(id) FROM run)` found nothing → section 6 failed wholesale, plus
+`steps: unbound variable`). That change was reverted — **only the assertion's scope was
+fixed, the script's data flow was left alone**. Lesson: when changing a test script, the
+insertion point matters more than the change itself.
+
+**Boundary**: this round only **measured the current behaviour and produced a plan**; the
+production pause semantics were **not** changed (it involves real-device plate drops, so the
+list of interruptible methods needs on-site confirmation); taking the timeout from the method
+is also **not yet implemented** (located and written into the plan).
+

@@ -155,6 +155,8 @@ queued.
 | `docs/并发调度决策记录.md` | `docs/en/concurrency-scheduling-decisions.md` | ✅ |
 | `docs/并行能力验证-20261103.md` | `docs/en/parallel-capability-verification.md` | ✅ |
 | `docs/页面实操验证报告-多并行多网关-20261105.md` | `docs/en/page-exercise-report-multi-parallel-20261105.md` | ✅ |
+| `docs/暂停与恢复语义验证-四类节点-20261106.md` | `docs/en/pause-resume-semantics-four-node-types-20261106.md` | ✅ |
+| `docs/设备执行中暂停-现状实测与实现方案-20261106.md` | `docs/en/pause-during-device-measured-and-plan-20261106.md` | ✅ |
 | `docs/并行调度-实施规格.md` | `docs/en/parallel-scheduling-spec.md` | ✅ |
 | `docs/开发日志.md` | `docs/en/development-log.md` | ✅ |
 | `docs/异步结果查询与动态分支-设计.md` | `docs/en/async-results-and-dynamic-branches.md` | ✅ |

@@ -48,6 +48,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_CRASH` | 34 | Crash recovery end to end (`verify-s3-2-residuals.py`); kill -9 → restart → queued rehydrate + orphan running settled by the startup fallback + `paused` not killed by mistake + queued zombie (queued for over 1 hour) collected |
 | `MIN_MULTIPAR` | 21 | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables (`e2e-multi-parallel.py`); drag 12 nodes / 13 edges on the page → save → really run → all three parallel branches completed |
 | `MIN_GWPAIR` | 34 | Gateway pairs · exclusive and parallel each at N=2 and N=3 (`e2e-gateway-pairs.py`); the four gateway roles come from the page's "use the suggested name" button and must match the incoming/outgoing edge counts → split and join appear **as a pair** → really run: all N parallel branches run, the exclusive split takes exactly one branch and the rest are bypassed |
+| `MIN_PAUSERES` | 25 | Pause point and resume origin (`e2e-pause-resume-nodes.py`); the pause point lands **only on a device task node** (neither gateways nor logic nodes consult the pause checker) → resume continues from the **node that had not finished**, nodes already completed are skipped via skipKeys → the device command is issued exactly once (not repeated) and really gets a response back |
 
 ---
 
@@ -208,6 +209,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `scripts/e2e-multi-parallel.py` | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables: drag 12 nodes / 13 edges on the page → the graph holds 2 parallelGateway + 2 exclusiveGateway → really run → all three parallel branches completed | L4 | ✅ |
 | `scripts/shot-gateway-labels.py` | Gateway readability · naming + role labels + a visible end marker: drag "exclusive split → parallel split → parallel join" on the page and name them → all three names land in the graph XML → screenshots confirm legible labels, an orange join marker and a dark end event | L4 | ⬜ reviewed by eye |
 | `scripts/e2e-gateway-pairs.py` | Gateway pairs · exclusive/parallel at N=2 and N=3: drag two graphs → roles come from "use the suggested name" and must match the edge counts → names land in the graph XML → really run: all parallel branches run, the exclusive split takes exactly one | L4 | ✅ |
+| `scripts/e2e-pause-resume-nodes.py` | Pause point and resume origin across exclusive / parallel / device / variable nodes: drag "variable → device → exclusive → parallel" → pause while the device node runs → assert the pause point lands only on the device task node (neither gateways nor logic nodes) → resume → completed nodes are skipped (the logic node is not re-run), unfinished ones are re-run, and the device command is issued once with a real response | L4 | ✅ |
 
 ---
 

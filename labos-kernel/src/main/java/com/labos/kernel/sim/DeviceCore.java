@@ -64,6 +64,18 @@ public final class DeviceCore {
     private final String code;
     private final String capability;
     private final long delayMs;
+    /**
+     * 随机耗时区间（毫秒，闭区间）；null = 不随机，按画像/型号的固定耗时。
+     *
+     * <p>为什么需要：固定耗时测不出「设备还在执行时来暂停」这类场景 ——
+     * 命令 150ms 就回来了，暂停信号根本来不及在动作中间到达。
+     * 随机 30–300 秒才能复现真机（离心 5 分钟、PCR 几十分钟）的时序。
+     */
+    private final long randDelayMinMs;
+    private final long randDelayMaxMs;
+    /** 随机种子；固定则每次跑的序列相同（可复现），null = 真随机。 */
+    private final Long randDelaySeed;
+    private final java.util.Random randDelayRng;
     private final boolean longTask;
     private final int failEvery;
     /** 只在这个方法上注入故障；null = 所有方法。 */
@@ -203,6 +215,23 @@ public final class DeviceCore {
                       long delayMs, boolean longTask, int failEvery,
                       String failCode, boolean offline, String profile,
                       DeviceModel model, String failMethod, int failFrom) {
+        this(port, deviceId, code, capability, delayMs, longTask, failEvery,
+                failCode, offline, profile, model, failMethod, failFrom,
+                -1, -1, null);
+    }
+
+    /**
+     * 完整构造：额外支持**随机耗时**。
+     *
+     * @param randDelayMinMs 随机耗时下界（毫秒，含）；&lt;= 0 表示不随机
+     * @param randDelayMaxMs 随机耗时上界（毫秒，含）
+     * @param randDelaySeed  随机种子；null = 真随机（每次不同），给定则可复现
+     */
+    public DeviceCore(int port, String deviceId, String code, String capability,
+                      long delayMs, boolean longTask, int failEvery,
+                      String failCode, boolean offline, String profile,
+                      DeviceModel model, String failMethod, int failFrom,
+                      long randDelayMinMs, long randDelayMaxMs, Long randDelaySeed) {
         this.port = port;
         this.deviceId = deviceId;
         this.code = code;
@@ -228,6 +257,14 @@ public final class DeviceCore {
         // 改动前一律 150ms，测出来的耗时没有参考意义）
         // 负数/0 = 用画像的分方法延迟；正数 = 所有方法统一用这个值（自动化测试想跑快）
         this.delayMs = delayMs > 0 ? delayMs : -1;
+        // 随机耗时：显式给了区间就用随机（覆盖画像/型号的固定耗时），
+        // 没给就沿用原逻辑。优先级：--rand-delay > --delay > 画像/型号默认。
+        this.randDelayMinMs = Math.max(0, randDelayMinMs);
+        this.randDelayMaxMs = Math.max(this.randDelayMinMs, randDelayMaxMs);
+        this.randDelaySeed = randDelaySeed;
+        this.randDelayRng = randDelaySeed == null
+                ? new java.util.Random()
+                : new java.util.Random(randDelaySeed);
     }
 
     /**
@@ -707,6 +744,19 @@ public final class DeviceCore {
         }
 
         long waited = delayMs > 0 ? delayMs : methodDelayMs(alias, method);
+        // 随机耗时优先（--rand-delay）：每次调用在区间里取一个值。
+        // 为什么放在 delayMs 之后判断：--delay 是「所有方法统一固定耗时」，
+        // 自动化测试要它；--rand-delay 是「模拟真机时序」，两者互斥时
+        // 显式参数优先，但随机用于本场景（真机耗时不确定）。
+        if (randDelayMaxMs > 0) {
+            long span = randDelayMaxMs - randDelayMinMs;
+            waited = span <= 0
+                    ? randDelayMinMs
+                    : randDelayMinMs + (long) (randDelayRng.nextDouble() * (span + 1));
+            if (waited > randDelayMaxMs) {
+                waited = randDelayMaxMs;
+            }
+        }
         sleep(waited);
 
         // ① 故障注入优先：真机是先失败、不是先成功。

@@ -58,6 +58,7 @@ MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / �
 MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle + paused 不被误杀 + 排队僵尸被收，31 → 34）
 MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
+MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点只落在设备任务节点——网关与逻辑节点都不查 pauseChecker；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
 
 FAIL=0
 SKIP=0
@@ -440,8 +441,30 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "网关成对 $GN / 0（异或/并行各 N=2+N=3，分叉与汇合成对）"
     fi
   fi
+  # 4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）
+  # 补的是「暂停停在哪类节点、恢复从哪继续」这条语义：
+  # 源码里 pauseChecker 只在 Kind.TASK 分支查 ⇒ 暂停点只可能是设备任务节点
+  # （网关与逻辑节点都不是）；恢复靠 skipKeys（上一轮 level=0 completed 的
+  # node_key）⇒ 已完成的跳过不重跑，没做完的重跑，设备指令不重复下发。
+  note "4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）"
+  POUT2=$(python3 scripts/e2e-pause-resume-nodes.py --base "$E2E_BASE" 2>&1)
+  if echo "$POUT2" | grep -q '^SKIP'; then
+    skip "暂停与恢复（没给库连接）"
+  else
+    PN2=$(echo "$POUT2" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+    PF2=$(echo "$POUT2" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+    PN2=${PN2:-0}; PF2=${PF2:-1}
+    if [[ "$PF2" != "0" ]]; then
+      fail "暂停与恢复有失败（$PF2 条）"
+      echo "$POUT2" | grep '✗' | head -8
+    elif (( PN2 < MIN_PAUSERES )); then
+      fail "暂停与恢复断言 $PN2 < 阈值 ${MIN_PAUSERES}"
+    else
+      pass "暂停与恢复 $PN2 / 0（暂停点只落在设备任务节点；恢复从未完成节点继续，设备指令不重复下发）"
+    fi
+  fi
 else
-  skip "前端 e2e / 4.5-4.15 页面轨（没给 --e2e）"
+  skip "前端 e2e / 4.5-4.16 页面轨（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果

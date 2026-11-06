@@ -19,6 +19,9 @@ import com.labos.kernel.device.DeviceModels;
  *   --host 0.0.0.0        绑定地址（默认所有网卡；写 127.0.0.1 只本机）
  *   --delay 0             模拟耗时；0/负数 = 用该型号/类型的默认值
  *   --long                长任务模式（先回"运行中"再回"完成"）
+ *   --rand-delay 30000:300000[:SEED]
+ *                         方法耗时在 [MIN,MAX] 毫秒内**随机**（真机时序）；
+ *                         给 SEED 则可复现。用于测「设备还在执行时来暂停」
  *   --fail 5              每 5 条**动作类**命令失败一次
  *   --fail-method Seal    只在 Seal 上失败（配合 --fail / --fail-code）
  *   --fail-from 3         第 3 条命令起才开始失败（前两条正常，测"跑一半坏了"）
@@ -46,6 +49,12 @@ public final class DeviceSimulator {
         boolean offline = false;
         String profile = "generic";
         String modelId = null;
+        // --rand-delay MIN:MAX[:SEED] —— 方法耗时在区间内随机（毫秒）。
+        // 为什么需要：固定耗时（默认几百毫秒）测不出「设备还在执行时来暂停」
+        // —— 命令早回来了，暂停信号来不及在动作中间到达。
+        long randMin = -1;
+        long randMax = -1;
+        Long randSeed = null;
 
         // --list-* 是单参数，先单独处理（下面的循环是成对解析）
         for (String a : args) {
@@ -78,6 +87,25 @@ public final class DeviceSimulator {
                 case "--profile" -> profile = args[++i];
                 case "--model" -> modelId = args[++i];
                 case "--offline" -> offline = true;
+                case "--rand-delay" -> {
+                    // 格式 MIN:MAX[:SEED]，单位毫秒
+                    String spec = args[++i];
+                    String[] parts = spec.split(":");
+                    if (parts.length < 2) {
+                        System.err.println("--rand-delay 需要 MIN:MAX 格式（毫秒），例如 --rand-delay 30000:300000");
+                        System.exit(2);
+                    }
+                    try {
+                        randMin = Long.parseLong(parts[0].trim());
+                        randMax = Long.parseLong(parts[1].trim());
+                        if (parts.length >= 3 && !parts[2].isBlank()) {
+                            randSeed = Long.parseLong(parts[2].trim());
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("--rand-delay 参数不是数字：" + spec);
+                        System.exit(2);
+                    }
+                }
                 default -> { }
             }
         }
@@ -105,7 +133,12 @@ public final class DeviceSimulator {
 
         DeviceCore core = new DeviceCore(port, device, code, cap,
                 delay, longTask, failEvery, failCode, offline, profile,
-                model, failMethod, failFrom);
+                model, failMethod, failFrom, randMin, randMax, randSeed);
+        if (randMax > 0) {
+            System.out.println("[模拟器] 方法耗时随机区间 "
+                    + randMin + "–" + randMax + "ms"
+                    + (randSeed == null ? "（每次不同）" : "（种子 " + randSeed + "，可复现）"));
+        }
 
         core.setListener(new DeviceCore.Listener() {
             @Override
