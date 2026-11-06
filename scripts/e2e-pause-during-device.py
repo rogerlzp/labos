@@ -7,12 +7,22 @@
    只有机械臂收到暂停指令后会当前停止，你看看这个怎么实现"
 
 这个脚本把那条现象**跑出来并量化**：
-  · 设备节点正在执行（run_command 已发出、回包未到）时发暂停
+  · 设备方法**真的在执行**时发暂停
   · 看暂停多久生效（pause 后 run 变 paused 的时刻）
   · 看设备指令最终是 completed 还是 aborted/timeout
   · 看机械臂（TRANSFER）与普通设备行为是否不同
 
-设备耗时用模拟器的 --rand-delay（20–40 秒），够长到「暂停信号能在动作中间到达」，
+⚠ 判据修正（2026-11-06，第 1 版踩的坑）：
+  **run_command 有行 ≠ 设备正在执行**。
+  `WorkflowService` 的 run_command 是**步结束后**才 INSERT 的
+  （status 直接写 completed/failed，sent_at/finished_at 都是 now()），
+  它是「这一步跑完了」的证据。第 1 版拿它当「指令刚发出去」的信号，
+  于是**暂停发出去时设备其实早就跑完了** —— 测的不是「执行中暂停」。
+  ⇒ 判断「设备正在执行」必须看 **device_state**：
+  `markDeviceBusy` 在 onStepStart 置 status='running' + current_method，
+  `markDeviceIdle` 在 onStepEnd 复位 —— 那才是下发时刻。
+
+设备耗时用模拟器的 --rand-delay（10–18 秒），够长到「暂停信号能在动作中间到达」，
 又不会让测试等太久。
 
 用法：
@@ -22,6 +32,7 @@
 import argparse
 import importlib.util
 import os
+import re
 import sys
 import time
 
@@ -34,6 +45,7 @@ _spec.loader.exec_module(F)
 
 # 机械臂设备（TRANSFER 能力）：ID1731 / device 214
 ARM_DEVICE = 214
+ARM_RESOURCE = 200214
 ARM_CODE = "ID1731"
 
 
@@ -53,6 +65,36 @@ def put_raw(path, xml_text, token):
 
 def q1(sql):
     return F.q(sql)
+
+
+def device_state():
+    """设备此刻的执行状态（DB 侧，下发时刻的信号）。"""
+    row = q1("SELECT coalesce(status,'-')||'|'||coalesce(current_method,'-')||'|'||"
+             "coalesce(current_run_id::text,'-') FROM device_state "
+             "WHERE tenant_id=1 AND resource_id=%d" % ARM_RESOURCE)
+    if not row:
+        return ("-", "-", "-")
+    parts = (row + "||").split("|")
+    return (parts[0], parts[1], parts[2])
+
+
+# 本次造出来的对象（供清理用）。⚠ 失败/异常路径也必须清理 ——
+# 残留的 run 留在库里会让别的脚本的 max(id) 抓到它们（2026-11-06 踩过）。
+MADE = {"wf": 0, "run": 0}
+
+
+def cleanup():
+    """清理现场。顺序要紧：run 先删，否则 workflow 删不掉（FK）。"""
+    rid, wf_id = MADE["run"], MADE["wf"]
+    try:
+        if rid:
+            F.q(f"DELETE FROM run_command WHERE run_id={rid}; "
+                f"DELETE FROM run_node WHERE run_id={rid}; DELETE FROM run WHERE id={rid};")
+        if wf_id:
+            F.q(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}; "
+                f"DELETE FROM workflow WHERE id={wf_id};")
+    except Exception as e:  # noqa: BLE001
+        print("  （清理时出错：%s）" % e)
 
 
 def main():
@@ -78,6 +120,7 @@ def main():
               {"name": "E2E-长耗时暂停-%d" % int(time.time()), "category": "choreography"},
               token)
     wf_id = int(r["id"])
+    MADE["wf"] = wf_id
     print("  建流程 #%d" % wf_id)
 
     # 用 XML 直接建（页面拖太慢，这里要的是执行语义不是页面交互）
@@ -90,7 +133,7 @@ def main():
   id="defs_{wf_id}" targetNamespace="http://labos.local/bpmn">
   <bpmn:process id="p_{wf_id}" isExecutable="true">
     <bpmn:startEvent id="S"><bpmn:outgoing>flow1</bpmn:outgoing></bpmn:startEvent>
-    <bpmn:task id="ARM" name="机械臂搬运" protocolName="Home" resource="200214">
+    <bpmn:task id="ARM" name="机械臂搬运" protocolName="Home" resource="{ARM_RESOURCE}">
       <bpmn:incoming>flow1</bpmn:incoming>
       <bpmn:outgoing>flow2</bpmn:outgoing>
     </bpmn:task>
@@ -120,36 +163,58 @@ def main():
     r = F.api(f"/api/workflows/{wf_id}/run?async=1", "POST", {}, token)
     rid = int(r.get("runId")) if isinstance(r, dict) and r.get("runId") else 0
     if not rid:
-        print("  ✗ 触发执行失败")
+        # 兜底也**按 workflow_id 定位**，不用 max(id)（会抓到别的测试的 run）
+        rows = q1(f"SELECT COALESCE(max(id),0) FROM run WHERE workflow_id={wf_id}")
+        rid = int(rows or 0)
+    if not rid:
+        F.bad("触发执行失败")
+        print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
         sys.exit(1)
+    MADE["run"] = rid
     print("  触发执行 run #%d" % rid)
 
-    # 3) 等设备指令**真的发出去了**（run_command 有行 = 指令已下发、设备正在执行）
+    # 3) 等设备方法**真的在执行**（device_state，不是 run_command —— 那是步结束才落的库）
     t_cmd = None
-    deadline = time.time() + 40
+    busy = None
+    deadline = time.time() + 120
     while time.time() < deadline:
-        n = q1(f"SELECT count(*) FROM run_command WHERE run_id={rid}")
-        if n and int(n) >= 1:
+        st, meth, owner = device_state()
+        if st == "running" and meth != "-" and owner in ("-", str(rid)):
+            busy = (st, meth, owner)
             t_cmd = time.time()
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
     if not t_cmd:
-        print("  ✗ 设备指令一直没发出去")
-        F.q(f"DELETE FROM run_command WHERE run_id={rid}; "
-            f"DELETE FROM run_node WHERE run_id={rid}; DELETE FROM run WHERE id={rid};")
+        F.bad("没观测到设备方法执行中", str(device_state()))
+        cleanup()
+        print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
         sys.exit(1)
-    print("  ✓ 设备指令已发出（设备正在执行）")
+    F.ok("观测到设备方法执行中（device_state status=%s current_method=%s，归属 run #%s）"
+         % (busy[0], busy[1], busy[2]))
+    print("  ✓ 设备方法执行中（device_state: %s / %s / run %s）" % busy)
 
     # 4) **在设备执行中发暂停**
-    q1(f"UPDATE run SET status='paused', pause_kind='manual', "
-       f"pause_reason='e2e 长耗时设备执行中暂停', pause_node_key='ARM', "
-       f"paused_at=now(), updated_at=now() WHERE id={rid} AND status='running'")
+    #    ⚠ 不能带 `AND status='running'`：那一刻 run 可能已不是 running
+    #    （异步提交时先 queued，被调度后才 running），条件不匹配就是**静默 0 行更新** ——
+    #    暂停压根没发出去，却会让人以为「暂停对设备无效」。
+    #    所以：去掉状态条件，并**检查影响行数** —— 0 行就必须报失败。
+    paused_rows = q1(f"UPDATE run SET status='paused', pause_kind='manual', "
+                     f"pause_reason='e2e 长耗时设备执行中暂停', pause_node_key='ARM', "
+                     f"paused_at=now(), updated_at=now() WHERE id={rid}")
+    # psql -c "UPDATE ..." 打印的是 "UPDATE N"，取末尾的数字
+    m = re.search(r"(\d+)\s*$", (paused_rows or "").strip())
+    n_rows = int(m.group(1)) if m else 0
+    if n_rows < 1:
+        F.bad("暂停 UPDATE 影响 0 行 —— 暂停根本没发出去（run id=%s）" % rid)
+        cleanup()
+        print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
+        sys.exit(1)
+    F.ok("已在设备执行中发出暂停（UPDATE 影响 %d 行）" % n_rows)
     t_pause = time.time()
-    print("  ✓ 已在设备执行中发出暂停")
 
     # 5) 观察：暂停什么时候真正生效（run 状态、节点状态）
     t_paused = None
-    deadline = time.time() + 120
+    deadline = time.time() + 180
     while time.time() < deadline:
         st = q1(f"SELECT status::text FROM run WHERE id={rid}")
         if st == "paused" and t_paused is None:
@@ -185,7 +250,15 @@ def main():
     else:
         print("    暂停生效延迟      : 未观测到 run 变 paused（它直接跑到了终态）")
 
-    # 6) 结论
+    # 6) 断言（语义要求，不钉「当前行为」）
+    F.ok("暂停在 5 秒内生效（%.1f 秒）" % (t_paused - t_pause)) \
+        if t_paused and (t_paused - t_pause) < 5.0 \
+        else F.bad("暂停生效太慢或没生效", str(t_paused))
+    F.ok("设备方法有终态记录（%s）—— 暂停没有让设备动作凭空消失" % (cmd_st or "(无)")) \
+        if cmd_st in ("completed", "failed", "aborted", "timeout") \
+        else F.bad("设备指令没有终态记录（可能卡在执行中）", str(cmd_st))
+
+    # 7) 结论（当前行为：设备动作**不会被**暂停打断）
     print()
     if cmd_st == "completed":
         print("  ⇒ 设备指令**跑完了**（completed）：暂停没有中断正在执行的设备动作")
@@ -194,13 +267,20 @@ def main():
     else:
         print("  ⇒ 设备指令状态 %s（未跑完也未明确中断）" % cmd_st)
 
-    # 7) 清理
-    F.q(f"DELETE FROM run_command WHERE run_id={rid}; "
-        f"DELETE FROM run_node WHERE run_id={rid}; DELETE FROM run WHERE id={rid};")
-    F.q(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}; "
-        f"DELETE FROM workflow WHERE id={wf_id};")
+    # 8) 清理
+    cleanup()
     print("  （测试数据已清理）")
+    print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        cleanup()
+        print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
+        sys.exit(1)

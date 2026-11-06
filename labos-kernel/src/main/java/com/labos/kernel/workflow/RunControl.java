@@ -153,6 +153,26 @@ public final class RunControl {
             ps.setLong(3, tenantId);
             ps.executeUpdate();
         }
+        // ⚠ **experiment 表也要跟着改成 paused**（2026-11-06 实测发现）：
+        //   上面只改了 experiment_run，experiment.status 停在 'running' ——
+        //   实验列表上显示「执行中」，但详情/暂停队列里已经是「已暂停」，
+        //   **两处自相矛盾**（现场会以为还在跑，不会去点继续）。
+        //   状态映射走词表（StatusVocabulary.runToExperimentCaseSql），
+        //   与 ExperimentExecutor.syncExperimentStatus 同一口径，不另写一套。
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "UPDATE experiment e SET status = "
+                             + com.labos.kernel.workflow.StatusVocabulary
+                                     .runToExperimentCaseSql() + ",\n"
+                             + "       updated_at = now()\n"
+                             + "  FROM experiment_run r\n"
+                             + " WHERE e.tenant_id = ? AND r.tenant_id = e.tenant_id\n"
+                             + "   AND e.id = r.experiment_id\n"
+                             + "   AND r.status = 'paused'\n"
+                             + "   AND e.status IN ('queued', 'running')")) {
+            ps.setLong(1, tenantId);
+            ps.executeUpdate();
+        }
     }
 
     /**

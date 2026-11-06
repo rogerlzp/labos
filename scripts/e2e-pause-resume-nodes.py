@@ -187,6 +187,18 @@ def resume_run(run_id):
     return True
 
 
+def finish(code=None):
+    """打印「通过 N / 失败 M」汇总行并退出。
+
+    ⚠ 为什么每条退出路径都要打这一行：门禁靠它判断成败。
+    早退（异常 / 断言失败）时不打汇总 ⇒ 门禁解析不到 ⇒ 兜底成「失败 1 条」
+    但一条明细都打不出来（2026-11-06 在 4.17 段踩过这个坑，排查了很久）。
+    """
+    print()
+    print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
+    sys.exit(code if code is not None else (1 if F.FAIL else 0))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:5173")
@@ -244,7 +256,8 @@ def main():
         if miss:
             F.bad("落点失败", ",".join(miss))
             b.close()
-            sys.exit(1)
+            ctx.cleanup()   # 失败路径也要清现场：残留的 run/workflow 会一直堆在库里
+            finish()
         F.ok("落 10 个节点（S/VAR/DEV/XOR/A/B/PAR/C/D/E）")
 
         for a, c in (("S", "VAR"), ("VAR", "DEV"), ("DEV", "XOR"),
@@ -290,16 +303,23 @@ def main():
         if not rid:
             F.bad("触发执行失败")
             b.close()
-            sys.exit(1)
+            ctx.cleanup()   # 同上
+            finish()
         ctx.made_run.append(rid)
         F.ok(f"触发真执行（run #{rid}）")
 
-        # ⚠ 判据必须是 **run_command 有行**（设备指令真的发出去了），
+        # ⚠ 判据用 **run_command 有行**（那一步**已经跑完并落库**），
         #   **不能**用 run_node.status='running'：
         #   `WorkflowService.java:1523` 在执行**开始前**就把所有业务节点
         #   一次性建成 'running' —— 所有节点一开始都是 running，
         #   拿它当「正在执行」的信号等于抓到假信号（第一版就是这么错的，
         #   表现为「所有节点都 running、VAR 不在已完成里」）。
+        #   ⚠ run_command 也不是「指令刚发出去」的信号 —— 它是**步结束后**
+        #     才 INSERT 的（status 直接写 completed/failed，sent_at/finished_at
+        #     都是 now()），所以它证明的是「DEV 这一步确实做过了」。
+        #     真要判「设备**正在执行**」得看 device_state
+        #     （markDeviceBusy 在 onStepStart 置 status='running'+current_method）
+        #     —— 见 e2e-pause-during-device.py / e2e-pause-during-experiment.py。
         deadline = time.time() + 30
         hit = False
         while time.time() < deadline:
@@ -310,8 +330,9 @@ def main():
         if not hit:
             F.bad("没抓到设备指令发出", str(node_states(rid)))
             b.close()
-            sys.exit(1)
-        F.ok(f"抓到设备节点 DEV={ids['DEV']} 的指令真的发出去了")
+            ctx.cleanup()   # 同上
+            finish()
+        F.ok(f"抓到设备节点 DEV={ids['DEV']} 的指令已执行并落库（run_command 有行）")
         pause_run(rid, ids["DEV"])
         F.ok("发出暂停")
 
@@ -438,9 +459,7 @@ def main():
         b.close()
     ctx.cleanup()
 
-    print()
-    print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
-    sys.exit(1 if F.FAIL else 0)
+    finish()
 
 
 if __name__ == "__main__":

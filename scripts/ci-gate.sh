@@ -59,6 +59,7 @@ MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → 
 MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点只落在设备任务节点——网关与逻辑节点都不查 pauseChecker；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
+MIN_PAUSEEXP=2    # 2026-11-06：实验级暂停 · 设备执行中发暂停 → run/experiment_run/experiment 三层都变 paused（语义要求，实现真停后也不该变）
 
 FAIL=0
 SKIP=0
@@ -66,6 +67,24 @@ note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
 skip() { printf '  \033[33m⏭\033[0m %s\n' "$1"; SKIP=$((SKIP + 1)); }
+
+# 解析子脚本的「通过 N / 失败 M」汇总行。
+# 为什么要专门写这个：汇总行**缺失**有两种完全不同的原因 ——
+#   ① 脚本里有失败用例（该报失败明细）
+#   ② 脚本**没跑到最后一行**（异常退出 / 被 kill / 压根没打印汇总）
+# 第 ② 种以前会被兜底成「失败 1 条」，但一条 ✗ 明细都打不出来，
+# 表现为「门禁红了却看不出为什么」—— 2026-11-06 的 4.17 段就是这么查了半天
+# （根因：脚本没打印汇总行，门禁解析不到 ⇒ 兜底 1 ⇒ 报「有失败」）。
+# ⇒ 汇总行缺失单独判一类，并把**输出尾部**打出来。
+# 用法：parse_summary "$OUT" → 读 SUM_PASS / SUM_FAIL / SUM_MISSING
+parse_summary() {
+  SUM_PASS=$(printf '%s' "$1" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  SUM_FAIL=$(printf '%s' "$1" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  SUM_MISSING=0
+  [[ -z "$SUM_PASS" || -z "$SUM_FAIL" ]] && SUM_MISSING=1
+  SUM_PASS=${SUM_PASS:-0}
+  SUM_FAIL=${SUM_FAIL:-1}
+}
 
 # ---------------------------------------------------------------- 0. 阈值只许涨
 # 为什么必须机器校验：阈值「只许涨」原本只是本文件顶部的一句注释 + 提交纪律。
@@ -451,20 +470,47 @@ if [[ $WITH_E2E -eq 1 ]]; then
   if echo "$POUT2" | grep -q '^SKIP'; then
     skip "暂停与恢复（没给库连接）"
   else
-    PN2=$(echo "$POUT2" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
-    PF2=$(echo "$POUT2" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
-    PN2=${PN2:-0}; PF2=${PF2:-1}
-    if [[ "$PF2" != "0" ]]; then
-      fail "暂停与恢复有失败（$PF2 条）"
-      echo "$POUT2" | grep '✗' | head -8
-    elif (( PN2 < MIN_PAUSERES )); then
-      fail "暂停与恢复断言 $PN2 < 阈值 ${MIN_PAUSERES}"
+    parse_summary "$POUT2"
+    if [[ "$SUM_MISSING" == "1" ]]; then
+      fail "暂停与恢复脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
+      printf '%s\n' "$POUT2" | tail -15
+    elif [[ "$SUM_FAIL" != "0" ]]; then
+      fail "暂停与恢复有失败（$SUM_FAIL 条）"
+      printf '%s\n' "$POUT2" | grep '✗' | head -8
+    elif (( SUM_PASS < MIN_PAUSERES )); then
+      fail "暂停与恢复断言 $SUM_PASS < 阈值 ${MIN_PAUSERES}"
     else
-      pass "暂停与恢复 $PN2 / 0（暂停点只落在设备任务节点；恢复从未完成节点继续，设备指令不重复下发）"
+      pass "暂停与恢复 $SUM_PASS / 0（暂停点只落在设备任务节点；恢复从未完成节点继续，设备指令不重复下发）"
+    fi
+  fi
+  # 4.17 实验级暂停：设备执行中发暂停 → 实验级两层都变 paused
+  # 断言的是**语义要求**（实现「设备执行中真停」后也不该变）：
+  #   设备方法正在执行时发暂停，实验必须真的进入暂停状态，
+  #   且 experiment_run / experiment 两层一致
+  #   （2026-11-06 实测发现过「experiment_run 被收尾覆盖成 completed」
+  #    「experiment 表不同步」两个 bug）。
+  #   workflow 级的 run 是**另一条独立执行** —— 它跑完就是 completed，
+  #   不受实验级暂停影响（实验暂停 ≠ 底层 workflow run 暂停）。
+  note "4.17 实验级暂停 · 设备执行中（e2e-pause-during-experiment.py）"
+  EOUT=$(python3 scripts/e2e-pause-during-experiment.py 2>&1)
+  if echo "$EOUT" | grep -qE '^SKIP|缺 LABOS_DB'; then
+    skip "实验级暂停（没给库连接）"
+  else
+    parse_summary "$EOUT"
+    if [[ "$SUM_MISSING" == "1" ]]; then
+      fail "实验级暂停脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
+      printf '%s\n' "$EOUT" | tail -15
+    elif [[ "$SUM_FAIL" != "0" ]]; then
+      fail "实验级暂停有失败（$SUM_FAIL 条）"
+      printf '%s\n' "$EOUT" | grep '✗' | head -8
+    elif (( SUM_PASS < MIN_PAUSEEXP )); then
+      fail "实验级暂停断言 $SUM_PASS < 阈值 ${MIN_PAUSEEXP}"
+    else
+      pass "实验级暂停 $SUM_PASS / 0（设备执行中发暂停 → 实验级两层 paused；workflow 级 run 独立跑完）"
     fi
   fi
 else
-  skip "前端 e2e / 4.5-4.16 页面轨（没给 --e2e）"
+  skip "前端 e2e / 4.5-4.17 页面轨（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果

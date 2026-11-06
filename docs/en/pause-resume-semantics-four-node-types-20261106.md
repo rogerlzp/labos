@@ -111,6 +111,18 @@ Measured: the device node was already `completed` when the pause took effect →
 `skipKeys` → the resume skipped it → **the device command was issued exactly once**
 (`run_command` has 1 row, with a real response).
 
+> ⚠ **"The device node was already completed when the pause took effect" does NOT mean
+> "the pause is always too late".**
+> That conclusion was measured on a **fast device (150 ms)**: the script waits for a
+> `run_command` row before issuing the pause, and `run_command` is only persisted **after the
+> step has finished** ⇒ by the time the pause went out, the device was long done.
+> Re-measured with a long-delay device (10–18 s) issuing the pause **while the method was
+> mid-flight**, the conclusion is **unchanged**: the device method still runs to completion
+> (`completed`), the `run` turns `paused`, and the run really stops only at the **next task
+> node boundary** — because the check point is always **before** `executeNode`.
+> How to write the criterion so it does not mislead: see §1.5 of
+> "Pausing During a Device Command · Measured Reality and How to Really Stop".
+
 ### 2.3 "Where to continue" on resume is decided by `skipKeys`
 
 `WorkflowService.resumeAsync(runId)`:
@@ -286,7 +298,7 @@ again**. That is why the design is:
 | Item | Status | Note |
 |---|---|---|
 | **A logic node as the pause point** | ✅ now covered | the source's `Kind.BUILTIN` branch has no `pauseChecker` ⇒ a logic node never becomes the pause point; there is now a dedicated assertion for it (previously only "not a gateway" was asserted) |
-| Pausing **in the middle of a device command** | ❌ impossible | the source checks at the action boundary ("the robot arm would drop the plate"); no half-way state is constructed in this round |
+| Pausing **in the middle of a device command** | ✅ now measured (by the other script) | the source checks at the action boundary ("the robot arm would drop the plate") ⇒ it **never stops mid-command**; the device method still **runs to the end**. A half-way state was constructed with a long-delay simulator — see §1.5 / §2.6 of "Pausing During a Device Command" |
 | Pause under a **site hold** (`runtime_hold`) | ❌ not covered | relates to `PauseManager.pause`'s `release_exempt` (the robot arm holding a plate / active device lock are exempt) |
 | Pausing **inside a loop body** | ❌ not covered | interaction between `maxVisits` and `hasCycle` |
 | **Real device** | ❌ not covered | this round uses the simulator (ID1731 / Home); the command really goes out and a response really comes back, but real-device timing differs |

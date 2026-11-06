@@ -5145,8 +5145,134 @@ triggering" — and **that broke the script** (the cleanup ran before the trigge
 fixed, the script's data flow was left alone**. Lesson: when changing a test script, the
 insertion point matters more than the change itself.
 
+**Addendum (same evening): experiment-level measurement + two real bugs fixed**
+The user followed up: "when we issue a pause while the device method is executing, does the
+experiment end up in the paused state?" Measured (experiment level, device delay random
+10–18 s, pause issued mid-execution):
+
+```
+暂停前 experiment_run 状态: running
+暂停接口返回：HTTP 200 {"status":"paused","scope":"experiment","kind":"manual"}
+暂停后 experiment_run 状态: paused
+run（workflow 级）      : paused
+experiment_run（实验级） : paused
+experiment（实验本身）   : paused
+设备指令最终状态        : completed      ← the device action still ran to the end
+暂停生效延迟            : 0.2 秒
+```
+
+**⇒ The answer: it does go into the paused state** (all three layers show "paused", effective
+within 0.2 s), **but the method the device is executing is not interrupted**.
+
+**A pitfall when measuring this**: the first version triggered with `?async=1`, and **the
+`experiment_run` was already `completed` before the pause** — the scheduler dispatches and
+immediately runs the experiment to the end (11:23:21→11:23:33), so the pause landed on an
+**already-completed run** (the endpoint still answers 200 + `status:"paused"`, which is very
+misleading). **You must use synchronous execution** (without `async=1`): synchronous execution
+blocks the HTTP response, which conveniently leaves the "device is executing" window open
+(run the execution on a background thread, issue the pause from the main thread).
+
+**Two real bugs exposed and fixed** (they only surface together in the "synchronous execution +
+pause during a device command" scenario; with async execution the experiment finished early
+and both bugs stayed hidden):
+① **the `paused` state of `experiment_run` gets overwritten on finalisation**:
+`ExperimentExecutor.settle()` unconditionally writes `status='completed'` and **lacks the
+`if (isRunPaused(runId)) return;` guard the workflow level has** (`WorkflowService.settleRun`
+has it) ⇒ the moment the user clicks pause it is overwritten with `completed`.
+**Fixed**: the experiment level now has the same guard, plus a new `isRunPaused(long)` (same
+criterion).
+② **the `experiment` table is not synchronised**: `RunControl.markCoveredPaused()` marks
+`experiment_run` but leaves `experiment.status` at 'running' ⇒ the list shows "running" while
+the detail view shows "paused" — **the two contradict each other** (on site, people would think
+it is still running and never press continue).
+**Fixed**: after marking, the `experiment` row is synchronised through the vocabulary mapping
+(`StatusVocabulary.runToExperimentCaseSql`, the same criterion as
+`ExperimentExecutor.syncExperimentStatus` — no second hand-written mapping).
+
+New gate section 4.17 (`MIN_PAUSEEXP=2`): asserts the **semantic requirement** (all three layers
+paused + effective within 5 s) and deliberately does **not** assert "the device command finally
+completed" — that one changes once a real interrupt is implemented and would make the gate
+falsely red.
+
 **Boundary**: this round only **measured the current behaviour and produced a plan**; the
 production pause semantics were **not** changed (it involves real-device plate drops, so the
 list of interruptible methods needs on-site confirmation); taking the timeout from the method
 is also **not yet implemented** (located and written into the plan).
 
+
+**Added later (2026-11-06, evening): gate section 4.17 went red → the problem was the
+*criterion* itself; after the fix the re-measurement**
+
+Gate section 4.17 failed, yet **running that script on its own was green** (both assertions ✓),
+and the gate log could **not find any `✗` detail**. Those two symptoms together have exactly one
+explanation: **the script never printed its "通过 N / 失败 M" summary line**
+⇒ the gate's `grep -oE '失败 [0-9]+'` found nothing ⇒ it fell back to `EF2=1` ⇒ it reported
+"实验级暂停有失败（1 条）" while `grep '✗'` naturally printed nothing — **red with no visible
+reason**.
+
+Fix (in the gate itself): a `parse_summary` helper that treats **"summary line missing" as its
+own failure class** and prints the tail of the output, instead of mixing it with "there are
+failing assertions" (the two need completely different handling: the first means the script
+died, the second means an assertion went red). Section 4.16 now uses the same helper, and
+`e2e-pause-resume-nodes.py` now prints the summary on **every** exit path.
+
+🔴 **But following that trail uncovered a more important problem: the first version's criterion
+for "the device is executing" was wrong in the first place.**
+
+1. **A `run_command` row ≠ the device is executing.**
+   `run_command` is INSERTed **after the step has finished** (`status` is written directly as
+   `completed`/`failed`, `sent_at`/`finished_at` are both `now()`) — it proves "this step ran",
+   **not** "the command just went out". The first version used it as the "device is executing"
+   signal, so **the pause went out after the device had already finished** — it was not
+   measuring "pause during execution" at all.
+2. **`max(id) FROM run` can pick up somebody else's run.** The table still holds runs from other
+   tests (with commands and terminal states); it did pick up the stale run with
+   `workflow_id=1255` (finished at 11:58) — so "the device command's final status" and "the node
+   states" were **another run's data**.
+
+**The correct criterion**: `device_state.status='running'` + non-null `current_method`
+(`markDeviceBusy` on `onStepStart`, `markDeviceIdle` on `onStepEnd`), plus `current_run_id` to
+confirm the execution is ours; locating your own run is always done via
+`run.workflow_id = <the workflow this test just created>`.
+
+**Re-measured with the corrected criterion**:
+
+```
+  ✓ 观测到设备方法执行中（device_state status=running current_method=Home，归属 run #207774）
+  暂停前 experiment_run 状态: running
+  暂停接口返回：HTTP 200 {"runId":1643,...,"status":"paused","scope":"experiment","kind":"manual"}
+  暂停后 experiment_run 状态: paused
+  ✓ 暂停在 5 秒内生效（0.2 秒）
+  ✓ workflow 级 run 独立跑完（不受实验级暂停影响）：completed
+
+  结果：
+    run（workflow 级）      : completed
+    experiment_run（实验级） : paused
+    experiment（实验本身）   : paused
+    设备指令最终状态        : completed      ← the device method still ran to the end
+    暂停生效延迟            : 0.2 秒
+```
+
+**⇒ Two parts of the conclusion change**:
+① The pause **does take effect** (`run` → `paused` within 0.1–0.2 s); the line in the previous
+log entry — "run（workflow 级）: paused / all three layers paused" — was **the stale run's data
+and is void**: the workflow-level `run` is a **separate execution**, unaffected by an
+experiment-level pause; it ends up `completed` when it finishes.
+② What is still not solved is the same thing as before: **the method the device is executing is
+not interrupted** (`completed`, it runs to the end).
+
+(The workflow-level variant was re-measured too: `run` → `paused` within 0.1 s, device command
+`completed`, node `ARM=completed` — consistent with the experiment level.)
+
+**Knock-on correction**: the criterion wording in `e2e-pause-resume-nodes.py` (gate section 4.16)
+— a `run_command` row only proves "the DEV step was done", it cannot be described as "the
+command went out"; its conclusions (DEV was completed when the pause took effect; the resume
+skips it via `skipKeys`) are **unaffected**, because the pause check point is always **before**
+`executeNode`, whether the device is fast or slow.
+
+**Lesson (cross-project)**: in a test script, "some state appeared" does not mean "something
+happened" — *when* a row is written (persisted after the step vs. written at dispatch time)
+decides what that signal can actually prove. **Find out who writes a signal and when, before
+using it as a criterion.** And when a gate parses a sub-script's output, "could not parse" must
+be handled separately from "parsed and not zero" — otherwise you get "red with no visible
+reason".

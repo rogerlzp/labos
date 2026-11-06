@@ -447,6 +447,32 @@ public final class ExperimentExecutor {
     }
 
     private void markRunning(long runId) throws SQLException {
+        // ⚠ **已经被现场扣留的 run 不能被标成 running**（2026-11-06 实测发现）：
+        //   用户在实验执行到一半时点暂停 → `RunControl.pause` 落下 runtime_hold
+        //   并把 experiment_run 标成 'paused'；但随后调度器派发这条 run 时，
+        //   `markRunning` 无条件 `status='running'` + 清空 pause_kind/pause_reason，
+        //   **把刚建立的暂停冲掉了** —— 执行器随后在动作边界查 `coveringFor`
+        //   才又看到扣留并停下，但状态已经被改写成 running，
+        //   用户看到的是「点了暂停，状态却还在跑」。
+        //
+        //   正确顺序：先看有没有生效扣留，有就保持 paused（等人工点继续）。
+        long islandId = islandOf(experimentIdOf(runId));
+        boolean held = new RuntimeHold(db, tenantId)
+                .coveringFor(experimentIdOf(runId), islandId) != null;
+        if (held) {
+            // 保持 paused：只补「开始时间」，状态与暂停标记都不动
+            try (Connection c = db.open();
+                 PreparedStatement ps = c.prepareStatement("""
+                         UPDATE experiment_run
+                            SET started_at = COALESCE(started_at, now()), updated_at = now()
+                          WHERE tenant_id = ? AND id = ? AND status = 'paused'
+                         """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, runId);
+                ps.executeUpdate();
+            }
+            return;
+        }
         try (Connection c = db.open()) {
             // 恢复时（pause_kind 非空）记一次 resumed_at，并把暂停标记清掉：
             // 这条 run 现在真的在跑，"为什么停过"由 runtime_hold 的历史留存。
@@ -504,12 +530,59 @@ public final class ExperimentExecutor {
      * @param status   completed / failed / aborted / cancelled / paused
      * @param pauseKind 暂停类型（仅 paused 时有值）
      */
+    /**
+     * 这条 run 现在是不是「已被人工暂停」。
+     *
+     * <p>与 {@code WorkflowService.isRunPaused} 同一口径（查一行主键）。
+     * 收尾前必须问一句：用户刚点暂停、这个 run 已经标 paused 了，
+     * 那就不能再用 completed/failed 把它盖掉。
+     */
+    private boolean isRunPaused(long runId) {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT status::text FROM experiment_run WHERE tenant_id=? AND id=?")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && "paused".equals(rs.getString(1));
+            }
+        } catch (SQLException e) {
+            // 查不到就当作没暂停（与 workflow 级同一取向：不因读库失败阻断收尾）
+            return false;
+        }
+    }
+
     private void settle(long runId, String status, int done, String error,
                         String pauseKind, String pauseReason, boolean syncExperimentStatus)
             throws SQLException {
         boolean paused = "paused".equals(status);
         boolean terminal = "completed".equals(status) || "failed".equals(status)
                 || "aborted".equals(status) || "cancelled".equals(status);
+
+        // ⚠ **已被人工暂停的 run 不能被收尾覆盖**（2026-11-06 实测发现）：
+        //   用户在设备方法执行到一半时点暂停 → `RunControl.pause` 把
+        //   experiment_run 标成 'paused'（并落下现场扣留）；
+        //   但当前动作跑完后执行线程会走这里 `settle(..., "completed", ...)`，
+        //   **把 paused 直接盖成 completed** —— 界面立刻显示"已完成"，
+        //   用户"点了暂停却什么都没停"。
+        //   workflow 级已有同样的保护（`WorkflowService.settleRun` 开头
+        //   `if (isRunPaused(runId)) return;`），实验级这里漏了 —— 现在对齐。
+        //
+        //   为什么必须挡住：扣留（runtime_hold）还在，实验其实处于"等人处理"的状态，
+        //   状态写成 completed 会让「暂停队列」页看不到它，现场以为跑完了就走了。
+        if (!paused && isRunPaused(runId)) {
+            // 已被人工暂停：保持 paused，只补错误信息（若有），不动状态
+            try (Connection c = db.open();
+                 PreparedStatement ps = c.prepareStatement(
+                         "UPDATE experiment_run SET error=?, updated_at=now() "
+                                 + "WHERE tenant_id=? AND id=? AND status='paused'")) {
+                ps.setString(1, error);
+                ps.setLong(2, tenantId);
+                ps.setLong(3, runId);
+                ps.executeUpdate();
+            }
+            return;
+        }
 
         StringBuilder set = new StringBuilder(
                 "status=?, error=?, pause_kind=?, pause_reason=?");
@@ -620,6 +693,23 @@ public final class ExperimentExecutor {
                      "SELECT island_id FROM experiment WHERE tenant_id=? AND id=?")) {
             ps.setLong(1, tenantId);
             ps.setLong(2, experimentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    long v = rs.getLong(1);
+                    return rs.wasNull() ? 0L : v;
+                }
+            }
+        }
+        return 0L;
+    }
+
+    /** 这条 experiment_run 属于哪个实验；查不到返回 0。 */
+    private long experimentIdOf(long runId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT experiment_id FROM experiment_run WHERE tenant_id=? AND id=?")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, runId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     long v = rs.getLong(1);

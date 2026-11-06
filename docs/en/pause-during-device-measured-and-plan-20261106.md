@@ -5,7 +5,8 @@
 > going; only the robot arm receives the pause command and stops right there — see how that
 > should be implemented"**
 >
-> Script: `scripts/e2e-pause-during-device.py`
+> Script: `scripts/e2e-pause-during-device.py` (workflow level)
+>       `scripts/e2e-pause-during-experiment.py` (experiment level, used by gate segment 4.17)
 > Re-run: `python3 scripts/e2e-pause-during-device.py --api http://127.0.0.1:18080`
 > Companion change: the simulator gained `--rand-delay MIN:MAX[:SEED]` (random method delays)
 > Environment: macOS, API `18080` + PostgreSQL `192.168.124.2:5432/labdb` + simulators 19500-19506
@@ -18,18 +19,26 @@
 today a pause does nothing to a device command that is already executing — and the robot arm
 stops neither.**
 
-Measured (simulator method delay set to 8–15 s, pause issued while the command was mid-flight):
+But two things have to be separated (the first version mixed them up — see §1.5):
+
+| Dimension | Conclusion |
+|---|---|
+| **Does the pause itself take effect?** | ✅ **Yes** — `run` turns `paused` within 0.1 s of the pause going out |
+| **Is the executing device method interrupted?** | ❌ **No** — the method runs to completion (`completed`); the action is not interrupted |
+
+Measured (simulator method delay random in 10–18 s, pause issued **while the method was
+mid-flight**; the "is it really executing?" criterion is `device_state`, see §1.5):
 
 ```
 ══ 长耗时设备执行中发暂停 ══
-  ✓ 设备指令已发出（设备正在执行）
-  ✓ 已在设备执行中发出暂停
+  ✓ 观测到设备方法执行中（device_state status=running current_method=Home，归属 run #207775）
+  ✓ 已在设备执行中发出暂停（UPDATE 影响 1 行）
 
   结果：
-    run 最终状态      : completed        ← the pause never took effect
-    设备指令最终状态  : completed        ← the device finished; it was not interrupted
+    run 最终状态      : paused           ← the pause did take effect
+    设备指令最终状态  : completed        ← but the device finished; it was not interrupted
     节点状态          : ARM=completed
-    暂停生效延迟      : 未观测到 run 变 paused（它直接跑到了终态）
+    暂停生效延迟      : 0.1 秒（从发暂停到 run 变 paused）
 
   ⇒ 设备指令**跑完了**（completed）：暂停没有中断正在执行的设备动作
 ```
@@ -37,6 +46,61 @@ Measured (simulator method delay set to 8–15 s, pause issued while the command
 The source explains why: **the pause check only happens at an "action boundary"**
 (before `executeNode`), while the device command is in flight the thread is **blocked waiting
 for the reply** and never reaches that check.
+
+---
+
+## 1.5 ⚠ Criterion fix: how do you actually tell that "the device is executing"?
+
+> This section was added on 2026-11-06. **The first version of the script used a wrong
+> criterion**, so it was not measuring "pause during execution" at all, and the conclusion
+> it printed was off.
+
+### Trap 1: a `run_command` row ≠ the device is executing
+
+The first version decided "the device is executing" like this:
+
+```python
+n = q1(f"SELECT count(*) FROM run_command WHERE run_id={rid}")
+if n and int(n) >= 1:      # ← believed this means "the command went out"
+```
+
+**That is wrong.** `run_command` is INSERTed **after the step has finished**
+(the command-level persistence in `WorkflowService.java` writes `status` directly as
+`completed`/`failed`, with `sent_at`/`finished_at` both `now()`) —
+it proves "**this step already ran and was persisted**", not "the command just went out".
+
+⇒ The first version therefore issued the pause **after the device had already finished**:
+`run` was already wrapping up, the UPDATE set `paused` and the wrap-up overwrote it with
+`completed` ⇒ the first output line "run 最终状态: completed ← the pause never took effect"
+was a **misdiagnosis**; the truth is "the pause went out too late, the device was already done".
+
+### Trap 2: `max(id) FROM run` can pick up **someone else's run**
+
+The first version located its own run with `SELECT max(id) FROM run WHERE tenant_id=1`.
+The table still holds runs from **other tests** (with commands and terminal states);
+as soon as `max(id)` hit one of those stale runs, the whole script asserted against
+**another run's evidence** (it did hit a stale run with `workflow_id=1255`, finished at 11:58).
+
+⇒ Always locate the run by `run.workflow_id = <the workflow this test just created>`
+(unique by construction).
+
+### The correct criterion: `device_state`
+
+| Signal | Meaning | Written by |
+|---|---|---|
+| `device_state.status='running'` + non-null `current_method` | **the device method is executing** | `markDeviceBusy` (`onStepStart`) / `markDeviceIdle` (`onStepEnd`) |
+| `device_state.current_run_id` | the run holding that device (proves it is not somebody else's execution) | `DeviceLock.tryAcquire` |
+| a `run_command` row exists | that step **already ran and was persisted** | command-level persistence (after the step) |
+
+```sql
+SELECT status, current_method, current_run_id
+FROM device_state WHERE tenant_id=1 AND resource_id=200214;
+-- running | Home | 207775   ← this is "the device is executing"
+```
+
+After fixing the criterion the re-measurement **kept the same conclusion but changed the
+evidence chain**: the pause **does take effect** (`run` → `paused` within 0.1 s) while the
+**device method still runs to completion** (`completed`) — that is the actual problem to solve.
 
 ---
 
@@ -150,6 +214,90 @@ Consequence: **any real-device method taking longer than 30 s (a 5-minute centri
 30-minute incubation) is judged as a timeout by the control plane** — unrelated to pausing.
 Measured: with the simulator delay set to 20–40 s, the runs that exceeded 30 s came back
 `failed`.
+
+---
+
+## 2.6 Experiment-level measurement: all three layers go to "paused", but the device action still runs to the end
+
+The above measured the workflow-level run. At the **experiment level**
+(`/api/experiments/{id}/run`) there are three layers of status to look at: `run` (workflow level,
+the device command hangs off it), `experiment_run` (experiment level) and `experiment` (the
+experiment itself, derived from `experiment_run`).
+
+Measured (device delay random 10–18 s, pause issued **while the method was mid-execution**
+through the real experiment-level pause endpoint `POST /api/experiments/runs/{id}/pause`;
+the criterion for "really executing" is `device_state`, see §1.5 — the pause is only issued
+after the device is confirmed to be executing):
+
+```
+  ✓ 观测到设备方法执行中（device_state status=running current_method=Home，归属 run #207774）
+  暂停前 experiment_run 状态: running
+  暂停接口返回：HTTP 200 {"runId":1643,"experimentId":1458,"status":"paused","scope":"experiment","kind":"manual"}
+  暂停后 experiment_run 状态: paused
+  ✓ 实验在设备执行中暂停后，实验级两层都变 paused（experiment_run / experiment）
+  ✓ 暂停在 5 秒内生效（0.2 秒）
+  ✓ workflow 级 run 独立跑完（不受实验级暂停影响）：completed
+
+  结果：
+    run（workflow 级）      : completed
+    experiment_run（实验级） : paused
+    experiment（实验本身）   : paused
+    设备指令最终状态        : completed      ← the device action still ran to the end
+    节点状态                : ARM=completed
+    暂停生效延迟            : 0.2 秒
+```
+
+**⇒ The answer: it does go into the paused state** (both experiment-level layers show "paused",
+effective within 0.2 s), **but the method the device is executing is not interrupted** — it
+finishes first.
+
+> This is now gate segment 4.17 (`scripts/e2e-pause-during-experiment.py`). It asserts only the
+> **semantic requirements** (both experiment-level layers paused + effective within 5 s + the
+> workflow-level run finishes on its own) and deliberately does **not** assert "the device
+> command ends as `completed`" — that one changes once "really stopping" is implemented, and
+> baking it into the gate would produce a false red.
+
+> ⚠ The workflow-level `run` is a **separate execution** and is unaffected by an
+> experiment-level pause: it ends up `completed` when it finishes (by design — "experiment
+> paused" ≠ "underlying workflow run paused"). The first version asserted all three layers
+> together and went falsely red as soon as the workflow run finished first. The gate asserts
+> only the two experiment-level layers.
+
+### ⚠ A pitfall when testing this: async dispatch makes the test miss it
+
+The first version triggered the experiment with `?async=1`, and the result was that **the
+`experiment_run` status was already `completed` before the pause** — the scheduler dispatches
+the experiment and **immediately** runs it to the end (11:23:21 → 11:23:33), so by the time I
+waited for the device command to appear, the experiment-level run had long finished and **the
+pause landed on an already-completed run** (the endpoint still answers 200 + `status:"paused"`,
+which is extremely misleading).
+
+**You must use synchronous execution** (without `async=1`): synchronous execution blocks the
+HTTP response, which conveniently leaves the "device is executing" window open to issue the
+pause (run the execution on a background thread, issue the pause from the main thread).
+
+### ⚠ Two real bugs exposed along the way (both fixed)
+
+**Bug 1 · the `paused` state of `experiment_run` gets overwritten by the finalisation**
+`ExperimentExecutor.settle()` unconditionally writes `status='completed'` on finalisation and
+**lacks the `if (isRunPaused(runId)) return;` guard that the workflow level has**
+(`WorkflowService.settleRun` has it) ⇒ the moment the user clicks pause, the executing thread
+overwrites it with `completed` when the action finishes.
+**Fixed**: the experiment level now has the same guard, plus a new `isRunPaused(long)` (same
+criterion as the workflow level).
+
+**Bug 2 · the `experiment` table is not synchronised**
+`RunControl.markCoveredPaused()` marks `experiment_run` as paused but **does not sync the
+`experiment` table** ⇒ the experiment list shows "running" while the detail view shows
+"paused" — **the two contradict each other** (on site, people would think it is still running
+and never press continue).
+**Fixed**: after marking, the `experiment` row is synchronised through the vocabulary mapping
+(`StatusVocabulary.runToExperimentCaseSql`, the same criterion as
+`ExperimentExecutor.syncExperimentStatus` — no second hand-written mapping).
+
+> Both bugs surfaced **at the same time** in the synchronous-execution + pause-during-a-device-
+> command scenario. With async execution the experiment finished early, the pause landed on an
+> already-completed run, and both bugs stayed hidden.
 
 ---
 
@@ -291,6 +439,7 @@ inside the range, and different every time.
 | Item | Status | Note |
 |---|---|---|
 | "Really stop a device command in flight" | ❌ **not implemented** | this round only **measured the current behaviour** and produced a plan; A1 involves real-device safety, so no production code was touched |
+| How to tell "the device is executing" | ✅ corrected | `device_state.status='running'` + `current_method`; **not** `run_command` (that is persisted after the step finishes) — see §1.5 |
 | Difference between the robot arm and an ordinary device on pause | ✅ clarified | **there is no difference today** — both "let the current action finish". "The robot arm stops" is a misreading |
 | The `abort` chain | ✅ clarified | the driver layer implements it for real (`TcpPersistentDriver` really does remove the future) but **nobody calls it**; `EC-99-0005` occurs 0 times |
 | The fixed 30 s timeout | ⚠ **located, not fixed** | `device_method.timeout_sec` is stored but never read; long methods are always killed |
@@ -298,6 +447,7 @@ inside the range, and different every time.
 | "Retry this step after an interrupt" | ⚠ **the mechanism exists** | `resumeAsync` deletes the not-completed rows and re-runs them; but there is no "interrupted" state source yet |
 | Pause + site hold (`runtime_hold`) combined | ❌ not covered | `releaseResources`' exemptions and the interrupt design have to be designed together |
 | Pausing while several devices run in parallel | ❌ not covered | the pause is run-scoped; with parallel devices it is unclear which one should stop |
+| Pausing during a multi-device parallel execution | ❌ not covered | this round only measured a **single** device executing; "which one stops" is a design question |
 
 ---
 
@@ -307,16 +457,28 @@ inside the range, and different every time.
 export LABOS_DB_HOST=192.168.124.2 LABOS_DB_NAME=labdb \
        LABOS_DB_USER=labos LABOS_DB_PASS='***' LABOS_DB_PORT=5432 PGPASSWORD='***'
 
-# ① make one device on the demo island take a long time (30–300 s at random)
+# ① make one device on the demo island take a long time (random; a SEED makes it reproducible)
 cd labos-kernel
 pkill -f "DeviceSimulator.*--port 19502"
 nohup java -cp out com.labos.kernel.sim.DeviceSimulator \
   --port 19502 --device 214 --code ID1731 --cap TRANSFER --profile generic \
-  --rand-delay 30000:300000 > /tmp/sim-19502.log 2>&1 &
+  --rand-delay 10000:18000:7 > /tmp/sim-19502.log 2>&1 &
+#   ⚠ the simulator's stdout has to go to its own file (sim-up.sh writes
+#     /tmp/sim-<code>.log; a hand-started one needs an explicit path) — that is
+#     where you see lines like "完成 Home（13579ms）", i.e. how long the device
+#     really executed, which is what you need to cross-check the timing.
 
-# ② run the "pause during a device command" measurement
+# ② run the "pause during a device command" measurement (workflow level)
 cd ..
 python3 scripts/e2e-pause-during-device.py --api http://127.0.0.1:18080
+
+# ③ run the experiment-level variant (the one gate segment 4.17 uses)
+python3 scripts/e2e-pause-during-experiment.py --api http://127.0.0.1:18080
 ```
 
-The script creates its own workflow and run, and cleans up after itself.
+Both scripts create their own workflow and run, clean up after themselves, and print a
+"通过 N / 失败 M" summary line.
+
+> ⚠ **Only run one long-delay simulator**: concurrent gate instances step on each other
+> (they fight over the same simulators/DB), which shows up as random false failures.
+> Always debug with a **single** instance.
