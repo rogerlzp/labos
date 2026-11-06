@@ -201,6 +201,9 @@ queued.
 | `docs/评审包-20261105/00-索引与评审须知.md` | `docs/en/review-20261105/00-index.md` | ✅ |
 | `docs/评审包-20261105/01-本轮交付清单与验证.md` | `docs/en/review-20261105/01-deliverables-and-verification.md` | ✅ |
 | `docs/评审包-20261105/02-遗留与后续规划.md` | `docs/en/review-20261105/02-remainder-and-next-steps.md` | ✅ |
+| `docs/评审包-20261106/00-索引与评审须知.md` | `docs/en/review-20261106/00-index.md` | ✅ |
+| `docs/评审包-20261106/01-本轮交付清单与验证.md` | `docs/en/review-20261106/01-deliverables-and-verification.md` | ✅ |
+| `docs/评审包-20261106/02-遗留与后续规划.md` | `docs/en/review-20261106/02-remainder-and-next-steps.md` | ✅ |
 | `docs/设备/README.md` | `docs/en/devices/README.md` | ✅ |
 | `docs/设备/协议与断线处理.md` | `docs/en/devices/protocol-and-disconnect-handling.md` | ✅ |
 | `docs/设备/型号库与错误码映射.md` | `docs/en/devices/model-library-and-error-code-mapping.md` | ✅ |
