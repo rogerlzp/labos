@@ -76,6 +76,13 @@ public final class GraphRunner {
     private Map<Long, Long> boundInstanceByResource = Map.of();
 
     /**
+     * 资源/实例 id -&gt; 能力编码。
+     *
+     * <p>用于「绑定了哪台设备就用那台设备的能力」这条优先级（见 RealWorkflowRunner）。
+     */
+    private Map<Long, String> capabilityByResource = Map.of();
+
+    /**
      * **断点续跑**要跳过的节点 key（上一轮已经 completed 的那些）。
      *
      * <p>没有它，点"继续"就只能把 run 置回 queued 干等着 ——
@@ -167,6 +174,12 @@ public final class GraphRunner {
     }
 
     /** 注入"资源 → 设备实例"映射（编排里显式绑定的设备用它）。 */
+    /** 注入资源/实例 -&gt; 能力映射（绑定设备的能力优先）。 */
+    public GraphRunner withResourceCapability(Map<Long, String> m) {
+        this.capabilityByResource = m == null ? Map.of() : m;
+        return this;
+    }
+
     public GraphRunner withBoundInstances(Map<Long, Long> m) {
         this.boundInstanceByResource = m == null ? Map.of() : m;
         return this;
@@ -601,7 +614,7 @@ public final class GraphRunner {
     private CapabilitySource resolveCapability(GNode n) {
         return RealWorkflowRunner.resolveCapability(
                 n.name(), n.method(), n.resourceId(),
-                capabilityByKey.get(n.key()), protocolCapability);
+                capabilityByKey.get(n.key()), protocolCapability, capabilityByResource);
     }
 
     /**

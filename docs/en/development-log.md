@@ -5276,3 +5276,115 @@ decides what that signal can actually prove. **Find out who writes a signal and 
 using it as a criterion.** And when a gate parses a sub-script's output, "could not parse" must
 be handled separately from "parsed and not zero" — otherwise you get "red with no visible
 reason".
+
+**Added later (2026-11-06, afternoon): the user decided three things — timeout per method /
+A1 "really stop it" / switch the simulator to 30–300 s**
+
+The user's answers to the three open questions:
+① Timeout per method → **"implement the mechanism **and** fill in the default timeout for
+   every capability"**
+② Really stopping a device command → **"A1 — I will provide the list of interruptible
+   methods"**
+③ Simulator delay range → **"fix the timeout first, then switch to 30–300 s"**
+
+### ① Timeout per method (implemented)
+
+Before the change `DriverStepExecutor` used an **executor-level fixed 30 s**, while
+`device_method.timeout_sec` / `workflow_node.timeout_sec` were **stored and never read**
+⇒ **every real-device method taking longer than 30 s was killed by the controller**
+(a 5-minute centrifuge, a 40-minute PCR) — unrelated to pausing, a plain bug.
+
+Landed:
+- New pure-logic class `MethodTimeoutPolicy` (the priority order) + 20 self-test
+  assertions (`MethodTimeoutPolicySelfTest`).
+- The driver layer (`DriverStepExecutor.resolveTimeoutMs`) resolves
+  **device method → device method-library ceiling → workflow node → capability default →
+  fallback 30 s**, and logs one line `[超时] <node> <method> → N s (source …)`.
+- New shard `99a_method_timeout.sql` (idempotent): fills the **260 rows** whose
+  `device_method.timeout_sec = 0` per capability (incubation 1800 s / thermocycler 3600 s /
+  centrifuge 900 s / washer 900 s / everything else 600 s).
+  The 3 s / 5 s / 20 s / 302 s values already in the device library are **left untouched** —
+  they are real contracts (estimated duration × 2), and raising them would turn "the
+  barcode reader died" from a 3-second discovery into a 10-minute one.
+- `90_all_in_one.sql` regenerated with merge.sh; the gate's "product matches the shards"
+  check passes.
+
+**Measured** (robot arm + random 30–300 s delays):
+```
+[超时] ARM Home → 600 秒（来源 device_library：设备方法=0s 设备库上限=600s 节点=0s 能力=TRANSFER）
+⇒ the device method ran for 48 s and answered normally — it was no longer killed at 30 s
+```
+
+**Four traps hit while implementing it** (none of them is small — every one of them
+silently falls back to 30 s):
+
+1. **`ctx.resourceId()` is the device_instance.id**, not the resource_node.id — the proof is
+   `DriverRegistry.driverFor(long deviceInstanceId)` and `candidates()`, which both use
+   instance ids. The wrong id space ⇒ every lookup misses ⇒ **silently** back to 30 s
+   (that is what the first version did; the log was full of 0s).
+2. **The capability default must use the device's real capability** — the capability on the
+   node is **guessed from its name** (`resolveCapability` level 6: a node named
+   "机械臂搬运" gets guessed as WASH), and querying the device's tables with a guessed
+   capability misses on both ends ⇒ query `resource_capability` instead.
+3. **`resource_capability` has no tenant_id column** — including it raises a SQLException,
+   the exception is swallowed ⇒ null is returned silently ⇒ the capability falls back to the
+   guessed one again.
+4. **The resolved timeout must be logged** — without the `[超时] …` line, all three traps
+   above can only be guessed at.
+
+### ② Two real bugs this work exposed
+
+**bug A · Capability resolution hijacked by same-named methods (a latent defect)**
+`loadProtocolCapability` was `SELECT dm.method, c.code FROM device_method ...` with
+**no DISTINCT and no ORDER BY**, and `Home` exists on the centrifuge (221), the transport
+robot (145) and the plate washer (183) ⇒ the result **depended on the physical row order**.
+My bulk UPDATE (260 timeout rows) reshuffled the heap ⇒ `Home` flipped from TRANSFER to
+CENTRIFUGE ⇒ **a node bound to the robot arm got bound to a centrifuge and the bound
+resource was ignored** (the candidate pool is per capability).
+Fixed: **the bound device's capability wins** (a new "bound" priority in
+`resolveCapability`, ahead of the protocol lookup) + the protocol map is now
+`DISTINCT + ORDER BY` (reproducible).
+
+**bug B · Leaked device locks (ghost occupancy)**
+When the process crashes or the API restarts, the device method in flight never reaches
+`onStepDone` ⇒ `markDeviceIdle` never runs ⇒ `device_state` stays at
+`status='running' + current_run_id=<a dead run>`; and `DeviceLock.tryAcquire` requires
+`current_run_id IS NULL OR current_run_id = me`
+⇒ **that device can never be acquired by any run again** (on site: one device is
+mysteriously "always busy"). Hit in practice: the robot arm ID1731 was stuck at
+`current_run_id=207893`, a run that died with the API restart.
+Fixed: the startup fallback `settle` now **releases the device locks held by interrupted
+runs** (same semantics as `DeviceLock.release`), covered by 3 new assertions in
+`StartupSettleSelfTest`.
+
+### ③ A1 "really stop it": mechanism implemented, waiting for the on-site list
+
+- `device_method` gains an `interruptible` column (default **false**); every method
+  declares for itself whether it can be interrupted mid-flight.
+- Execution side (`DriverStepExecutor.executeCommand`):
+  **not declared interruptible ⇒ the old path (the calling thread blocks for the reply,
+  behaviour unchanged)**; declared interruptible ⇒ the call runs on a worker thread and the
+  main thread polls every 200 ms for "should I stop" (workflow-level `run.status='paused'`
+  / experiment-level `runtime_hold` coverage) and on a hit calls
+  `driver.abort(commandId)` (`TcpPersistentDriver.abort` removes the waiting future).
+- After the interrupt: the command fails → `EC-99-0005` (that code is **not registered**
+  in the error-code table) ⇒ no recovery policy matches ⇒ the fallback is **MANUAL** ⇒ the
+  node lands as `manual`, the run as `paused`; on resume `resumeAsync` deletes every
+  non-completed row ⇒ **that step is re-run**.
+- **Everything defaults to false ⇒ without the on-site list the behaviour is byte-for-byte
+  the same as before**; this switch can never stop a robot arm that is carrying a plate.
+  Once the list arrives, flipping the flag is enough.
+- New script `scripts/e2e-interrupt-during-device.py`: temporarily marks the robot arm's
+  Home as interruptible, pauses while it executes, and asserts that the command reaches a
+  terminal state **within 10 seconds** (i.e. it did not wait for the device to finish).
+
+### ④ Simulator switched to a random 30–300 s
+
+`/tmp/sim-19502.log`: the robot-arm instance now runs `--rand-delay 30000:300000`
+(truly random, no seed). Measured one call at 275 s — **before the timeout fix that call
+was guaranteed to be killed at 30 s**; now it completes normally.
+
+**Lesson (cross-project)**: before treating "some column in some table" as configuration,
+confirm two things: **who writes it** (the write timing decides what it can prove) and
+**whether anything actually reads it** (`timeout_sec` sat there for three years unread, and
+those "looks configured" fields are the most dangerous ones).

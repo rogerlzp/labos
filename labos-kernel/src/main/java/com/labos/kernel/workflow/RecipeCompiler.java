@@ -83,7 +83,14 @@ public final class RecipeCompiler {
 
     /** 编译单个节点。 */
     public NodePlan compile(NodeDef node, Map<String, String> protocolCap) {
-        CapabilitySource cs = RealWorkflowRunner.resolveCapability(node, protocolCap);
+        return compile(node, protocolCap, Map.of());
+    }
+
+    /** 编译单个节点（带设备能力表：绑定设备的能力优先）。 */
+    public NodePlan compile(NodeDef node, Map<String, String> protocolCap,
+                            Map<Long, String> capabilityByResource) {
+        CapabilitySource cs = RealWorkflowRunner.resolveCapability(
+                node, protocolCap, capabilityByResource);
         String cap = cs.capability();
 
         // ★ 已指定具体方法 → 单步（存量流程 已落库的节点都是这种，不能再展开）
@@ -118,6 +125,12 @@ public final class RecipeCompiler {
 
     /** 编译整批节点。 */
     public List<NodePlan> compileAll(List<NodeDef> nodes, Map<String, String> protocolCap) {
+        return compileAll(nodes, protocolCap, Map.of());
+    }
+
+    /** 编译整批节点（带设备能力表）。 */
+    public List<NodePlan> compileAll(List<NodeDef> nodes, Map<String, String> protocolCap,
+                                     Map<Long, String> capabilityByResource) {
         List<NodePlan> out = new ArrayList<>(nodes.size());
         for (NodeDef n : nodes) {
             if (!"task".equals(n.type())) {

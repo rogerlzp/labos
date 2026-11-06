@@ -754,7 +754,7 @@ public final class QueryService {
         List<String> items = new ArrayList<>();
         String sql = """
                 SELECT dm.method, dm.name, c.code AS capability,
-                       dm.estimate_sec, dm.timeout_sec,
+                       dm.estimate_sec, dm.timeout_sec, dm.interruptible,
                        dm.param_schema->'params' AS params
                 FROM device_instance di
                 JOIN device_method dm ON dm.device_id = di.device_id
@@ -775,6 +775,8 @@ public final class QueryService {
                             "capability", rs.getString("capability"),
                             "estimateSec", rs.getObject("estimate_sec"),
                             "timeoutSec", rs.getObject("timeout_sec"),
+                            // 可中断标志：现场确认清单后置 true，暂停才会真的停掉这一步
+                            "interruptible", rs.getBoolean("interruptible"),
                             "params", params == null ? new Jsons.Raw("[]")
                                     : new Jsons.Raw(params)));
                 }

@@ -313,13 +313,14 @@ public final class WorkflowService {
         List<NodeDef> nodes = RealWorkflowRunner.loadNodes(db, workflowId);
         List<String[]> edges = RealWorkflowRunner.loadEdges(db, workflowId);
         Map<String, String> protocolCap = RealWorkflowRunner.loadProtocolCapability(db);
+        Map<Long, String> resourceCap = RealWorkflowRunner.loadResourceCapability(db);
 
         List<TaskView> tasks = new ArrayList<>();
         for (NodeDef n : nodes) {
             if (!"task".equals(n.type())) {
                 continue;
             }
-            CapabilitySource cs = RealWorkflowRunner.resolveCapability(n, protocolCap);
+            CapabilitySource cs = RealWorkflowRunner.resolveCapability(n, protocolCap, resourceCap);
             tasks.add(new TaskView(n.id(), n.key(), n.name(), cs.capability(), cs.source(),
                     n.protocolName()));
         }
@@ -361,7 +362,8 @@ public final class WorkflowService {
         Map<String, String> protocolCap = RealWorkflowRunner.loadProtocolCapability(db);
         RecipeCompiler compiler = RecipeCompiler.load(db, tenantId);
 
-        List<RecipeCompiler.NodePlan> plans = compiler.compileAll(nodes, protocolCap);
+        List<RecipeCompiler.NodePlan> plans = compiler.compileAll(nodes, protocolCap,
+                RealWorkflowRunner.loadResourceCapability(db));
         int totalSteps = plans.stream().mapToInt(RecipeCompiler.NodePlan::stepCount).sum();
         int recipeNodes = (int) plans.stream()
                 .filter(RecipeCompiler.NodePlan::fromRecipe).count();
@@ -668,9 +670,10 @@ public final class WorkflowService {
         boolean viaDriver = registry != null;
         Map<Long, Set<String>> devCaps = viaDriver ? loadDeviceCapabilities() : Map.of();
 
+        Map<Long, String> resourceCap = RealWorkflowRunner.loadResourceCapability(db);
         List<RecoverableNode> rec = new ArrayList<>();
         for (NodeDef n : ordered) {
-            CapabilitySource cs = RealWorkflowRunner.resolveCapability(n, protocolCap);
+            CapabilitySource cs = RealWorkflowRunner.resolveCapability(n, protocolCap, resourceCap);
             String cap = cs.capability();
             List<Long> candidates;
             if (RealWorkflowRunner.LOGIC.equals(cap)) {
@@ -805,6 +808,7 @@ public final class WorkflowService {
                     WorkflowGraphParser.Graph g = WorkflowGraphParser.parse(xml);
                     GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
                             nodeIdByKey, s -> { })
+                            .withResourceCapability(resourceCap)
                             .withBoundInstances(loadBoundInstances())
                             .withSkipKeys(skipKeys)
                             // 条件表达式/循环退出条件的取值来源（run.input.vars）
@@ -1990,7 +1994,7 @@ public final class WorkflowService {
                     } else {
                         ps.setLong(6, rid);
                     }
-                    ps.setString(7, ok ? "completed" : "failed");
+                    ps.setString(7, stepStatus(ok, errorCode));
                     ps.setInt(8, attempt);
                     ps.setLong(9, parentId);
                     ps.setInt(10, stepSeq);
@@ -2027,7 +2031,7 @@ public final class WorkflowService {
                     kv.add(stepSeq);
                     params.forEach((k, v) -> { kv.add(k); kv.add(v); });
                     ps.setString(6, Jsons.obj(kv.toArray()));
-                    ps.setString(7, ok ? "completed" : "failed");
+                    ps.setString(7, stepStatus(ok, errorCode));
                     ps.setInt(8, attempt);
                     ps.setString(9, Jsons.obj("ok", ok, "durationMs", durationMs));
                     ps.setString(10, rawResponse);
@@ -2164,6 +2168,27 @@ public final class WorkflowService {
             // 读不到就用启动时的值
         }
         return fallback;
+    }
+
+    /**
+     * 步骤/命令的落库状态。
+     *
+     * <p><b>为什么「被暂停中止」要记成 aborted 而不是 failed</b>：
+     * 「设备执行中真停」（A1）里，命令是**被暂停打断**的，不是设备坏了 ——
+     * 两者在数据上必须分得开：
+     * <ul>
+     *   <li>{@code aborted} = 被暂停中止 ⇒ 恢复时**重跑这一步**（可重试）；</li>
+     *   <li>{@code failed} = 真失败 ⇒ 恢复时同样重跑，但现场看到的语义完全不同
+     *       （界面上「已中止·可重试」vs「失败」）。</li>
+     * </ul>
+     * 判据是错误码 {@code EC-99-0005}（设备命令被中止）——
+     * 它是执行侧 {@code driver.abort(commandId)} 唯一的产物。
+     */
+    private static String stepStatus(boolean ok, String errorCode) {
+        if (ok) {
+            return "completed";
+        }
+        return "EC-99-0005".equals(errorCode) ? "aborted" : "failed";
     }
 
     /** 落子步骤（level=1）与命令（1:1）。 */

@@ -41,7 +41,37 @@ public final class StartupRecovery {
     }
 
     public static List<Orphan> settle(DbConfig db, long tenantId) throws SQLException {
+        return settle(db, tenantId, null);
+    }
+
+    /**
+     * 启动兜底 settle 的包内重载：可限定只处理指定 run（自测用）。
+     *
+     * <p>与实验级 {@code settleOrphanExperimentRuns} 同款做法：
+     * 自测若跑全量，会顺手把库里**真实**遗留的 running 一起收掉 ——
+     * 那应该由重启日志来证明，不该被自测提前"消费"掉。
+     *
+     * @param onlyRunIds null / 空 = 全量；否则只处理这些 run id
+     */
+    static List<Orphan> settle(DbConfig db, long tenantId,
+                               java.util.Collection<Long> onlyRunIds) throws SQLException {
         List<Orphan> orphans = new ArrayList<>();
+        if (onlyRunIds != null && onlyRunIds.isEmpty()) {
+            return orphans;
+        }
+        StringBuilder runFilter = new StringBuilder();
+        if (onlyRunIds != null) {
+            runFilter.append(" AND r.id IN (");
+            int i = 0;
+            for (Long id : onlyRunIds) {
+                if (i++ > 0) {
+                    runFilter.append(',');
+                }
+                // 入参是 Long（自测合成负数 id），直接拼数字无注入风险
+                runFilter.append(id);
+            }
+            runFilter.append(')');
+        }
 
         String scan = """
                 SELECT r.id, r.run_no,
@@ -59,6 +89,7 @@ public final class StartupRecovery {
                   AND (r.status = 'running'
                        OR (r.status IN ('queued', 'pending')
                            AND r.created_at < now() - interval '1 hour'))
+                """ + runFilter + """
                 GROUP BY r.id, r.run_no, r.input
                 ORDER BY r.id
                 """;
@@ -70,6 +101,51 @@ public final class StartupRecovery {
                     input = COALESCE(input, '{}'::jsonb) || ?::jsonb
                 WHERE tenant_id = ? AND id = ?
                   AND status IN ('running', 'queued', 'pending')
+                """;
+
+        // ★ 释放被中断的 run 占着的**设备锁**（device_state.current_run_id）。
+        //
+        //   为什么必须在这里放：进程被 kill / API 重启时，正在执行的设备方法
+        //   不会走 onStepDone ⇒ markDeviceIdle 永远不执行 ⇒
+        //   device_state 永远停在 status='running' + current_run_id=<已死的 run>。
+        //   而 DeviceLock.tryAcquire 的条件是
+        //   `current_run_id IS NULL OR current_run_id = 自己`
+        //   ⇒ 这台设备**从此再也不会被任何 run 拿到**（幽灵占用）。
+        //   现场表现：一台设备凭空"永远忙"，所有流程都绕开它。
+        //   （2026-11-06 实测：机械臂 ID1731 卡在 current_run_id=207893，
+        //    那个 run 早就随 API 重启死了。）
+        //
+        //   口径与 DeviceLock.release 一致：清 current_run_id / current_method，
+        //   无错时置 idle、有错时置 error。
+        String releaseLockSql = """
+                UPDATE device_state
+                SET current_run_id = NULL,
+                    current_method = NULL,
+                    status = CASE WHEN last_error IS NULL THEN 'idle' ELSE 'error' END,
+                    updated_at = now()
+                WHERE tenant_id = ? AND current_run_id = ?
+                """;
+
+        // ★ 释放**孤儿设备锁**：current_run_id 指向的 run 已经不存在了。
+        //
+        //   为什么上面那条不够：它只处理「本次 settle 掉的 run」，
+        //   而 run 被**直接删除**（清理脚本 / 后台清历史）时，
+        //   device_state 里那把锁就成了孤儿 —— 没人能再通过 settle 找到它。
+        //   孤儿锁的破坏性与幽灵锁一样：
+        //   `DeviceLock.tryAcquire` 要求 current_run_id IS NULL 或等于自己
+        //   ⇒ 这台设备**从此再也不会被任何 run 拿到**（现场：一台设备凭空永远忙）。
+        //   （2026-11-06 实测：测试删掉 run 后，机械臂卡在 current_run_id=<已删 run>。）
+        String releaseOrphanLockSql = """
+                UPDATE device_state ds
+                SET current_run_id = NULL,
+                    current_method = NULL,
+                    status = CASE WHEN ds.last_error IS NULL THEN 'idle' ELSE 'error' END,
+                    updated_at = now()
+                 WHERE ds.tenant_id = ?
+                   AND ds.current_run_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM run r
+                                    WHERE r.tenant_id = ds.tenant_id
+                                      AND r.id = ds.current_run_id)
                 """;
 
         try (Connection c = db.open()) {
@@ -95,7 +171,9 @@ public final class StartupRecovery {
                 return orphans;
             }
 
-            try (PreparedStatement ps = c.prepareStatement(settleSql)) {
+            try (PreparedStatement ps = c.prepareStatement(settleSql);
+                 PreparedStatement lp = c.prepareStatement(releaseLockSql);
+                 PreparedStatement op = c.prepareStatement(releaseOrphanLockSql)) {
                 for (Orphan o : found) {
                     ps.setString(1, Jsons.obj(
                             "interrupted", true,
@@ -107,8 +185,18 @@ public final class StartupRecovery {
                     ps.setLong(2, tenantId);
                     ps.setLong(3, o.runId());
                     ps.executeUpdate();
+
+                    // 释放这台设备（可能被多台设备同时占着）
+                    lp.setLong(1, tenantId);
+                    lp.setLong(2, o.runId());
+                    lp.executeUpdate();
                 }
+
+                // 孤儿锁（指向已删除的 run）：与本次 settle 无关，也要清
+                op.setLong(1, tenantId);
+                op.executeUpdate();
             }
+
             orphans.addAll(found);
         }
 

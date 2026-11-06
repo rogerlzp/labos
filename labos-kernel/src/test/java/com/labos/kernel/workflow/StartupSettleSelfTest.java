@@ -44,6 +44,19 @@ public final class StartupSettleSelfTest {
     private static final long SAMPLE_BATCH = -993140L;
     private static final long SAMPLE_KEEP = -993141L;
 
+    /** 合成资源节点（device_state 的 FK 目标）与它持有的设备锁。 */
+    private static final long RES_LOCK = -993900L;
+    private static final String RES_LOCK_CODE = "SELFTEST-RES-993900";
+    /** 孤儿锁用的第二个资源节点。 */
+    private static final long RES_LOCK_ORPHAN = -993901L;
+    private static final String RES_LOCK_ORPHAN_CODE = "SELFTEST-RES-993901";
+
+    /** workflow 级的 run（设备锁 device_state.current_run_id 挂的是**这个** id 空间）。 */
+    private static final long WF_RUN_LOCK = -993401L;
+
+    /** 指向「已不存在的 run」的孤儿设备锁（run 被直接删掉时留下）。 */
+    private static final long WF_RUN_GONE = -993402L;
+
     private static final long RUN_PLAIN = -993301L;
     private static final long RUN_BATCH = -993302L;
     private static final long RUN_KEEP = -993303L;
@@ -57,6 +70,7 @@ public final class StartupSettleSelfTest {
             settleNonBatchOrphan();
             settleBatchOrphan();
             idempotentAndDoesNotTouchOthers();
+            releasesGhostDeviceLock();
         } finally {
             cleanup();
         }
@@ -161,6 +175,58 @@ public final class StartupSettleSelfTest {
                 "non-empty");
     }
 
+    /**
+     * 设备锁必须被释放（幽灵占用）。
+     *
+     * <p>没有这条：进程崩溃 / API 重启时正在执行的设备方法不会走 onStepDone
+     * ⇒ markDeviceIdle 永远不执行 ⇒ device_state 永远停在
+     * {@code status='running' + current_run_id=<已死的 run>}，
+     * 而 {@code DeviceLock.tryAcquire} 的条件是
+     * {@code current_run_id IS NULL OR current_run_id = 自己}
+     * ⇒ 这台设备**从此再也不会被任何 run 拿到**（现场表现：一台设备凭空永远忙）。
+     */
+    private static void releasesGhostDeviceLock() throws Exception {
+        section("4. 启动兜底 settle 释放幽灵设备锁");
+        // 只处理我们造的那条孤儿 run（别把库里真实的遗留 running 一起收了）
+        StartupRecovery.settle(db, TENANT, List.of(WF_RUN_LOCK));
+        try (Connection c = db.open()) {
+            String owner = scalar(c,
+                    "SELECT COALESCE(current_run_id::text, '(null)') FROM device_state "
+                            + "WHERE tenant_id = ? AND resource_id = ?", TENANT, RES_LOCK);
+            check("settle 后设备锁的 current_run_id 已清空", "(null)".equals(owner), owner);
+            String st = scalar(c,
+                    "SELECT status FROM device_state WHERE tenant_id = ? AND resource_id = ?",
+                    TENANT, RES_LOCK);
+            check("settle 后设备状态回到 idle", "idle".equals(st), st);
+            String m = scalar(c,
+                    "SELECT COALESCE(current_method, '(null)') FROM device_state "
+                            + "WHERE tenant_id = ? AND resource_id = ?", TENANT, RES_LOCK);
+            check("settle 后设备的 current_method 已清空", "(null)".equals(m), m);
+            // 孤儿锁（指向已删除的 run）：与本次 settle 无关，也必须被清
+            String owner2 = scalar(c,
+                    "SELECT COALESCE(current_run_id::text, '(null)') FROM device_state "
+                            + "WHERE tenant_id = ? AND resource_id = ?",
+                    TENANT, RES_LOCK_ORPHAN);
+            check("孤儿设备锁（指向已删 run）也被释放", "(null)".equals(owner2), owner2);
+            String st2 = scalar(c,
+                    "SELECT status FROM device_state WHERE tenant_id = ? AND resource_id = ?",
+                    TENANT, RES_LOCK_ORPHAN);
+            check("孤儿设备锁的状态回到 idle", "idle".equals(st2), st2);
+        }
+    }
+
+    /** 读一列值（取第一行）。 */
+    private static String scalar(Connection c, String sql, Object... args) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            for (int i = 0; i < args.length; i++) {
+                ps.setObject(i + 1, args[i]);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
     // ================================================================ 造数
 
     private static void seed() throws SQLException {
@@ -184,6 +250,34 @@ public final class StartupSettleSelfTest {
             insertAttempt(c, batchId, RUN_BATCH, 1, "running");
             exec(c, "UPDATE experiment_batch SET status = 'running' "
                     + "WHERE tenant_id = ? AND id = ?", TENANT, batchId);
+            // 设备锁：幽灵占用（current_run_id 指向将被 settle 的孤儿 run）
+            // —— 模拟「进程崩溃 / API 重启时设备方法还在执行」的后果
+            exec(c, "INSERT INTO resource_node (id, tenant_id, code, name, kind, capacity) "
+                    + "VALUES (?, ?, ?, ?, 'device', 1) ON CONFLICT (id) DO NOTHING",
+                    RES_LOCK, TENANT, RES_LOCK_CODE, "自测资源");
+            exec(c, "INSERT INTO resource_node (id, tenant_id, code, name, kind, capacity) "
+                    + "VALUES (?, ?, ?, ?, 'device', 1) ON CONFLICT (id) DO NOTHING",
+                    RES_LOCK_ORPHAN, TENANT, RES_LOCK_ORPHAN_CODE, "自测资源-孤儿锁");
+            // workflow 级的孤儿 run（设备锁挂的就是这个 id 空间）
+            exec(c, "INSERT INTO run (id, tenant_id, run_no, run_type, status) "
+                    + "VALUES (?, ?, ?, 'workflow', 'running') ON CONFLICT (id) DO NOTHING",
+                    WF_RUN_LOCK, TENANT, "SELFTEST-WF-993401");
+            exec(c, "INSERT INTO device_state (tenant_id, resource_id, status, current_run_id, "
+                    + "current_method, online) VALUES (?, ?, 'running', ?, 'Home', true) "
+                    + "ON CONFLICT (tenant_id, resource_id) DO UPDATE "
+                    + "SET current_run_id = EXCLUDED.current_run_id, "
+                    + "    current_method = EXCLUDED.current_method, "
+                    + "    status = 'running', online = true",
+                    TENANT, RES_LOCK, WF_RUN_LOCK);
+            // 孤儿锁：指向一个**根本不存在**的 run（模拟 run 被直接删掉）
+            exec(c, "INSERT INTO device_state (tenant_id, resource_id, status, current_run_id, "
+                    + "current_method, online) VALUES (?, ?, 'running', ?, 'Home', true) "
+                    + "ON CONFLICT (tenant_id, resource_id) DO UPDATE "
+                    + "SET current_run_id = EXCLUDED.current_run_id, "
+                    + "    current_method = EXCLUDED.current_method, "
+                    + "    status = 'running', online = true",
+                    TENANT, RES_LOCK_ORPHAN, WF_RUN_GONE);
+
             // 合法已完成：run + 实验
             insertRunRow(c, RUN_KEEP, EXP_KEEP, "completed", null, "now()");
             exec(c, "UPDATE experiment_run SET finished_at = now() "
@@ -359,6 +453,12 @@ public final class StartupSettleSelfTest {
     // ================================================================ 清理
 
     private static void cleanup() throws SQLException {
+        // 合成资源节点 + 设备锁（FK 是 ON DELETE CASCADE，删资源节点即可带走设备状态）
+        try (Connection c = db.open()) {
+            exec(c, "DELETE FROM resource_node WHERE id IN (?, ?)",
+                    RES_LOCK, RES_LOCK_ORPHAN);
+            exec(c, "DELETE FROM run WHERE id = ?", WF_RUN_LOCK);
+        }
         String expIn = EXP_PLAIN + "," + EXP_BATCH + "," + EXP_KEEP + "," + EXP_OUTSIDE;
         try (Connection c = db.open()) {
             c.setAutoCommit(false);

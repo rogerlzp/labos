@@ -45,6 +45,8 @@ cat /tmp/_schema_header.sql \
     97_m95_process_edge.sql \
     98_m95_run_hold.sql \
     98b_manual_window.sql \
+    99a_method_timeout.sql \
+    99b_interruptible.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

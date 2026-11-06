@@ -306,17 +306,70 @@ public final class RealWorkflowRunner {
         return out;
     }
 
-    /** protocol_name -> capability，用于补齐缺失能力标注的节点。 */
+    /**
+     * protocol_name -&gt; capability，用于补齐缺失能力标注的节点。
+     *
+     * <p>⚠️ <b>同名方法跨能力冲突是常态</b>：设备库里 {@code Home} 这个方法
+     * 同时挂在离心机（device 221 / CENTRIFUGE）、转运机器人（145 / TRANSFER）、
+     * 洗板机（183 / WASH）上 —— 按方法名反查能力**天然有歧义**。
+     *
+     * <p>⚠️ 改动前这里是 {@code SELECT dm.method, c.code ...}（**无 DISTINCT、无 ORDER BY**），
+     * {@code putIfAbsent} 取的是**物理扫描顺序里的第一行** ——
+     * 而 PostgreSQL 的堆顺序会因任何一次批量 UPDATE/重写而变
+     * （2026-11-06 实测：补齐 device_method.timeout_sec 的 260 行 UPDATE
+     * 就把 {@code Home} 的解析从 TRANSFER 翻成了 CENTRIFUGE，
+     * 于是绑定了机械臂的节点改绑离心机、**BPMN 里绑的资源被忽略**）。
+     *
+     * <p>现在：{@code DISTINCT + ORDER BY} ⇒ 结果**可复现**；
+     * 真正解决歧义的是「**绑定了设备就用那台设备的能力**」那条规则
+     * （见 {@link #resolveCapability} 的 bound 优先级）。
+     */
     public static Map<String, String> loadProtocolCapability(DbConfig db) throws SQLException {
         Map<String, String> out = new HashMap<>();
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
-                     SELECT dm.method, c.code
+                     SELECT DISTINCT dm.method, c.code
                      FROM device_method dm JOIN capability c ON c.id = dm.capability_id
+                     ORDER BY dm.method, c.code
                      """)) {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     out.putIfAbsent(rs.getString(1), rs.getString(2));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 资源/实例 id -&gt; 能力编码（两套 id 空间都覆盖）。
+     *
+     * <p>为什么必须有它：<b>节点绑定了哪台设备，那台设备的能力就是权威的</b> ——
+     * 用户在设计器里明确选了机械臂，能力就该是 TRANSFER，
+     * 而不是「因为流程里写的方法名叫 Home，而离心机也有个 Home，就按离心机算」。
+     *
+     * <p>覆盖两个 id 空间：
+     * <ul>
+     *   <li>{@code resource_node.id}（流程图里绑的资源，如 200214）</li>
+     *   <li>{@code device_instance.id}（老数据里的设备实例，如 214）</li>
+     * </ul>
+     */
+    public static Map<Long, String> loadResourceCapability(DbConfig db) throws SQLException {
+        Map<Long, String> out = new HashMap<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT rc.resource_id, c.code
+                     FROM resource_capability rc JOIN capability c ON c.id = rc.capability_id
+                     UNION
+                     SELECT di.id, c.code
+                     FROM device_instance di
+                     JOIN resource_capability rc ON rc.resource_id = di.resource_id
+                     JOIN capability c ON c.id = rc.capability_id
+                     WHERE di.deleted_at IS NULL
+                     """)) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.putIfAbsent(rs.getLong(1), rs.getString(2));
                 }
             }
         }
@@ -347,8 +400,14 @@ public final class RealWorkflowRunner {
     public static final long MAX_PLAUSIBLE_RESOURCE_ID = 99_999_999L;
 
     static CapabilitySource resolveCapability(NodeDef n, Map<String, String> protocolCap) {
+        return resolveCapability(n, protocolCap, Map.of());
+    }
+
+    /** NodeDef 版（带设备能力表）：绑定设备的能力优先。 */
+    static CapabilitySource resolveCapability(NodeDef n, Map<String, String> protocolCap,
+                                              Map<Long, String> capabilityByResource) {
         return resolveCapability(n.name(), n.protocolName(), n.equipmentInstanceId(),
-                n.capability(), protocolCap);
+                n.capability(), protocolCap, capabilityByResource);
     }
 
     /**
@@ -361,6 +420,20 @@ public final class RealWorkflowRunner {
                                               Long equipmentInstanceId,
                                               String explicitCapability,
                                               Map<String, String> protocolCap) {
+        return resolveCapability(name, protocolName, equipmentInstanceId, explicitCapability,
+                protocolCap, Map.of());
+    }
+
+    /**
+     * 能力解析（带设备能力表）。
+     *
+     * @param capabilityByResource 资源/实例 id -&gt; 能力编码（两套 id 空间）
+     */
+    static CapabilitySource resolveCapability(String name, String protocolName,
+                                              Long equipmentInstanceId,
+                                              String explicitCapability,
+                                              Map<String, String> protocolCap,
+                                              Map<Long, String> capabilityByResource) {
         // 1) 逻辑节点不占设备——否则会因"无候选资源"误判为转人工
         if (isLogicNode(name)) {
             return new CapabilitySource(LOGIC, "logic");
@@ -373,6 +446,25 @@ public final class RealWorkflowRunner {
         // 3) 节点自带能力标注
         if (explicitCapability != null && !explicitCapability.isBlank()) {
             return new CapabilitySource(explicitCapability, "explicit");
+        }
+        // 3.5) ★ 节点绑定了设备 ⇒ **那台设备的能力就是权威的**
+        //   （排在协议反查之前）
+        //
+        //   为什么必须插在这里：设备库里同名方法跨能力冲突是常态
+        //   （`Home` 同时挂在离心机/转运机器人/洗板机上），
+        //   按方法名反查能力天然有歧义 —— 用户明明把节点绑到了机械臂，
+        //   却因为「离心机也有个 Home」而被解析成 CENTRIFUGE，
+        //   **候选池按能力算 ⇒ BPMN 里绑的资源直接被忽略**（2026-11-06 实踩）。
+        //
+        //   绑定的设备存在且有能力登记时，它的能力**优先于协议反查**。
+        if (equipmentInstanceId != null
+                && equipmentInstanceId > 0
+                && equipmentInstanceId <= MAX_PLAUSIBLE_RESOURCE_ID
+                && capabilityByResource != null) {
+            String boundCap = capabilityByResource.get(equipmentInstanceId);
+            if (boundCap != null && !boundCap.isBlank()) {
+                return new CapabilitySource(boundCap, "bound");
+            }
         }
         // 4) 按 protocol_name 反查（含拼写纠错，存量数据有 RunProcotol 这类笔误）
         String byProtocol = protocolName == null ? null : protocolCap.get(protocolName);

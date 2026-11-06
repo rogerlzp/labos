@@ -216,7 +216,25 @@ class Ctx:
         for s in stmts:
             q(s)
 
+    def wait_devices_idle(self, limit=120):
+        """等设备回到 idle 再删数据。
+
+        ⚠ 为什么必须等：设备方法耗时随机 30–300 秒（真机时序），
+        设备还在执行时删掉 run_node ⇒ 设备回包后落库步骤行时父节点已不存在 ⇒
+        `run_node_parent_node_id_fkey` 违反 ⇒ 门禁的「步骤落库失败」断言变红
+        （2026-11-06 实测：设备链路段被别的段落的清理搞红）。
+        """
+        deadline = time.time() + limit
+        while time.time() < deadline:
+            busy = q("SELECT count(*) FROM device_state "
+                     "WHERE tenant_id=1 AND status='running'")
+            if not busy or busy == "0":
+                return True
+            time.sleep(0.5)
+        return False
+
     def cleanup(self):
+        self.wait_devices_idle()
         if not have_db():
             return
         for rid in self.made_run:
@@ -489,7 +507,7 @@ def sec_run_and_assert(page, ctx, exp_id):
     btn.click()
 
     # 同步执行：轮询库，等这次产生的新 run 落库
-    deadline = time.time() + 120
+    deadline = time.time() + 420
     new_runs = []
     while time.time() < deadline:
         rows = q(f"SELECT id || ':' || status FROM run WHERE tenant_id=1 AND id > {before_max} "

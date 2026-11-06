@@ -83,11 +83,34 @@ def device_state():
 MADE = {"wf": 0, "run": 0}
 
 
+def wait_device_idle(resource_id=200214, limit=90):
+    """等设备回到 idle 再删数据。
+
+    ⚠ 为什么必须等：设备方法可能还在执行（随机 30–300 秒），
+    此时删掉 run_node ⇒ 设备回包后落库步骤行时父节点已不存在 ⇒
+    `run_node_parent_node_id_fkey` 违反 ⇒ 门禁的「步骤落库失败」断言变红。
+    """
+    deadline = time.time() + limit
+    while time.time() < deadline:
+        row = q1("SELECT COALESCE(status,'-') FROM device_state "
+                 "WHERE tenant_id=1 AND resource_id=%d" % resource_id)
+        if row != "running":
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def cleanup():
     """清理现场。顺序要紧：run 先删，否则 workflow 删不掉（FK）。"""
+    wait_device_idle()
     rid, wf_id = MADE["run"], MADE["wf"]
     try:
         if rid:
+            # 先释放这把设备锁：run 被删后 device_state 里指向它的锁就成了孤儿
+            # ⇒ DeviceLock.tryAcquire 再也拿不到这台设备（幽灵占用）。
+            F.q("UPDATE device_state SET current_run_id=NULL, current_method=NULL, "
+                "status='idle', updated_at=now() "
+                f"WHERE tenant_id=1 AND current_run_id={rid};")
             F.q(f"DELETE FROM run_command WHERE run_id={rid}; "
                 f"DELETE FROM run_node WHERE run_id={rid}; DELETE FROM run WHERE id={rid};")
         if wf_id:
@@ -213,8 +236,12 @@ def main():
     t_pause = time.time()
 
     # 5) 观察：暂停什么时候真正生效（run 状态、节点状态）
+    #    ⚠ 观察窗必须**大于设备最坏耗时**（随机 30–300 秒）：早退到点就清理，
+    #    而设备还在执行 ⇒ 在飞的步骤落库时父节点已被删 ⇒
+    #    run_node_parent_node_id_fkey 违反 ⇒ 门禁的「步骤落库失败」断言变红
+    #    （设备链路段就是这么被我的脚本搞红的，2026-11-06）。
     t_paused = None
-    deadline = time.time() + 180
+    deadline = time.time() + 420
     while time.time() < deadline:
         st = q1(f"SELECT status::text FROM run WHERE id={rid}")
         if st == "paused" and t_paused is None:

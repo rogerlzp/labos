@@ -380,29 +380,138 @@ UI honest:
 This is the **zero-code-risk** option, but "I pressed pause and nothing happened" would still
 be true from the user's point of view.
 
-### 3.4 Approach B: take the timeout from the method (**do this one**)
+### 3.4 Approach B: take the timeout from the method — ✅ **implemented this round**
+
+> 2026-11-06, the user decided: "implement the mechanism **and** fill in the default timeout
+> for every capability". Done.
 
 ```
-① DriverStepExecutor stops using a fixed 30 s; instead:
-   timeout = device_method.timeout_sec (for that device + method)
-              ?? workflow_node.timeout_sec
+① DriverStepExecutor no longer uses a fixed 30 s; it becomes:
+   timeout = device_method.timeout_sec (this device, this method)
+              ?? this device's method-library ceiling (max over its device_method rows)
+              ?? workflow_node.timeout_sec (workflow-node level)
+              ?? capability default (looked up by the device's **real** capability)
               ?? fallback 30 s
-② device_method.timeout_sec already has values, but many rows are probably NULL/0 — they
-   need sensible defaults per capability (centrifuge 5 minutes, incubation 30 minutes,
-   scan 30 seconds, …)
-③ Long tasks (--long) already have the "reply running first, then completed" two-frame
-   mechanism; combined with a per-method timeout it can really support
-   "incubate for 30 minutes"
+② The capability defaults are filled in (shard 99a_method_timeout.sql, idempotent UPDATE
+   of 260 rows):
+   incubation 1800 s / thermocycler-PCR 3600 s / centrifuge 900 s / washer 900 s /
+   every other capability 600 s (generic floor)
+   — only rows with `timeout_sec = 0` are filled; the 3 s / 5 s / 20 s / 302 s values
+   already in the device library are **real contracts** (estimated duration × 2) and are
+   left untouched
+③ Long tasks (--long) already have the "running again, then completed" two-frame
+   mechanism; only with a per-method timeout can "incubate for 30 minutes" really work
 ```
 
-### 3.5 Suggested implementation order
+**Measured** (robot arm + random 30–300 s delays):
 
-| Step | Content | Risk | Benefit |
+```
+[超时] ARM Home → 600 秒（来源 device_library：设备方法=0s 设备库上限=600s 节点=0s 能力=TRANSFER）
+⇒ the device method ran for 48 s and answered normally — **it was no longer killed by the
+  30 s timeout**
+```
+
+**Implementation details** (all of them learned the hard way):
+
+| Detail | Why |
+|---|---|
+| `ctx.resourceId()` is actually the **device_instance.id** | not the resource_node.id — the proof is `DriverRegistry.driverFor(long deviceInstanceId)` and `candidates()`, which both use instance ids. Using the wrong id space ⇒ every lookup misses ⇒ **silently falls back to 30 s** |
+| The capability default must use the device's **real** capability | the capability on the node is **guessed from its name** (`resolveCapability` level 6: the node named "机械臂搬运" gets guessed as WASH); querying the device's tables with a guessed capability misses on both ends ⇒ query `resource_capability` instead |
+| `resource_capability` has **no tenant_id column** | including it raises a SQLException, the exception is swallowed ⇒ null is returned silently ⇒ the capability falls back to the guessed one |
+| The resolved timeout must be logged | `[超时] <node> <method> → N s (source …)` — without that line, all three traps above can only be guessed at |
+
+**Two real bugs this work exposed** (details in the development log):
+
+1. **Capability resolution hijacked by same-named methods**:
+   `loadProtocolCapability` was
+   `SELECT dm.method, c.code FROM device_method ...` (**no DISTINCT, no ORDER BY**),
+   and `Home` exists on the centrifuge, the transport robot and the plate washer ⇒
+   the result **depended on the physical row order** ⇒ any bulk UPDATE of
+   `device_method` (such as filling in the timeouts) could flip it ⇒ **a node bound to the
+   robot arm got bound to a centrifuge and the bound resource was ignored**.
+   Fixed: **the bound device's capability wins** (a new "bound" priority in
+   `resolveCapability`, ahead of the protocol lookup), and the protocol map is now
+   `DISTINCT + ORDER BY` (reproducible).
+2. **Leaked device locks (ghost occupancy)**: when the process crashes or the API restarts,
+   the device method in flight never reaches `onStepDone` ⇒ `markDeviceIdle` never runs ⇒
+   `device_state` stays at `status='running' + current_run_id=<a dead run>`; and
+   `DeviceLock.tryAcquire` requires `current_run_id IS NULL OR current_run_id = me`
+   ⇒ **that device can never be acquired by any run again** (on site: one device is
+   mysteriously "always busy").
+   Fixed: the startup fallback `settle` now **releases the device locks held by the
+   interrupted runs** (same semantics as `DeviceLock.release`), covered by a self-test.
+
+### 3.5 Implementation order — where this round got to
+
+| Step | Content | Status | Note |
 |---|---|---|---|
-| 1 | **Timeout taken from the method** (B) | low (just stops false failures) | immediate; real long methods stop failing spuriously |
-| 2 | **Record the current commandId on pause** (no change to execution semantics yet) | low | paving the way for a real interrupt |
-| 3 | **Interruptible wait on the execution side + `interruptible` decides whether to abort** (A1) | **medium-high** (real-device safety) | a pause can actually stop an interruptible device |
-| 4 | State it in the UI ("the current action will finish" / "interrupted, retryable") | low | removing the misunderstanding |
+| 1 | **Take the timeout from the method** (B) | ✅ **implemented** | mechanism + per-capability defaults + 20 self-test assertions + measured (a 48 s method is no longer killed at 30 s) |
+| 2 | **Record the current commandId** when pausing | ⚠ changed to **the execution side asking itself** | no extra state column: the executor already knows its own runId and commandId, so it just polls "is my run paused / am I covered by a hold?" — one less field to keep consistent |
+| 3 | Execution side: interruptible wait + abort depending on `interruptible` (A1) | ✅ **mechanism implemented** (everything defaults to false) | see §3.6; **without the on-site list the behaviour is byte-for-byte the same as before** |
+| 4 | UI states "the current action will finish / interrupted, can retry" | ❌ not done | depends on the on-site list |
+
+---
+
+## 3.6 A1 "really stop it": mechanism implemented, waiting for the on-site list
+
+**How**: `device_method` gains an `interruptible` column (default **false**); every method
+declares for itself whether it can be interrupted mid-flight.
+
+```
+device_method.interruptible
+  · robot-arm handling (Transfer/Grip/Release/Load/Unload) → false (the plate would drop)
+  · long processes (centrifuge / incubation / PCR / plate reading…) → true
+```
+
+**Execution side** (`DriverStepExecutor.executeCommand`):
+
+```
+method not declared interruptible ⇒ old path: the calling thread blocks for the reply
+                                     (**behaviour unchanged**)
+method declared interruptible    ⇒ the call runs on a worker thread and the main thread
+                                    polls every 200 ms for "should I stop":
+      ① workflow level: run.status = 'paused' (the pause button on the page)
+      ② experiment level: my workflow is covered by an active site hold (runtime_hold)
+         — an experiment-level pause creates exactly such a hold, while the
+         workflow-level run status does **not** change because of it
+      hit ⇒ driver.abort(commandId)
+             (TcpPersistentDriver.abort removes the waiting future)
+```
+
+**State after the interrupt** (measured):
+
+```
+run 最终状态      : paused
+设备指令最终状态  : aborted|EC-99-0005
+节点状态          : ARM=running
+从发暂停到命令结束: 0.3 秒
+```
+
+- The **command / step row is recorded as `aborted`** (not `failed`): the persistence layer
+  distinguishes by the error code `EC-99-0005` — "aborted by a pause" and "the device really
+  failed" are separate in the data, so the UI can say "interrupted, retryable" instead of
+  "failed". (`node_status` already has `aborted` — no vocabulary change needed.)
+- The **business node row stays `running`**: the run is paused ⇒ the finalisation never ran
+  ⇒ the node row never got a terminal status.
+- The **run lands as `paused`**; `EC-99-0005` is **not registered** in the error-code table
+  ⇒ no recovery policy matches ⇒ the fallback is **MANUAL**.
+- **The step is re-run on resume**: `resumeAsync` deletes every **non-completed** row ⇒ the
+  node row (`running`) and the step row (`aborted`) are both deleted and re-run ⇒ the device
+  command is issued again.
+
+> ⚠ Telling "waiting for a human" apart from "interrupted, will retry" **in the UI** is
+> still missing (step 4 — it depends on the on-site list).
+
+**Why "everything defaults to false" is safe**: without the on-site list every method takes
+the old path, so the **behaviour is byte-for-byte identical to before** — this switch can
+never stop a robot arm that is carrying a plate. Once the list is confirmed, flipping the
+flag is enough; no code change is needed.
+
+**What is still missing**:
+- The **on-site list of interruptible methods** (from the user): which methods can be
+  stopped and which cannot.
+- The UI hint (step 4).
+- Real-device validation: this round is all simulators.
 
 ---
 
@@ -438,13 +547,17 @@ inside the range, and different every time.
 
 | Item | Status | Note |
 |---|---|---|
-| "Really stop a device command in flight" | ❌ **not implemented** | this round only **measured the current behaviour** and produced a plan; A1 involves real-device safety, so no production code was touched |
+| "Really stop a device command in flight" | ⚠ **mechanism implemented, on-site list pending** | `device_method.interruptible` + an interruptible wait on the execution side; **everything defaults to false ⇒ the behaviour is unchanged**; once the list arrives, flipping the flag is enough. Until then no method can be stopped |
+| Really stopping on a real device | ❌ not covered | this round is all simulators; a real plate would drop, so the list must be confirmed on site before switching anything on |
 | How to tell "the device is executing" | ✅ corrected | `device_state.status='running'` + `current_method`; **not** `run_command` (that is persisted after the step finishes) — see §1.5 |
 | Difference between the robot arm and an ordinary device on pause | ✅ clarified | **there is no difference today** — both "let the current action finish". "The robot arm stops" is a misreading |
 | The `abort` chain | ✅ clarified | the driver layer implements it for real (`TcpPersistentDriver` really does remove the future) but **nobody calls it**; `EC-99-0005` occurs 0 times |
-| The fixed 30 s timeout | ⚠ **located, not fixed** | `device_method.timeout_sec` is stored but never read; long methods are always killed |
+| The fixed 30 s timeout | ✅ **fixed** | now taken per method (device_method → device-library ceiling → workflow node → capability default → fallback 30 s), with the per-capability defaults filled in (shard 99a) |
+| Capability resolution hijacked by same-named methods | ✅ **fixed** | `loadProtocolCapability` had no DISTINCT/ORDER BY ⇒ the result for `Home` depended on the physical row order; now "the bound device's capability wins" + a reproducible map |
+| Leaked device locks (ghost occupancy) | ✅ **fixed** | after an API restart/crash `device_state.current_run_id` was never released ⇒ that device could **never** be acquired again; the startup fallback settle now releases it |
 | Real long tasks (a 5-minute centrifuge, …) | ❌ not covered | this round is all simulators |
-| "Retry this step after an interrupt" | ⚠ **the mechanism exists** | `resumeAsync` deletes the not-completed rows and re-runs them; but there is no "interrupted" state source yet |
+| "Retry this step after an interrupt" | ✅ verified | the interrupt lands as `manual` (not completed) ⇒ `resumeAsync` deletes it and re-runs that step |
+| Telling "waiting for a human" apart from "interrupted, will retry" in the UI | ❌ not done | depends on the on-site list |
 | Pause + site hold (`runtime_hold`) combined | ❌ not covered | `releaseResources`' exemptions and the interrupt design have to be designed together |
 | Pausing while several devices run in parallel | ❌ not covered | the pause is run-scoped; with parallel devices it is unclear which one should stop |
 | Pausing during a multi-device parallel execution | ❌ not covered | this round only measured a **single** device executing; "which one stops" is a design question |

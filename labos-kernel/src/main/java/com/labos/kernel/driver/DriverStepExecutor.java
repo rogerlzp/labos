@@ -1,6 +1,7 @@
 package com.labos.kernel.driver;
 
 import com.labos.kernel.engine.StepContext;
+import com.labos.kernel.workflow.RuntimeHold;
 import com.labos.kernel.engine.StepExecutor;
 import com.labos.kernel.engine.StepFailure;
 import com.labos.kernel.engine.StepSink;
@@ -59,6 +60,43 @@ public final class DriverStepExecutor implements StepExecutor {
      * 读不到（新码还没登记）再按前缀兜底。
      */
     private volatile Map<String, com.labos.kernel.recovery.RecoveryScope> scopes;
+
+    /**
+     * 本次执行解析出来的超时（毫秒）。
+     *
+     * <p>key = {@code resourceId|capabilityCode|method}。
+     * 为什么要缓存：一次执行里同一个设备的同一个方法可能被多步复用，
+     * 每步都查一次库是白白的三条 SQL；而且**同一次执行里超时必须一致** ——
+     * 中途变了会让排障时对不上账。
+     */
+    private final Map<String, Long> timeoutCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 解析出来的超时来源（与 {@link #timeoutCache} 同 key），只用于日志。 */
+    private final Map<String, String> timeoutSource = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 「可中断方法」判定缓存：key = {@code deviceInstanceId|method}。
+     *
+     * <p>默认全是 false（{@code device_method.interruptible} 默认 false），
+     * 所以**没有现场清单之前，走的还是老路径（阻塞等待），行为一字不变**。
+     */
+    private final Map<String, Boolean> interruptibleCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 轮询「该不该停」的间隔（毫秒）。 */
+    private static final long INTERRUPT_POLL_MS = 200L;
+
+    /**
+     * 可中断等待用的线程池。
+     *
+     * <p>只有**声明了可中断**的方法才会用到它；其余方法仍是调用线程直接阻塞等待
+     * （和改动前一样，不引入线程切换）。
+     */
+    private static final java.util.concurrent.ExecutorService INTERRUPT_POOL =
+            java.util.concurrent.Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "labos-interrupt-wait");
+                t.setDaemon(true);
+                return t;
+            });
 
     /**
      * 本节点第几次被 {@link #execute} 调用（从 1 开始）。
@@ -270,13 +308,15 @@ public final class DriverStepExecutor implements StepExecutor {
                 && System.getenv("LABOS_TRANSFER_PLAN") != null
                 && method != null && method.startsWith("Transfer");
         if (!protect) {
-            return driver.execute(buildCommand(ctx, deviceId, method, stepSeq, exec));
+            return executeCommand(driver, ctx,
+                    buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun());
         }
 
         Long srcRes = resourceOfParam(ctx, "source");
         Long dstRes = resourceOfParam(ctx, "target");
         if (srcRes == null || dstRes == null) {
-            return driver.execute(buildCommand(ctx, deviceId, method, stepSeq, exec));
+            return executeCommand(driver, ctx,
+                    buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun());
         }
 
         TransferPlan plan = new TransferPlan(db, tenantId, runId);
@@ -292,7 +332,8 @@ public final class DriverStepExecutor implements StepExecutor {
                 return DriverResult.failed("0", "EC-06-0001",
                         "设备没有可用驱动：" + resNodeId, null, 0);
             }
-            return d.get().execute(buildCommand(ctx, instId, m, stepSeq, exec));
+            return executeCommand(d.get(), ctx,
+                    buildCommand(ctx, instId, m, stepSeq, exec), workflowIdOfRun());
         };
         try {
             plan.acquireAll(srcRes, null, dstRes, null, null, null, factory);
@@ -420,6 +461,323 @@ public final class DriverStepExecutor implements StepExecutor {
      * （模拟器 {@code DeviceCore} 已实现；真实设备若不支持，
      * 应把动作类的超时策略配成 {@code manual}，宁可转人工也不要重复搬板）。
      */
+    /**
+     * 解析这一步该等设备多久（毫秒）。
+     *
+     * <p><b>改前是写死的 30 秒</b>（{@link #timeoutMs}），
+     * 而 {@code device_method.timeout_sec} / {@code workflow_node.timeout_sec}
+     * 两张表里存了值没人读 ⇒ <b>任何超过 30 秒的真机方法都被判超时</b>
+     * （离心 5 分钟、PCR 几十分钟、孵育 30 分钟全必挂），与暂停无关，是纯 bug。
+     *
+     * <p>取值优先级见 {@link MethodTimeoutPolicy}：
+     * 设备方法级 → 设备能力级 → 流程节点级 → 能力默认 → 兜底 30 秒。
+     *
+     * <p>拿不到库（{@code db == null}，影子执行等场景）时退回原固定值，
+     * 保证**老路径行为不变**。
+     */
+    private long resolveTimeoutMs(StepContext ctx, String method) {
+        if (db == null) {
+            return timeoutMs;
+        }
+        String cap = ctx.capabilityCode();
+        String key = ctx.resourceId() + "|" + (cap == null ? "" : cap) + "|" + method;
+        Long cached = timeoutCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        long methodSec = 0L;
+        long libSec = 0L;
+        long nodeSec = 0L;
+        String effectiveCap = cap;
+        try {
+            // ⚠ ctx.resourceId() 其实是 **device_instance.id**，
+            //   不是 resource_node.id —— 证据：DriverRegistry.driverFor(long deviceInstanceId)
+            //   与 candidates() 返回的都是实例 id（机械臂是 214，不是 200214）。
+            //   搞错 id 空间 ⇒ 查表全部落空 ⇒ 静默退回 30 秒兜底（2026-11-06 实踩）。
+            long instanceId = ctx.resourceId();
+            methodSec = deviceMethodTimeoutSec(instanceId, method);
+            libSec = deviceLibraryTimeoutSec(instanceId);
+            // 能力默认要用**设备的真实能力**，不是节点上启发式猜出来的那个 ——
+            // 节点名「机械臂搬运」会被猜成 WASH（resolveCapability 第 6 级），
+            // 拿猜出来的能力去查设备的方法库与默认表，两头都对不上。
+            String devCap = deviceCapabilityCode(instanceId);
+            if (devCap != null && !devCap.isBlank()) {
+                effectiveCap = devCap;
+            }
+            nodeSec = workflowNodeTimeoutSec(ctx.nodeId());
+        } catch (RuntimeException e) {
+            // 查库失败不该把执行搞挂 —— 退回兜底值继续跑
+            System.err.println("[超时] 解析失败，退回兜底 " + timeoutMs + "ms：" + e.getMessage());
+        }
+        MethodTimeoutPolicy.Resolved r = MethodTimeoutPolicy.resolve(
+                methodSec, libSec, nodeSec, effectiveCap, timeoutMs);
+        timeoutCache.put(key, r.timeoutMs());
+        timeoutSource.put(key, r.source());
+        if (r.timeoutMs() > 60_000L) {
+            System.out.println("[超时] " + ctx.nodeKey() + " " + method
+                    + " → " + (r.timeoutMs() / 1000L) + " 秒（来源 " + r.source()
+                    + "：设备方法=" + methodSec + "s 设备库上限=" + libSec
+                    + "s 节点=" + nodeSec + "s 能力=" + effectiveCap + "）");
+        }
+        return r.timeoutMs();
+    }
+
+    /**
+     * 这个方法是否声明了「执行中可被打断」。
+     *
+     * <p>判据：{@code device_method.interruptible}（device_instance + 方法名精确匹配）。
+     * 查不到 / 没配 ⇒ **false**（安全默认：宁可不停，也不要把搬板的机械臂停掉）。
+     */
+    private boolean isInterruptible(long instanceId, String method) {
+        if (db == null || method == null || method.isBlank()) {
+            return false;
+        }
+        String key = instanceId + "|" + method;
+        Boolean cached = interruptibleCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        boolean v = false;
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT interruptible FROM device_method "
+                             + "WHERE tenant_id = ? AND device_id = ? AND method = ? LIMIT 1")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, instanceId);
+            ps.setString(3, method);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    v = rs.getBoolean(1);
+                }
+            }
+        } catch (java.sql.SQLException e) {
+            v = false;
+        }
+        interruptibleCache.put(key, v);
+        return v;
+    }
+
+    /**
+     * 这条 run 现在是不是「该停」。
+     *
+     * <p>两个来源：
+     * <ol>
+     *   <li><b>workflow 级</b>：{@code run.status = 'paused'}（页面上的暂停按钮）。</li>
+     *   <li><b>实验级</b>：我的流程正被某个生效中的<b>现场扣留</b>覆盖
+     *       （{@code runtime_hold}：实验/岛/现场三级作用域）——
+     *       实验级暂停落的就是扣留，而 workflow 级的 run 状态**不会**因此变 paused
+     *       （设计如此：实验暂停 ≠ 底层 workflow run 暂停）。</li>
+     * </ol>
+     */
+    private boolean pauseRequested(long workflowId) {
+        if (runId > 0) {
+            String st = q1s("SELECT status::text FROM run WHERE tenant_id = ? AND id = ?",
+                    tenantId, runId);
+            if ("paused".equals(st)) {
+                return true;
+            }
+        }
+        if (workflowId <= 0) {
+            return false;
+        }
+        // 实验级：找出正在跑我这条流程的实验，再看它有没有被扣留
+        Long expId = q1("SELECT er.experiment_id FROM experiment_run er "
+                + "JOIN experiment_run_step s ON s.tenant_id = er.tenant_id "
+                + "AND s.experiment_run_id = er.id "
+                + "WHERE er.tenant_id = ? AND er.status = 'running' AND s.workflow_id = ? "
+                + "ORDER BY er.id DESC LIMIT 1", tenantId, workflowId);
+        if (expId == null || expId <= 0) {
+            return false;
+        }
+        Long island = q1("SELECT e.island_id FROM experiment e "
+                + "WHERE e.tenant_id = ? AND e.id = ?", tenantId, expId);
+        return new RuntimeHold(db, tenantId)
+                .coveringFor(expId, island == null ? 0L : island) != null;
+    }
+
+    /** 本次执行所属的流程 id（从 run 行取；查不到返回 0）。 */
+    private long workflowIdOfRun() {
+        if (runId <= 0) {
+            return 0L;
+        }
+        Long v = q1("SELECT workflow_id FROM run WHERE tenant_id = ? AND id = ?",
+                tenantId, runId);
+        return v == null ? 0L : v;
+    }
+
+    /** 一条 SQL 取一个字符串值（查不到返回 null）。 */
+    private String q1s(String sql, Object... args) {
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
+            for (int i = 0; i < args.length; i++) {
+                ps.setObject(i + 1, args[i]);
+            }
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        } catch (java.sql.SQLException e) {
+            return null;
+        }
+    }
+
+    /** 一条 SQL 取一个值（查不到返回 null）。 */
+    private Long q1(String sql, Object... args) {
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
+            for (int i = 0; i < args.length; i++) {
+                ps.setObject(i + 1, args[i]);
+            }
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : null;
+            }
+        } catch (java.sql.SQLException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 下发一条设备命令。
+     *
+     * <p><b>方法没声明可中断</b> ⇒ 老路径：调用线程直接阻塞等回包（行为不变）。
+     *
+     * <p><b>方法声明了可中断</b> ⇒ 放到工作线程里等，主线程每 200ms 查一次
+     * 「是否该停」（workflow 级暂停 / 实验级扣留）：
+     * 命中就调 {@code driver.abort(commandId)}
+     * （{@code TcpPersistentDriver.abort} 会把等待中的 future 摘掉，
+     * 让调用方立刻拿到失败）⇒ 这一步被中断，节点记 aborted，
+     * 恢复时因为它不是 completed，会**重跑这一步**。
+     */
+    private DriverResult executeCommand(DeviceDriver driver, StepContext ctx,
+                                        DriverCommand cmd, long workflowId) {
+        if (!isInterruptible(cmd.deviceInstanceId(), cmd.method())) {
+            return driver.execute(cmd);
+        }
+        java.util.concurrent.Future<DriverResult> f =
+                INTERRUPT_POOL.submit(() -> driver.execute(cmd));
+        try {
+            while (true) {
+                if (f.isDone()) {
+                    return f.get();
+                }
+                if (pauseRequested(workflowId)) {
+                    driver.abort(cmd.commandId());
+                    try {
+                        return f.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (java.util.concurrent.TimeoutException te) {
+                        f.cancel(true);
+                        return DriverResult.failed("0", "EC-99-0005",
+                                "设备命令被暂停中止（方法声明可中断）", null, 0);
+                    }
+                }
+                Thread.sleep(INTERRUPT_POLL_MS);
+            }
+        } catch (java.util.concurrent.ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            return DriverResult.failed("0", "EC-99-0001",
+                    "驱动异常：" + cause, null, 0);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            f.cancel(true);
+            return DriverResult.failed("0", "EC-99-0005", "等待被中断", null, 0);
+        }
+    }
+
+    /** 设备方法级超时（秒）：该设备该方法名登记的值，没有则 0。 */
+    private long deviceMethodTimeoutSec(long instanceId, String method) {
+        if (method == null || method.isBlank()) {
+            return 0L;
+        }
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method "
+                             + "WHERE tenant_id = ? AND device_id = ? AND method = ?")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, instanceId);
+            ps.setString(3, method);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        } catch (java.sql.SQLException e) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 设备方法库上限（秒）：该设备 {@code device_method} 里所有方法的最大值。
+     *
+     * <p>为什么要有这一级：设备库常常只登记了部分方法 ——
+     * 演示岛的 ID1731 只有一行方法名「液体」，而流程实际下发的是 {@code Home}，
+     * 精确匹配必然落空 ⇒ 没有这一级就又退回 30 秒，长工艺照样被误杀。
+     *
+     * <p>为什么**不按能力过滤**：节点上的能力码是按名字**启发式猜**出来的
+     * （{@code resolveCapability} 第 6 级：节点名「机械臂搬运」会被猜成 WASH），
+     * 拿它去过滤设备自己的方法库必然匹配不上 ⇒ 宁可取该设备全部方法的上限。
+     */
+    private long deviceLibraryTimeoutSec(long instanceId) {
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method "
+                             + "WHERE tenant_id = ? AND device_id = ?")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, instanceId);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        } catch (java.sql.SQLException e) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 设备的真实能力编码（resource_capability）；查不到返回 null。
+     *
+     * @param instanceId device_instance.id（不是 resource_node.id）
+     *
+     * <p>⚠ {@code resource_capability} 表**没有 tenant_id 列** ——
+     * 带上它会直接抛 SQLException（"column rc.tenant_id does not exist"），
+     * 而异常被这里吞掉 ⇒ 静默返回 null ⇒ 能力回落成节点上猜出来的那个。
+     */
+    private String deviceCapabilityCode(long instanceId) {
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT c.code FROM resource_capability rc "
+                             + "JOIN capability c ON c.id = rc.capability_id "
+                             + "WHERE rc.resource_id = "
+                             + "(SELECT resource_id FROM device_instance "
+                             + " WHERE tenant_id = ? AND id = ? AND deleted_at IS NULL) "
+                             + "LIMIT 1")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, instanceId);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        } catch (java.sql.SQLException e) {
+            return null;
+        }
+    }
+
+    /** 流程节点级超时（秒）：workflow_node.timeout_sec，没有则 0。 */
+    private long workflowNodeTimeoutSec(long nodeId) {
+        if (nodeId <= 0L) {
+            return 0L;
+        }
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM workflow_node "
+                             + "WHERE tenant_id = ? AND id = ?")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, nodeId);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        } catch (java.sql.SQLException e) {
+            return 0L;
+        }
+    }
+
     private DriverCommand buildCommand(StepContext ctx, long deviceId, String method,
                                        int stepSeq, int exec) {
         String id = "r" + runId
@@ -432,7 +790,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 deviceId,
                 method,
                 mergeParams(ctx),
-                timeoutMs,
+                resolveTimeoutMs(ctx, method),
                 traceId);
     }
 

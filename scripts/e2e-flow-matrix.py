@@ -179,7 +179,25 @@ class Ctx:
         self.made_wf = []
         self.made_run = []
 
+    def wait_devices_idle(self, limit=120):
+        """等设备回到 idle 再删数据。
+
+        ⚠ 为什么必须等：设备方法耗时随机 30–300 秒（真机时序），
+        设备还在执行时删掉 run_node ⇒ 设备回包后落库步骤行时父节点已不存在 ⇒
+        `run_node_parent_node_id_fkey` 违反 ⇒ 门禁的「步骤落库失败」断言变红
+        （2026-11-06 实测：设备链路段被别的段落的清理搞红）。
+        """
+        deadline = time.time() + limit
+        while time.time() < deadline:
+            busy = q("SELECT count(*) FROM device_state "
+                     "WHERE tenant_id=1 AND status='running'")
+            if not busy or busy == "0":
+                return True
+            time.sleep(0.5)
+        return False
+
     def cleanup(self):
+        self.wait_devices_idle()
         if not have_db():
             return
         for rid in self.made_run:
@@ -634,7 +652,9 @@ def delete_node(page, key):
     return page.locator(f'.djs-element[data-element-id="{key}"]').count() == 0
 
 
-def run_workflow(ctx, wf_id, wait=90):
+def run_workflow(ctx, wf_id, wait=420):
+    """等待预算：设备方法耗时随机 30–300 秒（真机时序）⇒ 90 秒不够用，
+    会把「设备还在跑」误判成「流程没跑完」。只在设备真慢时才会等满。"""
     """触发一次真执行（与页面「执行实验」同一条执行链），返回 (run_id, status)。"""
     r = api(f"/api/workflows/{wf_id}/run?async=1", "POST", {}, ctx.token)
     rid = 0

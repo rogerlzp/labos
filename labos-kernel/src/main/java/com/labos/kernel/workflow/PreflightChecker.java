@@ -85,6 +85,7 @@ public final class PreflightChecker {
     // 全量预检时这些数据只该加载一次，否则每个流程都会做一次全表查询
     private Map<String, List<Long>> capPoolCache;
     private Map<String, String> protocolCapCache;
+    private Map<Long, String> resourceCapCache;
     private RecoveryDecider deciderCache;
 
     public PreflightChecker(DbConfig db, long tenantId) {
@@ -104,6 +105,14 @@ public final class PreflightChecker {
             protocolCapCache = RealWorkflowRunner.loadProtocolCapability(db);
         }
         return protocolCapCache;
+    }
+
+    /** 资源/实例 -&gt; 能力（绑定设备的能力优先于协议反查）。 */
+    private Map<Long, String> resourceCapability() throws SQLException {
+        if (resourceCapCache == null) {
+            resourceCapCache = RealWorkflowRunner.loadResourceCapability(db);
+        }
+        return resourceCapCache;
     }
 
     private RecoveryDecider decider() throws SQLException {
@@ -175,10 +184,12 @@ public final class PreflightChecker {
         // ---- 静态检查 1：能力与设备 ----
         Map<String, List<Long>> capPool = capPool();
         Map<String, String> protocolCap = protocolCap();
+        Map<Long, String> resourceCap = resourceCapability();
         Map<String, Integer> capUsage = new LinkedHashMap<>();
         for (GNode t : tasks) {
             CapabilitySource cs = RealWorkflowRunner.resolveCapability(
-                    t.name(), t.method(), t.resourceId(), explicitCap.get(t.key()), protocolCap);
+                    t.name(), t.method(), t.resourceId(), explicitCap.get(t.key()),
+                    protocolCap, resourceCap);
             String cap = cs.capability();
 
             if (RealWorkflowRunner.LOGIC.equals(cap)) {

@@ -181,7 +181,10 @@ class Ctx:
             body["resourceId"] = resource
         api(f"/api/workflows/{wid}/nodes/{key}", "PUT", body, self.token)
 
-    def run(self, wid, vars_=None, wait=90):
+    # 等待预算：设备方法耗时随机 30–300 秒（真机时序）⇒ 90 秒不够用，
+    # 会把「设备还在跑」误判成「流程没跑完」。这里放宽到 420 秒：
+    # 只在设备真的慢时才会等满，正常秒级完成不受影响。
+    def run(self, wid, vars_=None, wait=420):
         path = f"/api/workflows/{wid}/run?async=1"
         if vars_:
             path += "&vars=" + urllib.parse.quote(",".join(f"{k}={v}" for k, v in vars_.items()), safe="")
@@ -200,7 +203,25 @@ class Ctx:
         return q(f"SELECT node_key||'='||status::text FROM run_node "
                  f"WHERE run_id={rid} AND level=0 ORDER BY id")
 
+    def wait_devices_idle(self, limit=120):
+        """等设备回到 idle 再删数据。
+
+        ⚠ 为什么必须等：设备方法耗时随机 30–300 秒（真机时序），
+        设备还在执行时删掉 run_node ⇒ 设备回包后落库步骤行时父节点已不存在 ⇒
+        `run_node_parent_node_id_fkey` 违反 ⇒ 门禁的「步骤落库失败」断言变红
+        （2026-11-06 实测：设备链路段被别的段落的清理搞红）。
+        """
+        deadline = time.time() + limit
+        while time.time() < deadline:
+            busy = q("SELECT count(*) FROM device_state "
+                     "WHERE tenant_id=1 AND status='running'")
+            if not busy or busy == "0":
+                return True
+            time.sleep(0.5)
+        return False
+
     def cleanup(self):
+        self.wait_devices_idle()
         for eid in self.made_exp:
             q(f"DELETE FROM experiment_process_edge WHERE experiment_id={eid};"
               f"DELETE FROM experiment_process WHERE experiment_id={eid};"

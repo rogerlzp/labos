@@ -100,8 +100,21 @@ def device_state():
 MADE = {"wf": 0, "exp": 0}
 
 
+def wait_device_idle(resource_id=200214, limit=90):
+    """等设备回到 idle 再删数据（理由同设备级脚本）。"""
+    deadline = time.time() + limit
+    while time.time() < deadline:
+        row = q1("SELECT COALESCE(status,'-') FROM device_state "
+                 "WHERE tenant_id=1 AND resource_id=%d" % resource_id)
+        if row != "running":
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def cleanup():
     """清理现场。顺序要紧：run 先删，否则 workflow 删不掉（FK）。"""
+    wait_device_idle()
     eid, wf_id = MADE["exp"], MADE["wf"]
     try:
         q1("DELETE FROM runtime_hold WHERE released_at IS NULL;")
@@ -110,6 +123,10 @@ def cleanup():
             q1(f"DELETE FROM experiment_process WHERE experiment_id={eid};")
             q1(f"DELETE FROM experiment WHERE id={eid};")
         if wf_id:
+            # 先释放这些 run 占着的设备锁（删 run ⇒ 锁成孤儿 ⇒ 设备永远拿不到）
+            q1("UPDATE device_state SET current_run_id=NULL, current_method=NULL, "
+               "status='idle', updated_at=now() WHERE tenant_id=1 AND current_run_id IN "
+               f"(SELECT id FROM run WHERE workflow_id={wf_id});")
             q1(f"DELETE FROM run_command WHERE run_id IN "
                f"(SELECT id FROM run WHERE workflow_id={wf_id});")
             q1(f"DELETE FROM run_node WHERE run_id IN "
@@ -272,7 +289,10 @@ def main():
 
     # 7) 观察
     t_paused = None
-    deadline = time.time() + 180
+    # ⚠ 观察窗必须**大于设备最坏耗时**（随机 30–300 秒）：到点就退出 ⇒
+    #   设备还在执行时清理 ⇒ 在飞的步骤落库时父节点已被删 ⇒ FK 违反 ⇒
+    #   门禁的「步骤落库失败」断言变红（2026-11-06 实踩）。
+    deadline = time.time() + 420
     while time.time() < deadline:
         er = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
         ex = q1(f"SELECT status FROM experiment WHERE id={eid}")

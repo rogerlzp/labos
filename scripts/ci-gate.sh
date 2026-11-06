@@ -39,7 +39,7 @@ for a in "$@"; do
 done
 
 # 阈值：只许涨不许跌。改了用例要同步改这里，逼着人想清楚"少的那几条去哪了"。
-MIN_PURE=624    # 2026-11-05：ManualWindowSelfTest 35（台账 6.5 有人值守窗口纯逻辑层）（589 → 624）
+MIN_PURE=644    # 2026-11-06：MethodTimeoutPolicySelfTest 20（超时按方法取的优先级/0=没配/显式值不被抬高）（624 → 644）
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
@@ -59,7 +59,8 @@ MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → 
 MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点只落在设备任务节点——网关与逻辑节点都不查 pauseChecker；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
-MIN_PAUSEEXP=2    # 2026-11-06：实验级暂停 · 设备执行中发暂停 → run/experiment_run/experiment 三层都变 paused（语义要求，实现真停后也不该变）
+MIN_PAUSEEXP=2    # 2026-11-06：实验级暂停 · 设备执行中发暂停 → 实验级两层（experiment_run / experiment）都变 paused，且 workflow 级 run 独立跑完（语义要求，实现真停后也不该变）
+MIN_INTR=3        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005），5 条断言（门禁 21 → 22 段）
 
 FAIL=0
 SKIP=0
@@ -509,8 +510,30 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "实验级暂停 $SUM_PASS / 0（设备执行中发暂停 → 实验级两层 paused；workflow 级 run 独立跑完）"
     fi
   fi
+  # 4.18 A1 真停：方法声明「可中断」时，执行中发暂停 → 命令真的被中止
+  # 断言的是**语义要求**：可中断方法在暂停后必须**很快**落终态
+  # （远快于设备本身要跑的 30–300 秒），而不是等设备跑完。
+  # 脚本会临时把机械臂的 Home 标成 interruptible=true，结束前还原。
+  note "4.18 A1 真停 · 可中断方法执行中（e2e-interrupt-during-device.py）"
+  IOUT=$(python3 scripts/e2e-interrupt-during-device.py 2>&1)
+  if echo "$IOUT" | grep -qE '^SKIP|缺 LABOS_DB'; then
+    skip "A1 真停（没给库连接）"
+  else
+    parse_summary "$IOUT"
+    if [[ "$SUM_MISSING" == "1" ]]; then
+      fail "A1 真停脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
+      printf '%s\n' "$IOUT" | tail -15
+    elif [[ "$SUM_FAIL" != "0" ]]; then
+      fail "A1 真停有失败（$SUM_FAIL 条）"
+      printf '%s\n' "$IOUT" | grep '✗' | head -8
+    elif (( SUM_PASS < MIN_INTR )); then
+      fail "A1 真停断言 $SUM_PASS < 阈值 ${MIN_INTR}"
+    else
+      pass "A1 真停 $SUM_PASS / 0（可中断方法执行中发暂停 → 命令在 10 秒内被中止）"
+    fi
+  fi
 else
-  skip "前端 e2e / 4.5-4.17 页面轨（没给 --e2e）"
+  skip "前端 e2e / 4.5-4.18 页面轨（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果

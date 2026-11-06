@@ -320,7 +320,8 @@ def main():
         #     真要判「设备**正在执行**」得看 device_state
         #     （markDeviceBusy 在 onStepStart 置 status='running'+current_method）
         #     —— 见 e2e-pause-during-device.py / e2e-pause-during-experiment.py。
-        deadline = time.time() + 30
+        # 设备方法耗时随机 30–300 秒 ⇒ 指令落库可能要等很久（不是 30 秒）
+        deadline = time.time() + 420
         hit = False
         while time.time() < deadline:
             if dev_cmd_count(rid, ids["DEV"]) >= 1:
@@ -336,7 +337,7 @@ def main():
         pause_run(rid, ids["DEV"])
         F.ok("发出暂停")
 
-        deadline = time.time() + 40
+        deadline = time.time() + 420
         run_status = ""
         st_states = {}
         while time.time() < deadline:
@@ -399,7 +400,7 @@ def main():
             if ids["DEV"] in completed_before else F.bad("DEV 不在已完成里", str(before))
 
         resume_run(rid)
-        deadline = time.time() + 90
+        deadline = time.time() + 420
         final = {}
         while time.time() < deadline:
             final = node_states(rid)
