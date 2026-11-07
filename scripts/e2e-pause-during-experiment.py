@@ -339,7 +339,10 @@ def main():
 
     # 6) 发暂停：确认没有历史 Hold，确保 API 不会幂等复用旧记录。
     import urllib.parse
-    reason = "S04A e2e exp=%d erun=%d wrun=%d" % (eid, erid, rid)
+    # reason 不含空格：查询串按 x-www-form-urlencoded 编码（空格→'+'），
+    # 但服务端用 URI.getQuery() 只解 %XX、不解 '+'，带空格的 reason 会
+    # 落库成 'a+b' 而查询用 'a b' ⇒ 找不到本次 Hold（并漏清理、留全局闸门）。
+    reason = "S04A_e2e_exp%d_erun%d_wrun%d" % (eid, erid, rid)
     preexisting = int(q1("SELECT count(*) FROM runtime_hold WHERE tenant_id=1 "
                          "AND scope='experiment' AND scope_id=%d "
                          "AND released_at IS NULL" % eid) or 0)
@@ -525,3 +528,4 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
