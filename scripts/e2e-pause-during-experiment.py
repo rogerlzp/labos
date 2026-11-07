@@ -396,10 +396,11 @@ def main():
     MADE["run"], MADE["er"] = rid, erid
     device_running_after_accept = (after_device[0] == "running"
                                    and after_device[2] == str(rid))
-    F.ok("Pause API 返回时设备仍处于本次 run 的在途状态")
-        if device_running_after_accept
-        else F.bad("Pause API 返回前设备动作已收敛，未形成设备执行中暂停场景",
-                   "device_state=%s expected_run=%s" % (str(after_device), rid))
+    if device_running_after_accept:
+        F.ok("Pause API 返回时设备仍处于本次 run 的在途状态")
+    else:
+        F.bad("Pause API 返回前设备动作已收敛，未形成设备执行中暂停场景",
+              "device_state=%s expected_run=%s" % (str(after_device), rid))
 
     t_device_settled = None
     t_workflow_paused = None
@@ -496,11 +497,12 @@ def main():
     timeline_ordered = (t_device_settled is not None
                        and t_workflow_paused is not None
                        and t_pause_request < t_device_settled <= t_workflow_paused)
-    F.ok("时间线顺序成立：Pause 请求 < 设备动作收敛 <= Workflow 暂停")
-        if timeline_ordered
-        else F.bad("暂停时间线顺序不成立或证据不完整",
-                   "pause_request=%s device_settled=%s workflow_paused=%s" %
-                   (str(t_pause_request), str(t_device_settled), str(t_workflow_paused)))
+    if timeline_ordered:
+        F.ok("时间线顺序成立：Pause 请求 < 设备动作收敛 <= Workflow 暂停")
+    else:
+        F.bad("暂停时间线顺序不成立或证据不完整",
+              "pause_request=%s device_settled=%s workflow_paused=%s" %
+              (str(t_pause_request), str(t_device_settled), str(t_workflow_paused)))
 
     print()
     print("  结果：")
