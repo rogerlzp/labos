@@ -317,15 +317,15 @@ WAITING_INTERVENTION 与 RECONCILIATION_REQUIRED 更适合作为聚合器计算�
 
 ---
 
-## 14. Workcell / Functional Island 级故障隔离与跨实验影响传播（业务决策补充）
+## 14. Island / Workcell 级故障隔离与跨实验影响传播（业务决策补充）
 
 ### 14.1 已确认的业务原则
 
 用户已确认：
-1. **设备故障默认暂停/隔离整个设备工作单元（Workcell）/功能岛（Functional Island）。**
+1. **设备故障默认暂停/隔离整个物理 island（Workcell）。**
 2. 其他独立节点是否继续，由**故障等级、安全域和依赖策略**共同决定。
 
-因此，LabOS 不采用“只暂停报错设备”作为默认策略，也不采用“任何设备故障都暂停整个实验室”的一刀切策略。默认隔离边界是故障设备所属 Workcell/Functional Island；故障影响可根据安全域和依赖关系向外扩大。只有证明安全独立的节点才能继续。
+因此，LabOS 不采用“只暂停报错设备”作为默认策略，也不采用“任何设备故障都暂停整个实验室”的一刀切策略。默认隔离边界是故障设备所属 island / Workcell；故障影响可根据安全域和依赖关系向外扩大。只有证明安全独立的节点才能继续。
 
 ### 14.2 `island` 的物理定义与 MVP 范围（用户已确认）
 
@@ -342,7 +342,7 @@ LabOS 当前的 `island` 是物理协同工作单元，对应 Workcell：通常�
 ### 14.3 故障后的控制顺序
 
 1. 验证报警来源、设备身份、事件 ID/序列号和设备到 Workcell/Resource/SafetyDomain 的映射。
-2. 创建持久化 Fault Hold；Workcell/Functional Island 进入隔离门禁，禁止领取新的普通命令。
+2. 创建持久化 Fault Hold；故障 island / Workcell 进入隔离门禁，禁止领取新的普通命令。
 3. 找出该 Workcell 中所有运行实验和节点；阻止相关执行器继续领取新工作。
 4. 在途命令按设备 Capability 和故障策略处理：设备专用安全动作、受控停止、运行到安全边界或进入 UNKNOWN/人工对账。Hold 不等于物理 Stop。
 5. 计算跨 Workcell 影响闭包：共享资源、DAG 后继、样本/板位、搬运路径、公共设施、环境和 SafetyDomain。
