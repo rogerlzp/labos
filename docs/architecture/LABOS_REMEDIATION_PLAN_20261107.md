@@ -129,3 +129,55 @@
 
 注意：WAITING_INTERVENTION 和 RECONCILIATION_REQUIRED 长于当前 schema 注释中 experiment_run.status 的 varchar(16) 设计；实施前核实实际库列类型，迁移扩容或使用短状态 code。当前不应直接写入这些长字符串。
 
+
+
+## Batch 0.4：暂停/人工干预方案的外部实践校准（2026-11-07）
+
+新增研究与 ADR：
+- `docs/architecture/LABOS_PAUSE_EXTERNAL_PRACTICES_AND_ADR_20261107.md`
+- `docs/architecture/LABOS_PAUSE_AND_INTERVENTION_STATE_MODEL_20261107.md` §13
+
+借鉴结论：
+- ISA-88/PackML：命令、过渡态、稳定态分离；Hold/Pause/Stop/Abort 语义区分。
+- ROS 2 Actions：CANCELING 与 CANCELED 分离，取消请求可被拒绝。
+- SiLA 2：稳定 execution UUID + 状态查询/订阅；但不假设其核心协议普遍支持 Pause/Cancel。
+- OPC UA A&C：Active、Acknowledge、Confirm、Resolved 分离；报警已知悉不等于故障已修复。
+- Temporal/Airflow：暂停编排层阻止新工作，不自动中止在途任务；必须另建 LabOS quiescence barrier。
+- 工业安全：软件 Pause/Stop/Abort 不替代硬件安全回路和 Emergency Stop。
+
+**重要模型修订：** WAITING_INTERVENTION / RECONCILIATION_REQUIRED 建议作为 ExecutionGate / AttentionState 聚合投影，而不是全部塞进 ExperimentRun.status。底层分为 RunControlState、HoldLedger、CommandExecutionState、Alarm/InterventionState 四类正交事实。
+
+## 下一步代码调查工作包（先调查，暂不直接改状态机）
+
+### A. 先完成现有调用链与副作用清单
+1. 旧 run 路径：RunApi → PauseManager.pause/resume → WorkflowService/WorkflowExecutor → run / run_node / resource_booking / position_state / device_state。
+2. 新 experiment_run 路径：ExperimentApi → RunControl.pause/resume/stop → RuntimeHold → ExperimentScheduler / ExperimentExecutor → experiment_run / experiment_run_step / experiment。
+3. 设备/报警路径：Gateway/Driver → alarm/event → RuntimeHold / ManualWindow / PauseManager。
+4. 前端：暂停队列、实验详情、运行详情、Hold 列表、人工窗口、恢复按钮对状态值的假设。
+5. 逐一确认旧 run 与 experiment_run 的关联基数、创建/关闭时机和重启恢复行为。
+
+### B. 本轮新增待核查点
+- PauseManager.releaseResources() 的 device_port_usage 更新 SQL 目前有两个 tenant_id 参数位，但通用 exec(sql, runId) 将第二个参数绑定为 runId；该 SQL 的第二个参数实际是 device_port.tenant_id。需确认这是否导致通道释放失效，或在 runId 恰好等于 tenantId 时错误释放该租户全部通道。先加测试复现，再决定修复。
+- PauseManager.releaseResources() 各资源释放操作使用独立连接；部分失败被吞掉并返回 0。需要明确哪些释放必须原子、哪些失败必须阻止恢复/保持隔离。
+- RuntimeHold.active() SQL 失败返回空列表；coveringForWorkflow() 反查 SQL 失败也返回 null。两处都可能 fail-open，不能只修 active()。
+- RunControl.pause() 和 resume() 的 Hold / run / experiment / workflow run 多步更新需纳入同一事务边界或显式 Saga + Outbox；不能仅修 pause 的一半。
+- 现有 DB self-test 覆盖 PauseManager、RunControl、RuntimeHold，但需检查其是否覆盖并发 Hold、SQL 失败、设备在途暂停、重复/乱序事件和跨表事务中断。
+
+### C. 本阶段交付物
+1. Pause/Resume/Stop/Abort 入口矩阵（API、调用方、权限、DB 写入、消息、设备动作）。
+2. 旧 run / experiment_run / workflow_id / experiment_run_step 关联图。
+3. 资源释放副作用矩阵（板位、预约、端口、设备锁、机械臂抓板状态）。
+4. DeviceCapability 当前实现盘点（TCP、模拟驱动、潜在 SiLA/OPC UA）。
+5. 当前测试覆盖表及缺口。
+6. PauseCoordinator V1 最小事务设计和迁移计划。
+
+### D. 预计实施顺序
+P0-1：修复所有安全闸门查询 fail-closed（包含 workflow scope 反查）。
+P0-2：定义统一事务 API/服务，原子写入 Hold、RunControl intent、Audit/Event、Outbox。
+P0-3：API 返回 request accepted / PAUSE_REQUESTED；执行器在边界收敛；聚合器决定 PAUSED。
+P1-1：多 Hold 并存、按 hold_id 清除。
+P1-2：报警/人工处置/设备复位证据与恢复门禁。
+P1-3：旧新执行路径适配与前端迁移。
+P2：设备协议适配、跨实验安全域、HIL 和长稳测试。
+
+未经 A-D 的调查和测试复现，不直接重写 PauseManager 或 RunControl，不先扩充 UI 状态枚举。
