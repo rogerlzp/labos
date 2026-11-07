@@ -311,26 +311,57 @@ def main():
             busy = (st, meth, owner)
             break
         time.sleep(0.1)
-    if not busy:
-        F.bad("没观测到设备方法执行中（device_state 一直是 idle）",
-              str(device_state()))
+    if not busy or busy[2] != str(rid):
+        F.bad("没观测到归属本次 Workflow Run 的设备方法执行中",
+              "device_state=%s expected_run=%s" % (str(device_state()), rid))
         finish(1)
         return
     F.ok("观测到设备方法执行中（device_state status=%s current_method=%s，"
          "归属 run #%s）" % (busy[0], busy[1], busy[2]))
     print("  ✓ 设备方法执行中（device_state: %s / %s / run %s）" % busy)
 
-    # 6) 发暂停（走真实的实验级暂停接口：现场扣留）
+    # 6) 发暂停：确认没有历史 Hold，确保 API 不会幂等复用旧记录。
     import urllib.parse
+    reason = "S04A e2e exp=%d erun=%d wrun=%d" % (eid, erid, rid)
+    preexisting = int(q1("SELECT count(*) FROM runtime_hold WHERE tenant_id=1 "
+                         "AND scope='experiment' AND scope_id=%d "
+                         "AND released_at IS NULL" % eid) or 0)
+    if preexisting:
+        F.bad("测试前本实验已有 active Hold，拒绝复用历史 Hold", str(preexisting))
+        finish(1)
+        return
+
     qs = urllib.parse.urlencode({"scope": "experiment", "kind": "manual",
-                                 "reason": "e2e 设备执行中暂停"})
+                                 "reason": reason})
     before_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
+    t_pause_request = time.time()
     code, body = http_post(base, f"/api/experiments/runs/{erid}/pause?{qs}", token)
+    t_pause_accepted = time.time()
+    try:
+        response = json.loads(body)
+    except (TypeError, ValueError):
+        response = {}
     after_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
+    after_device = device_state()
+    hold = own_hold_snapshot(eid, reason)
+    if hold:
+        MADE["hold"] = int(hold["id"])
+    MADE["run"], MADE["er"] = rid, erid
+
     print("  暂停前 experiment_run 状态: %s" % before_st)
-    print("  暂停接口返回：HTTP %s %s" % (code, str(body)[:120]))
+    print("  暂停接口返回：HTTP %s %s" % (code, str(response)[:240]))
     print("  暂停后 experiment_run 状态: %s" % after_st)
-    t_pause = time.time()
+    print("  请求接受后设备状态: %s" % (after_device,))
+
+    F.ok("Pause API 保持 legacy HTTP 200 / status=paused 契约") \
+        if code == 200 and response.get("status") == "paused" \
+        else F.bad("Pause API legacy 契约不符", "HTTP=%s body=%s" % (code, body[:300]))
+    F.ok("本次请求创建了可追溯的 active Experiment Hold") \
+        if hold and hold.get("scope") == "experiment" \
+        and int(hold.get("scope_id") or 0) == eid \
+        and hold.get("kind") == "manual" and hold.get("reason") == reason \
+        and hold.get("released_at") is None \
+        else F.bad("未找到本次请求对应的 active Hold", str(hold))
 
     # 7) 观察：等 workflow 级 run **也停在 paused**。
     #    修复后（2026-11-06「实验级暂停停不住底层 run」）三层都停在暂停：
