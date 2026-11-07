@@ -105,11 +105,11 @@ def device_state():
 
 # 本次造出来的对象（供清理用）。⚠ 失败路径也必须清理 ——
 # 残留的 run 留在库里会让别的脚本的 max(id) 抓到它们（2026-11-06 踩过）。
-MADE = {"wf": 0, "exp": 0}
+MADE = {"wf": 0, "exp": 0, "run": 0, "er": 0, "hold": 0}
 
 
 def wait_device_idle(resource_id=200214, limit=90):
-    """等设备回到 idle 再删数据（理由同设备级脚本）。"""
+    """等设备回到 idle 再删数据；超时后必须保留现场。"""
     deadline = time.time() + limit
     while time.time() < deadline:
         row = q1("SELECT COALESCE(status,'-') FROM device_state "
@@ -121,20 +121,21 @@ def wait_device_idle(resource_id=200214, limit=90):
 
 
 def cleanup():
-    """清理现场。顺序要紧：run 先删，否则 workflow 删不掉（FK）。"""
-    wait_device_idle()
-    eid, wf_id = MADE["exp"], MADE["wf"]
+    """只清理本次数据；未确认设备动作收敛时 fail-closed 保留现场。"""
+    eid, wf_id, hold_id = MADE["exp"], MADE["wf"], MADE["hold"]
     try:
-        q1("DELETE FROM runtime_hold WHERE released_at IS NULL;")
+        if not wait_device_idle():
+            print("  ⚠ 设备仍在运行：保留运行记录和 Hold，不执行清理")
+            return False
+        if hold_id:
+            q1("UPDATE runtime_hold SET released_at=now(), "
+               "release_note='e2e-pause-during-experiment cleanup' "
+               "WHERE tenant_id=1 AND id=%d AND released_at IS NULL;" % hold_id)
         if eid:
             q1(f"DELETE FROM experiment_run WHERE experiment_id={eid};")
             q1(f"DELETE FROM experiment_process WHERE experiment_id={eid};")
             q1(f"DELETE FROM experiment WHERE id={eid};")
         if wf_id:
-            # 先释放这些 run 占着的设备锁（删 run ⇒ 锁成孤儿 ⇒ 设备永远拿不到）
-            q1("UPDATE device_state SET current_run_id=NULL, current_method=NULL, "
-               "status='idle', updated_at=now() WHERE tenant_id=1 AND current_run_id IN "
-               f"(SELECT id FROM run WHERE workflow_id={wf_id});")
             q1(f"DELETE FROM run_command WHERE run_id IN "
                f"(SELECT id FROM run WHERE workflow_id={wf_id});")
             q1(f"DELETE FROM run_node WHERE run_id IN "
@@ -142,8 +143,10 @@ def cleanup():
             q1(f"DELETE FROM run WHERE workflow_id={wf_id};")
             q1(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}; "
                f"DELETE FROM workflow WHERE id={wf_id};")
+        return True
     except Exception as e:  # noqa: BLE001
         print("  （清理时出错：%s）" % e)
+        return False
 
 
 def finish(code=0):
