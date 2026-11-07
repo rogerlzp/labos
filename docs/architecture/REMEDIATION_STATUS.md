@@ -38,6 +38,7 @@
 | G-02 | 门禁拆段（ADR-PROCESS-002）：恢复 `MIN_PURE=651` / `MIN_MATRIX=55` / `MIN_PAUSEEXP=5`；**4.18 原样保留 `MIN_INTR=3`（A1 真停）**；新增 **4.19「安全边界暂停 · TCP 无物理 Abort」+ `MIN_SAFEBOUND`**，脚本另起 `e2e-safebound-pause.py`（避免与分支改过的 `e2e-interrupt-during-device.py` 互相覆盖）；skip 文案 `4.5-4.18` → `4.5-4.19` | NOT_STARTED | 两套 e2e 并存、段 0「只升不降」通过 |
 | G-03 | 补 e2e 锁死「三层都停 + resume 作废旧 run」，作为 B 组合入的回归条件 | NOT_STARTED | 全量 `ci-gate.sh --all` 无 SKIP 通过 |
 | G-04 | 评审分支打 tag 冻结为设计归档 | NOT_STARTED | tag + `ADR_INDEX.md` 标注 |
+| G-05 | 测试环境稳定性：`verify-flow-matrix.py` 的 `outvar` 用例取「在线 TRANSFER 中 `resource_id` 最小」的设备（本环境 = `200214`/ID1731，模拟器 `--rand-delay 30000:300000`），`GetPosition` + `Home` 耗时之和可超过 `Ctx.run(wait=420)` 的 420 秒预算 ⇒ 2.7 间歇判红（**非被测代码回归**，见 `LABOS_S04A_E2E_ACCEPTANCE_SPEC_20261107.md` §8.3） | NOT_STARTED | 固定到低延迟臂或按设备延迟上限调预算；连续 3 次 `ci-gate.sh --all` 无该失败 |
 
 ## 4. N 组：本次裁决新增（ADR-ISLAND-001~005）
 
@@ -73,7 +74,7 @@
 | S-01 | 两套 run 模型映射表：字段 / 调用链 / `pause_kind` 词表差异 / 创建·关闭·重启恢复行为 / 关联基数 | — | NOT_STARTED | `PauseManager`→`run.status`、`RunControl`→`experiment_run.status` 并存且独立写库；`3debf78` 只是约定式补丁，未合并 |
 | S-02 | `PauseCoordinator` 适配层：**与 P-06 是同一项**，本行只补「两套模型映射与适配边界」，不另建第二个 Coordinator | S-01、P-06 | NOT_STARTED | 统一入口 + 单事务写 Hold/意图/事件/Outbox；保留 `M-01` 作废旧 run 契约，不直接删 `PauseManager` |
 | S-03 | 事实 vs 投影职责切换：`experiment.status` 只允许聚合器写；`StatusVocabulary` CASE 回写收口 | S-02、P-06 | NOT_STARTED | 现状 3 处直接 UPDATE；`PauseCoordinator` / `ExperimentStateProjector` 在 Java 源码 0 命中 |
-| S-04 | ⚠️ **验收口径切换（分两个 PR）**：① PR-S04-A 保留 legacy API/status，4.17 增加本次 Hold ID、device_state 在途/收敛、节点边界和后续 pending 证据；明确 legacy `paused` 可早于物理收敛，**不在 A 阶段断言 UI/API 不显示 PAUSED**；② PR-S04-B 在 P-03、P-07/L-03、L-02、S-02/P-06 完成后切 API/UI 语义，并新增「未收敛不得显示 `PAUSED`」断言 | G-03、L-02、P-03、P-07、S-02/P-06 | NOT_STARTED | 现有 4.17 以三层 `paused` 为主断言；当前 `ExperimentApi` 立即返回 paused、设备动作可继续运行到安全边界。两阶段边界见 `LABOS_S04A_E2E_ACCEPTANCE_SPEC_20261107.md`；**禁止同一 PR 同时改实现与验收判据** |
+| S-04 | ⚠️ **验收口径切换（分两个 PR）**：① PR-S04-A 保留 legacy API/status，4.17 增加本次 Hold ID、device_state 在途/收敛、节点边界和后续 pending 证据；明确 legacy `paused` 可早于物理收敛，**不在 A 阶段断言 UI/API 不显示 PAUSED**；② PR-S04-B 在 P-03、P-07/L-03、L-02、S-02/P-06 完成后切 API/UI 语义，并新增「未收敛不得显示 `PAUSED`」断言 | G-03、L-02、P-03、P-07、S-02/P-06 | NOT_STARTED | 现有 4.17 以三层 `paused` 为主断言；当前 `ExperimentApi` 立即返回 paused、设备动作可继续运行到安全边界。两阶段边界见 `LABOS_S04A_E2E_ACCEPTANCE_SPEC_20261107.md`；**禁止同一 PR 同时改实现与验收判据**。2026-11-07 进展：PR-S04-A 已在评审分支跑通（4.17 = 13/0，`ci-gate.sh --all` 中 0 SKIP、4.17/4.18/4.13 全绿，唯一失败为与本项无关的 G-05），但仍 **NOT_STARTED → 未合入 main**；PR-S04-B 未开始 |
 | S-05 | 原有 26 份状态相关文档索引 + 过时标注（哪些仍是权威、哪些已被 ADR 取代） | — | NOT_STARTED | 避免下一个人把「三层都 paused」当成新设计的验收判据 |
 
 ## 5. P 组：保留的整改工作项
