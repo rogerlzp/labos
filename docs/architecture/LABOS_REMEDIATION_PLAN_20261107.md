@@ -265,3 +265,13 @@ P2：设备协议适配、跨实验安全域、HIL 和长稳测试。
 - Hold 查询 SQL 异常：相关候选 UNKNOWN，不派发；不能把查询失败当无 Hold。
 - 只有 SITE Hold 或明确跨岛 SafetyDomain Hold 才能同时阻断 A/B。
 - A 有 Hold、B 有无 Hold 的批次候选：B 可自动续批。
+
+
+### Batch 0.6 补充审计结论（2026-11-07）
+
+已进一步确认 Experiment → Workflow 组合也没有 Island 一致性校验：
+- `validateExperimentWorkflowIds` 只检查 ID 合法、租户内存在，不比较 experiment.island_id 与 workflow.attr.island_id。
+- `saveExperimentGraph` 复用该校验；`replaceExperimentProcesses` 写入 experiment_process 时不校验 Island。
+- `ExperimentExecutor` 虽读取 experiment.island_id 用于 Hold，但调用 WorkflowService 时仍只传 workflowId 和 vars。
+
+因此 P0-7 不只是“建议补查”：当前已检查的关联写入路径确认存在缺口。详见专项审计报告 §8。实施时必须同时验证 Workflow 内设备 Island 和 Experiment 所引用 Workflow Island，不能只修 Designer 的拖拽逻辑。
