@@ -313,3 +313,100 @@ WAITING_INTERVENTION 与 RECONCILIATION_REQUIRED 更适合作为聚合器计算�
 实施前先画出四个模型与当前 PauseManager / RuntimeHold / RunControl / ManualWindow 的映射，不直接增加一套同义表。先修复 fail-closed 和原子事务，再做设备能力盘点、报警/人工处置闭环与聚合投影。
 
 本节是对前文 ExperimentRun 状态候选的修订，若与前文 2.1 或状态枚举表存在冲突，以本节和外部实践比较文档为准。
+
+
+---
+
+## 14. Workcell / Functional Island 级故障隔离与跨实验影响传播（业务决策补充）
+
+### 14.1 已确认的业务原则
+
+用户已确认：
+1. **设备故障默认暂停/隔离整个设备工作单元（Workcell）/功能岛（Functional Island）。**
+2. 其他独立节点是否继续，由**故障等级、安全域和依赖策略**共同决定。
+
+因此，LabOS 不采用“只暂停报错设备”作为默认策略，也不采用“任何设备故障都暂停整个实验室”的一刀切策略。默认隔离边界是故障设备所属 Workcell/Functional Island；故障影响可根据安全域和依赖关系向外扩大。只有证明安全独立的节点才能继续。
+
+### 14.2 Workcell、Functional Island、SafetyDomain 必须分开建模
+
+- **Workcell：** 自动化工作单元，具有成员设备、内部资源、输入/输出端口、空间/物流边界、运行模式和健康状态。
+- **Functional Island：** 面向某一功能或工艺的逻辑分组；可能与 Workcell 一对一，也可能跨多个 Workcell。
+- **SafetyDomain：** 由风险分析确定的安全影响边界，可以覆盖多个 Workcell/Functional Island。
+- **Resource：** 设备、机械臂、板位、储位、端口、环境能力和其他可占用/共享资源。
+- **ExecutionPlan Binding：** 节点/Procedure 对 Workcell、设备池、Resource 和 SafetyDomain 的需求。
+- **Dependency Edge：** 数据、工艺、样本、板位、搬运、共享设备、环境和安全依赖。
+
+不能把 Workcell、Functional Island、SafetyDomain 当成同义词。实际拓扑需要通过现场设备布局、资源配置和安全风险分析确认。
+
+### 14.3 故障后的控制顺序
+
+1. 验证报警来源、设备身份、事件 ID/序列号和设备到 Workcell/Resource/SafetyDomain 的映射。
+2. 创建持久化 Fault Hold；Workcell/Functional Island 进入隔离门禁，禁止领取新的普通命令。
+3. 找出该 Workcell 中所有运行实验和节点；阻止相关执行器继续领取新工作。
+4. 在途命令按设备 Capability 和故障策略处理：设备专用安全动作、受控停止、运行到安全边界或进入 UNKNOWN/人工对账。Hold 不等于物理 Stop。
+5. 计算跨 Workcell 影响闭包：共享资源、DAG 后继、样本/板位、搬运路径、公共设施、环境和 SafetyDomain。
+6. 只有通过 Continue Predicate 的外部节点才可继续；无法证明独立性时默认阻断并扩大范围。
+7. 记录传播策略版本、输入事实、命中规则、受影响对象、允许继续对象和人工豁免审批。
+8. 故障条件消失不自动清除人工 Hold；设备自检、联锁复位、物理状态确认和人工处置完成后，才逐个解除 Hold 并执行恢复检查。
+
+### 14.4 Continue Predicate：其他节点继续执行的必要条件
+
+一个节点必须同时满足：
+- 不使用故障 Workcell、设备、共享设备池或受影响资源；
+- 不依赖故障节点的输出、样本、板位或物理搬运；
+- 不共享受影响 SafetyDomain 或故障传播定义中的公共设施；
+- 温度、湿度、气体、电力、排风等工艺环境条件不受影响；
+- 设备状态、资源状态和样本位置均非 UNKNOWN/QUARANTINED；
+- ExecutionPlan、资源映射和依赖图完整，影响传播计算无缺失；
+- 没有更高优先级的 site-wide / SafetyDomain Hold；
+- 继续执行不会妨碍故障 Workcell 的安全恢复、清理或必要解锁步骤。
+
+任一条件失败或无法判断，节点不得继续。
+
+### 14.5 故障范围策略矩阵（初稿，阈值须由设备/工艺风险分析确定）
+
+| 故障类别 | 默认隔离范围 | 在途动作 | 其他 Workcell |
+|---|---|---|---|
+| 单设备通信短断且设备状态可查询 | Workcell Hold + 设备隔离 | query/reattach；不重放未知命令 | Continue Predicate 全通过才可继续 |
+| 设备执行错误、机械臂/夹板异常 | Workcell Hold + 关联资源隔离 | 设备专用安全动作或等待/人工对账 | 依赖或共享安全域任务阻断 |
+| 样本/板位未知、搬运结果不确定 | Workcell + 样本/位置隔离 | 禁止后续搬运和样本处理 | 使用同一未知样本/位置的任务阻断 |
+| 温控、孵育、气体、电力、排风异常 | 相关 SafetyDomain Hold，可跨 Workcell | 按工艺安全策略维持或切换条件 | 受影响安全域任务阻断 |
+| 安全联锁/E-stop/人员风险 | SafetyDomain 或现场风险分析规定范围 | 硬件安全控制器执行；软件不替代 | 安全域内禁止继续，直至授权复位 |
+| 质量/污染/交叉污染风险 | 相关样本、设备、区域和工艺链 | 隔离样本与设备 | 相关批次/样本链阻断 |
+
+### 14.6 Workcell 运行门禁与健康状态分离
+
+Workcell 至少需要分别表达：
+- health_state：HEALTHY / DEGRADED / FAULTED / UNKNOWN；
+- execution_gate：ALLOW / HOLD / ISOLATED / RECONCILIATION_REQUIRED；
+- active_holds：当前所有有效阻断原因；
+- in_flight_commands：在途设备命令及其收敛状态。
+
+设备网络恢复只可能改变通信健康事实，不自动解除 Fault Hold；Hold 清除也不代表设备健康检查、位置确认和安全复位已通过。
+
+### 14.7 必须加入的验收测试
+
+| ID | 场景 | 必须满足 |
+|---|---|---|
+| FS-01 | Workcell A 内设备故障，多个实验在该岛有活动节点 | 整个 Workcell 禁止新普通命令；在途动作按 Capability 收敛 |
+| FS-02 | Workcell A 故障，Workcell B 无依赖 | B 仅在 Continue Predicate 全通过时继续 |
+| FS-03 | B 与 A 共享机械臂、储位或设备池 | B 的相关节点阻断 |
+| FS-04 | A 故障影响跨岛样本搬运/板位 | 所有依赖样本/位置的节点阻断 |
+| FS-05 | 两 Workcell 共享温控/排风/电力安全域，公共设施异常 | 按 SafetyDomain 扩大 Hold |
+| FS-06 | 传播计算缺少依赖边或资源映射 | 状态 UNKNOWN，默认扩大阻断 |
+| FS-07 | 报警恢复但 Workcell 人工 Hold 未清 | Workcell 仍隔离，不接受新命令 |
+| FS-08 | Workcell Hold 清除，但实验另有 User Hold | 实验仍不得恢复 |
+| FS-09 | 无关节点完成事件依赖故障 Workcell 的数据 | 重新计算依赖，下游不得推进 |
+| FS-10 | SafetyDomain E-stop 覆盖多个 Workcell | 软件跟随安全控制器状态，不代替硬件动作 |
+| FS-11 | 任一关键设备命令状态 UNKNOWN | 对应资源隔离，Continue Predicate 不得通过 |
+| FS-12 | 传播策略版本运行中更新 | 原传播快照不可静默改写；新策略需重新评估并审计 |
+
+### 14.8 实施前必须完成的现场核实
+
+- LabOS 当前 island 是否与用户所说的 Workcell/功能岛同义，还是仅为逻辑分组。
+- 各 Workcell 的设备清单、资源边界、搬运通道、共享设备池和输入/输出端口。
+- SafetyDomain 是否已有配置/硬件 PLC 来源；如没有，必须由设备/工艺/安全负责人共同定义，不能由软件工程师猜测。
+- 温控、孵育、搅拌、气体、电力、排风等设备发生故障时的安全保持动作。
+- Workcell 故障时哪些在途动作必须立即停止，哪些必须完成当前工艺步骤，哪些必须由操作员现场处置。
+
+本节将用户确认的业务原则转为设计约束；具体故障等级、Continue Predicate 和 SafetyDomain 映射仍需结合实际设备清单和现场风险分析，不能仅凭软件配置推定安全。
