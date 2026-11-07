@@ -413,6 +413,22 @@ public final class WorkflowService {
                 return t;
             });
 
+    /**
+     * 当前 JVM 内的 run worker 所有权。非物理中止驱动必须跑到安全边界才退出；
+     * 在旧 worker 退出前不允许 resumeAsync 启动第二个 worker 重放同一 run。
+     * 进程重启后的状态仍由数据库恢复/对账流程负责。
+     */
+    private static final java.util.Set<Long> ACTIVE_RUNS =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    static boolean reserveActiveRun(long runId) {
+        return ACTIVE_RUNS.add(runId);
+    }
+
+    static void releaseActiveRun(long runId) {
+        ACTIVE_RUNS.remove(runId);
+    }
+
     public Execution execute(long workflowId) throws SQLException {
         return execute(workflowId, ATTENDED);
     }
@@ -463,17 +479,27 @@ public final class WorkflowService {
             }
         }
 
-        RUN_POOL.submit(() -> {
-            try {
-                execute(workflowId, mode, runId);
-            } catch (Exception e) {
+        if (!reserveActiveRun(runId)) {
+            throw new IllegalStateException("run 已有执行 worker: " + runId);
+        }
+        try {
+            RUN_POOL.submit(() -> {
                 try {
-                    markRunFailed(runId, e.getMessage());
-                } catch (SQLException ignore) {
-                    // 尽力而为
+                    execute(workflowId, mode, runId);
+                } catch (Exception e) {
+                    try {
+                        markRunFailed(runId, e.getMessage());
+                    } catch (SQLException ignore) {
+                        // 尽力而为
+                    }
+                } finally {
+                    releaseActiveRun(runId);
                 }
-            }
-        });
+            });
+        } catch (RuntimeException submitFailure) {
+            releaseActiveRun(runId);
+            throw submitFailure;
+        }
         return runId;
     }
 
@@ -509,6 +535,24 @@ public final class WorkflowService {
      * </ol>
      */
     public void resumeAsync(long runId) throws SQLException {
+        // 当前 worker 可能仍在等待一个不支持物理 Abort 的设备动作自然完成。
+        // 先占有 run，防止两个 resume 请求或旧 worker 与新 worker 并行重放。
+        if (!reserveActiveRun(runId)) {
+            throw new IllegalStateException(
+                    "run " + runId + " 的上一执行线程尚未退出；请等设备动作到达安全边界后再恢复");
+        }
+        boolean scheduled = false;
+        try {
+            resumeAsyncReserved(runId);
+            scheduled = true;
+        } finally {
+            if (!scheduled) {
+                releaseActiveRun(runId);
+            }
+        }
+    }
+
+    private void resumeAsyncReserved(long runId) throws SQLException {
         Long wfId = null;
         String attendance = ATTENDED;
         try (Connection c = db.open();
@@ -603,6 +647,8 @@ public final class WorkflowService {
                 } catch (SQLException ignore) {
                     // 尽力而为
                 }
+            } finally {
+                releaseActiveRun(rid);
             }
         }, "labos-resume-" + runId);
         t.setDaemon(true);
@@ -804,37 +850,25 @@ public final class WorkflowService {
             String xml = graphEnabled ? loadGraphXml(workflowId) : null;
             boolean viaGraph = false;
             if (xml != null && !xml.isBlank()) {
-                try {
-                    WorkflowGraphParser.Graph g = WorkflowGraphParser.parse(xml);
-                    GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
-                            nodeIdByKey, s -> { })
-                            .withResourceCapability(resourceCap)
-                            .withBoundInstances(loadBoundInstances())
-                            .withSkipKeys(skipKeys)
-                            // 条件表达式/循环退出条件的取值来源（run.input.vars）
-                            .withVariables(loadRunVars(runId))
-                            // 节点输出 → 变量（循环靠它走够次数退出）
-                            .withOutputReader(key -> loadNodeOutputs(runId, key))
-                            // 圈数上限：流程可以在 attr.maxIterations 里自己定（默认 10）
-                            .withMaxVisits(loadMaxIterations(workflowId))
-                            // 循环每圈落一行（loop_index=1..N），汇总行仍是 loop_index=0
-                            .withRoundRecorder((key, round, st, ec, s1, e1) ->
-                                    recordNodeRound(runId, key, round, st, ec, s1, e1))
-                            // 变量/表达式节点的参数（不发给设备）
-                            .withBuiltinParams(builtinParams)
-
-                            // P1-8：每到一个节点边界查一次 DB —— 状态是 paused 就停。
-        // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
-        .withPauseChecker(() -> isRunPaused(runId));
-                    // 注意：**不能**按执行结果决定是否退回。
-                    // 退回意味着重跑，而在真实设备上重跑 = 开两次盖（物理副作用不可撤销）。
-                    // 这里只在解析阶段失败时退回（见 catch），执行了就是执行了。
-                    progress = gr.run(g, executor);
-                    viaGraph = true;
-                } catch (RuntimeException ex) {
-                    System.err.println("[WARN] 按图执行失败，退回顺序执行: " + ex.getMessage());
-                    progress = sm.executeAll(rec, executor);
-                }
+                // 先完成无副作用的执行器装配；解析失败才可按兼容策略退回。
+                // GraphRunner 一旦开始执行，任何 RuntimeException 都必须向上传播。
+                StepExecutor activeExecutor = executor;
+                GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
+                        nodeIdByKey, s -> { })
+                        .withResourceCapability(resourceCap)
+                        .withBoundInstances(loadBoundInstances())
+                        .withSkipKeys(skipKeys)
+                        .withVariables(loadRunVars(runId))
+                        .withOutputReader(key -> loadNodeOutputs(runId, key))
+                        .withMaxVisits(loadMaxIterations(workflowId))
+                        .withRoundRecorder((key, round, st, ec, s1, e1) ->
+                                recordNodeRound(runId, key, round, st, ec, s1, e1))
+                        .withBuiltinParams(builtinParams)
+                        .withPauseChecker(() -> isRunPaused(runId));
+                GraphExecution graphExecution = executeGraphWithParseFallback(
+                        xml, () -> sm.executeAll(rec, activeExecutor), gr, activeExecutor);
+                progress = graphExecution.progress();
+                viaGraph = graphExecution.viaGraph();
             } else {
                 progress = sm.executeAll(rec, executor);
             }
@@ -889,6 +923,27 @@ public final class WorkflowService {
                 progress.count(NodeStatus.ABORTED),
                 viaDriver, eventsWritten, results,
                 alerts, (int) notifyCount, mode);
+    }
+
+    /** 图解析失败时可在派发前选择兼容顺序路径；图执行异常绝不触发 fallback。 */
+    static GraphExecution executeGraphWithParseFallback(
+            String xml,
+            java.util.function.Supplier<RunProgress> sequentialFallback,
+            GraphRunner graphRunner,
+            StepExecutor executor) {
+        final WorkflowGraphParser.Graph graph;
+        try {
+            graph = WorkflowGraphParser.parse(xml);
+        } catch (RuntimeException parseFailure) {
+            System.err.println("[WARN] BPMN 解析失败（尚未执行设备命令），退回顺序执行: "
+                    + parseFailure.getMessage());
+            return new GraphExecution(sequentialFallback.get(), false);
+        }
+        // 故意放在 try/catch 之外：执行期 RuntimeException 不能触发顺序重跑。
+        return new GraphExecution(graphRunner.run(graph, executor), true);
+    }
+
+    record GraphExecution(RunProgress progress, boolean viaGraph) {
     }
 
     public record Execution(long runId, String workflowName, int total,

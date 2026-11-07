@@ -118,12 +118,9 @@ public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
 
     @Override
     public void abort(String commandId) {
-        // 尽力而为：把等待中的 future 摘掉，让调用方立刻返回失败
-        CompletableFuture<DriverResult> f = pending.remove(commandId);
-        if (f != null) {
-            f.complete(DriverResult.failed(commandId, "EC-99-0005",
-                    "被中止", null, 0));
-        }
+        // 当前 TCP 协议没有设备侧 Abort 消息。
+        // 不得移除 pending Future：那只会让内核误以为动作已中止，设备仍可能继续执行。
+        // supportsPhysicalAbort() 继承安全默认 false；暂停只能等待当前动作结束。
     }
 
     @Override

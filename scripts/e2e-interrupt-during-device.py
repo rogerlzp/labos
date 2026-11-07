@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""A1 真停：设备方法执行中发暂停 → 这次真的被停掉。
+"""设备执行中请求暂停：不支持物理 Abort 时，当前动作完成后在下一任务边界暂停。
 
-背景（2026-11-06，用户诉求）：
-  「设备正在执行的方法会继续，只有机械臂收到暂停指令后会当前停止，
-    你看看这个怎么实现」
-  方案 A1：**方法自己声明能不能中断**（`device_method.interruptible`），
-  执行侧在等回包时轮询「是否该停」，命中就 `driver.abort(commandId)`。
+安全约束：
+  · `device_method.interruptible=true` 只是方法配置，不代表驱动有物理停止能力。
+  · 当前 TCP 驱动协议没有设备侧 Abort 消息，不能取消本地 Future 冒充设备已停止。
+  · 因此当前动作必须自然完成；随后 GraphRunner 在下一个 task 边界暂停。
+  · 该测试同时确认前一节点不会因 resume 语义而被重复派发。
 
-这个脚本验的正是「真停」：
-  · 设备方法**声明可中断**（本脚本临时把机械臂的 Home 标成 interruptible=true）
-  · 设备方法正在执行时发暂停
-  · ⇒ 命令**在几秒内被中止**（而不是等 30–300 秒跑完）
-
-对照：`scripts/e2e-pause-during-device.py` 验的是「不声明可中断」时的行为
-（暂停生效，但设备动作跑完）。
+本脚本故意把 Home 标成 interruptible=true，以证明配置本身不能越过驱动能力门槛。
 
 用法：
   LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=... \
@@ -92,6 +86,9 @@ def main():
                  "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
                  % (ARM_DEVICE, ARM_METHOD))
     had_row = existed == "1"
+    previous_interruptible = q1("SELECT coalesce(interruptible::text,'false') "
+                                 "FROM device_method WHERE tenant_id=1 AND device_id=%d "
+                                 "AND method='%s'" % (ARM_DEVICE, ARM_METHOD))
     q1("INSERT INTO device_method (tenant_id, device_id, method, name, capability_id, "
        "param_schema, estimate_sec, timeout_sec, interruptible) "
        "VALUES (1, %d, '%s', '归位(Home)', "
@@ -118,13 +115,18 @@ def main():
   id="defs_{wf_id}" targetNamespace="http://labos.local/bpmn">
   <bpmn:process id="p_{wf_id}" isExecutable="true">
     <bpmn:startEvent id="S"><bpmn:outgoing>flow1</bpmn:outgoing></bpmn:startEvent>
-    <bpmn:task id="ARM" name="机械臂搬运" protocolName="{ARM_METHOD}" resource="{ARM_RESOURCE}">
+    <bpmn:task id="ARM" name="机械臂动作（当前动作）" protocolName="{ARM_METHOD}" resource="{ARM_RESOURCE}">
       <bpmn:incoming>flow1</bpmn:incoming>
       <bpmn:outgoing>flow2</bpmn:outgoing>
     </bpmn:task>
-    <bpmn:endEvent id="E"><bpmn:incoming>flow2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:task id="AFTER" name="暂停后的下一动作" protocolName="{ARM_METHOD}" resource="{ARM_RESOURCE}">
+      <bpmn:incoming>flow2</bpmn:incoming>
+      <bpmn:outgoing>flow3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="E"><bpmn:incoming>flow3</bpmn:incoming></bpmn:endEvent>
     <bpmn:sequenceFlow id="flow1" sourceRef="S" targetRef="ARM"/>
-    <bpmn:sequenceFlow id="flow2" sourceRef="ARM" targetRef="E"/>
+    <bpmn:sequenceFlow id="flow2" sourceRef="ARM" targetRef="AFTER"/>
+    <bpmn:sequenceFlow id="flow3" sourceRef="AFTER" targetRef="E"/>
   </bpmn:process>
 </bpmn:definitions>'''
         put_raw(f"/api/workflows/{wf_id}/graph", xml, token)
@@ -163,15 +165,15 @@ def main():
             else F.bad("暂停 UPDATE 影响 0 行 —— 暂停没发出去")
         t_pause = time.time()
 
-        # ⑥ 等「命令被中止」—— 关键：必须**远快于**设备本身要跑的 30–300 秒
-        t_abort = None
-        deadline = time.time() + 60
+        # ⑥ 等当前命令自然完成；本 TCP driver 不支持设备侧 Abort，不能伪报 aborted。
+        t_done = None
+        deadline = time.time() + 180
         while time.time() < deadline:
             cmd_st = q1(f"SELECT coalesce(status::text,'-')||'|'||"
                         f"coalesce(error_code,'-') FROM run_command "
                         f"WHERE run_id={rid} ORDER BY id DESC LIMIT 1")
-            if cmd_st and cmd_st.split("|")[0] in ("aborted", "failed", "completed"):
-                t_abort = time.time()
+            if cmd_st and cmd_st.split("|")[0] in ("completed", "failed", "aborted"):
+                t_done = time.time()
                 break
             time.sleep(0.1)
         cmd_st = q1(f"SELECT coalesce(status::text,'-')||'|'||coalesce(error_code,'-') "
@@ -179,47 +181,66 @@ def main():
         node_st = q1(f"SELECT node_key||'='||status::text FROM run_node "
                      f"WHERE run_id={rid} AND level=0 ORDER BY id")
         run_st = q1(f"SELECT status::text FROM run WHERE id={rid}")
+        cmd_count = int(q1(f"SELECT count(*) FROM run_command WHERE run_id={rid}") or "0")
+        arm_st = q1(f"SELECT status::text FROM run_node WHERE run_id={rid} "
+                    f"AND level=0 AND node_key='ARM' ORDER BY id LIMIT 1")
+        after_st = q1(f"SELECT status::text FROM run_node WHERE run_id={rid} "
+                      f"AND level=0 AND node_key='AFTER' ORDER BY id LIMIT 1")
         print()
         print("  结果：")
         print("    run 最终状态      : %s" % run_st)
         print("    设备指令最终状态  : %s" % cmd_st)
         print("    节点状态          : %s" % node_st)
-        if t_abort:
-            print("    从发暂停到命令结束: %.1f 秒" % (t_abort - t_pause))
+        print("    ARM / AFTER       : %s / %s" % (arm_st, after_st))
+        print("    命令数            : %d" % cmd_count)
+        if t_done:
+            print("    从发暂停到命令结束: %.1f 秒" % (t_done - t_pause))
         else:
             print("    从发暂停到命令结束: 未观测到命令落终态")
 
-        # ⑦ 断言
-        F.ok("命令在 10 秒内落了终态（%.1f 秒）—— 没等设备跑完" % (t_abort - t_pause)) \
-            if t_abort and (t_abort - t_pause) < 10.0 \
-            else F.bad("命令没有及时落终态（可能还在等设备跑完）",
-                       "%.1f 秒" % ((t_abort - t_pause) if t_abort else -1))
-        F.ok("设备指令被中止（%s）" % cmd_st) \
-            if cmd_st and cmd_st.split("|")[0] == "aborted" \
-            else F.bad("设备指令不是被中止的", cmd_st or "(无)")
-        F.ok("run 停在 paused（等人工继续；恢复时这一步会重跑）") \
-            if run_st == "paused" else F.bad("run 状态异常", run_st or "(无)")
+        # ⑦ 断言：当前动作成功完成；下一节点因暂停未执行；不伪报物理中止。
+        F.ok("当前设备动作已自然完成（%s）" % cmd_st) \
+            if cmd_st and cmd_st.split("|")[0] == "completed" \
+            else F.bad("当前设备动作未成功完成", cmd_st or "(无)")
+        F.ok("暂停后 run 停在下一个 task 边界") \
+            if run_st == "paused" else F.bad("run 未停在 paused", run_st or "(无)")
+        F.ok("当前节点完成、后续节点未执行") \
+            if arm_st == "completed" and after_st != "completed" \
+            else F.bad("节点边界状态不符合预期", "%s / %s" % (arm_st, after_st))
+        F.ok("没有重放或额外派发命令（仅 1 条）") \
+            if cmd_count == 1 else F.bad("命令数不是 1，可能发生重复派发", str(cmd_count))
+        F.ok("没有把本地取消伪装成 aborted") \
+            if cmd_st and cmd_st.split("|")[0] != "aborted" \
+            else F.bad("不支持物理 Abort 的驱动却报告 aborted", cmd_st or "(无)")
     finally:
-        # 清理：先删 run，再删 workflow；最后把临时的可中断标记撤掉
-        if rid:
-            # 先释放这把设备锁（删 run ⇒ 锁成孤儿 ⇒ 设备永远拿不到）
-            q1("UPDATE device_state SET current_run_id=NULL, current_method=NULL, "
-               "status='idle', updated_at=now() "
-               f"WHERE tenant_id=1 AND current_run_id={rid};")
-            q1(f"DELETE FROM run_command WHERE run_id={rid}; "
-               f"DELETE FROM run_node WHERE run_id={rid}; DELETE FROM run WHERE id={rid};")
-        if wf_id:
-            q1(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}; "
-               f"DELETE FROM workflow WHERE id={wf_id};")
+        # 只有设备和命令都确认不在运行，才允许清理测试记录/释放软件锁。
+        final_device_state = device_state()
+        final_cmd = q1(f"SELECT coalesce(status::text,'-') FROM run_command "
+                       f"WHERE run_id={rid} ORDER BY id DESC LIMIT 1") if rid else None
+        safe_to_cleanup = (final_device_state[0] != "running"
+                           and final_device_state[2] != str(rid)
+                           and final_cmd not in ("running", "pending", "unknown"))
+        if safe_to_cleanup:
+            if rid:
+                q1("UPDATE device_state SET current_run_id=NULL, current_method=NULL, "
+                   "status='idle', updated_at=now() "
+                   f"WHERE tenant_id=1 AND current_run_id={rid};")
+                q1(f"DELETE FROM run_command WHERE run_id={rid}; "
+                   f"DELETE FROM run_node WHERE run_id={rid}; DELETE FROM run WHERE id={rid};")
+            if wf_id:
+                q1(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}; "
+                   f"DELETE FROM workflow WHERE id={wf_id};")
+            print("  （设备已确认不在运行，测试数据已清理）")
+        else:
+            print("  ⚠ 设备/命令仍可能在运行：保留 run、命令和资源锁，必须人工核验后清理")
         if had_row:
-            # 原来就有这行 ⇒ 只把标志位还原回 false（测试前它就是默认 false）
-            q1("UPDATE device_method SET interruptible = false "
+            restore_value = "true" if previous_interruptible == "true" else "false"
+            q1("UPDATE device_method SET interruptible = %s "
                "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
-               % (ARM_DEVICE, ARM_METHOD))
+               % (restore_value, ARM_DEVICE, ARM_METHOD))
         else:
             q1(f"DELETE FROM device_method WHERE tenant_id=1 AND device_id={ARM_DEVICE} "
                f"AND method='{ARM_METHOD}' AND name='归位(Home)';")
-        print("  （测试数据已清理）")
         print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
 
 
