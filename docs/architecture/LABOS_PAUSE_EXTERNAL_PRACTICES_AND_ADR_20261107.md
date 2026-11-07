@@ -535,17 +535,38 @@ Momentum 官方帮助文档公开说明：
 - 只有经策略证明独立的分支才允许继续；独立性未知时默认阻断并扩大范围。
 - 严重安全事件可由 Safety Domain 覆盖 Workcell 边界，触发多个 Workcell 或全局安全域隔离。
 
-### 14.1 领域对象与关系
+### 14.1 `island` 的业务定义与当前范围（用户已确认）
 
-建议显式建模：
-- Workcell：物理/逻辑自动化工作单元，含成员设备、内部资源、输入/输出端口、空间边界、运行模式和健康状态。
-- Functional Island：面向功能的逻辑分组；可与 Workcell 一对一，也可跨多个 Workcell，但必须有明确 owner 和依赖定义。
-- SafetyDomain：由风险分析定义的安全影响范围，可以覆盖多个 Workcell/Functional Island。
-- Resource：设备、板位、机械臂、储位、端口、环境能力、耗材等。
-- ExecutionPlan binding：每个 Node/Procedure 对 Workcell、DevicePool、Resource 和 SafetyDomain 的需求。
-- Dependency Edge：显式表达数据、工艺、物理搬运、共享设备、环境和安全依赖。
+**LabOS 当前的 `island` 是物理协同工作单元，对应本设计中的 Workcell。** 典型形态是在一个房间/相对封闭的自动化区域内布置多台实验设备，由一台或多台机械臂连接设备间的板位与交接点；实验板可由机械臂从设备 A 搬到设备 B，完成连续生物实验流程。
 
-不要假定 Workcell、Functional Island、SafetyDomain 是同义词。它们分别表达自动化单元、功能组织和风险边界；真实拓扑可能多对多。
+当前版本范围：
+- 纳入实验设备、机械臂、机械臂可达的设备/板位/交接点，以及它们之间的板转运关系。
+- 一个 island 可以有 **一台或多台机械臂**；不得把“每个 island 恰好一台机械臂”写成领域不变量。
+- **AGV 暂不纳入当前实现范围**。未来若出现跨 island / 房间物流需求，再扩展 TransportExecutor / TransportResource 等抽象；当前不实现 AGV 调度、路径规划或车队管理。
+- 不为当前 MVP 额外引入一个与 `island` 重复的 Functional Island 实体。只有未来确实存在跨物理 island 的纯逻辑工艺分组时，才引入该概念。
+
+因此建议关系收敛为：
+- **Island / Workcell：** 当前物理自动化单元，含设备、机械臂、板位/储位、交接点、内部空间/可达边界、运行模式与健康状态。
+- **RobotArm：** 一等共享资源；记录所属 island、能力、可达设备/位置、工作空间/互斥区、运行状态和当前任务。多个机械臂之间是否能并行，取决于可达范围与共享工作空间冲突，不能只按数量推断。
+- **SafetyDomain：** 独立于 island 的风险影响边界，可覆盖一个或多个 island；其边界由风险分析和现场安全设计确定。
+- **Resource / Position：** 设备、机械臂、板位、储位、端口和交接点等可占用/共享资源。
+- **ExecutionPlan Binding：** 节点/Procedure 显式绑定 island、设备能力/设备池、RobotArm 或可接受的机械臂池、Position 与 SafetyDomain 需求。
+- **Dependency Edge：** 显式表达工艺先后、样本/板位、机械臂搬运、设备共享、工作空间冲突、环境和安全依赖。
+
+### 14.2 当前源码与上述业务定义的差距（初步审计，需继续 A–F）
+
+以下是对 `review/labos-industrial-architecture` 分支当前源码的观察，不代表真机拓扑已核实：
+
+1. `ExperimentScheduler` 以 `experiment.island_id` 作为队列和内存锁键；`tryLockIsland()` 使用 JVM 内 `ConcurrentHashMap.putIfAbsent`，锁 TTL 为 2 小时。当前互斥粒度是整个 island，而不是具体机械臂/共享工作空间/设备/板位。
+2. `ExperimentExecutor.runStep()` 调用 `workflows.withVars(runVars).execute(...)`，没有把实验的 `island_id` 传给 `WorkflowService.withIsland()`。因此调度器的 island 锁并不能证明流程内实际选择的设备都属于该 island。
+3. `WorkflowService.withIsland()` 当前按 `resource_node.parent_id = islandId` 查直接子设备；过滤某个 capability 后若候选为空，会使用原始全局候选池（`keep.isEmpty() ? e.getValue() : keep`）。即使该过滤器被调用，这个回退也可能越过 island 边界。此处应改为显式失败/等待配置修复，而不是全局 fallback；但先补复现测试和调用链证据，不在本轮直接改代码。
+4. `PositionLock.byIsland()` 通过资源树查询 island 直接子位置及设备下的位置；它解决的是位置占用视图，不等于机械臂可达性或运动工作空间模型。
+5. `ExperimentFlowRunner.enrichWithCoords()` 目前按 `robot_point.code` 读取坐标；该查询本身没有展示机械臂 ID、所属 island 或可达关系。需要继续调查 robot_point 配置、机械臂驱动和岛屿画布保存结构。
+6. `ExperimentScheduler` 的 island 锁是进程内存态，2 小时 TTL 到期会清锁；这不是跨 Kernel 实例的分布式互斥，也不能作为机械臂物理安全租约。
+
+**阶段性结论：** 当前 island 的领域含义已由用户澄清，但代码中的岛锁、设备绑定和机械臂资源拓扑尚未闭合。不得据此宣称“实验动作已被限制在物理 island 内”，也不得因为 island 有多台机械臂就直接放开同岛并发。
+
+
 
 ### 14.2 故障影响传播算法（设计要求）
 
