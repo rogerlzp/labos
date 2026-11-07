@@ -189,6 +189,8 @@ def cleanup():
 def finish(code=0):
     """清理 + 打印汇总行 + 退出。"""
     cleaned = cleanup()
+    if not cleaned:
+        F.bad("清理安全闸门未通过：本次 run/设备未确认收敛，现场与 Hold 已保留")
     print("  （测试数据已清理）" if cleaned else "  （测试现场保留，需人工检查）")
     print()
     print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
@@ -507,6 +509,8 @@ def main():
 
     # 9) 清理：只有本次 run 已终态且设备租约已释放，才释放本次 Hold 并清理数据。
     cleaned = cleanup()
+    if not cleaned:
+        F.bad("清理安全闸门未通过：本次 run/设备未确认收敛，现场与 Hold 已保留")
     print("  （测试数据已清理）" if cleaned else "  （测试现场保留，需人工检查）")
     print()
     print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
@@ -522,6 +526,7 @@ if __name__ == "__main__":
         traceback.print_exc()
         cleaned = cleanup()
         if not cleaned:
+            F.bad("清理安全闸门未通过：本次 run/设备未确认收敛，现场与 Hold 已保留")
             print("⚠ 测试现场保留，未确认设备收敛")
         print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
         sys.exit(1)
