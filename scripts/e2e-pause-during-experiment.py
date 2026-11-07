@@ -363,107 +363,114 @@ def main():
         and hold.get("released_at") is None \
         else F.bad("未找到本次请求对应的 active Hold", str(hold))
 
-    # 7) 观察：等 workflow 级 run **也停在 paused**。
-    #    修复后（2026-11-06「实验级暂停停不住底层 run」）三层都停在暂停：
-    #      · 实验级两层由 RunControl.pause 立即置 paused（markCoveredPaused）；
-    #      · 底层 workflow 级 run 在**下一个节点边界**查到现场扣留命中，
-    #        把自己落成 paused、停在那儿（GraphRunner → WorkflowService.pauseRunAtBoundary）。
-    #    ⚠ 底层停在边界要**等当前设备动作跑完**（"Home" 默认不可中断），
-    #    所以观察窗必须**大于设备最坏耗时**（随机 30–300 秒）：到点就退 ⇒
-    #    设备还在执行时清理 ⇒ 在飞的步骤落库时父节点已被删 ⇒ FK 违反 ⇒
-    #    门禁的「步骤落库失败」断言变红（2026-11-06 实踩）。
-    t_paused = None
+    # 7) 分别观测动作收敛与 Workflow 节点边界暂停。
+    #    注意：DB 轮询时间是“观测时间”，不是硬件精确完成时间；不以三层 status
+    #    替代设备状态、节点状态或命令关联证据。
+    MADE["run"], MADE["er"] = rid, erid
+    device_running_after_accept = (after_device[0] == "running"
+                                   and after_device[2] == str(rid))
+    if device_running_after_accept:
+        F.ok("legacy experiment_run 已 paused 时，本次设备动作仍在运行")
+    else:
+        print("  说明：API 返回时设备已不再归属本 run（可能在请求响应窗口内自然完成）")
+
+    t_device_settled = None
+    t_workflow_paused = None
     deadline = time.time() + 420
+    run_st = "-"
+    er_st = after_st
+    ex_st = q1(f"SELECT status::text FROM experiment WHERE id={eid}")
+    arm_st = node_status(rid, "ARM")
     while time.time() < deadline:
-        er = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
-        ex = q1(f"SELECT status FROM experiment WHERE id={eid}")
-        if t_paused is None and (er == "paused" or ex == "paused"):
-            t_paused = time.time()
-        rst = q1(f"SELECT status::text FROM run WHERE id={rid}")
-        # 底层 run 停在 paused（修复后的口径）；落终态也收工，别空转到超时
-        if rst in ("completed", "failed", "aborted", "paused"):
+        er_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
+        ex_st = q1(f"SELECT status::text FROM experiment WHERE id={eid}")
+        run_st = q1(f"SELECT status::text FROM run WHERE id={rid}")
+        arm_st = node_status(rid, "ARM")
+        owner = device_state()[2]
+        if t_device_settled is None and arm_st == "completed" and owner != str(rid):
+            t_device_settled = time.time()
+        if t_workflow_paused is None and run_st == "paused":
+            t_workflow_paused = time.time()
+        if t_device_settled is not None and t_workflow_paused is not None:
+            break
+        if run_st in ("completed", "failed", "aborted", "canceled"):
             break
         time.sleep(0.2)
 
-    # 断言一：实验级两层都 paused（语义要求，一直如此）
-    er_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
-    ex_st = q1(f"SELECT status FROM experiment WHERE id={eid}")
-    F.ok("实验在设备执行中暂停后，实验级两层都变 paused"
-         "（experiment_run / experiment）") \
-        if (er_st == "paused" and ex_st == "paused") \
+    F.ok("实验级两层最终都 paused（experiment_run / experiment）") \
+        if er_st == "paused" and ex_st == "paused" \
         else F.bad("实验级两层状态不一致",
                    "experiment_run=%s experiment=%s" % (er_st, ex_st))
-    F.ok("实验级暂停在 5 秒内生效（%.1f 秒）" % (t_paused - t_pause)) \
-        if t_paused and (t_paused - t_pause) < 5.0 \
-        else F.bad("实验级暂停生效太慢或没生效", str(t_paused))
+    F.ok("Workflow Run 在节点边界进入 paused") \
+        if run_st == "paused" and t_workflow_paused is not None \
+        else F.bad("Workflow Run 未在节点边界 paused", run_st)
+    F.ok("当前 ARM 节点已完成，设备租约不再属于本次 run") \
+        if t_device_settled is not None \
+        else F.bad("当前设备动作未确认收敛",
+                   "ARM=%s device=%s" % (arm_st, str(device_state())))
 
-    # 断言二：底层 workflow 级 run **也停在 paused**（本次修复的核心语义）。
-    # ⚠ 旧口径是「workflow 级 run 独立跑完（不受实验级暂停影响）」——
-    #   那正是 bug（暂停停不住底层流程）。现改为：底层也必须停在 paused。
-    run_st = q1(f"SELECT status::text FROM run WHERE id={rid}")
-    F.ok("workflow 级 run 也停在 paused（实验级暂停停住了底层流程）") \
-        if run_st == "paused" \
-        else F.bad("workflow 级 run 没停在 paused（实验级暂停停不住底层流程）", run_st)
+    # M-01：后续业务节点保持 pending；同时用 run_command 的父子节点关联证明未下发。
+    arm2_st = node_status(rid, "ARM2")
+    arm_completed_commands = command_count(rid, "ARM", "completed")
+    arm2_commands = command_count(rid, "ARM2")
+    F.ok("后续 ARM2 节点保持 pending") \
+        if arm2_st == "pending" \
+        else F.bad("后续 ARM2 节点不是 pending", arm2_st)
+    F.ok("当前 ARM 动作有 completed 命令证据") \
+        if arm_completed_commands >= 1 \
+        else F.bad("当前 ARM 节点缺少 completed 命令证据",
+                   str(arm_completed_commands))
+    F.ok("后续 ARM2 没有关联设备命令") \
+        if arm2_commands == 0 \
+        else F.bad("后续 ARM2 已产生设备命令", str(arm2_commands))
 
-    # 断言三：后续节点**没被执行**（停在 pending，不是 bypassed）。
-    #   流程是 S → ARM → ARM2 → E，暂停发在 ARM 执行中：
-    #   应在 ARM2 前的边界停住 ⇒ ARM 已完成、ARM2 停在 pending。
-    #   若这里看到 pending=0（全 bypassed/completed），说明暂停又没停住。
-    tot = int(q1(f"SELECT count(*) FROM run_node WHERE run_id={rid} AND level=0") or 0)
-    done = int(q1(f"SELECT count(*) FROM run_node WHERE run_id={rid} AND level=0 "
-                  f"AND status='completed'") or 0)
-    pend = int(q1(f"SELECT count(*) FROM run_node WHERE run_id={rid} AND level=0 "
-                  f"AND status='pending'") or 0)
-    F.ok("后续节点停在 pending 未执行（completed=%d / pending=%d / 共 %d）"
-         % (done, pend, tot)) \
-        if (done >= 1 and pend >= 1) \
-        else F.bad("后续节点执行情况不符（应至少 1 个已完成 + 1 个停在 pending）",
-                   "completed=%d pending=%d total=%d" % (done, pend, tot))
+    # 输出可机器读取的时间线。秒数是轮询观测时刻，不冒充设备硬件时间戳。
+    def elapsed(ts):
+        return None if ts is None else round(ts - t_pause, 3)
+
+    timeline = {
+        "experimentId": eid,
+        "experimentRunId": erid,
+        "workflowId": wf_id,
+        "workflowRunId": rid,
+        "holdId": MADE["hold"] or None,
+        "pauseRequestedAtEpoch": t_pause,
+        "pauseAcceptedAtEpoch": t_pause_accepted,
+        "deviceRunningObservedBeforeRequest": {
+            "status": busy[0], "method": busy[1], "currentRunId": busy[2]
+        },
+        "deviceStateImmediatelyAfterAccept": {
+            "status": after_device[0], "method": after_device[1],
+            "currentRunId": after_device[2]
+        },
+        "legacyExperimentRunStatusBefore": before_st,
+        "legacyExperimentRunStatusAfterAccept": after_st,
+        "experimentStatusFinal": ex_st,
+        "workflowRunStatusFinal": run_st,
+        "armNodeStatusFinal": arm_st,
+        "arm2NodeStatusFinal": arm2_st,
+        "armCompletedCommandCount": arm_completed_commands,
+        "arm2CommandCount": arm2_commands,
+        "deviceSettledObservedSecondsAfterRequest": elapsed(t_device_settled),
+        "workflowPausedObservedSecondsAfterRequest": elapsed(t_workflow_paused),
+        "hold": hold
+    }
+    print("\n  S04A_TIMELINE_JSON=" + json.dumps(timeline, ensure_ascii=False, sort_keys=True))
+    F.ok("设备收敛与 Workflow 暂停两个事实均已独立观测") \
+        if t_device_settled is not None and t_workflow_paused is not None \
+        else F.bad("暂停时间线证据不完整",
+                   "device_settled=%s workflow_paused=%s" %
+                   (str(t_device_settled), str(t_workflow_paused)))
 
     print()
     print("  结果：")
     print("    run（workflow 级）      : %s" % run_st)
     print("    experiment_run（实验级） : %s" % er_st)
     print("    experiment（实验本身）   : %s" % ex_st)
-    print("    设备指令最终状态        : %s" % q1(
-        f"SELECT status::text FROM run_command WHERE run_id={rid} ORDER BY id DESC LIMIT 1"))
-    print("    节点状态                : %s" % q1(
-        f"SELECT node_key||'='||status::text FROM run_node WHERE run_id={rid} AND level=0"))
-    print("    现场扣留记录            : %s" % q1(
-        "SELECT scope||'/'||kind||'/'||coalesce(reason,'') FROM runtime_hold "
-        "WHERE released_at IS NULL ORDER BY id DESC LIMIT 1"))
-    if t_paused:
-        print("    暂停生效延迟            : %.1f 秒" % (t_paused - t_pause))
-    else:
-        print("    暂停生效延迟            : 未观测到状态变 paused")
-    cmd_st = q1(f"SELECT status::text FROM run_command WHERE run_id={rid} "
-                f"ORDER BY id DESC LIMIT 1")
-    if cmd_st == "completed":
-        # "Home" 默认不可中断 ⇒ 正在执行的那个设备动作**跑完**（不打断硬件），
-        # 但在**下一个节点边界**（ARM2 前）停住 —— 这正是"动作边界生效"的语义。
-        print("    ⇒ 正在执行的设备动作跑完了（不可中断，不在动作中途停）；"
-              "但流程在下一个节点边界停住，后续节点未执行")
-    elif cmd_st in ("aborted", "timeout", "failed"):
-        print("    ⇒ 设备方法被中断（%s）" % cmd_st)
-    else:
-        print("    ⇒ 设备指令状态 %s" % cmd_st)
-
-    # 8) 时间线（保留现场，便于定位覆盖发生在哪一步）
-    print()
-    print("  时间线：")
-    print("    experiment_run : %s" % q1(
-        f"SELECT id||' status='||status||' started='||coalesce(started_at::text,'-')"
-        f"||' paused='||coalesce(paused_at::text,'-')"
-        f"||' finished='||coalesce(finished_at::text,'-')"
-        f"||' resumed='||coalesce(resumed_at::text,'-') FROM experiment_run WHERE id={erid}"))
-    print("    run           : %s" % q1(
-        f"SELECT id||' status='||status||' started='||coalesce(actual_start::text,'-')"
-        f"||' finished='||coalesce(actual_end::text,'-') FROM run WHERE id={rid}"))
-    print("    experiment    : %s" % q1(
-        f"SELECT id||' status='||status||' started='||coalesce(started_at::text,'-')"
-        f"||' finished='||coalesce(finished_at::text,'-') FROM experiment WHERE id={eid}"))
-    print("    保留现场：experiment=%d workflow=%d run=%d experiment_run=%d"
-          % (eid, wf_id, rid, erid))
+    print("    Hold                    : %s" % json.dumps(hold, ensure_ascii=False))
+    print("    ARM / ARM2              : %s / %s" % (arm_st, arm2_st))
+    print("    ARM completed commands : %d" % arm_completed_commands)
+    print("    ARM2 commands           : %d" % arm2_commands)
 
     # 9) 清理（顺序要紧：run 先删，否则 workflow 删不掉）
     cleanup()
