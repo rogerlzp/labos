@@ -88,3 +88,25 @@
 - [ ] 数据库持久化 worker lease / fencing token（覆盖多 Kernel 实例）。
 - [ ] 命令级 UNKNOWN/RECONCILING 与 crash recovery。
 - [ ] 真机 HIL：暂停时设备仍运行、响应丢失、设备拒绝停止、停止确认丢失等故障。
+
+
+## Batch 0.4：暂停状态与人工干预闭环（设计已补充，代码待实施）
+
+完整领域设计见 `docs/architecture/LABOS_PAUSE_AND_INTERVENTION_STATE_MODEL_20261107.md`。
+
+核心决策：
+- ExperimentRun 新增/明确 PAUSE_REQUESTED、PAUSING、PAUSED、WAITING_INTERVENTION、RESUMING、RECONCILIATION_REQUIRED。
+- NodeExecution 区分 PAUSE_REQUESTED、FINISHING_CURRENT_COMMAND、STOP_REQUESTED、WAITING_DEVICE_CONFIRMATION、PAUSED、BLOCKED_BY_FAULT、WAITING_OPERATOR、UNKNOWN/RECONCILING、READY_TO_RESUME。
+- 用户暂停与设备报警/安全联锁统一进入 Hold 机制，按 source、reason_code、scope、severity、resume_policy 区分。
+- 实验级 Hold 意图与受影响节点的 PAUSE_REQUESTED 在同一 PostgreSQL 事务中提交，并同事务写事件和 Outbox；随后异步收敛节点事实，最后由聚合器更新实验状态。
+- 设备报警需要人工处理时，安全收敛后进入 WAITING_INTERVENTION；人工处理、设备自检和联锁复位通过后才进入 RESUMING。
+- UNKNOWN 命令/物理状态不能被伪装成 PAUSED；不得因 TTL 过期解除物理隔离。
+- 默认不能证明并行分支独立性时，扩大暂停范围。
+
+实施顺序：
+1. 先落状态转换表、聚合规则和迁移兼容方案，不立即改数据库 schema。
+2. 修复暂停入口的精确 run 关联，避免按 workflowId 反查最近实验。
+3. 原子登记 Hold + 实验暂停意图 + 活动节点暂停请求 + Event/Outbox。
+4. 修复 UI 语义，明确展示“暂停处理中”与“已安全暂停”。
+5. 增加设备报警 Hold、人工 InterventionRecord、复位证据与恢复门禁。
+6. 最后做事件乱序、重复、worker crash、多实例和真机 HIL。
