@@ -181,3 +181,21 @@ P1-3：旧新执行路径适配与前端迁移。
 P2：设备协议适配、跨实验安全域、HIL 和长稳测试。
 
 未经 A-D 的调查和测试复现，不直接重写 PauseManager 或 RunControl，不先扩充 UI 状态枚举。
+
+
+### Batch 0.4 进一步源码核对：驱动取消和执行器 fail-open
+
+独立评审记录新增 F-23 至 F-25：
+- 主分支 DeviceDriver.abort() 是 void 尽力而为；TCP 实现目前只移除本地 pending Future 并返回本地失败，没有证据表明向设备发送真实停止协议帧。
+- DriverStepExecutor 的 q1s/q1 查询异常返回 null，RuntimeHold.coveringForWorkflow() 反查 SQL 异常也返回 null；暂停判定可能在数据库故障时 fail-open。
+- 当前源码树未找到统一 Outbox 实现；JdbcEventStore 独立连接且 autoCommit=true，需核实事件与业务事务一致性。
+
+因此 PauseCoordinator V1 的真正第一批调整为：
+1. **三态安全判定：** ACTIVE / INACTIVE / UNKNOWN；任何 DB/设备查询错误进入 UNKNOWN 并阻断派发。
+2. **设备 Abort 语义纠正：** 本地 Future 取消不等于设备停止；TCP 驱动需明确不支持/未知真实 cancel 能力，不能将本地取消结果记为物理停止。
+3. **RuntimeHold fail-closed：** active、coveringForWorkflow、anyActive 等所有安全闸门查询一致处理错误。
+4. **事务一致性：** 再设计 Hold + Run Control + Event + Outbox 原子提交。
+5. **资源释放 SQL 复现：** PauseManager 端口释放 SQL 的第二个参数疑似将 runId 绑定到 tenant_id 位置，先加回归测试。
+6. **现有 API / UI 迁移：** 上述内核行为确认后再变更 UI 状态和值域。
+
+不要先增加更多状态枚举。第一批目标是确保数据库或设备状态未知时，系统不会继续派发或谎报设备停止。
