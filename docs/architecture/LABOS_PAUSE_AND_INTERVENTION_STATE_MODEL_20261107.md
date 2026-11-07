@@ -327,16 +327,17 @@ WAITING_INTERVENTION 与 RECONCILIATION_REQUIRED 更适合作为聚合器计算�
 
 因此，LabOS 不采用“只暂停报错设备”作为默认策略，也不采用“任何设备故障都暂停整个实验室”的一刀切策略。默认隔离边界是故障设备所属 Workcell/Functional Island；故障影响可根据安全域和依赖关系向外扩大。只有证明安全独立的节点才能继续。
 
-### 14.2 Workcell、Functional Island、SafetyDomain 必须分开建模
+### 14.2 `island` 的物理定义与 MVP 范围（用户已确认）
 
-- **Workcell：** 自动化工作单元，具有成员设备、内部资源、输入/输出端口、空间/物流边界、运行模式和健康状态。
-- **Functional Island：** 面向某一功能或工艺的逻辑分组；可能与 Workcell 一对一，也可能跨多个 Workcell。
-- **SafetyDomain：** 由风险分析确定的安全影响边界，可以覆盖多个 Workcell/Functional Island。
-- **Resource：** 设备、机械臂、板位、储位、端口、环境能力和其他可占用/共享资源。
-- **ExecutionPlan Binding：** 节点/Procedure 对 Workcell、设备池、Resource 和 SafetyDomain 的需求。
-- **Dependency Edge：** 数据、工艺、样本、板位、搬运、共享设备、环境和安全依赖。
+LabOS 当前的 `island` 是物理协同工作单元，对应 Workcell：通常在一个房间/相对封闭区域内放置多台实验设备，由一台或多台机械臂在设备间搬运实验板，形成连续的生物实验流程。
 
-不能把 Workcell、Functional Island、SafetyDomain 当成同义词。实际拓扑需要通过现场设备布局、资源配置和安全风险分析确认。
+当前仅建模机械臂物流：机械臂、其可达设备/位置、工作空间与互斥区、板位/交接点和搬运动作。AGV 不属于当前 MVP；未来需要跨区域物流时再扩展，不提前实现 AGV 调度或路径规划。
+
+当前不额外创建与物理 island 重复的 Functional Island 实体。未来若确实存在跨多个物理 island 的纯逻辑工艺分组，再单独引入。SafetyDomain 仍独立建模，可按风险分析跨越多个 island。
+
+一个 island 可以有一台或多台机械臂。机械臂是共享资源，必须显式表达所属 island、可达设备/位置、工作空间/互斥区和当前任务。多个机械臂是否可以并行工作，必须由可达性与共享空间冲突判断，不能仅按机械臂数量推断。
+
+
 
 ### 14.3 故障后的控制顺序
 
