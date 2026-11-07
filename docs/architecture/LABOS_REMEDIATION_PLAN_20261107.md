@@ -224,3 +224,44 @@ P2：设备协议适配、跨实验安全域、HIL 和长稳测试。
 验收新增 FS-01 至 FS-12，至少覆盖跨实验共享 Workcell、跨岛共享资源、公共设施安全域、样本位置未知、传播计算缺失、报警恢复但人工 Hold 未清、其他实验仍有 User Hold、策略版本更新和 E-stop 覆盖多 Workcell。
 
 注意：本 Batch 目前是领域设计和调查要求，不授权直接改设备控制代码。完成 A–F 源码调查、现场拓扑核实和独立 AI 反向审查后，再拆分实施 PR；真机安全行为必须做 HIL/现场验收。
+
+
+## Batch 0.6：Island 编辑期边界与逐 Island Hold 调度（2026-11-07，源码审计完成，代码未实施）
+
+专项证据报告：`docs/architecture/LABOS_ISLAND_BOUNDARY_AND_HOLD_DISPATCH_AUDIT_20261107.md`。
+
+**产品语义修订：Island 边界首先由流程编辑和发布保证，运行时负责不可绕过的二次校验。不能把它仅仅当成 WorkflowService 的设备候选池过滤。**
+
+### P0-6：Workflow 固定 Island，编辑器禁止跨岛拼接
+
+- 当前 Designer 的 islandId 是可清空的 URL/UI 状态；null 会请求全量设备池。
+- 当前 onDropMethod 未验证当前 Workflow Island、前一节点 Island 和新节点 Island；LastDropped 未保存 islandId。
+- createWorkflow 写入 workflow.attr.island_id，但现有证据显示它主要用于设备面板默认过滤，不是不可变归属。
+- saveGraph / updateNodeBinding 当前可见实现没有校验 resource_id 所属 Island。
+- 先将 Workflow Island 归属作为权威字段/强约束；旧流程 null 必须显式分配，不得等同“全场设备池”。
+- 前端 drop、NodeSettings、切换 Island、页面保存均校验；服务端 saveGraph、updateNodeBinding、restore、choreography build、experiment process/graph 保存使用同一 IslandBoundaryValidator。
+- 无机械臂或机械臂不可达关系 UNKNOWN 时，不能把两台设备直接连成一条板流；当前 Designer 找不到 arm 时会退化为直接 connect，必须改为阻断。
+
+### P0-7：Experiment / Workflow Island 一致性
+
+- ExperimentCanvas 组合的是 Workflow 引用；Experiment 的 island_id 必须与其引用的每个物理 Workflow 的 island_id 一致。
+- 需要继续核查 replaceExperimentProcesses、experiment graph save 的所有入口；未完成前不声称该约束不存在。
+- ExperimentExecutor 运行时仍需从 experiment 取得 islandId，并对每个 Workflow/设备节点做强校验。
+
+### P0-8：RuntimeHold 按候选逐 Island 判定，三态 fail-closed
+
+- Queued 已携带 experimentId/islandId，可按候选评估，无需全队列 anyActive。
+- 当前 dispatch 全局 anyActive 导致任意 Island Hold 阻止所有 Island；RuntimeHold.active SQL 异常返回空列表，dispatch catch 后继续，构成 fail-open。
+- CLEAR 才允许派发；HELD 只跳过被覆盖的 Island/Experiment；UNKNOWN 阻断该候选并明确告警。
+- 普通设备/板位/机械臂故障默认 ISLAND Hold；SITE Hold 只用于明确的全场公共设施/安全事件；跨 Island 影响通过显式 SafetyDomain/affected-resource 传播。
+- autoContinueHeldBatches 也要按候选逐个评估，不能被其他 Island 的 Hold 全局挡住。
+
+### 验收新增
+
+- 同一 Workflow 先拖入 Island A 设备，再切换 Island B 拖入设备：drop/保存必须失败，图保持不变。
+- 直接 API PUT 绑定其他 Island 的 resourceId、或 saveGraph 混入异岛设备：服务端拒绝并回滚。
+- 旧 Workflow Island 未分配：不能以全量设备池发布/执行。
+- A Island 有 ISLAND Hold、B Island 有独立队列：A 不派发，B 正常派发。
+- Hold 查询 SQL 异常：相关候选 UNKNOWN，不派发；不能把查询失败当无 Hold。
+- 只有 SITE Hold 或明确跨岛 SafetyDomain Hold 才能同时阻断 A/B。
+- A 有 Hold、B 有无 Hold 的批次候选：B 可自动续批。
