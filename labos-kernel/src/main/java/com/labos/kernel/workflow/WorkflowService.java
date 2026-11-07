@@ -804,37 +804,29 @@ public final class WorkflowService {
             String xml = graphEnabled ? loadGraphXml(workflowId) : null;
             boolean viaGraph = false;
             if (xml != null && !xml.isBlank()) {
-                try {
-                    WorkflowGraphParser.Graph g = WorkflowGraphParser.parse(xml);
-                    GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
-                            nodeIdByKey, s -> { })
-                            .withResourceCapability(resourceCap)
-                            .withBoundInstances(loadBoundInstances())
-                            .withSkipKeys(skipKeys)
-                            // 条件表达式/循环退出条件的取值来源（run.input.vars）
-                            .withVariables(loadRunVars(runId))
-                            // 节点输出 → 变量（循环靠它走够次数退出）
-                            .withOutputReader(key -> loadNodeOutputs(runId, key))
-                            // 圈数上限：流程可以在 attr.maxIterations 里自己定（默认 10）
-                            .withMaxVisits(loadMaxIterations(workflowId))
-                            // 循环每圈落一行（loop_index=1..N），汇总行仍是 loop_index=0
-                            .withRoundRecorder((key, round, st, ec, s1, e1) ->
-                                    recordNodeRound(runId, key, round, st, ec, s1, e1))
-                            // 变量/表达式节点的参数（不发给设备）
-                            .withBuiltinParams(builtinParams)
-
-                            // P1-8：每到一个节点边界查一次 DB —— 状态是 paused 就停。
-        // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
-        .withPauseChecker(() -> isRunPaused(runId));
-                    // 注意：**不能**按执行结果决定是否退回。
-                    // 退回意味着重跑，而在真实设备上重跑 = 开两次盖（物理副作用不可撤销）。
-                    // 这里只在解析阶段失败时退回（见 catch），执行了就是执行了。
-                    progress = gr.run(g, executor);
-                    viaGraph = true;
-                } catch (RuntimeException ex) {
-                    System.err.println("[WARN] 按图执行失败，退回顺序执行: " + ex.getMessage());
-                    progress = sm.executeAll(rec, executor);
-                }
+                // 解析与执行必须分开：只有解析失败（尚未派发任何设备命令）时，
+                // 才允许按既有兼容策略退回顺序执行。GraphRunner 一旦开始执行，
+                // 任何 RuntimeException 都必须向上传播；禁止从头切换执行器重跑。
+                GraphExecution graphExecution = executeGraphWithParseFallback(
+                        xml,
+                        () -> sm.executeAll(rec, executor),
+                        g -> {
+                            GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
+                                    nodeIdByKey, s -> { })
+                                    .withResourceCapability(resourceCap)
+                                    .withBoundInstances(loadBoundInstances())
+                                    .withSkipKeys(skipKeys)
+                                    .withVariables(loadRunVars(runId))
+                                    .withOutputReader(key -> loadNodeOutputs(runId, key))
+                                    .withMaxVisits(loadMaxIterations(workflowId))
+                                    .withRoundRecorder((key, round, st, ec, s1, e1) ->
+                                            recordNodeRound(runId, key, round, st, ec, s1, e1))
+                                    .withBuiltinParams(builtinParams)
+                                    .withPauseChecker(() -> isRunPaused(runId));
+                            return gr.run(g, executor);
+                        });
+                progress = graphExecution.progress();
+                viaGraph = graphExecution.viaGraph();
             } else {
                 progress = sm.executeAll(rec, executor);
             }
@@ -889,6 +881,26 @@ public final class WorkflowService {
                 progress.count(NodeStatus.ABORTED),
                 viaDriver, eventsWritten, results,
                 alerts, (int) notifyCount, mode);
+    }
+
+    /** 图解析失败时可在派发前选择兼容顺序路径；图执行异常绝不触发 fallback。 */
+    static GraphExecution executeGraphWithParseFallback(
+            String xml,
+            java.util.function.Supplier<RunProgress> sequentialFallback,
+            java.util.function.Function<WorkflowGraphParser.Graph, RunProgress> graphExecution) {
+        final WorkflowGraphParser.Graph graph;
+        try {
+            graph = WorkflowGraphParser.parse(xml);
+        } catch (RuntimeException parseFailure) {
+            System.err.println("[WARN] BPMN 解析失败（尚未执行设备命令），退回顺序执行: "
+                    + parseFailure.getMessage());
+            return new GraphExecution(sequentialFallback.get(), false);
+        }
+        // 故意放在 try/catch 之外：执行期 RuntimeException 不能触发顺序重跑。
+        return new GraphExecution(graphExecution.apply(graph), true);
+    }
+
+    record GraphExecution(RunProgress progress, boolean viaGraph) {
     }
 
     public record Execution(long runId, String workflowName, int total,
