@@ -209,12 +209,16 @@ P2：设备协议适配、跨实验安全域、HIL 和长稳测试。
 - `docs/architecture/LABOS_PAUSE_EXTERNAL_PRACTICES_AND_ADR_20261107.md` §13–14
 - `docs/architecture/LABOS_PAUSE_AND_INTERVENTION_STATE_MODEL_20261107.md` §14
 
-实施前置调查：
-1. 确认当前 `island` 实体和用户所说 Workcell/Functional Island 的关系，避免把逻辑分组误当物理安全边界。
-2. 建立设备→Workcell→Functional Island→SafetyDomain 映射，以及 Workcell 内外共享资源、样本/板位、机器人路径和公共设施依赖图。
-3. 确认当前调度器是否能跨 ExperimentRun 计算受影响节点，是否能阻止 Workcell 新命令但允许已证明独立的外部节点继续。
-4. 盘点设备报警等级、设备能力、工艺安全边界和现场 E-stop/PLC 信号来源；不得由软件团队猜测安全等级。
-5. 定义 Continue Predicate 和影响传播快照，缺少依赖/状态信息时 fail-closed。
+实施前置调查（用户已明确 island 业务定义后修订）：
+1. 将当前 `island` 视为物理 Workcell：一个房间/相对封闭区域内的多台实验设备，由一台或多台机械臂连接并转运实验板；当前不另建重复的 Functional Island 实体。
+2. 当前仅考虑机械臂，不考虑 AGV；未来按需扩展物流执行器，不提前实现 AGV 调度。
+3. 核实 `resource_node` 资源树能否准确表达 island→device→position，以及 robot_point、机械臂、设备和板位之间的实际归属/可达关系。
+4. 审计实验执行是否把 `experiment.island_id` 绑定到每个 workflow 的设备候选池；当前初查发现 ExperimentExecutor.runStep 未调用 WorkflowService.withIsland，且 withIsland 的空候选回退会退回全局候选池，需先复现。
+5. 核实一台/多台机械臂的并发互斥边界：机械臂本体、共享工作空间/交叉区、设备端口、板位和转运路径；不得默认同岛只能有一台机械臂，也不得仅因多臂就放开并发。
+6. 确认调度锁是否跨 Kernel 实例持久化；当前 ExperimentScheduler 使用 JVM 内存锁和 2 小时 TTL，不能证明跨实例互斥或物理资源安全。
+7. 建立 island 内外共享资源、样本/板位和公共设施依赖图；确认故障影响闭包和跨实验传播。
+8. 盘点设备报警等级、设备能力、工艺安全边界和现场 E-stop/PLC 信号来源；不得由软件团队猜测安全等级。
+9. 定义 Continue Predicate 和影响传播快照，缺少依赖/状态信息时 fail-closed。
 
 验收新增 FS-01 至 FS-12，至少覆盖跨实验共享 Workcell、跨岛共享资源、公共设施安全域、样本位置未知、传播计算缺失、报警恢复但人工 Hold 未清、其他实验仍有 User Hold、策略版本更新和 E-stop 覆盖多 Workcell。
 
