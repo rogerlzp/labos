@@ -60,7 +60,7 @@ MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网�
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点只落在设备任务节点——网关与逻辑节点都不查 pauseChecker；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
 MIN_PAUSEEXP=2    # 2026-11-06：实验级暂停 · 设备执行中发暂停 → 实验级两层（experiment_run / experiment）都变 paused，且 workflow 级 run 独立跑完（语义要求，实现真停后也不该变）
-MIN_INTR=3        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005），5 条断言（门禁 21 → 22 段）
+MIN_INTR=3        # 2026-11-07：安全边界暂停 · TCP 无物理 Abort 时当前动作完成、下一 task 暂停、不重复派发；5 条断言
 
 FAIL=0
 SKIP=0
@@ -510,26 +510,25 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "实验级暂停 $SUM_PASS / 0（设备执行中发暂停 → 实验级两层 paused；workflow 级 run 独立跑完）"
     fi
   fi
-  # 4.18 A1 真停：方法声明「可中断」时，执行中发暂停 → 命令真的被中止
-  # 断言的是**语义要求**：可中断方法在暂停后必须**很快**落终态
-  # （远快于设备本身要跑的 30–300 秒），而不是等设备跑完。
-  # 脚本会临时把机械臂的 Home 标成 interruptible=true，结束前还原。
-  note "4.18 A1 真停 · 可中断方法执行中（e2e-interrupt-during-device.py）"
+  # 4.18 安全边界暂停：配置 interruptible 不等于驱动具备物理 Abort。
+  # TCP 驱动无设备侧 Abort 时，当前动作完成后必须在下一 task 边界暂停。
+  # 同时断言不伪报 aborted、不重复派发；测试脚本只在设备确认不运行后清理。
+  note "4.18 安全边界暂停 · 设备执行中请求暂停（e2e-interrupt-during-device.py）"
   IOUT=$(python3 scripts/e2e-interrupt-during-device.py 2>&1)
   if echo "$IOUT" | grep -qE '^SKIP|缺 LABOS_DB'; then
-    skip "A1 真停（没给库连接）"
+    skip "安全边界暂停（没给库连接）"
   else
     parse_summary "$IOUT"
     if [[ "$SUM_MISSING" == "1" ]]; then
-      fail "A1 真停脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
+      fail "安全边界暂停脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
       printf '%s\n' "$IOUT" | tail -15
     elif [[ "$SUM_FAIL" != "0" ]]; then
-      fail "A1 真停有失败（$SUM_FAIL 条）"
+      fail "安全边界暂停有失败（$SUM_FAIL 条）"
       printf '%s\n' "$IOUT" | grep '✗' | head -8
     elif (( SUM_PASS < MIN_INTR )); then
-      fail "A1 真停断言 $SUM_PASS < 阈值 ${MIN_INTR}"
+      fail "安全边界暂停断言 $SUM_PASS < 阈值 ${MIN_INTR}"
     else
-      pass "A1 真停 $SUM_PASS / 0（可中断方法执行中发暂停 → 命令在 10 秒内被中止）"
+      pass "安全边界暂停 $SUM_PASS / 0（当前动作完成、下一 task 边界暂停、无重复派发）"
     fi
   fi
 else
