@@ -25,6 +25,7 @@ public final class WorkflowExecutionSafetySelfTest {
     public static void main(String[] args) {
         caseGraphRuntimeFailureDoesNotFallback();
         caseParseFailureFallsBackBeforeExecution();
+        caseOnlyOneWorkerCanOwnRun();
         System.out.printf("通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {
             System.exit(1);
@@ -86,6 +87,24 @@ public final class WorkflowExecutionSafetySelfTest {
                             null);
             eq("不是图执行路径", false, result.viaGraph());
             eq("fallback 调用一次", 1, fallback.get());
+        });
+    }
+
+    private static void caseOnlyOneWorkerCanOwnRun() {
+        check("同一 run 同时只能有一个执行 worker", () -> {
+            long runId = 9_876_543_210L;
+            WorkflowService.releaseActiveRun(runId);
+            try {
+                eq("首个 worker 获取所有权", true,
+                        WorkflowService.reserveActiveRun(runId));
+                eq("第二个 worker 被拒绝", false,
+                        WorkflowService.reserveActiveRun(runId));
+            } finally {
+                WorkflowService.releaseActiveRun(runId);
+            }
+            eq("旧 worker 释放后允许重新获取", true,
+                    WorkflowService.reserveActiveRun(runId));
+            WorkflowService.releaseActiveRun(runId);
         });
     }
 
