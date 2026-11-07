@@ -217,3 +217,17 @@ PR-S04-B 不能只改 API 响应文字；必须让 UI、数据库、调度门禁
 ---
 
 **裁决摘要：** PR-S04-A 是“legacy 三层状态 + 可核验 Hold / 设备 / 节点事实”的兼容验证；PR-S04-B 才是“请求接受与 PAUSED 完成分离”的 API/UI 语义切换。任何把「未收敛不得显示 PAUSED」塞进保持旧 API 行为的 PR-S04-A 的做法，均属于验收契约自相矛盾。
+
+
+## 8. 当前分支实施状态（2026-11-07）
+
+已在 `review/labos-architecture-20261107` 修改：
+
+- `scripts/e2e-pause-during-experiment.py`：增加本次 Experiment Hold 精确查询、设备 `current_run_id` 与 Workflow Run 精确归属、legacy API/status 兼容断言、Hold 生命周期、ARM/ARM2 节点与命令关联、`S04A_TIMELINE_JSON`。
+- 清理路径不再删除全局 active Hold；只释放本次 Hold ID。只有本次 Workflow Run 已进入终态且设备不再运行/持有该 Run，才允许清理；否则保留运行记录与 Hold，并使测试失败。
+- `scripts/ci-gate.sh`：只更新 4.17 的说明文字，`MIN_PAUSEEXP=5` 未改变。
+- `docs/测试用例总表.md`：同步 S-04-A 的事实证据与 legacy 状态边界。
+
+**尚未验证：** 本轮没有可访问的项目运行环境，尚未执行 Python 编译检查、4.17 e2e、`ci-gate.sh --all` 或真实设备测试。GitHub 当前分支也没有对应 PR，且最新提交没有可见 CI status。因此这些修改只能标记为“已提交到评审分支、待运行验证”，不能标记 S-04-A 完成或 M-01 VERIFIED。
+
+**下一步验收顺序：** 先在具备 LabOS API、PostgreSQL 和模拟器的环境执行 `python3 -m py_compile scripts/e2e-pause-during-experiment.py`；再单独运行 4.17，检查 `S04A_TIMELINE_JSON` 和所有断言；最后执行 `./scripts/ci-gate.sh --all`，确认无 SKIP、`MIN_PAUSEEXP=5` 未降、M-01 其余回归无退化。
