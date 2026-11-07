@@ -293,3 +293,28 @@ CSV 导入也接收 `robotResourceId`，并将点位写入指定机械臂；`syn
 - 未合并到 main。
 
 后续需要补充：数据库 schema/migration、Robot driver / sidecar 协议、前端 island canvas、所有 PositionLock 调用点、CI 测试目录和现场机械臂配置。
+
+
+## 10. 关键源码锚点（便于复核）
+
+| 结论 | 文件与方法 | 关键位置（当前分支行号，后续提交可能变化） |
+|---|---|---|
+| Scheduler → Executor | `ExperimentScheduler.submit/dispatch/executeOne` | `workflow/ExperimentScheduler.java` 170–240、380–430、430–510 |
+| workflow 未绑定 island | `ExperimentExecutor.runStep` | `workflow/ExperimentExecutor.java` 748–810 |
+| island filter 存在 | `WorkflowService.withIsland/loadIslandDeviceIds` | `workflow/WorkflowService.java` 198–215、245–260 |
+| island filter 空集回退全局 | `WorkflowService.execute` | `workflow/WorkflowService.java` 740–765 |
+| RobotPoint 绑定机械臂和设备 | `QueryService.importRobotPointsCsv/robotPointsJson/syncRobotPoints` | `api/QueryService.java` 2092–2180、2203–2270 |
+| RobotPoint 更新未限定 robot_resource_id | `QueryService.updateRobotPoint` | `api/QueryService.java` 2018–2040 |
+| 点位坐标只按 code 查询 | `ExperimentFlowRunner.enrichWithCoords` | `workflow/ExperimentFlowRunner.java` 155–200 |
+| Island Flow JSON | `QueryService.islandFlowJson/saveIslandFlow` | `api/QueryService.java` 2275–2320 |
+| Island topology 只查直接子设备 | `QueryService.topologyJson` | `api/QueryService.java` 320–385 |
+| 全局 Hold 闸门及 fail-open | `ExperimentScheduler.dispatch` | `workflow/ExperimentScheduler.java` 380–410 |
+| Hold 查询异常返回空集合 | `RuntimeHold.active/anyActive` | `workflow/RuntimeHold.java` 270–310 |
+| Island 锁 TTL | `ExperimentScheduler.LOCK_TTL/sweepExpiredLocks` | `workflow/ExperimentScheduler.java` 35–45、625–640 |
+| 双位置预约不是单事务 | `PositionLock.tryReserveTransfer/tryReserve` | `driver/PositionLock.java` 130–220 |
+| 板位置/在途更新 | `PositionLock.putPlate/takePlate/markPlateInTransfer` | `driver/PositionLock.java` 245–420、510–555 |
+| 设备级 capability 与 quarantine | `DriverDescriptor/DriverRegistry` | `driver/DriverDescriptor.java` 10–60；`driver/DriverRegistry.java` 15–130 |
+| Physical Abort 默认 false | `DeviceDriver.supportsPhysicalAbort` | `driver/DeviceDriver.java` 20–55 |
+| 事件独立 autoCommit | `JdbcEventStore` constructor | `persistence/JdbcEventStore.java` 20–55 |
+| Pause/Hold 分步写入 | `RunControl.pause/markCoveredPaused` | `workflow/RunControl.java` 80–160 |
+
