@@ -164,10 +164,6 @@ def cleanup():
         if not wait_run_settled(run_id):
             print("  ⚠ 本次 run 未确认终态或设备租约未释放：保留运行记录和 Hold")
             return False
-        if hold_id:
-            q1("UPDATE runtime_hold SET released_at=now(), "
-               "release_note='e2e-pause-during-experiment cleanup' "
-               "WHERE tenant_id=1 AND id=%d AND released_at IS NULL;" % hold_id)
         if eid:
             q1(f"DELETE FROM experiment_run WHERE experiment_id={eid};")
             q1(f"DELETE FROM experiment_process WHERE experiment_id={eid};")
@@ -180,6 +176,11 @@ def cleanup():
             q1(f"DELETE FROM run WHERE workflow_id={wf_id};")
             q1(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}; "
                f"DELETE FROM workflow WHERE id={wf_id};")
+        # 只有测试对象删除成功后才释放本次 Hold；中途失败时保留安全闸门。
+        if hold_id:
+            q1("UPDATE runtime_hold SET released_at=now(), "
+               "release_note='e2e-pause-during-experiment cleanup' "
+               "WHERE tenant_id=1 AND id=%d AND released_at IS NULL;" % hold_id)
         return True
     except Exception as e:  # noqa: BLE001
         print("  （清理时出错：%s）" % e)
