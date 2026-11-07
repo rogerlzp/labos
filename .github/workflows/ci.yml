@@ -48,6 +48,9 @@ jobs:
           javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
             $(find src/main -name '*.java')
 
+      - name: 校验暂停 E2E 脚本语法
+        run: python3 -m py_compile scripts/e2e-interrupt-during-device.py
+
       - name: 前端依赖
         working-directory: webapp
         run: npm ci
