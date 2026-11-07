@@ -86,6 +86,9 @@ def main():
                  "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
                  % (ARM_DEVICE, ARM_METHOD))
     had_row = existed == "1"
+    previous_interruptible = q1("SELECT coalesce(interruptible::text,'false') "
+                                 "FROM device_method WHERE tenant_id=1 AND device_id=%d "
+                                 "AND method='%s'" % (ARM_DEVICE, ARM_METHOD))
     q1("INSERT INTO device_method (tenant_id, device_id, method, name, capability_id, "
        "param_schema, estimate_sec, timeout_sec, interruptible) "
        "VALUES (1, %d, '%s', '归位(Home)', "
@@ -214,7 +217,9 @@ def main():
         final_device_state = device_state()
         final_cmd = q1(f"SELECT coalesce(status::text,'-') FROM run_command "
                        f"WHERE run_id={rid} ORDER BY id DESC LIMIT 1") if rid else None
-        safe_to_cleanup = final_device_state[0] != "running" and final_cmd not in ("running", "pending")
+        safe_to_cleanup = (final_device_state[0] != "running"
+                           and final_device_state[2] != str(rid)
+                           and final_cmd not in ("running", "pending", "unknown"))
         if safe_to_cleanup:
             if rid:
                 q1("UPDATE device_state SET current_run_id=NULL, current_method=NULL, "
@@ -229,9 +234,10 @@ def main():
         else:
             print("  ⚠ 设备/命令仍可能在运行：保留 run、命令和资源锁，必须人工核验后清理")
         if had_row:
-            q1("UPDATE device_method SET interruptible = false "
+            restore_value = "true" if previous_interruptible == "true" else "false"
+            q1("UPDATE device_method SET interruptible = %s "
                "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
-               % (ARM_DEVICE, ARM_METHOD))
+               % (restore_value, ARM_DEVICE, ARM_METHOD))
         else:
             q1(f"DELETE FROM device_method WHERE tenant_id=1 AND device_id={ARM_DEVICE} "
                f"AND method='{ARM_METHOD}' AND name='归位(Home)';")
