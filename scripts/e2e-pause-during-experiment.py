@@ -137,24 +137,32 @@ def command_count(run_id, parent_key, status=None):
 MADE = {"wf": 0, "exp": 0, "run": 0, "er": 0, "hold": 0}
 
 
-def wait_device_idle(resource_id=200214, limit=90):
-    """等设备回到 idle 再删数据；超时后必须保留现场。"""
+def wait_run_settled(run_id, resource_id=200214, limit=90):
+    """只在本次 run 已终态且设备不再运行/占有它时允许清理。"""
+    if not run_id:
+        return False
     deadline = time.time() + limit
+    terminal = ("paused", "completed", "failed", "aborted", "canceled")
     while time.time() < deadline:
-        row = q1("SELECT COALESCE(status,'-') FROM device_state "
+        run_st = q1("SELECT COALESCE(status::text,'-') FROM run "
+                    "WHERE tenant_id=1 AND id=%d" % run_id)
+        row = q1("SELECT COALESCE(status,'-')||'|'||"
+                 "COALESCE(current_run_id::text,'-') FROM device_state "
                  "WHERE tenant_id=1 AND resource_id=%d" % resource_id)
-        if row != "running":
+        parts = (row + "|-").split("|")
+        if run_st in terminal and parts[0] != "running" and parts[1] != str(run_id):
             return True
         time.sleep(0.5)
     return False
 
 
 def cleanup():
-    """只清理本次数据；未确认设备动作收敛时 fail-closed 保留现场。"""
-    eid, wf_id, hold_id = MADE["exp"], MADE["wf"], MADE["hold"]
+    """只清理本次数据；未确认本次 run 收敛时 fail-closed 保留现场。"""
+    eid, wf_id, run_id, hold_id = (MADE["exp"], MADE["wf"],
+                                   MADE["run"], MADE["hold"])
     try:
-        if not wait_device_idle():
-            print("  ⚠ 设备仍在运行：保留运行记录和 Hold，不执行清理")
+        if not wait_run_settled(run_id):
+            print("  ⚠ 本次 run 未确认终态或设备租约未释放：保留运行记录和 Hold")
             return False
         if hold_id:
             q1("UPDATE runtime_hold SET released_at=now(), "
@@ -304,6 +312,7 @@ def main():
               f"run={rid} experiment_run={erid}")
         finish(1)
         return
+    MADE["run"], MADE["er"] = rid, erid
     print("  ✓ run #%d / experiment_run #%d 已建立" % (rid, erid))
 
     # 5) 等「设备方法真的在执行」——看 device_state，不看 run_command。
