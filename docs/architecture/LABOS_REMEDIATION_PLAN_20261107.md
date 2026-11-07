@@ -1,6 +1,6 @@
 # LabOS 下一阶段整改实施计划（基于 2026-11-07 独立审计）
 
-> 本文是评审建议，不代表已经实施。业务代码未改。对应详细证据见 `docs/评审记录/20261107-01-gpt6.md`。
+> 本文是分阶段整改计划。2026-11-07 已在评审分支实施 Batch 0 的部分保守修复；未修改 `main`。对应详细证据见 `docs/评审记录/20261107-01-gpt6.md`。
 
 ## 总原则
 
@@ -11,21 +11,21 @@
 
 ## Batch 0：执行路径安全边界（P0）
 
-### 0.1 GraphRunner 执行后禁止 fallback 重跑
+### 0.1 GraphRunner 执行后禁止 fallback 重跑 <已实现，待后续增强>
 
 - 将 BPMN parse/static validation 移到独立 try。
 - 构造 GraphRunner 完成后，执行异常只能走异常收敛，不得调用 `executeAll`。
 - 添加 run execution phase 标记，至少区分 PREPARED / DISPATCH_STARTED / SETTLED。
 - 验收：在设备命令派发后注入 RuntimeException，确保没有顺序路径执行、没有新 commandId 重做前序动作。
 
-### 0.2 abort 语义分离
+### 0.2 abort 语义分离 <保守缓解已实现，物理中止待实现>
 
 - 将 DeviceDriver.abort 返回值从 void 改为可审计 AbortResult（需要兼容适配器）。
 - 结果至少有 UNSUPPORTED / REQUESTED / DEVICE_ACKNOWLEDGED / PHYSICALLY_STOPPED / UNKNOWN。
 - TCP 协议无 Abort 消息时必须返回 UNSUPPORTED，不得以本地 future 完成冒充设备停止。
 - 设备驱动无法确认物理停止时，中断节点不得作为可自动重跑的“安全中断”。
 - 全部 `interruptible=true` 配置先保持 false，除非逐型号/固件/方法/负载 HIL 验证通过。
-- 验收：设备继续运行但响应丢失时，run/command 必须进入 UNKNOWN/RECONCILING，恢复不自动重跑。
+- 待验收：设备继续运行但响应丢失时，run/command 必须进入 UNKNOWN/RECONCILING，恢复不自动重跑；当前本次提交没有实现完整 UNKNOWN/RECONCILING 命令账本。
 
 ## Batch 1：配置与命令账本（P1）
 
@@ -76,3 +76,14 @@
 3. 其他 AI 只做独立反向审查，重点寻找反例；不与主实现者并行修改同一核心文件。
 4. 真机安全相关 PR 必须有设备型号、固件、方法、负载和停止后状态的 HIL 证据。
 5. 任何门禁阈值下降、SKIP、仅跑模拟器却宣称真机通过，均不接受。
+
+
+## Batch 0 当前状态（2026-11-07）
+
+- [x] GraphRunner 运行期异常不会再触发顺序 fallback 重跑。
+- [x] TCP 当前无物理 Abort 能力时，不会通过本地 Future 取消冒充设备已停止。
+- [x] 同一 JVM 内同一 run 的后台 worker 不允许并发；旧 worker 未退出时拒绝 resume。
+- [ ] 结构化 AbortResult 和设备侧停止确认。
+- [ ] 数据库持久化 worker lease / fencing token（覆盖多 Kernel 实例）。
+- [ ] 命令级 UNKNOWN/RECONCILING 与 crash recovery。
+- [ ] 真机 HIL：暂停时设备仍运行、响应丢失、设备拒绝停止、停止确认丢失等故障。
