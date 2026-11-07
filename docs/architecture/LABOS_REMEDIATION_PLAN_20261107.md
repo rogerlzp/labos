@@ -84,6 +84,7 @@
 - [x] TCP 当前无物理 Abort 能力时，不会通过本地 Future 取消冒充设备已停止。
 - [x] 同一 JVM 内同一 run 的后台 worker 不允许并发；旧 worker 未退出时拒绝 resume。
 - [ ] 结构化 AbortResult 和设备侧停止确认。
+- [ ] 将 pause_requested / pausing / paused 分开建模；当前设备动作收尾期间不能把 run.status='paused' 解读为设备已停止。
 - [ ] 数据库持久化 worker lease / fencing token（覆盖多 Kernel 实例）。
 - [ ] 命令级 UNKNOWN/RECONCILING 与 crash recovery。
 - [ ] 真机 HIL：暂停时设备仍运行、响应丢失、设备拒绝停止、停止确认丢失等故障。
