@@ -307,7 +307,7 @@ def main():
     busy = None
     while time.time() < deadline:
         st, meth, owner = device_state()
-        if st == "running" and meth != "-" and owner in ("-", str(rid)):
+        if st == "running" and meth != "-" and owner == str(rid):
             busy = (st, meth, owner)
             break
         time.sleep(0.1)
@@ -363,6 +363,10 @@ def main():
         and hold.get("kind") == "manual" and hold.get("reason") == reason \
         and hold.get("released_at") is None \
         else F.bad("未找到本次请求对应的 active Hold", str(hold))
+    F.ok("Experiment legacy status 在 API 接受后立即为 paused") \
+        if after_st == "paused" and ex_after_accept == "paused" \
+        else F.bad("Experiment legacy status 未按兼容契约立即 paused",
+                   "experiment_run=%s experiment=%s" % (after_st, ex_after_accept))
 
     # 7) 分别观测动作收敛与 Workflow 节点边界暂停。
     #    注意：DB 轮询时间是“观测时间”，不是硬件精确完成时间；不以三层 status
@@ -425,6 +429,11 @@ def main():
         if arm2_commands == 0 \
         else F.bad("后续 ARM2 已产生设备命令", str(arm2_commands))
 
+    hold_final = own_hold_snapshot(eid, reason)
+    F.ok("Workflow paused 后，本次 Hold 仍 active") \
+        if hold_final and hold_final.get("released_at") is None \
+        else F.bad("暂停期间本次 Hold 未保持 active", str(hold_final))
+
     # 输出可机器读取的时间线。秒数是轮询观测时刻，不冒充设备硬件时间戳。
     def elapsed(ts):
         return None if ts is None else round(ts - t_pause_request, 3)
@@ -455,7 +464,8 @@ def main():
         "arm2CommandCount": arm2_commands,
         "deviceSettledObservedSecondsAfterRequest": elapsed(t_device_settled),
         "workflowPausedObservedSecondsAfterRequest": elapsed(t_workflow_paused),
-        "hold": hold
+        "holdAtAccept": hold,
+        "holdAtFinalObservation": hold_final
     }
     print("\n  S04A_TIMELINE_JSON=" + json.dumps(timeline, ensure_ascii=False, sort_keys=True))
     F.ok("设备收敛与 Workflow 暂停两个事实均已独立观测") \
