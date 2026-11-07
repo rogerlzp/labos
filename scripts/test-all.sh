@@ -120,6 +120,9 @@ DB=(
   "api.UserRoleDbSelfTest"
   # 台账 6.5 有人值守窗口落库：开窗幂等 / 决策乐观锁 / 超时只标记（自建自清）
   "workflow.ManualWindowDbSelfTest"
+  # 保存前预检：纯内置图不报 PF-07 / 内置节点干跑直通不拦住下游（不报假 PF-03）
+  # / 纯设备图对照 / 只有网关时仍报 PF-07（探针流程只在内存里拼 XML，不写库）
+  "workflow.PreflightDbSelfTest"
 )
 
 run_one() {

@@ -3,17 +3,17 @@
 # CI 门禁（M8）
 #
 # 解决的问题：以前"改完有没有坏"靠人点。现在把可自动化的部分变成**硬阈值**：
-#   · 纯逻辑单测必须 ≥ 624 且 0 失败（数字下降 = 有人删了用例，也算红灯）
+#   · 纯逻辑单测必须 ≥ 651 且 0 失败（数字下降 = 有人删了用例，也算红灯）
 #   · 前端 tsc 必须 0 错误
 #   · 可选：并行能力（流程内并行 4 条 / 同岛并发 3 条，要库 + 模拟器 + API）
-#   · 可选：完整流程矩阵 45 条（节点/网关/变量/循环/回边/并行/端口/暂停，要库 + 模拟器 + API）
+#   · 可选：完整流程矩阵 55 条（节点/网关/变量/延时/等待/循环/回边/并行/端口/暂停，要库 + 模拟器 + API）
 #   · 可选：设备链路 41 条（要库 + 模拟器）
 #   · 可选：前端 e2e 24 条（要前端/API 在跑）
 #   · 可选：页面流程矩阵 45 条（设计器 palette/逻辑节点/变量节点/接缝真跑/运行详情/页面暂停恢复，要前端+API+库）
 #   · 可选：实验运行控制 22 条（页面暂停/恢复/停止，要前端+API+库）
 #   · 可选：仿真机联调 24 条（页面建流程→绑真机→建实验→执行→真回包，要仿真机+前端+API+库）
 #   · 可选：页面 P0 四页（告警/策略/暂停队列/实验画布，要前端+API；见 4.8-4.11）
-#   · 可选：崩溃恢复端到端 31 条（kill -9 内核进程 → 重启 → 启动兜底 settle，要库+前端+API；见 4.13）
+#   · 可选：崩溃恢复端到端 34 条（kill -9 内核进程 → 重启 → 启动兜底 settle，要库+前端+API；见 4.13）
 #
 # 用法：
 #   ./scripts/ci-gate.sh                 # 纯逻辑 + tsc（不需要数据库）
@@ -39,12 +39,14 @@ for a in "$@"; do
 done
 
 # 阈值：只许涨不许跌。改了用例要同步改这里，逼着人想清楚"少的那几条去哪了"。
-MIN_PURE=644    # 2026-11-06：MethodTimeoutPolicySelfTest 20（超时按方法取的优先级/0=没配/显式值不被抬高）（624 → 644）
+MIN_PURE=651    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（sleep 真停 / wait 满足 / wait 超时转人工 / 外部刷新不盖本图写值 / __ 前缀判 LOGIC）（644 → 649）；
+                # 2026-11-06 收尾：再新增「干跑内置节点直通」一条（评审③相邻缝隙）（649 → 650）；
+                # 2026-11-06 演示：新增「干跑任务节点也直通」一条（TASK 分不到设备时不误报下游走不到，PF-03 假报）（650 → 651）
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
-MIN_MATRIX=45   # 完整流程矩阵（verify-flow-matrix.py --force-online）：
-                # serial4/builtin4/outvar2/xor6/xor3 3/loop3/loopback2/parallel3/pause10/ports4/experiment3/concurrent1
+MIN_MATRIX=55   # 完整流程矩阵（verify-flow-matrix.py --force-online）：
+                # serial4/builtin4/waitsleep10/outvar2/xor6/xor3 3/loop3/loopback2/parallel3/pause10/ports4/experiment3/concurrent1
                 # 前置：内核以 LABOS_TRANSFER_PLAN=1 启动（否则 ports 4 条整节 SKIP）
 MIN_E2E=24        # 2026-11-03：权限收口 +Header 角色断言（23 → 24）
 MIN_E2EFM=45      # 2026-11-05：页面流程矩阵（登录1/设计器装配8+并行网关1+palette收敛1/变量节点4/E 逻辑节点Tab+连线条件+流程选项9/F 接缝·设计器画异或分支图→真跑12/运行详情5/页面暂停恢复5）
@@ -58,8 +60,8 @@ MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / �
 MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle + paused 不被误杀 + 排队僵尸被收，31 → 34）
 MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
-MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点只落在设备任务节点——网关与逻辑节点都不查 pauseChecker；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
-MIN_PAUSEEXP=2    # 2026-11-06：实验级暂停 · 设备执行中发暂停 → 实验级两层（experiment_run / experiment）都变 paused，且 workflow 级 run 独立跑完（语义要求，实现真停后也不该变）
+MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点落在设备任务节点——网关不查 pause，__setVar/__expr 是瞬时计算也不查；__sleep/__wait 在等待循环里另查，见 MIN_MATRIX 的 waitsleep；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
+MIN_PAUSEEXP=5    # 2026-11-06：实验级暂停 · 设备执行中发暂停 → 三层都停在暂停：实验级两层（experiment_run / experiment）+ 底层 workflow 级 run 都变 paused，且后续节点停在 pending 未执行（旧口径「workflow run 独立跑完」是 bug，已修）
 MIN_INTR=3        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005），5 条断言（门禁 21 → 22 段）
 
 FAIL=0
@@ -463,9 +465,11 @@ if [[ $WITH_E2E -eq 1 ]]; then
   fi
   # 4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）
   # 补的是「暂停停在哪类节点、恢复从哪继续」这条语义：
-  # 源码里 pauseChecker 只在 Kind.TASK 分支查 ⇒ 暂停点只可能是设备任务节点
-  # （网关与逻辑节点都不是）；恢复靠 skipKeys（上一轮 level=0 completed 的
-  # node_key）⇒ 已完成的跳过不重跑，没做完的重跑，设备指令不重复下发。
+  # 源码里 pauseChecker 在 Kind.TASK 分支查 ⇒ 暂停点落在设备任务节点
+  # （网关不是；__setVar/__expr 是瞬时计算也不是）；
+  # __sleep/__wait 会在等待循环里按 500ms 分片响应暂停 —— 那条路径另有用例。
+  # 恢复靠 skipKeys（上一轮 level=0 completed 的 node_key）⇒ 已完成的跳过不重跑，
+  # 没做完的重跑，设备指令不重复下发。
   note "4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）"
   POUT2=$(python3 scripts/e2e-pause-resume-nodes.py --base "$E2E_BASE" 2>&1)
   if echo "$POUT2" | grep -q '^SKIP'; then
@@ -484,14 +488,14 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "暂停与恢复 $SUM_PASS / 0（暂停点只落在设备任务节点；恢复从未完成节点继续，设备指令不重复下发）"
     fi
   fi
-  # 4.17 实验级暂停：设备执行中发暂停 → 实验级两层都变 paused
-  # 断言的是**语义要求**（实现「设备执行中真停」后也不该变）：
+  # 4.17 实验级暂停：设备执行中发暂停 → 三层都停在暂停
+  # 断言的是**语义要求**：
   #   设备方法正在执行时发暂停，实验必须真的进入暂停状态，
-  #   且 experiment_run / experiment 两层一致
-  #   （2026-11-06 实测发现过「experiment_run 被收尾覆盖成 completed」
-  #    「experiment 表不同步」两个 bug）。
-  #   workflow 级的 run 是**另一条独立执行** —— 它跑完就是 completed，
-  #   不受实验级暂停影响（实验暂停 ≠ 底层 workflow run 暂停）。
+  #   experiment_run / experiment 两层一致（2026-11-06 实测发现过
+  #   「experiment_run 被收尾覆盖成 completed」「experiment 表不同步」两个 bug）。
+  #   **底层 workflow 级 run 也必须停在 paused**，后续节点停在 pending 未执行
+  #   —— 旧口径「workflow 级 run 独立跑完」正是「实验级暂停停不住底层流程」的
+  #   bug（2026-11-06 修复：边界查现场扣留 → pauseRunAtBoundary）。
   note "4.17 实验级暂停 · 设备执行中（e2e-pause-during-experiment.py）"
   EOUT=$(python3 scripts/e2e-pause-during-experiment.py 2>&1)
   if echo "$EOUT" | grep -qE '^SKIP|缺 LABOS_DB'; then
@@ -507,7 +511,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
     elif (( SUM_PASS < MIN_PAUSEEXP )); then
       fail "实验级暂停断言 $SUM_PASS < 阈值 ${MIN_PAUSEEXP}"
     else
-      pass "实验级暂停 $SUM_PASS / 0（设备执行中发暂停 → 实验级两层 paused；workflow 级 run 独立跑完）"
+      pass "实验级暂停 $SUM_PASS / 0（设备执行中发暂停 → 三层都停 paused，后续节点停在 pending；底层 run 不再照旧跑完）"
     fi
   fi
   # 4.18 A1 真停：方法声明「可中断」时，执行中发暂停 → 命令真的被中止

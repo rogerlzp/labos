@@ -37,6 +37,7 @@
 | `BUG-20261104-03` | P2 (self-consistency) | The review package writes "`3aa4837..ec28d02`, **25 commits**"; the `A..B` git semantics **do not include A**, the real number is **24** (25 only when the base is counted) | `docs/评审包-20261104/00-索引与评审指引.md`、`01-本轮交付清单与验证.md` | ✅ **Closed** (2026-11-04: `00` §1/§5 and the `01` header 25→**24**; measured `git rev-list --count 3aa4837..ec28d02` = 24) | `20261104-01` |
 | `BUG-20261104-04` | P2 (self-consistency) | The review package writes `MetaApi 109` (total **3487**); on HEAD MetaApi has grown to **132** (total **3510**) with `f2d7e8e` (device-models) | `docs/评审包-20261104/01-本轮交付清单与验证.md` §4 | ✅ **Closed** (2026-11-04: `01` §4 changed to `MetaApi 132` (total **3510**), noting that 109→132 was introduced by `f2d7e8e`; measured, the 8 controllers total 3510) | `20261104-01` |
 | `BUG-20261104-05` | P2 (self-consistency) | The go-live re-run command (`00` §2) **carries no DB env**, but `01` §7 reports the 9/2 **with** the DB; without the env it is really **8/3** ("binding coverage rate" is skipped), so the command and the result use different yardsticks | `docs/评审包-20261104/00-索引与评审指引.md` §2、`01-本轮交付清单与验证.md` §7 | ✅ **Closed** (2026-11-04: the `00` §2 go-live command gained the DB env precondition and is annotated with 8/3 without the env, PASS 9 / WARN 2 / FAIL 0 with it; both yardsticks reproduced by measurement) | `20261104-01` |
+| `BUG-20261107-01` | **high** | An experiment-level pause does not stop the underlying workflow-level single-flow `run`: the node boundary only consults `run.status` and cannot see the on-site hold (`runtime_hold`) ⇒ the two experiment-level layers are set to paused while the underlying run finishes all its nodes as before; after the fix, on resume the stale `paused` run would be mistaken for a resumable one and re-execute the device action | `WorkflowService.withPauseChecker` / `RuntimeHold.coveringForWorkflow` / `RunControl.resume` | ✅ **Fixed** (2026-11-07: the node-boundary predicate is widened to "run paused OR a hold exists"; on resume, stale runs of this experiment step that are still paused are voided) | Found by the implementer in the delivery re-check (2026-11-07) |
 
 > **Table structure repair (2026-11-03 evening)**: `-08` / `-09` were separated from the overview table by blank lines and the "remediation" section, and the `-09` / `-10` rows had no table header, so Markdown did not render them as a table. This round only moved the rows; the verdict/status/evidence text was not changed.
 
@@ -181,3 +182,33 @@ gate passes (pure logic 423/0).
 
 **Closure condition**: `experiment.run_id` stays constantly `NULL` on the experiment status synchronisation path; if a backfill is ever genuinely
 needed, it must write `run(id)` and not `experiment_run(id)`.
+
+---
+
+### BUG-20261107-01 remediation (implementer · 2026-11-07)
+
+**Symptom**: an experiment-level pause only sets the two layers `experiment_run` / `experiment` to `paused` (and raises an on-site hold `runtime_hold`); the underlying workflow-level `run` is unaffected. At a node boundary the executor `GraphRunner` only consults `run.status`, cannot see the hold, and therefore runs all the remaining nodes as before.
+
+**Root cause**: an experiment-level pause lands a **side-channel state** (a hold), decoupled from "whether a given run has stopped"; the node-boundary gate only read `run.status` and did not take "the site is held" into account.
+
+**Fix (two places, both on the execution side)**:
+
+| Place | File | Approach |
+|---|---|---|
+| ① Stop at the node boundary | `WorkflowService` | The `withPauseChecker` predicate is widened from "`run.status='paused'`" to "`run.status='paused'` **or** `RuntimeHold.coveringForWorkflow(workflowId) != null`"; on a hit `pauseRunAtBoundary` sets the underlying run to `paused` and the following nodes stay `pending`. **Independent of `interruptible`, effective by default** |
+| ② Void the stale run on resume | `RunControl.resume` | An experiment-level pause also sets the current step's workflow-level run to `paused`; on resume that step re-runs from the top and starts a new run, so the old `paused` run becomes an orphan that sits in `PauseManager.pausedRuns` and, if an operator clicks "continue", redoes the device action (an irreversible physical side effect). So on resume the runs of "this experiment step and still `paused`" are voided to `aborted` |
+
+**Why the reverse lookup matters**: `RuntimeHold.coveringForWorkflow` resolves ownership by **`experiment_run_step.status='running'` + `workflow_id`**, and it must **not** filter by `experiment_run.status='running'` — an experiment-level pause sets `experiment_run` to `paused` first, so a `running` filter would never match (the direct cause of the original bug).
+
+**Verification**:
+
+| Item | Result |
+|---|---|
+| Self-test (live DB) | `RunControlDbSelfTest` etc. **43 / 0** |
+| Gate stage 4.17 | `scripts/e2e-pause-during-experiment.py` **5 / 0** (threshold 2 → 5) |
+| Measured evidence | run #208222 / experiment_run #1868: after the pause `ARM=completed / ARM2=pending` (the following node stays pending) |
+| Pure-logic unit tests | 651 / 0 (threshold 650 → 651) |
+
+**Do not conflate the two things**: this bug fixes "**stopping at the node boundary**" (effective by default); "**really stopping mid-action**" is a separate path (`device_method.interruptible=true` + `DriverStepExecutor.pauseRequested` → `driver.abort`, which needs a per-site checklist).
+
+**Closure condition**: after an experiment-level pause the underlying workflow-level run lands on `paused` at the node boundary and the following nodes stay `pending`; after a resume the old `paused` run is constantly `aborted` and no longer appears in the resumable `pausedRuns` set.

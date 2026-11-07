@@ -269,6 +269,32 @@ public final class RunControl {
             orchestrator.onRunStatusChanged(run.runId());
         }
 
+        // ★ 作废「被本次暂停中断、即将被整段重跑」的**流程级 run**。
+        //
+        //   实验级暂停会把当前步骤的 workflow 级 run 也落成 paused
+        //   （见 WorkflowService.pauseRunAtBoundary）；恢复时这一步会被整段重跑、
+        //   另起一条新 run（ExperimentExecutor.runStep 每跑一步都新建 run），
+        //   那条旧的 paused run 就成了孤儿 —— 它会一直挂在暂停队列
+        //   （PauseManager.pausedRuns 查 run.status='paused'）里，
+        //   值班员误点「继续」会让机械臂把同一个动作再做一遍（物理副作用不可撤销）。
+        //   所以在恢复时把它作废（aborted），只处理「本实验步 + 仍 paused」的那些，
+        //   已完成步骤的 run（completed）不受影响。
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE run r
+                        SET status = 'aborted', actual_end = now()
+                       FROM experiment_run_step s
+                      WHERE r.tenant_id = ? AND s.tenant_id = r.tenant_id
+                        AND s.run_id = r.id
+                        AND s.experiment_run_id = ?
+                        AND s.status = 'paused'
+                        AND r.status = 'paused'
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, run.runId());
+            ps.executeUpdate();
+        }
+
         RuntimeHold.Active still = holds.coveringFor(run.experimentId(), run.islandId());
         return new ResumeOutcome(run.experimentId(), cleared,
                 still == null ? null : (still.reason() == null ? "现场扣留" : still.reason()));

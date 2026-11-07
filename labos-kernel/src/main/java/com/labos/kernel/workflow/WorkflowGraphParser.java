@@ -171,12 +171,24 @@ public final class WorkflowGraphParser {
                     el.getAttribute("protocolName"), id);
             String proto = blankToNull(el.getAttribute("protocolName"));
             // __ 开头 = 内置节点（变量/表达式），不找设备、不走驱动
-            Kind kind = (proto != null && proto.startsWith("__")) ? Kind.BUILTIN : Kind.TASK;
+            Kind kind = isBuiltinProtocol(proto) ? Kind.BUILTIN : Kind.TASK;
             nodes.put(id, new GNode(id, name, ln, kind,
                     null,                     // 能力由外部按 node_key 补（要查库）
                     proto,
                     parseLong(el.getAttribute("resource"))));
         }
+    }
+
+    /**
+     * `protocolName` 以 `__` 开头 = 内置逻辑节点（不找设备、不走驱动）。
+     *
+     * <p>这是内置节点的**单一判定源**：解析器用它定 {@link Kind#BUILTIN}，
+     * 能力解析（{@code RealWorkflowRunner.resolveCapability}）也用它 —— 那边若只看
+     * 节点显示名，中文名（「延时」「等待变量」）匹配不上关键词，内置节点会被解析成
+     * `UNKNOWN` 能力、候选设备为空。
+     */
+    public static boolean isBuiltinProtocol(String protocolName) {
+        return protocolName != null && protocolName.startsWith("__");
     }
 
     /**

@@ -100,7 +100,7 @@ public final class PreflightDemo {
             case "PF-04" -> "异或缺条件且无默认边";
             case "PF-05" -> "并行汇合点入边到不齐";
             case "PF-06" -> "缺少开始事件";
-            case "PF-07" -> "流程没有任务节点";
+            case "PF-07" -> "流程没有可执行节点";
             case "PF-08" -> "流程没有 BPMN 图 / 解析失败";
             default -> code;
         };

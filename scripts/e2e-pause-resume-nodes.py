@@ -352,18 +352,22 @@ def main():
         # ---------------- Q1：停在哪种节点 ----------------
         F.step("C. Q1 · 暂停点落在哪种节点上")
         # pause_node_key 记的是「待执行节点」。
-        # 源码口径（GraphRunner）：pauseChecker **只在 Kind.TASK 分支**检查 ——
-        # Kind.BUILTIN（逻辑节点）走的是**独立的 else if 分支**，那个分支里
-        # **没有** pauseChecker。所以暂停点**只可能是设备任务节点**，
-        # 网关和逻辑节点都不是。
+        # 源码口径（GraphRunner）：**任务节点边界**才查 pauseChecker（Kind.TASK 分支），
+        # 网关不走这里，所以暂停点**只可能是设备任务节点**。
+        # 内置节点里，`__setVar` / `__expr` 是瞬时计算、不查暂停；
+        # 只有 `__sleep` / `__wait` 会在**等待循环**里按 500ms 分片轮询暂停
+        # （GraphRunner.waitInterruptibly）—— 本用例的 VAR 是 `__setVar`，
+        # 因此它同样不是暂停点。
         pk = F.q(f"SELECT COALESCE(pause_node_key,'') FROM run WHERE id={rid}")
         F.ok(f"pause_node_key 记的是待执行节点 {pk}")
         F.ok("暂停点不是网关（异或/并行网关都不检查 pause）") \
             if pk not in (ids["XOR"], ids["PAR"]) \
             else F.bad("暂停点落在网关上", pk)
-        # ★ 逻辑节点**也不会**成为暂停点（BUILTIN 分支不查 pauseChecker）。
+        # ★ `__setVar` 逻辑节点**也不会**成为暂停点：
+        #   它是瞬时计算、不调 waitInterruptibly，不轮询暂停信号。
+        #   （`__sleep` / `__wait` 会在等待途中响应暂停 —— 那是另一条路径，本用例不覆盖。）
         #   之前只有「不是网关」这条，逻辑节点这条没钉死 —— 补上。
-        F.ok("逻辑节点（变量节点）也不是暂停点（BUILTIN 分支不查 pauseChecker）") \
+        F.ok("逻辑节点（__setVar 变量节点）也不是暂停点（瞬时计算、不轮询暂停）") \
             if pk != ids["VAR"] else F.bad("暂停点落在变量节点上", pk)
         F.ok("暂停点是设备任务节点") \
             if pk == ids["DEV"] else F.bad("暂停点不是设备任务节点", pk)

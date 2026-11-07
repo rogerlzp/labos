@@ -7,7 +7,7 @@
 ## 0. One-line conclusion
 
 - Logic nodes (exclusive, parallel, conditions, loops, variables) **belong inside a workflow** and belong to the bpmn-js designer; the experiment canvas only does "cross-workflow orchestration".
-- The capability mismatch is the **starting point**, now converged by Batch 1–4: the designer's **entry points are in place** (parallel gateway = Batch 2, condition expression = Batch 3, loop cap = Batch 4), and the experiment canvas **has been shrunk** to cross-workflow orchestration only (`fork/parallel/loop/variable/device/join` are gone from the palette — on the canvas they "save 400 / are skipped at run time"; see §5 Batch 1). **Remaining**: `subProcess` silently skipped (registered only) and Batch 5 cross-workflow parallelism (parked).
+- The capability mismatch is the **starting point**, now converged by Batch 1–4 (Batch 6 was added on 2026-11-06: the two built-in logic nodes `__sleep` delay / `__wait` wait): the designer's **entry points are in place** (parallel gateway = Batch 2, condition expression = Batch 3, loop cap = Batch 4), and the experiment canvas **has been shrunk** to cross-workflow orchestration only (`fork/parallel/loop/variable/device/join` are gone from the palette — on the canvas they "save 400 / are skipped at run time"; see §5 Batch 1). **Remaining**: `subProcess` silently skipped (registered only) and Batch 5 cross-workflow parallelism (parked).
 - So the task is not "move the canvas model into the designer" but: **give the designer the editing entry points, and shrink the canvas to what it can actually run**.
 
 ## 1. The user's wording (the constraint of this document)
@@ -25,6 +25,7 @@
 | Condition expression | 🟡 a home-grown `evalCondition`: spaces required, no arithmetic/logic/parentheses, parse failure means true | ✅ sequence-flow condition UI (writes `bpmn:conditionExpression` + gateway `default`) | ✅ `conditionExpression` + `default`, `ConditionEvaluator` supports comparisons/logic/parentheses/plus-minus | ✅ builtin/outvar/xor |
 | Loop | 🟡 a `loop` node that duplicates steps in the frontend (≤20); no back edge; save returns 400 | ✅ a back edge can be drawn by hand; workflow-level `maxIterations` UI (right column "Workflow options") | ✅ back edge + DFS cycle detection + `maxVisits` (default 10) + `loop_index` | ✅ loop 3 / loopback 2 |
 | Variables | 🟡 a `variable` node with `k=v`, request-only; save returns 400 | ✅ `__setVar` / `__expr` panel | ✅ `Kind.BUILTIN` + device output write-back | ✅ builtin 4 / outvar 2 |
+| Delay / wait | ⬜ not available on the canvas | ✅ `__sleep` (sec) / `__wait` (var+value+timeout) panel | ✅ `Kind.BUILTIN`; capability resolution honours the `__` prefix (it does not rely on the node display name); the wait loop responds to a pause in 500 ms slices | ✅ waitsleep 10 |
 | Sub-workflow | 🟡 a `workflow` node can pick a workflow and save; **`runFlow` ignores it** | ✅ multi-step collapsible subProcess | 🟡 `BpmnExpander` expands it; `callActivity` not done | 🟡 experiment 3 |
 | Manual pause | ⬜ runs synchronously, no pause | ⬜ the designer palette no longer has intermediate events (the parser rejects them); manual pause goes through the paused queue / run-control API | ✅ node-boundary pauseChecker + MANUAL stops the graph | ✅ pause 10 |
 
@@ -95,6 +96,16 @@ Three boundaries follow:
 - Trap: a newly created workflow ships with a seed graph `S → E` (`WorkflowService.blankGraphXml`); without deleting it first the flow count is off by one and both `S`/`E` ids are taken → section F calls `delete_node(S/E)` before drawing.
 - Numbers: the page flow matrix goes **33 → 45**, gate `MIN_E2EFM=45` (may only go up).
 
+### Batch 6 · Delay / wait nodes (2026-11-06) ✅ done
+
+- Two new **built-in logic nodes** (`protocolName` starting with `__` means `Kind.BUILTIN`: no device lookup, no driver, no parser-whitelist change):
+  - `__sleep` · delay: parameter `sec` (positive, seconds) - it really waits N seconds here.
+  - `__wait` · wait: parameters `var` + `value` (required) and `timeout` (seconds, defaults to 300 when blank) - it polls the workflow variable until `${var} == value`, the only way it passes.
+- Pause response: the wait loop polls `pauseChecker` in **500 ms slices**, so a pause takes effect within 500 ms (unlike a device node, which checks once at its action boundary; see `pause-resume-semantics-four-node-types-20261106.md`).
+- Timeout policy: if `timeout` expires without the condition, it throws `EC-BUILTIN-001` → `RunProgress.manual` marks the node `MANUAL` → `WorkflowService.settleRun` settles the run as **`paused`** (`pause_kind='waiting_human'`; going to manual is a pause, so fixing the variable and pressing continue resumes it, and since the step was never recorded `completed` it re-runs), so it never **carries an unsatisfied condition forward**. `failed` is reserved for `aborted`; the `anyManual ? "failed"` line in `OpsApi` is a separate demo insert path, not the production settle.
+- Wiring: `WorkflowService` injects `Sleeper.REAL` and `withVariableRefresher(() -> loadRunVars(runId))` (re-reads `run.input.vars` each round, otherwise a variable written from outside would never be seen). The refresh fills only the keys **this graph has not written**: `__setVar` / `__expr` change memory only and never write back, so a blanket `putAll` would clobber the value just written (guaranteed to bite when the run starts with a variable of the same name). Known residue: a variable this graph wrote is no longer refreshed from outside, and those values are never persisted - on resume a skipped (already `completed`) assignment node loses them.
+- Acceptance: five `GraphRunnerTest` cases (sleep really waits / wait satisfied / wait timeout to manual / external refresh does not clobber this graph's own writes / the `__` prefix resolves to LOGIC), pure logic `644 → 649`; `verify-flow-matrix.py` gains a `waitsleep` section of 10 assertions, flow matrix `45 → 55` (`MIN_MATRIX=55`).
+
 ### Batch 5 · Cross-workflow parallelism (optional, needs decision Q2 first)
 
 - To keep canvas parallel/join: first allow those two kinds in `QueryService.compileExperimentGraph` and make the experiment executor really run sub-workflows in parallel; otherwise keep them hidden.
@@ -107,7 +118,7 @@ Three boundaries follow:
   1. **Preflight block**: add a generic rule to `PreflightChecker` - a node the parser does not recognise on the chain is `Level.ERROR` (keeps sub-process grouping, turns the silent skip into an explicit block);
   2. **Remove from the palette**: add `create.subprocess-expanded` to the trim list in `WorkflowPalette.ts` (most thorough, at the cost of no longer being able to group with a sub-process);
   3. **Make the parser transparent**: treat `subProcess` as a transparent container (in edges to the inner start, out edges from the inner end) for real sub-graph semantics (highest cost, changes runtime behaviour).
-- Dependency: if option 3 is chosen, `GraphRunner` and the `verify-flow-matrix.py` (45) cases must be updated in step, and two contrasting assertions ("empty sub-process" / "sub-process with content") must be added.
+- Dependency: if option 3 is chosen, `GraphRunner` and the `verify-flow-matrix.py` (55) cases must be updated in step, and two contrasting assertions ("empty sub-process" / "sub-process with content") must be added.
 - Why unscheduled: it does not affect the current main path (the designer normally wires start/task/gateway directly), and each of the three fixes has its own trade-off, so the approach must be agreed first.
 
 ## 6. Decisions needed
@@ -122,6 +133,6 @@ Three boundaries follow:
 ## 7. Where to start
 
 - Key files: `webapp/src/pages/ExperimentCanvas.tsx`, `webapp/src/pages/Designer.tsx`, `webapp/src/bpmn/`, `labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowGraphParser.java`, `GraphRunner.java` in the same package, `api/QueryService.java:4003-4130`, `workflow/PreflightChecker.java:202-269`.
-- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (45); `python3 scripts/e2e-flow-matrix.py` (45); `python3 scripts/e2e-canvas.py` (12).
+- Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (55); `python3 scripts/e2e-flow-matrix.py` (45); `python3 scripts/e2e-canvas.py` (12).
 - Number discipline: changing cases requires updating the `MIN_*` constants in `scripts/ci-gate.sh`, `docs/测试用例总表.md`, `ROADMAP.md` and review package 04 in both languages; thresholds may only go up, and a real reduction must be explained in the commit message.
 - Do not touch the body of historical snapshots: `docs/评审包-20261103/`, `docs/评审包-20261104/`, `LabOS实现总纲_20261029.md`.

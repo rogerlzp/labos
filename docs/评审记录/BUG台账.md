@@ -31,6 +31,7 @@
 | `BUG-20261104-03` | P2(自洽) | 评审包写“`3aa4837..ec28d02`，**25 个提交**”；`A..B` git 语义**不含 A**，实际 **24**（含基座才 25） | `docs/评审包-20261104/00-索引与评审指引.md`、`01-本轮交付清单与验证.md` | ✅ **已关闭**（2026-11-04：`00` §1/§5、`01` §头 25→**24**；实测 `git rev-list --count 3aa4837..ec28d02` = 24） | `20261104-01` |
 | `BUG-20261104-04` | P2(自洽) | 评审包写 `MetaApi 109`（合计 **3487**）；HEAD 上 MetaApi 已随 `f2d7e8e` 增至 **132**（合计 **3510**） | `docs/评审包-20261104/01-本轮交付清单与验证.md` §4 | ✅ **已关闭**（2026-11-04：`01` §4 改为 `MetaApi 132`（合计 **3510**），注明 109→132 由 `f2d7e8e` 引入；实测 8 控制器合计 3510） | `20261104-01` |
 | `BUG-20261104-05` | P2(自洽) | go-live 复跑命令（`00` §2）**未带 DB env**，但 `01` §7 报的是**带 DB** 的 9/2；不带 env 实为 **8/3**（“绑定覆盖率”跳过），命令与结果不同口径 | `docs/评审包-20261104/00-索引与评审指引.md` §2、`01-本轮交付清单与验证.md` §7 | ✅ **已关闭**（2026-11-04：`00` §2 go-live 命令补 DB env 前置并标注不带 env 为 8/3、带 env 为 PASS 9 / WARN 2 / FAIL 0；两口径实测复现） | `20261104-01` |
+| `BUG-20261107-01` | **高** | 实验级暂停停不住底层 workflow 级单流程 run：节点边界只查 `run.status` 看不到现场扣留（`runtime_hold`）⇒ 实验级两层标 paused，底层 run 照旧把节点跑完；修复后恢复时旧 `paused` run 会被误当可续跑而重做设备动作 | `WorkflowService.withPauseChecker` / `RuntimeHold.coveringForWorkflow` / `RunControl.resume` | ✅ **已修**（2026-11-07：节点边界判据扩到「run paused 或 有扣留」；恢复时作废本实验步仍 paused 的旧 run） | 执行方交付复核发现（2026-11-07） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
@@ -168,3 +169,33 @@
 **验证**：`RunControlDbSelfTest` 新增断言"同步后 `experiment.run_id` 保持 NULL"，并去掉为绕开外键而插的占位 `run` 行；连库全量 `test-all.sh` **500 / 0**，`ci-gate.sh` 门禁通过（纯逻辑 423/0）。
 
 **关闭条件**：`experiment.run_id` 在实验状态同步路径上恒为 `NULL`；若未来确需回填，必须写 `run(id)` 而非 `experiment_run(id)`。
+
+---
+
+### BUG-20261107-01 处置（执行方 · 2026-11-07）
+
+**现象**：实验级暂停只把 `experiment_run` / `experiment` 两层置 `paused`（并抬一道现场扣留 `runtime_hold`），底层 workflow 级 `run` 不受影响；执行器 `GraphRunner` 在节点边界只查 `run.status`，看不到扣留，于是照旧把后续节点全部跑完。
+
+**根因**：实验级暂停落的是**旁路状态**（扣留），与“某条 run 停没停”解耦；节点边界闸门只读了 `run.status`，没有把“现场被扣住”纳入判据。
+
+**修复（两处，都在执行侧）**：
+
+| 处 | 文件 | 做法 |
+|---|---|---|
+| ① 节点边界停住 | `WorkflowService` | `withPauseChecker` 判据由「`run.status='paused'`」扩为「`run.status='paused'` **或** `RuntimeHold.coveringForWorkflow(workflowId) != null`」；命中即 `pauseRunAtBoundary` 把底层 run 落 `paused`，后续节点停在 `pending`。**与 `interruptible` 无关，默认生效** |
+| ② 恢复时作废旧 run | `RunControl.resume` | 实验级暂停会把“当前步的 workflow 级 run”一并落 `paused`；恢复时该步整段重跑、另起新 run，旧 `paused` run 成孤儿，挂在 `PauseManager.pausedRuns` 里会被误点「继续」重做设备动作（物理副作用不可撤销）。故恢复时把「本实验步且仍 `paused`」的 run 作废为 `aborted` |
+
+**反查判据关键**：`RuntimeHold.coveringForWorkflow` 按 **`experiment_run_step.status='running'` + `workflow_id`** 反查归属，**不能**按 `experiment_run.status='running'` 过滤 —— 实验级暂停会先把 `experiment_run` 置 `paused`，用 `running` 过滤永远查不到（原 bug 直接成因）。
+
+**验证**：
+
+| 项 | 结果 |
+|---|---|
+| 自测（连库） | `RunControlDbSelfTest` 等 **43 / 0** |
+| 门禁 4.17 段 | `scripts/e2e-pause-during-experiment.py` **5 / 0**（原阈值 2 → 5） |
+| 实跑证据 | run #208222 / experiment_run #1868：暂停后 `ARM=completed / ARM2=pending`（后续节点停在 pending） |
+| 纯逻辑单测 | 651 / 0（阈值 650 → 651） |
+
+**两件事别混**：本 bug 修的是「**节点边界停住**」（默认生效）；「**动作中途真停**」是另一条路（`device_method.interruptible=true` + `DriverStepExecutor.pauseRequested` → `driver.abort`，需现场清单）。
+
+**关闭条件**：实验级暂停后底层 workflow 级 run 在节点边界落 `paused`、后续节点保持 `pending`；恢复后旧 `paused` run 恒为 `aborted`，不再出现在 `pausedRuns` 可续跑集合中。

@@ -217,7 +217,7 @@ Measured: with the simulator delay set to 20–40 s, the runs that exceeded 30 s
 
 ---
 
-## 2.6 Experiment-level measurement: all three layers go to "paused", but the device action still runs to the end
+## 2.6 Experiment-level measurement: all three layers stop at "paused"; only the one device action already in flight runs to the end
 
 The above measured the workflow-level run. At the **experiment level**
 (`/api/experiments/{id}/run`) there are three layers of status to look at: `run` (workflow level,
@@ -230,38 +230,44 @@ the criterion for "really executing" is `device_state`, see §1.5 — the pause 
 after the device is confirmed to be executing):
 
 ```
-  ✓ 观测到设备方法执行中（device_state status=running current_method=Home，归属 run #207774）
+  ✓ 观测到设备方法执行中（device_state status=running current_method=Home，归属 run #208222）
   暂停前 experiment_run 状态: running
-  暂停接口返回：HTTP 200 {"runId":1643,"experimentId":1458,"status":"paused","scope":"experiment","kind":"manual"}
+  暂停接口返回：HTTP 200 {"runId":1868,"experimentId":1563,"status":"paused","scope":"experiment","kind":"manual"}
   暂停后 experiment_run 状态: paused
   ✓ 实验在设备执行中暂停后，实验级两层都变 paused（experiment_run / experiment）
-  ✓ 暂停在 5 秒内生效（0.2 秒）
-  ✓ workflow 级 run 独立跑完（不受实验级暂停影响）：completed
+  ✓ 实验级暂停在 5 秒内生效（0.2 秒）
+  ✓ workflow 级 run 也停在 paused（实验级暂停停住了底层流程）
+  ✓ 后续节点停在 pending 未执行（completed=1 / pending=1 / 共 2）
 
   结果：
-    run（workflow 级）      : completed
+    run（workflow 级）      : paused      ← fixed: the underlying flow stops at paused too
     experiment_run（实验级） : paused
     experiment（实验本身）   : paused
-    设备指令最终状态        : completed      ← the device action still ran to the end
-    节点状态                : ARM=completed
+    设备指令最终状态        : completed   ← the action already in flight still runs to the end (not interruptible)
+    节点状态                : ARM=completed / ARM2=pending   ← the following node never ran
     暂停生效延迟            : 0.2 秒
 ```
 
-**⇒ The answer: it does go into the paused state** (both experiment-level layers show "paused",
-effective within 0.2 s), **but the method the device is executing is not interrupted** — it
-finishes first.
+**⇒ The answer: all three layers stop at paused.** Within 0.2 s of the pause, the
+`experiment_run` / `experiment` layers become `paused`; the underlying workflow-level `run` also
+lands on `paused` at the **next node boundary**, and the following nodes stay `pending` and never
+run. **The only thing that is not interrupted is the one device action already in flight** — it
+runs to the end (it is not interruptible; see §3 for why).
 
-> This is now gate segment 4.17 (`scripts/e2e-pause-during-experiment.py`). It asserts only the
-> **semantic requirements** (both experiment-level layers paused + effective within 5 s + the
-> workflow-level run finishes on its own) and deliberately does **not** assert "the device
-> command ends as `completed`" — that one changes once "really stopping" is implemented, and
-> baking it into the gate would produce a false red.
+> This is now gate segment 4.17 (`scripts/e2e-pause-during-experiment.py`). It asserts the
+> **semantic requirements**: all three layers (`run` / `experiment_run` / `experiment`) become
+> paused + effective within 5 s + the following nodes stay `pending`. It deliberately does
+> **not** assert "the device command ends as `completed`" — that one changes once "really
+> stopping" is implemented, and baking it into the gate would produce a false red.
 
-> ⚠ The workflow-level `run` is a **separate execution** and is unaffected by an
-> experiment-level pause: it ends up `completed` when it finishes (by design — "experiment
-> paused" ≠ "underlying workflow run paused"). The first version asserted all three layers
-> together and went falsely red as soon as the workflow run finished first. The gate asserts
-> only the two experiment-level layers.
+> ⚠ **Old reading (this round's first version, now overturned)**: it only said "both
+> experiment-level layers paused; the workflow-level run finishes on its own" — that was a
+> **bug**: an experiment-level pause records a **hold** and does **not** change the workflow-level
+> run status, so the underlying `GraphRunner` (which only checked `run.status`) saw nothing and
+> ran every remaining node. Fixed on 2026-11-07: `WorkflowService.withPauseChecker` checks, in
+> addition to `run.status`, `RuntimeHold.coveringForWorkflow` (which resolves ownership via
+> `experiment_run_step.status='running'`); on a hit it lands the underlying run on `paused` at
+> the **node boundary** — see §3.6 and §5 "stale workflow run after resume".
 
 ### ⚠ A pitfall when testing this: async dispatch makes the test miss it
 
@@ -445,6 +451,7 @@ be true from the user's point of view.
 
 | Step | Content | Status | Note |
 |---|---|---|---|
+| 0 | **An experiment-level pause also stops the underlying workflow-level run** (all three layers stop at paused) | ✅ **implemented** | `WorkflowService.withPauseChecker` checks, in addition to `run.status`, `RuntimeHold.coveringForWorkflow` (an experiment-level pause records a **hold** and does not change the run status, so it has to be resolved indirectly) ⇒ on a hit the underlying run lands on `paused` at the **node boundary** and the following nodes stay `pending`. **Independent of `interruptible`, on by default**; it only stops actions that have not started yet — the one already in flight still runs to the end (see step 3) |
 | 1 | **Take the timeout from the method** (B) | ✅ **implemented** | mechanism + per-capability defaults + 20 self-test assertions + measured (a 48 s method is no longer killed at 30 s) |
 | 2 | **Record the current commandId** when pausing | ⚠ changed to **the execution side asking itself** | no extra state column: the executor already knows its own runId and commandId, so it just polls "is my run paused / am I covered by a hold?" — one less field to keep consistent |
 | 3 | Execution side: interruptible wait + abort depending on `interruptible` (A1) | ✅ **mechanism implemented** (everything defaults to false) | see §3.6; **without the on-site list the behaviour is byte-for-byte the same as before** |
@@ -472,8 +479,11 @@ method declared interruptible    ⇒ the call runs on a worker thread and the ma
                                     polls every 200 ms for "should I stop":
       ① workflow level: run.status = 'paused' (the pause button on the page)
       ② experiment level: my workflow is covered by an active site hold (runtime_hold)
-         — an experiment-level pause creates exactly such a hold, while the
-         workflow-level run status does **not** change because of it
+         — an experiment-level pause creates exactly such a hold. **Note**: while the
+         device method is still in flight the workflow-level run is still `running` (the
+         boundary is only reached once the current action finishes, see §2.6), so in this
+         window you must **query the hold directly** (`RuntimeHold.coveringForWorkflow`),
+         not just `run.status`
       hit ⇒ driver.abort(commandId)
              (TcpPersistentDriver.abort removes the waiting future)
 ```
@@ -557,6 +567,7 @@ inside the range, and different every time.
 | Leaked device locks (ghost occupancy) | ✅ **fixed** | after an API restart/crash `device_state.current_run_id` was never released ⇒ that device could **never** be acquired again; the startup fallback settle now releases it |
 | Real long tasks (a 5-minute centrifuge, …) | ❌ not covered | this round is all simulators |
 | "Retry this step after an interrupt" | ✅ verified | the interrupt lands as `manual` (not completed) ⇒ `resumeAsync` deletes it and re-runs that step |
+| Stale workflow run of an interrupted step after a resume | ✅ **fixed** | an experiment-level pause also lands the current step's workflow-level run on `paused`; on resume that step is re-run whole and a new run is started, so the old run would otherwise sit in the paused queue (`PauseManager.pausedRuns`) forever and a mistaken "resume" would **repeat a device action**. `RunControl.resume` now marks "the workflow runs of this experiment that were interrupted and are still `paused`" as `aborted` (the runs of completed steps are untouched) |
 | Telling "waiting for a human" apart from "interrupted, will retry" in the UI | ❌ not done | depends on the on-site list |
 | Pause + site hold (`runtime_hold`) combined | ❌ not covered | `releaseResources`' exemptions and the interrupt design have to be designed together |
 | Pausing while several devices run in parallel | ❌ not covered | the pause is run-scoped; with parallel devices it is unclear which one should stop |

@@ -190,9 +190,20 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
   );
 }
 
+/** 内置逻辑节点的四种方法名（protocolName 以 __ 开头，不找设备、不走驱动）。 */
+type BuiltinKind = '__setVar' | '__expr' | '__sleep' | '__wait';
+
+/** 内置节点拖到画布时写进 `businessObject.name` 的显示名。 */
+function builtinNodeLabel(t: (k: MessageKey) => string, method: string): string {
+  return t(method === '__sleep' ? 'designer.node.sleep'
+    : method === '__wait' ? 'designer.node.wait'
+    : method === '__expr' ? 'designer.node.expr'
+    : 'designer.node.setVar');
+}
+
 /** 左侧「逻辑节点」面板里的一行：拖到画布生成内置节点（不带设备）。 */
 function LogicNodeRow({ method, label, disabled }: {
-  method: '__setVar' | '__expr';
+  method: BuiltinKind;
   label: string;
   disabled: boolean;
 }) {
@@ -340,9 +351,11 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
   const t = useT();
   // 节点设置里的"保存"会改 workflow_node.params：viewer 禁用
   const ro = useReadOnly();
-  const [kind, setKind] = useState<'device' | '__setVar' | '__expr'>('device');
+  const [kind, setKind] = useState<'device' | BuiltinKind>('device');
   const [varName, setVarName] = useState('');
   const [val, setVal] = useState('');
+  /** 等待节点的超时秒数（留空 = 后端默认 300）。 */
+  const [waitTimeout, setWaitTimeout] = useState('');
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
   /** 设备任务的绑定：设备 → 方法 → 参数（JSON） */
@@ -358,10 +371,13 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
       const r = await apiFetch(`/api/workflows/${wfId}/nodes/${encodeURIComponent(nodeKey)}`);
       const j = await r.json();
       const m: string = j.method ?? '';
-      const builtin = m === '__setVar' || m === '__expr';
-      setKind(builtin ? m : 'device');
+      const builtin = m === '__setVar' || m === '__expr' || m === '__sleep' || m === '__wait';
+      setKind(builtin ? (m as BuiltinKind) : 'device');
       setVarName(j.params?.var ?? '');
-      setVal(m === '__expr' ? (j.params?.expr ?? '') : (j.params?.value ?? ''));
+      setVal(m === '__expr' ? (j.params?.expr ?? '')
+        : m === '__sleep' ? (j.params?.sec ?? '')
+        : (j.params?.value ?? ''));
+      setWaitTimeout(m === '__wait' ? (j.params?.timeout ?? '') : '');
       if (!builtin) {
         setDeviceId(j.resourceId ?? null);
         setMethodName(m);
@@ -452,6 +468,14 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
           message.error(t('designer.error.badJson'));
           return;
         }
+      } else if (kind === '__sleep') {
+        // 延时节点：sec = 在这里停多少秒（后端按正数校验，空/非正数会直接报错）
+        params = { sec: val };
+      } else if (kind === '__wait') {
+        // 等待节点：var/value 必填；timeout 留空则由后端按 300 秒兜底
+        params = waitTimeout.trim()
+          ? { var: varName, value: val, timeout: waitTimeout.trim() }
+          : { var: varName, value: val };
       } else {
         params = kind === '__setVar'
           ? { var: varName, value: val }
@@ -486,11 +510,13 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
         <Select
           size="small" style={{ width: '100%' }} value={kind}
-          onChange={(v) => setKind(v as 'device' | '__setVar' | '__expr')}
+          onChange={(v) => setKind(v as 'device' | BuiltinKind)}
           options={[
             { value: 'device', label: t('designer.kind.device') },
             { value: '__setVar', label: t('designer.kind.setVar') },
             { value: '__expr', label: t('designer.kind.expr') },
+            { value: '__sleep', label: t('designer.kind.sleep') },
+            { value: '__wait', label: t('designer.kind.wait') },
           ]}
         />
         {kind === 'device' ? (
@@ -560,6 +586,26 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
                 {t('designer.params.noDevice')}
               </Typography.Text>
             )}
+          </>
+        ) : kind === '__sleep' ? (
+          <>
+            <Input size="small" placeholder={t('designer.placeholder.sleepSec')}
+              value={val} onChange={(e) => setVal(e.target.value)} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('designer.sleep.hint')}
+            </Typography.Text>
+          </>
+        ) : kind === '__wait' ? (
+          <>
+            <Input size="small" placeholder={t('designer.placeholder.varName')}
+              value={varName} onChange={(e) => setVarName(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.waitValue')}
+              value={val} onChange={(e) => setVal(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.waitTimeout')}
+              value={waitTimeout} onChange={(e) => setWaitTimeout(e.target.value)} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('designer.wait.hint')}
+            </Typography.Text>
           </>
         ) : (
           <>
@@ -1179,9 +1225,7 @@ export default function DesignerPage() {
     setShapeAttrs(shape, isBuiltin
       ? { protocolName: p.method, methodParams: '{}' }
       : { protocolName: p.method, resource: String(p.resourceId), methodParams: '{}', icon });
-    shape.businessObject.name = isBuiltin
-      ? t(p.method === '__setVar' ? 'designer.node.setVar' : 'designer.node.expr')
-      : p.method;
+    shape.businessObject.name = isBuiltin ? builtinNodeLabel(t, p.method) : p.method;
     modeling.createShape(shape, { x, y }, root);
 
     if (needTransfer && arm && prev && prevEl) {
@@ -1390,6 +1434,10 @@ export default function DesignerPage() {
                     <LogicNodeRow method="__setVar" label={t('designer.kind.setVar')}
                       disabled={ro.disabled} />
                     <LogicNodeRow method="__expr" label={t('designer.kind.expr')}
+                      disabled={ro.disabled} />
+                    <LogicNodeRow method="__sleep" label={t('designer.kind.sleep')}
+                      disabled={ro.disabled} />
+                    <LogicNodeRow method="__wait" label={t('designer.kind.wait')}
                       disabled={ro.disabled} />
                   </>
                 ),

@@ -170,14 +170,23 @@ public final class PreflightChecker {
             return new Report(workflowId, name, 0, 0, 0, issues);
         }
 
+        // tasks 只收设备任务（能力/设备检查、任务数统计只认它）；
+        // 但"有没有可执行的东西"要把内置逻辑节点（`__setVar` / `__sleep` / `__wait` …）
+        // 一起算 —— 内置节点也是一步活，只含内置节点的流程是合法流程，
+        // 不该被判"流程里没有任务节点"（PF-07，此前会误报）。
         List<GNode> tasks = new ArrayList<>();
+        boolean hasExecutable = false;
         for (GNode n : graph.nodes().values()) {
             if (n.kind() == Kind.TASK) {
                 tasks.add(n);
+                hasExecutable = true;
+            } else if (n.kind() == Kind.BUILTIN) {
+                hasExecutable = true;
             }
         }
-        if (tasks.isEmpty()) {
-            issues.add(new Issue(Level.ERROR, "PF-07", null, "流程里没有任务节点"));
+        if (!hasExecutable) {
+            issues.add(new Issue(Level.ERROR, "PF-07", null,
+                    "流程里没有可执行节点（设备任务或内置逻辑节点）"));
             return new Report(workflowId, name, 0, 0, 0, issues);
         }
 
@@ -252,7 +261,12 @@ public final class PreflightChecker {
         // ---- 干跑：哪些节点永远走不到 ----
         RunStateMachine sm = new RunStateMachine(decider(), ExecutionListener.NOOP,
                 Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
-        GraphRunner runner = new GraphRunner(sm, capPool, protocolCap, explicitCap, s -> { });
+        // 干跑只问「哪些节点走得到」：内置节点走直通（不执行、不取值）。
+        // 这里既没注入 builtinParams、也没有真实外部变量，真执行的话
+        // `__sleep` 缺参抛异常 / `__wait` 必然超时，都会让整图 break，
+        // 把**下游真实设备任务**误判成 PF-03「永远走不到」。
+        GraphRunner runner = new GraphRunner(sm, capPool, protocolCap, explicitCap, s -> { })
+                .withDryRun(true);
 
         RunProgress unused = runner.run(graph, DRY_RUN);
         Set<String> activated = runner.activatedKeys();

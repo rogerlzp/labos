@@ -5189,7 +5189,7 @@ it is still running and never press continue).
 (`StatusVocabulary.runToExperimentCaseSql`, the same criterion as
 `ExperimentExecutor.syncExperimentStatus` — no second hand-written mapping).
 
-New gate section 4.17 (`MIN_PAUSEEXP=2`): asserts the **semantic requirement** (all three layers
+New gate section 4.17 (`MIN_PAUSEEXP=2` at the time, raised to 5 on 2026-11-07, see the end of this file): asserts the **semantic requirement** (all three layers
 paused + effective within 5 s) and deliberately does **not** assert "the device command finally
 completed" — that one changes once a real interrupt is implemented and would make the gate
 falsely red.
@@ -5253,13 +5253,21 @@ confirm the execution is ours; locating your own run is always done via
     暂停生效延迟            : 0.2 秒
 ```
 
-**⇒ Two parts of the conclusion change**:
-① The pause **does take effect** (`run` → `paused` within 0.1–0.2 s); the line in the previous
-log entry — "run（workflow 级）: paused / all three layers paused" — was **the stale run's data
-and is void**: the workflow-level `run` is a **separate execution**, unaffected by an
-experiment-level pause; it ends up `completed` when it finishes.
-② What is still not solved is the same thing as before: **the method the device is executing is
-not interrupted** (`completed`, it runs to the end).
+**⇒ The conclusion (corrected on 2026-11-07)**:
+① The pause **does take effect** (`run` → `paused` within 0.1–0.2 s). The line above —
+"the workflow-level run finishes on its own" — is **what was observed at the time, but it is a
+bug**: an experiment-level pause records a **hold** (`runtime_hold`) and does **not** change the
+workflow-level `run` status, and the underlying `GraphRunner` only checked `run.status` ⇒ it
+never saw the hold ⇒ it ran every remaining node. **Fixed on 2026-11-07**:
+`WorkflowService.withPauseChecker` now checks, in addition to `run.status`,
+`RuntimeHold.coveringForWorkflow` (resolving ownership via `experiment_run_step.status='running'`)
+⇒ on a hit the underlying `run` lands on `paused` at the **node boundary** and the following
+nodes stay `pending` (see the entry at the end of this file).
+② What is still not solved is the same thing as before: **the one device method already executing
+is not interrupted** (`completed`, it runs to the end). ① and ② are **two different things** — do
+not conflate them: ① is "stop at the node boundary", on by default and independent of
+`interruptible`; ② is "really stop mid-action" and needs the on-site list
+(`device_method.interruptible=true`).
 
 (The workflow-level variant was re-measured too: `run` → `paused` within 0.1 s, device command
 `completed`, node `ARM=completed` — consistent with the experiment level.)
@@ -5411,3 +5419,46 @@ missed this bug.
 **Lesson (cross-project)**: when adding an early return to a block of logic, go back and
 check whether **every cleanup action after it** also gets skipped; and write self-tests
 that cover **each exit path**, not just the main line.
+
+**Added later (2026-11-07): an experiment-level pause could not stop the underlying run — fixed, and the interrupted old run is voided on resume**
+
+The user's instruction: "fix the experiment-level pause".
+
+**Root cause**: an experiment-level pause records a **hold** (`runtime_hold`) and does **not**
+change the workflow-level `run` status; the underlying `GraphRunner` only checked `run.status` at
+the node boundary ⇒ it never saw the hold ⇒ it ran every remaining node.
+
+**The fix (two parts)**:
+① **Stop at the node boundary**: `WorkflowService.withPauseChecker`'s criterion was widened from
+   "`run.status='paused'`" to "`run.status='paused'` **or** this workflow is covered by an active
+   site hold" (`RuntimeHold.coveringForWorkflow(workflowId)`) ⇒ on a hit the underlying `run` lands
+   on `paused` (`pauseRunAtBoundary`) and the following nodes stay `pending`. **Independent of
+   `interruptible`, on by default.** The key point of the criterion: `coveringForWorkflow` resolves
+   ownership by **`experiment_run_step.status='running'` + `workflow_id`**, and must **not** filter
+   on `experiment_run.status='running'` — an experiment-level pause first sets `experiment_run` to
+   `paused` (`RunControl.markCoveredPaused`), so filtering on `running` can never find it, which is
+   the direct cause of the original bug.
+② **Void the interrupted old run on resume** (a regression found while fixing): an
+   experiment-level pause also lands the current step's workflow-level run on `paused`; on resume
+   that step is re-run **whole** and a new run is started (`ExperimentExecutor.runStep` creates a
+   new run for every step) ⇒ the old `paused` run becomes an orphan that sits in the **paused
+   queue** (`PauseManager.pausedRuns` queries `run.status='paused'` with **no filter**) forever,
+   and an operator's mistaken "resume" would make the robot arm **repeat the same action**
+   (a physical side effect that cannot be undone). Fixed: `RunControl.resume` now voids
+   "this experiment's steps that are still `paused`" workflow runs as `aborted` (the runs of
+   completed steps are `completed` and untouched).
+
+**Verification** (both actually run):
+- The database-backed self-test `RunControlDbSelfTest`: **43 passed / 0 failed** (3 new assertions:
+  the interrupted step's workflow run is voided as `aborted`, a completed step's run is still
+  `completed`, and the voided run gets an end time).
+- Gate 4.17 (`e2e-pause-during-experiment.py`): **5 passed / 0 failed**
+  (run #208222 / experiment_run #1868; `ARM=completed` / `ARM2=pending`); the threshold
+  `MIN_PAUSEEXP` went 2 → 5.
+
+**Lesson (cross-project)**: when implementing "pause at layer A", never assume "layer B will see
+it on its own" — if layer A records a **bypass state** (here a hold, not the run status), layer B's
+check point will never see it; either add a reverse lookup in layer B or record the state where
+layer B can see it. Also, **when voiding an intermediate state, clean up the downstream visible
+artefacts too**: a re-run starts a new run, and an unhandled old run becomes a "ghost pause entry"
+that, once someone mis-clicks it, **replays a physical action**.

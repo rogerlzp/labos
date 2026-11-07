@@ -18,14 +18,14 @@
 | This round's range | `bb97b62..cf53bd8`, **12 commits**; earlier commits are the repository rebuild and narrative clean-up and are out of scope |
 | Environment | macOS, Java 17 (no Maven, full `javac` build); PostgreSQL 17.10 (database `labdb`); API `127.0.0.1:18080`; front-end dev `localhost:5173`; device simulators `19500–19506` |
 | Test baseline | pure logic **644/0**; database-connected suite **1031/0**; gate **22 segments, all green, zero skipped** (`ci-gate.sh --all`); EN/CN docs `verify-en-docs.py` hard errors **0** (registry 100 entries / 443 relative links all resolve) |
-| Gate thresholds | `MIN_*` at the top of `scripts/ci-gate.sh`: `MIN_PURE=644` `MIN_CHAIN=41` `MIN_PFLOW=4` `MIN_PEXP=3` `MIN_MATRIX=45` `MIN_EXPCTL=22` `MIN_ALERTS=8` `MIN_POLICIES=12` `MIN_PAUSED=7` `MIN_CANVAS=12` `MIN_CRASH=34` `MIN_MULTIPAR=21` `MIN_GWPAIR=34` `MIN_PAUSERES=25` `MIN_PAUSEEXP=2` `MIN_INTR=3`; "only ever up" is enforced by segment 0 of `ci-gate.sh` (any `MIN_*` below its git-history maximum is a red light) |
+| Gate thresholds | `MIN_*` at the top of `scripts/ci-gate.sh`: `MIN_PURE=644` `MIN_CHAIN=41` `MIN_PFLOW=4` `MIN_PEXP=3` `MIN_MATRIX=45` `MIN_EXPCTL=22` `MIN_ALERTS=8` `MIN_POLICIES=12` `MIN_PAUSED=7` `MIN_CANVAS=12` `MIN_CRASH=34` `MIN_MULTIPAR=21` `MIN_GWPAIR=34` `MIN_PAUSERES=25` `MIN_PAUSEEXP=5` `MIN_INTR=3`; "only ever up" is enforced by segment 0 of `ci-gate.sh` (any `MIN_*` below its git-history maximum is a red light) |
 
 ### 1.1 Gate segments added this round
 
 | Segment | Script | What it asserts | Threshold |
 |---|---|---|---|
 | 4.16 | `scripts/e2e-pause-resume-nodes.py` | the pause point lands **only on a device task node** (neither gateways nor logic nodes consult the pause checker); a resume continues from the node that had not finished; the device command is not issued twice | `MIN_PAUSERES=25` |
-| 4.17 | `scripts/e2e-pause-during-experiment.py` | pausing **while the device method is mid-flight** makes both experiment-level layers (`experiment_run` / `experiment`) `paused` within 5 s, while the workflow-level run finishes on its own | `MIN_PAUSEEXP=2` |
+| 4.17 | `scripts/e2e-pause-during-experiment.py` | pausing **while the device method is mid-flight** ⇒ **all three layers stop at paused**: both experiment-level layers (`experiment_run` / `experiment`) become `paused` within 5 s, and the underlying workflow-level run also stops as `paused` at the node boundary with the following nodes left `pending` (the old reading "the workflow-level run finishes on its own" was a bug, now fixed) | `MIN_PAUSEEXP=5` |
 | 4.18 | `scripts/e2e-interrupt-during-device.py` | when the method declares `interruptible=true`, pausing mid-flight makes the command reach a terminal state **within 10 s** (`aborted｜EC-99-0005`) instead of waiting for the device to finish | `MIN_INTR=3` |
 
 ## 2. How to re-run (a reviewing AI can execute it step by step)
@@ -115,10 +115,20 @@ python3 scripts/verify-en-docs.py                                       # hard e
 4. **The interrupt status**: why `aborted` rather than a new vocabulary entry / reusing
    `manual`? Does "the node row stays `running`" make the page show "still running"? Should it be
    an explicit `interrupted`?
-5. **How the experiment-level pause reaches the workflow level**: the execution side checks
-   `runtime_hold` coverage to decide "should I stop". Is that mapping
-   (workflow run → experiment → island/site) reliable? What about one workflow being used by
-   several experiments concurrently?
+5. **How the experiment-level pause reaches the workflow level**: the execution side has **two**
+   ways to stop — ① **node boundary**: `WorkflowService.withPauseChecker` checks once per task
+   node boundary with the criterion "`run.status='paused'` **or** this workflow is covered by an
+   active site hold" (an experiment-level pause records a hold and does **not** change the
+   workflow-level run status, so it can only be resolved indirectly through
+   `RuntimeHold.coveringForWorkflow`); on a hit `pauseRunAtBoundary` lands the underlying run on
+   `paused` and the following nodes stay `pending` — this path is independent of
+   `interruptible` and on by default; ② **mid-action**: `DriverStepExecutor.pauseRequested`
+   calls `driver.abort` on an **interruptible** method while it is in flight (requires
+   `device_method.interruptible=true`, see question 3). Is that reverse mapping
+   (workflow run → the running experiment step → experiment → island/site) reliable? In
+   particular, `RuntimeHold.coveringForWorkflow` resolves ownership only by
+   `experiment_run_step.status='running'` + `workflow_id` — with several concurrent running
+   steps on the same `workflow_id`, is coverage still decided reliably?
 6. **Device locks**: ghost locks and orphan locks are both cleaned by the startup fallback, but
    the root cause is "deleting a run does not release the lock". Should the deletion entry point
    release it? Is a startup-time cleanup enough (the device can stay unusable for hours if

@@ -8,7 +8,7 @@
 
 Companions: [test-specification.md](test-specification.md) (how to write a case),
 [testing-and-release-strategy.md](testing-and-release-strategy.md) (the L1–L5 model),
-[full-flow-test-matrix-design.md](full-flow-test-matrix-design.md) (the 45-case matrix in detail).
+[full-flow-test-matrix-design.md](full-flow-test-matrix-design.md) (the 55-case matrix in detail).
 
 Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 **L3** chain script (needs a device / simulator), **L4** page e2e (needs frontend + API).
@@ -19,10 +19,10 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Track | Entry point | Assertions today | In CI |
 |---|---|---|---|
-| L1 pure logic | `./scripts/test-all.sh --pure-only` | 624 | ✅ every push |
-| L1+L2 with DB | `./scripts/test-all.sh` | 1005 | ⬜ **not covered by the gate** (`ci-gate.sh` only runs `--pure-only`; this number moving up or down is invisible to the gate) |
+| L1 pure logic | `./scripts/test-all.sh --pure-only` | 650 | ✅ every push |
+| L1+L2 with DB | `./scripts/test-all.sh` | 1034 | ⬜ **not covered by the gate** (`ci-gate.sh` only runs `--pure-only`; this number moving up or down is invisible to the gate) |
 | L3 chain | `./scripts/verify-device-chain.sh` | 41 | ⬜ local `--all` |
-| L3 flow matrix | `./scripts/verify-flow-matrix.py --force-online` | 45 | ⬜ local `--all` |
+| L3 flow matrix | `./scripts/verify-flow-matrix.py --force-online` | 55 | ⬜ local `--all` |
 | L3 parallel | `verify-parallel-flow.py` / `verify-parallel-experiments.py` | 4 / 3 | ⬜ local `--all` |
 | L4 page e2e | `scripts/e2e-*.py` | see section 2 | ⬜ local `--all` + nightly |
 
@@ -32,10 +32,10 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 | Constant | Value | Coverage |
 |---|---|---|
-| `MIN_PURE` | 624 | Pure-logic unit tests (fewer = red) |
+| `MIN_PURE` | 651 | Pure-logic unit tests (fewer = red) |
 | `MIN_CHAIN` | 41 | Full device chain |
 | `MIN_PFLOW` / `MIN_PEXP` | 4 / 3 | In-flow parallelism / same-island concurrency |
-| `MIN_MATRIX` | 45 | Full flow matrix (`verify-flow-matrix.py`) |
+| `MIN_MATRIX` | 55 | Full flow matrix (`verify-flow-matrix.py`) |
 | `MIN_E2E` | 24 | Page main paths (`e2e-smoke.py`) |
 | `MIN_E2EFM` | 45 | Page flow matrix (`e2e-flow-matrix.py`) |
 | `MIN_EXPCTL` | 22 | Experiment run control (`verify-exp-control.py`) |
@@ -48,8 +48,8 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `MIN_CRASH` | 34 | Crash recovery end to end (`verify-s3-2-residuals.py`); kill -9 → restart → queued rehydrate + orphan running settled by the startup fallback + `paused` not killed by mistake + queued zombie (queued for over 1 hour) collected |
 | `MIN_MULTIPAR` | 21 | Live page exercise · multiple parallel gateways + multiple exclusive gateways + variables (`e2e-multi-parallel.py`); drag 12 nodes / 13 edges on the page → save → really run → all three parallel branches completed |
 | `MIN_GWPAIR` | 34 | Gateway pairs · exclusive and parallel each at N=2 and N=3 (`e2e-gateway-pairs.py`); the four gateway roles come from the page's "use the suggested name" button and must match the incoming/outgoing edge counts → split and join appear **as a pair** → really run: all N parallel branches run, the exclusive split takes exactly one branch and the rest are bypassed |
-| `MIN_PAUSERES` | 25 | Pause point and resume origin (`e2e-pause-resume-nodes.py`); the pause point lands **only on a device task node** (neither gateways nor logic nodes consult the pause checker) → resume continues from the **node that had not finished**, nodes already completed are skipped via skipKeys → the device command is issued exactly once (not repeated) and really gets a response back |
-| `MIN_PAUSEEXP` | 2 | Experiment-level pause · pausing while a device action is executing (`e2e-pause-during-experiment.py`); under **synchronous execution** a pause issued mid-action makes both experiment-level layers (`experiment_run` / `experiment`) become paused within 5 s |
+| `MIN_PAUSERES` | 25 | Pause point and resume origin (`e2e-pause-resume-nodes.py`); the pause point lands on a device task node (gateways do not consult the pause checker; `__setVar`/`__expr` are instantaneous and do not either; `__sleep`/`__wait` poll it in their wait loop, see the `waitsleep` section under `MIN_MATRIX`) → resume continues from the **node that had not finished**, nodes already completed are skipped via skipKeys → the device command is issued exactly once (not repeated) and really gets a response back |
+| `MIN_PAUSEEXP` | 5 | Experiment-level pause · pausing while a device action is executing (`e2e-pause-during-experiment.py`); under **synchronous execution** a pause issued mid-action ⇒ **all three layers stop at paused**: both experiment-level layers (`experiment_run` / `experiment`) **and** the workflow-level run become paused within 5 s, and the following nodes stay `pending` unexecuted (the old reading "the workflow-level run finishes on its own" was a bug, now fixed) |
 | `MIN_INTR` | 3 | A1 "really stop it" · pausing while an **interruptible** method is executing (`e2e-interrupt-during-device.py`); when the method declares `interruptible=true` → after the pause the **command reaches a terminal state within 10 s** (far faster than the 30–300 s the device itself needs) instead of waiting for the device to finish |
 
 ---
@@ -212,7 +212,7 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 | `scripts/shot-gateway-labels.py` | Gateway readability · naming + role labels + a visible end marker: drag "exclusive split → parallel split → parallel join" on the page and name them → all three names land in the graph XML → screenshots confirm legible labels, an orange join marker and a dark end event | L4 | ⬜ reviewed by eye |
 | `scripts/e2e-gateway-pairs.py` | Gateway pairs · exclusive/parallel at N=2 and N=3: drag two graphs → roles come from "use the suggested name" and must match the edge counts → names land in the graph XML → really run: all parallel branches run, the exclusive split takes exactly one | L4 | ✅ |
 | `scripts/e2e-pause-resume-nodes.py` | Pause point and resume origin across exclusive / parallel / device / variable nodes: drag "variable → device → exclusive → parallel" → pause while the device node runs → assert the pause point lands only on the device task node (neither gateways nor logic nodes) → resume → completed nodes are skipped (the logic node is not re-run), unfinished ones are re-run, and the device command is issued once with a real response | L4 | ✅ |
-| `scripts/e2e-pause-during-experiment.py` | Experiment-level pause · pausing while a device action is executing: under synchronous execution a pause issued mid-action (**the criterion is `device_state.status='running'` + `current_method`, not `run_command` — the latter is persisted only after the step finishes**) makes both experiment-level layers (`experiment_run` / `experiment`) become paused within 5 s, and the workflow-level run finishes on its own → records the device command's final state (with the current implementation the device action runs to the end) | L4 | ✅ |
+| `scripts/e2e-pause-during-experiment.py` | Experiment-level pause · pausing while a device action is executing: under synchronous execution a pause issued mid-action (**the criterion is `device_state.status='running'` + `current_method`, not `run_command` — the latter is persisted only after the step finishes**) → asserts that both experiment-level layers (`experiment_run` / `experiment`) **and** the workflow-level run **all three land on paused**, effective within 5 s, and the following nodes stay `pending` unexecuted → records the device command's final state (with the current implementation the action already in flight still runs to the end and cannot be stopped midway; the flow, however, stops at the next node boundary) | L4 | ✅ |
 | `scripts/e2e-interrupt-during-device.py` | A1 "really stop it" · pausing while an interruptible method is executing: temporarily marks the robot arm's Home as `interruptible=true` (restored afterwards) → pauses while the method is in flight → asserts the **command reaches a terminal state within 10 s** (it did not wait for the device), that the command status is `aborted`, and that the run stays `paused` (the step is re-run on resume) | L4 | ✅ |
 
 ---

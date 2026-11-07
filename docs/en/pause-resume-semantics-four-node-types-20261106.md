@@ -160,10 +160,10 @@ if ((node.kind() == Kind.TASK || node.kind() == Kind.BUILTIN)
 
 ### 2.4 The real difference between device and logic nodes
 
-There is **no difference in how the pause point is chosen**. The difference is the
+There is **no difference in how they are skipped or re-run** (`skipKeys` puts `Kind.TASK` / `Kind.BUILTIN` side by side). The difference is the
 **side effect of re-running**:
 
-| | Logic node (`__setVar` / `__expr`) | Device node (plain task) |
+| | Logic node, instant computation (`__setVar` / `__expr`) | Device node (plain task) |
 |---|---|---|
 | What it does | The engine computes a value into the variable table | Sends a command to the device through the driver |
 | Cost of re-running | **zero side effects** (same result) | **physical side effects** — the robot arm moves the plate again, the device acts again |
@@ -256,7 +256,8 @@ S ─ VAR(variable node) ─ DEV(device node) ─ XOR ─┬─ A ─┐
 | **Exclusive gateway** (✕) | **No** | `pauseChecker` is only in the `Kind.TASK` branch; gateways take the `else` branch and go straight to `choose()` / edge activation |
 | **Parallel gateway** (＋) | **No** | same |
 | **Device node** | **Yes** (at its action boundary) — but it actually takes effect at the **next boundary after it finished**, because the check sits before `executeNode` | `Kind.TASK` branch |
-| **Variable / expression node** | **No** | `Kind.BUILTIN` takes a separate branch with **no** `pauseChecker`; measured: the pause landed on the device node while VAR was already `completed` |
+| **Variable / expression node** (instant computation) | **No** | `Kind.BUILTIN` takes a separate branch with **no** `pauseChecker`; measured: the pause landed on the device node while VAR was already `completed` |
+| **Delay / wait node** (`__sleep` / `__wait`) | **Yes** | the wait loop polls `pauseChecker` in 500 ms slices (`GraphRunner.waitInterruptibly`) |
 | Start / end | **No** | `Kind.START` / `Kind.END` — not "a unit of work" |
 
 ### Q2 · On resume: from the next node, or from the current one?
@@ -273,9 +274,9 @@ stalled at"** (the `GraphRunner` comment's own wording).
 
 ### Q3 · How do device nodes and logic nodes differ?
 
-| Dimension | Logic node (`__setVar`/`__expr`) | Device node |
+| Dimension | Logic node, instant computation (`__setVar`/`__expr`) | Device node |
 |---|---|---|
-| **Can it be the pause point** | ❌ **No** (the `Kind.BUILTIN` branch doesn't consult `pauseChecker`; measured: the pause landed on the device node) | ✅ Yes (action boundary, before the command is sent) |
+| **Can it be the pause point** | ❌ **No** (the `Kind.BUILTIN` branch doesn't consult `pauseChecker`; measured: the pause landed on the device node). **Exception**: `__sleep` / `__wait`, see the note in section 4 Q1 / Q3 | ✅ Yes (action boundary, before the command is sent) |
 | **Pause timing** | — | before the command is issued (action boundary, never mid-command) |
 | **Re-run on resume** | already completed → skipped | already completed → skipped; **not completed → re-run (issues the command again)** |
 | **Cost of re-running** | zero side effects | **physical side effects** (the robot arm moves the plate again) |
@@ -297,7 +298,7 @@ again**. That is why the design is:
 
 | Item | Status | Note |
 |---|---|---|
-| **A logic node as the pause point** | ✅ now covered | the source's `Kind.BUILTIN` branch has no `pauseChecker` ⇒ a logic node never becomes the pause point; there is now a dedicated assertion for it (previously only "not a gateway" was asserted) |
+| **A logic node as the pause point** | 🟡 partially covered | the source's `Kind.BUILTIN` branch has no `pauseChecker` ⇒ `__setVar` / `__expr` (instant computations) never become the pause point; measured: the pause landed on the device node, but no dedicated assertion pins this down (only "not a gateway" was asserted). **Exception**: the `__sleep` / `__wait` nodes added on 2026-11-06 poll `pauseChecker` in 500 ms slices in their wait loop and **can** become the pause point (the waiting semantics are covered by the `waitsleep` section of `verify-flow-matrix.py`; the pause response has no dedicated assertion) |
 | Pausing **in the middle of a device command** | ✅ now measured (by the other script) | the source checks at the action boundary ("the robot arm would drop the plate") ⇒ it **never stops mid-command**; the device method still **runs to the end**. A half-way state was constructed with a long-delay simulator — see §1.5 / §2.6 of "Pausing During a Device Command" |
 | Pause under a **site hold** (`runtime_hold`) | ❌ not covered | relates to `PauseManager.pause`'s `release_exempt` (the robot arm holding a plate / active device lock are exempt) |
 | Pausing **inside a loop body** | ❌ not covered | interaction between `maxVisits` and `hasCycle` |
@@ -334,7 +335,7 @@ Requires: frontend `5173` + API `18080` + the simulators + simulator device `ID1
 `scripts/ci-gate.sh` gains **section 4.16**, threshold `MIN_PAUSERES=25`:
 
 ```bash
-MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点只落在设备任务节点——网关与逻辑节点都不查 pauseChecker；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
+MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点落在设备任务节点——网关不查 pause，__setVar/__expr 是瞬时计算也不查；__sleep/__wait 在等待循环里另查，见 MIN_MATRIX 的 waitsleep；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
 ```
 
 The gate section count goes **19 → 20**.

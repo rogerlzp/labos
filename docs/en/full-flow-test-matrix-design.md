@@ -23,7 +23,7 @@ matrix** and the main-path e2e (see §10, `scripts/e2e-smoke.py`).
 | Dimension | Capability | Authoritative implementation |
 |---|---|---|
 | Node types | `TASK` / `START` / `END` / `SPLIT_PARALLEL` / `JOIN_PARALLEL` / `SPLIT_XOR` / `JOIN_XOR` / `BUILTIN` | Orchestration compiler |
-| Built-in nodes | `__setVar` (`var`+`value`) / `__expr` (`var`+`expr`) | Executor |
+| Built-in nodes | `__setVar` (`var`+`value`) / `__expr` (`var`+`expr`) / `__sleep` (`sec`) / `__wait` (`var`+`value`+`timeout`) | Executor |
 | Gateway semantics | Exclusive: evaluated in declaration order, the first true branch wins, otherwise `default` | Compiler / executor |
 | Variables | `run?vars=k=v` seeds them; built-in nodes write them; device response fields write them; conditions read `${var}` | Runtime context |
 | Condition evaluation | Comparison / logic / parentheses / add-subtract arithmetic (`${a} + 1 > 3`) | `ConditionEvaluator` |
@@ -41,6 +41,7 @@ matrix** and the main-path e2e (see §10, `scripts/e2e-smoke.py`).
 |---|---|---|---|
 | All node types (START / END / TASK) | `verify-flow-matrix.py` | serial | ✅ 4 assertions |
 | Built-in nodes `__setVar` / `__expr` | `verify-flow-matrix.py` | builtin | ✅ 4 assertions |
+| Built-in delay / wait nodes `__sleep` / `__wait` | `verify-flow-matrix.py` | waitsleep | ✅ 10 assertions |
 | Variables: seeding to gateway-driven | `verify-flow-matrix.py` | builtin | ✅ |
 | Device response field to variable to condition | `verify-flow-matrix.py` | outvar | ✅ 2 assertions |
 | Exclusive gateway (true / default) | `verify-flow-matrix.py` | xor | ✅ 6 assertions |
@@ -70,7 +71,7 @@ export PGPASSWORD='...' \
        LABOS_DB_HOST=... LABOS_DB_PORT=5432 LABOS_DB_NAME=... \
        LABOS_DB_USER=... LABOS_DB_PASS='...'
 python3 scripts/verify-flow-matrix.py --force-online
-# Expected: 45 passed / 0 failed
+# Expected: 55 passed / 0 failed
 ```
 
 The `ports` section needs the kernel started with `LABOS_TRANSFER_PLAN=1`, otherwise the
@@ -86,6 +87,7 @@ LABOS_TRANSFER_PLAN=1 ... java -cp out:lib/postgresql-42.7.3.jar com.labos.kerne
 |---|---|---|
 | serial | 4 | Run `completed`; both tasks done; two device commands |
 | builtin | 4 | The variable really changed (branch A taken); the unselected branch is `bypassed` |
+| waitsleep | 10 | `__sleep` really waits, emits no device command and does not break the following device chain; `__wait` passes once the variable matches; `__wait` timeout goes to manual (the run becomes `paused`, the node `manual` - not `failed`) without driving downstream |
 | outvar | 2 | A device response field reaches the variable table and drives the condition |
 | xor | 6 | True goes to A; false goes to default; both paths marked `bypassed` |
 | xor3 | 3 | Declaration-order evaluation; three inputs each take one branch |
@@ -207,5 +209,5 @@ lands in the DB (present in the graph XML, missing in the table). The UPDATE bra
 ## 12. Open items
 
 None open: the Class A item (a back edge spanning a parallel region) is the `loopback`
-section; the backend matrix is wired into `ci-gate.sh` (`MIN_MATRIX=45`), the page-side matrix
-too (`MIN_E2EFM=45`), the simulator integration (`MIN_E2ESIM=24`), and the crash-recovery end-to-end check (`MIN_CRASH=31`).
+section; the backend matrix is wired into `ci-gate.sh` (`MIN_MATRIX=55`), the page-side matrix
+too (`MIN_E2EFM=45`), the simulator integration (`MIN_E2ESIM=24`), and the crash-recovery end-to-end check (`MIN_CRASH=34`).

@@ -300,6 +300,58 @@ public final class RuntimeHold {
         return covering(active(), experimentId, islandId);
     }
 
+    /**
+     * 覆盖「正在执行这条流程的实验」的扣留（没有则 null）。
+     *
+     * <p><b>为什么需要这层反查</b>：实验级暂停落的是扣留，**不改** workflow 级
+     * {@code run} 的状态（见 {@link RunControl}）。底层流程（{@code GraphRunner} 的
+     * 节点边界检查、可中断方法的 abort 轮询）手里只有自己的 {@code workflow_id}，
+     * 要判断「该不该停」只能反查：正在跑这条流程的实验步骤 → 实验 → 岛，
+     * 再看有没有扣留盖住它。
+     *
+     * <p><b>为什么不按 {@code experiment_run.status='running'} 过滤</b>：
+     * 实验级暂停会先把 {@code experiment_run} 置 {@code paused}
+     * （{@link RunControl#pause} → {@code markCoveredPaused}），
+     * 再用 {@code running} 过滤就永远查不到 —— 这正是「暂停发出去、
+     * 底层 run 照旧把所有节点跑完」的根因（2026-11-06 实测）。
+     * 步骤状态只在执行期是 {@code running}，暂停后会被执行器改成 {@code paused}，
+     * 所以判据落在**步骤行还在跑**这一件事上，而不是实验行的状态。
+     */
+    public Active coveringForWorkflow(long workflowId) {
+        if (workflowId <= 0) {
+            return null;
+        }
+        List<Active> active = active();
+        if (active.isEmpty()) {
+            return null;   // 现场没有任何扣留 —— 常见快路径，不必反查
+        }
+        String sql = """
+                SELECT er.experiment_id, COALESCE(e.island_id, 0) AS island_id
+                  FROM experiment_run_step s
+                  JOIN experiment_run er
+                    ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
+                  JOIN experiment e
+                    ON e.tenant_id = er.tenant_id AND e.id = er.experiment_id
+                 WHERE s.tenant_id = ? AND s.workflow_id = ? AND s.status = 'running'
+                """;
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, workflowId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Active a = covering(active, rs.getLong(1), rs.getLong(2));
+                    if (a != null) {
+                        return a;
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("[扣留] 反查流程归属失败：" + e.getMessage());
+        }
+        return null;
+    }
+
     /** 现场是否处于任何扣留中（调度器用：扣留期不派发新实验）。 */
     public boolean anyActive() {
         return !active().isEmpty();

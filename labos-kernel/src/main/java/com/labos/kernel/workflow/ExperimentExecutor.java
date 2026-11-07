@@ -183,12 +183,18 @@ public final class ExperimentExecutor {
                     // 工作流级暂停 → 上浮为**现场扣留**。
                     // 现场暂停是安全事件：同岛其他在跑的实验也要在各自边界停下。
                     // 未分配岛（islandId=0）退化为实验级，至少停住自己。
-                    if (islandId > 0) {
-                        holds.raise(RuntimeHold.Scope.ISLAND, islandId,
-                                RuntimeHold.Kind.of(out.pauseKind()), out.pauseReason(), null);
-                    } else {
-                        holds.raise(RuntimeHold.Scope.EXPERIMENT, experimentId,
-                                RuntimeHold.Kind.of(out.pauseKind()), out.pauseReason(), null);
+                    //
+                    // ⚠ 已经被扣留时**不重复上浮**：实验级暂停（RunControl.pause）落的
+                    //   就是扣留，这里再抬一道岛级扣留会在恢复时留下解除不掉的残留
+                    //   （恢复只解除最内层那道）⇒ 实验再也回不到 queued。
+                    if (holds.coveringFor(experimentId, islandId) == null) {
+                        if (islandId > 0) {
+                            holds.raise(RuntimeHold.Scope.ISLAND, islandId,
+                                    RuntimeHold.Kind.of(out.pauseKind()), out.pauseReason(), null);
+                        } else {
+                            holds.raise(RuntimeHold.Scope.EXPERIMENT, experimentId,
+                                    RuntimeHold.Kind.of(out.pauseKind()), out.pauseReason(), null);
+                        }
                     }
                     settle(runId, "paused", done, out.pauseReason(),
                             out.pauseKind(), out.pauseReason(), syncExperimentStatus);
@@ -446,7 +452,8 @@ public final class ExperimentExecutor {
         }
     }
 
-    private void markRunning(long runId) throws SQLException {
+    /** 包内可见：供 {@code RunControlDbSelfTest} 直接压这条异常敏感路径。 */
+    void markRunning(long runId) throws SQLException {
         // ⚠ **已经被现场扣留的 run 不能被标成 running**（2026-11-06 实测发现）：
         //   用户在实验执行到一半时点暂停 → `RunControl.pause` 落下 runtime_hold
         //   并把 experiment_run 标成 'paused'；但随后调度器派发这条 run 时，
@@ -460,11 +467,13 @@ public final class ExperimentExecutor {
         boolean held = new RuntimeHold(db, tenantId)
                 .coveringFor(experimentIdOf(runId), islandId) != null;
         if (held) {
-            // 保持 paused：只补「开始时间」，状态与暂停标记都不动
+            // 保持 paused：只补「开始时间」，状态与暂停标记都不动。
+            // ⚠ 不要写 updated_at：experiment_run 没有这一列（只有 experiment 有），
+            //   写它会抛 PSQLException 把这条 run 直接落 failed（2026-11-06 实测）。
             try (Connection c = db.open();
                  PreparedStatement ps = c.prepareStatement("""
                          UPDATE experiment_run
-                            SET started_at = COALESCE(started_at, now()), updated_at = now()
+                            SET started_at = COALESCE(started_at, now())
                           WHERE tenant_id = ? AND id = ? AND status = 'paused'
                          """)) {
                 ps.setLong(1, tenantId);
@@ -552,8 +561,9 @@ public final class ExperimentExecutor {
         }
     }
 
-    private void settle(long runId, String status, int done, String error,
-                        String pauseKind, String pauseReason, boolean syncExperimentStatus)
+    /** 包内可见：供 {@code RunControlDbSelfTest} 直接压这条异常敏感路径。 */
+    void settle(long runId, String status, int done, String error,
+                String pauseKind, String pauseReason, boolean syncExperimentStatus)
             throws SQLException {
         boolean paused = "paused".equals(status);
         boolean terminal = "completed".equals(status) || "failed".equals(status)
@@ -571,10 +581,11 @@ public final class ExperimentExecutor {
         //   为什么必须挡住：扣留（runtime_hold）还在，实验其实处于"等人处理"的状态，
         //   状态写成 completed 会让「暂停队列」页看不到它，现场以为跑完了就走了。
         if (!paused && isRunPaused(runId)) {
-            // 已被人工暂停：保持 paused，只补错误信息（若有），不动状态
+            // 已被人工暂停：保持 paused，只补错误信息（若有），不动状态。
+            // ⚠ 不要写 updated_at：experiment_run 没有这一列（见上）。
             try (Connection c = db.open();
                  PreparedStatement ps = c.prepareStatement(
-                         "UPDATE experiment_run SET error=?, updated_at=now() "
+                         "UPDATE experiment_run SET error=? "
                                  + "WHERE tenant_id=? AND id=? AND status='paused'")) {
                 ps.setString(1, error);
                 ps.setLong(2, tenantId);
@@ -744,6 +755,29 @@ public final class ExperimentExecutor {
         return "waiting_human";
     }
 
+    /**
+     * 流程级 run 的状态（{@code run.status}，查不到返回 null）。
+     *
+     * <p>用来判断这一步到底是"跑完了"还是"在节点边界被暂停" ——
+     * 流程被暂停时它跑过的节点都已完成、后面的还没轮到，光看节点状态分不出来。
+     */
+    private String wfRunStatus(Long wfRunId) {
+        if (wfRunId == null) {
+            return null;
+        }
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT status::text FROM run WHERE tenant_id=? AND id=?")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, wfRunId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        } catch (SQLException ignore) {
+            return null;
+        }
+    }
+
     /** 跑一步：落 step 记录 → 执行 → 三态落库。 */
     private StepOutcome runStep(long runId, Step st, Map<String, String> runVars)
             throws SQLException {
@@ -785,12 +819,19 @@ public final class ExperimentExecutor {
                     .filter(n -> "MANUAL".equals(String.valueOf(n.status()))
                             || "SKIPPED".equals(String.valueOf(n.status())))
                     .count();
-            if (bad == 0) {
+            // 流程级 run 被暂停（页面暂停 / 实验级现场扣留）在**节点边界**停住 ——
+            // 此时"跑过的节点都完成、后面的还没轮到"，只看 bad 会把它误判成成功。
+            // 判据落在 run 行本身：WorkflowService 停边界时会把 run 落成 paused。
+            boolean wfPaused = "paused".equals(wfRunStatus(wfRunId));
+            if (bad == 0 && !wfPaused) {
                 outcome = StepOutcome.ok();
             } else if (needHuman > 0) {
                 // 流程因"转人工/跳过"落成 paused —— 这是暂停不是失败（见 StepOutcome 说明）
                 outcome = StepOutcome.interrupted(pauseKindOf(wfRunId),
                         needHuman + " 个节点需要人工确认（板位不可信，不能当作已完成）");
+            } else if (wfPaused) {
+                outcome = StepOutcome.interrupted(pauseKindOf(wfRunId),
+                        "流程在节点边界被暂停，待恢复后续跑");
             } else {
                 outcome = StepOutcome.failed(bad + " 个节点未完成");
             }

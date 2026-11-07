@@ -10,6 +10,13 @@
   · experiment_run —— 实验级执行行（实验级暂停改的是它）
   · experiment     —— 实验本身（由 experiment_run 派生，StatusVocabulary 恒等映射）
 
+⚠ 三层**都要停在暂停**（2026-11-06 修"实验级暂停停不住底层 run"之后的口径）：
+  实验级暂停抬的是现场扣留。底层 workflow 级 run 在**节点边界**查扣留
+  （`GraphRunner.withPauseChecker` → `RuntimeHold.coveringForWorkflow`），
+  命中就把自己落成 paused、停在那儿 —— 还没轮到的节点保持 pending，不再往下跑。
+  ⇒ 流程必须**两个设备任务节点以上**，否则最后一个任务跑完就没有下一个边界可停，
+     暂停"停不住"只是因为没有剩下的活要停，测不出问题（本脚本第 2 版踩到）。
+
 ⚠ 两个曾经踩过的坑（2026-11-06 定位，本脚本第 1 版就踩了两个）：
   1. **run_command 有行 ≠ 设备正在执行**。
      `WorkflowService` 的 run_command 是**步结束后**才 INSERT 的
@@ -25,11 +32,11 @@
      ⇒ 一律按 `run.workflow_id = 本次新建的流程` 定位（天然唯一）。
 
 流程：
-  1. 建实验（绑一条含机械臂节点的流程）
+  1. 建实验（绑一条**含两个机械臂任务节点**的流程）
   2. 触发实验执行（**同步** —— 异步时调度器会立刻跑完实验）
-  3. 等 device_state 真的显示「设备方法执行中」
+  3. 等 device_state 真的显示「设备方法执行中」（此时后续节点还没轮到）
   4. 发暂停
-  5. 观察三层状态 + 设备指令最终状态 + 暂停生效延迟
+  5. 观察三层状态 + 后续节点是否被执行 + 暂停生效延迟
 
 用法：
   LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=... \
@@ -179,13 +186,18 @@ def main():
   id="defs_{wf_id}" targetNamespace="http://labos.local/bpmn">
   <bpmn:process id="p_{wf_id}" name="E2E-实验级暂停" isExecutable="true">
     <bpmn:startEvent id="S"><bpmn:outgoing>flow1</bpmn:outgoing></bpmn:startEvent>
-    <bpmn:task id="ARM" name="机械臂搬运" protocolName="Home" resource="{ARM_RESOURCE}">
+    <bpmn:task id="ARM" name="机械臂搬运1" protocolName="Home" resource="{ARM_RESOURCE}">
       <bpmn:incoming>flow1</bpmn:incoming>
       <bpmn:outgoing>flow2</bpmn:outgoing>
     </bpmn:task>
-    <bpmn:endEvent id="E"><bpmn:incoming>flow2</bpmn:incoming></bpmn:endEvent>
+    <bpmn:task id="ARM2" name="机械臂搬运2" protocolName="Home" resource="{ARM_RESOURCE}">
+      <bpmn:incoming>flow2</bpmn:incoming>
+      <bpmn:outgoing>flow3</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="E"><bpmn:incoming>flow3</bpmn:incoming></bpmn:endEvent>
     <bpmn:sequenceFlow id="flow1" sourceRef="S" targetRef="ARM"/>
-    <bpmn:sequenceFlow id="flow2" sourceRef="ARM" targetRef="E"/>
+    <bpmn:sequenceFlow id="flow2" sourceRef="ARM" targetRef="ARM2"/>
+    <bpmn:sequenceFlow id="flow3" sourceRef="ARM2" targetRef="E"/>
   </bpmn:process>
   <bpmndi:BPMNDiagram id="d_{wf_id}">
     <bpmndi:BPMNPlane id="pl_{wf_id}" bpmnElement="p_{wf_id}">
@@ -193,12 +205,16 @@ def main():
         <dc:Bounds x="160" y="82" width="36" height="36"/></bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="ARM_di" bpmnElement="ARM">
         <dc:Bounds x="250" y="60" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ARM2_di" bpmnElement="ARM2">
+        <dc:Bounds x="400" y="60" width="100" height="80"/></bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="E_di" bpmnElement="E">
-        <dc:Bounds x="420" y="82" width="36" height="36"/></bpmndi:BPMNShape>
+        <dc:Bounds x="550" y="82" width="36" height="36"/></bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="f1_di" bpmnElement="flow1">
         <di:waypoint x="196" y="100"/><di:waypoint x="250" y="100"/></bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="f2_di" bpmnElement="flow2">
-        <di:waypoint x="350" y="100"/><di:waypoint x="420" y="100"/></bpmndi:BPMNEdge>
+        <di:waypoint x="350" y="100"/><di:waypoint x="400" y="100"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f3_di" bpmnElement="flow3">
+        <di:waypoint x="500" y="100"/><di:waypoint x="550" y="100"/></bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>'''
@@ -287,31 +303,29 @@ def main():
     print("  暂停后 experiment_run 状态: %s" % after_st)
     t_pause = time.time()
 
-    # 7) 观察
+    # 7) 观察：等 workflow 级 run **也停在 paused**。
+    #    修复后（2026-11-06「实验级暂停停不住底层 run」）三层都停在暂停：
+    #      · 实验级两层由 RunControl.pause 立即置 paused（markCoveredPaused）；
+    #      · 底层 workflow 级 run 在**下一个节点边界**查到现场扣留命中，
+    #        把自己落成 paused、停在那儿（GraphRunner → WorkflowService.pauseRunAtBoundary）。
+    #    ⚠ 底层停在边界要**等当前设备动作跑完**（"Home" 默认不可中断），
+    #    所以观察窗必须**大于设备最坏耗时**（随机 30–300 秒）：到点就退 ⇒
+    #    设备还在执行时清理 ⇒ 在飞的步骤落库时父节点已被删 ⇒ FK 违反 ⇒
+    #    门禁的「步骤落库失败」断言变红（2026-11-06 实踩）。
     t_paused = None
-    # ⚠ 观察窗必须**大于设备最坏耗时**（随机 30–300 秒）：到点就退出 ⇒
-    #   设备还在执行时清理 ⇒ 在飞的步骤落库时父节点已被删 ⇒ FK 违反 ⇒
-    #   门禁的「步骤落库失败」断言变红（2026-11-06 实踩）。
     deadline = time.time() + 420
     while time.time() < deadline:
         er = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
         ex = q1(f"SELECT status FROM experiment WHERE id={eid}")
         if t_paused is None and (er == "paused" or ex == "paused"):
             t_paused = time.time()
-        # workflow 级 run 跑完 = 设备指令那一步结束了（run_command 落库）
         rst = q1(f"SELECT status::text FROM run WHERE id={rid}")
-        if rst in ("completed", "failed", "aborted"):
+        # 底层 run 停在 paused（修复后的口径）；落终态也收工，别空转到超时
+        if rst in ("completed", "failed", "aborted", "paused"):
             break
         time.sleep(0.2)
 
-    # 断言：**语义要求**（实现「设备执行中真停」后也不该变），
-    # 而不是「当前行为」（设备指令最终 completed —— 那条会随真停实现而变，
-    # 放进门禁就会假红）。设备指令的最终状态只作信息输出。
-    #
-    # ⚠ 只断言**实验级的两层**（experiment_run / experiment）：
-    #   workflow 级的 `run` 是**另一条独立执行** —— 它跑完就是 completed，
-    #   不受实验级暂停影响（这正是设计：实验暂停 ≠ 底层 workflow run 暂停）。
-    #   第一版把三层一起断言 ⇒ workflow run 一旦先收尾就假红。
+    # 断言一：实验级两层都 paused（语义要求，一直如此）
     er_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
     ex_st = q1(f"SELECT status FROM experiment WHERE id={eid}")
     F.ok("实验在设备执行中暂停后，实验级两层都变 paused"
@@ -319,13 +333,32 @@ def main():
         if (er_st == "paused" and ex_st == "paused") \
         else F.bad("实验级两层状态不一致",
                    "experiment_run=%s experiment=%s" % (er_st, ex_st))
-    F.ok("暂停在 5 秒内生效（%.1f 秒）" % (t_paused - t_pause)) \
+    F.ok("实验级暂停在 5 秒内生效（%.1f 秒）" % (t_paused - t_pause)) \
         if t_paused and (t_paused - t_pause) < 5.0 \
-        else F.bad("暂停生效太慢或没生效", str(t_paused))
+        else F.bad("实验级暂停生效太慢或没生效", str(t_paused))
+
+    # 断言二：底层 workflow 级 run **也停在 paused**（本次修复的核心语义）。
+    # ⚠ 旧口径是「workflow 级 run 独立跑完（不受实验级暂停影响）」——
+    #   那正是 bug（暂停停不住底层流程）。现改为：底层也必须停在 paused。
     run_st = q1(f"SELECT status::text FROM run WHERE id={rid}")
-    F.ok("workflow 级 run 独立跑完（不受实验级暂停影响）：%s" % run_st) \
-        if run_st in ("completed", "failed", "aborted") \
-        else F.bad("workflow 级 run 状态异常", run_st)
+    F.ok("workflow 级 run 也停在 paused（实验级暂停停住了底层流程）") \
+        if run_st == "paused" \
+        else F.bad("workflow 级 run 没停在 paused（实验级暂停停不住底层流程）", run_st)
+
+    # 断言三：后续节点**没被执行**（停在 pending，不是 bypassed）。
+    #   流程是 S → ARM → ARM2 → E，暂停发在 ARM 执行中：
+    #   应在 ARM2 前的边界停住 ⇒ ARM 已完成、ARM2 停在 pending。
+    #   若这里看到 pending=0（全 bypassed/completed），说明暂停又没停住。
+    tot = int(q1(f"SELECT count(*) FROM run_node WHERE run_id={rid} AND level=0") or 0)
+    done = int(q1(f"SELECT count(*) FROM run_node WHERE run_id={rid} AND level=0 "
+                  f"AND status='completed'") or 0)
+    pend = int(q1(f"SELECT count(*) FROM run_node WHERE run_id={rid} AND level=0 "
+                  f"AND status='pending'") or 0)
+    F.ok("后续节点停在 pending 未执行（completed=%d / pending=%d / 共 %d）"
+         % (done, pend, tot)) \
+        if (done >= 1 and pend >= 1) \
+        else F.bad("后续节点执行情况不符（应至少 1 个已完成 + 1 个停在 pending）",
+                   "completed=%d pending=%d total=%d" % (done, pend, tot))
 
     print()
     print("  结果：")
@@ -346,7 +379,10 @@ def main():
     cmd_st = q1(f"SELECT status::text FROM run_command WHERE run_id={rid} "
                 f"ORDER BY id DESC LIMIT 1")
     if cmd_st == "completed":
-        print("    ⇒ 设备方法**跑完了**：暂停没有打断正在执行的设备动作")
+        # "Home" 默认不可中断 ⇒ 正在执行的那个设备动作**跑完**（不打断硬件），
+        # 但在**下一个节点边界**（ARM2 前）停住 —— 这正是"动作边界生效"的语义。
+        print("    ⇒ 正在执行的设备动作跑完了（不可中断，不在动作中途停）；"
+              "但流程在下一个节点边界停住，后续节点未执行")
     elif cmd_st in ("aborted", "timeout", "failed"):
         print("    ⇒ 设备方法被中断（%s）" % cmd_st)
     else:

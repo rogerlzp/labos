@@ -21,7 +21,13 @@ import java.util.regex.Pattern;
  * <p>新流程已经修好（{@link WorkflowBuilder#build} 会写 edge）；这个工具负责**存量数据**：
  * 解析每个图形的位置，按"源图右边缘中点 → 目标图左边缘中点"补一条两点折线。
  *
- * <p>幂等：已经有 {@code BPMNEdge} 的流程直接跳过。
+ * <p>幂等：已经有 {@code BPMNEdge} 且坐标是真值的流程直接跳过。
+ *
+ * <p><b>为什么还要判"退化边"</b>：有一批流程（测试脚本
+ * {@code scripts/verify-flow-matrix.py} 早年生成的那批）虽然写了 {@code BPMNEdge}，
+ * 但 waypoint 一律是占位值 {@code (0,0)→(1,1)} —— 渲染出来是一条 1px 的线，
+ * 肉眼就是"线全没了"。只判"有没有 BPMNEdge"修不了这种，得连坐标一起看
+ * （2026-11-06 用户在设计器里指出）。
  *
  * <pre>
  * java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.workflow.GraphDiRepair [--dry-run]
@@ -35,6 +41,13 @@ public final class GraphDiRepair {
                     + "width=\"([0-9.]+)\" height=\"([0-9.]+)\"");
     private static final Pattern FLOW = Pattern.compile(
             "<bpmn:sequenceFlow id=\"([^\"]+)\" sourceRef=\"([^\"]+)\" targetRef=\"([^\"]+)\"");
+    private static final Pattern EDGE_BLOCK = Pattern.compile(
+            "\\s*<bpmndi:BPMNEdge\\b.*?</bpmndi:BPMNEdge>", Pattern.DOTALL);
+    private static final Pattern WAYPOINT = Pattern.compile(
+            "<di:waypoint\\s+x=\"(-?[0-9.]+)\"\\s+y=\"(-?[0-9.]+)\"");
+
+    /** 退化判定阈值（px）：一条线的所有 waypoint 全部落在这么小的框里 = 画不出线。 */
+    private static final double DEGENERATE_SPAN = 2.0;
 
     public static void main(String[] args) throws Exception {
         boolean dry = args.length > 0 && "--dry-run".equals(args[0]);
@@ -94,11 +107,18 @@ public final class GraphDiRepair {
      * @return 修补后的 XML；不需要改就返回 {@code null}
      */
     static String repair(String xml) {
-        if (xml == null || xml.isBlank() || xml.contains("<bpmndi:BPMNEdge")) {
+        if (xml == null || xml.isBlank()) {
             return null;
         }
+        boolean hasEdges = xml.contains("<bpmndi:BPMNEdge");
+        if (hasEdges && !hasDegenerateEdge(xml)) {
+            return null;               // 已有真坐标连线：不动（幂等）
+        }
+        // 占位边先整段摘掉再重算，否则会留下两份同 id 的 BPMNEdge
+        String body = hasEdges ? EDGE_BLOCK.matcher(xml).replaceAll("") : xml;
+
         Map<String, double[]> bounds = new LinkedHashMap<>();
-        Matcher sh = SHAPE.matcher(xml);
+        Matcher sh = SHAPE.matcher(body);
         while (sh.find()) {
             bounds.put(sh.group(2), new double[]{
                     Double.parseDouble(sh.group(3)), Double.parseDouble(sh.group(4)),
@@ -108,7 +128,7 @@ public final class GraphDiRepair {
             return null;
         }
         StringBuilder edges = new StringBuilder();
-        Matcher fl = FLOW.matcher(xml);
+        Matcher fl = FLOW.matcher(body);
         while (fl.find()) {
             String flowId = fl.group(1);
             double[] s = bounds.get(fl.group(2));
@@ -130,11 +150,42 @@ public final class GraphDiRepair {
         if (edges.length() == 0) {
             return null;
         }
-        int at = xml.indexOf("</bpmndi:BPMNPlane>");
+        int at = body.indexOf("</bpmndi:BPMNPlane>");
         if (at < 0) {
             return null;
         }
-        return xml.substring(0, at) + edges + xml.substring(at);
+        return body.substring(0, at) + edges + body.substring(at);
+    }
+
+    /**
+     * 是否存在"画不出来"的边：某条边的 waypoint 全部挤在 {@link #DEGENERATE_SPAN} 像素内。
+     *
+     * <p>只要有一条就算 —— 占位坐标是**生成器**的产物（一次生成就是整批），
+     * 而设计器/内核写出来的边坐标都是真的；所以"有一条退化"就等于"这批是占位值"。
+     */
+    static boolean hasDegenerateEdge(String xml) {
+        Matcher eb = EDGE_BLOCK.matcher(xml);
+        while (eb.find()) {
+            Matcher wp = WAYPOINT.matcher(eb.group());
+            double minX = Double.MAX_VALUE;
+            double maxX = -Double.MAX_VALUE;
+            double minY = Double.MAX_VALUE;
+            double maxY = -Double.MAX_VALUE;
+            int n = 0;
+            while (wp.find()) {
+                double x = Double.parseDouble(wp.group(1));
+                double y = Double.parseDouble(wp.group(2));
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minY = Math.min(minY, y);
+                maxY = Math.max(maxY, y);
+                n++;
+            }
+            if (n >= 2 && maxX - minX < DEGENERATE_SPAN && maxY - minY < DEGENERATE_SPAN) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String fmt(double v) {

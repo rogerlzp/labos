@@ -565,8 +565,8 @@ public final class DriverStepExecutor implements StepExecutor {
      *   <li><b>workflow 级</b>：{@code run.status = 'paused'}（页面上的暂停按钮）。</li>
      *   <li><b>实验级</b>：我的流程正被某个生效中的<b>现场扣留</b>覆盖
      *       （{@code runtime_hold}：实验/岛/现场三级作用域）——
-     *       实验级暂停落的就是扣留，而 workflow 级的 run 状态**不会**因此变 paused
-     *       （设计如此：实验暂停 ≠ 底层 workflow run 暂停）。</li>
+     *       实验级暂停落的就是扣留，靠 {@link RuntimeHold#coveringForWorkflow}
+     *       反查"正在跑这条流程的实验"。</li>
      * </ol>
      */
     private boolean pauseRequested(long workflowId) {
@@ -577,22 +577,11 @@ public final class DriverStepExecutor implements StepExecutor {
                 return true;
             }
         }
-        if (workflowId <= 0) {
-            return false;
-        }
-        // 实验级：找出正在跑我这条流程的实验，再看它有没有被扣留
-        Long expId = q1("SELECT er.experiment_id FROM experiment_run er "
-                + "JOIN experiment_run_step s ON s.tenant_id = er.tenant_id "
-                + "AND s.experiment_run_id = er.id "
-                + "WHERE er.tenant_id = ? AND er.status = 'running' AND s.workflow_id = ? "
-                + "ORDER BY er.id DESC LIMIT 1", tenantId, workflowId);
-        if (expId == null || expId <= 0) {
-            return false;
-        }
-        Long island = q1("SELECT e.island_id FROM experiment e "
-                + "WHERE e.tenant_id = ? AND e.id = ?", tenantId, expId);
-        return new RuntimeHold(db, tenantId)
-                .coveringFor(expId, island == null ? 0L : island) != null;
+        // 实验级：反查正在跑我这条流程的实验，再看它有没有被扣留盖住。
+        // 判据落在"步骤行还在跑"（experiment_run_step.status='running'），
+        // **不能**按 experiment_run.status='running' 过滤 —— 实验级暂停会先把它
+        // 置 paused，那样就永远查不到（见 RuntimeHold.coveringForWorkflow）。
+        return new RuntimeHold(db, tenantId).coveringForWorkflow(workflowId) != null;
     }
 
     /** 本次执行所属的流程 id（从 run 行取；查不到返回 0）。 */

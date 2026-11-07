@@ -5,6 +5,7 @@ import com.labos.kernel.engine.NodeStatus;
 import com.labos.kernel.engine.RecoverableNode;
 import com.labos.kernel.engine.RunProgress;
 import com.labos.kernel.engine.RunStateMachine;
+import com.labos.kernel.engine.Sleeper;
 import com.labos.kernel.engine.StepExecutor;
 import com.labos.kernel.workflow.RealWorkflowRunner.CapabilitySource;
 import com.labos.kernel.workflow.WorkflowGraphParser.GEdge;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * 按图推进：支持并行分叉/汇合与异或二选一。
@@ -100,6 +102,26 @@ public final class GraphRunner {
     private Map<String, String> variables = new java.util.LinkedHashMap<>();
 
     /**
+     * **本图自己写过**的变量名（`__setVar` / `__expr` 的目标）。
+     *
+     * <p>为什么需要：`__wait` 每轮都从外部刷新变量表，而刷新是整表 `putAll` ——
+     * 会把本图刚写进内存、但**还没回写库**的值盖回去。
+     * 例：实验启动时已经带了 `ready=0`，前面一个 `__setVar` 写成 `ready=1`，
+     * 后面 `__wait ready == 1`：第一次轮询就把 1 盖回 0，然后一路等到超时。
+     *
+     * <p>刷新因此**只补本图没写过的键**：外部写入（设备回包、人工改库）照旧生效，
+     * 本图自己的赋值以本图为准（赋值节点只改内存，见 {@link #executeBuiltin}）。
+     */
+    private final Set<String> locallyWrittenVars = new HashSet<>();
+
+    /** 记一次"本图自己写过的变量"，供 {@link #withVariableRefresher} 的刷新过滤用。 */
+    private String writeVar(String var, String value) {
+        variables.put(var, value);
+        locallyWrittenVars.add(var);
+        return var;
+    }
+
+    /**
      * 节点执行完把**返回值**读出来写进变量表。
      *
      * <p>没有它，循环就无法"走够次数再退出"（条件里的变量永远不变）；
@@ -134,6 +156,21 @@ public final class GraphRunner {
 
     public GraphRunner withBuiltinParams(Map<String, Map<String, Object>> p) {
         this.builtinParams = p == null ? Map.of() : p;
+        return this;
+    }
+
+    /**
+     * 干跑模式（保存前预检用）：只回答「哪些节点走得到」，**不真的执行内置节点**。
+     *
+     * <p>为什么需要：干跑给的是一份空参数表，`__wait` 在没有真实外部写入时必然等到超时，
+     * `__sleep` 缺 `sec` 会直接抛异常 —— 两种情况都会走上「转人工 + break」，
+     * 于是**下游真实设备任务**被误判成「永远走不到」（预检 `PF-03`）。
+     * 干跑要的是结构可达性，内置节点的取值语义在这里根本不成立。
+     */
+    private boolean dryRun;
+
+    public GraphRunner withDryRun(boolean v) {
+        this.dryRun = v;
         return this;
     }
 
@@ -209,9 +246,28 @@ public final class GraphRunner {
     /** 本次推进是否因暂停而提前停止。 */
     private boolean paused;
 
+    /**
+     * 节点状态回调：{@code (nodeKey, status)} —— 任务/内置节点「开始执行」与「执行结束」各调一次。
+     *
+     * <p>为什么需要：{@code run_node}（level=0）过去是**执行前一律建 running 外壳**，
+     * 到收尾才回填最终状态。于是整单运行期间查出来的状态恒为 running ——
+     * 流程图只能全蓝，看不出「已完成 / 执行中 / 还没轮到」三段（2026-11-07 实测）。
+     * 有了这个回调，外壳建 pending，执行时逐节点改成 running / completed。
+     *
+     * <p>默认空实现 —— 纯逻辑单测不需要落库。
+     */
+    private java.util.function.BiConsumer<String, String> nodeStateRecorder = (k, s) -> { };
+
     /** 注入暂停检查器（每到一个节点边界调用一次）。 */
     public GraphRunner withPauseChecker(java.util.function.BooleanSupplier checker) {
         this.pauseChecker = checker == null ? () -> false : checker;
+        return this;
+    }
+
+    /** 注入节点状态回调（nodeKey, status）；status 取 {@code node_status} 词表的小写名。 */
+    public GraphRunner withNodeStateRecorder(
+            java.util.function.BiConsumer<String, String> rec) {
+        this.nodeStateRecorder = rec == null ? (k, s) -> { } : rec;
         return this;
     }
 
@@ -219,6 +275,49 @@ public final class GraphRunner {
     public boolean runPaused() {
         return paused;
     }
+
+    /**
+     * 睡眠实现。
+     *
+     * <p>`__sleep` / `__wait` 两个内置节点会让执行线程**真的等**，
+     * 所以必须走这个抽象：单测注入 {@link Sleeper#recording(java.util.List)}，
+     * 不会为了验一条等待语义把 CI 拖慢几十秒。
+     */
+    private Sleeper sleeper = Sleeper.REAL;
+
+    public GraphRunner withSleeper(Sleeper s) {
+        this.sleeper = s == null ? Sleeper.REAL : s;
+        return this;
+    }
+
+    /**
+     * 变量外部刷新源（`__wait` 用）。
+     *
+     * <p>`__wait` 等的是「变量变成某个值」，而这个变化**来自执行体之外**
+     * （运维在库里改 `run.input.vars`、别的系统间接写入）。
+     * 内存里的 {@code variables} 只有本图自己写过的值，不再读一次外部源，
+     * 等待就永远是"值没变 → 超时"。
+     *
+     * <p>**刷新只补本图没写过的键**（见 {@link #locallyWrittenVars}）：
+     * `__setVar` / `__expr` 只改内存、不回写库，整表覆盖会把刚写的值盖回旧值。
+     *
+     * <p>默认空实现 —— 纯逻辑单测不需要连库。
+     */
+    private Supplier<Map<String, String>> variablesRefresher = Map::of;
+
+    public GraphRunner withVariableRefresher(Supplier<Map<String, String>> r) {
+        this.variablesRefresher = r == null ? Map::of : r;
+        return this;
+    }
+
+    /** 等待时轮询的粒度：既保证暂停能及时生效，又不至于把等待切成太碎的片。 */
+    private static final long BUILTIN_WAIT_SLICE_MS = 500L;
+
+    /** `__sleep` / `__wait` 的单次等待上限（1 天），防止参数写错把线程挂死。 */
+    private static final long BUILTIN_WAIT_MAX_MS = 86_400_000L;
+
+    /** `__wait` 没写 `timeout` 时的默认上限（秒）。和"设备让出资源"的量级一致。 */
+    private static final long DEFAULT_WAIT_TIMEOUT_SEC = 300L;
 
     public GraphRunner(RunStateMachine stateMachine,
                        Map<String, List<Long>> capabilityPool,
@@ -322,19 +421,35 @@ public final class GraphRunner {
                     && skipKeys.contains(key)) {
                 // 断点续跑：这个节点上一轮已经做完了，直接当完成往下走
                 log.accept("[续跑] 节点 " + key + " 已完成，跳过");
+            } else if ((node.kind() == Kind.TASK || node.kind() == Kind.BUILTIN) && dryRun) {
+                // 干跑：任务/内置节点**只当一步走过去**，不执行、不取值、不分配设备。
+                // 真执行的话，`__wait` 必然超时、`__sleep` 缺参会抛异常；
+                // 任务节点还要选设备 —— 干跑没有真实设备可分配（能力解析不到就 MANUAL），
+                // 三种情况都会让整图 break，把下游真实设备任务误判成"走不到"（PF-03）。
+                progress.complete(nodeId(node), "[干跑] " + node.method());
             } else if (node.kind() == Kind.BUILTIN) {
                 // 内置节点：不碰设备，直接算。算不出来就转人工停下（和人工节点一致），
                 // 不能带着错值往下跑 —— 后面可能拿它做条件分支。
+                nodeStateRecorder.accept(key, "running");
                 try {
                     String var = executeBuiltin(node);
+                    if (paused) {
+                        // `__sleep` / `__wait` 在等待途中收到暂停请求：这一步**没做完**，
+                        // 所以不留 completed 记录、也不往下走 —— 恢复时它不在 skipKeys 里，
+                        // 会被重新执行（和在任务节点边界暂停是同一套语义）。
+                        log.accept("[暂停] 内置节点 " + key + " 等待期间收到暂停请求，停在边界");
+                        break;
+                    }
                     progress.complete(nodeId(node), "[内置] " + node.method()
                             + (var == null ? "" : " → " + var + "=" + variables.get(var)));
+                    nodeStateRecorder.accept(key, "completed");
                     log.accept("[内置] " + key + " " + node.method()
                             + (var == null ? "" : " → " + var + "=" + variables.get(var)));
                 } catch (RuntimeException ex) {
                     progress.manual(nodeId(node),
                             "[内置] " + node.method() + " 失败：" + ex.getMessage(),
                             "EC-BUILTIN-001");
+                    nodeStateRecorder.accept(key, "manual");
                     log.accept("[内置] " + key + " 失败，停止等待人工：" + ex.getMessage());
                     break;
                 }
@@ -352,7 +467,9 @@ public final class GraphRunner {
                 }
                 RecoverableNode rn = toRecoverable(node);
                 java.time.Instant roundStart = java.time.Instant.now();
+                nodeStateRecorder.accept(key, "running");
                 NodeStatus st = stateMachine.executeNode(rn, progress, executor);
+                nodeStateRecorder.accept(key, st.name().toLowerCase());
                 // 只在**图里真有环**时记圈次：无环图每个节点只跑一次，
                 // 汇总行已经代表那一次，再记一行就是重复（会让"节点数"翻倍，
                 // 2026-11-03 verify-device-chain 的 3 步流程就是这么红的）。
@@ -395,12 +512,17 @@ public final class GraphRunner {
             }
 
             List<GEdge> outs = graph.out(key);
-            if (node.kind() == Kind.SPLIT_XOR) {
+            if (node.kind() == Kind.SPLIT_XOR && !dryRun) {
                 GEdge chosen = choose(outs, key);
                 if (chosen != null) {
                     activate(graph, chosen, pending, ready, done);
                 }
             } else {
+                // 干跑（保存前预检）里异或**不分叉**，出边全部算可达。
+                // 条件读的是运行时变量，干跑时值未知 —— 例如 `${mode} == 'go'`，
+                // `mode` 由 `__setVar` 在运行到那一步时才写；干跑按 default 走单边，
+                // 会把另一条分支判成「永远走不到」（PF-03 假报）。
+                // 预检只回答「有没有可能走到」，所以这里取并集。
                 for (GEdge e : outs) {
                     activate(graph, e, pending, ready, done);
                 }
@@ -446,31 +568,169 @@ public final class GraphRunner {
     /**
      * 执行一个内置节点，返回被赋值的变量名（没赋值返回 null）。
      *
-     * <p>两种：
+     * <p>四种（`protocolName` 以 `__` 开头，解析器直接归为 {@link Kind#BUILTIN}）：
      * <ul>
      *   <li>{@code __setVar}：`var` + `value`（value 里的 `${x}` 会先替换）</li>
      *   <li>{@code __expr}：`var` + `expr`（用条件求值器算，支持 `+ - * /`）</li>
+     *   <li>{@code __sleep}：`sec`（在这里停多少秒）</li>
+     *   <li>{@code __wait}：`var` + `value`（等它变成这个值才算通过）+
+     *       `timeout`（秒，默认 300）+ `interval`（轮询间隔秒，默认 1）</li>
      * </ul>
+     *
+     * <p>`__sleep` / `__wait` 都会**真的等**，但分成 500ms 的片，每片之间查一次暂停 ——
+     * 否则一个"停 1800 秒"会让暂停按钮半小时没反应（暂停是现场级事件）。
      */
     private String executeBuiltin(GNode node) {
         Map<String, Object> p = builtinParams.getOrDefault(node.key(), Map.of());
         String method = node.method();
-        String var = str(p.get("var"));
-        if (var == null || var.isBlank()) {
-            throw new IllegalArgumentException("缺参数 var（写到哪个变量）");
+        if ("__sleep".equals(method)) {
+            sleepSeconds(node, p);
+            return null;
         }
+        if ("__wait".equals(method)) {
+            waitForVariable(node, p);
+            return null;
+        }
+        String var = requireVar(p);
         if ("__setVar".equals(method)) {
             String raw = str(p.get("value"));
-            variables.put(var, substitute(raw == null ? "" : raw));
-            return var;
+            return writeVar(var, substitute(raw == null ? "" : raw));
         }
         if ("__expr".equals(method)) {
             String expr = str(p.get("expr"));
             Object v = com.labos.kernel.engine.ConditionEvaluator.value(expr, variables);
-            variables.put(var, fmt(v));
-            return var;
+            return writeVar(var, fmt(v));
         }
         throw new IllegalArgumentException("未知内置方法：" + method);
+    }
+
+    private static String requireVar(Map<String, Object> p) {
+        String var = str(p.get("var"));
+        if (var == null || var.isBlank()) {
+            throw new IllegalArgumentException("缺参数 var（写到哪个变量）");
+        }
+        return var.trim();
+    }
+
+    /** `__sleep`：在这里停多少秒（`sec`，也接受 `seconds`）。缺失或非正数直接报错，不做静默空转。 */
+    private void sleepSeconds(GNode node, Map<String, Object> p) {
+        Object raw = p.get("sec") != null ? p.get("sec") : p.get("seconds");
+        double sec = toDouble(raw);
+        if (sec <= 0) {
+            throw new IllegalArgumentException("缺参数 sec（在这里停多少秒，须为正数）");
+        }
+        long ms = Math.min(Math.round(sec * 1000L), BUILTIN_WAIT_MAX_MS);
+        log.accept("[内置] " + node.key() + " 延时 " + fmt(sec) + " 秒");
+        waitInterruptibly(ms);
+    }
+
+    /**
+     * `__wait`：等到 `var` 变成 `value` 才算通过。
+     *
+     * <p>每轮先调一次外部刷新源再比对 —— 变量的变化来自执行体之外，
+     * 只读内存表等于永远等不到。超时不成立就抛异常 → 上层记 manual 停下等人，
+     * 不会带着"条件没满足"继续往下跑。
+     */
+    private void waitForVariable(GNode node, Map<String, Object> p) {
+        String var = requireVar(p);
+        String rawWant = str(p.get("value"));
+        String want = rawWant == null ? "" : substitute(rawWant);
+        double timeoutSec = toDouble(p.get("timeout"));
+        if (timeoutSec <= 0) {
+            timeoutSec = DEFAULT_WAIT_TIMEOUT_SEC;
+        }
+        long timeoutMs = Math.min(Math.round(timeoutSec * 1000L), BUILTIN_WAIT_MAX_MS);
+        double intervalSec = toDouble(p.get("interval"));
+        if (intervalSec <= 0) {
+            intervalSec = 1;
+        }
+        long intervalMs = Math.max(1L, Math.min(Math.round(intervalSec * 1000L), timeoutMs));
+        log.accept("[内置] " + node.key() + " 等待 " + var + " = " + want
+                + "（超时 " + fmt(timeoutSec) + " 秒）");
+        // 用「已经睡掉的量」当计时，不读墙钟：单测注入的 Sleeper 不会推进系统时间，
+        // 拿 System.currentTimeMillis() 当 deadline 会让纯逻辑用例永远等不到超时。
+        long waited = 0;
+        while (true) {
+            try {
+                Map<String, String> ext = variablesRefresher.get();
+                if (ext != null && !ext.isEmpty()) {
+                    // 只补本图没写过的键：本图的 `__setVar` / `__expr` 只改内存、
+                    // 不回写 run.input.vars，整表 putAll 会把刚写的值盖回旧值，
+                    // 于是"前面赋值、后面等它"在有同名初始变量时必然等到超时。
+                    for (Map.Entry<String, String> e : ext.entrySet()) {
+                        if (!locallyWrittenVars.contains(e.getKey())) {
+                            variables.put(e.getKey(), e.getValue());
+                        }
+                    }
+                }
+            } catch (RuntimeException ex) {
+                log.accept("[内置] 读取外部变量失败（忽略）：" + ex.getMessage());
+            }
+            String cur = variables.get(var);
+            if (sameValue(cur, want)) {
+                log.accept("[内置] " + node.key() + " 条件成立：" + var + " = " + want);
+                return;
+            }
+            if (waited >= timeoutMs) {
+                throw new IllegalStateException("等待超时（" + fmt(timeoutSec) + " 秒）："
+                        + var + " 仍未变为 " + want + "（当前 " + (cur == null ? "未设置" : cur) + "）");
+            }
+            long nap = Math.min(intervalMs, timeoutMs - waited);
+            waitInterruptibly(nap);
+            waited += nap;
+            if (paused) {
+                return;   // 上层看到 paused 会停在边界，这一步不算完成
+            }
+        }
+    }
+
+    /**
+     * 分片等待：每 {@link #BUILTIN_WAIT_SLICE_MS} 毫秒查一次暂停。
+     *
+     * <p>查到暂停就置 {@link #paused} 并立刻返回（不等完剩下的时间）。
+     */
+    private void waitInterruptibly(long totalMs) {
+        long left = totalMs;
+        while (left > 0) {
+            long slice = Math.min(left, BUILTIN_WAIT_SLICE_MS);
+            try {
+                sleeper.sleep(slice);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("等待被中断");
+            }
+            left -= slice;
+            if (pauseChecker.getAsBoolean()) {
+                paused = true;
+                return;
+            }
+        }
+    }
+
+    /** 变量取值比较：两边都能当数字就按数字比（`10` == `10.0`），否则按字符串比。 */
+    private static boolean sameValue(String a, String b) {
+        if (a == null) {
+            return b == null;
+        }
+        if (a.equals(b)) {
+            return true;
+        }
+        try {
+            return Double.parseDouble(a.trim()) == Double.parseDouble(b.trim());
+        } catch (NumberFormatException ex) {
+            return false;
+        }
+    }
+
+    private static double toDouble(Object o) {
+        if (o == null) {
+            return 0;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(o).trim());
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
     }
 
     /** 把 `${x}` 换成变量表里的值；查不到就留空串（和条件求值器一致）。 */

@@ -221,6 +221,7 @@ queued.
 | `docs/评审记录/20261103-02-评审包复核.md` | `docs/en/review-records/20261103-02-review-recheck.md` | ✅ |
 | `docs/评审记录/20261103-03-编排设计评审.md` | `docs/en/review-records/20261103-03-orchestration-design-review.md` | ✅ |
 | `docs/评审记录/20261104-01-评审包复核.md` | `docs/en/review-records/20261104-01-review-recheck.md` | ✅ |
+| `docs/评审记录/20261106-01-grok.md` | `docs/en/review-records/20261106-01-grok.md` | ✅ |
 | `docs/评审记录/BUG台账.md` | `docs/en/review-records/bug-ledger.md` | ✅ |
 | `docs/评审记录/证据/20261103-run_node-ddl.md` | `docs/en/review-records/evidence/20261103-run_node-ddl.md` | ✅ |
 | `docs/资源模型与死锁避免-设计.md` | `docs/en/resource-model-and-deadlock-avoidance.md` | ✅ |

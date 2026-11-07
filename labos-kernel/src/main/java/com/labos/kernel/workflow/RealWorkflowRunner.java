@@ -435,7 +435,16 @@ public final class RealWorkflowRunner {
                                               Map<String, String> protocolCap,
                                               Map<Long, String> capabilityByResource) {
         // 1) 逻辑节点不占设备——否则会因"无候选资源"误判为转人工
-        if (isLogicNode(name)) {
+        //
+        //    两条判定缺一不可：
+        //    - `protocolName` 以 `__` 开头 = 内置节点（与解析器的 Kind.BUILTIN 同源，
+        //      WorkflowGraphParser.isBuiltinProtocol）；
+        //    - 显示名关键词（delay/variable/script…），覆盖存量"伪逻辑节点"。
+        //
+        //    只看显示名会漏：拖出来的内置节点叫「延时」「等待变量」，是中文，
+        //    关键词一条都匹配不上 ⇒ 走 NodeDef 路径（WorkflowService 建 RecoverableNode）
+        //    时能力被解析成 UNKNOWN、候选设备为空（2026-11-06 评审指出的同一条缝）。
+        if (WorkflowGraphParser.isBuiltinProtocol(protocolName) || isLogicNode(name)) {
             return new CapabilitySource(LOGIC, "logic");
         }
         // 2) 设备实例 id 是伪值(如 100000000/101000001)说明本就不绑真实设备

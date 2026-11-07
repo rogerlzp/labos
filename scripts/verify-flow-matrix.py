@@ -11,6 +11,7 @@
 覆盖的用例（--section 可选其一）：
   serial    START / END / TASK 串行
   builtin   __setVar / __expr / 变量驱动网关
+  waitsleep __sleep 延时 / __wait 变量满足 / __wait 超时转人工
   outvar    设备回包字段 → 变量 → 条件
   xor       异或网关（条件真 / 条件假走 default）
   xor3      三分支异或（按声明顺序求值）
@@ -101,6 +102,23 @@ def q(sql):
     return out.stdout.strip()
 
 
+def edge_waypoints(src, tgt):
+    """一条连线的两个端点。src/tgt 是 (x, y, w, h)。
+
+    为什么必须算真坐标：bpmn-js（和任何合规渲染器）**只按 DI 的 waypoint 画线**。
+    原来这里写的是占位值 (0,0)→(1,1)，页面上表现就是"方块都在、线一条都看不见"
+    （2026-11-06 用户在设计器里指出）。
+    """
+    sx, sy, sw, sh = src
+    tx, ty, tw, th = tgt
+    if tx >= sx + sw:                      # 目标在右：源右边缘中点 → 目标左边缘中点
+        return (round(sx + sw), round(sy + sh / 2)), (round(tx), round(ty + th / 2))
+    if tx + tw <= sx:                      # 目标在左（回边）：源左边缘中点 → 目标右边缘中点
+        return (round(sx), round(sy + sh / 2)), (round(tx + tw), round(ty + th / 2))
+    # 水平重叠：源底边中点 → 目标顶边中点
+    return (round(sx + sw / 2), round(sy + sh)), (round(tx + tw / 2), round(ty))
+
+
 def build_xml(nodes, edges, def_id="Def_m", proc_id="Proc_m"):
     """nodes: [(id, name, bpmn_tag, extra_attr)]；edges: [(id, src, tgt, cond_or_None)]。
 
@@ -109,6 +127,7 @@ def build_xml(nodes, edges, def_id="Def_m", proc_id="Proc_m"):
     """
     x = 80
     shapes, nes = [], []
+    box = {}
     for (nid, _name, tag, _extra) in nodes:
         if tag in ("startEvent", "endEvent"):
             w, h = 36, 36
@@ -116,12 +135,18 @@ def build_xml(nodes, edges, def_id="Def_m", proc_id="Proc_m"):
             w = h = 50
         else:
             w, h = 110, 80
+        box[nid] = (x, 160, w, h)
         shapes.append(f'<bpmndi:BPMNShape id="{nid}_di" bpmnElement="{nid}">'
                       f'<dc:Bounds x="{x}" y="160" width="{w}" height="{h}" /></bpmndi:BPMNShape>')
         x += 150
-    for (eid, *_rest) in edges:
+    for (eid, src, tgt, *_rest) in edges:
+        if src in box and tgt in box:
+            p1, p2 = edge_waypoints(box[src], box[tgt])
+        else:
+            p1, p2 = (0, 0), (1, 1)
         nes.append(f'<bpmndi:BPMNEdge id="{eid}_di" bpmnElement="{eid}">'
-                   f'<di:waypoint x="0" y="0" /><di:waypoint x="1" y="1" /></bpmndi:BPMNEdge>')
+                   f'<di:waypoint x="{p1[0]}" y="{p1[1]}" />'
+                   f'<di:waypoint x="{p2[0]}" y="{p2[1]}" /></bpmndi:BPMNEdge>')
 
     body_nodes = "\n".join(
         f'    <bpmn:{tag} id="{nid}" name="{name}" {extra} />'
@@ -289,6 +314,61 @@ def sec_builtin(ctx, d1, m1):
     ok("变量 counter=10 成立 → 走 A（证明 __setVar+__expr 真的改了变量）") if "A=completed" in n \
         else bad("变量没生效（没走 A）", n)
     ok("未选中的 B 为 bypassed") if "B=bypassed" in n else bad("B 状态不对", n)
+
+
+def sec_waitsleep(ctx, d1, m1):
+    step("waitsleep · __sleep 延时 / __wait 变量满足 / __wait 超时转人工")
+
+    # ① __sleep：到这一步真停 N 秒（不碰设备），且不打断后面的设备链路
+    wid = ctx.new_wf("MTRX-延时节点",
+                     [("S", "开始", "startEvent", ""),
+                      ("SL", "停 1 秒", "task", 'protocolName="__sleep"'),
+                      ("T", "延时后任务", "task", f'protocolName="{m1}" resource="{d1}"'),
+                      ("E", "结束", "endEvent", "")],
+                     [("f1", "S", "SL", None), ("f2", "SL", "T", None), ("f3", "T", "E", None)])
+    ctx.bind(wid, "SL", "__sleep", {"sec": "1"})
+    t0 = time.time()
+    rid, st = ctx.run(wid)
+    elapsed = time.time() - t0
+    ok("__sleep：整单 completed") if st == "completed" else bad("__sleep 整单未完成", st)
+    n = ctx.nodes(rid)
+    ok("SL completed") if "SL=completed" in n else bad("延时节点没完成", n)
+    ok("延时之后设备任务照常执行（T completed）") if "T=completed" in n else bad("延时后链路断了", n)
+    ok(f"确实停过（用时 {elapsed:.1f} 秒 ≥ 1）") if elapsed >= 1.0 else bad("没停够", f"{elapsed:.2f}")
+    c = q(f"SELECT count(*) FROM run_command WHERE run_id={rid}")
+    ok(f"延时节点不发设备命令（只有 T 的 1 条，实为 {c}）") if c == "1" else bad("命令数不对", c)
+
+    # ② __wait：变量已经变成目标值 → 通过（前置 __setVar 先把变量置好）
+    wid2 = ctx.new_wf("MTRX-等待节点",
+                      [("S", "开始", "startEvent", ""),
+                       ("SET", "置 ready=1", "task", 'protocolName="__setVar"'),
+                       ("W", "等 ready==1", "task", 'protocolName="__wait"'),
+                       ("E", "结束", "endEvent", "")],
+                      [("f1", "S", "SET", None), ("f2", "SET", "W", None), ("f3", "W", "E", None)])
+    ctx.bind(wid2, "SET", "__setVar", {"var": "ready", "value": "1"})
+    ctx.bind(wid2, "W", "__wait", {"var": "ready", "value": "1", "timeout": "5"})
+    rid2 = expect_run(ctx, wid2, None, "completed", "wait 条件成立")
+    n2 = ctx.nodes(rid2)
+    ok("SET 与 W 都 completed") if "SET=completed" in n2 and "W=completed" in n2 \
+        else bad("等待节点没完成", n2)
+
+    # ③ __wait 超时：目标值永远不出现 → 转人工停下，且不驱动下游设备
+    wid3 = ctx.new_wf("MTRX-等待超时",
+                      [("S", "开始", "startEvent", ""),
+                       ("W", "等 never==1", "task", 'protocolName="__wait"'),
+                       ("T", "不该跑", "task", f'protocolName="{m1}" resource="{d1}"'),
+                       ("E", "结束", "endEvent", "")],
+                      [("f1", "S", "W", None), ("f2", "W", "T", None), ("f3", "T", "E", None)])
+    ctx.bind(wid3, "W", "__wait", {"var": "never", "value": "1", "timeout": "2"})
+    rid3, st3 = ctx.run(wid3)
+    # 生产收尾走 WorkflowService.settleRun：MANUAL ⇒ 整单 paused + pause_kind='waiting_human'
+    # （转人工 = 暂停，点继续能跑），不是 failed。failed 只留给 aborted / OpsApi 那条演示插入路径。
+    ok("__wait 超时：整单 paused（转人工等人恢复）") if st3 == "paused" \
+        else bad("超时未转人工", st3)
+    n3 = ctx.nodes(rid3)
+    ok("W 记成 manual（停下等人工）") if "W=manual" in n3 else bad("等待节点状态不对", n3)
+    c3 = q(f"SELECT count(*) FROM run_command WHERE run_id={rid3}")
+    ok("超时后不驱动下游（0 条设备命令）") if c3 == "0" else bad("下游被跑了", c3)
 
 
 def sec_outvar(ctx, robot, m1):
@@ -857,6 +937,7 @@ def main():
     sections = {
         "serial": lambda: sec_serial(ctx, d1, d2, args.method),
         "builtin": lambda: sec_builtin(ctx, d1, args.method),
+        "waitsleep": lambda: sec_waitsleep(ctx, d1, args.method),
         "outvar": lambda: sec_outvar(ctx, robot, args.method),
         "xor": lambda: sec_xor(ctx, d1, args.method),
         "xor3": lambda: sec_xor3(ctx, d1, args.method),

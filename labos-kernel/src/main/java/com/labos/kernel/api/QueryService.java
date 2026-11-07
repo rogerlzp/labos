@@ -923,8 +923,10 @@ public final class QueryService {
      * <p>两个细节：
      * <ul>
      *   <li>{@code node_key} 就是 BPMN 元素 id，可以直接对上；</li>
-     *   <li>执行前会给**所有**节点建 {@code running} 外壳，所以"跑完的单子里还有
-     *       running"其实等于**没执行**——这里统一折算成 {@code pending}。</li>
+     *   <li>外壳建的是 {@code pending}，执行到哪个节点就改成 {@code running}、跑完改
+     *       {@code completed}（见 {@code GraphRunner.withNodeStateRecorder}），
+     *       所以运行期间能直接读到「已完成 / 执行中 / 还没轮到」三段。残留的
+     *       {@code running}（崩溃/中断）在非运行态统一折算成 {@code pending}。</li>
      * </ul>
      */
     public String runGraphJson(long runId) throws SQLException {
@@ -2817,6 +2819,8 @@ public final class QueryService {
         return switch (method) {
             case "__setVar" -> "变量";
             case "__expr" -> "表达式";
+            case "__sleep" -> "延时";
+            case "__wait" -> "等待";
             default -> method;
         };
     }

@@ -783,6 +783,10 @@ public final class WorkflowService {
 
         RunProgress progress;
         int eventsWritten = 0;
+        // 本次执行是不是在节点边界被暂停（workflow 级 paused / 实验级现场扣留）。
+        // 收尾前要用它把 run 落成 paused，否则 markBypassedNodes/settleRun 会把
+        // "还没轮到的节点"标成 bypassed、把整单覆盖成 completed。
+        boolean pausedAtBoundary = false;
         try (JdbcEventStore store = new JdbcEventStore(db, tenantId, runId, "api-wf", 100)) {
             // ⚠️ 这里改动前传的是 Sleeper.recording(...)：只**记录**退避时间，没人真睡。
             // 后果：策略写 retry 3 次（500ms/1s/2s），实际 50ms 内就把三次机会用光，
@@ -822,15 +826,29 @@ public final class WorkflowService {
                                     recordNodeRound(runId, key, round, st, ec, s1, e1))
                             // 变量/表达式节点的参数（不发给设备）
                             .withBuiltinParams(builtinParams)
+                            // `__sleep` / `__wait` 会**真的等**：真睡（不是 recording），
+                            // 并且每轮重读一次 run.input.vars —— 变量的变化来自执行体之外，
+                            // 只读内存表等于永远等不到（见 GraphRunner.withVariableRefresher）。
+                            .withSleeper(Sleeper.REAL)
+                            .withVariableRefresher(() -> loadRunVars(runId))
 
                             // P1-8：每到一个节点边界查一次 DB —— 状态是 paused 就停。
-        // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
-        .withPauseChecker(() -> isRunPaused(runId));
+                            // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
+                            // ⚠ 还要查**实验级现场扣留**：实验级暂停落的是扣留、不改
+                            // run 状态，只查 run.status 的话底层流程永远看不到它，会照旧跑完
+                            // （2026-11-06 实测：实验级暂停停不住 workflow 级 run）。
+                            .withPauseChecker(() -> isRunPaused(runId)
+                                    || new RuntimeHold(db, tenantId)
+                                            .coveringForWorkflow(workflowId) != null)
+                            // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
+                            // 靠这个回调把三段状态画得出来（见 createNodeShells）。
+                            .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st));
                     // 注意：**不能**按执行结果决定是否退回。
                     // 退回意味着重跑，而在真实设备上重跑 = 开两次盖（物理副作用不可撤销）。
                     // 这里只在解析阶段失败时退回（见 catch），执行了就是执行了。
                     progress = gr.run(g, executor);
                     viaGraph = true;
+                    pausedAtBoundary = gr.runPaused();
                 } catch (RuntimeException ex) {
                     System.err.println("[WARN] 按图执行失败，退回顺序执行: " + ex.getMessage());
                     progress = sm.executeAll(rec, executor);
@@ -844,6 +862,13 @@ public final class WorkflowService {
         }
 
         RunMonitor.INSTANCE.finish(runId);
+
+        // 执行在节点边界被暂停：先把 run 落成 paused，再收尾。
+        // 顺序不能反 —— markBypassedNodes / settleRun 都以 run.status 为准，
+        // 不先落就会把"还没轮到的节点"标成 bypassed、把整单覆盖成 completed。
+        if (pausedAtBoundary) {
+            pauseRunAtBoundary(runId, workflowId);
+        }
 
         Map<Long, Long> deviceToResource = loadDeviceResourceMap();
         Set<Long> validResources = loadResourceIds();
@@ -1485,10 +1510,16 @@ public final class WorkflowService {
     }
 
     /**
-     * 预创建业务节点的 run_node 外壳（status=running）。
+     * 预创建业务节点的 run_node 外壳（status=pending）。
      *
      * <p>必须提前建：命令级落库时子步骤要引用父节点 id。
-     * 返回 nodeId -> run_node.id。
+     *
+     * <p><b>为什么是 pending 而不是 running</b>：外壳是"还没轮到"的占位，
+     * 执行到那个节点时由 {@link GraphRunner#withNodeStateRecorder} 的回调改 running、
+     * 跑完改 completed。改动前一律建 running，导致整单运行期间查出来全是 running ——
+     * 流程图只能全蓝，看不出「已完成 / 执行中 / 还没轮到」（2026-11-07 实测）。
+     *
+     * <p>返回 nodeId -> run_node.id。
      */
     private Map<Long, Long> createNodeShells(long runId, List<RecoverableNode> defs,
                                              Map<Long, Long> deviceToResource,
@@ -1525,7 +1556,7 @@ public final class WorkflowService {
                 INSERT INTO run_node
                   (tenant_id, run_id, node_key, name, seq, node_type, resource_id,
                    status, attempt, actual_start, estimate_sec, input)
-                VALUES (?, ?, ?, ?, ?, 'task', ?, 'running', 0, now(), 0, ?::jsonb)
+                VALUES (?, ?, ?, ?, ?, 'task', ?, 'pending', 0, NULL, 0, ?::jsonb)
                 RETURNING id
                 """;
         try (Connection c = db.open();
@@ -1559,14 +1590,43 @@ public final class WorkflowService {
         return out;
     }
 
-    /** 执行结束后回填父节点最终状态（不重复插入）。 */
+    /**
+     * 逐节点落「执行中 / 已完成」（{@link GraphRunner#withNodeStateRecorder} 的回调）。
+     *
+     * <p>外壳建的是 {@code pending}，这里在节点开始执行时改 {@code running}、
+     * 结束时改最终态。{@code actual_start} 只补第一次（COALESCE），
+     * {@code actual_end} 只在非 running 时写。
+     *
+     * <p>落库失败不能中断执行（数据丢了比流程停了好）——只留日志。
+     */
+    private void recordNodeState(long runId, String nodeKey, String status) {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE run_node
+                        SET status = ?::node_status,
+                            actual_start = COALESCE(actual_start, now()),
+                            actual_end = CASE WHEN ?::text = 'running' THEN NULL ELSE now() END
+                      WHERE tenant_id = ? AND run_id = ? AND node_key = ? AND level = 0
+                     """)) {
+            ps.setString(1, status);
+            ps.setString(2, status);
+            ps.setLong(3, tenantId);
+            ps.setLong(4, runId);
+            ps.setString(5, nodeKey);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[WARN] 记录节点状态失败 " + nodeKey + " -> " + status
+                    + ": " + e.getMessage());
+        }
+    }
+
     /**
      * 把「分支未选中」的节点标成 {@code bypassed}。
      *
-     * <p>判定：整单**成功**跑完，但某些业务节点还是 {@code running} 外壳 ——
+     * <p>判定：整单**成功**跑完，但某些业务节点还是 {@code pending}/{@code running} ——
      * 说明异或网关走了另一条路，这些节点永远轮不到。
      *
-     * <p>只在成功结束时标：失败/暂停的单子里 running 可能是"待续跑"，
+     * <p>只在成功结束时标：失败/暂停的单子里 pending/running 可能是"待续跑"，
      * 标成 bypassed 会让续跑逻辑（按 completed 跳、其余重做）误判。
      */
     private void markBypassedNodes(long runId, RunProgress progress) throws SQLException {
@@ -1574,7 +1634,9 @@ public final class WorkflowService {
         // SKIPPED 也必须排除：跳过会让 settleRun 把整单落成 paused/waiting_human，
         // 这种单子的下游节点是"还没轮到（pending）"，不是"分支没选中（bypassed）"。
         // 漏排会把"等人处理"画成"这条路不用走"（2026-11-03 评审 H2）。
-        if (progress == null
+        // 暂停的单子同理：剩下的节点是"待续跑"，不是"分支没选中"。
+        if (isRunPaused(runId)
+                || progress == null
                 || progress.count(NodeStatus.MANUAL) > 0
                 || progress.count(NodeStatus.ABORTED) > 0
                 || progress.count(NodeStatus.SKIPPED) > 0
@@ -1589,7 +1651,7 @@ public final class WorkflowService {
                             input = COALESCE(input, '{}'::jsonb)
                                     || '{"reason":"分支未选中（异或网关走了另一条）"}'::jsonb
                       WHERE tenant_id = ? AND run_id = ? AND level = 0
-                        AND status = 'running'
+                        AND status IN ('pending', 'running')
                      """)) {
             ps.setLong(1, tenantId);
             ps.setLong(2, runId);
@@ -2381,6 +2443,45 @@ public final class WorkflowService {
             }
         } catch (SQLException e) {
             return false;   // 查不到就当作没暂停，不阻断执行
+        }
+    }
+
+    /**
+     * 执行在节点边界被暂停 —— 把 workflow 级 {@code run} 如实落成 paused。
+     *
+     * <p>不落的话下游 {@link #markBypassedNodes}/{@link #settleRun} 只认 {@code run.status}：
+     * 前者会把"还没轮到的节点"标成 {@code bypassed}（看着像分支没选中），
+     * 后者会把整单覆盖成 {@code completed} —— 用户点了实验级暂停，底层流程却显示"已完成"。
+     *
+     * <p>暂停类型/原因取覆盖该流程的现场扣留（实验级暂停落的就是它），
+     * 与实验口径一致；页面暂停已经写过的值不覆盖（{@code status <> 'paused'}）。
+     */
+    private void pauseRunAtBoundary(long runId, long workflowId) throws SQLException {
+        String kind = RuntimeHold.Kind.MANUAL.code();
+        String reason = "在节点边界被暂停，待恢复后续跑";
+        RuntimeHold.Active a = new RuntimeHold(db, tenantId).coveringForWorkflow(workflowId);
+        if (a != null) {
+            if (a.kind() != null && !a.kind().isBlank()) {
+                kind = a.kind();
+            }
+            if (a.reason() != null && !a.reason().isBlank()) {
+                reason = a.reason();
+            }
+        }
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE run
+                        SET status = 'paused'::run_status,
+                            pause_kind = COALESCE(pause_kind, ?),
+                            pause_reason = COALESCE(pause_reason, ?),
+                            paused_at = COALESCE(paused_at, now())
+                      WHERE tenant_id = ? AND id = ? AND status <> 'paused'
+                     """)) {
+            ps.setString(1, kind);
+            ps.setString(2, reason);
+            ps.setLong(3, tenantId);
+            ps.setLong(4, runId);
+            ps.executeUpdate();
         }
     }
 
