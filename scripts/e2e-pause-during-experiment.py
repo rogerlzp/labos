@@ -342,6 +342,7 @@ def main():
     except (TypeError, ValueError):
         response = {}
     after_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
+    ex_after_accept = q1(f"SELECT status::text FROM experiment WHERE id={eid}")
     after_device = device_state()
     hold = own_hold_snapshot(eid, reason)
     if hold:
@@ -379,7 +380,7 @@ def main():
     deadline = time.time() + 420
     run_st = "-"
     er_st = after_st
-    ex_st = q1(f"SELECT status::text FROM experiment WHERE id={eid}")
+    ex_st = ex_after_accept
     arm_st = node_status(rid, "ARM")
     while time.time() < deadline:
         er_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
@@ -426,7 +427,7 @@ def main():
 
     # 输出可机器读取的时间线。秒数是轮询观测时刻，不冒充设备硬件时间戳。
     def elapsed(ts):
-        return None if ts is None else round(ts - t_pause, 3)
+        return None if ts is None else round(ts - t_pause_request, 3)
 
     timeline = {
         "experimentId": eid,
@@ -434,7 +435,7 @@ def main():
         "workflowId": wf_id,
         "workflowRunId": rid,
         "holdId": MADE["hold"] or None,
-        "pauseRequestedAtEpoch": t_pause,
+        "pauseRequestedAtEpoch": t_pause_request,
         "pauseAcceptedAtEpoch": t_pause_accepted,
         "deviceRunningObservedBeforeRequest": {
             "status": busy[0], "method": busy[1], "currentRunId": busy[2]
@@ -445,6 +446,7 @@ def main():
         },
         "legacyExperimentRunStatusBefore": before_st,
         "legacyExperimentRunStatusAfterAccept": after_st,
+        "experimentStatusAfterAccept": ex_after_accept,
         "experimentStatusFinal": ex_st,
         "workflowRunStatusFinal": run_st,
         "armNodeStatusFinal": arm_st,
