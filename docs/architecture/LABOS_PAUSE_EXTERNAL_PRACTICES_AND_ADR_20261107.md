@@ -443,3 +443,188 @@ UI 同时展示 Run Control State、Execution Gate、Active Holds、In-flight Co
 - 设备安全回路独立于上层软件工作流。
 
 因此，LabOS 下一步先完成现有 PauseManager / RuntimeHold / RunControl 调用链梳理、RuntimeHold fail-closed、暂停事务原子化设计和 DeviceCapability 能力盘点。这会决定后续状态机和数据库迁移的真实边界。
+
+
+---
+
+## 13. 实验室自动化产品实践补充：GBG、Thermo Fisher Momentum、汇像 iMagicOS
+
+本节将研究从通用工作流/工业协议扩展到实验室自动化产品。证据边界：公开用户手册、官方帮助和厂商产品页能证明其公开描述的用户可见行为；不能据此推断其内部数据库、消息总线、事务协议或未公开的设备安全实现。
+
+### 13.1 Biosero Green Button Go（GBG）
+
+公开 GBG Scheduler 产品资料强调集中式实时监控、仪器状态、样本位置、系统消息、错误处理和模拟环境。公开用户手册还描述了 Program / Workcell Process / Plate Process / Instrument Process / Procedure 等层次，以及运行时错误处理、流程修改、死锁处理、板位流转和 crash recovery 等主题。
+
+对 LabOS 的借鉴：
+- 流程模型需要区分实验意图、Workcell Process、Plate/Instrument Process、Procedure 和底层设备命令；不要把一个业务节点直接等同于一次设备 RPC。
+- Workcell 需要成为真实的一等运行与故障隔离对象，具备成员设备、共享资源、物理边界、服务依赖和安全域关联。
+- 调度不只按 DAG 拓扑排序，还要判断过程是否 Ready、设备是否可用、板/样本是否可交接、资源是否释放。
+- 运行界面应同时提供流程视图、设备状态、样本/板位置、消息/报警和时间线。
+- 错误处理应有受控的 Retry / Skip / Modify / Stop / Operator intervention 等策略，但 LabOS 必须基于命令副作用、幂等性和物理证据决定是否允许，不能把“用户手册有 Retry”推导为所有设备命令均可安全重试。
+- 模拟运行与真机运行必须明确区分；模拟成功不能作为 HIL 或设备能力验收证据。
+
+不照搬：GBG 的产品层级和错误处理界面不等于 LabOS 已验证的内部执行内核。Workcell Process 等术语可借鉴，但最终实体应由现有 LabOS 数据模型和业务场景验证后确定。
+
+### 13.2 Thermo Fisher Momentum Workflow Scheduling Software
+
+Momentum 官方帮助文档公开说明：
+- Pause 时，如果设备正在执行属于该 Run 的操作，设备会先完成当前操作；之后 Run 进入暂停状态。
+- Attended 模式下，发生错误会暂停受影响的 Run 并等待操作员确认问题已处理；Unattended 模式尝试适用的自动恢复，但不支持自动恢复的设备会退回类似 Attended 的处理。
+- 设备池只从当前可用设备中选择；已在使用、Offline 或仍有未处理错误的设备不可用。设备池支持不同选择策略和错误/离线跳过策略。
+- Work Unit、Batch、Process/Experiment/Campaign 有明确组织方式；可在 Batch 中设置资源可用后执行、指定时间执行或相对另一个 Experiment 延迟执行等约束。
+- 7.1+ 文档允许按 Work Unit、Batch 或 Batch 内未执行工作等粒度终止，但明确提示中止某些必要 Batch 可能导致设备无法解锁或后续流程错误。
+
+对 LabOS 的借鉴：
+- 将暂停语义定义为“停止派发后续工作 + 在途动作按设备能力收敛”，而非强制立即停止所有设备。
+- 引入 attended/unattended 运行策略，但自动恢复必须是设备/错误/方法级 allowlist，不能仅由全局 unattended 开关授权。
+- 引入设备池/能力池：调度选择设备前检查 online、health、active fault、calibration、resource occupancy、safety domain 和能力匹配。
+- 支持 Batch / Work Unit 一类的运行组织和优先级/时间约束，但不能把这些实体机械照搬进现有模型；先确认是否需要作为独立 aggregate。
+- 中止粒度可以细化到尚未执行的工作，但必须做依赖闭包分析，避免跳过“解锁设备、释放板位、恢复环境”等清理步骤。
+- Dashboard 与工程师配置界面可分层：操作员聚焦运行、告警、人工待办；工程师聚焦流程、设备配置、诊断与调试。
+
+不照搬：Momentum 文档中的“当前设备操作完成后暂停”是其产品行为描述，不代表所有 LabOS 设备都适用。对安全联锁、机械碰撞、温控失控等故障，必须执行设备/安全控制器定义的即时安全响应，不能等待普通工艺步骤完成。
+
+### 13.3 汇像 iMagicOS
+
+汇像官方产品页公开描述其 iMagicOS 中控引擎采用分布式架构，面向生命科学、临床诊断、样品检测等场景，提供仪器驱动库和新增驱动接口；官方产品中心及公开案例呈现中控、数据中心、样本/耗材、AGV、LIMS 对接和自动化工作站等整体方案。
+
+对 LabOS 的借鉴：
+- 把实验室作为由设备、机器人/搬运、样本、耗材、环境、安全、数据系统组成的系统，而不是只把仪器 API 串成流程。
+- 设备驱动生态需要版本、能力声明、认证状态、仿真/HIL 结果和兼容矩阵；“有驱动”不等于“支持全部控制能力”。
+- 数据中心、实验执行记录和样本追溯应形成统一关联，但数据采集与设备控制的可靠性边界要分开。
+- 对 LIMS/ELN/外部系统定义稳定 API 和事件契约；外部系统不能绕过 LabOS 执行内核直接发高风险设备命令。
+- AI Copilot 应调用受权限约束的领域服务，生成流程草案、解释异常和提出恢复建议；最终控制由确定性内核、Capability、Safety Gate 和人工审批约束。
+
+证据限制：厂商宣传的驱动数量、分布式、高可用或端到端能力属于公开产品声明，不能证明具体协议、故障恢复语义、数据一致性或安全认证。需要产品演示、技术交流、现场验收或合同技术附件进一步确认。
+
+### 13.4 产品实践横向结论
+
+| 设计主题 | GBG | Momentum | iMagicOS | LabOS 应形成的设计 |
+|---|---|---|---|---|
+| 流程层次 | Workcell/Plate/Instrument Process | Process/Experiment/Batch/Work Unit | 图形化流程/功能岛 | 统一 ExecutionPlan + 可追溯业务层次 |
+| 调度 | Workcell/设备/板流转 | Work Unit、设备池、资源约束 | 跨设备与自动化模块协同 | Ready 判定、设备池、资源与安全域约束 |
+| 暂停 | 运行时错误与流程修改 | 在途操作完成后暂停 | 公开资料不足以确认底层语义 | 请求、收敛、设备确认、聚合状态 |
+| 故障处理 | 错误处理、Modify、恢复 | Attended/Unattended、设备级恢复 | 中控与设备协同 | Fault policy + Hold + Intervention + evidence |
+| 资源/样本 | 板位置、Workcell | 容器、设备池、Batch | 样本、耗材、AGV | 逻辑资源 + 物理观测 + 安全状态 |
+| 可观测性 | Dashboard、消息、状态 | Dashboard、Work Unit 状态 | 中控与数据中心 | Run/Node/Command/Device/Sample 全链路时间线 |
+| 模拟与验证 | Simulation | Simulation/Normal | 公开细节待核实 | 仿真、故障注入、HIL、真机验收分层 |
+
+### 13.5 本次产品研究形成的架构原则
+
+1. Workcell/Functional Island 必须是显式领域对象，不只是设备分组标签。
+2. Workcell 既是调度边界，也是默认故障隔离边界；但 Safety Domain 可以跨 Workcell，发生安全事件时可扩大影响范围。
+3. 实验/流程可跨 Workcell；因此一个 Workcell 故障可能影响多个 ExperimentRun，必须有跨实验的影响传播与聚合机制。
+4. 设备池只可包含能力、校准、状态和安全条件满足的设备；故障设备从池中隔离，不能仅因网络恢复自动重新可用。
+5. Pause/Stop/Abort 的粒度可以是 Run、Batch、Node 或 Workcell，但必须分别定义作用范围、在途动作策略、依赖闭包和清理动作。
+6. 自动恢复权限由设备能力、错误代码、方法风险、样本稳定性和安全策略联合决定；ATTENDED/UNATTENDED 只是运行模式，不是安全豁免。
+7. LabOS 必须同时管理数字状态与物理证据：样本/板位/机械臂位置不能仅凭软件命令成功回包更新为已确认。
+8. 所有厂商功能都应转成 LabOS 的可执行验收场景，而不是直接转成需求清单。
+
+## 14. 新增架构决策：Workcell 级故障隔离与策略化继续执行
+
+### ADR-FAULT-SCOPE-001：设备故障默认隔离整个 Workcell / Functional Island
+
+**Decision：ACCEPT AS DEFAULT POLICY; SAFETY OVERRIDE REQUIRED。**
+
+用户业务决策：设备故障默认暂停/隔离整个设备工作单元或功能岛；其他独立节点是否继续，由故障等级、安全域和依赖策略决定。
+
+解释：
+- 故障设备所在 Workcell/Functional Island 进入 FAULT_HOLD / ISOLATED，不再接受新的普通执行命令。
+- Workcell 内所有运行实例停止领取新节点；在途命令按各设备的安全策略收敛，不将 Hold 误作设备 Stop。
+- Workcell 外的任务不自动受影响；但若共享 Safety Domain、环境、公用设施、样本/板位、机器人通道或其他依赖，则按传播策略扩大。
+- 只有经策略证明独立的分支才允许继续；独立性未知时默认阻断并扩大范围。
+- 严重安全事件可由 Safety Domain 覆盖 Workcell 边界，触发多个 Workcell 或全局安全域隔离。
+
+### 14.1 领域对象与关系
+
+建议显式建模：
+- Workcell：物理/逻辑自动化工作单元，含成员设备、内部资源、输入/输出端口、空间边界、运行模式和健康状态。
+- Functional Island：面向功能的逻辑分组；可与 Workcell 一对一，也可跨多个 Workcell，但必须有明确 owner 和依赖定义。
+- SafetyDomain：由风险分析定义的安全影响范围，可以覆盖多个 Workcell/Functional Island。
+- Resource：设备、板位、机械臂、储位、端口、环境能力、耗材等。
+- ExecutionPlan binding：每个 Node/Procedure 对 Workcell、DevicePool、Resource 和 SafetyDomain 的需求。
+- Dependency Edge：显式表达数据、工艺、物理搬运、共享设备、环境和安全依赖。
+
+不要假定 Workcell、Functional Island、SafetyDomain 是同义词。它们分别表达自动化单元、功能组织和风险边界；真实拓扑可能多对多。
+
+### 14.2 故障影响传播算法（设计要求）
+
+收到已认证的 Fault/Alarm 后：
+1. 解析设备身份、Workcell、Functional Island、SafetyDomain、关联资源、当前命令和在途样本。
+2. 根据设备/错误/方法的故障策略确定 severity、required_response、resume_policy。
+3. 立即为故障 Workcell 建立持久化 Hold/Isolation，禁止领取新的普通命令。
+4. 计算影响闭包：同 Workcell 活动节点 + 共享资源使用者 + DAG 后继依赖 + 物理/环境依赖 + SafetyDomain 关联对象。
+5. 按每个受影响对象的策略生成控制动作：BLOCK_NEW_WORK、FINISH_TO_SAFE_BOUNDARY、CONTROLLED_STOP、SAFETY_CONTROLLER_ACTION、WAIT_OPERATOR、RECONCILE。
+6. 其他 Workcell 的节点只有满足全部 continue predicates 才能继续；任一关键事实 UNKNOWN 时 fail-closed。
+7. 保存传播决策快照：policy version、输入事实、命中规则、受影响对象、允许继续的对象、人工豁免及其审批。
+8. 故障解除后先恢复设备/Workcell 健康和安全证据，再逐一恢复受影响节点；不能清除 Workcell Hold 就自动恢复所有跨域实验。
+
+### 14.3 Continue Predicate（允许其他独立节点继续的必要条件）
+
+一个节点只有全部满足以下条件才允许继续：
+- 不使用故障 Workcell、设备、资源或共享设备池；
+- 不依赖受影响节点的输出、样本、板位或物理搬运；
+- 不共享受影响 SafetyDomain 或故障传播定义中的公共设施；
+- 环境条件（温度、湿度、气体、电力、排风等）不受故障影响；
+- 设备状态、资源状态和样本位置均非 UNKNOWN/QUARANTINED；
+- 当前 ExecutionPlan 版本和依赖图完整，传播计算无缺失；
+- 没有更高优先级的 site-wide / safety-domain Hold；
+- 继续执行不会阻止故障 Workcell 的安全恢复或必要清理动作。
+
+Continue Predicate 失败或无法计算时，节点不得继续。
+
+### 14.4 初步故障范围策略矩阵（阈值必须由设备/工艺风险分析确定）
+
+| 故障类别（示例） | 默认范围 | 在途动作 | Workcell 外任务 |
+|---|---|---|---|
+| 可恢复的单设备通信短断，设备状态可查询 | Workcell Hold，设备隔离 | 查询/reattach；不重放未知命令 | 仅 Continue Predicate 全通过者可继续 |
+| 设备执行错误、夹板/机械臂动作异常 | Workcell Hold；关联资源隔离 | 设备专用安全动作或等待/人工对账 | 依赖或共享安全域任务阻断 |
+| 样本/板位未知、搬运结果不确定 | Workcell + 相关样本/位置隔离 | 禁止后续搬运和处理 | 使用同一未知样本/板位的任务阻断 |
+| 温控、孵育、气体、电力、排风等公共条件异常 | 相关 SafetyDomain Hold，可能跨 Workcell | 按工艺安全策略维持/切换条件 | 受影响安全域任务阻断 |
+| 安全联锁/E-stop/人员风险 | SafetyDomain 或现场风险分析规定范围 | 由硬件安全控制器执行，不等待普通 worker | 安全域内禁止继续，直至授权复位 |
+| 质量/污染/交叉污染风险 | 相关样本、设备、区域和工艺链 | 隔离样本与设备，保留追溯 | 相关批次/样本链阻断 |
+
+### 14.5 作用范围聚合
+
+建议采用“多 Hold + 影响投影”：
+- Hold Ledger 保存原因事实和各自 scope。
+- Impact Projection 保存一次故障传播的计算结果和版本。
+- Execution Gate 对每个 NodeExecution / Resource 判断 BLOCKED / ALLOWED / UNKNOWN。
+- ExperimentRun 的展示状态由其节点、Hold 和 Gate 聚合；同一 ExperimentRun 可部分受影响，不应因某个 Workcell Hold 就无差别地将所有节点都标为设备已暂停。
+- Workcell Health 与 Workcell Execution Gate 分开：设备在线不代表无活动故障；Hold 清除也不代表健康检查完成。
+
+### 14.6 必须新增的验收测试
+
+| ID | 场景 | 必须满足 |
+|---|---|---|
+| FS-01 | Workcell A 内设备故障，A/B/C 三个实验均有节点在该岛 | 整个 Workcell 禁止新普通命令；所有在途动作按各自能力收敛 |
+| FS-02 | Workcell A 故障，Workcell B 无依赖 | B 只有 Continue Predicate 全通过才继续 |
+| FS-03 | B 与 A 共享机械臂/储位/设备池 | B 的相关节点阻断，不能因设备名不同而误判独立 |
+| FS-04 | A 故障影响跨岛样本搬运或板位 | 所有依赖该样本/位置的节点阻断 |
+| FS-05 | 两 Workcell 共享温控/排风/电力安全域，公共设施异常 | 按 SafetyDomain 扩大 Hold |
+| FS-06 | Workcell 故障传播计算缺少依赖边/资源映射 | UNKNOWN，默认扩大阻断，不放行 |
+| FS-07 | 设备报警恢复但 Workcell 人工 Hold 未清 | Workcell 仍隔离，不接受新命令 |
+| FS-08 | Workcell Hold 清除，但某实验另有 User Hold | 该实验仍不得恢复 |
+| FS-09 | 允许无关节点继续，但其完成事件依赖故障岛数据 | 重新计算依赖，不能推进下游节点 |
+| FS-10 | SafetyDomain E-stop 覆盖多个 Workcell | 软件记录和调度隔离跟随安全控制器状态；不得代替硬件动作 |
+| FS-11 | 故障时有设备命令状态 UNKNOWN | 对应资源隔离，禁止 Continue Predicate 通过 |
+| FS-12 | 故障传播策略版本在运行中更新 | 已有传播决策快照不可被静默改写；变更需重新评估并审计 |
+
+## 15. 公开参考资料
+
+### GBG / Biosero
+- Green Button Go Scheduler official product page: https://biosero.com/products/green-button-go-scheduler/
+- Green Button Go User Guide (public PDF mirror): https://www.moleculardevices.com/sites/default/files/en/assets/user-guide/dd/img/green-button-go-2015-user-manual.pdf
+
+### Thermo Fisher Momentum
+- Pausing, Resuming, and Aborting Work: https://apps.thermofisher.com/apps/lahr/LA_Online_Help_Resource/en-us/Content/Topics/Software/Momentum/Work%20Units/MMTM%20pausing%2C%20resuming%2C%20aborting%20runs.htm
+- Attended and Unattended Modes: https://apps.thermofisher.com/apps/lahr/LA_Online_Help_Resource/en-us/Content/Topics/Software/Momentum/Work%20Units/MMTM%20setting%20modes.htm
+- Creating and Configuring Pools: https://apps.thermofisher.com/apps/lahr/LA_Online_Help_Resource/en-us/Content/Topics/Software/Momentum/Configuration/MMTM%20configuring%20pools.htm
+- Understanding Work Units and Runs: https://apps.thermofisher.com/apps/lahr/LA_Online_Help_Resource/en-us/Content/Topics/Software/Momentum/Work%20Units/MMTM%20work%20units%20intro.htm
+- Thermo Fisher Momentum FAQs: https://www.thermofisher.com/order/catalog/product/MOMENTUM/faqs
+
+### 汇像科技
+- iMagicOS official product page: https://www.x-imaging.com/product/imagicos
+- XImaging product center: https://www.x-imaging.com/product
+
+注：厂商产品页与 FAQ 属厂商自述；涉及实际系统能力、内部架构、设备安全和恢复行为时，需以版本对应的技术手册、现场演示、设备型号/固件测试和合同技术附件进一步验证。
