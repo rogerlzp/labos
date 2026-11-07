@@ -262,3 +262,54 @@ Worker 消费 Outbox，向节点/设备发出控制动作。节点根据设备�
 - 暂停事务建议先把 Hold 和实验级 PAUSE_REQUESTED 意图写入，再把受影响节点置 PAUSE_REQUESTED；三者及事件/Outbox 同事务提交。设备侧确认后才推进节点状态，实验级 PAUSED/WAITING_INTERVENTION 由聚合器计算。
 - 先解决 fail-open 和跨连接非原子更新，再扩充状态枚举/字段。当前 experiment_run.status 是 varchar 语义；长状态如 WAITING_INTERVENTION / RECONCILIATION_REQUIRED 需要先核实列长度并通过 migration 扩容，或使用短 code + display label，不能直接假设写入可用。
 - 不要直接删除 PauseManager。先梳理旧 run 与 experiment_run 的 API、前端和调度调用；建立统一 PauseCoordinator 后由旧入口适配，逐步迁移。
+
+
+---
+
+## 13. 外部实践比较后的模型修订（以本节为准）
+
+本节根据 ISA-88/PackML、ROS 2 Actions、SiLA 2、OPC UA Alarms & Conditions、Temporal 和 Airflow 的公开资料，对前文状态模型作进一步收敛。
+
+### 13.1 不建议把所有含义塞进 ExperimentRun.status
+
+前文将 WAITING_INTERVENTION、RECONCILIATION_REQUIRED 列为 ExperimentRun 状态候选，便于表达 UI 语义；进一步研究后，建议底层采用正交模型：
+
+1. **Run Control State：** CREATED、RUNNING、PAUSE_REQUESTED、PAUSING、PAUSED、RESUMING、STOPPING、STOPPED、ABORTING、ABORTED、COMPLETED、FAILED、CANCELED。
+2. **Hold Ledger：** 一条 Hold 表示一个持续有效的阻断原因；多条可并存，按 hold_id 清除。
+3. **Command Execution State：** 原始设备命令及其 attempt 的执行事实，停止请求独立记录。
+4. **Alarm / Intervention State：** 报警 Active/Acknowledged/Resolved 与人工处置/设备复位证据分开。
+
+WAITING_INTERVENTION 与 RECONCILIATION_REQUIRED 更适合作为聚合器计算的 execution_gate / attention_state 或 UI 状态，而不是与 PAUSED、PAUSING、FAILED 等争夺同一互斥字段。这样才能表达“用户暂停仍然有效，同时设备故障也等待人工处理”的并发事实。
+
+### 13.2 Pause、Hold、Stop、Abort 需要定义不同语义
+
+- **Pause：** 由用户/调度控制请求触发，目标是在可恢复安全边界保持当前执行进度。
+- **Hold：** 由外部条件、设备故障、质量或安全事件造成的持续阻断原因；Hold 本身不是设备停止命令。
+- **Stop：** 按设备/工艺定义执行有序停止，通常不承诺从原位置直接继续。
+- **Abort：** 异常终止路径；不等于硬件 Emergency Stop，也不应伪装成可恢复 Pause。
+
+设备 Capability 必须明确支持哪一种语义。对于温控、孵育、搅拌等设备，安全 Hold 可能是维持工艺条件，而不是断电或停止。
+
+### 13.3 设备确认的层级
+
+不能把设备 ACK 统一理解成“已停止”。至少区分：
+- REQUEST_ACCEPTED：设备接受了控制请求。
+- STOPPING / CANCELING：设备正在执行停止过程。
+- STOPPED / CANCELED：设备报告控制动作已完成。
+- PHYSICAL_SAFE_VERIFIED：必要的传感器/安全状态证据证明设备处于允许恢复/释放资源的状态。
+
+对于机械臂、板位和高风险设备，最后一级证据可能是资源释放或恢复的必要条件。若设备协议不能提供可靠状态查询，应进入保守对账/人工确认路径。
+
+### 13.4 四个外部实践的直接启示
+
+- ISA-88/PackML：采用 acting/transient 与 wait/quiescent 的区分，状态由控制器报告。
+- ROS 2 Actions：CANCELING 是过渡态，CANCELED 是最终结果；取消请求可被拒绝。
+- SiLA 2：稳定 Command Execution UUID 和查询/订阅状态是长时设备命令的好基础，但标准核心状态不自动提供通用 Pause/Cancel。
+- OPC UA A&C：Acknowledge 表示已知悉，Confirm 表示已采取纠正措施；报警恢复与人工确认是不同事实。
+- Temporal/Airflow：暂停工作流主要阻止新工作派发；在途任务可继续运行，因此必须有 LabOS 自己的 quiescence barrier。
+
+### 13.5 实施含义
+
+实施前先画出四个模型与当前 PauseManager / RuntimeHold / RunControl / ManualWindow 的映射，不直接增加一套同义表。先修复 fail-closed 和原子事务，再做设备能力盘点、报警/人工处置闭环与聚合投影。
+
+本节是对前文 ExperimentRun 状态候选的修订，若与前文 2.1 或状态枚举表存在冲突，以本节和外部实践比较文档为准。
