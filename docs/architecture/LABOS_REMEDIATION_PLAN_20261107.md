@@ -199,3 +199,23 @@ P2：设备协议适配、跨实验安全域、HIL 和长稳测试。
 6. **现有 API / UI 迁移：** 上述内核行为确认后再变更 UI 状态和值域。
 
 不要先增加更多状态枚举。第一批目标是确保数据库或设备状态未知时，系统不会继续派发或谎报设备停止。
+
+
+## Batch 0.5：Workcell 故障隔离与影响传播（设计补充，代码未实施）
+
+用户已确认的业务原则：**设备故障默认暂停/隔离整个 Workcell / Functional Island；其他独立节点是否继续，由故障等级、安全域和依赖策略决定。**
+
+设计依据与详细规则：
+- `docs/architecture/LABOS_PAUSE_EXTERNAL_PRACTICES_AND_ADR_20261107.md` §13–14
+- `docs/architecture/LABOS_PAUSE_AND_INTERVENTION_STATE_MODEL_20261107.md` §14
+
+实施前置调查：
+1. 确认当前 `island` 实体和用户所说 Workcell/Functional Island 的关系，避免把逻辑分组误当物理安全边界。
+2. 建立设备→Workcell→Functional Island→SafetyDomain 映射，以及 Workcell 内外共享资源、样本/板位、机器人路径和公共设施依赖图。
+3. 确认当前调度器是否能跨 ExperimentRun 计算受影响节点，是否能阻止 Workcell 新命令但允许已证明独立的外部节点继续。
+4. 盘点设备报警等级、设备能力、工艺安全边界和现场 E-stop/PLC 信号来源；不得由软件团队猜测安全等级。
+5. 定义 Continue Predicate 和影响传播快照，缺少依赖/状态信息时 fail-closed。
+
+验收新增 FS-01 至 FS-12，至少覆盖跨实验共享 Workcell、跨岛共享资源、公共设施安全域、样本位置未知、传播计算缺失、报警恢复但人工 Hold 未清、其他实验仍有 User Hold、策略版本更新和 E-stop 覆盖多 Workcell。
+
+注意：本 Batch 目前是领域设计和调查要求，不授权直接改设备控制代码。完成 A–F 源码调查、现场拓扑核实和独立 AI 反向审查后，再拆分实施 PR；真机安全行为必须做 HIL/现场验收。
