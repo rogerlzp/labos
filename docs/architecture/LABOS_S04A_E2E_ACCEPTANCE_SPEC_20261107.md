@@ -96,7 +96,7 @@
 - Pause API HTTP 成功，且响应保持当前 legacy `status=paused`。
 - ExperimentRun / Experiment 的 legacy 状态写入仍然符合当前行为。
 - 本次请求确有一条 active RuntimeHold，scope=experiment，scope_id=本次 experiment_id，kind=manual，released_at IS NULL。
-- 本场景要求 Pause API 返回时设备仍为本次 Workflow Run 的 running 状态（`current_run_id` 精确匹配）；若设备已在 API 返回前自然完成，本次测试未命中「设备执行中发暂停」场景，应失败并调整设备方法时长后重跑。该事实只证明旧 API 返回时设备动作尚未收敛，不代表暂停完成。
+- 本场景要求 Pause API 返回时设备仍为本次 Workflow Run 的在途状态：`status='running'`、`current_method` 非空、`current_run_id` 精确匹配；若设备已在 API 返回前自然完成，本次测试未命中「设备执行中发暂停」场景，应失败并调整设备方法时长后重跑。该事实只证明旧 API 返回时设备动作尚未收敛，不代表暂停完成。
 - 当前设备动作最终结束，设备状态不再是本次 run 的 running/current_method。
 - Workflow Run 最终 paused。
 - 后续设备任务节点仍 pending。
