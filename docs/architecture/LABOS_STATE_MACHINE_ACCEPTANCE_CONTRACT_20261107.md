@@ -246,28 +246,41 @@ M-01 当前回归基线要求：
 
 **禁止把判据升级和 API 语义切换放在同一个 PR。**
 
-### PR-S04-A：先升级验收判据，保持现有 API 行为
+### PR-S04-A：先补事实证据与兼容回归，保持现有 API 行为
 
-目标：不改变现有业务 API 语义，为事实层增加可观测证据和新断言。
+目标：不改变现有 API 的 legacy status 语义，先把 4.17 从「只看三层 status」升级为「三层兼容状态 + 可核验的暂停事实证据」。本 PR **不宣称已完成新 PAUSED 投影语义**。
+
+**已从 main @ 3debf785 源码确认的约束：**
+
+- `RunControl.pause()` 立即创建 RuntimeHold，并立即把覆盖范围内的 `experiment_run` 标为 paused；`markCoveredPaused()` 随后另开连接更新 `experiment.status`。
+- `ExperimentApi.handle()` 当前 HTTP 200 直接返回 `status: "paused"`。
+- Workflow Run 要等当前设备动作完成，再到下一个节点边界才会落 paused。
+- 4.17 通过 `device_state.status='running' + current_method + current_run_id` 判断设备动作正在执行；`run_command` 是步骤结束后才落库，不能证明命令仍在执行。
+- 因此当前 legacy API/UI 在设备动作仍执行时可能已经显示 paused。这是 PR-S04-B 要解决的语义缺口，不能在保持现有 API 行为的 PR-S04-A 里假装它不存在。
 
 必须完成：
 
 1. 保留现有 e2e 4.17 的 M-01 三层最终 paused、后续节点 pending 断言。
-2. 增加对有效 Pause Hold 的断言（包括 hold_id、source、scope 等可查询证据）。
-3. 增加对在途命令收敛的断言；不能用「run_command 有记录」证明命令已派发或执行中，必须使用真实派发/设备状态证据。
-4. 增加「暂停请求已接受但设备动作尚未收敛」的测试场景。
-5. 在未收敛场景中断言：API/页面只表示请求已接受或 PAUSING；不得显示 PAUSED；不得开放 Resume；不得释放仍被设备占用或状态未知的资源；不得重复派发该物理命令。
-6. 增加 UNKNOWN 场景：设备查询失败/响应丢失时，系统进入 RECONCILIATION_REQUIRED 或等价阻断态。
-7. 测试用例总表与对应英文文档同步更新，明确旧断言和新增断言的差别。
-8. 本 PR 不改变 Pause API 从「立即写 paused」到「请求已接受」的外部语义；不引入未完成的 PauseCoordinator 大规模替换。
+2. 增加 RuntimeHold 持久化证据：本次测试创建的 Hold ID、scope、scope_id、kind、held_at、released_at；必须绑定当前实验/测试 run，不用全局最新 Hold 代替。
+3. 明确验证请求时设备确实在执行：使用 `device_state.status='running'`、`current_method`、`current_run_id`，并记录请求前后的状态。
+4. 明确验证收敛：等待当前动作结束；确认对应设备不再处于本次 run 的 running 状态；Workflow Run 在节点边界进入 paused；后续节点保持 pending；步骤结束后出现的 `run_command` 只作为动作已结束的补充证据，不作为“命令在途”证据。
+5. 在测试输出中分别记录三个时刻：Pause 请求接受、设备动作结束、Workflow 节点边界暂停。不得把实验级 status 提前变 paused 的时刻写成物理暂停完成时刻。
+6. legacy `experiment_run.status` / `experiment.status` 在请求后提前变 paused 的行为，本 PR 作为已知兼容行为记录，不把它解释成安全暂停完成；本 PR 不增加“未收敛时 API/UI 不得显示 PAUSED”的断言。
+7. 更新测试用例总表和对应英文文档，明确「legacy 三层状态」与「事实收敛证据」是两类断言。
+8. 不在本 PR 中加入当前 main 无法满足的 UNKNOWN fail-closed 断言；Hold 三态归 P-03，命令 ACK 丢失与 reconciliation 归 P-07/L-03。对应故障注入测试必须随这些实现工作项落地，并在 S-04-B 前成为硬门禁。
+9. 不改变 Pause API 当前的外部 status 语义；不引入未完成的 PauseCoordinator 大规模替换。
 
 PR-S04-A 通过条件：
 
 - 原 4.17 全部既有断言继续通过；
-- 新增收敛证据断言通过；
-- 新增未收敛不得 PAUSED 断言通过；
+- 新增 Hold 记录与设备执行事实断言通过；
+- 新增动作结束、节点边界暂停、后续 pending 的证据链通过；
+- 测试输出能区分请求接受时间与物理动作收敛时间；
+- 不把 legacy `status=paused` 单独当成安全暂停证据；
 - M-01 其他回归无退化；
 - 无 SKIP；记录 CI/e2e run id 和断言数。
+
+**边界：** PR-S04-A 是“事实证据与旧契约并行”的兼容阶段，不是“新状态语义已经切换”的阶段。它不能同时承诺旧 API 行为不变、又承诺未收敛时 API/UI 不显示 PAUSED。
 
 ### PR-S04-B：再切换 API / 投影语义
 
