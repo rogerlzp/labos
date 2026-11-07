@@ -180,19 +180,30 @@ Workflow（流程定义）        Run（一次 Workflow 执行）
 
 源码：`workflow/StatusVocabulary.java`
 
-- Pause kinds：`paused_fault`、`waiting_human`、`paused_unknown`
-- Hold kinds：`fault`、`plate_unknown`、`human`、`manual`
+- Pause kinds（StatusVocabulary 声明）：`paused_fault`、`waiting_human`、`paused_unknown`
+- Hold kinds（StatusVocabulary 声明）：`fault`、`plate_unknown`、`human`、`manual`
 - Hold scopes：`site`、`island`、`experiment`
 
-RuntimeHold.Kind.of() 将 Workflow code 映射为 Hold code：
+但要特别注意：**StatusVocabulary.PAUSE_KINDS 不是当前 `run.pause_kind` 数据库字段的完整枚举。** `WorkflowService.pauseRunAtBoundary()` 会把覆盖该 Workflow 的 `RuntimeHold.Active.kind()` 原样复制到 `run.pause_kind`；因此 Workflow Run 的 pause_kind 实际可能同时出现 PauseManager legacy code 和 RuntimeHold code。
 
-| Workflow PauseManager code | RuntimeHold code |
+| 来源 | 写入字段 | 可能 code |
+|---|---|---|
+| `PauseManager.pause()` | `run.pause_kind` | `paused_fault` / `waiting_human` / `paused_unknown` |
+| `WorkflowService.settleRun()` 转人工 | `run.pause_kind` | `waiting_human` |
+| `WorkflowService.pauseRunAtBoundary()` | `run.pause_kind` | `manual` 默认值，或 Hold 的 `fault` / `plate_unknown` / `human` / `manual` |
+| `RunControl.markCoveredPaused()` | `experiment_run.pause_kind` | RuntimeHold code：`fault` / `plate_unknown` / `human` / `manual` |
+
+RuntimeHold.Kind.of() 能将 legacy Workflow code 映射为 Hold code：
+
+| Workflow legacy code | RuntimeHold canonical code |
 |---|---|
 | `paused_fault` | `fault` |
 | `paused_unknown` | `plate_unknown` |
 | `waiting_human` | `human` |
 
-反向不是完整一一映射：`manual` 没有 PauseManager.Kind 的同名项；ExperimentRun.pause_kind 可能写入 RuntimeHold code，而 Workflow Run.pause_kind 写入 PauseManager code。因此不能把两列视为同一枚举，也不能直接复用同一个前端 code->label 字典而不保留 scope/type 信息。
+这意味着两列字段不只是“各自有不同枚举”，而是 **Workflow Run.pause_kind 本身也存在混合写入词表**。另外，`PauseManager.autoResumeFaulted()` 只匹配 `run.pause_kind='paused_fault'`；如果某条 Workflow Run 由 `pauseRunAtBoundary()` 写入 `fault`，该自动恢复 SQL 不会命中它。是否存在其他专门处理路径需按现场触发链确认，不能把两种 code 视为等价。
+
+**实施要求：** S-02 必须保留 raw code + 来源字段，先建立明确的 canonical mapping 和兼容读规则；不要只根据表名或 StatusVocabulary 的声明推断历史数据的完整取值域。未知 code 必须进入 UNKNOWN/人工对账，而不是静默回退为 HUMAN。
 
 ### 3.4 需要定案的兼容策略
 
@@ -213,7 +224,7 @@ RuntimeHold.Kind.of() 将 Workflow code 映射为 Hold code：
 典型链路：
 
 ```text
-Workflow API / error handling
+Workflow Run API / error handling
   -> PauseManager.pause(runId, Kind, reason, nodeKey)
   -> UPDATE run SET status='paused', pause_kind, pause_reason, pause_node_key
   -> releaseResources(runId)
@@ -238,7 +249,7 @@ Workflow API / error handling
 
 ```text
 POST /api/experiments/runs/{id}/pause
-  -> RunApi / ApiServer pause handler
+  -> ExperimentApi.handle() / EXP_RUN_ACTION matcher
   -> RunControl.info(runId)
   -> RunControl.pause(run, scope, kind, reason, actor)
        -> RuntimeHold.raise(scope, scopeId, kind, reason, actor)
@@ -347,6 +358,31 @@ Workflow Run 的 `startAsync()` 是先创建 run，再启动后台线程。Exper
 
 现状不是“所有表都由同一个状态机写”。ADR-STATE-001 所述 3debf78 的 M-01 是约定式补丁，增强了跨层暂停和防重复动作，但没有消除两套状态机。
 
+
+### 6.1 本轮补充确认的直接写入点（main 源码）
+
+以下是已定位的生产路径，不等于已经完成全仓 AST/SQL 穷举：
+
+| 表 | 写入点 | 行为 |
+|---|---|---|
+| `run` | `WorkflowService.createRun()` | 创建时直接 status=running |
+| `run` | `WorkflowService.pauseRunAtBoundary()` | 节点边界写 paused；pause_kind 复制 Hold kind |
+| `run` | `WorkflowService.settleRun()` | 写 failed / paused(waiting_human) / completed；先检查是否已 paused |
+| `run` | `WorkflowService.resumeAsync()` | 事务内删除未完成 run_node 与其命令，再写 running |
+| `run` | `PauseManager.pause/resume/dismiss/autoResumeFaulted()` | 写 paused / queued / aborted / running |
+| `run` | `StartupRecovery.settle()` | 崩溃时 running 及超时 queued/pending → failed |
+| `experiment_run` | `ExperimentScheduler.insertRun()` | 创建 queued |
+| `experiment_run` | `ExperimentScheduler.markStatus()` | 调度兜底写 completed / failed 等 |
+| `experiment_run` | `ExperimentExecutor.createRun/markRunning/settle()` | 创建 queued；开始 running；结束/暂停/失败收尾 |
+| `experiment_run` | `RunControl.markCoveredPaused/stop/resume()` | 直接暂停、停止请求/aborted、恢复 queued |
+| `experiment_run` | `BatchOrchestrator.markRunFailed()` | 执行异常兜底 failed |
+| `experiment_run` | `StartupRecovery.settleOrphanExperimentRuns()` | 启动时 running → failed |
+| `experiment` | `ExperimentExecutor.markRunning/syncExperimentStatus()` | 非分批路径同步 |
+| `experiment` | `RunControl.markCoveredPaused()` | 暂停时另开连接同步 paused |
+| `experiment` | `BatchOrchestrator.markExperimentRunning/syncExperimentStatusFromBatches()` | 批次路径聚合回写 |
+
+额外确认：Experiment API 当前 `pause` 分支调用 `RunControl.pause()` 后，HTTP 200 响应直接返回 `status: "paused"`；该响应与未来 ADR-PAUSE-001 的“请求接受 ≠ 暂停完成”语义不兼容，属于 S-04-B 必须切换的 API 契约，不应在 S-04-A 先行改变。
+
 ## 7. 对 PauseCoordinator 的适配边界建议
 
 PauseCoordinator 应统一**控制意图与事实入口**，不是把所有执行细节塞进一个巨型类，也不是把 Workflow Run 与 ExperimentRun 合并为一张表。
@@ -437,7 +473,7 @@ PauseCoordinator 应统一**控制意图与事实入口**，不是把所有执�
 | 状态词表与映射 | `.../workflow/StatusVocabulary.java` | `PAUSE_KINDS`、`HOLD_KINDS`、`SCOPES`、`RUN_TO_EXPERIMENT` |
 | 双模型崩溃收尾 | `.../workflow/StartupRecovery.java` | `settle`、`settleOrphanExperimentRuns` |
 | API 路由 | `labos-kernel/src/main/java/com/labos/kernel/api/RunApi.java` | `/api/runs/{id}/pause|resume`、`/api/manual-windows` |
-| Experiment API | `labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java` / 对应 controller | `/api/experiments/runs/{id}/pause|resume|stop`；需补齐 handler 精确定位 |
+| Experiment API | `labos-kernel/src/main/java/com/labos/kernel/api/ExperimentApi.java` | `handle()` 中 `EXP_RUN_ACTION` matcher；读取 RunInfo 后调用 RunControl.pause/stop/resume；pause 响应直接返回 `status=paused` |
 
 ---
 
