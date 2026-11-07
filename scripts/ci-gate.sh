@@ -61,7 +61,7 @@ MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → 
 MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点落在设备任务节点——网关不查 pause，__setVar/__expr 是瞬时计算也不查；__sleep/__wait 在等待循环里另查，见 MIN_MATRIX 的 waitsleep；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
-MIN_PAUSEEXP=5    # 2026-11-06：实验级暂停 · 设备执行中发暂停 → 三层都停在暂停：实验级两层（experiment_run / experiment）+ 底层 workflow 级 run 都变 paused，且后续节点停在 pending 未执行（旧口径「workflow run 独立跑完」是 bug，已修）
+MIN_PAUSEEXP=5    # S-04-A：保留 M-01 三层 legacy paused 回归；另验 Hold、设备 current_run_id/动作收敛、Workflow 边界、后续节点 pending 与无关联命令；legacy paused 可早于物理收敛。阈值不变
 MIN_INTR=3        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005），5 条断言（门禁 21 → 22 段）
 
 FAIL=0
@@ -493,9 +493,9 @@ if [[ $WITH_E2E -eq 1 ]]; then
   #   设备方法正在执行时发暂停，实验必须真的进入暂停状态，
   #   experiment_run / experiment 两层一致（2026-11-06 实测发现过
   #   「experiment_run 被收尾覆盖成 completed」「experiment 表不同步」两个 bug）。
-  #   **底层 workflow 级 run 也必须停在 paused**，后续节点停在 pending 未执行
-  #   —— 旧口径「workflow 级 run 独立跑完」正是「实验级暂停停不住底层流程」的
-  #   bug（2026-11-06 修复：边界查现场扣留 → pauseRunAtBoundary）。
+  #   M-01 兼容回归：底层 workflow 级 run 最终也必须停在 paused，后续节点 pending。
+  #   S-04-A 额外验证 Hold / device_state / 命令与节点关联事实；legacy paused
+  #   可早于设备动作收敛，不在本阶段断言 API/UI 隐藏 PAUSED（S-04-B 再切换）。
   note "4.17 实验级暂停 · 设备执行中（e2e-pause-during-experiment.py）"
   EOUT=$(python3 scripts/e2e-pause-during-experiment.py 2>&1)
   if echo "$EOUT" | grep -qE '^SKIP|缺 LABOS_DB'; then
@@ -511,7 +511,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
     elif (( SUM_PASS < MIN_PAUSEEXP )); then
       fail "实验级暂停断言 $SUM_PASS < 阈值 ${MIN_PAUSEEXP}"
     else
-      pass "实验级暂停 $SUM_PASS / 0（设备执行中发暂停 → 三层都停 paused，后续节点停在 pending；底层 run 不再照旧跑完）"
+      pass "实验级暂停 $SUM_PASS / 0（M-01 三层 legacy paused + Hold/设备收敛/节点边界/后续节点与命令证据）"
     fi
   fi
   # 4.18 A1 真停：方法声明「可中断」时，执行中发暂停 → 命令真的被中止
