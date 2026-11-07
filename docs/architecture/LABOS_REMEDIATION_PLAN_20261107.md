@@ -206,6 +206,7 @@ P2：设备协议适配、跨实验安全域、HIL 和长稳测试。
 用户已确认的业务原则：**设备故障默认暂停/隔离整个 Workcell / Functional Island；其他独立节点是否继续，由故障等级、安全域和依赖策略决定。**
 
 设计依据与详细规则：
+- `docs/architecture/LABOS_SOURCE_AUDIT_A-F_20261107.md`：A–F 阶段性源码审计，含调用链、robot_point 多机械臂字段、island 绑定缺口、资源互斥、Outbox 与测试缺口。
 - `docs/architecture/LABOS_PAUSE_EXTERNAL_PRACTICES_AND_ADR_20261107.md` §13–14
 - `docs/architecture/LABOS_PAUSE_AND_INTERVENTION_STATE_MODEL_20261107.md` §14
 
