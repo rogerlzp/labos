@@ -646,10 +646,11 @@ public final class DriverStepExecutor implements StepExecutor {
      */
     private DriverResult executeCommand(DeviceDriver driver, StepContext ctx,
                                         DriverCommand cmd, long workflowId) {
+        boolean driverSupportsPhysicalAbort = driver.supportsPhysicalAbort();
         boolean methodAllowsInterrupt = isInterruptible(cmd.deviceInstanceId(), cmd.method());
-        if (!methodAllowsInterrupt || !driver.supportsPhysicalAbort()) {
-            if (methodAllowsInterrupt && !driver.supportsPhysicalAbort()) {
-                System.err.println("[暂停] " + driver.describe().code() + " 未声明已验证的物理中止能力；"
+        if (!methodAllowsInterrupt || !driverSupportsPhysicalAbort) {
+            if (methodAllowsInterrupt) {
+                System.err.println("[暂停] 驱动未声明已验证的物理中止能力；"
                         + cmd.method() + " 将执行到安全边界，不取消本地等待");
             }
             return driver.execute(cmd);
