@@ -284,7 +284,7 @@ PR-S04-A 通过条件：
 
 ### PR-S04-B：再切换 API / 投影语义
 
-前置：PR-S04-A 已合入 main 并通过；L-02 的状态表达能力已具备；S-01 映射已完成；S-02 / P-06 的 PauseCoordinator 适配路径已可用。
+前置：PR-S04-A 已合入 main 并通过；L-02 的状态表达能力已具备；S-01 映射已完成；S-02 / P-06 的 PauseCoordinator 适配路径已可用；P-03 的 Hold CLEAR/HELD/UNKNOWN 门禁已可用；P-07/L-03 的命令账本与 reconciliation 最小能力已可用；P-11 的 API/前端状态词表与字段长度已核实。
 
 必须完成：
 
@@ -299,7 +299,7 @@ PR-S04-A 通过条件：
 PR-S04-B 通过条件：
 
 - 请求接受与暂停完成可以在 API、数据库、UI 中明确区分；
-- 在途命令、UNKNOWN、旧 Worker、未解除 Hold 均不能进入 PAUSED 或 RESUMING；
+- 在途命令、UNKNOWN、旧 Worker、未解除 Hold 均不能进入 PAUSED 或 RESUMING；其中 UNKNOWN 的判定必须来自 P-03/P-07 的实际 fail-closed 实现，不能用测试 mock 代替生产门禁；
 - 所有完成条件满足后可最终收敛到 PAUSED；
 - Resume 从正确 checkpoint 继续且无重复物理副作用；
 - 全量门禁无 SKIP；必要的设备 HIL 证据另行登记。
