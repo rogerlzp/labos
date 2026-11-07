@@ -396,10 +396,10 @@ def main():
     MADE["run"], MADE["er"] = rid, erid
     device_running_after_accept = (after_device[0] == "running"
                                    and after_device[2] == str(rid))
-    if device_running_after_accept:
-        F.ok("legacy experiment_run 已 paused 时，本次设备动作仍在运行")
-    else:
-        print("  说明：API 返回时设备已不再归属本 run（可能在请求响应窗口内自然完成）")
+    F.ok("Pause API 返回时设备仍处于本次 run 的在途状态")
+        if device_running_after_accept
+        else F.bad("Pause API 返回前设备动作已收敛，未形成设备执行中暂停场景",
+                   "device_state=%s expected_run=%s" % (str(after_device), rid))
 
     t_device_settled = None
     t_workflow_paused = None
@@ -477,6 +477,7 @@ def main():
             "status": after_device[0], "method": after_device[1],
             "currentRunId": after_device[2]
         },
+        "deviceStillRunningAtAccept": device_running_after_accept,
         "legacyExperimentRunStatusBefore": before_st,
         "legacyExperimentRunStatusAfterAccept": after_st,
         "experimentStatusAfterAccept": ex_after_accept,
@@ -492,11 +493,14 @@ def main():
         "holdAtFinalObservation": hold_final
     }
     print("\n  S04A_TIMELINE_JSON=" + json.dumps(timeline, ensure_ascii=False, sort_keys=True))
-    F.ok("设备收敛与 Workflow 暂停两个事实均已独立观测") \
-        if t_device_settled is not None and t_workflow_paused is not None \
-        else F.bad("暂停时间线证据不完整",
-                   "device_settled=%s workflow_paused=%s" %
-                   (str(t_device_settled), str(t_workflow_paused)))
+    timeline_ordered = (t_device_settled is not None
+                       and t_workflow_paused is not None
+                       and t_pause_request < t_device_settled <= t_workflow_paused)
+    F.ok("时间线顺序成立：Pause 请求 < 设备动作收敛 <= Workflow 暂停")
+        if timeline_ordered
+        else F.bad("暂停时间线顺序不成立或证据不完整",
+                   "pause_request=%s device_settled=%s workflow_paused=%s" %
+                   (str(t_pause_request), str(t_device_settled), str(t_workflow_paused)))
 
     print()
     print("  结果：")
@@ -518,16 +522,3 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit:
-        raise
-    except Exception:  # noqa: BLE001
-        import traceback
-        traceback.print_exc()
-        cleaned = cleanup()
-        if not cleaned:
-            F.bad("清理安全闸门未通过：本次 run/设备未确认收敛，现场与 Hold 已保留")
-            print("⚠ 测试现场保留，未确认设备收敛")
-        print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
-        sys.exit(1)
