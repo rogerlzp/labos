@@ -110,3 +110,22 @@
 4. 修复 UI 语义，明确展示“暂停处理中”与“已安全暂停”。
 5. 增加设备报警 Hold、人工 InterventionRecord、复位证据与恢复门禁。
 6. 最后做事件乱序、重复、worker crash、多实例和真机 HIL。
+
+
+### Batch 0.4 实施前的现有代码核对（重要修订）
+
+暂停设计文档已补充当前代码映射：`docs/architecture/LABOS_PAUSE_AND_INTERVENTION_STATE_MODEL_20261107.md` §12。
+
+仓库已经存在 PauseManager（旧 run 模型）、RuntimeHold（site/island/experiment）、RunControl（experiment_run）和 ManualWindow。**下一步不是新建第三套 Hold，而是收敛已有实现。**
+
+实施顺序调整为：
+
+1. **P0-0：安全闸门 fail-closed。** RuntimeHold.active() 当前 SQL 失败会返回空列表，可能把“读不到 Hold”误判成“没有 Hold”。改为明确错误/UNKNOWN，派发和恢复必须拒绝。
+2. **P0-1：暂停事务原子化。** RunControl.pause() 当前 raise Hold、更新 experiment_run、更新 experiment 使用独立连接；改为单一事务写 Hold + 实验级 PAUSE_REQUESTED + 受影响 run/node 的 PAUSE_REQUESTED + Event/Outbox。
+3. **P0-2：异步收敛状态。** 删除“暂停请求 API 立即把实验标为 paused”的语义；引入 PAUSING，节点在设备当前命令结束或设备侧停止确认后才标 PAUSED。
+4. **P0-3：Hold 原因与解除粒度。** 当前唯一索引限制同一 scope 只有一条活动 Hold，clear 按 scope 清全部。改为事件幂等键去重、hold_id 精确解除，允许用户暂停和设备故障 Hold 并存。
+5. **P0-4：人工干预恢复门禁。** 设备故障按策略区分可自动恢复和必须人工恢复；后者要求 InterventionRecord、设备自检、联锁复位和物理状态核验后才能 RESUMING。
+6. **P0-5：旧新模型兼容迁移。** 先梳理 PauseManager 的旧 run 与 RuntimeHold/RunControl 的 experiment_run 调用入口，建立统一 PauseCoordinator/适配器，再逐步迁移，不能直接删旧类。
+
+注意：WAITING_INTERVENTION 和 RECONCILIATION_REQUIRED 长于当前 schema 注释中 experiment_run.status 的 varchar(16) 设计；实施前核实实际库列类型，迁移扩容或使用短状态 code。当前不应直接写入这些长字符串。
+
