@@ -314,3 +314,29 @@ ExperimentCanvas 的节点类型是 start/end/workflow，工作流组合不是�
 - 未取得完整 DB migration/tree 清单；robot_point、workflow.attr、island_flow 的真实索引/外键/唯一约束仍需专门调查。
 
 下一步应先做 P0 的测试设计和边界服务接口设计，再由用户确认后进入小 PR 实施。不能先只改前端下拉框，因为这无法约束 API、历史图、脚本和旁路执行路径。
+
+
+## 8. 补充核查：Experiment 组合阶段也没有 Island 一致性校验 — CONFIRMED / P0
+
+这不是只发生在 Designer 的设备拖拽阶段。实验编排还存在第二个边界：
+
+文件：`labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java`
+
+- 1358–1373：`replaceExperimentProcesses(experimentId, workflowIds)` 先调用 `validateExperimentWorkflowIds`，再替换流程。
+- 1375–1413：`validateExperimentWorkflowIds` 只检查 workflowIds 数量、ID 合法性、tenant 下是否存在；查询只取 `workflow.id`，没有读取 `workflow.attr.island_id`，也没有读取 experiment.island_id。
+- 1415–1458：真正写入 `experiment_process` 时只写 experiment_id/workflow_id/seq/run_mode，没有 Island 一致性比较。
+- 2334–2362：`saveExperimentGraph` 编译 ExperimentCanvas 后调用同一存在性校验和流程替换；没有 Island 比较。
+- 2408–2450：`createExperiment(name, code, islandId, ..., workflowIds)` 同时接收实验 islandId 和 workflowIds，并在同一事务中写 experiment 与流程关联；本段路径没有看到先检查 workflow Island 是否一致。
+
+文件：`labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentExecutor.java`
+
+- 689–704：`islandOf(experimentId)` 能读取 experiment.island_id。
+- 144–156：运行时拿到 islandId 后用于 RuntimeHold 覆盖判断。
+- 774–779：真正调用 WorkflowService 时只使用 `withVars(runVars).execute(workflowId)`，没有把 islandId 传给 WorkflowService。
+
+因此需把“Workflow 内设备属于同一个 Island”和“Experiment 只引用所属 Island 的 Workflow”作为两个不同校验点：
+1. Workflow 内每个物理设备节点必须属于 workflow.island_id；
+2. Experiment 内每个 Workflow 必须属于 experiment.island_id；
+3. 两层任意一层未分配/不一致，都必须在保存/发布时阻断，运行时再次验证。
+
+本发现把原报告中“Experiment 与 Workflow 组合边界 PARTIAL”细化为：**当前已检查的流程关联写入路径只有存在性/租户检查，没有 Island 一致性检查；可见实现为 CONFIRMED 缺口。**
