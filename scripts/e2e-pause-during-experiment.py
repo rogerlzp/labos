@@ -102,6 +102,31 @@ def device_state():
     parts = (row + "||").split("|")
     return (parts[0], parts[1], parts[2])
 
+def own_hold_snapshot(experiment_id, reason):
+    """只读取本次请求的 Hold；不依赖全局最新 Hold。"""
+    raw = q1("SELECT row_to_json(h)::text FROM ("
+             "SELECT id, scope, scope_id, kind, reason, held_at, released_at "
+             "FROM runtime_hold WHERE tenant_id=1 AND scope='experiment' "
+             "AND scope_id=%d AND reason='%s' ORDER BY id DESC LIMIT 1) h" %
+             (experiment_id, reason.replace("'", "''")))
+    return json.loads(raw) if raw else None
+
+
+def node_status(run_id, node_key):
+    return q1("SELECT COALESCE((SELECT status::text FROM run_node "
+              "WHERE tenant_id=1 AND run_id=%d AND level=0 AND node_key='%s' "
+              "ORDER BY id DESC LIMIT 1), '-')" % (run_id, node_key))
+
+
+def command_count(run_id, parent_key, status=None):
+    status_filter = " AND c.status::text='%s'" % status if status else ""
+    return int(q1("SELECT count(*) FROM run_command c "
+                  "JOIN run_node n ON n.id=c.run_node_id "
+                  "LEFT JOIN run_node p ON p.id=n.parent_node_id "
+                  "WHERE c.tenant_id=1 AND c.run_id=%d "
+                  "AND (n.node_key='%s' OR p.node_key='%s')%s" %
+                  (run_id, parent_key, parent_key, status_filter)) or 0)
+
 
 # 本次造出来的对象（供清理用）。⚠ 失败路径也必须清理 ——
 # 残留的 run 留在库里会让别的脚本的 max(id) 抓到它们（2026-11-06 踩过）。
