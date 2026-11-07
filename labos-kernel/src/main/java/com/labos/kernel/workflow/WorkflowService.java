@@ -413,6 +413,22 @@ public final class WorkflowService {
                 return t;
             });
 
+    /**
+     * 当前 JVM 内的 run worker 所有权。非物理中止驱动必须跑到安全边界才退出；
+     * 在旧 worker 退出前不允许 resumeAsync 启动第二个 worker 重放同一 run。
+     * 进程重启后的状态仍由数据库恢复/对账流程负责。
+     */
+    private static final java.util.Set<Long> ACTIVE_RUNS =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    static boolean reserveActiveRun(long runId) {
+        return ACTIVE_RUNS.add(runId);
+    }
+
+    static void releaseActiveRun(long runId) {
+        ACTIVE_RUNS.remove(runId);
+    }
+
     public Execution execute(long workflowId) throws SQLException {
         return execute(workflowId, ATTENDED);
     }
@@ -463,17 +479,27 @@ public final class WorkflowService {
             }
         }
 
-        RUN_POOL.submit(() -> {
-            try {
-                execute(workflowId, mode, runId);
-            } catch (Exception e) {
+        if (!reserveActiveRun(runId)) {
+            throw new IllegalStateException("run 已有执行 worker: " + runId);
+        }
+        try {
+            RUN_POOL.submit(() -> {
                 try {
-                    markRunFailed(runId, e.getMessage());
-                } catch (SQLException ignore) {
-                    // 尽力而为
+                    execute(workflowId, mode, runId);
+                } catch (Exception e) {
+                    try {
+                        markRunFailed(runId, e.getMessage());
+                    } catch (SQLException ignore) {
+                        // 尽力而为
+                    }
+                } finally {
+                    releaseActiveRun(runId);
                 }
-            }
-        });
+            });
+        } catch (RuntimeException submitFailure) {
+            releaseActiveRun(runId);
+            throw submitFailure;
+        }
         return runId;
     }
 
@@ -509,6 +535,24 @@ public final class WorkflowService {
      * </ol>
      */
     public void resumeAsync(long runId) throws SQLException {
+        // 当前 worker 可能仍在等待一个不支持物理 Abort 的设备动作自然完成。
+        // 先占有 run，防止两个 resume 请求或旧 worker 与新 worker 并行重放。
+        if (!reserveActiveRun(runId)) {
+            throw new IllegalStateException(
+                    "run " + runId + " 的上一执行线程尚未退出；请等设备动作到达安全边界后再恢复");
+        }
+        boolean scheduled = false;
+        try {
+            resumeAsyncReserved(runId);
+            scheduled = true;
+        } finally {
+            if (!scheduled) {
+                releaseActiveRun(runId);
+            }
+        }
+    }
+
+    private void resumeAsyncReserved(long runId) throws SQLException {
         Long wfId = null;
         String attendance = ATTENDED;
         try (Connection c = db.open();
@@ -603,6 +647,8 @@ public final class WorkflowService {
                 } catch (SQLException ignore) {
                     // 尽力而为
                 }
+            } finally {
+                releaseActiveRun(rid);
             }
         }, "labos-resume-" + runId);
         t.setDaemon(true);
