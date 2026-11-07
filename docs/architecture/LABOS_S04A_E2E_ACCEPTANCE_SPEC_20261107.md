@@ -228,6 +228,31 @@ PR-S04-B 不能只改 API 响应文字；必须让 UI、数据库、调度门禁
 - `scripts/ci-gate.sh`：只更新 4.17 的说明文字，`MIN_PAUSEEXP=5` 未改变。
 - `docs/测试用例总表.md`：同步 S-04-A 的事实证据与 legacy 状态边界。
 
-**尚未验证：** 本轮没有可访问的项目运行环境，尚未执行 Python 编译检查、4.17 e2e、`ci-gate.sh --all` 或真实设备测试。GitHub 当前分支也没有对应 PR，且最新提交没有可见 CI status。因此这些修改只能标记为“已提交到评审分支、待运行验证”，不能标记 S-04-A 完成或 M-01 VERIFIED。
+### 8.1 真实环境验证结果（2026-11-07）
 
-**下一步验收顺序：** 先在具备 LabOS API、PostgreSQL 和模拟器的环境执行 `python3 -m py_compile scripts/e2e-pause-during-experiment.py`；再单独运行 4.17，检查 `S04A_TIMELINE_JSON` 和所有断言；最后执行 `./scripts/ci-gate.sh --all`，确认无 SKIP、`MIN_PAUSEEXP=5` 未降、M-01 其余回归无退化。
+在具备 LabOS API（`127.0.0.1:18080`）、PostgreSQL（`labdb`）与模拟器（设备 19500–19506）的环境执行：
+
+| 步骤 | 命令 | 结果 |
+|---|---|---|
+| 语法检查 | `python3 -m py_compile scripts/e2e-pause-during-experiment.py` | OK（修复空守卫后） |
+| 4.17 单跑 | `python3 scripts/e2e-pause-during-experiment.py --api http://127.0.0.1:18080` | 通过 13 / 失败 0；本次 Hold 生命周期正确；时间线成立（`t_pause_request < t_device_settled <= t_workflow_paused`）；清理后 `active_holds=0` |
+| 全量门禁 | `./scripts/ci-gate.sh --all` | 段 0/1/2/2.5/2.6 与 3/4/4.5/4.6/4.7/4.8–4.18 全绿；**4.17 实验级暂停 13 / 0**、4.18 A1 真停 5 / 0；**SKIP = 0**；唯一失败为 **2.7 完整流程矩阵的 `outvar`（2 条）** |
+
+**4.17 通过即 M-01 兼容回归成立**：三层 legacy `paused` 未退化，且新增的 Hold / `device_state` 在途与收敛 / Workflow 节点边界 / 后续节点 `pending` 与命令关联证据均成立。
+
+### 8.2 首轮暴露并修复的两个测试脚本缺陷
+
+1. **空 `if __name__` 守卫（P0）**：`a75b15a` 版本文件末尾 `if __name__ == "__main__":` 没有函数体，`py_compile` 直接 `IndentationError`，且 `main()` 从不执行。已补 `main()`。
+2. **`reason` 编码往返不一致**：客户端 `urlencode` 把空格编码为 `+`，而服务端 `ApiServer.queryParams` 经 `URI.getQuery()` + `URLDecoder.decode` 只解 `%XX`、不解 `+`，带空格的 `reason` 落库为 `a+b`、查询用 `a b`，导致找不到本次 Hold → 漏清理并残留 active Hold，会经 `ExperimentScheduler.dispatch()` 全局闸门阻塞其后所有 e2e 段。已把 `reason` 改为无空格形式。
+
+### 8.3 2.7 `outvar` 失败的性质（与本 PR 无关）
+
+`outvar` 选用的机械臂是 `verify-flow-matrix.py` 中「在线 TRANSFER 资源里 `resource_id` 最小」的一台，本环境即 **`200214`（ID1731，设备 214）**，其模拟器以 `--rand-delay 30000:300000` 启动（每次方法 30–300 秒）。该用例需要 `GetPosition` + `Home` 两次设备方法，耗时之和可能超过脚本 `Ctx.run(wait=420)` 的 420 秒预算，于是断言在「整单 `running`、节点 `T=completed`」时判失败。
+
+证据：失败时节点为 `T=completed` / `A=pending`（首轮）或 `T=running`（按同参数复跑 `--section outvar`），属**执行超时**而非语义错误；同一用例在设备更快时可通过（2026-11-06 记录有正常 `completed` 的 run）。本 PR 只改 4.17 脚本与文档，未触及 `verify-flow-matrix.py`、变量/网关执行路径或设备配置，故不构成本 PR 的回归。
+
+**建议（属测试环境治理，不在 PR-S04-A 范围）**：把 `outvar` 的机械臂选择固定到低延迟设备，或把 `Ctx.run` 预算按设备实际延迟上限调整，以消除该环境性波动。
+
+### 8.4 仍未完成（不得据此宣布完成）
+
+`RUNNING → PAUSE_REQUESTED → PAUSING → PAUSED` 中间态、Hold 查询异常的 UNKNOWN fail-closed、设备 ACK 丢失的 RECONCILING、物理 Abort，以及「未收敛不得显示 `PAUSED`」的 API/UI 投影切换，**均未实现**，属 P-03 / P-07 / L-02 / L-03 / PR-S04-B。本次验证只证明 **legacy 三层 `paused` 契约未退化 + 新增事实证据成立**，不证明新状态机已具备。
