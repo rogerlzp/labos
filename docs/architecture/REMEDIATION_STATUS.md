@@ -73,7 +73,7 @@
 | S-01 | 两套 run 模型映射表：字段 / 调用链 / `pause_kind` 词表差异 / 创建·关闭·重启恢复行为 / 关联基数 | — | NOT_STARTED | `PauseManager`→`run.status`、`RunControl`→`experiment_run.status` 并存且独立写库；`3debf78` 只是约定式补丁，未合并 |
 | S-02 | `PauseCoordinator` 适配层：**与 P-06 是同一项**，本行只补「两套模型映射与适配边界」，不另建第二个 Coordinator | S-01、P-06 | NOT_STARTED | 统一入口 + 单事务写 Hold/意图/事件/Outbox；保留 `M-01` 作废旧 run 契约，不直接删 `PauseManager` |
 | S-03 | 事实 vs 投影职责切换：`experiment.status` 只允许聚合器写；`StatusVocabulary` CASE 回写收口 | S-02、P-06 | NOT_STARTED | 现状 3 处直接 UPDATE；`PauseCoordinator` / `ExperimentStateProjector` 在 Java 源码 0 命中 |
-| S-04 | ⚠️ **验收口径切换（分两个 PR）**：① 升级 4.17 判据为「三层 status **且** Hold 有效 **且** 在途命令已收敛」，新增「未收敛不得显示 `PAUSED`」断言，旧断言并行通过；② 再切 API 语义 | G-03、L-02 | NOT_STARTED | `docs/测试用例总表.md:51,216` 与 e2e 4.17 现以「三层都 `paused`」为唯一判据，与新设计「status 只是投影」冲突；**禁止同一 PR 同时改实现与判据** |
+| S-04 | ⚠️ **验收口径切换（分两个 PR）**：① PR-S04-A 保留 legacy API/status，4.17 增加本次 Hold ID、device_state 在途/收敛、节点边界和后续 pending 证据；明确 legacy `paused` 可早于物理收敛，**不在 A 阶段断言 UI/API 不显示 PAUSED**；② PR-S04-B 在 P-03、P-07/L-03、L-02、S-02/P-06 完成后切 API/UI 语义，并新增「未收敛不得显示 `PAUSED`」断言 | G-03、L-02、P-03、P-07、S-02/P-06 | NOT_STARTED | 现有 4.17 以三层 `paused` 为主断言；当前 `ExperimentApi` 立即返回 paused、设备动作可继续运行到安全边界。两阶段边界见 `LABOS_S04A_E2E_ACCEPTANCE_SPEC_20261107.md`；**禁止同一 PR 同时改实现与验收判据** |
 | S-05 | 原有 26 份状态相关文档索引 + 过时标注（哪些仍是权威、哪些已被 ADR 取代） | — | NOT_STARTED | 避免下一个人把「三层都 paused」当成新设计的验收判据 |
 
 ## 5. P 组：保留的整改工作项
@@ -135,7 +135,7 @@
 | 1 | B-01~B-03 分 3 个小 PR 搬到 main（每项含源码+回归测试+证据+文档） | Step 0 | G-03 回归绿 |
 | 2 | 文档 PR：`ADR_INDEX.md`、`REMEDIATION_STATUS.md`、6 份脱敏归档文档合入 main；修 ADR §14.2 重复编号、A–F 审计行号改符号锚点 | — | review checklist 含「无商业公司/产品名」 |
 | 3 | 查清 **Q-12**（自研 `RedisClient` 是否支持 `SET NX PX` / Lua 原子释放 / 续约）；N-05 接口定案；Q-05 / Q-09 / Q-10 在对应 PR 内定（Q-03 / Q-04 已裁决） | Step 2 | ADR 新增/更新 |
-| 3b | **S-01 + S-04 第 1 个 PR**：两套 run 模型映射表 + 4.17 判据升级（三层 status **且** Hold 有效 **且** 在途命令已收敛）+ 新增「未收敛不得显示 `PAUSED`」断言，**旧断言并行通过** | Step 3 | 全量门禁绿；`M-01` 不回退 |
+| 3b | **S-01 + PR-S04-A**：两套 Run 模型映射表 + 4.17 增加 Hold / device_state / 动作收敛 / 节点 pending 事实证据，保持 legacy API/status；未收敛不得显示 `PAUSED` 的 UI/API 断言留到 PR-S04-B | Step 3 | 全量门禁绿；`M-01` 不回退；PR-S04-A 不得假称新 PAUSED 语义已切换 |
 | 4 | P-01（schema + 只读盘点，无 enforcement）→ P-10 → P-02（validator + 事务 + 12 条集成测试） | Step 3、N-05 | 测试 1~7/11/12 |
 | 5 | **跨 Workcell 组（独立 PR 组，ADR-LAYER-001 第 1 批）**：**N-03（Redis + PG 分布式资源锁，先做）** → N-01 → N-07（配置期 Handoff 结构）→ N-04 → **N-08 + L-01 + L-04 同批**（人工确认门禁 + 到位记录 + 前端页）→ N-06（反转用例）→ N-02 | Step 3b、Step 4 | 人工确认缺失 / UNKNOWN 必须阻断；配置过但无本次确认不得放行；锁失败 / 分区 ⇒ 资源 QUARANTINED |
 | 6 | **P-03（Hold 三态，独立 PR）+ N-10（整实验停的影响闭包，同批）** → P-04 + N-09（岛名展示口径）→ P-05 | Step 0、Step 4 | 同一实验内任一 Workcell 故障 ⇒ 全部段阻断；其他独立实验仍按 ADR-FAULT-SCOPE-001 |
