@@ -39,7 +39,7 @@ for a in "$@"; do
 done
 
 # 阈值：只许涨不许跌。改了用例要同步改这里，逼着人想清楚"少的那几条去哪了"。
-MIN_PURE=644    # 2026-11-06：MethodTimeoutPolicySelfTest 20（超时按方法取的优先级/0=没配/显式值不被抬高）（624 → 644）
+MIN_PURE=647    # 2026-11-06：MethodTimeoutPolicySelfTest 20（超时按方法取的优先级/0=没配/显式值不被抬高）（624 → 644）
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
