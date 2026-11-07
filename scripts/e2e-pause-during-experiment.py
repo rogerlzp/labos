@@ -86,9 +86,9 @@ def http_post(base, path, token):
     req.add_header("Authorization", "Bearer " + token)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, r.read().decode()[:300]
+            return r.status, r.read().decode()
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()[:300]
+        return e.code, e.read().decode()
 
 
 def device_state():
@@ -505,9 +505,9 @@ def main():
     print("    ARM completed commands : %d" % arm_completed_commands)
     print("    ARM2 commands           : %d" % arm2_commands)
 
-    # 9) 清理（顺序要紧：run 先删，否则 workflow 删不掉）
-    cleanup()
-    print("  （测试数据已清理）")
+    # 9) 清理：只有本次 run 已终态且设备租约已释放，才释放本次 Hold 并清理数据。
+    cleaned = cleanup()
+    print("  （测试数据已清理）" if cleaned else "  （测试现场保留，需人工检查）")
     print()
     print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
 
