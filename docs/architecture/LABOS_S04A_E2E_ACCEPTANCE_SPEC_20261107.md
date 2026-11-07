@@ -96,13 +96,13 @@
 - Pause API HTTP 成功，且响应保持当前 legacy `status=paused`。
 - ExperimentRun / Experiment 的 legacy 状态写入仍然符合当前行为。
 - 本次请求确有一条 active RuntimeHold，scope=experiment，scope_id=本次 experiment_id，kind=manual，released_at IS NULL。
-- Pause 请求后设备可能仍为 running；这是当前非可中断动作的预期兼容行为，不可将此时刻标记为暂停完成。
+- 本场景要求 Pause API 返回时设备仍为本次 Workflow Run 的 running 状态（`current_run_id` 精确匹配）；若设备已在 API 返回前自然完成，本次测试未命中「设备执行中发暂停」场景，应失败并调整设备方法时长后重跑。该事实只证明旧 API 返回时设备动作尚未收敛，不代表暂停完成。
 - 当前设备动作最终结束，设备状态不再是本次 run 的 running/current_method。
 - Workflow Run 最终 paused。
 - 后续设备任务节点仍 pending。
 - 后续节点没有对应的 run_command；不能仅凭 pending 节点状态推断没有发过命令，需结合本次 run 的命令关联查询。
 - 已完成的当前动作有其步骤完成证据；`run_command` 只能作为动作完成后的证据，不能作为在途证据。
-- 记录三个时间戳：`t_pause_request < t_device_action_settled <= t_workflow_paused`。如果执行器的观测粒度导致后二者相同，允许相等；不得倒序。
+- 记录并断言时间线：`t_pause_request < t_device_action_settled <= t_workflow_paused`。如果执行器的观测粒度导致后二者相同，允许相等；不得倒序。
 
 明确不作的断言：
 
@@ -223,7 +223,7 @@ PR-S04-B 不能只改 API 响应文字；必须让 UI、数据库、调度门禁
 
 已在 `review/labos-architecture-20261107` 修改：
 
-- `scripts/e2e-pause-during-experiment.py`：增加本次 Experiment Hold 精确查询、设备 `current_run_id` 与 Workflow Run 精确归属、legacy API/status 兼容断言、Hold 生命周期、ARM/ARM2 节点与命令关联、`S04A_TIMELINE_JSON`。
+- `scripts/e2e-pause-during-experiment.py`：增加本次 Experiment Hold 精确查询、设备 `current_run_id` 与 Workflow Run 精确归属、legacy API/status 兼容断言、Hold 生命周期、ARM/ARM2 节点与命令关联、`S04A_TIMELINE_JSON`；进一步强制 API 返回时设备仍归属本次 Run 并处于执行中，且断言 Pause 请求、设备动作收敛、Workflow 暂停的时间顺序。
 - 清理路径不再删除全局 active Hold；只释放本次 Hold ID。只有本次 Workflow Run 已进入终态且设备不再运行/持有该 Run，才允许清理；否则保留运行记录与 Hold，并使测试失败。
 - `scripts/ci-gate.sh`：只更新 4.17 的说明文字，`MIN_PAUSEEXP=5` 未改变。
 - `docs/测试用例总表.md`：同步 S-04-A 的事实证据与 legacy 状态边界。
