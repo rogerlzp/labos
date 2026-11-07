@@ -511,7 +511,7 @@ Momentum 官方帮助文档公开说明：
 
 ### 13.5 本次产品研究形成的架构原则
 
-1. Workcell/Functional Island 必须是显式领域对象，不只是设备分组标签。
+1. 当前 `island` 必须是显式物理 Workcell 领域对象，不只是设备分组标签。
 2. Workcell 既是调度边界，也是默认故障隔离边界；但 Safety Domain 可以跨 Workcell，发生安全事件时可扩大影响范围。
 3. 实验/流程可跨 Workcell；因此一个 Workcell 故障可能影响多个 ExperimentRun，必须有跨实验的影响传播与聚合机制。
 4. 设备池只可包含能力、校准、状态和安全条件满足的设备；故障设备从池中隔离，不能仅因网络恢复自动重新可用。
@@ -522,14 +522,14 @@ Momentum 官方帮助文档公开说明：
 
 ## 14. 新增架构决策：Workcell 级故障隔离与策略化继续执行
 
-### ADR-FAULT-SCOPE-001：设备故障默认隔离整个 Workcell / Functional Island
+### ADR-FAULT-SCOPE-001：设备故障默认隔离整个 island / Workcell
 
 **Decision：ACCEPT AS DEFAULT POLICY; SAFETY OVERRIDE REQUIRED。**
 
 用户业务决策：设备故障默认暂停/隔离整个设备工作单元或功能岛；其他独立节点是否继续，由故障等级、安全域和依赖策略决定。
 
 解释：
-- 故障设备所在 Workcell/Functional Island 进入 FAULT_HOLD / ISOLATED，不再接受新的普通执行命令。
+- 故障设备所在 island / Workcell 进入 FAULT_HOLD / ISOLATED，不再接受新的普通执行命令。
 - Workcell 内所有运行实例停止领取新节点；在途命令按各设备的安全策略收敛，不将 Hold 误作设备 Stop。
 - Workcell 外的任务不自动受影响；但若共享 Safety Domain、环境、公用设施、样本/板位、机器人通道或其他依赖，则按传播策略扩大。
 - 只有经策略证明独立的分支才允许继续；独立性未知时默认阻断并扩大范围。
@@ -571,7 +571,7 @@ Momentum 官方帮助文档公开说明：
 ### 14.2 故障影响传播算法（设计要求）
 
 收到已认证的 Fault/Alarm 后：
-1. 解析设备身份、Workcell、Functional Island、SafetyDomain、关联资源、当前命令和在途样本。
+1. 解析设备身份、island / Workcell、SafetyDomain、关联资源、当前命令和在途样本。
 2. 根据设备/错误/方法的故障策略确定 severity、required_response、resume_policy。
 3. 立即为故障 Workcell 建立持久化 Hold/Isolation，禁止领取新的普通命令。
 4. 计算影响闭包：同 Workcell 活动节点 + 共享资源使用者 + DAG 后继依赖 + 物理/环境依赖 + SafetyDomain 关联对象。
