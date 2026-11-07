@@ -804,27 +804,23 @@ public final class WorkflowService {
             String xml = graphEnabled ? loadGraphXml(workflowId) : null;
             boolean viaGraph = false;
             if (xml != null && !xml.isBlank()) {
-                // 解析与执行必须分开：只有解析失败（尚未派发任何设备命令）时，
-                // 才允许按既有兼容策略退回顺序执行。GraphRunner 一旦开始执行，
-                // 任何 RuntimeException 都必须向上传播；禁止从头切换执行器重跑。
+                // 先完成无副作用的执行器装配；解析失败才可按兼容策略退回。
+                // GraphRunner 一旦开始执行，任何 RuntimeException 都必须向上传播。
+                StepExecutor activeExecutor = executor;
+                GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
+                        nodeIdByKey, s -> { })
+                        .withResourceCapability(resourceCap)
+                        .withBoundInstances(loadBoundInstances())
+                        .withSkipKeys(skipKeys)
+                        .withVariables(loadRunVars(runId))
+                        .withOutputReader(key -> loadNodeOutputs(runId, key))
+                        .withMaxVisits(loadMaxIterations(workflowId))
+                        .withRoundRecorder((key, round, st, ec, s1, e1) ->
+                                recordNodeRound(runId, key, round, st, ec, s1, e1))
+                        .withBuiltinParams(builtinParams)
+                        .withPauseChecker(() -> isRunPaused(runId));
                 GraphExecution graphExecution = executeGraphWithParseFallback(
-                        xml,
-                        () -> sm.executeAll(rec, executor),
-                        g -> {
-                            GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
-                                    nodeIdByKey, s -> { })
-                                    .withResourceCapability(resourceCap)
-                                    .withBoundInstances(loadBoundInstances())
-                                    .withSkipKeys(skipKeys)
-                                    .withVariables(loadRunVars(runId))
-                                    .withOutputReader(key -> loadNodeOutputs(runId, key))
-                                    .withMaxVisits(loadMaxIterations(workflowId))
-                                    .withRoundRecorder((key, round, st, ec, s1, e1) ->
-                                            recordNodeRound(runId, key, round, st, ec, s1, e1))
-                                    .withBuiltinParams(builtinParams)
-                                    .withPauseChecker(() -> isRunPaused(runId));
-                            return gr.run(g, executor);
-                        });
+                        xml, () -> sm.executeAll(rec, activeExecutor), gr, activeExecutor);
                 progress = graphExecution.progress();
                 viaGraph = graphExecution.viaGraph();
             } else {
@@ -887,7 +883,8 @@ public final class WorkflowService {
     static GraphExecution executeGraphWithParseFallback(
             String xml,
             java.util.function.Supplier<RunProgress> sequentialFallback,
-            java.util.function.Function<WorkflowGraphParser.Graph, RunProgress> graphExecution) {
+            GraphRunner graphRunner,
+            StepExecutor executor) {
         final WorkflowGraphParser.Graph graph;
         try {
             graph = WorkflowGraphParser.parse(xml);
@@ -897,7 +894,7 @@ public final class WorkflowService {
             return new GraphExecution(sequentialFallback.get(), false);
         }
         // 故意放在 try/catch 之外：执行期 RuntimeException 不能触发顺序重跑。
-        return new GraphExecution(graphExecution.apply(graph), true);
+        return new GraphExecution(graphRunner.run(graph, executor), true);
     }
 
     record GraphExecution(RunProgress progress, boolean viaGraph) {
