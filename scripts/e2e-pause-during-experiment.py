@@ -395,6 +395,7 @@ def main():
     #    替代设备状态、节点状态或命令关联证据。
     MADE["run"], MADE["er"] = rid, erid
     device_running_after_accept = (after_device[0] == "running"
+                                   and after_device[1] != "-"
                                    and after_device[2] == str(rid))
     if device_running_after_accept:
         F.ok("Pause API 返回时设备仍处于本次 run 的在途状态")
