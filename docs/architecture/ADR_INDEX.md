@@ -200,8 +200,9 @@
 
 - **现状**：两套主状态机并存且独立写库——`PauseManager` → `run.status`、`RunControl` → `experiment_run.status`；另加 `runtime_hold` / `manual_window` / `run_node` / `run_command` 各自直写（`run.status` 约 10 处、`experiment_run.status` 约 9 处写入点）。**无 `PauseCoordinator`、无聚合投影器**（Java 源码 0 命中，只在文档里）。`3debf78` 是约定式补丁（三层真停 + 作废旧 run + `coveringForWorkflow` 反查），**未合并两套模型**。仓库原有 203 份文档**没有一篇**以「多层维护」为主题的专篇，内容散在实测记录、`BUG台账.md`、测试用例总表、开发日志与一份单套状态机设计。
 - **决策**：① 入口只写**事实**，状态由聚合器投影（`ADR-PAUSE-002/003`）；② 建 `PauseCoordinator` **适配层**收敛两套模型，不直接删 `PauseManager`；③ 保留 `M-01` 作废旧 paused run 契约（防重复物理动作），任何重构必须有对应回归；④ 建原有 26 份状态相关文档的索引并标注过时项。
-- ⚠️ **必须先解决的验收口径冲突**：`docs/测试用例总表.md:51,216` 与 e2e 4.17 以「**三层都 `paused`**」为通过判据，而新设计说 `status` 只是投影、判据应看 Hold + 节点 + 命令事实。若直接把 API 改成返回 `PAUSE_REQUESTED`，现有 5 条断言会变红；若为满足断言继续立即写 `paused`，中间态就永远落不了地。
-  - 处置：`M-01` 行为保留为回归基线，判据**升级**为「三层 status **且** Hold 有效 **且** 在途命令已收敛」，并新增「请求已接受但未收敛时不得显示 `PAUSED`」断言；**分两个 PR**——先加新判据（旧断言并行通过），再切换 API 语义。禁止在同一 PR 里同时改实现和判据。
+- ⚠️ **必须先解决的验收口径冲突**：`docs/测试用例总表.md:51,216` 与 e2e 4.17 以「**三层都 `paused`**」为通过判据，而新设计说 `status` 只是投影、判据应看 Hold + 节点 + 命令事实。若直接把 API 改成返回 `PAUSE_REQUESTED`，现有断言会变红；若为满足断言继续立即写 `paused`，中间态就永远落不了地。
+  - 处置：`M-01` 行为保留为回归基线，分两个 PR：**PR-S04-A** 保留 legacy API/status，先增加本次 Hold ID、device_state 在途/收敛、Workflow 节点边界、后续 pending 等事实证据；由于当前 `RunControl.pause()` 立即写 ExperimentRun/Experiment paused，且 `ExperimentApi` 立即返回 `status=paused`，A 阶段不得声称未收敛时 UI/API 已不显示 PAUSED，也不得加入无法通过的断言。**PR-S04-B** 在 Hold 三态（P-03）、命令账本与 reconciliation（P-07/L-03）、状态表达（L-02）、PauseCoordinator（S-02/P-06）具备后，再切 API/UI 语义，并新增「请求已接受但未收敛时不得显示 `PAUSED`」断言。禁止同一 PR 同时改实现与验收判据。
+  - 该两阶段边界由 `LABOS_S04A_E2E_ACCEPTANCE_SPEC_20261107.md` 细化；它是 ADR-STATE-001 的实施验收澄清，不改变「事实为准、status 为投影」的已接受原则。
 - 新增工作项 `S-01`~`S-05`（见 `REMEDIATION_STATUS.md`）。
 
 ---
