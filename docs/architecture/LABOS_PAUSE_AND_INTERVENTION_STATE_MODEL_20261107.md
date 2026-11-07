@@ -218,3 +218,47 @@ Worker 消费 Outbox，向节点/设备发出控制动作。节点根据设备�
 - 不在没有设备/传感器证据时把 UNKNOWN 自动改成 PAUSED、IDLE 或 FREE。
 - 不在人工处理后无检查地自动恢复。
 - 不预设最终数据库 schema，也不要求立即重写 RunStateMachine；先对齐领域状态、事件和验收行为，再做兼容迁移。
+
+
+## 12. 与当前仓库实现的映射（基于 main 源码核对，2026-11-07）
+
+本设计不是从零引入暂停系统。当前仓库已经有 PauseManager、RuntimeHold、RunControl、ManualWindow 和板位盘点流程。下一步应**收敛和扩展已有机制，不再平行新建第三套 Hold 表/状态机**。
+
+### 12.1 已有能力
+
+| 当前实现 | 已有语义 | 当前边界 |
+|---|---|---|
+| PauseManager | 旧 run 表上的 paused、pause_kind、pause_reason；Kind 有 paused_fault / waiting_human / paused_unknown | 主要服务旧 run 模型；pause() 立即写 paused 并随后释放部分资源 |
+| RuntimeHold | runtime_hold 表；site / island / experiment 三级范围；fault / plate_unknown / human / manual 四类 | 现场/调度闸门，不代表设备动作已停止，也不是节点级暂停进度 |
+| RunControl | experiment_run 的 pause / stop / resume；按作用域创建 Hold；将覆盖范围内 queued/running run 设为 paused | 暂停 API 立即回 paused；没有 PAUSE_REQUESTED/PAUSING 的中间事实 |
+| ManualWindow | 人工处理窗口与决策动作 | 需核对它与 Hold 的清除、证据、恢复门禁是否在所有故障路径中一致 |
+| GraphRunner / DriverStepExecutor | 在动作/节点边界检查暂停或 Hold，当前动作可继续完成 | 尚未把“正在收敛”“设备停止确认”“人工等待”完整表达为 NodeExecution 状态 |
+
+### 12.2 当前已确认的具体差距
+
+1. **状态过早标为 paused。** `RunControl.pause()` 先调用 `RuntimeHold.raise()`，再调用 `markCoveredPaused()`；后者把覆盖范围内的 experiment_run 从 queued/running 直接改为 paused。设备动作可能仍在执行，API 却立即返回 status=paused。需要改成 PAUSE_REQUESTED → PAUSING → 聚合确认后的 PAUSED/WAITING_INTERVENTION。
+2. **实验与实验运行的更新不是一个事务。** `markCoveredPaused()` 先用一个数据库连接更新 experiment_run，再用另一个连接更新 experiment.status；RuntimeHold.raise() 也单独使用连接。中间失败/进程退出会留下 Hold、experiment_run、experiment 三者不一致。应由单一事务服务原子写入 Hold、受影响 run 的暂停意图、experiment 聚合意图、事件和 Outbox。
+3. **runtime_hold 当前不支持同一 scope 的多个并发原因。** `pg_rebuild/schema/98_m95_run_hold.sql` 的唯一索引 uk_runtime_hold_active 限制同一 tenant/scope/scope_id 只能有一条活动 Hold；`RuntimeHold.raise()` 以 scope + scope_id 做 NOT EXISTS 幂等；`clear()` 按 scope + scope_id 清除。若同一岛同时发生设备故障与用户暂停，当前模型无法分别保留和清除原因。目标设计应改为 source_event_id/idempotency_key 级去重、hold_id 级清除，允许多个 Hold 叠加。
+4. **Hold 查询失败是 fail-open。** `RuntimeHold.active()` 捕获 SQLException 后记录日志并返回空列表；`coveringFor()` / `anyActive()` 会因此把“数据库读失败”表现成“没有 Hold”。安全闸门必须 fail-closed：查询失败返回明确错误/UNKNOWN，阻止新派发和恢复，而不是返回空集合。
+5. **两套暂停模型并存。** PauseManager 作用于旧 run；RuntimeHold/RunControl 作用于 experiment_run 和实验/岛级闸门。不能直接把两套字段合并或让一个入口只更新其中一套。先做入口调用图和数据模型映射，再建立统一服务/兼容适配器。
+6. **故障自动恢复策略需要分级。** PauseManager 文档把 paused_fault 定义为心跳恢复后自动继续；RuntimeHold 的注释又规定扣留必须由人显式解除。设备“短暂离线且安全恢复”的故障可以配置自动恢复，但夹板、机械臂异常、温控超限、联锁、板位未知等需要现场确认的故障必须使用人工 Hold，不能仅凭心跳恢复解除。
+7. **人工恢复与设备恢复不是同一件事。** 当前 RunControl.resume() 会解除覆盖该实验的最内层 Hold，并把 experiment_run 设为 queued；它没有在这个方法内验证完整的 InterventionRecord、设备自检、联锁复位、命令 UNKNOWN 对账和物理位置证据。需要将“清 Hold”与“准许恢复”分成有门禁的步骤。
+8. **节点状态尚未成为暂停事实的权威来源。** 当前 PauseManager/RunControl 主要更新 run / experiment_run 状态；设计目标要求 NodeExecution 保存当前命令是否仍在执行、是否等待设备确认、是否在安全边界暂停或等待人工。
+
+### 12.3 代码证据路径
+
+- `labos-kernel/src/main/java/com/labos/kernel/workflow/PauseManager.java`：旧 run 级 pause_kind、pause() 直接写 paused、资源释放策略、resume()。
+- `labos-kernel/src/main/java/com/labos/kernel/workflow/RuntimeHold.java`：作用域、Kind、raise/clear/active/coveringFor；active() 读失败返回空列表。
+- `labos-kernel/src/main/java/com/labos/kernel/workflow/RunControl.java`：pause()、markCoveredPaused()、resume()；实验运行与 experiment 状态分开更新。
+- `labos-kernel/src/main/java/com/labos/kernel/api/ExperimentApi.java`：POST /api/experiments/runs/{id}/pause|resume|stop 的入口与立即返回状态。
+- `labos-kernel/src/main/java/com/labos/kernel/api/RunApi.java`：旧 run pause/resume、runtime holds 查询与人工窗口入口。
+- `pg_rebuild/schema/94_m4_pause.sql`：旧 run 的 pause_kind 等字段。
+- `pg_rebuild/schema/98_m95_run_hold.sql`：runtime_hold 表、唯一活动 Hold 索引、experiment_run 控制列。
+- `labos-kernel/src/main/java/com/labos/kernel/driver/DriverStepExecutor.java`：设备步骤执行和动作边界；与节点暂停状态的整合点。
+
+### 12.4 对前文目标设计的实施修订
+
+- RunHold/PauseRequest 不应直接作为“再建一张同义表”的要求。优先扩展 runtime_hold；若需要独立 PauseRequest/InterventionRecord，必须有不同职责：Hold 表示持续生效的安全闸门，PauseRequest 表示一次异步控制过程，InterventionRecord 表示人工处理证据。
+- 暂停事务建议先把 Hold 和实验级 PAUSE_REQUESTED 意图写入，再把受影响节点置 PAUSE_REQUESTED；三者及事件/Outbox 同事务提交。设备侧确认后才推进节点状态，实验级 PAUSED/WAITING_INTERVENTION 由聚合器计算。
+- 先解决 fail-open 和跨连接非原子更新，再扩充状态枚举/字段。当前 experiment_run.status 是 varchar 语义；长状态如 WAITING_INTERVENTION / RECONCILIATION_REQUIRED 需要先核实列长度并通过 migration 扩容，或使用短 code + display label，不能直接假设写入可用。
+- 不要直接删除 PauseManager。先梳理旧 run 与 experiment_run 的 API、前端和调度调用；建立统一 PauseCoordinator 后由旧入口适配，逐步迁移。
