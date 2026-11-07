@@ -640,12 +640,9 @@ public final class DriverStepExecutor implements StepExecutor {
      *
      * <p><b>方法没声明可中断</b> ⇒ 老路径：调用线程直接阻塞等回包（行为不变）。
      *
-     * <p><b>方法声明了可中断</b> ⇒ 放到工作线程里等，主线程每 200ms 查一次
-     * 「是否该停」（workflow 级暂停 / 实验级扣留）：
-     * 命中就调 {@code driver.abort(commandId)}
-     * （{@code TcpPersistentDriver.abort} 会把等待中的 future 摘掉，
-     * 让调用方立刻拿到失败）⇒ 这一步被中断，节点记 aborted，
-     * 恢复时因为它不是 completed，会**重跑这一步**。
+     * <p>只有方法配置与驱动能力同时允许、且驱动声明已具备物理中止能力时，
+     * 才进入异步中止路径。TCP 当前协议不支持设备侧 Abort，因此会等待当前动作完成，
+     * 再由 GraphRunner 在任务边界响应暂停请求。
      */
     private DriverResult executeCommand(DeviceDriver driver, StepContext ctx,
                                         DriverCommand cmd, long workflowId) {
