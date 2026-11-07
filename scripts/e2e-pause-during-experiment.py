@@ -5,12 +5,16 @@
 回答用户 2026-11-06 的问题：
   「当我们发出暂停时候，设备方法正在执行，实验会处于暂停状态吗？」
 
-三层状态都要看（它们不是一回事）：
+三层 legacy status 仍作为 M-01 兼容回归，但不能单独证明物理暂停完成：
   · run            —— workflow 级执行行（设备指令挂在它下面）
   · experiment_run —— 实验级执行行（实验级暂停改的是它）
   · experiment     —— 实验本身（由 experiment_run 派生，StatusVocabulary 恒等映射）
 
-⚠ 三层**都要停在暂停**（2026-11-06 修"实验级暂停停不住底层 run"之后的口径）：
+PR-S04-A 还必须独立观测 Hold、设备动作、节点边界与命令关联事实。
+当前 API 会立即返回 status=paused；这是 legacy 契约，不代表设备动作已收敛。
+「未收敛时 API/UI 不得显示 PAUSED」属于 PR-S04-B，不在本脚本本阶段断言。
+
+⚠ 三层最终**都要停在暂停**（2026-11-06 修"实验级暂停停不住底层 run"之后的 M-01 兼容口径）：
   实验级暂停抬的是现场扣留。底层 workflow 级 run 在**节点边界**查扣留
   （`GraphRunner.withPauseChecker` → `RuntimeHold.coveringForWorkflow`），
   命中就把自己落成 paused、停在那儿 —— 还没轮到的节点保持 pending，不再往下跑。
@@ -176,7 +180,8 @@ def cleanup():
 
 def finish(code=0):
     """清理 + 打印汇总行 + 退出。"""
-    cleanup()
+    cleaned = cleanup()
+    print("  （测试数据已清理）" if cleaned else "  （测试现场保留，需人工检查）")
     print()
     print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
     sys.exit(code if code is not None else (1 if F.FAIL else 0))
@@ -343,6 +348,7 @@ def main():
         response = {}
     after_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
     ex_after_accept = q1(f"SELECT status::text FROM experiment WHERE id={eid}")
+    t_legacy_status_observed = time.time()
     after_device = device_state()
     hold = own_hold_snapshot(eid, reason)
     if hold:
@@ -363,10 +369,14 @@ def main():
         and hold.get("kind") == "manual" and hold.get("reason") == reason \
         and hold.get("released_at") is None \
         else F.bad("未找到本次请求对应的 active Hold", str(hold))
-    F.ok("Experiment legacy status 在 API 接受后立即为 paused") \
+    legacy_status_latency = t_legacy_status_observed - t_pause_request
+    F.ok("Experiment legacy 两层在 5 秒内写入 paused（%.2f 秒）" %
+         legacy_status_latency) \
         if after_st == "paused" and ex_after_accept == "paused" \
-        else F.bad("Experiment legacy status 未按兼容契约立即 paused",
-                   "experiment_run=%s experiment=%s" % (after_st, ex_after_accept))
+        and legacy_status_latency < 5.0 \
+        else F.bad("Experiment legacy 两层未在 5 秒内 paused",
+                   "experiment_run=%s experiment=%s latency=%.2f" %
+                   (after_st, ex_after_accept, legacy_status_latency))
 
     # 7) 分别观测动作收敛与 Workflow 节点边界暂停。
     #    注意：DB 轮询时间是“观测时间”，不是硬件精确完成时间；不以三层 status
@@ -446,6 +456,8 @@ def main():
         "holdId": MADE["hold"] or None,
         "pauseRequestedAtEpoch": t_pause_request,
         "pauseAcceptedAtEpoch": t_pause_accepted,
+        "legacyStatusObservedAtEpoch": t_legacy_status_observed,
+        "legacyStatusLatencySeconds": round(legacy_status_latency, 3),
         "deviceRunningObservedBeforeRequest": {
             "status": busy[0], "method": busy[1], "currentRunId": busy[2]
         },
@@ -499,6 +511,8 @@ if __name__ == "__main__":
     except Exception:  # noqa: BLE001
         import traceback
         traceback.print_exc()
-        cleanup()
+        cleaned = cleanup()
+        if not cleaned:
+            print("⚠ 测试现场保留，未确认设备收敛")
         print("通过 %d / 失败 %d" % (F.PASS, F.FAIL))
         sys.exit(1)
