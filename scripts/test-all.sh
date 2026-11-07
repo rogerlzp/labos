@@ -80,6 +80,8 @@ PURE=(
   # 时间约束（L1-1.6，P0）：最短补等 / 最长超限 EC-11-0001 / 前驱未跑不检查 / 补等上限守卫
   "engine.TimeConstraintSelfTest"
   "workflow.GraphRunnerTest"
+  "workflow.WorkflowExecutionSafetySelfTest"
+  "driver.DeviceDriverAbortContractSelfTest"
   # 调度队列排序收口（规格 §14.6）：EDD → priority DESC → FIFO，直接排 QUEUE_ORDER
   "workflow.SchedulerOrderSelfTest"
   # 有人值守窗口（台账 6.5）：开窗条件 / 默认项来自策略 / 动作白名单 / 超时降级 / 幂等键
