@@ -613,6 +613,180 @@ public final class PauseManager {
         return true;
     }
 
+    /**
+     * P-06 V2 第七切片：恢复写集在调用方事务内完成（E-2）。
+     *
+     * <p>与 {@link #resume} 同语义：校验暂停类型/崩溃可恢复性 → 应用板位校正 →
+     * run 回 queued/aborted。校正的板状态/解封/审计也在同事务（locatePlateTx）。
+     * 异步续跑仍由调用方 commit 后触发（内存动作，不属于 DB 事务）。
+     */
+    public ResumeResult resumeTx(Connection c, long runId, ResumeAction action,
+                                 Map<String, String> corrections, String operator)
+            throws SQLException {
+        String kind = pauseKindOfTx(c, runId);
+        boolean crashed = false;
+        if (kind == null) {
+            crashed = isCrashRecoverableTx(c, runId);
+            if (!crashed) {
+                return new ResumeResult(false, "该执行不在暂停状态", runId,
+                        action.name(), 0);
+            }
+        }
+        if (Kind.PAUSED_UNKNOWN.code().equals(kind)
+                && (corrections == null || corrections.isEmpty())
+                && action != ResumeAction.ABORT) {
+            return new ResumeResult(false,
+                    "板位置未知，必须提供 corrections（板号 → 实际位置）才能恢复",
+                    runId, action.name(), 0);
+        }
+        int corrected = 0;
+        if (corrections != null) {
+            for (Map.Entry<String, String> e : corrections.entrySet()) {
+                if (locatePlateTx(c, e.getKey(), e.getValue(), operator, runId)) {
+                    corrected++;
+                }
+            }
+        }
+        String newStatus;
+        String sql;
+        if (action == ResumeAction.ABORT) {
+            newStatus = "aborted";
+            sql = """
+                    UPDATE run SET status = ?::run_status, pause_kind = NULL,
+                           resumed_at = now(),
+                           error_code = COALESCE(error_code, 'EC-HUMAN-ABORT'),
+                           updated_at = now()
+                    WHERE tenant_id = ? AND id = ?
+                    """;
+        } else {
+            newStatus = "queued";
+            sql = """
+                    UPDATE run SET status = ?::run_status, pause_kind = NULL,
+                           pause_reason = NULL, resumed_at = now(), updated_at = now()
+                    WHERE tenant_id = ? AND id = ?
+                    """;
+        }
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, newStatus);
+            ps.setLong(2, tenantId);
+            ps.setLong(3, runId);
+            ps.executeUpdate();
+        }
+        return new ResumeResult(true, null, runId, action.name(), corrected);
+    }
+
+    private String pauseKindOfTx(Connection c, long runId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT pause_kind FROM run WHERE tenant_id = ? AND id = ? "
+                        + "AND status = 'paused'")) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    private boolean isCrashRecoverableTx(Connection c, long runId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT 1 FROM run
+                 WHERE tenant_id = ? AND id = ? AND status = 'failed'
+                   AND (input->>'recoverable')::boolean IS TRUE
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    private boolean locatePlateTx(Connection c, String barcode, String actualLocation,
+                                  String operator, Long runId) {
+        boolean lost = actualLocation == null || actualLocation.isBlank()
+                || "LOST".equalsIgnoreCase(actualLocation);
+        String toStatus = lost ? "LOST" : "KNOWN";
+        try {
+            List<Long> possible = possibleLocationsOfTx(c, barcode);
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE plate SET position_status = ?, possible_locations = NULL "
+                            + "WHERE tenant_id = ? AND barcode = ?")) {
+                ps.setString(1, toStatus);
+                ps.setLong(2, tenantId);
+                ps.setString(3, barcode);
+                ps.executeUpdate();
+            }
+            if (!possible.isEmpty()) {
+                String in = String.join(",", possible.stream().map(String::valueOf).toList());
+                try (PreparedStatement ps = c.prepareStatement("""
+                        UPDATE position_state
+                           SET reserved_by_run = NULL, block_reason = NULL,
+                               reserved_until = NULL, updated_at = now()
+                         WHERE tenant_id = ? AND resource_id IN (""" + in + """
+                        )
+                           AND block_reason = 'PLATE_UNKNOWN'
+                        """)) {
+                    ps.setLong(1, tenantId);
+                    ps.executeUpdate();
+                }
+            }
+            auditTx(c, barcode, "UNKNOWN", toStatus, actualLocation,
+                    operator == null ? "unknown" : operator,
+                    lost ? "人工确认丢失" : "人工盘点", runId);
+            return true;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    private List<Long> possibleLocationsOfTx(Connection c, String barcode)
+            throws SQLException {
+        List<Long> list = new ArrayList<>();
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT possible_locations FROM plate WHERE tenant_id = ? AND barcode = ?")) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, barcode);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    java.sql.Array arr = rs.getArray(1);
+                    if (arr != null) {
+                        for (Object o : (Object[]) arr.getArray()) {
+                            if (o instanceof Number n) {
+                                list.add(n.longValue());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return list;
+    }
+
+    private void auditTx(Connection c, String barcode, String from, String to,
+                         String actual, String operator, String note, Long runId)
+            throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO plate_location_audit
+                  (tenant_id, barcode, from_status, to_status,
+                   actual_location, operator, note, run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, barcode);
+            ps.setString(3, from);
+            ps.setString(4, to);
+            ps.setString(5, actual);
+            ps.setString(6, operator);
+            ps.setString(7, note);
+            if (runId == null) {
+                ps.setNull(8, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(8, runId);
+            }
+            ps.executeUpdate();
+        }
+    }
+
     private List<Long> possibleLocationsOf(String barcode) {
         List<Long> list = new ArrayList<>();
         try (Connection c = db.open();

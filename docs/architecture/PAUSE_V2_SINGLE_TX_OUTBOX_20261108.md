@@ -46,7 +46,7 @@ COMMIT
 | 实验级 Stop（E-5） | ✅ 第三切片 | stop_requested / aborted / 实验表同步 / STOP_REQUESTED 事件同事务；批次聚合 commit 后补 |
 | Workflow 级 Pause（E-1） | ✅ 第五切片 | run 落 paused + 释放位置/预约/通道/设备锁 + 幂等结果 + PAUSE_REQUESTED 事件同事务 |
 | Workflow 级忽略（E-3a 批量 / E-3b 单条） | ✅ 第六切片 | 批量/单条忽略与幂等结果/事件同事务 |
-| Workflow 级 Resume（E-2） | ❌ 仍 V1 | 含 locatePlate（板位校正）与异步续跑；下一步拆 |
+| Workflow 级 Resume（E-2） | ✅ 第七切片 | 校验/板位校正/run 回 queued 或 aborted/幂等结果/RESUME_REQUESTED 事件同事务；异步续跑 commit 后触发 |
 | PAUSING 异步收敛 worker | 🟡 第四切片（最小） | 受理超过 5 秒仍未到边界的 running run 标 PAUSING（只展示，不写 paused）；settle 收尾回 NONE |
 | P-07 命令账本/Outbox | ❌ 未做 | 设备指令派发前/回包后/重启恢复的 exactly-once 证据链 |
 
@@ -130,6 +130,24 @@ claimTx（单条）→ 忽略 → settleTx → pause_event(DISMISS_REQUESTED) �
 test-all 1174/0。
 
 边界：E-2（Workflow Resume，含 locatePlate 与异步续跑）仍 V1。
+
+## 三·补六、第七切片：Workflow 级 Resume（E-2）单事务（2026-11-08）
+
+E-2 原实现：读暂停类型/崩溃可恢复性 → locatePlate（板状态/解封/审计，多连接）→
+run 回 queued/aborted（再一个连接）→ 异步续跑。中间失败会留下「板已校正但 run 还 paused」
+或「run 已 queued 但板位没校正」。
+
+第七切片：PauseManager.resumeTx（校验 + locatePlateTx + auditTx + run 状态全部复用调用方连接），
+PauseCoordinator.resumeWorkflowRun 改为 claimTx → resumeTx → settleTx →
+（成功时）pause_event(RESUME_REQUESTED) 一次 commit；异常整体回滚。
+异步续跑 workflows.resumeAsync 在 commit 后触发；commit 后崩溃时 run 已 queued，
+不丢事实（内存续跑需人工/后续调度补，属已知边界）。
+
+测试：PauseCoordinatorDbSelfTest 66/0（E-2 恢复/queued/RESUME_REQUESTED/重复回放）；
+test-all 1180/0；4.16 暂停/恢复节点回归。
+
+至此 Workflow 级 E-1~E-3 与实验级 E-4~E-6 的写集均已单事务化。
+剩余：真实事件总线消费者、PAUSING worker 完整异步化（当前为最小 5s 标记）。
 
 ## 四、不变量与测试
 

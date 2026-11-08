@@ -353,34 +353,52 @@ public final class PauseCoordinator {
     public PauseManager.ResumeResult resumeWorkflowRun(PauseCommand cmd,
                                                        Map<String, String> corrections)
             throws SQLException {
-        Claim claim = claim(cmd);
-        if (!claim.firstTime()) {
-            // 重复请求：不再续跑，回放首次结果
-            boolean ok = PauseCommand.ResultState.COMPLETED.name().equals(claim.resultState());
-            return new PauseManager.ResumeResult(ok, claim.detail().get("error"),
-                    cmd.targetId(),
-                    PauseManager.ResumeAction.of(claim.kind()).name(),
-                    intOf(claim.detail().get("correctedPlates"), 0));
-        }
-        try {
-            PauseManager.ResumeAction action = PauseManager.ResumeAction.of(cmd.kind());
-            PauseManager.ResumeResult r = new PauseManager(db, tenantId)
-                    .resume(cmd.targetId(), action, corrections, "api");
-            if (r.ok() && action == PauseManager.ResumeAction.CONTINUE) {
-                workflows.resumeAsync(cmd.targetId());
+        // P-06 V2 第七切片：校验/板位校正/run 状态/幂等结果/事件同事务；
+        // 异步续跑是内存动作，commit 后触发。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                Claim claim = claimTx(c, cmd);
+                if (!claim.firstTime()) {
+                    c.rollback();
+                    // 重复请求：不再续跑，回放首次结果
+                    boolean ok = PauseCommand.ResultState.COMPLETED
+                            .name().equals(claim.resultState());
+                    return new PauseManager.ResumeResult(ok, claim.detail().get("error"),
+                            cmd.targetId(),
+                            PauseManager.ResumeAction.of(claim.kind()).name(),
+                            intOf(claim.detail().get("correctedPlates"), 0));
+                }
+                PauseManager.ResumeAction action = PauseManager.ResumeAction.of(cmd.kind());
+                PauseManager.ResumeResult r = new PauseManager(db, tenantId)
+                        .resumeTx(c, cmd.targetId(), action, corrections, "api");
+                cmd.result(r.ok() ? PauseCommand.ResultState.COMPLETED
+                        : PauseCommand.ResultState.REJECTED);
+                Map<String, String> detail = new LinkedHashMap<>();
+                detail.put("correctedPlates", String.valueOf(r.correctedPlates()));
+                if (r.error() != null) {
+                    detail.put("error", r.error());
+                }
+                settleTx(c, cmd, detail);
+                if (r.ok()) {
+                    insertPauseEvent(c, cmd, "RESUME_REQUESTED", null, null);
+                }
+                c.commit();
+
+                if (r.ok() && action == PauseManager.ResumeAction.CONTINUE
+                        && workflows != null) {
+                    try {
+                        workflows.resumeAsync(cmd.targetId());
+                    } catch (RuntimeException ex) {
+                        System.err.println("[暂停] 恢复后异步续跑启动失败（run 已 queued）："
+                                + ex.getMessage());
+                    }
+                }
+                return r;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
             }
-            cmd.result(r.ok() ? PauseCommand.ResultState.COMPLETED
-                    : PauseCommand.ResultState.REJECTED);
-            Map<String, String> detail = new LinkedHashMap<>();
-            detail.put("correctedPlates", String.valueOf(r.correctedPlates()));
-            if (r.error() != null) {
-                detail.put("error", r.error());
-            }
-            settle(cmd, detail);
-            return r;
-        } catch (SQLException | RuntimeException e) {
-            abandon(cmd);
-            throw e;
         }
     }
 

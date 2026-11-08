@@ -47,6 +47,7 @@ public final class PauseCoordinatorDbSelfTest {
     private static final String REQ_WF = "SELF-PC-WF-1";
     private static final long WF_RUN = -992401L;
     private static final String REQ_DISMISS = "SELF-PC-DISMISS-1";
+    private static final String REQ_WF_RESUME = "SELF-PC-WF-RESUME-1";
 
     public static void main(String[] args) throws Exception {
         db = DbConfig.fromEnv();
@@ -61,6 +62,7 @@ public final class PauseCoordinatorDbSelfTest {
             stopTransactionWritesEvent(coord);
             workflowPauseTransaction(coord);
             dismissTransactions(coord);
+            workflowResumeTransaction(coord);
         } finally {
             cleanup();
         }
@@ -313,6 +315,40 @@ public final class PauseCoordinatorDbSelfTest {
                 one("SELECT status::text FROM run WHERE id=" + b));
         exec("DELETE FROM run WHERE tenant_id=1 AND run_no LIKE 'SELF-PC-CRASH%'");
         exec("DELETE FROM run WHERE tenant_id=1 AND run_no LIKE 'SELF-PC-DISM%'");
+    }
+
+    // ------------------------------------------------- 8. Workflow 级恢复单事务（E-2）
+
+    private static void workflowResumeTransaction(PauseCoordinator coord) throws Exception {
+        exec("DELETE FROM run WHERE tenant_id=1 AND run_no='SELF-PC-WF-RESUME'");
+        exec("""
+                INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
+                                 mode, status, pause_kind, pause_reason,
+                                 actual_start, progress)
+                VALUES (1, 'SELF-PC-WF-RESUME', 'workflow', 239, 1, 'normal',
+                        'paused', 'waiting_human', '自测：待恢复', now(), 0)
+                """);
+        long runId = Long.parseLong(one(
+                "SELECT id FROM run WHERE tenant_id=1 AND run_no='SELF-PC-WF-RESUME'"));
+        PauseManager.ResumeResult r = coord.resumeWorkflowRun(PauseCommand.workflow(runId,
+                PauseCommand.Action.RESUME, "continue", "自测：恢复", REQ_WF_RESUME),
+                java.util.Map.of());
+        check("E-2 恢复成功", r.ok(), r.error());
+        check("E-2 run 回 queued",
+                "queued".equals(one("SELECT status::text FROM run WHERE id=" + runId)),
+                one("SELECT status::text FROM run WHERE id=" + runId));
+        check("E-2 单事务写入 RESUME_REQUESTED 事件",
+                eventCount(REQ_WF_RESUME) == 1, eventCount(REQ_WF_RESUME));
+        check("E-2 事件类型 RESUME_REQUESTED",
+                "RESUME_REQUESTED".equals(eventTypeOf(REQ_WF_RESUME)),
+                eventTypeOf(REQ_WF_RESUME));
+        PauseManager.ResumeResult replay = coord.resumeWorkflowRun(PauseCommand.workflow(runId,
+                PauseCommand.Action.RESUME, "continue", "自测：重复", REQ_WF_RESUME),
+                java.util.Map.of());
+        check("E-2 重复恢复回放首次结果", replay.ok(), replay.error());
+        check("E-2 重复恢复不新增事件",
+                eventCount(REQ_WF_RESUME) == 1, eventCount(REQ_WF_RESUME));
+        exec("DELETE FROM run WHERE tenant_id=1 AND run_no='SELF-PC-WF-RESUME'");
     }
 
     // ---------------------------------------------------------------- 造数 / 查询 / 清理
