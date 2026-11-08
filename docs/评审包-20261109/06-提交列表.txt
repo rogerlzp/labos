@@ -1,0 +1,45 @@
+e94ccbf feat(p08): 恢复强门禁——存在未确认搬运位置时禁止 continue/retry
+b2b0083 feat(n08): Handoff 与 manual_window 直接联动（三条件门禁）
+4318dd2 docs: 同步 Handoff 强关联批次与 test-all 1237/0
+31f73ab feat(n10): Handoff 与 L-01 介入记录强关联（intervention_record_id + 门禁校验）
+8085429 docs(test): 总纲脚本登记补故障注入脚本（42→45），状态索引补 V2/命令账本/N-10 文档
+188da42 docs: 夜间报告/日志同步 test-all 1236/0 与 Outbox 重放批次
+1959dae feat(command): 命令 Outbox 重放 API（只重投外部事件，不重发物理命令）
+a4dbd48 docs: 夜间报告补 TransferTransaction/Handoff 页/operator/自动建窗，test-all 1232/0
+67c4149 feat(n08): waiting_human 暂停自动建/关 manual_window
+196e417 feat(manual): L-01 操作人取登录用户名（介入/隔离/Handoff/证据/搬运确认）
+0e7c5be feat(n10): Handoff 处置页 + GET /api/handoffs
+ee1cf15 feat(p08): TransferTransaction（运动报告 ≠ 位置确认 + 人工/扫码确认 API）
+a48242c feat(p08): 物理位置证据表/API + 人工盘点自动落证
+2240339 test(fault): N-10 同实验跨 Workcell 故障闭包 e2e
+c74b8e0 docs: 夜间报告最终版（P-07.4 / N-10 确认 / P-08 隔离页与 settle 排除；test-all 1218/0）
+b14803a fix(recovery): P-08 启动 settle 不处理物理未知 run（保留设备锁）
+36bd09b feat(p08): 隔离处置页 + GET /api/runs/quarantined
+4632265 feat(fault): N-10 Handoff 运行时人工确认（confirmed 才放行）
+fb64c1f feat(command): P-07.4 命令事件 Outbox（同事务 PENDING → 调度器 DELIVERED）
+83c0887 docs: 夜间完成报告 + 日志收尾（19 批次 / 验证汇总 / 未完成项）
+2a113b0 feat(hold): P-03 收尾——runtime_hold 多 Hold 并存 + 精确解除
+5f558ae test(fault): N-10/P-03 故障注入 e2e——A 岛 Hold 时只挡 A，不挡无关实验
+2617c28 feat(recovery): P-08 第一切片——物理未知 run 启动隔离 QUARANTINED
+a163301 feat(manual): L-01 人工介入记录 + N-08/L-04 人工窗口消费页
+b38b302 feat(fault): N-10 跨 Workcell Handoff 配置 + 执行门禁
+f037272 docs: 夜间工作日志（已完成批次 / 剩余任务 / 明早检查入口）
+11ce1c9 feat(scheduler): P-03 逐候选派发——无关实验的 Hold 不再全局挡派发
+6e30dda feat(command): P-07.3——稳定逻辑 key + 四崩溃点回归矩阵
+a9dcc84 feat(pause): P-06 V2 第七切片——Workflow 级恢复（E-2）单事务
+e557ccd feat(pause): P-06 V2 第六切片——Workflow 级忽略（E-3）单事务
+7a8a8ac feat(pause): P-06 V2 第五切片——Workflow 级暂停（E-1）单事务
+fd191b4 feat(ui/docs): N-09 岛名口径 + S-01 两套 run 模型映射表
+fb7fce0 feat(fault): N-10 显式 Workcell 绑定 + 读写入口
+1970171 feat(command): P-07.2——UNKNOWN 命令人工核对处置入口 + 四个崩溃点证据
+bef89a2 feat(pause): P-06 V2 第四切片——PAUSING 异步中间态最小 worker
+a771993 feat(pause): P-06 V2 第三切片——实验级停止单事务 + STOP_REQUESTED 事件
+a5d5020 feat(pause): P-06 V2 第二切片——实验级恢复单事务 + RESUME_REQUESTED 事件
+a75d84a feat(fault): N-10 第一切片——按实验全部可推导 Workcell 判故障覆盖
+1be0e95 feat(command): P-07 第一切片——设备命令账本 + 重启对账 + fail-closed 防重复下发
+5097c34 feat(pause): P-06 V2 第一切片——实验级暂停单事务 + pause_event Outbox 幂等派发
+2fe8da2 docs(state): 新增状态机文档索引（S-05），标注权威/历史与 S-04-B 新口径
+481d0da test(e2e): 暂停队列页补「非空分支」真实 paused run 夹具
+5a8a730 feat(device): 设备方法 interruptible 产品写入口 + 4.18 改走 API
+a56b471 fix(pause): paused_fault 自动恢复只看本流程设备，M4 补心跳自动续跑验收
+43358f2 feat(state): S-04-B 暂停受理语义（accepted/control_state + 收敛后才 paused）
