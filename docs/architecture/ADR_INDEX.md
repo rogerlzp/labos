@@ -218,6 +218,7 @@
 - 同时 **`experiment_run.status` 列长扩容**（`varchar(16)` → `varchar(32)`）：`WAITING_INTERVENTION`（20 字符）等新生命周期码当前列放不下（`REMEDIATION_STATUS.md` L-02 行、`LABOS_STATE_MACHINE_ACCEPTANCE_CONTRACT_20261107.md` §101）。扩容是 L-02 的硬要求，与方案 A/B 无关。
 - 依据：`paused` 现已被复用为「等待人工」（`pause_kind=waiting_human`）；若再把中间态压进同一列，`status` 会变成随时间累积的多义字段，而它的读方（页面、聚合器、门禁）远多于新的 `control_state`，语义漂移风险高。
 - **本 ADR 只授予「状态表达能力」，不改行为**：L-02 不改变 `status` 何时变为 `paused`（legacy 立即投影保持），因此 PR-S04-A / e2e 4.17 / 4.18 判据不退化。「请求已接受但未收敛时不得显示 `PAUSED`」的行为切换属 **PR-S04-B**（`LABOS_S04B_IMPLEMENTATION_PLAN_20261107.md` §5 批次 1）。
+- **2026-11-08 S-04-B 最小闭环落地**：实验级 Pause API 返回 status=accepted + controlState=PAUSE_REQUESTED，受理时不写 paused；收敛由执行器在动作边界 settle（running）或调度器 RunControl.convergeQueuedPauses（queued）完成，之后才写 paused 且 control_state 回 NONE；页面显示 control 词表（已请求暂停/暂停中）。4.17=17/0、4.20=25/0。
 - 词表单一权威：后端 `StatusVocabulary` 增 `control` scope，前端 `webapp/src/utils/status.ts` 与 `webapp/src/i18n/codes.ts` 同步；不自建第二套映射。
 - **SUPERSEDES**：`LABOS_S04B_IMPLEMENTATION_PLAN_20261107.md` §3.1 方案 A（把 `PAUSE_REQUESTED` / `PAUSING` 塞进 `status`）。
 

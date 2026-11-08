@@ -209,20 +209,62 @@ def main():
             F.ok("弹窗提交后关闭") if page.locator(".ant-modal:visible").count() == 0 \
                 else F.bad("弹窗没关闭")
 
-            # ---- C. DOM：行内状态变「已暂停」且出现「恢复」 ----
-            deadline = time.time() + 30
-            dom_paused = False
+            # ---- C. S-04-B 受理语义：先「已请求暂停」，动作到边界后才「已暂停」 ----
+            accept_er = PR.q1("SELECT status::text FROM experiment_run WHERE id=%d" % erid)
+            accept_ctrl = PR.q1("SELECT control_state FROM experiment_run WHERE id=%d" % erid)
+            accept_exp = PR.q1("SELECT status::text FROM experiment WHERE id=%d" % eid)
+            F.ok("受理时 experiment_run 仍不是 paused（%s）" % accept_er) \
+                if accept_er in ("running", "queued") \
+                else F.bad("受理时 experiment_run 已被提前写成 paused", str(accept_er))
+            F.ok("受理时 control_state=PAUSE_REQUESTED") \
+                if accept_ctrl == "PAUSE_REQUESTED" \
+                else F.bad("受理时 control_state 不对", str(accept_ctrl))
+            F.ok("受理时 experiment 仍不是 paused（%s）" % accept_exp) \
+                if accept_exp != "paused" \
+                else F.bad("受理时 experiment 已被提前写成 paused", str(accept_exp))
+            deadline = time.time() + 20
+            dom_pending = False
             while time.time() < deadline:
                 refresh_runs(page)
+                if row.count():
+                    txt = row.first.inner_text()
+                    if ("已请求暂停" in txt or "暂停中" in txt) \
+                            and row.first.locator("button.ant-btn-link",
+                                                  has_text=re.compile(r"^恢\s*复$")).count() == 0:
+                        dom_pending = True
+                        break
+                page.wait_for_timeout(300)
+            F.ok("受理后 DOM 显示控制状态（已请求暂停/暂停中），没有假「已暂停」") \
+                if dom_pending else F.bad("DOM 没显示暂停控制状态",
+                                          row.first.inner_text() if row.count() else "无行")
+
+            # ---- D. 先等 DB 收敛（paused + control_state NONE），再 reload 页面核对 DOM ----
+            deadline = time.time() + 180
+            converged = False
+            while time.time() < deadline:
+                er_now = PR.q1("SELECT status::text FROM experiment_run WHERE id=%d" % erid)
+                ctrl_now = PR.q1("SELECT control_state FROM experiment_run WHERE id=%d" % erid)
+                if er_now == "paused" and ctrl_now == "NONE":
+                    converged = True
+                    break
+                page.wait_for_timeout(500)
+            F.ok("DB 收敛为 paused 且 control_state=NONE") if converged \
+                else F.bad("DB 未收敛为 paused/NONE", "er=%s ctrl=%s" % (er_now, ctrl_now))
+
+            # 页面「刷新」按钮在报告卡内、容易点错卡；reload 拿服务端最新数据更可靠。
+            dom_paused = False
+            for _ in range(5):
+                page.reload(wait_until="networkidle")
+                page.wait_for_timeout(1500)
                 if row.count() and "已暂停" in row.first.inner_text() \
-                        and row.first.locator("button.ant-btn-link", has_text=re.compile(r"^恢\s*复$")).count() > 0:
+                        and row.first.locator("button.ant-btn-link",
+                                              has_text=re.compile(r"^恢\s*复$")).count() > 0:
                     dom_paused = True
                     break
-                page.wait_for_timeout(300)
             F.ok("执行历史行显示「已暂停」，并出现「恢复」入口（DOM）") if dom_paused \
                 else F.bad("DOM 没有显示已暂停/恢复", row.first.inner_text() if row.count() else "无行")
 
-            # ---- D. API/DB/Hold 三段与设备在途事实 ----
+            # ---- E. API/DB/Hold 三段 ----
             er_st = PR.q1("SELECT status::text FROM experiment_run WHERE id=%d" % erid)
             ex_st = PR.q1("SELECT status::text FROM experiment WHERE id=%d" % eid)
             F.ok("DB：experiment_run = paused") if er_st == "paused" else F.bad("experiment_run 不是 paused", er_st)
@@ -260,7 +302,7 @@ def main():
             F.ok("本次 Hold 在 workflow paused 后仍 active（没被误释放）") \
                 if active_hold(eid) else F.bad("Hold 被提前释放")
 
-            # ---- E. 页面「恢复」→ Hold 释放、继续跑完 ----
+            # ---- F. 页面「恢复」→ Hold 释放、继续跑完 ----
             refresh_runs(page)
             resume_btn = row.first.locator("button.ant-btn-link", has_text=re.compile(r"^恢\s*复$"))
             F.ok("点行内「恢复」") if resume_btn.count() > 0 else F.bad("没有恢复入口")
@@ -287,6 +329,9 @@ def main():
                 time.sleep(1)
             F.ok("恢复后整实验执行 completed（API/DB）") if final_er == "completed" \
                 else F.bad("实验执行没 completed", final_er)
+            final_ctrl = PR.q1("SELECT control_state FROM experiment_run WHERE id=%d" % erid)
+            F.ok("恢复/完成后 control_state 回到 NONE（%s）" % final_ctrl) \
+                if final_ctrl == "NONE" else F.bad("control_state 没回 NONE", str(final_ctrl))
             old_run_st = PR.q1("SELECT status::text FROM run WHERE id=%d" % rid)
             F.ok("恢复沿用 M-01：旧 paused workflow run 被作废（%s）" % old_run_st) \
                 if old_run_st == "aborted" else F.bad("旧 run 状态不是 aborted", old_run_st)
@@ -295,7 +340,7 @@ def main():
             F.ok("恢复后新 workflow run（#%s）最终 completed" % new_rid) \
                 if new_run_st == "completed" else F.bad("新 workflow run 不是 completed", new_run_st)
 
-            # ---- F. DOM 终态（刷新页面拿最新数据，避免列表缓存） ----
+            # ---- G. DOM 终态（刷新页面拿最新数据，避免列表缓存） ----
             page.reload(wait_until="networkidle")
             page.wait_for_timeout(2000)
             deadline = time.time() + 40
@@ -315,6 +360,15 @@ def main():
             except Exception:  # noqa: BLE001
                 pass
             b.close()
+    # 兜底：失败时 PR.cleanup 可能因 run 未收敛而 fail-closed 保留现场；
+    # 本测试抬的现场 Hold 必须释放，否则会作为全局闸门阻断调度器派发。
+    try:
+        PR.q1("UPDATE runtime_hold SET released_at=now(), "
+              "release_note='4.20 e2e cleanup' "
+              "WHERE tenant_id=1 AND released_at IS NULL "
+              "AND scope='experiment' AND scope_id=%d" % eid)
+    except Exception:  # noqa: BLE001
+        pass
     PR.finish(0)
 
 

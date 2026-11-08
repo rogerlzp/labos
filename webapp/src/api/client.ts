@@ -340,6 +340,8 @@ export interface RuntimeHolds {
 export interface ExperimentPauseResult {
   runId: number; experimentId: number;
   status: string; scope: HoldScope; kind: string;
+  /** S-04-B：暂停控制过程（PAUSE_REQUESTED / PAUSING / NONE）；受理时 status=accepted */
+  controlState?: string | null;
 }
 
 export interface ExperimentStopResult {

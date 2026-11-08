@@ -375,23 +375,27 @@ def main():
     print("  暂停后 experiment_run 状态: %s" % after_st)
     print("  请求接受后设备状态: %s" % (after_device,))
 
-    F.ok("Pause API 保持 legacy HTTP 200 / status=paused 契约") \
-        if code == 200 and response.get("status") == "paused" \
-        else F.bad("Pause API legacy 契约不符", "HTTP=%s body=%s" % (code, body[:300]))
+    # ---- S-04-B：受理语义（未收敛不得显示 PAUSED） ----
+    accept_control = q1(f"SELECT control_state FROM experiment_run WHERE id={erid}")
+    F.ok("Pause API 返回 200 + status=accepted + controlState=PAUSE_REQUESTED") \
+        if code == 200 and response.get("status") == "accepted" \
+        and response.get("controlState") == "PAUSE_REQUESTED" \
+        else F.bad("Pause API 受理语义不符", "HTTP=%s body=%s" % (code, body[:300]))
     F.ok("本次请求创建了可追溯的 active Experiment Hold") \
         if hold and hold.get("scope") == "experiment" \
         and int(hold.get("scope_id") or 0) == eid \
         and hold.get("kind") == "manual" and hold.get("reason") == reason \
         and hold.get("released_at") is None \
         else F.bad("未找到本次请求对应的 active Hold", str(hold))
-    legacy_status_latency = t_legacy_status_observed - t_pause_request
-    F.ok("Experiment legacy 两层在 5 秒内写入 paused（%.2f 秒）" %
-         legacy_status_latency) \
-        if after_st == "paused" and ex_after_accept == "paused" \
-        and legacy_status_latency < 5.0 \
-        else F.bad("Experiment legacy 两层未在 5 秒内 paused",
-                   "experiment_run=%s experiment=%s latency=%.2f" %
-                   (after_st, ex_after_accept, legacy_status_latency))
+    F.ok("受理时 experiment_run 仍是 running/queued（不假写 paused）") \
+        if after_st in ("running", "queued") \
+        else F.bad("受理时 experiment_run 已被提前写成 paused", after_st)
+    F.ok("受理时 control_state=PAUSE_REQUESTED") \
+        if accept_control == "PAUSE_REQUESTED" \
+        else F.bad("受理时 control_state 不对", str(accept_control))
+    F.ok("受理时 experiment 仍不是 paused（%s）" % ex_after_accept) \
+        if ex_after_accept != "paused" \
+        else F.bad("受理时 experiment 已被提前写成 paused", str(ex_after_accept))
 
     # 7) 分别观测动作收敛与 Workflow 节点边界暂停。
     #    注意：DB 轮询时间是“观测时间”，不是硬件精确完成时间；不以三层 status
@@ -408,6 +412,8 @@ def main():
 
     t_device_settled = None
     t_workflow_paused = None
+    t_experiment_paused = None
+    er_control = "-"
     deadline = time.time() + 420
     run_st = "-"
     er_st = after_st
@@ -415,6 +421,7 @@ def main():
     arm_st = node_status(rid, "ARM")
     while time.time() < deadline:
         er_st = q1(f"SELECT status::text FROM experiment_run WHERE id={erid}")
+        er_control = q1(f"SELECT control_state FROM experiment_run WHERE id={erid}")
         ex_st = q1(f"SELECT status::text FROM experiment WHERE id={eid}")
         run_st = q1(f"SELECT status::text FROM run WHERE id={rid}")
         arm_st = node_status(rid, "ARM")
@@ -423,7 +430,10 @@ def main():
             t_device_settled = time.time()
         if t_workflow_paused is None and run_st == "paused":
             t_workflow_paused = time.time()
-        if t_device_settled is not None and t_workflow_paused is not None:
+        if t_experiment_paused is None and er_st == "paused":
+            t_experiment_paused = time.time()
+        if (t_device_settled is not None and t_workflow_paused is not None
+                and t_experiment_paused is not None):
             break
         if run_st in ("completed", "failed", "aborted", "canceled"):
             break
@@ -436,6 +446,14 @@ def main():
     F.ok("Workflow Run 在节点边界进入 paused") \
         if run_st == "paused" and t_workflow_paused is not None \
         else F.bad("Workflow Run 未在节点边界 paused", run_st)
+    F.ok("收敛后 control_state 回到 NONE（%s）" % er_control) \
+        if er_control == "NONE" \
+        else F.bad("收敛后 control_state 没回 NONE", str(er_control))
+    F.ok("实验级 paused 不是提前写的（发生在设备动作收敛之后）") \
+        if t_experiment_paused is not None and t_device_settled is not None \
+        and t_experiment_paused >= t_device_settled \
+        else F.bad("实验级 paused 早于设备收敛（假 paused）",
+                   "settled=%s paused=%s" % (str(t_device_settled), str(t_experiment_paused)))
     F.ok("当前 ARM 节点已完成，设备租约不再属于本次 run") \
         if t_device_settled is not None \
         else F.bad("当前设备动作未确认收敛",
@@ -473,8 +491,8 @@ def main():
         "holdId": MADE["hold"] or None,
         "pauseRequestedAtEpoch": t_pause_request,
         "pauseAcceptedAtEpoch": t_pause_accepted,
-        "legacyStatusObservedAtEpoch": t_legacy_status_observed,
-        "legacyStatusLatencySeconds": round(legacy_status_latency, 3),
+        "acceptObservedAtEpoch": t_legacy_status_observed,
+        "acceptControlState": accept_control,
         "deviceRunningObservedBeforeRequest": {
             "status": busy[0], "method": busy[1], "currentRunId": busy[2]
         },
@@ -500,13 +518,16 @@ def main():
     print("\n  S04A_TIMELINE_JSON=" + json.dumps(timeline, ensure_ascii=False, sort_keys=True))
     timeline_ordered = (t_device_settled is not None
                        and t_workflow_paused is not None
-                       and t_pause_request < t_device_settled <= t_workflow_paused)
+                       and t_experiment_paused is not None
+                       and t_pause_request < t_device_settled <= t_workflow_paused
+                       and t_workflow_paused <= t_experiment_paused + 0.5)
     if timeline_ordered:
-        F.ok("时间线顺序成立：Pause 请求 < 设备动作收敛 <= Workflow 暂停")
+        F.ok("时间线顺序成立：Pause 请求 < 设备收敛 <= Workflow 暂停 <= 实验级 paused")
     else:
         F.bad("暂停时间线顺序不成立或证据不完整",
-              "pause_request=%s device_settled=%s workflow_paused=%s" %
-              (str(t_pause_request), str(t_device_settled), str(t_workflow_paused)))
+              "pause_request=%s device_settled=%s workflow_paused=%s experiment_paused=%s" %
+              (str(t_pause_request), str(t_device_settled), str(t_workflow_paused),
+               str(t_experiment_paused)))
 
     print()
     print("  结果：")

@@ -581,6 +581,8 @@ public final class ExperimentExecutor {
             return;
         }
 
+        // S-04-B：任何收尾都表示控制过程走完，control_state 回到 NONE
+        // （pause → 执行器在动作边界 settle paused；stop/complete/fail 同理）。
         StringBuilder set = new StringBuilder(
                 "status=?, error=?, pause_kind=?, pause_reason=?");
         if (paused) {
@@ -589,6 +591,7 @@ public final class ExperimentExecutor {
         if (terminal) {
             set.append(", finished_at=now()");
         }
+        set.append(", control_state='NONE'");
 
         try (Connection c = db.open()) {
             try (PreparedStatement ps = c.prepareStatement(

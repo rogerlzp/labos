@@ -54,6 +54,8 @@ interface ExpRun {
   durationSec?: number | null; error?: string | null;
   /** 暂停类型/原因：后端 experimentRunsJson 已带出，界面要显示"为什么停" */
   pauseKind?: string | null; pauseReason?: string | null;
+  /** S-04-B：暂停控制过程（PAUSE_REQUESTED/PAUSING/...），与生命周期 status 正交 */
+  controlState?: string | null;
   /** 人工停止请求已落库，执行器还没走到动作边界 */
   stopRequested?: boolean;
 }
@@ -876,6 +878,11 @@ export default function ExperimentsPage() {
                       render: (v: string, r) => (
                         <Space size={4} wrap>
                           <Tag color={statusColor('run', v, vocab)}>{statusLabel('run', v, vocab)}</Tag>
+                          {r.controlState && r.controlState !== 'NONE' && (
+                            <Tag color={statusColor('control', r.controlState, vocab)}>
+                              {statusLabel('control', r.controlState, vocab)}
+                            </Tag>
+                          )}
                           {r.stopRequested && v !== 'aborted' && (
                             <Tag color="volcano">{t('experiments.tag.stopping')}</Tag>
                           )}
@@ -909,6 +916,9 @@ export default function ExperimentsPage() {
                         // 恢复：paused 是暂停中、failed 是处置完要继续跑；
                         // 停止：除终态外都能停（运行中走"停止请求"，其余直接终止）。
                         const live = r.status === 'running' || r.status === 'queued';
+                        // S-04-B：暂停请求已受理、还没收敛时不再重复给「暂停」入口
+                        const pendingPause = r.controlState === 'PAUSE_REQUESTED'
+                          || r.controlState === 'PAUSING';
                         const resumable = r.status === 'paused' || r.status === 'failed';
                         const stoppable = !['completed', 'aborted', 'cancelled']
                           .includes(r.status);
@@ -917,7 +927,7 @@ export default function ExperimentsPage() {
                         }
                         return (
                           <Space size={2} wrap>
-                            {live && (
+                            {live && !pendingPause && (
                               <Button size="small" type="link" {...ro}
                                 onClick={() => setPauseFor({
                                   runId: r.id, scope: 'island', reason: '',

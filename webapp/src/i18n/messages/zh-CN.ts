@@ -1076,7 +1076,7 @@ export const zhCN = {
   'experiments.batch.closed': '已关闭分批（之后执行按整单一次 run）',
   'experiments.batch.set': '已设置分批：每批 {n} 个样品，执行时自动切批',
   'experiments.error.batchFailed': '分批设置失败：{msg}',
-  'experiments.toast.paused': '已暂停 run#{id}（作用域：{scope}）',
+  'experiments.toast.paused': '暂停请求已受理 run#{id}（作用域：{scope}），等待当前动作到达边界',
   'experiments.error.pauseFailed': '暂停失败：{msg}',
   'experiments.confirm.stopTitle': '停止实验执行 #{id}？',
   'experiments.confirm.stopContent': '运行中的执行不会被打断：只落"停止请求"，执行器在下一个动作边界收尾；已暂停/排队的直接终止。停止是终态，不能恢复。',

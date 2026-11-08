@@ -1074,7 +1074,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'experiments.batch.closed': 'Batching is off (later runs execute the whole order in one run)',
   'experiments.batch.set': 'Batching set: {n} samples per batch, split automatically at execution time',
   'experiments.error.batchFailed': 'Failed to set batching: {msg}',
-  'experiments.toast.paused': 'run#{id} paused (scope: {scope})',
+  'experiments.toast.paused': 'pause requested for run#{id} (scope: {scope}); waiting for the current action to reach a boundary',
   'experiments.error.pauseFailed': 'Pause failed: {msg}',
   'experiments.confirm.stopTitle': 'Stop the experiment run #{id}?',
   'experiments.confirm.stopContent': 'A running execution is not interrupted: a stop request is recorded and the executor winds down at the next action boundary; a paused or queued run is terminated immediately. Stopping is a terminal state and cannot be undone.',

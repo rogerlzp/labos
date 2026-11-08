@@ -1127,7 +1127,7 @@ public final class QueryService {
     public String experimentRunsJson(long experimentId) throws SQLException {
         List<String> items = new ArrayList<>();
         String sql = """
-                SELECT r.id, r.status, r.expanded_steps, r.current_seq,
+                SELECT r.id, r.status, r.control_state, r.expanded_steps, r.current_seq,
                        r.started_at, r.finished_at, r.error,
                        r.pause_kind, r.pause_reason, r.stop_requested,
                        EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) AS dur_sec
@@ -1153,6 +1153,7 @@ public final class QueryService {
                                     : Math.round(((Number) dur).doubleValue()),
                             "pauseKind", rs.getString("pause_kind"),
                             "pauseReason", rs.getString("pause_reason"),
+                            "controlState", rs.getString("control_state"),
                             "stopRequested", rs.getBoolean("stop_requested"),
                             "error", rs.getString("error")));
                 }

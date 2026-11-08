@@ -93,7 +93,7 @@ public final class RunControl {
         Long scopeId = useScope == RuntimeHold.Scope.SITE ? null
                 : useScope == RuntimeHold.Scope.ISLAND ? run.islandId() : run.experimentId();
         new RuntimeHold(db, tenantId).raise(useScope, scopeId, kind, reason, by);
-        markCoveredPaused(useScope, scopeId, kind.code(), reason);
+        markControlRequested(useScope, scopeId, kind.code(), reason);
         return useScope;
     }
 
@@ -126,9 +126,20 @@ public final class RunControl {
         return !RuntimeHold.Scope.SITE.code().equals(scopeCode);
     }
 
-    /** 把扣留覆盖范围内、还在活动的 run 置 paused（给界面即时反馈；执行器随后同样会停）。 */
-    private void markCoveredPaused(RuntimeHold.Scope scope, Long scopeId,
-                                   String kind, String reason) throws SQLException {
+    /**
+     * 把扣留覆盖范围内、还在活动的 run 标记为「暂停请求已受理」（S-04-B）。
+     *
+     * <p><b>不再立即写 {@code status='paused'}</b>：请求被受理时设备动作可能还在途，
+     * 此时显示 PAUSED 是假收敛（旧版 {@code markCoveredPaused} 的问题）。
+     * 现在只写 {@code control_state=PAUSE_REQUESTED} + pause_kind/reason，
+     * status 保持 running/queued；真正收敛来自两处：
+     * <ul>
+     *   <li>正在跑的 run：执行器在动作边界看到 Hold 后 {@code settle(..., "paused")}；</li>
+     *   <li>排队未派发的 run：调度器每 tick 的 {@link #convergeQueuedPauses} 直接收成 paused。</li>
+     * </ul>
+     */
+    private void markControlRequested(RuntimeHold.Scope scope, Long scopeId,
+                                      String kind, String reason) throws SQLException {
         String filter;
         if (scope == RuntimeHold.Scope.SITE) {
             filter = "";
@@ -139,12 +150,13 @@ public final class RunControl {
         }
         String sql = """
                 UPDATE experiment_run r
-                   SET status = 'paused', pause_kind = ?, pause_reason = ?,
-                       paused_at = now()
+                   SET control_state = 'PAUSE_REQUESTED',
+                       pause_kind = ?, pause_reason = ?
                   FROM experiment e
                  WHERE r.tenant_id = ? AND e.tenant_id = r.tenant_id
                    AND e.id = r.experiment_id
                    AND r.status IN ('queued', 'running')
+                   AND r.control_state = 'NONE'
                 """ + filter;
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(sql)) {
@@ -153,14 +165,38 @@ public final class RunControl {
             ps.setLong(3, tenantId);
             ps.executeUpdate();
         }
-        // ⚠ **experiment 表也要跟着改成 paused**（2026-11-06 实测发现）：
-        //   上面只改了 experiment_run，experiment.status 停在 'running' ——
-        //   实验列表上显示「执行中」，但详情/暂停队列里已经是「已暂停」，
-        //   **两处自相矛盾**（现场会以为还在跑，不会去点继续）。
-        //   状态写入统一走 ExperimentStateProjector（S-03 单写者收口），映射仍由
-        //   StatusVocabulary.runToExperimentCaseSql 生成，与 ExperimentExecutor 同一口径。
+        // 收敛时再同步 experiment 表：由执行器 settle（running run）或
+        // convergeQueuedPauses（queued run）调用 ExperimentStateProjector.syncPausedByRuns，
+        // 保证「experiment_run 已 paused」和「experiment 已 paused」同一时刻发生。
+    }
+
+    /**
+     * S-04-B 收敛兜底：暂停请求已受理、但 run 还排在队列里没被派发的，
+     * 由调度器每 tick 直接收成 paused（排队中的 run 没有在途动作，可以立即收敛）。
+     *
+     * <p>正在跑的 run 不在这里处理：执行器必须在动作边界自己 settle，
+     * 否则会把设备动作中途「假暂停」。
+     *
+     * @return 本次收敛的 run 条数
+     */
+    public static int convergeQueuedPauses(com.labos.kernel.persistence.DbConfig db,
+                                           long tenantId) throws SQLException {
         try (Connection c = db.open()) {
-            ExperimentStateProjector.syncPausedByRuns(c, tenantId);
+            int n;
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE experiment_run
+                       SET status = 'paused', control_state = 'NONE', paused_at = now()
+                     WHERE tenant_id = ?
+                       AND status = 'queued'
+                       AND control_state IN ('PAUSE_REQUESTED', 'PAUSING')
+                    """)) {
+                ps.setLong(1, tenantId);
+                n = ps.executeUpdate();
+            }
+            if (n > 0) {
+                ExperimentStateProjector.syncPausedByRuns(c, tenantId);
+            }
+            return n;
         }
     }
 
@@ -240,7 +276,7 @@ public final class RunControl {
                     UPDATE experiment_run
                        SET status = 'queued', stop_requested = false, error = NULL,
                            pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
-                           finished_at = NULL
+                           control_state = 'NONE', finished_at = NULL
                      WHERE tenant_id = ? AND id = ?
                        AND status IN ('paused', 'failed', 'queued')
                     """)) {

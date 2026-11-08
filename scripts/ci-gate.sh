@@ -77,11 +77,11 @@ MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → 
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=58   # 2026-11-06：暂停点与恢复起点（25）。2026-11-08 重写为真边界暂停（25 → 32）；同日改为页面全链路（页面执行/暂停/继续 + DOM/API/DB）并接入自动对齐/图合法性/绑定复核断言（32 → 45 → 55）：
 MIN_PAGEGW=28   # 2026-11-08：4.19 页面全链路（异或+并行成对网关 + 4 设备任务 + 页面暂停/继续；27 → 28）
-MIN_EXPPAUSEPAGE=20   # 2026-11-08：4.20 实验级暂停/恢复·页面版（执行历史行内暂停→弹窗作用域/原因→边界暂停→恢复→续跑；20 条）
+MIN_EXPPAUSEPAGE=25   # 2026-11-08：4.20 实验级暂停/恢复·页面版（执行历史行内暂停→弹窗作用域/原因→边界暂停→恢复→续跑；25 条）
                 # 图增加第二个设备任务 DEV2；在 DEV 的 device_state=running 且 current_run_id=本次 run 时发暂停；
                 # 内核把 pause_node_key 写成 DEV2（探针不预写），DEV completed、DEV2 pending；
                 # 恢复后 DEV 不重跑、DEV2 才下发 1 条指令。网关和 __setVar 仍不是暂停点。
-MIN_PAUSEEXP=5    # S-04-A：保留 M-01 三层 legacy paused 回归；另验 Hold、设备 current_run_id/动作收敛、Workflow 边界、后续节点 pending 与无关联命令；legacy paused 可早于物理收敛。阈值不变
+MIN_PAUSEEXP=17   # S-04-A/B：受理语义（accepted+control_state）→设备收敛→Workflow 边界→实验级 paused 的顺序 / Hold / 命令证据 / 后续节点 pending；4.17 现 17 条
 MIN_INTR=3        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005），5 条断言（门禁 21 → 22 段）
 
 FAIL=0

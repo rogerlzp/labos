@@ -118,11 +118,30 @@ public final class RunControlDbSelfTest {
                 h != null && RuntimeHold.Scope.ISLAND.code().equals(h.scope()), h);
         check("界面看到的扣留原因是人写的",
                 h != null && "自测：岛级人工暂停".equals(h.reason()), h == null ? null : h.reason());
-        check("同岛排队实验被停", "paused".equals(statusOf(RUN_A)), statusOf(RUN_A));
-        check("同岛运行实验被停", "paused".equals(statusOf(RUN_B)), statusOf(RUN_B));
+        // S-04-B：受理时只写控制状态，不假写 paused（真正收敛在执行器边界/调度器）
+        check("同岛排队实验：control_state=PAUSE_REQUESTED",
+                "PAUSE_REQUESTED".equals(strOf(RUN_A, "control_state")),
+                strOf(RUN_A, "control_state"));
+        check("同岛运行实验：control_state=PAUSE_REQUESTED",
+                "PAUSE_REQUESTED".equals(strOf(RUN_B, "control_state")),
+                strOf(RUN_B, "control_state"));
+        check("受理时排队 run 的 status 仍是 queued",
+                "queued".equals(statusOf(RUN_A)), statusOf(RUN_A));
+        check("受理时运行 run 的 status 仍是 running",
+                "running".equals(statusOf(RUN_B)), statusOf(RUN_B));
         check("别岛/无岛实验不被牵连", "running".equals(statusOf(RUN_C)), statusOf(RUN_C));
-        check("停下来的 run 记下扣留类型",
+        check("受理的 run 记下扣留类型",
                 "manual".equals(strOf(RUN_A, "pause_kind")), strOf(RUN_A, "pause_kind"));
+
+        // S-04-B 收敛：排队 run 由调度器 convergeQueuedPauses 收成 paused；
+        // 运行 run 必须留给执行器在动作边界 settle，不能被提前写 paused。
+        int converged = RunControl.convergeQueuedPauses(db, TENANT);
+        check("调度收敛把排队 run 收成 paused（" + converged + " 条）",
+                "paused".equals(statusOf(RUN_A)), statusOf(RUN_A));
+        check("收敛后 control_state 回到 NONE",
+                "NONE".equals(strOf(RUN_A, "control_state")), strOf(RUN_A, "control_state"));
+        check("在跑的 run 不被收敛抢写（仍需执行器边界）",
+                "running".equals(statusOf(RUN_B)), statusOf(RUN_B));
 
         new RuntimeHold(db, TENANT).clear(RuntimeHold.Scope.ISLAND, ISL, null, "自测：清岛级");
         // 清完之后不应该还有覆盖
@@ -146,7 +165,11 @@ public final class RunControlDbSelfTest {
         check("退化后只扣自己这条实验",
                 h != null && h.scopeId() != null && h.scopeId() == EXP_C,
                 h == null ? null : h.scopeId());
-        check("自己被停下", "paused".equals(statusOf(RUN_C)), statusOf(RUN_C));
+        check("自己被受理：control_state=PAUSE_REQUESTED",
+                "PAUSE_REQUESTED".equals(strOf(RUN_C, "control_state")),
+                strOf(RUN_C, "control_state"));
+        check("受理时 status 仍是 running（不假写 paused）",
+                "running".equals(statusOf(RUN_C)), statusOf(RUN_C));
         check("同无岛的别的实验不受影响", "running".equals(statusOf(RUN_D)), statusOf(RUN_D));
 
         new RuntimeHold(db, TENANT).clear(RuntimeHold.Scope.EXPERIMENT, EXP_C, null, "自测：清实验级");
@@ -422,7 +445,8 @@ public final class RunControlDbSelfTest {
     private static void setRunStatus(long runId, String status) throws SQLException {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run SET status = ? WHERE tenant_id = ? AND id = ?
+                     UPDATE experiment_run SET status = ?, control_state = 'NONE'
+                      WHERE tenant_id = ? AND id = ?
                      """)) {
             ps.setString(1, status);
             ps.setLong(2, TENANT);

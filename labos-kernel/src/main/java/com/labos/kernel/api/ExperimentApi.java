@@ -183,6 +183,7 @@ final class ExperimentApi {
                         "runId", r.runId(),
                         "experimentId", r.experimentId(),
                         "status", r.status(),
+                        "controlState", r.controlState(),
                         "scope", r.scopeCode(),
                         "kind", r.kindCode()));
                 return true;

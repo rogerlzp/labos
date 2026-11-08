@@ -331,7 +331,8 @@ public final class PauseCoordinator {
 
     /** E-4 结果：实验级暂停受理后的既有关键字段（供入口拼原 JSON）。 */
     public record ExperimentPause(long runId, long experimentId, String status,
-                                  String scopeCode, String kindCode) {
+                                  String scopeCode, String kindCode,
+                                  String controlState) {
     }
 
     /** E-5 结果：实验级停止的既有关键字段。 */
@@ -358,9 +359,10 @@ public final class PauseCoordinator {
             Map<String, String> d = claim.detail();
             return new ExperimentPause(cmd.targetId(),
                     longOf(d.get("experimentId"), 0L),
-                    d.getOrDefault("status", "paused"),
+                    d.getOrDefault("status", "accepted"),
                     d.get("scopeCode"),
-                    d.getOrDefault("kindCode", RuntimeHold.Kind.of(claim.kind()).code()));
+                    d.getOrDefault("kindCode", RuntimeHold.Kind.of(claim.kind()).code()),
+                    d.getOrDefault("controlState", "PAUSE_REQUESTED"));
         }
         try {
             RunControl ctl = new RunControl(db, tenantId);
@@ -375,10 +377,12 @@ public final class PauseCoordinator {
             detail.put("experimentId", String.valueOf(ri.experimentId()));
             detail.put("scopeCode", effective.code());
             detail.put("kindCode", kind.code());
-            detail.put("status", "paused");
+            // S-04-B：受理时只承诺「请求已接受 + 控制过程开始」，不承诺已物理暂停。
+            detail.put("status", "accepted");
+            detail.put("controlState", "PAUSE_REQUESTED");
             settle(cmd, detail);
-            return new ExperimentPause(cmd.targetId(), ri.experimentId(), "paused",
-                    effective.code(), kind.code());
+            return new ExperimentPause(cmd.targetId(), ri.experimentId(), "accepted",
+                    effective.code(), kind.code(), "PAUSE_REQUESTED");
         } catch (SQLException | RuntimeException e) {
             abandon(cmd);
             throw e;

@@ -70,7 +70,13 @@ public final class PauseCoordinatorDbSelfTest {
                         "自测：首次暂停", REQ_PAUSE), "experiment");
         check("首次暂停落在实验级", RuntimeHold.Scope.EXPERIMENT.code().equals(first.scopeCode()),
                 first.scopeCode());
-        check("首次暂停生效后 run 为 paused", "paused".equals(first.status()), first.status());
+        check("首次暂停只回「已受理」", "accepted".equals(first.status()), first.status());
+        check("首次暂停 controlState=PAUSE_REQUESTED",
+                "PAUSE_REQUESTED".equals(first.controlState()), first.controlState());
+        check("受理时 DB status 仍是 running（不假写 paused）",
+                "running".equals(statusOf(RUN_P)), statusOf(RUN_P));
+        check("受理时 DB control_state=PAUSE_REQUESTED",
+                "PAUSE_REQUESTED".equals(controlStateOf(RUN_P)), controlStateOf(RUN_P));
         check("首次暂停登记了 1 条幂等键", pauseReqCount(REQ_PAUSE) == 1, pauseReqCount(REQ_PAUSE));
         check("首次暂停抬出 1 道扣留", holdCount(EXP_P) == 1, holdCount(EXP_P));
 
@@ -79,6 +85,8 @@ public final class PauseCoordinatorDbSelfTest {
                         "自测：重复暂停", REQ_PAUSE), "experiment");
         check("重复暂停回放相同作用域", first.scopeCode().equals(again.scopeCode()), again.scopeCode());
         check("重复暂停回放相同状态", first.status().equals(again.status()), again.status());
+        check("重复暂停回放相同 controlState",
+                first.controlState().equals(again.controlState()), again.controlState());
         check("重复暂停回放相同扣留类型", first.kindCode().equals(again.kindCode()), again.kindCode());
         check("重复暂停不再新增幂等键", pauseReqCount(REQ_PAUSE) == 1, pauseReqCount(REQ_PAUSE));
         check("重复暂停不再抬第二道扣留（关键）", holdCount(EXP_P) == 1, holdCount(EXP_P));
@@ -121,7 +129,9 @@ public final class PauseCoordinatorDbSelfTest {
         PauseCoordinator.ExperimentPause retry = coord.pauseExperimentRun(
                 PauseCommand.experiment(RUN_NEW, PauseCommand.Action.PAUSE, "manual",
                         "自测：重跑", REQ_RETRY), "experiment");
-        check("同 requestId 重试真正重跑", "paused".equals(retry.status()), retry.status());
+        check("同 requestId 重试真正重跑", "accepted".equals(retry.status()), retry.status());
+        check("重试也回 controlState=PAUSE_REQUESTED",
+                "PAUSE_REQUESTED".equals(retry.controlState()), retry.controlState());
         check("重跑后幂等键登记为 1 条", pauseReqCount(REQ_RETRY) == 1, pauseReqCount(REQ_RETRY));
         check("重跑抬出扣留", holdCount(EXP_P) == 1, holdCount(EXP_P));
 
@@ -168,11 +178,36 @@ public final class PauseCoordinatorDbSelfTest {
     private static void setRunStatus(long runId, String status) throws SQLException {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(
-                     "UPDATE experiment_run SET status = ? WHERE tenant_id = ? AND id = ?")) {
+                     "UPDATE experiment_run SET status = ?, control_state = 'NONE' "
+                             + "WHERE tenant_id = ? AND id = ?")) {
             ps.setString(1, status);
             ps.setLong(2, TENANT);
             ps.setLong(3, runId);
             ps.executeUpdate();
+        }
+    }
+
+    private static String statusOf(long runId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT status FROM experiment_run WHERE tenant_id = ? AND id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    private static String controlStateOf(long runId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT control_state FROM experiment_run WHERE tenant_id = ? AND id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
         }
     }
 
