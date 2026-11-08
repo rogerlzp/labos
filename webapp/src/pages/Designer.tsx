@@ -1731,21 +1731,13 @@ export default function DesignerPage() {
             <NodeSettings
               wfId={String(wfId)} nodeKey={String(selected)} islandId={islandId}
               onSaved={() => {
-                // 重新导入 XML，让画布上的属性/名称跟库一致
-                apiFetch(`/api/workflows/${wfId}/graph`)
-                  .then((r) => r.text())
-                  .then((xml) => modelerRef.current?.importXML(normalize(xml)))
-                  .then(() => {
-                    // 重新导入会清掉选中态 → 右侧面板消失，看起来像"保存把节点弄丢了"。
-                    // 这里把刚才那个节点重新选上。
-                    const reg = modelerRef.current?.get('elementRegistry') as
-                      { get: (id: string) => unknown } | undefined;
-                    const sel = modelerRef.current?.get('selection') as
-                      { select: (el: unknown) => void } | undefined;
-                    const el = reg?.get(String(selected));
-                    if (el) sel?.select(el);
-                  })
-                  .catch(() => { /* 重新导入失败不影响已保存的数据 */ });
+                // 不要整图 importXML！节点保存后端已是「只 patch 该节点」，
+                // 画布模型本身没变；重新导入会制造一个“旧模型窗口”——用户/测试
+                // 紧接着点下一个节点或点画布保存时，会拿旧模型覆盖刚保存的设置
+                // （实测连续设置 3 个内置节点只剩 1 个、6 个分支只剩最后 1 个）。
+                // 这里只刷新编译/预检数据（右栏信息来自 compile），画布不动。
+                void compile.refetch?.();
+                void pre.refetch?.();
               }}
             />
             <Card size="small" title={plan.name}>
