@@ -711,18 +711,78 @@ def validate_flow(xml):
     return errs
 
 
+def page_save(page, timeout=20.0):
+    """点画布「保存」，等设计器保存完成打点（父容器 data-graph-saved）。
+
+    注意：bpmn-js 的 .djs-container 是容器里的**子元素**，打点在造 modeler 的
+    父 div 上——所以用 [data-graph-saved] 读。
+    """
+    def saved_at():
+        try:
+            return page.evaluate(
+                "() => (document.querySelector('[data-graph-saved]')?.getAttribute('data-graph-saved')) || ''")
+        except Exception:  # noqa: BLE001
+            return ""
+    before = saved_at()
+    page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cur = saved_at()
+        if cur and cur != before:
+            page.wait_for_timeout(500)
+            return True
+        page.wait_for_timeout(120)
+    return False
+
+
 def set_node_builtin(page, label, key, var, value):
-    """选中图元 → 节点设置 → 切内置节点（变量节点/表达式）→ 填两个参数 → 卡内保存。"""
-    page.locator(f'.djs-element[data-element-id="{key}"]').first.click()
-    page.wait_for_timeout(1200)
-    card = page.locator(".ant-card", has_text="节点设置").first
-    if card.count() == 0:
+    """选中图元 → 节点设置 → 切内置节点（变量节点/表达式）→ 填两个参数 → 卡内保存。
+
+    ⚠ 用裸鼠标点中心，不用 locator.click()：bpmn-js 图元在保存/compile 刷新窗口里
+     actionability 检查会一直等（元素明明存在却 click 超时），connect() 早就用这个
+    办法绕过了；4.15 的 run_and_check 连续设置多个分支节点时踩过。
+    """
+    card = None
+    for _ in range(3):
+        # 优先对 SVG 图元直接派发 click：右侧节点可能被「节点设置」卡/视口
+        # 边界盖住，裸鼠标点击会打到覆盖层上，选中的还是上一个节点。
+        try:
+            sel = '.djs-element[data-element-id="%s"]' % key
+            page.evaluate(
+                "(sel) => { const el = document.querySelector(sel);"
+                " if (el) el.dispatchEvent(new MouseEvent('click',"
+                " {bubbles: true, cancelable: true, view: window})); }", sel)
+        except Exception:  # noqa: BLE001
+            cx, cy = center(page, key)
+            page.mouse.click(cx, cy)
+        page.wait_for_timeout(1200)
+        c = page.locator(".ant-card", has_text="节点设置").first
+        if c.count() == 0:
+            continue
+        # 卡片的标题带节点 id：必须确认“卡上就是刚点的那个节点”，否则连续设置
+        # 多个分支节点时会拿上一张卡把设置反复写到同一个节点上（4.15 实测：
+        # 4 个分支只有 1 个变内置节点，其余仍是 task → 执行转 manual 卡 paused）。
+        try:
+            title = c.locator(".ant-card-head-title").inner_text(timeout=2000)
+        except Exception:  # noqa: BLE001
+            title = ""
+        if key in title:
+            card = c
+            break
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+    if card is None:
         return False
     card.locator(".ant-select-selector").first.click()
     page.wait_for_timeout(400)
     page.locator(".ant-select-item-option", has_text=label).first.click()
     page.wait_for_timeout(700)
+    # 节点设置卡的参数字段是异步回填的：切完类型后要等两个输入框出现，
+    # 早 0.5s 直接 count<2 就 return False，会让 4 个分支只有个别真设上。
     inputs = card.locator("input.ant-input")
+    deadline = time.time() + 6
+    while inputs.count() < 2 and time.time() < deadline:
+        page.wait_for_timeout(300)
     if inputs.count() < 2:
         return False
     inputs.nth(0).fill(var)

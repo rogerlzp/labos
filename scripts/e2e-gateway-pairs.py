@@ -141,7 +141,12 @@ def shot_pairs(page, stem):
 
 
 def build_graph(page, ctx, name, nodes, edges):
-    """拖一张图并连线；返回 (wf_id, ids)。"""
+    """拖一张图 → 批量连线 → 单次保存 → 查库补连（缺哪条补哪条）。
+
+    为什么不再逐边保存：每次保存都会触发设计器 compile/preflight 异步刷新，
+    画布 DOM 在刷新窗口里会短暂不稳定；逐边保存 11 次很容易踩到「元素查不到」。
+    批量连完只保存一次，缺边再补，把保存次数从 O(E) 降到 1 + 缺边数。
+    """
     wf_id = F.make_workflow(page, ctx, name)
     for seed in ("S", "E"):
         F.delete_node(page, seed)
@@ -153,13 +158,38 @@ def build_graph(page, ctx, name, nodes, edges):
     if miss:
         F.bad("palette 落点失败", ",".join(miss))
         return wf_id, ids
-    bad = []
+
+    def db_edges():
+        xml = F.api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+        xml = xml if isinstance(xml, str) else F.json.dumps(xml)
+        return set(F.graph_edges(xml).values())
+
     for a, b in edges:
-        if not connect_retry(page, ctx, wf_id, ids[a], ids[b]):
-            bad.append(f"{a}→{b}")
-    if bad:
-        F.bad("有连线连不上（重试 3 次仍失败）", ",".join(bad))
+        F.connect(page, ids[a], ids[b])
+    if not F.page_save(page):
+        F.bad("批量连线后保存没完成", "20s 内没等到 data-graph-saved")
         return wf_id, ids
+    got = db_edges()
+    missing = [(a, b) for a, b in edges if (ids[a], ids[b]) not in got]
+    for a, b in missing:
+        F.connect(page, ids[a], ids[b])
+        if not F.page_save(page):
+            break
+        if (ids[a], ids[b]) in db_edges():
+            missing = [p for p in missing if p != (a, b)]
+            continue
+        # 补连仍失败 → 刷新再试一次（图在库里是好的，刷新让设计器重新 importXML）
+        page.reload(wait_until="networkidle")
+        page.wait_for_selector(".djs-container", timeout=25000)
+        page.wait_for_timeout(1800)
+        F.connect(page, ids[a], ids[b])
+        F.page_save(page)
+        if (ids[a], ids[b]) in db_edges():
+            missing = [p for p in missing if p != (a, b)]
+    if missing:
+        F.bad("有连线连不上（批量连 + 补连后仍缺）", ",".join(f"{a}→{b}" for a, b in missing))
+    else:
+        F.ok(f"{len(edges)} 条连线一次批量保存全部落库（缺边已补连）")
     return wf_id, ids
 
 
@@ -177,8 +207,8 @@ def check_pair(page, ctx, wf_id, ids, xs, xj, ps, pj, n):
             else F.bad(f"{key} 角色不对", f"期望 {expect}，实际 {got}")
 
     # 保存后名字要真的进图
-    page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
-    page.wait_for_timeout(2500)
+    if not F.page_save(page):
+        F.bad("保存没完成", "20s 内没等到 data-graph-saved")
     xml = F.api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
     xml = xml if isinstance(xml, str) else F.json.dumps(xml)
     for nm in ("异或分叉", "异或汇合", "并行分叉", "并行汇合"):
@@ -201,6 +231,16 @@ def check_pair(page, ctx, wf_id, ids, xs, xj, ps, pj, n):
                        f"期望 入{want_in}/出{want_out}，实际 入{ins[ids[key]]}/出{outs[ids[key]]}")
 
 
+def builtin_in_xml(ctx, wf_id, key):
+    """库里这张图里，该节点是否已经是内置节点（protocolName="__setVar"）。"""
+    xml = F.api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+    xml = xml if isinstance(xml, str) else F.json.dumps(xml)
+    i = xml.find(f'id="{key}"')
+    if i < 0:
+        return False
+    return 'protocolName="__setVar"' in xml[max(0, i - 80):i + 500]
+
+
 def run_and_check(ctx, page, wf_id, ids, expect_ran, xor_branches, label, all_branches):
     """真跑一次，同时核对「异或选一」与「并行全跑」。
 
@@ -210,9 +250,19 @@ def run_and_check(ctx, page, wf_id, ids, expect_ran, xor_branches, label, all_br
     （实测 N=2/N=3 都因此失败：节点是 manual/running 而不是 completed）。
     """
     for k in all_branches:
-        F.set_node_builtin(page, "变量节点", ids[k], f"v_{k}", "1")
-    page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
-    page.wait_for_timeout(2500)
+        # 设置后直接查库核对（服务端 patch 立即生效）；不生效就重试。
+        # 节点设置卡是异步回填的，UI 显示“保存成功”不等于这个节点真被改了。
+        for _try in range(3):
+            F.set_node_builtin(page, "变量节点", ids[k], f"v_{k}", "1")
+            if builtin_in_xml(ctx, wf_id, ids[k]):
+                break
+        F.ok(f"{k} 设成内置变量节点并落库（__setVar）") \
+            if builtin_in_xml(ctx, wf_id, ids[k]) \
+            else F.bad(f"{k} 内置节点设置没落库", ids[k])
+    # ⚠ 这里不能再点画布「保存」：节点设置走服务端 patch（只改这个节点的
+    # protocolName），但画布模型还是普通 task；再 saveXML 整图回写会把刚设置的
+    # 内置节点全部覆盖回 task → 执行时找不到设备转 manual、整单卡 paused
+    # （4.15 N=2/N=3 实测踩过）。节点设置本身已经落库，不需要再保存画布。
 
     rid, st = F.run_workflow(ctx, wf_id)
     if not rid:
