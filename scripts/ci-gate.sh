@@ -82,7 +82,7 @@ MIN_EXPPAUSEPAGE=25   # 2026-11-08：4.20 实验级暂停/恢复·页面版（�
                 # 内核把 pause_node_key 写成 DEV2（探针不预写），DEV completed、DEV2 pending；
                 # 恢复后 DEV 不重跑、DEV2 才下发 1 条指令。网关和 __setVar 仍不是暂停点。
 MIN_PAUSEEXP=17   # S-04-A/B：受理语义（accepted+control_state）→设备收敛→Workflow 边界→实验级 paused 的顺序 / Hold / 命令证据 / 后续节点 pending；4.17 现 17 条
-MIN_INTR=3        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005），5 条断言（门禁 21 → 22 段）
+MIN_INTR=6        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005）；2026-11-08 增加「产品写入口」断言（5 → 6）
 
 FAIL=0
 SKIP=0

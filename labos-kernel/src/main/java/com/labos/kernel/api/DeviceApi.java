@@ -446,11 +446,51 @@ final class DeviceApi {
             s.send(ex, 200, s.query.deviceMethodsJson(Long.parseLong(devMethods.group(1))));
             return true;
         }
+        Matcher devMethodInterruptible = DEVICE_METHOD_INTERRUPTIBLE.matcher(path);
+        if (devMethodInterruptible.matches()) {
+            if (!"PUT".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            long deviceId = Long.parseLong(devMethodInterruptible.group(1));
+            String dMethod = java.net.URLDecoder.decode(
+                    devMethodInterruptible.group(2), java.nio.charset.StandardCharsets.UTF_8);
+            String body = new String(s.readBody(ex),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            String raw = null;
+            java.util.regex.Matcher bm = java.util.regex.Pattern
+                    .compile("\"interruptible\"\\s*:\\s*(true|false)").matcher(body);
+            if (bm.find()) {
+                raw = bm.group(1);
+            }
+            if (raw == null) {
+                raw = paramStr(ex.getRequestURI().getQuery(), "interruptible");
+            }
+            if (!"true".equalsIgnoreCase(raw) && !"false".equalsIgnoreCase(raw)) {
+                s.send(ex, 400, err("需要 interruptible=true/false"));
+                return true;
+            }
+            boolean value = Boolean.parseBoolean(raw);
+            int n = s.query.setDeviceMethodInterruptible(deviceId, dMethod, value);
+            if (n == 0) {
+                s.send(ex, 404, err("设备方法不存在"));
+                return true;
+            }
+            com.labos.kernel.driver.DriverStepExecutor
+                    .invalidateInterruptible(deviceId, dMethod);
+            s.audited("device.method.interruptible", "device", deviceId,
+                    dMethod + "=" + value, null, ex);
+            s.send(ex, 200, Jsons.obj("deviceId", deviceId, "method", dMethod,
+                    "interruptible", value));
+            return true;
+        }
         return false;
     }
     // ------------------------------------------------------------ 路由正则
 
     private static final Pattern DEVICE_METHODS = Pattern.compile("^/api/devices/(\\d+)/methods$");
+
+    private static final Pattern DEVICE_METHOD_INTERRUPTIBLE = Pattern.compile(
+            "^/api/devices/(\\d+)/methods/([^/]+)/interruptible$");
 
     private static final Pattern DEVICE_ONE = Pattern.compile("^/api/devices/(\\d+)$");
 

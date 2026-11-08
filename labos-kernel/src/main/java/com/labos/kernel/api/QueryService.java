@@ -3718,6 +3718,25 @@ public final class QueryService {
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
 
+    /**
+     * 设置设备方法的「执行中可中断」标志（产品写入口；方法必须已在设备库中）。
+     *
+     * @return 受影响行数（0 = 设备/方法不存在，调用方回 404）
+     */
+    public int setDeviceMethodInterruptible(long deviceId, String method, boolean value)
+            throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "UPDATE device_method SET interruptible = ? "
+                             + "WHERE tenant_id = ? AND device_id = ? AND method = ?")) {
+            ps.setBoolean(1, value);
+            ps.setLong(2, tenantId);
+            ps.setLong(3, deviceId);
+            ps.setString(4, method);
+            return ps.executeUpdate();
+        }
+    }
+
     /** 某能力下可选的设备方法（{@code device_method}）。 */
     public String methodsJson(String capability) throws SQLException {
         List<String> items = new ArrayList<>();

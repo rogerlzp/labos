@@ -92,15 +92,30 @@ def main():
                  "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
                  % (ARM_DEVICE, ARM_METHOD))
     had_row = existed == "1"
+    orig_intr = "false"
+    if had_row:
+        orig_intr = (q1("SELECT interruptible::text FROM device_method "
+                        "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
+                        % (ARM_DEVICE, ARM_METHOD)) or "false")
     q1("INSERT INTO device_method (tenant_id, device_id, method, name, capability_id, "
        "param_schema, estimate_sec, timeout_sec, interruptible) "
        "VALUES (1, %d, '%s', '归位(Home)', "
        "(SELECT id FROM capability WHERE code='TRANSFER' LIMIT 1), "
-       "'{}'::jsonb, 10, 600, true) "
-       "ON CONFLICT (device_id, method) DO UPDATE SET interruptible = true"
+       "'{}'::jsonb, 10, 600, false) "
+       "ON CONFLICT (device_id, method) DO NOTHING"
        % (ARM_DEVICE, ARM_METHOD))
-    print("  ✓ 已把 %s 的 %s 标成可中断（interruptible=true，%s）"
-          % (ARM_DEVICE, ARM_METHOD, "原有行，结束后还原" if had_row else "临时行，结束后删除"))
+    # 产品写入口（S-04 补）：不再用 SQL 直接改，走真实 API，和页面/设备库同一路径。
+    try:
+        api_res = F.api("/api/devices/%d/methods/%s/interruptible"
+                        % (ARM_DEVICE, ARM_METHOD),
+                        "PUT", {"interruptible": True}, token)
+        F.ok("产品写入口 PUT /api/devices/{id}/methods/{method}/interruptible 可用") \
+            if api_res and api_res.get("interruptible") is True \
+            else F.bad("产品写入口返回不对", str(api_res)[:200])
+    except Exception as e:  # noqa: BLE001
+        F.bad("产品写入口不可用", str(e)[:200])
+    print("  ✓ 已请求把 %s 的 %s 标成可中断（产品 API；%s）"
+          % (ARM_DEVICE, ARM_METHOD, "原有行，结束后还原原值" if had_row else "临时插行，结束后删除"))
 
     wf_id = 0
     rid = 0
@@ -211,12 +226,18 @@ def main():
         if wf_id:
             q1(f"DELETE FROM workflow_node WHERE workflow_id={wf_id}; "
                f"DELETE FROM workflow WHERE id={wf_id};")
-        if had_row:
-            # 原来就有这行 ⇒ 只把标志位还原回 false（测试前它就是默认 false）
-            q1("UPDATE device_method SET interruptible = false "
-               "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
-               % (ARM_DEVICE, ARM_METHOD))
-        else:
+        # 走产品 API 还原（与设置同一条路径）；API 不可用时退回 SQL，保证现场可清理
+        try:
+            restore = ("true" if had_row and orig_intr == "true" else "false")
+            F.api("/api/devices/%d/methods/%s/interruptible"
+                  % (ARM_DEVICE, ARM_METHOD),
+                  "PUT", {"interruptible": restore == "true"}, token)
+        except Exception:  # noqa: BLE001
+            if had_row:
+                q1("UPDATE device_method SET interruptible = %s "
+                   "WHERE tenant_id=1 AND device_id=%d AND method='%s'"
+                   % (orig_intr, ARM_DEVICE, ARM_METHOD))
+        if not had_row:
             q1(f"DELETE FROM device_method WHERE tenant_id=1 AND device_id={ARM_DEVICE} "
                f"AND method='{ARM_METHOD}' AND name='归位(Home)';")
         print("  （测试数据已清理）")

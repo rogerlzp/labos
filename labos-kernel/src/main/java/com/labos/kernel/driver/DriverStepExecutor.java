@@ -80,7 +80,20 @@ public final class DriverStepExecutor implements StepExecutor {
      * <p>默认全是 false（{@code device_method.interruptible} 默认 false），
      * 所以**没有现场清单之前，走的还是老路径（阻塞等待），行为一字不变**。
      */
-    private final Map<String, Boolean> interruptibleCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<String, Boolean> INTERRUPTIBLE_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 设备方法的「可中断」标志被产品写入口改了之后，清掉缓存让下一次执行立刻生效。
+     *
+     * <p>缓存原来是实例字段、无失效入口：API 改库后要等进程重启才生效。静态 cache +
+     * 显式失效后，设备库配置改完下一次下发就按新值走。
+     */
+    public static void invalidateInterruptible(long deviceId, String method) {
+        if (method != null) {
+            INTERRUPTIBLE_CACHE.remove(deviceId + "|" + method);
+        }
+    }
 
     /** 轮询「该不该停」的间隔（毫秒）。 */
     private static final long INTERRUPT_POLL_MS = 200L;
@@ -533,7 +546,7 @@ public final class DriverStepExecutor implements StepExecutor {
             return false;
         }
         String key = instanceId + "|" + method;
-        Boolean cached = interruptibleCache.get(key);
+        Boolean cached = INTERRUPTIBLE_CACHE.get(key);
         if (cached != null) {
             return cached;
         }
@@ -553,7 +566,7 @@ public final class DriverStepExecutor implements StepExecutor {
         } catch (java.sql.SQLException e) {
             v = false;
         }
-        interruptibleCache.put(key, v);
+        INTERRUPTIBLE_CACHE.put(key, v);
         return v;
     }
 
