@@ -3957,17 +3957,34 @@ public final class QueryService {
                     n = ps.executeUpdate();
                 }
                 if (n > 0) {
+                    long recordId;
                     try (PreparedStatement ps = c.prepareStatement("""
                             INSERT INTO intervention_record
                               (tenant_id, run_id, operator, decided_action,
                                from_location, to_location, result, note)
                             VALUES (?, NULL, ?, 'HANDOFF_CONFIRM', ?, ?, 'resolved', ?)
+                            RETURNING id
                             """)) {
                         ps.setLong(1, tenantId);
                         ps.setString(2, operator == null ? "api" : operator);
                         ps.setString(3, String.valueOf(fromWorkcellId));
                         ps.setString(4, String.valueOf(toWorkcellId));
                         ps.setString(5, note);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            recordId = rs.next() ? rs.getLong(1) : 0L;
+                        }
+                    }
+                    try (PreparedStatement ps = c.prepareStatement("""
+                            UPDATE experiment_handoff
+                               SET intervention_record_id = ?
+                             WHERE tenant_id = ? AND experiment_id = ?
+                               AND from_workcell_id = ? AND to_workcell_id = ?
+                            """)) {
+                        ps.setLong(1, recordId);
+                        ps.setLong(2, tenantId);
+                        ps.setLong(3, experimentId);
+                        ps.setLong(4, fromWorkcellId);
+                        ps.setLong(5, toWorkcellId);
                         ps.executeUpdate();
                     }
                 }

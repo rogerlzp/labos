@@ -117,6 +117,16 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
   20s 刷新、viewer 只读；
 - 页面 Playwright 冒烟通过（标题/行/无加载失败）；API 手工验证 configure→confirm。
 
+## 四·补七、Handoff 与 L-01 介入记录强关联（2026-11-09）
+
+- experiment_handoff 增加 intervention_record_id（99q）；
+- confirmHandoff 同事务写介入记录并回填 handoff.intervention_record_id；
+- HandoffGate 放行条件收紧：status=confirmed **且** intervention_record_id 非空；
+- HandoffConfirmDbSelfTest 5/0（含强关联断言）；
+- test-all 1238/0（停 API）。
+
+仍缺：manual_window 与 Handoff 的直接外键/窗口处置联动（当前通过 L-01 记录强关联）。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；

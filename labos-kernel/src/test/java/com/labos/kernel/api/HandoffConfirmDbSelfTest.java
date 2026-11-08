@@ -28,6 +28,8 @@ public final class HandoffConfirmDbSelfTest {
         check("确认落 L-01 介入记录", recordCount(db) == 1, recordCount(db));
         int again = q.confirmHandoff(EXP, A, B, "tester", "again");
         check("重复确认返回 0", again == 0, again);
+        check("Handoff 与介入记录强关联（intervention_record_id）",
+                interventionId(db) > 0, interventionId(db));
         cleanup(db);
         System.out.println("通过 " + pass + ", 失败 " + fail);
         if (fail > 0) {
@@ -70,6 +72,19 @@ public final class HandoffConfirmDbSelfTest {
             ps.setLong(1, EXP);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    private static long interventionId(DbConfig db) throws Exception {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT intervention_record_id FROM experiment_handoff "
+                             + "WHERE tenant_id=1 AND experiment_id=?")) {
+            ps.setLong(1, EXP);
+            try (ResultSet rs = ps.executeQuery()) {
+                long v = rs.next() ? rs.getLong(1) : 0L;
+                return rs.wasNull() ? 0L : v;
             }
         }
     }
