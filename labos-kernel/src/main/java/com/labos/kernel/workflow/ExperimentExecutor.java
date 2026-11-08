@@ -591,7 +591,7 @@ public final class ExperimentExecutor {
         if (terminal) {
             set.append(", finished_at=now()");
         }
-        set.append(", control_state='NONE'");
+        set.append(", control_state='NONE', pause_requested_at=NULL");
 
         try (Connection c = db.open()) {
             try (PreparedStatement ps = c.prepareStatement(

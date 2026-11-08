@@ -88,6 +88,7 @@ public final class RunControlDbSelfTest {
             RunControl rc = new RunControl(db, TENANT);
 
             pauseIslandCoverage(rc);
+            pausingMarker();
             pauseNoIslandDegradesToExperiment(rc);
             stopTwoBranches(rc);
             resumeKeepsCompletedSteps();
@@ -102,6 +103,29 @@ public final class RunControlDbSelfTest {
         if (fail > 0) {
             System.exit(1);
         }
+    }
+
+    // ------------------------------------------------- P-06 V2：PAUSING 中间态
+
+    private static void pausingMarker() throws Exception {
+        exec("UPDATE experiment_run SET status='running', "
+                + "control_state='PAUSE_REQUESTED', "
+                + "pause_requested_at = now() - interval '10 seconds' "
+                + "WHERE tenant_id=1 AND id=" + RUN_B);
+        int marked = RunControl.markPausing(db, TENANT, 5);
+        check("受理超 5 秒仍在跑的 run 标 PAUSING（本次 " + marked + " 条）",
+                marked >= 1 && "PAUSING".equals(strOf(RUN_B, "control_state")),
+                strOf(RUN_B, "control_state"));
+
+        exec("UPDATE experiment_run SET control_state='PAUSE_REQUESTED', "
+                + "pause_requested_at=now() WHERE tenant_id=1 AND id=" + RUN_B);
+        RunControl.markPausing(db, TENANT, 5);
+        check("刚受理的 run 不立刻标 PAUSING（不制造假中间态）",
+                "PAUSE_REQUESTED".equals(strOf(RUN_B, "control_state")),
+                strOf(RUN_B, "control_state"));
+
+        exec("UPDATE experiment_run SET status='running', control_state='NONE', "
+                + "pause_requested_at=NULL WHERE tenant_id=1 AND id=" + RUN_B);
     }
 
     // ---------------------------------------------------------------- 1. 岛级暂停
@@ -479,6 +503,13 @@ public final class RunControlDbSelfTest {
 
     private static String statusOf(long runId) throws SQLException {
         return strOf(runId, "status");
+    }
+
+    private static void exec(String sql) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.executeUpdate();
+        }
     }
 
     private static String strOf(long runId, String column) throws SQLException {

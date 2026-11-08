@@ -127,6 +127,34 @@ public final class RunControl {
     }
 
     /**
+     * P-06 V2 收尾：把「已受理超过 {@code staleSeconds} 秒、仍在 running」的 run
+     * 标成 {@code control_state=PAUSING}（可观测中间态）。
+     *
+     * <p>只做展示层状态推进：真正 paused/NONE 仍由执行器动作边界 settle 完成，
+     * 这里绝不写 paused（否则又是假收敛）。queued run 由
+     * {@link #convergeQueuedPauses} 直接收敛，不经过 PAUSING。
+     *
+     * @return 本次标记条数
+     */
+    public static int markPausing(com.labos.kernel.persistence.DbConfig db,
+                                  long tenantId, int staleSeconds) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE experiment_run
+                        SET control_state = 'PAUSING'
+                      WHERE tenant_id = ?
+                        AND status = 'running'
+                        AND control_state = 'PAUSE_REQUESTED'
+                        AND pause_requested_at IS NOT NULL
+                        AND pause_requested_at < now() - (? || ' seconds')::interval
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setInt(2, Math.max(0, staleSeconds));
+            return ps.executeUpdate();
+        }
+    }
+
+    /**
      * 把扣留覆盖范围内、还在活动的 run 标记为「暂停请求已受理」（S-04-B）。
      *
      * <p><b>不再立即写 {@code status='paused'}</b>：请求被受理时设备动作可能还在途，
@@ -166,6 +194,7 @@ public final class RunControl {
         String sql = """
                 UPDATE experiment_run r
                    SET control_state = 'PAUSE_REQUESTED',
+                       pause_requested_at = now(),
                        pause_kind = ?, pause_reason = ?
                   FROM experiment e
                  WHERE r.tenant_id = ? AND e.tenant_id = r.tenant_id
@@ -196,7 +225,8 @@ public final class RunControl {
             int n;
             try (PreparedStatement ps = c.prepareStatement("""
                     UPDATE experiment_run
-                       SET status = 'paused', control_state = 'NONE', paused_at = now()
+                       SET status = 'paused', control_state = 'NONE',
+                           pause_requested_at = NULL, paused_at = now()
                      WHERE tenant_id = ?
                        AND status = 'queued'
                        AND control_state IN ('PAUSE_REQUESTED', 'PAUSING')
@@ -329,7 +359,8 @@ public final class RunControl {
                     UPDATE experiment_run
                        SET status = 'queued', stop_requested = false, error = NULL,
                            pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
-                           control_state = 'NONE', finished_at = NULL
+                           control_state = 'NONE', pause_requested_at = NULL,
+                           finished_at = NULL
                      WHERE tenant_id = ? AND id = ?
                        AND status IN ('paused', 'failed', 'queued')
                     """)) {

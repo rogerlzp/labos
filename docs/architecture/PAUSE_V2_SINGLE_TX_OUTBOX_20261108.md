@@ -45,7 +45,7 @@ COMMIT
 | 实验级 Resume（E-6） | ✅ 第二切片 | 解 Hold / run 回 queued / 实验表同步 / 作废旧 paused run / RESUME_REQUESTED 事件同事务；批次聚合与重新入队 commit 后做 |
 | 实验级 Stop（E-5） | ✅ 第三切片 | stop_requested / aborted / 实验表同步 / STOP_REQUESTED 事件同事务；批次聚合 commit 后补 |
 | Workflow 级 Pause / Resume（E-1~E-3） | ❌ 仍 V1 | PauseManager 仍多连接；依赖 P-07 命令账本一起做 |
-| PAUSING 异步收敛 worker | ❌ 未做 | 当前 accepted→paused 由执行器边界/调度器收敛（S-04-B 最小闭环） |
+| PAUSING 异步收敛 worker | 🟡 第四切片（最小） | 受理超过 5 秒仍未到边界的 running run 标 PAUSING（只展示，不写 paused）；settle 收尾回 NONE |
 | P-07 命令账本/Outbox | ❌ 未做 | 设备指令派发前/回包后/重启恢复的 exactly-once 证据链 |
 
 ## 三·补、第二切片：实验级 Resume（E-6）单事务（2026-11-08）
@@ -87,6 +87,20 @@ scheduler.resumeRun（内存队列）；commit 后崩溃由启动 rehydrateQueue
 
 边界：Workflow 级 Pause（E-1~E-3）仍由 PauseManager 多连接实现；PAUSING 异步收敛
 worker 与真实事件总线消费者仍未做。
+
+## 三·补三、第四切片：PAUSING 异步中间态（2026-11-08）
+
+experiment_run 新增 pause_requested_at（受理时间）；调度器每 tick 调
+RunControl.markPausing(db, tenant, 5)：只把「受理超过 5 秒、仍 status=running、
+control_state=PAUSE_REQUESTED」的 run 标成 PAUSING（界面显示「暂停中」），
+绝不写 paused；执行器动作边界 settle 时清 pause_requested_at 并回 NONE。
+queued run 仍由 convergeQueuedPauses 直接收成 paused。
+
+测试：RunControlDbSelfTest 51/0（超阈值标 PAUSING / 刚受理不误标）；
+test-all 1148/0。
+
+边界：这是可观测中间态的最小 worker；暂停请求没有 requestId 时仍能靠
+pause_requested_at 推进（该列由受理事务写入）。
 
 ## 四、不变量与测试
 

@@ -54,6 +54,7 @@ cat /tmp/_schema_header.sql \
     99d_pause_request.sql \
     99e_pause_event.sql \
     99f_command_ledger.sql \
+    99g_pausing.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

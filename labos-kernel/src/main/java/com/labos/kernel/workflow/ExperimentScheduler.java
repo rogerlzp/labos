@@ -292,6 +292,8 @@ public final class ExperimentScheduler {
             try {
                 sweepExpiredLocks();
                 dispatch();
+                // P-06 V2：受理久了还没到边界的 running run 标 PAUSING（只展示，不写 paused）
+                RunControl.markPausing(db, tenantId, 5);
                 // S-04-B：暂停请求已受理、还排在队列里的 run 直接收敛为 paused
                 // （在跑的 run 由执行器在动作边界 settle，不能在这里提前写 paused）。
                 RunControl.convergeQueuedPauses(db, tenantId);
