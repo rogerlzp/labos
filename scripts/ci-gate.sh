@@ -38,10 +38,26 @@ for a in "$@"; do
   esac
 done
 
+# 环境提示：带库段快不快，主要取决于仿真机 --rand-delay。只提示，不阻断。
+if [[ $WITH_DB -eq 1 ]]; then
+  SIM_RAND=$(pgrep -fl DeviceSimulator 2>/dev/null | grep -oE -- '--rand-delay [0-9]+:[0-9]+' | head -1)
+  if [[ -n "$SIM_RAND" ]]; then
+    SIM_MIN=$(echo "$SIM_RAND" | grep -oE '[0-9]+' | head -1)
+    if (( SIM_MIN >= 5000 )); then
+      printf '  \033[33m⚠ 当前仿真机 %s：设备段会明显变慢；门禁建议 ./labos-kernel/scripts/sim-up.sh LAB-DEMO-02 0 fast（2–5s），暂停段用 pause（8–15s）\033[0m\n' "$SIM_RAND"
+    fi
+  fi
+fi
+
 # 阈值：只许涨不许跌。改了用例要同步改这里，逼着人想清楚"少的那几条去哪了"。
-MIN_PURE=651    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（sleep 真停 / wait 满足 / wait 超时转人工 / 外部刷新不盖本图写值 / __ 前缀判 LOGIC）（644 → 649）；
+MIN_PURE=673    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（sleep 真停 / wait 满足 / wait 超时转人工 / 外部刷新不盖本图写值 / __ 前缀判 LOGIC）（644 → 649）；
                 # 2026-11-06 收尾：再新增「干跑内置节点直通」一条（评审③相邻缝隙）（649 → 650）；
-                # 2026-11-06 演示：新增「干跑任务节点也直通」一条（TASK 分不到设备时不误报下游走不到，PF-03 假报）（650 → 651）
+                # 2026-11-06 演示：新增「干跑任务节点也直通」一条（TASK 分不到设备时不误报下游走不到，PF-03 假报）（650 → 651）；
+                # 2026-11-07 V1-1：RuntimeHoldSelfTest 新增安全闸门三态 11 条（CLEAR 放行 / HELD 阻断 / UNKNOWN 阻断 /
+                #                 覆盖判定纯函数 4 条 / 读库失败 fail-closed 3 条：siteState、coverageFor、coverageForWorkflow）（651 → 662）；
+                # 2026-11-07 L-02：StatusVocabularySelfTest 新增 control scope 2 条（7b 契约固定 1 条 + JSON 元素形状 1 条）（662 → 664）；
+                # 2026-11-07 S-03：新增 ExperimentStateProjectorSelfTest 9 条（源码树可枚举 2 / 单写者 0 违规 1 /
+                #                 收口恰 5 条 + 常量名 + 非空 3 / 映射同源 3）（664 → 673）
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
@@ -60,16 +76,34 @@ MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / �
 MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle + paused 不被误杀 + 排队僵尸被收，31 → 34）
 MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
-MIN_PAUSERES=25   # 2026-11-06：暂停点与恢复起点（暂停点落在设备任务节点——网关不查 pause，__setVar/__expr 是瞬时计算也不查；__sleep/__wait 在等待循环里另查，见 MIN_MATRIX 的 waitsleep；恢复从「未完成的节点」继续，已 completed 的走 skipKeys 跳过；设备指令不重复下发）
+MIN_PAUSERES=45   # 2026-11-06：暂停点与恢复起点（25）。2026-11-08 重写为真边界暂停（25 → 32）；同日把图改成并行 fork/join 并改为页面全链路（页面执行/暂停/继续 + DOM/API/DB 三段断言）（32 → 45）：
+                # 图增加第二个设备任务 DEV2；在 DEV 的 device_state=running 且 current_run_id=本次 run 时发暂停；
+                # 内核把 pause_node_key 写成 DEV2（探针不预写），DEV completed、DEV2 pending；
+                # 恢复后 DEV 不重跑、DEV2 才下发 1 条指令。网关和 __setVar 仍不是暂停点。
 MIN_PAUSEEXP=5    # S-04-A：保留 M-01 三层 legacy paused 回归；另验 Hold、设备 current_run_id/动作收敛、Workflow 边界、后续节点 pending 与无关联命令；legacy paused 可早于物理收敛。阈值不变
 MIN_INTR=3        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005），5 条断言（门禁 21 → 22 段）
 
 FAIL=0
 SKIP=0
-note() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+GATE_START=$(date +%s)
+LAST_NOTE=""
+LAST_TS=0
+# note：段标题 + 上一段耗时（耗时是优化门禁速度的依据，哪段慢一眼看到）。
+note() {
+  local now; now=$(date +%s)
+  if [[ -n "$LAST_NOTE" ]]; then
+    printf '  \033[2m… %s 用时 %ss\033[0m\n' "$LAST_NOTE" "$((now - LAST_TS))"
+  fi
+  LAST_NOTE="$1"; LAST_TS=$now
+  printf '\n\033[1m%s\033[0m\n' "$1"
+}
 pass() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
 skip() { printf '  \033[33m⏭\033[0m %s\n' "$1"; SKIP=$((SKIP + 1)); }
+# SKIP 判定单一入口：子脚本历史上有三种真实输出格式——
+#   "SKIP ..."（老脚本）/ "  ⏭ ..."（F.skip）/ "缺 LABOS_DB_*"（退出码 2）
+# 只按 ^SKIP 判会把后两种当成失败（4.14/4.15/4.16 缺库误报红的根因）。
+is_skip() { grep -qE '^SKIP|⏭|缺 LABOS_DB|没有仿真机在监听|找不到可用空实验' <<< "$1"; }
 
 # 解析子脚本的「通过 N / 失败 M」汇总行。
 # 为什么要专门写这个：汇总行**缺失**有两种完全不同的原因 ——
@@ -110,8 +144,8 @@ while read -r key cur; do
   if (( cur < hist_max )); then
     threshold_drops="${threshold_drops}${key}(${cur} < ${hist_max}) "
   fi
-done < <(grep -E "^MIN_[A-Z_]+=" scripts/ci-gate.sh \
-  | sed -E "s/^(MIN_[A-Z_]+)=([0-9]+).*/\1 \2/")
+done < <(grep -E "^MIN_[A-Z0-9_]+=" scripts/ci-gate.sh \
+  | sed -E "s/^(MIN_[A-Z0-9_]+)=([0-9]+).*/\1 \2/")
 if [[ -z "$threshold_drops" ]]; then
   pass "所有 MIN_* 阈值均不低于历史最高值"
 else
@@ -165,7 +199,7 @@ if [[ $WITH_DB -eq 1 ]]; then
   note "2.6 并行能力（流程内并行 / 同岛多实验）"
 
   POUT=$(python3 scripts/verify-parallel-flow.py 2>&1)
-  if echo "$POUT" | grep -q '^SKIP'; then
+  if is_skip "$POUT"; then
     skip "流程内并行（环境里没有可用设备）"
   else
     PN=$(echo "$POUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -182,7 +216,7 @@ if [[ $WITH_DB -eq 1 ]]; then
   fi
 
   EOUT=$(python3 scripts/verify-parallel-experiments.py --count 4 2>&1)
-  if echo "$EOUT" | grep -q '^SKIP'; then
+  if is_skip "$EOUT"; then
     skip "同岛并发（API 不可用）"
   else
     EN=$(echo "$EOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -207,7 +241,7 @@ fi
 if [[ $WITH_DB -eq 1 ]]; then
   note "2.7 完整流程矩阵（verify-flow-matrix.py）"
   MOUT=$(python3 scripts/verify-flow-matrix.py --force-online 2>&1)
-  if echo "$MOUT" | grep -q '^SKIP'; then
+  if is_skip "$MOUT"; then
     skip "完整流程矩阵（库里没有设备实例）"
   else
     MN=$(echo "$MOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -265,7 +299,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   # 4.5 页面流程矩阵：设计器 palette/变量节点 + 运行详情着色 + 页面暂停恢复
   note "4.5 页面流程矩阵（e2e-flow-matrix.py）"
   MOUT=$(python3 scripts/e2e-flow-matrix.py --base "$E2E_BASE" 2>&1)
-  if echo "$MOUT" | grep -q '^SKIP'; then
+  if is_skip "$MOUT"; then
     skip "页面流程矩阵（API 不可用）"
   else
     MN=$(echo "$MOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -284,8 +318,8 @@ if [[ $WITH_E2E -eq 1 ]]; then
   # 4.6 实验运行控制：页面暂停（现场扣留）/恢复/停止
   note "4.6 实验运行控制（verify-exp-control.py）"
   COUT=$(python3 scripts/verify-exp-control.py --base "$E2E_BASE" 2>&1)
-  if echo "$COUT" | grep -qE '找不到可用空实验'; then
-    echo "  跳过（库里没有可借用的空实验）"
+  if is_skip "$COUT"; then
+    skip "实验运行控制（库里没有可借用的空实验）"
   else
     CN=$(echo "$COUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
     CF=$(echo "$COUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
@@ -306,7 +340,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   # 没起来就整体 SKIP（去 labos-kernel/scripts/sim-up.sh 起）。
   note "4.7 仿真机联调（e2e-sim-flow.py）"
   SOUT=$(python3 scripts/e2e-sim-flow.py --base "$E2E_BASE" 2>&1)
-  if echo "$SOUT" | grep -qE '^SKIP|没有仿真机在监听'; then
+  if is_skip "$SOUT"; then
     skip "仿真机联调（仿真机没起 / API 不可用）"
   else
     SN=$(echo "$SOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -426,7 +460,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   # 2 个异或网关 + 变量节点，从没被拖过。
   note "4.14 页面实操 · 多并行+多网关+变量（e2e-multi-parallel.py）"
   MOUT2=$(python3 scripts/e2e-multi-parallel.py --base "$E2E_BASE" 2>&1)
-  if echo "$MOUT2" | grep -q '^SKIP'; then
+  if is_skip "$MOUT2"; then
     skip "多并行多网关（没给库连接）"
   else
     M2N=$(echo "$MOUT2" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -448,7 +482,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   # 名字叫「异或分叉」却名实不符，也没有任何一个汇合点（2026-11-06 用户指出）。
   note "4.15 网关成对 · N=2/N=3（e2e-gateway-pairs.py）"
   GOUT=$(python3 scripts/e2e-gateway-pairs.py --base "$E2E_BASE" 2>&1)
-  if echo "$GOUT" | grep -q '^SKIP'; then
+  if is_skip "$GOUT"; then
     skip "网关成对（没给库连接）"
   else
     GN=$(echo "$GOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
@@ -464,15 +498,13 @@ if [[ $WITH_E2E -eq 1 ]]; then
     fi
   fi
   # 4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）
-  # 补的是「暂停停在哪类节点、恢复从哪继续」这条语义：
-  # 源码里 pauseChecker 在 Kind.TASK 分支查 ⇒ 暂停点落在设备任务节点
-  # （网关不是；__setVar/__expr 是瞬时计算也不是）；
-  # __sleep/__wait 会在等待循环里按 500ms 分片响应暂停 —— 那条路径另有用例。
-  # 恢复靠 skipKeys（上一轮 level=0 completed 的 node_key）⇒ 已完成的跳过不重跑，
-  # 没做完的重跑，设备指令不重复下发。
+  # 真边界暂停：DEV 还在执行（device_state running 且 current_run_id=本次 run）时发暂停。
+  # pauseChecker 在下一个 Kind.TASK（DEV2）的 executeNode 之前停下。
+  # 网关不是暂停点，__setVar 也不是；__sleep/__wait 另有用例。
+  # 恢复靠 skipKeys：已 completed 的 DEV 不重跑，pending 的 DEV2 才执行。
   note "4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）"
   POUT2=$(python3 scripts/e2e-pause-resume-nodes.py --base "$E2E_BASE" 2>&1)
-  if echo "$POUT2" | grep -q '^SKIP'; then
+  if is_skip "$POUT2"; then
     skip "暂停与恢复（没给库连接）"
   else
     parse_summary "$POUT2"
@@ -485,7 +517,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
     elif (( SUM_PASS < MIN_PAUSERES )); then
       fail "暂停与恢复断言 $SUM_PASS < 阈值 ${MIN_PAUSERES}"
     else
-      pass "暂停与恢复 $SUM_PASS / 0（暂停点只落在设备任务节点；恢复从未完成节点继续，设备指令不重复下发）"
+      pass "暂停与恢复 $SUM_PASS / 0（页面执行/暂停/继续；停在下一个设备任务 DEV2；DEV 不重跑，DEV2 恢复后才执行；PARJ 并行汇合等齐后整单才 completed）"
     fi
   fi
   # 4.17 实验级暂停：设备执行中发暂停 → 三层都停在暂停
@@ -498,7 +530,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   #   可早于设备动作收敛，不在本阶段断言 API/UI 隐藏 PAUSED（S-04-B 再切换）。
   note "4.17 实验级暂停 · 设备执行中（e2e-pause-during-experiment.py）"
   EOUT=$(python3 scripts/e2e-pause-during-experiment.py 2>&1)
-  if echo "$EOUT" | grep -qE '^SKIP|缺 LABOS_DB'; then
+  if is_skip "$EOUT"; then
     skip "实验级暂停（没给库连接）"
   else
     parse_summary "$EOUT"
@@ -520,7 +552,7 @@ if [[ $WITH_E2E -eq 1 ]]; then
   # 脚本会临时把机械臂的 Home 标成 interruptible=true，结束前还原。
   note "4.18 A1 真停 · 可中断方法执行中（e2e-interrupt-during-device.py）"
   IOUT=$(python3 scripts/e2e-interrupt-during-device.py 2>&1)
-  if echo "$IOUT" | grep -qE '^SKIP|缺 LABOS_DB'; then
+  if is_skip "$IOUT"; then
     skip "A1 真停（没给库连接）"
   else
     parse_summary "$IOUT"
@@ -542,6 +574,7 @@ fi
 
 # ---------------------------------------------------------------- 结果
 note "结果"
+printf '  总用时 %ss\n' "$(( $(date +%s) - GATE_START ))"
 if [[ $FAIL -eq 0 ]]; then
   if [[ $SKIP -gt 0 ]]; then
     # 关键：跳过不等于通过。缺环境时也要让「哪些没跑」显式可见，

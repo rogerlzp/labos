@@ -96,7 +96,8 @@ def run(ctx, page):
     # 这是「**多个并行**」+「**多个网关**」+「变量」三者共存的形状：
     #   · P1 是并行网关（一分为二）
     #   · P2 是**第二个**并行网关（嵌套在 P1 的一支里）
-    #   · X / X2 是异或网关（条件分支）
+    #   · X / X2 是 1 进 1 出的异或网关（只作为共存图元，不构成分叉；
+    #     真正的异或分叉+汇合语义见 4.15 e2e-gateway-pairs.py）
     #   · SET / A / B / F 是变量节点，C / D 是表达式节点
     #
     # ⚠ 坐标必须落在画布容器的**可视区**里：容器左侧被「按岛设备」面板挤掉，
@@ -221,23 +222,24 @@ def run(ctx, page):
     F.ok("并行分支 F 执行了（P2 的第二支）") if f"{ids['F']}=completed" in nodes \
         else F.bad("并行分支 F 没执行", nodes)
 
-    # 两条异或分支各命中 C / D
-    F.ok("异或分支 1 命中 C（${counter} == 1 生效）") \
+    # X/X2 是 1 进 1 出直通网关：条件虽写在唯一出边上，但引擎
+    # outs.size()==1 时直接放行、不求值（GraphRunner.choose）。这里只断言
+    # 两条直通支路都执行；「条件决定走哪条」的语义由 4.5 F 节覆盖。
+    F.ok("直通网关支路 C 执行了（X 为 1 进 1 出）") \
         if f"{ids['C']}=completed" in nodes else F.bad("没走 C", nodes)
-    F.ok("异或分支 2 命中 D（${counter} == 1 生效）") \
+    F.ok("直通网关支路 D 执行了（X2 为 1 进 1 出）") \
         if f"{ids['D']}=completed" in nodes else F.bad("没走 D", nodes)
 
-    # 汇合语义：E 是 end 事件（Kind.END），**本来就不进 run_node**
-    # （只有 Kind.TASK / Kind.BUILTIN 才上报节点状态，见 GraphRunner
-    #   的 progress.complete 只在 task/builtin 分支调用）。
-    # 所以汇合不能断言「E 在 run_node 里 completed」——那永远不成立。
-    # 可观测的判据是：三条并行分支都 completed **且** 整单 completed
-    # —— 若汇合没等齐（只跑完一支就收尾），其余支不会 completed。
-    F.ok("三条并行分支都 completed（汇合等齐了：只完成一支不会是这个结果）") \
+    # 本图**没有 join 网关**：P1/P2 都是分叉（1 入 2 出），X/X2 是 1 进 1 出直通，
+    # E 是 end 事件（Kind.END，不进 run_node）。因此本节只能证明
+    # 「多网关共存 + 三条分支都跑到 + 整单 completed」这个执行冒烟；
+    # **真正的 fork/join 等齐语义以 4.15 e2e-gateway-pairs.py 为准**。
+    # （旧注释用「分支都 completed ⇒ 汇合等齐」推理，在 OR 汇合下不成立，已删除。）
+    F.ok("三条分支都 completed（多网关共存下的执行冒烟）") \
         if all(f"{ids[k]}=completed" in nodes for k in ("A", "B", "F")) \
         else F.bad("并行分支没都完成", nodes)
-    F.ok("整单 completed 说明所有分支都汇合到 end 后才收尾") if st == "completed" \
-        else F.bad("整单没跑完（汇合未完成）", f"{st}；{nodes}")
+    F.ok("整单 completed（多网关共存图可执行）") if st == "completed" \
+        else F.bad("整单没跑完", f"{st}；{nodes}")
 
 
 def main():
