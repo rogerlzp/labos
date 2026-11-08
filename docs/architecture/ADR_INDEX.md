@@ -36,6 +36,10 @@
 | **ADR-LOCK-001** | **分布式资源锁用 Redis + PG 联合，按资源粒度，不按 islandId** | **ACCEPT** | 见 §2.10 | 用户裁决 2026-11-07（Q-03） | ExperimentScheduler、设备/板位/机械臂锁、RedisClient |
 | **ADR-FAULT-SCOPE-002** | **同一实验内任一 Workcell 故障 ⇒ 整个实验停** | **ACCEPT** | 见 §2.11 | 用户裁决 2026-11-07（Q-04） | 故障传播、Hold 覆盖、逐候选调度 |
 | **ADR-STATE-001** | **状态机多层维护治理：事实/投影分离 + PauseCoordinator + 验收口径切换** | **ACCEPT** | 见 §2.12 | 源码与文档盘点 2026-11-07 | 两套 run 模型、e2e 4.17 判据 |
+| **ADR-PAUSE-008** | **控制状态（`control_state`）与生命周期（`status`）分离** | **ACCEPT** | 见 §2.13 | 用户裁决 2026-11-07（L-02，取更完善方案） | `experiment_run` schema、RunControl、StatusVocabulary、前端词表 |
+| **ADR-PAUSE-009** | **V1 幂等键采用独立 `pause_request` 表** | **ACCEPT** | 见 §2.14 | 用户裁决 2026-11-07（Q-1，取更完善方案） | PauseCoordinator、schema 新增表、P-06 |
+| **ADR-PAUSE-010** | **Hold 读取失败的 `UNKNOWN` 必须运维可见** | **ACCEPT** | 见 §2.15 | 用户裁决 2026-11-07（Q-2，取更完善方案） | `GET /api/holds`、RuntimeHold |
+| **ADR-PROCESS-003** | **L-02 先于 S-02/P-06（PauseCoordinator）合并** | **ACCEPT** | 见 §2.16 | 用户裁决 2026-11-07（Q-3） | 合并顺序、REMEDIATION Step 7 |
 
 ---
 
@@ -205,6 +209,42 @@
   - 该两阶段边界由 `LABOS_S04A_E2E_ACCEPTANCE_SPEC_20261107.md` 细化；它是 ADR-STATE-001 的实施验收澄清，不改变「事实为准、status 为投影」的已接受原则。
 - 新增工作项 `S-01`~`S-05`（见 `REMEDIATION_STATUS.md`）。
 
+### 2.13 ADR-PAUSE-008：控制状态（`control_state`）与生命周期（`status`）分离
+
+**Decision：ACCEPT。** 用户裁决 2026-11-07（L-02；明确「尽量从更完善的方案出发，而不是从改动少的角度出发」）。
+
+- **不把暂停中间态塞进 `experiment_run.status`**（否决 `LABOS_S04B_IMPLEMENTATION_PLAN_20261107.md` §3.1 的方案 A）。`status` 只表达**生命周期**（`queued` / `running` / `paused` / `completed` / `failed` / `aborted` / `cancelled`），取值与 legacy 契约**保持不变**。
+- 新增列 `experiment_run.control_state` 表达**暂停控制过程**：`NONE` / `PAUSE_REQUESTED` / `PAUSING` / `RESUMING`，默认 `NONE`。与 `pause_kind`（为何暂停）语义不重叠：`pause_kind` 是原因，`control_state` 是控制阶段。
+- 同时 **`experiment_run.status` 列长扩容**（`varchar(16)` → `varchar(32)`）：`WAITING_INTERVENTION`（20 字符）等新生命周期码当前列放不下（`REMEDIATION_STATUS.md` L-02 行、`LABOS_STATE_MACHINE_ACCEPTANCE_CONTRACT_20261107.md` §101）。扩容是 L-02 的硬要求，与方案 A/B 无关。
+- 依据：`paused` 现已被复用为「等待人工」（`pause_kind=waiting_human`）；若再把中间态压进同一列，`status` 会变成随时间累积的多义字段，而它的读方（页面、聚合器、门禁）远多于新的 `control_state`，语义漂移风险高。
+- **本 ADR 只授予「状态表达能力」，不改行为**：L-02 不改变 `status` 何时变为 `paused`（legacy 立即投影保持），因此 PR-S04-A / e2e 4.17 / 4.18 判据不退化。「请求已接受但未收敛时不得显示 `PAUSED`」的行为切换属 **PR-S04-B**（`LABOS_S04B_IMPLEMENTATION_PLAN_20261107.md` §5 批次 1）。
+- 词表单一权威：后端 `StatusVocabulary` 增 `control` scope，前端 `webapp/src/utils/status.ts` 与 `webapp/src/i18n/codes.ts` 同步；不自建第二套映射。
+- **SUPERSEDES**：`LABOS_S04B_IMPLEMENTATION_PLAN_20261107.md` §3.1 方案 A（把 `PAUSE_REQUESTED` / `PAUSING` 塞进 `status`）。
+
+### 2.14 ADR-PAUSE-009：V1 幂等键采用独立 `pause_request` 表（Q-1 裁决）
+
+**Decision：ACCEPT。** 用户裁决 2026-11-07：**选项 B（更完善）**——`PauseCoordinator` 的幂等键用独立持久化表，而非「复用 `runtime_hold` + 审计」（选项 A）。
+
+- 新建 `pause_request` 表承载：`request_id`（幂等键，唯一）、`tenant_id`、`target_type` / `target_id`、`action`、`source` / `kind` / `reason`、`requested_by`、`requested_at`、`result_state`（`ACCEPTED` / `COMPLETED` / `REJECTED` / `UNKNOWN`）、`created_at`。
+- 语义：同 `request_id` 重复请求 ⇒ 不重复建 Hold / 不重复下发，直接返回首次结果（幂等可查）。
+- 与 `ADR-PAUSE-005`（按 `hold_id` 精确清除、需幂等键去重）同源：`pause_request` 是幂等键的落库载体。
+- 影响：`PauseCoordinator`（V1-5）、schema 新增表、`P-06`。
+
+### 2.15 ADR-PAUSE-010：Hold 读取失败的 `UNKNOWN` 必须运维可见（Q-2 裁决）
+
+**Decision：ACCEPT。** 用户裁决 2026-11-07：**选项 B（更完善）**——不在 V1 只落日志。
+
+- `RuntimeHold` 的 `CLEAR / HELD / UNKNOWN` 三态（`ADR-PAUSE-005`、`P-03`）中，`UNKNOWN` 由 `GET /api/holds` 显式暴露（如 `unknown=true` 及原因），使「读不到 Hold ⇒ 派发被阻断」这一 fail-closed 行为对运维**可见**，而不是仅落日志。
+- 依据：`UNKNOWN` 会导致调度器整体阻断新派发，若只落日志，运维看到的「实验不派发」将没有任何界面线索。
+
+### 2.16 ADR-PROCESS-003：L-02 先于 S-02/P-06 合并（Q-3 裁决）
+
+**Decision：ACCEPT。** 用户裁决 2026-11-07：**先合 L-02，再合 S-02/P-06（PauseCoordinator）**。
+
+- 合并顺序：`L-02`（状态表达能力：`control_state` + `status` 扩容 + 词表） → `S-02 / P-06`（PauseCoordinator 适配层，含 `ADR-PAUSE-009` 的 `pause_request` 幂等表与 `ADR-PAUSE-010` 的 UNKNOWN 暴露） → `S-03`（事实/投影切换） → `S-04` 第 2 个 PR。
+- 与 `REMEDIATION_STATUS.md` Step 7 依赖序一致（`L-02 → S-02/P-06 → S-03 → S-04B`）。
+- `V1-1`~`V1-4`（安全闸门 fail-closed、资源释放修复、PauseCoordinator 适配层）是 `P-03` / `P-06` 的**安全子集**，须在提交信息中说明，不与 `P-03` 的全部范围（逐 Workcell 候选调度、`uk_runtime_hold_active` 唯一索引改造）混淆。
+
 ---
 
 ## 3. 被取代条目（SUPERSEDED）
@@ -232,6 +272,7 @@
 | ADR §14.5「同一 ExperimentRun 可部分受影响」、状态模型 §14.5 同类表述 | 外部实践与 ADR / 状态模型 | ADR-FAULT-SCOPE-002 | 限定为「展示层可标注，执行层一律阻断」 |
 | `REMEDIATION_STATUS.md` 的 N-03 原定义（集合加锁 + 稳定顺序） | 整改状态表 | ADR-LOCK-001 | 改写为分布式资源锁（见状态表 N-03） |
 | `docs/测试用例总表.md:51,216` / e2e 4.17「三层都 `paused`」作为唯一通过判据 | 原有验收文档 | ADR-STATE-001 | 判据升级为「三层 status + Hold 有效 + 在途命令已收敛」，分两个 PR 切换 |
+| S-04B §3.1 方案 A（把 `PAUSE_REQUESTED` / `PAUSING` 塞进 `experiment_run.status`） | `LABOS_S04B_IMPLEMENTATION_PLAN_20261107.md` | ADR-PAUSE-008 | 改为新增 `control_state` 列；`status` 只表达生命周期 |
 
 ---
 
@@ -248,6 +289,10 @@
 | Q-03 | 锁改为 **Redis + PG 联合、按资源粒度（含设备）**；废弃 `islandId` 键 / JVM 内存锁 / 2h TTL | ADR-LOCK-001 |
 | Q-04 | 同一实验内任一 Workcell 故障 ⇒ **整个实验停**，不允许其他 Workcell 段继续 | ADR-FAULT-SCOPE-002 |
 | Q-11（本轮用户提问） | 「状态机多层维护」→ 补专门文档 + 治理工作项 `S-01`~`S-05`，含验收口径切换 | ADR-STATE-001 |
+| L-02 设计（S-04B §3.1） | 暂停中间态放哪 → **新列 `control_state`（方案 B）** + `status` 扩至 `varchar(32)` | ADR-PAUSE-008 |
+| Q-1（PauseCoordinator V1 设计 §9） | 幂等键持久化 → **新建 `pause_request` 表**（取更完善方案） | ADR-PAUSE-009 |
+| Q-2（PauseCoordinator V1 设计 §9） | `UNKNOWN` 运维可见 → **`GET /api/holds` 暴露 `unknown=true`** | ADR-PAUSE-010 |
+| Q-3（PauseCoordinator V1 设计 §9） | 合并顺序 → **先合 L-02，再合 S-02/P-06** | ADR-PROCESS-003 |
 
 ### 4.2 仍 OPEN
 
