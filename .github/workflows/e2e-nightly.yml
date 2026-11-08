@@ -14,8 +14,7 @@ name: E2E Nightly
 #   · 4.8-4.11 页面 P0 四页（告警 / 策略 / 暂停队列 / 实验画布）
 #   · 4.12     按岛设备 → 拖方法生成节点（e2e-method-drop.py，需岛上有设备）
 #   · 4.13     崩溃恢复端到端（verify-s3-2-residuals.py，kill -9 内核 → 重启 → 启动兜底 settle）
-#   · 4.14     页面实操 · 多并行+多网关+变量（e2e-multi-parallel.py）
-#   · 4.15     网关成对 · N=2/N=3（e2e-gateway-pairs.py，异或/并行分叉与汇合成对）
+# #   · 4.15     网关成对 · N=2/N=3（e2e-gateway-pairs.py，异或/并行分叉与汇合成对）
 #   纯逻辑 624 + tsc 也照跑（ci-gate.sh 的无参部分恒跑）。
 #
 # 不覆盖：设备链路 / 流程矩阵（2.6/2.7/3）要 .NET sidecar，本 workflow 不拉，

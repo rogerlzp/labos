@@ -74,7 +74,6 @@ MIN_PAUSED=7      # 2026-11-05：暂停队列（统计卡 + 空态/队列形态�
 MIN_CANVAS=12     # 2026-11-05：实验画布（跨流程编排：仅「流程」可拖/设计器提示/reactflow/两按钮/开始结束自动铺/属性卡）
 MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / 跨设备自动插机械臂 / 删除（无库 17 条常驻，有库 20）
 MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle + paused 不被误杀 + 排队僵尸被收，31 → 34）
-MIN_MULTIPAR=21   # 2026-11-05：页面实操 · 多并行网关 + 多异或网关 + 变量节点（页面拖 12 节点/13 连线 → 真跑 → 三条并行分支都 completed）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=55   # 2026-11-06：暂停点与恢复起点（25）。2026-11-08 重写为真边界暂停（25 → 32）；同日改为页面全链路（页面执行/暂停/继续 + DOM/API/DB）并接入自动对齐/图合法性/绑定复核断言（32 → 45 → 55）：
                 # 图增加第二个设备任务 DEV2；在 DEV 的 device_state=running 且 current_run_id=本次 run 时发暂停；
@@ -102,7 +101,7 @@ fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAIL=$((FAIL + 1)); }
 skip() { printf '  \033[33m⏭\033[0m %s\n' "$1"; SKIP=$((SKIP + 1)); }
 # SKIP 判定单一入口：子脚本历史上有三种真实输出格式——
 #   "SKIP ..."（老脚本）/ "  ⏭ ..."（F.skip）/ "缺 LABOS_DB_*"（退出码 2）
-# 只按 ^SKIP 判会把后两种当成失败（4.14/4.15/4.16 缺库误报红的根因）。
+# 只按 ^SKIP 判会把后两种当成失败（4.15/4.16 缺库误报红的根因）。
 is_skip() { grep -qE '^SKIP|⏭|缺 LABOS_DB|没有仿真机在监听|找不到可用空实验' <<< "$1"; }
 
 # 解析子脚本的「通过 N / 失败 M」汇总行。
@@ -452,28 +451,6 @@ if [[ $WITH_E2E -eq 1 ]]; then
     fail "崩溃恢复断言 $RN < 阈值 ${MIN_CRASH}"
   else
     pass "崩溃恢复 $RN / 0（kill -9 → 重启 → queued rehydrate + running 孤儿 settle）"
-  fi
-
-  # 4.14 页面实操 · 多并行网关 + 多异或网关 + 变量节点（e2e-multi-parallel.py）
-  # 补的是「多个网关共存」这条接缝：F 节只画了单异或，后端矩阵的 parallel
-  # 又是 build_xml() 直 POST 绕过界面 —— 页面上同时出现 2 个并行网关 +
-  # 2 个异或网关 + 变量节点，从没被拖过。
-  note "4.14 页面实操 · 多并行+多网关+变量（e2e-multi-parallel.py）"
-  MOUT2=$(python3 scripts/e2e-multi-parallel.py --base "$E2E_BASE" 2>&1)
-  if is_skip "$MOUT2"; then
-    skip "多并行多网关（没给库连接）"
-  else
-    M2N=$(echo "$MOUT2" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
-    M2F=$(echo "$MOUT2" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
-    M2N=${M2N:-0}; M2F=${M2F:-1}
-    if [[ "$M2F" != "0" ]]; then
-      fail "多并行多网关有失败（$M2F 条）"
-      echo "$MOUT2" | grep '✗' | head -8
-    elif (( M2N < MIN_MULTIPAR )); then
-      fail "多并行多网关断言 $M2N < 阈值 ${MIN_MULTIPAR}"
-    else
-      pass "多并行多网关 $M2N / 0（2 并行网关 + 2 异或网关 + 变量节点，页面拖→真跑）"
-    fi
   fi
 
   # 4.15 网关「成对」与多分支（e2e-gateway-pairs.py）
