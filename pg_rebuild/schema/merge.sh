@@ -52,6 +52,7 @@ cat /tmp/_schema_header.sql \
     99b_interruptible.sql \
     99c_pause_control.sql \
     99d_pause_request.sql \
+    99e_pause_event.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

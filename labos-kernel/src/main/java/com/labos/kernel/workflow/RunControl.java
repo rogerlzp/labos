@@ -140,6 +140,21 @@ public final class RunControl {
      */
     private void markControlRequested(RuntimeHold.Scope scope, Long scopeId,
                                       String kind, String reason) throws SQLException {
+        try (Connection c = db.open()) {
+            markControlRequestedTx(c, tenantId, scope, scopeId, kind, reason);
+        }
+        // 收敛时再同步 experiment 表：由执行器 settle（running run）或
+        // convergeQueuedPauses（queued run）调用 ExperimentStateProjector.syncPausedByRuns，
+        // 保证「experiment_run 已 paused」和「experiment 已 paused」同一时刻发生。
+    }
+
+    /**
+     * 同 {@link #markControlRequested}，但复用调用方事务连接（P-06 V2：控制状态与
+     * Hold / pause_event / 幂等键同事务提交）。
+     */
+    static void markControlRequestedTx(Connection c, long tenantId,
+                                       RuntimeHold.Scope scope, Long scopeId,
+                                       String kind, String reason) throws SQLException {
         String filter;
         if (scope == RuntimeHold.Scope.SITE) {
             filter = "";
@@ -158,16 +173,12 @@ public final class RunControl {
                    AND r.status IN ('queued', 'running')
                    AND r.control_state = 'NONE'
                 """ + filter;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, kind);
             ps.setString(2, reason);
             ps.setLong(3, tenantId);
             ps.executeUpdate();
         }
-        // 收敛时再同步 experiment 表：由执行器 settle（running run）或
-        // convergeQueuedPauses（queued run）调用 ExperimentStateProjector.syncPausedByRuns，
-        // 保证「experiment_run 已 paused」和「experiment 已 paused」同一时刻发生。
     }
 
     /**

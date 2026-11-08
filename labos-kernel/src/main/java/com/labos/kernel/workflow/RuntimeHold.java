@@ -252,6 +252,16 @@ public final class RuntimeHold {
      */
     public boolean raise(Scope scope, Long scopeId, Kind kind, String reason, Long by)
             throws SQLException {
+        try (Connection c = db.open()) {
+            return raiseTx(c, scope, scopeId, kind, reason, by);
+        }
+    }
+
+    /**
+     * 同 {@link #raise}，但复用调用方事务连接（P-06 V2：Hold 与 pause_event/幂等键同事务）。
+     */
+    public boolean raiseTx(Connection c, Scope scope, Long scopeId, Kind kind,
+                           String reason, Long by) throws SQLException {
         String sql = """
                 INSERT INTO runtime_hold (tenant_id, scope, scope_id, kind, reason, held_by)
                 SELECT ?, ?, ?, ?, ?, ?
@@ -262,8 +272,7 @@ public final class RuntimeHold {
                        AND released_at IS NULL
                 )
                 """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, tenantId);
             ps.setString(2, scope.code());
             if (scopeId == null) {

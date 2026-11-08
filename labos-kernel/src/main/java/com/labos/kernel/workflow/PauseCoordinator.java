@@ -162,6 +162,89 @@ public final class PauseCoordinator {
         }
     }
 
+    /** 同 {@link #claim}，但复用调用方事务连接（P-06 V2 单事务）。 */
+    private Claim claimTx(Connection c, PauseCommand cmd) throws SQLException {
+        String rid = cmd.requestId();
+        if (rid == null || rid.isBlank()) {
+            return Claim.first();
+        }
+        String insert = """
+                INSERT INTO pause_request
+                  (tenant_id, request_id, target_type, target_id, action,
+                   source, kind, reason, requested_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id, request_id) DO NOTHING
+                """;
+        try (PreparedStatement ps = c.prepareStatement(insert)) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, rid);
+            ps.setString(3, cmd.targetType().name());
+            ps.setLong(4, cmd.targetId());
+            ps.setString(5, cmd.action().name());
+            ps.setString(6, cmd.source());
+            ps.setString(7, cmd.kind());
+            ps.setString(8, cmd.reasonText());
+            ps.setString(9, cmd.requestedBy());
+            if (ps.executeUpdate() == 1) {
+                return Claim.first();
+            }
+        }
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT result_state, kind, result_detail FROM pause_request
+                 WHERE tenant_id = ? AND request_id = ?
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, rid);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new Claim(false, rs.getString("result_state"),
+                            rs.getString("kind"), parseDetail(rs.getString("result_detail")));
+                }
+            }
+        }
+        return Claim.first();
+    }
+
+    /** 同 {@link #settle}，但复用调用方事务连接。 */
+    private void settleTx(Connection c, PauseCommand cmd, Map<String, String> detail)
+            throws SQLException {
+        String rid = cmd.requestId();
+        if (rid == null || rid.isBlank()) {
+            return;
+        }
+        try (PreparedStatement ps = c.prepareStatement("""
+                UPDATE pause_request SET result_state = ?, result_detail = ?
+                 WHERE tenant_id = ? AND request_id = ?
+                """)) {
+            ps.setString(1, cmd.resultState().name());
+            ps.setString(2, encodeDetail(detail));
+            ps.setLong(3, tenantId);
+            ps.setString(4, rid);
+            ps.executeUpdate();
+        }
+    }
+
+    /** Outbox 事件：与 Hold/control_state/pause_request 同事务写入。 */
+    private void insertPauseEvent(Connection c, PauseCommand cmd, String eventType,
+                                  String scope, Long scopeId) throws SQLException {
+        String payload = "{\"scope\":" + (scope == null ? "null" : "\"" + scope + "\"")
+                + ",\"scopeId\":" + (scopeId == null ? "null" : scopeId) + "}";
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO pause_event
+                  (tenant_id, request_id, event_type, target_type, target_id, scope, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, cmd.requestId());
+            ps.setString(3, eventType);
+            ps.setString(4, cmd.targetType().name());
+            ps.setLong(5, cmd.targetId());
+            ps.setString(6, scope);
+            ps.setString(7, payload);
+            ps.executeUpdate();
+        }
+    }
+
     private static String encodeDetail(Map<String, String> m) {
         if (m == null || m.isEmpty()) {
             return null;
@@ -353,39 +436,52 @@ public final class PauseCoordinator {
      */
     public ExperimentPause pauseExperimentRun(PauseCommand cmd, String scopeCode)
             throws SQLException {
-        Claim claim = claim(cmd);
-        if (!claim.firstTime()) {
-            // 重复请求：不再抬第二道扣留（关键：Hold 数不增）
-            Map<String, String> d = claim.detail();
-            return new ExperimentPause(cmd.targetId(),
-                    longOf(d.get("experimentId"), 0L),
-                    d.getOrDefault("status", "accepted"),
-                    d.get("scopeCode"),
-                    d.getOrDefault("kindCode", RuntimeHold.Kind.of(claim.kind()).code()),
-                    d.getOrDefault("controlState", "PAUSE_REQUESTED"));
-        }
-        try {
-            RunControl ctl = new RunControl(db, tenantId);
-            RunControl.RunInfo ri = ctl.info(cmd.targetId());
-            RuntimeHold.Scope scope = RuntimeHold.Scope.of(scopeCode);
-            RuntimeHold.Kind kind = cmd.kind() == null
-                    ? RuntimeHold.Kind.MANUAL : RuntimeHold.Kind.of(cmd.kind());
-            String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
-            RuntimeHold.Scope effective = ctl.pause(ri, scope, kind, reason, null);
-            cmd.result(PauseCommand.ResultState.COMPLETED);
-            Map<String, String> detail = new LinkedHashMap<>();
-            detail.put("experimentId", String.valueOf(ri.experimentId()));
-            detail.put("scopeCode", effective.code());
-            detail.put("kindCode", kind.code());
-            // S-04-B：受理时只承诺「请求已接受 + 控制过程开始」，不承诺已物理暂停。
-            detail.put("status", "accepted");
-            detail.put("controlState", "PAUSE_REQUESTED");
-            settle(cmd, detail);
-            return new ExperimentPause(cmd.targetId(), ri.experimentId(), "accepted",
-                    effective.code(), kind.code(), "PAUSE_REQUESTED");
-        } catch (SQLException | RuntimeException e) {
-            abandon(cmd);
-            throw e;
+        // P-06 V2 第一切片：Hold + control_state + pause_request 结果 + pause_event
+        // 在同一事务里提交；失败整体回滚（幂等键也一起回滚，客户端可重试）。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                Claim claim = claimTx(c, cmd);
+                if (!claim.firstTime()) {
+                    c.rollback();
+                    Map<String, String> d = claim.detail();
+                    return new ExperimentPause(cmd.targetId(),
+                            longOf(d.get("experimentId"), 0L),
+                            d.getOrDefault("status", "accepted"),
+                            d.get("scopeCode"),
+                            d.getOrDefault("kindCode", "manual"),
+                            d.getOrDefault("controlState", "PAUSE_REQUESTED"));
+                }
+                RunControl ctl = new RunControl(db, tenantId);
+                RunControl.RunInfo ri = ctl.info(cmd.targetId());
+                RuntimeHold.Scope scope = RuntimeHold.Scope.of(scopeCode);
+                RuntimeHold.Kind kind = cmd.kind() == null
+                        ? RuntimeHold.Kind.MANUAL : RuntimeHold.Kind.of(cmd.kind());
+                String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
+                RuntimeHold.Scope effective = RunControl.effectiveScope(scope, ri.islandId());
+                Long scopeId = effective == RuntimeHold.Scope.SITE ? null
+                        : effective == RuntimeHold.Scope.ISLAND ? ri.islandId()
+                        : ri.experimentId();
+                new RuntimeHold(db, tenantId).raiseTx(c, effective, scopeId, kind, reason, null);
+                RunControl.markControlRequestedTx(c, tenantId, effective, scopeId,
+                        kind.code(), reason);
+                Map<String, String> detail = new LinkedHashMap<>();
+                detail.put("experimentId", String.valueOf(ri.experimentId()));
+                detail.put("scopeCode", effective.code());
+                detail.put("kindCode", kind.code());
+                // S-04-B：受理时只承诺「请求已接受 + 控制过程开始」，不承诺已物理暂停。
+                detail.put("status", "accepted");
+                detail.put("controlState", "PAUSE_REQUESTED");
+                cmd.result(PauseCommand.ResultState.COMPLETED);
+                settleTx(c, cmd, detail);
+                insertPauseEvent(c, cmd, "PAUSE_REQUESTED", effective.code(), scopeId);
+                c.commit();
+                return new ExperimentPause(cmd.targetId(), ri.experimentId(), "accepted",
+                        effective.code(), kind.code(), "PAUSE_REQUESTED");
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
         }
     }
 

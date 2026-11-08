@@ -79,6 +79,17 @@ public final class PauseCoordinatorDbSelfTest {
                 "PAUSE_REQUESTED".equals(controlStateOf(RUN_P)), controlStateOf(RUN_P));
         check("首次暂停登记了 1 条幂等键", pauseReqCount(REQ_PAUSE) == 1, pauseReqCount(REQ_PAUSE));
         check("首次暂停抬出 1 道扣留", holdCount(EXP_P) == 1, holdCount(EXP_P));
+        check("单事务同时写了 pause_event（Outbox）",
+                eventCount(REQ_PAUSE) == 1, eventCount(REQ_PAUSE));
+        check("Outbox 中本请求事件未派发",
+                pendingEventCount(REQ_PAUSE) == 1, pendingEventCount(REQ_PAUSE));
+        int dispatched = PauseEventOutbox.dispatchPending(db, TENANT, 20);
+        check("Outbox 派发成功（" + dispatched + " 条）", dispatched >= 1, dispatched);
+        check("派发后本请求事件已标记 dispatched_at",
+                pendingEventCount(REQ_PAUSE) == 0, pendingEventCount(REQ_PAUSE));
+        int againDispatch = PauseEventOutbox.dispatchPending(db, TENANT, 20);
+        check("重复派发不会重复处理已标记事件（本次 " + againDispatch + " 条）",
+                pendingEventCount(REQ_PAUSE) == 0, pendingEventCount(REQ_PAUSE));
 
         PauseCoordinator.ExperimentPause again = coord.pauseExperimentRun(
                 PauseCommand.experiment(RUN_P, PauseCommand.Action.PAUSE, "manual",
@@ -121,6 +132,8 @@ public final class PauseCoordinatorDbSelfTest {
         }
         check("目标不存在时抛错", threw, threw);
         check("失败后幂等键被撤回（可重跑）", pauseReqCount(REQ_RETRY) == 0, pauseReqCount(REQ_RETRY));
+        check("失败时 pause_event 也一起回滚（无半成品事件）",
+                eventCount(REQ_RETRY) == 0, eventCount(REQ_RETRY));
 
         // 补一条真实 run，带同一 requestId 重试 —— 必须真正执行，而不是被回放。
         try (Connection c = db.open()) {
@@ -211,6 +224,33 @@ public final class PauseCoordinatorDbSelfTest {
         }
     }
 
+    /** 该 requestId 在 pause_event 里的行数（单事务 Outbox 证据）。 */
+    private static int eventCount(String requestId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT count(*) FROM pause_event WHERE tenant_id = ? AND request_id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, requestId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    /** 该 requestId 还没派发的事件数。 */
+    private static int pendingEventCount(String requestId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT count(*) FROM pause_event "
+                             + "WHERE tenant_id = ? AND request_id = ? AND dispatched_at IS NULL")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, requestId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
     /** 该 requestId 在 pause_request 里的行数（幂等键唯一性证据）。 */
     private static int pauseReqCount(String requestId) throws SQLException {
         try (Connection c = db.open();
@@ -243,6 +283,11 @@ public final class PauseCoordinatorDbSelfTest {
     /** 删掉自测造的行（物理删除：自测数据不该留在现场闸门表 / 幂等表里）。 */
     private static void cleanup() throws SQLException {
         try (Connection c = db.open()) {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM pause_event WHERE tenant_id = ? AND request_id LIKE 'SELF-PC-%'")) {
+                ps.setLong(1, TENANT);
+                ps.executeUpdate();
+            }
             try (PreparedStatement ps = c.prepareStatement(
                     "DELETE FROM pause_request WHERE tenant_id = ? AND request_id LIKE 'SELF-PC-%'")) {
                 ps.setLong(1, TENANT);
