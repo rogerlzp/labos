@@ -74,6 +74,20 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 
 仍缺：运行时人工确认（manual_window 与 Handoff 关联）、故障注入 e2e（A Workcell 故障 → B 段 0 命令）。
 
+## 四·补三、故障注入 e2e（P-03 隔离验证，2026-11-09）
+
+脚本 verify-dispatch-isolation.py：
+
+1. 两个只含 start→end 的实验 A/B，分别绑两个岛；
+2. 给 A 岛抬 island Hold（DB 夹具，模拟 Workcell 故障/扣留）；
+3. 异步提交两个实验；
+4. 断言：A 保持 queued（不派发）、B 被正常派发（离开 queued）、扣留期间 A 不完成；
+5. 清理 Hold/实验/流程。
+
+实测结果：通过 3 / 失败 0（B 因空流程执行失败，但已证明被派发；A 全程 queued）。
+
+这验证了 P-03 逐候选派发：无关实验不再被 A 的 Hold 全局挡住；A 自身被正确阻断。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；
