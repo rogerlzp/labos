@@ -39,14 +39,18 @@ public final class RuntimeHoldDbSelfTest {
         try {
             RuntimeHold h = new RuntimeHold(db, TENANT);
 
-            // ---- 1. 幂等：同 scope 只能一条生效 ----
+            // ---- 1. 多 Hold 并存（同 scope 每个 kind 各一条；同 kind 幂等）----
             boolean first = h.raise(RuntimeHold.Scope.EXPERIMENT, EXP_ID,
                     RuntimeHold.Kind.MANUAL, "自测：人工暂停", null);
             check("首次扣留生效", first, first);
-            boolean again = h.raise(RuntimeHold.Scope.EXPERIMENT, EXP_ID,
-                    RuntimeHold.Kind.FAULT, "自测：重复抬闸", null);
-            check("重复 raise 幂等（返回 false）", !again, again);
-            check("同 scope 仍只有一条生效", countActive(EXP_ID) == 1, countActive(EXP_ID));
+            boolean secondKind = h.raise(RuntimeHold.Scope.EXPERIMENT, EXP_ID,
+                    RuntimeHold.Kind.FAULT, "自测：设备故障", null);
+            check("不同 kind 可并存（P-03 多 Hold）", secondKind, secondKind);
+            boolean sameKind = h.raise(RuntimeHold.Scope.EXPERIMENT, EXP_ID,
+                    RuntimeHold.Kind.MANUAL, "自测：重复抬闸", null);
+            check("同 kind 重复 raise 幂等（返回 false）", !sameKind, sameKind);
+            check("同 scope 两条生效（manual + fault）", countActive(EXP_ID) == 2,
+                    countActive(EXP_ID));
 
             // ---- 2. 覆盖查询 ----
             RuntimeHold.Active cov = h.coveringFor(EXP_ID, 0L);
@@ -57,8 +61,16 @@ public final class RuntimeHoldDbSelfTest {
             check("covering 不命中无关实验", !isMine(notMine, EXP_OTHER), notMine);
 
             // ---- 3. 解除 ----
-            boolean cleared = h.clear(RuntimeHold.Scope.EXPERIMENT, EXP_ID, null, "自测：解除");
-            check("解除成功", cleared, cleared);
+            boolean clearedKind = h.clearKind(RuntimeHold.Scope.EXPERIMENT, EXP_ID,
+                    RuntimeHold.Kind.MANUAL, null, "自测：只解人工暂停");
+            check("按 kind 解除成功（只解 manual）", clearedKind, clearedKind);
+            check("另一类 Hold 仍在（fault）", countActive(EXP_ID) == 1, countActive(EXP_ID));
+            boolean clearedKindAgain = h.clearKind(RuntimeHold.Scope.EXPERIMENT, EXP_ID,
+                    RuntimeHold.Kind.MANUAL, null, "自测：再解");
+            check("同 kind 重复解除返回 false", !clearedKindAgain, clearedKindAgain);
+
+            boolean cleared = h.clear(RuntimeHold.Scope.EXPERIMENT, EXP_ID, null, "自测：解除全部");
+            check("解除全部成功", cleared, cleared);
             boolean clearedAgain = h.clear(RuntimeHold.Scope.EXPERIMENT, EXP_ID, null, "自测：再解");
             check("重复解除返回 false", !clearedAgain, clearedAgain);
             check("解除后覆盖查询为空", !isMine(h.coveringFor(EXP_ID, 0L), EXP_ID),

@@ -346,7 +346,8 @@ public final class RunControl {
 
         boolean cleared = false;
         if (covered != null && clearableByExperimentResume(covered.scope())) {
-            cleared = holds.clear(RuntimeHold.Scope.of(covered.scope()), covered.scopeId(), by, note);
+            cleared = holds.clearKind(RuntimeHold.Scope.of(covered.scope()), covered.scopeId(),
+                    RuntimeHold.Kind.of(covered.kind()), by, note);
         }
 
         // 拉回待派发：paused / failed 都允许恢复（failed = 错误处理完成后继续）。

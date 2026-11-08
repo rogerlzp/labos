@@ -335,6 +335,7 @@ public final class RuntimeHold {
                     SELECT 1 FROM runtime_hold
                      WHERE tenant_id = ? AND scope = ?
                        AND COALESCE(scope_id, 0) = COALESCE(CAST(? AS bigint), 0)
+                       AND kind = ?
                        AND released_at IS NULL
                 )
                 """;
@@ -360,6 +361,7 @@ public final class RuntimeHold {
             } else {
                 ps.setLong(9, scopeId);
             }
+            ps.setString(10, kind.code());
             return ps.executeUpdate() > 0;
         }
     }
@@ -418,6 +420,45 @@ public final class RuntimeHold {
             } else {
                 ps.setLong(5, scopeId);
             }
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    /**
+     * 按 kind 精确解除：多 Hold 并存时只解一类，不误伤其它原因（P-03）。
+     */
+    public boolean clearKind(Scope scope, Long scopeId, Kind kind, Long by, String note)
+            throws SQLException {
+        try (Connection c = db.open()) {
+            return clearKindTx(c, scope, scopeId, kind, by, note);
+        }
+    }
+
+    /** 同 {@link #clearKind}，复用调用方事务连接。 */
+    public boolean clearKindTx(Connection c, Scope scope, Long scopeId, Kind kind,
+                               Long by, String note) throws SQLException {
+        String sql = """
+                UPDATE runtime_hold
+                   SET released_at = now(), released_by = ?, release_note = ?
+                 WHERE tenant_id = ? AND scope = ?
+                   AND COALESCE(scope_id, 0) = COALESCE(CAST(? AS bigint), 0)
+                   AND kind = ? AND released_at IS NULL
+                """;
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            if (by == null) {
+                ps.setNull(1, Types.BIGINT);
+            } else {
+                ps.setLong(1, by);
+            }
+            ps.setString(2, note);
+            ps.setLong(3, tenantId);
+            ps.setString(4, scope.code());
+            if (scopeId == null) {
+                ps.setNull(5, Types.BIGINT);
+            } else {
+                ps.setLong(5, scopeId);
+            }
+            ps.setString(6, kind.code());
             return ps.executeUpdate() > 0;
         }
     }
