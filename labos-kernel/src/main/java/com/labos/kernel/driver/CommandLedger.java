@@ -45,44 +45,75 @@ public final class CommandLedger {
                               long deviceId, String method, String commandId,
                               String traceId) throws SQLException {
         try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement("""
-                    INSERT INTO command_ledger
-                      (tenant_id, idempotency_key, run_id, node_id, attempt, step_seq,
-                       device_id, method, command_id, trace_id, state)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH_STARTED')
-                    ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
-                    RETURNING id
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setString(2, idempotencyKey);
-                ps.setLong(3, runId);
-                ps.setLong(4, nodeId);
-                ps.setInt(5, attempt);
-                ps.setInt(6, stepSeq);
-                ps.setLong(7, deviceId);
-                ps.setString(8, method);
-                ps.setString(9, commandId);
-                ps.setString(10, traceId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        return new Entry(rs.getLong(1), "DISPATCH_STARTED", true);
+            c.setAutoCommit(false);
+            try {
+                long ledgerId = 0L;
+                try (PreparedStatement ps = c.prepareStatement("""
+                        INSERT INTO command_ledger
+                          (tenant_id, idempotency_key, run_id, node_id, attempt, step_seq,
+                           device_id, method, command_id, trace_id, state)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH_STARTED')
+                        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+                        RETURNING id
+                        """)) {
+                    ps.setLong(1, tenantId);
+                    ps.setString(2, idempotencyKey);
+                    ps.setLong(3, runId);
+                    ps.setLong(4, nodeId);
+                    ps.setInt(5, attempt);
+                    ps.setInt(6, stepSeq);
+                    ps.setLong(7, deviceId);
+                    ps.setString(8, method);
+                    ps.setString(9, commandId);
+                    ps.setString(10, traceId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            ledgerId = rs.getLong(1);
+                        }
                     }
                 }
-            }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT id, state FROM command_ledger
-                     WHERE tenant_id = ? AND idempotency_key = ?
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setString(2, idempotencyKey);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        return new Entry(rs.getLong(1), rs.getString(2), false);
+                if (ledgerId == 0L) {
+                    // 已存在：读回状态，不写 Outbox（避免重复事件）
+                    String state = "UNKNOWN";
+                    try (PreparedStatement ps = c.prepareStatement("""
+                            SELECT id, state FROM command_ledger
+                             WHERE tenant_id = ? AND idempotency_key = ?
+                            """)) {
+                        ps.setLong(1, tenantId);
+                        ps.setString(2, idempotencyKey);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) {
+                                ledgerId = rs.getLong(1);
+                                state = rs.getString(2);
+                            }
+                        }
                     }
+                    c.rollback();
+                    return new Entry(ledgerId, state, false);
                 }
+                // P-07.4：与账本同事务写 Outbox（账本在 ⇒ 事件在）
+                try (PreparedStatement ps = c.prepareStatement("""
+                        INSERT INTO command_outbox
+                          (tenant_id, ledger_id, run_id, command_id, device_id, method, payload)
+                        VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)
+                        """)) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, ledgerId);
+                    ps.setLong(3, runId);
+                    ps.setString(4, commandId);
+                    ps.setLong(5, deviceId);
+                    ps.setString(6, method);
+                    ps.setString(7, "{\"deviceId\":" + deviceId
+                            + ",\"method\":\"" + (method == null ? "" : method)
+                            + "\"}");
+                    ps.executeUpdate();
+                }
+                c.commit();
+                return new Entry(ledgerId, "DISPATCH_STARTED", true);
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
             }
-            // 唯一约束冲突但读不到（极少）：按已存在且状态未知处理，宁可停不可重发。
-            return new Entry(0L, "UNKNOWN", false);
         }
     }
 

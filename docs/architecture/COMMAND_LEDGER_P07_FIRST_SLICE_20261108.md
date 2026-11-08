@@ -78,6 +78,18 @@ P-07.2 补：
    - 重复下发：同 key 第二次 begin 被拒。
 3. 测试：test-all 1186/0；设备链路 4.19/4.17 回归。
 
+## 三·补三、P-07.4：命令事件 Outbox（2026-11-09）
+
+- 新表 command_outbox（99n）：ledger_id / run / command / device / method / payload / state；
+- CommandLedger.begin 改为单事务：账本 DISPATCH_STARTED + Outbox PENDING 一次提交；
+  重复 key 不写第二条事件；
+- CommandOutbox.dispatchPending：调度器每 tick FOR UPDATE SKIP LOCKED 标记 DELIVERED，
+  attempts/delivered_at 留痕；
+- CommandLedgerDbSelfTest 25/0（Outbox 同事务 / 派发 / 重复 key 不重复事件 / 四崩溃点）；
+- test-all 1212/0（停 API 后跑；API 运行时会与 DB 自测抢写导致偶发红，见报告）。
+
+仍缺：真实外部总线消费者（Kafka/审计中心）、Outbox 重放策略。
+
 ## 四、当前边界（诚实说明）
 
 | 能力 | 状态 |

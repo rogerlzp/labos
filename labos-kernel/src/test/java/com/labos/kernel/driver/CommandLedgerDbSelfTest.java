@@ -47,6 +47,15 @@ public final class CommandLedgerDbSelfTest {
         CommandLedger.Entry first = begin(key, "cmd-ack");
         check("派发前账本创建成功", first.created() && "DISPATCH_STARTED".equals(first.state()),
                 first.state());
+        check("账本同事务写入 Outbox（PENDING）",
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()) == 1,
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()));
+        int dispatched = CommandOutbox.dispatchPending(db, TENANT, 20);
+        check("命令 Outbox 派发成功（" + dispatched + " 条）", dispatched >= 1, dispatched);
+        check("派发后本账本 Outbox 已 DELIVERED",
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()) == 0,
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()));
+
         CommandLedger.Entry second = begin(key, "cmd-ack");
         check("同一 commandId 不重复落账（只 1 行）",
                 !second.created() && second.id() == first.id(), second);
@@ -207,6 +216,9 @@ public final class CommandLedgerDbSelfTest {
 
     private static void cleanup() {
         try {
+            exec("DELETE FROM command_outbox WHERE tenant_id = 1 AND ledger_id IN ("
+                    + "SELECT id FROM command_ledger WHERE tenant_id = 1 "
+                    + "AND idempotency_key LIKE '" + PREFIX + "%')");
             exec("DELETE FROM command_ledger "
                     + "WHERE tenant_id = 1 AND idempotency_key LIKE '" + PREFIX + "%'");
         } catch (Exception ignored) {

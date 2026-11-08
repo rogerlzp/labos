@@ -299,6 +299,9 @@ public final class ExperimentScheduler {
                 RunControl.convergeQueuedPauses(db, tenantId);
                 // P-06 V2：幂等派发暂停事件 Outbox（单事务写入、FOR UPDATE SKIP LOCKED）
                 PauseEventOutbox.dispatchPending(db, tenantId, PauseEventOutbox.MAX_PER_TICK);
+                // P-07.4：命令事件 Outbox 派发
+                com.labos.kernel.driver.CommandOutbox.dispatchPending(db, tenantId,
+                        com.labos.kernel.driver.CommandOutbox.MAX_PER_TICK);
                 // S3.2-B：扣留解除后的自动续队，每 5 个 tick（约 10s）扫一次。
                 // 放在 dispatch 之后：正常派发优先；扫描要查库，不能挡派发。
                 ticks++;
