@@ -11,8 +11,9 @@
 （空态 / 队列）渲染路径完全不同，且队列卡里的处置按钮直接改 run 状态 —— 此前
 /paused 零页面级断言。规范见 docs/测试规范.md。
 
-说明：演示库当前暂无 paused run，因此**空态分支是常态路径**；非空分支的断言
-只在队列有条目时才执行。阈值 MIN_PAUSED 只压常驻断言（空态也能过）。
+说明（2026-11-08 起）：有 DB 环境时脚本会**自建一条真实 paused run 夹具**，
+因此非空队列分支每次都会被覆盖（统计/筛选/列头/行内暂停类型/处置按钮）；
+清理时只删自己造的那条。无 DB 环境时退回只测空态。阈值 MIN_PAUSED 已提高到 16。
 
 用法：
   python3 scripts/e2e-paused.py
@@ -23,8 +24,11 @@
 末尾固定输出「通过 N / 失败 M」（阈值 MIN_PAUSED）。
 """
 import argparse
+import os
 import re
+import subprocess
 import sys
+import time
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -46,6 +50,41 @@ def bad(msg, detail=""):
 
 def step(title):
     print(f"\n\u2550\u2550 {title} \u2550\u2550")
+
+
+def db(sql):
+    """执行一句 SQL（只有连库环境才用；页面测试本身不依赖库）。"""
+    env = dict(os.environ)
+    env.setdefault("PGPASSWORD", env.get("LABOS_DB_PASS", ""))
+    psql = os.environ.get("PSQL", "psql")
+    r = subprocess.run(
+        [psql, "-h", env["LABOS_DB_HOST"], "-p", env.get("LABOS_DB_PORT", "5432"),
+         "-U", env["LABOS_DB_USER"], "-d", env["LABOS_DB_NAME"], "-tAc", sql],
+        env=env, capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def create_paused_fixture():
+    """造一条真实 paused run，让页面走「队列非空」分支（不再只测空态）。
+
+    用 SELECT 复制现有 run 的 mode 等必填列，避免手写枚举；没有历史 run 时返回 0。
+    """
+    if not os.environ.get("LABOS_DB_HOST"):
+        return 0
+    run_no = "E2E-PAUSED-PAGE-%d" % int(time.time() * 1000)
+    try:
+        raw = db("""
+            INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
+                             mode, status, pause_kind, pause_reason, actual_start, progress)
+            SELECT 1, '%s', 'workflow', 239, 1, mode, 'paused',
+                   'waiting_human', 'e2e paused queue nonempty', now(), 10
+            FROM run ORDER BY id DESC LIMIT 1
+            RETURNING id;
+            """ % run_no)
+        return int(raw.strip().split("\n")[0]) if raw.strip() else 0
+    except Exception as e:  # noqa: BLE001
+        print("  （造 paused run 夹具失败：%s）" % str(e)[:120])
+        return 0
 
 
 def login(page, base, user, pwd):
@@ -72,6 +111,10 @@ def main():
     ap.add_argument("--pass", dest="pwd", default="admin123")
     ap.add_argument("--headed", action="store_true")
     args = ap.parse_args()
+
+    paused_run_id = create_paused_fixture()
+    if paused_run_id:
+        print(f"  （已造 paused run 夹具 #{paused_run_id}，走队列非空分支）")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.headed)
@@ -162,6 +205,16 @@ def main():
                     ok("时间范围筛选已渲染（不限时间 / 1 天前 / 7 天前）")
                 else:
                     bad("缺时间范围筛选")
+                if paused_run_id:
+                    row = page.locator(".ant-table-tbody tr.ant-table-row", has_text="E2E-PAUSED-PAGE")
+                    if row.count() > 0:
+                        ok("队列里能看到本次造的真实 paused run（E2E-PAUSED-PAGE）")
+                    else:
+                        bad("队列里找不到本次造的 paused run")
+                    if row.count() > 0 and "等待人工" in row.first.inner_text():
+                        ok("行内展示了暂停类型（等待人工）")
+                    else:
+                        bad("行内没展示暂停类型", row.first.inner_text()[:160] if row.count() else "无行")
                 page.screenshot(path="/tmp/e2e-paused.png")
 
         except PWTimeout as e:
@@ -173,6 +226,12 @@ def main():
                 pass
         finally:
             browser.close()
+
+    if paused_run_id:
+        try:
+            db("DELETE FROM run WHERE id=%d;" % paused_run_id)
+        except Exception:  # noqa: BLE001
+            pass
 
     print(f"\n{'─' * 42}")
     print(f"通过 {PASS} / 失败 {FAIL}")
