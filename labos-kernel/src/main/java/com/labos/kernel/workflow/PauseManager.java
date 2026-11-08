@@ -610,6 +610,11 @@ public final class PauseManager {
         audit(barcode, "UNKNOWN", toStatus, actualLocation,
                 operator == null ? "unknown" : operator,
                 lost ? "人工确认丢失" : "人工盘点", runId);
+        try (Connection c = db.open()) {
+            insertEvidence(c, barcode, actualLocation, operator, runId);
+        } catch (SQLException e) {
+            System.err.println("[暂停] 位置证据落库失败：" + e.getMessage());
+        }
         return true;
     }
 
@@ -733,6 +738,8 @@ public final class PauseManager {
             auditTx(c, barcode, "UNKNOWN", toStatus, actualLocation,
                     operator == null ? "unknown" : operator,
                     lost ? "人工确认丢失" : "人工盘点", runId);
+            // P-08：人工盘点证据独立落 position_evidence（设备回包不算位置确认）
+            insertEvidence(c, barcode, actualLocation, operator, runId);
             return true;
         } catch (SQLException e) {
             return false;
@@ -760,6 +767,29 @@ public final class PauseManager {
             }
         }
         return list;
+    }
+
+    /** P-08：位置证据（人工盘点来源）。失败不掩盖主流程。 */
+    private void insertEvidence(Connection c, String barcode, String actualLocation,
+                                String operator, Long runId) {
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO position_evidence
+                  (tenant_id, plate_barcode, evidence_type, run_id, operator, note)
+                VALUES (?, ?, 'MANUAL', ?, ?, ?)
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, barcode);
+            if (runId == null) {
+                ps.setNull(3, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(3, runId);
+            }
+            ps.setString(4, operator == null ? "unknown" : operator);
+            ps.setString(5, actualLocation);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[暂停] 位置证据落库失败：" + e.getMessage());
+        }
     }
 
     private void auditTx(Connection c, String barcode, String from, String to,

@@ -51,6 +51,17 @@ Batch 2 要求「启动恢复不无条件清理设备锁」。
 - 这些 run 只由 quarantineUncertainRuns 隔离为 quarantined，设备锁保留到人工确认；
 - QuarantineDbSelfTest 12/0 增加「settle 跳过 / 仍 running / 隔离」3 条断言。
 
+## 三·补三、物理位置证据（2026-11-09）
+
+- 新表 position_evidence（99o）：plate/resource/evidence_type(MANUAL/SCAN/SENSOR/DEVICE_REPORT)/
+  run/operator/note/created_at；
+- 人工盘点（PauseManager.locatePlate / locatePlateTx）成功后自动落 MANUAL 证据；
+- API：POST /api/plate-position-evidence（记录）、GET（按板号过滤列表）；
+- api.PositionEvidenceDbSelfTest 3/0；PauseManagerSelfTest 清理证据夹具；
+- test-all 1221/0（停 API）。
+
+仍缺：扫码/传感器证据接入、TransferTransaction 把「运动报告与位置确认」合并成事务。
+
 ## 四、边界（P-08 剩余）
 
 1. 资源与物理位置三维分离（resource / booking / physical position 独立事实）未做；

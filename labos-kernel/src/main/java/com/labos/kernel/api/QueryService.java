@@ -3980,6 +3980,81 @@ public final class QueryService {
         }
     }
 
+    /** P-08：记录一条物理位置证据。 */
+    public long recordPositionEvidence(String plateBarcode, Long resourceId, String type,
+                                       Long runId, String operator, String note)
+            throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     INSERT INTO position_evidence
+                       (tenant_id, plate_barcode, resource_id, evidence_type, run_id,
+                        operator, note)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     RETURNING id
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setString(2, plateBarcode);
+            if (resourceId == null) {
+                ps.setNull(3, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(3, resourceId);
+            }
+            ps.setString(4, type == null ? "MANUAL" : type.toUpperCase());
+            if (runId == null) {
+                ps.setNull(5, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(5, runId);
+            }
+            ps.setString(6, operator);
+            ps.setString(7, note);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        }
+    }
+
+    /** P-08：物理位置证据列表（按板号可选过滤）。 */
+    public String positionEvidenceJson(String plateBarcode, int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, plate_barcode, resource_id, evidence_type, run_id,
+                       operator, note, created_at::text
+                  FROM position_evidence
+                 WHERE tenant_id = ?
+                """);
+        if (plateBarcode != null && !plateBarcode.isBlank()) {
+            sql.append(" AND plate_barcode = ?");
+        }
+        sql.append(" ORDER BY id DESC LIMIT ?");
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int i = 1;
+            ps.setLong(i++, tenantId);
+            if (plateBarcode != null && !plateBarcode.isBlank()) {
+                ps.setString(i++, plateBarcode);
+            }
+            ps.setInt(i, Math.max(1, Math.min(limit, 500)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long rid = rs.getLong("resource_id");
+                    Object resourceId = rs.wasNull() ? null : rid;
+                    long runId = rs.getLong("run_id");
+                    Object run = rs.wasNull() ? null : runId;
+                    items.add(Jsons.obj("id", rs.getLong("id"),
+                            "plateBarcode", rs.getString("plate_barcode"),
+                            "resourceId", resourceId,
+                            "evidenceType", rs.getString("evidence_type"),
+                            "runId", run,
+                            "operator", rs.getString("operator"),
+                            "note", rs.getString("note"),
+                            "createdAt", rs.getString("created_at")));
+                }
+            }
+        }
+        return Jsons.obj("total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
     /** P-08：隔离中的 run 列表（处置页用）。 */
     public String quarantinedRunsJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();

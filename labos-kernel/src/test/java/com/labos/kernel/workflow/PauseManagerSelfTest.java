@@ -313,6 +313,7 @@ public final class PauseManagerSelfTest {
         exec("DELETE FROM plate_location_audit WHERE run_id = " + runId);
         exec("DELETE FROM run WHERE id = " + runId);
         exec("DELETE FROM plate WHERE tenant_id = 1 AND barcode = 'PL-TEST-M4'");
+        exec("DELETE FROM position_evidence WHERE tenant_id = 1 AND plate_barcode = 'PL-TEST-M4'");
     }
 
     private static String statusOf(long runId) {

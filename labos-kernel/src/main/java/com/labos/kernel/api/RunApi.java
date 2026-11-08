@@ -193,6 +193,32 @@ final class RunApi {
                     "interventionRecordId", recordId));
             return true;
         }
+        if ("/api/plate-position-evidence".equals(path)) {
+            if ("GET".equals(method)) {
+                s.send(ex, 200, s.query.positionEvidenceJson(
+                        paramStr(ex.getRequestURI().getQuery(), "plateBarcode"),
+                        intParam(ex, "limit", 100)));
+                return true;
+            }
+            if (!"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            String plate = jsonField(body, "plateBarcode");
+            if (plate == null || plate.isBlank()) {
+                s.send(ex, 400, err("需要 plateBarcode"));
+                return true;
+            }
+            Long resourceId = jsonLong(body, "resourceId");
+            Long runId = jsonLong(body, "runId");
+            long id = s.query.recordPositionEvidence(plate,
+                    resourceId, jsonField(body, "evidenceType"), runId,
+                    jsonField(body, "operator"), jsonField(body, "note"));
+            s.audited("position.evidence.record", "position_evidence", id,
+                    plate, Jsons.obj("type", jsonField(body, "evidenceType")), ex);
+            s.send(ex, 200, Jsons.obj("id", id, "plateBarcode", plate));
+            return true;
+        }
         if ("/api/runs/quarantined".equals(path)) {
             s.requireGet(method, ex);
             s.send(ex, 200, s.query.quarantinedRunsJson(intParam(ex, "limit", 100)));
