@@ -109,6 +109,14 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 实测 3/0：验证 ADR-FAULT-SCOPE-002「同一实验内任一 Workcell 扣留 ⇒ 整实验不派发」，
 不是只挡 B 段。
 
+## 四·补六、Handoff 处置页（2026-11-09）
+
+- 后端：GET /api/handoffs（实验/源目标 Workcell 名称/状态/carrier）；
+- 前端：/handoffs「交接确认」页列出配置态 Handoff，确认弹窗说明后调
+  POST /api/experiments/{id}/handoffs/confirm；确认后状态 confirmed；
+  20s 刷新、viewer 只读；
+- 页面 Playwright 冒烟通过（标题/行/无加载失败）；API 手工验证 configure→confirm。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；

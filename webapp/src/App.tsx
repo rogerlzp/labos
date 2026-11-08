@@ -13,6 +13,7 @@ import RunsPage from './pages/Runs';
 import PausedRunsPage from './pages/PausedRuns';
 import ManualWindowsPage from './pages/ManualWindows';
 import QuarantinePage from './pages/Quarantine';
+import HandoffsPage from './pages/Handoffs';
 import PlatesPage from './pages/Plates';
 import RunDetailPage from './pages/RunDetail';
 import WorkflowsPage from './pages/Workflows';
@@ -83,6 +84,7 @@ const NAV: NavGroup[] = [
       { key: '/paused', labelKey: 'nav.paused' },
       { key: '/manual-windows', labelKey: 'nav.manualWindows' },
       { key: '/quarantined', labelKey: 'nav.quarantined' },
+      { key: '/handoffs', labelKey: 'nav.handoffs' },
       { key: '/plates', labelKey: 'nav.plates' },
     ],
   },
@@ -252,6 +254,7 @@ export default function App() {
             <Route path="/paused" element={<PausedRunsPage />} />
             <Route path="/manual-windows" element={<ManualWindowsPage />} />
             <Route path="/quarantined" element={<QuarantinePage />} />
+            <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/plates" element={<PlatesPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
             {/* 列表 → 详情：/experiments 看全量，/experiments/:id 才是编排页 */}

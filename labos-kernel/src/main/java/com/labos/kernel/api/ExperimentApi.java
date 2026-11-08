@@ -133,6 +133,13 @@ final class ExperimentApi {
             return true;
         }
         Matcher expGraph = EXP_GRAPH.matcher(path);
+        if ("/api/handoffs".equals(path)) {
+            s.requireGet(method, ex);
+            s.send(ex, 200, s.query.handoffsJson(
+                    paramStr(ex.getRequestURI().getQuery(), "status"),
+                    intParam(ex, "limit", 100)));
+            return true;
+        }
         Matcher handoffConfirm = EXP_HANDOFF_CONFIRM.matcher(path);
         if (handoffConfirm.matches()) {
             if (!"POST".equals(method)) {

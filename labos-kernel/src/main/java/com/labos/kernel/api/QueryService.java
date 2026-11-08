@@ -3980,6 +3980,54 @@ public final class QueryService {
         }
     }
 
+    /** N-10：跨实验 Handoff 处置列表（可按状态过滤）。 */
+    public String handoffsJson(String status, int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("""
+                SELECT h.id, h.experiment_id, e.experiment_no,
+                       h.from_workcell_id, rf.name AS from_name,
+                       h.to_workcell_id, rt.name AS to_name,
+                       h.status, h.carrier, h.remark
+                  FROM experiment_handoff h
+                  JOIN experiment e
+                    ON e.tenant_id = h.tenant_id AND e.id = h.experiment_id
+                  LEFT JOIN resource_node rf
+                    ON rf.tenant_id = h.tenant_id AND rf.id = h.from_workcell_id
+                  LEFT JOIN resource_node rt
+                    ON rt.tenant_id = h.tenant_id AND rt.id = h.to_workcell_id
+                 WHERE h.tenant_id = ?
+                """);
+        if (status != null && !status.isBlank()) {
+            sql.append(" AND h.status = ?");
+        }
+        sql.append(" ORDER BY h.id DESC LIMIT ?");
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int i = 1;
+            ps.setLong(i++, tenantId);
+            if (status != null && !status.isBlank()) {
+                ps.setString(i++, status);
+            }
+            ps.setInt(i, Math.max(1, Math.min(limit, 200)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    items.add(Jsons.obj("id", rs.getLong("id"),
+                            "experimentId", rs.getLong("experiment_id"),
+                            "experimentNo", rs.getString("experiment_no"),
+                            "fromWorkcellId", rs.getLong("from_workcell_id"),
+                            "fromName", rs.getString("from_name"),
+                            "toWorkcellId", rs.getLong("to_workcell_id"),
+                            "toName", rs.getString("to_name"),
+                            "status", rs.getString("status"),
+                            "carrier", rs.getString("carrier"),
+                            "remark", rs.getString("remark")));
+                }
+            }
+        }
+        return Jsons.obj("total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
     /** P-08：TransferTransaction 列表。 */
     public String transferTransactionsJson(String status, int limit) throws SQLException {
         List<String> items = new ArrayList<>();
