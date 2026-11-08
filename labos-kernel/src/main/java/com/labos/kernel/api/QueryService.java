@@ -3980,6 +3980,45 @@ public final class QueryService {
         }
     }
 
+    /** P-08：隔离中的 run 列表（处置页用）。 */
+    public String quarantinedRunsJson(int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT r.id, r.run_no, r.error_code,
+                            r.input->>'quarantineReason' AS reason,
+                            r.created_at::text,
+                            (SELECT er.experiment_id
+                               FROM experiment_run_step s
+                               JOIN experiment_run er
+                                 ON er.tenant_id = s.tenant_id
+                                AND er.id = s.experiment_run_id
+                              WHERE s.tenant_id = r.tenant_id AND s.run_id = r.id
+                              LIMIT 1) AS experiment_id
+                       FROM run r
+                      WHERE r.tenant_id = ? AND r.status = 'quarantined'
+                      ORDER BY r.id DESC
+                      LIMIT ?
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setInt(2, Math.max(1, Math.min(limit, 500)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long eid = rs.getLong("experiment_id");
+                    Object expId = rs.wasNull() ? null : eid;
+                    items.add(Jsons.obj("runId", rs.getLong("id"),
+                            "runNo", rs.getString("run_no"),
+                            "errorCode", rs.getString("error_code"),
+                            "reason", rs.getString("reason"),
+                            "createdAt", rs.getString("created_at"),
+                            "experimentId", expId));
+                }
+            }
+        }
+        return Jsons.obj("total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
     /** UNKNOWN 命令账本列表（P-07.2 人工核对入口）。 */
     public String commandsUnknownJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();

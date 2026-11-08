@@ -34,6 +34,14 @@
 - test-all 1205/0；T0 门禁；tsc 通过；
 - API 手工验证：quarantined → release 200（interventionRecordId）→ 二次 409。
 
+## 三·补、隔离处置页（2026-11-09）
+
+- 后端：GET /api/runs/quarantined（runId/runNo/errorCode/reason/createdAt/experimentId）；
+- 前端：/quarantined 页（「隔离处置」菜单）列出隔离 run，确认弹窗填板号/说明后
+  调 POST /api/runs/{id}/quarantine/release；20s 自动刷新；viewer 只读；
+- 页面 Playwright 冒烟：标题/行渲染正常、无加载失败；
+- 清理：确认后 run→failed、实验 Hold 释放、intervention_record 落证。
+
 ## 四、边界（P-08 剩余）
 
 1. 资源与物理位置三维分离（resource / booking / physical position 独立事实）未做；

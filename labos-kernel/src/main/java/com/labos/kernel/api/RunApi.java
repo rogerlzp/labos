@@ -193,6 +193,11 @@ final class RunApi {
                     "interventionRecordId", recordId));
             return true;
         }
+        if ("/api/runs/quarantined".equals(path)) {
+            s.requireGet(method, ex);
+            s.send(ex, 200, s.query.quarantinedRunsJson(intParam(ex, "limit", 100)));
+            return true;
+        }
         if ("/api/intervention-records".equals(path)) {
             s.requireGet(method, ex);
             s.send(ex, 200, s.query.interventionRecordsJson(intParam(ex, "limit", 100)));
