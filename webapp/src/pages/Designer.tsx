@@ -980,6 +980,19 @@ export default function DesignerPage() {
    * <p>只移动 position，不改连线/拓扑；走 modeling.moveElements 会进 commandStack，
    * 页面会标脏，用户点「保存」后 DI 坐标一起落库（saveXML 包含 BPMNDiagram 坐标）。
    */
+  /**
+   * 自动对齐：先对齐「大节点」——网关分叉/汇合对，再排分支内部节点。
+   *
+   * 旧实现只按最长路径分层、每层按 y 往下堆：分叉和汇合不在同一水平线上，
+   * 分支里的节点也散落在不同层，看起来不合理（2026-11-08 用户指出）。
+   *
+   * 新实现按流程结构递归排版：
+   *   ① 从 start 沿主路径走，遇到网关对（分叉 → 对应汇合）时，把分叉和汇合
+   *      放在**同一水平行**上，分支节点排在这一对之间；
+   *   ② 分支按顺序上下排开，每个分支内部沿它自己的中心行从左到右；
+   *   ③ 分支里再遇到网关对（嵌套），递归套用同样的规则；
+   *   ④ 不在任何路径上的孤立节点统一放到最下面一排，避免互相叠住。
+   */
   const autoAlign = () => {
     const m = modelerRef.current;
     if (!m) return;
@@ -988,6 +1001,8 @@ export default function DesignerPage() {
       type: string;
       x?: number;
       y?: number;
+      width?: number;
+      height?: number;
       businessObject?: { incoming?: unknown[]; outgoing?: unknown[] };
     };
     type FlowEl = {
@@ -1020,58 +1035,281 @@ export default function DesignerPage() {
 
     const byId = new Map(shapes.map((s) => [s.id, s]));
     const out = new Map<string, string[]>();
-    shapes.forEach((s) => out.set(s.id, []));
+    const inc = new Map<string, string[]>();
+    shapes.forEach((s) => { out.set(s.id, []); inc.set(s.id, []); });
     flows.forEach((f) => {
       const src = f.businessObject?.sourceRef?.id;
       const tgt = f.businessObject?.targetRef?.id;
-      if (src && tgt && byId.has(src) && byId.has(tgt)) out.get(src)!.push(tgt);
+      if (src && tgt && byId.has(src) && byId.has(tgt)) {
+        out.get(src)!.push(tgt);
+        inc.get(tgt)!.push(src);
+      }
     });
 
-    // 最长路径分层：从 start 出发；环形回边按“已访问则只在更深时更新”截断。
+    const size = new Map<string, { w: number; h: number }>();
+    shapes.forEach((s) => size.set(s.id, {
+      w: s.width ?? 100,
+      h: s.height ?? (s.type === 'bpmn:StartEvent' || s.type === 'bpmn:EndEvent' ? 36
+        : s.type.includes('Gateway') ? 50 : 80),
+    }));
+    const nodeH = (id: string) => Math.max(size.get(id)?.h ?? 80, 50);
+    const isGatewayType = (t: string) => t.includes('Gateway');
+    const isParallelType = (t: string) => t.includes('Parallel');
+    const kindOf = (id: string) => {
+      const t = byId.get(id)?.type ?? '';
+      if (t === 'bpmn:EndEvent') return 'end';
+      if (t === 'bpmn:StartEvent') return 'start';
+      if (isGatewayType(t)) return isParallelType(t) ? 'par' : 'xor';
+      return 'task';
+    };
+
+    // 最长路径 level：用于给 fork 选“最近的”同类型汇合（嵌套时选内层 join）
     const level = new Map<string, number>();
     const starts = shapes.filter((s) => s.type === 'bpmn:StartEvent');
-    const queue: string[] = [];
+    const q: string[] = [];
     (starts.length ? starts : shapes.filter((s) => (s.businessObject?.incoming?.length ?? 0) === 0))
-      .forEach((s) => { if (!level.has(s.id)) { level.set(s.id, 0); queue.push(s.id); } });
-    let guard = 0;
-    while (queue.length && guard++ < 5000) {
-      const cur = queue.shift()!;
+      .forEach((s) => { if (!level.has(s.id)) { level.set(s.id, 0); q.push(s.id); } });
+    let guardLv = 0;
+    while (q.length && guardLv++ < 5000) {
+      const cur = q.shift()!;
       const lv = level.get(cur) ?? 0;
       for (const nx of out.get(cur) ?? []) {
         if (!level.has(nx) || (level.get(nx) ?? 0) < lv + 1) {
           level.set(nx, lv + 1);
-          queue.push(nx);
+          q.push(nx);
         }
       }
     }
     shapes.forEach((s) => { if (!level.has(s.id)) level.set(s.id, 0); });
 
-    const COL_GAP = 180;
-    const ROW_GAP = 110;
-    const MARGIN_X = 80;
-    const MARGIN_Y = 80;
-    const cols = new Map<number, ShapeEl[]>();
-    shapes.forEach((s) => {
-      const lv = level.get(s.id) ?? 0;
-      if (!cols.has(lv)) cols.set(lv, []);
-      cols.get(lv)!.push(s);
-    });
-    const maxLevel = Math.max(...level.values());
-    for (let lv = 0; lv <= maxLevel; lv++) {
-      const col = (cols.get(lv) ?? []).sort((a, b) => (a.y ?? 0) - (b.y ?? 0));
-      col.forEach((s, idx) => {
-        const targetX = MARGIN_X + lv * COL_GAP;
-        const targetY = MARGIN_Y + idx * ROW_GAP;
-        const dx = targetX - (s.x ?? 0);
-        const dy = targetY - (s.y ?? 0);
-        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-          modeling.moveElements([s], { x: dx, y: dy });
-        }
-      });
-    }
-    (m.get('canvas') as CanvasApi).zoom('fit-viewport');
-  };
+    // 可达集（小图 DFS；5000 步防环）
+    const reachCache = new Map<string, Set<string>>();
+    const reachOf = (id: string): Set<string> => {
+      const hit = reachCache.get(id);
+      if (hit) return hit;
+      const seen = new Set<string>();
+      const stack = [...(out.get(id) ?? [])];
+      let g = 0;
+      while (stack.length && g++ < 5000) {
+        const cur = stack.pop()!;
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        stack.push(...(out.get(cur) ?? []));
+      }
+      reachCache.set(id, seen);
+      return seen;
+    };
 
+    const forkIds: string[] = [];
+    const joinIds: string[] = [];
+    shapes.forEach((s) => {
+      if (!isGatewayType(s.type)) return;
+      if ((out.get(s.id)?.length ?? 0) > 1) forkIds.push(s.id);
+      if ((inc.get(s.id)?.length ?? 0) > 1) joinIds.push(s.id);
+    });
+    const forkToJoin = new Map<string, string>();
+    const joinToFork = new Map<string, string>();
+    forkIds.sort((a, b) => (level.get(a) ?? 0) - (level.get(b) ?? 0));
+    for (const f of forkIds) {
+      const fk = kindOf(f);
+      const succ = out.get(f) ?? [];
+      if (succ.length === 0) continue;
+      const cand = joinIds
+        .filter((j) => j !== f && kindOf(j) === fk
+          && reachOf(f).has(j) && succ.every((s) => reachOf(s).has(j)))
+        .sort((a, b) => (level.get(a) ?? 0) - (level.get(b) ?? 0));
+      let chosen: string | undefined = cand[0];
+      if (!chosen) {
+        // 异或分叉收口到同一个 end（合法图的常见写法）：end 也当排版汇合点
+        chosen = shapes
+          .filter((s) => s.type === 'bpmn:EndEvent')
+          .map((s) => s.id)
+          .find((e) => succ.every((s) => reachOf(s).has(e)));
+      }
+      if (chosen) {
+        forkToJoin.set(f, chosen);
+        joinToFork.set(chosen, f);
+      }
+    }
+
+    const COL_GAP = 200;
+    const ROW_GAP = 150;
+    const MARGIN_X = 200;
+    const MARGIN_Y = 200;
+    const MIN_BAND = 110;
+
+    // 分支/主路径要占多少列（含嵌套网关对）
+    const seqWidthMemo = new Map<string, number>();
+    function seqWidth(startId: string, stopId: string): number {
+      const key = startId + '>' + stopId;
+      const memo = seqWidthMemo.get(key);
+      if (memo != null) return memo;
+      seqWidthMemo.set(key, 0);
+      let cols = 0;
+      let n: string | undefined = startId;
+      const seen = new Set<string>();
+      let g = 0;
+      while (n && n !== stopId && g++ < 200 && !seen.has(n)) {
+        seen.add(n);
+        const pj = forkToJoin.get(n);
+        if (pj && pj !== stopId) {
+          cols += pairWidth(n, pj);
+          n = pj;
+        } else {
+          cols += 1;
+          n = (out.get(n) ?? [])[0];
+        }
+      }
+      seqWidthMemo.set(key, cols);
+      return cols;
+    }
+    function pairWidth(f: string, j: string): number {
+      const branches = out.get(f) ?? [];
+      const maxBranch = Math.max(0, ...branches.map((s) => seqWidth(s, j)));
+      return 1 + maxBranch + 1;
+    }
+
+    // 分支/主路径要占多少高度（按嵌套网关对的最外框算）
+    const seqHeightMemo = new Map<string, number>();
+    function seqHeight(startId: string, stopId: string): number {
+      const key = startId + '>' + stopId;
+      const memo = seqHeightMemo.get(key);
+      if (memo != null) return memo;
+      seqHeightMemo.set(key, nodeH(startId));
+      let h = nodeH(startId);
+      let n: string | undefined = startId;
+      const seen = new Set<string>();
+      let g = 0;
+      while (n && n !== stopId && g++ < 200 && !seen.has(n)) {
+        seen.add(n);
+        const pj = forkToJoin.get(n);
+        if (pj && pj !== stopId) {
+          h = Math.max(h, pairHeight(n, pj));
+          n = pj;
+        } else {
+          h = Math.max(h, nodeH(n));
+          n = (out.get(n) ?? [])[0];
+        }
+      }
+      seqHeightMemo.set(key, h);
+      return h;
+    }
+    function pairHeight(f: string, j: string): number {
+      const branches = out.get(f) ?? [];
+      const hs = branches.map((s) => Math.max(seqHeight(s, j), MIN_BAND));
+      const total = hs.reduce((a, b) => a + b, 0) + ROW_GAP * Math.max(0, branches.length - 1);
+      return Math.max(total, MIN_BAND);
+    }
+
+    const placed = new Set<string>();
+    const target = new Map<string, { x: number; y: number }>();
+    const placeNode = (id: string, col: number, centerY: number) => {
+      if (placed.has(id)) return;
+      placed.add(id);
+      target.set(id, { x: MARGIN_X + col * COL_GAP, y: MARGIN_Y + centerY });
+    };
+
+    function placeSeq(startId: string, stopId: string, col: number, rowCenter: number): number {
+      let n: string | undefined = startId;
+      let c = col;
+      const seen = new Set<string>();
+      let g = 0;
+      while (n && n !== stopId && g++ < 200 && !seen.has(n)) {
+        seen.add(n);
+        const pj = forkToJoin.get(n);
+        if (pj && pj !== stopId) {
+          c = placePair(n, pj, c, rowCenter);
+          n = pj;
+          continue;
+        }
+        if (!placed.has(n)) {
+          placeNode(n, c, rowCenter);
+          c += 1;
+        }
+        n = (out.get(n) ?? [])[0];
+      }
+      return c;
+    }
+
+    function placePair(f: string, j: string, col: number, centerY: number): number {
+      placeNode(f, col, centerY);
+      const branches = out.get(f) ?? [];
+      const widths = branches.map((s) => seqWidth(s, j));
+      const maxW = Math.max(0, ...widths);
+      const joinCol = col + 1 + maxW;
+      placeNode(j, joinCol, centerY);
+      const hs = branches.map((s) => Math.max(seqHeight(s, j), MIN_BAND));
+      const total = hs.reduce((a, b) => a + b, 0) + ROW_GAP * Math.max(0, branches.length - 1);
+      let top = centerY - total / 2;
+      branches.forEach((s, i) => {
+        const bandCenter = top + hs[i] / 2;
+        placeSeq(s, j, col + 1, bandCenter);
+        top += hs[i] + ROW_GAP;
+      });
+      return joinCol + 1;
+    }
+
+    const startIds = (starts.length ? starts : shapes.filter(
+      (s) => (s.businessObject?.incoming?.length ?? 0) === 0)).map((s) => s.id);
+    const endIds = shapes.filter((s) => s.type === 'bpmn:EndEvent').map((s) => s.id);
+    const endId = endIds[0] ?? '';
+    let cursor = 0;
+    for (const sid of startIds) {
+      cursor = placeSeq(sid, endId, cursor, 0);
+      if (startIds.length > 1) cursor += 1;
+    }
+    if (endId && !placed.has(endId)) placeNode(endId, cursor, 0);
+
+    // 孤立/没走到的节点：单独一排放在最下面（不参与主链排版）
+    let maxY = 0;
+    target.forEach((p) => { maxY = Math.max(maxY, p.y); });
+    let extraCol = 0;
+    shapes.forEach((s) => {
+      if (!placed.has(s.id)) {
+        placeNode(s.id, extraCol++, maxY + 200);
+      }
+    });
+
+    // 分支上下展开后可能超过上边界：整体平移到留白以内
+    let minY = Infinity;
+    target.forEach((p) => { minY = Math.min(minY, p.y); });
+    if (minY < 150) {
+      const shift = 150 - minY;
+      target.forEach((p) => { p.y += shift; });
+    }
+
+    // 落到画布：moveElements 用差分；批量相同位移可一次移
+    const moves: { el: ShapeEl; dx: number; dy: number }[] = [];
+    target.forEach((p, id) => {
+      const s = byId.get(id);
+      if (!s) return;
+      const sz = size.get(id) ?? { w: 100, h: 80 };
+      const curX = (s.x ?? 0) + sz.w / 2;
+      const curY = (s.y ?? 0) + sz.h / 2;
+      const dx = Math.round(p.x - curX);
+      const dy = Math.round(p.y - curY);
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) moves.push({ el: s, dx, dy });
+    });
+    const groups = new Map<string, { dx: number; dy: number; els: ShapeEl[] }>();
+    moves.forEach((mv) => {
+      const key = mv.dx + ',' + mv.dy;
+      if (!groups.has(key)) groups.set(key, { dx: mv.dx, dy: mv.dy, els: [] });
+      groups.get(key)!.els.push(mv.el);
+    });
+    groups.forEach((g) => { modeling.moveElements(g.els, { x: g.dx, y: g.dy }); });
+    const cv = m.get('canvas') as unknown as {
+      zoom: (v: string) => void;
+      viewbox: (v?: { x: number; y: number; width: number; height: number }) =>
+        { x: number; y: number; width: number; height: number };
+    };
+    cv.zoom('fit-viewport');
+    // 左侧 palette 是覆盖在画布上的：把视口往左上挪一点，内容整体右下移，
+    // 避免最左边的开始节点/第一列被 palette 盖住。
+    try {
+      const vb = cv.viewbox();
+      cv.viewbox({ x: vb.x - 100, y: vb.y - 40, width: vb.width, height: vb.height });
+    } catch { /* 视口 API 不可用时只保留 fit-viewport */ }
+  };
   // 加载图（steps=1 让多步节点显示为可折叠 subProcess）
   useEffect(() => {
     let alive = true;

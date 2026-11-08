@@ -500,6 +500,24 @@ def main():
         F.ok("自动对齐后节点互不重叠") if not overlap \
             else F.bad("对齐后仍有节点重叠", ",".join(overlap[:3]))
 
+        # 新排版要求：先对齐网关分叉/汇合对（同一水平线），再排分支内部
+        def _center(node_id):
+            b = bnd.get(node_id)
+            return ((b[0] + b[2] / 2, b[1] + b[3] / 2) if b else None)
+        cp, cj = _center(ids["PAR"]), _center(ids["PARJ"])
+        F.ok("自动对齐后并行网关对（PAR/PARJ）在同一水平线") \
+            if cp and cj and abs(cp[1] - cj[1]) <= 2 \
+            else F.bad("网关对没有水平对齐", str((cp, cj)))
+        cs, ce = _center(ids["S"]), _center(ids["E"])
+        F.ok("自动对齐后开始/结束节点在同一水平线") \
+            if cs and ce and abs(cs[1] - ce[1]) <= 2 \
+            else F.bad("开始/结束没有水平对齐", str((cs, ce)))
+        cc, cd = _center(ids["C"]), _center(ids["D"])
+        F.ok("自动对齐后并行分支 C/D 同列且上下对称") \
+            if cc and cd and cp and abs(cc[0] - cd[0]) <= 2 \
+            and abs((cc[1] + cd[1]) / 2 - cp[1]) <= 3 \
+            else F.bad("并行分支没有对称排开", str((cc, cd, cp)))
+
         # 变量节点 + 两个设备节点
         # ⚠ 每次节点设置保存后必须刷新一次设计器：节点卡的保存基于页面当前的
         #   BPMN 模型，连续设置多个节点时后面的保存会拿旧模型覆盖前面的设置
