@@ -119,6 +119,11 @@ java -cp out com.labos.gateway.GatewayMain
 
 ### Verify
 
+> **⚠ DEPRECATED (2026-11-08)**: this section is superseded by the single entry point
+> `docs/测试总纲.md` (Chinese, authoritative; English edition pending). Current tiers
+> and the "what changed → what to run" mapping live in the Testing Master §2 / §4.
+> Kept as historical context.
+
 ```bash
 cd labos-kernel
 LABOS_DB_NAME=<your-db> java -cp out com.labos.kernel.recovery.RecoverySelfTest

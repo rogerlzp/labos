@@ -1,5 +1,10 @@
 # Testing Document · LabOS Laboratory Control Console
 
+> **⚠ DEPRECATED (2026-11-08)**: Superseded by the Testing Master
+> (`docs/测试总纲.md`, Chinese, authoritative). The layering model, thresholds, gate
+> counts and case counts below are historical snapshots and are **not** current policy.
+> This file is kept as historical background under the append-only documentation rule.
+
 > **English edition.** The Chinese original is
 > [docs/en/review-20261103/04-testing.md](04-testing.md);
 > this is a line-for-line translation. Numbers, commit hashes and file paths are identical to the

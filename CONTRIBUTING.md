@@ -9,6 +9,10 @@ Thanks for your interest. LabOS is **pre-alpha**; small, focused changes are eas
 3. **No secrets, no internal data:** never commit credentials, private network addresses, customer data, vendor manuals you do not have rights to redistribute, or code you do not have the rights to publish.
 4. **Device work:** follow [docs/en/devices/](docs/en/devices/) and [docs/设备/](docs/设备/). Annotate each method with idempotency / retry-safety / evidence level. Do not claim real-hardware validation without a reproducible record.
 5. **Tests:** `scripts/test-all.sh` must stay green; pure-logic tests must run without a database.
+
+> **⚠ DEPRECATED (2026-11-08)**: this rule is superseded by the single entry point
+> [`docs/测试总纲.md`](docs/测试总纲.md) — run the gates selected for the files you changed,
+> and record the commands and results in the commit message (Testing Master §3.3).
 6. **Behaviour-changing changes** need cross-family review (see ROADMAP §7) and a note in the decision log.
 
 ## Pull requests

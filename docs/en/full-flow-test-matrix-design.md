@@ -1,5 +1,10 @@
 # Full Workflow Test Matrix (Design)
 
+> **⚠ DEPRECATED (2026-11-08)**: Superseded by the Testing Master
+> (`docs/测试总纲.md`, Chinese, authoritative). The layering model, thresholds, gate
+> counts and case counts below are historical snapshots and are **not** current policy.
+> This file is kept as historical background under the append-only documentation rule.
+
 > Applies to: LabOS 2.0
 > Related: [workflow-control-test-report.md](workflow-control-test-report.md) · [workflow-control-design.md](workflow-control-design.md) · [parallel-capability-verification.md](parallel-capability-verification.md)
 

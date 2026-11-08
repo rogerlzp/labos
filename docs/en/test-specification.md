@@ -1,5 +1,10 @@
 # LabOS Test Specification
 
+> **⚠ DEPRECATED (2026-11-08)**: Superseded by the Testing Master
+> (`docs/测试总纲.md`, Chinese, authoritative). The layering model, thresholds, gate
+> counts and case counts below are historical snapshots and are **not** current policy.
+> This file is kept as historical background under the append-only documentation rule.
+
 > The question this answers: **after changing a feature, on what basis do you claim
 > it is not broken and did not break anything else?**
 > The answer: write the cases before the implementation; keep both a script track and

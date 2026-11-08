@@ -1,5 +1,10 @@
 # Testing and Release Strategy
 
+> **⚠ DEPRECATED (2026-11-08)**: Superseded by the Testing Master
+> (`docs/测试总纲.md`, Chinese, authoritative). The layering model, thresholds, gate
+> counts and case counts below are historical snapshots and are **not** current policy.
+> This file is kept as historical background under the append-only documentation rule.
+
 > **English edition.** The Chinese original is [`docs/测试与上线策略.md`](../测试与上线策略.md); this is a
 > line-for-line translation. Numbers, commit hashes and file paths are identical to the
 > Chinese source — if they ever disagree, the Chinese original wins.

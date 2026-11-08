@@ -18,6 +18,10 @@ much easier to review than large ones.
 
 <!-- Be concrete. Prefer a command or a recorded result over a description. -->
 
+> **⚠ DEPRECATED (2026-11-08)**: the three checkboxes below are superseded by
+> [`docs/测试总纲.md`](../docs/测试总纲.md) §3.3 — run the gates selected for the
+> files changed by this PR and paste the commands and results here. Kept as historical context.
+
 - [ ] `scripts/test-all.sh` passes (pure-logic tests, no database required)
 - [ ] `npm run typecheck` passes in `webapp/` (front-end changes)
 - [ ] A simulator run is attached, if the change touches the device path

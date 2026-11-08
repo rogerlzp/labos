@@ -110,6 +110,9 @@ java -cp out com.labos.gateway.GatewayMain
 
 ### 验证
 
+> **⚠ DEPRECATED（2026-11-08）**：本节验证命令已并入 [测试总纲](docs/测试总纲.md)（唯一入口），
+> 现行分档与「改哪儿 → 跑什么」以总纲 §2 / §4 为准。以下保留作历史背景。
+
 ```bash
 cd labos-kernel
 LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.recovery.RecoverySelfTest
@@ -177,6 +180,7 @@ LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar" \
 
 | 文档 | 内容 |
 |---|---|
+| **[`docs/测试总纲.md`](docs/测试总纲.md)** | **⭐ 测试唯一入口（2026-11-08 起，以本次为准）**：三档执行矩阵 / 「改哪儿 → 跑什么」映射 / 改功能·分模块·提交时规则 / 有效测试红线 / 废弃清单与整理讨论。其余测试文档均已标 `DEPRECATED` |
 | **[`docs/en/INDEX.md`](docs/en/INDEX.md)** | **英文文档索引 + 翻译台账**：全部中文文档的英文名对照表（已译 / 待译状态） |
 | **[`ROADMAP.md`](ROADMAP.md)** | **⭐ 后续规划唯一权威**：M6–M11 阶段、功能清单、验收标准、P0/P1/P2 落位、完成定义 |
 | **[`docs/评审包-20261105/`](docs/评审包-20261105/00-索引与评审须知.md)** | **最新评审入口（三件套）**：[索引与评审须知](docs/评审包-20261105/00-索引与评审须知.md) · [交付清单与验证](docs/评审包-20261105/01-本轮交付清单与验证.md) · [遗留与后续规划](docs/评审包-20261105/02-遗留与后续规划.md) |

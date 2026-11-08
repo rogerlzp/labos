@@ -1,5 +1,10 @@
 # Test Case Master Table
 
+> **⚠ DEPRECATED (2026-11-08)**: Superseded by the Testing Master
+> (`docs/测试总纲.md`, Chinese, authoritative). The layering model, thresholds, gate
+> counts and case counts below are historical snapshots and are **not** current policy.
+> This file is kept as historical background under the append-only documentation rule.
+
 > The question this answers: **is every line of the functional documentation actually
 > covered by a case, in which script, and does it run in CI?**
 > This table is the single ledger: rows are the feature ledger (L1–L10) from

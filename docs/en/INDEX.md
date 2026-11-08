@@ -43,6 +43,11 @@
 | `webapp/src/i18n/` | Runtime i18n layer + zh-CN / en-US message packs + domain-code table | ✅ Complete |
 | `scripts/scan-i18n.py` | i18n ledger tool and CI gate (key parity, code coverage, residual Chinese) | ✅ Complete |
 
+> **2026-11-08 — testing docs consolidated**: the single current entry point is
+> `docs/测试总纲.md` (Chinese, authoritative). Every other testing document listed
+> above is `DEPRECATED` and points to it. Its English edition is registered as
+> `⬜` (planned) in §3, so no structural parity check runs until translated.
+
 ### Frontend i18n — what is already English-capable
 
 | Surface | Mechanism | Notes |
@@ -173,6 +178,7 @@ queued.
 | `docs/流程控制-技术设计.md` | `docs/en/workflow-control-design.md` | ✅ |
 | `docs/流程控制-测试报告.md` | `docs/en/workflow-control-test-report.md` | ✅ |
 | `docs/完整流程测试矩阵-设计.md` | `docs/en/full-flow-test-matrix-design.md` | ✅ |
+| `docs/测试总纲.md` | `docs/en/testing-master.md` | ⬜ |
 | `docs/测试与上线策略.md` | `docs/en/testing-and-release-strategy.md` | ✅ |
 | `docs/测试规范.md` | `docs/en/test-specification.md` | ✅ |
 | `docs/测试用例总表.md` | `docs/en/test-case-master-table.md` | ✅ |
