@@ -40,6 +40,8 @@ interface BpmnModelingApi {
   createShape: (shape: unknown, position: { x: number; y: number }, parent: unknown) => unknown;
   connect: (source: unknown, target: unknown) => unknown;
   removeElements: (elements: unknown[]) => void;
+  /** 自动对齐用：按 delta 平移元素（走 commandStack，页面会标脏）。 */
+  moveElements: (elements: unknown[], delta: { x: number; y: number }) => void;
 }
 interface BpmnElementFactoryApi {
   createShape: (opts: { type: string }) => {
@@ -968,6 +970,108 @@ export default function DesignerPage() {
     modeling.updateProperties(el, { name: next || undefined });
   };
 
+  /**
+   * 自动对齐：按拓扑层级把节点排成从左到右的列，列内按原 y 排序、纵距固定。
+   *
+   * <p>为什么需要：页面上拖出来的图经常是“全堆在一起、线互相压着”，
+   * 人眼难读，预检/评审也难看出网格结构。这里不引 dagre/auto-layout 新依赖，
+   * 按“最长路径分层 + 列内排序”已经够把几十个节点的图排整齐。
+   *
+   * <p>只移动 position，不改连线/拓扑；走 modeling.moveElements 会进 commandStack，
+   * 页面会标脏，用户点「保存」后 DI 坐标一起落库（saveXML 包含 BPMNDiagram 坐标）。
+   */
+  const autoAlign = () => {
+    const m = modelerRef.current;
+    if (!m) return;
+    type ShapeEl = {
+      id: string;
+      type: string;
+      x?: number;
+      y?: number;
+      businessObject?: { incoming?: unknown[]; outgoing?: unknown[] };
+    };
+    type FlowEl = {
+      id: string;
+      type: string;
+      businessObject?: { sourceRef?: { id?: string }; targetRef?: { id?: string } };
+    };
+    const reg = m.get('elementRegistry') as unknown as {
+      forEach: (fn: (el: ShapeEl | FlowEl) => void) => void;
+    };
+    const modeling = m.get('modeling') as BpmnModelingApi | undefined;
+    if (!modeling?.moveElements) return;
+
+    const SHAPES = new Set([
+      'bpmn:StartEvent', 'bpmn:EndEvent', 'bpmn:Task', 'bpmn:UserTask',
+      'bpmn:ServiceTask', 'bpmn:ScriptTask', 'bpmn:SendTask', 'bpmn:ReceiveTask',
+      'bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:SubProcess',
+      'bpmn:IntermediateThrowEvent', 'bpmn:IntermediateCatchEvent', 'bpmn:CallActivity',
+    ]);
+    const shapes: ShapeEl[] = [];
+    const flows: FlowEl[] = [];
+    reg.forEach((el) => {
+      if (SHAPES.has(el.type) && 'x' in el && (el as ShapeEl).x != null) {
+        shapes.push(el as ShapeEl);
+      } else if (el.type === 'bpmn:SequenceFlow') {
+        flows.push(el as FlowEl);
+      }
+    });
+    if (shapes.length === 0) return;
+
+    const byId = new Map(shapes.map((s) => [s.id, s]));
+    const out = new Map<string, string[]>();
+    shapes.forEach((s) => out.set(s.id, []));
+    flows.forEach((f) => {
+      const src = f.businessObject?.sourceRef?.id;
+      const tgt = f.businessObject?.targetRef?.id;
+      if (src && tgt && byId.has(src) && byId.has(tgt)) out.get(src)!.push(tgt);
+    });
+
+    // 最长路径分层：从 start 出发；环形回边按“已访问则只在更深时更新”截断。
+    const level = new Map<string, number>();
+    const starts = shapes.filter((s) => s.type === 'bpmn:StartEvent');
+    const queue: string[] = [];
+    (starts.length ? starts : shapes.filter((s) => (s.businessObject?.incoming?.length ?? 0) === 0))
+      .forEach((s) => { if (!level.has(s.id)) { level.set(s.id, 0); queue.push(s.id); } });
+    let guard = 0;
+    while (queue.length && guard++ < 5000) {
+      const cur = queue.shift()!;
+      const lv = level.get(cur) ?? 0;
+      for (const nx of out.get(cur) ?? []) {
+        if (!level.has(nx) || (level.get(nx) ?? 0) < lv + 1) {
+          level.set(nx, lv + 1);
+          queue.push(nx);
+        }
+      }
+    }
+    shapes.forEach((s) => { if (!level.has(s.id)) level.set(s.id, 0); });
+
+    const COL_GAP = 180;
+    const ROW_GAP = 110;
+    const MARGIN_X = 80;
+    const MARGIN_Y = 80;
+    const cols = new Map<number, ShapeEl[]>();
+    shapes.forEach((s) => {
+      const lv = level.get(s.id) ?? 0;
+      if (!cols.has(lv)) cols.set(lv, []);
+      cols.get(lv)!.push(s);
+    });
+    const maxLevel = Math.max(...level.values());
+    for (let lv = 0; lv <= maxLevel; lv++) {
+      const col = (cols.get(lv) ?? []).sort((a, b) => (a.y ?? 0) - (b.y ?? 0));
+      col.forEach((s, idx) => {
+        const targetX = MARGIN_X + lv * COL_GAP;
+        const targetY = MARGIN_Y + idx * ROW_GAP;
+        const dx = targetX - (s.x ?? 0);
+        const dy = targetY - (s.y ?? 0);
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+          modeling.moveElements([s], { x: dx, y: dy });
+        }
+      });
+    }
+    (m.get('canvas') as CanvasApi).zoom('fit-viewport');
+  };
+
   // 加载图（steps=1 让多步节点显示为可折叠 subProcess）
   useEffect(() => {
     let alive = true;
@@ -1472,6 +1576,9 @@ export default function DesignerPage() {
               <Button onClick={() => setShowTimeline(true)}>{t('designer.action.timeline')}</Button>
               <Button onClick={() => setShowRuns(true)}>{t('designer.action.runs')}</Button>
               <Button onClick={() => setShowHistory(true)}>{t('designer.action.history')}</Button>
+              <Button onClick={autoAlign} disabled={ro.disabled} title={t('designer.action.autoAlignHint')}>
+                {t('designer.action.autoAlign')}
+              </Button>
               <Button onClick={() => nav('/workflows')}>{t('designer.action.back')}</Button>
               <Button type="primary" loading={saving} {...ro} onClick={save}>{t('designer.action.save')}</Button>
             </Space>
