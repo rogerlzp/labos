@@ -689,8 +689,14 @@ def validate_flow(xml):
             joins = [j for j, jk in nodes.items()
                      if "Gateway" in jk and len(ins[j]) > 1 and gtype(jk) == gtype(kind) and j != k]
             ok_join = any(all(j in reach([b], outs) for b in outs[k]) for j in joins)
+            # 异或分叉允许以同一个 end 事件作为「合并点」（BPMN 的 end 语义）；
+            # 并行分叉必须到显式并行汇合，否则没有「等齐」语义。
+            if gtype(kind) == "exclusive" and ends:
+                ok_join = ok_join or all(ends[0] in reach([b], outs) for b in outs[k])
             if not ok_join:
-                errs.append("分叉网关 %s(%s) 的分支没有共同汇合网关" % (k, gtype(kind)))
+                errs.append("分叉网关 %s(%s) 的分支没有共同汇合网关%s"
+                            % (k, gtype(kind),
+                               "（异或可用同一 end，但这里连 end 也不一致）" if gtype(kind) == "exclusive" else ""))
         if len(ins[k]) > 1:
             splits = [s for s, sk in nodes.items()
                       if "Gateway" in sk and len(outs[s]) > 1 and gtype(sk) == gtype(kind) and s != k]
