@@ -112,6 +112,7 @@ export const FALLBACK: StatusVocabulary = {
       { code: 'queued', label: '排队中', color: 'default', active: true },
       { code: 'running', label: '执行中', color: 'blue', active: true },
       { code: 'paused', label: '已暂停', color: 'orange', active: true },
+      { code: 'quarantined', label: '隔离待确认', color: 'red', active: true },
       { code: 'completed', label: '已完成', color: 'green', terminal: true },
       { code: 'failed', label: '失败', color: 'red', terminal: true },
       { code: 'aborted', label: '已终止', color: 'red', terminal: true },

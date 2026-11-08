@@ -59,6 +59,7 @@ cat /tmp/_schema_header.sql \
     99i_experiment_workcell.sql \
     99j_experiment_handoff.sql \
     99k_intervention_record.sql \
+    99l_run_quarantine.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

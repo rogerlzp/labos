@@ -168,6 +168,31 @@ final class RunApi {
                     "resume", new Jsons.Raw(resume)));
             return true;
         }
+        Matcher quarantineRelease = MANUAL_QUARANTINE_RELEASE.matcher(path);
+        if (quarantineRelease.matches()) {
+            if (!"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            long runId = Long.parseLong(quarantineRelease.group(1));
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            String note = jsonField(body, "note");
+            boolean ok = com.labos.kernel.workflow.StartupRecovery.resolveQuarantine(
+                    s.db, TENANT, runId, 1L, note);
+            if (!ok) {
+                s.send(ex, 409, Jsons.obj("ok", false,
+                        "error", "该 run 不在隔离状态或已处置"));
+                return true;
+            }
+            long recordId = s.query.recordIntervention(0L, runId, null, "api",
+                    "QUARANTINE_RELEASE", jsonField(body, "plateBarcode"),
+                    jsonField(body, "sampleId"), jsonField(body, "fromLocation"),
+                    jsonField(body, "toLocation"), "resolved", note);
+            s.audited("run.quarantine.release", "run", runId, note,
+                    Jsons.obj("recordId", recordId), ex);
+            s.send(ex, 200, Jsons.obj("ok", true, "runId", runId,
+                    "interventionRecordId", recordId));
+            return true;
+        }
         if ("/api/intervention-records".equals(path)) {
             s.requireGet(method, ex);
             s.send(ex, 200, s.query.interventionRecordsJson(intParam(ex, "limit", 100)));
@@ -588,6 +613,9 @@ final class RunApi {
     private static final Pattern RUNS_PAUSED = Pattern.compile("^/api/runs/paused$");
 
     /** 台账 6.5：POST /api/manual-windows/{id}/decide */
+    private static final Pattern MANUAL_QUARANTINE_RELEASE =
+            Pattern.compile("^/api/runs/(\\d+)/quarantine/release$");
+
     private static final Pattern MANUAL_WINDOW_DECIDE =
             Pattern.compile("^/api/manual-windows/(\\d+)/decide$");
 

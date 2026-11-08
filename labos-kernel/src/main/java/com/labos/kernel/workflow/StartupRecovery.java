@@ -208,6 +208,160 @@ public final class StartupRecovery {
         return orphans;
     }
 
+    /** P-08：被隔离的 run（物理结果未知，等人工确认）。 */
+    public record Quarantined(long runId, String runNo, Long experimentId) {
+    }
+
+    /**
+     * P-08 第一切片：启动恢复隔离。
+     *
+     * <p>命令账本里已经出现 UNKNOWN / DISPATCH_STARTED 的 run，说明崩溃时设备
+     * 可能有物理动作没拿到回包；这类 run 不能按普通 failed/recoverable 放回执行，
+     * 统一标 quarantined 并抬实验级 Hold，等人工确认。
+     *
+     * <p>必须在 CommandLedger.reconcileOnStartup 之后调用。
+     *
+     * @return 本次隔离的 run
+     */
+    public static java.util.List<Quarantined> quarantineUncertainRuns(
+            DbConfig db, long tenantId) throws SQLException {
+        return quarantineUncertainRuns(db, tenantId, null);
+    }
+
+    /** 自测用重载：只处理指定 run，避免顺手隔离库里真实遗留。 */
+    static java.util.List<Quarantined> quarantineUncertainRuns(
+            DbConfig db, long tenantId, java.util.Collection<Long> onlyRunIds)
+            throws SQLException {
+        if (onlyRunIds != null && onlyRunIds.isEmpty()) {
+            return java.util.List.of();
+        }
+        String runFilter = "";
+        if (onlyRunIds != null) {
+            StringBuilder sb = new StringBuilder(" AND r.id IN (");
+            int i = 0;
+            for (Long id : onlyRunIds) {
+                if (i++ > 0) {
+                    sb.append(',');
+                }
+                sb.append(id);
+            }
+            runFilter = sb.append(')').toString();
+        }
+        java.util.List<Quarantined> out = new java.util.ArrayList<>();
+        try (Connection c = db.open()) {
+            java.util.List<long[]> ids = new java.util.ArrayList<>();
+            java.util.List<String> nos = new java.util.ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT r.id, r.run_no
+                      FROM run r
+                     WHERE r.tenant_id = ?
+                       AND r.status IN ('running', 'failed')
+                       AND EXISTS (SELECT 1 FROM command_ledger cl
+                                    WHERE cl.tenant_id = r.tenant_id
+                                      AND cl.run_id = r.id
+                                      AND cl.state IN ('UNKNOWN', 'DISPATCH_STARTED'))""" + runFilter + """
+                     ORDER BY r.id
+                    """)) {
+                ps.setLong(1, tenantId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(new long[]{rs.getLong(1)});
+                        nos.add(rs.getString(2));
+                    }
+                }
+            }
+            for (int i = 0; i < ids.size(); i++) {
+                long runId = ids.get(i)[0];
+                Long expId = experimentIdOfRun(c, tenantId, runId);
+                try (PreparedStatement ps = c.prepareStatement("""
+                        UPDATE run
+                           SET status = 'quarantined'::run_status,
+                               error_code = COALESCE(error_code, 'EC-QUARANTINE-UNKNOWN'),
+                               input = COALESCE(input, '{}'::jsonb) || ?::jsonb,
+                               actual_end = COALESCE(actual_end, now())
+                         WHERE tenant_id = ? AND id = ?
+                        """)) {
+                    ps.setString(1, Jsons.obj(
+                            "quarantine", true,
+                            "quarantineReason", "命令物理结果未知（启动隔离）",
+                            "recoverable", false));
+                    ps.setLong(2, tenantId);
+                    ps.setLong(3, runId);
+                    ps.executeUpdate();
+                }
+                if (expId != null) {
+                    new RuntimeHold(db, tenantId).raise(RuntimeHold.Scope.EXPERIMENT,
+                            expId, RuntimeHold.Kind.HUMAN,
+                            "启动隔离：物理结果未知 run#" + runId, null);
+                }
+                out.add(new Quarantined(runId, nos.get(i), expId));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * P-08：人工确认隔离 run 的物理状态后放行（确认失败/终止）。
+     *
+     * <p>只允许从 quarantined 转移；同时解除隔离时抬的实验级 Hold。
+     *
+     * @return true=已处置
+     */
+    public static boolean resolveQuarantine(DbConfig db, long tenantId, long runId,
+                                            long by, String note) throws SQLException {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                Long expId = experimentIdOfRun(c, tenantId, runId);
+                int n;
+                try (PreparedStatement ps = c.prepareStatement("""
+                        UPDATE run
+                           SET status = 'failed'::run_status,
+                               error_code = 'EC-QUARANTINE-CONFIRMED',
+                               input = COALESCE(input, '{}'::jsonb) || ?::jsonb,
+                               actual_end = now()
+                         WHERE tenant_id = ? AND id = ? AND status = 'quarantined'
+                        """)) {
+                    ps.setString(1, Jsons.obj(
+                            "quarantine", false,
+                            "quarantineConfirmed", true,
+                            "quarantineNote", note == null ? "" : note));
+                    ps.setLong(2, tenantId);
+                    ps.setLong(3, runId);
+                    n = ps.executeUpdate();
+                }
+                if (n > 0 && expId != null) {
+                    new RuntimeHold(db, tenantId).clearTx(c,
+                            RuntimeHold.Scope.EXPERIMENT, expId, by,
+                            "隔离解除：" + (note == null ? "人工确认" : note));
+                }
+                c.commit();
+                return n > 0;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        }
+    }
+
+    private static Long experimentIdOfRun(Connection c, long tenantId, long runId)
+            throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT er.experiment_id
+                  FROM experiment_run_step s
+                  JOIN experiment_run er
+                    ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
+                 WHERE s.tenant_id = ? AND s.run_id = ?
+                 LIMIT 1
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : null;
+            }
+        }
+    }
+
     /** 收集"被中断且可恢复"的 run，供接口展示。 */
     public static List<Orphan> listRecoverable(DbConfig db, long tenantId) throws SQLException {
         List<Orphan> out = new ArrayList<>();

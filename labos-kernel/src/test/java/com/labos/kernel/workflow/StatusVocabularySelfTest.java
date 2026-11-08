@@ -16,10 +16,10 @@ import java.util.regex.Pattern;
  * <ol>
  *   <li><b>契约形状</b>：六个 scope 的 code 顺序/数量固定（顺序即展示序）；
  *       每个状态的 label 非空、color 在允许令牌集合里、terminal/active 集合明确；</li>
- *   <li><b>映射唯一</b>：run→experiment 的 8 条映射（completed→finished 等）被钉死，
+ *   <li><b>映射唯一</b>：run→experiment 的 9 条映射（completed→finished、quarantined→failed 等）被钉死，
  *       前端消费的 transitions 与后端写库的 CASE 来自同一张表；</li>
  *   <li><b>写入行为不变</b>：{@link StatusVocabulary#runToExperimentCaseSql()} 的精确文本
- *       被钉死；且对全部 11 个 run 状态 + 未知码模拟求值，必须与改前规则
+ *       被钉死；且对全部 12 个 run 状态 + 未知码模拟求值，必须与改前规则
  *       「completed→finished，failed→failed，running→running，其余原样」逐状态相等——
  *       这是"重构不许改行为"的底线，不是口味问题；</li>
  *   <li><b>JSON 契约</b>：{@code GET /api/meta/status-vocabulary} 的顶层键、嵌套键、
@@ -35,7 +35,7 @@ public final class StatusVocabularySelfTest {
     /** 各 scope 契约顺序（顺序即展示序，改它等于改 UI）。 */
     private static final Map<String, List<String>> EXPECTED_CODES = Map.of(
             "run", List.of("draft", "pending", "planned", "queued", "running", "paused",
-                    "completed", "failed", "aborted", "cancelled", "skipped"),
+                    "quarantined", "completed", "failed", "aborted", "cancelled", "skipped"),
             "node", List.of("pending", "ready", "running", "completed", "failed", "manual",
                     "skipped", "aborted", "bypassed"),
             "step", List.of("pending", "running", "completed", "failed", "skipped", "paused"),
@@ -57,7 +57,7 @@ public final class StatusVocabularySelfTest {
             "control", List.of());
 
     private static final Map<String, List<String>> EXPECTED_ACTIVE = Map.of(
-            "run", List.of("queued", "running", "paused"),
+            "run", List.of("queued", "running", "paused", "quarantined"),
             "node", List.of("running", "manual"),
             "step", List.of("running", "paused"),
             "experiment", List.of("queued", "running", "paused"),
@@ -120,16 +120,17 @@ public final class StatusVocabularySelfTest {
         Map<String, String> map = StatusVocabulary.runToExperiment();
         List<String> entries = new ArrayList<>();
         map.forEach((from, to) -> entries.add(from + "->" + to));
-        eq("8 条映射、顺序 = 契约顺序（completed 必须映射成 finished）",
-                List.of("completed->finished", "failed->failed", "running->running",
-                        "paused->paused", "aborted->aborted", "cancelled->cancelled",
-                        "skipped->skipped", "queued->queued"),
+        eq("9 条映射、顺序 = 契约顺序（completed/failed/quarantined 固定）",
+                List.of("completed->finished", "failed->failed", "quarantined->failed",
+                        "running->running", "paused->paused", "aborted->aborted",
+                        "cancelled->cancelled", "skipped->skipped", "queued->queued"),
                 entries);
 
         section("6. 生成的 SQL CASE（写入侧唯一事实来源 + 行为等价）");
         String expectedCase = "CASE"
                 + " WHEN r.status = 'completed' THEN 'finished'"
                 + " WHEN r.status = 'failed' THEN 'failed'"
+                + " WHEN r.status = 'quarantined' THEN 'failed'"
                 + " WHEN r.status = 'running' THEN 'running'"
                 + " WHEN r.status = 'paused' THEN 'paused'"
                 + " WHEN r.status = 'aborted' THEN 'aborted'"
@@ -139,7 +140,7 @@ public final class StatusVocabularySelfTest {
                 + " ELSE r.status END";
         String sql = StatusVocabulary.runToExperimentCaseSql();
         eq("CASE 精确文本（顺序 = 映射迭代序）", expectedCase, sql);
-        check("CASE 形状：8 个 WHEN / 单引号成对 / ELSE r.status 兜底",
+        check("CASE 形状：9 个 WHEN / 单引号成对 / ELSE r.status 兜底",
                 countOccurrences(sql, " WHEN ") == map.size()
                         && sql.startsWith("CASE WHEN r.status = ")
                         && sql.endsWith(" ELSE r.status END")
@@ -157,7 +158,7 @@ public final class StatusVocabularySelfTest {
                 mismatch.add(s + ": 改前=" + baseline + ", 生成=" + got);
             }
         }
-        eq("全部 11 个 run 状态 + 未知码求值 = 改前规则", List.of(), mismatch);
+        eq("全部 12 个 run 状态 + 未知码求值 = 改前规则", List.of(), mismatch);
 
         section("7. pauseKinds / holdKinds / holdScopes");
         eq("pauseKinds 3 个、顺序/文案/颜色/auto/hint 固定",
@@ -194,9 +195,10 @@ public final class StatusVocabularySelfTest {
             }
         }
         eq("顶层/嵌套 key 齐全", List.of(), missing);
-        check("transitions 完整 8 条且顺序与映射一致",
+        check("transitions 完整 9 条且顺序与映射一致",
                 json.contains("\"runToExperiment\":{\"completed\":\"finished\","
-                        + "\"failed\":\"failed\",\"running\":\"running\","
+                        + "\"failed\":\"failed\",\"quarantined\":\"failed\","
+                        + "\"running\":\"running\","
                         + "\"paused\":\"paused\",\"aborted\":\"aborted\","
                         + "\"cancelled\":\"cancelled\",\"skipped\":\"skipped\","
                         + "\"queued\":\"queued\"}"));
@@ -332,6 +334,7 @@ public final class StatusVocabularySelfTest {
         return switch (runStatus) {
             case "completed" -> "finished";
             case "failed" -> "failed";
+            case "quarantined" -> "failed";
             case "running" -> "running";
             default -> runStatus;
         };

@@ -124,6 +124,7 @@ public final class StatusVocabulary {
                 new StatusDef("queued", "排队中", "default", false, true),
                 new StatusDef("running", "执行中", "blue", false, true),
                 new StatusDef("paused", "已暂停", "orange", false, true),
+                new StatusDef("quarantined", "隔离待确认", "red", false, true),
                 new StatusDef("completed", "已完成", "green", true, false),
                 new StatusDef("failed", "失败", "red", true, false),
                 new StatusDef("aborted", "已终止", "red", true, false),
@@ -183,6 +184,7 @@ public final class StatusVocabulary {
 
         RUN_TO_EXPERIMENT.put("completed", "finished");
         RUN_TO_EXPERIMENT.put("failed", "failed");
+        RUN_TO_EXPERIMENT.put("quarantined", "failed");
         RUN_TO_EXPERIMENT.put("running", "running");
         RUN_TO_EXPERIMENT.put("paused", "paused");
         RUN_TO_EXPERIMENT.put("aborted", "aborted");

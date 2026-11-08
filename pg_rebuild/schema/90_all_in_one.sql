@@ -3453,3 +3453,9 @@ CREATE INDEX IF NOT EXISTS ix_intervention_record_window
     ON intervention_record (tenant_id, manual_window_id);
 CREATE INDEX IF NOT EXISTS ix_intervention_record_run
     ON intervention_record (tenant_id, run_id);
+-- ============================================================================
+-- P-08：启动恢复隔离 QUARANTINED（2026-11-09）
+-- 物理结果未知的 run 不能当普通 failed/recoverable 放回执行；先隔离待人工确认。
+-- ============================================================================
+
+ALTER TYPE run_status ADD VALUE IF NOT EXISTS 'quarantined';

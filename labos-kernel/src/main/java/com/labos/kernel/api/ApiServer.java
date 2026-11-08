@@ -661,6 +661,20 @@ public final class ApiServer {
             System.out.println("  [启动收尾] 命令账本对账跳过: " + e.getMessage());
         }
 
+        // P-08：物理结果未知的 run 隔离（必须在命令账本对账之后）。
+        try {
+            var quarantined = StartupRecovery.quarantineUncertainRuns(
+                    com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT);
+            System.out.println("  [启动收尾] 物理未知隔离：" + quarantined.size() + " 条"
+                    + (quarantined.isEmpty() ? "（无遗留）" : ""));
+            for (var q : quarantined) {
+                System.out.printf("    run#%-7d %s → quarantined（实验 %s）%n",
+                        q.runId(), q.runNo(), q.experimentId());
+            }
+        } catch (Exception e) {
+            System.out.println("  [启动收尾] 物理未知隔离跳过: " + e.getMessage());
+        }
+
         // S3.2-A：重启 rehydrate 待派发队列。
         // 调度器队列是内存态：进程重启后库里仍 queued 的 experiment_run（async 整单 run、
         // 异步分批已建出来的下一批）没人入队就永远不会执行。启动时一次性装回内存队列；
