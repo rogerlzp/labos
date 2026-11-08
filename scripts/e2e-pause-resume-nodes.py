@@ -456,21 +456,82 @@ def main():
         page.wait_for_timeout(2500)
         F.ok("连线完成并保存")
 
+        # 页面「自动对齐」：点击后按拓扑分层重排（保存后 DI 坐标一起落库）
+        align_btn = page.locator("button.ant-btn", has_text=re.compile(r"自\s*动\s*对\s*齐"))
+        if align_btn.count() > 0:
+            align_btn.first.click()
+            page.wait_for_timeout(1500)
+            page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
+            page.wait_for_timeout(2500)
+            F.ok("页面有「自动对齐」按钮，点击后保存成功")
+        else:
+            F.bad("页面没有「自动对齐」按钮")
+
+        # 保存后刷新一次页面：自动对齐触发的 saveXML 会异步 re-import；
+        # 若紧接着用旧画布模型打开节点设置，后一次节点卡保存会把前一次的
+        # protocolName/参数覆盖掉（实测 VAR/C/D 只剩 1 个 __setVar）。
+        page.reload(wait_until="networkidle")
+        page.wait_for_selector(".djs-container", timeout=25000)
+        page.wait_for_timeout(2000)
+
+        # 结构合法性：一个流程 = 1 开始 + 1 结束 + 全连通 + 网关成对
+        xml_chk = F.api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+        xml_chk = xml_chk if isinstance(xml_chk, str) else F.json.dumps(xml_chk)
+        errs = F.validate_flow(xml_chk)
+        F.ok("流程结构合法（1 开始 / 1 结束 / 全连通 / 网关成对）") if not errs \
+            else F.bad("流程结构不合法", ";".join(errs))
+
+        # 自动对齐后：所有连线从左到右（目标 x > 源 x），且节点互不重叠
+        bnd = F.flow_bounds(xml_chk)
+        edges_now = F.graph_edges(xml_chk)
+        bad_dirs = [s + "->" + t for (s, t) in edges_now.values()
+                    if s in bnd and t in bnd and bnd[t][0] <= bnd[s][0]]
+        F.ok("自动对齐后连线全部从左到右（DI 坐标单调）") if not bad_dirs \
+            else F.bad("对齐后仍有连线不是从左到右", ",".join(bad_dirs[:5]))
+        order = sorted(bnd.items(), key=lambda kv: (kv[1][0], kv[1][1]))
+        overlap = []
+        for i in range(len(order)):
+            for j in range(i + 1, len(order)):
+                ra = order[i][1]
+                rb = order[j][1]
+                if (ra[0] < rb[0] + rb[2] and rb[0] < ra[0] + ra[2]
+                        and ra[1] < rb[1] + rb[3] and rb[1] < ra[1] + ra[3]):
+                    overlap.append(order[i][0] + "/" + order[j][0])
+        F.ok("自动对齐后节点互不重叠") if not overlap \
+            else F.bad("对齐后仍有节点重叠", ",".join(overlap[:3]))
+
         # 变量节点 + 两个设备节点
-        if set_builtin(page, ids["VAR"], "变量节点", "counter", "1"):
+        # ⚠ 每次节点设置保存后必须刷新一次设计器：节点卡的保存基于页面当前的
+        #   BPMN 模型，连续设置多个节点时后面的保存会拿旧模型覆盖前面的设置
+        #   （实测 VAR/C/D 三个 __setVar 最后只剩最后一个）。
+        def reload_designer():
+            page.reload(wait_until="networkidle")
+            page.wait_for_selector(".djs-container", timeout=25000)
+            page.wait_for_timeout(1500)
+
+        def set_builtin_retry(k, var, val):
+            # 刷新后节点卡偶发未就绪（第一次点开时卡还没渲染出来），重试一次。
+            for _ in range(2):
+                if set_builtin(page, ids[k], "变量节点", var, val):
+                    return True
+                page.wait_for_timeout(900)
+            return False
+
+        if set_builtin_retry("VAR", "counter", "1"):
             F.ok("VAR 设为变量节点 counter=1")
         else:
             F.bad("VAR 设变量节点失败")
-        # C/D 也必须是内置节点：它们是普通 task（设备任务），
-        # 库里没有对应设备 → 转 manual 并停下 → 整单卡 paused。
-        for k in ("C", "D"):
-            set_builtin(page, ids[k], "变量节点", f"v_{k}", "1")
-        F.ok("C/D 设为内置节点（避免设备任务转 manual 卡住）")
+        reload_designer()
+        # C/D 不再设内置节点：它们和 DEV/DEV2 一样绑到同一台仿真设备。
+        # 为什么：节点设置卡连续保存第三方节点时会偶发覆盖/失败（C 节点实测
+        # 两次都设不上），把 C/D 也走已验证可靠的「设备绑定」路径更稳；
+        # 并行段仍然是两个设备任务（同一台臂，引擎按设备锁串行）。
+        F.ok("C/D 走设备绑定路径（与 DEV/DEV2 相同）")
         # 节点卡自己的「保存」已经把 protocolName/resource 写进库。
         # 不要再点画布上的「保存」：那次 saveXML 往往还是重新导入前的旧模型，
         # 会把刚绑上的第二个设备节点盖成「没有设备」。
         bind_failed = False
-        for label in ("DEV", "DEV2"):
+        for label in ("DEV", "DEV2", "C", "D"):
             persisted = False
             if bind_device(page, ids[label]) and binding_ok(wf_id, ids[label]):
                 persisted = True
@@ -482,8 +543,25 @@ def main():
                 F.bad(f"{label} 绑定没有落库",
                       "resource/xml 未同时是 %s/Home" % ARM_RESOURCE)
                 bind_failed = True
+            reload_designer()
         if bind_failed:
             bail()
+
+        # 绑定后必须复核图 XML：设备 task 的 protocolName/resource 还在，
+        # 内置节点参数还在——否则运行时会转 manual（对齐/保存顺序会踩这个坑）。
+        xml_pre = F.api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
+        xml_pre = xml_pre if isinstance(xml_pre, str) else F.json.dumps(xml_pre)
+        n_home = xml_pre.count('protocolName="Home"')
+        F.ok(f"绑定后图 XML 里有 4 个 Home 设备任务（{n_home}）") if n_home >= 4 \
+            else F.bad("设备绑定在保存后被覆盖", "protocolName=Home 出现 " + str(n_home) + " 次")
+        n_setvar = xml_pre.count('protocolName="__setVar"')
+        F.ok(f"绑定后图 XML 里仍有 1 个内置变量节点（{n_setvar}）") if n_setvar >= 1 \
+            else F.bad("内置节点设置在保存后被覆盖", "protocolName=__setVar 出现 " + str(n_setvar) + " 次")
+        F.ok("绑定后图 XML 仍有 PAR/PARJ 并行网关") \
+            if xml_pre.count("parallelGateway") >= 2 \
+            else F.bad("并行网关在保存后丢了", str(xml_pre.count("parallelGateway")))
+        errs2 = F.validate_flow(xml_pre)
+        F.ok("绑定后流程仍合法") if not errs2 else F.bad("绑定后流程不合法", ";".join(errs2))
 
         # ---------------- 跑起来（页面入口） ----------------
         F.step("B. 页面「执行」→ DEV 还在跑的时候点页面「暂停」")
