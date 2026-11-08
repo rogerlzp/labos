@@ -1081,6 +1081,9 @@ export default function DesignerPage() {
         if (!alive || !modelerRef.current) return;
         await modelerRef.current.importXML(normalize(xml));
         (modelerRef.current.get('canvas') as CanvasApi).zoom('fit-viewport');
+        if (containerRef.current) {
+          containerRef.current.dataset.modelImported = String(Date.now());
+        }
         setReady(true);
         applyMarkers();
       } catch (e) {
@@ -1454,6 +1457,13 @@ export default function DesignerPage() {
       await api.saveGraph(wfId, collapse(xml));
       message.success(t('designer.toast.saved'));
       setDirty(false);
+      // 保存完成打点：画布容器加 data-graph-saved（毫秒时间戳）。
+      // 浏览器测试/自动化靠它判断“保存真的落库了”，不再靠固定 sleep ——
+      // 设计器保存后会异步 invalidate compile/preflight，画布 DOM 在此期间
+      // 不稳定，固定等待经常踩到“元素暂时查不到”。
+      if (containerRef.current) {
+        containerRef.current.dataset.graphSaved = String(Date.now());
+      }
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['compile', wfId] }),
         qc.invalidateQueries({ queryKey: ['preflight', wfId] }),
