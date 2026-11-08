@@ -56,6 +56,18 @@ public final class CommandLedgerDbSelfTest {
                 CommandOutbox.pendingForLedger(db, TENANT, first.id()) == 0,
                 CommandOutbox.pendingForLedger(db, TENANT, first.id()));
 
+        long outboxId = outboxIdFor(first.id());
+        check("可定位 Outbox 事件", outboxId > 0, outboxId);
+        check("已派发事件可重放（仅外部投递，不重发物理命令）",
+                CommandOutbox.replay(db, TENANT, outboxId), true);
+        check("重放后回到 PENDING",
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()) == 1,
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()));
+        CommandOutbox.dispatchPending(db, TENANT, 20);
+        check("重放后可再次派发（幂等标记）",
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()) == 0,
+                CommandOutbox.pendingForLedger(db, TENANT, first.id()));
+
         CommandLedger.Entry second = begin(key, "cmd-ack");
         check("同一 commandId 不重复落账（只 1 行）",
                 !second.created() && second.id() == first.id(), second);
@@ -152,6 +164,18 @@ public final class CommandLedgerDbSelfTest {
         begin(dup, "cmd-cp-dup");
         CommandLedger.Entry again = begin(dup, "cmd-cp-dup");
         check("崩溃点④重复下发：begin 拒绝新派发", !again.created(), again);
+    }
+
+    private static long outboxIdFor(long ledgerId) throws Exception {
+        try (java.sql.Connection c = db.open();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT id FROM command_outbox WHERE tenant_id = 1 AND ledger_id = ? "
+                             + "ORDER BY id DESC LIMIT 1")) {
+            ps.setLong(1, ledgerId);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        }
     }
 
     private static CommandLedger.Unknown findUnknown(String key) throws Exception {

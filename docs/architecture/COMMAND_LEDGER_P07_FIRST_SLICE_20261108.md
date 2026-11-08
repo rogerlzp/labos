@@ -90,6 +90,14 @@ P-07.2 补：
 
 仍缺：真实外部总线消费者（Kafka/审计中心）、Outbox 重放策略。
 
+## 三·补四、命令 Outbox 重放（2026-11-09）
+
+- GET /api/command-outbox?state=... 查看外部投递事件状态；
+- POST /api/command-outbox/{id}/replay：只把 DELIVERED 事件重置为 PENDING 重新投递；
+  绝不重发物理命令（物理动作仍由 command_ledger 的 fail-closed 守卫）；
+- POST 带审计 command.outbox.replay；
+- CommandLedgerDbSelfTest 29/0（重放→PENDING→再次派发）；停 API 后 test-all 1234/0。
+
 ## 四、当前边界（诚实说明）
 
 | 能力 | 状态 |

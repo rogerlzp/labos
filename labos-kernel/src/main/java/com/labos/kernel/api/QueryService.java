@@ -3980,6 +3980,51 @@ public final class QueryService {
         }
     }
 
+    /** P-07：命令事件 Outbox 列表（可按状态过滤）。 */
+    public String commandOutboxJson(String state, int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, ledger_id, run_id, command_id, device_id, method,
+                       state, attempts, created_at::text, delivered_at::text
+                  FROM command_outbox
+                 WHERE tenant_id = ?
+                """);
+        if (state != null && !state.isBlank()) {
+            sql.append(" AND state = ?");
+        }
+        sql.append(" ORDER BY id DESC LIMIT ?");
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int i = 1;
+            ps.setLong(i++, tenantId);
+            if (state != null && !state.isBlank()) {
+                ps.setString(i++, state);
+            }
+            ps.setInt(i, Math.max(1, Math.min(limit, 500)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    items.add(Jsons.obj("id", rs.getLong("id"),
+                            "ledgerId", rs.getLong("ledger_id"),
+                            "runId", rs.getObject("run_id"),
+                            "commandId", rs.getString("command_id"),
+                            "deviceId", rs.getObject("device_id"),
+                            "method", rs.getString("method"),
+                            "state", rs.getString("state"),
+                            "attempts", rs.getInt("attempts"),
+                            "createdAt", rs.getString("created_at"),
+                            "deliveredAt", rs.getString("delivered_at")));
+                }
+            }
+        }
+        return Jsons.obj("total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /** P-07：重放一条已派发的外部事件（不重发物理命令）。 */
+    public boolean replayCommandOutbox(long id) throws SQLException {
+        return com.labos.kernel.driver.CommandOutbox.replay(db, tenantId, id);
+    }
+
     /** N-10：跨实验 Handoff 处置列表（可按状态过滤）。 */
     public String handoffsJson(String status, int limit) throws SQLException {
         List<String> items = new ArrayList<>();

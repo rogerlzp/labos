@@ -67,6 +67,20 @@ public final class CommandOutbox {
         }
     }
 
+    /** P-07：重放一条已派发事件（仅供外部投递重试，绝不重发物理命令）。 */
+    public static boolean replay(DbConfig db, long tenantId, long outboxId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE command_outbox
+                        SET state = 'PENDING', delivered_at = NULL
+                      WHERE tenant_id = ? AND id = ? AND state = 'DELIVERED'
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, outboxId);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
     /** 某条账本对应的未派发事件数（自测/排障）。 */
     public static long pendingForLedger(DbConfig db, long tenantId, long ledgerId)
             throws SQLException {

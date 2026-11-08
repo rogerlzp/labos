@@ -195,6 +195,29 @@ final class RunApi {
                     "interventionRecordId", recordId));
             return true;
         }
+        if ("/api/command-outbox".equals(path)) {
+            s.requireGet(method, ex);
+            s.send(ex, 200, s.query.commandOutboxJson(
+                    paramStr(ex.getRequestURI().getQuery(), "state"),
+                    intParam(ex, "limit", 100)));
+            return true;
+        }
+        Matcher outboxReplay = COMMAND_OUTBOX_REPLAY.matcher(path);
+        if (outboxReplay.matches()) {
+            if (!"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            long id = Long.parseLong(outboxReplay.group(1));
+            boolean ok = s.query.replayCommandOutbox(id);
+            if (!ok) {
+                s.send(ex, 409, Jsons.obj("ok", false,
+                        "error", "事件不存在或不是 DELIVERED"));
+                return true;
+            }
+            s.audited("command.outbox.replay", "command_outbox", id, null, null, ex);
+            s.send(ex, 200, Jsons.obj("ok", true, "id", id, "state", "PENDING"));
+            return true;
+        }
         if ("/api/transfers".equals(path)) {
             s.requireGet(method, ex);
             s.send(ex, 200, s.query.transferTransactionsJson(
@@ -690,6 +713,9 @@ final class RunApi {
         var sess = s.currentSession(ex);
         return sess == null ? 1L : sess.userId();
     }
+
+    private static final Pattern COMMAND_OUTBOX_REPLAY =
+            Pattern.compile("^/api/command-outbox/(\\d+)/replay$");
 
     private static final Pattern TRANSFER_CONFIRM =
             Pattern.compile("^/api/transfers/(\\d+)/confirm$");
