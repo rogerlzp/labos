@@ -163,7 +163,7 @@ def main():
     print("  ✓ run #%d / experiment_run #%d 已建立" % (rid, erid))
 
     from playwright.sync_api import sync_playwright
-    reason = "4.20页面暂停验证"
+    reason = "4.20 页面暂停验证"
     with sync_playwright() as p:
         b = p.chromium.launch()
         page = b.new_page(viewport={"width": 1500, "height": 1000})
@@ -231,10 +231,10 @@ def main():
             PR.MADE["hold"] = int(hold["id"]) if hold else 0
             F.ok("DB：页面暂停创建了 experiment 作用域 Hold（id=%s）" % (hold or {}).get("id")) \
                 if hold and hold.get("scope") == "experiment" \
-                and reason in (hold.get("reason") or "") \
-                else F.bad("Hold 不对", str(hold))
-            # 备注：页面把 reason 放在 query 里，含空格会被存成 +（服务端未做 form decode），
-            # 这里用无空格 reason，避免把编码问题混进暂停语义断言。
+                and (hold.get("reason") or "") == reason \
+                else F.bad("Hold 不对（reason 含有空格时应原样落库）", str(hold))
+            # 页面把 reason 放在 query 里：服务端 paramStr 现在做 form decode，
+            # 含空格的 reason 必须原样落库（之前的 + 编码 bug 已修）。
             st, meth, owner = PR.device_state()
             F.ok("暂停被接受时设备动作仍在途（device_state=%s/%s）" % (st, meth)) \
                 if st == "running" and owner == str(rid) else \

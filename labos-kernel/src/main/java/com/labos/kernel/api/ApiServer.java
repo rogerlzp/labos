@@ -363,14 +363,29 @@ public final class ApiServer {
         return m.find() ? Long.parseLong(m.group(1)) : 0L;
     }
 
-    /** 从 query string 取字符串参数（不做 URL 解码，方法名够用）。 */
+    /**
+     * 从 query string 取字符串参数，并做 application/x-www-form-urlencoded 解码。
+     *
+     * <p>改动前是原样返回（注释还写着「不做 URL 解码」）：页面暂停原因带空格时，
+     * 前端 URLSearchParams 会编码成 {@code +}，库里就存成 {@code 4.20+页面暂停验证}；
+     * 其它带中文/空格/百分号的参数（实验名、vars 表达式）也会同样失真。
+     * 解码失败（非法 {@code %} 序列）时退回原值，不让参数解析把请求打成 500。
+     */
     static String paramStr(String query, String key) {
         if (query == null) {
             return null;
         }
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile(key + "=([^&]+)").matcher(query);
-        return m.find() ? m.group(1) : null;
+        if (!m.find()) {
+            return null;
+        }
+        String raw = m.group(1);
+        try {
+            return java.net.URLDecoder.decode(raw, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return raw;
+        }
     }
 
     /** 取一个 long 字段（带不带引号都认）。id 类字段用这个，别用 jsonInt（会溢出）。 */
