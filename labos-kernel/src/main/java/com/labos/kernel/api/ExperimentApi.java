@@ -28,8 +28,8 @@ import com.labos.kernel.driver.ShadowRunner;
 import com.labos.kernel.workflow.BatchOrchestrator;
 import com.labos.kernel.workflow.ExperimentExecutor;
 import com.labos.kernel.workflow.ExperimentScheduler;
-import com.labos.kernel.workflow.RunControl;
-import com.labos.kernel.workflow.RuntimeHold;
+import com.labos.kernel.workflow.PauseCommand;
+import com.labos.kernel.workflow.PauseCoordinator;
 import com.labos.kernel.workflow.SchedulerEta;
 import com.labos.kernel.workflow.StatusVocabulary;
 import com.labos.kernel.workflow.WorkflowBuilder;
@@ -165,60 +165,57 @@ final class ExperimentApi {
             long rid = Long.parseLong(runAction.group(1));
             String act = runAction.group(2);
             String qs = ex.getRequestURI().getQuery();
-            RunControl ctl = new RunControl(s.db, TENANT);
-            RunControl.RunInfo ri = ctl.info(rid);
+            String requestId = ex.getRequestHeaders().getFirst("X-Request-Id");
+            // 统一走 PauseCoordinator（S-02 / P-06）：这里只解析 HTTP 参数，
+            // 路由到既有 RunControl + RuntimeHold 的暂停/停止/恢复语义不在此处重写。
+            PauseCoordinator coord = new PauseCoordinator(s.db, TENANT, s.workflows, s.scheduler);
 
             if ("pause".equals(act)) {
-                RuntimeHold.Scope scope = RuntimeHold.Scope.of(paramStr(qs, "scope"));
-                String kindParam = paramStr(qs, "kind");
-                RuntimeHold.Kind kind = kindParam == null
-                        ? RuntimeHold.Kind.MANUAL : RuntimeHold.Kind.of(kindParam);
-                String reason = paramStr(qs, "reason");
+                PauseCoordinator.ExperimentPause r = coord.pauseExperimentRun(
+                        PauseCommand.experiment(rid, PauseCommand.Action.PAUSE,
+                                paramStr(qs, "kind"), paramStr(qs, "reason"), requestId),
+                        paramStr(qs, "scope"));
                 // 回"实际生效"的作用域：未分配岛时 island 会被后端退化成 experiment，
                 // 回请求值会让界面说"作用域：岛"，而库里只有一道实验级扣留。
-                RuntimeHold.Scope effective = ctl.pause(ri, scope, kind,
-                        reason == null ? "人工暂停" : reason, null);
-                s.audited("experiment.pause", "experiment", ri.experimentId(),
-                        "run#" + rid + " scope=" + effective.code(), null, ex);
+                s.audited("experiment.pause", "experiment", r.experimentId(),
+                        "run#" + rid + " scope=" + r.scopeCode(), null, ex);
                 s.send(ex, 200, Jsons.obj(
-                        "runId", rid,
-                        "experimentId", ri.experimentId(),
-                        "status", "paused",
-                        "scope", effective.code(),
-                        "kind", kind.code()));
+                        "runId", r.runId(),
+                        "experimentId", r.experimentId(),
+                        "status", r.status(),
+                        "scope", r.scopeCode(),
+                        "kind", r.kindCode()));
                 return true;
             }
 
             if ("stop".equals(act)) {
-                boolean changed = ctl.stop(ri, null);
-                String st = !changed ? ri.status()
-                        : "running".equals(ri.status()) ? "stopping" : "aborted";
-                s.audited("experiment.stop", "experiment", ri.experimentId(),
+                PauseCoordinator.ExperimentStop r = coord.stopExperimentRun(
+                        PauseCommand.experiment(rid, PauseCommand.Action.STOP,
+                                null, null, requestId));
+                s.audited("experiment.stop", "experiment", r.experimentId(),
                         "run#" + rid, null, ex);
                 s.send(ex, 200, Jsons.obj(
-                        "runId", rid,
-                        "experimentId", ri.experimentId(),
-                        "changed", changed,
-                        "status", st));
+                        "runId", r.runId(),
+                        "experimentId", r.experimentId(),
+                        "changed", r.changed(),
+                        "status", r.status()));
                 return true;
             }
 
             // resume
-            RunControl.ResumeOutcome out = ctl.resume(ri, null, paramStr(qs, "note"));
-            boolean requeued = out.stillHeldReason() == null;
-            if (requeued) {
-                // 重新入队，等调度器从断点续跑（扣留未解除时派发闸门会拦住）
-                s.scheduler.resumeRun(out.experimentId(), rid);
-            }
-            s.audited("experiment.resume", "experiment", out.experimentId(),
+            PauseCoordinator.ExperimentResume r = coord.resumeExperimentRun(
+                    PauseCommand.experiment(rid, PauseCommand.Action.RESUME,
+                            null, null, requestId),
+                    paramStr(qs, "note"));
+            s.audited("experiment.resume", "experiment", r.experimentId(),
                     "run#" + rid, null, ex);
             s.send(ex, 200, Jsons.obj(
-                    "runId", rid,
-                    "experimentId", out.experimentId(),
-                    "clearedHold", out.cleared(),
-                    "requeued", requeued,
-                    "stillHeldReason", out.stillHeldReason(),
-                    "status", requeued ? "queued" : "paused"));
+                    "runId", r.runId(),
+                    "experimentId", r.experimentId(),
+                    "clearedHold", r.clearedHold(),
+                    "requeued", r.requeued(),
+                    "stillHeldReason", r.stillHeldReason(),
+                    "status", r.status()));
             return true;
         }
         Matcher expRuns = EXP_RUNS.matcher(path);

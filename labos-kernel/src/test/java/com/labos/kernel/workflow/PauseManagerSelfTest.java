@@ -34,6 +34,7 @@ public final class PauseManagerSelfTest {
             testUnknownRequiresCorrection(runId);
             testUnknownWithCorrection(runId);
             testReleaseExempt();
+            testReleasePortUsage(runId);
         } finally {
             cleanup(runId);
         }
@@ -122,6 +123,67 @@ public final class PauseManagerSelfTest {
                 + " AND COALESCE(reserved_by_run, 0) <> -1");
         check("PLATE_UNKNOWN 的封锁都带 reserved_by_run=-1", blocked == 0,
                 blocked + " 条不一致");
+    }
+
+    /**
+     * V1-3：暂停释放资源时<b>通道占用必须真的清零</b>。
+     *
+     * <p>改动前 step 3 的两个占位符由 {@code exec} 统一绑成 {@code (tenant_id, runId)}，
+     * 第二个 {@code ?}（{@code device_port.tenant_id}）拿到的是 {@code runId}，
+     * 子查询永远查不到行 —— 这一步实际是空操作，通道计数只涨不落。
+     *
+     * <p>通道占用是租户级信号量（{@code device_port_usage} 无 run_id 列），
+     * 所以先把现场占用快照下来，测完按原值还原，避免污染其它用例/现场。
+     */
+    private static void testReleasePortUsage(long runId) throws Exception {
+        Map<Long, Integer> before = new LinkedHashMap<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT port_id, in_use FROM device_port_usage WHERE tenant_id = ?")) {
+            ps.setLong(1, TENANT);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    before.put(rs.getLong(1), rs.getInt(2));
+                }
+            }
+        }
+        check("通道释放：库里有通道占用行可测", !before.isEmpty(), "无 device_port_usage 行");
+        if (before.isEmpty()) {
+            return;
+        }
+
+        long probePort = before.keySet().iterator().next();
+        // 造一个"占用中"的通道：in_use 拉到 max_capacity（满足 ck_port_usage 约束）
+        exec("UPDATE device_port_usage SET in_use = max_capacity WHERE tenant_id = "
+                + TENANT + " AND port_id = " + probePort);
+        check("通道释放：前置占用已造好", inUseOf(probePort) > 0, inUseOf(probePort));
+
+        new PauseManager(db, TENANT).releaseResources(runId);
+
+        check("通道释放后 in_use = 0（V1-3：原第二个 ? 被绑成 runId 导致空操作）",
+                inUseOf(probePort) == 0, inUseOf(probePort));
+
+        // 还原：只回填测试前就 > 0 的通道，其余保持 0
+        for (Map.Entry<Long, Integer> e : before.entrySet()) {
+            if (e.getValue() > 0) {
+                exec("UPDATE device_port_usage SET in_use = " + e.getValue()
+                        + " WHERE tenant_id = " + TENANT + " AND port_id = " + e.getKey());
+            }
+        }
+    }
+
+    private static int inUseOf(long portId) {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT in_use FROM device_port_usage WHERE tenant_id = ? AND port_id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setLong(2, portId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : -1;
+            }
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     // ---------------------------------------------------------------- 工具

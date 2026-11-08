@@ -23,8 +23,11 @@ import { useI18n } from '../i18n';
 import { CODE_TEXT_EN } from '../i18n/codes';
 import type { Locale } from '../i18n/core';
 
-/** 词表作用域。run=执行单；node=BPMN 节点；step=展开后的步骤；experiment=实验单；batch=批次。 */
-export type StatusScope = 'run' | 'node' | 'step' | 'experiment' | 'batch';
+/**
+ * 词表作用域。run=执行单；node=BPMN 节点；step=展开后的步骤；experiment=实验单；batch=批次；
+ * control=暂停控制过程（`experiment_run.control_state`，与 experiment 生命周期正交，见 ADR-PAUSE-008）。
+ */
+export type StatusScope = 'run' | 'node' | 'step' | 'experiment' | 'batch' | 'control';
 
 /** 一个状态项的原始定义（后端词表数组元素）。 */
 export interface StatusScopeEntry {
@@ -63,7 +66,7 @@ export interface StatusVocabulary {
 }
 
 /** 词表数组的遍历顺序（也是页面上的展示顺序）。 */
-const STATUS_SCOPES: StatusScope[] = ['run', 'node', 'step', 'experiment', 'batch'];
+const STATUS_SCOPES: StatusScope[] = ['run', 'node', 'step', 'experiment', 'batch', 'control'];
 
 /**
  * 内置兜底词表：与后端契约逐项一致。
@@ -158,6 +161,14 @@ export const FALLBACK: StatusVocabulary = {
       { code: 'completed', label: '已完成', color: 'green', terminal: true },
       { code: 'failed', label: '失败', color: 'red', terminal: true },
       { code: 'aborted', label: '已终止', color: 'default', terminal: true },
+    ],
+    // 暂停控制过程（experiment_run.control_state）：与 experiment 生命周期正交。
+    // NONE 表示没有在途控制过程；其余三态都在途，故 active=true，且都不设终态。
+    control: [
+      { code: 'NONE', label: '无', color: 'default' },
+      { code: 'PAUSE_REQUESTED', label: '已请求暂停', color: 'gold', active: true },
+      { code: 'PAUSING', label: '暂停中', color: 'orange', active: true },
+      { code: 'RESUMING', label: '恢复中', color: 'blue', active: true },
     ],
   },
   pauseKinds: FALLBACK_PAUSE_KINDS,

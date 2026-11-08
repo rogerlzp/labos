@@ -12,7 +12,7 @@
  *
  * <p>key 命名：
  * <ul>
- *   <li>{@code status.<scope>.<code>} — scope ∈ run/node/step/experiment/batch</li>
+ *   <li>{@code status.<scope>.<code>} — scope ∈ run/node/step/experiment/batch/control</li>
  *   <li>{@code pause.<code>} / {@code pause.<code>.hint} — 暂停类型与处置提示</li>
  *   <li>{@code hold.<code>} — 现场扣留类型</li>
  *   <li>{@code holdScope.<code>} — 现场扣留作用域</li>
@@ -80,6 +80,13 @@ export const CODE_TEXT_EN: Record<string, string> = {
   'status.batch.completed': 'Completed',
   'status.batch.failed': 'Failed',
   'status.batch.aborted': 'Aborted',
+
+  // ------------------------------------------------------------ control
+  // 暂停控制过程（experiment_run.control_state，与 experiment 生命周期正交）
+  'status.control.NONE': 'None',
+  'status.control.PAUSE_REQUESTED': 'Pause requested',
+  'status.control.PAUSING': 'Pausing',
+  'status.control.RESUMING': 'Resuming',
 
   // ------------------------------------------------------------ 暂停类型
   'pause.paused_fault': 'Device fault',

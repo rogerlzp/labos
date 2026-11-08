@@ -1253,18 +1253,9 @@ public final class BatchOrchestrator {
 
     /** 实验进入 running（开始按批执行）。 */
     private void markExperimentRunning(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment
-                        SET status = 'running',
-                            started_at = COALESCE(started_at, now()),
-                            finished_at = NULL,
-                            updated_at = now()
-                      WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            ps.executeUpdate();
+        // 收口到 ExperimentStateProjector（S-03 单写者）：SQL 与改前逐字一致。
+        try (Connection c = db.open()) {
+            ExperimentStateProjector.markRunningByExperiment(c, tenantId, experimentId);
         }
     }
 
@@ -1278,21 +1269,10 @@ public final class BatchOrchestrator {
         if (aggregate == null) {
             return null;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment
-                        SET status = ?,
-                            started_at = COALESCE(started_at, now()),
-                            finished_at = CASE WHEN ? IN ('finished', 'failed')
-                                               THEN now() ELSE NULL END,
-                            updated_at = now()
-                      WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setString(1, aggregate);
-            ps.setString(2, aggregate);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, experimentId);
-            ps.executeUpdate();
+        // 收口到 ExperimentStateProjector（S-03 单写者）：SQL 与改前逐字一致，
+        // 聚合值仍由 BatchPlanner.aggregateExperimentStatus（D6 纯函数）算出后传入。
+        try (Connection c = db.open()) {
+            ExperimentStateProjector.syncByBatchAggregate(c, tenantId, experimentId, aggregate);
         }
         return aggregate;
     }

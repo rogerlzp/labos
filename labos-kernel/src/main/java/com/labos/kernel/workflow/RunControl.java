@@ -157,21 +157,10 @@ public final class RunControl {
         //   上面只改了 experiment_run，experiment.status 停在 'running' ——
         //   实验列表上显示「执行中」，但详情/暂停队列里已经是「已暂停」，
         //   **两处自相矛盾**（现场会以为还在跑，不会去点继续）。
-        //   状态映射走词表（StatusVocabulary.runToExperimentCaseSql），
-        //   与 ExperimentExecutor.syncExperimentStatus 同一口径，不另写一套。
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "UPDATE experiment e SET status = "
-                             + com.labos.kernel.workflow.StatusVocabulary
-                                     .runToExperimentCaseSql() + ",\n"
-                             + "       updated_at = now()\n"
-                             + "  FROM experiment_run r\n"
-                             + " WHERE e.tenant_id = ? AND r.tenant_id = e.tenant_id\n"
-                             + "   AND e.id = r.experiment_id\n"
-                             + "   AND r.status = 'paused'\n"
-                             + "   AND e.status IN ('queued', 'running')")) {
-            ps.setLong(1, tenantId);
-            ps.executeUpdate();
+        //   状态写入统一走 ExperimentStateProjector（S-03 单写者收口），映射仍由
+        //   StatusVocabulary.runToExperimentCaseSql 生成，与 ExperimentExecutor 同一口径。
+        try (Connection c = db.open()) {
+            ExperimentStateProjector.syncPausedByRuns(c, tenantId);
         }
     }
 
@@ -232,7 +221,9 @@ public final class RunControl {
      */
     public ResumeOutcome resume(RunInfo run, Long by, String note) throws SQLException {
         RuntimeHold holds = new RuntimeHold(db, tenantId);
-        RuntimeHold.Active covered = holds.coveringFor(run.experimentId(), run.islandId());
+        // fail-closed（P-03 / ADR-PAUSE-005）：用 checked 版本，读不到扣留直接抛 SQLException
+        // ⇒ 恢复操作整体失败。绝不能把「读不到」当成「没有扣留」而放行 resume。
+        RuntimeHold.Active covered = holds.coveringForChecked(run.experimentId(), run.islandId());
 
         boolean cleared = false;
         if (covered != null && clearableByExperimentResume(covered.scope())) {
@@ -295,7 +286,7 @@ public final class RunControl {
             ps.executeUpdate();
         }
 
-        RuntimeHold.Active still = holds.coveringFor(run.experimentId(), run.islandId());
+        RuntimeHold.Active still = holds.coveringForChecked(run.experimentId(), run.islandId());
         return new ResumeOutcome(run.experimentId(), cleared,
                 still == null ? null : (still.reason() == null ? "现场扣留" : still.reason()));
     }

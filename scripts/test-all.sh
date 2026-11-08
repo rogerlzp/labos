@@ -71,6 +71,9 @@ PURE=(
   # P2 状态映射收口：五 scope 词表契约 / terminal-active 集合 / run→experiment 映射
   # / syncExperimentStatus 生成的 SQL CASE 逐字钉死 + 与改前行为逐状态等价
   "workflow.StatusVocabularySelfTest"
+  # S-03 单写者不变量（源码扫描）：experiment.status 只允许 ExperimentStateProjector
+  # 写（除它外 0 处 UPDATE experiment … SET status）；投影仍走 StatusVocabulary CASE
+  "workflow.ExperimentStateProjectorSelfTest"
   "expr.ExpressionSelfTest"
   "driver.WaitForGraphSelfTest"
   "alert.AlertSelfTest"
@@ -109,6 +112,9 @@ DB=(
   "workflow.RuntimeHoldDbSelfTest"
   # 实验级暂停/停止/恢复落库（覆盖范围 / 停止双分支 / 断点续跑基线）
   "workflow.RunControlDbSelfTest"
+  # 暂停统一适配层幂等键落库（V1-5/ADR-PAUSE-009：同 requestId 不重复抬 Hold /
+  # 无 requestId 不去重 / 失败可重跑）
+  "workflow.PauseCoordinatorDbSelfTest"
   # S3 分批执行落库：建批幂等/快照、失败批重跑 attempt_no=2、成功批拒重跑、
   # NULL 回归、状态聚合、批边界扣留（用假执行体，不真动设备）
   "workflow.BatchDbSelfTest"

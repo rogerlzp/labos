@@ -30,6 +30,9 @@ import com.labos.kernel.driver.ShadowRunner;
 import com.labos.kernel.workflow.BatchOrchestrator;
 import com.labos.kernel.workflow.ExperimentExecutor;
 import com.labos.kernel.workflow.ExperimentScheduler;
+import com.labos.kernel.workflow.PauseCommand;
+import com.labos.kernel.workflow.PauseCoordinator;
+import com.labos.kernel.workflow.PauseManager;
 import com.labos.kernel.workflow.RunControl;
 import com.labos.kernel.workflow.RuntimeHold;
 import com.labos.kernel.workflow.SchedulerEta;
@@ -145,7 +148,8 @@ final class RunApi {
                     case "ABORT" -> "abort";
                     default -> "continue";
                 };
-                resume = resumeRunJson(w.runId(), "action=" + a, body);
+                resume = resumeRunJson(w.runId(), "action=" + a, body,
+                        ex.getRequestHeaders().getFirst("X-Request-Id"));
             }
             s.audited("manual_window.decide", "manual_window", wid,
                     action + " run=" + w.runId(), null, ex);
@@ -159,11 +163,18 @@ final class RunApi {
         }
         if ("/api/runtime/holds".equals(path)) {
             s.requireGet(method, ex);
-            RuntimeHold holds = new RuntimeHold(s.db, TENANT);
-            List<Map<String, Object>> list = holds.activeJson();
+            RuntimeHold.HoldView view = new RuntimeHold(s.db, TENANT).activeView();
+            boolean unknown = view.state() == RuntimeHold.HoldState.UNKNOWN;
             s.send(ex, 200, Jsons.obj(
-                    "anyActive", !list.isEmpty(),
-                    "holds", new Jsons.Raw(holdsJson(list))));
+                    "anyActive", !view.holds().isEmpty(),
+                    // ADR-PAUSE-010：读不到扣留(=UNKNOWN)会让调度器 fail-closed 阻断新派发，
+                    // 必须让运维在界面上看得见，而不是只落日志。
+                    "unknown", unknown,
+                    "unknownReason", unknown
+                            ? "读取现场扣留失败：调度器已按 fail-closed 阻断新实验派发，"
+                            + "请检查数据库连通性，确认后再放行。"
+                            : null,
+                    "holds", new Jsons.Raw(holdsJson(view.holds()))));
             return true;
         }
         Matcher runsPaused = RUNS_PAUSED.matcher(path);
@@ -193,7 +204,8 @@ final class RunApi {
                 throw new IllegalStateException("method not allowed: " + method);
             }
             s.send(ex, 200, pauseRunJson(Long.parseLong(runPause.group(1)),
-                    ex.getRequestURI().getQuery()));
+                    ex.getRequestURI().getQuery(),
+                    ex.getRequestHeaders().getFirst("X-Request-Id")));
             return true;
         }
         Matcher runResume = RUN_RESUME.matcher(path);
@@ -203,7 +215,8 @@ final class RunApi {
             }
             s.send(ex, 200, resumeRunJson(Long.parseLong(runResume.group(1)),
                     ex.getRequestURI().getQuery(),
-                    new String(s.readBody(ex), StandardCharsets.UTF_8)));
+                    new String(s.readBody(ex), StandardCharsets.UTF_8),
+                    ex.getRequestHeaders().getFirst("X-Request-Id")));
             return true;
         }
         Matcher runAttendance = RUN_ATTENDANCE.matcher(path);
@@ -256,8 +269,8 @@ final class RunApi {
             // 过滤条件：没给 runIds 时按 kind / beforeHours 收敛范围（都为空 = 全部）
             String kind = jsonField(body, "kind");
             Integer before = jsonInt(body, "beforeHours");
-            int n = new com.labos.kernel.workflow.PauseManager(s.db, TENANT)
-                    .dismissBatch(ids, kind, before);
+            int n = new PauseCoordinator(s.db, TENANT, s.workflows, s.scheduler)
+                    .dismissBatchWorkflowRuns(ids, kind, before);
             s.audited("run.dismiss_batch", "run", null,
                     ids.isEmpty()
                             ? "filter kind=" + kind + ",beforeHours=" + before
@@ -271,8 +284,9 @@ final class RunApi {
                 throw new IllegalStateException("method not allowed: " + method);
             }
             long rid = Long.parseLong(runDismiss.group(1));
-            boolean done = com.labos.kernel.workflow.StartupRecovery
-                    .dismiss(s.db, TENANT, rid);
+            boolean done = new PauseCoordinator(s.db, TENANT, s.workflows, s.scheduler)
+                    .dismissWorkflowRun(PauseCommand.workflow(rid, PauseCommand.Action.DISMISS,
+                            null, null, ex.getRequestHeaders().getFirst("X-Request-Id")));
             if (done) {
                 s.audited("run.dismiss", "run", rid, null, null, ex);
             }
@@ -437,18 +451,16 @@ final class RunApi {
     // ================================================================ 暂停/恢复
 
     /** 暂停一个执行。kind 可选 paused_fault / waiting_human / paused_unknown。 */
-    private String pauseRunJson(long runId, String query) {
+    private String pauseRunJson(long runId, String query, String requestId) {
         try {
             Map<String, String> q = queryParams(query);
-            String kindCode = q.getOrDefault("kind", "waiting_human");
-            String reason = q.getOrDefault("reason", "人工暂停");
-            String nodeKey = q.get("nodeKey");
-
-            com.labos.kernel.workflow.PauseManager.Kind kind =
-                    com.labos.kernel.workflow.PauseManager.Kind.of(kindCode);
-            int released = new com.labos.kernel.workflow.PauseManager(s.db, 1L).pause(runId, kind, reason, nodeKey);
+            // 统一走 PauseCoordinator（S-02 / P-06）：这里只解析 HTTP 参数，
+            // 路由与暂停语义不在此处重写。
+            PauseCoordinator.WorkflowPause r = new PauseCoordinator(s.db, TENANT, s.workflows, s.scheduler)
+                    .pauseWorkflowRun(PauseCommand.workflow(runId, PauseCommand.Action.PAUSE,
+                            q.get("kind"), q.get("reason"), requestId), q.get("nodeKey"));
             return Jsons.obj("ok", true, "runId", runId,
-                    "pauseKind", kind.code(), "releasedResources", released);
+                    "pauseKind", r.pauseKindCode(), "releasedResources", r.releasedResources());
         } catch (RuntimeException | SQLException e) {
             return Jsons.obj("ok", false, "error", String.valueOf(e.getMessage()));
         }
@@ -493,23 +505,17 @@ final class RunApi {
      *
      * <p>body 可以带 corrections：<pre>{"corrections":{"PL-001":"ID1183-L2"}}</pre>
      */
-    private String resumeRunJson(long runId, String query, String bodyText) {
+    private String resumeRunJson(long runId, String query, String bodyText, String requestId) {
         try {
             Map<String, String> q = queryParams(query);
-            com.labos.kernel.workflow.PauseManager.ResumeAction action =
-                    com.labos.kernel.workflow.PauseManager.ResumeAction.of(q.get("action"));
-
             Map<String, String> corrections = parseCorrections(bodyText);
 
-            com.labos.kernel.workflow.PauseManager.ResumeResult r = new com.labos.kernel.workflow.PauseManager(s.db, 1L)
-                    .resume(runId, action, corrections, "api");
-
-            // PauseManager 只把 run 置回 queued（它不知道执行体怎么跑）。
-            // 这里接着**真的续跑**：已完成节点跳过，从卡住那一步继续。
+            // 统一走 PauseCoordinator：PauseManager 只把 run 置回 queued，
+            // coordinator 内部接着真的续跑（已完成节点跳过，从卡住那一步继续）。
             // 不接这一步，界面上点"继续"就永远停在 queued（现场换完纸点继续没反应）。
-            if (r.ok() && action == com.labos.kernel.workflow.PauseManager.ResumeAction.CONTINUE) {
-                s.workflows.resumeAsync(runId);
-            }
+            PauseManager.ResumeResult r = new PauseCoordinator(s.db, TENANT, s.workflows, s.scheduler)
+                    .resumeWorkflowRun(PauseCommand.workflow(runId, PauseCommand.Action.RESUME,
+                            q.get("action"), null, requestId), corrections);
             return r.toJsonString();
         } catch (RuntimeException | SQLException e) {
             return Jsons.obj("ok", false, "error", String.valueOf(e.getMessage()));

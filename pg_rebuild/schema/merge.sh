@@ -21,6 +21,9 @@ cat > /tmp/_schema_header.sql <<'HDR'
 --   92/93/94/96/97/98/98b : 增量分片：实验室档案 / M1 并行基础设施 /
 --                    M4 暂停补列 / schema 补齐 / M9.5 实验流程偏序 /
 --                    M9.5 作用域扣留 / M9.5 分批执行 / 有人值守窗口 (26 表 + 2 视图)
+--   99a/99b/99c/99d: 方法超时字典 / 可中断方法 / L-02 控制状态与生命周期分离
+--                    (control_state + status 扩容，见 ADR-PAUSE-008) / V1-5 暂停请求
+--                    幂等键 pause_request（见 ADR-PAUSE-009）
 --
 -- 幂等: 全部 DDL 使用 IF NOT EXISTS，可重复执行
 -- 数据: **本文件不含任何 INSERT**。初始数据在 95_seed_data.sql，按需执行。
@@ -47,6 +50,8 @@ cat /tmp/_schema_header.sql \
     98b_manual_window.sql \
     99a_method_timeout.sql \
     99b_interruptible.sql \
+    99c_pause_control.sql \
+    99d_pause_request.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

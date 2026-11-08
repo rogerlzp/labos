@@ -1,5 +1,7 @@
 package com.labos.kernel.workflow;
 
+import com.labos.kernel.persistence.DbConfig;
+
 import java.util.List;
 
 /**
@@ -53,6 +55,36 @@ public final class RuntimeHoldSelfTest {
         scope("site -> SITE", "site", RuntimeHold.Scope.SITE);
         scope("island -> ISLAND", "island", RuntimeHold.Scope.ISLAND);
         scope("缺失 -> ISLAND（实验暂停默认岛级）", null, RuntimeHold.Scope.ISLAND);
+
+        section("6. 安全闸门三态（fail-closed 判定）");
+        state("CLEAR -> 放行", RuntimeHold.HoldState.CLEAR, RuntimeHold.HoldState.CLEAR, false);
+        state("HELD -> 阻断", RuntimeHold.HoldState.HELD, RuntimeHold.HoldState.HELD, true);
+        state("UNKNOWN -> 阻断", RuntimeHold.HoldState.UNKNOWN, RuntimeHold.HoldState.UNKNOWN, true);
+        coverage("已读到且无扣留 -> CLEAR（hold 为空）",
+                List.of(), 100L, 7L, "CLEAR", false);
+        coverage("站点扣留盖到我 -> HELD（hold 非空）",
+                List.of(site("公共气路故障")), 100L, 7L, "HELD", true);
+        coverage("本岛扣留盖到我 -> HELD",
+                List.of(island(7L, "岛内板位未知")), 100L, 7L, "HELD", true);
+        coverage("别的岛的扣留 -> CLEAR",
+                List.of(island(8L, "邻岛故障")), 100L, 7L, "CLEAR", false);
+        coverage("读库失败构造的三态 -> UNKNOWN（阻断）",
+                null, 100L, 7L, "UNKNOWN", true);
+
+        section("7. 读库失败 ⇒ UNKNOWN（fail-closed：读不到就阻断，不放行）");
+        // 这一节是 V1-1 的核心分界：走的是 RuntimeHold 的真实读库路径（coverageFor /
+        // coverageForWorkflow / siteState），不是纯函数。读库失败必须折成 UNKNOWN 阻断。
+        // 关键分界：旧实现把「读库失败」和「现场无扣留」都当成放行（fail-open）。
+        // 指向一个一定连不上的库：DriverManager 要么抛「No suitable driver」，
+        // 要么连 127.0.0.1:1 被拒 —— 两种情况都是 SQLException。
+        RuntimeHold broken = new RuntimeHold(
+                new DbConfig("jdbc:postgresql://127.0.0.1:1/labdb-probe", "nobody", "nobody"), 1L);
+        state("siteState 读库失败 -> UNKNOWN（阻断派发）", broken.siteState(),
+                RuntimeHold.HoldState.UNKNOWN, true);
+        coverageActual("coverageFor 读库失败 -> UNKNOWN",
+                "UNKNOWN", true, broken.coverageFor(100L, 7L));
+        coverageActual("coverageForWorkflow 读库失败 -> UNKNOWN",
+                "UNKNOWN", true, broken.coverageForWorkflow(12345L));
 
         System.out.printf("%n通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {
@@ -124,6 +156,47 @@ public final class RuntimeHoldSelfTest {
 
     private static void section(String title) {
         System.out.println("\n── " + title + " ──");
+    }
+
+    /** 三态本身：既要状态名对，也要 blocks() 与预期一致（block 才是调用点真正读的）。 */
+    private static void state(String name, RuntimeHold.HoldState got,
+                              RuntimeHold.HoldState expect, boolean expectBlocks) {
+        if (got == expect && got.blocks() == expectBlocks) {
+            passed++;
+            System.out.printf("  ✓ %-34s %s(block=%s)%n", name, got, got.blocks());
+        } else {
+            failed++;
+            System.out.printf("  ✗ %-34s 期望 %s(block=%s)，实际 %s(block=%s)%n",
+                    name, expect, expectBlocks, got, got.blocks());
+        }
+    }
+
+    /**
+     * 覆盖判定的纯函数路径。
+     *
+     * @param active 已读到的生效扣留；{@code null} 表示「读库失败」（应折成 UNKNOWN，不得当成 CLEAR）
+     */
+    private static void coverage(String name, List<RuntimeHold.Active> active,
+                                 long experimentId, long islandId,
+                                 String expectState, boolean expectBlocks) {
+        RuntimeHold.Coverage got = active == null
+                ? RuntimeHold.unknownCoverage()
+                : RuntimeHold.coverageOf(active, experimentId, islandId);
+        coverageActual(name, expectState, expectBlocks, got);
+    }
+
+    /** 覆盖判定的实际结果（模拟 RuntimeHold 读库路径返回的三态，如 coverageFor 读库失败）。 */
+    private static void coverageActual(String name, String expectState,
+                                       boolean expectBlocks, RuntimeHold.Coverage actual) {
+        String gotState = actual.state().name();
+        if (expectState.equals(gotState) && actual.blocks() == expectBlocks) {
+            passed++;
+            System.out.printf("  ✓ %-34s %s(block=%s)%n", name, gotState, actual.blocks());
+        } else {
+            failed++;
+            System.out.printf("  ✗ %-34s 期望 %s(block=%s)，实际 %s(block=%s)%n",
+                    name, expectState, expectBlocks, gotState, actual.blocks());
+        }
     }
 
     private RuntimeHoldSelfTest() {

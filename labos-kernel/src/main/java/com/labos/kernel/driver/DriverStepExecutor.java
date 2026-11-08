@@ -581,7 +581,9 @@ public final class DriverStepExecutor implements StepExecutor {
         // 判据落在"步骤行还在跑"（experiment_run_step.status='running'），
         // **不能**按 experiment_run.status='running' 过滤 —— 实验级暂停会先把它
         // 置 paused，那样就永远查不到（见 RuntimeHold.coveringForWorkflow）。
-        return new RuntimeHold(db, tenantId).coveringForWorkflow(workflowId) != null;
+        // fail-closed（P-03 / ADR-PAUSE-005）：读不到扣留时 coverageForWorkflow 返回
+        // UNKNOWN，blocks() 为 true ⇒ 按「要停」处理，不带着未知现场状态继续跑物理动作。
+        return new RuntimeHold(db, tenantId).coverageForWorkflow(workflowId).blocks();
     }
 
     /** 本次执行所属的流程 id（从 run 行取；查不到返回 0）。 */

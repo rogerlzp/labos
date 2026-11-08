@@ -2685,12 +2685,15 @@ public final class QueryService {
                 }
                 try (PreparedStatement ps = c.prepareStatement("""
                         UPDATE workflow_node
-                           SET params = CASE
-                                   WHEN ?::text IS NULL THEN params
-                                   ELSE jsonb_set(
-                                          jsonb_set(params, '{method_params}', ?::jsonb, true),
-                                          '{builtin}', to_jsonb(?::boolean), true)
-                               END,
+                           SET params = jsonb_set(
+                                   CASE
+                                       WHEN ?::text IS NULL THEN COALESCE(params, '{}'::jsonb)
+                                       ELSE jsonb_set(
+                                              jsonb_set(COALESCE(params, '{}'::jsonb),
+                                                        '{method_params}', ?::jsonb, true),
+                                              '{builtin}', to_jsonb(?::boolean), true)
+                                   END,
+                                   '{protocol_name}', to_jsonb(?::text), true),
                                updated_at = now()
                          WHERE tenant_id = ? AND workflow_id = ? AND node_key = ?
                         """)) {
@@ -2699,9 +2702,12 @@ public final class QueryService {
                     ps.setString(2, methodParamsJson == null || methodParamsJson.isBlank()
                             ? "{}" : methodParamsJson);
                     ps.setBoolean(3, builtin);
-                    ps.setLong(4, tenantId);
-                    ps.setLong(5, workflowId);
-                    ps.setString(6, nodeKey);
+                    // 执行器读的是 params.protocol_name，不是 XML 属性。
+                    // 只改 XML 的话，节点设置保存后跑起来方法名是空的，能力变成 UNKNOWN。
+                    ps.setString(4, m);
+                    ps.setLong(5, tenantId);
+                    ps.setLong(6, workflowId);
+                    ps.setString(7, nodeKey);
                     ps.executeUpdate();
                 }
 

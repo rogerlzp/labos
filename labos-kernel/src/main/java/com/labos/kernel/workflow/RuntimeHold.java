@@ -132,6 +132,37 @@ public final class RuntimeHold {
     public record Active(String scope, Long scopeId, String kind, String reason) {
     }
 
+    /**
+     * 安全闸门三态（ADR-PAUSE-005 / 工作项 P-03）。
+     *
+     * <h3>为什么不是 boolean</h3>
+     * 旧实现把「读库失败」和「现场无扣留」都表示成 {@code false} / {@code null}，
+     * 等于<b>「读不到 Hold ⇒ 继续派发」</b>——这是 fail-open。
+     * 读不到扣留时正确做法是<b>阻断</b>：宁可停机等人工确认，
+     * 也不能让机械臂在未知的现场状态下继续动作（撞机不可逆）。
+     */
+    public enum HoldState {
+        /** 读库成功且无覆盖扣留 —— 放行。 */
+        CLEAR,
+        /** 读库成功且存在覆盖扣留 —— 阻断，等人工解除。 */
+        HELD,
+        /** 读库失败/异常，无法判断 —— <b>按阻断处理</b>（fail-closed）。 */
+        UNKNOWN;
+
+        /** 是否应阻断派发 / 执行 / 恢复：{@code HELD} 与 {@code UNKNOWN} 都阻断。 */
+        public boolean blocks() {
+            return this != CLEAR;
+        }
+    }
+
+    /** 覆盖判定结果：三态 + 命中的扣留（{@code CLEAR} / {@code UNKNOWN} 时 {@code hold} 为 null）。 */
+    public record Coverage(HoldState state, Active hold) {
+        /** 同 {@link HoldState#blocks()}，让调用点读成「要不要阻断」。 */
+        public boolean blocks() {
+            return state.blocks();
+        }
+    }
+
     private final DbConfig db;
     private final long tenantId;
 
@@ -191,6 +222,24 @@ public final class RuntimeHold {
             return Gate.STOPPED;
         }
         return covering == null ? Gate.GO : Gate.HELD;
+    }
+
+    /**
+     * 把「已读到的生效扣留列表」折成三态覆盖结果（纯函数，便于单测）。
+     *
+     * <p>注意：只有<b>成功读到</b>的列表才能进这个函数。读库失败不属于 CLEAR，
+     * 必须由调用方走 {@link #unknownCoverage()} —— 这正是 fail-closed 的分界。
+     */
+    static Coverage coverageOf(List<Active> active, long experimentId, long islandId) {
+        Active a = covering(active, experimentId, islandId);
+        return a == null
+                ? new Coverage(HoldState.CLEAR, null)
+                : new Coverage(HoldState.HELD, a);
+    }
+
+    /** 读库失败时的覆盖结果：UNKNOWN（阻断）。 */
+    static Coverage unknownCoverage() {
+        return new Coverage(HoldState.UNKNOWN, null);
     }
 
     // ---------------------------------------------------------------- 落库
@@ -270,8 +319,14 @@ public final class RuntimeHold {
         }
     }
 
-    /** 当前所有生效扣留。 */
-    public List<Active> active() {
+    /**
+     * 当前所有生效扣留；<b>读库失败时抛 {@link SQLException}</b>，不做 fail-open 兜底。
+     *
+     * <p>所有安全判定都必须走这个方法（或建在它之上的三态方法），
+     * 只有纯展示（{@link #active()}）才允许吞异常；{@link #activeView()} 读库失败返回
+     * {@link HoldState#UNKNOWN}（对外显式可见）。
+     */
+    public List<Active> activeChecked() throws SQLException {
         List<Active> list = new ArrayList<>();
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
@@ -289,10 +344,53 @@ public final class RuntimeHold {
                             rs.getString("kind"), rs.getString("reason")));
                 }
             }
-        } catch (SQLException e) {
-            System.err.println("[扣留] 读取生效扣留失败：" + e.getMessage());
         }
         return list;
+    }
+
+    /** 当前所有生效扣留（展示用；读库失败返回空列表，安全判定请用 {@link #activeChecked()}）。 */
+    public List<Active> active() {
+        try {
+            return activeChecked();
+        } catch (SQLException e) {
+            System.err.println("[扣留] 读取生效扣留失败：" + e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    /**
+     * 现场是否有任何生效扣留 —— 三态（调度器全局闸门用）。
+     *
+     * <p>读库失败返回 {@link HoldState#UNKNOWN}，调用方<b>必须</b>按「阻断」处理。
+     */
+    public HoldState siteState() {
+        try {
+            return activeChecked().isEmpty() ? HoldState.CLEAR : HoldState.HELD;
+        } catch (SQLException e) {
+            System.err.println("[扣留] 现场闸门读取失败（按 UNKNOWN 阻断派发）：" + e.getMessage());
+            return HoldState.UNKNOWN;
+        }
+    }
+
+    /**
+     * 覆盖这条实验的扣留 —— 三态（读库失败 ⇒ {@link HoldState#UNKNOWN}）。
+     */
+    public Coverage coverageFor(long experimentId, long islandId) {
+        try {
+            return coverageOf(activeChecked(), experimentId, islandId);
+        } catch (SQLException e) {
+            System.err.println("[扣留] 覆盖判定读取失败（按 UNKNOWN 阻断）：" + e.getMessage());
+            return unknownCoverage();
+        }
+    }
+
+    /**
+     * 覆盖判定（读库失败抛 {@link SQLException}）—— 供必须 fail-closed 的写路径
+     * （如 RunControl.resume）使用：让「读不到扣留」直接变成一次失败操作，
+     * 而不是被当成「没扣留」放行。
+     */
+    public Active coveringForChecked(long experimentId, long islandId) throws SQLException {
+        return covering(activeChecked(), experimentId, islandId);
     }
 
     /** 覆盖这条实验的扣留（没有则 null）。 */
@@ -352,13 +450,72 @@ public final class RuntimeHold {
         return null;
     }
 
-    /** 现场是否处于任何扣留中（调度器用：扣留期不派发新实验）。 */
+    /**
+     * 覆盖「正在执行这条流程的实验」的扣留 —— 三态（读库失败 ⇒ {@link HoldState#UNKNOWN}）。
+     *
+     * <p>执行器（节点边界检查 / 可中断方法 abort 轮询）用它判「该不该停」。
+     * 读不到扣留时返回 {@code UNKNOWN}，调用方按「停」处理，不得继续跑物理动作。
+     */
+    public Coverage coverageForWorkflow(long workflowId) {
+        if (workflowId <= 0) {
+            return new Coverage(HoldState.CLEAR, null);
+        }
+        try {
+            List<Active> active = activeChecked();
+            if (active.isEmpty()) {
+                return new Coverage(HoldState.CLEAR, null);   // 现场没有任何扣留 —— 常见快路径，不必反查
+            }
+            String sql = """
+                    SELECT er.experiment_id, COALESCE(e.island_id, 0) AS island_id
+                      FROM experiment_run_step s
+                      JOIN experiment_run er
+                        ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
+                      JOIN experiment e
+                        ON e.tenant_id = er.tenant_id AND e.id = er.experiment_id
+                     WHERE s.tenant_id = ? AND s.workflow_id = ? AND s.status = 'running'
+                    """;
+            try (Connection c = db.open();
+                 PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, workflowId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Active a = covering(active, rs.getLong(1), rs.getLong(2));
+                        if (a != null) {
+                            return new Coverage(HoldState.HELD, a);
+                        }
+                    }
+                }
+            }
+            return new Coverage(HoldState.CLEAR, null);
+        } catch (SQLException e) {
+            System.err.println("[扣留] 反查流程归属读取失败（按 UNKNOWN 阻断执行）：" + e.getMessage());
+            return unknownCoverage();
+        }
+    }
+
+    /**
+     * 现场是否处于任何扣留中。
+     *
+     * <p><b>注意</b>：这是展示/兼容用的两值版本，读库失败会返回 {@code false}。
+     * 安全判定（派发闸门）必须用三态的 {@link #siteState()}，否则又会退化为 fail-open。
+     */
     public boolean anyActive() {
         return !active().isEmpty();
     }
 
-    /** 生效扣留的展示结构（API 用）。 */
-    public List<Map<String, Object>> activeJson() {
+    /** 生效扣留的展示结构 + 三态（读库失败 = {@link HoldState#UNKNOWN}）。 */
+    public record HoldView(HoldState state, List<Map<String, Object>> holds) {
+    }
+
+    /**
+     * 生效扣留的展示结构 + 三态（API 用）。
+     *
+     * <p>与 {@link #active()} 的区别：读库失败时返回 {@link HoldState#UNKNOWN}，而不是
+     * 静默当成「无扣留」。{@code UNKNOWN} 会让调度器 fail-closed 阻断新派发，若接口只回
+     * 空列表，运维看到的「实验不派发」将没有任何界面线索（ADR-PAUSE-010）。
+     */
+    public HoldView activeView() {
         List<Map<String, Object>> list = new ArrayList<>();
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
@@ -384,9 +541,10 @@ public final class RuntimeHold {
                     list.add(m);
                 }
             }
+            return new HoldView(list.isEmpty() ? HoldState.CLEAR : HoldState.HELD, list);
         } catch (SQLException e) {
-            // 返回空
+            System.err.println("[扣留] 读取生效扣留失败（按 UNKNOWN 暴露给运维）：" + e.getMessage());
+            return new HoldView(HoldState.UNKNOWN, list);
         }
-        return list;
     }
 }

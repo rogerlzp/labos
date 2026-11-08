@@ -247,6 +247,15 @@ public final class GraphRunner {
     private boolean paused;
 
     /**
+     * 因暂停而没开始执行的那个节点。
+     *
+     * <p>任务节点：检查点在 {@code executeNode} 之前，记的是<b>待执行</b>节点。
+     * 内置等待节点：{@code __sleep}/{@code __wait} 在等待途中被打断，记的是这个节点自己
+     * （这一步没做完，恢复时要重跑）。
+     */
+    private String pausedAtKey;
+
+    /**
      * 节点状态回调：{@code (nodeKey, status)} —— 任务/内置节点「开始执行」与「执行结束」各调一次。
      *
      * <p>为什么需要：{@code run_node}（level=0）过去是**执行前一律建 running 外壳**，
@@ -274,6 +283,11 @@ public final class GraphRunner {
     /** 本次 run 是否因暂停而停（true 时 run 应保持 paused，不要被收尾覆盖）。 */
     public boolean runPaused() {
         return paused;
+    }
+
+    /** 暂停停在哪个节点；没暂停时为 null。 */
+    public String pausedAtKey() {
+        return pausedAtKey;
     }
 
     /**
@@ -437,6 +451,7 @@ public final class GraphRunner {
                         // `__sleep` / `__wait` 在等待途中收到暂停请求：这一步**没做完**，
                         // 所以不留 completed 记录、也不往下走 —— 恢复时它不在 skipKeys 里，
                         // 会被重新执行（和在任务节点边界暂停是同一套语义）。
+                        pausedAtKey = key;
                         log.accept("[暂停] 内置节点 " + key + " 等待期间收到暂停请求，停在边界");
                         break;
                     }
@@ -462,6 +477,7 @@ public final class GraphRunner {
                     ready.offer(key);
                     done.remove(key);
                     paused = true;
+                    pausedAtKey = key;
                     log.accept("[暂停] 收到暂停请求，在节点边界停下，待执行节点：" + key);
                     break;
                 }

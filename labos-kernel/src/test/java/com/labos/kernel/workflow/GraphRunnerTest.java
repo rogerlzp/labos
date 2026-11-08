@@ -241,16 +241,21 @@ public final class GraphRunnerTest {
             // 第 1 次检查放行，第 2 次起报告"要暂停"
             java.util.concurrent.atomic.AtomicInteger calls =
                     new java.util.concurrent.atomic.AtomicInteger();
+            java.util.List<String> logs = new java.util.ArrayList<>();
             GraphRunner runner = new GraphRunner(sm,
                     Map.of("TRANSFER", List.of(101L, 102L)),
                     Map.of("Transfer", "TRANSFER"),
-                    s -> { })
+                    logs::add)
                     .withPauseChecker(() -> calls.incrementAndGet() > 1);
 
             RunProgress p = runner.run(g, new SimulatedBus());
 
             eq("只执行了 1 个节点", 1, p.all().size());
             eq("标记为已暂停", true, runner.runPaused());
+            eq("停在第二个任务节点 B（A 已执行，B 还没开始）", "B", runner.pausedAtKey());
+            eq("日志点名待执行节点",
+                    "[暂停] 收到暂停请求，在节点边界停下，待执行节点：B",
+                    logs.stream().filter(s -> s.startsWith("[暂停]")).findFirst().orElse(""));
             eq("没有被判失败", 0, p.count(NodeStatus.MANUAL) + (p.aborted() ? 1 : 0));
         });
     }

@@ -49,7 +49,7 @@ CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 # 不是要被替换的占位符 —— 所以排除 $ 前缀。
 PLACEHOLDER = re.compile(r"(?<!\$)\{(\w+)\}")
 
-SCOPES = ["run", "node", "step", "experiment", "batch"]
+SCOPES = ["run", "node", "step", "experiment", "batch", "control"]
 
 
 # ---------------------------------------------------------------- 语言包载入
@@ -148,6 +148,7 @@ def parse_backend_vocab() -> dict:
     scope_const = {
         "SCOPE_RUN": "run", "SCOPE_NODE": "node", "SCOPE_STEP": "step",
         "SCOPE_EXPERIMENT": "experiment", "SCOPE_BATCH": "batch",
+        "SCOPE_CONTROL": "control",
     }
     for const, scope in scope_const.items():
         # 形如：SCOPES.put(SCOPE_RUN, List.of( new StatusDef(...) ... )));

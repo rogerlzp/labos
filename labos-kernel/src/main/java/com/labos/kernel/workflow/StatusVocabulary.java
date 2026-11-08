@@ -31,7 +31,7 @@ import java.util.Map;
 public final class StatusVocabulary {
 
     /** 契约版本：词表内容变更时同步递增，前端可据此判缓存是否过期。 */
-    public static final String VERSION = "2026-11-03";
+    public static final String VERSION = "2026-11-07";
 
     /** scope 名（与前端、数据库列取值一致）。 */
     public static final String SCOPE_RUN = "run";
@@ -39,6 +39,16 @@ public final class StatusVocabulary {
     public static final String SCOPE_STEP = "step";
     public static final String SCOPE_EXPERIMENT = "experiment";
     public static final String SCOPE_BATCH = "batch";
+
+    /**
+     * {@code experiment_run.control_state} 的控制状态 scope（L-02 / ADR-PAUSE-008）。
+     *
+     * <p>与 {@code status}（生命周期）正交：{@code status} 回答"实验处在哪个阶段"，
+     * 本 scope 回答"暂停控制过程走到哪了"。取值 {@code NONE / PAUSE_REQUESTED /
+     * PAUSING / RESUMING}；列默认 {@code NONE}。L-02 <b>只授予表达能力不改行为</b>：
+     * 值由 PR-S04-B 接线，当前落库仍恒为默认 {@code NONE}。
+     */
+    public static final String SCOPE_CONTROL = "control";
 
     /**
      * 一个状态的定义。
@@ -162,6 +172,15 @@ public final class StatusVocabulary {
                 new StatusDef("failed", "失败", "red", true, false),
                 new StatusDef("aborted", "已终止", "default", true, false)));
 
+        // control：暂停控制过程（与 status 生命周期正交，见 SCOPE_CONTROL）。
+        // NONE=无控制过程；其余三态都是"在途"，故 active=true（看板可据此提示"控制中"）。
+        // 控制过程不设终态：走完自然回到 NONE，因此 terminal 一律 false。
+        SCOPES.put(SCOPE_CONTROL, List.of(
+                new StatusDef("NONE", "无", "default", false, false),
+                new StatusDef("PAUSE_REQUESTED", "已请求暂停", "gold", false, true),
+                new StatusDef("PAUSING", "暂停中", "orange", false, true),
+                new StatusDef("RESUMING", "恢复中", "blue", false, true)));
+
         RUN_TO_EXPERIMENT.put("completed", "finished");
         RUN_TO_EXPERIMENT.put("failed", "failed");
         RUN_TO_EXPERIMENT.put("running", "running");
@@ -177,7 +196,7 @@ public final class StatusVocabulary {
 
     // ------------------------------------------------------------ 查询
 
-    /** 全部 scope 名，按契约顺序（run/node/step/experiment/batch）。 */
+    /** 全部 scope 名，按契约顺序（run/node/step/experiment/batch/control）。 */
     public static List<String> scopes() {
         return List.copyOf(SCOPES.keySet());
     }

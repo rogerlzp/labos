@@ -160,13 +160,15 @@ public final class PauseManager {
                   AND run_node_id IN (SELECT id FROM run_node WHERE run_id = ?)
                 """, runId);
 
-        // 3) 通道占用：暂停说明不再处于搬运中，可以放
-        released += exec("""
+        // 3) 通道占用：暂停说明不再处于搬运中，可以放。
+        //    device_port_usage 是 (tenant_id, port_id) 上的租户级信号量，没有 run_id 列，
+        //    所以这里按租户维度清零（与 RuntimeHold「扣留不释放资源」是相反口径，见类头）。
+        released += execTenant("""
                 UPDATE device_port_usage u SET in_use = 0, updated_at = now()
                 WHERE u.tenant_id = ?
                   AND u.port_id IN (SELECT id FROM device_port WHERE tenant_id = ?)
                   AND u.in_use > 0
-                """, runId);
+                """);
 
         // 4) 设备锁：只放"状态不是 running"的（running 说明正在用）
         released += exec("""
@@ -178,11 +180,30 @@ public final class PauseManager {
         return released;
     }
 
+    /**
+     * 通用：{@code ?1 = tenant_id}，{@code ?2 = runId}。
+     */
     private int exec(String sql, long runId) {
+        return exec(sql, tenantId, runId);
+    }
+
+    /**
+     * 通道释放专用：SQL 里<b>两个</b> {@code ?} 都是 {@code tenant_id}。
+     *
+     * <p>2026-11-07 修（V1-3）：改动前这条 SQL 也走 {@link #exec(String, long)}，
+     * 第二个 {@code ?}（{@code device_port.tenant_id}）被绑成了 {@code runId} ——
+     * 子查询必然查不到行，等于「释放通道」这一步从来没生效，通道计数只涨不落，
+     * 会被现场误读成「通道一直被占着」。
+     */
+    private int execTenant(String sql) {
+        return exec(sql, tenantId, tenantId);
+    }
+
+    private int exec(String sql, long p1, long p2) {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
+            ps.setLong(1, p1);
+            ps.setLong(2, p2);
             return ps.executeUpdate();
         } catch (SQLException e) {
             System.err.println("[暂停] 释放资源失败：" + e.getMessage());

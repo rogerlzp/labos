@@ -711,11 +711,21 @@ export default function ExperimentsPage() {
                 实际是整片现场被闸住 —— 必须让值班员看见闸门本身。 */}
             <Card size="small" style={{ marginTop: 12 }}
               title={<Space><span>{t('experiments.holds.title')}</span>
-                <Tag color={(holdsQuery.data?.holds.length ?? 0) > 0 ? 'red' : 'default'}>
-                  {holdsQuery.data?.holds.length ?? 0}
-                </Tag></Space>}
+                {holdsQuery.data?.unknown ? (
+                  <Tag color="orange">{t('experiments.holds.unknownTag')}</Tag>
+                ) : (
+                  <Tag color={(holdsQuery.data?.holds.length ?? 0) > 0 ? 'red' : 'default'}>
+                    {holdsQuery.data?.holds.length ?? 0}
+                  </Tag>
+                )}</Space>}
               extra={<Button size="small" onClick={() => holdsQuery.refetch()}>{t('experiments.action.refresh')}</Button>}>
-              {(holdsQuery.data?.holds.length ?? 0) === 0 ? (
+              {holdsQuery.data?.unknown ? (
+                /* 读扣留失败(=UNKNOWN)：调度器 fail-closed 已阻断新派发，
+                   若这里显示"没有生效的扣留"就是误导 —— 必须显式提示（ADR-PAUSE-010）。 */
+                <Alert type="warning" showIcon
+                  message={t('experiments.holds.unknownTitle')}
+                  description={holdsQuery.data?.unknownReason ?? t('experiments.holds.unknownDesc')} />
+              ) : (holdsQuery.data?.holds.length ?? 0) === 0 ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   {t('experiments.holds.none')}
                 </Typography.Text>

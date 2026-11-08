@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  *
  * <p>锁住 P2「状态映射收口」的四条不能退的语义：
  * <ol>
- *   <li><b>契约形状</b>：五个 scope 的 code 顺序/数量固定（顺序即展示序）；
+ *   <li><b>契约形状</b>：六个 scope 的 code 顺序/数量固定（顺序即展示序）；
  *       每个状态的 label 非空、color 在允许令牌集合里、terminal/active 集合明确；</li>
  *   <li><b>映射唯一</b>：run→experiment 的 8 条映射（completed→finished 等）被钉死，
  *       前端消费的 transitions 与后端写库的 CASE 来自同一张表；</li>
@@ -43,7 +43,8 @@ public final class StatusVocabularySelfTest {
                     "completed", "finished", "failed", "aborted", "cancelled", "skipped",
                     "deleted"),
             "batch", List.of("pending", "queued", "running", "paused", "completed", "failed",
-                    "aborted"));
+                    "aborted"),
+            "control", List.of("NONE", "PAUSE_REQUESTED", "PAUSING", "RESUMING"));
 
     private static final Map<String, List<String>> EXPECTED_TERMINAL = Map.of(
             "run", List.of("completed", "failed", "aborted", "cancelled", "skipped"),
@@ -51,14 +52,18 @@ public final class StatusVocabularySelfTest {
             "step", List.of("completed", "failed", "skipped"),
             "experiment", List.of("completed", "finished", "failed", "aborted", "cancelled",
                     "skipped", "deleted"),
-            "batch", List.of("completed", "failed", "aborted"));
+            "batch", List.of("completed", "failed", "aborted"),
+            // 控制过程走完自然回 NONE，不设终态
+            "control", List.of());
 
     private static final Map<String, List<String>> EXPECTED_ACTIVE = Map.of(
             "run", List.of("queued", "running", "paused"),
             "node", List.of("running", "manual"),
             "step", List.of("running", "paused"),
             "experiment", List.of("queued", "running", "paused"),
-            "batch", List.of("queued", "running", "paused"));
+            "batch", List.of("queued", "running", "paused"),
+            // NONE 不在途，其余三个控制态都是"控制过程在途"
+            "control", List.of("PAUSE_REQUESTED", "PAUSING", "RESUMING"));
 
     private static final Pattern CASE_WHEN = Pattern.compile(
             "WHEN r\\.status = '([^']*)' THEN '([^']*)'");
@@ -68,12 +73,12 @@ public final class StatusVocabularySelfTest {
 
     public static void main(String[] args) {
         section("1. 契约版本与 scope 集");
-        eq("version = 2026-11-03", "2026-11-03", StatusVocabulary.VERSION);
-        eq("scope 顺序", List.of("run", "node", "step", "experiment", "batch"),
+        eq("version = 2026-11-07", "2026-11-07", StatusVocabulary.VERSION);
+        eq("scope 顺序", List.of("run", "node", "step", "experiment", "batch", "control"),
                 StatusVocabulary.scopes());
 
         section("2. 各 scope 的 code 顺序与数量（顺序即展示序）");
-        eq("五个 scope 的状态码/顺序/数量", EXPECTED_CODES, codesByScope());
+        eq("六个 scope 的状态码/顺序/数量", EXPECTED_CODES, codesByScope());
 
         section("3. 文案/颜色/terminal/active 合法性");
         check("label 全部非空且 color 在允许令牌集合内", labelsAndColorsOk());
@@ -169,11 +174,19 @@ public final class StatusVocabularySelfTest {
         eq("holdScopes 3 个", List.of("site|全场", "island|岛", "experiment|本实验"),
                 holdScopeFacts());
 
+        section("7b. control scope（control_state，L-02 / ADR-PAUSE-008）");
+        eq("control 4 个、顺序/文案/颜色/terminal/active 固定（NONE 非在途，其余在途、均非终态）",
+                List.of("NONE|无|default|false|false",
+                        "PAUSE_REQUESTED|已请求暂停|gold|false|true",
+                        "PAUSING|暂停中|orange|false|true",
+                        "RESUMING|恢复中|blue|false|true"),
+                controlFacts());
+
         section("8. 契约 JSON（ApiServer 原样 send）");
         String json = StatusVocabulary.toJson();
         List<String> missing = new ArrayList<>();
         for (String key : List.of("\"version\"", "\"scopes\"", "\"run\"", "\"node\"",
-                "\"step\"", "\"experiment\"", "\"batch\"", "\"pauseKinds\"",
+                "\"step\"", "\"experiment\"", "\"batch\"", "\"control\"", "\"pauseKinds\"",
                 "\"holdKinds\"", "\"holdScopes\"", "\"transitions\"",
                 "\"runToExperiment\"")) {
             if (!json.contains(key)) {
@@ -194,6 +207,11 @@ public final class StatusVocabularySelfTest {
                         + "\"color\":\"processing\",\"terminal\":false,\"active\":true}")
                         && json.contains("{\"code\":\"skipped\",\"label\":\"已跳过\","
                         + "\"color\":\"gold\",\"terminal\":true,\"active\":false}"));
+        check("control scope 元素形状（NONE 非在途 / PAUSE_REQUESTED 在途）",
+                json.contains("{\"code\":\"NONE\",\"label\":\"无\","
+                        + "\"color\":\"default\",\"terminal\":false,\"active\":false}")
+                        && json.contains("{\"code\":\"PAUSE_REQUESTED\",\"label\":\"已请求暂停\","
+                        + "\"color\":\"gold\",\"terminal\":false,\"active\":true}"));
         check("pauseKinds/holdKinds/holdScopes 字段形状",
                 json.contains("{\"code\":\"paused_fault\",\"label\":\"设备故障\","
                         + "\"color\":\"red\",\"auto\":true,\"hint\":\"")
@@ -283,6 +301,15 @@ public final class StatusVocabularySelfTest {
         List<String> out = new ArrayList<>();
         for (StatusVocabulary.HoldScopeDef s : StatusVocabulary.holdScopes()) {
             out.add(s.code() + "|" + s.label());
+        }
+        return out;
+    }
+
+    private static List<String> controlFacts() {
+        List<String> out = new ArrayList<>();
+        for (StatusVocabulary.StatusDef d : StatusVocabulary.statuses(StatusVocabulary.SCOPE_CONTROL)) {
+            out.add(d.code() + "|" + d.label() + "|" + d.color() + "|" + d.terminal()
+                    + "|" + d.active());
         }
         return out;
     }

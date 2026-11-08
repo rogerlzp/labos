@@ -497,22 +497,8 @@ public final class ExperimentExecutor {
                 ps.executeUpdate();
             }
             // 实验本身也标 running（否则列表上一直是"待执行"）。
-            //
-            // 不写 run_id：experiment.run_id 有外键指向 run(id)，而这里的 r.id 是
-            // experiment_run.id —— 两张表各自独立自增，不是一个 id 空间。写进去既语义错
-            // （experiment_run 不等于 experiment 的执行实例 run），又会在 experiment_run.id
-            // 撞到 run 表的 id 空洞时抛 23503（线上实测 run id 1..197 连续、198 起有洞）。
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE experiment e
-                       SET status='running',
-                           started_at=COALESCE(e.started_at, now()), updated_at=now()
-                      FROM experiment_run r
-                     WHERE e.tenant_id=? AND r.id=? AND e.id=r.experiment_id
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.executeUpdate();
-            }
+            // 收口到 ExperimentStateProjector（S-03 单写者）：SQL 与改前逐字一致。
+            ExperimentStateProjector.markRunningByRun(c, tenantId, runId);
         }
     }
 
@@ -641,23 +627,10 @@ public final class ExperimentExecutor {
      */
     static void syncExperimentStatus(Connection c, long tenantId, long runId)
             throws SQLException {
-        // 状态映射**不在这里手写**（BUG-13/14 这类"词表不一致"的根）：由
-        // StatusVocabulary.runToExperimentCaseSql() 从唯一映射表生成。生成的 CASE 比
-        // 改前的三行 CASE 多出 paused/aborted/… 等恒等 WHEN，其 THEN 值与 ELSE r.status
-        // 相同 —— 对任意 run.status 结果完全一致（StatusVocabularySelfTest 逐状态钉死）。
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE experiment e SET status = "
-                        + StatusVocabulary.runToExperimentCaseSql() + ",\n"
-                        + "       started_at = COALESCE(e.started_at, r.started_at),\n"
-                        + "       finished_at = r.finished_at,\n"
-                        + "       updated_at = now()\n"
-                        + "  FROM experiment_run r\n"
-                        + " WHERE e.tenant_id = ? AND r.tenant_id = e.tenant_id\n"
-                        + "   AND r.id = ? AND e.id = r.experiment_id")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.executeUpdate();
-        }
+        // 收口到 ExperimentStateProjector（S-03 单写者）：SQL 与改前逐字一致，
+        // run→experiment 映射仍由 StatusVocabulary.runToExperimentCaseSql 生成
+        // （改前的三行 CASE 与它多出的恒等 WHEN 对任意 run.status 结果完全一致）。
+        ExperimentStateProjector.syncByRun(c, tenantId, runId);
     }
 
     /**

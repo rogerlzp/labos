@@ -320,11 +320,11 @@ public final class ExperimentScheduler {
      *
      * <h3>口径</h3>
      * <ol>
-     *   <li><b>任何扣留生效时一律不动</b>（{@link RuntimeHold#anyActive()}）：现场暂停是安全事件，
+     *   <li><b>任何扣留生效时一律不动</b>（{@link RuntimeHold#siteState()}）：现场暂停是安全事件，
      *       只有全部解除才允许继续；</li>
      *   <li>候选来自 {@link BatchOrchestrator#pausedBatchCandidates()}：
      *       paused 且<b>无任何尝试</b>、实验不在终态；</li>
-     *   <li>逐条再用 {@link RuntimeHold#coveringFor(long, long)} 判覆盖（site/island/experiment
+     *   <li>逐条再用 {@link RuntimeHold#coverageFor(long, long)} 判覆盖（site/island/experiment
      *       三级作用域）—— 防御"扫描后、建单前"恰好有人新扣留的窗口；</li>
      *   <li>调 {@link BatchOrchestrator#createNextBatchAttempt(long, int, Map)}（afterBatchNo=batchNo-1）
      *       建下一批；只有 CREATED 才 {@link #resumeRun} 入队 + 打日志；</li>
@@ -339,7 +339,7 @@ public final class ExperimentScheduler {
     int autoContinueHeldBatches() {
         int created = 0;
         try {
-            if (new RuntimeHold(db, tenantId).anyActive()) {
+            if (new RuntimeHold(db, tenantId).siteState().blocks()) {
                 return 0;
             }
             List<BatchOrchestrator.PausedBatch> candidates =
@@ -353,7 +353,7 @@ public final class ExperimentScheduler {
                 try {
                     long islandId = islandOf(cand.experimentId());
                     if (new RuntimeHold(db, tenantId)
-                            .coveringFor(cand.experimentId(), islandId) != null) {
+                            .coverageFor(cand.experimentId(), islandId).blocks()) {
                         continue;
                     }
                     BatchOrchestrator.NextBatchAttempt next =
@@ -387,14 +387,13 @@ public final class ExperimentScheduler {
             snapshot = new ArrayList<>(queue);
         }
 
-        // 现场闸门：有任何生效扣留（site/island/experiment）时不派发新实验。
-        // 现场暂停是安全事件，此时不能再启动新动作；解除后下一轮 tick 自动继续。
-        try {
-            if (new RuntimeHold(db, tenantId).anyActive()) {
-                return;
-            }
-        } catch (Exception ignore) {
-            // 读不到扣留状态不阻断调度（宁可少停，不能把调度卡死）
+        // 现场闸门（fail-closed，P-03 / ADR-PAUSE-005）：有任何生效扣留
+        // （site/island/experiment）时不派发新实验；**读不到扣留状态时同样不派发**。
+        // 旧实现在读库异常时 catch 后放行（"宁可少停，不能把调度卡死"），
+        // 那等于「读不到 Hold ⇒ 继续派发」，现场状态未知时让机械臂继续动作，是安全漏洞。
+        // 现在改为 UNKNOWN ⇒ 阻断，等库恢复 / 人工确认后下一轮 tick 自动继续。
+        if (new RuntimeHold(db, tenantId).siteState().blocks()) {
+            return;
         }
 
         // 单一来源：直接复用 QUEUE_ORDER，避免页面位次（同样用 QUEUE_ORDER）与
