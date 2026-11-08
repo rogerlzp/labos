@@ -1302,13 +1302,108 @@ export default function DesignerPage() {
       groups.get(key)!.els.push(mv.el);
     });
     groups.forEach((g) => { modeling.moveElements(g.els, { x: g.dx, y: g.dy }); });
-    // 形状移动后让 bpmn-js 按新锚点重新布线（否则连线还挂着旧 waypoint，
-    // 看起来会“从节点背后穿过去”，用户 2026-11-08 指出画面不合理）。
-    const layoutConn = (modeling as unknown as {
-      layoutConnection?: (conn: unknown) => void;
-    }).layoutConnection;
-    if (layoutConn) {
-      flowEls.forEach((conn) => layoutConn.call(modeling, conn));
+    // ---- 显式锚点：一个节点的入点/出点分开，多个出点各占一个点 ----
+    // bpmn-js 默认所有出边都从同一个中点出去（分叉网关两条线完全重合），
+    // 入边也挤同一个点，小图还能看、网关一多就全是叠线（用户 2026-11-08 指出）。
+    // 规则：
+    //   · 分支在节点上方 → 从**上边**出去；下方 → 从**下边**出去；
+    //   · 同高度的目标 → 从**右边**出去，多条按 y 均匀分布（每条一个点）；
+    //   · 入边对称：上方来从上边进、下方来从下边进、同高度从左边进，多条均匀分布；
+    //   · 节点自身的入点和出点天然分在不同边，不会重合。
+    type NodeBox = { cx: number; cy: number; w: number; h: number };
+    const box = new Map<string, NodeBox>();
+    target.forEach((p, id) => {
+      const sz = size.get(id) ?? { w: 100, h: 80 };
+      box.set(id, { cx: p.x, cy: p.y, w: sz.w, h: sz.h });
+    });
+    type EdgeRef = { conn: unknown; src: string; tgt: string };
+    const edgeRefs: EdgeRef[] = [];
+    flowEls.forEach((c) => {
+      const bo = (c as {
+        businessObject?: { sourceRef?: { id?: string }; targetRef?: { id?: string } };
+      }).businessObject;
+      const src = bo?.sourceRef?.id;
+      const tgt = bo?.targetRef?.id;
+      if (src && tgt && box.has(src) && box.has(tgt)) edgeRefs.push({ conn: c, src, tgt });
+    });
+    const outRefs = new Map<string, EdgeRef[]>();
+    const inRefs = new Map<string, EdgeRef[]>();
+    box.forEach((_b, id) => { outRefs.set(id, []); inRefs.set(id, []); });
+    edgeRefs.forEach((e) => { outRefs.get(e.src)!.push(e); inRefs.get(e.tgt)!.push(e); });
+
+    type Side = 'left' | 'right';
+    type Anchor = { x: number; y: number; side: Side };
+    const outAnchor = new Map<unknown, Anchor>();
+    const inAnchor = new Map<unknown, Anchor>();
+
+    // 出点：统一从右边出去；多条出边在右边缘按目标 y 均匀分布（每条一个点）。
+    // 入点：统一从左边进来；多条入边在左边缘按来源 y 均匀分布。
+    // 节点自身的入点/出点分在左右两边，天然不会重合。
+    outRefs.forEach((list, id) => {
+      const b = box.get(id)!;
+      const groupR: EdgeRef[] = [];
+      const groupL: EdgeRef[] = [];
+      list.forEach((e) => {
+        (box.get(e.tgt)!.cx >= b.cx ? groupR : groupL).push(e);
+      });
+      groupR.sort((a, c) => box.get(a.tgt)!.cy - box.get(c.tgt)!.cy);
+      groupL.sort((a, c) => box.get(a.tgt)!.cy - box.get(c.tgt)!.cy);
+      const groups: { side: Side; arr: EdgeRef[] }[] = [
+        { side: 'right', arr: groupR },
+        { side: 'left', arr: groupL },
+      ];
+      groups.forEach(({ side, arr }) => {
+        const n = arr.length;
+        arr.forEach((e, i) => {
+          const y = b.cy - b.h / 2 + (b.h * (i + 1)) / (n + 1);
+          const x = side === 'right' ? b.cx + b.w / 2 : b.cx - b.w / 2;
+          outAnchor.set(e.conn, { x, y, side });
+        });
+      });
+    });
+    inRefs.forEach((list, id) => {
+      const b = box.get(id)!;
+      const groupL: EdgeRef[] = [];
+      const groupR: EdgeRef[] = [];
+      list.forEach((e) => {
+        (box.get(e.src)!.cx <= b.cx ? groupL : groupR).push(e);
+      });
+      groupL.sort((a, c) => box.get(a.src)!.cy - box.get(c.src)!.cy);
+      groupR.sort((a, c) => box.get(a.src)!.cy - box.get(c.src)!.cy);
+      const groups: { side: Side; arr: EdgeRef[] }[] = [
+        { side: 'left', arr: groupL },
+        { side: 'right', arr: groupR },
+      ];
+      groups.forEach(({ side, arr }) => {
+        const n = arr.length;
+        arr.forEach((e, i) => {
+          const y = b.cy - b.h / 2 + (b.h * (i + 1)) / (n + 1);
+          const x = side === 'left' ? b.cx - b.w / 2 : b.cx + b.w / 2;
+          inAnchor.set(e.conn, { x, y, side });
+        });
+      });
+    });
+
+    const round = (v: number) => Math.round(v);
+    const routePoints = (a: Anchor, z: Anchor): { x: number; y: number }[] => {
+      const pts: { x: number; y: number }[] = [{ x: round(a.x), y: round(a.y) }];
+      if (Math.abs(a.y - z.y) > 2) {
+        const midX = (a.x + z.x) / 2;
+        pts.push({ x: round(midX), y: round(a.y) });
+        pts.push({ x: round(midX), y: round(z.y) });
+      }
+      pts.push({ x: round(z.x), y: round(z.y) });
+      return pts;
+    };
+    const updateWp = (modeling as unknown as {
+      updateWaypoints?: (conn: unknown, wps: { x: number; y: number }[]) => void;
+    }).updateWaypoints;
+    if (updateWp) {
+      edgeRefs.forEach((e) => {
+        const a = outAnchor.get(e.conn);
+        const z = inAnchor.get(e.conn);
+        if (a && z) updateWp.call(modeling, e.conn, routePoints(a, z));
+      });
     }
     const cv = m.get('canvas') as unknown as {
       zoom: (v: string) => void;
