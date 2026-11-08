@@ -349,6 +349,38 @@ final class OpsApi {
             s.send(ex, 200, s.query.occurrences(intParam(ex, "limit", 20)));
             return true;
         }
+        // ---- P-07.2：UNKNOWN 设备命令的人工核对处置 ----
+        if ("/api/commands/unknown".equals(path)) {
+            s.requireGet(method, ex);
+            s.send(ex, 200, s.query.commandsUnknownJson(100));
+            return true;
+        }
+        Matcher commandResolve = COMMAND_RESOLVE.matcher(path);
+        if (commandResolve.matches()) {
+            if (!"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            long lid = Long.parseLong(commandResolve.group(1));
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            String action = jsonField(body, "action");
+            boolean done = "confirm-done".equals(action);
+            if (!done && !"confirm-failed".equals(action)) {
+                s.send(ex, 400, err("action 必须是 confirm-done / confirm-failed"));
+                return true;
+            }
+            String note = jsonField(body, "note");
+            int n = s.query.resolveCommandLedger(lid, done, note, null);
+            if (n == 0) {
+                s.send(ex, 409, err("不是 UNKNOWN 状态或不存在"));
+                return true;
+            }
+            s.audited("command.ledger.resolve", "command_ledger", lid, action,
+                    Jsons.obj("state", done ? "ACKED" : "FAILED", "note", note), ex);
+            s.send(ex, 200, Jsons.obj("resolved", n, "id", lid,
+                    "state", done ? "ACKED" : "FAILED"));
+            return true;
+        }
+
         if ("/api/demo/run".equals(path) && "POST".equals(method)) {
             s.send(ex, 200, demoRun());
             return true;
@@ -545,6 +577,9 @@ final class OpsApi {
     private static final Pattern POLICY_ONE = Pattern.compile("^/api/policies/(\\d+)$");
 
     private static final Pattern USER_ONE = Pattern.compile("^/api/users/(\\d+)$");
+
+    private static final Pattern COMMAND_RESOLVE =
+            Pattern.compile("^/api/commands/(\\d+)/resolve$");
 
     // ------------------------------------------------------------ 私有常量
 

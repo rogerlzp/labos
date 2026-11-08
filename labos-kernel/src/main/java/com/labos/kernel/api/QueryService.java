@@ -3737,6 +3737,26 @@ public final class QueryService {
         }
     }
 
+    /** UNKNOWN 命令账本列表（P-07.2 人工核对入口）。 */
+    public String commandsUnknownJson(int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        for (com.labos.kernel.driver.CommandLedger.Unknown u
+                : com.labos.kernel.driver.CommandLedger.listUnknown(db, tenantId, limit)) {
+            items.add(Jsons.obj("id", u.id(), "key", u.key(), "runId", u.runId(),
+                    "nodeId", u.nodeId(), "method", u.method(), "commandId", u.commandId(),
+                    "traceId", u.traceId(), "errorCode", u.errorCode(),
+                    "errorMessage", u.errorMessage(), "createdAt", u.createdAt()));
+        }
+        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)),
+                "count", items.size());
+    }
+
+    /** 处置 UNKNOWN 命令账本（confirm-done / confirm-failed）。 */
+    public int resolveCommandLedger(long id, boolean done, String note, Long by)
+            throws SQLException {
+        return com.labos.kernel.driver.CommandLedger.resolve(db, tenantId, id, done, note, by);
+    }
+
     /** 某能力下可选的设备方法（{@code device_method}）。 */
     public String methodsJson(String capability) throws SQLException {
         List<String> items = new ArrayList<>();

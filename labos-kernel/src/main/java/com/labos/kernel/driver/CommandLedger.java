@@ -130,6 +130,72 @@ public final class CommandLedger {
         }
     }
 
+    /** UNKNOWN 账本行（人工核对处置入口用）。 */
+    public record Unknown(long id, String key, long runId, Long nodeId, String method,
+                          String commandId, String traceId, String errorCode,
+                          String errorMessage, String createdAt) {
+    }
+
+    /** 列出当前 UNKNOWN（物理结果未知）的命令，最多 limit 条。 */
+    public static java.util.List<Unknown> listUnknown(DbConfig db, long tenantId, int limit)
+            throws SQLException {
+        int cap = Math.max(1, Math.min(limit, 200));
+        java.util.List<Unknown> rows = new java.util.ArrayList<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT id, idempotency_key, run_id, node_id, method, command_id,
+                            trace_id, error_code, error_message, created_at::text
+                       FROM command_ledger
+                      WHERE tenant_id = ? AND state = 'UNKNOWN'
+                      ORDER BY id
+                      LIMIT ?
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setInt(2, cap);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long node = rs.getLong("node_id");
+                    rows.add(new Unknown(rs.getLong("id"), rs.getString("idempotency_key"),
+                            rs.getLong("run_id"), rs.wasNull() ? null : node,
+                            rs.getString("method"), rs.getString("command_id"),
+                            rs.getString("trace_id"), rs.getString("error_code"),
+                            rs.getString("error_message"), rs.getString("created_at")));
+                }
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * 人工核对处置：把 UNKNOWN 行落成 ACKED（confirm-done）或 FAILED（confirm-failed）。
+     *
+     * <p>只允许从 UNKNOWN 转移（并发二次处置返回 0）；带 resolved_at/resolved_by 留痕。
+     *
+     * @return 受影响行数（0 = 不存在或已不是 UNKNOWN）
+     */
+    public static int resolve(DbConfig db, long tenantId, long ledgerId, boolean done,
+                              String note, Long by) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE command_ledger
+                        SET state = ?, resolved_at = now(), resolved_by = ?,
+                            error_code = COALESCE(error_code, 'EC-99-0006'),
+                            error_message = ?, updated_at = now()
+                      WHERE tenant_id = ? AND id = ? AND state = 'UNKNOWN'
+                     """)) {
+            ps.setString(1, done ? "ACKED" : "FAILED");
+            if (by == null) {
+                ps.setNull(2, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(2, by);
+            }
+            ps.setString(3, trunc(note == null ? "人工核对确认" : note, 250));
+            ps.setLong(4, tenantId);
+            ps.setLong(5, ledgerId);
+            return ps.executeUpdate();
+        }
+    }
+
     /** 查询某条 run 的命令账本状态（自测/排障）。 */
     public static String stateOf(DbConfig db, long tenantId, String key) throws SQLException {
         try (Connection c = db.open();

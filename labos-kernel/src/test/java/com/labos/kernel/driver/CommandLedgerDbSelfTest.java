@@ -78,6 +78,26 @@ public final class CommandLedgerDbSelfTest {
         check("陈旧行状态 UNKNOWN", "UNKNOWN".equals(CommandLedger.stateOf(db, TENANT, staleKey)),
                 CommandLedger.stateOf(db, TENANT, staleKey));
 
+        // P-07.2：UNKNOWN 人工处置入口
+        boolean listed = false;
+        for (CommandLedger.Unknown u : CommandLedger.listUnknown(db, TENANT, 200)) {
+            if (staleKey.equals(u.key())) {
+                listed = true;
+                check("UNKNOWN 列表能看到待核对命令", true, true);
+                int resolved = CommandLedger.resolve(db, TENANT, u.id(), false,
+                        "人工确认：设备未动作", 1L);
+                check("UNKNOWN 可按人工确认落 FAILED", resolved == 1, resolved);
+                check("处置后状态 FAILED",
+                        "FAILED".equals(CommandLedger.stateOf(db, TENANT, staleKey)),
+                        CommandLedger.stateOf(db, TENANT, staleKey));
+                check("处置留痕 resolved_at 非空", resolvedAtOf(staleKey) != null,
+                        resolvedAtOf(staleKey));
+                check("重复处置被拒（只允许从 UNKNOWN 转移）",
+                        CommandLedger.resolve(db, TENANT, u.id(), true, "再次处置", 1L) == 0, 0);
+            }
+        }
+        check("UNKNOWN 列表能看到待核对命令", listed, listed);
+
         String freshKey = PREFIX + "fresh";
         begin(freshKey, "cmd-fresh");
         int markedAgain = CommandLedger.reconcileOnStartup(db, TENANT, CommandLedger.STALE_MINUTES);
@@ -100,6 +120,19 @@ public final class CommandLedgerDbSelfTest {
             ps.setString(2, key);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    private static String resolvedAtOf(String key) throws Exception {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT resolved_at::text FROM command_ledger "
+                             + "WHERE tenant_id = ? AND idempotency_key = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
             }
         }
     }

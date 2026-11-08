@@ -41,6 +41,30 @@
 - 测试：`driver.CommandLedgerDbSelfTest` 10/0（同 key 一行 / 终态重放拒绝 / 陈旧标 UNKNOWN /
   非陈旧不误标），已注册进 `scripts/test-all.sh` DB 组。
 
+## 三·补、P-07.2：UNKNOWN 人工核对处置（2026-11-08）
+
+启动对账把「派发中断」标 UNKNOWN 后，原来没有产品出口 —— 值班员只能查库。
+P-07.2 补：
+
+- command_ledger 增加 resolved_at / resolved_by（99h 迁移）；
+- `GET /api/commands/unknown`：列出当前 UNKNOWN（id/key/run/node/method/command/error/时间）；
+- `POST /api/commands/{id}/resolve`：body {action: confirm-done | confirm-failed, note}，
+  只允许 UNKNOWN → ACKED/FAILED，带 resolved_at/resolved_by 留痕；二次处置返回 409；
+- 审计 action=command.ledger.resolve；
+- 自测：CommandLedgerDbSelfTest 16/0（列表可见 / 处置落 FAILED / 留痕 / 二次处置被拒）；
+  手工验证：GET 列表 → POST confirm-failed → 列表清空、DB 状态 FAILED；
+
+### 四个崩溃点覆盖情况
+
+| 崩溃点 | 证据/处置 |
+|---|---|
+| 派发前 | begin 落 DISPATCH_STARTED 后才下发；无账本不下发（EC-99-0002） |
+| 派发中 | 重启对账把陈旧 DISPATCH_STARTED 标 UNKNOWN |
+| 回包后/结果落库前 | 同上标 UNKNOWN，人工核对后 resolve 成 ACKED/FAILED |
+| 重复下发 | 同 commandId begin 拒绝（EC-99-0006）；UNKNOWN 处置幂等 |
+
+尚未做：真实故障注入矩阵（kill -9 时序）、逻辑步骤级稳定 key、命令 Outbox 传输层。
+
 ## 四、当前边界（诚实说明）
 
 | 能力 | 状态 |
