@@ -77,6 +77,7 @@ MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → 
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=58   # 2026-11-06：暂停点与恢复起点（25）。2026-11-08 重写为真边界暂停（25 → 32）；同日改为页面全链路（页面执行/暂停/继续 + DOM/API/DB）并接入自动对齐/图合法性/绑定复核断言（32 → 45 → 55）：
 MIN_PAGEGW=28   # 2026-11-08：4.19 页面全链路（异或+并行成对网关 + 4 设备任务 + 页面暂停/继续；27 → 28）
+MIN_EXPPAUSEPAGE=20   # 2026-11-08：4.20 实验级暂停/恢复·页面版（执行历史行内暂停→弹窗作用域/原因→边界暂停→恢复→续跑；20 条）
                 # 图增加第二个设备任务 DEV2；在 DEV 的 device_state=running 且 current_run_id=本次 run 时发暂停；
                 # 内核把 pause_node_key 写成 DEV2（探针不预写），DEV completed、DEV2 pending；
                 # 恢复后 DEV 不重跑、DEV2 才下发 1 条指令。网关和 __setVar 仍不是暂停点。
@@ -568,8 +569,29 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "页面全链路 $SUM_PASS / 0（10 节点/11 边 → 4 设备任务 → 页面执行/暂停/继续 → DOM/API/DB completed）"
     fi
   fi
+  # 4.20 实验级暂停/恢复 · 页面版（e2e-experiment-pause-page.py）
+  # 4.17 是 API 级契约验证；4.20 走页面真实动作：执行历史行内「暂停」→ 弹窗选作用域/填原因 →
+  # 确认 → 设备收敛 + 节点边界暂停 → 行内「恢复」→ Hold 释放 → 续跑完成；断言 DOM/API/DB 三段。
+  note "4.20 实验级暂停/恢复 · 页面（e2e-experiment-pause-page.py）"
+  EXPOUT=$(python3 scripts/e2e-experiment-pause-page.py --api "$LABOS_API" --base "$E2E_BASE" 2>&1)
+  if is_skip "$EXPOUT"; then
+    skip "实验级暂停页面（没给库连接）"
+  else
+    parse_summary "$EXPOUT"
+    if [[ "$SUM_MISSING" == "1" ]]; then
+      fail "实验级暂停页面脚本没有输出汇总行（脚本可能异常退出）"
+      printf '%s\n' "$EXPOUT" | tail -15
+    elif [[ "$SUM_FAIL" != "0" ]]; then
+      fail "实验级暂停页面有失败（$SUM_FAIL 条）"
+      printf '%s\n' "$EXPOUT" | grep '✗' | head -8
+    elif (( SUM_PASS < MIN_EXPPAUSEPAGE )); then
+      fail "实验级暂停页面断言 $SUM_PASS < 阈值 ${MIN_EXPPAUSEPAGE}"
+    else
+      pass "实验级暂停页面 $SUM_PASS / 0（行内暂停→弹窗作用域/原因→边界暂停→行内恢复→续跑完成；DOM/API/DB）"
+    fi
+  fi
 else
-  skip "前端 e2e / 4.5-4.19 页面轨（没给 --e2e）"
+  skip "前端 e2e / 4.5-4.20 页面轨（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果
