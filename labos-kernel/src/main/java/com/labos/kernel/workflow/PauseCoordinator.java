@@ -524,40 +524,68 @@ public final class PauseCoordinator {
      */
     public ExperimentResume resumeExperimentRun(PauseCommand cmd, String note)
             throws SQLException {
-        Claim claim = claim(cmd);
-        if (!claim.firstTime()) {
-            Map<String, String> d = claim.detail();
-            return new ExperimentResume(cmd.targetId(), longOf(d.get("experimentId"), 0L),
-                    boolOf(d.get("cleared"), false), boolOf(d.get("requeued"), false),
-                    d.get("stillHeldReason"), d.getOrDefault("status", "queued"));
-        }
-        try {
-            RunControl ctl = new RunControl(db, tenantId);
-            RunControl.RunInfo ri = ctl.info(cmd.targetId());
-            RunControl.ResumeOutcome out = ctl.resume(ri, null, note);
-            boolean requeued = out.stillHeldReason() == null;
-            if (requeued) {
-                // 扣留已解除：重新入队，等调度器从断点续跑（闸门未清时会拦住）
-                scheduler.resumeRun(out.experimentId(), cmd.targetId());
+        // P-06 V2 第二切片：解 Hold / run 回 queued / 实验表同步 / 作废旧 paused
+        // workflow run / 幂等键结果 / pause_event 同事务；批次聚合与重新入队在 commit 后做。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                Claim claim = claimTx(c, cmd);
+                if (!claim.firstTime()) {
+                    c.rollback();
+                    Map<String, String> d = claim.detail();
+                    return new ExperimentResume(cmd.targetId(),
+                            longOf(d.get("experimentId"), 0L),
+                            boolOf(d.get("cleared"), false),
+                            boolOf(d.get("requeued"), false),
+                            d.get("stillHeldReason"),
+                            d.getOrDefault("status", "queued"));
+                }
+                RunControl ctl = new RunControl(db, tenantId);
+                RunControl.RunInfo ri = ctl.info(cmd.targetId());
+                RunControl.ResumeTx rt = ctl.resumeTx(c, ri, null, note);
+                RunControl.ResumeOutcome out = rt.outcome();
+                boolean requeued = out.stillHeldReason() == null;
+                // 现场（site）扣留仍在 => 恢复未真正生效，如实标记 UNKNOWN 而不是假装完成。
+                cmd.result(requeued ? PauseCommand.ResultState.COMPLETED
+                        : PauseCommand.ResultState.UNKNOWN);
+                Map<String, String> detail = new LinkedHashMap<>();
+                detail.put("experimentId", String.valueOf(out.experimentId()));
+                detail.put("cleared", String.valueOf(out.cleared()));
+                detail.put("requeued", String.valueOf(requeued));
+                detail.put("status", requeued ? "queued" : "paused");
+                if (out.stillHeldReason() != null) {
+                    detail.put("stillHeldReason", out.stillHeldReason());
+                }
+                settleTx(c, cmd, detail);
+                insertPauseEvent(c, cmd, "RESUME_REQUESTED", "experiment",
+                        out.experimentId());
+                c.commit();
+
+                // commit 后动作：批次聚合（可能跨 run）；重新入队（内存队列，启动 rehydrate 兜底）。
+                if (rt.batchRun()) {
+                    try {
+                        new BatchOrchestrator(db, tenantId)
+                                .onRunStatusChanged(cmd.targetId());
+                    } catch (Exception e) {
+                        System.err.println("[暂停] 恢复后批次聚合失败（由启动 rehydrate 兜底）："
+                                + e.getMessage());
+                    }
+                }
+                if (requeued && scheduler != null) {
+                    try {
+                        scheduler.resumeRun(out.experimentId(), cmd.targetId());
+                    } catch (Exception e) {
+                        System.err.println("[暂停] 恢复后重新入队失败（由启动 rehydrate 兜底）："
+                                + e.getMessage());
+                    }
+                }
+                return new ExperimentResume(cmd.targetId(), out.experimentId(),
+                        out.cleared(), requeued, out.stillHeldReason(),
+                        requeued ? "queued" : "paused");
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
             }
-            // 现场（site）扣留仍在 => 恢复未真正生效，如实标记 UNKNOWN 而不是假装完成。
-            cmd.result(requeued ? PauseCommand.ResultState.COMPLETED
-                    : PauseCommand.ResultState.UNKNOWN);
-            Map<String, String> detail = new LinkedHashMap<>();
-            detail.put("experimentId", String.valueOf(out.experimentId()));
-            detail.put("cleared", String.valueOf(out.cleared()));
-            detail.put("requeued", String.valueOf(requeued));
-            detail.put("status", requeued ? "queued" : "paused");
-            if (out.stillHeldReason() != null) {
-                detail.put("stillHeldReason", out.stillHeldReason());
-            }
-            settle(cmd, detail);
-            return new ExperimentResume(cmd.targetId(), out.experimentId(),
-                    out.cleared(), requeued, out.stillHeldReason(),
-                    requeued ? "queued" : "paused");
-        } catch (SQLException | RuntimeException e) {
-            abandon(cmd);
-            throw e;
         }
     }
 }

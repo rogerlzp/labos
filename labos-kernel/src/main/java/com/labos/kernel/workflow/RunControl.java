@@ -337,4 +337,67 @@ public final class RunControl {
         return new ResumeOutcome(run.experimentId(), cleared,
                 still == null ? null : (still.reason() == null ? "现场扣留" : still.reason()));
     }
+
+    /** 事务化恢复结果：outcome + 是否批次 run（批次回调需在 commit 后做）。 */
+    public record ResumeTx(ResumeOutcome outcome, boolean batchRun) {
+    }
+
+    /**
+     * P-06 V2：恢复写集在调用方事务内完成（解 Hold / run 回 queued / 实验表同步 /
+     * 作废旧 paused workflow run / 事务内复查扣留）。
+     *
+     * <p>批次聚合（{@code BatchOrchestrator.onRunStatusChanged}）与调度器重新入队
+     * 必须在 commit 之后做（前者可能跨多条 run 聚合、后者是内存队列）；调用方拿
+     * {@link ResumeTx#batchRun()} 决定是否补批次回调。commit 后崩溃由启动 rehydrate
+     * 兜底 queued run，不会丢。
+     */
+    public ResumeTx resumeTx(Connection c, RunInfo run, Long by, String note)
+            throws SQLException {
+        RuntimeHold holds = new RuntimeHold(db, tenantId);
+        RuntimeHold.Active covered = holds.coveringForExperimentCheckedTx(c, run.experimentId());
+        boolean cleared = false;
+        if (covered != null && clearableByExperimentResume(covered.scope())) {
+            cleared = holds.clearTx(c, RuntimeHold.Scope.of(covered.scope()),
+                    covered.scopeId(), by, note);
+        }
+
+        try (PreparedStatement ps = c.prepareStatement("""
+                UPDATE experiment_run
+                   SET status = 'queued', stop_requested = false, error = NULL,
+                       pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
+                       control_state = 'NONE', finished_at = NULL
+                 WHERE tenant_id = ? AND id = ?
+                   AND status IN ('paused', 'failed', 'queued')
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, run.runId());
+            ps.executeUpdate();
+        }
+        BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
+        boolean batchRun = orchestrator.batchRunIdFor(run.runId()) != null;
+        if (!batchRun) {
+            ExperimentExecutor.syncExperimentStatus(c, tenantId, run.runId());
+        }
+
+        // ★ 作废「被本次暂停中断、即将被整段重跑」的流程级 run（M-01 契约）。
+        try (PreparedStatement ps = c.prepareStatement("""
+                UPDATE run r
+                   SET status = 'aborted', actual_end = now()
+                  FROM experiment_run_step s
+                 WHERE r.tenant_id = ? AND s.tenant_id = r.tenant_id
+                   AND s.run_id = r.id
+                   AND s.experiment_run_id = ?
+                   AND s.status = 'paused'
+                   AND r.status = 'paused'
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, run.runId());
+            ps.executeUpdate();
+        }
+
+        RuntimeHold.Active still = holds.coveringForExperimentCheckedTx(c, run.experimentId());
+        ResumeOutcome outcome = new ResumeOutcome(run.experimentId(), cleared,
+                still == null ? null : (still.reason() == null ? "现场扣留" : still.reason()));
+        return new ResumeTx(outcome, batchRun);
+    }
 }

@@ -40,6 +40,7 @@ public final class PauseCoordinatorDbSelfTest {
 
     private static final String REQ_PAUSE = "SELF-PC-PAUSE-1";
     private static final String REQ_RETRY = "SELF-PC-RETRY-1";
+    private static final String REQ_RESUME = "SELF-PC-RESUME-1";
 
     public static void main(String[] args) throws Exception {
         db = DbConfig.fromEnv();
@@ -50,6 +51,7 @@ public final class PauseCoordinatorDbSelfTest {
             idempotentPauseReplays(coord);
             noRequestIdSkipsDedup(coord);
             failedAttemptCanBeRetried(coord);
+            resumeTransactionWritesEvent(coord);
         } finally {
             cleanup();
         }
@@ -151,6 +153,34 @@ public final class PauseCoordinatorDbSelfTest {
         new RuntimeHold(db, TENANT).clear(RuntimeHold.Scope.EXPERIMENT, EXP_P, null, "自测：清扣留");
     }
 
+    // ------------------------------------------------- 4. 恢复单事务（P-06 V2 第二切片）
+
+    private static void resumeTransactionWritesEvent(PauseCoordinator coord) throws Exception {
+        setRunStatus(RUN_P, "paused");
+        new RuntimeHold(db, TENANT).raise(RuntimeHold.Scope.EXPERIMENT, EXP_P,
+                RuntimeHold.Kind.MANUAL, "自测：恢复前扣留", null);
+
+        PauseCoordinator.ExperimentResume r = coord.resumeExperimentRun(
+                PauseCommand.experiment(RUN_P, PauseCommand.Action.RESUME, "manual",
+                        "自测：恢复", REQ_RESUME), "自测恢复");
+        check("恢复成功解除可解扣留", r.clearedHold(), r.clearedHold());
+        check("恢复后重新入队", r.requeued(), r.requeued());
+        check("恢复后 run 回 queued", "queued".equals(statusOf(RUN_P)), statusOf(RUN_P));
+        check("恢复后 control_state=NONE",
+                "NONE".equals(controlStateOf(RUN_P)), controlStateOf(RUN_P));
+        check("恢复后实验级扣留已释放", holdCount(EXP_P) == 0, holdCount(EXP_P));
+        check("恢复单事务写入 RESUME_REQUESTED 事件",
+                eventCount(REQ_RESUME) == 1, eventCount(REQ_RESUME));
+        check("恢复事件类型 RESUME_REQUESTED",
+                "RESUME_REQUESTED".equals(eventTypeOf(REQ_RESUME)), eventTypeOf(REQ_RESUME));
+
+        PauseCoordinator.ExperimentResume replay = coord.resumeExperimentRun(
+                PauseCommand.experiment(RUN_P, PauseCommand.Action.RESUME, "manual",
+                        "自测：恢复重放", REQ_RESUME), "自测恢复");
+        check("重复恢复回放相同状态", "queued".equals(replay.status()), replay.status());
+        check("重复恢复不再新增事件", eventCount(REQ_RESUME) == 1, eventCount(REQ_RESUME));
+    }
+
     // ---------------------------------------------------------------- 造数 / 查询 / 清理
 
     private static void seed() throws SQLException {
@@ -233,6 +263,20 @@ public final class PauseCoordinatorDbSelfTest {
             ps.setString(2, requestId);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    /** 该 requestId 最新事件类型（恢复事件证据）。 */
+    private static String eventTypeOf(String requestId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT event_type FROM pause_event "
+                             + "WHERE tenant_id = ? AND request_id = ? ORDER BY id DESC LIMIT 1")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, requestId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
             }
         }
     }

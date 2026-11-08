@@ -42,10 +42,32 @@ COMMIT
 | 入口 | V2 单事务 | 说明 |
 |---|---|---|
 | 实验级 Pause（E-4：POST /api/experiments/runs/{id}/pause） | ✅ 本切片 | Hold+control+幂等键+事件同事务 |
-| 实验级 Resume（E-6） / Stop（E-5） | ❌ 仍 V1 | 下一步扩到同事务（Resume 还要释放 Hold + 重新入队） |
+| 实验级 Resume（E-6） | ✅ 第二切片 | 解 Hold / run 回 queued / 实验表同步 / 作废旧 paused run / RESUME_REQUESTED 事件同事务；批次聚合与重新入队 commit 后做 |
+| 实验级 Stop（E-5） | ❌ 仍 V1 | 下一步扩到同事务 |
 | Workflow 级 Pause / Resume（E-1~E-3） | ❌ 仍 V1 | PauseManager 仍多连接；依赖 P-07 命令账本一起做 |
 | PAUSING 异步收敛 worker | ❌ 未做 | 当前 accepted→paused 由执行器边界/调度器收敛（S-04-B 最小闭环） |
 | P-07 命令账本/Outbox | ❌ 未做 | 设备指令派发前/回包后/重启恢复的 exactly-once 证据链 |
+
+## 三·补、第二切片：实验级 Resume（E-6）单事务（2026-11-08）
+
+恢复原实现跨 5 个连接：读当前扣留 → 清 Hold → experiment_run 回 queued →
+同步实验表 → 作废旧 paused workflow run → 写 pause_request 结果；中间崩溃会留下
+「Hold 解了但 run 没回 queued」或「run 回了 queued 但旧 workflow run 没作废」的半成品。
+
+第二切片把以下写集收进同一事务（PauseCoordinator.resumeExperimentRun）：
+
+1. pause_request 幂等键（claimTx）；
+2. RuntimeHold.coveringForExperimentCheckedTx 读覆盖（事务内可见已清 Hold）；
+3. RuntimeHold.clearTx 解除可解扣留；
+4. RunControl.resumeTx：experiment_run 回 queued / control_state=NONE、
+   同步 experiment 表（非批次）、作废旧 paused workflow run（M-01 契约）、事务内复查扣留；
+5. pause_request 结果 + pause_event(RESUME_REQUESTED)。
+
+commit 之后才做批次聚合（BatchOrchestrator.onRunStatusChanged）和
+scheduler.resumeRun（内存队列）；commit 后崩溃由启动 rehydrateQueued 兜底。
+
+测试：PauseCoordinatorDbSelfTest 36/0（新增恢复单事务/RESUME_REQUESTED 事件/
+重复恢复不新增事件 9 条断言）；test-all 1136/0；4.20 页面恢复链路回归。
 
 ## 四、不变量与测试
 

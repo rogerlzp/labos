@@ -394,6 +394,68 @@ public final class RuntimeHold {
         }
     }
 
+    /** 同 {@link #clear}，但复用调用方事务连接（P-06 V2 Resume 单事务）。 */
+    public boolean clearTx(Connection c, Scope scope, Long scopeId, Long by, String note)
+            throws SQLException {
+        String sql = """
+                UPDATE runtime_hold
+                   SET released_at = now(), released_by = ?, release_note = ?
+                 WHERE tenant_id = ? AND scope = ?
+                   AND COALESCE(scope_id, 0) = COALESCE(CAST(? AS bigint), 0)
+                   AND released_at IS NULL
+                """;
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            if (by == null) {
+                ps.setNull(1, Types.BIGINT);
+            } else {
+                ps.setLong(1, by);
+            }
+            ps.setString(2, note);
+            ps.setLong(3, tenantId);
+            ps.setString(4, scope.code());
+            if (scopeId == null) {
+                ps.setNull(5, Types.BIGINT);
+            } else {
+                ps.setLong(5, scopeId);
+            }
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    /**
+     * 同 {@link #activeChecked}，但复用调用方事务连接（读到本事务内已 clear 的扣留）。
+     */
+    public List<Active> activeCheckedTx(Connection c) throws SQLException {
+        List<Active> list = new ArrayList<>();
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT scope, scope_id, kind, reason
+                  FROM runtime_hold
+                 WHERE tenant_id = ? AND released_at IS NULL
+                 ORDER BY held_at
+                """)) {
+            ps.setLong(1, tenantId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long sid = rs.getLong("scope_id");
+                    list.add(new Active(rs.getString("scope"),
+                            rs.wasNull() ? null : sid,
+                            rs.getString("kind"), rs.getString("reason")));
+                }
+            }
+        }
+        return list;
+    }
+
+    /**
+     * 同 {@link #coveringForExperimentChecked}，但复用事务连接读生效扣留；
+     * Workcell 集合仍按已提交数据推导（只读）。
+     */
+    public Active coveringForExperimentCheckedTx(Connection c, long experimentId)
+            throws SQLException {
+        Set<Long> islands = ExperimentWorkcellScope.islandsOf(db, tenantId, experimentId);
+        return coveringExperiment(activeCheckedTx(c), experimentId, islands);
+    }
+
     /**
      * 当前所有生效扣留；<b>读库失败时抛 {@link SQLException}</b>，不做 fail-open 兜底。
      *
