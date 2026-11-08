@@ -57,17 +57,17 @@
 | N-05 | `BoundaryResult` / `BoundaryViolation` 扩展 `boundaryKind` / `scopeType` / `evidence`，区分 INVALID / UNKNOWN | ADR-ISLAND-003 | NOT_STARTED | 取代实施规格 §3 的两 `Long` 接口；P-02 的前置 |
 | N-06 | 期望反转的测试：Experiment A 引用 Workflow B，有合法 Handoff 且人工确认后允许；Handoff 缺失 / 确认缺失 / UNKNOWN 时阻断 | N-04 | NOT_STARTED | 取代实施规格 §7 测试 8/9/10 的旧期望 |
 | N-07 | 配置期 Handoff 持久化结构：扩展 `experiment_process_edge` 或新建 `experiment_handoff`（Q-10），在岛内设备/IP 配置入口同处录入 | Q-10、N-04 | NOT_STARTED | `island_flow.graph` 边只落 `{id,source,target}` 且属**岛内动线**，不可直接复用；`experiment_process_edge` 现注释「只表达偏序，不表达资源」 |
-| N-08 | 运行时人工确认门禁：复用 `manual_window` + `pause_kind='waiting_human'` + `GET/POST /api/manual-windows`，补前端消费页（现 `webapp` 0 命中） | Q-09、N-04、ADR-PAUSE-007 | NOT_STARTED | **不新建第三套 Handoff 状态机**；确认人/时间/板样本标识/交接点/结果落 L-01 |
+| N-08 | 运行时人工确认门禁：复用 `manual_window` + `pause_kind='waiting_human'` + `GET/POST /api/manual-windows`，补前端消费页 | Q-09、N-04、ADR-PAUSE-007 | IN_PR | **不新建第三套 Handoff 状态机**；确认人/时间/板样本标识/交接点/结果落 L-01；2026-11-09 已补 /manual-windows 页 + 决策落 intervention_record（L01_N08_MANUAL_INTERVENTION_20261109.md） |
 | N-09 | 界面口径：不显示岛 ID，只显示岛名 `resource_node.name`；跨 Workcell 实验展示**涉及岛名列表**；改 `ExperimentList.tsx:169,171`、`Scheduler.tsx:171,232` 等 | ADR-ISLAND-005 | IN_PR | 岛名字段已存在；2026-11-08 已改：Scheduler 锁/队列增加 islandName 并只显示岛名，ExperimentList 显示 workcellNames/islandName（跨 Workcell 列表），不再显示 island_id |
 
 ## 4a. L 组：分层最小骨架（ADR-LAYER-001）
 
 | ID | 工作项 | 依赖 | 状态 | 说明 |
 |---|---|---|---|---|
-| L-01 | `InterventionRecord` 落证：确认人、时间、板/样本标识、源/目标交接点、确认结果 | Q-09、N-08 | NOT_STARTED | **与 N-08 同批**，借人工 Handoff 一起做，避免两套人工记录（ADR-PAUSE-003 / 007） |
+| L-01 | `InterventionRecord` 落证：确认人、时间、板/样本标识、源/目标交接点、确认结果 | Q-09、N-08 | IN_PR | **与 N-08 同批**，借人工 Handoff 一起做，避免两套人工记录（ADR-PAUSE-003 / 007）；2026-11-09 intervention_record 已落 + GET /api/intervention-records |
 | L-02 | `experiment_run.status varchar(16)` 扩容或改短 code + display label；落 `PAUSE_REQUESTED` / `PAUSING` 最小中间态 | ADR-PAUSE-001/003、**ADR-PAUSE-008** | **IN_PR** | 按 ADR-PAUSE-008 **方案 B**：`status` 扩容 `varchar(32)`；新增 `control_state varchar(24) NOT NULL DEFAULT 'NONE'`（`NONE`/`PAUSE_REQUESTED`/`PAUSING`/`RESUMING`）；词表单一权威同步（后端 `StatusVocabulary` 新增 `control` scope + 前端 `status.ts` / `i18n/codes.ts` / 扫描器 `scan-i18n.py`）；**只授予状态表达能力、不改行为**（legacy 立即投影保持，4.17/4.18 判据不退化）。证据：分片 `99c_pause_control.sql` 已拼入 `90_all_in_one.sql` 且 `check-schema-sync.sh` 产物同源；已应用到测试库 `192.168.124.2/labdb`（`control_state varchar(24) default NONE` + `status varchar(32)`）；`./scripts/ci-gate.sh --all` = 门禁通过（无跳过）/`GATE_EXIT=0`，4.17=13/0、4.18=5/0 未回退；纯逻辑 664/0（`MIN_PURE=664`）；`tsc` 0 错误；`scan-i18n.py` 硬错误 0。行为切换（`control_state` 接线）属 PR-S04-B |
 | L-03 | CommandExecutionState 最小账本 + 最小 Outbox | ADR-PAUSE-006 | NOT_STARTED | `run_command` 现复用 `node_status` 且步结束才落库；**并入 P-07，不另起一套** |
-| L-04 | 人工窗口前端消费页 | N-08 | NOT_STARTED | 可与 N-08 同 PR |
+| L-04 | 人工窗口前端消费页 | N-08 | IN_PR | 可与 N-08 同 PR；2026-11-09 /manual-windows 已落地 |
 | L-05 | SafetyDomain 传播算法 / RobotArm 工作空间互斥 / Dependency Edge 完整图 / 完整聚合器投影 | — | **DEFERRED** | 暂不建全套；当前只需「依赖闭包 UNKNOWN ⇒ fail-closed」最小实现 |
 
 ## 4b. S 组：状态机多层维护治理（ADR-STATE-001）

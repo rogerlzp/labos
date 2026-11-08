@@ -3743,6 +3743,92 @@ public final class QueryService {
         }
     }
 
+    /** L-01：记录一条人工介入（决策/Handoff 确认）。 */
+    public long recordIntervention(long manualWindowId, Long runId, Long experimentRunId,
+                                   String operator, String action, String plateBarcode,
+                                   String sampleId, String fromLocation, String toLocation,
+                                   String result, String note) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     INSERT INTO intervention_record
+                       (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
+                        decided_action, plate_barcode, sample_id, from_location, to_location,
+                        result, note)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     RETURNING id
+                     """)) {
+            ps.setLong(1, tenantId);
+            if (manualWindowId > 0) {
+                ps.setLong(2, manualWindowId);
+            } else {
+                ps.setNull(2, java.sql.Types.BIGINT);
+            }
+            if (runId == null) {
+                ps.setNull(3, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(3, runId);
+            }
+            if (experimentRunId == null) {
+                ps.setNull(4, java.sql.Types.BIGINT);
+            } else {
+                ps.setLong(4, experimentRunId);
+            }
+            ps.setString(5, operator == null ? "unknown" : operator);
+            ps.setString(6, action);
+            ps.setString(7, plateBarcode);
+            ps.setString(8, sampleId);
+            ps.setString(9, fromLocation);
+            ps.setString(10, toLocation);
+            ps.setString(11, result == null ? "unknown" : result);
+            ps.setString(12, note);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        }
+    }
+
+    /** L-01：人工介入记录列表（最新优先）。 */
+    public String interventionRecordsJson(int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT id, manual_window_id, run_id, experiment_run_id, operator,
+                            decided_action, plate_barcode, sample_id, from_location,
+                            to_location, result, note, created_at::text
+                       FROM intervention_record
+                      WHERE tenant_id = ?
+                      ORDER BY id DESC
+                      LIMIT ?
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setInt(2, Math.max(1, Math.min(limit, 500)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long wid = rs.getLong("manual_window_id");
+                    Object windowId = rs.wasNull() ? null : wid;
+                    long rid = rs.getLong("run_id");
+                    Object runId = rs.wasNull() ? null : rid;
+                    long erid = rs.getLong("experiment_run_id");
+                    Object experimentRunId = rs.wasNull() ? null : erid;
+                    items.add(Jsons.obj("id", rs.getLong("id"),
+                            "manualWindowId", windowId, "runId", runId,
+                            "experimentRunId", experimentRunId,
+                            "operator", rs.getString("operator"),
+                            "action", rs.getString("decided_action"),
+                            "plateBarcode", rs.getString("plate_barcode"),
+                            "sampleId", rs.getString("sample_id"),
+                            "fromLocation", rs.getString("from_location"),
+                            "toLocation", rs.getString("to_location"),
+                            "result", rs.getString("result"),
+                            "note", rs.getString("note"),
+                            "createdAt", rs.getString("created_at")));
+                }
+            }
+        }
+        return Jsons.obj("total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
     /** 实验 Handoff 配置列表（N-10）。 */
     public String experimentHandoffsJson(long experimentId) throws SQLException {
         List<String> items = new ArrayList<>();

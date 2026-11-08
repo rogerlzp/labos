@@ -151,6 +151,12 @@ final class RunApi {
                 resume = resumeRunJson(w.runId(), "action=" + a, body,
                         ex.getRequestHeaders().getFirst("X-Request-Id"));
             }
+            // L-01：人工介入落证（确认人/时间/板样本/交接点/动作/结果）
+            long recordId = s.query.recordIntervention(wid, w.runId(), null, "api", action,
+                    jsonField(body, "plateBarcode"), jsonField(body, "sampleId"),
+                    jsonField(body, "fromLocation"), jsonField(body, "toLocation"),
+                    "MANUAL".equals(action) ? "waiting" : "resolved",
+                    jsonField(body, "note"));
             s.audited("manual_window.decide", "manual_window", wid,
                     action + " run=" + w.runId(), null, ex);
             s.send(ex, 200, Jsons.obj(
@@ -158,7 +164,13 @@ final class RunApi {
                     "windowId", wid,
                     "runId", w.runId(),
                     "action", action,
+                    "interventionRecordId", recordId,
                     "resume", new Jsons.Raw(resume)));
+            return true;
+        }
+        if ("/api/intervention-records".equals(path)) {
+            s.requireGet(method, ex);
+            s.send(ex, 200, s.query.interventionRecordsJson(intParam(ex, "limit", 100)));
             return true;
         }
         if ("/api/runtime/holds".equals(path)) {
