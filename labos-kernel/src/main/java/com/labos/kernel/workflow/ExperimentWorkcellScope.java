@@ -37,6 +37,24 @@ public final class ExperimentWorkcellScope {
             throws SQLException {
         Set<Long> islands = new LinkedHashSet<>();
         try (Connection c = db.open()) {
+            // ① 显式绑定优先（N-10 / ADR-ISLAND-002）
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT workcell_id FROM experiment_workcell "
+                            + "WHERE tenant_id = ? AND experiment_id = ? ORDER BY workcell_id")) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, experimentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        long id = rs.getLong(1);
+                        if (!rs.wasNull() && id > 0) {
+                            islands.add(id);
+                        }
+                    }
+                }
+            }
+            if (!islands.isEmpty()) {
+                return islands;
+            }
             try (PreparedStatement ps = c.prepareStatement(
                     "SELECT island_id FROM experiment WHERE tenant_id = ? AND id = ?")) {
                 ps.setLong(1, tenantId);

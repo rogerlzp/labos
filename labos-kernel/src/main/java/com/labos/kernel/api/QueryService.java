@@ -3757,6 +3757,88 @@ public final class QueryService {
         return com.labos.kernel.driver.CommandLedger.resolve(db, tenantId, id, done, note, by);
     }
 
+    /** 实验显式 Workcell 绑定（N-10）。 */
+    public String experimentWorkcellsJson(long experimentId) throws SQLException {
+        List<String> items = new ArrayList<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT ew.workcell_id, rn.name
+                       FROM experiment_workcell ew
+                       LEFT JOIN resource_node rn
+                         ON rn.tenant_id = ew.tenant_id AND rn.id = ew.workcell_id
+                      WHERE ew.tenant_id = ? AND ew.experiment_id = ?
+                      ORDER BY ew.workcell_id
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, experimentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    items.add(Jsons.obj("workcellId", rs.getLong(1),
+                            "name", rs.getString(2)));
+                }
+            }
+        }
+        return Jsons.obj("experimentId", experimentId,
+                "items", new Jsons.Raw(Jsons.arr(items)), "count", items.size());
+    }
+
+    /**
+     * 全量替换实验 Workcell 绑定（N-10 显式绑定写入口）。
+     *
+     * @return 写入条数（空列表 = 清空绑定，回到资源树推导）
+     */
+    public int setExperimentWorkcells(long experimentId, List<Long> workcellIds)
+            throws SQLException {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT count(*) FROM experiment WHERE tenant_id = ? AND id = ?")) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, experimentId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next() || rs.getInt(1) == 0) {
+                            c.rollback();
+                            return -1;
+                        }
+                    }
+                }
+                try (PreparedStatement ps = c.prepareStatement(
+                        "DELETE FROM experiment_workcell "
+                                + "WHERE tenant_id = ? AND experiment_id = ?")) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, experimentId);
+                    ps.executeUpdate();
+                }
+                int n = 0;
+                if (workcellIds != null && !workcellIds.isEmpty()) {
+                    try (PreparedStatement ps = c.prepareStatement("""
+                            INSERT INTO experiment_workcell
+                              (tenant_id, experiment_id, workcell_id, source)
+                            VALUES (?, ?, ?, 'binding')
+                            ON CONFLICT (tenant_id, experiment_id, workcell_id) DO NOTHING
+                            """)) {
+                        for (Long wid : workcellIds) {
+                            if (wid == null || wid <= 0) {
+                                continue;
+                            }
+                            ps.setLong(1, tenantId);
+                            ps.setLong(2, experimentId);
+                            ps.setLong(3, wid);
+                            ps.addBatch();
+                        }
+                        n = ps.executeBatch().length;
+                    }
+                }
+                c.commit();
+                return n;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        }
+    }
+
     /** 某能力下可选的设备方法（{@code device_method}）。 */
     public String methodsJson(String capability) throws SQLException {
         List<String> items = new ArrayList<>();

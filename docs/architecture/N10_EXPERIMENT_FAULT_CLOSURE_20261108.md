@@ -44,6 +44,23 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 | 设备级故障 Hold（device scope） | ❌ 目前故障须落 island/experiment Hold |
 | 展示层「哪些节点受影响」标注 | ❌ 执行层先一律阻断，展示后续补 |
 
+## 四·补、显式 Workcell 绑定（2026-11-08）
+
+此前只能从资源树推导 Workcell。本补丁增加显式绑定（ADR-ISLAND-002 的落地第一步）：
+
+- 新表 experiment_workcell（99i，已拼入 90_all_in_one）：union(tenant, experiment, workcell)，
+  外键 experiment ON DELETE CASCADE；
+- ExperimentWorkcellScope.islandsOf 优先级：**显式绑定存在 ⇒ 只信显式绑定**；
+  为空才回退资源树推导 + experiment.island_id；
+- 产品写入口：GET /api/experiments/{id}/workcells、
+  PUT /api/experiments/{id}/workcells body {workcellIds:[...]}（空数组=清空绑定）；
+  PUT 带审计 experiment.workcells.set；
+- 自测：ExperimentWorkcellScopeDbSelfTest 6/0（显式权威 / 清空回退 / 写入口 / 不存在 404）；
+  test-all 1160/0；API 手工验证 GET→PUT→GET→清空。
+
+仍缺：Handoff 配置/可达性门禁（ADR-ISLAND-002/004）、P-03 逐候选调度、
+故障注入 e2e（A Workcell 故障 → B 段 0 命令）。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；

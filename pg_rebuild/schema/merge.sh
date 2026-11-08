@@ -56,6 +56,7 @@ cat /tmp/_schema_header.sql \
     99f_command_ledger.sql \
     99g_pausing.sql \
     99h_command_resolution.sql \
+    99i_experiment_workcell.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

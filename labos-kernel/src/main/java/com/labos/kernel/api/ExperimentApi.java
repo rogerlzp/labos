@@ -133,6 +133,41 @@ final class ExperimentApi {
             return true;
         }
         Matcher expGraph = EXP_GRAPH.matcher(path);
+        Matcher expWorkcells = EXP_WORKCELLS.matcher(path);
+        if (expWorkcells.matches()) {
+            long eid = Long.parseLong(expWorkcells.group(1));
+            if ("GET".equals(method)) {
+                s.send(ex, 200, s.query.experimentWorkcellsJson(eid));
+                return true;
+            }
+            if (!"PUT".equals(method) && !"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            java.util.regex.Matcher arr = java.util.regex.Pattern
+                    .compile("\"workcellIds\"\\s*:\\s*\\[([^\\]]*)\\]").matcher(body);
+            if (!arr.find()) {
+                s.send(ex, 400, err("需要 workcellIds 数组（空数组=清空绑定）"));
+                return true;
+            }
+            List<Long> ids = new ArrayList<>();
+            for (String part : arr.group(1).split(",")) {
+                String t = part.trim();
+                if (!t.isEmpty()) {
+                    ids.add(Long.parseLong(t));
+                }
+            }
+            int n = s.query.setExperimentWorkcells(eid, ids);
+            if (n < 0) {
+                s.send(ex, 404, err("实验不存在"));
+                return true;
+            }
+            s.audited("experiment.workcells.set", "experiment", eid,
+                    ids.toString(), Jsons.obj("count", n), ex);
+            s.send(ex, 200, Jsons.obj("experimentId", eid, "updated", n));
+            return true;
+        }
+
         if (expGraph.matches()) {
             long eidg = Long.parseLong(expGraph.group(1));
             if ("GET".equals(method)) {
@@ -625,6 +660,9 @@ final class ExperimentApi {
             Pattern.compile("^/api/experiments/(\\d+)/batch-split$");
 
     private static final Pattern EXP_GRAPH = Pattern.compile("^/api/experiments/(\\d+)/graph$");
+
+    private static final Pattern EXP_WORKCELLS =
+            Pattern.compile("^/api/experiments/(\\d+)/workcells$");
 
     /** 一次实验执行的逐步明细（含"未执行"的步骤）。 */
     private static final Pattern EXP_RUN_STEPS =
