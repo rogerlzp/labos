@@ -97,6 +97,18 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 - api.HandoffConfirmDbSelfTest 4/0（确认/状态/介入记录/重复拒绝）；
 - 配置 API PUT /handoffs 仍保留，但执行前必须确认。
 
+## 四·补五、同实验跨 Workcell 故障闭包 e2e（2026-11-09）
+
+脚本 verify-experiment-fault-closure.py：
+
+1. 一个实验显式绑定两个 Workcell（A/B）；
+2. 给 B Workcell 抬 island Hold；
+3. 异步提交 → 断言实验 run 保持 queued、调度队列里有它；
+4. 解除 Hold → 断言离开 queued（被派发）。
+
+实测 3/0：验证 ADR-FAULT-SCOPE-002「同一实验内任一 Workcell 扣留 ⇒ 整实验不派发」，
+不是只挡 B 段。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；
