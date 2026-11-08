@@ -396,24 +396,44 @@ public final class PauseCoordinator {
      */
     public int dismissBatchWorkflowRuns(List<Long> ids, String kind, Integer beforeHours)
             throws SQLException {
-        return new PauseManager(db, tenantId).dismissBatch(ids, kind, beforeHours);
+        // P-06 V2：批量忽略的多次 UPDATE 同一事务（要么全部忽略，要么一条不动）。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                int n = new PauseManager(db, tenantId)
+                        .dismissBatchTx(c, ids, kind, beforeHours);
+                c.commit();
+                return n;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        }
     }
 
     /** E-3b：忽略单条暂停的 run（{@code POST /api/runs/{id}/dismiss}）。 */
     public boolean dismissWorkflowRun(PauseCommand cmd) throws SQLException {
-        Claim claim = claim(cmd);
-        if (!claim.firstTime()) {
-            return PauseCommand.ResultState.COMPLETED.name().equals(claim.resultState());
-        }
-        try {
-            boolean done = StartupRecovery.dismiss(db, tenantId, cmd.targetId());
-            cmd.result(done ? PauseCommand.ResultState.COMPLETED
-                    : PauseCommand.ResultState.REJECTED);
-            settle(cmd, Map.of());
-            return done;
-        } catch (SQLException | RuntimeException e) {
-            abandon(cmd);
-            throw e;
+        // P-06 V2：忽略一次崩溃可恢复的 run + 幂等结果 + pause_event 同事务。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                Claim claim = claimTx(c, cmd);
+                if (!claim.firstTime()) {
+                    c.rollback();
+                    return PauseCommand.ResultState.COMPLETED
+                            .name().equals(claim.resultState());
+                }
+                boolean done = StartupRecovery.dismissTx(c, tenantId, cmd.targetId());
+                cmd.result(done ? PauseCommand.ResultState.COMPLETED
+                        : PauseCommand.ResultState.REJECTED);
+                settleTx(c, cmd, Map.of());
+                insertPauseEvent(c, cmd, "DISMISS_REQUESTED", null, null);
+                c.commit();
+                return done;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
         }
     }
 

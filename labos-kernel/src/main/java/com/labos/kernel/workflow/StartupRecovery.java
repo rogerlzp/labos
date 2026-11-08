@@ -249,15 +249,22 @@ public final class StartupRecovery {
      * （比如设备已经拆了），不给忽略入口的话，提示会一直挂着。
      */
     public static boolean dismiss(DbConfig db, long tenantId, long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run
-                        SET input = COALESCE(input, '{}'::jsonb)
-                                    || ?::jsonb,
-                            updated_at = now()
-                      WHERE tenant_id = ? AND id = ? AND status = 'failed'
-                        AND (input->>'recoverable')::boolean IS TRUE
-                     """)) {
+        try (Connection c = db.open()) {
+            return dismissTx(c, tenantId, runId);
+        }
+    }
+
+    /** 同 {@link #dismiss}，但复用调用方事务连接（P-06 V2 E-3b）。 */
+    public static boolean dismissTx(Connection c, long tenantId, long runId)
+            throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                UPDATE run
+                   SET input = COALESCE(input, '{}'::jsonb)
+                               || ?::jsonb,
+                       updated_at = now()
+                 WHERE tenant_id = ? AND id = ? AND status = 'failed'
+                   AND (input->>'recoverable')::boolean IS TRUE
+                """)) {
             ps.setString(1, Jsons.obj("recoverable", false, "dismissed", true));
             ps.setLong(2, tenantId);
             ps.setLong(3, runId);

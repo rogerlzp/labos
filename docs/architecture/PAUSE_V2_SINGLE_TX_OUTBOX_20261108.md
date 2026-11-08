@@ -45,7 +45,8 @@ COMMIT
 | 实验级 Resume（E-6） | ✅ 第二切片 | 解 Hold / run 回 queued / 实验表同步 / 作废旧 paused run / RESUME_REQUESTED 事件同事务；批次聚合与重新入队 commit 后做 |
 | 实验级 Stop（E-5） | ✅ 第三切片 | stop_requested / aborted / 实验表同步 / STOP_REQUESTED 事件同事务；批次聚合 commit 后补 |
 | Workflow 级 Pause（E-1） | ✅ 第五切片 | run 落 paused + 释放位置/预约/通道/设备锁 + 幂等结果 + PAUSE_REQUESTED 事件同事务 |
-| Workflow 级 Resume / 批量忽略（E-2/E-3） | ❌ 仍 V1 | E-2 还含 locatePlate/异步续跑，E-3 为批量语义；下一步拆 |
+| Workflow 级忽略（E-3a 批量 / E-3b 单条） | ✅ 第六切片 | 批量/单条忽略与幂等结果/事件同事务 |
+| Workflow 级 Resume（E-2） | ❌ 仍 V1 | 含 locatePlate（板位校正）与异步续跑；下一步拆 |
 | PAUSING 异步收敛 worker | 🟡 第四切片（最小） | 受理超过 5 秒仍未到边界的 running run 标 PAUSING（只展示，不写 paused）；settle 收尾回 NONE |
 | P-07 命令账本/Outbox | ❌ 未做 | 设备指令派发前/回包后/重启恢复的 exactly-once 证据链 |
 
@@ -116,6 +117,19 @@ pause_event(PAUSE_REQUESTED) 一次 commit；异常整体回滚。
 事件/重复回放 6 条）；test-all 1166/0；4.19 页面网关暂停、4.16 暂停/恢复节点回归。
 
 边界：E-2（Workflow Resume，含 locatePlate 与异步续跑）/E-3（批量忽略）仍 V1 多连接。
+
+## 三·补五、第六切片：Workflow 级忽略（E-3）单事务（2026-11-08）
+
+E-3a/E-3b 原来各自循环/单条 UPDATE，批量忽略中途失败会留下「一半 aborted」。
+
+第六切片：StartupRecovery.dismissTx、PauseManager.dismissBatchTx；
+PauseCoordinator.dismissBatchWorkflowRuns / dismissWorkflowRun 改单连接事务：
+claimTx（单条）→ 忽略 → settleTx → pause_event(DISMISS_REQUESTED) 一次 commit。
+
+测试：PauseCoordinatorDbSelfTest 60/0（E-3a 批量 2 条同事务、E-3b 单条事件/重复回放）；
+test-all 1174/0。
+
+边界：E-2（Workflow Resume，含 locatePlate 与异步续跑）仍 V1。
 
 ## 四、不变量与测试
 

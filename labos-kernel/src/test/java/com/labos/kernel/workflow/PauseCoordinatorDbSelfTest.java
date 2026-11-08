@@ -7,6 +7,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.List;
 
 /**
  * 暂停统一适配层 幂等键 落库自测（需要真实库）—— V1-5 / ADR-PAUSE-009。
@@ -45,6 +46,7 @@ public final class PauseCoordinatorDbSelfTest {
     private static final String REQ_STOP_RUNNING = "SELF-PC-STOP-RUNNING-1";
     private static final String REQ_WF = "SELF-PC-WF-1";
     private static final long WF_RUN = -992401L;
+    private static final String REQ_DISMISS = "SELF-PC-DISMISS-1";
 
     public static void main(String[] args) throws Exception {
         db = DbConfig.fromEnv();
@@ -58,6 +60,7 @@ public final class PauseCoordinatorDbSelfTest {
             resumeTransactionWritesEvent(coord);
             stopTransactionWritesEvent(coord);
             workflowPauseTransaction(coord);
+            dismissTransactions(coord);
         } finally {
             cleanup();
         }
@@ -253,6 +256,63 @@ public final class PauseCoordinatorDbSelfTest {
                 replay.pauseKindCode());
         check("重复流程暂停不新增事件", eventCount(REQ_WF) == 1, eventCount(REQ_WF));
         exec("DELETE FROM run WHERE tenant_id=1 AND id=" + wfRun);
+    }
+
+    // ------------------------------------------------- 7. E-3 忽略单条/批量单事务
+
+    private static void dismissTransactions(PauseCoordinator coord) throws Exception {
+        exec("DELETE FROM run WHERE tenant_id=1 AND run_no LIKE 'SELF-PC-CRASH%'");
+        exec("DELETE FROM run WHERE tenant_id=1 AND run_no LIKE 'SELF-PC-DISM%'");
+        exec("""
+                INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
+                                 mode, status, actual_start, progress, input)
+                VALUES (1, 'SELF-PC-CRASH', 'workflow', 239, 1, 'normal',
+                        'failed', now(), 0, '{"recoverable":true}'::jsonb)
+                """);
+        long crashRun = Long.parseLong(one(
+                "SELECT id FROM run WHERE tenant_id=1 AND run_no='SELF-PC-CRASH'"));
+        boolean done = coord.dismissWorkflowRun(PauseCommand.workflow(crashRun,
+                PauseCommand.Action.DISMISS, "waiting_human",
+                "自测：忽略崩溃可恢复", REQ_DISMISS));
+        check("E-3b 忽略崩溃可恢复 run 成功", done, done);
+        check("E-3b 单事务写入 DISMISS_REQUESTED 事件",
+                eventCount(REQ_DISMISS) == 1, eventCount(REQ_DISMISS));
+        check("E-3b 事件类型 DISMISS_REQUESTED",
+                "DISMISS_REQUESTED".equals(eventTypeOf(REQ_DISMISS)),
+                eventTypeOf(REQ_DISMISS));
+        boolean replay = coord.dismissWorkflowRun(PauseCommand.workflow(crashRun,
+                PauseCommand.Action.DISMISS, "waiting_human",
+                "自测：重复忽略", REQ_DISMISS));
+        check("E-3b 重复忽略回放首次结果", replay, replay);
+        check("E-3b 重复忽略不新增事件",
+                eventCount(REQ_DISMISS) == 1, eventCount(REQ_DISMISS));
+
+        exec("""
+                INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
+                                 mode, status, actual_start, progress)
+                SELECT 1, 'SELF-PC-DISM-A', 'workflow', 239, 1, 'normal',
+                       'paused', now(), 0
+                """);
+        exec("""
+                INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
+                                 mode, status, actual_start, progress)
+                SELECT 1, 'SELF-PC-DISM-B', 'workflow', 239, 1, 'normal',
+                       'paused', now(), 0
+                """);
+        long a = Long.parseLong(one(
+                "SELECT id FROM run WHERE tenant_id=1 AND run_no='SELF-PC-DISM-A'"));
+        long b = Long.parseLong(one(
+                "SELECT id FROM run WHERE tenant_id=1 AND run_no='SELF-PC-DISM-B'"));
+        int n = coord.dismissBatchWorkflowRuns(List.of(a, b), null, null);
+        check("E-3a 批量忽略 2 条同事务", n == 2, n);
+        check("E-3a A 落 aborted",
+                "aborted".equals(one("SELECT status::text FROM run WHERE id=" + a)),
+                one("SELECT status::text FROM run WHERE id=" + a));
+        check("E-3a B 落 aborted",
+                "aborted".equals(one("SELECT status::text FROM run WHERE id=" + b)),
+                one("SELECT status::text FROM run WHERE id=" + b));
+        exec("DELETE FROM run WHERE tenant_id=1 AND run_no LIKE 'SELF-PC-CRASH%'");
+        exec("DELETE FROM run WHERE tenant_id=1 AND run_no LIKE 'SELF-PC-DISM%'");
     }
 
     // ---------------------------------------------------------------- 造数 / 查询 / 清理

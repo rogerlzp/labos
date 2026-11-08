@@ -425,11 +425,36 @@ public final class PauseManager {
      */
     public int dismissBatch(java.util.List<Long> ids, String kind, Integer beforeHours)
             throws SQLException {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                int n = dismissBatchTx(c, ids, kind, beforeHours);
+                c.commit();
+                return n;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        }
+    }
+
+    /** 同 {@link #dismissBatch(java.util.List, String, Integer)}，但复用调用方事务连接。 */
+    public int dismissBatchTx(Connection c, java.util.List<Long> ids, String kind,
+                              Integer beforeHours) throws SQLException {
         if (ids != null && !ids.isEmpty()) {
             int n = 0;
             for (Long id : ids) {
-                if (dismiss(id)) {
-                    n++;
+                try (PreparedStatement ps = c.prepareStatement("""
+                        UPDATE run
+                           SET status = 'aborted', pause_kind = NULL, pause_reason = NULL,
+                               pause_node_key = NULL, actual_end = now(),
+                               error_code = COALESCE(error_code, 'EC-HUMAN-DISMISS'),
+                               updated_at = now()
+                         WHERE tenant_id = ? AND id = ? AND status = 'paused'
+                        """)) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, id);
+                    n += ps.executeUpdate();
                 }
             }
             return n;
@@ -453,8 +478,7 @@ public final class PauseManager {
             sql.append(" AND updated_at < now() - make_interval(hours => ?)");
             args.add(beforeHours);
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
+        try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
             for (int i = 0; i < args.size(); i++) {
                 Object a = args.get(i);
                 if (a instanceof Long l) {
