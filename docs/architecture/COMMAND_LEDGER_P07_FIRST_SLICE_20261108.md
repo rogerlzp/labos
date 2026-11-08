@@ -65,6 +65,19 @@ P-07.2 补：
 
 尚未做：真实故障注入矩阵（kill -9 时序）、逻辑步骤级稳定 key、命令 Outbox 传输层。
 
+## 三·补二、P-07.3：稳定逻辑 key + 崩溃点矩阵（2026-11-08）
+
+1. 账本 key 从 commandId（含 exec 计数）改为稳定逻辑 key：
+   run | node | attempt | step | device | method | opSeq；
+   同一次执行内 opSeq 按调用顺序递增，覆盖 Transfer 门/通道等多指令；
+   重复派发同一逻辑操作会命中同一行并 fail-closed。
+2. 四个崩溃点回归矩阵（CommandLedgerDbSelfTest 22/0）：
+   - 派发前：无账本行；begin 后才 DISPATCH_STARTED；
+   - 派发中：陈旧 DISPATCH_STARTED → 启动对账 UNKNOWN；
+   - 回包后/落库前：UNKNOWN → 人工确认 → ACKED；
+   - 重复下发：同 key 第二次 begin 被拒。
+3. 测试：test-all 1186/0；设备链路 4.19/4.17 回归。
+
 ## 四、当前边界（诚实说明）
 
 | 能力 | 状态 |
@@ -72,10 +85,10 @@ P-07.2 补：
 | 单条指令派发前落账 / 回包终态 | ✅ 本切片 |
 | 重启把陈旧 DISPATCH_STARTED 标 UNKNOWN | ✅ 本切片 |
 | 同 commandId 重复下发 fail-closed | ✅ 本切片 |
-| 逻辑步骤级幂等（跨 exec 计数重放） | ❌ P-07.2（需引入稳定 step key + op 序号） |
+| 逻辑步骤级幂等（跨 exec 计数重放） | ✅ P-07.3：稳定 key = run\|node\|attempt\|step\|device\|method\|opSeq |
 | 命令 Outbox 传输层 / 重试重放 | ❌ P-07.2 |
 | UNKNOWN 的人工核对/处置入口（页面/API） | ❌ P-07.2 |
-| 四个崩溃点完整回归（故障注入矩阵） | ❌ P-07.3 |
+| 四个崩溃点回归矩阵 | ✅ P-07.3：CommandLedgerDbSelfTest 22/0（派发前/派发中/回包后落库前/重复下发） |
 
 ## 五、验证
 

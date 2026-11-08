@@ -48,6 +48,10 @@ public final class DriverStepExecutor implements StepExecutor {
     private final long tenantId;
     private final long runId;
 
+    /** 账本逻辑操作序号（同一次执行内按调用顺序递增，用于稳定 key 的 op 段）。 */
+    private final java.util.concurrent.atomic.AtomicInteger ledgerOpSeq =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     /**
      * 错误码 → 恢复作用域（{@code error_code.scope}）。
      *
@@ -322,14 +326,14 @@ public final class DriverStepExecutor implements StepExecutor {
                 && method != null && method.startsWith("Transfer");
         if (!protect) {
             return executeCommand(driver, ctx,
-                    buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun());
+                    buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun(), stepSeq);
         }
 
         Long srcRes = resourceOfParam(ctx, "source");
         Long dstRes = resourceOfParam(ctx, "target");
         if (srcRes == null || dstRes == null) {
             return executeCommand(driver, ctx,
-                    buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun());
+                    buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun(), stepSeq);
         }
 
         TransferPlan plan = new TransferPlan(db, tenantId, runId);
@@ -346,7 +350,7 @@ public final class DriverStepExecutor implements StepExecutor {
                         "设备没有可用驱动：" + resNodeId, null, 0);
             }
             return executeCommand(d.get(), ctx,
-                    buildCommand(ctx, instId, m, stepSeq, exec), workflowIdOfRun());
+                    buildCommand(ctx, instId, m, stepSeq, exec), workflowIdOfRun(), stepSeq);
         };
         try {
             plan.acquireAll(srcRes, null, dstRes, null, null, null, factory);
@@ -658,12 +662,17 @@ public final class DriverStepExecutor implements StepExecutor {
      * 否则崩溃后无法判断「到底动没动」。
      */
     private DriverResult executeCommand(DeviceDriver driver, StepContext ctx,
-                                        DriverCommand cmd, long workflowId) {
+                                        DriverCommand cmd, long workflowId, int stepSeq) {
         long ledgerId = 0L;
         if (db != null && runId > 0 && cmd.commandId() != null) {
+            // P-07.2 稳定逻辑 key（不再用含 exec 计数的 commandId）：
+            // run|node|attempt|step|device|method|opSeq —— 同一逻辑操作重复派发时命中同一行。
+            String ledgerKey = "r" + runId + "|n" + ctx.nodeId() + "|a" + ctx.attempt()
+                    + "|s" + stepSeq + "|d" + cmd.deviceInstanceId()
+                    + "|m" + cmd.method() + "|o" + ledgerOpSeq.incrementAndGet();
             try {
                 CommandLedger.Entry e = CommandLedger.begin(db, tenantId,
-                        cmd.commandId(), runId, ctx.nodeId(), ctx.attempt(), 0,
+                        ledgerKey, runId, ctx.nodeId(), ctx.attempt(), stepSeq,
                         cmd.deviceInstanceId(), cmd.method(), cmd.commandId(), traceId);
                 if (!e.created()) {
                     // fail-closed：不抛检查异常（TransferPlan 的回调接口不声明 throws），

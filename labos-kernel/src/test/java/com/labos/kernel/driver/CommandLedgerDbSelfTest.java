@@ -32,6 +32,7 @@ public final class CommandLedgerDbSelfTest {
             testBeginDuplicateAndAck();
             testFailureState();
             testReconcileStale();
+            testCrashPointMatrix();
         } finally {
             cleanup();
         }
@@ -104,6 +105,53 @@ public final class CommandLedgerDbSelfTest {
         check("非陈旧 DISPATCH_STARTED 不被误标（本次 " + markedAgain + " 条）",
                 "DISPATCH_STARTED".equals(CommandLedger.stateOf(db, TENANT, freshKey)),
                 CommandLedger.stateOf(db, TENANT, freshKey));
+    }
+
+    /** P-07.3：四个崩溃点的最小回归矩阵（不真 kill -9，按账本状态模拟）。 */
+    private static void testCrashPointMatrix() throws Exception {
+        // ① 派发前崩溃：还没 begin ⇒ 没有账本行
+        String before = PREFIX + "cp-before";
+        check("崩溃点①派发前：无账本行", rowCount(before) == 0, rowCount(before));
+        CommandLedger.Entry e1 = begin(before, "cmd-cp-before");
+        check("派发前 begin 后落 DISPATCH_STARTED",
+                e1.created() && "DISPATCH_STARTED".equals(CommandLedger.stateOf(db, TENANT, before)),
+                CommandLedger.stateOf(db, TENANT, before));
+
+        // ② 派发中崩溃：DISPATCH_STARTED 陈旧 ⇒ 启动对账标 UNKNOWN
+        String mid = PREFIX + "cp-mid";
+        begin(mid, "cmd-cp-mid");
+        exec("UPDATE command_ledger SET created_at = now() - interval '1 hour' "
+                + "WHERE tenant_id = 1 AND idempotency_key = '" + mid + "'");
+        CommandLedger.reconcileOnStartup(db, TENANT, CommandLedger.STALE_MINUTES);
+        check("崩溃点②派发中：陈旧派发标 UNKNOWN",
+                "UNKNOWN".equals(CommandLedger.stateOf(db, TENANT, mid)),
+                CommandLedger.stateOf(db, TENANT, mid));
+
+        // ③ 回包后/落库前崩溃：UNKNOWN 人工确认已执行 ⇒ ACKED
+        CommandLedger.Unknown u = findUnknown(mid);
+        check("崩溃点③：UNKNOWN 可被人工确认", u != null, u);
+        if (u != null) {
+            int n = CommandLedger.resolve(db, TENANT, u.id(), true,
+                    "人工确认：设备已执行", 1L);
+            check("崩溃点③：确认后状态 ACKED", n == 1
+                    && "ACKED".equals(CommandLedger.stateOf(db, TENANT, mid)),
+                    CommandLedger.stateOf(db, TENANT, mid));
+        }
+
+        // ④ 重复下发：同 key 第二次 begin 被拒
+        String dup = PREFIX + "cp-dup";
+        begin(dup, "cmd-cp-dup");
+        CommandLedger.Entry again = begin(dup, "cmd-cp-dup");
+        check("崩溃点④重复下发：begin 拒绝新派发", !again.created(), again);
+    }
+
+    private static CommandLedger.Unknown findUnknown(String key) throws Exception {
+        for (CommandLedger.Unknown u : CommandLedger.listUnknown(db, TENANT, 200)) {
+            if (key.equals(u.key())) {
+                return u;
+            }
+        }
+        return null;
     }
 
     private static CommandLedger.Entry begin(String key, String commandId) throws Exception {
