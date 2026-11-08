@@ -65,6 +65,7 @@ cat /tmp/_schema_header.sql \
     99o_position_evidence.sql \
     99p_transfer_transaction.sql \
     99q_handoff_intervention.sql \
+    99r_handoff_manual_window.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

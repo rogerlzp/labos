@@ -30,6 +30,10 @@ public final class HandoffConfirmDbSelfTest {
         check("重复确认返回 0", again == 0, again);
         check("Handoff 与介入记录强关联（intervention_record_id）",
                 interventionId(db) > 0, interventionId(db));
+        check("Handoff 与人工窗口直接联动（manual_window_id）",
+                windowId(db) > 0, windowId(db));
+        check("联动窗口已决策 CONTINUE",
+                "decided".equals(windowStatus(db)), windowStatus(db));
         cleanup(db);
         System.out.println("通过 " + pass + ", 失败 " + fail);
         if (fail > 0) {
@@ -69,6 +73,32 @@ public final class HandoffConfirmDbSelfTest {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(
                      "SELECT status FROM experiment_handoff WHERE tenant_id=1 AND experiment_id=?")) {
+            ps.setLong(1, EXP);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    private static long windowId(DbConfig db) throws Exception {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT manual_window_id FROM experiment_handoff "
+                             + "WHERE tenant_id=1 AND experiment_id=?")) {
+            ps.setLong(1, EXP);
+            try (ResultSet rs = ps.executeQuery()) {
+                long v = rs.next() ? rs.getLong(1) : 0L;
+                return rs.wasNull() ? 0L : v;
+            }
+        }
+    }
+
+    private static String windowStatus(DbConfig db) throws Exception {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT w.status FROM experiment_handoff h JOIN manual_window w "
+                             + "ON w.id = h.manual_window_id "
+                             + "WHERE h.tenant_id=1 AND h.experiment_id=?")) {
             ps.setLong(1, EXP);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getString(1) : null;
@@ -116,6 +146,11 @@ public final class HandoffConfirmDbSelfTest {
             try (PreparedStatement ps = c.prepareStatement(
                     "DELETE FROM experiment_handoff WHERE tenant_id=1 AND experiment_id=?")) {
                 ps.setLong(1, EXP);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM manual_window WHERE tenant_id=1 AND window_key LIKE ?")) {
+                ps.setString(1, "handoff:" + EXP + ":%");
                 ps.executeUpdate();
             }
             try (PreparedStatement ps = c.prepareStatement(

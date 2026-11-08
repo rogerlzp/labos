@@ -3974,17 +3974,40 @@ public final class QueryService {
                             recordId = rs.next() ? rs.getLong(1) : 0L;
                         }
                     }
+                    // N-08：确认动作同时落一条已决策 manual_window，形成直接联动
+                    long windowId;
+                    try (PreparedStatement ps = c.prepareStatement("""
+                            INSERT INTO manual_window
+                              (tenant_id, run_id, window_key, default_action,
+                               allowed_actions, decision_reason, status,
+                               decided_at, decided_by, decided_action, note)
+                            VALUES (?, 0, ?, 'MANUAL',
+                                    '["CONTINUE"]'::jsonb, ?, 'decided',
+                                    now(), ?, 'CONTINUE', ?)
+                            RETURNING id
+                            """)) {
+                        ps.setLong(1, tenantId);
+                        ps.setString(2, "handoff:" + experimentId + ":" + fromWorkcellId + ":"
+                                + toWorkcellId);
+                        ps.setString(3, note == null ? "Handoff 人工确认" : note);
+                        ps.setString(4, operator == null ? "api" : operator);
+                        ps.setString(5, note);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            windowId = rs.next() ? rs.getLong(1) : 0L;
+                        }
+                    }
                     try (PreparedStatement ps = c.prepareStatement("""
                             UPDATE experiment_handoff
-                               SET intervention_record_id = ?
+                               SET intervention_record_id = ?, manual_window_id = ?
                              WHERE tenant_id = ? AND experiment_id = ?
                                AND from_workcell_id = ? AND to_workcell_id = ?
                             """)) {
                         ps.setLong(1, recordId);
-                        ps.setLong(2, tenantId);
-                        ps.setLong(3, experimentId);
-                        ps.setLong(4, fromWorkcellId);
-                        ps.setLong(5, toWorkcellId);
+                        ps.setLong(2, windowId);
+                        ps.setLong(3, tenantId);
+                        ps.setLong(4, experimentId);
+                        ps.setLong(5, fromWorkcellId);
+                        ps.setLong(6, toWorkcellId);
                         ps.executeUpdate();
                     }
                 }

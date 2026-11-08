@@ -127,6 +127,14 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 
 仍缺：manual_window 与 Handoff 的直接外键/窗口处置联动（当前通过 L-01 记录强关联）。
 
+## 四·补八、Handoff 与 manual_window 直接联动（2026-11-09）
+
+- experiment_handoff 增加 manual_window_id（99r）；
+- confirmHandoff 同事务写一条已决策 manual_window（run_id=0，window_key=handoff:exp:from:to，
+  decided_action=CONTINUE，decided_by=操作人）；
+- HandoffGate 放行条件：confirmed + intervention_record_id + manual_window_id 三者齐全；
+- HandoffConfirmDbSelfTest 7/0；test-all 1239/0（停 API）。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；

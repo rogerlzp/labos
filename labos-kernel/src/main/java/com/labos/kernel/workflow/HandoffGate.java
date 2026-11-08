@@ -58,7 +58,8 @@ public final class HandoffGate {
         Set<String> unknown = new LinkedHashSet<>();
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
-                     SELECT from_workcell_id, to_workcell_id, status, intervention_record_id
+                     SELECT from_workcell_id, to_workcell_id, status, intervention_record_id,
+                            manual_window_id
                        FROM experiment_handoff
                       WHERE tenant_id = ? AND experiment_id = ?
                      """)) {
@@ -69,8 +70,10 @@ public final class HandoffGate {
                     String pair = rs.getLong(1) + "->" + rs.getLong(2);
                     // ADR-ISLAND-004 / N-08：配置≠可执行；confirmed 且有人工介入记录才放行
                     long rec = rs.getLong(4);
+                    long win = rs.getLong(5);
                     boolean hasRecord = !rs.wasNull() && rec > 0;
-                    if ("confirmed".equalsIgnoreCase(rs.getString(3)) && hasRecord) {
+                    boolean hasWindow = !rs.wasNull() && win > 0;
+                    if ("confirmed".equalsIgnoreCase(rs.getString(3)) && hasRecord && hasWindow) {
                         configured.add(pair);
                     } else if ("unknown".equalsIgnoreCase(rs.getString(3))) {
                         unknown.add(pair);
