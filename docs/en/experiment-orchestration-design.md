@@ -605,7 +605,7 @@ Fork ${plateCount} > 1      ← evaluate it and choose the branch
 End
 ```
 
-**Note**: the two paths of the fork eventually have to merge into the "End" (or into a merge node), otherwise one of the paths never finishes.
+**Note**: the two paths of the fork eventually have to merge into the "End" (or into a merge node), otherwise one of the paths never finishes. When nesting, an inner split must merge **inside its enclosing branch**, each level has its own pair of joins, and a nesting depth of <= 2 is recommended; see §3.5 of the workflow-control technical design and §6 of the workflow-control functional guide.
 
 ---
 

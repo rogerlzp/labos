@@ -319,6 +319,7 @@ Three kinds must have a **second confirmation + an explanation of the consequenc
 | The status page is separate | Folded into the "Run" home page | The operator only cares about "now" |
 | Alerts and policies are separate | Both under "Operations" | They are two sides of the same thing |
 | A single-file HTML | A React + AntD project | See `webapp/` |
+| The designer has no "auto align"; execution has no parameter form | Add an "Auto align" button (topology layering); an execution-parameter form is still pending | Hand-placed diagrams get messy; run-input variables can currently only be passed through the API |
 
 ---
 

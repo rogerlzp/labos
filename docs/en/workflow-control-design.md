@@ -159,6 +159,15 @@ and marking it as `bypassed` would make `resumeAsync` (skip the completed ones, 
 
 ---
 
+### 3.5 Gateway pairing and nesting rules (added 2026-11-08)
+
+- **Roles are derived from in/out degrees**: in-degree > 1 means a join, out-degree > 1 means a split, both > 1 means wait-then-split, and 1-in-1-out is a pass-through; the "suggested name" on the canvas is only a naming aid and is not read by the executor.
+- **Join semantics**: a parallel gateway (`JOIN_PARALLEL`) is an AND join - it advances only when every incoming edge has arrived; any non-parallel merge (including exclusive gateways and ordinary nodes) is an OR join - it advances on the first arriving edge and de-duplicates via `done`.
+- **1-in-1-out gateways**: the parser treats them as pass-throughs and reports nothing, but a diamond that does nothing is a diagram-quality problem; the test helper `validate_flow()` already forbids it, and `PreflightChecker` should gain the same warning.
+- **Nesting**: the engine executes on graph topology and allows nesting; `validate_flow()` requires every branch of an inner split to merge into a same-type join inside its own branch (an exclusive split may merge into the same end), and recommends depth <= 2 and at most 4 gateway pairs per diagram.
+- **Known risk**: when a parallel split has no explicit join, the execution queue may drain early while `settleRun` still marks the run completed and marks unreached nodes bypassed (the false green of the old 4.16 diagram). Page-drawn and matrix-generated diagrams must therefore pass `validate_flow()` before execution.
+- **To be added**: `PreflightChecker` warnings for split-without-join / 1-in-1-out / over-deep nesting; and a run-input parameter form on the page execute entry (currently only the `?vars=` API is supported).
+
 ## 4. The data flow
 
 ```

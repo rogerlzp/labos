@@ -158,6 +158,15 @@ curl -X POST "http://127.0.0.1:18080/api/workflows/1259/run?async=1" -H "Authori
 
 ---
 
+## 6. Gateways, branches and variables: pairs, nesting and conditions (added 2026-11-08)
+
+- **One entry, one exit per workflow**: exactly one start and one end on the canvas; every node except start/end must have an incoming and an outgoing edge, and every node must be reachable from start and able to reach end.
+- **Gateways come in pairs**: a split (out-degree > 1) requires a join of the same type (in-degree > 1); a parallel split without a join has no synchronisation semantics, while an exclusive split may merge into the same end event. **1-in-1-out gateways are forbidden** (a meaningless pass-through that is easy to misread).
+- **Nesting is allowed but bounded**: a parallel branch may itself contain exclusive/parallel splits, but an inner split must merge **inside its own enclosing branch**; every level has its own pair of joins and one join must not merge two different semantic levels. Recommended limits: nesting depth <= 2 and at most 4 gateway pairs per diagram; the product preflight should warn when exceeded (today it only marks unreachable nodes and stuck joins; the hard check lives in the test helper `validate_flow()`).
+- **Where conditions live**: select the sequence flow and write the expression in the "Flow · Condition" panel (e.g. `${ok} == true`, `${counter} > 3`); a gateway may declare a default, and when no condition matches and no default exists the engine takes the first declared edge.
+- **Where variables come from**: (1) in-graph variable nodes `__setVar` / `__expr` configured in the node settings panel; (2) run-time input via the `vars` parameter of `POST /api/workflows/{id}/run` (e.g. `?vars=ok=true`, which is how `MTRX-异或-1` works).
+- **Current UI status**: node settings, flow conditions and auto-align all have page entries; however there is no execution-parameters form yet (the page execute button only sends `mode/async`), so run-input variables can only be passed through the API - an execution dialog is on the gap list.
+
 ## 5. Change log
 
 | Date | Content |
