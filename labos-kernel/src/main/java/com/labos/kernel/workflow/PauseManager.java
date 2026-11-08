@@ -366,6 +366,17 @@ public final class PauseManager {
                     runId, action.name(), 0);
         }
 
+        // P-08 强门禁：位置未确认（仅运动报告）时不允许继续/重试，只允许终止
+        if (action != ResumeAction.ABORT) {
+            try (Connection c = db.open()) {
+                if (hasUnconfirmedTransfer(c, runId)) {
+                    return new ResumeResult(false,
+                            "存在未确认的搬运位置，请先扫码/人工确认"
+                                    + "（POST /api/transfers/{id}/confirm）",
+                            runId, action.name(), 0);
+                }
+            }
+        }
         int corrected = 0;
         if (corrections != null) {
             for (Map.Entry<String, String> e : corrections.entrySet()) {
@@ -684,6 +695,21 @@ public final class PauseManager {
      * run 回 queued/aborted。校正的板状态/解封/审计也在同事务（locatePlateTx）。
      * 异步续跑仍由调用方 commit 后触发（内存动作，不属于 DB 事务）。
      */
+    /** P-08：该 run 是否还有未确认的搬运位置（REPORTED/UNKNOWN）。 */
+    private boolean hasUnconfirmedTransfer(Connection c, long runId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT count(*) FROM transfer_transaction
+                 WHERE tenant_id = ? AND run_id = ?
+                   AND status IN ('REPORTED', 'UNKNOWN')
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getInt(1) > 0;
+            }
+        }
+    }
+
     public ResumeResult resumeTx(Connection c, long runId, ResumeAction action,
                                  Map<String, String> corrections, String operator)
             throws SQLException {

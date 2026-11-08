@@ -71,6 +71,14 @@ public final class PauseManagerSelfTest {
                 count("SELECT count(*) FROM manual_window WHERE tenant_id=1 AND run_id="
                         + runId + " AND status='pending'"));
 
+        exec("INSERT INTO transfer_transaction (tenant_id, run_id, plate_barcode, status) "
+                + "VALUES (1, " + runId + ", 'PL-TEST-M4', 'REPORTED')");
+        PauseManager.ResumeResult blocked = pm.resume(runId,
+                PauseManager.ResumeAction.CONTINUE, Map.of(), "test");
+        check("未确认搬运位置拒绝恢复", !blocked.ok(), blocked.ok());
+
+        exec("UPDATE transfer_transaction SET status='CONFIRMED' "
+                + "WHERE tenant_id=1 AND run_id=" + runId);
         PauseManager.ResumeResult r = pm.resume(runId, PauseManager.ResumeAction.CONTINUE,
                 Map.of(), "test");
         check("恢复成功", r.ok(), r.error());
@@ -321,6 +329,7 @@ public final class PauseManagerSelfTest {
 
     private static void cleanup(long runId) {
         exec("DELETE FROM manual_window WHERE tenant_id = 1 AND run_id = " + runId);
+        exec("DELETE FROM transfer_transaction WHERE tenant_id = 1 AND run_id = " + runId);
         exec("DELETE FROM plate_location_audit WHERE run_id = " + runId);
         exec("DELETE FROM run WHERE id = " + runId);
         exec("DELETE FROM plate WHERE tenant_id = 1 AND barcode = 'PL-TEST-M4'");

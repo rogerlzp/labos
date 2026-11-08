@@ -370,8 +370,18 @@ public final class PauseCoordinator {
                             intOf(claim.detail().get("correctedPlates"), 0));
                 }
                 PauseManager.ResumeAction action = PauseManager.ResumeAction.of(cmd.kind());
-                PauseManager.ResumeResult r = new PauseManager(db, tenantId)
-                        .resumeTx(c, cmd.targetId(), action, corrections, "api");
+                // P-08 强门禁：位置未确认（仅运动报告）时不允许继续/重试，只允许终止
+                PauseManager.ResumeResult r;
+                if (action != PauseManager.ResumeAction.ABORT
+                        && TransferTransaction.hasUnconfirmed(db, tenantId, cmd.targetId())) {
+                    r = new PauseManager.ResumeResult(false,
+                            "存在未确认的搬运位置，请先扫码/人工确认"
+                                    + "（POST /api/transfers/{id}/confirm）",
+                            cmd.targetId(), action.name(), 0);
+                } else {
+                    r = new PauseManager(db, tenantId)
+                            .resumeTx(c, cmd.targetId(), action, corrections, "api");
+                }
                 cmd.result(r.ok() ? PauseCommand.ResultState.COMPLETED
                         : PauseCommand.ResultState.REJECTED);
                 Map<String, String> detail = new LinkedHashMap<>();

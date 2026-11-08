@@ -74,6 +74,15 @@ Batch 2 要求「启动恢复不无条件清理设备锁」。
 
 仍缺：扫码/传感器自动接入（当前人工调 API）、与调度「目标位置确认后才允许下一步」的强门禁。
 
+## 三·补五、按位置确认的恢复强门禁（2026-11-09）
+
+- PauseManager.resume / PauseCoordinator.resumeWorkflowRun 增加门禁：
+  该 run 存在 REPORTED/UNKNOWN 的 transfer_transaction 时，继续/重试一律拒绝，
+  提示先扫码/人工确认（POST /api/transfers/{id}/confirm）；ABORT 仍允许；
+- 依据：设备成功回包只是运动报告，位置未确认不能继续下一动作；
+- PauseManagerSelfTest 19/0（未确认拒绝恢复 / 确认后恢复成功）；
+- test-all 1240/0（停 API）。
+
 ## 四、边界（P-08 剩余）
 
 1. 资源与物理位置三维分离（resource / booking / physical position 独立事实）未做；
