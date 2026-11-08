@@ -242,7 +242,9 @@ final class WorkflowApi {
                 String body = new String(s.readBody(ex),
                         StandardCharsets.UTF_8);
                 try {
-                    WorkflowService.SaveResult r = s.workflows.saveGraph(gid, body);
+                    String dq = ex.getRequestURI().getQuery();
+                    boolean draft = dq != null && dq.contains("draft=1");
+                    WorkflowService.SaveResult r = s.workflows.saveGraph(gid, body, draft);
                     s.send(ex, 200, Jsons.obj(
                             "nodes", r.nodes(), "edges", r.edges(),
                             "added", r.added(), "updated", r.updated(),

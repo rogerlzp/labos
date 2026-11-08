@@ -331,6 +331,9 @@ export interface RuntimeHoldItem {
 
 export interface RuntimeHolds {
   anyActive: boolean;
+  /** 读扣留失败(=UNKNOWN)：调度器已 fail-closed 阻断新派发，界面须显式提示（ADR-PAUSE-010）。 */
+  unknown: boolean;
+  unknownReason: string | null;
   holds: RuntimeHoldItem[];
 }
 
@@ -688,7 +691,12 @@ export const api = {
    */
   saveGraph: async (id: number, xml: string) => {
     const token = tokenStore.get();
-    const r = await fetch(`${BASE}/api/workflows/${id}/graph`, {
+    // 自动化/编辑器中间态：页面 localStorage 打了草稿标记时，保存带 ?draft=1，
+    // 允许“还没连完线”的中间图落库；正常用户（无标记）仍会被服务端拒绝不完整图。
+    const draft = typeof window !== 'undefined'
+      && window.localStorage.getItem('labos.designer.draft') === '1';
+    const url = `${BASE}/api/workflows/${id}/graph${draft ? '?draft=1' : ''}`;
+    const r = await fetch(url, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/xml',
@@ -701,8 +709,10 @@ export const api = {
       throw new ApiError(401, 'unauthorized', translate('error.unauthorizedGraph'));
     }
     if (!r.ok) {
+      let detail = '';
+      try { detail = (await r.text()).trim(); } catch { /* ignore */ }
       throw new ApiError(r.status, 'saveGraph',
-        translate('error.saveGraph', { status: r.status }));
+        detail || translate('error.saveGraph', { status: r.status }));
     }
     return r.json();
   },

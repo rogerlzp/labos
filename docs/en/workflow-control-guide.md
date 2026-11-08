@@ -166,6 +166,7 @@ curl -X POST "http://127.0.0.1:18080/api/workflows/1259/run?async=1" -H "Authori
 - **Where conditions live**: select the sequence flow and write the expression in the "Flow · Condition" panel (e.g. `${ok} == true`, `${counter} > 3`); a gateway may declare a default, and when no condition matches and no default exists the engine takes the first declared edge.
 - **Where variables come from**: (1) in-graph variable nodes `__setVar` / `__expr` configured in the node settings panel; (2) run-time input via the `vars` parameter of `POST /api/workflows/{id}/run` (e.g. `?vars=ok=true`, which is how `MTRX-异或-1` works).
 - **Current UI status**: node settings, flow conditions and auto-align all have page entries; however there is no execution-parameters form yet (the page execute button only sends `mode/async`), so run-input variables can only be passed through the API - an execution dialog is on the gap list.
+- **Save validation (added 2026-11-08)**: the server validates a saved diagram - exactly one start and one end, no isolated nodes, every node reachable from start and able to reach end; otherwise the save fails with HTTP 400 naming the offending nodes. Automation/editor intermediates may pass `?draft=1` to save a draft (the designer page can enable it via `localStorage.labos.designer.draft=1`, which the test helper sets automatically); draft diagrams cannot be executed.
 
 ## 5. Change log
 

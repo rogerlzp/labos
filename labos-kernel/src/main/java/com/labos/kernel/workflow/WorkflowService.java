@@ -787,6 +787,9 @@ public final class WorkflowService {
         // 收尾前要用它把 run 落成 paused，否则 markBypassedNodes/settleRun 会把
         // "还没轮到的节点"标成 bypassed、把整单覆盖成 completed。
         boolean pausedAtBoundary = false;
+        // GraphRunner 实际停住的节点。页面/探针往往先把 status 写成 paused，
+        // 但写不了「下一个任务边界是谁」——那个 key 只在执行线程里知道。
+        String pausedAtKey = null;
         try (JdbcEventStore store = new JdbcEventStore(db, tenantId, runId, "api-wf", 100)) {
             // ⚠️ 这里改动前传的是 Sleeper.recording(...)：只**记录**退避时间，没人真睡。
             // 后果：策略写 retry 3 次（500ms/1s/2s），实际 50ms 内就把三次机会用光，
@@ -811,7 +814,13 @@ public final class WorkflowService {
                 try {
                     WorkflowGraphParser.Graph g = WorkflowGraphParser.parse(xml);
                     GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
-                            nodeIdByKey, s -> { })
+                            nodeIdByKey, line -> {
+                                // 其余图日志仍不刷屏；暂停落点必须进内核 stdout，
+                                // 否则「停在哪个节点」只活在被丢弃的回调里，外面无从核对。
+                                if (line != null && line.startsWith("[暂停]")) {
+                                    System.out.println(line);
+                                }
+                            })
                             .withResourceCapability(resourceCap)
                             .withBoundInstances(loadBoundInstances())
                             .withSkipKeys(skipKeys)
@@ -839,7 +848,7 @@ public final class WorkflowService {
                             // （2026-11-06 实测：实验级暂停停不住 workflow 级 run）。
                             .withPauseChecker(() -> isRunPaused(runId)
                                     || new RuntimeHold(db, tenantId)
-                                            .coveringForWorkflow(workflowId) != null)
+                                            .coverageForWorkflow(workflowId).blocks())
                             // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
                             // 靠这个回调把三段状态画得出来（见 createNodeShells）。
                             .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st));
@@ -849,6 +858,7 @@ public final class WorkflowService {
                     progress = gr.run(g, executor);
                     viaGraph = true;
                     pausedAtBoundary = gr.runPaused();
+                    pausedAtKey = gr.pausedAtKey();
                 } catch (RuntimeException ex) {
                     System.err.println("[WARN] 按图执行失败，退回顺序执行: " + ex.getMessage());
                     progress = sm.executeAll(rec, executor);
@@ -867,7 +877,7 @@ public final class WorkflowService {
         // 顺序不能反 —— markBypassedNodes / settleRun 都以 run.status 为准，
         // 不先落就会把"还没轮到的节点"标成 bypassed、把整单覆盖成 completed。
         if (pausedAtBoundary) {
-            pauseRunAtBoundary(runId, workflowId);
+            pauseRunAtBoundary(runId, workflowId, pausedAtKey);
         }
 
         Map<Long, Long> deviceToResource = loadDeviceResourceMap();
@@ -2455,8 +2465,14 @@ public final class WorkflowService {
      *
      * <p>暂停类型/原因取覆盖该流程的现场扣留（实验级暂停落的就是它），
      * 与实验口径一致；页面暂停已经写过的值不覆盖（{@code status <> 'paused'}）。
+     *
+     * @param pendingKey 执行线程实际停住、尚未开始的节点。调用方事先写过
+     *                   {@code pause_node_key} 时不覆盖；没写过则补上。
+     *                   探针若自己把 key 填成「正在执行的那个节点」，会把真正的边界盖掉，
+     *                   所以真边界暂停的探针必须把这一列留空。
      */
-    private void pauseRunAtBoundary(long runId, long workflowId) throws SQLException {
+    private void pauseRunAtBoundary(long runId, long workflowId, String pendingKey)
+            throws SQLException {
         String kind = RuntimeHold.Kind.MANUAL.code();
         String reason = "在节点边界被暂停，待恢复后续跑";
         RuntimeHold.Active a = new RuntimeHold(db, tenantId).coveringForWorkflow(workflowId);
@@ -2474,14 +2490,33 @@ public final class WorkflowService {
                         SET status = 'paused'::run_status,
                             pause_kind = COALESCE(pause_kind, ?),
                             pause_reason = COALESCE(pause_reason, ?),
+                            pause_node_key = COALESCE(pause_node_key, ?),
                             paused_at = COALESCE(paused_at, now())
                       WHERE tenant_id = ? AND id = ? AND status <> 'paused'
                      """)) {
             ps.setString(1, kind);
             ps.setString(2, reason);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, runId);
+            ps.setString(3, pendingKey);
+            ps.setLong(4, tenantId);
+            ps.setLong(5, runId);
             ps.executeUpdate();
+        }
+        // 页面暂停 / e2e 探针在动作进行中就把 status 写成了 paused。
+        // 上面那条 WHERE status <> 'paused' 因此更新 0 行，pause_node_key 仍是空。
+        // 边界到达后补上执行线程看到的待执行节点；已有值不覆盖。
+        if (pendingKey != null && !pendingKey.isBlank()) {
+            try (Connection c = db.open();
+                 PreparedStatement ps = c.prepareStatement("""
+                         UPDATE run
+                            SET pause_node_key = ?
+                          WHERE tenant_id = ? AND id = ? AND status = 'paused'
+                            AND pause_node_key IS NULL
+                         """)) {
+                ps.setString(1, pendingKey);
+                ps.setLong(2, tenantId);
+                ps.setLong(3, runId);
+                ps.executeUpdate();
+            }
         }
     }
 
@@ -2768,6 +2803,121 @@ public final class WorkflowService {
     }
 
     public SaveResult saveGraph(long workflowId, String xml) throws SQLException {
+        return saveGraph(workflowId, xml, false);
+    }
+
+    /**
+     * 校验「存进来的是一张能跑的图」——不通过就拒绝保存。
+     *
+     * <p>为什么不在前端拦：设计器保存是整图覆盖，前端漏校验/被绕过时会留下
+     * 「节点孤立、没有开始/结束」的垃圾流程（2026-11-08 用户在一个测试残留里
+     * 看到过：节点都在、线一条没连，页面却显示已保存）。产品侧必须兜底。
+     *
+     * <p>中间态（自动化逐边保存、编辑器暂存）可用 {@code ?draft=1} 放行；
+     * 草稿图不允许被执行（执行入口另有 preflight/compile 拦截）。
+     */
+    private static void validateGraphShape(BpmnGraphParser.ParsedGraph graph) {
+        long starts = graph.nodes().stream()
+                .filter(n -> "start".equals(n.type())).count();
+        long ends = graph.nodes().stream()
+                .filter(n -> "end".equals(n.type())).count();
+        if (starts != 1 || ends != 1) {
+            throw new IllegalArgumentException(
+                    "流程必须恰好 1 个开始节点和 1 个结束节点（当前 " + starts + " / " + ends + "）");
+        }
+        java.util.Map<String, Integer> degree = new java.util.LinkedHashMap<>();
+        java.util.Map<String, String> names = new java.util.LinkedHashMap<>();
+        for (BpmnGraphParser.ParsedNode n : graph.nodes()) {
+            degree.put(n.key(), 0);
+            names.put(n.key(), n.name() == null ? n.key() : n.name());
+        }
+        java.util.Map<String, java.util.List<String>> out = new java.util.LinkedHashMap<>();
+        java.util.Map<String, java.util.List<String>> in = new java.util.LinkedHashMap<>();
+        for (BpmnGraphParser.ParsedEdge e : graph.edges()) {
+            if (!degree.containsKey(e.from()) || !degree.containsKey(e.to())) {
+                continue;
+            }
+            degree.merge(e.from(), 1, Integer::sum);
+            degree.merge(e.to(), 1, Integer::sum);
+            out.computeIfAbsent(e.from(), k -> new java.util.ArrayList<>()).add(e.to());
+            in.computeIfAbsent(e.to(), k -> new java.util.ArrayList<>()).add(e.from());
+        }
+        java.util.List<String> isolated = new java.util.ArrayList<>();
+        for (BpmnGraphParser.ParsedNode n : graph.nodes()) {
+            if (("start".equals(n.type()) || "end".equals(n.type()))) {
+                continue;
+            }
+            if (degree.getOrDefault(n.key(), 0) == 0) {
+                isolated.add(names.get(n.key()) + "(" + n.key() + ")");
+            }
+        }
+        if (!isolated.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "图里有 " + isolated.size() + " 个孤立节点（没有任何连线）："
+                            + String.join(", ", isolated)
+                            + "。请先连线或删除后再保存（自动化中间态可用 ?draft=1）");
+        }
+        // 从 start 可达
+        String startKey = graph.nodes().stream()
+                .filter(n -> "start".equals(n.type())).findFirst().map(BpmnGraphParser.ParsedNode::key)
+                .orElse(null);
+        java.util.Set<String> reach = new java.util.HashSet<>();
+        java.util.Deque<String> stack = new java.util.ArrayDeque<>();
+        if (startKey != null) {
+            stack.push(startKey);
+            reach.add(startKey);
+        }
+        while (!stack.isEmpty()) {
+            String cur = stack.pop();
+            for (String nx : out.getOrDefault(cur, java.util.List.of())) {
+                if (reach.add(nx)) {
+                    stack.push(nx);
+                }
+            }
+        }
+        java.util.List<String> unreachable = new java.util.ArrayList<>();
+        for (BpmnGraphParser.ParsedNode n : graph.nodes()) {
+            if (!reach.contains(n.key())) {
+                unreachable.add(names.get(n.key()) + "(" + n.key() + ")");
+            }
+        }
+        if (!unreachable.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "有节点从开始节点走不到：" + String.join(", ", unreachable)
+                            + "。请补连线后再保存（自动化中间态可用 ?draft=1）");
+        }
+        // 都能到 end
+        String endKey = graph.nodes().stream()
+                .filter(n -> "end".equals(n.type())).findFirst().map(BpmnGraphParser.ParsedNode::key)
+                .orElse(null);
+        java.util.Set<String> back = new java.util.HashSet<>();
+        java.util.Deque<String> st2 = new java.util.ArrayDeque<>();
+        if (endKey != null) {
+            st2.push(endKey);
+            back.add(endKey);
+        }
+        while (!st2.isEmpty()) {
+            String cur = st2.pop();
+            for (String pv : in.getOrDefault(cur, java.util.List.of())) {
+                if (back.add(pv)) {
+                    st2.push(pv);
+                }
+            }
+        }
+        java.util.List<String> deadEnd = new java.util.ArrayList<>();
+        for (BpmnGraphParser.ParsedNode n : graph.nodes()) {
+            if (!back.contains(n.key())) {
+                deadEnd.add(names.get(n.key()) + "(" + n.key() + ")");
+            }
+        }
+        if (!deadEnd.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "有节点走不到结束节点：" + String.join(", ", deadEnd)
+                            + "。请补连线后再保存（自动化中间态可用 ?draft=1）");
+        }
+    }
+
+    public SaveResult saveGraph(long workflowId, String xml, boolean draft) throws SQLException {
         BpmnGraphParser.ParsedGraph graph = BpmnGraphParser.parse(xml);
 
         // ① 解析出 0 个节点 → 拒绝。否则一次误传（比如传了展开视图或坏 XML）
@@ -2786,6 +2936,10 @@ public final class WorkflowService {
             throw new IllegalArgumentException(
                     "这是展开视图（含 " + stepNodes + " 个步骤节点），不能直接保存。"
                             + "请在设计器里保存，它会把步骤折叠回业务节点");
+        }
+
+        if (!draft) {
+            validateGraphShape(graph);
         }
 
         // ② 保存前备份上一版图：出问题能查回上一版

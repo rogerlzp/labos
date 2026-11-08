@@ -167,6 +167,7 @@ and marking it as `bypassed` would make `resumeAsync` (skip the completed ones, 
 - **Nesting**: the engine executes on graph topology and allows nesting; `validate_flow()` requires every branch of an inner split to merge into a same-type join inside its own branch (an exclusive split may merge into the same end), and recommends depth <= 2 and at most 4 gateway pairs per diagram.
 - **Known risk**: when a parallel split has no explicit join, the execution queue may drain early while `settleRun` still marks the run completed and marks unreached nodes bypassed (the false green of the old 4.16 diagram). Page-drawn and matrix-generated diagrams must therefore pass `validate_flow()` before execution.
 - **To be added**: `PreflightChecker` warnings for split-without-join / 1-in-1-out / over-deep nesting; and a run-input parameter form on the page execute entry (currently only the `?vars=` API is supported).
+- **Server-side save guard (added 2026-11-08)**: `WorkflowService.saveGraph` validates start/end count, isolated nodes and reachability from start / to end unless draft mode is requested; failures throw `IllegalArgumentException` and the API returns 400 with the offending node list. `?draft=1` lets automation/editor intermediates through; preflight/compile remains the second gate before execution.
 
 ## 4. The data flow
 

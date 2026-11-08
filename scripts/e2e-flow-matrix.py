@@ -213,6 +213,12 @@ class Ctx:
 
 def make_workflow(page, ctx, name):
     """从界面新建一条流程并进设计器；返回 (wf_id, task_ids)。"""
+    # 测试脚本允许保存中间态图（逐边连线/调设置/腾挪节点），走 draft=1；
+    # 产品用户（无 localStorage 标记）仍会被服务端拒绝“有孤立节点/缺开始结束”的图。
+    try:
+        page.evaluate("localStorage.setItem('labos.designer.draft', '1')")
+    except Exception:  # noqa: BLE001
+        pass
     nav(page, "流程库")
     page.get_by_role("button", name=re.compile(r"新建流程")).first.click()
     page.wait_for_selector(".ant-modal-content", timeout=10000)
