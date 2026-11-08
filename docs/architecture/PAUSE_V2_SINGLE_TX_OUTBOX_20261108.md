@@ -44,7 +44,8 @@ COMMIT
 | 实验级 Pause（E-4：POST /api/experiments/runs/{id}/pause） | ✅ 本切片 | Hold+control+幂等键+事件同事务 |
 | 实验级 Resume（E-6） | ✅ 第二切片 | 解 Hold / run 回 queued / 实验表同步 / 作废旧 paused run / RESUME_REQUESTED 事件同事务；批次聚合与重新入队 commit 后做 |
 | 实验级 Stop（E-5） | ✅ 第三切片 | stop_requested / aborted / 实验表同步 / STOP_REQUESTED 事件同事务；批次聚合 commit 后补 |
-| Workflow 级 Pause / Resume（E-1~E-3） | ❌ 仍 V1 | PauseManager 仍多连接；依赖 P-07 命令账本一起做 |
+| Workflow 级 Pause（E-1） | ✅ 第五切片 | run 落 paused + 释放位置/预约/通道/设备锁 + 幂等结果 + PAUSE_REQUESTED 事件同事务 |
+| Workflow 级 Resume / 批量忽略（E-2/E-3） | ❌ 仍 V1 | E-2 还含 locatePlate/异步续跑，E-3 为批量语义；下一步拆 |
 | PAUSING 异步收敛 worker | 🟡 第四切片（最小） | 受理超过 5 秒仍未到边界的 running run 标 PAUSING（只展示，不写 paused）；settle 收尾回 NONE |
 | P-07 命令账本/Outbox | ❌ 未做 | 设备指令派发前/回包后/重启恢复的 exactly-once 证据链 |
 
@@ -101,6 +102,20 @@ test-all 1148/0。
 
 边界：这是可观测中间态的最小 worker；暂停请求没有 requestId 时仍能靠
 pause_requested_at 推进（该列由受理事务写入）。
+
+## 三·补四、第五切片：Workflow 级 Pause（E-1）单事务（2026-11-08）
+
+E-1 原实现：run 落 paused（一个连接）→ 释放资源（再 4 个连接：位置/预约/通道/设备锁）；
+中间崩溃会出现「显示 paused 但资源没释放」或反之。
+
+第五切片：PauseManager 新增 pauseTx(Connection,...) 与 releaseResourcesTx（4 条 SQL 复用同连接），
+PauseCoordinator.pauseWorkflowRun 改为单事务：claimTx → pauseTx（run+资源）→ settleTx →
+pause_event(PAUSE_REQUESTED) 一次 commit；异常整体回滚。
+
+测试：PauseManagerSelfTest 16/0；PauseCoordinatorDbSelfTest 52/0（新增流程级暂停单事务/
+事件/重复回放 6 条）；test-all 1166/0；4.19 页面网关暂停、4.16 暂停/恢复节点回归。
+
+边界：E-2（Workflow Resume，含 locatePlate 与异步续跑）/E-3（批量忽略）仍 V1 多连接。
 
 ## 四、不变量与测试
 

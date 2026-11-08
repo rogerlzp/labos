@@ -313,25 +313,32 @@ public final class PauseCoordinator {
      * @return 释放的资源条数 + 实际生效的暂停类型码
      */
     public WorkflowPause pauseWorkflowRun(PauseCommand cmd, String nodeKey) throws SQLException {
-        Claim claim = claim(cmd);
-        if (!claim.firstTime()) {
-            // 重复请求：不再释放资源（首次已释放），回放首次的暂停类型
-            return new WorkflowPause(intOf(claim.detail().get("releasedResources"), 0),
-                    PauseManager.Kind.of(claim.kind()).code());
-        }
-        try {
-            PauseManager.Kind kind = PauseManager.Kind.of(cmd.kind());
-            String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
-            int released = new PauseManager(db, tenantId)
-                    .pause(cmd.targetId(), kind, reason, nodeKey);
-            // released=0 表示该 run 不在 running（无需暂停），与入口既有行为一致：仍是成功受理。
-            cmd.result(PauseCommand.ResultState.COMPLETED);
-            settle(cmd, Map.of("releasedResources", String.valueOf(released),
-                    "pauseKind", kind.code()));
-            return new WorkflowPause(released, kind.code());
-        } catch (SQLException | RuntimeException e) {
-            abandon(cmd);
-            throw e;
+        // P-06 V2：run 落 paused + 释放资源 + 幂等键结果 + pause_event 同事务。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                Claim claim = claimTx(c, cmd);
+                if (!claim.firstTime()) {
+                    c.rollback();
+                    // 重复请求：不再释放资源（首次已释放），回放首次的暂停类型
+                    return new WorkflowPause(intOf(claim.detail().get("releasedResources"), 0),
+                            PauseManager.Kind.of(claim.kind()).code());
+                }
+                PauseManager.Kind kind = PauseManager.Kind.of(cmd.kind());
+                String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
+                int released = new PauseManager(db, tenantId)
+                        .pauseTx(c, cmd.targetId(), kind, reason, nodeKey);
+                // released=0 表示该 run 不在 running（无需暂停），与入口既有行为一致：仍是成功受理。
+                cmd.result(PauseCommand.ResultState.COMPLETED);
+                settleTx(c, cmd, Map.of("releasedResources", String.valueOf(released),
+                        "pauseKind", kind.code()));
+                insertPauseEvent(c, cmd, "PAUSE_REQUESTED", null, null);
+                c.commit();
+                return new WorkflowPause(released, kind.code());
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
         }
     }
 

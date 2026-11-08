@@ -108,14 +108,34 @@ public final class PauseManager {
      */
     public int pause(long runId, Kind kind, String reason, String nodeKey)
             throws SQLException {
+        // P-06 V2：run 落 paused 与释放资源（位置/预约/通道/设备锁）同一事务。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                int released = pauseTx(c, runId, kind, reason, nodeKey);
+                c.commit();
+                return released;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * 同 {@link #pause}，但复用调用方事务连接（P-06 V2 E-1 单事务）。
+     *
+     * @return 释放的资源条数；0 = run 不在 running（无需暂停）
+     */
+    public int pauseTx(Connection c, long runId, Kind kind, String reason, String nodeKey)
+            throws SQLException {
         String sql = """
                 UPDATE run SET status = 'paused', pause_kind = ?, pause_reason = ?,
                        paused_at = now(), pause_node_key = ?,
                        updated_at = now()
                 WHERE tenant_id = ? AND id = ? AND status = 'running'
                 """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, kind.code());
             ps.setString(2, reason);
             ps.setString(3, nodeKey);
@@ -125,7 +145,7 @@ public final class PauseManager {
                 return 0;   // 不在 running，不用暂停
             }
         }
-        return releaseResources(runId);
+        return releaseResourcesTx(c, runId);
     }
 
     /**
@@ -141,43 +161,67 @@ public final class PauseManager {
      * @return 释放条数
      */
     public int releaseResources(long runId) {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                int released = releaseResourcesTx(c, runId);
+                c.commit();
+                return released;
+            } catch (SQLException e) {
+                c.rollback();
+                System.err.println("[暂停] 释放资源失败：" + e.getMessage());
+                return 0;
+            }
+        } catch (SQLException e) {
+            System.err.println("[暂停] 释放资源失败：" + e.getMessage());
+            return 0;
+        }
+    }
+
+    /** 同 {@link #releaseResources}，但复用调用方事务连接。 */
+    private int releaseResourcesTx(Connection c, long runId) throws SQLException {
         int released = 0;
 
         // 1) 位置预约（非豁免）
-        released += exec("""
+        released += execTx(c, """
                 DELETE FROM position_state
                 WHERE tenant_id = ? AND reserved_by_run = ?
                   AND plate_id IS NULL
                   AND COALESCE(block_reason, '') <> 'PLATE_UNKNOWN'
-                """, runId);
+                """, tenantId, runId);
 
         // 2) 资源预约（非豁免）；回程承诺的 release_exempt = true 自动跳过。
-        // resource_booking 没有 run_id 列，通过 run_node_id 关联。
-        released += exec("""
+        released += execTx(c, """
                 DELETE FROM resource_booking
                 WHERE tenant_id = ? AND status = 'active'
                   AND COALESCE(release_exempt, false) = false
                   AND run_node_id IN (SELECT id FROM run_node WHERE run_id = ?)
-                """, runId);
+                """, tenantId, runId);
 
         // 3) 通道占用：暂停说明不再处于搬运中，可以放。
-        //    device_port_usage 是 (tenant_id, port_id) 上的租户级信号量，没有 run_id 列，
-        //    所以这里按租户维度清零（与 RuntimeHold「扣留不释放资源」是相反口径，见类头）。
-        released += execTenant("""
+        released += execTx(c, """
                 UPDATE device_port_usage u SET in_use = 0, updated_at = now()
                 WHERE u.tenant_id = ?
                   AND u.port_id IN (SELECT id FROM device_port WHERE tenant_id = ?)
                   AND u.in_use > 0
-                """);
+                """, tenantId, tenantId);
 
         // 4) 设备锁：只放"状态不是 running"的（running 说明正在用）
-        released += exec("""
+        released += execTx(c, """
                 UPDATE device_state SET current_run_id = NULL, status = 'idle',
                        updated_at = now()
                 WHERE tenant_id = ? AND current_run_id = ? AND status <> 'running'
-                """, runId);
+                """, tenantId, runId);
 
         return released;
+    }
+
+    private int execTx(Connection c, String sql, long p1, long p2) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, p1);
+            ps.setLong(2, p2);
+            return ps.executeUpdate();
+        }
     }
 
     /**

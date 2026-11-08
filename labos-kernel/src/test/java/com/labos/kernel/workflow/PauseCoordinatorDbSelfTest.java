@@ -43,6 +43,8 @@ public final class PauseCoordinatorDbSelfTest {
     private static final String REQ_RESUME = "SELF-PC-RESUME-1";
     private static final String REQ_STOP = "SELF-PC-STOP-1";
     private static final String REQ_STOP_RUNNING = "SELF-PC-STOP-RUNNING-1";
+    private static final String REQ_WF = "SELF-PC-WF-1";
+    private static final long WF_RUN = -992401L;
 
     public static void main(String[] args) throws Exception {
         db = DbConfig.fromEnv();
@@ -55,6 +57,7 @@ public final class PauseCoordinatorDbSelfTest {
             failedAttemptCanBeRetried(coord);
             resumeTransactionWritesEvent(coord);
             stopTransactionWritesEvent(coord);
+            workflowPauseTransaction(coord);
         } finally {
             cleanup();
         }
@@ -216,6 +219,42 @@ public final class PauseCoordinatorDbSelfTest {
                 eventCount(REQ_STOP_RUNNING) == 1, eventCount(REQ_STOP_RUNNING));
     }
 
+    // ------------------------------------------------- 6. Workflow 级暂停单事务（E-1）
+
+    private static void workflowPauseTransaction(PauseCoordinator coord) throws Exception {
+        exec("DELETE FROM run WHERE tenant_id=1 AND run_no='SELF-PC-WF'");
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     INSERT INTO run (tenant_id, run_no, run_type, workflow_id,
+                                      workflow_ver, mode, status, actual_start, progress)
+                     VALUES (?, 'SELF-PC-WF', 'workflow', 239, 1, 'normal',
+                             'running', now(), 0)
+                     """)) {
+            ps.setLong(1, TENANT);
+            ps.executeUpdate();
+        }
+        long wfRun = Long.parseLong(one("SELECT id FROM run WHERE tenant_id=1 "
+                + "AND run_no='SELF-PC-WF'"));
+        PauseCoordinator.WorkflowPause r = coord.pauseWorkflowRun(
+                PauseCommand.workflow(wfRun, PauseCommand.Action.PAUSE, "waiting_human",
+                        "自测：流程级暂停", REQ_WF), "node-x");
+        check("流程级暂停受理", "waiting_human".equals(r.pauseKindCode()), r.pauseKindCode());
+        check("流程级 run 落 paused",
+                "paused".equals(one("SELECT status::text FROM run WHERE id=" + wfRun)),
+                one("SELECT status::text FROM run WHERE id=" + wfRun));
+        check("流程级暂停单事务写入 pause_event",
+                eventCount(REQ_WF) == 1, eventCount(REQ_WF));
+        check("流程级事件类型 PAUSE_REQUESTED",
+                "PAUSE_REQUESTED".equals(eventTypeOf(REQ_WF)), eventTypeOf(REQ_WF));
+        PauseCoordinator.WorkflowPause replay = coord.pauseWorkflowRun(
+                PauseCommand.workflow(wfRun, PauseCommand.Action.PAUSE, "waiting_human",
+                        "自测：重复", REQ_WF), "node-x");
+        check("重复流程暂停回放相同类型", "waiting_human".equals(replay.pauseKindCode()),
+                replay.pauseKindCode());
+        check("重复流程暂停不新增事件", eventCount(REQ_WF) == 1, eventCount(REQ_WF));
+        exec("DELETE FROM run WHERE tenant_id=1 AND id=" + wfRun);
+    }
+
     // ---------------------------------------------------------------- 造数 / 查询 / 清理
 
     private static void seed() throws SQLException {
@@ -261,6 +300,21 @@ public final class PauseCoordinatorDbSelfTest {
             ps.setString(1, status);
             ps.setLong(2, TENANT);
             ps.setLong(3, runId);
+            ps.executeUpdate();
+        }
+    }
+
+    private static String one(String sql) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? rs.getString(1) : null;
+        }
+    }
+
+    private static void exec(String sql) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
             ps.executeUpdate();
         }
     }
