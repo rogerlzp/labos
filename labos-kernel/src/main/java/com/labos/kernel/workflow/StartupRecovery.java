@@ -89,6 +89,13 @@ public final class StartupRecovery {
                   AND (r.status = 'running'
                        OR (r.status IN ('queued', 'pending')
                            AND r.created_at < now() - interval '1 hour'))
+                  -- P-08：物理结果未知（命令账本 UNKNOWN/DISPATCH_STARTED）的 run
+                  -- 不交给普通 settle（否则会当 failed/recoverable 并释放设备锁）；
+                  -- 由 quarantineUncertainRuns 隔离，保留设备锁等人工确认。
+                  AND NOT EXISTS (SELECT 1 FROM command_ledger cl
+                                   WHERE cl.tenant_id = r.tenant_id
+                                     AND cl.run_id = r.id
+                                     AND cl.state IN ('UNKNOWN', 'DISPATCH_STARTED'))
                 """ + runFilter + """
                 GROUP BY r.id, r.run_no, r.input
                 ORDER BY r.id

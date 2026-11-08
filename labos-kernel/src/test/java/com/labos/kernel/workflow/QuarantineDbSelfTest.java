@@ -23,6 +23,15 @@ public final class QuarantineDbSelfTest {
         db = DbConfig.fromEnv();
         cleanup();
         seed();
+        // P-08：普通 settle 必须跳过物理未知 run（不落 failed、不释放设备锁）
+        List<StartupRecovery.Orphan> settled =
+                StartupRecovery.settle(db, TENANT, List.of(RUN));
+        check("物理未知 run 不被普通启动 settle 收掉",
+                settled.stream().noneMatch(o -> o.runId() == RUN), settled);
+        check("settle 后 run 仍是 running", "running".equals(
+                str("SELECT status::text FROM run WHERE id=" + RUN)),
+                str("SELECT status::text FROM run WHERE id=" + RUN));
+
         List<StartupRecovery.Quarantined> list =
                 StartupRecovery.quarantineUncertainRuns(db, TENANT, List.of(RUN));
         check("物理未知 run 被隔离", list.size() == 1 && list.get(0).runId() == RUN, list);

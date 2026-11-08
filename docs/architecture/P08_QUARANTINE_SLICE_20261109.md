@@ -42,6 +42,15 @@
 - 页面 Playwright 冒烟：标题/行渲染正常、无加载失败；
 - 清理：确认后 run→failed、实验 Hold 释放、intervention_record 落证。
 
+## 三·补二、启动 settle 不清理物理未知 run（2026-11-09）
+
+Batch 2 要求「启动恢复不无条件清理设备锁」。
+
+- StartupRecovery.settle 的扫描 SQL 增加排除条件：命令账本存在
+  UNKNOWN/DISPATCH_STARTED 的 run 不进入普通 settle（不标 failed、不释放设备锁）；
+- 这些 run 只由 quarantineUncertainRuns 隔离为 quarantined，设备锁保留到人工确认；
+- QuarantineDbSelfTest 12/0 增加「settle 跳过 / 仍 running / 隔离」3 条断言。
+
 ## 四、边界（P-08 剩余）
 
 1. 资源与物理位置三维分离（resource / booking / physical position 独立事实）未做；
