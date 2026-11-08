@@ -40,7 +40,7 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 |---|---|
 | 运行中实验按全部可推导 Workcell 判 Hold 覆盖 | ✅ 本切片 |
 | Workcell 显式绑定 / Handoff 模型（ADR-ISLAND-002） | ❌ 仍缺，当前靠资源树推导 |
-| 调度器逐候选评估（不同实验 Workcell 隔离） | ❌ P-03 完整项（当前 V1 全局闸门） |
+| 调度器逐候选评估（不同实验 Workcell 隔离） | 🟡 2026-11-08：dispatch / autoContinueHeldBatches 已逐候选按 coveringForExperiment 判定；UNKNOWN 仍全局阻断；uk_runtime_hold_active 多 Hold 索引改造未做 |
 | 设备级故障 Hold（device scope） | ❌ 目前故障须落 island/experiment Hold |
 | 展示层「哪些节点受影响」标注 | ❌ 执行层先一律阻断，展示后续补 |
 

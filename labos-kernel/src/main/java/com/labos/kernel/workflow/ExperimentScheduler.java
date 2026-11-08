@@ -346,9 +346,8 @@ public final class ExperimentScheduler {
     int autoContinueHeldBatches() {
         int created = 0;
         try {
-            if (new RuntimeHold(db, tenantId).siteState().blocks()) {
-                return 0;
-            }
+            // P-03：不再「任何 Hold ⇒ 全部不动」，改为逐候选按实验涉及 Workcell 判覆盖。
+            RuntimeHold holds = new RuntimeHold(db, tenantId);
             List<BatchOrchestrator.PausedBatch> candidates =
                     new BatchOrchestrator(db, tenantId).pausedBatchCandidates();
             int handled = 0;
@@ -358,10 +357,12 @@ public final class ExperimentScheduler {
                 }
                 handled++;
                 try {
-                    long islandId = islandOf(cand.experimentId());
-                    if (new RuntimeHold(db, tenantId)
-                            .coverageFor(cand.experimentId(), islandId).blocks()) {
-                        continue;
+                    RuntimeHold.Coverage cov = holds.coveringForExperiment(cand.experimentId());
+                    if (cov.state() == RuntimeHold.HoldState.UNKNOWN) {
+                        return created;   // 读不到扣留状态 ⇒ fail-closed
+                    }
+                    if (cov.blocks()) {
+                        continue;         // site / 所属 Workcell / experiment 级扣留覆盖该候选
                     }
                     BatchOrchestrator.NextBatchAttempt next =
                             new BatchOrchestrator(db, tenantId).createNextBatchAttempt(
@@ -394,14 +395,12 @@ public final class ExperimentScheduler {
             snapshot = new ArrayList<>(queue);
         }
 
-        // 现场闸门（fail-closed，P-03 / ADR-PAUSE-005）：有任何生效扣留
-        // （site/island/experiment）时不派发新实验；**读不到扣留状态时同样不派发**。
-        // 旧实现在读库异常时 catch 后放行（"宁可少停，不能把调度卡死"），
-        // 那等于「读不到 Hold ⇒ 继续派发」，现场状态未知时让机械臂继续动作，是安全漏洞。
-        // 现在改为 UNKNOWN ⇒ 阻断，等库恢复 / 人工确认后下一轮 tick 自动继续。
-        if (new RuntimeHold(db, tenantId).siteState().blocks()) {
-            return;
-        }
+        // P-03：逐候选评估扣留覆盖（ADR-FAULT-SCOPE-001/002）。
+        // 旧实现是「任何生效扣留 ⇒ 全场不派发」：A 实验暂停会挡住无关的 B 实验，
+        // 不符合 Workcell 隔离。现在对每个候选按「它涉及的 Workcell 集合」判覆盖：
+        //   - 覆盖它（site / 所属 island / experiment）⇒ 跳过该候选；
+        //   - 读不到扣留状态（UNKNOWN）⇒ 整轮不派发（fail-closed，绝不 fail-open）。
+        RuntimeHold holds = new RuntimeHold(db, tenantId);
 
         // 单一来源：直接复用 QUEUE_ORDER，避免页面位次（同样用 QUEUE_ORDER）与
         // 实际出队顺序各写一份比较器、日后只改一份导致两边分叉。
@@ -412,6 +411,13 @@ public final class ExperimentScheduler {
         for (Queued q : snapshot) {
             if (runningNow >= MAX_CONCURRENT) {
                 break;
+            }
+            RuntimeHold.Coverage cov = holds.coveringForExperiment(q.experimentId());
+            if (cov.state() == RuntimeHold.HoldState.UNKNOWN) {
+                return;   // 读不到扣留状态 ⇒ 整轮阻断（fail-closed）
+            }
+            if (cov.blocks()) {
+                continue; // 该实验被 site / 所属 Workcell / experiment 级扣留覆盖
             }
             Long holder = islandHolder(q.islandId());
             if (holder != null && holder != q.experimentRunId()) {

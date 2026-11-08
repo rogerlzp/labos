@@ -1073,17 +1073,19 @@ public final class BatchDbSelfTest {
                 !hasCandidate(candidates, EXP_AC_ABORTED, 1), candidates);
         check("候选按 batch_no 升序", ascendingBatchNo(candidates), candidates);
 
-        check("有覆盖扣留时 autoContinue 不建 attempt（任何扣留都不续）",
-                scheduler.autoContinueHeldBatches() == 0, "created != 0");
+        // P-03：逐候选评估（ADR-FAULT-SCOPE-001）——被覆盖实验跳过，无关实验照常续队。
+        int firstWave = scheduler.autoContinueHeldBatches();
+        check("有覆盖扣留时只跳过被覆盖实验（P-03 逐候选，本次建 " + firstWave + " 条）",
+                firstWave >= 1, firstWave);
         check("扣留期间 EXP_AC_HOLD 没有新 run", countRuns(EXP_AC_HOLD) == 0,
                 countRuns(EXP_AC_HOLD));
-        check("扣留期间 EXP_AC 也没有新 run（全局闸门）", countRuns(EXP_AC) == 0,
+        check("无关实验 EXP_AC 正常续队（不再全局闸门）", countRuns(EXP_AC) == 1,
                 countRuns(EXP_AC));
 
-        // 解除扣留 -> 自动续队：建下一批 attempt 并 resumeRun 入队列
+        // 解除扣留 -> 补被覆盖实验的下一批 attempt 并 resumeRun 入队列
         holds.clear(RuntimeHold.Scope.EXPERIMENT, EXP_AC_HOLD, null, "自测：解除扣留");
         int created = scheduler.autoContinueHeldBatches();
-        check("解除扣留后自动续队（EXP_AC + EXP_AC_HOLD 各 1 批）", created >= 2, created);
+        check("解除扣留后补被覆盖实验的下一批（本次 " + created + " 条）", created >= 1, created);
         check("EXP_AC_HOLD 建出 queued run", countRuns(EXP_AC_HOLD) == 1,
                 countRuns(EXP_AC_HOLD));
         check("EXP_AC_HOLD 第 1 批有 1 次 attempt",
