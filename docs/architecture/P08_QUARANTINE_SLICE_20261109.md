@@ -62,6 +62,18 @@ Batch 2 要求「启动恢复不无条件清理设备锁」。
 
 仍缺：扫码/传感器证据接入、TransferTransaction 把「运动报告与位置确认」合并成事务。
 
+## 三·补四、TransferTransaction + 物理确认（2026-11-09）
+
+- 新表 transfer_transaction（99p）：run/板/源目标资源/运动报告/状态/确认信息；
+- 驱动执行 Transfer 时自动创建事务：设备成功回包 → REPORTED（仅运动报告），
+  失败/异常 → UNKNOWN；**不会自动变 CONFIRMED**；
+- POST /api/transfers/{id}/confirm（evidenceType=SCAN/MANUAL/...，operator/note）：
+  只允许 REPORTED/UNKNOWN → CONFIRMED，并落 position_evidence；GET /api/transfers 列表；
+- TransferTransactionDbSelfTest 9/0（创建/报告/确认/证据/重复拒绝/失败 UNKNOWN）；
+- test-all 1230/0（停 API）。
+
+仍缺：扫码/传感器自动接入（当前人工调 API）、与调度「目标位置确认后才允许下一步」的强门禁。
+
 ## 四、边界（P-08 剩余）
 
 1. 资源与物理位置三维分离（resource / booking / physical position 独立事实）未做；

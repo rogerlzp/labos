@@ -140,6 +140,8 @@ DB=(
   "api.HandoffConfirmDbSelfTest"
   # P-08：物理位置证据（人工盘点独立落证）
   "api.PositionEvidenceDbSelfTest"
+  # P-08：TransferTransaction（设备回包=运动报告，物理确认需独立证据）
+  "workflow.TransferTransactionDbSelfTest"
   # 保存前预检：纯内置图不报 PF-07 / 内置节点干跑直通不拦住下游（不报假 PF-03）
   # / 纯设备图对照 / 只有网关时仍报 PF-07（探针流程只在内存里拼 XML，不写库）
   "workflow.PreflightDbSelfTest"

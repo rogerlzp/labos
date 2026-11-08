@@ -362,8 +362,28 @@ public final class DriverStepExecutor implements StepExecutor {
                     "申请资源时数据库错误：" + e.getMessage(), 0, method);
         }
 
+        // P-08：搬运事务（设备回包=运动报告，位置需另证）
+        long transferTxn = 0L;
+        String plate = ctx.params().get("plate") instanceof String p ? p : null;
+        if (db != null && runId > 0) {
+            try {
+                transferTxn = com.labos.kernel.workflow.TransferTransaction.begin(
+                        db, tenantId, runId, plate, srcRes, dstRes);
+            } catch (java.sql.SQLException e) {
+                System.err.println("[搬运事务] 创建失败（不阻断执行）：" + e.getMessage());
+            }
+        }
         try {
             DriverResult r = driver.execute(buildCommand(ctx, deviceId, method, stepSeq, exec));
+            if (transferTxn > 0) {
+                try {
+                    com.labos.kernel.workflow.TransferTransaction.report(db, tenantId,
+                            transferTxn, r.errorCode() == null, r.errorCode(),
+                            r.message(), r.deviceRawResponse());
+                } catch (java.sql.SQLException e) {
+                    System.err.println("[搬运事务] 回写失败：" + e.getMessage());
+                }
+            }
             // P1-10：动作失败 → 板可能既不在源位也不在目标位，必须标 UNKNOWN。
             // 不标的话系统会以为板还在源位，下一个节点去取就是撞机。
             if (r.errorCode() != null) {
@@ -371,6 +391,14 @@ public final class DriverStepExecutor implements StepExecutor {
             }
             return r;
         } catch (RuntimeException e) {
+            if (transferTxn > 0) {
+                try {
+                    com.labos.kernel.workflow.TransferTransaction.report(db, tenantId,
+                            transferTxn, false, "EC-99-0001", e.getMessage(), null);
+                } catch (java.sql.SQLException ex) {
+                    System.err.println("[搬运事务] 异常回写失败：" + ex.getMessage());
+                }
+            }
             // 抛异常同理：板的位置已不可信
             markPlatePositionUnknown(ctx, srcRes, dstRes);
             throw e;

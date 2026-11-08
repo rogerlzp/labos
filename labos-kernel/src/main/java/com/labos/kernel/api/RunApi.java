@@ -193,6 +193,32 @@ final class RunApi {
                     "interventionRecordId", recordId));
             return true;
         }
+        if ("/api/transfers".equals(path)) {
+            s.requireGet(method, ex);
+            s.send(ex, 200, s.query.transferTransactionsJson(
+                    paramStr(ex.getRequestURI().getQuery(), "status"),
+                    intParam(ex, "limit", 100)));
+            return true;
+        }
+        Matcher transferConfirm = TRANSFER_CONFIRM.matcher(path);
+        if (transferConfirm.matches()) {
+            if (!"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            long tid = Long.parseLong(transferConfirm.group(1));
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            boolean ok = s.query.confirmTransfer(tid, jsonField(body, "evidenceType"),
+                    jsonField(body, "operator"), jsonField(body, "note"));
+            if (!ok) {
+                s.send(ex, 409, Jsons.obj("ok", false,
+                        "error", "搬运事务不存在或已确认"));
+                return true;
+            }
+            s.audited("transfer.confirm", "transfer_transaction", tid,
+                    jsonField(body, "evidenceType"), null, ex);
+            s.send(ex, 200, Jsons.obj("ok", true, "id", tid, "status", "CONFIRMED"));
+            return true;
+        }
         if ("/api/plate-position-evidence".equals(path)) {
             if ("GET".equals(method)) {
                 s.send(ex, 200, s.query.positionEvidenceJson(
@@ -644,6 +670,9 @@ final class RunApi {
     private static final Pattern RUNS_PAUSED = Pattern.compile("^/api/runs/paused$");
 
     /** 台账 6.5：POST /api/manual-windows/{id}/decide */
+    private static final Pattern TRANSFER_CONFIRM =
+            Pattern.compile("^/api/transfers/(\\d+)/confirm$");
+
     private static final Pattern MANUAL_QUARANTINE_RELEASE =
             Pattern.compile("^/api/runs/(\\d+)/quarantine/release$");
 

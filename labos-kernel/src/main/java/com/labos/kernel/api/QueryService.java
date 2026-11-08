@@ -3980,6 +3980,52 @@ public final class QueryService {
         }
     }
 
+    /** P-08：TransferTransaction 列表。 */
+    public String transferTransactionsJson(String status, int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, run_id, plate_barcode, source_resource_id, target_resource_id,
+                       status, error_code, error_message, created_at::text
+                  FROM transfer_transaction
+                 WHERE tenant_id = ?
+                """);
+        if (status != null && !status.isBlank()) {
+            sql.append(" AND status = ?");
+        }
+        sql.append(" ORDER BY id DESC LIMIT ?");
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            int i = 1;
+            ps.setLong(i++, tenantId);
+            if (status != null && !status.isBlank()) {
+                ps.setString(i++, status);
+            }
+            ps.setInt(i, Math.max(1, Math.min(limit, 200)));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    items.add(Jsons.obj("id", rs.getLong("id"),
+                            "runId", rs.getObject("run_id"),
+                            "plateBarcode", rs.getString("plate_barcode"),
+                            "sourceResourceId", rs.getObject("source_resource_id"),
+                            "targetResourceId", rs.getObject("target_resource_id"),
+                            "status", rs.getString("status"),
+                            "errorCode", rs.getString("error_code"),
+                            "errorMessage", rs.getString("error_message"),
+                            "createdAt", rs.getString("created_at")));
+                }
+            }
+        }
+        return Jsons.obj("total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /** P-08：人工/扫码确认搬运物理位置。 */
+    public boolean confirmTransfer(long id, String evidenceType, String operator,
+                                   String note) throws SQLException {
+        return com.labos.kernel.workflow.TransferTransaction.confirm(
+                db, tenantId, id, evidenceType, operator, note);
+    }
+
     /** P-08：记录一条物理位置证据。 */
     public long recordPositionEvidence(String plateBarcode, Long resourceId, String type,
                                        Long runId, String operator, String note)

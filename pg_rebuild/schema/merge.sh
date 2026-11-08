@@ -63,6 +63,7 @@ cat /tmp/_schema_header.sql \
     99m_runtime_hold_multi.sql \
     99n_command_outbox.sql \
     99o_position_evidence.sql \
+    99p_transfer_transaction.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 
