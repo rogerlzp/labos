@@ -490,29 +490,51 @@ public final class PauseCoordinator {
      * （{@code POST /api/experiments/runs/{id}/stop}）。
      */
     public ExperimentStop stopExperimentRun(PauseCommand cmd) throws SQLException {
-        Claim claim = claim(cmd);
-        if (!claim.firstTime()) {
-            Map<String, String> d = claim.detail();
-            return new ExperimentStop(cmd.targetId(), longOf(d.get("experimentId"), 0L),
-                    boolOf(d.get("changed"), false), d.getOrDefault("status", "aborted"));
-        }
-        try {
-            RunControl ctl = new RunControl(db, tenantId);
-            RunControl.RunInfo ri = ctl.info(cmd.targetId());
-            boolean changed = ctl.stop(ri, null);
-            String st = !changed ? ri.status()
-                    : "running".equals(ri.status()) ? "stopping" : "aborted";
-            cmd.result(changed ? PauseCommand.ResultState.COMPLETED
-                    : PauseCommand.ResultState.REJECTED);
-            Map<String, String> detail = new LinkedHashMap<>();
-            detail.put("experimentId", String.valueOf(ri.experimentId()));
-            detail.put("changed", String.valueOf(changed));
-            detail.put("status", st);
-            settle(cmd, detail);
-            return new ExperimentStop(cmd.targetId(), ri.experimentId(), changed, st);
-        } catch (SQLException | RuntimeException e) {
-            abandon(cmd);
-            throw e;
+        // P-06 V2 第三切片：停止写集（stop_requested / aborted / 实验表同步 /
+        // pause_request 结果 / STOP_REQUESTED 事件）同事务；批次聚合 commit 后补。
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                Claim claim = claimTx(c, cmd);
+                if (!claim.firstTime()) {
+                    c.rollback();
+                    Map<String, String> d = claim.detail();
+                    return new ExperimentStop(cmd.targetId(),
+                            longOf(d.get("experimentId"), 0L),
+                            boolOf(d.get("changed"), false),
+                            d.getOrDefault("status", "aborted"));
+                }
+                RunControl ctl = new RunControl(db, tenantId);
+                RunControl.RunInfo ri = ctl.info(cmd.targetId());
+                RunControl.StopTx st = ctl.stopTx(c, ri, null);
+                String status = !st.changed() ? ri.status()
+                        : "running".equals(ri.status()) ? "stopping" : "aborted";
+                cmd.result(st.changed() ? PauseCommand.ResultState.COMPLETED
+                        : PauseCommand.ResultState.REJECTED);
+                Map<String, String> detail = new LinkedHashMap<>();
+                detail.put("experimentId", String.valueOf(ri.experimentId()));
+                detail.put("changed", String.valueOf(st.changed()));
+                detail.put("status", status);
+                settleTx(c, cmd, detail);
+                insertPauseEvent(c, cmd, "STOP_REQUESTED", "experiment",
+                        ri.experimentId());
+                c.commit();
+
+                if (st.batchRun()) {
+                    try {
+                        new BatchOrchestrator(db, tenantId)
+                                .onRunStatusChanged(cmd.targetId());
+                    } catch (Exception e) {
+                        System.err.println("[暂停] 停止后批次聚合失败（由启动 rehydrate 兜底）："
+                                + e.getMessage());
+                    }
+                }
+                return new ExperimentStop(cmd.targetId(), ri.experimentId(),
+                        st.changed(), status);
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
         }
     }
 

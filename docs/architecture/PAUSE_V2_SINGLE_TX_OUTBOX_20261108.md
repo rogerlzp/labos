@@ -43,7 +43,7 @@ COMMIT
 |---|---|---|
 | 实验级 Pause（E-4：POST /api/experiments/runs/{id}/pause） | ✅ 本切片 | Hold+control+幂等键+事件同事务 |
 | 实验级 Resume（E-6） | ✅ 第二切片 | 解 Hold / run 回 queued / 实验表同步 / 作废旧 paused run / RESUME_REQUESTED 事件同事务；批次聚合与重新入队 commit 后做 |
-| 实验级 Stop（E-5） | ❌ 仍 V1 | 下一步扩到同事务 |
+| 实验级 Stop（E-5） | ✅ 第三切片 | stop_requested / aborted / 实验表同步 / STOP_REQUESTED 事件同事务；批次聚合 commit 后补 |
 | Workflow 级 Pause / Resume（E-1~E-3） | ❌ 仍 V1 | PauseManager 仍多连接；依赖 P-07 命令账本一起做 |
 | PAUSING 异步收敛 worker | ❌ 未做 | 当前 accepted→paused 由执行器边界/调度器收敛（S-04-B 最小闭环） |
 | P-07 命令账本/Outbox | ❌ 未做 | 设备指令派发前/回包后/重启恢复的 exactly-once 证据链 |
@@ -68,6 +68,25 @@ scheduler.resumeRun（内存队列）；commit 后崩溃由启动 rehydrateQueue
 
 测试：PauseCoordinatorDbSelfTest 36/0（新增恢复单事务/RESUME_REQUESTED 事件/
 重复恢复不新增事件 9 条断言）；test-all 1136/0；4.20 页面恢复链路回归。
+
+## 三·补二、第三切片：实验级 Stop（E-5）单事务（2026-11-08）
+
+停止原实现跨多连接：写 stop_requested / aborted、同步实验表、写幂等结果；中间崩溃会
+留下「run 已 aborted 但实验状态还是 running」或「幂等键在、停止事实丢」。
+
+第三切片（PauseCoordinator.stopExperimentRun）：
+
+1. pause_request 幂等键（claimTx）；
+2. RunControl.stopTx：running 分支只落 stop_requested=true（在途动作由执行器边界收尾）；
+   非 running 分支落 aborted + 非批次时同步实验状态；
+3. pause_request 结果 + pause_event(STOP_REQUESTED) 同事务 commit；
+4. 批次聚合在 commit 后补（启动 rehydrate 兜底）。
+
+测试：PauseCoordinatorDbSelfTest 46/0（新增运行中/非运行态停止、STOP_REQUESTED 事件、
+重复停止不新增事件等）；test-all 1146/0。
+
+边界：Workflow 级 Pause（E-1~E-3）仍由 PauseManager 多连接实现；PAUSING 异步收敛
+worker 与真实事件总线消费者仍未做。
 
 ## 四、不变量与测试
 

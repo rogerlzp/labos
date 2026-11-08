@@ -41,6 +41,8 @@ public final class PauseCoordinatorDbSelfTest {
     private static final String REQ_PAUSE = "SELF-PC-PAUSE-1";
     private static final String REQ_RETRY = "SELF-PC-RETRY-1";
     private static final String REQ_RESUME = "SELF-PC-RESUME-1";
+    private static final String REQ_STOP = "SELF-PC-STOP-1";
+    private static final String REQ_STOP_RUNNING = "SELF-PC-STOP-RUNNING-1";
 
     public static void main(String[] args) throws Exception {
         db = DbConfig.fromEnv();
@@ -52,6 +54,7 @@ public final class PauseCoordinatorDbSelfTest {
             noRequestIdSkipsDedup(coord);
             failedAttemptCanBeRetried(coord);
             resumeTransactionWritesEvent(coord);
+            stopTransactionWritesEvent(coord);
         } finally {
             cleanup();
         }
@@ -181,6 +184,38 @@ public final class PauseCoordinatorDbSelfTest {
         check("重复恢复不再新增事件", eventCount(REQ_RESUME) == 1, eventCount(REQ_RESUME));
     }
 
+    // ------------------------------------------------- 5. 停止单事务（P-06 V2 第三切片）
+
+    private static void stopTransactionWritesEvent(PauseCoordinator coord) throws Exception {
+        // 非 running：直接落 aborted + 实验表同步 + STOP_REQUESTED 事件同事务
+        setRunStatus(RUN_P, "paused");
+        PauseCoordinator.ExperimentStop stopped = coord.stopExperimentRun(
+                PauseCommand.experiment(RUN_P, PauseCommand.Action.STOP, "manual",
+                        "自测：停止", REQ_STOP));
+        check("非运行态停止 changed=true", stopped.changed(), stopped.changed());
+        check("停止后 run=aborted", "aborted".equals(statusOf(RUN_P)), statusOf(RUN_P));
+        check("停止单事务写入 STOP_REQUESTED 事件",
+                eventCount(REQ_STOP) == 1, eventCount(REQ_STOP));
+        check("停止事件类型 STOP_REQUESTED",
+                "STOP_REQUESTED".equals(eventTypeOf(REQ_STOP)), eventTypeOf(REQ_STOP));
+        PauseCoordinator.ExperimentStop replay = coord.stopExperimentRun(
+                PauseCommand.experiment(RUN_P, PauseCommand.Action.STOP, "manual",
+                        "自测：停止重放", REQ_STOP));
+        check("重复停止回放相同状态", "aborted".equals(replay.status()), replay.status());
+        check("重复停止不新增事件", eventCount(REQ_STOP) == 1, eventCount(REQ_STOP));
+
+        // running：只落 stop_requested=true（在途动作由执行器边界收尾）
+        PauseCoordinator.ExperimentStop running = coord.stopExperimentRun(
+                PauseCommand.experiment(RUN_NEW, PauseCommand.Action.STOP, "manual",
+                        "自测：运行中停止", REQ_STOP_RUNNING));
+        check("运行中停止 changed=true", running.changed(), running.changed());
+        check("运行中停止返回 stopping", "stopping".equals(running.status()), running.status());
+        check("运行中停止落 stop_requested=true",
+                stopRequestedOf(RUN_NEW), stopRequestedOf(RUN_NEW));
+        check("运行中停止写入 STOP_REQUESTED 事件",
+                eventCount(REQ_STOP_RUNNING) == 1, eventCount(REQ_STOP_RUNNING));
+    }
+
     // ---------------------------------------------------------------- 造数 / 查询 / 清理
 
     private static void seed() throws SQLException {
@@ -238,6 +273,19 @@ public final class PauseCoordinatorDbSelfTest {
             ps.setLong(2, runId);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    private static boolean stopRequestedOf(long runId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT stop_requested FROM experiment_run "
+                             + "WHERE tenant_id = ? AND id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && rs.getBoolean(1);
             }
         }
     }

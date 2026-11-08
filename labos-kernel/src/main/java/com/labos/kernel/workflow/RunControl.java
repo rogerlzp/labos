@@ -259,6 +259,48 @@ public final class RunControl {
         return changed;
     }
 
+    /** 事务化停止结果：changed + 是否批次 run（批次回调需在 commit 后做）。 */
+    public record StopTx(boolean changed, boolean batchRun) {
+    }
+
+    /**
+     * P-06 V2 第三切片：停止写集在调用方事务内完成。
+     *
+     * <p>running 分支只落 {@code stop_requested=true}（在途动作由执行器在动作边界收尾）；
+     * 非 running 分支落 aborted + 非批次时同步实验状态；批次聚合在 commit 后补。
+     */
+    public StopTx stopTx(Connection c, RunInfo run, Long by) throws SQLException {
+        if ("running".equals(run.status())) {
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE experiment_run SET stop_requested = true
+                     WHERE tenant_id = ? AND id = ? AND status = 'running'
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, run.runId());
+                return new StopTx(ps.executeUpdate() > 0, false);
+            }
+        }
+        BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
+        boolean changed;
+        boolean batchRun;
+        try (PreparedStatement ps = c.prepareStatement("""
+                UPDATE experiment_run
+                   SET status = 'aborted', stop_requested = true, finished_at = now(),
+                       error = COALESCE(error, '人工停止')
+                 WHERE tenant_id = ? AND id = ?
+                   AND status NOT IN ('completed', 'aborted', 'cancelled')
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, run.runId());
+            changed = ps.executeUpdate() > 0;
+        }
+        batchRun = orchestrator.batchRunIdFor(run.runId()) != null;
+        if (!batchRun) {
+            ExperimentExecutor.syncExperimentStatus(c, tenantId, run.runId());
+        }
+        return new StopTx(changed, batchRun);
+    }
+
     /**
      * 恢复：解除覆盖该 run 的最内层扣留，并把 run 拉回 queued（等调度器从断点续跑）。
      *
