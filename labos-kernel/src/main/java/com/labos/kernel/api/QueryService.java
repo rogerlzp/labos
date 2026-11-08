@@ -3743,6 +3743,109 @@ public final class QueryService {
         }
     }
 
+    /** 实验 Handoff 配置列表（N-10）。 */
+    public String experimentHandoffsJson(long experimentId) throws SQLException {
+        List<String> items = new ArrayList<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT from_workcell_id, to_workcell_id, carrier, status, remark
+                       FROM experiment_handoff
+                      WHERE tenant_id = ? AND experiment_id = ?
+                      ORDER BY from_workcell_id, to_workcell_id
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, experimentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    items.add(Jsons.obj("fromWorkcellId", rs.getLong(1),
+                            "toWorkcellId", rs.getLong(2),
+                            "carrier", rs.getString(3),
+                            "status", rs.getString(4),
+                            "remark", rs.getString(5)));
+                }
+            }
+        }
+        return Jsons.obj("experimentId", experimentId,
+                "items", new Jsons.Raw(Jsons.arr(items)), "count", items.size());
+    }
+
+    /**
+     * 全量替换实验 Handoff 配置。
+     *
+     * @return 写入条数；-1 实验不存在；-2 起点/终点无效或不在显式 Workcell 绑定内
+     */
+    public int setExperimentHandoffs(long experimentId,
+                                     java.util.List<long[]> pairs) throws SQLException {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                java.util.Set<Long> bound = new java.util.LinkedHashSet<>();
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT count(*) FROM experiment WHERE tenant_id = ? AND id = ?")) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, experimentId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next() || rs.getInt(1) == 0) {
+                            c.rollback();
+                            return -1;
+                        }
+                    }
+                }
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT workcell_id FROM experiment_workcell "
+                                + "WHERE tenant_id = ? AND experiment_id = ?")) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, experimentId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            bound.add(rs.getLong(1));
+                        }
+                    }
+                }
+                for (long[] p : pairs) {
+                    if (p == null || p.length < 2 || p[0] <= 0 || p[1] <= 0 || p[0] == p[1]) {
+                        c.rollback();
+                        return -2;
+                    }
+                    if (!bound.isEmpty() && (!bound.contains(p[0]) || !bound.contains(p[1]))) {
+                        c.rollback();
+                        return -2;
+                    }
+                }
+                try (PreparedStatement ps = c.prepareStatement(
+                        "DELETE FROM experiment_handoff "
+                                + "WHERE tenant_id = ? AND experiment_id = ?")) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, experimentId);
+                    ps.executeUpdate();
+                }
+                int n = 0;
+                try (PreparedStatement ps = c.prepareStatement("""
+                        INSERT INTO experiment_handoff
+                          (tenant_id, experiment_id, from_workcell_id, to_workcell_id,
+                           carrier, status)
+                        VALUES (?, ?, ?, ?, 'manual', 'configured')
+                        ON CONFLICT (tenant_id, experiment_id, from_workcell_id, to_workcell_id)
+                        DO NOTHING
+                        """)) {
+                    for (long[] p : pairs) {
+                        ps.setLong(1, tenantId);
+                        ps.setLong(2, experimentId);
+                        ps.setLong(3, p[0]);
+                        ps.setLong(4, p[1]);
+                        ps.addBatch();
+                    }
+                    n = ps.executeBatch().length;
+                }
+                c.commit();
+                return n;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        }
+    }
+
     /** UNKNOWN 命令账本列表（P-07.2 人工核对入口）。 */
     public String commandsUnknownJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();

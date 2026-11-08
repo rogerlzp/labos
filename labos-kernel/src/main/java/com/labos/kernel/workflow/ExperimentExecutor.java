@@ -136,6 +136,10 @@ public final class ExperimentExecutor {
             throw new IllegalArgumentException("实验没有编排任何流程");
         }
 
+        // N-10：跨 Workcell 实验必须有完整 Handoff 配置（ADR-ISLAND-002/004），
+        // 缺失/UNKNOWN 在开跑前 fail-closed。
+        HandoffGate.check(db, tenantId, experimentId, steps);
+
         long runId = existingRunId > 0
                 ? updateRun(existingRunId, vars, steps.size())
                 : createRun(experimentId, vars, steps.size());

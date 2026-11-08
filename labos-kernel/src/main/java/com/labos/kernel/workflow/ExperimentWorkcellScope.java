@@ -26,6 +26,38 @@ public final class ExperimentWorkcellScope {
     }
 
     /**
+     * 推导单个 Workflow 的权威 Workcell（island 根 id）；推导不出返回 null。
+     *
+     * <p>从 workflow_node.resource_id 沿 resource_node.parent_id 上溯到 kind=island。
+     */
+    public static Long workcellOfWorkflow(DbConfig db, long tenantId, long workflowId)
+            throws SQLException {
+        String sql = """
+                WITH RECURSIVE res AS (
+                    SELECT DISTINCT wn.resource_id AS id
+                      FROM workflow_node wn
+                     WHERE wn.workflow_id = ? AND wn.resource_id IS NOT NULL
+                ), up AS (
+                    SELECT rn.id, rn.parent_id, rn.kind::text AS kind
+                      FROM resource_node rn
+                      JOIN res ON res.id = rn.id
+                    UNION ALL
+                    SELECT p.id, p.parent_id, p.kind::text
+                      FROM resource_node p
+                      JOIN up ON p.id = up.parent_id
+                )
+                SELECT id FROM up WHERE kind = 'island' LIMIT 1
+                """;
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, workflowId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : null;
+            }
+        }
+    }
+
+    /**
      * 推导实验涉及的全部 Workcell（island 根 id）。
      *
      * <p>来源：① experiment_process 引用的 workflow 的节点资源，沿 resource_node

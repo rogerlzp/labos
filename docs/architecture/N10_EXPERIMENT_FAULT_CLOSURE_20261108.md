@@ -61,6 +61,19 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 仍缺：Handoff 配置/可达性门禁（ADR-ISLAND-002/004）、P-03 逐候选调度、
 故障注入 e2e（A Workcell 故障 → B 段 0 命令）。
 
+## 四·补二、跨 Workcell Handoff 配置/门禁（2026-11-09）
+
+- 新表 experiment_handoff（99j）：experiment + from/to workcell + carrier/status/remark，
+  唯一约束 (tenant, experiment, from, to)，实验删除级联；
+- 产品写入口：GET/PUT /api/experiments/{id}/handoffs（body {handoffs:[{fromWorkcellId,toWorkcellId}]}）；
+  - 起点/终点必须 >0、不能相同、且在实验显式 Workcell 绑定内；
+- 执行门禁 HandoffGate：ExperimentExecutor.run 开跑前按 Workflow 链推导 Workcell 序列，
+  相邻且不同的 Workcell 必须配置 Handoff 且 status != unknown，否则 fail-closed 抛错；
+- 纯单测 HandoffGateSelfTest 6/0（完整/缺失点名/运行时 UNKNOWN/单 Workcell/无关配置/去重）；
+  test-all 1192/0；API 手工验证 PUT/GET/非法 pair 400。
+
+仍缺：运行时人工确认（manual_window 与 Handoff 关联）、故障注入 e2e（A Workcell 故障 → B 段 0 命令）。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；

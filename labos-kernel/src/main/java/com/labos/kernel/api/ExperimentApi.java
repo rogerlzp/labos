@@ -133,6 +133,39 @@ final class ExperimentApi {
             return true;
         }
         Matcher expGraph = EXP_GRAPH.matcher(path);
+        Matcher expHandoffs = EXP_HANDOFFS.matcher(path);
+        if (expHandoffs.matches()) {
+            long eid = Long.parseLong(expHandoffs.group(1));
+            if ("GET".equals(method)) {
+                s.send(ex, 200, s.query.experimentHandoffsJson(eid));
+                return true;
+            }
+            if (!"PUT".equals(method) && !"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            List<long[]> pairs = new ArrayList<>();
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                    "\\{[^{}]*\"fromWorkcellId\"\\s*:\\s*(\\d+)[^{}]*\"toWorkcellId\"\\s*:\\s*(\\d+)[^{}]*\\}")
+                    .matcher(body);
+            while (m.find()) {
+                pairs.add(new long[]{Long.parseLong(m.group(1)), Long.parseLong(m.group(2))});
+            }
+            int n = s.query.setExperimentHandoffs(eid, pairs);
+            if (n == -1) {
+                s.send(ex, 404, err("实验不存在"));
+                return true;
+            }
+            if (n == -2) {
+                s.send(ex, 400, err("Handoff 起点/终点无效或不在实验 Workcell 绑定内"));
+                return true;
+            }
+            s.audited("experiment.handoffs.set", "experiment", eid,
+                    "pairs=" + pairs.size(), Jsons.obj("count", n), ex);
+            s.send(ex, 200, Jsons.obj("experimentId", eid, "updated", n));
+            return true;
+        }
+
         Matcher expWorkcells = EXP_WORKCELLS.matcher(path);
         if (expWorkcells.matches()) {
             long eid = Long.parseLong(expWorkcells.group(1));
@@ -663,6 +696,9 @@ final class ExperimentApi {
 
     private static final Pattern EXP_WORKCELLS =
             Pattern.compile("^/api/experiments/(\\d+)/workcells$");
+
+    private static final Pattern EXP_HANDOFFS =
+            Pattern.compile("^/api/experiments/(\\d+)/handoffs$");
 
     /** 一次实验执行的逐步明细（含"未执行"的步骤）。 */
     private static final Pattern EXP_RUN_STEPS =
