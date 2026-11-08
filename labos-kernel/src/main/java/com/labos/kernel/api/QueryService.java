@@ -712,6 +712,11 @@ public final class QueryService {
                        e.planned_at, e.started_at, e.finished_at, e.remark,
                        e.workflow_id, w.name AS workflow_name,
                        isl.code AS island_code, isl.name AS island_name,
+                       (SELECT string_agg(rn.name, '、' ORDER BY rn.name)
+                          FROM experiment_workcell ew
+                          JOIN resource_node rn ON rn.id = ew.workcell_id
+                         WHERE ew.tenant_id = e.tenant_id
+                           AND ew.experiment_id = e.id) AS workcell_names,
                        (SELECT count(*) FROM experiment_process p
                          WHERE p.experiment_id = e.id) AS flow_count
                 FROM experiment e
@@ -742,6 +747,7 @@ public final class QueryService {
                             "remark", rs.getString("remark"),
                             "islandCode", rs.getString("island_code"),
                             "islandName", rs.getString("island_name"),
+                            "workcellNames", rs.getString("workcell_names"),
                             "flowCount", rs.getInt("flow_count")));
                 }
             }

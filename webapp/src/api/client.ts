@@ -464,8 +464,10 @@ export type ExperimentAsyncRunResult =
  */
 export interface SchedulerIslandLock {
   islandId: number;
-  /** 岛编码；联查不到时可能为 null，前端退化成只显示 #id */
+  /** 岛编码；联查不到时可能为 null（N-09：界面显示岛名，编码仅作 tooltip） */
   islandCode: string | null;
+  /** 岛名（N-09：界面主显示；联查不到时回退 islandCode） */
+  islandName?: string | null;
   /** 占锁主体：实验级 run 的 id */
   experimentRunId: number;
   /** 后端 §7.1 示例里的历史别名（与 experimentRunId 同值）；前端只用后者 */
@@ -487,6 +489,7 @@ export interface SchedulerQueueItem {
   experimentRunId: number;
   islandId: number | null;
   islandCode: string | null;
+  islandName?: string | null;
   priority: number;
   deadline: string | null;
   submittedAt: string | null;

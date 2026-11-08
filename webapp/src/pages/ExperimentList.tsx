@@ -17,6 +17,8 @@ interface ExpRow {
   remark?: string | null;
   islandCode?: string | null;
   islandName?: string | null;
+  /** N-10 显式绑定 / 跨 Workcell 的岛名列表（顿号分隔） */
+  workcellNames?: string | null;
   flowCount?: number;
   plannedAt?: string | null;
   startedAt?: string | null;
@@ -166,10 +168,14 @@ export default function ExperimentListPage() {
             },
             { title: t('experimentList.col.name'), dataIndex: 'name', ellipsis: true },
             {
-              title: t('experimentList.col.island'), dataIndex: 'islandCode', width: 160,
-              render: (v: string | null, r) => (v
-                ? <Tooltip title={r.islandName ?? ''}><Tag color="blue">{v}</Tag></Tooltip>
-                : <Typography.Text type="secondary">{t('experimentList.col.islandUnset')}</Typography.Text>),
+              title: t('experimentList.col.island'), dataIndex: 'islandName', width: 180,
+              render: (_, r) => {
+                // N-09 / ADR-ISLAND-005：只显示岛名，不显示 island_id；跨 Workcell 显示涉及岛名列表
+                const label = r.workcellNames || r.islandName || r.islandCode;
+                return label
+                  ? <Tooltip title={r.islandCode ? `编码：${r.islandCode}` : ''}><Tag color="blue">{label}</Tag></Tooltip>
+                  : <Typography.Text type="secondary">{t('experimentList.col.islandUnset')}</Typography.Text>;
+              },
             },
             {
               title: t('experimentList.col.flowCount'), dataIndex: 'flowCount', width: 90,

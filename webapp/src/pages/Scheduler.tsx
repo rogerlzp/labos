@@ -19,16 +19,14 @@ import { useT } from '../i18n';
  * <p>为什么两个都显示：编码是值班员认得的（Pre-NGS），id 是日志/工单里引用的；
  * 联查不到编码时也不能让这一格空着——#id 至少能拿去查库。
  */
-function IslandCell({ code, id }: { code: string | null; id: number | null }) {
+function IslandCell({ code, name }: { code: string | null; name?: string | null }) {
   const t = useT();
-  if (id == null) return <Typography.Text type="secondary">—</Typography.Text>;
+  // N-09 / ADR-ISLAND-005：界面只显示岛名，不显示内部 island_id。
+  if (!code && !name) return <Typography.Text type="secondary">{t('scheduler.unknownIsland')}</Typography.Text>;
   return (
-    <Space size={4}>
-      {code
-        ? <Tag color="blue">{code}</Tag>
-        : <Typography.Text type="secondary">{t('scheduler.unknownIsland')}</Typography.Text>}
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>#{id}</Typography.Text>
-    </Space>
+    <Tooltip title={code ? `编码：${code}` : ''}>
+      <Tag color="blue">{name || code}</Tag>
+    </Tooltip>
   );
 }
 
@@ -168,7 +166,7 @@ export default function SchedulerPage() {
           columns={[
             {
               title: t('scheduler.col.island'), width: 220,
-              render: (_, r) => <IslandCell code={r.islandCode} id={r.islandId} />,
+              render: (_, r) => <IslandCell code={r.islandCode} name={r.islandName} />,
             },
             {
               title: t('scheduler.col.holder'),
@@ -229,7 +227,7 @@ export default function SchedulerPage() {
             },
             {
               title: t('scheduler.col.island'), width: 220,
-              render: (_, r) => <IslandCell code={r.islandCode} id={r.islandId} />,
+              render: (_, r) => <IslandCell code={r.islandCode} name={r.islandName} />,
             },
             { title: t('scheduler.col.priority'), dataIndex: 'priority', width: 90 },
             {

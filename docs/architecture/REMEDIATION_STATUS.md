@@ -58,7 +58,7 @@
 | N-06 | 期望反转的测试：Experiment A 引用 Workflow B，有合法 Handoff 且人工确认后允许；Handoff 缺失 / 确认缺失 / UNKNOWN 时阻断 | N-04 | NOT_STARTED | 取代实施规格 §7 测试 8/9/10 的旧期望 |
 | N-07 | 配置期 Handoff 持久化结构：扩展 `experiment_process_edge` 或新建 `experiment_handoff`（Q-10），在岛内设备/IP 配置入口同处录入 | Q-10、N-04 | NOT_STARTED | `island_flow.graph` 边只落 `{id,source,target}` 且属**岛内动线**，不可直接复用；`experiment_process_edge` 现注释「只表达偏序，不表达资源」 |
 | N-08 | 运行时人工确认门禁：复用 `manual_window` + `pause_kind='waiting_human'` + `GET/POST /api/manual-windows`，补前端消费页（现 `webapp` 0 命中） | Q-09、N-04、ADR-PAUSE-007 | NOT_STARTED | **不新建第三套 Handoff 状态机**；确认人/时间/板样本标识/交接点/结果落 L-01 |
-| N-09 | 界面口径：不显示岛 ID，只显示岛名 `resource_node.name`；跨 Workcell 实验展示**涉及岛名列表**；改 `ExperimentList.tsx:169,171`、`Scheduler.tsx:171,232` 等 | ADR-ISLAND-005 | NOT_STARTED | 岛名字段已存在（`QueryService.java:714` `isl.name AS island_name`），改动小 |
+| N-09 | 界面口径：不显示岛 ID，只显示岛名 `resource_node.name`；跨 Workcell 实验展示**涉及岛名列表**；改 `ExperimentList.tsx:169,171`、`Scheduler.tsx:171,232` 等 | ADR-ISLAND-005 | IN_PR | 岛名字段已存在；2026-11-08 已改：Scheduler 锁/队列增加 islandName 并只显示岛名，ExperimentList 显示 workcellNames/islandName（跨 Workcell 列表），不再显示 island_id |
 
 ## 4a. L 组：分层最小骨架（ADR-LAYER-001）
 
@@ -76,7 +76,7 @@
 
 | ID | 工作项 | 依赖 | 状态 | 说明 |
 |---|---|---|---|---|
-| S-01 | 两套 run 模型映射表：字段 / 调用链 / `pause_kind` 词表差异 / 创建·关闭·重启恢复行为 / 关联基数 | — | NOT_STARTED | `PauseManager`→`run.status`、`RunControl`→`experiment_run.status` 并存且独立写库；`3debf78` 只是约定式补丁，未合并 |
+| S-01 | 两套 run 模型映射表：字段 / 调用链 / `pause_kind` 词表差异 / 创建·关闭·重启恢复行为 / 关联基数 | — | IN_PR | `PauseManager`→`run.status`、`RunControl`→`experiment_run.status` 并存且独立写库；`3debf78` 只是约定式补丁，未合并；2026-11-08 新增 docs/architecture/S01_RUN_MODEL_MAPPING_20261108.md（字段/调用链/词表/恢复/基数六节） |
 | S-02 | `PauseCoordinator` 适配层：**与 P-06 是同一项**，本行只补「两套模型映射与适配边界」，不另建第二个 Coordinator | S-01、P-06、**ADR-PAUSE-009/010**、**ADR-PROCESS-003** | **IN_PR** | **V1 安全子集已落地**（`LABOS_PAUSE_COORDINATOR_V1_DESIGN_20261107.md` §6 V1-1~V1-6；ADR-PROCESS-003 §2.16）：`PauseCoordinator` 适配层（E-1~E-6 全部经它路由，外部响应逐字段不变，`M-01` 作废旧 run 契约保留）+ Coordinator 级幂等（`pause_request` 表，§6 V1-5 / ADR-PAUSE-009）+ `GET /api/runtime/holds` 暴露 `unknown`/`unknownReason`（§6 V1-6 / ADR-PAUSE-010）。证据：`./scripts/ci-gate.sh --all` = 门禁通过（无跳过）/`GATE_EXIT=0`，2.7=55/0、4.13=34/0、4.17=13/0、4.18=5/0 未回退；纯逻辑 664/0；DB 单测 `PauseCoordinatorDbSelfTest` 16/0。**V2 第一切片已落地（2026-11-08）**：pause_event Outbox + 实验级 Pause（E-4）的 Hold/control_state/幂等键/事件**单事务**写入，PauseEventOutbox 幂等派发（PAUSE_V2_SINGLE_TX_OUTBOX_20261108.md）；剩余：Resume/Stop 与 Workflow 级 Pause 单事务化、PAUSING worker、P-07 命令账本 |
 | S-03 | 事实 vs 投影职责切换：`experiment.status` 只允许聚合器写；`StatusVocabulary` CASE 回写收口 | S-02、P-06 | NOT_STARTED | 现状 3 处直接 UPDATE；`PauseCoordinator` / `ExperimentStateProjector` 在 Java 源码 0 命中 |
 | S-04 | ⚠️ **验收口径切换（分两个 PR）**：① PR-S04-A 保留 legacy API/status，4.17 增加本次 Hold ID、device_state 在途/收敛、节点边界和后续 pending 证据；明确 legacy `paused` 可早于物理收敛，**不在 A 阶段断言 UI/API 不显示 PAUSED**；② PR-S04-B 在 P-03、P-07/L-03、L-02、S-02/P-06 完成后切 API/UI 语义，并新增「未收敛不得显示 `PAUSED`」断言 | G-03、L-02、P-03、P-07、S-02/P-06 | IN_PR（PR-S04-B 最小闭环） | 现有 4.17 以三层 `paused` 为主断言；当前 `ExperimentApi` 立即返回 paused、设备动作可继续运行到安全边界。两阶段边界见 `LABOS_S04A_E2E_ACCEPTANCE_SPEC_20261107.md`；**禁止同一 PR 同时改实现与验收判据**。2026-11-07 进展：PR-S04-A 已在评审分支跑通（4.17 = 13/0，`ci-gate.sh --all` 中 0 SKIP、4.17/4.18/4.13 全绿，唯一失败为与本项无关的 G-05），评审分支测试已随 530e4eb/b716d07 合入 main（2026-11-08）；PR-S04-B 最小闭环已落地：Pause API 返回 accepted + control_state，收敛后才写 paused（执行器 settle / 调度器 convergeQueuedPauses），页面显示 control 词表；4.17=17/0、4.20=25/0；剩余：P-07 命令账本/Outbox 与 P-06 V2 单事务未做 |

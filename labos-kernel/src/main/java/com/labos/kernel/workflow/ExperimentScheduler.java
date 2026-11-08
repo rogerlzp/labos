@@ -74,14 +74,14 @@ public final class ExperimentScheduler {
      * <p>{@code experimentId/experimentNo/islandCode} 来自联查；库抖动时可能为 null，
      * 但 {@code islandId/experimentRunId/since/expiresAt} 永远来自内存态，不受影响。
      */
-    public record LockEntry(long islandId, String islandCode, long experimentRunId,
-                            Long experimentId, String experimentNo,
+    public record LockEntry(long islandId, String islandCode, String islandName,
+                            long experimentRunId, Long experimentId, String experimentNo,
                             String since, String expiresAt) {
     }
 
     /** 快照里的一条排队项，{@code position} 从 1 开始（按派发口径排序后的位次）。 */
     public record QueueEntry(long experimentRunId, long experimentId, long islandId,
-                             String experimentNo, String islandCode,
+                             String experimentNo, String islandCode, String islandName,
                              int priority, String deadline, String submittedAt,
                              int position) {
     }
@@ -687,11 +687,12 @@ public final class ExperimentScheduler {
         }
 
         Map<Long, String> islandCodes = new HashMap<>();
+        Map<Long, String> islandNames = new HashMap<>();
         Map<Long, Long> expIdByRun = new HashMap<>();
         Map<Long, String> expNoByRun = new HashMap<>();
         Map<Long, String> expNoById = new HashMap<>();
         try (Connection c = db.open()) {
-            loadIslandCodes(c, islandIds, islandCodes);
+            loadIslandCodes(c, islandIds, islandCodes, islandNames);
             loadRunExperiments(c, lockRunIds, expIdByRun, expNoByRun);
             loadExperimentNos(c, queueExpIds, expNoById);
         } catch (SQLException e) {
@@ -701,6 +702,7 @@ public final class ExperimentScheduler {
         List<LockEntry> lockEntries = new ArrayList<>();
         for (LockView l : lockViews) {
             lockEntries.add(new LockEntry(l.islandId(), islandCodes.get(l.islandId()),
+                    islandNames.get(l.islandId()),
                     l.experimentRunId(), expIdByRun.get(l.experimentRunId()),
                     expNoByRun.get(l.experimentRunId()),
                     l.at().toString(), l.at().plus(LOCK_TTL).toString()));
@@ -712,6 +714,7 @@ public final class ExperimentScheduler {
             queueEntries.add(new QueueEntry(q.experimentRunId(), q.experimentId(),
                     q.islandId(), expNoById.get(q.experimentId()),
                     q.islandId() <= 0 ? null : islandCodes.get(q.islandId()),
+                    q.islandId() <= 0 ? null : islandNames.get(q.islandId()),
                     q.priority(), q.deadline(),
                     Instant.ofEpochMilli(q.submittedAt()).toString(), position));
         }
@@ -739,6 +742,7 @@ public final class ExperimentScheduler {
             Map<String, Object> x = new LinkedHashMap<>();
             x.put("islandId", l.islandId());
             x.put("islandCode", l.islandCode());
+            x.put("islandName", l.islandName());
             x.put("experimentRunId", l.experimentRunId());
             // runId 是 §7.1 示例里的历史别名（与 experimentRunId 同值），保留给读示例的客户端
             x.put("runId", l.experimentRunId());
@@ -762,6 +766,7 @@ public final class ExperimentScheduler {
             // 未分配岛的实验内核内部用 0 占位，对外是"未指定"（前端按 null 兜底）
             x.put("islandId", q.islandId() <= 0 ? null : q.islandId());
             x.put("islandCode", q.islandCode());
+            x.put("islandName", q.islandName());
             x.put("priority", q.priority());
             x.put("deadline", q.deadline());
             x.put("submittedAt", q.submittedAt());
@@ -785,17 +790,19 @@ public final class ExperimentScheduler {
 
     /** 岛编码批量联查（resource_node.id -> code）。 */
     private void loadIslandCodes(Connection c, Set<Long> islandIds,
-                                 Map<Long, String> into) throws SQLException {
+                                 Map<Long, String> codes, Map<Long, String> names)
+            throws SQLException {
         if (islandIds.isEmpty()) {
             return;
         }
         try (PreparedStatement ps = c.prepareStatement(
-                "SELECT id, code FROM resource_node WHERE tenant_id = ? AND id = ANY(?)")) {
+                "SELECT id, code, name FROM resource_node WHERE tenant_id = ? AND id = ANY(?)")) {
             ps.setLong(1, tenantId);
             ps.setArray(2, c.createArrayOf("bigint", islandIds.toArray()));
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    into.put(rs.getLong(1), rs.getString(2));
+                    codes.put(rs.getLong(1), rs.getString(2));
+                    names.put(rs.getLong(1), rs.getString(3));
                 }
             }
         }
