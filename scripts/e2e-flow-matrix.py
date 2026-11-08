@@ -579,6 +579,126 @@ def graph_edges(xml):
     return out
 
 
+def flow_bounds(xml):
+    """从图 XML 的 BPMNDiagram 取节点坐标：{id: (x, y, w, h)}。"""
+    out = {}
+    for m in re.finditer(r"<bpmndi:BPMNShape\b([^>]*)>(.*?)</bpmndi:BPMNShape>", xml, re.S):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        nid = attrs.get("bpmnElement")
+        b = re.search(r"<dc:Bounds\b([^>]*)/?>", m.group(2))
+        if not nid or not b:
+            continue
+        ba = dict(re.findall(r'(\w+)="([^"]*)"', b.group(1)))
+        try:
+            out[nid] = (float(ba.get("x", 0)), float(ba.get("y", 0)),
+                        float(ba.get("width", 0)), float(ba.get("height", 0)))
+        except ValueError:
+            continue
+    return out
+
+
+def validate_flow(xml):
+    """检查页面拖出的图是否是一个合法流程；返回错误列表（空 = 合法）。
+
+    规则（用户/运维对“一个流程”的直觉，也是引擎能跑的前提）：
+      1. 恰好 1 个 startEvent、1 个 endEvent；
+      2. 每条 sequenceFlow 的 sourceRef/targetRef 都存在；
+      3. 除 start 外每个节点至少 1 条入边；除 end 外每个节点至少 1 条出边；
+      4. 所有节点从 start 可达，且都能到达 end（不允许孤立/半截节点）；
+      5. 禁止 1 进 1 出的网关（无意义直通；要么分叉要么汇合）；
+      6. 每个分叉网关（出边>1）的每条分支都能到达一个同类型汇合网关（入边>1）；
+      7. 每个汇合网关（入边>1）能从至少一个同类型分叉到达。
+    """
+    errs = []
+    nodes = {}
+    for m in re.finditer(
+            r"<bpmn:(startEvent|endEvent|task|userTask|serviceTask|exclusiveGateway|parallelGateway)\b([^>]*)>",
+            xml):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(2)))
+        nid = attrs.get("id")
+        if nid:
+            nodes[nid] = m.group(1)
+    starts = [k for k, v in nodes.items() if v == "startEvent"]
+    ends = [k for k, v in nodes.items() if v == "endEvent"]
+    if len(starts) != 1:
+        errs.append("startEvent 数量 %d（必须 1）" % len(starts))
+    if len(ends) != 1:
+        errs.append("endEvent 数量 %d（必须 1）" % len(ends))
+
+    flows = {}
+    for m in re.finditer(r"<bpmn:sequenceFlow\b([^>]*)>", xml):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        src, tgt = attrs.get("sourceRef"), attrs.get("targetRef")
+        if not src or not tgt or src not in nodes or tgt not in nodes:
+            errs.append("连线 endpoint 不存在：%s -> %s" % (src, tgt))
+            continue
+        flows[attrs.get("id") or (src + "-" + tgt)] = (src, tgt)
+
+    ins = {k: [] for k in nodes}
+    outs = {k: [] for k in nodes}
+    for src, tgt in flows.values():
+        outs[src].append(tgt)
+        ins[tgt].append(src)
+
+    for k, kind in nodes.items():
+        if kind == "startEvent":
+            if ins[k]:
+                errs.append("start 有入边：" + str(ins[k]))
+            if not outs[k]:
+                errs.append("start 没有出边")
+        elif kind == "endEvent":
+            if not ins[k]:
+                errs.append("end 没有入边")
+            if outs[k]:
+                errs.append("end 有出边：" + str(outs[k]))
+        else:
+            if not ins[k]:
+                errs.append("%s(%s) 没有入边（孤立/断线）" % (k, kind))
+            if not outs[k]:
+                errs.append("%s(%s) 没有出边（断线）" % (k, kind))
+
+    def reach(seeds, adj):
+        seen = set(seeds)
+        stack = list(seeds)
+        while stack:
+            cur = stack.pop()
+            for nx in adj.get(cur, []):
+                if nx not in seen:
+                    seen.add(nx)
+                    stack.append(nx)
+        return seen
+
+    if starts:
+        miss = [k for k in nodes if k not in reach([starts[0]], outs)]
+        if miss:
+            errs.append("从 start 走不到：" + ",".join(miss))
+    if ends:
+        miss = [k for k in nodes if k not in reach([ends[0]], ins)]
+        if miss:
+            errs.append("走不到 end：" + ",".join(miss))
+
+    def gtype(kind):
+        return "exclusive" if kind == "exclusiveGateway" else "parallel"
+
+    for k, kind in nodes.items():
+        if "Gateway" not in kind:
+            continue
+        if len(ins[k]) <= 1 and len(outs[k]) <= 1:
+            errs.append("网关 %s 是 1 进 1 出（无意义直通）" % k)
+        if len(outs[k]) > 1:
+            joins = [j for j, jk in nodes.items()
+                     if "Gateway" in jk and len(ins[j]) > 1 and gtype(jk) == gtype(kind) and j != k]
+            ok_join = any(all(j in reach([b], outs) for b in outs[k]) for j in joins)
+            if not ok_join:
+                errs.append("分叉网关 %s(%s) 的分支没有共同汇合网关" % (k, gtype(kind)))
+        if len(ins[k]) > 1:
+            splits = [s for s, sk in nodes.items()
+                      if "Gateway" in sk and len(outs[s]) > 1 and gtype(sk) == gtype(kind) and s != k]
+            if not any(k in reach([s], outs) for s in splits):
+                errs.append("汇合网关 %s(%s) 没有对应分叉" % (k, gtype(kind)))
+    return errs
+
+
 def set_node_builtin(page, label, key, var, value):
     """选中图元 → 节点设置 → 切内置节点（变量节点/表达式）→ 填两个参数 → 卡内保存。"""
     page.locator(f'.djs-element[data-element-id="{key}"]').first.click()
