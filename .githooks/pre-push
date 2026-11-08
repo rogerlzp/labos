@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================================
-# pre-push 钩子：推送前跑一遍完整门禁（./scripts/ci-gate.sh --all）
+# pre-push 钩子：推送前按 diff 选档跑门禁（不再无条件 --all）
 #
-# 为什么需要：GitHub CI（.github/workflows/ci.yml）只跑**不需要数据库**的部分，
-# 页面轨 / 链路 / 流程矩阵 / 仿真机联调都不在 CI 里，最容易"本地看着绿了直接推"。
-# 这个钩子在 `git push` 之前先把完整的跑一遍，不过就挡下。
+# 为什么需要：GitHub CI 只跑不需要数据库的部分；页面轨/链路/流程矩阵不在 CI 里，
+# 最容易"本地看着绿了直接推"。但旧钩子无条件 ./scripts/ci-gate.sh --all
+# （40 分钟级，设备段还要 30–45 秒/动作的仿真机），等于每次 push 都跑发布前全量。
+#
+# 现在的分工（对应 docs/测试总纲.md §2 / §3.3）：
+#   · 只改文档      → verify-en-docs.py（秒级）
+#   · 改了代码      → T0（ci-gate.sh 无参：阈值自检/纯逻辑/tsc/schema），分钟级
+#   · T1 相关段     → 脚本会打印「按 §4 应加跑」清单；LABOS_GATE_T1=1 git push 自动跑
+#   · T2 全量       → 发布前手动 ./scripts/ci-gate.sh --all（nightly 跑页面轨）
 #
 # 启用（每个克隆各做一次）：
 #   git config core.hooksPath .githooks
@@ -22,14 +28,13 @@ fi
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT" || exit 1
 
-echo "pre-push：跑完整门禁 ./scripts/ci-gate.sh --all"
-echo "          （要库 / 前端 / 仿真机；缺环境的小节会 SKIP，"
-echo "            跳过的段会单独计数并在结尾提示——它们没跑，不算通过）"
+echo "pre-push：按 diff 选档（T2 全量留给发布前）"
 echo
 
-if ./scripts/ci-gate.sh --all; then
+if python3 scripts/gate-select.py --run; then
   echo
-  echo "pre-push：门禁通过，放行推送"
+  echo "pre-push：所选段通过，放行推送"
+  echo "          提醒：T2 全量仍须在发布前跑一次 ./scripts/ci-gate.sh --all"
   exit 0
 fi
 

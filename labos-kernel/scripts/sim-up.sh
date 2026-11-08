@@ -16,9 +16,11 @@
 #   ./scripts/sim-up.sh                     # 用默认岛（端口模式：127.0.0.1 + 不同端口）
 #   ./scripts/sim-up.sh LAB-DEMO-02         # 指定岛编号
 #   ./scripts/sim-up.sh LAB-DEMO-02 300     # 指定每台模拟耗时（0=用设备类型默认）
+#   ./scripts/sim-up.sh LAB-DEMO-02 0 fast   # 门禁快速档：每步 2–5 秒（T1/T2 用）
+#   ./scripts/sim-up.sh LAB-DEMO-02 0 pause  # 暂停观测档：每步 8–15 秒（4.16–4.18 用）
+#   ./scripts/sim-up.sh LAB-DEMO-02 0 slow   # 真机时序档：30–45 秒（默认慢档，仅压测/现场用）
 #   ./scripts/sim-up.sh LAB-DEMO-02 0 30000:300000
-#                                        # 方法耗时随机在 30–300 秒（真机时序）；
-#                                        # 测「设备还在执行时来暂停」用这个
+#                                        # 也可自定义区间（毫秒，MIN:MAX[:SEED]）
 #
 #   # 多 IP 模式：每台设备一个独立 IP、**同一端口**，最接近真实现场
 #   ./scripts/sim-up.sh --setup-ip 20       # 先打印加 IP 的命令（需 sudo，跑一次）
@@ -70,6 +72,12 @@ DELAY_MS="${2:-0}"     # 0 = 让模拟器按设备类型用默认耗时
 # 为什么需要：默认耗时只有几百毫秒，命令早回来了 —— 暂停信号根本来不及
 # 在「设备正在执行」时到达，测不出动作中间的暂停/续跑语义。
 RAND_DELAY="${3:-}"
+# 预设档位：门禁用 fast/pause，不再让每个设备动作等 30–45 秒。
+case "${RAND_DELAY}" in
+    fast)  RAND_DELAY="2000:5000" ;;
+    pause) RAND_DELAY="8000:15000" ;;
+    slow)  RAND_DELAY="30000:45000" ;;
+esac
 
 : "${LABOS_DB_HOST:?请设置 LABOS_DB_HOST}"
 : "${LABOS_DB_NAME:?请设置 LABOS_DB_NAME}"
