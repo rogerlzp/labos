@@ -1024,11 +1024,13 @@ export default function DesignerPage() {
     ]);
     const shapes: ShapeEl[] = [];
     const flows: FlowEl[] = [];
+    const flowEls: unknown[] = [];
     reg.forEach((el) => {
       if (SHAPES.has(el.type) && 'x' in el && (el as ShapeEl).x != null) {
         shapes.push(el as ShapeEl);
       } else if (el.type === 'bpmn:SequenceFlow') {
         flows.push(el as FlowEl);
+        flowEls.push(el);
       }
     });
     if (shapes.length === 0) return;
@@ -1239,11 +1241,14 @@ export default function DesignerPage() {
       const joinCol = col + 1 + maxW;
       placeNode(j, joinCol, centerY);
       const hs = branches.map((s) => Math.max(seqHeight(s, j), MIN_BAND));
+      // 分支整体在 fork/join 之间垂直居中；每个分支内部再在自己的列宽里居中
+      // （短分支不贴左，和长分支一样关于这一对的中心线对称）。
       const total = hs.reduce((a, b) => a + b, 0) + ROW_GAP * Math.max(0, branches.length - 1);
       let top = centerY - total / 2;
       branches.forEach((s, i) => {
         const bandCenter = top + hs[i] / 2;
-        placeSeq(s, j, col + 1, bandCenter);
+        const offset = Math.max(0, Math.floor((maxW - widths[i]) / 2));
+        placeSeq(s, j, col + 1 + offset, bandCenter);
         top += hs[i] + ROW_GAP;
       });
       return joinCol + 1;
@@ -1297,6 +1302,14 @@ export default function DesignerPage() {
       groups.get(key)!.els.push(mv.el);
     });
     groups.forEach((g) => { modeling.moveElements(g.els, { x: g.dx, y: g.dy }); });
+    // 形状移动后让 bpmn-js 按新锚点重新布线（否则连线还挂着旧 waypoint，
+    // 看起来会“从节点背后穿过去”，用户 2026-11-08 指出画面不合理）。
+    const layoutConn = (modeling as unknown as {
+      layoutConnection?: (conn: unknown) => void;
+    }).layoutConnection;
+    if (layoutConn) {
+      flowEls.forEach((conn) => layoutConn.call(modeling, conn));
+    }
     const cv = m.get('canvas') as unknown as {
       zoom: (v: string) => void;
       viewbox: (v?: { x: number; y: number; width: number; height: number }) =>
@@ -1307,7 +1320,14 @@ export default function DesignerPage() {
     // 避免最左边的开始节点/第一列被 palette 盖住。
     try {
       const vb = cv.viewbox();
-      cv.viewbox({ x: vb.x - 100, y: vb.y - 40, width: vb.width, height: vb.height });
+      // 内容整体右移 150（避开左侧 palette），同时把视口放大 300/120，
+      // 保证右边/下边也留出边距，不会把结束节点裁掉。
+      cv.viewbox({
+        x: vb.x - 150,
+        y: vb.y - 60,
+        width: vb.width + 300,
+        height: vb.height + 120,
+      });
     } catch { /* 视口 API 不可用时只保留 fit-viewport */ }
   };
   // 加载图（steps=1 让多步节点显示为可折叠 subProcess）
