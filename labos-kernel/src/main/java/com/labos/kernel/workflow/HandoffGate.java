@@ -67,8 +67,10 @@ public final class HandoffGate {
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     String pair = rs.getLong(1) + "->" + rs.getLong(2);
-                    configured.add(pair);
-                    if ("unknown".equalsIgnoreCase(rs.getString(3))) {
+                    // ADR-ISLAND-004：配置≠可执行；运行时人工确认（confirmed）后才放行
+                    if ("confirmed".equalsIgnoreCase(rs.getString(3))) {
+                        configured.add(pair);
+                    } else if ("unknown".equalsIgnoreCase(rs.getString(3))) {
                         unknown.add(pair);
                     }
                 }
@@ -76,7 +78,7 @@ public final class HandoffGate {
         }
         List<String> missing = missing(chain, configured, unknown);
         if (!missing.isEmpty()) {
-            throw new IllegalStateException("跨 Workcell Handoff 缺失/未知，禁止执行实验 #"
+            throw new IllegalStateException("跨 Workcell Handoff 未确认/缺失，禁止执行实验 #"
                     + experimentId + "：" + String.join("、", missing));
         }
     }

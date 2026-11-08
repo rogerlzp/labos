@@ -88,6 +88,15 @@ ADR-ISLAND-002 要求的「Experiment↔Workcell 显式绑定 + Handoff」**尚�
 
 这验证了 P-03 逐候选派发：无关实验不再被 A 的 Hold 全局挡住；A 自身被正确阻断。
 
+## 四·补四、Handoff 运行时人工确认（2026-11-09）
+
+- HandoffGate 收紧：status=configured 不再直接放行，必须 confirmed（ADR-ISLAND-004）；
+- 产品入口：POST /api/experiments/{id}/handoffs/confirm body {fromWorkcellId,toWorkcellId,note}；
+  只允许 configured/unknown → confirmed，并落 intervention_record（HANDOFF_CONFIRM，L-01）；
+- 重复确认返回 409；
+- api.HandoffConfirmDbSelfTest 4/0（确认/状态/介入记录/重复拒绝）；
+- 配置 API PUT /handoffs 仍保留，但执行前必须确认。
+
 ## 五、下一步
 
 1. 落 `experiment_workcell` 绑定表 + Handoff 门禁（ADR-ISLAND-002/004）；

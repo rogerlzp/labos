@@ -3932,6 +3932,54 @@ public final class QueryService {
         }
     }
 
+    /**
+     * N-10：人工确认一条 Handoff（配置 → confirmed），并落 L-01 介入记录。
+     *
+     * @return 更新条数（0 = 不存在/已确认）
+     */
+    public int confirmHandoff(long experimentId, long fromWorkcellId, long toWorkcellId,
+                              String operator, String note) throws SQLException {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            try {
+                int n;
+                try (PreparedStatement ps = c.prepareStatement("""
+                        UPDATE experiment_handoff
+                           SET status = 'confirmed', updated_at = now()
+                         WHERE tenant_id = ? AND experiment_id = ?
+                           AND from_workcell_id = ? AND to_workcell_id = ?
+                           AND status IN ('configured', 'unknown')
+                        """)) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, experimentId);
+                    ps.setLong(3, fromWorkcellId);
+                    ps.setLong(4, toWorkcellId);
+                    n = ps.executeUpdate();
+                }
+                if (n > 0) {
+                    try (PreparedStatement ps = c.prepareStatement("""
+                            INSERT INTO intervention_record
+                              (tenant_id, run_id, operator, decided_action,
+                               from_location, to_location, result, note)
+                            VALUES (?, NULL, ?, 'HANDOFF_CONFIRM', ?, ?, 'resolved', ?)
+                            """)) {
+                        ps.setLong(1, tenantId);
+                        ps.setString(2, operator == null ? "api" : operator);
+                        ps.setString(3, String.valueOf(fromWorkcellId));
+                        ps.setString(4, String.valueOf(toWorkcellId));
+                        ps.setString(5, note);
+                        ps.executeUpdate();
+                    }
+                }
+                c.commit();
+                return n;
+            } catch (SQLException | RuntimeException e) {
+                c.rollback();
+                throw e;
+            }
+        }
+    }
+
     /** UNKNOWN 命令账本列表（P-07.2 人工核对入口）。 */
     public String commandsUnknownJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();

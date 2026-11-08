@@ -133,6 +133,32 @@ final class ExperimentApi {
             return true;
         }
         Matcher expGraph = EXP_GRAPH.matcher(path);
+        Matcher handoffConfirm = EXP_HANDOFF_CONFIRM.matcher(path);
+        if (handoffConfirm.matches()) {
+            if (!"POST".equals(method)) {
+                throw new IllegalStateException("method not allowed: " + method);
+            }
+            long eid = Long.parseLong(handoffConfirm.group(1));
+            String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            Long from = jsonLong(body, "fromWorkcellId");
+            Long to = jsonLong(body, "toWorkcellId");
+            if (from == null || to == null) {
+                s.send(ex, 400, err("需要 fromWorkcellId / toWorkcellId"));
+                return true;
+            }
+            int n = s.query.confirmHandoff(eid, from, to, "api", jsonField(body, "note"));
+            if (n == 0) {
+                s.send(ex, 409, err("Handoff 不存在或已确认"));
+                return true;
+            }
+            s.audited("experiment.handoff.confirm", "experiment", eid,
+                    from + "->" + to, null, ex);
+            s.send(ex, 200, Jsons.obj("experimentId", eid,
+                    "fromWorkcellId", from, "toWorkcellId", to,
+                    "status", "confirmed"));
+            return true;
+        }
+
         Matcher expHandoffs = EXP_HANDOFFS.matcher(path);
         if (expHandoffs.matches()) {
             long eid = Long.parseLong(expHandoffs.group(1));
@@ -699,6 +725,9 @@ final class ExperimentApi {
 
     private static final Pattern EXP_HANDOFFS =
             Pattern.compile("^/api/experiments/(\\d+)/handoffs$");
+
+    private static final Pattern EXP_HANDOFF_CONFIRM =
+            Pattern.compile("^/api/experiments/(\\d+)/handoffs/confirm$");
 
     /** 一次实验执行的逐步明细（含"未执行"的步骤）。 */
     private static final Pattern EXP_RUN_STEPS =

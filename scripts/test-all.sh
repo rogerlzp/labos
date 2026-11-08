@@ -136,6 +136,8 @@ DB=(
   "workflow.ManualWindowDbSelfTest"
   # L-01：人工介入记录落库（人/时间/板/样本/交接点/结果）
   "api.InterventionRecordDbSelfTest"
+  # N-10：跨 Workcell Handoff 运行时人工确认（配置 → confirmed + L-01 记录）
+  "api.HandoffConfirmDbSelfTest"
   # 保存前预检：纯内置图不报 PF-07 / 内置节点干跑直通不拦住下游（不报假 PF-03）
   # / 纯设备图对照 / 只有网关时仍报 PF-07（探针流程只在内存里拼 XML，不写库）
   "workflow.PreflightDbSelfTest"
