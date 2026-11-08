@@ -713,9 +713,18 @@ public final class PauseManager {
                 UPDATE run SET status = 'running', pause_kind = NULL,
                        pause_reason = NULL, resumed_at = now(), updated_at = now()
                 WHERE tenant_id = ? AND status = 'paused' AND pause_kind = 'paused_fault'
+                  -- S-04-B 修复：只看**这条 run 的流程实际用到的设备**是否在线。
+                  -- 旧口径是「全租户所有 device_state 都在线」，现场只要有一台无关
+                  -- 设备离线就永远不自动恢复（实测 demo 环境多台离线 → 永不恢复）。
                   AND NOT EXISTS (
-                        SELECT 1 FROM device_state ds
-                        WHERE ds.tenant_id = run.tenant_id AND ds.online = false
+                        SELECT 1
+                          FROM device_state ds
+                          JOIN workflow_node wn
+                            ON wn.tenant_id = ds.tenant_id
+                           AND wn.resource_id = ds.resource_id
+                         WHERE ds.tenant_id = run.tenant_id
+                           AND ds.online = false
+                           AND wn.workflow_id = run.workflow_id
                   )
                 """;
         try (Connection c = db.open();

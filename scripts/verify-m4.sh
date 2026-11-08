@@ -154,6 +154,26 @@ AUDIT=$(q "SELECT count(*) FROM plate_location_audit
 [ "${AUDIT:-0}" -ge 1 ] && ok "盘点留痕（$AUDIT 条审计）" || bad "没有审计记录"
 fi
 
+# ---------------------------------------------------------------- ⑥ 故障自动恢复
+step "⑥ paused_fault 心跳恢复自动续跑（只看本流程设备）"
+
+q "UPDATE run SET status='running', pause_kind=NULL, pause_reason=NULL WHERE id=$RUN_ID;" >/dev/null
+PAUSE_RESP=$(api -X POST "$BASE/api/runs/$RUN_ID/pause?kind=paused_fault&reason=verify-auto-resume")
+PK=$(echo "$PAUSE_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('pauseKind',''))" 2>/dev/null)
+[ "$PK" = "paused_fault" ] && ok "paused_fault 暂停成功（API 与库一致）" \
+    || bad "paused_fault 暂停失败：api=$PK resp=$PAUSE_RESP"
+
+# 心跳默认 10s 一轮；自动恢复只看「本 run 所属流程用到的设备」是否在线，
+# 不再被无关离线设备挡住（S-04-B 修复）。最多等 45 秒。
+RESUMED=0
+for i in $(seq 1 45); do
+    ST=$(q "SELECT status::text FROM run WHERE id=$RUN_ID;")
+    if [ "$ST" = "running" ]; then RESUMED=1; break; fi
+    sleep 1
+done
+[ "$RESUMED" = "1" ] && ok "心跳检测到本流程设备在线后自动继续（paused_fault → running）" \
+    || bad "paused_fault 未被心跳自动恢复"
+
 # ---------------------------------------------------------------- ② 豁免
 step "② 回程承诺暂停不释放"
 

@@ -35,6 +35,7 @@ public final class PauseManagerSelfTest {
             testUnknownWithCorrection(runId);
             testReleaseExempt();
             testReleasePortUsage(runId);
+            testAutoResumeFaultedScope(runId);
         } finally {
             cleanup(runId);
         }
@@ -187,6 +188,107 @@ public final class PauseManagerSelfTest {
     }
 
     // ---------------------------------------------------------------- 工具
+
+    /**
+     * S-04-B 修复回归：paused_fault 自动恢复只看**本流程用到的设备**是否在线。
+     *
+     * <p>旧口径要求全租户所有 device_state 都在线；现场只要有一台无关设备离线
+     * 就永远不自动恢复（demo 库就长期有多台离线）。这里造一条用到 involved
+     * 设备的 run，把无关设备置离线，断言不影响自动恢复；再把 involved 置离线，
+     * 断言会被正确拦住；恢复在线后自动继续。
+     */
+    private static void testAutoResumeFaultedScope(long runId) throws Exception {
+        String wfRaw = one("SELECT workflow_id::text FROM run WHERE id=" + runId);
+        if (wfRaw == null || wfRaw.isEmpty() || "null".equals(wfRaw)) {
+            check("自动恢复范围用例需要 run.workflow_id", false, wfRaw);
+            return;
+        }
+        long wf = Long.parseLong(wfRaw);
+        long involved = 200162L;
+        long unrelated = 200164L;
+        Map<Long, Boolean> orig = new LinkedHashMap<>();
+        orig.put(involved, deviceOnline(involved));
+        orig.put(unrelated, deviceOnline(unrelated));
+        exec("DELETE FROM workflow_node WHERE workflow_id=" + wf
+                + " AND node_key LIKE 'SELF-AR-%'");
+        try {
+            insertWorkflowNode(wf, "SELF-AR-INV", involved);
+            setDeviceOnline(involved, true);
+            setDeviceOnline(unrelated, false);
+            setRunPausedFault(runId);
+            new PauseManager(db, TENANT).autoResumeFaulted();
+            check("无关设备离线不影响自动恢复（只看本流程设备）",
+                    "running".equals(statusOf(runId)), statusOf(runId));
+
+            setRunPausedFault(runId);
+            setDeviceOnline(involved, false);
+            new PauseManager(db, TENANT).autoResumeFaulted();
+            check("本流程所用设备离线时不自动恢复",
+                    "paused".equals(statusOf(runId)), statusOf(runId));
+
+            setRunPausedFault(runId);
+            setDeviceOnline(involved, true);
+            new PauseManager(db, TENANT).autoResumeFaulted();
+            check("本流程所用设备恢复在线后自动继续",
+                    "running".equals(statusOf(runId)), statusOf(runId));
+        } finally {
+            exec("DELETE FROM workflow_node WHERE workflow_id=" + wf
+                    + " AND node_key LIKE 'SELF-AR-%'");
+            for (Map.Entry<Long, Boolean> en : orig.entrySet()) {
+                setDeviceOnline(en.getKey(), en.getValue());
+            }
+        }
+    }
+
+    private static void insertWorkflowNode(long workflowId, String key, long resourceId)
+            throws Exception {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     INSERT INTO workflow_node (tenant_id, workflow_id, node_key,
+                                                node_type, name, resource_id)
+                     VALUES (1, ?, ?, 'task', 'autoresume selftest', ?)
+                     ON CONFLICT (workflow_id, node_key)
+                     DO UPDATE SET resource_id = EXCLUDED.resource_id
+                     """)) {
+            ps.setLong(1, workflowId);
+            ps.setString(2, key);
+            ps.setLong(3, resourceId);
+            ps.executeUpdate();
+        }
+    }
+
+    private static Boolean deviceOnline(long resourceId) {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT online FROM device_state WHERE tenant_id = 1 AND resource_id = ?")) {
+            ps.setLong(1, resourceId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getBoolean(1) : Boolean.TRUE;
+            }
+        } catch (Exception e) {
+            return Boolean.TRUE;
+        }
+    }
+
+    private static void setDeviceOnline(long resourceId, boolean online) {
+        exec("UPDATE device_state SET online = " + online
+                + " WHERE tenant_id = 1 AND resource_id = " + resourceId);
+    }
+
+    private static void setRunPausedFault(long runId) {
+        exec("UPDATE run SET status = 'paused', pause_kind = 'paused_fault', "
+                + "pause_reason = 'autoresume selftest', resumed_at = NULL WHERE id = " + runId);
+    }
+
+    private static String one(String sql) {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? rs.getString(1) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
 
     private static long createRun() throws Exception {
         try (Connection c = db.open();
