@@ -64,7 +64,7 @@
 
 | ID | 工作项 | 依赖 | 状态 | 说明 |
 |---|---|---|---|---|
-| L-01 | `InterventionRecord` 落证：确认人、时间、板/样本标识、源/目标交接点、确认结果 | Q-09、N-08 | IN_PR | **与 N-08 同批**，借人工 Handoff 一起做，避免两套人工记录（ADR-PAUSE-003 / 007）；2026-11-09 intervention_record 已落 + GET /api/intervention-records |
+| L-01 | `InterventionRecord` 落证：确认人、时间、板/样本标识、源/目标交接点、确认结果 | Q-09、N-08 | IN_PR | **与 N-08 同批**，借人工 Handoff 一起做，避免两套人工记录（ADR-PAUSE-003 / 007）；2026-11-09 intervention_record 已落 + GET /api/intervention-records + operator 取登录用户名 |
 | L-02 | `experiment_run.status varchar(16)` 扩容或改短 code + display label；落 `PAUSE_REQUESTED` / `PAUSING` 最小中间态 | ADR-PAUSE-001/003、**ADR-PAUSE-008** | **IN_PR** | 按 ADR-PAUSE-008 **方案 B**：`status` 扩容 `varchar(32)`；新增 `control_state varchar(24) NOT NULL DEFAULT 'NONE'`（`NONE`/`PAUSE_REQUESTED`/`PAUSING`/`RESUMING`）；词表单一权威同步（后端 `StatusVocabulary` 新增 `control` scope + 前端 `status.ts` / `i18n/codes.ts` / 扫描器 `scan-i18n.py`）；**只授予状态表达能力、不改行为**（legacy 立即投影保持，4.17/4.18 判据不退化）。证据：分片 `99c_pause_control.sql` 已拼入 `90_all_in_one.sql` 且 `check-schema-sync.sh` 产物同源；已应用到测试库 `192.168.124.2/labdb`（`control_state varchar(24) default NONE` + `status varchar(32)`）；`./scripts/ci-gate.sh --all` = 门禁通过（无跳过）/`GATE_EXIT=0`，4.17=13/0、4.18=5/0 未回退；纯逻辑 664/0（`MIN_PURE=664`）；`tsc` 0 错误；`scan-i18n.py` 硬错误 0。行为切换（`control_state` 接线）属 PR-S04-B |
 | L-03 | CommandExecutionState 最小账本 + 最小 Outbox | ADR-PAUSE-006 | NOT_STARTED | `run_command` 现复用 `node_status` 且步结束才落库；**并入 P-07，不另起一套** |
 | L-04 | 人工窗口前端消费页 | N-08 | IN_PR | 可与 N-08 同 PR；2026-11-09 /manual-windows 已落地 |

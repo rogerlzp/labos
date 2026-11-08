@@ -153,7 +153,9 @@ final class ExperimentApi {
                 s.send(ex, 400, err("需要 fromWorkcellId / toWorkcellId"));
                 return true;
             }
-            int n = s.query.confirmHandoff(eid, from, to, "api", jsonField(body, "note"));
+            var sess = s.currentSession(ex);
+            String op = sess == null ? "api" : sess.username();
+            int n = s.query.confirmHandoff(eid, from, to, op, jsonField(body, "note"));
             if (n == 0) {
                 s.send(ex, 409, err("Handoff 不存在或已确认"));
                 return true;

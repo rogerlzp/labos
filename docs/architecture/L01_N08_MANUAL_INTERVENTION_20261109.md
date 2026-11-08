@@ -41,6 +41,13 @@
 - 页面 Playwright 冒烟：/manual-windows 渲染「人工值守窗口」「人工介入记录（L-01）」，无加载失败；
 - `npx tsc --noEmit` 通过。
 
+## 三·补、操作人身份（2026-11-09）
+
+- 人工窗口 decide、隔离解除、Handoff 确认、位置证据、搬运确认的 operator
+  改为取登录会话用户名（无会话退化为 api）；
+- quarantine release 的 by 用会话 userId；
+- 审计仍由 ApiServer.audited 记录同一会话，介入记录与审计口径一致。
+
 ## 四、边界
 
 - 运行时确认与 Handoff 的强关联（跨 Workcell Handoff 必须走人工窗口确认）尚未打通；

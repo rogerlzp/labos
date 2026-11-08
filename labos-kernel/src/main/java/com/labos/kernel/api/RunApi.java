@@ -134,7 +134,8 @@ final class RunApi {
                 s.send(ex, 409, Jsons.obj("ok", false, "error", "窗口已被处置或已超时"));
                 return true;
             }
-            if (!store.decide(wid, action, "api", jsonField(body, "note"))) {
+            String op = operator(ex);
+            if (!store.decide(wid, action, op, jsonField(body, "note"))) {
                 s.send(ex, 409, Jsons.obj("ok", false, "error", "窗口已被处置或已超时"));
                 return true;
             }
@@ -152,7 +153,7 @@ final class RunApi {
                         ex.getRequestHeaders().getFirst("X-Request-Id"));
             }
             // L-01：人工介入落证（确认人/时间/板样本/交接点/动作/结果）
-            long recordId = s.query.recordIntervention(wid, w.runId(), null, "api", action,
+            long recordId = s.query.recordIntervention(wid, w.runId(), null, op, action,
                     jsonField(body, "plateBarcode"), jsonField(body, "sampleId"),
                     jsonField(body, "fromLocation"), jsonField(body, "toLocation"),
                     "MANUAL".equals(action) ? "waiting" : "resolved",
@@ -176,14 +177,15 @@ final class RunApi {
             long runId = Long.parseLong(quarantineRelease.group(1));
             String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
             String note = jsonField(body, "note");
+            String op = operator(ex);
             boolean ok = com.labos.kernel.workflow.StartupRecovery.resolveQuarantine(
-                    s.db, TENANT, runId, 1L, note);
+                    s.db, TENANT, runId, actorId(ex), note);
             if (!ok) {
                 s.send(ex, 409, Jsons.obj("ok", false,
                         "error", "该 run 不在隔离状态或已处置"));
                 return true;
             }
-            long recordId = s.query.recordIntervention(0L, runId, null, "api",
+            long recordId = s.query.recordIntervention(0L, runId, null, op,
                     "QUARANTINE_RELEASE", jsonField(body, "plateBarcode"),
                     jsonField(body, "sampleId"), jsonField(body, "fromLocation"),
                     jsonField(body, "toLocation"), "resolved", note);
@@ -207,8 +209,12 @@ final class RunApi {
             }
             long tid = Long.parseLong(transferConfirm.group(1));
             String body = new String(s.readBody(ex), StandardCharsets.UTF_8);
+            String op = jsonField(body, "operator");
+            if (op == null || op.isBlank()) {
+                op = operator(ex);
+            }
             boolean ok = s.query.confirmTransfer(tid, jsonField(body, "evidenceType"),
-                    jsonField(body, "operator"), jsonField(body, "note"));
+                    op, jsonField(body, "note"));
             if (!ok) {
                 s.send(ex, 409, Jsons.obj("ok", false,
                         "error", "搬运事务不存在或已确认"));
@@ -237,9 +243,13 @@ final class RunApi {
             }
             Long resourceId = jsonLong(body, "resourceId");
             Long runId = jsonLong(body, "runId");
+            String op = jsonField(body, "operator");
+            if (op == null || op.isBlank()) {
+                op = operator(ex);
+            }
             long id = s.query.recordPositionEvidence(plate,
                     resourceId, jsonField(body, "evidenceType"), runId,
-                    jsonField(body, "operator"), jsonField(body, "note"));
+                    op, jsonField(body, "note"));
             s.audited("position.evidence.record", "position_evidence", id,
                     plate, Jsons.obj("type", jsonField(body, "evidenceType")), ex);
             s.send(ex, 200, Jsons.obj("id", id, "plateBarcode", plate));
@@ -670,6 +680,17 @@ final class RunApi {
     private static final Pattern RUNS_PAUSED = Pattern.compile("^/api/runs/paused$");
 
     /** 台账 6.5：POST /api/manual-windows/{id}/decide */
+    /** 当前操作人（登录用户名）；无会话时退化为 api。 */
+    private String operator(HttpExchange ex) {
+        var sess = s.currentSession(ex);
+        return sess == null ? "api" : sess.username();
+    }
+
+    private long actorId(HttpExchange ex) {
+        var sess = s.currentSession(ex);
+        return sess == null ? 1L : sess.userId();
+    }
+
     private static final Pattern TRANSFER_CONFIRM =
             Pattern.compile("^/api/transfers/(\\d+)/confirm$");
 
