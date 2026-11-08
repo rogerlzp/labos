@@ -92,7 +92,7 @@
 | P-04 | 编辑器 UX：Workflow 加载服务端权威 Workcell 并锁定不可清空；严格设备池；drop 期 Workcell 校验；`LastDropped` 保存归属；无可达机械臂/UNKNOWN 时禁止直连 | PR-3、P0-6 | ADR-ISLAND-001 | NOT_STARTED |
 | P-05 | 编译/发布/运行严格边界：移除 `WorkflowService.withIsland()` 的全局候选回退；direct run / choreography / Experiment 执行前重校验配置快照 | PR-4、P0-B、A-03、N-02 | ADR-ISLAND-001/002 | NOT_STARTED |
 | P-06 | PauseCoordinator：Hold + 实验级 PAUSE_REQUESTED + 节点暂停请求 + Event/Outbox 单事务；PAUSING 异步收敛；API 返回 request accepted | P0-1(事务)、P0-2、P0-3、Batch 0.4 | ADR-PAUSE-001/002/007、**ADR-PAUSE-009/010** | **IN_PR（仅 V1 适配层子集）**：`PauseCoordinator` 统一入口（E-1~E-6）+ `PauseCommand` 统一请求对象 + Coordinator 级幂等（`pause_request`，ADR-PAUSE-009）+ `UNKNOWN` 运维可见（ADR-PAUSE-010）。证据：`./scripts/ci-gate.sh --all` = 门禁通过（无跳过）/`GATE_EXIT=0`；DB 单测 `PauseCoordinatorDbSelfTest` 16/0。**V2 第一切片已落地（2026-11-08）**：实验级 Pause 的 Hold + control_state + pause_request + pause_event 同事务；PauseEventOutbox 每 tick 幂等派发；API 已返回 status=accepted + controlState=PAUSE_REQUESTED（S-04-B 最小闭环，43358f2）。**未做**：Resume/Stop 与 Workflow 级 Pause 的单事务化、PAUSING 异步收敛 worker、真实事件总线消费者、P-07 命令账本 |
-| P-07 | 命令账本 + Outbox；`CREATED→…→UNKNOWN→RECONCILING`；四个崩溃点不重复物理动作 | Batch 1、ADR §8 Batch 1 | ADR-PAUSE-006 | NOT_STARTED |
+| P-07 | 命令账本 + Outbox；`CREATED→…→UNKNOWN→RECONCILING`；四个崩溃点不重复物理动作 | Batch 1、ADR §8 Batch 1 | ADR-PAUSE-006 | IN_PR（P-07 第一切片） |
 | P-08 | 资源与物理位置三维分离、启动恢复隔离 QUARANTINED、TransferTransaction + 物理确认 | Batch 2 | ADR-FAULT-SCOPE-001 | NOT_STARTED |
 | P-09 | run execution phase 标记 `PREPARED / DISPATCH_STARTED / SETTLED`（整改计划 0.1 有要求但 checkbox 清单漏列） | Batch 0.1 | ADR-PAUSE-001 | NOT_STARTED |
 | P-10 | `updateNodeBinding` 的 null 语义定案（Javadoc「不改绑定」 vs 代码写 SQL NULL） | 实施规格 §2.3 | — | NOT_STARTED（P-02 前置） |

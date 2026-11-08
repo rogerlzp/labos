@@ -647,6 +647,20 @@ public final class ApiServer {
             System.out.println("  [启动收尾] 孤儿 running settle 跳过: " + e.getMessage());
         }
 
+        // P-07 第一切片：命令账本启动对账。
+        // 进程崩溃时可能有「已下发、没拿到回包」的设备指令；把陈旧 DISPATCH_STARTED
+        // 标成 UNKNOWN（物理结果未知），后续同 commandId 重发会被账本 fail-closed 拦住，
+        // 必须人工确认后处置。只标记，不自动重发。
+        try {
+            int unknown = com.labos.kernel.driver.CommandLedger.reconcileOnStartup(
+                    com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT,
+                    com.labos.kernel.driver.CommandLedger.STALE_MINUTES);
+            System.out.println("  [启动收尾] 命令账本对账：标记 UNKNOWN " + unknown + " 条"
+                    + (unknown == 0 ? "（无遗留）" : ""));
+        } catch (Exception e) {
+            System.out.println("  [启动收尾] 命令账本对账跳过: " + e.getMessage());
+        }
+
         // S3.2-A：重启 rehydrate 待派发队列。
         // 调度器队列是内存态：进程重启后库里仍 queued 的 experiment_run（async 整单 run、
         // 异步分批已建出来的下一批）没人入队就永远不会执行。启动时一次性装回内存队列；

@@ -115,6 +115,8 @@ DB=(
   # 暂停统一适配层幂等键落库（V1-5/ADR-PAUSE-009：同 requestId 不重复抬 Hold /
   # 无 requestId 不去重 / 失败可重跑）
   "workflow.PauseCoordinatorDbSelfTest"
+  # P-07 第一切片：设备命令账本（派发前落账 / 回包终态 / 重启陈旧派发标 UNKNOWN）
+  "driver.CommandLedgerDbSelfTest"
   # S3 分批执行落库：建批幂等/快照、失败批重跑 attempt_no=2、成功批拒重跑、
   # NULL 回归、状态聚合、批边界扣留（用假执行体，不真动设备）
   "workflow.BatchDbSelfTest"

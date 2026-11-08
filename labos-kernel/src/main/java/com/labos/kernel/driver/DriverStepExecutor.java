@@ -651,8 +651,60 @@ public final class DriverStepExecutor implements StepExecutor {
      * 让调用方立刻拿到失败）⇒ 这一步被中断，节点记 aborted，
      * 恢复时因为它不是 completed，会**重跑这一步**。
      */
+    /**
+     * P-07 第一切片：派发前落命令账本（同一 commandId 唯一），回包后写 ACKED/FAILED。
+     *
+     * <p>账本写失败按 DB 错误处理（fail-closed）：没有账本就不下发物理指令 ——
+     * 否则崩溃后无法判断「到底动没动」。
+     */
     private DriverResult executeCommand(DeviceDriver driver, StepContext ctx,
                                         DriverCommand cmd, long workflowId) {
+        long ledgerId = 0L;
+        if (db != null && runId > 0 && cmd.commandId() != null) {
+            try {
+                CommandLedger.Entry e = CommandLedger.begin(db, tenantId,
+                        cmd.commandId(), runId, ctx.nodeId(), ctx.attempt(), 0,
+                        cmd.deviceInstanceId(), cmd.method(), cmd.commandId(), traceId);
+                if (!e.created()) {
+                    // fail-closed：不抛检查异常（TransferPlan 的回调接口不声明 throws），
+                    // 用明确错误码返回，由上层按错误码作用域处理。
+                    return DriverResult.failed(cmd.commandId(), "EC-99-0006",
+                            "命令账本已有 " + e.state()
+                                    + " 记录，禁止重复下发（需人工确认设备位置）",
+                            null, 0);
+                }
+                ledgerId = e.id();
+            } catch (java.sql.SQLException ex) {
+                return DriverResult.failed(cmd.commandId(), "EC-99-0002",
+                        "命令账本写入失败：" + ex.getMessage(), null, 0);
+            }
+        }
+        try {
+            DriverResult r = doExecuteCommand(driver, ctx, cmd, workflowId);
+            if (ledgerId > 0L) {
+                try {
+                    CommandLedger.finish(db, ledgerId, r.errorCode() == null,
+                            r.errorCode(), r.message(), cmd.commandId());
+                } catch (java.sql.SQLException ex) {
+                    System.err.println("[命令账本] 回写失败：" + ex.getMessage());
+                }
+            }
+            return r;
+        } catch (RuntimeException ex) {
+            if (ledgerId > 0L) {
+                try {
+                    CommandLedger.finish(db, ledgerId, false, "EC-99-0001",
+                            ex.getMessage(), cmd.commandId());
+                } catch (java.sql.SQLException ignored) {
+                    // 回写失败不覆盖原始异常
+                }
+            }
+            throw ex;
+        }
+    }
+
+    private DriverResult doExecuteCommand(DeviceDriver driver, StepContext ctx,
+                                          DriverCommand cmd, long workflowId) {
         if (!isInterruptible(cmd.deviceInstanceId(), cmd.method())) {
             return driver.execute(cmd);
         }
