@@ -76,6 +76,7 @@ MIN_METHOD_DROP=17 # 2026-11-05：按岛设备图片 / 拖方法带图节点 / �
 MIN_CRASH=34      # 2026-11-05：崩溃恢复端到端（kill -9 → 重启 → queued rehydrate + running 孤儿启动兜底 settle + paused 不被误杀 + 排队僵尸被收，31 → 34）
 MIN_GWPAIR=34     # 2026-11-06：网关成对 · 异或/并行各 N=2+N=3（分叉与汇合必须成对；角色由页面「用建议名」推出并与入/出边数一致；并行全跑 vs 异或只走一条）
 MIN_PAUSERES=55   # 2026-11-06：暂停点与恢复起点（25）。2026-11-08 重写为真边界暂停（25 → 32）；同日改为页面全链路（页面执行/暂停/继续 + DOM/API/DB）并接入自动对齐/图合法性/绑定复核断言（32 → 45 → 55）：
+MIN_PAGEGW=28   # 2026-11-08：4.19 页面全链路（异或+并行成对网关 + 4 设备任务 + 页面暂停/继续；27 → 28）
                 # 图增加第二个设备任务 DEV2；在 DEV 的 device_state=running 且 current_run_id=本次 run 时发暂停；
                 # 内核把 pause_node_key 写成 DEV2（探针不预写），DEV completed、DEV2 pending；
                 # 恢复后 DEV 不重跑、DEV2 才下发 1 条指令。网关和 __setVar 仍不是暂停点。
@@ -545,8 +546,30 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "A1 真停 $SUM_PASS / 0（可中断方法执行中发暂停 → 命令在 10 秒内被中止）"
     fi
   fi
+  # 4.19 页面全链路：异或+并行两对网关 + 4 个设备任务 + 页面执行/暂停/继续
+  # 补的是「多网关 + 设备任务 + 页面暂停」组合的真实路径：页面拖 10 节点/11 连线
+  # → 图合法 → 4 个设备任务 → 页面执行 → 页面暂停（任务边界）→ 页面继续 →
+  # DOM/API/DB completed。4.15 只验网关角色，4.16 只验单链路暂停；4.19 覆盖组合。
+  note "4.19 页面全链路 · 网关+设备任务+页面暂停/继续（e2e-page-gateway-pause.py）"
+  PWOUT=$(python3 scripts/e2e-page-gateway-pause.py --base "$E2E_BASE" 2>&1)
+  if is_skip "$PWOUT"; then
+    skip "页面全链路（没给库连接/仿真设备）"
+  else
+    parse_summary "$PWOUT"
+    if [[ "$SUM_MISSING" == "1" ]]; then
+      fail "页面全链路脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
+      printf '%s\n' "$PWOUT" | tail -15
+    elif [[ "$SUM_FAIL" != "0" ]]; then
+      fail "页面全链路有失败（$SUM_FAIL 条）"
+      printf '%s\n' "$PWOUT" | grep '✗' | head -8
+    elif (( SUM_PASS < MIN_PAGEGW )); then
+      fail "页面全链路断言 $SUM_PASS < 阈值 ${MIN_PAGEGW}"
+    else
+      pass "页面全链路 $SUM_PASS / 0（10 节点/11 边 → 4 设备任务 → 页面执行/暂停/继续 → DOM/API/DB completed）"
+    fi
+  fi
 else
-  skip "前端 e2e / 4.5-4.18 页面轨（没给 --e2e）"
+  skip "前端 e2e / 4.5-4.19 页面轨（没给 --e2e）"
 fi
 
 # ---------------------------------------------------------------- 结果
