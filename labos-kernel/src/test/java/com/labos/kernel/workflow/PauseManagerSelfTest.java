@@ -65,6 +65,11 @@ public final class PauseManagerSelfTest {
         String kind = pm.pauseKindOf(runId);
         check("暂停后 pause_kind=waiting_human",
                 PauseManager.Kind.WAITING_HUMAN.code().equals(kind), kind);
+        check("waiting_human 暂停自动开人工窗口", count(
+                "SELECT count(*) FROM manual_window WHERE tenant_id=1 AND run_id=" + runId
+                        + " AND status='pending'") == 1,
+                count("SELECT count(*) FROM manual_window WHERE tenant_id=1 AND run_id="
+                        + runId + " AND status='pending'"));
 
         PauseManager.ResumeResult r = pm.resume(runId, PauseManager.ResumeAction.CONTINUE,
                 Map.of(), "test");
@@ -73,6 +78,11 @@ public final class PauseManagerSelfTest {
         String st = statusOf(runId);
         check("恢复后离开 paused（queued 或 running）",
                 "queued".equals(st) || "running".equals(st), st);
+        check("恢复后自动关闭人工窗口", count(
+                "SELECT count(*) FROM manual_window WHERE tenant_id=1 AND run_id=" + runId
+                        + " AND status='pending'") == 0,
+                count("SELECT count(*) FROM manual_window WHERE tenant_id=1 AND run_id="
+                        + runId + " AND status='pending'"));
     }
 
     /** UNKNOWN 时没校正必须拒绝恢复。 */
@@ -310,6 +320,7 @@ public final class PauseManagerSelfTest {
     }
 
     private static void cleanup(long runId) {
+        exec("DELETE FROM manual_window WHERE tenant_id = 1 AND run_id = " + runId);
         exec("DELETE FROM plate_location_audit WHERE run_id = " + runId);
         exec("DELETE FROM run WHERE id = " + runId);
         exec("DELETE FROM plate WHERE tenant_id = 1 AND barcode = 'PL-TEST-M4'");

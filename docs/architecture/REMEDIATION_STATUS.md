@@ -57,7 +57,7 @@
 | N-05 | `BoundaryResult` / `BoundaryViolation` 扩展 `boundaryKind` / `scopeType` / `evidence`，区分 INVALID / UNKNOWN | ADR-ISLAND-003 | NOT_STARTED | 取代实施规格 §3 的两 `Long` 接口；P-02 的前置 |
 | N-06 | 期望反转的测试：Experiment A 引用 Workflow B，有合法 Handoff 且人工确认后允许；Handoff 缺失 / 确认缺失 / UNKNOWN 时阻断 | N-04 | NOT_STARTED | 取代实施规格 §7 测试 8/9/10 的旧期望 |
 | N-07 | 配置期 Handoff 持久化结构：扩展 `experiment_process_edge` 或新建 `experiment_handoff`（Q-10），在岛内设备/IP 配置入口同处录入 | Q-10、N-04 | NOT_STARTED | `island_flow.graph` 边只落 `{id,source,target}` 且属**岛内动线**，不可直接复用；`experiment_process_edge` 现注释「只表达偏序，不表达资源」 |
-| N-08 | 运行时人工确认门禁：复用 `manual_window` + `pause_kind='waiting_human'` + `GET/POST /api/manual-windows`，补前端消费页 | Q-09、N-04、ADR-PAUSE-007 | IN_PR | **不新建第三套 Handoff 状态机**；确认人/时间/板样本标识/交接点/结果落 L-01；2026-11-09 已补 /manual-windows 页 + 决策落 intervention_record（L01_N08_MANUAL_INTERVENTION_20261109.md） |
+| N-08 | 运行时人工确认门禁：复用 `manual_window` + `pause_kind='waiting_human'` + `GET/POST /api/manual-windows`，补前端消费页 | Q-09、N-04、ADR-PAUSE-007 | IN_PR | **不新建第三套 Handoff 状态机**；确认人/时间/板样本标识/交接点/结果落 L-01；2026-11-09 已补 /manual-windows 页 + 决策落 intervention_record + waiting_human 自动建窗（L01_N08_MANUAL_INTERVENTION_20261109.md） |
 | N-09 | 界面口径：不显示岛 ID，只显示岛名 `resource_node.name`；跨 Workcell 实验展示**涉及岛名列表**；改 `ExperimentList.tsx:169,171`、`Scheduler.tsx:171,232` 等 | ADR-ISLAND-005 | IN_PR | 岛名字段已存在；2026-11-08 已改：Scheduler 锁/队列增加 islandName 并只显示岛名，ExperimentList 显示 workcellNames/islandName（跨 Workcell 列表），不再显示 island_id |
 
 ## 4a. L 组：分层最小骨架（ADR-LAYER-001）

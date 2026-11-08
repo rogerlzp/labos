@@ -48,6 +48,14 @@
 - quarantine release 的 by 用会话 userId；
 - 审计仍由 ApiServer.audited 记录同一会话，介入记录与审计口径一致。
 
+## 三·补二、waiting_human 自动建/关人工窗口（2026-11-09）
+
+- PauseManager.pauseTx：kind=waiting_human 时同事务自动建 pending manual_window
+  （window_key=pause:{runId}，allowed CONTINUE/RETRY/SKIP/ABORT/MANUAL，1h 超时）；
+- PauseManager.resumeTx/resume：恢复时自动关闭该 run 的 pending 窗口；
+- PauseManagerSelfTest 18/0（暂停后窗口存在 / 恢复后关闭）；
+- 这样 /manual-windows 页与执行页「等待人工」暂停看到的是同一个事实。
+
 ## 四、边界
 
 - 运行时确认与 Handoff 的强关联（跨 Workcell Handoff 必须走人工窗口确认）尚未打通；

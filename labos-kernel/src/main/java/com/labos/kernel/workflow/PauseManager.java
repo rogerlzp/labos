@@ -145,7 +145,63 @@ public final class PauseManager {
                 return 0;   // 不在 running，不用暂停
             }
         }
+        // N-08：waiting_human 暂停自动开人工窗口（复用 manual_window）
+        if (kind == Kind.WAITING_HUMAN) {
+            openManualWindow(c, runId, reason, nodeKey);
+        }
         return releaseResourcesTx(c, runId);
+    }
+
+    /** N-08：waiting_human 暂停自动建 pending 人工窗口（同事务）。 */
+    private void openManualWindow(Connection c, long runId, String reason, String nodeKey) {
+        try {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT 1 FROM manual_window WHERE tenant_id = ? AND run_id = ? "
+                            + "AND status = 'pending' LIMIT 1")) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, runId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return;   // 已有待决窗口，不重复开
+                    }
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    INSERT INTO manual_window
+                      (tenant_id, run_id, window_key, error_code, node_key, strategy,
+                       default_action, allowed_actions, decision_reason, status, timeout_at)
+                    VALUES (?, ?, ?, 'EC-HUMAN-WAIT', ?, 'manual', 'MANUAL',
+                            '["CONTINUE","RETRY","SKIP","ABORT","MANUAL"]'::jsonb,
+                            ?, 'pending', now() + interval '1 hour')
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, runId);
+                ps.setString(3, "pause:" + runId);
+                ps.setString(4, nodeKey);
+                ps.setString(5, reason == null ? "等待人工确认" : reason);
+                ps.executeUpdate();
+            }
+        } catch (SQLException e) {
+            System.err.println("[暂停] 自动建人工窗口失败：" + e.getMessage());
+        }
+    }
+
+    /** N-08：run 恢复/终止时关闭其 pending 人工窗口。 */
+    private void closeManualWindow(Connection c, long runId, String operator, String action) {
+        try (PreparedStatement ps = c.prepareStatement("""
+                UPDATE manual_window
+                   SET status = 'decided', decided_at = now(),
+                       decided_by = ?, decided_action = ?, note = 'run resumed/closed'
+                 WHERE tenant_id = ? AND run_id = ? AND status = 'pending'
+                """)) {
+            ps.setString(1, operator == null ? "api" : operator);
+            ps.setString(2, action);
+            ps.setLong(3, tenantId);
+            ps.setLong(4, runId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[暂停] 关闭人工窗口失败：" + e.getMessage());
+        }
     }
 
     /**
@@ -356,6 +412,9 @@ public final class PauseManager {
             ps.executeUpdate();
         }
 
+        try (Connection cc = db.open()) {
+            closeManualWindow(cc, runId, operator, action.name());
+        }
         return new ResumeResult(true, null, runId, action.name(), corrected);
     }
 
@@ -677,6 +736,7 @@ public final class PauseManager {
             ps.setLong(3, runId);
             ps.executeUpdate();
         }
+        closeManualWindow(c, runId, operator, action.name());
         return new ResumeResult(true, null, runId, action.name(), corrected);
     }
 
