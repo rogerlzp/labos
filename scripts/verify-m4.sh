@@ -56,6 +56,9 @@ cleanup() {
        WHERE tenant_id=1 AND block_reason='PLATE_UNKNOWN' AND reserved_by_run=-1;" >/dev/null
     q "DELETE FROM plate_location_audit WHERE run_id=$RUN_ID;" >/dev/null
     q "DELETE FROM plate WHERE tenant_id=1 AND barcode='PL-VERIFY-M4';" >/dev/null
+    if [ "${CREATED_POS:-0}" = "1" ] && [ -n "${POS_ID:-}" ]; then
+        q "DELETE FROM position_state WHERE tenant_id=1 AND resource_id=$POS_ID AND block_reason IS NULL;" >/dev/null
+    fi
     q "DELETE FROM run WHERE id=$RUN_ID;" >/dev/null
 }
 trap cleanup EXIT
@@ -104,8 +107,18 @@ STILL=$(q "SELECT status FROM run WHERE id=$RUN_ID;")
 # ---------------------------------------------------------------- ④ 盘点解封
 step "④ 板位 UNKNOWN 封锁 + 盘点解封"
 
-# 造一块板 + 一个位置
-POS_ID=$(q "SELECT resource_id FROM position_state WHERE tenant_id=1 LIMIT 1;")
+# 造一块板 + 一个位置。位置优先取一台在线设备，且 position_state 可能为空
+# （演示库不保证有位置行），测试自己补一行再在 cleanup 里删，避免依赖残留数据。
+POS_ID=$(q "SELECT resource_id FROM device_state WHERE tenant_id=1 AND online=true ORDER BY resource_id LIMIT 1;")
+CREATED_POS=0
+if [ -z "$POS_ID" ]; then
+    echo "  ⏭ 没有在线设备可作为盘点位置，跳过板位封锁/解封" | tee -a "$REPORT"
+else
+    NOS=$(q "SELECT count(*) FROM position_state WHERE tenant_id=1 AND resource_id=$POS_ID;")
+    if [ "$NOS" = "0" ]; then
+        q "INSERT INTO position_state (tenant_id, resource_id, updated_at) VALUES (1,$POS_ID,now());" >/dev/null
+        CREATED_POS=1
+    fi
 # 真实流程里 markPlateUnknown 会同时写 possible_locations；
 # 测试要模拟完整，否则解封时找不到"可能位置"
 q "INSERT INTO plate (tenant_id, barcode, status, position_status, possible_locations)
@@ -139,6 +152,7 @@ AFTER=$(q "SELECT count(*) FROM position_state
 AUDIT=$(q "SELECT count(*) FROM plate_location_audit
            WHERE tenant_id=1 AND barcode='PL-VERIFY-M4';")
 [ "${AUDIT:-0}" -ge 1 ] && ok "盘点留痕（$AUDIT 条审计）" || bad "没有审计记录"
+fi
 
 # ---------------------------------------------------------------- ② 豁免
 step "② 回程承诺暂停不释放"
