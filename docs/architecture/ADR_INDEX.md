@@ -197,6 +197,7 @@
 - 因此 **Continue Predicate 不适用于同一跨 Workcell 实验内部的其他段**；外部实践与 ADR §14.5「同一 ExperimentRun 可部分受影响」、状态模型 §14.5 同类表述**作废/限定**：展示层可以标出哪些节点受影响，但执行层一律阻断。
 - 实现：Hold 仍可按 Workcell 发起，但**影响闭包的最小单位是 ExperimentRun**。`RuntimeHold` 覆盖判定、`ExperimentScheduler` 逐候选评估、`autoContinueHeldBatches` 都不得因「这个节点在另一个 Workcell」而放行同一实验；Handoff 边界同样阻断。
 - **SUPERSEDES**：Q-04 原建议「按节点实际 Workcell 判定、UNKNOWN 扩大阻断」（放大到实验级）、ADR §14.5 与状态模型 §14.5 的「可部分受影响」表述。
+- **2026-11-08 N-10 第一切片**：新增 ExperimentWorkcellScope（从 experiment_process → workflow_node.resource_id → resource_node 祖先链推导 island 根，兜底 experiment.island_id）+ RuntimeHold.coveringExperiment（experiment > 所属 island > site），ExperimentExecutor 3 处节点边界与 RunControl.resume/stop 全部改为按实验全部 Workcell 判覆盖；范围外 Workcell 扣留不误伤。纯单测 ExperimentFaultScopeSelfTest 7/0、test-all 1127/0。显式 Workcell 绑定/Handoff 与 P-03 逐候选调度仍未做。
 
 ### 2.12 ADR-STATE-001：状态机多层维护治理
 

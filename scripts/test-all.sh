@@ -101,6 +101,8 @@ PURE=(
   # 超时按方法取（2026-11-06）：优先级 device_method > device_capability > workflow_node
   # > 能力默认 > 兜底 30s；0 = 没配；显式设备库值不被能力默认抬高；保底 ≥ 300s
   "driver.MethodTimeoutPolicySelfTest"
+  # N-10：同一实验任一 Workcell 扣留 ⇒ 整实验 HELD；范围外 Workcell 不误伤
+  "workflow.ExperimentFaultScopeSelfTest"
 )
 
 # 连库：位置锁 / 暂停恢复 / 配方编译

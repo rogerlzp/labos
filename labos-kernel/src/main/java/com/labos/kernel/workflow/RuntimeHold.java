@@ -10,6 +10,7 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 
 /**
@@ -210,6 +211,71 @@ public final class RuntimeHold {
             }
         }
         return best;
+    }
+
+    /**
+     * N-10：按**实验涉及的全部 Workcell** 判覆盖（ADR-FAULT-SCOPE-002）。
+     *
+     * <p>与 {@link #covering} 的唯一区别：island 级扣留只要命中该实验任一
+     * Workcell 就阻断整个实验，不再只看 {@code experiment.island_id}。
+     */
+    static Active coveringExperiment(List<Active> active, long experimentId,
+                                     Set<Long> islandIds) {
+        Active best = null;
+        int bestRank = -1;
+        for (Active h : active) {
+            int rank;
+            if (Scope.EXPERIMENT.code().equals(h.scope())) {
+                if (h.scopeId() == null || h.scopeId().longValue() != experimentId) {
+                    continue;
+                }
+                rank = 2;
+            } else if (Scope.ISLAND.code().equals(h.scope())) {
+                if (h.scopeId() == null || islandIds == null
+                        || !islandIds.contains(h.scopeId())) {
+                    continue;
+                }
+                rank = 1;
+            } else if (Scope.SITE.code().equals(h.scope())) {
+                rank = 0;
+            } else {
+                continue;
+            }
+            if (rank > bestRank) {
+                bestRank = rank;
+                best = h;
+            }
+        }
+        return best;
+    }
+
+    /** 纯函数：实验级覆盖三态（N-10）。 */
+    static Coverage coverageForExperiment(List<Active> active, long experimentId,
+                                          Set<Long> islandIds) {
+        Active a = coveringExperiment(active, experimentId, islandIds);
+        return a == null
+                ? new Coverage(HoldState.CLEAR, null)
+                : new Coverage(HoldState.HELD, a);
+    }
+
+    /**
+     * 按实验涉及的全部 Workcell 判覆盖（N-10，查库）。
+     */
+    public Coverage coveringForExperiment(long experimentId) {
+        try {
+            Set<Long> islands = ExperimentWorkcellScope.islandsOf(db, tenantId, experimentId);
+            return coverageForExperiment(activeChecked(), experimentId, islands);
+        } catch (SQLException e) {
+            System.err.println("[扣留] 实验 Workcell 覆盖读取失败（按 UNKNOWN 阻断）："
+                    + e.getMessage());
+            return unknownCoverage();
+        }
+    }
+
+    /** 同 {@link #coveringForExperiment}，但读库失败抛异常（fail-closed 写路径用）。 */
+    public Active coveringForExperimentChecked(long experimentId) throws SQLException {
+        Set<Long> islands = ExperimentWorkcellScope.islandsOf(db, tenantId, experimentId);
+        return coveringExperiment(activeChecked(), experimentId, islands);
     }
 
     /**

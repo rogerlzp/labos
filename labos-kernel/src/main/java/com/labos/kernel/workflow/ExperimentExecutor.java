@@ -152,7 +152,7 @@ public final class ExperimentExecutor {
                 // ---- 动作边界检查：只在"两步之间"停，不在动作中途停 ----
                 // 机械臂抓着板移到半空是不能停的（板会掉），所以暂停/停止都只
                 // 在这里生效；正在执行的动作等它自然跑完。
-                RuntimeHold.Active covered = holds.coveringFor(experimentId, islandId);
+                RuntimeHold.Active covered = holds.coveringForExperiment(experimentId).hold();
                 RuntimeHold.Gate gate = RuntimeHold.gate(stopRequested(runId), covered);
 
                 if (gate == RuntimeHold.Gate.STOPPED) {
@@ -187,7 +187,7 @@ public final class ExperimentExecutor {
                     // ⚠ 已经被扣留时**不重复上浮**：实验级暂停（RunControl.pause）落的
                     //   就是扣留，这里再抬一道岛级扣留会在恢复时留下解除不掉的残留
                     //   （恢复只解除最内层那道）⇒ 实验再也回不到 queued。
-                    if (holds.coveringFor(experimentId, islandId) == null) {
+                    if (holds.coveringForExperiment(experimentId).hold() == null) {
                         if (islandId > 0) {
                             holds.raise(RuntimeHold.Scope.ISLAND, islandId,
                                     RuntimeHold.Kind.of(out.pauseKind()), out.pauseReason(), null);
@@ -465,7 +465,7 @@ public final class ExperimentExecutor {
         //   正确顺序：先看有没有生效扣留，有就保持 paused（等人工点继续）。
         long islandId = islandOf(experimentIdOf(runId));
         boolean held = new RuntimeHold(db, tenantId)
-                .coveringFor(experimentIdOf(runId), islandId) != null;
+                .coveringForExperiment(experimentIdOf(runId)).hold() != null;
         if (held) {
             // 保持 paused：只补「开始时间」，状态与暂停标记都不动。
             // ⚠ 不要写 updated_at：experiment_run 没有这一列（只有 experiment 有），

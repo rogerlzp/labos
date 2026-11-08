@@ -270,7 +270,7 @@ public final class RunControl {
         RuntimeHold holds = new RuntimeHold(db, tenantId);
         // fail-closed（P-03 / ADR-PAUSE-005）：用 checked 版本，读不到扣留直接抛 SQLException
         // ⇒ 恢复操作整体失败。绝不能把「读不到」当成「没有扣留」而放行 resume。
-        RuntimeHold.Active covered = holds.coveringForChecked(run.experimentId(), run.islandId());
+        RuntimeHold.Active covered = holds.coveringForExperimentChecked(run.experimentId());
 
         boolean cleared = false;
         if (covered != null && clearableByExperimentResume(covered.scope())) {
@@ -333,7 +333,7 @@ public final class RunControl {
             ps.executeUpdate();
         }
 
-        RuntimeHold.Active still = holds.coveringForChecked(run.experimentId(), run.islandId());
+        RuntimeHold.Active still = holds.coveringForExperimentChecked(run.experimentId());
         return new ResumeOutcome(run.experimentId(), cleared,
                 still == null ? null : (still.reason() == null ? "现场扣留" : still.reason()));
     }
