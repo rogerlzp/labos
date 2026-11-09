@@ -1,5 +1,6 @@
 package com.labos.kernel.driver.tcp;
 
+import com.labos.kernel.driver.AbortResult;
 import com.labos.kernel.driver.DriverDescriptor;
 import com.labos.kernel.driver.DriverResult;
 
@@ -34,8 +35,13 @@ public final class TcpAbortContractSelfTest {
             CompletableFuture<DriverResult> waiter = new CompletableFuture<>();
             driver.pendingForTest().put("cmd-1", waiter);
 
-            driver.abort("cmd-1");
+            AbortResult res = driver.abort("cmd-1");
 
+            // B-04：不仅要"不伪造完成"，还要如实回答"没有中止能力"
+            if (res.state() != AbortResult.State.UNSUPPORTED) {
+                throw new AssertionError("TCP 协议无停止帧，abort 必须回 UNSUPPORTED，实际 "
+                        + res.state());
+            }
             if (waiter.isDone()) {
                 throw new AssertionError("abort 让本地等待直接完成了："
                         + "内核会误以为设备已停止，实际设备还在动");

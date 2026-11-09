@@ -212,6 +212,11 @@ def main():
                      f"FROM run_node WHERE run_id={rid} AND level=0")
         run_st = q1(f"SELECT status::text FROM run WHERE id={rid}")
         cmd_count = int(q1(f"SELECT count(*) FROM run_command WHERE run_id={rid}") or "0")
+        # B-04：中止结果账本。驱动没有物理 Abort ⇒ 这条分支根本不会进入 ⇒
+        # abort_state 必须为空。一旦这里出现 REQUESTED/UNKNOWN 却把命令记成
+        # aborted，就是又回到了「本地取消冒充设备已停」。
+        abort_state = q1(f"SELECT coalesce(abort_state,'-') FROM command_ledger "
+                         f"WHERE run_id={rid} ORDER BY id DESC LIMIT 1")
         arm_st = q1(f"SELECT status::text FROM run_node WHERE run_id={rid} "
                     f"AND level=0 AND node_key='ARM' ORDER BY id LIMIT 1")
         after_st = q1(f"SELECT status::text FROM run_node WHERE run_id={rid} "
@@ -223,6 +228,7 @@ def main():
         print("    节点状态          : %s" % node_st)
         print("    ARM / AFTER       : %s / %s" % (arm_st, after_st))
         print("    命令数            : %d" % cmd_count)
+        print("    中止结果(账本)    : %s" % abort_state)
         if t_done:
             print("    从发暂停到命令结束: %.1f 秒（等设备自己跑完）" % (t_done - t_pause))
         else:
@@ -243,6 +249,9 @@ def main():
             else F.bad("节点边界状态不符合预期", "%s / %s" % (arm_st, after_st))
         F.ok("没有重放或额外派发命令（仅 1 条）") \
             if cmd_count == 1 else F.bad("命令数不是 1，可能发生重复派发", str(cmd_count))
+        F.ok("没有把中止请求记成已停（abort_state 为空）") \
+            if abort_state in (None, "", "-") \
+            else F.bad("无物理中止能力的驱动却写了 abort_state", abort_state)
         # 注：若哪天有驱动真的做了物理 Abort 的 HIL（supportsPhysicalAbort=true），
         # 这一段必须改写成「真停」分支（命令在数秒内 aborted）。届时 MIN_INTR
         # 只能上调；不允许把「安全边界」当成「真停」的替代品悄悄留下。

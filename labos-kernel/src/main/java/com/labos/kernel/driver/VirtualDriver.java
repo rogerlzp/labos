@@ -88,8 +88,10 @@ public final class VirtualDriver implements DeviceDriver {
     }
 
     @Override
-    public synchronized void abort(String commandId) {
-        // 虚拟驱动瞬时完成，无需中止
+    public synchronized AbortResult abort(String commandId) {
+        // 虚拟驱动瞬时完成，没有"在途动作"可中止；
+        // 若哪天改成按 estimate_sec 睡眠，这里要真的停并返回 stopped。
+        return AbortResult.unsupported("虚拟驱动瞬时完成，无在途动作");
     }
 
     @Override

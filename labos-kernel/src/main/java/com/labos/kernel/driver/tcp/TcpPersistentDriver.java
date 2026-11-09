@@ -1,6 +1,7 @@
 package com.labos.kernel.driver.tcp;
 
 import com.labos.kernel.device.DeviceErrorMapper;
+import com.labos.kernel.driver.AbortResult;
 import com.labos.kernel.driver.DeviceDriver;
 import com.labos.kernel.driver.DriverCommand;
 import com.labos.kernel.driver.DriverDescriptor;
@@ -128,8 +129,10 @@ public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
      * 上层据此改成「等当前动作跑到安全边界再暂停」。
      */
     @Override
-    public void abort(String commandId) {
-        // 故意空实现：不能伪造「设备已停止」。要真停，得先在协议里加停止帧并做 HIL。
+    public AbortResult abort(String commandId) {
+        // 故意什么都不做：不能伪造「设备已停止」。要真停，得先在协议里加停止帧并做 HIL。
+        // 返回 UNSUPPORTED 而不是 REQUESTED —— 我们连停止请求都发不出去。
+        return AbortResult.unsupported("TCP 协议无停止帧，无法向设备下发中止");
     }
 
     @Override

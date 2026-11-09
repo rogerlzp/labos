@@ -26,14 +26,21 @@ public interface DeviceDriver extends AutoCloseable {
     DriverResult execute(DriverCommand command);
 
     /**
-     * 请求设备中止正在执行的指令。
+     * 请求设备中止正在执行的指令，并返回**这一次请求到底走到了哪一步**（B-04）。
      *
      * <p>这是**请求**，不是承诺：只有设备协议本身有停止指令、驱动等到设备侧
      * 停止确认、且该型号/固件/方法已通过 HIL 验证时，{@link #supportsPhysicalAbort()}
      * 才允许返回 {@code true}。仅取消本地 Future / 关闭 Socket / 中断线程
      * **不构成**物理中止——设备可能还在动。
+     *
+     * <p>返回值必须诚实：没有能力就 {@link AbortResult#unsupported}，
+     * 发出去了没确认就 {@code REQUESTED/DEVICE_ACKNOWLEDGED/UNKNOWN}，
+     * **只有设备确认动作已停**才 {@link AbortResult#stopped}。
+     * 安全默认是 {@code UNSUPPORTED}——没实现的驱动不该被当成"能停"。
      */
-    void abort(String commandId);
+    default AbortResult abort(String commandId) {
+        return AbortResult.unsupported("该驱动未实现中止，不能假定设备已停");
+    }
 
     /**
      * 本驱动能否保证 {@link #abort(String)} 返回前设备动作已被设备侧确认停止。

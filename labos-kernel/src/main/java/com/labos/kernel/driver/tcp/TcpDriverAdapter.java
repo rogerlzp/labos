@@ -1,6 +1,7 @@
 package com.labos.kernel.driver.tcp;
 
 import com.labos.kernel.device.DeviceErrorMapper;
+import com.labos.kernel.driver.AbortResult;
 import com.labos.kernel.driver.DeviceDriver;
 import com.labos.kernel.driver.DriverCommand;
 import com.labos.kernel.driver.DriverDescriptor;
@@ -144,8 +145,9 @@ public final class TcpDriverAdapter implements DeviceDriver {
     }
 
     @Override
-    public void abort(String commandId) {
-        // 协议没有 Abort 消息类型，只能靠上层超时
+    public AbortResult abort(String commandId) {
+        // 协议没有 Abort 消息类型：不是「请求了没确认」，而是根本没有这条路。
+        return AbortResult.unsupported("TCP 协议无停止帧，只能靠上层超时");
     }
 
     @Override

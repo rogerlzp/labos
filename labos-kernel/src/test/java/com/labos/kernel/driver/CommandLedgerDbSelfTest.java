@@ -31,6 +31,7 @@ public final class CommandLedgerDbSelfTest {
         try {
             testBeginDuplicateAndAck();
             testFailureState();
+            testAbortRecord();
             testReconcileStale();
             testCrashPointMatrix();
         } finally {
@@ -88,6 +89,54 @@ public final class CommandLedgerDbSelfTest {
         check("失败状态落 FAILED", "FAILED".equals(CommandLedger.stateOf(db, TENANT, key)),
                 CommandLedger.stateOf(db, TENANT, key));
         check("失败错误码可追溯", "EC-99-0005".equals(errorCodeOf(key)), errorCodeOf(key));
+    }
+
+    /**
+     * B-04：中止结果必须落成可查的结构化状态，而不是一行日志。
+     *
+     * <p>这一列的存在意义就是事后能回答「设备到底认没认」——
+     * 只有 PHYSICALLY_STOPPED 允许把命令判成 aborted。
+     */
+    private static void testAbortRecord() throws Exception {
+        String key = PREFIX + "abort";
+        CommandLedger.Entry e = begin(key, "cmd-abort");
+
+        CommandLedger.recordAbort(db, e.id(), AbortResult.requested("已发出停止请求，未确认"));
+        check("中止请求落账 REQUESTED", "REQUESTED".equals(abortStateOf(e.id())),
+                abortStateOf(e.id()));
+        check("中止请求带时间戳", abortAtOf(e.id()) != null, abortAtOf(e.id()));
+
+        CommandLedger.recordAbort(db, e.id(), AbortResult.stopped("设备确认动作已停止"));
+        check("设备确认后落账 PHYSICALLY_STOPPED",
+                "PHYSICALLY_STOPPED".equals(abortStateOf(e.id())), abortStateOf(e.id()));
+
+        // 旁路写：记不上不能抛，也不能把已有记录清掉
+        CommandLedger.recordAbort(db, 0L, AbortResult.stopped("no ledger"));
+        CommandLedger.recordAbort(db, e.id(), null);
+        check("空账本号/null 结果是 no-op（不抛、不清旧值）",
+                "PHYSICALLY_STOPPED".equals(abortStateOf(e.id())), abortStateOf(e.id()));
+
+        // 未确认的中止必须能被 Index 条件捞出来（人工核验入口）
+        CommandLedger.Entry e2 = begin(PREFIX + "abort2", "cmd-abort2");
+        CommandLedger.recordAbort(db, e2.id(), AbortResult.unknown("断链，结果不可知"));
+        check("未确认的中止可被人工核验查询命中",
+                "UNKNOWN".equals(abortStateOf(e2.id())), abortStateOf(e2.id()));
+    }
+
+    private static String abortStateOf(long ledgerId) throws Exception {
+        return one("SELECT coalesce(abort_state,'-') FROM command_ledger WHERE id = " + ledgerId);
+    }
+
+    private static String abortAtOf(long ledgerId) throws Exception {
+        return one("SELECT abort_at::text FROM command_ledger WHERE id = " + ledgerId);
+    }
+
+    private static String one(String sql) throws Exception {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            return rs.next() ? rs.getString(1) : null;
+        }
     }
 
     private static void testReconcileStale() throws Exception {

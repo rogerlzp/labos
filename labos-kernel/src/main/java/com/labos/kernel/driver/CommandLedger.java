@@ -118,6 +118,36 @@ public final class CommandLedger {
     }
 
     /** 回包后落终态。 */
+    /**
+     * 记录一次中止请求的结果（B-04）。
+     *
+     * <p>为什么要落库：中止是**执行安全**里最容易自欺的一步。把
+     * {@code abort_state} 与命令本身的 {@code state} 分开存，事后才能回答
+     * 「这条命令到底是被设备确认停掉的，还是只是我们不等了」。
+     *
+     * <p>旁路写：记不上只打日志，不阻断调用方。宁可少一条审计行，
+     * 也不能因为审计失败而把一条已经在跑的物理动作重发一遍。
+     */
+    public static void recordAbort(DbConfig db, long ledgerId, AbortResult result) {
+        if (db == null || ledgerId <= 0L || result == null) {
+            return;
+        }
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE command_ledger
+                        SET abort_state = ?, abort_detail = ?, abort_at = now(), updated_at = now()
+                      WHERE id = ?
+                     """)) {
+            ps.setString(1, result.state().name());
+            ps.setString(2, trunc(result.detail(), 200));
+            ps.setLong(3, ledgerId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[WARN] 中止结果未记账（ledger=" + ledgerId
+                    + " state=" + result.state() + "）：" + e.getMessage());
+        }
+    }
+
     public static void finish(DbConfig db, long ledgerId, boolean ok,
                               String errorCode, String errorMessage,
                               String commandId) throws SQLException {

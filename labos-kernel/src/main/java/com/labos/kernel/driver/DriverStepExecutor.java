@@ -684,6 +684,26 @@ public final class DriverStepExecutor implements StepExecutor {
         return methodDeclaredInterruptible && driverSupportsPhysicalAbort;
     }
 
+    /** 拿到中止结果后能做什么：只有设备确认停了才敢"当作已停"。 */
+    enum AbortOutcome {
+        /** 可以把这一步记成 aborted（恢复时会重跑）。 */
+        TREAT_AS_STOPPED,
+        /** 停没停不知道：不得记 aborted，只能等动作自然结束。 */
+        KEEP_WAITING
+    }
+
+    /**
+     * B-04 核心判据：{@link AbortResult} 五种状态里**只有**
+     * {@code PHYSICALLY_STOPPED} 能走到 {@code TREAT_AS_STOPPED}。
+     *
+     * <p>{@code REQUESTED} / {@code DEVICE_ACKNOWLEDGED} 都只说明"话说出去了"，
+     * 不说明"设备不动了"；{@code UNKNOWN} 更是明确不知道。
+     */
+    static AbortOutcome decideAfterAbort(AbortResult result) {
+        return result != null && result.physicallyStopped()
+                ? AbortOutcome.TREAT_AS_STOPPED : AbortOutcome.KEEP_WAITING;
+    }
+
     /**
      * P-07 第一切片：派发前落命令账本（同一 commandId 唯一），回包后写 ACKED/FAILED。
      *
@@ -718,7 +738,7 @@ public final class DriverStepExecutor implements StepExecutor {
             }
         }
         try {
-            DriverResult r = doExecuteCommand(driver, ctx, cmd, workflowId);
+            DriverResult r = doExecuteCommand(driver, ctx, cmd, workflowId, ledgerId);
             if (ledgerId > 0L) {
                 try {
                     CommandLedger.finish(db, ledgerId, r.errorCode() == null,
@@ -753,7 +773,8 @@ public final class DriverStepExecutor implements StepExecutor {
      * 命中就调 {@code driver.abort(commandId)}，由驱动自己保证「设备侧已确认停止」。
      */
     private DriverResult doExecuteCommand(DeviceDriver driver, StepContext ctx,
-                                          DriverCommand cmd, long workflowId) {
+                                          DriverCommand cmd, long workflowId,
+                                          long ledgerId) {
         boolean driverSupportsPhysicalAbort = driver.supportsPhysicalAbort();
         boolean methodDeclaredInterruptible = isInterruptible(cmd.deviceInstanceId(), cmd.method());
         if (!allowInterruptibleWait(methodDeclaredInterruptible, driverSupportsPhysicalAbort)) {
@@ -773,19 +794,28 @@ public final class DriverStepExecutor implements StepExecutor {
                     return f.get();
                 }
                 if (pauseRequested(workflowId)) {
-                    // 能走到这里说明驱动已声明物理 Abort ⇒ abort 返回时设备侧
-                    // 已确认停止（这是 supportsPhysicalAbort 的契约），此时再取消
-                    // 本地等待不构成"谎报设备已停"。设备未确认就返回的情况属 B-04
-                    // （结构化 AbortResult），不在本段处理。
-                    driver.abort(cmd.commandId());
-                    try {
-                        return f.get(5, java.util.concurrent.TimeUnit.SECONDS);
-                    } catch (java.util.concurrent.TimeoutException te) {
-                        f.cancel(true);
-                        return DriverResult.failed("0", "EC-99-0005",
-                                "设备命令被暂停中止（驱动已确认物理停止，工作线程未及时返回）",
-                                null, 0);
+                    // B-04：中止是「请求」，结果分五档。只有设备确认动作已停
+                    // （PHYSICALLY_STOPPED）才允许把这一步记成 aborted —— 记成
+                    // aborted 的后果是「恢复时重跑这一步」，设备还在动就会动两次。
+                    AbortResult aborted = driver.abort(cmd.commandId());
+                    CommandLedger.recordAbort(db, ledgerId, aborted);
+                    if (decideAfterAbort(aborted) == AbortOutcome.TREAT_AS_STOPPED) {
+                        try {
+                            return f.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                        } catch (java.util.concurrent.TimeoutException te) {
+                            // 设备已确认停止，只是驱动线程没及时退出：此时取消本地
+                            // 等待不构成"谎报设备已停"（物理状态已确定）。
+                            f.cancel(true);
+                            return DriverResult.failed("0", "EC-99-0005",
+                                    "设备命令被暂停中止（设备已确认停止，工作线程未及时返回）",
+                                    null, 0);
+                        }
                     }
+                    // 没拿到设备确认：不谎报、也不重发。继续等当前动作自然结束，
+                    // 暂停由 GraphRunner 在下一个任务边界生效（与 UNSUPPORTED 同路）。
+                    System.err.println("[暂停] 中止未被设备确认（" + aborted.state()
+                            + "：" + aborted.detail() + "），继续等待当前动作跑到安全边界");
+                    return f.get();
                 }
                 Thread.sleep(INTERRUPT_POLL_MS);
             }

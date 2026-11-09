@@ -14,6 +14,10 @@ public final class DeviceDriverAbortContractSelfTest {
         caseDefaultIsUnsupported();
         caseExplicitDeclarationIsHonoured();
         caseBothConditionsRequired();
+        caseOnlyPhysicalStopCounts();
+        caseDecideAfterAbort();
+        caseDefaultAbortIsUnsupported();
+        caseDetailTruncatedToColumnWidth();
         System.out.printf("通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {
             System.exit(1);
@@ -54,6 +58,69 @@ public final class DeviceDriverAbortContractSelfTest {
                         DriverStepExecutor.allowInterruptibleWait(false, false)));
     }
 
+    /** B-04：五种状态里只有 PHYSICALLY_STOPPED 能算「停了」。 */
+    private static void caseOnlyPhysicalStopCounts() {
+        check("只有 PHYSICALLY_STOPPED 算物理停止", () -> {
+            eq("UNSUPPORTED", false, AbortResult.unsupported("x").physicallyStopped());
+            eq("REQUESTED", false, AbortResult.requested("x").physicallyStopped());
+            eq("DEVICE_ACKNOWLEDGED", false,
+                    AbortResult.acknowledged("x").physicallyStopped());
+            eq("UNKNOWN", false, AbortResult.unknown("x").physicallyStopped());
+            eq("PHYSICALLY_STOPPED", true, AbortResult.stopped("x").physicallyStopped());
+        });
+    }
+
+    /** B-04：拿到中止结果后的决策——只有设备确认停了才敢"当作已停"。 */
+    private static void caseDecideAfterAbort() {
+        check("设备确认停止才 TREAT_AS_STOPPED", () -> eq("stopped", "TREAT_AS_STOPPED",
+                DriverStepExecutor.decideAfterAbort(AbortResult.stopped("ok")).name()));
+        check("REQUESTED 必须继续等（不能说成停了）", () -> eq("requested", "KEEP_WAITING",
+                DriverStepExecutor.decideAfterAbort(AbortResult.requested("sent")).name()));
+        check("DEVICE_ACKNOWLEDGED 仍要继续等", () -> eq("ack", "KEEP_WAITING",
+                DriverStepExecutor.decideAfterAbort(AbortResult.acknowledged("ack")).name()));
+        check("UNKNOWN 必须继续等", () -> eq("unknown", "KEEP_WAITING",
+                DriverStepExecutor.decideAfterAbort(AbortResult.unknown("?")).name()));
+        check("UNSUPPORTED / null 必须继续等", () -> {
+            eq("unsupported", "KEEP_WAITING",
+                    DriverStepExecutor.decideAfterAbort(
+                            AbortResult.unsupported("no")).name());
+            eq("null", "KEEP_WAITING", DriverStepExecutor.decideAfterAbort(null).name());
+        });
+    }
+
+    /** 接口默认实现必须给「没有中止能力」，而不是假装请求成功。 */
+    private static void caseDefaultAbortIsUnsupported() {
+        check("未实现 abort 的驱动默认返回 UNSUPPORTED", () -> {
+            // 只实现 execute/healthy 的匿名类：命中接口默认的 abort 实现
+            DeviceDriver bare = new DeviceDriver() {
+                @Override
+                public DriverDescriptor describe() {
+                    return null;
+                }
+
+                @Override
+                public DriverResult execute(DriverCommand command) {
+                    return DriverResult.success(command.commandId(), "test", 0);
+                }
+
+                @Override
+                public boolean healthy() {
+                    return true;
+                }
+            };
+            eq("implicit", "UNSUPPORTED", bare.abort("c1").state().name());
+            eq("implicit-detail 非空", true, !bare.abort("c1").detail().isBlank());
+        });
+    }
+
+    /** detail 落的是 varchar(200)，超长必须在构造时截断，而不是让 UPDATE 抛错。 */
+    private static void caseDetailTruncatedToColumnWidth() {
+        check("detail 超 200 字符被截断", () -> {
+            String longDetail = "设".repeat(500);
+            eq("len", 200, AbortResult.unknown(longDetail).detail().length());
+        });
+    }
+
     private static DeviceDriver plainDriver() {
         return new DeviceDriver() {
             @Override
@@ -67,8 +134,9 @@ public final class DeviceDriverAbortContractSelfTest {
             }
 
             @Override
-            public void abort(String commandId) {
-                // test stub
+            public AbortResult abort(String commandId) {
+                // 未声明物理中止能力的驱动：默认给 UNSUPPORTED（安全默认）
+                return AbortResult.unsupported("test stub");
             }
 
             @Override
@@ -91,8 +159,9 @@ public final class DeviceDriverAbortContractSelfTest {
         }
 
         @Override
-        public void abort(String commandId) {
+        public AbortResult abort(String commandId) {
             // 设备侧停止确认（这里是桩）
+            return AbortResult.stopped("设备确认动作已停止");
         }
 
         @Override
