@@ -38,49 +38,42 @@ public final class PauseEventOutbox {
      */
     public static int dispatchPending(DbConfig db, long tenantId, int limit) throws SQLException {
         int cap = Math.max(1, Math.min(limit, MAX_PER_TICK));
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                List<Long> ids = new ArrayList<>();
-                try (PreparedStatement ps = c.prepareStatement("""
-                        SELECT id FROM pause_event
-                         WHERE tenant_id = ? AND dispatched_at IS NULL
-                         ORDER BY id
-                         LIMIT ?
-                         FOR UPDATE SKIP LOCKED
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setInt(2, cap);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            ids.add(rs.getLong(1));
-                        }
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            List<Long> ids = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT id FROM pause_event
+                     WHERE tenant_id = ? AND dispatched_at IS NULL
+                     ORDER BY id
+                     LIMIT ?
+                     FOR UPDATE SKIP LOCKED
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setInt(2, cap);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getLong(1));
                     }
                 }
-                if (!ids.isEmpty()) {
-                    try (PreparedStatement ps = c.prepareStatement("""
-                            UPDATE pause_event
-                               SET dispatched_at = now(), attempts = attempts + 1
-                             WHERE tenant_id = ? AND id = ? AND dispatched_at IS NULL
-                            """)) {
-                        for (Long id : ids) {
-                            ps.setLong(1, tenantId);
-                            ps.setLong(2, id);
-                            ps.addBatch();
-                        }
-                        ps.executeBatch();
-                    }
-                }
-                c.commit();
-                if (!ids.isEmpty()) {
-                    log.info("[暂停事件] Outbox 派发 " + ids.size() + " 条");
-                }
-                return ids.size();
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
             }
-        }
+            if (!ids.isEmpty()) {
+                try (PreparedStatement ps = c.prepareStatement("""
+                        UPDATE pause_event
+                           SET dispatched_at = now(), attempts = attempts + 1
+                         WHERE tenant_id = ? AND id = ? AND dispatched_at IS NULL
+                        """)) {
+                    for (Long id : ids) {
+                        ps.setLong(1, tenantId);
+                        ps.setLong(2, id);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
+            if (!ids.isEmpty()) {
+                log.info("[暂停事件] Outbox 派发 " + ids.size() + " 条");
+            }
+            return ids.size();
+        });
     }
 
     /** 未派发事件数（自测/运维查询用）。 */

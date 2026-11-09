@@ -24,50 +24,43 @@ public final class CommandOutbox {
     public static int dispatchPending(DbConfig db, long tenantId, int limit)
             throws SQLException {
         int cap = Math.max(1, Math.min(limit, MAX_PER_TICK));
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                List<Long> ids = new ArrayList<>();
-                try (PreparedStatement ps = c.prepareStatement("""
-                        SELECT id FROM command_outbox
-                         WHERE tenant_id = ? AND state = 'PENDING'
-                         ORDER BY id
-                         LIMIT ?
-                         FOR UPDATE SKIP LOCKED
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setInt(2, cap);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            ids.add(rs.getLong(1));
-                        }
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            List<Long> ids = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT id FROM command_outbox
+                     WHERE tenant_id = ? AND state = 'PENDING'
+                     ORDER BY id
+                     LIMIT ?
+                     FOR UPDATE SKIP LOCKED
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setInt(2, cap);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getLong(1));
                     }
                 }
-                if (!ids.isEmpty()) {
-                    try (PreparedStatement ps = c.prepareStatement("""
-                            UPDATE command_outbox
-                               SET state = 'DELIVERED', delivered_at = now(),
-                                   attempts = attempts + 1
-                             WHERE tenant_id = ? AND id = ? AND state = 'PENDING'
-                            """)) {
-                        for (Long id : ids) {
-                            ps.setLong(1, tenantId);
-                            ps.setLong(2, id);
-                            ps.addBatch();
-                        }
-                        ps.executeBatch();
-                    }
-                }
-                c.commit();
-                if (!ids.isEmpty()) {
-                    log.info("[命令 Outbox] 派发 " + ids.size() + " 条");
-                }
-                return ids.size();
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
             }
-        }
+            if (!ids.isEmpty()) {
+                try (PreparedStatement ps = c.prepareStatement("""
+                        UPDATE command_outbox
+                           SET state = 'DELIVERED', delivered_at = now(),
+                               attempts = attempts + 1
+                         WHERE tenant_id = ? AND id = ? AND state = 'PENDING'
+                        """)) {
+                    for (Long id : ids) {
+                        ps.setLong(1, tenantId);
+                        ps.setLong(2, id);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
+            if (!ids.isEmpty()) {
+                log.info("[命令 Outbox] 派发 " + ids.size() + " 条");
+            }
+            return ids.size();
+        });
     }
 
     /** P-07：重放一条已派发事件（仅供外部投递重试，绝不重发物理命令）。 */

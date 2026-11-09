@@ -159,11 +159,28 @@ Spring MVC 后改 `HandlerInterceptor` 自动注入。
 - `QueryService` 删 62 行（19 处 `setAutoCommit(false)` 及配套 commit/rollback），
   这些方法已有 21 个 `@Transactional`，事务改由 Spring 管。
 - `WorkflowService.saveGraph` 删 4 行。
-- **保留 27 处**：`PauseCoordinator` / `BatchOrchestrator` / `CommandLedger` /
-  `PositionLock` 等静态工具类，以及 `WorkflowService.doResumeAsync`
-  （private、后台 worker 线程调用，不经过 AOP 代理）—— 它们没有代理，
-  显式事务就是它们唯一的事务边界，删了会失去原子性。要删必须先把它们
-  Bean 化或迁到 Mapper 调用链，属后续按模块推进。
+- **保留 24 处（原 27，本轮 -2）**：`PauseCoordinator` / `BatchOrchestrator` /
+  `CommandLedger` / `PositionLock` 等静态工具类，以及
+  `WorkflowService.doResumeAsync`（private、后台 worker 线程、不经过 AOP 代理）。
+  它们没有代理，显式事务就是唯一边界，删了会失去原子性。
+
+**2026-11-09 续：静态工具类的框架级事务入口 `Tx`**
+`persistence/Tx.java` 提供 `Tx.inTransaction(db, c -> {...})`：内部用 Spring 的
+`TransactionTemplate` + `DataSourceTransactionManager`，在事务内 `db.open()`
+经 `DataSourceUtils` 拿线程绑定连接，提交/回滚/归还全由框架负责；
+`SQLException` 经 `UncheckedSql` 穿过 callback 后原样抛出。
+容器启动时 `DataSourceConfiguration` 调 `Tx.bind(tm)`；纯 JVM 自测无容器时
+回落到 `DriverManagerDataSource` + 同一个 `DataSourceTransactionManager`
+（仍是 Spring 在管事务，只是连接不池化）。`TestSpringSupport` 同样 bind。
+
+已收编 `CommandOutbox.dispatchPending` / `PauseEventOutbox.dispatchPending`
+（同构的 `FOR UPDATE SKIP LOCKED` 派发，原来各写一套手写事务）—— 业务侧
+只剩 SQL，不再碰 `Connection` 的事务方法。这是其余静态工具类的迁移范式。
+
+**剩余 24 处为何不一次删**：`PauseCoordinator`（7）里有「重复请求时
+`c.rollback()` 后 return」这类**正常控制流中的主动回滚**，不是异常路径；
+`BatchOrchestrator`（5）、`PositionLock`（2）等在暂停/批次/崩溃恢复核心链路。
+逐个迁 `Tx` 时每条都要配对应的回归段，不能批量脚本一刀切。
 
 ③ **第一个注解式 Controller 落地**：`MetaController` 拆出
 `/api/meta/status-vocabulary`、`/api/capabilities`、

@@ -81,7 +81,9 @@ public final class TestSpringSupport {
 
         @Bean
         public PlatformTransactionManager transactionManager(DataSource ds) {
-            return new DataSourceTransactionManager(ds);
+            PlatformTransactionManager tm = new DataSourceTransactionManager(ds);
+            com.labos.kernel.persistence.Tx.bind(tm);
+            return tm;
         }
 
         @Bean

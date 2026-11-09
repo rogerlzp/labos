@@ -46,7 +46,9 @@ public class DataSourceConfiguration {
 
     @Bean
     public PlatformTransactionManager transactionManager(DataSource ds) {
-        return new DataSourceTransactionManager(ds);
+        PlatformTransactionManager tm = new DataSourceTransactionManager(ds);
+        com.labos.kernel.persistence.Tx.bind(tm);   // 静态工具类也用同一个事务管理器
+        return tm;
     }
 
     /**
