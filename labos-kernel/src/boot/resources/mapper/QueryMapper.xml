@@ -41,4 +41,30 @@
         <if test="param3"> FOR UPDATE </if>
     </select>
 
+    <select id="countDevicesUnderIsland" resultType="int">
+        SELECT count(*) FROM resource_node
+         WHERE tenant_id = #{param1} AND parent_id = #{param2} AND kind = 'device'
+    </select>
+
+    <update id="bumpExperimentVersion">
+        UPDATE experiment SET version = version + 1, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <update id="setDeviceMethodInterruptible">
+        UPDATE device_method SET interruptible = #{param4}
+         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
+    </update>
+
+    <!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 -->
+    <update id="updateRobotPoint">
+        UPDATE robot_point SET updated_at = now(), synced_at = now()
+        <if test="x != null">, x = #{x}</if>
+        <if test="y != null">, y = #{y}</if>
+        <if test="z != null">, z = #{z}</if>
+        <if test="deviceResourceId != null">, device_resource_id = #{deviceResourceId}</if>
+        <if test="action != null and action != ''">, action = #{action}</if>
+         WHERE tenant_id = #{tenantId} AND island_id = #{islandId} AND code = #{code}
+    </update>
+
 </mapper>

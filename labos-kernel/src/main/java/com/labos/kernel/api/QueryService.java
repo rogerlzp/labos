@@ -1797,18 +1797,10 @@ throw e;
     public int deleteIsland(long islandId) throws SQLException {
         try (Connection c = db.open()) {
             int n;
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT count(*) FROM resource_node
-                    WHERE tenant_id = ? AND parent_id = ? AND kind = 'device'
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, islandId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next() && rs.getInt(1) > 0) {
-                        throw new IllegalArgumentException(
-                                "岛上还有 " + rs.getInt(1) + " 台设备，先把它们移出再删");
-                    }
-                }
+            int deviceCount = queryMapper.countDevicesUnderIsland(tenantId, islandId);
+            if (deviceCount > 0) {
+                throw new IllegalArgumentException(
+                        "岛上还有 " + deviceCount + " 台设备，先把它们移出再删");
             }
             try (PreparedStatement ps = c.prepareStatement("""
                     DELETE FROM resource_node
@@ -1982,26 +1974,8 @@ throw e;
     public int updateRobotPoint(long islandId, String code,
                                 Double x, Double y, Double z,
                                 Long deviceResourceId, String action) throws SQLException {
-        StringBuilder sql = new StringBuilder(
-                "UPDATE robot_point SET updated_at = now(), synced_at = now()");
-        List<Object> args = new ArrayList<>();
-        if (x != null) { sql.append(", x = ?"); args.add(x); }
-        if (y != null) { sql.append(", y = ?"); args.add(y); }
-        if (z != null) { sql.append(", z = ?"); args.add(z); }
-        if (deviceResourceId != null) { sql.append(", device_resource_id = ?"); args.add(deviceResourceId); }
-        if (action != null && !action.isBlank()) { sql.append(", action = ?"); args.add(action); }
-        sql.append(" WHERE tenant_id = ? AND island_id = ? AND code = ?");
-        args.add(tenantId);
-        args.add(islandId);
-        args.add(code);
-
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            for (int i = 0; i < args.size(); i++) {
-                ps.setObject(i + 1, args.get(i));
-            }
-            return ps.executeUpdate();
-        }
+        return queryMapper.updateRobotPoint(tenantId, islandId, code,
+                x, y, z, deviceResourceId, action);
     }
 
     /** 点位导出 CSV（现场示教器导出的表可以直接对照）。 */
@@ -3689,16 +3663,7 @@ throw e;
      */
     public int setDeviceMethodInterruptible(long deviceId, String method, boolean value)
             throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "UPDATE device_method SET interruptible = ? "
-                             + "WHERE tenant_id = ? AND device_id = ? AND method = ?")) {
-            ps.setBoolean(1, value);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, deviceId);
-            ps.setString(4, method);
-            return ps.executeUpdate();
-        }
+        return queryMapper.setDeviceMethodInterruptible(tenantId, deviceId, method, value);
     }
 
     /** L-01：记录一条人工介入（决策/Handoff 确认）。 */
@@ -4627,13 +4592,7 @@ throw e;
     }
 
     private void bumpExperimentVersion(Connection c, long experimentId) throws SQLException {
-        try (PreparedStatement up = c.prepareStatement(
-                "UPDATE experiment SET version = version + 1, updated_at = now() "
-                        + "WHERE tenant_id = ? AND id = ?")) {
-            up.setLong(1, tenantId);
-            up.setLong(2, experimentId);
-            up.executeUpdate();
-        }
+        queryMapper.bumpExperimentVersion(tenantId, experimentId);
     }
 
     /** 画布编译器：当前只接受 开始 -> 流程... -> 结束 的线性主链。 */

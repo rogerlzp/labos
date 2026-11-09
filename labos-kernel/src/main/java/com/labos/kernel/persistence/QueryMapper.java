@@ -1,5 +1,7 @@
 package com.labos.kernel.persistence;
 
+import org.apache.ibatis.annotations.Param;
+
 import java.util.Map;
 
 /**
@@ -27,4 +29,24 @@ public interface QueryMapper {
 
     /** role / enabled 两列；{@code forUpdate=true} 时加行锁。 */
     Map<String, Object> selectUserRoleEnabled(long tenantId, long userId, boolean forUpdate);
+
+    int countDevicesUnderIsland(long tenantId, long islandId);
+
+    int bumpExperimentVersion(long tenantId, long experimentId);
+
+    int setDeviceMethodInterruptible(long tenantId, long deviceId,
+                                     String method, boolean value);
+
+    /**
+     * 机器人点位增量更新。参数为 null 的列不动 —— 原实现用 StringBuilder 拼
+     * {@code ", x = ?"}，改成 XML 的 {@code <if>} 后 SQL 结构一眼可见。
+     */
+    int updateRobotPoint(@Param("tenantId") long tenantId,
+                         @Param("islandId") long islandId,
+                         @Param("code") String code,
+                         @Param("x") Double x,
+                         @Param("y") Double y,
+                         @Param("z") Double z,
+                         @Param("deviceResourceId") Long deviceResourceId,
+                         @Param("action") String action);
 }
