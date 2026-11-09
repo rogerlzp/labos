@@ -8,15 +8,16 @@
 
   只有文档          → 只跑 verify-en-docs.py（秒级）
   任何代码          → T0 恒跑（ci-gate.sh 无参：阈值自检/纯逻辑/tsc/schema）
-  可选 T1（显式开） → 按路径追加页面轨/链路/流程矩阵段：LABOS_GATE_T1=1
+  相关段 T1        → 按 §4 路径映射命中即**默认自动跑**（可用 --no-t1 / LABOS_GATE_T1=0 关）
 
-T2 全量（--all）不再由 push 触发：留给发布前手动与 nightly。
+原则（2026-11-09）：**只测改动面及相关部分，不跑全量**。
+`ci-gate.sh --all` 不作为任何 push、任何工作项的验收条件；它只是可选的跨轨复核手段。
 单一真源仍是 docs/测试总纲.md §4；本脚本是它的可执行版（阶段 1 换成 test-map.yaml）。
 
 用法：
   python3 scripts/gate-select.py                    # 只打印将跑什么
   python3 scripts/gate-select.py --run              # 实际执行（pre-push 用）
-  python3 scripts/gate-select.py --run --t1         # 连 T1 建议段一起跑
+  python3 scripts/gate-select.py --run --no-t1      # 只跑 T0，跳过相关段
   python3 scripts/gate-select.py --paths a b        # 用给定路径测试选择逻辑
 """
 from __future__ import annotations
@@ -79,9 +80,17 @@ T1_RULES = [
     ("webapp/src/pages/ExperimentCanvas",
      "python3 scripts/e2e-canvas.py"),
     ("webapp/src/pages/Designer",
-     "python3 scripts/e2e-flow-matrix.py"),
+     "./scripts/ci-gate.sh --designer"),
     ("webapp/src/bpmn/",
-     "python3 scripts/e2e-method-drop.py"),
+     "./scripts/ci-gate.sh --designer"),
+    ("labos-kernel/src/main/java/com/labos/kernel/workflow/PauseCoordinator",
+     "./scripts/ci-gate.sh --pause"),
+    ("labos-kernel/src/main/java/com/labos/kernel/workflow/RunControl",
+     "./scripts/ci-gate.sh --pause"),
+    ("labos-kernel/src/main/java/com/labos/kernel/workflow/StartupRecovery",
+     "./scripts/ci-gate.sh --recovery"),
+    ("labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowResumeRecovery",
+     "./scripts/ci-gate.sh --recovery"),
     ("webapp/",
      "python3 scripts/e2e-smoke.py"),
 ]
@@ -106,7 +115,7 @@ def changed_paths(base: str | None) -> list[str]:
 
 
 def select(paths: list[str]) -> tuple[list[str], list[str], list[str]]:
-    """返回 (必跑命令, T1 建议命令, 说明)。"""
+    """返回 (必跑命令, 相关段命令, 说明)。"""
     if not paths:
         return [], [], ["没有改动（或无法取 diff）→ 不跑"]
     docs = [p for p in paths if is_doc(p)]
@@ -115,8 +124,21 @@ def select(paths: list[str]) -> tuple[list[str], list[str], list[str]]:
         return ["python3 scripts/verify-en-docs.py"], [], [f"{len(docs)} 个文档改动"]
     cmds = ["./scripts/ci-gate.sh"]
     t1 = []
+    pause_only = code and all(
+        ("PauseCoordinator" in p or "RunControl" in p or "api/ExperimentApi" in p)
+        for p in code
+    )
+    recovery_only = code and all(
+        ("StartupRecovery" in p or "WorkflowResumeRecovery" in p)
+        for p in code
+    )
     for needle, cmd in T1_RULES:
         if any(needle in p for p in code) and cmd not in t1:
+            if cmd in {
+                "python3 scripts/verify-flow-matrix.py --force-online",
+                "python3 scripts/e2e-flow-matrix.py",
+            } and (pause_only or recovery_only):
+                continue
             t1.append(cmd)
     notes = [f"代码改动 {len(code)} 个 → T0 必跑"]
     if docs:
@@ -141,7 +163,8 @@ def main() -> int:
     ap.add_argument("--base", default=None, help="对比基准 ref（默认 merge-base origin/main）")
     ap.add_argument("--paths", nargs="*", default=None, help="直接给路径测试选择逻辑")
     ap.add_argument("--run", action="store_true", help="实际执行（默认只打印）")
-    ap.add_argument("--t1", action="store_true", help="连 T1 建议段一起执行")
+    ap.add_argument("--t1", action="store_true", help="兼容旧参数：相关段现在默认就跑")
+    ap.add_argument("--no-t1", action="store_true", help="跳过相关段（只跑 T0）")
     args = ap.parse_args()
 
     paths = args.paths if args.paths is not None else changed_paths(args.base)
@@ -155,16 +178,18 @@ def main() -> int:
     for c in cmds or ["（无）"]:
         print("  " + c)
     if t1:
-        print("\nT1 建议（按总纲 §4；加 --t1 或 LABOS_GATE_T1=1 时自动跑）：")
+        print("\n相关段（按总纲 §4 映射表，默认自动跑）：")
         for c in t1:
             print("  " + c)
-    print("\nT2 全量（发布前手动）：./scripts/ci-gate.sh --all\n")
+    else:
+        print("\n相关段：本次改动未命中映射表，无需加跑")
+    print()
 
     if not args.run:
         return 0
     rc = run(cmds, "必跑")
-    if args.t1 or os.environ.get("LABOS_GATE_T1") == "1":
-        rc = run(t1, "T1") or rc
+    if not args.no_t1 and os.environ.get("LABOS_GATE_T1") != "0":
+        rc = run(t1, "相关段") or rc
     return rc
 
 

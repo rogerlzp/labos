@@ -9,8 +9,8 @@
 # 现在的分工（对应 docs/测试总纲.md §2 / §3.3）：
 #   · 只改文档      → verify-en-docs.py（秒级）
 #   · 改了代码      → T0（ci-gate.sh 无参：阈值自检/纯逻辑/tsc/schema），分钟级
-#   · T1 相关段     → 脚本会打印「按 §4 应加跑」清单；LABOS_GATE_T1=1 git push 自动跑
-#   · T2 全量       → 发布前手动 ./scripts/ci-gate.sh --all（nightly 跑页面轨）
+#   · T1 相关段     → 按 §4 映射表命中即**默认自动跑**（改动面 + 相关部分）
+#   · 不设「全量必跑」：--all 只是可选的跨轨复核手段，绝非验收条件
 #
 # 启用（每个克隆各做一次）：
 #   git config core.hooksPath .githooks
@@ -28,13 +28,13 @@ fi
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT" || exit 1
 
-echo "pre-push：按 diff 选档（T2 全量留给发布前）"
+echo "pre-push：按 diff 精确选段（只跑改动面及相关段）"
 echo
 
 if python3 scripts/gate-select.py --run; then
   echo
   echo "pre-push：所选段通过，放行推送"
-  echo "          提醒：T2 全量仍须在发布前跑一次 ./scripts/ci-gate.sh --all"
+  echo "          已跑：T0 + 命中的相关段；无全量必跑要求"
   exit 0
 fi
 
