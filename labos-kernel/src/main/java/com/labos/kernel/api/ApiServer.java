@@ -103,7 +103,6 @@ public final class ApiServer {
     final int port;
 
     // 路由 controller（构造时注入 this；与 route() 分发一一对应）
-    private final DeviceApi deviceApi = new DeviceApi(this);
     private final WorkflowApi workflowApi = new WorkflowApi(this);
     private final ExperimentApi experimentApi = new ExperimentApi(this);
 
@@ -172,11 +171,10 @@ public final class ApiServer {
             // 各 controller 的 path 前缀互不重叠（/api/runs、/api/experiments、…），
             // 因此跨 controller 的顺序不改变语义；controller 内部保持 if/else 顺序。
             // 任一 controller 命中即 return，未命中落到下面的静态资源/健康检查/404。
-            // AuthApi 已拆成注解式 AuthController（com.labos.boot.web.controller），
-            // 不再走这条分发链；鉴权拦截器在 Spring MVC 层先命中。
-            if (deviceApi.handle(ex, path, method)
-                    // SchedulerApi / MetaApi 已拆成注解式 Controller
-                    || workflowApi.handle(ex, path, method)
+            // Auth/Scheduler/Meta/Device/Run 已拆成注解式 Controller
+            // （com.labos.boot.web.controller），不再走这条分发链；
+            // 鉴权拦截器在 Spring MVC 层先命中。
+            if (workflowApi.handle(ex, path, method)
                     || experimentApi.handle(ex, path, method)) {
                 return;
             }
@@ -343,7 +341,7 @@ public final class ApiServer {
     }
 
     /** 从 query string 取整型参数。 */
-    static long paramLong(String query, String key) {
+    public static long paramLong(String query, String key) {
         if (query == null) {
             return 0L;
         }
