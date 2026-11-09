@@ -344,6 +344,12 @@ public class RunService {
                 "holds", new Jsons.Raw(holdsJson(view.holds())));
     }
 
+    /** 实验批次视图（D8/D11：attempt + 批次汇总 + 实验 D6 聚合）。 */
+    public String batchesJson(long experimentId) throws java.sql.SQLException {
+        return new com.labos.kernel.workflow.BatchOrchestrator(db, TENANT, workflows)
+                .batchesJson(experimentId);
+    }
+
     public String recoverable() throws java.sql.SQLException {
         List<String> items = new ArrayList<>();
         for (var o : StartupRecovery.listRecoverable(db, TENANT)) {

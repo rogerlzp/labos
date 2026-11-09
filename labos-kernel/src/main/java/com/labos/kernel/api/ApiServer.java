@@ -104,7 +104,6 @@ public final class ApiServer {
 
     // 路由 controller（构造时注入 this；与 route() 分发一一对应）
     private final WorkflowApi workflowApi = new WorkflowApi(this);
-    private final ExperimentApi experimentApi = new ExperimentApi(this);
 
 
     /**
@@ -174,8 +173,9 @@ public final class ApiServer {
             // Auth/Scheduler/Meta/Device/Run 已拆成注解式 Controller
             // （com.labos.boot.web.controller），不再走这条分发链；
             // 鉴权拦截器在 Spring MVC 层先命中。
-            if (workflowApi.handle(ex, path, method)
-                    || experimentApi.handle(ex, path, method)) {
+            // Auth/Scheduler/Meta/Device/Run/Experiment 已拆成注解式 Controller；
+            // WorkflowApi 是最后一个（拆完即可删除本分发链与 ServletHttpExchange）。
+            if (workflowApi.handle(ex, path, method)) {
                 return;
             }
 
@@ -415,7 +415,7 @@ public final class ApiServer {
     }
 
     /** 解析 "k1=v1,k2=v2"。空串返回空表。 */
-    static Map<String, String> parseVarsExpr(String expr) {
+    public static Map<String, String> parseVarsExpr(String expr) {
         Map<String, String> m = new LinkedHashMap<>();
         if (expr == null || expr.isBlank()) {
             return m;
