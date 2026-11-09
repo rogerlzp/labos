@@ -65,6 +65,8 @@ PURE=(
   "workflow.RuntimeHoldSelfTest"
   # 实验级运行控制：作用域退化（无岛退实验级）+ site 扣留不可顺手解除
   "workflow.RunControlSelfTest"
+  # B-03：同一 JVM 内同一 run 只允许一个后台 worker；释放后可重入
+  "workflow.WorkflowServiceSingleFlightSelfTest"
   # B-01：图执行期 RuntimeException 不得退回顺序重跑（副作用只发生一次）
   "workflow.WorkflowExecutionSafetySelfTest"
   # B-02：物理中止能力默认关闭 + 「可中断等待」必须同时满足方法与驱动两个条件

@@ -413,6 +413,77 @@ public final class WorkflowService {
                 return t;
             });
 
+    /** JVM 内同一 run 只能有一个后台 worker，避免重复 continue/retry 并发起两条执行线程。 */
+    private static final java.util.concurrent.ConcurrentMap<Long, String> ACTIVE_RUN_WORKERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    static boolean claimRunWorkerSlot(long runId, String owner) {
+        return ACTIVE_RUN_WORKERS.putIfAbsent(runId, owner) == null;
+    }
+
+    static void releaseRunWorkerSlot(long runId, String owner) {
+        ACTIVE_RUN_WORKERS.remove(runId, owner);
+    }
+
+    static String activeRunWorkerOwner(long runId) {
+        return ACTIVE_RUN_WORKERS.get(runId);
+    }
+
+    static void clearRunWorkerSlotsForTest() {
+        ACTIVE_RUN_WORKERS.clear();
+    }
+
+    private void submitRunWorker(long runId, String owner, Runnable body) {
+        if (!claimRunWorkerSlot(runId, owner)) {
+            String holder = activeRunWorkerOwner(runId);
+            throw new IllegalStateException("run " + runId + " 已有后台执行线程"
+                    + (holder == null ? "" : "（" + holder + "）"));
+        }
+        try {
+            RUN_POOL.submit(() -> {
+                try {
+                    body.run();
+                } finally {
+                    releaseRunWorkerSlot(runId, owner);
+                }
+            });
+        } catch (RuntimeException e) {
+            releaseRunWorkerSlot(runId, owner);
+            throw e;
+        }
+    }
+
+    /**
+     * 占位；已被别的 worker 占着就抛。**调用方必须在动任何 DB 状态之前调它** ——
+     * 拒绝要发生在状态被改写之前，否则会留下「status=running 却没人跑」的僵尸单。
+     */
+    static void claimRunWorkerSlotOrThrow(long runId, String owner) {
+        if (!claimRunWorkerSlot(runId, owner)) {
+            String holder = activeRunWorkerOwner(runId);
+            throw new IllegalStateException("run " + runId + " 已有后台执行线程在跑"
+                    + (holder == null ? "" : "（" + holder + "）")
+                    + "；旧 worker 未退出前拒绝重复启动/续跑");
+        }
+    }
+
+    /** 起后台线程跑 body；**假定占位已由调用方完成**，结束后释放。 */
+    static void launchRunWorker(long runId, String owner, Runnable body) {
+        Thread t = new Thread(() -> {
+            try {
+                body.run();
+            } finally {
+                releaseRunWorkerSlot(runId, owner);
+            }
+        }, owner);
+        t.setDaemon(true);
+        try {
+            t.start();
+        } catch (RuntimeException | Error e) {
+            releaseRunWorkerSlot(runId, owner);
+            throw e;
+        }
+    }
+
     public Execution execute(long workflowId) throws SQLException {
         return execute(workflowId, ATTENDED);
     }
@@ -463,17 +534,23 @@ public final class WorkflowService {
             }
         }
 
-        RUN_POOL.submit(() -> {
-            try {
-                execute(workflowId, mode, runId);
-            } catch (Exception e) {
+        try {
+            submitRunWorker(runId, "run-exec-" + runId, () -> {
                 try {
-                    markRunFailed(runId, e.getMessage());
-                } catch (SQLException ignore) {
-                    // 尽力而为
+                    execute(workflowId, mode, runId);
+                } catch (Exception e) {
+                    try {
+                        markRunFailed(runId, e.getMessage());
+                    } catch (SQLException ignore) {
+                        // 尽力而为
+                    }
                 }
-            }
-        });
+            });
+        } catch (IllegalStateException busy) {
+            // 起不了线程就别留一条 status=running 的空单。
+            markRunFailed(runId, "启动失败：" + busy.getMessage());
+            throw busy;
+        }
         return runId;
     }
 
@@ -509,6 +586,19 @@ public final class WorkflowService {
      * </ol>
      */
     public void resumeAsync(long runId) throws SQLException {
+        // B-03：**先占位再动库**。旧 worker 没退出时直接拒绝，且此时 DB 一个字段都没改。
+        String workerOwner = "labos-resume-" + runId;
+        claimRunWorkerSlotOrThrow(runId, workerOwner);
+        try {
+            doResumeAsync(runId, workerOwner);
+        } catch (RuntimeException | SQLException e) {
+            // 没起线程就失败（读库/事务出错）：立刻释放，否则这个 run 再也续不了。
+            releaseRunWorkerSlot(runId, workerOwner);
+            throw e;
+        }
+    }
+
+    private void doResumeAsync(long runId, String workerOwner) throws SQLException {
         Long wfId = null;
         String attendance = ATTENDED;
         try (Connection c = db.open();
@@ -594,7 +684,7 @@ public final class WorkflowService {
         final long wid = wfId;
         final String mode = attendance;
         final long rid = runId;
-        Thread t = new Thread(() -> {
+        launchRunWorker(runId, workerOwner, () -> {
             try {
                 execute(wid, mode, rid, doneKeys);
             } catch (Exception e) {
@@ -604,9 +694,7 @@ public final class WorkflowService {
                     // 尽力而为
                 }
             }
-        }, "labos-resume-" + runId);
-        t.setDaemon(true);
-        t.start();
+        });
     }
 
     /** 有人值守。 */

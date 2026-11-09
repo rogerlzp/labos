@@ -50,7 +50,7 @@ if [[ $WITH_DB -eq 1 ]]; then
 fi
 
 # 阈值：只许涨不许跌。改了用例要同步改这里，逼着人想清楚"少的那几条去哪了"。
-MIN_PURE=705    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（sleep 真停 / wait 满足 / wait 超时转人工 / 外部刷新不盖本图写值 / __ 前缀判 LOGIC）（644 → 649）；
+MIN_PURE=718    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（sleep 真停 / wait 满足 / wait 超时转人工 / 外部刷新不盖本图写值 / __ 前缀判 LOGIC）（644 → 649）；
                 # 2026-11-06 收尾：再新增「干跑内置节点直通」一条（评审③相邻缝隙）（649 → 650）；
                 # 2026-11-06 演示：新增「干跑任务节点也直通」一条（TASK 分不到设备时不误报下游走不到，PF-03 假报）（650 → 651）；
                 # 2026-11-07 V1-1：RuntimeHoldSelfTest 新增安全闸门三态 11 条（CLEAR 放行 / HELD 阻断 / UNKNOWN 阻断 /
@@ -61,6 +61,7 @@ MIN_PURE=705    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（
                 # 2026-11-09 B-01/B-02：WorkflowExecutionSafetySelfTest 3 条（执行期异常不 fallback / 解析失败可 fallback / 解析成功走图执行）+ DeviceDriverAbortContractSelfTest 6 条（默认不支持物理中止 / 显式声明才认 / 准入组合 4 条）+ TcpAbortContractSelfTest 2 条（abort 不伪造完成 / TCP 不声明物理中止）。
                 #                 实测基线：改前 HEAD 实跑 686（阈值 673 有 13 条历史欠账），加 11 条后 697（686 → 697）
                 # 2026-11-09 B-04：DeviceDriverAbortContractSelfTest 新增 8 条（5 状态只有 PHYSICALLY_STOPPED 算停 / decideAfterAbort 的 stopped·requested·ack·unknown·null 分支 / 默认 abort 回 UNSUPPORTED / detail 截断到 200）→ 697 → 705
+                # 2026-11-09 B-03：新增 WorkflowServiceSingleFlightSelfTest 13 条（同 run 只允许一个 worker / 只有持有者能释放 / 释放后可重入 / 重复启动被拒且消息带占位者 / 线程结束与 body 崩溃都自动释放）→ 705 → 718
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
