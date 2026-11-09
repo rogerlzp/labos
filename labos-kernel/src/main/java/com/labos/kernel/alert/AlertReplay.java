@@ -25,6 +25,13 @@ import java.util.List;
  */
 public final class AlertReplay {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(AlertReplay.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final DateTimeFormatter FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
@@ -36,7 +43,7 @@ public final class AlertReplay {
 
         List<AlertSignal> signals = load(Path.of(csvPath));
         if (signals.isEmpty()) {
-            System.out.println("没有可回放的信号: " + csvPath);
+            log.info("没有可回放的信号: " + csvPath);
             return;
         }
 
@@ -63,25 +70,25 @@ public final class AlertReplay {
         Instant last = signals.get(signals.size() - 1).at();
         long days = Math.max(1, Duration.between(first, last).toDays());
 
-        System.out.println("=".repeat(84));
-        System.out.println("  历史错误回放：告警聚合效果");
-        System.out.println("=".repeat(84));
-        System.out.printf("  数据范围: %s ~ %s（约 %d 天）%n", first, last, days);
-        System.out.printf("  静默期  : %d 分钟%n%n", gapMinutes);
+        log.info("=".repeat(84));
+        log.info("  历史错误回放：告警聚合效果");
+        log.info("=".repeat(84));
+        printf("  数据范围: %s ~ %s（约 %d 天）%n", first, last, days);
+        printf("  静默期  : %d 分钟%n%n", gapMinutes);
 
         long push = opened + escalated;
 
-        System.out.printf("  输入错误条数        : %8d%n", signals.size());
-        System.out.printf("  ├ 推送给人 (OPENED+ESCALATED): %8d%n", push);
-        System.out.printf("  │   ├ OPENED 首报          : %8d%n", opened);
-        System.out.printf("  │   └ ESCALATED 阈值升级   : %8d%n", escalated);
-        System.out.printf("  └ 仅归档 (SUMMARY)         : %8d%n", summary);
-        System.out.println();
+        printf("  输入错误条数        : %8d%n", signals.size());
+        printf("  ├ 推送给人 (OPENED+ESCALATED): %8d%n", push);
+        printf("  │   ├ OPENED 首报          : %8d%n", opened);
+        printf("  │   └ ESCALATED 阈值升级   : %8d%n", escalated);
+        printf("  └ 仅归档 (SUMMARY)         : %8d%n", summary);
+        log.info("");
 
         double reduction = (1 - push / (double) signals.size()) * 100;
-        System.out.printf("  ★ 推送降噪率: %.2f%%（%d 条错误 -> %d 条推送）%n", reduction,
+        printf("  ★ 推送降噪率: %.2f%%（%d 条错误 -> %d 条推送）%n", reduction,
                 signals.size(), push);
-        System.out.printf("  ★ 含归档总量: %d 条对象（%.2f%% 压缩）%n%n",
+        printf("  ★ 含归档总量: %d 条对象（%.2f%% 压缩）%n%n",
                 alerts.size(), (1 - alerts.size() / (double) signals.size()) * 100);
 
         // 需要人工关注的（非 SUMMARY）
@@ -90,17 +97,17 @@ public final class AlertReplay {
                 .sorted(Comparator.comparingInt(Alert::count).reversed())
                 .toList();
 
-        System.out.printf("  需要推送给人处理的告警 %d 条。按影响排序 Top 10：%n", notify.size());
-        System.out.printf("    %-12s %-30s %8s  %s%n", "类型", "指纹(错误码|设备)", "次数", "窗口");
-        System.out.println("    " + "-".repeat(78));
+        printf("  需要推送给人处理的告警 %d 条。按影响排序 Top 10：%n", notify.size());
+        printf("    %-12s %-30s %8s  %s%n", "类型", "指纹(错误码|设备)", "次数", "窗口");
+        log.info("    " + "-".repeat(78));
         for (int i = 0; i < Math.min(10, notify.size()); i++) {
             Alert a = notify.get(i);
-            System.out.printf("    %-12s %-30s %8d  %s ~ %s%n",
+            printf("    %-12s %-30s %8d  %s ~ %s%n",
                     a.kind(), a.fingerprint(), a.count(),
                     a.firstAt(), a.lastAt());
         }
-        System.out.println();
-        System.out.println("  说明：SUMMARY 只归档不推送，用于事后统计。");
+        log.info("");
+        log.info("  说明：SUMMARY 只归档不推送，用于事后统计。");
     }
 
     private static List<AlertSignal> load(Path path) throws IOException {

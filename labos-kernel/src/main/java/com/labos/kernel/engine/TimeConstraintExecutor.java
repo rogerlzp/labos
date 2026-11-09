@@ -27,6 +27,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class TimeConstraintExecutor implements StepExecutor {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(TimeConstraintExecutor.class);
+
     /**
      * 一条约束。
      *
@@ -93,7 +96,7 @@ public final class TimeConstraintExecutor implements StepExecutor {
                     // > 0 = 真等，且**等够 needMs**。
                     // 用 MAX_WAIT_MS 兜底，防止 minSec 配错（比如配成天）把线程挂死。
                     if (waitRealMs <= 0) {
-                        System.out.println("[时间约束] 模拟模式，跳过补等 "
+                        log.info("[时间约束] 模拟模式，跳过补等 "
                                 + (needMs / 1000) + " 秒（节点 " + ctx.nodeId() + "）");
                     } else if (needMs > 0) {
                         if (needMs > MAX_WAIT_MS) {

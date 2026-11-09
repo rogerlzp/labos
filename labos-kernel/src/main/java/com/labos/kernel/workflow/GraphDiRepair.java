@@ -35,6 +35,13 @@ import java.util.regex.Pattern;
  */
 public final class GraphDiRepair {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(GraphDiRepair.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final Pattern SHAPE = Pattern.compile(
             "<bpmndi:BPMNShape id=\"([^\"]+)\" bpmnElement=\"([^\"]+)\">\\s*"
                     + "<dc:Bounds x=\"([0-9.]+)\" y=\"([0-9.]+)\" "
@@ -75,7 +82,7 @@ public final class GraphDiRepair {
                         continue;
                     }
                     fixed++;
-                    System.out.printf("%s #%d %s：补 %d 条连线%s%n", dry ? "[dry]" : "✓",
+                    printf("%s #%d %s：补 %d 条连线%s%n", dry ? "[dry]" : "✓",
                             id, code, count(patched), dry ? "（未写库）" : "");
                     if (!dry) {
                         try (PreparedStatement up = c.prepareStatement(
@@ -90,7 +97,7 @@ public final class GraphDiRepair {
                 }
             }
         }
-        System.out.printf("%n扫描 %d 个流程：修补 %d，跳过 %d（已有连线或无图）%n",
+        printf("%n扫描 %d 个流程：修补 %d，跳过 %d（已有连线或无图）%n",
                 scanned, fixed, skipped);
     }
 

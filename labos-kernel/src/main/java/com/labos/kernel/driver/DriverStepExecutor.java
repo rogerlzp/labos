@@ -277,7 +277,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 }
             }
         } catch (java.sql.SQLException e) {
-            System.err.println("[WARN] 加载错误码作用域失败，按前缀兜底: " + e.getMessage());
+            log.error("[WARN] 加载错误码作用域失败，按前缀兜底: " + e.getMessage());
         }
         return out;
     }
@@ -373,7 +373,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 transferTxn = com.labos.kernel.workflow.TransferTransaction.begin(
                         db, tenantId, runId, plate, srcRes, dstRes);
             } catch (java.sql.SQLException e) {
-                System.err.println("[搬运事务] 创建失败（不阻断执行）：" + e.getMessage());
+                log.error("[搬运事务] 创建失败（不阻断执行）：" + e.getMessage());
             }
         }
         try {
@@ -384,7 +384,7 @@ public final class DriverStepExecutor implements StepExecutor {
                             transferTxn, r.errorCode() == null, r.errorCode(),
                             r.message(), r.deviceRawResponse());
                 } catch (java.sql.SQLException e) {
-                    System.err.println("[搬运事务] 回写失败：" + e.getMessage());
+                    log.error("[搬运事务] 回写失败：" + e.getMessage());
                 }
             }
             // P1-10：动作失败 → 板可能既不在源位也不在目标位，必须标 UNKNOWN。
@@ -399,7 +399,7 @@ public final class DriverStepExecutor implements StepExecutor {
                     com.labos.kernel.workflow.TransferTransaction.report(db, tenantId,
                             transferTxn, false, "EC-99-0001", e.getMessage(), null);
                 } catch (java.sql.SQLException ex) {
-                    System.err.println("[搬运事务] 异常回写失败：" + ex.getMessage());
+                    log.error("[搬运事务] 异常回写失败：" + ex.getMessage());
                 }
             }
             // 抛异常同理：板的位置已不可信
@@ -431,16 +431,16 @@ public final class DriverStepExecutor implements StepExecutor {
         Object raw = ctx.params() == null ? null : ctx.params().get("plate");
         String barcode = raw == null ? null : String.valueOf(raw);
         if (barcode == null || barcode.isBlank()) {
-            System.err.println("[搬运] 失败但拿不到板号（params.plate），无法标记位置未知");
+            log.error("[搬运] 失败但拿不到板号（params.plate），无法标记位置未知");
             return;
         }
         try {
             int blocked = new com.labos.kernel.workflow.PauseManager(db, tenantId)
                     .markPlateUnknown(barcode, srcRes, dstRes, null, runId);
-            System.err.println("[搬运] 板 " + barcode + " 位置未知，已封锁 "
+            log.error("[搬运] 板 " + barcode + " 位置未知，已封锁 "
                     + blocked + " 个可能位置（需人工盘点）");
         } catch (java.sql.SQLException e) {
-            System.err.println("[搬运] 标记板位置未知失败：" + e.getMessage());
+            log.error("[搬运] 标记板位置未知失败：" + e.getMessage());
         }
     }
 
@@ -555,14 +555,14 @@ public final class DriverStepExecutor implements StepExecutor {
             nodeSec = workflowNodeTimeoutSec(ctx.nodeId());
         } catch (RuntimeException e) {
             // 查库失败不该把执行搞挂 —— 退回兜底值继续跑
-            System.err.println("[超时] 解析失败，退回兜底 " + timeoutMs + "ms：" + e.getMessage());
+            log.error("[超时] 解析失败，退回兜底 " + timeoutMs + "ms：" + e.getMessage());
         }
         MethodTimeoutPolicy.Resolved r = MethodTimeoutPolicy.resolve(
                 methodSec, libSec, nodeSec, effectiveCap, timeoutMs);
         timeoutCache.put(key, r.timeoutMs());
         timeoutSource.put(key, r.source());
         if (r.timeoutMs() > 60_000L) {
-            System.out.println("[超时] " + ctx.nodeKey() + " " + method
+            log.info("[超时] " + ctx.nodeKey() + " " + method
                     + " → " + (r.timeoutMs() / 1000L) + " 秒（来源 " + r.source()
                     + "：设备方法=" + methodSec + "s 设备库上限=" + libSec
                     + "s 节点=" + nodeSec + "s 能力=" + effectiveCap + "）");
@@ -748,7 +748,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 com.labos.kernel.workflow.RunExecPhase.markDispatched(db, tenantId, runId);
             } catch (java.sql.SQLException e) {
                 // 旁路：标不上也不能挡住物理命令的派发（挡住反而让现场停摆）。
-                System.err.println("[WARN] run#" + runId + " exec_phase 未升级："
+                log.error("[WARN] run#" + runId + " exec_phase 未升级："
                         + e.getMessage());
             }
         }
@@ -759,7 +759,7 @@ public final class DriverStepExecutor implements StepExecutor {
                     CommandLedger.finish(db, ledgerId, r.errorCode() == null,
                             r.errorCode(), r.message(), cmd.commandId());
                 } catch (java.sql.SQLException ex) {
-                    System.err.println("[命令账本] 回写失败：" + ex.getMessage());
+                    log.error("[命令账本] 回写失败：" + ex.getMessage());
                 }
             }
             return r;
@@ -828,7 +828,7 @@ public final class DriverStepExecutor implements StepExecutor {
                     }
                     // 没拿到设备确认：不谎报、也不重发。继续等当前动作自然结束，
                     // 暂停由 GraphRunner 在下一个任务边界生效（与 UNSUPPORTED 同路）。
-                    System.err.println("[暂停] 中止未被设备确认（" + aborted.state()
+                    log.error("[暂停] 中止未被设备确认（" + aborted.state()
                             + "：" + aborted.detail() + "），继续等待当前动作跑到安全边界");
                     return f.get();
                 }

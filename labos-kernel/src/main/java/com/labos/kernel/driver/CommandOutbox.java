@@ -12,6 +12,9 @@ import java.util.List;
 /** P-07.4 命令事件 Outbox 派发器（同 pause_event 的最小版本）。 */
 public final class CommandOutbox {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(CommandOutbox.class);
+
     public static final int MAX_PER_TICK = 20;
 
     private CommandOutbox() {
@@ -57,7 +60,7 @@ public final class CommandOutbox {
                 }
                 c.commit();
                 if (!ids.isEmpty()) {
-                    System.out.println("[命令 Outbox] 派发 " + ids.size() + " 条");
+                    log.info("[命令 Outbox] 派发 " + ids.size() + " 条");
                 }
                 return ids.size();
             } catch (SQLException | RuntimeException e) {

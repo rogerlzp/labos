@@ -36,6 +36,9 @@ import java.util.Set;
  */
 public final class SchedulerEta {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(SchedulerEta.class);
+
     /** 没填预估工时时的兜底秒数（与甘特/时间条同一口径：没数据就按 60 秒）。 */
     private static final int DEFAULT_ESTIMATE_SEC = 60;
 
@@ -314,7 +317,7 @@ public final class SchedulerEta {
         try {
             return estimateExperimentSec(db, tenantId, experimentId);
         } catch (SQLException e) {
-            System.err.println("[ETA] 实验 " + experimentId + " 工时估算失败: " + e.getMessage());
+            log.error("[ETA] 实验 " + experimentId + " 工时估算失败: " + e.getMessage());
             return 0L;
         }
     }
@@ -323,7 +326,7 @@ public final class SchedulerEta {
         try {
             return estimateRunRemainSec(db, tenantId, experimentRunId);
         } catch (SQLException e) {
-            System.err.println("[ETA] run " + experimentRunId + " 剩余估算失败: " + e.getMessage());
+            log.error("[ETA] run " + experimentRunId + " 剩余估算失败: " + e.getMessage());
             return 0L;
         }
     }

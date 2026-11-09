@@ -54,15 +54,27 @@ public final class RunControl {
 
     public RunInfo info(long runId) throws SQLException {
         try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT r.experiment_id, r.status, r.stop_requested,
-                            r.pause_kind, r.pause_reason,
-                            COALESCE(e.island_id, 0) AS island_id
-                       FROM experiment_run r
-                       JOIN experiment e
-                         ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
-                      WHERE r.tenant_id = ? AND r.id = ?
-                     """)) {
+        ) {
+            return infoTx(c, runId, false);
+        }
+    }
+
+    /** 同 {@link #info(long)}，但复用调用方事务连接；可选对 run/experiment 行加锁。 */
+    public RunInfo infoTx(Connection c, long runId) throws SQLException {
+        return infoTx(c, runId, true);
+    }
+
+    private RunInfo infoTx(Connection c, long runId, boolean forUpdate) throws SQLException {
+        String sql = """
+                SELECT r.experiment_id, r.status, r.stop_requested,
+                       r.pause_kind, r.pause_reason,
+                       COALESCE(e.island_id, 0) AS island_id
+                  FROM experiment_run r
+                  JOIN experiment e
+                    ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
+                 WHERE r.tenant_id = ? AND r.id = ?
+                """ + (forUpdate ? " FOR UPDATE OF r, e" : "");
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, tenantId);
             ps.setLong(2, runId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -350,6 +362,12 @@ public final class RunControl {
                     RuntimeHold.Kind.of(covered.kind()), by, note);
         }
 
+        RuntimeHold.Active still = holds.coveringForExperimentChecked(run.experimentId());
+        if (still != null) {
+            return new ResumeOutcome(run.experimentId(), cleared,
+                    still.reason() == null ? "现场扣留" : still.reason());
+        }
+
         // 拉回待派发：paused / failed 都允许恢复（failed = 错误处理完成后继续）。
         // D10：批次 run 只回写批次层（D8 按 D6 聚合实验状态）；单条 run 的 queued
         // 不能直接当实验状态写 —— 否则其他批还 pending 时实验就先显示 running/终态。
@@ -360,7 +378,7 @@ public final class RunControl {
                     UPDATE experiment_run
                        SET status = 'queued', stop_requested = false, error = NULL,
                            pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
-                           control_state = 'NONE', pause_requested_at = NULL,
+                           control_state = 'RESUMING', pause_requested_at = NULL,
                            finished_at = NULL
                      WHERE tenant_id = ? AND id = ?
                        AND status IN ('paused', 'failed', 'queued')
@@ -407,9 +425,7 @@ public final class RunControl {
             ps.executeUpdate();
         }
 
-        RuntimeHold.Active still = holds.coveringForExperimentChecked(run.experimentId());
-        return new ResumeOutcome(run.experimentId(), cleared,
-                still == null ? null : (still.reason() == null ? "现场扣留" : still.reason()));
+        return new ResumeOutcome(run.experimentId(), cleared, null);
     }
 
     /** 事务化恢复结果：outcome + 是否批次 run（批次回调需在 commit 后做）。 */
@@ -435,11 +451,18 @@ public final class RunControl {
                     covered.scopeId(), by, note);
         }
 
+        RuntimeHold.Active still = holds.coveringForExperimentCheckedTx(c, run.experimentId());
+        if (still != null) {
+            ResumeOutcome outcome = new ResumeOutcome(run.experimentId(), cleared,
+                    still.reason() == null ? "现场扣留" : still.reason());
+            return new ResumeTx(outcome, false);
+        }
+
         try (PreparedStatement ps = c.prepareStatement("""
                 UPDATE experiment_run
                    SET status = 'queued', stop_requested = false, error = NULL,
                        pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
-                       control_state = 'NONE', finished_at = NULL
+                       control_state = 'RESUMING', finished_at = NULL
                  WHERE tenant_id = ? AND id = ?
                    AND status IN ('paused', 'failed', 'queued')
                 """)) {
@@ -469,9 +492,7 @@ public final class RunControl {
             ps.executeUpdate();
         }
 
-        RuntimeHold.Active still = holds.coveringForExperimentCheckedTx(c, run.experimentId());
-        ResumeOutcome outcome = new ResumeOutcome(run.experimentId(), cleared,
-                still == null ? null : (still.reason() == null ? "现场扣留" : still.reason()));
+        ResumeOutcome outcome = new ResumeOutcome(run.experimentId(), cleared, null);
         return new ResumeTx(outcome, batchRun);
     }
 }

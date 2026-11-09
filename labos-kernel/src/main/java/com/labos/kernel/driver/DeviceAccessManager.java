@@ -29,6 +29,9 @@ import java.sql.SQLException;
  */
 public final class DeviceAccessManager {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceAccessManager.class);
+
     private final DbConfig db;
     private final long tenantId;
 
@@ -162,7 +165,7 @@ public final class DeviceAccessManager {
             ps.setLong(3, accessId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[门] 写状态失败 id=" + accessId + "：" + e.getMessage());
+            log.error("[门] 写状态失败 id=" + accessId + "：" + e.getMessage());
         }
     }
 }

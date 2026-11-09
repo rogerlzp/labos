@@ -31,6 +31,9 @@ import java.util.Map;
  */
 public final class PositionLock {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(PositionLock.class);
+
     /** 默认预约时长：搬运正常几秒，留足余量。 */
     public static final Duration DEFAULT_TTL = Duration.ofSeconds(120);
 
@@ -308,7 +311,7 @@ public final class PositionLock {
                 ps.executeUpdate();
             }
         } catch (SQLException e) {
-            System.err.println("[PLATE-WARN] 冗余表 plate 写入失败（不影响位置锁）："
+            log.error("[PLATE-WARN] 冗余表 plate 写入失败（不影响位置锁）："
                     + e.getMessage());
         }
     }
@@ -551,10 +554,10 @@ public final class PositionLock {
                 try (PreparedStatement rb = c.prepareStatement("ROLLBACK TO SAVEPOINT " + sp)) {
                     rb.execute();
                 } catch (SQLException e2) {
-                    System.err.println("[位置锁] 回滚 savepoint 失败：" + e2.getMessage());
+                    log.error("[位置锁] 回滚 savepoint 失败：" + e2.getMessage());
                 }
             }
-            System.err.println("[位置锁] 标记板在途失败（不影响取板）：" + e.getMessage());
+            log.error("[位置锁] 标记板在途失败（不影响取板）：" + e.getMessage());
         }
     }
 
@@ -687,7 +690,7 @@ public final class PositionLock {
             if (written <= 0) {
                 // 写入 0 行 = 层位上还是没板。不能返回 pos 骗调用方，
                 // 否则日志说"放板成功"、层位上空着，取板时取不到。
-                System.err.println("[PLATE-WARN] putPlate 写入 0 行，位置 " + pos
+                log.error("[PLATE-WARN] putPlate 写入 0 行，位置 " + pos
                         + " 未更新（板号 " + plateId + "）");
                 return NO_EMPTY_POSITION;
             }

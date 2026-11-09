@@ -22,6 +22,13 @@ import java.util.Optional;
  */
 public final class CoverageAnalyzer {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(CoverageAnalyzer.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     record CodeStat(String code, int occurrences, String topShooting) {
     }
 
@@ -33,22 +40,22 @@ public final class CoverageAnalyzer {
         RecoveryPolicyResolver resolver = new RecoveryPolicyResolver(policies);
 
         long totalOcc = codes.stream().mapToLong(CodeStat::occurrences).sum();
-        System.out.println("=".repeat(88));
-        System.out.println("  策略覆盖率分析");
-        System.out.println("=".repeat(88));
-        System.out.printf("  错误码 %d 个，历史报错 %d 次，策略 %d 条%n%n",
+        log.info("=".repeat(88));
+        log.info("  策略覆盖率分析");
+        log.info("=".repeat(88));
+        printf("  错误码 %d 个，历史报错 %d 次，策略 %d 条%n%n",
                 codes.size(), totalOcc, policies.size());
 
         for (RecoveryScope scope : new RecoveryScope[]{RecoveryScope.NODE, RecoveryScope.COMMAND}) {
             analyze(scope, codes, resolver, totalOcc);
         }
 
-        System.out.println("=".repeat(88));
-        System.out.println("  结论");
-        System.out.println("=".repeat(88));
-        System.out.println("  · 精确覆盖 = 该错误码有专门配置的策略");
-        System.out.println("  · 通配兜底 = 只命中 `*` 策略（行为一刀切，无针对性）");
-        System.out.println("  · 无匹配   = 引擎会直接转人工");
+        log.info("=".repeat(88));
+        log.info("  结论");
+        log.info("=".repeat(88));
+        log.info("  · 精确覆盖 = 该错误码有专门配置的策略");
+        log.info("  · 通配兜底 = 只命中 `*` 策略（行为一刀切，无针对性）");
+        log.info("  · 无匹配   = 引擎会直接转人工");
     }
 
     private static void analyze(RecoveryScope scope, List<CodeStat> codes,
@@ -77,30 +84,30 @@ public final class CoverageAnalyzer {
             }
         }
 
-        System.out.println("─".repeat(88));
-        System.out.printf("  作用域 %s%n", scope);
-        System.out.println("─".repeat(88));
-        System.out.printf("  %-14s %10s %10s %10s%n", "", "错误码数", "占比", "报错次数占比");
+        log.info("─".repeat(88));
+        printf("  作用域 %s%n", scope);
+        log.info("─".repeat(88));
+        printf("  %-14s %10s %10s %10s%n", "", "错误码数", "占比", "报错次数占比");
         row("精确覆盖", exactCodes, codes.size(), exactOcc, totalOcc);
         row("仅通配兜底", wildCodes, codes.size(), wildOcc, totalOcc);
         row("完全无匹配", noneCodes, codes.size(), noneOcc, totalOcc);
-        System.out.println();
+        log.info("");
 
         if (!uncovered.isEmpty()) {
             uncovered.sort(Comparator.comparingInt(a -> -Integer.parseInt(a[1])));
-            System.out.printf("  未被精确覆盖的高频错误码（Top 10）：%n");
-            System.out.printf("    %-18s %8s %-22s %s%n", "错误码", "次数", "历史主要处置", "当前匹配");
-            System.out.println("    " + "-".repeat(76));
+            printf("  未被精确覆盖的高频错误码（Top 10）：%n");
+            printf("    %-18s %8s %-22s %s%n", "错误码", "次数", "历史主要处置", "当前匹配");
+            log.info("    " + "-".repeat(76));
             for (int i = 0; i < Math.min(10, uncovered.size()); i++) {
                 String[] u = uncovered.get(i);
-                System.out.printf("    %-18s %8s %-22s %s%n", u[0], u[1], u[2], u[3]);
+                printf("    %-18s %8s %-22s %s%n", u[0], u[1], u[2], u[3]);
             }
-            System.out.println();
+            log.info("");
         }
     }
 
     private static void row(String label, int n, int totalN, long occ, long totalOcc) {
-        System.out.printf("  %-14s %10d %9.1f%% %12.1f%%%n",
+        printf("  %-14s %10d %9.1f%% %12.1f%%%n",
                 label, n, totalN == 0 ? 0 : n * 100.0 / totalN,
                 totalOcc == 0 ? 0 : occ * 100.0 / totalOcc);
     }

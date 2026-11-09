@@ -22,6 +22,9 @@ import java.util.List;
  */
 public final class PauseEventOutbox {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(PauseEventOutbox.class);
+
     /** 每 tick 最多派发条数（避免一次抢太多、拖慢调度）。 */
     public static final int MAX_PER_TICK = 20;
 
@@ -70,7 +73,7 @@ public final class PauseEventOutbox {
                 }
                 c.commit();
                 if (!ids.isEmpty()) {
-                    System.out.println("[暂停事件] Outbox 派发 " + ids.size() + " 条");
+                    log.info("[暂停事件] Outbox 派发 " + ids.size() + " 条");
                 }
                 return ids.size();
             } catch (SQLException | RuntimeException e) {

@@ -35,6 +35,9 @@ import java.util.Map;
  */
 public final class PauseManager {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(PauseManager.class);
+
     /** 三种暂停类型。 */
     public enum Kind {
         /** 设备故障，心跳恢复后自动继续。 */
@@ -182,7 +185,7 @@ public final class PauseManager {
                 ps.executeUpdate();
             }
         } catch (SQLException e) {
-            System.err.println("[暂停] 自动建人工窗口失败：" + e.getMessage());
+            log.error("[暂停] 自动建人工窗口失败：" + e.getMessage());
         }
     }
 
@@ -200,7 +203,7 @@ public final class PauseManager {
             ps.setLong(4, runId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[暂停] 关闭人工窗口失败：" + e.getMessage());
+            log.error("[暂停] 关闭人工窗口失败：" + e.getMessage());
         }
     }
 
@@ -225,11 +228,11 @@ public final class PauseManager {
                 return released;
             } catch (SQLException e) {
                 c.rollback();
-                System.err.println("[暂停] 释放资源失败：" + e.getMessage());
+                log.error("[暂停] 释放资源失败：" + e.getMessage());
                 return 0;
             }
         } catch (SQLException e) {
-            System.err.println("[暂停] 释放资源失败：" + e.getMessage());
+            log.error("[暂停] 释放资源失败：" + e.getMessage());
             return 0;
         }
     }
@@ -306,7 +309,7 @@ public final class PauseManager {
             ps.setLong(2, p2);
             return ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[暂停] 释放资源失败：" + e.getMessage());
+            log.error("[暂停] 释放资源失败：" + e.getMessage());
             return 0;
         }
     }
@@ -683,7 +686,7 @@ public final class PauseManager {
         try (Connection c = db.open()) {
             insertEvidence(c, barcode, actualLocation, operator, runId);
         } catch (SQLException e) {
-            System.err.println("[暂停] 位置证据落库失败：" + e.getMessage());
+            log.error("[暂停] 位置证据落库失败：" + e.getMessage());
         }
         return true;
     }
@@ -874,7 +877,7 @@ public final class PauseManager {
             ps.setString(5, actualLocation);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[暂停] 位置证据落库失败：" + e.getMessage());
+            log.error("[暂停] 位置证据落库失败：" + e.getMessage());
         }
     }
 
@@ -951,7 +954,7 @@ public final class PauseManager {
             }
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[盘点] 审计写入失败：" + e.getMessage());
+            log.error("[盘点] 审计写入失败：" + e.getMessage());
         }
     }
 
@@ -960,7 +963,7 @@ public final class PauseManager {
              PreparedStatement ps = c.prepareStatement(sql)) {
             return ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[暂停] SQL 失败：" + e.getMessage());
+            log.error("[暂停] SQL 失败：" + e.getMessage());
             return 0;
         }
     }

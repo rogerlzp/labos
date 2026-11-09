@@ -35,6 +35,9 @@ import java.util.Map;
  */
 public final class HeartbeatService {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(HeartbeatService.class);
+
     private final DbConfig db;
     private final long tenantId;
     private final long intervalMs;
@@ -92,7 +95,7 @@ public final class HeartbeatService {
         worker = new Thread(this::loop, "heartbeat");
         worker.setDaemon(true);
         worker.start();
-        System.out.println("[心跳] 已启动，间隔 " + (RuntimeSettings.heartbeatIntervalMs() / 1000)
+        log.info("[心跳] 已启动，间隔 " + (RuntimeSettings.heartbeatIntervalMs() / 1000)
                 + " 秒（页面可改，改完下一个周期生效）");
     }
 
@@ -110,7 +113,7 @@ public final class HeartbeatService {
             try {
                 int online = probeOnce();
                 if (online >= 0) {
-                    System.out.println("[心跳] " + online + " 个驱动在线");
+                    log.info("[心跳] " + online + " 个驱动在线");
                 }
 
                 // P0-4 修复（评审 20261102-03）：paused_fault 的自动恢复
@@ -121,13 +124,13 @@ public final class HeartbeatService {
                     int resumed = new com.labos.kernel.workflow.PauseManager(db, tenantId)
                             .autoResumeFaulted();
                     if (resumed > 0) {
-                        System.out.println("[心跳] 设备已恢复，自动继续 " + resumed + " 个执行");
+                        log.info("[心跳] 设备已恢复，自动继续 " + resumed + " 个执行");
                     }
                 } catch (RuntimeException e) {
-                    System.err.println("[心跳] 自动恢复失败：" + e.getMessage());
+                    log.error("[心跳] 自动恢复失败：" + e.getMessage());
                 }
             } catch (Exception e) {
-                System.err.println("[心跳] 探测失败：" + e.getMessage());
+                log.error("[心跳] 探测失败：" + e.getMessage());
             }
             sleep(RuntimeSettings.heartbeatIntervalMs());
         }
@@ -176,7 +179,7 @@ public final class HeartbeatService {
         try {
             int cleaned = new DeviceLock(db, tenantId).releaseOrphans();
             if (cleaned > 0) {
-                System.out.println("[心跳] 清理 " + cleaned + " 个孤儿设备锁"
+                log.info("[心跳] 清理 " + cleaned + " 个孤儿设备锁"
                         + "（对应的 run 已结束）");
             }
         } catch (RuntimeException ignore) {
@@ -187,7 +190,7 @@ public final class HeartbeatService {
         try {
             checkOfflineAlerts();
         } catch (SQLException e) {
-            System.err.println("[心跳] 离线告警检查失败：" + e.getMessage());
+            log.error("[心跳] 离线告警检查失败：" + e.getMessage());
         }
         return onlineCount;
     }
@@ -244,7 +247,7 @@ public final class HeartbeatService {
                 ps.setString(3, String.valueOf(RuntimeSettings.offlineAlertMs()));
                 int n = ps.executeUpdate();
                 if (n > 0) {
-                    System.out.println("[心跳] 新开 " + n + " 条离线告警（离线超过 "
+                    log.info("[心跳] 新开 " + n + " 条离线告警（离线超过 "
                             + (RuntimeSettings.offlineAlertMs() / 1000) + " 秒）");
                 }
             }
@@ -252,7 +255,7 @@ public final class HeartbeatService {
                 ps.setLong(1, tenantId);
                 int n = ps.executeUpdate();
                 if (n > 0) {
-                    System.out.println("[心跳] 关闭 " + n + " 条离线告警（设备已恢复）");
+                    log.info("[心跳] 关闭 " + n + " 条离线告警（设备已恢复）");
                 }
             }
         }
@@ -311,7 +314,7 @@ public final class HeartbeatService {
             ps.setString(4, msg);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[心跳] 写 driver_health 失败：" + e.getMessage());
+            log.error("[心跳] 写 driver_health 失败：" + e.getMessage());
         }
     }
 
@@ -341,7 +344,7 @@ public final class HeartbeatService {
             ps.setLong(5, driverId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[心跳] 写 device_state.online 失败：" + e.getMessage());
+            log.error("[心跳] 写 device_state.online 失败：" + e.getMessage());
         }
     }
 
@@ -395,7 +398,7 @@ public final class HeartbeatService {
             binder.bind(ps);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[心跳] 更新设备状态失败：" + e.getMessage());
+            log.error("[心跳] 更新设备状态失败：" + e.getMessage());
         }
     }
 

@@ -30,6 +30,9 @@ import java.util.List;
  */
 public final class StartupRecovery {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(StartupRecovery.class);
+
     /** 一条被中断的 run。 */
     public record Orphan(
             long runId,
@@ -338,8 +341,8 @@ public final class StartupRecovery {
                     n = ps.executeUpdate();
                 }
                 if (n > 0 && expId != null) {
-                    new RuntimeHold(db, tenantId).clearTx(c,
-                            RuntimeHold.Scope.EXPERIMENT, expId, by,
+                    new RuntimeHold(db, tenantId).clearKindTx(c,
+                            RuntimeHold.Scope.EXPERIMENT, expId, RuntimeHold.Kind.HUMAN, by,
                             "隔离解除：" + (note == null ? "人工确认" : note));
                 }
                 c.commit();
@@ -585,7 +588,7 @@ public final class StartupRecovery {
                     }
                 }
             } catch (Exception e) {
-                System.err.println("[启动收尾] 实验状态回写失败 run#" + s.runId()
+                log.error("[启动收尾] 实验状态回写失败 run#" + s.runId()
                         + ": " + e.getMessage());
             }
         }

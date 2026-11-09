@@ -38,6 +38,9 @@ import java.util.Map;
  */
 public final class RuntimeHold {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(RuntimeHold.class);
+
     /** 生效范围。 */
     public enum Scope {
         /** 全场（最严重，如公共气路故障）。 */
@@ -266,7 +269,7 @@ public final class RuntimeHold {
             Set<Long> islands = ExperimentWorkcellScope.islandsOf(db, tenantId, experimentId);
             return coverageForExperiment(activeChecked(), experimentId, islands);
         } catch (SQLException e) {
-            System.err.println("[扣留] 实验 Workcell 覆盖读取失败（按 UNKNOWN 阻断）："
+            log.error("[扣留] 实验 Workcell 覆盖读取失败（按 UNKNOWN 阻断）："
                     + e.getMessage());
             return unknownCoverage();
         }
@@ -531,7 +534,7 @@ public final class RuntimeHold {
         try {
             return activeChecked();
         } catch (SQLException e) {
-            System.err.println("[扣留] 读取生效扣留失败：" + e.getMessage());
+            log.error("[扣留] 读取生效扣留失败：" + e.getMessage());
             return new ArrayList<>();
         }
     }
@@ -545,7 +548,7 @@ public final class RuntimeHold {
         try {
             return activeChecked().isEmpty() ? HoldState.CLEAR : HoldState.HELD;
         } catch (SQLException e) {
-            System.err.println("[扣留] 现场闸门读取失败（按 UNKNOWN 阻断派发）：" + e.getMessage());
+            log.error("[扣留] 现场闸门读取失败（按 UNKNOWN 阻断派发）：" + e.getMessage());
             return HoldState.UNKNOWN;
         }
     }
@@ -557,7 +560,7 @@ public final class RuntimeHold {
         try {
             return coverageOf(activeChecked(), experimentId, islandId);
         } catch (SQLException e) {
-            System.err.println("[扣留] 覆盖判定读取失败（按 UNKNOWN 阻断）：" + e.getMessage());
+            log.error("[扣留] 覆盖判定读取失败（按 UNKNOWN 阻断）：" + e.getMessage());
             return unknownCoverage();
         }
     }
@@ -623,7 +626,7 @@ public final class RuntimeHold {
                 }
             }
         } catch (SQLException e) {
-            System.err.println("[扣留] 反查流程归属失败：" + e.getMessage());
+            log.error("[扣留] 反查流程归属失败：" + e.getMessage());
         }
         return null;
     }
@@ -667,7 +670,7 @@ public final class RuntimeHold {
             }
             return new Coverage(HoldState.CLEAR, null);
         } catch (SQLException e) {
-            System.err.println("[扣留] 反查流程归属读取失败（按 UNKNOWN 阻断执行）：" + e.getMessage());
+            log.error("[扣留] 反查流程归属读取失败（按 UNKNOWN 阻断执行）：" + e.getMessage());
             return unknownCoverage();
         }
     }
@@ -721,7 +724,7 @@ public final class RuntimeHold {
             }
             return new HoldView(list.isEmpty() ? HoldState.CLEAR : HoldState.HELD, list);
         } catch (SQLException e) {
-            System.err.println("[扣留] 读取生效扣留失败（按 UNKNOWN 暴露给运维）：" + e.getMessage());
+            log.error("[扣留] 读取生效扣留失败（按 UNKNOWN 暴露给运维）：" + e.getMessage());
             return new HoldView(HoldState.UNKNOWN, list);
         }
     }

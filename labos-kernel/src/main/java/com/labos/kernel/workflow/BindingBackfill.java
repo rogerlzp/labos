@@ -25,6 +25,13 @@ import java.util.Map;
  */
 public final class BindingBackfill {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(BindingBackfill.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final long TENANT = 1;
 
     public static void main(String[] args) throws Exception {
@@ -53,7 +60,7 @@ public final class BindingBackfill {
                     try {
                         g = BpmnGraphParser.parse(xml);
                     } catch (RuntimeException e) {
-                        System.out.println("  [跳过] 流程 " + id + " XML 解析失败：" + e.getMessage());
+                        log.info("  [跳过] 流程 " + id + " XML 解析失败：" + e.getMessage());
                         continue;
                     }
                     // seq 必须按 **XML 文档顺序**：解析器内部的 Map 顺序在两次运行之间会漂移
@@ -71,7 +78,7 @@ public final class BindingBackfill {
                                 mismatch++;
                                 if (mismatch <= 20) {
                                     String[] got = actual(c, id, n.key());
-                                    System.out.printf("  ✗ 流程 %d 节点 %s：XML 期望 rid=%s seq=%d，表里 rid=%s seq=%s%n",
+                                    printf("  ✗ 流程 %d 节点 %s：XML 期望 rid=%s seq=%d，表里 rid=%s seq=%s%n",
                                             id, n.key(), rid, wantSeq,
                                             got == null ? "缺行" : got[0], got == null ? "缺行" : got[1]);
                                 }
@@ -85,10 +92,10 @@ public final class BindingBackfill {
         }
 
         if (checkOnly) {
-            System.out.printf("%n比对 %d 条流程，不一致 %d 处%n", workflows, mismatch);
+            printf("%n比对 %d 条流程，不一致 %d 处%n", workflows, mismatch);
             System.exit(mismatch == 0 ? 0 : 1);
         }
-        System.out.printf("%n回填 %d 条流程，更新 %d 行%n", workflows, changed);
+        printf("%n回填 %d 条流程，更新 %d 行%n", workflows, changed);
     }
 
     private static String[] actual(Connection c, long wfId, String key) throws SQLException {

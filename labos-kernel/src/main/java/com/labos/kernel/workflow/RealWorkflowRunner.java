@@ -45,6 +45,13 @@ import java.util.Set;
  */
 public final class RealWorkflowRunner {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(RealWorkflowRunner.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final long TENANT = 1L;
 
     /** 流程定义。 */
@@ -74,10 +81,10 @@ public final class RealWorkflowRunner {
         Map<String, List<Long>> capPool = loadCapabilityPool(db);
         Map<String, String> protocolCap = loadProtocolCapability(db);
 
-        System.out.println("=".repeat(92));
-        System.out.printf("  真实工艺执行：%s（id=%d, %s）%n", wf.name(), wf.id(), wf.category());
-        System.out.println("=".repeat(92));
-        System.out.printf("  节点 %d 个，边 %d 条，能力池 %d 类%n%n",
+        log.info("=".repeat(92));
+        printf("  真实工艺执行：%s（id=%d, %s）%n", wf.name(), wf.id(), wf.category());
+        log.info("=".repeat(92));
+        printf("  节点 %d 个，边 %d 条，能力池 %d 类%n%n",
                 nodes.size(), edges.size(), capPool.size());
 
         // ---------- 2. 识别可执行节点
@@ -85,34 +92,34 @@ public final class RealWorkflowRunner {
                 .filter(n -> "task".equals(n.type()))
                 .toList();
         if (tasks.isEmpty()) {
-            System.out.println("  该流程没有可执行节点");
+            log.info("  该流程没有可执行节点");
             return;
         }
 
-        System.out.printf("  %-24s %-12s %-12s %-10s %s%n",
+        printf("  %-24s %-12s %-12s %-10s %s%n",
                 "节点", "名称", "所需能力", "能力来源", "候选设备数");
-        System.out.println("  " + "-".repeat(86));
+        log.info("  " + "-".repeat(86));
         java.util.Map<String, Integer> srcStat = new java.util.LinkedHashMap<>();
         for (NodeDef n : tasks) {
             CapabilitySource cs = resolveCapability(n, protocolCap);
             srcStat.merge(cs.source(), 1, Integer::sum);
             int pool = LOGIC.equals(cs.capability()) ? 1
                     : capPool.getOrDefault(cs.capability(), List.of()).size();
-            System.out.printf("  %-24s %-12s %-12s %-10s %d%n",
+            printf("  %-24s %-12s %-12s %-10s %d%n",
                     truncate(n.key(), 24), truncate(n.name(), 12),
                     cs.capability(), cs.source(), pool);
         }
-        System.out.println();
-        System.out.println("  能力来源统计: " + srcStat);
-        System.out.println();
+        log.info("");
+        log.info("  能力来源统计: " + srcStat);
+        log.info("");
 
         // ---------- 3. 拓扑排序
         List<NodeDef> ordered = topoSort(tasks, edges);
         if (ordered.size() != tasks.size()) {
-            System.out.println("  ⚠ 检测到环或孤立节点，已降级为按 id 排序");
+            log.info("  ⚠ 检测到环或孤立节点，已降级为按 id 排序");
         }
-        System.out.println("  拓扑序: " + ordered.stream().map(NodeDef::name).toList());
-        System.out.println();
+        log.info("  拓扑序: " + ordered.stream().map(NodeDef::name).toList());
+        log.info("");
 
         // ---------- 4. 转成可恢复节点（能力 -> 候选资源）
         List<RecoverableNode> recoverable = new ArrayList<>();
@@ -147,8 +154,8 @@ public final class RealWorkflowRunner {
                 break;
             }
         }
-        System.out.println("  故障注入: " + failNote);
-        System.out.println();
+        log.info("  故障注入: " + failNote);
+        log.info("");
 
         // ---------- 6. 执行
         JdbcRecoveryPolicyRepository repo = new JdbcRecoveryPolicyRepository(db, TENANT);
@@ -183,41 +190,41 @@ public final class RealWorkflowRunner {
             knownBad.addAll(progress.node(rn.id()).failedResourceIds());
         }
         if (avoided > 0) {
-            System.out.printf("  （已从后续候选中剔除 %d 个已知故障设备的分配）%n%n", avoided);
+            printf("  （已从后续候选中剔除 %d 个已知故障设备的分配）%n%n", avoided);
         }
 
         // ---------- 7. 输出
-        System.out.println("  事件流：");
+        log.info("  事件流：");
         for (ExecutionEvent e : events) {
-            System.out.println("    " + e);
+            log.info("    " + e);
         }
-        System.out.println();
+        log.info("");
 
-        System.out.println("  节点结果：");
-        System.out.printf("  %-14s %-12s %-6s %-14s %s%n", "节点", "能力", "尝试", "最终设备", "状态");
-        System.out.println("  " + "-".repeat(78));
+        log.info("  节点结果：");
+        printf("  %-14s %-12s %-6s %-14s %s%n", "节点", "能力", "尝试", "最终设备", "状态");
+        log.info("  " + "-".repeat(78));
         for (NodeProgress np : progress.all()) {
             RecoverableNode def = recoverable.stream()
                     .filter(r -> r.id() == np.nodeId()).findFirst().orElse(null);
-            System.out.printf("  %-14s %-12s %-6d %-14s %s%n",
+            printf("  %-14s %-12s %-6d %-14s %s%n",
                     def == null ? "?" : truncate(def.name(), 14),
                     def == null ? "?" : def.capabilityCode(),
                     np.attempt(),
                     np.currentResourceId() == null ? "—" : np.currentResourceId().toString(),
                     np.status());
         }
-        System.out.println();
-        System.out.println("  结果: " + progress.summary());
-        System.out.println();
+        log.info("");
+        log.info("  结果: " + progress.summary());
+        log.info("");
 
         long switched = events.stream()
                 .filter(e -> e.type() == com.labos.kernel.engine.EventType.RESOURCE_SWITCHED)
                 .count();
         long completed = progress.count(NodeStatus.COMPLETED);
-        System.out.printf("  ★ 真实工艺 %d 个节点，完成 %d 个，自动换机 %d 次%n",
+        printf("  ★ 真实工艺 %d 个节点，完成 %d 个，自动换机 %d 次%n",
                 recoverable.size(), completed, switched);
         if (switched > 0) {
-            System.out.println("  ★ 工艺只声明「需要什么能力」，设备坏了由内核自动换——工艺与设备已解耦");
+            log.info("  ★ 工艺只声明「需要什么能力」，设备坏了由内核自动换——工艺与设备已解耦");
         }
     }
 
@@ -751,49 +758,49 @@ public final class RealWorkflowRunner {
 
         long ms = (System.nanoTime() - t0) / 1_000_000;
 
-        System.out.println("=".repeat(90));
-        System.out.println("  批量验收：按图执行（含网关）");
-        System.out.println("=".repeat(90));
-        System.out.printf("  流程总数 %d，耗时 %d ms%n%n", wfs.size(), ms);
+        log.info("=".repeat(90));
+        log.info("  批量验收：按图执行（含网关）");
+        log.info("=".repeat(90));
+        printf("  流程总数 %d，耗时 %d ms%n%n", wfs.size(), ms);
 
-        System.out.println("  ── 流程级 ──");
+        log.info("  ── 流程级 ──");
         pct("全部完成", wfOk, wfs.size());
         pct("部分完成", wfPartial, wfs.size());
         pct("全部失败", wfFailed, wfs.size());
         pct("无 task 节点", wfEmpty, wfs.size());
         pct("无 BPMN 图", wfNoGraph, wfs.size());
-        System.out.println();
+        log.info("");
 
-        System.out.println("  ── 节点级 ──");
+        log.info("  ── 节点级 ──");
         pct("完成", (int) nodeDone, (int) nodeTotal);
         pct("跳过", (int) nodeSkip, (int) nodeTotal);
         pct("转人工", (int) nodeManual, (int) nodeTotal);
         pct("终止", (int) nodeAbort, (int) nodeTotal);
-        System.out.println();
+        log.info("");
 
-        System.out.println("  ── 网关行为 ──");
-        System.out.printf("  含并行网关的流程      %5d 个%n", parallelFlows);
-        System.out.printf("  含异或网关的流程      %5d 个%n", xorFlows);
-        System.out.printf("  异或走默认边次数      %5d 次%n", defaultEdges);
-        System.out.println();
+        log.info("  ── 网关行为 ──");
+        printf("  含并行网关的流程      %5d 个%n", parallelFlows);
+        printf("  含异或网关的流程      %5d 个%n", xorFlows);
+        printf("  异或走默认边次数      %5d 次%n", defaultEdges);
+        log.info("");
 
         if (!reasons.isEmpty()) {
-            System.out.println("  ── 转人工原因 ──");
+            log.info("  ── 转人工原因 ──");
             reasons.entrySet().stream()
                     .sorted((a, b) -> b.getValue() - a.getValue())
                     .limit(6)
-                    .forEach(e -> System.out.printf("  %-24s %6d 次%n", e.getKey(), e.getValue()));
-            System.out.println();
+                    .forEach(e -> printf("  %-24s %6d 次%n", e.getKey(), e.getValue()));
+            log.info("");
         }
 
         if (!worst.isEmpty()) {
-            System.out.println("  ── 问题最多的流程（前 10）──");
+            log.info("  ── 问题最多的流程（前 10）──");
             worst.forEach(System.out::println);
-            System.out.println();
+            log.info("");
         }
 
         double rate = nodeTotal == 0 ? 0 : nodeDone * 100.0 / nodeTotal;
-        System.out.printf("  ★ 节点自动完成率 %.1f%%，流程完全跑通率 %.1f%%%n",
+        printf("  ★ 节点自动完成率 %.1f%%，流程完全跑通率 %.1f%%%n",
                 rate, wfOk * 100.0 / Math.max(1, wfs.size()));
     }
 
@@ -839,7 +846,7 @@ public final class RealWorkflowRunner {
     }
 
     private static void pct(String label, int n, int total) {
-        System.out.printf("  %-14s %6d 个  %5.1f%%%n", label, n, total == 0 ? 0 : n * 100.0 / total);
+        printf("  %-14s %6d 个  %5.1f%%%n", label, n, total == 0 ? 0 : n * 100.0 / total);
     }
 
     private static String truncate(String s, int n) {

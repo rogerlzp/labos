@@ -37,13 +37,20 @@ import java.util.Set;
  */
 public final class SidecarDemo {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(SidecarDemo.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     public static void main(String[] args) throws Exception {
         try (MockDriverServer mock = new MockDriverServer(0)) {
             int port = mock.port();
 
             section("1. 模拟 .NET 驱动进程（TCP 服务端）");
-            System.out.println("  监听 127.0.0.1:" + port);
-            System.out.println("  协议 JSON over TCP，分隔符 " + TcpDriverAdapter.DELIMITER);
+            log.info("  监听 127.0.0.1:" + port);
+            log.info("  协议 JSON over TCP，分隔符 " + TcpDriverAdapter.DELIMITER);
 
             // ---------- 2. 适配器
             section("2. Sidecar 适配器（DeviceDriver 实现）");
@@ -62,9 +69,9 @@ public final class SidecarDemo {
             DriverRegistry registry = new DriverRegistry();
             registry.register(adapter);
 
-            System.out.print(registry.healthReport());
-            System.out.println("  TRANSFER 候选: " + registry.candidates("TRANSFER", Set.of()));
-            System.out.println("  INCUBATE 候选: " + registry.candidates("INCUBATE", Set.of()));
+            log.info(registry.healthReport());
+            log.info("  TRANSFER 候选: " + registry.candidates("TRANSFER", Set.of()));
+            log.info("  INCUBATE 候选: " + registry.candidates("INCUBATE", Set.of()));
 
             // ---------- 3. 执行
             section("3. 内核执行（状态机 → 适配器 → TCP → 驱动）");
@@ -84,17 +91,17 @@ public final class SidecarDemo {
             section("4. 驱动返回的 FinishMessage 原文");
             for (RecoverableNode n : nodes) {
                 exec.rawResponse(n.id()).ifPresent(raw ->
-                        System.out.printf("  node %-2d %s%n%n", n.id(), truncate(raw, 150)));
+                        printf("  node %-2d %s%n%n", n.id(), truncate(raw, 150)));
             }
 
             // ---------- 5. 驱动收到的报文
             section("5. 驱动侧实际收到的指令（验证协议正确）");
-            mock.received().forEach(r -> System.out.println("  " + r));
+            mock.received().forEach(r -> log.info("  " + r));
 
             // ---------- 6. 故障 -> 换机
             section("6. 注入故障：设备 200383 的 Transfer 永久失败");
             mock.fault("200383", "Transfer", "EC-08-0001");
-            System.out.println("  驱动侧已配置：200383:Transfer -> EC-08-0001\n");
+            log.info("  驱动侧已配置：200383:Transfer -> EC-08-0001\n");
 
             DriverStepExecutor exec2 = new DriverStepExecutor(registry);
             RunProgress p2 = run(exec2, nodes);
@@ -102,19 +109,19 @@ public final class SidecarDemo {
 
             NodeProgress first = p2.all().iterator().next();
             if (first.status() == NodeStatus.COMPLETED && first.attempt() > 0) {
-                System.out.printf("%n  设备 200383 失败 -> 自动切到 %d -> 完成%n",
+                printf("%n  设备 200383 失败 -> 自动切到 %d -> 完成%n",
                         first.currentResourceId());
-                System.out.println("  ★ 全程只改了 mock 的故障配置，工艺和内核一行没动");
+                log.info("  ★ 全程只改了 mock 的故障配置，工艺和内核一行没动");
             }
 
             section("7. 结论");
-            System.out.println("  ✓ JSON over TCP + #!LABSEP!# 分帧正确");
-            System.out.println("  ✓ message_id 透传，能正确过滤心跳、匹配响应");
-            System.out.println("  ✓ FinishMessage 原文完整回传（device_raw_response）");
-            System.out.println("  ✓ 错误码原样透传，适配层不做业务判断");
-            System.out.println("  ✓ 驱动侧零改动，换机由内核决策");
-            System.out.println();
-            System.out.println("  接入真实 .NET 驱动时，只需把 MockDriverServer 换成真实进程。");
+            log.info("  ✓ JSON over TCP + #!LABSEP!# 分帧正确");
+            log.info("  ✓ message_id 透传，能正确过滤心跳、匹配响应");
+            log.info("  ✓ FinishMessage 原文完整回传（device_raw_response）");
+            log.info("  ✓ 错误码原样透传，适配层不做业务判断");
+            log.info("  ✓ 驱动侧零改动，换机由内核决策");
+            log.info("");
+            log.info("  接入真实 .NET 驱动时，只需把 MockDriverServer 换成真实进程。");
         }
     }
 
@@ -133,13 +140,13 @@ public final class SidecarDemo {
     }
 
     private static void printNodes(RunProgress p, List<RecoverableNode> nodes) {
-        System.out.printf("  %-4s %-14s %-12s %-6s %-8s %s%n",
+        printf("  %-4s %-14s %-12s %-6s %-8s %s%n",
                 "#", "节点", "能力", "尝试", "设备", "结果");
-        System.out.println("  " + "-".repeat(66));
+        log.info("  " + "-".repeat(66));
         for (NodeProgress np : p.all()) {
             RecoverableNode n = nodes.stream()
                     .filter(x -> x.id() == np.nodeId()).findFirst().orElse(null);
-            System.out.printf("  %-4d %-14s %-12s %-6d %-8s %s%n",
+            printf("  %-4d %-14s %-12s %-6d %-8s %s%n",
                     np.nodeId(),
                     n == null ? "?" : n.name(),
                     n == null ? "?" : n.capabilityCode(),
@@ -147,16 +154,16 @@ public final class SidecarDemo {
                     np.currentResourceId() == null ? "-" : np.currentResourceId(),
                     np.status());
         }
-        System.out.println("  结果: " + p.summary());
-        System.out.println();
+        log.info("  结果: " + p.summary());
+        log.info("");
     }
 
     private static void section(String t) {
-        System.out.println();
-        System.out.println("=".repeat(82));
-        System.out.println("  " + t);
-        System.out.println("=".repeat(82));
-        System.out.println();
+        log.info("");
+        log.info("=".repeat(82));
+        log.info("  " + t);
+        log.info("=".repeat(82));
+        log.info("");
     }
 
     private static String truncate(String s, int n) {

@@ -21,8 +21,11 @@ import java.util.Map;
  */
 public final class DeviceModelExport {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceModelExport.class);
+
     public static void main(String[] args) {
-        System.out.println(json());
+        log.info(json());
     }
 
     /** 供自检用：导出内容里必须包含某个型号时直接比对字符串。 */

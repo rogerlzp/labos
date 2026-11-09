@@ -81,6 +81,13 @@ public class WorkflowService {
         this.workflowMapper = mapper;
     }
 
+    /** C 批：run 状态收尾 SQL（RunMapper.xml）。由 BeanConfiguration 注入。 */
+    private com.labos.kernel.persistence.RunMapper runMapper;
+
+    public void setRunMapper(com.labos.kernel.persistence.RunMapper mapper) {
+        this.runMapper = mapper;
+    }
+
     private static final DateTimeFormatter RUN_FMT =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
@@ -570,24 +577,16 @@ public class WorkflowService {
 
     /** 后台执行异常时把 run 收尾，避免永远停在 running。 */
     private void markRunFailed(long runId, String reason) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run
-                     SET status = 'failed', actual_end = now(),
-                         input = COALESCE(input, '{}'::jsonb) || ?::jsonb
-                     WHERE tenant_id = ? AND id = ? AND status = 'running'
-                     """)) {
-            ps.setString(1, Jsons.obj("error", reason == null ? "unknown" : reason));
-            ps.setLong(2, tenantId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
+        if (runMapper == null) {
+            throw new IllegalStateException("RunMapper 未注入");
         }
+        runMapper.markFailed(tenantId, runId,
+                Jsons.obj("error", reason == null ? "unknown" : reason));
         // P-09：失败同样是"执行体收尾"，不再会派发新命令。
         try {
-            RunExecPhase.markSettled(db, tenantId, runId);
-        } catch (SQLException e) {
-            System.err.println("[WARN] run#" + runId + " exec_phase 未落 SETTLED："
-                    + e.getMessage());
+            runMapper.markSettledPhase(tenantId, runId);
+        } catch (RuntimeException e) {
+            log.error("[WARN] run#{} exec_phase 未落 SETTLED：{}", runId, e.getMessage());
         }
     }
 
@@ -753,7 +752,7 @@ public class WorkflowService {
         Map<String, List<Long>> pool = RealWorkflowRunner.loadCapabilityPool(db);
         Map<String, String> protocolCap = RealWorkflowRunner.loadProtocolCapability(db);
         if (trace) {
-            System.out.println("[计时] 加载定义 " + lap.get() + "ms（累计）");
+            log.info("[计时] 加载定义 " + lap.get() + "ms（累计）");
             lastLap = lap.get();
         }
 
@@ -772,7 +771,7 @@ public class WorkflowService {
         DriverRegistry registry = buildDriverRegistry();
         if (trace) {
             long now = lap.get();
-            System.out.println("[计时] 驱动注册表 " + (now - lastLap) + "ms（累计 "
+            log.info("[计时] 驱动注册表 " + (now - lastLap) + "ms（累计 "
                     + now + "ms）");
             lastLap = now;
         }
@@ -839,7 +838,7 @@ public class WorkflowService {
 
         if (trace) {
             long now = lap.get();
-            System.out.println("[计时] 候选池+参数 " + (now - lastLap) + "ms（累计 "
+            log.info("[计时] 候选池+参数 " + (now - lastLap) + "ms（累计 "
                     + now + "ms）");
             lastLap = now;
         }
@@ -925,7 +924,7 @@ public class WorkflowService {
                             // 其余图日志仍不刷屏；暂停落点必须进内核 stdout，
                             // 否则「停在哪个节点」只活在被丢弃的回调里，外面无从核对。
                             if (line != null && line.startsWith("[暂停]")) {
-                                System.out.println(line);
+                                log.info(line);
                             }
                         })
                         .withResourceCapability(resourceCap)
@@ -993,7 +992,7 @@ public class WorkflowService {
             try {
                 markRunFailed(runId, "执行期异常：" + executionFailure);
             } catch (SQLException e) {
-                System.err.println("[WARN] run#" + runId + " 异常收尾回写失败（保留原异常）："
+                log.error("[WARN] run#" + runId + " 异常收尾回写失败（保留原异常）："
                         + e.getMessage());
             }
             throw executionFailure;
@@ -1079,7 +1078,7 @@ public class WorkflowService {
         try {
             graph = WorkflowGraphParser.parse(xml);
         } catch (RuntimeException parseFailure) {
-            System.err.println("[WARN] BPMN 解析失败（尚未派发设备命令），退回顺序执行: "
+            log.error("[WARN] BPMN 解析失败（尚未派发设备命令），退回顺序执行: "
                     + parseFailure.getMessage());
             return new GraphExecution(sequentialFallback.get(), false);
         }
@@ -1143,7 +1142,7 @@ public class WorkflowService {
                     "DRV-LOCAL-MOCK", "tcp://127.0.0.1:" + driverPort, "tcp", "mock",
                     caps, devCaps, devCaps.keySet(), Map.of("simulated", "true"));
             reg.register(buildAdapter(desc));
-            System.out.println("[驱动] 单端点回退模式：tcp://127.0.0.1:" + driverPort);
+            log.info("[驱动] 单端点回退模式：tcp://127.0.0.1:" + driverPort);
         }
 
         cachedRegistry = reg;
@@ -1224,7 +1223,7 @@ public class WorkflowService {
             // 没有能力的驱动注册不了（DriverDescriptor 会拒绝），
             // 但这不该让整个注册过程中断——跳过它，继续注册后面的。
             if (allCaps.isEmpty()) {
-                System.err.println("[驱动] " + m[0] + " 跳过：名下设备都没有声明能力"
+                log.error("[驱动] " + m[0] + " 跳过：名下设备都没有声明能力"
                         + "（查 resource_capability）");
                 continue;
             }
@@ -1236,12 +1235,12 @@ public class WorkflowService {
                 Map<Long, String> bindings = modelByDriver.getOrDefault(e.getKey(), Map.of());
                 reg.register(buildAdapter(desc, host, port, buildErrorMapper(bindings)));
                 ok++;
-                System.out.println("[驱动] " + m[0] + " → " + endpoint
+                log.info("[驱动] " + m[0] + " → " + endpoint
                         + "（" + devs.size() + " 台设备"
                         + (bindings.isEmpty() ? "，未绑定型号" : "，已绑定型号 " + bindings)
                         + "）");
             } catch (RuntimeException ex) {
-                System.err.println("[驱动] " + m[0] + " 注册失败：" + ex.getMessage());
+                log.error("[驱动] " + m[0] + " 注册失败：" + ex.getMessage());
             }
         }
         return ok;
@@ -1541,7 +1540,7 @@ public class WorkflowService {
                 }
             }
         } catch (SQLException e) {
-            System.err.println("[WARN] 读取节点输出失败: " + e.getMessage());
+            log.error("[WARN] 读取节点输出失败: " + e.getMessage());
         }
         return out;
     }
@@ -1567,7 +1566,7 @@ public class WorkflowService {
                 }
             }
         } catch (SQLException | NumberFormatException e) {
-            System.err.println("[WARN] 读取 maxIterations 失败，用默认 10: " + e.getMessage());
+            log.error("[WARN] 读取 maxIterations 失败，用默认 10: " + e.getMessage());
         }
         return 10;
     }
@@ -1620,7 +1619,7 @@ public class WorkflowService {
                 }
             }
         } catch (SQLException e) {
-            System.err.println("[WARN] 读取 run 变量失败（条件表达式会按空值处理）: " + e.getMessage());
+            log.error("[WARN] 读取 run 变量失败（条件表达式会按空值处理）: " + e.getMessage());
         }
         return out;
     }
@@ -1790,7 +1789,7 @@ public class WorkflowService {
             ps.setString(5, nodeKey);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[WARN] 记录节点状态失败 " + nodeKey + " -> " + status
+            log.error("[WARN] 记录节点状态失败 " + nodeKey + " -> " + status
                     + ": " + e.getMessage());
         }
     }
@@ -1832,7 +1831,7 @@ public class WorkflowService {
             ps.setLong(2, runId);
             int n = ps.executeUpdate();
             if (n > 0) {
-                System.out.println("[执行] run " + runId + " 有 " + n + " 个节点分支未选中（bypassed）");
+                log.info("[执行] run " + runId + " 有 " + n + " 个节点分支未选中（bypassed）");
             }
         }
     }
@@ -1984,10 +1983,10 @@ public class WorkflowService {
             ps.setString(9, nodeKey);
             int n = ps.executeUpdate();
             if (n == 0) {
-                System.err.println("[WARN] 记循环圈次失败（找不到汇总行）: " + nodeKey + " #" + round);
+                log.error("[WARN] 记循环圈次失败（找不到汇总行）: " + nodeKey + " #" + round);
             }
         } catch (SQLException e) {
-            System.err.println("[WARN] 记循环圈次失败: " + e.getMessage());
+            log.error("[WARN] 记循环圈次失败: " + e.getMessage());
         }
     }
 
@@ -2010,7 +2009,7 @@ public class WorkflowService {
                 return rs.next() ? rs.getInt(1) : 0;
             }
         } catch (SQLException e) {
-            System.err.println("[WARN] 读取最大步骤序号失败，从 0 开始: " + e.getMessage());
+            log.error("[WARN] 读取最大步骤序号失败，从 0 开始: " + e.getMessage());
             return 0;
         }
     }
@@ -2180,7 +2179,7 @@ public class WorkflowService {
                         paramsByNode.getOrDefault(nodeId, Map.of()));
             } catch (SQLException e) {
                 // 落库失败不能让执行中断：数据丢了比流程停了好
-                System.err.println("[WARN] 步骤落库失败: " + e.getMessage());
+                log.error("[WARN] 步骤落库失败: " + e.getMessage());
             }
         }
 
@@ -2199,18 +2198,18 @@ public class WorkflowService {
                             && moved == com.labos.kernel.driver.PositionLock.NO_EMPTY_POSITION) {
                         // 该放板但设备下没有空层位：设备会显示有板、层位上没板，
                         // 后续取板就取不到。必须显式告警，不能静默。
-                        System.err.println("[PLATE-WARN] " + method + " dev=" + deviceId
+                        log.error("[PLATE-WARN] " + method + " dev=" + deviceId
                                 + " 没有空层位，板无处安放（板号 " + plateId + "）");
                     } else if (moved != null
                             && moved == com.labos.kernel.driver.PositionLock.NO_PLATE_TO_TAKE) {
-                        System.err.println("[PLATE-WARN] " + method + " dev=" + deviceId
+                        log.error("[PLATE-WARN] " + method + " dev=" + deviceId
                                 + " 没有有板的层位，取不到板");
                     } else {
-                        System.err.println("[PLATE] " + method + " dev=" + deviceId
+                        log.error("[PLATE] " + method + " dev=" + deviceId
                                 + " plate=" + plateId + " -> pos=" + moved);
                     }
                 } catch (Exception pe) {
-                    System.err.println("[PLATE-ERR] " + method + " dev=" + deviceId
+                    log.error("[PLATE-ERR] " + method + " dev=" + deviceId
                             + " : " + pe.getClass().getSimpleName() + " " + pe.getMessage());
                 }
             }
@@ -2697,41 +2696,26 @@ public class WorkflowService {
                 || p.count(NodeStatus.SKIPPED) > 0;
         boolean aborted = p.aborted();
 
-        String sql;
         String status;
         if (aborted) {
             status = "failed";
-            sql = "UPDATE run SET status = ?::run_status, actual_end = now()"
-                    + " WHERE tenant_id = ? AND id = ?";
+            runMapper.settleTerminal(tenantId, runId, status);
         } else if (manual) {
             // 转人工 = 暂停，不是失败
             status = "paused";
-            sql = "UPDATE run SET status = ?::run_status, pause_kind = 'waiting_human',"
-                    + " pause_reason = '执行到需要人工确认的节点，处理后点继续',"
-                    + " paused_at = now()"
-                    + " WHERE tenant_id = ? AND id = ?";
+            runMapper.settleManual(tenantId, runId);
         } else {
             status = "completed";
-            sql = "UPDATE run SET status = ?::run_status, actual_end = now()"
-                    + " WHERE tenant_id = ? AND id = ?";
-        }
-
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, status);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
+            runMapper.settleTerminal(tenantId, runId, status);
         }
         // P-09：执行体收尾（含转人工的 paused）—— 但真正的"暂停等我点继续"
         // 走的是上面 isRunPaused 的 early return，那种单不落 SETTLED。
         if (!"paused".equals(status)) {
             try {
-                RunExecPhase.markSettled(db, tenantId, runId);
-            } catch (SQLException e) {
+                runMapper.markSettledPhase(tenantId, runId);
+            } catch (RuntimeException e) {
                 // 阶段标记是旁路事实，写不上不能把已经跑完的单标成失败。
-                System.err.println("[WARN] run#" + runId + " exec_phase 未落 SETTLED："
-                        + e.getMessage());
+                log.warn("run#{} exec_phase 未落 SETTLED：{}", runId, e.getMessage());
             }
         }
         if (manual) {
@@ -2792,7 +2776,7 @@ public class WorkflowService {
                     30);
         } catch (Exception e) {
             // 开窗是旁路：失败只留日志，人仍可到暂停队列页处置，不影响 run 的暂停态
-            System.err.println("[manual-window] 开窗失败 run=" + runId + ": " + e);
+            log.error("[manual-window] 开窗失败 run=" + runId + ": " + e);
         }
     }
 

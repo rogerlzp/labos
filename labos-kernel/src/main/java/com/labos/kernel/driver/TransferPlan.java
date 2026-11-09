@@ -40,6 +40,9 @@ import java.util.List;
  */
 public final class TransferPlan implements AutoCloseable {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(TransferPlan.class);
+
     private final DbConfig db;
     private final long tenantId;
     private final long runId;
@@ -307,14 +310,14 @@ public final class TransferPlan implements AutoCloseable {
                         try {
                             new PositionLock(db, tenantId).release(r.id(), runId);
                         } catch (SQLException e) {
-                            System.err.println("[搬运] 释放位置失败：" + e.getMessage());
+                            log.error("[搬运] 释放位置失败：" + e.getMessage());
                         }
                     }
                     case ACCESS -> { /* 门由调用方在 finally 里关，见 closeAccesses */ }
                     default -> { }
                 }
             } catch (RuntimeException e) {
-                System.err.println("[搬运] 释放 " + r.type() + " 失败：" + e.getMessage());
+                log.error("[搬运] 释放 " + r.type() + " 失败：" + e.getMessage());
             }
         }
         acquired.clear();
@@ -335,7 +338,7 @@ public final class TransferPlan implements AutoCloseable {
             AccessOpener opener = factory.forDevice(rid);
             String warn = accessManager.close(a, opener == null ? null : opener::open);
             if (warn != null) {
-                System.err.println("[搬运] " + warn);
+                log.error("[搬运] " + warn);
             }
         }
     }
@@ -348,7 +351,7 @@ public final class TransferPlan implements AutoCloseable {
             try {
                 closeAccesses(rollbackSourceRes, rollbackTargetRes, rollbackFactory);
             } catch (RuntimeException e) {
-                System.err.println("[搬运] 回滚关门失败（门可能仍开着）：" + e.getMessage());
+                log.error("[搬运] 回滚关门失败（门可能仍开着）：" + e.getMessage());
             }
         }
     }

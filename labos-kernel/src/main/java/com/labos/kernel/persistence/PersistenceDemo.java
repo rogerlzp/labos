@@ -29,34 +29,41 @@ import java.util.Map;
  */
 public final class PersistenceDemo {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(PersistenceDemo.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final long TENANT = 1L;
 
     public static void main(String[] args) throws Exception {
         DbConfig db = DbConfig.fromEnv();
-        System.out.println("目标库: " + db.url());
-        System.out.println();
+        log.info("目标库: " + db.url());
+        log.info("");
 
         // ---------- 1. 从数据库加载策略 ----------
         JdbcRecoveryPolicyRepository repo = new JdbcRecoveryPolicyRepository(db, TENANT);
         List<RecoveryPolicy> policies = repo.loadAll();
 
-        System.out.println("从 recovery_policy 加载 " + policies.size() + " 条策略：");
-        System.out.printf("  %-14s %-10s %-10s %-6s %-6s %s%n",
+        log.info("从 recovery_policy 加载 " + policies.size() + " 条策略：");
+        printf("  %-14s %-10s %-10s %-6s %-6s %s%n",
                 "错误码", "层级", "策略", "次数", "优先级", "退避");
-        System.out.println("  " + "-".repeat(72));
+        log.info("  " + "-".repeat(72));
         for (RecoveryPolicy p : policies) {
-            System.out.printf("  %-14s %-10s %-10s %-6d %-6d %s%n",
+            printf("  %-14s %-10s %-10s %-6d %-6d %s%n",
                     p.errorCode() == null ? "*" : p.errorCode(),
                     p.scope() == null ? "*" : p.scope(),
                     p.strategy(), p.maxAttempts(), p.priority(),
                     p.backoff() + "/" + p.baseDelay().toMillis() + "ms");
         }
-        System.out.println();
+        log.info("");
 
         // ---------- 2. 建一条 run ----------
         long runId = createRun(db, "DEMO");
-        System.out.println("已创建 run id=" + runId + "（run_no 前缀 DEMO-）");
-        System.out.println();
+        log.info("已创建 run id=" + runId + "（run_no 前缀 DEMO-）");
+        log.info("");
 
         // ---------- 3. 执行，事件实时落库 ----------
         RecoveryDecider decider = new RecoveryDecider(new RecoveryPolicyResolver(policies));
@@ -86,9 +93,9 @@ public final class PersistenceDemo {
             eventsFailed = store.failedCount();
         }
 
-        System.out.println("执行结果: " + progress.summary());
-        System.out.println("事件落库: 成功 " + eventsWritten + " 条，失败 " + eventsFailed + " 条");
-        System.out.println();
+        log.info("执行结果: " + progress.summary());
+        log.info("事件落库: 成功 " + eventsWritten + " 条，失败 " + eventsFailed + " 条");
+        log.info("");
 
         // ---------- 4. SKIPPED / MANUAL / ABORTED 三种结局都留痕 ----------
         JdbcErrorOccurrenceStore errStore = new JdbcErrorOccurrenceStore(db, TENANT, repo);
@@ -118,10 +125,10 @@ public final class PersistenceDemo {
                 default -> { }
             }
         }
-        System.out.printf("错误留痕: 跳过 %d 条(info) / 转人工 %d 条(warn) / 终止 %d 条(error)%n",
+        printf("错误留痕: 跳过 %d 条(info) / 转人工 %d 条(warn) / 终止 %d 条(error)%n",
                 skipped, manual, aborted);
-        System.out.println("  ↑ 跳过的也留痕，但不告警——这是对「91% 直接 Ignore、什么都不留」的修正");
-        System.out.println();
+        log.info("  ↑ 跳过的也留痕，但不告警——这是对「91% 直接 Ignore、什么都不留」的修正");
+        log.info("");
 
         // ---------- 5. 查询验证 ----------
         verify(db, runId);
@@ -150,13 +157,13 @@ public final class PersistenceDemo {
     }
 
     private static void verify(DbConfig db, long runId) throws SQLException {
-        System.out.println("=".repeat(80));
-        System.out.println("  数据库验证（run_id = " + runId + "）");
-        System.out.println("=".repeat(80));
+        log.info("=".repeat(80));
+        log.info("  数据库验证（run_id = " + runId + "）");
+        log.info("=".repeat(80));
 
         try (Connection c = db.open()) {
             // 事件分布
-            System.out.println("\n[run_event] 事件类型分布：");
+            log.info("\n[run_event] 事件类型分布：");
             try (PreparedStatement ps = c.prepareStatement("""
                     SELECT event_type, count(*) AS n
                     FROM run_event WHERE aggregate_id = ? AND aggregate_type='run'
@@ -168,15 +175,15 @@ public final class PersistenceDemo {
                     while (rs.next()) {
                         int n = rs.getInt("n");
                         total += n;
-                        System.out.printf("  %-20s %d%n", rs.getString("event_type"), n);
+                        printf("  %-20s %d%n", rs.getString("event_type"), n);
                     }
-                    System.out.println("  " + "-".repeat(28));
-                    System.out.printf("  %-20s %d%n", "合计", total);
+                    log.info("  " + "-".repeat(28));
+                    printf("  %-20s %d%n", "合计", total);
                 }
             }
 
             // 事件明细（前 8 条）
-            System.out.println("\n[run_event] 事件明细（前 8 条）：");
+            log.info("\n[run_event] 事件明细（前 8 条）：");
             try (PreparedStatement ps = c.prepareStatement("""
                     SELECT occurred_at, event_type, payload
                     FROM run_event WHERE aggregate_id = ? AND aggregate_type='run'
@@ -185,7 +192,7 @@ public final class PersistenceDemo {
                 ps.setLong(1, runId);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
-                        System.out.printf("  %-20s %-22s %s%n",
+                        printf("  %-20s %-22s %s%n",
                                 rs.getObject(1).toString().substring(11, 19),
                                 rs.getString("event_type"),
                                 truncate(rs.getString("payload"), 90));
@@ -194,7 +201,7 @@ public final class PersistenceDemo {
             }
 
             // 错误记录
-            System.out.println("\n[error_occurrence] 转人工记录：");
+            log.info("\n[error_occurrence] 转人工记录：");
             try (PreparedStatement ps = c.prepareStatement("""
                     SELECT eo.run_node_id, eo.fingerprint, eo.attempt, eo.outcome,
                            eo.severity, eo.message
@@ -205,14 +212,14 @@ public final class PersistenceDemo {
                     boolean any = false;
                     while (rs.next()) {
                         any = true;
-                        System.out.printf("  node=%d %-22s attempt=%d outcome=%s severity=%s%n",
+                        printf("  node=%d %-22s attempt=%d outcome=%s severity=%s%n",
                                 rs.getLong("run_node_id"), rs.getString("fingerprint"),
                                 rs.getInt("attempt"), rs.getString("outcome"),
                                 rs.getString("severity"));
-                        System.out.println("      原因: " + truncate(rs.getString("message"), 100));
+                        log.info("      原因: " + truncate(rs.getString("message"), 100));
                     }
                     if (!any) {
-                        System.out.println("  （无）");
+                        log.info("  （无）");
                     }
                 }
             }

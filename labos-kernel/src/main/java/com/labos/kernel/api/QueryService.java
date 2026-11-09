@@ -1203,6 +1203,9 @@ public class QueryService {
      * <p>变量数量少（通常 <10），整体替换比逐条 diff 简单可靠，
      * 也不会出现"删了一半"的中间态——全程一个事务。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int saveExperimentVariables(long experimentId, List<String[]> vars) throws SQLException {
         String del = "DELETE FROM experiment_variable WHERE tenant_id = ? AND experiment_id = ?";
         String ins = """
@@ -1297,6 +1300,9 @@ public class QueryService {
      *
      * @return 实际更新的条数
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int reorderExperiments(List<Long> orderedIds) throws SQLException {
         if (orderedIds == null || orderedIds.isEmpty()) {
             throw new IllegalArgumentException("orderedIds 不能为空");
@@ -1364,6 +1370,9 @@ public class QueryService {
         }
     }
 
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int replaceExperimentProcesses(long experimentId, List<Long> workflowIds)
             throws SQLException {
         CompiledGraph compiled = linearGraph(workflowIds);
@@ -1421,6 +1430,9 @@ public class QueryService {
         }
     }
 
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     private int replaceExperimentProcesses(Connection c, long experimentId,
                                            CompiledGraph compiled, boolean bumpVersion)
             throws SQLException {
@@ -1564,6 +1576,9 @@ public class QueryService {
      *
      * <p>纯改密码不触发"最后管理员"保护（保持行为不变）；用户不存在返回 0（保持）。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int updateUser(long id, String role, Boolean enabled, String password)
             throws SQLException {
         String newRole = role == null || role.isBlank() ? null : role;
@@ -1766,6 +1781,9 @@ public class QueryService {
      * <p>改的是资源树的 parent_id 与 path。设备实例与驱动关联不动——
      * "放哪个岛"是空间归属，"连哪个驱动"是通信归属，两件事。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int moveDeviceToIsland(long resourceId, long islandId) throws SQLException {
         // islandId <= 0 表示移出（放回设备池）
         if (islandId <= 0) {
@@ -1874,6 +1892,9 @@ public class QueryService {
      * 场景：一个岛上要放两台同型号孵箱。编号自动加后缀 -2/-3，
      * IP 留空由用户补——不能自动复制 IP，两台设备 IP 通常不同。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public long cloneDevice(long sourceResourceId, long islandId) throws SQLException {
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
@@ -2098,6 +2119,9 @@ public class QueryService {
      *
      * <p>表头行自动跳过（第一行含 "code"）。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int importRobotPointsCsv(long islandId, long robotResourceId, String body)
             throws SQLException {
         if (body == null || body.isBlank()) {
@@ -2417,6 +2441,9 @@ public class QueryService {
      *
      * @param workflowIds 可选：按顺序挂上的流程（写进 experiment_process.seq 1..N）
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public String createExperiment(String name, String code, Long islandId,
                                    Integer priority, java.util.List<Long> workflowIds)
             throws SQLException {
@@ -2566,6 +2593,9 @@ public class QueryService {
      *
      * <p>一次事务：码改了但策略没改，运行时就还是改动前的行为，排查会更难。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public boolean updateErrorCode(long id, Map<String, String> fields) throws SQLException {
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
@@ -2645,6 +2675,9 @@ public class QueryService {
      *       （只改这一个属性，坐标/排版一个字不动）</li>
      * </ol>
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public boolean updateNodeBinding(long workflowId, String nodeKey,
                                      String method, String methodParamsJson)
             throws SQLException {
@@ -2988,6 +3021,9 @@ public class QueryService {
         }
     }
 
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public long upsertPolicy(long errorCodeId, String scope, String strategy,
                              Integer maxAttempts, String params, Integer priority,
                              Boolean enabled) throws SQLException {
@@ -3114,6 +3150,9 @@ public class QueryService {
      * <p>编号自动递增（{@code Incubator_2C-20}），IP 留空由现场填——
      * 同一型号的多台设备 IP 一定不同，不能猜。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public long deployModel(long modelId, long islandId) throws SQLException {
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
@@ -3477,6 +3516,9 @@ public class QueryService {
      *
      * @param driverId 驱动端点 id，可空（单驱动场景下运行时兜底）
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public long createDevice(long islandId, String code, String name, String deviceType,
                              String capabilityCode, String ip, Long driverId)
             throws SQLException {
@@ -3610,6 +3652,9 @@ public class QueryService {
      * <p>名称同时改资源树节点（界面上看到的是那个）；
      * 能力改的是型号，会影响同型号的所有实例——这是刻意的，能力属于型号不属于单台。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int updateDevice(long resourceId, String name, String ip, Long driverId,
                             String capabilityCode) throws SQLException {
         try (Connection c = db.open()) {
@@ -3688,6 +3733,9 @@ public class QueryService {
      *
      * <p>不硬删：历史 run_node 可能引用这台设备，硬删会断链。
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int deleteDevice(long resourceId) throws SQLException {
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
@@ -3875,6 +3923,9 @@ public class QueryService {
      *
      * @return 写入条数；-1 实验不存在；-2 起点/终点无效或不在显式 Workcell 绑定内
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int setExperimentHandoffs(long experimentId,
                                      java.util.List<long[]> pairs) throws SQLException {
         try (Connection c = db.open()) {
@@ -3952,6 +4003,9 @@ public class QueryService {
      *
      * @return 更新条数（0 = 不存在/已确认）
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int confirmHandoff(long experimentId, long fromWorkcellId, long toWorkcellId,
                               String operator, String note) throws SQLException {
         try (Connection c = db.open()) {
@@ -4358,6 +4412,9 @@ public class QueryService {
      *
      * @return 写入条数（空列表 = 清空绑定，回到资源树推导）
      */
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int setExperimentWorkcells(long experimentId, List<Long> workcellIds)
             throws SQLException {
         try (Connection c = db.open()) {

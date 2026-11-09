@@ -22,6 +22,13 @@ import java.util.Set;
  */
 public final class EngineDemo {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(EngineDemo.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final Instant T0 = Instant.parse("2026-10-29T02:00:00Z");
 
     public static void main(String[] args) {
@@ -43,8 +50,8 @@ public final class EngineDemo {
         SimulatedBus bus = new SimulatedBus()
                 .dead(200383L, "TRANSFER", "EC-05-1006");     // 主机械臂彻底离线
 
-        System.out.println("  注入故障: 200383(主机械臂) 永久离线 [EC-05-1006]");
-        System.out.println("  策略    : EC-05-1006@COMMAND -> REASSIGN，最多 2 次\n");
+        log.info("  注入故障: 200383(主机械臂) 永久离线 [EC-05-1006]");
+        log.info("  策略    : EC-05-1006@COMMAND -> REASSIGN，最多 2 次\n");
 
         List<Long> slept = new ArrayList<>();
         List<ExecutionEvent> events = new ArrayList<>();
@@ -55,7 +62,7 @@ public final class EngineDemo {
 
         printEvents(events);
         printResult(progress, bus, slept);
-        System.out.println("  ★ 机械臂 200383 坏了，系统自动切到 200387，实验没有停下来等人。\n");
+        log.info("  ★ 机械臂 200383 坏了，系统自动切到 200387，实验没有停下来等人。\n");
     }
 
     /** 场景 B：唯一天平故障，无替代设备，转人工。 */
@@ -70,8 +77,8 @@ public final class EngineDemo {
         SimulatedBus bus = new SimulatedBus()
                 .dead(200401L, "CENTRIFUGE", "EC-08-0001", RecoveryScope.NODE);
 
-        System.out.println("  注入故障: 200401(唯一离心机) 永久失败 [EC-08-0001]");
-        System.out.println("  策略    : EC-08-0001@NODE -> REASSIGN，最多 2 次，但候选集只有它自己\n");
+        log.info("  注入故障: 200401(唯一离心机) 永久失败 [EC-08-0001]");
+        log.info("  策略    : EC-08-0001@NODE -> REASSIGN，最多 2 次，但候选集只有它自己\n");
 
         List<Long> slept = new ArrayList<>();
         List<ExecutionEvent> events = new ArrayList<>();
@@ -83,8 +90,8 @@ public final class EngineDemo {
         printEvents(events);
         printResult(progress, bus, slept);
 
-        System.out.println("  ★ 没有替代设备时，引擎一次把话说清楚（候选/已失败/原因），");
-        System.out.println("    直接进人工队列，而不是反复重试 5,928 次刷 11,856 条日志。\n");
+        log.info("  ★ 没有替代设备时，引擎一次把话说清楚（候选/已失败/原因），");
+        log.info("    直接进人工队列，而不是反复重试 5,928 次刷 11,856 条日志。\n");
     }
 
     // ---------------------------------------------------------------- 组装
@@ -110,40 +117,40 @@ public final class EngineDemo {
     // ---------------------------------------------------------------- 输出
 
     private static void printNodes(List<RecoverableNode> nodes) {
-        System.out.println("  流程节点（只声明能力，不绑定设备）：");
+        log.info("  流程节点（只声明能力，不绑定设备）：");
         for (RecoverableNode n : nodes) {
-            System.out.printf("    N%-2d %-12s 需要 %-12s 候选设备 %s%n",
+            printf("    N%-2d %-12s 需要 %-12s 候选设备 %s%n",
                     n.id(), n.name(), n.capabilityCode(), n.candidateResourceIds());
         }
-        System.out.println();
+        log.info("");
     }
 
     private static void printEvents(List<ExecutionEvent> events) {
-        System.out.println("  事件流：");
+        log.info("  事件流：");
         for (ExecutionEvent e : events) {
-            System.out.println("    " + e);
+            log.info("    " + e);
         }
-        System.out.println();
+        log.info("");
     }
 
     private static void printResult(RunProgress p, SimulatedBus bus, List<Long> slept) {
-        System.out.println("  结果: " + p.summary());
-        System.out.println("  设备调用次数:");
+        log.info("  结果: " + p.summary());
+        log.info("  设备调用次数:");
         Set<String> keys = new LinkedHashSet<>(bus.callLog());
         for (String k : keys) {
-            System.out.printf("    %-24s %d 次%n", k, java.util.Collections.frequency(bus.callLog(), k));
+            printf("    %-24s %d 次%n", k, java.util.Collections.frequency(bus.callLog(), k));
         }
         if (!slept.isEmpty()) {
-            System.out.println("  退避等待(ms): " + slept);
+            log.info("  退避等待(ms): " + slept);
         }
-        System.out.println();
+        log.info("");
     }
 
     private static void title(String s) {
-        System.out.println("=".repeat(104));
-        System.out.println("  " + s);
-        System.out.println("=".repeat(104));
-        System.out.println();
+        log.info("=".repeat(104));
+        log.info("  " + s);
+        log.info("=".repeat(104));
+        log.info("");
     }
 
     private EngineDemo() {

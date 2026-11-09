@@ -36,6 +36,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class AuthService {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(AuthService.class);
+
     /** 登录会话。 */
     public record Session(String token, long userId, String username,
                           String displayName, String role, Instant expiresAt) {
@@ -95,10 +98,10 @@ public final class AuthService {
                             "生产环境必须设置 LABOS_ADMIN_PASS（不接受默认口令）");
                 }
                 pass = "admin123";
-                System.out.println("  [鉴权] 开发模式使用默认口令；"
+                log.info("  [鉴权] 开发模式使用默认口令；"
                         + "生产请设 LABOS_ENV=prod 且必须提供 LABOS_ADMIN_PASS");
             } else if (pass.length() < 8) {
-                System.out.println("  [鉴权] 警告：LABOS_ADMIN_PASS 长度不足 8，建议加强");
+                log.info("  [鉴权] 警告：LABOS_ADMIN_PASS 长度不足 8，建议加强");
             }
             String salt = newSalt();
 
@@ -115,7 +118,7 @@ public final class AuthService {
                 ps.executeUpdate();
             }
             // **不打印明文**：只提示账号，口令由部署方自己知道
-            System.out.println("  [鉴权] 已创建初始管理员账号: " + user
+            log.info("  [鉴权] 已创建初始管理员账号: " + user
                     + "（口令不回显；请立即登录并修改）");
         }
     }
@@ -223,7 +226,7 @@ public final class AuthService {
             ps.setString(10, result);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[WARN] 审计写入失败: " + e.getMessage());
+            log.error("[WARN] 审计写入失败: " + e.getMessage());
         }
     }
 

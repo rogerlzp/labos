@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- C 批：run 状态收尾。调用方 com.labos.kernel.persistence.RunMapper -->
+<mapper namespace="com.labos.kernel.persistence.RunMapper">
+
+    <!-- 只把还在 running 的单标 failed：paused 的单不能被异常收尾覆盖。 -->
+    <update id="markFailed">
+        UPDATE run
+           SET status = 'failed',
+               actual_end = now(),
+               input = COALESCE(input, '{}'::jsonb) || CAST(#{param3} AS jsonb)
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+           AND status = 'running'
+    </update>
+
+    <!-- completed / failed 都写 actual_end；status 是 PG 枚举，必须显式 CAST。 -->
+    <update id="settleTerminal">
+        UPDATE run
+           SET status = CAST(#{param3} AS run_status),
+               actual_end = now()
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+    </update>
+
+    <!-- 转人工 = 暂停；不写 actual_end，恢复时还要接着跑。 -->
+    <update id="settleManual">
+        UPDATE run
+           SET status = 'paused',
+               pause_kind = 'waiting_human',
+               pause_reason = '执行到需要人工确认的节点，处理后点继续',
+               paused_at = now()
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+    </update>
+
+    <!-- P-09 执行阶段：SETTLED 表示执行体已收尾。 -->
+    <update id="markSettledPhase">
+        UPDATE run
+           SET exec_phase = 'SETTLED',
+               updated_at = now()
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+           AND exec_phase &lt;&gt; 'SETTLED'
+    </update>
+
+    <select id="selectStatus" resultType="java.lang.String">
+        SELECT status::text
+          FROM run
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+    </select>
+
+</mapper>

@@ -26,6 +26,13 @@ import java.util.List;
  */
 public final class RunStateMachine {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(RunStateMachine.class);
+    /** 兼容原有 System.err.printf 的格式化输出。 */
+    private static void errorf(String format, Object... args) {
+        log.error(String.format(format, args));
+    }
+
     private final RecoveryDecider decider;
     private final ExecutionListener listener;
     private final Sleeper sleeper;
@@ -213,7 +220,7 @@ public final class RunStateMachine {
         try {
             listener.onEvent(event);
         } catch (RuntimeException ex) {
-            System.err.printf("[WARN] 事件监听器异常（已忽略，不影响执行）: %s | %s%n",
+            errorf("[WARN] 事件监听器异常（已忽略，不影响执行）: %s | %s%n",
                     event, ex.toString());
         }
     }

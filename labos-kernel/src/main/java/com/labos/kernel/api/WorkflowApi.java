@@ -70,6 +70,9 @@ import static com.labos.kernel.api.ApiServer.*;
  */
 final class WorkflowApi {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(WorkflowApi.class);
+
     /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
@@ -235,7 +238,7 @@ final class WorkflowApi {
                         xml = s.workflows.graphWithSteps(gid, xml);
                     } catch (SQLException e) {
                         // 展开失败退回原图，不让设计器打不开
-                        System.err.println("[WARN] 展开视图失败: " + e.getMessage());
+                        log.error("[WARN] 展开视图失败: " + e.getMessage());
                     }
                 }
                 s.sendRaw(ex, 200, xml, "application/xml; charset=utf-8");
@@ -654,7 +657,7 @@ final class WorkflowApi {
             ps.setLong(1, bookingId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[岛锁] 释放失败：" + e.getMessage());
+            log.error("[岛锁] 释放失败：" + e.getMessage());
         }
     }
 
@@ -867,7 +870,7 @@ final class WorkflowApi {
             }
         } catch (java.sql.SQLException e) {
             // 数不出来就当 0，不能让列表整体 500
-            System.err.println("[WARN] 统计流程节点数失败: " + e.getMessage());
+            log.error("[WARN] 统计流程节点数失败: " + e.getMessage());
         }
         return m;
     }

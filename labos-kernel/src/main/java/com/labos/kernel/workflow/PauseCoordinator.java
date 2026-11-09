@@ -39,6 +39,9 @@ import java.util.Map;
  */
 public final class PauseCoordinator {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(PauseCoordinator.class);
+
     private final DbConfig db;
     private final long tenantId;
     /** 续跑 Workflow 级 run 的执行体（E-2）。 */
@@ -158,7 +161,7 @@ public final class PauseCoordinator {
             ps.setString(2, rid);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[暂停] 幂等键撤回失败：" + e.getMessage());
+            log.error("[暂停] 幂等键撤回失败：" + e.getMessage());
         }
     }
 
@@ -400,7 +403,7 @@ public final class PauseCoordinator {
                     try {
                         workflows.resumeAsync(cmd.targetId());
                     } catch (RuntimeException ex) {
-                        System.err.println("[暂停] 恢复后异步续跑启动失败（run 已 queued）："
+                        log.error("[暂停] 恢复后异步续跑启动失败（run 已 queued）："
                                 + ex.getMessage());
                     }
                 }
@@ -508,7 +511,7 @@ public final class PauseCoordinator {
                             d.getOrDefault("controlState", "PAUSE_REQUESTED"));
                 }
                 RunControl ctl = new RunControl(db, tenantId);
-                RunControl.RunInfo ri = ctl.info(cmd.targetId());
+                RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
                 RuntimeHold.Scope scope = RuntimeHold.Scope.of(scopeCode);
                 RuntimeHold.Kind kind = cmd.kind() == null
                         ? RuntimeHold.Kind.MANUAL : RuntimeHold.Kind.of(cmd.kind());
@@ -560,7 +563,7 @@ public final class PauseCoordinator {
                             d.getOrDefault("status", "aborted"));
                 }
                 RunControl ctl = new RunControl(db, tenantId);
-                RunControl.RunInfo ri = ctl.info(cmd.targetId());
+                RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
                 RunControl.StopTx st = ctl.stopTx(c, ri, null);
                 String status = !st.changed() ? ri.status()
                         : "running".equals(ri.status()) ? "stopping" : "aborted";
@@ -580,7 +583,7 @@ public final class PauseCoordinator {
                         new BatchOrchestrator(db, tenantId)
                                 .onRunStatusChanged(cmd.targetId());
                     } catch (Exception e) {
-                        System.err.println("[暂停] 停止后批次聚合失败（由启动 rehydrate 兜底）："
+                        log.error("[暂停] 停止后批次聚合失败（由启动 rehydrate 兜底）："
                                 + e.getMessage());
                     }
                 }
@@ -618,7 +621,7 @@ public final class PauseCoordinator {
                             d.getOrDefault("status", "queued"));
                 }
                 RunControl ctl = new RunControl(db, tenantId);
-                RunControl.RunInfo ri = ctl.info(cmd.targetId());
+                RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
                 RunControl.ResumeTx rt = ctl.resumeTx(c, ri, null, note);
                 RunControl.ResumeOutcome out = rt.outcome();
                 boolean requeued = out.stillHeldReason() == null;
@@ -644,7 +647,7 @@ public final class PauseCoordinator {
                         new BatchOrchestrator(db, tenantId)
                                 .onRunStatusChanged(cmd.targetId());
                     } catch (Exception e) {
-                        System.err.println("[暂停] 恢复后批次聚合失败（由启动 rehydrate 兜底）："
+                        log.error("[暂停] 恢复后批次聚合失败（由启动 rehydrate 兜底）："
                                 + e.getMessage());
                     }
                 }
@@ -652,7 +655,7 @@ public final class PauseCoordinator {
                     try {
                         scheduler.resumeRun(out.experimentId(), cmd.targetId());
                     } catch (Exception e) {
-                        System.err.println("[暂停] 恢复后重新入队失败（由启动 rehydrate 兜底）："
+                        log.error("[暂停] 恢复后重新入队失败（由启动 rehydrate 兜底）："
                                 + e.getMessage());
                     }
                 }

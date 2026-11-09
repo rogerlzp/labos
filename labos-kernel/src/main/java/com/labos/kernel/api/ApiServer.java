@@ -82,6 +82,13 @@ import java.util.regex.Pattern;
  */
 public final class ApiServer {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(ApiServer.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     static final long TENANT = 1L;
 
     final DbConfig db;
@@ -611,7 +618,7 @@ public final class ApiServer {
             try {
                 this.auth.ensureSeedUser();
             } catch (Exception e) {
-                System.out.println("  [鉴权] 初始化失败: " + e.getMessage());
+                log.info("  [鉴权] 初始化失败: " + e.getMessage());
             }
         }
 
@@ -620,17 +627,17 @@ public final class ApiServer {
             var orphans = com.labos.kernel.workflow.StartupRecovery
                     .settle(com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT);
             if (!orphans.isEmpty()) {
-                System.out.println();
-                System.out.println("  [启动收尾] 发现 " + orphans.size() + " 个被中断的 run：");
+                log.info("");
+                log.info("  [启动收尾] 发现 " + orphans.size() + " 个被中断的 run：");
                 for (var o : orphans) {
-                    System.out.printf("    #%-7d %-30s 完成 %d/%d  %s%n",
+                    printf("    #%-7d %-30s 完成 %d/%d  %s%n",
                             o.runId(), o.runNo(), o.completedNodes(), o.totalNodes(),
                             o.recoverable() ? "可续跑" : "");
                 }
-                System.out.println();
+                log.info("");
             }
         } catch (Exception e) {
-            System.out.println("  [启动收尾] 跳过: " + e.getMessage());
+            log.info("  [启动收尾] 跳过: " + e.getMessage());
         }
 
         // BUG-14：experiment_run 层的孤儿 running 兜底 settle（与上面 run 表那层并列）。
@@ -642,15 +649,15 @@ public final class ApiServer {
         try {
             var settled = StartupRecovery.settleOrphanExperimentRuns(
                     com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT);
-            System.out.println("  [启动收尾] 孤儿 running settle：" + settled.size() + " 条"
+            log.info("  [启动收尾] 孤儿 running settle：" + settled.size() + " 条"
                     + (settled.isEmpty() ? "（无遗留）" : ""));
             for (var s : settled) {
-                System.out.printf("    run#%-7d 实验 %-10s %s → failed%n",
+                printf("    run#%-7d 实验 %-10s %s → failed%n",
                         s.runId(), s.experimentNo(),
                         s.batchRun() ? "第 " + s.batchNo() + " 批" : "整单");
             }
         } catch (Exception e) {
-            System.out.println("  [启动收尾] 孤儿 running settle 跳过: " + e.getMessage());
+            log.info("  [启动收尾] 孤儿 running settle 跳过: " + e.getMessage());
         }
 
         // P-07 第一切片：命令账本启动对账。
@@ -661,24 +668,24 @@ public final class ApiServer {
             int unknown = com.labos.kernel.driver.CommandLedger.reconcileOnStartup(
                     com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT,
                     com.labos.kernel.driver.CommandLedger.STALE_MINUTES);
-            System.out.println("  [启动收尾] 命令账本对账：标记 UNKNOWN " + unknown + " 条"
+            log.info("  [启动收尾] 命令账本对账：标记 UNKNOWN " + unknown + " 条"
                     + (unknown == 0 ? "（无遗留）" : ""));
         } catch (Exception e) {
-            System.out.println("  [启动收尾] 命令账本对账跳过: " + e.getMessage());
+            log.info("  [启动收尾] 命令账本对账跳过: " + e.getMessage());
         }
 
         // P-08：物理结果未知的 run 隔离（必须在命令账本对账之后）。
         try {
             var quarantined = StartupRecovery.quarantineUncertainRuns(
                     com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT);
-            System.out.println("  [启动收尾] 物理未知隔离：" + quarantined.size() + " 条"
+            log.info("  [启动收尾] 物理未知隔离：" + quarantined.size() + " 条"
                     + (quarantined.isEmpty() ? "（无遗留）" : ""));
             for (var q : quarantined) {
-                System.out.printf("    run#%-7d %s → quarantined（实验 %s）%n",
+                printf("    run#%-7d %s → quarantined（实验 %s）%n",
                         q.runId(), q.runNo(), q.experimentId());
             }
         } catch (Exception e) {
-            System.out.println("  [启动收尾] 物理未知隔离跳过: " + e.getMessage());
+            log.info("  [启动收尾] 物理未知隔离跳过: " + e.getMessage());
         }
 
         // S3.2-A：重启 rehydrate 待派发队列。
@@ -688,9 +695,9 @@ public final class ApiServer {
         // 失败只打日志：rehydrate 是恢复优化，不能因为一次读库失败让 API 起不来。
         try {
             int rehydrated = this.scheduler.rehydrateQueued();
-            System.out.println("  [启动收尾] 待派发 rehydrate：" + rehydrated + " 条");
+            log.info("  [启动收尾] 待派发 rehydrate：" + rehydrated + " 条");
         } catch (Exception e) {
-            System.out.println("  [启动收尾] 待派发 rehydrate 跳过: " + e.getMessage());
+            log.info("  [启动收尾] 待派发 rehydrate 跳过: " + e.getMessage());
         }
 
         // FIX-P0-04：workflow 级 continue/retry 在 commit 后若进程退出，会遗留 status='queued'。
@@ -699,87 +706,87 @@ public final class ApiServer {
             var resumed = com.labos.kernel.workflow.WorkflowResumeRecovery.rehydrateQueued(
                     com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT,
                     this.workflows::resumeAsync);
-            System.out.println("  [启动收尾] queued workflow rehydrate："
+            log.info("  [启动收尾] queued workflow rehydrate："
                     + resumed.started() + "/" + resumed.scanned()
                     + (resumed.failed() == 0 ? "" : "，失败 " + resumed.failed() + " 条"));
         } catch (Exception e) {
-            System.out.println("  [启动收尾] queued workflow rehydrate 跳过: " + e.getMessage());
+            log.info("  [启动收尾] queued workflow rehydrate 跳过: " + e.getMessage());
         }
 
-        System.out.println("=".repeat(72));
-        System.out.println("  实验室中控 v0.1 内核服务已启动");
-        System.out.println("=".repeat(72));
-        System.out.println("  控制台: http://localhost:" + port + "/");
-        System.out.println("  API   : http://localhost:" + port + "/api/...");
-        System.out.println();
-        System.out.println("  POST /api/auth/login      登录");
-        System.out.println("  GET  /health              健康检查");
-        System.out.println("  GET  /api/policies        恢复策略列表");
-        System.out.println("  GET  /api/workflows       真实工艺列表");
-        System.out.println("  GET  /api/workflows/{id}  工艺详情（节点+能力）");
-        System.out.println("  POST /api/workflows/{id}/run  执行工艺");
-        System.out.println("  GET  /api/workflows/{id}/graph  BPMN XML");
-        System.out.println("  GET  /api/workflows/{id}/compile 编译预览（节点→步骤）");
-        System.out.println("  GET  /api/workflows/{id}/preflight 保存前预检（能不能跑）");
-        System.out.println("  GET/PUT /api/workflows/{id}/options  流程选项（循环上限 maxIterations）");
-        System.out.println("  POST /api/runs/{id}/attendance   切换值守模式");
-        System.out.println("  GET  /api/process-status         正在跑的 run 卡在哪");
-        System.out.println("  PUT  /api/policies/{id}          改策略");
-        System.out.println("  POST /api/policies/validate      生效校验");
-        System.out.println("  GET  /api/choreographies         搬运流程列表");
-        System.out.println("  GET  /api/workflows/{id}/history          流程图历史版本");
-        System.out.println("  POST /api/workflows/{id}/history/{h}/restore  回滚到某版本");
-        System.out.println("  POST /api/choreography           搬运序列 -> 正式流程");
-        System.out.println("  POST /api/islands                新增岛屿");
-        System.out.println("  POST /api/devices                新增设备（含 IP / 能力 / 驱动端点）");
-        System.out.println("  PUT/DELETE /api/devices/{id}     改 / 删设备");
-        System.out.println("  GET  /api/drivers                驱动端点列表");
-        System.out.println("  GET  /api/methods/{m}/params     设备方法的参数定义");
-        System.out.println("  GET/POST /api/users              用户管理（仅 admin）");
-        System.out.println("  GET  /api/audit                  审计日志");
-        System.out.println("  GET/PUT /api/experiments/{id}/processes  实验编排（流程顺序）");
-        System.out.println("  POST /api/shadow/probe?resourceId=&method=  影子探针（单命令）");
-        System.out.println("  POST /api/workflows/{id}/shadow-run         整流程影子跑（逐节点验契约）");
-        System.out.println("  GET  /api/durations              时长模型（p50/p90）");
-        System.out.println("  GET  /api/runs/{id}/timeline     甘特时间轴");
-        System.out.println("  GET  /api/workflows/{id}/predict 总时长预测");
-        System.out.println("  PUT  /api/devices/{id}/island    设备挂到岛（islandId=0 移出）");
-        System.out.println("  DELETE /api/islands/{id}         删岛（有设备时拒绝）");
-        System.out.println("  GET/PUT /api/islands/{id}/flow   岛屿编排动线");
-        System.out.println("  GET  /api/islands/{id}/robot-points       机械臂点位");
-        System.out.println("  POST /api/islands/{id}/robot-points/sync?robotResourceId=  按设备生成点位");
-        System.out.println("  PUT  /api/islands/{id}/robot-points/{code}  示教：更新坐标");
-        System.out.println("  POST /api/islands/{id}/robot-points/{code}/capture?robotResourceId=&method=  读坐标");
-        System.out.println("  GET/POST /api/islands/{id}/robot-points.csv  点位导入导出");
-        System.out.println("  PUT  /api/devices/{id}/position  保存设备摆放坐标");
-        System.out.println("  POST /api/devices/{id}/clone?islandId=  复制设备实例");
-        System.out.println("  GET  /api/heartbeat              设备心跳状态");
-        System.out.println("  GET  /api/scheduler/status       调度状态（岛锁/队列明细）");
-        System.out.println("  GET  /api/experiments/eta        实验预计等待（排队估算）");
-        System.out.println("  GET  /api/meta/status-vocabulary  状态词表（前端/后端唯一权威）");
-        System.out.println("  GET  /api/runtime/holds          生效的现场扣留（站点/岛/实验）");
-        System.out.println("  POST /api/experiments/runs/{id}/pause?scope=&kind=&reason=  暂停实验（现场扣留）");
-        System.out.println("  POST /api/experiments/runs/{id}/stop     停止实验（动作边界协作式）");
-        System.out.println("  POST /api/experiments/runs/{id}/resume   恢复实验（解扣留 + 断点续跑）");
-        System.out.println("  GET  /api/positions?islandId=    位置占用（哪些位置有板）");
-        System.out.println("  GET  /api/positions/stats        位置占用统计");
-        System.out.println("  GET  /api/device-models          设备型号池（可重复部署）");
-        System.out.println("  POST /api/device-models/{id}/deploy  按型号部署一台到岛");
-        System.out.println("  GET  /api/devices/pool           全量设备池（含所属岛）");
-        System.out.println("  GET  /api/devices/unassigned     未分配的设备");
-        System.out.println("  GET  /api/topology               岛屿 -> 设备");
-        System.out.println("  GET  /api/experiments            实验列表（650 个）");
-        System.out.println("  GET  /api/devices/{id}/methods   设备支持的方法");
-        System.out.println("  POST /api/alerts/{fp}/ack|close|silence|reopen  告警处置");
-        System.out.println();
-        System.out.println("  设计器: http://localhost:" + port + "/designer.html?id=239");
-        System.out.println("  GET  /api/runs?limit=20   最近执行");
-        System.out.println("  GET  /api/runs/{id}       执行详情（节点 + 事件流）");
-        System.out.println("  GET  /api/alerts          告警聚合");
-        System.out.println("  GET  /api/errors          错误明细");
-        System.out.println("  POST /api/demo/run        触发演示执行");
-        System.out.println();
-        System.out.println("=".repeat(72));
+        log.info("=".repeat(72));
+        log.info("  实验室中控 v0.1 内核服务已启动");
+        log.info("=".repeat(72));
+        log.info("  控制台: http://localhost:" + port + "/");
+        log.info("  API   : http://localhost:" + port + "/api/...");
+        log.info("");
+        log.info("  POST /api/auth/login      登录");
+        log.info("  GET  /health              健康检查");
+        log.info("  GET  /api/policies        恢复策略列表");
+        log.info("  GET  /api/workflows       真实工艺列表");
+        log.info("  GET  /api/workflows/{id}  工艺详情（节点+能力）");
+        log.info("  POST /api/workflows/{id}/run  执行工艺");
+        log.info("  GET  /api/workflows/{id}/graph  BPMN XML");
+        log.info("  GET  /api/workflows/{id}/compile 编译预览（节点→步骤）");
+        log.info("  GET  /api/workflows/{id}/preflight 保存前预检（能不能跑）");
+        log.info("  GET/PUT /api/workflows/{id}/options  流程选项（循环上限 maxIterations）");
+        log.info("  POST /api/runs/{id}/attendance   切换值守模式");
+        log.info("  GET  /api/process-status         正在跑的 run 卡在哪");
+        log.info("  PUT  /api/policies/{id}          改策略");
+        log.info("  POST /api/policies/validate      生效校验");
+        log.info("  GET  /api/choreographies         搬运流程列表");
+        log.info("  GET  /api/workflows/{id}/history          流程图历史版本");
+        log.info("  POST /api/workflows/{id}/history/{h}/restore  回滚到某版本");
+        log.info("  POST /api/choreography           搬运序列 -> 正式流程");
+        log.info("  POST /api/islands                新增岛屿");
+        log.info("  POST /api/devices                新增设备（含 IP / 能力 / 驱动端点）");
+        log.info("  PUT/DELETE /api/devices/{id}     改 / 删设备");
+        log.info("  GET  /api/drivers                驱动端点列表");
+        log.info("  GET  /api/methods/{m}/params     设备方法的参数定义");
+        log.info("  GET/POST /api/users              用户管理（仅 admin）");
+        log.info("  GET  /api/audit                  审计日志");
+        log.info("  GET/PUT /api/experiments/{id}/processes  实验编排（流程顺序）");
+        log.info("  POST /api/shadow/probe?resourceId=&method=  影子探针（单命令）");
+        log.info("  POST /api/workflows/{id}/shadow-run         整流程影子跑（逐节点验契约）");
+        log.info("  GET  /api/durations              时长模型（p50/p90）");
+        log.info("  GET  /api/runs/{id}/timeline     甘特时间轴");
+        log.info("  GET  /api/workflows/{id}/predict 总时长预测");
+        log.info("  PUT  /api/devices/{id}/island    设备挂到岛（islandId=0 移出）");
+        log.info("  DELETE /api/islands/{id}         删岛（有设备时拒绝）");
+        log.info("  GET/PUT /api/islands/{id}/flow   岛屿编排动线");
+        log.info("  GET  /api/islands/{id}/robot-points       机械臂点位");
+        log.info("  POST /api/islands/{id}/robot-points/sync?robotResourceId=  按设备生成点位");
+        log.info("  PUT  /api/islands/{id}/robot-points/{code}  示教：更新坐标");
+        log.info("  POST /api/islands/{id}/robot-points/{code}/capture?robotResourceId=&method=  读坐标");
+        log.info("  GET/POST /api/islands/{id}/robot-points.csv  点位导入导出");
+        log.info("  PUT  /api/devices/{id}/position  保存设备摆放坐标");
+        log.info("  POST /api/devices/{id}/clone?islandId=  复制设备实例");
+        log.info("  GET  /api/heartbeat              设备心跳状态");
+        log.info("  GET  /api/scheduler/status       调度状态（岛锁/队列明细）");
+        log.info("  GET  /api/experiments/eta        实验预计等待（排队估算）");
+        log.info("  GET  /api/meta/status-vocabulary  状态词表（前端/后端唯一权威）");
+        log.info("  GET  /api/runtime/holds          生效的现场扣留（站点/岛/实验）");
+        log.info("  POST /api/experiments/runs/{id}/pause?scope=&kind=&reason=  暂停实验（现场扣留）");
+        log.info("  POST /api/experiments/runs/{id}/stop     停止实验（动作边界协作式）");
+        log.info("  POST /api/experiments/runs/{id}/resume   恢复实验（解扣留 + 断点续跑）");
+        log.info("  GET  /api/positions?islandId=    位置占用（哪些位置有板）");
+        log.info("  GET  /api/positions/stats        位置占用统计");
+        log.info("  GET  /api/device-models          设备型号池（可重复部署）");
+        log.info("  POST /api/device-models/{id}/deploy  按型号部署一台到岛");
+        log.info("  GET  /api/devices/pool           全量设备池（含所属岛）");
+        log.info("  GET  /api/devices/unassigned     未分配的设备");
+        log.info("  GET  /api/topology               岛屿 -> 设备");
+        log.info("  GET  /api/experiments            实验列表（650 个）");
+        log.info("  GET  /api/devices/{id}/methods   设备支持的方法");
+        log.info("  POST /api/alerts/{fp}/ack|close|silence|reopen  告警处置");
+        log.info("");
+        log.info("  设计器: http://localhost:" + port + "/designer.html?id=239");
+        log.info("  GET  /api/runs?limit=20   最近执行");
+        log.info("  GET  /api/runs/{id}       执行详情（节点 + 事件流）");
+        log.info("  GET  /api/alerts          告警聚合");
+        log.info("  GET  /api/errors          错误明细");
+        log.info("  POST /api/demo/run        触发演示执行");
+        log.info("");
+        log.info("=".repeat(72));
 
     }
 }

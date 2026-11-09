@@ -47,6 +47,13 @@ import java.util.regex.Pattern;
  */
 public final class DeviceRegistrar {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceRegistrar.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final Pattern HEX_COLOR = Pattern.compile("^#[0-9A-Fa-f]{6}$");
 
     public static void main(String[] args) throws Exception {
@@ -63,17 +70,17 @@ public final class DeviceRegistrar {
         Spec spec = Spec.from(opt);
         String check = spec.validate();
         if (check != null) {
-            System.err.println("参数不对：" + check);
-            System.err.println("用 --help 看用法。");
+            log.error("参数不对：" + check);
+            log.error("用 --help 看用法。");
             System.exit(2);
         }
 
         String icon = ensureImage(spec);
 
         if (opt.containsKey("dry-run")) {
-            System.out.println("-- 干跑，不写库。实际会执行：");
-            System.out.println(sqlFor(spec, icon, capabilityIdOrNull(spec.capability)));
-            System.out.println("-- 图片位置：" + icon);
+            log.info("-- 干跑，不写库。实际会执行：");
+            log.info(sqlFor(spec, icon, capabilityIdOrNull(spec.capability)));
+            log.info("-- 图片位置：" + icon);
             return;
         }
 
@@ -82,13 +89,13 @@ public final class DeviceRegistrar {
             try {
                 Long capId = capabilityId(c, spec.capability);
                 if (spec.capability != null && capId == null) {
-                    System.err.println("能力 " + spec.capability + " 在 capability 表里不存在。");
-                    System.err.println("现有能力：");
+                    log.error("能力 " + spec.capability + " 在 capability 表里不存在。");
+                    log.error("现有能力：");
                     try (PreparedStatement ps = c.prepareStatement(
                             "SELECT code, name FROM capability ORDER BY id");
                          ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) {
-                            System.err.println("  " + rs.getString(1) + "  " + rs.getString(2));
+                            log.error("  " + rs.getString(1) + "  " + rs.getString(2));
                         }
                     }
                     System.exit(3);
@@ -100,15 +107,15 @@ public final class DeviceRegistrar {
                 // （2026-11-02 用户点出来：ASPIN_2K-1 方法为空）。
                 int methods = syncMethods(c, id, capId, spec.deviceModel);
                 c.commit();
-                System.out.printf("✅ 已加入设备池：id=%d code=%s 型号=%s 能力=%s%n",
+                printf("✅ 已加入设备池：id=%d code=%s 型号=%s 能力=%s%n",
                         id, spec.code, spec.model, spec.capability == null ? "-" : spec.capability);
                 if (spec.deviceModel != null) {
-                    System.out.printf("   型号绑定 attr.device_model=%s（设备错误码会按它翻译）%n",
+                    printf("   型号绑定 attr.device_model=%s（设备错误码会按它翻译）%n",
                             spec.deviceModel);
                 }
-                System.out.println("   图片：" + icon
+                log.info("   图片：" + icon
                         + (methods > 0 ? "，方法 " + methods + " 条" : ""));
-                System.out.println("   下一步：前端「岛 → 设备池 → 部署」选一个岛起实例，再填 IP。");
+                log.info("   下一步：前端「岛 → 设备池 → 部署」选一个岛起实例，再填 IP。");
             } catch (SQLException e) {
                 c.rollback();
                 throw e;
@@ -488,27 +495,27 @@ public final class DeviceRegistrar {
              PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setLong(1, tenantId());
             try (ResultSet rs = ps.executeQuery()) {
-                System.out.printf("%-16s %-28s %-14s %-10s %-12s %s%n",
+                printf("%-16s %-28s %-14s %-10s %-12s %s%n",
                         "code", "名称", "类型", "能力", "型号库", "已部署");
                 while (rs.next()) {
-                    System.out.printf("%-16s %-28s %-14s %-10s %-12s %d%n",
+                    printf("%-16s %-28s %-14s %-10s %-12s %d%n",
                             rs.getString("code"), cut(rs.getString("name"), 26),
                             nvl(rs.getString("device_type")), nvl(rs.getString("cap")),
                             nvl(rs.getString("model_id")), rs.getInt("deployed"));
                 }
             }
         }
-        System.out.println();
-        System.out.println("型号库（能对接真机的）：");
+        log.info("");
+        log.info("型号库（能对接真机的）：");
         for (DeviceModel m : DeviceModels.all()) {
-            System.out.printf("  %-14s %s %s（%s）%n", m.id, m.vendor, m.model, m.evidence);
+            printf("  %-14s %s %s（%s）%n", m.id, m.vendor, m.model, m.evidence);
         }
     }
 
     // ---------------------------------------------------------------- 工具
 
     private static void usage() {
-        System.out.println("""
+        log.info("""
                 把一台设备加入设备池（device 表），带图片。
                 
                 用法：

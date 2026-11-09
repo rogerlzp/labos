@@ -61,7 +61,12 @@
 
 实测：`labos-kernel/logs/labos-kernel.log` 生成，格式 `时间 级别 [线程] trace=… run=… cmd=… 类 - 消息`。
 
-**未完成**：其余约 500 处 `System.out/err`（多数是启动 banner 与既有调试输出）按模块逐步替换；JDK `HttpServer` 没有拦截器，MDC 入口目前靠调用方显式设置，HTTP 层迁 Spring MVC 后改 `HandlerInterceptor` 自动注入。
+**2026-11-09 续：539 处 `System.out/err` 已全部替换为 SLF4J**（48 个文件）。
+批量脚本把 `println/print` → `log.info/error`，`printf` → 同名辅助方法
+（`String.format` 包装），并给每个类注入 static Logger；`javac` 全量编译通过，
+`build-kernel.sh --verify` 13/0。剩余代码里只有注释文本还提到 "System.out.printf"。
+JDK `HttpServer` 没有拦截器，MDC 入口目前靠调用方显式设置，HTTP 层迁
+Spring MVC 后改 `HandlerInterceptor` 自动注入。
 
 ---
 
@@ -90,7 +95,36 @@
 - `POST {islandId:27}`（旧编号）→ 400「不是 resource_node 里的岛节点」
 - `POST` 不传岛 → 200，`island_id=NULL`
 
-**未完成**：剩余约 130 条 SQL 按聚合逐步收进 Mapper（`run` / `run_node` / `run_command` / `experiment` / `device` / `command_ledger` …）；46 处显式 `setAutoCommit/commit` 随之删掉，`DbConfig` 里的事务内连接代理也可一并删除；`labos-gateway` 手写 RESP2 换 Lettuce（独立进程，单独 PR）；HTTP 层由 JDK `HttpServer` 迁 Spring MVC。
+**2026-11-09 续：`RunMapper.xml` 落地**（`markFailed` / `settleTerminal` /
+`settleManual` / `markSettledPhase` / `selectStatus` 5 条），
+`WorkflowService.markRunFailed` 与 `settleRun` 的三段动态 SQL 字符串已删除、
+改走 Mapper；`BeanConfiguration` 注入 `RunMapper`。加上 `WorkflowMapper.xml`
+的 4 条，共 **9 条 SQL 进 XML**，两个 mapper 都通过 13/0 事务自测。
+
+**2026-11-09 续：显式事务收编（QueryService）** —— 19 处 `setAutoCommit(false)`
+所在的 21 个 public 方法（含重载）全部加
+`@Transactional(rollbackFor = Exception.class)`，Spring 路径由框架接管。
+`setAutoCommit/commit/rollback` **语句保留**，原因不是懒：
+`ExperimentWorkcellScopeDbSelfTest` 等 5 个 DB 自测直接
+`new QueryService(db, tenant)` 绕过容器，删掉就会让它们失去原子性。
+要物理删除，得先把这 5 个自测改成走 Spring 容器（独立 PR），随后
+`DbConfig` 里的事务内连接代理也能一并删掉。
+
+**2026-11-09 续：`labos-gateway` 换 Lettuce** —— 手写 200 行 RESP2 / 裸 Socket
+客户端替换为 `lettuce-core 6.3.2`，`RedisClient` 对外签名一个没改，
+`DriverConnection` 零改动；`javac` 全量编译通过。连接池、重连、超时、
+命令编解码交给 Lettuce/Netty。
+
+**仍未完成**：
+- 约 128 条 SQL 按聚合收进 Mapper（`run_node` / `run_command` / `experiment` /
+  `device` / `command_ledger` …）；
+- 46 处显式事务语句的物理删除（前置：5 个 DB 自测容器化）；
+- **HTTP 层由 JDK `HttpServer` 迁 Spring MVC**：要重写 9 个 `*Api` 类的
+  请求分发，或写约 200 行 `ServletHttpExchange` 适配层把请求转给
+  `ApiServer.route()`；无论哪条路都会动到 40+ 端点，必须配全量 e2e 验证，
+  不适合在「不跑测试」的前提下盲改。方案：先加 `spring-boot-starter-web`
+  + 通用 Controller 接管 18080、保留路由函数不变，跑通页面轨后再逐步把
+  `*Api` 拆成 `@RestController`。
 
 ---
 

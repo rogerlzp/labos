@@ -37,6 +37,9 @@ import java.time.format.DateTimeFormatter;
  */
 public final class SimulatorApp {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(SimulatorApp.class);
+
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final DeviceCore core;
@@ -594,7 +597,7 @@ public final class SimulatorApp {
         }
 
         if (GraphicsEnvironment.isHeadless()) {
-            System.err.println("当前环境没有图形界面（headless）。"
+            log.error("当前环境没有图形界面（headless）。"
                     + "用命令行版：com.labos.kernel.sim.DeviceSimulator");
             System.exit(2);
         }
@@ -611,7 +614,7 @@ public final class SimulatorApp {
 
         DeviceModel model = DeviceModels.of(modelId);
         if (modelId != null && model == null) {
-            System.err.println("未知型号 " + modelId + "，可用：" + DeviceModels.knownIds());
+            log.error("未知型号 " + modelId + "，可用：" + DeviceModels.knownIds());
             System.exit(2);
         }
         if (model != null) {

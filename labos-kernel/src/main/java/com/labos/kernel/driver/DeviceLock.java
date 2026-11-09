@@ -37,6 +37,9 @@ import java.time.Duration;
  */
 public final class DeviceLock {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceLock.class);
+
     private final DbConfig db;
     private final long tenantId;
 
@@ -124,7 +127,7 @@ public final class DeviceLock {
             ps.setLong(3, runId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[设备锁] 释放失败：" + e.getMessage());
+            log.error("[设备锁] 释放失败：" + e.getMessage());
         }
     }
 

@@ -34,6 +34,13 @@ import com.labos.kernel.device.DeviceModels;
  */
 public final class DeviceSimulator {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceSimulator.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     public static void main(String[] args) throws Exception {
         int port = 0;
         String device = "0";
@@ -63,10 +70,10 @@ public final class DeviceSimulator {
                 return;
             }
             if ("--list-profiles".equals(a)) {
-                System.out.println("可用设备类型（--profile）：");
+                log.info("可用设备类型（--profile）：");
                 DeviceProfile.knownNames().stream().sorted()
-                        .forEach(n -> System.out.println("  " + n));
-                System.out.println("  generic（不校验，调试用）");
+                        .forEach(n -> log.info("  " + n));
+                log.info("  generic（不校验，调试用）");
                 return;
             }
         }
@@ -92,7 +99,7 @@ public final class DeviceSimulator {
                     String spec = args[++i];
                     String[] parts = spec.split(":");
                     if (parts.length < 2) {
-                        System.err.println("--rand-delay 需要 MIN:MAX 格式（毫秒），例如 --rand-delay 30000:300000");
+                        log.error("--rand-delay 需要 MIN:MAX 格式（毫秒），例如 --rand-delay 30000:300000");
                         System.exit(2);
                     }
                     try {
@@ -102,7 +109,7 @@ public final class DeviceSimulator {
                             randSeed = Long.parseLong(parts[2].trim());
                         }
                     } catch (NumberFormatException e) {
-                        System.err.println("--rand-delay 参数不是数字：" + spec);
+                        log.error("--rand-delay 参数不是数字：" + spec);
                         System.exit(2);
                     }
                 }
@@ -110,13 +117,13 @@ public final class DeviceSimulator {
             }
         }
         if (port <= 0) {
-            System.err.println("必须指定 --port，例如 --port 19401");
+            log.error("必须指定 --port，例如 --port 19401");
             System.exit(2);
         }
 
         DeviceModel model = DeviceModels.of(modelId);
         if (modelId != null && model == null) {
-            System.err.println("未知型号 " + modelId + "，可用：" + DeviceModels.knownIds());
+            log.error("未知型号 " + modelId + "，可用：" + DeviceModels.knownIds());
             System.exit(2);
         }
         // 有型号时，类型从型号推出来（省得两处写不一致）
@@ -126,7 +133,7 @@ public final class DeviceSimulator {
             if (failEvery > 0 && !model.errorTable().isEmpty()
                     && !model.errorTable().containsKey(failCode)
                     && !failCode.startsWith("EC-")) {
-                System.err.println("提示：型号 " + model.id + " 的错误码表里没有 "
+                log.error("提示：型号 " + model.id + " 的错误码表里没有 "
                         + failCode + "，可用：" + model.errorTable().keySet());
             }
         }
@@ -135,7 +142,7 @@ public final class DeviceSimulator {
                 delay, longTask, failEvery, failCode, offline, profile,
                 model, failMethod, failFrom, randMin, randMax, randSeed);
         if (randMax > 0) {
-            System.out.println("[模拟器] 方法耗时随机区间 "
+            log.info("[模拟器] 方法耗时随机区间 "
                     + randMin + "–" + randMax + "ms"
                     + (randSeed == null ? "（每次不同）" : "（种子 " + randSeed + "，可复现）"));
         }
@@ -151,7 +158,7 @@ public final class DeviceSimulator {
 
         final String tag = code;
         Runtime.getRuntime().addShutdownHook(new Thread(() ->
-                System.out.println("[" + tag + "] 模拟器退出，共收到 "
+                log.info("[" + tag + "] 模拟器退出，共收到 "
                         + core.snapshot().get("received") + " 条命令")));
 
         // 常驻：不能用 Thread.currentThread().join()——那是对自己 join，
@@ -162,29 +169,29 @@ public final class DeviceSimulator {
 
     /** {@code --list-models}：已适配 / 待适配 / 错误码映射一次看全。 */
     private static void printModels() {
-        System.out.println("已适配的具体型号（--model）：依据 MANUAL 的才能对接真机");
-        System.out.println("─".repeat(96));
-        System.out.printf("  %-22s %-10s %-24s %-8s %s%n",
+        log.info("已适配的具体型号（--model）：依据 MANUAL 的才能对接真机");
+        log.info("─".repeat(96));
+        printf("  %-22s %-10s %-24s %-8s %s%n",
                 "型号 id", "类型", "厂商 型号", "依据", "指令/错误码");
         for (DeviceModel m : DeviceModels.all()) {
-            System.out.printf("  %-22s %-10s %-24s %-8s %d 条 / %d 个%n",
+            printf("  %-22s %-10s %-24s %-8s %d 条 / %d 个%n",
                     m.id, m.type, m.vendor + " " + m.model, m.evidence,
                     m.methods().size(), m.errorTable().size());
             if (m.note != null && !m.note.isBlank()) {
-                System.out.println("      注意：" + m.note);
+                log.info("      注意：" + m.note);
             }
         }
 
-        System.out.println();
-        System.out.println("待适配型号（手册还没到，不能对接真机）：");
-        System.out.println("─".repeat(96));
+        log.info("");
+        log.info("待适配型号（手册还没到，不能对接真机）：");
+        log.info("─".repeat(96));
         for (DeviceModels.Planned p : DeviceModels.planned()) {
-            System.out.printf("  %-24s %-10s %-28s 缺：%s%n",
+            printf("  %-24s %-10s %-28s 缺：%s%n",
                     p.id(), p.type(), p.vendorModel(), p.missing());
         }
 
-        System.out.println();
-        System.out.println("错误码映射（设备码 → 中控码 → 处置）："
+        log.info("");
+        log.info("错误码映射（设备码 → 中控码 → 处置）："
                 + "完整表格用 com.labos.kernel.device.DeviceErrorSql --list");
     }
 

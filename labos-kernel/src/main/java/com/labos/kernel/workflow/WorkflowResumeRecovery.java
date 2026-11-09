@@ -14,6 +14,9 @@ import java.util.List;
  */
 public final class WorkflowResumeRecovery {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(WorkflowResumeRecovery.class);
+
     @FunctionalInterface
     public interface ResumeStarter {
         void start(long runId) throws Exception;
@@ -33,7 +36,7 @@ public final class WorkflowResumeRecovery {
                 started++;
             } catch (Exception e) {
                 failed++;
-                System.err.println("[启动收尾] queued workflow rehydrate 失败：run#" + runId
+                log.error("[启动收尾] queued workflow rehydrate 失败：run#" + runId
                         + " -> " + e.getMessage());
             }
         }

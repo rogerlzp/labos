@@ -70,6 +70,9 @@ import static com.labos.kernel.api.ApiServer.*;
  */
 final class OpsApi {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(OpsApi.class);
+
     /** 宿主：提供库连接/服务与共享 helper（与 ApiServer 内部调用等价）。 */
     private final ApiServer s;
 
@@ -211,7 +214,7 @@ final class OpsApi {
                             s.db, TENANT, eff[0], eff[1]);
                 } catch (java.sql.SQLException e) {
                     // 存不进去也要让内存生效 —— 下次重启回退，不影响当前使用
-                    System.err.println("[WARN] 心跳参数落库失败（内存已生效）: " + e.getMessage());
+                    log.error("[WARN] 心跳参数落库失败（内存已生效）: " + e.getMessage());
                 }
                 s.audited("settings.heartbeat", "sys_setting", null,
                         "interval=" + eff[0] + ",offline=" + eff[1], null, ex);

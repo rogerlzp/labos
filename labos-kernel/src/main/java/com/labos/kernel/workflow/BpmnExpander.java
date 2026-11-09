@@ -36,6 +36,9 @@ import java.util.Set;
  */
 public final class BpmnExpander {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(BpmnExpander.class);
+
     private static final String NS_BPMN = "http://www.omg.org/spec/BPMN/20100524/MODEL";
     private static final String NS_DI = "http://www.omg.org/spec/BPMN/20100524/DI";
     private static final String NS_DC = "http://www.omg.org/spec/DD/20100524/DC";
@@ -114,7 +117,7 @@ public final class BpmnExpander {
 
         } catch (Exception e) {
             // 展开失败不能阻断设计器
-            System.err.println("[WARN] BPMN 展开失败，退回原图: " + e.getMessage());
+            log.error("[WARN] BPMN 展开失败，退回原图: " + e.getMessage());
             return xml;
         }
     }

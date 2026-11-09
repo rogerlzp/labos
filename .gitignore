@@ -69,3 +69,6 @@ labos-kernel/lib/spring/
 
 # B 批：Logback 滚动日志
 labos-kernel/logs/
+
+# gateway 的 Lettuce/Netty 运行时依赖，由 maven 拉取
+labos-gateway/lib/

@@ -59,6 +59,9 @@ import java.util.regex.Pattern;
  */
 public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(TcpPersistentDriver.class);
+
     private static final String SEP = "#!LABSEP!#";
     private static final Pattern ID_FIELD = Pattern.compile(
             "\"message_id\"\\s*:\\s*\"([^\"]+)\"");
@@ -303,7 +306,7 @@ public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
         if (status == 1) {
             CompletableFuture<DriverResult> running = pending.get(id);
             if (running != null && !running.isDone()) {
-                System.out.println("[驱动] 运行中 " + id
+                log.info("[驱动] 运行中 " + id
                         + "（继续等，直到设备报完成或命令超时）");
             }
             return;   // 不摘，等下一帧

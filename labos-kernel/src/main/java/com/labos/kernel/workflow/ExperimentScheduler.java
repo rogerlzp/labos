@@ -37,6 +37,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class ExperimentScheduler {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(ExperimentScheduler.class);
+
     /** 岛锁默认 TTL：超过这个时间的占用视为泄漏。 */
     private static final Duration LOCK_TTL = Duration.ofHours(2);
 
@@ -158,7 +161,7 @@ public final class ExperimentScheduler {
         Thread t = new Thread(this::loop, "experiment-scheduler");
         t.setDaemon(true);
         t.start();
-        System.out.println("[调度] 已启动（岛级互斥，最多 " + MAX_CONCURRENT + " 个实验并行）");
+        log.info("[调度] 已启动（岛级互斥，最多 " + MAX_CONCURRENT + " 个实验并行）");
     }
 
     /**
@@ -255,9 +258,11 @@ public final class ExperimentScheduler {
                     }
                 }
                 if (present) {
+                    clearResumingState(q.experimentRunId());
                     continue;
                 }
                 queue.add(q);
+                clearResumingState(q.experimentRunId());
                 added++;
             }
         }
@@ -278,11 +283,27 @@ public final class ExperimentScheduler {
         synchronized (queue) {
             for (Queued q : queue) {
                 if (q.experimentRunId() == runId) {
+                    clearResumingState(runId);
                     return;
                 }
             }
             queue.add(new Queued(runId, experimentId, islandId,
                     priority, deadline, System.currentTimeMillis()));
+        }
+        clearResumingState(runId);
+    }
+
+    private void clearResumingState(long runId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     UPDATE experiment_run
+                        SET control_state = 'NONE'
+                      WHERE tenant_id = ? AND id = ?
+                        AND status = 'queued' AND control_state = 'RESUMING'
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, runId);
+            ps.executeUpdate();
         }
     }
 
@@ -309,7 +330,7 @@ public final class ExperimentScheduler {
                     autoContinueHeldBatches();
                 }
             } catch (Exception e) {
-                System.err.println("[调度] 循环异常: " + e.getMessage());
+                log.error("[调度] 循环异常: " + e.getMessage());
             }
             try {
                 Thread.sleep(TICK_MS);
@@ -373,17 +394,17 @@ public final class ExperimentScheduler {
                     if (next.outcome() == BatchOrchestrator.NextBatchOutcome.CREATED) {
                         resumeRun(cand.experimentId(), next.runId());
                         created++;
-                        System.out.println("[调度] 扣留解除，自动续跑实验 " + cand.experimentId()
+                        log.info("[调度] 扣留解除，自动续跑实验 " + cand.experimentId()
                                 + " 第 " + next.batchNo() + " 批（run#" + next.runId() + "）");
                     }
                 } catch (Exception e) {
-                    System.err.println("[调度] 自动续队失败 实验 " + cand.experimentId()
+                    log.error("[调度] 自动续队失败 实验 " + cand.experimentId()
                             + " 第 " + cand.batchNo() + " 批: " + e.getMessage());
                 }
             }
         } catch (Exception e) {
             // 自动续队是兜底恢复路径，任何失败都不能影响正常派发
-            System.err.println("[调度] 自动续队扫描失败: " + e.getMessage());
+            log.error("[调度] 自动续队扫描失败: " + e.getMessage());
         }
         return created;
     }
@@ -483,11 +504,11 @@ public final class ExperimentScheduler {
                 try {
                     orchestrator.onRunStatusChanged(q.experimentRunId());
                 } catch (SQLException e) {
-                    System.err.println("[调度] 批次状态回写失败 run#" + q.experimentRunId()
+                    log.error("[调度] 批次状态回写失败 run#" + q.experimentRunId()
                             + ": " + e.getMessage());
                 }
             }
-            System.out.println("[调度] 实验 " + q.experimentId() + " 结束: " + r.status()
+            log.info("[调度] 实验 " + q.experimentId() + " 结束: " + r.status()
                     + " " + r.doneSteps() + "/" + r.totalSteps());
         } catch (Exception e) {
             // 执行器在 settle 之前就抛了（例如展开为空），兜底标失败。
@@ -506,7 +527,7 @@ public final class ExperimentScheduler {
                     // 回写失败不阻断调度收尾（批次状态读侧还会自愈，可人工重跑该批）
                 }
             }
-            System.err.println("[调度] 实验 " + q.experimentId() + " 失败: " + e.getMessage());
+            log.error("[调度] 实验 " + q.experimentId() + " 失败: " + e.getMessage());
         } finally {
             // 必须释放，否则岛永久卡住
             // P1-5 修复（评审 20261102-03）：改动前的 remove(islandId) 是**无条件删**——
@@ -550,14 +571,14 @@ public final class ExperimentScheduler {
             BatchOrchestrator.NextBatchAttempt next =
                     planNextBatch(experimentId, finishedBatchNo, finishedRunId);
             if (next == null) {
-                System.out.println("[调度] 实验 " + experimentId + " 第 " + finishedBatchNo
+                log.info("[调度] 实验 " + experimentId + " 第 " + finishedBatchNo
                         + " 批已停止/暂停，不再自动续下一批");
                 return;
             }
             switch (next.outcome()) {
                 case CREATED -> {
                     resumeRun(experimentId, next.runId());
-                    System.out.println("[调度] 实验 " + experimentId + " 续跑第 "
+                    log.info("[调度] 实验 " + experimentId + " 续跑第 "
                             + next.batchNo() + " 批（attempt " + next.attemptNo()
                             + "，run#" + next.runId() + "）");
                 }
@@ -565,13 +586,13 @@ public final class ExperimentScheduler {
                     if (next.queueable()) {
                         resumeRun(experimentId, next.runId());
                     }
-                    System.out.println("[调度] 实验 " + experimentId + " 已有批次 run#"
+                    log.info("[调度] 实验 " + experimentId + " 已有批次 run#"
                             + next.runId() + "（" + next.status() + "），批次续队跳过");
                 }
-                case HELD -> System.out.println("[调度] 实验 " + experimentId
+                case HELD -> log.info("[调度] 实验 " + experimentId
                         + " 批次续队停在批边界：" + next.holdReason() + "（第 " + next.batchNo()
                         + " 批标 paused，全部扣留解除后自动续队）");
-                case NO_MORE -> System.out.println("[调度] 实验 " + experimentId
+                case NO_MORE -> log.info("[调度] 实验 " + experimentId
                         + " 所有批次已跑完，聚合状态 " + next.status());
                 default -> {
                     // NOT_BATCHED 不会发生在批次 run 上；防御性忽略
@@ -579,7 +600,7 @@ public final class ExperimentScheduler {
             }
         } catch (Exception e) {
             // 续队失败不冒泡：执行线程的 finally 已经释放岛锁，这里只是"下一批没建出来"
-            System.err.println("[调度] 实验 " + experimentId + " 批次续队失败: " + e.getMessage());
+            log.error("[调度] 实验 " + experimentId + " 批次续队失败: " + e.getMessage());
         }
     }
 
@@ -705,7 +726,7 @@ public final class ExperimentScheduler {
             loadRunExperiments(c, lockRunIds, expIdByRun, expNoByRun);
             loadExperimentNos(c, queueExpIds, expNoById);
         } catch (SQLException e) {
-            System.err.println("[调度] 状态联查失败（只返回内存态）: " + e.getMessage());
+            log.error("[调度] 状态联查失败（只返回内存态）: " + e.getMessage());
         }
 
         List<LockEntry> lockEntries = new ArrayList<>();

@@ -28,6 +28,9 @@ import java.util.Map;
  */
 public final class DeviceErrorSql {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceErrorSql.class);
+
     /**
      * 适配层自己产生的错误码（不是设备回的，是我们判断出来的时序/部署问题）。
      *
@@ -100,9 +103,9 @@ public final class DeviceErrorSql {
             }
         }
         if (emitSql) {
-            System.out.print(sql());
+            log.info(sql());
         } else {
-            System.out.print(listing());
+            log.info(listing());
         }
     }
 

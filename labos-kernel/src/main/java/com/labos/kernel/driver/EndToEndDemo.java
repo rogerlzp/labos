@@ -34,6 +34,13 @@ import java.util.Set;
  */
 public final class EndToEndDemo {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(EndToEndDemo.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     private static final long TENANT = 1L;
 
     record TaskNode(long id, String key, String name, String capability, String method) {
@@ -47,15 +54,15 @@ public final class EndToEndDemo {
         Map<String, VirtualDriver> drivers = loadDrivers(db, registry);
 
         section("1. 驱动注册");
-        System.out.print(registry.healthReport());
+        log.info(registry.healthReport());
 
         // ---------- 2. 真实工艺节点
         List<TaskNode> nodes = loadTasks(db, 6);
         section("2. 一条流程的前 6 个 task");
-        System.out.printf("  %-4s %-28s %-12s %s%n", "#", "节点", "能力", "方法");
-        System.out.println("  " + "-".repeat(70));
+        printf("  %-4s %-28s %-12s %s%n", "#", "节点", "能力", "方法");
+        log.info("  " + "-".repeat(70));
         for (TaskNode n : nodes) {
-            System.out.printf("  %-4d %-28s %-12s %s%n",
+            printf("  %-4d %-28s %-12s %s%n",
                     n.id(), truncate(n.name(), 28), n.capability(), n.method());
         }
 
@@ -63,12 +70,12 @@ public final class EndToEndDemo {
         section("3. 执行（状态机 -> DriverStepExecutor -> 驱动）");
         RunProgress progress = run(db, registry, nodes);
 
-        System.out.printf("  %-4s %-24s %-12s %-6s %-8s %s%n",
+        printf("  %-4s %-24s %-12s %-6s %-8s %s%n",
                 "#", "节点", "能力", "尝试", "设备", "结果");
-        System.out.println("  " + "-".repeat(76));
+        log.info("  " + "-".repeat(76));
         for (NodeProgress np : progress.all()) {
             TaskNode n = nodes.stream().filter(t -> t.id() == np.nodeId()).findFirst().orElse(null);
-            System.out.printf("  %-4d %-24s %-12s %-6d %-8s %s%n",
+            printf("  %-4d %-24s %-12s %-6d %-8s %s%n",
                     np.nodeId(),
                     n == null ? "?" : truncate(n.name(), 24),
                     n == null ? "?" : n.capability(),
@@ -76,15 +83,15 @@ public final class EndToEndDemo {
                     np.currentResourceId() == null ? "—" : np.currentResourceId(),
                     np.status());
         }
-        System.out.println();
-        System.out.println("  结果: " + progress.summary());
+        log.info("");
+        log.info("  结果: " + progress.summary());
 
         // ---------- 4. 设备原文
         section("4. 设备原始回包");
         DriverStepExecutor exec = lastExecutor;
         for (TaskNode n : nodes) {
             exec.rawResponse(n.id()).ifPresent(raw ->
-                    System.out.printf("  node %-3d %s%n", n.id(), raw));
+                    printf("  node %-3d %s%n", n.id(), raw));
         }
 
         // ---------- 5. 故障 -> 自动换机
@@ -96,13 +103,13 @@ public final class EndToEndDemo {
                 break;
             }
         }
-        System.out.printf("  设备 %d 在方法 %s 上永久失败%n%n", deadDevice, nodes.get(0).method());
+        printf("  设备 %d 在方法 %s 上永久失败%n%n", deadDevice, nodes.get(0).method());
 
         RunProgress p2 = run(db, registry, nodes);
-        System.out.printf("  %-4s %-24s %-6s %-8s %s%n", "#", "节点", "尝试", "设备", "结果");
-        System.out.println("  " + "-".repeat(70));
+        printf("  %-4s %-24s %-6s %-8s %s%n", "#", "节点", "尝试", "设备", "结果");
+        log.info("  " + "-".repeat(70));
         for (NodeProgress np : p2.all()) {
-            System.out.printf("  %-4d %-24s %-6d %-8s %s%n",
+            printf("  %-4d %-24s %-6d %-8s %s%n",
                     np.nodeId(),
                     nodes.stream().filter(t -> t.id() == np.nodeId())
                             .map(t -> truncate(t.name(), 24)).findFirst().orElse("?"),
@@ -110,16 +117,16 @@ public final class EndToEndDemo {
                     np.currentResourceId() == null ? "—" : np.currentResourceId(),
                     np.status());
         }
-        System.out.println();
-        System.out.println("  结果: " + p2.summary());
+        log.info("");
+        log.info("  结果: " + p2.summary());
         NodeProgress first = p2.all().iterator().next();
         if (first.attempt() > 0) {
             if (first.status() == NodeStatus.COMPLETED) {
-                System.out.printf("%n  第 1 个节点换了 %d 次设备：%d -> %d，最终 COMPLETED%n",
+                printf("%n  第 1 个节点换了 %d 次设备：%d -> %d，最终 COMPLETED%n",
                         first.attempt(), deadDevice, first.currentResourceId());
-                System.out.println("  ★ 工艺没改一行，设备坏了自动换");
+                log.info("  ★ 工艺没改一行，设备坏了自动换");
             } else {
-                System.out.printf("%n  第 1 个节点尝试 %d 次，最终 %s：%s%n",
+                printf("%n  第 1 个节点尝试 %d 次，最终 %s：%s%n",
                         first.attempt(), first.status(), first.lastReason());
             }
         }
@@ -231,11 +238,11 @@ public final class EndToEndDemo {
     }
 
     private static void section(String title) {
-        System.out.println();
-        System.out.println("=".repeat(84));
-        System.out.println("  " + title);
-        System.out.println("=".repeat(84));
-        System.out.println();
+        log.info("");
+        log.info("=".repeat(84));
+        log.info("  " + title);
+        log.info("=".repeat(84));
+        log.info("");
     }
 
     private static String truncate(String s, int n) {

@@ -22,6 +22,9 @@ import java.sql.SQLException;
  */
 public final class RuntimeSettings {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(RuntimeSettings.class);
+
     /** 心跳探测间隔（毫秒）。 */
     private static volatile long heartbeatIntervalMs =
             envLong("LABOS_HEARTBEAT_INTERVAL_MS", 10_000L);
@@ -64,11 +67,11 @@ public final class RuntimeSettings {
             if (iv != null || off != null) {
                 updateHeartbeat(iv == null ? heartbeatIntervalMs : iv,
                         off == null ? offlineAlertMs : off);
-                System.out.println("[设置] 心跳参数来自库：间隔 " + (heartbeatIntervalMs / 1000)
+                log.info("[设置] 心跳参数来自库：间隔 " + (heartbeatIntervalMs / 1000)
                         + "s、离线阈值 " + (offlineAlertMs / 1000) + "s");
             }
         } catch (SQLException e) {
-            System.err.println("[WARN] 读取 sys_setting 失败，沿用环境变量: " + e.getMessage());
+            log.error("[WARN] 读取 sys_setting 失败，沿用环境变量: " + e.getMessage());
         }
     }
 

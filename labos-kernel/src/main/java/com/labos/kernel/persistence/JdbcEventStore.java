@@ -20,6 +20,13 @@ import java.util.UUID;
  */
 public final class JdbcEventStore implements ExecutionListener, AutoCloseable {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(JdbcEventStore.class);
+    /** 兼容原有 System.err.printf 的格式化输出。 */
+    private static void errorf(String format, Object... args) {
+        log.error(String.format(format, args));
+    }
+
     private static final String INSERT = """
             INSERT INTO run_event
               (event_id, tenant_id, occurred_at, aggregate_type, aggregate_id,
@@ -69,7 +76,7 @@ public final class JdbcEventStore implements ExecutionListener, AutoCloseable {
             }
         } catch (SQLException ex) {
             failed++;
-            System.err.printf("[WARN] 事件落库失败（已跳过）: %s | %s%n", e, ex.toString());
+            errorf("[WARN] 事件落库失败（已跳过）: %s | %s%n", e, ex.toString());
         }
     }
 
@@ -82,7 +89,7 @@ public final class JdbcEventStore implements ExecutionListener, AutoCloseable {
             written += pending;
         } catch (SQLException ex) {
             failed += pending;
-            System.err.printf("[WARN] 批量落库失败 %d 条: %s%n", pending, ex.toString());
+            errorf("[WARN] 批量落库失败 %d 条: %s%n", pending, ex.toString());
         } finally {
             pending = 0;
         }

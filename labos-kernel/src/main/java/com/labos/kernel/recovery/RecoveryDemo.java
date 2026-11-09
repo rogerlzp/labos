@@ -14,6 +14,13 @@ import java.util.Set;
  */
 public final class RecoveryDemo {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(RecoveryDemo.class);
+    /** 兼容原有 System.out.printf 的格式化输出。 */
+    private static void printf(String format, Object... args) {
+        log.info(String.format(format, args));
+    }
+
     public static void main(String[] args) {
         RecoveryPolicy commTimeout = new RecoveryPolicy(
                 "EC-05-1006", RecoveryScope.COMMAND, RecoveryStrategy.RETRY,
@@ -37,9 +44,9 @@ public final class RecoveryDemo {
     private static void scenario1(RecoveryDecider decider) {
         title("场景一：设备 id0044 离线（生产日志实测：全天 5,928 次 TrySyncRecords，11,856 条 ERROR）");
 
-        System.out.println("  模拟连续 10 次失败，引擎逐次决策：\n");
-        System.out.printf("  %-6s %-8s %-10s %s%n", "次数", "动作", "等待", "原因");
-        System.out.println("  " + "-".repeat(96));
+        log.info("  模拟连续 10 次失败，引擎逐次决策：\n");
+        printf("  %-6s %-8s %-10s %s%n", "次数", "动作", "等待", "原因");
+        log.info("  " + "-".repeat(96));
 
         boolean stopped = false;
         int retried = 0;
@@ -47,7 +54,7 @@ public final class RecoveryDemo {
 
         for (int i = 0; i < 10; i++) {
             if (stopped) {
-                System.out.printf("  %-6d %-8s %-10s %s%n", i + 1, "—", "—",
+                printf("  %-6d %-8s %-10s %s%n", i + 1, "—", "—",
                         "（引擎已判定 MANUAL，调用方不再重试）");
                 continue;
             }
@@ -58,7 +65,7 @@ public final class RecoveryDemo {
                     .build();
             RecoveryDecision d = decider.decide(ctx);
 
-            System.out.printf("  %-6d %-8s %-10s %s%n", i + 1, d.action(),
+            printf("  %-6d %-8s %-10s %s%n", i + 1, d.action(),
                     d.delayMillis() > 0 ? d.delayMillis() + "ms" : "—", d.reason());
 
             if (d.action() == RecoveryAction.RETRY) {
@@ -71,11 +78,11 @@ public final class RecoveryDemo {
             }
         }
 
-        System.out.println();
-        System.out.println("  机械重试：数千次重试 → 上万条 ERROR 日志 → 真人从日志海洋里捞问题");
-        System.out.printf("  新引擎：%d 次重试 + %d 次告警升级%n", retried, alerts);
-        System.out.println("  关键：不是「重试得更聪明」，而是「知道什么时候该停」。");
-        System.out.println();
+        log.info("");
+        log.info("  机械重试：数千次重试 → 上万条 ERROR 日志 → 真人从日志海洋里捞问题");
+        printf("  新引擎：%d 次重试 + %d 次告警升级%n", retried, alerts);
+        log.info("  关键：不是「重试得更聪明」，而是「知道什么时候该停」。");
+        log.info("");
     }
 
     /** 场景二：设备执行失败，自动换机。 */
@@ -89,8 +96,8 @@ public final class RecoveryDemo {
         Long current = 200383L;
         int attempt = 0;
 
-        System.out.printf("  %-6s %-10s %-12s %s%n", "轮次", "动作", "目标设备", "原因");
-        System.out.println("  " + "-".repeat(96));
+        printf("  %-6s %-10s %-12s %s%n", "轮次", "动作", "目标设备", "原因");
+        log.info("  " + "-".repeat(96));
 
         for (int i = 0; i < 4; i++) {
             ErrorContext ctx = ErrorContext.builder("EC-08-0001", RecoveryScope.NODE)
@@ -102,7 +109,7 @@ public final class RecoveryDemo {
                     .build();
             RecoveryDecision d = decider.decide(ctx);
 
-            System.out.printf("  %-6d %-10s %-12s %s%n", i + 1, d.action(),
+            printf("  %-6d %-10s %-12s %s%n", i + 1, d.action(),
                     d.targetResourceId() == null ? "—" : String.valueOf(d.targetResourceId()),
                     d.reason());
 
@@ -114,10 +121,10 @@ public final class RecoveryDemo {
                 break;
             }
         }
-        System.out.println();
-        System.out.println("  若节点写死 equipment_instance_id：设备坏了只能停下来等人。");
-        System.out.println("  新引擎：工艺只声明「需要 TRANSFER 能力」，坏了自动换同能力设备继续跑。");
-        System.out.println();
+        log.info("");
+        log.info("  若节点写死 equipment_instance_id：设备坏了只能停下来等人。");
+        log.info("  新引擎：工艺只声明「需要 TRANSFER 能力」，坏了自动换同能力设备继续跑。");
+        log.info("");
     }
 
     /** 场景三：无替代资源时，明确交人而不是瞎试。 */
@@ -133,17 +140,17 @@ public final class RecoveryDemo {
                 .build();
         RecoveryDecision d = decider.decide(ctx);
 
-        System.out.printf("  动作: %s%n", d.action());
-        System.out.printf("  原因: %s%n", d.reason());
-        System.out.println();
-        System.out.println("  关键：不猜、不乱试、不刷日志，一次把话说清楚，直接进人工队列。");
-        System.out.println();
+        printf("  动作: %s%n", d.action());
+        printf("  原因: %s%n", d.reason());
+        log.info("");
+        log.info("  关键：不猜、不乱试、不刷日志，一次把话说清楚，直接进人工队列。");
+        log.info("");
     }
 
     private static void title(String s) {
-        System.out.println("=".repeat(100));
-        System.out.println("  " + s);
-        System.out.println("=".repeat(100));
+        log.info("=".repeat(100));
+        log.info("  " + s);
+        log.info("=".repeat(100));
     }
 
     private RecoveryDemo() {

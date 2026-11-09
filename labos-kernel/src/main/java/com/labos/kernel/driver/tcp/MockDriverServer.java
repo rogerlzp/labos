@@ -28,6 +28,9 @@ import java.util.regex.Pattern;
  */
 public final class MockDriverServer implements AutoCloseable {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(MockDriverServer.class);
+
     // 分帧标记。驱动侧必须用同一个标记，否则通信会失败。
     private static final String DELIMITER = "#!LABSEP!#";
     private static final Pattern MSG_ID = Pattern.compile("\"message_id\"\\s*:\\s*\"([^\"]*)\"");
@@ -182,7 +185,7 @@ public final class MockDriverServer implements AutoCloseable {
     public static void main(String[] args) throws Exception {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 19401;
         MockDriverServer server = new MockDriverServer(port);
-        System.out.println("[MOCK] 监听 " + port
+        log.info("[MOCK] 监听 " + port
                 + (System.getenv("LABOS_MOCK_LONG_TASK") != null
                    ? "（长任务模拟：先回运行中再回完成）" : ""));
         Runtime.getRuntime().addShutdownHook(new Thread(server::close));

@@ -23,6 +23,9 @@ import java.sql.SQLException;
  */
 public final class DevicePortLock {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DevicePortLock.class);
+
     private final DbConfig db;
     private final long tenantId;
 
@@ -72,7 +75,7 @@ public final class DevicePortLock {
             ps.setLong(2, portId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[通道] 释放失败 port=" + portId + "：" + e.getMessage());
+            log.error("[通道] 释放失败 port=" + portId + "：" + e.getMessage());
         }
     }
 

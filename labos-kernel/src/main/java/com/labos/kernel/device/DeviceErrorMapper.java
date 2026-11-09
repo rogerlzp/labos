@@ -35,6 +35,9 @@ import java.util.regex.Pattern;
  */
 public final class DeviceErrorMapper {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceErrorMapper.class);
+
     /** 未登记的设备错误码（保守：转人工，不重试）。 */
     public static final String UNKNOWN_CODE = "EC-08-9001";
 
@@ -93,20 +96,20 @@ public final class DeviceErrorMapper {
                 }
                 String modelId = kv[1].trim();
                 if (DeviceModels.of(modelId) == null) {
-                    System.err.println("[设备型号] 忽略未知型号绑定 " + part.trim()
+                    log.error("[设备型号] 忽略未知型号绑定 " + part.trim()
                             + "，可用：" + DeviceModels.knownIds());
                     continue;
                 }
                 try {
                     map.put(Long.parseLong(kv[0].trim()), modelId);
                 } catch (NumberFormatException e) {
-                    System.err.println("[设备型号] 忽略非法设备 id " + part.trim());
+                    log.error("[设备型号] 忽略非法设备 id " + part.trim());
                 }
             }
         }
         String def = System.getenv("LABOS_DEFAULT_DEVICE_MODEL");
         if (def != null && !def.isBlank() && DeviceModels.of(def) == null) {
-            System.err.println("[设备型号] LABOS_DEFAULT_DEVICE_MODEL=" + def
+            log.error("[设备型号] LABOS_DEFAULT_DEVICE_MODEL=" + def
                     + " 不在型号库中，已忽略");
             def = null;
         }

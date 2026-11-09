@@ -54,6 +54,9 @@ import java.util.regex.Pattern;
  */
 public final class DeviceCore {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DeviceCore.class);
+
     private static final String SEP = "#!LABSEP!#";
     private static final Pattern P_ID = Pattern.compile("\"message_id\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern P_METHOD = Pattern.compile("\"method\"\\s*:\\s*\"([^\"]*)\"");
@@ -192,7 +195,7 @@ public final class DeviceCore {
 
     /** 统一出口：既打 stdout（CLI/日志文件），也推给 GUI。 */
     private void log(String line) {
-        System.out.println("[" + code + "] " + line);
+        log.info("[" + code + "] " + line);
         Listener l = listener;
         if (l != null) {
             l.onLog(line);
@@ -245,7 +248,7 @@ public final class DeviceCore {
         this.profile = profile == null ? "generic" : profile;
         DeviceProfile p = DeviceProfile.of(this.profile);
         if (p == null) {
-            System.err.println("未知设备类型 " + this.profile + "，可用："
+            log.error("未知设备类型 " + this.profile + "，可用："
                     + DeviceProfile.knownNames());
             System.exit(2);
         }
@@ -302,6 +305,7 @@ public final class DeviceCore {
         ServerSocket ss = new ServerSocket();
         ss.setReuseAddress(true);
         ss.bind(new java.net.InetSocketAddress(this.bindHost, port));
+        this.port = ss.getLocalPort();
         this.serverSocket = ss;
         this.listening = true;
 
@@ -335,9 +339,14 @@ public final class DeviceCore {
         accept.setDaemon(true);
         accept.start();
 
-        log("监听 " + this.bindHost + ":" + port
+        log("监听 " + this.bindHost + ":" + this.port
                 + "  device=" + deviceId + "  cap=" + capability
                 + (delayMs > 0 ? "  delay=" + delayMs + "ms" : ""));
+    }
+
+    /** 实际监听端口；传 0 自动分配时，启动后用它回读内核挑中的端口。 */
+    public int port() {
+        return port;
     }
 
     /** 停止监听并断开所有客户端。 */
@@ -695,14 +704,14 @@ public final class DeviceCore {
 
         // 只响应自己的设备；别的设备 id 说明中控配错了，明确回错误而不是静默
         if (!deviceId.equals(equip)) {
-            System.out.println("[" + code + "] 收到别的设备的命令 equipment_id=" + equip
+            log.info("[" + code + "] 收到别的设备的命令 equipment_id=" + equip
                     + "（我是 " + deviceId + "），返回错误");
             return frame(id, method, equip, 3,
                     "{\"error_code\":\"EC-06-0001\",\"error_text\":\"设备不属于本模拟器\"}",
                     "{}");
         }
 
-        System.out.println("[" + code + "] #" + seq + " " + alias
+        log.info("[" + code + "] #" + seq + " " + alias
                 + (alias.equals(method) ? "" : " → " + method)
                 + (delayMs > 0 ? "（模拟耗时 " + delayMs + "ms）" : ""));
 
@@ -710,7 +719,7 @@ public final class DeviceCore {
         // 这是"能建资源、能跑骨架、不能对接真机"的诚实表达。
         boolean checkMethodSet = model != null && !model.placeholder();
         if (checkMethodSet && !model.supports(alias)) {
-            System.out.println("[" + code + "] 型号 " + model.id
+            log.info("[" + code + "] 型号 " + model.id
                     + " 没有这条指令：" + alias);
             return frame(id, method, equip, 3,
                     "{\"error_code\":\"EC-06-0004\",\"error_text\":\"型号 "
@@ -724,7 +733,7 @@ public final class DeviceCore {
         // 按画像校验会把合法指令误拒（这个坑本轮实测踩到过）。
         String profileError = prof.validate(alias, msg, model == null);
         if (profileError != null) {
-            System.out.println("[" + code + "] 校验失败 " + alias + "：" + profileError);
+            log.info("[" + code + "] 校验失败 " + alias + "：" + profileError);
             // 方法认识、只是参数越界 → 0005；方法本身不认识 → 0004。
             // 有型号时"认不认识"要以型号为准（画像里可能没这个方法）。
             boolean known = prof.methods.contains(alias) || (model != null && model.supports(alias));
@@ -790,7 +799,7 @@ public final class DeviceCore {
         // ③ 通用状态机：真实设备会拒绝非法时序，模拟器必须也能
         String stateError = checkState(alias);
         if (stateError != null) {
-            System.out.println("[" + code + "] 状态不允许 " + alias + "：" + stateError);
+            log.info("[" + code + "] 状态不允许 " + alias + "：" + stateError);
             return frame(id, method, equip, 3,
                     "{\"error_code\":\"EC-06-0006\",\"error_text\":\""
                             + esc(stateError) + "\"}",

@@ -29,6 +29,9 @@ import java.sql.SQLException;
  */
 public final class RunExecPhase {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(RunExecPhase.class);
+
     /** 建单完成，还没派发过任何设备命令。 */
     public static final String PREPARED = "PREPARED";
     /** 已经派发过设备命令（物理结果可能未知）。 */
@@ -97,7 +100,7 @@ public final class RunExecPhase {
             String phase = of(db, tenantId, runId);
             return phase == null || !PREPARED.equals(phase);
         } catch (SQLException e) {
-            System.err.println("[WARN] 读 exec_phase 失败，按「可能已派发」处理 run#" + runId
+            log.error("[WARN] 读 exec_phase 失败，按「可能已派发」处理 run#" + runId
                     + "：" + e.getMessage());
             return true;
         }
