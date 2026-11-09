@@ -26,6 +26,9 @@ public final class CommandLedgerDbSelfTest {
     private static final String PREFIX = "SELF-CL-" + System.currentTimeMillis() + "-";
 
     public static void main(String[] args) throws Exception {
+        // 触发自测容器：绑定 Mappers（非 Bean 工具类通过 Mappers.get 取 Mapper），
+        // 并让 DbConfig 与容器共用同一个 DataSource。
+        com.labos.kernel.support.TestSpringSupport.queryService();
         db = DbConfig.fromEnv();
         cleanup();
         try {

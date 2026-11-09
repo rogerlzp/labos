@@ -75,6 +75,13 @@ public class BeanConfiguration {
         return new HeartbeatService(db, TENANT);
     }
 
+    /** 非 Bean 工具类通过 {@code Mappers.get(...)} 拿 Mapper；容器就绪时绑定一次。 */
+    @Bean
+    public Boolean mappersBinder(org.apache.ibatis.session.SqlSessionFactory factory) {
+        com.labos.kernel.persistence.Mappers.bind(factory);
+        return Boolean.TRUE;
+    }
+
     @Bean
     public ApiServer apiServer(DbConfig db, QueryService query, AuthService auth,
                                WorkflowService workflows, ExperimentScheduler scheduler,

@@ -95,7 +95,9 @@ public final class TestSpringSupport {
             f.setDataSource(ds);
             f.setMapperLocations(new PathMatchingResourcePatternResolver()
                     .getResources("classpath:mapper/*.xml"));
-            return f.getObject();
+            org.apache.ibatis.session.SqlSessionFactory sf = f.getObject();
+            com.labos.kernel.persistence.Mappers.bind(sf);
+            return sf;
         }
 
         @Bean

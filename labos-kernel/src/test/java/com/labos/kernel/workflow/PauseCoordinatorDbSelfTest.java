@@ -8,6 +8,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 暂停统一适配层 幂等键 落库自测（需要真实库）—— V1-5 / ADR-PAUSE-009。
@@ -50,6 +55,9 @@ public final class PauseCoordinatorDbSelfTest {
     private static final String REQ_WF_RESUME = "SELF-PC-WF-RESUME-1";
 
     public static void main(String[] args) throws Exception {
+        // 触发自测容器：绑定 Mappers（非 Bean 工具类通过 Mappers.get 取 Mapper），
+        // 并让 DbConfig 与容器共用同一个 DataSource。
+        com.labos.kernel.support.TestSpringSupport.queryService();
         db = DbConfig.fromEnv();
         cleanup();
         try {
@@ -58,6 +66,7 @@ public final class PauseCoordinatorDbSelfTest {
             idempotentPauseReplays(coord);
             noRequestIdSkipsDedup(coord);
             failedAttemptCanBeRetried(coord);
+            transactionalInfoLocksRunAndExperimentRows();
             resumeTransactionWritesEvent(coord);
             stopTransactionWritesEvent(coord);
             workflowPauseTransaction(coord);
@@ -166,6 +175,57 @@ public final class PauseCoordinatorDbSelfTest {
 
     // ------------------------------------------------- 4. 恢复单事务（P-06 V2 第二切片）
 
+    private static void transactionalInfoLocksRunAndExperimentRows() throws Exception {
+        try (Connection c = db.open()) {
+            c.setAutoCommit(false);
+            RunControl ctl = new RunControl(db, TENANT);
+            RunControl.RunInfo info = ctl.infoTx(c, RUN_P);
+            check("事务内读取拿到目标 run", info.runId() == RUN_P, info.runId());
+            check("事务内读取拿到目标实验", info.experimentId() == EXP_P, info.experimentId());
+
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            Future<Integer> runUpdate = null;
+            Future<Integer> experimentUpdate = null;
+            try {
+                runUpdate = pool.submit(() -> {
+                    try (Connection c2 = db.open();
+                         PreparedStatement ps = c2.prepareStatement("""
+                                 UPDATE experiment_run SET pause_reason = 'tx-lock'
+                                  WHERE tenant_id = ? AND id = ?
+                                 """)) {
+                        ps.setLong(1, TENANT);
+                        ps.setLong(2, RUN_P);
+                        return ps.executeUpdate();
+                    }
+                });
+                experimentUpdate = pool.submit(() -> {
+                    try (Connection c2 = db.open();
+                         PreparedStatement ps = c2.prepareStatement("""
+                                 UPDATE experiment SET island_id = 7
+                                  WHERE tenant_id = ? AND id = ?
+                                 """)) {
+                        ps.setLong(1, TENANT);
+                        ps.setLong(2, EXP_P);
+                        return ps.executeUpdate();
+                    }
+                });
+
+                check("run 行在提交前被锁住", blocked(runUpdate), "blocked");
+                check("experiment 行在提交前被锁住", blocked(experimentUpdate), "blocked");
+                c.commit();
+                int runUpdated = runUpdate.get(2, TimeUnit.SECONDS);
+                int experimentUpdated = experimentUpdate.get(2, TimeUnit.SECONDS);
+                check("提交后 run 行更新放行", runUpdated == 1, runUpdated);
+                check("提交后 experiment 行更新放行",
+                        experimentUpdated == 1, experimentUpdated);
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+        exec("UPDATE experiment_run SET pause_reason = NULL WHERE tenant_id=1 AND id=" + RUN_P);
+        exec("UPDATE experiment SET island_id = NULL WHERE tenant_id=1 AND id=" + EXP_P);
+    }
+
     private static void resumeTransactionWritesEvent(PauseCoordinator coord) throws Exception {
         setRunStatus(RUN_P, "paused");
         new RuntimeHold(db, TENANT).raise(RuntimeHold.Scope.EXPERIMENT, EXP_P,
@@ -177,8 +237,8 @@ public final class PauseCoordinatorDbSelfTest {
         check("恢复成功解除可解扣留", r.clearedHold(), r.clearedHold());
         check("恢复后重新入队", r.requeued(), r.requeued());
         check("恢复后 run 回 queued", "queued".equals(statusOf(RUN_P)), statusOf(RUN_P));
-        check("恢复后 control_state=NONE",
-                "NONE".equals(controlStateOf(RUN_P)), controlStateOf(RUN_P));
+        check("恢复后 control_state=RESUMING（等待入队）",
+                "RESUMING".equals(controlStateOf(RUN_P)), controlStateOf(RUN_P));
         check("恢复后实验级扣留已释放", holdCount(EXP_P) == 0, holdCount(EXP_P));
         check("恢复单事务写入 RESUME_REQUESTED 事件",
                 eventCount(REQ_RESUME) == 1, eventCount(REQ_RESUME));
@@ -412,6 +472,15 @@ public final class PauseCoordinatorDbSelfTest {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(sql)) {
             ps.executeUpdate();
+        }
+    }
+
+    private static boolean blocked(Future<Integer> f) throws Exception {
+        try {
+            f.get(300, TimeUnit.MILLISECONDS);
+            return false;
+        } catch (TimeoutException expected) {
+            return true;
         }
     }
 

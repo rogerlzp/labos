@@ -95,6 +95,14 @@
         SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
+    <select id="selectWorkflowName" resultType="java.lang.String">
+        SELECT name FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectAllWorkflowIds" resultType="java.lang.Long">
+        SELECT id FROM workflow WHERE tenant_id = #{param1} ORDER BY id
+    </select>
+
     <select id="selectExperimentStatuses" resultType="java.util.Map">
         SELECT id AS "id", status::text AS "status"
           FROM experiment

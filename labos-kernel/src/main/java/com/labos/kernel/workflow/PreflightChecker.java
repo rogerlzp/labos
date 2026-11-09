@@ -49,6 +49,12 @@ import java.util.Set;
  */
 public final class PreflightChecker {
 
+    /** 延迟取 Mapper 代理（本类是 new 出来的，无构造注入；见 Mappers）。 */
+    private static com.labos.kernel.persistence.QueryMapper mappers() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class);
+    }
+
     public enum Level { ERROR, WARN, INFO }
 
     public record Issue(Level level, String code, String nodeKey, String message) {
@@ -144,15 +150,10 @@ public final class PreflightChecker {
                            Map<String, String> explicitCap, String workflowName)
             throws SQLException {
         String name = workflowName == null ? "" : workflowName;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT name FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    name = rs.getString(1);
-                }
+        {
+            String found = mappers().selectWorkflowName(tenantId, workflowId);
+            if (found != null) {
+                name = found;
             }
         }
 
@@ -301,28 +302,13 @@ public final class PreflightChecker {
 
     // ---------------------------------------------------------------- 数据
 
-    private String loadXml(long workflowId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT graph->>'xml' FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+    private String loadXml(long workflowId) {
+        return mappers().selectWorkflowXml(tenantId, workflowId);
     }
 
-    private String loadWorkflowName(long workflowId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT name FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : "";
-            }
-        }
+    private String loadWorkflowName(long workflowId) {
+        String n = mappers().selectWorkflowName(tenantId, workflowId);
+        return n == null ? "" : n;
     }
 
     private Map<String, String> loadCapabilityByKey(long workflowId) throws SQLException {
@@ -357,17 +343,7 @@ public final class PreflightChecker {
 
     /** 全量预检：给"一键体检"用。 */
     public Map<String, Object> checkAll() throws SQLException {
-        List<Long> ids = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id FROM workflow WHERE tenant_id = ? ORDER BY id")) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    ids.add(rs.getLong(1));
-                }
-            }
-        }
+        List<Long> ids = new ArrayList<>(mappers().selectAllWorkflowIds(tenantId));
 
         // 批量预加载：避免每个流程各建两次连接（跨网络约 100ms/次）
         Map<Long, String> xmlByWf = new LinkedHashMap<>();

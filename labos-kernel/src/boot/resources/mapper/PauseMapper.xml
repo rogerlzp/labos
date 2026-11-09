@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 暂停/盘点路径。调用方 com.labos.kernel.persistence.PauseMapper -->
+<mapper namespace="com.labos.kernel.persistence.PauseMapper">
+
+    <select id="hasPendingManualWindow" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM manual_window
+             WHERE tenant_id = #{param1} AND run_id = #{param2}
+               AND status = 'pending')
+    </select>
+
+    <select id="selectPauseKind" resultType="java.lang.String">
+        SELECT pause_kind FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'paused'
+    </select>
+
+    <select id="isCrashRecoverable" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM run
+             WHERE tenant_id = #{param1} AND id = #{param2}
+               AND status = 'failed'
+               AND (input->>'recoverable')::boolean IS TRUE)
+    </select>
+
+    <update id="updatePlatePositionStatus">
+        UPDATE plate
+           SET position_status = #{param3}, possible_locations = NULL
+         WHERE tenant_id = #{param1} AND barcode = #{param2}
+    </update>
+
+    <!-- 用 unnest 把数组拆成行，调用方直接拿 List<Long>，
+         不用再碰 java.sql.Array 的强转。 -->
+    <select id="selectPossibleLocations" resultType="java.lang.Long">
+        SELECT unnest(possible_locations) AS "loc"
+          FROM plate
+         WHERE tenant_id = #{param1} AND barcode = #{param2}
+           AND possible_locations IS NOT NULL
+    </select>
+
+</mapper>

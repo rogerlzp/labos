@@ -55,6 +55,11 @@ public interface QueryMapper {
 
     Long selectDeviceIdByCode(long tenantId, String code);
 
+    String selectWorkflowName(long tenantId, long workflowId);
+
+    /** 全部流程 id（预检全量扫描）。 */
+    List<Long> selectAllWorkflowIds(long tenantId);
+
     /** 批量取实验状态（调序前校验）。id IN 用 foreach，替换手写 ANY(?) + createArrayOf。 */
     List<Map<String, Object>> selectExperimentStatuses(long tenantId, List<Long> ids);
 

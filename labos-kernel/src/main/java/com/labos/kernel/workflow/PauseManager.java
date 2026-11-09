@@ -35,6 +35,12 @@ import java.util.Map;
  */
 public final class PauseManager {
 
+    /** 延迟取 Mapper 代理：本类是 new 出来的工具类，没有构造注入（见 Mappers）。 */
+    private static com.labos.kernel.persistence.PauseMapper mappers() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.PauseMapper.class);
+    }
+
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(PauseManager.class);
 
@@ -151,16 +157,8 @@ public final class PauseManager {
     /** N-08：waiting_human 暂停自动建 pending 人工窗口（同事务）。 */
     private void openManualWindow(Connection c, long runId, String reason, String nodeKey) {
         try {
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT 1 FROM manual_window WHERE tenant_id = ? AND run_id = ? "
-                            + "AND status = 'pending' LIMIT 1")) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        return;   // 已有待决窗口，不重复开
-                    }
-                }
+            if (mappers().hasPendingManualWindow(tenantId, runId)) {
+                return;   // 已有待决窗口，不重复开
             }
             try (PreparedStatement ps = c.prepareStatement("""
                     INSERT INTO manual_window
@@ -749,30 +747,12 @@ public final class PauseManager {
         return new ResumeResult(true, null, runId, action.name(), corrected);
     }
 
-    private String pauseKindOfTx(Connection c, long runId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT pause_kind FROM run WHERE tenant_id = ? AND id = ? "
-                        + "AND status = 'paused'")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+    private String pauseKindOfTx(Connection c, long runId) {
+        return mappers().selectPauseKind(tenantId, runId);
     }
 
-    private boolean isCrashRecoverableTx(Connection c, long runId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT 1 FROM run
-                 WHERE tenant_id = ? AND id = ? AND status = 'failed'
-                   AND (input->>'recoverable')::boolean IS TRUE
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        }
+    private boolean isCrashRecoverableTx(Connection c, long runId) {
+        return mappers().isCrashRecoverable(tenantId, runId);
     }
 
     private boolean locatePlateTx(Connection c, String barcode, String actualLocation,
@@ -782,14 +762,7 @@ public final class PauseManager {
         String toStatus = lost ? "LOST" : "KNOWN";
         try {
             List<Long> possible = possibleLocationsOfTx(c, barcode);
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE plate SET position_status = ?, possible_locations = NULL "
-                            + "WHERE tenant_id = ? AND barcode = ?")) {
-                ps.setString(1, toStatus);
-                ps.setLong(2, tenantId);
-                ps.setString(3, barcode);
-                ps.executeUpdate();
-            }
+            mappers().updatePlatePositionStatus(tenantId, barcode, toStatus);
             if (!possible.isEmpty()) {
                 String in = String.join(",", possible.stream().map(String::valueOf).toList());
                 try (PreparedStatement ps = c.prepareStatement("""
@@ -815,27 +788,8 @@ public final class PauseManager {
         }
     }
 
-    private List<Long> possibleLocationsOfTx(Connection c, String barcode)
-            throws SQLException {
-        List<Long> list = new ArrayList<>();
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT possible_locations FROM plate WHERE tenant_id = ? AND barcode = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, barcode);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    java.sql.Array arr = rs.getArray(1);
-                    if (arr != null) {
-                        for (Object o : (Object[]) arr.getArray()) {
-                            if (o instanceof Number n) {
-                                list.add(n.longValue());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return list;
+    private List<Long> possibleLocationsOfTx(Connection c, String barcode) {
+        return mappers().selectPossibleLocations(tenantId, barcode);
     }
 
     /** P-08：位置证据（人工盘点来源）。失败不掩盖主流程。 */
@@ -887,28 +841,7 @@ public final class PauseManager {
     }
 
     private List<Long> possibleLocationsOf(String barcode) {
-        List<Long> list = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT possible_locations FROM plate WHERE tenant_id = ? AND barcode = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, barcode);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    java.sql.Array arr = rs.getArray(1);
-                    if (arr != null) {
-                        for (Object o : (Object[]) arr.getArray()) {
-                            if (o instanceof Number n) {
-                                list.add(n.longValue());
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (SQLException e) {
-            // 读不到就当没有
-        }
-        return list;
+        return mappers().selectPossibleLocations(tenantId, barcode);
     }
 
     private void audit(String barcode, String from, String to, String actual,
