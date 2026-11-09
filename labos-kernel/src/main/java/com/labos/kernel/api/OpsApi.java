@@ -355,6 +355,12 @@ final class OpsApi {
             s.send(ex, 200, s.query.commandsUnknownJson(100));
             return true;
         }
+        // ---- B-04：中止请求了但设备没确认停（与 UNKNOWN 分开看）----
+        if ("/api/commands/abort-unconfirmed".equals(path)) {
+            s.requireGet(method, ex);
+            s.send(ex, 200, s.query.commandsAbortUnconfirmedJson(100));
+            return true;
+        }
         Matcher commandResolve = COMMAND_RESOLVE.matcher(path);
         if (commandResolve.matches()) {
             if (!"POST".equals(method)) {

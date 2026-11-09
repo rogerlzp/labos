@@ -4274,6 +4274,26 @@ public final class QueryService {
     }
 
     /** UNKNOWN 命令账本列表（P-07.2 人工核对入口）。 */
+    /**
+     * B-04：已请求中止、但设备没确认停的命令（人工核验入口）。
+     *
+     * <p>与 {@link #commandsUnknownJson} 并列而不是合并：UNKNOWN 说的是
+     * 「命令结果不知道」，这里说的是「我们试着停过，但没拿到证据」——
+     * 两条判断可以同时成立，混成一张表就分不清是哪条原因需要人核查。
+     */
+    public String commandsAbortUnconfirmedJson(int limit) throws SQLException {
+        List<String> items = new ArrayList<>();
+        for (com.labos.kernel.driver.CommandLedger.AbortPending a
+                : com.labos.kernel.driver.CommandLedger.listUnconfirmedAbort(db, tenantId, limit)) {
+            items.add(Jsons.obj("id", a.id(), "key", a.key(), "runId", a.runId(),
+                    "nodeId", a.nodeId(), "method", a.method(), "commandId", a.commandId(),
+                    "state", a.state(), "abortState", a.abortState(),
+                    "abortDetail", a.abortDetail(), "abortAt", a.abortAt()));
+        }
+        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)),
+                "count", items.size());
+    }
+
     public String commandsUnknownJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();
         for (com.labos.kernel.driver.CommandLedger.Unknown u

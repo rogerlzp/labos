@@ -228,6 +228,54 @@ public final class CommandLedger {
     }
 
     /**
+     * 「已请求中止、但设备没确认停」的一行（B-04 的人工核验入口）。
+     *
+     * <p>这类命令既不能当作"停成功了"（会漏掉还在动的设备），也不能当作"没停"
+     * 就直接重发（会重复执行物理动作）——只能人来看一眼。
+     */
+    public record AbortPending(long id, String key, long runId, Long nodeId,
+                               String method, String commandId, String state,
+                               String abortState, String abortDetail, String abortAt) {
+    }
+
+    /**
+     * 列出中止未被设备确认的账本行（{@code abort_state} 存在且不是 PHYSICALLY_STOPPED）。
+     *
+     * <p>走 {@code ix_command_ledger_abort_unconfirmed} 部分索引。
+     */
+    public static java.util.List<AbortPending> listUnconfirmedAbort(DbConfig db, long tenantId,
+                                                                   int limit) throws SQLException {
+        int cap = Math.max(1, Math.min(limit, 200));
+        java.util.List<AbortPending> rows = new java.util.ArrayList<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT id, idempotency_key, run_id, node_id, method, command_id,
+                            state, abort_state, abort_detail, abort_at::text
+                       FROM command_ledger
+                      WHERE tenant_id = ?
+                        AND abort_state IS NOT NULL
+                        AND abort_state <> 'PHYSICALLY_STOPPED'
+                      ORDER BY abort_at DESC NULLS LAST, id DESC
+                      LIMIT ?
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setInt(2, cap);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long node = rs.getLong("node_id");
+                    boolean nodeNull = rs.wasNull();
+                    rows.add(new AbortPending(rs.getLong("id"), rs.getString("idempotency_key"),
+                            rs.getLong("run_id"), nodeNull ? null : node,
+                            rs.getString("method"), rs.getString("command_id"),
+                            rs.getString("state"), rs.getString("abort_state"),
+                            rs.getString("abort_detail"), rs.getString("abort_at")));
+                }
+            }
+        }
+        return rows;
+    }
+
+    /**
      * 人工核对处置：把 UNKNOWN 行落成 ACKED（confirm-done）或 FAILED（confirm-failed）。
      *
      * <p>只允许从 UNKNOWN 转移（并发二次处置返回 0）；带 resolved_at/resolved_by 留痕。

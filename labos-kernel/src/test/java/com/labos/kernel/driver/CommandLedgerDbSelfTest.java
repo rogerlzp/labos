@@ -121,6 +121,15 @@ public final class CommandLedgerDbSelfTest {
         CommandLedger.recordAbort(db, e2.id(), AbortResult.unknown("断链，结果不可知"));
         check("未确认的中止可被人工核验查询命中",
                 "UNKNOWN".equals(abortStateOf(e2.id())), abortStateOf(e2.id()));
+
+        // 核验队列只收「没确认停」的：设备已确认的行不能混进来，
+        // 否则人工会去复核一条本来就没问题的命令。
+        java.util.List<CommandLedger.AbortPending> pending =
+                CommandLedger.listUnconfirmedAbort(db, TENANT, 200);
+        boolean hasUnconfirmed = pending.stream().anyMatch(x -> x.id() == e2.id());
+        boolean hasConfirmed = pending.stream().anyMatch(x -> x.id() == e.id());
+        check("核验队列含未确认的中止", hasUnconfirmed, e2.id());
+        check("核验队列不含设备已确认停止的行", !hasConfirmed, e.id());
     }
 
     private static String abortStateOf(long ledgerId) throws Exception {
