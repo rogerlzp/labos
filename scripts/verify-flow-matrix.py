@@ -33,6 +33,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -100,6 +101,44 @@ def q(sql):
          "-d", os.environ["LABOS_DB_NAME"], "-tAc", sql],
         env=env, capture_output=True, text=True)
     return out.stdout.strip()
+
+
+# ---------------------------------------------------------------- 等待预算（G-05）
+#
+# 设备方法耗时由模拟器的 `--rand-delay min:max[:seed]` 决定，不是常量。
+# 写死 420 秒在 `--rand-delay 30000:300000` 的环境里不够用：`GetPosition + Home`
+# 两次动作就能超过它 ⇒ 把「设备还在跑」判成「流程没跑完」，2.7 间歇判红
+# （G-05，2026-11-07 记录：非被测代码回归）。
+#
+# 这里从**真实在跑的模拟器进程参数**推导预算：模拟器换延迟，预算自动跟着走。
+# 读不到（没模拟器 / 参数改成别的写法）就退回真机时序上限 300 秒 —— 宁可多等。
+# 注意：预算是**上限**不是固定等待，run 一进终态循环立刻返回，快速场景不受影响。
+_REAL_DEVICE_DELAY_MAX = 300          # 真机时序：单条设备方法最长 5 分钟
+
+
+def sim_method_delay_sec():
+    """当前环境单条设备方法的耗时上限（秒）。"""
+    try:
+        out = subprocess.run(["pgrep", "-fl", "DeviceSimulator"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return _REAL_DEVICE_DELAY_MAX
+    best = 0
+    for line in out.splitlines():
+        m = re.search(r"--rand-delay\s+(\d+):(\d+)", line)
+        if m:
+            best = max(best, int(m.group(2)))
+    if best <= 0:
+        return _REAL_DEVICE_DELAY_MAX
+    return max(1, best // 1000)
+
+
+def device_budget_sec(actions=3, slack=60):
+    """一次 run / 一次「等设备空闲」的等待预算。
+
+    覆盖 actions 次串行设备动作 + slack 秒余量。
+    """
+    return int(slack + actions * sim_method_delay_sec())
 
 
 def edge_waypoints(src, tgt):
@@ -206,10 +245,10 @@ class Ctx:
             body["resourceId"] = resource
         api(f"/api/workflows/{wid}/nodes/{key}", "PUT", body, self.token)
 
-    # 等待预算：设备方法耗时随机 30–300 秒（真机时序）⇒ 90 秒不够用，
-    # 会把「设备还在跑」误判成「流程没跑完」。这里放宽到 420 秒：
+    # 等待预算：按当前模拟器的 `--rand-delay` 推导（G-05），不再写死 420。
     # 只在设备真的慢时才会等满，正常秒级完成不受影响。
-    def run(self, wid, vars_=None, wait=420):
+    def run(self, wid, vars_=None, wait=None):
+        wait = device_budget_sec() if wait is None else wait
         path = f"/api/workflows/{wid}/run?async=1"
         if vars_:
             path += "&vars=" + urllib.parse.quote(",".join(f"{k}={v}" for k, v in vars_.items()), safe="")
@@ -228,7 +267,7 @@ class Ctx:
         return q(f"SELECT node_key||'='||status::text FROM run_node "
                  f"WHERE run_id={rid} AND level=0 ORDER BY id")
 
-    def wait_devices_idle(self, limit=420):
+    def wait_devices_idle(self, limit=None):
         """等设备回到 idle 再删数据。
 
         ⚠ 为什么必须等：设备方法耗时随机 30–300 秒（真机时序），
@@ -236,6 +275,7 @@ class Ctx:
         `run_node_parent_node_id_fkey` 违反 ⇒ 门禁的「步骤落库失败」断言变红
         （2026-11-06 实测：设备链路段被别的段落的清理搞红）。
         """
+        limit = device_budget_sec() if limit is None else limit
         deadline = time.time() + limit
         while time.time() < deadline:
             busy = q("SELECT count(*) FROM device_state "
