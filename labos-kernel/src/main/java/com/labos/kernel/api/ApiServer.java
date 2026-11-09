@@ -103,14 +103,11 @@ public final class ApiServer {
     final int port;
 
     // 路由 controller（构造时注入 this；与 route() 分发一一对应）
-    private final AuthApi authApi = new AuthApi(this);
     private final DeviceApi deviceApi = new DeviceApi(this);
-    private final SchedulerApi schedulerApi = new SchedulerApi(this);
     private final RunApi runApi = new RunApi(this);
     private final WorkflowApi workflowApi = new WorkflowApi(this);
     private final OpsApi opsApi = new OpsApi(this);
     private final ExperimentApi experimentApi = new ExperimentApi(this);
-    private final MetaApi metaApi = new MetaApi(this);
 
 
     /**
@@ -177,14 +174,14 @@ public final class ApiServer {
             // 各 controller 的 path 前缀互不重叠（/api/runs、/api/experiments、…），
             // 因此跨 controller 的顺序不改变语义；controller 内部保持 if/else 顺序。
             // 任一 controller 命中即 return，未命中落到下面的静态资源/健康检查/404。
-            if (authApi.handle(ex, path, method)
-                    || deviceApi.handle(ex, path, method)
-                    || schedulerApi.handle(ex, path, method)
+            // AuthApi 已拆成注解式 AuthController（com.labos.boot.web.controller），
+            // 不再走这条分发链；鉴权拦截器在 Spring MVC 层先命中。
+            if (deviceApi.handle(ex, path, method)
+                    // SchedulerApi / MetaApi 已拆成注解式 Controller
                     || runApi.handle(ex, path, method)
                     || workflowApi.handle(ex, path, method)
                     || opsApi.handle(ex, path, method)
-                    || experimentApi.handle(ex, path, method)
-                    || metaApi.handle(ex, path, method)) {
+                    || experimentApi.handle(ex, path, method)) {
                 return;
             }
 

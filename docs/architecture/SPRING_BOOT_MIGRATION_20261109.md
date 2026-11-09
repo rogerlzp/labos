@@ -213,12 +213,27 @@ HandlerMethod**，旧 `LegacyRouteController` 链路一行不动、仍由 route(
 （避免把已验证的 40+ 端点改出 401）。实测：有 token 三个端点 200、
 无 token `/api/meta/status-vocabulary` → 401、旧端点 topology/workflows/health 全 200。
 
+**2026-11-09 续：注解式 Controller 拆分（3/8）**
+- `AuthController`：login / me / logout。用 `@RequestBody Map` 替代手撕 JSON；
+  拦截器把鉴权通过的 `AuthService.Session` 放进 request attribute
+  （`ApiAuthInterceptor.SESSION_ATTR`），Controller 用 `@RequestAttribute` 取。
+  实测：login 200、me 200、无 token 401、错密码 401、logout 200、登出后 401。
+- `SchedulerController`：`/api/scheduler/status`，三个 JSON 辅助方法原样搬，
+  响应结构与原实现逐字一致。
+- `MetaController` 补齐 `/api/meta/device-models`，SQL 抽进
+  `MetaMapper.xml`（部署台数一次 GROUP BY，避免逐型号 N+1）。
+- 三个原类（`AuthApi` / `SchedulerApi` / `MetaApi`）已删除，`ApiServer.route`
+  的分发链同步摘除。实测：/api/scheduler/status 200、/api/meta/device-models 200、
+  /api/meta/status-vocabulary 200、/api/capabilities 200、旧端点 topology/workflows 200、
+  无 token 一律 401。
+
 **仍未完成**：
-- 约 125 条 SQL 按聚合收进 Mapper（`run_node` / `run_command` / `experiment` /
-  `device` / `command_ledger` …）；
-- 其余 8 个 `*Api` 按 `MetaController` 的范式逐个拆，拆完删除
-  `ServletHttpExchange` 适配层；
-- `ServletHttpExchange` 是**迁移期适配层**，不是长期架构。
+- 约 121 条 SQL 按聚合收进 Mapper（累计已进 13 条：
+  `WorkflowMapper` 4 + `RunMapper` 5 + `GraphMapper` 3 + `MetaMapper` 1）；
+- 剩余 5 个 `*Api`：`DeviceApi`(25 分支) / `ExperimentApi`(19) / `OpsApi`(19) /
+  `RunApi`(25) / `WorkflowApi`(21)。这些分支体含审计、请求体解析、正则路径参数、
+  多 method 共路径，需逐分支手工拆（不能脚本化），每拆一个都要配对应端点冒烟；
+- 拆完才能删除 `ServletHttpExchange` 适配层 —— 它仍是**迁移期设施**，不是长期架构。
 
 ---
 

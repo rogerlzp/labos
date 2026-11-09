@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 型号库元数据。调用方 com.labos.kernel.persistence.MetaMapper -->
+<mapper namespace="com.labos.kernel.persistence.MetaMapper">
+
+    <!-- 部署台数一次性 GROUP BY；软删的设备不计。 -->
+    <select id="countDevicesByModel" resultType="java.util.Map">
+        SELECT model, count(*) AS n
+          FROM device
+         WHERE tenant_id = #{param1}
+           AND deleted_at IS NULL
+         GROUP BY model
+    </select>
+
+</mapper>

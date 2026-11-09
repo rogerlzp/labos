@@ -22,6 +22,9 @@ import org.springframework.web.servlet.HandlerInterceptor;
 @Component
 public class ApiAuthInterceptor implements HandlerInterceptor {
 
+    /** 鉴权通过后放进 request 的 Session，Controller 用 @RequestAttribute 取。 */
+    public static final String SESSION_ATTR = "labos.session";
+
     private final AuthService auth;
 
     public ApiAuthInterceptor(AuthService auth) {
@@ -59,6 +62,7 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
             reject(resp, 403, "当前账号（" + s0.role() + "）无写权限");
             return false;
         }
+        req.setAttribute(SESSION_ATTR, s0);
         if (path.startsWith("/api/users") && !s0.isAdmin()) {
             reject(resp, 403, "仅管理员可管理账号");
             return false;
