@@ -8,6 +8,7 @@ import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.WorkflowMapper;
 import com.labos.kernel.persistence.RunMapper;
 import com.labos.kernel.persistence.GraphMapper;
+import com.labos.kernel.persistence.QueryMapper;
 import com.labos.kernel.workflow.ExperimentScheduler;
 import com.labos.kernel.workflow.WorkflowService;
 import org.springframework.context.annotation.Bean;
@@ -38,8 +39,10 @@ public class BeanConfiguration {
     }
 
     @Bean
-    public QueryService queryService(DbConfig db) {
-        return new QueryService(db, TENANT);
+    public QueryService queryService(DbConfig db, QueryMapper queryMapper) {
+        QueryService qs = new QueryService(db, TENANT);
+        qs.setQueryMapper(queryMapper);
+        return qs;
     }
 
     @Bean

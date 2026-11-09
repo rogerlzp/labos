@@ -28,19 +28,22 @@ public class QueryService {
         this.tenantId = tenantId;
     }
 
+    /** 读侧高频单查询（QueryMapper.xml）。由 BeanConfiguration 注入。 */
+    private com.labos.kernel.persistence.QueryMapper queryMapper;
+
+    public void setQueryMapper(com.labos.kernel.persistence.QueryMapper m) {
+        this.queryMapper = m;
+    }
+
     /** 健康检查：能连库才算活着。 */
     public String health() throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("SELECT current_database(), version()");
-             ResultSet rs = ps.executeQuery()) {
-            rs.next();
-            return Jsons.obj(
-                    "status", "ok",
-                    "database", rs.getString(1),
-                    "version", shortVersion(rs.getString(2)),
-                    "url", db.url(),
-                    "time", OffsetDateTime.now().toString());
-        }
+        java.util.Map<String, Object> row = queryMapper.health();
+        return Jsons.obj(
+                "status", "ok",
+                "database", row.get("db"),
+                "version", shortVersion(String.valueOf(row.get("ver"))),
+                "url", db.url(),
+                "time", OffsetDateTime.now().toString());
     }
 
     public String policies() throws SQLException {
@@ -563,15 +566,10 @@ public class QueryService {
     }
 
     private String resourceCodeOf(long resourceId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT code FROM resource_node WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        } catch (SQLException e) {
+        try {
+            return queryMapper.selectResourceCode(tenantId, resourceId);
+        } catch (RuntimeException e) {
+            // 原实现同样吞异常返回 null：资源码只用于展示，不阻断主流程。
             return null;
         }
     }
@@ -936,34 +934,13 @@ public class QueryService {
      * </ul>
      */
     public String runGraphJson(long runId) throws SQLException {
-        long workflowId;
-        String runStatus;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT workflow_id, status::text AS status FROM run
-                      WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("执行不存在: " + runId);
-                }
-                workflowId = rs.getLong(1);
-                runStatus = rs.getString(2);
-            }
+        java.util.Map<String, Object> runRow = queryMapper.selectRunWorkflow(tenantId, runId);
+        if (runRow == null) {
+            throw new IllegalArgumentException("执行不存在: " + runId);
         }
-
-        String xml = null;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT graph->>'xml' FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                xml = rs.next() ? rs.getString(1) : null;
-            }
-        }
+        long workflowId = ((Number) runRow.get("workflowId")).longValue();
+        String runStatus = String.valueOf(runRow.get("status"));
+        String xml = queryMapper.selectWorkflowXml(tenantId, workflowId);
 
         // 只有真的在跑，"running" 才是"执行中"；暂停/结束后的 running 都是没执行到
         boolean live = "running".equals(runStatus);
@@ -1648,15 +1625,7 @@ throw e;
     }
 
     private int countEnabledAdmins(Connection c) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT count(*) FROM sys_user"
-                        + " WHERE tenant_id = ? AND role = 'admin' AND enabled")) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getInt(1);
-            }
-        }
+        return queryMapper.countEnabledAdmins(tenantId);
     }
 
     /** 用户当前角色/启用状态；不存在返回 null。 */
@@ -1679,17 +1648,11 @@ throw e;
      */
     private UserRoleEnabled findUserRoleEnabled(Connection c, long id, boolean forUpdate)
             throws SQLException {
-        String sql = "SELECT role, enabled FROM sys_user WHERE tenant_id = ? AND id = ?"
-                + (forUpdate ? " FOR UPDATE" : "");
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next()
-                        ? new UserRoleEnabled(rs.getString(1), rs.getBoolean(2))
-                        : null;
-            }
-        }
+        java.util.Map<String, Object> row =
+                queryMapper.selectUserRoleEnabled(tenantId, id, forUpdate);
+        return row == null ? null
+                : new UserRoleEnabled(String.valueOf(row.get("role")),
+                        Boolean.TRUE.equals(row.get("enabled")));
     }
 
     /** 账号的角色 + 启用状态（权限保护判定用，不含密码）。 */
@@ -1952,14 +1915,8 @@ throw e;
     }
 
     private boolean existsDeviceCode(Connection c, String code) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT 1 FROM resource_node WHERE tenant_id = ? AND code = ? AND kind = 'device'")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, code);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        }
+        // c 只用于表明「调用方已在事务内」；Mapper 会取到同一条 Spring 绑定连接。
+        return queryMapper.existsDeviceCode(tenantId, code);
     }
 
     /**
@@ -2770,16 +2727,7 @@ throw e;
      * 参数以 workflow_node.params->'method_params' 为准。
      */
     public String nodeBindingJson(long workflowId, String nodeKey) throws SQLException {
-        String xml = null;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT graph->>'xml' FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                xml = rs.next() ? rs.getString(1) : null;
-            }
-        }
+        String xml = queryMapper.selectWorkflowXml(tenantId, workflowId);
         String method = null;
         if (xml != null) {
             java.util.regex.Matcher m = java.util.regex.Pattern
@@ -4475,15 +4423,7 @@ throw e;
 
     /** 取流程的 BPMN 2.0 XML（原样返回，给 bpmn-js 渲染）。 */
     public String workflowGraph(long workflowId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT graph->>'xml' FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return queryMapper.selectWorkflowXml(tenantId, workflowId);
     }
 
     /**

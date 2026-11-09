@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 读侧高频单查询。调用方 com.labos.kernel.persistence.QueryMapper -->
+<mapper namespace="com.labos.kernel.persistence.QueryMapper">
+
+    <select id="health" resultType="java.util.Map">
+        SELECT current_database() AS db, version() AS ver
+    </select>
+
+    <select id="selectResourceCode" resultType="java.lang.String">
+        SELECT code FROM resource_node WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <!-- 三处原本各写一遍：workflowGraph / runGraphJson / nodeBindingJson。 -->
+    <select id="selectWorkflowXml" resultType="java.lang.String">
+        SELECT graph->>'xml' FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectRunWorkflow" resultType="java.util.Map">
+        SELECT workflow_id AS workflowId, status::text AS status
+          FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="existsDeviceCode" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM resource_node
+             WHERE tenant_id = #{param1} AND code = #{param2} AND kind = 'device')
+    </select>
+
+    <select id="countEnabledAdmins" resultType="int">
+        SELECT count(*) FROM sys_user
+         WHERE tenant_id = #{param1} AND role = 'admin' AND enabled
+    </select>
+
+    <!-- forUpdate 只在账号管理的事务里用，必须与调用方同一事务连接。 -->
+    <select id="selectUserRoleEnabled" resultType="java.util.Map">
+        SELECT role, enabled FROM sys_user
+         WHERE tenant_id = #{param1} AND id = #{param2}
+        <if test="param3"> FOR UPDATE </if>
+    </select>
+
+</mapper>
