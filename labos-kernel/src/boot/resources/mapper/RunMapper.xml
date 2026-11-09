@@ -52,4 +52,13 @@
            AND id = #{param2}
     </select>
 
+    <!-- 只改 status='running' 的行：已结束的单不能被切值守。 -->
+    <update id="updateAttendance">
+        UPDATE run
+           SET attendance = #{param3}
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+           AND status = 'running'
+    </update>
+
 </mapper>

@@ -23,4 +23,7 @@ public interface RunMapper {
 
     /** 读当前状态（暂停边界判定等）。 */
     String selectStatus(long tenantId, long runId);
+
+    /** 切换运行中 run 的值守模式；已结束的 run 不受影响（0 行）。 */
+    int updateAttendance(long tenantId, long runId, String attendance);
 }
