@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 流程域 Service 数据访问。调用方 com.labos.kernel.persistence.WorkflowWebMapper -->
+<mapper namespace="com.labos.kernel.persistence.WorkflowWebMapper">
+
+    <select id="selectDeviceInstanceId" resultType="java.lang.Long">
+        SELECT id FROM device_instance WHERE resource_id = #{param1}
+    </select>
+
+    <!-- 插入成功 = 抢到；违反 EXCLUDE 约束 = 岛被占用（调用方按 null 处理）。
+         多实例部署下数据库约束才是真锁，内存锁各管各的等于没锁。
+         注意：MyBatis 的 DTD 不允许 <insert> 带 resultType，而 PG 的
+         INSERT..RETURNING 返回结果集，所以这里用 <select> 承载。 -->
+    <select id="insertIslandLock" resultType="java.lang.Long">
+        INSERT INTO resource_booking
+          (tenant_id, resource_id, period, status, source_type, note)
+        VALUES (#{param1}, #{param2},
+                tstzrange(now(), now() + interval '4 hours'),
+                'active', 'workflow-run', '执行期岛锁')
+        RETURNING id
+    </select>
+
+    <update id="releaseIslandLock">
+        UPDATE resource_booking
+           SET status = 'released', updated_at = now()
+         WHERE id = #{param1}
+    </update>
+
+    <!-- workflow_node 没有 deleted_at（只有 run_node 有），别照抄。 -->
+    <select id="selectWorkflowTaskCounts" resultType="java.util.Map">
+        SELECT workflow_id AS "workflowId", count(*) AS "n"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND node_type = 'task'
+         GROUP BY workflow_id
+    </select>
+
+    <select id="selectBoundResources" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey",
+               (params->>'bound_resource_id')::bigint AS "rid"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+           AND params->>'bound_resource_id' IS NOT NULL
+    </select>
+
+    <select id="selectDurationP50" resultType="java.util.Map">
+        SELECT method, p50_ms AS "p50Ms"
+          FROM duration_model
+         WHERE tenant_id = #{param1}
+    </select>
+
+    <select id="selectWorkflowCapabilities" resultType="java.util.Map">
+        SELECT n.node_key AS "nodeKey", c.code AS "code"
+          FROM workflow_node n JOIN capability c ON c.id = n.capability_id
+         WHERE n.tenant_id = #{param1} AND n.workflow_id = #{param2}
+           AND n.node_type = 'task'
+    </select>
+
+</mapper>

@@ -15,8 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -52,11 +50,14 @@ public class WorkflowWebService {
     private final DbConfig db;
     private final WorkflowService workflows;
     private final QueryService query;
+    private final com.labos.kernel.persistence.WorkflowWebMapper mapper;
 
-    public WorkflowWebService(DbConfig db, WorkflowService workflows, QueryService query) {
+    public WorkflowWebService(DbConfig db, WorkflowService workflows, QueryService query,
+                              com.labos.kernel.persistence.WorkflowWebMapper mapper) {
         this.db = db;
         this.workflows = workflows;
         this.query = query;
+        this.mapper = mapper;
     }
 
     // ---------------------------------------------------------------- 历史
@@ -131,20 +132,9 @@ public class WorkflowWebService {
         }
         // 节点绑定设备（搬运流程才有）：用于前端按顺序回放板子路径
         Map<String, Long> boundByKey = new LinkedHashMap<>();
-        try (java.sql.Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT node_key, (params->>'bound_resource_id')::bigint AS rid
-                     FROM workflow_node
-                     WHERE tenant_id = ? AND workflow_id = ?
-                       AND params->>'bound_resource_id' IS NOT NULL
-                     """)) {
-            ps.setLong(1, TENANT);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    boundByKey.put(rs.getString("node_key"), rs.getLong("rid"));
-                }
-            }
+        for (Map<String, Object> row : mapper.selectBoundResources(TENANT, workflowId)) {
+            boundByKey.put(String.valueOf(row.get("nodeKey")),
+                    ((Number) row.get("rid")).longValue());
         }
         List<String> tasks = new ArrayList<>();
         for (WorkflowService.TaskView t : d.tasks()) {
@@ -248,13 +238,9 @@ public class WorkflowWebService {
 
     /** 释放岛锁。 */
     public void releaseIslandLock(long bookingId) {
-        try (java.sql.Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "UPDATE resource_booking SET status = 'released',"
-                             + " updated_at = now() WHERE id = ?")) {
-            ps.setLong(1, bookingId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mapper.releaseIslandLock(bookingId);
+        } catch (RuntimeException e) {
             log.error("[岛锁] 释放失败：{}", e.getMessage());
         }
     }
@@ -266,21 +252,10 @@ public class WorkflowWebService {
      * 多实例部署时各管各的，等于没锁。
      */
     public long tryAcquireIslandLock(long islandId) {
-        String sql = """
-                INSERT INTO resource_booking
-                  (tenant_id, resource_id, period, status, source_type, note)
-                VALUES (?, ?, tstzrange(now(), now() + interval '4 hours'),
-                        'active', 'workflow-run', '执行期岛锁')
-                RETURNING id
-                """;
-        try (java.sql.Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, TENANT);
-            ps.setLong(2, islandId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : -1;
-            }
-        } catch (SQLException e) {
+        try {
+            Long id = mapper.insertIslandLock(TENANT, islandId);
+            return id == null ? -1 : id;
+        } catch (RuntimeException e) {
             return -1;   // 违反 EXCLUDE = 岛被占用，预期分支
         }
     }
@@ -356,15 +331,9 @@ public class WorkflowWebService {
     public String predict(long workflowId) throws SQLException {
         WorkflowService.CompileResult c = workflows.compile(workflowId);
         Map<String, Integer> p50 = new LinkedHashMap<>();
-        try (java.sql.Connection conn = db.open();
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT method, p50_ms FROM duration_model WHERE tenant_id = ?")) {
-            ps.setLong(1, TENANT);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    p50.put(rs.getString(1), rs.getInt(2));
-                }
-            }
+        for (Map<String, Object> row : mapper.selectDurationP50(TENANT)) {
+            p50.put(String.valueOf(row.get("method")),
+                    ((Number) row.get("p50Ms")).intValue());
         }
         List<String> nodes = new ArrayList<>();
         long totalMs = 0;
@@ -417,57 +386,31 @@ public class WorkflowWebService {
     }
 
     /** resource_node.id -> device_instance.id（0 表示不是设备）。 */
-    public long deviceInstanceId(long resourceNodeId) throws SQLException {
-        try (java.sql.Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id FROM device_instance WHERE resource_id = ?")) {
-            ps.setLong(1, resourceNodeId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        }
+    public long deviceInstanceId(long resourceNodeId) {
+        Long id = mapper.selectDeviceInstanceId(resourceNodeId);
+        return id == null ? 0L : id;
     }
 
     // ---------------------------------------------------------------- 内部
 
     /** 流程里每个节点的能力（node_key -> capability_code）。 */
-    private Map<String, String> workflowCapabilities(long workflowId) throws SQLException {
+    private Map<String, String> workflowCapabilities(long workflowId) {
         Map<String, String> out = new LinkedHashMap<>();
-        String sql = """
-                SELECT n.node_key, c.code
-                FROM workflow_node n JOIN capability c ON c.id = n.capability_id
-                WHERE n.tenant_id = ? AND n.workflow_id = ? AND n.node_type = 'task'
-                """;
-        try (java.sql.Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, TENANT);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.put(rs.getString(1), rs.getString(2));
-                }
-            }
+        for (Map<String, Object> row : mapper.selectWorkflowCapabilities(TENANT, workflowId)) {
+            out.put(String.valueOf(row.get("nodeKey")), String.valueOf(row.get("code")));
         }
         return out;
     }
 
     /** workflow_id → 任务节点数（只数 task，开始/结束/网关不算"一步活"）。 */
-    private Map<Long, Integer> workflowTaskCounts() throws SQLException {
+    private Map<Long, Integer> workflowTaskCounts() {
         Map<Long, Integer> m = new java.util.HashMap<>();
-        try (java.sql.Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT workflow_id, count(*) AS n FROM workflow_node
-                      -- workflow_node 没有 deleted_at（只有 run_node 有），别照抄
-                      WHERE tenant_id = ? AND node_type = 'task'
-                      GROUP BY workflow_id
-                     """)) {
-            ps.setLong(1, TENANT);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    m.put(rs.getLong(1), rs.getInt(2));
-                }
+        try {
+            for (Map<String, Object> row : mapper.selectWorkflowTaskCounts(TENANT)) {
+                m.put(((Number) row.get("workflowId")).longValue(),
+                        ((Number) row.get("n")).intValue());
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             // 数不出来就当 0，不能让列表整体 500
             log.error("[WARN] 统计流程节点数失败: {}", e.getMessage());
         }
