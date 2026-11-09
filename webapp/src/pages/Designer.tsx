@@ -487,7 +487,9 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
         method: 'PUT',
         body: JSON.stringify({
           method, params,
-          resourceId: isDevice ? (deviceId ?? 0) : undefined,
+          // P-10：0 = 显式解绑，缺字段 = 不改。内置节点不是设备节点，
+          // 必须显式解绑（否则历史绑定会留在表/图里）；设备节点没选设备也是 0。
+          resourceId: isDevice ? (deviceId ?? 0) : 0,
         }),
       });
       const j = await r.json();

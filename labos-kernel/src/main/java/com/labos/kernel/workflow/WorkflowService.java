@@ -568,6 +568,13 @@ public final class WorkflowService {
             ps.setLong(3, runId);
             ps.executeUpdate();
         }
+        // P-09：失败同样是"执行体收尾"，不再会派发新命令。
+        try {
+            RunExecPhase.markSettled(db, tenantId, runId);
+        } catch (SQLException e) {
+            System.err.println("[WARN] run#" + runId + " exec_phase 未落 SETTLED："
+                    + e.getMessage());
+        }
     }
 
     /**
@@ -2701,6 +2708,17 @@ public final class WorkflowService {
             ps.setLong(2, tenantId);
             ps.setLong(3, runId);
             ps.executeUpdate();
+        }
+        // P-09：执行体收尾（含转人工的 paused）—— 但真正的"暂停等我点继续"
+        // 走的是上面 isRunPaused 的 early return，那种单不落 SETTLED。
+        if (!"paused".equals(status)) {
+            try {
+                RunExecPhase.markSettled(db, tenantId, runId);
+            } catch (SQLException e) {
+                // 阶段标记是旁路事实，写不上不能把已经跑完的单标成失败。
+                System.err.println("[WARN] run#" + runId + " exec_phase 未落 SETTLED："
+                        + e.getMessage());
+            }
         }
         if (manual) {
             // 台账 6.5：有人值守时落一条待决窗口。放在状态 UPDATE 之后 ——

@@ -737,6 +737,18 @@ public final class DriverStepExecutor implements StepExecutor {
                         "命令账本写入失败：" + ex.getMessage(), null, 0);
             }
         }
+        // P-09：**派发前**就把 run 的执行阶段升到 DISPATCH_STARTED。
+        // 时序很关键：崩在「已下发、未回包」的窗口时 run_command 还没落库，
+        // 只有这个先于派发的标记能诚实地说明"这条单可能已经动过设备"。
+        if (db != null && runId > 0) {
+            try {
+                com.labos.kernel.workflow.RunExecPhase.markDispatched(db, tenantId, runId);
+            } catch (java.sql.SQLException e) {
+                // 旁路：标不上也不能挡住物理命令的派发（挡住反而让现场停摆）。
+                System.err.println("[WARN] run#" + runId + " exec_phase 未升级："
+                        + e.getMessage());
+            }
+        }
         try {
             DriverResult r = doExecuteCommand(driver, ctx, cmd, workflowId, ledgerId);
             if (ledgerId > 0L) {

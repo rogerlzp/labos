@@ -67,6 +67,8 @@ cat /tmp/_schema_header.sql \
     99q_handoff_intervention.sql \
     99r_handoff_manual_window.sql \
     99s_command_abort.sql \
+    99t_run_status_cancelled.sql \
+    99u_run_exec_phase.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

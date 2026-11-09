@@ -2651,7 +2651,12 @@ public final class QueryService {
     /**
      * 同 {@link #updateNodeBinding(long, String, String, String)}，额外绑定设备。
      *
-     * @param resourceId 设备资源 id（null = 不改动绑定）
+     * @param resourceId 设备资源 id。**契约（P-10 定案，2026-11-09）**：
+     *                   {@code null} = 不改动绑定；{@code 0}（或负数）= 显式解绑；
+     *                   {@code > 0} = 绑定到该资源。
+     *                   改动前 null 会写成 SQL NULL，而 XML 侧的
+     *                   {@code patchNodeAttrs} 把 null 当"不改"—— 结果一张表说没绑、
+     *                   图里还绑着，正是本方法注释里最怕的那种漂移。
      *
      * <p>为什么设备也要走这个方法：设备绑定只存在图 XML 的 {@code resource="…"} 属性里，
      * `workflow_node` 没有这一列（见 ROADMAP「表结构没表达流程怎么跑」那条债）。
@@ -2674,21 +2679,25 @@ public final class QueryService {
                 //   builtin       → 记下"这是个内置节点"，方便列表和排查
                 // resource_id 也跟着写：XML 是权威（bpmn-js 还得能打开），
                 // 表是读侧的快路径 —— 两边必须同时改，否则又会漂。
-                try (PreparedStatement ps2 = c.prepareStatement("""
-                        UPDATE workflow_node SET resource_id = ?, updated_at = now()
-                         WHERE tenant_id = ? AND workflow_id = ? AND node_key = ?
-                        """)) {
-                    if (resourceId == null) {
-                        ps2.setNull(1, java.sql.Types.BIGINT);
-                    } else if (resourceId > 0) {
-                        ps2.setLong(1, resourceId);
-                    } else {
-                        ps2.setNull(1, java.sql.Types.BIGINT);
+                // null = 不改动：与 patchNodeAttrs 的 null 语义保持一致
+                //（那边是 `if (resourceId != null)` 才动 XML）。
+                // 只有显式给值才写库，避免"表清了、图里还绑着"。
+                if (resourceId != null) {
+                    try (PreparedStatement ps2 = c.prepareStatement("""
+                            UPDATE workflow_node SET resource_id = ?, updated_at = now()
+                             WHERE tenant_id = ? AND workflow_id = ? AND node_key = ?
+                            """)) {
+                        if (resourceId > 0) {
+                            ps2.setLong(1, resourceId);
+                        } else {
+                            // 0 / 负数 = 显式解绑
+                            ps2.setNull(1, java.sql.Types.BIGINT);
+                        }
+                        ps2.setLong(2, tenantId);
+                        ps2.setLong(3, workflowId);
+                        ps2.setString(4, nodeKey);
+                        ps2.executeUpdate();
                     }
-                    ps2.setLong(2, tenantId);
-                    ps2.setLong(3, workflowId);
-                    ps2.setString(4, nodeKey);
-                    ps2.executeUpdate();
                 }
                 try (PreparedStatement ps = c.prepareStatement("""
                         UPDATE workflow_node

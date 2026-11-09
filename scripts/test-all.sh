@@ -129,6 +129,10 @@ DB=(
   "workflow.PauseCoordinatorDbSelfTest"
   # P-07 第一切片：设备命令账本（派发前落账 / 回包终态 / 重启陈旧派发标 UNKNOWN）
   "driver.CommandLedgerDbSelfTest"
+  # P-11：状态词表 ↔ 库落库能力（枚举双向一致 / varchar 列宽放得下最长码）
+  "workflow.StatusVocabularyDbSelfTest"
+  # P-09：run.exec_phase 单向推进（PREPARED → DISPATCH_STARTED → SETTLED，不倒退）
+  "workflow.RunExecPhaseDbSelfTest"
   # N-10：实验显式 Workcell 绑定落库（有绑定为权威 / 清空回退 island_id / 写入口幂等）
   "workflow.ExperimentWorkcellScopeDbSelfTest"
   # S3 分批执行落库：建批幂等/快照、失败批重跑 attempt_no=2、成功批拒重跑、

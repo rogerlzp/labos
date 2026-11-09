@@ -38,7 +38,8 @@ public final class StatusVocabularySelfTest {
                     "quarantined", "completed", "failed", "aborted", "cancelled", "skipped"),
             "node", List.of("pending", "ready", "running", "completed", "failed", "manual",
                     "skipped", "aborted", "bypassed"),
-            "step", List.of("pending", "running", "completed", "failed", "skipped", "paused"),
+            // P-11（2026-11-09）：去掉永远写不出来的 paused，补上 stepStatus() 真会写的 aborted
+            "step", List.of("pending", "running", "completed", "failed", "aborted", "skipped"),
             "experiment", List.of("created", "planned", "queued", "running", "paused",
                     "completed", "finished", "failed", "aborted", "cancelled", "skipped",
                     "deleted"),
@@ -49,7 +50,7 @@ public final class StatusVocabularySelfTest {
     private static final Map<String, List<String>> EXPECTED_TERMINAL = Map.of(
             "run", List.of("completed", "failed", "aborted", "cancelled", "skipped"),
             "node", List.of("completed", "failed", "skipped", "aborted", "bypassed"),
-            "step", List.of("completed", "failed", "skipped"),
+            "step", List.of("completed", "failed", "aborted", "skipped"),
             "experiment", List.of("completed", "finished", "failed", "aborted", "cancelled",
                     "skipped", "deleted"),
             "batch", List.of("completed", "failed", "aborted"),
@@ -59,7 +60,7 @@ public final class StatusVocabularySelfTest {
     private static final Map<String, List<String>> EXPECTED_ACTIVE = Map.of(
             "run", List.of("queued", "running", "paused", "quarantined"),
             "node", List.of("running", "manual"),
-            "step", List.of("running", "paused"),
+            "step", List.of("running"),
             "experiment", List.of("queued", "running", "paused"),
             "batch", List.of("queued", "running", "paused"),
             // NONE 不在途，其余三个控制态都是"控制过程在途"
@@ -73,7 +74,7 @@ public final class StatusVocabularySelfTest {
 
     public static void main(String[] args) {
         section("1. 契约版本与 scope 集");
-        eq("version = 2026-11-07", "2026-11-07", StatusVocabulary.VERSION);
+        eq("version = 2026-11-07", "2026-11-09", StatusVocabulary.VERSION);
         eq("scope 顺序", List.of("run", "node", "step", "experiment", "batch", "control"),
                 StatusVocabulary.scopes());
 

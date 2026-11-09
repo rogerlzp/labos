@@ -31,7 +31,7 @@ import java.util.Map;
 public final class StatusVocabulary {
 
     /** 契约版本：词表内容变更时同步递增，前端可据此判缓存是否过期。 */
-    public static final String VERSION = "2026-11-07";
+    public static final String VERSION = "2026-11-09";
 
     /** scope 名（与前端、数据库列取值一致）。 */
     public static final String SCOPE_RUN = "run";
@@ -142,13 +142,20 @@ public final class StatusVocabulary {
                 new StatusDef("aborted", "已终止", "red", true, false),
                 new StatusDef("bypassed", "分支未选中", "default", true, false)));
 
+        // P-11 核实（2026-11-09）：step 落到 run_command.status，取值由
+        // WorkflowService.stepStatus() 决定 —— completed / aborted / failed。
+        //   · 原来这里写的是 "paused"，但**没有任何写入路径**会产生 step 级 paused
+        //     （暂停发生在 run/node 边界，命令层不会被暂停）⇒ 删掉，别让界面
+        //     承诺一个永远不会出现的状态；
+        //   · 原来**缺** "aborted"，而 EC-99-0005（命令被中止）就是落成 aborted
+        //     ⇒ 补上，否则界面显示原始码。
         SCOPES.put(SCOPE_STEP, List.of(
                 new StatusDef("pending", "未执行", "default", false, false),
                 new StatusDef("running", "执行中", "blue", false, true),
                 new StatusDef("completed", "已执行", "green", true, false),
                 new StatusDef("failed", "失败", "red", true, false),
-                new StatusDef("skipped", "已跳过", "orange", true, false),
-                new StatusDef("paused", "已暂停", "orange", false, true)));
+                new StatusDef("aborted", "已中止", "orange", true, false),
+                new StatusDef("skipped", "已跳过", "orange", true, false)));
 
         SCOPES.put(SCOPE_EXPERIMENT, List.of(
                 new StatusDef("created", "已建", "default", false, false),
