@@ -32,6 +32,9 @@ public interface QueryMapper {
 
     int countDevicesUnderIsland(long tenantId, long islandId);
 
+    /** 按 id 查策略作用域（PATCH 没带 scope 时用）。查不到返回 null。 */
+    String selectPolicyScope(long tenantId, long policyId);
+
     int bumpExperimentVersion(long tenantId, long experimentId);
 
     int setDeviceMethodInterruptible(long tenantId, long deviceId,

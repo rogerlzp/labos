@@ -106,7 +106,6 @@ public final class ApiServer {
     private final DeviceApi deviceApi = new DeviceApi(this);
     private final RunApi runApi = new RunApi(this);
     private final WorkflowApi workflowApi = new WorkflowApi(this);
-    private final OpsApi opsApi = new OpsApi(this);
     private final ExperimentApi experimentApi = new ExperimentApi(this);
 
 
@@ -180,7 +179,6 @@ public final class ApiServer {
                     // SchedulerApi / MetaApi 已拆成注解式 Controller
                     || runApi.handle(ex, path, method)
                     || workflowApi.handle(ex, path, method)
-                    || opsApi.handle(ex, path, method)
                     || experimentApi.handle(ex, path, method)) {
                 return;
             }
@@ -212,7 +210,7 @@ public final class ApiServer {
     }
 
     /** 从极简 JSON body 里取字符串字段（无依赖，够用即可）。 */
-    static String jsonField(String body, String key) {
+    public static String jsonField(String body, String key) {
         if (body == null || body.isBlank()) {
             return null;
         }
@@ -364,7 +362,7 @@ public final class ApiServer {
      * 其它带中文/空格/百分号的参数（实验名、vars 表达式）也会同样失真。
      * 解码失败（非法 {@code %} 序列）时退回原值，不让参数解析把请求打成 500。
      */
-    static String paramStr(String query, String key) {
+    public static String paramStr(String query, String key) {
         if (query == null) {
             return null;
         }
@@ -382,7 +380,7 @@ public final class ApiServer {
     }
 
     /** 取一个 long 字段（带不带引号都认）。id 类字段用这个，别用 jsonInt（会溢出）。 */
-    static Long jsonLong(String body, String key) {
+    public static Long jsonLong(String body, String key) {
         if (body == null) {
             return null;
         }
@@ -391,7 +389,16 @@ public final class ApiServer {
         return m.find() ? Long.valueOf(m.group(1)) : null;
     }
 
-    static Integer jsonInt(String body, String key) {
+    public static Boolean jsonBool(String body, String key) {
+        if (body == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"" + key + "\"\\s*:\\s*(true|false)").matcher(body);
+        return m.find() ? Boolean.valueOf(m.group(1)) : null;
+    }
+
+    public static Integer jsonInt(String body, String key) {
         if (body == null) {
             return null;
         }
@@ -454,7 +461,7 @@ public final class ApiServer {
         return def;
     }
 
-    static String err(String msg) {
+    public static String err(String msg) {
         return Jsons.obj("error", msg);
     }
 

@@ -46,6 +46,10 @@
          WHERE tenant_id = #{param1} AND parent_id = #{param2} AND kind = 'device'
     </select>
 
+    <select id="selectPolicyScope" resultType="java.lang.String">
+        SELECT scope FROM recovery_policy WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
     <update id="bumpExperimentVersion">
         UPDATE experiment SET version = version + 1, updated_at = now()
          WHERE tenant_id = #{param1} AND id = #{param2}

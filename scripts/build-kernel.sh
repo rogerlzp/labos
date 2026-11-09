@@ -41,7 +41,7 @@ if [[ ! -f lib/spring/spring-jdbc-6.1.6.jar ]]; then
 fi
 
 # ---- ② 编译既有源码（classpath 不含 spring：DbConfig 用反射桥接）----
-javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
       $(find src/main -name '*.java')
 echo "✓ 既有源码编译完成（DbConfig 直接使用 Spring JDBC）"
 
@@ -51,7 +51,7 @@ cp -f src/boot/resources/* out/ 2>/dev/null || true
 cp -f src/boot/resources/mapper/*.xml out/mapper/ 2>/dev/null || true
 
 # ---- ③ 编译 Spring Boot 容器层 ----
-javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
       $(find src/boot/java -name '*.java')
 echo "✓ Spring Boot 容器层编译完成"
 
