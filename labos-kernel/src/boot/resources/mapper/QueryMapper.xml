@@ -95,6 +95,12 @@
         SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
+    <select id="selectNodeCode" resultType="java.lang.String">
+        SELECT code FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2}
+           AND kind = #{param3}::resource_kind
+    </select>
+
     <select id="selectParentIdOfNode" resultType="java.lang.Long">
         SELECT parent_id FROM resource_node
          WHERE tenant_id = #{param1} AND id = #{param2}

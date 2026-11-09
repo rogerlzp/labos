@@ -1735,17 +1735,9 @@ throw e;
                     throw new IllegalArgumentException("岛屿不存在: " + islandId);
                 }
 
-                String code;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT code FROM resource_node WHERE tenant_id = ? AND id = ? AND kind = 'device'")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, resourceId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next()) {
-                            throw new IllegalArgumentException("设备不存在: " + resourceId);
-                        }
-                        code = rs.getString(1);
-                    }
+                String code = queryMapper.selectNodeCode(tenantId, resourceId, "device");
+                if (code == null) {
+                    throw new IllegalArgumentException("设备不存在: " + resourceId);
                 }
 
                 int n;
@@ -3386,17 +3378,9 @@ throw e;
         try (Connection c = db.open()) {
             try {
                 // 1) 岛屿必须存在且是 island
-                String islandPath;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT path FROM resource_node WHERE tenant_id = ? AND id = ? AND kind = 'island'")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, islandId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next()) {
-                            throw new IllegalArgumentException("岛屿不存在: " + islandId);
-                        }
-                        islandPath = rs.getString(1);
-                    }
+                String islandPath = queryMapper.selectIslandPath(tenantId, islandId);
+                if (islandPath == null) {
+                    throw new IllegalArgumentException("岛屿不存在: " + islandId);
                 }
 
                 // 2) 资源树节点
@@ -3421,16 +3405,8 @@ throw e;
                 // 3) 型号（按 code 查，没有则建）
                 Long capabilityId = null;
                 if (capabilityCode != null && !capabilityCode.isBlank()) {
-                    try (PreparedStatement ps = c.prepareStatement(
-                            "SELECT id FROM capability WHERE tenant_id = ? AND code = ?")) {
-                        ps.setLong(1, tenantId);
-                        ps.setString(2, capabilityCode.trim());
-                        try (ResultSet rs = ps.executeQuery()) {
-                            if (rs.next()) {
-                                capabilityId = rs.getLong(1);
-                            }
-                        }
-                    }
+                    capabilityId = queryMapper.selectCapabilityId(
+                            tenantId, capabilityCode.trim());
                 }
 
                 long deviceId;

@@ -60,6 +60,9 @@ public interface QueryMapper {
     /** 全部流程 id（预检全量扫描）。 */
     List<Long> selectAllWorkflowIds(long tenantId);
 
+    /** 资源节点的编码（按 kind 限定，避免拿到同 id 的其它类型）。 */
+    String selectNodeCode(long tenantId, long resourceNodeId, String kind);
+
     /** 资源节点的父节点（位置 -> 所属设备）；无父节点返回 null。 */
     Long selectParentIdOfNode(long tenantId, long resourceNodeId);
 
