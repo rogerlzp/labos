@@ -88,6 +88,13 @@ public class WorkflowService {
         this.runMapper = mapper;
     }
 
+    /** 流程图保存路径的 SQL（GraphMapper.xml）。由 BeanConfiguration 注入。 */
+    private com.labos.kernel.persistence.GraphMapper graphMapper;
+
+    public void setGraphMapper(com.labos.kernel.persistence.GraphMapper mapper) {
+        this.graphMapper = mapper;
+    }
+
     private static final DateTimeFormatter RUN_FMT =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
@@ -2858,23 +2865,12 @@ public class WorkflowService {
      */
     /** 把当前 XML 存一份到历史表（保存前调用）。 */
     private void backupGraph(long workflowId) throws SQLException {
-        String sql = """
-                INSERT INTO workflow_graph_history
-                  (tenant_id, workflow_id, xml, node_count, edge_count)
-                SELECT ?, id, graph->>'xml',
-                       (SELECT count(*) FROM workflow_node n
-                         WHERE n.workflow_id = w.id AND n.node_type = 'task'),
-                       (SELECT count(*) FROM workflow_edge e WHERE e.workflow_id = w.id)
-                FROM workflow w
-                WHERE w.tenant_id = ? AND w.id = ? AND w.graph->>'xml' IS NOT NULL
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, workflowId);
-            ps.executeUpdate();
+        if (graphMapper == null) {
+            throw new IllegalStateException("GraphMapper 未注入");
         }
+        // 与 saveGraph 的其余写入同处一个 @Transactional：
+        // 备份成功但保存失败时，两者一起回滚，历史里不会多出一条假版本。
+        graphMapper.backupGraph(tenantId, workflowId);
     }
 
     /**
@@ -3099,7 +3095,6 @@ public class WorkflowService {
         Map<String, Long> methodCap = loadMethodCapability();
 
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 // 1) 现有节点
                 Set<String> existing = new LinkedHashSet<>();
@@ -3120,11 +3115,7 @@ public class WorkflowService {
                 }
 
                 // 2) 清掉上一版边
-                try (PreparedStatement ps = c.prepareStatement(
-                        "DELETE FROM workflow_edge WHERE workflow_id = ?")) {
-                    ps.setLong(1, workflowId);
-                    ps.executeUpdate();
-                }
+                graphMapper.deleteEdges(workflowId);
 
                 // 3) 增量 upsert 节点
                 int added = 0;
@@ -3265,14 +3256,11 @@ public class WorkflowService {
                     ps.executeUpdate();
                 }
 
-                c.commit();
                 return new SaveResult(graph.nodes().size(), graph.edges().size(),
                         added, updated, removed, unlabeled);
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             } finally {
-                c.setAutoCommit(true);
             }
         }
     }

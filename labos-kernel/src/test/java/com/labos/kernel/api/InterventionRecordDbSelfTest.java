@@ -20,7 +20,7 @@ public final class InterventionRecordDbSelfTest {
                              + "AND plate_barcode='SELF-L01-PLATE'")) {
             ps.executeUpdate();
         }
-        QueryService q = new QueryService(db, tenant);
+        QueryService q = com.labos.kernel.support.TestSpringSupport.queryService();
         long id = q.recordIntervention(0L, -900001L, null, "selftest", "CONTINUE",
                 "SELF-L01-PLATE", "SAMPLE-1", "A-01", "B-02", "resolved", "自测");
         check("人工介入记录可落库", id > 0, id);

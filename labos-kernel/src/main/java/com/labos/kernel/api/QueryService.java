@@ -1214,7 +1214,6 @@ public class QueryService {
                 VALUES (?, ?, ?, ?, ?, ?)
                 """;
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 try (PreparedStatement ps = c.prepareStatement(del)) {
                     ps.setLong(1, tenantId);
@@ -1239,10 +1238,8 @@ public class QueryService {
                     }
                     ps.executeBatch();
                 }
-                c.commit();
                 return n;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -1314,7 +1311,6 @@ public class QueryService {
             throw new IllegalArgumentException("orderedIds 里有重复 id");
         }
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 // 先查状态：只允许 created / planned
                 java.util.Map<Long, String> status = new java.util.LinkedHashMap<>();
@@ -1361,10 +1357,8 @@ public class QueryService {
                         n += Math.max(one, 0);
                     }
                 }
-                c.commit();
                 return n;
             } catch (RuntimeException | SQLException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -1377,14 +1371,11 @@ public class QueryService {
             throws SQLException {
         CompiledGraph compiled = linearGraph(workflowIds);
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 validateExperimentWorkflowIds(c, compiled.workflowIds());
                 int n = replaceExperimentProcesses(c, experimentId, compiled, true);
-                c.commit();
                 return n;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -1598,7 +1589,6 @@ public class QueryService {
                 WHERE tenant_id = ? AND id = ?
                 """;
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 // 事务内第一句：串行化所有"用户角色/启用状态"写入。
                 // 固定 key（不是 per-user）：保护判定看的是全局 admin 计数，
@@ -1616,7 +1606,6 @@ public class QueryService {
                     //（跨用户串行化由上面的 advisory lock 保证，行锁是第二道保险）。
                     UserRoleEnabled target = findUserRoleEnabled(c, id, true);
                     if (target == null) {
-                        c.commit();
                         return 0;
                     }
                     if ("admin".equals(target.role()) && target.enabled()) {
@@ -1636,16 +1625,10 @@ public class QueryService {
                     ps.setLong(6, id);
                     updated = ps.executeUpdate();
                 }
-                c.commit();
                 return updated;
             } catch (SQLException | RuntimeException e) {
                 // 拒绝（如最后一个管理员）以及任何异常都整体回滚，不留半改状态。
-                try {
-                    c.rollback();
-                } catch (SQLException rollbackError) {
-                    e.addSuppressed(rollbackError);
-                }
-                throw e;
+throw e;
             }
         }
     }
@@ -1799,7 +1782,6 @@ public class QueryService {
             }
         }
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 String islandPath;
                 try (PreparedStatement ps = c.prepareStatement(
@@ -1839,10 +1821,8 @@ public class QueryService {
                     ps.setLong(4, resourceId);
                     n = ps.executeUpdate();
                 }
-                c.commit();
                 return n;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -1897,7 +1877,6 @@ public class QueryService {
             rollbackFor = Exception.class)
     public long cloneDevice(long sourceResourceId, long islandId) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 String srcCode;
                 String srcName;
@@ -1965,10 +1944,8 @@ public class QueryService {
                     ps.executeUpdate();
                 }
 
-                c.commit();
                 return newResourceId;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -2130,7 +2107,6 @@ public class QueryService {
         String[] lines = body.split("\\r?\\n");
         int ok = 0;
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 for (int i = 0; i < lines.length; i++) {
                     String line = lines[i].trim();
@@ -2188,10 +2164,8 @@ public class QueryService {
                         ok++;
                     }
                 }
-                c.commit();
                 return ok;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -2380,7 +2354,6 @@ public class QueryService {
                 SET graph = EXCLUDED.graph, updated_at = now()
                 """;
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try (PreparedStatement ps = c.prepareStatement(sql)) {
                 ps.setLong(1, tenantId);
                 ps.setLong(2, experimentId);
@@ -2389,10 +2362,8 @@ public class QueryService {
                 validateExperimentWorkflowIds(c, compiled.workflowIds());
                 replaceExperimentProcesses(c, experimentId, compiled, false);
                 bumpExperimentVersion(c, experimentId);
-                c.commit();
                 return compiled.steps().size();
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -2459,7 +2430,6 @@ public class QueryService {
                 : code.trim();
 
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 long id;
                 try (PreparedStatement ps = c.prepareStatement("""
@@ -2488,11 +2458,9 @@ public class QueryService {
                     // 避免"新建的实验有流程、没有边"这种半成品状态。
                     replaceExperimentProcesses(c, id, linearGraph(workflowIds), false);
                 }
-                c.commit();
                 return Jsons.obj("id", id, "experimentNo", no,
                         "processes", workflowIds == null ? 0 : workflowIds.size());
             } catch (SQLException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -2598,7 +2566,6 @@ public class QueryService {
             rollbackFor = Exception.class)
     public boolean updateErrorCode(long id, Map<String, String> fields) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 List<String> sets = new ArrayList<>();
                 List<Object> args = new ArrayList<>();
@@ -2654,10 +2621,8 @@ public class QueryService {
                         ps.executeUpdate();
                     }
                 }
-                c.commit();
                 return true;
             } catch (SQLException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -2710,7 +2675,6 @@ public class QueryService {
         }
         String m = method == null ? "" : method.trim();
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 // workflow_node 没有 protocol_name 列（方法从 XML 的 protocolName 来，
                 // 设备任务另有 protocol_id）。所以这里只写 params：
@@ -2792,10 +2756,8 @@ public class QueryService {
                         }
                     }
                 }
-                c.commit();
                 return true;
             } catch (SQLException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -3028,7 +2990,6 @@ public class QueryService {
                              Integer maxAttempts, String params, Integer priority,
                              Boolean enabled) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 Long existId = null;
                 try (PreparedStatement ps = c.prepareStatement("""
@@ -3090,10 +3051,8 @@ public class QueryService {
                         }
                     }
                 }
-                c.commit();
                 return id;
             } catch (SQLException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -3155,7 +3114,6 @@ public class QueryService {
             rollbackFor = Exception.class)
     public long deployModel(long modelId, long islandId) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 String modelName;
                 String modelCode;
@@ -3243,10 +3201,8 @@ public class QueryService {
                     ps.executeUpdate();
                 }
 
-                c.commit();
                 return rid;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -3530,7 +3486,6 @@ public class QueryService {
         }
 
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 // 1) 岛屿必须存在且是 island
                 String islandPath;
@@ -3634,10 +3589,8 @@ public class QueryService {
                     ps.executeUpdate();
                 }
 
-                c.commit();
                 return resourceId;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 if (e instanceof java.sql.SQLIntegrityConstraintViolationException) {
                     throw new IllegalArgumentException("设备编号已存在: " + code);
                 }
@@ -3658,7 +3611,6 @@ public class QueryService {
     public int updateDevice(long resourceId, String name, String ip, Long driverId,
                             String capabilityCode) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 if (name != null && !name.isBlank()) {
                     try (PreparedStatement ps = c.prepareStatement("""
@@ -3719,10 +3671,8 @@ public class QueryService {
                     n = ps.executeUpdate();
                 }
 
-                c.commit();
                 return n;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -3738,7 +3688,6 @@ public class QueryService {
             rollbackFor = Exception.class)
     public int deleteDevice(long resourceId) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 try (PreparedStatement ps = c.prepareStatement("""
                         UPDATE device_instance
@@ -3752,10 +3701,8 @@ public class QueryService {
                 // 不删 resource_node：run_node.resource_id 可能引用它（外键会挡住），
                 // 且历史执行记录要能查回"这台设备当时在哪"。
                 // 拓扑查询会过滤 deleted_at IS NOT NULL，界面上等于删掉了。
-                c.commit();
                 return 1;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -3929,7 +3876,6 @@ public class QueryService {
     public int setExperimentHandoffs(long experimentId,
                                      java.util.List<long[]> pairs) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 java.util.Set<Long> bound = new java.util.LinkedHashSet<>();
                 try (PreparedStatement ps = c.prepareStatement(
@@ -3938,7 +3884,6 @@ public class QueryService {
                     ps.setLong(2, experimentId);
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!rs.next() || rs.getInt(1) == 0) {
-                            c.rollback();
                             return -1;
                         }
                     }
@@ -3956,11 +3901,9 @@ public class QueryService {
                 }
                 for (long[] p : pairs) {
                     if (p == null || p.length < 2 || p[0] <= 0 || p[1] <= 0 || p[0] == p[1]) {
-                        c.rollback();
                         return -2;
                     }
                     if (!bound.isEmpty() && (!bound.contains(p[0]) || !bound.contains(p[1]))) {
-                        c.rollback();
                         return -2;
                     }
                 }
@@ -3989,10 +3932,8 @@ public class QueryService {
                     }
                     n = ps.executeBatch().length;
                 }
-                c.commit();
                 return n;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -4009,7 +3950,6 @@ public class QueryService {
     public int confirmHandoff(long experimentId, long fromWorkcellId, long toWorkcellId,
                               String operator, String note) throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 int n;
                 try (PreparedStatement ps = c.prepareStatement("""
@@ -4080,10 +4020,8 @@ public class QueryService {
                         ps.executeUpdate();
                     }
                 }
-                c.commit();
                 return n;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }
@@ -4418,7 +4356,6 @@ public class QueryService {
     public int setExperimentWorkcells(long experimentId, List<Long> workcellIds)
             throws SQLException {
         try (Connection c = db.open()) {
-            c.setAutoCommit(false);
             try {
                 try (PreparedStatement ps = c.prepareStatement(
                         "SELECT count(*) FROM experiment WHERE tenant_id = ? AND id = ?")) {
@@ -4426,7 +4363,6 @@ public class QueryService {
                     ps.setLong(2, experimentId);
                     try (ResultSet rs = ps.executeQuery()) {
                         if (!rs.next() || rs.getInt(1) == 0) {
-                            c.rollback();
                             return -1;
                         }
                     }
@@ -4458,10 +4394,8 @@ public class QueryService {
                         n = ps.executeBatch().length;
                     }
                 }
-                c.commit();
                 return n;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
                 throw e;
             }
         }

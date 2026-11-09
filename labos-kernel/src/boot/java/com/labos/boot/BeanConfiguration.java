@@ -7,6 +7,7 @@ import com.labos.kernel.driver.HeartbeatService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.WorkflowMapper;
 import com.labos.kernel.persistence.RunMapper;
+import com.labos.kernel.persistence.GraphMapper;
 import com.labos.kernel.workflow.ExperimentScheduler;
 import com.labos.kernel.workflow.WorkflowService;
 import org.springframework.context.annotation.Bean;
@@ -48,12 +49,13 @@ public class BeanConfiguration {
 
     @Bean
     public WorkflowService workflowService(DbConfig db, WorkflowMapper workflowMapper,
-                                       RunMapper runMapper) {
+                                       RunMapper runMapper, GraphMapper graphMapper) {
         int driverPort = Integer.parseInt(
                 System.getenv().getOrDefault("LABOS_DRIVER_PORT", "19301"));
         WorkflowService ws = new WorkflowService(db, TENANT, driverPort);
         ws.setWorkflowMapper(workflowMapper);
         ws.setRunMapper(runMapper);
+        ws.setGraphMapper(graphMapper);
         return ws;
     }
 

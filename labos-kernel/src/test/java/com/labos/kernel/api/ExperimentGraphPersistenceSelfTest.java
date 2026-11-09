@@ -37,7 +37,7 @@ public final class ExperimentGraphPersistenceSelfTest {
             return;
         }
         db = DbConfig.fromEnv();
-        query = new QueryService(db, TENANT);
+        query = com.labos.kernel.support.TestSpringSupport.queryService();
 
         workflowIds = loadWorkflowIds();
         if (workflowIds.size() < 2) {

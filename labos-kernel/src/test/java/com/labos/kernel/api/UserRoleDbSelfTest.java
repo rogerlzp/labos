@@ -39,7 +39,7 @@ public final class UserRoleDbSelfTest {
             return;
         }
         db = DbConfig.fromEnv();
-        query = new QueryService(db, TENANT);
+        query = com.labos.kernel.support.TestSpringSupport.queryService();
         cleanup();
         try {
             runChecks();

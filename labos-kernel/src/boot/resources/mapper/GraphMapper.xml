@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 流程图保存路径。调用方 com.labos.kernel.persistence.GraphMapper -->
+<mapper namespace="com.labos.kernel.persistence.GraphMapper">
+
+    <!-- 备份上一版图。node_count 只数 task 节点，edge_count 数边；
+         当前没有图时不写历史行，避免给新流程塞一条空版本。 -->
+    <insert id="backupGraph">
+        INSERT INTO workflow_graph_history
+            (tenant_id, workflow_id, xml, node_count, edge_count)
+        SELECT #{param1}, w.id, w.graph->>'xml',
+               (SELECT count(*) FROM workflow_node n
+                 WHERE n.workflow_id = w.id AND n.node_type = 'task'),
+               (SELECT count(*) FROM workflow_edge e WHERE e.workflow_id = w.id)
+          FROM workflow w
+         WHERE w.tenant_id = #{param1}
+           AND w.id = #{param2}
+           AND w.graph->>'xml' IS NOT NULL
+    </insert>
+
+    <delete id="deleteEdges">
+        DELETE FROM workflow_edge WHERE workflow_id = #{param1}
+    </delete>
+
+    <select id="selectGraphXml" resultType="java.lang.String">
+        SELECT graph->>'xml'
+          FROM workflow
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+    </select>
+
+</mapper>

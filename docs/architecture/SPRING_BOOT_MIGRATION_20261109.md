@@ -142,11 +142,43 @@ Spring MVC 后改 `HandlerInterceptor` 自动注入。
 （`test-sidecar.sh` 靠 stdout 的 md5 比对 `models.json`，是数据管道不是日志）。
 修复后 `test-sidecar.sh` **7/0**、独立模拟器启动正常。
 
+**2026-11-09 续：三项继续推进**
+
+① **SQL 进 XML（累计 12 条）**：新增 `GraphMapper.xml`
+（`backupGraph` / `deleteEdges` / `selectGraphXml`）。`WorkflowService.backupGraph`
+与 `saveGraph` 的"清旧边"改走 Mapper；`saveGraph` 里 4 行显式事务语句删除后，
+**备份上一版与全部写入同处一个 `@Transactional`** —— 以前备份在正式保存的
+事务之外，备份成功但保存失败会多出一条假历史版本，现在要么全成要么全滚。
+实测：新建流程 → 两次 PUT graph → `workflow_graph_history` 2 条、`workflow_edge`
+重建 2 条。
+
+② **显式事务语句物理删除（66 行）**：
+- 前置先解决：`TestSpringSupport` 让 6 个直接 `new QueryService` 的 DB 自测
+  拿到 Spring CGLIB 代理（池收窄到 2 条 + 懒连 + JVM 关闭钩子），
+  6 个自测全绿（6/0、3/0、3/0、7/0、13/0、10/0）。
+- `QueryService` 删 62 行（19 处 `setAutoCommit(false)` 及配套 commit/rollback），
+  这些方法已有 21 个 `@Transactional`，事务改由 Spring 管。
+- `WorkflowService.saveGraph` 删 4 行。
+- **保留 27 处**：`PauseCoordinator` / `BatchOrchestrator` / `CommandLedger` /
+  `PositionLock` 等静态工具类，以及 `WorkflowService.doResumeAsync`
+  （private、后台 worker 线程调用，不经过 AOP 代理）—— 它们没有代理，
+  显式事务就是它们唯一的事务边界，删了会失去原子性。要删必须先把它们
+  Bean 化或迁到 Mapper 调用链，属后续按模块推进。
+
+③ **第一个注解式 Controller 落地**：`MetaController` 拆出
+`/api/meta/status-vocabulary`、`/api/capabilities`、
+`/api/capabilities/{code}/methods` 三个纯读端点。
+`ApiAuthInterceptor` 复用 `ApiServer.isPublic/AUTH_ENABLED` 与
+`AuthService.verify`，**只作用于 `com.labos.boot.web.controller` 包下的
+HandlerMethod**，旧 `LegacyRouteController` 链路一行不动、仍由 route() 自己鉴权
+（避免把已验证的 40+ 端点改出 401）。实测：有 token 三个端点 200、
+无 token `/api/meta/status-vocabulary` → 401、旧端点 topology/workflows/health 全 200。
+
 **仍未完成**：
-- 约 128 条 SQL 按聚合收进 Mapper（`run_node` / `run_command` / `experiment` /
+- 约 125 条 SQL 按聚合收进 Mapper（`run_node` / `run_command` / `experiment` /
   `device` / `command_ledger` …）；
-- 46 处显式事务语句的物理删除（前置：5 个 DB 自测容器化）；
-- 把 9 个 `*Api` 逐个拆成注解式 `@RestController`，届时删除
+- 27 处静态工具类的显式事务（前置：Bean 化 / Mapper 化）；
+- 其余 8 个 `*Api` 按 `MetaController` 的范式逐个拆，拆完删除
   `ServletHttpExchange` 适配层；
 - `ServletHttpExchange` 是**迁移期适配层**，不是长期架构。
 

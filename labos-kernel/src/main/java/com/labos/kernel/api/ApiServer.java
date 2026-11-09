@@ -96,7 +96,7 @@ public final class ApiServer {
     final ExperimentScheduler scheduler;
     /** 设备心跳：每 10 秒探活一次，结果写 device_state.online。 */
     final com.labos.kernel.driver.HeartbeatService heartbeat;
-    private static final boolean AUTH_ENABLED = !"0".equals(System.getenv("LABOS_AUTH"));
+    public static final boolean AUTH_ENABLED = !"0".equals(System.getenv("LABOS_AUTH"));
     /** 请求体上限 1 MB。 */
     private static final long MAX_BODY = 1024L * 1024L;
     final WorkflowService workflows;
@@ -322,7 +322,7 @@ public final class ApiServer {
      * <p><b>登录接口必须在白名单里</b>——否则鉴权前置后，连登录都被拦住，
      * 系统直接不可用（这个坑 P0-1 修复时踩过一次）。
      */
-    static boolean isPublic(String path) {
+    public static boolean isPublic(String path) {
         return "/health".equals(path)
                 || "/api/auth/login".equals(path)
                 || "/".equals(path)
@@ -332,7 +332,7 @@ public final class ApiServer {
                 || path.startsWith("/assets/");
     }
 
-    static String bearer(HttpExchange ex) {
+    public static String bearer(HttpExchange ex) {
         String h = ex.getRequestHeaders().getFirst("Authorization");
         if (h == null) {
             return null;

@@ -15,7 +15,7 @@ public final class PositionEvidenceDbSelfTest {
     public static void main(String[] args) throws Exception {
         DbConfig db = DbConfig.fromEnv();
         cleanup(db);
-        QueryService q = new QueryService(db, 1L);
+        QueryService q = com.labos.kernel.support.TestSpringSupport.queryService();
         long id = q.recordPositionEvidence(PLATE, null, "MANUAL", -997001L,
                 "tester", "人工盘点：ID1183-L3");
         check("位置证据可落库", id > 0, id);

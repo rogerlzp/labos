@@ -28,7 +28,7 @@ public final class ExperimentWorkcellScopeDbSelfTest {
         db = DbConfig.fromEnv();
         cleanup();
         try {
-            QueryService q = new QueryService(db, TENANT);
+            QueryService q = com.labos.kernel.support.TestSpringSupport.queryService();
             seed();
             int n = q.setExperimentWorkcells(EXP, List.of(993101L, 993102L));
             check("绑定写入口写入 2 条", n == 2, n);
