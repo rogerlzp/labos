@@ -826,7 +826,7 @@ public class QueryService {
         String baseSql = "SELECT actual_start FROM run WHERE tenant_id = ? AND id = ?";
         String sql = """
                 SELECT id, node_key, name, status::text AS status, level,
-                       parent_node_id, step_seq, resource_id,
+                       parent_node_id, step_seq, resource_id, loop_index,
                        actual_start, actual_end,
                        EXTRACT(EPOCH FROM (actual_end - actual_start)) * 1000 AS dur_ms
                 FROM run_node

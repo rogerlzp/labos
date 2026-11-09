@@ -18,7 +18,9 @@
     </select>
 
     <select id="selectRunWorkflow" resultType="java.util.Map">
-        SELECT workflow_id AS workflowId, status::text AS status
+        <!-- PostgreSQL 未加引号的别名一律转小写，resultType=map 的 key 就是小写列名；
+             这里必须加引号保留驼峰，否则 Java 侧 get("workflowId") 拿到 null（实测 NPE）。 -->
+        SELECT workflow_id AS "workflowId", status::text AS "status"
           FROM run
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>

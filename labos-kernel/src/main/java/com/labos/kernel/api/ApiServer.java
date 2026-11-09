@@ -104,7 +104,6 @@ public final class ApiServer {
 
     // 路由 controller（构造时注入 this；与 route() 分发一一对应）
     private final DeviceApi deviceApi = new DeviceApi(this);
-    private final RunApi runApi = new RunApi(this);
     private final WorkflowApi workflowApi = new WorkflowApi(this);
     private final ExperimentApi experimentApi = new ExperimentApi(this);
 
@@ -177,7 +176,6 @@ public final class ApiServer {
             // 不再走这条分发链；鉴权拦截器在 Spring MVC 层先命中。
             if (deviceApi.handle(ex, path, method)
                     // SchedulerApi / MetaApi 已拆成注解式 Controller
-                    || runApi.handle(ex, path, method)
                     || workflowApi.handle(ex, path, method)
                     || experimentApi.handle(ex, path, method)) {
                 return;
@@ -411,7 +409,7 @@ public final class ApiServer {
     }
 
     /** ?mode=unattended 时走无人值守。 */
-    static String modeParam(String query) {
+    public static String modeParam(String query) {
         if (query != null && query.contains("mode=unattended")) {
             return WorkflowService.UNATTENDED;
         }
