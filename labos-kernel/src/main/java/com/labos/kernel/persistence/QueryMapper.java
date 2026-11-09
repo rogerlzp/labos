@@ -2,6 +2,8 @@ package com.labos.kernel.persistence;
 
 import org.apache.ibatis.annotations.Param;
 
+import java.util.List;
+
 import java.util.Map;
 
 /**
@@ -34,6 +36,27 @@ public interface QueryMapper {
 
     /** 按 id 查策略作用域（PATCH 没带 scope 时用）。查不到返回 null。 */
     String selectPolicyScope(long tenantId, long policyId);
+
+    /** run 的实际开始时间（甘特图相对时间的基准）。 */
+    java.sql.Timestamp selectRunActualStart(long tenantId, long runId);
+
+    /**
+     * 串行化「用户角色/启用状态」写入的事务级咨询锁。
+     *
+     * <p>固定 key（不是 per-user）：保护判定看的是全局 admin 计数，
+     * 锁必须覆盖「任意两个用户同时改角色」的交叉场景。
+     */
+    void lockUserRole();
+
+    /** 岛的 path（移设备/建设备时拼子节点路径）。 */
+    String selectIslandPath(long tenantId, long islandId);
+
+    Long selectCapabilityId(long tenantId, String code);
+
+    Long selectDeviceIdByCode(long tenantId, String code);
+
+    /** 批量取实验状态（调序前校验）。id IN 用 foreach，替换手写 ANY(?) + createArrayOf。 */
+    List<Map<String, Object>> selectExperimentStatuses(long tenantId, List<Long> ids);
 
     int bumpExperimentVersion(long tenantId, long experimentId);
 

@@ -830,7 +830,7 @@ public class QueryService {
      * <p>返回相对毫秒（相对 run 开始），前端不用处理时区。
      */
     public String timelineJson(long runId) throws SQLException {
-        String baseSql = "SELECT actual_start FROM run WHERE tenant_id = ? AND id = ?";
+        java.sql.Timestamp runStart = queryMapper.selectRunActualStart(tenantId, runId);
         String sql = """
                 SELECT id, node_key, name, status::text AS status, level,
                        parent_node_id, step_seq, resource_id, loop_index,
@@ -842,16 +842,7 @@ public class QueryService {
                 """;
 
         try (Connection c = db.open()) {
-            java.time.Instant start = null;
-            try (PreparedStatement ps = c.prepareStatement(baseSql)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next() && rs.getObject(1) != null) {
-                        start = rs.getTimestamp(1).toInstant();
-                    }
-                }
-            }
+            java.time.Instant start = runStart == null ? null : runStart.toInstant();
             if (start == null) {
                 return Jsons.obj("runId", runId, "items", new Jsons.Raw(Jsons.arr(List.of())));
             }
@@ -1298,15 +1289,10 @@ public class QueryService {
             try {
                 // 先查状态：只允许 created / planned
                 java.util.Map<Long, String> status = new java.util.LinkedHashMap<>();
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT id, status FROM experiment WHERE tenant_id = ? AND id = ANY(?)")) {
-                    ps.setLong(1, tenantId);
-                    ps.setArray(2, c.createArrayOf("bigint", orderedIds.toArray()));
-                    try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            status.put(rs.getLong(1), rs.getString(2));
-                        }
-                    }
+                for (java.util.Map<String, Object> row
+                        : queryMapper.selectExperimentStatuses(tenantId, orderedIds)) {
+                    status.put(((Number) row.get("id")).longValue(),
+                            String.valueOf(row.get("status")));
                 }
                 java.util.List<Long> unknown = orderedIds.stream()
                         .filter(id -> !status.containsKey(id)).toList();
@@ -1572,11 +1558,7 @@ experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
                 // 事务内第一句：串行化所有"用户角色/启用状态"写入。
                 // 固定 key（不是 per-user）：保护判定看的是全局 admin 计数，
                 // 锁必须覆盖"任意两个用户同时改角色"的交叉场景。
-                try (PreparedStatement lock = c.prepareStatement(
-                        "SELECT pg_advisory_xact_lock(hashtext('labos:user-role'))");
-                     ResultSet rs = lock.executeQuery()) {
-                    rs.next();   // 只为拿到锁；返回值无意义
-                }
+                queryMapper.lockUserRole();   // 只为拿到锁；返回值无意义
 
                 int updated;
                 // 纯改密码不触发"最后管理员"保护；只有改角色/改启用状态才需要判定。
@@ -1748,17 +1730,9 @@ throw e;
         }
         try (Connection c = db.open()) {
             try {
-                String islandPath;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT path FROM resource_node WHERE tenant_id = ? AND id = ? AND kind = 'island'")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, islandId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next()) {
-                            throw new IllegalArgumentException("岛屿不存在: " + islandId);
-                        }
-                        islandPath = rs.getString(1);
-                    }
+                String islandPath = queryMapper.selectIslandPath(tenantId, islandId);
+                if (islandPath == null) {
+                    throw new IllegalArgumentException("岛屿不存在: " + islandId);
                 }
 
                 String code;
@@ -3460,13 +3434,11 @@ throw e;
                 }
 
                 long deviceId;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT id FROM device WHERE tenant_id = ? AND code = ?")) {
-                    ps.setLong(1, tenantId);
-                    ps.setString(2, code.trim());
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) {
-                            deviceId = rs.getLong(1);
+                Long existingDeviceId = queryMapper.selectDeviceIdByCode(tenantId, code.trim());
+                {
+                    {
+                        if (existingDeviceId != null) {
+                            deviceId = existingDeviceId;
                         } else {
                             try (PreparedStatement ins = c.prepareStatement("""
                                     INSERT INTO device
@@ -3549,17 +3521,7 @@ throw e;
                 }
 
                 if (capabilityCode != null && !capabilityCode.isBlank()) {
-                    Long capId = null;
-                    try (PreparedStatement ps = c.prepareStatement(
-                            "SELECT id FROM capability WHERE tenant_id = ? AND code = ?")) {
-                        ps.setLong(1, tenantId);
-                        ps.setString(2, capabilityCode.trim());
-                        try (ResultSet rs = ps.executeQuery()) {
-                            if (rs.next()) {
-                                capId = rs.getLong(1);
-                            }
-                        }
-                    }
+                    Long capId = queryMapper.selectCapabilityId(tenantId, capabilityCode.trim());
                     if (capId != null) {
                         try (PreparedStatement ps = c.prepareStatement("""
                                 UPDATE device SET capability_id = ?

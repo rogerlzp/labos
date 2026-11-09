@@ -73,4 +73,36 @@
          WHERE tenant_id = #{tenantId} AND island_id = #{islandId} AND code = #{code}
     </update>
 
+    <select id="selectRunActualStart" resultType="java.sql.Timestamp">
+        SELECT actual_start FROM run WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <!-- 事务级咨询锁：同一 key 的并发写入串行化，事务结束自动释放。 -->
+    <select id="lockUserRole" resultType="java.lang.String">
+        SELECT pg_advisory_xact_lock(hashtext('labos:user-role'))::text
+    </select>
+
+    <select id="selectIslandPath" resultType="java.lang.String">
+        SELECT path FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'island'
+    </select>
+
+    <select id="selectCapabilityId" resultType="java.lang.Long">
+        SELECT id FROM capability WHERE tenant_id = #{param1} AND code = #{param2}
+    </select>
+
+    <select id="selectDeviceIdByCode" resultType="java.lang.Long">
+        SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
+    </select>
+
+    <select id="selectExperimentStatuses" resultType="java.util.Map">
+        SELECT id AS "id", status::text AS "status"
+          FROM experiment
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach item="one" collection="param2" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </select>
+
 </mapper>
