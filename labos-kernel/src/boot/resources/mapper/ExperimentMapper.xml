@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 实验域清场/校验。调用方 com.labos.kernel.persistence.ExperimentMapper -->
+<mapper namespace="com.labos.kernel.persistence.ExperimentMapper">
+
+    <select id="experimentExists" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM experiment
+             WHERE tenant_id = #{param1} AND id = #{param2})
+    </select>
+
+    <select id="selectExperimentWorkcellIds" resultType="java.lang.Long">
+        SELECT workcell_id FROM experiment_workcell
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </select>
+
+    <delete id="deleteExperimentHandoffs">
+        DELETE FROM experiment_handoff
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </delete>
+
+    <delete id="deleteExperimentWorkcells">
+        DELETE FROM experiment_workcell
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </delete>
+
+    <delete id="deleteExperimentVariables">
+        DELETE FROM experiment_variable
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </delete>
+
+    <!-- 删 process 会级联删 experiment_process_edge（见 97_m95_process_edg）。 -->
+    <delete id="deleteExperimentProcesses">
+        DELETE FROM experiment_process
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </delete>
+
+</mapper>

@@ -35,6 +35,13 @@ public class QueryService {
         this.queryMapper = m;
     }
 
+    /** 实验域清场/校验（ExperimentMapper.xml）。由 BeanConfiguration 注入。 */
+    private com.labos.kernel.persistence.ExperimentMapper experimentMapper;
+
+    public void setExperimentMapper(com.labos.kernel.persistence.ExperimentMapper m) {
+        this.experimentMapper = m;
+    }
+
     /** 健康检查：能连库才算活着。 */
     public String health() throws SQLException {
         java.util.Map<String, Object> row = queryMapper.health();
@@ -1406,12 +1413,7 @@ public class QueryService {
             throws SQLException {
         // 删 process 会级联删 experiment_process_edge（见 97_m95_process_edge.sql 的 FK），
         // 所以边不需要单独清 —— 整体替换天然一致。
-        try (PreparedStatement del = c.prepareStatement(
-                "DELETE FROM experiment_process WHERE tenant_id = ? AND experiment_id = ?")) {
-            del.setLong(1, tenantId);
-            del.setLong(2, experimentId);
-            del.executeUpdate();
-        }
+experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
         // nodeId -> 新生成的 process.id，用于把画布上的边翻译成 process 之间的边
         java.util.Map<String, Long> processIds = new java.util.HashMap<>();
         try (PreparedStatement ins = c.prepareStatement("""
@@ -3820,13 +3822,7 @@ throw e;
                         return -2;
                     }
                 }
-                try (PreparedStatement ps = c.prepareStatement(
-                        "DELETE FROM experiment_handoff "
-                                + "WHERE tenant_id = ? AND experiment_id = ?")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    ps.executeUpdate();
-                }
+                experimentMapper.deleteExperimentHandoffs(tenantId, experimentId);
                 int n = 0;
                 try (PreparedStatement ps = c.prepareStatement("""
                         INSERT INTO experiment_handoff

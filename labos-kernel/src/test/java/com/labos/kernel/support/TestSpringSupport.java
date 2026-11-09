@@ -3,9 +3,12 @@ package com.labos.kernel.support;
 import com.labos.kernel.api.QueryService;
 import com.labos.kernel.persistence.DbConfig;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.mybatis.spring.SqlSessionFactoryBean;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
@@ -59,6 +62,7 @@ public final class TestSpringSupport {
     }
 
     @Configuration
+    @MapperScan("com.labos.kernel.persistence")
     @EnableTransactionManagement
     static class Config {
 
@@ -79,6 +83,21 @@ public final class TestSpringSupport {
                     env("LABOS_DB_PASS", ""));
         }
 
+        /**
+         * Mapper 的 XML 在 out/mapper（classpath:mapper/*.xml）。
+         * 必须用与事务管理器**同一个** DataSource bean，否则 DataSourceUtils
+         * 认不出事务绑定连接（正式容器与 Tx 的教训同源）。
+         */
+        @Bean
+        public org.apache.ibatis.session.SqlSessionFactory sqlSessionFactory(
+                DataSource ds) throws Exception {
+            SqlSessionFactoryBean f = new SqlSessionFactoryBean();
+            f.setDataSource(ds);
+            f.setMapperLocations(new PathMatchingResourcePatternResolver()
+                    .getResources("classpath:mapper/*.xml"));
+            return f.getObject();
+        }
+
         @Bean
         public PlatformTransactionManager transactionManager(DataSource ds) {
             PlatformTransactionManager tm = new DataSourceTransactionManager(ds);
@@ -93,8 +112,13 @@ public final class TestSpringSupport {
         }
 
         @Bean
-        public QueryService queryService(DbConfig db) {
-            return new QueryService(db, 1L);
+        public QueryService queryService(DbConfig db,
+                                         com.labos.kernel.persistence.QueryMapper queryMapper,
+                                         com.labos.kernel.persistence.ExperimentMapper experimentMapper) {
+            QueryService qs = new QueryService(db, 1L);
+            qs.setQueryMapper(queryMapper);
+            qs.setExperimentMapper(experimentMapper);
+            return qs;
         }
     }
 
