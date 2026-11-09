@@ -11,6 +11,9 @@ public interface ExperimentMapper {
     /** 实验绑定的 workcell（handoff 校验起点/终点是否在绑定内）。 */
     List<Long> selectExperimentWorkcellIds(long tenantId, long experimentId);
 
+    /** 实验所属岛（未显式绑定 workcell 时的回落）。 */
+    Long selectExperimentIslandId(long tenantId, long experimentId);
+
     int deleteExperimentHandoffs(long tenantId, long experimentId);
 
     int deleteExperimentWorkcells(long tenantId, long experimentId);

@@ -95,6 +95,15 @@
         SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
+    <select id="selectParentIdOfNode" resultType="java.lang.Long">
+        SELECT parent_id FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectDeviceResourceByInstance" resultType="java.lang.Long">
+        SELECT resource_id FROM device_instance WHERE id = #{param1}
+    </select>
+
     <select id="selectWorkflowName" resultType="java.lang.String">
         SELECT name FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
     </select>

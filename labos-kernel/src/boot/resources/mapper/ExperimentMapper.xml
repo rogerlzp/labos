@@ -15,6 +15,10 @@
          WHERE tenant_id = #{param1} AND experiment_id = #{param2}
     </select>
 
+    <select id="selectExperimentIslandId" resultType="java.lang.Long">
+        SELECT island_id FROM experiment WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
     <delete id="deleteExperimentHandoffs">
         DELETE FROM experiment_handoff
          WHERE tenant_id = #{param1} AND experiment_id = #{param2}

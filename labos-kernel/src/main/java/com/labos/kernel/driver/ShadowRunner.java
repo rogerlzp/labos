@@ -30,6 +30,12 @@ import java.util.Map;
  */
 public final class ShadowRunner {
 
+    /** 延迟取 Mapper 代理（new 出来的工具类，无构造注入；见 Mappers）。 */
+    private static com.labos.kernel.persistence.QueryMapper qm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class);
+    }
+
     /** 一个节点的影子结果。 */
     public record NodeProbe(
             String nodeKey, String name, String capability, String method,
@@ -83,16 +89,12 @@ public final class ShadowRunner {
                 """;
 
         try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT name FROM workflow WHERE tenant_id = ? AND id = ?")) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, workflowId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        wfName = rs.getString(1);
-                    }
+            try {
+                String found = qm().selectWorkflowName(tenantId, workflowId);
+                if (found != null) {
+                    wfName = found;
                 }
-            } catch (SQLException ignore) {
+            } catch (RuntimeException ignore) {
                 // 流程名取不到不影响影子跑
             }
 
@@ -150,14 +152,11 @@ public final class ShadowRunner {
 
     /** resource_node.id -> device_instance.id。 */
     private Long deviceInstanceOf(long resourceNodeId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id FROM device_instance WHERE resource_id = ?")) {
-            ps.setLong(1, resourceNodeId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        } catch (SQLException e) {
+        try {
+            return com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.WorkflowWebMapper.class)
+                    .selectDeviceInstanceId(resourceNodeId);
+        } catch (RuntimeException e) {
             return null;
         }
     }

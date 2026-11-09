@@ -22,6 +22,12 @@ import java.util.Set;
  */
 public final class ExperimentWorkcellScope {
 
+    /** 延迟取 Mapper 代理（new 出来的工具类，无构造注入；见 Mappers）。 */
+    private static com.labos.kernel.persistence.ExperimentMapper mappers() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExperimentMapper.class);
+    }
+
     private ExperimentWorkcellScope() {
     }
 
@@ -70,34 +76,18 @@ public final class ExperimentWorkcellScope {
         Set<Long> islands = new LinkedHashSet<>();
         try (Connection c = db.open()) {
             // ① 显式绑定优先（N-10 / ADR-ISLAND-002）
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT workcell_id FROM experiment_workcell "
-                            + "WHERE tenant_id = ? AND experiment_id = ? ORDER BY workcell_id")) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, experimentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        long id = rs.getLong(1);
-                        if (!rs.wasNull() && id > 0) {
-                            islands.add(id);
-                        }
-                    }
+            for (Long id : mappers().selectExperimentWorkcellIds(tenantId, experimentId)) {
+                if (id != null && id > 0) {
+                    islands.add(id);
                 }
             }
             if (!islands.isEmpty()) {
                 return islands;
             }
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT island_id FROM experiment WHERE tenant_id = ? AND id = ?")) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, experimentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        long island = rs.getLong(1);
-                        if (!rs.wasNull() && island > 0) {
-                            islands.add(island);
-                        }
-                    }
+            {
+                Long island = mappers().selectExperimentIslandId(tenantId, experimentId);
+                if (island != null && island > 0) {
+                    islands.add(island);
                 }
             }
             String sql = """

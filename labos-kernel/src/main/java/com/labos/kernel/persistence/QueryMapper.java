@@ -60,6 +60,12 @@ public interface QueryMapper {
     /** 全部流程 id（预检全量扫描）。 */
     List<Long> selectAllWorkflowIds(long tenantId);
 
+    /** 资源节点的父节点（位置 -> 所属设备）；无父节点返回 null。 */
+    Long selectParentIdOfNode(long tenantId, long resourceNodeId);
+
+    /** device_instance.id -> resource_node.id（原 SQL 无 tenant 条件，保持一致）。 */
+    Long selectDeviceResourceByInstance(long deviceInstanceId);
+
     /** 批量取实验状态（调序前校验）。id IN 用 foreach，替换手写 ANY(?) + createArrayOf。 */
     List<Map<String, Object>> selectExperimentStatuses(long tenantId, List<Long> ids);
 

@@ -31,6 +31,12 @@ import java.util.Map;
  */
 public final class PositionLock {
 
+    /** 延迟取 Mapper 代理（new 出来的工具类，无构造注入；见 Mappers）。 */
+    private static com.labos.kernel.persistence.QueryMapper qm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class);
+    }
+
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(PositionLock.class);
 
@@ -318,20 +324,12 @@ public final class PositionLock {
 
     /** 位置变化后，刷新它所属设备的 has_plate。 */
     private void refreshHasPlateOfPosition(long positionResourceId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT parent_id FROM resource_node WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, positionResourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long pid = rs.getLong(1);
-                    if (!rs.wasNull()) {
-                        refreshHasPlate(pid);
-                    }
-                }
+        try {
+            Long pid = qm().selectParentIdOfNode(tenantId, positionResourceId);
+            if (pid != null) {
+                refreshHasPlate(pid);
             }
-        } catch (SQLException ignore) {
+        } catch (SQLException | RuntimeException ignore) {
             // 刷新失败不影响主流程，下次变动会再算
         }
     }
@@ -642,18 +640,7 @@ public final class PositionLock {
         }
 
         // 设备 -> 资源节点 -> 它的层位
-        Long deviceResource = null;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT resource_id FROM device_instance WHERE id = ?")) {
-            ps.setLong(1, deviceInstanceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long v = rs.getLong(1);
-                    deviceResource = rs.wasNull() ? null : v;
-                }
-            }
-        }
+        Long deviceResource = qm().selectDeviceResourceByInstance(deviceInstanceId);
         if (deviceResource == null) {
             return null;
         }
