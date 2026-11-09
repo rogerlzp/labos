@@ -58,7 +58,11 @@ T1_RULES = [
     ("labos-kernel/src/main/java/com/labos/kernel/persistence/",
      "./scripts/check-schema-sync.sh"),
     ("pg_rebuild/schema/",
-     "./scripts/check-schema-sync.sh"),
+     "./scripts/check-schema-sync.sh"),    ("src/boot/",
+     "./scripts/build-kernel.sh --verify"),
+    ("persistence/DbConfig",
+     "./scripts/build-kernel.sh --verify"),
+
     ("sidecar-dotnet/",
      "./scripts/verify-device-chain.sh"),
     ("webapp/src/i18n/",

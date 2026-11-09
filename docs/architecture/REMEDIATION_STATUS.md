@@ -180,3 +180,17 @@ ADR 依据：ADR-XXXX-XXX（或「无，纯重构」）
 | 动作 | `pg_rebuild/schema/99w_sequence_fresh_start.sql`：把 **69 个 identity 序列**统一抬到 **1,000,000** 起。条件式（仅 `last_value < 1000000` 才抬），且保证大于该表 `max(id)`，可重复执行、不退回。不改动任何已有行的 id。 |
 | 效果 | 此后新建的任何行 id ≥ 1,000,000，与历史所有号段不重叠，一眼可分新旧；杜绝「手工插入大 id 导致 sequence 落后 → duplicate key」。 |
 | 证据 | 抬升前 69 个序列**无一落后于 max(id)**（不是修 bug，是防患）；抬升后复核「仍低于 1,000,000 的序列 = 0」；插入验证行拿到 `id=1000000`；重跑分片输出「共抬升 0 个序列」且序列未退回；验证行已删。分片已并入 `90_all_in_one.sql`，`check-schema-sync.sh` 产物一致。 |
+
+---
+
+## 8. 架构：Spring Boot 容器与声明式事务（2026-11-09）
+
+| 项 | 内容 |
+|---|---|
+| 起因 | 现场指出全仓 396 处裸 `db.open()` / 46 处手写事务是重复造轮子，要求直接用 Spring Boot 处理。 |
+| 阶段一（**已完成**） | `pom.xml` 引入 `spring-boot-starter-jdbc` 3.2.5；`LabosApplication`（WebApplicationType.NONE）+ `DataSourceConfiguration`（HikariCP 替代手写 8 连接池、DataSourceTransactionManager、TransactionTemplate）+ `KernelRunner`（容器就绪后拉起原 ApiServer）；`DbConfig.open()` 桥接到 `DataSourceUtils`，396 处调用点零改动即进入 Spring 事务；反射实现使旧 classpath 零编译依赖。文档 `SPRING_BOOT_MIGRATION_20261109.md`。 |
+| 证据 | `./scripts/build-kernel.sh --verify` **8/0**（事务内同一物理连接 / 抛异常全回滚 / 正常全提交 / 遗留 commit、rollback 不越界 / 解绑后旧池可用）；Spring Boot 实启 18080，登录与 topology/workflows/devices/workflows POST 全 200；`test-all.sh` **1310/0**、`ci-gate.sh --fast` 通过。 |
+| 阶段二（未做） | Service 注册为 Spring Bean 后用 `@Transactional` 改写 P-02 三条写路径并收编 46 处显式事务；4.13 崩溃恢复段改用 Spring 启动（需同步改 `api_pids()` 的进程匹配）。 |
+| 阶段三（未做） | HTTP 层由 JDK `HttpServer` 迁到 Spring MVC Controller。 |
+
+**阶段一状态：DONE（有实测证据）**；不得以「已引入 Spring Boot」宣称 P-02 事务化完成。

@@ -63,3 +63,6 @@ docs/设备/*.docx
 
 # 本地并行工作树（IDE/自动化创建），不该进仓库
 .worktrees/
+
+# Spring Boot 运行时依赖由 scripts/build-kernel.sh 从 Maven 拉取，不提交二进制
+labos-kernel/lib/spring/
