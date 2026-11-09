@@ -45,6 +45,11 @@ javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/
       $(find src/main -name '*.java')
 echo "✓ 既有源码编译完成（DbConfig 直接使用 Spring JDBC）"
 
+# ---- ②b 清理已删除源文件的 stale class（javac 不删旧产物，删类后残留会继续生效）
+rm -rf out/com/labos/boot
+rm -f out/com/labos/kernel/api/LegacyRouteController.class \
+      out/com/labos/kernel/api/ServletHttpExchange.class
+
 # ---- ③ 资源（logback / application.properties / mapper XML）----
 mkdir -p out/mapper
 cp -f src/boot/resources/* out/ 2>/dev/null || true

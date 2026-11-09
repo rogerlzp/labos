@@ -129,77 +129,9 @@ public final class ApiServer {
      */
     // ---------------------------------------------------------------- 路由
 
-    public void route(HttpExchange ex) {
-        String path = ex.getRequestURI().getPath();
-        String method = ex.getRequestMethod();
-        try {
-            if ("OPTIONS".equals(method)) {
-                cors(ex);
-                send(ex, 204, "");
-                return;
-            }
+    // route() 已退役：全部端点迁到注解式 Controller（com.labos.boot.web.controller），
+    // 静态资源与健康检查在 FallbackController，鉴权在 ApiAuthInterceptor。
 
-            // ---------- 鉴权拦截（必须在所有业务路由之前） ----------
-            //
-            // P0-1 修复（评审 20261102-03）：改动前这段代码在路由链中段，
-            // 前面注册的 ~500 行路由（workflows / runs / devices / topology …）
-            // 全部绕过鉴权 —— 无 token 也能读全部数据、执行流程。
-            //
-            // 现在前置到路由分发之前，只放行 isPublic 白名单
-            // （health / 登录 / 静态资源）。
-            if (AUTH_ENABLED && !isPublic(path)) {
-                AuthService.Session s0 = currentSession(ex);
-                if (s0 == null) {
-                    send(ex, 401, err("未登录或会话已过期"));
-                    return;
-                }
-                // 写操作要求 operator 以上；账号管理要求 admin
-                boolean write = !"GET".equals(method);
-                if (write && !s0.canWrite()) {
-                    send(ex, 403, err("当前账号（" + s0.role() + "）无写权限"));
-                    return;
-                }
-                if (path.startsWith("/api/users") && !s0.isAdmin()) {
-                    send(ex, 403, err("仅管理员可管理账号"));
-                    return;
-                }
-            }
-
-            // ---------- 业务路由：拆到同包 controller（按首次出现顺序分发） ----------
-            // 各 controller 的 path 前缀互不重叠（/api/runs、/api/experiments、…），
-            // 因此跨 controller 的顺序不改变语义；controller 内部保持 if/else 顺序。
-            // 任一 controller 命中即 return，未命中落到下面的静态资源/健康检查/404。
-            // Auth/Scheduler/Meta/Device/Run 已拆成注解式 Controller
-            // （com.labos.boot.web.controller），不再走这条分发链；
-            // 鉴权拦截器在 Spring MVC 层先命中。
-            // 全部 *Api 已拆成注解式 Controller（com.labos.boot.web.controller）。
-            // 本方法只剩鉴权后的静态资源与健康检查兜底；分发链已退役。
-
-            if ("/".equals(path) || "/index.html".equals(path)) {
-                serveUi(ex);
-                return;
-            }
-            if (path.startsWith("/vendor/") || "/designer.html".equals(path)) {
-                serveStatic(ex, path);
-                return;
-            }
-            if ("/health".equals(path)) {
-                requireGet(method, ex);
-                send(ex, 200, query.health());
-                return;
-            }
-            send(ex, 404, err("no route: " + method + " " + path));
-        } catch (IllegalArgumentException e) {
-            // 参数不合法（含 id 溢出、未知动作）：400 而不是 500
-            sendQuietly(ex, 400, err(e.getMessage()));
-        } catch (IllegalStateException e) {
-            sendQuietly(ex, 405, err(e.getMessage()));
-        } catch (BodyTooLarge e) {
-            sendQuietly(ex, 413, err(e.getMessage()));
-        } catch (Exception e) {
-            sendQuietly(ex, 500, err(e.getClass().getSimpleName() + ": " + e.getMessage()));
-        }
-    }
 
     /** 从极简 JSON body 里取字符串字段（无依赖，够用即可）。 */
     public static String jsonField(String body, String key) {
@@ -458,71 +390,11 @@ public final class ApiServer {
     }
 
     /** 托管静态资源（限定在 web/ 目录内，阻止路径穿越）。 */
-    void serveStatic(HttpExchange ex, String path) throws IOException {
-        String rel = path.startsWith("/") ? path.substring(1) : path;
-        if (rel.contains("..")) {
-            send(ex, 400, err("bad path"));
-            return;
-        }
-        java.nio.file.Path file = java.nio.file.Path.of("web", rel);
-        if (!java.nio.file.Files.exists(file) || java.nio.file.Files.isDirectory(file)) {
-            send(ex, 404, err("not found: " + rel));
-            return;
-        }
-        byte[] body = java.nio.file.Files.readAllBytes(file);
-        String ct = rel.endsWith(".js") ? "application/javascript; charset=utf-8"
-                : rel.endsWith(".css") ? "text/css; charset=utf-8"
-                : rel.endsWith(".html") ? "text/html; charset=utf-8"
-                : rel.endsWith(".woff2") ? "font/woff2"
-                : rel.endsWith(".woff") ? "font/woff"
-                : rel.endsWith(".ttf") ? "font/ttf"
-                : rel.endsWith(".svg") ? "image/svg+xml"
-                : "application/octet-stream";
-        sendRaw(ex, 200, body, ct);
-    }
 
     /** 原样发送（XML / 二进制），不做 JSON 包装。 */
-    void sendRaw(HttpExchange ex, int code, String body, String contentType) throws IOException {
-        sendRaw(ex, code, body.getBytes(StandardCharsets.UTF_8), contentType);
-    }
 
-    void sendRaw(HttpExchange ex, int code, byte[] bytes, String contentType) throws IOException {
-        cors(ex);
-        ex.getResponseHeaders().add("Content-Type", contentType);
-        ex.sendResponseHeaders(code, bytes.length == 0 ? -1 : bytes.length);
-        if (bytes.length > 0) {
-            try (OutputStream os = ex.getResponseBody()) {
-                os.write(bytes);
-            }
-        }
-        ex.close();
-    }
 
     /** 托管单页看板：优先 classpath，其次工作目录下的 web/index.html。 */
-    void serveUi(HttpExchange ex) throws IOException {
-        byte[] body = null;
-        try (var in = getClass().getClassLoader().getResourceAsStream("web/index.html")) {
-            if (in != null) {
-                body = in.readAllBytes();
-            }
-        }
-        if (body == null) {
-            java.nio.file.Path p = java.nio.file.Path.of("web/index.html");
-            if (java.nio.file.Files.exists(p)) {
-                body = java.nio.file.Files.readAllBytes(p);
-            }
-        }
-        if (body == null) {
-            send(ex, 404, err("web/index.html not found (run from labos-kernel dir)"));
-            return;
-        }
-        ex.getResponseHeaders().add("Content-Type", "text/html; charset=utf-8");
-        ex.sendResponseHeaders(200, body.length);
-        try (OutputStream os = ex.getResponseBody()) {
-            os.write(body);
-        }
-        ex.close();
-    }
 
     /**
      * CORS：不再回 {@code *}。
@@ -535,18 +407,6 @@ public final class ApiServer {
      * 浏览器会拦，等于挡掉 CSRF。需要放行更多来源时用环境变量配置：
      * {@code LABOS_CORS_ORIGINS=http://a,http://b}
      */
-    void cors(HttpExchange ex) {
-        String origin = ex.getRequestHeaders().getFirst("Origin");
-        if (origin != null && !trustedOrigin(origin)) {
-            return;   // 不受信任：不给任何 CORS 头，浏览器会拦
-        }
-        if (origin != null) {
-            ex.getResponseHeaders().add("Access-Control-Allow-Origin", origin);
-            ex.getResponseHeaders().add("Vary", "Origin");
-        }
-        ex.getResponseHeaders().add("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-        ex.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type");
-    }
 
     static boolean trustedOrigin(String origin) {
         String allow = System.getenv("LABOS_CORS_ORIGINS");
@@ -562,26 +422,7 @@ public final class ApiServer {
         return origin.matches("^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:\\d+)?$");
     }
 
-    void send(HttpExchange ex, int code, String body) throws IOException {
-        cors(ex);
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
-        ex.sendResponseHeaders(code, bytes.length == 0 ? -1 : bytes.length);
-        if (bytes.length > 0) {
-            try (OutputStream os = ex.getResponseBody()) {
-                os.write(bytes);
-            }
-        }
-        ex.close();
-    }
 
-    void sendQuietly(HttpExchange ex, int code, String body) {
-        try {
-            send(ex, code, body);
-        } catch (IOException ignored) {
-            // 连接已断，无需处理
-        }
-    }
 
     // ---------------------------------------------------------------- 启动
 
