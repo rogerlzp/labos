@@ -1,8 +1,8 @@
 package com.labos.kernel.persistence;
 
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
@@ -31,6 +31,9 @@ public final class Tx {
     private static volatile PlatformTransactionManager boundManager;
     private static volatile PlatformTransactionManager fallback;
 
+    /** 当前 inTransaction 的 status；供「正常分支主动回滚」使用（支持嵌套）。 */
+    private static final ThreadLocal<TransactionStatus> CURRENT = new ThreadLocal<>();
+
     private Tx() {
     }
 
@@ -46,14 +49,10 @@ public final class Tx {
         }
         synchronized (Tx.class) {
             if (fallback == null) {
-                DataSource ds = DbConfig.bound();
-                if (ds == null) {
-                    ds = new DriverManagerDataSource(
-                            DbConfig.fromEnv().url(),
-                            env("LABOS_DB_USER", "labos"),
-                            env("LABOS_DB_PASS", ""));
-                }
-                fallback = new DataSourceTransactionManager(ds);
+                // 必须与 DbConfig.open() 用**同一个** DataSource 实例，
+                // 否则 DataSourceUtils 认不出事务绑定连接（详见 DbConfig.standaloneDataSource）。
+                fallback = new DataSourceTransactionManager(
+                        DbConfig.standaloneDataSource());
             }
             return fallback;
         }
@@ -72,16 +71,40 @@ public final class Tx {
     public static <T> T inTransaction(DbConfig db, SqlWork<T> work) throws SQLException {
         try {
             return new TransactionTemplate(manager()).execute(status -> {
-                // open() 必须在事务内调用：DataSourceUtils 会返回线程绑定连接，
-                // close() 只是归还，不会中途把连接真关掉。
-                try (Connection c = db.open()) {
-                    return work.run(c);
-                } catch (SQLException e) {
-                    throw new UncheckedSql(e);
+                TransactionStatus prev = CURRENT.get();
+                CURRENT.set(status);
+                try {
+                    // open() 必须在事务内调用：DataSourceUtils 会返回线程绑定连接，
+                    // close() 只是归还，不会中途把连接真关掉。
+                    try (Connection c = db.open()) {
+                        return work.run(c);
+                    } catch (SQLException e) {
+                        throw new UncheckedSql(e);
+                    }
+                } finally {
+                    if (prev == null) {
+                        CURRENT.remove();
+                    } else {
+                        CURRENT.set(prev);
+                    }
                 }
             });
         } catch (UncheckedSql e) {
             throw e.cause;
+        }
+    }
+
+    /**
+     * 标记当前事务只回滚，**但方法仍可正常返回**。
+     *
+     * <p>对应旧代码里「重复请求/校验不通过时 {@code c.rollback(); return result;}」
+     * 这种正常控制流中的主动回滚 —— 不是异常路径，不能用抛异常代替。
+     * Spring 会在 {@link TransactionTemplate} 返回前回滚，返回值照常给调用方。
+     */
+    public static void rollbackOnly() {
+        TransactionStatus st = CURRENT.get();
+        if (st != null) {
+            st.setRollbackOnly();
         }
     }
 

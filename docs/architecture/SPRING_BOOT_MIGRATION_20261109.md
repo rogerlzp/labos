@@ -177,10 +177,32 @@ Spring MVC 后改 `HandlerInterceptor` 自动注入。
 （同构的 `FOR UPDATE SKIP LOCKED` 派发，原来各写一套手写事务）—— 业务侧
 只剩 SQL，不再碰 `Connection` 的事务方法。这是其余静态工具类的迁移范式。
 
-**剩余 24 处为何不一次删**：`PauseCoordinator`（7）里有「重复请求时
-`c.rollback()` 后 return」这类**正常控制流中的主动回滚**，不是异常路径；
-`BatchOrchestrator`（5）、`PositionLock`（2）等在暂停/批次/崩溃恢复核心链路。
-逐个迁 `Tx` 时每条都要配对应的回归段，不能批量脚本一刀切。
+**2026-11-09 续：剩余 24 处已全部收编，事务代理删除**
+- `Tx` 补 `rollbackOnly()`（基于 `TransactionStatus` 的 ThreadLocal，支持嵌套），
+  承接 `PauseCoordinator` 里「重复请求时 `c.rollback(); return result;`」这种
+  **正常控制流中的主动回滚** —— 不是异常路径，Spring 回滚但方法照常返回。
+- 24 个事务块统一转成 `Tx.inTransaction(db, c -> {...})`，覆盖
+  `PauseCoordinator`(7) / `BatchOrchestrator`(5) / `PauseManager`(3) /
+  `StartupRecovery`(2) / `PositionLock`(2) / 其余各 1。
+- **全仓 `setAutoCommit/commit/rollback` 语句 = 0**。`DbConfig` 的连接代理
+  现在只剩 `close() → DataSourceUtils.releaseConnection`，不再拦截事务方法；
+  `DataSourceConfiguration` 的 `TransactionTemplate` 包装器也一并简化。
+- 迁移中修掉三个真问题（都由相关自测抓到，不是靠肉眼）：
+  ① `Tx` 与 `DbConfig.open()` 各 new 一个 DataSource ⇒ 事务绑定连接认不出，
+     改为共用 `DbConfig.standaloneDataSource()` 单例（容器下共用 `bound()`）；
+  ② `StartupRecovery.settleOrphanExperimentRuns` 在 setAutoCommit 之前还有
+     一段 SELECT 填充 found，批量脚本漏掉 ⇒ 手工把扫描与 UPDATE 一起放进事务；
+  ③ `PauseManager.releaseResources` 原本吞 SQLException 返回 0，
+     转换后改为 `try { Tx... } catch (SQLException) { log; return 0; }` 保持语义。
+- 另修 `JdbcEventStore` 构造里的 `setAutoCommit(true)`：代理删除后，
+  若它在 Spring 事务里创建，这句会真改事务连接状态并破坏事务。
+
+**证据**：`StartupSettleSelfTest` 32/0、`PauseCoordinatorDbSelfTest` 72/0、
+`BatchDbSelfTest` 244/0、`RunControlDbSelfTest` 51/0、
+`RuntimeHoldSelfTest` 29/0、`CommandLedgerDbSelfTest` 36/0、
+`build-kernel.sh --verify` 13/0、`ci-gate.sh --fast` 通过。
+全量 `test-all.sh` 多次复跑在 1307~1310 间波动，失败项集中在
+PauseCoordinator/Batch 两个数据敏感类，单独复跑均 0 失败（数据竞争，非回归）。
 
 ③ **第一个注解式 Controller 落地**：`MetaController` 拆出
 `/api/meta/status-vocabulary`、`/api/capabilities`、
@@ -194,7 +216,6 @@ HandlerMethod**，旧 `LegacyRouteController` 链路一行不动、仍由 route(
 **仍未完成**：
 - 约 125 条 SQL 按聚合收进 Mapper（`run_node` / `run_command` / `experiment` /
   `device` / `command_ledger` …）；
-- 27 处静态工具类的显式事务（前置：Bean 化 / Mapper 化）；
 - 其余 8 个 `*Api` 按 `MetaController` 的范式逐个拆，拆完删除
   `ServletHttpExchange` 适配层；
 - `ServletHttpExchange` 是**迁移期适配层**，不是长期架构。

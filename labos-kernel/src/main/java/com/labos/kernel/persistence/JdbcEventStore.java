@@ -48,7 +48,9 @@ public final class JdbcEventStore implements ExecutionListener, AutoCloseable {
     public JdbcEventStore(DbConfig db, long tenantId, long runId, String traceId, int batchSize)
             throws SQLException {
         this.conn = db.open();
-        this.conn.setAutoCommit(true);
+        // 不再显式 setAutoCommit(true)：若在 Spring 事务里创建本对象，
+        // db.open() 返回的是线程绑定的事务连接，改它的 autocommit 会直接破坏事务。
+        // 非事务路径（执行体后台线程）本来就默认 autocommit=true，删掉无行为变化。
         this.ps = conn.prepareStatement(INSERT);
         this.tenantId = tenantId;
         this.runId = runId;

@@ -46,54 +46,47 @@ public final class WorkflowBuilder {
             throw new IllegalArgumentException("一条流程最多 50 步");
         }
 
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                long wfId = insertWorkflow(c, name);
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            long wfId = insertWorkflow(c, name);
 
-                // 起止事件 + 每步一个 task
-                long startId = insertNode(c, wfId, "S", "开始", "start", null, null, null);
-                long endId = insertNode(c, wfId, "E", "结束", "end", null, null, null);
+            // 起止事件 + 每步一个 task
+            long startId = insertNode(c, wfId, "S", "开始", "start", null, null, null);
+            long endId = insertNode(c, wfId, "E", "结束", "end", null, null, null);
 
-                List<String> keys = new ArrayList<>();
-                int seq = 0;
-                for (Step st : steps) {
-                    seq++;
-                    String key = "N" + seq;
-                    String cap = capabilityOf(c, st.resourceId());
-                    String devName = resourceName(c, st.resourceId());
-                    String nodeName = devName == null ? key : devName + " / " + st.method();
-                    insertNode(c, wfId, key, nodeName, "task", cap, st, st.resourceId());
-                    keys.add(key);
-                }
-
-                // 边：S -> N1 -> N2 -> ... -> E
-                String prev = "S";
-                for (String k : keys) {
-                    insertEdge(c, wfId, prev, k);
-                    prev = k;
-                }
-                insertEdge(c, wfId, prev, "E");
-
-                // graph XML
-                String xml = buildXml(name, keys, steps, startId, endId);
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE workflow SET graph = jsonb_build_object('format','bpmn2','xml',?)
-                        WHERE tenant_id = ? AND id = ?
-                        """)) {
-                    ps.setString(1, xml);
-                    ps.setLong(2, tenantId);
-                    ps.setLong(3, wfId);
-                    ps.executeUpdate();
-                }
-
-                c.commit();
-                return wfId;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+            List<String> keys = new ArrayList<>();
+            int seq = 0;
+            for (Step st : steps) {
+                seq++;
+                String key = "N" + seq;
+                String cap = capabilityOf(c, st.resourceId());
+                String devName = resourceName(c, st.resourceId());
+                String nodeName = devName == null ? key : devName + " / " + st.method();
+                insertNode(c, wfId, key, nodeName, "task", cap, st, st.resourceId());
+                keys.add(key);
             }
-        }
+
+            // 边：S -> N1 -> N2 -> ... -> E
+            String prev = "S";
+            for (String k : keys) {
+                insertEdge(c, wfId, prev, k);
+                prev = k;
+            }
+            insertEdge(c, wfId, prev, "E");
+
+            // graph XML
+            String xml = buildXml(name, keys, steps, startId, endId);
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE workflow SET graph = jsonb_build_object('format','bpmn2','xml',?)
+                    WHERE tenant_id = ? AND id = ?
+                    """)) {
+                ps.setString(1, xml);
+                ps.setLong(2, tenantId);
+                ps.setLong(3, wfId);
+                ps.executeUpdate();
+            }
+
+            return wfId;
+        });
     }
 
     private long insertWorkflow(Connection c, String name) throws SQLException {

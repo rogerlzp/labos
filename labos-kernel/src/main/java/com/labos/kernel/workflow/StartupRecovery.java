@@ -319,39 +319,32 @@ public final class StartupRecovery {
      */
     public static boolean resolveQuarantine(DbConfig db, long tenantId, long runId,
                                             long by, String note) throws SQLException {
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Long expId = experimentIdOfRun(c, tenantId, runId);
-                int n;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE run
-                           SET status = 'failed'::run_status,
-                               error_code = 'EC-QUARANTINE-CONFIRMED',
-                               input = COALESCE(input, '{}'::jsonb) || ?::jsonb,
-                               actual_end = now()
-                         WHERE tenant_id = ? AND id = ? AND status = 'quarantined'
-                        """)) {
-                    ps.setString(1, Jsons.obj(
-                            "quarantine", false,
-                            "quarantineConfirmed", true,
-                            "quarantineNote", note == null ? "" : note));
-                    ps.setLong(2, tenantId);
-                    ps.setLong(3, runId);
-                    n = ps.executeUpdate();
-                }
-                if (n > 0 && expId != null) {
-                    new RuntimeHold(db, tenantId).clearKindTx(c,
-                            RuntimeHold.Scope.EXPERIMENT, expId, RuntimeHold.Kind.HUMAN, by,
-                            "隔离解除：" + (note == null ? "人工确认" : note));
-                }
-                c.commit();
-                return n > 0;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Long expId = experimentIdOfRun(c, tenantId, runId);
+            int n;
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE run
+                       SET status = 'failed'::run_status,
+                           error_code = 'EC-QUARANTINE-CONFIRMED',
+                           input = COALESCE(input, '{}'::jsonb) || ?::jsonb,
+                           actual_end = now()
+                     WHERE tenant_id = ? AND id = ? AND status = 'quarantined'
+                    """)) {
+                ps.setString(1, Jsons.obj(
+                        "quarantine", false,
+                        "quarantineConfirmed", true,
+                        "quarantineNote", note == null ? "" : note));
+                ps.setLong(2, tenantId);
+                ps.setLong(3, runId);
+                n = ps.executeUpdate();
             }
-        }
+            if (n > 0 && expId != null) {
+                new RuntimeHold(db, tenantId).clearKindTx(c,
+                        RuntimeHold.Scope.EXPERIMENT, expId, RuntimeHold.Kind.HUMAN, by,
+                        "隔离解除：" + (note == null ? "人工确认" : note));
+            }
+            return n > 0;
+        });
     }
 
     private static Long experimentIdOfRun(Connection c, long tenantId, long runId)
@@ -531,13 +524,15 @@ public final class StartupRecovery {
                 """ + filter + " ORDER BY r.id";
 
         List<SettledExperimentRun> found = new ArrayList<>();
-        try (Connection c = db.open()) {
+        // 扫描（SELECT）与收尾（UPDATE）同处一个 Spring 事务：
+        // 转换脚本原先只保留了 setAutoCommit 之后的 UPDATE，把扫描段丢了，
+        // 导致 found 永远为空、启动兜底 settle 完全不生效（已由 StartupSettleSelfTest 抓到）。
+        com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
             try (PreparedStatement ps = c.prepareStatement(scan)) {
                 ps.setLong(1, tenantId);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
-                        // wasNull() 只反映"最后一次 get"的列，必须紧跟着 batch_no 取，
-                        // 否则后面再读 id/experiment_no 会把判断覆盖掉（属 batch_run 判定错的坑）
+                        // wasNull() 只反映"最后一次 get"的列，必须紧跟着 batch_no 取
                         long batchNo = rs.getLong("batch_no");
                         boolean batchRun = !rs.wasNull();
                         found.add(new SettledExperimentRun(
@@ -549,30 +544,23 @@ public final class StartupRecovery {
                 }
             }
             if (found.isEmpty()) {
-                return found;
+                return null;      // 等价于原来的提前 return found
             }
-            // 收尾本身放同一个事务：要么全部落 failed，要么一条都不动
-            c.setAutoCommit(false);
-            try {
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE experiment_run
-                           SET status = 'failed', finished_at = now(), error = ?
-                         WHERE tenant_id = ? AND id = ? AND status = 'running'
-                        """)) {
-                    for (SettledExperimentRun s : found) {
-                        ps.setString(1, STARTUP_SETTLE_ERROR);
-                        ps.setLong(2, tenantId);
-                        ps.setLong(3, s.runId());
-                        ps.addBatch();
-                    }
-                    ps.executeBatch();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE experiment_run
+                       SET status = 'failed', finished_at = now(), error = ?
+                     WHERE tenant_id = ? AND id = ? AND status = 'running'
+                    """)) {
+                for (SettledExperimentRun s : found) {
+                    ps.setString(1, STARTUP_SETTLE_ERROR);
+                    ps.setLong(2, tenantId);
+                    ps.setLong(3, s.runId());
+                    ps.addBatch();
                 }
-                c.commit();
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+                ps.executeBatch();
             }
-        }
+            return null;
+        });
 
         // run 落 failed 之后再回写上层状态：
         // 批次 run 走 D8（attempt + 批次汇总 + 实验 D6 聚合）；非批次 run 走执行器同款映射。

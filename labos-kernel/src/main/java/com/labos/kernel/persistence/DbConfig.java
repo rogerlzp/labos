@@ -2,8 +2,6 @@ package com.labos.kernel.persistence;
 
 import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.springframework.transaction.TransactionStatus;
-import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -21,10 +19,11 @@ import java.sql.SQLException;
  * 直接建连，连不上立刻抛 —— 不引池、没有后台重连线程。这是自测入口，
  * 不是旧启动方式的兼容层。
  *
- * <p>2026-11-09 A 批：删掉了手写 8 连接池、反射探测、「无 Spring 时回落旧池」
- * 的兼容分支，以及 {@code ApiServer.main} 旧启动入口。事务内
- * {@code setAutoCommit(false)/commit()} 仍由连接代理拦下，因为 46 处遗留显式
- * 事务尚未全部收编（C 批用 MyBatis 重写后即可删除该代理）。
+ * <p>2026-11-09：手写 8 连接池、反射探测、无容器回落旧池、
+ * {@code ApiServer.main} 旧启动入口均已删除。**46 处显式事务已全部收编**
+ * （Bean 方法走 {@code @Transactional}，静态工具类走 {@link Tx}），
+ * 因此连接代理只剩 {@code close() → releaseConnection} 一件事，
+ * 不再拦截 {@code setAutoCommit/commit/rollback}。
  */
 public final class DbConfig {
 
@@ -35,6 +34,9 @@ public final class DbConfig {
 
     /** 容器注入的数据源，所有 DbConfig 实例共享。 */
     private static volatile DataSource shared;
+
+    /** 无容器时（纯 JVM 自测）全进程共用的直连数据源单例。 */
+    private static volatile DataSource standalone;
 
     public DbConfig(String host, int port, String database, String user, String password) {
         this(String.format("jdbc:postgresql://%s:%d/%s", host, port, database),
@@ -64,6 +66,30 @@ public final class DbConfig {
         return shared;
     }
 
+    /**
+     * 无容器时的直连数据源。
+     *
+     * <p><b>必须是单例</b>：Spring 的 {@code DataSourceUtils} 以 DataSource 对象为 key
+     * 绑定事务连接。若这里每次 new 一个、而 {@code Tx} 的事务管理器拿着另一个，
+     * 两边 key 不同 ⇒ 连接不进事务，所有 {@code Tx.inTransaction} 静默退化成
+     * autocommit（2026-11-09 批量迁移时实际踩到，StartupSettle/Batch/Pause
+     * 三个自测集体判红）。
+     */
+    public static DataSource standaloneDataSource() {
+        if (shared != null) {
+            return shared;
+        }
+        synchronized (DbConfig.class) {
+            if (standalone == null) {
+                standalone = new DriverManagerDataSource(
+                        fromEnv().url(),
+                        env("LABOS_DB_USER", "labos"),
+                        env("LABOS_DB_PASS", ""));
+            }
+            return standalone;
+        }
+    }
+
     private DataSource resolveDataSource() {
         if (dataSource != null) {
             return dataSource;
@@ -71,11 +97,12 @@ public final class DbConfig {
         if (shared != null) {
             return shared;
         }
-        // 纯 JVM 自测：每次直连，不共享、不缓存、不重试。
-        return new DriverManagerDataSource(
-                url,
-                user != null ? user : env("LABOS_DB_USER", "labos"),
-                password != null ? password : env("LABOS_DB_PASS", ""));
+        // 显式给自定义 url 的实例（如故意连不上的 fail-closed 探针）各用各的，
+        // 绝不能复用真实库单例，否则"读不到库"的用例会假绿。
+        if (!url.equals(fromEnv().url())) {
+            return new DriverManagerDataSource(url, user, password);
+        }
+        return standaloneDataSource();
     }
 
     /**
@@ -108,47 +135,12 @@ public final class DbConfig {
                         DataSourceUtils.releaseConnection(real, ds);
                         return null;
                     }
-                    if (DataSourceUtils.isConnectionTransactional(real, ds)) {
-                        // 遗留代码里的手写事务边界：交给 Spring，不许提前提交。
-                        if ("setAutoCommit".equals(name) || "commit".equals(name)) {
-                            return null;
-                        }
-                        if ("rollback".equals(name)) {
-                            markRollbackOnly();
-                            return null;
-                        }
-                    }
                     try {
                         return method.invoke(real, args);
                     } catch (java.lang.reflect.InvocationTargetException e) {
                         throw e.getCause();
                     }
                 });
-    }
-
-    /** 遗留代码 catch 住异常却调了 rollback()：标记只回滚，避免提交半截写入。 */
-    private static void markRollbackOnly() {
-        try {
-            TransactionStatus st = TransactionAspectSupport.currentTransactionStatus();
-            st.setRollbackOnly();
-        } catch (RuntimeException ignore) {
-            // 不在 AOP 事务里（例如 TransactionTemplate）：由 TransactionTemplate
-            // 的包装器把 status 放进 CURRENT_TX，见 DataSourceConfiguration。
-            if (CURRENT_TX.get() instanceof TransactionStatus tx) {
-                tx.setRollbackOnly();
-            }
-        }
-    }
-
-    /** TransactionTemplate 场景下没有 AOP 的 currentTransactionStatus，显式暴露。 */
-    private static final ThreadLocal<Object> CURRENT_TX = new ThreadLocal<>();
-
-    public static void bindCurrentTransactionStatus(Object status) {
-        CURRENT_TX.set(status);
-    }
-
-    public static void clearCurrentTransactionStatus() {
-        CURRENT_TX.remove();
     }
 
     /** 从环境变量读取配置（默认值只放本地开发级别的信息）。 */

@@ -359,31 +359,25 @@ public final class BatchOrchestrator {
                             + "请先给实验挂样品，或把 batch_split 置空");
         }
         List<BatchPlanner.Batch> plan = BatchPlanner.split(samples, split);
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                try (PreparedStatement ps = c.prepareStatement("""
-                        INSERT INTO experiment_batch
-                          (tenant_id, experiment_id, batch_no, sample_count, samples, status)
-                        VALUES (?, ?, ?, ?, ?::jsonb, 'pending')
-                        ON CONFLICT (tenant_id, experiment_id, batch_no) DO NOTHING
-                        """)) {
-                    for (BatchPlanner.Batch b : plan) {
-                        ps.setLong(1, tenantId);
-                        ps.setLong(2, experimentId);
-                        ps.setInt(3, b.batchNo());
-                        ps.setInt(4, b.sampleCount());
-                        ps.setString(5, samplesJson(b.samples()));
-                        ps.addBatch();
-                    }
-                    ps.executeBatch();
+        com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            try (PreparedStatement ps = c.prepareStatement("""
+                    INSERT INTO experiment_batch
+                      (tenant_id, experiment_id, batch_no, sample_count, samples, status)
+                    VALUES (?, ?, ?, ?, ?::jsonb, 'pending')
+                    ON CONFLICT (tenant_id, experiment_id, batch_no) DO NOTHING
+                    """)) {
+                for (BatchPlanner.Batch b : plan) {
+                    ps.setLong(1, tenantId);
+                    ps.setLong(2, experimentId);
+                    ps.setInt(3, b.batchNo());
+                    ps.setInt(4, b.sampleCount());
+                    ps.setString(5, samplesJson(b.samples()));
+                    ps.addBatch();
                 }
-                c.commit();
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+                ps.executeBatch();
             }
-        }
+            return null;
+        });
         return loadBatches(experimentId);
     }
 
@@ -653,53 +647,45 @@ public final class BatchOrchestrator {
         // 避免"持实验行锁等建批事务、建批事务等实验行外键锁"的互等。
         ensureBatches(experimentId);
 
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                lockExperimentRow(c, experimentId);
-                // 顺序很重要：先看"已有未结束的批次 run"，再看扣留。
-                // 否则同一实验正在跑第 1 批时重复 async 提交，会被判成 HELD 并顺手把
-                // 第 2 批标 paused（一个本不该发生的副作用）。
-                ActiveAttempt active = activeBatchAttempt(c, experimentId);
-                if (active != null) {
-                    // 已有未结束的批次 run：不重复建（重复入队 / 双 POST 的幂等口）
-                    c.rollback();
-                    return new NextBatchAttempt(NextBatchOutcome.EXISTING, experimentId,
-                            active.runId(), active.batchRunId(), active.batchNo(),
-                            active.attemptNo(), active.status(), null);
-                }
-                CandidateBatch next = firstCandidateInTx(c, experimentId, afterBatchNo);
-                if (next == null) {
-                    c.rollback();
-                    String aggregate = syncExperimentStatusFromBatches(experimentId);
-                    return new NextBatchAttempt(NextBatchOutcome.NO_MORE, experimentId,
-                            0L, 0L, 0, 0, aggregate, null);
-                }
-                // D7 批边界：锁内判定现场扣留（与同步 runAll 同口径：标 paused + 按 D6 聚合）
-                RuntimeHold.Active covered = new RuntimeHold(db, tenantId)
-                        .coveringFor(experimentId, islandOf(experimentId));
-                if (covered != null) {
-                    updateBatchStatus(c, next.batchId(), "paused");
-                    c.commit();
-                    syncExperimentStatusFromBatches(experimentId);
-                    String reason = covered.reason() == null ? "现场扣留" : covered.reason();
-                    return new NextBatchAttempt(NextBatchOutcome.HELD, experimentId, 0L, 0L,
-                            next.batchNo(), 0, null, reason);
-                }
-                long runId = insertQueuedRun(c, experimentId, vars);
-                int attemptNo = nextAttemptNo(c, next.batchId());
-                long batchRunId = insertQueuedBatchRun(c, next.batchId(), runId, attemptNo);
-                updateBatchStatus(c, next.batchId(), "queued");
-                c.commit();
-                // 实验状态由 D6 聚合（queued 批 ⇒ running），不让单条 run 直接覆盖
-                syncExperimentStatusFromBatches(experimentId);
-                return new NextBatchAttempt(NextBatchOutcome.CREATED, experimentId,
-                        runId, batchRunId, next.batchNo(), attemptNo, "queued", null);
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            lockExperimentRow(c, experimentId);
+            // 顺序很重要：先看"已有未结束的批次 run"，再看扣留。
+            // 否则同一实验正在跑第 1 批时重复 async 提交，会被判成 HELD 并顺手把
+            // 第 2 批标 paused（一个本不该发生的副作用）。
+            ActiveAttempt active = activeBatchAttempt(c, experimentId);
+            if (active != null) {
+                // 已有未结束的批次 run：不重复建（重复入队 / 双 POST 的幂等口）
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                return new NextBatchAttempt(NextBatchOutcome.EXISTING, experimentId,
+                        active.runId(), active.batchRunId(), active.batchNo(),
+                        active.attemptNo(), active.status(), null);
             }
-        }
+            CandidateBatch next = firstCandidateInTx(c, experimentId, afterBatchNo);
+            if (next == null) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                String aggregate = syncExperimentStatusFromBatches(experimentId);
+                return new NextBatchAttempt(NextBatchOutcome.NO_MORE, experimentId,
+                        0L, 0L, 0, 0, aggregate, null);
+            }
+            // D7 批边界：锁内判定现场扣留（与同步 runAll 同口径：标 paused + 按 D6 聚合）
+            RuntimeHold.Active covered = new RuntimeHold(db, tenantId)
+                    .coveringFor(experimentId, islandOf(experimentId));
+            if (covered != null) {
+                updateBatchStatus(c, next.batchId(), "paused");
+                syncExperimentStatusFromBatches(experimentId);
+                String reason = covered.reason() == null ? "现场扣留" : covered.reason();
+                return new NextBatchAttempt(NextBatchOutcome.HELD, experimentId, 0L, 0L,
+                        next.batchNo(), 0, null, reason);
+            }
+            long runId = insertQueuedRun(c, experimentId, vars);
+            int attemptNo = nextAttemptNo(c, next.batchId());
+            long batchRunId = insertQueuedBatchRun(c, next.batchId(), runId, attemptNo);
+            updateBatchStatus(c, next.batchId(), "queued");
+            // 实验状态由 D6 聚合（queued 批 ⇒ running），不让单条 run 直接覆盖
+            syncExperimentStatusFromBatches(experimentId);
+            return new NextBatchAttempt(NextBatchOutcome.CREATED, experimentId,
+                    runId, batchRunId, next.batchNo(), attemptNo, "queued", null);
+        });
     }
 
     /**
@@ -909,20 +895,14 @@ public final class BatchOrchestrator {
             return false;
         }
         // attempt 行 + 批次汇总在一个事务里落，避免"尝试已 completed、批次还是 running"
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                updateAttemptFromRun(c, ref.batchRunId(), experimentRunId);
-                String derived = derivedBatchStatus(c, ref.batchId());
-                if (derived != null) {
-                    updateBatchStatus(c, ref.batchId(), derived);
-                }
-                c.commit();
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            updateAttemptFromRun(c, ref.batchRunId(), experimentRunId);
+            String derived = derivedBatchStatus(c, ref.batchId());
+            if (derived != null) {
+                updateBatchStatus(c, ref.batchId(), derived);
             }
-        }
+            return null;
+        });
         // 再按 D6 聚合实验状态（读侧自愈口径：同批只要有一次完成，整体就算完成）
         syncExperimentStatusFromBatches(ref.experimentId());
         return true;
@@ -1015,20 +995,17 @@ public final class BatchOrchestrator {
         // D12：attempt_no 的"读-算-写"必须串行 —— 先 SELECT ... FOR UPDATE 锁住批次行，
         // 再算 MAX(attempt_no)+1 并 INSERT，同一事务提交。否则同批并发重跑会撞
         // UNIQUE(batch_id, attempt_no)。锁的是 experiment_batch 行（每次重跑都动它）。
-        int attemptNo;
-        long batchRunId;
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                lockBatchRow(c, batch.id());
-                attemptNo = nextAttemptNo(c, batch.id());
-                batchRunId = insertBatchRun(c, batch.id(), runId, attemptNo);
-                c.commit();
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
-            }
-        }
+        // 事务结果用局部 record 带出：lambda 不能给外部局部变量赋值，
+        // 而且把「锁行 → 算 attempt_no → 插 batch_run」的返回值显式化更好排查。
+        record BatchAttempt(int attemptNo, long batchRunId) { }
+        BatchAttempt attempt = com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            lockBatchRow(c, batch.id());
+            int no = nextAttemptNo(c, batch.id());
+            long id = insertBatchRun(c, batch.id(), runId, no);
+            return new BatchAttempt(no, id);
+        });
+        int attemptNo = attempt.attemptNo();
+        long batchRunId = attempt.batchRunId();
         updateBatchStatus(batch.id(), "running");
         ExperimentExecutor.Result r;
         try {
@@ -1175,51 +1152,44 @@ public final class BatchOrchestrator {
                     "batchSplit 必须为正整数或 null（0 表示关闭分批）");
         }
         Integer normalized = BatchPlanner.normalizeSplit(batchSplit);
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Integer current;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        SELECT batch_split FROM experiment
-                         WHERE tenant_id = ? AND id = ?
-                         FOR UPDATE
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next()) {
-                            throw new IllegalArgumentException("实验不存在：" + experimentId);
-                        }
-                        int v = rs.getInt(1);
-                        current = rs.wasNull() || v <= 0 ? null : v;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Integer current;
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT batch_split FROM experiment
+                     WHERE tenant_id = ? AND id = ?
+                     FOR UPDATE
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, experimentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        throw new IllegalArgumentException("实验不存在：" + experimentId);
                     }
+                    int v = rs.getInt(1);
+                    current = rs.wasNull() || v <= 0 ? null : v;
                 }
-                if (hasBatches(c, experimentId) && !Objects.equals(current, normalized)) {
-                    throw new IllegalArgumentException(
-                            "实验已有批次（快照已固化），不能改 batch_split；"
-                                    + "要改请先清批次数据");
-                }
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE experiment
-                           SET batch_split = ?, updated_at = now()
-                         WHERE tenant_id = ? AND id = ?
-                        """)) {
-                    if (normalized == null) {
-                        ps.setNull(1, Types.INTEGER);
-                    } else {
-                        ps.setInt(1, normalized);
-                    }
-                    ps.setLong(2, tenantId);
-                    ps.setLong(3, experimentId);
-                    ps.executeUpdate();
-                }
-                c.commit();
-                return normalized;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
             }
-        }
+            if (hasBatches(c, experimentId) && !Objects.equals(current, normalized)) {
+                throw new IllegalArgumentException(
+                        "实验已有批次（快照已固化），不能改 batch_split；"
+                                + "要改请先清批次数据");
+            }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE experiment
+                       SET batch_split = ?, updated_at = now()
+                     WHERE tenant_id = ? AND id = ?
+                    """)) {
+                if (normalized == null) {
+                    ps.setNull(1, Types.INTEGER);
+                } else {
+                    ps.setInt(1, normalized);
+                }
+                ps.setLong(2, tenantId);
+                ps.setLong(3, experimentId);
+                ps.executeUpdate();
+            }
+            return normalized;
+        });
     }
 
     private boolean hasBatches(Connection c, long experimentId) throws SQLException {

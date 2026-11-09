@@ -78,65 +78,58 @@ public final class TransferTransaction {
      */
     public static boolean confirm(DbConfig db, long tenantId, long id, String evidenceType,
                                   String operator, String note) throws SQLException {
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                String plate;
-                Long target;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        SELECT plate_barcode, target_resource_id
-                          FROM transfer_transaction
-                         WHERE tenant_id = ? AND id = ?
-                           AND status IN ('REPORTED', 'UNKNOWN')
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, id);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next()) {
-                            c.rollback();
-                            return false;
-                        }
-                        plate = rs.getString(1);
-                        long t = rs.getLong(2);
-                        target = rs.wasNull() ? null : t;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            String plate;
+            Long target;
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT plate_barcode, target_resource_id
+                      FROM transfer_transaction
+                     WHERE tenant_id = ? AND id = ?
+                       AND status IN ('REPORTED', 'UNKNOWN')
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        com.labos.kernel.persistence.Tx.rollbackOnly();
+                        return false;
                     }
+                    plate = rs.getString(1);
+                    long t = rs.getLong(2);
+                    target = rs.wasNull() ? null : t;
                 }
+            }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE transfer_transaction
+                       SET status = 'CONFIRMED', confirmed_at = now()
+                     WHERE tenant_id = ? AND id = ?
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, id);
+                ps.executeUpdate();
+            }
+            if (plate != null) {
                 try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE transfer_transaction
-                           SET status = 'CONFIRMED', confirmed_at = now()
-                         WHERE tenant_id = ? AND id = ?
+                        INSERT INTO position_evidence
+                          (tenant_id, plate_barcode, resource_id, evidence_type,
+                           operator, note)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """)) {
                     ps.setLong(1, tenantId);
-                    ps.setLong(2, id);
+                    ps.setString(2, plate);
+                    if (target == null) {
+                        ps.setNull(3, java.sql.Types.BIGINT);
+                    } else {
+                        ps.setLong(3, target);
+                    }
+                    ps.setString(4, evidenceType == null ? "MANUAL" : evidenceType.toUpperCase());
+                    ps.setString(5, operator);
+                    ps.setString(6, note);
                     ps.executeUpdate();
                 }
-                if (plate != null) {
-                    try (PreparedStatement ps = c.prepareStatement("""
-                            INSERT INTO position_evidence
-                              (tenant_id, plate_barcode, resource_id, evidence_type,
-                               operator, note)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            """)) {
-                        ps.setLong(1, tenantId);
-                        ps.setString(2, plate);
-                        if (target == null) {
-                            ps.setNull(3, java.sql.Types.BIGINT);
-                        } else {
-                            ps.setLong(3, target);
-                        }
-                        ps.setString(4, evidenceType == null ? "MANUAL" : evidenceType.toUpperCase());
-                        ps.setString(5, operator);
-                        ps.setString(6, note);
-                        ps.executeUpdate();
-                    }
-                }
-                c.commit();
-                return true;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
             }
-        }
+            return true;
+        });
     }
 
     /** 该 run 是否还有未确认的搬运位置（REPORTED/UNKNOWN）。 */

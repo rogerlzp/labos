@@ -84,43 +84,37 @@ public final class DeviceRegistrar {
             return;
         }
 
-        try (Connection c = DbConfig.fromEnv().open()) {
-            c.setAutoCommit(false);
-            try {
-                Long capId = capabilityId(c, spec.capability);
-                if (spec.capability != null && capId == null) {
-                    log.error("能力 " + spec.capability + " 在 capability 表里不存在。");
-                    log.error("现有能力：");
-                    try (PreparedStatement ps = c.prepareStatement(
-                            "SELECT code, name FROM capability ORDER BY id");
-                         ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            log.error("  " + rs.getString(1) + "  " + rs.getString(2));
-                        }
+        com.labos.kernel.persistence.Tx.inTransaction(DbConfig.fromEnv(), c -> {
+            Long capId = capabilityId(c, spec.capability);
+            if (spec.capability != null && capId == null) {
+                log.error("能力 " + spec.capability + " 在 capability 表里不存在。");
+                log.error("现有能力：");
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT code, name FROM capability ORDER BY id");
+                     ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        log.error("  " + rs.getString(1) + "  " + rs.getString(2));
                     }
-                    System.exit(3);
                 }
-
-                long id = upsert(c, spec, icon, capId);
-                // **方法集要一起落库**：设备池里点「详情」看的方法，来自 device_method 表，
-                // 不是型号库。只写 device 不写 device_method，界面就是"这台设备没有任何方法"
-                // （2026-11-02 用户点出来：ASPIN_2K-1 方法为空）。
-                int methods = syncMethods(c, id, capId, spec.deviceModel);
-                c.commit();
-                printf("✅ 已加入设备池：id=%d code=%s 型号=%s 能力=%s%n",
-                        id, spec.code, spec.model, spec.capability == null ? "-" : spec.capability);
-                if (spec.deviceModel != null) {
-                    printf("   型号绑定 attr.device_model=%s（设备错误码会按它翻译）%n",
-                            spec.deviceModel);
-                }
-                log.info("   图片：" + icon
-                        + (methods > 0 ? "，方法 " + methods + " 条" : ""));
-                log.info("   下一步：前端「岛 → 设备池 → 部署」选一个岛起实例，再填 IP。");
-            } catch (SQLException e) {
-                c.rollback();
-                throw e;
+                System.exit(3);
             }
-        }
+
+            long id = upsert(c, spec, icon, capId);
+            // **方法集要一起落库**：设备池里点「详情」看的方法，来自 device_method 表，
+            // 不是型号库。只写 device 不写 device_method，界面就是"这台设备没有任何方法"
+            // （2026-11-02 用户点出来：ASPIN_2K-1 方法为空）。
+            int methods = syncMethods(c, id, capId, spec.deviceModel);
+            printf("✅ 已加入设备池：id=%d code=%s 型号=%s 能力=%s%n",
+                    id, spec.code, spec.model, spec.capability == null ? "-" : spec.capability);
+            if (spec.deviceModel != null) {
+                printf("   型号绑定 attr.device_model=%s（设备错误码会按它翻译）%n",
+                        spec.deviceModel);
+            }
+            log.info("   图片：" + icon
+                    + (methods > 0 ? "，方法 " + methods + " 条" : ""));
+            log.info("   下一步：前端「岛 → 设备池 → 部署」选一个岛起实例，再填 IP。");
+            return null;
+        });
     }
 
     // ---------------------------------------------------------------- 数据

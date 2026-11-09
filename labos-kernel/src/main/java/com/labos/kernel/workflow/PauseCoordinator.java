@@ -317,32 +317,25 @@ public final class PauseCoordinator {
      */
     public WorkflowPause pauseWorkflowRun(PauseCommand cmd, String nodeKey) throws SQLException {
         // P-06 V2：run 落 paused + 释放资源 + 幂等键结果 + pause_event 同事务。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Claim claim = claimTx(c, cmd);
-                if (!claim.firstTime()) {
-                    c.rollback();
-                    // 重复请求：不再释放资源（首次已释放），回放首次的暂停类型
-                    return new WorkflowPause(intOf(claim.detail().get("releasedResources"), 0),
-                            PauseManager.Kind.of(claim.kind()).code());
-                }
-                PauseManager.Kind kind = PauseManager.Kind.of(cmd.kind());
-                String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
-                int released = new PauseManager(db, tenantId)
-                        .pauseTx(c, cmd.targetId(), kind, reason, nodeKey);
-                // released=0 表示该 run 不在 running（无需暂停），与入口既有行为一致：仍是成功受理。
-                cmd.result(PauseCommand.ResultState.COMPLETED);
-                settleTx(c, cmd, Map.of("releasedResources", String.valueOf(released),
-                        "pauseKind", kind.code()));
-                insertPauseEvent(c, cmd, "PAUSE_REQUESTED", null, null);
-                c.commit();
-                return new WorkflowPause(released, kind.code());
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Claim claim = claimTx(c, cmd);
+            if (!claim.firstTime()) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                // 重复请求：不再释放资源（首次已释放），回放首次的暂停类型
+                return new WorkflowPause(intOf(claim.detail().get("releasedResources"), 0),
+                        PauseManager.Kind.of(claim.kind()).code());
             }
-        }
+            PauseManager.Kind kind = PauseManager.Kind.of(cmd.kind());
+            String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
+            int released = new PauseManager(db, tenantId)
+                    .pauseTx(c, cmd.targetId(), kind, reason, nodeKey);
+            // released=0 表示该 run 不在 running（无需暂停），与入口既有行为一致：仍是成功受理。
+            cmd.result(PauseCommand.ResultState.COMPLETED);
+            settleTx(c, cmd, Map.of("releasedResources", String.valueOf(released),
+                    "pauseKind", kind.code()));
+            insertPauseEvent(c, cmd, "PAUSE_REQUESTED", null, null);
+            return new WorkflowPause(released, kind.code());
+        });
     }
 
     /**
@@ -358,61 +351,54 @@ public final class PauseCoordinator {
             throws SQLException {
         // P-06 V2 第七切片：校验/板位校正/run 状态/幂等结果/事件同事务；
         // 异步续跑是内存动作，commit 后触发。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Claim claim = claimTx(c, cmd);
-                if (!claim.firstTime()) {
-                    c.rollback();
-                    // 重复请求：不再续跑，回放首次结果
-                    boolean ok = PauseCommand.ResultState.COMPLETED
-                            .name().equals(claim.resultState());
-                    return new PauseManager.ResumeResult(ok, claim.detail().get("error"),
-                            cmd.targetId(),
-                            PauseManager.ResumeAction.of(claim.kind()).name(),
-                            intOf(claim.detail().get("correctedPlates"), 0));
-                }
-                PauseManager.ResumeAction action = PauseManager.ResumeAction.of(cmd.kind());
-                // P-08 强门禁：位置未确认（仅运动报告）时不允许继续/重试，只允许终止
-                PauseManager.ResumeResult r;
-                if (action != PauseManager.ResumeAction.ABORT
-                        && TransferTransaction.hasUnconfirmed(db, tenantId, cmd.targetId())) {
-                    r = new PauseManager.ResumeResult(false,
-                            "存在未确认的搬运位置，请先扫码/人工确认"
-                                    + "（POST /api/transfers/{id}/confirm）",
-                            cmd.targetId(), action.name(), 0);
-                } else {
-                    r = new PauseManager(db, tenantId)
-                            .resumeTx(c, cmd.targetId(), action, corrections, "api");
-                }
-                cmd.result(r.ok() ? PauseCommand.ResultState.COMPLETED
-                        : PauseCommand.ResultState.REJECTED);
-                Map<String, String> detail = new LinkedHashMap<>();
-                detail.put("correctedPlates", String.valueOf(r.correctedPlates()));
-                if (r.error() != null) {
-                    detail.put("error", r.error());
-                }
-                settleTx(c, cmd, detail);
-                if (r.ok()) {
-                    insertPauseEvent(c, cmd, "RESUME_REQUESTED", null, null);
-                }
-                c.commit();
-
-                if (r.ok() && action == PauseManager.ResumeAction.CONTINUE
-                        && workflows != null) {
-                    try {
-                        workflows.resumeAsync(cmd.targetId());
-                    } catch (RuntimeException ex) {
-                        log.error("[暂停] 恢复后异步续跑启动失败（run 已 queued）："
-                                + ex.getMessage());
-                    }
-                }
-                return r;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Claim claim = claimTx(c, cmd);
+            if (!claim.firstTime()) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                // 重复请求：不再续跑，回放首次结果
+                boolean ok = PauseCommand.ResultState.COMPLETED
+                        .name().equals(claim.resultState());
+                return new PauseManager.ResumeResult(ok, claim.detail().get("error"),
+                        cmd.targetId(),
+                        PauseManager.ResumeAction.of(claim.kind()).name(),
+                        intOf(claim.detail().get("correctedPlates"), 0));
             }
-        }
+            PauseManager.ResumeAction action = PauseManager.ResumeAction.of(cmd.kind());
+            // P-08 强门禁：位置未确认（仅运动报告）时不允许继续/重试，只允许终止
+            PauseManager.ResumeResult r;
+            if (action != PauseManager.ResumeAction.ABORT
+                    && TransferTransaction.hasUnconfirmed(db, tenantId, cmd.targetId())) {
+                r = new PauseManager.ResumeResult(false,
+                        "存在未确认的搬运位置，请先扫码/人工确认"
+                                + "（POST /api/transfers/{id}/confirm）",
+                        cmd.targetId(), action.name(), 0);
+            } else {
+                r = new PauseManager(db, tenantId)
+                        .resumeTx(c, cmd.targetId(), action, corrections, "api");
+            }
+            cmd.result(r.ok() ? PauseCommand.ResultState.COMPLETED
+                    : PauseCommand.ResultState.REJECTED);
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("correctedPlates", String.valueOf(r.correctedPlates()));
+            if (r.error() != null) {
+                detail.put("error", r.error());
+            }
+            settleTx(c, cmd, detail);
+            if (r.ok()) {
+                insertPauseEvent(c, cmd, "RESUME_REQUESTED", null, null);
+            }
+
+            if (r.ok() && action == PauseManager.ResumeAction.CONTINUE
+                    && workflows != null) {
+                try {
+                    workflows.resumeAsync(cmd.targetId());
+                } catch (RuntimeException ex) {
+                    log.error("[暂停] 恢复后异步续跑启动失败（run 已 queued）："
+                            + ex.getMessage());
+                }
+            }
+            return r;
+        });
     }
 
     /**
@@ -428,44 +414,30 @@ public final class PauseCoordinator {
     public int dismissBatchWorkflowRuns(List<Long> ids, String kind, Integer beforeHours)
             throws SQLException {
         // P-06 V2：批量忽略的多次 UPDATE 同一事务（要么全部忽略，要么一条不动）。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                int n = new PauseManager(db, tenantId)
-                        .dismissBatchTx(c, ids, kind, beforeHours);
-                c.commit();
-                return n;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
-            }
-        }
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            int n = new PauseManager(db, tenantId)
+                    .dismissBatchTx(c, ids, kind, beforeHours);
+            return n;
+        });
     }
 
     /** E-3b：忽略单条暂停的 run（{@code POST /api/runs/{id}/dismiss}）。 */
     public boolean dismissWorkflowRun(PauseCommand cmd) throws SQLException {
         // P-06 V2：忽略一次崩溃可恢复的 run + 幂等结果 + pause_event 同事务。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Claim claim = claimTx(c, cmd);
-                if (!claim.firstTime()) {
-                    c.rollback();
-                    return PauseCommand.ResultState.COMPLETED
-                            .name().equals(claim.resultState());
-                }
-                boolean done = StartupRecovery.dismissTx(c, tenantId, cmd.targetId());
-                cmd.result(done ? PauseCommand.ResultState.COMPLETED
-                        : PauseCommand.ResultState.REJECTED);
-                settleTx(c, cmd, Map.of());
-                insertPauseEvent(c, cmd, "DISMISS_REQUESTED", null, null);
-                c.commit();
-                return done;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Claim claim = claimTx(c, cmd);
+            if (!claim.firstTime()) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                return PauseCommand.ResultState.COMPLETED
+                        .name().equals(claim.resultState());
             }
-        }
+            boolean done = StartupRecovery.dismissTx(c, tenantId, cmd.targetId());
+            cmd.result(done ? PauseCommand.ResultState.COMPLETED
+                    : PauseCommand.ResultState.REJECTED);
+            settleTx(c, cmd, Map.of());
+            insertPauseEvent(c, cmd, "DISMISS_REQUESTED", null, null);
+            return done;
+        });
     }
 
     // ==================================================== Experiment Run（E-4 ~ E-6）
@@ -496,51 +468,44 @@ public final class PauseCoordinator {
             throws SQLException {
         // P-06 V2 第一切片：Hold + control_state + pause_request 结果 + pause_event
         // 在同一事务里提交；失败整体回滚（幂等键也一起回滚，客户端可重试）。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Claim claim = claimTx(c, cmd);
-                if (!claim.firstTime()) {
-                    c.rollback();
-                    Map<String, String> d = claim.detail();
-                    return new ExperimentPause(cmd.targetId(),
-                            longOf(d.get("experimentId"), 0L),
-                            d.getOrDefault("status", "accepted"),
-                            d.get("scopeCode"),
-                            d.getOrDefault("kindCode", "manual"),
-                            d.getOrDefault("controlState", "PAUSE_REQUESTED"));
-                }
-                RunControl ctl = new RunControl(db, tenantId);
-                RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
-                RuntimeHold.Scope scope = RuntimeHold.Scope.of(scopeCode);
-                RuntimeHold.Kind kind = cmd.kind() == null
-                        ? RuntimeHold.Kind.MANUAL : RuntimeHold.Kind.of(cmd.kind());
-                String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
-                RuntimeHold.Scope effective = RunControl.effectiveScope(scope, ri.islandId());
-                Long scopeId = effective == RuntimeHold.Scope.SITE ? null
-                        : effective == RuntimeHold.Scope.ISLAND ? ri.islandId()
-                        : ri.experimentId();
-                new RuntimeHold(db, tenantId).raiseTx(c, effective, scopeId, kind, reason, null);
-                RunControl.markControlRequestedTx(c, tenantId, effective, scopeId,
-                        kind.code(), reason);
-                Map<String, String> detail = new LinkedHashMap<>();
-                detail.put("experimentId", String.valueOf(ri.experimentId()));
-                detail.put("scopeCode", effective.code());
-                detail.put("kindCode", kind.code());
-                // S-04-B：受理时只承诺「请求已接受 + 控制过程开始」，不承诺已物理暂停。
-                detail.put("status", "accepted");
-                detail.put("controlState", "PAUSE_REQUESTED");
-                cmd.result(PauseCommand.ResultState.COMPLETED);
-                settleTx(c, cmd, detail);
-                insertPauseEvent(c, cmd, "PAUSE_REQUESTED", effective.code(), scopeId);
-                c.commit();
-                return new ExperimentPause(cmd.targetId(), ri.experimentId(), "accepted",
-                        effective.code(), kind.code(), "PAUSE_REQUESTED");
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Claim claim = claimTx(c, cmd);
+            if (!claim.firstTime()) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                Map<String, String> d = claim.detail();
+                return new ExperimentPause(cmd.targetId(),
+                        longOf(d.get("experimentId"), 0L),
+                        d.getOrDefault("status", "accepted"),
+                        d.get("scopeCode"),
+                        d.getOrDefault("kindCode", "manual"),
+                        d.getOrDefault("controlState", "PAUSE_REQUESTED"));
             }
-        }
+            RunControl ctl = new RunControl(db, tenantId);
+            RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
+            RuntimeHold.Scope scope = RuntimeHold.Scope.of(scopeCode);
+            RuntimeHold.Kind kind = cmd.kind() == null
+                    ? RuntimeHold.Kind.MANUAL : RuntimeHold.Kind.of(cmd.kind());
+            String reason = cmd.reasonText() == null ? "人工暂停" : cmd.reasonText();
+            RuntimeHold.Scope effective = RunControl.effectiveScope(scope, ri.islandId());
+            Long scopeId = effective == RuntimeHold.Scope.SITE ? null
+                    : effective == RuntimeHold.Scope.ISLAND ? ri.islandId()
+                    : ri.experimentId();
+            new RuntimeHold(db, tenantId).raiseTx(c, effective, scopeId, kind, reason, null);
+            RunControl.markControlRequestedTx(c, tenantId, effective, scopeId,
+                    kind.code(), reason);
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("experimentId", String.valueOf(ri.experimentId()));
+            detail.put("scopeCode", effective.code());
+            detail.put("kindCode", kind.code());
+            // S-04-B：受理时只承诺「请求已接受 + 控制过程开始」，不承诺已物理暂停。
+            detail.put("status", "accepted");
+            detail.put("controlState", "PAUSE_REQUESTED");
+            cmd.result(PauseCommand.ResultState.COMPLETED);
+            settleTx(c, cmd, detail);
+            insertPauseEvent(c, cmd, "PAUSE_REQUESTED", effective.code(), scopeId);
+            return new ExperimentPause(cmd.targetId(), ri.experimentId(), "accepted",
+                    effective.code(), kind.code(), "PAUSE_REQUESTED");
+        });
     }
 
     /**
@@ -550,50 +515,43 @@ public final class PauseCoordinator {
     public ExperimentStop stopExperimentRun(PauseCommand cmd) throws SQLException {
         // P-06 V2 第三切片：停止写集（stop_requested / aborted / 实验表同步 /
         // pause_request 结果 / STOP_REQUESTED 事件）同事务；批次聚合 commit 后补。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Claim claim = claimTx(c, cmd);
-                if (!claim.firstTime()) {
-                    c.rollback();
-                    Map<String, String> d = claim.detail();
-                    return new ExperimentStop(cmd.targetId(),
-                            longOf(d.get("experimentId"), 0L),
-                            boolOf(d.get("changed"), false),
-                            d.getOrDefault("status", "aborted"));
-                }
-                RunControl ctl = new RunControl(db, tenantId);
-                RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
-                RunControl.StopTx st = ctl.stopTx(c, ri, null);
-                String status = !st.changed() ? ri.status()
-                        : "running".equals(ri.status()) ? "stopping" : "aborted";
-                cmd.result(st.changed() ? PauseCommand.ResultState.COMPLETED
-                        : PauseCommand.ResultState.REJECTED);
-                Map<String, String> detail = new LinkedHashMap<>();
-                detail.put("experimentId", String.valueOf(ri.experimentId()));
-                detail.put("changed", String.valueOf(st.changed()));
-                detail.put("status", status);
-                settleTx(c, cmd, detail);
-                insertPauseEvent(c, cmd, "STOP_REQUESTED", "experiment",
-                        ri.experimentId());
-                c.commit();
-
-                if (st.batchRun()) {
-                    try {
-                        new BatchOrchestrator(db, tenantId)
-                                .onRunStatusChanged(cmd.targetId());
-                    } catch (Exception e) {
-                        log.error("[暂停] 停止后批次聚合失败（由启动 rehydrate 兜底）："
-                                + e.getMessage());
-                    }
-                }
-                return new ExperimentStop(cmd.targetId(), ri.experimentId(),
-                        st.changed(), status);
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Claim claim = claimTx(c, cmd);
+            if (!claim.firstTime()) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                Map<String, String> d = claim.detail();
+                return new ExperimentStop(cmd.targetId(),
+                        longOf(d.get("experimentId"), 0L),
+                        boolOf(d.get("changed"), false),
+                        d.getOrDefault("status", "aborted"));
             }
-        }
+            RunControl ctl = new RunControl(db, tenantId);
+            RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
+            RunControl.StopTx st = ctl.stopTx(c, ri, null);
+            String status = !st.changed() ? ri.status()
+                    : "running".equals(ri.status()) ? "stopping" : "aborted";
+            cmd.result(st.changed() ? PauseCommand.ResultState.COMPLETED
+                    : PauseCommand.ResultState.REJECTED);
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("experimentId", String.valueOf(ri.experimentId()));
+            detail.put("changed", String.valueOf(st.changed()));
+            detail.put("status", status);
+            settleTx(c, cmd, detail);
+            insertPauseEvent(c, cmd, "STOP_REQUESTED", "experiment",
+                    ri.experimentId());
+
+            if (st.batchRun()) {
+                try {
+                    new BatchOrchestrator(db, tenantId)
+                            .onRunStatusChanged(cmd.targetId());
+                } catch (Exception e) {
+                    log.error("[暂停] 停止后批次聚合失败（由启动 rehydrate 兜底）："
+                            + e.getMessage());
+                }
+            }
+            return new ExperimentStop(cmd.targetId(), ri.experimentId(),
+                    st.changed(), status);
+        });
     }
 
     /**
@@ -606,66 +564,59 @@ public final class PauseCoordinator {
             throws SQLException {
         // P-06 V2 第二切片：解 Hold / run 回 queued / 实验表同步 / 作废旧 paused
         // workflow run / 幂等键结果 / pause_event 同事务；批次聚合与重新入队在 commit 后做。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                Claim claim = claimTx(c, cmd);
-                if (!claim.firstTime()) {
-                    c.rollback();
-                    Map<String, String> d = claim.detail();
-                    return new ExperimentResume(cmd.targetId(),
-                            longOf(d.get("experimentId"), 0L),
-                            boolOf(d.get("cleared"), false),
-                            boolOf(d.get("requeued"), false),
-                            d.get("stillHeldReason"),
-                            d.getOrDefault("status", "queued"));
-                }
-                RunControl ctl = new RunControl(db, tenantId);
-                RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
-                RunControl.ResumeTx rt = ctl.resumeTx(c, ri, null, note);
-                RunControl.ResumeOutcome out = rt.outcome();
-                boolean requeued = out.stillHeldReason() == null;
-                // 现场（site）扣留仍在 => 恢复未真正生效，如实标记 UNKNOWN 而不是假装完成。
-                cmd.result(requeued ? PauseCommand.ResultState.COMPLETED
-                        : PauseCommand.ResultState.UNKNOWN);
-                Map<String, String> detail = new LinkedHashMap<>();
-                detail.put("experimentId", String.valueOf(out.experimentId()));
-                detail.put("cleared", String.valueOf(out.cleared()));
-                detail.put("requeued", String.valueOf(requeued));
-                detail.put("status", requeued ? "queued" : "paused");
-                if (out.stillHeldReason() != null) {
-                    detail.put("stillHeldReason", out.stillHeldReason());
-                }
-                settleTx(c, cmd, detail);
-                insertPauseEvent(c, cmd, "RESUME_REQUESTED", "experiment",
-                        out.experimentId());
-                c.commit();
-
-                // commit 后动作：批次聚合（可能跨 run）；重新入队（内存队列，启动 rehydrate 兜底）。
-                if (rt.batchRun()) {
-                    try {
-                        new BatchOrchestrator(db, tenantId)
-                                .onRunStatusChanged(cmd.targetId());
-                    } catch (Exception e) {
-                        log.error("[暂停] 恢复后批次聚合失败（由启动 rehydrate 兜底）："
-                                + e.getMessage());
-                    }
-                }
-                if (requeued && scheduler != null) {
-                    try {
-                        scheduler.resumeRun(out.experimentId(), cmd.targetId());
-                    } catch (Exception e) {
-                        log.error("[暂停] 恢复后重新入队失败（由启动 rehydrate 兜底）："
-                                + e.getMessage());
-                    }
-                }
-                return new ExperimentResume(cmd.targetId(), out.experimentId(),
-                        out.cleared(), requeued, out.stillHeldReason(),
-                        requeued ? "queued" : "paused");
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            Claim claim = claimTx(c, cmd);
+            if (!claim.firstTime()) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                Map<String, String> d = claim.detail();
+                return new ExperimentResume(cmd.targetId(),
+                        longOf(d.get("experimentId"), 0L),
+                        boolOf(d.get("cleared"), false),
+                        boolOf(d.get("requeued"), false),
+                        d.get("stillHeldReason"),
+                        d.getOrDefault("status", "queued"));
             }
-        }
+            RunControl ctl = new RunControl(db, tenantId);
+            RunControl.RunInfo ri = ctl.infoTx(c, cmd.targetId());
+            RunControl.ResumeTx rt = ctl.resumeTx(c, ri, null, note);
+            RunControl.ResumeOutcome out = rt.outcome();
+            boolean requeued = out.stillHeldReason() == null;
+            // 现场（site）扣留仍在 => 恢复未真正生效，如实标记 UNKNOWN 而不是假装完成。
+            cmd.result(requeued ? PauseCommand.ResultState.COMPLETED
+                    : PauseCommand.ResultState.UNKNOWN);
+            Map<String, String> detail = new LinkedHashMap<>();
+            detail.put("experimentId", String.valueOf(out.experimentId()));
+            detail.put("cleared", String.valueOf(out.cleared()));
+            detail.put("requeued", String.valueOf(requeued));
+            detail.put("status", requeued ? "queued" : "paused");
+            if (out.stillHeldReason() != null) {
+                detail.put("stillHeldReason", out.stillHeldReason());
+            }
+            settleTx(c, cmd, detail);
+            insertPauseEvent(c, cmd, "RESUME_REQUESTED", "experiment",
+                    out.experimentId());
+
+            // commit 后动作：批次聚合（可能跨 run）；重新入队（内存队列，启动 rehydrate 兜底）。
+            if (rt.batchRun()) {
+                try {
+                    new BatchOrchestrator(db, tenantId)
+                            .onRunStatusChanged(cmd.targetId());
+                } catch (Exception e) {
+                    log.error("[暂停] 恢复后批次聚合失败（由启动 rehydrate 兜底）："
+                            + e.getMessage());
+                }
+            }
+            if (requeued && scheduler != null) {
+                try {
+                    scheduler.resumeRun(out.experimentId(), cmd.targetId());
+                } catch (Exception e) {
+                    log.error("[暂停] 恢复后重新入队失败（由启动 rehydrate 兜底）："
+                            + e.getMessage());
+                }
+            }
+            return new ExperimentResume(cmd.targetId(), out.experimentId(),
+                    out.cleared(), requeued, out.stillHeldReason(),
+                    requeued ? "queued" : "paused");
+        });
     }
 }

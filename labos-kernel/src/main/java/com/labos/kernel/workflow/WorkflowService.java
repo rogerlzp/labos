@@ -663,50 +663,44 @@ public class WorkflowService {
             }
         }
 
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                // 必须**先删步骤行（level=1）**，再删业务节点。
-                // run_command 挂在步骤行上（FK -> run_node.id ON DELETE CASCADE），
-                // 而步骤行只靠裸字段 parent_node_id 指向业务节点，**没有外键** ——
-                // 只删 level=0 级联不到它们（2026-11-03 评审 H1，已实测复现：
-                // 续跑发了 2 条命令，run_command 一条没增，日志里 2 条 duplicate key）。
-                try (PreparedStatement ps = c.prepareStatement("""
-                        DELETE FROM run_node s
-                         USING run_node p
-                         WHERE s.tenant_id = ? AND s.run_id = ? AND s.level = 1
-                           AND p.id = s.parent_node_id
-                           AND p.tenant_id = s.tenant_id AND p.run_id = s.run_id
-                           AND p.level = 0 AND p.status <> 'completed'
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, runId);
-                    ps.executeUpdate();
-                }
-                try (PreparedStatement ps = c.prepareStatement("""
-                        DELETE FROM run_node
-                        WHERE tenant_id = ? AND run_id = ? AND level = 0
-                          AND status <> 'completed'
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, runId);
-                    ps.executeUpdate();
-                }
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE run SET status = 'running', pause_kind = NULL, pause_reason = NULL,
-                               pause_node_key = NULL, resumed_at = now(), updated_at = now()
-                        WHERE tenant_id = ? AND id = ?
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, runId);
-                    ps.executeUpdate();
-                }
-                c.commit();
-            } catch (SQLException e) {
-                c.rollback();
-                throw e;
+        com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            // 必须**先删步骤行（level=1）**，再删业务节点。
+            // run_command 挂在步骤行上（FK -> run_node.id ON DELETE CASCADE），
+            // 而步骤行只靠裸字段 parent_node_id 指向业务节点，**没有外键** ——
+            // 只删 level=0 级联不到它们（2026-11-03 评审 H1，已实测复现：
+            // 续跑发了 2 条命令，run_command 一条没增，日志里 2 条 duplicate key）。
+            try (PreparedStatement ps = c.prepareStatement("""
+                    DELETE FROM run_node s
+                     USING run_node p
+                     WHERE s.tenant_id = ? AND s.run_id = ? AND s.level = 1
+                       AND p.id = s.parent_node_id
+                       AND p.tenant_id = s.tenant_id AND p.run_id = s.run_id
+                       AND p.level = 0 AND p.status <> 'completed'
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, runId);
+                ps.executeUpdate();
             }
-        }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    DELETE FROM run_node
+                    WHERE tenant_id = ? AND run_id = ? AND level = 0
+                      AND status <> 'completed'
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, runId);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE run SET status = 'running', pause_kind = NULL, pause_reason = NULL,
+                           pause_node_key = NULL, resumed_at = now(), updated_at = now()
+                    WHERE tenant_id = ? AND id = ?
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, runId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
 
         final long wid = wfId;
         final String mode = attendance;

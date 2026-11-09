@@ -112,17 +112,10 @@ public final class PauseManager {
     public int pause(long runId, Kind kind, String reason, String nodeKey)
             throws SQLException {
         // P-06 V2：run 落 paused 与释放资源（位置/预约/通道/设备锁）同一事务。
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                int released = pauseTx(c, runId, kind, reason, nodeKey);
-                c.commit();
-                return released;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
-            }
-        }
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            int released = pauseTx(c, runId, kind, reason, nodeKey);
+            return released;
+        });
     }
 
     /**
@@ -220,19 +213,13 @@ public final class PauseManager {
      * @return 释放条数
      */
     public int releaseResources(long runId) {
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                int released = releaseResourcesTx(c, runId);
-                c.commit();
-                return released;
-            } catch (SQLException e) {
-                c.rollback();
-                log.error("[暂停] 释放资源失败：" + e.getMessage());
-                return 0;
-            }
+        // 原实现在这里吞掉 SQLException、记日志后返回 0；保持该对外语义不变，
+        // 事务本身仍由 Spring 管理（异常会让 Tx 回滚）。
+        try {
+            return com.labos.kernel.persistence.Tx.inTransaction(
+                    db, c -> releaseResourcesTx(c, runId));
         } catch (SQLException e) {
-            log.error("[暂停] 释放资源失败：" + e.getMessage());
+            log.error("[暂停] 释放资源失败：{}", e.getMessage());
             return 0;
         }
     }
@@ -498,17 +485,10 @@ public final class PauseManager {
      */
     public int dismissBatch(java.util.List<Long> ids, String kind, Integer beforeHours)
             throws SQLException {
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                int n = dismissBatchTx(c, ids, kind, beforeHours);
-                c.commit();
-                return n;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
-            }
-        }
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            int n = dismissBatchTx(c, ids, kind, beforeHours);
+            return n;
+        });
     }
 
     /** 同 {@link #dismissBatch(java.util.List, String, Integer)}，但复用调用方事务连接。 */

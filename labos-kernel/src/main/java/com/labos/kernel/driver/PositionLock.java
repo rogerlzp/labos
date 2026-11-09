@@ -337,43 +337,36 @@ public final class PositionLock {
     }
 
     private int putPlateInternal(long resourceId, String plateId, long runId) throws SQLException {
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                int n;
-                // 用 UPSERT 而不是纯 UPDATE：position_state 里可能还没有这一行
-                // （tryReserve 没插或插失败），纯 UPDATE 会静默影响 0 行，
-                // 表现为"返回了位置但层位上没板"。
-                try (PreparedStatement ps = c.prepareStatement("""
-                        INSERT INTO position_state
-                          (tenant_id, resource_id, plate_id, occupied_since,
-                           occupied_by_run, updated_at)
-                        VALUES (?, ?, ?, now(), ?, now())
-                        ON CONFLICT (tenant_id, resource_id) DO UPDATE
-                        SET plate_id = EXCLUDED.plate_id,
-                            occupied_since = now(),
-                            occupied_by_run = EXCLUDED.occupied_by_run,
-                            reserved_until = NULL,
-                            reserved_by_run = NULL,
-                            updated_at = now()
-                        WHERE position_state.plate_id IS NULL OR position_state.plate_id = ''
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, resourceId);
-                    ps.setString(3, plateId);
-                    ps.setLong(4, runId);
-                    n = ps.executeUpdate();
-                }
-                // 不在主事务里写 plate 表：那张表是冗余，列名一变就会
-                // 让整个事务作废，把 position_state 的更新一起回滚。
-                // 改为 commit 之后用独立连接写（见 putPlate 包装）。
-                c.commit();
-                return n;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            int n;
+            // 用 UPSERT 而不是纯 UPDATE：position_state 里可能还没有这一行
+            // （tryReserve 没插或插失败），纯 UPDATE 会静默影响 0 行，
+            // 表现为"返回了位置但层位上没板"。
+            try (PreparedStatement ps = c.prepareStatement("""
+                    INSERT INTO position_state
+                      (tenant_id, resource_id, plate_id, occupied_since,
+                       occupied_by_run, updated_at)
+                    VALUES (?, ?, ?, now(), ?, now())
+                    ON CONFLICT (tenant_id, resource_id) DO UPDATE
+                    SET plate_id = EXCLUDED.plate_id,
+                        occupied_since = now(),
+                        occupied_by_run = EXCLUDED.occupied_by_run,
+                        reserved_until = NULL,
+                        reserved_by_run = NULL,
+                        updated_at = now()
+                    WHERE position_state.plate_id IS NULL OR position_state.plate_id = ''
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, resourceId);
+                ps.setString(3, plateId);
+                ps.setLong(4, runId);
+                n = ps.executeUpdate();
             }
-        }
+            // 不在主事务里写 plate 表：那张表是冗余，列名一变就会
+            // 让整个事务作废，把 position_state 的更新一起回滚。
+            // 改为 commit 之后用独立连接写（见 putPlate 包装）。
+            return n;
+        });
     }
 
     /** 登记"板取走了"：位置变空。 */
@@ -384,43 +377,36 @@ public final class PositionLock {
     }
 
     private int takePlateInternal(long resourceId, long runId) throws SQLException {
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            try {
-                String plate = null;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        SELECT plate_id FROM position_state
-                        WHERE tenant_id = ? AND resource_id = ? AND plate_id IS NOT NULL
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, resourceId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) {
-                            plate = rs.getString(1);
-                        }
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            String plate = null;
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT plate_id FROM position_state
+                    WHERE tenant_id = ? AND resource_id = ? AND plate_id IS NOT NULL
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, resourceId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        plate = rs.getString(1);
                     }
                 }
-                int n;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE position_state
-                        SET plate_id = NULL, occupied_since = NULL, occupied_by_run = NULL,
-                            updated_at = now()
-                        WHERE tenant_id = ? AND resource_id = ?
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, resourceId);
-                    n = ps.executeUpdate();
-                }
-                if (n > 0 && plate != null) {
-                    markPlateInTransfer(c, plate, runId);
-                }
-                c.commit();
-                return n;
-            } catch (SQLException | RuntimeException e) {
-                c.rollback();
-                throw e;
             }
-        }
+            int n;
+            try (PreparedStatement ps = c.prepareStatement("""
+                    UPDATE position_state
+                    SET plate_id = NULL, occupied_since = NULL, occupied_by_run = NULL,
+                        updated_at = now()
+                    WHERE tenant_id = ? AND resource_id = ?
+                    """)) {
+                ps.setLong(1, tenantId);
+                ps.setLong(2, resourceId);
+                n = ps.executeUpdate();
+            }
+            if (n > 0 && plate != null) {
+                markPlateInTransfer(c, plate, runId);
+            }
+            return n;
+        });
     }
 
     /** 清掉过期预约（定时任务调）。返回清理条数。 */
@@ -515,7 +501,7 @@ public final class PositionLock {
      *
      * <p>更致命的是：SQL 失败后 {@code catch (SQLException ignore)} 吞掉异常，
      * 但 **PostgreSQL 已经把整个事务标记为 aborted**，
-     * 外层的 {@code c.commit()} 必然抛错 → 整个 takePlate 回滚。
+     * 整个 takePlate 由 Spring 事务回滚（原实现靠手写 commit 抛错）。
      * 表现是"任何取板动作必失败"，而日志里只看得到一句 catch。
      *
      * <p><b>修法两层</b>：

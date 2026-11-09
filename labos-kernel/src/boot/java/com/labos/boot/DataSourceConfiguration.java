@@ -51,27 +51,10 @@ public class DataSourceConfiguration {
         return tm;
     }
 
-    /**
-     * 把当前 {@code TransactionStatus} 暴露给桥接层：遗留裸 JDBC 代码里的
-     * {@code rollback()} 需要据此标记 rollback-only（编程式事务下
-     * {@code TransactionAspectSupport.currentTransactionStatus()} 不可用）。
-     */
+    /** 编程式事务入口：静态工具类用 {@code Tx}，这里给需要显式模板的调用方。 */
     @Bean
     public TransactionTemplate transactionTemplate(PlatformTransactionManager tm) {
-        return new TransactionTemplate(tm) {
-            @Override
-            public <T> T execute(
-                    org.springframework.transaction.support.TransactionCallback<T> action) {
-                return super.execute(status -> {
-                    DbConfig.bindCurrentTransactionStatus(status);
-                    try {
-                        return action.doInTransaction(status);
-                    } finally {
-                        DbConfig.clearCurrentTransactionStatus();
-                    }
-                });
-            }
-        };
+        return new TransactionTemplate(tm);
     }
 
     private static String env(String key, String def) {
