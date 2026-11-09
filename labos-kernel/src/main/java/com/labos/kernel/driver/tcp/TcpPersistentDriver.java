@@ -116,14 +116,30 @@ public final class TcpPersistentDriver implements DeviceDriver, AutoCloseable {
         return descriptor;
     }
 
+    /**
+     * B-02：当前 TCP 协议**没有设备侧 Abort 消息**（只有 {@code message_type=1} 的命令帧）。
+     *
+     * <p>所以这里只能什么都不做。改动前会把 {@code pending} 里的 future 摘掉并塞一个
+     * 「被中止」，看上去很干净：内核立刻拿到失败、节点记 aborted、界面显示已停 ——
+     * 但设备**从来没有收到停止指令，动作还在继续**。恢复时那一步因为不是 completed
+     * 会被重跑，于是同一条物理动作执行两次。
+     *
+     * <p>{@link #supportsPhysicalAbort()} 保持接口安全默认 {@code false}，
+     * 上层据此改成「等当前动作跑到安全边界再暂停」。
+     */
     @Override
     public void abort(String commandId) {
-        // 尽力而为：把等待中的 future 摘掉，让调用方立刻返回失败
-        CompletableFuture<DriverResult> f = pending.remove(commandId);
-        if (f != null) {
-            f.complete(DriverResult.failed(commandId, "EC-99-0005",
-                    "被中止", null, 0));
-        }
+        // 故意空实现：不能伪造「设备已停止」。要真停，得先在协议里加停止帧并做 HIL。
+    }
+
+    @Override
+    public boolean supportsPhysicalAbort() {
+        return false;
+    }
+
+    /** 包可见：仅供自测断言「abort 不会伪造完成」。 */
+    Map<String, CompletableFuture<DriverResult>> pendingForTest() {
+        return pending;
     }
 
     @Override

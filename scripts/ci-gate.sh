@@ -50,7 +50,7 @@ if [[ $WITH_DB -eq 1 ]]; then
 fi
 
 # 阈值：只许涨不许跌。改了用例要同步改这里，逼着人想清楚"少的那几条去哪了"。
-MIN_PURE=673    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（sleep 真停 / wait 满足 / wait 超时转人工 / 外部刷新不盖本图写值 / __ 前缀判 LOGIC）（644 → 649）；
+MIN_PURE=697    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（sleep 真停 / wait 满足 / wait 超时转人工 / 外部刷新不盖本图写值 / __ 前缀判 LOGIC）（644 → 649）；
                 # 2026-11-06 收尾：再新增「干跑内置节点直通」一条（评审③相邻缝隙）（649 → 650）；
                 # 2026-11-06 演示：新增「干跑任务节点也直通」一条（TASK 分不到设备时不误报下游走不到，PF-03 假报）（650 → 651）；
                 # 2026-11-07 V1-1：RuntimeHoldSelfTest 新增安全闸门三态 11 条（CLEAR 放行 / HELD 阻断 / UNKNOWN 阻断 /
@@ -58,6 +58,8 @@ MIN_PURE=673    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（
                 # 2026-11-07 L-02：StatusVocabularySelfTest 新增 control scope 2 条（7b 契约固定 1 条 + JSON 元素形状 1 条）（662 → 664）；
                 # 2026-11-07 S-03：新增 ExperimentStateProjectorSelfTest 9 条（源码树可枚举 2 / 单写者 0 违规 1 /
                 #                 收口恰 5 条 + 常量名 + 非空 3 / 映射同源 3）（664 → 673）
+                # 2026-11-09 B-01/B-02：WorkflowExecutionSafetySelfTest 3 条（执行期异常不 fallback / 解析失败可 fallback / 解析成功走图执行）+ DeviceDriverAbortContractSelfTest 6 条（默认不支持物理中止 / 显式声明才认 / 准入组合 4 条）+ TcpAbortContractSelfTest 2 条（abort 不伪造完成 / TCP 不声明物理中止）。
+                #                 实测基线：改前 HEAD 实跑 686（阈值 673 有 13 条历史欠账），加 11 条后 697（686 → 697）
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
 MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
@@ -82,7 +84,7 @@ MIN_EXPPAUSEPAGE=25   # 2026-11-08：4.20 实验级暂停/恢复·页面版（�
                 # 内核把 pause_node_key 写成 DEV2（探针不预写），DEV completed、DEV2 pending；
                 # 恢复后 DEV 不重跑、DEV2 才下发 1 条指令。网关和 __setVar 仍不是暂停点。
 MIN_PAUSEEXP=17   # S-04-A/B：受理语义（accepted+control_state）→设备收敛→Workflow 边界→实验级 paused 的顺序 / Hold / 命令证据 / 后续节点 pending；4.17 现 17 条
-MIN_INTR=6        # 2026-11-06：A1 真停 · 可中断方法执行中发暂停 → 命令真被中止（aborted|EC-99-0005）；2026-11-08 增加「产品写入口」断言（5 → 6）
+MIN_INTR=9        # 2026-11-09（B-02）：4.18 改写为「暂停安全边界」——驱动无物理 Abort 时动作必须自然完成、下一 task 边界暂停、不重复派发、不伪报 aborted（6 → 9）。真停分支待 P-12 HIL
 
 FAIL=0
 SKIP=0
@@ -525,26 +527,32 @@ if [[ $WITH_E2E -eq 1 ]]; then
       pass "实验级暂停 $SUM_PASS / 0（M-01 三层 legacy paused + Hold/设备收敛/节点边界/后续节点与命令证据）"
     fi
   fi
-  # 4.18 A1 真停：方法声明「可中断」时，执行中发暂停 → 命令真的被中止
-  # 断言的是**语义要求**：可中断方法在暂停后必须**很快**落终态
-  # （远快于设备本身要跑的 30–300 秒），而不是等设备跑完。
-  # 脚本会临时把机械臂的 Home 标成 interruptible=true，结束前还原。
-  note "4.18 A1 真停 · 可中断方法执行中（e2e-interrupt-during-device.py）"
+  # 4.18 暂停安全边界（B-02，2026-11-09 改写）：驱动没有物理 Abort 时，
+  # 暂停**不能**靠取消本地 Future 冒充「设备已停止」。
+  #   ① 方法声明可中断（device_method.interruptible）只说明"停一下工艺上安全"，
+  #      不说明驱动真能让设备停；
+  #   ② TCP 协议没有停止帧 ⇒ supportsPhysicalAbort() 恒 false ⇒ 当前动作跑完，
+  #      在下一个 task 边界暂停，且不得重复派发。
+  # 断言的是**语义要求**：命令必须自然 completed（不是伪报 aborted）、run 停在
+  # 下一 task 边界、命令数仍为 1。
+  # 「声明可中断 + 驱动有物理 Abort ⇒ 命令数秒内 aborted」这条正向路径当前环境
+  # 无驱动可验（无 HIL）⇒ 归 P-12 真机，不在此段假装通过。
+  note "4.18 暂停安全边界 · 驱动无物理 Abort（e2e-interrupt-during-device.py）"
   IOUT=$(python3 scripts/e2e-interrupt-during-device.py 2>&1)
   if is_skip "$IOUT"; then
-    skip "A1 真停（没给库连接）"
+    skip "暂停安全边界（没给库连接）"
   else
     parse_summary "$IOUT"
     if [[ "$SUM_MISSING" == "1" ]]; then
-      fail "A1 真停脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
+      fail "暂停安全边界脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
       printf '%s\n' "$IOUT" | tail -15
     elif [[ "$SUM_FAIL" != "0" ]]; then
-      fail "A1 真停有失败（$SUM_FAIL 条）"
+      fail "暂停安全边界有失败（$SUM_FAIL 条）"
       printf '%s\n' "$IOUT" | grep '✗' | head -8
     elif (( SUM_PASS < MIN_INTR )); then
-      fail "A1 真停断言 $SUM_PASS < 阈值 ${MIN_INTR}"
+      fail "暂停安全边界断言 $SUM_PASS < 阈值 ${MIN_INTR}"
     else
-      pass "A1 真停 $SUM_PASS / 0（可中断方法执行中发暂停 → 命令在 10 秒内被中止）"
+      pass "暂停安全边界 $SUM_PASS / 0（动作跑完 · 下一 task 暂停 · 不重复派发 · 不伪报 stopped）"
     fi
   fi
   # 4.19 页面全链路：异或+并行两对网关 + 4 个设备任务 + 页面执行/暂停/继续

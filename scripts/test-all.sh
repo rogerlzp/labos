@@ -67,6 +67,10 @@ PURE=(
   "workflow.RunControlSelfTest"
   # B-01：图执行期 RuntimeException 不得退回顺序重跑（副作用只发生一次）
   "workflow.WorkflowExecutionSafetySelfTest"
+  # B-02：物理中止能力默认关闭 + 「可中断等待」必须同时满足方法与驱动两个条件
+  "driver.DeviceDriverAbortContractSelfTest"
+  # B-02：TCP 无 Abort 消息 ⇒ abort 不得伪造「设备已停止」
+  "driver.tcp.TcpAbortContractSelfTest"
   # S3 分批执行纯逻辑：96/24=4、余数成批、空/NULL 集合、D5 批变量、D6 状态聚合
   "workflow.BatchPlannerSelfTest"
   "workflow.SchedulerEtaSelfTest"

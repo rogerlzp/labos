@@ -672,17 +672,18 @@ public final class DriverStepExecutor implements StepExecutor {
     }
 
     /**
-     * 下发一条设备命令。
+     * 「可中断等待」的准入判据（B-02）：**方法声明可中断**且**驱动具备物理中止能力**，
+     * 两者缺一不可。
      *
-     * <p><b>方法没声明可中断</b> ⇒ 老路径：调用线程直接阻塞等回包（行为不变）。
-     *
-     * <p><b>方法声明了可中断</b> ⇒ 放到工作线程里等，主线程每 200ms 查一次
-     * 「是否该停」（workflow 级暂停 / 实验级扣留）：
-     * 命中就调 {@code driver.abort(commandId)}
-     * （{@code TcpPersistentDriver.abort} 会把等待中的 future 摘掉，
-     * 让调用方立刻拿到失败）⇒ 这一步被中断，节点记 aborted，
-     * 恢复时因为它不是 completed，会**重跑这一步**。
+     * <p>{@code device_method.interruptible=true} 只说明「这个方法停一下是安全的」，
+     * 不说明「驱动真的能让它停」。若驱动没有物理 Abort 能力（安全默认），
+     * 取消本地 Future 只会让我们**以为**停了：设备还在动，恢复时又会重派一遍。
      */
+    static boolean allowInterruptibleWait(boolean methodDeclaredInterruptible,
+                                          boolean driverSupportsPhysicalAbort) {
+        return methodDeclaredInterruptible && driverSupportsPhysicalAbort;
+    }
+
     /**
      * P-07 第一切片：派发前落命令账本（同一 commandId 唯一），回包后写 ACKED/FAILED。
      *
@@ -740,9 +741,28 @@ public final class DriverStepExecutor implements StepExecutor {
         }
     }
 
+    /**
+     * 下发一条设备命令（B-02 后的行为）。
+     *
+     * <p><b>方法没声明可中断，或驱动没有物理 Abort 能力</b> ⇒ 调用线程直接阻塞等回包，
+     * 当前动作**跑到安全边界**；暂停请求由 GraphRunner 在下一个任务边界生效。
+     * 「取消本地等待」不算停：设备可能还在动，恢复时会重复派发同一物理动作。
+     *
+     * <p><b>方法声明可中断且驱动声明物理 Abort</b> ⇒ 放到工作线程里等，
+     * 主线程每 {@code INTERRUPT_POLL_MS} 查一次「是否该停」：
+     * 命中就调 {@code driver.abort(commandId)}，由驱动自己保证「设备侧已确认停止」。
+     */
     private DriverResult doExecuteCommand(DeviceDriver driver, StepContext ctx,
                                           DriverCommand cmd, long workflowId) {
-        if (!isInterruptible(cmd.deviceInstanceId(), cmd.method())) {
+        boolean driverSupportsPhysicalAbort = driver.supportsPhysicalAbort();
+        boolean methodDeclaredInterruptible = isInterruptible(cmd.deviceInstanceId(), cmd.method());
+        if (!allowInterruptibleWait(methodDeclaredInterruptible, driverSupportsPhysicalAbort)) {
+            if (methodDeclaredInterruptible) {
+                // 方法允许中断，但驱动没有物理 Abort 能力：只能等它跑完。
+                // 这条日志是「暂停为什么没立刻生效」的唯一线索，必须留。
+                System.err.println("[暂停] 驱动未声明已验证的物理中止能力；"
+                        + cmd.method() + " 将执行到安全边界，不取消本地等待");
+            }
             return driver.execute(cmd);
         }
         java.util.concurrent.Future<DriverResult> f =
@@ -753,13 +773,18 @@ public final class DriverStepExecutor implements StepExecutor {
                     return f.get();
                 }
                 if (pauseRequested(workflowId)) {
+                    // 能走到这里说明驱动已声明物理 Abort ⇒ abort 返回时设备侧
+                    // 已确认停止（这是 supportsPhysicalAbort 的契约），此时再取消
+                    // 本地等待不构成"谎报设备已停"。设备未确认就返回的情况属 B-04
+                    // （结构化 AbortResult），不在本段处理。
                     driver.abort(cmd.commandId());
                     try {
                         return f.get(5, java.util.concurrent.TimeUnit.SECONDS);
                     } catch (java.util.concurrent.TimeoutException te) {
                         f.cancel(true);
                         return DriverResult.failed("0", "EC-99-0005",
-                                "设备命令被暂停中止（方法声明可中断）", null, 0);
+                                "设备命令被暂停中止（驱动已确认物理停止，工作线程未及时返回）",
+                                null, 0);
                     }
                 }
                 Thread.sleep(INTERRUPT_POLL_MS);

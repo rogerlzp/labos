@@ -30,9 +30,9 @@
 
 | ID | 工作项 | 分支证据 | 状态 | 目标 PR |
 |---|---|---|---|---|
-| B-01 | GraphRunner 执行期 RuntimeException 不再 fallback 到 `executeAll` 顺序重跑 | `WorkflowService.executeGraphWithParseFallback` | **IN_PR（2026-11-09 实装，待合入 main）**：`executeGraphWithParseFallback(xml, sequentialFallback, graphRunner, executor)` 只把 `WorkflowGraphParser.parse` 放进 try，`graphRunner.run` 故意放在 try 之外 ⇒ 解析期可退回、执行期异常原样抛出；执行期异常另把 run 落 `failed`（不覆盖 paused、不回滚已完成节点）后抛出。证据：`WorkflowExecutionSafetySelfTest` 3/0（执行期异常不 fallback + 解析失败可 fallback + 解析成功走图执行） | PR-B1 |
-| B-02 | TCP 无物理 Abort 时不以本地 Future 取消冒充设备已停止 | `DeviceDriver.supportsPhysicalAbort()` 默认 false、`DeviceDriverAbortContractSelfTest.java` | NOT_STARTED(on main) | PR-B2 |
-| B-03 | 同一 JVM 内同一 run 的后台 worker 禁止并发，旧 worker 未退出时拒绝 resume | `WorkflowExecutionSafetySelfTest.java` | NOT_STARTED(on main) | PR-B3 |
+| B-01 | GraphRunner 执行期 RuntimeException 不再 fallback 到 `executeAll` 顺序重跑 | `WorkflowService.executeGraphWithParseFallback` | **IN_PR（2026-11-09 实装，待合入 main）**：`executeGraphWithParseFallback(xml, sequentialFallback, graphRunner, executor)` 只把 `WorkflowGraphParser.parse` 放进 try，`graphRunner.run` 故意放在 try 之外 ⇒ 解析期可退回、执行期异常原样抛出；执行期异常另把 run 落 `failed`（不覆盖 paused、不回滚已完成节点）后抛出。证据：`WorkflowExecutionSafetySelfTest` 3/0（执行期异常不 fallback + 解析失败可 fallback + 解析成功走图执行）；`MIN_PURE` 673 → 684 | PR-B1 |
+| B-02 | TCP 无物理 Abort 时不以本地 Future 取消冒充设备已停止 | `DeviceDriver.supportsPhysicalAbort()` 默认 false、`DeviceDriverAbortContractSelfTest.java` | **IN_PR（2026-11-09 实装，待合入 main）**：①`DeviceDriver.supportsPhysicalAbort()` 安全默认 `false`；②`DriverStepExecutor.allowInterruptibleWait(method, driver)` = 方法声明可中断 **且** 驱动声明物理 Abort，缺一即阻塞等回包（跑完到安全边界）；③`TcpPersistentDriver.abort` 改为空实现（TCP 协议只有 `message_type=1` 命令帧，无停止帧）并显式 `supportsPhysicalAbort()=false`。证据：`DeviceDriverAbortContractSelfTest` 6/0、`TcpAbortContractSelfTest` 2/0（abort 后 Future 必须仍未完成）；门禁 4.18 改写为「暂停安全边界」`MIN_INTR` 6 → 9。**未验证**：「声明可中断 + 驱动有物理 Abort ⇒ 命令数秒内真停」当前环境无此驱动（无 HIL）⇒ 归 P-12 | PR-B2 |
+| B-03 | 同一 JVM 内同一 run 的后台 worker 禁止并发，旧 worker 未退出时拒绝 resume | `WorkflowServiceSingleFlightSelfTest.java`（2026-11-09 工作区已实装：`claimRunWorkerSlot` / `submitRunWorker` / `startRunWorker`，**未提交、未合入 main**） | NOT_STARTED(on main) | PR-B3 |
 | B-04 | 结构化 `AbortResult`（UNSUPPORTED / REQUESTED / DEVICE_ACKNOWLEDGED / PHYSICALLY_STOPPED / UNKNOWN） | 分支未实现，整改计划 Batch 0.2 `[ ]` | NOT_STARTED | PR-B4 |
 
 ## 3. G 组：基线对齐与门禁（先于一切实施）
