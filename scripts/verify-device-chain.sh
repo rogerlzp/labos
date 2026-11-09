@@ -104,7 +104,7 @@ api() {  # api <METHOD> <PATH> [BODY]
 step "1. 设备型号入池（幂等）"
 cd "$ROOT/labos-kernel" || exit 1
 for m in s100 aspin-2k; do
-    if java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.device.DeviceRegistrar \
+    if java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceRegistrar \
             --model "$m" >/tmp/registrar-$m.log 2>&1; then
         ok "$m 在设备池"
     else
@@ -190,10 +190,10 @@ ASPIN_DRV=$(bind_driver DRV-SIDECAR-ASPIN "$SIDE_ASPIN" "$ASPIN_INST")
 
 # ---------------------------------------------------------------- 4. 起服务
 step "4. 起模拟器 + sidecar"
-( cd "$ROOT/labos-kernel" && exec java -cp out com.labos.kernel.sim.DeviceSimulator \
+( cd "$ROOT/labos-kernel" && exec java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
     --model s100 --device "$S100_INST" --code S100V --port "$SIM_S100" --delay 1 \
     > /tmp/verify-sim-s100.log 2>&1 ) & SIM_S100_PID=$!; PIDS+=($!)
-( cd "$ROOT/labos-kernel" && exec java -cp out com.labos.kernel.sim.DeviceSimulator \
+( cd "$ROOT/labos-kernel" && exec java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
     --model aspin-2k --device "$ASPIN_INST" --code ASPINV --port "$SIM_ASPIN" --delay 1 \
     > /tmp/verify-sim-aspin.log 2>&1 ) & PIDS+=($!)
 sleep 1.5
@@ -259,7 +259,7 @@ restart_sim_s100() {  # $1 = 额外参数（如 "--fail 1 --fail-from 2 …"）
     kill "$SIM_S100_PID" 2>/dev/null
     sleep 1
     # shellcheck disable=SC2086
-    ( cd "$ROOT/labos-kernel" && exec java -cp out com.labos.kernel.sim.DeviceSimulator \
+    ( cd "$ROOT/labos-kernel" && exec java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
         --model s100 --device "$S100_INST" --code S100V --port "$SIM_S100" --delay 1 $1 \
         > /tmp/verify-sim-s100.log 2>&1 ) & SIM_S100_PID=$!; PIDS+=($!)
     sleep 2
@@ -340,7 +340,7 @@ done
 # ============================================================================
 step "9. 节点绑定表与图 XML 一致"
 
-if ( cd "$ROOT/labos-kernel" && java -cp "out:lib/postgresql-42.7.3.jar" \
+if ( cd "$ROOT/labos-kernel" && java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
         com.labos.kernel.workflow.BindingBackfill --check ) > /tmp/verify-bind.log 2>&1; then
     ok "全库 workflow_node.resource_id/seq 与图 XML 一致"
 else

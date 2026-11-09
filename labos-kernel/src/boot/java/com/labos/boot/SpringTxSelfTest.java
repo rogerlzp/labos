@@ -33,8 +33,10 @@ public final class SpringTxSelfTest {
         ConfigurableApplicationContext ctx = new SpringApplicationBuilder(LabosApplication.class)
                 .web(WebApplicationType.NONE)
                 .bannerMode(Banner.Mode.OFF)
-                .properties("labos.kernel.http.enabled=false")
-                .run();
+                // 命令行参数优先级高于 application.properties，确保自测不启 Tomcat、
+                // 不抢 18080（application.properties 里正式配置是 servlet）。
+                .run("--spring.main.web-application-type=none",
+                        "--labos.kernel.http.enabled=false");
         try {
             DbConfig db = ctx.getBean(DbConfig.class);
             TxProbeService probe = ctx.getBean(TxProbeService.class);

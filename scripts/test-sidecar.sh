@@ -71,12 +71,12 @@ md5_of_stdin() {
     md5sum | cut -d' ' -f1
   fi
 }
-CUR=$(cd "$ROOT/labos-kernel" && java -cp out com.labos.kernel.device.DeviceModelExport | md5_of_stdin)
+CUR=$(cd "$ROOT/labos-kernel" && java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceModelExport | md5_of_stdin)
 REG=$(md5_of "$ROOT/sidecar-dotnet/models.json")
 if [[ "$CUR" == "$REG" ]]; then
     ok "models.json 与型号库一致"
 else
-    bad "models.json 过期" "重跑：java -cp out com.labos.kernel.device.DeviceModelExport > ../sidecar-dotnet/models.json"
+    bad "models.json 过期" "重跑：java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceModelExport > ../sidecar-dotnet/models.json"
 fi
 
 echo
@@ -84,7 +84,7 @@ echo "════════ 1. 起模拟器 + sidecar ═══════�
 # exec：让 $! 就是 java 本身。写成 ( cd … && java … ) & 时 $! 是子 shell，
 # kill 子 shell 不会杀 java —— 每次跑完都留一个模拟器孤儿（2026-11-03 清出 150 个进程时定位到）。
 ( cd "$ROOT/labos-kernel" \
-  && exec java -cp out com.labos.kernel.sim.DeviceSimulator \
+  && exec java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
        --model s100 --device "$DEVICE" --code S100T --port "$SIM_PORT" --delay 1 \
        > /tmp/sidecar-sim.log 2>&1 ) &
 SIM_PID=$!

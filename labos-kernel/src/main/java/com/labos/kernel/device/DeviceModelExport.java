@@ -25,7 +25,9 @@ public final class DeviceModelExport {
             org.slf4j.LoggerFactory.getLogger(DeviceModelExport.class);
 
     public static void main(String[] args) {
-        log.info(json());
+        // 数据管道输出，不是日志：test-sidecar.sh 把 stdout 的 md5 与
+        // sidecar-dotnet/models.json 比对，走 logback 会让 stdout 变空。
+        System.out.println(json());
     }
 
     /** 供自检用：导出内容里必须包含某个型号时直接比对字符串。 */

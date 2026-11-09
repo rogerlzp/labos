@@ -173,7 +173,7 @@ while IFS='|' read -r DEV_ID RES_ID CODE CAP; do
     if [[ -n "${RAND_DELAY}" ]]; then
         RAND_ARGS=(--rand-delay "${RAND_DELAY}")
     fi
-    nohup java -cp out ${SIM_MAIN} \
+    nohup java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" ${SIM_MAIN} \
         --port "${PORT}" --device "${DEV_ID}" --code "${CODE}" --cap "${CAP}" \
         --profile "${PROFILE}" --delay "${DELAY_MS}" "${RAND_ARGS[@]}" \
         >> "/tmp/sim-${CODE}.log" 2>&1 &

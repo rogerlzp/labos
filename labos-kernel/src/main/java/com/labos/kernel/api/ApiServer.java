@@ -37,11 +37,9 @@ import com.labos.kernel.workflow.WorkflowService;
 import com.labos.kernel.workflow.RealWorkflowRunner.WorkflowDef;
 
 import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -53,7 +51,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -104,7 +101,6 @@ public final class ApiServer {
     private static final long MAX_BODY = 1024L * 1024L;
     final WorkflowService workflows;
     final int port;
-    private HttpServer server;
 
     // 路由 controller（构造时注入 this；与 route() 分发一一对应）
     private final AuthApi authApi = new AuthApi(this);
@@ -135,24 +131,13 @@ public final class ApiServer {
         this.port = port;
     }
 
-    public void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(port), 0);
-        server.createContext("/", this::route);
-        // HTTP 走 16 线程：执行工艺是长请求，不能让它占满连接池
-        // （run 本身在 WorkflowService 的独立线程池里跑）
-        server.setExecutor(Executors.newFixedThreadPool(16));
-        server.start();
-    }
-
-    public void stop() {
-        if (server != null) {
-            server.stop(0);
-        }
-    }
-
+    /**
+     * HTTP 已由 Spring MVC（Tomcat）接管：端口、线程池、生命周期都归容器。
+     * 本类只保留路由分发与启动收尾，不再创建任何 ServerSocket。
+     */
     // ---------------------------------------------------------------- 路由
 
-    private void route(HttpExchange ex) {
+    public void route(HttpExchange ex) {
         String path = ex.getRequestURI().getPath();
         String method = ex.getRequestMethod();
         try {
@@ -609,7 +594,7 @@ public final class ApiServer {
      * 旧的 {@code java -cp out ... ApiServer 18080} 入口已删除。
      */
     public void runKernel() throws Exception {
-        start();
+        // HTTP 由 Spring MVC 容器启动，这里只跑启动收尾。
 
         this.scheduler.start();
         this.heartbeat.start();

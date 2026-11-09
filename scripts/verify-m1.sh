@@ -36,13 +36,13 @@ step "0. 起分类型模拟器"
 pkill -f "com.labos.kernel.sim.DeviceSimulator" 2>/dev/null
 sleep 2
 
-(nohup java -cp labos-kernel/out com.labos.kernel.sim.DeviceSimulator \
+(nohup java -cp "labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
     --port $ROBOT_PORT --device 214 --code ID1731 --cap TRANSFER \
     --profile robot >> /tmp/m1-robot.log 2>&1 &)
-(nohup java -cp labos-kernel/out com.labos.kernel.sim.DeviceSimulator \
+(nohup java -cp "labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
     --port $INC_PORT --device 171 --code ID1183 --cap INCUBATE \
     --profile incubator --delay 100 >> /tmp/m1-inc.log 2>&1 &)
-(nohup java -cp labos-kernel/out com.labos.kernel.sim.DeviceSimulator \
+(nohup java -cp "labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
     --port $CENT_PORT --device 999 --code CENT-01 --cap CENTRIFUGE \
     --profile centrifuge >> /tmp/m1-cent.log 2>&1 &)
 sleep 4
@@ -164,7 +164,7 @@ else
     # ⑤ 跑一次 TransferPlan 回归（内含失败回滚断言）
     TP=$(LABOS_DB_HOST="$LABOS_DB_HOST" LABOS_DB_NAME="${LABOS_DB_NAME:-}" \
          LABOS_DB_USER="${LABOS_DB_USER:-}" LABOS_DB_PASS="${LABOS_DB_PASS:-}" \
-         java -cp "labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar" \
+         java -cp "labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" \
          com.labos.kernel.driver.TransferPlanSelfTest 2>&1 | grep -oE "通过 [0-9]+, 失败 [0-9]+")
     if echo "$TP" | grep -q "失败 0"; then
         ok "TransferPlan $TP"

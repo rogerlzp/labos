@@ -34,6 +34,11 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-aop</artifactId>
     </dependency>
+    <!-- HTTP 迁 Spring MVC：Tomcat 接管 18080，JDK HttpServer 退役 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
     <!-- C 批：SQL 收口到 XML mapper（现场决策：XML 比 Java 里拼 SQL 更可读） -->
     <dependency>
       <groupId>org.mybatis.spring.boot</groupId>
