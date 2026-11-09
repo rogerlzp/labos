@@ -144,6 +144,9 @@ final class WorkflowApi {
                     s.audited("workflow.create", "workflow", nid,
                             jsonField(body, "name"), null, ex);
                     s.send(ex, 200, Jsons.obj("id", nid));
+                } catch (IllegalArgumentException e) {
+                    // P-01：给了不存在的岛 id 属于请求错误，不能静默落成脏数据
+                    s.send(ex, 400, err(e.getMessage()));
                 } catch (java.sql.SQLException e) {
                     String msg = e.getMessage() == null ? "" : e.getMessage();
                     s.send(ex, msg.contains("duplicate key")

@@ -69,6 +69,7 @@ cat /tmp/_schema_header.sql \
     99s_command_abort.sql \
     99t_run_status_cancelled.sql \
     99u_run_exec_phase.sql \
+    99v_workflow_island_id.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

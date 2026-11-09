@@ -2897,14 +2897,30 @@ public final class WorkflowService {
         long id;
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO workflow (tenant_id, code, name, category, version, status)
-                     VALUES (?, ?, ?, ?, 1, 1)
+                     INSERT INTO workflow
+                       (tenant_id, code, name, category, version, status, island_id)
+                     VALUES (?, ?, ?, ?, 1, 1, ?)
                      RETURNING id
                      """)) {
             ps.setLong(1, tenantId);
             ps.setString(2, cd);
             ps.setString(3, nm);
             ps.setString(4, cat);
+            // P-01：岛归属是**权威执行边界**（workflow.island_id →
+            // resource_node(kind='island')），不是展示偏好。改动前写在
+            // attr->'island_id' 里，且后端从来没人读、番号还是另一套旧编号
+            // （994 条全是悬空值），2026-11-09 已按现场决策清除该键。
+            // 现在：给了就必须真实存在，给错了直接拒绝，不再静默写下脏标签；
+            // 没给就是 NULL（未分配），由 P-02 校验器按 UNKNOWN 处理。
+            if (islandId == null || islandId <= 0) {
+                ps.setNull(5, java.sql.Types.BIGINT);
+            } else {
+                if (!isRealIsland(c, islandId)) {
+                    throw new IllegalArgumentException(
+                            "islandId " + islandId + " 不是 resource_node 里的岛节点");
+                }
+                ps.setLong(5, islandId);
+            }
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 id = rs.getLong(1);
@@ -2912,25 +2928,22 @@ public final class WorkflowService {
         }
         // 建完立刻落一张最小可用的图，否则设计器打开是空的、保存也无从谈起
         saveGraph(id, blankGraphXml(id, nm));
-        // 记录所属岛：设计器据此默认只显示「这个岛」的设备。
-        // 写 attr 而不是加列，避免为展示偏好改 DDL；旧流程 attr 里没有这个键，
-        // 设计器回落「全部岛」，不回归既有流程与 e2e-sim-flow。
-        if (islandId != null && islandId > 0) {
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement("""
-                         UPDATE workflow
-                            SET attr = jsonb_set(coalesce(attr, '{}'::jsonb),
-                                                 '{island_id}', to_jsonb(?::bigint), true),
-                                updated_at = now()
-                          WHERE tenant_id = ? AND id = ?
-                         """)) {
-                ps.setLong(1, islandId);
-                ps.setLong(2, tenantId);
-                ps.setLong(3, id);
-                ps.executeUpdate();
+        return id;
+    }
+
+    /** P-01：只有 resource_node 里 kind='island' 的 id 才算权威岛。 */
+    private boolean isRealIsland(Connection c, long islandId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT 1 FROM resource_node
+                 WHERE tenant_id = ? AND id = ? AND kind = 'island'
+                   AND deleted_at IS NULL
+                """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, islandId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
             }
         }
-        return id;
     }
 
     /** 最小可用图：开始 → 结束（带 DI，否则 bpmn-js 画不出来）。 */
