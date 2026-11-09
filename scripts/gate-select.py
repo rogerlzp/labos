@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""pre-push 选段：按「这次推了什么」决定跑哪些门禁。
+"""按「这次推了什么」决定跑哪些门禁（2026-11-09 起由开发者/CI 显式调用）。
 
-为什么要有这个：.githooks/pre-push 原来无条件跑 ./scripts/ci-gate.sh --all
+为什么要有这个：早期 .githooks/pre-push 无条件跑 ./scripts/ci-gate.sh --all
 （40 分钟级；设备段还要 30–45 秒/动作的仿真机），等于把"发布前全量"降级成
 "每次 push"。这里按改动路径选档：
 
@@ -16,7 +16,7 @@
 
 用法：
   python3 scripts/gate-select.py                    # 只打印将跑什么
-  python3 scripts/gate-select.py --run              # 实际执行（pre-push 用）
+  python3 scripts/gate-select.py --run              # 实际执行（手动 / CI 用）
   python3 scripts/gate-select.py --run --no-t1      # 只跑 T0，跳过相关段
   python3 scripts/gate-select.py --paths a b        # 用给定路径测试选择逻辑
 """
