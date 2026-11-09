@@ -399,8 +399,21 @@ public class ExperimentActionController {
                             "experimentId", id,
                             "experimentRunId", null,
                             "async", true,
+                            "held", true,
+                            "status", "paused",
+                            "batchNo", next.batchNo(),
+                            "holdReason", next.holdReason()));
+                }
+                case NO_MORE -> {
+                    // 所有批次都已成功：没有可派发的批次（等同同步 runAll 的空跑）
+                    audit.record(session(req), "experiment.submit", "experiment", id,
+                            "no-more-batch", null, req.getRemoteAddr());
+                    return ResponseEntity.ok(Jsons.obj(
+                            "experimentId", id,
+                            "experimentRunId", null,
+                            "async", true,
                             "status", next.status() == null ? "finished" : next.status(),
-                            "batchNo", next.batchNo()));
+                            "batchNo", null));
                 }
                 case NOT_BATCHED -> throw new IllegalArgumentException(
                         "实验已配置分批但取不到切批计划（batch_split 可能刚被清空），请重试");

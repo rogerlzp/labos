@@ -227,13 +227,34 @@ HandlerMethod**，旧 `LegacyRouteController` 链路一行不动、仍由 route(
   /api/meta/status-vocabulary 200、/api/capabilities 200、旧端点 topology/workflows 200、
   无 token 一律 401。
 
+**2026-11-10 凌晨：HTTP 迁移正式收口（全部完成）**
+- 9 个 `*Api`（4457 行）全部拆成 11 个注解式 Controller：Auth/Scheduler/Meta/
+  OpsUser/OpsError/RunQuery/RunAction/Device/ExperimentQuery/ExperimentAction/
+  Workflow + FallbackController（/health、静态 UI、404 兜底）。
+- `ServletHttpExchange` 适配层与 `LegacyRouteController` 删除；
+  `ApiServer.route()/serveUi/serveStatic/cors/send 系列`失去调用者一并删除，
+  JDK `com.sun.net.httpserver` 依赖清零。分层定稿：
+  Controller（HTTP 解析/审计/状态码）→ Service（RunService /
+  WorkflowWebService）→ Mapper（SQL 进 XML，累计 33 条）。
+- **构建层真坑**：git rm 源文件后旧 class 留在 out/ 继续生效（javac 不清
+  stale 产物），导致 `Ambiguous handler methods mapped for '/'`；
+  build-kernel.sh 已加「编译前清理 boot 输出目录」。
+- **拆分引入的真回归（4.13 抓到，已修）**：`POST /run?async=1` 分批路径的
+  HELD 响应漏了 `held:true`、status 误写 finished，且 **NO_MORE 分支整个
+  遗漏**（会掉进 default 对不存在的 runId 调 resumeRun）。教训：分支体
+  「逐字对照原实现 + 响应形状全字段比对」不能省，端到端段（4.13/4.17/4.18）
+  是这类回归唯一的抓手，BatchDbSelfTest 不覆盖 HTTP 形状。
+- `WorkflowWebMapper` 落地 7 条（含岛锁的 INSERT..RETURNING —— MyBatis DTD
+  不允许 <insert> 带 resultType，改用 <select> 承载）。
+
+**验证**：build-kernel.sh --verify 13/0；ci-gate.sh --recovery 门禁通过、
+4.13 崩溃恢复 **34/0**；域端点冒烟全绿（topology/workflows/devices/
+experiments/eta/runs/scheduler/meta/manual-windows/holds/users/health/静态页），
+无 token 一律 401。
+
 **仍未完成**：
-- 约 121 条 SQL 按聚合收进 Mapper（累计已进 13 条：
-  `WorkflowMapper` 4 + `RunMapper` 5 + `GraphMapper` 3 + `MetaMapper` 1）；
-- 剩余 5 个 `*Api`：`DeviceApi`(25 分支) / `ExperimentApi`(19) / `OpsApi`(19) /
-  `RunApi`(25) / `WorkflowApi`(21)。这些分支体含审计、请求体解析、正则路径参数、
-  多 method 共路径，需逐分支手工拆（不能脚本化），每拆一个都要配对应端点冒烟；
-- 拆完才能删除 `ServletHttpExchange` 适配层 —— 它仍是**迁移期设施**，不是长期架构。
+- 约 100 条 SQL 按聚合收进 Mapper（`QueryService` 写路径大方法、
+  `DriverStepExecutor`、`ExperimentExecutor` 等）；
 
 ---
 
