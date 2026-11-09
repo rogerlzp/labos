@@ -103,7 +103,6 @@ public final class ApiServer {
     final int port;
 
     // 路由 controller（构造时注入 this；与 route() 分发一一对应）
-    private final WorkflowApi workflowApi = new WorkflowApi(this);
 
 
     /**
@@ -173,11 +172,8 @@ public final class ApiServer {
             // Auth/Scheduler/Meta/Device/Run 已拆成注解式 Controller
             // （com.labos.boot.web.controller），不再走这条分发链；
             // 鉴权拦截器在 Spring MVC 层先命中。
-            // Auth/Scheduler/Meta/Device/Run/Experiment 已拆成注解式 Controller；
-            // WorkflowApi 是最后一个（拆完即可删除本分发链与 ServletHttpExchange）。
-            if (workflowApi.handle(ex, path, method)) {
-                return;
-            }
+            // 全部 *Api 已拆成注解式 Controller（com.labos.boot.web.controller）。
+            // 本方法只剩鉴权后的静态资源与健康检查兜底；分发链已退役。
 
             if ("/".equals(path) || "/index.html".equals(path)) {
                 serveUi(ex);
