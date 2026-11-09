@@ -189,13 +189,22 @@ def log_since(path, offset):
 
 
 def api_pids():
-    out = subprocess.run(["pgrep", "-f", "com.labos.kernel.api.ApiServer"],
-                         capture_output=True, text=True).stdout.strip()
-    return [int(x) for x in out.split()] if out else []
+    """A 批：按 18080 监听端口反查内核进程。
+
+    旧实现用 `pgrep -f com.labos.kernel.api.ApiServer` 匹配命令行；Spring Boot
+    入口是 com.labos.boot.LabosApplication，字符串匹配不到，kill -9 会漏杀。
+    改按端口反查，与启动方式解耦。
+    """
+    try:
+        out = subprocess.run(["lsof", "-tiTCP:18080", "-sTCP:LISTEN"],
+                             capture_output=True, text=True).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return []
+    return [int(x) for x in out.split() if x.isdigit()]
 
 
 def detect_api_log(fallback):
-    """当前 ApiServer 进程的 stdout 落到哪个文件（pgrep + lsof 反查）。
+    """当前内核进程的 stdout 落到哪个文件（按端口反查 PID + lsof）。
 
     为什么需要：脚本要在启动日志里找"待派发 rehydrate"/"启动收尾"这类行，
     但内核是运维手工起的，日志位置随启动方式而变（/tmp/apiserver.log、
@@ -209,10 +218,10 @@ def detect_api_log(fallback):
         except Exception:  # noqa: BLE001
             continue
         for line in out.splitlines():
-            parts = line.split()
+            parts = line.split(None, 8)
             # lsof 行：COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
-            if len(parts) >= 9 and parts[3] in ("1w", "2w") and parts[-1].endswith(".log"):
-                return parts[-1]
+            if len(parts) >= 9 and parts[3] in ("1w", "2w") and parts[8].endswith(".log"):
+                return parts[8]
     return fallback
 
 
@@ -233,8 +242,9 @@ def restart_api(log_path):
     立刻起新进程会 HttpServer.create 绑定失败（脚本第二轮重启就踩过）。
     """
     env = dict(os.environ)
-    cmd = ("cd %s/labos-kernel && nohup java -cp 'out:lib/postgresql-42.7.3.jar' "
-           "com.labos.kernel.api.ApiServer 18080 >> %s 2>&1 & disown"
+    # A 批：唯一启动入口是 Spring Boot 容器；脚本内部会先 build-kernel.sh，
+    # 因此健康等待窗口要覆盖「编译 + 容器启动」（见下方 120s）。
+    cmd = ("cd '%s' && nohup bash scripts/start-kernel.sh >> '%s' 2>&1 & disown"
            % (ROOT, log_path))
     for _ in range(2):
         for pid in api_pids():
@@ -248,7 +258,7 @@ def restart_api(log_path):
             time.sleep(1.0)   # 端口还没放，再等一拍
         subprocess.Popen(["bash", "-c", cmd], env=env, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
-        deadline = time.time() + 60
+        deadline = time.time() + 120
         while time.time() < deadline:
             if health("http://127.0.0.1:18080"):
                 return True

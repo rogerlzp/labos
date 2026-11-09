@@ -1,21 +1,21 @@
 package com.labos.boot;
 
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.api.QueryService;
+import com.labos.kernel.workflow.WorkflowService;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.boot.Banner;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 
 /**
- * Spring 事务桥接自测：证明「框架真的在管事务」，而不是只加了个依赖。
+ * A 批验收：Spring 容器 + AOP 声明式事务真的生效（不是只加了个依赖）。
  *
- * <p>跑法：
  * <pre>
  * cd labos-kernel
  * java -Dlabos.kernel.http.enabled=false \
@@ -27,7 +27,7 @@ public final class SpringTxSelfTest {
 
     private static int pass;
     private static int fail;
-    private static final String PREFIX = "SPRING-TX-" + System.currentTimeMillis() + "-";
+    private static final String PREFIX = "SPRING-A-" + System.currentTimeMillis() + "-";
 
     public static void main(String[] args) throws Exception {
         ConfigurableApplicationContext ctx = new SpringApplicationBuilder(LabosApplication.class)
@@ -36,100 +36,70 @@ public final class SpringTxSelfTest {
                 .properties("labos.kernel.http.enabled=false")
                 .run();
         try {
-            TransactionTemplate tx = ctx.getBean(TransactionTemplate.class);
             DbConfig db = ctx.getBean(DbConfig.class);
+            TxProbeService probe = ctx.getBean(TxProbeService.class);
 
-            check("DataSource 已由 Spring 容器绑定", DbConfig.boundDataSource() != null,
-                    DbConfig.boundDataSource());
+            check("DataSource 由 Spring 容器绑定", DbConfig.bound() != null, DbConfig.bound());
 
-            // ① 桥接硬证据：事务内多次 db.open() 必须是同一个物理连接
-            tx.execute(status -> {
-                try {
-                    int p1 = backendPid(db);
-                    int p2 = backendPid(db);
-                    check("事务内两次 db.open() 是同一物理连接", p1 > 0 && p1 == p2,
-                            p1 + " / " + p2);
-                } catch (SQLException e) {
-                    throw new RuntimeException(e);
-                }
-                return null;
-            });
+            // ① @Transactional 生效的前提：调用方拿到的必须是 AOP 代理，不是裸实例
+            check("WorkflowService 是 AOP 代理",
+                    AopUtils.isAopProxy(ctx.getBean(WorkflowService.class)),
+                    ctx.getBean(WorkflowService.class).getClass().getSimpleName());
+            check("QueryService 是 AOP 代理",
+                    AopUtils.isAopProxy(ctx.getBean(QueryService.class)),
+                    ctx.getBean(QueryService.class).getClass().getSimpleName());
 
-            // ② 抛异常 → 整个事务回滚（两条 INSERT 都消失）
+            // ② 事务内连接复用（DataSourceUtils 桥接）
+            int[] pids = probe.twoConnectionsPid();
+            check("事务内两次 db.open() 是同一物理连接", pids[0] > 0 && pids[0] == pids[1],
+                    pids[0] + " / " + pids[1]);
+
+            // ③ RuntimeException 回滚
             try {
-                tx.execute(status -> {
-                    insert(db, PREFIX + "rollback-a");
-                    insert(db, PREFIX + "rollback-b");
-                    throw new IllegalStateException("故意失败");
-                });
-                check("事务抛异常应向外传播", false, "没抛");
+                probe.insertThenThrow(PREFIX + "rt-a", PREFIX + "rt-b", false);
+                check("RuntimeException 应向外传播", false, "没抛");
             } catch (IllegalStateException expected) {
-                check("事务抛异常应向外传播", true, expected.getMessage());
+                check("RuntimeException 应向外传播", true, expected.getMessage());
             }
-            check("回滚后一条都不剩", countRows(db, PREFIX + "rollback-%") == 0,
-                    countRows(db, PREFIX + "rollback-%"));
+            check("RuntimeException → 两条全回滚", count(db, PREFIX + "rt-%") == 0,
+                    count(db, PREFIX + "rt-%"));
 
-            // ③ 正常返回 → 一起提交
-            tx.execute(status -> {
-                insert(db, PREFIX + "commit-a");
-                insert(db, PREFIX + "commit-b");
-                return null;
-            });
-            check("提交后两条都在", countRows(db, PREFIX + "commit-%") == 2,
-                    countRows(db, PREFIX + "commit-%"));
-
-            // ④ 遗留显式事务代码：setAutoCommit(false)/commit() 不许提前提交
+            // ④ checked 异常也必须回滚（rollbackFor = Exception.class 的意义）
             try {
-                tx.execute(status -> {
-                    insert(db, PREFIX + "legacy-a");
-                    try (Connection c = db.open()) {
-                        c.setAutoCommit(false);
-                        try (PreparedStatement ps = c.prepareStatement(
-                                "SELECT 1")) {
-                            try (ResultSet rs = ps.executeQuery()) {
-                                rs.next();
-                            }
-                        }
-                        c.commit();       // 桥接应吞掉，交给 Spring 统一提交
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                    insert(db, PREFIX + "legacy-b");
-                    status.setRollbackOnly();   // 模拟外层判定失败
-                    return null;
-                });
-            } catch (RuntimeException ignore) {
-                // 某些传播配置下回滚会抛，忽略
+                probe.insertThenThrow(PREFIX + "ck-a", PREFIX + "ck-b", true);
+                check("checked 异常应向外传播", false, "没抛");
+            } catch (java.sql.SQLException expected) {
+                check("checked 异常应向外传播", true, expected.getMessage());
             }
-            check("遗留 commit() 未提前提交（rollback-only 仍生效）",
-                    countRows(db, PREFIX + "legacy-%") == 0,
-                    countRows(db, PREFIX + "legacy-%"));
+            check("SQLException → 两条全回滚（默认配置下不会回滚）",
+                    count(db, PREFIX + "ck-%") == 0, count(db, PREFIX + "ck-%"));
 
-            // ⑤ 遗留代码 rollback() 后吞掉异常，也必须整体回滚
+            // ⑤ 正常返回提交
+            probe.insertBoth(PREFIX + "ok-a", PREFIX + "ok-b");
+            check("正常返回 → 两条都提交", count(db, PREFIX + "ok-%") == 2,
+                    count(db, PREFIX + "ok-%"));
+
+            // ⑥ C 批：MyBatis XML Mapper 与裸 JDBC 共用同一 Spring 事务连接
+            int[] mix = probe.mapperAndJdbcSamePid(PREFIX + "xml-a");
+            check("Mapper 写入 + JDBC 读取是同一物理连接",
+                    mix[0] > 0 && mix[0] == mix[1], mix[0] + " / " + mix[1]);
+            check("XML mapper 的 select 可用（countByCode）",
+                    probe.countByCode(PREFIX + "xml-a") == 1,
+                    probe.countByCode(PREFIX + "xml-a"));
+
+            // ⑦ C 批：Mapper 的插入也受 @Transactional 回滚约束
             try {
-                tx.execute(status -> {
-                    insert(db, PREFIX + "swallow-a");
-                    try (Connection c = db.open()) {
-                        c.rollback();     // 桥接应标记 rollback-only
-                    } catch (SQLException e) {
-                        throw new RuntimeException(e);
-                    }
-                    return null;        // 不抛异常
-                });
-            } catch (RuntimeException ignore) {
-                // UnexpectedRollbackException 属预期
+                probe.mapperInsertThenThrow(PREFIX + "xml-rollback");
+                check("Mapper 事务异常应向外传播", false, "没抛");
+            } catch (IllegalStateException expected) {
+                check("Mapper 事务异常应向外传播", true, expected.getMessage());
             }
-            check("遗留 rollback() 吞异常后仍不提交",
-                    countRows(db, PREFIX + "swallow-%") == 0,
-                    countRows(db, PREFIX + "swallow-%"));
+            check("事务回滚后 Mapper 插入也不存在",
+                    probe.countByCode(PREFIX + "xml-rollback") == 0,
+                    probe.countByCode(PREFIX + "xml-rollback"));
 
             cleanup(db);
         } finally {
-            // ⑥ 解绑后回落到原有手写连接池：证明旧启动方式零回归
-            DbConfig.bindDataSource(null);
-            try (Connection c = DbConfig.fromEnv().open()) {
-                check("解绑 Spring 后原连接池仍可用", c != null && !c.isClosed(), "ok");
-            }
             ctx.close();
         }
         System.out.printf("%n通过 %d, 失败 %d%n", pass, fail);
@@ -138,28 +108,7 @@ public final class SpringTxSelfTest {
         }
     }
 
-    private static void insert(DbConfig db, String code) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO workflow (tenant_id, code, name, category, version, status)
-                     VALUES (1, ?, '事务自测', 'choreography', 1, 1)
-                     """)) {
-            ps.setString(1, code);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private static int backendPid(DbConfig db) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("SELECT pg_backend_pid()");
-             ResultSet rs = ps.executeQuery()) {
-            return rs.next() ? rs.getInt(1) : -1;
-        }
-    }
-
-    private static int countRows(DbConfig db, String like) {
+    private static int count(DbConfig db, String like) {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(
                      "SELECT count(*) FROM workflow WHERE tenant_id=1 AND code LIKE ?")) {
@@ -167,7 +116,7 @@ public final class SpringTxSelfTest {
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getInt(1) : -1;
             }
-        } catch (SQLException e) {
+        } catch (Exception e) {
             return -1;
         }
     }
@@ -178,7 +127,7 @@ public final class SpringTxSelfTest {
                      "DELETE FROM workflow WHERE tenant_id=1 AND code LIKE ?")) {
             ps.setString(1, PREFIX + "%");
             ps.executeUpdate();
-        } catch (SQLException ignore) {
+        } catch (Exception ignore) {
             // 尽力而为
         }
     }

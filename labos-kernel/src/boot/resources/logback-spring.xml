@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  B 批：统一日志。改前全仓 System.out 434 处 / System.err 109 处 / slf4j 0 处，
+  排查问题只能翻 stdout，B-02 那行「驱动未声明物理中止能力」会淹没在几百行
+  banner 里。这里给一个可长期演进的骨架：
+
+    · 控制台只留 INFO 以上，带 MDC（traceId / runId / commandId / workflowId）
+    · 全量 DEBUG 落滚动文件，按天 + 100MB 切分，留 14 天
+    · 执行安全相关（暂停/中止/事务）单独落 security 文件，便于事后审计
+
+  MDC 字段由 LogContext 设置；JDK HttpServer 没有拦截器，调用方在关键路径
+  显式 put/remove（C 批迁 Spring MVC 后改成 HandlerInterceptor 自动注入）。
+-->
+<configuration>
+  <property name="LOG_DIR" value="${LABOS_LOG_DIR:-logs}"/>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %X{traceId:--} run=%X{runId:-} cmd=%X{commandId:-} %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${LOG_DIR}/labos-kernel.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <fileNamePattern>${LOG_DIR}/labos-kernel.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+      <maxFileSize>100MB</maxFileSize>
+      <maxHistory>14</maxHistory>
+      <totalSizeCap>2GB</totalSizeCap>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] trace=%X{traceId:-} run=%X{runId:-} cmd=%X{commandId:-} wf=%X{workflowId:-} %logger{40} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- 执行安全事件独立留档：暂停边界、中止结果、命令账本、事务回滚 -->
+  <appender name="SECURITY" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>${LOG_DIR}/labos-security.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+      <fileNamePattern>${LOG_DIR}/labos-security.%d{yyyy-MM-dd}.log.gz</fileNamePattern>
+      <maxHistory>30</maxHistory>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level trace=%X{traceId:-} run=%X{runId:-} cmd=%X{commandId:-} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="com.labos.kernel.security" level="DEBUG" additivity="false">
+    <appender-ref ref="SECURITY"/>
+    <appender-ref ref="CONSOLE"/>
+  </logger>
+
+  <logger name="com.labos.kernel" level="DEBUG"/>
+  <logger name="org.springframework.jdbc" level="INFO"/>
+  <logger name="com.zaxxer.hikari" level="INFO"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </root>
+</configuration>

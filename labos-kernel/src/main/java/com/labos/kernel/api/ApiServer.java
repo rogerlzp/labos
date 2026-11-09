@@ -110,17 +110,21 @@ public final class ApiServer {
     private final MetaApi metaApi = new MetaApi(this);
 
 
-    public ApiServer(int port) {
-        this.db = DbConfig.fromEnv();
-        this.query = new QueryService(db, TENANT);
-        this.auth = new AuthService(db, TENANT);
-        int driverPort = Integer.parseInt(
-                System.getenv().getOrDefault("LABOS_DRIVER_PORT", "19301"));
-        this.workflows = new WorkflowService(db, TENANT, driverPort);
-        this.scheduler = new ExperimentScheduler(db, TENANT, this.workflows);
+    /**
+     * A 批：所有依赖由 Spring 容器注入，不再在构造函数里 {@code new}。
+     * 这样对 workflows/query 的调用才会经过 AOP 代理，{@code @Transactional} 才生效。
+     */
+    public ApiServer(int port, DbConfig db, QueryService query, AuthService auth,
+                     WorkflowService workflows, ExperimentScheduler scheduler,
+                     com.labos.kernel.driver.HeartbeatService heartbeat) {
+        this.db = db;
+        this.query = query;
+        this.auth = auth;
+        this.workflows = workflows;
+        this.scheduler = scheduler;
+        this.heartbeat = heartbeat;
         // 心跳参数以库里为准（页面可改），没有就用环境变量/默认值
         com.labos.kernel.driver.RuntimeSettings.loadFromDb(db, TENANT);
-        this.heartbeat = new com.labos.kernel.driver.HeartbeatService(db, TENANT);
         this.port = port;
     }
 
@@ -593,17 +597,19 @@ public final class ApiServer {
 
     // ---------------------------------------------------------------- 启动
 
-    public static void main(String[] args) throws Exception {
-        int port = args.length > 0 ? Integer.parseInt(args[0]) : 18080;
-        ApiServer app = new ApiServer(port);
-        app.start();
+    /**
+     * A 批：启动内核与全部启动收尾逻辑。由 Spring 的 StartupRunner 调用，
+     * 旧的 {@code java -cp out ... ApiServer 18080} 入口已删除。
+     */
+    public void runKernel() throws Exception {
+        start();
 
-        app.scheduler.start();
-        app.heartbeat.start();
+        this.scheduler.start();
+        this.heartbeat.start();
 
         if (AUTH_ENABLED) {
             try {
-                app.auth.ensureSeedUser();
+                this.auth.ensureSeedUser();
             } catch (Exception e) {
                 System.out.println("  [鉴权] 初始化失败: " + e.getMessage());
             }
@@ -681,10 +687,23 @@ public final class ApiServer {
         // 运行中不重复调用（rehydrateQueued 自身幂等，但没必要周期性扫库）。
         // 失败只打日志：rehydrate 是恢复优化，不能因为一次读库失败让 API 起不来。
         try {
-            int rehydrated = app.scheduler.rehydrateQueued();
+            int rehydrated = this.scheduler.rehydrateQueued();
             System.out.println("  [启动收尾] 待派发 rehydrate：" + rehydrated + " 条");
         } catch (Exception e) {
             System.out.println("  [启动收尾] 待派发 rehydrate 跳过: " + e.getMessage());
+        }
+
+        // FIX-P0-04：workflow 级 continue/retry 在 commit 后若进程退出，会遗留 status='queued'。
+        // 启动时把这些 run 再交给 resumeAsync，避免一直卡在 queued。
+        try {
+            var resumed = com.labos.kernel.workflow.WorkflowResumeRecovery.rehydrateQueued(
+                    com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT,
+                    this.workflows::resumeAsync);
+            System.out.println("  [启动收尾] queued workflow rehydrate："
+                    + resumed.started() + "/" + resumed.scanned()
+                    + (resumed.failed() == 0 ? "" : "，失败 " + resumed.failed() + " 条"));
+        } catch (Exception e) {
+            System.out.println("  [启动收尾] queued workflow rehydrate 跳过: " + e.getMessage());
         }
 
         System.out.println("=".repeat(72));
@@ -760,10 +779,7 @@ public final class ApiServer {
         System.out.println("  GET  /api/errors          错误明细");
         System.out.println("  POST /api/demo/run        触发演示执行");
         System.out.println();
-        System.out.println("  Ctrl+C 退出");
         System.out.println("=".repeat(72));
 
-        Runtime.getRuntime().addShutdownHook(new Thread(app::stop));
-        Thread.currentThread().join();
     }
 }

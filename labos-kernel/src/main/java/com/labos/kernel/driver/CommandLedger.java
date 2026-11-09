@@ -26,6 +26,9 @@ import java.sql.SQLException;
  */
 public final class CommandLedger {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(CommandLedger.class);
+
     /** 启动对账：超过该分钟数仍是 DISPATCH_STARTED 视为「派发中断」。 */
     public static final int STALE_MINUTES = 10;
 
@@ -143,8 +146,8 @@ public final class CommandLedger {
             ps.setLong(3, ledgerId);
             ps.executeUpdate();
         } catch (SQLException e) {
-            System.err.println("[WARN] 中止结果未记账（ledger=" + ledgerId
-                    + " state=" + result.state() + "）：" + e.getMessage());
+            log.warn("[中止结果未记账] ledger={} state={} reason={}",
+                    ledgerId, result.state(), e.getMessage());
         }
     }
 

@@ -83,7 +83,7 @@ The `ports` section needs the kernel started with `LABOS_TRANSFER_PLAN=1`, other
 whole section is skipped:
 
 ```bash
-LABOS_TRANSFER_PLAN=1 ... java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.api.ApiServer 18080
+LABOS_TRANSFER_PLAN=1 ... ./scripts/start-kernel.sh
 ```
 
 ## 5. Section detail
@@ -215,4 +215,4 @@ lands in the DB (present in the graph XML, missing in the table). The UPDATE bra
 
 None open: the Class A item (a back edge spanning a parallel region) is the `loopback`
 section; the backend matrix is wired into `ci-gate.sh` (`MIN_MATRIX=55`), the page-side matrix
-too (`MIN_E2EFM=45`), the simulator integration (`MIN_E2ESIM=24`), and the crash-recovery end-to-end check (`MIN_CRASH=34`).
+too (`MIN_E2EFM=45`), the simulator integration (`MIN_E2ESIM=23`; since 2026-11-09 it keeps only "real device binding + real callback", while the canvas-assembly details moved to 4.5/4.12), and the crash-recovery end-to-end check (`MIN_CRASH=34`).

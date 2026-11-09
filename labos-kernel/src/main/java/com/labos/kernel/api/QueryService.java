@@ -18,7 +18,7 @@ import java.util.Set;
  *
  * <p>刻意不做 ORM——查询是只读的、SQL 是稳定的，直接用 JDBC 更透明。
  */
-public final class QueryService {
+public class QueryService {
 
     private final DbConfig db;
     private final long tenantId;
@@ -2341,6 +2341,9 @@ public final class QueryService {
     }
 
     /** 保存实验编排图（整体替换），并同步编译成 experiment_process（含偏序边）。 */
+    /** A 批：Spring 声明式事务。checked 异常也要回滚（默认只回滚 RuntimeException）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public int saveExperimentGraph(long experimentId, String graphJson) throws SQLException {
         if (graphJson == null || graphJson.isBlank()) {
             throw new IllegalArgumentException("图不能为空");
@@ -2662,6 +2665,9 @@ public final class QueryService {
      * `workflow_node` 没有这一列（见 ROADMAP「表结构没表达流程怎么跑」那条债）。
      * 在设计器里选设备，本质就是改这个属性。
      */
+    /** A 批：Spring 声明式事务。checked 异常也要回滚（默认只回滚 RuntimeException）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public boolean updateNodeBinding(long workflowId, String nodeKey,
                                      String method, String methodParamsJson,
                                      Long resourceId)

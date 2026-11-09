@@ -89,7 +89,6 @@ The root-level `前后端实施方案_编译甘特就绪调度.md`,
 cd labos-kernel
 javac -encoding UTF-8 -d out $(find src -name '*.java')
 java -Dfile.encoding=UTF-8 -cp "out:lib/postgresql-42.7.3.jar" \
-     com.labos.kernel.api.ApiServer 18080
 
 # 2. Frontend (port 5173)
 cd webapp
@@ -114,7 +113,7 @@ done
 
 # Full process set (the workflows walked on the simulation bus)
 # Note: this is SimulatedBus walking the graph, not real-device verification
-java -cp "out:lib/postgresql-42.7.3.jar" \
+./scripts/start-kernel.sh \
      com.labos.kernel.workflow.RealWorkflowRunner --all
 ```
 

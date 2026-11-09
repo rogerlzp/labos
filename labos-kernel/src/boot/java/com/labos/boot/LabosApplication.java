@@ -5,7 +5,9 @@ import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 /**
  * LabOS 内核的 Spring Boot 启动入口。
@@ -19,6 +21,8 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
  * <p>DataSource 由 {@link DataSourceConfiguration} 显式提供，所以排除自动配置，
  * 避免 Spring Boot 再建一个 Hikari 池造成两套连接来源。
  */
+@EnableTransactionManagement
+@MapperScan("com.labos.kernel.persistence")
 @SpringBootApplication(exclude = {
         DataSourceAutoConfiguration.class,
         DataSourceTransactionManagerAutoConfiguration.class

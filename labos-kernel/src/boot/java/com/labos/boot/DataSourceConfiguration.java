@@ -14,11 +14,11 @@ import javax.sql.DataSource;
 /**
  * Spring 接管数据源与事务。
  *
- * <p>替代 {@code DbConfig} 里那个手写的 8 连接池：HikariCP 由 Spring 管理生命周期，
+ * <p>A 批：手写 8 连接池已删除，HikariCP 由 Spring 管理生命周期，
  * 事务由 {@link DataSourceTransactionManager} 统一 commit / rollback。
  *
- * <p><b>桥接的关键</b>：{@link DbConfig#bindDataSource} 把 DataSource 注入静态字段后，
- * 全仓 396 处 {@code db.open()} 会自动走 {@code DataSourceUtils.getConnection}，
+ * <p><b>桥接的关键</b>：{@code DbConfig.bind(ds)}（BeanConfiguration 调用）注入静态字段后，
+ * 全仓 {@code db.open()} 统一走 {@code DataSourceUtils.getConnection}，
  * 在 {@code @Transactional} / {@code TransactionTemplate} 范围内拿到**同一个**
  * 线程绑定连接 —— 遗留裸 JDBC 代码无需改动就进入 Spring 事务。
  */
@@ -70,17 +70,6 @@ public class DataSourceConfiguration {
                 });
             }
         };
-    }
-
-    /**
-     * 绑定动作一定要发生在任何 Service 取连接之前：
-     * {@link KernelRunner} 依赖本 Bean，Spring 会保证初始化顺序。
-     */
-    @Bean
-    public DbConfig dbConfig(DataSource ds) {
-        DbConfig cfg = DbConfig.fromEnv();
-        DbConfig.bindDataSource(ds);
-        return cfg;
     }
 
     private static String env(String key, String def) {

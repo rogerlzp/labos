@@ -282,7 +282,7 @@ java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.workflow.RealWorkflowR
 java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.driver.EndToEndDemo
 
 # The console
-java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.api.ApiServer 18080
+./scripts/start-kernel.sh
 # Open http://localhost:18080/
 ```
 

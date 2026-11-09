@@ -364,7 +364,7 @@ seconds, but an incubation / a centrifugation often takes tens of minutes:
 **How it is switched on**:
 
 ```bash
-LABOS_DRIVER_MODE=persistent java -cp ... ApiServer 18080
+LABOS_DRIVER_MODE=persistent ./scripts/start-kernel.sh
 ```
 
 The startup log prints `[驱动] 长连接模式：tcp://...`.

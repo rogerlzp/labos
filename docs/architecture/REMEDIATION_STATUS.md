@@ -193,4 +193,4 @@ ADR 依据：ADR-XXXX-XXX（或「无，纯重构」）
 | 阶段二（未做） | Service 注册为 Spring Bean 后用 `@Transactional` 改写 P-02 三条写路径并收编 46 处显式事务；4.13 崩溃恢复段改用 Spring 启动（需同步改 `api_pids()` 的进程匹配）。 |
 | 阶段三（未做） | HTTP 层由 JDK `HttpServer` 迁到 Spring MVC Controller。 |
 
-**阶段一状态：DONE（有实测证据）**；不得以「已引入 Spring Boot」宣称 P-02 事务化完成。
+**2026-11-09 后续批次（按现场决策：MyBatis XML、不留旧启动方式）**：A 批已完成——`ApiServer.main` 删除、Service 全部 Bean 化、4 个写入口 `@Transactional(rollbackFor=Exception.class)`、手写池/反射桥接/无容器回落全删、`verify-s3-2-residuals.py` 改按端口反查 + Spring 启动、唯一入口 `scripts/start-kernel.sh`；4.13 崩溃恢复 **34/0** 验证通过。B 批——Logback + MDC（`LogContext`）落地，关键路径 （B-01/B-02/中止结果/启动）已换 SLF4J，其余约 500 处 println 按模块迁移。C 批——`WorkflowMapper.xml` 首个垂直切片落地，`createWorkflow` 改走 MyBatis；剩余约 130 条 SQL、46 处显式事务、gateway Lettuce、HTTP 迁 Spring MVC 待做。验收 `build-kernel.sh --verify` **13/0**、`test-all.sh` **1310/0**、`ci-gate.sh --fast` 通过。权威文档 `SPRING_BOOT_MIGRATION_20261109.md`。**不得以「已引入 Spring Boot」宣称 P-02 事务化或全部 SQL 迁移完成。**

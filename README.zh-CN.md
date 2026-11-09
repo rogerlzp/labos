@@ -70,7 +70,6 @@ cd labos-kernel
 javac -encoding UTF-8 -d out $(find src -name '*.java')
 LABOS_DB_NAME=<你的库名> java -Dfile.encoding=UTF-8 \
      -cp "out:lib/postgresql-42.7.3.jar" \
-     com.labos.kernel.api.ApiServer 18080
 ```
 
 ### 启动前端
@@ -118,7 +117,7 @@ cd labos-kernel
 LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.recovery.RecoverySelfTest
 LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.engine.EngineSelfTest
 LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.workflow.GraphRunnerTest
-LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar" \
+LABOS_DB_NAME=<你的库名> ./scripts/start-kernel.sh \
      com.labos.kernel.workflow.RealWorkflowRunner --all
 ```
 

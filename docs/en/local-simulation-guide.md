@@ -104,7 +104,7 @@ simulates a slow device.
 
 ```bash
 LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=... \
-java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.api.ApiServer 18080
+./scripts/start-kernel.sh
 ```
 
 **The startup log lists the registered drivers**:

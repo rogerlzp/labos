@@ -25,7 +25,7 @@ dotnet run -c Release -- --mock
 
 # ② Kernel
 cd labos-kernel
-java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.api.ApiServer 18080
+./scripts/start-kernel.sh
 
 # ③ Frontend
 cd webapp

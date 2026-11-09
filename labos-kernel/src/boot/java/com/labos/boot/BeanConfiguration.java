@@ -1,0 +1,75 @@
+package com.labos.boot;
+
+import com.labos.kernel.api.ApiServer;
+import com.labos.kernel.api.AuthService;
+import com.labos.kernel.api.QueryService;
+import com.labos.kernel.driver.HeartbeatService;
+import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.WorkflowMapper;
+import com.labos.kernel.workflow.ExperimentScheduler;
+import com.labos.kernel.workflow.WorkflowService;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import javax.sql.DataSource;
+
+/**
+ * A 批：所有 Service 由容器创建，不再在 {@code ApiServer} 构造函数里 {@code new}。
+ *
+ * <p>这是 {@code @Transactional} 能生效的前提：调用方拿到的是 Spring AOP 代理对象，
+ * 而不是裸实例。{@code WorkflowService} / {@code QueryService} 的 {@code final}
+ * 已去掉（CGLIB 不能代理 final 类）。
+ *
+ * <p>同类内部 {@code this.xxx()} 自调用仍不经过代理 —— 写路径集中在
+ * {@code createWorkflow} / {@code saveGraph} / {@code updateNodeBinding} /
+ * {@code saveExperimentGraph} 四个入口，事务在入口开启，内部调用共享同一连接。
+ */
+@Configuration
+public class BeanConfiguration {
+
+    private static final long TENANT = 1L;
+
+    @Bean
+    public DbConfig dbConfig(DataSource ds) {
+        DbConfig.bind(ds);
+        return DbConfig.fromEnv();
+    }
+
+    @Bean
+    public QueryService queryService(DbConfig db) {
+        return new QueryService(db, TENANT);
+    }
+
+    @Bean
+    public AuthService authService(DbConfig db) {
+        return new AuthService(db, TENANT);
+    }
+
+    @Bean
+    public WorkflowService workflowService(DbConfig db, WorkflowMapper workflowMapper) {
+        int driverPort = Integer.parseInt(
+                System.getenv().getOrDefault("LABOS_DRIVER_PORT", "19301"));
+        WorkflowService ws = new WorkflowService(db, TENANT, driverPort);
+        ws.setWorkflowMapper(workflowMapper);
+        return ws;
+    }
+
+    @Bean
+    public ExperimentScheduler experimentScheduler(DbConfig db, WorkflowService workflows) {
+        return new ExperimentScheduler(db, TENANT, workflows);
+    }
+
+    @Bean
+    public HeartbeatService heartbeatService(DbConfig db) {
+        return new HeartbeatService(db, TENANT);
+    }
+
+    @Bean
+    public ApiServer apiServer(DbConfig db, QueryService query, AuthService auth,
+                               WorkflowService workflows, ExperimentScheduler scheduler,
+                               HeartbeatService heartbeat) {
+        int port = Integer.parseInt(
+                System.getenv().getOrDefault("LABOS_API_PORT", "18080"));
+        return new ApiServer(port, db, query, auth, workflows, scheduler, heartbeat);
+    }
+}

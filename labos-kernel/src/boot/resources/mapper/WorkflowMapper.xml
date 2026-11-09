@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  C 批：workflow 的 SQL 全部在这里，一眼能看清列、条件与 tenant 隔离。
+  调用方：com.labos.kernel.persistence.WorkflowMapper
+  事务：由 @Transactional 管理；MyBatis-Spring 与 DbConfig.open() 共用同一连接。
+-->
+<mapper namespace="com.labos.kernel.persistence.WorkflowMapper">
+
+    <!-- 新建流程。version/status 固定为初值；island_id 允许 NULL（未分配权威岛）。 -->
+    <insert id="insertWorkflow" parameterType="com.labos.kernel.persistence.WorkflowRow"
+            useGeneratedKeys="true" keyProperty="id" keyColumn="id">
+        INSERT INTO workflow
+            (tenant_id, code, name, category, version, status, island_id)
+        VALUES
+            (#{tenantId}, #{code}, #{name}, #{category}, 1, 1, #{islandId})
+    </insert>
+
+    <!-- 权威岛校验：type 必须是资源树里的 island，且未软删。 -->
+    <select id="countIsland" resultType="int">
+        SELECT count(*)
+          FROM resource_node
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+           AND kind = 'island'
+           AND deleted_at IS NULL
+    </select>
+
+    <!-- P-01 权威列：执行边界取自 Workflow，不取 experiment.island_id。 -->
+    <select id="selectIslandId" resultType="java.lang.Long">
+        SELECT island_id
+          FROM workflow
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+    </select>
+
+    <select id="countByCode" resultType="int">
+        SELECT count(*)
+          FROM workflow
+         WHERE tenant_id = #{param1}
+           AND code = #{param2}
+    </select>
+
+</mapper>

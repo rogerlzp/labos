@@ -66,3 +66,6 @@ docs/设备/*.docx
 
 # Spring Boot 运行时依赖由 scripts/build-kernel.sh 从 Maven 拉取，不提交二进制
 labos-kernel/lib/spring/
+
+# B 批：Logback 滚动日志
+labos-kernel/logs/

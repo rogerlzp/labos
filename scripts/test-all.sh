@@ -23,7 +23,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 cd labos-kernel || exit 1
 
-CP="out:lib/postgresql-42.7.3.jar"
+CP="out:lib/postgresql-42.7.3.jar:lib/spring/*"
 
 # 每轮都编 src/main：原来只在 out/ 为空时编，本机 out/ 已存在时新增的主类
 # 不会进 out，src/test 就会报"找不到符号"，而且脚本只把它算成一次失败，

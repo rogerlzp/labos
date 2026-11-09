@@ -65,7 +65,21 @@ import java.util.Set;
  *   <li>没有 → 退回内置 {@link SimulatedBus}，保证页面永远能演示</li>
  * </ul>
  */
-public final class WorkflowService {
+public class WorkflowService {
+
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(WorkflowService.class);
+
+    /**
+     * C 批：workflow 的 SQL 走 MyBatis XML（见 WorkflowMapper.xml）。
+     * 由 BeanConfiguration 注入；为空说明有人绕过容器 new 了本类 —— 直接失败，
+     * 不留「没 Mapper 就退回裸 JDBC」的兼容分支。
+     */
+    private com.labos.kernel.persistence.WorkflowMapper workflowMapper;
+
+    public void setWorkflowMapper(com.labos.kernel.persistence.WorkflowMapper mapper) {
+        this.workflowMapper = mapper;
+    }
 
     private static final DateTimeFormatter RUN_FMT =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
@@ -974,8 +988,8 @@ public final class WorkflowService {
             // run 落 failed 并记下原因，异常原样抛给调用方 —— 让上层看到"这次失败了"，
             // 而不是在背后把同一批物理动作再执行一遍。
             RunMonitor.INSTANCE.finish(runId);
-            System.err.println("[执行失败] run#" + runId + " 执行期异常（不重跑）："
-                    + executionFailure);
+            log.error("[执行失败] run#{} 执行期异常（不重跑，不退回顺序重跑）",
+                    runId, executionFailure);
             try {
                 markRunFailed(runId, "执行期异常：" + executionFailure);
             } catch (SQLException e) {
@@ -2887,6 +2901,9 @@ public final class WorkflowService {
      *
      * <p>code 不传就用 {@code AUTO-<时间戳>}：流程编号在库里是唯一键，人工编号容易撞。
      */
+    /** A 批：Spring 声明式事务。checked 异常也要回滚（默认只回滚 RuntimeException）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public long createWorkflow(String name, String code, String category, Long islandId)
             throws SQLException {
         String nm = (name == null || name.isBlank()) ? "未命名流程" : name.trim();
@@ -2894,56 +2911,28 @@ public final class WorkflowService {
                 ? "AUTO-" + System.currentTimeMillis() % 100000000L
                 : code.trim();
         String cat = (category == null || category.isBlank()) ? "choreography" : category.trim();
-        long id;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO workflow
-                       (tenant_id, code, name, category, version, status, island_id)
-                     VALUES (?, ?, ?, ?, 1, 1, ?)
-                     RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, cd);
-            ps.setString(3, nm);
-            ps.setString(4, cat);
-            // P-01：岛归属是**权威执行边界**（workflow.island_id →
-            // resource_node(kind='island')），不是展示偏好。改动前写在
-            // attr->'island_id' 里，且后端从来没人读、番号还是另一套旧编号
-            // （994 条全是悬空值），2026-11-09 已按现场决策清除该键。
-            // 现在：给了就必须真实存在，给错了直接拒绝，不再静默写下脏标签；
-            // 没给就是 NULL（未分配），由 P-02 校验器按 UNKNOWN 处理。
-            if (islandId == null || islandId <= 0) {
-                ps.setNull(5, java.sql.Types.BIGINT);
-            } else {
-                if (!isRealIsland(c, islandId)) {
-                    throw new IllegalArgumentException(
-                            "islandId " + islandId + " 不是 resource_node 里的岛节点");
-                }
-                ps.setLong(5, islandId);
-            }
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                id = rs.getLong(1);
-            }
+        if (workflowMapper == null) {
+            throw new IllegalStateException(
+                    "WorkflowService 必须由 Spring 容器创建（WorkflowMapper 未注入）");
         }
+        // P-01：岛归属是权威执行边界，给了就必须是资源树里真实存在的 island。
+        if (islandId != null && islandId > 0
+                && workflowMapper.countIsland(tenantId, islandId) == 0) {
+            throw new IllegalArgumentException(
+                    "islandId " + islandId + " 不是 resource_node 里的岛节点");
+        }
+        com.labos.kernel.persistence.WorkflowRow row =
+                new com.labos.kernel.persistence.WorkflowRow();
+        row.setTenantId(tenantId);
+        row.setCode(cd);
+        row.setName(nm);
+        row.setCategory(cat);
+        row.setIslandId(islandId != null && islandId > 0 ? islandId : null);
+        workflowMapper.insertWorkflow(row);
+        long id = row.getId();
         // 建完立刻落一张最小可用的图，否则设计器打开是空的、保存也无从谈起
         saveGraph(id, blankGraphXml(id, nm));
         return id;
-    }
-
-    /** P-01：只有 resource_node 里 kind='island' 的 id 才算权威岛。 */
-    private boolean isRealIsland(Connection c, long islandId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT 1 FROM resource_node
-                 WHERE tenant_id = ? AND id = ? AND kind = 'island'
-                   AND deleted_at IS NULL
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        }
     }
 
     /** 最小可用图：开始 → 结束（带 DI，否则 bpmn-js 画不出来）。 */
@@ -3092,6 +3081,9 @@ public final class WorkflowService {
         }
     }
 
+    /** A 批：Spring 声明式事务。checked 异常也要回滚（默认只回滚 RuntimeException）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
     public SaveResult saveGraph(long workflowId, String xml, boolean draft) throws SQLException {
         BpmnGraphParser.ParsedGraph graph = BpmnGraphParser.parse(xml);
 

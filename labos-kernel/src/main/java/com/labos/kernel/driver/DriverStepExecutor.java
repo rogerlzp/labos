@@ -33,6 +33,9 @@ import java.util.UUID;
  */
 public final class DriverStepExecutor implements StepExecutor {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(DriverStepExecutor.class);
+
     private final DriverRegistry registry;
     private final long timeoutMs;
     private final String traceId;
@@ -793,8 +796,8 @@ public final class DriverStepExecutor implements StepExecutor {
             if (methodDeclaredInterruptible) {
                 // 方法允许中断，但驱动没有物理 Abort 能力：只能等它跑完。
                 // 这条日志是「暂停为什么没立刻生效」的唯一线索，必须留。
-                System.err.println("[暂停] 驱动未声明已验证的物理中止能力；"
-                        + cmd.method() + " 将执行到安全边界，不取消本地等待");
+                log.warn("[暂停] 驱动未声明已验证的物理中止能力；method={} 将执行到安全边界，不取消本地等待",
+                        cmd.method());
             }
             return driver.execute(cmd);
         }

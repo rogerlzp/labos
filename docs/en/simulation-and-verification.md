@@ -37,7 +37,7 @@ The real driver   .NET Sidecar → device
 cd labos-kernel
 
 # Walk through every workflow on the virtual bus
-LABOS_DB_NAME=<database name> java -cp "out:lib/postgresql-42.7.3.jar" \
+LABOS_DB_NAME=<database name> ./scripts/start-kernel.sh \
      com.labos.kernel.workflow.RealWorkflowRunner --all
 ```
 
@@ -62,7 +62,7 @@ LABOS_DB_NAME=<database name> java -cp "out:lib/postgresql-42.7.3.jar" \
 ### 2.2 A single workflow executed along its graph
 
 ```bash
-LABOS_DB_NAME=<database name> java -cp "out:lib/postgresql-42.7.3.jar" \
+LABOS_DB_NAME=<database name> ./scripts/start-kernel.sh \
      com.labos.kernel.workflow.RealWorkflowRunner --all --verbose
 ```
 

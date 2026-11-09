@@ -56,8 +56,7 @@ LABOS_DB_NAME=labdb \
 LABOS_DB_USER=<用户> \
 LABOS_DB_PASS=<密码> \
 nohup java -Dfile.encoding=UTF-8 \
-     -cp "out:lib/postgresql-42.7.3.jar" \
-     com.labos.kernel.api.ApiServer 18080 >> /opt/labos/api.log 2>&1 &
+     -cp "out:lib/postgresql-42.7.3.jar" \ >> /opt/labos/api.log 2>&1 &
 ```
 
 **Pass criteria**:
