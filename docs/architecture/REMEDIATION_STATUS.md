@@ -30,7 +30,7 @@
 
 | ID | 工作项 | 分支证据 | 状态 | 目标 PR |
 |---|---|---|---|---|
-| B-01 | GraphRunner 执行期 RuntimeException 不再 fallback 到 `executeAll` 顺序重跑 | `WorkflowService.executeGraphWithParseFallback` | NOT_STARTED(on main) | PR-B1 |
+| B-01 | GraphRunner 执行期 RuntimeException 不再 fallback 到 `executeAll` 顺序重跑 | `WorkflowService.executeGraphWithParseFallback` | **IN_PR（2026-11-09 实装，待合入 main）**：`executeGraphWithParseFallback(xml, sequentialFallback, graphRunner, executor)` 只把 `WorkflowGraphParser.parse` 放进 try，`graphRunner.run` 故意放在 try 之外 ⇒ 解析期可退回、执行期异常原样抛出；执行期异常另把 run 落 `failed`（不覆盖 paused、不回滚已完成节点）后抛出。证据：`WorkflowExecutionSafetySelfTest` 3/0（执行期异常不 fallback + 解析失败可 fallback + 解析成功走图执行） | PR-B1 |
 | B-02 | TCP 无物理 Abort 时不以本地 Future 取消冒充设备已停止 | `DeviceDriver.supportsPhysicalAbort()` 默认 false、`DeviceDriverAbortContractSelfTest.java` | NOT_STARTED(on main) | PR-B2 |
 | B-03 | 同一 JVM 内同一 run 的后台 worker 禁止并发，旧 worker 未退出时拒绝 resume | `WorkflowExecutionSafetySelfTest.java` | NOT_STARTED(on main) | PR-B3 |
 | B-04 | 结构化 `AbortResult`（UNSUPPORTED / REQUESTED / DEVICE_ACKNOWLEDGED / PHYSICALLY_STOPPED / UNKNOWN） | 分支未实现，整改计划 Batch 0.2 `[ ]` | NOT_STARTED | PR-B4 |

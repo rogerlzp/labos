@@ -811,57 +811,61 @@ public final class WorkflowService {
             String xml = graphEnabled ? loadGraphXml(workflowId) : null;
             boolean viaGraph = false;
             if (xml != null && !xml.isBlank()) {
-                try {
-                    WorkflowGraphParser.Graph g = WorkflowGraphParser.parse(xml);
-                    GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
-                            nodeIdByKey, line -> {
-                                // 其余图日志仍不刷屏；暂停落点必须进内核 stdout，
-                                // 否则「停在哪个节点」只活在被丢弃的回调里，外面无从核对。
-                                if (line != null && line.startsWith("[暂停]")) {
-                                    System.out.println(line);
-                                }
-                            })
-                            .withResourceCapability(resourceCap)
-                            .withBoundInstances(loadBoundInstances())
-                            .withSkipKeys(skipKeys)
-                            // 条件表达式/循环退出条件的取值来源（run.input.vars）
-                            .withVariables(loadRunVars(runId))
-                            // 节点输出 → 变量（循环靠它走够次数退出）
-                            .withOutputReader(key -> loadNodeOutputs(runId, key))
-                            // 圈数上限：流程可以在 attr.maxIterations 里自己定（默认 10）
-                            .withMaxVisits(loadMaxIterations(workflowId))
-                            // 循环每圈落一行（loop_index=1..N），汇总行仍是 loop_index=0
-                            .withRoundRecorder((key, round, st, ec, s1, e1) ->
-                                    recordNodeRound(runId, key, round, st, ec, s1, e1))
-                            // 变量/表达式节点的参数（不发给设备）
-                            .withBuiltinParams(builtinParams)
-                            // `__sleep` / `__wait` 会**真的等**：真睡（不是 recording），
-                            // 并且每轮重读一次 run.input.vars —— 变量的变化来自执行体之外，
-                            // 只读内存表等于永远等不到（见 GraphRunner.withVariableRefresher）。
-                            .withSleeper(Sleeper.REAL)
-                            .withVariableRefresher(() -> loadRunVars(runId))
+                GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
+                        nodeIdByKey, line -> {
+                            // 其余图日志仍不刷屏；暂停落点必须进内核 stdout，
+                            // 否则「停在哪个节点」只活在被丢弃的回调里，外面无从核对。
+                            if (line != null && line.startsWith("[暂停]")) {
+                                System.out.println(line);
+                            }
+                        })
+                        .withResourceCapability(resourceCap)
+                        .withBoundInstances(loadBoundInstances())
+                        .withSkipKeys(skipKeys)
+                        // 条件表达式/循环退出条件的取值来源（run.input.vars）
+                        .withVariables(loadRunVars(runId))
+                        // 节点输出 → 变量（循环靠它走够次数退出）
+                        .withOutputReader(key -> loadNodeOutputs(runId, key))
+                        // 圈数上限：流程可以在 attr.maxIterations 里自己定（默认 10）
+                        .withMaxVisits(loadMaxIterations(workflowId))
+                        // 循环每圈落一行（loop_index=1..N），汇总行仍是 loop_index=0
+                        .withRoundRecorder((key, round, st, ec, s1, e1) ->
+                                recordNodeRound(runId, key, round, st, ec, s1, e1))
+                        // 变量/表达式节点的参数（不发给设备）
+                        .withBuiltinParams(builtinParams)
+                        // `__sleep` / `__wait` 会**真的等**：真睡（不是 recording），
+                        // 并且每轮重读一次 run.input.vars —— 变量的变化来自执行体之外，
+                        // 只读内存表等于永远等不到（见 GraphRunner.withVariableRefresher）。
+                        .withSleeper(Sleeper.REAL)
+                        .withVariableRefresher(() -> loadRunVars(runId))
 
-                            // P1-8：每到一个节点边界查一次 DB —— 状态是 paused 就停。
-                            // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
-                            // ⚠ 还要查**实验级现场扣留**：实验级暂停落的是扣留、不改
-                            // run 状态，只查 run.status 的话底层流程永远看不到它，会照旧跑完
-                            // （2026-11-06 实测：实验级暂停停不住 workflow 级 run）。
-                            .withPauseChecker(() -> isRunPaused(runId)
-                                    || new RuntimeHold(db, tenantId)
-                                            .coverageForWorkflow(workflowId).blocks())
-                            // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
-                            // 靠这个回调把三段状态画得出来（见 createNodeShells）。
-                            .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st));
-                    // 注意：**不能**按执行结果决定是否退回。
-                    // 退回意味着重跑，而在真实设备上重跑 = 开两次盖（物理副作用不可撤销）。
-                    // 这里只在解析阶段失败时退回（见 catch），执行了就是执行了。
-                    progress = gr.run(g, executor);
-                    viaGraph = true;
+                        // P1-8：每到一个节点边界查一次 DB —— 状态是 paused 就停。
+                        // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
+                        // ⚠ 还要查**实验级现场扣留**：实验级暂停落的是扣留、不改
+                        // run 状态，只查 run.status 的话底层流程永远看不到它，会照旧跑完
+                        // （2026-11-06 实测：实验级暂停停不住 workflow 级 run）。
+                        .withPauseChecker(() -> isRunPaused(runId)
+                                || new RuntimeHold(db, tenantId)
+                                        .coverageForWorkflow(workflowId).blocks())
+                        // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
+                        // 靠这个回调把三段状态画得出来（见 createNodeShells）。
+                        .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st));
+                // B-01：退回顺序执行**只允许发生在解析期**。
+                // 解析失败时还没派发任何设备命令，退回是兼容手段；
+                // 一旦 GraphRunner 开始执行，RuntimeException 必须原样抛出——
+                // 退回 executeAll 等于把同一流程从头再执行一遍，在真实设备上
+                // 就是第二次开盖/第二次移液（物理副作用不可撤销）。
+                // lambda 里用的必须是 effectively-final（executor 上面可能被
+                // TimeConstraintExecutor 包过一层，不能直接捕获）。
+                final StepExecutor seqExecutor = executor;
+                final List<RecoverableNode> recFinal = rec;
+                GraphExecution graphExecution = executeGraphWithParseFallback(
+                        xml, () -> sm.executeAll(recFinal, seqExecutor), gr, seqExecutor);
+                progress = graphExecution.progress();
+                viaGraph = graphExecution.viaGraph();
+                if (viaGraph) {
                     pausedAtBoundary = gr.runPaused();
                     pausedAtKey = gr.pausedAtKey();
-                } catch (RuntimeException ex) {
-                    System.err.println("[WARN] 按图执行失败，退回顺序执行: " + ex.getMessage());
-                    progress = sm.executeAll(rec, executor);
                 }
             } else {
                 progress = sm.executeAll(rec, executor);
@@ -869,6 +873,21 @@ public final class WorkflowService {
             pathHolder[0] = viaGraph ? "graph" : "sequential";
             store.flush();
             eventsWritten = store.written();
+        } catch (RuntimeException executionFailure) {
+            // B-01：执行期异常**不重跑**，只如实收尾。
+            // 已完成节点的 run_node / run_command 保持现场（不回滚、不重放），
+            // run 落 failed 并记下原因，异常原样抛给调用方 —— 让上层看到"这次失败了"，
+            // 而不是在背后把同一批物理动作再执行一遍。
+            RunMonitor.INSTANCE.finish(runId);
+            System.err.println("[执行失败] run#" + runId + " 执行期异常（不重跑）："
+                    + executionFailure);
+            try {
+                markRunFailed(runId, "执行期异常：" + executionFailure);
+            } catch (SQLException e) {
+                System.err.println("[WARN] run#" + runId + " 异常收尾回写失败（保留原异常）："
+                        + e.getMessage());
+            }
+            throw executionFailure;
         }
 
         RunMonitor.INSTANCE.finish(runId);
@@ -924,6 +943,43 @@ public final class WorkflowService {
                 progress.count(NodeStatus.ABORTED),
                 viaDriver, eventsWritten, results,
                 alerts, (int) notifyCount, mode);
+    }
+
+    /**
+     * 图执行的失败边界（B-01）：**退回顺序执行只允许发生在解析期**。
+     *
+     * <p>退回一次顺序执行 = 把同一张流程图从头再跑一遍。真实设备上这意味着
+     * 第二次开盖 / 第二次移液 / 第二次搬运，而执行期异常恰恰最常发生在
+     * 「已经跑了一半、现场状态已经变了」的时候——此时重跑不只是浪费，
+     * 而是**在错误的现场状态下重复物理动作**。
+     *
+     * <p>因此：
+     * <ul>
+     *   <li>解析失败（还一条设备命令都没派发）⇒ 允许退回顺序执行，
+     *       兼容历史流程图里解析器不认识的写法；</li>
+     *   <li>执行期任何 {@link RuntimeException} ⇒ 原样抛出（方法体内的
+     *       {@code graphRunner.run} 故意放在 try 之外），由上层按失败收尾。</li>
+     * </ul>
+     */
+    static GraphExecution executeGraphWithParseFallback(
+            String xml,
+            java.util.function.Supplier<RunProgress> sequentialFallback,
+            GraphRunner graphRunner,
+            StepExecutor executor) {
+        final WorkflowGraphParser.Graph graph;
+        try {
+            graph = WorkflowGraphParser.parse(xml);
+        } catch (RuntimeException parseFailure) {
+            System.err.println("[WARN] BPMN 解析失败（尚未派发设备命令），退回顺序执行: "
+                    + parseFailure.getMessage());
+            return new GraphExecution(sequentialFallback.get(), false);
+        }
+        // 故意放在 try/catch 之外：执行期异常绝不能触发顺序重跑。
+        return new GraphExecution(graphRunner.run(graph, executor), true);
+    }
+
+    /** {@link #executeGraphWithParseFallback} 的结果：进度 + 这次是否真的走了图执行。 */
+    record GraphExecution(RunProgress progress, boolean viaGraph) {
     }
 
     public record Execution(long runId, String workflowName, int total,

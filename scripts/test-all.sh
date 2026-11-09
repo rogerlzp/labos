@@ -65,6 +65,8 @@ PURE=(
   "workflow.RuntimeHoldSelfTest"
   # 实验级运行控制：作用域退化（无岛退实验级）+ site 扣留不可顺手解除
   "workflow.RunControlSelfTest"
+  # B-01：图执行期 RuntimeException 不得退回顺序重跑（副作用只发生一次）
+  "workflow.WorkflowExecutionSafetySelfTest"
   # S3 分批执行纯逻辑：96/24=4、余数成批、空/NULL 集合、D5 批变量、D6 状态聚合
   "workflow.BatchPlannerSelfTest"
   "workflow.SchedulerEtaSelfTest"
