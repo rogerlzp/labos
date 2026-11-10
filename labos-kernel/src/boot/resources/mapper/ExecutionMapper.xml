@@ -46,6 +46,11 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <select id="selectTransferStatus" resultType="java.lang.String">
+        SELECT status FROM transfer_transaction
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
     <select id="countRunningRuns" resultType="int">
         SELECT count(*) FROM run
          WHERE tenant_id = #{param1} AND status = 'running'

@@ -80,15 +80,8 @@ public final class CommandOutbox {
     /** 某条账本对应的未派发事件数（自测/排障）。 */
     public static long pendingForLedger(DbConfig db, long tenantId, long ledgerId)
             throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT count(*) FROM command_outbox "
-                             + "WHERE tenant_id = ? AND ledger_id = ? AND state = 'PENDING'")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, ledgerId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.CommandMapper.class)
+                .countPendingEvents(tenantId, ledgerId);
     }
 }

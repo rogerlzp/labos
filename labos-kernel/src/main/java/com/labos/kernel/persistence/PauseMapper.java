@@ -22,6 +22,12 @@ public interface PauseMapper {
 
     int updatePlatePositionStatus(long tenantId, String barcode, String positionStatus);
 
+    /** 未派发的暂停事件数（派发器 backlog 展示）。 */
+    long countUndispatchedEvents(long tenantId);
+
+    /** 撤回幂等键（暂停请求失败回滚时用）。 */
+    int deletePauseRequest(long tenantId, String requestId);
+
     /** 板子可能所在的位置（原 possible_locations 数组，unnest 成行更好处理）。 */
     List<Long> selectPossibleLocations(long tenantId, String barcode);
 }

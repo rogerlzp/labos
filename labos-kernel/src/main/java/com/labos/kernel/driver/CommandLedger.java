@@ -303,16 +303,9 @@ public final class CommandLedger {
 
     /** 查询某条 run 的命令账本状态（自测/排障）。 */
     public static String stateOf(DbConfig db, long tenantId, String key) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT state FROM command_ledger "
-                             + "WHERE tenant_id = ? AND idempotency_key = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, key);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.CommandMapper.class)
+                .selectLedgerState(tenantId, key);
     }
 
     private static String trunc(String s, int max) {

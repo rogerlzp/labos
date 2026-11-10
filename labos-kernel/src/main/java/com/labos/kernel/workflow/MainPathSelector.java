@@ -297,15 +297,9 @@ public final class MainPathSelector {
         if (code == null || code.isBlank()) {
             return null;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id FROM capability WHERE tenant_id = ? AND code = ? LIMIT 1")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, code);
-            try (ResultSet r2 = ps.executeQuery()) {
-                return r2.next() ? r2.getLong(1) : null;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class)
+                .selectCapabilityId(tenantId, code);
     }
 
     private Map<String, List<String>> loadEdges(long workflowId) throws SQLException {

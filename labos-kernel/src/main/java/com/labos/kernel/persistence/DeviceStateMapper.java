@@ -28,6 +28,9 @@ public interface DeviceStateMapper {
     /** 设备方法是否可中断；查不到返回 null。 */
     Boolean selectMethodInterruptible(long tenantId, long deviceInstanceId, String method);
 
+    /** 层位被哪个 run 预占（position_state.reserved_by_run）。 */
+    Long selectPositionReservedBy(long tenantId, long resourceId);
+
     /** 谁占着这台设备（device_state.current_run_id）；空表示空闲。 */
     Long selectCurrentRunId(long tenantId, long resourceId);
 

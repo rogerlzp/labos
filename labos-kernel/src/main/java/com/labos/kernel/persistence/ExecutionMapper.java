@@ -40,6 +40,9 @@ public interface ExecutionMapper {
     /** run.pause_kind（暂停类型）。 */
     String selectPauseKindOfRun(long tenantId, long runId);
 
+    /** 搬运事务（transfer_transaction）的状态；不存在返回 null。 */
+    String selectTransferStatus(long tenantId, long transferId);
+
     /** 当前 running 的 run 数（准入提示"当前并发 N 个"）。 */
     int countRunningRuns(long tenantId);
 

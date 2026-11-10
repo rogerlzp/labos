@@ -255,20 +255,11 @@ public final class TransferPlan implements AutoCloseable {
 
     /** 谁预约着这个位置。 */
     private Long positionHolder(long positionId) {
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT reserved_by_run FROM position_state"
-                             + " WHERE tenant_id = ? AND resource_id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, positionId);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                long v = rs.getLong(1);
-                return rs.wasNull() ? null : v;
-            }
-        } catch (SQLException e) {
+        try {
+            return com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .selectPositionReservedBy(tenantId, positionId);
+        } catch (RuntimeException e) {
             return null;
         }
     }

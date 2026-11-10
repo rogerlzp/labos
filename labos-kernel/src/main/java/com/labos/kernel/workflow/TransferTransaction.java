@@ -151,15 +151,9 @@ public final class TransferTransaction {
 
     /** 当前状态（自测/排障）。 */
     public static String statusOf(DbConfig db, long tenantId, long id) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT status FROM transfer_transaction WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExecutionMapper.class)
+                .selectTransferStatus(tenantId, id);
     }
 
     private static String esc(String s) {

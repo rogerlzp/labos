@@ -32,6 +32,16 @@
 
     <!-- 用 unnest 把数组拆成行，调用方直接拿 List<Long>，
          不用再碰 java.sql.Array 的强转。 -->
+    <select id="countUndispatchedEvents" resultType="long">
+        SELECT count(*) FROM pause_event
+         WHERE tenant_id = #{param1} AND dispatched_at IS NULL
+    </select>
+
+    <delete id="deletePauseRequest">
+        DELETE FROM pause_request
+         WHERE tenant_id = #{param1} AND request_id = #{param2}
+    </delete>
+
     <select id="selectPossibleLocations" resultType="java.lang.Long">
         SELECT unnest(possible_locations) AS "loc"
           FROM plate

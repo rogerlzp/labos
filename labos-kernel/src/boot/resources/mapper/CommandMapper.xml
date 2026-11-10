@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 命令通道查询。调用方 com.labos.kernel.persistence.CommandMapper -->
+<mapper namespace="com.labos.kernel.persistence.CommandMapper">
+
+    <select id="countPendingEvents" resultType="long">
+        SELECT count(*) FROM command_outbox
+         WHERE tenant_id = #{param1} AND ledger_id = #{param2} AND state = 'PENDING'
+    </select>
+
+    <select id="selectLedgerState" resultType="java.lang.String">
+        SELECT state FROM command_ledger
+         WHERE tenant_id = #{param1} AND idempotency_key = #{param2}
+    </select>
+
+</mapper>

@@ -154,13 +154,11 @@ public final class PauseCoordinator {
         if (rid == null || rid.isBlank()) {
             return;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "DELETE FROM pause_request WHERE tenant_id = ? AND request_id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, rid);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.PauseMapper.class)
+                    .deletePauseRequest(tenantId, rid);
+        } catch (RuntimeException e) {
             log.error("[暂停] 幂等键撤回失败：" + e.getMessage());
         }
     }

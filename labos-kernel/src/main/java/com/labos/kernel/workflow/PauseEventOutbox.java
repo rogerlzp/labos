@@ -78,14 +78,8 @@ public final class PauseEventOutbox {
 
     /** 未派发事件数（自测/运维查询用）。 */
     public static long pendingCount(DbConfig db, long tenantId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT count(*) FROM pause_event "
-                             + "WHERE tenant_id = ? AND dispatched_at IS NULL")) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.PauseMapper.class)
+                .countUndispatchedEvents(tenantId);
     }
 }

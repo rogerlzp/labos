@@ -41,6 +41,11 @@
          LIMIT 1
     </select>
 
+    <select id="selectPositionReservedBy" resultType="java.lang.Long">
+        SELECT reserved_by_run FROM position_state
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+    </select>
+
     <select id="selectCurrentRunId" resultType="java.lang.Long">
         SELECT current_run_id FROM device_state
          WHERE tenant_id = #{param1} AND resource_id = #{param2}
