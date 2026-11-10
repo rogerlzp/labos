@@ -134,6 +134,32 @@ public interface QueryMapper {
     /** 登录成功回写 last_login_at。 */
     int touchLastLogin(long userId);
 
+    /** 首启播种子账号（仅 countUsers==0 时调用，role 固定 'admin'）。 */
+    int insertSeedUser(@Param("tenantId") long tenantId,
+                         @Param("username") String username,
+                         @Param("displayName") String displayName,
+                         @Param("passwordHash") String passwordHash,
+                         @Param("salt") String salt);
+
+    /** 登录校验取用户行（不存在即无行；enabled 由调用方判）。 */
+    Map<String, Object> selectUserForLogin(@Param("tenantId") long tenantId,
+                                           @Param("username") String username);
+
+    /**
+     * 审计写入 audit_log。before/after 为 JSON 文本（可空），
+     * ip 可空；userId/entityId 可空。
+     */
+    int insertAuditLog(@Param("tenantId") long tenantId,
+                       @Param("userId") Long userId,
+                       @Param("username") String username,
+                       @Param("action") String action,
+                       @Param("entityType") String entityType,
+                       @Param("entityId") Long entityId,
+                       @Param("before") String before,
+                       @Param("after") String after,
+                       @Param("ip") String ip,
+                       @Param("result") String result);
+
     /** workflow.attr->>'maxIterations'（原样字符串，调用方自己解析，兼容脏值）。 */
     String selectWorkflowMaxIterations(long tenantId, long workflowId);
 

@@ -58,4 +58,31 @@
 
     <select id="selectAllWorkflowIds" resultType="java.lang.Long">
         SELECT id FROM workflow WHERE tenant_id = #{param1} ORDER BY id
-    </select></mapper>
+    </select>
+
+    <!-- AuthService 鉴权（阶段3第31批收编） -->
+    <insert id="insertSeedUser">
+        INSERT INTO sys_user
+          (tenant_id, username, display_name, role, password_hash, salt)
+        VALUES (#{tenantId}, #{username}, #{displayName}, 'admin',
+                #{passwordHash}, #{salt})
+    </insert>
+    <select id="selectUserForLogin" resultType="java.util.Map">
+        SELECT id AS "id", username AS "username",
+               display_name AS "displayName", role AS "role",
+               password_hash AS "passwordHash", salt AS "salt",
+               enabled AS "enabled"
+        FROM sys_user WHERE tenant_id = #{tenantId} AND username = #{username}
+    </select>
+    <!-- before/after 带 jdbcType：为 null 时按 varchar 传，::jsonb cast 出 NULL；
+         ip 同理走 ::inet。原实现 setString(null) 等价。 -->
+    <insert id="insertAuditLog">
+        INSERT INTO audit_log
+          (tenant_id, occurred_at, user_id, username, action,
+           entity_type, entity_id, before, after, ip, result)
+        VALUES (#{tenantId}, now(), #{userId,jdbcType=BIGINT}, #{username},
+                #{action}, #{entityType}, #{entityId,jdbcType=BIGINT},
+                #{before,jdbcType=VARCHAR}::jsonb, #{after,jdbcType=VARCHAR}::jsonb,
+                #{ip,jdbcType=VARCHAR}::inet, #{result})
+    </insert>
+</mapper>

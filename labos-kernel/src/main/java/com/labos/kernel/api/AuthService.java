@@ -8,9 +8,6 @@ import javax.crypto.spec.PBEKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -71,51 +68,40 @@ public final class AuthService {
      * 用户名/密码可用环境变量覆盖：{@code LABOS_ADMIN_USER} / {@code LABOS_ADMIN_PASS}。
      */
     public void ensureSeedUser() throws SQLException {
-        try (Connection c = db.open()) {
-            if (com.labos.kernel.persistence.Mappers.get(
-                    com.labos.kernel.persistence.QueryMapper.class).countUsers(tenantId) > 0) {
-                return;
-            }
-
-            String user = envOr("LABOS_ADMIN_USER", "admin");
-
-            // P0-2 修复（评审 20261102-03）：改动前默认口令硬编码 admin123，
-            // 且把明文打印到 stdout —— 日志、终端历史、截图都会泄漏。
-            //
-            // 现在：生产环境（LABOS_ENV=prod）**必须**显式设 LABOS_ADMIN_PASS；
-            // 开发环境保留便利默认值，但**不打印明文**。
-            String env = envOr("LABOS_ENV", "dev");
-            String pass = envOr("LABOS_ADMIN_PASS", null);
-            boolean prod = "prod".equalsIgnoreCase(env);
-            if (pass == null || pass.isBlank()) {
-                if (prod) {
-                    throw new IllegalStateException(
-                            "生产环境必须设置 LABOS_ADMIN_PASS（不接受默认口令）");
-                }
-                pass = "admin123";
-                log.info("  [鉴权] 开发模式使用默认口令；"
-                        + "生产请设 LABOS_ENV=prod 且必须提供 LABOS_ADMIN_PASS");
-            } else if (pass.length() < 8) {
-                log.info("  [鉴权] 警告：LABOS_ADMIN_PASS 长度不足 8，建议加强");
-            }
-            String salt = newSalt();
-
-            try (PreparedStatement ps = c.prepareStatement("""
-                    INSERT INTO sys_user
-                      (tenant_id, username, display_name, role, password_hash, salt)
-                    VALUES (?, ?, ?, 'admin', ?, ?)
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setString(2, user);
-                ps.setString(3, "管理员");
-                ps.setString(4, pbkdf2(pass, salt));
-                ps.setString(5, salt);
-                ps.executeUpdate();
-            }
-            // **不打印明文**：只提示账号，口令由部署方自己知道
-            log.info("  [鉴权] 已创建初始管理员账号: " + user
-                    + "（口令不回显；请立即登录并修改）");
+        if (com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class).countUsers(tenantId) > 0) {
+            return;
         }
+
+        String user = envOr("LABOS_ADMIN_USER", "admin");
+
+        // P0-2 修复（评审 20261102-03）：改动前默认口令硬编码 admin123，
+        // 且把明文打印到 stdout —— 日志、终端历史、截图都会泄漏。
+        //
+        // 现在：生产环境（LABOS_ENV=prod）**必须**显式设 LABOS_ADMIN_PASS；
+        // 开发环境保留便利默认值，但**不打印明文**。
+        String env = envOr("LABOS_ENV", "dev");
+        String pass = envOr("LABOS_ADMIN_PASS", null);
+        boolean prod = "prod".equalsIgnoreCase(env);
+        if (pass == null || pass.isBlank()) {
+            if (prod) {
+                throw new IllegalStateException(
+                        "生产环境必须设置 LABOS_ADMIN_PASS（不接受默认口令）");
+            }
+            pass = "admin123";
+            log.info("  [鉴权] 开发模式使用默认口令；"
+                    + "生产请设 LABOS_ENV=prod 且必须提供 LABOS_ADMIN_PASS");
+        } else if (pass.length() < 8) {
+            log.info("  [鉴权] 警告：LABOS_ADMIN_PASS 长度不足 8，建议加强");
+        }
+        String salt = newSalt();
+
+        com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class)
+                .insertSeedUser(tenantId, user, "管理员", pbkdf2(pass, salt), salt);
+        // **不打印明文**：只提示账号，口令由部署方自己知道
+        log.info("  [鉴权] 已创建初始管理员账号: " + user
+                + "（口令不回显；请立即登录并修改）");
     }
 
     /** 登录：校验密码，发 token。失败返回 null（不区分"用户不存在"和"密码错"，避免枚举）。 */
@@ -123,43 +109,35 @@ public final class AuthService {
         if (username == null || password == null) {
             return null;
         }
-        String sql = """
-                SELECT id, username, display_name, role, password_hash, salt, enabled
-                FROM sys_user WHERE tenant_id = ? AND username = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, username);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next() || !rs.getBoolean("enabled")) {
-                    audit(null, username, "auth.login", "user", null,
-                            null, null, ip, "fail");
-                    return null;
-                }
-                String expected = rs.getString("password_hash");
-                String actual = pbkdf2(password, rs.getString("salt"));
-                if (!MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),
-                        actual.getBytes(StandardCharsets.UTF_8))) {
-                    audit(null, username, "auth.login", "user", null,
-                            null, null, ip, "fail");
-                    return null;
-                }
-
-                Session s = new Session(UUID.randomUUID().toString(),
-                        rs.getLong("id"), rs.getString("username"),
-                        rs.getString("display_name"), rs.getString("role"),
-                        Instant.now().plus(TTL));
-                sessions.put(s.token(), s);
-
-                com.labos.kernel.persistence.Mappers.get(
-                        com.labos.kernel.persistence.QueryMapper.class)
-                        .touchLastLogin(s.userId());
-                audit(s, s.username(), "auth.login", "user", s.userId(),
-                        null, null, ip, "ok");
-                return s;
-            }
+        Map<String, Object> row = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class)
+                .selectUserForLogin(tenantId, username);
+        if (row == null || !Boolean.TRUE.equals(row.get("enabled"))) {
+            audit(null, username, "auth.login", "user", null,
+                    null, null, ip, "fail");
+            return null;
         }
+        String expected = (String) row.get("passwordHash");
+        String actual = pbkdf2(password, (String) row.get("salt"));
+        if (!MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),
+                actual.getBytes(StandardCharsets.UTF_8))) {
+            audit(null, username, "auth.login", "user", null,
+                    null, null, ip, "fail");
+            return null;
+        }
+
+        Session s = new Session(UUID.randomUUID().toString(),
+                ((Number) row.get("id")).longValue(), (String) row.get("username"),
+                (String) row.get("displayName"), (String) row.get("role"),
+                Instant.now().plus(TTL));
+        sessions.put(s.token(), s);
+
+        com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class)
+                .touchLastLogin(s.userId());
+        audit(s, s.username(), "auth.login", "user", s.userId(),
+                null, null, ip, "ok");
+        return s;
     }
 
     /** 校验 token（过期即失效并移除）。 */
@@ -191,34 +169,16 @@ public final class AuthService {
      */
     public void audit(Session who, String username, String action, String entityType,
                       Long entityId, String before, String after, String ip, String result) {
-        String sql = """
-                INSERT INTO audit_log
-                  (tenant_id, occurred_at, user_id, username, action,
-                   entity_type, entity_id, before, after, ip, result)
-                VALUES (?, now(), ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?::inet, ?)
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            if (who == null) {
-                ps.setNull(2, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(2, who.userId());
-            }
-            ps.setString(3, username == null ? "anonymous" : username);
-            ps.setString(4, action);
-            ps.setString(5, entityType);
-            if (entityId == null) {
-                ps.setNull(6, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(6, entityId);
-            }
-            ps.setString(7, before);
-            ps.setString(8, after);
-            ps.setString(9, ip == null || ip.isBlank() ? null : ip);
-            ps.setString(10, result);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.QueryMapper.class)
+                    .insertAuditLog(tenantId,
+                            who == null ? null : who.userId(),
+                            username == null ? "anonymous" : username,
+                            action, entityType, entityId, before, after,
+                            ip == null || ip.isBlank() ? null : ip,
+                            result);
+        } catch (RuntimeException e) {
             log.error("[WARN] 审计写入失败: " + e.getMessage());
         }
     }
