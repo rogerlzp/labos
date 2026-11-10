@@ -70,7 +70,12 @@ real sidecar commands and their real timeouts: `MoveTray` 3 s, `Seal` 12 s,
   Spring-managed transactions, HikariCP for pooling, MyBatis XML for SQL)
 - **PostgreSQL** (default database `labdb`, override with `LABOS_DB_NAME`)
 - **Node 18+** (frontend)
-- **Redis** (optional, only needed in gateway mode)
+- **Redis** — **an architectural dependency, not an optional extra**: the device gateway's
+  state centre (the gateway writes device state), the kernel's cross-instance lock
+  coordination (ADR-LOCK-001), and the kernel→gateway command path
+  (`LABOS_DRIVER_MODE=redis`, **not implemented yet**). The kernel side is not wired up
+  today (scheduling is still single-instance), so today's minimum setup only needs it in
+  gateway mode — a transitional state, not the end state
 - **Maven** — only to resolve dependencies; `scripts/build-kernel.sh` downloads it on demand
 
 ### Run the kernel

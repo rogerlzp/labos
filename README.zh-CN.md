@@ -61,7 +61,7 @@
 - **JDK 17** —— 内核跑在 **Spring Boot 3.2.5** 容器里（HTTP 用 Spring MVC，事务与连接池归 Spring 管，SQL 走 MyBatis XML）
 - **PostgreSQL**（默认库名 `labdb`，可用 `LABOS_DB_NAME` 覆盖）
 - **Node 18+**（前端）
-- **Redis**（可选，只有网关模式需要）
+- **Redis** —— **架构级依赖，不是可选项**：设备网关的状态中心（网关写设备状态）、内核分布式资源锁的跨实例协调（ADR-LOCK-001）、内核→网关的设备命令通道（`LABOS_DRIVER_MODE=redis`，**尚未实现**）。**当前内核侧还没接 Redis**（调度仍是单实例的岛锁），所以今天的最小可用集里只有网关模式需要它 —— 这是过渡态，不是终态
 - **Maven**（只用于拉依赖；`scripts/build-kernel.sh` 在本机没有时会自动下载）
 
 ### 启动内核
