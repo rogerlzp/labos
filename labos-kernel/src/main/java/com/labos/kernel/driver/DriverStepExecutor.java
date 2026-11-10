@@ -444,17 +444,17 @@ public final class DriverStepExecutor implements StepExecutor {
         }
     }
 
+    /** 延迟取 Mapper（本类是 new 出来的执行器，见 Mappers）。 */
+    private static com.labos.kernel.persistence.DeviceStateMapper dm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceStateMapper.class);
+    }
+
     /** resource_node.id → device_instance.id（两套 ID 的转换）。 */
     private Long instanceOfResource(long resourceId) {
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT id FROM device_instance WHERE resource_id = ?"
-                             + " AND deleted_at IS NULL ORDER BY id LIMIT 1")) {
-            ps.setLong(1, resourceId);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        } catch (java.sql.SQLException e) {
+        try {
+            return dm().selectInstanceIdByResource(resourceId);
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -466,15 +466,9 @@ public final class DriverStepExecutor implements StepExecutor {
             return null;
         }
         String code = String.valueOf(v);
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT id FROM resource_node WHERE tenant_id = ? AND code = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, code);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        } catch (java.sql.SQLException e) {
+        try {
+            return dm().selectResourceIdByCode(tenantId, code);
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -586,19 +580,12 @@ public final class DriverStepExecutor implements StepExecutor {
             return cached;
         }
         boolean v = false;
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT interruptible FROM device_method "
-                             + "WHERE tenant_id = ? AND device_id = ? AND method = ? LIMIT 1")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, instanceId);
-            ps.setString(3, method);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    v = rs.getBoolean(1);
-                }
+        try {
+            Boolean b = dm().selectMethodInterruptible(tenantId, instanceId, method);
+            if (b != null) {
+                v = b;
             }
-        } catch (java.sql.SQLException e) {
+        } catch (RuntimeException e) {
             v = false;
         }
         INTERRUPTIBLE_CACHE.put(key, v);
@@ -619,8 +606,14 @@ public final class DriverStepExecutor implements StepExecutor {
      */
     private boolean pauseRequested(long workflowId) {
         if (runId > 0) {
-            String st = q1s("SELECT status::text FROM run WHERE tenant_id = ? AND id = ?",
-                    tenantId, runId);
+            String st;
+            try {
+                st = com.labos.kernel.persistence.Mappers.get(
+                        com.labos.kernel.persistence.RunMapper.class)
+                        .selectStatus(tenantId, runId);
+            } catch (RuntimeException e) {
+                st = null;
+            }
             if ("paused".equals(st)) {
                 return true;
             }
@@ -639,9 +632,15 @@ public final class DriverStepExecutor implements StepExecutor {
         if (runId <= 0) {
             return 0L;
         }
-        Long v = q1("SELECT workflow_id FROM run WHERE tenant_id = ? AND id = ?",
-                tenantId, runId);
-        return v == null ? 0L : v;
+        try {
+            java.util.Map<String, Object> row = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.QueryMapper.class)
+                    .selectRunWorkflow(tenantId, runId);
+            Object v = row == null ? null : row.get("workflowId");
+            return v instanceof Number n ? n.longValue() : 0L;
+        } catch (RuntimeException e) {
+            return 0L;
+        }
     }
 
     /** 一条 SQL 取一个字符串值（查不到返回 null）。 */

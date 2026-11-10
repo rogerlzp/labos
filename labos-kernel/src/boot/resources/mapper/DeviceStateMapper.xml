@@ -25,6 +25,22 @@
            AND resource_id = (SELECT resource_id FROM device_instance WHERE id = #{param2})
     </update>
 
+    <select id="selectInstanceIdByResource" resultType="java.lang.Long">
+        SELECT id FROM device_instance
+         WHERE resource_id = #{param1} AND deleted_at IS NULL
+         ORDER BY id LIMIT 1
+    </select>
+
+    <select id="selectResourceIdByCode" resultType="java.lang.Long">
+        SELECT id FROM resource_node WHERE tenant_id = #{param1} AND code = #{param2}
+    </select>
+
+    <select id="selectMethodInterruptible" resultType="java.lang.Boolean">
+        SELECT interruptible FROM device_method
+         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
+         LIMIT 1
+    </select>
+
     <select id="hasPorts" resultType="boolean">
         SELECT EXISTS(
             SELECT 1 FROM device_port
