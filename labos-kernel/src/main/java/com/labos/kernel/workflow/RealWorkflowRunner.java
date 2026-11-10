@@ -269,14 +269,10 @@ public final class RealWorkflowRunner {
     public static Map<String, List<Long>> loadCapabilityPool(DbConfig db) throws SQLException {
         Map<String, List<Long>> out = new LinkedHashMap<>();
         for (java.util.Map<String, Object> m : gm().selectCapabilityPools()) {
-            // array_agg 列在 Map 里保持 java.sql.Array，拆成 List<Long>
-            java.sql.Array arr = (java.sql.Array) m.get("ids");
-            List<Long> ids = new ArrayList<>();
-            if (arr != null) {
-                for (Object o : (Object[]) arr.getArray()) {
-                    ids.add(((Number) o).longValue());
-                }
-            }
+            // array_agg 列在 Map 里**不是** java.sql.Array，而是 PG 驱动给的 Java 数组
+            // （Long[]）—— 直接强转会 ClassCastException，**每次执行工艺都 500**。
+            // 统一交给 DbArrays 摊平（三种形态都认，见 DbArrays 的说明）。
+            List<Long> ids = com.labos.kernel.persistence.DbArrays.longs(m.get("ids"));
             out.put((String) m.get("code"), ids);
         }
         return out;

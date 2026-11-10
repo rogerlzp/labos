@@ -592,19 +592,22 @@ public final class PauseManager {
                 m.put("possibleLocationIds", toList(row.get("locationIds")));
                 list.add(m);
             }
-        } catch (RuntimeException | java.sql.SQLException e) {
-            // 返回空
+        } catch (RuntimeException e) {
+            // 返回空（toList 不再抛 checked 异常，SQL 异常已被 Mapper 包成 RuntimeException）
         }
         return list;
     }
 
-    /** pgjdbc 把 bigint[] / text[] 列返回成 java.sql.Array，统一摊平成 List。 */
-    private static List<Object> toList(Object arrayVal) throws java.sql.SQLException {
-        if (!(arrayVal instanceof java.sql.Array a)) {
-            return List.of();
-        }
-        Object[] arr = (Object[]) a.getArray();
-        return arr == null ? List.of() : List.of(arr);
+    /**
+     * PG 数组列 → List。
+     *
+     * <p>⚠ PG 数组列在 {@code resultType=java.util.Map} 下返回的是**Java 数组**
+     * （{@code Long[]} / {@code String[]}），不是 {@link java.sql.Array} ——
+     * 原来这里只认 {@code java.sql.Array}，于是**板位可能位置恒为空**
+     * （不报错，所以一直没被发现）。统一交给 {@code DbArrays} 摊平。
+     */
+    private static List<Object> toList(Object arrayVal) {
+        return com.labos.kernel.persistence.DbArrays.objects(arrayVal);
     }
 
     /**

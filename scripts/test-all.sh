@@ -141,6 +141,9 @@ PURE=(
   "workflow.ExperimentFaultScopeSelfTest"
   # N-10：跨 Workcell Handoff 缺失/UNKNOWN 必须阻断（纯逻辑）
   "workflow.HandoffGateSelfTest"
+  # PG 数组列摊平（2026-11-10）：java.sql.Array / Java 数组 / null 三形态都认
+  # —— 原先按 java.sql.Array 强转 ⇒ 每次执行工艺 500
+  "persistence.DbArraysSelfTest"
 )
 
 # 连库：位置锁 / 暂停恢复 / 配方编译
