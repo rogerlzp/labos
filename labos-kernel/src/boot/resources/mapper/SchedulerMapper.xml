@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 实验调度器（experiment_run 排队/续跑/资源预检）。调用方 com.labos.kernel.persistence.SchedulerMapper -->
+<mapper namespace="com.labos.kernel.persistence.SchedulerMapper">
+
+    <select id="selectQueuedRuns" resultType="java.util.Map">
+        SELECT r.id AS "runId", r.experiment_id AS "experimentId",
+               COALESCE(e.island_id, 0) AS "islandId",
+               COALESCE(e.priority, 50) AS "priority", e.deadline AS "deadline"
+          FROM experiment_run r
+          JOIN experiment e
+            ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
+         WHERE r.tenant_id = #{tenantId} AND r.status = 'queued'
+         ORDER BY r.id
+    </select>
+
+    <update id="clearResumingState">
+        UPDATE experiment_run
+           SET control_state = 'NONE'
+         WHERE tenant_id = #{tenantId} AND id = #{runId}
+           AND status = 'queued' AND control_state = 'RESUMING'
+    </update>
+
+    <select id="selectRequiredResources" resultType="java.lang.Long">
+        SELECT DISTINCT wn.resource_id
+          FROM experiment_process ep
+          JOIN workflow_node wn
+            ON wn.workflow_id = ep.workflow_id AND wn.tenant_id = ep.tenant_id
+         WHERE ep.tenant_id = #{tenantId} AND ep.experiment_id = #{experimentId}
+           AND wn.resource_id IS NOT NULL
+    </select>
+
+    <select id="selectExperimentPriority" resultType="java.lang.Long">
+        SELECT COALESCE(priority, 50) FROM experiment
+         WHERE tenant_id = #{tenantId} AND id = #{experimentId}
+    </select>
+
+    <select id="selectExperimentDeadline" resultType="java.sql.Timestamp">
+        SELECT deadline FROM experiment
+         WHERE tenant_id = #{tenantId} AND id = #{experimentId}
+    </select>
+
+</mapper>

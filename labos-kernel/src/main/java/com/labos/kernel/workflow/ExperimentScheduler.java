@@ -3,8 +3,6 @@ package com.labos.kernel.workflow;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -257,29 +255,14 @@ public final class ExperimentScheduler {
      */
     public int rehydrateQueued() throws SQLException {
         List<Queued> candidates = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT r.id AS run_id, r.experiment_id,
-                            COALESCE(e.island_id, 0) AS island_id,
-                            COALESCE(e.priority, 50) AS priority,
-                            e.deadline
-                       FROM experiment_run r
-                       JOIN experiment e
-                         ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
-                      WHERE r.tenant_id = ? AND r.status = 'queued'
-                      ORDER BY r.id
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                long now = System.currentTimeMillis();
-                while (rs.next()) {
-                    Timestamp dl = rs.getTimestamp("deadline");
-                    candidates.add(new Queued(rs.getLong("run_id"),
-                            rs.getLong("experiment_id"), rs.getLong("island_id"),
-                            rs.getInt("priority"),
-                            dl == null ? null : dl.toLocalDateTime().toString(), now));
-                }
-            }
+        long now = System.currentTimeMillis();
+        for (Map<String, Object> m : mapper().selectQueuedRuns(tenantId)) {
+            Timestamp dl = (Timestamp) m.get("deadline");
+            candidates.add(new Queued(((Number) m.get("runId")).longValue(),
+                    ((Number) m.get("experimentId")).longValue(),
+                    ((Number) m.get("islandId")).longValue(),
+                    ((Number) m.get("priority")).intValue(),
+                    dl == null ? null : dl.toLocalDateTime().toString(), now));
         }
         int added = 0;
         synchronized (queue) {
@@ -328,17 +311,7 @@ public final class ExperimentScheduler {
     }
 
     private void clearResumingState(long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run
-                        SET control_state = 'NONE'
-                      WHERE tenant_id = ? AND id = ?
-                        AND status = 'queued' AND control_state = 'RESUMING'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.executeUpdate();
-        }
+        mapper().clearResumingState(tenantId, runId);
     }
 
     /** 调度循环。 */
@@ -668,6 +641,11 @@ public final class ExperimentScheduler {
     }
 
     /** 延迟取 Mapper（本类可能被 new 出来，见 Mappers）。 */
+    private com.labos.kernel.persistence.SchedulerMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.SchedulerMapper.class);
+    }
+
     private com.labos.kernel.persistence.RunMapper rm() {
         return com.labos.kernel.persistence.Mappers.get(
                 com.labos.kernel.persistence.RunMapper.class);
@@ -731,23 +709,10 @@ public final class ExperimentScheduler {
      */
     private Set<Long> requiredResources(long experimentId) {
         Set<Long> out = new HashSet<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT DISTINCT wn.resource_id
-                     FROM experiment_process ep
-                     JOIN workflow_node wn
-                       ON wn.workflow_id = ep.workflow_id AND wn.tenant_id = ep.tenant_id
-                     WHERE ep.tenant_id = ? AND ep.experiment_id = ?
-                       AND wn.resource_id IS NOT NULL
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(rs.getLong(1));
-                }
-            }
-        } catch (SQLException e) {
+        try {
+            out.addAll(mapper().selectRequiredResources(tenantId, experimentId));
+        } catch (RuntimeException e) {
+            // fail-closed：读不了资源集合就不放行（mapper 已把 SQL 异常包装）
             log.error("[调度] 读实验资源集合失败，保守不放行: experiment=" + experimentId
                     + " " + e.getMessage());
             return null;
@@ -970,50 +935,21 @@ public final class ExperimentScheduler {
     }
 
     private int priorityOf(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT COALESCE(priority, 50) FROM experiment
-                     WHERE tenant_id=? AND id=?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getInt(1) : 50;
-            }
-        }
+        Long p = mapper().selectExperimentPriority(tenantId, experimentId);
+        return p == null ? 50 : p.intValue();
     }
 
     private String deadlineOf(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT deadline FROM experiment WHERE tenant_id=? AND id=?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    java.sql.Timestamp ts = rs.getTimestamp(1);
-                    return ts == null ? null : ts.toLocalDateTime().toString();
-                }
-            }
-        }
-        return null;
+        java.sql.Timestamp ts = mapper().selectExperimentDeadline(tenantId, experimentId);
+        return ts == null ? null : ts.toLocalDateTime().toString();
     }
 
     private long insertRun(long experimentId, Map<String, String> vars) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO experiment_run (tenant_id, experiment_id, status, variables)
-                     VALUES (?, ?, 'queued', ?::jsonb) RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            ps.setString(3, BatchOrchestrator.variablesJson(vars));
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        // 与 BatchOrchestrator 的建 run 语句同源，直接复用
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.BatchMapper.class)
+                .insertQueuedRunWithVars(tenantId, experimentId,
+                        BatchOrchestrator.variablesJson(vars));
     }
 
     /**
