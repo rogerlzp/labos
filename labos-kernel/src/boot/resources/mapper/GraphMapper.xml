@@ -177,4 +177,43 @@
          WHERE n.tenant_id = #{param1} AND n.node_type = 'task'
     </select>
 
+    <!-- WorkflowBuilder（搬运序列落成正式流程）-->
+
+    <!-- INSERT...RETURNING 用 <select> 承载：MyBatis DTD 不允许 <insert> 带 resultType -->
+    <select id="insertWorkflowRow" resultType="java.lang.Long">
+        INSERT INTO workflow (tenant_id, code, name, category)
+        VALUES (#{tenantId}, #{code}, #{name}, 'choreography')
+        RETURNING id
+    </select>
+
+    <select id="insertWorkflowNodeRow" resultType="java.lang.Long">
+        INSERT INTO workflow_node
+          (tenant_id, workflow_id, node_key, name, node_type, capability_id, params)
+        VALUES (#{tenantId}, #{workflowId}, #{nodeKey}, #{name}, #{nodeType},
+                (SELECT id FROM capability
+                  WHERE tenant_id = #{tenantId} AND code = #{capabilityCode}),
+                #{paramsJson}::jsonb)
+        RETURNING id
+    </select>
+
+    <insert id="insertWorkflowEdgeRow">
+        INSERT INTO workflow_edge (tenant_id, workflow_id, from_key, to_key,
+                                   edge_type, condition)
+        VALUES (#{tenantId}, #{workflowId}, #{fromKey}, #{toKey},
+                'sequence', '{}'::jsonb)
+    </insert>
+
+    <update id="writeWorkflowGraphXml">
+        UPDATE workflow SET graph = jsonb_build_object('format','bpmn2','xml',#{xml})
+         WHERE tenant_id = #{tenantId} AND id = #{workflowId}
+    </update>
+
+    <select id="selectCapabilityCodeOfResource" resultType="java.lang.String">
+        SELECT cap.code FROM device_instance di
+          JOIN device d ON d.id = di.device_id
+          JOIN capability cap ON cap.id = d.capability_id
+         WHERE di.resource_id = #{resourceId}
+         LIMIT 1
+    </select>
+
 </mapper>

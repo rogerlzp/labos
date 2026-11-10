@@ -111,4 +111,41 @@ public interface GraphMapper {
 
     /** 库里的显式能力标注：task 节点的 (workflowId, nodeKey, capabilityCode)。 */
     java.util.List<java.util.Map<String, Object>> selectCapabilityAnnotations(long tenantId);
+
+    // ---- WorkflowBuilder（搬运序列落成正式流程，全事务写集）----
+
+    /** 建 workflow 行（category 固定 choreography）；返回自增 id。 */
+    Long insertWorkflowRow(@org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+                           @org.apache.ibatis.annotations.Param("code") String code,
+                           @org.apache.ibatis.annotations.Param("name") String name);
+
+    /**
+     * 建节点行：capability_id 按 (tenant, capabilityCode) 子查询
+     * （code 不存在时写入 NULL，与原语句一致）；返回自增 id。
+     */
+    Long insertWorkflowNodeRow(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey,
+            @org.apache.ibatis.annotations.Param("name") String name,
+            @org.apache.ibatis.annotations.Param("nodeType") String nodeType,
+            @org.apache.ibatis.annotations.Param("capabilityCode") String capabilityCode,
+            @org.apache.ibatis.annotations.Param("paramsJson") String paramsJson);
+
+    /** 顺序边（edge_type='sequence'）；无幂等子句 —— 调用方事务内一次性建。 */
+    int insertWorkflowEdgeRow(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("fromKey") String fromKey,
+            @org.apache.ibatis.annotations.Param("toKey") String toKey);
+
+    /** 回写 graph XML（jsonb_build_object 整包替换，区别于 saveGraph 的合并写）。 */
+    int writeWorkflowGraphXml(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("xml") String xml);
+
+    /** 资源绑定的设备能力码（device_instance -> device -> capability）；无返回 null。 */
+    String selectCapabilityCodeOfResource(
+            @org.apache.ibatis.annotations.Param("resourceId") long resourceId);
 }

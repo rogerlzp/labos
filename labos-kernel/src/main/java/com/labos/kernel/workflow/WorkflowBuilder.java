@@ -3,8 +3,6 @@ package com.labos.kernel.workflow;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,6 +29,11 @@ public final class WorkflowBuilder {
     public WorkflowBuilder(DbConfig db, long tenantId) {
         this.db = db;
         this.tenantId = tenantId;
+    }
+
+    private static com.labos.kernel.persistence.GraphMapper gm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class);
     }
 
     /**
@@ -75,95 +78,37 @@ public final class WorkflowBuilder {
 
             // graph XML
             String xml = buildXml(name, keys, steps, startId, endId);
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE workflow SET graph = jsonb_build_object('format','bpmn2','xml',?)
-                    WHERE tenant_id = ? AND id = ?
-                    """)) {
-                ps.setString(1, xml);
-                ps.setLong(2, tenantId);
-                ps.setLong(3, wfId);
-                ps.executeUpdate();
-            }
+            gm().writeWorkflowGraphXml(tenantId, wfId, xml);
 
             return wfId;
         });
     }
 
     private long insertWorkflow(Connection c, String name) throws SQLException {
+        // c 形参保留（Tx 事务内调用，mapper 复用绑定连接）
         String code = "AUTO-" + System.currentTimeMillis() % 100000;
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO workflow (tenant_id, code, name, category)
-                VALUES (?, ?, ?, 'choreography') RETURNING id
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, code);
-            ps.setString(3, name == null || name.isBlank() ? "搬运流程 " + code : name);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return gm().insertWorkflowRow(tenantId, code,
+                name == null || name.isBlank() ? "搬运流程 " + code : name);
     }
 
     private long insertNode(Connection c, long wfId, String key, String name, String type,
                             String capability, Step step, Long resourceId) throws SQLException {
-        String sql = """
-                INSERT INTO workflow_node
-                  (tenant_id, workflow_id, node_key, name, node_type, capability_id, params)
-                VALUES (?, ?, ?, ?, ?, (SELECT id FROM capability
-                                          WHERE tenant_id = ? AND code = ?), ?::jsonb)
-                RETURNING id
-                """;
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, wfId);
-            ps.setString(3, key);
-            ps.setString(4, name);
-            ps.setString(5, type);
-            ps.setLong(6, tenantId);
-            ps.setString(7, capability == null ? "LOGIC" : capability);
-
-            StringBuilder json = new StringBuilder("{");
-            if (step != null) {
-                json.append("\"protocol_name\":\"").append(step.method()).append("\"");
-                json.append(",\"bound_resource_id\":").append(step.resourceId());
-            }
-            json.append("}");
-            ps.setString(8, json.toString());
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
+        StringBuilder json = new StringBuilder("{");
+        if (step != null) {
+            json.append("\"protocol_name\":\"").append(step.method()).append("\"");
+            json.append(",\"bound_resource_id\":").append(step.resourceId());
         }
+        json.append("}");
+        return gm().insertWorkflowNodeRow(tenantId, wfId, key, name, type,
+                capability == null ? "LOGIC" : capability, json.toString());
     }
 
     private void insertEdge(Connection c, long wfId, String from, String to) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO workflow_edge (tenant_id, workflow_id, from_key, to_key,
-                                           edge_type, condition)
-                VALUES (?, ?, ?, ?, 'sequence', '{}'::jsonb)
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, wfId);
-            ps.setString(3, from);
-            ps.setString(4, to);
-            ps.executeUpdate();
-        }
+        gm().insertWorkflowEdgeRow(tenantId, wfId, from, to);
     }
 
     private String capabilityOf(Connection c, long resourceId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT cap.code FROM device_instance di
-                JOIN device d ON d.id = di.device_id
-                JOIN capability cap ON cap.id = d.capability_id
-                WHERE di.resource_id = ?
-                LIMIT 1
-                """)) {
-            ps.setLong(1, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return gm().selectCapabilityCodeOfResource(resourceId);
     }
 
     private String resourceName(Connection c, long resourceId) throws SQLException {
