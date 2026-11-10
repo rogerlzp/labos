@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 搬运业务事务（transfer_transaction / position_evidence）。调用方 com.labos.kernel.persistence.TransferMapper -->
+<mapper namespace="com.labos.kernel.persistence.TransferMapper">
+
+    <!-- INSERT...RETURNING 用 <select> 承载：MyBatis DTD 不允许 <insert> 带 resultType -->
+    <select id="beginTransfer" resultType="java.lang.Long">
+        INSERT INTO transfer_transaction
+          (tenant_id, run_id, plate_barcode, source_resource_id,
+           target_resource_id, status)
+        VALUES (#{tenantId}, #{runId}, #{plateBarcode},
+                #{sourceResourceId, jdbcType=BIGINT},
+                #{targetResourceId, jdbcType=BIGINT}, 'REPORTED')
+        RETURNING id
+    </select>
+
+    <update id="reportTransfer">
+        UPDATE transfer_transaction
+           SET status = #{status},
+               device_report = #{deviceReportJson}::jsonb,
+               error_code = #{errorCode, jdbcType=VARCHAR},
+               error_message = #{errorMessage, jdbcType=VARCHAR}
+         WHERE tenant_id = #{tenantId} AND id = #{id}
+    </update>
+
+    <select id="selectConfirmableTransfer" resultType="java.util.Map">
+        SELECT plate_barcode AS "plateBarcode", target_resource_id AS "targetResourceId"
+          FROM transfer_transaction
+         WHERE tenant_id = #{tenantId} AND id = #{id}
+           AND status IN ('REPORTED', 'UNKNOWN')
+    </select>
+
+    <update id="markTransferConfirmed">
+        UPDATE transfer_transaction
+           SET status = 'CONFIRMED', confirmed_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{id}
+    </update>
+
+    <insert id="insertPositionEvidenceOnConfirm">
+        INSERT INTO position_evidence
+          (tenant_id, plate_barcode, resource_id, evidence_type, operator, note)
+        VALUES (#{tenantId}, #{plateBarcode}, #{resourceId, jdbcType=BIGINT},
+                #{evidenceType}, #{operator, jdbcType=VARCHAR},
+                #{note, jdbcType=VARCHAR})
+    </insert>
+
+</mapper>
