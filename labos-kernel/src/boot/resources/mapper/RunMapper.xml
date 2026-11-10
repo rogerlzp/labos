@@ -631,4 +631,73 @@
          WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'running'
     </update>
 
+    <!-- ---- ExperimentFlowRunner（逐步执行的实验编排落库）---- -->
+
+    <select id="selectRobotPoint" resultType="java.util.Map">
+        SELECT x AS "x", y AS "y", z AS "z" FROM robot_point
+         WHERE tenant_id = #{tenantId} AND code = #{code}
+         LIMIT 1
+    </select>
+
+    <select id="selectPlatePresence" resultType="java.util.Map">
+        SELECT ds.has_plate AS "hasPlate"
+          FROM resource_node r
+          LEFT JOIN device_state ds
+                 ON ds.resource_id = r.id AND ds.tenant_id = r.tenant_id
+         WHERE r.tenant_id = #{tenantId} AND r.code = #{code}
+         LIMIT 1
+    </select>
+
+    <select id="selectInstanceIdOfResource" resultType="java.lang.Long">
+        SELECT id FROM device_instance
+         WHERE tenant_id = #{tenantId} AND resource_id = #{resourceId}
+           AND deleted_at IS NULL
+         LIMIT 1
+    </select>
+
+    <!-- INSERT...RETURNING 用 <select> 承载：MyBatis DTD 不允许 <insert> 带 resultType -->
+    <select id="insertExperimentFlowRun" resultType="java.lang.Long">
+        INSERT INTO run (tenant_id, run_no, run_type, workflow_id, mode, priority,
+                         status, actual_start, input, output, attendance,
+                         created_at, updated_at)
+        VALUES (#{tenantId}, #{runNo}, 'experiment', NULL, 'normal', 50, 'running', now(),
+                #{inputJson}::jsonb, '{}'::jsonb, 'attended', now(), now())
+        RETURNING id
+    </select>
+
+    <select id="insertFlowNode" resultType="java.lang.Long">
+        INSERT INTO run_node (tenant_id, run_id, node_key, name, seq, node_type,
+                              resource_id, status, attempt, level, actual_start,
+                              estimate_sec, input)
+        VALUES (#{tenantId}, #{runId}, #{nodeKey}, #{name}, #{seq}, 'task',
+                #{resourceId}, 'running', 0, 0, now(), 0, '{}'::jsonb)
+        RETURNING id
+    </select>
+
+    <update id="updateFlowNodeFinished">
+        UPDATE run_node
+           SET status = #{status}::node_status, actual_end = now(),
+               error_code = #{errorCode, jdbcType=VARCHAR},
+               input = COALESCE(input, '{}'::jsonb) || #{inputPatchJson}::jsonb
+         WHERE tenant_id = #{tenantId} AND id = #{nodeId}
+    </update>
+
+    <insert id="insertFlowRunCommand">
+        INSERT INTO run_command
+          (tenant_id, run_id, run_node_id, command_seq, method, payload,
+           status, attempt, sent_at, finished_at, result,
+           device_raw_response, error_code, device_id)
+        VALUES (#{tenantId}, #{runId}, #{nodeId}, 1, #{method}, #{payloadJson}::jsonb,
+                #{status}::node_status, 0, now(), now(),
+                #{resultJson}::jsonb, #{rawResponse}::jsonb, #{errorCode}, #{deviceId})
+    </insert>
+
+    <update id="updateFlowRunFinished">
+        UPDATE run
+           SET status = #{status}::run_status, actual_end = now(),
+               progress = #{progress}, output = #{outputJson}::jsonb,
+               error_code = #{errorCode, jdbcType=VARCHAR}
+         WHERE tenant_id = #{tenantId} AND id = #{runId}
+    </update>
+
 </mapper>

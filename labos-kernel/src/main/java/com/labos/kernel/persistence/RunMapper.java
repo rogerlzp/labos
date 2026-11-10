@@ -249,4 +249,58 @@ public interface RunMapper {
     /** 收尾一条遗留 running 的 experiment_run：failed + 固定 error 文案。 */
     int settleOrphanExperimentRun(long tenantId, long runId, String error);
 
+    // ---- ExperimentFlowRunner（逐步执行的实验编排，run/run_node/run_command 落库）----
+
+    /** 点位坐标（x/y/z 为 BigDecimal，可能为 null）；不存在返回 null。 */
+    Map<String, Object> selectRobotPoint(@Param("tenantId") long tenantId,
+                                         @Param("code") String code);
+
+    /** 搬运预检：资源点位上有没有板（hasPlate 为 Boolean）；资源不存在返回 null。 */
+    Map<String, Object> selectPlatePresence(@Param("tenantId") long tenantId,
+                                            @Param("code") String code);
+
+    /** resource_node.id -> device_instance.id（未删除实例）；没有返回 null。 */
+    Long selectInstanceIdOfResource(@Param("tenantId") long tenantId,
+                                    @Param("resourceId") long resourceId);
+
+    /** 逐步执行的实验 run（run_type='experiment'，input 记名称/步数/变量），返回自增 id。 */
+    Long insertExperimentFlowRun(@Param("tenantId") long tenantId,
+                                 @Param("runNo") String runNo,
+                                 @Param("inputJson") String inputJson);
+
+    /** 落一个步骤节点（node_type='task'、level=0、status='running'），返回自增 id。 */
+    Long insertFlowNode(@Param("tenantId") long tenantId,
+                        @Param("runId") long runId,
+                        @Param("nodeKey") String nodeKey,
+                        @Param("name") String name,
+                        @Param("seq") int seq,
+                        @Param("resourceId") long resourceId);
+
+    /** 步骤收尾：status + actual_end + error_code（可空）+ input 合并耗时/错误码补丁。 */
+    int updateFlowNodeFinished(@Param("tenantId") long tenantId,
+                               @Param("nodeId") long nodeId,
+                               @Param("status") String status,
+                               @Param("errorCode") String errorCode,
+                               @Param("inputPatchJson") String inputPatchJson);
+
+    /** 命令台账（逐步执行路径）：payload/result 为 jsonb 文本，rawResponse 可空。 */
+    int insertFlowRunCommand(@Param("tenantId") long tenantId,
+                             @Param("runId") long runId,
+                             @Param("nodeId") long nodeId,
+                             @Param("method") String method,
+                             @Param("payloadJson") String payloadJson,
+                             @Param("status") String status,
+                             @Param("resultJson") String resultJson,
+                             @Param("rawResponse") String rawResponse,
+                             @Param("errorCode") String errorCode,
+                             @Param("deviceId") long deviceId);
+
+    /** run 收尾：status（::run_status）+ progress + output jsonb + error_code（可空）。 */
+    int updateFlowRunFinished(@Param("tenantId") long tenantId,
+                              @Param("runId") long runId,
+                              @Param("status") String status,
+                              @Param("progress") java.math.BigDecimal progress,
+                              @Param("outputJson") String outputJson,
+                              @Param("errorCode") String errorCode);
+
 }

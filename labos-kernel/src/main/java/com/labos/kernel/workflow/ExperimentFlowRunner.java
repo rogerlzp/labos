@@ -2,10 +2,9 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.driver.ShadowProbe;
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.Mappers;
+import com.labos.kernel.persistence.RunMapper;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -47,6 +46,10 @@ public final class ExperimentFlowRunner {
         this.db = db;
         this.tenantId = tenantId;
         this.workflows = workflows;
+    }
+
+    private RunMapper mapper() {
+        return Mappers.get(RunMapper.class);
     }
 
     /**
@@ -164,34 +167,26 @@ public final class ExperimentFlowRunner {
             if (code == null) {
                 continue;
             }
-            String sql = """
-                    SELECT x, y, z FROM robot_point
-                    WHERE tenant_id = ? AND code = ?
-                    LIMIT 1
-                    """;
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, tenantId);
-                ps.setString(2, String.valueOf(code));
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) {
-                        continue;
-                    }
-                    java.math.BigDecimal px = rs.getBigDecimal("x");
-                    java.math.BigDecimal py = rs.getBigDecimal("y");
-                    java.math.BigDecimal pz = rs.getBigDecimal("z");
-                    if (px != null) {
-                        params.put(side + "_x", px.doubleValue());
-                    }
-                    if (py != null) {
-                        params.put(side + "_y", py.doubleValue());
-                    }
-                    if (pz != null) {
-                        params.put(side + "_z", pz.doubleValue());
-                    }
+            try {
+                Map<String, Object> p = mapper().selectRobotPoint(tenantId, String.valueOf(code));
+                if (p == null) {
+                    continue;
                 }
-            } catch (SQLException ignore) {
+                Number px = (Number) p.get("x");
+                Number py = (Number) p.get("y");
+                Number pz = (Number) p.get("z");
+                if (px != null) {
+                    params.put(side + "_x", px.doubleValue());
+                }
+                if (py != null) {
+                    params.put(side + "_y", py.doubleValue());
+                }
+                if (pz != null) {
+                    params.put(side + "_z", pz.doubleValue());
+                }
+            } catch (RuntimeException ignore) {
                 // 查不到坐标就不加，别让点位表问题阻断执行
+                // （mapper 不声明 SQLException，SQL 异常已被 MyBatis 包装）
             }
         }
     }
@@ -212,28 +207,15 @@ public final class ExperimentFlowRunner {
         if (src == null) {
             return null;   // 没传 source 就没法查，交给驱动报错
         }
-        String sql = """
-                SELECT ds.has_plate
-                FROM resource_node r
-                LEFT JOIN device_state ds
-                       ON ds.resource_id = r.id AND ds.tenant_id = r.tenant_id
-                WHERE r.tenant_id = ? AND r.code = ?
-                LIMIT 1
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, String.valueOf(src));
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return "找不到点位/设备 " + src;
-                }
-                boolean has = rs.getBoolean(1);
-                if (!has) {
-                    return src + " 上没有板，不能搬";
-                }
+        try {
+            Map<String, Object> row = mapper().selectPlatePresence(tenantId, String.valueOf(src));
+            if (row == null) {
+                return "找不到点位/设备 " + src;
             }
-        } catch (SQLException e) {
+            if (!Boolean.TRUE.equals(row.get("hasPlate"))) {
+                return src + " 上没有板，不能搬";
+            }
+        } catch (RuntimeException e) {
             return null;   // 预检查不了就放行，别拦住正常生产
         }
         return null;
@@ -258,18 +240,9 @@ public final class ExperimentFlowRunner {
 
     /** resource_node.id -> device_instance.id。 */
     private Long instanceIdOf(long resourceId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id FROM device_instance
-                     WHERE tenant_id = ? AND resource_id = ? AND deleted_at IS NULL
-                     LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        } catch (SQLException e) {
+        try {
+            return mapper().selectInstanceIdOfResource(tenantId, resourceId);
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -304,48 +277,14 @@ public final class ExperimentFlowRunner {
     private long createRun(String name, int total, Map<String, String> vars) throws SQLException {
         String runNo = "EXP-" + LocalDateTime.now()
                 .format(DateTimeFormatter.ofPattern("yyMMddHHmmss"));
-        String sql = """
-                INSERT INTO run (tenant_id, run_no, run_type, workflow_id, mode, priority,
-                                 status, actual_start, input, output, attendance,
-                                 created_at, updated_at)
-                VALUES (?, ?, 'experiment', NULL, 'normal', 50, 'running', now(),
-                        ?::jsonb, '{}'::jsonb, 'attended', now(), now())
-                RETURNING id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, runNo);
-            ps.setString(3, Jsons.obj("name", name, "steps", total,
-                    "vars", new Jsons.Raw(toJson(vars))));
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return mapper().insertExperimentFlowRun(tenantId, runNo,
+                Jsons.obj("name", name, "steps", total,
+                        "vars", new Jsons.Raw(toJson(vars))));
     }
 
     private long createNode(long runId, int seq, Step st) throws SQLException {
-        String sql = """
-                INSERT INTO run_node (tenant_id, run_id, node_key, name, seq, node_type,
-                                      resource_id, status, attempt, level, actual_start,
-                                      estimate_sec, input)
-                VALUES (?, ?, ?, ?, ?, 'task', ?, 'running', 0, 0, now(), 0, '{}'::jsonb)
-                RETURNING id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.setString(3, "S" + seq);
-            ps.setString(4, st.method());
-            ps.setInt(5, seq);
-            ps.setLong(6, st.resourceId());
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return mapper().insertFlowNode(tenantId, runId, "S" + seq, st.method(), seq,
+                st.resourceId());
     }
 
     private void finishNode(long nodeId, boolean ok, long ms, String raw, String errCode)
@@ -354,85 +293,39 @@ public final class ExperimentFlowRunner {
         // 所以每次都抛 SQLException，再退化到"只更新状态"：
         // 表面上流程能跑完，实际上错误码和耗时全丢了（日志里那行注释就是当年踩的坑）。
         // 现在写真正存在的 error_code，耗时放进 input（jsonb 里随便加字段）。
-        String sql = """
-                UPDATE run_node
-                SET status = ?::node_status, actual_end = now(), error_code = ?,
-                    input = COALESCE(input, '{}'::jsonb) || ?::jsonb
-                WHERE tenant_id = ? AND id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, ok ? "completed" : "failed");
-            if (errCode == null || errCode.isBlank()) {
-                ps.setNull(2, java.sql.Types.VARCHAR);
-            } else {
-                ps.setString(2, errCode.length() > 64 ? errCode.substring(0, 64) : errCode);
-            }
-            ps.setString(3, Jsons.obj("durationMs", ms, "errorCode", errCode));
-            ps.setLong(4, tenantId);
-            ps.setLong(5, nodeId);
-            ps.executeUpdate();
-        }
+        mapper().updateFlowNodeFinished(tenantId, nodeId, ok ? "completed" : "failed",
+                errCode == null || errCode.isBlank() ? null
+                        : errCode.length() > 64 ? errCode.substring(0, 64) : errCode,
+                Jsons.obj("durationMs", ms, "errorCode", errCode));
     }
 
     private void writeCommand(long runId, long nodeId, int seq, Step st,
                               Map<String, Object> params,
                               boolean ok, long ms, String raw, String errCode)
             throws SQLException {
-        String sql = """
-                INSERT INTO run_command
-                  (tenant_id, run_id, run_node_id, command_seq, method, payload,
-                   status, attempt, sent_at, finished_at, result,
-                   device_raw_response, error_code, device_id)
-                VALUES (?, ?, ?, 1, ?, ?::jsonb, ?::node_status, 0, now(), now(),
-                        ?::jsonb, ?::jsonb, ?, ?)
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.setLong(3, nodeId);
-            ps.setString(4, st.method());
-            // payload 记实际下发的参数，便于复盘"当时传了什么"
-            java.util.List<Object> kv = new ArrayList<>();
-            kv.add("resourceId");
-            kv.add(st.resourceId());
-            kv.add("stepSeq");
-            kv.add(seq);
-            params.forEach((k, v) -> { kv.add(k); kv.add(v); });
-            ps.setString(5, Jsons.obj(kv.toArray()));
-            ps.setString(6, ok ? "completed" : "failed");
-            ps.setString(7, Jsons.obj("ok", ok, "durationMs", ms));
-            if (raw == null || raw.isBlank()) {
-                ps.setNull(8, java.sql.Types.OTHER);
-            } else {
-                ps.setString(8, raw);
-            }
-            ps.setString(9, errCode);
-            ps.setLong(10, st.resourceId());
-            ps.executeUpdate();
-        }
+        // payload 记实际下发的参数，便于复盘"当时传了什么"
+        java.util.List<Object> kv = new ArrayList<>();
+        kv.add("resourceId");
+        kv.add(st.resourceId());
+        kv.add("stepSeq");
+        kv.add(seq);
+        params.forEach((k, v) -> { kv.add(k); kv.add(v); });
+        // raw 为空时原裸 SQL 走 setNull(OTHER)，MyBatis 对 null 默认即 jdbcType=OTHER，
+        // 且该参数带 ::jsonb 强制类型转换，语义一致
+        mapper().insertFlowRunCommand(tenantId, runId, nodeId, st.method(),
+                Jsons.obj(kv.toArray()), ok ? "completed" : "failed",
+                Jsons.obj("ok", ok, "durationMs", ms),
+                raw == null || raw.isBlank() ? null : raw,
+                errCode, st.resourceId());
     }
 
     private void finishRun(long runId, String status, int done, int total,
                            String error, Map<String, String> vars) throws SQLException {
-        String sql = """
-                UPDATE run
-                SET status = ?::run_status, actual_end = now(),
-                    progress = ?, output = ?::jsonb, error_code = ?
-                WHERE tenant_id = ? AND id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, status);
-            ps.setBigDecimal(2, java.math.BigDecimal.valueOf(done * 100.0 / total));
-            ps.setString(3, Jsons.obj("vars", new Jsons.Raw(toJson(vars)),
-                    "completed", done, "total", total, "error", error));
-            ps.setString(4, error == null ? null : "EXP_STEP_FAILED");
-            ps.setLong(5, tenantId);
-            ps.setLong(6, runId);
-            ps.executeUpdate();
-        }
+        mapper().updateFlowRunFinished(tenantId, runId, status,
+                java.math.BigDecimal.valueOf(done * 100.0 / total),
+                Jsons.obj("vars", new Jsons.Raw(toJson(vars)),
+                        "completed", done, "total", total, "error", error),
+                error == null ? null : "EXP_STEP_FAILED");
     }
 
     private static String toJson(Map<String, String> m) {
