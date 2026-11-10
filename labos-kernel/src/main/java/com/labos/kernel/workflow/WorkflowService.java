@@ -95,6 +95,29 @@ public class WorkflowService {
         this.graphMapper = mapper;
     }
 
+    /** 读侧高频查询（QueryMapper.xml）。由 BeanConfiguration 注入。 */
+    private com.labos.kernel.persistence.QueryMapper queryMapper;
+
+    public void setQueryMapper(com.labos.kernel.persistence.QueryMapper mapper) {
+        this.queryMapper = mapper;
+    }
+
+    /**
+     * 懒取 Mapper：容器里由上面的 setter 注入；**自测/独立工具里本类是裸 new 的**，
+     * 没有注入机会，这里回落到 {@link com.labos.kernel.persistence.Mappers}。
+     * 不做这个兜底，{@code loadGraphXml} 之类会在裸 new 场景抛 NPE
+     * （不是 SQLException，原有 catch 兜不住，直接把批处理链路打挂）。
+     */
+    private com.labos.kernel.persistence.QueryMapper qm() {
+        com.labos.kernel.persistence.QueryMapper m = queryMapper;
+        if (m == null) {
+            m = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.QueryMapper.class);
+            queryMapper = m;
+        }
+        return m;
+    }
+
     private static final DateTimeFormatter RUN_FMT =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
@@ -1553,20 +1576,12 @@ public class WorkflowService {
      * 按节点配会让运维记不清"这条到底受谁管"。
      */
     public int loadMaxIterations(long workflowId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT attr->>'maxIterations' AS n FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    String v = rs.getString(1);
-                    if (v != null && !v.isBlank()) {
-                        return Integer.parseInt(v.trim());
-                    }
-                }
+        try {
+            String v = qm().selectWorkflowMaxIterations(tenantId, workflowId);
+            if (v != null && !v.isBlank()) {
+                return Integer.parseInt(v.trim());
             }
-        } catch (SQLException | NumberFormatException e) {
+        } catch (RuntimeException e) {
             log.error("[WARN] 读取 maxIterations 失败，用默认 10: " + e.getMessage());
         }
         return 10;
@@ -1597,29 +1612,20 @@ public class WorkflowService {
 
     private Map<String, String> loadRunVars(long runId) {
         Map<String, String> out = new java.util.LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT input->'vars' AS vars FROM run WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return out;
-                }
-                String raw = rs.getString("vars");
-                if (raw == null || raw.isBlank() || "null".equals(raw)) {
-                    return out;
-                }
-                // {"temp":"37","plate":"P1"} —— 值统一按字符串处理，
-                // 数字比较交给 ConditionEvaluator 判断
-                java.util.regex.Matcher m = java.util.regex.Pattern
-                        .compile("\"([^\"]+)\"\\s*:\\s*\"?([^\",}]*)\"?")
-                        .matcher(raw);
-                while (m.find()) {
-                    out.put(m.group(1), m.group(2));
-                }
+        try {
+            String raw = qm().selectRunVars(tenantId, runId);
+            if (raw == null || raw.isBlank() || "null".equals(raw)) {
+                return out;
             }
-        } catch (SQLException e) {
+            // {"temp":"37","plate":"P1"} —— 值统一按字符串处理，
+            // 数字比较交给 ConditionEvaluator 判断
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\"([^\"]+)\"\\s*:\\s*\"?([^\",}]*)\"?")
+                    .matcher(raw);
+            while (m.find()) {
+                out.put(m.group(1), m.group(2));
+            }
+        } catch (RuntimeException e) {
             log.error("[WARN] 读取 run 变量失败（条件表达式会按空值处理）: " + e.getMessage());
         }
         return out;
@@ -1664,15 +1670,7 @@ public class WorkflowService {
     }
 
     private String loadGraphXml(long workflowId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT graph->>'xml' FROM workflow WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return qm().selectWorkflowXml(tenantId, workflowId);
     }
 
     /** 依赖缓存：execute 里会多次用到，避免重复查库。 */
@@ -1923,17 +1921,9 @@ public class WorkflowService {
 
     /** device_instance.id -> resource_node.id（查库）。 */
     private Long lookupResourceId(long instanceId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT resource_id FROM device_instance WHERE id = ?")) {
-            ps.setLong(1, instanceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long v = rs.getLong(1);
-                    return rs.wasNull() ? null : v;
-                }
-            }
-        } catch (SQLException ignore) {
+        try {
+            return qm().selectDeviceResourceByInstance(instanceId);
+        } catch (RuntimeException ignore) {
             // 查不到就返回 null，调用方会写 NULL（不写坏数据）
         }
         return null;
@@ -2059,14 +2049,7 @@ public class WorkflowService {
 
         /** device_instance.id → resource_node.id（两套 ID 的转换，踩过很多次）。 */
         private Long resourceIdOfInstance(long instanceId) throws SQLException {
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(
-                         "SELECT resource_id FROM device_instance WHERE id = ?")) {
-                ps.setLong(1, instanceId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    return rs.next() ? rs.getLong(1) : null;
-                }
-            }
+            return qm().selectDeviceResourceByInstance(instanceId);
         }
 
         /** 当前 run id（用于设备锁归属）。 */
@@ -2397,20 +2380,12 @@ public class WorkflowService {
 
     /** 读 run 当前的值守模式（运行中可被切换）。 */
     private String liveAttendance(long runId, String fallback) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT attendance FROM run WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    String v = rs.getString(1);
-                    if (v != null && !v.isBlank()) {
-                        return v;
-                    }
-                }
+        try {
+            String v = qm().selectRunAttendance(tenantId, runId);
+            if (v != null && !v.isBlank()) {
+                return v;
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             // 读不到就用启动时的值
         }
         return fallback;
@@ -2435,18 +2410,9 @@ public class WorkflowService {
      */
     private long deviceLockWaitMs(long instanceId) {
         Long sec = null;
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method "
-                             + "WHERE tenant_id = ? AND device_id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, instanceId);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    sec = rs.getLong(1);
-                }
-            }
-        } catch (java.sql.SQLException e) {
+        try {
+            sec = qm().selectDeviceLockTimeoutSec(tenantId, instanceId);
+        } catch (RuntimeException e) {
             sec = null;
         }
         long ms = (sec == null ? 0L : sec) * 1000L;

@@ -55,13 +55,15 @@ public class BeanConfiguration {
 
     @Bean
     public WorkflowService workflowService(DbConfig db, WorkflowMapper workflowMapper,
-                                       RunMapper runMapper, GraphMapper graphMapper) {
+                                       RunMapper runMapper, GraphMapper graphMapper,
+                                       QueryMapper queryMapper) {
         int driverPort = Integer.parseInt(
                 System.getenv().getOrDefault("LABOS_DRIVER_PORT", "19301"));
         WorkflowService ws = new WorkflowService(db, TENANT, driverPort);
         ws.setWorkflowMapper(workflowMapper);
         ws.setRunMapper(runMapper);
         ws.setGraphMapper(graphMapper);
+        ws.setQueryMapper(queryMapper);
         return ws;
     }
 

@@ -95,6 +95,26 @@
         SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
+    <select id="selectWorkflowMaxIterations" resultType="java.lang.String">
+        SELECT attr->>'maxIterations' AS n FROM workflow
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectRunVars" resultType="java.lang.String">
+        SELECT input->'vars' AS vars FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectRunAttendance" resultType="java.lang.String">
+        SELECT attendance FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectDeviceLockTimeoutSec" resultType="long">
+        SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
+         WHERE tenant_id = #{param1} AND device_id = #{param2}
+    </select>
+
     <select id="selectNodeCode" resultType="java.lang.String">
         SELECT code FROM resource_node
          WHERE tenant_id = #{param1} AND id = #{param2}

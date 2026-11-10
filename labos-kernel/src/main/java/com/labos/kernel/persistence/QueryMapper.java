@@ -60,6 +60,18 @@ public interface QueryMapper {
     /** 全部流程 id（预检全量扫描）。 */
     List<Long> selectAllWorkflowIds(long tenantId);
 
+    /** workflow.attr->>'maxIterations'（原样字符串，调用方自己解析，兼容脏值）。 */
+    String selectWorkflowMaxIterations(long tenantId, long workflowId);
+
+    /** run.input->'vars'（JSON 文本，调用方解析）。 */
+    String selectRunVars(long tenantId, long runId);
+
+    /** run.attendance 当前值（运行中可被切换）。 */
+    String selectRunAttendance(long tenantId, long runId);
+
+    /** 设备方法的超时上限（秒），无配置返回 0。 */
+    long selectDeviceLockTimeoutSec(long tenantId, long deviceInstanceId);
+
     /** 资源节点的编码（按 kind 限定，避免拿到同 id 的其它类型）。 */
     String selectNodeCode(long tenantId, long resourceNodeId, String kind);
 
