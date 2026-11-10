@@ -247,6 +247,31 @@ def main() -> int:
                 errors.append(f"{f.relative_to(ROOT)}: 链接失效 → {t}")
                 link_bad += 1
 
+    # **中文侧的相对链接也要查**。
+    #
+    # 为什么以前没查、现在要查：这个门禁的链接检查原本只覆盖英文侧（docs/en），
+    # 而中文文档才是**权威源** —— 它的链接会静默腐烂：2026-11-10 就发现
+    # `docs/设计-实验编排统一-v0.1-实施清单.md` 里的配套设计链接写成了
+    # `docs/设计-实验编排统一-v0.1-草稿.md`（相对仓库根写的，但该文档自己就在
+    # docs/ 下 ⇒ 解析到 docs/docs/… ⇒ 点不开），而门禁一直是绿的。
+    # ⇒ 同一类问题（相对路径写错 / 目标文件被删）在中文侧必须同样报错。
+    zh_link_total = 0
+    zh_files = [f for f in sorted((ROOT / "docs").rglob("*.md"))
+                if EN_DIR not in f.parents and f != EN_DIR / "INDEX.md"]
+    zh_files += [p for p in (ROOT / "README.zh-CN.md", ROOT / "ROADMAP.md")
+                 if p.exists()]
+    for f in zh_files:
+        for t in LINK.findall(read(f)):
+            if t.startswith(("http://", "https://", "#", "mailto:")):
+                continue
+            p = t.split("#")[0]
+            if not p:
+                continue
+            zh_link_total += 1
+            if not (f.parent / p).resolve().exists():
+                errors.append(f"{f.relative_to(ROOT)}: 链接失效 → {t}")
+                link_bad += 1
+
     # 英文版文件是否还指向中文文档（而那份中文文档其实有英文版）
     # —— 这是英文读者最直接的踩坑点：点进去全是中文。
     zh2en = {zh: en for zh, en, _ in reg}
@@ -341,7 +366,7 @@ def main() -> int:
     print("英文文档批量验收")
     print("=" * 70)
     print(f"登记表条目：{len(reg)}（已译 {done} / 待译 {pending}）")
-    print(f"相对链接：{link_total} 条，失效 {link_bad} 条")
+    print(f"相对链接：英文 {link_total} 条 + 中文 {zh_link_total} 条，失效 {link_bad} 条")
     print(f"非代码块中文行：{cjk_total} 行，其中无法自动归类 {unclear} 行")
     print("-" * 70)
     if errors:
@@ -360,7 +385,7 @@ def main() -> int:
     if args.md:
         md = ["# 英文文档验收报告（自动生成）", "",
               f"- 登记表条目：{len(reg)}（已译 {done} / 待译 {pending}）",
-              f"- 相对链接：{link_total} 条，失效 {link_bad} 条",
+              f"- 相对链接：英文 {link_total} 条 + 中文 {zh_link_total} 条，失效 {link_bad} 条",
               f"- 硬错误：{len(errors)}", "",
               "| 中文原文 | 英文译文 | 行数 | 表格行 | 代码块 | 标题 | 复选框 |",
               "|---|---|---|---|---|---|---|"]
