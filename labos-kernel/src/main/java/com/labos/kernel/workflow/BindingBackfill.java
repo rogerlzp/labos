@@ -1,11 +1,9 @@
 package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.GraphMapper;
+import com.labos.kernel.persistence.Mappers;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.util.Map;
 
 /**
@@ -22,6 +20,11 @@ import java.util.Map;
  * </pre>
  *
  * <p>幂等：重复跑只会把列刷成 XML 的当前值；不一致的行会打印出来（最多 20 行）。
+ *
+ * <p>阶段3第20批：4 条裸 SQL 收编进 {@code GraphMapper}（见
+ * {@code mapper/GraphMapper.xml} 的 BindingBackfill 段）。本工具是无容器入口，
+ * {@link Mappers#get} 自动以 {@link DbConfig#standaloneDataSource()} 初始化，
+ * 语句各自 autocommit —— 与原「单连接 + 逐条执行」语义一致。
  */
 public final class BindingBackfill {
 
@@ -34,59 +37,50 @@ public final class BindingBackfill {
 
     private static final long TENANT = 1;
 
+    private static GraphMapper mapper() {
+        return Mappers.get(GraphMapper.class);
+    }
+
     public static void main(String[] args) throws Exception {
         boolean checkOnly = args.length > 0 && "--check".equals(args[0]);
-        DbConfig db = DbConfig.fromEnv();
         int workflows = 0;
         int changed = 0;
         int mismatch = 0;
 
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id, graph->>'xml' AS xml FROM workflow
-                      WHERE tenant_id = ? AND deleted_at IS NULL
-                      ORDER BY id
-                     """)) {
-            ps.setLong(1, TENANT);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long id = rs.getLong("id");
-                    String xml = rs.getString("xml");
-                    if (xml == null || xml.isBlank()) {
-                        continue;
-                    }
-                    workflows++;
-                    BpmnGraphParser.ParsedGraph g;
-                    try {
-                        g = BpmnGraphParser.parse(xml);
-                    } catch (RuntimeException e) {
-                        log.info("  [跳过] 流程 " + id + " XML 解析失败：" + e.getMessage());
-                        continue;
-                    }
-                    // seq 必须按 **XML 文档顺序**：解析器内部的 Map 顺序在两次运行之间会漂移
-                    // （回填一遍、检查一遍就对不上，2026-11-03 踩过）。
-                    Map<String, Integer> order = BpmnGraphParser.documentOrder(xml,
-                            g.nodes().stream().map(BpmnGraphParser.ParsedNode::key).toList());
-                    for (BpmnGraphParser.ParsedNode n : g.nodes()) {
-                        Long rid = n.resourceId();
-                        Integer wantSeq = order.get(n.key());
-                        if (wantSeq == null) {
-                            continue;
-                        }
-                        if (checkOnly) {
-                            if (!matches(c, id, n.key(), rid, wantSeq)) {
-                                mismatch++;
-                                if (mismatch <= 20) {
-                                    String[] got = actual(c, id, n.key());
-                                    printf("  ✗ 流程 %d 节点 %s：XML 期望 rid=%s seq=%d，表里 rid=%s seq=%s%n",
-                                            id, n.key(), rid, wantSeq,
-                                            got == null ? "缺行" : got[0], got == null ? "缺行" : got[1]);
-                                }
-                            }
-                        } else if (apply(c, id, n.key(), rid, wantSeq)) {
-                            changed++;
+        for (Map<String, Object> row : mapper().selectBackfillWorkflowXmls(TENANT)) {
+            long id = ((Number) row.get("id")).longValue();
+            String xml = (String) row.get("xml");
+            if (xml == null || xml.isBlank()) {
+                continue;
+            }
+            workflows++;
+            BpmnGraphParser.ParsedGraph g;
+            try {
+                g = BpmnGraphParser.parse(xml);
+            } catch (RuntimeException e) {
+                log.info("  [跳过] 流程 " + id + " XML 解析失败：" + e.getMessage());
+                continue;
+            }
+            // seq 必须按 **XML 文档顺序**：解析器内部的 Map 顺序在两次运行之间会漂移
+            // （回填一遍、检查一遍就对不上，2026-11-03 踩过）。
+            Map<String, Integer> order = BpmnGraphParser.documentOrder(xml,
+                    g.nodes().stream().map(BpmnGraphParser.ParsedNode::key).toList());
+            for (BpmnGraphParser.ParsedNode n : g.nodes()) {
+                Long rid = n.resourceId();
+                Integer wantSeq = order.get(n.key());
+                if (wantSeq == null) {
+                    continue;
+                }
+                if (checkOnly) {
+                    if (!matches(id, n.key(), rid, wantSeq)) {
+                        mismatch++;
+                        if (mismatch <= 20) {
+                            printf("  ✗ 流程 %d 节点 %s：XML 期望 rid=%s seq=%d，表里 %s%n",
+                                    id, n.key(), rid, wantSeq, actualDesc(id, n.key()));
                         }
                     }
+                } else if (mapper().updateNodeBinding(TENANT, id, n.key(), rid, wantSeq) > 0) {
+                    changed++;
                 }
             }
         }
@@ -98,64 +92,27 @@ public final class BindingBackfill {
         printf("%n回填 %d 条流程，更新 %d 行%n", workflows, changed);
     }
 
-    private static String[] actual(Connection c, long wfId, String key) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT resource_id, seq FROM workflow_node
-                 WHERE tenant_id = ? AND workflow_id = ? AND node_key = ?
-                """)) {
-            ps.setLong(1, TENANT);
-            ps.setLong(2, wfId);
-            ps.setString(3, key);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                Object r = rs.getObject("resource_id");
-                Object q = rs.getObject("seq");
-                return new String[]{String.valueOf(r), String.valueOf(q)};
-            }
+    /** 比对：行不存在 / rid 不等（含双侧 NULL）/ seq 不等都算不一致（原 matches 语义）。 */
+    private static boolean matches(long wfId, String key, Long rid, int seq) {
+        Map<String, Object> row = mapper().selectNodeBinding(TENANT, wfId, key);
+        if (row == null) {
+            return false;
         }
+        Object gotRid = row.get("resourceId");
+        Object gotSeq = row.get("seq");
+        boolean ridOk = (rid == null && gotRid == null)
+                || (rid != null && gotRid != null
+                        && ((Number) gotRid).longValue() == rid);
+        return ridOk && gotSeq != null && ((Number) gotSeq).intValue() == seq;
     }
 
-    private static boolean matches(Connection c, long wfId, String key, Long rid, int seq)
-            throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT resource_id, seq FROM workflow_node
-                 WHERE tenant_id = ? AND workflow_id = ? AND node_key = ?
-                """)) {
-            ps.setLong(1, TENANT);
-            ps.setLong(2, wfId);
-            ps.setString(3, key);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return false;
-                }
-                long gotRid = rs.getLong("resource_id");
-                boolean ridNull = rs.wasNull();
-                int gotSeq = rs.getInt("seq");
-                boolean seqNull = rs.wasNull();
-                boolean ridOk = (rid == null && ridNull) || (rid != null && !ridNull && rid == gotRid);
-                return ridOk && !seqNull && gotSeq == seq;
-            }
+    /** 不一致打印用的现状描述（原 actual 的 String[]{rid, seq}，“缺行”原样保留）。 */
+    private static String actualDesc(long wfId, String key) {
+        Map<String, Object> row = mapper().selectNodeBinding(TENANT, wfId, key);
+        if (row == null) {
+            return "rid=缺行 seq=缺行";
         }
-    }
-
-    private static boolean apply(Connection c, long wfId, String key, Long rid, int seq)
-            throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE workflow_node SET resource_id = ?, seq = ?
-                 WHERE tenant_id = ? AND workflow_id = ? AND node_key = ?
-                   AND (resource_id IS DISTINCT FROM ? OR seq IS DISTINCT FROM ?)
-                """)) {
-            ps.setObject(1, rid);
-            ps.setInt(2, seq);
-            ps.setLong(3, TENANT);
-            ps.setLong(4, wfId);
-            ps.setString(5, key);
-            ps.setObject(6, rid);
-            ps.setInt(7, seq);
-            return ps.executeUpdate() > 0;
-        }
+        return "rid=" + row.get("resourceId") + " seq=" + row.get("seq");
     }
 
     private BindingBackfill() {

@@ -216,4 +216,29 @@
          LIMIT 1
     </select>
 
+    <!-- ==== BindingBackfill（设备绑定/顺序回填工具，阶段3第20批收编） ==== -->
+
+    <select id="selectBackfillWorkflowXmls" resultType="java.util.Map">
+        SELECT id AS "id", graph->>'xml' AS "xml"
+          FROM workflow
+         WHERE tenant_id = #{param1} AND deleted_at IS NULL
+         ORDER BY id
+    </select>
+
+    <select id="selectNodeBinding" resultType="java.util.Map">
+        SELECT resource_id AS "resourceId", seq AS "seq"
+          FROM workflow_node
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{workflowId}
+           AND node_key = #{nodeKey}
+    </select>
+
+    <!-- IS DISTINCT FROM 幂等护栏：与 XML 当前值一致的行不更新（重复跑只刷新变化行）。
+         resourceId 为 null（解绑）时 jdbcType=BIGINT 保证 null 安全落列。 -->
+    <update id="updateNodeBinding">
+        UPDATE workflow_node SET resource_id = #{resourceId,jdbcType=BIGINT}, seq = #{seq}
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{workflowId} AND node_key = #{nodeKey}
+           AND (resource_id IS DISTINCT FROM #{resourceId,jdbcType=BIGINT}
+                OR seq IS DISTINCT FROM #{seq})
+    </update>
+
 </mapper>

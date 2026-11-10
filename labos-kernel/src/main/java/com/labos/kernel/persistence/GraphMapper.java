@@ -148,4 +148,35 @@ public interface GraphMapper {
     /** 资源绑定的设备能力码（device_instance -> device -> capability）；无返回 null。 */
     String selectCapabilityCodeOfResource(
             @org.apache.ibatis.annotations.Param("resourceId") long resourceId);
+
+    // ---- BindingBackfill（设备绑定/顺序回填工具，阶段3第20批收编）----
+
+    /**
+     * 回填范围：未删流程的 (id, xml)，按 id 升序。
+     *
+     * <p>区别于 {@link #selectRepairableWorkflowXmls}（多 code 列、无 ORDER BY）与
+     * {@link #selectGraphXmlRows}（不筛 deleted_at）：回填要的是确定性的全量顺序遍历。
+     */
+    java.util.List<java.util.Map<String, Object>> selectBackfillWorkflowXmls(long tenantId);
+
+    /**
+     * 单节点的现有绑定（resourceId/seq，Map 值，NULL 列为 null）；行不存在返回 null。
+     * {@code resourceId} 为 null 即「XML 未绑定设备」。
+     */
+    java.util.Map<String, Object> selectNodeBinding(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey);
+
+    /**
+     * 仅当现有值与目标值不同才更新（{@code IS DISTINCT FROM} 幂等护栏），
+     * 返回实际更新行数（0=本来一致）。
+     * {@code resourceId} 可空（解绑），XML 里统一 {@code jdbcType=BIGINT}。
+     */
+    int updateNodeBinding(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey,
+            @org.apache.ibatis.annotations.Param("resourceId") Long resourceId,
+            @org.apache.ibatis.annotations.Param("seq") int seq);
 }
