@@ -205,6 +205,24 @@ public interface QueryMapper {
     int updateRecoveryPolicy(long tenantId, long id, String strategy,
                              Integer maxAttempts, Integer priority, Boolean enabled);
 
+    /** 设备离线告警（含离线秒数）。 */
+    List<Map<String, Object>> selectDeviceAlerts(long tenantId, int limit);
+
+    /** 交接记录（status 为 null 时不过滤）。 */
+    List<Map<String, Object>> selectHandoffs(long tenantId, String status, int limit);
+
+    /** 设备池（islandId 为 null/<=0 时全部）。 */
+    List<Map<String, Object>> selectDevicePool(long tenantId, Long islandId);
+
+    /** 告警聚合（按 fingerprint，排除 info 与已解决）。 */
+    List<Map<String, Object>> selectAlerts(long tenantId, int limit);
+
+    /** 节点绑定的方法参数与资源 id；不存在返回 null。 */
+    Map<String, Object> selectNodeBinding(long tenantId, long workflowId, String nodeKey);
+
+    /** 策略校验：错误码是否存在 / 历史命中 / 被更高优先级覆盖。 */
+    Map<String, Object> selectPolicyValidation(long tenantId, String errorCode, int priority);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

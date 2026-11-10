@@ -2143,24 +2143,15 @@ throw e;
             }
         }
         String params = "{}";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT params->'method_params' AS mp, resource_id FROM workflow_node
-                      WHERE tenant_id = ? AND workflow_id = ? AND node_key = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            ps.setString(3, nodeKey);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    if (rs.getString("mp") != null) {
-                        params = rs.getString("mp");
-                    }
-                    long rid = rs.getLong("resource_id");
-                    if (!rs.wasNull()) {
-                        resourceId = rid;
-                    }
-                }
+        java.util.Map<String, Object> binding =
+                queryMapper.selectNodeBinding(tenantId, workflowId, nodeKey);
+        if (binding != null) {
+            Object mp = binding.get("mp");
+            if (mp != null) {
+                params = String.valueOf(mp);
+            }
+            if (binding.get("resourceId") != null) {
+                resourceId = ((Number) binding.get("resourceId")).longValue();
             }
         }
         return Jsons.obj("workflowId", workflowId, "nodeKey", nodeKey,
@@ -2509,49 +2500,21 @@ throw e;
      */
     public String devicePoolJson(Long islandId) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT d.id AS resource_id, d.code, d.name, di.ip,
-                       c.code AS capability,
-                       dev.icon AS icon,
-                       (SELECT p.id FROM resource_node p
-                         WHERE p.id = d.parent_id AND p.kind = 'island')   AS island_id,
-                       (SELECT p.code FROM resource_node p
-                         WHERE p.id = d.parent_id AND p.kind = 'island')   AS island_code
-                FROM resource_node d
-                JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
-                LEFT JOIN device dev ON dev.id = di.device_id
-                LEFT JOIN capability c ON c.id = dev.capability_id
-                WHERE d.tenant_id = ? AND d.kind = 'device'
-                  AND (?::bigint IS NULL OR d.parent_id = ?)
-                ORDER BY d.code
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            if (islandId == null || islandId <= 0) {
-                ps.setNull(2, java.sql.Types.BIGINT);
-                ps.setNull(3, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(2, islandId);
-                ps.setLong(3, islandId);
-            }
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Long isl = (Long) rs.getObject("island_id");
-                    items.add(Jsons.obj(
-                            "resourceId", rs.getLong("resource_id"),
-                            "code", rs.getString("code"),
-                            "name", rs.getString("name"),
-                            "ip", rs.getString("ip"),
-                            "capability", rs.getString("capability"),
-                            // 型号库登记的原始图片路径。多数存量值指向源服务器
-                            // /image/device/<uuid>.png（换环境 404），前端 iconFor()
-                            // 会按 capability 映射回本地 /devices/<CAP>.svg。
-                            "icon", rs.getString("icon"),
-                            "islandId", isl,
-                            "islandCode", rs.getString("island_code")));
-                }
-            }
+        Long islFilter = islandId == null || islandId <= 0 ? null : islandId;
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectDevicePool(tenantId, islFilter)) {
+            items.add(Jsons.obj(
+                    "resourceId", row.get("resourceId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "ip", row.get("ip"),
+                    "capability", row.get("capability"),
+                    // 型号库登记的原始图片路径。多数存量值指向源服务器
+                    // /image/device/<uuid>.png（换环境 404），前端 iconFor()
+                    // 会按 capability 映射回本地 /devices/<CAP>.svg。
+                    "icon", row.get("icon"),
+                    "islandId", row.get("islandId"),
+                    "islandCode", row.get("islandCode")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -3153,46 +3116,19 @@ throw e;
     /** N-10：跨实验 Handoff 处置列表（可按状态过滤）。 */
     public String handoffsJson(String status, int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("""
-                SELECT h.id, h.experiment_id, e.experiment_no,
-                       h.from_workcell_id, rf.name AS from_name,
-                       h.to_workcell_id, rt.name AS to_name,
-                       h.status, h.carrier, h.remark
-                  FROM experiment_handoff h
-                  JOIN experiment e
-                    ON e.tenant_id = h.tenant_id AND e.id = h.experiment_id
-                  LEFT JOIN resource_node rf
-                    ON rf.tenant_id = h.tenant_id AND rf.id = h.from_workcell_id
-                  LEFT JOIN resource_node rt
-                    ON rt.tenant_id = h.tenant_id AND rt.id = h.to_workcell_id
-                 WHERE h.tenant_id = ?
-                """);
-        if (status != null && !status.isBlank()) {
-            sql.append(" AND h.status = ?");
-        }
-        sql.append(" ORDER BY h.id DESC LIMIT ?");
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            int i = 1;
-            ps.setLong(i++, tenantId);
-            if (status != null && !status.isBlank()) {
-                ps.setString(i++, status);
-            }
-            ps.setInt(i, Math.max(1, Math.min(limit, 200)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj("id", rs.getLong("id"),
-                            "experimentId", rs.getLong("experiment_id"),
-                            "experimentNo", rs.getString("experiment_no"),
-                            "fromWorkcellId", rs.getLong("from_workcell_id"),
-                            "fromName", rs.getString("from_name"),
-                            "toWorkcellId", rs.getLong("to_workcell_id"),
-                            "toName", rs.getString("to_name"),
-                            "status", rs.getString("status"),
-                            "carrier", rs.getString("carrier"),
-                            "remark", rs.getString("remark")));
-                }
-            }
+        String statusFilter = status == null || status.isBlank() ? null : status;
+        for (java.util.Map<String, Object> row : queryMapper.selectHandoffs(
+                tenantId, statusFilter, Math.max(1, Math.min(limit, 200)))) {
+            items.add(Jsons.obj("id", row.get("id"),
+                    "experimentId", row.get("experimentId"),
+                    "experimentNo", row.get("experimentNo"),
+                    "fromWorkcellId", row.get("fromWorkcellId"),
+                    "fromName", row.get("fromName"),
+                    "toWorkcellId", row.get("toWorkcellId"),
+                    "toName", row.get("toName"),
+                    "status", row.get("status"),
+                    "carrier", row.get("carrier"),
+                    "remark", row.get("remark")));
         }
         return Jsons.obj("total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -3477,53 +3413,31 @@ throw e;
      * 三件事任一不满足，策略就是死的：错误码不存在 / 被更高优先级遮蔽 / 历史没出现过。
      */
     public String validatePolicy(String errorCode, String scope, int priority) throws SQLException {
-        String sql = """
-                SELECT
-                  (SELECT count(*) FROM error_code WHERE tenant_id = ? AND code = ?) AS code_exists,
-                  (SELECT count(*) FROM error_occurrence e
-                     JOIN error_code c ON c.id = e.error_code_id
-                    WHERE e.tenant_id = ? AND c.code = ?)                        AS history_hits,
-                  (SELECT count(*) FROM recovery_policy p
-                     LEFT JOIN error_code c ON c.id = p.error_code_id
-                    WHERE p.tenant_id = ? AND p.enabled
-                      AND p.priority < ?
-                      AND (p.error_code_id IS NULL OR c.code = ?))                AS shadowed
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, errorCode);
-            ps.setLong(3, tenantId);
-            ps.setString(4, errorCode);
-            ps.setLong(5, tenantId);
-            ps.setInt(6, priority);
-            ps.setString(7, errorCode);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return Jsons.obj("ok", false, "warning", "查询失败");
-                }
-                int exists = rs.getInt("code_exists");
-                int hits = rs.getInt("history_hits");
-                int shadowed = rs.getInt("shadowed");
-
-                String warning = null;
-                if (exists == 0) {
-                    warning = "错误码不存在，这条策略永远不会命中";
-                } else if (shadowed > 0) {
-                    warning = "有 " + shadowed + " 条更高优先级的策略会先命中，这条可能永远不生效";
-                } else if (hits == 0) {
-                    warning = "历史上没出现过这个错误；不是错误，但无法用历史验证效果";
-                }
-                return Jsons.obj(
-                        "errorCode", errorCode,
-                        "scope", scope,
-                        "codeExists", exists > 0,
-                        "historyHits", hits,
-                        "shadowedBy", shadowed,
-                        "ok", warning == null,
-                        "warning", warning);
-            }
+        java.util.Map<String, Object> v =
+                queryMapper.selectPolicyValidation(tenantId, errorCode, priority);
+        if (v == null) {
+            return Jsons.obj("ok", false, "warning", "查询失败");
         }
+        int exists = mint(v, "codeExists");
+        int hits = mint(v, "historyHits");
+        int shadowed = mint(v, "shadowed");
+
+        String warning = null;
+        if (exists == 0) {
+            warning = "错误码不存在，这条策略永远不会命中";
+        } else if (shadowed > 0) {
+            warning = "有 " + shadowed + " 条更高优先级的策略会先命中，这条可能永远不生效";
+        } else if (hits == 0) {
+            warning = "历史上没出现过这个错误；不是错误，但无法用历史验证效果";
+        }
+        return Jsons.obj(
+                "errorCode", errorCode,
+                "scope", scope,
+                "codeExists", exists > 0,
+                "historyHits", hits,
+                "shadowedBy", shadowed,
+                "ok", warning == null,
+                "warning", warning);
     }
 
     public String alerts(int limit) throws SQLException {
@@ -3537,47 +3451,20 @@ throw e;
         String want = (status == null || status.isBlank() || "all".equalsIgnoreCase(status))
                 ? null : status.toLowerCase();
 
-        String sql = """
-                SELECT e.fingerprint,
-                       max(e.error_code_id)                      AS code_id,
-                       max(e.resource_id)                        AS resource_id,
-                       count(*)                                  AS hit_count,
-                       min(e.occurred_at)                        AS first_at,
-                       max(e.occurred_at)                        AS last_at,
-                       max(e.severity::text)                     AS severity,
-                       (array_agg(e.outcome ORDER BY e.occurred_at DESC))[1] AS last_outcome,
-                       (array_agg(e.message ORDER BY e.occurred_at DESC))[1] AS last_message,
-                       COALESCE(max(s.status), 'open')           AS state,
-                       max(s.assignee)                           AS assignee,
-                       max(s.note)                               AS note
-                FROM error_occurrence e
-                LEFT JOIN alert_state s
-                       ON s.tenant_id = e.tenant_id AND s.fingerprint = e.fingerprint
-                WHERE e.tenant_id = ? AND e.severity::text <> 'info' AND e.resolved_at IS NULL
-                GROUP BY e.fingerprint
-                ORDER BY hit_count DESC, last_at DESC
-                LIMIT ?
-                """;
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 200)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "fingerprint", rs.getString("fingerprint"),
-                            "hitCount", rs.getInt("hit_count"),
-                            "severity", rs.getString("severity"),
-                            "lastOutcome", rs.getString("last_outcome"),
-                            "firstAt", str(rs, "first_at"),
-                            "lastAt", str(rs, "last_at"),
-                            "lastMessage", rs.getString("last_message"),
-                            "state", rs.getString("state"),
-                            "assignee", rs.getString("assignee"),
-                            "note", rs.getString("note")));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectAlerts(
+                tenantId, Math.max(1, Math.min(limit, 200)))) {
+            items.add(Jsons.obj(
+                    "fingerprint", row.get("fingerprint"),
+                    "hitCount", mint(row, "hitCount"),
+                    "severity", row.get("severity"),
+                    "lastOutcome", row.get("lastOutcome"),
+                    "firstAt", mstr(row, "firstAt"),
+                    "lastAt", mstr(row, "lastAt"),
+                    "lastMessage", row.get("lastMessage"),
+                    "state", row.get("state"),
+                    "assignee", row.get("assignee"),
+                    "note", row.get("note")));
         }
         return Jsons.obj("total", items.size(), "items", raw(Jsons.arr(items)));
     }
@@ -4035,46 +3922,22 @@ throw e;
      * 执行错误看 run_command，离线要先查网络和电源。
      */
     public String deviceAlerts(int limit) throws SQLException {
-        String sql = """
-                SELECT a.fingerprint, a.status, a.note, a.assignee,
-                       a.closed_at, a.updated_at,
-                       r.code AS device_code, r.name AS device_name,
-                       ds.online, ds.last_heartbeat,
-                       CASE WHEN ds.online = false
-                            THEN EXTRACT(EPOCH FROM (now() - ds.last_heartbeat))::bigint
-                            ELSE NULL END AS offline_sec
-                FROM alert_state a
-                LEFT JOIN resource_node r
-                       ON a.fingerprint = 'DEVICE-OFFLINE|' || r.id
-                LEFT JOIN device_state ds
-                       ON ds.resource_id = r.id AND ds.tenant_id = a.tenant_id
-                WHERE a.tenant_id = ? AND a.fingerprint LIKE 'DEVICE-OFFLINE|%'
-                ORDER BY CASE WHEN a.status = 'open' THEN 0 ELSE 1 END,
-                         a.updated_at DESC
-                LIMIT ?
-                """;
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, limit);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "fingerprint", rs.getString("fingerprint"),
-                            "status", rs.getString("status"),
-                            "deviceCode", rs.getString("device_code"),
-                            "deviceName", rs.getString("device_name"),
-                            "online", rs.getBoolean("online"),
-                            "offlineSec", rs.getObject("offline_sec"),
-                            "lastHeartbeat", rs.getTimestamp("last_heartbeat") == null
-                                    ? null : rs.getTimestamp("last_heartbeat").toInstant().toString(),
-                            "note", rs.getString("note"),
-                            "assignee", rs.getString("assignee"),
-                            "closedAt", rs.getTimestamp("closed_at") == null
-                                    ? null : rs.getTimestamp("closed_at").toInstant().toString()));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectDeviceAlerts(tenantId, limit)) {
+            java.time.Instant hb = minst(row.get("lastHeartbeat"));
+            java.time.Instant closed = minst(row.get("closedAt"));
+            items.add(Jsons.obj(
+                    "fingerprint", row.get("fingerprint"),
+                    "status", row.get("status"),
+                    "deviceCode", row.get("deviceCode"),
+                    "deviceName", row.get("deviceName"),
+                    "online", Boolean.TRUE.equals(row.get("online")),
+                    "offlineSec", row.get("offlineSec"),
+                    "lastHeartbeat", hb == null ? null : hb.toString(),
+                    "note", row.get("note"),
+                    "assignee", row.get("assignee"),
+                    "closedAt", closed == null ? null : closed.toString()));
         }
         return Jsons.obj("total", items.size(), "items", new Jsons.Raw(Jsons.arr(items)));
     }
