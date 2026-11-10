@@ -14,6 +14,8 @@ import { apiFetch } from '../api/client';
 import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
 import type { MessageKey } from '../i18n/core';
+import { canvasNodeLabel } from './experimentCanvasLabel';
+import { AUTO_LABEL_CODE } from '../i18n/legacyCanvasLabels';
 
 /**
  * 节点类型：实验画布只做「跨流程编排」——开始 / 结束 / 流程。
@@ -39,6 +41,11 @@ const KIND_META: Record<NodeKind, {
   end: { titleKey: 'experimentCanvas.kind.end.title', color: '#64748b', hintKey: 'experimentCanvas.kind.end.hint' },
 };
 
+/**
+ * 自动生成的起止节点标签与显示文案在 `experimentCanvasLabel.ts`：
+ * 落库用中性 code、显示时本地化（老数据按 `kind` 守门反查）。
+ */
+
 /** 通用节点外观：一个色条 + 标题 + 说明 + 上下连接点。 */
 function KindNode({ data, selected }: NodeProps<NodeData>) {
   const t = useT();
@@ -62,7 +69,7 @@ function KindNode({ data, selected }: NodeProps<NodeData>) {
           {t(meta.titleKey)}
         </span>
       </div>
-      <div style={{ fontSize: 12, marginTop: 2 }}>{data.label || t(meta.hintKey)}</div>
+      <div style={{ fontSize: 12, marginTop: 2 }}>{canvasNodeLabel(data.kind, data.label, t, meta.hintKey, meta.titleKey)}</div>
       {data.kind !== 'end' && (
         <Handle type="source" position={Position.Bottom}
           style={{ background: meta.color }} />
@@ -162,7 +169,7 @@ export default function ExperimentCanvasPage() {
                 id: 'start-1',
                 type: 'kindNode',
                 position: { x: 240, y: -60 },
-                data: { kind: 'start', label: t('experimentCanvas.node.start') },
+                data: { kind: 'start', label: AUTO_LABEL_CODE.start },
               },
               ...procItems.map((one, i) => ({
                 id: `wf-${one.seq}-${one.workflowId}`,
@@ -178,7 +185,7 @@ export default function ExperimentCanvasPage() {
                 id: 'end-1',
                 type: 'kindNode',
                 position: { x: 240, y: 80 + procItems.length * 140 },
-                data: { kind: 'end', label: t('experimentCanvas.node.end') },
+                data: { kind: 'end', label: AUTO_LABEL_CODE.end },
               },
             ];
             const seedEdges: Edge[] = [];
@@ -196,10 +203,10 @@ export default function ExperimentCanvasPage() {
             setNodes([
               { id: 'start-1', type: 'kindNode',
                 position: { x: 240, y: -60 },
-                data: { kind: 'start', label: t('experimentCanvas.node.start') } },
+                data: { kind: 'start', label: AUTO_LABEL_CODE.start } },
               { id: 'end-1', type: 'kindNode',
                 position: { x: 240, y: 420 },
-                data: { kind: 'end', label: t('experimentCanvas.node.end') } },
+                data: { kind: 'end', label: AUTO_LABEL_CODE.end } },
             ] as Node<NodeData>[]);
             setEdges([withArrow({
               id: 'e-start-end', source: 'start-1', target: 'end-1',
@@ -214,7 +221,7 @@ export default function ExperimentCanvasPage() {
             extra.push({
               id: 'start-1', type: 'kindNode',
               position: { x: 240, y: -200 },
-              data: { kind: 'start', label: t('experimentCanvas.node.start') },
+              data: { kind: 'start', label: AUTO_LABEL_CODE.start },
             });
           }
           if (!hasEnd) {
@@ -222,7 +229,7 @@ export default function ExperimentCanvasPage() {
             extra.push({
               id: 'end-1', type: 'kindNode',
               position: { x: 240, y: bottom + 140 },
-              data: { kind: 'end', label: t('experimentCanvas.node.end') },
+              data: { kind: 'end', label: AUTO_LABEL_CODE.end },
             });
           }
           setNodes([...extra, ...loadedNodes]);
@@ -260,7 +267,7 @@ export default function ExperimentCanvasPage() {
       id: `${kind}-${Date.now()}`,
       type: 'kindNode',
       position: { x: px, y: py },
-      data: { kind, label: t(KIND_META[kind].hintKey) },
+      data: { kind, label: '' },
     }]);
     setDirty(true);
   }, [setNodes, t]);
@@ -425,7 +432,10 @@ export default function ExperimentCanvasPage() {
 
               <div>
                 <Typography.Text style={{ fontSize: 11 }}>{t('experimentCanvas.field.name')}</Typography.Text>
-                <Input size="small" value={selected.data.label}
+                {/* 输入框显示的是**显示文案**（自动生成的起止标签显示本地化标题，
+                    而不是中性 code / 老数据文案）；用户一改就落成他自己的名字。 */}
+                <Input size="small" value={canvasNodeLabel(selected.data.kind, selected.data.label, t,
+                    KIND_META[selected.data.kind].hintKey, KIND_META[selected.data.kind].titleKey)}
                   onChange={(e) => patchSelected({ label: e.target.value })} />
               </div>
 
