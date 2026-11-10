@@ -262,3 +262,29 @@ Self-check before committing:
 
 **The test**: can you (or a new colleague) read this message three months later and
 know **why it was changed this way**?
+
+---
+
+## 9. Commit discipline under concurrent sessions
+
+This repository is regularly worked on by **several sessions** (people or agents)
+**on the same branch**. `git commit` commits **everything in the index** — so
+as soon as somebody else's change has been `git add`-ed, it goes into your
+commit too, and you usually notice only afterwards.
+
+| Discipline | Why |
+|---|---|
+| Run `git status` before touching a file someone else is editing, and confirm it is not their work in progress | When they write the whole file back, your edit is silently overwritten |
+| When one file contains both sides' changes, stage it hunk by hunk (`git diff -U3` → `git apply --cached`) | Staging the whole file also commits their half-finished work |
+| Look at the file list of `git diff --cached --stat` before committing | A file in the index that is not yours means it will be swept into this commit |
+| Check the file list of `git show --stat HEAD` right after committing | Discovering the sweep after the commit costs far more to undo |
+| The index is not a safe: either commit it or `git restore --staged` before you leave | Changes sitting in the index are swept away by the next `git commit` |
+| If your work has been swept into an **already pushed** commit, do not rewrite history with `reset` + `force-push` | Rewriting breaks the follow-up pushes of the concurrent session; record the real commit id in `docs/architecture/REMEDIATION_STATUS.md` instead |
+
+> **Observed on 2026-11-10**: the frontend changes of P-13 were waiting in the
+> index and got swept into another session's `git commit` (titled
+> `feat(sql): 最后 1 条真实查询 + 迁移文档收口`) — the title had nothing to do with
+> the content. Because that commit was **already pushed**, the history was left
+> alone and the real commit id `a077f19` was recorded in the P-13 row of the
+> remediation status table instead.
+
