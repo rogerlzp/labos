@@ -139,6 +139,13 @@
           FROM error_occurrence eo WHERE eo.run_id = #{param1}
     </select>
 
+    <!-- DriverStepExecutor 启动时加载「错误码 → 恢复作用域」映射。 -->
+    <select id="selectErrorCodeScopes" resultType="java.util.Map">
+        SELECT code AS "code", scope::text AS "scope"
+          FROM error_code
+         WHERE tenant_id = #{tenantId} AND scope IS NOT NULL AND deleted_at IS NULL
+    </select>
+
     <select id="selectPolicyScope" resultType="java.lang.String">
         SELECT scope FROM recovery_policy
         WHERE tenant_id = #{tenantId} AND id = #{policyId}

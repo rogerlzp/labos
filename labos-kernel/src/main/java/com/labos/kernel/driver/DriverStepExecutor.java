@@ -249,34 +249,29 @@ public final class DriverStepExecutor implements StepExecutor {
         }
     }
 
-    /** 从库加载一次错误码作用域（懒加载，进程内缓存）。 */
+    /** 从库加载一次错误码作用域（懒加载，进程内缓存；SQL 在 OpsMapper）。 */
     private Map<String, com.labos.kernel.recovery.RecoveryScope> loadScopes() {
         Map<String, com.labos.kernel.recovery.RecoveryScope> out = new java.util.HashMap<>();
         if (db == null) {
             return out;
         }
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement("""
-                     SELECT code, scope FROM error_code
-                      WHERE tenant_id = ? AND scope IS NOT NULL AND deleted_at IS NULL
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String sc = rs.getString(2);
-                    if (sc == null || sc.isBlank()) {
-                        continue;
-                    }
-                    try {
-                        out.put(rs.getString(1),
-                                com.labos.kernel.recovery.RecoveryScope.valueOf(
-                                        sc.trim().toUpperCase()));
-                    } catch (IllegalArgumentException ignore) {
-                        // 库里写了非法值就当没配，走前缀兜底
-                    }
+        try {
+            for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.OpsMapper.class)
+                    .selectErrorCodeScopes(tenantId)) {
+                String sc = (String) row.get("scope");
+                if (sc == null || sc.isBlank()) {
+                    continue;
+                }
+                try {
+                    out.put((String) row.get("code"),
+                            com.labos.kernel.recovery.RecoveryScope.valueOf(
+                                    sc.trim().toUpperCase()));
+                } catch (IllegalArgumentException ignore) {
+                    // 库里写了非法值就当没配，走前缀兜底
                 }
             }
-        } catch (java.sql.SQLException e) {
+        } catch (RuntimeException e) {
             log.error("[WARN] 加载错误码作用域失败，按前缀兜底: " + e.getMessage());
         }
         return out;
@@ -640,36 +635,6 @@ public final class DriverStepExecutor implements StepExecutor {
             return v instanceof Number n ? n.longValue() : 0L;
         } catch (RuntimeException e) {
             return 0L;
-        }
-    }
-
-    /** 一条 SQL 取一个字符串值（查不到返回 null）。 */
-    private String q1s(String sql, Object... args) {
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
-            for (int i = 0; i < args.length; i++) {
-                ps.setObject(i + 1, args[i]);
-            }
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        } catch (java.sql.SQLException e) {
-            return null;
-        }
-    }
-
-    /** 一条 SQL 取一个值（查不到返回 null）。 */
-    private Long q1(String sql, Object... args) {
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
-            for (int i = 0; i < args.length; i++) {
-                ps.setObject(i + 1, args[i]);
-            }
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        } catch (java.sql.SQLException e) {
-            return null;
         }
     }
 

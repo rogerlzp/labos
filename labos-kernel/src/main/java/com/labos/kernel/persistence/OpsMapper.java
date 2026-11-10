@@ -78,6 +78,12 @@ public interface OpsMapper {
      */
     List<Map<String, Object>> selectErrorOccurrencesByRun(long runId);
 
+    /**
+     * 全部已登记错误码的作用域（code/scope 文本，scope 非空且未软删）；
+     * DriverStepExecutor 启动时加载一次做「错误码 → 恢复作用域」映射。
+     */
+    List<Map<String, Object>> selectErrorCodeScopes(@Param("tenantId") long tenantId);
+
 
     /** 按 id 查策略作用域（PATCH 没带 scope 时用）。查不到返回 null。 */
     String selectPolicyScope(long tenantId, long policyId);
