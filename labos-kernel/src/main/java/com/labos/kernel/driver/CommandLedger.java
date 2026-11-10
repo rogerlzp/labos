@@ -2,9 +2,6 @@ package com.labos.kernel.driver;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 
 /**
@@ -39,6 +36,11 @@ public final class CommandLedger {
     public record Entry(long id, String state, boolean created) {
     }
 
+    private static com.labos.kernel.persistence.CommandMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.CommandMapper.class);
+    }
+
     /**
      * 派发前登记。同一 {@code idempotencyKey} 已存在时不覆盖，返回现有行供调用方
      * fail-closed 处理（{@link #created()} == false）。
@@ -47,68 +49,27 @@ public final class CommandLedger {
                               long runId, long nodeId, int attempt, int stepSeq,
                               long deviceId, String method, String commandId,
                               String traceId) throws SQLException {
+        // c 形参保留（SqlWork 签名）：mapper 在 Tx 事务内经 DataSource 同步复用绑定连接
         return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            long ledgerId = 0L;
-            try (PreparedStatement ps = c.prepareStatement("""
-                    INSERT INTO command_ledger
-                      (tenant_id, idempotency_key, run_id, node_id, attempt, step_seq,
-                       device_id, method, command_id, trace_id, state)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCH_STARTED')
-                    ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
-                    RETURNING id
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setString(2, idempotencyKey);
-                ps.setLong(3, runId);
-                ps.setLong(4, nodeId);
-                ps.setInt(5, attempt);
-                ps.setInt(6, stepSeq);
-                ps.setLong(7, deviceId);
-                ps.setString(8, method);
-                ps.setString(9, commandId);
-                ps.setString(10, traceId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        ledgerId = rs.getLong(1);
-                    }
-                }
-            }
-            if (ledgerId == 0L) {
+            Long ledgerId = mapper().insertDispatchBegin(
+                    tenantId, idempotencyKey, runId, nodeId, attempt, stepSeq,
+                    deviceId, method, commandId, traceId);
+            if (ledgerId == null) {
                 // 已存在：读回状态，不写 Outbox（避免重复事件）
-                String state = "UNKNOWN";
-                try (PreparedStatement ps = c.prepareStatement("""
-                        SELECT id, state FROM command_ledger
-                         WHERE tenant_id = ? AND idempotency_key = ?
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setString(2, idempotencyKey);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) {
-                            ledgerId = rs.getLong(1);
-                            state = rs.getString(2);
-                        }
-                    }
-                }
+                java.util.Map<String, Object> existing =
+                        mapper().selectLedgerEntry(tenantId, idempotencyKey);
+                long id = existing == null ? 0L
+                        : ((Number) existing.get("id")).longValue();
+                String state = existing == null ? "UNKNOWN"
+                        : (String) existing.get("state");
                 com.labos.kernel.persistence.Tx.rollbackOnly();
-                return new Entry(ledgerId, state, false);
+                return new Entry(id, state, false);
             }
             // P-07.4：与账本同事务写 Outbox（账本在 ⇒ 事件在）
-            try (PreparedStatement ps = c.prepareStatement("""
-                    INSERT INTO command_outbox
-                      (tenant_id, ledger_id, run_id, command_id, device_id, method, payload)
-                    VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, ledgerId);
-                ps.setLong(3, runId);
-                ps.setString(4, commandId);
-                ps.setLong(5, deviceId);
-                ps.setString(6, method);
-                ps.setString(7, "{\"deviceId\":" + deviceId
-                        + ",\"method\":\"" + (method == null ? "" : method)
-                        + "\"}");
-                ps.executeUpdate();
-            }
+            mapper().insertOutboxEvent(tenantId, ledgerId, runId, commandId, deviceId,
+                    method, "{\"deviceId\":" + deviceId
+                            + ",\"method\":\"" + (method == null ? "" : method)
+                            + "\"}");
             return new Entry(ledgerId, "DISPATCH_STARTED", true);
         });
     }
@@ -128,17 +89,12 @@ public final class CommandLedger {
         if (db == null || ledgerId <= 0L || result == null) {
             return;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE command_ledger
-                        SET abort_state = ?, abort_detail = ?, abort_at = now(), updated_at = now()
-                      WHERE id = ?
-                     """)) {
-            ps.setString(1, result.state().name());
-            ps.setString(2, trunc(result.detail(), 200));
-            ps.setLong(3, ledgerId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mapper().updateAbortResult(ledgerId, result.state().name(),
+                    trunc(result.detail(), 200));
+        } catch (RuntimeException e) {
+            // 旁路写 fail-open：mapper 不声明 SQLException，SQL 异常已被
+            // MyBatis 包装成 RuntimeException
             log.warn("[中止结果未记账] ledger={} state={} reason={}",
                     ledgerId, result.state(), e.getMessage());
         }
@@ -147,20 +103,8 @@ public final class CommandLedger {
     public static void finish(DbConfig db, long ledgerId, boolean ok,
                               String errorCode, String errorMessage,
                               String commandId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE command_ledger
-                        SET state = ?, error_code = ?, error_message = ?,
-                            command_id = COALESCE(?, command_id), updated_at = now()
-                      WHERE id = ?
-                     """)) {
-            ps.setString(1, ok ? "ACKED" : "FAILED");
-            ps.setString(2, errorCode);
-            ps.setString(3, trunc(errorMessage, 250));
-            ps.setString(4, commandId);
-            ps.setLong(5, ledgerId);
-            ps.executeUpdate();
-        }
+        mapper().finishLedger(ledgerId, ok ? "ACKED" : "FAILED", errorCode,
+                trunc(errorMessage, 250), commandId);
     }
 
     /**
@@ -170,21 +114,7 @@ public final class CommandLedger {
      */
     public static int reconcileOnStartup(DbConfig db, long tenantId, int staleMinutes)
             throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE command_ledger
-                        SET state = 'UNKNOWN',
-                            error_code = COALESCE(error_code, 'EC-99-0006'),
-                            error_message = COALESCE(error_message,
-                                '进程重启时命令仍处于派发中，物理结果未知；需人工确认后处置'),
-                            updated_at = now()
-                      WHERE tenant_id = ? AND state = 'DISPATCH_STARTED'
-                        AND created_at < now() - (? || ' minutes')::interval
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(0, staleMinutes));
-            return ps.executeUpdate();
-        }
+        return mapper().markStaleUnknown(tenantId, Math.max(0, staleMinutes));
     }
 
     /** UNKNOWN 账本行（人工核对处置入口用）。 */
@@ -198,27 +128,14 @@ public final class CommandLedger {
             throws SQLException {
         int cap = Math.max(1, Math.min(limit, 200));
         java.util.List<Unknown> rows = new java.util.ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id, idempotency_key, run_id, node_id, method, command_id,
-                            trace_id, error_code, error_message, created_at::text
-                       FROM command_ledger
-                      WHERE tenant_id = ? AND state = 'UNKNOWN'
-                      ORDER BY id
-                      LIMIT ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, cap);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long node = rs.getLong("node_id");
-                    rows.add(new Unknown(rs.getLong("id"), rs.getString("idempotency_key"),
-                            rs.getLong("run_id"), rs.wasNull() ? null : node,
-                            rs.getString("method"), rs.getString("command_id"),
-                            rs.getString("trace_id"), rs.getString("error_code"),
-                            rs.getString("error_message"), rs.getString("created_at")));
-                }
-            }
+        for (java.util.Map<String, Object> m : mapper().selectUnknownList(tenantId, cap)) {
+            Number node = (Number) m.get("nodeId");
+            rows.add(new Unknown(((Number) m.get("id")).longValue(), (String) m.get("key"),
+                    ((Number) m.get("runId")).longValue(),
+                    node == null ? null : node.longValue(),
+                    (String) m.get("method"), (String) m.get("commandId"),
+                    (String) m.get("traceId"), (String) m.get("errorCode"),
+                    (String) m.get("errorMessage"), (String) m.get("createdAt")));
         }
         return rows;
     }
@@ -243,30 +160,15 @@ public final class CommandLedger {
                                                                    int limit) throws SQLException {
         int cap = Math.max(1, Math.min(limit, 200));
         java.util.List<AbortPending> rows = new java.util.ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id, idempotency_key, run_id, node_id, method, command_id,
-                            state, abort_state, abort_detail, abort_at::text
-                       FROM command_ledger
-                      WHERE tenant_id = ?
-                        AND abort_state IS NOT NULL
-                        AND abort_state <> 'PHYSICALLY_STOPPED'
-                      ORDER BY abort_at DESC NULLS LAST, id DESC
-                      LIMIT ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, cap);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long node = rs.getLong("node_id");
-                    boolean nodeNull = rs.wasNull();
-                    rows.add(new AbortPending(rs.getLong("id"), rs.getString("idempotency_key"),
-                            rs.getLong("run_id"), nodeNull ? null : node,
-                            rs.getString("method"), rs.getString("command_id"),
-                            rs.getString("state"), rs.getString("abort_state"),
-                            rs.getString("abort_detail"), rs.getString("abort_at")));
-                }
-            }
+        for (java.util.Map<String, Object> m
+                : mapper().selectUnconfirmedAborts(tenantId, cap)) {
+            Number node = (Number) m.get("nodeId");
+            rows.add(new AbortPending(((Number) m.get("id")).longValue(),
+                    (String) m.get("key"), ((Number) m.get("runId")).longValue(),
+                    node == null ? null : node.longValue(),
+                    (String) m.get("method"), (String) m.get("commandId"),
+                    (String) m.get("state"), (String) m.get("abortState"),
+                    (String) m.get("abortDetail"), (String) m.get("abortAt")));
         }
         return rows;
     }
@@ -280,25 +182,8 @@ public final class CommandLedger {
      */
     public static int resolve(DbConfig db, long tenantId, long ledgerId, boolean done,
                               String note, Long by) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE command_ledger
-                        SET state = ?, resolved_at = now(), resolved_by = ?,
-                            error_code = COALESCE(error_code, 'EC-99-0006'),
-                            error_message = ?, updated_at = now()
-                      WHERE tenant_id = ? AND id = ? AND state = 'UNKNOWN'
-                     """)) {
-            ps.setString(1, done ? "ACKED" : "FAILED");
-            if (by == null) {
-                ps.setNull(2, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(2, by);
-            }
-            ps.setString(3, trunc(note == null ? "人工核对确认" : note, 250));
-            ps.setLong(4, tenantId);
-            ps.setLong(5, ledgerId);
-            return ps.executeUpdate();
-        }
+        return mapper().resolveLedger(tenantId, ledgerId, done ? "ACKED" : "FAILED",
+                by, trunc(note == null ? "人工核对确认" : note, 250));
     }
 
     /** 查询某条 run 的命令账本状态（自测/排障）。 */

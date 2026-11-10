@@ -14,4 +14,89 @@
          WHERE tenant_id = #{param1} AND idempotency_key = #{param2}
     </select>
 
+    <!-- INSERT...RETURNING 用 <select> 承载：MyBatis DTD 不允许 <insert> 带 resultType -->
+    <select id="insertDispatchBegin" resultType="java.lang.Long">
+        INSERT INTO command_ledger
+          (tenant_id, idempotency_key, run_id, node_id, attempt, step_seq,
+           device_id, method, command_id, trace_id, state)
+        VALUES (#{tenantId}, #{idempotencyKey}, #{runId}, #{nodeId}, #{attempt},
+                #{stepSeq}, #{deviceId}, #{method}, #{commandId}, #{traceId},
+                'DISPATCH_STARTED')
+        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+        RETURNING id
+    </select>
+
+    <select id="selectLedgerEntry" resultType="java.util.Map">
+        SELECT id AS "id", state AS "state" FROM command_ledger
+         WHERE tenant_id = #{tenantId} AND idempotency_key = #{idempotencyKey}
+    </select>
+
+    <insert id="insertOutboxEvent">
+        INSERT INTO command_outbox
+          (tenant_id, ledger_id, run_id, command_id, device_id, method, payload)
+        VALUES (#{tenantId}, #{ledgerId}, #{runId}, #{commandId}, #{deviceId},
+                #{method}, #{payloadJson}::jsonb)
+    </insert>
+
+    <update id="updateAbortResult">
+        UPDATE command_ledger
+           SET abort_state = #{abortState}, abort_detail = #{abortDetail},
+               abort_at = now(), updated_at = now()
+         WHERE id = #{ledgerId}
+    </update>
+
+    <update id="finishLedger">
+        UPDATE command_ledger
+           SET state = #{state}, error_code = #{errorCode},
+               error_message = #{errorMessage},
+               command_id = COALESCE(#{commandId}, command_id), updated_at = now()
+         WHERE id = #{ledgerId}
+    </update>
+
+    <update id="markStaleUnknown">
+        UPDATE command_ledger
+           SET state = 'UNKNOWN',
+               error_code = COALESCE(error_code, 'EC-99-0006'),
+               error_message = COALESCE(error_message,
+                   '进程重启时命令仍处于派发中，物理结果未知；需人工确认后处置'),
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND state = 'DISPATCH_STARTED'
+           AND created_at &lt; now() - (#{staleMinutes} || ' minutes')::interval
+    </update>
+
+    <select id="selectUnknownList" resultType="java.util.Map">
+        SELECT id AS "id", idempotency_key AS "key", run_id AS "runId",
+               node_id AS "nodeId", method AS "method",
+               command_id AS "commandId", trace_id AS "traceId",
+               error_code AS "errorCode", error_message AS "errorMessage",
+               created_at::text AS "createdAt"
+          FROM command_ledger
+         WHERE tenant_id = #{tenantId} AND state = 'UNKNOWN'
+         ORDER BY id
+         LIMIT #{limit}
+    </select>
+
+    <select id="selectUnconfirmedAborts" resultType="java.util.Map">
+        SELECT id AS "id", idempotency_key AS "key", run_id AS "runId",
+               node_id AS "nodeId", method AS "method",
+               command_id AS "commandId", state AS "state",
+               abort_state AS "abortState", abort_detail AS "abortDetail",
+               abort_at::text AS "abortAt"
+          FROM command_ledger
+         WHERE tenant_id = #{tenantId}
+           AND abort_state IS NOT NULL
+           AND abort_state &lt;&gt; 'PHYSICALLY_STOPPED'
+         ORDER BY abort_at DESC NULLS LAST, id DESC
+         LIMIT #{limit}
+    </select>
+
+    <update id="resolveLedger">
+        UPDATE command_ledger
+           SET state = #{state}, resolved_at = now(),
+               resolved_by = #{resolvedBy, jdbcType=BIGINT},
+               error_code = COALESCE(error_code, 'EC-99-0006'),
+               error_message = #{note}, updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{ledgerId} AND state = 'UNKNOWN'
+    </update>
+
 </mapper>
