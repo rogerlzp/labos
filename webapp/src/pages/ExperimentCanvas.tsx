@@ -288,7 +288,12 @@ export default function ExperimentCanvasPage() {
       const r = await apiFetch(`/api/experiments/${expId}/graph`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodes, edges }),
+        // 边的 label 只是画布上「点这条线可删」的提示（**界面文案**），不落库 ——
+        // 后端只读 source/target，存进去会让库里带着界面语种的文案（P-15 同类问题）。
+        body: JSON.stringify({
+          nodes,
+          edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+        }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? t('experimentCanvas.error.saveFailed'));
