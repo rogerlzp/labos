@@ -29,26 +29,11 @@
         SELECT EXISTS(
             SELECT 1 FROM resource_node
              WHERE tenant_id = #{param1} AND code = #{param2} AND kind = 'device')
-    </select>
-
-    <select id="countEnabledAdmins" resultType="int">
-        SELECT count(*) FROM sys_user
-         WHERE tenant_id = #{param1} AND role = 'admin' AND enabled
-    </select>
-
-    <!-- forUpdate 只在账号管理的事务里用，必须与调用方同一事务连接。 -->
-    <select id="selectUserRoleEnabled" resultType="java.util.Map">
-        SELECT role, enabled FROM sys_user
-         WHERE tenant_id = #{param1} AND id = #{param2}
-        <if test="param3"> FOR UPDATE </if>
-    </select><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><select id="selectRunActualStart" resultType="java.sql.Timestamp">
+    </select><!-- forUpdate 只在账号管理的事务里用，必须与调用方同一事务连接。 --><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><select id="selectRunActualStart" resultType="java.sql.Timestamp">
         SELECT actual_start FROM run WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
-    <!-- 事务级咨询锁：同一 key 的并发写入串行化，事务结束自动释放。 -->
-    <select id="lockUserRole" resultType="java.lang.String">
-        SELECT pg_advisory_xact_lock(hashtext('labos:user-role'))::text
-    </select><select id="selectCapabilityId" resultType="java.lang.Long">
+    <!-- 事务级咨询锁：同一 key 的并发写入串行化，事务结束自动释放。 --><select id="selectCapabilityId" resultType="java.lang.Long">
         SELECT id FROM capability WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
@@ -102,11 +87,6 @@
     </select><select id="selectGraphHistoryXml" resultType="java.lang.String">
         SELECT xml FROM workflow_graph_history
          WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND id = #{param3}
-    </select><select id="selectUsers" resultType="java.util.Map">
-        SELECT id AS "id", username AS "username", display_name AS "displayName",
-               role AS "role", enabled AS "enabled",
-               last_login_at AS "lastLoginAt", created_at AS "createdAt"
-          FROM sys_user WHERE tenant_id = #{param1} ORDER BY id
     </select><select id="selectChoreographies" resultType="java.util.Map">
         SELECT w.id AS "id", w.code AS "code", w.name AS "name",
                (SELECT count(*) FROM workflow_node n
@@ -114,20 +94,7 @@
           FROM workflow w
          WHERE w.tenant_id = #{param1} AND w.category = 'choreography'
          ORDER BY w.id DESC LIMIT #{param2}
-    </select><!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 -->
-    <select id="selectAuditLog" resultType="java.util.Map">
-        SELECT occurred_at AS "occurredAt", username AS "username", action AS "action",
-               entity_type AS "entityType", entity_id AS "entityId",
-               result AS "result", ip AS "ip",
-               "before" AS "before", "after" AS "after"
-          FROM audit_log
-         WHERE tenant_id = #{param1}
-           AND (#{param2}::text IS NULL OR action = #{param2})
-         ORDER BY occurred_at DESC
-         LIMIT #{param3}
-    </select>
-
-    <select id="selectGraphHistory" resultType="java.util.Map">
+    </select><!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 --><select id="selectGraphHistory" resultType="java.util.Map">
         SELECT id AS "id", node_count AS "nodeCount", edge_count AS "edgeCount",
                length(xml) AS "bytes", saved_at AS "savedAt"
           FROM workflow_graph_history
@@ -197,106 +164,13 @@
          WHERE tenant_id = #{param1}
          ORDER BY id DESC
          LIMIT #{param2}
-    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 -->
-    <update id="updateRecoveryPolicy">
-        UPDATE recovery_policy
-           SET strategy     = COALESCE(#{param3}::recovery_strategy, strategy),
-               max_attempts = COALESCE(#{param4}, max_attempts),
-               priority     = COALESCE(#{param5}, priority),
-               enabled      = COALESCE(#{param6}, enabled),
-               updated_at   = now()
-         WHERE tenant_id = #{param1} AND id = #{param2}
-    </update>
-
-    <select id="selectDeviceAlerts" resultType="java.util.Map">
-        SELECT a.fingerprint AS "fingerprint", a.status AS "status",
-               a.note AS "note", a.assignee AS "assignee",
-               a.closed_at AS "closedAt", a.updated_at AS "updatedAt",
-               r.code AS "deviceCode", r.name AS "deviceName",
-               ds.online AS "online", ds.last_heartbeat AS "lastHeartbeat",
-               CASE WHEN ds.online = false
-                    THEN EXTRACT(EPOCH FROM (now() - ds.last_heartbeat))::bigint
-                    ELSE NULL END AS "offlineSec"
-          FROM alert_state a
-          LEFT JOIN resource_node r
-                 ON a.fingerprint = 'DEVICE-OFFLINE|' || r.id
-          LEFT JOIN device_state ds
-                 ON ds.resource_id = r.id AND ds.tenant_id = a.tenant_id
-         WHERE a.tenant_id = #{param1}
-           AND a.fingerprint LIKE 'DEVICE-OFFLINE|%'
-         ORDER BY CASE WHEN a.status = 'open' THEN 0 ELSE 1 END,
-                  a.updated_at DESC
-         LIMIT #{param2}
-    </select><!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 -->
-    <select id="selectAlerts" resultType="java.util.Map">
-        SELECT e.fingerprint AS "fingerprint",
-               max(e.error_code_id) AS "codeId",
-               max(e.resource_id) AS "resourceId",
-               count(*) AS "hitCount",
-               min(e.occurred_at) AS "firstAt",
-               max(e.occurred_at) AS "lastAt",
-               max(e.severity::text) AS "severity",
-               (array_agg(e.outcome ORDER BY e.occurred_at DESC))[1] AS "lastOutcome",
-               (array_agg(e.message ORDER BY e.occurred_at DESC))[1] AS "lastMessage",
-               COALESCE(max(s.status), 'open') AS "state",
-               max(s.assignee) AS "assignee",
-               max(s.note) AS "note"
-          FROM error_occurrence e
-          LEFT JOIN alert_state s
-                 ON s.tenant_id = e.tenant_id AND s.fingerprint = e.fingerprint
-         WHERE e.tenant_id = #{param1}
-           AND e.severity::text &lt;&gt; 'info' AND e.resolved_at IS NULL
-         GROUP BY e.fingerprint
-         ORDER BY "hitCount" DESC, "lastAt" DESC
-         LIMIT #{param2}
-    </select>
-
-    <select id="selectNodeBinding" resultType="java.util.Map">
+    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 --><!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 --><select id="selectNodeBinding" resultType="java.util.Map">
         SELECT (params->'method_params')::text AS "mp", resource_id AS "resourceId"
           FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_key = #{param3}
-    </select>
-
-    <select id="selectPolicyValidation" resultType="java.util.Map">
-        SELECT
-          (SELECT count(*) FROM error_code
-            WHERE tenant_id = #{param1} AND code = #{param2}) AS "codeExists",
-          (SELECT count(*) FROM error_occurrence e
-             JOIN error_code c ON c.id = e.error_code_id
-            WHERE e.tenant_id = #{param1} AND c.code = #{param2}) AS "historyHits",
-          (SELECT count(*) FROM recovery_policy p
-             LEFT JOIN error_code c ON c.id = p.error_code_id
-            WHERE p.tenant_id = #{param1} AND p.enabled
-              AND p.priority &lt; #{param3}
-              AND (p.error_code_id IS NULL OR c.code = #{param2})) AS "shadowed"
-    </select>
-
-    <!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
+    </select><!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
          p 是 LATERAL 取出的优先级最高启用策略；policies 子询保留全部策略
-         （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 --><insert id="insertUser">
-        INSERT INTO sys_user (tenant_id, username, display_name, role, password_hash, salt)
-        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
-    </insert>
-
-    <!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 --><insert id="upsertAlertState">
-        INSERT INTO alert_state
-          (tenant_id, fingerprint, status, assignee, note,
-           acked_at, closed_at, updated_at)
-        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
-                CASE WHEN #{param3} = 'acked' THEN now() END,
-                CASE WHEN #{param3} = 'closed' THEN now() END,
-                now())
-        ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET
-            status     = EXCLUDED.status,
-            assignee   = COALESCE(EXCLUDED.assignee, alert_state.assignee),
-            note       = COALESCE(EXCLUDED.note, alert_state.note),
-            acked_at   = COALESCE(alert_state.acked_at, EXCLUDED.acked_at),
-            closed_at  = CASE WHEN EXCLUDED.status = 'closed'
-                              THEN now() ELSE alert_state.closed_at END,
-            updated_at = now()
-    </insert>
-
-    <select id="insertPositionEvidence" resultType="java.lang.Long">
+         （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 --><!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 --><select id="insertPositionEvidence" resultType="java.lang.Long">
         INSERT INTO position_evidence
           (tenant_id, plate_barcode, resource_id, evidence_type, run_id,
            operator, note)
@@ -340,14 +214,7 @@
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6},
                 #{param7}, #{param8}, #{param9}, #{param10}, #{param11}, #{param12})
         RETURNING id
-    </select><update id="updateUserFields">
-        UPDATE sys_user
-           SET role = COALESCE(#{param3}, role),
-               enabled = COALESCE(#{param4}, enabled),
-               password_hash = COALESCE(#{param5}, password_hash),
-               salt = COALESCE(#{param6}, salt)
-         WHERE tenant_id = #{param1} AND id = #{param2}
-    </update><select id="selectWorkflowResources" resultType="java.lang.Long">
+    </select><select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
            AND node_type = 'task' AND resource_id IS NOT NULL
@@ -449,18 +316,7 @@
           FROM run_node
          WHERE run_id = #{param1} AND actual_start IS NOT NULL
          ORDER BY COALESCE(parent_node_id, id), level, COALESCE(step_seq, 0), id
-    </select><select id="selectPolicies" resultType="java.util.Map">
-        SELECT p.id AS "id", COALESCE(ec.code, '*') AS "code", p.scope AS "scope",
-               p.strategy::text AS "strategy", p.max_attempts AS "maxAttempts",
-               p.priority AS "priority", p.enabled AS "enabled",
-               COALESCE(p.params->>'origin', 'manual') AS "origin"
-          FROM recovery_policy p
-          LEFT JOIN error_code ec ON ec.id = p.error_code_id
-         WHERE p.tenant_id = #{param1}
-         ORDER BY p.priority, p.id
-    </select>
-
-    <select id="selectRecentRuns" resultType="java.util.Map">
+    </select><select id="selectRecentRuns" resultType="java.util.Map">
         SELECT r.id AS "id", r.run_no AS "runNo", r.run_type AS "runType",
                r.status::text AS "status", r.priority AS "priority",
                r.attendance AS "attendance",

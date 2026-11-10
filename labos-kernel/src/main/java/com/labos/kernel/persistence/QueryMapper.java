@@ -27,23 +27,13 @@ public interface QueryMapper {
 
     boolean existsDeviceCode(long tenantId, String code);
 
-    int countEnabledAdmins(long tenantId);
 
-    /** role / enabled 两列；{@code forUpdate=true} 时加行锁。 */
-    Map<String, Object> selectUserRoleEnabled(long tenantId, long userId, boolean forUpdate);
 
 
 
     /** run 的实际开始时间（甘特图相对时间的基准）。 */
     java.sql.Timestamp selectRunActualStart(long tenantId, long runId);
 
-    /**
-     * 串行化「用户角色/启用状态」写入的事务级咨询锁。
-     *
-     * <p>固定 key（不是 per-user）：保护判定看的是全局 admin 计数，
-     * 锁必须覆盖「任意两个用户同时改角色」的交叉场景。
-     */
-    void lockUserRole();
 
 
     Long selectCapabilityId(long tenantId, String code);
@@ -96,8 +86,6 @@ public interface QueryMapper {
 
 
 
-    /** 用户清单。 */
-    List<Map<String, Object>> selectUsers(long tenantId);
 
 
 
@@ -105,8 +93,6 @@ public interface QueryMapper {
     List<Map<String, Object>> selectChoreographies(long tenantId, int limit);
 
 
-    /** 审计日志（filter 为 null 时取全部）。 */
-    List<Map<String, Object>> selectAuditLog(long tenantId, String filter, int limit);
 
     /** 图历史版本列表（最近 30 条）。 */
     List<Map<String, Object>> selectGraphHistory(long tenantId, long workflowId);
@@ -142,34 +128,19 @@ public interface QueryMapper {
 
 
 
-    /** 更新恢复策略（COALESCE：没传的字段不动）。 */
-    int updateRecoveryPolicy(long tenantId, long id, String strategy,
-                             Integer maxAttempts, Integer priority, Boolean enabled);
-
-    /** 设备离线告警（含离线秒数）。 */
-    List<Map<String, Object>> selectDeviceAlerts(long tenantId, int limit);
 
 
 
-    /** 告警聚合（按 fingerprint，排除 info 与已解决）。 */
-    List<Map<String, Object>> selectAlerts(long tenantId, int limit);
+
 
     /** 节点绑定的方法参数与资源 id；不存在返回 null。 */
     Map<String, Object> selectNodeBinding(long tenantId, long workflowId, String nodeKey);
 
-    /** 策略校验：错误码是否存在 / 历史命中 / 被更高优先级覆盖。 */
-    Map<String, Object> selectPolicyValidation(long tenantId, String errorCode, int priority);
 
 
 
-    /** 新建用户（密码 hash 与 salt 由调用方算好）。 */
-    int insertUser(long tenantId, String username, String displayName, String role,
-                   String passwordHash, String salt);
 
 
-    /** 告警处置（按 tenant+fingerprint 覆盖）。 */
-    int upsertAlertState(long tenantId, String fingerprint, String status,
-                         String assignee, String note);
 
     /** 记一条板位证据，返回 id。 */
     Long insertPositionEvidence(long tenantId, String plateBarcode, Long resourceId,
@@ -191,9 +162,6 @@ public interface QueryMapper {
 
 
 
-    /** 改用户（COALESCE：没传的字段不动）。 */
-    int updateUserFields(long tenantId, long id, String role, Boolean enabled,
-                         String passwordHash, String salt);
 
 
 
@@ -203,8 +171,6 @@ public interface QueryMapper {
     List<Map<String, Object>> selectTimelineNodes(long runId);
 
 
-    /** 恢复策略清单（带错误码，`*` 表示通配）。 */
-    List<Map<String, Object>> selectPolicies(long tenantId);
 
     /** 最近的 run 列表（含 loop_index=0 的节点数）。 */
     List<Map<String, Object>> selectRecentRuns(long tenantId, int limit);

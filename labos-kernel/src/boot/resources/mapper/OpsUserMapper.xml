@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 用户/策略/告警域。调用方 com.labos.kernel.persistence.OpsUserMapper -->
+<mapper namespace="com.labos.kernel.persistence.OpsUserMapper">
+
+
+<select id="selectUsers" resultType="java.util.Map">
+        SELECT id AS "id", username AS "username", display_name AS "displayName",
+               role AS "role", enabled AS "enabled",
+               last_login_at AS "lastLoginAt", created_at AS "createdAt"
+          FROM sys_user WHERE tenant_id = #{param1} ORDER BY id
+    </select>
+
+<insert id="insertUser">
+        INSERT INTO sys_user (tenant_id, username, display_name, role, password_hash, salt)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
+    </insert>
+
+<update id="updateUserFields">
+        UPDATE sys_user
+           SET role = COALESCE(#{param3}, role),
+               enabled = COALESCE(#{param4}, enabled),
+               password_hash = COALESCE(#{param5}, password_hash),
+               salt = COALESCE(#{param6}, salt)
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+<select id="lockUserRole" resultType="java.lang.String">
+        SELECT pg_advisory_xact_lock(hashtext('labos:user-role'))::text
+    </select>
+
+<select id="selectAuditLog" resultType="java.util.Map">
+        SELECT occurred_at AS "occurredAt", username AS "username", action AS "action",
+               entity_type AS "entityType", entity_id AS "entityId",
+               result AS "result", ip AS "ip",
+               "before" AS "before", "after" AS "after"
+          FROM audit_log
+         WHERE tenant_id = #{param1}
+           AND (#{param2}::text IS NULL OR action = #{param2})
+         ORDER BY occurred_at DESC
+         LIMIT #{param3}
+    </select>
+
+<select id="selectPolicies" resultType="java.util.Map">
+        SELECT p.id AS "id", COALESCE(ec.code, '*') AS "code", p.scope AS "scope",
+               p.strategy::text AS "strategy", p.max_attempts AS "maxAttempts",
+               p.priority AS "priority", p.enabled AS "enabled",
+               COALESCE(p.params->>'origin', 'manual') AS "origin"
+          FROM recovery_policy p
+          LEFT JOIN error_code ec ON ec.id = p.error_code_id
+         WHERE p.tenant_id = #{param1}
+         ORDER BY p.priority, p.id
+    </select>
+
+<update id="updateRecoveryPolicy">
+        UPDATE recovery_policy
+           SET strategy     = COALESCE(#{param3}::recovery_strategy, strategy),
+               max_attempts = COALESCE(#{param4}, max_attempts),
+               priority     = COALESCE(#{param5}, priority),
+               enabled      = COALESCE(#{param6}, enabled),
+               updated_at   = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+<select id="selectPolicyValidation" resultType="java.util.Map">
+        SELECT
+          (SELECT count(*) FROM error_code
+            WHERE tenant_id = #{param1} AND code = #{param2}) AS "codeExists",
+          (SELECT count(*) FROM error_occurrence e
+             JOIN error_code c ON c.id = e.error_code_id
+            WHERE e.tenant_id = #{param1} AND c.code = #{param2}) AS "historyHits",
+          (SELECT count(*) FROM recovery_policy p
+             LEFT JOIN error_code c ON c.id = p.error_code_id
+            WHERE p.tenant_id = #{param1} AND p.enabled
+              AND p.priority &lt; #{param3}
+              AND (p.error_code_id IS NULL OR c.code = #{param2})) AS "shadowed"
+    </select>
+
+<select id="selectAlerts" resultType="java.util.Map">
+        SELECT e.fingerprint AS "fingerprint",
+               max(e.error_code_id) AS "codeId",
+               max(e.resource_id) AS "resourceId",
+               count(*) AS "hitCount",
+               min(e.occurred_at) AS "firstAt",
+               max(e.occurred_at) AS "lastAt",
+               max(e.severity::text) AS "severity",
+               (array_agg(e.outcome ORDER BY e.occurred_at DESC))[1] AS "lastOutcome",
+               (array_agg(e.message ORDER BY e.occurred_at DESC))[1] AS "lastMessage",
+               COALESCE(max(s.status), 'open') AS "state",
+               max(s.assignee) AS "assignee",
+               max(s.note) AS "note"
+          FROM error_occurrence e
+          LEFT JOIN alert_state s
+                 ON s.tenant_id = e.tenant_id AND s.fingerprint = e.fingerprint
+         WHERE e.tenant_id = #{param1}
+           AND e.severity::text &lt;&gt; 'info' AND e.resolved_at IS NULL
+         GROUP BY e.fingerprint
+         ORDER BY "hitCount" DESC, "lastAt" DESC
+         LIMIT #{param2}
+    </select>
+
+<select id="selectDeviceAlerts" resultType="java.util.Map">
+        SELECT a.fingerprint AS "fingerprint", a.status AS "status",
+               a.note AS "note", a.assignee AS "assignee",
+               a.closed_at AS "closedAt", a.updated_at AS "updatedAt",
+               r.code AS "deviceCode", r.name AS "deviceName",
+               ds.online AS "online", ds.last_heartbeat AS "lastHeartbeat",
+               CASE WHEN ds.online = false
+                    THEN EXTRACT(EPOCH FROM (now() - ds.last_heartbeat))::bigint
+                    ELSE NULL END AS "offlineSec"
+          FROM alert_state a
+          LEFT JOIN resource_node r
+                 ON a.fingerprint = 'DEVICE-OFFLINE|' || r.id
+          LEFT JOIN device_state ds
+                 ON ds.resource_id = r.id AND ds.tenant_id = a.tenant_id
+         WHERE a.tenant_id = #{param1}
+           AND a.fingerprint LIKE 'DEVICE-OFFLINE|%'
+         ORDER BY CASE WHEN a.status = 'open' THEN 0 ELSE 1 END,
+                  a.updated_at DESC
+         LIMIT #{param2}
+    </select>
+
+<insert id="upsertAlertState">
+        INSERT INTO alert_state
+          (tenant_id, fingerprint, status, assignee, note,
+           acked_at, closed_at, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
+                CASE WHEN #{param3} = 'acked' THEN now() END,
+                CASE WHEN #{param3} = 'closed' THEN now() END,
+                now())
+        ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET
+            status     = EXCLUDED.status,
+            assignee   = COALESCE(EXCLUDED.assignee, alert_state.assignee),
+            note       = COALESCE(EXCLUDED.note, alert_state.note),
+            acked_at   = COALESCE(alert_state.acked_at, EXCLUDED.acked_at),
+            closed_at  = CASE WHEN EXCLUDED.status = 'closed'
+                              THEN now() ELSE alert_state.closed_at END,
+            updated_at = now()
+    </insert>
+
+<select id="countEnabledAdmins" resultType="int">
+        SELECT count(*) FROM sys_user
+         WHERE tenant_id = #{param1} AND role = 'admin' AND enabled
+    </select>
+
+<select id="selectUserRoleEnabled" resultType="java.util.Map">
+        SELECT role, enabled FROM sys_user
+         WHERE tenant_id = #{param1} AND id = #{param2}
+        <if test="param3"> FOR UPDATE </if>
+    </select>
+</mapper>

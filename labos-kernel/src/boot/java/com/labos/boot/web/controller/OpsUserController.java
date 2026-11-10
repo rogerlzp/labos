@@ -3,7 +3,6 @@ package com.labos.boot.web.controller;
 import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.kernel.api.AuthService;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.driver.RuntimeSettings;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
@@ -53,12 +52,13 @@ public class OpsUserController {
     private static final java.util.Set<String> ALERT_ACTIONS =
             java.util.Set.of("ack", "close", "silence", "reopen");
 
-    private final QueryService query;
+    private final com.labos.boot.web.service.OpsUserService opsUserService;
     private final DbConfig db;
     private final AuditRecorder audit;
 
-    public OpsUserController(QueryService query, DbConfig db, AuditRecorder audit) {
-        this.query = query;
+    public OpsUserController(com.labos.boot.web.service.OpsUserService opsUserService,
+                            DbConfig db, AuditRecorder audit) {
+        this.opsUserService = opsUserService;
         this.db = db;
         this.audit = audit;
     }
@@ -67,7 +67,7 @@ public class OpsUserController {
 
     @GetMapping(value = "/users", produces = "application/json; charset=utf-8")
     public String listUsers() throws SQLException {
-        return query.usersJson();
+        return opsUserService.usersJson();
     }
 
     @PostMapping(value = "/users", produces = "application/json; charset=utf-8")
@@ -75,7 +75,7 @@ public class OpsUserController {
                              @RequestAttribute(name = ApiAuthInterceptor.SESSION_ATTR,
                                      required = false) AuthService.Session session,
                              HttpServletRequest req) throws SQLException {
-        int n = query.createUser(
+        int n = opsUserService.createUser(
                 jsonField(body, "username"),
                 jsonField(body, "displayName"),
                 jsonField(body, "role"),
@@ -95,7 +95,7 @@ public class OpsUserController {
                              @RequestAttribute(name = ApiAuthInterceptor.SESSION_ATTR,
                                      required = false) AuthService.Session session,
                              HttpServletRequest req) throws SQLException {
-        int n = query.updateUser(id,
+        int n = opsUserService.updateUser(id,
                 jsonField(body, "role"),
                 jsonBool(body, "enabled"),
                 jsonField(body, "password"));
@@ -120,14 +120,14 @@ public class OpsUserController {
 
     @GetMapping(value = "/audit", produces = "application/json; charset=utf-8")
     public String auditLog(@RequestParam(required = false) String action) throws SQLException {
-        return query.auditJson(200, action);
+        return opsUserService.auditJson(200, action);
     }
 
     // ---------------------------------------------------------------- 策略
 
     @GetMapping(value = "/policies", produces = "application/json; charset=utf-8")
     public String policies() throws SQLException {
-        return query.policies();
+        return opsUserService.policies();
     }
 
     @PutMapping(value = "/policies/{id}", produces = "application/json; charset=utf-8")
@@ -136,7 +136,7 @@ public class OpsUserController {
                                @RequestAttribute(name = ApiAuthInterceptor.SESSION_ATTR,
                                        required = false) AuthService.Session session,
                                HttpServletRequest req) throws SQLException {
-        int n = query.updatePolicy(id,
+        int n = opsUserService.updatePolicy(id,
                 jsonField(body, "strategy"),
                 jsonInt(body, "maxAttempts"),
                 jsonInt(body, "priority"),
@@ -162,7 +162,7 @@ public class OpsUserController {
     public String validatePolicy(@RequestBody(required = false) String body) throws SQLException {
         String code = jsonField(body, "errorCode");
         Integer prio = jsonInt(body, "priority");
-        return query.validatePolicy(code, jsonField(body, "scope"),
+        return opsUserService.validatePolicy(code, jsonField(body, "scope"),
                 prio == null ? 50 : prio);
     }
 
@@ -170,12 +170,12 @@ public class OpsUserController {
 
     @GetMapping(value = "/alerts", produces = "application/json; charset=utf-8")
     public String alerts(@RequestParam(required = false) String limit) throws SQLException {
-        return query.alerts(intOr(limit, 20));
+        return opsUserService.alerts(intOr(limit, 20));
     }
 
     @GetMapping(value = "/device-alerts", produces = "application/json; charset=utf-8")
     public String deviceAlerts(@RequestParam(required = false) String limit) throws SQLException {
-        return query.deviceAlerts(intOr(limit, 60));
+        return opsUserService.deviceAlerts(intOr(limit, 60));
     }
 
     @PostMapping(value = "/alerts/{fingerprint}/{action}",
@@ -196,7 +196,7 @@ public class OpsUserController {
         String fp = URLDecoder.decode(fingerprint, StandardCharsets.UTF_8);
         String assignee = jsonField(body, "assignee");
         String note = jsonField(body, "note");
-        int n = query.updateAlertState(fp, action, assignee, note);
+        int n = opsUserService.updateAlertState(fp, action, assignee, note);
         audit.record(session, "alert." + action, "alert", null, fp,
                 Jsons.obj("assignee", assignee, "note", note), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj(
