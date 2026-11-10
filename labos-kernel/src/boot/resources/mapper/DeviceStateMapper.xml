@@ -317,4 +317,47 @@
         )
     </insert>
 
+    <!-- DeviceLock（设备锁，阶段3第21批收编） -->
+
+    <!-- RETURNING 用 select 承载（MyBatis DTD 限制）：抢到即有一行，没抢到无行。 -->
+    <select id="tryAcquireDevice" resultType="java.lang.Long">
+        UPDATE device_state
+           SET current_run_id = #{runId}, status = 'running', updated_at = now()
+         WHERE tenant_id = #{tenantId} AND resource_id = #{resourceId}
+           AND (current_run_id IS NULL OR current_run_id = #{runId})
+        RETURNING resource_id
+    </select>
+
+    <!-- 只释放自己占的（current_run_id = runId），避免误放别人的锁。 -->
+    <update id="releaseDevice">
+        UPDATE device_state
+           SET current_run_id = NULL, current_method = NULL,
+               status = CASE WHEN last_error IS NULL THEN 'idle' ELSE status END,
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND resource_id = #{resourceId}
+           AND current_run_id = #{runId}
+    </update>
+
+    <!-- 孤儿锁：指向的 run 已到终态但锁还挂着（执行线程被 kill / 路径漏放）。 -->
+    <update id="releaseOrphanDeviceLocks">
+        UPDATE device_state ds
+           SET current_run_id = NULL, status = 'idle', updated_at = now()
+         WHERE ds.tenant_id = #{tenantId}
+           AND ds.current_run_id IS NOT NULL
+           AND EXISTS (
+                 SELECT 1 FROM run r
+                 WHERE r.id = ds.current_run_id
+                   AND r.status::text IN ('completed','failed','aborted','cancelled'))
+    </update>
+
+    <!-- 超时锁：run 还在 running 但 updated_at 超过阈值（秒数文本拼 interval）。 -->
+    <update id="releaseStaleDeviceLocks">
+        UPDATE device_state ds
+           SET current_run_id = NULL, status = 'idle',
+               last_error = '锁超时自动释放', updated_at = now()
+         WHERE ds.tenant_id = #{tenantId}
+           AND ds.current_run_id IS NOT NULL
+           AND ds.updated_at &lt; now() - (#{ttlSeconds} || ' seconds')::interval
+    </update>
+
 </mapper>

@@ -1,11 +1,9 @@
 package com.labos.kernel.driver;
 
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.DeviceStateMapper;
+import com.labos.kernel.persistence.Mappers;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.Duration;
 
 /**
@@ -34,6 +32,10 @@ import java.time.Duration;
  *   <tr><td>设备锁（本类）</td><td>一台设备</td><td>两个实验同时命令同一台设备</td></tr>
  *   <tr><td>位置锁 {@link PositionLock}</td><td>一个层位</td><td>两块板放同一个位置</td></tr>
  * </table>
+ *
+ * <p>阶段3第21批：4 条裸 SQL 收编进 {@code DeviceStateMapper}
+ * （{@code mapper/DeviceStateMapper.xml} 的 DeviceLock 段），本类只留锁语义
+ * 与重试/兜底策略；db 字段保留以维持构造签名，SQL 经 {@link Mappers#get} 执行。
  */
 public final class DeviceLock {
 
@@ -48,6 +50,10 @@ public final class DeviceLock {
         this.tenantId = tenantId;
     }
 
+    private DeviceStateMapper mapper() {
+        return Mappers.get(DeviceStateMapper.class);
+    }
+
     /**
      * 抢设备。
      *
@@ -59,23 +65,10 @@ public final class DeviceLock {
      * @return true = 抢到
      */
     public boolean tryAcquire(long resourceId, long runId) {
-        String sql = """
-                UPDATE device_state
-                SET current_run_id = ?, status = 'running', updated_at = now()
-                WHERE tenant_id = ? AND resource_id = ?
-                  AND (current_run_id IS NULL OR current_run_id = ?)
-                RETURNING resource_id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, runId);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, resourceId);
-            ps.setLong(4, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
+        try {
+            // 抢到即 RETURNING 出一行；没抢到/无行返回 null。
+            return mapper().tryAcquireDevice(tenantId, resourceId, runId) != null;
+        } catch (RuntimeException e) {
             return false;   // 表锁/死锁时保守认为没抢到
         }
     }
@@ -113,20 +106,9 @@ public final class DeviceLock {
      * 避免把别人抢到的锁误释放——那种 bug 很难查。
      */
     public void release(long resourceId, long runId) {
-        String sql = """
-                UPDATE device_state
-                SET current_run_id = NULL, current_method = NULL,
-                    status = CASE WHEN last_error IS NULL THEN 'idle' ELSE status END,
-                    updated_at = now()
-                WHERE tenant_id = ? AND resource_id = ? AND current_run_id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mapper().releaseDevice(tenantId, resourceId, runId);
+        } catch (RuntimeException e) {
             log.error("[设备锁] 释放失败：" + e.getMessage());
         }
     }
@@ -134,9 +116,7 @@ public final class DeviceLock {
     /** 谁占着这台设备；null = 空闲。 */
     public Long holder(long resourceId) {
         try {
-            return com.labos.kernel.persistence.Mappers.get(
-                    com.labos.kernel.persistence.DeviceStateMapper.class)
-                    .selectCurrentRunId(tenantId, resourceId);
+            return mapper().selectCurrentRunId(tenantId, resourceId);
         } catch (RuntimeException ignore) {
             // 查不到当空闲
         }
@@ -159,21 +139,9 @@ public final class DeviceLock {
      * @return 清理了几条
      */
     public int releaseOrphans() {
-        String sql = """
-                UPDATE device_state ds
-                SET current_run_id = NULL, status = 'idle', updated_at = now()
-                WHERE ds.tenant_id = ?
-                  AND ds.current_run_id IS NOT NULL
-                  AND EXISTS (
-                        SELECT 1 FROM run r
-                        WHERE r.id = ds.current_run_id
-                          AND r.status::text IN ('completed','failed','aborted','cancelled'))
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            return ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            return mapper().releaseOrphanDeviceLocks(tenantId);
+        } catch (RuntimeException e) {
             return 0;
         }
     }
@@ -187,20 +155,10 @@ public final class DeviceLock {
      * @return 清理了几条
      */
     public int releaseStale(Duration threshold) {
-        String sql = """
-                UPDATE device_state ds
-                SET current_run_id = NULL, status = 'idle',
-                    last_error = '锁超时自动释放', updated_at = now()
-                WHERE ds.tenant_id = ?
-                  AND ds.current_run_id IS NOT NULL
-                  AND ds.updated_at < now() - (? || ' seconds')::interval
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, String.valueOf(threshold.toSeconds()));
-            return ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            return mapper().releaseStaleDeviceLocks(tenantId,
+                    String.valueOf(threshold.toSeconds()));
+        } catch (RuntimeException e) {
             return 0;
         }
     }

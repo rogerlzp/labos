@@ -149,4 +149,31 @@ public interface DeviceStateMapper {
 
     /** 板不在 plate 表时补一行（'unknown' 类型占位）。 */
     int insertPlateIfAbsent(long tenantId, String plateId, long positionResourceId);
+
+    // ---- DeviceLock（设备锁，阶段3第21批收编）----
+
+    /**
+     * 抢设备（检查+占用一条 UPDATE，原子性由数据库保证）：只有 current_run_id 为空、
+     * 或已经是自己时才更新成功。抢到返回资源 id，没抢到/无行返回 null。
+     */
+    Long tryAcquireDevice(@Param("tenantId") long tenantId,
+                          @Param("resourceId") long resourceId,
+                          @Param("runId") long runId);
+
+    /**
+     * 释放设备（只释放自己占的，不误伤别人）：status 仅在无 last_error 时回落 idle。
+     */
+    int releaseDevice(@Param("tenantId") long tenantId,
+                      @Param("resourceId") long resourceId,
+                      @Param("runId") long runId);
+
+    /** 清孤儿锁（current_run_id 指向的 run 已是终态）；返回清理条数。 */
+    int releaseOrphanDeviceLocks(@Param("tenantId") long tenantId);
+
+    /**
+     * 清超时锁（updated_at 早于阈值）；ttlSeconds 为秒数文本（与 {@code ' seconds'}
+     * 拼接成 interval，与原语句一致），返回清理条数。
+     */
+    int releaseStaleDeviceLocks(@Param("tenantId") long tenantId,
+                                @Param("ttlSeconds") String ttlSeconds);
 }
