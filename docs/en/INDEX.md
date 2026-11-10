@@ -426,9 +426,22 @@ cd webapp && npx tsc -b --force
 ./scripts/test-all.sh --pure-only
 ```
 
-The scanner exits non-zero when a hard check fails, so it can be wired into
-`scripts/ci-gate.sh` as a fifth gate (not yet done — tracked as an open item in the
-action list).
+The scanner exits non-zero when a hard check fails. It is wired into the gate chain
+through `scripts/gate-select.py` (runs when `webapp/src/i18n/**` changes).
+
+**Document parity and link checks** live in a second script:
+
+```bash
+# 5. 中英文档逐项对齐 + 相对链接可解析（英文侧 + **中文侧**）
+python3 scripts/verify-en-docs.py
+```
+
+It checks, for every registered pair: table rows, code fences, headings and checkboxes
+match one for one, each table row's column count matches the source row for row, and
+**every relative link resolves** — on the English side *and* on the Chinese side (the
+Chinese set is the authority, so its links rot silently otherwise: a relative path
+written against the repository root instead of the document's own directory). It is
+also wired through `scripts/gate-select.py` (runs when documents changed).
 
 ---
 
@@ -437,11 +450,11 @@ action list).
 | # | Item | Status |
 |---|---|---|
 | 1 | Translate the frontend | ✅ Done — 26/26 pages, 0 residual Chinese |
-| 1b | Translate the documents | ✅ **89 / 89 done** — every Chinese document has an English edition |
-| 2 | Translate the P0/P1 documents (roadmap, onboarding, overseas research 00–02) | ⬜ |
-| 3 | Merge `feat/auto-20261103-acb9a80e` into `main`, then translate overseas research 03–10 | ⬜ Blocked on the merge |
-| 4 | Wire `scan-i18n.py` into `scripts/ci-gate.sh` | ⬜ |
-| 5 | Backend-side Chinese text (kernel error messages, `StatusVocabulary` labels, SQL comments) | ⬜ Not started — the API returns Chinese `error` strings, which currently surface verbatim in the console |
+| 1b | Translate the documents | ⚠️ **Partial** — **104 of the 142** Chinese documents have an English edition; the other **38 are Chinese-only by design** (architecture decisions, the remediation status table, review bundles, working logs) — see §3b. The earlier "89/89 — every Chinese document has an English edition" was **wrong** |
+| 2 | Translate the P0/P1 documents (roadmap, onboarding, overseas research 00–02) | ✅ **Closed** — roadmap and onboarding are translated; the **overseas research was moved into `private/`** and is deliberately **not published** (§5b), so it needs no English edition in the repository |
+| 3 | Merge `feat/auto-20261103-acb9a80e` into `main`, then translate overseas research 03–10 | ✅ **Closed** — the branch is merged; the overseas research now lives in `private/` and is not published (§5b) |
+| 4 | Wire `scan-i18n.py` into the gate | ✅ **Done** — wired through `scripts/gate-select.py` (runs when `webapp/src/i18n/**` changes); not yet in the always-run set |
+| 5 | Backend-side Chinese text (kernel error messages, `StatusVocabulary` labels, SQL comments) | ⬜ Not started — the API returns Chinese `error` strings, which currently surface verbatim in the console. Tracked as **P-16** in `docs/architecture/REMEDIATION_STATUS.md` (measured: 152 distinct messages, 32 display points) |
 | 6 | Decide whether the English build ships as a separate artifact (`VITE_DEFAULT_LOCALE=en-US`) or as one build with runtime switching | ⬜ Currently: one build, runtime switching |
 
 **Item 5 is the largest remaining gap.** The kernel returns Chinese error strings in
