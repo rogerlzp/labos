@@ -5511,3 +5511,63 @@ swept into another session's commit, whose title had nothing to do with the cont
 ⇒ Check `git diff --cached --stat` before committing and `git show --stat HEAD` afterwards;
 for a commit that was already **pushed**, do not rewrite history — just record the real
 commit id in the status table (see chapter 9 of the contribution guidelines).
+
+**Added later (2026-11-10): the names of built-in logic nodes and robot-arm transfer nodes also fall back to neutral codes (P-14)**
+
+Symptom: a workflow created in the Chinese UI stores node names like `表达式节点` and
+`机械臂搬运`; the same workflow created in the English UI stores "Expression node" and
+"Robot-arm transfer". Open someone else's graph after a locale switch and the node names
+are simply in the other language.
+
+Root cause: P-13 only converted the **gateway role names** to neutral codes — the
+built-in node line was left untouched. It uses the very same mechanism (an
+auto-generated name written into the BPMN `name`), but it wrote the **UI wording**
+there. And `name` is persisted data (it lands in `workflow_node.name`).
+
+Fix:
+① The code of a built-in node **is its method** (`__setVar`/`__expr`/`__sleep`/`__wait` —
+   the backend identifies built-in nodes by `protocolName` anyway), so no separate set of
+   codes is needed;
+② The robot-arm transfer node uses `ARM_TRANSFER` — its method is `Transfer`, and the
+   database has more than 2000 ordinary transfer tasks with that same name; using it as
+   the display identity would label every one of them `机械臂搬运`;
+③ Legacy Chinese names are converted by a reverse table at the display layer;
+   **not a single byte of the stored data is touched**;
+④ The legacy **English** names are deliberately **not** reverse-mapped: they collide with
+   **real device method names** — the database has 480 rows named `Delay` whose
+   `protocol_name` is `Delay` — so the two are indistinguishable in the data and a
+   reverse lookup would necessarily misjudge 480 real device nodes. Rather miss the
+   translation (graphs created in the English UI have to be renamed by hand once) than
+   misjudge.
+
+**The most valuable thing found this time**: bpmn-js draws names in **two completely
+different places** — the external label (gateways, drawn outside the shape) and the
+**inside of the task shape** (built-in nodes, drawn in the box). The first version only
+took over the label, and in the rendering-level check `__expr` **showed up verbatim in
+the box on the canvas** ⇒ the shape itself has to be taken over as well (two renderers:
+label 2000 / shape 1900, and the shape one deliberately below the device-card renderer
+at 2000 so that device nodes with an icon still go through the card renderer).
+
+**Verification**: `tsc --noEmit` on an exported snapshot of the index (0 errors — the
+working tree mixes in another session's WIP and cannot stand for this commit); a runtime
+mapping check (2 locales × 9 codes + 10 legacy Chinese names, zero misjudgements among
+14 other names); and a real bpmn-js rendering check (both the import-render path and the
+locale-switch redraw path — `Delay` stayed untouched and the model name was not
+modified).
+
+Lessons (cross-project):
+① **"the same mechanism" is not "the same code path"** — registering the same renderer
+   in **both canvases** (designer / run graph) is not enough: bpmn-js has **two**
+   rendering entry points for a name (external label vs inside the shape), and missing
+   one leaves half of the nodes showing their raw code.
+   ⇒ When adding a rendering-layer mechanism, write down **everywhere the name can be
+   drawn** and wire each of them.
+② **A reverse lookup by name requires proving the literal is unique in the real data** —
+   this time we nearly turned 480 real `Delay` device nodes into built-in delay nodes.
+   ⇒ Before building a reverse table, query the database: does this literal mean
+   anything else there? (Not "it looks unique" — **looked it up**.)
+③ **Without the field, there is no type guard** — the frontend `RunNode`/Gantt nodes
+   carry no `nodeType` and the backend DTO does not expose one either, so a reverse
+   lookup can only match names exactly ⇒ the misjudgement risk has to be written into
+   the item explicitly (rather miss than misjudge) instead of assuming "an exact match
+   is enough".
