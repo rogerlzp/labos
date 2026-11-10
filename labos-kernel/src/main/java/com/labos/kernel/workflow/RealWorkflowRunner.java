@@ -230,20 +230,20 @@ public final class RealWorkflowRunner {
 
     // ---------------------------------------------------------------- 数据读取
 
+    /** 延迟取 Mapper（本类全是静态方法，见 Mappers）。 */
+    private static com.labos.kernel.persistence.GraphMapper gm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class);
+    }
+
     public static WorkflowDef loadWorkflow(DbConfig db, long id) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id, code, name, category FROM workflow WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, TENANT);
-            ps.setLong(2, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("workflow 不存在: " + id);
-                }
-                return new WorkflowDef(rs.getLong("id"), rs.getString("code"),
-                        rs.getString("name"), rs.getString("category"));
-            }
+        java.util.Map<String, Object> row = gm().selectWorkflowHeader(TENANT, id);
+        if (row == null) {
+            throw new IllegalArgumentException("workflow 不存在: " + id);
         }
+        return new WorkflowDef(((Number) row.get("id")).longValue(),
+                (String) row.get("code"), (String) row.get("name"),
+                (String) row.get("category"));
     }
 
     public static List<NodeDef> loadNodes(DbConfig db, long workflowId) throws SQLException {
@@ -276,15 +276,8 @@ public final class RealWorkflowRunner {
 
     public static List<String[]> loadEdges(DbConfig db, long workflowId) throws SQLException {
         List<String[]> out = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT from_key, to_key FROM workflow_edge WHERE workflow_id=?")) {
-            ps.setLong(1, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(new String[]{rs.getString(1), rs.getString(2)});
-                }
-            }
+        for (java.util.Map<String, Object> row : gm().selectEdges(workflowId)) {
+            out.add(new String[]{(String) row.get("fromKey"), (String) row.get("toKey")});
         }
         return out;
     }
@@ -638,14 +631,11 @@ public final class RealWorkflowRunner {
 
     private static Map<Long, List<String[]>> loadAllEdges(DbConfig db) throws SQLException {
         Map<Long, List<String[]>> out = new HashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT workflow_id, from_key, to_key FROM workflow_edge");
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.computeIfAbsent(rs.getLong(1), k -> new ArrayList<>())
-                        .add(new String[]{rs.getString(2), rs.getString(3)});
-            }
+        for (java.util.Map<String, Object> row : gm().selectAllEdges()) {
+            long wfId = ((Number) row.get("workflowId")).longValue();
+            out.computeIfAbsent(wfId, k -> new ArrayList<>())
+                    .add(new String[]{(String) row.get("fromKey"),
+                            (String) row.get("toKey")});
         }
         return out;
     }
@@ -655,16 +645,10 @@ public final class RealWorkflowRunner {
         long t0 = System.nanoTime();
 
         List<WorkflowDef> wfs = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id, code, name, category FROM workflow WHERE tenant_id = ? ORDER BY id")) {
-            ps.setLong(1, TENANT);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    wfs.add(new WorkflowDef(rs.getLong(1), rs.getString(2),
-                            rs.getString(3), rs.getString(4)));
-                }
-            }
+        for (java.util.Map<String, Object> row : gm().selectWorkflowHeaders(TENANT)) {
+            wfs.add(new WorkflowDef(((Number) row.get("id")).longValue(),
+                    (String) row.get("code"), (String) row.get("name"),
+                    (String) row.get("category")));
         }
 
         Map<Long, String> xmlByWf = loadGraphXml(db);
@@ -807,18 +791,10 @@ public final class RealWorkflowRunner {
     /** 每个流程的 BPMN XML。 */
     private static Map<Long, String> loadGraphXml(DbConfig db) throws SQLException {
         Map<Long, String> out = new HashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id, graph->>'xml' FROM workflow WHERE tenant_id = ?");
-             ) {
-            ps.setLong(1, TENANT);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String xml = rs.getString(2);
-                    if (xml != null && !xml.isBlank()) {
-                        out.put(rs.getLong(1), xml);
-                    }
-                }
+        for (java.util.Map<String, Object> row : gm().selectGraphXmlRows(TENANT)) {
+            String xml = (String) row.get("xml");
+            if (xml != null && !xml.isBlank()) {
+                out.put(((Number) row.get("id")).longValue(), xml);
             }
         }
         return out;

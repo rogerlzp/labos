@@ -11,6 +11,23 @@ package com.labos.kernel.persistence;
  */
 public interface GraphMapper {
 
+    // ---- 执行器的图读取（RealWorkflowRunner 的静态方法用 Mappers.get 取）----
+
+    /** 流程头（id/code/name/category）；不存在返回 null。 */
+    java.util.Map<String, Object> selectWorkflowHeader(long tenantId, long workflowId);
+
+    /** 全部流程头（批量验收 runAll 用）。 */
+    java.util.List<java.util.Map<String, Object>> selectWorkflowHeaders(long tenantId);
+
+    /** 单个流程的边。**原实现按 workflow_id 过滤、不带 tenant**，沿用。 */
+    java.util.List<java.util.Map<String, Object>> selectEdges(long workflowId);
+
+    /** 全库边（按 workflow 分组前的原始行）。**同样不带 tenant**，沿用。 */
+    java.util.List<java.util.Map<String, Object>> selectAllEdges();
+
+    /** 每个流程的 BPMN XML（id + xml）。 */
+    java.util.List<java.util.Map<String, Object>> selectGraphXmlRows(long tenantId);
+
     /** 现有节点 + 已标能力（saveGraph 增量 upsert 的比较基准）。 */
     java.util.List<java.util.Map<String, Object>> selectNodeCaps(long workflowId);
 

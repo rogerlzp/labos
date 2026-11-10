@@ -59,4 +59,36 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
 
+    <select id="selectWorkflowHeader" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", name AS "name", category AS "category"
+          FROM workflow
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectWorkflowHeaders" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", name AS "name", category AS "category"
+          FROM workflow
+         WHERE tenant_id = #{param1}
+         ORDER BY id
+    </select>
+
+    <!-- 原实现只按 workflow_id 过滤（不加 tenant），沿用以免改变可见范围。 -->
+    <select id="selectEdges" resultType="java.util.Map">
+        SELECT from_key AS "fromKey", to_key AS "toKey"
+          FROM workflow_edge
+         WHERE workflow_id = #{param1}
+    </select>
+
+    <select id="selectAllEdges" resultType="java.util.Map">
+        SELECT workflow_id AS "workflowId",
+               from_key AS "fromKey", to_key AS "toKey"
+          FROM workflow_edge
+    </select>
+
+    <select id="selectGraphXmlRows" resultType="java.util.Map">
+        SELECT id AS "id", graph->>'xml' AS "xml"
+          FROM workflow
+         WHERE tenant_id = #{param1}
+    </select>
+
 </mapper>
