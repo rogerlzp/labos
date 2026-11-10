@@ -18,6 +18,8 @@
 import argparse
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import threading
@@ -55,6 +57,82 @@ XML = """<?xml version="1.0" encoding="UTF-8"?>
 # 探方法时按"有时长的动作类"优先：并发/排队断言要靠命令真的占一段时长。
 METHOD_CANDIDATES = ["Seal", "OpenDoor", "Grip", "Mix", "SetTemp", "Deposit1",
                      "Transfer", "Home", "GetStatus"]
+
+# ---------------------------------------------------------------- 本机环境的两把尺子
+#
+# ① 模拟器**故意**带 30~45 秒随机延时（`--rand-delay 30000:45000`，见
+#    `verify-flow-matrix.py` 的 G-05：等待预算要按它推导，不是常量），
+#    而影子探针的命令超时只有 3 秒 ⇒ **好设备也会超时**返回 EC-05-1007。
+#    按探针的 ok 判 ⇒ 每一台都被判成"不能跑命令" ⇒ 脚本永远 SKIP，
+#    看着像"环境没起模拟器"，其实是**判据与本环境不匹配**。
+# ② 模拟器画像（profile）决定它**真正实现**哪些方法 —— 挑了型号不支持的
+#    方法，实验跑起来必然失败，所以方法要从画像里取。
+
+# 模拟器画像 → 真正实现的方法（抄自 labos-kernel 的 DeviceProfile.java；
+# 只列本脚本候选方法里出现过的那些）
+PROFILE_METHODS = {
+    "robot": {"Home", "Transfer", "TransferTo", "GetPosition", "GetPoints",
+              "SyncPoints", "Grip", "Release", "GetStatus", "Stop"},
+    "liquid_handler": {"Home", "GetTips", "DropTips", "Aspirate", "Dispense",
+                       "Transfer", "Mix", "SetTemp", "GetStatus", "Stop"},
+    "incubator": {"Home", "OpenDoor", "CloseDoor", "Deposit1", "Withdraw1",
+                  "SetTemp", "SetCO2", "GetTemp", "GetStatus"},
+    "centrifuge": {"Home", "OpenDoor", "CloseDoor", "Load", "Unload", "GetStatus"},
+    "sealer": {"Home", "Load", "Unload", "Seal", "GetStatus"},
+    "washer": {"Home", "Load", "Unload", "Wash", "Dispense", "GetStatus"},
+}
+
+
+def sim_profiles():
+    """{端口: 画像} —— 从模拟器进程参数读（跟 verify-flow-matrix.py 同一套路）。"""
+    out = {}
+    try:
+        text = subprocess.run(["pgrep", "-fl", "DeviceSimulator"],
+                              capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return out
+    for line in text.splitlines():
+        m_port = re.search(r"--port\s+(\d+)", line)
+        m_prof = re.search(r"--profile\s+(\S+)", line)
+        if m_port and m_prof:
+            out[int(m_port.group(1))] = m_prof.group(1)
+    return out
+
+
+def sim_method_delay_sec():
+    """当前环境单条设备方法的耗时上限（秒）—— 从模拟器进程参数读。"""
+    try:
+        out = subprocess.run(["pgrep", "-fl", "DeviceSimulator"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    best = 0
+    for line in out.splitlines():
+        m = re.search(r"--rand-delay\s+(\d+):(\d+)", line)
+        if m:
+            best = max(best, int(m.group(2)))
+    return max(0, best // 1000)
+
+
+def device_budget_sec(actions=1, slack=90):
+    """一次 run 的等待预算：按当前模拟器的单条动作耗时推导（G-05 同口径）。"""
+    d = sim_method_delay_sec()
+    if d <= 0:
+        return 300          # 读不到模拟器参数 ⇒ 退回真机时序上限
+    return max(90, d * actions + slack)
+
+
+def tcp_reachable(endpoint, timeout=2.0):
+    """设备端点的端口是否真的通（2 秒超时，连不上立刻出局）。"""
+    if not endpoint or "://" not in endpoint:
+        return False
+    hostport = endpoint.split("://", 1)[1]
+    host, _, port = hostport.partition(":")
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
 
 
 def ok(msg):
@@ -117,12 +195,20 @@ def main():
         return 0
 
     def probe(rid, method):
-        """单命令真下发一次：ok=True 才算"这台设备真的能跑这个方法"。"""
+        """探一次：返回 (这个方法能不能用, 错误码)。
+
+        <p>「能不能用」在本环境里**不能**只看 ok：模拟器刻意慢 30~45 秒，
+        好设备也会超时返回 EC-05-1007（设备回包超时），但命令**确实发出去了**
+        ⇒ 设备是通的。只有 EC-06-0004（设备类型不支持该方法）才说明
+        这个方法要换 —— 那个判定是内核侧的能力检查，不依赖设备回包。
+        """
         try:
             r = api(f"/api/shadow/probe?resourceId={rid}&method={method}", "POST", {}, token)
-            return bool(r.get("ok"))
         except Exception:  # noqa: BLE001
-            return False
+            return False, ""
+        if r.get("ok"):
+            return True, ""
+        return r.get("errorCode") != "EC-06-0004", r.get("errorCode") or ""
 
     # 选设备：按"最近成功过命令 + 本地端点 + 库里顺序"排，逐台**真探**。
     #
@@ -133,8 +219,9 @@ def main():
     # 收集**所有**真探得通的设备（连同它所在的岛）——
     # A 段要用第一台，B 段（同岛并行）需要同岛第二台。
     working = []          # [(resource_id, method, island_id)]
-    candidates = [int(x) for x in q("""
-        SELECT r.id FROM resource_node r
+    candidates = []
+    for ln in [x for x in q("""
+        SELECT r.id || '|' || COALESCE(dr.endpoint,'') FROM resource_node r
           JOIN device_instance di ON di.resource_id = r.id AND di.deleted_at IS NULL
           LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
          WHERE r.kind = 'device' AND r.tenant_id = 1 AND r.deleted_at IS NULL
@@ -155,20 +242,47 @@ def main():
                     WHERE n.resource_id = r.id AND c.status = 'completed'
                       AND c.finished_at > now() - interval '2 hours') DESC,
               r.id
-         LIMIT 24""").split()]
-    probed = 0
-    for rid in candidates:
-        probed += 1
-        ms = [m for m in METHOD_CANDIDATES if probe(rid, m)]
-        if ms:
+         LIMIT 24""").split("\n") if x.strip()]:
+        rid_s, _, ep = ln.partition("|")
+        try:
+            candidates.append((int(rid_s), ep.strip()))
+        except ValueError:
+            continue
+    # 选设备：三条判据，都不依赖"探针 ok"（本环境设备刻意慢 30~45 秒，
+    # 探针 3 秒超时 ⇒ 按 ok 判会把好设备也判死，脚本永远 SKIP）。
+    #   ① 脚本自己连一次 TCP：端口通不通是确定的（远端 192.168.10.196 连不上，
+    #      2 秒内出局，不必等 3 秒超时）；
+    #   ② 方法取自**该模拟器画像真正实现的方法**（从进程参数读 profile）——
+    #      挑了型号不支持的方法，实验跑起来必然失败；
+    #   ③ 探针只用来判"方法与设备能力匹配"（EC-06-0004 ⇒ 换下一个方法）。
+    profiles = sim_profiles()
+    probed, tcp_ok = 0, 0
+    for rid, endpoint in candidates:
+        if not tcp_reachable(endpoint):
+            continue
+        tcp_ok += 1
+        port = int(endpoint.rsplit(":", 1)[-1]) if ":" in endpoint else 0
+        prof = profiles.get(port)
+        methods = [m for m in METHOD_CANDIDATES
+                   if prof is None or m in PROFILE_METHODS.get(prof, set())]
+        if not methods:
+            methods = METHOD_CANDIDATES
+        picked = None
+        for m in methods:
+            probed += 1
+            good, _code = probe(rid, m)
+            if good:
+                picked = m
+                break
+        if picked:
             isl = int(q(f"SELECT parent_id FROM resource_node WHERE id={rid}") or 0)
-            working.append((rid, ms[0], isl))
+            working.append((rid, picked, isl))
     if not working:
-        print(f"SKIP: 库里没有真能跑命令的设备（候选 {probed} 台全探不通，"
-              f"CI 没起模拟器？），无法验证同岛并发")
+        print(f"SKIP: 没有可用设备（候选 {len(candidates)} 台，端口可达 {tcp_ok} 台，"
+              f"探针 {probed} 次全失败），无法验证同岛并发")
         return 0
-    print(f"候选探针：{probed} 台探完，{len(working)} 台真能跑命令"
-          f"（{', '.join(str(r) for r, _, _ in working)}）")
+    print(f"候选：{len(candidates)} 台 / 端口可达 {tcp_ok} 台 / 探针 {probed} 次 → "
+          f"{len(working)} 台可用（{', '.join(f'{r}:{m}' for r, m, _ in working)}）")
 
     dev, method = working[0][0], working[0][1]
     island = args.island or working[0][2]
@@ -209,7 +323,7 @@ def main():
     inlist = ",".join(str(int(x)) for x in erids)
 
     peak, queued_peak, samples = 0, 0, []
-    deadline = time.time() + 180
+    deadline = time.time() + device_budget_sec(actions=max(2, args.count))
     while time.time() < deadline:
         sts = [s for s in q(f"SELECT status FROM experiment_run WHERE id IN ({inlist})").split("\n") if s]
         running = sum(1 for s in sts if s == "running")
@@ -268,7 +382,7 @@ def main():
             erids_b.append(r.get("experimentRunId") or r.get("id"))
         inlist_b = ",".join(str(int(x)) for x in erids_b if x)
         peak_b, samples_b = 0, []
-        deadline = time.time() + 120
+        deadline = time.time() + device_budget_sec(actions=2)
         while time.time() < deadline:
             sts = [s for s in q(f"SELECT status FROM experiment_run WHERE id IN ({inlist_b})").split("\n") if s]
             running = sum(1 for s in sts if s == "running")
