@@ -181,6 +181,10 @@
         SELECT name FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <select id="selectCapabilityIdGlobal" resultType="java.lang.Long">
+        SELECT id FROM capability WHERE code = #{param1}
+    </select>
+
     <select id="selectExistingWorkflowIds" resultType="java.lang.Long">
         SELECT id FROM workflow
          WHERE tenant_id = #{param1}

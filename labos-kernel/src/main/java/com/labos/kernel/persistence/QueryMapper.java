@@ -57,6 +57,14 @@ public interface QueryMapper {
 
     String selectWorkflowName(long tenantId, long workflowId);
 
+    /**
+     * 按 code 取型号 id（**不带 tenant**，code 由调用方转大写）。
+     *
+     * <p>与 {@link #selectCapabilityId} 不同：那条带 tenant_id。
+     * 设备注册脚本按全局唯一 code 查，沿用原语义。
+     */
+    Long selectCapabilityIdGlobal(String code);
+
     /** 这批 workflow id 里哪些真的存在（编排校验用）。 */
     List<Long> selectExistingWorkflowIds(long tenantId, List<Long> ids);
 

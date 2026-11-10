@@ -179,6 +179,10 @@ def parse_backend_vocab() -> dict:
 
 # 按设计保留中文的文件：翻译源本身，不是"漏翻"。
 EXCLUDE = {
+    # 先于通用前缀命中（dict 保序，取第一个匹配项）：这里的中文是**历史数据的
+    # 键值**（2026-11-10 之前写死的中文网关角色名），不是待翻译的界面文案。
+    "webapp/src/i18n/legacyRoleNames.ts":
+        "Legacy data key table — frozen Chinese role names read from old rows, not UI copy",
     "webapp/src/i18n/": "The message packs — the Chinese pack is the master, the English one is derived from it",
     "webapp/src/utils/status.ts": "FALLBACK is the Chinese-side fallback vocabulary (the English side comes from i18n/codes.ts)",
 }

@@ -6,7 +6,9 @@ import 'bpmn-js/dist/assets/bpmn-js.css';
 import 'bpmn-js/dist/assets/bpmn-font/css/bpmn.css';
 import { apiFetch } from '../api/client';
 import { statusMeta, statusKnown, useStatusVocabulary } from '../utils/status';
-import { useT } from '../i18n';
+import { useI18n, useT } from '../i18n';
+import NodeRoleLabelRenderer from '../bpmn/NodeRoleLabelRenderer';
+import { isLocalizableRoleName } from '../bpmn/nodeRoleLabel';
 
 /**
  * 一次执行的流程图：把 run_node 的状态画回 BPMN 图上。
@@ -81,6 +83,7 @@ const STYLE = `
 export default function RunGraph({ runId }: { runId: number }) {
   const vocab = useStatusVocabulary();
   const t = useT();
+  const { locale } = useI18n();
   const holder = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<BpmnViewer | null>(null);
   /** 已经打上去的 marker，换状态前要先清掉，否则一个节点会同时挂两个颜色类 */
@@ -117,7 +120,17 @@ export default function RunGraph({ runId }: { runId: number }) {
   // 建 viewer + 导入 XML：**只在 XML 变化时**（轮询只更新 marker，不重建画布，否则会闪）
   useEffect(() => {
     if (!data?.xml || !holder.current) return;
-    const viewer = new BpmnViewer({ container: holder.current });
+    // 标签渲染：把库里存的角色名（中性 code XOR_MERGE，或 2026-11-10 之前
+    // 的老数据中文名「异或汇合」）显示成本地化文案 —— 与设计器画布同一套机制
+    // （见 bpmn/NodeRoleLabelRenderer.ts）。
+    // ⚠ 之前这里漏注册了它 ⇒ 运行图上的网关名一直显示原文（英文界面下是中文）。
+    const viewer = new BpmnViewer({
+      container: holder.current,
+      additionalModules: [{
+        __init__: ['nodeRoleLabelRenderer'],
+        nodeRoleLabelRenderer: ['type', NodeRoleLabelRenderer],
+      }],
+    } as any);
     viewerRef.current = viewer;
     let disposed = false;
     viewer.importXML(data.xml)
@@ -159,6 +172,32 @@ export default function RunGraph({ runId }: { runId: number }) {
       try { viewer.destroy(); } catch { /* 卸载时销毁失败无所谓 */ }
     };
   }, [data?.xml]);
+
+  // 语种切换后重画角色名标签（与设计器画布同一套机制，见 Designer.tsx）。
+  //
+  // 为什么需要：画布是 bpmn-js 的 SVG，不受 React 重渲染影响；角色名的显示
+  // 文案是按**当前语种**查出来的 ⇒ 切语种后必须重画，否则画布上是旧语种的
+  // 文案、页面上其它地方却是新语种。
+  //
+  // 只重画命中角色名（中性 code / 老数据中文名）的标签，不碰形状、不碰
+  // marker 染色、不重建 viewer。
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!v) return;
+    const registry = v.get('elementRegistry') as {
+      getAll: () => Array<{ id: string; type?: string; labelTarget?: { businessObject?: { name?: string } } }>;
+      getGraphics: (el: unknown) => SVGElement | undefined;
+    };
+    const graphicsFactory = v.get('graphicsFactory') as {
+      update: (type: string, element: unknown, gfx: SVGElement) => void;
+    };
+    registry.getAll().forEach((el) => {
+      if (el.type !== 'label' || !el.labelTarget) return;
+      if (!isLocalizableRoleName(el.labelTarget.businessObject?.name)) return;
+      const gfx = registry.getGraphics(el);
+      if (gfx) graphicsFactory.update('shape', el, gfx);
+    });
+  }, [locale]);
 
   // 打 marker：每次状态变化重打一遍（先清先前的）
   const paint = useCallback((nodes: RunGraphNode[]) => {

@@ -3,7 +3,7 @@ import type { DragEvent as ReactDragEvent } from 'react';
 import DeviceImageRenderer, { iconFor, isArm } from '../bpmn/DeviceImageRenderer';
 import { workflowPaletteModule } from '../bpmn/WorkflowPalette';
 import NodeRoleLabelRenderer from '../bpmn/NodeRoleLabelRenderer';
-import { gatewayRoleCode, isMergeRole, isNeutralCode, localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
+import { gatewayRoleCode, isLocalizableRoleName, isMergeRole, localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -928,7 +928,8 @@ export default function DesignerPage() {
   // （XOR_MERGE 等）的显示文案是按**当前语种**查出来的 ⇒ 切语种后必须重画，
   // 否则画布上是旧语种的文案、右栏面板却是新语种，两边对不上。
   //
-  // 只重画命中中性 code 的标签，其余标签交给 bpmn-js 自己的更新路径，
+  // 只重画命中角色名的标签（中性 code，或 2026-11-10 之前的老数据中文名），
+  // 其余标签交给 bpmn-js 自己的更新路径，
   // 不碰形状、不碰选中态、不进 commandStack（不影响"保存"按钮的脏标记）。
   useEffect(() => {
     const m = modelerRef.current;
@@ -942,7 +943,7 @@ export default function DesignerPage() {
     };
     registry.getAll().forEach((el) => {
       if (el.type !== 'label' || !el.labelTarget) return;
-      if (!isNeutralCode(el.labelTarget.businessObject?.name)) return;
+      if (!isLocalizableRoleName(el.labelTarget.businessObject?.name)) return;
       const gfx = registry.getGraphics(el);
       if (gfx) graphicsFactory.update('shape', el, gfx);
     });

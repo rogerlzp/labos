@@ -376,12 +376,9 @@ public final class DeviceRegistrar {
         if (code == null || code.isBlank()) {
             return null;
         }
-        try (PreparedStatement ps = c.prepareStatement("SELECT id FROM capability WHERE code = ?")) {
-            ps.setString(1, code.toUpperCase(Locale.ROOT));
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class)
+                .selectCapabilityIdGlobal(code.toUpperCase(Locale.ROOT));
     }
 
     private static Long capabilityIdOrNull(String code) {

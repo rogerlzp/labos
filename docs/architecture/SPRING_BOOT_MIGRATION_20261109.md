@@ -270,9 +270,28 @@ experiments/eta/runs/scheduler/meta/manual-windows/holds/users/health/静态页�
 - `JdbcManualWindowStore` 的 4 条**刻意不迁**：`COLUMNS` 常量已被 3 处复用，
   `read(rs)` 按 16 列**位置**映射，搬进 XML 会把「列序即契约」藏起来。
 
+**2026-11-10 深夜：SQL 收编达到可收口状态（114 条进 XML，Java 侧 18）**
+
+Mapper 一览：Workflow 4 / Run 11 / Graph 13 / Meta 1 / Query 24 /
+WorkflowWeb 9 / Experiment 6 / Pause 7 / DeviceState 11 / Execution 10 /
+Command 2。
+
+**Java 侧剩 18 处字面量，按性质分四类，只有第一类需要后续处理：**
+1. **明确约定暂缓**（2 处）：`WorkflowService.saveGraph` 的节点 upsert 批量
+   循环（每行 jsonb 拼装 + 可空绑定）、`JdbcManualWindowStore` 的 4 条
+   （`COLUMNS` 常量 + 16 列位置映射 = 列序即契约）。
+2. **SQL 生成器，不是数据访问**（5 处）：`DeviceErrorSql`（给 DBA 的 INSERT
+   脚本）、`DeviceRegistrar.sqlFor`（导出语句）、`DeviceRegistrar` 的
+   capability 列表诊断输出。搬进 XML 只会让脚本依赖 Spring 容器。
+3. **SQL 由代码生成**（2 处）：`ExperimentStateProjector` 的两条 UPDATE 由
+   `StatusVocabulary.runToExperimentCaseSql()` 生成 —— 状态映射的唯一真源，
+   `StatusVocabularySelfTest` 逐状态钉死；写进 XML 就是第二份映射。
+4. **一次性工具 / 演示**（6 处）：`GraphDiRepair`（图修复脚本）、
+   `EndToEndDemo` / `DriverContractDemo`（演示与契约脚本）。
+
 **仍未完成**：
-- 约 71 条 SQL 按聚合收进 Mapper（`WorkflowService.saveGraph` 节点/边重建、
-  `DriverStepExecutor`、`ExperimentExecutor`、`ExperimentScheduler` 等）；
+- `saveGraph` 节点 upsert 与 `JdbcManualWindowStore` 这两处的最终方案（待研究）；
+- 其余零散 SQL 已按上面四类归位，不需要再动。
 
 ---
 

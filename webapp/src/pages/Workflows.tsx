@@ -10,6 +10,7 @@ import { api, type WorkflowSummary } from '../api/client';
 import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
 import type { MessageKey, MessageVars } from '../i18n/core';
+import { localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 
 /** 流程库：选一个 → 看预检 + 节点 → 执行。 */
 export default function WorkflowsPage() {
@@ -333,7 +334,8 @@ export default function WorkflowsPage() {
             dataSource={detail.data?.tasks ?? []}
             rowKey={(r, i) => `${r.name}-${i}`}
             columns={[
-              { title: t('workflows.col.nodes'), dataIndex: 'name' },
+              { title: t('workflows.col.nodes'), dataIndex: 'name',
+                render: (v: string) => localizedNeutralLabel(v) ?? v },
               { title: t('workflows.col.capability'), dataIndex: 'capability', width: 130 },
               {
                 title: t('workflows.col.source'), dataIndex: 'source', width: 110,

@@ -19,8 +19,13 @@ import { localizedNeutralLabel } from './nodeRoleLabel';
  * 渲染器画（盒、fitBox 自适应、颜色全由它保证），画完**立刻还原**。
  * 于是：SVG 里是本地化文案，模型里仍是中性 code ⇒ 画布随语种变，落库不随语种变。
  *
- * <p>取不到中性 code 的标签（用户自起的名字、库里旧的中文名、连线标签）
- * 一律 {@code canRender=false}，交回默认渲染器，行为与改动前完全一致。
+ * <p>取不到角色名的标签（用户自起的名字、连线标签）一律 {@code canRender=false}，
+ * 交回默认渲染器，行为与改动前完全一致。
+ *
+ * <p><b>老数据的中文名也会被接管</b>（P-13）：「异或汇合」这类 2026-11-10
+ * 之前写死的中文名，经反向映射表换成 code 后走同一套本地化 ⇒ 英文界面下
+ * 老图里的网关名也不再是中文。模型里的 name 仍然不动（换名只发生在
+ * 渲染的那一瞬间）。
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 class NodeRoleLabelRenderer extends BaseRenderer {
