@@ -248,6 +248,20 @@ def main():
             candidates.append((int(rid_s), ep.strip()))
         except ValueError:
             continue
+    # 先按端点收窄候选：**本机有回环端点的模拟器时，只看它们**。
+    #
+    # 为什么必须收窄：远端台架（192.168.10.196:8501）在本机**TCP 也是通的**
+    # （端口开着、只是设备不回包）⇒ TCP 检查放它们过去 ⇒ 而它们每个要试
+    # 9 个方法 × 3 秒超时 = 27 秒，15 台远端就是 7 分钟（实测门禁卡在这），
+    # 而且它们随时可能被误选成"可用设备"（超时 ≠ 能力不匹配 ⇒ 判据会放行）。
+    # 本机模拟器才是"能跑命令"的那批（脚本的既定前提，见下方注释）。
+    if any(ep.startswith("tcp://127.0.0.1") or ep.startswith("tcp://localhost")
+           for _, ep in candidates):
+        local = [(rid, ep) for rid, ep in candidates
+                 if ep.startswith("tcp://127.0.0.1") or ep.startswith("tcp://localhost")]
+        print(f"候选收窄：{len(candidates)} → {len(local)} 台（本机回环端点）")
+        candidates = local
+
     # 选设备：三条判据，都不依赖"探针 ok"（本环境设备刻意慢 30~45 秒，
     # 探针 3 秒超时 ⇒ 按 ok 判会把好设备也判死，脚本永远 SKIP）。
     #   ① 脚本自己连一次 TCP：端口通不通是确定的（远端 192.168.10.196 连不上，
