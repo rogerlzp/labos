@@ -303,7 +303,9 @@ public final class PreflightChecker {
     // ---------------------------------------------------------------- 数据
 
     private String loadXml(long workflowId) {
-        return mappers().selectWorkflowXml(tenantId, workflowId);
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.WorkflowWebMapper.class)
+                .selectWorkflowXml(tenantId, workflowId);
     }
 
     private String loadWorkflowName(long workflowId) {

@@ -198,213 +198,6 @@ public class QueryService {
                 "steps", row.get("steps"));
     }
 
-    /** 实验列表（650 个）。 */
-    /**
-     * 这条流程的**时间条**：每个任务节点预计什么时候开始、什么时候结束。
-     *
-     * <p>甘特的前置：甘特要画条，至少得先有"开始 + 时长"。
-     * 这里按 `seq` 顺序串行模拟一遍，并考虑设备当前占用：
-     * 节点开始时间 = max(上一步结束, 该设备空闲时刻)。
-     *
-     * <p>只说清现在能算准的部分：
-     * <ul>
-     *   <li>时长取 `workflow_node.estimate_sec`，为 0 时按 60 秒兜底并标注 {@code estimated=true}；</li>
-     *   <li>不含换型/清洗/人工处置；并行分支按"都在同一条时间轴上串行"处理（保守）；</li>
-     *   <li>设备绑定从图 XML 的 {@code resource="…"} 读（`workflow_node` 没有这一列）。</li>
-     * </ul>
-     */
-    public String workflowTimelineJson(long workflowId) throws SQLException {
-        // 设备空闲时刻（秒，从现在算）
-        java.util.Map<Long, Long> freeAt = new java.util.HashMap<>();
-        java.util.Map<Long, String> resCode = new java.util.HashMap<>();
-        long now = 0;
-
-        List<String> items = new ArrayList<>();
-        long cursor = 0;
-        // 估算链（每步耗时从哪来，按可靠性从高到低）：
-        //   ① manual  —— 人在流程里填的 estimate_sec（最可信）
-        //   ② history —— 这个方法的**历史 P50**（run_command 里有 11.6 万条实测）
-        //   ③ device  —— 型号库 device_method.estimate_sec（随设备型号来）
-        //   ④ default —— 60 秒兜底，标 estimated=true
-        // 为什么不是"没数据就 60 秒"：历史样本足够的方法（Transfer 4.3 万条）用实测比猜准得多。
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectWorkflowTimelineNodes(tenantId, workflowId)) {
-            String key = String.valueOf(row.get("nodeKey"));
-            long manual = mint(row, "manual");
-            Object p50Obj = row.get("p50");
-            double p50 = p50Obj instanceof Number n ? n.doubleValue() : 0d;
-            boolean p50Null = p50Obj == null;
-            Object nObj = row.get("n");
-            long histN = nObj instanceof Number n ? n.longValue() : 0L;
-            boolean histNNull = nObj == null;
-            Object devObj = row.get("devEst");
-            long devEst = devObj instanceof Number n ? n.longValue() : 0L;
-            boolean devNull = devObj == null;
-
-            long dur;
-            String source;
-            if (manual > 0) {
-                dur = manual;
-                source = "manual";
-            } else if (!p50Null && p50 > 0 && !histNNull && histN >= 20) {
-                // 样本 <20 不用：一两条的耗时不如型号库的默认值
-                dur = Math.max(1, Math.round(p50));
-                source = "history";
-            } else if (!devNull && devEst > 0) {
-                dur = devEst;
-                source = "device";
-            } else {
-                dur = 60;
-                source = "default";
-            }
-            boolean estimated = !"manual".equals(source);
-            Object ridObj = row.get("resourceId");
-            // 0 是历史数据里的"没有设备"，别当成一台设备
-            Long rid = (ridObj == null || !(ridObj instanceof Number)
-                    || ((Number) ridObj).longValue() == 0)
-                    ? null : ((Number) ridObj).longValue();
-            long resFree = 0;
-            if (rid != null) {
-                resFree = freeAt.computeIfAbsent(rid, r -> remainingOf(r));
-                if (!resCode.containsKey(rid)) {
-                    String code = resourceCodeOf(rid);
-                    // 存量流程里的资源 id 可能已经不在 resource_node 了（换过设备/清过池）：
-                    // 显示 "设备#387" 比显示 "未绑定" 诚实 —— 它确实绑了，只是绑的东西没了
-                    resCode.put(rid, code == null ? "设备#" + rid + "（已失效）" : code);
-                }
-            }
-            long startSec = Math.max(cursor, resFree);
-            long end = startSec + dur;
-            cursor = end;
-            if (rid != null) {
-                freeAt.put(rid, end);
-            }
-            items.add(Jsons.obj(
-                    "nodeKey", key,
-                    "name", row.get("name"),
-                    "seq", items.size() + 1,
-                    "resourceId", rid,
-                    "resourceCode", rid == null ? null : resCode.get(rid),
-                    "startSec", startSec,
-                    "endSec", end,
-                    "durationSec", dur,
-                    "estimateSource", source,
-                    "estimateSamples", histNNull ? 0 : histN,
-                    "estimated", estimated));
-        }
-
-        return Jsons.obj("workflowId", workflowId, "totalSec", cursor,
-                "nodes", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /** 某个资源还要被占用多久（秒）；没人用就是 0。 */
-    private long remainingOf(long resourceId) {
-        try {
-            Double remain = queryMapper.selectRemainingSec(tenantId, resourceId);
-            return remain == null ? 0 : Math.round(remain);
-        } catch (RuntimeException e) {
-            return 0;
-        }
-    }
-
-    private String resourceCodeOf(long resourceId) {
-        try {
-            return queryMapper.selectResourceCode(tenantId, resourceId);
-        } catch (RuntimeException e) {
-            // 原实现同样吞异常返回 null：资源码只用于展示，不阻断主流程。
-            return null;
-        }
-    }
-
-    /**
-     * 这条流程现在跑，大概要等多久（秒）。
-     *
-     * <p>算法：取流程里所有任务节点用到的资源，看每个资源**当前**有没有别人的
-     * `run_node` 在跑（`status='running'`），把「预计耗时 - 已跑时长」取最大值。
-     * 再加**排队人数**（同资源上 queued 的单数）作为参考。
-     *
-     * <p>为什么要：点执行之后没有任何反馈，用户不知道是"马上跑"还是"排在 3 个实验后面"。
-     * 甘特之前先把"还要等多久"这个数算出来，后面画时间轴才有数据。
-     *
-     * <p>局限（别当承诺）：按"当前占用者跑完"估算，不含换型/清洗/人工处置时间；
-     * 资源被暂停的单占着时，估的是"它继续跑完"而不是"等人处理"。
-     */
-    public String workflowEtaJson(long workflowId) throws SQLException {
-        // ① 这条流程要用哪些资源 —— 直接查 workflow_node.resource_id。
-        // 这两列是 M9 前置债补的：改动前只能解析图 XML，ETA / 时间条 / 绑定面板各写了一遍正则。
-        java.util.Set<Long> resources = new java.util.LinkedHashSet<>(
-                queryMapper.selectWorkflowResources(tenantId, workflowId));
-        if (resources.isEmpty()) {
-            return Jsons.obj("workflowId", workflowId, "waitSec", 0, "known", false,
-                    "detail", "这条流程没有绑定设备资源，不会排队");
-        }
-
-        long maxWait = 0;
-        List<String> busy = new ArrayList<>();
-        for (Long rid : resources) {
-            java.util.Map<String, Object> holder =
-                    queryMapper.selectBusyResourceHolder(tenantId, rid);
-            if (holder != null) {
-                Object rem = holder.get("remain");
-                long remain = rem instanceof Number n ? Math.round(n.doubleValue()) : 0L;
-                maxWait = Math.max(maxWait, remain);
-                busy.add(Jsons.obj(
-                        "resourceId", rid,
-                        "resourceCode", holder.get("resCode"),
-                        "holderRunNo", holder.get("runNo"),
-                        "holderRunId", holder.get("runId"),
-                        "remainSec", remain));
-            }
-        }
-        return Jsons.obj("workflowId", workflowId, "waitSec", maxWait,
-                "known", true, "resources", resources.size(),
-                "busy", new Jsons.Raw(Jsons.arr(busy)));
-    }
-
-    /**
-     * 某条流程的**执行记录**（最近 N 次）。
-     *
-     * <p>为什么要：跑完的单子在页面上没有入口能翻到 —— 实时看板只列 running，
-     * 暂停队列只列 paused，甘特要手动在下拉里找 run id。
-     * "这条流程跑过几次、每次结果如何"是最基本的追溯需求。
-     */
-    public String workflowRunsJson(long workflowId, int limit) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row : queryMapper.selectWorkflowRuns(
-                tenantId, workflowId, Math.max(1, Math.min(limit, 100)))) {
-            Object dur = row.get("durationSec");
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "runNo", row.get("runNo"),
-                    "status", row.get("status"),
-                    "startedAt", mstr(row, "actualStart"),
-                    "finishedAt", mstr(row, "actualEnd"),
-                    "durationSec", dur instanceof Number n ? n.intValue() : null,
-                    "total", mint(row, "total"),
-                    "done", mint(row, "done"),
-                    "manual", mint(row, "manual"),
-                    "failed", mint(row, "failed")));
-        }
-        return Jsons.obj("workflowId", workflowId, "total", items.size(),
-                "items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /** 时长模型（命令 → p50/p90），甘特预测与仿真共用。 */
-    public String durationsJson(int limit) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectDurations(tenantId, Math.max(1, Math.min(limit, 300)))) {
-            items.add(Jsons.obj(
-                    "method", row.get("method"),
-                    "p50Ms", row.get("p50Ms"),
-                    "p90Ms", row.get("p90Ms"),
-                    "minMs", row.get("minMs"),
-                    "maxMs", row.get("maxMs"),
-                    "sampleCount", row.get("sampleCount")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
     /**
      * 甘特数据：一个 run 的节点/步骤时间轴。
      *
@@ -481,7 +274,9 @@ public class QueryService {
         }
         long workflowId = ((Number) runRow.get("workflowId")).longValue();
         String runStatus = String.valueOf(runRow.get("status"));
-        String xml = queryMapper.selectWorkflowXml(tenantId, workflowId);
+        String xml = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.WorkflowWebMapper.class)
+                .selectWorkflowXml(tenantId, workflowId);
 
         // 只有真的在跑，"running" 才是"执行中"；暂停/结束后的 running 都是没执行到
         boolean live = "running".equals(runStatus);
@@ -586,20 +381,6 @@ public class QueryService {
     /** 保存实验编排图（整体替换），并同步编译成 experiment_process（含偏序边）。 */
     /** A 批：Spring 声明式事务。checked 异常也要回滚（默认只回滚 RuntimeException）。 */
 
-    /** 搬运流程列表（岛屿视图"跑流程"用，按 id 降序）。 */
-    public String choreographiesJson(int limit) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectChoreographies(tenantId, limit)) {
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "code", row.get("code"),
-                    "name", row.get("name"),
-                    "nodeCount", mint(row, "nodeCount")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
     /**
      * 错误码字典 + 它的**主恢复策略**（priority 最小的那条）。
      *
@@ -625,68 +406,6 @@ public class QueryService {
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
 
-    /**
-     * 改一个节点的**方法绑定 + 方法参数**。
-     *
-     * <p>为什么需要这个接口：内置节点（`__setVar` / `__expr`）和普通任务参数，
-     * 改动前只能改库 —— 设计器里拖出来的 task 没有 `protocolName`，而 bpmn-js 的 modeling
-     * 对未声明的自定义属性支持不稳。这里**以库为准**改两处：
-     * <ol>
-     *   <li>{@code workflow_node.protocol_name} + {@code params.method_params}</li>
-     *   <li>{@code workflow.graph->>'xml'} 里该元素的 {@code protocolName} 属性
-     *       （只改这一个属性，坐标/排版一个字不动）</li>
-     * </ol>
-     */
-    /**
-     * 读一个节点的绑定信息（设计器右侧面板用）。
-     *
-     * <p>方法名以 XML 的 protocolName 为准（执行引擎解析的就是它），
-     * 参数以 workflow_node.params->'method_params' 为准。
-     */
-    public String nodeBindingJson(long workflowId, String nodeKey) throws SQLException {
-        String xml = queryMapper.selectWorkflowXml(tenantId, workflowId);
-        String method = null;
-        if (xml != null) {
-            java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("<[a-zA-Z0-9_:]+[^>]*\\sid=\"" + java.util.regex.Pattern.quote(nodeKey)
-                            + "\"[^>]*?\\sprotocolName=\"([^\"]*)\"")
-                    .matcher(xml);
-            if (m.find()) {
-                method = m.group(1);
-            }
-        }
-        // 设备绑定优先读表（M9 前置债）；表里为空再退回 XML（存量未回填时兜底）
-        Long resourceId = null;
-        if (resourceId == null && xml != null) {
-            java.util.regex.Matcher em = java.util.regex.Pattern
-                    .compile("<[a-zA-Z0-9_:]+[^>]*\\sid=\"" + java.util.regex.Pattern.quote(nodeKey)
-                            + "\"[^>]*>")
-                    .matcher(xml);
-            if (em.find()) {
-                java.util.regex.Matcher rm = java.util.regex.Pattern
-                        .compile("\\sresource=\"(\\d+)\"").matcher(em.group());
-                if (rm.find()) {
-                    resourceId = Long.parseLong(rm.group(1));
-                }
-            }
-        }
-        String params = "{}";
-        java.util.Map<String, Object> binding =
-                queryMapper.selectNodeBinding(tenantId, workflowId, nodeKey);
-        if (binding != null) {
-            Object mp = binding.get("mp");
-            if (mp != null) {
-                params = String.valueOf(mp);
-            }
-            if (binding.get("resourceId") != null) {
-                resourceId = ((Number) binding.get("resourceId")).longValue();
-            }
-        }
-        return Jsons.obj("workflowId", workflowId, "nodeKey", nodeKey,
-                "method", method, "resourceId", resourceId,
-                "params", new Jsons.Raw(params));
-    }
-
     /** Spring 声明式事务（checked 异常也回滚）。 */
 
     /**
@@ -697,45 +416,6 @@ public class QueryService {
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
 
-    /** 流程图保存历史（按时间倒序）。 */
-    public String graphHistoryJson(long workflowId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectGraphHistory(tenantId, workflowId)) {
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "nodeCount", mint(row, "nodeCount"),
-                    "edgeCount", mint(row, "edgeCount"),
-                    "bytes", mint(row, "bytes"),
-                    "savedAt", mstr(row, "savedAt")));
-        }
-        return Jsons.obj("workflowId", workflowId,
-                "items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /**
-     * 恢复到某个历史版本。
-     *
-     * <p>先把当前版本再备份一次（不然回滚后就找不到"回滚前"的样子了），
-     * 再写回去。等价于一次普通的保存。
-     */
-    public int restoreGraph(long workflowId, long historyId) throws SQLException {
-        String xml = queryMapper.selectGraphHistoryXml(tenantId, workflowId, historyId);
-        if (xml == null) {
-            throw new IllegalArgumentException("历史版本不存在: " + historyId);
-        }
-        // 注意：这里不写回，交由调用方走 saveGraph（复用校验与备份逻辑）
-        return xml.length();   // 由 ApiServer 取 XML 再调 saveGraph
-    }
-
-    /** 读某历史版本的 XML 原文。 */
-    public String graphHistoryXml(long workflowId, long historyId) throws SQLException {
-        String xml = queryMapper.selectGraphHistoryXml(tenantId, workflowId, historyId);
-        if (xml == null) {
-            throw new IllegalArgumentException("历史版本不存在: " + historyId);
-        }
-        return xml;
-    }
 
     /**
      * 删设备：软删实例 + 从资源树移除。
@@ -900,11 +580,6 @@ public class QueryService {
      * @return 写入条数（空列表 = 清空绑定，回到资源树推导）
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-
-    /** 取流程的 BPMN 2.0 XML（原样返回，给 bpmn-js 渲染）。 */
-    public String workflowGraph(long workflowId) throws SQLException {
-        return queryMapper.selectWorkflowXml(tenantId, workflowId);
-    }
 
     // ---------------------------------------------------------------- 工具
 

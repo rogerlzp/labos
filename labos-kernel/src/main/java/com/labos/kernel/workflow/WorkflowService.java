@@ -1687,7 +1687,13 @@ public class WorkflowService {
     }
 
     private String loadGraphXml(long workflowId) throws SQLException {
-        return qm().selectWorkflowXml(tenantId, workflowId);
+        return wwm().selectWorkflowXml(tenantId, workflowId);
+    }
+
+    /** 懒取 WorkflowWebMapper：同 qm()，流程图 XML 已按域归位到该 Mapper。 */
+    private com.labos.kernel.persistence.WorkflowWebMapper wwm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.WorkflowWebMapper.class);
     }
 
     /** 依赖缓存：execute 里会多次用到，避免重复查库。 */

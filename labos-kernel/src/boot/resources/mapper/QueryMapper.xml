@@ -6,18 +6,7 @@
 
     <select id="health" resultType="java.util.Map">
         SELECT current_database() AS db, version() AS ver
-    </select>
-
-    <select id="selectResourceCode" resultType="java.lang.String">
-        SELECT code FROM resource_node WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
-    <!-- 三处原本各写一遍：workflowGraph / runGraphJson / nodeBindingJson。 -->
-    <select id="selectWorkflowXml" resultType="java.lang.String">
-        SELECT graph->>'xml' FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
-    <select id="selectRunWorkflow" resultType="java.util.Map">
+    </select><!-- 三处原本各写一遍：workflowGraph / runGraphJson / nodeBindingJson。 --><select id="selectRunWorkflow" resultType="java.util.Map">
         <!-- PostgreSQL 未加引号的别名一律转小写，resultType=map 的 key 就是小写列名；
              这里必须加引号保留驼峰，否则 Java 侧 get("workflowId") 拿到 null（实测 NPE）。 -->
         SELECT workflow_id AS "workflowId", status::text AS "status"
@@ -84,23 +73,7 @@
         SELECT id FROM capability WHERE code = #{param1}
     </select><select id="selectResourceName" resultType="java.lang.String">
         SELECT name FROM resource_node WHERE id = #{param1}
-    </select><select id="selectGraphHistoryXml" resultType="java.lang.String">
-        SELECT xml FROM workflow_graph_history
-         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND id = #{param3}
-    </select><select id="selectChoreographies" resultType="java.util.Map">
-        SELECT w.id AS "id", w.code AS "code", w.name AS "name",
-               (SELECT count(*) FROM workflow_node n
-                 WHERE n.workflow_id = w.id AND n.node_type = 'task') AS "nodeCount"
-          FROM workflow w
-         WHERE w.tenant_id = #{param1} AND w.category = 'choreography'
-         ORDER BY w.id DESC LIMIT #{param2}
-    </select><!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 --><select id="selectGraphHistory" resultType="java.util.Map">
-        SELECT id AS "id", node_count AS "nodeCount", edge_count AS "edgeCount",
-               length(xml) AS "bytes", saved_at AS "savedAt"
-          FROM workflow_graph_history
-         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
-         ORDER BY saved_at DESC LIMIT 30
-    </select><!-- 三个列表的动态过滤：调用方把空串归一化成 null，这里只判 != null。
+    </select><!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 --><!-- 三个列表的动态过滤：调用方把空串归一化成 null，这里只判 != null。
          原来用 StringBuilder 拼 " AND xxx = ?" 再按顺序 setObject，
          现在「哪些条件下会多一个谓词」在 XML 里一眼可见。 -->
     <select id="selectCommandOutbox" resultType="java.util.Map">
@@ -164,11 +137,7 @@
          WHERE tenant_id = #{param1}
          ORDER BY id DESC
          LIMIT #{param2}
-    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 --><!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 --><select id="selectNodeBinding" resultType="java.util.Map">
-        SELECT (params->'method_params')::text AS "mp", resource_id AS "resourceId"
-          FROM workflow_node
-         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_key = #{param3}
-    </select><!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
+    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 --><!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 --><!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
          p 是 LATERAL 取出的优先级最高启用策略；policies 子询保留全部策略
          （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 --><!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 --><select id="insertPositionEvidence" resultType="java.lang.Long">
         INSERT INTO position_evidence
@@ -179,34 +148,7 @@
     </select>
 
     <!-- 估算链（Java 侧按可靠性选）：manual > history(p50,样本>=20) > device > 60s。
-         hist 的 percentile_cont 依赖 run_command 实测；样本不足时不用。 -->
-    <select id="selectWorkflowTimelineNodes" resultType="java.util.Map">
-        WITH nd AS (
-            SELECT node_key AS "nodeKey", name AS "name", estimate_sec AS "manual",
-                   resource_id AS "resourceId",
-                   params->>'protocol_name' AS "method",
-                   COALESCE(seq, 2147483647) AS ord, id
-              FROM workflow_node
-             WHERE tenant_id = #{param1} AND workflow_id = #{param2}
-               AND node_type = 'task'
-        ), hist AS (
-            SELECT cmd.method,
-                   percentile_cont(0.5) WITHIN GROUP (
-                     ORDER BY EXTRACT(EPOCH FROM (cmd.finished_at - cmd.sent_at))) AS p50,
-                   count(*) AS n
-              FROM run_command cmd
-             WHERE cmd.tenant_id = #{param1}
-               AND cmd.method IN (SELECT "method" FROM nd WHERE "method" IS NOT NULL)
-               AND cmd.finished_at IS NOT NULL AND cmd.sent_at IS NOT NULL
-             GROUP BY cmd.method
-        )
-        SELECT nd."nodeKey", nd."name", nd."manual", nd."resourceId", nd."method",
-               hist.p50 AS "p50", hist.n AS "n",
-               (SELECT max(dm.estimate_sec) FROM device_method dm
-                 WHERE dm.method = nd."method" AND dm.estimate_sec > 0) AS "devEst"
-          FROM nd LEFT JOIN hist ON hist.method = nd."method"
-         ORDER BY nd.ord, nd.id
-    </select><!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 --><select id="insertIntervention" resultType="java.lang.Long">
+         hist 的 percentile_cont 依赖 run_command 实测；样本不足时不用。 --><!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 --><select id="insertIntervention" resultType="java.lang.Long">
         INSERT INTO intervention_record
           (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
            decided_action, plate_barcode, sample_id, from_location, to_location,
@@ -214,30 +156,7 @@
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6},
                 #{param7}, #{param8}, #{param9}, #{param10}, #{param11}, #{param12})
         RETURNING id
-    </select><select id="selectWorkflowResources" resultType="java.lang.Long">
-        SELECT DISTINCT resource_id FROM workflow_node
-         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
-           AND node_type = 'task' AND resource_id IS NOT NULL
-    </select>
-
-    <!-- ORDER BY remain DESC LIMIT 1：同一资源上只取最慢的那个在跑节点。 -->
-    <select id="selectBusyResourceHolder" resultType="java.util.Map">
-        SELECT n.id AS "id", n.node_key AS "nodeKey", n.run_id AS "runId",
-               n.estimate_sec AS "estimateSec", n.actual_start AS "actualStart",
-               r.run_no AS "runNo", res.code AS "resCode",
-               GREATEST(0, COALESCE(n.estimate_sec, 0)
-                         - COALESCE(EXTRACT(EPOCH FROM (now() - n.actual_start)), 0))
-                 AS "remain"
-          FROM run_node n
-          JOIN run r ON r.id = n.run_id
-          LEFT JOIN resource_node res ON res.id = n.resource_id
-         WHERE n.tenant_id = #{param1} AND n.resource_id = #{param2}
-           AND n.level = 0 AND n.status = 'running'
-           AND r.status = 'running'
-         ORDER BY "remain" DESC LIMIT 1
-    </select>
-
-    <select id="selectRunningProcessStatus" resultType="java.util.Map">
+    </select><!-- ORDER BY remain DESC LIMIT 1：同一资源上只取最慢的那个在跑节点。 --><select id="selectRunningProcessStatus" resultType="java.util.Map">
         SELECT r.id AS "id", r.run_no AS "runNo", r.attendance AS "attendance",
                r.actual_start AS "actualStart",
                count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0) AS "total",
@@ -342,41 +261,7 @@
          ORDER BY n.id LIMIT 1
     </select>
 
-    <!-- GROUP BY r.id 后其余列在 PG 里可用（主键函数依赖），沿用原写法。 -->
-    <select id="selectWorkflowRuns" resultType="java.util.Map">
-        SELECT r.id AS "id", r.run_no AS "runNo", r.status::text AS "status",
-               r.actual_start AS "actualStart", r.actual_end AS "actualEnd",
-               EXTRACT(EPOCH FROM (r.actual_end - r.actual_start)) AS "durationSec",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0) AS "total",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                    AND n.status = 'completed') AS "done",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                    AND n.status = 'manual') AS "manual",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                    AND n.status = 'failed') AS "failed"
-          FROM run r
-          LEFT JOIN run_node n ON n.run_id = r.id
-         WHERE r.tenant_id = #{param1} AND r.workflow_id = #{param2}
-         GROUP BY r.id
-         ORDER BY r.id DESC
-         LIMIT #{param3}
-    </select>
-
-    <!-- GREATEST(0, ...) 保持原口径：估时已过则剩 0，不返回负数。 -->
-    <select id="selectRemainingSec" resultType="java.lang.Double">
-        SELECT GREATEST(0, COALESCE(n.estimate_sec, 0)
-                  - COALESCE(EXTRACT(EPOCH FROM (now() - n.actual_start)), 0)) AS "remain"
-          FROM run_node n JOIN run r ON r.id = n.run_id
-         WHERE n.tenant_id = #{param1} AND n.resource_id = #{param2}
-           AND n.level = 0 AND n.status = 'running' AND r.status = 'running'
-         ORDER BY "remain" DESC LIMIT 1
-    </select><select id="selectDurations" resultType="java.util.Map">
-        SELECT method AS "method", p50_ms AS "p50Ms", p90_ms AS "p90Ms",
-               min_ms AS "minMs", max_ms AS "maxMs", sample_count AS "sampleCount"
-          FROM duration_model
-         WHERE tenant_id = #{param1}
-         ORDER BY sample_count DESC LIMIT #{param2}
-    </select><select id="selectAllCapabilities" resultType="java.util.Map">
+    <!-- GROUP BY r.id 后其余列在 PG 里可用（主键函数依赖），沿用原写法。 --><!-- GREATEST(0, ...) 保持原口径：估时已过则剩 0，不返回负数。 --><select id="selectAllCapabilities" resultType="java.util.Map">
         SELECT code AS "code", name AS "name" FROM capability ORDER BY id
     </select>
 

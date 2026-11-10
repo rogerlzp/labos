@@ -43,4 +43,42 @@ public interface WorkflowWebMapper {
 
     /** 流程里每个任务节点的能力（node_key -> capability_code）。 */
     List<Map<String, Object>> selectWorkflowCapabilities(long tenantId, long workflowId);
+
+    /** 编排流程列表（category='choreography'）。 */
+    List<Map<String, Object>> selectChoreographies(long tenantId, int limit);
+
+    /** 流程图 XML；不存在时为 null。 */
+    String selectWorkflowXml(long tenantId, long workflowId);
+
+    /** 节点绑定的方法参数与资源 id；不存在返回 null。 */
+    Map<String, Object> selectNodeBinding(long tenantId, long workflowId, String nodeKey);
+
+    /** 流程时间轴估算：任务节点 + 历史 P50 + 型号库估值，一次 CTE 取全。 */
+    List<Map<String, Object>> selectWorkflowTimelineNodes(long tenantId, long workflowId);
+
+    /** 这条流程用到的设备资源（task 节点的 resource_id 去重）。 */
+    List<Long> selectWorkflowResources(long tenantId, long workflowId);
+
+    /** 当前占着某资源的 run 节点（ETA 明细）；无则返回 null。 */
+    Map<String, Object> selectBusyResourceHolder(long tenantId, long resourceId);
+
+    /** 某流程的 run 列表（含完成/人工/失败计数）。 */
+    List<Map<String, Object>> selectWorkflowRuns(long tenantId, long workflowId, int limit);
+
+    /** 时长模型（按样本数倒序，limit 由调用方钳位）。 */
+    List<Map<String, Object>> selectDurations(long tenantId, int limit);
+
+    /** 图历史版本列表（最近 30 条）。 */
+    List<Map<String, Object>> selectGraphHistory(long tenantId, long workflowId);
+
+    /** 某个历史版本的 BPMN XML；不存在返回 null。 */
+    String selectGraphHistoryXml(long tenantId, long workflowId, long historyId);
+
+
+    /** 该资源上正在跑的节点还剩多少秒（ETA 用）；无在跑节点返回 null。 */
+    Double selectRemainingSec(long tenantId, long resourceId);
+
+
+    String selectResourceCode(long tenantId, long resourceId);
+
 }

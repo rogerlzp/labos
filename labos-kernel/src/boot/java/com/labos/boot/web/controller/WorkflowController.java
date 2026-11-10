@@ -5,7 +5,6 @@ import com.labos.boot.web.AuditRecorder;
 import com.labos.boot.web.service.WorkflowWebService;
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.driver.ShadowProbe;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.workflow.WorkflowBuilder;
@@ -58,14 +57,12 @@ import static com.labos.kernel.api.ApiServer.paramStr;
 public class WorkflowController {
 
     private final WorkflowWebService web;
-    private final QueryService query;
     private final WorkflowService workflows;
     private final AuditRecorder audit;
 
-    public WorkflowController(WorkflowWebService web, QueryService query,
+    public WorkflowController(WorkflowWebService web,
                               WorkflowService workflows, AuditRecorder audit) {
         this.web = web;
-        this.query = query;
         this.workflows = workflows;
         this.audit = audit;
     }
@@ -120,7 +117,7 @@ public class WorkflowController {
     @GetMapping(value = "/choreographies", produces = "application/json; charset=utf-8")
     public String choreographies(@RequestParam(required = false) String limit)
             throws SQLException {
-        return query.choreographiesJson(intOr(limit, 20));
+        return web.choreographiesJson(intOr(limit, 20));
     }
 
     // ---------------------------------------------------------------- 列表 / 新建 / 详情
@@ -205,7 +202,7 @@ public class WorkflowController {
     @GetMapping(value = "/workflows/{id:\\d+}/graph")
     public ResponseEntity<String> graph(@PathVariable long id,
                                         HttpServletRequest req) throws SQLException {
-        String xml = query.workflowGraph(id);
+        String xml = web.workflowGraph(id);
         if (xml == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("graph not found"));
         }
@@ -276,7 +273,7 @@ public class WorkflowController {
             produces = "application/json; charset=utf-8")
     public String nodeBinding(@PathVariable long id, @PathVariable String nodeKey)
             throws SQLException {
-        return query.nodeBindingJson(id,
+        return web.nodeBindingJson(id,
                 URLDecoder.decode(nodeKey, StandardCharsets.UTF_8));
     }
 
@@ -319,20 +316,20 @@ public class WorkflowController {
     @GetMapping(value = "/workflows/{id:\\d+}/timeline",
             produces = "application/json; charset=utf-8")
     public String timeline(@PathVariable long id) throws SQLException {
-        return query.workflowTimelineJson(id);
+        return web.workflowTimelineJson(id);
     }
 
     @GetMapping(value = "/workflows/{id:\\d+}/eta",
             produces = "application/json; charset=utf-8")
     public String eta(@PathVariable long id) throws SQLException {
-        return query.workflowEtaJson(id);
+        return web.workflowEtaJson(id);
     }
 
     @GetMapping(value = "/workflows/{id:\\d+}/runs",
             produces = "application/json; charset=utf-8")
     public String runs(@PathVariable long id,
                        @RequestParam(required = false) String limit) throws SQLException {
-        return query.workflowRunsJson(id, intOr(limit, 20));
+        return web.workflowRunsJson(id, intOr(limit, 20));
     }
 
     @GetMapping(value = "/workflows/{id:\\d+}/options",
@@ -452,7 +449,7 @@ public class WorkflowController {
 
     @GetMapping(value = "/durations", produces = "application/json; charset=utf-8")
     public String durations() throws SQLException {
-        return query.durationsJson(200);
+        return web.durationsJson(200);
     }
 
     // ---------------------------------------------------------------- 内部
