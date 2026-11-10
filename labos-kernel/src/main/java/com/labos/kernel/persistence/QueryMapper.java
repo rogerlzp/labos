@@ -72,6 +72,37 @@ public interface QueryMapper {
     /** 设备方法的超时上限（秒），无配置返回 0。 */
     long selectDeviceLockTimeoutSec(long tenantId, long deviceInstanceId);
 
+    /**
+     * 错误码本体字段的动态 UPDATE（哪些列会被写由 XML 的 &lt;if&gt; 决定）。
+     *
+     * <p>severity 是 PG 枚举，必须 {@code ::error_severity}；scope/title/detail
+     * 是 varchar，原实现没有 cast，保持一致。
+     */
+    int updateErrorCodeFields(long tenantId, long id,
+                              @Param("scope") String scope,
+                              @Param("severity") String severity,
+                              @Param("title") String title,
+                              @Param("detail") String detail);
+
+    /**
+     * 只改「主策略」（priority 最小的那条）。
+     *
+     * <p>COALESCE 表示「没传就不动」，所以 null 不会被写成 NULL。
+     */
+    int updatePrimaryRecoveryPolicy(long tenantId, long errorCodeId,
+                                    @Param("strategy") String strategy,
+                                    @Param("maxAttempts") String maxAttempts,
+                                    @Param("params") String params,
+                                    @Param("enabled") String enabled);
+
+    /**
+     * 人工插队：数组顺序即执行顺序，priority 从 100 递减。
+     *
+     * <p>原来按 index 逐条 batch update；现在用 CASE 一次写完，
+     * 「顺序 → priority」的换算在 SQL 里一眼可见。
+     */
+    int reorderExperimentPriorities(long tenantId, @Param("ids") List<Long> ids);
+
     /** 资源节点的编码（按 kind 限定，避免拿到同 id 的其它类型）。 */
     String selectNodeCode(long tenantId, long resourceNodeId, String kind);
 

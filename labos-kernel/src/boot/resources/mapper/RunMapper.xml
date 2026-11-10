@@ -52,6 +52,55 @@
            AND id = #{param2}
     </select>
 
+    <select id="selectExperimentRunStatus" resultType="java.lang.String">
+        SELECT status FROM experiment_run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectIslandCodes" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", name AS "name"
+          FROM resource_node
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach collection="param2" item="one" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </select>
+
+    <select id="selectRunExperiments" resultType="java.util.Map">
+        SELECT er.id AS "runId", er.experiment_id AS "experimentId",
+               e.experiment_no AS "experimentNo"
+          FROM experiment_run er
+          JOIN experiment e ON e.id = er.experiment_id
+         WHERE er.tenant_id = #{param1}
+           AND er.id IN
+        <foreach collection="param2" item="one" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </select>
+
+    <select id="selectExperimentNos" resultType="java.util.Map">
+        SELECT id AS "id", experiment_no AS "experimentNo"
+          FROM experiment
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach collection="param2" item="one" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </select>
+
+    <update id="markExperimentRunStatus">
+        UPDATE experiment_run
+           -- experiment_run.status 是 varchar（只有 run.status 是 run_status 枚举），
+           -- 这里不能加 ::experiment_run_status —— 该类型在库里不存在。
+           SET status = #{param3},
+               error = #{param4}
+        <if test="finished">, finished_at = now()</if>
+         WHERE tenant_id = #{param1}
+           AND id = #{param2}
+           AND status NOT IN ('aborted', 'cancelled')
+    </update>
+
     <!-- 只改 status='running' 的行：已结束的单不能被切值守。 -->
     <update id="updateAttendance">
         UPDATE run

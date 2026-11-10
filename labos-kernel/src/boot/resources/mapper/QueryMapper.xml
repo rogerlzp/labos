@@ -115,6 +115,45 @@
          WHERE tenant_id = #{param1} AND device_id = #{param2}
     </select>
 
+    <update id="updateErrorCodeFields">
+        UPDATE error_code
+        <set>
+            <if test="scope != null">scope = #{scope},</if>
+            <if test="severity != null">severity = #{severity}::error_severity,</if>
+            <if test="title != null">title = #{title},</if>
+            <if test="detail != null">detail = #{detail},</if>
+        </set>
+        WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <update id="updatePrimaryRecoveryPolicy">
+        UPDATE recovery_policy
+           SET strategy = COALESCE(#{strategy}::recovery_strategy, strategy),
+               max_attempts = COALESCE(#{maxAttempts}::smallint, max_attempts),
+               params = COALESCE(#{params}::jsonb, params),
+               enabled = COALESCE(#{enabled}::boolean, enabled),
+               updated_at = now()
+         WHERE tenant_id = #{param1}
+           AND id = (SELECT id FROM recovery_policy
+                      WHERE tenant_id = #{param1} AND error_code_id = #{param2}
+                      ORDER BY priority, id LIMIT 1)
+    </update>
+
+    <update id="reorderExperimentPriorities">
+        UPDATE experiment
+           SET priority = (CASE id
+        <foreach collection="ids" item="one" index="idx">
+            WHEN #{one} THEN 100 - #{idx}
+        </foreach>
+            ELSE priority END),
+               updated_at = now()
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach collection="ids" item="one" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </update>
+
     <select id="selectNodeCode" resultType="java.lang.String">
         SELECT code FROM resource_node
          WHERE tenant_id = #{param1} AND id = #{param2}

@@ -632,17 +632,15 @@ public final class ExperimentScheduler {
         return orchestrator.createNextBatchAttempt(experimentId, finishedBatchNo, userVars);
     }
 
+    /** 延迟取 Mapper（本类可能被 new 出来，见 Mappers）。 */
+    private com.labos.kernel.persistence.RunMapper rm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.RunMapper.class);
+    }
+
     /** 读一条 run 的当前状态（续队前以库为准）。 */
-    private String runStatusOf(long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT status FROM experiment_run WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+    private String runStatusOf(long runId) {
+        return rm().selectExperimentRunStatus(tenantId, runId);
     }
 
     // ---------------------------------------------------------- 岛锁
@@ -825,16 +823,11 @@ public final class ExperimentScheduler {
         if (islandIds.isEmpty()) {
             return;
         }
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT id, code, name FROM resource_node WHERE tenant_id = ? AND id = ANY(?)")) {
-            ps.setLong(1, tenantId);
-            ps.setArray(2, c.createArrayOf("bigint", islandIds.toArray()));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    codes.put(rs.getLong(1), rs.getString(2));
-                    names.put(rs.getLong(1), rs.getString(3));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : rm().selectIslandCodes(tenantId, new ArrayList<>(islandIds))) {
+            long id = ((Number) row.get("id")).longValue();
+            codes.put(id, (String) row.get("code"));
+            names.put(id, (String) row.get("name"));
         }
     }
 
@@ -845,20 +838,11 @@ public final class ExperimentScheduler {
         if (runIds.isEmpty()) {
             return;
         }
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT er.id, er.experiment_id, e.experiment_no
-                  FROM experiment_run er
-                  JOIN experiment e ON e.id = er.experiment_id
-                 WHERE er.tenant_id = ? AND er.id = ANY(?)
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setArray(2, c.createArrayOf("bigint", runIds.toArray()));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    expIdInto.put(rs.getLong(1), rs.getLong(2));
-                    expNoInto.put(rs.getLong(1), rs.getString(3));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : rm().selectRunExperiments(tenantId, new ArrayList<>(runIds))) {
+            long rid = ((Number) row.get("runId")).longValue();
+            expIdInto.put(rid, ((Number) row.get("experimentId")).longValue());
+            expNoInto.put(rid, (String) row.get("experimentNo"));
         }
     }
 
@@ -868,34 +852,20 @@ public final class ExperimentScheduler {
         if (expIds.isEmpty()) {
             return;
         }
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT id, experiment_no FROM experiment WHERE tenant_id = ? AND id = ANY(?)")) {
-            ps.setLong(1, tenantId);
-            ps.setArray(2, c.createArrayOf("bigint", expIds.toArray()));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    into.put(rs.getLong(1), rs.getString(2));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : rm().selectExperimentNos(tenantId, new ArrayList<>(expIds))) {
+            into.put(((Number) row.get("id")).longValue(),
+                    (String) row.get("experimentNo"));
         }
     }
 
     // ---------------------------------------------------------- 实验属性
 
-    private long islandOf(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT island_id FROM experiment WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long v = rs.getLong(1);
-                    return rs.wasNull() ? 0L : v;
-                }
-            }
-        }
-        return 0L;
+    private long islandOf(long experimentId) {
+        Long v = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExperimentMapper.class)
+                .selectExperimentIslandId(tenantId, experimentId);
+        return v == null ? 0L : v;
     }
 
     private int priorityOf(long experimentId) throws SQLException {
@@ -952,18 +922,7 @@ public final class ExperimentScheduler {
      * 不能被一个迟到的兜底写回成 failed。
      */
     private void markStatus(long runId, String status, String error) throws SQLException {
-        String sql = "completed".equals(status) || "failed".equals(status)
-                ? "UPDATE experiment_run SET status=?, error=?, finished_at=now()"
-                        + " WHERE tenant_id=? AND id=? AND status NOT IN ('aborted','cancelled')"
-                : "UPDATE experiment_run SET status=?, error=?"
-                        + " WHERE tenant_id=? AND id=? AND status NOT IN ('aborted','cancelled')";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, status);
-            ps.setString(2, error);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, runId);
-            ps.executeUpdate();
-        }
+        boolean finished = "completed".equals(status) || "failed".equals(status);
+        rm().markExperimentRunStatus(tenantId, runId, status, error, finished);
     }
 }

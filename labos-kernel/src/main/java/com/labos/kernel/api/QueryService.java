@@ -1311,24 +1311,8 @@ public class QueryService {
                             + notAllowed);
                 }
 
-                int n = 0;
-                try (PreparedStatement ps = c.prepareStatement(
-                        "UPDATE experiment SET priority = ?, updated_at = now() "
-                                + "WHERE tenant_id = ? AND id = ?")) {
-                    int idx = 0;
-                    for (Long id : orderedIds) {
-                        ps.setInt(1, 100 - idx);
-                        ps.setLong(2, tenantId);
-                        ps.setLong(3, id);
-                        ps.addBatch();
-                        idx++;
-                    }
-                    for (int one : ps.executeBatch()) {
-                        n += Math.max(one, 0);
-                    }
-                }
-                return n;
-            } catch (RuntimeException | SQLException e) {
+                return queryMapper.reorderExperimentPriorities(tenantId, orderedIds);
+            } catch (RuntimeException e) {
                 throw e;
             }
         }
@@ -2466,29 +2450,13 @@ throw e;
     public boolean updateErrorCode(long id, Map<String, String> fields) throws SQLException {
         try (Connection c = db.open()) {
             try {
-                List<String> sets = new ArrayList<>();
-                List<Object> args = new ArrayList<>();
-                for (String k : List.of("scope", "severity", "title", "detail")) {
-                    String v = fields.get(k);
-                    if (v == null) {
-                        continue;
-                    }
-                    sets.add(("severity".equals(k) ? "severity = ?::error_severity"
-                            : k + " = ?"));
-                    args.add(v);
-                }
-                if (!sets.isEmpty()) {
-                    try (PreparedStatement ps = c.prepareStatement(
-                            "UPDATE error_code SET " + String.join(", ", sets)
-                                    + " WHERE tenant_id = ? AND id = ?")) {
-                        int i = 1;
-                        for (Object a : args) {
-                            ps.setObject(i++, a);
-                        }
-                        ps.setLong(i++, tenantId);
-                        ps.setLong(i, id);
-                        ps.executeUpdate();
-                    }
+                // 只有确实传了字段才发 UPDATE（否则 <set> 会拼出空 SET）。
+                boolean anyCodeField = List.of("scope", "severity", "title", "detail")
+                        .stream().anyMatch(k -> fields.get(k) != null);
+                if (anyCodeField) {
+                    queryMapper.updateErrorCodeFields(tenantId, id,
+                            fields.get("scope"), fields.get("severity"),
+                            fields.get("title"), fields.get("detail"));
                 }
 
                 String strategy = fields.get("strategy");
@@ -2498,30 +2466,11 @@ throw e;
                 if (strategy != null || maxAttempts != null || params != null || enabled != null) {
                     // 只改主策略（priority 最小那条）。多条策略的精细编辑放后面再说——
                     // 现在库里每个码最多 1 条，先把 80% 的场景做掉。
-                    try (PreparedStatement ps = c.prepareStatement("""
-                            UPDATE recovery_policy SET
-                              strategy = COALESCE(?::recovery_strategy, strategy),
-                              max_attempts = COALESCE(?::smallint, max_attempts),
-                              params = COALESCE(?::jsonb, params),
-                              enabled = COALESCE(?::boolean, enabled),
-                              updated_at = now()
-                            WHERE tenant_id = ? AND id = (
-                                SELECT id FROM recovery_policy
-                                 WHERE tenant_id = ? AND error_code_id = ?
-                                 ORDER BY priority, id LIMIT 1)
-                            """)) {
-                        ps.setString(1, strategy);
-                        ps.setString(2, maxAttempts);
-                        ps.setString(3, params);
-                        ps.setString(4, enabled);
-                        ps.setLong(5, tenantId);
-                        ps.setLong(6, tenantId);
-                        ps.setLong(7, id);
-                        ps.executeUpdate();
-                    }
+                    queryMapper.updatePrimaryRecoveryPolicy(tenantId, id,
+                            strategy, maxAttempts, params, enabled);
                 }
                 return true;
-            } catch (SQLException e) {
+            } catch (RuntimeException e) {
                 throw e;
             }
         }
