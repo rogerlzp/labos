@@ -79,8 +79,12 @@ public final class PlateOwnershipDbSelfTest {
         check("别人的板仍在", "PLATE-B".equals(plateOf(POS_B)), plateOf(POS_B));
 
         cleanup();
-        System.out.println("PlateOwnershipDbSelfTest " + (fail == 0 ? "全部通过 " : "有失败 ")
+        // 汇总行必须是 test-all.sh 能解析的「通过 N, 失败 M」格式：
+        // 原来打印「全部通过 13 / 0」，脚本 grep 不到 → 每轮都被记成
+        // "无法解析输出"（2026-11-10 实测：单跑 13/0 但全量里恒为红）。
+        System.out.println((fail == 0 ? "全部通过：" : "有失败：")
                 + pass + " / " + fail);
+        System.out.println("通过 " + pass + ", 失败 " + fail);
         if (fail > 0) {
             System.exit(1);
         }

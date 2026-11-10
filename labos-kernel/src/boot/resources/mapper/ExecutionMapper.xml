@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 执行引擎 SQL。调用方 com.labos.kernel.persistence.ExecutionMapper -->
+<mapper namespace="com.labos.kernel.persistence.ExecutionMapper">
+
+    <select id="selectExperimentRunStatus" resultType="java.lang.String">
+        SELECT status::text FROM experiment_run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <!-- 注意：experiment_run 没有 updated_at 列，别照抄别的表。 -->
+    <update id="updateErrorWhenPaused">
+        UPDATE experiment_run
+           SET error = #{param3}
+         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'paused'
+    </update>
+
+    <update id="settleExperimentRun">
+        UPDATE experiment_run
+        <set>
+            status = #{status},
+            error = #{error},
+            pause_kind = #{pauseKind},
+            pause_reason = #{pauseReason},
+            <if test="paused">paused_at = now(),</if>
+            <if test="terminal">finished_at = now(),</if>
+            control_state = 'NONE',
+            pause_requested_at = NULL,
+        </set>
+        WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <select id="selectStopRequested" resultType="java.lang.Boolean">
+        SELECT stop_requested FROM experiment_run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectExperimentIdOfRun" resultType="java.lang.Long">
+        SELECT experiment_id FROM experiment_run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectPauseKindOfRun" resultType="java.lang.String">
+        SELECT pause_kind FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectRunStatus" resultType="java.lang.String">
+        SELECT status::text FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+</mapper>

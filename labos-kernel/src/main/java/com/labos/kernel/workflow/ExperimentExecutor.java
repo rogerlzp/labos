@@ -536,16 +536,16 @@ public final class ExperimentExecutor {
      * 收尾前必须问一句：用户刚点暂停、这个 run 已经标 paused 了，
      * 那就不能再用 completed/failed 把它盖掉。
      */
+    /** 延迟取 Mapper（执行器是 new 出来的，见 Mappers）。 */
+    private com.labos.kernel.persistence.ExecutionMapper em() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExecutionMapper.class);
+    }
+
     private boolean isRunPaused(long runId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT status::text FROM experiment_run WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() && "paused".equals(rs.getString(1));
-            }
-        } catch (SQLException e) {
+        try {
+            return "paused".equals(em().selectExperimentRunStatus(tenantId, runId));
+        } catch (RuntimeException e) {
             // 查不到就当作没暂停（与 workflow 级同一取向：不因读库失败阻断收尾）
             return false;
         }
@@ -573,42 +573,15 @@ public final class ExperimentExecutor {
         if (!paused && isRunPaused(runId)) {
             // 已被人工暂停：保持 paused，只补错误信息（若有），不动状态。
             // ⚠ 不要写 updated_at：experiment_run 没有这一列（见上）。
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(
-                         "UPDATE experiment_run SET error=? "
-                                 + "WHERE tenant_id=? AND id=? AND status='paused'")) {
-                ps.setString(1, error);
-                ps.setLong(2, tenantId);
-                ps.setLong(3, runId);
-                ps.executeUpdate();
-            }
+            em().updateErrorWhenPaused(tenantId, runId, error);
             return;
         }
 
         // S-04-B：任何收尾都表示控制过程走完，control_state 回到 NONE
         // （pause → 执行器在动作边界 settle paused；stop/complete/fail 同理）。
-        StringBuilder set = new StringBuilder(
-                "status=?, error=?, pause_kind=?, pause_reason=?");
-        if (paused) {
-            set.append(", paused_at=now()");
-        }
-        if (terminal) {
-            set.append(", finished_at=now()");
-        }
-        set.append(", control_state='NONE', pause_requested_at=NULL");
-
+        em().settleExperimentRun(tenantId, runId, status, error,
+                pauseKind, pauseReason, paused, terminal);
         try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE experiment_run SET " + set
-                            + " WHERE tenant_id=? AND id=?")) {
-                ps.setString(1, status);
-                ps.setString(2, error);
-                ps.setString(3, pauseKind);
-                ps.setString(4, pauseReason);
-                ps.setLong(5, tenantId);
-                ps.setLong(6, runId);
-                ps.executeUpdate();
-            }
 
             // **实验本身的状态也要跟着走**。改动前只更新 experiment_run，
             // experiment.status 永远停在 created —— 实验列表上分不出"跑过"和"没跑过"，
@@ -666,49 +639,22 @@ public final class ExperimentExecutor {
 
     /** 是否有人请求停止这条 run（协作式：执行器在动作边界看）。 */
     boolean stopRequested(long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT stop_requested FROM experiment_run WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() && rs.getBoolean(1);
-            }
-        }
+        Boolean v = em().selectStopRequested(tenantId, runId);
+        return v != null && v;
     }
 
     /** 实验所属岛；未分配返回 0（0 表示不匹配任何 island 级扣留）。 */
-    private long islandOf(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT island_id FROM experiment WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long v = rs.getLong(1);
-                    return rs.wasNull() ? 0L : v;
-                }
-            }
-        }
-        return 0L;
+    private long islandOf(long experimentId) {
+        Long v = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExperimentMapper.class)
+                .selectExperimentIslandId(tenantId, experimentId);
+        return v == null ? 0L : v;
     }
 
     /** 这条 experiment_run 属于哪个实验；查不到返回 0。 */
-    private long experimentIdOf(long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT experiment_id FROM experiment_run WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long v = rs.getLong(1);
-                    return rs.wasNull() ? 0L : v;
-                }
-            }
-        }
-        return 0L;
+    private long experimentIdOf(long runId) {
+        Long v = em().selectExperimentIdOfRun(tenantId, runId);
+        return v == null ? 0L : v;
     }
 
     /** 流程级暂停类型（载入 run.pause_kind）；查不到按需人工确认处理。 */
@@ -716,20 +662,12 @@ public final class ExperimentExecutor {
         if (wfRunId == null) {
             return "waiting_human";
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT pause_kind FROM run WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, wfRunId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    String k = rs.getString(1);
-                    if (k != null && !k.isBlank()) {
-                        return k;
-                    }
-                }
+        try {
+            String k = em().selectPauseKindOfRun(tenantId, wfRunId);
+            if (k != null && !k.isBlank()) {
+                return k;
             }
-        } catch (SQLException ignore) {
+        } catch (RuntimeException ignore) {
             // 流程表读不到就退回默认口径，不因此判定实验失败
         }
         return "waiting_human";
@@ -745,15 +683,9 @@ public final class ExperimentExecutor {
         if (wfRunId == null) {
             return null;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT status::text FROM run WHERE tenant_id=? AND id=?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, wfRunId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        } catch (SQLException ignore) {
+        try {
+            return em().selectRunStatus(tenantId, wfRunId);
+        } catch (RuntimeException ignore) {
             return null;
         }
     }
