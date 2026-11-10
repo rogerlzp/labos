@@ -471,6 +471,67 @@
          WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
     </update>
 
+    <select id="selectRobotPointDetails" resultType="java.util.Map">
+        SELECT p.id AS "id", p.robot_resource_id AS "robotResourceId",
+               p.code AS "code", p.name AS "name",
+               p.x AS "x", p.y AS "y", p.z AS "z", p.action AS "action",
+               p.device_resource_id AS "deviceResourceId",
+               r.code AS "deviceCode", p.synced_at AS "syncedAt"
+          FROM robot_point p
+          LEFT JOIN resource_node r ON r.id = p.device_resource_id
+         WHERE p.tenant_id = #{param1} AND p.island_id = #{param2}
+         ORDER BY p.robot_resource_id, p.code
+    </select>
+
+    <!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 -->
+    <insert id="syncRobotPoints">
+        INSERT INTO robot_point
+          (tenant_id, island_id, robot_resource_id, code, name,
+           device_resource_id, action, synced_at)
+        SELECT #{param1}, #{param2}, #{param3}, d.code, d.name, d.id, 'PickPlace', now()
+          FROM resource_node d
+         WHERE d.tenant_id = #{param1} AND d.parent_id = #{param2}
+           AND d.kind = 'device' AND d.id &lt;&gt; #{param3}
+        ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
+           SET name = EXCLUDED.name,
+               device_resource_id = EXCLUDED.device_resource_id,
+               synced_at = now(), updated_at = now()
+    </insert>
+
+    <select id="selectErrorOccurrences" resultType="java.util.Map">
+        SELECT eo.id AS "id", eo.fingerprint AS "fingerprint",
+               eo.outcome AS "outcome", eo.severity::text AS "severity",
+               eo.attempt AS "attempt", eo.run_id AS "runId",
+               eo.run_node_id AS "runNodeId", eo.resource_id AS "resourceId",
+               eo.occurred_at AS "occurredAt", eo.message AS "message"
+          FROM error_occurrence eo
+         WHERE eo.tenant_id = #{param1}
+         ORDER BY eo.id DESC LIMIT #{param2}
+    </select>
+
+    <delete id="deleteIslandNode">
+        DELETE FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'island'
+    </delete>
+
+    <update id="softDeleteDeviceInstance">
+        UPDATE device_instance
+           SET deleted_at = now(), updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+           AND deleted_at IS NULL
+    </update>
+
+    <!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 -->
+    <update id="updateRecoveryPolicy">
+        UPDATE recovery_policy
+           SET strategy     = COALESCE(#{param3}::recovery_strategy, strategy),
+               max_attempts = COALESCE(#{param4}, max_attempts),
+               priority     = COALESCE(#{param5}, priority),
+               enabled      = COALESCE(#{param6}, enabled),
+               updated_at   = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}

@@ -186,6 +186,25 @@ public interface QueryMapper {
     /** 写设备在资源树上的坐标（jsonb attr 合并，不动其它键）。 */
     int updateDevicePosition(long tenantId, long resourceId, double x, double y);
 
+    /** 机器人点位明细（列表页用）。 */
+    List<Map<String, Object>> selectRobotPointDetails(long tenantId, long islandId);
+
+    /** 从资源树同步点位（岛下设备，排除机器人自身）；返回受影响行数。 */
+    int syncRobotPoints(long tenantId, long islandId, long robotResourceId);
+
+    /** 错误发生记录（最近 N 条）。 */
+    List<Map<String, Object>> selectErrorOccurrences(long tenantId, int limit);
+
+    /** 删岛（只删 kind='island' 的资源节点）。 */
+    int deleteIslandNode(long tenantId, long islandId);
+
+    /** 设备实例软删（保留 resource_node 供历史 run_node 追溯）。 */
+    int softDeleteDeviceInstance(long tenantId, long resourceId);
+
+    /** 更新恢复策略（COALESCE：没传的字段不动）。 */
+    int updateRecoveryPolicy(long tenantId, long id, String strategy,
+                             Integer maxAttempts, Integer priority, Boolean enabled);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

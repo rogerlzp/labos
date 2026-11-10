@@ -1369,23 +1369,12 @@ throw e;
      * 删岛。岛下还有设备时拒绝——避免设备变成孤儿（parent 指向已删节点）。
      */
     public int deleteIsland(long islandId) throws SQLException {
-        try (Connection c = db.open()) {
-            int n;
-            int deviceCount = queryMapper.countDevicesUnderIsland(tenantId, islandId);
-            if (deviceCount > 0) {
-                throw new IllegalArgumentException(
-                        "岛上还有 " + deviceCount + " 台设备，先把它们移出再删");
-            }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    DELETE FROM resource_node
-                    WHERE tenant_id = ? AND id = ? AND kind = 'island'
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, islandId);
-                n = ps.executeUpdate();
-            }
-            return n;
+        int deviceCount = queryMapper.countDevicesUnderIsland(tenantId, islandId);
+        if (deviceCount > 0) {
+            throw new IllegalArgumentException(
+                    "岛上还有 " + deviceCount + " 台设备，先把它们移出再删");
         }
+        return queryMapper.deleteIslandNode(tenantId, islandId);
     }
 
     /**
@@ -1701,35 +1690,20 @@ throw e;
     /** 某个岛的机械臂点位列表。 */
     public String robotPointsJson(long islandId) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT p.id, p.robot_resource_id, p.code, p.name,
-                       p.x, p.y, p.z, p.action, p.device_resource_id,
-                       r.code AS device_code, p.synced_at
-                FROM robot_point p
-                LEFT JOIN resource_node r ON r.id = p.device_resource_id
-                WHERE p.tenant_id = ? AND p.island_id = ?
-                ORDER BY p.robot_resource_id, p.code
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "robotResourceId", rs.getLong("robot_resource_id"),
-                            "code", rs.getString("code"),
-                            "name", rs.getString("name"),
-                            "x", rs.getObject("x"),
-                            "y", rs.getObject("y"),
-                            "z", rs.getObject("z"),
-                            "action", rs.getString("action"),
-                            "deviceResourceId", rs.getObject("device_resource_id"),
-                            "deviceCode", rs.getString("device_code"),
-                            "syncedAt", str(rs, "synced_at")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectRobotPointDetails(tenantId, islandId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "robotResourceId", row.get("robotResourceId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "x", row.get("x"),
+                    "y", row.get("y"),
+                    "z", row.get("z"),
+                    "action", row.get("action"),
+                    "deviceResourceId", row.get("deviceResourceId"),
+                    "deviceCode", row.get("deviceCode"),
+                    "syncedAt", mstr(row, "syncedAt")));
         }
         return Jsons.obj("islandId", islandId,
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -1745,29 +1719,7 @@ throw e;
      * <p>点位 code 用设备编号（`ID1775`）——`Transfer` 的 source/target 直接引用它。
      */
     public int syncRobotPoints(long islandId, long robotResourceId) throws SQLException {
-        String sql = """
-                INSERT INTO robot_point
-                  (tenant_id, island_id, robot_resource_id, code, name,
-                   device_resource_id, action, synced_at)
-                SELECT ?, ?, ?, d.code, d.name, d.id, 'PickPlace', now()
-                FROM resource_node d
-                WHERE d.tenant_id = ? AND d.parent_id = ? AND d.kind = 'device'
-                  AND d.id <> ?
-                ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
-                SET name = EXCLUDED.name,
-                    device_resource_id = EXCLUDED.device_resource_id,
-                    synced_at = now(), updated_at = now()
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            ps.setLong(3, robotResourceId);
-            ps.setLong(4, tenantId);
-            ps.setLong(5, islandId);
-            ps.setLong(6, robotResourceId);
-            return ps.executeUpdate();
-        }
+        return queryMapper.syncRobotPoints(tenantId, islandId, robotResourceId);
     }
 
     /** 岛屿动线（设备节点坐标 + 搬运箭头）。 */
@@ -2921,25 +2873,11 @@ throw e;
     @org.springframework.transaction.annotation.Transactional(
             rollbackFor = Exception.class)
     public int deleteDevice(long resourceId) throws SQLException {
-        try (Connection c = db.open()) {
-            try {
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE device_instance
-                        SET deleted_at = now(), updated_at = now()
-                        WHERE tenant_id = ? AND resource_id = ? AND deleted_at IS NULL
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, resourceId);
-                    ps.executeUpdate();
-                }
-                // 不删 resource_node：run_node.resource_id 可能引用它（外键会挡住），
-                // 且历史执行记录要能查回"这台设备当时在哪"。
-                // 拓扑查询会过滤 deleted_at IS NOT NULL，界面上等于删掉了。
-                return 1;
-            } catch (SQLException | RuntimeException e) {
-                throw e;
-            }
-        }
+        // 不删 resource_node：run_node.resource_id 可能引用它（外键会挡住），
+        // 且历史执行记录要能查回"这台设备当时在哪"。
+        // 拓扑查询会过滤 deleted_at IS NOT NULL，界面上等于删掉了。
+        queryMapper.softDeleteDeviceInstance(tenantId, resourceId);
+        return 1;
     }
 
     /** 能力字典（设计器下拉用）：code + 可用设备数。 */
@@ -3528,25 +3466,9 @@ throw e;
                 throw new IllegalArgumentException("未知动作: " + strategy);
             }
         }
-        String sql = """
-                UPDATE recovery_policy
-                SET strategy     = COALESCE(?::recovery_strategy, strategy),
-                    max_attempts = COALESCE(?, max_attempts),
-                    priority     = COALESCE(?, priority),
-                    enabled      = COALESCE(?, enabled),
-                    updated_at   = now()
-                WHERE tenant_id = ? AND id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, strategy == null ? null : strategy.toUpperCase());
-            ps.setObject(2, maxAttempts);
-            ps.setObject(3, priority);
-            ps.setObject(4, enabled);
-            ps.setLong(5, tenantId);
-            ps.setLong(6, id);
-            return ps.executeUpdate();
-        }
+        return queryMapper.updateRecoveryPolicy(tenantId, id,
+                strategy == null ? null : strategy.toUpperCase(),
+                maxAttempts, priority, enabled);
     }
 
     /**
@@ -3662,34 +3584,21 @@ throw e;
 
     /** 错误记录明细（含 SKIPPED 留痕，用于追溯）。 */
     public String occurrences(int limit) throws SQLException {
-        String sql = """
-                SELECT eo.id, eo.fingerprint, eo.outcome, eo.severity::text AS severity,
-                       eo.attempt, eo.run_id, eo.run_node_id, eo.resource_id,
-                       eo.occurred_at, eo.message
-                FROM error_occurrence eo
-                WHERE eo.tenant_id = ?
-                ORDER BY eo.id DESC LIMIT ?
-                """;
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 200)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "fingerprint", rs.getString("fingerprint"),
-                            "outcome", rs.getString("outcome"),
-                            "severity", rs.getString("severity"),
-                            "attempt", rs.getInt("attempt"),
-                            "runId", rs.getLong("run_id"),
-                            "runNodeId", rs.getLong("run_node_id"),
-                            "resourceId", rs.getObject("resource_id"),
-                            "occurredAt", str(rs, "occurred_at"),
-                            "message", rs.getString("message")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectErrorOccurrences(tenantId,
+                        Math.max(1, Math.min(limit, 200)))) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "fingerprint", row.get("fingerprint"),
+                    "outcome", row.get("outcome"),
+                    "severity", row.get("severity"),
+                    "attempt", mint(row, "attempt"),
+                    "runId", row.get("runId"),
+                    "runNodeId", row.get("runNodeId"),
+                    "resourceId", row.get("resourceId"),
+                    "occurredAt", mstr(row, "occurredAt"),
+                    "message", row.get("message")));
         }
         return Jsons.obj("total", items.size(), "items", raw(Jsons.arr(items)));
     }
