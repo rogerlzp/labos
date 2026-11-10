@@ -5769,3 +5769,57 @@ Lessons (cross-project):
    nodes carry `kind`, so one can tell "this label is the auto-generated one"; on
    the BPMN side there is no nodeType, so only an exact name match is possible.
    Same kind of task: guard it if you can, don't guess.
+
+**Addendum (2026-11-10): flattening PG array columns (every execution returned 500); and P-05 "requested island vs authoritative island"**
+
+**One: PG array columns — every workflow execution returned 500**
+
+Symptom: every workflow execution returned 500 with
+`ClassCastException: class [Ljava.lang.Long; cannot be cast to class java.sql.Array`.
+
+Cause: `RealWorkflowRunner.loadCapabilityPool` cast the `array_agg(...)` column
+of the capability-pool SQL to `java.sql.Array`. But with `resultType=java.util.Map`
+the PG array column comes back through `ResultSet.getObject(...)` ⇒ you get the
+**corresponding Java array** (`Long[]`); `java.sql.Array` only appears when
+`getArray(...)` is called explicitly ⇒ the cast always blew up.
+
+The same wrong assumption existed in `PauseManager.toList`, but there it was
+**silent**: only `java.sql.Array` was recognised ⇒ the plate's "possible locations"
+list was always empty (no exception, so nobody noticed).
+
+Fix: a new `persistence/DbArrays` flattens all three shapes (`java.sql.Array` /
+Java array / null); both call sites switched to it; `DbArraysSelfTest` (14 cases)
+pins the three shapes down.
+
+**Two: P-05 — requested island vs authoritative island**
+
+Workflow 1000319's authoritative island is 100027, but the island used at runtime
+comes **only from the request parameter**, and the frontend does not send an island
+at all ⇒ `workflow.island_id` was **never used** on the execution path. This
+batch lands only the part that can be judged right or wrong: a requested island
+that differs from the authoritative one ⇒ **400, explicitly refused**.
+
+The rest is not done, and the cause is not "the filter was forgotten" but "the
+filter never took effect" (all three at once): ① the node picks a device from the
+**unfiltered** `pool` (the filter only acts on `capPool`); ② `capPool` lives in
+the resource_node.id space while `loadIslandDeviceIds` returns device_instance.id
+(two id spaces that do not line up); ③ the island filter only ever came from the
+request parameter ⇒ all three must change together, otherwise the candidate pool
+gets emptied ⇒ regression.
+
+Lessons (cross-project):
+① **"What comes back" depends on how you fetch it, not on the type** — the same
+PG array column gives `java.sql.Array` via `getArray` and `Long[]` via
+`getObject`; **casting an array type inside a Map result always blows up** ⇒
+everywhere the database hands back an array, go through one flattening helper
+instead of casting per call site.
+② **A silent empty value costs more than an exception** — the plate "possible
+locations" list was always empty without throwing, so it stayed unnoticed until
+the same wrong assumption exploded somewhere else ⇒ **when the same wrong
+assumption shows up a second time, go back and find the first one.**
+③ **"Never took effect" and "was never written" are different** — the island
+filter code was there all along, but it acted on an object that is **not used at
+all** (`capPool` ≠ the `pool` the node actually selects from) and compared it
+against **a different id space** ⇒ reading code and seeing "there is a filter"
+does not mean the filter works; you have to follow the **actual data flow**.
+
