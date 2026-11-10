@@ -61,6 +61,18 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <!-- RunExecPhase 阶段推进（阶段3第32批收编）：单向 PREPARED→DISPATCH_STARTED→SETTLED -->
+    <update id="markDispatched">
+        UPDATE run
+           SET exec_phase = 'DISPATCH_STARTED', updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND exec_phase = 'PREPARED'
+    </update>
+    <update id="markSettled">
+        UPDATE run
+           SET exec_phase = 'SETTLED', updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND exec_phase &lt;&gt; 'SETTLED'
+    </update>
+
     <select id="selectRunStatus" resultType="java.lang.String">
         SELECT status::text FROM run
          WHERE tenant_id = #{param1} AND id = #{param2}

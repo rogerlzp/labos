@@ -2,9 +2,6 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 
 /**
@@ -49,31 +46,17 @@ public final class RunExecPhase {
      */
     public static void markDispatched(DbConfig db, long tenantId, long runId)
             throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run
-                        SET exec_phase = 'DISPATCH_STARTED', updated_at = now()
-                      WHERE tenant_id = ? AND id = ? AND exec_phase = 'PREPARED'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.executeUpdate();
-        }
+        com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExecutionMapper.class)
+                .markDispatched(tenantId, runId);
     }
 
     /** 收尾：执行体不再派发新命令。paused 不调这个（那一单还没走完）。 */
     public static void markSettled(DbConfig db, long tenantId, long runId)
             throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run
-                        SET exec_phase = 'SETTLED', updated_at = now()
-                      WHERE tenant_id = ? AND id = ? AND exec_phase <> 'SETTLED'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.executeUpdate();
-        }
+        com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExecutionMapper.class)
+                .markSettled(tenantId, runId);
     }
 
     /** 读当前阶段；行不存在返回 {@code null}。 */

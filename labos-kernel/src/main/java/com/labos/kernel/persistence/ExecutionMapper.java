@@ -52,6 +52,12 @@ public interface ExecutionMapper {
     /** run 当前状态。 */
     String selectRunStatus(long tenantId, long runId);
 
+    /** 派发开始：PREPARED → DISPATCH_STARTED（条件命中才更新，幂等单向）。 */
+    int markDispatched(long tenantId, long runId);
+
+    /** 收尾：→ SETTLED（非 SETTLED 才更新；paused 不调，语义不变）。 */
+    int markSettled(long tenantId, long runId);
+
     // ---- ExperimentExecutor 编排/落库（阶段3收编） ----
 
     /** 编排行（id/seq/workflowId/loopCount/paramsOverride，按 seq 升序）。 */
