@@ -14,6 +14,12 @@ import java.util.Map;
 /**
  * 位置锁：一个位置同一时刻只能被一个 run 占用。
  *
+ * <p><b>收编说明（阶段3）</b>：业务 SQL 已全部归 {@code DeviceStateMapper}/
+ * {@code QueryMapper}；唯一保留的 3 条 {@code prepareStatement} 是
+ * {@code SAVEPOINT / RELEASE SAVEPOINT / ROLLBACK TO SAVEPOINT} —— 事务控制语句，
+ * 必须在 {@code markPlateInTransfer} 拿到的**同一条裸 Connection** 上执行
+ * （MyBatis mapper 无法对外层 Spring 事务打 savepoint），属有意保留，勿再收编。
+ *
  * <p><b>为什么不是简单地"查一下有没有板"</b>：
  * 两个实验可能同时查到"位置空"，然后都去放板——必须有一次原子的
  * "占住"操作，这就是 {@link #tryReserve} 存在的理由。
