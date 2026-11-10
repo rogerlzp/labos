@@ -112,4 +112,41 @@ public interface PauseMapper {
      * （旧口径"全租户设备都在线"会让一台无关离线就永不恢复）。
      */
     int autoResumeFaulted(long tenantId);
+
+    // ---- PauseCoordinator（V1-5 幂等键 + pause_event，ADR-PAUSE-009）----
+
+    /**
+     * 抢占登记：同 (tenant_id, request_id) 已存在时 ON CONFLICT DO NOTHING。
+     *
+     * @return 1=首次（插入成功）；0=重复请求（冲突）
+     */
+    int insertPauseRequest(@Param("tenantId") long tenantId,
+                           @Param("requestId") String requestId,
+                           @Param("targetType") String targetType,
+                           @Param("targetId") long targetId,
+                           @Param("action") String action,
+                           @Param("source") String source,
+                           @Param("kind") String kind,
+                           @Param("reason") String reason,
+                           @Param("requestedBy") String requestedBy);
+
+    /** 重复请求时读回首次结果（resultState/kind/resultDetail）；不存在返回 null。 */
+    java.util.Map<String, Object> selectPauseRequestResult(
+            @Param("tenantId") long tenantId,
+            @Param("requestId") String requestId);
+
+    /** 回写首次结果供幂等回放；requestId 为空时调用方不调用本方法。 */
+    int updatePauseRequestResult(@Param("tenantId") long tenantId,
+                                 @Param("requestId") String requestId,
+                                 @Param("resultState") String resultState,
+                                 @Param("resultDetail") String resultDetail);
+
+    /** Outbox 事件：与 Hold/control_state/pause_request 同事务写入；requestId/scope 可空。 */
+    int insertPauseEvent(@Param("tenantId") long tenantId,
+                         @Param("requestId") String requestId,
+                         @Param("eventType") String eventType,
+                         @Param("targetType") String targetType,
+                         @Param("targetId") long targetId,
+                         @Param("scope") String scope,
+                         @Param("payloadJson") String payloadJson);
 }

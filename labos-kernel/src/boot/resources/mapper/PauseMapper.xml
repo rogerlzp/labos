@@ -226,4 +226,36 @@
                     AND wn.workflow_id = run.workflow_id)
     </update>
 
+    <!-- ---- PauseCoordinator（V1-5 幂等键 + pause_event，ADR-PAUSE-009）---- -->
+
+    <insert id="insertPauseRequest">
+        INSERT INTO pause_request
+          (tenant_id, request_id, target_type, target_id, action,
+           source, kind, reason, requested_by)
+        VALUES (#{tenantId}, #{requestId}, #{targetType}, #{targetId}, #{action},
+                #{source}, #{kind}, #{reason}, #{requestedBy})
+        ON CONFLICT (tenant_id, request_id) DO NOTHING
+    </insert>
+
+    <select id="selectPauseRequestResult" resultType="java.util.Map">
+        SELECT result_state AS "resultState", kind AS "kind",
+               result_detail AS "resultDetail"
+          FROM pause_request
+         WHERE tenant_id = #{tenantId} AND request_id = #{requestId}
+    </select>
+
+    <update id="updatePauseRequestResult">
+        UPDATE pause_request SET result_state = #{resultState},
+               result_detail = #{resultDetail, jdbcType=VARCHAR}
+         WHERE tenant_id = #{tenantId} AND request_id = #{requestId}
+    </update>
+
+    <insert id="insertPauseEvent">
+        INSERT INTO pause_event
+          (tenant_id, request_id, event_type, target_type, target_id, scope, payload)
+        VALUES (#{tenantId}, #{requestId, jdbcType=VARCHAR}, #{eventType},
+                #{targetType}, #{targetId}, #{scope, jdbcType=VARCHAR},
+                #{payloadJson}::jsonb)
+    </insert>
+
 </mapper>

@@ -3,8 +3,6 @@ package com.labos.kernel.workflow;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -74,53 +72,34 @@ public final class PauseCoordinator {
         }
     }
 
+    private static com.labos.kernel.persistence.PauseMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.PauseMapper.class);
+    }
+
     /**
      * 登记本次请求：带 {@code requestId} 时按 {@code (tenant_id, request_id)} 去重。
      *
      * <p>用 {@code INSERT ... ON CONFLICT DO NOTHING} 抢占：插入成功即首次；
      * 冲突即重复（读回首次结果）。无 {@code requestId} 时一律按首次处理 —— 旧行为。
+     * 事务内调用时（claimTx）经 DataSource 同步复用绑定连接。
      */
     private Claim claim(PauseCommand cmd) throws SQLException {
         String rid = cmd.requestId();
         if (rid == null || rid.isBlank()) {
             return Claim.first();
         }
-        String insert = """
-                INSERT INTO pause_request
-                  (tenant_id, request_id, target_type, target_id, action,
-                   source, kind, reason, requested_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (tenant_id, request_id) DO NOTHING
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(insert)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, rid);
-            ps.setString(3, cmd.targetType().name());
-            ps.setLong(4, cmd.targetId());
-            ps.setString(5, cmd.action().name());
-            ps.setString(6, cmd.source());
-            ps.setString(7, cmd.kind());
-            ps.setString(8, cmd.reasonText());
-            ps.setString(9, cmd.requestedBy());
-            if (ps.executeUpdate() == 1) {
-                return Claim.first();
-            }
+        if (mapper().insertPauseRequest(tenantId, rid, cmd.targetType().name(),
+                cmd.targetId(), cmd.action().name(), cmd.source(), cmd.kind(),
+                cmd.reasonText(), cmd.requestedBy()) == 1) {
+            return Claim.first();
         }
         // 冲突 ⇒ 重复请求：读回首次结果用于回放
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT result_state, kind, result_detail FROM pause_request
-                      WHERE tenant_id = ? AND request_id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, rid);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return new Claim(false, rs.getString("result_state"),
-                            rs.getString("kind"), parseDetail(rs.getString("result_detail")));
-                }
-            }
+        Map<String, Object> row = mapper().selectPauseRequestResult(tenantId, rid);
+        if (row != null) {
+            return new Claim(false, (String) row.get("resultState"),
+                    (String) row.get("kind"),
+                    parseDetail((String) row.get("resultDetail")));
         }
         // 竞态窗口：插入冲突但读不到（极少）。保守按首次处理，宁可重放一次也不阻断。
         return Claim.first();
@@ -132,17 +111,8 @@ public final class PauseCoordinator {
         if (rid == null || rid.isBlank()) {
             return;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE pause_request SET result_state = ?, result_detail = ?
-                      WHERE tenant_id = ? AND request_id = ?
-                     """)) {
-            ps.setString(1, cmd.resultState().name());
-            ps.setString(2, encodeDetail(detail));
-            ps.setLong(3, tenantId);
-            ps.setString(4, rid);
-            ps.executeUpdate();
-        }
+        mapper().updatePauseRequestResult(tenantId, rid, cmd.resultState().name(),
+                encodeDetail(detail));
     }
 
     /**
@@ -163,66 +133,15 @@ public final class PauseCoordinator {
         }
     }
 
-    /** 同 {@link #claim}，但复用调用方事务连接（P-06 V2 单事务）。 */
+    /** 同 {@link #claim}；c 形参保留（Tx 事务内调用，mapper 复用绑定连接）。 */
     private Claim claimTx(Connection c, PauseCommand cmd) throws SQLException {
-        String rid = cmd.requestId();
-        if (rid == null || rid.isBlank()) {
-            return Claim.first();
-        }
-        String insert = """
-                INSERT INTO pause_request
-                  (tenant_id, request_id, target_type, target_id, action,
-                   source, kind, reason, requested_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (tenant_id, request_id) DO NOTHING
-                """;
-        try (PreparedStatement ps = c.prepareStatement(insert)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, rid);
-            ps.setString(3, cmd.targetType().name());
-            ps.setLong(4, cmd.targetId());
-            ps.setString(5, cmd.action().name());
-            ps.setString(6, cmd.source());
-            ps.setString(7, cmd.kind());
-            ps.setString(8, cmd.reasonText());
-            ps.setString(9, cmd.requestedBy());
-            if (ps.executeUpdate() == 1) {
-                return Claim.first();
-            }
-        }
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT result_state, kind, result_detail FROM pause_request
-                 WHERE tenant_id = ? AND request_id = ?
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, rid);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return new Claim(false, rs.getString("result_state"),
-                            rs.getString("kind"), parseDetail(rs.getString("result_detail")));
-                }
-            }
-        }
-        return Claim.first();
+        return claim(cmd);
     }
 
-    /** 同 {@link #settle}，但复用调用方事务连接。 */
+    /** 同 {@link #settle}；c 形参保留（Tx 事务内调用）。 */
     private void settleTx(Connection c, PauseCommand cmd, Map<String, String> detail)
             throws SQLException {
-        String rid = cmd.requestId();
-        if (rid == null || rid.isBlank()) {
-            return;
-        }
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE pause_request SET result_state = ?, result_detail = ?
-                 WHERE tenant_id = ? AND request_id = ?
-                """)) {
-            ps.setString(1, cmd.resultState().name());
-            ps.setString(2, encodeDetail(detail));
-            ps.setLong(3, tenantId);
-            ps.setString(4, rid);
-            ps.executeUpdate();
-        }
+        settle(cmd, detail);
     }
 
     /** Outbox 事件：与 Hold/control_state/pause_request 同事务写入。 */
@@ -230,20 +149,8 @@ public final class PauseCoordinator {
                                   String scope, Long scopeId) throws SQLException {
         String payload = "{\"scope\":" + (scope == null ? "null" : "\"" + scope + "\"")
                 + ",\"scopeId\":" + (scopeId == null ? "null" : scopeId) + "}";
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO pause_event
-                  (tenant_id, request_id, event_type, target_type, target_id, scope, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, cmd.requestId());
-            ps.setString(3, eventType);
-            ps.setString(4, cmd.targetType().name());
-            ps.setLong(5, cmd.targetId());
-            ps.setString(6, scope);
-            ps.setString(7, payload);
-            ps.executeUpdate();
-        }
+        mapper().insertPauseEvent(tenantId, cmd.requestId(), eventType,
+                cmd.targetType().name(), cmd.targetId(), scope, payload);
     }
 
     private static String encodeDetail(Map<String, String> m) {
