@@ -1,7 +1,7 @@
 package com.labos.boot.web.controller;
 
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.device.DeviceModels;
+import com.labos.boot.web.service.MetaService;
 import com.labos.kernel.persistence.MetaMapper;
 import com.labos.kernel.workflow.StatusVocabulary;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,11 +24,11 @@ public class MetaController {
 
     private static final long TENANT = 1L;
 
-    private final QueryService query;
+    private final MetaService metaService;
     private final MetaMapper metaMapper;
 
-    public MetaController(QueryService query, MetaMapper metaMapper) {
-        this.query = query;
+    public MetaController(MetaService metaService, MetaMapper metaMapper) {
+        this.metaService = metaService;
         this.metaMapper = metaMapper;
     }
 
@@ -60,12 +60,12 @@ public class MetaController {
     @GetMapping(value = "/api/capabilities",
             produces = "application/json; charset=utf-8")
     public String capabilities() throws SQLException {
-        return query.capabilitiesJson();
+        return metaService.capabilitiesJson();
     }
 
     @GetMapping(value = "/api/capabilities/{code}/methods",
             produces = "application/json; charset=utf-8")
     public String capabilityMethods(@PathVariable String code) throws SQLException {
-        return query.methodsJson(code);
+        return metaService.capabilityMethods(code);
     }
 }

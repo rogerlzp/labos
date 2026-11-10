@@ -2566,16 +2566,6 @@ throw e;
     }
 
     /** 能力字典（设计器下拉用）：code + 可用设备数。 */
-    public String capabilitiesJson() throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row : queryMapper.selectCapabilities(tenantId)) {
-            items.add(Jsons.obj(
-                    "code", row.get("code"),
-                    "name", row.get("name"),
-                    "devices", mint(row, "devices")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
 
     /**
      * 设置设备方法的「执行中可中断」标志（产品写入口；方法必须已在设备库中）。
@@ -2975,14 +2965,6 @@ throw e;
     }
 
     /** 某能力下可选的设备方法（{@code device_method}）。 */
-    public String methodsJson(String capability) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (String m : queryMapper.selectMethodsByCapability(tenantId, capability)) {
-            items.add(Jsons.quote(m));
-        }
-        return Jsons.obj("capability", capability,
-                "methods", new Jsons.Raw(Jsons.arr(items)));
-    }
 
     /**
      * 告警处置：认领 / 关闭 / 静音。

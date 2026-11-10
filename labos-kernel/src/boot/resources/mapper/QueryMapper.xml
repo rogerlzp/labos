@@ -262,24 +262,6 @@
          ORDER BY "deployed" DESC, d.name
     </select>
 
-    <select id="selectCapabilities" resultType="java.util.Map">
-        SELECT c.code AS "code", c.name AS "name",
-               count(rc.resource_id) AS "devices"
-          FROM capability c
-          LEFT JOIN resource_capability rc ON rc.capability_id = c.id
-         WHERE c.tenant_id = #{param1}
-         GROUP BY c.id, c.code, c.name
-         ORDER BY "devices" DESC, c.code
-    </select>
-
-    <select id="selectMethodsByCapability" resultType="java.lang.String">
-        SELECT DISTINCT dm.method
-          FROM device_method dm
-          JOIN capability c ON c.id = dm.capability_id
-         WHERE c.tenant_id = #{param1} AND c.code = #{param2}
-         ORDER BY dm.method
-    </select>
-
     <select id="selectChoreographies" resultType="java.util.Map">
         SELECT w.id AS "id", w.code AS "code", w.name AS "name",
                (SELECT count(*) FROM workflow_node n

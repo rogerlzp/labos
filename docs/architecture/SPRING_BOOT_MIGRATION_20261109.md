@@ -327,6 +327,25 @@ Command 2。
 `StatusVocabulary` 生成 CASE。**其余约 359 条都是真实数据访问**，仍需按
 「只读查询 → 写路径小方法 → 执行引擎」的顺序继续收编。
 
+
+**2026-11-10 续：按 Controller 域拆分 Service/Mapper（架构方向调整）**
+
+`QueryService` 3566 行 / 98 个 public 方法、`QueryMapper` 119 条 SQL，
+两者都塞了全部 9 个域。实测「被多个 Controller 调用的方法 = 0」——
+调用天然按域聚簇，拆分不需要拆共享逻辑。定稿分层：
+
+```
+Controller（按域） -> Service（按域） -> Mapper（按域）
+```
+
+样板已落地：`MetaController -> MetaService -> MetaMapper`（1:1:1，
+无兼容层）。后续按此模板分批推进：① 剩余 24 条裸 SQL 按域落位
+（Device 13 / Workflow 4 / ExperimentAction 4 / OpsError 3）；
+② 把 QueryService 剩余方法与 QueryMapper 的 119 条按 9 个域搬空；
+③ QueryService 缩成薄兼容门面（11 个自测 + RunService /
+WorkflowWebService 的 7 个间接调用仍依赖它），最终删除。
+每批一个域，配端点冒烟 + 全量 1323/0。
+
 **仍未完成**：
 - 约 359 条 SQL 进 Mapper（`QueryService` 109 为大头）；
 - `QueryService`(5000 行) / `WorkflowService`(3300 行) 两个上帝类按聚合拆分。

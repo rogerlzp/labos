@@ -122,12 +122,6 @@ public interface QueryMapper {
     /** 设备型号 + 部署台数（一次子查询，避免逐型号 N+1）。 */
     List<Map<String, Object>> selectDeviceModels(long tenantId);
 
-    /** 能力清单 + 绑定资源数。 */
-    List<Map<String, Object>> selectCapabilities(long tenantId);
-
-    /** 某能力下已登记的方法名（去重排序）。 */
-    List<String> selectMethodsByCapability(long tenantId, String capability);
-
     /** 编排流程列表（category='choreography'）。 */
     List<Map<String, Object>> selectChoreographies(long tenantId, int limit);
 
