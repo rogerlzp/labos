@@ -16,6 +16,7 @@ import {
 } from '../utils/status';
 import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
+import { localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 
 /**
  * 执行详情：**实时看跑到哪一步**，并能暂停/继续/停止。
@@ -253,7 +254,7 @@ export default function RunDetailPage() {
             icon={<SyncOutlined spin />}
             message={
               <Space>
-                <b>{t('runDetail.current.running', { name: current.name })}</b>
+                <b>{t('runDetail.current.running', { name: localizedNeutralLabel(current.name) ?? current.name })}</b>
                 {currentStep && (
                   <Tag color="blue">
                     {t('runDetail.current.step', { seq: currentStep.stepSeq ?? '?' })}
@@ -314,7 +315,7 @@ export default function RunDetailPage() {
         <Card size="small" style={{ borderColor: '#1677ff', borderWidth: 2 }}>
           <Space size={24}>
             <Statistic title={t('runDetail.stat.currentStep')} value={currentStep.stepSeq ?? '—'} />
-            <Statistic title={t('runDetail.stat.stepName')} value={currentStep.name ?? '—'} />
+            <Statistic title={t('runDetail.stat.stepName')} value={localizedNeutralLabel(currentStep.name) ?? currentStep.name ?? '—'} />
             {currentStep.attempt > 0 && (
               <Statistic title={t('runDetail.stat.retries')} value={currentStep.attempt} />
             )}
@@ -345,7 +346,9 @@ export default function RunDetailPage() {
                 render: (v: string, r: RunNode) => (
                   <Space>
                     {r.status === 'running' && <SyncOutlined spin style={{ color: '#1677ff' }} />}
-                    <span style={{ fontWeight: r.status === 'running' ? 600 : 400 }}>{v}</span>
+                    <span style={{ fontWeight: r.status === 'running' ? 600 : 400 }}>
+                      {localizedNeutralLabel(v) ?? v}
+                    </span>
                   </Space>
                 ),
               },

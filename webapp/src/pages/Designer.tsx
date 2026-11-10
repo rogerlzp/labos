@@ -723,7 +723,7 @@ function TimelineChart({ data }: {
       {data.nodes.map((n) => (
         <div key={n.nodeKey}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-            <span>{n.name ?? n.nodeKey} <Tag>{n.resourceCode ?? t('designer.estimate.noDevice')}</Tag></span>
+            <span>{localizedNeutralLabel(n.name) ?? n.name ?? n.nodeKey} <Tag>{n.resourceCode ?? t('designer.estimate.noDevice')}</Tag></span>
             <span style={{ color: '#64748b' }}>
               {fmtWait(n.startSec, t)} → {fmtWait(n.endSec, t)} ({fmtWait(n.durationSec, t)})
               <Tooltip title={t(ESTIMATE_HINT[n.estimateSource ?? 'default'])}>
