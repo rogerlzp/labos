@@ -150,4 +150,25 @@
         SELECT scope FROM recovery_policy
         WHERE tenant_id = #{tenantId} AND id = #{policyId}
     </select>
+
+    <!-- JdbcRecoveryPolicyRepository（阶段3第37批收编） -->
+    <select id="selectRecoveryPolicies" resultType="java.util.Map">
+        SELECT p.id AS "id",
+               ec.code AS "errorCode",
+               p.scope AS "scope",
+               p.strategy::text AS "strategy",
+               p.params::text AS "params",
+               p.max_attempts AS "maxAttempts",
+               p.priority AS "priority",
+               p.enabled AS "enabled"
+        FROM recovery_policy p
+        LEFT JOIN error_code ec ON ec.id = p.error_code_id
+        WHERE p.tenant_id = #{tenantId}
+        ORDER BY p.priority, p.id
+    </select>
+    <select id="selectErrorCodeIdPairs" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code"
+        FROM error_code
+        WHERE tenant_id = #{tenantId} AND deleted_at IS NULL
+    </select>
 </mapper>

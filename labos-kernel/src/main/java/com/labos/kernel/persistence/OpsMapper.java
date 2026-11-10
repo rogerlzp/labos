@@ -88,4 +88,13 @@ public interface OpsMapper {
     /** 按 id 查策略作用域（PATCH 没带 scope 时用）。查不到返回 null。 */
     String selectPolicyScope(long tenantId, long policyId);
 
+    /**
+     * 全部恢复策略行（errorCode 为 null 表示通配；strategy/params 显式 ::text）。
+     * JdbcRecoveryPolicyRepository 启动时加载。
+     */
+    List<Map<String, Object>> selectRecoveryPolicies(@Param("tenantId") long tenantId);
+
+    /** 全部未软删错误码的 id/code 对（errorCodeIds 映射用）。 */
+    List<Map<String, Object>> selectErrorCodeIdPairs(@Param("tenantId") long tenantId);
+
 }

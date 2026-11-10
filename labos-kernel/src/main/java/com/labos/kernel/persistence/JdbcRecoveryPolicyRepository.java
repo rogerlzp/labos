@@ -5,9 +5,6 @@ import com.labos.kernel.recovery.RecoveryPolicy;
 import com.labos.kernel.recovery.RecoveryScope;
 import com.labos.kernel.recovery.RecoveryStrategy;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -22,21 +19,6 @@ import java.util.Map;
  */
 public final class JdbcRecoveryPolicyRepository {
 
-    private static final String SQL = """
-            SELECT p.id,
-                   ec.code          AS error_code,
-                   p.scope,
-                   p.strategy::text AS strategy,
-                   p.params::text   AS params,
-                   p.max_attempts,
-                   p.priority,
-                   p.enabled
-            FROM recovery_policy p
-            LEFT JOIN error_code ec ON ec.id = p.error_code_id
-            WHERE p.tenant_id = ?
-            ORDER BY p.priority, p.id
-            """;
-
     private final DbConfig db;
     private final long tenantId;
     private final Map<String, Long> codeToId = new LinkedHashMap<>();
@@ -48,24 +30,19 @@ public final class JdbcRecoveryPolicyRepository {
 
     public List<RecoveryPolicy> loadAll() throws SQLException {
         List<RecoveryPolicy> out = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(SQL)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(map(rs));
-                }
-            }
-            loadErrorCodeIds(c);
+        OpsMapper om = Mappers.get(OpsMapper.class);
+        for (Map<String, Object> row : om.selectRecoveryPolicies(tenantId)) {
+            out.add(map(row));
         }
+        loadErrorCodeIds(om);
         return out;
     }
 
-    private RecoveryPolicy map(ResultSet rs) throws SQLException {
-        String code = rs.getString("error_code");            // null = 通配
-        String scopeRaw = rs.getString("scope");
-        String stratRaw = rs.getString("strategy");
-        String params = rs.getString("params");
+    private RecoveryPolicy map(Map<String, Object> row) throws SQLException {
+        String code = (String) row.get("errorCode");            // null = 通配
+        String scopeRaw = (String) row.get("scope");
+        String stratRaw = (String) row.get("strategy");
+        String params = (String) row.get("params");
 
         RecoveryScope scope = scopeRaw == null ? null
                 : RecoveryScope.valueOf(scopeRaw.trim().toUpperCase());
@@ -75,20 +52,14 @@ public final class JdbcRecoveryPolicyRepository {
         Duration base = JsonParams.baseDelay(params, Duration.ofMillis(1000));
 
         return new RecoveryPolicy(code, scope, strategy,
-                rs.getInt("max_attempts"), backoff, base,
-                rs.getInt("priority"), rs.getBoolean("enabled"));
+                ((Number) row.get("maxAttempts")).intValue(), backoff, base,
+                ((Number) row.get("priority")).intValue(),
+                Boolean.TRUE.equals(row.get("enabled")));
     }
 
-    private void loadErrorCodeIds(Connection c) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT id, code FROM error_code WHERE tenant_id = ? AND deleted_at IS NULL");
-             ) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    codeToId.put(rs.getString("code"), rs.getLong("id"));
-                }
-            }
+    private void loadErrorCodeIds(OpsMapper om) throws SQLException {
+        for (Map<String, Object> row : om.selectErrorCodeIdPairs(tenantId)) {
+            codeToId.put((String) row.get("code"), ((Number) row.get("id")).longValue());
         }
     }
 
