@@ -43,6 +43,29 @@
            AND params->>'bound_resource_id' IS NOT NULL
     </select>
 
+    <update id="updateNodeResource">
+        UPDATE workflow_node SET resource_id = #{param4}, updated_at = now()
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_key = #{param3}
+    </update>
+
+    <!-- 双层 jsonb_set：先 method_params / builtin，再统一写 protocol_name。
+         执行器读的是 params.protocol_name，不是 XML 属性——只改 XML 会导致
+         节点设置保存后跑起来方法名为空、能力变 UNKNOWN。 -->
+    <update id="updateNodeParams">
+        UPDATE workflow_node
+           SET params = jsonb_set(
+                   CASE
+                       WHEN #{param4}::text IS NULL THEN COALESCE(params, '{}'::jsonb)
+                       ELSE jsonb_set(
+                              jsonb_set(COALESCE(params, '{}'::jsonb),
+                                        '{method_params}', #{param5}::jsonb, true),
+                              '{builtin}', to_jsonb(#{param6}::boolean), true)
+                   END,
+                   '{protocol_name}', to_jsonb(#{param7}::text), true),
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_key = #{param3}
+    </update>
+
     <select id="selectDurationP50" resultType="java.util.Map">
         SELECT method, p50_ms AS "p50Ms"
           FROM duration_model

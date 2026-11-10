@@ -51,13 +51,19 @@ public class WorkflowWebService {
     private final WorkflowService workflows;
     private final QueryService query;
     private final com.labos.kernel.persistence.WorkflowWebMapper mapper;
+    private final com.labos.kernel.persistence.QueryMapper queryMapper;
+    private final com.labos.kernel.persistence.GraphMapper graphMapper;
 
     public WorkflowWebService(DbConfig db, WorkflowService workflows, QueryService query,
-                              com.labos.kernel.persistence.WorkflowWebMapper mapper) {
+                              com.labos.kernel.persistence.WorkflowWebMapper mapper,
+                              com.labos.kernel.persistence.QueryMapper queryMapper,
+                              com.labos.kernel.persistence.GraphMapper graphMapper) {
         this.db = db;
         this.workflows = workflows;
         this.query = query;
         this.mapper = mapper;
+        this.queryMapper = queryMapper;
+        this.graphMapper = graphMapper;
     }
 
     // ---------------------------------------------------------------- 历史
@@ -416,4 +422,134 @@ public class WorkflowWebService {
         }
         return m;
     }
+    // ---------------------------------------------------------------- 节点绑定
+
+    /** Spring 声明式事务（checked 异常也回滚）。 */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
+    public boolean updateNodeBinding(long workflowId, String nodeKey,
+                                     String method, String methodParamsJson)
+            throws SQLException {
+        return updateNodeBinding(workflowId, nodeKey, method, methodParamsJson, null);
+    }
+
+    /**
+     * 同 {@link #updateNodeBinding(long, String, String, String)}，额外绑定设备。
+     *
+     * @param resourceId 设备资源 id。**契约（P-10 定案）**：
+     *                   {@code null} = 不改动绑定；{@code 0}（或负数）= 显式解绑；
+     *                   {@code > 0} = 绑定到该资源。
+     *
+     * <p>设备绑定只存在图 XML 的 {@code resource="…"} 属性里，{@code workflow_node}
+     * 没有这一列。在设计器里选设备本质就是改这个属性；表是读侧快路径，
+     * 两边必须同时改，否则「表清了、图里还绑着」。
+     */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
+    public boolean updateNodeBinding(long workflowId, String nodeKey,
+                                     String method, String methodParamsJson,
+                                     Long resourceId) throws SQLException {
+        if (nodeKey == null || nodeKey.isBlank()) {
+            throw new IllegalArgumentException("nodeKey 不能为空");
+        }
+        String m = method == null ? "" : method.trim();
+        try (java.sql.Connection c = db.open()) {
+            try {
+                // null = 不改动：与 patchNodeAttrs 的 null 语义保持一致，
+                // 只有显式给值才写库，避免「表清了、图里还绑着」。
+                if (resourceId != null) {
+                    mapper.updateNodeResource(TENANT, workflowId, nodeKey,
+                            resourceId > 0 ? resourceId : null);
+                }
+                mapper.updateNodeParams(TENANT, workflowId, nodeKey,
+                        methodParamsJson,
+                        methodParamsJson == null || methodParamsJson.isBlank()
+                                ? "{}" : methodParamsJson,
+                        m.startsWith("__"), m);
+
+                String xml = queryMapper.selectWorkflowXml(TENANT, workflowId);
+                if (xml != null && !xml.isBlank()) {
+                    String patched = patchNodeAttrs(xml, nodeKey, m, resourceId);
+                    if (!patched.equals(xml)) {
+                        graphMapper.updateWorkflowGraph(TENANT, workflowId, patched);
+                    }
+                }
+                return true;
+            } catch (RuntimeException e) {
+                throw e;
+            }
+        }
+    }
+
+    /** 内置节点方法 -> 中文短名（节点名跟着方法名走时用）。 */
+    private static String labelOf(String method) {
+        return switch (method) {
+            case "__setVar" -> "变量";
+            case "__expr" -> "表达式";
+            case "__sleep" -> "延时";
+            case "__wait" -> "等待";
+            default -> method;
+        };
+    }
+
+    /**
+     * 只改 BPMN 节点上 method / resource 两个属性，坐标与排版一个字不动。
+     * 按属性名逐对解析再重建：直接字符串替换会留下双空格，也容易把值里的
+     * 空格当分隔符。
+     */
+    private static String patchNodeAttrs(String xml, String nodeKey,
+                                         String method, Long resourceId) {
+        java.util.regex.Pattern pat = java.util.regex.Pattern.compile(
+                "<([a-zA-Z0-9_:]+)([^>]*?\\sid=\"" + java.util.regex.Pattern.quote(nodeKey)
+                        + "\")([^>]*?)(/?)>");
+        java.util.regex.Matcher mt = pat.matcher(xml);
+        if (!mt.find()) {
+            return xml;
+        }
+        String tag = mt.group(1);
+        String all = mt.group(2) + mt.group(3);
+        boolean selfClose = !mt.group(4).isEmpty();
+
+        java.util.LinkedHashMap<String, String> attrs = new java.util.LinkedHashMap<>();
+        java.util.regex.Matcher am = java.util.regex.Pattern
+                .compile("([A-Za-z_:][-A-Za-z0-9_:.]*)\\s*=\\s*\"([^\"]*)\"")
+                .matcher(all);
+        while (am.find()) {
+            attrs.put(am.group(1), am.group(2));
+        }
+
+        if (method != null) {
+            String oldMethod = attrs.get("protocolName");
+            String oldName = attrs.get("name");
+            if (method.isBlank()) {
+                attrs.remove("protocolName");
+            } else {
+                attrs.put("protocolName", method);
+                // 节点名跟着方法名走 —— 但只在「用户没自己起过名」时改：
+                // 名字为空 / 等于方法名 / 还是 bpmn-js 的占位名（Task 之类），
+                // 否则会把用户写的「封膜第一步」覆盖掉。
+                boolean placeholder = oldName == null || oldName.isBlank()
+                        || oldName.equals(oldMethod)
+                        || oldName.startsWith("Task") || oldName.startsWith("Activity")
+                        || oldName.startsWith("任务") || oldName.startsWith("活动");
+                if (placeholder) {
+                    attrs.put("name", labelOf(method));
+                }
+            }
+        }
+        if (resourceId != null) {
+            if (resourceId > 0) {
+                attrs.put("resource", String.valueOf(resourceId));
+            } else {
+                attrs.remove("resource");
+                attrs.remove("resourceName");
+            }
+        }
+
+        StringBuilder sb = new StringBuilder("<").append(tag);
+        attrs.forEach((k, v) -> sb.append(' ').append(k).append("=\"").append(v).append('"'));
+        sb.append(selfClose ? " />" : ">");
+        return xml.substring(0, mt.start()) + sb + xml.substring(mt.end());
+    }
+
 }

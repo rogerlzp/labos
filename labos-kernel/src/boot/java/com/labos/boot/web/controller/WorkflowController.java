@@ -297,7 +297,7 @@ public class WorkflowController {
             prm = prm.replace("\\\"", "\"");
         }
         Long resId = jsonLong(body, "resourceId");
-        query.updateNodeBinding(id, key, mth, prm, resId);
+        web.updateNodeBinding(id, key, mth, prm, resId);
         audit.record(session(req), "workflow.node_binding", "workflow", id,
                 key + " → " + (mth == null ? "" : mth), null, req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("workflowId", id, "nodeKey", key,

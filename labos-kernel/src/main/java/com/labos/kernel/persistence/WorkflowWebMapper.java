@@ -23,6 +23,21 @@ public interface WorkflowWebMapper {
     /** 节点绑定的设备（params->>'bound_resource_id'）。 */
     List<Map<String, Object>> selectBoundResources(long tenantId, long workflowId);
 
+    /**
+     * 节点绑定设备：{@code resourceId} 传 null = 显式解绑。
+     * 「null 入参 = 不改动」的判断在调用方，不在这里。
+     */
+    int updateNodeResource(long tenantId, long workflowId, String nodeKey,
+                           Long resourceId);
+
+    /**
+     * 节点绑定方法/参数：只写 params（workflow_node 没有 protocol_name 列）。
+     * methodParamsJson 为 null 时保留 method_params，只改 protocol_name。
+     */
+    int updateNodeParams(long tenantId, long workflowId, String nodeKey,
+                         String methodParamsRaw, String methodParamsJson,
+                         boolean builtin, String method);
+
     /** 时长模型 p50（method -> ms）。 */
     List<Map<String, Object>> selectDurationP50(long tenantId);
 
