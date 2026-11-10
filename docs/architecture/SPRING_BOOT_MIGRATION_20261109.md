@@ -360,12 +360,23 @@ AuthService / WorkflowService / PositionLock / PreflightChecker /
 ShadowRunner 等执行引擎类直接使用，归下一阶段「执行引擎 256 条」
 一并收编。
 
+**2026-11-10 晚：阶段 3 启动（执行引擎收编）**
+
+`WorkflowService` 34 条 SQL 已全部归位（2 个提交）：执行写入路径
+（run/run_node/run_command 生命周期、断点续跑、边界暂停）→ RunMapper；
+驱动/设备能力读侧 → DriverMapper / DeviceStateMapper；workflow_node
+装配读侧与 maxIterations 写 → WorkflowMapper。顺手删了被
+`createNodeShells + PersistingStepSink` 取代的无调用方死代码
+（persistNodes / persistStepsAndCommands / deviceInstanceToResource）。
+`WorkflowService` 至此 0 条裸 SQL（3152 → ~2600 行，JDBC import 清零）。
+
 **仍未完成**：
-- 执行引擎侧约 256 条 SQL 进 Mapper（WorkflowService 34 /
-  PauseManager 28 / BatchOrchestrator 25 / PositionLock 19 /
-  StartupRecovery 12 / ExperimentExecutor 11 / RuntimeHold 9 /
-  RunControl 9，其余 33 个文件各 1~8 条）——含上面保留的 13 条；
-- `WorkflowService`(3300 行) 等执行引擎上帝类按聚合拆分。
+- 执行引擎侧约 222 条 SQL 进 Mapper（PauseManager 28 /
+  BatchOrchestrator 25 / PositionLock 19 / StartupRecovery 12 /
+  ExperimentExecutor 11 / RuntimeHold 9 / RunControl 9，
+  其余 33 个文件各 1~8 条）——含上面保留的 13 条；
+- `WorkflowService`(~2600 行) 等执行引擎上帝类按聚合拆分（SQL 清零
+  后，纯 Java 编排逻辑还在）。
 
 ---
 
