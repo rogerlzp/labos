@@ -198,6 +198,49 @@
         SELECT name FROM resource_node WHERE id = #{param1}
     </select>
 
+    <!-- GREATEST(0, ...) 保持原口径：估时已过则剩 0，不返回负数。 -->
+    <select id="selectRemainingSec" resultType="java.lang.Double">
+        SELECT GREATEST(0, COALESCE(n.estimate_sec, 0)
+                  - COALESCE(EXTRACT(EPOCH FROM (now() - n.actual_start)), 0)) AS "remain"
+          FROM run_node n JOIN run r ON r.id = n.run_id
+         WHERE n.tenant_id = #{param1} AND n.resource_id = #{param2}
+           AND n.level = 0 AND n.status = 'running' AND r.status = 'running'
+         ORDER BY "remain" DESC LIMIT 1
+    </select>
+
+    <update id="updateExperimentProcessLoopCount">
+        UPDATE experiment_process SET loop_count = #{param4}
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2} AND seq = #{param3}
+    </update>
+
+    <select id="selectDurations" resultType="java.util.Map">
+        SELECT method AS "method", p50_ms AS "p50Ms", p90_ms AS "p90Ms",
+               min_ms AS "minMs", max_ms AS "maxMs", sample_count AS "sampleCount"
+          FROM duration_model
+         WHERE tenant_id = #{param1}
+         ORDER BY sample_count DESC LIMIT #{param2}
+    </select>
+
+    <select id="selectExperimentVariables" resultType="java.util.Map">
+        SELECT id AS "id", name AS "name", type AS "type",
+               default_value AS "defaultValue", description AS "description"
+          FROM experiment_variable
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+         ORDER BY id
+    </select>
+
+    <select id="selectDeviceMethods" resultType="java.util.Map">
+        SELECT dm.method AS "method", dm.name AS "name", c.code AS "capability",
+               dm.estimate_sec AS "estimateSec", dm.timeout_sec AS "timeoutSec",
+               dm.interruptible AS "interruptible",
+               dm.param_schema->'params' AS "params"
+          FROM device_instance di
+          JOIN device_method dm ON dm.device_id = di.device_id
+          LEFT JOIN capability c ON c.id = dm.capability_id
+         WHERE di.resource_id = #{param1}
+         ORDER BY dm.method
+    </select>
+
     <select id="selectAllCapabilities" resultType="java.util.Map">
         SELECT code AS "code", name AS "name" FROM capability ORDER BY id
     </select>

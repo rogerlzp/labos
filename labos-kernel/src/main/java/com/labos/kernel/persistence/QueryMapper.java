@@ -71,6 +71,22 @@ public interface QueryMapper {
     /** 资源节点名称。 */
     String selectResourceName(long resourceId);
 
+    /** 该资源上正在跑的节点还剩多少秒（ETA 用）；无在跑节点返回 null。 */
+    Double selectRemainingSec(long tenantId, long resourceId);
+
+    /** 实验流程的循环次数覆盖值（null = 用默认）。 */
+    int updateExperimentProcessLoopCount(long tenantId, long experimentId, int seq,
+                                         String loopCount);
+
+    /** 时长模型（按样本数倒序，limit 由调用方钳位）。 */
+    List<Map<String, Object>> selectDurations(long tenantId, int limit);
+
+    /** 实验变量列表。 */
+    List<Map<String, Object>> selectExperimentVariables(long tenantId, long experimentId);
+
+    /** 设备方法清单（按 resource_node.id 关联，含型号码与参数定义）。 */
+    List<Map<String, Object>> selectDeviceMethods(long resourceId);
+
     /** 能力清单（code + name），设备注册脚本在型号不存在时打印出来排障。 */
     List<Map<String, Object>> selectAllCapabilities();
 

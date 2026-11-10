@@ -553,21 +553,10 @@ public class QueryService {
 
     /** 某个资源还要被占用多久（秒）；没人用就是 0。 */
     private long remainingOf(long resourceId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT GREATEST(0, COALESCE(n.estimate_sec, 0)
-                               - COALESCE(EXTRACT(EPOCH FROM (now() - n.actual_start)), 0)) AS remain
-                       FROM run_node n JOIN run r ON r.id = n.run_id
-                      WHERE n.tenant_id = ? AND n.resource_id = ?
-                        AND n.level = 0 AND n.status = 'running' AND r.status = 'running'
-                      ORDER BY remain DESC LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? Math.round(rs.getDouble("remain")) : 0;
-            }
-        } catch (SQLException e) {
+        try {
+            Double remain = queryMapper.selectRemainingSec(tenantId, resourceId);
+            return remain == null ? 0 : Math.round(remain);
+        } catch (RuntimeException e) {
             return 0;
         }
     }
@@ -763,35 +752,20 @@ public class QueryService {
     /** 某台设备（resource_node.id）支持的方法。 */
     public String deviceMethodsJson(long resourceId) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT dm.method, dm.name, c.code AS capability,
-                       dm.estimate_sec, dm.timeout_sec, dm.interruptible,
-                       dm.param_schema->'params' AS params
-                FROM device_instance di
-                JOIN device_method dm ON dm.device_id = di.device_id
-                LEFT JOIN capability c ON c.id = dm.capability_id
-                WHERE di.resource_id = ?
-                ORDER BY dm.method
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    // 参数定义原样透出：{seq,name,desc,type,default,required,control_type,unit,range}
-                    String params = rs.getString("params");
-                    items.add(Jsons.obj(
-                            "method", rs.getString("method"),
-                            "name", rs.getString("name"),
-                            "capability", rs.getString("capability"),
-                            "estimateSec", rs.getObject("estimate_sec"),
-                            "timeoutSec", rs.getObject("timeout_sec"),
-                            // 可中断标志：现场确认清单后置 true，暂停才会真的停掉这一步
-                            "interruptible", rs.getBoolean("interruptible"),
-                            "params", params == null ? new Jsons.Raw("[]")
-                                    : new Jsons.Raw(params)));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectDeviceMethods(resourceId)) {
+            // 参数定义原样透出：{seq,name,desc,type,default,required,control_type,unit,range}
+            Object params = row.get("params");
+            items.add(Jsons.obj(
+                    "method", row.get("method"),
+                    "name", row.get("name"),
+                    "capability", row.get("capability"),
+                    "estimateSec", row.get("estimateSec"),
+                    "timeoutSec", row.get("timeoutSec"),
+                    // 可中断标志：现场确认清单后置 true，暂停才会真的停掉这一步
+                    "interruptible", Boolean.TRUE.equals(row.get("interruptible")),
+                    "params", params == null ? new Jsons.Raw("[]")
+                            : new Jsons.Raw(String.valueOf(params))));
         }
         return Jsons.obj("resourceId", resourceId, "total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -800,26 +774,15 @@ public class QueryService {
     /** 时长模型（命令 → p50/p90），甘特预测与仿真共用。 */
     public String durationsJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT method, p50_ms, p90_ms, min_ms, max_ms, sample_count
-                FROM duration_model WHERE tenant_id = ?
-                ORDER BY sample_count DESC LIMIT ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 300)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "method", rs.getString("method"),
-                            "p50Ms", rs.getInt("p50_ms"),
-                            "p90Ms", rs.getInt("p90_ms"),
-                            "minMs", rs.getInt("min_ms"),
-                            "maxMs", rs.getInt("max_ms"),
-                            "sampleCount", rs.getInt("sample_count")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectDurations(tenantId, Math.max(1, Math.min(limit, 300)))) {
+            items.add(Jsons.obj(
+                    "method", row.get("method"),
+                    "p50Ms", row.get("p50Ms"),
+                    "p90Ms", row.get("p90Ms"),
+                    "minMs", row.get("minMs"),
+                    "maxMs", row.get("maxMs"),
+                    "sampleCount", row.get("sampleCount")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -893,17 +856,8 @@ public class QueryService {
      * @param loopCount null/空 = 不循环；数字或 {@code ${var}} 表示次数
      */
     public int setLoopCount(long experimentId, int seq, String loopCount) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_process SET loop_count = ?
-                     WHERE tenant_id = ? AND experiment_id = ? AND seq = ?
-                     """)) {
-            ps.setString(1, loopCount == null || loopCount.isBlank() ? null : loopCount.trim());
-            ps.setLong(2, tenantId);
-            ps.setLong(3, experimentId);
-            ps.setInt(4, seq);
-            return ps.executeUpdate();
-        }
+        return queryMapper.updateExperimentProcessLoopCount(tenantId, experimentId, seq,
+                loopCount == null || loopCount.isBlank() ? null : loopCount.trim());
     }
 
     /** 实验执行历史（最近 20 次）。 */
@@ -1147,26 +1101,14 @@ public class QueryService {
     /** 实验变量列表。 */
     public String experimentVariablesJson(long experimentId) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT id, name, type, default_value, description
-                FROM experiment_variable
-                WHERE tenant_id = ? AND experiment_id = ?
-                ORDER BY id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "name", rs.getString("name"),
-                            "type", rs.getString("type"),
-                            "defaultValue", rs.getString("default_value"),
-                            "description", rs.getString("description")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperimentVariables(tenantId, experimentId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "name", row.get("name"),
+                    "type", row.get("type"),
+                    "defaultValue", row.get("defaultValue"),
+                    "description", row.get("description")));
         }
         return Jsons.obj("experimentId", experimentId,
                 "items", new Jsons.Raw(Jsons.arr(items)));
