@@ -307,12 +307,29 @@ Command 2。
 - 新增 `DriverMapper`（2 条）供两个契约/演示脚本；
   `DeviceRegistrar` 的型号清单诊断改走 `selectAllCapabilities`。
 
-**剩余的 6 处不是数据访问，是 SQL 文本生成**（不需要也不应该进 XML）：
-`DeviceErrorSql`（给 DBA 的 error_code/recovery_policy 种子脚本）、
-`DeviceRegistrar.sqlFor`（导出语句）、`ExperimentStateProjector`（两条 UPDATE
-由 `StatusVocabulary.runToExperimentCaseSql()` 生成，是状态映射唯一真源）。
+**纠错（2026-11-10）**：此前用「单行字符串字面量」统计，得出「Java 侧只剩
+18 行」的结论是**错的** —— 漏掉了 `"""` 文本块形态的 SQL（占大多数）。
+按文本块 + 字面量重算，Java 侧仍有 **365 条**语句：
 
-**仍未完成**：无（SQL 收编到此结束）。
+| 文件 | 条数 |
+|---|---|
+| `QueryService` | 109 |
+| `WorkflowService` | 34 |
+| `PauseManager` | 28 |
+| `BatchOrchestrator` | 25 |
+| `PositionLock` | 19 |
+| `StartupRecovery` | 12 |
+| `ExperimentExecutor` | 11 |
+| 其余 ~30 个文件 | 各 1~9 |
+
+其中**只有 6 条是 SQL 文本生成**（不该进 XML）：`DeviceErrorSql` 的种子脚本、
+`DeviceRegistrar.sqlFor`、`ExperimentStateProjector` 的
+`StatusVocabulary` 生成 CASE。**其余约 359 条都是真实数据访问**，仍需按
+「只读查询 → 写路径小方法 → 执行引擎」的顺序继续收编。
+
+**仍未完成**：
+- 约 359 条 SQL 进 Mapper（`QueryService` 109 为大头）；
+- `QueryService`(5000 行) / `WorkflowService`(3300 行) 两个上帝类按聚合拆分。
 
 ---
 
