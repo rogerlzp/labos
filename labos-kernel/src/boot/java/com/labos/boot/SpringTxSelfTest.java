@@ -1,7 +1,6 @@
 package com.labos.boot;
 
 import com.labos.kernel.persistence.DbConfig;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.workflow.WorkflowService;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.boot.Banner;
@@ -47,9 +46,11 @@ public final class SpringTxSelfTest {
             check("WorkflowService 是 AOP 代理",
                     AopUtils.isAopProxy(ctx.getBean(WorkflowService.class)),
                     ctx.getBean(WorkflowService.class).getClass().getSimpleName());
-            check("QueryService 是 AOP 代理",
-                    AopUtils.isAopProxy(ctx.getBean(QueryService.class)),
-                    ctx.getBean(QueryService.class).getClass().getSimpleName());
+            check("ExperimentActionService 是 AOP 代理",
+                    AopUtils.isAopProxy(
+                            ctx.getBean(com.labos.boot.web.service.ExperimentActionService.class)),
+                    ctx.getBean(com.labos.boot.web.service.ExperimentActionService.class)
+                            .getClass().getSimpleName());
 
             // ② 事务内连接复用（DataSourceUtils 桥接）
             int[] pids = probe.twoConnectionsPid();

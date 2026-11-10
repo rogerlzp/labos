@@ -14,4 +14,8 @@ public interface MetaMapper {
 
     /** 某能力下已登记的方法名（去重排序）。 */
     List<String> selectMethodsByCapability(long tenantId, String capability);
+
+    /** 健康探测：库版本与当前库名。 */
+    Map<String, Object> health();
+
 }

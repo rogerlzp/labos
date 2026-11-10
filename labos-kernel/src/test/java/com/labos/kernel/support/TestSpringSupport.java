@@ -1,6 +1,5 @@
 package com.labos.kernel.support;
 
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.persistence.DbConfig;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.mybatis.spring.annotation.MapperScan;
@@ -53,8 +52,14 @@ public final class TestSpringSupport {
         return ctx;
     }
 
-    public static QueryService queryService() {
-        return context().getBean(QueryService.class);
+    /** 用户域 Service：自测按域直取（OpsUserController 同款入口）。 */
+    public static com.labos.boot.web.service.OpsUserService opsUserService() {
+        return context().getBean(com.labos.boot.web.service.OpsUserService.class);
+    }
+
+    /** RunMapper：介入记录/位置证据自测按域直取。 */
+    public static com.labos.kernel.persistence.RunMapper runMapper() {
+        return context().getBean(com.labos.kernel.persistence.RunMapper.class);
     }
 
     /** 按域拆分后的 Service 入口：自测容器不做 @ComponentScan，显式注册再取。 */
@@ -129,13 +134,9 @@ public final class TestSpringSupport {
         }
 
         @Bean
-        public QueryService queryService(DbConfig db,
-                                         com.labos.kernel.persistence.QueryMapper queryMapper,
-                                         com.labos.kernel.persistence.ExperimentMapper experimentMapper) {
-            QueryService qs = new QueryService(db, 1L);
-            qs.setQueryMapper(queryMapper);
-            qs.setExperimentMapper(experimentMapper);
-            return qs;
+        public com.labos.boot.web.service.OpsUserService opsUserService(
+                DbConfig db, com.labos.kernel.persistence.OpsUserMapper opsUserMapper) {
+            return new com.labos.boot.web.service.OpsUserService(db, opsUserMapper);
         }
     }
 

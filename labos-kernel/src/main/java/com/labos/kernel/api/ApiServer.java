@@ -93,7 +93,6 @@ public final class ApiServer {
     static final long TENANT = 1L;
 
     final DbConfig db;
-    final QueryService query;
     /** 鉴权：默认开启；LABOS_AUTH=0 可关闭（仅联调用）。 */
     final AuthService auth;
     /** 多实验并行调度器（岛级互斥）。 */
@@ -113,11 +112,10 @@ public final class ApiServer {
      * A 批：所有依赖由 Spring 容器注入，不再在构造函数里 {@code new}。
      * 这样对 workflows/query 的调用才会经过 AOP 代理，{@code @Transactional} 才生效。
      */
-    public ApiServer(int port, DbConfig db, QueryService query, AuthService auth,
+    public ApiServer(int port, DbConfig db, AuthService auth,
                      WorkflowService workflows, ExperimentScheduler scheduler,
                      com.labos.kernel.driver.HeartbeatService heartbeat) {
         this.db = db;
-        this.query = query;
         this.auth = auth;
         this.workflows = workflows;
         this.scheduler = scheduler;

@@ -1,6 +1,5 @@
 package com.labos.kernel.workflow;
 
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
@@ -28,7 +27,8 @@ public final class ExperimentWorkcellScopeDbSelfTest {
         db = DbConfig.fromEnv();
         cleanup();
         try {
-            QueryService q = com.labos.kernel.support.TestSpringSupport.queryService();
+            com.labos.boot.web.service.ExperimentActionService q =
+                    com.labos.kernel.support.TestSpringSupport.experimentActionService();
             seed();
             int n = q.setExperimentWorkcells(EXP, List.of(993101L, 993102L));
             check("绑定写入口写入 2 条", n == 2, n);

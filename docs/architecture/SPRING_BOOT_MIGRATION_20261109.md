@@ -339,16 +339,33 @@ Controller（按域） -> Service（按域） -> Mapper（按域）
 ```
 
 样板已落地：`MetaController -> MetaService -> MetaMapper`（1:1:1，
-无兼容层）。后续按此模板分批推进：① 剩余 24 条裸 SQL 按域落位
-（Device 13 / Workflow 4 / ExperimentAction 4 / OpsError 3）；
-② 把 QueryService 剩余方法与 QueryMapper 的 119 条按 9 个域搬空；
-③ QueryService 缩成薄兼容门面（11 个自测 + RunService /
-WorkflowWebService 的 7 个间接调用仍依赖它），最终删除。
-每批一个域，配端点冒烟 + 全量 1323/0。
+无兼容层）。实际执行（2026-11-10 一天内 7 个提交完成）：
+① 剩余 24 条裸 SQL 按域落位；② 按 Device / Experiment / OpsError /
+OpsUser / Workflow / Run 六个域把 QueryService 的方法与 QueryMapper
+的 SQL 逐批搬入对应的 Service/Mapper，Controller 改接 1:1:1；
+③ 收尾批把 health 归 Meta、3 条共享语句（existsDeviceCode /
+selectCapabilityId / selectDeviceIdByCode）归 DeviceMapper，
+`QueryService.java` 直接删除（中间态门面不需要——依赖它的 11 个
+自测与间接调用全部当场改接到对应 Service/Mapper）。
+每批配编译 + 全量测试（纯模式 718/0）。
+
+至此 QueryService 3566 行清零、QueryMapper 从 119 条降到 13 条，
+保留的 13 条（selectCapabilityIdGlobal / selectResourceName /
+selectAllCapabilities / countUsers / touchLastLogin /
+selectWorkflowMaxIterations / selectRunVars / selectRunAttendance /
+selectDeviceLockTimeoutSec / selectParentIdOfNode /
+selectDeviceResourceByInstance / selectAllWorkflowIds /
+selectWorkflowName）仍被 DeviceRegistrar / WorkflowBuilder /
+AuthService / WorkflowService / PositionLock / PreflightChecker /
+ShadowRunner 等执行引擎类直接使用，归下一阶段「执行引擎 256 条」
+一并收编。
 
 **仍未完成**：
-- 约 359 条 SQL 进 Mapper（`QueryService` 109 为大头）；
-- `QueryService`(5000 行) / `WorkflowService`(3300 行) 两个上帝类按聚合拆分。
+- 执行引擎侧约 256 条 SQL 进 Mapper（WorkflowService 34 /
+  PauseManager 28 / BatchOrchestrator 25 / PositionLock 19 /
+  StartupRecovery 12 / ExperimentExecutor 11 / RuntimeHold 9 /
+  RunControl 9，其余 33 个文件各 1~8 条）——含上面保留的 13 条；
+- `WorkflowService`(3300 行) 等执行引擎上帝类按聚合拆分。
 
 ---
 

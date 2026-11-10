@@ -1,6 +1,5 @@
 package com.labos.boot.web.controller;
 
-import com.labos.kernel.api.QueryService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -30,10 +29,10 @@ import static com.labos.kernel.api.ApiServer.err;
 @RestController
 public class FallbackController {
 
-    private final QueryService query;
+    private final com.labos.boot.web.service.MetaService metaService;
 
-    public FallbackController(QueryService query) {
-        this.query = query;
+    public FallbackController(com.labos.boot.web.service.MetaService metaService) {
+        this.metaService = metaService;
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -43,7 +42,7 @@ public class FallbackController {
 
     @GetMapping(value = "/health", produces = "application/json; charset=utf-8")
     public String health() throws SQLException {
-        return query.health();
+        return metaService.health();
     }
 
     @GetMapping(value = {"/", "/index.html"})

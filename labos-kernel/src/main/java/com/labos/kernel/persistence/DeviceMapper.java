@@ -150,4 +150,14 @@ public interface DeviceMapper {
     /** 按设备编码找资源节点 id（kind='device'）。 */
     Long selectResourceIdByDeviceCode(long tenantId, String code);
 
+
+    /** 设备编号存在性（克隆/部署时自动编号避重）。 */
+    boolean existsDeviceCode(long tenantId, String code);
+
+    /** 按能力 code 查 capability id。 */
+    Long selectCapabilityId(long tenantId, String code);
+
+    /** 按设备编号查型号 id。 */
+    Long selectDeviceIdByCode(long tenantId, String code);
+
 }

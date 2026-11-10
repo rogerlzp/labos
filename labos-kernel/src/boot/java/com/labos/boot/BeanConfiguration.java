@@ -2,7 +2,6 @@ package com.labos.boot;
 
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.driver.HeartbeatService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.WorkflowMapper;
@@ -39,14 +38,6 @@ public class BeanConfiguration {
         return DbConfig.fromEnv();
     }
 
-    @Bean
-    public QueryService queryService(DbConfig db, QueryMapper queryMapper,
-                                     ExperimentMapper experimentMapper) {
-        QueryService qs = new QueryService(db, TENANT);
-        qs.setQueryMapper(queryMapper);
-        qs.setExperimentMapper(experimentMapper);
-        return qs;
-    }
 
     @Bean
     public AuthService authService(DbConfig db) {
@@ -85,11 +76,11 @@ public class BeanConfiguration {
     }
 
     @Bean
-    public ApiServer apiServer(DbConfig db, QueryService query, AuthService auth,
+    public ApiServer apiServer(DbConfig db, AuthService auth,
                                WorkflowService workflows, ExperimentScheduler scheduler,
                                HeartbeatService heartbeat) {
         int port = Integer.parseInt(
                 System.getenv().getOrDefault("LABOS_API_PORT", "18080"));
-        return new ApiServer(port, db, query, auth, workflows, scheduler, heartbeat);
+        return new ApiServer(port, db, auth, workflows, scheduler, heartbeat);
     }
 }

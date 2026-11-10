@@ -32,4 +32,8 @@
          ORDER BY dm.method
     </select>
 
+
+<select id="health" resultType="java.util.Map">
+        SELECT current_database() AS db, version() AS ver
+    </select>
 </mapper>

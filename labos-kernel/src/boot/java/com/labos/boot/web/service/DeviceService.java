@@ -2,7 +2,6 @@ package com.labos.boot.web.service;
 
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.DeviceMapper;
-import com.labos.kernel.persistence.QueryMapper;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
@@ -33,13 +32,10 @@ public class DeviceService {
 
     private final DbConfig db;
     private final DeviceMapper deviceMapper;
-    private final QueryMapper queryMapper;
 
-    public DeviceService(DbConfig db, DeviceMapper deviceMapper,
-                         QueryMapper queryMapper) {
+    public DeviceService(DbConfig db, DeviceMapper deviceMapper) {
         this.db = db;
         this.deviceMapper = deviceMapper;
-        this.queryMapper = queryMapper;
     }
 
     /** 克隆设备：源设备实例连同型号/驱动一起复制，编号自动加后缀避重。 */
@@ -62,7 +58,7 @@ public class DeviceService {
 
                 String newCode = srcCode + "-2";
                 int suffix = 2;
-                while (queryMapper.existsDeviceCode(TENANT, newCode)) {
+                while (deviceMapper.existsDeviceCode(TENANT, newCode)) {
                     suffix++;
                     newCode = srcCode + "-" + suffix;
                 }
@@ -104,7 +100,7 @@ public class DeviceService {
                         ? modelName : modelCode).replaceAll("[^A-Za-z0-9_]", "_");
                 int seq = 1;
                 String code = base + "-" + seq;
-                while (queryMapper.existsDeviceCode(TENANT, code)) {
+                while (deviceMapper.existsDeviceCode(TENANT, code)) {
                     seq++;
                     code = base + "-" + seq;
                 }
@@ -149,11 +145,11 @@ public class DeviceService {
                 // 3) 型号（按 code 查，没有则建）
                 Long capabilityId = null;
                 if (capabilityCode != null && !capabilityCode.isBlank()) {
-                    capabilityId = queryMapper.selectCapabilityId(
+                    capabilityId = deviceMapper.selectCapabilityId(
                             TENANT, capabilityCode.trim());
                 }
                 long deviceId;
-                Long existing = queryMapper.selectDeviceIdByCode(TENANT, code.trim());
+                Long existing = deviceMapper.selectDeviceIdByCode(TENANT, code.trim());
                 if (existing != null) {
                     deviceId = existing;
                 } else {
@@ -197,7 +193,7 @@ public class DeviceService {
                     deviceMapper.updateResourceNodeName(TENANT, resourceId, name.trim());
                 }
                 if (capabilityCode != null && !capabilityCode.isBlank()) {
-                    Long capId = queryMapper.selectCapabilityId(
+                    Long capId = deviceMapper.selectCapabilityId(
                             TENANT, capabilityCode.trim());
                     if (capId != null) {
                         deviceMapper.updateModelCapability(TENANT, resourceId, capId);

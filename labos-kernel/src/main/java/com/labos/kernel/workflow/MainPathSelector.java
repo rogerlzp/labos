@@ -298,7 +298,7 @@ public final class MainPathSelector {
             return null;
         }
         return com.labos.kernel.persistence.Mappers.get(
-                com.labos.kernel.persistence.QueryMapper.class)
+                com.labos.kernel.persistence.DeviceMapper.class)
                 .selectCapabilityId(tenantId, code);
     }
 

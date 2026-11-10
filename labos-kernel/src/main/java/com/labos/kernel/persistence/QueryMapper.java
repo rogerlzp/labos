@@ -15,12 +15,6 @@ import java.util.Map;
  */
 public interface QueryMapper {
 
-    Map<String, Object> health();
-
-
-
-
-    boolean existsDeviceCode(long tenantId, String code);
 
 
 
@@ -29,9 +23,11 @@ public interface QueryMapper {
 
 
 
-    Long selectCapabilityId(long tenantId, String code);
 
-    Long selectDeviceIdByCode(long tenantId, String code);
+
+
+
+
 
     String selectWorkflowName(long tenantId, long workflowId);
 

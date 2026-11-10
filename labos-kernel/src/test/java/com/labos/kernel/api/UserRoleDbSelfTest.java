@@ -15,7 +15,7 @@ import java.sql.SQLException;
  *   <li>建号接口不再能把 {@code boss}/{@code root} 这类脏角色写进库
  *       （抛 IllegalArgumentException → ApiServer 映射 400，而不是落库或 500）；</li>
  *   <li>改号接口同样校验角色，且**拒绝时不得执行 UPDATE**（角色保持原样）；</li>
- *   <li>{@link QueryService#countEnabledAdmins()} 口径可用，且"最后管理员"保护按
+ *   <li>{@code OpsUserService.countEnabledAdmins()} 口径可用，且"最后管理员"保护按
  *       <b>剩余启用 admin 数</b>判定——有别的 admin 时降级某个 admin 必须允许
  *       （这条最容易被写成"目标是 admin 就拒"，那样多管理员场景就永远改不了人）；</li>
  *   <li>用户不存在时保持语义不变：返回 0，不抛异常。</li>
@@ -29,7 +29,7 @@ public final class UserRoleDbSelfTest {
     private static int pass;
     private static int fail;
     private static DbConfig db;
-    private static QueryService query;
+    private static com.labos.boot.web.service.OpsUserService query;
 
     public static void main(String[] args) throws Exception {
         String host = System.getenv("LABOS_DB_HOST");
@@ -39,7 +39,7 @@ public final class UserRoleDbSelfTest {
             return;
         }
         db = DbConfig.fromEnv();
-        query = com.labos.kernel.support.TestSpringSupport.queryService();
+        query = com.labos.kernel.support.TestSpringSupport.opsUserService();
         cleanup();
         try {
             runChecks();
@@ -84,14 +84,14 @@ public final class UserRoleDbSelfTest {
 
         // ---- 5. 改角色：合法角色生效 ----
         int changed = query.updateUser(viewerId, "operator", null, null);
-        QueryService.UserRoleEnabled afterChange = query.findUserRoleEnabled(viewerId);
+        com.labos.boot.web.service.OpsUserService.UserRoleEnabled afterChange = query.findUserRoleEnabled(viewerId);
         check("改角色 viewer→operator 成功", changed == 1
                         && afterChange != null && "operator".equals(afterChange.role()),
                 afterChange);
 
         // ---- 6. 改角色：脏角色被拒，且拒绝时不得执行 UPDATE ----
         String badUpdate = mustReject(() -> query.updateUser(operatorId, "boss", null, null));
-        QueryService.UserRoleEnabled afterReject = query.findUserRoleEnabled(operatorId);
+        com.labos.boot.web.service.OpsUserService.UserRoleEnabled afterReject = query.findUserRoleEnabled(operatorId);
         check("改 role=boss 被拒且库中角色保持 operator",
                 badUpdate != null && badUpdate.contains("角色不合法")
                         && afterReject != null && "operator".equals(afterReject.role()),
@@ -107,7 +107,7 @@ public final class UserRoleDbSelfTest {
         long tempAdminId = idOf(tempAdminName);
         int adminsBeforeDemote = query.countEnabledAdmins();
         int demoted = query.updateUser(tempAdminId, "viewer", null, null);
-        QueryService.UserRoleEnabled tempAfter = query.findUserRoleEnabled(tempAdminId);
+        com.labos.boot.web.service.OpsUserService.UserRoleEnabled tempAfter = query.findUserRoleEnabled(tempAdminId);
         check("多 admin 时降级某个 admin 允许（不是见 admin 就拒）",
                 na == 1 && adminsBeforeDemote >= 2 && demoted == 1
                         && tempAfter != null && "viewer".equals(tempAfter.role()),

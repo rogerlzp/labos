@@ -332,4 +332,16 @@
            AND kind = 'device'
          LIMIT 1
     </select>
+
+<select id="existsDeviceCode" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM resource_node
+             WHERE tenant_id = #{param1} AND code = #{param2} AND kind = 'device')
+    </select>
+<select id="selectCapabilityId" resultType="java.lang.Long">
+        SELECT id FROM capability WHERE tenant_id = #{param1} AND code = #{param2}
+    </select>
+<select id="selectDeviceIdByCode" resultType="java.lang.Long">
+        SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
+    </select>
 </mapper>

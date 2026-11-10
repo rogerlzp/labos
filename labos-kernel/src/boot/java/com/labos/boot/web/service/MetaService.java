@@ -1,7 +1,9 @@
 package com.labos.boot.web.service;
 
 import com.labos.kernel.persistence.Jsons;
+import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.MetaMapper;
+import com.labos.kernel.persistence.QJson;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -23,10 +25,23 @@ public class MetaService {
 
     private static final long TENANT = 1L;
 
+    private final DbConfig db;
     private final MetaMapper metaMapper;
 
-    public MetaService(MetaMapper metaMapper) {
+    public MetaService(DbConfig db, MetaMapper metaMapper) {
+        this.db = db;
         this.metaMapper = metaMapper;
+    }
+
+    /** /health 探测：库版本 + 连接 URL，与内核共活判定同源。 */
+    public String health() throws java.sql.SQLException {
+        java.util.Map<String, Object> row = metaMapper.health();
+        return Jsons.obj(
+                "status", "ok",
+                "database", row.get("db"),
+                "version", QJson.shortVersion(String.valueOf(row.get("ver"))),
+                "url", db.url(),
+                "time", java.time.OffsetDateTime.now().toString());
     }
 
     /** 能力清单（含每个能力绑定了多少资源）。 */
