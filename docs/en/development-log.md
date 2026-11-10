@@ -5795,17 +5795,36 @@ pins the three shapes down.
 
 Workflow 1000319's authoritative island is 100027, but the island used at runtime
 comes **only from the request parameter**, and the frontend does not send an island
-at all ⇒ `workflow.island_id` was **never used** on the execution path. This
+at all ⇒ `workflow.island_id` **never takes part in device selection** (it is now
+only used to reject a mismatching request island). This
 batch lands only the part that can be judged right or wrong: a requested island
 that differs from the authoritative one ⇒ **400, explicitly refused**.
 
 The rest is not done, and the cause is not "the filter was forgotten" but "the
-filter never took effect" (all three at once): ① the node picks a device from the
-**unfiltered** `pool` (the filter only acts on `capPool`); ② `capPool` lives in
-the resource_node.id space while `loadIslandDeviceIds` returns device_instance.id
-(two id spaces that do not line up); ③ the island filter only ever came from the
-request parameter ⇒ all three must change together, otherwise the candidate pool
-gets emptied ⇒ regression.
+filter never took effect" (all four at once; **corrected on re-check 2026-11-10**:
+the first draft named "the node picks from the unfiltered `pool`" as the main
+cause, which does not match the code):
+① **the filtered content is always empty** — `islandFilter` is only set by
+`withIsland(islandId)` (a **request parameter**), and the frontend does not send an
+island ⇒ the island device set is empty ⇒ every capability's kept set is empty ⇒
+everything falls through to the "fall back to the global pool" branch ⇒ the
+candidate pool stays as it was;
+② **the fallback makes the filter *look* effective** — when the island has no
+device with that capability the global candidates are kept ⇒ even with an island
+passed, global devices are still admitted;
+③ **the id space differs per path** — on the main (driver) path `capPool` comes
+from `registryPool(...)` (device_instance.id), which is the same space as the
+island set ⇒ it lines up; on the **simulation path** `capPool` comes from
+`loadCapabilityPool(db)` (resource_node.id) ⇒ it does not line up ⇒ the filter
+necessarily misses there;
+④ **pinned devices bypass the filter** — a node with an explicitly bound device
+goes through GraphRunner's `pinned` branch ⇒ it neither takes part in the
+capability rotation nor in the island filter ⇒ a workflow of this island can be
+bound to another island's device and really use it at run time.
+⇒ all four must change together (take the island from the authoritative value at
+execution time / drop the global-candidate fallback / take the island set in the
+current path's id space / check that pinned devices are on the same island),
+otherwise the candidate pool gets emptied ⇒ regression.
 
 Lessons (cross-project):
 ① **"What comes back" depends on how you fetch it, not on the type** — the same
@@ -5818,8 +5837,10 @@ locations" list was always empty without throwing, so it stayed unnoticed until
 the same wrong assumption exploded somewhere else ⇒ **when the same wrong
 assumption shows up a second time, go back and find the first one.**
 ③ **"Never took effect" and "was never written" are different** — the island
-filter code was there all along, but it acted on an object that is **not used at
-all** (`capPool` ≠ the `pool` the node actually selects from) and compared it
-against **a different id space** ⇒ reading code and seeing "there is a filter"
-does not mean the filter works; you have to follow the **actual data flow**.
+filter code was there all along, and it really did act on the pool GraphRunner
+uses; but **the content it filtered on was always empty** (no island ever reached
+it), and when it matched nothing it **fell back to the global candidates** ⇒ seeing
+"there is a filter" in the code absolutely does not imply the filter works ⇒ follow
+the **actual data flow** and then ask whether the thing being filtered on is empty
+at all.
 

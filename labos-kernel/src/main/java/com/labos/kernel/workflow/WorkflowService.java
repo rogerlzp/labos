@@ -780,15 +780,31 @@ public class WorkflowService {
 
         // 限定岛：只保留该岛内的设备；岛内没有该能力的设备时保留候选池（避免跑不动）
         //
-        // ⚠ 已知问题（P-05 待办，**别当这行是有效的**）：这里其实过滤不干净 ——
-        // ① 节点实际选设备用的是上面那个未过滤的 `pool`，不是这个 `capPool`；
-        // ② `capPool` 是 **resource_node.id** 空间，而 `loadIslandDeviceIds` 返回的是
-        //    **device_instance.id** 空间 ⇒ 两套 id 对不上（"两套 id 坑了三次"里的又一次）；
-        // ③ 岛过滤只来自**请求参数**（`withIsland`），而前端执行压根不传岛
-        //    ⇒ `workflow.island_id`（权威岛，P-01）在这条路径上完全没被用到。
-        // ⇒ 结果：岛约束**从来没有真正生效过**。修它要三件事一起做：
-        //    (a) 确认节点选设备用的是哪个池；(b) 岛内设备集合按**那个池的 id 空间**取；
-        //    (c) 去掉"全局候选回退"（岛内没有该能力就不跑）。
+        // ⚠ 已知问题（P-05 待办，**别当这行是有效的**）—— 根因是
+        // 「过滤从未生效」，不是「漏写过滤」。四点同时成立：
+        // ① **过滤的内容恒等于空**：`islandFilter` 只由 `withIsland(islandId)`
+        //    （**请求参数**）设置，而前端执行压根不传岛 ⇒ `islandFilter.get()`
+        //    为 null ⇒ `islandDevs` 是空集 ⇒ 每个能力的 `keep` 都空 ⇒ 全落到
+        //    下面那句「回退到全局候选」⇒ 候选池原样保留。
+        //    ⇒ 权威岛 `workflow.island_id`（P-01）**从未参与选设备**
+        //    （P-05 已落地的那条只拿它做「请求岛 vs 权威岛」的冲突校验）。
+        // ② **回退分支让过滤「看起来生效」**：岛内没有该能力的设备时保留全局候选
+        //    （注释写的"避免跑不动"）⇒ 就算传了岛也照样放行全局设备。
+        //    P-05 要删的正是这条。
+        // ③ **id 空间分两条路径**：主路径（driver）的 `capPool` 来自
+        //    `registryPool(...)`（device_instance.id），与 `loadIslandDeviceIds`
+        //    同空间 ⇒ 对得上；但**模拟路径**的 `capPool` 来自
+        //    `loadCapabilityPool(db)`（resource_node.id）⇒ 与岛内集合**对不上**
+        //    ⇒ 模拟路径下过滤必然落空（再被 ② 的回退救回来，所以看不出异常）。
+        // ④ **pinned 设备绕过过滤**：编排里显式绑定了设备的节点走 GraphRunner 的
+        //    `pinned` 分支（`boundInstanceByResource` 把 resource_id 映射成
+        //    device_instance.id）⇒ 直接用那台，**既不参与能力轮转也不参与岛过滤**
+        //    ⇒ 能给本岛流程绑一台别岛的设备，并在执行时真的用它。
+        //    （附：顺序回退路径 `sm.executeAll(rec, ...)` 的候选完全未过滤。）
+        // ⇒ 修它要一起做：(a) 执行期从**权威岛**取岛（不是从请求参数）；
+        //    (b) 岛内没有该能力 ⇒ 就不跑（删掉全局候选回退）；
+        //    (c) 岛内集合按**当前路径的 id 空间**取；
+        //    (d) pinned 设备校验同岛（越岛 ⇒ 明确拒绝，不要静默换设备）。
         //    详见 REMEDIATION_STATUS.md 的 P-05。
         if (islandFilter != null) {
             Long islFilter = islandFilter.get();
