@@ -1108,25 +1108,15 @@ experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
     /** 用户列表（不含密码）。 */
     public String usersJson() throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT id, username, display_name, role, enabled, last_login_at, created_at
-                FROM sys_user WHERE tenant_id = ? ORDER BY id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "username", rs.getString("username"),
-                            "displayName", rs.getString("display_name"),
-                            "role", rs.getString("role"),
-                            "enabled", rs.getBoolean("enabled"),
-                            "lastLoginAt", str(rs, "last_login_at"),
-                            "createdAt", str(rs, "created_at")));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectUsers(tenantId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "username", row.get("username"),
+                    "displayName", row.get("displayName"),
+                    "role", row.get("role"),
+                    "enabled", Boolean.TRUE.equals(row.get("enabled")),
+                    "lastLoginAt", mstr(row, "lastLoginAt"),
+                    "createdAt", mstr(row, "createdAt")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -1912,27 +1902,13 @@ throw e;
     /** 搬运流程列表（岛屿视图"跑流程"用，按 id 降序）。 */
     public String choreographiesJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT w.id, w.code, w.name,
-                       (SELECT count(*) FROM workflow_node n
-                         WHERE n.workflow_id = w.id AND n.node_type = 'task') AS task_count
-                FROM workflow w
-                WHERE w.tenant_id = ? AND w.category = 'choreography'
-                ORDER BY w.id DESC LIMIT ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, limit);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "code", rs.getString("code"),
-                            "name", rs.getString("name"),
-                            "nodeCount", rs.getInt("task_count")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectChoreographies(tenantId, limit)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "nodeCount", mint(row, "nodeCount")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -2539,32 +2515,16 @@ throw e;
 
     public String deviceModelsJson() throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT d.id, d.code, d.name, d.device_type, d.vendor, d.icon,
-                       c.code AS capability,
-                       (SELECT count(*) FROM device_instance di
-                         WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS deployed
-                FROM device d
-                LEFT JOIN capability c ON c.id = d.capability_id
-                WHERE d.tenant_id = ?
-                ORDER BY deployed DESC, d.name
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "modelId", rs.getLong("id"),
-                            "code", rs.getString("code"),
-                            "name", rs.getString("name"),
-                            "deviceType", rs.getString("device_type"),
-                            "vendor", rs.getString("vendor"),
-                            "icon", rs.getString("icon"),
-                            "capability", rs.getString("capability"),
-                            "deployed", rs.getInt("deployed")));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectDeviceModels(tenantId)) {
+            items.add(Jsons.obj(
+                    "modelId", row.get("modelId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "deviceType", row.get("deviceType"),
+                    "vendor", row.get("vendor"),
+                    "icon", row.get("icon"),
+                    "capability", row.get("capability"),
+                    "deployed", mint(row, "deployed")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -2847,25 +2807,14 @@ throw e;
     /** 驱动端点列表（新增设备时选）。 */
     public String driversJson() throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT id, code, name, protocol::text AS protocol, endpoint, status
-                FROM driver WHERE tenant_id = ? AND deleted_at IS NULL
-                ORDER BY id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "code", rs.getString("code"),
-                            "name", rs.getString("name"),
-                            "protocol", rs.getString("protocol"),
-                            "endpoint", rs.getString("endpoint"),
-                            "status", rs.getObject("status")));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectDrivers(tenantId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "protocol", row.get("protocol"),
+                    "endpoint", row.get("endpoint"),
+                    "status", row.get("status")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -3124,25 +3073,11 @@ throw e;
     /** 能力字典（设计器下拉用）：code + 可用设备数。 */
     public String capabilitiesJson() throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT c.code, c.name, count(rc.resource_id) AS devices
-                FROM capability c
-                LEFT JOIN resource_capability rc ON rc.capability_id = c.id
-                WHERE c.tenant_id = ?
-                GROUP BY c.id, c.code, c.name
-                ORDER BY devices DESC, c.code
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "code", rs.getString(1),
-                            "name", rs.getString(2),
-                            "devices", rs.getInt(3)));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectCapabilities(tenantId)) {
+            items.add(Jsons.obj(
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "devices", mint(row, "devices")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -3773,22 +3708,8 @@ throw e;
     /** 某能力下可选的设备方法（{@code device_method}）。 */
     public String methodsJson(String capability) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT DISTINCT dm.method
-                FROM device_method dm
-                JOIN capability c ON c.id = dm.capability_id
-                WHERE c.tenant_id = ? AND c.code = ?
-                ORDER BY dm.method
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, capability);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.quote(rs.getString(1)));
-                }
-            }
+        for (String m : queryMapper.selectMethodsByCapability(tenantId, capability)) {
+            items.add(Jsons.quote(m));
         }
         return Jsons.obj("capability", capability,
                 "methods", new Jsons.Raw(Jsons.arr(items)));

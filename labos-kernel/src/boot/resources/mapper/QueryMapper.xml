@@ -235,6 +235,60 @@
                AND (rp.scope = e.scope OR rp.scope IS NULL))
     </select>
 
+    <select id="selectUsers" resultType="java.util.Map">
+        SELECT id AS "id", username AS "username", display_name AS "displayName",
+               role AS "role", enabled AS "enabled",
+               last_login_at AS "lastLoginAt", created_at AS "createdAt"
+          FROM sys_user WHERE tenant_id = #{param1} ORDER BY id
+    </select>
+
+    <select id="selectDrivers" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", name AS "name",
+               protocol::text AS "protocol", endpoint AS "endpoint", status AS "status"
+          FROM driver
+         WHERE tenant_id = #{param1} AND deleted_at IS NULL
+         ORDER BY id
+    </select>
+
+    <select id="selectDeviceModels" resultType="java.util.Map">
+        SELECT d.id AS "modelId", d.code AS "code", d.name AS "name",
+               d.device_type AS "deviceType", d.vendor AS "vendor", d.icon AS "icon",
+               c.code AS "capability",
+               (SELECT count(*) FROM device_instance di
+                 WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS "deployed"
+          FROM device d
+          LEFT JOIN capability c ON c.id = d.capability_id
+         WHERE d.tenant_id = #{param1}
+         ORDER BY "deployed" DESC, d.name
+    </select>
+
+    <select id="selectCapabilities" resultType="java.util.Map">
+        SELECT c.code AS "code", c.name AS "name",
+               count(rc.resource_id) AS "devices"
+          FROM capability c
+          LEFT JOIN resource_capability rc ON rc.capability_id = c.id
+         WHERE c.tenant_id = #{param1}
+         GROUP BY c.id, c.code, c.name
+         ORDER BY "devices" DESC, c.code
+    </select>
+
+    <select id="selectMethodsByCapability" resultType="java.lang.String">
+        SELECT DISTINCT dm.method
+          FROM device_method dm
+          JOIN capability c ON c.id = dm.capability_id
+         WHERE c.tenant_id = #{param1} AND c.code = #{param2}
+         ORDER BY dm.method
+    </select>
+
+    <select id="selectChoreographies" resultType="java.util.Map">
+        SELECT w.id AS "id", w.code AS "code", w.name AS "name",
+               (SELECT count(*) FROM workflow_node n
+                 WHERE n.workflow_id = w.id AND n.node_type = 'task') AS "nodeCount"
+          FROM workflow w
+         WHERE w.tenant_id = #{param1} AND w.category = 'choreography'
+         ORDER BY w.id DESC LIMIT #{param2}
+    </select>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}

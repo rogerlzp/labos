@@ -113,6 +113,24 @@ public interface QueryMapper {
     /** 错误码是否已被同级（或 NULL 通配）的启用策略覆盖。 */
     boolean scopeCovered(long tenantId, long errorCodeId);
 
+    /** 用户清单。 */
+    List<Map<String, Object>> selectUsers(long tenantId);
+
+    /** 驱动清单（未软删）。 */
+    List<Map<String, Object>> selectDrivers(long tenantId);
+
+    /** 设备型号 + 部署台数（一次子查询，避免逐型号 N+1）。 */
+    List<Map<String, Object>> selectDeviceModels(long tenantId);
+
+    /** 能力清单 + 绑定资源数。 */
+    List<Map<String, Object>> selectCapabilities(long tenantId);
+
+    /** 某能力下已登记的方法名（去重排序）。 */
+    List<String> selectMethodsByCapability(long tenantId, String capability);
+
+    /** 编排流程列表（category='choreography'）。 */
+    List<Map<String, Object>> selectChoreographies(long tenantId, int limit);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 
