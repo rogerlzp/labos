@@ -173,7 +173,7 @@ export default function ExperimentListPage() {
                 // N-09 / ADR-ISLAND-005：只显示岛名，不显示 island_id；跨 Workcell 显示涉及岛名列表
                 const label = r.workcellNames || r.islandName || r.islandCode;
                 return label
-                  ? <Tooltip title={r.islandCode ? `编码：${r.islandCode}` : ''}><Tag color="blue">{label}</Tag></Tooltip>
+                  ? <Tooltip title={r.islandCode ? t('island.codeTooltip', { code: r.islandCode }) : ''}><Tag color="blue">{label}</Tag></Tooltip>
                   : <Typography.Text type="secondary">{t('experimentList.col.islandUnset')}</Typography.Text>;
               },
             },

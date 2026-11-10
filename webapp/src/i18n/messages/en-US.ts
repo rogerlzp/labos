@@ -175,6 +175,8 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'format.wait.seconds': '~{n} s',
   'format.wait.minutes': '~{n} min',
   'format.wait.hours': '~{h} h {m} min',
+  // Tooltip for the island code (the UI shows only the island name)
+  'island.codeTooltip': 'Code: {code}',
 
   // ------------------------------------------------------------ common errors
   'error.sessionExpired': 'Session expired — please sign in again',

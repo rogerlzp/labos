@@ -24,7 +24,7 @@ function IslandCell({ code, name }: { code: string | null; name?: string | null 
   // N-09 / ADR-ISLAND-005：界面只显示岛名，不显示内部 island_id。
   if (!code && !name) return <Typography.Text type="secondary">{t('scheduler.unknownIsland')}</Typography.Text>;
   return (
-    <Tooltip title={code ? `编码：${code}` : ''}>
+    <Tooltip title={code ? t('island.codeTooltip', { code }) : ''}>
       <Tag color="blue">{name || code}</Tag>
     </Tooltip>
   );

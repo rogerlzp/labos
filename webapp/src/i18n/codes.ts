@@ -31,6 +31,7 @@ export const CODE_TEXT_EN: Record<string, string> = {
   'status.run.queued': 'Queued',
   'status.run.running': 'Running',
   'status.run.paused': 'Paused',
+  'status.run.quarantined': 'Quarantined',
   'status.run.completed': 'Completed',
   'status.run.failed': 'Failed',
   'status.run.aborted': 'Aborted',
@@ -50,12 +51,15 @@ export const CODE_TEXT_EN: Record<string, string> = {
   'status.node.bypassed': 'Branch not taken',
 
   // ------------------------------------------------------------ step
+  // step 落在 run_command.status：completed / aborted / failed / skipped。
+  // **没有 step 级 paused** —— 暂停发生在 run / node 边界，命令层不会被暂停，
+  // 界面不该承诺一个永远不会出现的状态（与后端 StatusVocabulary §SCOPE_STEP 一致）。
   'status.step.pending': 'Not started',
   'status.step.running': 'Running',
   'status.step.completed': 'Executed',
   'status.step.failed': 'Failed',
+  'status.step.aborted': 'Aborted',
   'status.step.skipped': 'Skipped',
-  'status.step.paused': 'Paused',
 
   // ------------------------------------------------------------ experiment
   'status.experiment.created': 'Created',

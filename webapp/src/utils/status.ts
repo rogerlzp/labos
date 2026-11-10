@@ -136,8 +136,8 @@ export const FALLBACK: StatusVocabulary = {
       { code: 'running', label: '执行中', color: 'blue', active: true },
       { code: 'completed', label: '已执行', color: 'green', terminal: true },
       { code: 'failed', label: '失败', color: 'red', terminal: true },
+      { code: 'aborted', label: '已中止', color: 'orange', terminal: true },
       { code: 'skipped', label: '已跳过', color: 'orange', terminal: true },
-      { code: 'paused', label: '已暂停', color: 'orange', active: true },
     ],
     experiment: [
       { code: 'created', label: '已建', color: 'default' },

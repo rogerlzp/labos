@@ -177,6 +177,8 @@ export const zhCN = {
   'format.wait.seconds': '约 {n} 秒',
   'format.wait.minutes': '约 {n} 分',
   'format.wait.hours': '约 {h} 小时 {m} 分',
+  // 岛编码的悬浮说明（界面只显示岛名，编码放 tooltip 里）
+  'island.codeTooltip': '编码：{code}',
 
   // ------------------------------------------------------------ 通用错误
   'error.sessionExpired': '会话已过期，请重新登录',
