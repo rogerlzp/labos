@@ -57,6 +57,12 @@ public interface QueryMapper {
 
     String selectWorkflowName(long tenantId, long workflowId);
 
+    /** 这批 workflow id 里哪些真的存在（编排校验用）。 */
+    List<Long> selectExistingWorkflowIds(long tenantId, List<Long> ids);
+
+    /** 资源节点名称。 */
+    String selectResourceName(long resourceId);
+
     /** 全部流程 id（预检全量扫描）。 */
     List<Long> selectAllWorkflowIds(long tenantId);
 

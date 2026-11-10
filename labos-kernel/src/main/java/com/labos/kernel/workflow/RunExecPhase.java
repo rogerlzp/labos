@@ -78,15 +78,9 @@ public final class RunExecPhase {
 
     /** 读当前阶段；行不存在返回 {@code null}。 */
     public static String of(DbConfig db, long tenantId, long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT exec_phase FROM run WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExecutionMapper.class)
+                .selectExecPhase(tenantId, runId);
     }
 
     /**

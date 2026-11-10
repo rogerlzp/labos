@@ -1352,16 +1352,7 @@ public class QueryService {
         }
         if (!workflowIds.isEmpty()) {
             java.util.Set<Long> exist = new java.util.HashSet<>();
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id FROM workflow WHERE tenant_id = ? AND id = ANY(?)")) {
-                ps.setLong(1, tenantId);
-                ps.setArray(2, c.createArrayOf("bigint", workflowIds.toArray()));
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        exist.add(rs.getLong(1));
-                    }
-                }
-            }
+            exist.addAll(queryMapper.selectExistingWorkflowIds(tenantId, workflowIds));
             java.util.List<Long> missing = workflowIds.stream()
                     .filter(id -> !exist.contains(id)).toList();
             if (!missing.isEmpty()) {

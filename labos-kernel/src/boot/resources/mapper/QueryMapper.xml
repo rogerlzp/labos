@@ -181,6 +181,19 @@
         SELECT name FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <select id="selectExistingWorkflowIds" resultType="java.lang.Long">
+        SELECT id FROM workflow
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach collection="param2" item="one" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </select>
+
+    <select id="selectResourceName" resultType="java.lang.String">
+        SELECT name FROM resource_node WHERE id = #{param1}
+    </select>
+
     <select id="selectAllWorkflowIds" resultType="java.lang.Long">
         SELECT id FROM workflow WHERE tenant_id = #{param1} ORDER BY id
     </select>

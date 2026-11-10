@@ -156,15 +156,11 @@ public final class DeviceAccessManager {
     }
 
     private void setState(long accessId, String state) {
-        String sql = "UPDATE device_access SET state = ?, state_checked_at = now()"
-                + " WHERE tenant_id = ? AND id = ?";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, state);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, accessId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .updateAccessState(tenantId, accessId, state);
+        } catch (RuntimeException e) {
             log.error("[门] 写状态失败 id=" + accessId + "：" + e.getMessage());
         }
     }

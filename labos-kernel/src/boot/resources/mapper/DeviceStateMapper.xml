@@ -41,6 +41,17 @@
          LIMIT 1
     </select>
 
+    <select id="selectCurrentRunId" resultType="java.lang.Long">
+        SELECT current_run_id FROM device_state
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+    </select>
+
+    <update id="updateAccessState">
+        UPDATE device_access
+           SET state = #{param3}, state_checked_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
     <select id="selectMethodTimeoutSec" resultType="long">
         SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
          WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}

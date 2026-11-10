@@ -46,6 +46,16 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <select id="countRunningRuns" resultType="int">
+        SELECT count(*) FROM run
+         WHERE tenant_id = #{param1} AND status = 'running'
+    </select>
+
+    <select id="selectExecPhase" resultType="java.lang.String">
+        SELECT exec_phase FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
     <select id="selectRunStatus" resultType="java.lang.String">
         SELECT status::text FROM run
          WHERE tenant_id = #{param1} AND id = #{param2}

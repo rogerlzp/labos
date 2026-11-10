@@ -40,6 +40,12 @@ public interface ExecutionMapper {
     /** run.pause_kind（暂停类型）。 */
     String selectPauseKindOfRun(long tenantId, long runId);
 
+    /** 当前 running 的 run 数（准入提示"当前并发 N 个"）。 */
+    int countRunningRuns(long tenantId);
+
+    /** run 的执行阶段（RunExecPhase）。 */
+    String selectExecPhase(long tenantId, long runId);
+
     /** run 当前状态。 */
     String selectRunStatus(long tenantId, long runId);
 }

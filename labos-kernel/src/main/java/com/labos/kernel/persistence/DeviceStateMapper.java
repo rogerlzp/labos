@@ -28,6 +28,12 @@ public interface DeviceStateMapper {
     /** 设备方法是否可中断；查不到返回 null。 */
     Boolean selectMethodInterruptible(long tenantId, long deviceInstanceId, String method);
 
+    /** 谁占着这台设备（device_state.current_run_id）；空表示空闲。 */
+    Long selectCurrentRunId(long tenantId, long resourceId);
+
+    /** 门禁状态回写（设备访问控制）。 */
+    int updateAccessState(long tenantId, long accessId, String state);
+
     /** 某设备某方法的超时上限（秒），无配置返回 0。 */
     long selectMethodTimeoutSec(long tenantId, long deviceInstanceId, String method);
 

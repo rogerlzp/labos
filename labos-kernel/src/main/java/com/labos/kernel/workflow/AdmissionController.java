@@ -276,14 +276,11 @@ public final class AdmissionController {
      * <p>用于界面提示"当前并发 N 个"。
      */
     public int runningCount() {
-        String sql = "SELECT count(*) FROM run WHERE tenant_id = ? AND status = 'running'";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getInt(1) : 0;
-            }
-        } catch (SQLException e) {
+        try {
+            return com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.ExecutionMapper.class)
+                    .countRunningRuns(tenantId);
+        } catch (RuntimeException e) {
             return 0;
         }
     }

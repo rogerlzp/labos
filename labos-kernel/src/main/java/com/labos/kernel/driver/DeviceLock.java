@@ -133,19 +133,11 @@ public final class DeviceLock {
 
     /** 谁占着这台设备；null = 空闲。 */
     public Long holder(long resourceId) {
-        String sql = "SELECT current_run_id FROM device_state"
-                + " WHERE tenant_id = ? AND resource_id = ?";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long v = rs.getLong(1);
-                    return rs.wasNull() ? null : v;
-                }
-            }
-        } catch (SQLException ignore) {
+        try {
+            return com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .selectCurrentRunId(tenantId, resourceId);
+        } catch (RuntimeException ignore) {
             // 查不到当空闲
         }
         return null;

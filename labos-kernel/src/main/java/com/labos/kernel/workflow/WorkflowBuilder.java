@@ -167,13 +167,9 @@ public final class WorkflowBuilder {
     }
 
     private String resourceName(Connection c, long resourceId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT name FROM resource_node WHERE id = ?")) {
-            ps.setLong(1, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class)
+                .selectResourceName(resourceId);
     }
 
     /** 生成带 bpmn: 前缀的 XML（bpmn-js 与 BpmnGraphParser 都认）。 */
