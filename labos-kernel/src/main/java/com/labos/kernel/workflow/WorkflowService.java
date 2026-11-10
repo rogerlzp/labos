@@ -266,10 +266,32 @@ public class WorkflowService {
     }
 
     /**
+     * 流程的**权威岛**（`workflow.island_id`，P-01 定的执行边界）。
+     *
+     * <p>为什么执行时要读它：岛过滤原先只来自**请求参数**（{@link #withIsland}），
+     * 而前端执行压根不传岛 ⇒ 候选池是全岛池，流程的设备可能来自别的岛（P-05）。
+     *
+     * @return 权威岛 id；旧流程（island_id 为 NULL）返回 null ⇒ 沿用请求里的岛
+     */
+    public Long authoritativeIslandId(long workflowId) throws SQLException {
+        java.util.Map<String, Object> row =
+                graphMapper.selectWorkflowHeader(tenantId, workflowId);
+        if (row == null || row.get("islandId") == null) {
+            return null;
+        }
+        Object v = row.get("islandId");
+        return v instanceof Number ? ((Number) v).longValue() : null;
+    }
+
+    /**
      * 限定从某个岛选设备。
      *
      * <p>用途：岛内演示时希望"板子在这几台之间流转"，
      * 而不是被设备池里任意一台其他设备接管。
+     *
+     * <p>⚠ 注意与 {@code workflow.island_id}（权威岛）的区别：这里是**这次执行的
+     * 候选池偏好**；权威岛是**流程的归属**，执行时以它为准（见
+     * {@link #authoritativeIslandId}）。两者不一致时以权威岛为准。
      */
     public WorkflowService withIsland(Long islandId) {
         if (islandId == null) {
@@ -757,6 +779,17 @@ public class WorkflowService {
         capPool = preferEmptyDevices(capPool);
 
         // 限定岛：只保留该岛内的设备；岛内没有该能力的设备时保留候选池（避免跑不动）
+        //
+        // ⚠ 已知问题（P-05 待办，**别当这行是有效的**）：这里其实过滤不干净 ——
+        // ① 节点实际选设备用的是上面那个未过滤的 `pool`，不是这个 `capPool`；
+        // ② `capPool` 是 **resource_node.id** 空间，而 `loadIslandDeviceIds` 返回的是
+        //    **device_instance.id** 空间 ⇒ 两套 id 对不上（"两套 id 坑了三次"里的又一次）；
+        // ③ 岛过滤只来自**请求参数**（`withIsland`），而前端执行压根不传岛
+        //    ⇒ `workflow.island_id`（权威岛，P-01）在这条路径上完全没被用到。
+        // ⇒ 结果：岛约束**从来没有真正生效过**。修它要三件事一起做：
+        //    (a) 确认节点选设备用的是哪个池；(b) 岛内设备集合按**那个池的 id 空间**取；
+        //    (c) 去掉"全局候选回退"（岛内没有该能力就不跑）。
+        //    详见 REMEDIATION_STATUS.md 的 P-05。
         if (islandFilter != null) {
             Long islFilter = islandFilter.get();
             java.util.Set<Long> islandDevs = islFilter == null ? java.util.Set.of()

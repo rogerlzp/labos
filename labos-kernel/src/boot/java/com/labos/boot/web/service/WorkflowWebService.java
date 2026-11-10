@@ -179,6 +179,17 @@ public class WorkflowWebService {
             return run(workflowId, attendance);
         }
         if (needIsland) {
+            // 权威岛优先（P-05）：请求里指定的岛必须与流程自己的权威岛一致。
+            // 不一致就**明确拒绝** —— 否则"流程属于 A 岛"与"这次从 B 岛挑设备"
+            // 会同时成立，板子会在两个岛之间乱跑，而界面上看不出任何异常。
+            // 没有权威岛（旧流程）⇒ 仍以请求为准，保持兼容。
+            Long authIsland = workflows.authoritativeIslandId(workflowId);
+            if (authIsland != null && authIsland.longValue() != islandId) {
+                return Jsons.obj("error",
+                        "请求的岛与流程的权威岛不一致：流程属于岛 " + authIsland
+                                + "，请求指定了岛 " + islandId
+                                + "。流程的归属由服务端决定，不能在执行时改。");
+            }
             workflows.withIsland(islandId);
         }
         if (needVars) {
