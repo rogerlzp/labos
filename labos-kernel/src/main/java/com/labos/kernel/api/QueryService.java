@@ -632,50 +632,25 @@ public class QueryService {
     public String experimentsJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();
         // 列表页要能一眼看出：哪个岛、什么内容、第几版、编了几条流程
-        String sql = """
-                SELECT e.id, e.experiment_no, e.name, e.status, e.version, e.priority,
-                       e.planned_at, e.started_at, e.finished_at, e.remark,
-                       e.workflow_id, w.name AS workflow_name,
-                       isl.code AS island_code, isl.name AS island_name,
-                       (SELECT string_agg(rn.name, '、' ORDER BY rn.name)
-                          FROM experiment_workcell ew
-                          JOIN resource_node rn ON rn.id = ew.workcell_id
-                         WHERE ew.tenant_id = e.tenant_id
-                           AND ew.experiment_id = e.id) AS workcell_names,
-                       (SELECT count(*) FROM experiment_process p
-                         WHERE p.experiment_id = e.id) AS flow_count
-                FROM experiment e
-                LEFT JOIN workflow w ON w.id = e.workflow_id
-                LEFT JOIN resource_node isl ON isl.id = e.island_id
-                WHERE e.tenant_id = ?
-                ORDER BY e.id DESC
-                LIMIT ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 500)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "experimentNo", rs.getString("experiment_no"),
-                            "name", rs.getString("name"),
-                            "status", rs.getString("status"),
-                            "plannedAt", str(rs, "planned_at"),
-                            "startedAt", str(rs, "started_at"),
-                            "finishedAt", str(rs, "finished_at"),
-                            "workflowId", rs.getObject("workflow_id"),
-                            "workflowName", rs.getString("workflow_name"),
-                            "version", rs.getInt("version"),
-                            "priority", rs.getInt("priority"),
-                            "remark", rs.getString("remark"),
-                            "islandCode", rs.getString("island_code"),
-                            "islandName", rs.getString("island_name"),
-                            "workcellNames", rs.getString("workcell_names"),
-                            "flowCount", rs.getInt("flow_count")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperiments(tenantId, Math.max(1, Math.min(limit, 500)))) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "experimentNo", row.get("experimentNo"),
+                    "name", row.get("name"),
+                    "status", row.get("status"),
+                    "plannedAt", mstr(row, "plannedAt"),
+                    "startedAt", mstr(row, "startedAt"),
+                    "finishedAt", mstr(row, "finishedAt"),
+                    "workflowId", row.get("workflowId"),
+                    "workflowName", row.get("workflowName"),
+                    "version", mint(row, "version"),
+                    "priority", mint(row, "priority"),
+                    "remark", row.get("remark"),
+                    "islandCode", row.get("islandCode"),
+                    "islandName", row.get("islandName"),
+                    "workcellNames", row.get("workcellNames"),
+                    "flowCount", mint(row, "flowCount")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -725,59 +700,41 @@ public class QueryService {
      */
     public String timelineJson(long runId) throws SQLException {
         java.sql.Timestamp runStart = queryMapper.selectRunActualStart(tenantId, runId);
-        String sql = """
-                SELECT id, node_key, name, status::text AS status, level,
-                       parent_node_id, step_seq, resource_id, loop_index,
-                       actual_start, actual_end,
-                       EXTRACT(EPOCH FROM (actual_end - actual_start)) * 1000 AS dur_ms
-                FROM run_node
-                WHERE run_id = ? AND actual_start IS NOT NULL
-                ORDER BY COALESCE(parent_node_id, id), level, COALESCE(step_seq, 0), id
-                """;
-
-        try (Connection c = db.open()) {
-            java.time.Instant start = runStart == null ? null : runStart.toInstant();
-            if (start == null) {
-                return Jsons.obj("runId", runId, "items", new Jsons.Raw(Jsons.arr(List.of())));
-            }
-
-            List<String> items = new ArrayList<>();
-            long totalMs = 0;
-            try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        if (rs.getObject("actual_start") == null) {
-                            continue;
-                        }
-                        java.time.Instant st = rs.getTimestamp("actual_start").toInstant();
-                        java.time.Instant en = rs.getObject("actual_end") == null
-                                ? null : rs.getTimestamp("actual_end").toInstant();
-                        long offsetMs = java.time.Duration.between(start, st).toMillis();
-                        double raw = rs.getObject("dur_ms") == null ? 0d : rs.getDouble("dur_ms");
-                        long durMs = (long) Math.max(0d, raw);
-                        totalMs = Math.max(totalMs, offsetMs + durMs);
-                        items.add(Jsons.obj(
-                                "id", rs.getLong("id"),
-                                "nodeKey", rs.getString("node_key"),
-                                "name", rs.getString("name"),
-                                "status", rs.getString("status"),
-                                "level", rs.getInt("level"),
-                                "parentNodeId", rs.getObject("parent_node_id"),
-                                "loopIndex", rs.getInt("loop_index"),
-                                "stepSeq", rs.getObject("step_seq"),
-                                "resourceId", rs.getObject("resource_id"),
-                                "offsetMs", offsetMs,
-                                "durationMs", durMs));
-                    }
-                }
-            }
-            return Jsons.obj(
-                    "runId", runId,
-                    "startedAt", start.toString(),
-                    "totalMs", totalMs,
-                    "items", new Jsons.Raw(Jsons.arr(items)));
+        java.time.Instant start = runStart == null ? null : runStart.toInstant();
+        if (start == null) {
+            return Jsons.obj("runId", runId, "items", new Jsons.Raw(Jsons.arr(List.of())));
         }
+
+        List<String> items = new ArrayList<>();
+        long totalMs = 0;
+        for (java.util.Map<String, Object> row : queryMapper.selectTimelineNodes(runId)) {
+            java.time.Instant st = minst(row.get("actualStart"));
+            if (st == null) {
+                continue;
+            }
+            long offsetMs = java.time.Duration.between(start, st).toMillis();
+            Object dur = row.get("durMs");
+            double rawDur = dur instanceof Number n ? n.doubleValue() : 0d;
+            long durMs = (long) Math.max(0d, rawDur);
+            totalMs = Math.max(totalMs, offsetMs + durMs);
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "nodeKey", row.get("nodeKey"),
+                    "name", row.get("name"),
+                    "status", row.get("status"),
+                    "level", mint(row, "level"),
+                    "parentNodeId", row.get("parentNodeId"),
+                    "loopIndex", mint(row, "loopIndex"),
+                    "stepSeq", row.get("stepSeq"),
+                    "resourceId", row.get("resourceId"),
+                    "offsetMs", offsetMs,
+                    "durationMs", durMs));
+        }
+        return Jsons.obj(
+                "runId", runId,
+                "startedAt", start.toString(),
+                "totalMs", totalMs,
+                "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
     /** 实验编排：该实验由哪些流程按什么顺序组成。 */
@@ -4262,6 +4219,23 @@ throw e;
     /** 把已序列化好的 JSON 片段原样嵌入（避免二次转义）。 */
     private static Jsons.Raw raw(String json) {
         return new Jsons.Raw(json == null ? "{}" : json);
+    }
+
+    /** Map 里的时间列转 Instant（MyBatis 对 timestamptz 给 java.sql.Timestamp）。 */
+    private static java.time.Instant minst(Object o) {
+        if (o == null) {
+            return null;
+        }
+        if (o instanceof java.sql.Timestamp t) {
+            return t.toInstant();
+        }
+        if (o instanceof java.time.Instant i) {
+            return i;
+        }
+        if (o instanceof java.time.OffsetDateTime d) {
+            return d.toInstant();
+        }
+        return java.time.Instant.parse(o.toString());
     }
 
     /** Map 版 {@link #str(ResultSet, String)}：null 保留 null。 */

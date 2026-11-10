@@ -71,6 +71,12 @@ public interface QueryMapper {
     /** 资源节点名称。 */
     String selectResourceName(long resourceId);
 
+    /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
+    List<Map<String, Object>> selectExperiments(long tenantId, int limit);
+
+    /** 甘特时间轴的 run_node 行（相对毫秒由 Java 侧换算）。 */
+    List<Map<String, Object>> selectTimelineNodes(long runId);
+
     /** 实验编排的流程列表（含流程名/码与任务节点数）。 */
     List<Map<String, Object>> selectExperimentProcesses(long tenantId, long experimentId);
 

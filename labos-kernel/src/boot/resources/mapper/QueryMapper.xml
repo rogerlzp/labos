@@ -198,6 +198,42 @@
         SELECT name FROM resource_node WHERE id = #{param1}
     </select>
 
+    <!-- string_agg / count 子查询保持原有 N+1 规避：一条 SQL 出全列表。 -->
+    <select id="selectExperiments" resultType="java.util.Map">
+        SELECT e.id AS "id", e.experiment_no AS "experimentNo", e.name AS "name",
+               e.status AS "status", e.version AS "version", e.priority AS "priority",
+               e.planned_at AS "plannedAt", e.started_at AS "startedAt",
+               e.finished_at AS "finishedAt", e.remark AS "remark",
+               e.workflow_id AS "workflowId", w.name AS "workflowName",
+               isl.code AS "islandCode", isl.name AS "islandName",
+               (SELECT string_agg(rn.name, '、' ORDER BY rn.name)
+                  FROM experiment_workcell ew
+                  JOIN resource_node rn ON rn.id = ew.workcell_id
+                 WHERE ew.tenant_id = e.tenant_id AND ew.experiment_id = e.id)
+                 AS "workcellNames",
+               (SELECT count(*) FROM experiment_process p
+                 WHERE p.experiment_id = e.id) AS "flowCount"
+          FROM experiment e
+          LEFT JOIN workflow w ON w.id = e.workflow_id
+          LEFT JOIN resource_node isl ON isl.id = e.island_id
+         WHERE e.tenant_id = #{param1}
+         ORDER BY e.id DESC
+         LIMIT #{param2}
+    </select>
+
+    <!-- loop_index 必须显式列出：代码要读它，早期版本漏列导致 timeline 500。 -->
+    <select id="selectTimelineNodes" resultType="java.util.Map">
+        SELECT id AS "id", node_key AS "nodeKey", name AS "name",
+               status::text AS "status", level AS "level",
+               parent_node_id AS "parentNodeId", step_seq AS "stepSeq",
+               resource_id AS "resourceId", loop_index AS "loopIndex",
+               actual_start AS "actualStart", actual_end AS "actualEnd",
+               EXTRACT(EPOCH FROM (actual_end - actual_start)) * 1000 AS "durMs"
+          FROM run_node
+         WHERE run_id = #{param1} AND actual_start IS NOT NULL
+         ORDER BY COALESCE(parent_node_id, id), level, COALESCE(step_seq, 0), id
+    </select>
+
     <select id="selectExperimentProcesses" resultType="java.util.Map">
         SELECT p.id AS "id", p.workflow_id AS "workflowId", p.seq AS "seq",
                p.run_mode AS "runMode", p.run_after AS "runAfter",
