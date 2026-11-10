@@ -99,4 +99,29 @@
          WHERE tenant_id = #{tenantId} AND id = #{ledgerId} AND state = 'UNKNOWN'
     </update>
 
+    <!-- CommandOutbox（P-07.4 命令事件 Outbox 派发器，阶段3第29批收编） -->
+
+    <!-- SKIP LOCKED：多派发器并发抢批互不阻塞；必须同事务内紧跟 markOutboxDelivered。 -->
+    <select id="selectPendingOutboxIds" resultType="java.lang.Long">
+        SELECT id FROM command_outbox
+         WHERE tenant_id = #{tenantId} AND state = 'PENDING'
+         ORDER BY id
+         LIMIT #{limit}
+         FOR UPDATE SKIP LOCKED
+    </select>
+
+    <update id="markOutboxDelivered">
+        UPDATE command_outbox
+           SET state = 'DELIVERED', delivered_at = now(), attempts = attempts + 1
+         WHERE tenant_id = #{tenantId} AND state = 'PENDING'
+           AND id IN
+           <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    </update>
+
+    <update id="replayOutbox">
+        UPDATE command_outbox
+           SET state = 'PENDING', delivered_at = NULL
+         WHERE tenant_id = #{tenantId} AND id = #{outboxId} AND state = 'DELIVERED'
+    </update>
+
 </mapper>

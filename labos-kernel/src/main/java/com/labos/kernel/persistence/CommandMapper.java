@@ -80,4 +80,26 @@ public interface CommandMapper {
                       @Param("state") String state,
                       @Param("resolvedBy") Long resolvedBy,
                       @Param("note") String note);
+
+    // ---- CommandOutbox（P-07.4 命令事件 Outbox 派发器，阶段3第29批收编）----
+
+    /**
+     * 待派发的 outbox id（id 升序，FOR UPDATE SKIP LOCKED，最多 limit 条）。
+     * 调用方在事务内使用（与随后的 markOutboxDelivered 同事务）。
+     */
+    List<Long> selectPendingOutboxIds(@Param("tenantId") long tenantId,
+                                      @Param("limit") int limit);
+
+    /**
+     * 批量标记 DELIVERED（delivered_at + attempts+1）；每行仍带 state='PENDING' 护栏，
+     * 返回实际更新条数。
+     */
+    int markOutboxDelivered(@Param("tenantId") long tenantId,
+                            @Param("ids") List<Long> ids);
+
+    /**
+     * 重放一条已派发事件（DELIVERED → PENDING，仅供外部投递重试，绝不重发物理命令）；
+     * 返回 1 = 重放成功。
+     */
+    int replayOutbox(@Param("tenantId") long tenantId, @Param("outboxId") long outboxId);
 }
