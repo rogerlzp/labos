@@ -5571,3 +5571,54 @@ Lessons (cross-project):
    lookup can only match names exactly ⇒ the misjudgement risk has to be written into
    the item explicitly (rather miss than misjudge) instead of assuming "an exact match
    is enough".
+
+**Added later (2026-11-10): the start/end node labels of the experiment canvas also fall back to neutral codes (P-15)**
+
+Symptom: the node labels of the experiment orchestration canvas are **persisted data**
+(the whole canvas JSON lands in `experiment_graph.graph`), but the auto-generated labels
+of the start/end nodes are written with the **UI wording of the current locale**.
+⇒ An experiment created in the Chinese UI stores `开始` / `结束`; the same experiment
+created in the English UI stores "Start" / "End". Open someone else's experiment after a
+locale switch and the labels are simply in the other language.
+
+Measured: all 5 rows of `experiment_graph` carry the Chinese `开始` / `结束` (none in
+English), next to names the user typed themselves (`板数`, `重复`, `判断`, `汇合`,
+`按条件走两条路`).
+
+Root cause: the same as P-13/P-14 — a value that is "auto-generated" must not be UI
+wording. P-13 (gateway roles) and P-14 (built-in logic nodes) were both converted; the
+experiment canvas line was missed.
+
+Fix: store neutral codes (`START` / `END`), localize at display time, **leave the stored
+data alone`; nodes dropped from the palette no longer store wording at all (empty label ⇒
+the localized hint of that node type is shown); legacy data is reverse-mapped at the
+display layer and the lookup is **guarded by `kind`** — only start/end nodes can hit it,
+so a workflow node the user named `开始` is not misjudged; the property panel input shows
+the **display text**, and as soon as the user edits it, their own text is stored.
+
+**The difference from the previous two (worth recording)**: this one **can** be guarded
+by type, P-13/P-14 cannot — canvas nodes **carry a `kind` field** (start/end/workflow), so
+one can tell "this label is the auto-generated one"; on the BPMN side the frontend
+interface has no nodeType and the backend DTO does not expose one either, so only an
+exact name match is possible.
+⇒ For the same reverse-lookup task, **whether a type guard is possible depends on
+whether the data carries that field**; if it does, do not fall back to guessing by name.
+
+Verification: `tsc --noEmit` on an exported snapshot of the index (0 errors); a runtime
+display-text check (2 locales × 10 cases, all passing — including "a workflow node the
+user named `开始` is not misjudged"); `scan-i18n.py` reports 0 residual Chinese characters
+in 0 files.
+
+Lessons (cross-project):
+① **"A was converted" does not mean "the whole class was converted"** — the very same
+mistake ("an auto-generated name stored as UI wording") surfaced three times in a row
+(gateway roles / built-in logic nodes / experiment canvas start & end), and each time it
+had to be hunted down again. ⇒ For this class, **find them all at once**: search every
+write site of an auto-generated name (`name = t(...)`, `label: t(...)`), not just the one
+in front of you.
+   ⚠ But note: grepping `label: t(` produces a lot of false positives (menus, table column
+   titles, dropdown options are not persisted fields) ⇒ the criterion is "does this value
+   **end up in the database**", not "is it a t(...) call".
+② **Whether the data carries the field decides whether the reverse lookup can be guarded
+by type** — guard by `kind` when there is one; otherwise only an exact name match is
+possible (and the misjudgement risk has to be written down).
