@@ -786,6 +786,55 @@
          WHERE tenant_id = #{param1} AND experiment_run_id = #{param2}
     </select>
 
+    <!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 -->
+    <select id="insertIsland" resultType="java.lang.Long">
+        INSERT INTO resource_node
+          (tenant_id, parent_id, code, name, kind, path, sort_order)
+        VALUES (#{param1}, NULL, #{param2}, #{param3}, 'island', #{param4}, 100)
+        RETURNING id
+    </select>
+
+    <select id="insertIntervention" resultType="java.lang.Long">
+        INSERT INTO intervention_record
+          (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
+           decided_action, plate_barcode, sample_id, from_location, to_location,
+           result, note)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6},
+                #{param7}, #{param8}, #{param9}, #{param10}, #{param11}, #{param12})
+        RETURNING id
+    </select>
+
+    <insert id="insertExperimentHandoff">
+        INSERT INTO experiment_handoff
+          (tenant_id, experiment_id, from_workcell_id, to_workcell_id, carrier, status)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'manual', 'configured')
+        ON CONFLICT (tenant_id, experiment_id, from_workcell_id, to_workcell_id)
+        DO NOTHING
+    </insert>
+
+    <insert id="insertExperimentWorkcell">
+        INSERT INTO experiment_workcell
+          (tenant_id, experiment_id, workcell_id, source)
+        VALUES (#{param1}, #{param2}, #{param3}, 'binding')
+        ON CONFLICT (tenant_id, experiment_id, workcell_id) DO NOTHING
+    </insert>
+
+    <select id="insertExperiment" resultType="java.lang.Long">
+        INSERT INTO experiment
+          (tenant_id, experiment_no, name, status, priority, island_id, planned_at)
+        VALUES (#{param1}, #{param2}, #{param3}, 'created', #{param4}, #{param5}, now())
+        RETURNING id
+    </select>
+
+    <update id="updateUserFields">
+        UPDATE sys_user
+           SET role = COALESCE(#{param3}, role),
+               enabled = COALESCE(#{param4}, enabled),
+               password_hash = COALESCE(#{param5}, password_hash),
+               salt = COALESCE(#{param6}, salt)
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}

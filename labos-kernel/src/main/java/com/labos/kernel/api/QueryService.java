@@ -1082,14 +1082,6 @@ experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
         String salt = password == null || password.isBlank() ? null : AuthService.newSalt();
         String hash = salt == null ? null : AuthService.pbkdf2(password, salt);
 
-        String sql = """
-                UPDATE sys_user
-                SET role = COALESCE(?, role),
-                    enabled = COALESCE(?, enabled),
-                    password_hash = COALESCE(?, password_hash),
-                    salt = COALESCE(?, salt)
-                WHERE tenant_id = ? AND id = ?
-                """;
         try (Connection c = db.open()) {
             try {
                 // 事务内第一句：串行化所有"用户角色/启用状态"写入。
@@ -1097,7 +1089,6 @@ experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
                 // 锁必须覆盖"任意两个用户同时改角色"的交叉场景。
                 queryMapper.lockUserRole();   // 只为拿到锁；返回值无意义
 
-                int updated;
                 // 纯改密码不触发"最后管理员"保护；只有改角色/改启用状态才需要判定。
                 if (newRole != null || enabled != null) {
                     // FOR UPDATE：目标行在事务内被锁住，避免同一用户被并发改写
@@ -1114,16 +1105,8 @@ experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
                         }
                     }
                 }
-                try (PreparedStatement ps = c.prepareStatement(sql)) {
-                    ps.setString(1, newRole);
-                    ps.setObject(2, enabled);
-                    ps.setString(3, hash);
-                    ps.setString(4, salt);
-                    ps.setLong(5, tenantId);
-                    ps.setLong(6, id);
-                    updated = ps.executeUpdate();
-                }
-                return updated;
+                return queryMapper.updateUserFields(tenantId, id, newRole, enabled,
+                        hash, salt);
             } catch (SQLException | RuntimeException e) {
                 // 拒绝（如最后一个管理员）以及任何异常都整体回滚，不留半改状态。
 throw e;
@@ -1715,28 +1698,8 @@ throw e;
 
         try (Connection c = db.open()) {
             try {
-                long id;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        INSERT INTO experiment
-                          (tenant_id, experiment_no, name, status, priority, island_id,
-                           planned_at)
-                        VALUES (?, ?, ?, 'created', ?, ?, now())
-                        RETURNING id
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setString(2, no);
-                    ps.setString(3, name.trim());
-                    ps.setInt(4, priority == null ? 5 : priority);
-                    if (islandId == null) {
-                        ps.setNull(5, java.sql.Types.BIGINT);
-                    } else {
-                        ps.setLong(5, islandId);
-                    }
-                    try (ResultSet rs = ps.executeQuery()) {
-                        rs.next();
-                        id = rs.getLong(1);
-                    }
-                }
+                long id = queryMapper.insertExperiment(tenantId, no, name.trim(),
+                        priority == null ? 5 : priority, islandId);
                 if (workflowIds != null) {
                     // 走统一入口：写 process 的同时生成线性链式的偏序边，
                     // 避免"新建的实验有流程、没有边"这种半成品状态。
@@ -2456,23 +2419,17 @@ throw e;
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("岛屿名称不能为空");
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO resource_node
-                       (tenant_id, parent_id, code, name, kind, path, sort_order)
-                     VALUES (?, NULL, ?, ?, 'island', ?, 100)
-                     RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, code.trim());
-            ps.setString(3, name.trim());
-            ps.setString(4, "/" + code.trim());
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
+        try {
+            Long id = queryMapper.insertIsland(tenantId, code.trim(), name.trim(),
+                    "/" + code.trim());
+            return id == null ? 0L : id;
+        } catch (RuntimeException e) {
+            // Spring 把唯一键冲突包成 DuplicateKeyException（不再是 JDBC 的
+            // SQLIntegrityConstraintViolationException），按 message 判断。
+            if (e.getMessage() != null && e.getMessage().contains("duplicate key")) {
+                throw new IllegalArgumentException("岛屿编号已存在: " + code);
             }
-        } catch (java.sql.SQLIntegrityConstraintViolationException e) {
-            throw new IllegalArgumentException("岛屿编号已存在: " + code);
+            throw e;
         }
     }
 
@@ -2708,43 +2665,13 @@ throw e;
                                    String operator, String action, String plateBarcode,
                                    String sampleId, String fromLocation, String toLocation,
                                    String result, String note) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO intervention_record
-                       (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
-                        decided_action, plate_barcode, sample_id, from_location, to_location,
-                        result, note)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            if (manualWindowId > 0) {
-                ps.setLong(2, manualWindowId);
-            } else {
-                ps.setNull(2, java.sql.Types.BIGINT);
-            }
-            if (runId == null) {
-                ps.setNull(3, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(3, runId);
-            }
-            if (experimentRunId == null) {
-                ps.setNull(4, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(4, experimentRunId);
-            }
-            ps.setString(5, operator == null ? "unknown" : operator);
-            ps.setString(6, action);
-            ps.setString(7, plateBarcode);
-            ps.setString(8, sampleId);
-            ps.setString(9, fromLocation);
-            ps.setString(10, toLocation);
-            ps.setString(11, result == null ? "unknown" : result);
-            ps.setString(12, note);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        }
+        Long id = queryMapper.insertIntervention(tenantId,
+                manualWindowId > 0 ? manualWindowId : null,
+                runId, experimentRunId,
+                operator == null ? "unknown" : operator,
+                action, plateBarcode, sampleId, fromLocation, toLocation,
+                result == null ? "unknown" : result, note);
+        return id == null ? 0L : id;
     }
 
     /** L-01：人工介入记录列表（最新优先）。 */
@@ -2813,25 +2740,14 @@ throw e;
                 }
                 experimentMapper.deleteExperimentHandoffs(tenantId, experimentId);
                 int n = 0;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        INSERT INTO experiment_handoff
-                          (tenant_id, experiment_id, from_workcell_id, to_workcell_id,
-                           carrier, status)
-                        VALUES (?, ?, ?, ?, 'manual', 'configured')
-                        ON CONFLICT (tenant_id, experiment_id, from_workcell_id, to_workcell_id)
-                        DO NOTHING
-                        """)) {
-                    for (long[] p : pairs) {
-                        ps.setLong(1, tenantId);
-                        ps.setLong(2, experimentId);
-                        ps.setLong(3, p[0]);
-                        ps.setLong(4, p[1]);
-                        ps.addBatch();
-                    }
-                    n = ps.executeBatch().length;
+                // 原 executeBatch().length 返回批里的语句条数（即使 ON CONFLICT
+                // DO NOTHING 也计入），所以这里按 pairs 条数累加，保持计数一致。
+                for (long[] p : pairs) {
+                    queryMapper.insertExperimentHandoff(tenantId, experimentId, p[0], p[1]);
+                    n++;
                 }
                 return n;
-            } catch (SQLException | RuntimeException e) {
+            } catch (RuntimeException e) {
                 throw e;
             }
         }
@@ -3115,26 +3031,17 @@ throw e;
                 experimentMapper.deleteExperimentWorkcells(tenantId, experimentId);
                 int n = 0;
                 if (workcellIds != null && !workcellIds.isEmpty()) {
-                    try (PreparedStatement ps = c.prepareStatement("""
-                            INSERT INTO experiment_workcell
-                              (tenant_id, experiment_id, workcell_id, source)
-                            VALUES (?, ?, ?, 'binding')
-                            ON CONFLICT (tenant_id, experiment_id, workcell_id) DO NOTHING
-                            """)) {
-                        for (Long wid : workcellIds) {
-                            if (wid == null || wid <= 0) {
-                                continue;
-                            }
-                            ps.setLong(1, tenantId);
-                            ps.setLong(2, experimentId);
-                            ps.setLong(3, wid);
-                            ps.addBatch();
+                    // 同上：按进入批的有效行数计数，与 executeBatch().length 一致。
+                    for (Long wid : workcellIds) {
+                        if (wid == null || wid <= 0) {
+                            continue;
                         }
-                        n = ps.executeBatch().length;
+                        queryMapper.insertExperimentWorkcell(tenantId, experimentId, wid);
+                        n++;
                     }
                 }
                 return n;
-            } catch (SQLException | RuntimeException e) {
+            } catch (RuntimeException e) {
                 throw e;
             }
         }

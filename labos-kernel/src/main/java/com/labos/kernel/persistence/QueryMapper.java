@@ -261,6 +261,30 @@ public interface QueryMapper {
     /** 实验执行的实际步骤行。 */
     List<Map<String, Object>> selectExperimentRunStepRows(long tenantId, long runId);
 
+    /** 建岛，返回 id。 */
+    Long insertIsland(long tenantId, String code, String name, String path);
+
+    /** 记一条人工介入记录，返回 id。 */
+    Long insertIntervention(long tenantId, Long manualWindowId, Long runId,
+                            Long experimentRunId, String operator, String action,
+                            String plateBarcode, String sampleId, String fromLocation,
+                            String toLocation, String result, String note);
+
+    /** 新增一条工位交接（重复则忽略）。 */
+    int insertExperimentHandoff(long tenantId, long experimentId,
+                                long fromWorkcellId, long toWorkcellId);
+
+    /** 新增一条实验工位绑定（重复则忽略）。 */
+    int insertExperimentWorkcell(long tenantId, long experimentId, long workcellId);
+
+    /** 新建实验，返回 id。 */
+    Long insertExperiment(long tenantId, String experimentNo, String name,
+                          Integer priority, Long islandId);
+
+    /** 改用户（COALESCE：没传的字段不动）。 */
+    int updateUserFields(long tenantId, long id, String role, Boolean enabled,
+                         String passwordHash, String salt);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 
