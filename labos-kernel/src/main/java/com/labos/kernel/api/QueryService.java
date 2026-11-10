@@ -836,38 +836,22 @@ public class QueryService {
 
     public String experimentRunsJson(long experimentId) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT r.id, r.status, r.control_state, r.expanded_steps, r.current_seq,
-                       r.started_at, r.finished_at, r.error,
-                       r.pause_kind, r.pause_reason, r.stop_requested,
-                       EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) AS dur_sec
-                FROM experiment_run r
-                WHERE r.tenant_id = ? AND r.experiment_id = ?
-                ORDER BY r.id DESC LIMIT 20
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Object dur = rs.getObject("dur_sec");
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "status", rs.getString("status"),
-                            "expandedSteps", rs.getInt("expanded_steps"),
-                            "currentSeq", rs.getInt("current_seq"),
-                            "startedAt", str(rs, "started_at"),
-                            "finishedAt", str(rs, "finished_at"),
-                            "durationSec", dur == null ? null
-                                    : Math.round(((Number) dur).doubleValue()),
-                            "pauseKind", rs.getString("pause_kind"),
-                            "pauseReason", rs.getString("pause_reason"),
-                            "controlState", rs.getString("control_state"),
-                            "stopRequested", rs.getBoolean("stop_requested"),
-                            "error", rs.getString("error")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperimentRuns(tenantId, experimentId)) {
+            Object dur = row.get("durationSec");
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "status", row.get("status"),
+                    "expandedSteps", mint(row, "expandedSteps"),
+                    "currentSeq", mint(row, "currentSeq"),
+                    "startedAt", mstr(row, "startedAt"),
+                    "finishedAt", mstr(row, "finishedAt"),
+                    "durationSec", dur instanceof Number n ? Math.round(n.doubleValue()) : null,
+                    "pauseKind", row.get("pauseKind"),
+                    "pauseReason", row.get("pauseReason"),
+                    "controlState", row.get("controlState"),
+                    "stopRequested", Boolean.TRUE.equals(row.get("stopRequested")),
+                    "error", row.get("error")));
         }
         return Jsons.obj("experimentId", experimentId,
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -1297,37 +1281,22 @@ throw e;
     public String auditJson(int limit, String action) throws SQLException {
         String filter = (action == null || action.isBlank() || "all".equals(action))
                 ? null : action;
-        String sql = """
-                SELECT occurred_at, username, action, entity_type, entity_id,
-                       result, ip, before, after
-                FROM audit_log
-                WHERE tenant_id = ? AND (?::text IS NULL OR action = ?)
-                ORDER BY occurred_at DESC
-                LIMIT ?
-                """;
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, filter);
-            ps.setString(3, filter);
-            ps.setInt(4, Math.max(1, Math.min(limit, 500)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "occurredAt", str(rs, "occurred_at"),
-                            "username", rs.getString("username"),
-                            "action", rs.getString("action"),
-                            "entityType", rs.getString("entity_type"),
-                            "entityId", rs.getObject("entity_id"),
-                            "result", rs.getString("result"),
-                            "ip", rs.getString("ip"),
-                            "before", rs.getString("before") == null ? null
-                                    : new Jsons.Raw(rs.getString("before")),
-                            "after", rs.getString("after") == null ? null
-                                    : new Jsons.Raw(rs.getString("after"))));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectAuditLog(
+                tenantId, filter, Math.max(1, Math.min(limit, 500)))) {
+            Object before = row.get("before");
+            Object after = row.get("after");
+            items.add(Jsons.obj(
+                    "occurredAt", mstr(row, "occurredAt"),
+                    "username", row.get("username"),
+                    "action", row.get("action"),
+                    "entityType", row.get("entityType"),
+                    "entityId", row.get("entityId"),
+                    "result", row.get("result"),
+                    "ip", row.get("ip"),
+                    // null 保持 null（这里不能像 mraw 那样兜成 {}）
+                    "before", before == null ? null : new Jsons.Raw(String.valueOf(before)),
+                    "after", after == null ? null : new Jsons.Raw(String.valueOf(after))));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -2694,31 +2663,14 @@ throw e;
     /** 未挂到任何岛的设备（拖拽时的"设备池"）。 */
     public String unassignedDevicesJson() throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT d.id AS resource_id, d.code, d.name, di.ip, c.code AS capability
-                FROM resource_node d
-                LEFT JOIN resource_node p ON p.id = d.parent_id
-                LEFT JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
-                LEFT JOIN device dev ON dev.id = di.device_id
-                LEFT JOIN capability c ON c.id = dev.capability_id
-                WHERE d.tenant_id = ? AND d.kind = 'device'
-                  AND (p.id IS NULL OR p.kind <> 'island')
-                  AND di.id IS NOT NULL
-                ORDER BY d.code
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "resourceId", rs.getLong("resource_id"),
-                            "code", rs.getString("code"),
-                            "name", rs.getString("name"),
-                            "ip", rs.getString("ip"),
-                            "capability", rs.getString("capability")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectUnassignedDevices(tenantId)) {
+            items.add(Jsons.obj(
+                    "resourceId", row.get("resourceId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "ip", row.get("ip"),
+                    "capability", row.get("capability")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -2726,26 +2678,14 @@ throw e;
     /** 流程图保存历史（按时间倒序）。 */
     public String graphHistoryJson(long workflowId) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT id, node_count, edge_count, length(xml) AS bytes, saved_at
-                FROM workflow_graph_history
-                WHERE tenant_id = ? AND workflow_id = ?
-                ORDER BY saved_at DESC LIMIT 30
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "nodeCount", rs.getInt("node_count"),
-                            "edgeCount", rs.getInt("edge_count"),
-                            "bytes", rs.getInt("bytes"),
-                            "savedAt", str(rs, "saved_at")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectGraphHistory(tenantId, workflowId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "nodeCount", mint(row, "nodeCount"),
+                    "edgeCount", mint(row, "edgeCount"),
+                    "bytes", mint(row, "bytes"),
+                    "savedAt", mstr(row, "savedAt")));
         }
         return Jsons.obj("workflowId", workflowId,
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -2777,31 +2717,19 @@ throw e;
 
     /** 某个设备方法的参数定义（设计器填参用）。 */
     public String methodParamsJson(String method) throws SQLException {
-        String sql = """
-                SELECT dm.method, dm.name, c.code AS capability, dm.param_schema->'params' AS params
-                FROM device_method dm
-                LEFT JOIN capability c ON c.id = dm.capability_id
-                WHERE dm.tenant_id = ? AND dm.method = ?
-                LIMIT 1
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, method);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return Jsons.obj("method", method, "found", false,
-                            "params", new Jsons.Raw("[]"));
-                }
-                String ps1 = rs.getString("params");
-                return Jsons.obj(
-                        "method", rs.getString("method"),
-                        "name", rs.getString("name"),
-                        "capability", rs.getString("capability"),
-                        "found", true,
-                        "params", ps1 == null ? new Jsons.Raw("[]") : new Jsons.Raw(ps1));
-            }
+        java.util.Map<String, Object> row = queryMapper.selectMethodParams(tenantId, method);
+        if (row == null) {
+            return Jsons.obj("method", method, "found", false,
+                    "params", new Jsons.Raw("[]"));
         }
+        Object params = row.get("params");
+        return Jsons.obj(
+                "method", row.get("method"),
+                "name", row.get("name"),
+                "capability", row.get("capability"),
+                "found", true,
+                "params", params == null ? new Jsons.Raw("[]")
+                        : new Jsons.Raw(String.valueOf(params)));
     }
 
     /** 驱动端点列表（新增设备时选）。 */
@@ -3181,24 +3109,13 @@ throw e;
     /** 实验 Handoff 配置列表（N-10）。 */
     public String experimentHandoffsJson(long experimentId) throws SQLException {
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT from_workcell_id, to_workcell_id, carrier, status, remark
-                       FROM experiment_handoff
-                      WHERE tenant_id = ? AND experiment_id = ?
-                      ORDER BY from_workcell_id, to_workcell_id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj("fromWorkcellId", rs.getLong(1),
-                            "toWorkcellId", rs.getLong(2),
-                            "carrier", rs.getString(3),
-                            "status", rs.getString(4),
-                            "remark", rs.getString(5)));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperimentHandoffs(tenantId, experimentId)) {
+            items.add(Jsons.obj("fromWorkcellId", row.get("fromWorkcellId"),
+                    "toWorkcellId", row.get("toWorkcellId"),
+                    "carrier", row.get("carrier"),
+                    "status", row.get("status"),
+                    "remark", row.get("remark")));
         }
         return Jsons.obj("experimentId", experimentId,
                 "items", new Jsons.Raw(Jsons.arr(items)), "count", items.size());

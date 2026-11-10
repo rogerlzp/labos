@@ -131,6 +131,24 @@ public interface QueryMapper {
     /** 编排流程列表（category='choreography'）。 */
     List<Map<String, Object>> selectChoreographies(long tenantId, int limit);
 
+    /** 某实验的执行记录（最近 20 条）。 */
+    List<Map<String, Object>> selectExperimentRuns(long tenantId, long experimentId);
+
+    /** 审计日志（filter 为 null 时取全部）。 */
+    List<Map<String, Object>> selectAuditLog(long tenantId, String filter, int limit);
+
+    /** 图历史版本列表（最近 30 条）。 */
+    List<Map<String, Object>> selectGraphHistory(long tenantId, long workflowId);
+
+    /** 某方法的参数定义；不存在返回 null。 */
+    Map<String, Object> selectMethodParams(long tenantId, String method);
+
+    /** 未挂到岛上的设备（有 device_instance 但父节点不是 island）。 */
+    List<Map<String, Object>> selectUnassignedDevices(long tenantId);
+
+    /** 实验的工位交接清单。 */
+    List<Map<String, Object>> selectExperimentHandoffs(long tenantId, long experimentId);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

@@ -289,6 +289,71 @@
          ORDER BY w.id DESC LIMIT #{param2}
     </select>
 
+    <select id="selectExperimentRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.status AS "status", r.control_state AS "controlState",
+               r.expanded_steps AS "expandedSteps", r.current_seq AS "currentSeq",
+               r.started_at AS "startedAt", r.finished_at AS "finishedAt",
+               r.error AS "error", r.pause_kind AS "pauseKind",
+               r.pause_reason AS "pauseReason", r.stop_requested AS "stopRequested",
+               EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) AS "durationSec"
+          FROM experiment_run r
+         WHERE r.tenant_id = #{param1} AND r.experiment_id = #{param2}
+         ORDER BY r.id DESC LIMIT 20
+    </select>
+
+    <!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 -->
+    <select id="selectAuditLog" resultType="java.util.Map">
+        SELECT occurred_at AS "occurredAt", username AS "username", action AS "action",
+               entity_type AS "entityType", entity_id AS "entityId",
+               result AS "result", ip AS "ip",
+               "before" AS "before", "after" AS "after"
+          FROM audit_log
+         WHERE tenant_id = #{param1}
+           AND (#{param2}::text IS NULL OR action = #{param2})
+         ORDER BY occurred_at DESC
+         LIMIT #{param3}
+    </select>
+
+    <select id="selectGraphHistory" resultType="java.util.Map">
+        SELECT id AS "id", node_count AS "nodeCount", edge_count AS "edgeCount",
+               length(xml) AS "bytes", saved_at AS "savedAt"
+          FROM workflow_graph_history
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+         ORDER BY saved_at DESC LIMIT 30
+    </select>
+
+    <select id="selectMethodParams" resultType="java.util.Map">
+        SELECT dm.method AS "method", dm.name AS "name", c.code AS "capability",
+               (dm.param_schema->'params')::text AS "params"
+          FROM device_method dm
+          LEFT JOIN capability c ON c.id = dm.capability_id
+         WHERE dm.tenant_id = #{param1} AND dm.method = #{param2}
+         LIMIT 1
+    </select>
+
+    <select id="selectUnassignedDevices" resultType="java.util.Map">
+        SELECT d.id AS "resourceId", d.code AS "code", d.name AS "name",
+               di.ip AS "ip", c.code AS "capability"
+          FROM resource_node d
+          LEFT JOIN resource_node p ON p.id = d.parent_id
+          LEFT JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
+          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN capability c ON c.id = dev.capability_id
+         WHERE d.tenant_id = #{param1} AND d.kind = 'device'
+           AND (p.id IS NULL OR p.kind &lt;&gt; 'island')
+           AND di.id IS NOT NULL
+         ORDER BY d.code
+    </select>
+
+    <select id="selectExperimentHandoffs" resultType="java.util.Map">
+        SELECT from_workcell_id AS "fromWorkcellId",
+               to_workcell_id AS "toWorkcellId", carrier AS "carrier",
+               status AS "status", remark AS "remark"
+          FROM experiment_handoff
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+         ORDER BY from_workcell_id, to_workcell_id
+    </select>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
