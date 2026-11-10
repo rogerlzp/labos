@@ -54,67 +54,36 @@ public class QueryService {
     }
 
     public String policies() throws SQLException {
-        String sql = """
-                SELECT p.id, COALESCE(ec.code,'*') AS code, p.scope, p.strategy::text AS strategy,
-                       p.max_attempts, p.priority, p.enabled,
-                       COALESCE(p.params->>'origin','manual') AS origin
-                FROM recovery_policy p
-                LEFT JOIN error_code ec ON ec.id = p.error_code_id
-                WHERE p.tenant_id = ?
-                ORDER BY p.priority, p.id
-                """;
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "errorCode", rs.getString("code"),
-                            "scope", rs.getString("scope"),
-                            "strategy", rs.getString("strategy"),
-                            "maxAttempts", rs.getInt("max_attempts"),
-                            "priority", rs.getInt("priority"),
-                            "enabled", rs.getBoolean("enabled"),
-                            "origin", rs.getString("origin")));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectPolicies(tenantId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "errorCode", row.get("code"),
+                    "scope", row.get("scope"),
+                    "strategy", row.get("strategy"),
+                    "maxAttempts", mint(row, "maxAttempts"),
+                    "priority", mint(row, "priority"),
+                    "enabled", Boolean.TRUE.equals(row.get("enabled")),
+                    "origin", row.get("origin")));
         }
         return Jsons.obj("total", items.size(), "items", raw(Jsons.arr(items)));
     }
 
     public String recentRuns(int limit) throws SQLException {
-        String sql = """
-                SELECT r.id, r.run_no, r.run_type, r.status::text AS status, r.priority,
-                       r.attendance,
-                       r.actual_start, r.actual_end, r.created_at,
-                       (SELECT count(*) FROM run_node n WHERE n.run_id = r.id AND n.loop_index = 0) AS node_count
-                FROM run r
-                WHERE r.tenant_id = ?
-                ORDER BY r.id DESC
-                LIMIT ?
-                """;
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 200)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "runNo", rs.getString("run_no"),
-                            "runType", rs.getString("run_type"),
-                            "attendance", rs.getString("attendance"),
-                            "status", rs.getString("status"),
-                            "priority", rs.getInt("priority"),
-                            "nodeCount", rs.getInt("node_count"),
-                            "actualStart", str(rs, "actual_start"),
-                            "actualEnd", str(rs, "actual_end"),
-                            "createdAt", str(rs, "created_at")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectRecentRuns(tenantId, Math.max(1, Math.min(limit, 200)))) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "runNo", row.get("runNo"),
+                    "runType", row.get("runType"),
+                    "attendance", row.get("attendance"),
+                    "status", row.get("status"),
+                    "priority", mint(row, "priority"),
+                    "nodeCount", mint(row, "nodeCount"),
+                    "actualStart", mstr(row, "actualStart"),
+                    "actualEnd", mstr(row, "actualEnd"),
+                    "createdAt", mstr(row, "createdAt")));
         }
         return Jsons.obj("total", items.size(), "items", raw(Jsons.arr(items)));
     }
@@ -290,33 +259,20 @@ public class QueryService {
 
     /** 当前卡住/正在执行的节点（取最早一个未完成的业务节点）。 */
     private String currentNodeJson(Connection c, long runId) throws SQLException {
-        String sql = """
-                SELECT n.id, n.node_key, n.name, n.status::text AS status, n.attempt,
-                       n.resource_id, n.input->>'reason' AS reason,
-                       (SELECT string_agg(c2.method, ' → ' ORDER BY c2.command_seq)
-                          FROM run_command c2 WHERE c2.run_node_id = n.id) AS steps
-                FROM run_node n
-                WHERE n.run_id = ? AND n.level = 0 AND n.loop_index = 0
-                  AND n.status NOT IN ('completed', 'skipped')
-                ORDER BY n.id LIMIT 1
-                """;
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return "null";
-                }
-                return Jsons.obj(
-                        "nodeId", rs.getLong("id"),
-                        "nodeKey", rs.getString("node_key"),
-                        "name", rs.getString("name"),
-                        "status", rs.getString("status"),
-                        "attempt", rs.getInt("attempt"),
-                        "resourceId", rs.getObject("resource_id"),
-                        "reason", rs.getString("reason"),
-                        "steps", rs.getString("steps"));
-            }
+        // c 只表示调用方已在事务内；Mapper 会取到同一条 Spring 绑定连接。
+        java.util.Map<String, Object> row = queryMapper.selectCurrentNode(runId);
+        if (row == null) {
+            return "null";
         }
+        return Jsons.obj(
+                "nodeId", row.get("id"),
+                "nodeKey", row.get("nodeKey"),
+                "name", row.get("name"),
+                "status", row.get("status"),
+                "attempt", mint(row, "attempt"),
+                "resourceId", row.get("resourceId"),
+                "reason", row.get("reason"),
+                "steps", row.get("steps"));
     }
 
     /**
@@ -654,45 +610,20 @@ public class QueryService {
      */
     public String workflowRunsJson(long workflowId, int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT r.id, r.run_no, r.status::text AS status,
-                       r.actual_start, r.actual_end,
-                       EXTRACT(EPOCH FROM (r.actual_end - r.actual_start)) AS dur,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0) AS total,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                            AND n.status = 'completed') AS done,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                            AND n.status = 'manual') AS manual,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                            AND n.status = 'failed') AS failed
-                FROM run r
-                LEFT JOIN run_node n ON n.run_id = r.id
-                WHERE r.tenant_id = ? AND r.workflow_id = ?
-                GROUP BY r.id
-                ORDER BY r.id DESC
-                LIMIT ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            ps.setInt(3, Math.max(1, Math.min(limit, 100)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "runNo", rs.getString("run_no"),
-                            "status", rs.getString("status"),
-                            "startedAt", str(rs, "actual_start"),
-                            "finishedAt", str(rs, "actual_end"),
-                            "durationSec", rs.getObject("dur") == null
-                                    ? null : rs.getBigDecimal("dur").intValue(),
-                            "total", rs.getInt("total"),
-                            "done", rs.getInt("done"),
-                            "manual", rs.getInt("manual"),
-                            "failed", rs.getInt("failed")));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectWorkflowRuns(
+                tenantId, workflowId, Math.max(1, Math.min(limit, 100)))) {
+            Object dur = row.get("durationSec");
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "runNo", row.get("runNo"),
+                    "status", row.get("status"),
+                    "startedAt", mstr(row, "actualStart"),
+                    "finishedAt", mstr(row, "actualEnd"),
+                    "durationSec", dur instanceof Number n ? n.intValue() : null,
+                    "total", mint(row, "total"),
+                    "done", mint(row, "done"),
+                    "manual", mint(row, "manual"),
+                    "failed", mint(row, "failed")));
         }
         return Jsons.obj("workflowId", workflowId, "total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -4358,6 +4289,18 @@ throw e;
     /** 把已序列化好的 JSON 片段原样嵌入（避免二次转义）。 */
     private static Jsons.Raw raw(String json) {
         return new Jsons.Raw(json == null ? "{}" : json);
+    }
+
+    /** Map 版 {@link #str(ResultSet, String)}：null 保留 null。 */
+    private static String mstr(java.util.Map<String, Object> row, String key) {
+        Object o = row.get(key);
+        return o == null ? null : o.toString();
+    }
+
+    /** Map 版 rs.getInt：null 当 0。 */
+    private static int mint(java.util.Map<String, Object> row, String key) {
+        Object o = row.get(key);
+        return o instanceof Number n ? n.intValue() : 0;
     }
 
     private static String str(ResultSet rs, String col) throws SQLException {

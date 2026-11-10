@@ -71,6 +71,18 @@ public interface QueryMapper {
     /** 资源节点名称。 */
     String selectResourceName(long resourceId);
 
+    /** 恢复策略清单（带错误码，`*` 表示通配）。 */
+    List<Map<String, Object>> selectPolicies(long tenantId);
+
+    /** 最近的 run 列表（含 loop_index=0 的节点数）。 */
+    List<Map<String, Object>> selectRecentRuns(long tenantId, int limit);
+
+    /** 当前进行中的节点（含已下发步骤串）；无则返回 null。 */
+    Map<String, Object> selectCurrentNode(long runId);
+
+    /** 某流程的 run 列表（含完成/人工/失败计数）。 */
+    List<Map<String, Object>> selectWorkflowRuns(long tenantId, long workflowId, int limit);
+
     /** 该资源上正在跑的节点还剩多少秒（ETA 用）；无在跑节点返回 null。 */
     Double selectRemainingSec(long tenantId, long resourceId);
 
