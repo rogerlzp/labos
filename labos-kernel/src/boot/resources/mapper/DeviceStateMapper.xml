@@ -103,6 +103,33 @@
          WHERE tenant_id = #{param1} AND port_id = #{param2}
     </select>
 
+    <!-- DevicePortLock（通道锁，阶段3第28批收编） -->
+
+    <!-- RETURNING 用 select 承载：抢到即有一行（返回新占用数），没抢到无行。 -->
+    <select id="tryAcquirePort" resultType="java.lang.Integer">
+        UPDATE device_port_usage
+           SET in_use = in_use + 1, updated_at = now()
+         WHERE tenant_id = #{tenantId} AND port_id = #{portId} AND in_use &lt; max_capacity
+        RETURNING in_use
+    </select>
+
+    <update id="releasePort">
+        UPDATE device_port_usage
+           SET in_use = in_use - 1, updated_at = now()
+         WHERE tenant_id = #{tenantId} AND port_id = #{portId} AND in_use &gt; 0
+    </update>
+
+    <select id="selectAvailablePort" resultType="java.lang.Long">
+        SELECT p.id
+          FROM device_port p
+          JOIN device_port_usage u ON u.port_id = p.id AND u.tenant_id = p.tenant_id
+         WHERE p.tenant_id = #{tenantId} AND p.resource_id = #{resourceId}
+           AND (p.direction = #{direction} OR p.direction = 'both')
+           AND u.in_use &lt; u.max_capacity
+         ORDER BY p.capacity DESC, p.id
+         LIMIT 1
+    </select>
+
     <select id="selectPlateBusyInstanceIds" resultType="java.lang.Long">
         SELECT di.id
           FROM device_state ds

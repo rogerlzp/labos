@@ -69,6 +69,20 @@ public interface DeviceStateMapper {
     /** 当前占用数；没有该 port 行时返回 null。 */
     Integer selectPortInUse(long tenantId, long portId);
 
+    /** 抢通道（占用数 +1，未满才成功，RETURNING 用 select 承载）；没抢到返回 null。 */
+    Integer tryAcquirePort(@Param("tenantId") long tenantId, @Param("portId") long portId);
+
+    /** 释放通道（占用数 -1，不会减到负数）。 */
+    int releasePort(@Param("tenantId") long tenantId, @Param("portId") long portId);
+
+    /**
+     * 该设备指定方向的可用通道 id（both 方向可当 in/out 用；按 capacity 降序取第一个）；
+     * 没配通道或都满了返回 null。
+     */
+    Long selectAvailablePort(@Param("tenantId") long tenantId,
+                             @Param("resourceId") long resourceId,
+                             @Param("direction") String direction);
+
     /** 有板设备的 device_instance.id 集合（WorkflowService 选设备的"忙集"）。 */
     java.util.List<Long> selectPlateBusyInstanceIds(@Param("tenantId") long tenantId);
 

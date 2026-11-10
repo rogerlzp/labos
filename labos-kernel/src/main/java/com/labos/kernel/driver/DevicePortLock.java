@@ -2,11 +2,6 @@ package com.labos.kernel.driver;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-
 /**
  * 通道锁：设备的进/出口。
  *
@@ -44,37 +39,19 @@ public final class DevicePortLock {
      * @return true = 抢到
      */
     public boolean tryAcquire(long portId) {
-        String sql = """
-                UPDATE device_port_usage
-                SET in_use = in_use + 1, updated_at = now()
-                WHERE tenant_id = ? AND port_id = ? AND in_use < max_capacity
-                RETURNING in_use
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, portId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
+        try {
+            // 抢到即 RETURNING 出新占用数；没抢到/无行返回 null。
+            return mapper().tryAcquirePort(tenantId, portId) != null;
+        } catch (RuntimeException e) {
             return false;   // 死锁/锁等待时保守认为没抢到
         }
     }
 
     /** 释放通道：占用数 -1（不会减到负数）。 */
     public void release(long portId) {
-        String sql = """
-                UPDATE device_port_usage
-                SET in_use = in_use - 1, updated_at = now()
-                WHERE tenant_id = ? AND port_id = ? AND in_use > 0
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, portId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mapper().releasePort(tenantId, portId);
+        } catch (RuntimeException e) {
             log.error("[通道] 释放失败 port=" + portId + "：" + e.getMessage());
         }
     }
@@ -87,25 +64,9 @@ public final class DevicePortLock {
      * @return 通道 id；null = 没配通道或都满了
      */
     public Long findAvailablePort(long resourceId, String direction) {
-        String sql = """
-                SELECT p.id
-                FROM device_port p
-                JOIN device_port_usage u ON u.port_id = p.id AND u.tenant_id = p.tenant_id
-                WHERE p.tenant_id = ? AND p.resource_id = ?
-                  AND (p.direction = ? OR p.direction = 'both')
-                  AND u.in_use < u.max_capacity
-                ORDER BY p.capacity DESC, p.id
-                LIMIT 1
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            ps.setString(3, direction);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        } catch (SQLException e) {
+        try {
+            return mapper().selectAvailablePort(tenantId, resourceId, direction);
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -113,9 +74,7 @@ public final class DevicePortLock {
     /** 设备有没有配通道（没配说明是存量数据，跳过通道锁）。 */
     public boolean hasPorts(long resourceId) {
         try {
-            return com.labos.kernel.persistence.Mappers.get(
-                    com.labos.kernel.persistence.DeviceStateMapper.class)
-                    .hasPorts(tenantId, resourceId);
+            return mapper().hasPorts(tenantId, resourceId);
         } catch (RuntimeException e) {
             return false;
         }
@@ -124,12 +83,15 @@ public final class DevicePortLock {
     /** 当前占用数（排查用）。 */
     public int inUse(long portId) {
         try {
-            Integer v = com.labos.kernel.persistence.Mappers.get(
-                    com.labos.kernel.persistence.DeviceStateMapper.class)
-                    .selectPortInUse(tenantId, portId);
+            Integer v = mapper().selectPortInUse(tenantId, portId);
             return v == null ? -1 : v;
         } catch (RuntimeException e) {
             return -1;
         }
+    }
+
+    private com.labos.kernel.persistence.DeviceStateMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceStateMapper.class);
     }
 }
