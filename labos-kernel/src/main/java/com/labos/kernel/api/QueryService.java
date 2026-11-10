@@ -1308,20 +1308,7 @@ throw e;
      * 不是"实例"的，所以换驱动、换 IP 都不影响位置。
      */
     public int saveDevicePosition(long resourceId, double x, double y) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE resource_node
-                     SET attr = COALESCE(attr, '{}'::jsonb)
-                                || jsonb_build_object('pos_x', ?, 'pos_y', ?),
-                         updated_at = now()
-                     WHERE tenant_id = ? AND id = ? AND kind = 'device'
-                     """)) {
-            ps.setDouble(1, x);
-            ps.setDouble(2, y);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, resourceId);
-            return ps.executeUpdate();
-        }
+        return queryMapper.updateDevicePosition(tenantId, resourceId, x, y);
     }
 
     /**
@@ -1557,28 +1544,15 @@ throw e;
     /** 点位导出 CSV（现场示教器导出的表可以直接对照）。 */
     public String robotPointsCsv(long islandId) throws SQLException {
         StringBuilder sb = new StringBuilder("code,name,x,y,z,device_code,action\n");
-        String sql = """
-                SELECT p.code, p.name, p.x, p.y, p.z, p.action, r.code AS device_code
-                FROM robot_point p
-                LEFT JOIN resource_node r ON r.id = p.device_resource_id
-                WHERE p.tenant_id = ? AND p.island_id = ?
-                ORDER BY p.robot_resource_id, p.code
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    sb.append(csv(rs.getString("code"))).append(',')
-                      .append(csv(rs.getString("name"))).append(',')
-                      .append(num(rs.getBigDecimal("x"))).append(',')
-                      .append(num(rs.getBigDecimal("y"))).append(',')
-                      .append(num(rs.getBigDecimal("z"))).append(',')
-                      .append(csv(rs.getString("device_code"))).append(',')
-                      .append(csv(rs.getString("action"))).append('\n');
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectRobotPoints(tenantId, islandId)) {
+            sb.append(mcsv(row.get("code"))).append(',')
+              .append(mcsv(row.get("name"))).append(',')
+              .append(mnum(row.get("x"))).append(',')
+              .append(mnum(row.get("y"))).append(',')
+              .append(mnum(row.get("z"))).append(',')
+              .append(mcsv(row.get("deviceCode"))).append(',')
+              .append(mcsv(row.get("action"))).append('\n');
         }
         return sb.toString();
     }
@@ -1589,6 +1563,25 @@ throw e;
         }
         return s.contains(",") || s.contains("\"")
                 ? "\"" + s.replace("\"", "\"\"") + "\"" : s;
+    }
+
+    /** Map 版 num：numeric 列可能是 BigDecimal / Double，统一按 BigDecimal 格式化。 */
+    private static String mnum(Object o) {
+        if (o == null) {
+            return "";
+        }
+        if (o instanceof java.math.BigDecimal b) {
+            return b.stripTrailingZeros().toPlainString();
+        }
+        if (o instanceof Number n) {
+            return new java.math.BigDecimal(n.toString()).stripTrailingZeros().toPlainString();
+        }
+        return o.toString();
+    }
+
+    /** Map 版 csv：null 与 csv(String) 一样输出空串。 */
+    private static String mcsv(Object o) {
+        return csv(o == null ? null : String.valueOf(o));
     }
 
     private static String num(java.math.BigDecimal v) {
@@ -1779,22 +1772,8 @@ throw e;
 
     /** 岛屿动线（设备节点坐标 + 搬运箭头）。 */
     public String islandFlowJson(long islandId) throws SQLException {
-        String sql = """
-                SELECT graph FROM island_flow
-                WHERE tenant_id = ? AND island_id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    String g = rs.getString(1);
-                    return g == null ? "{\"nodes\":[],\"edges\":[]}" : g;
-                }
-            }
-        }
-        return "{\"nodes\":[],\"edges\":[]}";
+        String g = queryMapper.selectIslandFlow(tenantId, islandId);
+        return g == null ? "{\"nodes\":[],\"edges\":[]}" : g;
     }
 
     /** 保存岛屿动线（整体替换）。 */
@@ -1802,39 +1781,13 @@ throw e;
         if (graphJson == null || graphJson.isBlank()) {
             throw new IllegalArgumentException("动线不能为空");
         }
-        String sql = """
-                INSERT INTO island_flow (tenant_id, island_id, graph, updated_at)
-                VALUES (?, ?, ?::jsonb, now())
-                ON CONFLICT (island_id) DO UPDATE
-                SET graph = EXCLUDED.graph, updated_at = now()
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            ps.setString(3, graphJson);
-            return ps.executeUpdate();
-        }
+        return queryMapper.upsertIslandFlow(tenantId, islandId, graphJson);
     }
 
     /** 实验编排图（nodes + edges）。 */
     public String experimentGraphJson(long experimentId) throws SQLException {
-        String sql = """
-                SELECT graph FROM experiment_graph
-                WHERE tenant_id = ? AND experiment_id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    String g = rs.getString(1);
-                    return g == null ? "{\"nodes\":[],\"edges\":[]}" : g;
-                }
-            }
-        }
-        return "{\"nodes\":[],\"edges\":[]}";
+        String g = queryMapper.selectExperimentGraph(tenantId, experimentId);
+        return g == null ? "{\"nodes\":[],\"edges\":[]}" : g;
     }
 
     /** 保存实验编排图（整体替换），并同步编译成 experiment_process（含偏序边）。 */
@@ -1846,18 +1799,9 @@ throw e;
             throw new IllegalArgumentException("图不能为空");
         }
         CompiledGraph compiled = compileExperimentGraph(graphJson);
-        String sql = """
-                INSERT INTO experiment_graph (tenant_id, experiment_id, graph, updated_at)
-                VALUES (?, ?, ?::jsonb, now())
-                ON CONFLICT (experiment_id) DO UPDATE
-                SET graph = EXCLUDED.graph, updated_at = now()
-                """;
         try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, experimentId);
-                ps.setString(3, graphJson);
-                ps.executeUpdate();
+            try {
+                queryMapper.upsertExperimentGraph(tenantId, experimentId, graphJson);
                 validateExperimentWorkflowIds(c, compiled.workflowIds());
                 replaceExperimentProcesses(c, experimentId, compiled, false);
                 bumpExperimentVersion(c, experimentId);

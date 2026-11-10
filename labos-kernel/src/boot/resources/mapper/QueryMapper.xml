@@ -429,6 +429,48 @@
          ORDER BY ew.workcell_id
     </select>
 
+    <select id="selectIslandFlow" resultType="java.lang.String">
+        SELECT graph::text FROM island_flow
+         WHERE tenant_id = #{param1} AND island_id = #{param2}
+    </select>
+
+    <insert id="upsertIslandFlow">
+        INSERT INTO island_flow (tenant_id, island_id, graph, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}::jsonb, now())
+        ON CONFLICT (island_id) DO UPDATE
+           SET graph = EXCLUDED.graph, updated_at = now()
+    </insert>
+
+    <select id="selectExperimentGraph" resultType="java.lang.String">
+        SELECT graph::text FROM experiment_graph
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </select>
+
+    <insert id="upsertExperimentGraph">
+        INSERT INTO experiment_graph (tenant_id, experiment_id, graph, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}::jsonb, now())
+        ON CONFLICT (experiment_id) DO UPDATE
+           SET graph = EXCLUDED.graph, updated_at = now()
+    </insert>
+
+    <select id="selectRobotPoints" resultType="java.util.Map">
+        SELECT p.code AS "code", p.name AS "name", p.x AS "x", p.y AS "y", p.z AS "z",
+               p.action AS "action", r.code AS "deviceCode"
+          FROM robot_point p
+          LEFT JOIN resource_node r ON r.id = p.device_resource_id
+         WHERE p.tenant_id = #{param1} AND p.island_id = #{param2}
+         ORDER BY p.robot_resource_id, p.code
+    </select>
+
+    <!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 -->
+    <update id="updateDevicePosition">
+        UPDATE resource_node
+           SET attr = COALESCE(attr, '{}'::jsonb)
+                      || jsonb_build_object('pos_x', #{param3}, 'pos_y', #{param4}),
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
+    </update>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}

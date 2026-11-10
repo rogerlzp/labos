@@ -168,6 +168,24 @@ public interface QueryMapper {
     /** 实验绑定的工位（含名称）。 */
     List<Map<String, Object>> selectExperimentWorkcells(long tenantId, long experimentId);
 
+    /** 岛动线图；不存在返回 null。 */
+    String selectIslandFlow(long tenantId, long islandId);
+
+    /** 保存岛动线（按 island_id 覆盖）。 */
+    int upsertIslandFlow(long tenantId, long islandId, String graphJson);
+
+    /** 实验编排图；不存在返回 null。 */
+    String selectExperimentGraph(long tenantId, long experimentId);
+
+    /** 保存实验编排图（按 experiment_id 覆盖）。 */
+    int upsertExperimentGraph(long tenantId, long experimentId, String graphJson);
+
+    /** 机器人点位（CSV 与列表共用的原始行）。 */
+    List<Map<String, Object>> selectRobotPoints(long tenantId, long islandId);
+
+    /** 写设备在资源树上的坐标（jsonb attr 合并，不动其它键）。 */
+    int updateDevicePosition(long tenantId, long resourceId, double x, double y);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 
