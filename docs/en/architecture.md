@@ -25,13 +25,13 @@
 │                                                          │
 │  src/boot/   container layer (lifecycle, threads, config)  │
 │    web/controller/  12 @RestController (thin HTTP layer)   │
-│    web/service/     RunService · WorkflowWebService        │
+│    web/service/     9 per-domain services (Run/Workflow/…) │
 │    web/             auth interceptor · CORS · MVC · audit  │
 │                                                          │
 │  src/main/   domain layer (no Spring annotations)          │
 │    workflow/ engine/ driver/ recovery/ alert/ expr/ sim/  │
 │    persistence/  MyBatis Mapper · DbConfig · Tx           │
-│    api/        AuthService · QueryService (queries + auth) │
+│    api/        AuthService · RbacRules · ApiServer        │ 
 └────────┬───────────────────────────────┬─────────────────┘
          │ HikariCP → JDBC                │ TCP + JSON
   ┌──────▼─────────┐              ┌───────▼────────────────┐
@@ -87,7 +87,7 @@ labos-kernel/src/
     ├── redis/    Redis client
     ├── persistence/ MyBatis Mapper · DbConfig · Tx
     ├── device/   device type definitions
-    └── api/      AuthService · QueryService · RbacRules · ApiServer
+    └── api/      AuthService · RbacRules · ApiServer
 ```
 
 **Why two layers**: `src/main/` carries no Spring annotations ⇒ the domain logic can be
@@ -101,7 +101,7 @@ unit-tested without a container and can be driven directly by pure-JVM tools suc
 | Class | Responsibility |
 |---|---|
 | `LabosApplication` | Start-up entry point. `@SpringBootApplication` + `@MapperScan` + `@EnableTransactionManagement`; excludes the DataSource auto-configuration (so Spring does not build a second Hikari pool) |
-| `BeanConfiguration` | `QueryService` / `AuthService` / `WorkflowService` / `ExperimentScheduler` / `HeartbeatService` / `ApiServer` are all created by the container |
+| `BeanConfiguration` | `DbConfig` / `AuthService` / `WorkflowService` / `ExperimentScheduler` / `HeartbeatService` / `ApiServer` are created by the container; the 9 per-domain web services are picked up by `@Service` component scanning |
 | `DataSourceConfiguration` | HikariCP pool (max 16 / min idle 2 / 60s leak detection) + `DataSourceTransactionManager` + `TransactionTemplate` |
 | `KernelRunner` | Starts the kernel once the container is ready (crash-orphan settle, command-ledger reconciliation, queued rehydrate) |
 | `LogContext` | MDC scope: `traceId` / `runId` / `commandId` / `workflowId`, try-with-resources, nestable |
@@ -128,7 +128,7 @@ ApiAuthInterceptor        authentication (token → Session into a request attri
   ↓
 @RestController           parse parameters / assemble the response / audit
   ↓
-Service (RunService / WorkflowWebService)   business orchestration
+Service (9 per-domain services)          business orchestration   
   ↓
 Mapper (MyBatis XML)      SQL
   ↓
@@ -136,8 +136,7 @@ Domain layer (workflow / engine / driver …)
 ```
 
 **Controllers are a thin HTTP layer**: no business branches, only parameter parsing, response shape
-and auditing. Orchestration for the execution domain moved into `RunService`, for the workflow
-domain into `WorkflowWebService`.
+and auditing. Orchestration moved into the per-domain web service (see the table below).
 
 ### Controller inventory
 
@@ -155,6 +154,31 @@ domain into `WorkflowWebService`.
 | `OpsErrorController` | error events and manual windows |
 | `MetaController` | status vocabulary, capability catalogue, model library |
 | `FallbackController` | `/health`, static UI, 404 fallback |
+
+### Per-domain map: Controller → Service → Mapper
+
+**This table is the entry point for "where does the code live".** Until 2026-11-10 all queries and
+write paths sat in one large `QueryService`; they are now split per domain into 8 web services +
+18 mappers, and `QueryService` is gone.
+
+| Domain | Controller | Service | Mapper |
+|---|---|---|---|
+| Authentication | `AuthController` | `AuthService` (domain layer, `api/`) | — |
+| Devices | `DeviceController` | `DeviceService` | `DeviceMapper` |
+| Workflow | `WorkflowController` | `WorkflowWebService` | `WorkflowWebMapper` / `GraphMapper` |
+| Execution · action | `RunActionController` | `RunService` | `RunMapper` / `WorkflowWebMapper` |
+| Execution · query | `RunQueryController` | `RunService` | same as above |
+| Experiment · action | `ExperimentActionController` | `ExperimentActionService` | `ExperimentMapper` |
+| Experiment · query | `ExperimentQueryController` | `ExperimentQueryService` | `ExperimentQueryMapper` |
+| Scheduling | `SchedulerController` | `ExperimentScheduler` (domain layer, `workflow/`) | — |
+| Metadata | `MetaController` | `MetaService` | `MetaMapper` |
+| Error-code operations | `OpsErrorController` | `OpsErrorService` | `OpsMapper` |
+| User operations | `OpsUserController` | `OpsUserService` | `OpsUserMapper` |
+| Fallback | `FallbackController` | — | — |
+
+**Mappers used by the domain layer itself** (not through a web service):
+`BatchMapper` / `CommandMapper` / `DeviceStateMapper` / `DriverMapper` /
+`ExecutionMapper` / `HoldMapper` / `PauseMapper` / `QueryMapper` / `WorkflowMapper`.
 
 ### Before and after the migration
 
@@ -262,13 +286,21 @@ project's `jsonb`, PG enums, `ON CONFLICT` and `FOR UPDATE`.
 | Field mapping | `map-underscore-to-camel-case=true` |
 | Statement timeout | 30 seconds |
 
-Eight mapper XML files exist today: `WorkflowMapper` / `RunMapper` / `GraphMapper` /
-`QueryMapper` / `ExperimentMapper` / `MetaMapper` / `PauseMapper` /
+Eighteen mapper XML files exist today (the interfaces live in `com.labos.kernel.persistence`,
+the XML in `src/boot/resources/mapper/`): `BatchMapper` / `CommandMapper` / `DeviceMapper` /
+`DeviceStateMapper` / `DriverMapper` / `ExecutionMapper` / `ExperimentMapper` /
+`ExperimentQueryMapper` / `GraphMapper` / `HoldMapper` / `MetaMapper` / `OpsMapper` /
+`OpsUserMapper` / `PauseMapper` / `QueryMapper` / `RunMapper` / `WorkflowMapper` /
 `WorkflowWebMapper`.
 
-**Not yet consolidated**: roughly 100 SQL statements still sit in the large write-path methods of
-`QueryService`, in `DriverStepExecutor`, in `ExperimentExecutor` and elsewhere; moving them into
-mappers is work in progress.
+**Not yet consolidated**: roughly 140 raw SQL statements (string literals) still sit in 40-odd
+files, concentrated in the domain layer (`RunControl` / `ExperimentWorkcellScope` /
+`CommandLedger` / `ExperimentFlowRunner` / `RealWorkflowRunner` / `PauseCoordinator` /
+`HeartbeatService` / `WorkflowBuilder` / `TransferTransaction` / `ExperimentScheduler` …);
+moving them into mappers is work in progress. (`QueryService` was deleted on 2026-11-10 as part of
+the per-domain split; its SQL now lives in `RunService` / `WorkflowWebService` / `DeviceService` /
+`ExperimentActionService` / `ExperimentQueryService` / `MetaService` / `OpsErrorService` /
+`OpsUserService`.)
 
 ### Transaction boundaries
 
