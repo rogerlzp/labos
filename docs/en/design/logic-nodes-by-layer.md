@@ -29,13 +29,13 @@
 | Sub-workflow | 🟡 a `workflow` node can pick a workflow and save; **`runFlow` ignores it** | ✅ multi-step collapsible subProcess | 🟡 `BpmnExpander` expands it; `callActivity` not done | 🟡 experiment 3 |
 | Manual pause | ⬜ runs synchronously, no pause | ⬜ the designer palette no longer has intermediate events (the parser rejects them); manual pause goes through the paused queue / run-control API | ✅ node-boundary pauseChecker + MANUAL stops the graph | ✅ pause 10 |
 
-Legend: ✅ supported / 🟡 partial / ⬜ not supported. Evidence is in `ExperimentCanvas.tsx:184-191,750-753`, `PaletteProvider.js:161-211`, `WorkflowGraphParser.java:215-220`, `GraphRunner.java:385-394,489-500`, `QueryService.java:4069-4094`, `verify-flow-matrix.py:295-472`.
+Legend: ✅ supported / 🟡 partial / ⬜ not supported. Evidence is in `ExperimentCanvas.tsx:184-191,750-753`, `PaletteProvider.js:161-211`, `WorkflowGraphParser.java:215-220`, `GraphRunner.java:385-394,489-500`, `ExperimentActionService.java:349-384`, `verify-flow-matrix.py:295-472`.
 
 ## 3. Six concrete contradictions (ordered by harm)
 
 | # | Contradiction | Evidence |
 |---|---|---|
-| M1 | The canvas palette offers six logic nodes, but save/compile accepts only three (start/end/workflow); the rest always return 400 | `ExperimentCanvas.tsx:184-191`; `QueryService.java:4091-4094`; `ExperimentGraphCompileSelfTest.java:55-80` |
+| M1 | The canvas palette offers six logic nodes, but save/compile accepts only three (start/end/workflow); the rest always return 400 | `ExperimentCanvas.tsx:184-191`; `ExperimentActionService.java:380-384`; `ExperimentGraphCompileSelfTest.java:55-80` |
 | M2 | What can be drawn cannot be saved, and what can be saved is not executed: `runFlow` only understands device nodes, which are exactly the kind rejected on save; workflow nodes save and compile, but `runFlow` silently ignores them | `ExperimentCanvas.tsx:703-757` |
 | M3 | A parallel gateway can only be hand-written in XML, even though the executor fully supports it | `PaletteProvider.js:161-211`; `e2e-flow-matrix.py:182-185`; `GraphRunner.java:390-394,489-500` |
 | M4 | Two condition-expression syntaxes; the canvas one treats a parse failure as true (silently taking the wrong branch) | `ExperimentCanvas.tsx:229-259`; `ConditionEvaluator`; `WorkflowGraphParser.java:96-121` |
@@ -108,7 +108,7 @@ Three boundaries follow:
 
 ### Batch 5 · Cross-workflow parallelism (optional, needs decision Q2 first)
 
-- To keep canvas parallel/join: first allow those two kinds in `QueryService.compileExperimentGraph` and make the experiment executor really run sub-workflows in parallel; otherwise keep them hidden.
+- To keep canvas parallel/join: first allow those two kinds in `ExperimentActionService.compileExperimentGraph` and make the experiment executor really run sub-workflows in parallel; otherwise keep them hidden.
 - Risk: logical parallelism is not wall-clock parallelism; the island lock serialises devices on the same island.
 
 ### Backlog · subProcess silently skipped (decided 2026-11-05: park it, do it later)
@@ -132,7 +132,7 @@ Three boundaries follow:
 
 ## 7. Where to start
 
-- Key files: `webapp/src/pages/ExperimentCanvas.tsx`, `webapp/src/pages/Designer.tsx`, `webapp/src/bpmn/`, `labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowGraphParser.java`, `GraphRunner.java` in the same package, `api/QueryService.java:4003-4130`, `workflow/PreflightChecker.java:202-269`.
+- Key files: `webapp/src/pages/ExperimentCanvas.tsx`, `webapp/src/pages/Designer.tsx`, `webapp/src/bpmn/`, `labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowGraphParser.java`, `GraphRunner.java` in the same package, `boot/web/service/ExperimentActionService.java:296-430`, `workflow/PreflightChecker.java:202-269`.
 - Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (55); `python3 scripts/e2e-flow-matrix.py` (45); `python3 scripts/e2e-canvas.py` (12).
 - Number discipline: changing cases requires updating the `MIN_*` constants in `scripts/ci-gate.sh`, `docs/测试用例总表.md`, `ROADMAP.md` and review package 04 in both languages; thresholds may only go up, and a real reduction must be explained in the commit message.
 - Do not touch the body of historical snapshots: `docs/评审包-20261103/`, `docs/评审包-20261104/`, `LabOS实现总纲_20261029.md`.

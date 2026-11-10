@@ -455,7 +455,7 @@ The canvas (`/canvas`) does **cross-workflow orchestration** only: the nodes are
 | **End** | Grey | The exit from the workflow | None |
 | **Workflow** | Blue | Runs a workflow | A sub-workflow |
 
-**Why there are only three**: saving goes through `QueryService.compileExperimentGraph`, whose whitelist only accepts `start` / `end` / `workflow`; any other type is rejected with 400. It also requires a linear main chain (exactly one start and one end, every workflow node with one incoming and one outgoing edge, a cycle is 400).
+**Why there are only three**: saving goes through `ExperimentActionService.compileExperimentGraph`, whose whitelist only accepts `start` / `end` / `workflow`; any other type is rejected with 400. It also requires a linear main chain (exactly one start and one end, every workflow node with one incoming and one outgoing edge, a cycle is 400).
 
 **Where the in-workflow nodes went**: the six node kinds — device, variable, fork, parallel, loop, merge — have been removed from the canvas palette: on the canvas they "can be drawn but not saved (400) / can be saved but not executed". Their editing entry point is now the Workflow Designer, see §2 of the design note on layered logic nodes (see the Chinese original `docs/设计-逻辑节点分层与编辑器分工.md`).
 

@@ -290,7 +290,7 @@ if (!targetHasLayer) {
 {"data": {"x": 320.5, "y": 180.2, "z": 45.0}}
 ```
 
-**`QueryService.extractXYZ`** matches `x`/`pos_x`/`X` loosely (the field names differ between vendors).
+**`QJson.extractXYZ`** matches `x`/`pos_x`/`X` loosely (the field names differ between vendors).
 
 **The synchronisation strategy**:
 

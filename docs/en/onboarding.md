@@ -137,10 +137,10 @@ labos-kernel/src/
 │   ├── LogContext              MDC scope (traceId/runId/…)
 │   └── web/                    Spring MVC
 │       ├── controller/         12 @RestController (thin HTTP layer)
-│       ├── service/            RunService · WorkflowWebService
+│       ├── service/            9 per-domain services (Run/Workflow/Device/…)
 │       └── ApiAuthInterceptor / CorsConfig / WebMvcConfig / AuditRecorder
 └── main/java/com/labos/kernel/
-    ├── api/             authentication and queries (AuthService · QueryService · RbacRules)
+    ├── api/             authentication and RBAC (AuthService · RbacRules)
     │                    ApiServer only holds the start-up cleanup runKernel() (614 lines, was ~1500)
     ├── workflow/        workflows: BPMN parsing, compilation, execution, experiment orchestration, scheduling
     │   ├── WorkflowService      core (execution, variable substitution, candidate pool)
