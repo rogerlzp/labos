@@ -220,6 +220,19 @@ public final class PreflightChecker {
             }
         }
 
+        // ---- 静态检查 1.5：绑定的设备 + 岛边界（执行前的配置快照重校验）----
+        //
+        // 为什么必须有：绑定的 id 有**两套空间** —— 资源号（resource_node.id）与
+        // 设备实例号（device_instance.id）。执行器按**资源号**查（loadBoundInstances
+        // 是 resource→instance），于是：
+        //   · 存成**实例号**的绑定 ⇒ 查不到 ⇒ 节点静默改按能力轮转挑别的设备；
+        //   · 两个空间**都查不到**的 ⇒ 绑定的设备已经没了 ⇒ 同样静默换设备。
+        // 两种都不报错，只是"跑的不是你绑的那台" ⇒ 从节点状态上看不出来。
+        // 岛边界同理：流程有权威岛时，绑了岛外设备 ⇒ 执行期会被拒绝（P-05），
+        // 岛内没有该能力的设备 ⇒ 该节点会转人工 —— 这两件都该在执行**之前**说清。
+        issues.addAll(checkBindingsAndIsland(workflowId, tasks, explicitCap,
+                protocolCap, resourceCap));
+
         // ---- 静态检查 2：异或出口规则 ----
         for (GNode n : graph.nodes().values()) {
             if (n.kind() != Kind.SPLIT_XOR) {
@@ -298,6 +311,150 @@ public final class PreflightChecker {
         int reachableTasks = (int) tasks.stream().filter(t -> activated.contains(t.key())).count();
         return new Report(workflowId, name, tasks.size(), reachableTasks,
                 runner.defaultEdgeCount(), issues);
+    }
+
+    /**
+     * 绑定的设备 + 岛边界（执行前的**配置快照重校验**）。
+     *
+     * <p>为什么单独一套：绑定的 id 有**两套空间** —— 资源号（{@code resource_node.id}）
+     * 与设备实例号（{@code device_instance.id}）。执行器按**资源号**查
+     * （{@code loadBoundInstances} 是 resource→instance），所以：
+     * <ul>
+     *   <li>存成**实例号**的绑定 ⇒ 查不到 ⇒ 节点静默改按能力轮转挑别的设备；</li>
+     *   <li>两个空间**都查不到**的 ⇒ 绑定的设备已经没了 ⇒ 同样静默换设备。</li>
+     * </ul>
+     * 两种都不报错，只是"跑的不是你绑的那台" ⇒ 预检把它显式说出来。
+     *
+     * <p>岛边界（P-05）：流程有权威岛时
+     * <ul>
+     *   <li>绑定的设备不在岛内 ⇒ 执行期会被**拒绝**（PF-12）；</li>
+     *   <li>某能力在岛内没有设备 ⇒ 该节点执行时会**转人工**（PF-13）。</li>
+     * </ul>
+     * 两者都是"执行之前就该知道"的事，不该等跑到一半才暴露。
+     */
+    private List<Issue> checkBindingsAndIsland(long workflowId, List<GNode> tasks,
+                                               Map<String, String> explicitCap,
+                                               Map<String, String> protocolCap,
+                                               Map<Long, String> resourceCap)
+            throws SQLException {
+        List<Issue> out = new ArrayList<>();
+        Long islandId = authoritativeIslandId(workflowId);
+        Map<Long, Long> resourceToInstance = new LinkedHashMap<>();
+        Map<Long, Long> instanceToResource = new LinkedHashMap<>();
+        java.util.Set<Long> islandInstances = new java.util.LinkedHashSet<>();
+        java.util.Set<Long> islandResources = new java.util.LinkedHashSet<>();
+        try {
+            for (Map<String, Object> row : deviceMappers().selectResourceInstancePairs(tenantId)) {
+                long rid = ((Number) row.get("resourceId")).longValue();
+                long iid = ((Number) row.get("instanceId")).longValue();
+                resourceToInstance.put(rid, iid);
+                instanceToResource.put(iid, rid);
+            }
+            if (islandId != null) {
+                islandInstances.addAll(
+                        deviceMappers().selectIslandInstanceIds(tenantId, islandId));
+                for (Map.Entry<Long, Long> e : resourceToInstance.entrySet()) {
+                    if (islandInstances.contains(e.getValue())) {
+                        islandResources.add(e.getKey());
+                    }
+                }
+            }
+        } catch (RuntimeException e) {
+            // 读不到就**说读不到**，不能当成"检查通过"（fail-closed：宁可多报一条）
+            out.add(new Issue(Level.WARN, "PF-14", null,
+                    "读设备资源关系失败，本次跳过绑定与岛边界检查：" + e.getMessage()));
+            return out;
+        }
+
+        Map<String, List<Long>> pool = capPool();
+        for (GNode t : tasks) {
+            CapabilitySource cs = RealWorkflowRunner.resolveCapability(
+                    t.name(), t.method(), t.resourceId(), explicitCap.get(t.key()),
+                    protocolCap, resourceCap);
+            String cap = cs.capability();
+            if (RealWorkflowRunner.LOGIC.equals(cap) || "UNKNOWN".equals(cap)) {
+                continue;   // 逻辑节点不占设备；能力未知的已由 PF-01 报过
+            }
+
+            // ---- 岛内有没有具备该能力的设备（PF-13）----
+            if (islandId != null) {
+                boolean hasInIsland = pool.getOrDefault(cap, List.of()).stream()
+                        .anyMatch(islandResources::contains);
+                if (!hasInIsland) {
+                    out.add(new Issue(Level.ERROR, "PF-13", t.key(), String.format(
+                            "节点「%s」需要 %s 能力，但流程所属的岛 %d 内没有具备该能力的设备"
+                                    + " —— 执行时该节点会转人工（不会去借别岛的设备）",
+                            t.name(), cap, islandId)));
+                }
+            }
+
+            // ---- 绑定的设备是否还在、是否在岛内（PF-10/11/12）----
+            Long bound = t.resourceId();
+            if (bound == null) {
+                continue;
+            }
+            Long instance = resourceToInstance.get(bound);
+            if (instance != null) {
+                if (islandId != null && !islandInstances.contains(instance)) {
+                    out.add(new Issue(Level.ERROR, "PF-12", t.key(), String.format(
+                            "节点「%s」绑定的设备（资源 %d / 实例 %d）不在流程所属的岛 %d 内"
+                                    + " —— 执行时会被拒绝（设备归属由服务端决定，执行时不能换设备）",
+                            t.name(), bound, instance, islandId)));
+                }
+                continue;
+            }
+            Long asInstance = instanceToResource.get(bound);
+            if (asInstance != null) {
+                out.add(new Issue(Level.WARN, "PF-11", t.key(), String.format(
+                        "节点「%s」绑定的 id %d 是**设备实例号**（对应资源 %d），"
+                                + "而执行器按**资源号**查 —— 该绑定当前不生效，"
+                                + "执行时实际会按能力挑另一台设备",
+                        t.name(), bound, asInstance)));
+                continue;
+            }
+            out.add(new Issue(Level.ERROR, "PF-10", t.key(), String.format(
+                    "节点「%s」绑定的设备（id %d）在资源树里找不到"
+                            + "（资源号、设备实例号两个空间都没有）—— 该绑定当前不生效，"
+                            + "执行时实际会按能力挑另一台设备",
+                    t.name(), bound)));
+        }
+        return out;
+    }
+
+    /** resource_node.id → device_instance.id（租户内、未软删）。 */
+    private Map<Long, Long> loadResourceInstancePairs() throws SQLException {
+        Map<Long, Long> out = new LinkedHashMap<>();
+        for (Map<String, Object> row : deviceMappers().selectResourceInstancePairs(tenantId)) {
+            out.put(((Number) row.get("resourceId")).longValue(),
+                    ((Number) row.get("instanceId")).longValue());
+        }
+        return out;
+    }
+
+    private static com.labos.kernel.persistence.DeviceStateMapper deviceMappers() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceStateMapper.class);
+    }
+
+    /**
+     * 流程的**权威岛**（{@code workflow.island_id}，P-01 落的列）。
+     *
+     * @return 权威岛 id；没有则 null（1036 个旧流程都这样）
+     */
+    private Long authoritativeIslandId(long workflowId) {
+        try {
+            Map<String, Object> row = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.GraphMapper.class)
+                    .selectWorkflowHeader(tenantId, workflowId);
+            if (row == null) {
+                return null;
+            }
+            Object v = row.get("islandId");
+            return v instanceof Number ? ((Number) v).longValue() : null;
+        } catch (RuntimeException e) {
+            // 读不到岛 ⇒ 视为"没有岛约束"（与执行期一致：读不到就不拦）
+            return null;
+        }
     }
 
     // ---------------------------------------------------------------- 数据

@@ -43,6 +43,9 @@ public final class PreflightDbSelfTest {
         builtinDoesNotBlockDownstream();
         controlDeviceOnlyGraphHasNoPf03();
         gatewayOnlyGraphStillReportsPf07();
+        liveBindingHasNoBindingIssue();
+        bindingStoredAsInstanceIdReportsPf11();
+        danglingBindingReportsPf10();
 
         System.out.println();
         System.out.println("通过 " + pass + ", 失败 " + fail);
@@ -127,6 +130,68 @@ public final class PreflightDbSelfTest {
                     """);
             PreflightChecker.Report r = preflight(xml);
             eq("有 PF-07", 1, codes(r, "PF-07").size());
+        });
+    }
+
+    /**
+     * 绑定到**在册设备**（资源号口径，且设备有实例）：不该报绑定问题。
+     *
+     * <p>绑定的 id 有两套空间（resource_node.id / device_instance.id），
+     * 执行器按**资源号**查 ⇒ 这一条是"绑定真的生效"的样子。
+     */
+    private static void liveBindingHasNoBindingIssue() {
+        check("绑定到在册设备（资源号口径）：无 PF-10/PF-11", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="T" name="Transfer" resource="200167"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="T"/>
+                    <sequenceFlow id="F2" sourceRef="T" targetRef="E"/>
+                    """);
+            PreflightChecker.Report r = preflight(xml);
+            eq("没有 PF-10", 0, codes(r, "PF-10").size());
+            eq("没有 PF-11", 0, codes(r, "PF-11").size());
+            eq("没有 PF-12（探针流程没有权威岛）", 0, codes(r, "PF-12").size());
+        });
+    }
+
+    /**
+     * 绑定存的是**设备实例号**：执行器按资源号查 ⇒ 绑定当前不生效。
+     *
+     * <p>库里 8295 条老绑定就是这个形态（存实例号）⇒ 节点实际按能力轮转挑别的设备，
+     * 现场从节点状态上看不出来 ⇒ 预检必须报出来（WARN，不阻塞：它还在跑）。
+     */
+    private static void bindingStoredAsInstanceIdReportsPf11() {
+        check("绑定存成设备实例号：报 PF-11（WARN）", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="T" name="Transfer" resource="167"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="T"/>
+                    <sequenceFlow id="F2" sourceRef="T" targetRef="E"/>
+                    """);
+            PreflightChecker.Report r = preflight(xml);
+            eq("有 PF-11", 1, codes(r, "PF-11").size());
+            eq("PF-11 不是错误（不阻塞）", 0, codes(r, "PF-10").size());
+        });
+    }
+
+    /**
+     * 绑定在**两个空间都找不到**：绑定的设备已经没了 ⇒ 静默换设备 ⇒ 报 PF-10（ERROR）。
+     */
+    private static void danglingBindingReportsPf10() {
+        check("悬空绑定：报 PF-10（ERROR，阻塞）", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="T" name="Transfer" resource="999999"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="T"/>
+                    <sequenceFlow id="F2" sourceRef="T" targetRef="E"/>
+                    """);
+            PreflightChecker.Report r = preflight(xml);
+            eq("有 PF-10", 1, codes(r, "PF-10").size());
+            eq("没有 PF-11", 0, codes(r, "PF-11").size());
+            eq("PF-10 是错误级（阻塞）", 1, r.errors());
         });
     }
 
