@@ -5723,3 +5723,49 @@ Lessons (cross-project):
    `id` twice in one file; deleting one copy is enough (they are identical).
    ⇒ Self-check after adding or moving a mapper statement: scan the file for a repeated `id`:
    `grep -o 'id="[^"]*"' X.xml | sort | uniq -d`.
+
+**Added later (2026-11-10): a `--` inside an XML comment kept the kernel from starting; and P-04 "the designer locks the island to the server-authoritative one"**
+
+**1. The real reason the kernel would not start: two hyphens in a comment**
+
+Symptom: the kernel failed at start-up (MyBatis threw `Error parsing Mapper XML`)
+⇒ the container never came up, port 18080 never listened ⇒ what the site sees is
+"cannot log in / the service is not running".
+
+Root cause: three mappers used section comments written as `<!-- ---- xxx ---- -->`
+— **`--` is not allowed inside an XML comment** (it may only start or end it) ⇒
+those three files were **not well-formed XML**. Mapper XML does not take part in
+javac ⇒ the build still passed and the unit tests never reached the parsing stage
+(without a database they do not get that far) ⇒ **it only blew up when the kernel
+was actually started**, and the symptom pointed nowhere near the cause.
+
+Fix: the decoration becomes `==== xxx ====`; and `scripts/build-kernel.sh` now
+runs an **XML well-formedness self-check** after compiling (parses every XML under
+`src/`, fails with the file and line).
+
+**2. P-04 frontend: the designer locks the island to the server-authoritative one**
+
+The island used to be just a filter in the user's hands (localStorage, switchable
+at will), while the authoritative boundary is `workflow.island_id` ⇒ a device
+from another island could be bound to this island's workflow. Now the API carries
+the authoritative island ⇒ the designer locks the island selector (cannot be
+cleared, shows "fixed by the server") ⇒ the device pool is filtered strictly by it
+⇒ dropping a foreign device is refused ⇒ the robot arm is taken from **the island
+of the previous node** (moving a plate needs both devices on the same island).
+Workflows without an island (1036 of them in the database) can still pick one
+manually — the fallback path is intact.
+
+Lessons (cross-project):
+① **"It compiled" is not "it runs"** — for every artefact that does **not** take
+   part in the compiler (XML / YAML / config), there must be a *parsing* self-check
+   in the build; otherwise the error is deferred to "the service does not start",
+   and the symptom is far away from the cause (a comment → the container dies →
+   nobody can log in).
+② **"A filter in the user's hands" is not "the system's authority"** — when the
+   backend has an authoritative value and the frontend also lets the user pick one,
+   the backend must win and the frontend must be locked; otherwise the two
+   versions talk past each other while the UI shows nothing wrong.
+③ **When a type field exists, the reverse lookup should be guarded by it** — canvas
+   nodes carry `kind`, so one can tell "this label is the auto-generated one"; on
+   the BPMN side there is no nodeType, so only an exact name match is possible.
+   Same kind of task: guard it if you can, don't guess.
