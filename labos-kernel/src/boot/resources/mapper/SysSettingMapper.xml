@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 运行期可调参数（sys_setting）。调用方 com.labos.kernel.persistence.SysSettingMapper
+     线上表无 (tenant_id, scope, setting_key) 唯一约束，写路径保持两段式（先 UPDATE 后 INSERT）。 -->
+<mapper namespace="com.labos.kernel.persistence.SysSettingMapper">
+
+    <select id="selectSettingValue" resultType="java.lang.String">
+        SELECT value::text FROM sys_setting
+         WHERE tenant_id = #{tenantId} AND scope = 'global' AND setting_key = #{key}
+    </select>
+
+    <update id="updateSetting">
+        UPDATE sys_setting
+           SET value = to_jsonb(#{value}::bigint), updated_at = now()
+         WHERE tenant_id = #{tenantId} AND scope = 'global' AND setting_key = #{key}
+    </update>
+
+    <insert id="insertSetting">
+        INSERT INTO sys_setting (tenant_id, scope, setting_key, value, description, updated_at)
+        VALUES (#{tenantId}, 'global', #{key}, to_jsonb(#{value}::bigint),
+                '运行期可调参数（页面可改）', now())
+    </insert>
+
+</mapper>

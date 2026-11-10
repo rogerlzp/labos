@@ -1,10 +1,9 @@
 package com.labos.kernel.driver;
 
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.Mappers;
+import com.labos.kernel.persistence.SysSettingMapper;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 
 /**
@@ -61,16 +60,16 @@ public final class RuntimeSettings {
 
     /** 启动时从库读一次（没有就用环境变量/默认值）。 */
     public static void loadFromDb(DbConfig db, long tenantId) {
-        try (Connection c = db.open()) {
-            Long iv = readLong(c, tenantId, "heartbeat.interval_ms");
-            Long off = readLong(c, tenantId, "heartbeat.offline_ms");
+        try {
+            Long iv = readLong(tenantId, "heartbeat.interval_ms");
+            Long off = readLong(tenantId, "heartbeat.offline_ms");
             if (iv != null || off != null) {
                 updateHeartbeat(iv == null ? heartbeatIntervalMs : iv,
                         off == null ? offlineAlertMs : off);
                 log.info("[设置] 心跳参数来自库：间隔 " + (heartbeatIntervalMs / 1000)
                         + "s、离线阈值 " + (offlineAlertMs / 1000) + "s");
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             log.error("[WARN] 读取 sys_setting 失败，沿用环境变量: " + e.getMessage());
         }
     }
@@ -79,64 +78,30 @@ public final class RuntimeSettings {
     public static void saveHeartbeat(DbConfig db, long tenantId, long intervalMs, long offlineMs)
             throws SQLException {
         long[] eff = updateHeartbeat(intervalMs, offlineMs);
-        try (Connection c = db.open()) {
-            upsert(c, tenantId, "heartbeat.interval_ms", eff[0]);
-            upsert(c, tenantId, "heartbeat.offline_ms", eff[1]);
-        }
+        upsert(tenantId, "heartbeat.interval_ms", eff[0]);
+        upsert(tenantId, "heartbeat.offline_ms", eff[1]);
     }
 
     /**
-     * 写一条设置：**先 UPDATE，没中就 INSERT**。
-     *
-     * <p>不用 {@code ON CONFLICT} 是因为线上 `sys_setting` 没有
-     * `(tenant_id, scope, setting_key)` 的唯一约束（历史表结构缺），
-     * 直接 ON CONFLICT 会报 "no unique or exclusion constraint matching"，
-     * 而给 sys_setting 补唯一索引要担心已有重复行 —— 这种两段式写法在哪都能跑。
+     * 写一条设置：**先 UPDATE，没中了 INSERT**（SQL 在 SysSettingMapper，
+     * 阶段3第25批收编；两段式原因见接口注释）。
      */
-    private static void upsert(Connection c, long tenantId, String key, long value)
-            throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE sys_setting
-                   SET value = to_jsonb(?::bigint), updated_at = now()
-                 WHERE tenant_id = ? AND scope = 'global' AND setting_key = ?
-                """)) {
-            ps.setLong(1, value);
-            ps.setLong(2, tenantId);
-            ps.setString(3, key);
-            if (ps.executeUpdate() > 0) {
-                return;
-            }
+    private static void upsert(long tenantId, String key, long value) {
+        SysSettingMapper m = Mappers.get(SysSettingMapper.class);
+        if (m.updateSetting(tenantId, key, value) > 0) {
+            return;
         }
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO sys_setting (tenant_id, scope, setting_key, value, description, updated_at)
-                VALUES (?, 'global', ?, to_jsonb(?::bigint), '运行期可调参数（页面可改）', now())
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, key);
-            ps.setLong(3, value);
-            ps.executeUpdate();
-        }
+        m.insertSetting(tenantId, key, value);
     }
 
-    private static Long readLong(Connection c, long tenantId, String key) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT value FROM sys_setting
-                 WHERE tenant_id = ? AND scope = 'global' AND setting_key = ?
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, key);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                String v = rs.getString(1);
-                if (v == null) {
-                    return null;
-                }
-                // jsonb 里存的是数字（可能是 10000 或 "10000"）
-                v = v.replace("\"", "").trim();
-                return Long.parseLong(v);
-            }
+    private static Long readLong(long tenantId, String key) {
+        String v = Mappers.get(SysSettingMapper.class).selectSettingValue(tenantId, key);
+        if (v == null) {
+            return null;
+        }
+        try {
+            // jsonb 里存的是数字（可能是 10000 或 "10000"）
+            return Long.parseLong(v.replace("\"", "").trim());
         } catch (NumberFormatException e) {
             return null;
         }
