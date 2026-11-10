@@ -26,6 +26,29 @@ import urllib.request
 
 BASE = os.environ.get("LABOS_API", "http://127.0.0.1:18080")
 
+
+def sim_method_delay_sec():
+    """当前环境单条设备方法的耗时上限（秒）—— 从模拟器进程参数读。"""
+    try:
+        out = subprocess.run(["pgrep", "-fl", "DeviceSimulator"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    best = 0
+    for line in out.splitlines():
+        m = re.search(r"--rand-delay\s+(\d+):(\d+)", line)
+        if m:
+            best = max(best, int(m.group(2)))
+    return max(0, best // 1000)
+
+
+def device_budget_sec(actions=1, slack=90):
+    """一次 run 的等待预算：按当前模拟器的单条动作耗时推导（与另两个并行脚本同口径）。"""
+    d = sim_method_delay_sec()
+    if d <= 0:
+        return 300          # 读不到模拟器参数 ⇒ 退回真机时序上限
+    return max(90, d * actions + slack)
+
 XML = """<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
   xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
@@ -285,10 +308,15 @@ def main():
 
     run = api(f"/api/workflows/{wf}/run?async=1", "POST", {}, token)
     rid = run.get("runId") or q("SELECT max(id) FROM run")
-    for _ in range(60):
+    # 等待预算按**当前模拟器的单条动作耗时**推导：两条分支共用一台设备 ⇒ 串行 ⇒
+    # 至少 2×45 秒（本机模拟器刻意 30~45 秒延时）。原来写死「60 次 × 1 秒」
+    # ⇒ 60 秒不够就放弃，把"还在跑"判成"没完成"（假失败，2026-11-11 连踩三次）。
+    budget = device_budget_sec(actions=2)
+    deadline = time.time() + budget
+    while time.time() < deadline:
         if q(f"SELECT status FROM run WHERE id={rid}") in ("completed", "failed", "aborted", "paused"):
             break
-        time.sleep(1)
+        time.sleep(2)
 
     status = q(f"SELECT status FROM run WHERE id={rid}")
     nodes = q(f"SELECT node_key||' '||status FROM run_node WHERE run_id={rid} AND level=0 ORDER BY id")
