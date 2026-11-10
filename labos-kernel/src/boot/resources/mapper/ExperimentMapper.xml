@@ -15,6 +15,12 @@
          WHERE tenant_id = #{param1} AND experiment_id = #{param2}
     </select>
 
+    <insert id="insertExperimentVariable">
+        INSERT INTO experiment_variable
+          (tenant_id, experiment_id, name, type, default_value, description)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
+    </insert>
+
     <select id="selectExperimentIslandId" resultType="java.lang.Long">
         SELECT island_id FROM experiment WHERE tenant_id = #{param1} AND id = #{param2}
     </select>

@@ -1055,34 +1055,23 @@ public class QueryService {
     @org.springframework.transaction.annotation.Transactional(
             rollbackFor = Exception.class)
     public int saveExperimentVariables(long experimentId, List<String[]> vars) throws SQLException {
-        String ins = """
-                INSERT INTO experiment_variable
-                  (tenant_id, experiment_id, name, type, default_value, description)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """;
         try (Connection c = db.open()) {
             try {
                 experimentMapper.deleteExperimentVariables(tenantId, experimentId);
                 int n = 0;
-                try (PreparedStatement ps = c.prepareStatement(ins)) {
-                    for (String[] v : vars) {
-                        // v = [name, type, defaultValue, description]
-                        if (v[0] == null || v[0].isBlank()) {
-                            continue;
-                        }
-                        ps.setLong(1, tenantId);
-                        ps.setLong(2, experimentId);
-                        ps.setString(3, v[0].trim());
-                        ps.setString(4, v[1] == null || v[1].isBlank() ? "number" : v[1]);
-                        ps.setString(5, v[2]);
-                        ps.setString(6, v[3]);
-                        ps.addBatch();
-                        n++;
+                for (String[] v : vars) {
+                    // v = [name, type, defaultValue, description]
+                    if (v[0] == null || v[0].isBlank()) {
+                        continue;
                     }
-                    ps.executeBatch();
+                    experimentMapper.insertExperimentVariable(tenantId, experimentId,
+                            v[0].trim(),
+                            v[1] == null || v[1].isBlank() ? "number" : v[1],
+                            v[2], v[3]);
+                    n++;
                 }
                 return n;
-            } catch (SQLException | RuntimeException e) {
+            } catch (RuntimeException e) {
                 throw e;
             }
         }
@@ -1090,34 +1079,18 @@ public class QueryService {
 
     public String experimentProcessesJson(long experimentId) throws SQLException {
         List<String> items = new ArrayList<>();
-        String sql = """
-                SELECT p.id, p.workflow_id, p.seq, p.run_mode, p.run_after,
-                       p.loop_count, p.params_override,
-                       w.name AS workflow_name, w.code AS workflow_code,
-                       (SELECT count(*) FROM workflow_node n
-                         WHERE n.workflow_id = p.workflow_id AND n.node_type = 'task') AS node_count
-                FROM experiment_process p
-                JOIN workflow w ON w.id = p.workflow_id
-                WHERE p.tenant_id = ? AND p.experiment_id = ?
-                ORDER BY p.seq
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "workflowId", rs.getLong("workflow_id"),
-                            "workflowName", rs.getString("workflow_name"),
-                            "workflowCode", rs.getString("workflow_code"),
-                            "seq", items.size() + 1,
-                            "runMode", rs.getString("run_mode"),
-                            "runAfter", rs.getInt("run_after"),
-                            "nodeCount", rs.getInt("node_count")));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperimentProcesses(tenantId, experimentId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "workflowId", row.get("workflowId"),
+                    "workflowName", row.get("workflowName"),
+                    "workflowCode", row.get("workflowCode"),
+                    // seq 用输出序号而不是库里的 seq：原实现如此（列表序号从 1 起）
+                    "seq", items.size() + 1,
+                    "runMode", row.get("runMode"),
+                    "runAfter", mint(row, "runAfter"),
+                    "nodeCount", mint(row, "nodeCount")));
         }
         return Jsons.obj("experimentId", experimentId, "total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));

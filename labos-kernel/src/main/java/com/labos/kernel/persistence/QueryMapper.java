@@ -71,6 +71,9 @@ public interface QueryMapper {
     /** 资源节点名称。 */
     String selectResourceName(long resourceId);
 
+    /** 实验编排的流程列表（含流程名/码与任务节点数）。 */
+    List<Map<String, Object>> selectExperimentProcesses(long tenantId, long experimentId);
+
     /** 恢复策略清单（带错误码，`*` 表示通配）。 */
     List<Map<String, Object>> selectPolicies(long tenantId);
 

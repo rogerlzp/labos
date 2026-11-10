@@ -198,6 +198,20 @@
         SELECT name FROM resource_node WHERE id = #{param1}
     </select>
 
+    <select id="selectExperimentProcesses" resultType="java.util.Map">
+        SELECT p.id AS "id", p.workflow_id AS "workflowId", p.seq AS "seq",
+               p.run_mode AS "runMode", p.run_after AS "runAfter",
+               p.loop_count AS "loopCount",
+               w.name AS "workflowName", w.code AS "workflowCode",
+               (SELECT count(*) FROM workflow_node n
+                 WHERE n.workflow_id = p.workflow_id AND n.node_type = 'task')
+                   AS "nodeCount"
+          FROM experiment_process p
+          JOIN workflow w ON w.id = p.workflow_id
+         WHERE p.tenant_id = #{param1} AND p.experiment_id = #{param2}
+         ORDER BY p.seq
+    </select>
+
     <select id="selectPolicies" resultType="java.util.Map">
         SELECT p.id AS "id", COALESCE(ec.code, '*') AS "code", p.scope AS "scope",
                p.strategy::text AS "strategy", p.max_attempts AS "maxAttempts",

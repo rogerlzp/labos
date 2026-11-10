@@ -11,6 +11,10 @@ public interface ExperimentMapper {
     /** 实验绑定的 workcell（handoff 校验起点/终点是否在绑定内）。 */
     List<Long> selectExperimentWorkcellIds(long tenantId, long experimentId);
 
+    /** 变量逐行插入（调用方先 delete 再 insert，同一事务内）。 */
+    int insertExperimentVariable(long tenantId, long experimentId, String name,
+                                 String type, String defaultValue, String description);
+
     /** 实验所属岛（未显式绑定 workcell 时的回落）。 */
     Long selectExperimentIslandId(long tenantId, long experimentId);
 
