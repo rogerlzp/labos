@@ -61,17 +61,18 @@ MIN_PURE=718    # 2026-11-06：GraphRunnerTest 新增 __sleep / __wait 五条（
                 # 2026-11-09 B-01/B-02：WorkflowExecutionSafetySelfTest 3 条（执行期异常不 fallback / 解析失败可 fallback / 解析成功走图执行）+ DeviceDriverAbortContractSelfTest 6 条（默认不支持物理中止 / 显式声明才认 / 准入组合 4 条）+ TcpAbortContractSelfTest 2 条（abort 不伪造完成 / TCP 不声明物理中止）。
                 #                 实测基线：改前 HEAD 实跑 686（阈值 673 有 13 条历史欠账），加 11 条后 697（686 → 697）
                 # 2026-11-09 B-04：DeviceDriverAbortContractSelfTest 新增 8 条（5 状态只有 PHYSICALLY_STOPPED 算停 / decideAfterAbort 的 stopped·requested·ack·unknown·null 分支 / 默认 abort 回 UNSUPPORTED / detail 截断到 200）→ 697 → 705
-                # 2026-11-09 B-03：新增 WorkflowServiceSingleFlightSelfTest 13 条（同 run 只允许一个 worker / 只有持有者能释放 / 释放后可重入 / 重复启动被拒且消息带占位者 / 线程结束与 body 崩溃都自动释放）→ 705 → 718
 MIN_CHAIN=41
 MIN_PFLOW=4     # 流程内并行：整单完成 / 两分支都在 / 两分支都完成 / 同设备命令不重叠
-MIN_PEXP=3      # 同岛并发：有排队 / 峰值并行=1 / 全部完成
+MIN_PEXP=3      # 同岛并发：同设备互斥（有排队 / 峰值并行=1 / 全部完成）+ 同岛不同设备应并行
 MIN_MATRIX=55   # 完整流程矩阵（verify-flow-matrix.py --force-online）：
                 # serial4/builtin4/waitsleep10/outvar2/xor6/xor3 3/loop3/loopback2/parallel3/pause10/ports4/experiment3/concurrent1
                 # 前置：内核以 LABOS_TRANSFER_PLAN=1 启动（否则 ports 4 条整节 SKIP）
 MIN_E2E=24        # 2026-11-03：权限收口 +Header 角色断言（23 → 24）
 MIN_E2EFM=45      # 2026-11-05：页面流程矩阵（登录1/设计器装配8+并行网关1+palette收敛1/变量节点4/E 逻辑节点Tab+连线条件+流程选项9/F 接缝·设计器画异或分支图→真跑12/运行详情5/页面暂停恢复5）
 MIN_EXPCTL=22     # 实验运行控制：页面暂停/恢复/停止（verify-exp-control.py）
-MIN_E2ESIM=24     # 2026-11-04：仿真机联调（页面建流程+绑真机+建实验+执行+真回包，e2e-sim-flow.py）
+MIN_E2ESIM=23     # 2026-11-04：仿真机联调（页面建流程+绑真机+建实验+执行+真回包，e2e-sim-flow.py）
+                 # 2026-11-09：4.7 不再重复覆盖 4.5/4.12 的画布装配细节，聚焦「真设备绑定 + 真回包」；
+                 #             当前稳定断言为 23 条，阈值随职责收口同步到 23。
 MIN_ALERTS=8      # 2026-11-05：告警页（心跳参数 + 告警表/空态；认领/关闭弹窗是有数据时的增量断言）
 MIN_POLICIES=12   # 2026-11-05：策略页（表 + 编辑弹窗 + 生效校验；需 recovery_policy 有种子数据）
 MIN_PAUSED=16     # 2026-11-08：暂停队列（统计卡 + 非空队列夹具 + 筛选/列头/行内暂停类型；空队列时旧下限 7）
