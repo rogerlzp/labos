@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 有人值守窗口（manual_window）。调用方 com.labos.kernel.persistence.ManualWindowMapper -->
+<mapper namespace="com.labos.kernel.persistence.ManualWindowMapper">
+
+    <!-- 窗口行的统一列清单：时间统一 ::text（与 Java 侧 String 字段一致）。 -->
+    <sql id="windowColumns">
+        id AS "id", run_id AS "runId", window_key AS "windowKey",
+        error_code AS "errorCode", node_key AS "nodeKey", strategy AS "strategy",
+        default_action AS "defaultAction", allowed_actions::text AS "allowedActions",
+        decision_reason AS "decisionReason", status AS "status",
+        opened_at::text AS "openedAt", timeout_at::text AS "timeoutAt",
+        decided_at::text AS "decidedAt", decided_by AS "decidedBy",
+        decided_action AS "decidedAction", note AS "note"
+    </sql>
+
+    <!-- 幂等开窗：NOT EXISTS 预检让同 key 的 pending 只开一扇；
+         并发窗口的 23505 由调用方捕获按「已有窗口」处理。 -->
+    <insert id="insertWindowIgnoreExisting">
+        INSERT INTO manual_window
+          (tenant_id, run_id, window_key, error_code, node_key, strategy,
+           default_action, allowed_actions, decision_reason, status, timeout_at)
+        SELECT #{tenantId}, #{runId}, #{windowKey},
+               #{errorCode, jdbcType=VARCHAR}, #{nodeKey, jdbcType=VARCHAR},
+               #{strategy, jdbcType=VARCHAR},
+               #{defaultAction}, #{allowedActionsJson}::jsonb, #{reason}, 'pending',
+               now() + make_interval(mins =&gt; #{timeoutMinutes})
+        WHERE NOT EXISTS (
+            SELECT 1 FROM manual_window
+             WHERE tenant_id = #{tenantId} AND window_key = #{windowKey}
+               AND status = 'pending'
+        )
+    </insert>
+
+    <select id="selectPendingWindows" resultType="java.util.Map">
+        SELECT <include refid="windowColumns"/>
+          FROM manual_window
+         WHERE tenant_id = #{tenantId} AND status = 'pending'
+         ORDER BY opened_at DESC, id DESC
+         LIMIT #{limit}
+    </select>
+
+    <select id="selectWindowById" resultType="java.util.Map">
+        SELECT <include refid="windowColumns"/>
+          FROM manual_window
+         WHERE tenant_id = #{tenantId} AND id = #{id}
+    </select>
+
+    <select id="selectWindowByKey" resultType="java.util.Map">
+        SELECT <include refid="windowColumns"/>
+          FROM manual_window
+         WHERE tenant_id = #{tenantId} AND window_key = #{windowKey}
+         ORDER BY id DESC
+         LIMIT 1
+    </select>
+
+    <!-- 决策乐观条件：WHERE status='pending' AND decided_at IS NULL，
+         重复点确定、两人同时处置都只有第一次生效。 -->
+    <update id="updateWindowDecided">
+        UPDATE manual_window
+           SET status = 'decided', decided_at = now(),
+               decided_by = #{decidedBy, jdbcType=VARCHAR},
+               decided_action = #{decidedAction},
+               note = #{note, jdbcType=VARCHAR}
+         WHERE tenant_id = #{tenantId} AND id = #{id}
+           AND status = 'pending' AND decided_at IS NULL
+    </update>
+
+    <!-- 超时不代决：只标 timed_out，run 仍为 paused/waiting_human。 -->
+    <update id="markOverdueTimedOut">
+        UPDATE manual_window SET status = 'timed_out'
+         WHERE tenant_id = #{tenantId} AND status = 'pending'
+           AND timeout_at IS NOT NULL AND timeout_at &lt;= now()
+    </update>
+
+    <delete id="deleteWindowsByKeyPrefix">
+        DELETE FROM manual_window
+         WHERE tenant_id = #{tenantId} AND window_key LIKE #{prefix}
+    </delete>
+
+</mapper>

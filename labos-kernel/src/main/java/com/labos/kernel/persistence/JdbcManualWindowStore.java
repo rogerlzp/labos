@@ -1,12 +1,9 @@
 package com.labos.kernel.persistence;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 有人值守窗口（台账 6.5）的落库层：开窗 / 列待决 / 决策回写 / 超时标记。
@@ -22,41 +19,9 @@ import java.util.List;
  * </ul>
  *
  * <p>本类不碰执行线程、不碰岛锁、不写告警 —— 那些分别属于 WorkflowService 与告警层。
+ * SQL 全部在 {@code mapper/ManualWindowMapper.xml}。
  */
 public final class JdbcManualWindowStore {
-
-    private static final String COLUMNS = """
-            id, run_id, window_key, error_code, node_key, strategy,
-            default_action, allowed_actions::text, decision_reason, status,
-            opened_at::text, timeout_at::text, decided_at::text,
-            decided_by, decided_action, note
-            """;
-
-    private static final String OPEN = """
-            INSERT INTO manual_window
-              (tenant_id, run_id, window_key, error_code, node_key, strategy,
-               default_action, allowed_actions, decision_reason, status, timeout_at)
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, 'pending',
-                   now() + make_interval(mins => ?)
-            WHERE NOT EXISTS (
-                SELECT 1 FROM manual_window
-                 WHERE tenant_id = ? AND window_key = ? AND status = 'pending'
-            )
-            """;
-
-    private static final String DECIDE = """
-            UPDATE manual_window
-               SET status = 'decided', decided_at = now(),
-                   decided_by = ?, decided_action = ?, note = ?
-             WHERE tenant_id = ? AND id = ?
-               AND status = 'pending' AND decided_at IS NULL
-            """;
-
-    private static final String EXPIRE = """
-            UPDATE manual_window SET status = 'timed_out'
-             WHERE tenant_id = ? AND status = 'pending'
-               AND timeout_at IS NOT NULL AND timeout_at <= now()
-            """;
 
     public record Window(
             long id,
@@ -85,6 +50,10 @@ public final class JdbcManualWindowStore {
         this.tenantId = tenantId;
     }
 
+    private static ManualWindowMapper mapper() {
+        return Mappers.get(ManualWindowMapper.class);
+    }
+
     /**
      * 开窗。返回 true = 本次真的开了一扇；false = 该 run 已有 pending 窗口。
      * {@code timeoutMinutes <= 0} 用于连库自测造「已超时」样本。
@@ -102,23 +71,15 @@ public final class JdbcManualWindowStore {
             throw new IllegalArgumentException("decisionReason 不能为空");
         }
         String actionsJson = Jsons.arr(allowedActions.stream().map(Jsons::quote).toList());
-        try (Connection c = db.open(); PreparedStatement ps = c.prepareStatement(OPEN)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.setString(3, windowKey);
-            setNullable(ps, 4, errorCode);
-            setNullable(ps, 5, nodeKey);
-            setNullable(ps, 6, strategy);
-            ps.setString(7, defaultAction);
-            ps.setString(8, actionsJson);
-            ps.setString(9, reason);
-            ps.setInt(10, timeoutMinutes);
-            ps.setLong(11, tenantId);
-            ps.setString(12, windowKey);
-            return ps.executeUpdate() > 0;
-        } catch (SQLException e) {
+        try {
+            return mapper().insertWindowIgnoreExisting(tenantId, runId, windowKey,
+                    errorCode, nodeKey, strategy, defaultAction, actionsJson, reason,
+                    timeoutMinutes) > 0;
+        } catch (RuntimeException e) {
             // 23505 = 并发下另一条 tick 先开了同一扇窗，按「已有窗口」处理
-            if ("23505".equals(e.getSQLState())) {
+            // （裸 JDBC 时捕获的是 SQLException；MyBatis 已包装成 RuntimeException，
+            // 沿 cause 链找 SQLState）
+            if (hasSqlState(e, "23505")) {
                 return false;
             }
             throw e;
@@ -127,44 +88,21 @@ public final class JdbcManualWindowStore {
 
     /** 待决窗口（最新在前）。调用方通常先跑 {@link #expireOverdue()}。 */
     public List<Window> pending(int limit) throws SQLException {
-        String sql = "SELECT " + COLUMNS + " FROM manual_window "
-                + "WHERE tenant_id = ? AND status = 'pending' "
-                + "ORDER BY opened_at DESC, id DESC LIMIT ?";
         List<Window> out = new ArrayList<>();
-        try (Connection c = db.open(); PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, limit));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(read(rs));
-                }
-            }
+        for (Map<String, Object> m
+                : mapper().selectPendingWindows(tenantId, Math.max(1, limit))) {
+            out.add(read(m));
         }
         return out;
     }
 
     public Window byId(long id) throws SQLException {
-        String sql = "SELECT " + COLUMNS + " FROM manual_window WHERE tenant_id = ? AND id = ?";
-        try (Connection c = db.open(); PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? read(rs) : null;
-            }
-        }
+        return read(mapper().selectWindowById(tenantId, id));
     }
 
     /** 按幂等键取最近一条（含已处置/已超时），供回查与连库自测使用。 */
     public Window byWindowKey(String windowKey) throws SQLException {
-        String sql = "SELECT " + COLUMNS + " FROM manual_window "
-                + "WHERE tenant_id = ? AND window_key = ? ORDER BY id DESC LIMIT 1";
-        try (Connection c = db.open(); PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, windowKey);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? read(rs) : null;
-            }
-        }
+        return read(mapper().selectWindowByKey(tenantId, windowKey));
     }
 
     /** 决策回写。false = 已被处置 / 已超时 / 不存在（幂等保护）。 */
@@ -173,47 +111,42 @@ public final class JdbcManualWindowStore {
         if (action == null || action.isBlank()) {
             throw new IllegalArgumentException("action 不能为空");
         }
-        try (Connection c = db.open(); PreparedStatement ps = c.prepareStatement(DECIDE)) {
-            setNullable(ps, 1, operator);
-            ps.setString(2, action);
-            setNullable(ps, 3, note);
-            ps.setLong(4, tenantId);
-            ps.setLong(5, id);
-            return ps.executeUpdate() > 0;
-        }
+        return mapper().updateWindowDecided(tenantId, id, operator, action, note) > 0;
     }
 
     /** 把超时窗口标记为 timed_out；不改变任何 run 的状态。 */
     public int expireOverdue() throws SQLException {
-        try (Connection c = db.open(); PreparedStatement ps = c.prepareStatement(EXPIRE)) {
-            ps.setLong(1, tenantId);
-            return ps.executeUpdate();
-        }
+        return mapper().markOverdueTimedOut(tenantId);
     }
 
     /** 仅供连库自测清理自己造的合成窗口。 */
     public int deleteByKeyPrefix(String prefix) throws SQLException {
-        try (Connection c = db.open(); PreparedStatement ps = c.prepareStatement(
-                "DELETE FROM manual_window WHERE tenant_id = ? AND window_key LIKE ?")) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, prefix + "%");
-            return ps.executeUpdate();
-        }
+        return mapper().deleteWindowsByKeyPrefix(tenantId, prefix + "%");
     }
 
-    private static Window read(ResultSet rs) throws SQLException {
+    private static Window read(Map<String, Object> m) {
+        if (m == null) {
+            return null;
+        }
         return new Window(
-                rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
-                rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8),
-                rs.getString(9), rs.getString(10), rs.getString(11), rs.getString(12),
-                rs.getString(13), rs.getString(14), rs.getString(15), rs.getString(16));
+                ((Number) m.get("id")).longValue(),
+                ((Number) m.get("runId")).longValue(),
+                (String) m.get("windowKey"), (String) m.get("errorCode"),
+                (String) m.get("nodeKey"), (String) m.get("strategy"),
+                (String) m.get("defaultAction"), (String) m.get("allowedActions"),
+                (String) m.get("decisionReason"), (String) m.get("status"),
+                (String) m.get("openedAt"), (String) m.get("timeoutAt"),
+                (String) m.get("decidedAt"), (String) m.get("decidedBy"),
+                (String) m.get("decidedAction"), (String) m.get("note"));
     }
 
-    private static void setNullable(PreparedStatement ps, int idx, String v) throws SQLException {
-        if (v == null) {
-            ps.setNull(idx, Types.VARCHAR);
-        } else {
-            ps.setString(idx, v);
+    /** 沿异常 cause 链找 SQLState（MyBatis 把 SQLException 包装在深层）。 */
+    private static boolean hasSqlState(Throwable t, String state) {
+        for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+            if (cur instanceof SQLException sql && state.equals(sql.getSQLState())) {
+                return true;
+            }
         }
+        return false;
     }
 }
