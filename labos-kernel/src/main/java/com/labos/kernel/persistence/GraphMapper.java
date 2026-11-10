@@ -1,5 +1,7 @@
 package com.labos.kernel.persistence;
 
+import org.apache.ibatis.annotations.Param;
+
 /**
  * 流程图相关 SQL，语句见 {@code mapper/GraphMapper.xml}。
  *
@@ -82,6 +84,12 @@ public interface GraphMapper {
      */
     java.util.List<java.util.Map<String, Object>> selectShadowProbeNodes(
             long tenantId, long workflowId);
+
+    /**
+     * 端到端演示：task 最多（带能力）的那个流程的节点行
+     * （id/nodeKey/name/capability/method，LIMIT #{limit}）。无 tenant 过滤，与原语句一致。
+     */
+    java.util.List<java.util.Map<String, Object>> selectDemoTaskNodes(@Param("limit") int limit);
 
     /** 删掉本次图中不存在的节点（keep 为本次节点 key 全集）。 */
     int deleteNodesNotIn(long workflowId, java.util.List<String> keep);

@@ -19,6 +19,12 @@ public interface DriverMapper {
     List<Map<String, Object>> selectDriversWithKind(long tenantId);
 
     /**
+     * 端到端演示：driver_id 非空的设备实例 × 能力（driverId/deviceId/capabilityCode）。
+     * 无 tenant 过滤 —— 与原语句一致（演示脚本用）。
+     */
+    List<Map<String, Object>> selectDriverDeviceCapabilities();
+
+    /**
      * 启用驱动的全量设备视图（WorkflowService 注册驱动用）：每行一个
      * 驱动×设备×能力组合，外加设备型号绑定（device.attr-&gt;&gt;'device_model'）。
      */

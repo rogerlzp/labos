@@ -44,4 +44,14 @@
           JOIN capability c ON c.id = rc.capability_id
     </select>
 
+    <!-- EndToEndDemo（阶段3第39批收编）：无 tenant 过滤，与原语句一致 -->
+    <select id="selectDriverDeviceCapabilities" resultType="java.util.Map">
+        SELECT di.driver_id AS "driverId", di.id AS "deviceId",
+               cap.code AS "capabilityCode"
+        FROM device_instance di
+        JOIN resource_capability rc ON rc.resource_id = di.resource_id
+        JOIN capability cap ON cap.id = rc.capability_id
+        WHERE di.driver_id IS NOT NULL
+    </select>
+
 </mapper>

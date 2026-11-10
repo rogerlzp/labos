@@ -11,9 +11,6 @@ import com.labos.kernel.persistence.JdbcRecoveryPolicyRepository;
 import com.labos.kernel.recovery.RecoveryDecider;
 import com.labos.kernel.recovery.RecoveryPolicyResolver;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -168,26 +165,12 @@ public final class EndToEndDemo {
 
     private static List<TaskNode> loadTasks(DbConfig db, int limit) throws SQLException {
         List<TaskNode> out = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT n.id, n.node_key, n.name, c.code AS capability,
-                            COALESCE(n.params->>'protocol_name', c.code) AS method
-                     FROM workflow_node n
-                     LEFT JOIN capability c ON c.id = n.capability_id
-                     WHERE n.node_type = 'task' AND c.code IS NOT NULL
-                       AND n.workflow_id = (
-                           SELECT workflow_id FROM workflow_node
-                           WHERE node_type = 'task' AND capability_id IS NOT NULL
-                           GROUP BY workflow_id ORDER BY count(*) DESC LIMIT 1)
-                     ORDER BY n.id LIMIT ?
-                     """)) {
-            ps.setInt(1, limit);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(new TaskNode(rs.getLong(1), rs.getString(2), rs.getString(3),
-                            rs.getString(4), rs.getString(5)));
-                }
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class)
+                .selectDemoTaskNodes(limit)) {
+            out.add(new TaskNode(((Number) row.get("id")).longValue(),
+                    (String) row.get("nodeKey"), (String) row.get("name"),
+                    (String) row.get("capability"), (String) row.get("method")));
         }
         return out;
     }
@@ -206,20 +189,14 @@ public final class EndToEndDemo {
         }
 
         Map<Long, Map<Long, Set<String>>> devCaps = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT di.driver_id, di.id, cap.code
-                     FROM device_instance di
-                     JOIN resource_capability rc ON rc.resource_id = di.resource_id
-                     JOIN capability cap ON cap.id = rc.capability_id
-                     WHERE di.driver_id IS NOT NULL
-                     """);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                devCaps.computeIfAbsent(rs.getLong(1), k -> new LinkedHashMap<>())
-                        .computeIfAbsent(rs.getLong(2), k -> new LinkedHashSet<>())
-                        .add(rs.getString(3));
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DriverMapper.class)
+                .selectDriverDeviceCapabilities()) {
+            devCaps.computeIfAbsent(((Number) row.get("driverId")).longValue(),
+                            k -> new LinkedHashMap<>())
+                    .computeIfAbsent(((Number) row.get("deviceId")).longValue(),
+                            k -> new LinkedHashSet<>())
+                    .add((String) row.get("capabilityCode"));
         }
 
         Map<String, VirtualDriver> out = new LinkedHashMap<>();

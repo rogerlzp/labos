@@ -267,5 +267,18 @@
           AND n.node_type = 'task'
         ORDER BY n.id
     </select>
+    <select id="selectDemoTaskNodes" resultType="java.util.Map">
+        SELECT n.id AS "id", n.node_key AS "nodeKey", n.name AS "name",
+               c.code AS "capability",
+               COALESCE(n.params-&gt;&gt;'protocol_name', c.code) AS "method"
+        FROM workflow_node n
+        LEFT JOIN capability c ON c.id = n.capability_id
+        WHERE n.node_type = 'task' AND c.code IS NOT NULL
+          AND n.workflow_id = (
+              SELECT workflow_id FROM workflow_node
+              WHERE node_type = 'task' AND capability_id IS NOT NULL
+              GROUP BY workflow_id ORDER BY count(*) DESC LIMIT 1)
+        ORDER BY n.id LIMIT #{limit}
+    </select>
 
 </mapper>
