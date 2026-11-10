@@ -27,6 +27,17 @@ public interface PauseMapper {
     /** 未派发的暂停事件数（派发器 backlog 展示）。 */
     long countUndispatchedEvents(long tenantId);
 
+    /**
+     * 抢未派发事件 id（{@code FOR UPDATE SKIP LOCKED}）——**必须**在
+     * {@code Tx.inTransaction} 内调用，行锁才有意义。
+     */
+    java.util.List<Long> lockPendingPauseEvents(@Param("tenantId") long tenantId,
+                                                  @Param("limit") int limit);
+
+    /** 批量标记已派发（dispatched_at=now, attempts+1；仍带 IS NULL 兜底，幂等）。 */
+    int markPauseEventsDispatched(@Param("tenantId") long tenantId,
+                                  @Param("ids") java.util.List<Long> ids);
+
     /** 撤回幂等键（暂停请求失败回滚时用）。 */
     int deletePauseRequest(long tenantId, String requestId);
 
