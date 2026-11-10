@@ -1547,18 +1547,7 @@ throw e;
      */
     /** resource_node.id -> device_instance.id（探针/驱动认这个）。 */
     public Long instanceIdOf(long resourceId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id FROM device_instance
-                     WHERE tenant_id = ? AND resource_id = ? AND deleted_at IS NULL
-                     LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        }
+        return queryMapper.selectInstanceId(tenantId, resourceId);
     }
 
     /**
@@ -1731,16 +1720,8 @@ throw e;
     }
 
     private Long resourceIdByCode(Connection c, String code) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT id FROM resource_node
-                WHERE tenant_id = ? AND code = ? AND kind = 'device' LIMIT 1
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, code);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        }
+        // c 只表示调用方已在事务内；Mapper 取同一条 Spring 绑定连接。
+        return queryMapper.selectResourceIdByDeviceCode(tenantId, code);
     }
 
     private static String unq(String s) {
@@ -2462,15 +2443,7 @@ throw e;
      * 硬删会连带丢掉"这个错以前出过多少次"；软删后列表不再显示，历史仍在。
      */
     public boolean deleteErrorCode(long id) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE error_code SET deleted_at = now()
-                      WHERE tenant_id = ? AND id = ? AND deleted_at IS NULL
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, id);
-            return ps.executeUpdate() > 0;
-        }
+        return queryMapper.softDeleteErrorCode(tenantId, id) > 0;
     }
 
     /**
@@ -2482,20 +2455,7 @@ throw e;
      */
     /** 该码在它自己的作用域上是否有启用中的策略（保存后回给前端做提示）。 */
     public boolean scopeCovered(long errorCodeId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT EXISTS (
-                         SELECT 1 FROM error_code e
-                           JOIN recovery_policy rp ON rp.error_code_id = e.id AND rp.enabled
-                          WHERE e.tenant_id = ? AND e.id = ?
-                            AND (rp.scope = e.scope OR rp.scope IS NULL))
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, errorCodeId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() && rs.getBoolean(1);
-            }
-        }
+        return queryMapper.scopeCovered(tenantId, errorCodeId);
     }
 
     /** Spring 声明式事务（checked 异常也回滚）。 */
@@ -2574,16 +2534,7 @@ throw e;
     }
 
     public boolean deletePolicy(long errorCodeId, long policyId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     DELETE FROM recovery_policy
-                      WHERE tenant_id = ? AND error_code_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, errorCodeId);
-            ps.setLong(3, policyId);
-            return ps.executeUpdate() > 0;
-        }
+        return queryMapper.deleteRecoveryPolicy(tenantId, errorCodeId, policyId) > 0;
     }
 
     public String deviceModelsJson() throws SQLException {
@@ -2847,46 +2798,21 @@ throw e;
      * 再写回去。等价于一次普通的保存。
      */
     public int restoreGraph(long workflowId, long historyId) throws SQLException {
-        String xml;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT xml FROM workflow_graph_history
-                     WHERE tenant_id = ? AND workflow_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            ps.setLong(3, historyId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("历史版本不存在: " + historyId);
-                }
-                xml = rs.getString(1);
-            }
-        } catch (SQLException e) {
-            throw e;
-        } finally {
-            // 注意：这里不写回，交由调用方走 saveGraph（复用校验与备份逻辑）
+        String xml = queryMapper.selectGraphHistoryXml(tenantId, workflowId, historyId);
+        if (xml == null) {
+            throw new IllegalArgumentException("历史版本不存在: " + historyId);
         }
+        // 注意：这里不写回，交由调用方走 saveGraph（复用校验与备份逻辑）
         return xml.length();   // 由 ApiServer 取 XML 再调 saveGraph
     }
 
     /** 读某历史版本的 XML 原文。 */
     public String graphHistoryXml(long workflowId, long historyId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT xml FROM workflow_graph_history
-                     WHERE tenant_id = ? AND workflow_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            ps.setLong(3, historyId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("历史版本不存在: " + historyId);
-                }
-                return rs.getString(1);
-            }
+        String xml = queryMapper.selectGraphHistoryXml(tenantId, workflowId, historyId);
+        if (xml == null) {
+            throw new IllegalArgumentException("历史版本不存在: " + historyId);
         }
+        return xml;
     }
 
     /** 某个设备方法的参数定义（设计器填参用）。 */

@@ -95,6 +95,24 @@ public interface QueryMapper {
     /** 正在跑的 run 汇总（process-status 的库侧兜底）。 */
     List<Map<String, Object>> selectRunningProcessStatus(long tenantId);
 
+    /** resource_node.id -> device_instance.id（未软删，取一条）。 */
+    Long selectInstanceId(long tenantId, long resourceId);
+
+    /** 按设备编码找资源节点 id（kind='device'）。 */
+    Long selectResourceIdByDeviceCode(long tenantId, String code);
+
+    /** 某个历史版本的 BPMN XML；不存在返回 null。 */
+    String selectGraphHistoryXml(long tenantId, long workflowId, long historyId);
+
+    /** 错误码软删。 */
+    int softDeleteErrorCode(long tenantId, long id);
+
+    /** 删除恢复策略。 */
+    int deleteRecoveryPolicy(long tenantId, long errorCodeId, long policyId);
+
+    /** 错误码是否已被同级（或 NULL 通配）的启用策略覆盖。 */
+    boolean scopeCovered(long tenantId, long errorCodeId);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

@@ -198,6 +198,43 @@
         SELECT name FROM resource_node WHERE id = #{param1}
     </select>
 
+    <select id="selectInstanceId" resultType="java.lang.Long">
+        SELECT id FROM device_instance
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+           AND deleted_at IS NULL
+         LIMIT 1
+    </select>
+
+    <select id="selectResourceIdByDeviceCode" resultType="java.lang.Long">
+        SELECT id FROM resource_node
+         WHERE tenant_id = #{param1} AND code = #{param2}
+           AND kind = 'device'
+         LIMIT 1
+    </select>
+
+    <select id="selectGraphHistoryXml" resultType="java.lang.String">
+        SELECT xml FROM workflow_graph_history
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND id = #{param3}
+    </select>
+
+    <update id="softDeleteErrorCode">
+        UPDATE error_code SET deleted_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND deleted_at IS NULL
+    </update>
+
+    <delete id="deleteRecoveryPolicy">
+        DELETE FROM recovery_policy
+         WHERE tenant_id = #{param1} AND error_code_id = #{param2} AND id = #{param3}
+    </delete>
+
+    <select id="scopeCovered" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM error_code e
+              JOIN recovery_policy rp ON rp.error_code_id = e.id AND rp.enabled
+             WHERE e.tenant_id = #{param1} AND e.id = #{param2}
+               AND (rp.scope = e.scope OR rp.scope IS NULL))
+    </select>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
