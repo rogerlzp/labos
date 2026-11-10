@@ -117,4 +117,63 @@
                updated_at = now()
     </insert>
 
+    <!-- ---- 执行器的图读取（RealWorkflowRunner，与 GM.java 既有区合并）---- -->
+
+    <select id="selectWorkflowNodes" resultType="java.util.Map">
+        SELECT n.id AS "id", n.node_key AS "nodeKey", n.name AS "name",
+               n.node_type AS "nodeType", n.estimate_sec AS "estimateSec",
+               c.code AS "capability",
+               n.params->>'protocol_name' AS "protocolName",
+               (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId"
+          FROM workflow_node n
+          LEFT JOIN capability c ON c.id = n.capability_id
+         WHERE n.workflow_id = #{param1}
+         ORDER BY n.id
+    </select>
+
+    <select id="selectAllWorkflowNodes" resultType="java.util.Map">
+        SELECT n.workflow_id AS "workflowId", n.id AS "id",
+               n.node_key AS "nodeKey", n.name AS "name",
+               n.node_type AS "nodeType", n.estimate_sec AS "estimateSec",
+               cap.code AS "capability",
+               n.params->>'protocol_name' AS "protocolName",
+               (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId"
+          FROM workflow_node n
+          LEFT JOIN capability cap ON cap.id = n.capability_id
+    </select>
+
+    <!-- array_agg 列在 Map 里保持 java.sql.Array，由调用方拆成 List<Long> -->
+    <select id="selectCapabilityPools" resultType="java.util.Map">
+        SELECT c.code AS "code",
+               array_agg(rc.resource_id ORDER BY rc.resource_id) AS "ids"
+          FROM resource_capability rc
+          JOIN capability c ON c.id = rc.capability_id
+         GROUP BY c.code
+    </select>
+
+    <!-- DISTINCT + ORDER BY 让同名方法跨能力的解析结果可复现（堆序曾因批量 UPDATE 翻过案） -->
+    <select id="selectProtocolCapabilities" resultType="java.util.Map">
+        SELECT DISTINCT dm.method AS "method", c.code AS "capabilityCode"
+          FROM device_method dm JOIN capability c ON c.id = dm.capability_id
+         ORDER BY dm.method, c.code
+    </select>
+
+    <select id="selectResourceCapabilities" resultType="java.util.Map">
+        SELECT rc.resource_id AS "id", c.code AS "capabilityCode"
+          FROM resource_capability rc JOIN capability c ON c.id = rc.capability_id
+        UNION
+        SELECT di.id AS "id", c.code AS "capabilityCode"
+          FROM device_instance di
+          JOIN resource_capability rc ON rc.resource_id = di.resource_id
+          JOIN capability c ON c.id = rc.capability_id
+         WHERE di.deleted_at IS NULL
+    </select>
+
+    <select id="selectCapabilityAnnotations" resultType="java.util.Map">
+        SELECT n.workflow_id AS "workflowId", n.node_key AS "nodeKey", c.code AS "capabilityCode"
+          FROM workflow_node n
+          JOIN capability c ON c.id = n.capability_id
+         WHERE n.tenant_id = #{param1} AND n.node_type = 'task'
+    </select>
+
 </mapper>

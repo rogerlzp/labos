@@ -85,4 +85,30 @@ public interface GraphMapper {
 
     /** 读当前图 XML。 */
     String selectGraphXml(long tenantId, long workflowId);
+
+    /** 单个流程的节点定义（含能力码 / protocol_name / 绑定实例，按 id 升序）。 */
+    java.util.List<java.util.Map<String, Object>> selectWorkflowNodes(long workflowId);
+
+    /**
+     * 全库节点定义（批量验收避免按流程逐条查）。
+     * 列与 {@link #selectWorkflowNodes} 相同，多 workflowId。
+     */
+    java.util.List<java.util.Map<String, Object>> selectAllWorkflowNodes();
+
+    /**
+     * 能力池：capability.code -&gt; resource_id 数组（array_agg，Map 里为 java.sql.Array）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectCapabilityPools();
+
+    /**
+     * protocol_name -&gt; capability（DISTINCT + ORDER BY 保证可复现；
+     * 同名方法跨能力冲突由调用方 putIfAbsent 取排序第一 + bound 优先级裁决）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectProtocolCapabilities();
+
+    /** 资源/实例 id -&gt; 能力码（resource_node 与 device_instance 两个 id 空间 UNION）。 */
+    java.util.List<java.util.Map<String, Object>> selectResourceCapabilities();
+
+    /** 库里的显式能力标注：task 节点的 (workflowId, nodeKey, capabilityCode)。 */
+    java.util.List<java.util.Map<String, Object>> selectCapabilityAnnotations(long tenantId);
 }

@@ -15,9 +15,6 @@ import com.labos.kernel.recovery.RecoveryDecider;
 import com.labos.kernel.recovery.RecoveryPolicyResolver;
 import com.labos.kernel.recovery.RecoveryScope;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.util.ArrayDeque;
@@ -248,28 +245,15 @@ public final class RealWorkflowRunner {
 
     public static List<NodeDef> loadNodes(DbConfig db, long workflowId) throws SQLException {
         List<NodeDef> out = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT n.id, n.node_key, n.name, n.node_type, n.estimate_sec,
-                            c.code AS capability,
-                            n.params->>'protocol_name' AS protocol_name,
-                            (n.params->>'equipment_instance_id')::bigint AS equipment_instance_id
-                     FROM workflow_node n
-                     LEFT JOIN capability c ON c.id = n.capability_id
-                     WHERE n.workflow_id = ?
-                     ORDER BY n.id
-                     """)) {
-            ps.setLong(1, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Object ei = rs.getObject("equipment_instance_id");
-                    out.add(new NodeDef(rs.getLong("id"), rs.getString("node_key"),
-                            rs.getString("name"), rs.getString("node_type"),
-                            rs.getString("capability"), rs.getString("protocol_name"),
-                            rs.getInt("estimate_sec"),
-                            ei == null ? null : ((Number) ei).longValue()));
-                }
-            }
+        for (java.util.Map<String, Object> m : gm().selectWorkflowNodes(workflowId)) {
+            Number ei = (Number) m.get("equipmentInstanceId");
+            Number est = (Number) m.get("estimateSec");
+            out.add(new NodeDef(((Number) m.get("id")).longValue(),
+                    (String) m.get("nodeKey"), (String) m.get("name"),
+                    (String) m.get("nodeType"), (String) m.get("capability"),
+                    (String) m.get("protocolName"),
+                    est == null ? 0 : est.intValue(),
+                    ei == null ? null : ei.longValue()));
         }
         return out;
     }
@@ -284,24 +268,16 @@ public final class RealWorkflowRunner {
 
     public static Map<String, List<Long>> loadCapabilityPool(DbConfig db) throws SQLException {
         Map<String, List<Long>> out = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT c.code, array_agg(rc.resource_id ORDER BY rc.resource_id) AS ids
-                     FROM resource_capability rc
-                     JOIN capability c ON c.id = rc.capability_id
-                     GROUP BY c.code
-                     """);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                java.sql.Array arr = rs.getArray("ids");
-                List<Long> ids = new ArrayList<>();
-                if (arr != null) {
-                    for (Object o : (Object[]) arr.getArray()) {
-                        ids.add(((Number) o).longValue());
-                    }
+        for (java.util.Map<String, Object> m : gm().selectCapabilityPools()) {
+            // array_agg 列在 Map 里保持 java.sql.Array，拆成 List<Long>
+            java.sql.Array arr = (java.sql.Array) m.get("ids");
+            List<Long> ids = new ArrayList<>();
+            if (arr != null) {
+                for (Object o : (Object[]) arr.getArray()) {
+                    ids.add(((Number) o).longValue());
                 }
-                out.put(rs.getString("code"), ids);
             }
+            out.put((String) m.get("code"), ids);
         }
         return out;
     }
@@ -326,17 +302,9 @@ public final class RealWorkflowRunner {
      */
     public static Map<String, String> loadProtocolCapability(DbConfig db) throws SQLException {
         Map<String, String> out = new HashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT DISTINCT dm.method, c.code
-                     FROM device_method dm JOIN capability c ON c.id = dm.capability_id
-                     ORDER BY dm.method, c.code
-                     """)) {
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.putIfAbsent(rs.getString(1), rs.getString(2));
-                }
-            }
+        for (java.util.Map<String, Object> m : gm().selectProtocolCapabilities()) {
+            // DISTINCT + ORDER BY 已保证可复现，putIfAbsent 取排序第一（沿用原语义）
+            out.putIfAbsent((String) m.get("method"), (String) m.get("capabilityCode"));
         }
         return out;
     }
@@ -356,22 +324,9 @@ public final class RealWorkflowRunner {
      */
     public static Map<Long, String> loadResourceCapability(DbConfig db) throws SQLException {
         Map<Long, String> out = new HashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT rc.resource_id, c.code
-                     FROM resource_capability rc JOIN capability c ON c.id = rc.capability_id
-                     UNION
-                     SELECT di.id, c.code
-                     FROM device_instance di
-                     JOIN resource_capability rc ON rc.resource_id = di.resource_id
-                     JOIN capability c ON c.id = rc.capability_id
-                     WHERE di.deleted_at IS NULL
-                     """)) {
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.putIfAbsent(rs.getLong(1), rs.getString(2));
-                }
-            }
+        for (java.util.Map<String, Object> m : gm().selectResourceCapabilities()) {
+            out.putIfAbsent(((Number) m.get("id")).longValue(),
+                    (String) m.get("capabilityCode"));
         }
         return out;
     }
@@ -609,22 +564,16 @@ public final class RealWorkflowRunner {
     /** 一次性装载全部节点（避免按流程逐条查询）。 */
     private static Map<Long, List<NodeDef>> loadAllNodes(DbConfig db) throws SQLException {
         Map<Long, List<NodeDef>> out = new HashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT n.workflow_id, n.id, n.node_key, n.name, n.node_type, n.estimate_sec,
-                            cap.code AS capability, n.params->>'protocol_name' AS protocol_name,
-                            (n.params->>'equipment_instance_id')::bigint AS equipment_instance_id
-                     FROM workflow_node n
-                     LEFT JOIN capability cap ON cap.id = n.capability_id
-                     """);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                Object ei = rs.getObject(9);
-                out.computeIfAbsent(rs.getLong(1), k -> new ArrayList<>())
-                        .add(new NodeDef(rs.getLong(2), rs.getString(3), rs.getString(4),
-                                rs.getString(5), rs.getString(7), rs.getString(8), rs.getInt(6),
-                                ei == null ? null : ((Number) ei).longValue()));
-            }
+        for (java.util.Map<String, Object> m : gm().selectAllWorkflowNodes()) {
+            Number ei = (Number) m.get("equipmentInstanceId");
+            Number est = (Number) m.get("estimateSec");
+            out.computeIfAbsent(((Number) m.get("workflowId")).longValue(), k -> new ArrayList<>())
+                    .add(new NodeDef(((Number) m.get("id")).longValue(),
+                            (String) m.get("nodeKey"), (String) m.get("name"),
+                            (String) m.get("nodeType"), (String) m.get("capability"),
+                            (String) m.get("protocolName"),
+                            est == null ? 0 : est.intValue(),
+                            ei == null ? null : ei.longValue()));
         }
         return out;
     }
@@ -803,20 +752,9 @@ public final class RealWorkflowRunner {
     /** 库里的显式能力标注：workflow_id -> (node_key -> capability_code)。 */
     private static Map<Long, Map<String, String>> loadCapabilityByKey(DbConfig db) throws SQLException {
         Map<Long, Map<String, String>> out = new HashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT n.workflow_id, n.node_key, c.code
-                     FROM workflow_node n
-                     JOIN capability c ON c.id = n.capability_id
-                     WHERE n.tenant_id = ? AND n.node_type = 'task'
-                     """)) {
-            ps.setLong(1, TENANT);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.computeIfAbsent(rs.getLong(1), k -> new HashMap<>())
-                            .put(rs.getString(2), rs.getString(3));
-                }
-            }
+        for (java.util.Map<String, Object> m : gm().selectCapabilityAnnotations(TENANT)) {
+            out.computeIfAbsent(((Number) m.get("workflowId")).longValue(), k -> new HashMap<>())
+                    .put((String) m.get("nodeKey"), (String) m.get("capabilityCode"));
         }
         return out;
     }
