@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 设备写路径。调用方 com.labos.kernel.persistence.DeviceMapper -->
+<mapper namespace="com.labos.kernel.persistence.DeviceMapper">
+
+    <!-- LEFT JOIN 岛：岛不存在时 path 为 null，调用方据此抛「岛屿不存在」。 -->
+    <select id="selectCloneSource" resultType="java.util.Map">
+        SELECT r.code AS "code", r.name AS "name", p.path AS "islandPath"
+          FROM resource_node r
+          LEFT JOIN resource_node p ON p.id = #{param3}
+         WHERE r.tenant_id = #{param1} AND r.id = #{param2} AND r.kind = 'device'
+    </select>
+
+    <select id="selectModelForDeploy" resultType="java.util.Map">
+        SELECT d.name AS "name", d.code AS "modelCode",
+               c.code AS "capability", p.path AS "islandPath"
+          FROM device d
+          LEFT JOIN capability c ON c.id = d.capability_id
+          LEFT JOIN resource_node p ON p.id = #{param3}
+         WHERE d.tenant_id = #{param1} AND d.id = #{param2}
+    </select>
+
+    <!-- PG 的 INSERT..RETURNING 返回结果集，MyBatis DTD 不允许 <insert> 带
+         resultType，所以用 <select> 承载。 -->
+    <select id="insertDeviceNode" resultType="java.lang.Long">
+        INSERT INTO resource_node
+          (tenant_id, parent_id, code, name, kind, path, sort_order)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'device', #{param5}, 100)
+        RETURNING id
+    </select>
+
+    <insert id="cloneDeviceInstance">
+        INSERT INTO device_instance
+          (tenant_id, code, name, device_id, resource_id, ip, driver_id)
+        SELECT #{param1}, #{param2}, #{param3}, device_id, #{param4}, NULL, driver_id
+          FROM device_instance
+         WHERE tenant_id = #{param1} AND resource_id = #{param5}
+           AND deleted_at IS NULL
+    </insert>
+
+    <insert id="insertModelDeviceInstance">
+        INSERT INTO device_instance
+          (tenant_id, code, name, device_id, resource_id, ip)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, NULL)
+    </insert>
+
+    <!-- **能力必须一起写**：驱动注册表按 resource_capability 分能力，
+         只建实例不建能力会让驱动整条跳过（现象：设备在界面上有点不动）。 -->
+    <insert id="insertResourceCapabilityFromModel">
+        INSERT INTO resource_capability (resource_id, capability_id)
+        SELECT #{param1}, capability_id FROM device
+         WHERE id = #{param2} AND capability_id IS NOT NULL
+        ON CONFLICT (resource_id, capability_id) DO NOTHING
+    </insert>
+
+    <select id="insertDeviceModel" resultType="java.lang.Long">
+        INSERT INTO device
+          (tenant_id, code, name, device_type, capability_id)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5})
+        RETURNING id
+    </select>
+
+    <insert id="insertDeviceInstance">
+        INSERT INTO device_instance
+          (tenant_id, code, name, device_id, resource_id, ip, driver_id)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
+                #{param6}, #{param7})
+    </insert>
+
+    <update id="updateResourceNodeName">
+        UPDATE resource_node SET name = #{param3}
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
+    </update>
+
+    <update id="updateModelCapability">
+        UPDATE device SET capability_id = #{param3}
+         WHERE tenant_id = #{param1}
+           AND id = (SELECT device_id FROM device_instance
+                      WHERE tenant_id = #{param1} AND resource_id = #{param2})
+    </update>
+
+    <update id="updateDeviceInstanceEndpoint">
+        UPDATE device_instance
+           SET ip = COALESCE(#{param3}, ip),
+               driver_id = COALESCE(#{param4}, driver_id),
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+    </update>
+
+</mapper>

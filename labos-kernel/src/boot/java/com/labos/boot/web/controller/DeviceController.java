@@ -4,6 +4,7 @@ import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
+import com.labos.boot.web.service.DeviceService;
 import com.labos.kernel.api.QueryService;
 import com.labos.kernel.driver.HeartbeatService;
 import com.labos.kernel.driver.ShadowProbe;
@@ -58,14 +59,17 @@ public class DeviceController {
     private static final long TENANT = 1L;
 
     private final QueryService query;
+    private final DeviceService deviceService;
     private final WorkflowService workflows;
     private final DbConfig db;
     private final HeartbeatService heartbeat;
     private final AuditRecorder audit;
 
-    public DeviceController(QueryService query, WorkflowService workflows,
-                            DbConfig db, HeartbeatService heartbeat, AuditRecorder audit) {
+    public DeviceController(QueryService query, DeviceService deviceService,
+                            WorkflowService workflows, DbConfig db,
+                            HeartbeatService heartbeat, AuditRecorder audit) {
         this.query = query;
+        this.deviceService = deviceService;
         this.workflows = workflows;
         this.db = db;
         this.heartbeat = heartbeat;
@@ -90,7 +94,7 @@ public class DeviceController {
         if (toIsl <= 0) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("需要 islandId"));
         }
-        long newRid = query.deployModel(id, toIsl);
+        long newRid = deviceService.deployModel(id, toIsl);
         audit.record(session(req), "device.deploy", "device", newRid, "model=" + id,
                 Jsons.obj("islandId", toIsl), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("resourceId", newRid, "modelId", id));
@@ -161,7 +165,7 @@ public class DeviceController {
         if (islandId == null) {
             throw new IllegalArgumentException("必须指定所属岛屿");
         }
-        long rid = query.createDevice(
+        long rid = deviceService.createDevice(
                 islandId.longValue(),
                 jsonField(body, "code"),
                 jsonField(body, "name"),
@@ -184,7 +188,7 @@ public class DeviceController {
     public String updateDevice(@PathVariable long id,
                                @RequestBody(required = false) String body,
                                HttpServletRequest req) throws SQLException {
-        int n = query.updateDevice(id,
+        int n = deviceService.updateDevice(id,
                 jsonField(body, "name"),
                 jsonField(body, "ip"),
                 jsonInt(body, "driverId") == null ? null
@@ -221,7 +225,7 @@ public class DeviceController {
         if (toIsland <= 0) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("需要 islandId"));
         }
-        long newRid = query.cloneDevice(id, toIsland);
+        long newRid = deviceService.cloneDevice(id, toIsland);
         audit.record(session(req), "device.clone", "device", newRid, "from=" + id,
                 Jsons.obj("islandId", toIsland), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("resourceId", newRid, "from", id));
