@@ -138,22 +138,37 @@ def main():
           JOIN device_instance di ON di.resource_id = r.id AND di.deleted_at IS NULL
           LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
          WHERE r.kind = 'device' AND r.tenant_id = 1 AND r.deleted_at IS NULL
-         ORDER BY (SELECT count(*) FROM run_command c
+         ORDER BY
+              -- ① 先按「本地回环端点」排。
+              --
+              -- 为什么放第一位：探针判据是「这台设备**真能**跑命令」，而
+              -- CI/本地环境里能跑命令的是本机模拟器（tcp://127.0.0.1:195xx），
+              -- 其余台架指向 192.168.10.196:8501，本机根本连不上 ⇒ 探针必失败。
+              -- 原来把「最近成功过命令」排在这个键**前面**：只要远端设备留过
+              -- 历史成功记录，它们就会把本地设备挤出 LIMIT ⇒ 一台都探不通 ⇒
+              -- 脚本误报 "SKIP: 库里没有真能跑命令的设备"，看着像环境没起模拟器，
+              -- 其实是候选没选对。排序键改成「先本地后热度」后，每台候选都值得探。
+              COALESCE(dr.endpoint LIKE 'tcp://127.0.0.1%', false) DESC,
+              -- ② 再按「最近 2 小时成功过命令」排（同一档内的先后顺序）
+              (SELECT count(*) FROM run_command c
                      JOIN run_node n ON n.id = c.run_node_id
                     WHERE n.resource_id = r.id AND c.status = 'completed'
                       AND c.finished_at > now() - interval '2 hours') DESC,
-                  -- endpoint 为 NULL 时 LIKE 出 NULL，DESC 会把它们排最前白占名额
-                  COALESCE(dr.endpoint LIKE 'tcp://127.0.0.1%', false) DESC,
-                  r.id
-         LIMIT 12""").split()]
+              r.id
+         LIMIT 24""").split()]
+    probed = 0
     for rid in candidates:
+        probed += 1
         ms = [m for m in METHOD_CANDIDATES if probe(rid, m)]
         if ms:
             isl = int(q(f"SELECT parent_id FROM resource_node WHERE id={rid}") or 0)
             working.append((rid, ms[0], isl))
     if not working:
-        print("SKIP: 库里没有真能跑命令的设备（CI 没起模拟器？），无法验证同岛并发")
+        print(f"SKIP: 库里没有真能跑命令的设备（候选 {probed} 台全探不通，"
+              f"CI 没起模拟器？），无法验证同岛并发")
         return 0
+    print(f"候选探针：{probed} 台探完，{len(working)} 台真能跑命令"
+          f"（{', '.join(str(r) for r, _, _ in working)}）")
 
     dev, method = working[0][0], working[0][1]
     island = args.island or working[0][2]
