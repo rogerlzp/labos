@@ -67,10 +67,10 @@ Data: 116 tables; workflows 1009 / nodes 14033 / experiments 678 / runs 10710 / 
 | Can do | Cannot do |
 |---|---|
 | Drive devices from a BPMN graph; parallel / branch / loop / variables; expressions include arithmetic `+ - * / %` with precedence | Expressions do not support string functions, function definitions, loops, object arrays or regular expressions |
-| Each loop iteration is recorded separately (`loop_index`); run detail and the graph expand by iteration | Multi-instance deployment (locks live in-process) |
-| On error, retry / switch device / hand over to an operator per policy; error codes can be added, edited and deleted (duplicate → 400) | No coverage baseline yet; the device chain is not in CI |
+| Each loop iteration is recorded separately (`loop_index`); run detail and the graph expand by iteration | Multi-instance deployment: resource-level admission is done **inside one process** (measured: peak 1 per device, peak 2 for two devices on the same island), but **cross-instance arbitration is still missing** (N-03) |
+| On error, retry / switch device / hand over to an operator per policy; error codes can be added, edited and deleted (duplicate → 400) | No coverage baseline yet; the device chain **is in the local gate** (section 3, `verify-device-chain.sh`) but **not in GitHub Actions** (CI runs pure logic + tsc only) |
 | Resume after pause, resume after crash; heartbeat / offline thresholds editable in the UI and effective immediately | **Never connected to a real device** (that is M10, and it depends on vendor manuals) |
-| Full set of pages (authoring / execution / monitoring / operations) + 24 e2e main-chain assertions | Reporting / BI, multi-tenancy (M11, pending the shape and deployment model) |
+| Full set of pages (authoring / execution / monitoring / operations) + 15 `e2e-*.py` and 5 `verify-*.py` scripts in the gate | Reporting / BI, multi-tenancy (M11, pending the shape and deployment model) |
 
 ---
 
