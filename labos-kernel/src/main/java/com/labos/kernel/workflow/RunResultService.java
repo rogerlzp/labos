@@ -2,9 +2,6 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.LinkedHashMap;
@@ -48,26 +45,9 @@ public final class RunResultService {
      */
     public void save(long runId, Long nodeId, String key, Map<String, Object> payload,
                      String source, Timestamp validUntil) throws SQLException {
-        String sql = """
-                INSERT INTO run_result
-                  (tenant_id, run_id, node_id, result_key, payload, source, valid_until)
-                VALUES (?, ?, ?, ?, ?::jsonb, ?, ?)
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            if (nodeId == null) {
-                ps.setNull(3, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(3, nodeId);
-            }
-            ps.setString(4, key);
-            ps.setString(5, toJson(payload));
-            ps.setString(6, source == null ? "device" : source);
-            ps.setTimestamp(7, validUntil);
-            ps.executeUpdate();
-        }
+        // SQL 收编进 RunResultMapper（阶段3第24批）；db 字段保留维持构造签名。
+        mapper().insertResult(tenantId, runId, nodeId, key, toJson(payload),
+                source == null ? "device" : source, validUntil);
     }
 
     /**
@@ -86,55 +66,36 @@ public final class RunResultService {
      */
     public Map<String, Object> loadAsVars(long runId) throws SQLException {
         Map<String, Object> out = new LinkedHashMap<>();
-        String sql = """
-                SELECT result_key, payload, valid_until
-                FROM run_result
-                WHERE tenant_id = ? AND run_id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                Timestamp until = null;
-                while (rs.next()) {
-                    String key = rs.getString("result_key");
-                    Timestamp vu = rs.getTimestamp("valid_until");
-                    if (vu != null && vu.before(new java.sql.Timestamp(System.currentTimeMillis()))) {
-                        // 过期：注入一个标记，但字段不注入
-                        out.put(PREFIX + key + ".__expired", true);
-                        out.put(PREFIX + key + EXISTS_SUFFIX, false);
-                        continue;
-                    }
-                    flatten(PREFIX + key, parseJson(rs.getString("payload")), out);
-                    out.put(PREFIX + key + EXISTS_SUFFIX, true);
-                }
+        for (Map<String, Object> row : mapper().selectResults(tenantId, runId)) {
+            String key = (String) row.get("resultKey");
+            Timestamp vu = (Timestamp) row.get("validUntil");
+            if (vu != null && vu.before(new java.sql.Timestamp(System.currentTimeMillis()))) {
+                // 过期：注入一个标记，但字段不注入
+                out.put(PREFIX + key + ".__expired", true);
+                out.put(PREFIX + key + EXISTS_SUFFIX, false);
+                continue;
             }
+            flatten(PREFIX + key, parseJson((String) row.get("payload")), out);
+            out.put(PREFIX + key + EXISTS_SUFFIX, true);
         }
         return out;
     }
 
     /** 某个结果存不存在（且没过期）。 */
     public boolean exists(long runId, String key) {
-        String sql = """
-                SELECT 1 FROM run_result
-                WHERE tenant_id = ? AND run_id = ? AND result_key = ?
-                  AND (valid_until IS NULL OR valid_until > now())
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.setString(3, key);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
+        try {
+            return mapper().hasResult(tenantId, runId, key);
+        } catch (RuntimeException e) {
             return false;
         }
     }
 
     // ---------------------------------------------------------------- 工具
+
+    private com.labos.kernel.persistence.RunResultMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.RunResultMapper.class);
+    }
 
     /** 把嵌套 JSON 展开成 "a.b.c" 形式的扁平键。 */
     @SuppressWarnings("unchecked")

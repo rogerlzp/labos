@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 异步结果（run_result）。调用方 com.labos.kernel.persistence.RunResultMapper -->
+<mapper namespace="com.labos.kernel.persistence.RunResultMapper">
+
+    <!-- nodeId/validUntil 可空，jdbcType 保证 null 安全落列（null=run 级/永不过期）。 -->
+    <insert id="insertResult">
+        INSERT INTO run_result
+          (tenant_id, run_id, node_id, result_key, payload, source, valid_until)
+        VALUES (#{tenantId}, #{runId}, #{nodeId,jdbcType=BIGINT}, #{key},
+                #{payloadJson}::jsonb, #{source}, #{validUntil,jdbcType=TIMESTAMP})
+    </insert>
+
+    <!-- payload 显式 ::text：Map 里拿到的一定是 String（调用方要再 parseJson）。 -->
+    <select id="selectResults" resultType="java.util.Map">
+        SELECT result_key AS "resultKey", payload::text AS "payload",
+               valid_until AS "validUntil"
+          FROM run_result
+         WHERE tenant_id = #{tenantId} AND run_id = #{runId}
+    </select>
+
+    <select id="hasResult" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM run_result
+             WHERE tenant_id = #{tenantId} AND run_id = #{runId} AND result_key = #{key}
+               AND (valid_until IS NULL OR valid_until &gt; now()))
+    </select>
+
+</mapper>
