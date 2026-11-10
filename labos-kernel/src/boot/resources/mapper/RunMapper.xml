@@ -444,6 +444,18 @@
                 #{param9}::jsonb, to_jsonb(#{param10}::text), #{param11}, #{param12})
     </insert>
 
+    <select id="selectLatestNodeOutput" resultType="java.util.Map">
+        SELECT cmd.result::text AS "result",
+               cmd.device_raw_response::text AS "raw"
+          FROM run_command cmd
+          JOIN run_node n ON n.id = cmd.run_node_id
+          LEFT JOIN run_node p ON p.id = n.parent_node_id
+         WHERE cmd.tenant_id = #{param1} AND cmd.run_id = #{param2}
+           AND (n.node_key = #{param3} OR p.node_key = #{param3})
+         ORDER BY cmd.id DESC
+         LIMIT 1
+    </select>
+
     <update id="pauseRunAtBoundary">
         UPDATE run
            SET status = 'paused'::run_status,

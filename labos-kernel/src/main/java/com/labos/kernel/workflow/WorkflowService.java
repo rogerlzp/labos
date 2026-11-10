@@ -40,9 +40,6 @@ import com.labos.kernel.workflow.RealWorkflowRunner.WorkflowDef;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
@@ -1114,42 +1111,23 @@ public class WorkflowService {
         // 对应多台实例，而"用哪套错误码"是实例级的事实。
         // 没配就留空 —— 宁可不翻译，也不要猜错型号。
         Map<Long, Map<Long, String>> modelByDriver = new LinkedHashMap<>();
-        String sql = """
-                SELECT d.id AS driver_id, d.code, d.endpoint, d.protocol::text AS protocol,
-                       di.id AS instance_id, c.code AS cap,
-                       dt.attr->>'device_model' AS device_model
-                FROM driver d
-                JOIN device_instance di ON di.driver_id = d.id AND di.deleted_at IS NULL
-                LEFT JOIN device dt ON dt.id = di.device_id
-                LEFT JOIN resource_capability rc ON rc.resource_id = di.resource_id
-                LEFT JOIN capability c ON c.id = rc.capability_id
-                WHERE d.tenant_id = ? AND d.status = 1
-                  AND d.endpoint IS NOT NULL AND d.endpoint <> ''
-                ORDER BY d.id, di.id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long did = rs.getLong("driver_id");
-                    meta.putIfAbsent(did, new String[]{
-                            rs.getString("code"), rs.getString("endpoint"),
-                            rs.getString("protocol")});
-                    long inst = rs.getLong("instance_id");
-                    Map<Long, Set<String>> devs =
-                            byDriver.computeIfAbsent(did, k -> new LinkedHashMap<>());
-                    Set<String> caps = devs.computeIfAbsent(inst, k -> new LinkedHashSet<>());
-                    String cap = rs.getString("cap");
-                    if (cap != null) {
-                        caps.add(cap);
-                    }
-                    String modelId = rs.getString("device_model");
-                    if (modelId != null && !modelId.isBlank()) {
-                        modelByDriver.computeIfAbsent(did, k -> new LinkedHashMap<>())
-                                .put(inst, modelId.trim());
-                    }
-                }
+        for (Map<String, Object> row : drm().selectDriverDeviceRows(tenantId)) {
+            long did = ((Number) row.get("driverId")).longValue();
+            meta.putIfAbsent(did, new String[]{
+                    (String) row.get("code"), (String) row.get("endpoint"),
+                    (String) row.get("protocol")});
+            long inst = ((Number) row.get("instanceId")).longValue();
+            Map<Long, Set<String>> devs =
+                    byDriver.computeIfAbsent(did, k -> new LinkedHashMap<>());
+            Set<String> caps = devs.computeIfAbsent(inst, k -> new LinkedHashSet<>());
+            String cap = (String) row.get("cap");
+            if (cap != null) {
+                caps.add(cap);
+            }
+            String modelId = (String) row.get("deviceModel");
+            if (modelId != null && !modelId.isBlank()) {
+                modelByDriver.computeIfAbsent(did, k -> new LinkedHashMap<>())
+                        .put(inst, modelId.trim());
             }
         }
 
@@ -1242,19 +1220,10 @@ public class WorkflowService {
 
     private Map<Long, Set<String>> loadDeviceCapabilities() throws SQLException {
         Map<Long, Set<String>> out = new LinkedHashMap<>();
-        String sql = """
-                SELECT di.id, c.code
-                FROM device_instance di
-                JOIN resource_capability rc ON rc.resource_id = di.resource_id
-                JOIN capability c ON c.id = rc.capability_id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.computeIfAbsent(rs.getLong(1), k -> new LinkedHashSet<>())
-                        .add(rs.getString(2));
-            }
+        for (Map<String, Object> row : drm().selectInstanceCapabilities()) {
+            out.computeIfAbsent(((Number) row.get("instanceId")).longValue(),
+                            k -> new LinkedHashSet<>())
+                    .add((String) row.get("cap"));
         }
         return out;
     }
@@ -1285,31 +1254,15 @@ public class WorkflowService {
         Map<String, Long> idByKey = loadNodeIdByKey(workflowId);
         Map<Long, TimeConstraintExecutor.Constraint> out = new LinkedHashMap<>();
 
-        String sql = """
-                SELECT node_key,
-                       params->'time_constraint'->>'after_node_key' AS after_key,
-                       COALESCE((params->'time_constraint'->>'min_sec')::int, 0) AS min_sec,
-                       COALESCE((params->'time_constraint'->>'max_sec')::int, 0) AS max_sec
-                FROM workflow_node
-                WHERE tenant_id = ? AND workflow_id = ? AND node_type = 'task'
-                  AND params->'time_constraint' IS NOT NULL
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Long selfId = idByKey.get(rs.getString("node_key"));
-                    Long afterId = idByKey.get(rs.getString("after_key"));
-                    int minSec = rs.getInt("min_sec");
-                    int maxSec = rs.getInt("max_sec");
-                    if (selfId == null || afterId == null || (minSec <= 0 && maxSec <= 0)) {
-                        continue;
-                    }
-                    out.put(selfId, new TimeConstraintExecutor.Constraint(afterId, minSec, maxSec));
-                }
+        for (Map<String, Object> row : wm().selectTimeConstraints(tenantId, workflowId)) {
+            Long selfId = idByKey.get(row.get("nodeKey"));
+            Long afterId = idByKey.get(row.get("afterKey"));
+            int minSec = ((Number) row.get("minSec")).intValue();
+            int maxSec = ((Number) row.get("maxSec")).intValue();
+            if (selfId == null || afterId == null || (minSec <= 0 && maxSec <= 0)) {
+                continue;
             }
+            out.put(selfId, new TimeConstraintExecutor.Constraint(afterId, minSec, maxSec));
         }
         return out;
     }
@@ -1323,43 +1276,31 @@ public class WorkflowService {
                                                             Map<String, Long> idByKey)
             throws SQLException {
         Map<Long, Map<String, Object>> out = new LinkedHashMap<>();
-        String sql = """
-                SELECT node_key, params->'method_params' AS mp
-                FROM workflow_node
-                WHERE tenant_id = ? AND workflow_id = ? AND node_type = 'task'
-                  AND params->'method_params' IS NOT NULL
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Long id = idByKey.get(rs.getString("node_key"));
-                    String json = rs.getString("mp");
-                    if (id == null || json == null || json.isBlank()) {
-                        continue;
-                    }
-                    Map<String, Object> raw = parseFlatJson(json);
-                    // 变量替换：{"plateID":"${plate}"} → {"plateID":"PL001"}
-                    // 替换后如果是纯数字，转成数字——驱动端对类型敏感，
-                    // "7" 和 7 在某些协议里不是一回事。
-                    Map<String, Object> replaced = new LinkedHashMap<>();
-                    raw.forEach((k, v) -> {
-                        if (!(v instanceof String sv)) {
-                            replaced.put(k, v);
-                            return;
-                        }
-                        String rv = substVars(sv);
-                        if (!rv.equals(sv) && rv.matches("-?\\d+")) {
-                            replaced.put(k, Long.parseLong(rv));
-                        } else {
-                            replaced.put(k, rv);
-                        }
-                    });
-                    out.put(id, replaced);
-                }
+        for (Map<String, Object> row : wm().selectMethodParams(tenantId, workflowId)) {
+            Long id = idByKey.get(row.get("nodeKey"));
+            Object mpJson = row.get("mp");
+            String json = mpJson == null ? null : String.valueOf(mpJson);
+            if (id == null || json == null || json.isBlank()) {
+                continue;
             }
+            Map<String, Object> raw = parseFlatJson(json);
+            // 变量替换：{"plateID":"${plate}"} → {"plateID":"PL001"}
+            // 替换后如果是纯数字，转成数字——驱动端对类型敏感，
+            // "7" 和 7 在某些协议里不是一回事。
+            Map<String, Object> replaced = new LinkedHashMap<>();
+            raw.forEach((k, v) -> {
+                if (!(v instanceof String sv)) {
+                    replaced.put(k, v);
+                    return;
+                }
+                String rv = substVars(sv);
+                if (!rv.equals(sv) && rv.matches("-?\\d+")) {
+                    replaced.put(k, Long.parseLong(rv));
+                } else {
+                    replaced.put(k, rv);
+                }
+            });
+            out.put(id, replaced);
         }
         return out;
     }
@@ -1399,18 +1340,9 @@ public class WorkflowService {
     /** workflow_id -> (node_key -> workflow_node.id)：让图执行的节点 id 与库一致。 */
     private Map<String, Long> loadNodeIdByKey(long workflowId) throws SQLException {
         Map<String, Long> out = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT node_key, id FROM workflow_node
-                     WHERE tenant_id = ? AND workflow_id = ? AND node_type = 'task'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.put(rs.getString(1), rs.getLong(2));
-                }
-            }
+        for (Map<String, Object> row : wm().selectTaskNodeIds(tenantId, workflowId)) {
+            out.put((String) row.get("nodeKey"),
+                    ((Number) row.get("id")).longValue());
         }
         return out;
     }
@@ -1440,53 +1372,34 @@ public class WorkflowService {
      */
     private Map<String, String> loadNodeOutputs(long runId, String nodeKey) {
         Map<String, String> out = new java.util.LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT cmd.result::text AS result,
-                            cmd.device_raw_response::text AS raw
-                       FROM run_command cmd
-                       JOIN run_node n ON n.id = cmd.run_node_id
-                       -- 命令挂在**步骤节点**（level=1，node_key=S1）上，
-                       -- 业务节点（level=0，node_key=GET）是它的 parent。
-                       -- 只按 n.node_key 匹配永远查不到（2026-11-03 踩的）。
-                       LEFT JOIN run_node p ON p.id = n.parent_node_id
-                      WHERE cmd.tenant_id = ? AND cmd.run_id = ?
-                        AND (n.node_key = ? OR p.node_key = ?)
-                      ORDER BY cmd.id DESC
-                      LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.setString(3, nodeKey);
-            ps.setString(4, nodeKey);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return out;
-                }
-                // **优先取设备原始回包里的 data**：run_command.result 只有
-                // {ok,durationMs}，设备真正返回的业务字段（plateType 等）在
-                // device_raw_response 的 data 里。不读它，节点输出驱动条件等于空谈。
-                String payload = rs.getString("raw");
-                if (payload == null || payload.isBlank()) {
-                    payload = rs.getString("result");
-                }
-                if (payload == null || payload.isBlank() || "null".equals(payload)) {
-                    return out;
-                }
-                // 存的是 JSON 字符串（转义过），先去转义再抽字段
-                String raw = payload.replace("\\\"", "\"");
-                java.util.regex.Matcher m = java.util.regex.Pattern
-                        .compile("\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:\\s*(\"[^\"]*\"|-?[0-9.]+|true|false)")
-                        .matcher(raw);
-                while (m.find()) {
-                    String v = m.group(2);
-                    if (v.startsWith("\"")) {
-                        v = v.substring(1, v.length() - 1);
-                    }
-                    out.put(m.group(1), v);
-                }
+        try {
+            Map<String, Object> row = rm().selectLatestNodeOutput(tenantId, runId, nodeKey);
+            if (row == null) {
+                return out;
             }
-        } catch (SQLException e) {
+            // **优先取设备原始回包里的 data**：run_command.result 只有
+            // {ok,durationMs}，设备真正返回的业务字段（plateType 等）在
+            // device_raw_response 的 data 里。不读它，节点输出驱动条件等于空谈。
+            String payload = (String) row.get("raw");
+            if (payload == null || payload.isBlank()) {
+                payload = (String) row.get("result");
+            }
+            if (payload == null || payload.isBlank() || "null".equals(payload)) {
+                return out;
+            }
+            // 存的是 JSON 字符串（转义过），先去转义再抽字段
+            String raw = payload.replace("\\\"", "\"");
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:\\s*(\"[^\"]*\"|-?[0-9.]+|true|false)")
+                    .matcher(raw);
+            while (m.find()) {
+                String v = m.group(2);
+                if (v.startsWith("\"")) {
+                    v = v.substring(1, v.length() - 1);
+                }
+                out.put(m.group(1), v);
+            }
+        } catch (RuntimeException e) {
             log.error("[WARN] 读取节点输出失败: " + e.getMessage());
         }
         return out;
@@ -1518,19 +1431,7 @@ public class WorkflowService {
      * 范围由调用方（API 层）校验，这里只负责落库。
      */
     public void setMaxIterations(long workflowId, int value) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE workflow
-                        SET attr = jsonb_set(coalesce(attr, '{}'::jsonb),
-                                             '{maxIterations}', to_jsonb(?::int), true),
-                            updated_at = now()
-                      WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setInt(1, value);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, workflowId);
-            ps.executeUpdate();
-        }
+        wm().updateMaxIterations(tenantId, workflowId, value);
     }
 
     private Map<String, String> loadRunVars(long runId) {
@@ -1556,38 +1457,17 @@ public class WorkflowService {
 
     private Map<Long, Long> loadBoundInstances() throws SQLException {
         Map<Long, Long> out = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT di.resource_id, di.id
-                     FROM device_instance di
-                     WHERE di.tenant_id = ? AND di.deleted_at IS NULL AND di.resource_id IS NOT NULL
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.put(rs.getLong(1), rs.getLong(2));
-                }
-            }
+        for (Map<String, Object> row : dm().selectResourceInstancePairs(tenantId)) {
+            out.put(((Number) row.get("resourceId")).longValue(),
+                    ((Number) row.get("instanceId")).longValue());
         }
         return out;
     }
 
     private Map<String, String> loadCapabilityByKey(long workflowId) throws SQLException {
         Map<String, String> out = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT n.node_key, cap.code
-                     FROM workflow_node n
-                     JOIN capability cap ON cap.id = n.capability_id
-                     WHERE n.tenant_id = ? AND n.workflow_id = ? AND n.node_type = 'task'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.put(rs.getString(1), rs.getString(2));
-                }
-            }
+        for (Map<String, Object> row : wm().selectCapabilityCodeByKey(tenantId, workflowId)) {
+            out.put((String) row.get("nodeKey"), (String) row.get("cap"));
         }
         return out;
     }
@@ -1600,6 +1480,12 @@ public class WorkflowService {
     private com.labos.kernel.persistence.WorkflowWebMapper wwm() {
         return com.labos.kernel.persistence.Mappers.get(
                 com.labos.kernel.persistence.WorkflowWebMapper.class);
+    }
+
+    /** 懒取 DriverMapper：同 qm()，驱动/设备能力读侧按域归位到该 Mapper。 */
+    private com.labos.kernel.persistence.DriverMapper drm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DriverMapper.class);
     }
 
     /** 依赖缓存：execute 里会多次用到，避免重复查库。 */
@@ -2325,11 +2211,6 @@ public class WorkflowService {
         // 没有层位的设备永远是"没板"，因为它没地方放板——这是正确语义，不是缺陷。
     }
 
-    /** device_instance.id -> resource_node.id（映射不到返回 null，调用方跳过写入）。 */
-    private Long deviceInstanceToResource(Connection c, long instanceId) throws SQLException {
-        return qm().selectDeviceResourceByInstance(instanceId);
-    }
-
     private void recordOccurrences(long runId, RunProgress p, JdbcRecoveryPolicyRepository repo,
                                    Map<Long, Long> deviceToResource, Set<Long> validResources,
                                    String attendance) throws SQLException {
@@ -2701,20 +2582,10 @@ public class WorkflowService {
     /** protocol_name -> capability（多数表决），用于新增节点自动标能力。 */
     private Map<String, Long> loadMethodCapability() throws SQLException {
         Map<String, Long> out = new LinkedHashMap<>();
-        String sql = """
-                SELECT method, capability_id,
-                       row_number() OVER (PARTITION BY method
-                                          ORDER BY count(*) DESC, capability_id) AS rn
-                FROM device_method WHERE capability_id IS NOT NULL
-                GROUP BY method, capability_id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                if (rs.getInt(3) == 1) {
-                    out.putIfAbsent(rs.getString(1), rs.getLong(2));
-                }
+        for (Map<String, Object> row : dm().selectMethodCapabilityVotes()) {
+            if (((Number) row.get("rn")).intValue() == 1) {
+                out.putIfAbsent((String) row.get("method"),
+                        ((Number) row.get("capabilityId")).longValue());
             }
         }
         return out;

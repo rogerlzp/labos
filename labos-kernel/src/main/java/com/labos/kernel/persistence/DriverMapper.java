@@ -17,4 +17,13 @@ public interface DriverMapper {
 
     /** 同上 + driver_kind（manifest 里的类型，缺省 unknown）。 */
     List<Map<String, Object>> selectDriversWithKind(long tenantId);
+
+    /**
+     * 启用驱动的全量设备视图（WorkflowService 注册驱动用）：每行一个
+     * 驱动×设备×能力组合，外加设备型号绑定（device.attr-&gt;&gt;'device_model'）。
+     */
+    List<Map<String, Object>> selectDriverDeviceRows(long tenantId);
+
+    /** 全部设备实例声明的能力（device_instance.id -&gt; cap code 多行展开）。 */
+    List<Map<String, Object>> selectInstanceCapabilities();
 }

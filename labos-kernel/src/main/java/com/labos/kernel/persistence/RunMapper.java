@@ -186,6 +186,14 @@ public interface RunMapper {
                          String resultJson, String rawResponse, String errorCode,
                          long deviceId);
 
+    /**
+     * 节点最新一次执行的命令结果（result + 设备原始回包，按命令 id 倒序取一条）。
+     *
+     * <p>命令挂在步骤节点（level=1）上，业务节点（level=0）是它的 parent ——
+     * 两处 node_key 都要匹配，只按一边查永远查不到。
+     */
+    Map<String, Object> selectLatestNodeOutput(long tenantId, long runId, String nodeKey);
+
     /** 节点边界暂停：paused + 扣留类型/原因/边界节点（已有值不覆盖）。 */
     int pauseRunAtBoundary(long tenantId, long runId, String kind, String reason,
                            String pendingKey);

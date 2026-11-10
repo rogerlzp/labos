@@ -37,4 +37,25 @@ public interface WorkflowMapper {
             @Param("tenantId") long tenantId,
             @Param("category") String category,
             @Param("limit") int limit);
+
+    // ---- workflow_node 读侧（WorkflowService 执行前的图装配）----
+
+    /** task 节点的时间约束（params->'time_constraint' 非空才算）。 */
+    java.util.List<java.util.Map<String, Object>> selectTimeConstraints(
+            long tenantId, long workflowId);
+
+    /** task 节点的设备方法参数（params->'method_params'，JSON 原文由 Java 解析）。 */
+    java.util.List<java.util.Map<String, Object>> selectMethodParams(
+            long tenantId, long workflowId);
+
+    /** task 节点的 node_key -&gt; workflow_node.id（图执行节点 id 与库一致）。 */
+    java.util.List<java.util.Map<String, Object>> selectTaskNodeIds(
+            long tenantId, long workflowId);
+
+    /** task 节点的 node_key -&gt; 能力编码（多数决议用，能力可能未标）。 */
+    java.util.List<java.util.Map<String, Object>> selectCapabilityCodeByKey(
+            long tenantId, long workflowId);
+
+    /** 写流程级循环上限 attr.maxIterations（设计器保存，运行时立即生效）。 */
+    int updateMaxIterations(long tenantId, long workflowId, int value);
 }

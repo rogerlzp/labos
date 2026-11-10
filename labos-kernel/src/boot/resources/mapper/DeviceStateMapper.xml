@@ -119,4 +119,19 @@
            AND di.deleted_at IS NULL
     </select>
 
+    <select id="selectResourceInstancePairs" resultType="java.util.Map">
+        SELECT di.resource_id AS "resourceId", di.id AS "instanceId"
+          FROM device_instance di
+         WHERE di.tenant_id = #{tenantId} AND di.deleted_at IS NULL
+           AND di.resource_id IS NOT NULL
+    </select>
+
+    <select id="selectMethodCapabilityVotes" resultType="java.util.Map">
+        SELECT method AS "method", capability_id AS "capabilityId",
+               row_number() OVER (PARTITION BY method
+                                  ORDER BY count(*) DESC, capability_id) AS "rn"
+          FROM device_method WHERE capability_id IS NOT NULL
+         GROUP BY method, capability_id
+    </select>
+
 </mapper>

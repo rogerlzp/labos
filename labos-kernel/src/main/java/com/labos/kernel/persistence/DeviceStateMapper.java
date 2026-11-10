@@ -75,4 +75,19 @@ public interface DeviceStateMapper {
     /** 岛（resource_node.parent_id）下全部未软删设备的 device_instance.id。 */
     java.util.List<Long> selectIslandInstanceIds(@Param("tenantId") long tenantId,
                                                  @Param("islandId") long islandId);
+
+    /**
+     * resource_node.id -&gt; device_instance.id（本租户未软删、resource 非空）。
+     *
+     * <p>与 {@link #selectInstanceResourcePairs} 方向相反且带租户过滤 ——
+     * 那是全量 id-&gt;resource 映射（驱动路由用），这是 resource-&gt;实例（节点绑定用）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectResourceInstancePairs(
+            @Param("tenantId") long tenantId);
+
+    /**
+     * method -&gt; capability_id 多数表决（rn=1 即每个 method 票数最高者；
+     * 平票取 capability_id 小的，确定性可回放）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectMethodCapabilityVotes();
 }

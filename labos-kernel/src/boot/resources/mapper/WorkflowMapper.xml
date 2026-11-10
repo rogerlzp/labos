@@ -55,4 +55,45 @@
          ORDER BY w.updated_at DESC NULLS LAST, w.id DESC LIMIT #{limit}
     </select>
 
+    <!-- workflow_node 读侧（WorkflowService 执行前的图装配）。 -->
+
+    <select id="selectTimeConstraints" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey",
+               params->'time_constraint'->>'after_node_key' AS "afterKey",
+               COALESCE((params->'time_constraint'->>'min_sec')::int, 0) AS "minSec",
+               COALESCE((params->'time_constraint'->>'max_sec')::int, 0) AS "maxSec"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_type = 'task'
+           AND params->'time_constraint' IS NOT NULL
+    </select>
+
+    <select id="selectMethodParams" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", params->'method_params' AS "mp"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_type = 'task'
+           AND params->'method_params' IS NOT NULL
+    </select>
+
+    <select id="selectTaskNodeIds" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", id AS "id"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_type = 'task'
+    </select>
+
+    <select id="selectCapabilityCodeByKey" resultType="java.util.Map">
+        SELECT n.node_key AS "nodeKey", cap.code AS "cap"
+          FROM workflow_node n
+          JOIN capability cap ON cap.id = n.capability_id
+         WHERE n.tenant_id = #{param1} AND n.workflow_id = #{param2}
+           AND n.node_type = 'task'
+    </select>
+
+    <update id="updateMaxIterations">
+        UPDATE workflow
+           SET attr = jsonb_set(coalesce(attr, '{}'::jsonb),
+                                '{maxIterations}', to_jsonb(#{param3}::int), true),
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
 </mapper>

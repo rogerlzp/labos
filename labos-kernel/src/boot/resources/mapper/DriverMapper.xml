@@ -21,4 +21,27 @@
          ORDER BY id
     </select>
 
+    <!-- 启用驱动 × 未软删设备 × 能力 全量展开（注册驱动用）。 -->
+    <select id="selectDriverDeviceRows" resultType="java.util.Map">
+        SELECT d.id AS "driverId", d.code AS "code", d.endpoint AS "endpoint",
+               d.protocol::text AS "protocol",
+               di.id AS "instanceId", c.code AS "cap",
+               dt.attr->>'device_model' AS "deviceModel"
+          FROM driver d
+          JOIN device_instance di ON di.driver_id = d.id AND di.deleted_at IS NULL
+          LEFT JOIN device dt ON dt.id = di.device_id
+          LEFT JOIN resource_capability rc ON rc.resource_id = di.resource_id
+          LEFT JOIN capability c ON c.id = rc.capability_id
+         WHERE d.tenant_id = #{param1} AND d.status = 1
+           AND d.endpoint IS NOT NULL AND d.endpoint &lt;&gt; ''
+         ORDER BY d.id, di.id
+    </select>
+
+    <select id="selectInstanceCapabilities" resultType="java.util.Map">
+        SELECT di.id AS "instanceId", c.code AS "cap"
+          FROM device_instance di
+          JOIN resource_capability rc ON rc.resource_id = di.resource_id
+          JOIN capability c ON c.id = rc.capability_id
+    </select>
+
 </mapper>
