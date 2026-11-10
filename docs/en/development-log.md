@@ -5695,3 +5695,31 @@ Lessons (cross-project):
 ④ **"Looks unreachable" and "reachable but silent" must be separated** — a TCP port that
    accepts a connection does not mean the device answers; a port check only proves that
    *somebody is listening*, not that *it will reply*.
+
+**Added later (2026-11-10): the kernel would not start — a mapper statement was defined twice**
+
+Symptom: the user reported that "the user name and password no longer work". The first
+investigation showed the **backend was not running** (a devsplit test at 17:50 stopped the
+kernel and nobody started it again) ⇒ starting it fixed the login. But a few hours later it
+**would not start at all**:
+
+```
+Caused by: java.lang.IllegalArgumentException: Mapped Statements collection
+already contains key com.labos.kernel.persistence.WorkflowWebMapper.selectWorkflowXml
+```
+
+Root cause: the statement `selectWorkflowXml` was **defined twice** in
+`WorkflowWebMapper.xml`, the two copies being **character-for-character identical** (a
+copy-paste leftover). MyBatis throws "already contains key" while parsing the second one ⇒
+the `SqlSessionFactory` cannot be built ⇒ **the whole application fails to start**.
+
+Lessons (cross-project):
+① **A duplicate MyBatis statement does not warn, it kills the startup** — copying one SQL
+   twice is not caught at compile time (the XML is not part of javac) and not by the unit
+   tests either (they never reach the parsing stage when there is no database); it only
+   explodes when the **kernel is actually started**. ⇒ After touching a mapper XML, **start
+   the kernel once and read the log** — "it compiled" is not evidence.
+② **"Copy-paste a piece of SQL" is the number one source of duplicate definitions** — the same
+   `id` twice in one file; deleting one copy is enough (they are identical).
+   ⇒ Self-check after adding or moving a mapper statement: scan the file for a repeated `id`:
+   `grep -o 'id="[^"]*"' X.xml | sort | uniq -d`.

@@ -79,7 +79,7 @@
 **根因**：M6（`6fb38d3`）改了分片与 `merge.sh`，但**未重跑 `merge.sh`** 再生合并产物。
 
 **影响**：用新库启动后——
-1. `labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java` 中约 22 处引用 `run_node.loop_index` 的查询（运行列表/详情/流程图/时间线）直接 SQL 报错（列不存在）；
+1. `https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java` 中约 22 处引用 `run_node.loop_index` 的查询（运行列表/详情/流程图/时间线）直接 SQL 报错（列不存在）；
 2. `parent_node_id` 无外键 → 步骤行级联删除的结构前提缺失（H1 类孤儿行风险重现）；
 3. `uk_run_node` 回到 3 列 → 循环场景下同一节点跨圈插入**撞唯一键**（M6 被抵消）。
 

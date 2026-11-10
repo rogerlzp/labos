@@ -56,7 +56,7 @@
 | The ApiServer split | 679 lines | `wc -l` of [ApiServer.java](../../../labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java) = **679** | ✅ |
 | The dispatch order | chained `\|\|`, the first hit returns | [ApiServer.java:184-191](../../../labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java#L184-L191) in order `authApi→deviceApi→schedulerApi→runApi→workflowApi→opsApi→experimentApi→metaApi` | ✅ (the equivalence is discussed separately in §6) |
 | The status vocabulary's single source | the backend is the only authority + the frontend consumes it | [StatusVocabulary.java](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/StatusVocabulary.java) is there; `labos-kernel/src/main/java/com/labos/kernel/api/MetaApi.java:90-94` provides `GET /api/meta/status-vocabulary`; the frontend uniformly does `import … from '../utils/status'`, and **no local status-mapping constants** are seen inside the pages | ✅ |
-| The last-administrator protection | advisory lock + a single transaction | [QueryService.java:1574-1624](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L1574-L1624): `pg_advisory_xact_lock(hashtext('labos:user-role'))` + `SELECT … FOR UPDATE` + a single transaction commit/rollback; the rule is in [RbacRules.lastAdminGuard](../../../labos-kernel/src/main/java/com/labos/kernel/api/RbacRules.java#L83-L106) | ✅ |
+| The last-administrator protection | advisory lock + a single transaction | [QueryService.java:1574-1624](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L1574-L1624): `pg_advisory_xact_lock(hashtext('labos:user-role'))` + `SELECT … FOR UPDATE` + a single transaction commit/rollback; the rule is in [RbacRules.lastAdminGuard](../../../labos-kernel/src/main/java/com/labos/kernel/api/RbacRules.java#L83-L106) | ✅ |
 | The scheduler parameters | EDD / island mutual exclusion / MAX_CONCURRENT=4 / tick 2s | [ExperimentScheduler.java:47](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentScheduler.java#L47); `rehydrateQueued()` [:217](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentScheduler.java#L217); the automatic re-queue every 5 ticks [:294](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentScheduler.java#L294) | ✅ |
 | go-live (with the DB env) | PASS 9 / WARN 2 / FAIL 0 | `LABOS_DB_* python3 scripts/device-go-live-check.py` = **PASS 9 / WARN 2 / FAIL 0** | ✅ |
 
@@ -73,7 +73,7 @@
 
 | Step | Fact | Evidence |
 |---|---|---|
-| 1 | The experiment list takes the first row by `ORDER BY e.id DESC` | [QueryService.java:721](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L721) |
+| 1 | The experiment list takes the first row by `ORDER BY e.id DESC` | [QueryService.java:721](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L721) |
 | 2 | The current largest id is **962**, `experiment_no=EXP-20261104001045-2428`, `name=rbac-operator-允许建实验-22244` | `psql … ORDER BY id DESC LIMIT 3` = 962 / 844 / 843 |
 | 3 | The number of `experiment_run` rows of 962 = **0** | `psql … count(*) WHERE experiment_id=962` = 0 |
 | 4 | The execution-history table has **no `rowExpandable`** set ⇒ "it can only be expanded if there is a run"; with 0 runs there is no expand icon | [Experiments.tsx:848-854](../../../webapp/src/pages/Experiments.tsx#L848-L854) |

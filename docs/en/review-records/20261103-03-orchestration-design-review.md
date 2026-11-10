@@ -136,8 +136,8 @@ Of these two, I recommend **#1** more strongly, because it naturally supports th
 **Location:**
 - the draft [§2.2 rules 1-5](../design/unified-experiment-orchestration-draft.md)
 - the draft [§7 S1](../design/unified-experiment-orchestration-draft.md)
-- the existing `experiment_process` saving [QueryService.java:L1393-L1425](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L1393-L1425)
-- the existing `experiment_graph` saving [QueryService.java:L2156-L2172](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L2156-L2172)
+- the existing `experiment_process` saving [QueryService.java:L1393-L1425](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L1393-L1425)
+- the existing `experiment_graph` saving [QueryService.java:L2156-L2172](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L2156-L2172)
 
 **The problem:**
 
@@ -179,13 +179,13 @@ The following judgements were confirmed by reading the code, and the draft holds
 ### 1. `experiment_graph` really is only read/written by the canvas today, the executor does not read it
 
 - The executor only expands by [`experiment_process ORDER BY seq`](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/ExperimentExecutor.java#L108-L139)
-- `experiment_graph` today only has [`SELECT graph`](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L2137-L2153) / [`saveExperimentGraph`](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L2156-L2172)
+- `experiment_graph` today only has [`SELECT graph`](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L2137-L2153) / [`saveExperimentGraph`](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L2156-L2172)
 
 Conclusion: **"the canvas has no effect" is a fact, not a speculation.**
 
 ### 2. `run_after` really is exposed by the API today, but the executor does not use it
 
-- The API returns [`p.run_after`](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L1236-L1260)
+- The API returns [`p.run_after`](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java#L1236-L1260)
 - The fields queried by `ExperimentExecutor.expand()` are only `seq / workflow_id / loop_count / params_override`, **there is no `run_after`**
 
 Conclusion: the draft uses it as a counter-example of "the model comes first, the execution does not keep up", and that judgement holds.

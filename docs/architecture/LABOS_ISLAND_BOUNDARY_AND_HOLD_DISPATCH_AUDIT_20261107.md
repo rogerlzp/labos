@@ -51,7 +51,7 @@
 
 - 211–216：`/api/devices/pool` 将可选 islandId 传给 QueryService；不传即传 null。
 
-文件：`labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java`
+文件：`https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java`
 
 - 3184–3219：`devicePoolJson(null)` 明确返回全量设备；只有 islandId 非空才加 `d.parent_id = islandId` 过滤。
 - 3198–3201：返回的 island_id/island_code 是通过设备直接 parent 为 island 查询得到。
@@ -119,7 +119,7 @@ Designer 注释写明“板子换设备必须由机械臂搬运”，但代码�
 
 - 284–306：节点绑定 PUT/POST 将 resourceId 交给 QueryService.updateNodeBinding。
 
-文件：`labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java`
+文件：`https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java`
 
 - 2636–2653：updateNodeBinding 接受 workflowId/nodeKey/resourceId。
 - 2668–2682：直接更新 workflow_node.resource_id。
@@ -329,7 +329,7 @@ ExperimentCanvas 的节点类型是 start/end/workflow，工作流组合不是�
 
 这不是只发生在 Designer 的设备拖拽阶段。实验编排还存在第二个边界：
 
-文件：`labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java`
+文件：`https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java`
 
 - 1358–1373：`replaceExperimentProcesses(experimentId, workflowIds)` 先调用 `validateExperimentWorkflowIds`，再替换流程。
 - 1375–1413：`validateExperimentWorkflowIds` 只检查 workflowIds 数量、ID 合法性、tenant 下是否存在；查询只取 `workflow.id`，没有读取 `workflow.attr.island_id`，也没有读取 experiment.island_id。

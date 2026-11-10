@@ -85,7 +85,7 @@
 **Root cause**: M6 (`6fb38d3`) changed the shards and `merge.sh`, but **did not re-run `merge.sh`** to regenerate the merged artifact.
 
 **Impact**: after starting with a new database —
-1. the ~22 queries in [QueryService.java](../../../labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java) that reference `run_node.loop_index` (run list / detail / flow chart / timeline) fail with a SQL error directly (the column does not exist);
+1. the ~22 queries in [QueryService.java](https://github.com/rogerlzp/labos/blob/7524a94d853076a601bb87ad6a0e8bc45c31d8d2/labos-kernel/src/main/java/com/labos/kernel/api/QueryService.java) that reference `run_node.loop_index` (run list / detail / flow chart / timeline) fail with a SQL error directly (the column does not exist);
 2. `parent_node_id` has no foreign key → the structural precondition for the cascade delete of the step rows is missing (the H1-class orphan-row risk reappears);
 3. `uk_run_node` goes back to 3 columns → in a loop scenario the same node **hits the unique key** when it is inserted across iterations (M6 is cancelled out).
 
