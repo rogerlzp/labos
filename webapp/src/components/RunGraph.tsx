@@ -7,8 +7,8 @@ import 'bpmn-js/dist/assets/bpmn-font/css/bpmn.css';
 import { apiFetch } from '../api/client';
 import { statusMeta, statusKnown, useStatusVocabulary } from '../utils/status';
 import { useI18n, useT } from '../i18n';
-import NodeRoleLabelRenderer from '../bpmn/NodeRoleLabelRenderer';
-import { isLocalizableRoleName } from '../bpmn/nodeRoleLabel';
+import NodeAutoNameLabelRenderer, { NodeAutoNameShapeRenderer } from '../bpmn/NodeAutoNameRenderer';
+import { isLocalizableAutoName } from '../bpmn/nodeRoleLabel';
 
 /**
  * 一次执行的流程图：把 run_node 的状态画回 BPMN 图上。
@@ -120,15 +120,17 @@ export default function RunGraph({ runId }: { runId: number }) {
   // 建 viewer + 导入 XML：**只在 XML 变化时**（轮询只更新 marker，不重建画布，否则会闪）
   useEffect(() => {
     if (!data?.xml || !holder.current) return;
-    // 标签渲染：把库里存的角色名（中性 code XOR_MERGE，或 2026-11-10 之前
-    // 的老数据中文名「异或汇合」）显示成本地化文案 —— 与设计器画布同一套机制
-    // （见 bpmn/NodeRoleLabelRenderer.ts）。
-    // ⚠ 之前这里漏注册了它 ⇒ 运行图上的网关名一直显示原文（英文界面下是中文）。
+    // 名字渲染：把库里存的**中性 code**（XOR_MERGE / __expr / ARM_TRANSFER 等）
+    // 显示成本地化文案 —— 与设计器画布同一套机制（见 bpmn/NodeAutoNameRenderer.ts）。
+    // 分两个渲染器是因为 bpmn-js 把名字画在两个位置：外置标签（网关）与
+    // task 图形内部（内置逻辑节点）。
+    // ⚠ 之前这里漏注册了渲染器 —— 角色名在运行图上一直是原文（英文界面下是中文）。
     const viewer = new BpmnViewer({
       container: holder.current,
       additionalModules: [{
-        __init__: ['nodeRoleLabelRenderer'],
-        nodeRoleLabelRenderer: ['type', NodeRoleLabelRenderer],
+        __init__: ['nodeAutoNameLabelRenderer', 'nodeAutoNameShapeRenderer'],
+        nodeAutoNameLabelRenderer: ['type', NodeAutoNameLabelRenderer],
+        nodeAutoNameShapeRenderer: ['type', NodeAutoNameShapeRenderer],
       }],
     } as any);
     viewerRef.current = viewer;
@@ -179,21 +181,29 @@ export default function RunGraph({ runId }: { runId: number }) {
   // 文案是按**当前语种**查出来的 ⇒ 切语种后必须重画，否则画布上是旧语种的
   // 文案、页面上其它地方却是新语种。
   //
-  // 只重画命中角色名（中性 code / 老数据中文名）的标签，不碰形状、不碰
-  // marker 染色、不重建 viewer。
+  // 只重画命中自动名（中性 code / 老数据中文名）的元素，不碰 marker 染色、
+  // 不重建 viewer。
+  //
+  // ⚠ 要重画**两类**位置：外置标签（网关）与 task 图形本身（内置逻辑节点）——
+  // 只重画标签的话，切语种后内置节点仍停在旧语种。
   useEffect(() => {
     const v = viewerRef.current;
     if (!v) return;
     const registry = v.get('elementRegistry') as {
-      getAll: () => Array<{ id: string; type?: string; labelTarget?: { businessObject?: { name?: string } } }>;
+      getAll: () => Array<{
+        id: string;
+        type?: string;
+        businessObject?: { name?: string };
+        labelTarget?: { businessObject?: { name?: string } };
+      }>;
       getGraphics: (el: unknown) => SVGElement | undefined;
     };
     const graphicsFactory = v.get('graphicsFactory') as {
       update: (type: string, element: unknown, gfx: SVGElement) => void;
     };
     registry.getAll().forEach((el) => {
-      if (el.type !== 'label' || !el.labelTarget) return;
-      if (!isLocalizableRoleName(el.labelTarget.businessObject?.name)) return;
+      const bo = el.type === 'label' ? el.labelTarget?.businessObject : el.businessObject;
+      if (!isLocalizableAutoName(bo?.name)) return;
       const gfx = registry.getGraphics(el);
       if (gfx) graphicsFactory.update('shape', el, gfx);
     });

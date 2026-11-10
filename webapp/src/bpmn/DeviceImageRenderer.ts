@@ -1,4 +1,5 @@
 import BaseRenderer from 'diagram-js/lib/draw/BaseRenderer';
+import { localizedNeutralLabel } from './nodeRoleLabel';
 
 /**
  * 让「拖方法生成的设备节点」显示该设备的图片，而不是 bpmn-js 的统一矩形。
@@ -83,7 +84,11 @@ class DeviceImageRenderer extends BaseRenderer {
       x: w / 2, y: h - 8, 'text-anchor': 'middle',
       'font-family': 'sans-serif', 'font-size': 11, fill: '#334155',
     });
-    label.textContent = element.businessObject?.name || attrs.protocolName || '';
+    // 卡片上的文字就是节点的持久化名字。自动生成的名字存的是**中性 code**
+    // （如机械臂搬运节点的 ARM_TRANSFER），要经本地化再显示，
+    // 否则英文界面下会直接露出 code（见 bpmn/nodeRoleLabel.ts）。
+    const rawName = element.businessObject?.name || '';
+    label.textContent = localizedNeutralLabel(rawName) || rawName || attrs.protocolName || '';
     parent.appendChild(label);
 
     return rect;

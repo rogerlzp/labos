@@ -183,6 +183,8 @@ EXCLUDE = {
     # 键值**（2026-11-10 之前写死的中文网关角色名），不是待翻译的界面文案。
     "webapp/src/i18n/legacyRoleNames.ts":
         "Legacy data key table — frozen Chinese role names read from old rows, not UI copy",
+    "webapp/src/i18n/legacyBuiltinNames.ts":
+        "Legacy data key table — frozen Chinese built-in node names read from old rows, not UI copy",
     "webapp/src/i18n/": "The message packs — the Chinese pack is the master, the English one is derived from it",
     "webapp/src/utils/status.ts": "FALLBACK is the Chinese-side fallback vocabulary (the English side comes from i18n/codes.ts)",
 }

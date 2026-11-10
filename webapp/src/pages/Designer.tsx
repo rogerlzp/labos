@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import DeviceImageRenderer, { iconFor, isArm } from '../bpmn/DeviceImageRenderer';
 import { workflowPaletteModule } from '../bpmn/WorkflowPalette';
-import NodeRoleLabelRenderer from '../bpmn/NodeRoleLabelRenderer';
-import { gatewayRoleCode, isLocalizableRoleName, isMergeRole, localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
+import { NodeAutoNameLabelRenderer, NodeAutoNameShapeRenderer } from '../bpmn/NodeAutoNameRenderer';
+import { gatewayRoleCode, isLocalizableAutoName, isMergeRole, localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -196,14 +196,6 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
 
 /** 内置逻辑节点的四种方法名（protocolName 以 __ 开头，不找设备、不走驱动）。 */
 type BuiltinKind = '__setVar' | '__expr' | '__sleep' | '__wait';
-
-/** 内置节点拖到画布时写进 `businessObject.name` 的显示名。 */
-function builtinNodeLabel(t: (k: MessageKey) => string, method: string): string {
-  return t(method === '__sleep' ? 'designer.node.sleep'
-    : method === '__wait' ? 'designer.node.wait'
-    : method === '__expr' ? 'designer.node.expr'
-    : 'designer.node.setVar');
-}
 
 /** 左侧「逻辑节点」面板里的一行：拖到画布生成内置节点（不带设备）。 */
 function LogicNodeRow({ method, label, disabled }: {
@@ -890,11 +882,14 @@ export default function DesignerPage() {
         __init__: ['deviceImageRenderer'],
         deviceImageRenderer: ['type', DeviceImageRenderer],
       },
-      // 标签渲染：把库里存的中性 code（XOR_MERGE 等）显示成本地化文案。
-      // 只接管 label，网关形状仍走 bpmn-js 原生渲染。
+      // 自动名渲染：把库里存的**中性 code**（XOR_MERGE / __expr / ARM_TRANSFER 等）
+      // 显示成本地化文案。分两个渲染器是因为 bpmn-js 把名字画在两个位置：
+      // 外置标签（网关等，画在图形外面）与 task 图形内部（内置逻辑节点）。
+      // 只接 label 的话，内置节点的 code 会直接露在方框里。
       {
-        __init__: ['nodeRoleLabelRenderer'],
-        nodeRoleLabelRenderer: ['type', NodeRoleLabelRenderer],
+        __init__: ['nodeAutoNameLabelRenderer', 'nodeAutoNameShapeRenderer'],
+        nodeAutoNameLabelRenderer: ['type', NodeAutoNameLabelRenderer],
+        nodeAutoNameShapeRenderer: ['type', NodeAutoNameShapeRenderer],
       },
       // palette：补并行网关入口 + 移除解析器不认的入口（见 WorkflowPalette.ts 注释）
       workflowPaletteModule],
@@ -928,22 +923,32 @@ export default function DesignerPage() {
   // （XOR_MERGE 等）的显示文案是按**当前语种**查出来的 ⇒ 切语种后必须重画，
   // 否则画布上是旧语种的文案、右栏面板却是新语种，两边对不上。
   //
-  // 只重画命中角色名的标签（中性 code，或 2026-11-10 之前的老数据中文名），
-  // 其余标签交给 bpmn-js 自己的更新路径，
-  // 不碰形状、不碰选中态、不进 commandStack（不影响"保存"按钮的脏标记）。
+  // 只重画命中自动名的元素（中性 code，或 2026-11-10 之前的老数据中文名），
+  // 其余交给 bpmn-js 自己的更新路径，
+  // 不碰选中态、不进 commandStack（不影响"保存"按钮的脏标记）。
+  //
+  // ⚠ 要重画**两类**位置：外置标签（网关，名字画在图形外面）与
+  // task 图形本身（内置逻辑节点，名字画在方框**里面**）——
+  // 只重画标签的话，切语种后内置节点仍显示旧语种（甚至直接露出 code）。
   useEffect(() => {
     const m = modelerRef.current;
     if (!m) return;
     const registry = m.get('elementRegistry') as {
-      getAll: () => Array<{ id: string; type?: string; labelTarget?: { businessObject?: { name?: string } } }>;
+      getAll: () => Array<{
+        id: string;
+        type?: string;
+        businessObject?: { name?: string };
+        labelTarget?: { businessObject?: { name?: string } };
+      }>;
       getGraphics: (el: unknown) => SVGElement | undefined;
     };
     const graphicsFactory = m.get('graphicsFactory') as {
       update: (type: string, element: unknown, gfx: SVGElement) => void;
     };
     registry.getAll().forEach((el) => {
-      if (el.type !== 'label' || !el.labelTarget) return;
-      if (!isLocalizableRoleName(el.labelTarget.businessObject?.name)) return;
+      // 连线等元素的 businessObject 也在这里，但它们没有自动名 ⇒ 直接跳过
+      const bo = el.type === 'label' ? el.labelTarget?.businessObject : el.businessObject;
+      if (!isLocalizableAutoName(bo?.name)) return;
       const gfx = registry.getGraphics(el);
       if (gfx) graphicsFactory.update('shape', el, gfx);
     });
@@ -1728,7 +1733,11 @@ export default function DesignerPage() {
     setShapeAttrs(shape, isBuiltin
       ? { protocolName: p.method, methodParams: '{}' }
       : { protocolName: p.method, resource: String(p.resourceId), methodParams: '{}', icon });
-    shape.businessObject.name = isBuiltin ? builtinNodeLabel(t, p.method) : p.method;
+    // 自动生成的名字落库必须是**与语种无关的中性 code**，不是界面文案：
+    // 内置节点的 code 就是它的 method（__setVar/__expr/__sleep/__wait —— 后端
+    // 本来就按它识别内置节点），设备节点的 code 就是方法名（与其它设备任务一致）。
+    // 显示时再按 code 映射成本地化文案（见 bpmn/nodeRoleLabel.ts）。
+    shape.businessObject.name = p.method;
     modeling.createShape(shape, { x, y }, root);
 
     if (needTransfer && arm && prev && prevEl) {
@@ -1739,7 +1748,11 @@ export default function DesignerPage() {
         methodParams: JSON.stringify({ source: prev.code, target: p.code }),
         icon: iconFor(arm.icon, arm.capability),
       });
-      armShape.businessObject.name = t('designer.node.armTransfer');
+      // 自动插入的搬运节点：name 落**中性 code**，显示时再本地化
+      // （ARM_TRANSFER ⇒ 「机械臂搬运」/ "Robot-arm transfer"）。
+      // 不能用 method（Transfer）：那有 2000 多行普通搬运任务同名，
+      // 拿它当显示标识会把所有搬运节点都显示成「机械臂搬运」。
+      armShape.businessObject.name = 'ARM_TRANSFER';
       modeling.createShape(armShape, { x: (prev.x + x) / 2, y }, root);
       modeling.connect(prevEl, armShape);
       modeling.connect(armShape, shape);
