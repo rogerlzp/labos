@@ -108,6 +108,12 @@ public class WorkflowService {
      * 不做这个兜底，{@code loadGraphXml} 之类会在裸 new 场景抛 NPE
      * （不是 SQLException，原有 catch 兜不住，直接把批处理链路打挂）。
      */
+    /** 延迟取设备态 Mapper（内部类与静态路径都用它）。 */
+    private static com.labos.kernel.persistence.DeviceStateMapper dm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceStateMapper.class);
+    }
+
     /** 懒取 RunMapper：同 qm()，裸 new 场景（自测/工具）没有注入机会。 */
     private com.labos.kernel.persistence.RunMapper rm() {
         com.labos.kernel.persistence.RunMapper m = runMapper;
@@ -2070,38 +2076,22 @@ public class WorkflowService {
 
         /** 设备进入"运行中"。失败不影响执行主链路。 */
         private void markDeviceBusy(long resourceId, String method) {
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(
-                         // 入参是 device_instance.id，device_state.resource_id 是 resource_node.id，
-                         // 必须转换——直接比较会更新 0 行且不报错（这个坑踩了很多次）。
-                         "UPDATE device_state SET status = 'running', current_method = ?,"
-                                 + " updated_at = now()"
-                                 + " WHERE tenant_id = ? AND resource_id ="
-                                 + " (SELECT resource_id FROM device_instance WHERE id = ?)")) {
-                ps.setString(1, method);
-                ps.setLong(2, tenantId);
-                ps.setLong(3, resourceId);
-                ps.executeUpdate();
-            } catch (SQLException ignore) {
+            try {
+                // 入参是 device_instance.id，Mapper 内部按 resource_node.id 落表
+                // （直接比较会更新 0 行且不报错——这个坑踩过很多次）。
+                dm().markRunning(tenantId, resourceId, method, null);
+            } catch (RuntimeException ignore) {
                 // 状态上报失败不能影响执行主链路
             }
         }
 
         /** 设备回到空闲（或错误）。 */
         private void markDeviceIdle(long resourceId, String lastError) {
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(
-                         "UPDATE device_state SET status = ?, current_method = NULL,"
-                                 + " last_error = ?, updated_at = now()"
-                                 + " WHERE tenant_id = ? AND resource_id ="
-                                 + " (SELECT resource_id FROM device_instance WHERE id = ?)")) {
-                ps.setString(1, lastError == null ? "idle" : "error");
-                ps.setString(2, lastError);
-                ps.setLong(3, tenantId);
-                ps.setLong(4, resourceId);
-                ps.executeUpdate();
-            } catch (SQLException ignore) {
-                // 同上
+            try {
+                dm().markIdle(tenantId, resourceId,
+                        lastError == null ? "idle" : "error", lastError);
+            } catch (RuntimeException ignore) {
+                // 状态上报失败不能影响执行主链路
             }
         }
 
@@ -2312,27 +2302,15 @@ public class WorkflowService {
     /** device_instance.id -> resource_node.id（驱动按实例 id 路由，落库要存资源节点 id）。 */
     private Map<Long, Long> loadDeviceResourceMap() throws SQLException {
         Map<Long, Long> out = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id, resource_id FROM device_instance WHERE resource_id IS NOT NULL");
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.put(rs.getLong(1), rs.getLong(2));
-            }
+        for (java.util.Map<String, Object> row : dm().selectInstanceResourcePairs()) {
+            out.put(((Number) row.get("instanceId")).longValue(),
+                    ((Number) row.get("resourceId")).longValue());
         }
         return out;
     }
 
     private Set<Long> loadResourceIds() throws SQLException {
-        Set<Long> out = new LinkedHashSet<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("SELECT id FROM resource_node");
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.add(rs.getLong(1));
-            }
-        }
-        return out;
+        return new LinkedHashSet<>(dm().selectAllResourceIds());
     }
 
     /** 落父节点，返回 nodeId -> run_node.id 映射。 */
@@ -2772,17 +2750,7 @@ public class WorkflowService {
 
     /** device_instance.id -> resource_node.id（映射不到返回 null，调用方跳过写入）。 */
     private Long deviceInstanceToResource(Connection c, long instanceId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT resource_id FROM device_instance WHERE id = ?")) {
-            ps.setLong(1, instanceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                long rid = rs.getLong(1);
-                return rs.wasNull() ? null : rid;
-            }
-        }
+        return qm().selectDeviceResourceByInstance(instanceId);
     }
 
     private void recordOccurrences(long runId, RunProgress p, JdbcRecoveryPolicyRepository repo,
@@ -3182,22 +3150,12 @@ public class WorkflowService {
                             new ArrayList<>(keep));
                 }
 
-                // 5) 重建边
-                try (PreparedStatement ps = c.prepareStatement(
-                        "INSERT INTO workflow_edge (tenant_id, workflow_id, from_key, to_key, edge_type) "
-                                + "VALUES (?, ?, ?, ?, 'sequence') "
-                                + "ON CONFLICT DO NOTHING")) {
-                    for (BpmnGraphParser.ParsedEdge e : graph.edges()) {
-                        if (!keep.contains(e.from()) || !keep.contains(e.to())) {
-                            continue;
-                        }
-                        ps.setLong(1, tenantId);
-                        ps.setLong(2, workflowId);
-                        ps.setString(3, e.from());
-                        ps.setString(4, e.to());
-                        ps.addBatch();
+                // 5) 重建边（逐条 INSERT ... ON CONFLICT DO NOTHING）
+                for (BpmnGraphParser.ParsedEdge e : graph.edges()) {
+                    if (!keep.contains(e.from()) || !keep.contains(e.to())) {
+                        continue;
                     }
-                    ps.executeBatch();
+                    graphMapper.insertEdge(tenantId, workflowId, e.from(), e.to());
                 }
 
                 // 6) 保存原始 XML

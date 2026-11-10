@@ -41,6 +41,16 @@
          LIMIT 1
     </select>
 
+    <select id="selectInstanceResourcePairs" resultType="java.util.Map">
+        SELECT id AS "instanceId", resource_id AS "resourceId"
+          FROM device_instance
+         WHERE resource_id IS NOT NULL
+    </select>
+
+    <select id="selectAllResourceIds" resultType="java.lang.Long">
+        SELECT id FROM resource_node
+    </select>
+
     <select id="hasPorts" resultType="boolean">
         SELECT EXISTS(
             SELECT 1 FROM device_port

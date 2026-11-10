@@ -28,6 +28,12 @@ public interface DeviceStateMapper {
     /** 设备方法是否可中断；查不到返回 null。 */
     Boolean selectMethodInterruptible(long tenantId, long deviceInstanceId, String method);
 
+    /** device_instance.id -> resource_node.id 全量映射（只取映射到的）。 */
+    java.util.List<java.util.Map<String, Object>> selectInstanceResourcePairs();
+
+    /** 全部资源节点 id（校验工作流节点引用的资源是否还在）。 */
+    java.util.List<Long> selectAllResourceIds();
+
     /** 设备有没有配通道（没配说明是存量数据，跳过通道锁）。 */
     boolean hasPorts(long tenantId, long resourceId);
 
