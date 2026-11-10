@@ -5902,4 +5902,67 @@ field has no value", confirm the table and the column; writing "we queried the
 wrong column" into a governance document sends the next person to fix a bug that
 does not exist.
 
+**Addendum (2026-11-11, evening): re-validating the configuration snapshot before dispatch (preflight PF-10~PF-14); and "the device lock is not returned after quarantine is resolved"**
+
+**One: preflight — making hidden problems explicit**
+
+The spec §6 requires "compile/preflight/publish: Revalidate graph, capabilities, transfer
+robot and reachability" ⇒ preflight gains four checks (**no execution behaviour
+change**, reporting only):
+- **PF-10** (ERROR) the bound id cannot be found in the resource tree ⇒ the binding
+  does not take effect; at run time the node actually picks a different device by capability
+- **PF-11** (WARN) the bound id is really a **device instance id** ⇒ the space does not
+  match what the executor uses ⇒ the binding does not take effect
+- **PF-12** (ERROR) the workflow has an authoritative island and the bound device is not
+  on it ⇒ execution will be refused
+- **PF-13** (ERROR) the workflow has an authoritative island but the island has no
+  device with that capability ⇒ the node will go to manual at run time
+- **PF-14** (WARN) the device/resource relation could not be read ⇒ this run skips the
+  binding and island checks (fail-closed: report one more rather than pass silently)
+
+**Measured on the real database**: of 10651 task bindings, **8295 store a device
+instance id** (all still alive ⇒ **every one of those bindings currently does not take
+effect**, touching 988 of 1038 workflows), 79 are in resource-id space (those bindings
+do take effect), and 2277 exist in neither space (genuinely dangling, 490 workflows,
+44 runs in the last 30 days).
+⚠ What I had written earlier — that workflow 1063 "binds no device and selects by
+capability" — **was wrong**: every one of its nodes does bind a device, but the bound id
+is an instance id ⇒ the binding does not take effect and it degrades to capability
+selection.
+
+**Two: a real defect found on the way: the device lock is not returned after quarantine
+is resolved**
+
+The concurrency acceptance B segment reported "0/2 completed" — digging in, it was
+**not** my change: the **kernel was SIGTERM'd while the device action was running** ⇒
+two runs were quarantined at startup ⇒ each held a device lock ⇒ and **resolving the
+quarantine did not release the device lock** ⇒ those two devices became **permanently
+unavailable** (`DeviceLock.tryAcquire` requires `current_run_id IS NULL` or equal to
+itself) ⇒ every later experiment waits for them forever.
+The ordinary settle path does release them (`releaseRunDeviceLocks`); the **quarantine
+path was missing it**.
+Fix: `resolveQuarantine` releases the run's device locks when the confirmation
+succeeds. (Not releasing them **during** quarantine is correct: the physical result is
+unknown ⇒ the device may still be executing something.)
+
+**Three: lessons (cross-project)**
+
+① **"What must be said before execution" belongs in preflight** — a dead binding, a
+   foreign-island binding and "no device with that capability on the island" look like
+   "it ran on another device", "400 refused" and "the node went to manual" at run time,
+   and **none of them tells an operator anything**; preflight is the only place where
+   it can be said before touching the equipment.
+② **"Silently swapping the device" is harder to diagnose than "failing outright"** —
+   with a dead binding the node still runs to completion and every status is green, so
+   nobody notices that the device was not the one that was bound ⇒ such problems can
+   only be found by **static comparison** (preflight), never by watching the logs.
+③ **Separate "code regression" from "environment residue" before believing a test
+   failure** — this time the red B segment was caused by the kernel being killed, but
+   the **lock not being released** found by following it is a genuine defect ⇒
+   **follow a failure all the way down**; do not stop at "environmental, just re-run".
+④ **After quarantine or termination, give the resources back** — releasing locks cannot
+   hang only on the "normal wrap-up" path; abnormal wrap-up (quarantine) is a terminal
+   state too, and a terminal state owes the resource back.
+
+
 
