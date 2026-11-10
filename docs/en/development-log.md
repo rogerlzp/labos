@@ -5894,5 +5894,12 @@ blocked" sample as well, and it has to prove that **no device was touched**
 this time I nearly wrote the "two id spaces" trap again; only after checking the
 candidate id space of the driver path and the simulation path separately did it
 become clear which side needed converting.
+⑤ **Before claiming "this field is empty", confirm which column you queried** — I
+queried `run_node.output->>'reason'`, found it empty, and nearly wrote a
+**non-existent problem** into the status table; the reason actually lives in
+`input->>'reason'` (`updateNodeResult` writes `input`) ⇒ before asserting "this
+field has no value", confirm the table and the column; writing "we queried the
+wrong column" into a governance document sends the next person to fix a bug that
+does not exist.
 
 
