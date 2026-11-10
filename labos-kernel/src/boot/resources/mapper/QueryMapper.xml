@@ -734,6 +734,58 @@
         RETURNING id
     </select>
 
+    <!-- 估算链（Java 侧按可靠性选）：manual > history(p50,样本>=20) > device > 60s。
+         hist 的 percentile_cont 依赖 run_command 实测；样本不足时不用。 -->
+    <select id="selectWorkflowTimelineNodes" resultType="java.util.Map">
+        WITH nd AS (
+            SELECT node_key AS "nodeKey", name AS "name", estimate_sec AS "manual",
+                   resource_id AS "resourceId",
+                   params->>'protocol_name' AS "method",
+                   COALESCE(seq, 2147483647) AS ord, id
+              FROM workflow_node
+             WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+               AND node_type = 'task'
+        ), hist AS (
+            SELECT cmd.method,
+                   percentile_cont(0.5) WITHIN GROUP (
+                     ORDER BY EXTRACT(EPOCH FROM (cmd.finished_at - cmd.sent_at))) AS p50,
+                   count(*) AS n
+              FROM run_command cmd
+             WHERE cmd.tenant_id = #{param1}
+               AND cmd.method IN (SELECT "method" FROM nd WHERE "method" IS NOT NULL)
+               AND cmd.finished_at IS NOT NULL AND cmd.sent_at IS NOT NULL
+             GROUP BY cmd.method
+        )
+        SELECT nd."nodeKey", nd."name", nd."manual", nd."resourceId", nd."method",
+               hist.p50 AS "p50", hist.n AS "n",
+               (SELECT max(dm.estimate_sec) FROM device_method dm
+                 WHERE dm.method = nd."method" AND dm.estimate_sec > 0) AS "devEst"
+          FROM nd LEFT JOIN hist ON hist.method = nd."method"
+         ORDER BY nd.ord, nd.id
+    </select>
+
+    <select id="selectExperimentRunHeader" resultType="java.util.Map">
+        SELECT experiment_id AS "experimentId", status AS "status",
+               expanded_steps AS "expandedSteps"
+          FROM experiment_run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectExperimentProcessPlan" resultType="java.util.Map">
+        SELECT p.seq AS "seq", p.workflow_id AS "workflowId",
+               p.loop_count AS "loopCount", w.name AS "name"
+          FROM experiment_process p LEFT JOIN workflow w ON w.id = p.workflow_id
+         WHERE p.tenant_id = #{param1} AND p.experiment_id = #{param2}
+         ORDER BY p.seq
+    </select>
+
+    <select id="selectExperimentRunStepRows" resultType="java.util.Map">
+        SELECT seq AS "seq", loop_index AS "loopIndex", status AS "status",
+               run_id AS "runId", error AS "error"
+          FROM experiment_run_step
+         WHERE tenant_id = #{param1} AND experiment_run_id = #{param2}
+    </select>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}

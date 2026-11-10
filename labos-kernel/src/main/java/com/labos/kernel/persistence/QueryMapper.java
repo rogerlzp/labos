@@ -249,6 +249,18 @@ public interface QueryMapper {
     Long insertPositionEvidence(long tenantId, String plateBarcode, Long resourceId,
                                 String type, Long runId, String operator, String note);
 
+    /** 流程时间轴估算：任务节点 + 历史 P50 + 型号库估值，一次 CTE 取全。 */
+    List<Map<String, Object>> selectWorkflowTimelineNodes(long tenantId, long workflowId);
+
+    /** 实验执行头（experiment_id / status / expanded_steps）；不存在返回 null。 */
+    Map<String, Object> selectExperimentRunHeader(long tenantId, long runId);
+
+    /** 实验编排计划（每条流程 × loop_count）。 */
+    List<Map<String, Object>> selectExperimentProcessPlan(long tenantId, long experimentId);
+
+    /** 实验执行的实际步骤行。 */
+    List<Map<String, Object>> selectExperimentRunStepRows(long tenantId, long runId);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

@@ -293,96 +293,70 @@ public class QueryService {
         //   ③ device  —— 型号库 device_method.estimate_sec（随设备型号来）
         //   ④ default —— 60 秒兜底，标 estimated=true
         // 为什么不是"没数据就 60 秒"：历史样本足够的方法（Transfer 4.3 万条）用实测比猜准得多。
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     WITH nd AS (
-                         SELECT node_key, name, estimate_sec, resource_id,
-                                params->>'protocol_name' AS method,
-                                COALESCE(seq, 2147483647) AS ord, id
-                           FROM workflow_node
-                          WHERE tenant_id = ? AND workflow_id = ? AND node_type = 'task'
-                     ), hist AS (
-                         SELECT cmd.method,
-                                percentile_cont(0.5) WITHIN GROUP (
-                                  ORDER BY EXTRACT(EPOCH FROM (cmd.finished_at - cmd.sent_at))) AS p50,
-                                count(*) AS n
-                           FROM run_command cmd
-                          WHERE cmd.tenant_id = ?
-                            AND cmd.method IN (SELECT method FROM nd WHERE method IS NOT NULL)
-                            AND cmd.finished_at IS NOT NULL AND cmd.sent_at IS NOT NULL
-                          GROUP BY cmd.method
-                     )
-                     SELECT nd.node_key, nd.name, nd.estimate_sec, nd.resource_id, nd.method,
-                            hist.p50, hist.n,
-                            (SELECT max(dm.estimate_sec) FROM device_method dm
-                              WHERE dm.method = nd.method AND dm.estimate_sec > 0) AS dev_est
-                       FROM nd LEFT JOIN hist ON hist.method = nd.method
-                      ORDER BY nd.ord, nd.id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            ps.setLong(3, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String key = rs.getString("node_key");
-                    long manual = rs.getInt("estimate_sec");
-                    double p50 = rs.getDouble("p50");
-                    boolean p50Null = rs.wasNull();
-                    long histN = rs.getLong("n");
-                    boolean histNNull = rs.wasNull();
-                    long devEst = rs.getLong("dev_est");
-                    boolean devNull = rs.wasNull();
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectWorkflowTimelineNodes(tenantId, workflowId)) {
+            String key = String.valueOf(row.get("nodeKey"));
+            long manual = mint(row, "manual");
+            Object p50Obj = row.get("p50");
+            double p50 = p50Obj instanceof Number n ? n.doubleValue() : 0d;
+            boolean p50Null = p50Obj == null;
+            Object nObj = row.get("n");
+            long histN = nObj instanceof Number n ? n.longValue() : 0L;
+            boolean histNNull = nObj == null;
+            Object devObj = row.get("devEst");
+            long devEst = devObj instanceof Number n ? n.longValue() : 0L;
+            boolean devNull = devObj == null;
 
-                    long dur;
-                    String source;
-                    if (manual > 0) {
-                        dur = manual;
-                        source = "manual";
-                    } else if (!p50Null && p50 > 0 && !histNNull && histN >= 20) {
-                        // 样本 <20 不用：一两条的耗时不如型号库的默认值
-                        dur = Math.max(1, Math.round(p50));
-                        source = "history";
-                    } else if (!devNull && devEst > 0) {
-                        dur = devEst;
-                        source = "device";
-                    } else {
-                        dur = 60;
-                        source = "default";
-                    }
-                    boolean estimated = !"manual".equals(source);
-                    long ridRaw = rs.getLong("resource_id");
-                    // 0 是历史数据里的"没有设备"，别当成一台设备
-                    Long rid = (rs.wasNull() || ridRaw == 0) ? null : ridRaw;
-                    long resFree = 0;
-                    if (rid != null) {
-                        resFree = freeAt.computeIfAbsent(rid, r -> remainingOf(r));
-                        if (!resCode.containsKey(rid)) {
-                            String code = resourceCodeOf(rid);
-                            // 存量流程里的资源 id 可能已经不在 resource_node 了（换过设备/清过池）：
-                            // 显示 "设备#387" 比显示 "未绑定" 诚实 —— 它确实绑了，只是绑的东西没了
-                            resCode.put(rid, code == null ? "设备#" + rid + "（已失效）" : code);
-                        }
-                    }
-                    long start = Math.max(cursor, resFree);
-                    long end = start + dur;
-                    cursor = end;
-                    if (rid != null) {
-                        freeAt.put(rid, end);
-                    }
-                    items.add(Jsons.obj(
-                            "nodeKey", key,
-                            "name", rs.getString("name"),
-                            "seq", items.size() + 1,
-                            "resourceId", rid,
-                            "resourceCode", rid == null ? null : resCode.get(rid),
-                            "startSec", start,
-                            "endSec", end,
-                            "durationSec", dur,
-                            "estimateSource", source,
-                            "estimateSamples", histNNull ? 0 : histN,
-                            "estimated", estimated));
+            long dur;
+            String source;
+            if (manual > 0) {
+                dur = manual;
+                source = "manual";
+            } else if (!p50Null && p50 > 0 && !histNNull && histN >= 20) {
+                // 样本 <20 不用：一两条的耗时不如型号库的默认值
+                dur = Math.max(1, Math.round(p50));
+                source = "history";
+            } else if (!devNull && devEst > 0) {
+                dur = devEst;
+                source = "device";
+            } else {
+                dur = 60;
+                source = "default";
+            }
+            boolean estimated = !"manual".equals(source);
+            Object ridObj = row.get("resourceId");
+            // 0 是历史数据里的"没有设备"，别当成一台设备
+            Long rid = (ridObj == null || !(ridObj instanceof Number)
+                    || ((Number) ridObj).longValue() == 0)
+                    ? null : ((Number) ridObj).longValue();
+            long resFree = 0;
+            if (rid != null) {
+                resFree = freeAt.computeIfAbsent(rid, r -> remainingOf(r));
+                if (!resCode.containsKey(rid)) {
+                    String code = resourceCodeOf(rid);
+                    // 存量流程里的资源 id 可能已经不在 resource_node 了（换过设备/清过池）：
+                    // 显示 "设备#387" 比显示 "未绑定" 诚实 —— 它确实绑了，只是绑的东西没了
+                    resCode.put(rid, code == null ? "设备#" + rid + "（已失效）" : code);
                 }
             }
+            long startSec = Math.max(cursor, resFree);
+            long end = startSec + dur;
+            cursor = end;
+            if (rid != null) {
+                freeAt.put(rid, end);
+            }
+            items.add(Jsons.obj(
+                    "nodeKey", key,
+                    "name", row.get("name"),
+                    "seq", items.size() + 1,
+                    "resourceId", rid,
+                    "resourceCode", rid == null ? null : resCode.get(rid),
+                    "startSec", startSec,
+                    "endSec", end,
+                    "durationSec", dur,
+                    "estimateSource", source,
+                    "estimateSamples", histNNull ? 0 : histN,
+                    "estimated", estimated));
         }
 
         return Jsons.obj("workflowId", workflowId, "totalSec", cursor,
@@ -693,75 +667,46 @@ public class QueryService {
     }
 
     public String experimentRunStepsJson(long runId) throws SQLException {
-        long expId;
-        String runStatus;
-        int expanded;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT experiment_id, status, expanded_steps FROM experiment_run
-                      WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("实验执行不存在: " + runId);
-                }
-                expId = rs.getLong(1);
-                runStatus = rs.getString(2);
-                expanded = rs.getInt(3);
-            }
+        java.util.Map<String, Object> header =
+                queryMapper.selectExperimentRunHeader(tenantId, runId);
+        if (header == null) {
+            throw new IllegalArgumentException("实验执行不存在: " + runId);
         }
+        long expId = ((Number) header.get("experimentId")).longValue();
+        String runStatus = String.valueOf(header.get("status"));
+        int expanded = mint(header, "expandedSteps");
 
         // 计划：每条流程 × 循环次数
         java.util.List<long[]> plan = new ArrayList<>();          // [seq, loop]
         java.util.Map<String, String> wfName = new java.util.HashMap<>();
         java.util.Map<Integer, Long> wfId = new java.util.HashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT p.seq, p.workflow_id, p.loop_count, w.name
-                       FROM experiment_process p LEFT JOIN workflow w ON w.id = p.workflow_id
-                      WHERE p.tenant_id = ? AND p.experiment_id = ?
-                      ORDER BY p.seq
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, expId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    int seq = rs.getInt("seq");
-                    long wf = rs.getLong("workflow_id");
-                    wfId.put(seq, wf);
-                    wfName.put(seq + ":" + wf, rs.getString("name"));
-                    int times = 1;
-                    String loop = rs.getString("loop_count");
-                    if (loop != null && loop.trim().matches("\\d+")) {
-                        times = Math.max(1, Integer.parseInt(loop.trim()));
-                    }
-                    for (int i = 0; i < times; i++) {
-                        plan.add(new long[]{seq, i});
-                    }
-                }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperimentProcessPlan(tenantId, expId)) {
+            int seq = mint(row, "seq");
+            long wf = ((Number) row.get("workflowId")).longValue();
+            wfId.put(seq, wf);
+            wfName.put(seq + ":" + wf,
+                    row.get("name") == null ? null : String.valueOf(row.get("name")));
+            int times = 1;
+            Object loopObj = row.get("loopCount");
+            String loop = loopObj == null ? null : String.valueOf(loopObj);
+            if (loop != null && loop.trim().matches("\\d+")) {
+                times = Math.max(1, Integer.parseInt(loop.trim()));
+            }
+            for (int i = 0; i < times; i++) {
+                plan.add(new long[]{seq, i});
             }
         }
 
         // 实际执行行
         java.util.Map<String, String[]> done = new java.util.HashMap<>();   // "seq:loop" → [status,runId,err]
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT seq, loop_index, status, run_id, error
-                       FROM experiment_run_step
-                      WHERE tenant_id = ? AND experiment_run_id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    done.put(rs.getInt(1) + ":" + rs.getInt(2), new String[]{
-                            rs.getString(3),
-                            rs.getObject(4) == null ? null : String.valueOf(rs.getLong(4)),
-                            rs.getString(5)});
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperimentRunStepRows(tenantId, runId)) {
+            Object runObj = row.get("runId");
+            done.put(mint(row, "seq") + ":" + mint(row, "loopIndex"), new String[]{
+                    row.get("status") == null ? null : String.valueOf(row.get("status")),
+                    runObj == null ? null : String.valueOf(((Number) runObj).longValue()),
+                    row.get("error") == null ? null : String.valueOf(row.get("error"))});
         }
 
         List<String> items = new ArrayList<>();
