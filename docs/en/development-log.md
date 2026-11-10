@@ -5462,3 +5462,52 @@ check point will never see it; either add a reverse lookup in layer B or record 
 layer B can see it. Also, **when voiding an intermediate state, clean up the downstream visible
 artefacts too**: a re-run starts a new run, and an unhandled old run becomes a "ghost pause entry"
 that, once someone mis-clicks it, **replays a physical action**.
+
+**Added later (2026-11-10): legacy Chinese gateway names still showed up in the English UI — solved with a display-layer reverse lookup (P-13)**
+
+Symptom: workflows created before 2026-11-10 still showed Chinese gateway names
+(`异或汇合`, `并行分叉`) on the canvas in the English UI.
+
+Root cause: when the automatic gateway name was changed to the neutral code
+(`XOR_MERGE`), only a **one-directional** map ("code → text") was added. The legacy rows
+store the Chinese name, which is not in the table ⇒ the lookup misses ⇒ the raw Chinese
+is displayed. Two more holes of the same kind turned up while chasing this:
+① the bpmn-js viewer of the **run graph never registered the renderer at all**
+   (36edb54 only touched the designer canvas) ⇒ even new codes stayed raw there;
+② a reverse lookup without a node-type guard would treat "a custom name that happens to
+use the same wording" as a role name — the database really does contain gateways named
+`分支` and `B还要再来吗`.
+
+Fix: add a **frozen** "legacy Chinese name → code" reverse table, normalize the name to
+a code *before* rendering and then look up the text, so new and legacy data share one set
+of i18n strings. **Not a single byte of the stored data is touched** (no data migration:
+you cannot tell "an auto-generated role name" from "a custom name that happens to use the
+same wording", and a migration would corrupt the user's own naming). The run graph now
+registers the renderer as well and redraws on a locale switch (the canvas is an SVG,
+unaffected by React re-renders).
+
+Verification: the live database has 4 legacy Chinese names in `workflow_node` (workflows
+1257 / 3203, whose BPMN XML carries the same Chinese names); a runtime mapping check
+(2 locales × 8 role names all correct, 10 other names never misjudged); and a real
+bpmn-js rendering check (canvas texts `["并行分叉","异或汇合","分支"]` in Chinese and
+`["Parallel split","XOR merge","分支"]` in English, while `businessObject.name` still
+holds the original Chinese value afterwards ⇒ the model was not modified).
+
+Lessons (cross-project):
+① **"A new mechanism was added" is not "every entry point was wired up"** — the same
+renderer is registered once in the designer canvas and once in the run graph; missing one
+leaves that one place on the old behaviour, and the place that misses still *looks* fine
+(only the text is not localized). ⇒ When adding a mechanism, write the **list of entry
+points** down and wire each of them; do not stop at the main one.
+② **A reverse table must freeze the literal strings; it must not be derived from the
+current language pack** — the pack's wording changes, while the literals stored in the old
+rows are **historical facts**.
+③ **A display-layer reverse lookup without a type guard will misjudge**: rather miss the
+translation (the old name stays as it is) than misjudge (rewrite a user's custom name into
+a role name). That trade-off has to be written into the item explicitly — do not assume
+"an exact match is enough".
+④ **Under concurrent sessions, `git commit` commits the entire index** — my changes were
+swept into another session's commit, whose title had nothing to do with the content.
+⇒ Check `git diff --cached --stat` before committing and `git show --stat HEAD` afterwards;
+for a commit that was already **pushed**, do not rewrite history — just record the real
+commit id in the status table (see chapter 9 of the contribution guidelines).
