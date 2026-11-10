@@ -41,4 +41,41 @@
          WHERE tenant_id = #{tenantId} AND id = #{experimentId}
     </select>
 
+    <!-- SchedulerEta（预计等待时间估算，阶段3第23批收编） -->
+
+    <!-- NULLIF(x,0)+COALESCE(…,60)：estimate_sec 是 NOT NULL DEFAULT 0，
+         裸 COALESCE 永不命中兜底，0 视同"未估算"按 60 秒（与甘特/时间条同口径）。 -->
+    <select id="selectExperimentEstimateSec" resultType="long">
+        SELECT COALESCE(SUM(COALESCE(NULLIF(wn.estimate_sec, 0), 60)), 0)
+          FROM experiment_process ep
+          JOIN workflow_node wn
+            ON wn.workflow_id = ep.workflow_id
+           AND wn.tenant_id = ep.tenant_id
+         WHERE ep.tenant_id = #{tenantId} AND ep.experiment_id = #{experimentId}
+           AND wn.node_type = 'task'
+    </select>
+
+    <!-- 只覆盖"已开跑、还没跑完"的节点：未开始步骤还没有 run_node（§7.2 公式，非漏算）。
+         未完成态集合原 UNFINISHED_NODE_STATUSES 常量只有这一处使用，直接内联。 -->
+    <select id="selectRunRemainSec" resultType="long">
+        SELECT COALESCE(SUM(COALESCE(NULLIF(rn.estimate_sec, 0), 60)), 0)
+          FROM experiment_run_step s
+          JOIN run_node rn
+            ON rn.run_id = s.run_id
+           AND rn.tenant_id = s.tenant_id
+         WHERE s.tenant_id = #{tenantId} AND s.experiment_run_id = #{experimentRunId}
+           AND rn.status IN ('pending','ready','running')
+    </select>
+
+    <select id="selectRecentExperimentsForEta" resultType="java.util.Map">
+        SELECT e.id AS "id", e.experiment_no AS "experimentNo", e.status AS "status",
+               e.island_id AS "islandId", isl.code AS "islandCode"
+          FROM experiment e
+          LEFT JOIN resource_node isl
+            ON isl.id = e.island_id AND isl.tenant_id = e.tenant_id
+         WHERE e.tenant_id = #{tenantId}
+         ORDER BY e.id DESC
+         LIMIT #{limit}
+    </select>
+
 </mapper>

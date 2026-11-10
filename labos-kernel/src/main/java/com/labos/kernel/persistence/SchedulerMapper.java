@@ -33,4 +33,24 @@ public interface SchedulerMapper {
     /** 实验截止时间；无值或实验不存在返回 null。 */
     java.sql.Timestamp selectExperimentDeadline(@Param("tenantId") long tenantId,
                                                 @Param("experimentId") long experimentId);
+
+    // ---- SchedulerEta（预计等待时间估算的读查询，阶段3第23批收编）----
+
+    /**
+     * 实验自身预计耗时（秒）：各流程任务节点工时之和，0 视同未估算按 60 兜底；
+     * 没有流程/节点返回 0（COALESCE 保底，恒有一行）。
+     */
+    long selectExperimentEstimateSec(@Param("tenantId") long tenantId,
+                                     @Param("experimentId") long experimentId);
+
+    /**
+     * 某 experiment_run 的剩余耗时（秒）：已展开 run_node 中
+     * pending/ready/running 节点的工时之和（同样 0 兜底 60）；无未完成节点返回 0。
+     */
+    long selectRunRemainSec(@Param("tenantId") long tenantId,
+                            @Param("experimentRunId") long experimentRunId);
+
+    /** 最近 limit 个实验（id 降序，与实验列表同口径；islandId/islandCode 可空）。 */
+    List<Map<String, Object>> selectRecentExperimentsForEta(@Param("tenantId") long tenantId,
+                                                            @Param("limit") int limit);
 }

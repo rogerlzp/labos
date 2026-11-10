@@ -3,9 +3,6 @@ package com.labos.kernel.workflow;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -42,8 +39,10 @@ public final class SchedulerEta {
     /** 没填预估工时时的兜底秒数（与甘特/时间条同一口径：没数据就按 60 秒）。 */
     private static final int DEFAULT_ESTIMATE_SEC = 60;
 
-    /** 会继续消耗时间的节点状态（终态 = completed/failed/skipped/aborted，不再等）。 */
-    private static final String UNFINISHED_NODE_STATUSES = "('pending','ready','running')";
+    private static com.labos.kernel.persistence.SchedulerMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.SchedulerMapper.class);
+    }
 
     /**
      * 纯函数：预计等待秒数（§7.2 算法核心，必须可单测）。
@@ -95,23 +94,8 @@ public final class SchedulerEta {
      */
     public static long estimateExperimentSec(DbConfig db, long tenantId, long experimentId)
             throws SQLException {
-        String sql = """
-                SELECT COALESCE(SUM(COALESCE(NULLIF(wn.estimate_sec, 0), 60)), 0) AS total
-                  FROM experiment_process ep
-                  JOIN workflow_node wn
-                    ON wn.workflow_id = ep.workflow_id
-                   AND wn.tenant_id = ep.tenant_id
-                 WHERE ep.tenant_id = ? AND ep.experiment_id = ?
-                   AND wn.node_type = 'task'
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? Math.max(0L, rs.getLong(1)) : 0L;
-            }
-        }
+        // SQL 收编进 SchedulerMapper（阶段3第23批）；db 形参保留维持调用方签名。
+        return Math.max(0L, mapper().selectExperimentEstimateSec(tenantId, experimentId));
     }
 
     /**
@@ -125,23 +109,7 @@ public final class SchedulerEta {
      */
     public static long estimateRunRemainSec(DbConfig db, long tenantId, long experimentRunId)
             throws SQLException {
-        String sql = """
-                SELECT COALESCE(SUM(COALESCE(NULLIF(rn.estimate_sec, 0), 60)), 0) AS remain
-                  FROM experiment_run_step s
-                  JOIN run_node rn
-                    ON rn.run_id = s.run_id
-                   AND rn.tenant_id = s.tenant_id
-                 WHERE s.tenant_id = ? AND s.experiment_run_id = ?
-                   AND rn.status IN """ + UNFINISHED_NODE_STATUSES + """
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentRunId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? Math.max(0L, rs.getLong(1)) : 0L;
-            }
-        }
+        return Math.max(0L, mapper().selectRunRemainSec(tenantId, experimentRunId));
     }
 
     /** ETA 列表里的一条实验（DB 行 + 调度器快照的合并视图）。 */
@@ -186,29 +154,14 @@ public final class SchedulerEta {
             lockByResource.putIfAbsent(l.resourceId(), l);
         }
 
-        // 最近 limit 个实验（id DESC，与实验列表同口径）
+        // 最近 limit 个实验（id DESC，与实验列表同口径；SQL 收编进 SchedulerMapper）
         List<ExpRow> rows = new ArrayList<>();
-        String sql = """
-                SELECT e.id, e.experiment_no, e.status, e.island_id, isl.code AS island_code
-                  FROM experiment e
-                  LEFT JOIN resource_node isl
-                    ON isl.id = e.island_id AND isl.tenant_id = e.tenant_id
-                 WHERE e.tenant_id = ?
-                 ORDER BY e.id DESC
-                 LIMIT ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, n);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long islandId = rs.getLong("island_id");
-                    rows.add(new ExpRow(rs.getLong("id"), rs.getString("experiment_no"),
-                            rs.getString("status"),
-                            rs.wasNull() ? null : islandId, rs.getString("island_code")));
-                }
-            }
+        for (Map<String, Object> row : mapper().selectRecentExperimentsForEta(tenantId, n)) {
+            Object islandId = row.get("islandId");
+            rows.add(new ExpRow(((Number) row.get("id")).longValue(),
+                    (String) row.get("experimentNo"), (String) row.get("status"),
+                    islandId == null ? null : ((Number) islandId).longValue(),
+                    (String) row.get("islandCode")));
         }
 
         // §7.2 算法 1：running 以调度器岛锁持有者为准（内存态，"谁真的在跑"），
@@ -345,7 +298,7 @@ public final class SchedulerEta {
     private static long estimateQuietly(DbConfig db, long tenantId, long experimentId) {
         try {
             return estimateExperimentSec(db, tenantId, experimentId);
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             log.error("[ETA] 实验 " + experimentId + " 工时估算失败: " + e.getMessage());
             return 0L;
         }
@@ -354,7 +307,7 @@ public final class SchedulerEta {
     private static long estimateRemainQuietly(DbConfig db, long tenantId, long experimentRunId) {
         try {
             return estimateRunRemainSec(db, tenantId, experimentRunId);
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             log.error("[ETA] run " + experimentRunId + " 剩余估算失败: " + e.getMessage());
             return 0L;
         }
