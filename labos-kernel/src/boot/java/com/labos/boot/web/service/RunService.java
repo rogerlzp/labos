@@ -70,15 +70,18 @@ public class RunService {
     private final ExperimentScheduler scheduler;
     private final RunMapper runMapper;
     private final com.labos.kernel.api.QueryService query;
+    private final PauseCoordinatorFactory pauseFactory;
 
     public RunService(DbConfig db, WorkflowService workflows,
                       ExperimentScheduler scheduler, RunMapper runMapper,
-                      com.labos.kernel.api.QueryService query) {
+                      com.labos.kernel.api.QueryService query,
+                      PauseCoordinatorFactory pauseFactory) {
         this.db = db;
         this.workflows = workflows;
         this.scheduler = scheduler;
         this.runMapper = runMapper;
         this.query = query;
+        this.pauseFactory = pauseFactory;
     }
 
     // ================================================================ 人工窗口
@@ -246,7 +249,7 @@ public class RunService {
     public String pauseRun(long runId, String queryString, String requestId) {
         try {
             Map<String, String> q = queryParams(queryString);
-            PauseCoordinator.WorkflowPause r = new PauseCoordinator(db, TENANT, workflows, scheduler)
+            PauseCoordinator.WorkflowPause r = pauseFactory.forTenant(TENANT)
                     .pauseWorkflowRun(PauseCommand.workflow(runId, PauseCommand.Action.PAUSE,
                             q.get("kind"), q.get("reason"), requestId), q.get("nodeKey"));
             return Jsons.obj("ok", true, "runId", runId,
@@ -265,7 +268,7 @@ public class RunService {
         try {
             Map<String, String> q = queryParams(queryString);
             Map<String, String> corrections = parseCorrections(bodyText);
-            PauseManager.ResumeResult r = new PauseCoordinator(db, TENANT, workflows, scheduler)
+            PauseManager.ResumeResult r = pauseFactory.forTenant(TENANT)
                     .resumeWorkflowRun(PauseCommand.workflow(runId, PauseCommand.Action.RESUME,
                             q.get("action"), null, requestId), corrections);
             return r.toJsonString();
@@ -305,7 +308,7 @@ public class RunService {
         }
         String kind = field(body, "kind");
         Integer before = com.labos.kernel.api.ApiServer.jsonInt(body, "beforeHours");
-        int n = new PauseCoordinator(db, TENANT, workflows, scheduler)
+        int n = pauseFactory.forTenant(TENANT)
                 .dismissBatchWorkflowRuns(ids, kind, before);
         return Result.of(200, Jsons.obj("dismissed", n), null,
                 ids.isEmpty() ? "filter kind=" + kind + ",beforeHours=" + before
@@ -313,7 +316,7 @@ public class RunService {
     }
 
     public Result dismissOne(long runId, String requestId) throws java.sql.SQLException {
-        boolean done = new PauseCoordinator(db, TENANT, workflows, scheduler)
+        boolean done = pauseFactory.forTenant(TENANT)
                 .dismissWorkflowRun(PauseCommand.workflow(runId, PauseCommand.Action.DISMISS,
                         null, null, requestId));
         return Result.of(done ? 200 : 404, Jsons.obj("runId", runId, "dismissed", done), runId, null, null);

@@ -2,6 +2,7 @@ package com.labos.boot.web.controller;
 
 import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
+import com.labos.boot.web.service.PauseCoordinatorFactory;
 import com.labos.boot.web.service.RunService;
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
@@ -66,16 +67,19 @@ public class ExperimentActionController {
     private final ExperimentScheduler scheduler;
     private final AuditRecorder audit;
     private final RunService runService;
+    private final PauseCoordinatorFactory pauseFactory;
 
     public ExperimentActionController(QueryService query, DbConfig db,
                                       WorkflowService workflows, ExperimentScheduler scheduler,
-                                      AuditRecorder audit, RunService runService) {
+                                      AuditRecorder audit, RunService runService,
+                                      PauseCoordinatorFactory pauseFactory) {
         this.query = query;
         this.db = db;
         this.workflows = workflows;
         this.scheduler = scheduler;
         this.audit = audit;
         this.runService = runService;
+        this.pauseFactory = pauseFactory;
     }
 
     // ---------------------------------------------------------------- 流程直跑（演示/调试）
@@ -264,7 +268,7 @@ public class ExperimentActionController {
         String qs = req.getQueryString();
         // 统一走 PauseCoordinator（S-02 / P-06）：这里只解析 HTTP 参数，
         // 路由到既有 RunControl + RuntimeHold 的暂停/停止/恢复语义不在此处重写。
-        PauseCoordinator coord = new PauseCoordinator(db, TENANT, workflows, scheduler);
+        PauseCoordinator coord = pauseFactory.forTenant(TENANT);
 
         if ("pause".equals(action)) {
             PauseCoordinator.ExperimentPause r = coord.pauseExperimentRun(
