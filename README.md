@@ -66,19 +66,23 @@ real sidecar commands and their real timeouts: `MoveTray` 3 s, `Seal` 12 s,
 
 ### Requirements
 
-- **JDK 17** (no framework dependency — JDK standard library + PostgreSQL JDBC only)
+- **JDK 17** — the kernel runs inside a **Spring Boot 3.2.5** container (Spring MVC for HTTP,
+  Spring-managed transactions, HikariCP for pooling, MyBatis XML for SQL)
 - **PostgreSQL** (default database `labdb`, override with `LABOS_DB_NAME`)
 - **Node 18+** (frontend)
 - **Redis** (optional, only needed in gateway mode)
+- **Maven** — only to resolve dependencies; `scripts/build-kernel.sh` downloads it on demand
 
 ### Run the kernel
 
 ```bash
-cd labos-kernel
-javac -encoding UTF-8 -d out $(find src -name '*.java')
-LABOS_DB_NAME=<your-db> java -Dfile.encoding=UTF-8 \
-     -cp "out:lib/postgresql-42.7.3.jar" \
+./scripts/build-kernel.sh                      # resolve dependencies + compile main/boot
+LABOS_DB_NAME=<your-db> ./scripts/start-kernel.sh
 ```
+
+`start-kernel.sh` is the **only** entry point. It launches the Spring Boot container
+(`com.labos.boot.LabosApplication`), which serves the API on port 18080 through Tomcat and
+starts the kernel once the container is ready.
 
 ### Run the frontend
 
@@ -93,11 +97,16 @@ Default account: `admin` / `admin123`.
 
 ```bash
 cd labos-gateway
-javac -encoding UTF-8 -d out $(find src -name '*.java')
+mvn -q -B dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=lib
+javac -encoding UTF-8 -d out -cp "lib/*" $(find src -name '*.java')
 LABOS_REDIS_HOST=127.0.0.1 \
 LABOS_GATEWAY_DRIVERS="DRV-A=tcp://192.0.2.10:8501" \
-java -cp out com.labos.gateway.GatewayMain
+java -cp "out:lib/*" com.labos.gateway.GatewayMain
 ```
+
+The gateway deliberately stays on **bare JDK + Lettuce**: it is a separate process whose only
+jobs are holding connections, moving bytes and writing state — pulling Spring in would add
+roughly 30MB of dependencies and 2–3 seconds of start-up time, which is inconvenient on site.
 
 ### Environment variables
 
@@ -125,9 +134,12 @@ java -cp out com.labos.gateway.GatewayMain
 
 ```bash
 cd labos-kernel
-LABOS_DB_NAME=<your-db> java -cp out com.labos.kernel.recovery.RecoverySelfTest
-LABOS_DB_NAME=<your-db> java -cp out com.labos.kernel.engine.EngineSelfTest
-LABOS_DB_NAME=<your-db> java -cp out com.labos.kernel.workflow.GraphRunnerTest
+LABOS_DB_NAME=<your-db> java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+     com.labos.kernel.recovery.RecoverySelfTest
+LABOS_DB_NAME=<your-db> java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+     com.labos.kernel.engine.EngineSelfTest
+LABOS_DB_NAME=<your-db> java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+     com.labos.kernel.workflow.GraphRunnerTest
 LABOS_DB_NAME=<your-db> ./scripts/start-kernel.sh \
      com.labos.kernel.workflow.RealWorkflowRunner --all
 ```
@@ -148,36 +160,42 @@ python3 scripts/scan-i18n.py        # i18n ledger: key parity + code coverage
 ## Architecture
 
 ```
-┌─────────────────────────────────────┐
-│  Browser (React 18 + TS + Ant Design) │
-└──────────────┬──────────────────────┘
-               │ HTTP/JSON  :18080
-┌──────────────▼──────────────────────┐
-│  Kernel `labos-kernel` (pure Java 17)  │
-│  api/      routing + parameter parsing │
-│  workflow/ workflow · experiment · sched │
-│  engine/   state machine (retry/manual/ │
-│            idempotency)                 │
-│  driver/   device drivers · position lock│
-│  recovery/ crash-recovery decisions    │
-│  alert/    alerts                       │
-└──────────────┬──────────────────────┘
-               │ TCP + JSON
-┌──────────────▼──────────────────────┐
-│  Vendor driver service (.NET sidecar / mock) │
-└──────────────┬──────────────────────┘
-               │ vendor DLL / serial port
-┌──────────────▼──────────────────────┐
-│  Devices / robot arms                │
-└─────────────────────────────────────┘
+┌────────────────────────────────────────────┐
+│  Browser (React 18 + TS + Ant Design)       │
+└───────────────────┬────────────────────────┘
+                    │ HTTP/JSON  :18080
+┌───────────────────▼────────────────────────┐
+│  Kernel `labos-kernel`                      │
+│  Spring Boot 3.2.5 · Java 17 · Tomcat       │
+│                                            │
+│  src/boot/    container layer               │
+│   web/controller/  12 @RestController       │
+│   web/service/     RunService · Workflow…   │
+│   web/             auth · CORS · MVC · audit│
+│                                            │
+│  src/main/    domain layer                  │
+│   workflow/ engine/ driver/ recovery/       │
+│   alert/ expr/ persistence/                 │
+└──────┬───────────────────────┬─────────────┘
+       │ JDBC (HikariCP)        │ TCP + JSON
+┌──────▼───────────┐   ┌───────▼─────────────────┐
+│  PostgreSQL      │   │  Vendor driver service  │
+│  (MyBatis XML)   │   │  (.NET sidecar / mock)   │
+└──────────────────┘   └───────┬─────────────────┘
+                              │ vendor DLL / serial port
+                    ┌─────────▼─────────────────┐
+                    │  Devices / robot arms     │
+                    └───────────────────────────┘
 ```
 
 **Optional gateway path**: kernel → Redis → `labos-gateway` → devices. The gateway
 keeps long-lived connections, so restarting the kernel does not interrupt a running
 device command.
 
-Full module map: [`docs/技术架构与模块地图.md`](docs/en/architecture.md)
-(Chinese).
+Full module map: [`docs/en/architecture.md`](docs/en/architecture.md)
+(Chinese original: [`docs/技术架构与模块地图.md`](docs/技术架构与模块地图.md)).
+The Spring Boot migration itself — scope, per-batch decisions and measured evidence — is in
+[`docs/architecture/SPRING_BOOT_MIGRATION_20261109.md`](docs/architecture/SPRING_BOOT_MIGRATION_20261109.md).
 
 ---
 
@@ -231,8 +249,8 @@ the real localisation code over the backend vocabulary, and fails when:
 - a backend code has no English entry (it would render as a bare code);
 - the English UI would display any Chinese text.
 
-**Current state: all 26 console pages are fully translated — 1 176 message keys
-(zh/en aligned), 58 domain codes covered, 1 238 reachable English strings with zero
+**Current state: all 26 console pages are fully translated — 1 248 message keys
+(zh/en aligned), 63 domain codes covered, 1 315 reachable English strings with zero
 Chinese characters, and 0 residual user-facing Chinese in `webapp/src`.**
 The Chinese console is unchanged: the default locale is still `zh-CN`.
 
@@ -257,6 +275,7 @@ intelligence rather than product documentation; they live in the local, git-igno
 | [`docs/en/onboarding.md`](docs/en/onboarding.md) | Start here for a new reader: 30 minutes to understand the project + the known-issue list |
 | [`docs/en/functional-specification.md`](docs/en/functional-specification.md) | The functional specification — authoritative for what the features are |
 | [`docs/en/architecture.md`](docs/en/architecture.md) | Package layout, key classes, data flow |
+| [`docs/architecture/SPRING_BOOT_MIGRATION_20261109.md`](docs/architecture/SPRING_BOOT_MIGRATION_20261109.md) | **The Spring Boot migration**: container, Spring-managed transactions, MyBatis XML, SLF4J — scope, per-batch decisions, measured evidence |
 | [`docs/en/deployment.md`](docs/en/deployment.md) | Complete on-site deployment steps and pass criteria |
 | [`docs/en/production-roadmap.md`](docs/en/production-roadmap.md) | How far production is, and staged estimates |
 | [`docs/en/experiment-orchestration-design.md`](docs/en/experiment-orchestration-design.md) | Experiment orchestration, canvas, variable passing, execution model |
@@ -299,7 +318,8 @@ Status: **pre-alpha**. The kernel runs workflows, scheduling, position-level occ
 
 Interoperability is a roadmap item, not a shipped feature:
 
-- **SiLA 2 adapter** — consume/expose SiLA 2 features as a separate adapter process, so the kernel keeps zero framework dependencies.
+- **SiLA 2 adapter** — consume/expose SiLA 2 features as a separate adapter process, so the
+  interoperability layer does not add dependencies to the kernel itself.
 - **SiLA Converter pattern** — wrap existing .NET / private-TCP instruments as standard features instead of rewriting drivers.
 - **OPC UA LADS** — evaluated as a companion interface, not a replacement for SiLA 2.
 - **MCP** — an outbound agent-facing interface, complementary to SiLA 2. MCP does not replace device standards.

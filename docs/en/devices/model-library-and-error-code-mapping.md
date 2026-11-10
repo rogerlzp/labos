@@ -120,8 +120,8 @@ private static DeviceBehavior newBehavior(DeviceModel model) {
 
 ```bash
 cd labos-kernel
-javac -encoding UTF-8 -d out $(find src -name '*.java')
-java -cp out com.labos.kernel.device.DeviceErrorSql --emit-sql
+javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" $(find src/main -name '*.java')
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceErrorSql --emit-sql
 # Replace the whole output into the "device-specific error codes" section of 95_seed_data.sql
 ./scripts/test-all.sh --pure-only    # DeviceModelSelfTest checks whether the SQL is in sync
 ```
@@ -263,7 +263,7 @@ code** (`DeviceModels`), not put into the database:
 
 ### Still to be adapted (`PLANNED`, cannot be connected to a real machine)
 
-See `java -cp out com.labos.kernel.sim.DeviceSimulator --list-models`; in the code it is `DeviceModels.PLANNED`.
+See `java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator --list-models`; in the code it is `DeviceModels.PLANNED`.
 
 | Model | What is missing |
 |---|---|
@@ -284,23 +284,23 @@ See `java -cp out com.labos.kernel.sim.DeviceSimulator --list-models`; in the co
 
 ```bash
 cd labos-kernel
-javac -encoding UTF-8 -d out $(find src -name '*.java')
+javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" $(find src/main -name '*.java')
 
 # Model library + mapping + decision (does not touch the database)
-java -cp out com.labos.kernel.device.DeviceModelSelfTest
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceModelSelfTest
 # Simulator behaviour (starts a real socket, follows the timing in the manual)
-java -cp out com.labos.kernel.sim.SimulatorBehaviorSelfTest
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.SimulatorBehaviorSelfTest
 # Full chain: device code → adapter → control-console code → recovery action
-java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.driver.DeviceErrorChainSelfTest
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.driver.DeviceErrorChainSelfTest
 
 # Look at the mapping table / generate the SQL
-java -cp out com.labos.kernel.device.DeviceErrorSql --list
-java -cp out com.labos.kernel.device.DeviceErrorSql --emit-sql
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceErrorSql --list
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceErrorSql --emit-sql
 
 # Start an S100 simulator (with GUI)
-java -cp out com.labos.kernel.sim.SimulatorApp --model s100 --device 501 --port 19501
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.SimulatorApp --model s100 --device 501 --port 19501
 # Start an ASpin 2K simulator (no GUI, for automation)
-java -cp out com.labos.kernel.sim.DeviceSimulator --model aspin-2k --device 601 --port 19502
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator --model aspin-2k --device 601 --port 19502
 
 # Control console → sidecar → device, full chain (no real machine needed)
 ./scripts/test-sidecar.sh
@@ -405,11 +405,11 @@ cd labos-kernel
 export LABOS_DB_HOST=192.0.2.10 LABOS_DB_NAME=labdb LABOS_DB_USER=labos LABOS_DB_PASS=***
 
 # Already in the model library (recommended): name / vendor / type / capability / model binding all automatic
-java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.device.DeviceRegistrar \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceRegistrar \
      --model s100 --image docs/设备/images/s100.jpg
 
 # See the current state
-java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.device.DeviceRegistrar --list
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceRegistrar --list
 ```
 
 What it does (all of it idempotent — a re-run only updates, it never adds):
@@ -446,7 +446,7 @@ Give a JSON description file, so that nobody has to remember the parameters:
 ```
 
 ```bash
-java -cp out:lib/postgresql-42.7.3.jar com.labos.kernel.device.DeviceRegistrar \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.device.DeviceRegistrar \
      --from my-device.json
 ```
 

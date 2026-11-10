@@ -31,10 +31,10 @@ wrong route simply cannot connect**.
 
 ```bash
 # macOS / Linux
-java -cp out com.labos.kernel.sim.DeviceSimulator --port 19501 --device 171 --code ID1183
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator --port 19501 --device 171 --code ID1183
 
 # Windows
-java -cp out com.labos.kernel.sim.DeviceSimulator --port 19501 --device 171 --code ID1183
+java -cp "out;lib\postgresql-42.7.3.jar;lib\spring\*" com.labos.kernel.sim.DeviceSimulator --port 19501 --device 171 --code ID1183
 ```
 
 **There is no need to package for mac/windows separately**. The JVM solves the
@@ -144,7 +144,7 @@ It stops all the simulators and detaches the devices from the simulation driver.
 ## 4. The parameters of a single simulator
 
 ```bash
-java -cp out com.labos.kernel.sim.DeviceSimulator \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
      --port 19501 \
      --device 171 \
      --code ID1183 \
@@ -175,7 +175,7 @@ java -cp out com.labos.kernel.sim.DeviceSimulator \
 
 ```bash
 # Make ID1183 take 5 seconds per step
-java -cp out com.labos.kernel.sim.DeviceSimulator \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
      --port 19501 --device 171 --code ID1183 --delay 5000
 ```
 
@@ -185,7 +185,7 @@ the workflow gets stuck because of it.
 ### 5.2 A long task (`--long`)
 
 ```bash
-java -cp out com.labos.kernel.sim.DeviceSimulator \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
      --port 19501 --device 171 --code ID1183 --delay 4000 --long
 ```
 
@@ -198,11 +198,11 @@ has to be passed before going onto a real machine.**
 
 ```bash
 # Fail once every 3 action-type commands
-java -cp out com.labos.kernel.sim.DeviceSimulator \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
      --port 19501 --device 171 --code ID1183 --fail 3
 
 # Fail with a real-machine error code: the S100 out of paper (the control console translates it into EC-08-300C → hand over to an operator)
-java -cp out com.labos.kernel.sim.DeviceSimulator \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
      --port 19501 --device 171 --code ID1183 --model s100 \
      --fail 1 --fail-method Seal --fail-code 0x8000000C --fail-from 6
 ```
@@ -407,11 +407,11 @@ real machine that means a collision.
 
 ```bash
 # Robot arm
-java -cp out com.labos.kernel.sim.DeviceSimulator \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
      --port 19601 --device 214 --code ID1731 --profile robot
 
 # Centrifuge (with the parameters echoed back)
-java -cp out com.labos.kernel.sim.DeviceSimulator \
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator \
      --port 19603 --device 999 --code CENT-01 --profile centrifuge
 ```
 

@@ -58,19 +58,22 @@
 
 ### 依赖
 
-- **JDK 17**（无框架依赖，只用 JDK 标准库 + PostgreSQL JDBC）
+- **JDK 17** —— 内核跑在 **Spring Boot 3.2.5** 容器里（HTTP 用 Spring MVC，事务与连接池归 Spring 管，SQL 走 MyBatis XML）
 - **PostgreSQL**（默认库名 `labdb`，可用 `LABOS_DB_NAME` 覆盖）
 - **Node 18+**（前端）
 - **Redis**（可选，只有网关模式需要）
+- **Maven**（只用于拉依赖；`scripts/build-kernel.sh` 在本机没有时会自动下载）
 
 ### 启动内核
 
 ```bash
-cd labos-kernel
-javac -encoding UTF-8 -d out $(find src -name '*.java')
-LABOS_DB_NAME=<你的库名> java -Dfile.encoding=UTF-8 \
-     -cp "out:lib/postgresql-42.7.3.jar" \
+./scripts/build-kernel.sh                      # 拉依赖 + 编译 main/boot
+LABOS_DB_NAME=<你的库名> ./scripts/start-kernel.sh
 ```
+
+`start-kernel.sh` 是**唯一**启动入口：拉起 Spring Boot 容器
+（`com.labos.boot.LabosApplication`），由 Tomcat 在 18080 提供 API，
+容器就绪后再拉起内核。
 
 ### 启动前端
 
@@ -85,11 +88,15 @@ npm install && npm run dev      # http://localhost:5173
 
 ```bash
 cd labos-gateway
-javac -encoding UTF-8 -d out $(find src -name '*.java')
+mvn -q -B dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=lib
+javac -encoding UTF-8 -d out -cp "lib/*" $(find src -name '*.java')
 LABOS_REDIS_HOST=127.0.0.1 \
 LABOS_GATEWAY_DRIVERS="DRV-A=tcp://192.0.2.10:8501" \
-java -cp out com.labos.gateway.GatewayMain
+java -cp "out:lib/*" com.labos.gateway.GatewayMain
 ```
+
+网关**刻意保持裸 JDK + Lettuce**：它是独立进程，只干三件事——维持连接、收发字节、写状态；
+引 Spring 会带来约 30MB 依赖和 2–3 秒启动时间，现场重启不方便。
 
 ### 环境变量
 
@@ -114,9 +121,12 @@ java -cp out com.labos.gateway.GatewayMain
 
 ```bash
 cd labos-kernel
-LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.recovery.RecoverySelfTest
-LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.engine.EngineSelfTest
-LABOS_DB_NAME=<你的库名> java -cp out com.labos.kernel.workflow.GraphRunnerTest
+LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+     com.labos.kernel.recovery.RecoverySelfTest
+LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+     com.labos.kernel.engine.EngineSelfTest
+LABOS_DB_NAME=<你的库名> java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+     com.labos.kernel.workflow.GraphRunnerTest
 LABOS_DB_NAME=<你的库名> ./scripts/start-kernel.sh \
      com.labos.kernel.workflow.RealWorkflowRunner --all
 ```
@@ -129,33 +139,40 @@ LABOS_DB_NAME=<你的库名> ./scripts/start-kernel.sh \
 ## 架构
 
 ```
-┌─────────────────────────────────────┐
-│ 浏览器（React 18 + TS + Antd）        │
-└──────────────┬──────────────────────┘
-               │ HTTP/JSON  :18080
-┌──────────────▼──────────────────────┐
-│ 内核 labos-kernel（纯 Java 17）       │
-│  api/      路由与参数解析             │
-│  workflow/ 流程 · 实验 · 调度         │
-│  engine/   状态机（重试/转人工/幂等）  │
-│  driver/   设备驱动 · 位置锁          │
-│  recovery/ 崩溃恢复决策               │
-│  alert/    告警                       │
-└──────────────┬──────────────────────┘
-               │ TCP + JSON
-┌──────────────▼──────────────────────┐
-│ 厂商驱动服务（.NET Sidecar / Mock）    │
-└──────────────┬──────────────────────┘
-               │ 厂商 DLL / 串口
-┌──────────────▼──────────────────────┐
-│ 设备 / 机械臂                         │
-└─────────────────────────────────────┘
+┌────────────────────────────────────────────┐
+│ 浏览器（React 18 + TS + Antd）               │
+└───────────────────┬────────────────────────┘
+                    │ HTTP/JSON  :18080
+┌───────────────────▼────────────────────────┐
+│ 内核 labos-kernel                            │
+│ Spring Boot 3.2.5 · Java 17 · Tomcat          │
+│                                             │
+│ src/boot/    容器层                           │
+│  web/controller/  12 个 @RestController       │
+│  web/service/     RunService · Workflow…      │
+│  web/             鉴权 · CORS · MVC · 审计     │
+│                                             │
+│ src/main/    领域层                           │
+│  workflow/ engine/ driver/ recovery/          │
+│  alert/ expr/ persistence/                    │
+└──────┬───────────────────────┬──────────────┘
+       │ JDBC（HikariCP）       │ TCP + JSON
+┌──────▼───────────┐   ┌───────▼─────────────────┐
+│ PostgreSQL       │   │ 厂商驱动服务              │
+│ （MyBatis XML）  │   │（.NET Sidecar / Mock）     │
+└──────────────────┘   └───────┬─────────────────┘
+                              │ 厂商 DLL / 串口
+                    ┌─────────▼─────────────────┐
+                    │ 设备 / 机械臂               │
+                    └───────────────────────────┘
 ```
 
 **可选网关路径**：内核 → Redis → `labos-gateway` → 设备。
 网关常驻长连接，内核重启不影响设备执行。
 
 详细模块地图见 [`docs/技术架构与模块地图.md`](docs/技术架构与模块地图.md)。
+Spring Boot 迁移本身（范围、分批决策与实测证据）见
+[`docs/architecture/SPRING_BOOT_MIGRATION_20261109.md`](docs/architecture/SPRING_BOOT_MIGRATION_20261109.md)。
 
 ---
 
@@ -189,6 +206,7 @@ LABOS_DB_NAME=<你的库名> ./scripts/start-kernel.sh \
 | [`docs/评审包-20261102.md`](docs/评审包-20261102.md) | **本轮评审入口：做了什么/验证结果/7 个待审点** |
 | [`docs/设计审核包.md`](docs/设计审核包.md) | **要审设计？从这里进**：7 个待审点 + 状态对照 |
 | [`docs/技术架构与模块地图.md`](docs/技术架构与模块地图.md) | 包结构、关键类职责、数据流 |
+| [`docs/architecture/SPRING_BOOT_MIGRATION_20261109.md`](docs/architecture/SPRING_BOOT_MIGRATION_20261109.md) | **Spring Boot 迁移档案**：容器 / 事务 / MyBatis XML / 日志的范围、分批决策与实测证据 |
 | [`docs/开发日志.md`](docs/开发日志.md) | 每个决策和每个坑的来龙去脉 |
 | [`docs/实验编排-功能设计.md`](docs/实验编排-功能设计.md) | 实验编排、画布、变量传递、执行模型 |
 | [`docs/流程控制-功能说明.md`](docs/流程控制-功能说明.md) | **条件分支 / 循环 / 变量**：怎么配、页面上怎么看、已知限制 |

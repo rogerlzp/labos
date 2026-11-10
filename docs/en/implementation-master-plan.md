@@ -87,7 +87,7 @@ did the device answer", instead of having only the sentence "execution failed".
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│  Interface layer   HTTP API (zero framework) + single-page console                       │
+│  Interface layer   HTTP API (Spring MVC) + single-page console                           │
 ├──────────────────────────────────────────────────────────────────────────────────────────┤
 │  Kernel layer      recovery  decision engine (pure function, replayable)                 │
 │                    engine    execution state machine (does no IO)                        │
@@ -154,7 +154,7 @@ If the literal reading is kept, the orchestration logic afterwards is bound to b
 | `alert` | `AlertAggregator` | Aggregation with a **silence period** (not a fixed window), three-state alerts |
 | `workflow` | `RealWorkflowRunner` | It reads the real process from the database; the capability → device is decided at run time |
 | `driver` | The `DeviceDriver` contract | Capability declaration, idempotency key, device raw response, catch-all codes are forbidden |
-| `api` | `ApiServer` | The JDK built-in HttpServer, zero framework |
+| `api` | `ApiServer` | Spring MVC (Tomcat owns port 18080); `ApiServer` only holds the start-up cleanup |
 
 ### 4.2 The three "verifiability" designs
 

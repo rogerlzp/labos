@@ -353,7 +353,7 @@ webapp/src/
 
 实验块那一层在 2.0 只保留「多个 workflow 顺序执行」。块级画布不在发布门槛里。
 
-内核保持不依赖 Spring。演示用的 JDK HttpServer 继续包住内核。Spring Boot 是内核之外的后续决定，见第 12 章。
+内核已引入 Spring Boot 3.2.5（2026-11-10 取代原「内核保持不依赖 Spring」的表述，见第 12 章 D6 与 `决策记录.md`）。HTTP 层用 Spring MVC，持久化用 MyBatis XML，连接池与事务由 Spring 管理；设备网关是另一个进程，仍保持裸 JDK，不引框架。
 
 ---
 
@@ -642,8 +642,8 @@ P0 收进第 1.1 节的发布门槛。P1 做，不挡住 2.0 改版本号。标�
 | 层 | 2.0 的选择 | 说明 |
 |---|---|---|
 | 内核语言 | Java 17 | 已用 |
-| 内核依赖 | 不依赖 Web 框架 | 决策、执行、编译保持可单测 |
-| 演示服务 | JDK HttpServer | 继续包住内核 |
+| 内核依赖 | Spring Boot 3.2.5（Spring MVC / MyBatis XML / Spring 事务） | 领域层不引 Spring 注解，决策、执行、编译仍保持可单测 |
+| 演示服务 | Spring MVC（Tomcat 接管 18080） | JDK HttpServer 已退役；设备网关另为独立的裸 JDK 进程 |
 | 数据库 | PostgreSQL 17 | 已迁移 |
 | 驱动 | gRPC + .NET Sidecar | 契约已定，真实端点见 8.3 |
 | 实时推送 | SSE | P1，状态视图可以先轮询 |
@@ -819,7 +819,7 @@ GET /api/process-status
 | D3 | 并行要不要墙钟重叠 | 2.0 只要求汇合语义。墙钟并行不挡发布 |
 | D4 | 条件表达式怎么实现 | 出现条件之后再用白名单（比较、与或、变量和上游状态）。不使用 SpEL、Groovy 或任意脚本 |
 | D5 | 前端框架 | 2.0 沿用现有控制台和 bpmn-js。React 留到实验块画布立项时再定 |
-| D6 | Spring Boot | 2.0 内核不引入。HttpServer 只做演示外壳 |
+| D6 | Spring Boot | **已推翻（2026-11-10）**：2.0 内核已引入 Spring Boot 3.2.5（Spring MVC HTTP 层 + MyBatis XML + Spring 事务 + HikariCP + SLF4J）。JDK HttpServer 已退役；设备网关保持裸 JDK，不引框架。见 `决策记录.md` 与 ADR-TECH-001 |
 | D7 | 板在哪 | 2.0 不实现 nest 跟踪。容器身份为 P1。就绪三态放到有位置之后 |
 | D8 | 真实设备怎么接 | 先影子模式一个端点。不要求全部设备同时停机 |
 | D9 | 换设备从哪一步重跑 | 从该节点第一步重跑 |

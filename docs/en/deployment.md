@@ -48,15 +48,18 @@ returns rows.
 ### 1.3 Start the kernel
 
 ```bash
-cd /opt/labos/labos-kernel
-javac -encoding UTF-8 -d out $(find src -name '*.java')
+cd /opt/labos
 
+# 1. build (resolve Maven dependencies + compile main/boot)
+cd labos-kernel
+bash /opt/labos/scripts/build-kernel.sh
+
+# 2. start (the Spring Boot container — the only entry point)
 LABOS_DB_HOST=<DB_IP> \
 LABOS_DB_NAME=labdb \
-LABOS_DB_USER=<用户> \
-LABOS_DB_PASS=<密码> \
-nohup java -Dfile.encoding=UTF-8 \
-     -cp "out:lib/postgresql-42.7.3.jar" \ >> /opt/labos/api.log 2>&1 &
+LABOS_DB_USER=<user> \
+LABOS_DB_PASS=<password> \
+nohup ./scripts/start-kernel.sh >> /opt/labos/api.log 2>&1 &
 ```
 
 **Pass criteria**:
@@ -64,6 +67,13 @@ nohup java -Dfile.encoding=UTF-8 \
 ```
 [调度] 已启动（岛级互斥，最多 4 个实验并行）
 ```
+
+> **The first build needs network access**: `build-kernel.sh` uses Maven to pull the
+> Spring/MyBatis dependencies (they land in `labos-kernel/lib/spring/`, which is
+> gitignored) and downloads Maven itself into `~/.cache/labos-maven/` when the machine
+> has none. **If the site has no internet**: run `build-kernel.sh` once on a machine
+> that does, then copy the whole `labos-kernel/lib/spring/` directory over with the
+> package. Once the dependencies are there, later builds need no network.
 
 ```bash
 curl -X POST http://localhost:18080/api/auth/login \
@@ -260,7 +270,7 @@ WHERE ds.tenant_id = 1;
 
 ```bash
 # 1. stop the control console
-pkill -f ApiServer
+pkill -f LabosApplication
 
 # 2. clear the devices by hand (take the plates out, home the robot arm)
 #    this step must be done by hand — the system does not know the actual state on site
@@ -280,9 +290,9 @@ the same time — both sides think the plate is in their own hands, and they wil
 |---|---|
 | Check whether the service is alive | `curl http://localhost:18080/health` |
 | Check the scheduler status | `curl .../api/scheduler/status` |
-| Check the log | `tail -100 /opt/labos/api.log` |
+| Check the log | `tail -100 /opt/labos/api.log` (console output)<br>`tail -100 /opt/labos/labos-kernel/logs/labos-kernel.log` (rolling full log)<br>`tail -100 /opt/labos/labos-kernel/logs/labos-security.log` (pause / abort / transaction archive) |
 | Check the alerts | the "alerts" page in the UI |
-| Restart | `pkill -f ApiServer`, then start it as in 1.3 |
+| Restart | `pkill -f LabosApplication`, then start it as in 1.3 |
 
 ### Do not overwrite the log with `>`
 

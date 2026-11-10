@@ -1,6 +1,6 @@
 # LabOS 架构决策记录（ADR）统一注册表
 
-日期：2026-11-07
+日期：2026-11-07（最后更新：2026-11-10）
 状态：**唯一真源**。所有架构文档的结论、编号与状态以本表为准；其它文档只保留思考过程与源码证据，不得各自维护一套结论或状态。
 
 维护规则：
@@ -8,7 +8,7 @@
 1. 新增决策必须先在本表取号并登记，再写文档；禁止在正文里新增未注册的 ADR 编号。
 2. 状态取值：`PROPOSED` / `ACCEPT` / `SUPERSEDED` / `REJECTED`。已 `ACCEPT` 的决策不直接改写，用新 ADR 标记 `SUPERSEDES` 并列入 §3。
 3. 每个实施 PR 的模板必填：`ADR 编号`、`REMEDIATION_STATUS.md 中对应行更新`、`CI/e2e/HIL 证据`。
-4. 命名前缀：`ADR-PAUSE-*`（暂停/干预状态）、`ADR-FAULT-SCOPE-*`（故障隔离）、`ADR-ISLAND-*`（Workcell 边界）、`ADR-PROCESS-*`（工程与基线纪律）、`ADR-DOC-*`（文档规范）。
+4. 命名前缀：`ADR-PAUSE-*`（暂停/干预状态）、`ADR-FAULT-SCOPE-*`（故障隔离）、`ADR-ISLAND-*`（Workcell 边界）、`ADR-PROCESS-*`（工程与基线纪律）、`ADR-DOC-*`（文档规范）、`ADR-TECH-*`（技术栈与框架选型）。
 
 ---
 
@@ -40,6 +40,7 @@
 | **ADR-PAUSE-009** | **V1 幂等键采用独立 `pause_request` 表** | **ACCEPT** | 见 §2.14 | 用户裁决 2026-11-07（Q-1，取更完善方案） | PauseCoordinator、schema 新增表、P-06 |
 | **ADR-PAUSE-010** | **Hold 读取失败的 `UNKNOWN` 必须运维可见** | **ACCEPT** | 见 §2.15 | 用户裁决 2026-11-07（Q-2，取更完善方案） | `GET /api/holds`、RuntimeHold |
 | **ADR-PROCESS-003** | **L-02 先于 S-02/P-06（PauseCoordinator）合并** | **ACCEPT** | 见 §2.16 | 用户裁决 2026-11-07（Q-3） | 合并顺序、REMEDIATION Step 7 |
+| **ADR-TECH-001** | **内核采用 Spring Boot 3.2.5 容器；设备网关保持裸 JDK** | **ACCEPT** | 见 §2.17 | 现场实施决策 2026-11-09/10 | `labos-kernel` 全量、`scripts/`、全部架构文档 |
 
 ---
 
@@ -253,6 +254,39 @@
 - 合并顺序：`L-02`（状态表达能力：`control_state` + `status` 扩容 + 词表） → `S-02 / P-06`（PauseCoordinator 适配层，含 `ADR-PAUSE-009` 的 `pause_request` 幂等表与 `ADR-PAUSE-010` 的 UNKNOWN 暴露） → `S-03`（事实/投影切换） → `S-04` 第 2 个 PR。
 - 与 `REMEDIATION_STATUS.md` Step 7 依赖序一致（`L-02 → S-02/P-06 → S-03 → S-04B`）。
 - `V1-1`~`V1-4`（安全闸门 fail-closed、资源释放修复、PauseCoordinator 适配层）是 `P-03` / `P-06` 的**安全子集**，须在提交信息中说明，不与 `P-03` 的全部范围（逐 Workcell 候选调度、`uk_runtime_hold_active` 唯一索引改造）混淆。
+
+### 2.17 ADR-TECH-001：内核采用 Spring Boot 3.2.5 容器；设备网关保持裸 JDK
+
+**Decision：ACCEPT。** 现场实施决策 2026-11-09 / 2026-11-10。
+
+**决策内容**
+
+- `labos-kernel` 跑在 **Spring Boot 3.2.5 / Java 17** 容器里，入口唯一：`com.labos.boot.LabosApplication`。
+- HTTP 层用 **Spring MVC**（Tomcat 接管 18080）：12 个 `@RestController` 承接全部端点，业务编排放进 `RunService` / `WorkflowWebService`。
+- 持久化用 **MyBatis XML**：SQL 全在 `mapper/*.xml`，`@MapperScan("com.labos.kernel.persistence")` 注册。
+- 连接池与事务归 **Spring**：HikariCP + `DataSourceTransactionManager` + `@Transactional` / `Tx.inTransaction`。
+- 日志走 **SLF4J + logback-spring.xml**，MDC 上下文（`traceId` / `runId` / `commandId` / `workflowId`）由 `LogContext` 注入。
+- **`labos-gateway` 刻意不引 Spring**，保持裸 JDK + Lettuce（连接池/重连/编解码交给 Lettuce）。
+
+**为什么**
+
+1. **手写基础设施的维护成本已超过框架成本。** 迁移前的事实：396 处 `db.open()`、46 处显式 `setAutoCommit(false)`、自研 8 连接池、434 处 `System.out` + 109 处 `System.err`、137 条散在 Java 里的 SQL、一个约 1500 行的手写路由巨类。
+2. **迁移后的净收益是可数的**：全仓 `setAutoCommit/commit/rollback` **归零**；539 处 `System.out/err` 全部换成 SLF4J；HTTP 路由拆成 12 个薄 Controller + 2 个 Service；SQL 收进 XML 后可直接阅读与审阅。
+3. **领域层不被框架绑架**：`src/main/`（领域层）不引 Spring 注解，`src/boot/`（容器层）只做装配与 HTTP 适配 ⇒ 领域逻辑仍可脱离容器单测，纯 JVM 工具（如 `RealWorkflowRunner`）可直接驱动。
+4. **网关不引 Spring 是有理由的**：它是独立进程，职责只有维持连接、收发字节、写状态；引 Spring 会带来约 30MB 依赖和 2–3 秒启动时间，现场重启不方便。**框架边界画在进程边界上**，不是画在"要不要用框架"上。
+5. **选 MyBatis XML 而非 JdbcTemplate / JPA**：SQL 与 Java 分离后可直接阅读；JPA 与本项目的 `jsonb`、PG 枚举、`ON CONFLICT`、`FOR UPDATE` 冲突。
+
+**明确不做**
+
+- **不改用 `mvn package` 一把梭**：现有门禁与 e2e 全部按 `out/` 目录 + 裸 `javac` 工作，改 Maven 生命周期会同时改掉启动脚本、崩溃恢复段的重启命令与所有自测的 classpath。**Maven 只负责拉依赖**，编译仍走 javac，产物照样落 `out/`。
+- **不留兼容层**：旧启动方式、`LegacyRouteController` + `ServletHttpExchange` 适配层、`ApiServer.route()` 全部退役，不保留双路径。
+
+**证据**
+
+- 迁移过程与逐批实测见 [`SPRING_BOOT_MIGRATION_20261109.md`](SPRING_BOOT_MIGRATION_20261109.md)。
+- `build-kernel.sh --verify` 13/0；`test-all.sh` 1310/0；`ci-gate.sh --recovery` 4.13 崩溃恢复 34/0。
+
+**影响面**：`labos-kernel`（`src/boot/` 全部 + `src/main/` 的事务与日志写法）、`scripts/`（构建/启动/进程发现口径）、全部架构与操作文档（README / 模块地图 / 评审指引 / 部署手册 及其英文镜像）。
 
 ---
 

@@ -79,26 +79,28 @@ The root-level `前后端实施方案_编译甘特就绪调度.md`,
 
 - PostgreSQL `192.0.2.1:5432` (database `labos`, user `labos`)
 - Redis `192.0.2.1:6379` (the gateway state centre)
-- JDK 17 (no third-party dependencies, only `postgresql-42.7.3.jar`)
+- JDK 17 (the kernel runs inside a **Spring Boot 3.2.5** container: Spring MVC + Spring transactions + HikariCP + MyBatis XML)
+- Maven (only to resolve dependencies; `scripts/build-kernel.sh` downloads it on demand)
 - Node 18+ (frontend)
 
 ### Start
 
 ```bash
-# 1. Kernel (port 18080)
-cd labos-kernel
-javac -encoding UTF-8 -d out $(find src -name '*.java')
-java -Dfile.encoding=UTF-8 -cp "out:lib/postgresql-42.7.3.jar" \
+# 1. Kernel (port 18080) — the only entry point
+./scripts/build-kernel.sh                      # resolve dependencies + compile main/boot
+LABOS_DB_NAME=<your-db> ./scripts/start-kernel.sh
 
 # 2. Frontend (port 5173)
 cd webapp
 npm install && npm run dev
 
-# 3. Device gateway (optional, persistent-connection mode)
+# 3. Device gateway (optional, persistent-connection mode) — deliberately bare JDK + Lettuce
 cd labos-gateway
+mvn -q -B dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=lib
+javac -encoding UTF-8 -d out -cp "lib/*" $(find src -name '*.java')
 LABOS_REDIS_HOST=192.0.2.1 \
 LABOS_GATEWAY_DRIVERS="DRV-A=tcp://192.0.2.10:8501" \
-java -cp out com.labos.gateway.GatewayMain
+java -cp "out:lib/*" com.labos.gateway.GatewayMain
 ```
 
 ### Verify
@@ -108,7 +110,7 @@ java -cp out com.labos.gateway.GatewayMain
 cd labos-kernel
 for t in recovery.RecoverySelfTest engine.EngineSelfTest alert.AlertSelfTest \
          workflow.WorkflowAlertTest workflow.GraphRunnerTest; do
-  java -cp out com.labos.kernel.$t
+  java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.$t
 done
 
 # Full process set (the workflows walked on the simulation bus)
@@ -126,30 +128,43 @@ done
 ## 4. Code map
 
 ```
-labos-kernel/src/main/java/com/labos/kernel/
-├── api/             HTTP endpoints (ApiServer is a ~1500-line monolith, QueryService does queries)
-├── workflow/        workflows: BPMN parsing, compilation, execution, experiment orchestration, scheduling
-│   ├── WorkflowService      core (execution, variable substitution, candidate pool)
-│   ├── ExperimentExecutor   experiment execution (variables + loop expansion + sequential run)
-│   ├── ExperimentScheduler  parallel experiments (island locks + queueing)
-│   ├── GraphRunner          executes along a BPMN graph
-│   └── ExperimentFlowRunner canvas step-by-step execution (writes run/run_node/run_command)
-├── engine/          state machine (RunStateMachine: retry, hand-over, idempotency)
-├── driver/          device drivers
-│   ├── DeviceDriver         interface
-│   ├── tcp/TcpDriverAdapter short connection
-│   ├── tcp/TcpPersistentDriver persistent connection (pairs by messageId)
-│   ├── PositionLock         position lock (atomic reservation, dual move locks)
-│   └── ShadowProbe          single-command probe (shadow mode)
-├── recovery/        crash-recovery decisions (RecoveryDecider); the crash cleanup is in workflow/StartupRecovery
-│                    Note: there is no "lease takeover" mechanism (it was in the early design, never implemented)
-├── alert/           alerts (generation, deduplication, merging)
-└── redis/           hand-written RESP2 client
+labos-kernel/src/
+├── boot/             Spring Boot container layer (every Spring dependency lives here)
+│   ├── LabosApplication        start-up entry point (the only one)
+│   ├── BeanConfiguration       Service / Mapper wiring
+│   ├── DataSourceConfiguration HikariCP + transaction manager
+│   ├── KernelRunner            starts the kernel once the container is ready
+│   ├── LogContext              MDC scope (traceId/runId/…)
+│   └── web/                    Spring MVC
+│       ├── controller/         12 @RestController (thin HTTP layer)
+│       ├── service/            RunService · WorkflowWebService
+│       └── ApiAuthInterceptor / CorsConfig / WebMvcConfig / AuditRecorder
+└── main/java/com/labos/kernel/
+    ├── api/             authentication and queries (AuthService · QueryService · RbacRules)
+    │                    ApiServer only holds the start-up cleanup runKernel() (614 lines, was ~1500)
+    ├── workflow/        workflows: BPMN parsing, compilation, execution, experiment orchestration, scheduling
+    │   ├── WorkflowService      core (execution, variable substitution, candidate pool)
+    │   ├── ExperimentExecutor   experiment execution (variables + loop expansion + sequential run)
+    │   ├── ExperimentScheduler  parallel experiments (island locks + queueing)
+    │   ├── GraphRunner          executes along a BPMN graph
+    │   └── ExperimentFlowRunner canvas step-by-step execution (writes run/run_node/run_command)
+    ├── engine/          state machine (RunStateMachine: retry, hand-over, idempotency)
+    ├── driver/          device drivers
+    │   ├── DeviceDriver         interface
+    │   ├── tcp/TcpDriverAdapter short connection
+    │   ├── tcp/TcpPersistentDriver persistent connection (pairs by messageId)
+    │   ├── PositionLock         position lock (atomic reservation, dual move locks)
+    │   └── ShadowProbe          single-command probe (shadow mode)
+    ├── recovery/        crash-recovery decisions (RecoveryDecider); the crash cleanup is in workflow/StartupRecovery
+    │                    Note: there is no "lease takeover" mechanism (it was in the early design, never implemented)
+    ├── alert/           alerts (generation, deduplication, merging)
+    ├── persistence/     MyBatis Mapper (SQL in XML) + DbConfig + Tx (transaction entry point)
+    └── redis/           hand-written RESP2 client
 
 labos-gateway/src/main/java/com/labos/gateway/
 ├── GatewayMain             entry point (one consumer thread per driver)
 ├── driver/DriverConnection persistent connection + writes to Redis
-└── redis/RedisClient       hand-written RESP2
+└── redis/RedisClient       Lettuce 6.3.2 (swapped in for the hand-written RESP2 client on 2026-11-09)
 
 webapp/src/pages/
 ├── Island.tsx          island view (drag devices onto the canvas, transfer sequence, plate visualisation)
@@ -273,10 +288,13 @@ A frontend showing `3/5` actually means "step 3 is running", not "3 steps done".
 It has become an empty method (with a comment explaining why); if something else
 still calls it, it fails silently.
 
-### 🟢 `ApiServer` is a ~1500-line monolith
+### 🟢 `ApiServer` dropped from ~1500 lines to 614 (closed out 2026-11-10)
 
-Routing, parameter parsing and JSON assembly all live together. When reviewing, you
-can count how many `if (path.equals(...))` it has.
+The HTTP routes all moved into annotated Controllers (12 of them, in
+`src/boot/web/controller/`); `ApiServer` now only holds the start-up cleanup
+`runKernel()` and a few static helpers. The methods inside it that are still typed
+against `HttpExchange` **have no callers** (dead code) and are a cleanup candidate —
+when reviewing, just count how many `HttpExchange` references are left in `ApiServer`.
 
 ---
 
@@ -328,7 +346,7 @@ but has not become a routine check.
 ### Not worth focusing on
 
 - Frontend styling details (demo quality)
-- The code style of `ApiServer` (it is known to be a monolith)
+- The dead code left in `ApiServer` (the `HttpExchange`-typed methods have no callers)
 - Test coverage numbers (look at whether the critical paths are tested at all)
 
 ---

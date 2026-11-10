@@ -255,10 +255,10 @@ it has to:
 
 ```bash
 # Online
-java -cp out com.labos.kernel.sim.DeviceSimulator --port 19501 --device 171 --code ID1183
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator --port 19501 --device 171 --code ID1183
 
 # Offline (does not listen)
-java -cp out com.labos.kernel.sim.DeviceSimulator --port 19501 --offline
+java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" com.labos.kernel.sim.DeviceSimulator --port 19501 --offline
 
 # Kill it while it is running
 pkill -f "code ID1183"

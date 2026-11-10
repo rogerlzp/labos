@@ -15,6 +15,15 @@
 
 ## 1. What exists in English today
 
+> **Technology baseline (2026-11-10)**: the kernel runs inside a **Spring Boot 3.2.5**
+> container — Spring MVC for HTTP, Spring-managed transactions, HikariCP for pooling,
+> MyBatis XML for SQL, SLF4J for logging. The device gateway (`labos-gateway`) stays a
+> separate process on bare JDK + Lettuce **by design**. The migration record (scope,
+> per-batch decisions, measured evidence) is
+> [`docs/architecture/SPRING_BOOT_MIGRATION_20261109.md`](../architecture/SPRING_BOOT_MIGRATION_20261109.md)
+> (Chinese only). The module map that reflects this baseline is
+> [`docs/en/architecture.md`](architecture.md).
+
 | English document | Contents | Status |
 |---|---|---|
 | [`README.md`](../../README.md) | Project facade: capabilities, quick start, architecture, design decisions, i18n model, known limitations | ✅ Complete |
@@ -69,9 +78,9 @@
 
 | Metric | Value |
 |---|---|
-| Message keys (zh / en) | 1 176 / 1 176 — key-aligned |
-| Domain codes with an English entry | 58 / 58 (45 statuses + 3 pause kinds + 3 hints + 4 hold kinds + 3 hold scopes) |
-| English texts actually reachable in the UI (executed, not parsed) | 1 238 — **0 contain Chinese** |
+| Message keys (zh / en) | 1 248 / 1 248 — key-aligned |
+| Domain codes with an English entry | 63 / 63 (50 statuses + 3 pause kinds + 3 hints + 4 hold kinds + 3 hold scopes) |
+| English texts actually reachable in the UI (executed, not parsed) | 1 315 — **0 contain Chinese** |
 | **Remaining Chinese in the frontend (user-facing, comments excluded)** | **0 characters / 0 files** — every one of the 26 console pages is fully translated |
 
 All 26 console pages have been converted (batches B2–B7 below). The Chinese
@@ -103,8 +112,8 @@ translation projects rot.
 
 The frontend has no i18n dependency, and none is being added:
 
-- The kernel is JDK 17 with zero framework dependencies; the frontend holds to the
-  same discipline.
+- The kernel runs inside a Spring Boot 3.2.5 container; the frontend deliberately adds
+  **no** i18n dependency of its own.
 - The actual requirement is "look up a key" + "look up a domain code" — no plurals,
   no gender, no interpolation pipeline.
 - Key alignment between the two packs is enforced **by the type system**

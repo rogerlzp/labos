@@ -357,7 +357,7 @@ webapp/src/
 
 The experiment-block layer keeps only "several workflows executed in sequence" in 2.0. A block-level canvas is not in the release gate.
 
-The kernel stays free of a Spring dependency. The JDK HttpServer used for the demo continues to wrap the kernel. Spring Boot is a later decision outside the kernel — see chapter 12.
+The kernel now runs on Spring Boot 3.2.5 (on 2026-11-10 this replaced the original "the kernel stays free of a Spring dependency" wording — see D6 in chapter 12 and `决策记录.md`). The HTTP layer is Spring MVC, persistence is MyBatis XML, and the pool and transactions are managed by Spring; the device gateway is a separate process that stays on bare JDK and pulls in no framework.
 
 ---
 
@@ -646,8 +646,8 @@ The `protocol` is a device method, not a process template. Chapter 1 of the data
 | Layer | The 2.0 choice | Explanation |
 |---|---|---|
 | Kernel language | Java 17 | Already in use |
-| Kernel dependencies | No dependency on a web framework | The decisions, the execution and the compilation stay unit-testable |
-| Demo service | JDK HttpServer | Continues to wrap the kernel |
+| Kernel dependencies | Spring Boot 3.2.5 (Spring MVC / MyBatis XML / Spring transactions) | The domain layer carries no Spring annotations, so the decisions, the execution and the compilation stay unit-testable |
+| Demo service | Spring MVC (Tomcat owns port 18080) | The JDK HttpServer is retired; the device gateway is a separate bare-JDK process |
 | Database | PostgreSQL 17 | Already in use |
 | Driver | gRPC + .NET Sidecar | The contract is fixed, the real endpoint is in 8.3 |
 | Real-time push | SSE | P1, the status view can poll first |
@@ -822,7 +822,7 @@ The following rulings are part of the specification. When one of them is overtur
 | D3 | Whether the parallel needs a wall-clock overlap | 2.0 only requires the join semantics. The wall-clock parallelism does not block the release |
 | D4 | How the conditional expressions are implemented | The whitelist is used once the conditions appear (comparisons, and / or, variables and upstream state). No SpEL, Groovy or arbitrary script |
 | D5 | The frontend framework | 2.0 keeps the existing console and bpmn-js. React is decided when the experiment-block canvas is started as a project |
-| D6 | Spring Boot | Not introduced in the 2.0 kernel. The HttpServer is only a demo shell |
+| D6 | Spring Boot | **Overturned (2026-11-10)**: the 2.0 kernel now uses Spring Boot 3.2.5 (Spring MVC HTTP layer + MyBatis XML + Spring transactions + HikariCP + SLF4J). The JDK HttpServer is retired; the device gateway stays on bare JDK and pulls in no framework. See `决策记录.md` and ADR-TECH-001 |
 | D7 | Where the plate is | 2.0 does not implement the nest tracking. The container identity is P1. The three-state readiness waits until there is a position |
 | D8 | How the real devices are connected | Shadow mode with one endpoint first. It is not required to take every device down at the same time |
 | D9 | From which step a re-run after a device switch starts | From the first step of that node |
