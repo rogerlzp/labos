@@ -198,6 +198,10 @@
         SELECT name FROM resource_node WHERE id = #{param1}
     </select>
 
+    <select id="selectAllCapabilities" resultType="java.util.Map">
+        SELECT code AS "code", name AS "name" FROM capability ORDER BY id
+    </select>
+
     <select id="selectAllWorkflowIds" resultType="java.lang.Long">
         SELECT id FROM workflow WHERE tenant_id = #{param1} ORDER BY id
     </select>

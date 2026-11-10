@@ -71,6 +71,9 @@ public interface QueryMapper {
     /** 资源节点名称。 */
     String selectResourceName(long resourceId);
 
+    /** 能力清单（code + name），设备注册脚本在型号不存在时打印出来排障。 */
+    List<Map<String, Object>> selectAllCapabilities();
+
     /** 全部流程 id（预检全量扫描）。 */
     List<Long> selectAllWorkflowIds(long tenantId);
 

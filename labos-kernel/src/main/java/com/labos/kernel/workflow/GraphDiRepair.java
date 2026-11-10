@@ -58,47 +58,37 @@ public final class GraphDiRepair {
 
     public static void main(String[] args) throws Exception {
         boolean dry = args.length > 0 && "--dry-run".equals(args[0]);
-        DbConfig db = DbConfig.fromEnv();
         long tenant = 1L;
 
         int scanned = 0;
         int fixed = 0;
         int skipped = 0;
 
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id, code, graph->>'xml' AS xml FROM workflow "
-                             + "WHERE tenant_id = ? AND deleted_at IS NULL AND graph->>'xml' IS NOT NULL")) {
-            ps.setLong(1, tenant);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    scanned++;
-                    long id = rs.getLong("id");
-                    String code = rs.getString("code");
-                    String xml = rs.getString("xml");
-                    String patched = repair(xml);
-                    if (patched == null) {
-                        skipped++;
-                        continue;
-                    }
-                    fixed++;
-                    printf("%s #%d %s：补 %d 条连线%s%n", dry ? "[dry]" : "✓",
-                            id, code, count(patched), dry ? "（未写库）" : "");
-                    if (!dry) {
-                        try (PreparedStatement up = c.prepareStatement(
-                                "UPDATE workflow SET graph = jsonb_set(graph, '{xml}', to_jsonb(?::text)), "
-                                        + "updated_at = now() WHERE tenant_id = ? AND id = ?")) {
-                            up.setString(1, patched);
-                            up.setLong(2, tenant);
-                            up.setLong(3, id);
-                            up.executeUpdate();
-                        }
-                    }
-                }
+        for (java.util.Map<String, Object> row : mapper().selectRepairableWorkflowXmls(tenant)) {
+            scanned++;
+            long id = ((Number) row.get("id")).longValue();
+            String code = String.valueOf(row.get("code"));
+            String xml = (String) row.get("xml");
+            String patched = repair(xml);
+            if (patched == null) {
+                skipped++;
+                continue;
+            }
+            fixed++;
+            printf("%s #%d %s：补 %d 条连线%s%n", dry ? "[dry]" : "✓",
+                    id, code, count(patched), dry ? "（未写库）" : "");
+            if (!dry) {
+                mapper().updateWorkflowGraph(tenant, id, patched);
             }
         }
         printf("%n扫描 %d 个流程：修补 %d，跳过 %d（已有连线或无图）%n",
                 scanned, fixed, skipped);
+    }
+
+    /** 延迟取 Mapper（本类是独立 CLI，见 Mappers）。 */
+    private static com.labos.kernel.persistence.GraphMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class);
     }
 
     private static int count(String xml) {

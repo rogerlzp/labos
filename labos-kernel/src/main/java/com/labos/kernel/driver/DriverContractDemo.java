@@ -130,18 +130,15 @@ public final class DriverContractDemo {
 
         // 驱动 + 端点
         Map<Long, String[]> drvRow = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(
-                     "SELECT id, code, endpoint, protocol::text AS protocol, "
-                     + "COALESCE(manifest->>'driver_kind','unknown') AS driver_kind "
-                     + "FROM driver WHERE tenant_id=? ORDER BY id")) {
-            ps.setLong(1, TENANT);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    drvRow.put(rs.getLong(1), new String[]{
-                            rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5)});
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : com.labos.kernel.persistence.Mappers.get(
+                        com.labos.kernel.persistence.DriverMapper.class)
+                        .selectDriversWithKind(TENANT)) {
+            drvRow.put(((Number) row.get("id")).longValue(),
+                    new String[]{String.valueOf(row.get("code")),
+                            String.valueOf(row.get("endpoint")),
+                            String.valueOf(row.get("protocol")),
+                            String.valueOf(row.get("driverKind"))});
         }
 
         // 能力

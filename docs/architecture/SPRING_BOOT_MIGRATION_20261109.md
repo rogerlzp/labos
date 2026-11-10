@@ -289,9 +289,30 @@ Command 2。
 4. **一次性工具 / 演示**（6 处）：`GraphDiRepair`（图修复脚本）、
    `EndToEndDemo` / `DriverContractDemo`（演示与契约脚本）。
 
-**仍未完成**：
-- `saveGraph` 节点 upsert 与 `JdbcManualWindowStore` 这两处的最终方案（待研究）；
-- 其余零散 SQL 已按上面四类归位，不需要再动。
+**2026-11-10 收官：Java 侧只剩 3 个 SQL 文本生成器**
+
+`saveGraph` 的节点 upsert 与 `JdbcManualWindowStore` 这两处「暂缓项」已处理：
+
+- **节点 upsert 改数据库裁决**：`uk_workflow_node (workflow_id, node_key)` 已存在，
+  改成一条 `INSERT ... ON CONFLICT DO UPDATE`。三个**故意不覆盖**的列写进
+  `GraphMapper.upsertNode` 的注释：`capability_id`（节点绑定写入，页面保存
+  不该改）、`estimate_sec`（只在新建给 0）、`created_at`。`params` 保留原
+  「新节点写 insertParams（含 origin=bpmn_editor）/ 老节点 COALESCE 合并
+  updateParams」的双形态；`added/updated/unlabeled` 计数改在 Java 侧按
+  `existing` 集合判定，端到端结果与改动前逐字一致（新增 2 / 更新 4 / 无重复 /
+  capability 保留）。
+- **`GraphDiRepair` 复用 `GraphMapper`**（扫描用新增的
+  `selectRepairableWorkflowXmls`，更新直接复用 `updateWorkflowGraph`，
+  两条 SQL 完全相同），`--dry-run` 实测扫描 1031 个流程。
+- 新增 `DriverMapper`（2 条）供两个契约/演示脚本；
+  `DeviceRegistrar` 的型号清单诊断改走 `selectAllCapabilities`。
+
+**剩余的 6 处不是数据访问，是 SQL 文本生成**（不需要也不应该进 XML）：
+`DeviceErrorSql`（给 DBA 的 error_code/recovery_policy 种子脚本）、
+`DeviceRegistrar.sqlFor`（导出语句）、`ExperimentStateProjector`（两条 UPDATE
+由 `StatusVocabulary.runToExperimentCaseSql()` 生成，是状态映射唯一真源）。
+
+**仍未完成**：无（SQL 收编到此结束）。
 
 ---
 

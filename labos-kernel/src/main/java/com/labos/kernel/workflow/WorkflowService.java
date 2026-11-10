@@ -3028,8 +3028,7 @@ public class WorkflowService {
 
         Map<String, Long> methodCap = loadMethodCapability();
 
-        try (Connection c = db.open()) {
-            try {
+        {
                 // 1) 现有节点
                 Set<String> existing = new LinkedHashSet<>();
                 Map<String, Long> capByKey = new LinkedHashMap<>();
@@ -3054,91 +3053,47 @@ public class WorkflowService {
                 Map<String, Integer> docOrder = BpmnGraphParser.documentOrder(xml,
                         graph.nodes().stream().map(BpmnGraphParser.ParsedNode::key).toList());
 
-                try (PreparedStatement up = c.prepareStatement(
-                        "UPDATE workflow_node SET name = ?, node_type = ?, "
-                                + "params = COALESCE(params, '{}'::jsonb) || ?::jsonb, "
-                                + "resource_id = ?, seq = ?, "
-                                + "updated_at = now() "
-                                + "WHERE workflow_id = ? AND node_key = ?");
-                     PreparedStatement ins = c.prepareStatement(
-                        "INSERT INTO workflow_node (tenant_id, workflow_id, node_key, name, node_type, "
-                                + "capability_id, params, estimate_sec, resource_id, seq) "
-                                + "VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, 0, ?, ?)")) {
-                    for (BpmnGraphParser.ParsedNode n : graph.nodes()) {
-                        Integer seq = docOrder.get(n.key());
-                        if (existing.contains(n.key())) {
-                            up.setString(1, n.name());
-                            up.setString(2, n.type());
-                            // protocol_name 必须和 INSERT 分支一样回写：节点设置里选完
-                            // 设备/方法只 patch 了图 XML（见 QueryService.patchNodeAttrs），
-                            // 再点页面级保存时走的是这条 UPDATE 分支。若这里不回写，
-                            // XML 里的 protocolName 就永远进不了 workflow_node ——
-                            // 读侧 RealWorkflowRunner/RecipeCompiler 按 XML 走没问题，
-                            // 但库里字段与图长期不一致（实测：绑完设备再保存，
-                            // params->>'protocol_name' 仍是空串）。
-                            String mpU = n.methodParams();
-                            String protoU = n.protocolName() == null ? "" : n.protocolName();
-                            up.setString(3, mpU == null || mpU.isBlank()
-                                    ? Jsons.obj("protocol_name", protoU)
-                                    : Jsons.obj("protocol_name", protoU,
-                                            "method_params", new Jsons.Raw(mpU)));
-                            if (n.resourceId() == null) {
-                                up.setNull(4, java.sql.Types.BIGINT);
-                            } else {
-                                up.setLong(4, n.resourceId());
-                            }
-                            if (seq == null) {
-                                up.setNull(5, java.sql.Types.INTEGER);
-                            } else {
-                                up.setInt(5, seq);
-                            }
-                            up.setLong(6, workflowId);
-                            up.setString(7, n.key());
-                            up.addBatch();
-                            updated++;
-                            if (!capByKey.containsKey(n.key())
-                                    && "task".equals(n.type())) {
-                                unlabeled++;
-                            }
-                        } else {
-                            Long cap = n.protocolName() == null ? null
-                                    : methodCap.get(n.protocolName());
-                            ins.setLong(1, tenantId);
-                            ins.setLong(2, workflowId);
-                            ins.setString(3, n.key());
-                            ins.setString(4, n.name());
-                            ins.setString(5, n.type());
-                            if (cap == null) {
-                                ins.setNull(6, java.sql.Types.BIGINT);
-                                if ("task".equals(n.type())) {
-                                    unlabeled++;
-                                }
-                            } else {
-                                ins.setLong(6, cap);
-                            }
-                            String mp = n.methodParams();
-                            String proto = n.protocolName() == null ? "" : n.protocolName();
-                            ins.setString(7, mp == null || mp.isBlank()
-                                    ? Jsons.obj("protocol_name", proto, "origin", "bpmn_editor")
-                                    : Jsons.obj("protocol_name", proto,
-                                            "method_params", new Jsons.Raw(mp),
-                                            "origin", "bpmn_editor"));
-                            if (n.resourceId() == null) {
-                                ins.setNull(8, java.sql.Types.BIGINT);
-                            } else {
-                                ins.setLong(8, n.resourceId());
-                            }
-                            if (seq == null) {
-                                ins.setNull(9, java.sql.Types.INTEGER);
-                            } else {
-                                ins.setInt(9, seq);
-                            }
-                            ins.addBatch();
-                            added++;
+                for (BpmnGraphParser.ParsedNode n : graph.nodes()) {
+                    Integer seq = docOrder.get(n.key());
+                    boolean isExisting = existing.contains(n.key());
+                    Long cap = isExisting ? null
+                            : (n.protocolName() == null ? null
+                                    : methodCap.get(n.protocolName()));
+
+                    // params 两个形态必须分开：
+                    //  - 新节点：带 origin=bpmn_editor（编辑器来源标记）；
+                    //  - 老节点：只回写 protocol_name / method_params。
+                    //    节点设置里选完设备/方法只 patch 了图 XML（见
+                    //    QueryService.patchNodeAttrs），再点页面级保存走的是这条
+                    //    合并路径；若这里不回写，XML 里的 protocolName 永远进不了
+                    //    workflow_node（实测：绑完设备再保存，params->>'protocol_name'
+                    //    仍是空串）。
+                    String mp = n.methodParams();
+                    String proto = n.protocolName() == null ? "" : n.protocolName();
+                    String insertParams = mp == null || mp.isBlank()
+                            ? Jsons.obj("protocol_name", proto, "origin", "bpmn_editor")
+                            : Jsons.obj("protocol_name", proto,
+                                    "method_params", new Jsons.Raw(mp),
+                                    "origin", "bpmn_editor");
+                    String updateParams = mp == null || mp.isBlank()
+                            ? Jsons.obj("protocol_name", proto)
+                            : Jsons.obj("protocol_name", proto,
+                                    "method_params", new Jsons.Raw(mp));
+
+                    graphMapper.upsertNode(tenantId, workflowId, n.key(), n.name(),
+                            n.type(), cap, insertParams, updateParams, n.resourceId(), seq);
+
+                    if (isExisting) {
+                        updated++;
+                        if (!capByKey.containsKey(n.key()) && "task".equals(n.type())) {
+                            unlabeled++;
+                        }
+                    } else {
+                        added++;
+                        if (cap == null && "task".equals(n.type())) {
+                            unlabeled++;
                         }
                     }
-                    up.executeBatch();
-                    ins.executeBatch();
                 }
 
                 // 4) 删除不在新图里的节点
@@ -3163,10 +3118,6 @@ public class WorkflowService {
 
                 return new SaveResult(graph.nodes().size(), graph.edges().size(),
                         added, updated, removed, unlabeled);
-            } catch (SQLException | RuntimeException e) {
-                throw e;
-            } finally {
-            }
         }
     }
 

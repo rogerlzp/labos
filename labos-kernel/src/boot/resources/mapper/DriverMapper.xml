@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 驱动表只读查询。调用方 com.labos.kernel.persistence.DriverMapper -->
+<mapper namespace="com.labos.kernel.persistence.DriverMapper">
+
+    <select id="selectDrivers" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", endpoint AS "endpoint",
+               protocol::text AS "protocol"
+          FROM driver
+         WHERE tenant_id = #{param1}
+         ORDER BY id
+    </select>
+
+    <select id="selectDriversWithKind" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", endpoint AS "endpoint",
+               protocol::text AS "protocol",
+               COALESCE(manifest->>'driver_kind', 'unknown') AS "driverKind"
+          FROM driver
+         WHERE tenant_id = #{param1}
+         ORDER BY id
+    </select>
+
+</mapper>

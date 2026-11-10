@@ -89,12 +89,11 @@ public final class DeviceRegistrar {
             if (spec.capability != null && capId == null) {
                 log.error("能力 " + spec.capability + " 在 capability 表里不存在。");
                 log.error("现有能力：");
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT code, name FROM capability ORDER BY id");
-                     ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        log.error("  " + rs.getString(1) + "  " + rs.getString(2));
-                    }
+                for (java.util.Map<String, Object> cap
+                        : com.labos.kernel.persistence.Mappers.get(
+                                com.labos.kernel.persistence.QueryMapper.class)
+                                .selectAllCapabilities()) {
+                    log.error("  " + cap.get("code") + "  " + cap.get("name"));
                 }
                 System.exit(3);
             }

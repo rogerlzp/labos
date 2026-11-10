@@ -85,10 +85,36 @@
           FROM workflow_edge
     </select>
 
+    <select id="selectRepairableWorkflowXmls" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", graph->>'xml' AS "xml"
+          FROM workflow
+         WHERE tenant_id = #{param1}
+           AND deleted_at IS NULL
+           AND graph->>'xml' IS NOT NULL
+    </select>
+
     <select id="selectGraphXmlRows" resultType="java.util.Map">
         SELECT id AS "id", graph->>'xml' AS "xml"
           FROM workflow
          WHERE tenant_id = #{param1}
     </select>
+
+    <!-- 冲突列是 uk_workflow_node (workflow_id, node_key)。
+         capability_id / estimate_sec 故意不在 DO UPDATE 里（见接口注释）。 -->
+    <insert id="upsertNode">
+        INSERT INTO workflow_node
+          (tenant_id, workflow_id, node_key, name, node_type,
+           capability_id, params, estimate_sec, resource_id, seq)
+        VALUES
+          (#{tenantId}, #{workflowId}, #{nodeKey}, #{name}, #{nodeType},
+           #{capabilityId}, #{insertParams}::jsonb, 0, #{resourceId}, #{seq})
+        ON CONFLICT (workflow_id, node_key) DO UPDATE
+           SET name = EXCLUDED.name,
+               node_type = EXCLUDED.node_type,
+               params = COALESCE(workflow_node.params, '{}'::jsonb) || #{updateParams}::jsonb,
+               resource_id = EXCLUDED.resource_id,
+               seq = EXCLUDED.seq,
+               updated_at = now()
+    </insert>
 
 </mapper>

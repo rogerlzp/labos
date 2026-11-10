@@ -11,6 +11,36 @@ package com.labos.kernel.persistence;
  */
 public interface GraphMapper {
 
+    /**
+     * 节点 upsert（saveGraph 用）。
+     *
+     * <p>为什么用 {@code INSERT ... ON CONFLICT (workflow_id, node_key) DO UPDATE}
+     * 而不是「先 UPDATE 再 INSERT」：{@code uk_workflow_node} 已经是唯一约束，
+     * 冲突裁决交给数据库，省掉「先查存在性、再分两条语句」的窗口。
+     *
+     * <p>三个**故意不覆盖**的列，与原两条语句语义一致：
+     * <ul>
+     *   <li>{@code capability_id}：老节点的能力由节点绑定写入，页面级保存不该改它；</li>
+     *   <li>{@code estimate_sec}：只在新建时给 0，重存不动已学习的估值；</li>
+     *   <li>{@code created_at}：不碰。</li>
+     * </ul>
+     *
+     * <p>{@code params} 保留原「合并」语义：新节点写 {@code insertParams}
+     * （含 origin=bpmn_editor），老节点用
+     * {@code COALESCE(params,'{}') || updateParams} 只回写
+     * protocol_name/method_params，不动节点设置里其它键。
+     */
+    int upsertNode(@org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+                   @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+                   @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey,
+                   @org.apache.ibatis.annotations.Param("name") String name,
+                   @org.apache.ibatis.annotations.Param("nodeType") String nodeType,
+                   @org.apache.ibatis.annotations.Param("capabilityId") Long capabilityId,
+                   @org.apache.ibatis.annotations.Param("insertParams") String insertParams,
+                   @org.apache.ibatis.annotations.Param("updateParams") String updateParams,
+                   @org.apache.ibatis.annotations.Param("resourceId") Long resourceId,
+                   @org.apache.ibatis.annotations.Param("seq") Integer seq);
+
     // ---- 执行器的图读取（RealWorkflowRunner 的静态方法用 Mappers.get 取）----
 
     /** 流程头（id/code/name/category）；不存在返回 null。 */
@@ -24,6 +54,13 @@ public interface GraphMapper {
 
     /** 全库边（按 workflow 分组前的原始行）。**同样不带 tenant**，沿用。 */
     java.util.List<java.util.Map<String, Object>> selectAllEdges();
+
+    /**
+     * 图修复工具用：只取未删且 XML 非空的流程。
+     *
+     * <p>区别于 {@link #selectGraphXmlRows}（那是执行器全量读，不筛 deleted_at）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectRepairableWorkflowXmls(long tenantId);
 
     /** 每个流程的 BPMN XML（id + xml）。 */
     java.util.List<java.util.Map<String, Object>> selectGraphXmlRows(long tenantId);
