@@ -33,8 +33,6 @@ public interface QueryMapper {
     Map<String, Object> selectUserRoleEnabled(long tenantId, long userId, boolean forUpdate);
 
 
-    /** 按 id 查策略作用域（PATCH 没带 scope 时用）。查不到返回 null。 */
-    String selectPolicyScope(long tenantId, long policyId);
 
     /** run 的实际开始时间（甘特图相对时间的基准）。 */
     java.sql.Timestamp selectRunActualStart(long tenantId, long runId);
@@ -95,14 +93,8 @@ public interface QueryMapper {
     /** 某个历史版本的 BPMN XML；不存在返回 null。 */
     String selectGraphHistoryXml(long tenantId, long workflowId, long historyId);
 
-    /** 错误码软删。 */
-    int softDeleteErrorCode(long tenantId, long id);
 
-    /** 删除恢复策略。 */
-    int deleteRecoveryPolicy(long tenantId, long errorCodeId, long policyId);
 
-    /** 错误码是否已被同级（或 NULL 通配）的启用策略覆盖。 */
-    boolean scopeCovered(long tenantId, long errorCodeId);
 
     /** 用户清单。 */
     List<Map<String, Object>> selectUsers(long tenantId);
@@ -147,8 +139,6 @@ public interface QueryMapper {
 
 
 
-    /** 错误发生记录（最近 N 条）。 */
-    List<Map<String, Object>> selectErrorOccurrences(long tenantId, int limit);
 
 
 
@@ -170,21 +160,12 @@ public interface QueryMapper {
     /** 策略校验：错误码是否存在 / 历史命中 / 被更高优先级覆盖。 */
     Map<String, Object> selectPolicyValidation(long tenantId, String errorCode, int priority);
 
-    /** 错误码清单：三重可选过滤（severity / scope / keyword），keyword 走 ILIKE。 */
-    List<Map<String, Object>> selectErrorCodes(
-            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
-            @org.apache.ibatis.annotations.Param("severity") String severity,
-            @org.apache.ibatis.annotations.Param("scope") String scope,
-            @org.apache.ibatis.annotations.Param("keyword") String keyword);
 
 
     /** 新建用户（密码 hash 与 salt 由调用方算好）。 */
     int insertUser(long tenantId, String username, String displayName, String role,
                    String passwordHash, String salt);
 
-    /** 新建错误码，返回 id。MyBatis 的 <insert> 不能带 resultType，这里用 <select>。 */
-    Long insertErrorCode(long tenantId, String code, String scope, String severity,
-                         String title, String detail, String source);
 
     /** 告警处置（按 tenant+fingerprint 覆盖）。 */
     int upsertAlertState(long tenantId, String fingerprint, String status,
@@ -267,28 +248,7 @@ public interface QueryMapper {
     /** 设备方法的超时上限（秒），无配置返回 0。 */
     long selectDeviceLockTimeoutSec(long tenantId, long deviceInstanceId);
 
-    /**
-     * 错误码本体字段的动态 UPDATE（哪些列会被写由 XML 的 &lt;if&gt; 决定）。
-     *
-     * <p>severity 是 PG 枚举，必须 {@code ::error_severity}；scope/title/detail
-     * 是 varchar，原实现没有 cast，保持一致。
-     */
-    int updateErrorCodeFields(long tenantId, long id,
-                              @Param("scope") String scope,
-                              @Param("severity") String severity,
-                              @Param("title") String title,
-                              @Param("detail") String detail);
 
-    /**
-     * 只改「主策略」（priority 最小的那条）。
-     *
-     * <p>COALESCE 表示「没传就不动」，所以 null 不会被写成 NULL。
-     */
-    int updatePrimaryRecoveryPolicy(long tenantId, long errorCodeId,
-                                    @Param("strategy") String strategy,
-                                    @Param("maxAttempts") String maxAttempts,
-                                    @Param("params") String params,
-                                    @Param("enabled") String enabled);
 
 
 

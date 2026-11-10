@@ -4,8 +4,6 @@ import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.kernel.api.AuthService;
 import com.labos.boot.web.service.OpsErrorService;
-import com.labos.kernel.api.QueryService;
-import com.labos.kernel.persistence.QueryMapper;
 import com.labos.kernel.persistence.Jsons;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
@@ -52,16 +50,11 @@ public class OpsErrorController {
             "scope", "severity", "title", "detail", "strategy", "maxAttempts", "params", "enabled"
     };
 
-    private final QueryService query;
     private final OpsErrorService opsErrorService;
-    private final QueryMapper queryMapper;
     private final AuditRecorder audit;
 
-    public OpsErrorController(QueryService query, OpsErrorService opsErrorService,
-                              QueryMapper queryMapper, AuditRecorder audit) {
-        this.query = query;
+    public OpsErrorController(OpsErrorService opsErrorService, AuditRecorder audit) {
         this.opsErrorService = opsErrorService;
-        this.queryMapper = queryMapper;
         this.audit = audit;
     }
 
@@ -71,7 +64,7 @@ public class OpsErrorController {
     public String errorCodes(@RequestParam(required = false) String severity,
                              @RequestParam(required = false) String scope,
                              @RequestParam(required = false) String q) throws SQLException {
-        return query.errorCodesJson(severity, scope, q);
+        return opsErrorService.errorCodesJson(severity, scope, q);
     }
 
     @PostMapping(value = "/error-codes", produces = "application/json; charset=utf-8")
@@ -81,7 +74,7 @@ public class OpsErrorController {
             AuthService.Session session,
             HttpServletRequest req) throws SQLException {
         try {
-            String created = query.createErrorCode(
+            String created = opsErrorService.createErrorCode(
                     jsonField(body, "code"), jsonField(body, "scope"),
                     jsonField(body, "severity"), jsonField(body, "title"),
                     jsonField(body, "detail"), jsonField(body, "source"));
@@ -116,7 +109,7 @@ public class OpsErrorController {
                 jsonBool(body, "enabled"));
         audit.record(session, "error_code.policy_save", "error_code", id,
                 "scope=" + scope, null, req.getRemoteAddr());
-        boolean covered = query.scopeCovered(id);
+        boolean covered = opsErrorService.scopeCovered(id);
         return ResponseEntity.ok(Jsons.obj("errorCodeId", id, "policyId", pid,
                 "scope", scope, "scopeCovered", covered,
                 "warning", covered ? null
@@ -131,7 +124,7 @@ public class OpsErrorController {
             @RequestAttribute(name = ApiAuthInterceptor.SESSION_ATTR, required = false)
             AuthService.Session session,
             HttpServletRequest req) throws SQLException {
-        boolean gone = query.deletePolicy(id, pid);
+        boolean gone = opsErrorService.deletePolicy(id, pid);
         audit.record(session, "error_code.policy_delete", "error_code", id,
                 "policy=" + pid, null, req.getRemoteAddr());
         return ResponseEntity.status(gone ? HttpStatus.OK : HttpStatus.NOT_FOUND)
@@ -150,7 +143,7 @@ public class OpsErrorController {
         // 按 id 改：作用域默认不动（改作用域等于换一条策略，前端走新增）
         String scope = jsonField(body, "scope");
         if (scope == null || scope.isBlank()) {
-            scope = queryMapper.selectPolicyScope(TENANT, pid);
+            scope = opsErrorService.policyScope(pid);
         }
         if (scope == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
@@ -199,7 +192,7 @@ public class OpsErrorController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(err("没有可更新的字段"));
         }
-        query.updateErrorCode(id, fields);
+        opsErrorService.updateErrorCode(id, fields);
         audit.record(session, "error_code.update", "error_code", id,
                 String.join(",", fields.keySet()), null, req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("id", id, "updated", fields.keySet()));
@@ -221,7 +214,7 @@ public class OpsErrorController {
             @RequestAttribute(name = ApiAuthInterceptor.SESSION_ATTR, required = false)
             AuthService.Session session,
             HttpServletRequest req) throws SQLException {
-        boolean gone = query.deleteErrorCode(id);
+        boolean gone = opsErrorService.deleteErrorCode(id);
         if (gone) {
             audit.record(session, "error_code.delete", "error_code", id,
                     null, null, req.getRemoteAddr());
@@ -234,17 +227,17 @@ public class OpsErrorController {
 
     @GetMapping(value = "/errors", produces = "application/json; charset=utf-8")
     public String occurrences(@RequestParam(required = false) String limit) throws SQLException {
-        return query.occurrences(intOr(limit, 20));
+        return opsErrorService.occurrences(intOr(limit, 20));
     }
 
     @GetMapping(value = "/commands/unknown", produces = "application/json; charset=utf-8")
     public String unknownCommands() throws SQLException {
-        return query.commandsUnknownJson(100);
+        return opsErrorService.commandsUnknownJson(100);
     }
 
     @GetMapping(value = "/commands/abort-unconfirmed", produces = "application/json; charset=utf-8")
     public String abortUnconfirmedCommands() throws SQLException {
-        return query.commandsAbortUnconfirmedJson(100);
+        return opsErrorService.commandsAbortUnconfirmedJson(100);
     }
 
     @PostMapping(value = "/commands/{id}/resolve", produces = "application/json; charset=utf-8")
@@ -261,7 +254,7 @@ public class OpsErrorController {
                     .body(err("action 必须是 confirm-done / confirm-failed"));
         }
         String note = jsonField(body, "note");
-        int n = query.resolveCommandLedger(id, done, note, null);
+        int n = opsErrorService.resolveCommandLedger(id, done, note, null);
         if (n == 0) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body(err("不是 UNKNOWN 状态或不存在"));

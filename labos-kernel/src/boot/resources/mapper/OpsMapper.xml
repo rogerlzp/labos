@@ -35,4 +35,104 @@
         RETURNING id
     </select>
 
+
+<select id="selectErrorCodes" resultType="java.util.Map">
+        SELECT e.id AS "id", e.code AS "code", e.scope AS "scope",
+               e.severity::text AS "severity", e.source AS "source",
+               e.title AS "title", e.detail AS "detail",
+               p.strategy::text AS "strategy", p.max_attempts AS "maxAttempts",
+               p.params::text AS "params", p.priority AS "priority",
+               p.enabled AS "enabled", p.scope AS "policyScope",
+               (SELECT count(*) FROM error_occurrence o WHERE o.error_code_id = e.id)
+                   AS "occurrences",
+               -- 这个码在**它自己的作用域**上有没有策略？没有 = 配置静默失效（M7）
+               EXISTS (SELECT 1 FROM recovery_policy rp2
+                        WHERE rp2.error_code_id = e.id AND rp2.enabled
+                          AND (rp2.scope = e.scope OR rp2.scope IS NULL)) AS "scopeCovered",
+               (SELECT jsonb_agg(jsonb_build_object(
+                           'id', rp.id, 'scope', rp.scope,
+                           'strategy', rp.strategy::text,
+                           'maxAttempts', rp.max_attempts, 'params', rp.params,
+                           'priority', rp.priority, 'enabled', rp.enabled)
+                       ORDER BY rp.priority, rp.id)::text
+                  FROM recovery_policy rp WHERE rp.error_code_id = e.id) AS "policies"
+          FROM error_code e
+          LEFT JOIN LATERAL (
+                SELECT * FROM recovery_policy rp
+                 WHERE rp.error_code_id = e.id AND rp.enabled
+                 ORDER BY rp.priority, rp.id LIMIT 1) p ON true
+         WHERE e.tenant_id = #{tenantId} AND e.deleted_at IS NULL
+        <if test="severity != null"> AND e.severity::text = #{severity} </if>
+        <if test="scope != null"> AND e.scope = #{scope} </if>
+        <if test="keyword != null">
+            AND (e.code ILIKE #{keyword} OR e.title ILIKE #{keyword})
+        </if>
+         ORDER BY e.code
+    </select>
+
+<select id="insertErrorCode" resultType="java.lang.Long">
+        INSERT INTO error_code
+          (tenant_id, code, scope, severity, title, detail, source)
+        VALUES (#{param1}, #{param2}, #{param3},
+                #{param4}::error_severity, #{param5}, #{param6}, #{param7})
+        RETURNING id
+    </select>
+
+<select id="scopeCovered" resultType="boolean">
+        SELECT EXISTS (
+            SELECT 1 FROM error_code e
+              JOIN recovery_policy rp ON rp.error_code_id = e.id AND rp.enabled
+             WHERE e.tenant_id = #{param1} AND e.id = #{param2}
+               AND (rp.scope = e.scope OR rp.scope IS NULL))
+    </select>
+
+<delete id="deleteRecoveryPolicy">
+        DELETE FROM recovery_policy
+         WHERE tenant_id = #{param1} AND error_code_id = #{param2} AND id = #{param3}
+    </delete>
+
+<update id="updateErrorCodeFields">
+        UPDATE error_code
+        <set>
+            <if test="scope != null">scope = #{scope},</if>
+            <if test="severity != null">severity = #{severity}::error_severity,</if>
+            <if test="title != null">title = #{title},</if>
+            <if test="detail != null">detail = #{detail},</if>
+        </set>
+        WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+<update id="updatePrimaryRecoveryPolicy">
+        UPDATE recovery_policy
+           SET strategy = COALESCE(#{strategy}::recovery_strategy, strategy),
+               max_attempts = COALESCE(#{maxAttempts}::smallint, max_attempts),
+               params = COALESCE(#{params}::jsonb, params),
+               enabled = COALESCE(#{enabled}::boolean, enabled),
+               updated_at = now()
+         WHERE tenant_id = #{param1}
+           AND id = (SELECT id FROM recovery_policy
+                      WHERE tenant_id = #{param1} AND error_code_id = #{param2}
+                      ORDER BY priority, id LIMIT 1)
+    </update>
+
+<update id="softDeleteErrorCode">
+        UPDATE error_code SET deleted_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND deleted_at IS NULL
+    </update>
+
+<select id="selectErrorOccurrences" resultType="java.util.Map">
+        SELECT eo.id AS "id", eo.fingerprint AS "fingerprint",
+               eo.outcome AS "outcome", eo.severity::text AS "severity",
+               eo.attempt AS "attempt", eo.run_id AS "runId",
+               eo.run_node_id AS "runNodeId", eo.resource_id AS "resourceId",
+               eo.occurred_at AS "occurredAt", eo.message AS "message"
+          FROM error_occurrence eo
+         WHERE eo.tenant_id = #{param1}
+         ORDER BY eo.id DESC LIMIT #{param2}
+    </select>
+
+    <select id="selectPolicyScope" resultType="java.lang.String">
+        SELECT scope FROM recovery_policy
+        WHERE tenant_id = #{tenantId} AND id = #{policyId}
+    </select>
 </mapper>

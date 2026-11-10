@@ -41,8 +41,6 @@
         SELECT role, enabled FROM sys_user
          WHERE tenant_id = #{param1} AND id = #{param2}
         <if test="param3"> FOR UPDATE </if>
-    </select><select id="selectPolicyScope" resultType="java.lang.String">
-        SELECT scope FROM recovery_policy WHERE tenant_id = #{param1} AND id = #{param2}
     </select><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><select id="selectRunActualStart" resultType="java.sql.Timestamp">
         SELECT actual_start FROM run WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
@@ -84,31 +82,7 @@
     <select id="selectDeviceLockTimeoutSec" resultType="long">
         SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
          WHERE tenant_id = #{param1} AND device_id = #{param2}
-    </select>
-
-    <update id="updateErrorCodeFields">
-        UPDATE error_code
-        <set>
-            <if test="scope != null">scope = #{scope},</if>
-            <if test="severity != null">severity = #{severity}::error_severity,</if>
-            <if test="title != null">title = #{title},</if>
-            <if test="detail != null">detail = #{detail},</if>
-        </set>
-        WHERE tenant_id = #{param1} AND id = #{param2}
-    </update>
-
-    <update id="updatePrimaryRecoveryPolicy">
-        UPDATE recovery_policy
-           SET strategy = COALESCE(#{strategy}::recovery_strategy, strategy),
-               max_attempts = COALESCE(#{maxAttempts}::smallint, max_attempts),
-               params = COALESCE(#{params}::jsonb, params),
-               enabled = COALESCE(#{enabled}::boolean, enabled),
-               updated_at = now()
-         WHERE tenant_id = #{param1}
-           AND id = (SELECT id FROM recovery_policy
-                      WHERE tenant_id = #{param1} AND error_code_id = #{param2}
-                      ORDER BY priority, id LIMIT 1)
-    </update><select id="selectParentIdOfNode" resultType="java.lang.Long">
+    </select><select id="selectParentIdOfNode" resultType="java.lang.Long">
         SELECT parent_id FROM resource_node
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
@@ -128,27 +102,7 @@
     </select><select id="selectGraphHistoryXml" resultType="java.lang.String">
         SELECT xml FROM workflow_graph_history
          WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND id = #{param3}
-    </select>
-
-    <update id="softDeleteErrorCode">
-        UPDATE error_code SET deleted_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2} AND deleted_at IS NULL
-    </update>
-
-    <delete id="deleteRecoveryPolicy">
-        DELETE FROM recovery_policy
-         WHERE tenant_id = #{param1} AND error_code_id = #{param2} AND id = #{param3}
-    </delete>
-
-    <select id="scopeCovered" resultType="boolean">
-        SELECT EXISTS (
-            SELECT 1 FROM error_code e
-              JOIN recovery_policy rp ON rp.error_code_id = e.id AND rp.enabled
-             WHERE e.tenant_id = #{param1} AND e.id = #{param2}
-               AND (rp.scope = e.scope OR rp.scope IS NULL))
-    </select>
-
-    <select id="selectUsers" resultType="java.util.Map">
+    </select><select id="selectUsers" resultType="java.util.Map">
         SELECT id AS "id", username AS "username", display_name AS "displayName",
                role AS "role", enabled AS "enabled",
                last_login_at AS "lastLoginAt", created_at AS "createdAt"
@@ -243,16 +197,7 @@
          WHERE tenant_id = #{param1}
          ORDER BY id DESC
          LIMIT #{param2}
-    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><select id="selectErrorOccurrences" resultType="java.util.Map">
-        SELECT eo.id AS "id", eo.fingerprint AS "fingerprint",
-               eo.outcome AS "outcome", eo.severity::text AS "severity",
-               eo.attempt AS "attempt", eo.run_id AS "runId",
-               eo.run_node_id AS "runNodeId", eo.resource_id AS "resourceId",
-               eo.occurred_at AS "occurredAt", eo.message AS "message"
-          FROM error_occurrence eo
-         WHERE eo.tenant_id = #{param1}
-         ORDER BY eo.id DESC LIMIT #{param2}
-    </select><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 -->
+    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 -->
     <update id="updateRecoveryPolicy">
         UPDATE recovery_policy
            SET strategy     = COALESCE(#{param3}::recovery_strategy, strategy),
@@ -328,54 +273,12 @@
 
     <!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
          p 是 LATERAL 取出的优先级最高启用策略；policies 子询保留全部策略
-         （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 -->
-    <select id="selectErrorCodes" resultType="java.util.Map">
-        SELECT e.id AS "id", e.code AS "code", e.scope AS "scope",
-               e.severity::text AS "severity", e.source AS "source",
-               e.title AS "title", e.detail AS "detail",
-               p.strategy::text AS "strategy", p.max_attempts AS "maxAttempts",
-               p.params::text AS "params", p.priority AS "priority",
-               p.enabled AS "enabled", p.scope AS "policyScope",
-               (SELECT count(*) FROM error_occurrence o WHERE o.error_code_id = e.id)
-                   AS "occurrences",
-               -- 这个码在**它自己的作用域**上有没有策略？没有 = 配置静默失效（M7）
-               EXISTS (SELECT 1 FROM recovery_policy rp2
-                        WHERE rp2.error_code_id = e.id AND rp2.enabled
-                          AND (rp2.scope = e.scope OR rp2.scope IS NULL)) AS "scopeCovered",
-               (SELECT jsonb_agg(jsonb_build_object(
-                           'id', rp.id, 'scope', rp.scope,
-                           'strategy', rp.strategy::text,
-                           'maxAttempts', rp.max_attempts, 'params', rp.params,
-                           'priority', rp.priority, 'enabled', rp.enabled)
-                       ORDER BY rp.priority, rp.id)::text
-                  FROM recovery_policy rp WHERE rp.error_code_id = e.id) AS "policies"
-          FROM error_code e
-          LEFT JOIN LATERAL (
-                SELECT * FROM recovery_policy rp
-                 WHERE rp.error_code_id = e.id AND rp.enabled
-                 ORDER BY rp.priority, rp.id LIMIT 1) p ON true
-         WHERE e.tenant_id = #{tenantId} AND e.deleted_at IS NULL
-        <if test="severity != null"> AND e.severity::text = #{severity} </if>
-        <if test="scope != null"> AND e.scope = #{scope} </if>
-        <if test="keyword != null">
-            AND (e.code ILIKE #{keyword} OR e.title ILIKE #{keyword})
-        </if>
-         ORDER BY e.code
-    </select><insert id="insertUser">
+         （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 --><insert id="insertUser">
         INSERT INTO sys_user (tenant_id, username, display_name, role, password_hash, salt)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
     </insert>
 
-    <!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 -->
-    <select id="insertErrorCode" resultType="java.lang.Long">
-        INSERT INTO error_code
-          (tenant_id, code, scope, severity, title, detail, source)
-        VALUES (#{param1}, #{param2}, #{param3},
-                #{param4}::error_severity, #{param5}, #{param6}, #{param7})
-        RETURNING id
-    </select>
-
-    <insert id="upsertAlertState">
+    <!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 --><insert id="upsertAlertState">
         INSERT INTO alert_state
           (tenant_id, fingerprint, status, assignee, note,
            acked_at, closed_at, updated_at)
