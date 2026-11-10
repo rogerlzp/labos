@@ -57,6 +57,11 @@ public final class TestSpringSupport {
         return context().getBean(QueryService.class);
     }
 
+    /** 按域拆分后的 Service 入口：自测容器不做 @ComponentScan，显式注册再取。 */
+    public static com.labos.boot.web.service.ExperimentActionService experimentActionService() {
+        return context().getBean(com.labos.boot.web.service.ExperimentActionService.class);
+    }
+
     public static DbConfig db() {
         return context().getBean(DbConfig.class);
     }
@@ -111,6 +116,16 @@ public final class TestSpringSupport {
         public DbConfig dbConfig(DataSource ds) {
             DbConfig.bind(ds);
             return DbConfig.fromEnv();
+        }
+
+        /**
+         * 按域拆出的写 Service。Config 不扫描 @Service（会连带拖入
+         * RunService 依赖的一串 Bean），这里按需显式注册。
+         */
+        @Bean
+        public com.labos.boot.web.service.ExperimentActionService experimentActionService(
+                DbConfig db, com.labos.kernel.persistence.ExperimentMapper experimentMapper) {
+            return new com.labos.boot.web.service.ExperimentActionService(db, experimentMapper);
         }
 
         @Bean

@@ -20,7 +20,9 @@ public final class HandoffConfirmDbSelfTest {
         DbConfig db = DbConfig.fromEnv();
         cleanup(db);
         seed(db);
-        QueryService q = com.labos.kernel.support.TestSpringSupport.queryService();
+        // confirmHandoff 已按域搬到 ExperimentActionService（QueryService 不再持有）
+        com.labos.boot.web.service.ExperimentActionService q =
+                com.labos.kernel.support.TestSpringSupport.experimentActionService();
         int n = q.confirmHandoff(EXP, A, B, "tester", "现场确认交接完成");
         check("配置态 Handoff 可人工确认", n == 1, n);
         check("确认后 status=confirmed", "confirmed".equals(status(db)),

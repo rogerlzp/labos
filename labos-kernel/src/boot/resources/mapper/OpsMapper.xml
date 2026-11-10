@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 恢复策略。调用方 com.labos.kernel.persistence.OpsMapper -->
+<mapper namespace="com.labos.kernel.persistence.OpsMapper">
+
+    <select id="selectPolicyId" resultType="java.lang.Long">
+        SELECT id FROM recovery_policy
+         WHERE tenant_id = #{param1} AND error_code_id = #{param2} AND scope = #{param3}
+         ORDER BY priority, id LIMIT 1
+    </select>
+
+    <!-- strategy 是 PG 枚举、params 是 jsonb，必须显式 cast；
+         COALESCE 保证没传的字段保持原值。 -->
+    <update id="updatePolicy">
+        UPDATE recovery_policy SET
+              strategy = COALESCE(#{param3}::recovery_strategy, strategy),
+              max_attempts = COALESCE(#{param4}::smallint, max_attempts),
+              params = COALESCE(#{param5}::jsonb, params),
+              priority = COALESCE(#{param6}::smallint, priority),
+              enabled = COALESCE(#{param7}::boolean, enabled),
+              updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <!-- INSERT..RETURNING 用 <select> 承载（MyBatis DTD 限制）。 -->
+    <select id="insertPolicy" resultType="java.lang.Long">
+        INSERT INTO recovery_policy
+          (tenant_id, error_code_id, scope, strategy, params,
+           max_attempts, priority, enabled)
+        VALUES (#{param1}, #{param2}, #{param3},
+                #{param4}::recovery_strategy,
+                COALESCE(#{param5}::jsonb, '{}'::jsonb),
+                #{param6}, #{param7}, COALESCE(#{param8}::boolean, true))
+        RETURNING id
+    </select>
+
+</mapper>

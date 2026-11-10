@@ -3,6 +3,7 @@ package com.labos.boot.web.controller;
 import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.kernel.api.AuthService;
+import com.labos.boot.web.service.OpsErrorService;
 import com.labos.kernel.api.QueryService;
 import com.labos.kernel.persistence.QueryMapper;
 import com.labos.kernel.persistence.Jsons;
@@ -52,11 +53,14 @@ public class OpsErrorController {
     };
 
     private final QueryService query;
+    private final OpsErrorService opsErrorService;
     private final QueryMapper queryMapper;
     private final AuditRecorder audit;
 
-    public OpsErrorController(QueryService query, QueryMapper queryMapper, AuditRecorder audit) {
+    public OpsErrorController(QueryService query, OpsErrorService opsErrorService,
+                              QueryMapper queryMapper, AuditRecorder audit) {
         this.query = query;
+        this.opsErrorService = opsErrorService;
         this.queryMapper = queryMapper;
         this.audit = audit;
     }
@@ -104,7 +108,7 @@ public class OpsErrorController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(err("策略必须指定 scope（command/node/run/device）"));
         }
-        long pid = query.upsertPolicy(id, scope,
+        long pid = opsErrorService.upsertPolicy(id, scope,
                 jsonField(body, "strategy"),
                 jsonInt(body, "maxAttempts"),
                 jsonField(body, "params"),
@@ -152,7 +156,7 @@ public class OpsErrorController {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(err("策略不存在: " + pid));
         }
-        query.upsertPolicy(id, scope,
+        opsErrorService.upsertPolicy(id, scope,
                 jsonField(body, "strategy"),
                 jsonInt(body, "maxAttempts"),
                 jsonField(body, "params"),

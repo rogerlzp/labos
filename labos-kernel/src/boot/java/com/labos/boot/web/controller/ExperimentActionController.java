@@ -2,6 +2,7 @@ package com.labos.boot.web.controller;
 
 import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
+import com.labos.boot.web.service.ExperimentActionService;
 import com.labos.boot.web.service.PauseCoordinatorFactory;
 import com.labos.boot.web.service.RunService;
 import com.labos.kernel.api.ApiServer;
@@ -68,11 +69,13 @@ public class ExperimentActionController {
     private final AuditRecorder audit;
     private final RunService runService;
     private final PauseCoordinatorFactory pauseFactory;
+    private final ExperimentActionService experimentActionService;
 
     public ExperimentActionController(QueryService query, DbConfig db,
                                       WorkflowService workflows, ExperimentScheduler scheduler,
                                       AuditRecorder audit, RunService runService,
-                                      PauseCoordinatorFactory pauseFactory) {
+                                      PauseCoordinatorFactory pauseFactory,
+                                      ExperimentActionService experimentActionService) {
         this.query = query;
         this.db = db;
         this.workflows = workflows;
@@ -80,6 +83,7 @@ public class ExperimentActionController {
         this.audit = audit;
         this.runService = runService;
         this.pauseFactory = pauseFactory;
+        this.experimentActionService = experimentActionService;
     }
 
     // ---------------------------------------------------------------- 流程直跑（演示/调试）
@@ -148,7 +152,7 @@ public class ExperimentActionController {
                     .body(err("需要 fromWorkcellId / toWorkcellId"));
         }
         String op = operator(req);
-        int n = query.confirmHandoff(id, from, to, op, jsonField(body, "note"));
+        int n = experimentActionService.confirmHandoff(id, from, to, op, jsonField(body, "note"));
         if (n == 0) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(err("Handoff 不存在或已确认"));
         }

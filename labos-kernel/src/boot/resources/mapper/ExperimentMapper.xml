@@ -36,6 +36,42 @@
         VALUES (#{param1}, #{param2}, #{param3}, #{param4})
     </insert>
 
+    <update id="confirmHandoffStatus">
+        UPDATE experiment_handoff
+           SET status = 'confirmed', updated_at = now()
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+           AND from_workcell_id = #{param3} AND to_workcell_id = #{param4}
+           AND status IN ('configured', 'unknown')
+    </update>
+
+    <!-- 两个 INSERT..RETURNING 用 <select> 承载（MyBatis DTD 限制）。 -->
+    <select id="insertHandoffIntervention" resultType="java.lang.Long">
+        INSERT INTO intervention_record
+          (tenant_id, run_id, operator, decided_action,
+           from_location, to_location, result, note)
+        VALUES (#{param1}, NULL, #{param2}, 'HANDOFF_CONFIRM',
+                #{param3}, #{param4}, 'resolved', #{param5})
+        RETURNING id
+    </select>
+
+    <select id="insertHandoffWindow" resultType="java.lang.Long">
+        INSERT INTO manual_window
+          (tenant_id, run_id, window_key, default_action,
+           allowed_actions, decision_reason, status,
+           decided_at, decided_by, decided_action, note)
+        VALUES (#{param1}, 0, #{param2}, 'MANUAL',
+                '["CONTINUE"]'::jsonb, #{param3}, 'decided',
+                now(), #{param4}, 'CONTINUE', #{param5})
+        RETURNING id
+    </select>
+
+    <update id="linkHandoffRecords">
+        UPDATE experiment_handoff
+           SET intervention_record_id = #{param5}, manual_window_id = #{param6}
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+           AND from_workcell_id = #{param3} AND to_workcell_id = #{param4}
+    </update>
+
     <select id="selectExperimentIslandId" resultType="java.lang.Long">
         SELECT island_id FROM experiment WHERE tenant_id = #{param1} AND id = #{param2}
     </select>

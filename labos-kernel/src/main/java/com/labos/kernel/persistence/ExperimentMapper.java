@@ -22,6 +22,22 @@ public interface ExperimentMapper {
     int insertExperimentProcessEdge(long tenantId, long experimentId,
                                     long fromId, long toId);
 
+    /** 确认工位交接（只允许 configured/unknown -> confirmed）。 */
+    int confirmHandoffStatus(long tenantId, long experimentId,
+                             long fromWorkcellId, long toWorkcellId);
+
+    /** 交接确认的介入记录，返回 id。 */
+    Long insertHandoffIntervention(long tenantId, String operator,
+                                   String fromLocation, String toLocation, String note);
+
+    /** N-08 联动：交接确认同时落一条已决策人工窗口，返回 id。 */
+    Long insertHandoffWindow(long tenantId, String windowKey, String decisionReason,
+                             String decidedBy, String note);
+
+    /** 把介入记录与人工窗口回写到交接行。 */
+    int linkHandoffRecords(long tenantId, long experimentId, long fromWorkcellId,
+                           long toWorkcellId, long recordId, long windowId);
+
     /** 实验所属岛（未显式绑定 workcell 时的回落）。 */
     Long selectExperimentIslandId(long tenantId, long experimentId);
 
