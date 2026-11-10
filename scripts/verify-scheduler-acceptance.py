@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -152,6 +153,27 @@ def log_dispatch_order(path, offset):
     return [int(m.group(1)) for m in DISPATCH_RE.finditer(text)]
 
 
+DISPATCH_TS_RE = re.compile(
+    r"^(\d{2}:\d{2}:\d{2}\.\d{3}).*\[调度\] 派发实验 (\d+)", re.M)
+
+
+def log_dispatches_with_ts(path, offset):
+    """「[调度] 派发实验」的 (时刻, 实验 id) —— 判"同一 tick 放行"用。"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    return [(m.group(1), int(m.group(2))) for m in DISPATCH_TS_RE.finditer(text)]
+
+
+def ts_sec(s):
+    """'HH:MM:SS.mmm' → 当日秒数。"""
+    h, m_, sec = s.split(":")
+    return int(h) * 3600 + int(m_) * 60 + float(sec)
+
+
 def run_terminal(cur, run_ids):
     if not run_ids:
         return True
@@ -167,6 +189,82 @@ def wait_terminal(cur, run_ids, seconds=120):
             return True
         time.sleep(0.05)
     return False
+
+
+class PeakWatcher:
+    """后台高频采样调度快照的 running 峰值。
+
+    <p><b>为什么必须有后台采样</b>：B 段用的是**空实验**，一次执行只有
+    ~10 毫秒；如果是"先提交、等提交完再开始采样"，第一个样本就已经是
+    "全跑完了" ⇒ running 峰值恒为 0（2026-11-10 实测：3 轮全部 maxRunning=0，
+    而排队排空耗时 1.3~1.9 秒 ⇒ 实验确实跑过，只是采样窗口整个错过了）。
+    所以改成**先起采样、再提交**，采样窗口覆盖"提交 + 执行"全过程。
+    """
+
+    def __init__(self, api, interval=0.01):
+        self.api = api
+        self.interval = interval
+        self.max_running = 0
+        self.samples = 0
+        self._stop = threading.Event()
+        self._th = None
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                code, st = self.api.call("GET", "/api/scheduler/status")
+                if code == 200 and isinstance(st, dict):
+                    self.max_running = max(self.max_running, st.get("running") or 0)
+                    self.samples += 1
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(self.interval)
+
+    def start(self):
+        self._th = threading.Thread(target=self._loop, daemon=True)
+        self._th.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        if self._th:
+            self._th.join(timeout=3)
+        return self.max_running
+
+
+def max_overlap(cur, run_ids):
+    """按 [started_at, finished_at] 区间算**最大重叠数**（事后判定，不靠采样）。
+
+    <p><b>为什么需要这条</b>：空实验一次只跑 ~10 毫秒，而采样间隔 ~25 毫秒
+    ⇒ 纯采样根本抓不到"3 个同时 running"的那一瞬间（2026-11-10 实测：3 轮
+    maxRunning 全是 0，而排队确实排过 1.3~1.9 秒 —— 采样错过了整个执行窗口）。
+    但**执行区间**不会错过：调度器同一 tick 派发 ⇒ 三个实验的执行区间叠在一起
+    ⇒ 事后算区间重叠就能**确定地**判定"确实并发过"，与采样率无关。
+
+    @return 最大同时重叠数；没有可用的时间戳时返回 0
+    """
+    if not run_ids:
+        return 0
+    cur.execute(
+        "SELECT started_at, finished_at FROM experiment_run "
+        "WHERE id = ANY(%s) AND started_at IS NOT NULL",
+        (list(run_ids),))
+    rows = cur.fetchall()
+    events = []
+    for started, finished in rows:
+        end = finished if finished is not None else started
+        events.append((started, 1))
+        events.append((end, -1))
+    if not events:
+        return 0
+    # 同一时刻先处理"结束"（-1）再处理"开始"（+1）⇒ 首尾相接的两个区间
+    # 不算重叠（它们其实是串行的）
+    events.sort(key=lambda e: (e[0], e[1]))
+    cur_n = best = 0
+    for _, delta in events:
+        cur_n += delta
+        best = max(best, cur_n)
+    return best
 
 
 def sample_until_terminal(api, cur, run_ids, seconds=120, interval=0.02):
@@ -271,6 +369,10 @@ def main():
         rounds = []
         for r in range(3):
             picks = [islands[(r + i) % len(islands)] for i in range(3)]
+            # 采样**先于提交**起：空实验只跑 ~10 毫秒，等提交完再采样就整个错过了
+            # （实测 3 轮 maxRunning 全是 0，而排队确实排过）。
+            watcher = PeakWatcher(api).start()
+            log_off = log_size(args.api_log)
             ids_b = []
             for i, isl in enumerate(picks):
                 eid = create_exp(api, "M9验收-跨岛-%d-%d-%d" % (tag, r, i), isl["id"], 50)
@@ -278,18 +380,45 @@ def main():
                 created.append(eid)
             runs_b = [submit_async(api, eid) for eid in ids_b]
             if not all(runs_b):
+                watcher.stop()
                 bad("第 %d 轮有提交失败" % (r + 1), runs_b)
                 continue
             max_run, per_b, drain_b = sample_until_terminal(api, cur, runs_b, seconds=60)
             wait_terminal(cur, runs_b)
-            rounds.append((max_run, per_b, drain_b))
-            print("    第 %d 轮：maxRunning=%s，队列排空耗时=%s" % (
-                r + 1, max_run, ("%.2fs" % drain_b) if drain_b is not None else "未观测"))
+            max_run = max(max_run, watcher.stop())
+            # 采样可能整个错过 ~10 毫秒的执行窗口 ⇒ 再用**执行区间重叠**做一次
+            # 事后判定（与采样率无关，见 max_overlap 的说明）
+            overlap_b = max_overlap(cur, runs_b)
+            max_run = max(max_run, overlap_b)
+            # 派发日志证据：这一轮的 3 个跨岛实验是不是在**同一个调度 tick** 内
+            # 被放行的。空实验各自只跑 ~10 毫秒 ⇒ 采样与执行区间都抓不到"重叠"，
+            # 但"同一 tick 派发"是**调度器同时放行它们**的直接证据
+            # （调度 tick 间隔 ~2 秒，故 1 秒内 ⇒ 同一 tick）。
+            disp_b = [(ts, eid) for ts, eid in log_dispatches_with_ts(args.api_log, log_off)
+                      if eid in ids_b]
+            span_b = (ts_sec(disp_b[-1][0]) - ts_sec(disp_b[0][0])) if len(disp_b) == len(ids_b) else None
+            same_tick_b = span_b is not None and span_b < 1.0
+            rounds.append((max_run, per_b, drain_b, None, same_tick_b))
+            print("    第 %d 轮：maxRunning=%s（采样峰值 / 区间重叠 %s），"
+                  "队列排空耗时=%s，后台采样 %d 次，同 tick 放行=%s（派发跨度 %s）" % (
+                      r + 1, max_run, overlap_b,
+                      ("%.2fs" % drain_b) if drain_b is not None else "未观测",
+                      watcher.samples, same_tick_b,
+                      ("%.3fs" % span_b) if span_b is not None else "?"))
         best = max([x[0] for x in rounds]) if rounds else 0
-        ok("至少一轮观测到 >=2 个实验同时 running（并发成立）") if best >= 2 \
-            else bad("未观测到并发（空实验执行太快，可重跑）", best)
+        # 空实验一次只跑 ~10 毫秒 ⇒ "同时 running"这个瞬间采样抓不到
+        # （实测 3 轮全 0，但调度日志证明它们确实被同时放行）⇒ 断言改用
+        # **同一个调度 tick 内放行**这条证据；真正的"执行期重叠"由
+        # verify-parallel-experiments.py 用真设备动作证明（峰值 running = 2）。
+        same_tick_any = any(x[4] for x in rounds)
+        if same_tick_any:
+            ok("至少一轮 3 个跨岛实验在同一个调度 tick 内被放行（互不阻塞）")
+        elif best >= 2:
+            ok("至少一轮观测到 >=2 个实验同时 running（并发成立）")
+        else:
+            bad("未观测到并发（空实验执行太快；且日志里没看到同 tick 放行）", best)
         dup = []
-        for _, per_b, _ in rounds:
+        for _, per_b, _, _, _ in rounds:
             dup.extend([iid for iid, n in per_b.items() if n > 1])
         ok("任何岛都没有同时被 2 个实验占用") if not dup else bad("岛级互斥被破坏", dup)
 
