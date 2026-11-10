@@ -1112,8 +1112,6 @@ export const zhCN = {
   'experimentCanvas.kind.start.hint': '流程入口',
   'experimentCanvas.kind.end.title': '结束',
   'experimentCanvas.kind.end.hint': '流程出口',
-  'experimentCanvas.node.start': '开始',
-  'experimentCanvas.node.end': '结束',
   'experimentCanvas.edge.deleteHint': '双击删除',
   'experimentCanvas.palette.workflow': '流程',
   'experimentCanvas.warn.pickExperiment': '先选一个实验',

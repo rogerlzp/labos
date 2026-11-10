@@ -1111,8 +1111,6 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'experimentCanvas.kind.start.hint': 'Entry point of the workflow',
   'experimentCanvas.kind.end.title': 'End',
   'experimentCanvas.kind.end.hint': 'Exit point of the workflow',
-  'experimentCanvas.node.start': 'Start',
-  'experimentCanvas.node.end': 'End',
   'experimentCanvas.edge.deleteHint': 'Double-click to delete',
   'experimentCanvas.palette.workflow': 'Workflow',
   'experimentCanvas.warn.pickExperiment': 'Select an experiment first',
