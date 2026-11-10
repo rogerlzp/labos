@@ -10,14 +10,14 @@ import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 /**
- * 注解式 {@code @RestController} 的鉴权：与 {@code ApiServer.route()} 里的规则完全一致。
+ * 注解式 {@code @RestController} 的鉴权：与迁移前 {@code ApiServer.route()} 里的规则完全一致。
  *
- * <p><b>只拦注解式 Controller</b>（{@link HandlerMethod}），不拦
- * {@code LegacyRouteController} 那条旧链路 —— 旧链路在 route() 内部自己鉴权，
- * 两边规则相同但不会重复执行，迁移期不会把已验证的 40+ 端点改出 401。
+ * <p><b>只拦注解式 Controller</b>（{@link HandlerMethod}），不拦静态资源等
+ * 非 Controller 的处理器。鉴权规则与原 route() 内部一致 —— 迁移期不改动已验证
+ * 端点的行为，避免把 40+ 端点改出 401。
  *
- * <p>这是把 {@code *Api} 逐个拆成 Spring MVC Controller 的前置设施：
- * 每拆一个，只要加 {@code @GetMapping/@PostMapping}，鉴权自动由这里接管。
+ * <p>鉴权通过的 Session 放进 request attribute（{@link #SESSION_ATTR}），
+ * Controller 用 {@code @RequestAttribute} 取。
  */
 @Component
 public class ApiAuthInterceptor implements HandlerInterceptor {
@@ -42,7 +42,7 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
                         .equals("com.labos.boot.web.controller")) {
             return check(req, resp);
         }
-        return true;                           // LegacyRouteController 自己鉴权
+        return true;                           // controller 包以外的 HandlerMethod（当前没有）
     }
 
     private boolean check(HttpServletRequest req, HttpServletResponse resp) throws Exception {

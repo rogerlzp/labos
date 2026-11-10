@@ -57,25 +57,29 @@ import java.util.regex.Pattern;
 /**
  * 内核服务：把决策 / 执行 / 持久化 / 告警四个模块暴露成 HTTP API。
  *
- * <p>用 JDK 自带 {@code com.sun.net.httpserver}，零框架依赖——
- * 目的不是替代 Spring Boot，而是**证明内核可以独立成为一个服务**，
- * 不被框架、容器、配置绑架。
+ * <p><b>2026-11-10 起 HTTP 职责已交出去</b>：本类原先用 JDK 自带
+ * {@code com.sun.net.httpserver} 手写 {@code route()} 做路由。
+ * Spring Boot 迁移完成后，端口、线程池、生命周期归 Spring 容器，
+ * 全部端点迁到 12 个注解式 Controller（{@code com.labos.boot.web.controller}），
+ * 静态资源与健康检查在 {@code FallbackController}，鉴权在
+ * {@code ApiAuthInterceptor}。{@code route()} 与 {@code ServletHttpExchange}
+ * 适配层均已退役，JDK HttpServer 的**服务职责**清零。
  *
- * <pre>
- *   java -cp "out:lib/postgresql-42.7.3.jar" com.labos.kernel.api.ApiServer [port]
- * </pre>
+ * <p>本类现在只剩两件事：
+ * <ol>
+ *   <li>{@link #runKernel()} —— 容器就绪后的启动收尾（崩溃孤儿 settle、
+ *       命令账本对账、物理未知隔离、queued rehydrate）；</li>
+ *   <li>若干静态工具方法（{@code jsonField} / {@code paramLong} / {@code err} 等），
+ *       被 Controller 直接引用。</li>
+ * </ol>
  *
- * <p>端点：
- * <pre>
- *   GET  /health              健康检查
- *   GET  /api/policies        恢复策略列表
- *   GET  /api/runs            最近执行
- *   GET  /api/runs/{id}       执行详情（节点 + 事件流）
- *   GET  /api/alerts          告警（按指纹聚合，排除 info）
- *   GET  /api/errors          错误明细（含 SKIPPED 留痕）
- *   GET  /api/meta/status-vocabulary  状态词表（前端/后端唯一权威）
- *   POST /api/demo/run        触发一次演示执行
- * </pre>
+ * <p>仍在但**已无调用者**（死代码，待清理）：以 {@code HttpExchange} 为签名的
+ * {@code bearer} / {@code currentSession} / {@code remoteIp} / {@code requireGet} /
+ * {@code intParam} / {@code readBody}。它们是适配层时代的产物，Controller 改用
+ * {@code HttpServletRequest} 后不再需要。
+ *
+ * <p>启动入口：{@code com.labos.boot.LabosApplication}（Spring Boot 容器）。
+ * 本类没有 {@code main()}，也不创建任何 ServerSocket。
  */
 public final class ApiServer {
 
@@ -123,14 +127,11 @@ public final class ApiServer {
         this.port = port;
     }
 
-    /**
-     * HTTP 已由 Spring MVC（Tomcat）接管：端口、线程池、生命周期都归容器。
-     * 本类只保留路由分发与启动收尾，不再创建任何 ServerSocket。
-     */
     // ---------------------------------------------------------------- 路由
 
     // route() 已退役：全部端点迁到注解式 Controller（com.labos.boot.web.controller），
     // 静态资源与健康检查在 FallbackController，鉴权在 ApiAuthInterceptor。
+    // 以下以 HttpExchange 为签名的方法是适配层时代的遗留，已无调用者（死代码）。
 
 
     /** 从极简 JSON body 里取字符串字段（无依赖，够用即可）。 */

@@ -16,7 +16,7 @@
 空态容错：库里没有岛 / 该岛没设备 / 该设备没方法 / 岛上只有一台设备时跳过，不判失败。
 自建流程在 finally 里清理（与 e2e-sim-flow.py 同口径）；`--demo` 时保留流程供人工查看。
 
-前置：ApiServer 18080、前端 5173；库断言与清理需要 LABOS_DB_*（缺失则跳过）。
+前置：内核 18080（Spring Boot 容器）、前端 5173；库断言与清理需要 LABOS_DB_*（缺失则跳过）。
 
 用法：
   python3 scripts/e2e-method-drop.py

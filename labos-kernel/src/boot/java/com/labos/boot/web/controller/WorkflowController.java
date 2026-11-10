@@ -42,7 +42,7 @@ import static com.labos.kernel.api.ApiServer.paramStr;
 /**
  * 流程域 Controller（21 个端点）——最后一个从 {@code *Api} 拆出的类。
  * 拆完后旧分发链（{@code ApiServer.route()} 里最后一个
- * {@code workflowApi.handle}）与 {@code ServletHttpExchange} 适配层即可退役。
+ * {@code workflowApi.handle}）与 {@code ServletHttpExchange} 适配层**已退役**。
  *
  * <p>业务在 {@link WorkflowWebService}；本类只做 HTTP 解析、审计与状态码。
  * 语义对齐点：

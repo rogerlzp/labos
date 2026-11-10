@@ -16,7 +16,7 @@
   <version>2.0.0-SNAPSHOT</version>
   <packaging>jar</packaging>
   <name>labos-kernel</name>
-  <description>LabOS 内核（Spring Boot 容器 + 现有 JDK HttpServer 路由）</description>
+  <description>LabOS 内核（Spring Boot 容器 + Spring MVC HTTP 层 + MyBatis XML 持久化）</description>
 
   <properties>
     <java.version>17</java.version>
@@ -24,20 +24,20 @@
   </properties>
 
   <dependencies>
-    <!-- 只要 JDBC/事务能力，不要 Tomcat：HTTP 路由仍用现有 com.sun.net.httpserver -->
+    <!-- HTTP 层已迁 Spring MVC：Tomcat 接管 18080，JDK HttpServer 退役 -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-jdbc</artifactId>
+      <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
-    <!-- A 批：声明式事务需要 AOP 代理 -->
+    <!-- 声明式事务需要 AOP 代理 -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-aop</artifactId>
     </dependency>
-    <!-- HTTP 迁 Spring MVC：Tomcat 接管 18080，JDK HttpServer 退役 -->
+    <!-- 只要 JDBC/事务能力（连接池与事务管理器由 DataSourceConfiguration 提供） -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-web</artifactId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
     </dependency>
     <!-- C 批：SQL 收口到 XML mapper（现场决策：XML 比 Java 里拼 SQL 更可读） -->
     <dependency>

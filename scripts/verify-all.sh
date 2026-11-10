@@ -47,7 +47,7 @@ if curl -s -m 3 "$BASE/health" >/dev/null 2>&1 || \
    curl -s -m 3 -o /dev/null -w "%{http_code}" "$BASE/api/auth/login" -d '{}' 2>/dev/null | grep -qE "200|400|401"; then
     ok "中控服务在 $BASE"
 else
-    bad "中控服务未启动（先跑 ApiServer）"
+    bad "中控服务未启动（先跑 ./scripts/start-kernel.sh）"
     echo "报告：$REPORT"; exit 1
 fi
 

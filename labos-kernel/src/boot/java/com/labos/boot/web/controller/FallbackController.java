@@ -22,9 +22,9 @@ import static com.labos.kernel.api.ApiServer.err;
  * 兜底 Controller：{@code /health}、静态 UI（{@code /}、{@code /designer.html}、
  * {@code /vendor/**}）与 404。
  *
- * <p>这是旧 {@code LegacyRouteController + ServletHttpExchange} 适配层的**替代者**，
- * 也是整条旧分发链的最后残余——原 {@code ApiServer.route()} 里的
- * 静态资源/健康检查/404 三段在这里用 Servlet API 直出，适配层已删除。
+ * <p>旧 {@code LegacyRouteController + ServletHttpExchange} 适配层**已删除**，
+ * 这里就是它的替代者：原 {@code ApiServer.route()} 里的
+ * 静态资源/健康检查/404 三段现在用 Servlet API 直出。
  * 处理集合与原 route() 完全一致（多一个都不接）。
  */
 @RestController

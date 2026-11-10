@@ -16,8 +16,8 @@ import java.util.Map;
  * 第一个从 {@code *Api} 拆出来的注解式 Controller（P-04/P-05 迁移范式）。
  *
  * <p>选 MetaApi 里三个纯读端点先拆：它们不需要写库、不涉及设备，风险最低。
- * 鉴权由 {@code ApiAuthInterceptor} 接管（规则与 route() 一致），
- * 其余端点仍走 {@code LegacyRouteController}，行为不变。
+ * 鉴权由 {@code ApiAuthInterceptor} 接管（规则与原 route() 一致）。
+ * 如今 9 个 {@code *Api} 已全部拆完，本类是其中之一。
  */
 @RestController
 public class MetaController {

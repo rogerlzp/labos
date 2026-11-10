@@ -436,11 +436,15 @@ if [[ $WITH_E2E -eq 1 ]]; then
     pass "拖方法 $DN / 0（岛→设备→方法→XML/compile/落库）"
   fi
 
-  # 4.13 崩溃恢复端到端：真 kill -9 内核进程 → 重启 → 断言启动兜底 settle 收掉 running 孤儿。
+fi
+
+# 4.13 崩溃恢复端到端：真 kill -9 内核进程 → 重启 → 断言启动兜底 settle 收掉 running 孤儿。
   # 补的是 BUG-14 的**生产入口接线**：L2 的 StartupSettleSelfTest 直接调包内重载、
-  # 进程内造数，只证明方法本身对，证明不了 ApiServer 启动时真的调了 settle/rehydrate。
+  # 进程内造数，只证明方法本身对，证明不了内核启动时真的调了 settle/rehydrate。
   # 重启继承本进程环境，故先兜底设内核能力开关，避免重启后能力与重启前不一致
   # （丢了 LABOS_TRANSFER_PLAN=1 会让 2.7 的 ports 4 条整节 SKIP）。
+if want_section "4.13"; then
+  RECOVERY_RAN=1
   note "4.13 崩溃恢复（verify-s3-2-residuals.py：kill -9 → 重启 → 启动兜底 settle）"
   export LABOS_TRANSFER_PLAN="${LABOS_TRANSFER_PLAN:-1}"
   export LABOS_EXEC_GRAPH="${LABOS_EXEC_GRAPH:-1}"
@@ -459,51 +463,73 @@ if [[ $WITH_E2E -eq 1 ]]; then
     pass "崩溃恢复 $RN / 0（kill -9 → 重启 → queued rehydrate + running 孤儿 settle）"
   fi
 
-  # 4.15 网关「成对」与多分支（e2e-gateway-pairs.py）
+  if wait_api_healthy 45; then
+    pass "4.13 后 API 已恢复健康（后续页面轨继续跑）"
+  else
+    API_AFTER_CRASH_OK=0
+    skip "4.13 后 API 未恢复健康：后续依赖内核 API 的页面轨不再重复报红"
+  fi
+fi
+
+# 4.15 网关「成对」与多分支（e2e-gateway-pairs.py）
   # 补的是「异或/并行分叉必须与汇合成对出现」+「N=2 与 N=3 都要测」：
   # 上一版 4.14 的图按后端口径一算是 2 个分叉 + 2 个**直通**（X/X2 入1出1），
   # 名字叫「异或分叉」却名实不符，也没有任何一个汇合点（2026-11-06 用户指出）。
+if want_section "4.15"; then
   note "4.15 网关成对 · N=2/N=3（e2e-gateway-pairs.py）"
-  GOUT=$(python3 scripts/e2e-gateway-pairs.py --base "$E2E_BASE" 2>&1)
-  if is_skip "$GOUT"; then
-    skip "网关成对（没给库连接）"
+  if [[ $RECOVERY_RAN -eq 1 && $API_AFTER_CRASH_OK -ne 1 ]]; then
+    skip "网关成对（4.13 后 API 未恢复）"
   else
-    GN=$(echo "$GOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
-    GF=$(echo "$GOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
-    GN=${GN:-0}; GF=${GF:-1}
-    if [[ "$GF" != "0" ]]; then
-      fail "网关成对有失败（$GF 条）"
-      echo "$GOUT" | grep '✗' | head -8
-    elif (( GN < MIN_GWPAIR )); then
-      fail "网关成对断言 $GN < 阈值 ${MIN_GWPAIR}"
+    GOUT=$(python3 scripts/e2e-gateway-pairs.py --base "$E2E_BASE" 2>&1)
+    if is_skip "$GOUT"; then
+      skip "网关成对（没给库连接）"
     else
-      pass "网关成对 $GN / 0（异或/并行各 N=2+N=3，分叉与汇合成对）"
+      GN=$(echo "$GOUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+      GF=$(echo "$GOUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+      GN=${GN:-0}; GF=${GF:-1}
+      if [[ "$GF" != "0" ]]; then
+        fail "网关成对有失败（$GF 条）"
+        echo "$GOUT" | grep '✗' | head -8
+      elif (( GN < MIN_GWPAIR )); then
+        fail "网关成对断言 $GN < 阈值 ${MIN_GWPAIR}"
+      else
+        pass "网关成对 $GN / 0（异或/并行各 N=2+N=3，分叉与汇合成对）"
+      fi
     fi
   fi
-  # 4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）
+fi
+
+# 4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）
   # 真边界暂停：DEV 还在执行（device_state running 且 current_run_id=本次 run）时发暂停。
   # pauseChecker 在下一个 Kind.TASK（DEV2）的 executeNode 之前停下。
   # 网关不是暂停点，__setVar 也不是；__sleep/__wait 另有用例。
   # 恢复靠 skipKeys：已 completed 的 DEV 不重跑，pending 的 DEV2 才执行。
+if want_section "4.16"; then
   note "4.16 暂停点与恢复起点（e2e-pause-resume-nodes.py）"
-  POUT2=$(python3 scripts/e2e-pause-resume-nodes.py --base "$E2E_BASE" 2>&1)
-  if is_skip "$POUT2"; then
-    skip "暂停与恢复（没给库连接）"
+  if [[ $RECOVERY_RAN -eq 1 && $API_AFTER_CRASH_OK -ne 1 ]]; then
+    skip "暂停与恢复（4.13 后 API 未恢复）"
   else
-    parse_summary "$POUT2"
-    if [[ "$SUM_MISSING" == "1" ]]; then
-      fail "暂停与恢复脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
-      printf '%s\n' "$POUT2" | tail -15
-    elif [[ "$SUM_FAIL" != "0" ]]; then
-      fail "暂停与恢复有失败（$SUM_FAIL 条）"
-      printf '%s\n' "$POUT2" | grep '✗' | head -8
-    elif (( SUM_PASS < MIN_PAUSERES )); then
-      fail "暂停与恢复断言 $SUM_PASS < 阈值 ${MIN_PAUSERES}"
+    POUT2=$(python3 scripts/e2e-pause-resume-nodes.py --base "$E2E_BASE" 2>&1)
+    if is_skip "$POUT2"; then
+      skip "暂停与恢复（没给库连接）"
     else
-      pass "暂停与恢复 $SUM_PASS / 0（页面执行/暂停/继续；停在下一个设备任务 DEV2；DEV 不重跑，DEV2 恢复后才执行；PARJ 并行汇合等齐后整单才 completed）"
+      parse_summary "$POUT2"
+      if [[ "$SUM_MISSING" == "1" ]]; then
+        fail "暂停与恢复脚本没有输出「通过 N / 失败 M」汇总行（脚本可能异常退出）"
+        printf '%s\n' "$POUT2" | tail -15
+      elif [[ "$SUM_FAIL" != "0" ]]; then
+        fail "暂停与恢复有失败（$SUM_FAIL 条）"
+        printf '%s\n' "$POUT2" | grep '✗' | head -8
+      elif (( SUM_PASS < MIN_PAUSERES )); then
+        fail "暂停与恢复断言 $SUM_PASS < 阈值 ${MIN_PAUSERES}"
+      else
+        pass "暂停与恢复 $SUM_PASS / 0（页面执行/暂停/继续；停在下一个设备任务 DEV2；DEV 不重跑，DEV2 恢复后才执行；PARJ 并行汇合等齐后整单才 completed）"
+      fi
     fi
   fi
-  # 4.17 实验级暂停：设备执行中发暂停 → 三层都停在暂停
+fi
+
+# 4.17 实验级暂停：设备执行中发暂停 → 三层都停在暂停
   # 断言的是**语义要求**：
   #   设备方法正在执行时发暂停，实验必须真的进入暂停状态，
   #   experiment_run / experiment 两层一致（2026-11-06 实测发现过

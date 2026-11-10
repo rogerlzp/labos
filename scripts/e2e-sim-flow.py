@@ -23,11 +23,13 @@
 边界（C 类，只观察不判失败）：
   · 只**复用**已经跑起来的仿真机；没起来就整体 SKIP 并提示去跑 sim-up.sh，
     **不主动拉起、不 kill** —— 拉起/回收是台架（sim-up.sh）的事。
-  · 设计器 palette 没有并行网关入口（并行结构只能在 XML/接口侧建），
-    本用例只用 start / task / end。
+  · 设计器 palette **已有**并行网关入口（`bpmn:ParallelGateway`，见
+    `webapp/src/bpmn/WorkflowPalette.ts`）；但本用例只走最简的 start / task / end ——
+    并行分支的去向无法用"一条指令真回包"这一条断言覆盖，并行结构由
+    `verify-flow-matrix.py` / `e2e-flow-matrix.py` 负责。
 
 前置：
-  · ApiServer 18080、前端可访问（默认 http://localhost:5173；nginx 8080 用 --base）；
+  · 内核 18080（Spring Boot 容器 com.labos.boot.LabosApplication）、前端可访问（默认 http://localhost:5173；nginx 8080 用 --base）；
   · 7 台 DeviceSimulator 在 19500..19506 监听（labos-kernel/scripts/sim-up.sh）；
   · 连库环境变量 LABOS_DB_HOST / LABOS_DB_PORT / LABOS_DB_NAME / LABOS_DB_USER /
     LABOS_DB_PASS（缺失则页面步骤照跑，库断言与清理跳过）。

@@ -906,14 +906,22 @@ def sec_concurrent(ctx, d1, d2, m1):
 
 
 def kernel_env():
-    """聚合**所有** ApiServer 相关进程的环境变量。
+    """聚合**所有**内核进程的环境变量。
 
-    为什么不能只取第一个 pid：内核常以 `bash -c '... java ... ApiServer ...'` 两层起，
+    为什么不能只取第一个 pid：内核常以 `bash -c '... java ...'` 两层起，
     pgrep 会同时命中外壳与 java，而环境只挂在 java 那层；取 pid[0] 若恰是外壳，
     就读不到 LABOS_TRANSFER_PLAN，ports 一节会假 SKIP（45 → 41 条）。
+
+    A 批（2026-11-09）起改按 **18080 监听端口反查**：旧实现用
+    `pgrep -f ApiServer` 匹配命令行，而 Spring Boot 入口是
+    `com.labos.boot.LabosApplication`，字符串匹配不到 ⇒ `kernel_env()` 恒返回空
+    ⇒ ports 一节永远假 SKIP。端口反查与启动方式解耦，且直接命中真正监听的
+    java 进程（天然避开上面那个「两层起、pid[0] 是外壳」的问题）。
     """
     try:
-        pids = subprocess.run(["pgrep", "-f", "ApiServer"], capture_output=True, text=True).stdout.split()
+        out = subprocess.run(["lsof", "-tiTCP:18080", "-sTCP:LISTEN"],
+                             capture_output=True, text=True).stdout.strip()
+        pids = [x for x in out.split() if x.isdigit()]
         if not pids:
             return ""
         return "\n".join(

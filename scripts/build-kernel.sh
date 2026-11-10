@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 构建内核（Spring Boot 容器 + 现有 JDK HttpServer 路由）
+# 构建内核（Spring Boot 容器 + Spring MVC HTTP 层）
 #
 #   ./scripts/build-kernel.sh            # 编译 main + boot
 #   ./scripts/build-kernel.sh --verify   # 编译并跑 Spring 事务桥接自测

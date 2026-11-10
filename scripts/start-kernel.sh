@@ -9,7 +9,8 @@
 #   ① 建 HikariDataSource（LABOS_DB_* 环境变量）
 #   ② 建 DataSourceTransactionManager / TransactionTemplate
 #   ③ 把 DataSource 绑定到 DbConfig，让全仓 396 处 db.open() 进入 Spring 事务
-#   ④ 由 KernelRunner 在独立线程拉起原有 ApiServer（18080 + 全部端点）
+#   ④ 由 Spring MVC 的 12 个 Controller 承接全部端点（Tomcat 监听 18080），
+#      再由 KernelRunner 在独立线程执行启动收尾（崩溃孤儿 settle / 命令账本对账 / queued rehydrate）
 #
 # A 批：`java -cp out ... ApiServer 18080` 已删除（ApiServer.main 不再存在），
 # 门禁 4.13 的 kill -9 重启也走本脚本。
