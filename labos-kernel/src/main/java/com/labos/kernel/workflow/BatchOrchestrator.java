@@ -1,14 +1,13 @@
 package com.labos.kernel.workflow;
 
+import com.labos.kernel.persistence.BatchMapper;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
+import com.labos.kernel.persistence.Mappers;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
-import java.sql.Types;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -107,6 +106,11 @@ public final class BatchOrchestrator {
     private final long tenantId;
     private final BatchRunner runner;
 
+    /** Mapper 懒取器：本类是 new 出来的工具类，拿不到构造注入。 */
+    private static BatchMapper bm() {
+        return Mappers.get(BatchMapper.class);
+    }
+
     /** 线上构造：每批用真实 {@link ExperimentExecutor} 跑一条 run。 */
     public BatchOrchestrator(DbConfig db, long tenantId, WorkflowService workflows) {
         this(db, tenantId, new ExperimentExecutor(db, tenantId, workflows));
@@ -140,21 +144,8 @@ public final class BatchOrchestrator {
 
     /** 读实验的批次开关；NULL / {@code <= 0} = 不分批。 */
     public Integer batchSplit(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT batch_split FROM experiment
-                      WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                int v = rs.getInt(1);
-                return rs.wasNull() || v <= 0 ? null : v;
-            }
-        }
+        Integer v = bm().selectBatchSplit(tenantId, experimentId);
+        return v == null || v <= 0 ? null : v;
     }
 
     /**
@@ -184,29 +175,14 @@ public final class BatchOrchestrator {
      * 变量只能从"这条 run 属于哪一批"反查——批次快照是不变量（D2），反查结果稳定。
      */
     public BatchContext batchContextFor(long experimentRunId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT br.id AS batch_run_id, b.id AS batch_id, b.batch_no,
-                            (SELECT string_agg(x.e ->> 'barcode', ',' ORDER BY x.o)
-                               FROM jsonb_array_elements(b.samples)
-                                    WITH ORDINALITY AS x(e, o)) AS barcodes
-                       FROM experiment_batch_run br
-                       JOIN experiment_batch b
-                         ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
-                      WHERE br.tenant_id = ? AND br.experiment_run_id = ?
-                      ORDER BY br.id DESC
-                      LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentRunId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                return new BatchContext(rs.getLong("batch_run_id"), rs.getLong("batch_id"),
-                        rs.getInt("batch_no"), rs.getString("barcodes"));
-            }
+        Map<String, Object> row = bm().selectBatchContext(tenantId, experimentRunId);
+        if (row == null) {
+            return null;
         }
+        return new BatchContext(((Number) row.get("batchRunId")).longValue(),
+                ((Number) row.get("batchId")).longValue(),
+                ((Number) row.get("batchNo")).intValue(),
+                (String) row.get("barcodes"));
     }
 
     // ---------------------------------------------------------------- 变量 overrides（S3.2-C）
@@ -240,25 +216,11 @@ public final class BatchOrchestrator {
      */
     public Map<String, String> runVariables(long runId) throws SQLException {
         Map<String, String> m = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT x.key, x.value
-                       FROM experiment_run r
-                       CROSS JOIN LATERAL jsonb_each_text(r.variables) AS x(key, value)
-                      WHERE r.tenant_id = ? AND r.id = ?
-                        AND jsonb_typeof(r.variables) = 'object'
-                      ORDER BY x.key
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String key = rs.getString(1);
-                    String value = rs.getString(2);
-                    if (key != null && value != null) {
-                        m.put(key, value);
-                    }
-                }
+        for (Map<String, Object> row : bm().selectRunVariables(tenantId, runId)) {
+            String key = (String) row.get("key");
+            String value = (String) row.get("value");
+            if (key != null && value != null) {
+                m.put(key, value);
             }
         }
         return m;
@@ -296,28 +258,13 @@ public final class BatchOrchestrator {
      * 万一历史脏数据有多条，取最新一条，不放大污染面。
      */
     private BatchRef findBatchRef(long experimentRunId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT br.id AS batch_run_id, b.id AS batch_id, b.experiment_id
-                       FROM experiment_batch_run br
-                       JOIN experiment_batch b
-                         ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
-                       JOIN experiment_run r
-                         ON r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
-                      WHERE br.tenant_id = ? AND br.experiment_run_id = ?
-                      ORDER BY br.id DESC
-                      LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentRunId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                return new BatchRef(rs.getLong("batch_run_id"), rs.getLong("batch_id"),
-                        rs.getLong("experiment_id"));
-            }
+        Map<String, Object> row = bm().selectBatchRef(tenantId, experimentRunId);
+        if (row == null) {
+            return null;
         }
+        return new BatchRef(((Number) row.get("batchRunId")).longValue(),
+                ((Number) row.get("batchId")).longValue(),
+                ((Number) row.get("experimentId")).longValue());
     }
 
     /**
@@ -360,21 +307,9 @@ public final class BatchOrchestrator {
         }
         List<BatchPlanner.Batch> plan = BatchPlanner.split(samples, split);
         com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            try (PreparedStatement ps = c.prepareStatement("""
-                    INSERT INTO experiment_batch
-                      (tenant_id, experiment_id, batch_no, sample_count, samples, status)
-                    VALUES (?, ?, ?, ?, ?::jsonb, 'pending')
-                    ON CONFLICT (tenant_id, experiment_id, batch_no) DO NOTHING
-                    """)) {
-                for (BatchPlanner.Batch b : plan) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    ps.setInt(3, b.batchNo());
-                    ps.setInt(4, b.sampleCount());
-                    ps.setString(5, samplesJson(b.samples()));
-                    ps.addBatch();
-                }
-                ps.executeBatch();
+            for (BatchPlanner.Batch b : plan) {
+                bm().insertBatch(tenantId, experimentId, b.batchNo(), b.sampleCount(),
+                        samplesJson(b.samples()));
             }
             return null;
         });
@@ -710,26 +645,9 @@ public final class BatchOrchestrator {
 
     public List<PausedBatch> pausedBatchCandidates() throws SQLException {
         List<PausedBatch> out = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT b.experiment_id, b.batch_no
-                       FROM experiment_batch b
-                       JOIN experiment e
-                         ON e.tenant_id = b.tenant_id AND e.id = b.experiment_id
-                      WHERE b.tenant_id = ?
-                        AND b.status = 'paused'
-                        AND e.status NOT IN ('finished', 'failed', 'aborted', 'cancelled')
-                        AND NOT EXISTS (
-                            SELECT 1 FROM experiment_batch_run br
-                             WHERE br.tenant_id = b.tenant_id AND br.batch_id = b.id)
-                      ORDER BY b.batch_no, b.experiment_id
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(new PausedBatch(rs.getLong(1), rs.getInt(2)));
-                }
-            }
+        for (Map<String, Object> row : bm().selectPausedBatchCandidates(tenantId)) {
+            out.add(new PausedBatch(((Number) row.get("experimentId")).longValue(),
+                    ((Number) row.get("batchNo")).intValue()));
         }
         return out;
     }
@@ -746,30 +664,17 @@ public final class BatchOrchestrator {
     /** 事务内版本：在锁内按派生态选下一批（只读，不写）。 */
     private CandidateBatch firstCandidateInTx(Connection c, long experimentId, int afterBatchNo)
             throws SQLException {
-        List<long[]> rows = new ArrayList<>();
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT id, batch_no FROM experiment_batch
-                 WHERE tenant_id = ? AND experiment_id = ?
-                 ORDER BY batch_no
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    rows.add(new long[]{rs.getLong(1), rs.getLong(2)});
-                }
-            }
-        }
-        for (long[] row : rows) {
-            int batchNo = (int) row[1];
+        for (Map<String, Object> row : bm().selectBatchIdNo(tenantId, experimentId)) {
+            long batchId = ((Number) row.get("id")).longValue();
+            int batchNo = ((Number) row.get("batchNo")).intValue();
             if (batchNo <= afterBatchNo) {
                 continue;
             }
-            String status = derivedBatchStatus(c, row[0]);
+            String status = derivedBatchStatus(c, batchId);
             if ("completed".equals(status) || "running".equals(status)) {
                 continue;
             }
-            return new CandidateBatch(row[0], batchNo);
+            return new CandidateBatch(batchId, batchNo);
         }
         return null;
     }
@@ -781,63 +686,28 @@ public final class BatchOrchestrator {
      * 实验级不变量，只锁某一批挡不住两个请求同时给不同批建单。
      */
     private void lockExperimentRow(Connection c, long experimentId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT id FROM experiment
-                 WHERE tenant_id = ? AND id = ?
-                 FOR UPDATE
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("实验不存在：" + experimentId);
-                }
-            }
+        if (bm().lockExperiment(tenantId, experimentId) == null) {
+            throw new IllegalArgumentException("实验不存在：" + experimentId);
         }
     }
 
     /** 查同实验有没有未结束（queued/running/paused）的批次 run；没有返回 null。 */
     private ActiveAttempt activeBatchAttempt(Connection c, long experimentId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT br.experiment_run_id AS run_id, br.id AS batch_run_id,
-                       b.batch_no, br.attempt_no, r.status
-                  FROM experiment_batch_run br
-                  JOIN experiment_batch b
-                    ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
-                  JOIN experiment_run r
-                    ON r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
-                 WHERE br.tenant_id = ? AND b.experiment_id = ?
-                   AND r.status IN ('queued', 'running', 'paused')
-                 ORDER BY br.id DESC
-                 LIMIT 1
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                return new ActiveAttempt(rs.getLong("run_id"), rs.getLong("batch_run_id"),
-                        rs.getInt("batch_no"), rs.getInt("attempt_no"), rs.getString("status"));
-            }
+        Map<String, Object> row = bm().selectActiveAttempt(tenantId, experimentId);
+        if (row == null) {
+            return null;
         }
+        return new ActiveAttempt(((Number) row.get("runId")).longValue(),
+                ((Number) row.get("batchRunId")).longValue(),
+                ((Number) row.get("batchNo")).intValue(),
+                ((Number) row.get("attemptNo")).intValue(),
+                (String) row.get("status"));
     }
 
     /** 在事务里建一条 queued 的 experiment_run（异步分批的"待派发 run"）。 */
     private long insertQueuedRun(Connection c, long experimentId, Map<String, String> vars)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO experiment_run (tenant_id, experiment_id, status, variables)
-                VALUES (?, ?, 'queued', ?::jsonb) RETURNING id
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            ps.setString(3, variablesJson(vars));
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return bm().insertQueuedRunWithVars(tenantId, experimentId, variablesJson(vars));
     }
 
     /**
@@ -848,21 +718,7 @@ public final class BatchOrchestrator {
      */
     private long insertQueuedBatchRun(Connection c, long batchId, long runId, int attemptNo)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO experiment_batch_run
-                  (tenant_id, batch_id, experiment_run_id, attempt_no, status)
-                VALUES (?, ?, ?, ?, 'queued')
-                RETURNING id
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, batchId);
-            ps.setLong(3, runId);
-            ps.setInt(4, attemptNo);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return bm().insertQueuedBatchRun(tenantId, batchId, runId, attemptNo);
     }
 
     // ---------------------------------------------------------------- 回写
@@ -917,26 +773,9 @@ public final class BatchOrchestrator {
      */
     private void updateAttemptFromRun(Connection c, long batchRunId, long experimentRunId)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE experiment_batch_run br
-                   SET status = r.status,
-                       error = r.error,
-                       -- 异步分批的 attempt 是 queued 建的（started_at 为空），真正开跑时间
-                       -- 在 run.started_at；同步路径建尝试时已落 started_at。COALESCE 两边都保留。
-                       started_at = COALESCE(br.started_at, r.started_at),
-                       finished_at = CASE
-                           WHEN r.status IN ('completed', 'failed', 'aborted', 'cancelled')
-                           THEN COALESCE(br.finished_at, now())
-                           ELSE NULL
-                       END
-                  FROM experiment_run r
-                 WHERE br.tenant_id = ? AND br.id = ?
-                   AND r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, batchRunId);
-            ps.executeUpdate();
-        }
+        // 异步分批的 attempt 是 queued 建的（started_at 为空），真正开跑时间
+        // 在 run.started_at；同步路径建尝试时已落 started_at。COALESCE 两边都保留。
+        bm().updateAttemptFromRun(tenantId, batchRunId);
     }
 
     /**
@@ -947,36 +786,7 @@ public final class BatchOrchestrator {
      * @return 派生状态；没有尝试时返回 {@code null}（调用方不写）
      */
     private String derivedBatchStatus(Connection c, long batchId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT CASE
-                         WHEN EXISTS (
-                             SELECT 1
-                               FROM experiment_batch_run br
-                               JOIN experiment_run r
-                                 ON r.tenant_id = br.tenant_id
-                                AND r.id = br.experiment_run_id
-                              WHERE br.tenant_id = ? AND br.batch_id = ?
-                                AND (br.status = 'completed' OR r.status = 'completed'))
-                         THEN 'completed'
-                         ELSE (
-                             SELECT COALESCE(r2.status, br2.status)
-                               FROM experiment_batch_run br2
-                               LEFT JOIN experiment_run r2
-                                 ON r2.tenant_id = br2.tenant_id
-                                AND r2.id = br2.experiment_run_id
-                              WHERE br2.tenant_id = ? AND br2.batch_id = ?
-                              ORDER BY br2.attempt_no DESC, br2.id DESC
-                              LIMIT 1)
-                       END
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, batchId);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, batchId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return bm().selectDerivedBatchStatus(tenantId, batchId);
     }
 
     // ---------------------------------------------------------------- 落库
@@ -1028,108 +838,38 @@ public final class BatchOrchestrator {
     }
 
     private long createQueuedRun(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO experiment_run (tenant_id, experiment_id, status)
-                     VALUES (?, ?, 'queued') RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return bm().insertQueuedRunPlain(tenantId, experimentId);
     }
 
     /** D12：锁住批次行，串行化同批并发重跑的 attempt_no 计算。 */
     private void lockBatchRow(Connection c, long batchId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT id FROM experiment_batch
-                 WHERE tenant_id = ? AND id = ?
-                 FOR UPDATE
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, batchId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("批次不存在：batch#" + batchId);
-                }
-            }
+        if (bm().lockBatch(tenantId, batchId) == null) {
+            throw new IllegalArgumentException("批次不存在：batch#" + batchId);
         }
     }
 
     private int nextAttemptNo(Connection c, long batchId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT COALESCE(MAX(attempt_no), 0) + 1
-                  FROM experiment_batch_run
-                 WHERE tenant_id = ? AND batch_id = ?
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, batchId);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getInt(1);
-            }
-        }
+        return bm().nextAttemptNo(tenantId, batchId);
     }
 
     private long insertBatchRun(Connection c, long batchId, long runId, int attemptNo)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO experiment_batch_run
-                  (tenant_id, batch_id, experiment_run_id, attempt_no, status, started_at)
-                VALUES (?, ?, ?, ?, 'running', now())
-                RETURNING id
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, batchId);
-            ps.setLong(3, runId);
-            ps.setInt(4, attemptNo);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return bm().insertBatchRunRunning(tenantId, batchId, runId, attemptNo);
     }
 
     private void finishBatchRun(long batchRunId, String status, String error, boolean terminal)
             throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_batch_run
-                        SET status = ?, error = ?,
-                            finished_at = CASE WHEN ? THEN now() ELSE finished_at END
-                      WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setString(1, status);
-            ps.setString(2, error);
-            ps.setBoolean(3, terminal);
-            ps.setLong(4, tenantId);
-            ps.setLong(5, batchRunId);
-            ps.executeUpdate();
-        }
+        bm().finishBatchRun(tenantId, batchRunId, status, error, terminal);
     }
 
     private void updateBatchStatus(long batchId, String status) throws SQLException {
-        try (Connection c = db.open()) {
-            updateBatchStatus(c, batchId, status);
-        }
+        bm().updateBatchStatus(tenantId, batchId, status);
     }
 
     /** 在给定连接/事务上更新批次状态（D8 回写事务用）。 */
     private void updateBatchStatus(Connection c, long batchId, String status)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE experiment_batch
-                   SET status = ?, updated_at = now()
-                 WHERE tenant_id = ? AND id = ?
-                """)) {
-            ps.setString(1, status);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, batchId);
-            ps.executeUpdate();
-        }
+        bm().updateBatchStatus(tenantId, batchId, status);
     }
 
     /**
@@ -1153,72 +893,24 @@ public final class BatchOrchestrator {
         }
         Integer normalized = BatchPlanner.normalizeSplit(batchSplit);
         return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            Integer current;
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT batch_split FROM experiment
-                     WHERE tenant_id = ? AND id = ?
-                     FOR UPDATE
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, experimentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) {
-                        throw new IllegalArgumentException("实验不存在：" + experimentId);
-                    }
-                    int v = rs.getInt(1);
-                    current = rs.wasNull() || v <= 0 ? null : v;
-                }
+            Integer current = bm().lockExperimentBatchSplit(tenantId, experimentId);
+            if (current == null) {
+                throw new IllegalArgumentException("实验不存在：" + experimentId);
             }
-            if (hasBatches(c, experimentId) && !Objects.equals(current, normalized)) {
+            current = current <= 0 ? null : current;
+            if (bm().hasBatches(tenantId, experimentId) && !Objects.equals(current, normalized)) {
                 throw new IllegalArgumentException(
                         "实验已有批次（快照已固化），不能改 batch_split；"
                                 + "要改请先清批次数据");
             }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE experiment
-                       SET batch_split = ?, updated_at = now()
-                     WHERE tenant_id = ? AND id = ?
-                    """)) {
-                if (normalized == null) {
-                    ps.setNull(1, Types.INTEGER);
-                } else {
-                    ps.setInt(1, normalized);
-                }
-                ps.setLong(2, tenantId);
-                ps.setLong(3, experimentId);
-                ps.executeUpdate();
-            }
+            bm().updateExperimentBatchSplit(tenantId, experimentId, normalized);
             return normalized;
         });
     }
 
-    private boolean hasBatches(Connection c, long experimentId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT EXISTS (SELECT 1 FROM experiment_batch
-                                WHERE tenant_id = ? AND experiment_id = ?)
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() && rs.getBoolean(1);
-            }
-        }
-    }
-
     /** 执行器在 settle 前抛异常时的兜底落库（与 ExperimentScheduler.markStatus 同口径）。 */
     private void markRunFailed(long runId, String error) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run
-                        SET status = 'failed', error = ?, finished_at = now()
-                      WHERE tenant_id = ? AND id = ?
-                        AND status NOT IN ('completed', 'failed', 'aborted', 'cancelled')
-                     """)) {
-            ps.setString(1, error);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
-        }
+        bm().markRunFailed(tenantId, runId, error);
     }
 
     /** 实验进入 running（开始按批执行）。 */
@@ -1260,24 +952,9 @@ public final class BatchOrchestrator {
     /** 实验样品（按 sample_id 升序，同一样品多角色只算一次）。 */
     private List<BatchPlanner.Sample> loadSamples(long experimentId) throws SQLException {
         List<BatchPlanner.Sample> out = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT DISTINCT es.sample_id, s.barcode
-                       FROM experiment_sample es
-                       JOIN experiment e
-                         ON e.id = es.experiment_id AND e.tenant_id = ?
-                       JOIN sample s
-                         ON s.id = es.sample_id AND s.tenant_id = e.tenant_id
-                      WHERE es.experiment_id = ?
-                      ORDER BY es.sample_id, s.barcode
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(new BatchPlanner.Sample(rs.getLong(1), rs.getString(2)));
-                }
-            }
+        for (Map<String, Object> row : bm().selectSamples(tenantId, experimentId)) {
+            out.add(new BatchPlanner.Sample(((Number) row.get("sampleId")).longValue(),
+                    (String) row.get("barcode")));
         }
         return out;
     }
@@ -1310,56 +987,30 @@ public final class BatchOrchestrator {
      */
     private List<BatchRow> loadBatches(long experimentId) throws SQLException {
         Map<Long, Acc> accs = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT b.id AS batch_id, b.batch_no, b.sample_count,
-                            b.samples::text AS samples_json, b.status AS batch_status,
-                            (SELECT string_agg(x.e ->> 'barcode', ',' ORDER BY x.o)
-                               FROM jsonb_array_elements(b.samples)
-                                    WITH ORDINALITY AS x(e, o)) AS barcodes,
-                            br.id AS batch_run_id, br.experiment_run_id, br.attempt_no,
-                            br.status AS attempt_status, br.started_at, br.finished_at,
-                            br.error, r.status AS run_status
-                       FROM experiment_batch b
-                       LEFT JOIN experiment_batch_run br
-                              ON br.tenant_id = b.tenant_id AND br.batch_id = b.id
-                       LEFT JOIN experiment_run r
-                              ON r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
-                      WHERE b.tenant_id = ? AND b.experiment_id = ?
-                      ORDER BY b.batch_no, br.attempt_no
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long batchId = rs.getLong("batch_id");
-                    // 先把当前行读全：computeIfAbsent 的 lambda 不能抛受检的 SQLException
-                    int batchNo = rs.getInt("batch_no");
-                    int sampleCount = rs.getInt("sample_count");
-                    String samplesJson = rs.getString("samples_json");
-                    String barcodes = rs.getString("barcodes");
-                    String storedStatus = rs.getString("batch_status");
-                    Acc acc = accs.computeIfAbsent(batchId, k -> new Acc(
-                            batchId, batchNo, sampleCount, samplesJson, barcodes, storedStatus));
-                    long batchRunId = rs.getLong("batch_run_id");
-                    if (rs.wasNull()) {
-                        continue;
-                    }
-                    String runStatus = rs.getString("run_status");
-                    acc.latestRunStatus = runStatus;
-                    String attemptStatus = runStatus;
-                    if (attemptStatus == null) {
-                        attemptStatus = rs.getString("attempt_status");
-                    }
-                    acc.runs.add(new AttemptRow(batchRunId, rs.getLong("experiment_run_id"),
-                            rs.getInt("attempt_no"), attemptStatus,
-                            tsStr(rs, "started_at"), tsStr(rs, "finished_at"),
-                            rs.getString("error")));
-                    if ("completed".equals(attemptStatus)
-                            || "completed".equals(rs.getString("attempt_status"))) {
-                        acc.anyCompleted = true;
-                    }
-                }
+        for (Map<String, Object> row : bm().selectBatchViewRows(tenantId, experimentId)) {
+            long batchId = ((Number) row.get("batchId")).longValue();
+            Acc acc = accs.computeIfAbsent(batchId, k -> new Acc(batchId,
+                    ((Number) row.get("batchNo")).intValue(),
+                    ((Number) row.get("sampleCount")).intValue(),
+                    (String) row.get("samplesJson"), (String) row.get("barcodes"),
+                    (String) row.get("storedStatus")));
+            Object batchRunIdObj = row.get("batchRunId");
+            if (batchRunIdObj == null) {
+                continue;
+            }
+            long batchRunId = ((Number) batchRunIdObj).longValue();
+            String runStatus = (String) row.get("runStatus");
+            acc.latestRunStatus = runStatus;
+            String attemptStatus = runStatus != null ? runStatus
+                    : (String) row.get("attemptStatus");
+            acc.runs.add(new AttemptRow(batchRunId,
+                    ((Number) row.get("experimentRunId")).longValue(),
+                    ((Number) row.get("attemptNo")).intValue(), attemptStatus,
+                    tsStr(row.get("startedAt")), tsStr(row.get("finishedAt")),
+                    (String) row.get("error")));
+            if ("completed".equals(attemptStatus)
+                    || "completed".equals(row.get("attemptStatus"))) {
+                acc.anyCompleted = true;
             }
         }
         List<BatchRow> out = new ArrayList<>();
@@ -1413,26 +1064,13 @@ public final class BatchOrchestrator {
                 || "aborted".equals(status) || "cancelled".equals(status);
     }
 
-    private static String tsStr(ResultSet rs, String col) throws SQLException {
-        Timestamp ts = rs.getTimestamp(col);
-        return ts == null ? null : ts.toLocalDateTime().format(TS_FMT);
+    private static String tsStr(Object ts) {
+        return ts == null ? null : ((Timestamp) ts).toLocalDateTime().format(TS_FMT);
     }
 
     /** 实验所属岛；未分配返回 0（0 不匹配任何 island 级扣留）。 */
     private long islandOf(long experimentId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT island_id FROM experiment WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    long v = rs.getLong(1);
-                    return rs.wasNull() ? 0L : v;
-                }
-            }
-        }
-        return 0L;
+        Long v = bm().selectIslandIdOfExperiment(tenantId, experimentId);
+        return v == null ? 0L : v;
     }
 }

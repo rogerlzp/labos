@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 分批执行编排。调用方 com.labos.kernel.persistence.BatchMapper -->
+<mapper namespace="com.labos.kernel.persistence.BatchMapper">
+
+    <!-- 读 -->
+
+    <select id="selectBatchSplit" resultType="java.lang.Integer">
+        SELECT batch_split FROM experiment
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectBatchContext" resultType="java.util.Map">
+        SELECT br.id AS "batchRunId", b.id AS "batchId", b.batch_no AS "batchNo",
+               (SELECT string_agg(x.e -&gt;&gt; 'barcode', ',' ORDER BY x.o)
+                  FROM jsonb_array_elements(b.samples)
+                       WITH ORDINALITY AS x(e, o)) AS "barcodes"
+          FROM experiment_batch_run br
+          JOIN experiment_batch b
+            ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
+         WHERE br.tenant_id = #{param1} AND br.experiment_run_id = #{param2}
+         ORDER BY br.id DESC
+         LIMIT 1
+    </select>
+
+    <!-- variables 约定平铺字符串对象；非对象（脏数据）返回空行集。 -->
+    <select id="selectRunVariables" resultType="java.util.Map">
+        SELECT x.key AS "key", x.value AS "value"
+          FROM experiment_run r
+          CROSS JOIN LATERAL jsonb_each_text(r.variables) AS x(key, value)
+         WHERE r.tenant_id = #{param1} AND r.id = #{param2}
+           AND jsonb_typeof(r.variables) = 'object'
+         ORDER BY x.key
+    </select>
+
+    <select id="selectBatchRef" resultType="java.util.Map">
+        SELECT br.id AS "batchRunId", b.id AS "batchId", b.experiment_id AS "experimentId"
+          FROM experiment_batch_run br
+          JOIN experiment_batch b
+            ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
+          JOIN experiment_run r
+            ON r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
+         WHERE br.tenant_id = #{param1} AND br.experiment_run_id = #{param2}
+         ORDER BY br.id DESC
+         LIMIT 1
+    </select>
+
+    <select id="selectPausedBatchCandidates" resultType="java.util.Map">
+        SELECT b.experiment_id AS "experimentId", b.batch_no AS "batchNo"
+          FROM experiment_batch b
+          JOIN experiment e
+            ON e.tenant_id = b.tenant_id AND e.id = b.experiment_id
+         WHERE b.tenant_id = #{param1}
+           AND b.status = 'paused'
+           AND e.status NOT IN ('finished', 'failed', 'aborted', 'cancelled')
+           AND NOT EXISTS (
+               SELECT 1 FROM experiment_batch_run br
+                WHERE br.tenant_id = b.tenant_id AND br.batch_id = b.id)
+         ORDER BY b.batch_no, b.experiment_id
+    </select>
+
+    <select id="selectBatchIdNo" resultType="java.util.Map">
+        SELECT id AS "id", batch_no AS "batchNo"
+          FROM experiment_batch
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+         ORDER BY batch_no
+    </select>
+
+    <select id="selectActiveAttempt" resultType="java.util.Map">
+        SELECT br.experiment_run_id AS "runId", br.id AS "batchRunId",
+               b.batch_no AS "batchNo", br.attempt_no AS "attemptNo", r.status AS "status"
+          FROM experiment_batch_run br
+          JOIN experiment_batch b
+            ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
+          JOIN experiment_run r
+            ON r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
+         WHERE br.tenant_id = #{param1} AND b.experiment_id = #{param2}
+           AND r.status IN ('queued', 'running', 'paused')
+         ORDER BY br.id DESC
+         LIMIT 1
+    </select>
+
+    <!-- 派生态口径（读侧自愈）：任一尝试 completed ⇒ completed；否则最新尝试状态。 -->
+    <select id="selectDerivedBatchStatus" resultType="java.lang.String">
+        SELECT CASE
+                 WHEN EXISTS (
+                     SELECT 1
+                       FROM experiment_batch_run br
+                       JOIN experiment_run r
+                         ON r.tenant_id = br.tenant_id
+                        AND r.id = br.experiment_run_id
+                      WHERE br.tenant_id = #{param1} AND br.batch_id = #{param2}
+                        AND (br.status = 'completed' OR r.status = 'completed'))
+                 THEN 'completed'
+                 ELSE (
+                     SELECT COALESCE(r2.status, br2.status)
+                       FROM experiment_batch_run br2
+                       LEFT JOIN experiment_run r2
+                         ON r2.tenant_id = br2.tenant_id
+                        AND r2.id = br2.experiment_run_id
+                      WHERE br2.tenant_id = #{param1} AND br2.batch_id = #{param2}
+                      ORDER BY br2.attempt_no DESC, br2.id DESC
+                      LIMIT 1)
+               END
+    </select>
+
+    <select id="selectIslandIdOfExperiment" resultType="java.lang.Long">
+        SELECT island_id FROM experiment
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectSamples" resultType="java.util.Map">
+        SELECT DISTINCT es.sample_id AS "sampleId", s.barcode AS "barcode"
+          FROM experiment_sample es
+          JOIN experiment e
+            ON e.id = es.experiment_id AND e.tenant_id = #{param1}
+          JOIN sample s
+            ON s.id = es.sample_id AND s.tenant_id = e.tenant_id
+         WHERE es.experiment_id = #{param2}
+         ORDER BY es.sample_id, s.barcode
+    </select>
+
+    <!-- 批次视图平铺行：批次列取第一行即可（computeIfAbsent 语义），
+         尝试列 batchRunId 为 NULL 表示该批还没有任何尝试。时间戳为 Timestamp。 -->
+    <select id="selectBatchViewRows" resultType="java.util.Map">
+        SELECT b.id AS "batchId", b.batch_no AS "batchNo", b.sample_count AS "sampleCount",
+               b.samples::text AS "samplesJson", b.status AS "storedStatus",
+               (SELECT string_agg(x.e -&gt;&gt; 'barcode', ',' ORDER BY x.o)
+                  FROM jsonb_array_elements(b.samples)
+                       WITH ORDINALITY AS x(e, o)) AS "barcodes",
+               br.id AS "batchRunId", br.experiment_run_id AS "experimentRunId",
+               br.attempt_no AS "attemptNo", br.status AS "attemptStatus",
+               br.started_at AS "startedAt", br.finished_at AS "finishedAt",
+               br.error AS "error", r.status AS "runStatus"
+          FROM experiment_batch b
+          LEFT JOIN experiment_batch_run br
+                 ON br.tenant_id = b.tenant_id AND br.batch_id = b.id
+          LEFT JOIN experiment_run r
+                 ON r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
+         WHERE b.tenant_id = #{param1} AND b.experiment_id = #{param2}
+         ORDER BY b.batch_no, br.attempt_no
+    </select>
+
+    <select id="lockExperiment" resultType="java.lang.Integer">
+        SELECT id FROM experiment
+         WHERE tenant_id = #{param1} AND id = #{param2}
+         FOR UPDATE
+    </select>
+
+    <select id="lockExperimentBatchSplit" resultType="java.lang.Integer">
+        SELECT batch_split FROM experiment
+         WHERE tenant_id = #{param1} AND id = #{param2}
+         FOR UPDATE
+    </select>
+
+    <select id="lockBatch" resultType="java.lang.Integer">
+        SELECT id FROM experiment_batch
+         WHERE tenant_id = #{param1} AND id = #{param2}
+         FOR UPDATE
+    </select>
+
+    <select id="hasBatches" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM experiment_batch
+                        WHERE tenant_id = #{param1} AND experiment_id = #{param2})
+    </select>
+
+    <!-- 写 -->
+
+    <insert id="insertBatch">
+        INSERT INTO experiment_batch
+          (tenant_id, experiment_id, batch_no, sample_count, samples, status)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}::jsonb, 'pending')
+        ON CONFLICT (tenant_id, experiment_id, batch_no) DO NOTHING
+    </insert>
+
+    <insert id="insertQueuedRunWithVars" resultType="long">
+        INSERT INTO experiment_run (tenant_id, experiment_id, status, variables)
+        VALUES (#{param1}, #{param2}, 'queued', #{param3}::jsonb) RETURNING id
+    </insert>
+
+    <insert id="insertQueuedRunPlain" resultType="long">
+        INSERT INTO experiment_run (tenant_id, experiment_id, status)
+        VALUES (#{param1}, #{param2}, 'queued') RETURNING id
+    </insert>
+
+    <insert id="insertQueuedBatchRun" resultType="long">
+        INSERT INTO experiment_batch_run
+          (tenant_id, batch_id, experiment_run_id, attempt_no, status)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'queued')
+        RETURNING id
+    </insert>
+
+    <insert id="insertBatchRunRunning" resultType="long">
+        INSERT INTO experiment_batch_run
+          (tenant_id, batch_id, experiment_run_id, attempt_no, status, started_at)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'running', now())
+        RETURNING id
+    </insert>
+
+    <!-- 终态落 finished_at（COALESCE 保留第一次的终态时间）；非终态清掉。 -->
+    <update id="updateAttemptFromRun">
+        UPDATE experiment_batch_run br
+           SET status = r.status,
+               error = r.error,
+               started_at = COALESCE(br.started_at, r.started_at),
+               finished_at = CASE
+                   WHEN r.status IN ('completed', 'failed', 'aborted', 'cancelled')
+                   THEN COALESCE(br.finished_at, now())
+                   ELSE NULL
+               END
+          FROM experiment_run r
+         WHERE br.tenant_id = #{param1} AND br.id = #{param2}
+           AND r.tenant_id = br.tenant_id AND r.id = br.experiment_run_id
+    </update>
+
+    <update id="updateBatchStatus">
+        UPDATE experiment_batch
+           SET status = #{param3}, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <select id="nextAttemptNo" resultType="int">
+        SELECT COALESCE(MAX(attempt_no), 0) + 1
+          FROM experiment_batch_run
+         WHERE tenant_id = #{param1} AND batch_id = #{param2}
+    </select>
+
+    <update id="finishBatchRun">
+        UPDATE experiment_batch_run
+           SET status = #{param3}, error = #{param4},
+               finished_at = CASE WHEN #{param5}::boolean THEN now() ELSE finished_at END
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <!-- batchSplit 为 null 时 ::int 强转落 NULL，即关闭分批。 -->
+    <update id="updateExperimentBatchSplit">
+        UPDATE experiment
+           SET batch_split = #{param3}::int, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <update id="markRunFailed">
+        UPDATE experiment_run
+           SET status = 'failed', error = #{param3}, finished_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+           AND status NOT IN ('completed', 'failed', 'aborted', 'cancelled')
+    </update>
+
+</mapper>
