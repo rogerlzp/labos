@@ -351,7 +351,19 @@
         UPDATE device_state
            SET current_run_id = #{runId}, status = 'running', updated_at = now()
          WHERE tenant_id = #{tenantId} AND resource_id = #{resourceId}
-           AND (current_run_id IS NULL OR current_run_id = #{runId})
+           AND (current_run_id IS NULL
+                OR current_run_id = #{runId}
+                -- 幽灵锁可回收：锁指向的 run **已经不存在或已终态** ⇒ 这把锁没人会
+                -- 再还回来（run 被删/跑完/被隔离），不回收就是"这台设备凭空永远忙"。
+                -- 2026-11-11 实测：验收脚本清理时删掉了自己的 run，设备锁还指着那个
+                -- 已删的 run ⇒ 后续实验永远抢不到这台设备（T1 一直 running）。
+                -- ⚠ **paused / running / queued 的锁不能回收** —— 那些 run 还要恢复，
+                -- 设备是它的（回收 ⇒ 别的 run 抢走它暂停时占着的设备）。
+                OR NOT EXISTS (
+                     SELECT 1 FROM run r
+                      WHERE r.tenant_id = #{tenantId}
+                        AND r.id = device_state.current_run_id
+                        AND r.status IN ('draft','pending','planned','queued','running','paused')))
         RETURNING resource_id
     </select>
 

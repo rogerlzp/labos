@@ -1,5 +1,6 @@
 package com.labos.kernel.workflow;
 
+import com.labos.kernel.driver.DeviceLock;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
@@ -57,6 +58,16 @@ public final class StartupSettleSelfTest {
     /** 指向「已不存在的 run」的孤儿设备锁（run 被直接删掉时留下）。 */
     private static final long WF_RUN_GONE = -993402L;
 
+    /** 运行期抢锁用例：幽灵锁（run 不存在）＋ 活跃锁（run 还在 running）。 */
+    private static final long RES_GHOST = -993902L;
+    private static final String RES_GHOST_CODE = "SELFTEST-RES-993902";
+    private static final long RES_ACTIVE = -993903L;
+    private static final String RES_ACTIVE_CODE = "SELFTEST-RES-993903";
+    /** 活跃 run（它的锁不许被别人抢走）。 */
+    private static final long WF_RUN_ACTIVE = -993403L;
+    /** 抢锁用的"新 run"（自造 id，不落库）。 */
+    private static final long RUN_TAKER = -993404L;
+
     private static final long RUN_PLAIN = -993301L;
     private static final long RUN_BATCH = -993302L;
     private static final long RUN_KEEP = -993303L;
@@ -72,6 +83,7 @@ public final class StartupSettleSelfTest {
             idempotentAndDoesNotTouchOthers();
             releasesGhostDeviceLock();
             releasesOrphanLockWithoutOrphanRuns();
+            runtimeAcquireReclaimsGhostLock();
         } finally {
             cleanup();
         }
@@ -245,6 +257,60 @@ public final class StartupSettleSelfTest {
                     "SELECT status FROM device_state WHERE tenant_id = ? AND resource_id = ?",
                     TENANT, RES_LOCK_ORPHAN);
             check("孤儿设备锁的状态回到 idle", "idle".equals(st2), st2);
+        }
+    }
+
+    /**
+     * 运行期抢锁：幽灵锁（run **已不存在**）**可回收**；活跃 run 的锁**抢不到**。
+     *
+     * <p>为什么要有这条：幽灵锁原来只有"内核启动时清理"这一条路
+     * （{@code releaseOrphanDeviceLocks} 只在 StartupRecovery 里跑）。而 run 被删 /
+     * 跑完的**运行期**路径没人还锁 ⇒ 2026-11-11 实测：验收脚本清理时删掉了自己的
+     * run，设备锁还指着那个已删的 run ⇒ 那台设备**永远抢不到**（整单卡在 running，
+     * 现场看着像"设备不响应"）。
+     *
+     * <p>⚠ 活跃 run（running/paused/queued…）的锁**不能**回收 —— 那些 run 还要恢复，
+     * 设备是它的（回收 ⇒ 别的 run 抢走它暂停时占着的设备）。
+     */
+    private static void runtimeAcquireReclaimsGhostLock() throws Exception {
+        section("6. 运行期抢锁：幽灵锁可回收，活跃 run 的锁不动");
+        try (Connection c = db.open()) {
+            exec(c, "INSERT INTO resource_node (id, tenant_id, code, name, kind, capacity) "
+                    + "VALUES (?, ?, ?, ?, 'device', 1) ON CONFLICT (id) DO NOTHING",
+                    RES_GHOST, TENANT, RES_GHOST_CODE, "自测资源-运行期幽灵锁");
+            exec(c, "INSERT INTO resource_node (id, tenant_id, code, name, kind, capacity) "
+                    + "VALUES (?, ?, ?, ?, 'device', 1) ON CONFLICT (id) DO NOTHING",
+                    RES_ACTIVE, TENANT, RES_ACTIVE_CODE, "自测资源-活跃锁");
+            exec(c, "INSERT INTO run (id, tenant_id, run_no, run_type, status) "
+                    + "VALUES (?, ?, ?, 'workflow', 'running') ON CONFLICT (id) DO NOTHING",
+                    WF_RUN_ACTIVE, TENANT, "SELFTEST-WF-993403");
+            exec(c, "INSERT INTO device_state (tenant_id, resource_id, status, current_run_id, "
+                    + "current_method, online) VALUES (?, ?, 'running', ?, 'Home', true) "
+                    + "ON CONFLICT (tenant_id, resource_id) DO UPDATE "
+                    + "SET current_run_id = EXCLUDED.current_run_id, "
+                    + "    current_method = EXCLUDED.current_method, "
+                    + "    status = 'running', online = true",
+                    TENANT, RES_GHOST, WF_RUN_GONE);      // 指向**不存在**的 run
+            exec(c, "INSERT INTO device_state (tenant_id, resource_id, status, current_run_id, "
+                    + "current_method, online) VALUES (?, ?, 'running', ?, 'Home', true) "
+                    + "ON CONFLICT (tenant_id, resource_id) DO UPDATE "
+                    + "SET current_run_id = EXCLUDED.current_run_id, "
+                    + "    current_method = EXCLUDED.current_method, "
+                    + "    status = 'running', online = true",
+                    TENANT, RES_ACTIVE, WF_RUN_ACTIVE);    // 指向**活跃** run
+        }
+        DeviceLock lock = new DeviceLock(db, TENANT);
+        check("幽灵锁（run 已不存在）可以被抢回来", lock.tryAcquire(RES_GHOST, RUN_TAKER), false);
+        check("活跃 run 的锁抢不到（不抢别人的设备）",
+                !lock.tryAcquire(RES_ACTIVE, RUN_TAKER), false);
+        try (Connection c = db.open()) {
+            String owner = scalar(c, "SELECT COALESCE(current_run_id::text, '(null)') "
+                    + "FROM device_state WHERE tenant_id = ? AND resource_id = ?", TENANT, RES_GHOST);
+            check("幽灵锁被回收后 current_run_id 换成新 run",
+                    String.valueOf(RUN_TAKER).equals(owner), owner);
+            String owner2 = scalar(c, "SELECT COALESCE(current_run_id::text, '(null)') "
+                    + "FROM device_state WHERE tenant_id = ? AND resource_id = ?", TENANT, RES_ACTIVE);
+            check("活跃 run 的锁没被动", String.valueOf(WF_RUN_ACTIVE).equals(owner2), owner2);
         }
     }
 
@@ -488,9 +554,9 @@ public final class StartupSettleSelfTest {
     private static void cleanup() throws SQLException {
         // 合成资源节点 + 设备锁（FK 是 ON DELETE CASCADE，删资源节点即可带走设备状态）
         try (Connection c = db.open()) {
-            exec(c, "DELETE FROM resource_node WHERE id IN (?, ?)",
-                    RES_LOCK, RES_LOCK_ORPHAN);
-            exec(c, "DELETE FROM run WHERE id = ?", WF_RUN_LOCK);
+            exec(c, "DELETE FROM resource_node WHERE id IN (?, ?, ?, ?)",
+                    RES_LOCK, RES_LOCK_ORPHAN, RES_GHOST, RES_ACTIVE);
+            exec(c, "DELETE FROM run WHERE id IN (?, ?)", WF_RUN_LOCK, WF_RUN_ACTIVE);
         }
         String expIn = EXP_PLAIN + "," + EXP_BATCH + "," + EXP_KEEP + "," + EXP_OUTSIDE;
         try (Connection c = db.open()) {
