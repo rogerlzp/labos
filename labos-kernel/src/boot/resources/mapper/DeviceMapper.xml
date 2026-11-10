@@ -88,4 +88,248 @@
          WHERE tenant_id = #{param1} AND resource_id = #{param2}
     </update>
 
+
+<select id="selectDeviceModels" resultType="java.util.Map">
+        SELECT d.id AS "modelId", d.code AS "code", d.name AS "name",
+               d.device_type AS "deviceType", d.vendor AS "vendor", d.icon AS "icon",
+               c.code AS "capability",
+               (SELECT count(*) FROM device_instance di
+                 WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS "deployed"
+          FROM device d
+          LEFT JOIN capability c ON c.id = d.capability_id
+         WHERE d.tenant_id = #{param1}
+         ORDER BY "deployed" DESC, d.name
+    </select>
+
+<update id="softDeleteDeviceInstance">
+        UPDATE device_instance
+           SET deleted_at = now(), updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+           AND deleted_at IS NULL
+    </update>
+
+<select id="selectIslandPath" resultType="java.lang.String">
+        SELECT path FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'island'
+    </select>
+
+<update id="attachDeviceToIsland">
+        UPDATE resource_node
+           SET parent_id = #{param3}, path = #{param4}, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
+    </update>
+
+<update id="detachDeviceFromIsland">
+        UPDATE resource_node
+           SET parent_id = NULL, path = '/' || code, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
+    </update>
+
+<select id="selectNodeCode" resultType="java.lang.String">
+        SELECT code FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2}
+           AND kind = #{param3}::resource_kind
+    </select>
+
+<update id="updateDevicePosition">
+        UPDATE resource_node
+           SET attr = COALESCE(attr, '{}'::jsonb)
+                      || jsonb_build_object('pos_x', #{param3}, 'pos_y', #{param4}),
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
+    </update>
+
+<select id="selectDevicePool" resultType="java.util.Map">
+        SELECT d.id AS "resourceId", d.code AS "code", d.name AS "name",
+               di.ip AS "ip", c.code AS "capability", dev.icon AS "icon",
+               (SELECT p.id FROM resource_node p
+                 WHERE p.id = d.parent_id AND p.kind = 'island') AS "islandId",
+               (SELECT p.code FROM resource_node p
+                 WHERE p.id = d.parent_id AND p.kind = 'island') AS "islandCode"
+          FROM resource_node d
+          JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
+          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN capability c ON c.id = dev.capability_id
+         WHERE d.tenant_id = #{param1} AND d.kind = 'device'
+           AND (#{param2}::bigint IS NULL OR d.parent_id = #{param2})
+         ORDER BY d.code
+    </select>
+
+<select id="selectUnassignedDevices" resultType="java.util.Map">
+        SELECT d.id AS "resourceId", d.code AS "code", d.name AS "name",
+               di.ip AS "ip", c.code AS "capability"
+          FROM resource_node d
+          LEFT JOIN resource_node p ON p.id = d.parent_id
+          LEFT JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
+          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN capability c ON c.id = dev.capability_id
+         WHERE d.tenant_id = #{param1} AND d.kind = 'device'
+           AND (p.id IS NULL OR p.kind &lt;&gt; 'island')
+           AND di.id IS NOT NULL
+         ORDER BY d.code
+    </select>
+
+<select id="selectDeviceMethods" resultType="java.util.Map">
+        SELECT dm.method AS "method", dm.name AS "name", c.code AS "capability",
+               dm.estimate_sec AS "estimateSec", dm.timeout_sec AS "timeoutSec",
+               dm.interruptible AS "interruptible",
+               dm.param_schema->'params' AS "params"
+          FROM device_instance di
+          JOIN device_method dm ON dm.device_id = di.device_id
+          LEFT JOIN capability c ON c.id = dm.capability_id
+         WHERE di.resource_id = #{param1}
+         ORDER BY dm.method
+    </select>
+
+<select id="selectMethodParams" resultType="java.util.Map">
+        SELECT dm.method AS "method", dm.name AS "name", c.code AS "capability",
+               (dm.param_schema->'params')::text AS "params"
+          FROM device_method dm
+          LEFT JOIN capability c ON c.id = dm.capability_id
+         WHERE dm.tenant_id = #{param1} AND dm.method = #{param2}
+         LIMIT 1
+    </select>
+
+<select id="selectDrivers" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", name AS "name",
+               protocol::text AS "protocol", endpoint AS "endpoint", status AS "status"
+          FROM driver
+         WHERE tenant_id = #{param1} AND deleted_at IS NULL
+         ORDER BY id
+    </select>
+
+<select id="selectTopology" resultType="java.util.Map">
+        SELECT i.id AS "id", i.code AS "code", i.name AS "name",
+               d.id AS "devId", d.code AS "devCode", d.name AS "devName",
+               dev.model AS "model", dev.vendor AS "vendor", dev.icon AS "icon",
+               c.code AS "capability", di.id AS "instanceId", di.ip AS "ip",
+               dr.endpoint AS "driverEndpoint", dr.code AS "driverCode",
+               (d.attr->>'pos_x')::numeric AS "posX",
+               (d.attr->>'pos_y')::numeric AS "posY",
+               COALESCE(ds.online, false) AS "online",
+               COALESCE(ds.status, 'idle') AS "devStatus",
+               ds.current_method AS "currentMethod", ds.has_plate AS "hasPlate"
+          FROM resource_node i
+          LEFT JOIN resource_node d
+                 ON d.parent_id = i.id AND d.kind = 'device'
+          LEFT JOIN device_instance di
+                 ON di.resource_id = d.id AND di.deleted_at IS NULL
+          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN capability c ON c.id = dev.capability_id
+          LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
+          LEFT JOIN device_state ds
+                 ON ds.resource_id = d.id AND ds.tenant_id = i.tenant_id
+         WHERE i.tenant_id = #{param1} AND i.kind = 'island'
+         ORDER BY i.code, d.code
+    </select>
+
+<update id="setDeviceMethodInterruptible">
+        UPDATE device_method SET interruptible = #{param4}
+         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
+    </update>
+
+<select id="insertIsland" resultType="java.lang.Long">
+        INSERT INTO resource_node
+          (tenant_id, parent_id, code, name, kind, path, sort_order)
+        VALUES (#{param1}, NULL, #{param2}, #{param3}, 'island', #{param4}, 100)
+        RETURNING id
+    </select>
+
+<select id="countDevicesUnderIsland" resultType="int">
+        SELECT count(*) FROM resource_node
+         WHERE tenant_id = #{param1} AND parent_id = #{param2} AND kind = 'device'
+    </select>
+
+<delete id="deleteIslandNode">
+        DELETE FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'island'
+    </delete>
+
+<select id="selectRobotPointDetails" resultType="java.util.Map">
+        SELECT p.id AS "id", p.robot_resource_id AS "robotResourceId",
+               p.code AS "code", p.name AS "name",
+               p.x AS "x", p.y AS "y", p.z AS "z", p.action AS "action",
+               p.device_resource_id AS "deviceResourceId",
+               r.code AS "deviceCode", p.synced_at AS "syncedAt"
+          FROM robot_point p
+          LEFT JOIN resource_node r ON r.id = p.device_resource_id
+         WHERE p.tenant_id = #{param1} AND p.island_id = #{param2}
+         ORDER BY p.robot_resource_id, p.code
+    </select>
+
+<select id="selectRobotPoints" resultType="java.util.Map">
+        SELECT p.code AS "code", p.name AS "name", p.x AS "x", p.y AS "y", p.z AS "z",
+               p.action AS "action", r.code AS "deviceCode"
+          FROM robot_point p
+          LEFT JOIN resource_node r ON r.id = p.device_resource_id
+         WHERE p.tenant_id = #{param1} AND p.island_id = #{param2}
+         ORDER BY p.robot_resource_id, p.code
+    </select>
+
+<insert id="upsertRobotPoint">
+        INSERT INTO robot_point
+          (tenant_id, island_id, robot_resource_id, code, name,
+           x, y, z, device_resource_id, action, synced_at)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
+                #{param6}, #{param7}, #{param8}, #{param9}, #{param10}, now())
+        ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
+           SET name = COALESCE(EXCLUDED.name, robot_point.name),
+               x = COALESCE(EXCLUDED.x, robot_point.x),
+               y = COALESCE(EXCLUDED.y, robot_point.y),
+               z = COALESCE(EXCLUDED.z, robot_point.z),
+               device_resource_id = COALESCE(EXCLUDED.device_resource_id,
+                                            robot_point.device_resource_id),
+               action = COALESCE(EXCLUDED.action, robot_point.action),
+               updated_at = now()
+    </insert>
+
+<insert id="syncRobotPoints">
+        INSERT INTO robot_point
+          (tenant_id, island_id, robot_resource_id, code, name,
+           device_resource_id, action, synced_at)
+        SELECT #{param1}, #{param2}, #{param3}, d.code, d.name, d.id, 'PickPlace', now()
+          FROM resource_node d
+         WHERE d.tenant_id = #{param1} AND d.parent_id = #{param2}
+           AND d.kind = 'device' AND d.id &lt;&gt; #{param3}
+        ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
+           SET name = EXCLUDED.name,
+               device_resource_id = EXCLUDED.device_resource_id,
+               synced_at = now(), updated_at = now()
+    </insert>
+
+<update id="updateRobotPoint">
+        UPDATE robot_point SET updated_at = now(), synced_at = now()
+        <if test="x != null">, x = #{x}</if>
+        <if test="y != null">, y = #{y}</if>
+        <if test="z != null">, z = #{z}</if>
+        <if test="deviceResourceId != null">, device_resource_id = #{deviceResourceId}</if>
+        <if test="action != null and action != ''">, action = #{action}</if>
+         WHERE tenant_id = #{tenantId} AND island_id = #{islandId} AND code = #{code}
+    </update>
+
+<select id="selectInstanceId" resultType="java.lang.Long">
+        SELECT id FROM device_instance
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+           AND deleted_at IS NULL
+         LIMIT 1
+    </select>
+
+<select id="selectIslandFlow" resultType="java.lang.String">
+        SELECT graph::text FROM island_flow
+         WHERE tenant_id = #{param1} AND island_id = #{param2}
+    </select>
+
+<insert id="upsertIslandFlow">
+        INSERT INTO island_flow (tenant_id, island_id, graph, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}::jsonb, now())
+        ON CONFLICT (island_id) DO UPDATE
+           SET graph = EXCLUDED.graph, updated_at = now()
+    </insert>
+
+<select id="selectResourceIdByDeviceCode" resultType="java.lang.Long">
+        SELECT id FROM resource_node
+         WHERE tenant_id = #{param1} AND code = #{param2}
+           AND kind = 'device'
+         LIMIT 1
+    </select>
 </mapper>

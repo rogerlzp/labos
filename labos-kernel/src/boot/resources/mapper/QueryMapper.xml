@@ -41,53 +41,21 @@
         SELECT role, enabled FROM sys_user
          WHERE tenant_id = #{param1} AND id = #{param2}
         <if test="param3"> FOR UPDATE </if>
-    </select>
-
-    <select id="countDevicesUnderIsland" resultType="int">
-        SELECT count(*) FROM resource_node
-         WHERE tenant_id = #{param1} AND parent_id = #{param2} AND kind = 'device'
-    </select>
-
-    <select id="selectPolicyScope" resultType="java.lang.String">
+    </select><select id="selectPolicyScope" resultType="java.lang.String">
         SELECT scope FROM recovery_policy WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
     <update id="bumpExperimentVersion">
         UPDATE experiment SET version = version + 1, updated_at = now()
          WHERE tenant_id = #{param1} AND id = #{param2}
-    </update>
-
-    <update id="setDeviceMethodInterruptible">
-        UPDATE device_method SET interruptible = #{param4}
-         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
-    </update>
-
-    <!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 -->
-    <update id="updateRobotPoint">
-        UPDATE robot_point SET updated_at = now(), synced_at = now()
-        <if test="x != null">, x = #{x}</if>
-        <if test="y != null">, y = #{y}</if>
-        <if test="z != null">, z = #{z}</if>
-        <if test="deviceResourceId != null">, device_resource_id = #{deviceResourceId}</if>
-        <if test="action != null and action != ''">, action = #{action}</if>
-         WHERE tenant_id = #{tenantId} AND island_id = #{islandId} AND code = #{code}
-    </update>
-
-    <select id="selectRunActualStart" resultType="java.sql.Timestamp">
+    </update><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><select id="selectRunActualStart" resultType="java.sql.Timestamp">
         SELECT actual_start FROM run WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
     <!-- 事务级咨询锁：同一 key 的并发写入串行化，事务结束自动释放。 -->
     <select id="lockUserRole" resultType="java.lang.String">
         SELECT pg_advisory_xact_lock(hashtext('labos:user-role'))::text
-    </select>
-
-    <select id="selectIslandPath" resultType="java.lang.String">
-        SELECT path FROM resource_node
-         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'island'
-    </select>
-
-    <select id="selectCapabilityId" resultType="java.lang.Long">
+    </select><select id="selectCapabilityId" resultType="java.lang.Long">
         SELECT id FROM capability WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
@@ -160,15 +128,7 @@
         <foreach collection="ids" item="one" open="(" separator="," close=")">
             #{one}
         </foreach>
-    </update>
-
-    <select id="selectNodeCode" resultType="java.lang.String">
-        SELECT code FROM resource_node
-         WHERE tenant_id = #{param1} AND id = #{param2}
-           AND kind = #{param3}::resource_kind
-    </select>
-
-    <select id="selectParentIdOfNode" resultType="java.lang.Long">
+    </update><select id="selectParentIdOfNode" resultType="java.lang.Long">
         SELECT parent_id FROM resource_node
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
@@ -196,23 +156,7 @@
 
     <select id="selectResourceName" resultType="java.lang.String">
         SELECT name FROM resource_node WHERE id = #{param1}
-    </select>
-
-    <select id="selectInstanceId" resultType="java.lang.Long">
-        SELECT id FROM device_instance
-         WHERE tenant_id = #{param1} AND resource_id = #{param2}
-           AND deleted_at IS NULL
-         LIMIT 1
-    </select>
-
-    <select id="selectResourceIdByDeviceCode" resultType="java.lang.Long">
-        SELECT id FROM resource_node
-         WHERE tenant_id = #{param1} AND code = #{param2}
-           AND kind = 'device'
-         LIMIT 1
-    </select>
-
-    <select id="selectGraphHistoryXml" resultType="java.lang.String">
+    </select><select id="selectGraphHistoryXml" resultType="java.lang.String">
         SELECT xml FROM workflow_graph_history
          WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND id = #{param3}
     </select>
@@ -240,29 +184,7 @@
                role AS "role", enabled AS "enabled",
                last_login_at AS "lastLoginAt", created_at AS "createdAt"
           FROM sys_user WHERE tenant_id = #{param1} ORDER BY id
-    </select>
-
-    <select id="selectDrivers" resultType="java.util.Map">
-        SELECT id AS "id", code AS "code", name AS "name",
-               protocol::text AS "protocol", endpoint AS "endpoint", status AS "status"
-          FROM driver
-         WHERE tenant_id = #{param1} AND deleted_at IS NULL
-         ORDER BY id
-    </select>
-
-    <select id="selectDeviceModels" resultType="java.util.Map">
-        SELECT d.id AS "modelId", d.code AS "code", d.name AS "name",
-               d.device_type AS "deviceType", d.vendor AS "vendor", d.icon AS "icon",
-               c.code AS "capability",
-               (SELECT count(*) FROM device_instance di
-                 WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS "deployed"
-          FROM device d
-          LEFT JOIN capability c ON c.id = d.capability_id
-         WHERE d.tenant_id = #{param1}
-         ORDER BY "deployed" DESC, d.name
-    </select>
-
-    <select id="selectChoreographies" resultType="java.util.Map">
+    </select><select id="selectChoreographies" resultType="java.util.Map">
         SELECT w.id AS "id", w.code AS "code", w.name AS "name",
                (SELECT count(*) FROM workflow_node n
                  WHERE n.workflow_id = w.id AND n.node_type = 'task') AS "nodeCount"
@@ -302,32 +224,7 @@
           FROM workflow_graph_history
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
          ORDER BY saved_at DESC LIMIT 30
-    </select>
-
-    <select id="selectMethodParams" resultType="java.util.Map">
-        SELECT dm.method AS "method", dm.name AS "name", c.code AS "capability",
-               (dm.param_schema->'params')::text AS "params"
-          FROM device_method dm
-          LEFT JOIN capability c ON c.id = dm.capability_id
-         WHERE dm.tenant_id = #{param1} AND dm.method = #{param2}
-         LIMIT 1
-    </select>
-
-    <select id="selectUnassignedDevices" resultType="java.util.Map">
-        SELECT d.id AS "resourceId", d.code AS "code", d.name AS "name",
-               di.ip AS "ip", c.code AS "capability"
-          FROM resource_node d
-          LEFT JOIN resource_node p ON p.id = d.parent_id
-          LEFT JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
-          LEFT JOIN device dev ON dev.id = di.device_id
-          LEFT JOIN capability c ON c.id = dev.capability_id
-         WHERE d.tenant_id = #{param1} AND d.kind = 'device'
-           AND (p.id IS NULL OR p.kind &lt;&gt; 'island')
-           AND di.id IS NOT NULL
-         ORDER BY d.code
-    </select>
-
-    <select id="selectExperimentHandoffs" resultType="java.util.Map">
+    </select><select id="selectExperimentHandoffs" resultType="java.util.Map">
         SELECT from_workcell_id AS "fromWorkcellId",
                to_workcell_id AS "toWorkcellId", carrier AS "carrier",
                status AS "status", remark AS "remark"
@@ -409,21 +306,7 @@
             ON rn.tenant_id = ew.tenant_id AND rn.id = ew.workcell_id
          WHERE ew.tenant_id = #{param1} AND ew.experiment_id = #{param2}
          ORDER BY ew.workcell_id
-    </select>
-
-    <select id="selectIslandFlow" resultType="java.lang.String">
-        SELECT graph::text FROM island_flow
-         WHERE tenant_id = #{param1} AND island_id = #{param2}
-    </select>
-
-    <insert id="upsertIslandFlow">
-        INSERT INTO island_flow (tenant_id, island_id, graph, updated_at)
-        VALUES (#{param1}, #{param2}, #{param3}::jsonb, now())
-        ON CONFLICT (island_id) DO UPDATE
-           SET graph = EXCLUDED.graph, updated_at = now()
-    </insert>
-
-    <select id="selectExperimentGraph" resultType="java.lang.String">
+    </select><select id="selectExperimentGraph" resultType="java.lang.String">
         SELECT graph::text FROM experiment_graph
          WHERE tenant_id = #{param1} AND experiment_id = #{param2}
     </select>
@@ -433,54 +316,7 @@
         VALUES (#{param1}, #{param2}, #{param3}::jsonb, now())
         ON CONFLICT (experiment_id) DO UPDATE
            SET graph = EXCLUDED.graph, updated_at = now()
-    </insert>
-
-    <select id="selectRobotPoints" resultType="java.util.Map">
-        SELECT p.code AS "code", p.name AS "name", p.x AS "x", p.y AS "y", p.z AS "z",
-               p.action AS "action", r.code AS "deviceCode"
-          FROM robot_point p
-          LEFT JOIN resource_node r ON r.id = p.device_resource_id
-         WHERE p.tenant_id = #{param1} AND p.island_id = #{param2}
-         ORDER BY p.robot_resource_id, p.code
-    </select>
-
-    <!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 -->
-    <update id="updateDevicePosition">
-        UPDATE resource_node
-           SET attr = COALESCE(attr, '{}'::jsonb)
-                      || jsonb_build_object('pos_x', #{param3}, 'pos_y', #{param4}),
-               updated_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
-    </update>
-
-    <select id="selectRobotPointDetails" resultType="java.util.Map">
-        SELECT p.id AS "id", p.robot_resource_id AS "robotResourceId",
-               p.code AS "code", p.name AS "name",
-               p.x AS "x", p.y AS "y", p.z AS "z", p.action AS "action",
-               p.device_resource_id AS "deviceResourceId",
-               r.code AS "deviceCode", p.synced_at AS "syncedAt"
-          FROM robot_point p
-          LEFT JOIN resource_node r ON r.id = p.device_resource_id
-         WHERE p.tenant_id = #{param1} AND p.island_id = #{param2}
-         ORDER BY p.robot_resource_id, p.code
-    </select>
-
-    <!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 -->
-    <insert id="syncRobotPoints">
-        INSERT INTO robot_point
-          (tenant_id, island_id, robot_resource_id, code, name,
-           device_resource_id, action, synced_at)
-        SELECT #{param1}, #{param2}, #{param3}, d.code, d.name, d.id, 'PickPlace', now()
-          FROM resource_node d
-         WHERE d.tenant_id = #{param1} AND d.parent_id = #{param2}
-           AND d.kind = 'device' AND d.id &lt;&gt; #{param3}
-        ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
-           SET name = EXCLUDED.name,
-               device_resource_id = EXCLUDED.device_resource_id,
-               synced_at = now(), updated_at = now()
-    </insert>
-
-    <select id="selectErrorOccurrences" resultType="java.util.Map">
+    </insert><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><select id="selectErrorOccurrences" resultType="java.util.Map">
         SELECT eo.id AS "id", eo.fingerprint AS "fingerprint",
                eo.outcome AS "outcome", eo.severity::text AS "severity",
                eo.attempt AS "attempt", eo.run_id AS "runId",
@@ -489,21 +325,7 @@
           FROM error_occurrence eo
          WHERE eo.tenant_id = #{param1}
          ORDER BY eo.id DESC LIMIT #{param2}
-    </select>
-
-    <delete id="deleteIslandNode">
-        DELETE FROM resource_node
-         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'island'
-    </delete>
-
-    <update id="softDeleteDeviceInstance">
-        UPDATE device_instance
-           SET deleted_at = now(), updated_at = now()
-         WHERE tenant_id = #{param1} AND resource_id = #{param2}
-           AND deleted_at IS NULL
-    </update>
-
-    <!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 -->
+    </select><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 -->
     <update id="updateRecoveryPolicy">
         UPDATE recovery_policy
            SET strategy     = COALESCE(#{param3}::recovery_strategy, strategy),
@@ -553,24 +375,7 @@
          ORDER BY h.id DESC LIMIT #{param3}
     </select>
 
-    <!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 -->
-    <select id="selectDevicePool" resultType="java.util.Map">
-        SELECT d.id AS "resourceId", d.code AS "code", d.name AS "name",
-               di.ip AS "ip", c.code AS "capability", dev.icon AS "icon",
-               (SELECT p.id FROM resource_node p
-                 WHERE p.id = d.parent_id AND p.kind = 'island') AS "islandId",
-               (SELECT p.code FROM resource_node p
-                 WHERE p.id = d.parent_id AND p.kind = 'island') AS "islandCode"
-          FROM resource_node d
-          JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
-          LEFT JOIN device dev ON dev.id = di.device_id
-          LEFT JOIN capability c ON c.id = dev.capability_id
-         WHERE d.tenant_id = #{param1} AND d.kind = 'device'
-           AND (#{param2}::bigint IS NULL OR d.parent_id = #{param2})
-         ORDER BY d.code
-    </select>
-
-    <!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 -->
+    <!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 -->
     <select id="selectAlerts" resultType="java.util.Map">
         SELECT e.fingerprint AS "fingerprint",
                max(e.error_code_id) AS "codeId",
@@ -649,34 +454,7 @@
             AND (e.code ILIKE #{keyword} OR e.title ILIKE #{keyword})
         </if>
          ORDER BY e.code
-    </select>
-
-    <select id="selectTopology" resultType="java.util.Map">
-        SELECT i.id AS "id", i.code AS "code", i.name AS "name",
-               d.id AS "devId", d.code AS "devCode", d.name AS "devName",
-               dev.model AS "model", dev.vendor AS "vendor", dev.icon AS "icon",
-               c.code AS "capability", di.id AS "instanceId", di.ip AS "ip",
-               dr.endpoint AS "driverEndpoint", dr.code AS "driverCode",
-               (d.attr->>'pos_x')::numeric AS "posX",
-               (d.attr->>'pos_y')::numeric AS "posY",
-               COALESCE(ds.online, false) AS "online",
-               COALESCE(ds.status, 'idle') AS "devStatus",
-               ds.current_method AS "currentMethod", ds.has_plate AS "hasPlate"
-          FROM resource_node i
-          LEFT JOIN resource_node d
-                 ON d.parent_id = i.id AND d.kind = 'device'
-          LEFT JOIN device_instance di
-                 ON di.resource_id = d.id AND di.deleted_at IS NULL
-          LEFT JOIN device dev ON dev.id = di.device_id
-          LEFT JOIN capability c ON c.id = dev.capability_id
-          LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
-          LEFT JOIN device_state ds
-                 ON ds.resource_id = d.id AND ds.tenant_id = i.tenant_id
-         WHERE i.tenant_id = #{param1} AND i.kind = 'island'
-         ORDER BY i.code, d.code
-    </select>
-
-    <insert id="insertUser">
+    </select><insert id="insertUser">
         INSERT INTO sys_user (tenant_id, username, display_name, role, password_hash, salt)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
     </insert>
@@ -768,15 +546,7 @@
          WHERE tenant_id = #{param1} AND experiment_run_id = #{param2}
     </select>
 
-    <!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 -->
-    <select id="insertIsland" resultType="java.lang.Long">
-        INSERT INTO resource_node
-          (tenant_id, parent_id, code, name, kind, path, sort_order)
-        VALUES (#{param1}, NULL, #{param2}, #{param3}, 'island', #{param4}, 100)
-        RETURNING id
-    </select>
-
-    <select id="insertIntervention" resultType="java.lang.Long">
+    <!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 --><select id="insertIntervention" resultType="java.lang.Long">
         INSERT INTO intervention_record
           (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
            decided_action, plate_barcode, sample_id, from_location, to_location,
@@ -815,38 +585,7 @@
                password_hash = COALESCE(#{param5}, password_hash),
                salt = COALESCE(#{param6}, salt)
          WHERE tenant_id = #{param1} AND id = #{param2}
-    </update>
-
-    <insert id="upsertRobotPoint">
-        INSERT INTO robot_point
-          (tenant_id, island_id, robot_resource_id, code, name,
-           x, y, z, device_resource_id, action, synced_at)
-        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
-                #{param6}, #{param7}, #{param8}, #{param9}, #{param10}, now())
-        ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
-           SET name = COALESCE(EXCLUDED.name, robot_point.name),
-               x = COALESCE(EXCLUDED.x, robot_point.x),
-               y = COALESCE(EXCLUDED.y, robot_point.y),
-               z = COALESCE(EXCLUDED.z, robot_point.z),
-               device_resource_id = COALESCE(EXCLUDED.device_resource_id,
-                                            robot_point.device_resource_id),
-               action = COALESCE(EXCLUDED.action, robot_point.action),
-               updated_at = now()
-    </insert>
-
-    <update id="detachDeviceFromIsland">
-        UPDATE resource_node
-           SET parent_id = NULL, path = '/' || code, updated_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
-    </update>
-
-    <update id="attachDeviceToIsland">
-        UPDATE resource_node
-           SET parent_id = #{param3}, path = #{param4}, updated_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
-    </update>
-
-    <select id="selectWorkflowResources" resultType="java.lang.Long">
+    </update><select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
            AND node_type = 'task' AND resource_id IS NOT NULL
@@ -1073,21 +812,7 @@
           FROM experiment_variable
          WHERE tenant_id = #{param1} AND experiment_id = #{param2}
          ORDER BY id
-    </select>
-
-    <select id="selectDeviceMethods" resultType="java.util.Map">
-        SELECT dm.method AS "method", dm.name AS "name", c.code AS "capability",
-               dm.estimate_sec AS "estimateSec", dm.timeout_sec AS "timeoutSec",
-               dm.interruptible AS "interruptible",
-               dm.param_schema->'params' AS "params"
-          FROM device_instance di
-          JOIN device_method dm ON dm.device_id = di.device_id
-          LEFT JOIN capability c ON c.id = dm.capability_id
-         WHERE di.resource_id = #{param1}
-         ORDER BY dm.method
-    </select>
-
-    <select id="selectAllCapabilities" resultType="java.util.Map">
+    </select><select id="selectAllCapabilities" resultType="java.util.Map">
         SELECT code AS "code", name AS "name" FROM capability ORDER BY id
     </select>
 

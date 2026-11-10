@@ -6,7 +6,11 @@ import com.labos.kernel.persistence.QueryMapper;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
+import java.util.ArrayList;
 import java.util.Map;
+import static com.labos.kernel.persistence.QJson.*;
+import com.labos.kernel.persistence.Jsons;
+import java.util.List;
 
 /**
  * 设备域的写 Service：{@code DeviceController} 的建/改/克隆/部署四个端点。
@@ -133,7 +137,7 @@ public class DeviceService {
         try (Connection c = db.open()) {
             try {
                 // 1) 岛屿必须存在且是 island
-                String islandPath = queryMapper.selectIslandPath(TENANT, islandId);
+                String islandPath = deviceMapper.selectIslandPath(TENANT, islandId);
                 if (islandPath == null) {
                     throw new IllegalArgumentException("岛屿不存在: " + islandId);
                 }
@@ -206,4 +210,398 @@ public class DeviceService {
             }
         }
     }
+
+    public String deviceModelsJson() throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row : deviceMapper.selectDeviceModels(TENANT)) {
+            items.add(Jsons.obj(
+                    "modelId", row.get("modelId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "deviceType", row.get("deviceType"),
+                    "vendor", row.get("vendor"),
+                    "icon", row.get("icon"),
+                    "capability", row.get("capability"),
+                    "deployed", mint(row, "deployed")));
+        }
+        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    public int deleteDevice(long resourceId) throws java.sql.SQLException {
+        // 不删 resource_node：run_node.resource_id 可能引用它（外键会挡住），
+        // 且历史执行记录要能查回"这台设备当时在哪"。
+        // 拓扑查询会过滤 deleted_at IS NOT NULL，界面上等于删掉了。
+        deviceMapper.softDeleteDeviceInstance(TENANT, resourceId);
+        return 1;
+    }
+
+    public int moveDeviceToIsland(long resourceId, long islandId) throws java.sql.SQLException {
+        // islandId <= 0 表示移出（放回设备池）
+        if (islandId <= 0) {
+            return deviceMapper.detachDeviceFromIsland(TENANT, resourceId);
+        }
+        try (Connection c = db.open()) {
+            try {
+                String islandPath = deviceMapper.selectIslandPath(TENANT, islandId);
+                if (islandPath == null) {
+                    throw new IllegalArgumentException("岛屿不存在: " + islandId);
+                }
+
+                String code = deviceMapper.selectNodeCode(TENANT, resourceId, "device");
+                if (code == null) {
+                    throw new IllegalArgumentException("设备不存在: " + resourceId);
+                }
+
+                return deviceMapper.attachDeviceToIsland(TENANT, resourceId,
+                        islandId, islandPath + "/" + code);
+            } catch (RuntimeException e) {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * 保存设备在岛上的摆放位置。
+     *
+     * <p>坐标存在 {@code resource_node.attr.pos_x/pos_y}——布局是"资源"的属性，
+     * 不是"实例"的，所以换驱动、换 IP 都不影响位置。
+     */
+    public int saveDevicePosition(long resourceId, double x, double y) throws java.sql.SQLException {
+        return deviceMapper.updateDevicePosition(TENANT, resourceId, x, y);
+    }
+
+    public String devicePoolJson() throws java.sql.SQLException {
+        return devicePoolJson(null);
+    }
+
+    /**
+     * 设备池，可按岛过滤（设计器「按岛找设备」）。
+     * islandId 为 null / <=0 时保持全量，保证岛屿视图与 e2e-sim-flow 不回归。
+     */
+    public String devicePoolJson(Long islandId) throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        Long islFilter = islandId == null || islandId <= 0 ? null : islandId;
+        for (java.util.Map<String, Object> row
+                : deviceMapper.selectDevicePool(TENANT, islFilter)) {
+            items.add(Jsons.obj(
+                    "resourceId", row.get("resourceId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "ip", row.get("ip"),
+                    "capability", row.get("capability"),
+                    // 型号库登记的原始图片路径。多数存量值指向源服务器
+                    // /image/device/<uuid>.png（换环境 404），前端 iconFor()
+                    // 会按 capability 映射回本地 /devices/<CAP>.svg。
+                    "icon", row.get("icon"),
+                    "islandId", row.get("islandId"),
+                    "islandCode", row.get("islandCode")));
+        }
+        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /** 未挂到任何岛的设备（拖拽时的"设备池"）。 */
+    public String unassignedDevicesJson() throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row
+                : deviceMapper.selectUnassignedDevices(TENANT)) {
+            items.add(Jsons.obj(
+                    "resourceId", row.get("resourceId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "ip", row.get("ip"),
+                    "capability", row.get("capability")));
+        }
+        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /** 某台设备（resource_node.id）支持的方法。 */
+    public String deviceMethodsJson(long resourceId) throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row
+                : deviceMapper.selectDeviceMethods(resourceId)) {
+            // 参数定义原样透出：{seq,name,desc,type,default,required,control_type,unit,range}
+            Object params = row.get("params");
+            items.add(Jsons.obj(
+                    "method", row.get("method"),
+                    "name", row.get("name"),
+                    "capability", row.get("capability"),
+                    "estimateSec", row.get("estimateSec"),
+                    "timeoutSec", row.get("timeoutSec"),
+                    // 可中断标志：现场确认清单后置 true，暂停才会真的停掉这一步
+                    "interruptible", Boolean.TRUE.equals(row.get("interruptible")),
+                    "params", params == null ? new Jsons.Raw("[]")
+                            : new Jsons.Raw(String.valueOf(params))));
+        }
+        return Jsons.obj("resourceId", resourceId, "total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /** 某个设备方法的参数定义（设计器填参用）。 */
+    public String methodParamsJson(String method) throws java.sql.SQLException {
+        java.util.Map<String, Object> row = deviceMapper.selectMethodParams(TENANT, method);
+        if (row == null) {
+            return Jsons.obj("method", method, "found", false,
+                    "params", new Jsons.Raw("[]"));
+        }
+        Object params = row.get("params");
+        return Jsons.obj(
+                "method", row.get("method"),
+                "name", row.get("name"),
+                "capability", row.get("capability"),
+                "found", true,
+                "params", params == null ? new Jsons.Raw("[]")
+                        : new Jsons.Raw(String.valueOf(params)));
+    }
+
+    /** 驱动端点列表（新增设备时选）。 */
+    public String driversJson() throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row : deviceMapper.selectDrivers(TENANT)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "protocol", row.get("protocol"),
+                    "endpoint", row.get("endpoint"),
+                    "status", row.get("status")));
+        }
+        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 拓扑：岛屿 → 设备。
+     *
+     * <p>层级来自 {@code resource_node}（kind=island / device），
+     * 型号信息来自 {@code device}（经 device_instance 关联）。
+     */
+    public String topologyJson() throws java.sql.SQLException {
+        List<String> islands = new ArrayList<>();
+        Map<Long, String[]> head = new java.util.LinkedHashMap<>();
+        Map<Long, List<String>> devices = new java.util.LinkedHashMap<>();
+
+        for (java.util.Map<String, Object> row : deviceMapper.selectTopology(TENANT)) {
+            long iid = ((Number) row.get("id")).longValue();
+            head.putIfAbsent(iid, new String[]{
+                    String.valueOf(row.get("code")), String.valueOf(row.get("name"))});
+            devices.computeIfAbsent(iid, k -> new ArrayList<>());
+            // devId / instanceId 为空说明实例已软删（或从未建过），拓扑里不显示
+            if (row.get("devId") != null && row.get("instanceId") != null) {
+                devices.get(iid).add(Jsons.obj(
+                        "resourceId", row.get("devId"),
+                        "code", row.get("devCode"),
+                        "name", row.get("devName"),
+                        "model", row.get("model"),
+                        "vendor", row.get("vendor"),
+                        "capability", row.get("capability"),
+                        // 设备示意图（/devices/xxx.svg）。没有就由前端退回能力色块
+                        "icon", row.get("icon"),
+                        "instanceId", row.get("instanceId"),
+                        "ip", row.get("ip"),
+                        "driverEndpoint", row.get("driverEndpoint"),
+                        "driverCode", row.get("driverCode"),
+                        "x", row.get("posX"),
+                        "y", row.get("posY"),
+                        "online", Boolean.TRUE.equals(row.get("online")),
+                        "status", row.get("devStatus"),
+                        "currentMethod", row.get("currentMethod"),
+                        "hasPlate", Boolean.TRUE.equals(row.get("hasPlate"))));
+            }
+        }
+
+        for (Map.Entry<Long, String[]> e : head.entrySet()) {
+            List<String> devs = devices.getOrDefault(e.getKey(), List.of());
+            islands.add(Jsons.obj(
+                    "id", e.getKey(),
+                    "code", e.getValue()[0],
+                    "name", e.getValue()[1],
+                    "deviceCount", devs.size(),
+                    "devices", new Jsons.Raw(Jsons.arr(devs))));
+        }
+        return Jsons.obj("islands", new Jsons.Raw(Jsons.arr(islands)));
+    }
+
+    /**
+     * 设置设备方法的「执行中可中断」标志（产品写入口；方法必须已在设备库中）。
+     *
+     * @return 受影响行数（0 = 设备/方法不存在，调用方回 404）
+     */
+    public int setDeviceMethodInterruptible(long deviceId, String method, boolean value)
+            throws java.sql.SQLException {
+        return deviceMapper.setDeviceMethodInterruptible(TENANT, deviceId, method, value);
+    }
+
+    /**
+     * 新增岛屿。
+     *
+     * <p>岛屿是资源树的顶层（parent_id 为空），path 用 {@code /CODE}。
+     */
+    public long createIsland(String code, String name) throws java.sql.SQLException {
+        if (code == null || code.isBlank()) {
+            throw new IllegalArgumentException("岛屿编号不能为空");
+        }
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("岛屿名称不能为空");
+        }
+        try {
+            Long id = deviceMapper.insertIsland(TENANT, code.trim(), name.trim(),
+                    "/" + code.trim());
+            return id == null ? 0L : id;
+        } catch (RuntimeException e) {
+            // Spring 把唯一键冲突包成 DuplicateKeyException（不再是 JDBC 的
+            // SQLIntegrityConstraintViolationException），按 message 判断。
+            if (e.getMessage() != null && e.getMessage().contains("duplicate key")) {
+                throw new IllegalArgumentException("岛屿编号已存在: " + code);
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 删岛。岛下还有设备时拒绝——避免设备变成孤儿（parent 指向已删节点）。
+     */
+    public int deleteIsland(long islandId) throws java.sql.SQLException {
+        int deviceCount = deviceMapper.countDevicesUnderIsland(TENANT, islandId);
+        if (deviceCount > 0) {
+            throw new IllegalArgumentException(
+                    "岛上还有 " + deviceCount + " 台设备，先把它们移出再删");
+        }
+        return deviceMapper.deleteIslandNode(TENANT, islandId);
+    }
+
+    /** 某个岛的机械臂点位列表。 */
+    public String robotPointsJson(long islandId) throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row
+                : deviceMapper.selectRobotPointDetails(TENANT, islandId)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "robotResourceId", row.get("robotResourceId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "x", row.get("x"),
+                    "y", row.get("y"),
+                    "z", row.get("z"),
+                    "action", row.get("action"),
+                    "deviceResourceId", row.get("deviceResourceId"),
+                    "deviceCode", row.get("deviceCode"),
+                    "syncedAt", mstr(row, "syncedAt")));
+        }
+        return Jsons.obj("islandId", islandId,
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /** 点位导出 CSV（现场示教器导出的表可以直接对照）。 */
+    public String robotPointsCsv(long islandId) throws java.sql.SQLException {
+        StringBuilder sb = new StringBuilder("code,name,x,y,z,device_code,action\n");
+        for (java.util.Map<String, Object> row
+                : deviceMapper.selectRobotPoints(TENANT, islandId)) {
+            sb.append(mcsv(row.get("code"))).append(',')
+              .append(mcsv(row.get("name"))).append(',')
+              .append(mnum(row.get("x"))).append(',')
+              .append(mnum(row.get("y"))).append(',')
+              .append(mnum(row.get("z"))).append(',')
+              .append(mcsv(row.get("deviceCode"))).append(',')
+              .append(mcsv(row.get("action"))).append('\n');
+        }
+        return sb.toString();
+    }
+
+    public int importRobotPointsCsv(long islandId, long robotResourceId, String body)
+            throws java.sql.SQLException {
+        if (body == null || body.isBlank()) {
+            throw new IllegalArgumentException("CSV 为空");
+        }
+        String[] lines = body.split("\\r?\\n");
+        int ok = 0;
+        try (Connection c = db.open()) {
+            try {
+                for (int i = 0; i < lines.length; i++) {
+                    String line = lines[i].trim();
+                    if (line.isEmpty()) {
+                        continue;
+                    }
+                    if (i == 0 && line.toLowerCase().startsWith("code")) {
+                        continue;   // 表头
+                    }
+                    String[] f = line.split(",", -1);
+                    if (f.length < 1 || f[0].isBlank()) {
+                        continue;
+                    }
+                    String code = unq(f[0]);
+                    String name = f.length > 1 ? unq(f[1]) : null;
+                    java.math.BigDecimal px = dec(f, 2);
+                    java.math.BigDecimal py = dec(f, 3);
+                    java.math.BigDecimal pz = dec(f, 4);
+                    String devCode = f.length > 5 ? unq(f[5]) : null;
+                    String action = f.length > 6 ? unq(f[6]) : "PickPlace";
+                    Long devId = devCode == null || devCode.isBlank()
+                            ? null : resourceIdByCode(c, devCode);
+
+                    deviceMapper.upsertRobotPoint(TENANT, islandId, robotResourceId,
+                            code, name, px, py, pz, devId, action);
+                    ok++;
+                }
+                return ok;
+            } catch (java.sql.SQLException | RuntimeException e) {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * 一次性同步点位：把岛上的设备都建成"默认点位"。
+     *
+     * <p>为什么提供这个：现场先是手工导出机械臂点位表，再导入。
+     * 但演示/首装时没人有那表，按设备自动生成一版能先跑起来，
+     * 后续再逐个改坐标。
+     *
+     * <p>点位 code 用设备编号（`ID1775`）——`Transfer` 的 source/target 直接引用它。
+     */
+    public int syncRobotPoints(long islandId, long robotResourceId) throws java.sql.SQLException {
+        return deviceMapper.syncRobotPoints(TENANT, islandId, robotResourceId);
+    }
+
+    /**
+     * 更新点位（示教：把当前机械臂坐标记下来）。
+     *
+     * <p>只更新传了值的字段：示教时可能只改坐标，不改关联设备。
+     */
+    public int updateRobotPoint(long islandId, String code,
+                                Double x, Double y, Double z,
+                                Long deviceResourceId, String action) throws java.sql.SQLException {
+        return deviceMapper.updateRobotPoint(TENANT, islandId, code,
+                x, y, z, deviceResourceId, action);
+    }
+
+    /**
+     * 设备型号池：一个型号可以被拖多次，每次产生一台真实设备。
+     *
+     * <p>这是实验室的实际语义——"这个岛上要 3 台 Incubator_2C"，
+     * 而不是"把某一台具体的孵箱搬过去"。
+     */
+    /** resource_node.id -> device_instance.id（探针/驱动认这个）。 */
+    public Long instanceIdOf(long resourceId) throws java.sql.SQLException {
+        return deviceMapper.selectInstanceId(TENANT, resourceId);
+    }
+
+    /** 岛屿动线（设备节点坐标 + 搬运箭头）。 */
+    public String islandFlowJson(long islandId) throws java.sql.SQLException {
+        String g = deviceMapper.selectIslandFlow(TENANT, islandId);
+        return g == null ? "{\"nodes\":[],\"edges\":[]}" : g;
+    }
+
+    /** 保存岛屿动线（整体替换）。 */
+    public int saveIslandFlow(long islandId, String graphJson) throws java.sql.SQLException {
+        if (graphJson == null || graphJson.isBlank()) {
+            throw new IllegalArgumentException("动线不能为空");
+        }
+        return deviceMapper.upsertIslandFlow(TENANT, islandId, graphJson);
+    }
+
+
+    private Long resourceIdByCode(Connection c, String code) throws java.sql.SQLException {
+        // c 只表示调用方已在事务内；Mapper 取同一条 Spring 绑定连接。
+        return deviceMapper.selectResourceIdByDeviceCode(TENANT, code);
+    }
+
 }

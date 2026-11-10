@@ -3,6 +3,8 @@ package com.labos.kernel.api;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 
+import static com.labos.kernel.persistence.QJson.*;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -212,58 +214,6 @@ public class QueryService {
                 "steps", row.get("steps"));
     }
 
-    /**
-     * 拓扑：岛屿 → 设备。
-     *
-     * <p>层级来自 {@code resource_node}（kind=island / device），
-     * 型号信息来自 {@code device}（经 device_instance 关联）。
-     */
-    public String topologyJson() throws SQLException {
-        List<String> islands = new ArrayList<>();
-        Map<Long, String[]> head = new java.util.LinkedHashMap<>();
-        Map<Long, List<String>> devices = new java.util.LinkedHashMap<>();
-
-        for (java.util.Map<String, Object> row : queryMapper.selectTopology(tenantId)) {
-            long iid = ((Number) row.get("id")).longValue();
-            head.putIfAbsent(iid, new String[]{
-                    String.valueOf(row.get("code")), String.valueOf(row.get("name"))});
-            devices.computeIfAbsent(iid, k -> new ArrayList<>());
-            // devId / instanceId 为空说明实例已软删（或从未建过），拓扑里不显示
-            if (row.get("devId") != null && row.get("instanceId") != null) {
-                devices.get(iid).add(Jsons.obj(
-                        "resourceId", row.get("devId"),
-                        "code", row.get("devCode"),
-                        "name", row.get("devName"),
-                        "model", row.get("model"),
-                        "vendor", row.get("vendor"),
-                        "capability", row.get("capability"),
-                        // 设备示意图（/devices/xxx.svg）。没有就由前端退回能力色块
-                        "icon", row.get("icon"),
-                        "instanceId", row.get("instanceId"),
-                        "ip", row.get("ip"),
-                        "driverEndpoint", row.get("driverEndpoint"),
-                        "driverCode", row.get("driverCode"),
-                        "x", row.get("posX"),
-                        "y", row.get("posY"),
-                        "online", Boolean.TRUE.equals(row.get("online")),
-                        "status", row.get("devStatus"),
-                        "currentMethod", row.get("currentMethod"),
-                        "hasPlate", Boolean.TRUE.equals(row.get("hasPlate"))));
-            }
-        }
-
-        for (Map.Entry<Long, String[]> e : head.entrySet()) {
-            List<String> devs = devices.getOrDefault(e.getKey(), List.of());
-            islands.add(Jsons.obj(
-                    "id", e.getKey(),
-                    "code", e.getValue()[0],
-                    "name", e.getValue()[1],
-                    "deviceCount", devs.size(),
-                    "devices", new Jsons.Raw(Jsons.arr(devs))));
-        }
-        return Jsons.obj("islands", new Jsons.Raw(Jsons.arr(islands)));
-    }
-
     /** 实验列表（650 个）。 */
     /**
      * 这条流程的**时间条**：每个任务节点预计什么时候开始、什么时候结束。
@@ -361,23 +311,6 @@ public class QueryService {
 
         return Jsons.obj("workflowId", workflowId, "totalSec", cursor,
                 "nodes", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /** 从图 XML 里抠某个节点元素上的 resource="…"。 */
-    private static Long resourceOf(String xml, String nodeKey) {
-        if (xml == null) {
-            return null;
-        }
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("<[a-zA-Z0-9_:]+[^>]*\\bid=\"" + java.util.regex.Pattern.quote(nodeKey)
-                        + "\"[^>]*>")
-                .matcher(xml);
-        if (!m.find()) {
-            return null;
-        }
-        java.util.regex.Matcher r = java.util.regex.Pattern
-                .compile("\\sresource=\"(\\d+)\"").matcher(m.group());
-        return r.find() ? Long.parseLong(r.group(1)) : null;
     }
 
     /** 某个资源还要被占用多久（秒）；没人用就是 0。 */
@@ -496,28 +429,6 @@ public class QueryService {
                     "flowCount", mint(row, "flowCount")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /** 某台设备（resource_node.id）支持的方法。 */
-    public String deviceMethodsJson(long resourceId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectDeviceMethods(resourceId)) {
-            // 参数定义原样透出：{seq,name,desc,type,default,required,control_type,unit,range}
-            Object params = row.get("params");
-            items.add(Jsons.obj(
-                    "method", row.get("method"),
-                    "name", row.get("name"),
-                    "capability", row.get("capability"),
-                    "estimateSec", row.get("estimateSec"),
-                    "timeoutSec", row.get("timeoutSec"),
-                    // 可中断标志：现场确认清单后置 true，暂停才会真的停掉这一步
-                    "interruptible", Boolean.TRUE.equals(row.get("interruptible")),
-                    "params", params == null ? new Jsons.Raw("[]")
-                            : new Jsons.Raw(String.valueOf(params))));
-        }
-        return Jsons.obj("resourceId", resourceId, "total", items.size(),
-                "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
     /** 时长模型（命令 → p50/p90），甘特预测与仿真共用。 */
@@ -1164,312 +1075,6 @@ throw e;
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
 
-    /**
-     * 保存设备在岛上的摆放位置。
-     *
-     * <p>坐标存在 {@code resource_node.attr.pos_x/pos_y}——布局是"资源"的属性，
-     * 不是"实例"的，所以换驱动、换 IP 都不影响位置。
-     */
-    public int saveDevicePosition(long resourceId, double x, double y) throws SQLException {
-        return queryMapper.updateDevicePosition(tenantId, resourceId, x, y);
-    }
-
-    /**
-     * 把设备挂到某个岛（拖拽入岛）。
-     *
-     * <p>改的是资源树的 parent_id 与 path。设备实例与驱动关联不动——
-     * "放哪个岛"是空间归属，"连哪个驱动"是通信归属，两件事。
-     */
-    /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int moveDeviceToIsland(long resourceId, long islandId) throws SQLException {
-        // islandId <= 0 表示移出（放回设备池）
-        if (islandId <= 0) {
-            return queryMapper.detachDeviceFromIsland(tenantId, resourceId);
-        }
-        try (Connection c = db.open()) {
-            try {
-                String islandPath = queryMapper.selectIslandPath(tenantId, islandId);
-                if (islandPath == null) {
-                    throw new IllegalArgumentException("岛屿不存在: " + islandId);
-                }
-
-                String code = queryMapper.selectNodeCode(tenantId, resourceId, "device");
-                if (code == null) {
-                    throw new IllegalArgumentException("设备不存在: " + resourceId);
-                }
-
-                return queryMapper.attachDeviceToIsland(tenantId, resourceId,
-                        islandId, islandPath + "/" + code);
-            } catch (RuntimeException e) {
-                throw e;
-            }
-        }
-    }
-
-    /**
-     * 删岛。岛下还有设备时拒绝——避免设备变成孤儿（parent 指向已删节点）。
-     */
-    public int deleteIsland(long islandId) throws SQLException {
-        int deviceCount = queryMapper.countDevicesUnderIsland(tenantId, islandId);
-        if (deviceCount > 0) {
-            throw new IllegalArgumentException(
-                    "岛上还有 " + deviceCount + " 台设备，先把它们移出再删");
-        }
-        return queryMapper.deleteIslandNode(tenantId, islandId);
-    }
-
-    /**
-     * 设备池：**全量设备**（不只未分配的）。
-     *
-     * <p>用户要先在池子里看到所有设备，再决定拖到哪个岛。
-     * 已经在岛上的会带 islandCode/islandId，池子里标出来；
-     * 拖到另一个岛就是换个 parent。
-     */
-    /**
-     * 复制一台设备（同型号的第二个实例）。
-     *
-     * 场景：一个岛上要放两台同型号孵箱。编号自动加后缀 -2/-3，
-     * IP 留空由用户补——不能自动复制 IP，两台设备 IP 通常不同。
-     */
-    /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-
-
-    /**
-     * 设备型号池：一个型号可以被拖多次，每次产生一台真实设备。
-     *
-     * <p>这是实验室的实际语义——"这个岛上要 3 台 Incubator_2C"，
-     * 而不是"把某一台具体的孵箱搬过去"。
-     */
-    /** resource_node.id -> device_instance.id（探针/驱动认这个）。 */
-    public Long instanceIdOf(long resourceId) throws SQLException {
-        return queryMapper.selectInstanceId(tenantId, resourceId);
-    }
-
-    /**
-     * 从机械臂返回原文里提取坐标。
-     *
-     * <p>支持的字段名：x/y/z、pos_x/pos_y/pos_z、X/Y/Z。
-     * 找到就返回数组 [x,y,z]（缺的为 null），找不到返回 null。
-     *
-     * <p>为什么用宽松的多字段匹配：不同厂商的驱动返回格式不一样，
-     * 有的叫 `x`，有的叫 `pos_x`，有的嵌在 `data` 里。
-     * 硬编码一种会导致"某家驱动永远读不到"。
-     */
-    public static Double[] extractXYZ(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return null;
-        }
-        Double x = pick(raw, "x", "pos_x", "X");
-        Double y = pick(raw, "y", "pos_y", "Y");
-        Double z = pick(raw, "z", "pos_z", "Z");
-        return (x == null && y == null && z == null) ? null : new Double[]{x, y, z};
-    }
-
-    private static Double pick(String json, String... names) {
-        for (String n : names) {
-            java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("\"" + java.util.regex.Pattern.quote(n)
-                            + "\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)")
-                    .matcher(json);
-            if (m.find()) {
-                return Double.parseDouble(m.group(1));
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 更新点位（示教：把当前机械臂坐标记下来）。
-     *
-     * <p>只更新传了值的字段：示教时可能只改坐标，不改关联设备。
-     */
-    public int updateRobotPoint(long islandId, String code,
-                                Double x, Double y, Double z,
-                                Long deviceResourceId, String action) throws SQLException {
-        return queryMapper.updateRobotPoint(tenantId, islandId, code,
-                x, y, z, deviceResourceId, action);
-    }
-
-    /** 点位导出 CSV（现场示教器导出的表可以直接对照）。 */
-    public String robotPointsCsv(long islandId) throws SQLException {
-        StringBuilder sb = new StringBuilder("code,name,x,y,z,device_code,action\n");
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectRobotPoints(tenantId, islandId)) {
-            sb.append(mcsv(row.get("code"))).append(',')
-              .append(mcsv(row.get("name"))).append(',')
-              .append(mnum(row.get("x"))).append(',')
-              .append(mnum(row.get("y"))).append(',')
-              .append(mnum(row.get("z"))).append(',')
-              .append(mcsv(row.get("deviceCode"))).append(',')
-              .append(mcsv(row.get("action"))).append('\n');
-        }
-        return sb.toString();
-    }
-
-    private static String csv(String s) {
-        if (s == null) {
-            return "";
-        }
-        return s.contains(",") || s.contains("\"")
-                ? "\"" + s.replace("\"", "\"\"") + "\"" : s;
-    }
-
-    /** Map 版 num：numeric 列可能是 BigDecimal / Double，统一按 BigDecimal 格式化。 */
-    private static String mnum(Object o) {
-        if (o == null) {
-            return "";
-        }
-        if (o instanceof java.math.BigDecimal b) {
-            return b.stripTrailingZeros().toPlainString();
-        }
-        if (o instanceof Number n) {
-            return new java.math.BigDecimal(n.toString()).stripTrailingZeros().toPlainString();
-        }
-        return o.toString();
-    }
-
-    /** Map 版 csv：null 与 csv(String) 一样输出空串。 */
-    private static String mcsv(Object o) {
-        return csv(o == null ? null : String.valueOf(o));
-    }
-
-    private static String num(java.math.BigDecimal v) {
-        return v == null ? "" : v.stripTrailingZeros().toPlainString();
-    }
-
-    /**
-     * 点位导入 CSV（列：code,name,x,y,z,device_code,action）。
-     *
-     * <p>按 code 匹配：存在就更新坐标，不存在就插入。
-     * device_code 会被解析成 resource_node.id。
-     *
-     * <p>表头行自动跳过（第一行含 "code"）。
-     */
-    /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int importRobotPointsCsv(long islandId, long robotResourceId, String body)
-            throws SQLException {
-        if (body == null || body.isBlank()) {
-            throw new IllegalArgumentException("CSV 为空");
-        }
-        String[] lines = body.split("\\r?\\n");
-        int ok = 0;
-        try (Connection c = db.open()) {
-            try {
-                for (int i = 0; i < lines.length; i++) {
-                    String line = lines[i].trim();
-                    if (line.isEmpty()) {
-                        continue;
-                    }
-                    if (i == 0 && line.toLowerCase().startsWith("code")) {
-                        continue;   // 表头
-                    }
-                    String[] f = line.split(",", -1);
-                    if (f.length < 1 || f[0].isBlank()) {
-                        continue;
-                    }
-                    String code = unq(f[0]);
-                    String name = f.length > 1 ? unq(f[1]) : null;
-                    java.math.BigDecimal px = dec(f, 2);
-                    java.math.BigDecimal py = dec(f, 3);
-                    java.math.BigDecimal pz = dec(f, 4);
-                    String devCode = f.length > 5 ? unq(f[5]) : null;
-                    String action = f.length > 6 ? unq(f[6]) : "PickPlace";
-                    Long devId = devCode == null || devCode.isBlank()
-                            ? null : resourceIdByCode(c, devCode);
-
-                    queryMapper.upsertRobotPoint(tenantId, islandId, robotResourceId,
-                            code, name, px, py, pz, devId, action);
-                    ok++;
-                }
-                return ok;
-            } catch (SQLException | RuntimeException e) {
-                throw e;
-            }
-        }
-    }
-
-    private Long resourceIdByCode(Connection c, String code) throws SQLException {
-        // c 只表示调用方已在事务内；Mapper 取同一条 Spring 绑定连接。
-        return queryMapper.selectResourceIdByDeviceCode(tenantId, code);
-    }
-
-    private static String unq(String s) {
-        if (s == null) {
-            return null;
-        }
-        String t = s.trim();
-        if (t.startsWith("\"") && t.endsWith("\"") && t.length() >= 2) {
-            t = t.substring(1, t.length() - 1).replace("\"\"", "\"");
-        }
-        return t;
-    }
-
-    private static java.math.BigDecimal dec(String[] f, int i) {
-        if (f.length <= i || f[i] == null || f[i].isBlank()) {
-            return null;
-        }
-        try {
-            return new java.math.BigDecimal(unq(f[i]));
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    /** 某个岛的机械臂点位列表。 */
-    public String robotPointsJson(long islandId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectRobotPointDetails(tenantId, islandId)) {
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "robotResourceId", row.get("robotResourceId"),
-                    "code", row.get("code"),
-                    "name", row.get("name"),
-                    "x", row.get("x"),
-                    "y", row.get("y"),
-                    "z", row.get("z"),
-                    "action", row.get("action"),
-                    "deviceResourceId", row.get("deviceResourceId"),
-                    "deviceCode", row.get("deviceCode"),
-                    "syncedAt", mstr(row, "syncedAt")));
-        }
-        return Jsons.obj("islandId", islandId,
-                "items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /**
-     * 一次性同步点位：把岛上的设备都建成"默认点位"。
-     *
-     * <p>为什么提供这个：现场先是手工导出机械臂点位表，再导入。
-     * 但演示/首装时没人有那表，按设备自动生成一版能先跑起来，
-     * 后续再逐个改坐标。
-     *
-     * <p>点位 code 用设备编号（`ID1775`）——`Transfer` 的 source/target 直接引用它。
-     */
-    public int syncRobotPoints(long islandId, long robotResourceId) throws SQLException {
-        return queryMapper.syncRobotPoints(tenantId, islandId, robotResourceId);
-    }
-
-    /** 岛屿动线（设备节点坐标 + 搬运箭头）。 */
-    public String islandFlowJson(long islandId) throws SQLException {
-        String g = queryMapper.selectIslandFlow(tenantId, islandId);
-        return g == null ? "{\"nodes\":[],\"edges\":[]}" : g;
-    }
-
-    /** 保存岛屿动线（整体替换）。 */
-    public int saveIslandFlow(long islandId, String graphJson) throws SQLException {
-        if (graphJson == null || graphJson.isBlank()) {
-            throw new IllegalArgumentException("动线不能为空");
-        }
-        return queryMapper.upsertIslandFlow(tenantId, islandId, graphJson);
-    }
-
     /** 实验编排图（nodes + edges）。 */
     public String experimentGraphJson(long experimentId) throws SQLException {
         String g = queryMapper.selectExperimentGraph(tenantId, experimentId);
@@ -1751,22 +1356,6 @@ throw e;
         return queryMapper.deleteRecoveryPolicy(tenantId, errorCodeId, policyId) > 0;
     }
 
-    public String deviceModelsJson() throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row : queryMapper.selectDeviceModels(tenantId)) {
-            items.add(Jsons.obj(
-                    "modelId", row.get("modelId"),
-                    "code", row.get("code"),
-                    "name", row.get("name"),
-                    "deviceType", row.get("deviceType"),
-                    "vendor", row.get("vendor"),
-                    "icon", row.get("icon"),
-                    "capability", row.get("capability"),
-                    "deployed", mint(row, "deployed")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
     /**
      * 按型号部署一台新设备到岛。
      *
@@ -1776,50 +1365,6 @@ throw e;
     /** Spring 声明式事务（checked 异常也回滚）。 */
     @org.springframework.transaction.annotation.Transactional(
             rollbackFor = Exception.class)
-
-    public String devicePoolJson() throws SQLException {
-        return devicePoolJson(null);
-    }
-
-    /**
-     * 设备池，可按岛过滤（设计器「按岛找设备」）。
-     * islandId 为 null / <=0 时保持全量，保证岛屿视图与 e2e-sim-flow 不回归。
-     */
-    public String devicePoolJson(Long islandId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        Long islFilter = islandId == null || islandId <= 0 ? null : islandId;
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectDevicePool(tenantId, islFilter)) {
-            items.add(Jsons.obj(
-                    "resourceId", row.get("resourceId"),
-                    "code", row.get("code"),
-                    "name", row.get("name"),
-                    "ip", row.get("ip"),
-                    "capability", row.get("capability"),
-                    // 型号库登记的原始图片路径。多数存量值指向源服务器
-                    // /image/device/<uuid>.png（换环境 404），前端 iconFor()
-                    // 会按 capability 映射回本地 /devices/<CAP>.svg。
-                    "icon", row.get("icon"),
-                    "islandId", row.get("islandId"),
-                    "islandCode", row.get("islandCode")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /** 未挂到任何岛的设备（拖拽时的"设备池"）。 */
-    public String unassignedDevicesJson() throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectUnassignedDevices(tenantId)) {
-            items.add(Jsons.obj(
-                    "resourceId", row.get("resourceId"),
-                    "code", row.get("code"),
-                    "name", row.get("name"),
-                    "ip", row.get("ip"),
-                    "capability", row.get("capability")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
 
     /** 流程图保存历史（按时间倒序）。 */
     public String graphHistoryJson(long workflowId) throws SQLException {
@@ -1861,64 +1406,6 @@ throw e;
         return xml;
     }
 
-    /** 某个设备方法的参数定义（设计器填参用）。 */
-    public String methodParamsJson(String method) throws SQLException {
-        java.util.Map<String, Object> row = queryMapper.selectMethodParams(tenantId, method);
-        if (row == null) {
-            return Jsons.obj("method", method, "found", false,
-                    "params", new Jsons.Raw("[]"));
-        }
-        Object params = row.get("params");
-        return Jsons.obj(
-                "method", row.get("method"),
-                "name", row.get("name"),
-                "capability", row.get("capability"),
-                "found", true,
-                "params", params == null ? new Jsons.Raw("[]")
-                        : new Jsons.Raw(String.valueOf(params)));
-    }
-
-    /** 驱动端点列表（新增设备时选）。 */
-    public String driversJson() throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row : queryMapper.selectDrivers(tenantId)) {
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "code", row.get("code"),
-                    "name", row.get("name"),
-                    "protocol", row.get("protocol"),
-                    "endpoint", row.get("endpoint"),
-                    "status", row.get("status")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /**
-     * 新增岛屿。
-     *
-     * <p>岛屿是资源树的顶层（parent_id 为空），path 用 {@code /CODE}。
-     */
-    public long createIsland(String code, String name) throws SQLException {
-        if (code == null || code.isBlank()) {
-            throw new IllegalArgumentException("岛屿编号不能为空");
-        }
-        if (name == null || name.isBlank()) {
-            throw new IllegalArgumentException("岛屿名称不能为空");
-        }
-        try {
-            Long id = queryMapper.insertIsland(tenantId, code.trim(), name.trim(),
-                    "/" + code.trim());
-            return id == null ? 0L : id;
-        } catch (RuntimeException e) {
-            // Spring 把唯一键冲突包成 DuplicateKeyException（不再是 JDBC 的
-            // SQLIntegrityConstraintViolationException），按 message 判断。
-            if (e.getMessage() != null && e.getMessage().contains("duplicate key")) {
-                throw new IllegalArgumentException("岛屿编号已存在: " + code);
-            }
-            throw e;
-        }
-    }
-
     /**
      * 删设备：软删实例 + 从资源树移除。
      *
@@ -1927,25 +1414,7 @@ throw e;
     /** Spring 声明式事务（checked 异常也回滚）。 */
     @org.springframework.transaction.annotation.Transactional(
             rollbackFor = Exception.class)
-    public int deleteDevice(long resourceId) throws SQLException {
-        // 不删 resource_node：run_node.resource_id 可能引用它（外键会挡住），
-        // 且历史执行记录要能查回"这台设备当时在哪"。
-        // 拓扑查询会过滤 deleted_at IS NOT NULL，界面上等于删掉了。
-        queryMapper.softDeleteDeviceInstance(tenantId, resourceId);
-        return 1;
-    }
 
-    /** 能力字典（设计器下拉用）：code + 可用设备数。 */
-
-    /**
-     * 设置设备方法的「执行中可中断」标志（产品写入口；方法必须已在设备库中）。
-     *
-     * @return 受影响行数（0 = 设备/方法不存在，调用方回 404）
-     */
-    public int setDeviceMethodInterruptible(long deviceId, String method, boolean value)
-            throws SQLException {
-        return queryMapper.setDeviceMethodInterruptible(tenantId, deviceId, method, value);
-    }
 
     /** L-01：记录一条人工介入（决策/Handoff 确认）。 */
     public long recordIntervention(long manualWindowId, Long runId, Long experimentRunId,
@@ -2255,7 +1724,6 @@ throw e;
         }
     }
 
-    /** 某能力下可选的设备方法（{@code device_method}）。 */
 
     /**
      * 告警处置：认领 / 关闭 / 静音。
@@ -2386,59 +1854,6 @@ throw e;
     }
 
     // ---------------------------------------------------------------- 工具
-
-    /** 把已序列化好的 JSON 片段原样嵌入（避免二次转义）。 */
-    private static Jsons.Raw raw(String json) {
-        return new Jsons.Raw(json == null ? "{}" : json);
-    }
-
-    /** Map 版 {@link #raw(String)}：null 仍兜成 {}。 */
-    private static Jsons.Raw mraw(java.util.Map<String, Object> row, String key) {
-        Object o = row.get(key);
-        return new Jsons.Raw(o == null ? "{}" : String.valueOf(o));
-    }
-
-    /** Map 里的时间列转 Instant（MyBatis 对 timestamptz 给 java.sql.Timestamp）。 */
-    private static java.time.Instant minst(Object o) {
-        if (o == null) {
-            return null;
-        }
-        if (o instanceof java.sql.Timestamp t) {
-            return t.toInstant();
-        }
-        if (o instanceof java.time.Instant i) {
-            return i;
-        }
-        if (o instanceof java.time.OffsetDateTime d) {
-            return d.toInstant();
-        }
-        return java.time.Instant.parse(o.toString());
-    }
-
-    /** Map 版 {@link #str(ResultSet, String)}：null 保留 null。 */
-    private static String mstr(java.util.Map<String, Object> row, String key) {
-        Object o = row.get(key);
-        return o == null ? null : o.toString();
-    }
-
-    /** Map 版 rs.getInt：null 当 0。 */
-    private static int mint(java.util.Map<String, Object> row, String key) {
-        Object o = row.get(key);
-        return o instanceof Number n ? n.intValue() : 0;
-    }
-
-    private static String str(ResultSet rs, String col) throws SQLException {
-        Object o = rs.getObject(col);
-        return o == null ? null : o.toString();
-    }
-
-    private static String shortVersion(String v) {
-        if (v == null) {
-            return "";
-        }
-        int i = v.indexOf(" on ");
-        return i > 0 ? v.substring(0, i) : v;
-    }
 
     private void bumpExperimentVersion(Connection c, long experimentId) throws SQLException {
         queryMapper.bumpExperimentVersion(tenantId, experimentId);
@@ -2605,42 +2020,6 @@ throw e;
         return new CompiledGraph(steps, edges);
     }
 
-    private static Map<?, ?> asMap(Object value, String what) {
-        if (value instanceof Map<?, ?> map) {
-            return map;
-        }
-        throw new IllegalArgumentException(what + " 不是对象");
-    }
-
-    private static String asString(Object value) {
-        return value == null ? null : String.valueOf(value);
-    }
-
-    private static Long asLong(Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Number n) {
-            return n.longValue();
-        }
-        try {
-            return Long.parseLong(String.valueOf(value));
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("workflowId 不是合法数字：" + value);
-        }
-    }
-
-    private static Object parseJson(String json) {
-        if (json == null || json.isBlank()) {
-            return Map.of();
-        }
-        try {
-            return new MiniJson(json).parseValue();
-        } catch (RuntimeException e) {
-            throw new IllegalArgumentException("画布 JSON 解析失败：" + e.getMessage(), e);
-        }
-    }
-
     private record CanvasNode(String id, String kind, Long workflowId) { }
 
     /** 编译出的一步：画布流程节点 -> 一行 experiment_process。 */
@@ -2657,157 +2036,6 @@ throw e;
     }
 
     /** 极简 JSON 解析：只处理当前画布保存用到的对象/数组/标量。 */
-    private static final class MiniJson {
-        private final String s;
-        private int i;
-
-        MiniJson(String s) {
-            this.s = s;
-        }
-
-        Object parseValue() {
-            skip();
-            if (i >= s.length()) {
-                return null;
-            }
-            char c = s.charAt(i);
-            if (c == '{') {
-                return parseObject();
-            }
-            if (c == '[') {
-                return parseArray();
-            }
-            if (c == '"') {
-                return parseString();
-            }
-            if (s.startsWith("true", i)) {
-                i += 4;
-                return true;
-            }
-            if (s.startsWith("false", i)) {
-                i += 5;
-                return false;
-            }
-            if (s.startsWith("null", i)) {
-                i += 4;
-                return null;
-            }
-            return parseNumberOrToken();
-        }
-
-        private Map<String, Object> parseObject() {
-            expect('{');
-            java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
-            skip();
-            if (peek('}')) {
-                expect('}');
-                return out;
-            }
-            while (true) {
-                String key = parseString();
-                skip();
-                expect(':');
-                out.put(key, parseValue());
-                skip();
-                if (peek('}')) {
-                    expect('}');
-                    return out;
-                }
-                expect(',');
-            }
-        }
-
-        private java.util.List<Object> parseArray() {
-            expect('[');
-            java.util.List<Object> out = new java.util.ArrayList<>();
-            skip();
-            if (peek(']')) {
-                expect(']');
-                return out;
-            }
-            while (true) {
-                out.add(parseValue());
-                skip();
-                if (peek(']')) {
-                    expect(']');
-                    return out;
-                }
-                expect(',');
-            }
-        }
-
-        private String parseString() {
-            expect('"');
-            StringBuilder sb = new StringBuilder();
-            while (i < s.length()) {
-                char c = s.charAt(i++);
-                if (c == '"') {
-                    return sb.toString();
-                }
-                if (c == '\\') {
-                    if (i >= s.length()) {
-                        break;
-                    }
-                    char esc = s.charAt(i++);
-                    switch (esc) {
-                        case '"', '\\', '/' -> sb.append(esc);
-                        case 'b' -> sb.append('\b');
-                        case 'f' -> sb.append('\f');
-                        case 'n' -> sb.append('\n');
-                        case 'r' -> sb.append('\r');
-                        case 't' -> sb.append('\t');
-                        case 'u' -> {
-                            if (i + 4 > s.length()) {
-                                throw new IllegalArgumentException("非法 unicode 转义");
-                            }
-                            sb.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
-                            i += 4;
-                        }
-                        default -> throw new IllegalArgumentException("未知转义：" + esc);
-                    }
-                } else {
-                    sb.append(c);
-                }
-            }
-            throw new IllegalArgumentException("字符串未闭合");
-        }
-
-        private Object parseNumberOrToken() {
-            int j = i;
-            while (j < s.length() && ",]} \n\r\t".indexOf(s.charAt(j)) < 0) {
-                j++;
-            }
-            String token = s.substring(i, j);
-            i = j;
-            try {
-                if (token.contains(".") || token.contains("e") || token.contains("E")) {
-                    return Double.parseDouble(token);
-                }
-                return Long.parseLong(token);
-            } catch (NumberFormatException e) {
-                return token;
-            }
-        }
-
-        private void skip() {
-            while (i < s.length() && Character.isWhitespace(s.charAt(i))) {
-                i++;
-            }
-        }
-
-        private boolean peek(char c) {
-            skip();
-            return i < s.length() && s.charAt(i) == c;
-        }
-
-        private void expect(char c) {
-            skip();
-            if (i >= s.length() || s.charAt(i) != c) {
-                throw new IllegalArgumentException("期待 '" + c + "'");
-            }
-            i++;
-        }
-    }
 
     /**
      * 设备级告警（目前只有"离线"）。

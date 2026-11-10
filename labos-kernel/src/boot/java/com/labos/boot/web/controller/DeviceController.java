@@ -5,7 +5,6 @@ import com.labos.boot.web.AuditRecorder;
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
 import com.labos.boot.web.service.DeviceService;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.driver.HeartbeatService;
 import com.labos.kernel.driver.ShadowProbe;
 import com.labos.kernel.persistence.DbConfig;
@@ -34,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static com.labos.kernel.persistence.QJson.extractXYZ;
 import static com.labos.kernel.api.ApiServer.err;
 import static com.labos.kernel.api.ApiServer.jsonField;
 import static com.labos.kernel.api.ApiServer.jsonInt;
@@ -44,13 +44,13 @@ import static com.labos.kernel.api.ApiServer.paramStr;
 /**
  * 设备/岛/型号/点位域 Controller（25 个端点）——纯 HTTP 层。
  *
- * <p>读查询在 {@link QueryService}，写在 {@code QueryService} 的
- * {@code @Transactional} 方法与 {@code WorkflowService} 里；本类只做
+ * <p>读与写都经 {@code DeviceService}（按域拆自原 {@code QueryService}），
+ * 岛锁等执行语义在 {@code WorkflowService} 里；本类只做
  * 参数解析、审计与响应，不 new 任何工具类。
  *
  * <p>捕获采集（{@code /devices/{id}/methods/.../capture}）里 ShadowProbe
  * 需要 {@code device_instance.id} 而不是 resource_node.id（这个坑出现过五次），
- * 已用 {@code query.instanceIdOf} 转换。
+ * 已用 {@code DeviceService.instanceIdOf} 转换。
  */
 @RestController
 @RequestMapping("/api")
@@ -58,17 +58,15 @@ public class DeviceController {
 
     private static final long TENANT = 1L;
 
-    private final QueryService query;
     private final DeviceService deviceService;
     private final WorkflowService workflows;
     private final DbConfig db;
     private final HeartbeatService heartbeat;
     private final AuditRecorder audit;
 
-    public DeviceController(QueryService query, DeviceService deviceService,
+    public DeviceController(DeviceService deviceService,
                             WorkflowService workflows, DbConfig db,
                             HeartbeatService heartbeat, AuditRecorder audit) {
-        this.query = query;
         this.deviceService = deviceService;
         this.workflows = workflows;
         this.db = db;
@@ -152,7 +150,7 @@ public class DeviceController {
 
     @GetMapping(value = "/device-models", produces = "application/json; charset=utf-8")
     public String deviceModels() throws SQLException {
-        return query.deviceModelsJson();
+        return deviceService.deviceModelsJson();
     }
 
     // ---------------------------------------------------------------- 设备 CRUD
@@ -209,7 +207,7 @@ public class DeviceController {
     @DeleteMapping(value = "/devices/{id:\\d+}", produces = "application/json; charset=utf-8")
     public String deleteDevice(@PathVariable long id,
                                HttpServletRequest req) throws SQLException {
-        int n = query.deleteDevice(id);
+        int n = deviceService.deleteDevice(id);
         audit.record(session(req), "device.delete", "device", id, null, null,
                 req.getRemoteAddr());
         return Jsons.obj("deleted", n, "resourceId", id);
@@ -240,7 +238,7 @@ public class DeviceController {
         if (isl <= 0) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("需要 islandId"));
         }
-        int n = query.moveDeviceToIsland(id, isl);
+        int n = deviceService.moveDeviceToIsland(id, isl);
         audit.record(session(req), "device.move", "device", id, null,
                 Jsons.obj("islandId", isl), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("moved", n, "resourceId", id, "islandId", isl));
@@ -266,7 +264,7 @@ public class DeviceController {
         if (!mx.find() || !my.find()) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("需要 x 与 y"));
         }
-        int n = query.saveDevicePosition(id,
+        int n = deviceService.saveDevicePosition(id,
                 Double.parseDouble(mx.group(1)), Double.parseDouble(my.group(1)));
         return ResponseEntity.ok(Jsons.obj("saved", n, "resourceId", id));
     }
@@ -286,33 +284,33 @@ public class DeviceController {
             throws SQLException {
         // 可选 ?islandId=：设计器按「这个岛」找设备；不传仍是全量池（岛屿视图 / e2e 回归）
         long isl = paramLongValue(islandId);
-        return query.devicePoolJson(isl > 0 ? isl : null);
+        return deviceService.devicePoolJson(isl > 0 ? isl : null);
     }
 
     @GetMapping(value = "/devices/unassigned", produces = "application/json; charset=utf-8")
     public String unassignedDevices() throws SQLException {
-        return query.unassignedDevicesJson();
+        return deviceService.unassignedDevicesJson();
     }
 
     @GetMapping(value = "/devices/{id:\\d+}/methods",
             produces = "application/json; charset=utf-8")
     public String deviceMethods(@PathVariable long id) throws SQLException {
-        return query.deviceMethodsJson(id);
+        return deviceService.deviceMethodsJson(id);
     }
 
     @GetMapping(value = "/methods/{code}/params", produces = "application/json; charset=utf-8")
     public String methodParams(@PathVariable String code) throws SQLException {
-        return query.methodParamsJson(URLDecoder.decode(code, StandardCharsets.UTF_8));
+        return deviceService.methodParamsJson(URLDecoder.decode(code, StandardCharsets.UTF_8));
     }
 
     @GetMapping(value = "/drivers", produces = "application/json; charset=utf-8")
     public String drivers() throws SQLException {
-        return query.driversJson();
+        return deviceService.driversJson();
     }
 
     @GetMapping(value = "/topology", produces = "application/json; charset=utf-8")
     public String topology() throws SQLException {
-        return query.topologyJson();
+        return deviceService.topologyJson();
     }
 
     @PutMapping(value = "/devices/{id:\\d+}/methods/{method}/interruptible",
@@ -337,7 +335,7 @@ public class DeviceController {
                     .body(err("需要 interruptible=true/false"));
         }
         boolean value = Boolean.parseBoolean(raw);
-        int n = query.setDeviceMethodInterruptible(id, dMethod, value);
+        int n = deviceService.setDeviceMethodInterruptible(id, dMethod, value);
         if (n == 0) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("设备方法不存在"));
         }
@@ -353,7 +351,7 @@ public class DeviceController {
     @PostMapping(value = "/islands", produces = "application/json; charset=utf-8")
     public String createIsland(@RequestBody(required = false) String body,
                                HttpServletRequest req) throws SQLException {
-        long id = query.createIsland(jsonField(body, "code"), jsonField(body, "name"));
+        long id = deviceService.createIsland(jsonField(body, "code"), jsonField(body, "name"));
         audit.record(session(req), "island.create", "island", id,
                 jsonField(body, "code"), body, req.getRemoteAddr());
         return Jsons.obj("id", id);
@@ -362,7 +360,7 @@ public class DeviceController {
     @DeleteMapping(value = "/islands/{id:\\d+}", produces = "application/json; charset=utf-8")
     public String deleteIsland(@PathVariable long id,
                                HttpServletRequest req) throws SQLException {
-        int n = query.deleteIsland(id);
+        int n = deviceService.deleteIsland(id);
         audit.record(session(req), "island.delete", "island", id, null, null,
                 req.getRemoteAddr());
         return Jsons.obj("deleted", n, "id", id);
@@ -373,12 +371,12 @@ public class DeviceController {
     @GetMapping(value = "/islands/{id:\\d+}/robot-points",
             produces = "application/json; charset=utf-8")
     public String robotPoints(@PathVariable long id) throws SQLException {
-        return query.robotPointsJson(id);
+        return deviceService.robotPointsJson(id);
     }
 
     @GetMapping(value = "/islands/{id:\\d+}/robot-points.csv")
     public ResponseEntity<String> robotPointsCsv(@PathVariable long id) throws SQLException {
-        String csv = query.robotPointsCsv(id);
+        String csv = deviceService.robotPointsCsv(id);
         return ResponseEntity.ok()
                 .header("Content-Type", "text/csv; charset=utf-8")
                 .header("Content-Disposition",
@@ -398,7 +396,7 @@ public class DeviceController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(err("需要 robotResourceId"));
         }
-        int n = query.importRobotPointsCsv(id, robot, body);
+        int n = deviceService.importRobotPointsCsv(id, robot, body);
         audit.record(session(req), "robot.points.import", "island", id, null,
                 Jsons.obj("rows", n), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("imported", n, "islandId", id));
@@ -415,7 +413,7 @@ public class DeviceController {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(err("需要 robotResourceId"));
         }
-        int n = query.syncRobotPoints(id, robotId);
+        int n = deviceService.syncRobotPoints(id, robotId);
         audit.record(session(req), "robot.points.sync", "island", id, null,
                 Jsons.obj("robot", robotId, "points", n), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("synced", n, "islandId", id, "robot", robotId));
@@ -433,7 +431,7 @@ public class DeviceController {
         String pcode = URLDecoder.decode(code, StandardCharsets.UTF_8);
         java.util.regex.Matcher mx = java.util.regex.Pattern
                 .compile("\"x\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)").matcher(body);
-        int n = query.updateRobotPoint(id, pcode,
+        int n = deviceService.updateRobotPoint(id, pcode,
                 mx.find() ? Double.parseDouble(mx.group(1)) : null,
                 null, null,
                 paramLongValue(deviceResourceId) > 0
@@ -460,7 +458,7 @@ public class DeviceController {
                     .body(err("需要 robotResourceId 和 method"));
         }
         // ShadowProbe 要 device_instance.id，不是 resource_node.id（这个坑第五次了）
-        Long robotInst = query.instanceIdOf(robot);
+        Long robotInst = deviceService.instanceIdOf(robot);
         if (robotInst == null) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(err("机械臂实例不存在: " + robot));
@@ -472,14 +470,14 @@ public class DeviceController {
                     .body(Jsons.obj("error", "读取失败：" + pr.errorCode() + " " + pr.errorText(),
                             "captured", 0));
         }
-        Double[] xyz = QueryService.extractXYZ(pr.rawResponse());
+        Double[] xyz = extractXYZ(pr.rawResponse());
         if (xyz == null) {
             // 驱动不返回坐标：把原文给前端看，现场好判断该配什么字段
             return ResponseEntity.ok(Jsons.obj("captured", 0,
                     "reason", "驱动返回里没有 x/y/z 字段",
                     "raw", pr.rawResponse()));
         }
-        int n = query.updateRobotPoint(id, ccode, xyz[0], xyz[1], xyz[2], null, null);
+        int n = deviceService.updateRobotPoint(id, ccode, xyz[0], xyz[1], xyz[2], null, null);
         audit.record(session(req), "robot.point.capture", "island", id, ccode,
                 Jsons.obj("method", readMethod), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("captured", n, "code", ccode,
@@ -490,14 +488,14 @@ public class DeviceController {
 
     @GetMapping(value = "/islands/{id:\\d+}/flow", produces = "application/json; charset=utf-8")
     public String islandFlow(@PathVariable long id) throws SQLException {
-        return query.islandFlowJson(id);
+        return deviceService.islandFlowJson(id);
     }
 
     @PutMapping(value = "/islands/{id:\\d+}/flow", produces = "application/json; charset=utf-8")
     public String saveIslandFlow(@PathVariable long id,
                                  @RequestBody(required = false) String body,
                                  HttpServletRequest req) throws SQLException {
-        int n = query.saveIslandFlow(id, body);
+        int n = deviceService.saveIslandFlow(id, body);
         audit.record(session(req), "island.flow", "island", id, null,
                 Jsons.obj("bytes", body == null ? 0 : body.length()), req.getRemoteAddr());
         return Jsons.obj("saved", n, "bytes", body == null ? 0 : body.length());

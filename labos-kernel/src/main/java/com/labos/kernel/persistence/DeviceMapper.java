@@ -1,5 +1,8 @@
 package com.labos.kernel.persistence;
 
+import org.apache.ibatis.annotations.Param;
+
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -55,4 +58,96 @@ public interface DeviceMapper {
     /** 改设备实例的 IP / 驱动（没传的列保持原值）。 */
     int updateDeviceInstanceEndpoint(long tenantId, long resourceId,
                                      String ip, Long driverId);
+
+    /** 设备型号 + 部署台数（一次子查询，避免逐型号 N+1）。 */
+    List<Map<String, Object>> selectDeviceModels(long tenantId);
+
+    /** 设备实例软删（保留 resource_node 供历史 run_node 追溯）。 */
+    int softDeleteDeviceInstance(long tenantId, long resourceId);
+
+    /** 岛的 path（移设备/建设备时拼子节点路径）。 */
+    String selectIslandPath(long tenantId, long islandId);
+
+    /** 设备挂到岛下（path 由调用方按岛 path + 设备 code 拼好）。 */
+    int attachDeviceToIsland(long tenantId, long resourceId, long islandId, String path);
+
+    /** 设备移出岛（放回设备池）。 */
+    int detachDeviceFromIsland(long tenantId, long resourceId);
+
+    /** 资源节点的编码（按 kind 限定，避免拿到同 id 的其它类型）。 */
+    String selectNodeCode(long tenantId, long resourceNodeId, String kind);
+
+    /** 写设备在资源树上的坐标（jsonb attr 合并，不动其它键）。 */
+    int updateDevicePosition(long tenantId, long resourceId, double x, double y);
+
+    /** 设备池（islandId 为 null/<=0 时全部）。 */
+    List<Map<String, Object>> selectDevicePool(long tenantId, Long islandId);
+
+    /** 未挂到岛上的设备（有 device_instance 但父节点不是 island）。 */
+    List<Map<String, Object>> selectUnassignedDevices(long tenantId);
+
+    /** 设备方法清单（按 resource_node.id 关联，含型号码与参数定义）。 */
+    List<Map<String, Object>> selectDeviceMethods(long resourceId);
+
+    /** 某方法的参数定义；不存在返回 null。 */
+    Map<String, Object> selectMethodParams(long tenantId, String method);
+
+    /** 驱动清单（未软删）。 */
+    List<Map<String, Object>> selectDrivers(long tenantId);
+
+    /** 拓扑：岛 + 其下设备（一次 JOIN 出全部字段，Java 侧按岛分组）。 */
+    List<Map<String, Object>> selectTopology(long tenantId);
+
+    int setDeviceMethodInterruptible(long tenantId, long deviceId,
+                                     String method, boolean value);
+
+    /** 建岛，返回 id。 */
+    Long insertIsland(long tenantId, String code, String name, String path);
+
+    int countDevicesUnderIsland(long tenantId, long islandId);
+
+    /** 删岛（只删 kind='island' 的资源节点）。 */
+    int deleteIslandNode(long tenantId, long islandId);
+
+    /** 机器人点位明细（列表页用）。 */
+    List<Map<String, Object>> selectRobotPointDetails(long tenantId, long islandId);
+
+    /** 机器人点位（CSV 与列表共用的原始行）。 */
+    List<Map<String, Object>> selectRobotPoints(long tenantId, long islandId);
+
+    /** 导入一个机器人点位（同 robot+code 覆盖，未传的列保留旧值）。 */
+    int upsertRobotPoint(long tenantId, long islandId, long robotResourceId,
+                         String code, String name, java.math.BigDecimal x,
+                         java.math.BigDecimal y, java.math.BigDecimal z,
+                         Long deviceResourceId, String action);
+
+    /** 从资源树同步点位（岛下设备，排除机器人自身）；返回受影响行数。 */
+    int syncRobotPoints(long tenantId, long islandId, long robotResourceId);
+
+    /**
+     * 机器人点位增量更新。参数为 null 的列不动 —— 原实现用 StringBuilder 拼
+     * {@code ", x = ?"}，改成 XML 的 {@code <if>} 后 SQL 结构一眼可见。
+     */
+    int updateRobotPoint(@Param("tenantId") long tenantId,
+                         @Param("islandId") long islandId,
+                         @Param("code") String code,
+                         @Param("x") Double x,
+                         @Param("y") Double y,
+                         @Param("z") Double z,
+                         @Param("deviceResourceId") Long deviceResourceId,
+                         @Param("action") String action);
+
+    /** resource_node.id -> device_instance.id（未软删，取一条）。 */
+    Long selectInstanceId(long tenantId, long resourceId);
+
+    /** 岛动线图；不存在返回 null。 */
+    String selectIslandFlow(long tenantId, long islandId);
+
+    /** 保存岛动线（按 island_id 覆盖）。 */
+    int upsertIslandFlow(long tenantId, long islandId, String graphJson);
+
+
+    /** 按设备编码找资源节点 id（kind='device'）。 */
+    Long selectResourceIdByDeviceCode(long tenantId, String code);
+
 }
