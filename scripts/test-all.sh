@@ -23,6 +23,34 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 cd labos-kernel || exit 1
 
+# ---------------------------------------------------------------------------
+# 互斥：运行中的内核会和连库自测抢同一批数据
+#
+# 内核的 ExperimentScheduler 循环每 5 tick 扫一次 paused 批次并自动续队，
+# 而 BatchDbSelfTest / PauseCoordinatorDbSelfTest / RunControlDbSelfTest
+# 用的是固定负数 experiment id（tenant 1），内核看得见也会去改 —— 表现为
+# 「同一条断言一会儿绿一会儿红」。2026-11-10 用 A/B 证实：
+# 停掉内核后连跑 3 轮，RunControl 51/0、PauseCoordinator 72/0 全稳定；
+# 内核在跑时同样 3 轮各出现 1~2 条红。
+#
+# 所以这里**默认拒绝**在内核运行时跑连库测试，而不是让它偶发红把真回归埋掉。
+# 需要自动停：LABOS_TESTALL_STOP_KERNEL=1 ./scripts/test-all.sh
+# ---------------------------------------------------------------------------
+if lsof -nP -iTCP:"${LABOS_API_PORT:-18080}" -sTCP:LISTEN >/dev/null 2>&1; then
+  if [ "${LABOS_TESTALL_STOP_KERNEL:-0}" = "1" ]; then
+    echo "⚠ 内核在跑，按 LABOS_TESTALL_STOP_KERNEL=1 停掉后再测"
+    pkill -f "com.labos.boot.LabosApplication" 2>/dev/null || true
+    sleep 3
+  else
+    echo "✗ 检测到内核仍在 ${LABOS_API_PORT:-18080} 上运行：" >&2
+    echo "  它的调度循环会自动续队 paused 批次，与连库自测抢同一批数据" >&2
+    echo "  （固定负数 experiment id / tenant 1），会让断言随机变红。" >&2
+    echo "  处理：先停内核，或 LABOS_TESTALL_STOP_KERNEL=1 让本脚本代停。" >&2
+    echo "  只跑纯逻辑：./scripts/test-all.sh --pure-only" >&2
+    exit 2
+  fi
+fi
+
 CP="out:lib/postgresql-42.7.3.jar:lib/spring/*"
 
 # 每轮都编 src/main：原来只在 out/ 为空时编，本机 out/ 已存在时新增的主类

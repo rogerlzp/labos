@@ -252,9 +252,27 @@ HandlerMethod**，旧 `LegacyRouteController` 链路一行不动、仍由 route(
 experiments/eta/runs/scheduler/meta/manual-windows/holds/users/health/静态页），
 无 token 一律 401。
 
+**2026-11-10 续：非 Bean 工具类的 Mapper 通道 + 测试互斥修复**
+- `persistence/Mappers`：静态桥接（容器 `bind(sqlSessionFactory)`；无容器按需
+  用 `DbConfig.standaloneDataSource()` 自动初始化，**必须同一个 DataSource**）。
+  `PauseManager` / `PreflightChecker` / `PositionLock` / `ShadowRunner` /
+  `ExperimentWorkcellScope` 这些 new 出来的类因此也能走 Mapper。
+  `WorkflowService`/`QueryService` 的 Mapper 字段改为懒取（注入优先、
+  缺注入回落 Mappers）——裸 new 场景拿 null 会在 `loadGraphXml` 等处抛 NPE，
+  而不是 SQLException，原有 catch 兜不住（BatchDb 5/6 失败才暴露）。
+- 新增 `PauseMapper`(5) / `ExperimentMapper`(6) / `WorkflowWebMapper`(7/9)；
+  `QueryMapper` 扩到 18 条。**XML 累计 62 条**。
+- **测试互斥（真缺陷，不是"数据竞争"）**：内核调度循环与连库自测共用
+  tenant 1 与固定负数 id，互相抢数据。停内核后连跑 3 轮全绿
+  （RunControl 51/0、PauseCoordinator 72/0），全量 **1310/0**；
+  `test-all.sh` 已加硬守卫（检测 18080 有监听即 exit 2，
+  `LABOS_TESTALL_STOP_KERNEL=1` 可代停）。
+- `JdbcManualWindowStore` 的 4 条**刻意不迁**：`COLUMNS` 常量已被 3 处复用，
+  `read(rs)` 按 16 列**位置**映射，搬进 XML 会把「列序即契约」藏起来。
+
 **仍未完成**：
-- 约 100 条 SQL 按聚合收进 Mapper（`QueryService` 写路径大方法、
-  `DriverStepExecutor`、`ExperimentExecutor` 等）；
+- 约 71 条 SQL 按聚合收进 Mapper（`WorkflowService.saveGraph` 节点/边重建、
+  `DriverStepExecutor`、`ExperimentExecutor`、`ExperimentScheduler` 等）；
 
 ---
 

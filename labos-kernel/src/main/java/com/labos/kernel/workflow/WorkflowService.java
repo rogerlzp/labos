@@ -108,6 +108,17 @@ public class WorkflowService {
      * 不做这个兜底，{@code loadGraphXml} 之类会在裸 new 场景抛 NPE
      * （不是 SQLException，原有 catch 兜不住，直接把批处理链路打挂）。
      */
+    /** 懒取 RunMapper：同 qm()，裸 new 场景（自测/工具）没有注入机会。 */
+    private com.labos.kernel.persistence.RunMapper rm() {
+        com.labos.kernel.persistence.RunMapper m = runMapper;
+        if (m == null) {
+            m = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.RunMapper.class);
+            runMapper = m;
+        }
+        return m;
+    }
+
     private com.labos.kernel.persistence.QueryMapper qm() {
         com.labos.kernel.persistence.QueryMapper m = queryMapper;
         if (m == null) {
@@ -2574,15 +2585,10 @@ public class WorkflowService {
      */
     /** 这个 run 是否已被外部置为 paused。 */
     private boolean isRunPaused(long runId) {
-        String sql = "SELECT status::text FROM run WHERE tenant_id = ? AND id = ?";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() && "paused".equals(rs.getString(1));
-            }
-        } catch (SQLException e) {
+        try {
+            // 复用 RunMapper.selectStatus（同一条 SQL，暂停边界判定与暂停协调共用）
+            return "paused".equals(rm().selectStatus(tenantId, runId));
+        } catch (RuntimeException e) {
             return false;   // 查不到就当作没暂停，不阻断执行
         }
     }

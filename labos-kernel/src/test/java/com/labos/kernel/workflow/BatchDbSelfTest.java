@@ -1066,7 +1066,10 @@ public final class BatchDbSelfTest {
                 RuntimeHold.Kind.MANUAL, "自测：现场扣留", null);
 
         List<BatchOrchestrator.PausedBatch> candidates = orch.pausedBatchCandidates();
-        check("paused 且无 attempt 的批被枚举", hasCandidate(candidates, EXP_AC, 1), candidates);
+        // 失败时把入选三要素直接打印出来：batch 状态 / 实验状态 / 已有 attempt 数。
+        // 否则只看到"候选里没有我"，分不清是数据没造对还是枚举逻辑漏了。
+        check("paused 且无 attempt 的批被枚举", hasCandidate(candidates, EXP_AC, 1),
+                candidates + " | diag=" + candidateDiag(EXP_AC));
         check("有 attempt 的 paused 批不枚举",
                 !hasCandidate(candidates, EXP_AC_ATTEMPT, 1), candidates);
         check("实验已 aborted 不枚举",
@@ -1550,6 +1553,44 @@ public final class BatchDbSelfTest {
     private static String varsJsonOf(long runId) throws SQLException {
         return str("SELECT variables::text FROM experiment_run "
                 + "WHERE tenant_id = ? AND id = ?", TENANT, runId);
+    }
+
+    /** 诊断用：把某一实验的「batch 状态 / 实验状态 / attempt 数」拼成一行。 */
+    private static String candidateDiag(long experimentId) {
+        StringBuilder sb = new StringBuilder();
+        try (Connection c = db.open()) {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT status::text FROM experiment WHERE tenant_id = ? AND id = ?")) {
+                ps.setLong(1, TENANT);
+                ps.setLong(2, experimentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    sb.append("expStatus=").append(rs.next() ? rs.getString(1) : "<none>");
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT b.batch_no, b.status::text,
+                           (SELECT count(*) FROM experiment_batch_run br
+                             WHERE br.tenant_id = b.tenant_id AND br.batch_id = b.id) AS attempts
+                      FROM experiment_batch b
+                     WHERE b.tenant_id = ? AND b.experiment_id = ?
+                     ORDER BY b.batch_no
+                    """)) {
+                ps.setLong(1, TENANT);
+                ps.setLong(2, experimentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    sb.append(" batches=[");
+                    while (rs.next()) {
+                        sb.append("no").append(rs.getInt(1)).append("/")
+                                .append(rs.getString(2)).append("/att=")
+                                .append(rs.getInt(3)).append(" ");
+                    }
+                    sb.append("]");
+                }
+            }
+        } catch (Exception e) {
+            sb.append(" diag-error=").append(e.getMessage());
+        }
+        return sb.toString();
     }
 
     private static boolean hasCandidate(List<BatchOrchestrator.PausedBatch> candidates,
