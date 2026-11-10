@@ -6,23 +6,11 @@
 
     <select id="health" resultType="java.util.Map">
         SELECT current_database() AS db, version() AS ver
-    </select><!-- 三处原本各写一遍：workflowGraph / runGraphJson / nodeBindingJson。 --><select id="selectRunWorkflow" resultType="java.util.Map">
-        <!-- PostgreSQL 未加引号的别名一律转小写，resultType=map 的 key 就是小写列名；
-             这里必须加引号保留驼峰，否则 Java 侧 get("workflowId") 拿到 null（实测 NPE）。 -->
-        SELECT workflow_id AS "workflowId", status::text AS "status"
-          FROM run
-         WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
-    <select id="existsDeviceCode" resultType="boolean">
+    </select><!-- 三处原本各写一遍：workflowGraph / runGraphJson / nodeBindingJson。 --><select id="existsDeviceCode" resultType="boolean">
         SELECT EXISTS(
             SELECT 1 FROM resource_node
              WHERE tenant_id = #{param1} AND code = #{param2} AND kind = 'device')
-    </select><!-- forUpdate 只在账号管理的事务里用，必须与调用方同一事务连接。 --><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><select id="selectRunActualStart" resultType="java.sql.Timestamp">
-        SELECT actual_start FROM run WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
-    <!-- 事务级咨询锁：同一 key 的并发写入串行化，事务结束自动释放。 --><select id="selectCapabilityId" resultType="java.lang.Long">
+    </select><!-- forUpdate 只在账号管理的事务里用，必须与调用方同一事务连接。 --><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><!-- 事务级咨询锁：同一 key 的并发写入串行化，事务结束自动释放。 --><select id="selectCapabilityId" resultType="java.lang.Long">
         SELECT id FROM capability WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
@@ -75,193 +63,10 @@
         SELECT name FROM resource_node WHERE id = #{param1}
     </select><!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 --><!-- 三个列表的动态过滤：调用方把空串归一化成 null，这里只判 != null。
          原来用 StringBuilder 拼 " AND xxx = ?" 再按顺序 setObject，
-         现在「哪些条件下会多一个谓词」在 XML 里一眼可见。 -->
-    <select id="selectCommandOutbox" resultType="java.util.Map">
-        SELECT id AS "id", ledger_id AS "ledgerId", run_id AS "runId",
-               command_id AS "commandId", device_id AS "deviceId",
-               method AS "method", state AS "state", attempts AS "attempts",
-               created_at::text AS "createdAt", delivered_at::text AS "deliveredAt"
-          FROM command_outbox
-         WHERE tenant_id = #{param1}
-        <if test="param2 != null"> AND state = #{param2} </if>
-         ORDER BY id DESC LIMIT #{param3}
-    </select>
-
-    <select id="selectTransferTransactions" resultType="java.util.Map">
-        SELECT id AS "id", run_id AS "runId", plate_barcode AS "plateBarcode",
-               source_resource_id AS "sourceResourceId",
-               target_resource_id AS "targetResourceId",
-               status AS "status", error_code AS "errorCode",
-               error_message AS "errorMessage", created_at::text AS "createdAt"
-          FROM transfer_transaction
-         WHERE tenant_id = #{param1}
-        <if test="param2 != null"> AND status = #{param2} </if>
-         ORDER BY id DESC LIMIT #{param3}
-    </select>
-
-    <select id="selectPositionEvidence" resultType="java.util.Map">
-        SELECT id AS "id", plate_barcode AS "plateBarcode",
-               resource_id AS "resourceId", evidence_type AS "evidenceType",
-               run_id AS "runId", operator AS "operator", note AS "note",
-               created_at::text AS "createdAt"
-          FROM position_evidence
-         WHERE tenant_id = #{param1}
-        <if test="param2 != null"> AND plate_barcode = #{param2} </if>
-         ORDER BY id DESC LIMIT #{param3}
-    </select>
-
-    <select id="selectQuarantinedRuns" resultType="java.util.Map">
-        SELECT r.id AS "id", r.run_no AS "runNo", r.error_code AS "errorCode",
-               r.input->>'quarantineReason' AS "reason",
-               r.created_at::text AS "createdAt",
-               (SELECT er.experiment_id
-                  FROM experiment_run_step s
-                  JOIN experiment_run er
-                    ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
-                 WHERE s.tenant_id = r.tenant_id AND s.run_id = r.id
-                 LIMIT 1) AS "experimentId"
-          FROM run r
-         WHERE r.tenant_id = #{param1} AND r.status = 'quarantined'
-         ORDER BY r.id DESC
-         LIMIT #{param2}
-    </select>
-
-    <select id="selectInterventionRecords" resultType="java.util.Map">
-        SELECT id AS "id", manual_window_id AS "manualWindowId", run_id AS "runId",
-               experiment_run_id AS "experimentRunId", operator AS "operator",
-               decided_action AS "decidedAction", plate_barcode AS "plateBarcode",
-               sample_id AS "sampleId", from_location AS "fromLocation",
-               to_location AS "toLocation", result AS "result", note AS "note",
-               created_at::text AS "createdAt"
-          FROM intervention_record
-         WHERE tenant_id = #{param1}
-         ORDER BY id DESC
-         LIMIT #{param2}
-    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 --><!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 --><!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
+         现在「哪些条件下会多一个谓词」在 XML 里一眼可见。 --><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><!-- strategy 是 PG 枚举，必须显式 cast；其余列靠 COALESCE 的推断。 --><!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 --><!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
          p 是 LATERAL 取出的优先级最高启用策略；policies 子询保留全部策略
-         （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 --><!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 --><select id="insertPositionEvidence" resultType="java.lang.Long">
-        INSERT INTO position_evidence
-          (tenant_id, plate_barcode, resource_id, evidence_type, run_id,
-           operator, note)
-        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6}, #{param7})
-        RETURNING id
-    </select>
-
-    <!-- 估算链（Java 侧按可靠性选）：manual > history(p50,样本>=20) > device > 60s。
-         hist 的 percentile_cont 依赖 run_command 实测；样本不足时不用。 --><!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 --><select id="insertIntervention" resultType="java.lang.Long">
-        INSERT INTO intervention_record
-          (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
-           decided_action, plate_barcode, sample_id, from_location, to_location,
-           result, note)
-        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6},
-                #{param7}, #{param8}, #{param9}, #{param10}, #{param11}, #{param12})
-        RETURNING id
-    </select><!-- ORDER BY remain DESC LIMIT 1：同一资源上只取最慢的那个在跑节点。 --><select id="selectRunningProcessStatus" resultType="java.util.Map">
-        SELECT r.id AS "id", r.run_no AS "runNo", r.attendance AS "attendance",
-               r.actual_start AS "actualStart",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0) AS "total",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                    AND n.status = 'completed') AS "done",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                    AND n.status = 'manual') AS "manual",
-               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                    AND n.status = 'failed') AS "failed"
-          FROM run r
-          LEFT JOIN run_node n ON n.run_id = r.id
-         WHERE r.tenant_id = #{param1} AND r.status = 'running'
-         GROUP BY r.id, r.run_no, r.attendance, r.actual_start
-         ORDER BY r.actual_start DESC
-    </select>
-
-    <!-- jsonb 列显式 ::text：Map 里拿到的一定是 String，不会出现 PGobject。 -->
-    <select id="selectRunDetail" resultType="java.util.Map">
-        SELECT id AS "id", run_no AS "runNo", run_type AS "runType",
-               pause_kind AS "pauseKind", pause_reason AS "pauseReason",
-               pause_node_key AS "pauseNodeKey", status::text AS "status",
-               priority AS "priority", attendance AS "attendance",
-               actual_start AS "actualStart", actual_end AS "actualEnd",
-               created_at AS "createdAt", input::text AS "input"
-          FROM run
-         WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
-    <select id="selectRunDetailNodes" resultType="java.util.Map">
-        SELECT rn.id AS "id", rn.node_key AS "nodeKey", rn.name AS "name",
-               rn.status::text AS "status", rn.attempt AS "attempt",
-               rn.resource_id AS "resourceId", rn.capability_id AS "capabilityId",
-               rn.estimate_sec AS "estimateSec",
-               res.code AS "resourceCode",
-               level AS "level", parent_node_id AS "parentNodeId",
-               step_seq AS "stepSeq", loop_index AS "loopIndex",
-               input->>'reason' AS "reason", rn.error_code AS "errorCode"
-          FROM run_node rn
-          LEFT JOIN resource_node res ON res.id = rn.resource_id
-         WHERE rn.run_id = #{param1}
-         ORDER BY COALESCE(rn.parent_node_id, rn.id), rn.loop_index, rn.level,
-                  COALESCE(rn.step_seq, 0), rn.id
-    </select>
-
-    <select id="selectRunEvents" resultType="java.util.Map">
-        SELECT occurred_at AS "at", event_type AS "type", payload::text AS "payload"
-          FROM run_event
-         WHERE aggregate_type = 'run' AND aggregate_id = #{param1}
-         ORDER BY COALESCE((payload->>'seq')::int, 0) LIMIT 100
-    </select>
-
-    <select id="selectWorkflowTaskNames" resultType="java.util.Map">
-        SELECT node_key AS "nodeKey", name AS "name"
-          FROM workflow_node
-         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
-           AND node_type = 'task'
-         ORDER BY id
-    </select>
-
-    <select id="selectRunNodeStates" resultType="java.util.Map">
-        SELECT node_key AS "nodeKey", name AS "name",
-               status::text AS "status", error_code AS "errorCode"
-          FROM run_node
-         WHERE tenant_id = #{param1} AND run_id = #{param2}
-           AND level = 0 AND loop_index = 0
-    </select>
-
-    <!-- string_agg / count 子查询保持原有 N+1 规避：一条 SQL 出全列表。 --><!-- loop_index 必须显式列出：代码要读它，早期版本漏列导致 timeline 500。 -->
-    <select id="selectTimelineNodes" resultType="java.util.Map">
-        SELECT id AS "id", node_key AS "nodeKey", name AS "name",
-               status::text AS "status", level AS "level",
-               parent_node_id AS "parentNodeId", step_seq AS "stepSeq",
-               resource_id AS "resourceId", loop_index AS "loopIndex",
-               actual_start AS "actualStart", actual_end AS "actualEnd",
-               EXTRACT(EPOCH FROM (actual_end - actual_start)) * 1000 AS "durMs"
-          FROM run_node
-         WHERE run_id = #{param1} AND actual_start IS NOT NULL
-         ORDER BY COALESCE(parent_node_id, id), level, COALESCE(step_seq, 0), id
-    </select><select id="selectRecentRuns" resultType="java.util.Map">
-        SELECT r.id AS "id", r.run_no AS "runNo", r.run_type AS "runType",
-               r.status::text AS "status", r.priority AS "priority",
-               r.attendance AS "attendance",
-               r.actual_start AS "actualStart", r.actual_end AS "actualEnd",
-               r.created_at AS "createdAt",
-               (SELECT count(*) FROM run_node n
-                 WHERE n.run_id = r.id AND n.loop_index = 0) AS "nodeCount"
-          FROM run r
-         WHERE r.tenant_id = #{param1}
-         ORDER BY r.id DESC
-         LIMIT #{param2}
-    </select>
-
-    <select id="selectCurrentNode" resultType="java.util.Map">
-        SELECT n.id AS "id", n.node_key AS "nodeKey", n.name AS "name",
-               n.status::text AS "status", n.attempt AS "attempt",
-               n.resource_id AS "resourceId", n.input->>'reason' AS "reason",
-               (SELECT string_agg(c2.method, ' → ' ORDER BY c2.command_seq)
-                  FROM run_command c2 WHERE c2.run_node_id = n.id) AS "steps"
-          FROM run_node n
-         WHERE n.run_id = #{param1} AND n.level = 0 AND n.loop_index = 0
-           AND n.status NOT IN ('completed', 'skipped')
-         ORDER BY n.id LIMIT 1
-    </select>
-
-    <!-- GROUP BY r.id 后其余列在 PG 里可用（主键函数依赖），沿用原写法。 --><!-- GREATEST(0, ...) 保持原口径：估时已过则剩 0，不返回负数。 --><select id="selectAllCapabilities" resultType="java.util.Map">
+         （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 --><!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 --><!-- 估算链（Java 侧按可靠性选）：manual > history(p50,样本>=20) > device > 60s。
+         hist 的 percentile_cont 依赖 run_command 实测；样本不足时不用。 --><!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 --><!-- ORDER BY remain DESC LIMIT 1：同一资源上只取最慢的那个在跑节点。 --><!-- jsonb 列显式 ::text：Map 里拿到的一定是 String，不会出现 PGobject。 --><!-- string_agg / count 子查询保持原有 N+1 规避：一条 SQL 出全列表。 --><!-- loop_index 必须显式列出：代码要读它，早期版本漏列导致 timeline 500。 --><!-- GROUP BY r.id 后其余列在 PG 里可用（主键函数依赖），沿用原写法。 --><!-- GREATEST(0, ...) 保持原口径：估时已过则剩 0，不返回负数。 --><select id="selectAllCapabilities" resultType="java.util.Map">
         SELECT code AS "code", name AS "name" FROM capability ORDER BY id
     </select>
 

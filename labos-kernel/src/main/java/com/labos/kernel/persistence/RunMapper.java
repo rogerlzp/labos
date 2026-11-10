@@ -2,6 +2,9 @@ package com.labos.kernel.persistence;
 
 import org.apache.ibatis.annotations.Param;
 
+import java.util.List;
+import java.util.Map;
+
 /**
  * C 批：run 表的状态收尾 SQL，语句见 {@code mapper/RunMapper.xml}。
  *
@@ -61,4 +64,65 @@ public interface RunMapper {
 
     /** 切换运行中 run 的值守模式；已结束的 run 不受影响（0 行）。 */
     int updateAttendance(long tenantId, long runId, String attendance);
+
+    /** 最近的 run 列表（含 loop_index=0 的节点数）。 */
+    List<Map<String, Object>> selectRecentRuns(long tenantId, int limit);
+
+    /** run 详情的事件列表（按 payload.seq，最多 100 条）。 */
+    List<Map<String, Object>> selectRunEvents(long runId);
+
+    /** run 详情头；不存在返回 null。 */
+    Map<String, Object> selectRunDetail(long tenantId, long runId);
+
+    /** run 详情的节点列表（含父节点/层位/循环序号排序）。 */
+    List<Map<String, Object>> selectRunDetailNodes(long runId);
+
+    /** 正在跑的 run 汇总（process-status 的库侧兜底）。 */
+    List<Map<String, Object>> selectRunningProcessStatus(long tenantId);
+
+    /** run 对应的 workflow_id 与当前状态（取不到时 null）。 */
+    Map<String, Object> selectRunWorkflow(long tenantId, long runId);
+
+    /** 一次执行里各节点的实际状态（只取父节点、loop 0）。 */
+    List<Map<String, Object>> selectRunNodeStates(long tenantId, long runId);
+
+    /** 流程计划节点（task 的 node_key -> name）。 */
+    List<Map<String, Object>> selectWorkflowTaskNames(long tenantId, long workflowId);
+
+    /** run 的实际开始时间（甘特图相对时间的基准）。 */
+    java.sql.Timestamp selectRunActualStart(long tenantId, long runId);
+
+    /** 甘特时间轴的 run_node 行（相对毫秒由 Java 侧换算）。 */
+    List<Map<String, Object>> selectTimelineNodes(long runId);
+
+    /** 命令 Outbox（state 为 null 时不过滤）。 */
+    List<Map<String, Object>> selectCommandOutbox(long tenantId, String state, int limit);
+
+    /** 搬运事务（status 为 null 时不过滤）。 */
+    List<Map<String, Object>> selectTransferTransactions(long tenantId, String status, int limit);
+
+    /** 板位证据（plateBarcode 为 null 时不过滤）。 */
+    List<Map<String, Object>> selectPositionEvidence(long tenantId, String plateBarcode,
+                                                     int limit);
+
+    /** 隔离中的 run（含反查实验 id 的子查询）。 */
+    List<Map<String, Object>> selectQuarantinedRuns(long tenantId, int limit);
+
+    /** 人工介入记录。 */
+    List<Map<String, Object>> selectInterventionRecords(long tenantId, int limit);
+
+    /** 记一条人工介入记录，返回 id。 */
+    Long insertIntervention(long tenantId, Long manualWindowId, Long runId,
+                            Long experimentRunId, String operator, String action,
+                            String plateBarcode, String sampleId, String fromLocation,
+                            String toLocation, String result, String note);
+
+    /** 记一条板位证据，返回 id。 */
+    Long insertPositionEvidence(long tenantId, String plateBarcode, Long resourceId,
+                                String type, Long runId, String operator, String note);
+
+
+    /** 当前进行中的节点（含已下发步骤串）；无则返回 null。 */
+    Map<String, Object> selectCurrentNode(long runId);
+
 }

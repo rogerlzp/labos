@@ -1,7 +1,6 @@
 package com.labos.boot.web.controller;
 
 import com.labos.boot.web.service.RunService;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.persistence.RunMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -28,12 +27,10 @@ import static com.labos.kernel.api.ApiServer.err;
 public class RunQueryController {
 
     private final RunService runService;
-    private final QueryService query;
-
-    public RunQueryController(RunService runService, QueryService query) {
+    
+    public RunQueryController(RunService runService) {
         this.runService = runService;
-        this.query = query;
-    }
+            }
 
     @GetMapping(value = "/manual-windows", produces = "application/json; charset=utf-8")
     public String manualWindows() throws SQLException {
@@ -43,13 +40,13 @@ public class RunQueryController {
     @GetMapping(value = "/command-outbox", produces = "application/json; charset=utf-8")
     public String commandOutbox(@RequestParam(required = false) String state,
                                 @RequestParam(required = false) String limit) throws SQLException {
-        return query.commandOutboxJson(state, intOr(limit, 100));
+        return runService.commandOutboxJson(state, intOr(limit, 100));
     }
 
     @GetMapping(value = "/transfers", produces = "application/json; charset=utf-8")
     public String transfers(@RequestParam(required = false) String status,
                             @RequestParam(required = false) String limit) throws SQLException {
-        return query.transferTransactionsJson(status, intOr(limit, 100));
+        return runService.transferTransactionsJson(status, intOr(limit, 100));
     }
 
     @GetMapping(value = "/plate-position-evidence",
@@ -57,19 +54,19 @@ public class RunQueryController {
     public String positionEvidence(@RequestParam(required = false) String plateBarcode,
                                    @RequestParam(required = false) String limit)
             throws SQLException {
-        return query.positionEvidenceJson(plateBarcode, intOr(limit, 100));
+        return runService.positionEvidenceJson(plateBarcode, intOr(limit, 100));
     }
 
     @GetMapping(value = "/runs/quarantined", produces = "application/json; charset=utf-8")
     public String quarantinedRuns(@RequestParam(required = false) String limit)
             throws SQLException {
-        return query.quarantinedRunsJson(intOr(limit, 100));
+        return runService.quarantinedRunsJson(intOr(limit, 100));
     }
 
     @GetMapping(value = "/intervention-records", produces = "application/json; charset=utf-8")
     public String interventionRecords(@RequestParam(required = false) String limit)
             throws SQLException {
-        return query.interventionRecordsJson(intOr(limit, 100));
+        return runService.interventionRecordsJson(intOr(limit, 100));
     }
 
     @GetMapping(value = "/runtime/holds", produces = "application/json; charset=utf-8")
@@ -89,12 +86,12 @@ public class RunQueryController {
 
     @GetMapping(value = "/runs/{id:\\d+}/graph", produces = "application/json; charset=utf-8")
     public String runGraph(@PathVariable long id) throws SQLException {
-        return query.runGraphJson(id);
+        return runService.runGraphJson(id);
     }
 
     @GetMapping(value = "/runs/{id:\\d+}/timeline", produces = "application/json; charset=utf-8")
     public String runTimeline(@PathVariable long id) throws SQLException {
-        return query.timelineJson(id);
+        return runService.timelineJson(id);
     }
 
     @GetMapping(value = "/runs/recoverable", produces = "application/json; charset=utf-8")
@@ -104,17 +101,17 @@ public class RunQueryController {
 
     @GetMapping(value = "/process-status", produces = "application/json; charset=utf-8")
     public String processStatus() throws SQLException {
-        return query.processStatusJson();
+        return runService.processStatusJson();
     }
 
     @GetMapping(value = "/runs", produces = "application/json; charset=utf-8")
     public String recentRuns(@RequestParam(required = false) String limit) throws SQLException {
-        return query.recentRuns(intOr(limit, 20));
+        return runService.recentRuns(intOr(limit, 20));
     }
 
     @GetMapping(value = "/runs/{id:\\d+}", produces = "application/json; charset=utf-8")
     public ResponseEntity<String> runDetail(@PathVariable long id) throws SQLException {
-        String body = query.runDetail(id);
+        String body = runService.runDetail(id);
         if (body == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("run not found"));
         }

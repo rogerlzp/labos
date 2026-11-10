@@ -634,7 +634,7 @@ public final class DriverStepExecutor implements StepExecutor {
         }
         try {
             java.util.Map<String, Object> row = com.labos.kernel.persistence.Mappers.get(
-                    com.labos.kernel.persistence.QueryMapper.class)
+                    com.labos.kernel.persistence.RunMapper.class)
                     .selectRunWorkflow(tenantId, runId);
             Object v = row == null ? null : row.get("workflowId");
             return v instanceof Number n ? n.longValue() : 0L;

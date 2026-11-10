@@ -110,4 +110,202 @@
            AND status = 'running'
     </update>
 
+
+<select id="selectRecentRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.run_no AS "runNo", r.run_type AS "runType",
+               r.status::text AS "status", r.priority AS "priority",
+               r.attendance AS "attendance",
+               r.actual_start AS "actualStart", r.actual_end AS "actualEnd",
+               r.created_at AS "createdAt",
+               (SELECT count(*) FROM run_node n
+                 WHERE n.run_id = r.id AND n.loop_index = 0) AS "nodeCount"
+          FROM run r
+         WHERE r.tenant_id = #{param1}
+         ORDER BY r.id DESC
+         LIMIT #{param2}
+    </select>
+
+<select id="selectRunEvents" resultType="java.util.Map">
+        SELECT occurred_at AS "at", event_type AS "type", payload::text AS "payload"
+          FROM run_event
+         WHERE aggregate_type = 'run' AND aggregate_id = #{param1}
+         ORDER BY COALESCE((payload->>'seq')::int, 0) LIMIT 100
+    </select>
+
+<select id="selectRunDetail" resultType="java.util.Map">
+        SELECT id AS "id", run_no AS "runNo", run_type AS "runType",
+               pause_kind AS "pauseKind", pause_reason AS "pauseReason",
+               pause_node_key AS "pauseNodeKey", status::text AS "status",
+               priority AS "priority", attendance AS "attendance",
+               actual_start AS "actualStart", actual_end AS "actualEnd",
+               created_at AS "createdAt", input::text AS "input"
+          FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+<select id="selectRunDetailNodes" resultType="java.util.Map">
+        SELECT rn.id AS "id", rn.node_key AS "nodeKey", rn.name AS "name",
+               rn.status::text AS "status", rn.attempt AS "attempt",
+               rn.resource_id AS "resourceId", rn.capability_id AS "capabilityId",
+               rn.estimate_sec AS "estimateSec",
+               res.code AS "resourceCode",
+               level AS "level", parent_node_id AS "parentNodeId",
+               step_seq AS "stepSeq", loop_index AS "loopIndex",
+               input->>'reason' AS "reason", rn.error_code AS "errorCode"
+          FROM run_node rn
+          LEFT JOIN resource_node res ON res.id = rn.resource_id
+         WHERE rn.run_id = #{param1}
+         ORDER BY COALESCE(rn.parent_node_id, rn.id), rn.loop_index, rn.level,
+                  COALESCE(rn.step_seq, 0), rn.id
+    </select>
+
+<select id="selectRunningProcessStatus" resultType="java.util.Map">
+        SELECT r.id AS "id", r.run_no AS "runNo", r.attendance AS "attendance",
+               r.actual_start AS "actualStart",
+               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0) AS "total",
+               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
+                                    AND n.status = 'completed') AS "done",
+               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
+                                    AND n.status = 'manual') AS "manual",
+               count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
+                                    AND n.status = 'failed') AS "failed"
+          FROM run r
+          LEFT JOIN run_node n ON n.run_id = r.id
+         WHERE r.tenant_id = #{param1} AND r.status = 'running'
+         GROUP BY r.id, r.run_no, r.attendance, r.actual_start
+         ORDER BY r.actual_start DESC
+    </select>
+
+<select id="selectRunWorkflow" resultType="java.util.Map">
+        <!-- PostgreSQL 未加引号的别名一律转小写，resultType=map 的 key 就是小写列名；
+             这里必须加引号保留驼峰，否则 Java 侧 get("workflowId") 拿到 null（实测 NPE）。 -->
+        SELECT workflow_id AS "workflowId", status::text AS "status"
+          FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+<select id="selectRunNodeStates" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", name AS "name",
+               status::text AS "status", error_code AS "errorCode"
+          FROM run_node
+         WHERE tenant_id = #{param1} AND run_id = #{param2}
+           AND level = 0 AND loop_index = 0
+    </select>
+
+<select id="selectWorkflowTaskNames" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", name AS "name"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+           AND node_type = 'task'
+         ORDER BY id
+    </select>
+
+<select id="selectRunActualStart" resultType="java.sql.Timestamp">
+        SELECT actual_start FROM run WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+<select id="selectTimelineNodes" resultType="java.util.Map">
+        SELECT id AS "id", node_key AS "nodeKey", name AS "name",
+               status::text AS "status", level AS "level",
+               parent_node_id AS "parentNodeId", step_seq AS "stepSeq",
+               resource_id AS "resourceId", loop_index AS "loopIndex",
+               actual_start AS "actualStart", actual_end AS "actualEnd",
+               EXTRACT(EPOCH FROM (actual_end - actual_start)) * 1000 AS "durMs"
+          FROM run_node
+         WHERE run_id = #{param1} AND actual_start IS NOT NULL
+         ORDER BY COALESCE(parent_node_id, id), level, COALESCE(step_seq, 0), id
+    </select>
+
+<select id="selectCommandOutbox" resultType="java.util.Map">
+        SELECT id AS "id", ledger_id AS "ledgerId", run_id AS "runId",
+               command_id AS "commandId", device_id AS "deviceId",
+               method AS "method", state AS "state", attempts AS "attempts",
+               created_at::text AS "createdAt", delivered_at::text AS "deliveredAt"
+          FROM command_outbox
+         WHERE tenant_id = #{param1}
+        <if test="param2 != null"> AND state = #{param2} </if>
+         ORDER BY id DESC LIMIT #{param3}
+    </select>
+
+<select id="selectTransferTransactions" resultType="java.util.Map">
+        SELECT id AS "id", run_id AS "runId", plate_barcode AS "plateBarcode",
+               source_resource_id AS "sourceResourceId",
+               target_resource_id AS "targetResourceId",
+               status AS "status", error_code AS "errorCode",
+               error_message AS "errorMessage", created_at::text AS "createdAt"
+          FROM transfer_transaction
+         WHERE tenant_id = #{param1}
+        <if test="param2 != null"> AND status = #{param2} </if>
+         ORDER BY id DESC LIMIT #{param3}
+    </select>
+
+<select id="selectPositionEvidence" resultType="java.util.Map">
+        SELECT id AS "id", plate_barcode AS "plateBarcode",
+               resource_id AS "resourceId", evidence_type AS "evidenceType",
+               run_id AS "runId", operator AS "operator", note AS "note",
+               created_at::text AS "createdAt"
+          FROM position_evidence
+         WHERE tenant_id = #{param1}
+        <if test="param2 != null"> AND plate_barcode = #{param2} </if>
+         ORDER BY id DESC LIMIT #{param3}
+    </select>
+
+<select id="selectQuarantinedRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.run_no AS "runNo", r.error_code AS "errorCode",
+               r.input->>'quarantineReason' AS "reason",
+               r.created_at::text AS "createdAt",
+               (SELECT er.experiment_id
+                  FROM experiment_run_step s
+                  JOIN experiment_run er
+                    ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
+                 WHERE s.tenant_id = r.tenant_id AND s.run_id = r.id
+                 LIMIT 1) AS "experimentId"
+          FROM run r
+         WHERE r.tenant_id = #{param1} AND r.status = 'quarantined'
+         ORDER BY r.id DESC
+         LIMIT #{param2}
+    </select>
+
+<select id="selectInterventionRecords" resultType="java.util.Map">
+        SELECT id AS "id", manual_window_id AS "manualWindowId", run_id AS "runId",
+               experiment_run_id AS "experimentRunId", operator AS "operator",
+               decided_action AS "decidedAction", plate_barcode AS "plateBarcode",
+               sample_id AS "sampleId", from_location AS "fromLocation",
+               to_location AS "toLocation", result AS "result", note AS "note",
+               created_at::text AS "createdAt"
+          FROM intervention_record
+         WHERE tenant_id = #{param1}
+         ORDER BY id DESC
+         LIMIT #{param2}
+    </select>
+
+<select id="insertIntervention" resultType="java.lang.Long">
+        INSERT INTO intervention_record
+          (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
+           decided_action, plate_barcode, sample_id, from_location, to_location,
+           result, note)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6},
+                #{param7}, #{param8}, #{param9}, #{param10}, #{param11}, #{param12})
+        RETURNING id
+    </select>
+
+<select id="insertPositionEvidence" resultType="java.lang.Long">
+        INSERT INTO position_evidence
+          (tenant_id, plate_barcode, resource_id, evidence_type, run_id,
+           operator, note)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6}, #{param7})
+        RETURNING id
+    </select>
+
+<select id="selectCurrentNode" resultType="java.util.Map">
+        SELECT n.id AS "id", n.node_key AS "nodeKey", n.name AS "name",
+               n.status::text AS "status", n.attempt AS "attempt",
+               n.resource_id AS "resourceId", n.input->>'reason' AS "reason",
+               (SELECT string_agg(c2.method, ' → ' ORDER BY c2.command_seq)
+                  FROM run_command c2 WHERE c2.run_node_id = n.id) AS "steps"
+          FROM run_node n
+         WHERE n.run_id = #{param1} AND n.level = 0 AND n.loop_index = 0
+           AND n.status NOT IN ('completed', 'skipped')
+         ORDER BY n.id LIMIT 1
+    </select>
 </mapper>
