@@ -1,7 +1,9 @@
 package com.labos.kernel.workflow;
 
+import com.labos.kernel.persistence.ExperimentProjectorMapper;
+import com.labos.kernel.persistence.Mappers;
+
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
 
 /**
@@ -13,14 +15,17 @@ import java.sql.SQLException;
  * 这类自相矛盾。本类把这些写入<b>全部收口</b>到一处：调用方只表达「发生了什么事实」，
  * 由本类统一算并写投影。
  *
- * <p>本类只做「职责收口」，<b>不改变任何既有语义</b>：每条方法里的 SQL 都是从原调用点
- * <b>原样搬过来</b>的，调用方、参数、过滤条件、事务边界都不动。run→experiment 的映射
- * 仍由 {@link StatusVocabulary#runToExperimentCaseSql()} 从唯一映射表生成（唯一真源），
- * 本类只负责执行它 —— 这就是 S-03 要求的「{@code StatusVocabulary} CASE 回写收口」。
+ * <p>阶段3第19批起，5 条 UPDATE 的 SQL 本体收编进 MyBatis
+ * {@link ExperimentProjectorMapper}（对应 XML 是该形态 SQL 的唯一合法落点，
+ * 由 {@code ExperimentStateProjectorSelfTest} 扫描全部 mapper XML 强制）；
+ * 本类仍是 Java 侧的<b>唯一写入口</b>，方法签名、参数、过滤条件、事务边界与原样搬运时
+ * 完全一致。run→experiment 的映射仍由 {@link StatusVocabulary#runToExperimentCaseSql()}
+ * 从唯一映射表生成后经 {@code caseSql} 传入 XML 的 {@code ${caseSql}} 替换点 ——
+ * {@code StatusVocabulary} 仍是唯一真源，XML 里不手写 WHEN 分支。
  *
- * <p><b>不变量（由 {@code ExperimentStateProjectorSelfTest} 扫描源码强制）</b>：
- * {@code src/main/java} 下除本类外，任何文件都不得出现
- * {@code UPDATE experiment … SET status} 形态的 SQL。
+ * <p><b>不变量（由 {@code ExperimentStateProjectorSelfTest} 扫描源码与 mapper XML 强制）</b>：
+ * {@code src/main/java} 与 {@code src/boot/resources/mapper} 下除本类的 mapper XML 外，
+ * 任何文件都不得出现 {@code UPDATE experiment … SET status} 形态的 SQL。
  *
  * <p>本类<b>不是</b>完整的「由四组事实聚合状态」平台（那是 L-05，标记 DEFERRED）：它只负责把
  * 既有的投影写入收口到一处，为后续（S-04-B / P-06 V2）把投影真正改成由 Hold + 节点 + 命令 +
@@ -34,6 +39,10 @@ public final class ExperimentStateProjector {
     private ExperimentStateProjector() {
     }
 
+    private static ExperimentProjectorMapper mapper() {
+        return Mappers.get(ExperimentProjectorMapper.class);
+    }
+
     /**
      * 事实：一条 {@code experiment_run} 起跑/恢复。
      * 投影：其所属 {@code experiment} 标 {@code running}（列表不再一直停在「待执行」）。
@@ -45,17 +54,8 @@ public final class ExperimentStateProjector {
         // 不写 run_id：experiment.run_id 有外键指向 run(id)，而这里的 r.id 是
         // experiment_run.id —— 两张表各自独立自增、不是一个 id 空间；写进去既语义错，
         // 又会在 experiment_run.id 撞到 run 表 id 空洞时抛 23503（线上实测过）。
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE experiment e
-                   SET status='running',
-                       started_at=COALESCE(e.started_at, now()), updated_at=now()
-                  FROM experiment_run r
-                 WHERE e.tenant_id=? AND r.id=? AND e.id=r.experiment_id
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.executeUpdate();
-        }
+        // c 形参保留（同事务写集语义），实际经 Mappers 绑定连接执行。
+        mapper().markRunningByRun(tenantId, runId);
     }
 
     /**
@@ -66,22 +66,11 @@ public final class ExperimentStateProjector {
      */
     public static void syncByRun(Connection c, long tenantId, long runId) throws SQLException {
         // 状态映射**不在这里手写**（BUG-13/14 这类"词表不一致"的根）：由
-        // StatusVocabulary.runToExperimentCaseSql() 从唯一映射表生成。生成的 CASE 比
-        // 三行手写 CASE 多出 paused/aborted/… 等恒等 WHEN，其 THEN 值与 ELSE r.status
-        // 相同 —— 对任意 run.status 结果完全一致（StatusVocabularySelfTest 逐状态钉死）。
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE experiment e SET status = "
-                        + StatusVocabulary.runToExperimentCaseSql() + ",\n"
-                        + "       started_at = COALESCE(e.started_at, r.started_at),\n"
-                        + "       finished_at = r.finished_at,\n"
-                        + "       updated_at = now()\n"
-                        + "  FROM experiment_run r\n"
-                        + " WHERE e.tenant_id = ? AND r.tenant_id = e.tenant_id\n"
-                        + "   AND r.id = ? AND e.id = r.experiment_id")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.executeUpdate();
-        }
+        // StatusVocabulary.runToExperimentCaseSql() 从唯一映射表生成，作为 caseSql
+        // 传入 XML 的 ${caseSql} 替换点。生成的 CASE 比三行手写 CASE 多出
+        // paused/aborted/… 等恒等 WHEN，其 THEN 值与 ELSE r.status 相同 ——
+        // 对任意 run.status 结果完全一致（StatusVocabularySelfTest 逐状态钉死）。
+        mapper().syncByRun(tenantId, runId, StatusVocabulary.runToExperimentCaseSql());
     }
 
     /**
@@ -93,18 +82,7 @@ public final class ExperimentStateProjector {
      * <p>源自 {@code RunControl.pause} 收尾的内联 SQL（原样搬运）。
      */
     public static void syncPausedByRuns(Connection c, long tenantId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE experiment e SET status = "
-                        + StatusVocabulary.runToExperimentCaseSql() + ",\n"
-                        + "       updated_at = now()\n"
-                        + "  FROM experiment_run r\n"
-                        + " WHERE e.tenant_id = ? AND r.tenant_id = e.tenant_id\n"
-                        + "   AND e.id = r.experiment_id\n"
-                        + "   AND r.status = 'paused'\n"
-                        + "   AND e.status IN ('queued', 'running')")) {
-            ps.setLong(1, tenantId);
-            ps.executeUpdate();
-        }
+        mapper().syncPausedByRuns(tenantId, StatusVocabulary.runToExperimentCaseSql());
     }
 
     /**
@@ -115,18 +93,7 @@ public final class ExperimentStateProjector {
      */
     public static void markRunningByExperiment(Connection c, long tenantId, long experimentId)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE experiment
-                   SET status = 'running',
-                       started_at = COALESCE(started_at, now()),
-                       finished_at = NULL,
-                       updated_at = now()
-                 WHERE tenant_id = ? AND id = ?
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            ps.executeUpdate();
-        }
+        mapper().markRunningByExperiment(tenantId, experimentId);
     }
 
     /**
@@ -140,21 +107,7 @@ public final class ExperimentStateProjector {
      */
     public static String syncByBatchAggregate(Connection c, long tenantId, long experimentId,
             String aggregate) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE experiment
-                   SET status = ?,
-                       started_at = COALESCE(started_at, now()),
-                       finished_at = CASE WHEN ? IN ('finished', 'failed')
-                                          THEN now() ELSE NULL END,
-                       updated_at = now()
-                 WHERE tenant_id = ? AND id = ?
-                """)) {
-            ps.setString(1, aggregate);
-            ps.setString(2, aggregate);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, experimentId);
-            ps.executeUpdate();
-        }
+        mapper().syncByBatchAggregate(tenantId, experimentId, aggregate);
         return aggregate;
     }
 }

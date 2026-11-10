@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- experiment.status 投影写入（S-03 单写者）。调用方 com.labos.kernel.persistence.ExperimentProjectorMapper
+     本文件是 UPDATE experiment … SET status 形态 SQL 的唯一合法落点
+     （ExperimentStateProjectorSelfTest 扫描全部 mapper XML 强制）。 -->
+<mapper namespace="com.labos.kernel.persistence.ExperimentProjectorMapper">
+
+    <!-- 不写 run_id：experiment.run_id 外键指向 run(id)，与 experiment_run.id
+         不是一个 id 空间，写进去语义错且可能 23503。 -->
+    <update id="markRunningByRun">
+        UPDATE experiment e
+           SET status = 'running',
+               started_at = COALESCE(e.started_at, now()), updated_at = now()
+          FROM experiment_run r
+         WHERE e.tenant_id = #{tenantId} AND r.id = #{runId} AND e.id = r.experiment_id
+    </update>
+
+    <!-- status 的 CASE 由 StatusVocabulary.runToExperimentCaseSql() 生成后经 ${caseSql}
+         原样替换（词表是唯一真源，此处不手写 WHEN 分支）。 -->
+    <update id="syncByRun">
+        UPDATE experiment e SET status = ${caseSql},
+               started_at = COALESCE(e.started_at, r.started_at),
+               finished_at = r.finished_at,
+               updated_at = now()
+          FROM experiment_run r
+         WHERE e.tenant_id = #{tenantId} AND r.tenant_id = e.tenant_id
+           AND r.id = #{runId} AND e.id = r.experiment_id
+    </update>
+
+    <update id="syncPausedByRuns">
+        UPDATE experiment e SET status = ${caseSql},
+               updated_at = now()
+          FROM experiment_run r
+         WHERE e.tenant_id = #{tenantId} AND r.tenant_id = e.tenant_id
+           AND e.id = r.experiment_id
+           AND r.status = 'paused'
+           AND e.status IN ('queued', 'running')
+    </update>
+
+    <update id="markRunningByExperiment">
+        UPDATE experiment
+           SET status = 'running',
+               started_at = COALESCE(started_at, now()),
+               finished_at = NULL,
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{experimentId}
+    </update>
+
+    <update id="syncByBatchAggregate">
+        UPDATE experiment
+           SET status = #{aggregate},
+               started_at = COALESCE(started_at, now()),
+               finished_at = CASE WHEN #{aggregate} IN ('finished', 'failed')
+                                  THEN now() ELSE NULL END,
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{experimentId}
+    </update>
+
+</mapper>
