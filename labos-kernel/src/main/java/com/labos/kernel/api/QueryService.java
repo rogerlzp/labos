@@ -90,99 +90,57 @@ public class QueryService {
 
     /** 单个 run 的详情：基础信息 + 节点 + 最近事件。 */
     public String runDetail(long runId) throws SQLException {
-        try (Connection c = db.open()) {
-            String base = null;
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT id, run_no, run_type, pause_kind, pause_reason, pause_node_key, status::text AS status, priority,
-                           actual_start, actual_end, created_at, input, attendance
-                    FROM run WHERE tenant_id = ? AND id = ?
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        base = Jsons.obj(
-                                "id", rs.getLong("id"),
-                                "runNo", rs.getString("run_no"),
-                                "runType", rs.getString("run_type"),
-                            "attendance", rs.getString("attendance"),
-                                "status", rs.getString("status"),
-                                "priority", rs.getInt("priority"),
-                                "pauseKind", rs.getString("pause_kind"),
-                                "pauseReason", rs.getString("pause_reason"),
-                                "pauseNodeKey", rs.getString("pause_node_key"),
-                                "actualStart", str(rs, "actual_start"),
-                                "actualEnd", str(rs, "actual_end"),
-                                "createdAt", str(rs, "created_at"),
-                                "input", raw(rs.getString("input")));
-                    }
-                }
-            }
-            if (base == null) {
-                return null;
-            }
-
-            List<String> nodes = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT rn.id, rn.node_key, rn.name, rn.status::text AS status,
-                           rn.attempt, rn.resource_id,
-                           rn.capability_id, rn.estimate_sec,
-                           res.code AS resource_code,
-                           level, parent_node_id, step_seq, loop_index,
-                           input->>'reason' AS reason,
-                           rn.error_code
-                    FROM run_node rn
-                    LEFT JOIN resource_node res ON res.id = rn.resource_id
-                    WHERE rn.run_id = ?
-                    ORDER BY COALESCE(rn.parent_node_id, rn.id), rn.loop_index, rn.level,
-                             COALESCE(rn.step_seq, 0), rn.id
-                    """)) {
-                ps.setLong(1, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        nodes.add(Jsons.obj(
-                                "id", rs.getLong("id"),
-                                "nodeKey", rs.getString("node_key"),
-                                "name", rs.getString("name"),
-                                "status", rs.getString("status"),
-                                "attempt", rs.getInt("attempt"),
-                                "resourceId", rs.getObject("resource_id"),
-                                "resourceCode", rs.getString("resource_code"),
-                                "capabilityId", rs.getObject("capability_id"),
-                                "estimateSec", rs.getInt("estimate_sec"),
-                                "level", rs.getInt("level"),
-                                "parentNodeId", rs.getObject("parent_node_id"),
-                                "loopIndex", rs.getInt("loop_index"),
-                                "stepSeq", rs.getObject("step_seq"),
-                                "reason", rs.getString("reason"),
-                                "errorCode", rs.getString("error_code")));
-                    }
-                }
-            }
-
-            List<String> events = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT occurred_at, event_type, payload
-                    FROM run_event
-                    WHERE aggregate_type='run' AND aggregate_id = ?
-                    ORDER BY COALESCE((payload->>'seq')::int, 0) LIMIT 100
-                    """)) {
-                ps.setLong(1, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        events.add(Jsons.obj(
-                                "at", str(rs, "occurred_at"),
-                                "type", rs.getString("event_type"),
-                                "payload", raw(rs.getString("payload"))));
-                    }
-                }
-            }
-
-            return Jsons.obj(
-                    "run", raw(base),
-                    "nodes", raw(Jsons.arr(nodes)),
-                    "events", raw(Jsons.arr(events)));
+        java.util.Map<String, Object> row = queryMapper.selectRunDetail(tenantId, runId);
+        if (row == null) {
+            return null;
         }
+        String base = Jsons.obj(
+                "id", row.get("id"),
+                "runNo", row.get("runNo"),
+                "runType", row.get("runType"),
+                "attendance", row.get("attendance"),
+                "status", row.get("status"),
+                "priority", mint(row, "priority"),
+                "pauseKind", row.get("pauseKind"),
+                "pauseReason", row.get("pauseReason"),
+                "pauseNodeKey", row.get("pauseNodeKey"),
+                "actualStart", mstr(row, "actualStart"),
+                "actualEnd", mstr(row, "actualEnd"),
+                "createdAt", mstr(row, "createdAt"),
+                "input", mraw(row, "input"));
+
+        List<String> nodes = new ArrayList<>();
+        for (java.util.Map<String, Object> n : queryMapper.selectRunDetailNodes(runId)) {
+            nodes.add(Jsons.obj(
+                    "id", n.get("id"),
+                    "nodeKey", n.get("nodeKey"),
+                    "name", n.get("name"),
+                    "status", n.get("status"),
+                    "attempt", mint(n, "attempt"),
+                    "resourceId", n.get("resourceId"),
+                    "resourceCode", n.get("resourceCode"),
+                    "capabilityId", n.get("capabilityId"),
+                    "estimateSec", mint(n, "estimateSec"),
+                    "level", mint(n, "level"),
+                    "parentNodeId", n.get("parentNodeId"),
+                    "loopIndex", mint(n, "loopIndex"),
+                    "stepSeq", n.get("stepSeq"),
+                    "reason", n.get("reason"),
+                    "errorCode", n.get("errorCode")));
+        }
+
+        List<String> events = new ArrayList<>();
+        for (java.util.Map<String, Object> e : queryMapper.selectRunEvents(runId)) {
+            events.add(Jsons.obj(
+                    "at", mstr(e, "at"),
+                    "type", e.get("type"),
+                    "payload", mraw(e, "payload")));
+        }
+
+        return Jsons.obj(
+                "run", raw(base),
+                "nodes", raw(Jsons.arr(nodes)),
+                "events", raw(Jsons.arr(events)));
     }
 
     /**
@@ -787,37 +745,17 @@ public class QueryService {
 
         // 计划节点（图上的 task）——没跑过的也要出现在结果里
         java.util.Map<String, String> planName = new java.util.LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT node_key, name FROM workflow_node
-                      WHERE tenant_id = ? AND workflow_id = ? AND node_type = 'task'
-                      ORDER BY id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    planName.put(rs.getString(1), rs.getString(2));
-                }
-            }
+        for (java.util.Map<String, Object> pn
+                : queryMapper.selectWorkflowTaskNames(tenantId, workflowId)) {
+            planName.put(String.valueOf(pn.get("nodeKey")), (String) pn.get("name"));
         }
 
         java.util.Map<String, String[]> actual = new java.util.HashMap<>();  // key → [status,name,err]
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT node_key, name, status::text AS status, error_code
-                       FROM run_node
-                      WHERE tenant_id = ? AND run_id = ? AND level = 0 AND loop_index = 0
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    actual.put(rs.getString("node_key"), new String[]{
-                            rs.getString("status"), rs.getString("name"),
-                            rs.getString("error_code")});
-                }
-            }
+        for (java.util.Map<String, Object> an
+                : queryMapper.selectRunNodeStates(tenantId, runId)) {
+            actual.put(String.valueOf(an.get("nodeKey")), new String[]{
+                    (String) an.get("status"), (String) an.get("name"),
+                    (String) an.get("errorCode")});
         }
 
         List<String> nodes = new ArrayList<>();
@@ -4219,6 +4157,12 @@ throw e;
     /** 把已序列化好的 JSON 片段原样嵌入（避免二次转义）。 */
     private static Jsons.Raw raw(String json) {
         return new Jsons.Raw(json == null ? "{}" : json);
+    }
+
+    /** Map 版 {@link #raw(String)}：null 仍兜成 {}。 */
+    private static Jsons.Raw mraw(java.util.Map<String, Object> row, String key) {
+        Object o = row.get(key);
+        return new Jsons.Raw(o == null ? "{}" : String.valueOf(o));
     }
 
     /** Map 里的时间列转 Instant（MyBatis 对 timestamptz 给 java.sql.Timestamp）。 */

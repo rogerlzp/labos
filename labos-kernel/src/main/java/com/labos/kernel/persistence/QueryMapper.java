@@ -71,6 +71,21 @@ public interface QueryMapper {
     /** 资源节点名称。 */
     String selectResourceName(long resourceId);
 
+    /** run 详情头；不存在返回 null。 */
+    Map<String, Object> selectRunDetail(long tenantId, long runId);
+
+    /** run 详情的节点列表（含父节点/层位/循环序号排序）。 */
+    List<Map<String, Object>> selectRunDetailNodes(long runId);
+
+    /** run 详情的事件列表（按 payload.seq，最多 100 条）。 */
+    List<Map<String, Object>> selectRunEvents(long runId);
+
+    /** 流程计划节点（task 的 node_key -> name）。 */
+    List<Map<String, Object>> selectWorkflowTaskNames(long tenantId, long workflowId);
+
+    /** 一次执行里各节点的实际状态（只取父节点、loop 0）。 */
+    List<Map<String, Object>> selectRunNodeStates(long tenantId, long runId);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

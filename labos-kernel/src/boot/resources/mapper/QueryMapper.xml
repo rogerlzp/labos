@@ -198,6 +198,57 @@
         SELECT name FROM resource_node WHERE id = #{param1}
     </select>
 
+    <!-- jsonb 列显式 ::text：Map 里拿到的一定是 String，不会出现 PGobject。 -->
+    <select id="selectRunDetail" resultType="java.util.Map">
+        SELECT id AS "id", run_no AS "runNo", run_type AS "runType",
+               pause_kind AS "pauseKind", pause_reason AS "pauseReason",
+               pause_node_key AS "pauseNodeKey", status::text AS "status",
+               priority AS "priority", attendance AS "attendance",
+               actual_start AS "actualStart", actual_end AS "actualEnd",
+               created_at AS "createdAt", input::text AS "input"
+          FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectRunDetailNodes" resultType="java.util.Map">
+        SELECT rn.id AS "id", rn.node_key AS "nodeKey", rn.name AS "name",
+               rn.status::text AS "status", rn.attempt AS "attempt",
+               rn.resource_id AS "resourceId", rn.capability_id AS "capabilityId",
+               rn.estimate_sec AS "estimateSec",
+               res.code AS "resourceCode",
+               level AS "level", parent_node_id AS "parentNodeId",
+               step_seq AS "stepSeq", loop_index AS "loopIndex",
+               input->>'reason' AS "reason", rn.error_code AS "errorCode"
+          FROM run_node rn
+          LEFT JOIN resource_node res ON res.id = rn.resource_id
+         WHERE rn.run_id = #{param1}
+         ORDER BY COALESCE(rn.parent_node_id, rn.id), rn.loop_index, rn.level,
+                  COALESCE(rn.step_seq, 0), rn.id
+    </select>
+
+    <select id="selectRunEvents" resultType="java.util.Map">
+        SELECT occurred_at AS "at", event_type AS "type", payload::text AS "payload"
+          FROM run_event
+         WHERE aggregate_type = 'run' AND aggregate_id = #{param1}
+         ORDER BY COALESCE((payload->>'seq')::int, 0) LIMIT 100
+    </select>
+
+    <select id="selectWorkflowTaskNames" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", name AS "name"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+           AND node_type = 'task'
+         ORDER BY id
+    </select>
+
+    <select id="selectRunNodeStates" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", name AS "name",
+               status::text AS "status", error_code AS "errorCode"
+          FROM run_node
+         WHERE tenant_id = #{param1} AND run_id = #{param2}
+           AND level = 0 AND loop_index = 0
+    </select>
+
     <!-- string_agg / count 子查询保持原有 N+1 规避：一条 SQL 出全列表。 -->
     <select id="selectExperiments" resultType="java.util.Map">
         SELECT e.id AS "id", e.experiment_no AS "experimentNo", e.name AS "name",
