@@ -5,6 +5,7 @@ import com.labos.kernel.persistence.OpsMapper;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
+import java.util.Locale;
 import static com.labos.kernel.persistence.QJson.*;
 import com.labos.kernel.persistence.Jsons;
 import java.util.ArrayList;
@@ -35,16 +36,24 @@ public class OpsErrorService {
     public long upsertPolicy(long errorCodeId, String scope, String strategy,
                              Integer maxAttempts, String params, Integer priority,
                              Boolean enabled) throws java.sql.SQLException {
+        // PG 的 `recovery_strategy` 是**枚举**，只收小写
+        // （retry/skip/reassign/abort/manual/compensate），而界面与 Java 的
+        // `RecoveryStrategy` 词表是**大写**（RETRY/SKIP/...）⇒ 直接传大写会被 PG 拒：
+        // `invalid input value for enum recovery_strategy: "RETRY"`（保存必 500）。
+        // 在**写库边界**归一，照既有约定那一对写法：
+        // `JdbcErrorOccurrenceStore` 写时 `.name().toLowerCase()`、
+        // `JdbcRecoveryPolicyRepository` 读时 `.toUpperCase()`。
+        String strat = strategy == null ? null : strategy.trim().toLowerCase(Locale.ROOT);
         try (Connection c = db.open()) {
             try {
                 Long existId = opsMapper.selectPolicyId(TENANT, errorCodeId, scope);
                 if (existId != null) {
-                    opsMapper.updatePolicy(TENANT, existId, strategy,
+                    opsMapper.updatePolicy(TENANT, existId, strat,
                             maxAttempts, params, priority, enabled);
                     return existId;
                 }
                 Long id = opsMapper.insertPolicy(TENANT, errorCodeId, scope,
-                        strategy == null ? "manual" : strategy, params,
+                        strat == null ? "manual" : strat, params,
                         maxAttempts == null ? 1 : maxAttempts,
                         priority == null ? 50 : priority, enabled);
                 return id == null ? 0L : id;

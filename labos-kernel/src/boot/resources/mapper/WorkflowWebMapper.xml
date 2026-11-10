@@ -93,10 +93,6 @@
         SELECT graph->>'xml' FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
-<select id="selectWorkflowXml" resultType="java.lang.String">
-        SELECT graph->>'xml' FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
 <select id="selectNodeBinding" resultType="java.util.Map">
         SELECT (params->'method_params')::text AS "mp", resource_id AS "resourceId"
           FROM workflow_node
