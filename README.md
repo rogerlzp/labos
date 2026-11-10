@@ -52,7 +52,7 @@ real sidecar commands and their real timeouts: `MoveTray` 3 s, `Seal` 12 s,
 | Capability | Description |
 |---|---|
 | **Workflow execution** | Parses a BPMN graph and executes node by node; supports parallel gateways, exclusive gateways and loops |
-| **Parallel experiments** | Island-level mutual exclusion + EDD ordering + queueing; no two experiments share an island, separate islands never interfere |
+| **Parallel experiments** | Resource-level mutual exclusion + EDD ordering + queueing; a device serves one experiment at a time, and **different devices in the same island may run in parallel** |
 | **Plate & position management** | Position-level reservation (atomic write), dual locks for plate moves (deadlock-free), three-tier plate-ID resolution |
 | **Device drivers** | Short-connection and persistent-connection modes; contract validation (four required response fields) |
 | **Shadow mode** | Single-command probe + whole-workflow dry run: issues no commands, only reports *what would be sent* |
@@ -208,7 +208,7 @@ The Spring Boot migration itself — scope, per-batch decisions and measured evi
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | **Position-level mutual exclusion > island-level** | Positions are shared across islands and plates already in the lab may still exist; island-level exclusion was the 2.0 simplification |
+| 1 | **Resource-level mutual exclusion > island-level** | An island is a *set of devices*, not an executable unit. Island-level exclusion turned "waiting for the robot arm" into "waiting for the whole island" — an experiment incubating for 30 min blocked another that only needed the centrifuge for 5. **Since 2026-11-10 it is resource-level**: an experiment is dispatched when the resources it needs do not overlap with the ones being held, so different devices in the same island run in parallel |
 | 2 | **Atomic reservation** (`INSERT ON CONFLICT DO UPDATE WHERE`) | SELECT-then-UPDATE leaves a window in which two experiments both believe the position is free |
 | 3 | **Plate moves take both locks in ascending id order** | Removes circular wait (one of the four deadlock conditions); the second failure releases the first |
 | 4 | **No `eval` for condition evaluation** | Canvas content comes from user input — `eval` hands the browser to someone else |
