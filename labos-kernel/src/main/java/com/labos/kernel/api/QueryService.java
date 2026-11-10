@@ -3067,40 +3067,21 @@ throw e;
     /** L-01：人工介入记录列表（最新优先）。 */
     public String interventionRecordsJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id, manual_window_id, run_id, experiment_run_id, operator,
-                            decided_action, plate_barcode, sample_id, from_location,
-                            to_location, result, note, created_at::text
-                       FROM intervention_record
-                      WHERE tenant_id = ?
-                      ORDER BY id DESC
-                      LIMIT ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 500)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long wid = rs.getLong("manual_window_id");
-                    Object windowId = rs.wasNull() ? null : wid;
-                    long rid = rs.getLong("run_id");
-                    Object runId = rs.wasNull() ? null : rid;
-                    long erid = rs.getLong("experiment_run_id");
-                    Object experimentRunId = rs.wasNull() ? null : erid;
-                    items.add(Jsons.obj("id", rs.getLong("id"),
-                            "manualWindowId", windowId, "runId", runId,
-                            "experimentRunId", experimentRunId,
-                            "operator", rs.getString("operator"),
-                            "action", rs.getString("decided_action"),
-                            "plateBarcode", rs.getString("plate_barcode"),
-                            "sampleId", rs.getString("sample_id"),
-                            "fromLocation", rs.getString("from_location"),
-                            "toLocation", rs.getString("to_location"),
-                            "result", rs.getString("result"),
-                            "note", rs.getString("note"),
-                            "createdAt", rs.getString("created_at")));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectInterventionRecords(
+                tenantId, Math.max(1, Math.min(limit, 500)))) {
+            items.add(Jsons.obj("id", row.get("id"),
+                    "manualWindowId", row.get("manualWindowId"),
+                    "runId", row.get("runId"),
+                    "experimentRunId", row.get("experimentRunId"),
+                    "operator", row.get("operator"),
+                    "action", row.get("decidedAction"),
+                    "plateBarcode", row.get("plateBarcode"),
+                    "sampleId", row.get("sampleId"),
+                    "fromLocation", row.get("fromLocation"),
+                    "toLocation", row.get("toLocation"),
+                    "result", row.get("result"),
+                    "note", row.get("note"),
+                    "createdAt", row.get("createdAt")));
         }
         return Jsons.obj("total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -3264,38 +3245,19 @@ throw e;
     /** P-07：命令事件 Outbox 列表（可按状态过滤）。 */
     public String commandOutboxJson(String state, int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("""
-                SELECT id, ledger_id, run_id, command_id, device_id, method,
-                       state, attempts, created_at::text, delivered_at::text
-                  FROM command_outbox
-                 WHERE tenant_id = ?
-                """);
-        if (state != null && !state.isBlank()) {
-            sql.append(" AND state = ?");
-        }
-        sql.append(" ORDER BY id DESC LIMIT ?");
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            int i = 1;
-            ps.setLong(i++, tenantId);
-            if (state != null && !state.isBlank()) {
-                ps.setString(i++, state);
-            }
-            ps.setInt(i, Math.max(1, Math.min(limit, 500)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj("id", rs.getLong("id"),
-                            "ledgerId", rs.getLong("ledger_id"),
-                            "runId", rs.getObject("run_id"),
-                            "commandId", rs.getString("command_id"),
-                            "deviceId", rs.getObject("device_id"),
-                            "method", rs.getString("method"),
-                            "state", rs.getString("state"),
-                            "attempts", rs.getInt("attempts"),
-                            "createdAt", rs.getString("created_at"),
-                            "deliveredAt", rs.getString("delivered_at")));
-                }
-            }
+        String stateFilter = state == null || state.isBlank() ? null : state;
+        for (java.util.Map<String, Object> row : queryMapper.selectCommandOutbox(
+                tenantId, stateFilter, Math.max(1, Math.min(limit, 500)))) {
+            items.add(Jsons.obj("id", row.get("id"),
+                    "ledgerId", row.get("ledgerId"),
+                    "runId", row.get("runId"),
+                    "commandId", row.get("commandId"),
+                    "deviceId", row.get("deviceId"),
+                    "method", row.get("method"),
+                    "state", row.get("state"),
+                    "attempts", mint(row, "attempts"),
+                    "createdAt", row.get("createdAt"),
+                    "deliveredAt", row.get("deliveredAt")));
         }
         return Jsons.obj("total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -3357,37 +3319,18 @@ throw e;
     /** P-08：TransferTransaction 列表。 */
     public String transferTransactionsJson(String status, int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("""
-                SELECT id, run_id, plate_barcode, source_resource_id, target_resource_id,
-                       status, error_code, error_message, created_at::text
-                  FROM transfer_transaction
-                 WHERE tenant_id = ?
-                """);
-        if (status != null && !status.isBlank()) {
-            sql.append(" AND status = ?");
-        }
-        sql.append(" ORDER BY id DESC LIMIT ?");
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            int i = 1;
-            ps.setLong(i++, tenantId);
-            if (status != null && !status.isBlank()) {
-                ps.setString(i++, status);
-            }
-            ps.setInt(i, Math.max(1, Math.min(limit, 200)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj("id", rs.getLong("id"),
-                            "runId", rs.getObject("run_id"),
-                            "plateBarcode", rs.getString("plate_barcode"),
-                            "sourceResourceId", rs.getObject("source_resource_id"),
-                            "targetResourceId", rs.getObject("target_resource_id"),
-                            "status", rs.getString("status"),
-                            "errorCode", rs.getString("error_code"),
-                            "errorMessage", rs.getString("error_message"),
-                            "createdAt", rs.getString("created_at")));
-                }
-            }
+        String statusFilter = status == null || status.isBlank() ? null : status;
+        for (java.util.Map<String, Object> row : queryMapper.selectTransferTransactions(
+                tenantId, statusFilter, Math.max(1, Math.min(limit, 200)))) {
+            items.add(Jsons.obj("id", row.get("id"),
+                    "runId", row.get("runId"),
+                    "plateBarcode", row.get("plateBarcode"),
+                    "sourceResourceId", row.get("sourceResourceId"),
+                    "targetResourceId", row.get("targetResourceId"),
+                    "status", row.get("status"),
+                    "errorCode", row.get("errorCode"),
+                    "errorMessage", row.get("errorMessage"),
+                    "createdAt", row.get("createdAt")));
         }
         return Jsons.obj("total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -3436,40 +3379,18 @@ throw e;
     /** P-08：物理位置证据列表（按板号可选过滤）。 */
     public String positionEvidenceJson(String plateBarcode, int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("""
-                SELECT id, plate_barcode, resource_id, evidence_type, run_id,
-                       operator, note, created_at::text
-                  FROM position_evidence
-                 WHERE tenant_id = ?
-                """);
-        if (plateBarcode != null && !plateBarcode.isBlank()) {
-            sql.append(" AND plate_barcode = ?");
-        }
-        sql.append(" ORDER BY id DESC LIMIT ?");
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            int i = 1;
-            ps.setLong(i++, tenantId);
-            if (plateBarcode != null && !plateBarcode.isBlank()) {
-                ps.setString(i++, plateBarcode);
-            }
-            ps.setInt(i, Math.max(1, Math.min(limit, 500)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long rid = rs.getLong("resource_id");
-                    Object resourceId = rs.wasNull() ? null : rid;
-                    long runId = rs.getLong("run_id");
-                    Object run = rs.wasNull() ? null : runId;
-                    items.add(Jsons.obj("id", rs.getLong("id"),
-                            "plateBarcode", rs.getString("plate_barcode"),
-                            "resourceId", resourceId,
-                            "evidenceType", rs.getString("evidence_type"),
-                            "runId", run,
-                            "operator", rs.getString("operator"),
-                            "note", rs.getString("note"),
-                            "createdAt", rs.getString("created_at")));
-                }
-            }
+        String plateFilter = plateBarcode == null || plateBarcode.isBlank()
+                ? null : plateBarcode;
+        for (java.util.Map<String, Object> row : queryMapper.selectPositionEvidence(
+                tenantId, plateFilter, Math.max(1, Math.min(limit, 500)))) {
+            items.add(Jsons.obj("id", row.get("id"),
+                    "plateBarcode", row.get("plateBarcode"),
+                    "resourceId", row.get("resourceId"),
+                    "evidenceType", row.get("evidenceType"),
+                    "runId", row.get("runId"),
+                    "operator", row.get("operator"),
+                    "note", row.get("note"),
+                    "createdAt", row.get("createdAt")));
         }
         return Jsons.obj("total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -3478,37 +3399,14 @@ throw e;
     /** P-08：隔离中的 run 列表（处置页用）。 */
     public String quarantinedRunsJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT r.id, r.run_no, r.error_code,
-                            r.input->>'quarantineReason' AS reason,
-                            r.created_at::text,
-                            (SELECT er.experiment_id
-                               FROM experiment_run_step s
-                               JOIN experiment_run er
-                                 ON er.tenant_id = s.tenant_id
-                                AND er.id = s.experiment_run_id
-                              WHERE s.tenant_id = r.tenant_id AND s.run_id = r.id
-                              LIMIT 1) AS experiment_id
-                       FROM run r
-                      WHERE r.tenant_id = ? AND r.status = 'quarantined'
-                      ORDER BY r.id DESC
-                      LIMIT ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 500)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long eid = rs.getLong("experiment_id");
-                    Object expId = rs.wasNull() ? null : eid;
-                    items.add(Jsons.obj("runId", rs.getLong("id"),
-                            "runNo", rs.getString("run_no"),
-                            "errorCode", rs.getString("error_code"),
-                            "reason", rs.getString("reason"),
-                            "createdAt", rs.getString("created_at"),
-                            "experimentId", expId));
-                }
-            }
+        for (java.util.Map<String, Object> row : queryMapper.selectQuarantinedRuns(
+                tenantId, Math.max(1, Math.min(limit, 500)))) {
+            items.add(Jsons.obj("runId", row.get("id"),
+                    "runNo", row.get("runNo"),
+                    "errorCode", row.get("errorCode"),
+                    "reason", row.get("reason"),
+                    "createdAt", row.get("createdAt"),
+                    "experimentId", row.get("experimentId")));
         }
         return Jsons.obj("total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
@@ -3557,23 +3455,10 @@ throw e;
     /** 实验显式 Workcell 绑定（N-10）。 */
     public String experimentWorkcellsJson(long experimentId) throws SQLException {
         List<String> items = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT ew.workcell_id, rn.name
-                       FROM experiment_workcell ew
-                       LEFT JOIN resource_node rn
-                         ON rn.tenant_id = ew.tenant_id AND rn.id = ew.workcell_id
-                      WHERE ew.tenant_id = ? AND ew.experiment_id = ?
-                      ORDER BY ew.workcell_id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj("workcellId", rs.getLong(1),
-                            "name", rs.getString(2)));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectExperimentWorkcells(tenantId, experimentId)) {
+            items.add(Jsons.obj("workcellId", row.get("workcellId"),
+                    "name", row.get("name")));
         }
         return Jsons.obj("experimentId", experimentId,
                 "items", new Jsons.Raw(Jsons.arr(items)), "count", items.size());

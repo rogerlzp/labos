@@ -354,6 +354,81 @@
          ORDER BY from_workcell_id, to_workcell_id
     </select>
 
+    <!-- 三个列表的动态过滤：调用方把空串归一化成 null，这里只判 != null。
+         原来用 StringBuilder 拼 " AND xxx = ?" 再按顺序 setObject，
+         现在「哪些条件下会多一个谓词」在 XML 里一眼可见。 -->
+    <select id="selectCommandOutbox" resultType="java.util.Map">
+        SELECT id AS "id", ledger_id AS "ledgerId", run_id AS "runId",
+               command_id AS "commandId", device_id AS "deviceId",
+               method AS "method", state AS "state", attempts AS "attempts",
+               created_at::text AS "createdAt", delivered_at::text AS "deliveredAt"
+          FROM command_outbox
+         WHERE tenant_id = #{param1}
+        <if test="param2 != null"> AND state = #{param2} </if>
+         ORDER BY id DESC LIMIT #{param3}
+    </select>
+
+    <select id="selectTransferTransactions" resultType="java.util.Map">
+        SELECT id AS "id", run_id AS "runId", plate_barcode AS "plateBarcode",
+               source_resource_id AS "sourceResourceId",
+               target_resource_id AS "targetResourceId",
+               status AS "status", error_code AS "errorCode",
+               error_message AS "errorMessage", created_at::text AS "createdAt"
+          FROM transfer_transaction
+         WHERE tenant_id = #{param1}
+        <if test="param2 != null"> AND status = #{param2} </if>
+         ORDER BY id DESC LIMIT #{param3}
+    </select>
+
+    <select id="selectPositionEvidence" resultType="java.util.Map">
+        SELECT id AS "id", plate_barcode AS "plateBarcode",
+               resource_id AS "resourceId", evidence_type AS "evidenceType",
+               run_id AS "runId", operator AS "operator", note AS "note",
+               created_at::text AS "createdAt"
+          FROM position_evidence
+         WHERE tenant_id = #{param1}
+        <if test="param2 != null"> AND plate_barcode = #{param2} </if>
+         ORDER BY id DESC LIMIT #{param3}
+    </select>
+
+    <select id="selectQuarantinedRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.run_no AS "runNo", r.error_code AS "errorCode",
+               r.input->>'quarantineReason' AS "reason",
+               r.created_at::text AS "createdAt",
+               (SELECT er.experiment_id
+                  FROM experiment_run_step s
+                  JOIN experiment_run er
+                    ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
+                 WHERE s.tenant_id = r.tenant_id AND s.run_id = r.id
+                 LIMIT 1) AS "experimentId"
+          FROM run r
+         WHERE r.tenant_id = #{param1} AND r.status = 'quarantined'
+         ORDER BY r.id DESC
+         LIMIT #{param2}
+    </select>
+
+    <select id="selectInterventionRecords" resultType="java.util.Map">
+        SELECT id AS "id", manual_window_id AS "manualWindowId", run_id AS "runId",
+               experiment_run_id AS "experimentRunId", operator AS "operator",
+               decided_action AS "decidedAction", plate_barcode AS "plateBarcode",
+               sample_id AS "sampleId", from_location AS "fromLocation",
+               to_location AS "toLocation", result AS "result", note AS "note",
+               created_at::text AS "createdAt"
+          FROM intervention_record
+         WHERE tenant_id = #{param1}
+         ORDER BY id DESC
+         LIMIT #{param2}
+    </select>
+
+    <select id="selectExperimentWorkcells" resultType="java.util.Map">
+        SELECT ew.workcell_id AS "workcellId", rn.name AS "name"
+          FROM experiment_workcell ew
+          LEFT JOIN resource_node rn
+            ON rn.tenant_id = ew.tenant_id AND rn.id = ew.workcell_id
+         WHERE ew.tenant_id = #{param1} AND ew.experiment_id = #{param2}
+         ORDER BY ew.workcell_id
+    </select>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}

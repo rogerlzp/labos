@@ -149,6 +149,25 @@ public interface QueryMapper {
     /** 实验的工位交接清单。 */
     List<Map<String, Object>> selectExperimentHandoffs(long tenantId, long experimentId);
 
+    /** 命令 Outbox（state 为 null 时不过滤）。 */
+    List<Map<String, Object>> selectCommandOutbox(long tenantId, String state, int limit);
+
+    /** 搬运事务（status 为 null 时不过滤）。 */
+    List<Map<String, Object>> selectTransferTransactions(long tenantId, String status, int limit);
+
+    /** 板位证据（plateBarcode 为 null 时不过滤）。 */
+    List<Map<String, Object>> selectPositionEvidence(long tenantId, String plateBarcode,
+                                                     int limit);
+
+    /** 隔离中的 run（含反查实验 id 的子查询）。 */
+    List<Map<String, Object>> selectQuarantinedRuns(long tenantId, int limit);
+
+    /** 人工介入记录。 */
+    List<Map<String, Object>> selectInterventionRecords(long tenantId, int limit);
+
+    /** 实验绑定的工位（含名称）。 */
+    List<Map<String, Object>> selectExperimentWorkcells(long tenantId, long experimentId);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 
