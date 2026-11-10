@@ -31,7 +31,12 @@ find_mvn() {
   echo "$cache"
 }
 
-if [[ ! -f lib/spring/spring-jdbc-6.1.6.jar ]]; then
+# 依赖：只在**关键 jar 齐了**时才跳过拉取。
+# 为什么看多个 jar 而不是单个标记：加新依赖（如 2026-11-10 的 lettuce-core）时，
+# 已有 lib/spring/ 的本地环境会因为「老标记还在」而跳过下载 ⇒ 编译报
+# 「程序包io.lettuce.core不存在」。加依赖时在这里补一个判断即可。
+# CI 是全新检出，没有 lib/spring/，一律全量拉。
+if [[ ! -f lib/spring/spring-jdbc-6.1.6.jar || ! -f lib/spring/lettuce-core-6.3.2.RELEASE.jar ]]; then
   MVN="$(find_mvn)"
   "$MVN" -q -B dependency:copy-dependencies \
       -DincludeScope=runtime -DoutputDirectory=lib/spring

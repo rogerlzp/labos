@@ -45,6 +45,15 @@
       <artifactId>mybatis-spring-boot-starter</artifactId>
       <version>3.0.3</version>
     </dependency>
+    <!-- Redis 客户端：与 labos-gateway 统一用 Lettuce（2026-11-10）。
+         内核侧还没接上（LABOS_DRIVER_MODE=redis 未实现、分布式锁待 N-03），
+         但 Redis 是架构级依赖（状态中心 / 跨实例锁 / 命令通道），
+         客户端先统一成一种实现，别留两套手写 RESP2。 -->
+    <dependency>
+      <groupId>io.lettuce</groupId>
+      <artifactId>lettuce-core</artifactId>
+      <version>6.3.2.RELEASE</version>
+    </dependency>
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
