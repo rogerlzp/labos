@@ -50,6 +50,33 @@ javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/
       $(find src/main -name '*.java')
 echo "✓ 既有源码编译完成（DbConfig 直接使用 Spring JDBC）"
 
+# ---- ②a mapper XML 合法性自检（**编译查不出来，只有起内核才炸**）----
+#
+# 为什么必须有：XML 注释里**不允许出现 `--`**（`<!-- ---- xxx ---- -->` 是非法的），
+# 而 mapper XML 不参与 javac ⇒ 写错时编译照样过、测试也照样跑（连不上库也走不到解析），
+# 只有**真启动内核**时 MyBatis 才抛 "Error parsing Mapper XML"，容器起不来、
+# 端口不监听 ⇒ 现场表现为"登录不进去 / 服务没起来"，极难联想到是 XML 注释的问题。
+# 2026-11-10 实测踩到：3 个 mapper 里的 `<!-- ---- … ---- -->` 让 HEAD 的内核直接起不来。
+python3 - <<'PY'
+import os, sys, xml.etree.ElementTree as ET
+bad = []
+for dp, _dn, fn in os.walk('src'):
+    for f in fn:
+        if not f.endswith('.xml'):
+            continue
+        p = os.path.join(dp, f)
+        try:
+            ET.parse(p)
+        except Exception as e:
+            bad.append(f"{p}: {e}")
+if bad:
+    print("✗ mapper/资源 XML 不合法（内核会起不来）：", file=sys.stderr)
+    for b in bad:
+        print("   " + b, file=sys.stderr)
+    sys.exit(1)
+PY
+echo "✓ XML 合法性自检通过（mapper / 资源）"
+
 # ---- ②b 清理已删除源文件的 stale class（javac 不删旧产物，删类后残留会继续生效）
 rm -rf out/com/labos/boot
 rm -f out/com/labos/kernel/api/LegacyRouteController.class \

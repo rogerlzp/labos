@@ -117,7 +117,7 @@
                updated_at = now()
     </insert>
 
-    <!-- ---- 执行器的图读取（RealWorkflowRunner，与 GM.java 既有区合并）---- -->
+    <!-- ==== 执行器的图读取（RealWorkflowRunner，与 GM.java 既有区合并） ==== -->
 
     <select id="selectWorkflowNodes" resultType="java.util.Map">
         SELECT n.id AS "id", n.node_key AS "nodeKey", n.name AS "name",
