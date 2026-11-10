@@ -92,11 +92,11 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
 
-    <insert id="insertExperimentRun" resultType="long">
+    <select id="insertExperimentRun" resultType="long">
         INSERT INTO experiment_run
           (tenant_id, experiment_id, status, variables, expanded_steps)
         VALUES (#{param1}, #{param2}, 'queued', #{param3}::jsonb, #{param4}) RETURNING id
-    </insert>
+    </select>
 
     <update id="touchStartedAtWhenPaused">
         UPDATE experiment_run
@@ -122,12 +122,12 @@
          WHERE tenant_id = #{param1} AND experiment_run_id = #{param2} AND status = 'completed'
     </select>
 
-    <insert id="insertRunStep" resultType="long">
+    <select id="insertRunStep" resultType="long">
         INSERT INTO experiment_run_step
           (tenant_id, experiment_run_id, seq, loop_index, workflow_id, status, started_at)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, 'running', now())
         RETURNING id
-    </insert>
+    </select>
 
     <update id="settleRunStep">
         UPDATE experiment_run_step

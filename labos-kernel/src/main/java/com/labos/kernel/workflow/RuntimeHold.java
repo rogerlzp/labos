@@ -3,10 +3,7 @@ package com.labos.kernel.workflow;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Types;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -175,6 +172,24 @@ public final class RuntimeHold {
         this.tenantId = tenantId;
     }
 
+    /** 延迟取 Mapper（本类是 new 出来的工具类，见 Mappers）。 */
+    private com.labos.kernel.persistence.HoldMapper hm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.HoldMapper.class);
+    }
+
+    /** 生效扣留行 → Active（scopeId 为 NULL = site 级）。 */
+    private static List<Active> toActiveList(List<Map<String, Object>> rows) {
+        List<Active> list = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Object sid = row.get("scopeId");
+            list.add(new Active((String) row.get("scope"),
+                    sid == null ? null : ((Number) sid).longValue(),
+                    (String) row.get("kind"), (String) row.get("reason")));
+        }
+        return list;
+    }
+
     // ---------------------------------------------------------------- 纯函数
 
     /**
@@ -268,7 +283,7 @@ public final class RuntimeHold {
         try {
             Set<Long> islands = ExperimentWorkcellScope.islandsOf(db, tenantId, experimentId);
             return coverageForExperiment(activeChecked(), experimentId, islands);
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             log.error("[扣留] 实验 Workcell 覆盖读取失败（按 UNKNOWN 阻断）："
                     + e.getMessage());
             return unknownCoverage();
@@ -331,100 +346,22 @@ public final class RuntimeHold {
      */
     public boolean raiseTx(Connection c, Scope scope, Long scopeId, Kind kind,
                            String reason, Long by) throws SQLException {
-        String sql = """
-                INSERT INTO runtime_hold (tenant_id, scope, scope_id, kind, reason, held_by)
-                SELECT ?, ?, ?, ?, ?, ?
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM runtime_hold
-                     WHERE tenant_id = ? AND scope = ?
-                       AND COALESCE(scope_id, 0) = COALESCE(CAST(? AS bigint), 0)
-                       AND kind = ?
-                       AND released_at IS NULL
-                )
-                """;
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, scope.code());
-            if (scopeId == null) {
-                ps.setNull(3, Types.BIGINT);
-            } else {
-                ps.setLong(3, scopeId);
-            }
-            ps.setString(4, kind.code());
-            ps.setString(5, reason);
-            if (by == null) {
-                ps.setNull(6, Types.BIGINT);
-            } else {
-                ps.setLong(6, by);
-            }
-            ps.setLong(7, tenantId);
-            ps.setString(8, scope.code());
-            if (scopeId == null) {
-                ps.setNull(9, Types.BIGINT);
-            } else {
-                ps.setLong(9, scopeId);
-            }
-            ps.setString(10, kind.code());
-            return ps.executeUpdate() > 0;
-        }
+        // 幂等：同 (scope, scope_id, kind) 已有生效行时不重复建（沿用没变）
+        return hm().insertHoldIgnoreExisting(tenantId, scope.code(), scopeId, kind.code(),
+                reason, by) > 0;
     }
 
     /**
      * 解除扣留（人工处置完事故后）。没有生效扣留时返回 false。
      */
     public boolean clear(Scope scope, Long scopeId, Long by, String note) throws SQLException {
-        String sql = """
-                UPDATE runtime_hold
-                   SET released_at = now(), released_by = ?, release_note = ?
-                 WHERE tenant_id = ? AND scope = ?
-                   AND COALESCE(scope_id, 0) = COALESCE(CAST(? AS bigint), 0)
-                   AND released_at IS NULL
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            if (by == null) {
-                ps.setNull(1, Types.BIGINT);
-            } else {
-                ps.setLong(1, by);
-            }
-            ps.setString(2, note);
-            ps.setLong(3, tenantId);
-            ps.setString(4, scope.code());
-            if (scopeId == null) {
-                ps.setNull(5, Types.BIGINT);
-            } else {
-                ps.setLong(5, scopeId);
-            }
-            return ps.executeUpdate() > 0;
-        }
+        return hm().releaseHolds(tenantId, scope.code(), scopeId, by, note) > 0;
     }
 
     /** 同 {@link #clear}，但复用调用方事务连接（P-06 V2 Resume 单事务）。 */
     public boolean clearTx(Connection c, Scope scope, Long scopeId, Long by, String note)
             throws SQLException {
-        String sql = """
-                UPDATE runtime_hold
-                   SET released_at = now(), released_by = ?, release_note = ?
-                 WHERE tenant_id = ? AND scope = ?
-                   AND COALESCE(scope_id, 0) = COALESCE(CAST(? AS bigint), 0)
-                   AND released_at IS NULL
-                """;
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            if (by == null) {
-                ps.setNull(1, Types.BIGINT);
-            } else {
-                ps.setLong(1, by);
-            }
-            ps.setString(2, note);
-            ps.setLong(3, tenantId);
-            ps.setString(4, scope.code());
-            if (scopeId == null) {
-                ps.setNull(5, Types.BIGINT);
-            } else {
-                ps.setLong(5, scopeId);
-            }
-            return ps.executeUpdate() > 0;
-        }
+        return hm().releaseHolds(tenantId, scope.code(), scopeId, by, note) > 0;
     }
 
     /**
@@ -440,54 +377,15 @@ public final class RuntimeHold {
     /** 同 {@link #clearKind}，复用调用方事务连接。 */
     public boolean clearKindTx(Connection c, Scope scope, Long scopeId, Kind kind,
                                Long by, String note) throws SQLException {
-        String sql = """
-                UPDATE runtime_hold
-                   SET released_at = now(), released_by = ?, release_note = ?
-                 WHERE tenant_id = ? AND scope = ?
-                   AND COALESCE(scope_id, 0) = COALESCE(CAST(? AS bigint), 0)
-                   AND kind = ? AND released_at IS NULL
-                """;
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            if (by == null) {
-                ps.setNull(1, Types.BIGINT);
-            } else {
-                ps.setLong(1, by);
-            }
-            ps.setString(2, note);
-            ps.setLong(3, tenantId);
-            ps.setString(4, scope.code());
-            if (scopeId == null) {
-                ps.setNull(5, Types.BIGINT);
-            } else {
-                ps.setLong(5, scopeId);
-            }
-            ps.setString(6, kind.code());
-            return ps.executeUpdate() > 0;
-        }
+        return hm().releaseHoldsByKind(tenantId, scope.code(), scopeId, kind.code(), by,
+                note) > 0;
     }
 
     /**
      * 同 {@link #activeChecked}，但复用调用方事务连接（读到本事务内已 clear 的扣留）。
      */
     public List<Active> activeCheckedTx(Connection c) throws SQLException {
-        List<Active> list = new ArrayList<>();
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT scope, scope_id, kind, reason
-                  FROM runtime_hold
-                 WHERE tenant_id = ? AND released_at IS NULL
-                 ORDER BY held_at
-                """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long sid = rs.getLong("scope_id");
-                    list.add(new Active(rs.getString("scope"),
-                            rs.wasNull() ? null : sid,
-                            rs.getString("kind"), rs.getString("reason")));
-                }
-            }
-        }
-        return list;
+        return toActiveList(hm().selectActiveHolds(tenantId));
     }
 
     /**
@@ -508,32 +406,14 @@ public final class RuntimeHold {
      * {@link HoldState#UNKNOWN}（对外显式可见）。
      */
     public List<Active> activeChecked() throws SQLException {
-        List<Active> list = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT scope, scope_id, kind, reason
-                       FROM runtime_hold
-                      WHERE tenant_id = ? AND released_at IS NULL
-                      ORDER BY held_at
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long sid = rs.getLong("scope_id");
-                    list.add(new Active(rs.getString("scope"),
-                            rs.wasNull() ? null : sid,
-                            rs.getString("kind"), rs.getString("reason")));
-                }
-            }
-        }
-        return list;
+        return toActiveList(hm().selectActiveHolds(tenantId));
     }
 
     /** 当前所有生效扣留（展示用；读库失败返回空列表，安全判定请用 {@link #activeChecked()}）。 */
     public List<Active> active() {
         try {
             return activeChecked();
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             log.error("[扣留] 读取生效扣留失败：" + e.getMessage());
             return new ArrayList<>();
         }
@@ -547,7 +427,7 @@ public final class RuntimeHold {
     public HoldState siteState() {
         try {
             return activeChecked().isEmpty() ? HoldState.CLEAR : HoldState.HELD;
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             log.error("[扣留] 现场闸门读取失败（按 UNKNOWN 阻断派发）：" + e.getMessage());
             return HoldState.UNKNOWN;
         }
@@ -559,7 +439,7 @@ public final class RuntimeHold {
     public Coverage coverageFor(long experimentId, long islandId) {
         try {
             return coverageOf(activeChecked(), experimentId, islandId);
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             log.error("[扣留] 覆盖判定读取失败（按 UNKNOWN 阻断）：" + e.getMessage());
             return unknownCoverage();
         }
@@ -604,28 +484,16 @@ public final class RuntimeHold {
         if (active.isEmpty()) {
             return null;   // 现场没有任何扣留 —— 常见快路径，不必反查
         }
-        String sql = """
-                SELECT er.experiment_id, COALESCE(e.island_id, 0) AS island_id
-                  FROM experiment_run_step s
-                  JOIN experiment_run er
-                    ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
-                  JOIN experiment e
-                    ON e.tenant_id = er.tenant_id AND e.id = er.experiment_id
-                 WHERE s.tenant_id = ? AND s.workflow_id = ? AND s.status = 'running'
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Active a = covering(active, rs.getLong(1), rs.getLong(2));
-                    if (a != null) {
-                        return a;
-                    }
+        try {
+            for (Map<String, Object> row
+                    : hm().selectRunningWorkflowExperiments(tenantId, workflowId)) {
+                Active a = covering(active, ((Number) row.get("experimentId")).longValue(),
+                        ((Number) row.get("islandId")).longValue());
+                if (a != null) {
+                    return a;
                 }
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             log.error("[扣留] 反查流程归属失败：" + e.getMessage());
         }
         return null;
@@ -646,30 +514,16 @@ public final class RuntimeHold {
             if (active.isEmpty()) {
                 return new Coverage(HoldState.CLEAR, null);   // 现场没有任何扣留 —— 常见快路径，不必反查
             }
-            String sql = """
-                    SELECT er.experiment_id, COALESCE(e.island_id, 0) AS island_id
-                      FROM experiment_run_step s
-                      JOIN experiment_run er
-                        ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
-                      JOIN experiment e
-                        ON e.tenant_id = er.tenant_id AND e.id = er.experiment_id
-                     WHERE s.tenant_id = ? AND s.workflow_id = ? AND s.status = 'running'
-                    """;
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, workflowId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        Active a = covering(active, rs.getLong(1), rs.getLong(2));
-                        if (a != null) {
-                            return new Coverage(HoldState.HELD, a);
-                        }
-                    }
+            for (Map<String, Object> row
+                    : hm().selectRunningWorkflowExperiments(tenantId, workflowId)) {
+                Active a = covering(active, ((Number) row.get("experimentId")).longValue(),
+                        ((Number) row.get("islandId")).longValue());
+                if (a != null) {
+                    return new Coverage(HoldState.HELD, a);
                 }
             }
             return new Coverage(HoldState.CLEAR, null);
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             log.error("[扣留] 反查流程归属读取失败（按 UNKNOWN 阻断执行）：" + e.getMessage());
             return unknownCoverage();
         }
@@ -698,32 +552,21 @@ public final class RuntimeHold {
      */
     public HoldView activeView() {
         List<Map<String, Object>> list = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id, scope, scope_id, kind, reason, held_at, held_by
-                       FROM runtime_hold
-                      WHERE tenant_id = ? AND released_at IS NULL
-                      ORDER BY held_at
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("id", rs.getLong("id"));
-                    m.put("scope", rs.getString("scope"));
-                    long sid = rs.getLong("scope_id");
-                    m.put("scopeId", rs.wasNull() ? null : sid);
-                    m.put("kind", rs.getString("kind"));
-                    m.put("reason", rs.getString("reason"));
-                    java.sql.Timestamp t = rs.getTimestamp("held_at");
-                    m.put("heldAt", t == null ? null : t.toInstant().toString());
-                    long by = rs.getLong("held_by");
-                    m.put("heldBy", rs.wasNull() ? null : by);
-                    list.add(m);
-                }
+        try {
+            for (Map<String, Object> row : hm().selectActiveHoldViews(tenantId)) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", row.get("id"));
+                m.put("scope", row.get("scope"));
+                m.put("scopeId", row.get("scopeId"));
+                m.put("kind", row.get("kind"));
+                m.put("reason", row.get("reason"));
+                java.sql.Timestamp t = (java.sql.Timestamp) row.get("heldAt");
+                m.put("heldAt", t == null ? null : t.toInstant().toString());
+                m.put("heldBy", row.get("heldBy"));
+                list.add(m);
             }
             return new HoldView(list.isEmpty() ? HoldState.CLEAR : HoldState.HELD, list);
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             log.error("[扣留] 读取生效扣留失败（按 UNKNOWN 暴露给运维）：" + e.getMessage());
             return new HoldView(HoldState.UNKNOWN, list);
         }

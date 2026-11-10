@@ -174,29 +174,29 @@
         ON CONFLICT (tenant_id, experiment_id, batch_no) DO NOTHING
     </insert>
 
-    <insert id="insertQueuedRunWithVars" resultType="long">
+    <select id="insertQueuedRunWithVars" resultType="long">
         INSERT INTO experiment_run (tenant_id, experiment_id, status, variables)
         VALUES (#{param1}, #{param2}, 'queued', #{param3}::jsonb) RETURNING id
-    </insert>
+    </select>
 
-    <insert id="insertQueuedRunPlain" resultType="long">
+    <select id="insertQueuedRunPlain" resultType="long">
         INSERT INTO experiment_run (tenant_id, experiment_id, status)
         VALUES (#{param1}, #{param2}, 'queued') RETURNING id
-    </insert>
+    </select>
 
-    <insert id="insertQueuedBatchRun" resultType="long">
+    <select id="insertQueuedBatchRun" resultType="long">
         INSERT INTO experiment_batch_run
           (tenant_id, batch_id, experiment_run_id, attempt_no, status)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'queued')
         RETURNING id
-    </insert>
+    </select>
 
-    <insert id="insertBatchRunRunning" resultType="long">
+    <select id="insertBatchRunRunning" resultType="long">
         INSERT INTO experiment_batch_run
           (tenant_id, batch_id, experiment_run_id, attempt_no, status, started_at)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'running', now())
         RETURNING id
-    </insert>
+    </select>
 
     <!-- 终态落 finished_at（COALESCE 保留第一次的终态时间）；非终态清掉。 -->
     <update id="updateAttemptFromRun">

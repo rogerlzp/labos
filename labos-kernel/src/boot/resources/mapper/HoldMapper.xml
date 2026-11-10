@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 现场扣留（runtime_hold）。调用方 com.labos.kernel.persistence.HoldMapper -->
+<mapper namespace="com.labos.kernel.persistence.HoldMapper">
+
+    <!-- 幂等建：COALESCE(scope_id,0) 比对让 site 级（scope_id 为 NULL）也能判重。 -->
+    <insert id="insertHoldIgnoreExisting">
+        INSERT INTO runtime_hold (tenant_id, scope, scope_id, kind, reason, held_by)
+        SELECT #{tenantId}, #{scope}, #{scopeId}, #{kind}, #{reason}, #{by}
+        WHERE NOT EXISTS (
+            SELECT 1 FROM runtime_hold
+             WHERE tenant_id = #{tenantId} AND scope = #{scope}
+               AND COALESCE(scope_id, 0) = COALESCE(CAST(#{scopeId} AS bigint), 0)
+               AND kind = #{kind}
+               AND released_at IS NULL
+        )
+    </insert>
+
+    <update id="releaseHolds">
+        UPDATE runtime_hold
+           SET released_at = now(), released_by = #{by}, release_note = #{note}
+         WHERE tenant_id = #{tenantId} AND scope = #{scope}
+           AND COALESCE(scope_id, 0) = COALESCE(CAST(#{scopeId} AS bigint), 0)
+           AND released_at IS NULL
+    </update>
+
+    <update id="releaseHoldsByKind">
+        UPDATE runtime_hold
+           SET released_at = now(), released_by = #{by}, release_note = #{note}
+         WHERE tenant_id = #{tenantId} AND scope = #{scope}
+           AND COALESCE(scope_id, 0) = COALESCE(CAST(#{scopeId} AS bigint), 0)
+           AND kind = #{kind} AND released_at IS NULL
+    </update>
+
+    <select id="selectActiveHolds" resultType="java.util.Map">
+        SELECT scope AS "scope", scope_id AS "scopeId", kind AS "kind", reason AS "reason"
+          FROM runtime_hold
+         WHERE tenant_id = #{param1} AND released_at IS NULL
+         ORDER BY held_at
+    </select>
+
+    <!-- 判据落在"步骤行还在跑"而不是 experiment_run 的状态：
+         实验级暂停会先把 experiment_run 置 paused，按它过滤就永远查不到。 -->
+    <select id="selectRunningWorkflowExperiments" resultType="java.util.Map">
+        SELECT er.experiment_id AS "experimentId", COALESCE(e.island_id, 0) AS "islandId"
+          FROM experiment_run_step s
+          JOIN experiment_run er
+            ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
+          JOIN experiment e
+            ON e.tenant_id = er.tenant_id AND e.id = er.experiment_id
+         WHERE s.tenant_id = #{param1} AND s.workflow_id = #{param2} AND s.status = 'running'
+    </select>
+
+    <select id="selectActiveHoldViews" resultType="java.util.Map">
+        SELECT id AS "id", scope AS "scope", scope_id AS "scopeId", kind AS "kind",
+               reason AS "reason", held_at AS "heldAt", held_by AS "heldBy"
+          FROM runtime_hold
+         WHERE tenant_id = #{param1} AND released_at IS NULL
+         ORDER BY held_at
+    </select>
+
+</mapper>
