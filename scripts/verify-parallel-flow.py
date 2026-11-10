@@ -17,6 +17,8 @@
 import argparse
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import time
@@ -110,6 +112,47 @@ def q(sql):
     return out.stdout.strip()
 
 
+# ---------------------------------------------------------------- 本机环境的两把尺子
+#
+# 与 verify-parallel-experiments.py 同一套判据（那边有完整说明）：
+# ① 本机模拟器**故意**带 30~45 秒随机延时（--rand-delay），而影子探针的命令
+#    超时只有 3 秒 ⇒ 好设备也会超时返回 EC-05-1007 ⇒ 按 `ok` 判会把每一台
+#    都判成"不能跑命令"（实测本脚本为此空转了 15 分钟、探针试了 110 次）；
+# ② 远端台架（192.168.10.196:8501）在本机 TCP 也是通的 ⇒ 选不出、又拖时间。
+
+PROFILE_METHODS = {
+    "robot": {"Home", "Transfer", "TransferTo", "GetPosition", "GetPoints",
+              "SyncPoints", "Grip", "Release", "GetStatus", "Stop"},
+    "liquid_handler": {"Home", "GetTips", "DropTips", "Aspirate", "Dispense",
+                       "Transfer", "Mix", "SetTemp", "GetStatus", "Stop"},
+    "incubator": {"Home", "OpenDoor", "CloseDoor", "Deposit1", "Withdraw1",
+                  "SetTemp", "SetCO2", "GetTemp", "GetStatus"},
+    "centrifuge": {"Home", "OpenDoor", "CloseDoor", "Load", "Unload", "GetStatus"},
+    "sealer": {"Home", "Load", "Unload", "Seal", "GetStatus"},
+    "washer": {"Home", "Load", "Unload", "Wash", "Dispense", "GetStatus"},
+}
+
+
+def sim_profiles():
+    """{端口: 画像} —— 从模拟器进程参数读。"""
+    out = {}
+    try:
+        text = subprocess.run(["pgrep", "-fl", "DeviceSimulator"],
+                              capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return out
+    for line in text.splitlines():
+        m_port = re.search(r"--port\s+(\d+)", line)
+        m_prof = re.search(r"--profile\s+(\S+)", line)
+        if m_port and m_prof:
+            out[int(m_port.group(1))] = m_prof.group(1)
+    return out
+
+
+def is_local_endpoint(endpoint):
+    return endpoint.startswith("tcp://127.0.0.1") or endpoint.startswith("tcp://localhost")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", type=int, default=0)
@@ -127,15 +170,28 @@ def main():
                 {"username": "admin", "password": "admin123"})["token"]
 
     def probe(rid, method):
-        """单命令真下发一次：ok=True 才算"这台设备真的能跑这个方法"。"""
+        """探一次：返回 (这个方法能不能用, 错误码)。
+
+        <p>「能不能用」**不能只看 ok**：本机模拟器刻意慢 30~45 秒，好设备也会
+        超时返回 EC-05-1007（设备回包超时）—— 但命令**确实发出去了** ⇒ 设备是通的。
+        只有 EC-06-0004（设备类型不支持该方法，内核侧的能力检查）才说明要换方法。
+        """
         try:
             r = api(f"/api/shadow/probe?resourceId={rid}&method={method}", "POST", {}, token)
-            return bool(r.get("ok"))
         except Exception:  # noqa: BLE001
-            return False
+            return False, ""
+        if r.get("ok"):
+            return True, ""
+        return r.get("errorCode") != "EC-06-0004", r.get("errorCode") or ""
 
-    def working_methods(rid):
-        return [m for m in METHOD_CANDIDATES if probe(rid, m)]
+    def working_methods(rid, methods=None):
+        """这台设备能用哪些方法（按方法表顺序，取到第一个能用的就够）。"""
+        out = []
+        for m in (methods or METHOD_CANDIDATES):
+            good, _code = probe(rid, m)
+            if good:
+                out.append(m)
+        return out
 
     # 选设备：按"最近成功过命令 + 本地端点 + 库里顺序"排，逐台**真探**。
     #
@@ -144,20 +200,48 @@ def main():
     # 该方法"（EC-06-0004）的设备，挑中它们跑出来全是 manual/failed ——
     # 看着像并发坏了，其实是选错了设备。
     def candidates():
-        return [int(x) for x in q("""
-            SELECT r.id FROM resource_node r
+        """候选设备 [(id, endpoint)]。
+
+        排序键：① 本机回环端点优先 —— 远端台架在本机 TCP 也是通的（端口开、
+        设备不回包），探它们每个要 9 个方法 × 3 秒超时，纯拖时间；② 最近成功过命令。
+        """
+        out = []
+        for ln in [x for x in q("""
+            SELECT r.id || '|' || COALESCE(dr.endpoint,'') FROM resource_node r
               JOIN device_instance di ON di.resource_id = r.id AND di.deleted_at IS NULL
               LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
              WHERE r.kind = 'device' AND r.tenant_id = 1 AND r.deleted_at IS NULL
-             ORDER BY (SELECT count(*) FROM run_command c
-                         JOIN run_node n ON n.id = c.run_node_id
-                        WHERE n.resource_id = r.id AND c.status = 'completed'
-                          AND c.finished_at > now() - interval '2 hours') DESC,
-                      -- endpoint 为 NULL 的行 LIKE 出来是 NULL，DESC 会把它们排在最前，
-                      -- 白占候选名额；用 coalesce 归成 false。
-                      COALESCE(dr.endpoint LIKE 'tcp://127.0.0.1%', false) DESC,
-                      r.id
-             LIMIT 12""").split()]
+             ORDER BY
+                  -- endpoint 为 NULL 的行 LIKE 出来是 NULL，DESC 会把它们排在最前，
+                  -- 白占候选名额；用 coalesce 归成 false。
+                  COALESCE(dr.endpoint LIKE 'tcp://127.0.0.1%', false) DESC,
+                  (SELECT count(*) FROM run_command c
+                     JOIN run_node n ON n.id = c.run_node_id
+                    WHERE n.resource_id = r.id AND c.status = 'completed'
+                      AND c.finished_at > now() - interval '2 hours') DESC,
+                  r.id
+             LIMIT 24""").split("\n") if x.strip()]:
+            rid_s, _, ep = ln.partition("|")
+            try:
+                out.append((int(rid_s), ep.strip()))
+            except ValueError:
+                continue
+        # 本机有回环端点时只探本机那批（远端设备探不通，只会白等）
+        if any(is_local_endpoint(ep) for _, ep in out):
+            out = [(rid, ep) for rid, ep in out if is_local_endpoint(ep)]
+        return out
+
+    profiles = sim_profiles()
+
+    def methods_for(rid, endpoint):
+        """这台设备该试哪些方法：按**模拟器画像真正实现的方法**取
+        （从进程参数读 profile）—— 挑了型号不支持的方法，实验跑起来必然失败。"""
+        port = int(endpoint.rsplit(":", 1)[-1]) if ":" in endpoint else 0
+        prof = profiles.get(port)
+        if prof is None:
+            return METHOD_CANDIDATES
+        ms = [m for m in METHOD_CANDIDATES if m in PROFILE_METHODS.get(prof, set())]
+        return ms or METHOD_CANDIDATES
 
     picked, ms = 0, []
     if args.device:
@@ -167,8 +251,8 @@ def main():
             return 0
         picked = args.device
     else:
-        for rid in candidates():
-            ms = working_methods(rid)
+        for rid, endpoint in candidates():
+            ms = working_methods(rid, methods_for(rid, endpoint))
             if ms:
                 picked = rid
                 break
