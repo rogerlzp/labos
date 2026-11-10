@@ -285,6 +285,18 @@ public interface QueryMapper {
     int updateUserFields(long tenantId, long id, String role, Boolean enabled,
                          String passwordHash, String salt);
 
+    /** 导入一个机器人点位（同 robot+code 覆盖，未传的列保留旧值）。 */
+    int upsertRobotPoint(long tenantId, long islandId, long robotResourceId,
+                         String code, String name, java.math.BigDecimal x,
+                         java.math.BigDecimal y, java.math.BigDecimal z,
+                         Long deviceResourceId, String action);
+
+    /** 设备移出岛（放回设备池）。 */
+    int detachDeviceFromIsland(long tenantId, long resourceId);
+
+    /** 设备挂到岛下（path 由调用方按岛 path + 设备 code 拼好）。 */
+    int attachDeviceToIsland(long tenantId, long resourceId, long islandId, String path);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

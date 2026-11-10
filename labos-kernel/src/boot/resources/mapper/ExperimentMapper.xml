@@ -21,6 +21,21 @@
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
     </insert>
 
+    <!-- 删 process 会级联删 edge（FK ON DELETE CASCADE），所以整体替换天然一致；
+         RETURNING id 用 <select> 承载，供调用方建立 nodeId -> processId 映射。 -->
+    <select id="insertExperimentProcess" resultType="java.lang.Long">
+        INSERT INTO experiment_process
+          (tenant_id, experiment_id, workflow_id, seq, run_mode)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'sequential')
+        RETURNING id
+    </select>
+
+    <insert id="insertExperimentProcessEdge">
+        INSERT INTO experiment_process_edge
+          (tenant_id, experiment_id, from_id, to_id)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4})
+    </insert>
+
     <select id="selectExperimentIslandId" resultType="java.lang.Long">
         SELECT island_id FROM experiment WHERE tenant_id = #{param1} AND id = #{param2}
     </select>

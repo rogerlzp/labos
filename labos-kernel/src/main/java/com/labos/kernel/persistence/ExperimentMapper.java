@@ -15,6 +15,13 @@ public interface ExperimentMapper {
     int insertExperimentVariable(long tenantId, long experimentId, String name,
                                  String type, String defaultValue, String description);
 
+    /** 新增一条实验流程，返回 id（用于把画布边翻译成 process 间的边）。 */
+    Long insertExperimentProcess(long tenantId, long experimentId, long workflowId, int seq);
+
+    /** 新增一条流程偏序边。 */
+    int insertExperimentProcessEdge(long tenantId, long experimentId,
+                                    long fromId, long toId);
+
     /** 实验所属岛（未显式绑定 workcell 时的回落）。 */
     Long selectExperimentIslandId(long tenantId, long experimentId);
 

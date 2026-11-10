@@ -953,42 +953,19 @@ public class QueryService {
 experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
         // nodeId -> 新生成的 process.id，用于把画布上的边翻译成 process 之间的边
         java.util.Map<String, Long> processIds = new java.util.HashMap<>();
-        try (PreparedStatement ins = c.prepareStatement("""
-                INSERT INTO experiment_process
-                  (tenant_id, experiment_id, workflow_id, seq, run_mode)
-                VALUES (?, ?, ?, ?, 'sequential')
-                RETURNING id
-                """)) {
-            for (CompiledStep step : compiled.steps()) {
-                ins.setLong(1, tenantId);
-                ins.setLong(2, experimentId);
-                ins.setLong(3, step.workflowId());
-                ins.setInt(4, step.seq());
-                try (ResultSet rs = ins.executeQuery()) {
-                    rs.next();
-                    processIds.put(step.nodeId(), rs.getLong(1));
-                }
-            }
+        for (CompiledStep step : compiled.steps()) {
+            Long id = experimentMapper.insertExperimentProcess(tenantId, experimentId,
+                    step.workflowId(), step.seq());
+            processIds.put(step.nodeId(), id);
         }
-        try (PreparedStatement insEdge = c.prepareStatement("""
-                INSERT INTO experiment_process_edge
-                  (tenant_id, experiment_id, from_id, to_id)
-                VALUES (?, ?, ?, ?)
-                """)) {
-            for (CompiledEdge edge : compiled.edges()) {
-                Long from = processIds.get(edge.fromNodeId());
-                Long to = processIds.get(edge.toNodeId());
-                if (from == null || to == null) {
-                    throw new IllegalArgumentException("编排边引用了不存在的节点："
-                            + edge.fromNodeId() + " -> " + edge.toNodeId());
-                }
-                insEdge.setLong(1, tenantId);
-                insEdge.setLong(2, experimentId);
-                insEdge.setLong(3, from);
-                insEdge.setLong(4, to);
-                insEdge.addBatch();
+        for (CompiledEdge edge : compiled.edges()) {
+            Long from = processIds.get(edge.fromNodeId());
+            Long to = processIds.get(edge.toNodeId());
+            if (from == null || to == null) {
+                throw new IllegalArgumentException("编排边引用了不存在的节点："
+                        + edge.fromNodeId() + " -> " + edge.toNodeId());
             }
-            insEdge.executeBatch();
+            experimentMapper.insertExperimentProcessEdge(tenantId, experimentId, from, to);
         }
         if (bumpVersion) {
             bumpExperimentVersion(c, experimentId);
@@ -1209,16 +1186,7 @@ throw e;
     public int moveDeviceToIsland(long resourceId, long islandId) throws SQLException {
         // islandId <= 0 表示移出（放回设备池）
         if (islandId <= 0) {
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement("""
-                         UPDATE resource_node SET parent_id = NULL, path = '/' || code,
-                                                 updated_at = now()
-                         WHERE tenant_id = ? AND id = ? AND kind = 'device'
-                         """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, resourceId);
-                return ps.executeUpdate();
-            }
+            return queryMapper.detachDeviceFromIsland(tenantId, resourceId);
         }
         try (Connection c = db.open()) {
             try {
@@ -1232,20 +1200,9 @@ throw e;
                     throw new IllegalArgumentException("设备不存在: " + resourceId);
                 }
 
-                int n;
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE resource_node
-                        SET parent_id = ?, path = ?, updated_at = now()
-                        WHERE tenant_id = ? AND id = ? AND kind = 'device'
-                        """)) {
-                    ps.setLong(1, islandId);
-                    ps.setString(2, (islandPath == null ? "" : islandPath) + "/" + code);
-                    ps.setLong(3, tenantId);
-                    ps.setLong(4, resourceId);
-                    n = ps.executeUpdate();
-                }
-                return n;
-            } catch (SQLException | RuntimeException e) {
+                return queryMapper.attachDeviceToIsland(tenantId, resourceId,
+                        islandId, islandPath + "/" + code);
+            } catch (RuntimeException e) {
                 throw e;
             }
         }
@@ -1505,39 +1462,9 @@ throw e;
                     Long devId = devCode == null || devCode.isBlank()
                             ? null : resourceIdByCode(c, devCode);
 
-                    String sql = """
-                            INSERT INTO robot_point
-                              (tenant_id, island_id, robot_resource_id, code, name,
-                               x, y, z, device_resource_id, action, synced_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
-                            ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
-                            SET name = COALESCE(EXCLUDED.name, robot_point.name),
-                                x = COALESCE(EXCLUDED.x, robot_point.x),
-                                y = COALESCE(EXCLUDED.y, robot_point.y),
-                                z = COALESCE(EXCLUDED.z, robot_point.z),
-                                device_resource_id = COALESCE(EXCLUDED.device_resource_id,
-                                                             robot_point.device_resource_id),
-                                action = COALESCE(EXCLUDED.action, robot_point.action),
-                                updated_at = now()
-                            """;
-                    try (PreparedStatement ps = c.prepareStatement(sql)) {
-                        ps.setLong(1, tenantId);
-                        ps.setLong(2, islandId);
-                        ps.setLong(3, robotResourceId);
-                        ps.setString(4, code);
-                        ps.setString(5, name);
-                        ps.setBigDecimal(6, px);
-                        ps.setBigDecimal(7, py);
-                        ps.setBigDecimal(8, pz);
-                        if (devId == null) {
-                            ps.setNull(9, java.sql.Types.BIGINT);
-                        } else {
-                            ps.setLong(9, devId);
-                        }
-                        ps.setString(10, action);
-                        ps.executeUpdate();
-                        ok++;
-                    }
+                    queryMapper.upsertRobotPoint(tenantId, islandId, robotResourceId,
+                            code, name, px, py, pz, devId, action);
+                    ok++;
                 }
                 return ok;
             } catch (SQLException | RuntimeException e) {

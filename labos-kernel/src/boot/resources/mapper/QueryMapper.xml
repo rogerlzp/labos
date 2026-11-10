@@ -835,6 +835,35 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
 
+    <insert id="upsertRobotPoint">
+        INSERT INTO robot_point
+          (tenant_id, island_id, robot_resource_id, code, name,
+           x, y, z, device_resource_id, action, synced_at)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
+                #{param6}, #{param7}, #{param8}, #{param9}, #{param10}, now())
+        ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE
+           SET name = COALESCE(EXCLUDED.name, robot_point.name),
+               x = COALESCE(EXCLUDED.x, robot_point.x),
+               y = COALESCE(EXCLUDED.y, robot_point.y),
+               z = COALESCE(EXCLUDED.z, robot_point.z),
+               device_resource_id = COALESCE(EXCLUDED.device_resource_id,
+                                            robot_point.device_resource_id),
+               action = COALESCE(EXCLUDED.action, robot_point.action),
+               updated_at = now()
+    </insert>
+
+    <update id="detachDeviceFromIsland">
+        UPDATE resource_node
+           SET parent_id = NULL, path = '/' || code, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
+    </update>
+
+    <update id="attachDeviceToIsland">
+        UPDATE resource_node
+           SET parent_id = #{param3}, path = #{param4}, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
+    </update>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
