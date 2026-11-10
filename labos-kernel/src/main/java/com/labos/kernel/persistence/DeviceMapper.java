@@ -160,4 +160,33 @@ public interface DeviceMapper {
     /** 按设备编号查型号 id。 */
     Long selectDeviceIdByCode(long tenantId, String code);
 
+    // ---- DeviceRegistrar（设备池登记 CLI，阶段3第30批收编）----
+
+    /**
+     * 设备池登记 upsert（{@code (tenant_id, code)} 冲突时更新展示字段，
+     * {@code attr} 为合并而非覆盖）；返回 device id。capabilityId 可空。
+     */
+    Long upsertDevicePool(@Param("tenantId") long tenantId,
+                          @Param("code") String code,
+                          @Param("name") String name,
+                          @Param("model") String model,
+                          @Param("vendor") String vendor,
+                          @Param("deviceType") String deviceType,
+                          @Param("capabilityId") Long capabilityId,
+                          @Param("icon") String icon,
+                          @Param("color") String color,
+                          @Param("remark") String remark,
+                          @Param("attrJson") String attrJson);
+
+    /**
+     * 方法集同步（{@code device_method}，{@code (device_id, method)} 冲突时更新；
+     * 只增改不删 —— 存量方法可能被历史流程引用）。items 每行：
+     * method/label/capabilityId(可空)/paramsJson/estimate/timeout。
+     */
+    int upsertDeviceMethods(@Param("tenantId") long tenantId,
+                            @Param("deviceId") long deviceId,
+                            @Param("items") List<Map<String, Object>> items);
+
+    /** 设备池清单（{@code --list} 用；deployed = 未软删实例数，按它降序）。 */
+    List<Map<String, Object>> selectDevicePoolList(@Param("tenantId") long tenantId);
 }

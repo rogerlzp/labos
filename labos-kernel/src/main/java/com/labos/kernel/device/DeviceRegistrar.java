@@ -7,11 +7,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Types;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -85,7 +80,7 @@ public final class DeviceRegistrar {
         }
 
         com.labos.kernel.persistence.Tx.inTransaction(DbConfig.fromEnv(), c -> {
-            Long capId = capabilityId(c, spec.capability);
+            Long capId = capabilityId(spec.capability);
             if (spec.capability != null && capId == null) {
                 log.error("能力 " + spec.capability + " 在 capability 表里不存在。");
                 log.error("现有能力：");
@@ -98,11 +93,11 @@ public final class DeviceRegistrar {
                 System.exit(3);
             }
 
-            long id = upsert(c, spec, icon, capId);
+            long id = upsert(spec, icon, capId);
             // **方法集要一起落库**：设备池里点「详情」看的方法，来自 device_method 表，
             // 不是型号库。只写 device 不写 device_method，界面就是"这台设备没有任何方法"
             // （2026-11-02 用户点出来：ASPIN_2K-1 方法为空）。
-            int methods = syncMethods(c, id, capId, spec.deviceModel);
+            int methods = syncMethods(id, capId, spec.deviceModel);
             printf("✅ 已加入设备池：id=%d code=%s 型号=%s 能力=%s%n",
                     id, spec.code, spec.model, spec.capability == null ? "-" : spec.capability);
             if (spec.deviceModel != null) {
@@ -309,47 +304,11 @@ public final class DeviceRegistrar {
 
     // ---------------------------------------------------------------- 写库
 
-    private static String SQL = """
-            INSERT INTO device (tenant_id, code, name, model, vendor, device_type,
-                                capability_id, icon, color, need_reagent, remark, attr)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, ?, ?::jsonb)
-            ON CONFLICT (tenant_id, code) DO UPDATE
-               SET name = EXCLUDED.name,
-                   model = EXCLUDED.model,
-                   vendor = EXCLUDED.vendor,
-                   device_type = EXCLUDED.device_type,
-                   capability_id = EXCLUDED.capability_id,
-                   icon = EXCLUDED.icon,
-                   color = EXCLUDED.color,
-                   remark = EXCLUDED.remark,
-                   attr = device.attr || EXCLUDED.attr,
-                   updated_at = now()
-            RETURNING id
-            """;
-
-    private static long upsert(Connection c, Spec s, String icon, Long capId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(SQL)) {
-            int i = 1;
-            ps.setLong(i++, tenantId());
-            ps.setString(i++, s.code);
-            ps.setString(i++, s.name);
-            ps.setString(i++, s.model);
-            ps.setString(i++, s.vendor);
-            ps.setString(i++, s.deviceType);
-            if (capId == null) {
-                ps.setNull(i++, Types.BIGINT);
-            } else {
-                ps.setLong(i++, capId);
-            }
-            ps.setString(i++, icon);
-            ps.setString(i++, s.color);
-            ps.setString(i++, s.remark);
-            ps.setString(i++, attrJson(s));
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+    private static long upsert(Spec s, String icon, Long capId) {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceMapper.class)
+                .upsertDevicePool(tenantId(), s.code, s.name, s.model, s.vendor,
+                        s.deviceType, capId, icon, s.color, s.remark, attrJson(s));
     }
 
     /**
@@ -371,7 +330,7 @@ public final class DeviceRegistrar {
         return sb.toString();
     }
 
-    private static Long capabilityId(Connection c, String code) throws SQLException {
+    private static Long capabilityId(String code) {
         if (code == null || code.isBlank()) {
             return null;
         }
@@ -384,9 +343,9 @@ public final class DeviceRegistrar {
         if (code == null || code.isBlank()) {
             return null;
         }
-        try (Connection c = DbConfig.fromEnv().open()) {
-            return capabilityId(c, code);
-        } catch (SQLException e) {
+        try {
+            return capabilityId(code);
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -399,8 +358,7 @@ public final class DeviceRegistrar {
      *
      * @return 写了多少条
      */
-    private static int syncMethods(Connection c, long deviceId, Long capId,
-                                   String modelId) throws SQLException {
+    private static int syncMethods(long deviceId, Long capId, String modelId) {
         if (modelId == null || modelId.isBlank()) {
             return 0;
         }
@@ -408,45 +366,31 @@ public final class DeviceRegistrar {
         if (m == null) {
             return 0;
         }
-        int n = 0;
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO device_method
-                  (tenant_id, device_id, method, name, capability_id,
-                   param_schema, estimate_sec, timeout_sec)
-                VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?)
-                ON CONFLICT (device_id, method) DO UPDATE
-                   SET name = EXCLUDED.name,
-                       capability_id = EXCLUDED.capability_id,
-                       param_schema = EXCLUDED.param_schema,
-                       estimate_sec = EXCLUDED.estimate_sec,
-                       timeout_sec = EXCLUDED.timeout_sec,
-                       updated_at = now()
-                """)) {
-            for (DeviceModel.Method mm : m.methods()) {
-                // 手册没写的指令（如 GetStatus）标出来：接真机时可能根本不存在
-                String alias = mm.aliasOf();
-                String label = mm.documented()
-                        ? alias : alias + "（手册未提供，需现场确认）";
-                int estimate = mm.delayMs() > 0 ? (int) Math.max(1, mm.delayMs() / 1000) : 1;
-                int timeout = (int) Math.max(estimate + 2, m.actionTimeoutMs / 1000);
-                ps.setLong(1, tenantId());
-                ps.setLong(2, deviceId);
-                ps.setString(3, alias);
-                ps.setString(4, label);
-                if (capId == null) {
-                    ps.setNull(5, Types.BIGINT);
-                } else {
-                    ps.setLong(5, capId);
-                }
-                ps.setString(6, paramsJson(mm));
-                ps.setInt(7, estimate);
-                ps.setInt(8, timeout);
-                ps.addBatch();
-                n++;
-            }
-            ps.executeBatch();
+        // 每行一个方法：label / estimate / timeout 的计算留在 Java 侧（同原 addBatch 循环）。
+        java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+        for (DeviceModel.Method mm : m.methods()) {
+            // 手册没写的指令（如 GetStatus）标出来：接真机时可能根本不存在
+            String alias = mm.aliasOf();
+            String label = mm.documented()
+                    ? alias : alias + "（手册未提供，需现场确认）";
+            int estimate = mm.delayMs() > 0 ? (int) Math.max(1, mm.delayMs() / 1000) : 1;
+            int timeout = (int) Math.max(estimate + 2, m.actionTimeoutMs / 1000);
+            java.util.Map<String, Object> it = new java.util.LinkedHashMap<>();
+            it.put("method", alias);
+            it.put("label", label);
+            it.put("capabilityId", capId);
+            it.put("paramsJson", paramsJson(mm));
+            it.put("estimate", estimate);
+            it.put("timeout", timeout);
+            items.add(it);
         }
-        return n;
+        if (items.isEmpty()) {
+            return 0;
+        }
+        com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceMapper.class)
+                .upsertDeviceMethods(tenantId(), deviceId, items);
+        return items.size();
     }
 
     /** 参数说明进 param_schema.params（界面「详情」里能看到"这条指令带什么参数"）。 */
@@ -470,30 +414,18 @@ public final class DeviceRegistrar {
 
     // ---------------------------------------------------------------- 查询
 
-    private static void listPool() throws SQLException {
-        String sql = """
-                SELECT d.code, d.name, d.device_type, c.code AS cap, d.icon,
-                       d.attr->>'device_model' AS model_id,
-                       (SELECT count(*) FROM device_instance di
-                         WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS deployed
-                FROM device d
-                LEFT JOIN capability c ON c.id = d.capability_id
-                WHERE d.tenant_id = ?
-                ORDER BY deployed DESC, d.code
-                """;
-        try (Connection c = DbConfig.fromEnv().open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId());
-            try (ResultSet rs = ps.executeQuery()) {
-                printf("%-16s %-28s %-14s %-10s %-12s %s%n",
-                        "code", "名称", "类型", "能力", "型号库", "已部署");
-                while (rs.next()) {
-                    printf("%-16s %-28s %-14s %-10s %-12s %d%n",
-                            rs.getString("code"), cut(rs.getString("name"), 26),
-                            nvl(rs.getString("device_type")), nvl(rs.getString("cap")),
-                            nvl(rs.getString("model_id")), rs.getInt("deployed"));
-                }
-            }
+    private static void listPool() {
+        printf("%-16s %-28s %-14s %-10s %-12s %s%n",
+                "code", "名称", "类型", "能力", "型号库", "已部署");
+        for (java.util.Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceMapper.class)
+                .selectDevicePoolList(tenantId())) {
+            Object deployed = row.get("deployed");
+            printf("%-16s %-28s %-14s %-10s %-12s %d%n",
+                    strOf(row.get("code")), cut(strOf(row.get("name")), 26),
+                    nvl(strOf(row.get("deviceType"))), nvl(strOf(row.get("cap"))),
+                    nvl(strOf(row.get("modelId"))),
+                    deployed instanceof Number num ? num.intValue() : 0);
         }
         log.info("");
         log.info("型号库（能对接真机的）：");
@@ -593,6 +525,11 @@ public final class DeviceRegistrar {
 
     private static String nvl(String s) {
         return s == null ? "-" : s;
+    }
+
+    /** Map 行里的值统一转字符串（null 保持 null，走 nvl/cut 的原有判空）。 */
+    private static String strOf(Object o) {
+        return o == null ? null : o.toString();
     }
 
     private static String cut(String s, int n) {

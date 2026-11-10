@@ -344,4 +344,54 @@
 <select id="selectDeviceIdByCode" resultType="java.lang.Long">
         SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
+
+    <!-- DeviceRegistrar 设备池登记（阶段3第30批收编） -->
+    <select id="upsertDevicePool" resultType="java.lang.Long">
+        INSERT INTO device (tenant_id, code, name, model, vendor, device_type,
+                            capability_id, icon, color, need_reagent, remark, attr)
+        VALUES (#{tenantId}, #{code}, #{name}, #{model}, #{vendor}, #{deviceType},
+                #{capabilityId,jdbcType=BIGINT}, #{icon}, #{color}, false,
+                #{remark}, #{attrJson}::jsonb)
+        ON CONFLICT (tenant_id, code) DO UPDATE
+           SET name = EXCLUDED.name,
+               model = EXCLUDED.model,
+               vendor = EXCLUDED.vendor,
+               device_type = EXCLUDED.device_type,
+               capability_id = EXCLUDED.capability_id,
+               icon = EXCLUDED.icon,
+               color = EXCLUDED.color,
+               remark = EXCLUDED.remark,
+               attr = device.attr || EXCLUDED.attr,
+               updated_at = now()
+        RETURNING id
+    </select>
+    <insert id="upsertDeviceMethods">
+        INSERT INTO device_method
+          (tenant_id, device_id, method, name, capability_id,
+           param_schema, estimate_sec, timeout_sec)
+        VALUES
+        <foreach collection="items" item="it" separator=",">
+            (#{tenantId}, #{deviceId}, #{it.method}, #{it.label},
+             #{it.capabilityId,jdbcType=BIGINT}, #{it.paramsJson}::jsonb,
+             #{it.estimate}, #{it.timeout})
+        </foreach>
+        ON CONFLICT (device_id, method) DO UPDATE
+           SET name = EXCLUDED.name,
+               capability_id = EXCLUDED.capability_id,
+               param_schema = EXCLUDED.param_schema,
+               estimate_sec = EXCLUDED.estimate_sec,
+               timeout_sec = EXCLUDED.timeout_sec,
+               updated_at = now()
+    </insert>
+    <select id="selectDevicePoolList" resultType="java.util.Map">
+        SELECT d.code AS "code", d.name AS "name", d.device_type AS "deviceType",
+               c.code AS "cap", d.icon AS "icon",
+               d.attr-&gt;&gt;'device_model' AS "modelId",
+               (SELECT count(*) FROM device_instance di
+                 WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS "deployed"
+        FROM device d
+        LEFT JOIN capability c ON c.id = d.capability_id
+        WHERE d.tenant_id = #{tenantId}
+        ORDER BY deployed DESC, d.code
+    </select>
 </mapper>
