@@ -57,7 +57,7 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
-    <select id="selectIslandCodes" resultType="java.util.Map">
+    <select id="selectResourceCodes" resultType="java.util.Map">
         SELECT id AS "id", code AS "code", name AS "name"
           FROM resource_node
          WHERE tenant_id = #{param1}

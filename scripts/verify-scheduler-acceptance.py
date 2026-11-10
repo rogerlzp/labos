@@ -8,8 +8,9 @@ M9 调度验收：3 个实验并发/互斥 + 队列位次与实际派发一致 +
 不碰设备，也仍然释放岛锁、落终态。
 
 观测方式（空实验执行太快，纯靠轮询会漏帧）：
-  · 同岛互斥 + 派发顺序：用 API 进程日志里的 "[调度] 实验 <id> 结束/失败" 顺序判定
-    （同岛串行 => 完成顺序 == 派发顺序），并辅以高频采样"同岛同时占用数 <= 1"；
+  · 资源级互斥 + 派发顺序：用 API 进程日志里的 "[调度] 派发实验 <id>" 判定派发顺序
+    （2026-11-10 起同岛实验可以并行，完成顺序不再等于派发顺序，必须直接读派发日志），
+    并辅以高频采样"同一台设备同时占用数 <= 1"；
   · 跨岛并发：3 轮提交 + 20ms 级高频采样，任一轮观测到 >=2 个实验同时 running 即成立
     （MAX_CONCURRENT=4；不同岛互不阻塞）。
   · 甘特页：Playwright 打开 /schedule 确认渲染。
@@ -35,6 +36,9 @@ from playwright.sync_api import sync_playwright
 PASS = 0
 FAIL = 0
 LOG_RE = re.compile(r"\[调度\] 实验 (\d+) (?:结束|失败)")
+# 派发顺序单独抓：2026-11-10 起同岛实验可以并行，完成顺序不再等于派发顺序，
+# 派发顺序必须直接读日志，否则断言就落空了。
+DISPATCH_RE = re.compile(r"\[调度\] 派发实验 (\d+)")
 
 
 def ok(msg):
@@ -137,6 +141,17 @@ def log_completion_order(path, offset):
     return [int(m.group(1)) for m in LOG_RE.finditer(text)]
 
 
+def log_dispatch_order(path, offset):
+    """按 API 进程日志里的「[调度] 派发实验 <id>」抓派发顺序。"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    return [int(m.group(1)) for m in DISPATCH_RE.finditer(text)]
+
+
 def run_terminal(cur, run_ids):
     if not run_ids:
         return True
@@ -165,12 +180,14 @@ def sample_until_terminal(api, cur, run_ids, seconds=120, interval=0.02):
         code, st = api.call("GET", "/api/scheduler/status")
         if code == 200 and isinstance(st, dict):
             max_running = max(max_running, st.get("running") or 0)
+            # 2026-11-10 起是**资源占用**（不再是岛锁）：真约束是「同一台设备同一时刻
+            # 只服务一个实验」⇒ 同一 resourceId 的并发占用数必须 <= 1。
             per = {}
-            for l in (st.get("islandLocks") or []):
-                iid = l.get("islandId")
-                per[iid] = per.get(iid, 0) + 1
-            for iid, n in per.items():
-                per_island_max[iid] = max(per_island_max.get(iid, 0), n)
+            for l in (st.get("resourceLocks") or []):
+                rid = l.get("resourceId")
+                per[rid] = per.get(rid, 0) + 1
+            for rid, n in per.items():
+                per_island_max[rid] = max(per_island_max.get(rid, 0), n)
             if drained_at is None and (st.get("running") or 0) == 0 \
                     and (st.get("queued") or 0) == 0:
                 drained_at = time.time() - drain_start
@@ -223,7 +240,7 @@ def main():
     tag = int(time.time())
     try:
         # ================= A. 同岛：互斥 + 派发顺序 =================
-        step("A. 同岛 3 实验：岛级互斥 + 派发顺序 == 提交顺序")
+        step("A. 同岛 3 实验：资源级互斥 + 派发顺序 == 提交顺序")
         island_a = islands[0]
         exp_ids = []
         for i in range(3):
@@ -239,13 +256,15 @@ def main():
         ok("队列位次与提交顺序一致（同优先级按提交时间）") \
             if queued == sorted(queued, key=lambda e: pos[e]) else bad("队列位次顺序不对", pos)
         max_running_a, per_a, drain_a = sample_until_terminal(api, cur, run_ids)
-        ok("同岛任何时刻最多 1 个实验占用（层级互斥）") \
-            if per_a.get(island_a["id"], 0) <= 1 else bad("同岛出现并发", per_a)
+        ok("同一台设备任何时刻最多 1 个实验占用（资源级互斥）") \
+            if all(v <= 1 for v in per_a.values()) else bad("同设备出现并发", per_a)
         ok("同岛 3 个实验均跑到终态") if wait_terminal(cur, run_ids) else bad("未到终态")
         time.sleep(0.6)   # 等 stdout 刷盘
-        order = log_completion_order(args.api_log, offset)
-        got = [e for e in order if e in exp_ids]
-        ok("派发顺序 == 提交顺序（日志完成序）") if got == exp_ids else bad("派发顺序不一致", (got, exp_ids))
+        # 派发顺序直接读「派发实验」日志：同岛实验现在可以并行，完成顺序不再确定，
+        # 用完成序反推派发序会误判。
+        dispatch = [e for e in log_dispatch_order(args.api_log, offset) if e in exp_ids]
+        ok("派发顺序 == 提交顺序（日志派发序）") \
+            if dispatch == exp_ids else bad("派发顺序不一致", (dispatch, exp_ids))
 
         # ================= B. 不同岛：并发 =================
         step("B. 不同岛 3 实验：观测到并发（3 轮，受 MAX_CONCURRENT=4 限制）")

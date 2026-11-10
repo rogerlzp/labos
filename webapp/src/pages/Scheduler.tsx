@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   api,
   type ExperimentEtaItem,
-  type SchedulerIslandLock,
+  type SchedulerResourceLock,
   type SchedulerQueueItem,
 } from '../api/client';
 import { formatTime, formatWait } from '../utils/format';
@@ -23,6 +23,24 @@ function IslandCell({ code, name }: { code: string | null; name?: string | null 
   const t = useT();
   // N-09 / ADR-ISLAND-005：界面只显示岛名，不显示内部 island_id。
   if (!code && !name) return <Typography.Text type="secondary">{t('scheduler.unknownIsland')}</Typography.Text>;
+  return (
+    <Tooltip title={code ? t('island.codeTooltip', { code }) : ''}>
+      <Tag color="blue">{name || code}</Tag>
+    </Tooltip>
+  );
+}
+
+/**
+ * 资源占用单元格：显示设备名，编码放 tooltip。
+ *
+ * <p>2026-11-10 起调度占用的是**设备**（不是整个岛）—— 同岛不同设备可以并行，
+ * 值班员要看到的是「哪台设备被谁占着」。
+ */
+function ResourceCell({ code, name }: { code: string | null; name?: string | null }) {
+  const t = useT();
+  if (!code && !name) {
+    return <Typography.Text type="secondary">{t('scheduler.unknownResource')}</Typography.Text>;
+  }
   return (
     <Tooltip title={code ? t('island.codeTooltip', { code }) : ''}>
       <Tag color="blue">{name || code}</Tag>
@@ -80,7 +98,7 @@ export default function SchedulerPage() {
   }
 
   const st = status.data;
-  const locks = st?.islandLocks ?? [];
+  const locks = st?.resourceLocks ?? [];
   const queue = st?.queue ?? [];
   const workers = st?.workers;
   const stalled = !!st?.stalled;
@@ -154,8 +172,8 @@ export default function SchedulerPage() {
           </Typography.Text>
         }
       >
-        <Table<SchedulerIslandLock>
-          rowKey="islandId"
+        <Table<SchedulerResourceLock>
+          rowKey="resourceId"
           size="small"
           pagination={false}
           loading={status.isLoading}
@@ -165,8 +183,8 @@ export default function SchedulerPage() {
           }}
           columns={[
             {
-              title: t('scheduler.col.island'), width: 220,
-              render: (_, r) => <IslandCell code={r.islandCode} name={r.islandName} />,
+              title: t('scheduler.col.resource'), width: 220,
+              render: (_, r) => <ResourceCell code={r.resourceCode} name={r.resourceName} />,
             },
             {
               title: t('scheduler.col.holder'),

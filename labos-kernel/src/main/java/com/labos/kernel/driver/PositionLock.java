@@ -390,14 +390,23 @@ public final class PositionLock {
                 }
             }
             int n;
+            // ⚠ **归属校验**（2026-11-10）：WHERE 里必须带 `occupied_by_run = ?`。
+            //   位置上的板是谁放上去的，`occupied_by_run` 记着；取板只允许取**自己的**。
+            //   以前这条约束是靠「岛级互斥」隐含保证的（岛内同时只有一个实验在跑，
+            //   所以设备上的板必然是自己的）—— 岛内并行一放开，这个隐含保证就没了：
+            //   A 把板放进孵箱、B 对同一台设备做 Withdraw，就会把 A 的板取走。
+            //   读不到归属（occupied_by_run 为空）时按**取不到**处理（fail-closed）：
+            //   宁可报「没板可取」让节点显式转人工，也不要静默搬走别人的板。
             try (PreparedStatement ps = c.prepareStatement("""
                     UPDATE position_state
                     SET plate_id = NULL, occupied_since = NULL, occupied_by_run = NULL,
                         updated_at = now()
                     WHERE tenant_id = ? AND resource_id = ?
+                      AND occupied_by_run = ?
                     """)) {
                 ps.setLong(1, tenantId);
                 ps.setLong(2, resourceId);
+                ps.setLong(3, runId);
                 n = ps.executeUpdate();
             }
             if (n > 0 && plate != null) {
@@ -670,9 +679,12 @@ public final class PositionLock {
             return pos;
         }
 
-        // withdraw：找第一个有板的位置
+        // withdraw：找第一个**本 run 放上去的**有板位置
         // 同样不直接写 has_plate，由 takePlate 内部的 refreshHasPlate 派生
-        Long pos = firstOccupiedPosition(deviceResource);
+        // ⚠ 归属过滤在 firstOccupiedPosition 里（2026-11-10）：只取自己的板。
+        //   这台设备上有别人的板时，这里返回 null → NO_PLATE_TO_TAKE，
+        //   节点显式转人工，而不是静默搬走别人的板。
+        Long pos = firstOccupiedPosition(deviceResource, runId);
         if (pos == null) {
             return NO_PLATE_TO_TAKE;
         }
@@ -748,7 +760,7 @@ public final class PositionLock {
     }
 
     /** 设备下第一个有板的位置。 */
-    private Long firstOccupiedPosition(long deviceResourceId) throws SQLException {
+    private Long firstOccupiedPosition(long deviceResourceId, long runId) throws SQLException {
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
                      SELECT r.id FROM resource_node r
@@ -756,10 +768,16 @@ public final class PositionLock {
                           ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
                      WHERE r.tenant_id = ? AND r.parent_id = ?
                        AND ps.plate_id IS NOT NULL AND ps.plate_id <> ''
+                       -- ⚠ **归属过滤**（2026-11-10）：只认**本 run 放上去的板**。
+                       --   以前这台设备上的板必然是自己的（岛级互斥隐含保证），
+                       --   岛内并行后不成立 —— 不过滤会把别的实验的板取走。
+                       --   归属为空（读不到）时按「不认」处理（fail-closed）。
+                       AND ps.occupied_by_run = ?
                      ORDER BY r.id LIMIT 1
                      """)) {
             ps.setLong(1, tenantId);
             ps.setLong(2, deviceResourceId);
+            ps.setLong(3, runId);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getLong(1) : null;
             }

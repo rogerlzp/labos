@@ -36,12 +36,13 @@ public class SchedulerController {
                 "started", st.started(),
                 "loopStarted", st.loopStarted(),
                 "lastDispatchAt", st.lastDispatchAt(),
-                "islandLocks", new Jsons.Raw(locksJson(st.islandLocks())),
+                // 2026-11-10：调度粒度改成资源级 ⇒ islandLocks 改名 resourceLocks
+                "resourceLocks", new Jsons.Raw(locksJson(st.resourceLocks())),
                 "queue", new Jsons.Raw(queueJson(st.queue())),
                 "workers", new Jsons.Raw(workersJson(st)));
     }
 
-    /** 岛锁列表转 JSON 数组（§7.1：补 islandCode / experimentId / experimentNo）。 */
+    /** 资源占用列表转 JSON 数组（§7.1：补 resourceCode / experimentId / experimentNo）。 */
     private static String locksJson(List<ExperimentScheduler.LockEntry> locks) {
         if (locks == null) {
             return "[]";
@@ -49,8 +50,9 @@ public class SchedulerController {
         List<String> items = new ArrayList<>();
         for (ExperimentScheduler.LockEntry l : locks) {
             items.add(Jsons.obj(
-                    "islandId", l.islandId(),
-                    "islandCode", l.islandCode(),
+                    "resourceId", l.resourceId(),
+                    "resourceCode", l.resourceCode(),
+                    "resourceName", l.resourceName(),
                     "experimentRunId", l.experimentRunId(),
                     "runId", l.experimentRunId(),
                     "experimentId", l.experimentId(),

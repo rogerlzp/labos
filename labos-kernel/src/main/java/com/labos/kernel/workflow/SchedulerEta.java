@@ -179,9 +179,11 @@ public final class SchedulerEta {
             // 同一实验可能有重复入队（多次提交）：取位次最靠前的作为它的队列视图
             queueByExperiment.putIfAbsent(q.experimentId(), q);
         }
-        Map<Long, ExperimentScheduler.LockEntry> lockByIsland = new HashMap<>();
+        // 占用索引：按**资源**（2026-11-10 起不再是岛锁）。
+        // 一个资源同一时刻只被一条 run 占着，所以按 resourceId 建索引。
+        Map<Long, ExperimentScheduler.LockEntry> lockByResource = new HashMap<>();
         for (ExperimentScheduler.LockEntry l : lockSnap) {
-            lockByIsland.putIfAbsent(l.islandId(), l);
+            lockByResource.putIfAbsent(l.resourceId(), l);
         }
 
         // 最近 limit 个实验（id DESC，与实验列表同口径）
@@ -243,23 +245,47 @@ public final class SchedulerEta {
                 position = qe.position();
                 estimateSec = estimateSecCached(db, tenantId, r.id(), estimateCache);
 
-                ExperimentScheduler.LockEntry holder = lockByIsland.get(qe.islandId());
+                // 等的是**抢资源的那些 run**，不是"同岛占用者"：
+                // 与我需要的资源有交集、且不是我自己的那条占用，才算挡我的。
+                Set<Long> need = new HashSet<>(qe.resources());
+                ExperimentScheduler.LockEntry holder = null;
                 long holderRemain = 0L;
-                if (holder != null) {
-                    holderRemain = remainCache.computeIfAbsent(holder.experimentRunId(),
+                for (ExperimentScheduler.LockEntry l : lockSnap) {
+                    if (!need.contains(l.resourceId())) {
+                        continue;
+                    }
+                    if (l.experimentRunId() == qe.experimentRunId()) {
+                        continue;   // 自己占的（重入）不算挡路
+                    }
+                    long remain = remainCache.computeIfAbsent(l.experimentRunId(),
                             rid2 -> estimateRemainQuietly(db, tenantId, rid2));
+                    // 多个冲突里取**最晚释放**的那个 —— 它才是真正的瓶颈
+                    if (remain > holderRemain) {
+                        holderRemain = remain;
+                        holder = l;
+                    }
                 }
+                // 排在我前面、且与我抢资源（同一批资源）的实验
                 List<Long> ahead = new ArrayList<>();
                 for (ExperimentScheduler.QueueEntry other : queueSnap) {
-                    if (other.islandId() == qe.islandId()
-                            && other.position() < qe.position()) {
+                    if (other.position() >= qe.position()) {
+                        continue;
+                    }
+                    if (other.resources() == null || other.resources().isEmpty()) {
+                        continue;
+                    }
+                    if (need.isEmpty()) {
+                        // 我没有绑定任何设备 ⇒ 不与任何人抢资源，不算"排在我前面"
+                        continue;
+                    }
+                    boolean clash = other.resources().stream().anyMatch(need::contains);
+                    if (clash) {
                         ahead.add(estimateSecCached(db, tenantId,
                                 other.experimentId(), estimateCache));
                     }
                 }
                 wait = estimateWait(false, position, holderRemain, ahead);
-                reason = queuedReason(r.islandId() == null ? 0L : r.islandId(),
-                        holder, ahead.size());
+                reason = queuedReason(holder, ahead.size());
             } else {
                 // 不在运行也不在调度队列：留给前端显示「—」，不编一个 0
                 status = r.status();
@@ -282,19 +308,22 @@ public final class SchedulerEta {
     }
 
     /** 预计等待的人话原因（前端 tooltip 直接显示）。 */
-    private static String queuedReason(long islandId,
-                                       ExperimentScheduler.LockEntry holder,
+    /**
+     * 排队原因（2026-11-10 起按**资源**口径，不再按岛）。
+     *
+     * <p>旧文案写"岛被 X 占用"——调度改成资源级之后，同岛不同实验是可以并行的，
+     * 再说"岛被占"会误导值班员以为整个岛都被锁住了。
+     */
+    private static String queuedReason(ExperimentScheduler.LockEntry holder,
                                        int aheadCount) {
         StringBuilder sb = new StringBuilder();
         if (holder != null) {
             String who = holder.experimentNo() != null && !holder.experimentNo().isBlank()
                     ? holder.experimentNo() : "run#" + holder.experimentRunId();
-            if (islandId > 0) {
-                sb.append("岛被 ").append(who).append(" 占用");
-            } else {
-                // 未指定岛的实验在内核里共用 0 号伪岛串行，原因别写成"岛被占"误导
-                sb.append("前序实验 ").append(who).append(" 尚未结束");
-            }
+            String what = holder.resourceName() != null && !holder.resourceName().isBlank()
+                    ? holder.resourceName() : holder.resourceCode();
+            sb.append("设备 ").append(what == null ? "" : what)
+              .append(" 被 ").append(who).append(" 占用");
         } else {
             sb.append("排队中");
         }

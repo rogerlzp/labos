@@ -25,8 +25,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 实验调度器：多实验并行的唯一入口。
  *
- * <p><b>核心约束：岛级互斥</b>。一个岛通常只有一台机械臂，两个实验同时跑会打架，
- * 而且机械臂分不清板子归属——可能把 A 的板送到 B 的目的地。
+ * <p><b>核心约束：资源级互斥</b>（2026-11-10 起取代岛级互斥）。一个岛通常只有一台
+ * 机械臂，两个实验同时跑会打架，而且机械臂分不清板子归属——可能把 A 的板送到 B 的
+ * 目的地。真正的物理约束由三层更细的锁兜住：设备锁 {@code DeviceLock}（机械臂就是
+ * 普通设备）、位置锁 {@code PositionLock}、板子归属校验（取板只取自己的）。
+ * 本类只做**派发前的粗筛**：需要的资源与别人正在占的不相交才放行 ⇒ 同岛不同资源集
+ * 的实验可以并行。
  *
  * <p><b>为什么是"贪心 + 滚动"而不是最优解</b>：
  * 工时精度只有 10 秒级、波动比最大 13.5×，最优解和贪心的实际差距小于工时误差。
@@ -60,7 +64,7 @@ public final class ExperimentScheduler {
     /** 一次自动续队最多处理几个候选批（防止解除后一次建太多、打乱队列）。 */
     private static final int AUTO_CONTINUE_MAX_PER_TICK = 5;
 
-    private record Lock(long experimentRunId, Instant at) {
+    private record ResourceHold(long experimentRunId, Instant at) {
     }
 
     /**
@@ -77,16 +81,28 @@ public final class ExperimentScheduler {
      * <p>{@code experimentId/experimentNo/islandCode} 来自联查；库抖动时可能为 null，
      * 但 {@code islandId/experimentRunId/since/expiresAt} 永远来自内存态，不受影响。
      */
-    public record LockEntry(long islandId, String islandCode, String islandName,
+    /**
+     * 快照里的一条**资源占用**（2026-11-10 起不再是「岛锁」）。
+     *
+     * <p>调度粒度改成资源级后，一个岛可以同时有多条占用（不同实验用不同设备），
+     * 值班员要看到的是「哪台设备被谁占着」而不是「哪个岛被谁占着」。
+     */
+    public record LockEntry(long resourceId, String resourceCode, String resourceName,
                             long experimentRunId, Long experimentId, String experimentNo,
                             String since, String expiresAt) {
     }
 
     /** 快照里的一条排队项，{@code position} 从 1 开始（按派发口径排序后的位次）。 */
+    /**
+     * 快照里的一条排队项，{@code position} 从 1 开始（按派发口径排序后的位次）。
+     *
+     * <p>{@code resources} 是这条实验需要的资源集合（派发粗筛用的同一份）——
+     * ETA 要用它算「我排在谁后面、谁跟我抢资源」。
+     */
     public record QueueEntry(long experimentRunId, long experimentId, long islandId,
                              String experimentNo, String islandCode, String islandName,
                              int priority, String deadline, String submittedAt,
-                             int position) {
+                             int position, List<Long> resources) {
     }
 
     /**
@@ -96,7 +112,7 @@ public final class ExperimentScheduler {
      * "调度循环是否已启动"语义保留在新字段 {@code loopStarted}，避免读取现有字段的
      * 客户端把 true/false 当计数）。
      */
-    public record Snapshot(List<LockEntry> islandLocks, List<QueueEntry> queue,
+    public record Snapshot(List<LockEntry> resourceLocks, List<QueueEntry> queue,
                            int running, int queued, int maxConcurrent,
                            boolean stalled, String lastDispatchAt, long started,
                            boolean loopStarted) {
@@ -120,7 +136,25 @@ public final class ExperimentScheduler {
     private final WorkflowService workflows;
 
     /** 岛 -> 锁。 */
-    private final Map<Long, Lock> islandLocks = new ConcurrentHashMap<>();
+    /**
+     * 资源级软预约：{@code resource_id} → 占它的那条实验 run。
+     *
+     * <p><b>为什么不再是「岛锁」（2026-11-10）</b>：岛是**设备的集合**，不是一个可执行
+     * 单元。一岛通常只有一台机械臂，但它只负责**搬板**；孵箱、离心机这些设备在长任务
+     * 期间是独占的，可别的实验完全能用。岛锁把「抢机械臂」放大成「抢整个岛」——
+     * 实验 A 孵育 30 分钟，实验 B 离心 5 分钟也得干等（{@code DeviceLock} 类注释原话：
+     * 「这是纯浪费」）。
+     *
+     * <p><b>真正的物理约束由更细的三层兜住</b>：设备锁 {@code DeviceLock}（一台设备一把
+     * 锁，机械臂就是普通设备 ⇒「一次搬一块板」天然成立，抢不到就等）、位置锁
+     * {@code PositionLock}（层位级预约 + 搬运双锁）、板子归属（取板只取自己的）。
+     *
+     * <p>本表是**派发前的粗筛**：需要的资源与别人正在占的不相交 ⇒ 可以并行开跑；
+     * 相交 ⇒ 留在队列里等。同岛不同资源集的实验从此能并行，抢同一台设备的仍然排队。
+     */
+    private final Map<Long, ResourceHold> resourceHolds = new ConcurrentHashMap<>();
+    /** 「整组要么都占到、要么都不占」的临界区。 */
+    private final Object resourceHoldLock = new Object();
     /** 待执行队列（每次派发前重新排序，量小够用）。 */
     private final List<Queued> queue = new ArrayList<>();
     private final ExecutorService pool = Executors.newFixedThreadPool(MAX_CONCURRENT);
@@ -161,7 +195,7 @@ public final class ExperimentScheduler {
         Thread t = new Thread(this::loop, "experiment-scheduler");
         t.setDaemon(true);
         t.start();
-        log.info("[调度] 已启动（岛级互斥，最多 " + MAX_CONCURRENT + " 个实验并行）");
+        log.info("[调度] 已启动（资源级准入，最多 " + MAX_CONCURRENT + " 个实验并行）");
     }
 
     /**
@@ -443,18 +477,20 @@ public final class ExperimentScheduler {
             if (cov.blocks()) {
                 continue; // 该实验被 site / 所属 Workcell / experiment 级扣留覆盖
             }
-            Long holder = islandHolder(q.islandId());
-            if (holder != null && holder != q.experimentRunId()) {
-                continue;   // 岛被占，试下一个
+            // 资源级准入（2026-11-10，取代岛锁）：需要的资源没被别的实验占着
+            // ⇒ 可以开跑（**同岛也可以并行**）；有冲突 ⇒ 留在队列里等。
+            Set<Long> need = requiredResources(q.experimentId());
+            if (need == null) {
+                continue;   // 读不到资源集合 ⇒ 不放行（fail-closed）
             }
-            if (!islandLocks.containsKey(q.islandId())
-                    && !tryLockIsland(q.islandId(), q.experimentRunId())) {
-                continue;
+            if (!tryHoldResources(need, q.experimentRunId())) {
+                continue;   // 资源被别的实验占着，试下一个
             }
 
             synchronized (queue) {
                 queue.remove(q);
             }
+            log.info("[调度] 派发实验 " + q.experimentId() + "（占资源 " + need.size() + " 项）");
             runningNow++;
             dispatched.incrementAndGet();
             running.incrementAndGet();
@@ -529,20 +565,19 @@ public final class ExperimentScheduler {
             }
             log.error("[调度] 实验 " + q.experimentId() + " 失败: " + e.getMessage());
         } finally {
-            // 必须释放，否则岛永久卡住
-            // P1-5 修复（评审 20261102-03）：改动前的 remove(islandId) 是**无条件删**——
-            // 如果本实验的锁已因 TTL 过期被清理、岛又被别的实验占了，
-            // 这一句会把**别人的锁删掉**，于是同岛两个实验并行跑。
-            // 改成带值比较：只有"当前持有者仍是自己"时才删。
+            // 必须释放，否则资源永久被占住
+            // P1-5 修复（评审 20261102-03）的教训继续适用：改动前的 remove(islandId) 是
+            // **无条件删** —— 如果本实验的锁已因 TTL 过期被清理、资源又被别的实验占了，
+            // 这一句会把**别人的锁删掉**，于是两个实验同时跑同一台设备。
+            // 资源级释放只删「当前持有者是自己」的条目。
             // P1-6：无论成败都要减计数，否则并发名额被永久占用
             running.decrementAndGet();
 
-            islandLocks.computeIfPresent(q.islandId(),
-                    (k, v) -> v.experimentRunId() == q.experimentRunId() ? null : v);
+            releaseResources(q.experimentRunId());
         }
 
-        // 异步分批续队：放到岛锁释放之后，下一批重新参与派发竞争
-        // （不能在上面的 try 里建——那会让"下一批"在这条执行线程还没交还岛锁时进队列）。
+        // 异步分批续队：放到资源释放之后，下一批重新参与派发竞争
+        // （不能在上面的 try 里建 —— 那会让"下一批"在这条执行线程还没交还资源时进队列）。
         if (batchRunId != null && batchCtx != null) {
             continueNextBatch(q.experimentId(), batchCtx.batchNo(), q.experimentRunId());
         }
@@ -646,32 +681,91 @@ public final class ExperimentScheduler {
     // ---------------------------------------------------------- 岛锁
 
     /**
-     * 尝试占岛。
+     * 尝试占住一组资源（派发前的粗筛）。
      *
-     * <p>用 putIfAbsent 而不是"先查再放"——后者有窗口，两个实验会同时认为岛是空的。
-     * 同一个 run 重复占（重入）视为成功。
+     * <p>整组要么都占到、要么都不占 —— 半占会出现「A 占着机械臂、B 占着离心机」
+     * 这种既没意义又难解释的中间态。
+     *
+     * <p>重入：同一条 run 重复占自己已占的资源算成功（批次续队会重新进来）。
      */
-    private boolean tryLockIsland(long islandId, long experimentRunId) {
-        Lock existing = islandLocks.putIfAbsent(islandId,
-                new Lock(experimentRunId, Instant.now()));
-        return existing == null || existing.experimentRunId() == experimentRunId;
+    private boolean tryHoldResources(Set<Long> resources, long experimentRunId) {
+        if (resources.isEmpty()) {
+            return true;
+        }
+        synchronized (resourceHoldLock) {
+            for (Long r : resources) {
+                ResourceHold h = resourceHolds.get(r);
+                if (h != null && h.experimentRunId() != experimentRunId) {
+                    return false;
+                }
+            }
+            Instant now = Instant.now();
+            for (Long r : resources) {
+                resourceHolds.put(r, new ResourceHold(experimentRunId, now));
+            }
+            return true;
+        }
     }
 
-    /** 谁占着这个岛（null 表示空闲）。 */
-    private Long islandHolder(long islandId) {
-        Lock l = islandLocks.get(islandId);
-        return l == null ? null : l.experimentRunId();
+    /**
+     * 释放某条 run 占着的全部资源（run 结束/失败时调用）。
+     *
+     * <p>只删**自己占的** —— 别人后来占上的同名资源不能被误删（否则两个实验就会
+     * 同时跑在同一个设备上）。这是岛锁时代 P1-5 修复留下的教训，资源锁同样适用。
+     */
+    private void releaseResources(long experimentRunId) {
+        synchronized (resourceHoldLock) {
+            resourceHolds.entrySet().removeIf(e -> e.getValue().experimentRunId() == experimentRunId);
+        }
     }
 
-    /** 清理超时未释放的锁。 */
+    /**
+     * 某个实验需要的资源集合（它所有流程的节点绑定设备）。
+     *
+     * <p>取的是 {@code workflow_node.resource_id}（M9 起已双写落表，不用解析 XML）。
+     * 机械臂也是一台设备（TRANSFER 能力）、它作为节点被绑上去 ⇒ 同岛两个实验都要
+     * 搬板时，会在机械臂那个 resource_id 上冲突 ⇒ 仍然互斥 ✓
+     *
+     * <p>取不到时返回 {@code null}（**不放行**，fail-closed）：不知道它要什么的时候
+     * 就放它进去，风险太大。
+     */
+    private Set<Long> requiredResources(long experimentId) {
+        Set<Long> out = new HashSet<>();
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT DISTINCT wn.resource_id
+                     FROM experiment_process ep
+                     JOIN workflow_node wn
+                       ON wn.workflow_id = ep.workflow_id AND wn.tenant_id = ep.tenant_id
+                     WHERE ep.tenant_id = ? AND ep.experiment_id = ?
+                       AND wn.resource_id IS NOT NULL
+                     """)) {
+            ps.setLong(1, tenantId);
+            ps.setLong(2, experimentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(rs.getLong(1));
+                }
+            }
+        } catch (SQLException e) {
+            log.error("[调度] 读实验资源集合失败，保守不放行: experiment=" + experimentId
+                    + " " + e.getMessage());
+            return null;
+        }
+        return out;
+    }
+
+    /** 清理超时未释放的占用（执行线程被 kill -9 时 finally 跑不到）。 */
     private void sweepExpiredLocks() {
         Instant cutoff = Instant.now().minus(LOCK_TTL);
-        islandLocks.entrySet().removeIf(e -> e.getValue().at().isBefore(cutoff));
+        synchronized (resourceHoldLock) {
+            resourceHolds.entrySet().removeIf(e -> e.getValue().at().isBefore(cutoff));
+        }
     }
 
     // ---------------------------------------------------------- 查询
 
-    private record LockView(long islandId, long experimentRunId, Instant at) {
+    private record ResourceView(long resourceId, long experimentRunId, Instant at) {
     }
 
     /**
@@ -689,10 +783,12 @@ public final class ExperimentScheduler {
      * 「谁占着哪个岛、队列里有几条」这些最关键的信息仍要能看。
      */
     public Snapshot snapshot() {
-        List<LockView> lockViews = new ArrayList<>();
-        islandLocks.forEach((islandId, lock) ->
-                lockViews.add(new LockView(islandId, lock.experimentRunId(), lock.at())));
-        lockViews.sort(Comparator.comparingLong(LockView::islandId));
+        List<ResourceView> lockViews = new ArrayList<>();
+        synchronized (resourceHoldLock) {
+            resourceHolds.forEach((resourceId, hold) ->
+                    lockViews.add(new ResourceView(resourceId, hold.experimentRunId(), hold.at())));
+        }
+        lockViews.sort(Comparator.comparingLong(ResourceView::resourceId));
 
         List<Queued> queueNow;
         synchronized (queue) {
@@ -700,27 +796,28 @@ public final class ExperimentScheduler {
         }
         queueNow.sort(QUEUE_ORDER);
 
-        Set<Long> islandIds = new HashSet<>();
+        Set<Long> resourceIds = new HashSet<>();
         Set<Long> lockRunIds = new HashSet<>();
         Set<Long> queueExpIds = new HashSet<>();
-        for (LockView l : lockViews) {
-            islandIds.add(l.islandId());
+        for (ResourceView l : lockViews) {
+            resourceIds.add(l.resourceId());
             lockRunIds.add(l.experimentRunId());
         }
         for (Queued q : queueNow) {
+            // 队列项要显示岛名/编码（值班员认岛），岛也是 resource_node 的一行
             if (q.islandId() > 0) {
-                islandIds.add(q.islandId());
+                resourceIds.add(q.islandId());
             }
             queueExpIds.add(q.experimentId());
         }
 
-        Map<Long, String> islandCodes = new HashMap<>();
-        Map<Long, String> islandNames = new HashMap<>();
+        Map<Long, String> resourceCodes = new HashMap<>();
+        Map<Long, String> resourceNames = new HashMap<>();
         Map<Long, Long> expIdByRun = new HashMap<>();
         Map<Long, String> expNoByRun = new HashMap<>();
         Map<Long, String> expNoById = new HashMap<>();
         try (Connection c = db.open()) {
-            loadIslandCodes(c, islandIds, islandCodes, islandNames);
+            loadResourceCodes(c, resourceIds, resourceCodes, resourceNames);
             loadRunExperiments(c, lockRunIds, expIdByRun, expNoByRun);
             loadExperimentNos(c, queueExpIds, expNoById);
         } catch (SQLException e) {
@@ -728,9 +825,9 @@ public final class ExperimentScheduler {
         }
 
         List<LockEntry> lockEntries = new ArrayList<>();
-        for (LockView l : lockViews) {
-            lockEntries.add(new LockEntry(l.islandId(), islandCodes.get(l.islandId()),
-                    islandNames.get(l.islandId()),
+        for (ResourceView l : lockViews) {
+            lockEntries.add(new LockEntry(l.resourceId(), resourceCodes.get(l.resourceId()),
+                    resourceNames.get(l.resourceId()),
                     l.experimentRunId(), expIdByRun.get(l.experimentRunId()),
                     expNoByRun.get(l.experimentRunId()),
                     l.at().toString(), l.at().plus(LOCK_TTL).toString()));
@@ -739,14 +836,18 @@ public final class ExperimentScheduler {
         int position = 0;
         for (Queued q : queueNow) {
             position++;
+            // 队列项带上它需要的资源集合：ETA 要用它算「我跟谁抢资源、排在谁后面」
+            Set<Long> need = requiredResources(q.experimentId());
             queueEntries.add(new QueueEntry(q.experimentRunId(), q.experimentId(),
                     q.islandId(), expNoById.get(q.experimentId()),
-                    q.islandId() <= 0 ? null : islandCodes.get(q.islandId()),
-                    q.islandId() <= 0 ? null : islandNames.get(q.islandId()),
+                    q.islandId() <= 0 ? null : resourceCodes.get(q.islandId()),
+                    q.islandId() <= 0 ? null : resourceNames.get(q.islandId()),
                     q.priority(), q.deadline(),
-                    Instant.ofEpochMilli(q.submittedAt()).toString(), position));
+                    Instant.ofEpochMilli(q.submittedAt()).toString(), position,
+                    need == null ? List.of() : new ArrayList<>(need)));
         }
-        int runningCount = lockEntries.size();
+        // running 是**执行条数**，不是资源占用条数（一个实验可能同时占多台设备）
+        int runningCount = lockRunIds.size();
         int queuedCount = queueEntries.size();
         return new Snapshot(lockEntries, queueEntries, runningCount, queuedCount,
                 MAX_CONCURRENT, runningCount == 0 && queuedCount > 0,
@@ -766,11 +867,11 @@ public final class ExperimentScheduler {
         Map<String, Object> m = new LinkedHashMap<>();
 
         List<Map<String, Object>> locks = new ArrayList<>();
-        for (LockEntry l : s.islandLocks()) {
+        for (LockEntry l : s.resourceLocks()) {
             Map<String, Object> x = new LinkedHashMap<>();
-            x.put("islandId", l.islandId());
-            x.put("islandCode", l.islandCode());
-            x.put("islandName", l.islandName());
+            x.put("resourceId", l.resourceId());
+            x.put("resourceCode", l.resourceCode());
+            x.put("resourceName", l.resourceName());
             x.put("experimentRunId", l.experimentRunId());
             // runId 是 §7.1 示例里的历史别名（与 experimentRunId 同值），保留给读示例的客户端
             x.put("runId", l.experimentRunId());
@@ -780,7 +881,7 @@ public final class ExperimentScheduler {
             x.put("expiresAt", l.expiresAt());
             locks.add(x);
         }
-        m.put("islandLocks", locks);
+        m.put("resourceLocks", locks);
         m.put("running", s.running());
         m.put("queued", s.queued());
 
@@ -817,14 +918,14 @@ public final class ExperimentScheduler {
     }
 
     /** 岛编码批量联查（resource_node.id -> code）。 */
-    private void loadIslandCodes(Connection c, Set<Long> islandIds,
-                                 Map<Long, String> codes, Map<Long, String> names)
+    private void loadResourceCodes(Connection c, Set<Long> ids,
+                                   Map<Long, String> codes, Map<Long, String> names)
             throws SQLException {
-        if (islandIds.isEmpty()) {
+        if (ids.isEmpty()) {
             return;
         }
         for (java.util.Map<String, Object> row
-                : rm().selectIslandCodes(tenantId, new ArrayList<>(islandIds))) {
+                : rm().selectResourceCodes(tenantId, new ArrayList<>(ids))) {
             long id = ((Number) row.get("id")).longValue();
             codes.put(id, (String) row.get("code"));
             names.put(id, (String) row.get("name"));

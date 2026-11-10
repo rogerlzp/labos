@@ -31,8 +31,14 @@ public interface RunMapper {
     /** experiment_run 当前状态（续队前以库为准）。 */
     String selectExperimentRunStatus(long tenantId, long runId);
 
-    /** 岛锁展示用：id -> code/name。 */
-    java.util.List<java.util.Map<String, Object>> selectIslandCodes(
+    /**
+     * 资源展示用：id -&gt; code/name（一次批量）。
+     *
+     * <p>2026-11-10 起调度粒度改成资源级，岛锁变成资源占用 —— 展示的对象从
+     * 「岛」变成「设备/机械臂」，但它们都是 {@code resource_node} 的行，
+     * 所以这条查询对两者通用（岛是 kind='island' 的资源节点）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectResourceCodes(
             long tenantId, java.util.List<Long> ids);
 
     /** 锁的 run -> 实验 id / 实验编号（一次 JOIN 批量）。 */

@@ -457,17 +457,22 @@ export type ExperimentAsyncRunResult =
 // ---------------------------------------------------------------- 并行调度可观测量（M9）
 
 /**
- * 一条岛锁：某个实验正在占用的岛（`GET /api/scheduler/status` 的 islandLocks[]）。
+ * 一条**资源占用**：某个实验正在占用的一台设备
+ * （`GET /api/scheduler/status` 的 resourceLocks[]）。
  *
- * <p>为什么锁要带 `experimentNo`：值班员要看的是"Pre-NGS 被 EXP0812 占着"，
+ * <p>2026-11-10 起不再是「岛锁」：调度粒度改成资源级后，一个岛可以同时有多个
+ * 实验在跑（各用各的设备），值班员要看到的是「哪台设备被谁占着」。
+ *
+ * <p>为什么占用要带 `experimentNo`：值班员要看的是"离心机被 EXP0812 占着"，
  * 而不是"#100033 被 run#91 占着"——后者还得再查一次库才能判断该不该人工干预。
  */
-export interface SchedulerIslandLock {
-  islandId: number;
-  /** 岛编码；联查不到时可能为 null（N-09：界面显示岛名，编码仅作 tooltip） */
-  islandCode: string | null;
-  /** 岛名（N-09：界面主显示；联查不到时回退 islandCode） */
-  islandName?: string | null;
+export interface SchedulerResourceLock {
+  /** 被占用的资源（设备/机械臂）的 resource_node.id */
+  resourceId: number;
+  /** 资源编码；联查不到时可能为 null（界面主显示名称，编码仅作 tooltip） */
+  resourceCode: string | null;
+  /** 资源名（界面主显示；联查不到时回退 resourceCode） */
+  resourceName?: string | null;
   /** 占锁主体：实验级 run 的 id */
   experimentRunId: number;
   /** 后端 §7.1 示例里的历史别名（与 experimentRunId 同值）；前端只用后者 */
@@ -525,7 +530,7 @@ export interface SchedulerStatus {
   /** 调度循环是否已启动（boolean 语义，向后兼容保留；内核可能没有该字段） */
   loopStarted?: boolean;
   lastDispatchAt: string | null;
-  islandLocks: SchedulerIslandLock[];
+  resourceLocks: SchedulerResourceLock[];
   queue: SchedulerQueueItem[];
   workers: SchedulerWorkers;
 }

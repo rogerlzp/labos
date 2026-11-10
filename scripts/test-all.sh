@@ -187,6 +187,8 @@ DB=(
   "workflow.PreflightDbSelfTest"
   # P-08：物理结果未知的 run 启动隔离 QUARANTINED + 人工确认解除
   "workflow.QuarantineDbSelfTest"
+  # 板子归属校验：取板只取自己的（别人的板取不动 / 归属不明 fail-closed）
+  "driver.PlateOwnershipDbSelfTest"
 )
 
 run_one() {

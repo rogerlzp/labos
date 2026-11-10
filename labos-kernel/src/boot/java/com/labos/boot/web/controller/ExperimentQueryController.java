@@ -116,12 +116,13 @@ public class ExperimentQueryController {
     @GetMapping(value = "/experiments/eta", produces = "application/json; charset=utf-8")
     public String eta(@RequestParam(required = false) String limit) throws SQLException {
         // §7.2（2026-11-03）：预计等待。limit 默认 100、上限 500（与列表页同上限）。
-        // 队列/岛锁取调度器内存快照（库里 experiment_run.status 是回写的、有延迟），
+        // 队列/资源占用取调度器内存快照（库里 experiment_run.status 是回写的、有延迟），
         // 估算本身是纯函数（SchedulerEta.estimateWait）。
+        // 2026-11-10：ETA 口径改成按**资源**算（与调度准入同一套粗筛）。
         int n = Math.max(1, Math.min(intOr(limit, 100), 500));
         ExperimentScheduler.Snapshot snap = scheduler.snapshot();
         return SchedulerEta.experimentsEtaJson(db, TENANT, n,
-                snap.queue(), snap.islandLocks());
+                snap.queue(), snap.resourceLocks());
     }
 
     private static int intOr(String raw, int def) {
