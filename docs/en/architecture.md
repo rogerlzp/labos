@@ -182,7 +182,7 @@ of the JDK HttpServer is fully retired.
 | `WorkflowGraphParser` | Parses BPMN XML | `parse()` |
 | `GraphRunner` | Executes along the graph (parallel / exclusive gateway) | `run()`、`toRecoverable()` |
 | `ExperimentExecutor` | Experiment execution (variables + loops) | `run(expId, vars, existingRunId)` |
-| `ExperimentScheduler` | Multi-experiment parallelism (island lock + queueing) | `submit()`、`status()` |
+| `ExperimentScheduler` | Multi-experiment parallelism (**resource-level admission** + queueing) | `submit()`、`status()` |
 | `ExperimentFlowRunner` | Canvas step-by-step execution | `run(name, steps, vars)` |
 | `RealWorkflowRunner` | Process regression test | `--all` runs the full workflow set |
 | `WorkflowBuilder` | Generates a workflow from a transport sequence | `build()` |
@@ -364,7 +364,7 @@ POST /api/experiments/{id}/run?async=1
 ExperimentActionController → ExperimentScheduler.submit()
   ↓ creates experiment_run (queued)
   ↓ background polling every 2 seconds
-  ├ take the island lock (putIfAbsent)
+  ├ resource-level admission: dispatch only when the resources it needs do not overlap the ones being held (different devices in the same island may run in parallel)
   └ ExperimentExecutor.run(expId, vars, existingRunId)
        ├ loadVariables (default value ← override value)
        ├ expand (expand by loop_count, cap 20/500)

@@ -63,8 +63,18 @@ Experiment B: Incubator_2C-2 → XRobot takes the plate → puts it into Rotanta
 XRobot is called by both experiments, and **it does not know whose plate it is** — in the end it may
 deliver A's plate to B's destination.
 
-**Conclusion: the island-level capacity must be 1**, unless we can do "robot arm time slicing" (which
-needs second-accurate durations, and we cannot do that today).
+**Conclusion (overturned on 2026-11-10)**: "the island-level capacity must be 1" was too
+coarse — an island is a *set of devices*, not an executable unit. The island lock turned
+"waiting for the robot arm" into "waiting for the whole island": an experiment incubating for
+30 minutes blocked one that only needed the centrifuge for 5.
+**It is now resource-level admission** (first slice of ADR-LOCK-001): an experiment is
+dispatched when the resources it needs do not overlap the ones being held ⇒ **different
+devices in the same island may run in parallel**. The real constraint — plate ownership — is
+now carried by **plate-ownership validation** (`PositionLock` takes only its own plate, and
+an unreadable owner is treated as fail-closed) instead of being implied by the island lock.
+Robot-arm time slicing (phase 2.3) is still missing: when several branches need the arm at
+once, who goes first is not arbitrated yet — that would need second-accurate durations,
+which we cannot do today.
 
 ### 1.3 Experiment → island mapping
 
@@ -451,7 +461,7 @@ paused is estimated as "it will run to completion".
 
 | Phase | Content |
 |---|---|
-| **2.0** | Island-level mutual exclusion, EDD + priority ordering, TTL fallback, the state machine, the observability interface |
+| **2.0** | Island-level mutual exclusion (**resource-level admission since 2026-11-10**), EDD + priority ordering, TTL fallback, the state machine, the observability interface |
 | 2.1 | Cross-island experiments (several locks requested in id order) |
 | 2.2 | Automatic alert on a stall + automatic release |
 | 2.3 | Multiple experiments in parallel inside one island (needs second-accurate duration data) |

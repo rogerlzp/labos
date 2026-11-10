@@ -16,7 +16,7 @@
 |---|---|---|
 | **Workflow orchestration** | Usable | BPMN graph parsing, parallel / exclusive / loop gateways, device + variable + loop canvas |
 | **Workflow execution** | Usable (simulation) | All workflows run through on the virtual bus, no cycles and no isolated nodes |
-| **Multi-experiment parallelism** | Basically usable | Island-level mutual exclusion + EDD ordering + queueing |
+| **Multi-experiment parallelism** | Basically usable | Resource-level admission (since 2026-11-10) + EDD ordering + queueing |
 | **Plate tracking** | Usable | Position-level atomic reservation, dual locks on transport, three-colour visualisation |
 | **Device driver framework** | Framework complete | Short / persistent connections, contract validation, probe, mock |
 | **Crash recovery** | Basically usable | Idempotency key, startup cleanup |
@@ -60,7 +60,7 @@ what is missing is **version management**.
 
 | What commercial products have | Us | Gap |
 |---|---|---|
-| Multi-experiment parallelism | ✅ Island-level mutual exclusion | — |
+| Multi-experiment parallelism | ✅ Resource-level admission (different devices in the same island may run in parallel) | — |
 | Priority + deadline | ✅ EDD | — |
 | **Gantt visualisation** | ❌ | **Missing** |
 | **Manual drag-to-adjust the schedule** | ❌ | **Missing** |
