@@ -90,4 +90,63 @@ public interface DeviceStateMapper {
      * 平票取 capability_id 小的，确定性可回放）。
      */
     java.util.List<java.util.Map<String, Object>> selectMethodCapabilityVotes();
+
+    // ---- PositionLock（位置锁） ----
+
+    /** 占位无期限（回程承诺）：reserved_until 落 NULL，只有持有者/人工能放。 */
+    int reservePositionForever(long tenantId, long resourceId, long runId);
+
+    /** 原子预约（TTL 秒数文本如 "120 seconds"，同一条件出现两次）。 */
+    int reservePosition(long tenantId, long resourceId, String ttlSeconds, long runId);
+
+    /** 占不到时的现场（plateId）；无行返回 null（map 为 null）。 */
+    java.util.Map<String, Object> selectPositionOccupant(long tenantId, long resourceId);
+
+    /** 释放预约（不动板）。 */
+    int releasePosition(long tenantId, long resourceId, long runId);
+
+    /** 释放某 run 的全部预约（run 结束兜底）；返回清理条数。 */
+    int releaseAllPositions(long tenantId, long runId);
+
+    /** UPSERT 登记"板放进去了"（预约转实际占用）。 */
+    int putPlateOnPosition(long tenantId, long resourceId, String plateId, long runId);
+
+    /** 层位当前板号（无板/无行返回 null，调用方只用于在途标记）。 */
+    String selectPlateOnPosition(long tenantId, long resourceId);
+
+    /** 取板（归属校验：只占本 run 放的；返回 0 = 取不到）。 */
+    int clearPlateFromPosition(long tenantId, long resourceId, long runId);
+
+    /** 清掉过期预约（定时任务）；返回清理条数。 */
+    int sweepExpiredReservations(long tenantId);
+
+    /** 岛下所有层位占用状态（byIsland 画图用，键见 XML）。 */
+    java.util.List<java.util.Map<String, Object>> selectPositionsByIsland(long tenantId,
+                                                                          long islandId);
+
+    /** 层位类型（kind::text）；不存在或类型不在允许集合返回 null（无行）。 */
+    String selectPositionKind(long tenantId, long resourceId);
+
+    /** 板标"在途"（SAVEPOINT 内调用，失败由调用方局部回滚）。 */
+    int markPlateInTransfer(long tenantId, String barcode);
+
+    /** 从 position_state 重算 device_state.has_plate（派生单一数据源）。 */
+    int refreshDeviceHasPlate(long tenantId, long deviceResourceId);
+
+    /** 设备下第一个真空闲层位（同 tryReserve 的三态判定）。 */
+    Long selectFirstAvailablePosition(long tenantId, long deviceResourceId);
+
+    /** 设备下第一个"本 run 放的板"的层位（归属过滤，fail-closed）。 */
+    Long selectFirstOccupiedPosition(long tenantId, long deviceResourceId, long runId);
+
+    /** 占位统计（withPlate/reserved/tracked）。 */
+    java.util.Map<String, Object> selectPositionStats(long tenantId);
+
+    // ---- PositionLock 冗余 plate 表（独立连接，失败只记日志） ----
+
+    /** 冗余表登记板位置（UPDATE 命中返回 1）。 */
+    int updatePlateLocation(long tenantId, String plateId, long positionResourceId);
+
+    /** 板不在 plate 表时补一行（'unknown' 类型占位）。 */
+    int insertPlateIfAbsent(long tenantId, String plateId, long positionResourceId);
 }

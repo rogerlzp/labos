@@ -4,7 +4,6 @@ import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -35,6 +34,12 @@ public final class PositionLock {
     private static com.labos.kernel.persistence.QueryMapper qm() {
         return com.labos.kernel.persistence.Mappers.get(
                 com.labos.kernel.persistence.QueryMapper.class);
+    }
+
+    /** 位置锁/设备态走 DeviceStateMapper（同一个懒取约定）。 */
+    private static com.labos.kernel.persistence.DeviceStateMapper dm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceStateMapper.class);
     }
 
     private static final org.slf4j.Logger log =
@@ -93,28 +98,8 @@ public final class PositionLock {
             return ReserveResult.NOT_FOUND;
         }
 
-        String upsert = """
-                INSERT INTO position_state
-                  (tenant_id, resource_id, reserved_until, reserved_by_run, updated_at)
-                VALUES (?, ?, NULL, ?, now())
-                ON CONFLICT (tenant_id, resource_id) DO UPDATE
-                SET reserved_until = NULL,
-                    reserved_by_run = EXCLUDED.reserved_by_run,
-                    updated_at = now()
-                WHERE (position_state.plate_id IS NULL OR position_state.plate_id = '')
-                  AND (position_state.reserved_by_run IS NULL
-                       OR (position_state.reserved_until IS NOT NULL
-                           AND position_state.reserved_until < now())
-                       OR position_state.reserved_by_run = EXCLUDED.reserved_by_run)
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(upsert)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            ps.setLong(3, runId);
-            if (ps.executeUpdate() > 0) {
-                return ReserveResult.OK;
-            }
+        if (dm().reservePositionForever(tenantId, resourceId, runId) > 0) {
+            return ReserveResult.OK;
         }
         // 抢不到：保守返回"被别人占着"（不区分 NOT_FOUND —— 前面已判过 kind，
         // 走到这里必然是占用冲突）。
@@ -141,58 +126,23 @@ public final class PositionLock {
         }
 
         // ② 原子占用：只有"没板 且 预约已过期或没有"才能占
-        String upsert = """
-                INSERT INTO position_state
-                  (tenant_id, resource_id, reserved_until, reserved_by_run, updated_at)
-                VALUES (?, ?, now() + ?::interval, ?, now())
-                ON CONFLICT (tenant_id, resource_id) DO UPDATE
-                SET reserved_until = now() + ?::interval,
-                    reserved_by_run = EXCLUDED.reserved_by_run,
-                    updated_at = now()
-                WHERE (position_state.plate_id IS NULL OR position_state.plate_id = '')
-                  -- P1-4：判定能不能占，必须看**谁占着**，不能只看 reserved_until。
-                  -- 只按 `reserved_until IS NULL` 判空闲会出错："回程承诺"恰恰是
-                  -- reserved_until=NULL + reserved_by_run 非空 —— 于是承诺位被当成空位抢走。
-                  -- 新三态：
-                  --   reserved_by_run IS NULL              → 真空闲，可占
-                  --   非空 且 until < now()                 → 已过期，可占
-                  --   非空 且 until IS NULL                 → 永久承诺，不可占
-                  AND (position_state.reserved_by_run IS NULL
-                       OR (position_state.reserved_until IS NOT NULL
-                           AND position_state.reserved_until < now())
-                       OR position_state.reserved_by_run = EXCLUDED.reserved_by_run)
-                """;
-        String interval = life.toSeconds() + " seconds";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(upsert)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            ps.setString(3, interval);
-            ps.setLong(4, runId);
-            ps.setString(5, interval);
-            int n = ps.executeUpdate();
-            if (n > 0) {
-                return ReserveResult.OK;
-            }
+        // P1-4（DeviceStateMapper.reservePosition）：判定能不能占看**谁占着**——
+        // 只按 reserved_until IS NULL 判空闲会出错："回程承诺"恰恰是
+        // reserved_until=NULL + reserved_by_run 非空 —— 于是承诺位被当成空位抢走。
+        // 新三态：reserved_by_run IS NULL → 真空闲；非空且过期 → 可占；
+        //         非空且 until IS NULL → 永久承诺，不可占。
+        if (dm().reservePosition(tenantId, resourceId, life.toSeconds() + " seconds", runId) > 0) {
+            return ReserveResult.OK;
         }
 
         // ③ 没占到，判断原因（这里可以非原子，只是给出可读的错误）
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT plate_id, reserved_until, reserved_by_run
-                     FROM position_state WHERE tenant_id = ? AND resource_id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    String plate = rs.getString(1);
-                    if (plate != null && !plate.isBlank()) {
-                        return ReserveResult.OCCUPIED_BY_PLATE;
-                    }
-                    return ReserveResult.RESERVED_BY_OTHER;
-                }
+        Map<String, Object> occupant = dm().selectPositionOccupant(tenantId, resourceId);
+        if (occupant != null) {
+            String plate = (String) occupant.get("plateId");
+            if (plate != null && !plate.isBlank()) {
+                return ReserveResult.OCCUPIED_BY_PLATE;
             }
+            return ReserveResult.RESERVED_BY_OTHER;
         }
         // 更新 0 行 + 查不到记录 = 这个位置在 position_state 里根本不存在，
         // 不能报 OK（否则调用方以为占住了，实际什么都没发生）。
@@ -227,31 +177,12 @@ public final class PositionLock {
 
     /** 释放预约（不板——板还在位置上）。 */
     public void release(long resourceId, long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE position_state
-                     SET reserved_until = NULL, reserved_by_run = NULL, updated_at = now()
-                     WHERE tenant_id = ? AND resource_id = ? AND reserved_by_run = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
-        }
+        dm().releasePosition(tenantId, resourceId, runId);
     }
 
     /** 释放某个 run 的全部预约（run 结束时兜底）。 */
     public int releaseAll(long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE position_state
-                     SET reserved_until = NULL, reserved_by_run = NULL, updated_at = now()
-                     WHERE tenant_id = ? AND reserved_by_run = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            return ps.executeUpdate();
-        }
+        return dm().releaseAllPositions(tenantId, runId);
     }
 
     /**
@@ -286,37 +217,12 @@ public final class PositionLock {
      * <p>独立连接后，即使 plate 表结构再变，位置锁也不受影响。
      */
     private void markPlateOutsideTx(String plateId, long positionResourceId, long runId) {
-        String sql = """
-                UPDATE plate SET location_id = ?, updated_at = now()
-                WHERE tenant_id = ? AND barcode = ? AND deleted_at IS NULL
-                """;
-        String ins = """
-                INSERT INTO plate (tenant_id, barcode, plate_type, rows, cols,
-                                   status, location_id, created_at, updated_at)
-                SELECT ?, ?, 'unknown', 8, 12, 'active', ?, now(), now()
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM plate
-                    WHERE tenant_id = ? AND barcode = ? AND deleted_at IS NULL
-                )
-                """;
-        try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, positionResourceId);
-                ps.setLong(2, tenantId);
-                ps.setString(3, plateId);
-                if (ps.executeUpdate() > 0) {
-                    return;
-                }
+        try {
+            if (dm().updatePlateLocation(tenantId, plateId, positionResourceId) > 0) {
+                return;
             }
-            try (PreparedStatement ps = c.prepareStatement(ins)) {
-                ps.setLong(1, tenantId);
-                ps.setString(2, plateId);
-                ps.setLong(3, positionResourceId);
-                ps.setLong(4, tenantId);
-                ps.setString(5, plateId);
-                ps.executeUpdate();
-            }
-        } catch (SQLException e) {
+            dm().insertPlateIfAbsent(tenantId, plateId, positionResourceId);
+        } catch (RuntimeException e) {
             log.error("[PLATE-WARN] 冗余表 plate 写入失败（不影响位置锁）："
                     + e.getMessage());
         }
@@ -336,30 +242,10 @@ public final class PositionLock {
 
     private int putPlateInternal(long resourceId, String plateId, long runId) throws SQLException {
         return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            int n;
-            // 用 UPSERT 而不是纯 UPDATE：position_state 里可能还没有这一行
-            // （tryReserve 没插或插失败），纯 UPDATE 会静默影响 0 行，
-            // 表现为"返回了位置但层位上没板"。
-            try (PreparedStatement ps = c.prepareStatement("""
-                    INSERT INTO position_state
-                      (tenant_id, resource_id, plate_id, occupied_since,
-                       occupied_by_run, updated_at)
-                    VALUES (?, ?, ?, now(), ?, now())
-                    ON CONFLICT (tenant_id, resource_id) DO UPDATE
-                    SET plate_id = EXCLUDED.plate_id,
-                        occupied_since = now(),
-                        occupied_by_run = EXCLUDED.occupied_by_run,
-                        reserved_until = NULL,
-                        reserved_by_run = NULL,
-                        updated_at = now()
-                    WHERE position_state.plate_id IS NULL OR position_state.plate_id = ''
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, resourceId);
-                ps.setString(3, plateId);
-                ps.setLong(4, runId);
-                n = ps.executeUpdate();
-            }
+            // 用 UPSERT 而不是纯 UPDATE（DeviceStateMapper.putPlateOnPosition）：
+            // position_state 里可能还没有这一行（tryReserve 没插或插失败），
+            // 纯 UPDATE 会静默影响 0 行，表现为"返回了位置但层位上没板"。
+            int n = dm().putPlateOnPosition(tenantId, resourceId, plateId, runId);
             // 不在主事务里写 plate 表：那张表是冗余，列名一变就会
             // 让整个事务作废，把 position_state 的更新一起回滚。
             // 改为 commit 之后用独立连接写（见 putPlate 包装）。
@@ -376,39 +262,15 @@ public final class PositionLock {
 
     private int takePlateInternal(long resourceId, long runId) throws SQLException {
         return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            String plate = null;
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT plate_id FROM position_state
-                    WHERE tenant_id = ? AND resource_id = ? AND plate_id IS NOT NULL
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, resourceId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        plate = rs.getString(1);
-                    }
-                }
-            }
-            int n;
-            // ⚠ **归属校验**（2026-11-10）：WHERE 里必须带 `occupied_by_run = ?`。
+            String plate = dm().selectPlateOnPosition(tenantId, resourceId);
+            // ⚠ **归属校验**（2026-11-10，DeviceStateMapper.clearPlateFromPosition）：
             //   位置上的板是谁放上去的，`occupied_by_run` 记着；取板只允许取**自己的**。
             //   以前这条约束是靠「岛级互斥」隐含保证的（岛内同时只有一个实验在跑，
             //   所以设备上的板必然是自己的）—— 岛内并行一放开，这个隐含保证就没了：
             //   A 把板放进孵箱、B 对同一台设备做 Withdraw，就会把 A 的板取走。
             //   读不到归属（occupied_by_run 为空）时按**取不到**处理（fail-closed）：
             //   宁可报「没板可取」让节点显式转人工，也不要静默搬走别人的板。
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE position_state
-                    SET plate_id = NULL, occupied_since = NULL, occupied_by_run = NULL,
-                        updated_at = now()
-                    WHERE tenant_id = ? AND resource_id = ?
-                      AND occupied_by_run = ?
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, resourceId);
-                ps.setLong(3, runId);
-                n = ps.executeUpdate();
-            }
+            int n = dm().clearPlateFromPosition(tenantId, resourceId, runId);
             if (n > 0 && plate != null) {
                 markPlateInTransfer(c, plate, runId);
             }
@@ -418,80 +280,36 @@ public final class PositionLock {
 
     /** 清掉过期预约（定时任务调）。返回清理条数。 */
     public int sweepExpired() throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE position_state
-                     SET reserved_until = NULL, reserved_by_run = NULL, updated_at = now()
-                     WHERE tenant_id = ? AND reserved_until IS NOT NULL
-                       AND reserved_until < now()
-                     """)) {
-            ps.setLong(1, tenantId);
-            return ps.executeUpdate();
-        }
+        return dm().sweepExpiredReservations(tenantId);
     }
 
     /** 某个岛下所有位置的占用状态（前端画图用）。 */
     public List<PositionState> byIsland(long islandId) throws SQLException {
         List<PositionState> out = new ArrayList<>();
-        String sql = """
-                SELECT r.id, r.code, r.name, r.kind::text AS kind,
-                       ps.plate_id, ps.reserved_until, ps.reserved_by_run,
-                       ps.occupied_since,
-                       d.id AS parent_id, d.code AS parent_code
-                FROM resource_node r
-                LEFT JOIN position_state ps
-                       ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
-                LEFT JOIN resource_node d
-                       ON d.id = r.parent_id AND d.kind = 'device' 
-                WHERE r.tenant_id = ?
-                  AND r.kind IN ('incubator', 'storage', 'transfer_point')
-                  AND (r.parent_id = ? OR r.parent_id IN
-                       (SELECT id FROM resource_node WHERE parent_id = ? AND kind = 'device'))
-                ORDER BY r.code
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            ps.setLong(3, islandId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    java.sql.Timestamp until = rs.getTimestamp("reserved_until");
-                    boolean reserved = until != null && until.after(new java.util.Date());
-                    Object rb = rs.getObject("reserved_by_run");
-                    java.sql.Timestamp occ = rs.getTimestamp("occupied_since");
-                    Object pid = rs.getObject("parent_id");
-                    out.add(new PositionState(
-                            rs.getLong("id"),
-                            rs.getString("code"),
-                            rs.getString("name"),
-                            rs.getString("kind"),
-                            rs.getString("plate_id"),
-                            reserved,
-                            rb == null ? null : ((Number) rb).longValue(),
-                            occ == null ? null : occ.toLocalDateTime().toString(),
-                            pid == null ? null : ((Number) pid).longValue(),
-                            rs.getString("parent_code")));
-                }
-            }
+        for (Map<String, Object> row : dm().selectPositionsByIsland(tenantId, islandId)) {
+            java.sql.Timestamp until = (java.sql.Timestamp) row.get("reservedUntil");
+            boolean reserved = until != null && until.after(new java.util.Date());
+            Object rb = row.get("reservedByRun");
+            java.sql.Timestamp occ = (java.sql.Timestamp) row.get("occupiedSince");
+            Object pid = row.get("parentId");
+            out.add(new PositionState(
+                    ((Number) row.get("id")).longValue(),
+                    (String) row.get("code"),
+                    (String) row.get("name"),
+                    (String) row.get("kind"),
+                    (String) row.get("plateId"),
+                    reserved,
+                    rb == null ? null : ((Number) rb).longValue(),
+                    occ == null ? null : occ.toLocalDateTime().toString(),
+                    pid == null ? null : ((Number) pid).longValue(),
+                    (String) row.get("parentCode")));
         }
         return out;
     }
 
     /** 位置类型（不在允许集合内返回 null）。 */
     private String positionKind(long resourceId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT kind::text FROM resource_node
-                     WHERE tenant_id = ? AND id = ?
-                       AND kind IN ('incubator', 'storage', 'transfer_point')
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return dm().selectPositionKind(tenantId, resourceId);
     }
 
     // A3（评审 20261102-04 Trae 指出）：删掉 markPlatePosition。
@@ -527,20 +345,13 @@ public final class PositionLock {
                 sps.execute();
                 hasSavepoint = true;
             }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE plate SET position_status = 'IN_TRANSFER', updated_at = now()
-                    WHERE tenant_id = ? AND barcode = ?
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setString(2, barcode);
-                ps.executeUpdate();
-            }
+            dm().markPlateInTransfer(tenantId, barcode);
             if (hasSavepoint) {
                 try (PreparedStatement rel = c.prepareStatement("RELEASE SAVEPOINT " + sp)) {
                     rel.execute();
                 }
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException | SQLException e) {
             // 这一步只是冗余标记，失败不该让取板整体失败；
             // 但必须回滚到 savepoint，否则事务已 aborted。
             if (hasSavepoint) {
@@ -568,24 +379,7 @@ public final class PositionLock {
      * @param deviceResourceId resource_node.id（不是 device_instance.id）
      */
     public void refreshHasPlate(long deviceResourceId) throws SQLException {
-        String sql = """
-                UPDATE device_state ds
-                SET has_plate = EXISTS (
-                        SELECT 1 FROM resource_node r
-                        JOIN position_state ps
-                             ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
-                        WHERE r.parent_id = ds.resource_id AND r.tenant_id = ds.tenant_id
-                          AND ps.plate_id IS NOT NULL AND ps.plate_id <> ''
-                    ),
-                    updated_at = now()
-                WHERE ds.tenant_id = ? AND ds.resource_id = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, deviceResourceId);
-            ps.executeUpdate();
-        }
+        dm().refreshDeviceHasPlate(tenantId, deviceResourceId);
     }
 
     /**
@@ -692,35 +486,6 @@ public final class PositionLock {
         return pos;
     }
 
-    /**
-     * 同步更新设备级"有没有板"。
-     *
-     * <p>为什么每步都要更新：调度器按 {@code has_plate} 把"空设备"排前面，
-     * 如果只在流程结束后更新，同一条流程里的两个 INCUBATE 节点会选到同一台，
-     * 板子永远不会移动。
-     */
-    private void markDevicePlate(long deviceResourceId, boolean hasPlate, long runId) {
-        String sql = """
-                INSERT INTO device_state (tenant_id, resource_id, status, has_plate,
-                                          current_run_id, updated_at)
-                VALUES (?, ?, 'idle', ?, ?, now())
-                ON CONFLICT (tenant_id, resource_id) DO UPDATE
-                SET has_plate = EXCLUDED.has_plate,
-                    current_run_id = EXCLUDED.current_run_id,
-                    updated_at = now()
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, deviceResourceId);
-            ps.setBoolean(3, hasPlate);
-            ps.setLong(4, runId);
-            ps.executeUpdate();
-        } catch (SQLException ignore) {
-            // 板位登记失败不影响执行主链路
-        }
-    }
-
     private static boolean startsWithAny(String s, String... prefixes) {
         for (String p : prefixes) {
             if (s.startsWith(p)) {
@@ -732,83 +497,34 @@ public final class PositionLock {
 
     /** 设备下第一个空位置。 */
     private Long firstAvailablePosition(long deviceResourceId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT r.id FROM resource_node r
-                     LEFT JOIN position_state ps
-                            ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
-                     WHERE r.tenant_id = ? AND r.parent_id = ?
-                       AND r.kind IN ('incubator', 'storage', 'transfer_point')
-                       AND (ps.plate_id IS NULL OR ps.plate_id = '')
-                       -- A2 修复（评审 20261102-04 Trae 指出）：
-                       -- 这里改动前还是二态 `reserved_until IS NULL OR < now()`，
-                       -- 而 tryReserve 已改成看 reserved_by_run。
-                       -- 两处判定不一致的后果：**永久承诺位（reserved_by_run 非空
-                       -- + reserved_until 为 NULL）会被这里当成空位选出来**，
-                       -- 然后 tryReserve 又抢不到 —— 表现为"选的位子总是抢失败"。
-                       AND (ps.reserved_by_run IS NULL
-                            OR (ps.reserved_until IS NOT NULL
-                                AND ps.reserved_until < now()))
-                     ORDER BY r.id LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, deviceResourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        }
+        // A2 修复（评审 20261102-04，DeviceStateMapper.selectFirstAvailablePosition）：
+        // 这里改动前还是二态 `reserved_until IS NULL OR < now()`，而 tryReserve 已改成
+        // 看 reserved_by_run。两处判定不一致的后果：**永久承诺位（reserved_by_run 非空
+        // + reserved_until 为 NULL）会被这里当成空位选出来**，然后 tryReserve 又抢不到
+        // —— 表现为"选的位子总是抢失败"。
+        return dm().selectFirstAvailablePosition(tenantId, deviceResourceId);
     }
 
     /** 设备下第一个有板的位置。 */
     private Long firstOccupiedPosition(long deviceResourceId, long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT r.id FROM resource_node r
-                     JOIN position_state ps
-                          ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
-                     WHERE r.tenant_id = ? AND r.parent_id = ?
-                       AND ps.plate_id IS NOT NULL AND ps.plate_id <> ''
-                       -- ⚠ **归属过滤**（2026-11-10）：只认**本 run 放上去的板**。
-                       --   以前这台设备上的板必然是自己的（岛级互斥隐含保证），
-                       --   岛内并行后不成立 —— 不过滤会把别的实验的板取走。
-                       --   归属为空（读不到）时按「不认」处理（fail-closed）。
-                       AND ps.occupied_by_run = ?
-                     ORDER BY r.id LIMIT 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, deviceResourceId);
-            ps.setLong(3, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        }
+        // ⚠ **归属过滤**（2026-11-10，DeviceStateMapper.selectFirstOccupiedPosition）：
+        //   只认**本 run 放上去的板**。以前这台设备上的板必然是自己的（岛级互斥隐含
+        //   保证），岛内并行后不成立 —— 不过滤会把别的实验的板取走。
+        //   归属为空（读不到）时按「不认」处理（fail-closed）。
+        return dm().selectFirstOccupiedPosition(tenantId, deviceResourceId, runId);
     }
 
     /** 占位统计（给监控用）。 */
     public Map<String, Object> stats() throws SQLException {
+        // reserved 含永久承诺位（A2 残留修复，评审 20261102-05）——只数
+        // `reserved_until > now()` 会漏掉 reserved_by_run 非空 + until 为 NULL 的
+        // 承诺位，"已预约"监控数字恒比实际少。
+        Map<String, Object> row = dm().selectPositionStats(tenantId);
         Map<String, Object> m = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT count(*) FILTER (WHERE plate_id IS NOT NULL) AS with_plate,
-                            -- A2 残留修复（评审 20261102-05 Trae 指出）：
-                            -- 这里改动前只数 `reserved_until > now()`，
-                            -- **漏掉永久承诺位**（reserved_by_run 非空 + reserved_until 为 NULL）。
-                            -- 于是"已预约"这个监控数字恒比实际少，运维看着"还有很多位子"。
-                            count(*) FILTER (WHERE reserved_by_run IS NOT NULL
-                                               AND (reserved_until IS NULL
-                                                    OR reserved_until > now())) AS reserved,
-                            count(*)                                        AS tracked
-                     FROM position_state WHERE tenant_id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    m.put("withPlate", rs.getInt("with_plate"));
-                    m.put("reserved", rs.getInt("reserved"));
-                    m.put("tracked", rs.getInt("tracked"));
-                }
-            }
-        }
+        m.put("withPlate", ((Number) row.get("withPlate")).intValue());
+        m.put("reserved", ((Number) row.get("reserved")).intValue());
+        m.put("tracked", ((Number) row.get("tracked")).intValue());
         return m;
     }
+
 }

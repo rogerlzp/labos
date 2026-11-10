@@ -134,4 +134,187 @@
          GROUP BY method, capability_id
     </select>
 
+    <!-- PositionLock（位置锁） -->
+
+    <!-- 占位无期限（回程承诺，P1-4）：reserved_until = NULL 是"永久"语义，
+         sweep 不会清它；只有持有者 release 或人工处置能放。 -->
+    <insert id="reservePositionForever">
+        INSERT INTO position_state
+          (tenant_id, resource_id, reserved_until, reserved_by_run, updated_at)
+        VALUES (#{param1}, #{param2}, NULL, #{param3}, now())
+        ON CONFLICT (tenant_id, resource_id) DO UPDATE
+        SET reserved_until = NULL,
+            reserved_by_run = EXCLUDED.reserved_by_run,
+            updated_at = now()
+        WHERE (position_state.plate_id IS NULL OR position_state.plate_id = '')
+          AND (position_state.reserved_by_run IS NULL
+               OR (position_state.reserved_until IS NOT NULL
+                   AND position_state.reserved_until &lt; now())
+               OR position_state.reserved_by_run = EXCLUDED.reserved_by_run)
+    </insert>
+
+    <!-- P1-4 三态判定：真空闲 / 已过期 / 永久承诺（不可占）。 -->
+    <insert id="reservePosition">
+        INSERT INTO position_state
+          (tenant_id, resource_id, reserved_until, reserved_by_run, updated_at)
+        VALUES (#{param1}, #{param2}, now() + #{param3}::interval, #{param4}, now())
+        ON CONFLICT (tenant_id, resource_id) DO UPDATE
+        SET reserved_until = now() + #{param3}::interval,
+            reserved_by_run = EXCLUDED.reserved_by_run,
+            updated_at = now()
+        WHERE (position_state.plate_id IS NULL OR position_state.plate_id = '')
+          AND (position_state.reserved_by_run IS NULL
+               OR (position_state.reserved_until IS NOT NULL
+                   AND position_state.reserved_until &lt; now())
+               OR position_state.reserved_by_run = EXCLUDED.reserved_by_run)
+    </insert>
+
+    <select id="selectPositionOccupant" resultType="java.util.Map">
+        SELECT plate_id AS "plateId"
+          FROM position_state WHERE tenant_id = #{param1} AND resource_id = #{param2}
+    </select>
+
+    <update id="releasePosition">
+        UPDATE position_state
+           SET reserved_until = NULL, reserved_by_run = NULL, updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2} AND reserved_by_run = #{param3}
+    </update>
+
+    <update id="releaseAllPositions">
+        UPDATE position_state
+           SET reserved_until = NULL, reserved_by_run = NULL, updated_at = now()
+         WHERE tenant_id = #{param1} AND reserved_by_run = #{param2}
+    </update>
+
+    <!-- UPSERT 而不是纯 UPDATE：tryReserve 没插的行也要能落板。 -->
+    <insert id="putPlateOnPosition">
+        INSERT INTO position_state
+          (tenant_id, resource_id, plate_id, occupied_since, occupied_by_run, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}, now(), #{param4}, now())
+        ON CONFLICT (tenant_id, resource_id) DO UPDATE
+        SET plate_id = EXCLUDED.plate_id,
+            occupied_since = now(),
+            occupied_by_run = EXCLUDED.occupied_by_run,
+            reserved_until = NULL,
+            reserved_by_run = NULL,
+            updated_at = now()
+        WHERE position_state.plate_id IS NULL OR position_state.plate_id = ''
+    </insert>
+
+    <select id="selectPlateOnPosition" resultType="java.lang.String">
+        SELECT plate_id FROM position_state
+         WHERE tenant_id = #{param1} AND resource_id = #{param2} AND plate_id IS NOT NULL
+    </select>
+
+    <!-- ⚠ 归属校验（2026-11-10）：只取本 run 放的板；读不到归属按取不到处理。 -->
+    <update id="clearPlateFromPosition">
+        UPDATE position_state
+           SET plate_id = NULL, occupied_since = NULL, occupied_by_run = NULL,
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+           AND occupied_by_run = #{param3}
+    </update>
+
+    <update id="sweepExpiredReservations">
+        UPDATE position_state
+           SET reserved_until = NULL, reserved_by_run = NULL, updated_at = now()
+         WHERE tenant_id = #{param1} AND reserved_until IS NOT NULL
+           AND reserved_until &lt; now()
+    </update>
+
+    <select id="selectPositionsByIsland" resultType="java.util.Map">
+        SELECT r.id AS "id", r.code AS "code", r.name AS "name", r.kind::text AS "kind",
+               ps.plate_id AS "plateId", ps.reserved_until AS "reservedUntil",
+               ps.reserved_by_run AS "reservedByRun",
+               ps.occupied_since AS "occupiedSince",
+               d.id AS "parentId", d.code AS "parentCode"
+          FROM resource_node r
+          LEFT JOIN position_state ps
+                 ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
+          LEFT JOIN resource_node d
+                 ON d.id = r.parent_id AND d.kind = 'device'
+         WHERE r.tenant_id = #{param1}
+           AND r.kind IN ('incubator', 'storage', 'transfer_point')
+           AND (r.parent_id = #{param2} OR r.parent_id IN
+                (SELECT id FROM resource_node WHERE parent_id = #{param2} AND kind = 'device'))
+         ORDER BY r.code
+    </select>
+
+    <select id="selectPositionKind" resultType="java.lang.String">
+        SELECT kind::text FROM resource_node
+         WHERE tenant_id = #{param1} AND id = #{param2}
+           AND kind IN ('incubator', 'storage', 'transfer_point')
+    </select>
+
+    <update id="markPlateInTransfer">
+        UPDATE plate SET position_status = 'IN_TRANSFER', updated_at = now()
+         WHERE tenant_id = #{param1} AND barcode = #{param2}
+    </update>
+
+    <!-- 单一数据源派生：该设备下任一层位有板 → has_plate=true。 -->
+    <update id="refreshDeviceHasPlate">
+        UPDATE device_state ds
+           SET has_plate = EXISTS (
+                   SELECT 1 FROM resource_node r
+                   JOIN position_state ps
+                        ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
+                   WHERE r.parent_id = ds.resource_id AND r.tenant_id = ds.tenant_id
+                     AND ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; ''
+               ),
+               updated_at = now()
+         WHERE ds.tenant_id = #{param1} AND ds.resource_id = #{param2}
+    </update>
+
+    <!-- A2 修复：与 tryReserve 同三态判定，永久承诺位不当空位。 -->
+    <select id="selectFirstAvailablePosition" resultType="java.lang.Long">
+        SELECT r.id FROM resource_node r
+          LEFT JOIN position_state ps
+                 ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
+         WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2}
+           AND r.kind IN ('incubator', 'storage', 'transfer_point')
+           AND (ps.plate_id IS NULL OR ps.plate_id = '')
+           AND (ps.reserved_by_run IS NULL
+                OR (ps.reserved_until IS NOT NULL
+                    AND ps.reserved_until &lt; now()))
+         ORDER BY r.id LIMIT 1
+    </select>
+
+    <!-- ⚠ 归属过滤（2026-11-10）：只认本 run 放上去的板（岛内并行）。 -->
+    <select id="selectFirstOccupiedPosition" resultType="java.lang.Long">
+        SELECT r.id FROM resource_node r
+          JOIN position_state ps
+               ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
+         WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2}
+           AND ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; ''
+           AND ps.occupied_by_run = #{param3}
+         ORDER BY r.id LIMIT 1
+    </select>
+
+    <!-- reserved 含永久承诺位（reserved_until IS NULL + reserved_by_run 非空）。 -->
+    <select id="selectPositionStats" resultType="java.util.Map">
+        SELECT count(*) FILTER (WHERE plate_id IS NOT NULL) AS "withPlate",
+               count(*) FILTER (WHERE reserved_by_run IS NOT NULL
+                                  AND (reserved_until IS NULL
+                                       OR reserved_until &gt; now())) AS "reserved",
+               count(*) AS "tracked"
+          FROM position_state WHERE tenant_id = #{param1}
+    </select>
+
+    <!-- 冗余 plate 表（独立写，失败只记日志）。 -->
+
+    <update id="updatePlateLocation">
+        UPDATE plate SET location_id = #{param3}, updated_at = now()
+         WHERE tenant_id = #{param1} AND barcode = #{param2} AND deleted_at IS NULL
+    </update>
+
+    <insert id="insertPlateIfAbsent">
+        INSERT INTO plate (tenant_id, barcode, plate_type, rows, cols,
+                           status, location_id, created_at, updated_at)
+        SELECT #{param1}, #{param2}, 'unknown', 8, 12, 'active', #{param3}, now(), now()
+        WHERE NOT EXISTS (
+            SELECT 1 FROM plate
+            WHERE tenant_id = #{param1} AND barcode = #{param2} AND deleted_at IS NULL
+        )
+    </insert>
+
 </mapper>
