@@ -148,12 +148,21 @@ public class WorkflowWebService {
                     "method", t.method(),
                     "resourceId", boundByKey.get(t.key())));
         }
+        // 权威岛（P-01 的 `workflow.island_id`）：流程一旦定岛，**设备池就按它锁死**，
+        // 前端不再让用户用 localStorage 里随手选的岛挑设备（P-04）。
+        // 没有岛（NULL，旧流程）时前端仍可手动选岛，保持兼容。
+        Object islandId = null;
+        java.util.Map<String, Object> header = graphMapper.selectWorkflowHeader(TENANT, workflowId);
+        if (header != null && header.get("islandId") != null) {
+            islandId = ((Number) header.get("islandId")).longValue();
+        }
         return Jsons.obj(
                 "workflow", new Jsons.Raw(Jsons.obj(
                         "id", d.workflow().id(),
                         "code", d.workflow().code(),
                         "name", d.workflow().name(),
-                        "category", d.workflow().category())),
+                        "category", d.workflow().category(),
+                        "islandId", islandId)),
                 "edgeCount", d.edgeCount(),
                 "tasks", new Jsons.Raw(Jsons.arr(tasks)));
     }

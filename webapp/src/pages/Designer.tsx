@@ -106,6 +106,8 @@ interface LastDropped {
   builtin?: boolean;
   capability?: string;
   icon: string;
+  /** 这个节点**属于哪个岛**：搬运的机械臂必须同岛（P-04「LastDropped 保存归属」）。 */
+  islandId?: number;
   x: number;
 }
 
@@ -795,20 +797,38 @@ export default function DesignerPage() {
     const v = Number(sp.get('islandId'));
     return Number.isFinite(v) && v > 0 ? v : null;
   });
+  const wfId = Number(id);
   const islandsQ = useQuery({
     queryKey: ['designer-islands'],
     queryFn: () => apiFetch('/api/topology').then((r) => r.json()) as Promise<{
       islands?: Array<{ id: number; code: string; name?: string }>;
     }>,
   });
+  /**
+   * **权威岛**（服务端 `workflow.island_id`，P-01 定的执行边界）。
+   *
+   * <p>为什么必须有它：岛原先只是**用户手里一个筛选器**（localStorage 里的
+   * islandId），于是"给本岛流程绑一台别岛的设备"没人拦 —— 流程的岛与设备的岛
+   * 可以各说各话，运行时按流程的岛判定、硬件却在别的岛（P-04）。
+   *
+   * <p>有权威岛 ⇒ 设备池按它锁死、岛选择器锁定不可清空；
+   * 没有（库里的 island_id 为 NULL 的旧流程）⇒ 仍可手动选岛，保持兼容。
+   */
+  const wfQ = useQuery({
+    queryKey: ['workflow', wfId],
+    queryFn: () => api.workflow(wfId),
+    enabled: Number.isFinite(wfId) && wfId > 0,
+  });
+  const authIslandId = wfQ.data?.workflow?.islandId ?? null;
+  /** 生效的岛：权威岛优先；没有权威岛才用用户选的那个。 */
+  const effectiveIslandId = authIslandId ?? islandId;
   // 左侧设备面板：与 NodeSettings 共用 ['device-pool', islandId] 缓存，不额外发请求
   const paletteDevices = useQuery({
-    queryKey: ['device-pool', islandId],
-    queryFn: () => apiFetch(`/api/devices/pool${islandId ? `?islandId=${islandId}` : ''}`)
+    queryKey: ['device-pool', effectiveIslandId],
+    queryFn: () => apiFetch(`/api/devices/pool${effectiveIslandId ? `?islandId=${effectiveIslandId}` : ''}`)
       .then((r) => r.json()) as Promise<{ items?: PaletteDevice[] }>,
   });
   const qc = useQueryClient();
-  const wfId = Number(id);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const modelerRef = useRef<BpmnModeler | null>(null);
@@ -1699,6 +1719,17 @@ export default function DesignerPage() {
     // 逻辑节点（__setVar / __expr）没有设备，只要求 method；设备方法还要求 resourceId
     if (!m || !p?.method || (!isBuiltin && !p.resourceId)) return;
 
+    // drop 期岛校验（P-04）：设备必须属于本流程的**权威岛**。
+    // 设备池已经按权威岛过滤过了，这里是第二道闸 —— 防的是"用户之前切过岛
+    // 留在 localStorage 里的旧选择"或"设备从别处进来"的漏网情况。
+    if (!isBuiltin && authIslandId != null && p.islandId != null
+        && p.islandId !== authIslandId) {
+      message.error(t('designer.error.deviceOtherIsland', {
+        island: p.islandCode || String(p.islandId),
+      }));
+      return;
+    }
+
     const factory = m.get('elementFactory') as unknown as BpmnElementFactoryApi;
     const modeling = m.get('modeling') as unknown as BpmnModelingApi;
     const canvasApi = m.get('canvas') as unknown as BpmnDragApi;
@@ -1720,8 +1751,13 @@ export default function DesignerPage() {
 
     // 板子换设备必须由机械臂搬运；岛上的 TRANSFER 设备从同一个设备池取。
     // 逻辑节点不占设备，也不参与搬运（否则会在变量节点和真设备之间插一台机械臂）。
+    //
+    // 机械臂从**上一个节点所在的岛**取（P-04「LastDropped 保存归属」）：
+    // 搬运是把板子从上一台设备搬到这一台，两台必须同岛 ⇒ 机械臂也要同岛。
+    // 不能按本次拖入的设备找 —— 否则会插进一台别岛的机械臂。
+    const armIsland = prev?.islandId ?? effectiveIslandId;
     const arm = isBuiltin ? undefined : (paletteDevices.data?.items ?? []).find((d) =>
-      isArm(d.capability) && (!p.islandId || d.islandId === p.islandId));
+      isArm(d.capability) && (!armIsland || d.islandId === armIsland));
     const needTransfer = !!(prev && !prev.builtin && !isBuiltin
       && prev.resourceId !== p.resourceId
       && !isArm(prev.capability) && !isArm(p.capability) && arm);
@@ -1764,6 +1800,8 @@ export default function DesignerPage() {
     lastDroppedRef.current = {
       shapeId: shape.id, resourceId: p.resourceId, code: p.code, builtin: isBuiltin,
       capability: p.capability, icon, x,
+      // 记住这个节点属于哪个岛：下一次拖入别的设备时，机械臂要在这个岛上找（P-04）
+      islandId: p.islandId ?? effectiveIslandId ?? undefined,
     };
     selection.select(shape);
     await persistAfterDrop(shape.id, isBuiltin ? t('designer.toast.logicDropped') : undefined);
@@ -1907,9 +1945,14 @@ export default function DesignerPage() {
       <Col flex="240px" style={{ minHeight: 0 }}>
         <Card size="small" title={t('designer.palette.title')}>
           <Select
-            size="small" allowClear style={{ width: '100%', marginBottom: 6 }}
+            size="small"
+            // 有权威岛 ⇒ 锁定：不可换岛、不可清空（"锁定不可清空"是 P-04 的原话）。
+            // 没有权威岛（旧流程）⇒ 仍可手动选岛，且可清空（= 全部岛）。
+            allowClear={authIslandId == null}
+            disabled={authIslandId != null}
+            style={{ width: '100%', marginBottom: 6 }}
             placeholder={t('designer.field.allIslands')}
-            value={islandId ?? undefined}
+            value={effectiveIslandId ?? undefined}
             onChange={(v: number | undefined) => {
               setIslandId(v ?? null);
               const next = new URLSearchParams(sp);
@@ -1921,6 +1964,14 @@ export default function DesignerPage() {
               label: `${i.code}${i.name ? ' · ' + i.name : ''}`,
             }))}
           />
+          {authIslandId != null && (
+            <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 6 }}>
+              {t('designer.field.islandLocked', {
+                island: (islandsQ.data?.islands ?? []).find((i) => i.id === authIslandId)?.name
+                  ?? String(authIslandId),
+              })}
+            </Typography.Text>
+          )}
           <Tabs
             size="small"
             defaultActiveKey="devices"

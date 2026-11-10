@@ -130,6 +130,8 @@ export interface WorkflowSummary {
   name: string;
   category: string;
   nodeCount: number;
+  /** 权威岛（`workflow.island_id`）：流程的执行边界。null = 未定岛（旧流程） */
+  islandId?: number | null;
 }
 
 export interface WorkflowDetail {

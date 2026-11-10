@@ -60,7 +60,8 @@
     </update>
 
     <select id="selectWorkflowHeader" resultType="java.util.Map">
-        SELECT id AS "id", code AS "code", name AS "name", category AS "category"
+        SELECT id AS "id", code AS "code", name AS "name", category AS "category",
+               island_id AS "islandId"
           FROM workflow
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
