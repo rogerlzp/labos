@@ -58,6 +58,13 @@ public interface ExecutionMapper {
     /** 收尾：→ SETTLED（非 SETTLED 才更新；paused 不调，语义不变）。 */
     int markSettled(long tenantId, long runId);
 
+    /** 准入：某能力的设备池状况（capCode/total/freeCnt；无行返回 null）。 */
+    java.util.Map<String, Object> selectCapabilityCapacity(long tenantId, long capabilityId);
+
+    /** 准入：某能力下被占用设备 + 持有者（上限 20，按设备 code 排序）。 */
+    java.util.List<java.util.Map<String, Object>> selectBusyDevices(
+            long tenantId, long capabilityId);
+
     // ---- ExperimentExecutor 编排/落库（阶段3收编） ----
 
     /** 编排行（id/seq/workflowId/loopCount/paramsOverride，按 seq 升序）。 */

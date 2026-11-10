@@ -2,9 +2,6 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -189,31 +186,13 @@ public final class AdmissionController {
         int free = 0;
         List<Blocker> busy = new ArrayList<>();
 
-        String sql = """
-                SELECT c.code AS cap_code,
-                       count(di.id) AS total,
-                       count(*) FILTER (WHERE ds.current_run_id IS NULL) AS free_cnt
-                FROM capability c
-                LEFT JOIN resource_capability rc ON rc.capability_id = c.id
-                LEFT JOIN device_instance di
-                       ON di.resource_id = rc.resource_id AND di.tenant_id = c.tenant_id
-                       AND di.deleted_at IS NULL
-                LEFT JOIN device_state ds
-                       ON ds.resource_id = di.resource_id AND ds.tenant_id = c.tenant_id
-                WHERE c.tenant_id = ? AND c.id = ?
-                GROUP BY c.code
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, capabilityId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    code = rs.getString("cap_code");
-                    total = rs.getInt("total");
-                    free = rs.getInt("free_cnt");
-                }
-            }
+        java.util.Map<String, Object> row = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExecutionMapper.class)
+                .selectCapabilityCapacity(tenantId, capabilityId);
+        if (row != null) {
+            code = (String) row.get("capCode");
+            total = intOf(row.get("total"));
+            free = intOf(row.get("freeCnt"));
         }
 
         if (free < 1) {
@@ -226,48 +205,25 @@ public final class AdmissionController {
     /** 这个能力下被占用的设备 + 持有者。 */
     private List<Blocker> busyDevicesOf(long capabilityId) throws SQLException {
         List<Blocker> list = new ArrayList<>();
-        String sql = """
-                SELECT di.id AS device_id, di.code AS device_code,
-                       ds.current_run_id, ds.current_method,
-                       r.run_no,
-                       COALESCE(EXTRACT(EPOCH FROM (now() - r.actual_start))::int, 0)
-                           AS elapsed_sec,
-                       COALESCE((
-                           SELECT rn.estimate_sec FROM run_node rn
-                           WHERE rn.run_id = r.id AND rn.status = 'running'
-                           ORDER BY rn.id DESC LIMIT 1
-                       ), 60) AS node_estimate_sec
-                FROM resource_capability rc
-                JOIN device_instance di ON di.resource_id = rc.resource_id
-                                       AND di.tenant_id = ?
-                                       AND di.deleted_at IS NULL
-                JOIN device_state ds ON ds.resource_id = di.resource_id
-                                    AND ds.tenant_id = di.tenant_id
-                LEFT JOIN run r ON r.id = ds.current_run_id
-                WHERE rc.capability_id = ?
-                  AND ds.current_run_id IS NOT NULL
-                ORDER BY di.code
-                LIMIT 20
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, capabilityId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    int est = rs.getInt("node_estimate_sec");
-                    int elapsed = rs.getInt("elapsed_sec");
-                    list.add(new Blocker(
-                            rs.getLong("current_run_id"),
-                            rs.getString("run_no"),
-                            rs.getLong("device_id"),
-                            rs.getString("device_code"),
-                            rs.getString("current_method"),
-                            Math.max(0, est - elapsed)));
-                }
-            }
+        for (java.util.Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExecutionMapper.class)
+                .selectBusyDevices(tenantId, capabilityId)) {
+            int est = intOf(row.get("nodeEstimateSec"));
+            int elapsed = intOf(row.get("elapsedSec"));
+            list.add(new Blocker(
+                    ((Number) row.get("currentRunId")).longValue(),
+                    (String) row.get("runNo"),
+                    ((Number) row.get("deviceId")).longValue(),
+                    (String) row.get("deviceCode"),
+                    (String) row.get("currentMethod"),
+                    Math.max(0, est - elapsed)));
         }
         return list;
+    }
+
+    /** Map 里的数值统一转 int（PG count 是 bigint，经 Number 兜住）。 */
+    private static int intOf(Object o) {
+        return o instanceof Number num ? num.intValue() : 0;
     }
 
     /**

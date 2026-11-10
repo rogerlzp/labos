@@ -73,6 +73,46 @@
          WHERE tenant_id = #{param1} AND id = #{param2} AND exec_phase &lt;&gt; 'SETTLED'
     </update>
 
+    <!-- AdmissionController 容量/占用（阶段3第36批收编） -->
+    <select id="selectCapabilityCapacity" resultType="java.util.Map">
+        SELECT c.code AS "capCode",
+               count(di.id) AS "total",
+               count(*) FILTER (WHERE ds.current_run_id IS NULL) AS "freeCnt"
+        FROM capability c
+        LEFT JOIN resource_capability rc ON rc.capability_id = c.id
+        LEFT JOIN device_instance di
+               ON di.resource_id = rc.resource_id AND di.tenant_id = c.tenant_id
+               AND di.deleted_at IS NULL
+        LEFT JOIN device_state ds
+               ON ds.resource_id = di.resource_id AND ds.tenant_id = c.tenant_id
+        WHERE c.tenant_id = #{param1} AND c.id = #{param2}
+        GROUP BY c.code
+    </select>
+    <select id="selectBusyDevices" resultType="java.util.Map">
+        SELECT di.id AS "deviceId", di.code AS "deviceCode",
+               ds.current_run_id AS "currentRunId",
+               ds.current_method AS "currentMethod",
+               r.run_no AS "runNo",
+               COALESCE(EXTRACT(EPOCH FROM (now() - r.actual_start))::int, 0)
+                   AS "elapsedSec",
+               COALESCE((
+                   SELECT rn.estimate_sec FROM run_node rn
+                   WHERE rn.run_id = r.id AND rn.status = 'running'
+                   ORDER BY rn.id DESC LIMIT 1
+               ), 60) AS "nodeEstimateSec"
+        FROM resource_capability rc
+        JOIN device_instance di ON di.resource_id = rc.resource_id
+                               AND di.tenant_id = #{param1}
+                               AND di.deleted_at IS NULL
+        JOIN device_state ds ON ds.resource_id = di.resource_id
+                            AND ds.tenant_id = di.tenant_id
+        LEFT JOIN run r ON r.id = ds.current_run_id
+        WHERE rc.capability_id = #{param2}
+          AND ds.current_run_id IS NOT NULL
+        ORDER BY di.code
+        LIMIT 20
+    </select>
+
     <select id="selectRunStatus" resultType="java.lang.String">
         SELECT status::text FROM run
          WHERE tenant_id = #{param1} AND id = #{param2}
