@@ -5844,3 +5844,55 @@ it), and when it matched nothing it **fell back to the global candidates** ⇒ s
 the **actual data flow** and then ask whether the thing being filtered on is empty
 at all.
 
+**Addendum (2026-11-11): the island constraint actually takes effect (authoritative island at execution time / global fallback removed / id space aligned / pinned same-island check)**
+
+The previous entry recorded the root cause of "the island constraint never took
+effect"; these four steps fix it, with a paired set of measurements.
+
+**One: what changed**
+
+① **The authoritative island is used at execution time** — `WorkflowService.execute`
+reads `workflow.island_id` directly; only workflows without an authoritative island
+fall back to the island passed in the request (the old manual selection survives).
+② **The global-candidate fallback is gone** — when the island has no device with
+that capability the candidate set is empty ⇒ the node gets **no device** ⇒ it no
+longer borrows a device from another island.
+③ **The island set is taken in the current path's id space** — the driver path uses
+device_instance.id, the simulation path uses resource_node.id ⇒ `resourceIdsOf`
+converts between them (this is the fourth "two id spaces" trap).
+④ **Pinned devices are checked against the island** — a device bound in the
+orchestration that is not on the island ⇒ **explicitly refused** (400), never
+silently swapped for another island's device.
+In addition, the reason for "no device" now carries the island context (the state
+machine used to say only "the candidate set is empty").
+
+**Two: paired measurements (real kernel + real database)**
+
+| Sample | Island | Result |
+|---|---|---|
+| 1255 (bound device 413, on island 100030) | 100030 | 200, runs (device is on the island) |
+| 1255 | 100027 | **400 refused**, 0.25s, **no device action** |
+| 1063 (device chosen by capability) | none | picks an off-island device 200167 (baseline) |
+| 1063 | 100030 (no TRANSFER) | node gets no device, 0.49s fast fail, reason names the island |
+| 1063 | 100027 (has TRANSFER) | picks the island's device 200167 |
+
+**Three: lessons (cross-project)**
+
+① **"there is a filter" needs three follow-up questions**: is the **content** being
+filtered empty? is the **object** being filtered the one that is actually used? does
+the **fallback** when nothing matches swallow the effect? — I tripped over all three,
+and each of them looks fine on its own.
+② **"explicit refusal" must happen before the action and carry a reason**: refusing
+early (no command dispatched) with a readable reason ("island 100030 has no device
+with capability TRANSFER") is a refusal; discovering it halfway through and leaving
+only "the candidate set is empty" just makes the field think the device is broken.
+③ **Verification must be designed in pairs**: testing only the "allow" case proves
+nothing about the boundary (the old code allowed it too); you need a "should be
+blocked" sample as well, and it has to prove that **no device was touched**
+(0.25s elapsed + zero device actions), not merely that the status code changed.
+④ **Before changing filter logic, measure the id space of the filtered object** —
+this time I nearly wrote the "two id spaces" trap again; only after checking the
+candidate id space of the driver path and the simulation path separately did it
+become clear which side needed converting.
+
+
