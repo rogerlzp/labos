@@ -51,7 +51,15 @@ export default function PoliciesPage() {
     if (!editing) return;
     setBusy(true);
     try {
-      await api.updatePolicy(editing.id!, { strategy, maxAttempts: attempts, priority: prio, enabled });
+      // ⚠ 发给后端必须是**小写**：PG 的 `recovery_strategy` 是枚举，取值只有
+      // retry/skip/reassign/abort/manual/compensate（小写），而界面与 Java 的
+      // 词表是大写（RETRY/SKIP/...）。直接发大写 ⇒ PG 报
+      // `invalid input value for enum recovery_strategy: "RETRY"` ⇒ 保存必 500。
+      // 库读出来也是小写（`JdbcRecoveryPolicyRepository` 读时 `.toUpperCase()`
+      // 转成 Java 词表），所以"界面大写、落库小写"是这个字段的既有约定。
+      await api.updatePolicy(editing.id!, {
+        strategy: strategy.toLowerCase(), maxAttempts: attempts, priority: prio, enabled,
+      });
       message.success(t('policies.toast.saved'));
       setEditing(null);
       await qc.invalidateQueries({ queryKey: ['policies'] });
