@@ -187,6 +187,18 @@ public final class StartupRecovery {
                         RuntimeHold.Scope.EXPERIMENT, expId, RuntimeHold.Kind.HUMAN, by,
                         "隔离解除：" + (note == null ? "人工确认" : note));
             }
+            // ★ 人工确认后**释放该 run 占着的设备锁**。
+            //   为什么隔离期间不释放、确认后才释放：隔离的含义是"物理结果未知"
+            //   —— 设备上可能还有动作没结束 ⇒ 那台设备不能被别人拿去用（撞车）。
+            //   但人工已经确认完（或终止）了，run 已是终态 ⇒ 锁必须还回去：
+            //   否则这台设备**永久不可用**（DeviceLock.tryAcquire 要求
+            //   current_run_id IS NULL 或等于自己），现场表现就是
+            //   "一台设备凭空永远忙"，后续实验全卡在等它。
+            //   （2026-11-11 实测：两条被隔离的 run 各自锁着一台设备，
+            //   人工确认后锁一直没还 ⇒ 并发验收 B 段两台设备都拿不到。）
+            if (n > 0) {
+                rm().releaseRunDeviceLocks(tenantId, runId);
+            }
             return n > 0;
         });
     }
