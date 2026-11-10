@@ -3065,18 +3065,12 @@ public class WorkflowService {
                 // 1) 现有节点
                 Set<String> existing = new LinkedHashSet<>();
                 Map<String, Long> capByKey = new LinkedHashMap<>();
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT node_key, capability_id FROM workflow_node WHERE workflow_id = ?")) {
-                    ps.setLong(1, workflowId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            String k = rs.getString(1);
-                            existing.add(k);
-                            long cap = rs.getLong(2);
-                            if (!rs.wasNull()) {
-                                capByKey.put(k, cap);
-                            }
-                        }
+                for (Map<String, Object> row : graphMapper.selectNodeCaps(workflowId)) {
+                    String k = String.valueOf(row.get("nodeKey"));
+                    existing.add(k);
+                    Object cap = row.get("capabilityId");
+                    if (cap instanceof Number n) {
+                        capByKey.put(k, n.longValue());
                     }
                 }
 
@@ -3184,13 +3178,8 @@ public class WorkflowService {
                         .map(BpmnGraphParser.ParsedNode::key).toList();
                 int removed = 0;
                 if (!keep.isEmpty()) {
-                    try (PreparedStatement ps = c.prepareStatement(
-                            "DELETE FROM workflow_node WHERE workflow_id = ? "
-                                    + "AND NOT (node_key = ANY(?))")) {
-                        ps.setLong(1, workflowId);
-                        ps.setArray(2, c.createArrayOf("varchar", keep.toArray()));
-                        removed = ps.executeUpdate();
-                    }
+                    removed = graphMapper.deleteNodesNotIn(workflowId,
+                            new ArrayList<>(keep));
                 }
 
                 // 5) 重建边
@@ -3212,15 +3201,7 @@ public class WorkflowService {
                 }
 
                 // 6) 保存原始 XML
-                try (PreparedStatement ps = c.prepareStatement(
-                        "UPDATE workflow SET graph = jsonb_set("
-                                + "COALESCE(graph, '{}'::jsonb), '{xml}', to_jsonb(?::text)), "
-                                + "updated_at = now() WHERE tenant_id = ? AND id = ?")) {
-                    ps.setString(1, xml);
-                    ps.setLong(2, tenantId);
-                    ps.setLong(3, workflowId);
-                    ps.executeUpdate();
-                }
+                graphMapper.updateWorkflowGraph(tenantId, workflowId, xml);
 
                 return new SaveResult(graph.nodes().size(), graph.edges().size(),
                         added, updated, removed, unlabeled);

@@ -30,4 +30,33 @@
            AND id = #{param2}
     </select>
 
+    <!-- 注意：原实现只按 workflow_id 过滤，没有 tenant（沿用，避免改变可见性）。 -->
+    <select id="selectNodeCaps" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", capability_id AS "capabilityId"
+          FROM workflow_node
+         WHERE workflow_id = #{param1}
+    </select>
+
+    <delete id="deleteNodesNotIn">
+        DELETE FROM workflow_node
+         WHERE workflow_id = #{param1}
+           AND node_key NOT IN
+        <foreach item="k" collection="param2" open="(" separator="," close=")">
+            #{k}
+        </foreach>
+    </delete>
+
+    <insert id="insertEdge">
+        INSERT INTO workflow_edge (tenant_id, workflow_id, from_key, to_key, edge_type)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'sequence')
+        ON CONFLICT DO NOTHING
+    </insert>
+
+    <update id="updateWorkflowGraph">
+        UPDATE workflow
+           SET graph = jsonb_set(COALESCE(graph, '{}'::jsonb), '{xml}', to_jsonb(#{param3}::text)),
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
 </mapper>
