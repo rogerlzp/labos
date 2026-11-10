@@ -3,8 +3,6 @@ package com.labos.kernel.workflow;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -229,60 +227,41 @@ public final class ExperimentExecutor {
      */
     public List<Step> expand(long experimentId, Map<String, String> vars) throws SQLException {
         List<Step> out = new ArrayList<>();
-        try (Connection c = db.open()) {
-            // 1) 编排行（seq 只用于"同层谁先跑"的稳定排序，不再是唯一顺序来源）
-            Map<Long, ProcRow> rows = new LinkedHashMap<>();
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT id, seq, workflow_id, loop_count, params_override
-                    FROM experiment_process
-                    WHERE tenant_id = ? AND experiment_id = ?
-                    ORDER BY seq
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, experimentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        ProcRow row = new ProcRow(rs.getLong("id"), rs.getInt("seq"),
-                                rs.getLong("workflow_id"), rs.getString("loop_count"),
-                                rs.getString("params_override"));
-                        rows.put(row.id(), row);
-                    }
-                }
+        // 1) 编排行（seq 只用于"同层谁先跑"的稳定排序，不再是唯一顺序来源）
+        Map<Long, ProcRow> rows = new LinkedHashMap<>();
+        for (Map<String, Object> row : em().selectExperimentProcessRows(tenantId, experimentId)) {
+            ProcRow pr = new ProcRow(((Number) row.get("id")).longValue(),
+                    ((Number) row.get("seq")).intValue(),
+                    ((Number) row.get("workflowId")).longValue(),
+                    (String) row.get("loopCount"),
+                    (String) row.get("paramsOverride"));
+            rows.put(pr.id(), pr);
+        }
+
+        // 2) 偏序边
+        Map<Long, List<Long>> successors = new java.util.HashMap<>();
+        for (Map<String, Object> row
+                : em().selectExperimentProcessEdges(tenantId, experimentId)) {
+            successors.computeIfAbsent(((Number) row.get("fromId")).longValue(),
+                    k -> new ArrayList<>()).add(((Number) row.get("toId")).longValue());
+        }
+
+        // 3) 求执行序（Kahn；同层按 seq 稳定排序）
+        Map<Long, Integer> seqOrder = new LinkedHashMap<>();
+        rows.forEach((id, row) -> seqOrder.put(id, row.seq()));
+        List<Long> order = topologicalOrder(rows.keySet(), successors, seqOrder);
+
+        // 4) 展开
+        for (Long id : order) {
+            ProcRow row = rows.get(id);
+            int times = resolveLoop(row.loopCount(), vars);
+            if (times > 20) {
+                throw new IllegalArgumentException(
+                        "第 " + row.seq() + " 步循环次数 " + times + " 超过上限 20");
             }
-
-            // 2) 偏序边
-            Map<Long, List<Long>> successors = new java.util.HashMap<>();
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT from_id, to_id FROM experiment_process_edge
-                    WHERE tenant_id = ? AND experiment_id = ?
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, experimentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        successors.computeIfAbsent(rs.getLong("from_id"),
-                                k -> new ArrayList<>()).add(rs.getLong("to_id"));
-                    }
-                }
-            }
-
-            // 3) 求执行序（Kahn；同层按 seq 稳定排序）
-            Map<Long, Integer> seqOrder = new LinkedHashMap<>();
-            rows.forEach((id, row) -> seqOrder.put(id, row.seq()));
-            List<Long> order = topologicalOrder(rows.keySet(), successors, seqOrder);
-
-            // 4) 展开
-            for (Long id : order) {
-                ProcRow row = rows.get(id);
-                int times = resolveLoop(row.loopCount(), vars);
-                if (times > 20) {
-                    throw new IllegalArgumentException(
-                            "第 " + row.seq() + " 步循环次数 " + times + " 超过上限 20");
-                }
-                Map<String, String> params = parseParams(row.paramsOverride(), vars);
-                for (int i = 0; i < times; i++) {
-                    out.add(new Step(row.workflowId(), row.seq(), i, params));
-                }
+            Map<String, String> params = parseParams(row.paramsOverride(), vars);
+            for (int i = 0; i < times; i++) {
+                out.add(new Step(row.workflowId(), row.seq(), i, params));
             }
         }
         if (out.size() > 500) {
@@ -394,18 +373,10 @@ public final class ExperimentExecutor {
     private Map<String, String> loadVariables(long experimentId, Map<String, String> overrides)
             throws SQLException {
         Map<String, String> m = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT name, default_value FROM experiment_variable
-                     WHERE tenant_id = ? AND experiment_id = ? ORDER BY id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    m.put(rs.getString(1), rs.getString(2) == null ? "" : rs.getString(2));
-                }
-            }
+        for (Map<String, Object> row
+                : em().selectExperimentVariables(tenantId, experimentId)) {
+            String def = (String) row.get("defaultValue");
+            m.put((String) row.get("name"), def == null ? "" : def);
         }
         if (overrides != null) {
             overrides.forEach((k, v) -> {
@@ -421,39 +392,13 @@ public final class ExperimentExecutor {
 
     /** 复用调度器创建的记录：补上变量与展开步数。 */
     private long updateRun(long runId, Map<String, String> vars, int steps) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run
-                     SET variables = ?::jsonb, expanded_steps = ?
-                     WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setString(1, toJson(vars));
-            ps.setInt(2, steps);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, runId);
-            ps.executeUpdate();
-        }
+        em().updateRunVariables(tenantId, runId, toJson(vars), steps);
         return runId;
     }
 
     private long createRun(long experimentId, Map<String, String> vars, int steps)
             throws SQLException {
-        String json = toJson(vars);
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO experiment_run
-                       (tenant_id, experiment_id, status, variables, expanded_steps)
-                     VALUES (?, ?, 'queued', ?::jsonb, ?) RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            ps.setString(3, json);
-            ps.setInt(4, steps);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return em().insertExperimentRun(tenantId, experimentId, toJson(vars), steps);
     }
 
     /** 包内可见：供 {@code RunControlDbSelfTest} 直接压这条异常敏感路径。 */
@@ -474,32 +419,13 @@ public final class ExperimentExecutor {
             // 保持 paused：只补「开始时间」，状态与暂停标记都不动。
             // ⚠ 不要写 updated_at：experiment_run 没有这一列（只有 experiment 有），
             //   写它会抛 PSQLException 把这条 run 直接落 failed（2026-11-06 实测）。
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement("""
-                         UPDATE experiment_run
-                            SET started_at = COALESCE(started_at, now())
-                          WHERE tenant_id = ? AND id = ? AND status = 'paused'
-                         """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.executeUpdate();
-            }
+            em().touchStartedAtWhenPaused(tenantId, runId);
             return;
         }
+        // 恢复时（pause_kind 非空）记一次 resumed_at，并把暂停标记清掉：
+        // 这条 run 现在真的在跑，"为什么停过"由 runtime_hold 的历史留存。
+        em().markExperimentRunRunning(tenantId, runId);
         try (Connection c = db.open()) {
-            // 恢复时（pause_kind 非空）记一次 resumed_at，并把暂停标记清掉：
-            // 这条 run 现在真的在跑，"为什么停过"由 runtime_hold 的历史留存。
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE experiment_run
-                       SET status='running', started_at=COALESCE(started_at, now()),
-                           paused_at=NULL, pause_kind=NULL, pause_reason=NULL,
-                           resumed_at = CASE WHEN paused_at IS NOT NULL THEN now() ELSE resumed_at END
-                     WHERE tenant_id=? AND id=?
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.executeUpdate();
-            }
             // 实验本身也标 running（否则列表上一直是"待执行"）。
             // 收口到 ExperimentStateProjector（S-03 单写者）：SQL 与改前逐字一致。
             ExperimentStateProjector.markRunningByRun(c, tenantId, runId);
@@ -507,15 +433,7 @@ public final class ExperimentExecutor {
     }
 
     private void bumpCurrentSeq(long runId, int seq) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run SET current_seq=? WHERE tenant_id=? AND id=?
-                     """)) {
-            ps.setInt(1, seq);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
-        }
+        em().bumpCurrentSeq(tenantId, runId, seq);
     }
 
     /**
@@ -621,18 +539,9 @@ public final class ExperimentExecutor {
      */
     java.util.Set<String> completedStepKeys(long runId) throws SQLException {
         java.util.Set<String> keys = new java.util.HashSet<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT seq, loop_index FROM experiment_run_step
-                      WHERE tenant_id = ? AND experiment_run_id = ? AND status = 'completed'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    keys.add(rs.getInt(1) + ":" + rs.getInt(2));
-                }
-            }
+        for (Map<String, Object> row : em().selectCompletedSteps(tenantId, runId)) {
+            keys.add(((Number) row.get("seq")).intValue() + ":"
+                    + ((Number) row.get("loopIndex")).intValue());
         }
         return keys;
     }
@@ -693,23 +602,8 @@ public final class ExperimentExecutor {
     /** 跑一步：落 step 记录 → 执行 → 三态落库。 */
     private StepOutcome runStep(long runId, Step st, Map<String, String> runVars)
             throws SQLException {
-        long stepId;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO experiment_run_step
-                       (tenant_id, experiment_run_id, seq, loop_index, workflow_id, status, started_at)
-                     VALUES (?, ?, ?, ?, ?, 'running', now()) RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            ps.setInt(3, st.seq());
-            ps.setInt(4, st.loopIndex());
-            ps.setLong(5, st.workflowId());
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                stepId = rs.getLong(1);
-            }
-        }
+        long stepId = em().insertRunStep(tenantId, runId, st.seq(), st.loopIndex(),
+                st.workflowId());
 
         Long wfRunId = null;
         StepOutcome outcome;
@@ -753,23 +647,7 @@ public final class ExperimentExecutor {
 
         String stepStatus = outcome.state() == StepOutcome.Out.OK ? "completed"
                 : outcome.state() == StepOutcome.Out.INTERRUPTED ? "paused" : "failed";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run_step
-                     SET status=?, run_id=?, finished_at=now(), error=?
-                     WHERE tenant_id=? AND id=?
-                     """)) {
-            ps.setString(1, stepStatus);
-            if (wfRunId == null) {
-                ps.setNull(2, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(2, wfRunId);
-            }
-            ps.setString(3, outcome.error());
-            ps.setLong(4, tenantId);
-            ps.setLong(5, stepId);
-            ps.executeUpdate();
-        }
+        em().settleRunStep(tenantId, stepId, stepStatus, wfRunId, outcome.error());
         return outcome;
     }
 

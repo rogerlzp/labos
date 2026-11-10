@@ -51,4 +51,42 @@ public interface ExecutionMapper {
 
     /** run 当前状态。 */
     String selectRunStatus(long tenantId, long runId);
+
+    // ---- ExperimentExecutor 编排/落库（阶段3收编） ----
+
+    /** 编排行（id/seq/workflowId/loopCount/paramsOverride，按 seq 升序）。 */
+    java.util.List<java.util.Map<String, Object>> selectExperimentProcessRows(
+            long tenantId, long experimentId);
+
+    /** 编排偏序边（fromId/toId）。 */
+    java.util.List<java.util.Map<String, Object>> selectExperimentProcessEdges(
+            long tenantId, long experimentId);
+
+    /** 实验变量默认值（name/defaultValue，按 id 升序）。 */
+    java.util.List<java.util.Map<String, Object>> selectExperimentVariables(
+            long tenantId, long experimentId);
+
+    /** 复用调度器创建的 run：补变量与展开步数。 */
+    int updateRunVariables(long tenantId, long runId, String varsJson, int steps);
+
+    /** 新建 run（queued + 变量 + 展开步数），返回 id。 */
+    long insertExperimentRun(long tenantId, long experimentId, String varsJson, int steps);
+
+    /** 被扣留 run 保持 paused，只补 started_at（不要写 updated_at，该表没有这列）。 */
+    int touchStartedAtWhenPaused(long tenantId, long runId);
+
+    /** 标 running：清暂停三字段，恢复时（pause_kind 非空）记 resumed_at。 */
+    int markExperimentRunRunning(long tenantId, long runId);
+
+    /** 推进 current_seq。 */
+    int bumpCurrentSeq(long tenantId, long runId, int seq);
+
+    /** 断点续跑：本 run 已完成的步（seq/loopIndex）。 */
+    java.util.List<java.util.Map<String, Object>> selectCompletedSteps(long tenantId, long runId);
+
+    /** 落一条 step 记录（running），返回 id。 */
+    long insertRunStep(long tenantId, long runId, int seq, int loopIndex, long workflowId);
+
+    /** step 三态收尾（runId 可空：流程没跑起来就没有 wf run）。 */
+    int settleRunStep(long tenantId, long stepId, String status, Long runId, String error);
 }
