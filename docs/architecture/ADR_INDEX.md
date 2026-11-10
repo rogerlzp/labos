@@ -129,7 +129,7 @@
 
 - Handoff = **配置期静态定义 + 运行时人工执行**，不是运行时自动调度；不需要 AGV、机械臂跨岛可达性、路径/碰撞规划（与 ADR §14.1「AGV 不纳入范围」一致）。ADR-ISLAND-002 中「转运执行者 / 可达性证明」的表述据此改为人工执行。
 - **配置期**：在岛配置入口（设备/IP 配置、挂岛/移出）同处定义 Handoff：源 Workcell、目标 Workcell、交接点/出入口、板与样本身份、执行方式=人工、所需确认项，并持久化。现状不足：`island_flow.graph` 的边只落 `{id,source,target}`，不落 `type/label`（`IslandFlow.tsx:200-203`），且它是**岛内动线**；跨 Workcell Handoff 应挂在**实验编排层的边**上——候选 `experiment_process_edge`（`97_m95_process_edge.sql:24-44`，其注释明确「只表达偏序，不表达资源」，`run_after` 执行器从未读过），需扩展或新建 `experiment_handoff`。
-- **运行时**：跨 Workcell 实验在两个 Workflow 之间必须停在**人工门禁**，不得自动推进。复用已有 `manual_window` + `pause_kind='waiting_human'` + `GET/POST /api/manual-windows`（`RunApi.java:89,113`），遵守 ADR-PAUSE-007「不新建第三套子系统」，**不另建 Handoff 状态机**。
+- **运行时**：跨 Workcell 实验在两个 Workflow 之间必须停在**人工门禁**，不得自动推进。复用已有 `manual_window` + `pause_kind='waiting_human'` + `GET/POST /api/manual-windows`（原 `RunApi.java:89,113`，`RunApi` 已于 2026-11-10 拆成 `RunQueryController` / `RunActionController`），遵守 ADR-PAUSE-007「不新建第三套子系统」，**不另建 Handoff 状态机**。
 - **物理到位证据 = 人工确认记录**，不是设备 ACK。每次运行必须记录确认人、时间、板/样本标识、源/目标交接点、确认结果；无记录 ⇒ `UNKNOWN` ⇒ 阻断后续节点。**配置里定义过只证明「允许这么走」，不证明「这一次板真的到了」**，绝不可因已配置就自动放行。
 - main 现状缺口：`ManualWindow` 后端齐全但 `webapp` 全目录 **0 处消费**；唯一人工确认是 `Plates.tsx` 手填 barcode 的板位盘点，无扫码/传感器、无「样本到位」独立入口，`position_state` 无确认字段。⇒ 必须补前端人工确认页 + `InterventionRecord` 落证（正好是 ADR-PAUSE-003 要求的实体）。
 - 影响：`REMEDIATION_STATUS.md` 的 N-04 定义改写，新增 N-07（配置期结构）、N-08（运行时门禁）、L-01（`InterventionRecord`）。
@@ -138,7 +138,7 @@
 
 **Decision：ACCEPT。** 用户裁决：`island_id` 仅用于区分，**展示岛的名字，不需要展示岛的 ID**。
 
-- `island_id` 是**内部区分键**，不向用户展示数字 ID；界面只显示岛名（字段已存在：`resource_node.name`，`20_kernel.sql:30-31`；`QueryService.java:714` 已有 `isl.name AS island_name`）。
+- `island_id` 是**内部区分键**，不向用户展示数字 ID；界面只显示岛名（字段已存在：`resource_node.name`，`20_kernel.sql:30-31`；`ExperimentQueryMapper.xml:111` 已有 `isl.name AS "islandName"`（原 `QueryService.java:714`，该类已于 2026-11-10 按域拆分删除；此处只更新实现指针，决策内容未改））。
 - `experiment.island_id` **不参与执行判定**，也不承担「主 Workcell」语义；跨 Workcell 实验涉及的 Workcell 集合由 Experiment↔Workflow 关联推导，界面展示**涉及的岛名列表**而非单个名字。
 - ⚠️ **与 main 现状的差距就是 N-01/N-02/N-03 的真实工作量**：`e.island_id` 目前在 7+ 处是执行判定核心——`RunControl.java:60,136`（暂停作用域）、`RuntimeHold.java:329`（扣留覆盖）、`ExperimentScheduler.java:226,845`（队列与岛锁键）、`ExperimentExecutor.java:704`（故障隔离）、`BatchOrchestrator.java:1475`。这些必须逐一改为按**节点实际 Workcell** 判定，**不能只改 UI**。
 - `workflow.island_id`（P-01 新增）是**权威执行边界**，与 `experiment.island_id` 的「区分/展示」定位不同，不得混用同一语义或同一套读写路径（ADR-ISLAND-001/003）。
@@ -190,7 +190,7 @@
 - **职责划分（防止双主）**：
   - **PG 是权威事实层**——资源占用、租约记录、fencing token、状态变更在同一事务提交；用行锁 / 唯一约束 / `pg_advisory_xact_lock` 保证跨实例互斥。
   - **Redis 是加速与跨实例协调层**——租约抢占、事件通知、对热资源快速拒绝重复派发；**不作为唯一真相源**。Redis 不可用或数据丢失，不得让系统把物理资源误判为空闲。
-- **可复用基础**：`labos-kernel/.../redis/RedisClient.java`（自研 RESP2 最小客户端，env `LABOS_REDIS_HOST/PORT/PASSWORD/DB`）、`labos-gateway` 同名客户端、`docs/设备网关与Redis状态中心-设计.md`；PG 侧已有 `pg_advisory_xact_lock`（`QueryService.java:1585`）与 `SELECT ... FOR UPDATE`（`BatchOrchestrator` 多处）。⚠️ **实施前必须核实**自研 `RedisClient` 是否支持 `SET NX PX`、Lua 原子释放与续约；若不支持，先补客户端能力，不要用「先查后写」冒充原子锁。
+- **可复用基础**：`labos-kernel/.../redis/RedisClient.java`（自研 RESP2 最小客户端，env `LABOS_REDIS_HOST/PORT/PASSWORD/DB`）、`labos-gateway` 同名客户端、`docs/设备网关与Redis状态中心-设计.md`；PG 侧已有 `pg_advisory_xact_lock`（原 `QueryService.java:1585`，该类已于 2026-11-10 按域拆分删除；同类用法现在见 `OpsUserMapper.xml:30`）与 `SELECT ... FOR UPDATE`（`BatchOrchestrator` 多处）。⚠️ **实施前必须核实**自研 `RedisClient` 是否支持 `SET NX PX`、Lua 原子释放与续约；若不支持，先补客户端能力，不要用「先查后写」冒充原子锁。
 - **硬约束**：租约到期只释放**软件租约**，不释放物理安全隔离；每个资源锁带 fencing token，旧持有者的写必须被拒；进程崩溃 / 网络分区 / Redis 主从延迟 ⇒ 资源状态 `UNKNOWN/QUARANTINED`，不得自动重派发、不得自动释放设备。
 - **SUPERSEDES**：Q-03 原默认建议「按 Workcell 集合 + ID 升序加锁、2h TTL 暂留」，以及所有以 `e.island_id` 为锁键/队列键的路径（`N-03` 据此改写）。
 
