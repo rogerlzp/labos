@@ -1,11 +1,12 @@
 package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.Mappers;
+import com.labos.kernel.persistence.RunControlMapper;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Map;
 
 /**
  * 实验级运行控制：暂停 / 停止 / 恢复。
@@ -43,6 +44,10 @@ public final class RunControl {
         this.tenantId = tenantId;
     }
 
+    private static RunControlMapper mapper() {
+        return Mappers.get(RunControlMapper.class);
+    }
+
     /** 一条 run 的关键信息（含所属实验与岛）。 */
     public record RunInfo(long runId, long experimentId, long islandId, String status,
                           boolean stopRequested, String pauseKind, String pauseReason) {
@@ -65,27 +70,17 @@ public final class RunControl {
     }
 
     private RunInfo infoTx(Connection c, long runId, boolean forUpdate) throws SQLException {
-        String sql = """
-                SELECT r.experiment_id, r.status, r.stop_requested,
-                       r.pause_kind, r.pause_reason,
-                       COALESCE(e.island_id, 0) AS island_id
-                  FROM experiment_run r
-                  JOIN experiment e
-                    ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
-                 WHERE r.tenant_id = ? AND r.id = ?
-                """ + (forUpdate ? " FOR UPDATE OF r, e" : "");
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("实验运行记录不存在：run#" + runId);
-                }
-                return new RunInfo(runId, rs.getLong("experiment_id"), rs.getLong("island_id"),
-                        rs.getString("status"), rs.getBoolean("stop_requested"),
-                        rs.getString("pause_kind"), rs.getString("pause_reason"));
-            }
+        // c 形参保留（公共/包级签名），语句走 RunControlMapper：在事务内会复用
+        // 当前绑定连接（同 DataSource 事务同步），不在事务内时自动开 autocommit session。
+        Map<String, Object> m = mapper().selectRunInfo(tenantId, runId, forUpdate);
+        if (m == null) {
+            throw new IllegalArgumentException("实验运行记录不存在：run#" + runId);
         }
+        return new RunInfo(runId, ((Number) m.get("experimentId")).longValue(),
+                ((Number) m.get("islandId")).longValue(),
+                (String) m.get("status"),
+                Boolean.TRUE.equals(m.get("stopRequested")),
+                (String) m.get("pauseKind"), (String) m.get("pauseReason"));
     }
 
     /**
@@ -150,20 +145,7 @@ public final class RunControl {
      */
     public static int markPausing(com.labos.kernel.persistence.DbConfig db,
                                   long tenantId, int staleSeconds) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run
-                        SET control_state = 'PAUSING'
-                      WHERE tenant_id = ?
-                        AND status = 'running'
-                        AND control_state = 'PAUSE_REQUESTED'
-                        AND pause_requested_at IS NOT NULL
-                        AND pause_requested_at < now() - (? || ' seconds')::interval
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(0, staleSeconds));
-            return ps.executeUpdate();
-        }
+        return mapper().markPausing(tenantId, Math.max(0, staleSeconds));
     }
 
     /**
@@ -195,31 +177,9 @@ public final class RunControl {
     static void markControlRequestedTx(Connection c, long tenantId,
                                        RuntimeHold.Scope scope, Long scopeId,
                                        String kind, String reason) throws SQLException {
-        String filter;
-        if (scope == RuntimeHold.Scope.SITE) {
-            filter = "";
-        } else if (scope == RuntimeHold.Scope.ISLAND) {
-            filter = " AND e.island_id = " + scopeId;
-        } else {
-            filter = " AND r.experiment_id = " + scopeId;
-        }
-        String sql = """
-                UPDATE experiment_run r
-                   SET control_state = 'PAUSE_REQUESTED',
-                       pause_requested_at = now(),
-                       pause_kind = ?, pause_reason = ?
-                  FROM experiment e
-                 WHERE r.tenant_id = ? AND e.tenant_id = r.tenant_id
-                   AND e.id = r.experiment_id
-                   AND r.status IN ('queued', 'running')
-                   AND r.control_state = 'NONE'
-                """ + filter;
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, kind);
-            ps.setString(2, reason);
-            ps.setLong(3, tenantId);
-            ps.executeUpdate();
-        }
+        // c 形参保留（同事务写集语义），动态 scope 过滤收进 XML <choose>，
+        // scopeId 不再字符串拼接（顺带消掉拼接注入面）。
+        mapper().markControlRequested(tenantId, scope.code(), scopeId, kind, reason);
     }
 
     /**
@@ -234,18 +194,7 @@ public final class RunControl {
     public static int convergeQueuedPauses(com.labos.kernel.persistence.DbConfig db,
                                            long tenantId) throws SQLException {
         try (Connection c = db.open()) {
-            int n;
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE experiment_run
-                       SET status = 'paused', control_state = 'NONE',
-                           pause_requested_at = NULL, paused_at = now()
-                     WHERE tenant_id = ?
-                       AND status = 'queued'
-                       AND control_state IN ('PAUSE_REQUESTED', 'PAUSING')
-                    """)) {
-                ps.setLong(1, tenantId);
-                n = ps.executeUpdate();
-            }
+            int n = mapper().convergeQueuedPauses(tenantId);
             if (n > 0) {
                 ExperimentStateProjector.syncPausedByRuns(c, tenantId);
             }
@@ -261,33 +210,15 @@ public final class RunControl {
     public boolean stop(RunInfo run, Long by) throws SQLException {
         if ("running".equals(run.status())) {
             // 有动作在进行，不能硬杀：只落停止请求，执行器在动作边界收尾
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement("""
-                         UPDATE experiment_run SET stop_requested = true
-                          WHERE tenant_id = ? AND id = ? AND status = 'running'
-                         """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, run.runId());
-                return ps.executeUpdate() > 0;
-            }
+            return mapper().requestStop(tenantId, run.runId()) > 0;
         }
         // D10：批次 run 的实验状态必须按 D6 用所有批次聚合（走 D8 回写），
         // 不能让"这一条 run aborted"直接覆盖 experiment.status；
         // 非批次 run 保持现有逻辑（同连接里 syncExperimentStatus，行为不变）。
         BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
-        boolean changed;
+        boolean changed = mapper().abortRun(tenantId, run.runId()) > 0;
         boolean batchRun;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE experiment_run
-                        SET status = 'aborted', stop_requested = true, finished_at = now(),
-                            error = COALESCE(error, '人工停止')
-                      WHERE tenant_id = ? AND id = ?
-                        AND status NOT IN ('completed', 'aborted', 'cancelled')
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, run.runId());
-            changed = ps.executeUpdate() > 0;
+        try (Connection c = db.open()) {
             // 改完 run 后再探测批次归属（探测只读，不改状态）
             batchRun = orchestrator.batchRunIdFor(run.runId()) != null;
             if (!batchRun) {
@@ -313,30 +244,12 @@ public final class RunControl {
      */
     public StopTx stopTx(Connection c, RunInfo run, Long by) throws SQLException {
         if ("running".equals(run.status())) {
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE experiment_run SET stop_requested = true
-                     WHERE tenant_id = ? AND id = ? AND status = 'running'
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, run.runId());
-                return new StopTx(ps.executeUpdate() > 0, false);
-            }
+            // 事务内：mapper 经 DataSource 事务同步复用 c 这条绑定连接
+            return new StopTx(mapper().requestStop(tenantId, run.runId()) > 0, false);
         }
         BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
-        boolean changed;
-        boolean batchRun;
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE experiment_run
-                   SET status = 'aborted', stop_requested = true, finished_at = now(),
-                       error = COALESCE(error, '人工停止')
-                 WHERE tenant_id = ? AND id = ?
-                   AND status NOT IN ('completed', 'aborted', 'cancelled')
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, run.runId());
-            changed = ps.executeUpdate() > 0;
-        }
-        batchRun = orchestrator.batchRunIdFor(run.runId()) != null;
+        boolean changed = mapper().abortRun(tenantId, run.runId()) > 0;
+        boolean batchRun = orchestrator.batchRunIdFor(run.runId()) != null;
         if (!batchRun) {
             ExperimentExecutor.syncExperimentStatus(c, tenantId, run.runId());
         }
@@ -374,19 +287,7 @@ public final class RunControl {
         BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
         boolean batchRun;
         try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE experiment_run
-                       SET status = 'queued', stop_requested = false, error = NULL,
-                           pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
-                           control_state = 'RESUMING', pause_requested_at = NULL,
-                           finished_at = NULL
-                     WHERE tenant_id = ? AND id = ?
-                       AND status IN ('paused', 'failed', 'queued')
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, run.runId());
-                ps.executeUpdate();
-            }
+            mapper().requeueRun(tenantId, run.runId(), true);
             // 改完 run 后再探测批次归属（探测只读，不改状态）
             batchRun = orchestrator.batchRunIdFor(run.runId()) != null;
             if (!batchRun) {
@@ -409,21 +310,7 @@ public final class RunControl {
         //   值班员误点「继续」会让机械臂把同一个动作再做一遍（物理副作用不可撤销）。
         //   所以在恢复时把它作废（aborted），只处理「本实验步 + 仍 paused」的那些，
         //   已完成步骤的 run（completed）不受影响。
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run r
-                        SET status = 'aborted', actual_end = now()
-                       FROM experiment_run_step s
-                      WHERE r.tenant_id = ? AND s.tenant_id = r.tenant_id
-                        AND s.run_id = r.id
-                        AND s.experiment_run_id = ?
-                        AND s.status = 'paused'
-                        AND r.status = 'paused'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, run.runId());
-            ps.executeUpdate();
-        }
+        mapper().abortOrphanPausedRuns(tenantId, run.runId());
 
         return new ResumeOutcome(run.experimentId(), cleared, null);
     }
@@ -458,18 +345,9 @@ public final class RunControl {
             return new ResumeTx(outcome, false);
         }
 
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE experiment_run
-                   SET status = 'queued', stop_requested = false, error = NULL,
-                       pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
-                       control_state = 'RESUMING', finished_at = NULL
-                 WHERE tenant_id = ? AND id = ?
-                   AND status IN ('paused', 'failed', 'queued')
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, run.runId());
-            ps.executeUpdate();
-        }
+        // 事务内：mapper 复用 c 这条绑定连接；clearPauseRequested=false 与原
+        // 裸 SQL 语义一致（不清 pause_requested_at，非事务路径才清）
+        mapper().requeueRun(tenantId, run.runId(), false);
         BatchOrchestrator orchestrator = new BatchOrchestrator(db, tenantId);
         boolean batchRun = orchestrator.batchRunIdFor(run.runId()) != null;
         if (!batchRun) {
@@ -477,20 +355,7 @@ public final class RunControl {
         }
 
         // ★ 作废「被本次暂停中断、即将被整段重跑」的流程级 run（M-01 契约）。
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE run r
-                   SET status = 'aborted', actual_end = now()
-                  FROM experiment_run_step s
-                 WHERE r.tenant_id = ? AND s.tenant_id = r.tenant_id
-                   AND s.run_id = r.id
-                   AND s.experiment_run_id = ?
-                   AND s.status = 'paused'
-                   AND r.status = 'paused'
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, run.runId());
-            ps.executeUpdate();
-        }
+        mapper().abortOrphanPausedRuns(tenantId, run.runId());
 
         ResumeOutcome outcome = new ResumeOutcome(run.experimentId(), cleared, null);
         return new ResumeTx(outcome, batchRun);

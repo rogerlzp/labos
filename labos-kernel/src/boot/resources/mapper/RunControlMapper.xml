@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 实验级运行控制（experiment_run 的暂停/停止/恢复写集）。调用方 com.labos.kernel.persistence.RunControlMapper -->
+<mapper namespace="com.labos.kernel.persistence.RunControlMapper">
+
+    <select id="selectRunInfo" resultType="java.util.Map">
+        SELECT r.experiment_id AS "experimentId", r.status AS "status",
+               r.stop_requested AS "stopRequested", r.pause_kind AS "pauseKind",
+               r.pause_reason AS "pauseReason",
+               COALESCE(e.island_id, 0) AS "islandId"
+          FROM experiment_run r
+          JOIN experiment e
+            ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
+         WHERE r.tenant_id = #{tenantId} AND r.id = #{runId}
+        <if test="forUpdate">
+            FOR UPDATE OF r, e
+        </if>
+    </select>
+
+    <update id="markPausing">
+        UPDATE experiment_run
+           SET control_state = 'PAUSING'
+         WHERE tenant_id = #{tenantId}
+           AND status = 'running'
+           AND control_state = 'PAUSE_REQUESTED'
+           AND pause_requested_at IS NOT NULL
+           AND pause_requested_at &lt; now() - (#{staleSeconds} || ' seconds')::interval
+    </update>
+
+    <update id="markControlRequested">
+        UPDATE experiment_run r
+           SET control_state = 'PAUSE_REQUESTED',
+               pause_requested_at = now(),
+               pause_kind = #{kind}, pause_reason = #{reason}
+          FROM experiment e
+         WHERE r.tenant_id = #{tenantId} AND e.tenant_id = r.tenant_id
+           AND e.id = r.experiment_id
+           AND r.status IN ('queued', 'running')
+           AND r.control_state = 'NONE'
+        <choose>
+            <when test="scope == 'SITE'"/>
+            <when test="scope == 'ISLAND'">
+                AND e.island_id = #{scopeId}
+            </when>
+            <otherwise>
+                AND r.experiment_id = #{scopeId}
+            </otherwise>
+        </choose>
+    </update>
+
+    <update id="convergeQueuedPauses">
+        UPDATE experiment_run
+           SET status = 'paused', control_state = 'NONE',
+               pause_requested_at = NULL, paused_at = now()
+         WHERE tenant_id = #{tenantId}
+           AND status = 'queued'
+           AND control_state IN ('PAUSE_REQUESTED', 'PAUSING')
+    </update>
+
+    <update id="requestStop">
+        UPDATE experiment_run SET stop_requested = true
+         WHERE tenant_id = #{tenantId} AND id = #{runId} AND status = 'running'
+    </update>
+
+    <update id="abortRun">
+        UPDATE experiment_run
+           SET status = 'aborted', stop_requested = true, finished_at = now(),
+               error = COALESCE(error, '人工停止')
+         WHERE tenant_id = #{tenantId} AND id = #{runId}
+           AND status NOT IN ('completed', 'aborted', 'cancelled')
+    </update>
+
+    <update id="requeueRun">
+        UPDATE experiment_run
+           SET status = 'queued', stop_requested = false, error = NULL,
+               pause_kind = NULL, pause_reason = NULL, paused_at = NULL,
+               control_state = 'RESUMING',
+               <if test="clearPauseRequested">
+                   pause_requested_at = NULL,
+               </if>
+               finished_at = NULL
+         WHERE tenant_id = #{tenantId} AND id = #{runId}
+           AND status IN ('paused', 'failed', 'queued')
+    </update>
+
+    <update id="abortOrphanPausedRuns">
+        UPDATE run r
+           SET status = 'aborted', actual_end = now()
+          FROM experiment_run_step s
+         WHERE r.tenant_id = #{tenantId} AND s.tenant_id = r.tenant_id
+           AND s.run_id = r.id
+           AND s.experiment_run_id = #{experimentRunId}
+           AND s.status = 'paused'
+           AND r.status = 'paused'
+    </update>
+
+</mapper>
