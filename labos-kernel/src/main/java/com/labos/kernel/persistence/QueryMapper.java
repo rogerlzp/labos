@@ -60,6 +60,12 @@ public interface QueryMapper {
     /** 全部流程 id（预检全量扫描）。 */
     List<Long> selectAllWorkflowIds(long tenantId);
 
+    /** 租户下用户数（首次启动判断要不要播种子账号）。 */
+    int countUsers(long tenantId);
+
+    /** 登录成功回写 last_login_at。 */
+    int touchLastLogin(long userId);
+
     /** workflow.attr->>'maxIterations'（原样字符串，调用方自己解析，兼容脏值）。 */
     String selectWorkflowMaxIterations(long tenantId, long workflowId);
 

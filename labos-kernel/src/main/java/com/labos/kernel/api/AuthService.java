@@ -72,14 +72,9 @@ public final class AuthService {
      */
     public void ensureSeedUser() throws SQLException {
         try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT count(*) FROM sys_user WHERE tenant_id = ?")) {
-                ps.setLong(1, tenantId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next() && rs.getInt(1) > 0) {
-                        return;
-                    }
-                }
+            if (com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.QueryMapper.class).countUsers(tenantId) > 0) {
+                return;
             }
 
             String user = envOr("LABOS_ADMIN_USER", "admin");
@@ -157,11 +152,9 @@ public final class AuthService {
                         Instant.now().plus(TTL));
                 sessions.put(s.token(), s);
 
-                try (PreparedStatement up = c.prepareStatement(
-                        "UPDATE sys_user SET last_login_at = now() WHERE id = ?")) {
-                    up.setLong(1, s.userId());
-                    up.executeUpdate();
-                }
+                com.labos.kernel.persistence.Mappers.get(
+                        com.labos.kernel.persistence.QueryMapper.class)
+                        .touchLastLogin(s.userId());
                 audit(s, s.username(), "auth.login", "user", s.userId(),
                         null, null, ip, "ok");
                 return s;

@@ -112,30 +112,23 @@ public final class DevicePortLock {
 
     /** 设备有没有配通道（没配说明是存量数据，跳过通道锁）。 */
     public boolean hasPorts(long resourceId) {
-        String sql = "SELECT 1 FROM device_port WHERE tenant_id = ? AND resource_id = ? LIMIT 1";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        } catch (SQLException e) {
+        try {
+            return com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .hasPorts(tenantId, resourceId);
+        } catch (RuntimeException e) {
             return false;
         }
     }
 
     /** 当前占用数（排查用）。 */
     public int inUse(long portId) {
-        String sql = "SELECT in_use FROM device_port_usage WHERE tenant_id = ? AND port_id = ?";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, portId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getInt(1) : -1;
-            }
-        } catch (SQLException e) {
+        try {
+            Integer v = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .selectPortInUse(tenantId, portId);
+            return v == null ? -1 : v;
+        } catch (RuntimeException e) {
             return -1;
         }
     }

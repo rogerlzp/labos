@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 设备运行态 / 通道占用。调用方 com.labos.kernel.persistence.DeviceStateMapper -->
+<mapper namespace="com.labos.kernel.persistence.DeviceStateMapper">
+
+    <!-- 入参是 device_instance.id，落表按 resource_node.id（两套 ID 转换在 SQL 里）。 -->
+    <update id="markRunning">
+        UPDATE device_state
+           SET status = 'running',
+               current_method = #{param3},
+               current_run_id = COALESCE(#{param4}, current_run_id),
+               updated_at = now()
+         WHERE tenant_id = #{param1}
+           AND resource_id = (SELECT resource_id FROM device_instance WHERE id = #{param2})
+    </update>
+
+    <update id="markIdle">
+        UPDATE device_state
+           SET status = #{param3},
+               current_method = NULL,
+               last_error = #{param4},
+               updated_at = now()
+         WHERE tenant_id = #{param1}
+           AND resource_id = (SELECT resource_id FROM device_instance WHERE id = #{param2})
+    </update>
+
+    <select id="hasPorts" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM device_port
+             WHERE tenant_id = #{param1} AND resource_id = #{param2})
+    </select>
+
+    <select id="selectPortInUse" resultType="java.lang.Integer">
+        SELECT in_use FROM device_port_usage
+         WHERE tenant_id = #{param1} AND port_id = #{param2}
+    </select>
+
+</mapper>

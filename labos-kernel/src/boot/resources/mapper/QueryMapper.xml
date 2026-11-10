@@ -95,6 +95,14 @@
         SELECT id FROM device WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
+    <select id="countUsers" resultType="int">
+        SELECT count(*) FROM sys_user WHERE tenant_id = #{param1}
+    </select>
+
+    <update id="touchLastLogin">
+        UPDATE sys_user SET last_login_at = now() WHERE id = #{param1}
+    </update>
+
     <select id="selectWorkflowMaxIterations" resultType="java.lang.String">
         SELECT attr->>'maxIterations' AS n FROM workflow
          WHERE tenant_id = #{param1} AND id = #{param2}

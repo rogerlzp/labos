@@ -356,36 +356,25 @@ public final class HeartbeatService {
      * <p>驱动收到 {@code method_status=1} 时调用。前端看到的就是"运行中"。
      */
     public void markRunning(long deviceInstanceId, String method, Long runId) {
-        updateDeviceState(deviceInstanceId,
-                "UPDATE device_state SET status = 'running', current_method = ?,"
-                        + " current_run_id = COALESCE(?, current_run_id), updated_at = now()"
-                        + " WHERE tenant_id = ? AND resource_id ="
-                        + " (SELECT resource_id FROM device_instance WHERE id = ?)",
-                ps -> {
-                    ps.setString(1, method);
-                    if (runId == null) {
-                        ps.setNull(2, java.sql.Types.BIGINT);
-                    } else {
-                        ps.setLong(2, runId);
-                    }
-                    ps.setLong(3, tenantId);
-                    ps.setLong(4, deviceInstanceId);
-                });
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .markRunning(tenantId, deviceInstanceId, method, runId);
+        } catch (RuntimeException e) {
+            log.error("[心跳] 标记运行中失败：{}", e.getMessage());
+        }
     }
 
     /** 标记设备空闲（执行完成或失败后）。 */
     public void markIdle(long deviceInstanceId, String lastError) {
-        updateDeviceState(deviceInstanceId,
-                "UPDATE device_state SET status = ?, current_method = NULL,"
-                        + " last_error = ?, updated_at = now()"
-                        + " WHERE tenant_id = ? AND resource_id ="
-                        + " (SELECT resource_id FROM device_instance WHERE id = ?)",
-                ps -> {
-                    ps.setString(1, lastError == null ? "idle" : "error");
-                    ps.setString(2, lastError);
-                    ps.setLong(3, tenantId);
-                    ps.setLong(4, deviceInstanceId);
-                });
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .markIdle(tenantId, deviceInstanceId,
+                            lastError == null ? "idle" : "error", lastError);
+        } catch (RuntimeException e) {
+            log.error("[心跳] 标记空闲失败：{}", e.getMessage());
+        }
     }
 
     private interface Binder {
