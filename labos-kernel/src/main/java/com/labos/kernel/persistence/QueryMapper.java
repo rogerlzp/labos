@@ -86,6 +86,15 @@ public interface QueryMapper {
     /** 一次执行里各节点的实际状态（只取父节点、loop 0）。 */
     List<Map<String, Object>> selectRunNodeStates(long tenantId, long runId);
 
+    /** 这条流程用到的设备资源（task 节点的 resource_id 去重）。 */
+    List<Long> selectWorkflowResources(long tenantId, long workflowId);
+
+    /** 当前占着某资源的 run 节点（ETA 明细）；无则返回 null。 */
+    Map<String, Object> selectBusyResourceHolder(long tenantId, long resourceId);
+
+    /** 正在跑的 run 汇总（process-status 的库侧兜底）。 */
+    List<Map<String, Object>> selectRunningProcessStatus(long tenantId);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

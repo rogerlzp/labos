@@ -177,47 +177,26 @@ public class QueryService {
         }
 
         List<String> runs = new ArrayList<>();
-        String sql = """
-                SELECT r.id, r.run_no, r.attendance, r.actual_start,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0) AS total,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                            AND n.status = 'completed') AS done,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                            AND n.status = 'manual') AS manual,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.loop_index = 0
-                                            AND n.status = 'failed') AS failed
-                FROM run r
-                LEFT JOIN run_node n ON n.run_id = r.id
-                WHERE r.tenant_id = ? AND r.status = 'running'
-                GROUP BY r.id, r.run_no, r.attendance, r.actual_start
-                ORDER BY r.actual_start DESC
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long runId = rs.getLong("id");
-                    runs.add(Jsons.obj(
-                            "runId", runId,
-                            "runNo", rs.getString("run_no"),
-                            "attendance", rs.getString("attendance"),
-                            "startedAt", String.valueOf(rs.getObject("actual_start")),
-                            "total", rs.getInt("total"),
-                            "done", rs.getInt("done"),
-                            "manual", rs.getInt("manual"),
-                            "failed", rs.getInt("failed"),
-                            "current", new Jsons.Raw(currentNodeJson(c, runId))));
-                }
-            }
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectRunningProcessStatus(tenantId)) {
+            long runId = ((Number) row.get("id")).longValue();
+            runs.add(Jsons.obj(
+                    "runId", runId,
+                    "runNo", row.get("runNo"),
+                    "attendance", row.get("attendance"),
+                    "startedAt", String.valueOf(row.get("actualStart")),
+                    "total", mint(row, "total"),
+                    "done", mint(row, "done"),
+                    "manual", mint(row, "manual"),
+                    "failed", mint(row, "failed"),
+                    "current", new Jsons.Raw(currentNodeJson(runId))));
         }
         return Jsons.obj("running", runs.size(),
                 "items", new Jsons.Raw(Jsons.arr(runs)));
     }
 
     /** 当前卡住/正在执行的节点（取最早一个未完成的业务节点）。 */
-    private String currentNodeJson(Connection c, long runId) throws SQLException {
-        // c 只表示调用方已在事务内；Mapper 会取到同一条 Spring 绑定连接。
+    private String currentNodeJson(long runId) throws SQLException {
         java.util.Map<String, Object> row = queryMapper.selectCurrentNode(runId);
         if (row == null) {
             return "null";
@@ -500,21 +479,8 @@ public class QueryService {
     public String workflowEtaJson(long workflowId) throws SQLException {
         // ① 这条流程要用哪些资源 —— 直接查 workflow_node.resource_id。
         // 这两列是 M9 前置债补的：改动前只能解析图 XML，ETA / 时间条 / 绑定面板各写了一遍正则。
-        java.util.Set<Long> resources = new java.util.LinkedHashSet<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT DISTINCT resource_id FROM workflow_node
-                      WHERE tenant_id = ? AND workflow_id = ?
-                        AND node_type = 'task' AND resource_id IS NOT NULL
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    resources.add(rs.getLong(1));
-                }
-            }
-        }
+        java.util.Set<Long> resources = new java.util.LinkedHashSet<>(
+                queryMapper.selectWorkflowResources(tenantId, workflowId));
         if (resources.isEmpty()) {
             return Jsons.obj("workflowId", workflowId, "waitSec", 0, "known", false,
                     "detail", "这条流程没有绑定设备资源，不会排队");
@@ -523,35 +489,18 @@ public class QueryService {
         long maxWait = 0;
         List<String> busy = new ArrayList<>();
         for (Long rid : resources) {
-            String sql = """
-                    SELECT n.id, n.node_key, n.run_id, n.estimate_sec, n.actual_start,
-                           r.run_no, res.code AS res_code,
-                           GREATEST(0, COALESCE(n.estimate_sec, 0)
-                                     - COALESCE(EXTRACT(EPOCH FROM (now() - n.actual_start)), 0)) AS remain
-                      FROM run_node n
-                      JOIN run r ON r.id = n.run_id
-                      LEFT JOIN resource_node res ON res.id = n.resource_id
-                     WHERE n.tenant_id = ? AND n.resource_id = ?
-                       AND n.level = 0 AND n.status = 'running'
-                       AND r.status = 'running'
-                     ORDER BY remain DESC LIMIT 1
-                    """;
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, rid);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        long remain = Math.round(rs.getDouble("remain"));
-                        maxWait = Math.max(maxWait, remain);
-                        busy.add(Jsons.obj(
-                                "resourceId", rid,
-                                "resourceCode", rs.getString("res_code"),
-                                "holderRunNo", rs.getString("run_no"),
-                                "holderRunId", rs.getLong("run_id"),
-                                "remainSec", remain));
-                    }
-                }
+            java.util.Map<String, Object> holder =
+                    queryMapper.selectBusyResourceHolder(tenantId, rid);
+            if (holder != null) {
+                Object rem = holder.get("remain");
+                long remain = rem instanceof Number n ? Math.round(n.doubleValue()) : 0L;
+                maxWait = Math.max(maxWait, remain);
+                busy.add(Jsons.obj(
+                        "resourceId", rid,
+                        "resourceCode", holder.get("resCode"),
+                        "holderRunNo", holder.get("runNo"),
+                        "holderRunId", holder.get("runId"),
+                        "remainSec", remain));
             }
         }
         return Jsons.obj("workflowId", workflowId, "waitSec", maxWait,
