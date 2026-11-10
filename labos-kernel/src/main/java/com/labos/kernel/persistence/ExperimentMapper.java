@@ -1,5 +1,10 @@
 package com.labos.kernel.persistence;
 
+import org.apache.ibatis.annotations.Param;
+
+import java.util.List;
+import java.util.Map;
+
 import java.util.List;
 
 /** 实验域的清场/校验类数据访问，语句见 {@code mapper/ExperimentMapper.xml}。 */
@@ -48,4 +53,41 @@ public interface ExperimentMapper {
     int deleteExperimentVariables(long tenantId, long experimentId);
 
     int deleteExperimentProcesses(long tenantId, long experimentId);
+
+    /** 新增一条工位交接（重复则忽略）。 */
+    int insertExperimentHandoff(long tenantId, long experimentId,
+                                long fromWorkcellId, long toWorkcellId);
+
+    /** 新增一条实验工位绑定（重复则忽略）。 */
+    int insertExperimentWorkcell(long tenantId, long experimentId, long workcellId);
+
+    /** 保存实验编排图（按 experiment_id 覆盖）。 */
+    int upsertExperimentGraph(long tenantId, long experimentId, String graphJson);
+
+    /** 实验流程的循环次数覆盖值（null = 用默认）。 */
+    int updateExperimentProcessLoopCount(long tenantId, long experimentId, int seq,
+                                         String loopCount);
+
+    /**
+     * 人工插队：数组顺序即执行顺序，priority 从 100 递减。
+     *
+     * <p>原来按 index 逐条 batch update；现在用 CASE 一次写完，
+     * 「顺序 → priority」的换算在 SQL 里一眼可见。
+     */
+    int reorderExperimentPriorities(long tenantId, @Param("ids") List<Long> ids);
+
+    /** 批量取实验状态（调序前校验）。id IN 用 foreach，替换手写 ANY(?) + createArrayOf。 */
+    List<Map<String, Object>> selectExperimentStatuses(long tenantId, List<Long> ids);
+
+    /** 新建实验，返回 id。 */
+    Long insertExperiment(long tenantId, String experimentNo, String name,
+                          Integer priority, Long islandId);
+
+
+    /** 这批 workflow id 里哪些真的存在（编排校验用）。 */
+    List<Long> selectExistingWorkflowIds(long tenantId, List<Long> ids);
+
+
+    int bumpExperimentVersion(long tenantId, long experimentId);
+
 }

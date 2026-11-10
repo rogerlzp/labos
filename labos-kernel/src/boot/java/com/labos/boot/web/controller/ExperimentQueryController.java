@@ -1,7 +1,6 @@
 package com.labos.boot.web.controller;
 
 import com.labos.boot.web.service.RunService;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.workflow.ExperimentScheduler;
@@ -34,14 +33,15 @@ public class ExperimentQueryController {
 
     private static final long TENANT = 1L;
 
-    private final QueryService query;
+    private final com.labos.boot.web.service.ExperimentQueryService experimentQueryService;
     private final DbConfig db;
     private final ExperimentScheduler scheduler;
     private final RunService runService;
 
-    public ExperimentQueryController(QueryService query, DbConfig db,
-                                     ExperimentScheduler scheduler, RunService runService) {
-        this.query = query;
+    public ExperimentQueryController(
+            com.labos.boot.web.service.ExperimentQueryService experimentQueryService,
+            DbConfig db, ExperimentScheduler scheduler, RunService runService) {
+        this.experimentQueryService = experimentQueryService;
         this.db = db;
         this.scheduler = scheduler;
         this.runService = runService;
@@ -56,38 +56,38 @@ public class ExperimentQueryController {
     @GetMapping(value = "/experiments/{id:\\d+}/graph",
             produces = "application/json; charset=utf-8")
     public String graph(@PathVariable long id) throws SQLException {
-        return query.experimentGraphJson(id);
+        return experimentQueryService.experimentGraphJson(id);
     }
 
     @GetMapping(value = "/handoffs", produces = "application/json; charset=utf-8")
     public String handoffs(@RequestParam(required = false) String status,
                            @RequestParam(required = false) String limit) throws SQLException {
-        return query.handoffsJson(status, intOr(limit, 100));
+        return experimentQueryService.handoffsJson(status, intOr(limit, 100));
     }
 
     @GetMapping(value = "/experiments/{id:\\d+}/handoffs",
             produces = "application/json; charset=utf-8")
     public String experimentHandoffs(@PathVariable long id) throws SQLException {
-        return query.experimentHandoffsJson(id);
+        return experimentQueryService.experimentHandoffsJson(id);
     }
 
     @GetMapping(value = "/experiments/{id:\\d+}/workcells",
             produces = "application/json; charset=utf-8")
     public String workcells(@PathVariable long id) throws SQLException {
-        return query.experimentWorkcellsJson(id);
+        return experimentQueryService.experimentWorkcellsJson(id);
     }
 
     /** 一次实验执行的逐步明细（含"未执行"的步骤）。 */
     @GetMapping(value = "/experiments/runs/{id:\\d+}/steps",
             produces = "application/json; charset=utf-8")
     public String runSteps(@PathVariable long id) throws SQLException {
-        return query.experimentRunStepsJson(id);
+        return experimentQueryService.experimentRunStepsJson(id);
     }
 
     @GetMapping(value = "/experiments/{id:\\d+}/runs",
             produces = "application/json; charset=utf-8")
     public String experimentRuns(@PathVariable long id) throws SQLException {
-        return query.experimentRunsJson(id);
+        return experimentQueryService.experimentRunsJson(id);
     }
 
     @GetMapping(value = "/experiments/{id:\\d+}/batches",
@@ -99,18 +99,18 @@ public class ExperimentQueryController {
     @GetMapping(value = "/experiments/{id:\\d+}/variables",
             produces = "application/json; charset=utf-8")
     public String variables(@PathVariable long id) throws SQLException {
-        return query.experimentVariablesJson(id);
+        return experimentQueryService.experimentVariablesJson(id);
     }
 
     @GetMapping(value = "/experiments/{id:\\d+}/processes",
             produces = "application/json; charset=utf-8")
     public String processes(@PathVariable long id) throws SQLException {
-        return query.experimentProcessesJson(id);
+        return experimentQueryService.experimentProcessesJson(id);
     }
 
     @GetMapping(value = "/experiments", produces = "application/json; charset=utf-8")
     public String list() throws SQLException {
-        return query.experimentsJson(100);
+        return experimentQueryService.experimentsJson(100);
     }
 
     @GetMapping(value = "/experiments/eta", produces = "application/json; charset=utf-8")

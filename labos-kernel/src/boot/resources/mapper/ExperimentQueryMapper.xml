@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 实验查询域。调用方 com.labos.kernel.persistence.ExperimentQueryMapper -->
+<mapper namespace="com.labos.kernel.persistence.ExperimentQueryMapper">
+
+
+<select id="selectExperimentGraph" resultType="java.lang.String">
+        SELECT graph::text FROM experiment_graph
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </select>
+
+<select id="selectHandoffs" resultType="java.util.Map">
+        SELECT h.id AS "id", h.experiment_id AS "experimentId",
+               e.experiment_no AS "experimentNo",
+               h.from_workcell_id AS "fromWorkcellId", rf.name AS "fromName",
+               h.to_workcell_id AS "toWorkcellId", rt.name AS "toName",
+               h.status AS "status", h.carrier AS "carrier", h.remark AS "remark"
+          FROM experiment_handoff h
+          JOIN experiment e
+            ON e.tenant_id = h.tenant_id AND e.id = h.experiment_id
+          LEFT JOIN resource_node rf
+            ON rf.tenant_id = h.tenant_id AND rf.id = h.from_workcell_id
+          LEFT JOIN resource_node rt
+            ON rt.tenant_id = h.tenant_id AND rt.id = h.to_workcell_id
+         WHERE h.tenant_id = #{param1}
+        <if test="param2 != null"> AND h.status = #{param2} </if>
+         ORDER BY h.id DESC LIMIT #{param3}
+    </select>
+
+<select id="selectExperimentHandoffs" resultType="java.util.Map">
+        SELECT from_workcell_id AS "fromWorkcellId",
+               to_workcell_id AS "toWorkcellId", carrier AS "carrier",
+               status AS "status", remark AS "remark"
+          FROM experiment_handoff
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+         ORDER BY from_workcell_id, to_workcell_id
+    </select>
+
+<select id="selectExperimentWorkcells" resultType="java.util.Map">
+        SELECT ew.workcell_id AS "workcellId", rn.name AS "name"
+          FROM experiment_workcell ew
+          LEFT JOIN resource_node rn
+            ON rn.tenant_id = ew.tenant_id AND rn.id = ew.workcell_id
+         WHERE ew.tenant_id = #{param1} AND ew.experiment_id = #{param2}
+         ORDER BY ew.workcell_id
+    </select>
+
+<select id="selectExperimentProcessPlan" resultType="java.util.Map">
+        SELECT p.seq AS "seq", p.workflow_id AS "workflowId",
+               p.loop_count AS "loopCount", w.name AS "name"
+          FROM experiment_process p LEFT JOIN workflow w ON w.id = p.workflow_id
+         WHERE p.tenant_id = #{param1} AND p.experiment_id = #{param2}
+         ORDER BY p.seq
+    </select>
+
+<select id="selectExperimentRunStepRows" resultType="java.util.Map">
+        SELECT seq AS "seq", loop_index AS "loopIndex", status AS "status",
+               run_id AS "runId", error AS "error"
+          FROM experiment_run_step
+         WHERE tenant_id = #{param1} AND experiment_run_id = #{param2}
+    </select>
+
+<select id="selectExperimentRunHeader" resultType="java.util.Map">
+        SELECT experiment_id AS "experimentId", status AS "status",
+               expanded_steps AS "expandedSteps"
+          FROM experiment_run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+<select id="selectExperimentRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.status AS "status", r.control_state AS "controlState",
+               r.expanded_steps AS "expandedSteps", r.current_seq AS "currentSeq",
+               r.started_at AS "startedAt", r.finished_at AS "finishedAt",
+               r.error AS "error", r.pause_kind AS "pauseKind",
+               r.pause_reason AS "pauseReason", r.stop_requested AS "stopRequested",
+               EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) AS "durationSec"
+          FROM experiment_run r
+         WHERE r.tenant_id = #{param1} AND r.experiment_id = #{param2}
+         ORDER BY r.id DESC LIMIT 20
+    </select>
+
+<select id="selectExperimentVariables" resultType="java.util.Map">
+        SELECT id AS "id", name AS "name", type AS "type",
+               default_value AS "defaultValue", description AS "description"
+          FROM experiment_variable
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+         ORDER BY id
+    </select>
+
+<select id="selectExperimentProcesses" resultType="java.util.Map">
+        SELECT p.id AS "id", p.workflow_id AS "workflowId", p.seq AS "seq",
+               p.run_mode AS "runMode", p.run_after AS "runAfter",
+               p.loop_count AS "loopCount",
+               w.name AS "workflowName", w.code AS "workflowCode",
+               (SELECT count(*) FROM workflow_node n
+                 WHERE n.workflow_id = p.workflow_id AND n.node_type = 'task')
+                   AS "nodeCount"
+          FROM experiment_process p
+          JOIN workflow w ON w.id = p.workflow_id
+         WHERE p.tenant_id = #{param1} AND p.experiment_id = #{param2}
+         ORDER BY p.seq
+    </select>
+
+<select id="selectExperiments" resultType="java.util.Map">
+        SELECT e.id AS "id", e.experiment_no AS "experimentNo", e.name AS "name",
+               e.status AS "status", e.version AS "version", e.priority AS "priority",
+               e.planned_at AS "plannedAt", e.started_at AS "startedAt",
+               e.finished_at AS "finishedAt", e.remark AS "remark",
+               e.workflow_id AS "workflowId", w.name AS "workflowName",
+               isl.code AS "islandCode", isl.name AS "islandName",
+               (SELECT string_agg(rn.name, '、' ORDER BY rn.name)
+                  FROM experiment_workcell ew
+                  JOIN resource_node rn ON rn.id = ew.workcell_id
+                 WHERE ew.tenant_id = e.tenant_id AND ew.experiment_id = e.id)
+                 AS "workcellNames",
+               (SELECT count(*) FROM experiment_process p
+                 WHERE p.experiment_id = e.id) AS "flowCount"
+          FROM experiment e
+          LEFT JOIN workflow w ON w.id = e.workflow_id
+          LEFT JOIN resource_node isl ON isl.id = e.island_id
+         WHERE e.tenant_id = #{param1}
+         ORDER BY e.id DESC
+         LIMIT #{param2}
+    </select>
+</mapper>

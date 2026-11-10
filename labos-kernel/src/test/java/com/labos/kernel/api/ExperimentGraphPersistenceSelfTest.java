@@ -1,5 +1,6 @@
 package com.labos.kernel.api;
 
+import com.labos.boot.web.service.ExperimentActionService;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
@@ -24,7 +25,7 @@ public final class ExperimentGraphPersistenceSelfTest {
     private static int pass;
     private static int fail;
     private static DbConfig db;
-    private static QueryService query;
+    private static ExperimentActionService query;
     private static long experimentId;
     private static String experimentNo;
     private static List<Long> workflowIds;
@@ -37,7 +38,7 @@ public final class ExperimentGraphPersistenceSelfTest {
             return;
         }
         db = DbConfig.fromEnv();
-        query = com.labos.kernel.support.TestSpringSupport.queryService();
+        query = com.labos.kernel.support.TestSpringSupport.experimentActionService();
 
         workflowIds = loadWorkflowIds();
         if (workflowIds.size() < 2) {
@@ -259,7 +260,7 @@ public final class ExperimentGraphPersistenceSelfTest {
     private static boolean storedGraphCompilesTo(List<Long> expected) {
         try {
             String stored = graphJson();
-            return stored != null && QueryService.compileExperimentGraphWorkflowIds(stored).equals(expected);
+            return stored != null && ExperimentActionService.compileExperimentGraphWorkflowIds(stored).equals(expected);
         } catch (Exception e) {
             return false;
         }

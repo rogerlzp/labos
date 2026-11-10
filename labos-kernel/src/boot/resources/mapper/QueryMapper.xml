@@ -43,12 +43,7 @@
         <if test="param3"> FOR UPDATE </if>
     </select><select id="selectPolicyScope" resultType="java.lang.String">
         SELECT scope FROM recovery_policy WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
-    <update id="bumpExperimentVersion">
-        UPDATE experiment SET version = version + 1, updated_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2}
-    </update><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><select id="selectRunActualStart" resultType="java.sql.Timestamp">
+    </select><!-- 增量更新：null 的列不写，避免把已有值覆盖成 NULL。 --><select id="selectRunActualStart" resultType="java.sql.Timestamp">
         SELECT actual_start FROM run WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
@@ -113,21 +108,6 @@
            AND id = (SELECT id FROM recovery_policy
                       WHERE tenant_id = #{param1} AND error_code_id = #{param2}
                       ORDER BY priority, id LIMIT 1)
-    </update>
-
-    <update id="reorderExperimentPriorities">
-        UPDATE experiment
-           SET priority = (CASE id
-        <foreach collection="ids" item="one" index="idx">
-            WHEN #{one} THEN 100 - #{idx}
-        </foreach>
-            ELSE priority END),
-               updated_at = now()
-         WHERE tenant_id = #{param1}
-           AND id IN
-        <foreach collection="ids" item="one" open="(" separator="," close=")">
-            #{one}
-        </foreach>
     </update><select id="selectParentIdOfNode" resultType="java.lang.Long">
         SELECT parent_id FROM resource_node
          WHERE tenant_id = #{param1} AND id = #{param2}
@@ -143,18 +123,7 @@
 
     <select id="selectCapabilityIdGlobal" resultType="java.lang.Long">
         SELECT id FROM capability WHERE code = #{param1}
-    </select>
-
-    <select id="selectExistingWorkflowIds" resultType="java.lang.Long">
-        SELECT id FROM workflow
-         WHERE tenant_id = #{param1}
-           AND id IN
-        <foreach collection="param2" item="one" open="(" separator="," close=")">
-            #{one}
-        </foreach>
-    </select>
-
-    <select id="selectResourceName" resultType="java.lang.String">
+    </select><select id="selectResourceName" resultType="java.lang.String">
         SELECT name FROM resource_node WHERE id = #{param1}
     </select><select id="selectGraphHistoryXml" resultType="java.lang.String">
         SELECT xml FROM workflow_graph_history
@@ -191,21 +160,7 @@
           FROM workflow w
          WHERE w.tenant_id = #{param1} AND w.category = 'choreography'
          ORDER BY w.id DESC LIMIT #{param2}
-    </select>
-
-    <select id="selectExperimentRuns" resultType="java.util.Map">
-        SELECT r.id AS "id", r.status AS "status", r.control_state AS "controlState",
-               r.expanded_steps AS "expandedSteps", r.current_seq AS "currentSeq",
-               r.started_at AS "startedAt", r.finished_at AS "finishedAt",
-               r.error AS "error", r.pause_kind AS "pauseKind",
-               r.pause_reason AS "pauseReason", r.stop_requested AS "stopRequested",
-               EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) AS "durationSec"
-          FROM experiment_run r
-         WHERE r.tenant_id = #{param1} AND r.experiment_id = #{param2}
-         ORDER BY r.id DESC LIMIT 20
-    </select>
-
-    <!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 -->
+    </select><!-- filter 为 null 时 (?::text IS NULL) 成立 = 不过滤；两次引用同一参数。 -->
     <select id="selectAuditLog" resultType="java.util.Map">
         SELECT occurred_at AS "occurredAt", username AS "username", action AS "action",
                entity_type AS "entityType", entity_id AS "entityId",
@@ -224,16 +179,7 @@
           FROM workflow_graph_history
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
          ORDER BY saved_at DESC LIMIT 30
-    </select><select id="selectExperimentHandoffs" resultType="java.util.Map">
-        SELECT from_workcell_id AS "fromWorkcellId",
-               to_workcell_id AS "toWorkcellId", carrier AS "carrier",
-               status AS "status", remark AS "remark"
-          FROM experiment_handoff
-         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
-         ORDER BY from_workcell_id, to_workcell_id
-    </select>
-
-    <!-- 三个列表的动态过滤：调用方把空串归一化成 null，这里只判 != null。
+    </select><!-- 三个列表的动态过滤：调用方把空串归一化成 null，这里只判 != null。
          原来用 StringBuilder 拼 " AND xxx = ?" 再按顺序 setObject，
          现在「哪些条件下会多一个谓词」在 XML 里一眼可见。 -->
     <select id="selectCommandOutbox" resultType="java.util.Map">
@@ -297,26 +243,7 @@
          WHERE tenant_id = #{param1}
          ORDER BY id DESC
          LIMIT #{param2}
-    </select>
-
-    <select id="selectExperimentWorkcells" resultType="java.util.Map">
-        SELECT ew.workcell_id AS "workcellId", rn.name AS "name"
-          FROM experiment_workcell ew
-          LEFT JOIN resource_node rn
-            ON rn.tenant_id = ew.tenant_id AND rn.id = ew.workcell_id
-         WHERE ew.tenant_id = #{param1} AND ew.experiment_id = #{param2}
-         ORDER BY ew.workcell_id
-    </select><select id="selectExperimentGraph" resultType="java.lang.String">
-        SELECT graph::text FROM experiment_graph
-         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
-    </select>
-
-    <insert id="upsertExperimentGraph">
-        INSERT INTO experiment_graph (tenant_id, experiment_id, graph, updated_at)
-        VALUES (#{param1}, #{param2}, #{param3}::jsonb, now())
-        ON CONFLICT (experiment_id) DO UPDATE
-           SET graph = EXCLUDED.graph, updated_at = now()
-    </insert><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><select id="selectErrorOccurrences" resultType="java.util.Map">
+    </select><!-- attr 用 || 合并而不是整体覆盖：节点设置里还有别的键。 --><!-- 同步点位：岛下所有 device，排除机器人自身；按 (tenant,robot,code) 覆盖。 --><select id="selectErrorOccurrences" resultType="java.util.Map">
         SELECT eo.id AS "id", eo.fingerprint AS "fingerprint",
                eo.outcome AS "outcome", eo.severity::text AS "severity",
                eo.attempt AS "attempt", eo.run_id AS "runId",
@@ -355,27 +282,7 @@
          ORDER BY CASE WHEN a.status = 'open' THEN 0 ELSE 1 END,
                   a.updated_at DESC
          LIMIT #{param2}
-    </select>
-
-    <select id="selectHandoffs" resultType="java.util.Map">
-        SELECT h.id AS "id", h.experiment_id AS "experimentId",
-               e.experiment_no AS "experimentNo",
-               h.from_workcell_id AS "fromWorkcellId", rf.name AS "fromName",
-               h.to_workcell_id AS "toWorkcellId", rt.name AS "toName",
-               h.status AS "status", h.carrier AS "carrier", h.remark AS "remark"
-          FROM experiment_handoff h
-          JOIN experiment e
-            ON e.tenant_id = h.tenant_id AND e.id = h.experiment_id
-          LEFT JOIN resource_node rf
-            ON rf.tenant_id = h.tenant_id AND rf.id = h.from_workcell_id
-          LEFT JOIN resource_node rt
-            ON rt.tenant_id = h.tenant_id AND rt.id = h.to_workcell_id
-         WHERE h.tenant_id = #{param1}
-        <if test="param2 != null"> AND h.status = #{param2} </if>
-         ORDER BY h.id DESC LIMIT #{param3}
-    </select>
-
-    <!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 -->
+    </select><!-- islandId 为 null 时 (?::bigint IS NULL) 成立 = 取全部设备。 --><!-- 注意：原实现算了个 want（status 小写）但 SQL 从未用它过滤，这里保持一致。 -->
     <select id="selectAlerts" resultType="java.util.Map">
         SELECT e.fingerprint AS "fingerprint",
                max(e.error_code_id) AS "codeId",
@@ -522,31 +429,7 @@
                  WHERE dm.method = nd."method" AND dm.estimate_sec > 0) AS "devEst"
           FROM nd LEFT JOIN hist ON hist.method = nd."method"
          ORDER BY nd.ord, nd.id
-    </select>
-
-    <select id="selectExperimentRunHeader" resultType="java.util.Map">
-        SELECT experiment_id AS "experimentId", status AS "status",
-               expanded_steps AS "expandedSteps"
-          FROM experiment_run
-         WHERE tenant_id = #{param1} AND id = #{param2}
-    </select>
-
-    <select id="selectExperimentProcessPlan" resultType="java.util.Map">
-        SELECT p.seq AS "seq", p.workflow_id AS "workflowId",
-               p.loop_count AS "loopCount", w.name AS "name"
-          FROM experiment_process p LEFT JOIN workflow w ON w.id = p.workflow_id
-         WHERE p.tenant_id = #{param1} AND p.experiment_id = #{param2}
-         ORDER BY p.seq
-    </select>
-
-    <select id="selectExperimentRunStepRows" resultType="java.util.Map">
-        SELECT seq AS "seq", loop_index AS "loopIndex", status AS "status",
-               run_id AS "runId", error AS "error"
-          FROM experiment_run_step
-         WHERE tenant_id = #{param1} AND experiment_run_id = #{param2}
-    </select>
-
-    <!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 --><select id="insertIntervention" resultType="java.lang.Long">
+    </select><!-- 三个 INSERT..RETURNING 都用 <select> 承载（MyBatis DTD 限制）。 --><select id="insertIntervention" resultType="java.lang.Long">
         INSERT INTO intervention_record
           (tenant_id, manual_window_id, run_id, experiment_run_id, operator,
            decided_action, plate_barcode, sample_id, from_location, to_location,
@@ -554,31 +437,7 @@
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6},
                 #{param7}, #{param8}, #{param9}, #{param10}, #{param11}, #{param12})
         RETURNING id
-    </select>
-
-    <insert id="insertExperimentHandoff">
-        INSERT INTO experiment_handoff
-          (tenant_id, experiment_id, from_workcell_id, to_workcell_id, carrier, status)
-        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'manual', 'configured')
-        ON CONFLICT (tenant_id, experiment_id, from_workcell_id, to_workcell_id)
-        DO NOTHING
-    </insert>
-
-    <insert id="insertExperimentWorkcell">
-        INSERT INTO experiment_workcell
-          (tenant_id, experiment_id, workcell_id, source)
-        VALUES (#{param1}, #{param2}, #{param3}, 'binding')
-        ON CONFLICT (tenant_id, experiment_id, workcell_id) DO NOTHING
-    </insert>
-
-    <select id="insertExperiment" resultType="java.lang.Long">
-        INSERT INTO experiment
-          (tenant_id, experiment_no, name, status, priority, island_id, planned_at)
-        VALUES (#{param1}, #{param2}, #{param3}, 'created', #{param4}, #{param5}, now())
-        RETURNING id
-    </select>
-
-    <update id="updateUserFields">
+    </select><update id="updateUserFields">
         UPDATE sys_user
            SET role = COALESCE(#{param3}, role),
                enabled = COALESCE(#{param4}, enabled),
@@ -676,30 +535,7 @@
            AND level = 0 AND loop_index = 0
     </select>
 
-    <!-- string_agg / count 子查询保持原有 N+1 规避：一条 SQL 出全列表。 -->
-    <select id="selectExperiments" resultType="java.util.Map">
-        SELECT e.id AS "id", e.experiment_no AS "experimentNo", e.name AS "name",
-               e.status AS "status", e.version AS "version", e.priority AS "priority",
-               e.planned_at AS "plannedAt", e.started_at AS "startedAt",
-               e.finished_at AS "finishedAt", e.remark AS "remark",
-               e.workflow_id AS "workflowId", w.name AS "workflowName",
-               isl.code AS "islandCode", isl.name AS "islandName",
-               (SELECT string_agg(rn.name, '、' ORDER BY rn.name)
-                  FROM experiment_workcell ew
-                  JOIN resource_node rn ON rn.id = ew.workcell_id
-                 WHERE ew.tenant_id = e.tenant_id AND ew.experiment_id = e.id)
-                 AS "workcellNames",
-               (SELECT count(*) FROM experiment_process p
-                 WHERE p.experiment_id = e.id) AS "flowCount"
-          FROM experiment e
-          LEFT JOIN workflow w ON w.id = e.workflow_id
-          LEFT JOIN resource_node isl ON isl.id = e.island_id
-         WHERE e.tenant_id = #{param1}
-         ORDER BY e.id DESC
-         LIMIT #{param2}
-    </select>
-
-    <!-- loop_index 必须显式列出：代码要读它，早期版本漏列导致 timeline 500。 -->
+    <!-- string_agg / count 子查询保持原有 N+1 规避：一条 SQL 出全列表。 --><!-- loop_index 必须显式列出：代码要读它，早期版本漏列导致 timeline 500。 -->
     <select id="selectTimelineNodes" resultType="java.util.Map">
         SELECT id AS "id", node_key AS "nodeKey", name AS "name",
                status::text AS "status", level AS "level",
@@ -710,23 +546,7 @@
           FROM run_node
          WHERE run_id = #{param1} AND actual_start IS NOT NULL
          ORDER BY COALESCE(parent_node_id, id), level, COALESCE(step_seq, 0), id
-    </select>
-
-    <select id="selectExperimentProcesses" resultType="java.util.Map">
-        SELECT p.id AS "id", p.workflow_id AS "workflowId", p.seq AS "seq",
-               p.run_mode AS "runMode", p.run_after AS "runAfter",
-               p.loop_count AS "loopCount",
-               w.name AS "workflowName", w.code AS "workflowCode",
-               (SELECT count(*) FROM workflow_node n
-                 WHERE n.workflow_id = p.workflow_id AND n.node_type = 'task')
-                   AS "nodeCount"
-          FROM experiment_process p
-          JOIN workflow w ON w.id = p.workflow_id
-         WHERE p.tenant_id = #{param1} AND p.experiment_id = #{param2}
-         ORDER BY p.seq
-    </select>
-
-    <select id="selectPolicies" resultType="java.util.Map">
+    </select><select id="selectPolicies" resultType="java.util.Map">
         SELECT p.id AS "id", COALESCE(ec.code, '*') AS "code", p.scope AS "scope",
                p.strategy::text AS "strategy", p.max_attempts AS "maxAttempts",
                p.priority AS "priority", p.enabled AS "enabled",
@@ -791,43 +611,16 @@
          WHERE n.tenant_id = #{param1} AND n.resource_id = #{param2}
            AND n.level = 0 AND n.status = 'running' AND r.status = 'running'
          ORDER BY "remain" DESC LIMIT 1
-    </select>
-
-    <update id="updateExperimentProcessLoopCount">
-        UPDATE experiment_process SET loop_count = #{param4}
-         WHERE tenant_id = #{param1} AND experiment_id = #{param2} AND seq = #{param3}
-    </update>
-
-    <select id="selectDurations" resultType="java.util.Map">
+    </select><select id="selectDurations" resultType="java.util.Map">
         SELECT method AS "method", p50_ms AS "p50Ms", p90_ms AS "p90Ms",
                min_ms AS "minMs", max_ms AS "maxMs", sample_count AS "sampleCount"
           FROM duration_model
          WHERE tenant_id = #{param1}
          ORDER BY sample_count DESC LIMIT #{param2}
-    </select>
-
-    <select id="selectExperimentVariables" resultType="java.util.Map">
-        SELECT id AS "id", name AS "name", type AS "type",
-               default_value AS "defaultValue", description AS "description"
-          FROM experiment_variable
-         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
-         ORDER BY id
     </select><select id="selectAllCapabilities" resultType="java.util.Map">
         SELECT code AS "code", name AS "name" FROM capability ORDER BY id
     </select>
 
     <select id="selectAllWorkflowIds" resultType="java.lang.Long">
         SELECT id FROM workflow WHERE tenant_id = #{param1} ORDER BY id
-    </select>
-
-    <select id="selectExperimentStatuses" resultType="java.util.Map">
-        SELECT id AS "id", status::text AS "status"
-          FROM experiment
-         WHERE tenant_id = #{param1}
-           AND id IN
-        <foreach item="one" collection="param2" open="(" separator="," close=")">
-            #{one}
-        </foreach>
-    </select>
-
-</mapper>
+    </select></mapper>

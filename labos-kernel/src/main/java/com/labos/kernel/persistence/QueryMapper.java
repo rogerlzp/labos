@@ -62,8 +62,6 @@ public interface QueryMapper {
      */
     Long selectCapabilityIdGlobal(String code);
 
-    /** 这批 workflow id 里哪些真的存在（编排校验用）。 */
-    List<Long> selectExistingWorkflowIds(long tenantId, List<Long> ids);
 
     /** 资源节点名称。 */
     String selectResourceName(long resourceId);
@@ -114,8 +112,6 @@ public interface QueryMapper {
     /** 编排流程列表（category='choreography'）。 */
     List<Map<String, Object>> selectChoreographies(long tenantId, int limit);
 
-    /** 某实验的执行记录（最近 20 条）。 */
-    List<Map<String, Object>> selectExperimentRuns(long tenantId, long experimentId);
 
     /** 审计日志（filter 为 null 时取全部）。 */
     List<Map<String, Object>> selectAuditLog(long tenantId, String filter, int limit);
@@ -125,8 +121,6 @@ public interface QueryMapper {
 
 
 
-    /** 实验的工位交接清单。 */
-    List<Map<String, Object>> selectExperimentHandoffs(long tenantId, long experimentId);
 
     /** 命令 Outbox（state 为 null 时不过滤）。 */
     List<Map<String, Object>> selectCommandOutbox(long tenantId, String state, int limit);
@@ -144,16 +138,10 @@ public interface QueryMapper {
     /** 人工介入记录。 */
     List<Map<String, Object>> selectInterventionRecords(long tenantId, int limit);
 
-    /** 实验绑定的工位（含名称）。 */
-    List<Map<String, Object>> selectExperimentWorkcells(long tenantId, long experimentId);
 
 
 
-    /** 实验编排图；不存在返回 null。 */
-    String selectExperimentGraph(long tenantId, long experimentId);
 
-    /** 保存实验编排图（按 experiment_id 覆盖）。 */
-    int upsertExperimentGraph(long tenantId, long experimentId, String graphJson);
 
 
 
@@ -171,8 +159,6 @@ public interface QueryMapper {
     /** 设备离线告警（含离线秒数）。 */
     List<Map<String, Object>> selectDeviceAlerts(long tenantId, int limit);
 
-    /** 交接记录（status 为 null 时不过滤）。 */
-    List<Map<String, Object>> selectHandoffs(long tenantId, String status, int limit);
 
 
     /** 告警聚合（按 fingerprint，排除 info 与已解决）。 */
@@ -211,14 +197,8 @@ public interface QueryMapper {
     /** 流程时间轴估算：任务节点 + 历史 P50 + 型号库估值，一次 CTE 取全。 */
     List<Map<String, Object>> selectWorkflowTimelineNodes(long tenantId, long workflowId);
 
-    /** 实验执行头（experiment_id / status / expanded_steps）；不存在返回 null。 */
-    Map<String, Object> selectExperimentRunHeader(long tenantId, long runId);
 
-    /** 实验编排计划（每条流程 × loop_count）。 */
-    List<Map<String, Object>> selectExperimentProcessPlan(long tenantId, long experimentId);
 
-    /** 实验执行的实际步骤行。 */
-    List<Map<String, Object>> selectExperimentRunStepRows(long tenantId, long runId);
 
 
     /** 记一条人工介入记录，返回 id。 */
@@ -227,16 +207,8 @@ public interface QueryMapper {
                             String plateBarcode, String sampleId, String fromLocation,
                             String toLocation, String result, String note);
 
-    /** 新增一条工位交接（重复则忽略）。 */
-    int insertExperimentHandoff(long tenantId, long experimentId,
-                                long fromWorkcellId, long toWorkcellId);
 
-    /** 新增一条实验工位绑定（重复则忽略）。 */
-    int insertExperimentWorkcell(long tenantId, long experimentId, long workcellId);
 
-    /** 新建实验，返回 id。 */
-    Long insertExperiment(long tenantId, String experimentNo, String name,
-                          Integer priority, Long islandId);
 
     /** 改用户（COALESCE：没传的字段不动）。 */
     int updateUserFields(long tenantId, long id, String role, Boolean enabled,
@@ -245,14 +217,10 @@ public interface QueryMapper {
 
 
 
-    /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
-    List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 
     /** 甘特时间轴的 run_node 行（相对毫秒由 Java 侧换算）。 */
     List<Map<String, Object>> selectTimelineNodes(long runId);
 
-    /** 实验编排的流程列表（含流程名/码与任务节点数）。 */
-    List<Map<String, Object>> selectExperimentProcesses(long tenantId, long experimentId);
 
     /** 恢复策略清单（带错误码，`*` 表示通配）。 */
     List<Map<String, Object>> selectPolicies(long tenantId);
@@ -269,15 +237,10 @@ public interface QueryMapper {
     /** 该资源上正在跑的节点还剩多少秒（ETA 用）；无在跑节点返回 null。 */
     Double selectRemainingSec(long tenantId, long resourceId);
 
-    /** 实验流程的循环次数覆盖值（null = 用默认）。 */
-    int updateExperimentProcessLoopCount(long tenantId, long experimentId, int seq,
-                                         String loopCount);
 
     /** 时长模型（按样本数倒序，limit 由调用方钳位）。 */
     List<Map<String, Object>> selectDurations(long tenantId, int limit);
 
-    /** 实验变量列表。 */
-    List<Map<String, Object>> selectExperimentVariables(long tenantId, long experimentId);
 
 
     /** 能力清单（code + name），设备注册脚本在型号不存在时打印出来排障。 */
@@ -327,13 +290,6 @@ public interface QueryMapper {
                                     @Param("params") String params,
                                     @Param("enabled") String enabled);
 
-    /**
-     * 人工插队：数组顺序即执行顺序，priority 从 100 递减。
-     *
-     * <p>原来按 index 逐条 batch update；现在用 CASE 一次写完，
-     * 「顺序 → priority」的换算在 SQL 里一眼可见。
-     */
-    int reorderExperimentPriorities(long tenantId, @Param("ids") List<Long> ids);
 
 
     /** 资源节点的父节点（位置 -> 所属设备）；无父节点返回 null。 */
@@ -342,10 +298,7 @@ public interface QueryMapper {
     /** device_instance.id -> resource_node.id（原 SQL 无 tenant 条件，保持一致）。 */
     Long selectDeviceResourceByInstance(long deviceInstanceId);
 
-    /** 批量取实验状态（调序前校验）。id IN 用 foreach，替换手写 ANY(?) + createArrayOf。 */
-    List<Map<String, Object>> selectExperimentStatuses(long tenantId, List<Long> ids);
 
-    int bumpExperimentVersion(long tenantId, long experimentId);
 
 
 }

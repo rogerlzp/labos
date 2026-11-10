@@ -7,7 +7,6 @@ import com.labos.boot.web.service.PauseCoordinatorFactory;
 import com.labos.boot.web.service.RunService;
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
-import com.labos.kernel.api.QueryService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.workflow.BatchOrchestrator;
@@ -62,7 +61,6 @@ public class ExperimentActionController {
 
     private static final long TENANT = 1L;
 
-    private final QueryService query;
     private final DbConfig db;
     private final WorkflowService workflows;
     private final ExperimentScheduler scheduler;
@@ -71,12 +69,11 @@ public class ExperimentActionController {
     private final PauseCoordinatorFactory pauseFactory;
     private final ExperimentActionService experimentActionService;
 
-    public ExperimentActionController(QueryService query, DbConfig db,
+    public ExperimentActionController(DbConfig db,
                                       WorkflowService workflows, ExperimentScheduler scheduler,
                                       AuditRecorder audit, RunService runService,
                                       PauseCoordinatorFactory pauseFactory,
                                       ExperimentActionService experimentActionService) {
-        this.query = query;
         this.db = db;
         this.workflows = workflows;
         this.scheduler = scheduler;
@@ -175,7 +172,7 @@ public class ExperimentActionController {
         while (m.find()) {
             pairs.add(new long[]{Long.parseLong(m.group(1)), Long.parseLong(m.group(2))});
         }
-        int n = query.setExperimentHandoffs(id, pairs);
+        int n = experimentActionService.setExperimentHandoffs(id, pairs);
         if (n == -1) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("实验不存在"));
         }
@@ -218,7 +215,7 @@ public class ExperimentActionController {
                 ids.add(Long.parseLong(t));
             }
         }
-        int n = query.setExperimentWorkcells(id, ids);
+        int n = experimentActionService.setExperimentWorkcells(id, ids);
         if (n < 0) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("实验不存在"));
         }
@@ -244,7 +241,7 @@ public class ExperimentActionController {
             @PathVariable long id,
             @RequestBody(required = false) String body,
             HttpServletRequest req) throws SQLException {
-        int n = query.saveExperimentGraph(id, body);
+        int n = experimentActionService.saveExperimentGraph(id, body);
         audit.record(session(req), "experiment.graph", "experiment", id, null,
                 Jsons.obj("bytes", body == null ? 0 : body.length(),
                         "compiledProcesses", n), req.getRemoteAddr());
@@ -323,7 +320,7 @@ public class ExperimentActionController {
             produces = "application/json; charset=utf-8")
     public String setLoop(@PathVariable long id, @PathVariable int seq,
                           @RequestParam(required = false) String count) throws SQLException {
-        int n = query.setLoopCount(id, seq, count);
+        int n = experimentActionService.setLoopCount(id, seq, count);
         return Jsons.obj("updated", n, "seq", seq, "loopCount", count);
     }
 
@@ -503,7 +500,7 @@ public class ExperimentActionController {
                     extractStr(chunk, "description"),
             });
         }
-        int n = query.saveExperimentVariables(id, vars);
+        int n = experimentActionService.saveExperimentVariables(id, vars);
         audit.record(session(req), "experiment.vars", "experiment", id, null,
                 Jsons.obj("count", n), req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("saved", n));
@@ -549,7 +546,7 @@ public class ExperimentActionController {
             }
         }
         try {
-            int n = query.reorderExperiments(order);
+            int n = experimentActionService.reorderExperiments(order);
             audit.record(session(req), "experiment.reorder", "experiment", null,
                     "count=" + order.size(), null, req.getRemoteAddr());
             return ResponseEntity.ok(Jsons.obj("reordered", n, "ids",
@@ -574,7 +571,7 @@ public class ExperimentActionController {
                 wfs.add(Long.parseLong(im.group()));
             }
         }
-        String eid = query.createExperiment(
+        String eid = experimentActionService.createExperiment(
                 jsonField(body, "name"), jsonField(body, "code"),
                 jsonLong(body, "islandId"), jsonInt(body, "priority"), wfs);
         audit.record(session(req), "experiment.create", "experiment", null,

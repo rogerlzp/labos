@@ -405,32 +405,6 @@ public class QueryService {
                 "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
-    public String experimentsJson(int limit) throws SQLException {
-        List<String> items = new ArrayList<>();
-        // 列表页要能一眼看出：哪个岛、什么内容、第几版、编了几条流程
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperiments(tenantId, Math.max(1, Math.min(limit, 500)))) {
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "experimentNo", row.get("experimentNo"),
-                    "name", row.get("name"),
-                    "status", row.get("status"),
-                    "plannedAt", mstr(row, "plannedAt"),
-                    "startedAt", mstr(row, "startedAt"),
-                    "finishedAt", mstr(row, "finishedAt"),
-                    "workflowId", row.get("workflowId"),
-                    "workflowName", row.get("workflowName"),
-                    "version", mint(row, "version"),
-                    "priority", mint(row, "priority"),
-                    "remark", row.get("remark"),
-                    "islandCode", row.get("islandCode"),
-                    "islandName", row.get("islandName"),
-                    "workcellNames", row.get("workcellNames"),
-                    "flowCount", mint(row, "flowCount")));
-        }
-        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
     /** 时长模型（命令 → p50/p90），甘特预测与仿真共用。 */
     public String durationsJson(int limit) throws SQLException {
         List<String> items = new ArrayList<>();
@@ -489,17 +463,6 @@ public class QueryService {
                 "startedAt", start.toString(),
                 "totalMs", totalMs,
                 "items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /** 实验编排：该实验由哪些流程按什么顺序组成。 */
-    /**
-     * 设置某一步的循环次数。
-     *
-     * @param loopCount null/空 = 不循环；数字或 {@code ${var}} 表示次数
-     */
-    public int setLoopCount(long experimentId, int seq, String loopCount) throws SQLException {
-        return queryMapper.updateExperimentProcessLoopCount(tenantId, experimentId, seq,
-                loopCount == null || loopCount.isBlank() ? null : loopCount.trim());
     }
 
     /** 实验执行历史（最近 20 次）。 */
@@ -577,120 +540,6 @@ public class QueryService {
                 "nodes", new Jsons.Raw(Jsons.arr(nodes)));
     }
 
-    public String experimentRunStepsJson(long runId) throws SQLException {
-        java.util.Map<String, Object> header =
-                queryMapper.selectExperimentRunHeader(tenantId, runId);
-        if (header == null) {
-            throw new IllegalArgumentException("实验执行不存在: " + runId);
-        }
-        long expId = ((Number) header.get("experimentId")).longValue();
-        String runStatus = String.valueOf(header.get("status"));
-        int expanded = mint(header, "expandedSteps");
-
-        // 计划：每条流程 × 循环次数
-        java.util.List<long[]> plan = new ArrayList<>();          // [seq, loop]
-        java.util.Map<String, String> wfName = new java.util.HashMap<>();
-        java.util.Map<Integer, Long> wfId = new java.util.HashMap<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperimentProcessPlan(tenantId, expId)) {
-            int seq = mint(row, "seq");
-            long wf = ((Number) row.get("workflowId")).longValue();
-            wfId.put(seq, wf);
-            wfName.put(seq + ":" + wf,
-                    row.get("name") == null ? null : String.valueOf(row.get("name")));
-            int times = 1;
-            Object loopObj = row.get("loopCount");
-            String loop = loopObj == null ? null : String.valueOf(loopObj);
-            if (loop != null && loop.trim().matches("\\d+")) {
-                times = Math.max(1, Integer.parseInt(loop.trim()));
-            }
-            for (int i = 0; i < times; i++) {
-                plan.add(new long[]{seq, i});
-            }
-        }
-
-        // 实际执行行
-        java.util.Map<String, String[]> done = new java.util.HashMap<>();   // "seq:loop" → [status,runId,err]
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperimentRunStepRows(tenantId, runId)) {
-            Object runObj = row.get("runId");
-            done.put(mint(row, "seq") + ":" + mint(row, "loopIndex"), new String[]{
-                    row.get("status") == null ? null : String.valueOf(row.get("status")),
-                    runObj == null ? null : String.valueOf(((Number) runObj).longValue()),
-                    row.get("error") == null ? null : String.valueOf(row.get("error"))});
-        }
-
-        List<String> items = new ArrayList<>();
-        int okCnt = 0;
-        int badCnt = 0;
-        int pendingCnt = 0;
-        for (long[] p : plan) {
-            int seq = (int) p[0];
-            int loop = (int) p[1];
-            String[] d = done.get(seq + ":" + loop);
-            String st = d == null ? "pending" : d[0];
-            if ("completed".equals(st)) {
-                okCnt++;
-            } else if ("failed".equals(st)) {
-                badCnt++;
-            } else if ("pending".equals(st)) {
-                pendingCnt++;
-            }
-            items.add(Jsons.obj(
-                    "seq", seq,
-                    "loopIndex", loop,
-                    "workflowId", wfId.get(seq),
-                    "workflowName", wfName.get(seq + ":" + wfId.get(seq)),
-                    "status", st,
-                    "runId", d == null || d[1] == null ? null : Long.valueOf(d[1]),
-                    "error", d == null ? null : d[2]));
-        }
-
-        return Jsons.obj("runId", runId, "status", runStatus,
-                "expandedSteps", expanded,
-                "completed", okCnt, "failed", badCnt, "pending", pendingCnt,
-                "items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    public String experimentRunsJson(long experimentId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperimentRuns(tenantId, experimentId)) {
-            Object dur = row.get("durationSec");
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "status", row.get("status"),
-                    "expandedSteps", mint(row, "expandedSteps"),
-                    "currentSeq", mint(row, "currentSeq"),
-                    "startedAt", mstr(row, "startedAt"),
-                    "finishedAt", mstr(row, "finishedAt"),
-                    "durationSec", dur instanceof Number n ? Math.round(n.doubleValue()) : null,
-                    "pauseKind", row.get("pauseKind"),
-                    "pauseReason", row.get("pauseReason"),
-                    "controlState", row.get("controlState"),
-                    "stopRequested", Boolean.TRUE.equals(row.get("stopRequested")),
-                    "error", row.get("error")));
-        }
-        return Jsons.obj("experimentId", experimentId,
-                "items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
-    /** 实验变量列表。 */
-    public String experimentVariablesJson(long experimentId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperimentVariables(tenantId, experimentId)) {
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "name", row.get("name"),
-                    "type", row.get("type"),
-                    "defaultValue", row.get("defaultValue"),
-                    "description", row.get("description")));
-        }
-        return Jsons.obj("experimentId", experimentId,
-                "items", new Jsons.Raw(Jsons.arr(items)));
-    }
-
     /**
      * 整体替换实验变量（先删后插）。
      *
@@ -698,49 +547,6 @@ public class QueryService {
      * 也不会出现"删了一半"的中间态——全程一个事务。
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int saveExperimentVariables(long experimentId, List<String[]> vars) throws SQLException {
-        try (Connection c = db.open()) {
-            try {
-                experimentMapper.deleteExperimentVariables(tenantId, experimentId);
-                int n = 0;
-                for (String[] v : vars) {
-                    // v = [name, type, defaultValue, description]
-                    if (v[0] == null || v[0].isBlank()) {
-                        continue;
-                    }
-                    experimentMapper.insertExperimentVariable(tenantId, experimentId,
-                            v[0].trim(),
-                            v[1] == null || v[1].isBlank() ? "number" : v[1],
-                            v[2], v[3]);
-                    n++;
-                }
-                return n;
-            } catch (RuntimeException e) {
-                throw e;
-            }
-        }
-    }
-
-    public String experimentProcessesJson(long experimentId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperimentProcesses(tenantId, experimentId)) {
-            items.add(Jsons.obj(
-                    "id", row.get("id"),
-                    "workflowId", row.get("workflowId"),
-                    "workflowName", row.get("workflowName"),
-                    "workflowCode", row.get("workflowCode"),
-                    // seq 用输出序号而不是库里的 seq：原实现如此（列表序号从 1 起）
-                    "seq", items.size() + 1,
-                    "runMode", row.get("runMode"),
-                    "runAfter", mint(row, "runAfter"),
-                    "nodeCount", mint(row, "nodeCount")));
-        }
-        return Jsons.obj("experimentId", experimentId, "total", items.size(),
-                "items", new Jsons.Raw(Jsons.arr(items)));
-    }
 
     /**
      * 整体替换编排。
@@ -760,129 +566,10 @@ public class QueryService {
      * @return 实际更新的条数
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int reorderExperiments(List<Long> orderedIds) throws SQLException {
-        if (orderedIds == null || orderedIds.isEmpty()) {
-            throw new IllegalArgumentException("orderedIds 不能为空");
-        }
-        if (orderedIds.size() > 100) {
-            throw new IllegalArgumentException("一次最多重排 100 个实验");
-        }
-        if (new java.util.HashSet<>(orderedIds).size() != orderedIds.size()) {
-            throw new IllegalArgumentException("orderedIds 里有重复 id");
-        }
-        try (Connection c = db.open()) {
-            try {
-                // 先查状态：只允许 created / planned
-                java.util.Map<Long, String> status = new java.util.LinkedHashMap<>();
-                for (java.util.Map<String, Object> row
-                        : queryMapper.selectExperimentStatuses(tenantId, orderedIds)) {
-                    status.put(((Number) row.get("id")).longValue(),
-                            String.valueOf(row.get("status")));
-                }
-                java.util.List<Long> unknown = orderedIds.stream()
-                        .filter(id -> !status.containsKey(id)).toList();
-                if (!unknown.isEmpty()) {
-                    throw new IllegalArgumentException("实验不存在：" + unknown);
-                }
-                java.util.List<String> notAllowed = new java.util.ArrayList<>();
-                for (Long id : orderedIds) {
-                    String st = status.get(id);
-                    if (st != null && !"created".equals(st) && !"planned".equals(st)) {
-                        notAllowed.add(id + "(" + st + ")");
-                    }
-                }
-                if (!notAllowed.isEmpty()) {
-                    throw new IllegalArgumentException("只有还没跑的实验能调序，这些不是："
-                            + notAllowed);
-                }
-
-                return queryMapper.reorderExperimentPriorities(tenantId, orderedIds);
-            } catch (RuntimeException e) {
-                throw e;
-            }
-        }
-    }
 
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int replaceExperimentProcesses(long experimentId, List<Long> workflowIds)
-            throws SQLException {
-        CompiledGraph compiled = linearGraph(workflowIds);
-        try (Connection c = db.open()) {
-            try {
-                validateExperimentWorkflowIds(c, compiled.workflowIds());
-                int n = replaceExperimentProcesses(c, experimentId, compiled, true);
-                return n;
-            } catch (SQLException | RuntimeException e) {
-                throw e;
-            }
-        }
-    }
-
-    private void validateExperimentWorkflowIds(Connection c, List<Long> workflowIds)
-            throws SQLException {
-        if (workflowIds.size() > 50) {
-            throw new IllegalArgumentException("单个实验最多编排 50 个流程");
-        }
-        // 先校验再删 —— 顺序很重要：
-        //   ① 非法 id（≤0）多半是前端把"新建流程…"这类哨兵值混进来了
-        //   ② 不存在的 id 会在 INSERT 时撞外键，报的是
-        //      "Batch entry 1 ... violates foreign key constraint"，看不出是哪个 id
-        // 更关键的是：**校验必须在 DELETE 之前**，否则删完才发现插不进去，编排就丢了。
-        java.util.List<Long> bad = new java.util.ArrayList<>();
-        for (Long id : workflowIds) {
-            if (id == null || id <= 0) {
-                bad.add(id);
-            }
-        }
-        if (!bad.isEmpty()) {
-            throw new IllegalArgumentException("编排里有非法流程 id：" + bad
-                    + "（可能把界面上的「新建流程…」当成流程加了进来）");
-        }
-        if (!workflowIds.isEmpty()) {
-            java.util.Set<Long> exist = new java.util.HashSet<>();
-            exist.addAll(queryMapper.selectExistingWorkflowIds(tenantId, workflowIds));
-            java.util.List<Long> missing = workflowIds.stream()
-                    .filter(id -> !exist.contains(id)).toList();
-            if (!missing.isEmpty()) {
-                throw new IllegalArgumentException("流程不存在或已删除：" + missing);
-            }
-        }
-    }
 
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    private int replaceExperimentProcesses(Connection c, long experimentId,
-                                           CompiledGraph compiled, boolean bumpVersion)
-            throws SQLException {
-        // 删 process 会级联删 experiment_process_edge（见 97_m95_process_edge.sql 的 FK），
-        // 所以边不需要单独清 —— 整体替换天然一致。
-experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
-        // nodeId -> 新生成的 process.id，用于把画布上的边翻译成 process 之间的边
-        java.util.Map<String, Long> processIds = new java.util.HashMap<>();
-        for (CompiledStep step : compiled.steps()) {
-            Long id = experimentMapper.insertExperimentProcess(tenantId, experimentId,
-                    step.workflowId(), step.seq());
-            processIds.put(step.nodeId(), id);
-        }
-        for (CompiledEdge edge : compiled.edges()) {
-            Long from = processIds.get(edge.fromNodeId());
-            Long to = processIds.get(edge.toNodeId());
-            if (from == null || to == null) {
-                throw new IllegalArgumentException("编排边引用了不存在的节点："
-                        + edge.fromNodeId() + " -> " + edge.toNodeId());
-            }
-            experimentMapper.insertExperimentProcessEdge(tenantId, experimentId, from, to);
-        }
-        if (bumpVersion) {
-            bumpExperimentVersion(c, experimentId);
-        }
-        return compiled.steps().size();
-    }
 
     /** 用户列表（不含密码）。 */
     public String usersJson() throws SQLException {
@@ -1075,33 +762,8 @@ throw e;
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
 
-    /** 实验编排图（nodes + edges）。 */
-    public String experimentGraphJson(long experimentId) throws SQLException {
-        String g = queryMapper.selectExperimentGraph(tenantId, experimentId);
-        return g == null ? "{\"nodes\":[],\"edges\":[]}" : g;
-    }
-
     /** 保存实验编排图（整体替换），并同步编译成 experiment_process（含偏序边）。 */
     /** A 批：Spring 声明式事务。checked 异常也要回滚（默认只回滚 RuntimeException）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int saveExperimentGraph(long experimentId, String graphJson) throws SQLException {
-        if (graphJson == null || graphJson.isBlank()) {
-            throw new IllegalArgumentException("图不能为空");
-        }
-        CompiledGraph compiled = compileExperimentGraph(graphJson);
-        try (Connection c = db.open()) {
-            try {
-                queryMapper.upsertExperimentGraph(tenantId, experimentId, graphJson);
-                validateExperimentWorkflowIds(c, compiled.workflowIds());
-                replaceExperimentProcesses(c, experimentId, compiled, false);
-                bumpExperimentVersion(c, experimentId);
-                return compiled.steps().size();
-            } catch (SQLException | RuntimeException e) {
-                throw e;
-            }
-        }
-    }
 
     /** 搬运流程列表（岛屿视图"跑流程"用，按 id 降序）。 */
     public String choreographiesJson(int limit) throws SQLException {
@@ -1135,36 +797,6 @@ throw e;
     /** Spring 声明式事务（checked 异常也回滚）。 */
     @org.springframework.transaction.annotation.Transactional(
             rollbackFor = Exception.class)
-    public String createExperiment(String name, String code, Long islandId,
-                                   Integer priority, java.util.List<Long> workflowIds)
-            throws SQLException {
-        if (name == null || name.isBlank()) {
-            throw new IllegalArgumentException("实验名称不能为空");
-        }
-        // 编号：EXP-<yyyyMMddHHmmss>-<4 位随机>。撞了极少，但唯一索引会兜住。
-        String no = (code == null || code.isBlank())
-                ? "EXP-" + java.time.LocalDateTime.now()
-                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
-                        + "-" + String.format("%04d",
-                            java.util.concurrent.ThreadLocalRandom.current().nextInt(10000))
-                : code.trim();
-
-        try (Connection c = db.open()) {
-            try {
-                long id = queryMapper.insertExperiment(tenantId, no, name.trim(),
-                        priority == null ? 5 : priority, islandId);
-                if (workflowIds != null) {
-                    // 走统一入口：写 process 的同时生成线性链式的偏序边，
-                    // 避免"新建的实验有流程、没有边"这种半成品状态。
-                    replaceExperimentProcesses(c, id, linearGraph(workflowIds), false);
-                }
-                return Jsons.obj("id", id, "experimentNo", no,
-                        "processes", workflowIds == null ? 0 : workflowIds.size());
-            } catch (SQLException e) {
-                throw e;
-            }
-        }
-    }
 
     public String errorCodesJson(String severity, String scope, String keyword)
             throws SQLException {
@@ -1363,8 +995,6 @@ throw e;
      * 同一型号的多台设备 IP 一定不同，不能猜。
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
 
     /** 流程图保存历史（按时间倒序）。 */
     public String graphHistoryJson(long workflowId) throws SQLException {
@@ -1412,9 +1042,6 @@ throw e;
      * <p>不硬删：历史 run_node 可能引用这台设备，硬删会断链。
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-
 
     /** L-01：记录一条人工介入（决策/Handoff 确认）。 */
     public long recordIntervention(long manualWindowId, Long runId, Long experimentRunId,
@@ -1453,61 +1080,12 @@ throw e;
                 "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
-    /** 实验 Handoff 配置列表（N-10）。 */
-    public String experimentHandoffsJson(long experimentId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperimentHandoffs(tenantId, experimentId)) {
-            items.add(Jsons.obj("fromWorkcellId", row.get("fromWorkcellId"),
-                    "toWorkcellId", row.get("toWorkcellId"),
-                    "carrier", row.get("carrier"),
-                    "status", row.get("status"),
-                    "remark", row.get("remark")));
-        }
-        return Jsons.obj("experimentId", experimentId,
-                "items", new Jsons.Raw(Jsons.arr(items)), "count", items.size());
-    }
-
     /**
      * 全量替换实验 Handoff 配置。
      *
      * @return 写入条数；-1 实验不存在；-2 起点/终点无效或不在显式 Workcell 绑定内
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int setExperimentHandoffs(long experimentId,
-                                     java.util.List<long[]> pairs) throws SQLException {
-        try (Connection c = db.open()) {
-            try {
-                java.util.Set<Long> bound = new java.util.LinkedHashSet<>();
-                if (!experimentMapper.experimentExists(tenantId, experimentId)) {
-                    return -1;
-                }
-                bound.addAll(experimentMapper.selectExperimentWorkcellIds(
-                        tenantId, experimentId));
-                for (long[] p : pairs) {
-                    if (p == null || p.length < 2 || p[0] <= 0 || p[1] <= 0 || p[0] == p[1]) {
-                        return -2;
-                    }
-                    if (!bound.isEmpty() && (!bound.contains(p[0]) || !bound.contains(p[1]))) {
-                        return -2;
-                    }
-                }
-                experimentMapper.deleteExperimentHandoffs(tenantId, experimentId);
-                int n = 0;
-                // 原 executeBatch().length 返回批里的语句条数（即使 ON CONFLICT
-                // DO NOTHING 也计入），所以这里按 pairs 条数累加，保持计数一致。
-                for (long[] p : pairs) {
-                    queryMapper.insertExperimentHandoff(tenantId, experimentId, p[0], p[1]);
-                    n++;
-                }
-                return n;
-            } catch (RuntimeException e) {
-                throw e;
-            }
-        }
-    }
 
     /**
      * N-10：人工确认一条 Handoff（配置 → confirmed），并落 L-01 介入记录。
@@ -1515,8 +1093,6 @@ throw e;
      * @return 更新条数（0 = 不存在/已确认）
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
 
     /** P-07：命令事件 Outbox 列表（可按状态过滤）。 */
     public String commandOutboxJson(String state, int limit) throws SQLException {
@@ -1542,27 +1118,6 @@ throw e;
     /** P-07：重放一条已派发的外部事件（不重发物理命令）。 */
     public boolean replayCommandOutbox(long id) throws SQLException {
         return com.labos.kernel.driver.CommandOutbox.replay(db, tenantId, id);
-    }
-
-    /** N-10：跨实验 Handoff 处置列表（可按状态过滤）。 */
-    public String handoffsJson(String status, int limit) throws SQLException {
-        List<String> items = new ArrayList<>();
-        String statusFilter = status == null || status.isBlank() ? null : status;
-        for (java.util.Map<String, Object> row : queryMapper.selectHandoffs(
-                tenantId, statusFilter, Math.max(1, Math.min(limit, 200)))) {
-            items.add(Jsons.obj("id", row.get("id"),
-                    "experimentId", row.get("experimentId"),
-                    "experimentNo", row.get("experimentNo"),
-                    "fromWorkcellId", row.get("fromWorkcellId"),
-                    "fromName", row.get("fromName"),
-                    "toWorkcellId", row.get("toWorkcellId"),
-                    "toName", row.get("toName"),
-                    "status", row.get("status"),
-                    "carrier", row.get("carrier"),
-                    "remark", row.get("remark")));
-        }
-        return Jsons.obj("total", items.size(),
-                "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
     /** P-08：TransferTransaction 列表。 */
@@ -1678,52 +1233,12 @@ throw e;
         return com.labos.kernel.driver.CommandLedger.resolve(db, tenantId, id, done, note, by);
     }
 
-    /** 实验显式 Workcell 绑定（N-10）。 */
-    public String experimentWorkcellsJson(long experimentId) throws SQLException {
-        List<String> items = new ArrayList<>();
-        for (java.util.Map<String, Object> row
-                : queryMapper.selectExperimentWorkcells(tenantId, experimentId)) {
-            items.add(Jsons.obj("workcellId", row.get("workcellId"),
-                    "name", row.get("name")));
-        }
-        return Jsons.obj("experimentId", experimentId,
-                "items", new Jsons.Raw(Jsons.arr(items)), "count", items.size());
-    }
-
     /**
      * 全量替换实验 Workcell 绑定（N-10 显式绑定写入口）。
      *
      * @return 写入条数（空列表 = 清空绑定，回到资源树推导）
      */
     /** Spring 声明式事务（checked 异常也回滚）。 */
-    @org.springframework.transaction.annotation.Transactional(
-            rollbackFor = Exception.class)
-    public int setExperimentWorkcells(long experimentId, List<Long> workcellIds)
-            throws SQLException {
-        try (Connection c = db.open()) {
-            try {
-                if (!experimentMapper.experimentExists(tenantId, experimentId)) {
-                    return -1;
-                }
-                experimentMapper.deleteExperimentWorkcells(tenantId, experimentId);
-                int n = 0;
-                if (workcellIds != null && !workcellIds.isEmpty()) {
-                    // 同上：按进入批的有效行数计数，与 executeBatch().length 一致。
-                    for (Long wid : workcellIds) {
-                        if (wid == null || wid <= 0) {
-                            continue;
-                        }
-                        queryMapper.insertExperimentWorkcell(tenantId, experimentId, wid);
-                        n++;
-                    }
-                }
-                return n;
-            } catch (RuntimeException e) {
-                throw e;
-            }
-        }
-    }
-
 
     /**
      * 告警处置：认领 / 关闭 / 静音。
@@ -1854,186 +1369,6 @@ throw e;
     }
 
     // ---------------------------------------------------------------- 工具
-
-    private void bumpExperimentVersion(Connection c, long experimentId) throws SQLException {
-        queryMapper.bumpExperimentVersion(tenantId, experimentId);
-    }
-
-    /** 画布编译器：当前只接受 开始 -> 流程... -> 结束 的线性主链。 */
-    static CompiledGraph compileExperimentGraph(String graphJson) {
-        Object parsed = parseJson(graphJson);
-        if (!(parsed instanceof Map<?, ?> root)) {
-            throw new IllegalArgumentException("画布格式不对：根节点必须是对象");
-        }
-        Object nodesObj = root.get("nodes");
-        Object edgesObj = root.get("edges");
-        if (!(nodesObj instanceof java.util.List<?> nodesRaw)
-                || !(edgesObj instanceof java.util.List<?> edgesRaw)) {
-            throw new IllegalArgumentException("画布格式不对：需要 nodes 与 edges 数组");
-        }
-
-        java.util.Map<String, CanvasNode> nodes = new java.util.LinkedHashMap<>();
-        for (Object one : nodesRaw) {
-            if (!(one instanceof Map<?, ?> nodeMap)) {
-                throw new IllegalArgumentException("画布格式不对：nodes 里有非法节点");
-            }
-            String id = asString(nodeMap.get("id"));
-            Map<?, ?> data = asMap(nodeMap.get("data"), "节点 data");
-            String kind = asString(data.get("kind"));
-            if (id == null || id.isBlank()) {
-                throw new IllegalArgumentException("画布里有节点缺少 id");
-            }
-            if (kind == null || kind.isBlank()) {
-                throw new IllegalArgumentException("节点 " + id + " 缺少 kind");
-            }
-            if (nodes.put(id, new CanvasNode(id, kind, asLong(data.get("workflowId")))) != null) {
-                throw new IllegalArgumentException("画布里有重复节点 id：" + id);
-            }
-        }
-        if (nodes.isEmpty()) {
-            throw new IllegalArgumentException("画布不能为空");
-        }
-
-        java.util.Map<String, java.util.List<String>> outgoing = new java.util.HashMap<>();
-        java.util.Map<String, Integer> incoming = new java.util.HashMap<>();
-        for (String id : nodes.keySet()) {
-            outgoing.put(id, new java.util.ArrayList<>());
-            incoming.put(id, 0);
-        }
-        for (Object one : edgesRaw) {
-            if (!(one instanceof Map<?, ?> edgeMap)) {
-                throw new IllegalArgumentException("画布格式不对：edges 里有非法连线");
-            }
-            String source = asString(edgeMap.get("source"));
-            String target = asString(edgeMap.get("target"));
-            if (!nodes.containsKey(source) || !nodes.containsKey(target)) {
-                throw new IllegalArgumentException("连线引用了不存在的节点：" + source + " -> " + target);
-            }
-            outgoing.get(source).add(target);
-            incoming.put(target, incoming.get(target) + 1);
-        }
-
-        java.util.List<CanvasNode> starts = nodes.values().stream()
-                .filter(n -> "start".equals(n.kind())).toList();
-        java.util.List<CanvasNode> ends = nodes.values().stream()
-                .filter(n -> "end".equals(n.kind())).toList();
-        if (starts.size() != 1 || ends.size() != 1) {
-            throw new IllegalArgumentException("当前只支持一条线性主链：需要且只需要 1 个开始节点和 1 个结束节点");
-        }
-
-        java.util.Set<String> unsupportedKinds = new java.util.LinkedHashSet<>();
-        for (CanvasNode node : nodes.values()) {
-            int in = incoming.get(node.id());
-            int out = outgoing.get(node.id()).size();
-            switch (node.kind()) {
-                case "start" -> {
-                    if (in != 0 || out != 1) {
-                        throw new IllegalArgumentException("开始节点必须恰好连出 1 条线");
-                    }
-                }
-                case "end" -> {
-                    if (in != 1 || out != 0) {
-                        throw new IllegalArgumentException("结束节点必须恰好接入 1 条线");
-                    }
-                }
-                case "workflow" -> {
-                    if (node.workflowId() == null || node.workflowId() <= 0) {
-                        throw new IllegalArgumentException("流程节点 " + node.id() + " 还没选具体流程");
-                    }
-                    if (in != 1 || out != 1) {
-                        throw new IllegalArgumentException("当前只支持线性主链：流程节点必须各有 1 条入线和 1 条出线");
-                    }
-                }
-                default -> unsupportedKinds.add(node.kind());
-            }
-        }
-        if (!unsupportedKinds.isEmpty()) {
-            throw new IllegalArgumentException("当前保存只支持 开始/结束/流程 节点；请先移除："
-                    + String.join("、", unsupportedKinds));
-        }
-
-        java.util.List<String> order = new java.util.ArrayList<>();
-        java.util.Set<String> visited = new java.util.LinkedHashSet<>();
-        String current = starts.get(0).id();
-        while (true) {
-            if (!visited.add(current)) {
-                throw new IllegalArgumentException("画布里存在环，当前只支持线性主链");
-            }
-            order.add(current);
-            CanvasNode node = nodes.get(current);
-            if ("end".equals(node.kind())) {
-                break;
-            }
-            java.util.List<String> next = outgoing.get(current);
-            if (next.size() != 1) {
-                throw new IllegalArgumentException("当前只支持线性主链：节点 " + current + " 的出线数量不为 1");
-            }
-            current = next.get(0);
-        }
-        if (visited.size() != nodes.size()) {
-            throw new IllegalArgumentException("画布里有未接入主链的节点，请删掉或连到主链后再保存");
-        }
-
-        // 遍历序 -> 编译结果：workflow 节点各成一行（seq 1..N），
-        // 相邻**流程节点之间**一条偏序边（开始/结束不是流程，不产生边）。
-        java.util.List<CompiledStep> steps = new java.util.ArrayList<>();
-        java.util.List<CompiledEdge> edges = new java.util.ArrayList<>();
-        int seq = 1;
-        String prevWorkflow = null;
-        for (String nodeId : order) {
-            CanvasNode node = nodes.get(nodeId);
-            if (!"workflow".equals(node.kind())) {
-                continue;
-            }
-            steps.add(new CompiledStep(nodeId, node.workflowId(), seq++));
-            if (prevWorkflow != null) {
-                edges.add(new CompiledEdge(prevWorkflow, nodeId));
-            }
-            prevWorkflow = nodeId;
-        }
-        return new CompiledGraph(steps, edges);
-    }
-
-    /** 只取流程 id（调用方用）。 */
-    static java.util.List<Long> compileExperimentGraphWorkflowIds(String graphJson) {
-        return compileExperimentGraph(graphJson).workflowIds();
-    }
-
-    /** 由线性流程 id 列表构造"链式"编译结果（写入口 / 新建实验用）。 */
-    static CompiledGraph linearGraph(java.util.List<Long> workflowIds) {
-        java.util.List<CompiledStep> steps = new java.util.ArrayList<>();
-        java.util.List<String> nodeIds = new java.util.ArrayList<>();
-        int seq = 1;
-        for (Long wf : workflowIds) {
-            if (wf == null) {
-                continue;
-            }
-            String nodeId = "n" + seq;
-            steps.add(new CompiledStep(nodeId, wf, seq));
-            nodeIds.add(nodeId);
-            seq++;
-        }
-        java.util.List<CompiledEdge> edges = new java.util.ArrayList<>();
-        for (int i = 0; i + 1 < nodeIds.size(); i++) {
-            edges.add(new CompiledEdge(nodeIds.get(i), nodeIds.get(i + 1)));
-        }
-        return new CompiledGraph(steps, edges);
-    }
-
-    private record CanvasNode(String id, String kind, Long workflowId) { }
-
-    /** 编译出的一步：画布流程节点 -> 一行 experiment_process。 */
-    record CompiledStep(String nodeId, long workflowId, int seq) { }
-
-    /** 编译出的一条偏序边：前驱节点 -> 后继节点（画布节点 id 层面）。 */
-    record CompiledEdge(String fromNodeId, String toNodeId) { }
-
-    /** 画布编译结果：步骤（含 seq）+ 偏序边。 */
-    record CompiledGraph(java.util.List<CompiledStep> steps, java.util.List<CompiledEdge> edges) {
-        java.util.List<Long> workflowIds() {
-            return steps.stream().map(CompiledStep::workflowId).toList();
-        }
-    }
 
     /** 极简 JSON 解析：只处理当前画布保存用到的对象/数组/标量。 */
 

@@ -1,5 +1,7 @@
 package com.labos.kernel.api;
 
+import com.labos.boot.web.service.ExperimentActionService;
+
 import java.util.List;
 
 /**
@@ -152,7 +154,7 @@ public final class ExperimentGraphCompileSelfTest {
 
     private static void ok(String name, String json, List<Long> expect) {
         try {
-            List<Long> got = QueryService.compileExperimentGraphWorkflowIds(json);
+            List<Long> got = ExperimentActionService.compileExperimentGraphWorkflowIds(json);
             if (expect.equals(got)) {
                 passed++;
                 System.out.printf("  ✓ %-28s %s%n", name, got);
@@ -168,7 +170,7 @@ public final class ExperimentGraphCompileSelfTest {
 
     private static void throwsOn(String name, String json, String expectedPart) {
         try {
-            List<Long> got = QueryService.compileExperimentGraphWorkflowIds(json);
+            List<Long> got = ExperimentActionService.compileExperimentGraphWorkflowIds(json);
             failed++;
             System.out.printf("  ✗ %-28s 应拒绝，却返回 %s%n", name, got);
         } catch (IllegalArgumentException e) {
@@ -187,7 +189,7 @@ public final class ExperimentGraphCompileSelfTest {
     private static void compilesEdges(String name, String json,
                                       String expectEdges, String expectSteps) {
         try {
-            QueryService.CompiledGraph g = QueryService.compileExperimentGraph(json);
+            ExperimentActionService.CompiledGraph g = ExperimentActionService.compileExperimentGraph(json);
             String edges = g.edges().stream()
                     .map(e -> e.fromNodeId() + ">" + e.toNodeId())
                     .reduce((a, b) -> a + "," + b).orElse("");

@@ -97,4 +97,77 @@
          WHERE tenant_id = #{param1} AND experiment_id = #{param2}
     </delete>
 
+
+<insert id="insertExperimentHandoff">
+        INSERT INTO experiment_handoff
+          (tenant_id, experiment_id, from_workcell_id, to_workcell_id, carrier, status)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, 'manual', 'configured')
+        ON CONFLICT (tenant_id, experiment_id, from_workcell_id, to_workcell_id)
+        DO NOTHING
+    </insert>
+
+<insert id="insertExperimentWorkcell">
+        INSERT INTO experiment_workcell
+          (tenant_id, experiment_id, workcell_id, source)
+        VALUES (#{param1}, #{param2}, #{param3}, 'binding')
+        ON CONFLICT (tenant_id, experiment_id, workcell_id) DO NOTHING
+    </insert>
+
+<insert id="upsertExperimentGraph">
+        INSERT INTO experiment_graph (tenant_id, experiment_id, graph, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}::jsonb, now())
+        ON CONFLICT (experiment_id) DO UPDATE
+           SET graph = EXCLUDED.graph, updated_at = now()
+    </insert>
+
+<update id="updateExperimentProcessLoopCount">
+        UPDATE experiment_process SET loop_count = #{param4}
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2} AND seq = #{param3}
+    </update>
+
+<update id="reorderExperimentPriorities">
+        UPDATE experiment
+           SET priority = (CASE id
+        <foreach collection="ids" item="one" index="idx">
+            WHEN #{one} THEN 100 - #{idx}
+        </foreach>
+            ELSE priority END),
+               updated_at = now()
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach collection="ids" item="one" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </update>
+
+<select id="selectExperimentStatuses" resultType="java.util.Map">
+        SELECT id AS "id", status::text AS "status"
+          FROM experiment
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach item="one" collection="param2" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </select>
+
+<select id="insertExperiment" resultType="java.lang.Long">
+        INSERT INTO experiment
+          (tenant_id, experiment_no, name, status, priority, island_id, planned_at)
+        VALUES (#{param1}, #{param2}, #{param3}, 'created', #{param4}, #{param5}, now())
+        RETURNING id
+    </select>
+
+<select id="selectExistingWorkflowIds" resultType="java.lang.Long">
+        SELECT id FROM workflow
+         WHERE tenant_id = #{param1}
+           AND id IN
+        <foreach collection="param2" item="one" open="(" separator="," close=")">
+            #{one}
+        </foreach>
+    </select>
+
+<update id="bumpExperimentVersion">
+        UPDATE experiment SET version = version + 1, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
 </mapper>
