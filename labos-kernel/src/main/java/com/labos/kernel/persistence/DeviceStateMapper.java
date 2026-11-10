@@ -28,6 +28,24 @@ public interface DeviceStateMapper {
     /** 设备方法是否可中断；查不到返回 null。 */
     Boolean selectMethodInterruptible(long tenantId, long deviceInstanceId, String method);
 
+    /** 某设备某方法的超时上限（秒），无配置返回 0。 */
+    long selectMethodTimeoutSec(long tenantId, long deviceInstanceId, String method);
+
+    /** 该设备全部方法里的超时上限（秒），无配置返回 0。 */
+    long selectLibraryTimeoutSec(long tenantId, long deviceInstanceId);
+
+    /**
+     * 设备的真实能力编码（resource_capability），查不到返回 null。
+     *
+     * <p>⚠ {@code resource_capability} 表**没有 tenant_id 列** —— 带上会抛
+     * SQLException（"column rc.tenant_id does not exist"），异常被调用方吞掉
+     * 就静默返回 null、能力回落成节点上猜出来的那个。
+     */
+    String selectCapabilityCodeOfInstance(long tenantId, long deviceInstanceId);
+
+    /** 流程节点级超时（秒），无配置返回 0。 */
+    long selectWorkflowNodeTimeoutSec(long tenantId, long workflowNodeId);
+
     /** device_instance.id -> resource_node.id 全量映射（只取映射到的）。 */
     java.util.List<java.util.Map<String, Object>> selectInstanceResourcePairs();
 

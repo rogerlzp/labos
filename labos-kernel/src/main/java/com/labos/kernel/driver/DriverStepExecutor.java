@@ -852,17 +852,9 @@ public final class DriverStepExecutor implements StepExecutor {
         if (method == null || method.isBlank()) {
             return 0L;
         }
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method "
-                             + "WHERE tenant_id = ? AND device_id = ? AND method = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, instanceId);
-            ps.setString(3, method);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        } catch (java.sql.SQLException e) {
+        try {
+            return dm().selectMethodTimeoutSec(tenantId, instanceId, method);
+        } catch (RuntimeException e) {
             return 0L;
         }
     }
@@ -879,16 +871,9 @@ public final class DriverStepExecutor implements StepExecutor {
      * 拿它去过滤设备自己的方法库必然匹配不上 ⇒ 宁可取该设备全部方法的上限。
      */
     private long deviceLibraryTimeoutSec(long instanceId) {
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method "
-                             + "WHERE tenant_id = ? AND device_id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, instanceId);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        } catch (java.sql.SQLException e) {
+        try {
+            return dm().selectLibraryTimeoutSec(tenantId, instanceId);
+        } catch (RuntimeException e) {
             return 0L;
         }
     }
@@ -903,20 +888,9 @@ public final class DriverStepExecutor implements StepExecutor {
      * 而异常被这里吞掉 ⇒ 静默返回 null ⇒ 能力回落成节点上猜出来的那个。
      */
     private String deviceCapabilityCode(long instanceId) {
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT c.code FROM resource_capability rc "
-                             + "JOIN capability c ON c.id = rc.capability_id "
-                             + "WHERE rc.resource_id = "
-                             + "(SELECT resource_id FROM device_instance "
-                             + " WHERE tenant_id = ? AND id = ? AND deleted_at IS NULL) "
-                             + "LIMIT 1")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, instanceId);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        } catch (java.sql.SQLException e) {
+        try {
+            return dm().selectCapabilityCodeOfInstance(tenantId, instanceId);
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -926,16 +900,9 @@ public final class DriverStepExecutor implements StepExecutor {
         if (nodeId <= 0L) {
             return 0L;
         }
-        try (java.sql.Connection c = db.open();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT COALESCE(MAX(timeout_sec), 0) FROM workflow_node "
-                             + "WHERE tenant_id = ? AND id = ?")) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, nodeId);
-            try (java.sql.ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        } catch (java.sql.SQLException e) {
+        try {
+            return dm().selectWorkflowNodeTimeoutSec(tenantId, nodeId);
+        } catch (RuntimeException e) {
             return 0L;
         }
     }

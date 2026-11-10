@@ -41,6 +41,31 @@
          LIMIT 1
     </select>
 
+    <select id="selectMethodTimeoutSec" resultType="long">
+        SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
+         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
+    </select>
+
+    <select id="selectLibraryTimeoutSec" resultType="long">
+        SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
+         WHERE tenant_id = #{param1} AND device_id = #{param2}
+    </select>
+
+    <!-- resource_capability 没有 tenant_id 列（带上会直接报错），这里只用 rc.resource_id。 -->
+    <select id="selectCapabilityCodeOfInstance" resultType="java.lang.String">
+        SELECT c.code FROM resource_capability rc
+          JOIN capability c ON c.id = rc.capability_id
+         WHERE rc.resource_id = (SELECT resource_id FROM device_instance
+                                  WHERE tenant_id = #{param1} AND id = #{param2}
+                                    AND deleted_at IS NULL)
+         LIMIT 1
+    </select>
+
+    <select id="selectWorkflowNodeTimeoutSec" resultType="long">
+        SELECT COALESCE(MAX(timeout_sec), 0) FROM workflow_node
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
     <select id="selectInstanceResourcePairs" resultType="java.util.Map">
         SELECT id AS "instanceId", resource_id AS "resourceId"
           FROM device_instance
