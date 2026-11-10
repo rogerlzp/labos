@@ -68,6 +68,14 @@ public interface GraphMapper {
     /** 现有节点 + 已标能力（saveGraph 增量 upsert 的比较基准）。 */
     java.util.List<java.util.Map<String, Object>> selectNodeCaps(long workflowId);
 
+    /** 主链选择：流程节点行（params 显式 ::text，调用方自行解析 JSON）。 */
+    java.util.List<java.util.Map<String, Object>> selectMainPathNodes(
+            long tenantId, long workflowId);
+
+    /** 主链选择：流程边（fromKey→toKey，按 id 升序）。 */
+    java.util.List<java.util.Map<String, Object>> selectMainPathEdges(
+            long tenantId, long workflowId);
+
     /** 删掉本次图中不存在的节点（keep 为本次节点 key 全集）。 */
     int deleteNodesNotIn(long workflowId, java.util.List<String> keep);
 
@@ -114,10 +122,16 @@ public interface GraphMapper {
 
     // ---- WorkflowBuilder（搬运序列落成正式流程，全事务写集）----
 
-    /** 建 workflow 行（category 固定 choreography）；返回自增 id。 */
+    /**
+     * 建 workflow 行（category 固定 choreography）；返回自增 id。
+     *
+     * <p>{@code islandId} = 搬运序列**派生出来的岛**（P-05：choreography build 要
+     * "derive or require Island"）—— 传 null 表示这条搬运流程没有岛约束。
+     */
     Long insertWorkflowRow(@org.apache.ibatis.annotations.Param("tenantId") long tenantId,
                            @org.apache.ibatis.annotations.Param("code") String code,
-                           @org.apache.ibatis.annotations.Param("name") String name);
+                           @org.apache.ibatis.annotations.Param("name") String name,
+                           @org.apache.ibatis.annotations.Param("islandId") Long islandId);
 
     /**
      * 建节点行：capability_id 按 (tenant, capabilityCode) 子查询

@@ -2,9 +2,6 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -259,41 +256,31 @@ public final class MainPathSelector {
 
     private Map<String, Node> loadNodes(long workflowId) throws SQLException {
         Map<String, Node> m = new LinkedHashMap<>();
-        String sql = """
-                SELECT node_key, node_type, name, capability_id, estimate_sec, params
-                FROM workflow_node WHERE tenant_id = ? AND workflow_id = ?
-                ORDER BY id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String params = rs.getString("params");
-                    Long eq = extractEquipmentId(params);
-                    Map<String, String> mark = extractMainPath(params);
-                    m.put(rs.getString("node_key"), new Node(
-                            rs.getString("node_key"),
-                            rs.getString("node_type"),
-                            rs.getString("name"),
-                            eq,
-                            capabilityId(rs),
-                            rs.getInt("estimate_sec"),
-                            mark));
-                }
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class)
+                .selectMainPathNodes(tenantId, workflowId)) {
+            String params = (String) row.get("params");
+            Long eq = extractEquipmentId(params);
+            Map<String, String> mark = extractMainPath(params);
+            m.put((String) row.get("nodeKey"), new Node(
+                    (String) row.get("nodeKey"),
+                    (String) row.get("nodeType"),
+                    (String) row.get("name"),
+                    eq,
+                    capabilityId(row),
+                    ((Number) row.get("estimateSec")).intValue(),
+                    mark));
         }
         return m;
     }
 
     /** 节点的能力：先看 capability_id 列，再看 params.capability_code。 */
-    private Long capabilityId(ResultSet rs) throws SQLException {
-        long cid = rs.getLong("capability_id");
-        if (!rs.wasNull() && cid > 0) {
-            return cid;
+    private Long capabilityId(Map<String, Object> row) throws SQLException {
+        Object cid = row.get("capabilityId");
+        if (cid instanceof Number num && num.longValue() > 0) {
+            return num.longValue();
         }
-        String code = strField(rs.getString("params"), "capability_code");
+        String code = strField((String) row.get("params"), "capability_code");
         if (code == null || code.isBlank()) {
             return null;
         }
@@ -304,20 +291,11 @@ public final class MainPathSelector {
 
     private Map<String, List<String>> loadEdges(long workflowId) throws SQLException {
         Map<String, List<String>> m = new LinkedHashMap<>();
-        String sql = """
-                SELECT from_key, to_key FROM workflow_edge
-                WHERE tenant_id = ? AND workflow_id = ? ORDER BY id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    m.computeIfAbsent(rs.getString(1), k -> new ArrayList<>())
-                            .add(rs.getString(2));
-                }
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class)
+                .selectMainPathEdges(tenantId, workflowId)) {
+            m.computeIfAbsent((String) row.get("fromKey"), k -> new ArrayList<>())
+                    .add((String) row.get("toKey"));
         }
         return m;
     }

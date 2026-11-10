@@ -181,8 +181,8 @@
 
     <!-- INSERT...RETURNING 用 <select> 承载：MyBatis DTD 不允许 <insert> 带 resultType -->
     <select id="insertWorkflowRow" resultType="java.lang.Long">
-        INSERT INTO workflow (tenant_id, code, name, category)
-        VALUES (#{tenantId}, #{code}, #{name}, 'choreography')
+        INSERT INTO workflow (tenant_id, code, name, category, island_id)
+        VALUES (#{tenantId}, #{code}, #{name}, 'choreography', #{islandId})
         RETURNING id
     </select>
 
@@ -240,5 +240,21 @@
            AND (resource_id IS DISTINCT FROM #{resourceId,jdbcType=BIGINT}
                 OR seq IS DISTINCT FROM #{seq})
     </update>
+
+    <!-- MainPathSelector 主链加载（阶段3第34批收编） -->
+    <select id="selectMainPathNodes" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", node_type AS "nodeType", name AS "name",
+               capability_id AS "capabilityId", estimate_sec AS "estimateSec",
+               params::text AS "params"
+          FROM workflow_node
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+         ORDER BY id
+    </select>
+    <select id="selectMainPathEdges" resultType="java.util.Map">
+        SELECT from_key AS "fromKey", to_key AS "toKey"
+          FROM workflow_edge
+         WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+         ORDER BY id
+    </select>
 
 </mapper>
