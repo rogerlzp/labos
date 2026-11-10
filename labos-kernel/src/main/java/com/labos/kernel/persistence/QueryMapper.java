@@ -223,6 +223,32 @@ public interface QueryMapper {
     /** 策略校验：错误码是否存在 / 历史命中 / 被更高优先级覆盖。 */
     Map<String, Object> selectPolicyValidation(long tenantId, String errorCode, int priority);
 
+    /** 错误码清单：三重可选过滤（severity / scope / keyword），keyword 走 ILIKE。 */
+    List<Map<String, Object>> selectErrorCodes(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("severity") String severity,
+            @org.apache.ibatis.annotations.Param("scope") String scope,
+            @org.apache.ibatis.annotations.Param("keyword") String keyword);
+
+    /** 拓扑：岛 + 其下设备（一次 JOIN 出全部字段，Java 侧按岛分组）。 */
+    List<Map<String, Object>> selectTopology(long tenantId);
+
+    /** 新建用户（密码 hash 与 salt 由调用方算好）。 */
+    int insertUser(long tenantId, String username, String displayName, String role,
+                   String passwordHash, String salt);
+
+    /** 新建错误码，返回 id。MyBatis 的 <insert> 不能带 resultType，这里用 <select>。 */
+    Long insertErrorCode(long tenantId, String code, String scope, String severity,
+                         String title, String detail, String source);
+
+    /** 告警处置（按 tenant+fingerprint 覆盖）。 */
+    int upsertAlertState(long tenantId, String fingerprint, String status,
+                         String assignee, String note);
+
+    /** 记一条板位证据，返回 id。 */
+    Long insertPositionEvidence(long tenantId, String plateBarcode, Long resourceId,
+                                String type, Long runId, String operator, String note);
+
     /** 实验列表页（岛、流程、绑定工位名、流程数，一次查全）。 */
     List<Map<String, Object>> selectExperiments(long tenantId, int limit);
 

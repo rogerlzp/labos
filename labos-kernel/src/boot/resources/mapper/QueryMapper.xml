@@ -632,6 +632,108 @@
               AND (p.error_code_id IS NULL OR c.code = #{param2})) AS "shadowed"
     </select>
 
+    <!-- 三重过滤都是「不传就不过滤」；keyword 拼好 %..% 后同一个参数用两次。
+         p 是 LATERAL 取出的优先级最高启用策略；policies 子询保留全部策略
+         （按作用域分，运行时 findFirst 匹配，不是 fallback 链）。 -->
+    <select id="selectErrorCodes" resultType="java.util.Map">
+        SELECT e.id AS "id", e.code AS "code", e.scope AS "scope",
+               e.severity::text AS "severity", e.source AS "source",
+               e.title AS "title", e.detail AS "detail",
+               p.strategy::text AS "strategy", p.max_attempts AS "maxAttempts",
+               p.params::text AS "params", p.priority AS "priority",
+               p.enabled AS "enabled", p.scope AS "policyScope",
+               (SELECT count(*) FROM error_occurrence o WHERE o.error_code_id = e.id)
+                   AS "occurrences",
+               -- 这个码在**它自己的作用域**上有没有策略？没有 = 配置静默失效（M7）
+               EXISTS (SELECT 1 FROM recovery_policy rp2
+                        WHERE rp2.error_code_id = e.id AND rp2.enabled
+                          AND (rp2.scope = e.scope OR rp2.scope IS NULL)) AS "scopeCovered",
+               (SELECT jsonb_agg(jsonb_build_object(
+                           'id', rp.id, 'scope', rp.scope,
+                           'strategy', rp.strategy::text,
+                           'maxAttempts', rp.max_attempts, 'params', rp.params,
+                           'priority', rp.priority, 'enabled', rp.enabled)
+                       ORDER BY rp.priority, rp.id)::text
+                  FROM recovery_policy rp WHERE rp.error_code_id = e.id) AS "policies"
+          FROM error_code e
+          LEFT JOIN LATERAL (
+                SELECT * FROM recovery_policy rp
+                 WHERE rp.error_code_id = e.id AND rp.enabled
+                 ORDER BY rp.priority, rp.id LIMIT 1) p ON true
+         WHERE e.tenant_id = #{tenantId} AND e.deleted_at IS NULL
+        <if test="severity != null"> AND e.severity::text = #{severity} </if>
+        <if test="scope != null"> AND e.scope = #{scope} </if>
+        <if test="keyword != null">
+            AND (e.code ILIKE #{keyword} OR e.title ILIKE #{keyword})
+        </if>
+         ORDER BY e.code
+    </select>
+
+    <select id="selectTopology" resultType="java.util.Map">
+        SELECT i.id AS "id", i.code AS "code", i.name AS "name",
+               d.id AS "devId", d.code AS "devCode", d.name AS "devName",
+               dev.model AS "model", dev.vendor AS "vendor", dev.icon AS "icon",
+               c.code AS "capability", di.id AS "instanceId", di.ip AS "ip",
+               dr.endpoint AS "driverEndpoint", dr.code AS "driverCode",
+               (d.attr->>'pos_x')::numeric AS "posX",
+               (d.attr->>'pos_y')::numeric AS "posY",
+               COALESCE(ds.online, false) AS "online",
+               COALESCE(ds.status, 'idle') AS "devStatus",
+               ds.current_method AS "currentMethod", ds.has_plate AS "hasPlate"
+          FROM resource_node i
+          LEFT JOIN resource_node d
+                 ON d.parent_id = i.id AND d.kind = 'device'
+          LEFT JOIN device_instance di
+                 ON di.resource_id = d.id AND di.deleted_at IS NULL
+          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN capability c ON c.id = dev.capability_id
+          LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
+          LEFT JOIN device_state ds
+                 ON ds.resource_id = d.id AND ds.tenant_id = i.tenant_id
+         WHERE i.tenant_id = #{param1} AND i.kind = 'island'
+         ORDER BY i.code, d.code
+    </select>
+
+    <insert id="insertUser">
+        INSERT INTO sys_user (tenant_id, username, display_name, role, password_hash, salt)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
+    </insert>
+
+    <!-- PG 的 INSERT..RETURNING 返回结果集；MyBatis DTD 不允许 <insert> 带 resultType。 -->
+    <select id="insertErrorCode" resultType="java.lang.Long">
+        INSERT INTO error_code
+          (tenant_id, code, scope, severity, title, detail, source)
+        VALUES (#{param1}, #{param2}, #{param3},
+                #{param4}::error_severity, #{param5}, #{param6}, #{param7})
+        RETURNING id
+    </select>
+
+    <insert id="upsertAlertState">
+        INSERT INTO alert_state
+          (tenant_id, fingerprint, status, assignee, note,
+           acked_at, closed_at, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
+                CASE WHEN #{param3} = 'acked' THEN now() END,
+                CASE WHEN #{param3} = 'closed' THEN now() END,
+                now())
+        ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET
+            status     = EXCLUDED.status,
+            assignee   = COALESCE(EXCLUDED.assignee, alert_state.assignee),
+            note       = COALESCE(EXCLUDED.note, alert_state.note),
+            acked_at   = COALESCE(alert_state.acked_at, EXCLUDED.acked_at),
+            closed_at  = CASE WHEN EXCLUDED.status = 'closed'
+                              THEN now() ELSE alert_state.closed_at END,
+            updated_at = now()
+    </insert>
+
+    <select id="insertPositionEvidence" resultType="java.lang.Long">
+        INSERT INTO position_evidence
+          (tenant_id, plate_barcode, resource_id, evidence_type, run_id,
+           operator, note)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6}, #{param7})
+        RETURNING id
+    </select>
+
     <select id="selectWorkflowResources" resultType="java.lang.Long">
         SELECT DISTINCT resource_id FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}

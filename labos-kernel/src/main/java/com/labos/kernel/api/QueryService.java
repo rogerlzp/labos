@@ -220,73 +220,35 @@ public class QueryService {
      */
     public String topologyJson() throws SQLException {
         List<String> islands = new ArrayList<>();
-        String sql = """
-                SELECT i.id, i.code, i.name,
-                       d.id      AS dev_id,
-                       d.code    AS dev_code,
-                       d.name    AS dev_name,
-                       dev.model, dev.vendor, dev.icon,
-                       c.code    AS capability,
-                       di.id     AS instance_id,
-                       di.ip,
-                       dr.endpoint AS driver_endpoint,
-                       dr.code     AS driver_code,
-                       (d.attr->>'pos_x')::numeric AS pos_x,
-                       (d.attr->>'pos_y')::numeric AS pos_y,
-                       COALESCE(ds.online, false)   AS online,
-                       COALESCE(ds.status, 'idle')  AS dev_status,
-                       ds.current_method,
-                       ds.has_plate
-                FROM resource_node i
-                LEFT JOIN resource_node d
-                       ON d.parent_id = i.id AND d.kind = 'device'
-                LEFT JOIN device_instance di
-                       ON di.resource_id = d.id AND di.deleted_at IS NULL
-                LEFT JOIN device dev ON dev.id = di.device_id
-                LEFT JOIN capability c ON c.id = dev.capability_id
-                LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
-                LEFT JOIN device_state ds
-                       ON ds.resource_id = d.id AND ds.tenant_id = i.tenant_id
-                WHERE i.tenant_id = ? AND i.kind = 'island'
-                ORDER BY i.code, d.code
-                """;
-
         Map<Long, String[]> head = new java.util.LinkedHashMap<>();
         Map<Long, List<String>> devices = new java.util.LinkedHashMap<>();
 
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long iid = rs.getLong("id");
-                    head.putIfAbsent(iid, new String[]{
-                            rs.getString("code"), rs.getString("name")});
-                    devices.computeIfAbsent(iid, k -> new ArrayList<>());
-                    // instance_id 为空说明实例已软删（或从未建过），拓扑里不显示
-                    if (rs.getObject("dev_id") != null && rs.getObject("instance_id") != null) {
-                        devices.get(iid).add(Jsons.obj(
-                                "resourceId", rs.getLong("dev_id"),
-                                "code", rs.getString("dev_code"),
-                                "name", rs.getString("dev_name"),
-                                "model", rs.getString("model"),
-                                "vendor", rs.getString("vendor"),
-                                "capability", rs.getString("capability"),
-                                // 设备示意图（/devices/xxx.svg）。岛上卡片和编排画布都用它，
-                                // 没有就由前端退回能力色块
-                                "icon", rs.getString("icon"),
-                                "instanceId", rs.getObject("instance_id"),
-                                "ip", rs.getString("ip"),
-                                "driverEndpoint", rs.getString("driver_endpoint"),
-                                "driverCode", rs.getString("driver_code"),
-                                "x", rs.getObject("pos_x"),
-                                "y", rs.getObject("pos_y"),
-                                "online", rs.getBoolean("online"),
-                                "status", rs.getString("dev_status"),
-                                "currentMethod", rs.getString("current_method"),
-                                "hasPlate", rs.getBoolean("has_plate")));
-                    }
-                }
+        for (java.util.Map<String, Object> row : queryMapper.selectTopology(tenantId)) {
+            long iid = ((Number) row.get("id")).longValue();
+            head.putIfAbsent(iid, new String[]{
+                    String.valueOf(row.get("code")), String.valueOf(row.get("name"))});
+            devices.computeIfAbsent(iid, k -> new ArrayList<>());
+            // devId / instanceId 为空说明实例已软删（或从未建过），拓扑里不显示
+            if (row.get("devId") != null && row.get("instanceId") != null) {
+                devices.get(iid).add(Jsons.obj(
+                        "resourceId", row.get("devId"),
+                        "code", row.get("devCode"),
+                        "name", row.get("devName"),
+                        "model", row.get("model"),
+                        "vendor", row.get("vendor"),
+                        "capability", row.get("capability"),
+                        // 设备示意图（/devices/xxx.svg）。没有就由前端退回能力色块
+                        "icon", row.get("icon"),
+                        "instanceId", row.get("instanceId"),
+                        "ip", row.get("ip"),
+                        "driverEndpoint", row.get("driverEndpoint"),
+                        "driverCode", row.get("driverCode"),
+                        "x", row.get("posX"),
+                        "y", row.get("posY"),
+                        "online", Boolean.TRUE.equals(row.get("online")),
+                        "status", row.get("devStatus"),
+                        "currentMethod", row.get("currentMethod"),
+                        "hasPlate", Boolean.TRUE.equals(row.get("hasPlate"))));
             }
         }
 
@@ -1122,21 +1084,17 @@ experimentMapper.deleteExperimentProcesses(tenantId, experimentId);
                     + "（可选 " + String.join("/", RbacRules.ROLES) + "）");
         }
         String salt = AuthService.newSalt();
-        String sql = """
-                INSERT INTO sys_user (tenant_id, username, display_name, role, password_hash, salt)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, username.trim());
-            ps.setString(3, displayName == null ? username.trim() : displayName);
-            ps.setString(4, effectiveRole);
-            ps.setString(5, AuthService.pbkdf2(password, salt));
-            ps.setString(6, salt);
-            return ps.executeUpdate();
-        } catch (java.sql.SQLIntegrityConstraintViolationException e) {
-            throw new IllegalArgumentException("用户名已存在: " + username);
+        try {
+            return queryMapper.insertUser(tenantId, username.trim(),
+                    displayName == null ? username.trim() : displayName,
+                    effectiveRole, AuthService.pbkdf2(password, salt), salt);
+        } catch (RuntimeException e) {
+            // MyBatis/Spring 把唯一键冲突包成 DuplicateKeyException（RuntimeException），
+            // 不再是 JDBC 的 SQLIntegrityConstraintViolationException。
+            if (e.getMessage() != null && e.getMessage().contains("duplicate key")) {
+                throw new IllegalArgumentException("用户名已存在: " + username);
+            }
+            throw e;
         }
     }
 
@@ -1850,88 +1808,33 @@ throw e;
     public String errorCodesJson(String severity, String scope, String keyword)
             throws SQLException {
         List<String> items = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("""
-                SELECT e.id, e.code, e.scope, e.severity::text AS severity,
-                       e.source, e.title, e.detail,
-                       p.strategy::text AS strategy, p.max_attempts, p.params::text AS params,
-                       p.priority, p.enabled, p.scope AS policy_scope,
-                       (SELECT count(*) FROM error_occurrence o WHERE o.error_code_id = e.id)
-                           AS occurrences,
-                       -- 这个码在**它自己的作用域**上有没有策略？
-                       -- 没有 = 一旦真抛出来，只能落到通配策略，配置静默失效（M7）
-                       EXISTS (SELECT 1 FROM recovery_policy rp2
-                                WHERE rp2.error_code_id = e.id AND rp2.enabled
-                                  AND (rp2.scope = e.scope OR rp2.scope IS NULL)) AS scope_covered,
-                       -- 一个码可能有多条策略（**按作用域分**：同一码在 command 层
-                       -- 该重发、在 node 层该转人工，两条都得留）。
-                       -- 运行时按"谁匹配当前作用域"选，不是按顺序回退——
-                       -- RecoveryPolicyResolver 是 findFirst，别把这里当 fallback 链。
-                       (SELECT jsonb_agg(jsonb_build_object(
-                                   'id', rp.id,
-                                   'scope', rp.scope,
-                                   'strategy', rp.strategy::text,
-                                   'maxAttempts', rp.max_attempts,
-                                   'params', rp.params,
-                                   'priority', rp.priority,
-                                   'enabled', rp.enabled)
-                               ORDER BY rp.priority, rp.id)
-                          FROM recovery_policy rp WHERE rp.error_code_id = e.id) AS policies
-                FROM error_code e
-                LEFT JOIN LATERAL (
-                      SELECT * FROM recovery_policy rp
-                       WHERE rp.error_code_id = e.id AND rp.enabled
-                       ORDER BY rp.priority, rp.id LIMIT 1) p ON true
-                WHERE e.tenant_id = ? AND e.deleted_at IS NULL
-                """);
-        boolean bySev = severity != null && !severity.isBlank();
-        boolean byScope = scope != null && !scope.isBlank();
-        boolean byKw = keyword != null && !keyword.isBlank();
-        if (bySev) {
-            sql.append(" AND e.severity::text = ?");
-        }
-        if (byScope) {
-            sql.append(" AND e.scope = ?");
-        }
-        if (byKw) {
-            sql.append(" AND (e.code ILIKE ? OR e.title ILIKE ?)");
-        }
-        sql.append(" ORDER BY e.code");
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            int i = 1;
-            ps.setLong(i++, tenantId);
-            if (bySev) {
-                ps.setString(i++, severity);
-            }
-            if (byScope) {
-                ps.setString(i++, scope);
-            }
-            if (byKw) {
-                ps.setString(i++, "%" + keyword + "%");
-                ps.setString(i++, "%" + keyword + "%");
-            }
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    items.add(Jsons.obj(
-                            "id", rs.getLong("id"),
-                            "code", rs.getString("code"),
-                            "scope", rs.getString("scope"),
-                            "severity", rs.getString("severity"),
-                            "source", rs.getString("source"),
-                            "title", rs.getString("title"),
-                            "detail", rs.getString("detail"),
-                            "occurrences", rs.getInt("occurrences"),
-                            "scopeCovered", rs.getBoolean("scope_covered"),
-                            "strategy", rs.getString("strategy"),
-                            "maxAttempts", rs.getObject("max_attempts"),
-                            "params", rs.getString("params"),
-                            "priority", rs.getObject("priority"),
-                            "enabled", rs.getObject("enabled"),
-                            "policyScope", rs.getString("policy_scope"),
-                            "policies", new Jsons.Raw(rs.getString("policies") == null
-                                    ? "[]" : rs.getString("policies"))));
-                }
-            }
+        // 空串归一化成 null = XML 里对应 <if> 不成立（不过滤）；
+        // keyword 的 %..% 在这里拼好，SQL 里同一个参数用两次。
+        String sev = severity == null || severity.isBlank() ? null : severity;
+        String scp = scope == null || scope.isBlank() ? null : scope;
+        String kw = keyword == null || keyword.isBlank()
+                ? null : "%" + keyword + "%";
+        for (java.util.Map<String, Object> row
+                : queryMapper.selectErrorCodes(tenantId, sev, scp, kw)) {
+            Object policies = row.get("policies");
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "code", row.get("code"),
+                    "scope", row.get("scope"),
+                    "severity", row.get("severity"),
+                    "source", row.get("source"),
+                    "title", row.get("title"),
+                    "detail", row.get("detail"),
+                    "occurrences", mint(row, "occurrences"),
+                    "scopeCovered", Boolean.TRUE.equals(row.get("scopeCovered")),
+                    "strategy", row.get("strategy"),
+                    "maxAttempts", row.get("maxAttempts"),
+                    "params", row.get("params"),
+                    "priority", row.get("priority"),
+                    "enabled", row.get("enabled"),
+                    "policyScope", row.get("policyScope"),
+                    "policies", new Jsons.Raw(policies == null
+                            ? "[]" : String.valueOf(policies))));
         }
         return Jsons.obj("total", items.size(), "items", new Jsons.Raw(Jsons.arr(items)));
     }
@@ -2241,25 +2144,15 @@ throw e;
             throw new IllegalArgumentException("错误码不能为空");
         }
         String c = code.trim();
-        try (Connection conn = db.open();
-             PreparedStatement ps = conn.prepareStatement("""
-                     INSERT INTO error_code
-                       (tenant_id, code, scope, severity, title, detail, source)
-                     VALUES (?, ?, ?, ?::error_severity, ?, ?, ?)
-                     RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, c);
-            ps.setString(3, scope == null || scope.isBlank() ? "command" : scope);
-            ps.setString(4, severity == null || severity.isBlank() ? "error" : severity);
-            ps.setString(5, title == null || title.isBlank() ? c : title);
-            ps.setString(6, detail);
-            ps.setString(7, source == null || source.isBlank() ? "manual" : source);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return Jsons.obj("id", rs.getLong(1), "code", c);
-            }
-        } catch (SQLException e) {
+        try {
+            Long id = queryMapper.insertErrorCode(tenantId, c,
+                    scope == null || scope.isBlank() ? "command" : scope,
+                    severity == null || severity.isBlank() ? "error" : severity,
+                    title == null || title.isBlank() ? c : title,
+                    detail,
+                    source == null || source.isBlank() ? "manual" : source);
+            return Jsons.obj("id", id, "code", c);
+        } catch (RuntimeException e) {
             // 唯一键冲突要给前端看得懂的话，而不是 500
             if (e.getMessage() != null && e.getMessage().contains("duplicate key")) {
                 throw new IllegalArgumentException("错误码已存在：" + c);
@@ -3165,33 +3058,10 @@ throw e;
     public long recordPositionEvidence(String plateBarcode, Long resourceId, String type,
                                        Long runId, String operator, String note)
             throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO position_evidence
-                       (tenant_id, plate_barcode, resource_id, evidence_type, run_id,
-                        operator, note)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                     RETURNING id
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, plateBarcode);
-            if (resourceId == null) {
-                ps.setNull(3, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(3, resourceId);
-            }
-            ps.setString(4, type == null ? "MANUAL" : type.toUpperCase());
-            if (runId == null) {
-                ps.setNull(5, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(5, runId);
-            }
-            ps.setString(6, operator);
-            ps.setString(7, note);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : 0L;
-            }
-        }
+        Long id = queryMapper.insertPositionEvidence(tenantId, plateBarcode,
+                resourceId, type == null ? "MANUAL" : type.toUpperCase(),
+                runId, operator, note);
+        return id == null ? 0L : id;
     }
 
     /** P-08：物理位置证据列表（按板号可选过滤）。 */
@@ -3353,34 +3223,7 @@ throw e;
             case "open", "reopen" -> "open";
             default -> throw new IllegalArgumentException("未知处置动作: " + status);
         };
-        String sql = """
-                INSERT INTO alert_state
-                  (tenant_id, fingerprint, status, assignee, note,
-                   acked_at, closed_at, updated_at)
-                VALUES (?, ?, ?, ?, ?,
-                        CASE WHEN ? = 'acked' THEN now() END,
-                        CASE WHEN ? = 'closed' THEN now() END,
-                        now())
-                ON CONFLICT (tenant_id, fingerprint) DO UPDATE SET
-                    status     = EXCLUDED.status,
-                    assignee   = COALESCE(EXCLUDED.assignee, alert_state.assignee),
-                    note       = COALESCE(EXCLUDED.note, alert_state.note),
-                    acked_at   = COALESCE(alert_state.acked_at, EXCLUDED.acked_at),
-                    closed_at  = CASE WHEN EXCLUDED.status = 'closed'
-                                      THEN now() ELSE alert_state.closed_at END,
-                    updated_at = now()
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, fingerprint);
-            ps.setString(3, st);
-            ps.setString(4, assignee);
-            ps.setString(5, note);
-            ps.setString(6, st);
-            ps.setString(7, st);
-            return ps.executeUpdate();
-        }
+        return queryMapper.upsertAlertState(tenantId, fingerprint, st, assignee, note);
     }
 
     /** 取流程的 BPMN 2.0 XML（原样返回，给 bpmn-js 渲染）。 */
