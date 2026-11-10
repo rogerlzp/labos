@@ -718,6 +718,12 @@ export const zhCN = {
   'designer.gateway.exclusive': '异或网关（✕）：分叉时只走一条，汇合时任一条到达即放行',
   'designer.gateway.roleLabel': '在本图中的作用',
   'designer.gateway.roleUnknown': '直通（单进单出）',
+  // 网关角色的**中性 code**（库里的名字）对应的显示文案。
+  // code 存的是 XOR_SPLIT 这类与语种无关的标识，显示时映射到这里。
+  'designer.gateway.roleXorSplit': '异或分叉',
+  'designer.gateway.roleXorMerge': '异或汇合',
+  'designer.gateway.roleParallelSplit': '并行分叉',
+  'designer.gateway.roleParallelMerge': '并行汇合',
   'designer.gateway.hint': '名字会显示在图上与运行详情里。两种网关都是菱形，起个名一眼就分得清。',
   'designer.field.nodeName': '显示名',
   'designer.field.device': '设备',

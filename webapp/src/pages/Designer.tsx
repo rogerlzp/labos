@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import DeviceImageRenderer, { iconFor, isArm } from '../bpmn/DeviceImageRenderer';
 import { workflowPaletteModule } from '../bpmn/WorkflowPalette';
+import NodeRoleLabelRenderer from '../bpmn/NodeRoleLabelRenderer';
+import { gatewayRoleCode, isMergeRole, isNeutralCode, localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -15,7 +17,7 @@ import 'bpmn-js/dist/assets/bpmn-font/css/bpmn.css';
 import { apiFetch, api, type PreflightIssue } from '../api/client';
 import { statusColor, useStatusVocabulary } from '../utils/status';
 import { useReadOnly } from '../auth';
-import { useT } from '../i18n';
+import { useI18n, useT } from '../i18n';
 import type { MessageKey, MessageVars } from '../i18n/core';
 
 interface CanvasApi {
@@ -785,6 +787,8 @@ function fmtWait(sec: number, t: (k: MessageKey, vars?: MessageVars) => string):
 
 export default function DesignerPage() {
   const t = useT();
+  // 语种：画布不是 React 管的，切换语种后要手动重画标签（见下面的 locale 副作用）
+  const { locale } = useI18n();
   const { id } = useParams();
   const nav = useNavigate();
   // 流程设计器：浏览/缩放不拦，保存与历史恢复是写操作
@@ -823,8 +827,11 @@ export default function DesignerPage() {
   const [selType, setSelType] = useState('');
   /** 选中网关的显示名（写进 BPMN 的 name 属性） */
   const [nodeName, setNodeName] = useState('');
-  /** 选中网关的角色建议：并行分叉 / 并行汇合 / 异或分叉 / 异或汇合 */
-  const [gatewayHint, setGatewayHint] = useState('');
+  /**
+   * 选中网关的角色**中性 code**（XOR_MERGE 之类，与语种无关）。
+   * 落库存它，显示时再映射成本地化文案 —— 见 bpmn/nodeRoleLabel.ts。
+   */
+  const [gatewayRole, setGatewayRole] = useState('');
   /** 连线的条件表达式（选中 SequenceFlow 时才有意义） */
   const [flowCond, setFlowCond] = useState('');
   /** 这条连线是否为源网关的默认边（无条件兜底） */
@@ -883,6 +890,12 @@ export default function DesignerPage() {
         __init__: ['deviceImageRenderer'],
         deviceImageRenderer: ['type', DeviceImageRenderer],
       },
+      // 标签渲染：把库里存的中性 code（XOR_MERGE 等）显示成本地化文案。
+      // 只接管 label，网关形状仍走 bpmn-js 原生渲染。
+      {
+        __init__: ['nodeRoleLabelRenderer'],
+        nodeRoleLabelRenderer: ['type', NodeRoleLabelRenderer],
+      },
       // palette：补并行网关入口 + 移除解析器不认的入口（见 WorkflowPalette.ts 注释）
       workflowPaletteModule],
     } as any);
@@ -897,10 +910,10 @@ export default function DesignerPage() {
       if (el?.id) {
         const r = readNodeName(el.id);
         setNodeName(r.name);
-        setGatewayHint(r.hint);
+        setGatewayRole(r.code);
       } else {
         setNodeName('');
-        setGatewayHint('');
+        setGatewayRole('');
       }
     });
     return () => {
@@ -909,8 +922,34 @@ export default function DesignerPage() {
     };
   }, []);
 
+  // 语种切换后重画画布上的中性 code 标签。
+  //
+  // 为什么需要：画布是 bpmn-js 的 SVG，不受 React 重渲染影响；而中性 code
+  // （XOR_MERGE 等）的显示文案是按**当前语种**查出来的 ⇒ 切语种后必须重画，
+  // 否则画布上是旧语种的文案、右栏面板却是新语种，两边对不上。
+  //
+  // 只重画命中中性 code 的标签，其余标签交给 bpmn-js 自己的更新路径，
+  // 不碰形状、不碰选中态、不进 commandStack（不影响"保存"按钮的脏标记）。
+  useEffect(() => {
+    const m = modelerRef.current;
+    if (!m) return;
+    const registry = m.get('elementRegistry') as {
+      getAll: () => Array<{ id: string; type?: string; labelTarget?: { businessObject?: { name?: string } } }>;
+      getGraphics: (el: unknown) => SVGElement | undefined;
+    };
+    const graphicsFactory = m.get('graphicsFactory') as {
+      update: (type: string, element: unknown, gfx: SVGElement) => void;
+    };
+    registry.getAll().forEach((el) => {
+      if (el.type !== 'label' || !el.labelTarget) return;
+      if (!isNeutralCode(el.labelTarget.businessObject?.name)) return;
+      const gfx = registry.getGraphics(el);
+      if (gfx) graphicsFactory.update('shape', el, gfx);
+    });
+  }, [locale]);
+
   /**
-   * 读节点的显示名 + 算网关默认名建议。
+   * 读节点的显示名 + 算网关角色。
    *
    * <p>为什么需要：两种网关在页面上都是菱形（✕ / ＋），缩小后几乎分不出；
    * 而「分叉」还是「汇合」光看形状也看不出来 —— 引擎是按连线数自动判定的
@@ -918,11 +957,15 @@ export default function DesignerPage() {
    * 都 > 1 按汇合先等再分、单进单出等价于直通）。
    * 给个默认名，图上一眼就知道这个菱形在干什么。
    *
-   * <p>推导规则**必须和后端一致**，否则名字会骗人。
+   * <p>推导规则**必须和后端一致**，否则名字会骗人 —— 这里直接复用
+   * {@link gatewayRoleCode}（与后端同一口径）。
+   *
+   * <p>返回的是**中性 code** 而不是文案：落库存 code，显示时再本地化，
+   * 免得同一张图因创建时的界面语种不同而存下不同的名字。
    */
-  const readNodeName = (key: string): { name: string; hint: string } => {
+  const readNodeName = (key: string): { name: string; code: string } => {
     const m = modelerRef.current;
-    if (!m || !key) return { name: '', hint: '' };
+    if (!m || !key) return { name: '', code: '' };
     const reg = m.get('elementRegistry') as {
       get: (id: string) => {
         type?: string;
@@ -941,15 +984,10 @@ export default function DesignerPage() {
     const type = el?.type ?? '';
     const ins = bo?.incoming?.length ?? 0;
     const outs = bo?.outgoing?.length ?? 0;
-    let hint = '';
-    if (type === 'bpmn:ExclusiveGateway') {
-      // 异或：二选一（分叉）/ 任一条到达即放行（汇合）
-      hint = ins > 1 ? '异或汇合' : outs > 1 ? '异或分叉' : '';
-    } else if (type === 'bpmn:ParallelGateway') {
-      // 并行：全走（分叉）/ 所有入边到齐才放行（汇合）
-      hint = ins > 1 ? '并行汇合' : outs > 1 ? '并行分叉' : '';
-    }
-    return { name: el?.businessObject?.name ?? '', hint };
+    return {
+      name: el?.businessObject?.name ?? '',
+      code: gatewayRoleCode(type, ins, outs),
+    };
   };
 
   /**
@@ -970,6 +1008,8 @@ export default function DesignerPage() {
     if (!modeling || !el) return;
     const next = name.trim();
     modeling.updateProperties(el, { name: next || undefined });
+    // 输入框是受控组件：不同步的话，点「使用建议名」后画布变了、输入框还是旧值。
+    setNodeName(next);
   };
 
   /**
@@ -2013,8 +2053,8 @@ export default function DesignerPage() {
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('designer.gateway.roleLabel')}
               </Typography.Text>
-              <Tag color={gatewayHint.includes('汇合') ? 'orange' : 'green'}>
-                {gatewayHint || t('designer.gateway.roleUnknown')}
+              <Tag color={isMergeRole(gatewayRole) ? 'orange' : 'green'}>
+                {localizedNeutralLabel(gatewayRole) || t('designer.gateway.roleUnknown')}
               </Tag>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('designer.field.nodeName')}
@@ -2027,10 +2067,10 @@ export default function DesignerPage() {
                 onBlur={() => writeNodeName(String(selected), nodeName)}
                 onPressEnter={() => writeNodeName(String(selected), nodeName)}
               />
-              {gatewayHint && (
+              {gatewayRole && (
                 <Button size="small" type="link" style={{ padding: 0, alignSelf: 'flex-start' }}
-                  onClick={() => writeNodeName(String(selected), gatewayHint)} {...ro}>
-                  {t('designer.action.useSuggestedName', { name: gatewayHint })}
+                  onClick={() => writeNodeName(String(selected), gatewayRole)} {...ro}>
+                  {t('designer.action.useSuggestedName', { name: localizedNeutralLabel(gatewayRole) ?? gatewayRole })}
                 </Button>
               )}
               <Typography.Text type="secondary" style={{ fontSize: 11 }}>

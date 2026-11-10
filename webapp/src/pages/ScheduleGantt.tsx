@@ -5,6 +5,7 @@ import { apiFetch } from '../api/client';
 import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
 import type { MessageKey, MessageVars } from '../i18n/core';
+import { localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 
 interface TlNode {
   nodeKey: string; name?: string; resourceCode?: string | null; resourceId?: number | null;
@@ -197,7 +198,7 @@ export default function ScheduleGanttPage() {
           const end = start + (n.durationSec ?? 0);
           all.push({
             expId: exp.id, expName: exp.name, flowId: f.workflowId,
-            nodeKey: n.nodeKey, name: n.name ?? n.nodeKey, resource: res,
+            nodeKey: n.nodeKey, name: localizedNeutralLabel(n.name) ?? n.name ?? n.nodeKey, resource: res,
             start, end, duration: n.durationSec ?? 0,
             source: n.estimateSource, samples: n.estimateSamples,
           });

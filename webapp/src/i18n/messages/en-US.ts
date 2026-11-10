@@ -716,6 +716,13 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'designer.gateway.exclusive': 'Exclusive gateway (✕): only one branch runs when splitting; any arriving branch releases a join',
   'designer.gateway.roleLabel': 'Role in this graph',
   'designer.gateway.roleUnknown': 'Straight through (one in, one out)',
+  // Display text for the **neutral codes** stored as gateway names in the
+  // database (XOR_SPLIT and friends). The code is locale-independent;
+  // this is where it is mapped for display.
+  'designer.gateway.roleXorSplit': 'XOR split',
+  'designer.gateway.roleXorMerge': 'XOR merge',
+  'designer.gateway.roleParallelSplit': 'Parallel split',
+  'designer.gateway.roleParallelMerge': 'Parallel merge',
   'designer.gateway.hint': 'The name shows on the canvas and in the run detail. Both gateways are diamonds — a name makes them easy to tell apart.',
   'designer.field.nodeName': 'Display name',
   'designer.field.device': 'Device',
