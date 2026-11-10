@@ -133,11 +133,13 @@ The frontend has no i18n dependency, and none is being added:
 
 ## 3. Translation ledger — documents
 
-**Every Chinese document has an assigned English filename.** The table below is the
-complete registry: it gives the English path each document will live at, so the file
-names are settled even where the translation is still pending. ✅ means the English
-document exists now; ⬜ means the English path is reserved and the translation is
-queued.
+**This registry covers the Chinese documents that have an English counterpart or a
+reserved English path** — 105 entries (104 translated ✅, 1 queued ⬜). It is **not** a
+list of every Chinese document: the Chinese set has **142 documents** (138 under
+`docs/`, 4 in the repository root), and the remaining **38 are Chinese-only**
+(architecture decisions, the remediation status table, review bundles, working logs) —
+they are listed in §3b. ✅ means the English document exists now; ⬜ means the English
+path is reserved and the translation is queued.
 
 | Chinese source | English target | Status |
 |---|---|---|
@@ -279,6 +281,28 @@ checkboxes must match one for one, each table row's column count must match the
 source row for row, no relative link may be broken, and no Chinese prose may be
 left in the text (Chinese inside backticks — paths, identifiers, literal program
 output — is expected and allowed).
+
+## 3b. Chinese-only documents (no English edition)
+
+**38 Chinese documents have no English counterpart.** They are not missing work — they
+are Chinese-only by design. The English edition is *additive* (see the header): it
+covers the documents an English reader needs, and these are either internal working
+records, Chinese-only decision records, or documents whose source is the Chinese
+authority itself.
+
+| Folder | Count | What they are | Why no English edition |
+|---|---|---|---|
+| `docs/architecture/` | 25 | Architecture decisions, the ADR registry, the remediation status table, migration records, per-topic specs | They are the **Chinese authority** — the ADR index and the status table are referenced by Chinese review records; translating them would create a second source of truth. Per-document navigation: [`docs/architecture/00-文档索引.md`](../architecture/00-文档索引.md) |
+| `docs/评审包-20261107/` | 3 | The 2026-11-07 review bundle | A point-in-time review bundle for the Chinese team |
+| `docs/评审包-20261109/` | 5 | The 2026-11-09 review bundle | Same |
+| `docs/评审记录/` | 1 | `20261105-01-评审包复核.md` | The other review records do have English counterparts; this one does not |
+| `docs/` (root) | 4 | `夜间完成报告-20261109.md`, `夜间工作日志-20261109.md`, `状态机文档索引.md`, `LabOS_review分支评审与下一步修改方案_20261107.md` | Nightly working logs and a state-machine pointer index |
+
+**What this means in practice**: a reader of the English edition gets the module map,
+the roadmap, the design and UI specifications, the test matrix and the review records.
+For the architecture decisions themselves and for "where are we now", the Chinese
+documents in `docs/architecture/` remain authoritative — that is stated at the top of
+this file as well.
 
 ## 4. Translation ledger — frontend ✅ complete
 
