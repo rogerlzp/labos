@@ -2,9 +2,6 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -38,29 +35,7 @@ public final class ExperimentWorkcellScope {
      */
     public static Long workcellOfWorkflow(DbConfig db, long tenantId, long workflowId)
             throws SQLException {
-        String sql = """
-                WITH RECURSIVE res AS (
-                    SELECT DISTINCT wn.resource_id AS id
-                      FROM workflow_node wn
-                     WHERE wn.workflow_id = ? AND wn.resource_id IS NOT NULL
-                ), up AS (
-                    SELECT rn.id, rn.parent_id, rn.kind::text AS kind
-                      FROM resource_node rn
-                      JOIN res ON res.id = rn.id
-                    UNION ALL
-                    SELECT p.id, p.parent_id, p.kind::text
-                      FROM resource_node p
-                      JOIN up ON p.id = up.parent_id
-                )
-                SELECT id FROM up WHERE kind = 'island' LIMIT 1
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        }
+        return mappers().selectWorkflowIslandId(workflowId);
     }
 
     /**
@@ -74,54 +49,24 @@ public final class ExperimentWorkcellScope {
     public static Set<Long> islandsOf(DbConfig db, long tenantId, long experimentId)
             throws SQLException {
         Set<Long> islands = new LinkedHashSet<>();
-        try (Connection c = db.open()) {
-            // ① 显式绑定优先（N-10 / ADR-ISLAND-002）
-            for (Long id : mappers().selectExperimentWorkcellIds(tenantId, experimentId)) {
-                if (id != null && id > 0) {
-                    islands.add(id);
-                }
+        // ① 显式绑定优先（N-10 / ADR-ISLAND-002）
+        for (Long id : mappers().selectExperimentWorkcellIds(tenantId, experimentId)) {
+            if (id != null && id > 0) {
+                islands.add(id);
             }
-            if (!islands.isEmpty()) {
-                return islands;
+        }
+        if (!islands.isEmpty()) {
+            return islands;
+        }
+        {
+            Long island = mappers().selectExperimentIslandId(tenantId, experimentId);
+            if (island != null && island > 0) {
+                islands.add(island);
             }
-            {
-                Long island = mappers().selectExperimentIslandId(tenantId, experimentId);
-                if (island != null && island > 0) {
-                    islands.add(island);
-                }
-            }
-            String sql = """
-                    WITH RECURSIVE wf AS (
-                        SELECT ep.workflow_id
-                          FROM experiment_process ep
-                         WHERE ep.tenant_id = ? AND ep.experiment_id = ?
-                    ), res AS (
-                        SELECT DISTINCT wn.resource_id AS id
-                          FROM workflow_node wn
-                          JOIN wf ON wf.workflow_id = wn.workflow_id
-                         WHERE wn.resource_id IS NOT NULL
-                    ), up AS (
-                        SELECT rn.id, rn.parent_id, rn.kind::text AS kind
-                          FROM resource_node rn
-                          JOIN res ON res.id = rn.id
-                        UNION ALL
-                        SELECT p.id, p.parent_id, p.kind::text
-                          FROM resource_node p
-                          JOIN up ON p.id = up.parent_id
-                    )
-                    SELECT DISTINCT id FROM up WHERE kind = 'island'
-                    """;
-            try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, experimentId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        long id = rs.getLong(1);
-                        if (!rs.wasNull() && id > 0) {
-                            islands.add(id);
-                        }
-                    }
-                }
+        }
+        for (Long id : mappers().selectExperimentIslandClosure(tenantId, experimentId)) {
+            if (id != null && id > 0) {
+                islands.add(id);
             }
         }
         return islands;

@@ -46,6 +46,18 @@ public interface ExperimentMapper {
     /** 实验所属岛（未显式绑定 workcell 时的回落）。 */
     Long selectExperimentIslandId(long tenantId, long experimentId);
 
+    /**
+     * 单个 workflow 的权威 Workcell（island 根 id）：节点资源沿
+     * resource_node.parent_id 递归上溯，取 kind='island' 的第一个；推导不出返回 null。
+     */
+    Long selectWorkflowIslandId(long workflowId);
+
+    /**
+     * 实验涉及的全部 Workcell 闭包：experiment_process 引用的 workflow 的
+     * 节点资源递归上溯到 kind='island'（DISTINCT）。可能为空集合。
+     */
+    java.util.List<Long> selectExperimentIslandClosure(long tenantId, long experimentId);
+
     int deleteExperimentHandoffs(long tenantId, long experimentId);
 
     int deleteExperimentWorkcells(long tenantId, long experimentId);

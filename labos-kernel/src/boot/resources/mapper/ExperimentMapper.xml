@@ -76,6 +76,45 @@
         SELECT island_id FROM experiment WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <!-- ExperimentWorkcellScope 递归上溯（阶段3第35批收编） -->
+    <select id="selectWorkflowIslandId" resultType="java.lang.Long">
+        WITH RECURSIVE res AS (
+            SELECT DISTINCT wn.resource_id AS id
+              FROM workflow_node wn
+             WHERE wn.workflow_id = #{param1} AND wn.resource_id IS NOT NULL
+        ), up AS (
+            SELECT rn.id, rn.parent_id, rn.kind::text AS kind
+              FROM resource_node rn
+              JOIN res ON res.id = rn.id
+            UNION ALL
+            SELECT p.id, p.parent_id, p.kind::text
+              FROM resource_node p
+              JOIN up ON p.id = up.parent_id
+        )
+        SELECT id FROM up WHERE kind = 'island' LIMIT 1
+    </select>
+    <select id="selectExperimentIslandClosure" resultType="java.lang.Long">
+        WITH RECURSIVE wf AS (
+            SELECT ep.workflow_id
+              FROM experiment_process ep
+             WHERE ep.tenant_id = #{param1} AND ep.experiment_id = #{param2}
+        ), res AS (
+            SELECT DISTINCT wn.resource_id AS id
+              FROM workflow_node wn
+              JOIN wf ON wf.workflow_id = wn.workflow_id
+             WHERE wn.resource_id IS NOT NULL
+        ), up AS (
+            SELECT rn.id, rn.parent_id, rn.kind::text AS kind
+              FROM resource_node rn
+              JOIN res ON res.id = rn.id
+            UNION ALL
+            SELECT p.id, p.parent_id, p.kind::text
+              FROM resource_node p
+              JOIN up ON p.id = up.parent_id
+        )
+        SELECT DISTINCT id FROM up WHERE kind = 'island'
+    </select>
+
     <delete id="deleteExperimentHandoffs">
         DELETE FROM experiment_handoff
          WHERE tenant_id = #{param1} AND experiment_id = #{param2}
