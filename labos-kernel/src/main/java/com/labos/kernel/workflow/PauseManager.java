@@ -3,8 +3,6 @@ package com.labos.kernel.workflow;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -131,21 +129,8 @@ public final class PauseManager {
      */
     public int pauseTx(Connection c, long runId, Kind kind, String reason, String nodeKey)
             throws SQLException {
-        String sql = """
-                UPDATE run SET status = 'paused', pause_kind = ?, pause_reason = ?,
-                       paused_at = now(), pause_node_key = ?,
-                       updated_at = now()
-                WHERE tenant_id = ? AND id = ? AND status = 'running'
-                """;
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, kind.code());
-            ps.setString(2, reason);
-            ps.setString(3, nodeKey);
-            ps.setLong(4, tenantId);
-            ps.setLong(5, runId);
-            if (ps.executeUpdate() == 0) {
-                return 0;   // 不在 running，不用暂停
-            }
+        if (mappers().pauseRun(tenantId, runId, kind.code(), reason, nodeKey) == 0) {
+            return 0;   // 不在 running，不用暂停
         }
         // N-08：waiting_human 暂停自动开人工窗口（复用 manual_window）
         if (kind == Kind.WAITING_HUMAN) {
@@ -160,40 +145,19 @@ public final class PauseManager {
             if (mappers().hasPendingManualWindow(tenantId, runId)) {
                 return;   // 已有待决窗口，不重复开
             }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    INSERT INTO manual_window
-                      (tenant_id, run_id, window_key, error_code, node_key, strategy,
-                       default_action, allowed_actions, decision_reason, status, timeout_at)
-                    VALUES (?, ?, ?, 'EC-HUMAN-WAIT', ?, 'manual', 'MANUAL',
-                            '["CONTINUE","RETRY","SKIP","ABORT","MANUAL"]'::jsonb,
-                            ?, 'pending', now() + interval '1 hour')
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.setString(3, "pause:" + runId);
-                ps.setString(4, nodeKey);
-                ps.setString(5, reason == null ? "等待人工确认" : reason);
-                ps.executeUpdate();
-            }
-        } catch (SQLException e) {
+            mappers().insertManualWindow(tenantId, runId, "pause:" + runId, nodeKey,
+                    reason == null ? "等待人工确认" : reason);
+        } catch (RuntimeException e) {
             log.error("[暂停] 自动建人工窗口失败：" + e.getMessage());
         }
     }
 
     /** N-08：run 恢复/终止时关闭其 pending 人工窗口。 */
     private void closeManualWindow(Connection c, long runId, String operator, String action) {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE manual_window
-                   SET status = 'decided', decided_at = now(),
-                       decided_by = ?, decided_action = ?, note = 'run resumed/closed'
-                 WHERE tenant_id = ? AND run_id = ? AND status = 'pending'
-                """)) {
-            ps.setString(1, operator == null ? "api" : operator);
-            ps.setString(2, action);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, runId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mappers().closeManualWindow(tenantId, runId,
+                    operator == null ? "api" : operator, action);
+        } catch (RuntimeException e) {
             log.error("[暂停] 关闭人工窗口失败：" + e.getMessage());
         }
     }
@@ -227,76 +191,18 @@ public final class PauseManager {
         int released = 0;
 
         // 1) 位置预约（非豁免）
-        released += execTx(c, """
-                DELETE FROM position_state
-                WHERE tenant_id = ? AND reserved_by_run = ?
-                  AND plate_id IS NULL
-                  AND COALESCE(block_reason, '') <> 'PLATE_UNKNOWN'
-                """, tenantId, runId);
+        released += mappers().releasePositionReservations(tenantId, runId);
 
         // 2) 资源预约（非豁免）；回程承诺的 release_exempt = true 自动跳过。
-        released += execTx(c, """
-                DELETE FROM resource_booking
-                WHERE tenant_id = ? AND status = 'active'
-                  AND COALESCE(release_exempt, false) = false
-                  AND run_node_id IN (SELECT id FROM run_node WHERE run_id = ?)
-                """, tenantId, runId);
+        released += mappers().releaseResourceBookings(tenantId, runId);
 
         // 3) 通道占用：暂停说明不再处于搬运中，可以放。
-        released += execTx(c, """
-                UPDATE device_port_usage u SET in_use = 0, updated_at = now()
-                WHERE u.tenant_id = ?
-                  AND u.port_id IN (SELECT id FROM device_port WHERE tenant_id = ?)
-                  AND u.in_use > 0
-                """, tenantId, tenantId);
+        released += mappers().releasePortUsage(tenantId);
 
         // 4) 设备锁：只放"状态不是 running"的（running 说明正在用）
-        released += execTx(c, """
-                UPDATE device_state SET current_run_id = NULL, status = 'idle',
-                       updated_at = now()
-                WHERE tenant_id = ? AND current_run_id = ? AND status <> 'running'
-                """, tenantId, runId);
+        released += mappers().releaseDeviceLocks(tenantId, runId);
 
         return released;
-    }
-
-    private int execTx(Connection c, String sql, long p1, long p2) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, p1);
-            ps.setLong(2, p2);
-            return ps.executeUpdate();
-        }
-    }
-
-    /**
-     * 通用：{@code ?1 = tenant_id}，{@code ?2 = runId}。
-     */
-    private int exec(String sql, long runId) {
-        return exec(sql, tenantId, runId);
-    }
-
-    /**
-     * 通道释放专用：SQL 里<b>两个</b> {@code ?} 都是 {@code tenant_id}。
-     *
-     * <p>2026-11-07 修（V1-3）：改动前这条 SQL 也走 {@link #exec(String, long)}，
-     * 第二个 {@code ?}（{@code device_port.tenant_id}）被绑成了 {@code runId} ——
-     * 子查询必然查不到行，等于「释放通道」这一步从来没生效，通道计数只涨不落，
-     * 会被现场误读成「通道一直被占着」。
-     */
-    private int execTenant(String sql) {
-        return exec(sql, tenantId, tenantId);
-    }
-
-    private int exec(String sql, long p1, long p2) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, p1);
-            ps.setLong(2, p2);
-            return ps.executeUpdate();
-        } catch (SQLException e) {
-            log.error("[暂停] 释放资源失败：" + e.getMessage());
-            return 0;
-        }
     }
 
     // ---------------------------------------------------------------- 恢复
@@ -355,15 +261,12 @@ public final class PauseManager {
         }
 
         // P-08 强门禁：位置未确认（仅运动报告）时不允许继续/重试，只允许终止
-        if (action != ResumeAction.ABORT) {
-            try (Connection c = db.open()) {
-                if (hasUnconfirmedTransfer(c, runId)) {
-                    return new ResumeResult(false,
-                            "存在未确认的搬运位置，请先扫码/人工确认"
-                                    + "（POST /api/transfers/{id}/confirm）",
-                            runId, action.name(), 0);
-                }
-            }
+        if (action != ResumeAction.ABORT
+                && mappers().countUnconfirmedTransfers(tenantId, runId) > 0) {
+            return new ResumeResult(false,
+                    "存在未确认的搬运位置，请先扫码/人工确认"
+                            + "（POST /api/transfers/{id}/confirm）",
+                    runId, action.name(), 0);
         }
         int corrected = 0;
         if (corrections != null) {
@@ -374,17 +277,8 @@ public final class PauseManager {
             }
         }
 
-        String newStatus;
-        String sql;
         if (action == ResumeAction.ABORT) {
-            newStatus = "aborted";
-            sql = """
-                    UPDATE run SET status = ?::run_status, pause_kind = NULL,
-                           resumed_at = now(),
-                           error_code = COALESCE(error_code, 'EC-HUMAN-ABORT'),
-                           updated_at = now()
-                    WHERE tenant_id = ? AND id = ?
-                    """;
+            mappers().resumeToAborted(tenantId, runId);
         } else {
             // P0-5 修复（评审 20261102-03）：改动前直接置 running，
             // 但执行体（同步阻塞在 WorkflowService.execute 里的那个线程）
@@ -395,25 +289,10 @@ public final class PauseManager {
             // 由调度器（ExperimentScheduler）或人工重新提交执行。
             // 不假装"继续" —— 从中间某步继续需要执行体支持断点续跑，
             // 那是下一轮的事（记录里列为 P1）。
-            newStatus = "queued";
-            sql = """
-                    UPDATE run SET status = ?::run_status, pause_kind = NULL,
-                           pause_reason = NULL, resumed_at = now(), updated_at = now()
-                    WHERE tenant_id = ? AND id = ?
-                    """;
+            mappers().resumeToQueued(tenantId, runId);
         }
 
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, newStatus);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
-        }
-
-        try (Connection cc = db.open()) {
-            closeManualWindow(cc, runId, operator, action.name());
-        }
+        closeManualWindow(null, runId, operator, action.name());
         return new ResumeResult(true, null, runId, action.name(), corrected);
     }
 
@@ -422,18 +301,7 @@ public final class PauseManager {
      * {@code input.recoverable=true}（由 {@code StartupRecovery.settle} 打的标）。
      */
     public boolean isCrashRecoverable(long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT 1 FROM run
-                      WHERE tenant_id = ? AND id = ? AND status = 'failed'
-                        AND (input->>'recoverable')::boolean IS TRUE
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        }
+        return mappers().isCrashRecoverable(tenantId, runId);
     }
 
     /**
@@ -447,19 +315,7 @@ public final class PauseManager {
      * 没人会一条条点"终止"，结果页面永远脏着，真出事的单子反而看不见。
      */
     public boolean dismiss(long runId) throws SQLException {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run
-                        SET status = 'aborted', pause_kind = NULL, pause_reason = NULL,
-                            pause_node_key = NULL, actual_end = now(),
-                            error_code = COALESCE(error_code, 'EC-HUMAN-DISMISS'),
-                            updated_at = now()
-                      WHERE tenant_id = ? AND id = ? AND status = 'paused'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            return ps.executeUpdate() > 0;
-        }
+        return mappers().dismissRun(tenantId, runId) > 0;
     }
 
     /**
@@ -495,69 +351,18 @@ public final class PauseManager {
         if (ids != null && !ids.isEmpty()) {
             int n = 0;
             for (Long id : ids) {
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE run
-                           SET status = 'aborted', pause_kind = NULL, pause_reason = NULL,
-                               pause_node_key = NULL, actual_end = now(),
-                               error_code = COALESCE(error_code, 'EC-HUMAN-DISMISS'),
-                               updated_at = now()
-                         WHERE tenant_id = ? AND id = ? AND status = 'paused'
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, id);
-                    n += ps.executeUpdate();
-                }
+                n += mappers().dismissRun(tenantId, id);
             }
             return n;
         }
-        StringBuilder sql = new StringBuilder("""
-                UPDATE run
-                   SET status = 'aborted', pause_kind = NULL, pause_reason = NULL,
-                       pause_node_key = NULL, actual_end = now(),
-                       error_code = COALESCE(error_code, 'EC-HUMAN-DISMISS'),
-                       updated_at = now()
-                 WHERE tenant_id = ? AND status = 'paused'
-                """);
-        java.util.List<Object> args = new java.util.ArrayList<>();
-        args.add(tenantId);
-        if (kind != null && !kind.isBlank() && !"all".equals(kind)) {
-            sql.append(" AND pause_kind = ?");   // pause_kind 是 varchar，不是枚举（别加 ::pause_kind，会报 type does not exist）
-            args.add(kind);
-        }
-        if (beforeHours != null && beforeHours > 0) {
-            // 用 updated_at 近似"最后一次动过的时间"：暂停后没人再操作，它就等于暂停时间
-            sql.append(" AND updated_at < now() - make_interval(hours => ?)");
-            args.add(beforeHours);
-        }
-        try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
-            for (int i = 0; i < args.size(); i++) {
-                Object a = args.get(i);
-                if (a instanceof Long l) {
-                    ps.setLong(i + 1, l);
-                } else if (a instanceof Integer n) {
-                    ps.setInt(i + 1, n);
-                } else {
-                    ps.setString(i + 1, String.valueOf(a));
-                }
-            }
-            return ps.executeUpdate();
-        }
+        // 用 updated_at 近似"最后一次动过的时间"：暂停后没人再操作，它就等于暂停时间
+        return mappers().dismissRunsConditional(tenantId,
+                kind != null && !"all".equals(kind) ? kind : null, beforeHours);
     }
 
     /** 当前暂停类型，null = 没暂停。 */
     public String pauseKindOf(long runId) throws SQLException {
-        String sql = """
-                SELECT pause_kind FROM run
-                WHERE tenant_id = ? AND id = ? AND status = 'paused'
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        }
+        return mappers().selectPauseKind(tenantId, runId);
     }
 
     // ---------------------------------------------------------------- 板位三态
@@ -584,31 +389,11 @@ public final class PauseManager {
         }
 
         // 1) 板标 UNKNOWN + 记录可能位置
-        String sql = """
-                UPDATE plate SET position_status = 'UNKNOWN',
-                       possible_locations = ?
-                WHERE tenant_id = ? AND barcode = ?
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setArray(1, c.createArrayOf("bigint", possible.toArray()));
-            ps.setLong(2, tenantId);
-            ps.setString(3, barcode);
-            ps.executeUpdate();
-        }
+        mappers().markPlateUnknown(tenantId, barcode, possible);
 
         // 2) 封锁可能位置（24 小时，且不自动解封）
-        int blocked = 0;
-        if (!possible.isEmpty()) {
-            String in = String.join(",", possible.stream().map(String::valueOf).toList());
-            blocked = execRaw("""
-                    UPDATE position_state
-                    SET reserved_by_run = -1, block_reason = 'PLATE_UNKNOWN',
-                        reserved_until = now() + interval '24 hours', updated_at = now()
-                    WHERE tenant_id = %d AND resource_id IN (%s)
-                      AND plate_id IS NULL
-                    """.formatted(tenantId, in));
-        }
+        int blocked = possible.isEmpty() ? 0
+                : mappers().blockPossiblePositions(tenantId, possible);
 
         // 3) 审计
         audit(barcode, "KNOWN", "UNKNOWN", null, "system",
@@ -633,29 +418,15 @@ public final class PauseManager {
         List<Long> possible = possibleLocationsOf(barcode);
 
         // 2) 更新板状态
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE plate SET position_status = ?, possible_locations = NULL
-                     WHERE tenant_id = ? AND barcode = ?
-                     """)) {
-            ps.setString(1, toStatus);
-            ps.setLong(2, tenantId);
-            ps.setString(3, barcode);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mappers().updatePlatePositionStatus(tenantId, barcode, toStatus);
+        } catch (RuntimeException e) {
             return false;
         }
 
         // 3) 解封：只解"因这块板被封的"
         if (!possible.isEmpty()) {
-            String in = String.join(",", possible.stream().map(String::valueOf).toList());
-            execRaw("""
-                    UPDATE position_state
-                    SET reserved_by_run = NULL, block_reason = NULL,
-                        reserved_until = NULL, updated_at = now()
-                    WHERE tenant_id = %d AND resource_id IN (%s)
-                      AND block_reason = 'PLATE_UNKNOWN'
-                    """.formatted(tenantId, in));
+            mappers().unblockPossiblePositions(tenantId, possible);
         }
 
         audit(barcode, "UNKNOWN", toStatus, actualLocation,
@@ -676,21 +447,6 @@ public final class PauseManager {
      * run 回 queued/aborted。校正的板状态/解封/审计也在同事务（locatePlateTx）。
      * 异步续跑仍由调用方 commit 后触发（内存动作，不属于 DB 事务）。
      */
-    /** P-08：该 run 是否还有未确认的搬运位置（REPORTED/UNKNOWN）。 */
-    private boolean hasUnconfirmedTransfer(Connection c, long runId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT count(*) FROM transfer_transaction
-                 WHERE tenant_id = ? AND run_id = ?
-                   AND status IN ('REPORTED', 'UNKNOWN')
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() && rs.getInt(1) > 0;
-            }
-        }
-    }
-
     public ResumeResult resumeTx(Connection c, long runId, ResumeAction action,
                                  Map<String, String> corrections, String operator)
             throws SQLException {
@@ -718,30 +474,10 @@ public final class PauseManager {
                 }
             }
         }
-        String newStatus;
-        String sql;
         if (action == ResumeAction.ABORT) {
-            newStatus = "aborted";
-            sql = """
-                    UPDATE run SET status = ?::run_status, pause_kind = NULL,
-                           resumed_at = now(),
-                           error_code = COALESCE(error_code, 'EC-HUMAN-ABORT'),
-                           updated_at = now()
-                    WHERE tenant_id = ? AND id = ?
-                    """;
+            mappers().resumeToAborted(tenantId, runId);
         } else {
-            newStatus = "queued";
-            sql = """
-                    UPDATE run SET status = ?::run_status, pause_kind = NULL,
-                           pause_reason = NULL, resumed_at = now(), updated_at = now()
-                    WHERE tenant_id = ? AND id = ?
-                    """;
-        }
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, newStatus);
-            ps.setLong(2, tenantId);
-            ps.setLong(3, runId);
-            ps.executeUpdate();
+            mappers().resumeToQueued(tenantId, runId);
         }
         closeManualWindow(c, runId, operator, action.name());
         return new ResumeResult(true, null, runId, action.name(), corrected);
@@ -764,18 +500,7 @@ public final class PauseManager {
             List<Long> possible = possibleLocationsOfTx(c, barcode);
             mappers().updatePlatePositionStatus(tenantId, barcode, toStatus);
             if (!possible.isEmpty()) {
-                String in = String.join(",", possible.stream().map(String::valueOf).toList());
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE position_state
-                           SET reserved_by_run = NULL, block_reason = NULL,
-                               reserved_until = NULL, updated_at = now()
-                         WHERE tenant_id = ? AND resource_id IN (""" + in + """
-                        )
-                           AND block_reason = 'PLATE_UNKNOWN'
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.executeUpdate();
-                }
+                mappers().unblockPossiblePositions(tenantId, possible);
             }
             auditTx(c, barcode, "UNKNOWN", toStatus, actualLocation,
                     operator == null ? "unknown" : operator,
@@ -795,22 +520,10 @@ public final class PauseManager {
     /** P-08：位置证据（人工盘点来源）。失败不掩盖主流程。 */
     private void insertEvidence(Connection c, String barcode, String actualLocation,
                                 String operator, Long runId) {
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO position_evidence
-                  (tenant_id, plate_barcode, evidence_type, run_id, operator, note)
-                VALUES (?, ?, 'MANUAL', ?, ?, ?)
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, barcode);
-            if (runId == null) {
-                ps.setNull(3, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(3, runId);
-            }
-            ps.setString(4, operator == null ? "unknown" : operator);
-            ps.setString(5, actualLocation);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mappers().insertPositionEvidenceManual(tenantId, barcode, runId,
+                    operator == null ? "unknown" : operator, actualLocation);
+        } catch (RuntimeException e) {
             log.error("[暂停] 位置证据落库失败：" + e.getMessage());
         }
     }
@@ -818,26 +531,8 @@ public final class PauseManager {
     private void auditTx(Connection c, String barcode, String from, String to,
                          String actual, String operator, String note, Long runId)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                INSERT INTO plate_location_audit
-                  (tenant_id, barcode, from_status, to_status,
-                   actual_location, operator, note, run_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, barcode);
-            ps.setString(3, from);
-            ps.setString(4, to);
-            ps.setString(5, actual);
-            ps.setString(6, operator);
-            ps.setString(7, note);
-            if (runId == null) {
-                ps.setNull(8, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(8, runId);
-            }
-            ps.executeUpdate();
-        }
+        mappers().insertPlateAudit(tenantId, barcode, from, to, actual,
+                operator, note, runId);
     }
 
     private List<Long> possibleLocationsOf(String barcode) {
@@ -846,38 +541,11 @@ public final class PauseManager {
 
     private void audit(String barcode, String from, String to, String actual,
                        String operator, String note, Long runId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO plate_location_audit
-                       (tenant_id, barcode, from_status, to_status,
-                        actual_location, operator, note, run_id)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, barcode);
-            ps.setString(3, from);
-            ps.setString(4, to);
-            ps.setString(5, actual);
-            ps.setString(6, operator);
-            ps.setString(7, note);
-            if (runId == null) {
-                ps.setNull(8, java.sql.Types.BIGINT);
-            } else {
-                ps.setLong(8, runId);
-            }
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mappers().insertPlateAudit(tenantId, barcode, from, to, actual,
+                    operator, note, runId);
+        } catch (RuntimeException e) {
             log.error("[盘点] 审计写入失败：" + e.getMessage());
-        }
-    }
-
-    private int execRaw(String sql) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            return ps.executeUpdate();
-        } catch (SQLException e) {
-            log.error("[暂停] SQL 失败：" + e.getMessage());
-            return 0;
         }
     }
 
@@ -890,41 +558,15 @@ public final class PauseManager {
         // run.pause_node_key 常常是 null（比如转到人工时没传），
         // 所以这里直接取**第一个没完成的业务节点**：名字 + 状态 + input.reason
         // （reason 就是「策略[EC-08-400C@NODE] 指定直接转人工」这种，错误码在里面）。
-        String sql = """
-                SELECT r.id, r.run_no, r.pause_kind, r.pause_reason, r.paused_at, r.pause_node_key,
-                       n.name        AS node_name,
-                       n.status::text AS node_status,
-                       n.input->>'reason' AS node_reason
-                FROM run r
-                LEFT JOIN LATERAL (
-                      SELECT n2.name, n2.status, n2.input
-                      FROM run_node n2
-                      WHERE n2.run_id = r.id AND n2.level = 0
-                        AND n2.status NOT IN ('completed', 'skipped')
-                      ORDER BY n2.id LIMIT 1) n ON true
-                WHERE r.tenant_id = ? AND r.status = 'paused' AND r.deleted_at IS NULL
-                ORDER BY r.paused_at DESC LIMIT 100
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("runId", rs.getLong("id"));
-                    m.put("runNo", rs.getString("run_no"));
-                    m.put("pauseKind", rs.getString("pause_kind"));
-                    m.put("pauseReason", rs.getString("pause_reason"));
-                    m.put("pauseNodeKey", rs.getString("pause_node_key"));
-                    m.put("nodeName", rs.getString("node_name"));
-                    m.put("nodeStatus", rs.getString("node_status"));
-                    m.put("nodeReason", rs.getString("node_reason"));
-                    java.sql.Timestamp t = rs.getTimestamp("paused_at");
-                    m.put("pausedAt", t == null ? null : t.toInstant().toString());
-                    list.add(m);
-                }
+        try {
+            for (Map<String, Object> row : mappers().selectPausedRuns(tenantId)) {
+                Map<String, Object> m = new LinkedHashMap<>(row);
+                Object t = m.get("pausedAt");
+                m.put("pausedAt", t instanceof java.sql.Timestamp ts
+                        ? ts.toInstant().toString() : null);
+                list.add(m);
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             // 返回空
         }
         return list;
@@ -941,38 +583,28 @@ public final class PauseManager {
      */
     public List<Map<String, Object>> unknownPlates() {
         List<Map<String, Object>> list = new ArrayList<>();
-        String sql = """
-                SELECT p.barcode,
-                       p.position_status,
-                       COALESCE((SELECT array_agg(r.code ORDER BY r.id)
-                                 FROM resource_node r
-                                 WHERE r.id = ANY(p.possible_locations)), '{}') AS location_names,
-                       p.possible_locations AS location_ids
-                FROM plate p
-                WHERE p.tenant_id = ? AND p.position_status IN ('UNKNOWN','LOST')
-                ORDER BY p.barcode LIMIT 100
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("barcode", rs.getString("barcode"));
-                    m.put("positionStatus", rs.getString("position_status"));
-                    java.sql.Array names = rs.getArray("location_names");
-                    m.put("possibleLocations",
-                            names == null ? List.of() : List.of((Object[]) names.getArray()));
-                    java.sql.Array ids = rs.getArray("location_ids");
-                    m.put("possibleLocationIds",
-                            ids == null ? List.of() : List.of((Object[]) ids.getArray()));
-                    list.add(m);
-                }
+        try {
+            for (Map<String, Object> row : mappers().selectUnknownPlates(tenantId)) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("barcode", row.get("barcode"));
+                m.put("positionStatus", row.get("positionStatus"));
+                m.put("possibleLocations", toList(row.get("locationNames")));
+                m.put("possibleLocationIds", toList(row.get("locationIds")));
+                list.add(m);
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException | java.sql.SQLException e) {
             // 返回空
         }
         return list;
+    }
+
+    /** pgjdbc 把 bigint[] / text[] 列返回成 java.sql.Array，统一摊平成 List。 */
+    private static List<Object> toList(Object arrayVal) throws java.sql.SQLException {
+        if (!(arrayVal instanceof java.sql.Array a)) {
+            return List.of();
+        }
+        Object[] arr = (Object[]) a.getArray();
+        return arr == null ? List.of() : List.of(arr);
     }
 
     /**
@@ -983,29 +615,12 @@ public final class PauseManager {
      * @return 恢复了几个
      */
     public int autoResumeFaulted() {
-        String sql = """
-                UPDATE run SET status = 'running', pause_kind = NULL,
-                       pause_reason = NULL, resumed_at = now(), updated_at = now()
-                WHERE tenant_id = ? AND status = 'paused' AND pause_kind = 'paused_fault'
-                  -- S-04-B 修复：只看**这条 run 的流程实际用到的设备**是否在线。
-                  -- 旧口径是「全租户所有 device_state 都在线」，现场只要有一台无关
-                  -- 设备离线就永远不自动恢复（实测 demo 环境多台离线 → 永不恢复）。
-                  AND NOT EXISTS (
-                        SELECT 1
-                          FROM device_state ds
-                          JOIN workflow_node wn
-                            ON wn.tenant_id = ds.tenant_id
-                           AND wn.resource_id = ds.resource_id
-                         WHERE ds.tenant_id = run.tenant_id
-                           AND ds.online = false
-                           AND wn.workflow_id = run.workflow_id
-                  )
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            return ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            // S-04-B 修复：只看**这条 run 的流程实际用到的设备**是否在线。
+            // 旧口径是「全租户所有 device_state 都在线」，现场只要有一台无关
+            // 设备离线就永远不自动恢复（实测 demo 环境多台离线 → 永不恢复）。
+            return mappers().autoResumeFaulted(tenantId);
+        } catch (RuntimeException e) {
             return 0;
         }
     }
