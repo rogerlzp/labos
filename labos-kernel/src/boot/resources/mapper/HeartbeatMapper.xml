@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 设备心跳路径（driver / driver_health / device_state 在线 UPSERT / alert_state）。调用方 com.labos.kernel.persistence.HeartbeatMapper -->
+<mapper namespace="com.labos.kernel.persistence.HeartbeatMapper">
+
+    <select id="selectActiveDrivers" resultType="java.util.Map">
+        SELECT id AS "id", code AS "code", endpoint AS "endpoint"
+          FROM driver
+         WHERE tenant_id = #{tenantId} AND status = 1
+           AND endpoint IS NOT NULL AND endpoint &lt;&gt; ''
+    </select>
+
+    <insert id="insertDriverHealth">
+        INSERT INTO driver_health (driver_id, checked_at, healthy, latency_ms, message)
+        VALUES (#{driverId}, now(), #{healthy}, #{latencyMs}, #{message})
+    </insert>
+
+    <!-- UPSERT 而不是 UPDATE：设备可能还没有 device_state 行（从没执行过），
+         纯 UPDATE 静默 0 行 = "模拟器在线但显示离线"。
+         last_heartbeat 只在探测成功时推进，离线后停在最后一次成功点 ——
+         now() - last_heartbeat 天然就是"离线了多久"。 -->
+    <insert id="upsertDeviceOnline">
+        INSERT INTO device_state
+          (tenant_id, resource_id, status, online, last_heartbeat, updated_at)
+        SELECT #{tenantId}, di.resource_id, 'idle', #{online},
+               CASE WHEN #{online} THEN to_timestamp(#{nowMillis} / 1000.0)
+                    ELSE NULL END, now()
+          FROM device_instance di
+         WHERE di.driver_id = #{driverId} AND di.deleted_at IS NULL
+        ON CONFLICT (tenant_id, resource_id) DO UPDATE
+        SET online = EXCLUDED.online,
+            last_heartbeat = CASE WHEN EXCLUDED.online
+                                  THEN EXCLUDED.last_heartbeat
+                                  ELSE device_state.last_heartbeat END,
+            updated_at = now()
+    </insert>
+
+    <!-- 改动前是 INSERT ... WHERE NOT EXISTS(open)：上一轮关掉后那行还在
+         （status=closed），NOT EXISTS 不成立 ⇒ 走 INSERT ⇒ duplicate key，
+         每次心跳刷一条 ERROR。upsert：有行重新打开，没有才插。 -->
+    <insert id="upsertOfflineAlerts">
+        INSERT INTO alert_state (tenant_id, fingerprint, status, updated_at)
+        SELECT #{tenantId}, 'DEVICE-OFFLINE|' || r.id, 'open', now()
+          FROM device_state ds
+          JOIN resource_node r ON r.id = ds.resource_id
+         WHERE ds.tenant_id = #{tenantId}
+           AND ds.online = false
+           AND ds.last_heartbeat IS NOT NULL
+           AND ds.last_heartbeat &lt; now() - (#{offlineMs} || ' milliseconds')::interval
+        ON CONFLICT (tenant_id, fingerprint)
+        DO UPDATE SET status = 'open', closed_at = NULL, updated_at = now()
+    </insert>
+
+    <update id="closeRecoveredAlerts">
+        UPDATE alert_state a
+           SET status = 'closed', closed_at = now(), updated_at = now()
+         WHERE a.tenant_id = #{tenantId}
+           AND a.status = 'open'
+           AND a.fingerprint LIKE 'DEVICE-OFFLINE|%'
+           AND EXISTS (
+                 SELECT 1 FROM device_state ds
+                 JOIN resource_node r ON r.id = ds.resource_id
+                 WHERE ds.tenant_id = a.tenant_id
+                   AND a.fingerprint = 'DEVICE-OFFLINE|' || r.id
+                   AND ds.online = true)
+    </update>
+
+</mapper>

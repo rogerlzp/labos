@@ -5,9 +5,6 @@ import com.labos.kernel.persistence.DbConfig;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -208,56 +205,16 @@ public final class HeartbeatService {
      * 所以 {@code now() - last_heartbeat} 天然就是"离线了多久"。
      */
     private void checkOfflineAlerts() throws SQLException {
-        // ① 开告警：离线超阈值且没有未关闭的告警
-        // ⚠️ 这里改动前是 INSERT ... WHERE NOT EXISTS(open 告警)。看起来对，其实会撞主键：
-        // alert_state 的唯一键是 (tenant_id, fingerprint)，一个设备只留一行；
-        // 上一轮离线关掉后那行还在（status=closed），下次再离线 NOT EXISTS 不成立 ⇒
-        // 走 INSERT ⇒ duplicate key，**每次心跳刷一条 ERROR**。
-        // 正确做法是 upsert：有行就重新打开，没有才插。
-        String openSql = """
-                INSERT INTO alert_state (tenant_id, fingerprint, status, updated_at)
-                SELECT ?, 'DEVICE-OFFLINE|' || r.id, 'open', now()
-                FROM device_state ds
-                JOIN resource_node r ON r.id = ds.resource_id
-                WHERE ds.tenant_id = ?
-                  AND ds.online = false
-                  AND ds.last_heartbeat IS NOT NULL
-                  AND ds.last_heartbeat < now() - (? || ' milliseconds')::interval
-                ON CONFLICT (tenant_id, fingerprint)
-                DO UPDATE SET status = 'open', closed_at = NULL, updated_at = now()
-                """;
-        // ② 关告警：已恢复在线，且有未关闭的告警
-        String closeSql = """
-                UPDATE alert_state a
-                SET status = 'closed', closed_at = now(), updated_at = now()
-                WHERE a.tenant_id = ?
-                  AND a.status = 'open'
-                  AND a.fingerprint LIKE 'DEVICE-OFFLINE|%'
-                  AND EXISTS (
-                        SELECT 1 FROM device_state ds
-                        JOIN resource_node r ON r.id = ds.resource_id
-                        WHERE ds.tenant_id = a.tenant_id
-                          AND a.fingerprint = 'DEVICE-OFFLINE|' || r.id
-                          AND ds.online = true)
-                """;
-        try (Connection c = db.open()) {
-            try (PreparedStatement ps = c.prepareStatement(openSql)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, tenantId);
-                ps.setString(3, String.valueOf(RuntimeSettings.offlineAlertMs()));
-                int n = ps.executeUpdate();
-                if (n > 0) {
-                    log.info("[心跳] 新开 " + n + " 条离线告警（离线超过 "
-                            + (RuntimeSettings.offlineAlertMs() / 1000) + " 秒）");
-                }
-            }
-            try (PreparedStatement ps = c.prepareStatement(closeSql)) {
-                ps.setLong(1, tenantId);
-                int n = ps.executeUpdate();
-                if (n > 0) {
-                    log.info("[心跳] 关闭 " + n + " 条离线告警（设备已恢复）");
-                }
-            }
+        // ①② 语句本体在 mapper/HeartbeatMapper.xml（upsert 幂等键语义注释在那里）
+        int opened = mapper().upsertOfflineAlerts(tenantId,
+                String.valueOf(RuntimeSettings.offlineAlertMs()));
+        if (opened > 0) {
+            log.info("[心跳] 新开 " + opened + " 条离线告警（离线超过 "
+                    + (RuntimeSettings.offlineAlertMs() / 1000) + " 秒）");
+        }
+        int closed = mapper().closeRecoveredAlerts(tenantId);
+        if (closed > 0) {
+            log.info("[心跳] 关闭 " + closed + " 条离线告警（设备已恢复）");
         }
     }
 
@@ -275,77 +232,42 @@ public final class HeartbeatService {
 
     private Map<String, DriverProbe> loadDrivers() throws SQLException {
         Map<String, DriverProbe> out = new LinkedHashMap<>();
-        String sql = """
-                SELECT id, code, endpoint FROM driver
-                WHERE tenant_id = ? AND status = 1
-                  AND endpoint IS NOT NULL AND endpoint <> ''
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String ep = rs.getString("endpoint");
-                    String hp = ep.startsWith("tcp://") ? ep.substring(6) : ep;
-                    int idx = hp.lastIndexOf(':');
-                    if (idx <= 0) {
-                        continue;
-                    }
-                    out.put(rs.getString("code"), new DriverProbe(
-                            rs.getLong("id"),
-                            hp.substring(0, idx),
-                            Integer.parseInt(hp.substring(idx + 1))));
-                }
+        for (Map<String, Object> m : mapper().selectActiveDrivers(tenantId)) {
+            String ep = (String) m.get("endpoint");
+            String hp = ep.startsWith("tcp://") ? ep.substring(6) : ep;
+            int idx = hp.lastIndexOf(':');
+            if (idx <= 0) {
+                continue;
             }
+            out.put((String) m.get("code"), new DriverProbe(
+                    ((Number) m.get("id")).longValue(),
+                    hp.substring(0, idx),
+                    Integer.parseInt(hp.substring(idx + 1))));
         }
         return out;
     }
 
     private void writeDriverHealth(long driverId, boolean healthy, int latency, String msg) {
-        String sql = """
-                INSERT INTO driver_health (driver_id, checked_at, healthy, latency_ms, message)
-                VALUES (?, now(), ?, ?, ?)
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, driverId);
-            ps.setBoolean(2, healthy);
-            ps.setInt(3, latency);
-            ps.setString(4, msg);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            mapper().insertDriverHealth(driverId, healthy, latency, msg);
+        } catch (RuntimeException e) {
+            // mapper 不声明 SQLException，SQL 异常已被 MyBatis 包装
             log.error("[心跳] 写 driver_health 失败：" + e.getMessage());
         }
     }
 
     private void writeDeviceOnline(long driverId, boolean online, long now) {
-        // 用 UPSERT 而不是 UPDATE：设备可能还没有 device_state 记录
-        // （从没执行过），纯 UPDATE 会静默影响 0 行，表现为"模拟器在线但显示离线"。
-        String sql = """
-                INSERT INTO device_state
-                  (tenant_id, resource_id, status, online, last_heartbeat, updated_at)
-                SELECT ?, di.resource_id, 'idle', ?,
-                       CASE WHEN ? THEN to_timestamp(? / 1000.0) ELSE NULL END, now()
-                FROM device_instance di
-                WHERE di.driver_id = ? AND di.deleted_at IS NULL
-                ON CONFLICT (tenant_id, resource_id) DO UPDATE
-                SET online = EXCLUDED.online,
-                    last_heartbeat = CASE WHEN EXCLUDED.online
-                                          THEN EXCLUDED.last_heartbeat
-                                          ELSE device_state.last_heartbeat END,
-                    updated_at = now()
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setBoolean(2, online);
-            ps.setBoolean(3, online);
-            ps.setLong(4, now);
-            ps.setLong(5, driverId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        // UPSERT 语义（不建行的设备先插 idle）见 mapper/HeartbeatMapper.xml 注释
+        try {
+            mapper().upsertDeviceOnline(tenantId, online, now, driverId);
+        } catch (RuntimeException e) {
             log.error("[心跳] 写 device_state.online 失败：" + e.getMessage());
         }
+    }
+
+    private com.labos.kernel.persistence.HeartbeatMapper mapper() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.HeartbeatMapper.class);
     }
 
     // ---------------------------------------------------------------- 状态上报
@@ -374,20 +296,6 @@ public final class HeartbeatService {
                             lastError == null ? "idle" : "error", lastError);
         } catch (RuntimeException e) {
             log.error("[心跳] 标记空闲失败：{}", e.getMessage());
-        }
-    }
-
-    private interface Binder {
-        void bind(PreparedStatement ps) throws SQLException;
-    }
-
-    private void updateDeviceState(long deviceInstanceId, String sql, Binder binder) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            binder.bind(ps);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            log.error("[心跳] 更新设备状态失败：" + e.getMessage());
         }
     }
 
