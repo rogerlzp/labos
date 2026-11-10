@@ -1182,7 +1182,6 @@ public class QueryService {
     @org.springframework.transaction.annotation.Transactional(
             rollbackFor = Exception.class)
     public int saveExperimentVariables(long experimentId, List<String[]> vars) throws SQLException {
-        String del = "DELETE FROM experiment_variable WHERE tenant_id = ? AND experiment_id = ?";
         String ins = """
                 INSERT INTO experiment_variable
                   (tenant_id, experiment_id, name, type, default_value, description)
@@ -1190,11 +1189,7 @@ public class QueryService {
                 """;
         try (Connection c = db.open()) {
             try {
-                try (PreparedStatement ps = c.prepareStatement(del)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    ps.executeUpdate();
-                }
+                experimentMapper.deleteExperimentVariables(tenantId, experimentId);
                 int n = 0;
                 try (PreparedStatement ps = c.prepareStatement(ins)) {
                     for (String[] v : vars) {
@@ -3680,27 +3675,11 @@ throw e;
         try (Connection c = db.open()) {
             try {
                 java.util.Set<Long> bound = new java.util.LinkedHashSet<>();
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT count(*) FROM experiment WHERE tenant_id = ? AND id = ?")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next() || rs.getInt(1) == 0) {
-                            return -1;
-                        }
-                    }
+                if (!experimentMapper.experimentExists(tenantId, experimentId)) {
+                    return -1;
                 }
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT workcell_id FROM experiment_workcell "
-                                + "WHERE tenant_id = ? AND experiment_id = ?")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) {
-                            bound.add(rs.getLong(1));
-                        }
-                    }
-                }
+                bound.addAll(experimentMapper.selectExperimentWorkcellIds(
+                        tenantId, experimentId));
                 for (long[] p : pairs) {
                     if (p == null || p.length < 2 || p[0] <= 0 || p[1] <= 0 || p[0] == p[1]) {
                         return -2;
@@ -4153,23 +4132,10 @@ throw e;
             throws SQLException {
         try (Connection c = db.open()) {
             try {
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT count(*) FROM experiment WHERE tenant_id = ? AND id = ?")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (!rs.next() || rs.getInt(1) == 0) {
-                            return -1;
-                        }
-                    }
+                if (!experimentMapper.experimentExists(tenantId, experimentId)) {
+                    return -1;
                 }
-                try (PreparedStatement ps = c.prepareStatement(
-                        "DELETE FROM experiment_workcell "
-                                + "WHERE tenant_id = ? AND experiment_id = ?")) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, experimentId);
-                    ps.executeUpdate();
-                }
+                experimentMapper.deleteExperimentWorkcells(tenantId, experimentId);
                 int n = 0;
                 if (workcellIds != null && !workcellIds.isEmpty()) {
                     try (PreparedStatement ps = c.prepareStatement("""
