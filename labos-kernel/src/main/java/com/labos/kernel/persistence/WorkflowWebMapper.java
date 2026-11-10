@@ -12,6 +12,9 @@ public interface WorkflowWebMapper {
     /** resource_node.id -> device_instance.id；不是设备返回 null。 */
     Long selectDeviceInstanceId(long resourceNodeId);
 
+    /** device_instance.id -> 资源 code（影子跑展示设备名用）。 */
+    String selectDeviceCodeByInstance(long deviceInstanceId);
+
     /** 抢执行期岛锁（resource_booking 的 EXCLUDE 约束）；违反约束返回 null。 */
     Long insertIslandLock(long tenantId, long islandId);
 

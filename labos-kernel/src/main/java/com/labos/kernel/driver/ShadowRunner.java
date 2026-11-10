@@ -3,9 +3,6 @@ package com.labos.kernel.driver;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -78,72 +75,57 @@ public final class ShadowRunner {
         int contractGaps = 0;
 
         // 读节点：key / name / 能力 / 方法
-        String sql = """
-                SELECT n.node_key, n.name, c.code AS capability,
-                       COALESCE(n.params->>'protocol_name', c.code) AS method,
-                       (n.params->>'bound_resource_id')::bigint   AS bound
-                FROM workflow_node n
-                LEFT JOIN capability c ON c.id = n.capability_id
-                WHERE n.tenant_id = ? AND n.workflow_id = ? AND n.node_type = 'task'
-                ORDER BY n.id
-                """;
+        try {
+            String found = qm().selectWorkflowName(tenantId, workflowId);
+            if (found != null) {
+                wfName = found;
+            }
+        } catch (RuntimeException ignore) {
+            // 流程名取不到不影响影子跑
+        }
 
-        try (Connection c = db.open()) {
-            try {
-                String found = qm().selectWorkflowName(tenantId, workflowId);
-                if (found != null) {
-                    wfName = found;
-                }
-            } catch (RuntimeException ignore) {
-                // 流程名取不到不影响影子跑
+        for (java.util.Map<String, Object> nodeRow : com.labos.kernel.persistence.Mappers
+                .get(com.labos.kernel.persistence.GraphMapper.class)
+                .selectShadowProbeNodes(tenantId, workflowId)) {
+            String key = (String) nodeRow.get("nodeKey");
+            String name = (String) nodeRow.get("name");
+            String cap = (String) nodeRow.get("capability");
+            String method = (String) nodeRow.get("method");
+            Object boundObj = nodeRow.get("bound");
+            Long bound = boundObj instanceof Number num ? num.longValue() : null;
+            if (cap == null || "LOGIC".equals(cap)) {
+                continue;   // 逻辑节点没有设备命令，跳过
             }
 
-            try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, workflowId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        String key = rs.getString("node_key");
-                        String name = rs.getString("name");
-                        String cap = rs.getString("capability");
-                        String method = rs.getString("method");
-                        Long bound = (Long) rs.getObject("bound");
-                        if (cap == null || "LOGIC".equals(cap)) {
-                            continue;   // 逻辑节点没有设备命令，跳过
-                        }
-
-                        // 节点绑了具体设备（搬运序列生成的流程）就用它，否则按能力挑
-                        List<Long> candidates;
-                        if (bound != null && bound > 0) {
-                            Long instance = deviceInstanceOf(bound);
-                            candidates = instance == null ? List.of() : List.of(instance);
-                        } else {
-                            candidates = capPool.getOrDefault(cap, List.of());
-                        }
-                        if (candidates.isEmpty()) {
-                            results.add(new NodeProbe(key, name, cap, method,
-                                    0, null, false, "EC-06-0002",
-                                    "该能力没有可用设备", 0, 0));
-                            continue;
-                        }
-
-                        long dev = candidates.get(0);
-                        String devCode = deviceCode(dev);
-                        ShadowProbe.Probe p = probe.probe(dev, method);
-                        long missing = p.contract() == null ? 0
-                                : p.contract().values().stream().filter(v -> !v).count();
-                        if (missing > 0) {
-                            contractGaps++;
-                        }
-                        if (p.ok()) {
-                            ok++;
-                        }
-                        results.add(new NodeProbe(key, name, cap, method, dev, devCode,
-                                p.ok(), p.errorCode(), p.errorText(),
-                                p.elapsedMs(), (int) missing));
-                    }
-                }
+            // 节点绑了具体设备（搬运序列生成的流程）就用它，否则按能力挑
+            List<Long> candidates;
+            if (bound != null && bound > 0) {
+                Long instance = deviceInstanceOf(bound);
+                candidates = instance == null ? List.of() : List.of(instance);
+            } else {
+                candidates = capPool.getOrDefault(cap, List.of());
             }
+            if (candidates.isEmpty()) {
+                results.add(new NodeProbe(key, name, cap, method,
+                        0, null, false, "EC-06-0002",
+                        "该能力没有可用设备", 0, 0));
+                continue;
+            }
+
+            long dev = candidates.get(0);
+            String devCode = deviceCode(dev);
+            ShadowProbe.Probe p = probe.probe(dev, method);
+            long missing = p.contract() == null ? 0
+                    : p.contract().values().stream().filter(v -> !v).count();
+            if (missing > 0) {
+                contractGaps++;
+            }
+            if (p.ok()) {
+                ok++;
+            }
+            results.add(new NodeProbe(key, name, cap, method, dev, devCode,
+                    p.ok(), p.errorCode(), p.errorText(),
+                    p.elapsedMs(), (int) missing));
         }
 
         return new Report(workflowId, wfName, results.size(), ok,
@@ -162,17 +144,11 @@ public final class ShadowRunner {
     }
 
     private String deviceCode(long deviceInstanceId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT r.code FROM device_instance di
-                     JOIN resource_node r ON r.id = di.resource_id
-                     WHERE di.id = ?
-                     """)) {
-            ps.setLong(1, deviceInstanceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getString(1) : null;
-            }
-        } catch (SQLException e) {
+        try {
+            return com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.WorkflowWebMapper.class)
+                    .selectDeviceCodeByInstance(deviceInstanceId);
+        } catch (RuntimeException e) {
             return null;
         }
     }

@@ -256,5 +256,16 @@
          WHERE tenant_id = #{param1} AND workflow_id = #{param2}
          ORDER BY id
     </select>
+    <select id="selectShadowProbeNodes" resultType="java.util.Map">
+        SELECT n.node_key AS "nodeKey", n.name AS "name",
+               c.code AS "capability",
+               COALESCE(n.params-&gt;&gt;'protocol_name', c.code) AS "method",
+               (n.params-&gt;&gt;'bound_resource_id')::bigint AS "bound"
+        FROM workflow_node n
+        LEFT JOIN capability c ON c.id = n.capability_id
+        WHERE n.tenant_id = #{param1} AND n.workflow_id = #{param2}
+          AND n.node_type = 'task'
+        ORDER BY n.id
+    </select>
 
 </mapper>

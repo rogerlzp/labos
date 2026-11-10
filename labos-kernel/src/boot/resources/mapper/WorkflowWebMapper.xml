@@ -7,6 +7,11 @@
     <select id="selectDeviceInstanceId" resultType="java.lang.Long">
         SELECT id FROM device_instance WHERE resource_id = #{param1}
     </select>
+    <select id="selectDeviceCodeByInstance" resultType="java.lang.String">
+        SELECT r.code FROM device_instance di
+        JOIN resource_node r ON r.id = di.resource_id
+        WHERE di.id = #{param1}
+    </select>
 
     <!-- 插入成功 = 抢到；违反 EXCLUDE 约束 = 岛被占用（调用方按 null 处理）。
          多实例部署下数据库约束才是真锁，内存锁各管各的等于没锁。

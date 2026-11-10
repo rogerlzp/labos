@@ -76,6 +76,13 @@ public interface GraphMapper {
     java.util.List<java.util.Map<String, Object>> selectMainPathEdges(
             long tenantId, long workflowId);
 
+    /**
+     * 影子跑：流程 task 节点探测行（nodeKey/name/capability/method/bound；
+     * bound 来自 params.bound_resource_id，能力空的逻辑节点由调用方跳过）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectShadowProbeNodes(
+            long tenantId, long workflowId);
+
     /** 删掉本次图中不存在的节点（keep 为本次节点 key 全集）。 */
     int deleteNodesNotIn(long workflowId, java.util.List<String> keep);
 
