@@ -131,6 +131,14 @@
          ORDER BY eo.id DESC LIMIT #{param2}
     </select>
 
+    <!-- 演示验证（PersistenceDemo）：单 run 留痕，run_id 全局唯一故不带 tenant。 -->
+    <select id="selectErrorOccurrencesByRun" resultType="java.util.Map">
+        SELECT eo.run_node_id AS "runNodeId", eo.fingerprint AS "fingerprint",
+               eo.attempt AS "attempt", eo.outcome AS "outcome",
+               eo.severity::text AS "severity", eo.message AS "message"
+          FROM error_occurrence eo WHERE eo.run_id = #{param1}
+    </select>
+
     <select id="selectPolicyScope" resultType="java.lang.String">
         SELECT scope FROM recovery_policy
         WHERE tenant_id = #{tenantId} AND id = #{policyId}

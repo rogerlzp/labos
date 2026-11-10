@@ -303,4 +303,18 @@ public interface RunMapper {
                               @Param("outputJson") String outputJson,
                               @Param("errorCode") String errorCode);
 
+    // ---- PersistenceDemo（端到端演示的建 run + 落库验证查询，阶段3第22批收编）----
+
+    /**
+     * 演示建 run：无 workflow_id（演示 run 不挂在任何流程下）。
+     * 与 {@link #insertRun} 语义不同（那个必须有 workflowId/attendance），不能混用。
+     */
+    Long insertDemoRun(long tenantId, String runNo);
+
+    /** 演示验证：该 run 的事件类型分布（eventType/n，按条数降序）。 */
+    List<Map<String, Object>> selectDemoEventTypeCounts(long runId);
+
+    /** 演示验证：该 run 的事件明细前 8 条（occurredAt/eventType/payload 文本）。 */
+    List<Map<String, Object>> selectDemoEventDetails(long runId);
+
 }

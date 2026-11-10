@@ -369,6 +369,28 @@
         RETURNING id
     </select>
 
+    <!-- PersistenceDemo（端到端演示的建 run + 落库验证查询，阶段3第22批收编） -->
+
+    <!-- 演示 run 无 workflow_id/attendance，与上面的 insertRun 不同形，不能复用。 -->
+    <select id="insertDemoRun" resultType="java.lang.Long">
+        INSERT INTO run (tenant_id, run_no, run_type, mode, priority, status, created_at)
+        VALUES (#{param1}, #{param2}, 'workflow', 'normal', 5, 'running', now())
+        RETURNING id
+    </select>
+
+    <select id="selectDemoEventTypeCounts" resultType="java.util.Map">
+        SELECT event_type AS "eventType", count(*) AS "n"
+          FROM run_event WHERE aggregate_id = #{param1} AND aggregate_type = 'run'
+         GROUP BY event_type ORDER BY "n" DESC
+    </select>
+
+    <select id="selectDemoEventDetails" resultType="java.util.Map">
+        SELECT occurred_at AS "occurredAt", event_type AS "eventType",
+               payload::text AS "payload"
+          FROM run_event WHERE aggregate_id = #{param1} AND aggregate_type = 'run'
+         ORDER BY occurred_at, payload->>'seq' LIMIT 8
+    </select>
+
     <select id="selectTopNodeKeyIds" resultType="java.util.Map">
         SELECT node_key AS "nodeKey", id AS "id"
           FROM run_node

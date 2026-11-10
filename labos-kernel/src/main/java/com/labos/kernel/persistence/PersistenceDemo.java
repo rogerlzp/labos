@@ -14,10 +14,6 @@ import com.labos.kernel.recovery.RecoveryPolicyResolver;
 import com.labos.kernel.recovery.RecoveryScope;
 import com.labos.kernel.recovery.RecoveryStrategy;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -61,7 +57,7 @@ public final class PersistenceDemo {
         log.info("");
 
         // ---------- 2. 建一条 run ----------
-        long runId = createRun(db, "DEMO");
+        long runId = createRun("DEMO");
         log.info("已创建 run id=" + runId + "（run_no 前缀 DEMO-）");
         log.info("");
 
@@ -131,98 +127,61 @@ public final class PersistenceDemo {
         log.info("");
 
         // ---------- 5. 查询验证 ----------
-        verify(db, runId);
+        verify(runId);
     }
 
     // ---------------------------------------------------------------- DB
 
-    private static long createRun(DbConfig db, String prefix) throws SQLException {
+    /**
+     * 演示建 run（阶段3第22批：SQL 收编进 RunMapper/OpsMapper；无容器入口，
+     * {@link Mappers#get} 自动以 {@link DbConfig#standaloneDataSource()} 初始化）。
+     */
+    private static long createRun(String prefix) {
         String runNo = prefix + "-" + LocalDateTime.now()
                 .format(DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS"));
-
-        String sql = """
-                INSERT INTO run (tenant_id, run_no, run_type, mode, priority, status, created_at)
-                VALUES (?, ?, 'workflow', 'normal', 5, 'running', now())
-                RETURNING id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, TENANT);
-            ps.setString(2, runNo);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return Mappers.get(RunMapper.class).insertDemoRun(TENANT, runNo);
     }
 
-    private static void verify(DbConfig db, long runId) throws SQLException {
+    private static void verify(long runId) {
         log.info("=".repeat(80));
         log.info("  数据库验证（run_id = " + runId + "）");
         log.info("=".repeat(80));
+        RunMapper runMapper = Mappers.get(RunMapper.class);
 
-        try (Connection c = db.open()) {
-            // 事件分布
-            log.info("\n[run_event] 事件类型分布：");
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT event_type, count(*) AS n
-                    FROM run_event WHERE aggregate_id = ? AND aggregate_type='run'
-                    GROUP BY event_type ORDER BY n DESC
-                    """)) {
-                ps.setLong(1, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    int total = 0;
-                    while (rs.next()) {
-                        int n = rs.getInt("n");
-                        total += n;
-                        printf("  %-20s %d%n", rs.getString("event_type"), n);
-                    }
-                    log.info("  " + "-".repeat(28));
-                    printf("  %-20s %d%n", "合计", total);
-                }
-            }
+        // 事件分布
+        log.info("\n[run_event] 事件类型分布：");
+        int total = 0;
+        for (Map<String, Object> row : runMapper.selectDemoEventTypeCounts(runId)) {
+            int n = ((Number) row.get("n")).intValue();
+            total += n;
+            printf("  %-20s %d%n", row.get("eventType"), n);
+        }
+        log.info("  " + "-".repeat(28));
+        printf("  %-20s %d%n", "合计", total);
 
-            // 事件明细（前 8 条）
-            log.info("\n[run_event] 事件明细（前 8 条）：");
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT occurred_at, event_type, payload
-                    FROM run_event WHERE aggregate_id = ? AND aggregate_type='run'
-                    ORDER BY occurred_at, payload->>'seq' LIMIT 8
-                    """)) {
-                ps.setLong(1, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        printf("  %-20s %-22s %s%n",
-                                rs.getObject(1).toString().substring(11, 19),
-                                rs.getString("event_type"),
-                                truncate(rs.getString("payload"), 90));
-                    }
-                }
-            }
+        // 事件明细（前 8 条）
+        log.info("\n[run_event] 事件明细（前 8 条）：");
+        for (Map<String, Object> row : runMapper.selectDemoEventDetails(runId)) {
+            printf("  %-20s %-22s %s%n",
+                    String.valueOf(row.get("occurredAt")).substring(11, 19),
+                    row.get("eventType"),
+                    truncate((String) row.get("payload"), 90));
+        }
 
-            // 错误记录
-            log.info("\n[error_occurrence] 转人工记录：");
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT eo.run_node_id, eo.fingerprint, eo.attempt, eo.outcome,
-                           eo.severity, eo.message
-                    FROM error_occurrence eo WHERE eo.run_id = ?
-                    """)) {
-                ps.setLong(1, runId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    boolean any = false;
-                    while (rs.next()) {
-                        any = true;
-                        printf("  node=%d %-22s attempt=%d outcome=%s severity=%s%n",
-                                rs.getLong("run_node_id"), rs.getString("fingerprint"),
-                                rs.getInt("attempt"), rs.getString("outcome"),
-                                rs.getString("severity"));
-                        log.info("      原因: " + truncate(rs.getString("message"), 100));
-                    }
-                    if (!any) {
-                        log.info("  （无）");
-                    }
-                }
-            }
+        // 错误记录
+        log.info("\n[error_occurrence] 转人工记录：");
+        List<Map<String, Object>> occurrences =
+                Mappers.get(OpsMapper.class).selectErrorOccurrencesByRun(runId);
+        for (Map<String, Object> row : occurrences) {
+            printf("  node=%d %-22s attempt=%d outcome=%s severity=%s%n",
+                    ((Number) row.get("runNodeId")).longValue(),
+                    row.get("fingerprint"),
+                    ((Number) row.get("attempt")).intValue(),
+                    row.get("outcome"), row.get("severity"));
+            log.info("      原因: " + truncate((String) row.get("message"), 100));
+        }
+        if (occurrences.isEmpty()) {
+            log.info("  （无）");
         }
     }
 

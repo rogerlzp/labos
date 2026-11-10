@@ -72,6 +72,12 @@ public interface OpsMapper {
     /** 错误发生记录（最近 N 条）。 */
     List<Map<String, Object>> selectErrorOccurrences(long tenantId, int limit);
 
+    /**
+     * 演示验证：单条 run 的全部错误留痕（runNodeId/fingerprint/attempt/outcome/
+     * severity/message，无 tenant 过滤 —— run_id 全局唯一，与原语句一致）。
+     */
+    List<Map<String, Object>> selectErrorOccurrencesByRun(long runId);
+
 
     /** 按 id 查策略作用域（PATCH 没带 scope 时用）。查不到返回 null。 */
     String selectPolicyScope(long tenantId, long policyId);
