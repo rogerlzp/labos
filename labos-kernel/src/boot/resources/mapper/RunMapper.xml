@@ -472,4 +472,163 @@
          WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'paused'
            AND pause_node_key IS NULL
     </update>
+    <!-- StartupRecovery（启动崩溃收尾） -->
+
+    <!-- P1-7：running 立刻收；queued/pending 超 1 小时才收（刚入队的正常记录不误杀）；
+         P-08：命令账本 UNKNOWN/DISPATCH_STARTED 的不交普通 settle，留给隔离。 -->
+    <select id="selectInterruptedRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.run_no AS "runNo",
+               count(n.id) FILTER (WHERE n.level = 0) AS "total",
+               count(n.id) FILTER (WHERE n.level = 0 AND n.status = 'completed') AS "done",
+               count(n.id) FILTER (WHERE n.level = 0 AND n.status IN ('failed','manual')) AS "bad"
+          FROM run r
+          LEFT JOIN run_node n ON n.run_id = r.id
+         WHERE r.tenant_id = #{tenantId}
+           AND (r.status = 'running'
+                OR (r.status IN ('queued', 'pending')
+                    AND r.created_at &lt; now() - interval '1 hour'))
+           AND NOT EXISTS (SELECT 1 FROM command_ledger cl
+                            WHERE cl.tenant_id = r.tenant_id
+                              AND cl.run_id = r.id
+                              AND cl.state IN ('UNKNOWN', 'DISPATCH_STARTED'))
+        <if test="ids != null">
+           AND r.id IN
+            <foreach collection="ids" item="one" open="(" separator="," close=")">
+                #{one}
+            </foreach>
+        </if>
+         GROUP BY r.id, r.run_no, r.input
+         ORDER BY r.id
+    </select>
+
+    <!-- 孤儿设备锁：current_run_id 指向的 run 已被删除；无错 idle / 有错 error。 -->
+    <update id="releaseOrphanDeviceLocks">
+        UPDATE device_state ds
+           SET current_run_id = NULL,
+               current_method = NULL,
+               status = CASE WHEN ds.last_error IS NULL THEN 'idle' ELSE 'error' END,
+               updated_at = now()
+         WHERE ds.tenant_id = #{param1}
+           AND ds.current_run_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM run r
+                            WHERE r.tenant_id = ds.tenant_id
+                              AND r.id = ds.current_run_id)
+    </update>
+
+    <update id="settleInterruptedRun">
+        UPDATE run
+           SET status = 'failed',
+               actual_end = now(),
+               input = COALESCE(input, '{}'::jsonb) || #{param3}::jsonb
+         WHERE tenant_id = #{param1} AND id = #{param2}
+           AND status IN ('running', 'queued', 'pending')
+    </update>
+
+    <!-- 口径与 DeviceLock.release 一致：清 current_run_id / current_method。 -->
+    <update id="releaseRunDeviceLocks">
+        UPDATE device_state
+           SET current_run_id = NULL,
+               current_method = NULL,
+               status = CASE WHEN last_error IS NULL THEN 'idle' ELSE 'error' END,
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND current_run_id = #{param2}
+    </update>
+
+    <!-- P-08 隔离候选：running/failed 且命令账本有 UNKNOWN / DISPATCH_STARTED。 -->
+    <select id="selectUncertainRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.run_no AS "runNo"
+          FROM run r
+         WHERE r.tenant_id = #{tenantId}
+           AND r.status IN ('running', 'failed')
+           AND EXISTS (SELECT 1 FROM command_ledger cl
+                        WHERE cl.tenant_id = r.tenant_id
+                          AND cl.run_id = r.id
+                          AND cl.state IN ('UNKNOWN', 'DISPATCH_STARTED'))
+        <if test="ids != null">
+           AND r.id IN
+            <foreach collection="ids" item="one" open="(" separator="," close=")">
+                #{one}
+            </foreach>
+        </if>
+         ORDER BY r.id
+    </select>
+
+    <update id="quarantineRun">
+        UPDATE run
+           SET status = 'quarantined'::run_status,
+               error_code = COALESCE(error_code, 'EC-QUARANTINE-UNKNOWN'),
+               input = COALESCE(input, '{}'::jsonb) || #{param3}::jsonb,
+               actual_end = COALESCE(actual_end, now())
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <select id="selectExperimentIdOfRun" resultType="java.lang.Long">
+        SELECT er.experiment_id
+          FROM experiment_run_step s
+          JOIN experiment_run er
+            ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
+         WHERE s.tenant_id = #{param1} AND s.run_id = #{param2}
+         LIMIT 1
+    </select>
+
+    <update id="confirmQuarantine">
+        UPDATE run
+           SET status = 'failed'::run_status,
+               error_code = 'EC-QUARANTINE-CONFIRMED',
+               input = COALESCE(input, '{}'::jsonb) || #{param3}::jsonb,
+               actual_end = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'quarantined'
+    </update>
+
+    <!-- 只列近 7 天被中断的：十天前的单子点"继续"会真的重跑，不是恢复是事故。 -->
+    <select id="selectRecoverableRuns" resultType="java.util.Map">
+        SELECT r.id AS "id", r.run_no AS "runNo",
+               (r.input-&gt;&gt;'totalNodes')::int AS "total",
+               (r.input-&gt;&gt;'completedNodes')::int AS "done",
+               (r.input-&gt;&gt;'failedNodes')::int AS "bad"
+          FROM run r
+         WHERE r.tenant_id = #{param1}
+           AND r.status = 'failed'
+           AND (r.input-&gt;&gt;'recoverable')::boolean IS TRUE
+           AND COALESCE((r.input-&gt;&gt;'interruptedAt')::timestamptz, r.actual_end)
+               &gt; now() - interval '7 days'
+         ORDER BY r.id DESC
+         LIMIT 50
+    </select>
+
+    <update id="dismissRecoverable">
+        UPDATE run
+           SET input = COALESCE(input, '{}'::jsonb) || #{param3}::jsonb,
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'failed'
+           AND (input-&gt;&gt;'recoverable')::boolean IS TRUE
+    </update>
+
+    <!-- BUG-14：experiment_run 层的遗留 running（与 run 表那套是两层记录）。 -->
+    <select id="selectOrphanExperimentRuns" resultType="java.util.Map">
+        SELECT DISTINCT r.id AS "id", r.experiment_id AS "experimentId",
+               e.experiment_no AS "experimentNo", b.batch_no AS "batchNo"
+          FROM experiment_run r
+          JOIN experiment e
+            ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
+          LEFT JOIN experiment_batch_run br
+            ON br.tenant_id = r.tenant_id AND br.experiment_run_id = r.id
+          LEFT JOIN experiment_batch b
+            ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
+         WHERE r.tenant_id = #{tenantId} AND r.status = 'running'
+        <if test="ids != null">
+           AND r.experiment_id IN
+            <foreach collection="ids" item="one" open="(" separator="," close=")">
+                #{one}
+            </foreach>
+        </if>
+         ORDER BY r.id
+    </select>
+
+    <update id="settleOrphanExperimentRun">
+        UPDATE experiment_run
+           SET status = 'failed', finished_at = now(), error = #{param3}
+         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'running'
+    </update>
+
 </mapper>

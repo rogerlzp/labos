@@ -201,4 +201,52 @@ public interface RunMapper {
     /** 边界到达后补 pause_node_key（仅当 paused 且仍为空）。 */
     int fillPauseNodeKey(long tenantId, long runId, String pendingKey);
 
+    // ---- StartupRecovery（启动崩溃收尾） ----
+
+    /**
+     * 被中断的 run 扫描（running 立即收；queued/pending 超 1 小时才收；
+     * 命令账本 UNKNOWN/DISPATCH_STARTED 的留给隔离）。
+     *
+     * <p>ids 非 null 时限定 run id（自测用；调用方已保证非空）。
+     * 返回 id/runNo/total/done/bad。
+     */
+    List<Map<String, Object>> selectInterruptedRuns(@Param("tenantId") long tenantId,
+                                                      @Param("ids") java.util.Collection<Long> ids);
+
+    /** 释放孤儿设备锁（current_run_id 指向的 run 已不存在）。 */
+    int releaseOrphanDeviceLocks(long tenantId);
+
+    /** 收尾一条 run：failed + 中断说明 jsonb；仅当还在 running/queued/pending。 */
+    int settleInterruptedRun(long tenantId, long runId, String inputJson);
+
+    /** 释放该 run 占着的设备锁（口径与 DeviceLock.release 一致）。 */
+    int releaseRunDeviceLocks(long tenantId, long runId);
+
+    /** 命令账本 UNKNOWN/DISPATCH_STARTED 的 run（id/runNo，按 id 升序）。 */
+    List<Map<String, Object>> selectUncertainRuns(@Param("tenantId") long tenantId,
+                                                  @Param("ids") java.util.Collection<Long> ids);
+
+    /** 隔离一条 run：quarantined + 隔离说明 jsonb（幂等抬错误码）。 */
+    int quarantineRun(long tenantId, long runId, String inputJson);
+
+    /** run -> 实验 id（经 experiment_run_step 反查）；无归属返回 null。 */
+    Long selectExperimentIdOfRun(long tenantId, long runId);
+
+    /** 人工确认隔离：failed + 确认说明 jsonb；仅当还是 quarantined。 */
+    int confirmQuarantine(long tenantId, long runId, String inputJson);
+
+    /** 近 7 天被中断且可恢复的 run（id/runNo/total/done/bad，按 id 倒序 50 条）。 */
+    List<Map<String, Object>> selectRecoverableRuns(long tenantId);
+
+    /** 忽略一条可恢复记录（recoverable=false，仅 failed 且可恢复的）。 */
+    int dismissRecoverable(long tenantId, long runId, String inputJson);
+
+    /** 遗留 running 的 experiment_run（id/experimentId/experimentNo/batchNo）。 */
+    List<Map<String, Object>> selectOrphanExperimentRuns(
+            @Param("tenantId") long tenantId,
+            @Param("ids") java.util.Collection<Long> onlyExperimentIds);
+
+    /** 收尾一条遗留 running 的 experiment_run：failed + 固定 error 文案。 */
+    int settleOrphanExperimentRun(long tenantId, long runId, String error);
+
 }

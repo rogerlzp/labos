@@ -4,11 +4,10 @@ import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 
 import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 启动时的崩溃收尾。
@@ -32,6 +31,12 @@ public final class StartupRecovery {
 
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(StartupRecovery.class);
+
+    /** Mapper 懒取器：本类是静态工具类，拿不到构造注入。 */
+    private static com.labos.kernel.persistence.RunMapper rm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.RunMapper.class);
+    }
 
     /** 一条被中断的 run。 */
     public record Orphan(
@@ -62,159 +67,57 @@ public final class StartupRecovery {
         if (onlyRunIds != null && onlyRunIds.isEmpty()) {
             return orphans;
         }
-        StringBuilder runFilter = new StringBuilder();
-        if (onlyRunIds != null) {
-            runFilter.append(" AND r.id IN (");
-            int i = 0;
-            for (Long id : onlyRunIds) {
-                if (i++ > 0) {
-                    runFilter.append(',');
-                }
-                // 入参是 Long（自测合成负数 id），直接拼数字无注入风险
-                runFilter.append(id);
-            }
-            runFilter.append(')');
-        }
 
-        String scan = """
-                SELECT r.id, r.run_no,
-                       COALESCE(r.input->>'attendance', 'attended') AS attendance,
-                       count(n.id) FILTER (WHERE n.level = 0)                        AS total,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.status = 'completed') AS done,
-                       count(n.id) FILTER (WHERE n.level = 0 AND n.status IN ('failed','manual')) AS bad
-                FROM run r
-                LEFT JOIN run_node n ON n.run_id = r.id
-                -- P1-7 修复（评审 20261102-03）：改动前只看 running。
-                -- queued/pending 在进程崩溃后同样是僵尸（排队排到遥遥无期），
-                -- 但**不能立刻判失败**——刚入队几秒的正常记录也会被误杀。
-                -- 折中：running 立刻收；queued/pending 超过 1 小时才收。
-                WHERE r.tenant_id = ?
-                  AND (r.status = 'running'
-                       OR (r.status IN ('queued', 'pending')
-                           AND r.created_at < now() - interval '1 hour'))
-                  -- P-08：物理结果未知（命令账本 UNKNOWN/DISPATCH_STARTED）的 run
-                  -- 不交给普通 settle（否则会当 failed/recoverable 并释放设备锁）；
-                  -- 由 quarantineUncertainRuns 隔离，保留设备锁等人工确认。
-                  AND NOT EXISTS (SELECT 1 FROM command_ledger cl
-                                   WHERE cl.tenant_id = r.tenant_id
-                                     AND cl.run_id = r.id
-                                     AND cl.state IN ('UNKNOWN', 'DISPATCH_STARTED'))
-                """ + runFilter + """
-                GROUP BY r.id, r.run_no, r.input
-                ORDER BY r.id
-                """;
-
-        String settleSql = """
-                UPDATE run
-                SET status = 'failed',
-                    actual_end = now(),
-                    input = COALESCE(input, '{}'::jsonb) || ?::jsonb
-                WHERE tenant_id = ? AND id = ?
-                  AND status IN ('running', 'queued', 'pending')
-                """;
-
-        // ★ 释放被中断的 run 占着的**设备锁**（device_state.current_run_id）。
-        //
-        //   为什么必须在这里放：进程被 kill / API 重启时，正在执行的设备方法
-        //   不会走 onStepDone ⇒ markDeviceIdle 永远不执行 ⇒
-        //   device_state 永远停在 status='running' + current_run_id=<已死的 run>。
-        //   而 DeviceLock.tryAcquire 的条件是
-        //   `current_run_id IS NULL OR current_run_id = 自己`
-        //   ⇒ 这台设备**从此再也不会被任何 run 拿到**（幽灵占用）。
-        //   现场表现：一台设备凭空"永远忙"，所有流程都绕开它。
-        //   （2026-11-06 实测：机械臂 ID1731 卡在 current_run_id=207893，
-        //    那个 run 早就随 API 重启死了。）
-        //
-        //   口径与 DeviceLock.release 一致：清 current_run_id / current_method，
-        //   无错时置 idle、有错时置 error。
-        String releaseLockSql = """
-                UPDATE device_state
-                SET current_run_id = NULL,
-                    current_method = NULL,
-                    status = CASE WHEN last_error IS NULL THEN 'idle' ELSE 'error' END,
-                    updated_at = now()
-                WHERE tenant_id = ? AND current_run_id = ?
-                """;
-
-        // ★ 释放**孤儿设备锁**：current_run_id 指向的 run 已经不存在了。
-        //
-        //   为什么上面那条不够：它只处理「本次 settle 掉的 run」，
-        //   而 run 被**直接删除**（清理脚本 / 后台清历史）时，
-        //   device_state 里那把锁就成了孤儿 —— 没人能再通过 settle 找到它。
-        //   孤儿锁的破坏性与幽灵锁一样：
-        //   `DeviceLock.tryAcquire` 要求 current_run_id IS NULL 或等于自己
-        //   ⇒ 这台设备**从此再也不会被任何 run 拿到**（现场：一台设备凭空永远忙）。
+        // ★ 先释放**孤儿设备锁**（current_run_id 指向的 run 已被删除）：
+        //   run 被**直接删除**（清理脚本 / 后台清历史）时，device_state 里那把锁
+        //   就成了孤儿 —— 没人能再通过 settle 找到它。孤儿锁的破坏性与幽灵锁一样：
+        //   `DeviceLock.tryAcquire` 要求 current_run_id IS NULL 或等于自己 ⇒
+        //   这台设备从此再也不会被任何 run 拿到（现场：一台设备凭空永远忙）。
         //   （2026-11-06 实测：测试删掉 run 后，机械臂卡在 current_run_id=<已删 run>。）
-        String releaseOrphanLockSql = """
-                UPDATE device_state ds
-                SET current_run_id = NULL,
-                    current_method = NULL,
-                    status = CASE WHEN ds.last_error IS NULL THEN 'idle' ELSE 'error' END,
-                    updated_at = now()
-                 WHERE ds.tenant_id = ?
-                   AND ds.current_run_id IS NOT NULL
-                   AND NOT EXISTS (SELECT 1 FROM run r
-                                    WHERE r.tenant_id = ds.tenant_id
-                                      AND r.id = ds.current_run_id)
-                """;
+        //
+        //   ⚠ 必须放在**扫描之前**：扫描后有 `if (found.isEmpty()) return` 的提前返回 ——
+        //   放在后面的话，「本次没有孤儿 run」时孤儿锁就永远清不掉
+        //   （2026-11-06 实测：机械臂的锁指向一个已被删除的 run，重启后仍然占着）。
+        rm().releaseOrphanDeviceLocks(tenantId);
 
-        try (Connection c = db.open()) {
-            // ⚠ 孤儿设备锁的清理必须放在**扫描之前**：
-            //   下面有 `if (found.isEmpty()) return orphans;` 的提前返回 ——
-            //   放在后面的话，「本次没有孤儿 run」时孤儿锁就永远清不掉
-            //   （2026-11-06 实测：机械臂的锁指向一个已被删除的 run，
-            //    重启后仍然占着，那台设备又拿不到了）。
-            try (PreparedStatement op = c.prepareStatement(releaseOrphanLockSql)) {
-                op.setLong(1, tenantId);
-                op.executeUpdate();
-            }
-
-            List<Orphan> found = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement(scan)) {
-                ps.setLong(1, tenantId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        int total = rs.getInt("total");
-                        int done = rs.getInt("done");
-                        int bad = rs.getInt("bad");
-                        found.add(new Orphan(
-                                rs.getLong("id"),
-                                rs.getString("run_no"),
-                                total, done, bad,
-                                // 有完成过节点才值得续跑；一个都没完成 = 从头跑，不算恢复
-                                done > 0));
-                    }
-                }
-            }
-
-            if (found.isEmpty()) {
-                return orphans;
-            }
-
-            try (PreparedStatement ps = c.prepareStatement(settleSql);
-                 PreparedStatement lp = c.prepareStatement(releaseLockSql)) {
-                for (Orphan o : found) {
-                    ps.setString(1, Jsons.obj(
-                            "interrupted", true,
-                            "interruptedAt", java.time.Instant.now().toString(),
-                            "completedNodes", o.completedNodes(),
-                            "totalNodes", o.totalNodes(),
-                            "failedNodes", o.failedNodes(),
-                            "recoverable", o.recoverable()));
-                    ps.setLong(2, tenantId);
-                    ps.setLong(3, o.runId());
-                    ps.executeUpdate();
-
-                    // 释放这台设备（可能被多台设备同时占着）
-                    lp.setLong(1, tenantId);
-                    lp.setLong(2, o.runId());
-                    lp.executeUpdate();
-                }
-            }
-
-            orphans.addAll(found);
+        List<Orphan> found = new ArrayList<>();
+        // P1-7：running 立刻收；queued/pending 超 1 小时才收（刚入队的正常记录不误杀）。
+        // P-08：命令账本 UNKNOWN/DISPATCH_STARTED 的不交普通 settle，留给隔离。
+        for (Map<String, Object> row : rm().selectInterruptedRuns(tenantId, onlyRunIds)) {
+            int done = ((Number) row.get("done")).intValue();
+            found.add(new Orphan(
+                    ((Number) row.get("id")).longValue(),
+                    (String) row.get("runNo"),
+                    ((Number) row.get("total")).intValue(),
+                    done,
+                    ((Number) row.get("bad")).intValue(),
+                    // 有完成过节点才值得续跑；一个都没完成 = 从头跑，不算恢复
+                    done > 0));
         }
 
+        if (found.isEmpty()) {
+            return orphans;
+        }
+
+        for (Orphan o : found) {
+            rm().settleInterruptedRun(tenantId, o.runId(), Jsons.obj(
+                    "interrupted", true,
+                    "interruptedAt", java.time.Instant.now().toString(),
+                    "completedNodes", o.completedNodes(),
+                    "totalNodes", o.totalNodes(),
+                    "failedNodes", o.failedNodes(),
+                    "recoverable", o.recoverable()));
+
+            // ★ 释放这台设备（可能被多台设备同时占着）占着的**设备锁**。
+            //   为什么必须在这里放：进程被 kill / API 重启时，正在执行的设备方法
+            //   不会走 onStepDone ⇒ markDeviceIdle 永远不执行 ⇒ device_state 永远停在
+            //   status='running' + current_run_id=<已死的 run>，而 DeviceLock.tryAcquire
+            //   的条件是 `current_run_id IS NULL OR = 自己` ⇒ 这台设备从此再也拿不到
+            //   （幽灵占用）。口径与 DeviceLock.release 一致（RunMapper.releaseRunDeviceLocks）。
+            rm().releaseRunDeviceLocks(tenantId, o.runId());
+        }
+
+        orphans.addAll(found);
         return orphans;
     }
 
@@ -245,67 +148,21 @@ public final class StartupRecovery {
         if (onlyRunIds != null && onlyRunIds.isEmpty()) {
             return java.util.List.of();
         }
-        String runFilter = "";
-        if (onlyRunIds != null) {
-            StringBuilder sb = new StringBuilder(" AND r.id IN (");
-            int i = 0;
-            for (Long id : onlyRunIds) {
-                if (i++ > 0) {
-                    sb.append(',');
-                }
-                sb.append(id);
-            }
-            runFilter = sb.append(')').toString();
-        }
         java.util.List<Quarantined> out = new java.util.ArrayList<>();
-        try (Connection c = db.open()) {
-            java.util.List<long[]> ids = new java.util.ArrayList<>();
-            java.util.List<String> nos = new java.util.ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement("""
-                    SELECT r.id, r.run_no
-                      FROM run r
-                     WHERE r.tenant_id = ?
-                       AND r.status IN ('running', 'failed')
-                       AND EXISTS (SELECT 1 FROM command_ledger cl
-                                    WHERE cl.tenant_id = r.tenant_id
-                                      AND cl.run_id = r.id
-                                      AND cl.state IN ('UNKNOWN', 'DISPATCH_STARTED'))""" + runFilter + """
-                     ORDER BY r.id
-                    """)) {
-                ps.setLong(1, tenantId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        ids.add(new long[]{rs.getLong(1)});
-                        nos.add(rs.getString(2));
-                    }
-                }
+        for (Map<String, Object> row : rm().selectUncertainRuns(tenantId, onlyRunIds)) {
+            long runId = ((Number) row.get("id")).longValue();
+            String runNo = (String) row.get("runNo");
+            Long expId = rm().selectExperimentIdOfRun(tenantId, runId);
+            rm().quarantineRun(tenantId, runId, Jsons.obj(
+                    "quarantine", true,
+                    "quarantineReason", "命令物理结果未知（启动隔离）",
+                    "recoverable", false));
+            if (expId != null) {
+                new RuntimeHold(db, tenantId).raise(RuntimeHold.Scope.EXPERIMENT,
+                        expId, RuntimeHold.Kind.HUMAN,
+                        "启动隔离：物理结果未知 run#" + runId, null);
             }
-            for (int i = 0; i < ids.size(); i++) {
-                long runId = ids.get(i)[0];
-                Long expId = experimentIdOfRun(c, tenantId, runId);
-                try (PreparedStatement ps = c.prepareStatement("""
-                        UPDATE run
-                           SET status = 'quarantined'::run_status,
-                               error_code = COALESCE(error_code, 'EC-QUARANTINE-UNKNOWN'),
-                               input = COALESCE(input, '{}'::jsonb) || ?::jsonb,
-                               actual_end = COALESCE(actual_end, now())
-                         WHERE tenant_id = ? AND id = ?
-                        """)) {
-                    ps.setString(1, Jsons.obj(
-                            "quarantine", true,
-                            "quarantineReason", "命令物理结果未知（启动隔离）",
-                            "recoverable", false));
-                    ps.setLong(2, tenantId);
-                    ps.setLong(3, runId);
-                    ps.executeUpdate();
-                }
-                if (expId != null) {
-                    new RuntimeHold(db, tenantId).raise(RuntimeHold.Scope.EXPERIMENT,
-                            expId, RuntimeHold.Kind.HUMAN,
-                            "启动隔离：物理结果未知 run#" + runId, null);
-                }
-                out.add(new Quarantined(runId, nos.get(i), expId));
-            }
+            out.add(new Quarantined(runId, runNo, expId));
         }
         return out;
     }
@@ -320,24 +177,11 @@ public final class StartupRecovery {
     public static boolean resolveQuarantine(DbConfig db, long tenantId, long runId,
                                             long by, String note) throws SQLException {
         return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            Long expId = experimentIdOfRun(c, tenantId, runId);
-            int n;
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE run
-                       SET status = 'failed'::run_status,
-                           error_code = 'EC-QUARANTINE-CONFIRMED',
-                           input = COALESCE(input, '{}'::jsonb) || ?::jsonb,
-                           actual_end = now()
-                     WHERE tenant_id = ? AND id = ? AND status = 'quarantined'
-                    """)) {
-                ps.setString(1, Jsons.obj(
-                        "quarantine", false,
-                        "quarantineConfirmed", true,
-                        "quarantineNote", note == null ? "" : note));
-                ps.setLong(2, tenantId);
-                ps.setLong(3, runId);
-                n = ps.executeUpdate();
-            }
+            Long expId = rm().selectExperimentIdOfRun(tenantId, runId);
+            int n = rm().confirmQuarantine(tenantId, runId, Jsons.obj(
+                    "quarantine", false,
+                    "quarantineConfirmed", true,
+                    "quarantineNote", note == null ? "" : note));
             if (n > 0 && expId != null) {
                 new RuntimeHold(db, tenantId).clearKindTx(c,
                         RuntimeHold.Scope.EXPERIMENT, expId, RuntimeHold.Kind.HUMAN, by,
@@ -347,54 +191,17 @@ public final class StartupRecovery {
         });
     }
 
-    private static Long experimentIdOfRun(Connection c, long tenantId, long runId)
-            throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                SELECT er.experiment_id
-                  FROM experiment_run_step s
-                  JOIN experiment_run er
-                    ON er.tenant_id = s.tenant_id AND er.id = s.experiment_run_id
-                 WHERE s.tenant_id = ? AND s.run_id = ?
-                 LIMIT 1
-                """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
-        }
-    }
-
     /** 收集"被中断且可恢复"的 run，供接口展示。 */
     public static List<Orphan> listRecoverable(DbConfig db, long tenantId) throws SQLException {
+        // **只列近 7 天被中断的**（RunMapper.selectRecoverableRuns）。
+        // 全量列出来是 42 条（存量数据），界面上一直挂着"有可恢复"的提示；
+        // 更糟的是这些十天前的单子点"继续"会真的重跑，而设备状态、板位、配方
+        // 早就变了 —— 那不是恢复，是制造事故。
         List<Orphan> out = new ArrayList<>();
-        String sql = """
-                SELECT r.id, r.run_no,
-                       (r.input->>'totalNodes')::int     AS total,
-                       (r.input->>'completedNodes')::int AS done,
-                       (r.input->>'failedNodes')::int    AS bad
-                FROM run r
-                WHERE r.tenant_id = ?
-                  AND r.status = 'failed'
-                  AND (r.input->>'recoverable')::boolean IS TRUE
-                  -- **只列近 7 天被中断的**。
-                  -- 全量列出来是 42 条（存量数据），界面上一直挂着
-                  -- "有可恢复"的提示；更糟的是这些十天前的单子点"继续"会真的重跑，
-                  -- 而设备状态、板位、配方早就变了 —— 那不是恢复，是制造事故。
-                  AND COALESCE((r.input->>'interruptedAt')::timestamptz, r.actual_end)
-                      > now() - interval '7 days'
-                ORDER BY r.id DESC
-                LIMIT 50
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(new Orphan(rs.getLong("id"), rs.getString("run_no"),
-                            rs.getInt("total"), rs.getInt("done"), rs.getInt("bad"), true));
-                }
-            }
+        for (Map<String, Object> row : rm().selectRecoverableRuns(tenantId)) {
+            out.add(new Orphan(((Number) row.get("id")).longValue(), (String) row.get("runNo"),
+                    ((Number) row.get("total")).intValue(), ((Number) row.get("done")).intValue(),
+                    ((Number) row.get("bad")).intValue(), true));
         }
         return out;
     }
@@ -414,19 +221,8 @@ public final class StartupRecovery {
     /** 同 {@link #dismiss}，但复用调用方事务连接（P-06 V2 E-3b）。 */
     public static boolean dismissTx(Connection c, long tenantId, long runId)
             throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("""
-                UPDATE run
-                   SET input = COALESCE(input, '{}'::jsonb)
-                               || ?::jsonb,
-                       updated_at = now()
-                 WHERE tenant_id = ? AND id = ? AND status = 'failed'
-                   AND (input->>'recoverable')::boolean IS TRUE
-                """)) {
-            ps.setString(1, Jsons.obj("recoverable", false, "dismissed", true));
-            ps.setLong(2, tenantId);
-            ps.setLong(3, runId);
-            return ps.executeUpdate() > 0;
-        }
+        return rm().dismissRecoverable(tenantId, runId,
+                Jsons.obj("recoverable", false, "dismissed", true)) > 0;
     }
 
     // ========================================================================
@@ -497,67 +293,27 @@ public final class StartupRecovery {
         if (onlyExperimentIds != null && onlyExperimentIds.isEmpty()) {
             return new ArrayList<>();
         }
-        StringBuilder filter = new StringBuilder();
-        if (onlyExperimentIds != null) {
-            filter.append(" AND r.experiment_id IN (");
-            int i = 0;
-            for (Long id : onlyExperimentIds) {
-                if (i++ > 0) {
-                    filter.append(',');
-                }
-                // 入参是 Long（自测合成负数 id），直接拼数字无注入风险
-                filter.append(id);
-            }
-            filter.append(')');
-        }
-
-        String scan = """
-                SELECT DISTINCT r.id, r.experiment_id, e.experiment_no, b.batch_no
-                  FROM experiment_run r
-                  JOIN experiment e
-                    ON e.tenant_id = r.tenant_id AND e.id = r.experiment_id
-                  LEFT JOIN experiment_batch_run br
-                    ON br.tenant_id = r.tenant_id AND br.experiment_run_id = r.id
-                  LEFT JOIN experiment_batch b
-                    ON b.tenant_id = br.tenant_id AND b.id = br.batch_id
-                 WHERE r.tenant_id = ? AND r.status = 'running'
-                """ + filter + " ORDER BY r.id";
 
         List<SettledExperimentRun> found = new ArrayList<>();
         // 扫描（SELECT）与收尾（UPDATE）同处一个 Spring 事务：
         // 转换脚本原先只保留了 setAutoCommit 之后的 UPDATE，把扫描段丢了，
         // 导致 found 永远为空、启动兜底 settle 完全不生效（已由 StartupSettleSelfTest 抓到）。
         com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            try (PreparedStatement ps = c.prepareStatement(scan)) {
-                ps.setLong(1, tenantId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        // wasNull() 只反映"最后一次 get"的列，必须紧跟着 batch_no 取
-                        long batchNo = rs.getLong("batch_no");
-                        boolean batchRun = !rs.wasNull();
-                        found.add(new SettledExperimentRun(
-                                rs.getLong("id"), rs.getLong("experiment_id"),
-                                rs.getString("experiment_no"),
-                                batchRun ? (int) batchNo : null,
-                                batchRun));
-                    }
-                }
+            for (Map<String, Object> row
+                    : rm().selectOrphanExperimentRuns(tenantId, onlyExperimentIds)) {
+                Object batchNoObj = row.get("batchNo");
+                found.add(new SettledExperimentRun(
+                        ((Number) row.get("id")).longValue(),
+                        ((Number) row.get("experimentId")).longValue(),
+                        (String) row.get("experimentNo"),
+                        batchNoObj == null ? null : ((Number) batchNoObj).intValue(),
+                        batchNoObj != null));
             }
             if (found.isEmpty()) {
                 return null;      // 等价于原来的提前 return found
             }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE experiment_run
-                       SET status = 'failed', finished_at = now(), error = ?
-                     WHERE tenant_id = ? AND id = ? AND status = 'running'
-                    """)) {
-                for (SettledExperimentRun s : found) {
-                    ps.setString(1, STARTUP_SETTLE_ERROR);
-                    ps.setLong(2, tenantId);
-                    ps.setLong(3, s.runId());
-                    ps.addBatch();
-                }
-                ps.executeBatch();
+            for (SettledExperimentRun s : found) {
+                rm().settleOrphanExperimentRun(tenantId, s.runId(), STARTUP_SETTLE_ERROR);
             }
             return null;
         });
