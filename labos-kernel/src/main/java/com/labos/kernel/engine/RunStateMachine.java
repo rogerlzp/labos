@@ -42,6 +42,14 @@ public final class RunStateMachine {
     private java.util.function.Function<Long, java.util.List<String>> stepPlanner;
     /** 节点 -> 设备方法参数；未设置时为空（流程本身不带参数）。 */
     private java.util.function.Function<Long, java.util.Map<String, Object>> paramPlanner;
+    /**
+     * 节点 key -> "为什么没有设备"（可选）。
+     *
+     * <p>为什么需要：默认消息是"无可执行资源：节点未给出初始设备，且候选集为空"，
+     * 现场只看得到"候选集为空"，**看不出为什么空**。P-05 里最常见的原因是
+     * "岛内没有具备该能力的设备" —— 注入它，运营就不用猜。
+     */
+    private java.util.function.Function<String, String> noDeviceReason;
 
     public RunStateMachine(RecoveryDecider decider) {
         this(decider, ExecutionListener.NOOP, Sleeper.REAL, Clock.systemUTC());
@@ -86,7 +94,7 @@ public final class RunStateMachine {
 
         if (resource == null) {
             np.setStatus(NodeStatus.MANUAL);
-            np.setLastReason("无可执行资源：节点未给出初始设备，且候选集为空");
+            np.setLastReason(noDeviceReasonText(node));
             emit(node, EventType.NODE_MANUAL, np.lastReason());
             return NodeStatus.MANUAL;
         }
@@ -185,6 +193,39 @@ public final class RunStateMachine {
             java.util.function.Function<Long, java.util.List<String>> planner) {
         this.stepPlanner = planner;
         return this;
+    }
+
+    /**
+     * 注入"为什么没有设备"的原因（node key -> 原因）。
+     *
+     * <p>不放在构造器里是为了不破坏现有调用方（十几处 new）。
+     *
+     * @param f 原因提供器；null = 不注入（用默认那句话）
+     */
+    public RunStateMachine withNoDeviceReason(
+            java.util.function.Function<String, String> reasonProvider) {
+        this.noDeviceReason = reasonProvider;
+        return this;
+    }
+
+    /**
+     * "没有设备"的原因文案：默认那句 + 注入的具体原因。
+     *
+     * <p>注入的原因提供器**不许把执行搞挂** —— 它只是给现场补一句话，
+     * 自己抛异常就当没有（fail-safe：文案缺失不能变成执行失败）。
+     */
+    private String noDeviceReasonText(RecoverableNode node) {
+        String base = "无可执行资源：节点未给出初始设备，且候选集为空";
+        if (noDeviceReason == null) {
+            return base;
+        }
+        String extra;
+        try {
+            extra = noDeviceReason.apply(node.key());
+        } catch (RuntimeException e) {
+            return base;
+        }
+        return (extra == null || extra.isBlank()) ? base : base + "（" + extra + "）";
     }
 
     /** 配置参数规划器：节点执行时携带的设备方法参数。 */

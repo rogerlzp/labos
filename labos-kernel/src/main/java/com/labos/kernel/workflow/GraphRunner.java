@@ -78,6 +78,14 @@ public final class GraphRunner {
     private Map<Long, Long> boundInstanceByResource = Map.of();
 
     /**
+     * 本次执行允许的设备实例（岛内设备，device_instance.id 口径）。
+     *
+     * <p>null = 不做岛约束（没有权威岛的旧流程、或没带岛的请求）；
+     * **空集 = 岛内确实没有设备** ⇒ 一台都不许用（P-05：岛内没有就不跑）。
+     */
+    private java.util.Set<Long> islandInstanceIds;
+
+    /**
      * 资源/实例 id -&gt; 能力编码。
      *
      * <p>用于「绑定了哪台设备就用那台设备的能力」这条优先级（见 RealWorkflowRunner）。
@@ -219,6 +227,20 @@ public final class GraphRunner {
 
     public GraphRunner withBoundInstances(Map<Long, Long> m) {
         this.boundInstanceByResource = m == null ? Map.of() : m;
+        return this;
+    }
+
+    /**
+     * 岛内设备实例集合（device_instance.id 口径）—— 给**显式绑定**的节点做同岛校验。
+     *
+     * <p>为什么 pinned 要单独校验：pinned 分支直接用绑定的那台设备，
+     * **不经过能力候选池** ⇒ 岛过滤对它完全无效 ⇒ 能给本岛流程绑一台别岛的设备
+     * 并在执行时真的用它。越岛 ⇒ **明确拒绝**（不静默换设备）。
+     *
+     * @param ids 岛内实例 id 集合；null = 不做岛约束
+     */
+    public GraphRunner withIslandInstances(java.util.Set<Long> ids) {
+        this.islandInstanceIds = ids == null ? null : java.util.Set.copyOf(ids);
         return this;
     }
 
@@ -859,6 +881,14 @@ public final class GraphRunner {
         // 编排里显式绑了设备 → 就用这台，不参与能力轮转
         Long pinned = n.resourceId() == null ? null : boundInstanceByResource.get(n.resourceId());
         if (pinned != null) {
+            // P-05：pinned 绕过候选池 ⇒ 岛过滤对它无效 ⇒ 这里单独守同岛。
+            // 越岛绑定**明确拒绝**（不静默换一台岛内的设备跑 —— 那等于偷偷改了
+            // 工艺要的设备，现场看到的却是"跑通了"）。
+            if (islandInstanceIds != null && !islandInstanceIds.contains(pinned)) {
+                throw new IllegalArgumentException("节点 " + n.key() + " 绑定的设备（实例 "
+                        + pinned + "）不在流程所属的岛内，拒绝执行：设备归属由服务端决定，"
+                        + "执行时不能换设备");
+            }
             return RecoverableNode.of(nodeId(n), n.key(), n.name(), cap,
                     n.method(), pinned, List.of(pinned));
         }

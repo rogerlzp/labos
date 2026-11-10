@@ -336,6 +336,27 @@ public class WorkflowService {
                 dm().selectIslandInstanceIds(tenantId, islandId));
     }
 
+    /**
+     * 岛内设备实例 → resource_node.id（**模拟路径**的候选池是资源 id 口径）。
+     *
+     * <p>为什么要转：driver 路径的候选是 device_instance.id，模拟路径是
+     * resource_node.id —— 拿同一种口径去比另一种，必然全部落空（"两套 id"坑的
+     * 又一次）。这里按当前路径的 id 口径转换，避免过滤结果恒为空。
+     */
+    private java.util.Set<Long> resourceIdsOf(java.util.Set<Long> instanceIds) throws SQLException {
+        java.util.Set<Long> out = new java.util.LinkedHashSet<>();
+        if (instanceIds.isEmpty()) {
+            return out;
+        }
+        for (java.util.Map<String, Object> row : dm().selectResourceInstancePairs(tenantId)) {
+            long inst = ((Number) row.get("instanceId")).longValue();
+            if (instanceIds.contains(inst)) {
+                out.add(((Number) row.get("resourceId")).longValue());
+            }
+        }
+        return out;
+    }
+
     public List<WorkflowDef> list(int limit) throws SQLException {
         return list(limit, null);
     }
@@ -744,6 +765,29 @@ public class WorkflowService {
         boolean viaDriver = registry != null;
         Map<Long, Set<String>> devCaps = viaDriver ? loadDeviceCapabilities() : Map.of();
 
+        // ---- P-05：执行期用流程的**权威岛**（workflow.island_id） ----
+        // 没有权威岛（旧流程）才用请求里带的岛；两者都有时上游已校验过一致。
+        //
+        // 为什么以前不生效：岛过滤**只来自请求参数**，而前端执行压根不传岛 ⇒
+        // 过滤的内容恒等于空；再加上"过滤不中就回退全局候选" ⇒ 岛约束从来没
+        // 真正管过选设备。详见 REMEDIATION_STATUS.md 的 P-05。
+        Long authIsland = authoritativeIslandId(workflowId);
+        Long effIsland = authIsland != null ? authIsland
+                : (islandFilter != null ? islandFilter.get() : null);
+        // islandInstances：岛内设备实例（device_instance.id 口径）——
+        //   给 GraphRunner 的 pinned 分支做同岛校验（它用的就是实例 id）。
+        // islandIds：按**当前路径的候选 id 口径**取 —— driver 路径的候选是
+        //   device_instance.id，模拟路径是 resource_node.id（"两套 id"坑的又一次）。
+        //   null = 不做岛约束（没有权威岛、也没请求带岛）。
+        //   两个集合都写成 final 单表达式赋值：不靠"方法引用的接收者是表达式"
+        //   这种宽松语义，免得编译器一收紧就编不过。
+        final java.util.Set<Long> islandInstances = effIsland == null
+                ? null
+                : loadIslandDeviceIds(effIsland);
+        final java.util.Set<Long> islandIds = islandInstances == null
+                ? null
+                : (viaDriver ? islandInstances : resourceIdsOf(islandInstances));
+
         Map<Long, String> resourceCap = RealWorkflowRunner.loadResourceCapability(db);
         List<RecoverableNode> rec = new ArrayList<>();
         for (NodeDef n : ordered) {
@@ -757,11 +801,34 @@ public class WorkflowService {
             } else {
                 candidates = pool.getOrDefault(cap, List.of());
             }
+            // P-05：岛约束对**顺序回退路径**同样有效（它用的就是这份 rec）。
+            // 逻辑节点不是设备（伪 id LOGIC_RESOURCE）⇒ 不参与岛过滤。
+            if (islandIds != null && !RealWorkflowRunner.LOGIC.equals(cap)) {
+                candidates = candidates.stream().filter(islandIds::contains).toList();
+            }
             if (candidates.isEmpty() && RealWorkflowRunner.LOGIC.equals(cap)) {
                 candidates = List.of(RealWorkflowRunner.LOGIC_RESOURCE);
             }
             rec.add(RecoverableNode.of(n.id(), n.key(), n.name(), cap, n.protocolName(),
                     candidates.isEmpty() ? null : candidates.get(0), candidates));
+        }
+
+        // 岛内没有该能力的节点 → 记下"为什么没设备"。
+        //
+        // 为什么必须有：状态机的默认话是"无可执行资源：节点未给出初始设备，且候选集为空"，
+        // 现场只看得到"候选集为空"，**看不出为什么空** —— 而这恰恰是 P-05 里最常见的
+        // 原因（岛内没有具备该能力的设备）。注入进去，运营不用猜。
+        //
+        // 只在**岛过滤真的生效**时才有内容（没岛约束的流程拿不到任何注入）。
+        final java.util.Map<String, String> islandNoDevice = new java.util.HashMap<>();
+        if (islandIds != null) {
+            for (RecoverableNode n : rec) {
+                if (n.candidateResourceIds() != null && n.candidateResourceIds().isEmpty()
+                        && !RealWorkflowRunner.LOGIC.equals(n.capabilityCode())) {
+                    islandNoDevice.put(n.key(), "岛 " + effIsland + " 内没有具备 "
+                            + n.capabilityCode() + " 能力的设备，拒绝借用其它岛的设备");
+                }
+            }
         }
 
         Map<String, String> capByKey = loadCapabilityByKey(workflowId);
@@ -778,43 +845,14 @@ public class WorkflowService {
         // 只影响顺序，不改变候选集合——没有空设备时仍会复用有板的。
         capPool = preferEmptyDevices(capPool);
 
-        // 限定岛：只保留该岛内的设备；岛内没有该能力的设备时保留候选池（避免跑不动）
+        // 限定岛（P-05）：**岛内没有该能力的设备 ⇒ 就不跑**（不再回退全局候选）。
         //
-        // ⚠ 已知问题（P-05 待办，**别当这行是有效的**）—— 根因是
-        // 「过滤从未生效」，不是「漏写过滤」。四点同时成立：
-        // ① **过滤的内容恒等于空**：`islandFilter` 只由 `withIsland(islandId)`
-        //    （**请求参数**）设置，而前端执行压根不传岛 ⇒ `islandFilter.get()`
-        //    为 null ⇒ `islandDevs` 是空集 ⇒ 每个能力的 `keep` 都空 ⇒ 全落到
-        //    下面那句「回退到全局候选」⇒ 候选池原样保留。
-        //    ⇒ 权威岛 `workflow.island_id`（P-01）**从未参与选设备**
-        //    （P-05 已落地的那条只拿它做「请求岛 vs 权威岛」的冲突校验）。
-        // ② **回退分支让过滤「看起来生效」**：岛内没有该能力的设备时保留全局候选
-        //    （注释写的"避免跑不动"）⇒ 就算传了岛也照样放行全局设备。
-        //    P-05 要删的正是这条。
-        // ③ **id 空间分两条路径**：主路径（driver）的 `capPool` 来自
-        //    `registryPool(...)`（device_instance.id），与 `loadIslandDeviceIds`
-        //    同空间 ⇒ 对得上；但**模拟路径**的 `capPool` 来自
-        //    `loadCapabilityPool(db)`（resource_node.id）⇒ 与岛内集合**对不上**
-        //    ⇒ 模拟路径下过滤必然落空（再被 ② 的回退救回来，所以看不出异常）。
-        // ④ **pinned 设备绕过过滤**：编排里显式绑定了设备的节点走 GraphRunner 的
-        //    `pinned` 分支（`boundInstanceByResource` 把 resource_id 映射成
-        //    device_instance.id）⇒ 直接用那台，**既不参与能力轮转也不参与岛过滤**
-        //    ⇒ 能给本岛流程绑一台别岛的设备，并在执行时真的用它。
-        //    （附：顺序回退路径 `sm.executeAll(rec, ...)` 的候选完全未过滤。）
-        // ⇒ 修它要一起做：(a) 执行期从**权威岛**取岛（不是从请求参数）；
-        //    (b) 岛内没有该能力 ⇒ 就不跑（删掉全局候选回退）；
-        //    (c) 岛内集合按**当前路径的 id 空间**取；
-        //    (d) pinned 设备校验同岛（越岛 ⇒ 明确拒绝，不要静默换设备）。
-        //    详见 REMEDIATION_STATUS.md 的 P-05。
-        if (islandFilter != null) {
-            Long islFilter = islandFilter.get();
-            java.util.Set<Long> islandDevs = islFilter == null ? java.util.Set.of()
-                    : loadIslandDeviceIds(islFilter);
+        // 此前这里"过滤不中就保留全局候选"，加上过滤内容恒为空 ⇒ 岛约束从来没
+        // 真正生效过（根因与修法见 REMEDIATION_STATUS.md 的 P-05）。
+        if (islandIds != null) {
             Map<String, List<Long>> filtered = new LinkedHashMap<>();
             for (Map.Entry<String, List<Long>> e : capPool.entrySet()) {
-                List<Long> keep = e.getValue().stream()
-                        .filter(islandDevs::contains).toList();
-                filtered.put(e.getKey(), keep.isEmpty() ? e.getValue() : keep);
+                filtered.put(e.getKey(), e.getValue().stream().filter(islandIds::contains).toList());
             }
             capPool = filtered;
         }
@@ -902,7 +940,9 @@ public class WorkflowService {
             RunStateMachine sm = new RunStateMachine(decider,
                     tee(events, store, monitor), recoverySleeper, Clock.systemUTC())
                     .withStepPlanner(id -> stepsByNode.getOrDefault(id, List.of()))
-                    .withParamPlanner(id -> paramsByNode.getOrDefault(id, Map.of()));
+                    .withParamPlanner(id -> paramsByNode.getOrDefault(id, Map.of()))
+                    // P-05：岛内没有该能力时，把"为什么没设备"写进节点原因
+                    .withNoDeviceReason(islandNoDevice::get);
             // 按图执行（含并行/异或网关）。
             // 之前这里走 executeAll，网关被忽略——批量验收用了 GraphRunner，
             // 于是出现"验收说 100%、产品路径却没有网关"的不一致。
@@ -922,6 +962,10 @@ public class WorkflowService {
                         })
                         .withResourceCapability(resourceCap)
                         .withBoundInstances(loadBoundInstances())
+                        // P-05：编排里**显式绑定**的节点走 pinned 分支，直接用那台
+                        // 设备，不经候选池 ⇒ 岛过滤对它无效 ⇒ 这里把岛内实例集合交给
+                        // 执行器，越岛绑定**明确拒绝**（不静默换设备）。
+                        .withIslandInstances(islandInstances)
                         .withSkipKeys(skipKeys)
                         // 条件表达式/循环退出条件的取值来源（run.input.vars）
                         .withVariables(loadRunVars(runId))
