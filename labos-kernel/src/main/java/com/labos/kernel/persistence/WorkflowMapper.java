@@ -1,5 +1,7 @@
 package com.labos.kernel.persistence;
 
+import org.apache.ibatis.annotations.Param;
+
 /**
  * C 批：workflow 相关的 SQL 收口到这里，具体语句见
  * {@code src/boot/resources/mapper/WorkflowMapper.xml}。
@@ -24,4 +26,15 @@ public interface WorkflowMapper {
 
     /** 按编号查重（新建流程时给友好报错）。 */
     int countByCode(long tenantId, String code);
+
+    /**
+     * 流程列表：最近改动在前（NULLS LAST），带 task 数统计。
+     *
+     * <p>{@code category} 为 null/空时不过滤——不写成 "?::text IS NULL"：
+     * JDBC 推断不出 NULL 的类型，条件永远为假。
+     */
+    java.util.List<java.util.Map<String, Object>> selectWorkflowList(
+            @Param("tenantId") long tenantId,
+            @Param("category") String category,
+            @Param("limit") int limit);
 }

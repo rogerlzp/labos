@@ -103,4 +103,20 @@
          WHERE tenant_id = #{param1} AND port_id = #{param2}
     </select>
 
+    <select id="selectPlateBusyInstanceIds" resultType="java.lang.Long">
+        SELECT di.id
+          FROM device_state ds
+          JOIN device_instance di
+            ON di.resource_id = ds.resource_id AND di.deleted_at IS NULL
+         WHERE ds.tenant_id = #{tenantId} AND ds.has_plate
+    </select>
+
+    <select id="selectIslandInstanceIds" resultType="java.lang.Long">
+        SELECT di.id
+          FROM device_instance di
+          JOIN resource_node r ON r.id = di.resource_id
+         WHERE di.tenant_id = #{tenantId} AND r.parent_id = #{islandId}
+           AND di.deleted_at IS NULL
+    </select>
+
 </mapper>

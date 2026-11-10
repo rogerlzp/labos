@@ -42,4 +42,17 @@
            AND code = #{param2}
     </select>
 
+    <!-- 流程列表：category 传 null/空时整段条件不渲染（勿用 ?::text IS NULL，JDBC 推不出 NULL 类型）。 -->
+    <select id="selectWorkflowList" resultType="java.util.Map">
+        SELECT w.id, w.code, w.name, w.category,
+               (SELECT count(*) FROM workflow_node n
+                 WHERE n.workflow_id = w.id AND n.node_type = 'task') AS task_count
+          FROM workflow w
+         WHERE w.tenant_id = #{tenantId}
+        <if test="category != null and category != ''">
+           AND w.category = #{category}
+        </if>
+         ORDER BY w.updated_at DESC NULLS LAST, w.id DESC LIMIT #{limit}
+    </select>
+
 </mapper>

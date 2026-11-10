@@ -125,4 +125,72 @@ public interface RunMapper {
     /** 当前进行中的节点（含已下发步骤串）；无则返回 null。 */
     Map<String, Object> selectCurrentNode(long runId);
 
+    // ---- 执行生命周期（WorkflowService 断点续跑路径）----
+
+    /** 运行期变量合并进 run.input.vars（启动线程读 input 之前必须落库）。 */
+    int mergeRunInputVars(long tenantId, long runId, String varsJson);
+
+    /** 续跑前置读：workflow_id 与值守模式（attendance 为 NULL 按 'attended'）。 */
+    Map<String, Object> selectRunResumeInfo(long tenantId, long runId);
+
+    /** 续跑：本轮已完成的顶层节点 key（level=0 + completed，不再执行）。 */
+    List<String> selectCompletedNodeKeys(long tenantId, long runId);
+
+    /** 续跑：先删未完成业务节点的步骤行（level=1，否则重跑时 duplicate key）。 */
+    int deleteIncompleteStepRows(long tenantId, long runId);
+
+    /** 续跑：再删未完成的顶层业务节点（步骤行已先删，FK 级联不再被依赖）。 */
+    int deleteIncompleteTopNodes(long tenantId, long runId);
+
+    /** 续跑：run 置 running，清暂停三字段，记 resumed_at。 */
+    int markResumed(long tenantId, long runId);
+
+    // ---- 执行写入（WorkflowService 执行体）----
+
+    /** 新建 run（异步执行的载体），返回自增 id。 */
+    Long insertRun(long tenantId, String runNo, long workflowId, String attendance);
+
+    /** 落一个顶层业务节点（level=0），返回自增 id。 */
+    Long insertTopNode(long tenantId, long runId, String nodeKey, String name, int seq,
+                       Long resourceId, String status, int attempt, String inputJson);
+
+    /** 续跑时已有顶层节点的 key -> id（跳过重复插入用）。 */
+    List<Map<String, Object>> selectTopNodeKeyIds(long tenantId, long runId);
+
+    /** 节点执行中/结束的状态推进（actual_start 只补第一次，running 时不清 actual_end）。 */
+    int updateNodeStateLive(long tenantId, long runId, String nodeKey, String status);
+
+    /** 成功结束时把 pending/running 的顶层节点标成 bypassed（分支未选中）。 */
+    int markBypassed(long tenantId, long runId);
+
+    /** 批量收尾：节点的最终状态 / attempt / 资源 / error_code / 原因。 */
+    int updateNodeResult(long tenantId, long runId, String nodeKey, String status,
+                         int attempt, Long resourceId, String errorCode, String inputJson);
+
+    /** 循环第 N 圈：从汇总行复制补一行（loop_index=N）。 */
+    int insertNodeRound(long tenantId, long runId, String nodeKey, String status,
+                        java.sql.Timestamp start, java.sql.Timestamp end, String inputJson,
+                        String errorCode, int round);
+
+    /** 本 run 步骤行（level=1）的最大数字序号（node_key=S&lt;n&gt;），解析失败按 0。 */
+    int selectMaxStepSeq(long tenantId, long runId);
+
+    /** 步骤行（level=1），返回自增 id；errorCode 超长由调用方截断。 */
+    Long insertStepNode(long tenantId, long runId, String nodeKey, String name, int seq,
+                        Long resourceId, String status, int attempt, long parentNodeId,
+                        int stepSeq, String errorCode, String inputJson);
+
+    /** 命令台账（实时写路径，带 device_id）。 */
+    int insertRunCommand(long tenantId, long runId, long runNodeId, int commandSeq,
+                         String method, String payloadJson, String status, int attempt,
+                         String resultJson, String rawResponse, String errorCode,
+                         long deviceId);
+
+    /** 节点边界暂停：paused + 扣留类型/原因/边界节点（已有值不覆盖）。 */
+    int pauseRunAtBoundary(long tenantId, long runId, String kind, String reason,
+                           String pendingKey);
+
+    /** 边界到达后补 pause_node_key（仅当 paused 且仍为空）。 */
+    int fillPauseNodeKey(long tenantId, long runId, String pendingKey);
+
 }

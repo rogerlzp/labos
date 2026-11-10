@@ -1,5 +1,7 @@
 package com.labos.kernel.persistence;
 
+import org.apache.ibatis.annotations.Param;
+
 /**
  * 设备运行态与通道占用（HeartbeatService / DevicePortLock 的裸 SQL）。
  *
@@ -66,4 +68,11 @@ public interface DeviceStateMapper {
 
     /** 当前占用数；没有该 port 行时返回 null。 */
     Integer selectPortInUse(long tenantId, long portId);
+
+    /** 有板设备的 device_instance.id 集合（WorkflowService 选设备的"忙集"）。 */
+    java.util.List<Long> selectPlateBusyInstanceIds(@Param("tenantId") long tenantId);
+
+    /** 岛（resource_node.parent_id）下全部未软删设备的 device_instance.id。 */
+    java.util.List<Long> selectIslandInstanceIds(@Param("tenantId") long tenantId,
+                                                 @Param("islandId") long islandId);
 }

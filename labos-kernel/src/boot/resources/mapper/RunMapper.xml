@@ -308,4 +308,156 @@
            AND n.status NOT IN ('completed', 'skipped')
          ORDER BY n.id LIMIT 1
     </select>
+
+    <!-- 执行生命周期：断点续跑（WorkflowService.doResumeAsync）。 -->
+
+    <update id="mergeRunInputVars">
+        UPDATE run SET input = COALESCE(input, '{}'::jsonb) || #{param3}::jsonb
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <select id="selectRunResumeInfo" resultType="java.util.Map">
+        SELECT workflow_id AS "workflowId",
+               COALESCE(attendance, 'attended') AS "attendance"
+          FROM run WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectCompletedNodeKeys" resultType="java.lang.String">
+        SELECT node_key FROM run_node
+         WHERE tenant_id = #{param1} AND run_id = #{param2}
+           AND level = 0 AND status = 'completed'
+    </select>
+
+    <update id="deleteIncompleteStepRows">
+        DELETE FROM run_node s
+         USING run_node p
+         WHERE s.tenant_id = #{param1} AND s.run_id = #{param2} AND s.level = 1
+           AND p.id = s.parent_node_id
+           AND p.tenant_id = s.tenant_id AND p.run_id = s.run_id
+           AND p.level = 0 AND p.status &lt;&gt; 'completed'
+    </update>
+
+    <update id="deleteIncompleteTopNodes">
+        DELETE FROM run_node
+         WHERE tenant_id = #{param1} AND run_id = #{param2} AND level = 0
+           AND status &lt;&gt; 'completed'
+    </update>
+
+    <update id="markResumed">
+        UPDATE run SET status = 'running', pause_kind = NULL, pause_reason = NULL,
+               pause_node_key = NULL, resumed_at = now(), updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <!-- 执行写入：WorkflowService 执行体（节点外壳/状态推进/步骤+命令台账/边界暂停）。 -->
+
+    <select id="insertRun" resultType="java.lang.Long">
+        INSERT INTO run (tenant_id, run_no, run_type, workflow_id, mode, priority,
+                         status, attendance, actual_start, created_at)
+        VALUES (#{param1}, #{param2}, 'workflow', #{param3}, 'normal', 5,
+                'running', #{param4}, now(), now())
+        RETURNING id
+    </select>
+
+    <select id="insertTopNode" resultType="java.lang.Long">
+        INSERT INTO run_node
+          (tenant_id, run_id, node_key, name, seq, node_type, resource_id,
+           status, attempt, actual_start, estimate_sec, input)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, 'task',
+                #{param6}, #{param7}::node_status, #{param8}, NULL, 0,
+                #{param9}::jsonb)
+        RETURNING id
+    </select>
+
+    <select id="selectTopNodeKeyIds" resultType="java.util.Map">
+        SELECT node_key AS "nodeKey", id AS "id"
+          FROM run_node
+         WHERE tenant_id = #{param1} AND run_id = #{param2} AND level = 0
+    </select>
+
+    <update id="updateNodeStateLive">
+        UPDATE run_node
+           SET status = #{param4}::node_status,
+               actual_start = COALESCE(actual_start, now()),
+               actual_end = CASE WHEN #{param4}::text = 'running'
+                                 THEN NULL ELSE now() END
+         WHERE tenant_id = #{param1} AND run_id = #{param2}
+           AND node_key = #{param3} AND level = 0
+    </update>
+
+    <update id="markBypassed">
+        UPDATE run_node
+           SET status = 'bypassed'::node_status,
+               actual_end = now(),
+               input = COALESCE(input, '{}'::jsonb)
+                       || '{"reason":"分支未选中（异或网关走了另一条）"}'::jsonb
+         WHERE tenant_id = #{param1} AND run_id = #{param2} AND level = 0
+           AND status IN ('pending', 'running')
+    </update>
+
+    <update id="updateNodeResult">
+        UPDATE run_node
+           SET status = #{param4}::node_status, attempt = #{param5},
+               resource_id = #{param6}, error_code = #{param7},
+               actual_end = now(), input = COALESCE(input, '{}'::jsonb) || #{param8}::jsonb
+         WHERE tenant_id = #{param1} AND run_id = #{param2}
+           AND node_key = #{param3} AND level = 0
+    </update>
+
+    <insert id="insertNodeRound">
+        INSERT INTO run_node
+          (tenant_id, run_id, node_key, name, seq, node_type, status,
+           attempt, actual_start, actual_end, input, error_code,
+           level, loop_index, estimate_sec, progress)
+        SELECT tenant_id, run_id, node_key, name, seq, node_type,
+               #{param4}::node_status, attempt, #{param5}, #{param6}, #{param7}::jsonb,
+               #{param8}, 0, #{param9}, estimate_sec, 100
+          FROM run_node
+         WHERE tenant_id = #{param1} AND run_id = #{param2} AND node_key = #{param3}
+           AND level = 0 AND loop_index = 0
+    </insert>
+
+    <select id="selectMaxStepSeq" resultType="int">
+        SELECT COALESCE(MAX(NULLIF(regexp_replace(node_key, '\D', '', 'g'), '')::int), 0)
+          FROM run_node
+         WHERE tenant_id = #{param1} AND run_id = #{param2} AND level = 1
+    </select>
+
+    <select id="insertStepNode" resultType="java.lang.Long">
+        INSERT INTO run_node
+          (tenant_id, run_id, node_key, name, seq, node_type, resource_id,
+           status, attempt, level, parent_node_id, step_seq,
+           error_code, actual_start, actual_end, estimate_sec, input)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, 'task',
+                #{param6}, #{param7}::node_status, #{param8}, 1, #{param9}, #{param10},
+                #{param11}, now(), now(), 0, #{param12}::jsonb)
+        RETURNING id
+    </select>
+
+    <insert id="insertRunCommand">
+        INSERT INTO run_command
+          (tenant_id, run_id, run_node_id, command_seq, method, payload,
+           status, attempt, sent_at, finished_at, result,
+           device_raw_response, error_code, device_id)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
+                #{param6}::jsonb, #{param7}::node_status, #{param8}, now(), now(),
+                #{param9}::jsonb, to_jsonb(#{param10}::text), #{param11}, #{param12})
+    </insert>
+
+    <update id="pauseRunAtBoundary">
+        UPDATE run
+           SET status = 'paused'::run_status,
+               pause_kind = COALESCE(pause_kind, #{param3}),
+               pause_reason = COALESCE(pause_reason, #{param4}),
+               pause_node_key = COALESCE(pause_node_key, #{param5}),
+               paused_at = COALESCE(paused_at, now())
+         WHERE tenant_id = #{param1} AND id = #{param2} AND status &lt;&gt; 'paused'
+    </update>
+
+    <update id="fillPauseNodeKey">
+        UPDATE run
+           SET pause_node_key = #{param3}
+         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'paused'
+           AND pause_node_key IS NULL
+    </update>
 </mapper>

@@ -135,6 +135,17 @@ public class WorkflowService {
         return m;
     }
 
+    /** 懒取 WorkflowMapper：同 qm()，裸 new 场景（自测/工具）没有注入机会。 */
+    private com.labos.kernel.persistence.WorkflowMapper wm() {
+        com.labos.kernel.persistence.WorkflowMapper m = workflowMapper;
+        if (m == null) {
+            m = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.WorkflowMapper.class);
+            workflowMapper = m;
+        }
+        return m;
+    }
+
     private static final DateTimeFormatter RUN_FMT =
             DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
 
@@ -284,23 +295,8 @@ public class WorkflowService {
      */
     private Map<String, List<Long>> preferEmptyDevices(Map<String, List<Long>> capPool)
             throws SQLException {
-        java.util.Set<Long> busy = new java.util.LinkedHashSet<>();
-        String sql = """
-                SELECT di.id
-                FROM device_state ds
-                JOIN device_instance di
-                  ON di.resource_id = ds.resource_id AND di.deleted_at IS NULL
-                WHERE ds.tenant_id = ? AND ds.has_plate
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    busy.add(rs.getLong(1));
-                }
-            }
-        }
+        java.util.Set<Long> busy = new java.util.LinkedHashSet<>(
+                dm().selectPlateBusyInstanceIds(tenantId));
         if (busy.isEmpty()) {
             return capPool;
         }
@@ -317,23 +313,8 @@ public class WorkflowService {
 
     /** 岛的 device_instance.id 集合（空集表示岛内没设备）。 */    /** 岛的 device_instance.id 集合（空集表示岛内没设备）。 */
     private java.util.Set<Long> loadIslandDeviceIds(long islandId) throws SQLException {
-        java.util.Set<Long> out = new java.util.LinkedHashSet<>();
-        String sql = """
-                SELECT di.id FROM device_instance di
-                JOIN resource_node r ON r.id = di.resource_id
-                WHERE di.tenant_id = ? AND r.parent_id = ? AND di.deleted_at IS NULL
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, islandId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(rs.getLong(1));
-                }
-            }
-        }
-        return out;
+        return new java.util.LinkedHashSet<>(
+                dm().selectIslandInstanceIds(tenantId, islandId));
     }
 
     public List<WorkflowDef> list(int limit) throws SQLException {
@@ -348,30 +329,15 @@ public class WorkflowService {
      */
     public List<WorkflowDef> list(int limit, String category) throws SQLException {
         List<WorkflowDef> out = new ArrayList<>();
-        // 不写成 "?::text IS NULL"：JDBC 推断不出 NULL 的类型，条件永远为假
         boolean byCategory = category != null && !category.isBlank();
-        String sql = """
-                SELECT w.id, w.code, w.name, w.category,
-                       (SELECT count(*) FROM workflow_node n
-                         WHERE n.workflow_id = w.id AND n.node_type = 'task') AS task_count
-                FROM workflow w
-                WHERE w.tenant_id = ?
-                """
-                + (byCategory ? " AND w.category = ?" : "")
-                // **最近改动的在前**。改动前按 task_count DESC 排 —— 结果新建的
-                // 单步流程（任务数少）永远落在 limit 之外，界面上根本搜不到，
-                // 现象是"刚建的流程不见了"。复杂流程并不等于更该被看见。
-                + " ORDER BY w.updated_at DESC NULLS LAST, w.id DESC LIMIT ?";
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setInt(2, Math.max(1, Math.min(limit, 500)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.add(new WorkflowDef(rs.getLong(1), rs.getString(2),
-                            rs.getString(3), rs.getString(4)));
-                }
-            }
+        // **最近改动的在前**。改动前按 task_count DESC 排 —— 结果新建的
+        // 单步流程（任务数少）永远落在 limit 之外，界面上根本搜不到，
+        // 现象是"刚建的流程不见了"。复杂流程并不等于更该被看见。
+        for (Map<String, Object> r : wm().selectWorkflowList(tenantId,
+                byCategory ? category : null, Math.max(1, Math.min(limit, 500)))) {
+            out.add(new WorkflowDef(((Number) r.get("id")).longValue(),
+                    (String) r.get("code"), (String) r.get("name"),
+                    (String) r.get("category")));
         }
         return out;
     }
@@ -589,17 +555,7 @@ public class WorkflowService {
                   .append(kv.substring(i + 1).trim().replace("\"", "")).append('"');
             }
             vj.append('}');
-            String json = vj.toString();
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement("""
-                         UPDATE run SET input = COALESCE(input, '{}'::jsonb) || ?::jsonb
-                          WHERE tenant_id = ? AND id = ?
-                         """)) {
-                ps.setString(1, "{\"vars\":" + json + "}");
-                ps.setLong(2, tenantId);
-                ps.setLong(3, runId);
-                ps.executeUpdate();
-            }
+            rm().mergeRunInputVars(tenantId, runId, "{\"vars\":" + vj + "}");
         }
 
         try {
@@ -666,42 +622,19 @@ public class WorkflowService {
     }
 
     private void doResumeAsync(long runId, String workerOwner) throws SQLException {
-        Long wfId = null;
-        String attendance = ATTENDED;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT workflow_id, COALESCE(attendance, 'attended') AS attendance
-                     FROM run WHERE tenant_id = ? AND id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    throw new IllegalArgumentException("run 不存在: " + runId);
-                }
-                long v = rs.getLong(1);
-                wfId = rs.wasNull() ? null : v;
-                attendance = rs.getString(2);
-            }
+        Map<String, Object> resumeInfo = rm().selectRunResumeInfo(tenantId, runId);
+        if (resumeInfo == null) {
+            throw new IllegalArgumentException("run 不存在: " + runId);
         }
+        Long wfId = resumeInfo.get("workflowId") == null ? null
+                : ((Number) resumeInfo.get("workflowId")).longValue();
         if (wfId == null) {
             throw new IllegalStateException("run " + runId + " 没有关联 workflow，无法续跑");
         }
+        String attendance = (String) resumeInfo.get("attendance");
 
-        java.util.Set<String> doneKeys = new java.util.LinkedHashSet<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT node_key FROM run_node
-                     WHERE tenant_id = ? AND run_id = ? AND level = 0 AND status = 'completed'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    doneKeys.add(rs.getString(1));
-                }
-            }
-        }
+        java.util.Set<String> doneKeys =
+                new java.util.LinkedHashSet<>(rm().selectCompletedNodeKeys(tenantId, runId));
 
         com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
             // 必须**先删步骤行（level=1）**，再删业务节点。
@@ -709,36 +642,9 @@ public class WorkflowService {
             // 而步骤行只靠裸字段 parent_node_id 指向业务节点，**没有外键** ——
             // 只删 level=0 级联不到它们（2026-11-03 评审 H1，已实测复现：
             // 续跑发了 2 条命令，run_command 一条没增，日志里 2 条 duplicate key）。
-            try (PreparedStatement ps = c.prepareStatement("""
-                    DELETE FROM run_node s
-                     USING run_node p
-                     WHERE s.tenant_id = ? AND s.run_id = ? AND s.level = 1
-                       AND p.id = s.parent_node_id
-                       AND p.tenant_id = s.tenant_id AND p.run_id = s.run_id
-                       AND p.level = 0 AND p.status <> 'completed'
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.executeUpdate();
-            }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    DELETE FROM run_node
-                    WHERE tenant_id = ? AND run_id = ? AND level = 0
-                      AND status <> 'completed'
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.executeUpdate();
-            }
-            try (PreparedStatement ps = c.prepareStatement("""
-                    UPDATE run SET status = 'running', pause_kind = NULL, pause_reason = NULL,
-                           pause_node_key = NULL, resumed_at = now(), updated_at = now()
-                    WHERE tenant_id = ? AND id = ?
-                    """)) {
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.executeUpdate();
-            }
+            rm().deleteIncompleteStepRows(tenantId, runId);
+            rm().deleteIncompleteTopNodes(tenantId, runId);
+            rm().markResumed(tenantId, runId);
             return null;
         });
 
@@ -1728,59 +1634,30 @@ public class WorkflowService {
         // 已有节点直接复用它的 id，别再插一遍 —— 否则撞
         // uk_run_node (run_id, node_key, attempt)=(205351, N1, 0)，
         // 表现是"点继续 → run 变 failed，什么都没跑"。
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id, node_key FROM run_node
-                     WHERE tenant_id = ? AND run_id = ? AND level = 0
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                Map<String, Long> byKey = new LinkedHashMap<>();
-                while (rs.next()) {
-                    byKey.put(rs.getString("node_key"), rs.getLong("id"));
-                }
-                for (RecoverableNode d : defs) {
-                    Long existing = byKey.get(d.key());
-                    if (existing != null) {
-                        out.put(d.id(), existing);
-                    }
-                }
+        Map<String, Long> byKey = new LinkedHashMap<>();
+        for (Map<String, Object> row : rm().selectTopNodeKeyIds(tenantId, runId)) {
+            byKey.put((String) row.get("nodeKey"),
+                    ((Number) row.get("id")).longValue());
+        }
+        for (RecoverableNode d : defs) {
+            Long existing = byKey.get(d.key());
+            if (existing != null) {
+                out.put(d.id(), existing);
             }
         }
-        String sql = """
-                INSERT INTO run_node
-                  (tenant_id, run_id, node_key, name, seq, node_type, resource_id,
-                   status, attempt, actual_start, estimate_sec, input)
-                VALUES (?, ?, ?, ?, ?, 'task', ?, 'pending', 0, NULL, 0, ?::jsonb)
-                RETURNING id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            int seq = 0;
-            for (RecoverableNode d : defs) {
-                if (out.containsKey(d.id())) {
-                    seq++;
-                    continue;   // 已有节点（续跑），不重复插
-                }
-                Long rid = resolveResource(d.initialResourceId(), deviceToResource, validResources);
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.setString(3, d.key());
-                ps.setString(4, d.name());
-                ps.setInt(5, ++seq);
-                if (rid == null) {
-                    ps.setNull(6, java.sql.Types.BIGINT);
-                } else {
-                    ps.setLong(6, rid);
-                }
-                ps.setString(7, Jsons.obj("capability", d.capabilityCode(),
-                        "method", String.valueOf(d.method())));
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        out.put(d.id(), rs.getLong(1));
-                    }
-                }
+        int seq = 0;
+        for (RecoverableNode d : defs) {
+            if (out.containsKey(d.id())) {
+                seq++;
+                continue;   // 已有节点（续跑），不重复插
+            }
+            Long rid = resolveResource(d.initialResourceId(), deviceToResource, validResources);
+            Long id = rm().insertTopNode(tenantId, runId, d.key(), d.name(), ++seq, rid,
+                    "pending", 0,
+                    Jsons.obj("capability", d.capabilityCode(),
+                            "method", String.valueOf(d.method())));
+            if (id != null) {
+                out.put(d.id(), id);
             }
         }
         return out;
@@ -1796,21 +1673,9 @@ public class WorkflowService {
      * <p>落库失败不能中断执行（数据丢了比流程停了好）——只留日志。
      */
     private void recordNodeState(long runId, String nodeKey, String status) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run_node
-                        SET status = ?::node_status,
-                            actual_start = COALESCE(actual_start, now()),
-                            actual_end = CASE WHEN ?::text = 'running' THEN NULL ELSE now() END
-                      WHERE tenant_id = ? AND run_id = ? AND node_key = ? AND level = 0
-                     """)) {
-            ps.setString(1, status);
-            ps.setString(2, status);
-            ps.setLong(3, tenantId);
-            ps.setLong(4, runId);
-            ps.setString(5, nodeKey);
-            ps.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            rm().updateNodeStateLive(tenantId, runId, nodeKey, status);
+        } catch (RuntimeException e) {
             log.error("[WARN] 记录节点状态失败 " + nodeKey + " -> " + status
                     + ": " + e.getMessage());
         }
@@ -1839,22 +1704,9 @@ public class WorkflowService {
                 || progress.aborted()) {
             return;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run_node
-                        SET status = 'bypassed'::node_status,
-                            actual_end = now(),
-                            input = COALESCE(input, '{}'::jsonb)
-                                    || '{"reason":"分支未选中（异或网关走了另一条）"}'::jsonb
-                      WHERE tenant_id = ? AND run_id = ? AND level = 0
-                        AND status IN ('pending', 'running')
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            int n = ps.executeUpdate();
-            if (n > 0) {
-                log.info("[执行] run " + runId + " 有 " + n + " 个节点分支未选中（bypassed）");
-            }
+        int n = rm().markBypassed(tenantId, runId);
+        if (n > 0) {
+            log.info("[执行] run " + runId + " 有 " + n + " 个节点分支未选中（bypassed）");
         }
     }
 
@@ -1869,41 +1721,18 @@ public class WorkflowService {
         //   · 前端要显示得用正则从"策略[EC-08-400C@NODE] 指定直接转人工"里抠；
         //   · SQL 没法统计"哪台设备最常报无纸"。
         // 列本来就存在（varchar(64)），只是一直没人写。
-        String sql = """
-                UPDATE run_node
-                SET status = ?::node_status, attempt = ?, resource_id = ?, error_code = ?,
-                    actual_end = now(), input = COALESCE(input, '{}'::jsonb) || ?::jsonb
-                WHERE tenant_id = ? AND run_id = ? AND node_key = ? AND level = 0
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            for (NodeProgress np : p.all()) {
-                RecoverableNode d = byId.get(np.nodeId());
-                if (d == null) {
-                    continue;
-                }
-                Long rid = resolveResource(np.currentResourceId(), deviceToResource, validResources);
-                ps.setString(1, np.status().name().toLowerCase());
-                ps.setInt(2, np.attempt());
-                if (rid == null) {
-                    ps.setNull(3, java.sql.Types.BIGINT);
-                } else {
-                    ps.setLong(3, rid);
-                }
-                String err = np.lastErrorCode();
-                if (err == null || err.isBlank()) {
-                    ps.setNull(4, java.sql.Types.VARCHAR);
-                } else {
-                    ps.setString(4, err.length() > 64 ? err.substring(0, 64) : err);
-                }
-                ps.setString(5, Jsons.obj("reason", np.lastReason(),
-                        "errorCode", np.lastErrorCode()));
-                ps.setLong(6, tenantId);
-                ps.setLong(7, runId);
-                ps.setString(8, d.key());
-                ps.addBatch();
+        for (NodeProgress np : p.all()) {
+            RecoverableNode d = byId.get(np.nodeId());
+            if (d == null) {
+                continue;
             }
-            ps.executeBatch();
+            Long rid = resolveResource(np.currentResourceId(), deviceToResource, validResources);
+            String err = np.lastErrorCode();
+            rm().updateNodeResult(tenantId, runId, d.key(),
+                    np.status().name().toLowerCase(), np.attempt(), rid,
+                    err == null || err.isBlank() ? null
+                            : (err.length() > 64 ? err.substring(0, 64) : err),
+                    Jsons.obj("reason", np.lastReason(), "errorCode", np.lastErrorCode()));
         }
     }
 
@@ -1968,38 +1797,18 @@ public class WorkflowService {
         if (round < 1) {
             return;
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     INSERT INTO run_node
-                       (tenant_id, run_id, node_key, name, seq, node_type, status,
-                        attempt, actual_start, actual_end, input, error_code,
-                        level, loop_index, estimate_sec, progress)
-                     SELECT tenant_id, run_id, node_key, name, seq, node_type,
-                            ?::node_status, attempt, ?, ?, ?::jsonb, ?,
-                            0, ?, estimate_sec, 100
-                       FROM run_node
-                      WHERE tenant_id = ? AND run_id = ? AND node_key = ?
-                        AND level = 0 AND loop_index = 0
-                     """)) {
-            ps.setString(1, status.name().toLowerCase());
-            ps.setTimestamp(2, java.sql.Timestamp.from(start));
-            ps.setTimestamp(3, java.sql.Timestamp.from(end));
-            ps.setString(4, Jsons.obj("reason", "循环第 " + round + " 圈",
-                    "loopIndex", round));
-            if (errorCode == null || errorCode.isBlank()) {
-                ps.setNull(5, java.sql.Types.VARCHAR);
-            } else {
-                ps.setString(5, errorCode.length() > 64 ? errorCode.substring(0, 64) : errorCode);
-            }
-            ps.setInt(6, round);
-            ps.setLong(7, tenantId);
-            ps.setLong(8, runId);
-            ps.setString(9, nodeKey);
-            int n = ps.executeUpdate();
+        try {
+            String code = errorCode == null || errorCode.isBlank() ? null
+                    : (errorCode.length() > 64 ? errorCode.substring(0, 64) : errorCode);
+            int n = rm().insertNodeRound(tenantId, runId, nodeKey,
+                    status.name().toLowerCase(),
+                    java.sql.Timestamp.from(start), java.sql.Timestamp.from(end),
+                    Jsons.obj("reason", "循环第 " + round + " 圈", "loopIndex", round),
+                    code, round);
             if (n == 0) {
                 log.error("[WARN] 记循环圈次失败（找不到汇总行）: " + nodeKey + " #" + round);
             }
-        } catch (SQLException e) {
+        } catch (RuntimeException e) {
             log.error("[WARN] 记循环圈次失败: " + e.getMessage());
         }
     }
@@ -2011,18 +1820,9 @@ public class WorkflowService {
      * uk_run_node(run_id, node_key, attempt)。解析不出来（存量数据不是 S+n）就当 0。
      */
     private int maxStepSeq(long runId) {
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT COALESCE(MAX(NULLIF(regexp_replace(node_key, '\\D', '', 'g'), '')::int), 0)
-                       FROM run_node
-                      WHERE tenant_id = ? AND run_id = ? AND level = 1
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, runId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getInt(1) : 0;
-            }
-        } catch (SQLException e) {
+        try {
+            return rm().selectMaxStepSeq(tenantId, runId);
+        } catch (RuntimeException e) {
             log.error("[WARN] 读取最大步骤序号失败，从 0 开始: " + e.getMessage());
             return 0;
         }
@@ -2168,7 +1968,7 @@ public class WorkflowService {
                 writeStep(parentId, stepSeq, method, ok, errorCode, rawResponse,
                         durationMs, attempt, dev == null ? 0L : dev,
                         paramsByNode.getOrDefault(nodeId, Map.of()));
-            } catch (SQLException e) {
+            } catch (SQLException | RuntimeException e) {
                 // 落库失败不能让执行中断：数据丢了比流程停了好
                 log.error("[WARN] 步骤落库失败: " + e.getMessage());
             }
@@ -2206,77 +2006,26 @@ public class WorkflowService {
             }
             Long rid = resolveResource(deviceId <= 0 ? null : deviceId,
                     deviceToResource, validResources);
-            try (Connection c = db.open()) {
-                long stepNodeId;
-                // error_code 也写进步骤节点：改动前只有 run_command 有，
-                // 业务节点又被标成 manual（不是 failed），
-                // 于是"第几步、因为什么码失败"只能去 run_command 表里翻。
-                try (PreparedStatement ps = c.prepareStatement("""
-                        INSERT INTO run_node
-                          (tenant_id, run_id, node_key, name, seq, node_type, resource_id,
-                           status, attempt, level, parent_node_id, step_seq,
-                           error_code, actual_start, actual_end, estimate_sec, input)
-                        VALUES (?, ?, ?, ?, ?, 'task', ?, ?::node_status, ?, 1, ?, ?,
-                                ?, now(), now(), 0, ?::jsonb)
-                        RETURNING id
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, runId);
-                    ps.setString(3, "S" + seq.incrementAndGet());
-                    ps.setString(4, method);
-                    ps.setInt(5, stepSeq);
-                    if (rid == null) {
-                        ps.setNull(6, java.sql.Types.BIGINT);
-                    } else {
-                        ps.setLong(6, rid);
-                    }
-                    ps.setString(7, stepStatus(ok, errorCode));
-                    ps.setInt(8, attempt);
-                    ps.setLong(9, parentId);
-                    ps.setInt(10, stepSeq);
-                    if (errorCode == null || errorCode.isBlank()) {
-                        ps.setNull(11, java.sql.Types.VARCHAR);
-                    } else {
-                        ps.setString(11, errorCode.length() > 64
-                                ? errorCode.substring(0, 64) : errorCode);
-                    }
-                    ps.setString(12, Jsons.obj("durationMs", durationMs, "stepSeq", stepSeq));
-                    try (ResultSet rs = ps.executeQuery()) {
-                        rs.next();
-                        stepNodeId = rs.getLong(1);
-                    }
-                }
-                try (PreparedStatement ps = c.prepareStatement("""
-                        INSERT INTO run_command
-                          (tenant_id, run_id, run_node_id, command_seq, method, payload,
-                           status, attempt, sent_at, finished_at, result,
-                           device_raw_response, error_code, device_id)
-                        VALUES (?, ?, ?, ?, ?, ?::jsonb, ?::node_status, ?, now(), now(),
-                                ?::jsonb, to_jsonb(?::text), ?, ?)
-                        """)) {
-                    ps.setLong(1, tenantId);
-                    ps.setLong(2, runId);
-                    ps.setLong(3, stepNodeId);
-                    ps.setInt(4, stepSeq);
-                    ps.setString(5, method);
-                    // payload 记实际下发的参数，便于事后核对"当时传了什么"
-                    java.util.List<Object> kv = new java.util.ArrayList<>();
-                    kv.add("nodeId");
-                    kv.add(parentId);
-                    kv.add("stepSeq");
-                    kv.add(stepSeq);
-                    params.forEach((k, v) -> { kv.add(k); kv.add(v); });
-                    ps.setString(6, Jsons.obj(kv.toArray()));
-                    ps.setString(7, stepStatus(ok, errorCode));
-                    ps.setInt(8, attempt);
-                    ps.setString(9, Jsons.obj("ok", ok, "durationMs", durationMs));
-                    ps.setString(10, rawResponse);
-                    // 参数序号：12 = device_id（9=result, 10=raw, 11=error_code, 12=device_id）
-                    ps.setLong(12, deviceId);
-                    ps.setString(11, errorCode);
-                    ps.executeUpdate();
-                }
-            }
+            // error_code 也写进步骤节点：改动前只有 run_command 有，
+            // 业务节点又被标成 manual（不是 failed），
+            // 于是"第几步、因为什么码失败"只能去 run_command 表里翻。
+            Long stepNodeId = rm().insertStepNode(tenantId, runId,
+                    "S" + seq.incrementAndGet(), method, stepSeq, rid,
+                    stepStatus(ok, errorCode), attempt, parentId, stepSeq,
+                    errorCode == null || errorCode.isBlank() ? null
+                            : (errorCode.length() > 64 ? errorCode.substring(0, 64) : errorCode),
+                    Jsons.obj("durationMs", durationMs, "stepSeq", stepSeq));
+            // payload 记实际下发的参数，便于事后核对"当时传了什么"
+            java.util.List<Object> kv = new java.util.ArrayList<>();
+            kv.add("nodeId");
+            kv.add(parentId);
+            kv.add("stepSeq");
+            kv.add(stepSeq);
+            params.forEach((k, v) -> { kv.add(k); kv.add(v); });
+            rm().insertRunCommand(tenantId, runId, stepNodeId, stepSeq, method,
+                    Jsons.obj(kv.toArray()), stepStatus(ok, errorCode), attempt,
+                    Jsons.obj("ok", ok, "durationMs", durationMs), rawResponse, errorCode,
+                    deviceId);
         }
     }
 
@@ -2286,23 +2035,7 @@ public class WorkflowService {
         String runNo = "WF-" + LocalDateTime.now().format(RUN_FMT)
                 + "-" + String.format("%04d", java.util.concurrent.ThreadLocalRandom
                         .current().nextInt(10000));
-        String sql = """
-                INSERT INTO run (tenant_id, run_no, run_type, workflow_id, mode, priority,
-                                 status, attendance, actual_start, created_at)
-                VALUES (?, ?, 'workflow', ?, 'normal', 5, 'running', ?, now(), now())
-                RETURNING id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setString(2, runNo);
-            ps.setLong(3, wf.id());
-            ps.setString(4, attendance);
-            try (ResultSet rs = ps.executeQuery()) {
-                rs.next();
-                return rs.getLong(1);
-            }
-        }
+        return rm().insertRun(tenantId, runNo, wf.id(), attendance);
     }
 
     /** device_instance.id -> resource_node.id（驱动按实例 id 路由，落库要存资源节点 id）。 */
@@ -2320,59 +2053,6 @@ public class WorkflowService {
     }
 
     /** 落父节点，返回 nodeId -> run_node.id 映射。 */
-    private Map<Long, Long> persistNodes(long runId, RunProgress p, List<RecoverableNode> defs,
-                                         Map<Long, Long> deviceToResource,
-                                         Set<Long> validResources) throws SQLException {
-        Map<Long, Long> out = new LinkedHashMap<>();
-        Map<Long, RecoverableNode> byId = new LinkedHashMap<>();
-        defs.forEach(d -> byId.put(d.id(), d));
-
-        String sql = """
-                INSERT INTO run_node
-                  (tenant_id, run_id, node_key, name, seq, node_type, capability_id,
-                   resource_id, status, attempt, actual_start, actual_end, estimate_sec, input)
-                VALUES (?, ?, ?, ?, ?, 'task', NULL, ?, ?::node_status, ?, now(), now(), 0, ?::jsonb)
-                RETURNING id
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            int seq = 0;
-            for (NodeProgress np : p.all()) {
-                RecoverableNode def = byId.get(np.nodeId());
-                ps.setLong(1, tenantId);
-                ps.setLong(2, runId);
-                ps.setString(3, def == null ? ("N" + np.nodeId()) : def.key());
-                ps.setString(4, def == null ? ("节点" + np.nodeId()) : def.name());
-                ps.setInt(5, ++seq);
-                Long rid = null;
-                if (np.currentResourceId() != null) {
-                    long mapped = deviceToResource.getOrDefault(
-                            np.currentResourceId(), np.currentResourceId());
-                    if (validResources.contains(mapped)) {
-                        rid = mapped;
-                    }
-                }
-                if (rid == null) {
-                    ps.setNull(6, java.sql.Types.BIGINT);
-                } else {
-                    ps.setLong(6, rid);
-                }
-                ps.setString(7, np.status().name().toLowerCase());
-                ps.setInt(8, np.attempt());
-                ps.setString(9, Jsons.obj(
-                        "capability", def == null ? "" : def.capabilityCode(),
-                        "method", def == null ? "" : String.valueOf(def.method()),
-                        "reason", np.lastReason()));
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        out.put(np.nodeId(), rs.getLong(1));
-                    }
-                }
-            }
-        }
-        return out;
-    }
-
     /** 读 run 当前的值守模式（运行中可被切换）。 */
     private String liveAttendance(long runId, String fallback) {
         try {
@@ -2433,88 +2113,6 @@ public class WorkflowService {
             return "completed";
         }
         return "EC-99-0005".equals(errorCode) ? "aborted" : "failed";
-    }
-
-    /** 落子步骤（level=1）与命令（1:1）。 */
-    private void persistStepsAndCommands(long runId, StepCollector collector,
-                                         Map<Long, Long> nodeIdMap,
-                                         Map<Long, Long> deviceToResource,
-                                         Set<Long> validResources) throws SQLException {
-        if (collector.done.isEmpty()) {
-            return;
-        }
-        String nodeSql = """
-                INSERT INTO run_node
-                  (tenant_id, run_id, node_key, name, seq, node_type, resource_id,
-                   status, attempt, level, parent_node_id, step_seq,
-                   actual_start, actual_end, estimate_sec, input)
-                VALUES (?, ?, ?, ?, ?, 'task', ?, ?::node_status, ?, 1, ?, ?, now(), now(), 0, ?::jsonb)
-                RETURNING id
-                """;
-        String cmdSql = """
-                INSERT INTO run_command
-                  (tenant_id, run_id, run_node_id, command_seq, method, payload,
-                   status, attempt, sent_at, finished_at, result,
-                   device_raw_response, error_code)
-                VALUES (?, ?, ?, ?, ?, ?::jsonb, ?::node_status, 0, now(), now(), ?::jsonb,
-                        to_jsonb(?::text), ?)
-                """;
-        try (Connection c = db.open();
-             PreparedStatement nodePs = c.prepareStatement(nodeSql);
-             PreparedStatement cmdPs = c.prepareStatement(cmdSql)) {
-            int seq = 0;
-            for (StepCollector.StepRec r : collector.done) {
-                // node_key 必须全局唯一：节点重试会重复报同一 (nodeId, seq)，
-                // 而 uk_run_node 是 (run_id, node_key, attempt)，不带 attempt 就冲突。
-                String stepKey = "S" + (++seq);
-                Long parentId = nodeIdMap.get(r.nodeId());
-                if (parentId == null) {
-                    continue;
-                }
-                Long rid = null;
-                if (r.resourceId() > 0) {
-                    long mapped = deviceToResource.getOrDefault(r.resourceId(), r.resourceId());
-                    if (validResources.contains(mapped)) {
-                        rid = mapped;
-                    }
-                }
-
-                nodePs.setLong(1, tenantId);
-                nodePs.setLong(2, runId);
-                nodePs.setString(3, stepKey);
-                nodePs.setString(4, r.method());
-                nodePs.setInt(5, r.seq());
-                if (rid == null) {
-                    nodePs.setNull(6, java.sql.Types.BIGINT);
-                } else {
-                    nodePs.setLong(6, rid);
-                }
-                nodePs.setString(7, r.ok() ? "completed" : "failed");
-                nodePs.setInt(8, r.attempt());
-                nodePs.setLong(9, parentId);
-                nodePs.setInt(10, r.seq());
-                nodePs.setString(11, Jsons.obj("method", r.method(),
-                        "durationMs", r.durationMs(), "attempt", r.attempt()));
-
-                long stepNodeId;
-                try (ResultSet rs = nodePs.executeQuery()) {
-                    rs.next();
-                    stepNodeId = rs.getLong(1);
-                }
-
-                cmdPs.setLong(1, tenantId);
-                cmdPs.setLong(2, runId);
-                cmdPs.setLong(3, stepNodeId);
-                cmdPs.setInt(4, r.seq());
-                cmdPs.setString(5, r.method());
-                cmdPs.setString(6, Jsons.obj("nodeId", r.nodeId(), "seq", r.seq()));
-                cmdPs.setString(7, r.ok() ? "completed" : "failed");
-                cmdPs.setString(8, Jsons.obj("ok", r.ok(), "durationMs", r.durationMs()));
-                cmdPs.setString(9, r.rawResponse());
-                cmdPs.setString(10, r.errorCode());
-                cmdPs.executeUpdate();
-            }
-        }
     }
 
     /** 收集子步骤执行结果。 */
@@ -2605,39 +2203,12 @@ public class WorkflowService {
                 reason = a.reason();
             }
         }
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     UPDATE run
-                        SET status = 'paused'::run_status,
-                            pause_kind = COALESCE(pause_kind, ?),
-                            pause_reason = COALESCE(pause_reason, ?),
-                            pause_node_key = COALESCE(pause_node_key, ?),
-                            paused_at = COALESCE(paused_at, now())
-                      WHERE tenant_id = ? AND id = ? AND status <> 'paused'
-                     """)) {
-            ps.setString(1, kind);
-            ps.setString(2, reason);
-            ps.setString(3, pendingKey);
-            ps.setLong(4, tenantId);
-            ps.setLong(5, runId);
-            ps.executeUpdate();
-        }
+        rm().pauseRunAtBoundary(tenantId, runId, kind, reason, pendingKey);
         // 页面暂停 / e2e 探针在动作进行中就把 status 写成了 paused。
         // 上面那条 WHERE status <> 'paused' 因此更新 0 行，pause_node_key 仍是空。
         // 边界到达后补上执行线程看到的待执行节点；已有值不覆盖。
         if (pendingKey != null && !pendingKey.isBlank()) {
-            try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement("""
-                         UPDATE run
-                            SET pause_node_key = ?
-                          WHERE tenant_id = ? AND id = ? AND status = 'paused'
-                            AND pause_node_key IS NULL
-                         """)) {
-                ps.setString(1, pendingKey);
-                ps.setLong(2, tenantId);
-                ps.setLong(3, runId);
-                ps.executeUpdate();
-            }
+            rm().fillPauseNodeKey(tenantId, runId, pendingKey);
         }
     }
 
