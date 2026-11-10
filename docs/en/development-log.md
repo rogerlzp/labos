@@ -5622,3 +5622,76 @@ in front of you.
 ② **Whether the data carries the field decides whether the reverse lookup can be guarded
 by type** — guard by `kind` when there is one; otherwise only an exact name match is
 possible (and the misjudgement risk has to be written down).
+
+**Added later (2026-11-10): the two rulers of this environment — a verification criterion has to match the environment**
+
+Trigger: the user reported that "the user name and password no longer work". The login
+itself was fine (the audit log holds **not a single failed attempt** ⇒ the request never
+reached the backend): **the backend was not running** — a devsplit test run at 17:50
+stopped the kernel and nobody started it again; when I tried to restart it at 18:05 I
+hit a compile error in another session's uncommitted file (they fixed it themselves within
+minutes). After a rebuild and a restart the login worked again (both directly on port
+18080 and through the frontend proxy on 5173 returned a token).
+
+While fixing the login, **three real bugs / three broken criteria** turned up:
+
+① **The PG enum case did not match** (real bug, fixed): `recovery_strategy` is an enum
+   that only accepts lower case (retry/skip/reassign/abort/manual/compensate), while the
+   UI and the Java vocabulary are upper case; the "error code policy" page sent the
+   upper-case value straight through ⇒ PG answered
+   `invalid input value for enum recovery_strategy: "RETRY"` ⇒ **saving always failed
+   with a 500**. Its sibling page `ErrorCodes.tsx` already used lower case — only this
+   one entry point was wrong. Fix: `.toLowerCase()` before sending; the UI is unchanged.
+
+② **The probe criterion of the acceptance scripts did not match this environment** (the
+   same trap, once in each of two scripts): the local simulators are **deliberately**
+   given a 30–45 second random delay (`--rand-delay 30000:45000`; G-05 in
+   `verify-flow-matrix.py` explicitly requires "the budget is derived from it, not a
+   constant"), while the **shadow probe's command timeout is only 3 seconds** ⇒ even a
+   good device times out with EC-05-1007 ⇒ judging by `ok` marks **every** device as
+   "cannot run a command" ⇒ the script always SKIPs, which looks like "the environment
+   did not start the simulators". Worse: the remote devices that cannot be reached
+   return **the same** EC-05-1007 ⇒ the error code alone cannot tell "slow" from "dead".
+   ⇒ The criterion became three things that do not depend on `ok`: ① the script opens the
+   TCP connection itself (whether the port is open is unambiguous); ② the method is taken
+   from the methods the **simulator profile really implements** (read `--profile` from the
+   process arguments) — picking a method the model does not support guarantees a failing
+   run; ③ the probe only judges "does the method match the device capability"
+   (EC-06-0004 ⇒ try another method); every other error (including a timeout) means the
+   command really went out. Also: the remote benches are **TCP-reachable from this
+   machine** (port open, device silent) ⇒ only probe the local loopback endpoints;
+   device selection went from 4 minutes to ~30 seconds.
+
+③ **A momentary event like "running at the same time" cannot be judged by sampling**: an
+   empty experiment runs for ~10 milliseconds, which sampling (interval ~25 ms) misses
+   entirely; and computing the overlap of [started_at, finished_at] afterwards gives 0 as
+   well (the three experiments were indeed released together, but each finishes within
+   10 ms, so the intervals do not intersect). ⇒ Switched to the **dispatch log**, an
+   evidence source the script already had: the 3 cross-island experiments were dispatched
+   **within the same scheduler tick** (measured dispatch span 0.050–0.090 seconds while
+   the tick interval is ~2 seconds) ⇒ the scheduler really released them together ⇒ the
+   islands do not block each other.
+   **Division of labour**: "the scheduler released them together" is proven by the
+   dispatch log; "the execution windows really overlap" is proven with **real device
+   actions** (same island, different devices, peak running = 2, two experiments dispatched
+   31 milliseconds apart).
+
+Lessons (cross-project):
+① **A criterion has to match the environment, and the environment changes** — the local
+   simulator delay is **by design** (the scripts derive their budget from it), not a
+   misconfiguration; a criterion written as "a good device should answer ok" marks every
+   good device as dead in this environment. ⇒ Before writing an acceptance script, ask
+   one question: **what does "normal" look like in this environment** (delay magnitude,
+   timeout values, the real response time of a device)? Write the criterion against
+   that; if it cannot be read reliably, **read it from the environment** (process
+   arguments, configuration, measured durations).
+② **Find every instance of the same class of trap at once** — trap ② was hit once in
+   `verify-parallel-experiments.py` and once in `verify-parallel-flow.py` (the latter spun
+   for 15 minutes with 110 probes). ⇒ After fixing one criterion, search the other
+   scripts for the same kind of criterion.
+③ **Judge momentary events from evidence collected afterwards, not by sampling** — sampling
+   misses the whole window; dispatch logs and timestamp intervals are **post-hoc**
+   evidence and do not depend on the sampling rate.
+④ **"Looks unreachable" and "reachable but silent" must be separated** — a TCP port that
+   accepts a connection does not mean the device answers; a port check only proves that
+   *somebody is listening*, not that *it will reply*.
