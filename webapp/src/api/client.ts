@@ -701,12 +701,12 @@ export const api = {
    *
    * <p>现在：带 token；非 2xx 一律抛 ApiError，让调用方的 catch 能提示失败。
    */
-  saveGraph: async (id: number, xml: string) => {
+  saveGraph: async (id: number, xml: string, opts?: { draft?: boolean }) => {
     const token = tokenStore.get();
-    // 自动化/编辑器中间态：页面 localStorage 打了草稿标记时，保存带 ?draft=1，
-    // 允许“还没连完线”的中间图落库；正常用户（无标记）仍会被服务端拒绝不完整图。
-    const draft = typeof window !== 'undefined'
-      && window.localStorage.getItem('labos.designer.draft') === '1';
+    // 自动化/编辑器中间态：拖入节点、自动插机械臂、删节点后还没补全整图，
+    // 这时允许按 draft 落库；显式保存仍走完整图校验。
+    const draft = opts?.draft === true || (typeof window !== 'undefined'
+      && window.localStorage.getItem('labos.designer.draft') === '1');
     const url = `${BASE}/api/workflows/${id}/graph${draft ? '?draft=1' : ''}`;
     const r = await fetch(url, {
       method: 'PUT',

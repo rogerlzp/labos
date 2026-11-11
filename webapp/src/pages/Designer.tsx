@@ -339,12 +339,17 @@ function RunsTable({ wfId, onOpen }: { wfId: number; onOpen: (runId: number) => 
  * 未声明的自定义属性支持不稳，直接在画布上改可能把它丢掉。这里走服务端接口
  * （改 workflow_node.params + patch XML 里那一个属性），保存后**重新导入 XML**。</p>
  */
-function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
+function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
   wfId: string;
   nodeKey: string;
   /** 只显示这个岛的设备；null = 全部岛（旧流程回落） */
   islandId: number | null;
   onSaved: () => void;
+  onPatched?: (patch: {
+    method: string;
+    params: Record<string, unknown>;
+    resourceId: number | null;
+  }) => void;
 }) {
   const t = useT();
   // 节点设置里的"保存"会改 workflow_node.params：viewer 禁用
@@ -493,6 +498,12 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved }: {
         message.error(j.error ?? t('designer.error.saveFailed'));
         return;
       }
+      onPatched?.({
+        method,
+        params: params && typeof params === 'object' && !Array.isArray(params)
+          ? (params as Record<string, unknown>) : {},
+        resourceId: isDevice ? (deviceId ?? null) : null,
+      });
       message.success(kind === 'device' ? t('designer.toast.deviceSaved') : t('designer.toast.builtinSaved'));
       onSaved();
     } finally {
@@ -832,6 +843,7 @@ export default function DesignerPage() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const modelerRef = useRef<BpmnModeler | null>(null);
+
   // ---- 运行态视图（URL 带 ?run=<runId>）：把这次运行的节点状态画在流程图上 ----
   //
   // 为什么要有这个：从「实验详情 → 执行历史」点进来的人，想看的是**这个流程
@@ -1748,9 +1760,11 @@ export default function DesignerPage() {
     try {
       const { xml } = await m.saveXML({ format: true }) as { xml: string };
       // 故意不走 save()：它带「必填参数」守卫，而刚拖入的节点还没有参数定义。
-      // saveGraph 的 INSERT 分支直接把 protocolName/resource 写进 workflow_node，
+      // 这里必须按草稿落库：拖入/删节点后的中间态常常还没连到 start/end，
+      // 若走完整图校验，前端画布看起来成功、XML/compile/workflow_node 却不会更新。
+      // saveGraph 的 INSERT 分支会把 protocolName/resource 直接写进 workflow_node，
       // 也就避开了 e2e-sim-flow 里「绑完设备还要再点一次保存」的老坑。
-      await api.saveGraph(wfId, collapse(xml));
+      await api.saveGraph(wfId, collapse(xml), { draft: true });
       setDirty(false);
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['compile', wfId] }),
@@ -2306,7 +2320,32 @@ export default function DesignerPage() {
         ) : (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <NodeSettings
-              wfId={String(wfId)} nodeKey={String(selected)} islandId={islandId}
+              wfId={String(wfId)} nodeKey={String(selected)} islandId={effectiveIslandId}
+              onPatched={({ method, params, resourceId }) => {
+                const m = modelerRef.current;
+                if (!m || !selected) return;
+                const reg = m.get('elementRegistry') as { get: (id: string) => SelectedElement | undefined };
+                const el = reg.get(String(selected));
+                const bo = el?.businessObject as { $attrs?: Record<string, string>; name?: string } | undefined;
+                if (!bo) return;
+                let attrs = bo.$attrs;
+                if (!attrs) {
+                  attrs = {};
+                  Object.defineProperty(bo, '$attrs', {
+                    value: attrs, writable: true, configurable: true, enumerable: false,
+                  });
+                }
+                attrs.protocolName = method;
+                attrs.methodParams = JSON.stringify(params ?? {});
+                if (resourceId != null && resourceId > 0) {
+                  attrs.resource = String(resourceId);
+                } else {
+                  delete attrs.resource;
+                  delete attrs.icon;
+                }
+                // name 落中性 code：内置节点用 method（__expr 等），设备节点用方法名
+                bo.name = method;
+              }}
               onSaved={() => {
                 // 不要整图 importXML！节点保存后端已是「只 patch 该节点」，
                 // 画布模型本身没变；重新导入会制造一个“旧模型窗口”——用户/测试
