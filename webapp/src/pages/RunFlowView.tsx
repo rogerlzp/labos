@@ -19,8 +19,9 @@ import { useT } from '../i18n';
  * <p>两条路由：
  * <ul>
  *   <li>{@code /runs/:runId/flow} —— 有这次执行 ⇒ 图按执行状态着色，每 2 秒刷新；</li>
- *   <li>{@code /workflows/:workflowId/flow} —— 这一步**失败在建执行单之前**、没有 run
- *       ⇒ 只画流程定义，并说明"这一步没有执行记录"。</li>
+ *   <li>{@code /workflows/:workflowId/flow} —— 没有指定某次执行 ⇒ **自动取最近一次执行**
+ *       （{@code GET /api/workflows/{id}/runs?limit=1}）来着色并继续跟踪；
+ *       这条流程**一次都没跑过**时才只画流程定义，并说明"没有执行记录"。</li>
  * </ul>
  */
 export default function RunFlowViewPage() {
@@ -39,6 +40,31 @@ export default function RunFlowViewPage() {
     enabled: runId != null,
   });
 
+  /**
+   * 只有 workflowId、没 runId 时 ⇒ **自动取最近一次执行**。
+   *
+   * <p>为什么必须取：这条路由是从「流程库」点进来的，现场打开就是为了看
+   * 「这条流程现在跑到哪了」。不取的话页面只有一张静态流程图 ——
+   * 节点全白、没有状态、也没有往下走的迹象，看起来像"根本没执行"。
+   * （2026-11-11 用户现场：流程正在跑，页面却"看不到状态、没有往下走"。）</p>
+   */
+  const latestQ = useQuery({
+    queryKey: ['wf-latest-run', workflowId],
+    queryFn: () => apiFetch(`/api/workflows/${workflowId}/runs?limit=1`).then((r) => r.json()) as Promise<{
+      items?: Array<{ id: number; runNo?: string; status?: string; startedAt?: string }>;
+    }>,
+    enabled: runId == null && workflowId != null,
+    // 还在跑就继续找最新一次；已终态就不必再问了
+    refetchInterval: (q) => {
+      const s = (q.state.data as { items?: Array<{ status?: string }> } | undefined)
+        ?.items?.[0]?.status;
+      return s && ['completed', 'failed', 'aborted', 'cancelled'].includes(s) ? false : 4000;
+    },
+  });
+  const latest = latestQ.data?.items?.[0];
+  /** 真正要展示的那次执行：指定了就用指定的，没指定就用最近一次。 */
+  const shownRunId = runId ?? latest?.id;
+
   // 只有 workflowId、没 runId 时，去流程库把流程的元信息取回来（名字/编号）
   const wfQ = useQuery({
     queryKey: ['wf-flow-meta', workflowId],
@@ -48,11 +74,16 @@ export default function RunFlowViewPage() {
   });
 
   const run = runQ.data?.run;
+  const shownStatus = run?.status ?? latest?.status;
   const title = useMemo(() => {
     if (run?.runNo) return `#${run.id ?? runId} · ${run.runNo}`;
+    if (latest?.runNo) {
+      return `${wfQ.data?.workflow?.name ?? wfQ.data?.name ?? `#${workflowId}`}`
+        + ` · 最近一次 #${latest.id}`;
+    }
     if (wfQ.data) return `${wfQ.data.workflow?.name ?? wfQ.data.name ?? `#${workflowId}`}`;
     return runId ? `#${runId}` : `#${workflowId}`;
-  }, [run, wfQ.data, runId, workflowId]);
+  }, [run, latest, wfQ.data, runId, workflowId]);
 
   return (
     <div>
@@ -60,15 +91,15 @@ export default function RunFlowViewPage() {
         title={<Space size={8}>
           <span>{t('runFlowView.title')}</span>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>{title}</Typography.Text>
-          {run?.status && (
-            <Tag color={statusColor('run', run.status, vocab)}>
-              {statusLabel('run', run.status, vocab)}
+          {shownStatus && (
+            <Tag color={statusColor('run', shownStatus, vocab)}>
+              {statusLabel('run', shownStatus, vocab)}
             </Tag>
           )}
         </Space>}
         extra={<Space>
-          {runId != null && (
-            <Button size="small" onClick={() => nav(`/runs/${runId}`)}>
+          {shownRunId != null && (
+            <Button size="small" onClick={() => nav(`/runs/${shownRunId}`)}>
               {t('runFlowView.openRunDetail')}
             </Button>
           )}
@@ -77,13 +108,15 @@ export default function RunFlowViewPage() {
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Alert type="info" showIcon
             message={t('runFlowView.readonly')}
-            description={runId == null
+            description={shownRunId == null
               ? t('runFlowView.noRunDesc')
               : t('runFlowView.desc')} />
-          <RunGraph runId={runId} workflowId={workflowId} />
-          <Card size="small" title={t('runCommands.title')}>
-            <RunCommands runId={runId as number} />
-          </Card>
+          <RunGraph runId={shownRunId} workflowId={workflowId} />
+          {shownRunId != null && (
+            <Card size="small" title={t('runCommands.title')}>
+              <RunCommands runId={shownRunId} />
+            </Card>
+          )}
         </Space>
       </Card>
     </div>
