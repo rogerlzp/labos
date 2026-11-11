@@ -6,7 +6,6 @@ import com.labos.kernel.device.DeviceModels;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
@@ -47,11 +46,10 @@ public final class SimulatorBehaviorSelfTest {
     private static void testS100() throws Exception {
         section("S100 封膜机：托盘原点 / 板型 / 故障锁存");
         DeviceModel model = DeviceModels.of("s100");
-        int port = freePort();
-        DeviceCore core = new DeviceCore(port, "501", "SEAL1", "SEAL", 1,
+        DeviceCore core = new DeviceCore(0, "501", "SEAL1", "SEAL", 1,
                 false, 0, "EC-05-0001", false, "sealer", model, null, 0);
-        core.startServer("127.0.0.1", port);
-        try (Client c = new Client(port, "501")) {
+        core.startServer("127.0.0.1", 0);
+        try (Client c = new Client(core.port(), "501")) {
             // 1) 原点封膜：成功
             Frame r = c.call("m1", "Seal", null);
             eq("原点封膜成功", 2, r.status);
@@ -103,11 +101,10 @@ public final class SimulatorBehaviorSelfTest {
     private static void testAspin() throws Exception {
         section("ASpin 2K：模块实例 / 初始化 / 双门 / 参数");
         DeviceModel model = DeviceModels.of("aspin-2k");
-        int port = freePort();
-        DeviceCore core = new DeviceCore(port, "601", "CENT1", "CENTRIFUGE", 1,
+        DeviceCore core = new DeviceCore(0, "601", "CENT1", "CENTRIFUGE", 1,
                 false, 0, "EC-05-0001", false, "centrifuge", model, null, 0);
-        core.startServer("127.0.0.1", port);
-        try (Client c = new Client(port, "601")) {
+        core.startServer("127.0.0.1", 0);
+        try (Client c = new Client(core.port(), "601")) {
             // 1) 手册：先 PcCreateModules，否则指令发不出去
             Frame r = c.call("a1", "RunProgram", "\"time\":60,\"speed\":1500,\"ramp\":150");
             eq("未建模块实例 → 拒绝", 3, r.status);
@@ -220,12 +217,6 @@ public final class SimulatorBehaviorSelfTest {
                 .compile("\"" + java.util.regex.Pattern.quote(key) + "\"\\s*:\\s*(-?\\d+)")
                 .matcher(json);
         return m.find() ? Integer.parseInt(m.group(1)) : -1;
-    }
-
-    private static int freePort() throws Exception {
-        try (ServerSocket s = new ServerSocket(0)) {
-            return s.getLocalPort();
-        }
     }
 
     private static void section(String title) {
