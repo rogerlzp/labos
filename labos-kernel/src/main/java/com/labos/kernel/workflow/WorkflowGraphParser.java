@@ -23,17 +23,38 @@ import java.util.Set;
  * <ul>
  *   <li>{@code parallelGateway}：分叉与汇合</li>
  *   <li>{@code exclusiveGateway}：二选一（异或）</li>
+ *   <li>{@code inclusiveGateway}：条件网关（包容）—— 条件成立的几条分支**都走**，
+ *       汇合只等实际会到达的分支</li>
  *   <li>{@code sequenceFlow} 的 {@code conditionExpression} 与网关的 {@code default}</li>
  * </ul>
  *
  * <p>存量流程里有 parallelGateway 和 exclusiveGateway，
  * 但改动前的执行器只按 sequenceFlow 顺序推进，网关被完全忽略。
+ *
+ * <p><b>2026-11-11</b>：补上 {@code inclusiveGateway}。此前它在**保存侧**
+ * （{@link BpmnGraphParser} 的 TYPE_MAP）有映射、在**执行侧**没有 ⇒
+ * 拖到画布上的条件网关被静默跳过，整段分支不执行且不报错
+ * （评审记录 20261102-03 已记过这条「inclusiveGateway 不识别致断流」）。
  */
 public final class WorkflowGraphParser {
 
     /** 节点类型：决定推进语义。 */
     public enum Kind {
         TASK, START, END, SPLIT_PARALLEL, JOIN_PARALLEL, SPLIT_XOR, JOIN_XOR,
+
+        /**
+         * <b>条件网关（包容网关，{@code bpmn:InclusiveGateway}）</b>：分叉时
+         * **所有条件成立的分支都走**（可能 0 条、1 条、多条），汇合时
+         * **只等实际会到达的分支**。
+         *
+         * <p>为什么单独一种而不用异或顶上：异或是「第一条成立就赢」，
+         * 多条同时成立时后面的条件根本不会被求值 ⇒ 表达不了
+         * 「合格就同时送去分析和存档」这种**多路并行**的编排。
+         *
+         * <p>与并行网关的区别：并行网关**无条件全走**；条件网关走哪几条
+         * 由每条出边上的条件表达式决定。
+         */
+        SPLIT_CONDITIONAL, JOIN_CONDITIONAL,
 
         /**
          * **内置节点**：不驱动设备，引擎自己算。
@@ -229,6 +250,10 @@ public final class WorkflowGraphParser {
                                     Map<String, List<GEdge>> out) {
         addGatewayKind(doc, nodes, in, out, "parallelGateway", Kind.SPLIT_PARALLEL, Kind.JOIN_PARALLEL);
         addGatewayKind(doc, nodes, in, out, "exclusiveGateway", Kind.SPLIT_XOR, Kind.JOIN_XOR);
+        // 条件网关（包容网关）：保存侧早就映射了 inclusiveGateway，
+        // 执行侧此前**不认** ⇒ 拖到画布上的 ○ 会被静默跳过（node == null → continue），
+        // 后面整段不执行且不报错。2026-11-11 补上。
+        addGatewayKind(doc, nodes, in, out, "inclusiveGateway", Kind.SPLIT_CONDITIONAL, Kind.JOIN_CONDITIONAL);
     }
 
     private static void addGatewayKind(Document doc, Map<String, GNode> nodes,

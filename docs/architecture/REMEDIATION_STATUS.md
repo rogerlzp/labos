@@ -227,3 +227,15 @@ ADR 依据：ADR-XXXX-XXX（或「无，纯重构」）
 | 阶段三（未做） | HTTP 层由 JDK `HttpServer` 迁到 Spring MVC Controller。 |
 
 **2026-11-09 后续批次（按现场决策：MyBatis XML、不留旧启动方式）**：A 批已完成——`ApiServer.main` 删除、Service 全部 Bean 化、4 个写入口 `@Transactional(rollbackFor=Exception.class)`、手写池/反射桥接/无容器回落全删、`verify-s3-2-residuals.py` 改按端口反查 + Spring 启动、唯一入口 `scripts/start-kernel.sh`；4.13 崩溃恢复 **34/0** 验证通过。B 批——Logback + MDC（`LogContext`）落地，关键路径 （B-01/B-02/中止结果/启动）已换 SLF4J，其余约 500 处 println 按模块迁移。C 批——`WorkflowMapper.xml` 首个垂直切片落地，`createWorkflow` 改走 MyBatis；剩余约 130 条 SQL、46 处显式事务、gateway Lettuce、HTTP 迁 Spring MVC 待做。验收 `build-kernel.sh --verify` **13/0**、`test-all.sh` **1310/0**、`ci-gate.sh --fast` 通过。权威文档 `SPRING_BOOT_MIGRATION_20261109.md`。**续（同日）**：539 处 `System.out/err` 全量换 SLF4J；新增 `RunMapper.xml`（5 条 SQL，`markRunFailed`/`settleRun` 改走 Mapper）；`QueryService` 21 个写入口加 `@Transactional`；`labos-gateway` 手写 RESP2 换 Lettuce（`DriverConnection` 零改动）。HTTP 层已迁 Spring MVC（Tomcat 接管 18080 + `ServletHttpExchange` 适配 + `LegacyRouteController`，40+ 端点逻辑不变；4.13 崩溃恢复 34/0、端点冒烟全 200）；拆成注解式 `@RestController` 仍待做。**不得以「已引入 Spring Boot」宣称 P-02 事务化或全部 SQL 迁移完成。**
+
+---
+
+## 9. 流程编排：网关成对入口 + 条件网关执行语义（2026-11-11）
+
+| 项 | 内容 |
+|---|---|
+| 起因 | 用户指出「并行网关，异或网关，条件网关，应该都有开始和结束网关的，现在拖得很多只有一个，这样看起来不清晰的」。核查发现三件事：① bpmn-js 默认 palette **只有异或网关一个入口**，并行靠我们自补、条件（包容）**连入口都没有**；② `inclusiveGateway` **只被保存侧识别、执行侧不认** ⇒ 拖到链路上静默断流（评审记录 20261102-03 已记过）；③ bpmn-js 的 `renderGateway` **完全不看 `gatewayDirection`** ⇒ 并行分叉与并行汇合画出来一模一样，而 `docs/测试总纲.md` 规则 5/6/7 早就写了「禁止 1 进 1 出的网关 / 分叉必须配同类型汇合 / 汇合必须有同类型分叉」—— **只写在文档里，实现层从没强制过**。 |
+| 范围 | ① palette 改成 **6 个成对入口**（并行/异或/条件 × 分叉/汇合），拖出来即带中性 code 名字 + BPMN 标准 `gatewayDirection`；② 执行侧补 `inclusiveGateway`：`SPLIT_CONDITIONAL`（条件成立的分支**都走**）+ `JOIN_CONDITIONAL`（只等**实际会到达**的分支）；③ 画布按角色染色（分叉绿 / 汇合橙），名字跟着**实际连线数**同步；④ 预检新增 PF-15/16/17/18/19 把「不成对」说出来。 |
+| 关键实现 | **死分支传播**（`ConditionalBranchTracker`）：分叉决定后把「被跳过的边」标死并往下推（某节点所有入边都死了 ⇒ 它也不会执行 ⇒ 它的出边也死）；汇合点只等「没被判死且已到达」的入边。死集合变化时**重新判定**所有条件汇合点 ⇒ 被跳过的分支不会把汇合点卡死。 |
+| 证据 | `GraphRunnerTest` **22/0**（新增 5 条条件网关用例：两条件都成立两条分支都跑 / 一条不成立汇合照样放行 / 都不成立走 default / 死分支穿过嵌套条件分叉 / 干跑不假报 PF-03）；`PreflightGatewayStructureSelfTest` **8/0**（新增，PF-15/16/17/18/19 纯逻辑）；`scripts/verify-gateway-pairs.py` **24/0**（页面 6 个成对入口 + 标签 + 绿/橙描边 + 名字跟拓扑 + XML 存中性 code + 预检报出结构问题；接口侧真跑条件网关：两条件都成立⇒两条分支都执行且汇合放行、单条件成立⇒该分支不跑而**汇合点没死等**）；`ci-gate.sh` 全量通过。 |
+| 边界 | ① 设备级**真并发**仍未实现（`GraphRunner` 是单线程 ready 队列 ⇒ 同一 run 内并行分支的设备命令仍串行下发），本轮不动这个；② 条件网关的**兜底口径**与异或一致（没条件的出边只当兜底，不自动走）；③ 预检新增的 5 条都是 **WARN**（画法问题不是跑不了，阻断保存会让用户以为系统坏了）。 |

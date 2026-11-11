@@ -110,13 +110,13 @@ LABOS_TRANSFER_PLAN=1 ... ./scripts/start-kernel.sh
 |---|---|---|---|
 | 1 | A back edge pointing straight at a parallel split gateway | Unsupported (the whole parallel region is bypassed) | Class C: capability boundary, see §7 |
 | 2 | Iteration cap configured per gateway | Unsupported (workflow level) | Class C: capability boundary, see §7 |
-| 3 | OR / inclusive gateway | Unsupported | Class C: capability boundary, see §7 |
+| 3 | OR / inclusive gateway | ~~Unsupported~~ **supported since 2026-11-11** (conditional gateway = `inclusiveGateway`) | ✅ Delivered, see row 1 of §7 |
 
 ## 7. Class C capability boundaries
 
 | # | Boundary | Fact | Impact |
 |---|---|---|---|
-| 1 | No OR / inclusive gateway | On the execution side there is only exclusive (`SPLIT_XOR`) and parallel (`SPLIT_PARALLEL`) | An orchestration that needs "every satisfied branch runs" must use a parallel gateway |
+| 1 | ~~No OR / inclusive gateway~~ **lifted (2026-11-11)** | The execution side now handles `inclusiveGateway`: `SPLIT_CONDITIONAL` (every branch whose condition holds runs) and `JOIN_CONDITIONAL` (waits only for the branches that actually arrive — a skipped branch does not deadlock the join) | An orchestration that needs "every satisfied branch runs" no longer has to use a parallel gateway; the designer also has paired entries (conditional split / conditional merge) |
 | 2 | The iteration cap is workflow-level | `maxIterations` comes from `workflow.attr`, not per gateway | Several loops in one workflow share the same cap |
 | 3 | `TransferPlan` always takes `in` | Source / target channels always resolve to `in`; the `out` direction is not consumed by the current execution chain | `out` only declares capacity; it creates no separate occupancy |
 | 4 | Heartbeat auto-resume requires no offline device in the tenant | `autoResumeFaulted` tests `NOT EXISTS(... online=false)` | A single offline device stops a fault pause from auto-resuming |

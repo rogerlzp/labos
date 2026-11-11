@@ -83,7 +83,11 @@ public final class BpmnGraphParser {
             Map.entry("customDevice", "task"),
             Map.entry("exclusiveGateway", "gateway"),
             Map.entry("parallelGateway", "gateway_parallel"),
-            Map.entry("inclusiveGateway", "gateway_parallel"),
+            // 条件网关（包容）：**不能**再映射成 gateway_parallel ——
+            // 那样它在 workflow_node.node_type 里和并行网关完全一样，
+            // 两者的执行语义不同（条件网关看边上的条件），分不开。
+            // 前缀仍是 "gateway" ⇒ MainPathSelector.isGateway() 照旧认得。
+            Map.entry("inclusiveGateway", "gateway_conditional"),
             Map.entry("subProcess", "subprocess"));
 
     public static ParsedGraph parse(String xml) {

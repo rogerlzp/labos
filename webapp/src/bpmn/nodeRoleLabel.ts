@@ -50,6 +50,8 @@ const CODE_TO_KEY: Record<string, MessageKey> = {
   XOR_MERGE: 'designer.gateway.roleXorMerge',
   PARALLEL_SPLIT: 'designer.gateway.roleParallelSplit',
   PARALLEL_MERGE: 'designer.gateway.roleParallelMerge',
+  COND_SPLIT: 'designer.gateway.roleConditionalSplit',
+  COND_MERGE: 'designer.gateway.roleConditionalMerge',
 };
 
 /**
@@ -99,7 +101,35 @@ export function gatewayRoleCode(type: string, ins: number, outs: number): string
     if (outs > 1) return 'PARALLEL_SPLIT';
     return '';
   }
+  if (type === 'bpmn:InclusiveGateway') {
+    // 条件网关（包容网关）：分叉时条件成立的几条分支都走，汇合只等实际会到的分支。
+    if (ins > 1) return 'COND_MERGE';
+    if (outs > 1) return 'COND_SPLIT';
+    return '';
+  }
   return '';
+}
+
+/**
+ * 这个网关类型是不是**条件网关**（包容网关）。
+ *
+ * <p>设计器右栏拿它决定要不要提示「给分支配条件」。
+ */
+export function isConditionalGateway(type: string): boolean {
+  return type === 'bpmn:InclusiveGateway';
+}
+
+/**
+ * 网关类型 → 中性 code 的**前缀**（`XOR` / `PARALLEL` / `COND`）。
+ *
+ * <p>palette 拖出来的网关要预置名字（「并行分叉」这类），
+ * 但那时节点还没连线、推不出分叉还是汇合 ⇒ 先按 palette 入口的意图定。
+ */
+export function gatewayRolePrefix(type: string): 'XOR' | 'PARALLEL' | 'COND' | null {
+  if (type === 'bpmn:ExclusiveGateway') return 'XOR';
+  if (type === 'bpmn:ParallelGateway') return 'PARALLEL';
+  if (type === 'bpmn:InclusiveGateway') return 'COND';
+  return null;
 }
 
 /** 这个名字是不是本表收录的中性 code。 */

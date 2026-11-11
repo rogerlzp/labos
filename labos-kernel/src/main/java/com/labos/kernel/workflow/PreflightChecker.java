@@ -23,6 +23,9 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -262,6 +265,16 @@ public final class PreflightChecker {
             }
         }
 
+        // ---- 静态检查 2.6：网关结构（成对 / 角色明确）----
+        //
+        // 为什么要有：用户 2026-11-11 指出「并行网关、异或网关、条件网关应该都有
+        // 开始和结束网关成对出现，现在拖出来只有一个，看不清结构」。
+        // 文档（docs/测试总纲.md 规则 5/6/7）早就写了「禁止 1 进 1 出的网关」
+        // 「分叉必须配同类型汇合」「汇合必须有同类型分叉」——
+        // 但那些规则**只写在文档里，实现层从没强制过**，所以用户拖一堆网关出来，
+        // 系统一声不吭全收下，跑起来才知道不对。这里把它变成预检里的可见问题。
+        issues.addAll(checkGatewayStructure(graph));
+
         // ---- 静态检查 3：开始事件 ----
         boolean hasStart = graph.nodes().values().stream().anyMatch(n -> n.kind() == Kind.START);
         if (!hasStart) {
@@ -351,6 +364,197 @@ public final class PreflightChecker {
                     "读设备资源关系失败，本次跳过绑定与岛边界检查：" + e.getMessage()));
         }
         return out;
+    }
+
+    /**
+     * 网关**结构**检查：成对、角色明确、条件齐备。
+     *
+     * <p>对应 {@code docs/测试总纲.md} 的规则 5/6/7：
+     * <ol>
+     *   <li><b>PF-15 禁止 1 进 1 出的网关</b>：单进单出的网关在引擎口径里就是
+     *       「直通」（{@code WorkflowGraphParser} 明确按入/出边数判），
+     *       画着占地方、缩小后还跟分叉汇合混淆 ⇒ 提示去掉；</li>
+     *   <li><b>PF-16 分叉必须有同族汇合</b>：并行/条件分叉的每条分支都该收到
+     *       「等齐」的信号，否则分支各跑各的、下游提前开跑；</li>
+     *   <li><b>PF-17 汇合必须有同族分叉</b>：孤立的汇合点多半是分叉没画全；</li>
+     *   <li><b>PF-18 条件网关的出边要有条件</b>：没条件的出边在条件网关里
+     *       只当兜底用（所有条件都不成立时才走），多数时候是漏写了；</li>
+     *   <li><b>PF-19 孤立的网关</b>：一条线都没连的网关不参与执行 ——
+     *       正是「拖出来只有一个、看不清结构」的那种图。</li>
+     * </ol>
+     *
+     * <p><b>同族</b>的定义：并行↔并行、异或↔异或、条件↔条件。
+     * 异或分叉**允许**直接收口到 end（引擎的异或汇合是「任一条到达即放行」，
+     * 收到 end 也是同一个意思）⇒ 不对异或报 PF-16/PF-17。
+     *
+     * <p>全部是 WARN 不是 ERROR：这些是**画法**问题，不是跑不了 ——
+     * 阻断保存会让用户以为系统坏了。
+     *
+     * <p><b>包内可见</b>（不是 private）：这段是**纯逻辑**（只看图，不连库），
+     * 让自测能直接调用，不用为了测它去连数据库。
+     */
+    static List<Issue> checkGatewayStructure(Graph graph) {
+        List<Issue> out = new ArrayList<>();
+
+        // ---- PF-15：单进单出 = 直通 ----
+        for (GNode n : graph.nodes().values()) {
+            if (gatewayFamily(n.kind()) == null) {
+                continue;
+            }
+            int ins = graph.in(n.key()).size();
+            int outs = graph.out(n.key()).size();
+            if (ins == 1 && outs == 1) {
+                out.add(new Issue(Level.WARN, "PF-15", n.key(),
+                        String.format("网关「%s」是 1 进 1 出（直通）——"
+                                + "引擎按连线数判角色，它既不分叉也不汇合，建议去掉或补上第二条线",
+                                n.name())));
+            }
+            // ---- PF-19：孤立的网关（一条线都没连）----
+            //
+            // 为什么单列一条：这正是用户 2026-11-11 说的「拖出来只有一个」——
+            // 网关拖到画布上却没接到链路里，图上就多一个说不清作用的菱形。
+            // PF-15 管不到它（0 进 0 出不是 1 进 1 出），所以另给一个码。
+            if (ins == 0 && outs == 0) {
+                out.add(new Issue(Level.WARN, "PF-19", n.key(),
+                        String.format("网关「%s」没有连任何线（孤立）—— "
+                                + "它不参与执行，画图时多半是拖出来忘了接", n.name())));
+            }
+        }
+
+        // ---- PF-16：分叉的分支要收到同族汇合 ----
+        for (GNode n : graph.nodes().values()) {
+            String family = gatewayFamily(n.kind());
+            if (family == null || !isFork(n.kind())) {
+                continue;
+            }
+            // 异或允许收口到 end ⇒ 不查
+            if ("xor".equals(family)) {
+                continue;
+            }
+            List<GEdge> outs = graph.out(n.key());
+            List<String> orphans = new ArrayList<>();
+            for (GEdge e : outs) {
+                if (!reachesJoinOfFamily(graph, e.to(), family)) {
+                    orphans.add(e.to());
+                }
+            }
+            if (!orphans.isEmpty()) {
+                out.add(new Issue(Level.WARN, "PF-16", n.key(),
+                        String.format("%s分叉有 %d 条分支收不到同族汇合点（%s）——"
+                                + "这些分支不会参与「等齐」，下游可能提前开跑",
+                                familyLabel(family), orphans.size(), String.join("、", orphans))));
+            }
+        }
+
+        // ---- PF-17：汇合要有同族分叉 ----
+        for (GNode n : graph.nodes().values()) {
+            String family = gatewayFamily(n.kind());
+            if (family == null || !isJoin(n.kind())) {
+                continue;
+            }
+            if ("xor".equals(family)) {
+                continue;
+            }
+            if (!reachedByForkOfFamily(graph, n.key(), family)) {
+                out.add(new Issue(Level.WARN, "PF-17", n.key(),
+                        String.format("%s汇合点找不到同族分叉 —— 多半是分叉没画全，"
+                                + "它会一直等那些永远不会到的分支", familyLabel(family))));
+            }
+        }
+
+        // ---- PF-18：条件网关的出边该有条件 ----
+        for (GNode n : graph.nodes().values()) {
+            if (n.kind() != Kind.SPLIT_CONDITIONAL) {
+                continue;
+            }
+            List<GEdge> outs = graph.out(n.key());
+            long noCond = outs.stream()
+                    .filter(e -> (e.condition() == null || e.condition().isBlank()) && !e.isDefault())
+                    .count();
+            if (noCond > 0) {
+                out.add(new Issue(Level.WARN, "PF-18", n.key(),
+                        String.format("条件网关有 %d 条出边没写条件表达式 —— "
+                                + "没条件的分支只当兜底用（所有条件都不成立时才走）", noCond)));
+            }
+        }
+        return out;
+    }
+
+    /** 网关「家族」：分叉与汇合要同族配对。 */
+    private static String gatewayFamily(Kind k) {
+        if (k == Kind.SPLIT_PARALLEL || k == Kind.JOIN_PARALLEL) {
+            return "par";
+        }
+        if (k == Kind.SPLIT_XOR || k == Kind.JOIN_XOR) {
+            return "xor";
+        }
+        if (k == Kind.SPLIT_CONDITIONAL || k == Kind.JOIN_CONDITIONAL) {
+            return "cond";
+        }
+        return null;
+    }
+
+    private static boolean isFork(Kind k) {
+        return k == Kind.SPLIT_PARALLEL || k == Kind.SPLIT_XOR || k == Kind.SPLIT_CONDITIONAL;
+    }
+
+    private static boolean isJoin(Kind k) {
+        return k == Kind.JOIN_PARALLEL || k == Kind.JOIN_XOR || k == Kind.JOIN_CONDITIONAL;
+    }
+
+    /** 家族的中文名（给提示文案用）。 */
+    private static String familyLabel(String family) {
+        if ("par".equals(family)) {
+            return "并行";
+        }
+        if ("cond".equals(family)) {
+            return "条件";
+        }
+        return "异或";
+    }
+
+    /** 从 from 出发能不能走到同族的汇合点（入边 > 1 的那个）。 */
+    private static boolean reachesJoinOfFamily(Graph g, String from, String family) {
+        Deque<String> stack = new ArrayDeque<>();
+        Set<String> seen = new HashSet<>();
+        stack.push(from);
+        int guard = 0;
+        while (!stack.isEmpty() && guard++ < 5000) {
+            String cur = stack.pop();
+            if (!seen.add(cur)) {
+                continue;
+            }
+            GNode n = g.nodes().get(cur);
+            if (n != null && family.equals(gatewayFamily(n.kind())) && isJoin(n.kind())) {
+                return true;
+            }
+            for (GEdge e : g.out(cur)) {
+                stack.push(e.to());
+            }
+        }
+        return false;
+    }
+
+    /** 能不能从某个同族分叉走到 joinKey。 */
+    private static boolean reachedByForkOfFamily(Graph g, String joinKey, String family) {
+        Deque<String> stack = new ArrayDeque<>();
+        Set<String> seen = new HashSet<>();
+        stack.push(joinKey);
+        int guard = 0;
+        while (!stack.isEmpty() && guard++ < 5000) {
+            String cur = stack.pop();
+            if (!seen.add(cur)) {
+                continue;
+            }
+            GNode n = g.nodes().get(cur);
+            if (n != null && family.equals(gatewayFamily(n.kind())) && isFork(n.kind())) {
+                return true;
+            }
+            for (GEdge e : g.in(cur)) {
+                stack.push(e.from());
+            }
+        }
+        return false;
     }
 
     /** resource_node.id → device_instance.id（租户内、未软删）。 */

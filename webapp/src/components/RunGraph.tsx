@@ -9,6 +9,7 @@ import { statusMeta, statusKnown, useStatusVocabulary } from '../utils/status';
 import { useI18n, useT } from '../i18n';
 import NodeAutoNameLabelRenderer, { NodeAutoNameShapeRenderer } from '../bpmn/NodeAutoNameRenderer';
 import { isLocalizableAutoName } from '../bpmn/nodeRoleLabel';
+import { GatewayShapeRenderer } from '../bpmn/GatewayVisuals';
 
 /**
  * 一次执行的流程图：把 run_node 的状态画回 BPMN 图上。
@@ -157,6 +158,12 @@ export default function RunGraph({ runId, workflowId }:
         __init__: ['nodeAutoNameLabelRenderer', 'nodeAutoNameShapeRenderer'],
         nodeAutoNameLabelRenderer: ['type', NodeAutoNameLabelRenderer],
         nodeAutoNameShapeRenderer: ['type', NodeAutoNameShapeRenderer],
+      },
+      // 网关按角色染色（分叉绿 / 汇合橙）—— 与设计器画布同一套，
+      // 否则运行图上的分叉汇合又是分不清的一堆菱形。
+      {
+        __init__: ['gatewayShapeRenderer'],
+        gatewayShapeRenderer: ['type', GatewayShapeRenderer],
       }],
     } as any);
     viewerRef.current = viewer;

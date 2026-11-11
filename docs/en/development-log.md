@@ -6926,3 +6926,84 @@ assertions go through the API**. ⇒ The gate should test "is pause/resume corre
 "is the button on the screen in this particular frame".
 
 **The measurement**: `scripts/ci-gate.sh` 32/0 (scenarios 1–4 all covered, 168 s in total).
+
+---
+
+## 2026-11-11 (evening) · Paired gateway entries + conditional gateway execution semantics
+
+The user pointed out: "并行网关，异或网关，条件网关，应该都有开始和结束网关的，现在拖得很多只有一个，这样看起来不清晰的" (parallel, exclusive and conditional gateways should each come with a start and an end gateway; right now dragging them out gives only one, which makes the structure hard to read).
+
+### Features
+
+| Item | Explanation |
+|---|---|
+| Paired palette entries | Six entries: parallel split / parallel merge, exclusive split / exclusive merge, **conditional split / conditional merge**. The generic "exclusive gateway" entry was removed — an entry that does not distinguish split from merge is exactly the root of "dragging it out gives only one". |
+| A name from the moment it is dragged | Each entry pre-sets a **neutral code** (`PARALLEL_SPLIT` and friends) plus the standard BPMN `gatewayDirection` (Diverging/Converging) ⇒ the canvas immediately shows "并行分叉" / "条件汇合", readable even when zoomed out |
+| Canvas colouring by role | Splits get a **green border**, merges an **orange** one (bpmn-js does not render `gatewayDirection` at all, so a parallel split and a parallel merge are identical to it) |
+| The name follows the topology | A gateway name is synchronised with the **actual connection count** (the engine decides the role by connection count, so the name may not contradict the facts); a name the user typed is **never** overwritten |
+| The conditional gateway really runs | The execution side now handles `inclusiveGateway`: `SPLIT_CONDITIONAL` (every branch whose condition holds runs) and `JOIN_CONDITIONAL` (waits only for the branches that actually arrive) |
+| Gateway structure preflight | New PF-15/16/17/18/19: one-in-one-out, a split without a same-family merge, a merge without a same-family split, a conditional gateway whose outgoing edges carry no condition, and an isolated gateway |
+| Auto-layout knows the conditional gateway | Fork/join pairing is per family — parallel with parallel, exclusive with exclusive, conditional with conditional — instead of treating a conditional gateway as an exclusive one |
+
+### Bugs
+
+**① The execution side did not recognise `inclusiveGateway` ⇒ a silent break in the flow**
+
+The saving side (`BpmnGraphParser.TYPE_MAP`) has always mapped `inclusiveGateway`, but the execution side (`WorkflowGraphParser`) had **no such branch at all** ⇒ the gateway is not in `nodes` ⇒ `GraphRunner` hits `node == null → continue` and **does not enqueue the successor** ⇒ everything downstream silently does not run, without an error. The review record 20261102-03 already noted it ("inclusiveGateway not recognised breaks the flow"); it was never fixed.
+
+⇒ This round completes the execution semantics and changes the specification from "inclusive gateway is outside the release" to "delivered" (it used to be a Class C capability boundary).
+
+**② bpmn-js's `renderGateway` does not look at `gatewayDirection` at all**
+
+The moddle supports `gatewayDirection` (an attribute of the `Gateway` base class), but the official renderer never uses it ⇒ a parallel split and a parallel merge are drawn **identically**. That is one of the roots of "the structure is hard to read".
+
+⇒ A gateway shape renderer takes over: it calls the default renderer (which returns the diamond `<polygon>`) and then recolours its stroke by role.
+
+**③ `setAttribute('stroke')` alone does not change the colour**
+
+bpmn-js's `shapeStyle` writes the colour as one **inline style** string (`style="...; stroke: rgb(34,36,42); ..."`), and **a CSS style beats an SVG presentation attribute** ⇒ the attribute turned green while the drawing stayed black.
+
+⇒ `gfx.style.stroke` has to be written as well. Worse, **the verification script was fooled too**: it checked the `stroke` attribute (green) rather than the computed style (black) ⇒ the gate stayed green while the UI stayed black. ⇒ Verification now checks `getComputedStyle` — what the user actually sees.
+
+**④ Once a gateway name is cleared it can never be filled in again**
+
+The role synchronisation originally cleared the name when a gateway turned into a "straight-through" (one in, one out) ⇒ an empty name is no longer an "automatic name" ⇒ when the role became unambiguous again, `isNeutralCode('')` was false ⇒ **the name could never come back**, and the gateway was left nameless for good.
+
+⇒ Now the name is only written **when the role is unambiguous**; a straight-through keeps the previous name. The right panel reports the actual role honestly (and warns when the name disagrees, including the "actually a straight-through" case).
+
+### Design
+
+**Why the conditional gateway has to touch the execution core**
+
+The user chose the **inclusive semantics** (every branch whose condition holds runs). Its value is expressing what an exclusive gateway cannot: "if it passes, send it **simultaneously** to analysis and to archiving". An exclusive gateway is "the first match wins" — the later conditions are never even evaluated.
+
+The hard part is not the split but the **merge**: a conditional merge has to know which of its incoming edges "will actually arrive". That is **dead-branch propagation** (`ConditionalBranchTracker`):
+
+1. After a split decides, the **skipped** outgoing edges are marked dead;
+2. When **all** incoming edges of a node are dead, the node itself cannot run (it is a dead node) ⇒ its outgoing edges are dead too ⇒ propagation continues;
+3. A merge waits only for the incoming edges that are neither dead nor arrived; whenever the dead set changes, **all conditional merges are re-evaluated**.
+
+Point 3 is the crux: without it, a skipped branch would **deadlock** the merge (the flow would stop silently).
+
+Why "all incoming edges dead" and not "any": a node may have several incoming edges (other splits point at it too); as long as one of them may still be live, the node may run ⇒ it must not be declared dead. The same rule prevents "a skipped branch kills a shared node".
+
+**Why the preflight issues are WARN and not ERROR**
+
+All five new issues are about **how the graph is drawn**, not about whether it can run. Blocking the save would make users think the system is broken — and what the user asked for is exactly "make the structure visible", so the right move is to point at the part that is not drawn right, not to forbid saving it.
+
+**Why exclusive gateways do not get PF-16/PF-17**
+
+An exclusive merge releases on "any arriving branch", so converging on an `end` event means the same thing (the test master table rule 6 says outright "exclusive may use the same end as the merge point") ⇒ reporting "no same-family merge" for an exclusive gateway would be a false alarm.
+
+### Measured
+
+| Item | Result |
+|---|---|
+| `GraphRunnerTest` | **22/0** (5 new conditional-gateway cases: both conditions hold ⇒ both branches run / one does not hold ⇒ the merge still releases / none holds ⇒ the default edge is taken / dead propagation crosses a nested conditional split / dry run does not report a false PF-03) |
+| `PreflightGatewayStructureSelfTest` (new) | **8/0** (PF-15/16/17/18/19, pure logic) |
+| `scripts/verify-gateway-pairs.py` (new) | **24/0** — on the page: six paired entries, four role labels, green/orange strokes (checking the **computed style**), the name following the topology, the XML storing the neutral code, the preflight reporting the structural problems; over the API: the conditional gateway really runs — both conditions hold ⇒ both branches execute and the merge releases; one condition does not hold ⇒ that branch does not run **and the merge does not deadlock** |
+| `scripts/ci-gate.sh` | **Gate passed** (core scenarios 32/0, 180 seconds in total) |
+
+### Fixed in passing
+
+`scripts/shot-gateway-labels.py` and `shot-gateways.py` import `scripts/e2e-flow-matrix.py`, which was deleted on 2026-11-11 when the old gate system was retired wholesale (`7c9a2f7`) ⇒ those two screenshot scripts have been **unable to run** ever since. ⇒ The page-interaction helpers that are still in use were extracted into a self-contained `scripts/designer-helpers.py`, and the two screenshot scripts now point at it (their palette entry ids were updated as well).

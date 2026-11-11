@@ -496,6 +496,9 @@ public final class GraphRunner {
 
         Deque<String> ready = new ArrayDeque<>();
         Set<String> done = new HashSet<>();
+        // 条件网关（包容）的分支存活性：条件汇合点靠它知道
+        // 「哪条入边是分支被跳过的、永远不会来」⇒ 只等真正会到的分支。
+        ConditionalBranchTracker tracker = new ConditionalBranchTracker(graph);
         // 每个节点走了几圈。**只有图里真的存在环（回边）时才允许重入**，
         // 否则并行/异或的重复激活会被误当成循环，把设备动作多跑一遍。
         Map<String, Integer> visits = new HashMap<>();
@@ -689,17 +692,34 @@ public final class GraphRunner {
             List<GEdge> outs = graph.out(key);
             if (node.kind() == Kind.SPLIT_XOR && !dryRun) {
                 GEdge chosen = choose(outs, key);
+                // 先记「被跳过的分支」⇒ 条件汇合点知道哪条入边永远不会来。
+                // 必须在激活分支之前做：分支节点马上就会跑。
+                tracker.markSkipped(graph, outs,
+                        chosen == null ? Set.of() : Set.of(chosen.id()));
                 if (chosen != null) {
-                    activate(graph, chosen, pending, ready, done);
+                    activate(graph, chosen, pending, ready, done, tracker);
                 }
+                recheckConditionalJoins(graph, ready, done, tracker);
+            } else if (node.kind() == Kind.SPLIT_CONDITIONAL && !dryRun) {
+                // 条件分叉（包容语义）：**条件成立的几条分支都走**。
+                List<GEdge> taken = chooseAll(outs, key);
+                Set<String> takenIds = new HashSet<>();
+                for (GEdge e : taken) {
+                    takenIds.add(e.id());
+                }
+                tracker.markSkipped(graph, outs, takenIds);
+                for (GEdge e : taken) {
+                    activate(graph, e, pending, ready, done, tracker);
+                }
+                recheckConditionalJoins(graph, ready, done, tracker);
             } else {
-                // 干跑（保存前预检）里异或**不分叉**，出边全部算可达。
+                // 干跑（保存前预检）里异或/条件**不分叉**，出边全部算可达。
                 // 条件读的是运行时变量，干跑时值未知 —— 例如 `${mode} == 'go'`，
                 // `mode` 由 `__setVar` 在运行到那一步时才写；干跑按 default 走单边，
                 // 会把另一条分支判成「永远走不到」（PF-03 假报）。
                 // 预检只回答「有没有可能走到」，所以这里取并集。
                 for (GEdge e : outs) {
-                    activate(graph, e, pending, ready, done);
+                    activate(graph, e, pending, ready, done, tracker);
                 }
             }
         }
@@ -948,15 +968,24 @@ public final class GraphRunner {
     }
 
     private void activate(Graph g, GEdge edge, Map<String, Integer> pending,
-                          Deque<String> ready, Set<String> done) {
+                          Deque<String> ready, Set<String> done,
+                          ConditionalBranchTracker tracker) {
         GNode target = g.nodes().get(edge.to());
         if (target == null) {
             return;
         }
+        tracker.markArrived(edge);
         if (target.kind() == Kind.JOIN_PARALLEL) {
             // AND join：所有入边都到齐才推进
             int left = pending.merge(edge.to(), -1, Integer::sum);
             if (left <= 0) {
+                ready.add(edge.to());
+            }
+        } else if (target.kind() == Kind.JOIN_CONDITIONAL) {
+            // 条件汇合：只等**确实会到**的入边到齐 —— 被跳过的分支不算数，
+            // 否则那个分支永远不会来，汇合点就死等了。
+            if (tracker.joinReady(g, edge.to())
+                    && (!done.contains(edge.to()) || graphHasCycle)) {
                 ready.add(edge.to());
             }
         } else {
@@ -964,6 +993,29 @@ public final class GraphRunner {
             // 图里有环时不能只看 done —— 回边指向的节点本来就"做过"，不放行就永远循环不了。
             if (!done.contains(edge.to()) || graphHasCycle) {
                 ready.add(edge.to());
+            }
+        }
+    }
+
+    /**
+     * 死分支集合变了 ⇒ 重新判定所有条件汇合点。
+     *
+     * <p><b>为什么需要</b>：条件汇合点可能在「另一条分支还没决定」时
+     * 先收到一条入边，那它按「还有未知入边」继续等。等分叉决定完、
+     * 那条分支被跳过（判死），汇合点「要等几条」就变少了 ——
+     * 得回头再判一次，否则它会一直等下去。
+     */
+    private void recheckConditionalJoins(Graph g, Deque<String> ready, Set<String> done,
+                                         ConditionalBranchTracker tracker) {
+        for (GNode n : g.nodes().values()) {
+            if (n.kind() != Kind.JOIN_CONDITIONAL) {
+                continue;
+            }
+            if (done.contains(n.key()) && !graphHasCycle) {
+                continue;
+            }
+            if (tracker.joinReady(g, n.key())) {
+                ready.add(n.key());
             }
         }
     }
@@ -1017,6 +1069,71 @@ public final class GraphRunner {
         log.accept(String.format("网关 %s 无 default，走稳定排序第一条 -> %s（未经条件）",
                 gatewayKey, first.to()));
         return first;
+    }
+
+    /**
+     * <b>条件分叉</b>选边：<b>所有条件成立的出边都走</b>（包容语义）。
+     *
+     * <p>与异或 {@link #choose} 的差别只有一处：异或是「第一条成立就赢」
+     * （后面的条件根本不会被求值），这里是「成立的全都走」——
+     * 这正是条件网关存在的意义：表达「合格就<b>同时</b>送去分析和存档」
+     * 这种多路并行的编排。
+     *
+     * <p><b>兜底口径与异或保持一致</b>：一条都没成立时走 {@code default} 边，
+     * 没有 default 就走稳定排序第一条。
+     *
+     * <p><b>没写条件的出边不自动走</b>，只在兜底时可能被选中 ——
+     * 否则「无条件边 = 永远走」会和「default = 兜底」两套规则打架，
+     * 同一张图里两种网关行为不一致更难排查。
+     */
+    private List<GEdge> chooseAll(List<GEdge> outs, String gatewayKey) {
+        if (outs.isEmpty()) {
+            return List.of();
+        }
+        if (outs.size() == 1) {
+            // 单出边 = 直通（与异或同一口径：不求值条件）
+            return outs;
+        }
+        List<GEdge> taken = new ArrayList<>();
+        for (GEdge e : outs) {
+            if (e.condition() == null || e.condition().isBlank()) {
+                continue;
+            }
+            try {
+                if (com.labos.kernel.engine.ConditionEvaluator.eval(e.condition(), variables)) {
+                    conditionHitCount++;
+                    taken.add(e);
+                    log.accept(String.format("网关 %s 条件成立 -> %s（%s）",
+                            gatewayKey, e.to(), e.condition().trim()));
+                }
+            } catch (RuntimeException ex) {
+                // 求值失败**不静默**：记数，然后这条分支当没成立
+                // （不能因为一个写错的表达式把整单卡死，也不能猜它成立）。
+                unevaluatedConditionCount++;
+                log.accept(String.format("网关 %s 条件求值失败（%s），该分支不走：%s",
+                        gatewayKey, ex.getMessage(), e.condition()));
+            }
+        }
+        if (!taken.isEmpty()) {
+            return taken;
+        }
+        // 一条都没成立：default → 稳定排序第一条
+        for (GEdge e : outs) {
+            if (e.isDefault()) {
+                defaultEdgeCount++;
+                log.accept(String.format("网关 %s 走 default 边 -> %s（无分支条件成立）",
+                        gatewayKey, e.to()));
+                return List.of(e);
+            }
+        }
+        GEdge first = outs.stream()
+                .sorted(Comparator.comparing(GEdge::to))
+                .findFirst()
+                .orElse(outs.get(0));
+        defaultEdgeCount++;
+        log.accept(String.format("网关 %s 无 default，走稳定排序第一条 -> %s（无分支条件成立）",
+                gatewayKey, first.to()));
+        return List.of(first);
     }
 
     // ---------------------------------------------------------------- 节点转换
@@ -1122,7 +1239,8 @@ public final class GraphRunner {
         Set<String> out = new LinkedHashSet<>();
         for (GNode n : g.nodes().values()) {
             if (n.kind() == Kind.SPLIT_PARALLEL || n.kind() == Kind.JOIN_PARALLEL
-                    || n.kind() == Kind.SPLIT_XOR || n.kind() == Kind.JOIN_XOR) {
+                    || n.kind() == Kind.SPLIT_XOR || n.kind() == Kind.JOIN_XOR
+                    || n.kind() == Kind.SPLIT_CONDITIONAL || n.kind() == Kind.JOIN_CONDITIONAL) {
                 out.add(n.key() + "(" + n.kind() + ")");
             }
         }

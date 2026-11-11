@@ -17,11 +17,15 @@ import os
 import re
 import sys
 
+# 辅助函数在 designer-helpers.py（自包含）。
+# ⚠ 原先这里 import 的是 e2e-flow-matrix.py —— 那个文件在 2026-11-11
+#   「旧门禁体系整体退役」时被删了（7c9a2f7），本脚本从那时起就**跑不起来**。
+#   页面交互的写法沉淀到了 designer-helpers.py，这里改指过去。
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
-    "efm", os.path.join(_HERE, "e2e-flow-matrix.py"))
+    "dh", os.path.join(_HERE, "designer-helpers.py"))
 F = importlib.util.module_from_spec(_spec)
-sys.modules["efm"] = F
+sys.modules["dh"] = F
 _spec.loader.exec_module(F)
 
 OUT_DIR = os.path.join(os.path.dirname(_HERE), "docs", "media")
@@ -75,9 +79,11 @@ def main():
             page.wait_for_selector("text=流程库", timeout=25000)
 
         # A：异或网关（X 形）—— 一分为多选一
+        # ⚠ palette 入口 2026-11-11 起改成**成对**（分叉/汇合各一个），
+        #   通用「异或网关」入口已撤下。
         shot(page, ctx, "xor", "异或网关",
              [("S", "create.start-event", 140, 120),
-              ("X", "create.exclusive-gateway", 300, 120),
+              ("X", "create.exclusive-split", 300, 120),
               ("A", "create.task", 480, 60),
               ("B", "create.task", 480, 200),
               ("E", "create.end-event", 560, 300)],
@@ -87,7 +93,7 @@ def main():
         # B：并行网关（＋形）—— 一分为多，全走
         shot(page, ctx, "par", "并行网关",
              [("S", "create.start-event", 140, 120),
-              ("P", "create.parallel-gateway", 300, 120),
+              ("P", "create.parallel-split", 300, 120),
               ("A", "create.task", 480, 60),
               ("B", "create.task", 480, 200),
               ("E", "create.end-event", 560, 300)],

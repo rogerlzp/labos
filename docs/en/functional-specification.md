@@ -428,12 +428,15 @@ The storage continues to use BPMN XML, so that the workflow definitions can be o
 | Sequence | `sequenceFlow` | Delivered |
 | Parallel, fork and join | `parallelGateway` | Delivered |
 | Decision, one branch only | `exclusiveGateway` | Delivered |
+| Conditional, every branch whose condition holds | `inclusiveGateway` | Delivered |
 | Time Constraint, the shortest or longest interval between two steps | No equivalent element, a new annotation is needed | Delivered. Used for incubation and plate-reading windows |
 | Sub-process | `subProcess` | P1, executed as a subgraph |
 | Loop, Wait Until | `loopCharacteristics` etc. | Outside the release, the model keeps the field |
 | Exclusively holding a device until it is released | None | Outside the release |
 | Executing a set of containers one by one and assigning variables | None | Together with the containers and the variables, outside the release |
-| Inclusive gateway, event gateway, boundary events | Corresponding elements | Outside the release |
+| Event gateway, boundary events | Corresponding elements | Outside the release |
+
+All three gateway kinds come in **paired** palette entries: parallel split / parallel merge, exclusive split / exclusive merge, conditional split / conditional merge. A gateway dragged out carries its role name right away (splits get a green border, merges an orange one), and the name follows the actual connection count — the engine decides the role by connection count, so the name may not contradict the facts.
 
 The acceptance criterion of the parallel: both branches are executed; the join does not continue while any branch is unfinished. 2.0 does not require the two branches to overlap on the wall clock. The wall-clock overlap is device scheduling and does not block the gateway semantics.
 
@@ -441,6 +444,12 @@ The acceptance criterion of the exclusive: only one outgoing edge is executed. A
 
 - When an outgoing edge carries a condition expression, the one that matches after the evaluation is taken. The evaluation only allows the whitelist limited in chapter 12; arbitrary code is not allowed.
 - When an outgoing edge has no condition, the preflight before saving flags it as "missing condition". The execution takes one default edge (the BPMN default outgoing edge; when there is no default, the first one after a stable sort), and the event records "no condition, the default edge was taken". Executing both outgoing edges counts as a failure.
+
+The acceptance criterion of the conditional (inclusive semantics, delivered 2026-11-11):
+
+- **Split**: the condition on every outgoing edge is evaluated and **every edge that holds is taken**; when none holds, the `default` edge is taken, and without a `default` the first one after a stable sort. An outgoing edge without a condition only acts as a fallback; it is not taken automatically.
+- **Join**: it waits only for the branches that **actually arrive**. A skipped branch does not deadlock the join — the skip propagates down the branch (a node whose incoming edges are all dead is itself dead), and the join re-evaluates how many branches it still has to wait for.
+- The conditional gateway used to be recognised by the saving side only and not by the execution side (dropped onto a chain it silently broke the flow); this round adds the execution semantics and a preflight hint for outgoing edges without a condition.
 
 The acceptance criterion of the time constraint: the constraint is written on a pair of commands (or a pair of nodes) and contains the shortest interval, the longest interval, or both. Both the forecast and the real execution check it. When the longest interval is exceeded, the recovery policy handles it (the default escalates to `MANUAL`; the policy can change it to `ABORT`). For a command without a duration model, the preflight refuses to attach a time constraint.
 

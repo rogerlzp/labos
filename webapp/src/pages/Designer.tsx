@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent as ReactDragEvent } from 'react';
 import DeviceImageRenderer, { iconFor, isArm } from '../bpmn/DeviceImageRenderer';
 import { workflowPaletteModule } from '../bpmn/WorkflowPalette';
+import { GatewayShapeRenderer, GatewayRoleSync, isGatewayType } from '../bpmn/GatewayVisuals';
 import { NodeAutoNameLabelRenderer, NodeAutoNameShapeRenderer } from '../bpmn/NodeAutoNameRenderer';
 import { gatewayRoleCode, isLocalizableAutoName, isMergeRole, localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -1159,8 +1160,15 @@ export default function DesignerPage() {
         nodeAutoNameLabelRenderer: ['type', NodeAutoNameLabelRenderer],
         nodeAutoNameShapeRenderer: ['type', NodeAutoNameShapeRenderer],
       },
-      // palette：补并行网关入口 + 移除解析器不认的入口（见 WorkflowPalette.ts 注释）
-      workflowPaletteModule],
+      // palette：网关改成 6 个成对入口（并行/异或/条件 × 分叉/汇合）+ 移除解析器不认的入口
+      workflowPaletteModule,
+      // 网关可视化：分叉绿边、汇合橙边（bpmn-js 自己不画 gatewayDirection，
+      // 分叉和汇合画出来一模一样）；并把网关名同步成**实际拓扑**算出来的角色。
+      {
+        __init__: ['gatewayShapeRenderer', 'gatewayRoleSync'],
+        gatewayShapeRenderer: ['type', GatewayShapeRenderer],
+        gatewayRoleSync: ['type', GatewayRoleSync],
+      }],
     } as any);
     modelerRef.current = modeler;
 
@@ -1335,7 +1343,7 @@ export default function DesignerPage() {
     const SHAPES = new Set([
       'bpmn:StartEvent', 'bpmn:EndEvent', 'bpmn:Task', 'bpmn:UserTask',
       'bpmn:ServiceTask', 'bpmn:ScriptTask', 'bpmn:SendTask', 'bpmn:ReceiveTask',
-      'bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:SubProcess',
+      'bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:InclusiveGateway', 'bpmn:SubProcess',
       'bpmn:IntermediateThrowEvent', 'bpmn:IntermediateCatchEvent', 'bpmn:CallActivity',
     ]);
     const shapes: ShapeEl[] = [];
@@ -1373,11 +1381,18 @@ export default function DesignerPage() {
     const nodeH = (id: string) => Math.max(size.get(id)?.h ?? 80, 50);
     const isGatewayType = (t: string) => t.includes('Gateway');
     const isParallelType = (t: string) => t.includes('Parallel');
+    const isConditionalType = (t: string) => t.includes('Inclusive');
+    // 网关种类决定「分叉配哪个汇合」：并行配并行、异或配异或、条件配条件。
+    // 三种混配就是画错了（引擎也是按类型分别判语义的）。
     const kindOf = (id: string) => {
       const t = byId.get(id)?.type ?? '';
       if (t === 'bpmn:EndEvent') return 'end';
       if (t === 'bpmn:StartEvent') return 'start';
-      if (isGatewayType(t)) return isParallelType(t) ? 'par' : 'xor';
+      if (isGatewayType(t)) {
+        if (isParallelType(t)) return 'par';
+        if (isConditionalType(t)) return 'cond';
+        return 'xor';
+      }
       return 'task';
     };
 
@@ -1849,7 +1864,7 @@ export default function DesignerPage() {
     const src = bo?.sourceRef;
     setFlowDefault(!!src?.default && src.default.id === selected);
     setFlowSrcGateway(!!src && (src.$type === 'bpmn:ExclusiveGateway'
-      || src.$type === 'bpmn:ParallelGateway'));
+      || src.$type === 'bpmn:ParallelGateway' || src.$type === 'bpmn:InclusiveGateway'));
   }, [selected, selType]);
 
   // 参数定义加载后，用 default 回填空值（只在明确是简单值时，避免把 JSON 片段填进去）
@@ -2102,7 +2117,8 @@ export default function DesignerPage() {
       });
       // default 只有挂在网关（或其它元素）上才会被解析器收；挂在连线上无人读。
       const src = bo.sourceRef;
-      if (src && (src.$type === 'bpmn:ExclusiveGateway' || src.$type === 'bpmn:ParallelGateway')) {
+      if (src && (src.$type === 'bpmn:ExclusiveGateway' || src.$type === 'bpmn:ParallelGateway'
+        || src.$type === 'bpmn:InclusiveGateway')) {
         const srcEl = reg.get(src.id);
         if (srcEl) {
           modeling.updateProperties(srcEl, { default: flowDefault ? bo : undefined });
@@ -2177,6 +2193,16 @@ export default function DesignerPage() {
   };
 
   const issues: PreflightIssue[] = pre.data?.issues ?? [];
+
+  // 网关「名字写的是什么」与「图里实际是什么角色」的对照。
+  // 引擎按连线数判角色（入边多=汇合、出边多=分叉），名字骗不了它 ——
+  // 两者打架时如实告诉用户，别让画布上写着「并行分叉」而引擎在等齐。
+  //
+  // ⚠ 实际是**直通**（单进单出）时 actualRoleLabel 为空，也算「打架」——
+  //   名字说「并行分叉」而引擎按直通跑，同样是误导，得说出来。
+  const nodeNameLabel = localizedNeutralLabel(nodeName);
+  const actualRoleLabel = localizedNeutralLabel(gatewayRole);
+  const roleMismatch = !!nodeNameLabel && nodeNameLabel !== actualRoleLabel;
 
   return (
     <>
@@ -2349,14 +2375,14 @@ export default function DesignerPage() {
           <Card size="small">
             <Empty description={t('designer.empty.selectNode')} />
           </Card>
-        ) : selType === 'bpmn:ExclusiveGateway'
-          || selType === 'bpmn:ParallelGateway' ? (
+        ) : isGatewayType(selType) ? (
           /* 网关专用卡片。
              为什么单独一张：网关**不需要**绑定设备/方法，而「节点设置」卡挂在
              compile 结果上（compile 只认 task），所以网关选中后右栏只会显示
              「还没保存，先保存画布才能绑定设备与方法」—— 想给网关起个名都做不到。
-             而网关恰恰最需要名字：两种网关都是菱形（✕ / ＋），缩小后分不出，
-             「分叉」还是「汇合」光看形状也看不出来（引擎按连线数自动判）。 */
+             而网关恰恰最需要名字：三种网关都是菱形（✕ / ＋ / ○），
+             缩小后分不出类型，「分叉」还是「汇合」光看形状也看不出来
+             （引擎按连线数自动判）—— 所以画布上另用绿边/橙边区分（见 GatewayVisuals.ts）。 */
           <Card size="small" title={t('designer.gateway.title')}
             extra={<Button size="small" type="primary" loading={saving} {...ro} onClick={save}>
               {t('designer.action.save')}
@@ -2365,10 +2391,13 @@ export default function DesignerPage() {
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('designer.gateway.kindLabel')}
               </Typography.Text>
-              <Tag color={selType === 'bpmn:ParallelGateway' ? 'blue' : 'default'}>
+              <Tag color={selType === 'bpmn:ParallelGateway' ? 'blue'
+                : selType === 'bpmn:InclusiveGateway' ? 'purple' : 'default'}>
                 {selType === 'bpmn:ParallelGateway'
                   ? t('designer.gateway.parallel')
-                  : t('designer.gateway.exclusive')}
+                  : selType === 'bpmn:InclusiveGateway'
+                    ? t('designer.gateway.conditional')
+                    : t('designer.gateway.exclusive')}
               </Tag>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('designer.gateway.roleLabel')}
@@ -2376,6 +2405,16 @@ export default function DesignerPage() {
               <Tag color={isMergeRole(gatewayRole) ? 'orange' : 'green'}>
                 {localizedNeutralLabel(gatewayRole) || t('designer.gateway.roleUnknown')}
               </Tag>
+              {/* 名字与实际角色打架时如实说：引擎按连线数判，名字骗不了它。 */}
+              {roleMismatch && (
+                <Alert type="warning" showIcon
+                  message={actualRoleLabel
+                    ? t('designer.gateway.roleMismatch', {
+                      name: nodeNameLabel,
+                      role: actualRoleLabel,
+                    })
+                    : t('designer.gateway.roleMismatchStraight', { name: nodeNameLabel })} />
+              )}
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('designer.field.nodeName')}
               </Typography.Text>
@@ -2392,6 +2431,9 @@ export default function DesignerPage() {
                   onClick={() => writeNodeName(String(selected), gatewayRole)} {...ro}>
                   {t('designer.action.useSuggestedName', { name: localizedNeutralLabel(gatewayRole) ?? gatewayRole })}
                 </Button>
+              )}
+              {selType === 'bpmn:InclusiveGateway' && (
+                <Alert type="info" showIcon message={t('designer.gateway.needCondition')} />
               )}
               <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                 {t('designer.gateway.hint')}

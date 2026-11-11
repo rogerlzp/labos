@@ -18,11 +18,15 @@ import os
 import re
 import sys
 
+# 辅助函数在 designer-helpers.py（自包含）。
+# ⚠ 原先这里 import 的是 e2e-flow-matrix.py —— 那个文件在 2026-11-11
+#   「旧门禁体系整体退役」时被删了（7c9a2f7），本脚本从那时起就**跑不起来**。
+#   页面交互的写法沉淀到了 designer-helpers.py，这里改指过去。
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
-    "efm", os.path.join(_HERE, "e2e-flow-matrix.py"))
+    "dh", os.path.join(_HERE, "designer-helpers.py"))
 F = importlib.util.module_from_spec(_spec)
-sys.modules["efm"] = F
+sys.modules["dh"] = F
 _spec.loader.exec_module(F)
 
 OUT = os.path.join(os.path.dirname(_HERE), "docs", "media")
@@ -104,13 +108,15 @@ def main():
         #     右栏如实显示「直通（单进单出）」—— 这不是 bug，是图没画对。）
         # ⚠ 两个 ＋ 形网关（并行分叉 / 并行汇合）之间要留够横向距离，
         #   否则它们的标签（都在节点正下方）会叠在一起。
+        # ⚠ palette 入口是**成对**的（2026-11-11）：并行分叉 / 并行汇合各一个，
+        #   不再有一个不分叉汇合的通用「并行网关」入口。
         ids = {}
         for n, action, x, y in (("S", "create.start-event", 120, 120),
-                               ("X1", "create.exclusive-gateway", 230, 120),
-                               ("P1", "create.parallel-gateway", 340, 120),
+                               ("X1", "create.exclusive-split", 230, 120),
+                               ("P1", "create.parallel-split", 340, 120),
                                ("A", "create.task", 460, 50),
                                ("B", "create.task", 460, 200),
-                               ("P2", "create.parallel-gateway", 620, 130),
+                               ("P2", "create.parallel-merge", 620, 130),
                                ("C", "create.task", 760, 130),
                                ("E", "create.end-event", 760, 250)):
             clear_selection(page)

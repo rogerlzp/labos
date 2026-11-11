@@ -44,6 +44,11 @@ public final class GraphRunnerTest {
         caseXorOnlyOneBranch();
         caseDryRunNoDeviceStillReachable();
         caseXorDefaultEdge();
+        caseConditionalSplitMultipleBranches();
+        caseConditionalJoinSkipsDeadBranch();
+        caseConditionalDefaultFallback();
+        caseConditionalInsideSkippedBranch();
+        caseConditionalDryRunAllReachable();
         testPauseCheckpoint();
         caseLoopRounds();
         caseBuiltinNodes();
@@ -217,6 +222,180 @@ public final class GraphRunnerTest {
                     """);
             RunProgress p = run(xml);
             eq("只执行 1 个任务", 1, p.all().size());
+        });
+    }
+
+    // -------------------------------------------------- 条件网关（包容网关）
+
+    /**
+     * 包容语义的核心：**条件成立的几条分支都走**。
+     *
+     * <p>异或做不到这件事 —— 它是「第一条成立就赢」，后面的条件根本不会被求值。
+     */
+    private static void caseConditionalSplitMultipleBranches() {
+        check("条件分叉：两条条件都成立 → 两条分支都执行", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <inclusiveGateway id="COND"/>
+                    <task id="A" name="Transfer"/>
+                    <task id="B" name="Transfer"/>
+                    <inclusiveGateway id="JOIN"/>
+                    <task id="C" name="Transfer"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="COND"/>
+                    <sequenceFlow id="F2" sourceRef="COND" targetRef="A">
+                      <conditionExpression>${a} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F3" sourceRef="COND" targetRef="B">
+                      <conditionExpression>${b} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F4" sourceRef="A" targetRef="JOIN"/>
+                    <sequenceFlow id="F5" sourceRef="B" targetRef="JOIN"/>
+                    <sequenceFlow id="F6" sourceRef="JOIN" targetRef="C"/>
+                    <sequenceFlow id="F7" sourceRef="C" targetRef="E"/>
+                    """);
+            RunProgress p = runWithVars(xml, Map.of("a", "yes", "b", "yes"));
+            eq("A/B/C 三个任务都执行", 3, p.all().size());
+            eq("全部完成", 3, p.count(NodeStatus.COMPLETED));
+        });
+    }
+
+    /**
+     * 条件汇合最关键的一条：<b>被跳过的分支不能把汇合点卡死</b>。
+     *
+     * <p>没有死分支追踪的话，汇合点会一直等 B 的入边 ⇒ C 永远不执行 ⇒ 流程静默停住。
+     */
+    private static void caseConditionalJoinSkipsDeadBranch() {
+        check("条件汇合：分支被跳过时汇合照样放行（不死等）", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <inclusiveGateway id="COND"/>
+                    <task id="A" name="Transfer"/>
+                    <task id="B" name="Transfer"/>
+                    <inclusiveGateway id="JOIN"/>
+                    <task id="C" name="Transfer"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="COND"/>
+                    <sequenceFlow id="F2" sourceRef="COND" targetRef="A">
+                      <conditionExpression>${a} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F3" sourceRef="COND" targetRef="B">
+                      <conditionExpression>${b} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F4" sourceRef="A" targetRef="JOIN"/>
+                    <sequenceFlow id="F5" sourceRef="B" targetRef="JOIN"/>
+                    <sequenceFlow id="F6" sourceRef="JOIN" targetRef="C"/>
+                    <sequenceFlow id="F7" sourceRef="C" targetRef="E"/>
+                    """);
+            RunProgress p = runWithVars(xml, Map.of("a", "yes", "b", "no"));
+            eq("只执行 A 和 C 两个任务", 2, p.all().size());
+            checkTrue("B（条件不成立的分支）没执行", p.all().stream()
+                    .noneMatch(np -> np.nodeId() == Math.abs((long) "B".hashCode())));
+            checkTrue("C 执行了（汇合点没被死等卡住）", p.all().stream()
+                    .anyMatch(np -> np.nodeId() == Math.abs((long) "C".hashCode())));
+        });
+    }
+
+    /** 一条都不成立时走 default（与异或同一口径）。 */
+    private static void caseConditionalDefaultFallback() {
+        check("条件分叉：都不成立时走 default 边", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <inclusiveGateway id="COND" default="F3"/>
+                    <task id="A" name="Transfer"/>
+                    <task id="B" name="Transfer"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="COND"/>
+                    <sequenceFlow id="F2" sourceRef="COND" targetRef="A">
+                      <conditionExpression>${a} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F3" sourceRef="COND" targetRef="B"/>
+                    <sequenceFlow id="F4" sourceRef="A" targetRef="E"/>
+                    <sequenceFlow id="F5" sourceRef="B" targetRef="E"/>
+                    """);
+            RunProgress p = runWithVars(xml, Map.of("a", "no"));
+            eq("只执行 1 个任务", 1, p.all().size());
+            checkTrue("执行的是 default 分支 B", p.all().stream()
+                    .anyMatch(np -> np.nodeId() == Math.abs((long) "B".hashCode())));
+        });
+    }
+
+    /**
+     * 死分支要能<b>穿过嵌套的网关</b>传下去。
+     *
+     * <p>异或只走 A ⇒ B 支线整条不执行 ⇒ B 支线里那个条件分叉也不会跑
+     * ⇒ 它下面的分支也不该跑 ⇒ 汇合点不能等它们。
+     */
+    private static void caseConditionalInsideSkippedBranch() {
+        check("死分支穿过嵌套条件分叉：整条支线不执行，汇合不死等", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <exclusiveGateway id="XOR" default="F2"/>
+                    <task id="A" name="Transfer"/>
+                    <task id="B" name="Transfer"/>
+                    <inclusiveGateway id="COND2"/>
+                    <task id="B2" name="Transfer"/>
+                    <inclusiveGateway id="JOIN"/>
+                    <task id="C" name="Transfer"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="XOR"/>
+                    <sequenceFlow id="F2" sourceRef="XOR" targetRef="A"/>
+                    <sequenceFlow id="F3" sourceRef="XOR" targetRef="B"/>
+                    <sequenceFlow id="F4" sourceRef="A" targetRef="JOIN"/>
+                    <sequenceFlow id="F5" sourceRef="B" targetRef="COND2"/>
+                    <sequenceFlow id="F6" sourceRef="COND2" targetRef="B2">
+                      <conditionExpression>${b2} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F7" sourceRef="B2" targetRef="JOIN"/>
+                    <sequenceFlow id="F8" sourceRef="JOIN" targetRef="C"/>
+                    <sequenceFlow id="F9" sourceRef="C" targetRef="E"/>
+                    """);
+            // 异或走 default（A）；B 支线整条被跳过
+            RunProgress p = runWithVars(xml, Map.of("b2", "yes"));
+            eq("只执行 A 和 C", 2, p.all().size());
+            checkTrue("B 没执行", p.all().stream()
+                    .noneMatch(np -> np.nodeId() == Math.abs((long) "B".hashCode())));
+            checkTrue("嵌套支线里的 B2 也没执行", p.all().stream()
+                    .noneMatch(np -> np.nodeId() == Math.abs((long) "B2".hashCode())));
+            checkTrue("C 执行了（汇合没死等）", p.all().stream()
+                    .anyMatch(np -> np.nodeId() == Math.abs((long) "C".hashCode())));
+        });
+    }
+
+    /** 条件网关在干跑里不分叉：条件读的是运行期变量，干跑值未知。 */
+    private static void caseConditionalDryRunAllReachable() {
+        check("干跑：条件网关的分支都算可达（不假报 PF-03）", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <inclusiveGateway id="COND"/>
+                    <task id="A" name="Transfer"/>
+                    <task id="B" name="Transfer"/>
+                    <inclusiveGateway id="JOIN"/>
+                    <task id="C" name="Transfer"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="COND"/>
+                    <sequenceFlow id="F2" sourceRef="COND" targetRef="A">
+                      <conditionExpression>${a} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F3" sourceRef="COND" targetRef="B">
+                      <conditionExpression>${b} == 'yes'</conditionExpression>
+                    </sequenceFlow>
+                    <sequenceFlow id="F4" sourceRef="A" targetRef="JOIN"/>
+                    <sequenceFlow id="F5" sourceRef="B" targetRef="JOIN"/>
+                    <sequenceFlow id="F6" sourceRef="JOIN" targetRef="C"/>
+                    <sequenceFlow id="F7" sourceRef="C" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            GraphRunner dry = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L, 102L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { }).withDryRun(true);
+            dry.run(g, new SimulatedBus());
+            checkTrue("干跑 A 可达", dry.activatedKeys().contains("A"));
+            checkTrue("干跑 B 可达", dry.activatedKeys().contains("B"));
+            checkTrue("干跑 C 可达", dry.activatedKeys().contains("C"));
         });
     }
 
@@ -626,13 +805,19 @@ public final class GraphRunnerTest {
     }
 
     private static RunProgress run(String xml) {
+        return runWithVars(xml, Map.of());
+    }
+
+    /** 带运行期变量的执行（条件网关的表达式要读变量）。 */
+    private static RunProgress runWithVars(String xml, Map<String, String> vars) {
         Graph g = WorkflowGraphParser.parse(xml);
         RunStateMachine sm = new RunStateMachine(decider(), e -> { },
                 Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
         GraphRunner runner = new GraphRunner(sm,
                 Map.of("TRANSFER", List.of(101L, 102L)),
                 Map.of("Transfer", "TRANSFER"),
-                s -> { });
+                s -> { })
+                .withVariables(vars);
         return runner.run(g, new SimulatedBus());
     }
 
