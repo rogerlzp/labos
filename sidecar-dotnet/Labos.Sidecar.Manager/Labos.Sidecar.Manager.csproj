@@ -21,4 +21,15 @@
     <Compile Include="../Labos.Sidecar/RedisLinkState.cs" Link="Shared/RedisLinkState.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      wwwroot 显式复制到输出目录。
+      为什么必须显式写：Web SDK 默认把静态资源当 Content，**CopyToOutputDirectory 是 Never**
+      （开发时由 StaticWebAssets manifest 提供）⇒ 直接 `dotnet <dll>` 跑的时候
+      页面 404（现场就是"管理台打开了是空白页"）。
+      复制到输出目录后，`dotnet bin/.../Labos.Sidecar.Manager.dll` 就能直接跑。
+    -->
+    <Content Update="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

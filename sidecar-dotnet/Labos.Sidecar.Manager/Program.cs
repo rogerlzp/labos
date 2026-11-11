@@ -17,7 +17,17 @@ using Labos.Sidecar.Manager;
 //             Manager__RegistryUrl 等）
 // ============================================================================
 
-var builder = WebApplication.CreateBuilder(args);
+// ContentRoot / WebRoot 显式钉死到程序所在目录。
+// 为什么必须写：静态文件默认从 **ContentRoot/wwwroot** 找，而直接
+// `dotnet <dll>` 跑时 ContentRoot = **当前工作目录** ⇒ 从别处启动就 404
+// （现场表现为「管理台打开了是空白页」）。钉到 AppContext.BaseDirectory 后，
+// 从哪个目录启动都一样。
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
+    WebRootPath = "wwwroot",
+});
 builder.Services.AddSingleton<DeviceSupervisor>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
     p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));

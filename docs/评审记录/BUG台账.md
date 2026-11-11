@@ -50,6 +50,7 @@
 | `BUG-20261111-16` | **中** | **读 Redis 只 read 一次 TCP 就当拿到整个响应** ⇒ 响应被分包时只读到半截（`$5\r\nonli`）⇒ **key 明明存在却读成"不存在"** ⇒ 设备明明在线却显示离线 | `RedisLinkState.Get`（按"一次 read = 完整响应"处理） | ✅ **已修**（2026-11-11：按 RESP 声明的长度**读满**再解析） | 设备管理台第一版把 5 台全判成离线（2026-11-11） |
 | `BUG-20261111-17` | **中** | **设备管理台重启后不接管已经在跑的 tcp client** ⇒ 这些设备在界面上显示"不是本机托管"、**下线按钮是灰的** ⇒ 设备永远停不下来（Redis key 一直续期，中控一直判在线） | `Labos.Sidecar.Manager` 只记自己启动的进程，**不扫进程表** | ✅ **已修**（2026-11-11：每次刷新状态都扫进程表，按 `--link-only` + `--sim <ip:端口>` 认领并收编；实测管理台重启后 5 台全部 `managed=true`、pid 全部对上） | 管理台重启后设备停不掉（2026-11-11） |
 | `BUG-20261111-18` | **中** | **点了「下线」，设备仍显示在线 30 秒** ⇒ 停进程用的是 SIGKILL，进程**没有机会执行自己的清理代码** ⇒ Redis key 一直留到 TTL 过期 | `Labos.Sidecar.Manager` 停进程后不主动清 key | ✅ **已修**（2026-11-11：管理台知道 key 在哪，停完进程**直接清掉** ⇒ 中控即刻判离线；实测下线后 key **立即**消失） | 上下线联动用例实测（2026-11-11） |
+| `BUG-20261111-19` | **中** | **设备管理台打开是空白页（404）** ⇒ 现场按 dll 启动必然踩到 | ① Web SDK 默认**不把 `wwwroot` 复制到输出目录**（静态资源走 manifest，直接 `dotnet <dll>` 跑时不生效）；② 静态文件从 **ContentRoot/wwwroot** 找，而直接跑 dll 时 ContentRoot = **当前工作目录** ⇒ 从别处启动就找不到 | `Labos.Sidecar.Manager.csproj`（`Content Update="wwwroot/**" CopyToOutputDirectory`）、`Labos.Sidecar.Manager/Program.cs`（`ContentRootPath` / `WebRootPath` 显式钉死到 `AppContext.BaseDirectory`） | ✅ **已修**（2026-11-11：两处都补上；实测从 `/tmp` 启动 `dotnet <绝对路径>.dll` ⇒ `HTTP 200`，界面正常渲染 5 台设备） | 管理台启动后浏览器打开是空白页（2026-11-11） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
@@ -307,3 +308,14 @@
 key 口径（-11）、调度是否尊重它（-12）、台账的时间语义（-13）、
 以及端侧进程用哪个身份上报（-14）。
 少改一处，现象就是「明明离线，页面说在线」或反过来 —— 两种都很难一眼看出根因。
+
+#### 处置：BUG-20261111-19（执行方 · 2026-11-11）
+
+| 项 | 结果 |
+|---|---|
+| 现象 | 设备管理台启动后浏览器打开是**空白页**（`GET /` 返回 404，`#rows` 元素根本不存在） |
+| 两个坑 | ① **Web SDK 默认不把 `wwwroot` 复制到输出目录** —— 静态资源走 `staticwebassets` manifest，直接 `dotnet <dll>` 跑时不生效（`dotnet run` / `dotnet publish` 才生效）；② 静态文件从 **ContentRoot/wwwroot** 找，而直接跑 dll 时 ContentRoot = **当前工作目录** ⇒ 从别的目录启动就 404 |
+| 修法 | ① csproj 里 `<Content Update="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />`；② `WebApplication.CreateBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory, WebRootPath = "wwwroot" })` |
+| 实测 | 从 `/tmp` 启动 `dotnet /abs/path/Labos.Sidecar.Manager.dll --urls http://127.0.0.1:8600` ⇒ `HTTP 200`，界面正常渲染 5 台设备（名称/设备ID/设备IP/端口/能力/进程号/上线下线按钮齐全） |
+| 教训 | **"开发时能跑"不等于"部署后能跑"** —— `dotnet run` 会用 manifest 提供静态资源，直接跑 dll 不会。这两个坑都只出现在"按交付方式启动"的路径上，而那条路径恰恰是现场用的 |
+
