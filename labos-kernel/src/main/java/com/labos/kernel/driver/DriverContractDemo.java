@@ -2,9 +2,6 @@ package com.labos.kernel.driver;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -143,33 +140,24 @@ public final class DriverContractDemo {
 
         // 能力
         Map<Long, Set<String>> caps = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT dc.driver_id, cap.code
-                     FROM driver_capability dc JOIN capability cap ON cap.id = dc.capability_id
-                     """);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                caps.computeIfAbsent(rs.getLong(1), k -> new LinkedHashSet<>()).add(rs.getString(2));
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DriverMapper.class)
+                .selectDriverCapabilities()) {
+            caps.computeIfAbsent(((Number) row.get("driverId")).longValue(),
+                    k -> new LinkedHashSet<>())
+                    .add((String) row.get("capabilityCode"));
         }
 
         // 设备级能力：device_instance -> resource_node -> resource_capability
         Map<Long, Map<Long, Set<String>>> devCaps = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT di.driver_id, di.id AS device_instance_id, cap.code
-                     FROM device_instance di
-                     JOIN resource_capability rc ON rc.resource_id = di.resource_id
-                     JOIN capability cap ON cap.id = rc.capability_id
-                     WHERE di.driver_id IS NOT NULL
-                     """);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                devCaps.computeIfAbsent(rs.getLong(1), k -> new LinkedHashMap<>())
-                        .computeIfAbsent(rs.getLong(2), k -> new LinkedHashSet<>())
-                        .add(rs.getString(3));
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DriverMapper.class)
+                .selectDriverDeviceCapabilities()) {
+            devCaps.computeIfAbsent(((Number) row.get("driverId")).longValue(),
+                            k -> new LinkedHashMap<>())
+                    .computeIfAbsent(((Number) row.get("deviceId")).longValue(),
+                            k -> new LinkedHashSet<>())
+                    .add((String) row.get("capabilityCode"));
         }
 
         for (Map.Entry<Long, String[]> e : drvRow.entrySet()) {

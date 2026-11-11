@@ -54,4 +54,11 @@
         WHERE di.driver_id IS NOT NULL
     </select>
 
+    <!-- DriverContractDemo（阶段3第40批收编）：无 tenant 过滤，与原语句一致 -->
+    <select id="selectDriverCapabilities" resultType="java.util.Map">
+        SELECT dc.driver_id AS "driverId", cap.code AS "capabilityCode"
+        FROM driver_capability dc
+        JOIN capability cap ON cap.id = dc.capability_id
+    </select>
+
 </mapper>

@@ -24,6 +24,9 @@ public interface DriverMapper {
      */
     List<Map<String, Object>> selectDriverDeviceCapabilities();
 
+    /** 契约演示：驱动级能力（driver_capability JOIN capability，driverId/capabilityCode）。 */
+    List<Map<String, Object>> selectDriverCapabilities();
+
     /**
      * 启用驱动的全量设备视图（WorkflowService 注册驱动用）：每行一个
      * 驱动×设备×能力组合，外加设备型号绑定（device.attr-&gt;&gt;'device_model'）。
