@@ -41,6 +41,15 @@
 | `BUG-20261111-07` | **中** | **`run_command.sent_at` 记的是落库时刻、不是下发时刻** —— 命令台账在命令**执行完**之后才写，`sent_at` 用 `now()` ⇒ 与 `finished_at` 同毫秒 ⇒ 事后算不出「发出 → 设备响应」的时间差 | `RunMapper.insertRunCommand` / `WorkflowService.onStepStart` | ✅ **已修**（2026-11-11：在 `onStepStart`（拿完锁、即将下发那一刻）捕获真实下发时刻并落库；实测下发→完成 6.39s，与设备回的 `durationMs 6220` 吻合） | 执行方查「什么时候发出指令」时发现（2026-11-11） |
 | `BUG-20261111-08` | **中** | **顺序执行路径不回写 level=0 汇总行** ⇒ 运行中的流程图**看不到任何节点状态变化**，等整单结束才一次性变（图执行路径有 `nodeStateRecorder` 回调，顺序路径没有） | `WorkflowService.PersistingStepSink.onStepStart` | ✅ **已修**（2026-11-11：在 `onStepStart` 把 level=0 写成 `running`，**终态仍由收尾统一回填**（两条路径终态语义不一致：同一节点顺序路径是 manual、图路径是 completed ⇒ 猜终态会写错）⇒ 零语义风险） | 用户现场反馈 + 决定性实验（只切 `LABOS_EXEC_GRAPH` 一��变量） |
 | `BUG-20261111-09` | **中** | **命令台账把 jsonb 对象当字符串渲染** ⇒ React 崩（`Objects are not valid as a React child`）⇒ 运行详情页与只读运行页**整页白屏** | `webapp/src/components/RunCommands.tsx` | ✅ **已修**（2026-11-11：payload/result 类型改 `unknown`，统一用 `asText()` 转文本再渲染；playwright 实测命令台账卡片出现、2 行、发出/完成/耗时/设备都可见） | 执行方实测命令台账界面时发现（2026-11-11） |
+| `BUG-20261111-10` | **高** | **在线判定粒度按 driver** ⇒ 一个 driver 名下挂多台设备时，**A 设备在线会把 B 设备也标成在线**（内核探一次端点，结论套给该 driver 名下所有设备） | `HeartbeatService.loadDrivers/probeOnce`（按 driver 探测一次）、`HeartbeatMapper.selectActiveDrivers` | ✅ **已修**（2026-11-11：在线状态改为**完全走 Redis**（tcp client 的长连接），判定粒度改到**设备级**：`selectActiveDrivers`→`selectLinkTargets`（逐设备）、`upsertDeviceOnline` 由「按 driverId 批量写」改成「按 resourceId 逐台写」） | 新基线重建时按设备口径逐台核对发现（2026-11-11） |
+| `BUG-20261111-11` | **高** | **Redis 的长连接状态 key 不含设备身份** ⇒ key = `labos:link:<host>:<port>` ⇒ **同一 driver 下挂多台设备时状态串台**（A 的长连接活着，B 被判在线） | `RedisLinkState.LinkKey` / `HeartbeatService.linkKey`（口径只有 host:port） | ✅ **已修**（2026-11-11：key 统一为 `labos:link:<设备ID>:<设备IP>:<端口>`，模拟端 / 中控 / tcp client **三端同一口径**） | 同上（2026-11-11） |
+| `BUG-20261111-12` | **高** | **设备离线时流程仍然报 completed** ⇒ 现场看到"实验做完了"，设备其实一步没动 | ① 候选池 `selectCapabilityPools` 只排除 `status='error' AND online=false`（**两个都要**）⇒ 离线的设备（online=false、status 仍 idle）**一直在池里**；② 编排里**显式绑定**设备的节点走 pinned 分支，**根本不经候选池** ⇒ 改候选池也管不到它。在线状态改成 Redis 判定后，命令走短连接仍可能发得出去 ⇒ 假成功 | `GraphMapper.selectCapabilityPools`（排除条件写错）、`GraphRunner.toRecoverable`（pinned 分支不查在线） | ✅ **已修**（2026-11-11：① 候选池排除条件改成 `online = false OR status = 'error'`；② `GraphRunner` 加 `withOfflineInstances`，pinned 设备离线时返回空候选 ⇒ 走**既有**的「无可用设备」路径（实测状态变成 **paused**）。**不静默换设备**（那是偷偷改了工艺要的设备），**也不假装成功**） | 新基线的「上线/下线联动」用例实测：下线后跑流程仍 completed（2026-11-11） |
+| `BUG-20261111-13` | **中** | **`run_command.sent_at` 记的是「进入步骤」的时刻，不是「指令发出去」的时刻** ⇒ **排队等设备锁的时间被算进了 sent_at** ⇒ 两个并发 run 抢同一台设备时，两条命令的 sent_at **完全相同**，台账看起来像"两条指令同时发出"，与设备侧的实际串行行为对不上 | `WorkflowService.PersistingStepSink.onStepStart`（记时刻的时机在 `acquireWithWait` **之前**） | ✅ **已修**（2026-11-11：sent_at 挪到**拿到设备锁之后、真正下发之前**；修完互斥断言 4/0 全绿，"发出→响应"间隔只含设备耗时） | 新基线的「设备互斥」用例实测：两条 Home 的 sent_at 同为 15:05:03.227（2026-11-11） |
+| `BUG-20261111-14` | **中** | **tcp client 转发命令时 `equipment_id` 用默认值 `SIDECAR-1`** ⇒ 设备侧按自己的设备号校验，**对不上直接回 `EC-06-0001`**（"设备不属于本模拟器"）⇒ 命令发出去全被拒 | `sidecar-dotnet/Labos.Sidecar/Program.cs`（RunOnce 与转发链路用硬编码默认） | ✅ **已修**（2026-11-11：sidecar 启动时**从中控的设备清单认领自己**，用认到的设备ID 作 `equipment_id`；实测用清单里的设备ID 408 发命令，模拟器接受并回 `{"position":"A1","plate":"SIM-PLATE-1"}`） | 新基线端到端实测（2026-11-11） |
+| `BUG-20261111-15` | **中** | **`device_instance.ip` 全部为空** ⇒ 设备口径三要素（设备ID + 设备IP + 端口）凑不齐 ⇒ Redis key 拼不出设备IP；清单接口给不出设备IP | 设备IP 这一列从未回填（存量 48 台有值、11 台在役设备全空） | ✅ **已修**（2026-11-11：按 `driver.endpoint` 的 host 回填 11 台在役设备（与存量 48 台的写法同源，已核对 48/48 一致）；`sim-up.sh` 重建 driver 时同步回填，避免改了 endpoint 却不同步 ip） | 统一三端口径时逐台核对发现（2026-11-11） |
+| `BUG-20261111-16` | **中** | **读 Redis 只 read 一次 TCP 就当拿到整个响应** ⇒ 响应被分包时只读到半截（`$5\r\nonli`）⇒ **key 明明存在却读成"不存在"** ⇒ 设备明明在线却显示离线 | `RedisLinkState.Get`（按"一次 read = 完整响应"处理） | ✅ **已修**（2026-11-11：按 RESP 声明的长度**读满**再解析） | 设备管理台第一版把 5 台全判成离线（2026-11-11） |
+| `BUG-20261111-17` | **中** | **设备管理台重启后不接管已经在跑的 tcp client** ⇒ 这些设备在界面上显示"不是本机托管"、**下线按钮是灰的** ⇒ 设备永远停不下来（Redis key 一直续期，中控一直判在线） | `Labos.Sidecar.Manager` 只记自己启动的进程，**不扫进程表** | ✅ **已修**（2026-11-11：每次刷新状态都扫进程表，按 `--link-only` + `--sim <ip:端口>` 认领并收编；实测管理台重启后 5 台全部 `managed=true`、pid 全部对上） | 管理台重启后设备停不掉（2026-11-11） |
+| `BUG-20261111-18` | **中** | **点了「下线」，设备仍显示在线 30 秒** ⇒ 停进程用的是 SIGKILL，进程**没有机会执行自己的清理代码** ⇒ Redis key 一直留到 TTL 过期 | `Labos.Sidecar.Manager` 停进程后不主动清 key | ✅ **已修**（2026-11-11：管理台知道 key 在哪，停完进程**直接清掉** ⇒ 中控即刻判离线；实测下线后 key **立即**消失） | 上下线联动用例实测（2026-11-11） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
@@ -273,3 +282,28 @@
 | -07 | 库里所有命令 `sent_at == finished_at` ⇒ 算不出"发出→响应" | 台账在命令**执行完**后才写，`sent_at` 用 `now()` | `onStepStart` 捕获真实下发时刻并落库 | 下发 13:08:24.057 → 完成 13:08:30.445（差 6.39s，与设备 `durationMs 6220` 吻合） |
 | -08 | 运行中流程图"看不到变化，最后一次性变" | 顺序执行路径（`sm.executeAll`，图解析失败时回退到它）**没有 `nodeStateRecorder` 回调** ⇒ 汇总行直到整单结束才批量回填 | `onStepStart` 把 level=0 写成 `running`；终态留给收尾（两条路径终态语义不一致，猜会写错） | 顺序路径 8 秒即三行 `running`（修复前 8 秒仍全 pending） |
 | -09 | 加了命令台账表后运行详情页/只读运行页**整页白屏** | 后端 `keyValueArrayJson` 的 `payload`/`result` 是**已解析对象**，我当字符串塞进 `<code>` ⇒ React 崩 | 类型改 `unknown`，统一 `asText()` 转文本 | playwright 实测：卡片出现、2 行、发出/完成/耗时/设备全可见 |
+
+#### 处置：BUG-20261111-10 ~ -18（执行方 · 2026-11-11 · 新基线重建期间）
+
+这一批是**把旧基线整套拆掉、按新基线重建**的过程中挖出来的。
+共同背景：在线状态从「内核自己探 TCP」改成「tcp client 长连接 → Redis → 中核读」，
+链路多了两环（Redis key、设备ID 口径），**凡是"谁说了算"的地方都要重新对一遍**。
+
+| 编号 | 现象 | 根因 | 修法 | 验证 |
+|---|---|---|---|---|
+| -10 | 一个 driver 下多台设备时，A 在线 ⇒ B 也被标在线 | 心跳按 driver 探一次，结论套给该 driver 名下所有设备 | 在线判定改**逐设备**：`selectLinkTargets` + 按 resourceId 逐台写 `device_state` | 5 台设备逐台核对，状态与实际一一对应 |
+| -11 | 同 driver 下多台设备状态串台 | Redis key 只有 host:port，没有设备身份 | key 改 `labos:link:<设备ID>:<设备IP>:<端口>`，三端同一口径 | 9 条 key 与 `device_instance.id` 逐一对应 |
+| -12 | **设备离线，流程仍 completed**（现场看到"做完了"，设备一步没动） | 候选池排除条件写成 `error AND offline`（两个都要）；pinned 分支根本不经候选池 | ① 排除条件改 `offline OR error`；② pinned 离线走既有「无可用设备」路径 | 下线后跑流程 ⇒ **paused**（不再假成功）；上线后又能跑通 |
+| -13 | 并发抢同一台设备时，两条命令 sent_at **完全相同**，像"同时发出" | 记时刻的时机在拿设备锁**之前** ⇒ 排队时间被算进去 | 挪到拿到锁之后 | 互斥断言 4/0：命令零重叠 + 确实排队 |
+| -14 | tcp client 转发的命令被设备拒（`EC-06-0001`） | `equipment_id` 用硬编码默认 `SIDECAR-1` | 启动时从中控清单认领设备，用设备ID | 设备ID 408 发命令，模拟器接受并回真实数据 |
+| -15 | Redis key 拼不出设备IP；清单给不出设备IP | `device_instance.ip` 从未回填 | 按 endpoint 的 host 回填 11 台；`sim-up.sh` 同步回填 | 三方对齐用例 6/0 |
+| -16 | key 明明存在却读成"不存在" | 读 Redis 只 read 一次就当完整响应（TCP 是流，会分包） | 按 RESP 声明长度读满 | 5 台全部判为在线 |
+| -17 | 管理台重启后设备停不掉（下线按钮是灰的） | 只记自己启动的进程，不扫进程表 | 扫进程表按 `--link-only` + 端点认领收编 | 重启后 5 台 `managed=true`、pid 全对 |
+| -18 | 点了下线，设备还在线 30 秒 | SIGKILL ⇒ 进程没机会执行清理 ⇒ key 留到 TTL 过期 | 管理台停完进程直接清 key | 下线后 key 立即消失 |
+
+**这一批共同的教训**：
+换掉「在线状态」这个**权威来源**，不只是换一个数据源，而是要把
+「谁说了算」在**每一处**重新对齐 —— 判定粒度（-10/-11）、
+key 口径（-11）、调度是否尊重它（-12）、台账的时间语义（-13）、
+以及端侧进程用哪个身份上报（-14）。
+少改一处，现象就是「明明离线，页面说在线」或反过来 —— 两种都很难一眼看出根因。

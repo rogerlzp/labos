@@ -6269,3 +6269,110 @@ illegal or non-existent workflow id ⇒ **400**; the existing arrangement is nev
    compile) ⇒ use **line numbers + unique anchors** instead.
 ④ **Decisive experiments must change exactly one variable** — that is how the root cause
    of the live-state problem was pinned down in one run.
+
+**Added (2026-11-11, afternoon): online status entirely via Redis + unified device identity + new-baseline rebuild + gate rewrite**
+
+This round carried out three things the user asked for together: **online status goes
+through the tcp client's long-held connection → Redis → the control system reads it**
+(no fallback), **a device is identified by the two unique values device id + device ip,
+unified across the three sides, with the device list kept in the control system's tables**,
+and **tearing the old baseline down and rebuilding it** (cases that are no longer needed
+are removed outright).
+
+**1. Redis is the single authority for online status**
+
+On site, an independent tcp client (the sidecar) holds the **long connection to the
+device** and writes "connected / disconnected" into Redis (with a TTL, so a dropped
+connection expires on its own). The control system **only reads Redis** and no longer
+opens a `Socket()` to probe the device itself. Why: a short-connection probe makes the
+device side see "connect → disconnect" over and over, which is not really being online;
+and as soon as online status has two sources, the two will inevitably disagree, which is
+expensive to track down. No record in Redis (or Redis unreadable) ⇒ **offline**, with
+**no direct-connect fallback** (the user's wording: "entirely via redis").
+
+**2. Unified device identity: device id + device ip**
+
+A device = **device id** (`device_instance.id`) + **device ip** (`device_instance.ip`) + port.
+New unauthenticated read-only endpoint `GET /api/devices/registry`: the registry's source
+of truth is the control system's tables, and the simulator and the tcp client read
+"which device am I" from there. The simulator gained `--registry`: at startup it claims
+itself by the endpoint it listens on and fills in device id / code / capability / profile.
+The tcp client claims itself at startup and uses the claimed device id as `equipment_id`
+(the device validates against it and rejects with `EC-06-0001` when it does not match).
+The Redis key is unified as `labos:link:<deviceId>:<deviceIp>:<port>`.
+
+**3. A standalone device console for the sidecar (a separate web app)**
+
+New `sidecar-dotnet/Labos.Sidecar.Manager` (ASP.NET Core, runs on the workstation, open it
+in a browser): a device list (name / device id / device ip / port / capability / online
+state) plus per-device or fleet-wide "bring online / take down".
+The console keeps **no device table of its own** — the registry comes from the control
+system, the online state comes from Redis. The sidecar gained a `--link-only` mode: it only
+holds the long connection and reports to Redis, it does not listen on a port and it needs
+no model knowledge (the model library only holds the models that can be connected to real
+hardware, yet **every** device needs a tcp client before it can be "online" at all).
+
+**4. Rebuilding the baseline**
+
+The old baseline had grown to thirty islands, a thousand-plus workflows and six-hundred
+plus experiments, and could no longer serve as a baseline: every new case had to pick
+devices out of a pile of historical data, and historical cases kept occupying each other's
+devices (a red result usually meant "the device was taken by another run", not a broken
+logic). `scripts/baseline-backup.sql` first backs up the **structure** into one generic
+table `legacy_snapshot` (37k rows); `baseline-reset.sql` wipes islands / workflows /
+experiments / run history (the run history is deliberately **not backed up** — 120k +
+117k rows, huge and worth less afterwards than it costs to keep); `baseline-build.sql`
+creates the new baseline island `LAB-BASE-01` holding **exactly 5 devices**, one per
+capability family: X231 robot / X229 incubator / ASPIN_2K-1 centrifuge / ID1021 plate
+reader / S100-1 sealer. The hard rule for picking devices: **the device's method set must
+lie inside the simulator profile's method set** — the simulator validates method names
+against the profile and answers "method not supported" when it does not match, so the node
+necessarily fails (in the repository, ID1183 and ID0000 have method sets with **no
+intersection at all** with their profiles, so they were excluded).
+
+**5. Rewriting the gate**
+
+`scripts/ci-gate.sh` was rewritten for the new baseline: segment 0 thresholds /
+1 pure logic / 2 tsc / 2.5 schema artifacts / 3 device three-way alignment /
+4 baseline end-to-end / 5 device mutex / 6 online-offline link / 7 crash recovery; profiles
+`--fast` / `--baseline` / `--online` / `--recovery` / `--all`. The thresholds use a new
+`MIN_BASE_*` prefix (the old `MIN_*` belong to the old baseline's case set, and using them
+to police the new gate would only block the rewrite), but the "may only grow" mechanical
+check stays (segment 0 scans git history for the highest value).
+`docs/测试总纲.md` §2 / §4 / §5 / §6 were updated to the new wording.
+
+**6. The nine defects dug out and fixed in this round** (BUG-20261111-10 ~ -18, see the ledger)
+
+The most serious is **-12: the flow still reported completed while the device was
+offline** — on site it looks like "the experiment finished" while the device did not move
+a single step. Two root causes: the candidate pool only excluded devices that were
+"both error and offline" (both required), and nodes that **explicitly bind** a device
+never go through the candidate pool at all. Once online status was decided by Redis, the
+short-connection dispatch could still reach the device ⇒ false success.
+Fix: the pool exclusion became an OR; an offline pinned device now takes the **existing**
+"no device available" path (measured: the status becomes paused). It never silently swaps
+devices (that would be changing the device the process asked for behind its back) and
+never pretends success.
+
+**7. Lessons**
+
+① **Replacing an authority is not swapping a data source — it is realigning "who decides"
+   everywhere**: the granularity (-10/-11), the key convention (-11), whether scheduling
+   respects it (-12), the ledger's time semantics (-13), which identity the side reports
+   under (-14). Miss one spot and the symptom is "clearly offline, the page says online"
+   or the other way round — both are hard to trace to their cause.
+② **A half-fix is more dangerous than no fix** — changing `sent_at` from "the moment it
+   was persisted" to "the moment the step was entered" only got half way: the time spent
+   queueing for the device lock got counted, so two commands ended up with identical
+   sent_at and the ledger looked like they went out at the same time. A half-fixed place
+   is harder to investigate than an unfixed one, because **it looks already fixed**.
+③ **Assertions must locate the problem, not just go red** — the device state exists in
+   three places (registry / Redis / device_state) and any mismatch shows the same
+   sentence. Making the three-way alignment a set of locatable assertions is what tells
+   you which link to inspect.
+④ **A failing SQL query in a script must raise** — returning an empty string is read
+   upstream as "not in the database", so "cannot reach the database" gets reported as
+   "no devices in this environment" and the gate **skips silently** (a false green).
+⑤ **A PG boolean rendered as text is `true`/`false`, not `t`/`f`; a JSON number compared
+   against a SQL string is always False** — both make an assertion vacuous (and it even
+   printed "0 devices online", which looks like a real finding).
