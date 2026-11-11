@@ -1,14 +1,20 @@
-# Material Identity and State · Design (v2)
+# Material Identity and State · Design (v3 · three-way convergence)
 
-> **Status**: **up for re-review** (v1 raised 2026-11-11; v2 rewritten on 2026-11-12 after
-> merging **all** the findings of three independent reviews)
+> **Status**: **up for re-review** (v1 raised 2026-11-11; v2 rewritten on 2026-11-12 after merging
+> the findings of three independent **reviews**; **v3 converged on 2026-11-12 after merging three
+> independent *designs***)
 > **Decision number segment**: this document claims **D401-D4xx** (to be merged into the segment
 > table in `docs/评审规范.md` §7 once the review passes)
 > **Related**: [Process Orchestration Capability Gaps and Landing Route](process-orchestration-gaps-and-roadmap.md)
 > (the gap analysis, G1/G2/G11); review records `docs/评审记录/20261112-01-grok.md`,
 > `20261112-02-kimi.md`, `20261112-03-openai.md`
-> **Code baseline**: `main` @ `9b36868` (the v1 commit, which changed no code)
+> **Code baseline**: `main` @ `0eb2a99` (the v2 commit, documentation only)
 > **⚠ This is still a design; no code and no schema change has been made.**
+>
+> **How this document came to be**: the same question produced **three mutually independent
+> designs** (see §0.1). This document is their **convergence**: it keeps only the **points all
+> three agree on** and the **disagreements that have been adjudicated**. The superseded drafts
+> are kept for comparison and are no longer candidate baselines.
 
 ---
 
@@ -19,11 +25,51 @@
 | **What is being reviewed** | The domain model for material identity and state, the mechanism for execution facts and material effects, the data model, the interfaces and the pages |
 | **Why now** | Checking against a real process flowchart showed that LabOS orchestrates "actions" while the real process orchestrates "material"; a container has an identity and a position but **no process stage** ⇒ the site cannot answer "which step of the process is this plate at", and material hand-over across processes cannot be expressed either |
 | **Read these three first** | §3 (the facts) → §4 (the domain model) → §5 (execution facts and material effects) |
-| **How v2 differs from v1** | v1 had **6 factual errors** and **4 model defects**, each found independently by at least one of the three reviews ⇒ v2 fixes all of them; the list is in §0.1 |
-| **Review focus** | ① the failure semantics of the two-phase model in §5; ② the extension boundary of the contract in §6; ③ the boundary between plate stage and well-level sample in §4.2; ④ the idempotence key in §5.5; ⑤ the completion-point scheme in §5.7 (this round gives a more precise answer than the three reviews did) |
-| **Known problems** | See §13 — **six open questions**, two of which would change the implementation |
+| **How v2 differs from v1** | v1 had **6 factual errors** and **4 model defects**, each found independently by at least one of the three reviews ⇒ v2 fixed all of them; the list is in §0.2 |
+| **Review focus** | ① the two-level failure semantics in §5.2b; ② the extension boundary of the contract in §6; ③ the boundary between plate stage and well-level sample in §4.2; ④ the idempotence key in §5.5; ⑤ the completion-point scheme in §5.7 |
+| **Known problems** | See §13, **six open questions**, two of which would change the implementation |
 
-### 0.1 The errors in v1 (publicly acknowledged, per `docs/评审规范.md` §4)
+### 0.1 How this document came to be: the convergence of three independent designs
+
+The same question produced **three mutually independent designs** (not one design reviewed
+three times):
+
+| # | Source | File | Shape |
+|---|---|---|---|
+| A | v2 of this session (merging the findings of the Grok / Kimi / OpenAI **reviews**) | `docs/物料身份与状态-设计.md` (the previous version of this file) | the smallest landing: extra columns on `plate` + an effect table + an audit table |
+| B | the **independent v2** of the concurrent session | `docs/物料身份与状态-设计-v2.md` (kept for comparison) | four kinds of facts apart + 8 invariants + two new columns on `run_node` |
+| C | a third independent design draft (given by an external reviewer) | not filed (its conclusions are absorbed here) | the full Material / Location / Content / Event / Effect five-object model |
+
+**What all three agree on (12 points, all adopted here)**:
+
+| # | Consensus |
+|---|---|
+| C1 | **Identity ≠ position**: a position is an attribute or relation of the material, not its identity |
+| C2 | **An execution declaration ≠ a physical fact**: the flow declaration, the device report and the system confirmation are three different things |
+| C3 | **Current state and historical events are apart**: the current value may be projected, the history is never overwritten |
+| C4 | **Source / current attribution / processing history are three things**, not one `owner_*` |
+| C5 | **Loop round, retry count and execution instance must be modelled apart** (`loop_round` / `attempt` / `execution_id`) |
+| C6 | **Device execution and the database transaction are not one thing**: a physical action cannot be rolled back |
+| C7 | **The one-to-many structure must be reserved**: the first phase restricts it with validation rules rather than designing the tables to be one-to-one forever |
+| C8 | **Not declared ≠ no effect**: an explicit classification is required (NONE / DECLARED / UNKNOWN) |
+| C9 | **The position lock reuses the existing `PositionLock`**, no second occupancy system |
+| C10 | **Tenant isolation is not actually implemented yet** (`TENANT = 1L` is hard-coded); a new table carrying `tenant_id` does not mean isolation is in place |
+| C11 | **S0 settles the model first, S1 creates the tables**: do not freeze the DDL and then patch the model afterwards |
+| C12 | **Consumables are a later phase**: the first phase does not build a half-finished inventory / consumption feature |
+
+**The disagreements and how they were adjudicated (7 points)**:
+
+| # | Disagreement | A (this session's v2) | B (independent v2) | C (third design) | **Adjudication** | Reason |
+|---|---|---|---|---|---|---|
+| D1 | The anchor of the idempotence key | `run+node+loop+plate` | effect_key | `execution_id + effect_index` | **`execution_id + effect_index`** | C's anchor is the most stable, and it also solves "one node produces several effects" |
+| D2 | Where the execution fact lives | the effect table doubles as T1 | two columns on `run_node` | a separate Execution Fact object | **a three-way split**: the command fact reuses `run_command`; the node-level sync status goes on `run_node`; the material effect gets its own table | No second command ledger, and the effect table does not double as the execution fact |
+| D3 | The effect state machine | 3 states | 3 states | **5 states** | **5 states** (adding `REJECTED` / `NEEDS_RECONCILIATION`) | "the effect violates the rules" and "the physical fact is unclear" are two completely different dispositions; merging them loses information |
+| D4 | The relation between the node and the effect | decoupled (not detailed) | decoupled (not detailed) | explicitly "the node only counts as fully complete once the effect reaches the required confirmation level" | **adopt C, and give it a landing** | Do not change the `node_status` enum; use `runtime_hold` to block the dependent downstream nodes |
+| D5 | The name and fields of the event table | `plate_state_audit` | `plate_material_event` | `Material Event` (with `occurred_at` / `recorded_at`) | **`plate_material_event` + the two timestamps** | "event" expresses an immutable event stream better than "audit"; the physical time and the recording time must be apart |
+| D6 | How much of the domain model lands | the lightest (extra columns on `plate`) | in between | the heaviest (three relation tables) | **a compromise**: Material = the existing `plate` plus columns; Location = **reuse** `position_state`; Content = **reuse** `plate_well`/`sample`/`sample_aliquot` | The three agree on the future model; they differ only on how many tables the first phase builds, and reusing what exists avoids a second source of truth |
+| D7 | The criterion for consumables | independent identity / lifecycle traceability | an independent entity plus position and attachment history | independent identity / lifecycle / stock / batch / expiry / reuse / traceability | **the union of the three** | The three word it differently but mean the same thing |
+
+### 0.2 The errors in v1 (publicly acknowledged, per `docs/评审规范.md` §4)
 
 The **factual errors** the reviews pointed out (my draft was simply wrong — not a difference of
 opinion):
@@ -53,7 +99,7 @@ opinion):
 | Question | Today's answer |
 |---|---|
 | Which step of the process is this plate at? | ❌ cannot be answered. `plate` has no plate-level process stage |
-| Who produced this plate, and who processed it last? | ❌ cannot be answered. `plate` has no production-source column and `plate_state_audit` does not exist yet |
+| Who produced this plate, and who processed it last? | ❌ cannot be answered. `plate` has no production-source column and `plate_material_event` does not exist yet |
 | Which material results did this run declare? | ❌ cannot be answered |
 | How many of this batch of plates are still empty? | ⚠️ **half answerable**: the `plate_well.status` model (`empty/filled/consumed/invalid`) exists, but there is no data in it ⇒ the definition has to be pinned down (§4.2) |
 
@@ -87,7 +133,7 @@ to `plate`", it is establishing a **Material domain** of which `plate` is one ki
 |---|---|
 | `plate.status` defaults to `available`; vocabulary `available / in_use / consumed / discarded` | `30_business.sql:68` |
 | `plate.plate_type` defaults to `'96'`; vocabulary `96 / 384 / 24 / tube_rack` = **plate format specification** (with `rows`/`cols` next to it) | `30_business.sql:65` |
-| The **`plate_well` / `sample` / `sample_aliquot` tables already exist**, all with 0 rows | `30_business.sql:17-58,78-93` |
+| The `plate_well` / `sample` / `sample_aliquot` **tables already exist**, all with 0 rows | `30_business.sql:17-58,78-93` |
 | `run_node` unique key `UNIQUE (run_id, node_key, attempt, loop_index)` ⇒ **the loop round is a first-class dimension** | `20_kernel.sql:328` |
 | The device TASK completion callback is at `GraphRunner.java:650`; `:604` is in the `Kind.BUILTIN` branch | `GraphRunner.java` |
 | `BuiltinListener` is only called in the builtin branch, and `emit()` **catches the exception and ignores it** | `GraphRunner.java:577-626` / `RunStateMachine.java:250-265` |
@@ -185,14 +231,14 @@ is the wrong move** ⇒ the whole table is deferred to S5 (§14).
 |---|---|---|---|
 | **Current attribution** | `plate.current_run_id` | who manages it now | **yes** |
 | **Production source** | `plate.origin_run_id` / `origin_node_key` | who produced it in the first place | **no** |
-| **Processing history** | `plate_state_audit` | one row per change | append only |
+| **Processing history** | `plate_material_event` | one row per change | append only |
 
 **Why they must be split**: after a plate has been processed by A (amplification), B (purification)
 and C (detection), the system must be able to answer "who produced it (A)", "who processed it
 last (C)" and "who owns it now". With one set of `owner_*` columns every migration overwrites
 the previous value ⇒ **the production relation is lost for good**.
 
-⇒ **`/api/runs/{id}/material-effects` queries by the `source_run_id` of the audit / effect
+⇒ **`/api/runs/{id}/material-effects` queries by the `source_run_id` of the event / effect
 records**, **not** by `plate.current_run_id`; the wording changes to "**the material results /
 state changes this run declared**" and no longer says "newly produced plates".
 
@@ -219,12 +265,29 @@ Whatever the database can commit atomically should go in one transaction.
 | Layer | Responsibility | Change this round |
 |---|---|---|
 | `GraphRunner` | graph progression, loops, branches, pause, resume | **never touches the database** (as today) |
-| `RunStateMachine` / `StepExecutor` | executing nodes, retries, device commands | add a **completion notification that does not swallow exceptions** (§5.7) |
+| `RunStateMachine` / `StepExecutor` | executing nodes, retries, device commands | add a **material effect notification** (§5.7) |
 | `PositionLock` / `CommandLedger` | position locks, command records, physical execution trace | **untouched** (position ≠ content) |
 | **MaterialEffectService** (new) | material inputs and outputs, state transitions, material audit, idempotence | **a new domain service** that consumes execution facts |
 
 ⚠ **Explicitly forbidden**: do not push the material state update into `PositionLock` — that
 would couple position management and process-content management all over again.
+
+### 5.2b The two-level failure semantics (v3 new · the key point of the convergence)
+
+**The failure consequences of T1 and T2 are completely different.** v2 did not say this, and
+it is what the re-review chased down as a P0:
+
+| Stage | Failing means | Consequence | Basis |
+|---|---|---|---|
+| **T1** (persisting the execution fact + the migration intent) | **the physical action happened but the system kept no record at all** | **the whole run must be blocked and escalated to manual** — without a record there is no basis for compensation, and "run it again" would perform the physical action a second time | C6 / C9 |
+| **T2** (applying the state projection) | the physical action happened and is recorded, only the **projection** did not catch up | **the node still counts as completed** (the device really did finish), but **the material is marked as awaiting reconciliation** and **the downstream that depends on it must be blocked** | D4 / D3's `NEEDS_RECONCILIATION` |
+
+⇒ **What mechanism blocks the downstream**: **reuse the existing `runtime_hold` (scope hold)** —
+no new `node_status` enum value (that is a contract inside the release gate, changing it is a
+big surface), instead "node `status=completed` + `material_sync_status=pending/failed`" plus
+one `runtime_hold` that stops the dependent successor nodes.
+⇒ The site sees "the device finished, but this batch of material has not been reconciled and the
+work behind it is held" — **not** a fake device failure.
 
 ### 5.3 T1: execution fact confirmation
 
@@ -246,7 +309,7 @@ version** are frozen; a continuation reads only the snapshot and **never the new
 
 ### 5.4 T2: the material state projection
 
-**In one transaction**: `lock the plate → apply the transition → write the audit → mark APPLIED`.
+**In one transaction**: `lock the plate → apply the transition → write the event → mark APPLIED`.
 
 | Failure case | Behaviour |
 |---|---|
@@ -254,18 +317,27 @@ version** are frozen; a continuation reads only the snapshot and **never the new
 | the plate is not found / the attribution does not match | **isolate and escalate to manual, do not guess** (§6.3) |
 | a manual inventory and an automatic migration collide | there must be an explicit conflict rule (§5.6); **a silent "last writer wins" is forbidden** |
 
-### 5.5 The idempotence key
+### 5.5 The idempotence key (v3 adopts `execution_id + effect_index`)
 
 ```
-idempotence key = tenant_id + source_run_id + source_node_key + source_loop_index + plate_id
+execution_id = (tenant_id, source_run_id, source_node_key, source_loop_index)
+idempotence key = execution_id + effect_index
 ```
+
+**Why the anchor changed** (adjudication D1): v2 used `run+node+loop+plate`, which has two
+holes — ① a node that **produces several effects** has no distinguishing slot;
+② "the plate" is not the natural unit of an effect (one effect may involve several materials).
+
+⇒ `effect_index` is the **effect ordinal within one execution** (a node declaring three
+effects has 0/1/2), and how many plates an effect touches is written inside its own
+declaration ⇒ **the idempotence key is decoupled from the plate**.
 
 | Design point | Reason |
 |---|---|
-| **includes `source_loop_index`** | the `run_node` unique key already includes `loop_index` (`20_kernel.sql:328`) ⇒ the same node running three times in a row is **three legitimate effects** and must not be eaten by the idempotence key |
-| **`attempt` is not part of the key** | a device / node **retry** is the Nth attempt of the same logical execution ⇒ it must not produce a new material transition |
-| **aligned with the `run_node` unique key** | `(run_id, node_key, attempt, loop_index)` ⇒ we take its `(run_id, node_key, loop_index)` plus `plate_id` |
+| **`source_loop_index` goes into `execution_id`** | the `run_node` unique key already includes `loop_index` (`20_kernel.sql:328`) ⇒ the same node running three times in a row is **three legitimate effects** and must not be eaten by the idempotence key |
+| **`attempt` does not go into `execution_id`** | a device / node **retry** is the Nth attempt of the same logical execution ⇒ it must not produce a new material transition |
 | **same key + same payload may be skipped; same key + different payload must raise an error** | silently swallowing "the design changed" is the most dangerous failure mode |
+| **`payload_hash` must be stored** | it is the basis for deciding "same key, same payload?" |
 
 ⚠ **v1's `(owner_run_id, owner_node_key, plate_id)` makes the third loop iteration hit the
 unique index** — that is a hard defect.
@@ -277,8 +349,8 @@ different nodes (or a human) from changing the same plate at the same time.
 
 ⇒ Inside T2, take **`SELECT ... FOR UPDATE`** on the `plate` row, or use a **`state_version`
 CAS**.
-⇒ The `from_*` values in the audit row must match what was actually updated (otherwise "both
-audit rows look successful while the later commit overwrote the earlier one").
+⇒ The `from_*` values in the event row must match what was actually updated (otherwise "both
+event rows look successful while the later commit overwrote the earlier one").
 ⇒ When an automatic migration collides with a manual change: **who fails and how it alarms must
 be explicit**.
 
@@ -295,15 +367,17 @@ solving concurrent updates of the material state.
 | `GraphRunner.java:604` (builtin node completion) | builtin nodes only | device tasks are not there (v1's error E1) |
 | the `NODE_COMPLETED` event of `ExecutionListener` | **both paths are covered** ✓ | ⚠ `emit()` **catches `RuntimeException` and ignores it** ("a listener failure must not affect the execution") ⇒ it cannot carry an action that "must leave a pending intent behind" |
 
-⇒ **v2's scheme**: before `RunStateMachine.executeNode` returns successfully, fire a
-**dedicated completion notification that does not swallow exceptions**, `nodeEffectListener`;
+⇒ **v3's scheme (correcting v2's wording)**: before `RunStateMachine.executeNode` returns
+successfully, fire a **dedicated material effect notification**, `materialEffectListener`;
 both `GraphRunner` and `WorkflowService` inject it on their path.
 
 | Decision point | Explanation |
 |---|---|
-| How are exceptions handled | **not swallowed**: they propagate to the caller, which decides "escalate to manual" or "record PENDING and carry on". ⇒ **`ExecutionListener` must not be reused** |
+| **How it differs from `ExecutionListener`** | `ExecutionListener` is "the side-effect outlet" and **its failure must not affect the execution** (`emit()` catches the exception and ignores it); the material effect notification **must be able to reflect a failure** ⇒ the two semantics are opposite and **must not be merged** |
+| **How exceptions are handled (v3 correction)** | v2 wrote "exceptions are not swallowed, they propagate to the caller" — **that is wrong**: if a failed material effect propagates up to `executeNode`'s caller it **aborts the whole run**, while the device action has already happened. ⇒ **The correct approach: the material effect handler swallows its own exception, but it must leave a PENDING record + an error code + an escalation to manual**; **only T1 (where even the PENDING cannot be written) may propagate and block the run** (see §5.2b) |
+| **Where it fires** | after "the device action has completed" and **before** the node is marked completed ⇒ when PENDING cannot be written the node does not falsely count as complete |
 | The round on the sequential path | the sequential path has no loop ⇒ `source_loop_index = 0` |
-| What happens to `ExecutionListener` | **left exactly as it is** (it is "the side-effect outlet" semantics; do not change it) ⇒ this is **another** callback |
+| What happens to `ExecutionListener` | **left exactly as it is** (it is "the side-effect outlet" semantics; do not change it) |
 
 ### 5.8 Compensation and recovery
 
@@ -315,6 +389,28 @@ both `GraphRunner` and `WorkflowService` inject it on their path.
 | repeated compensation | the idempotence key blocks it ⇒ same key + same payload is skipped |
 | the flow has already continued when the compensation runs | the effect record is decoupled from the run ⇒ the compensation does not need the run to still be alive |
 | database exception | **must not carry on silently** ⇒ an error code is recorded and it escalates to manual |
+
+### 5.9 The relation between the node state, the effect state and the run state (v3 adopts D4)
+
+**The three are not equivalent** and must be looked at separately:
+
+| Device execution | Material effect | Node state | Effect state | Result |
+|---|---|---|---|---|
+| success | achieved | `completed` | `APPLIED` | carry on normally |
+| success | **awaiting reconciliation** | `completed` | `NEEDS_RECONCILIATION` | the node counts as complete, **the downstream is held by `runtime_hold`** |
+| success | failed | `completed` | `FAILED` | the node counts as complete, **the downstream is held**, waiting for compensation / reconciliation |
+| failure | no effect produced | `failed` / `manual` | — | the node fails, the existing recovery policy applies |
+| **timeout** | **result unknown** | `manual` | `NEEDS_RECONCILIATION` | **it must not simply be treated as "the action did not happen"** (the device may have finished) |
+
+⇒ **What "the node is fully complete" means**: a node that explicitly declares `NONE` does not
+wait for an effect; a node that declares an effect **only counts as fully complete once the
+effect reaches the required confirmation level**.
+⇒ **No new `node_status` enum value is introduced for this**: `run_node.material_sync_status`
+expresses it, and `runtime_hold` expresses "the downstream is held".
+⇒ **Whether the run may continue** is decided by the flow dependency relation, the node
+execution result and the material consistency **together** — **neither turning every material
+problem into a failure of the whole run, nor letting the successors of an anomalous material
+keep running.**
 
 ---
 
@@ -422,39 +518,64 @@ ALTER TABLE plate
   ADD COLUMN origin_run_id   bigint,                 -- production source (never overwritten)
   ADD COLUMN origin_node_key varchar(64),
   ADD COLUMN state_version   bigint NOT NULL DEFAULT 0;  -- for the CAS
--- Reference constraint: process_state must exist in the same tenant's plate_process_state
---   (composite foreign key or an equivalent check)
--- CHECK (seal_state IN ('none','sealed'))
+-- Reference constraint: process_state must exist in the same tenant's plate_process_state.
+-- ⚠ With MATCH SIMPLE (the PG default): when process_state is NULL the foreign key is **not**
+--   enforced ⇒ old data (unknown) can still be written, whose meaning is "unknown" rather than
+--   "illegal". That is exactly what we want.
+ALTER TABLE plate ADD CONSTRAINT fk_plate_process_state
+  FOREIGN KEY (tenant_id, process_state)
+  REFERENCES plate_process_state (tenant_id, code);
+ALTER TABLE plate ADD CONSTRAINT ck_plate_seal_state
+  CHECK (seal_state IN ('none','sealed'));
 
--- ③ Material effect (T1 writes PENDING → T2 applies)
+-- ③ Node level: physical completion and material sync are apart (v3 adopts the independent v2)
+ALTER TABLE run_node
+  ADD COLUMN physical_completed_at timestamptz,      -- when the device/node physical action finished
+  ADD COLUMN material_sync_status  varchar(16) NOT NULL DEFAULT 'not_required',
+  ADD COLUMN material_error_code   varchar(64);
+ALTER TABLE run_node ADD CONSTRAINT ck_run_node_material_sync
+  CHECK (material_sync_status IN ('not_required','pending','applied','failed','needs_reconciliation'));
+CREATE INDEX ix_run_node_material_sync
+  ON run_node (tenant_id, material_sync_status)
+  WHERE material_sync_status IN ('pending','failed','needs_reconciliation');
+-- Semantics: physical_completed_at only means the physical action finished, **not** that the
+--   material projection is complete; for old data status='completed' serves as the compatible
+--   evidence of physical completion; material_error_code **does not overwrite** the device's
+--   own error_code.
+
+-- ④ Material effect (the migration intent): T1 writes PENDING → T2 applies
 CREATE TABLE plate_material_effect (
   id                bigserial PRIMARY KEY,
   tenant_id         bigint      NOT NULL,
-  effect_key        varchar(128) NOT NULL,   -- idempotence key (hash computed by the application)
+  execution_id      varchar(128) NOT NULL,   -- = tenant|run|node|loop (the logical execution instance)
+  effect_index      int         NOT NULL,   -- the effect ordinal within one execution
   source_run_id     bigint      NOT NULL,
   source_node_key   varchar(64) NOT NULL,
   source_loop_index int         NOT NULL DEFAULT 0,
-  source_attempt    int         NOT NULL DEFAULT 0,   -- recorded, not part of the idempotence key
+  source_attempt    int         NOT NULL DEFAULT 0,   -- recorded, not part of execution_id
   plate_id          bigint,                    -- the plate actually resolved in T1 (the compensation replays by it)
   declaration       jsonb      NOT NULL,      -- declaration snapshot (the run version is frozen)
   payload_hash      varchar(64) NOT NULL,      -- same key + different payload → error
-  status            varchar(16) NOT NULL,      -- PENDING / APPLIED / FAILED
+  status            varchar(16) NOT NULL,      -- five states, see below
   applied_at        timestamptz,
   error_code        varchar(64),
   error_message     varchar(255),
   created_at        timestamptz NOT NULL DEFAULT now(),
-  updated_at        timestamptz NOT NULL DEFAULT now()
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT ck_effect_status CHECK (status IN
+    ('PENDING','APPLIED','REJECTED','NEEDS_RECONCILIATION','FAILED'))
 );
 CREATE UNIQUE INDEX ux_plate_material_effect_key
-  ON plate_material_effect (tenant_id, effect_key);
+  ON plate_material_effect (tenant_id, execution_id, effect_index);
 CREATE INDEX ix_plate_material_effect_pending
   ON plate_material_effect (tenant_id, status, created_at) WHERE status <> 'APPLIED';
 
--- ④ State transition audit (written by T2)
-CREATE TABLE plate_state_audit (
+-- ⑤ Material events (immutable): one row per state change, append only
+CREATE TABLE plate_material_event (
   id                 bigserial PRIMARY KEY,
   tenant_id          bigint      NOT NULL,
   plate_id           bigint      NOT NULL,
+  event_type         varchar(32) NOT NULL,   -- process_state_changed / seal_changed / moved / retired ...
   from_process_state varchar(32),
   to_process_state   varchar(32),
   from_seal_state    varchar(16),
@@ -464,16 +585,30 @@ CREATE TABLE plate_state_audit (
   source_run_id      bigint,
   source_node_key    varchar(64),
   source_loop_index  int         NOT NULL DEFAULT 0,
-  command_id         varchar(64),        -- the physical command id
+  command_id         varchar(64),        -- the physical command id (the Execution Fact)
   effect_id          bigint,             -- the matching plate_material_effect
   evidence           varchar(24) NOT NULL,  -- evidence source (see below)
   operator           varchar(16) NOT NULL,  -- AUTO / MANUAL
   note               varchar(255),
-  created_at         timestamptz NOT NULL DEFAULT now()
+  occurred_at        timestamptz,         -- **the physical time**
+  recorded_at        timestamptz NOT NULL DEFAULT now(),  -- **the system recording time**
+  CONSTRAINT ck_event_evidence CHECK (evidence IN
+    ('DEVICE_CONFIRMED','EXECUTION_DECLARED','MANUAL_INVENTORY','MANUAL_CORRECTION','RECONCILIATION')),
+  CONSTRAINT ck_event_operator CHECK (operator IN ('AUTO','MANUAL'))
 );
-CREATE INDEX ix_plate_state_audit_plate  ON plate_state_audit (tenant_id, plate_id, created_at DESC);
-CREATE INDEX ix_plate_state_audit_source ON plate_state_audit (tenant_id, source_run_id);
+CREATE INDEX ix_plate_material_event_plate  ON plate_material_event (tenant_id, plate_id, occurred_at DESC);
+CREATE INDEX ix_plate_material_event_source ON plate_material_event (tenant_id, source_run_id);
 ```
+
+**The effect state machine (five states, v3 adopts the third design's D3)**:
+
+| State | Meaning | What follows |
+|---|---|---|
+| `PENDING` | waiting to be processed | the compensation job / the next retry |
+| `APPLIED` | the effect has been applied | terminal |
+| `REJECTED` | **the effect violates the rules** (the target plate's attribution does not match, the declaration contradicts itself) | terminal, **escalate to manual**, no automatic retry |
+| `NEEDS_RECONCILIATION` | **the physical fact is unclear** (the device timed out but the action may have happened) | wait for the reconciliation, **it must not simply be treated as "the action did not happen"** |
+| `FAILED` | the processing failed (database / concurrency) | keep + retryable |
 
 **The evidence-source enum** (`evidence`):
 
@@ -482,26 +617,49 @@ CREATE INDEX ix_plate_state_audit_source ON plate_state_audit (tenant_id, source
 | `DEVICE_CONFIRMED` | confirmed by a device result (the state was actually read) |
 | `EXECUTION_DECLARED` | migrated after the node finished, per the declaration (**the system said it, not the device**) |
 | `MANUAL_INVENTORY` | manual on-site inventory |
-| `MANUAL_CORRECTION` | a human correcting what the system recorded |
+| `MANUAL_CORRECTION` | a human correcting what the system recorded (**a new event is appended, the history is not overwritten**) |
 | `RECONCILIATION` | repaired by a reconciliation / recovery job |
 
-⚠ **The principle**: the system writing a state from a node declaration **is not** the device
-having detected the material state. **These two kinds of evidence must not both be shown as
-"confirmed by the device".**
+**Where the Execution Fact lives (v3 adjudication D2)**: **no new table** —
+`run_command` already has `command_id` / `device_raw_response` / `ack_at` / `status` / `attempt`
+and is the ready-made carrier of the execution fact; it only needs two semantic slots added
+where necessary, `evidence_source` and `occurred_at`.
+**`run_command` is the command ledger and the material event is the material ledger — the two
+are not mixed.**
 
 ⚠ **The `consumable` table is not created in this round** (§4.4) ⇒ the independent consumable
 is deferred to S5 as a whole.
 
+⚠ **`plate_material_event` and `plate_location_audit` are two separate lines**: the former
+records **content / attribution** changes, the latter records **position** changes; a single
+transfer may produce only the latter.
+
 **✅ This DDL has actually been executed (2026-11-12)**: it was run in the isolated schema
 `labos_v2_ddl_check` and four constraints were verified; that schema was then dropped
-(**no table of the production database was touched**):
+(**no table of the production database was touched**).
+
+⚠ **Honest note (corrected)**: what was executed the first time is the **v2 DDL**, and
+**v3 changed four things** (two columns on `run_node`, the event table renamed to
+`plate_material_event` with the two timestamps, and the effect table gaining
+`execution_id`/`effect_index` plus the five-state CHECK).
+⇒ **the v3 DDL has been re-run** (2026-11-12): the SQL was **extracted from this document
+as written** and executed in the isolated schema `labos_v3_ddl_check`, which was then
+dropped (**no table of the production database was touched**):
 
 | Verified | Result |
 |---|---|
-| the whole DDL executes | ✅ tables / indexes / composite foreign key / CHECK all pass |
-| the dictionary reference constraint | ✅ writing `process_state='no_such_state'` is rejected by the composite foreign key |
-| the seal state CHECK | ✅ writing `seal_state='weird'` is rejected by the CHECK |
-| the idempotence unique key | ✅ a second insert with the same `effect_key` is rejected by `ux_plate_material_effect_key` |
+| the whole DDL executes (**extracted from the document**) | ✅ tables / indexes / composite foreign key / CHECK all pass |
+| the dictionary reference constraint | ✅ writing `process_state='no_such_state'` is rejected by `fk_plate_process_state` |
+| the seal state CHECK | ✅ writing `seal_state='weird'` is rejected by `ck_plate_seal_state` |
+| **the old-data semantics (`process_state` is NULL)** | ✅ **the write is allowed** — under MATCH SIMPLE a NULL does not enforce the foreign key, so "unknown" ≠ "illegal" |
+| the effect idempotence unique key | ✅ a second insert with the same `execution_id` + `effect_index` is rejected by `ux_plate_material_effect_key` |
+| the five-state CHECK | ✅ writing `status='BOGUS'` is rejected by `ck_effect_status` |
+| the `run_node` sync status CHECK | ✅ writing `material_sync_status='bogus'` is rejected by `ck_run_node_material_sync` |
+
+⚠ **The real defect this round caught (now fixed)**: in the v2/v3 first drafts the two most
+important constraints (the dictionary composite foreign key and the seal state CHECK) were
+**written as comments** — present on paper, **not in effect** in the DDL.
+**Paper DDL that is never executed will never reveal this kind of thing.**
 
 ⇒ **this SQL is no longer prose**; but what was verified are **the constraints themselves**,
 not the migration script of S1 (the back-fill of old data, index concurrency and the tenant
@@ -515,9 +673,9 @@ initialisation each need another round).
 |---|---|---|
 | GET | `/api/plates?processState=&currentRunId=&originRunId=&resourceId=&plateType=` | query plates by stage / current attribution / production source / position / plate format |
 | GET | `/api/plates/{barcode}` | one plate: current stage, seal state, current attribution, production source, position |
-| GET | `/api/plates/{barcode}/state-history` | the state transition history (paginated, including the evidence source) |
-| PUT | `/api/plates/{barcode}/state` | change the state by hand ⇒ writes the audit with `evidence='MANUAL_INVENTORY'` / `'MANUAL_CORRECTION'` |
-| GET | `/api/runs/{id}/material-effects` | **the material results / state changes this run declared** (queried by `source_run_id` of the effect records, not by the current attribution) |
+| GET | `/api/plates/{barcode}/state-history` | the material event history (paginated, including the evidence source and the physical / recording timestamps) |
+| PUT | `/api/plates/{barcode}/state` | change the state by hand ⇒ writes the event with `evidence='MANUAL_INVENTORY'` / `'MANUAL_CORRECTION'` |
+| GET | `/api/runs/{id}/material-effects` | **the material results / state changes this run declared** (queried by the `source_run_id` of the effect records, not by the current attribution) |
 | GET | `/api/plate-process-states` | the stage dictionary (tenant level) |
 | POST | `/api/plate-process-states` | add a stage |
 | PATCH | `/api/plate-process-states/{code}` | rename / reorder / **deactivate** (the `code` may not change) |
@@ -555,24 +713,34 @@ initialisation each need another round).
 | Question | How it is verified | Tier |
 |---|---|---|
 | After a node produces a plate, its stage changed | run a flow with a `materialEffect` ⇒ `plate.process_state` = the declared value | real environment |
-| The migration is traced and the evidence source is visible | one row in `plate_state_audit` with the right `evidence` | real environment |
-| "Who produced it / who processed it last / who owns it now" can be answered | the three columns and the audit history answer them separately | real environment |
+| The migration is traced and the evidence source is visible | one row in `plate_material_event` with the right `evidence` | real environment |
+| "Who produced it / who processed it last / who owns it now" can be answered | the three columns and the event history answer them separately | real environment |
 | "Which material results did this run declare" can be answered | `GET /api/runs/{id}/material-effects` | real environment |
 | Renaming a dictionary entry does not break the reference | change `display_name` ⇒ the display follows, the `code` does not change | pure logic |
 | Old flows change behaviour not at all | run an existing flow from the database and compare with the behaviour before the change | real environment |
 
-### 11.2 Failure scenarios (required by all three reviews)
+### 11.2 Failure scenarios (15 · the merged list of the three reviews and the three designs)
 
-| Scenario | The result that must be guaranteed |
-|---|---|
-| the device succeeded, the database write failed | **it must not silently show the material state as correct** ⇒ the effect record goes `FAILED` and it escalates to manual |
-| the device timed out, but the action may have happened | **it must not simply be treated as "the action did not happen"** |
-| the same node retries | **the same material effect is not applied twice** (`attempt` is not part of the idempotence key) |
-| the same node loops three times | **all three real effects are traceable** (the idempotence key includes `loop_index`) |
-| the run crashes and recovers | the confirmed effects are not repeated; the unconfirmed ones **can be recovered** (replayed by the already resolved `plate_id`) |
-| two runs modify the same plate at the same time | **no state is overwritten** (`FOR UPDATE` / CAS) |
-| a manual inventory and an automatic migration collide | there is an explicit conflict rule; **no silent overwrite** |
-| the material cannot be found | **isolate and escalate to manual, do not guess** |
+| # | Scenario | The result that must be guaranteed |
+|---|---|---|
+| 1 | the device succeeded, the database write failed | **it must not silently show the material state as correct** ⇒ T1 fails ⇒ the run is blocked and escalated to manual |
+| 2 | the device timed out, but the action may have happened | **it must not simply be treated as "the action did not happen"** ⇒ the effect goes to `NEEDS_RECONCILIATION` |
+| 3 | the same device command callback arrives twice | the effect is applied only once (the idempotence key blocks it) |
+| 4 | the same node loops three times in one run | **all three real effects are traceable** (`execution_id` includes `loop_index`) |
+| 5 | one logical execution retries three times | **only one material effect is produced** (`attempt` does not go into `execution_id`) |
+| 6 | the run crashes and recovers | the confirmed effects are not repeated; the unconfirmed ones **can be recovered** (replayed by the already resolved `plate_id`) |
+| 7 | two runs modify the same plate at the same time | **no state is overwritten** (`FOR UPDATE` / CAS) |
+| 8 | two materials occupy the same position at the same time | blocked by the existing `PositionLock` (**reused, not rebuilt**) |
+| 9 | the target position is already occupied | the migration fails visibly and escalates to manual, no guessing |
+| 10 | the material cannot be found / the identity cannot be confirmed | **isolate and escalate to manual, cannot guess** (the position is only a helper, never the identity) |
+| 11 | a manual inventory and an automatic migration collide | there is an explicit conflict handling, **no silent overwrite** |
+| 12 | the declaration disagrees with the device execution result | the effect goes to `REJECTED` and escalates to manual, **the declaration is not written blindly** |
+| 13 | the node succeeded but the effect processing failed | the node still counts as completed (no fake device failure), **the downstream is held by `runtime_hold`** |
+| 14 | the state update succeeded but the event record failed | the two are **in one transaction**, either both or neither (a "state changed but no history" is not allowed) |
+| 15 | a cross-tenant material or dictionary reference | **must be rejected** (composite foreign key / tenant context check) |
+
+⚠ Any one of them without an explicit handling mechanism means the material state management
+**cannot be claimed production-ready**.
 
 ---
 
@@ -580,9 +748,9 @@ initialisation each need another round).
 
 | Slice | Content | Depends on | Produces |
 |---|---|---|---|
-| **S0** | **The domain model is finalised** (no tables): the Material layering and the three boundaries; the three attribution concepts; the tenant model of the stage dictionary and the template set; the idempotence key and the round; the model for execution facts and material effects; the completion-point scheme | — | the model is settled; **no code until the review passes** |
-| **S1** | Basic data structures: the stage dictionary, the new `plate` columns, the effect table, the audit table, the constraints and indexes, the migration script. **Not wired into the execution engine** | S0 | the tables are in place, zero behaviour change |
-| **S2** | The execution fact and material effect engine: the completion notification (both paths covered, exceptions not swallowed), T1/T2, idempotence, loops, retries, isolation, compensation | S0, S1 | **the behaviour starts to change** |
+| **S0** | **The domain model is finalised** (no tables): the Material layering and the three boundaries; the three attribution concepts; the tenant model of the stage dictionary and the template set; the `execution_id` / `effect_index` idempotence definition; the model for execution facts and material effects; the **two-level failure semantics**; the completion-point scheme | — | the model is settled; **no code until the review passes** |
+| **S1** | Basic data structures: the stage dictionary, the new `plate` columns, the two new `run_node` columns, the effect table, the event table, the constraints and indexes, the migration script. **Not wired into the execution engine** | S0 | the tables are in place, zero behaviour change |
+| **S2** | The execution fact and material effect engine: the material effect notification (both paths covered, **a failure does not abort the execution but a PENDING must be left**), T1/T2, the five-state effect state machine, idempotence, loops, retries, isolation, compensation, `runtime_hold` blocking the downstream | S0, S1 | **the behaviour starts to change** |
 | **S3** | Material query and traceability: the interfaces, the columns on the inventory page, the state transition history, the material results on the run detail page | S2 | the site can look it up |
 | **S4** | The process designer: the material effect section, preflight, the node impact classification | S2, S3 | the site can configure it |
 | **S5** | The independent consumable domain: the `consumable` model (position + attachment history + state machine), the lid stock and handling | S0 | lids become traceable |
@@ -637,6 +805,21 @@ specification first):
 | 5 | Should a missing declaration block | do not block | **basically accepted, but the reasoning changes**: classify by node impact (position-only / may change the content / unknown); a node known to change the content that declares nothing ⇒ ERROR | all three reviews point out that "the system cannot tell" does not hold |
 | 6 | The six `plate_type` values | change it to six process roles | **rejected**: `plate_type` keeps meaning the **plate format**; a process role would be another column, and this round does not add one | Grok + OpenAI + Kimi |
 | 7 | Are the consumables (S5) in this round | a separate slice | **accepted**, and the **whole table is deferred** (not just the execution) | Kimi + OpenAI |
+
+**The two new adjudications of the v3 three-way convergence**:
+
+| # | Decision point | **v3 conclusion** | Basis |
+|---|---|---|---|
+| 8 | **The anchor of the idempotence key** | **`execution_id + effect_index`** (`execution_id = tenant\|run\|node\|loop`; `attempt` does not go into it) | the third design's anchor is the most stable: it is decoupled from the plate and natively supports several effects per node; keeping `attempt` out guarantees a retry produces no new effect |
+| 9 | **The relation between the node completion and the effect** | a node explicitly declaring `NONE` does not wait for an effect; a node that declares an effect **only counts as fully complete once the effect reaches the required confirmation level**. **No new `node_status` enum value** — `run_node.material_sync_status` expresses it and `runtime_hold` holds the downstream | the third design's D4 + the existing `runtime_hold` capability |
+
+**Three more convergences (not decision points, they are wording)**:
+① the effect state machine takes **five states** (adding `REJECTED` / `NEEDS_RECONCILIATION`);
+② the event table is named **`plate_material_event`** and separates `occurred_at` (the physical
+time) from `recorded_at` (the system recording time);
+③ **the Execution Fact gets no new table** — `run_command` is reused (it already has
+`command_id` / `device_raw_response` / `ack_at`), the material event gets its own ledger, and
+the two ledgers are not mixed.
 
 ---
 
