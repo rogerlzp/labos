@@ -188,6 +188,12 @@
          什么时候发出、设备什么时候回的、耗时多少、失败原因是什么。
          sent_at 是**命令真正下发到设备的时刻**（见 insertRunCommand 的 sentAt 参数），
          finished_at 是命令完成落库时刻 ⇒ 两者之差 = 设备侧耗时。 -->
+    <update id="updateRunNodeStatus">
+        UPDATE run_node
+           SET status = #{param3}::node_status, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2} AND level = 0
+    </update>
+
     <select id="selectRunCommands" resultType="java.util.Map">
         SELECT rc.id AS "id",
                rc.command_seq AS "commandSeq",

@@ -202,6 +202,19 @@ public interface RunMapper {
     java.util.List<java.util.Map<String, Object>> selectRunCommands(long tenantId, long runId);
 
     /**
+     * 按 run_node.id 更新该行状态（只用于 level=0 的业务节点汇总行）。
+     *
+     * <p>用途：让**顺序执行路径**（{@code sm.executeAll}，没有
+     * {@code nodeStateRecorder} 回调）也能实时显示"这个节点正在跑"。
+     * 否则运行中的流程图全是 pending，直到整单结束才一次性回填
+     * （2026-11-11 实测：顺序路径下 level=0 三行一直是 pending，
+     * 16 秒后整单结束才一次性变 completed/manual）。
+     */
+    int updateRunNodeStatus(@Param("tenantId") long tenantId,
+                            @Param("nodeId") long nodeId,
+                            @Param("status") String status);
+
+    /**
      * 节点最新一次执行的命令结果（result + 设备原始回包，按命令 id 倒序取一条）。
      *
      * <p>命令挂在步骤节点（level=1）上，业务节点（level=0）是它的 parent ——

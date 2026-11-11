@@ -1930,6 +1930,25 @@ public class WorkflowService {
         public void onStepStart(long nodeId, int stepSeq, String method,
                                 long resourceId, int attempt) {
             resourceByStep.put(nodeId + ":" + stepSeq + ":" + attempt, resourceId);
+            // **level=0 汇总行实时回写 running**（2026-11-11 修）。
+            //
+            // 为什么：图执行路径有 `nodeStateRecorder` 回调实时改汇总行，
+            // 而**顺序执行路径**（`sm.executeAll`，图解析失败时回退到它）没有 ⇒
+            // 汇总行一直是 pending，直到整单结束才一次性回填
+            // ⇒ 运行态流程图"执行中看不到任何变化、最后一次性变"
+            // （2026-11-11 实测：顺序路径 8 秒时三行全 pending、16 秒整单结束
+            //   才变成 completed/manual/completed）。
+            //
+            // ⚠ 只在**开始**时写 running，**终态仍由收尾统一回填**
+            // （两条路径的终态语义并不完全一致，猜终态会写错）⇒ 零语义风险。
+            try {
+                Long parentRowId = nodeIdMap.get(nodeId);
+                if (parentRowId != null) {
+                    rm().updateRunNodeStatus(tenantId, parentRowId, "running");
+                }
+            } catch (RuntimeException ignore) {
+                // 回写失败不影响执行主链路（状态只是展示用；mapper 不声明受检异常）
+            }
             // 命令下发的时刻（拿完锁、即将下发这一刻）
             sentAtByStep.put(nodeId + ":" + stepSeq + ":" + attempt,
                     java.sql.Timestamp.from(java.time.Instant.now()));
