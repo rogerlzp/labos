@@ -34,3 +34,19 @@ public interface ITransport : IDisposable
 
     TransportReply Send(Protocol.Request req, ModelLibrary.ModelDef model);
 }
+
+/// <summary>
+/// 传输层能自报"到设备的链路还活着吗"。
+///
+/// <para>在线状态的权威是 <b>Redis</b>，写入方是 tcp client（就是本 sidecar）：
+/// 它持有到设备的**长连接**，把状态写进 Redis，中控只读。
+/// 所以 sidecar 必须能回答"我这条长连接现在活着吗" —— 这就是本接口。</para>
+///
+/// <para>没实现本接口的传输（串口 / dll）会在保活线程里按"进程在跑即视为链路可用"
+/// 上报，并打一行警告 —— 那不是真的探测，只是"我没能力探"。</para>
+/// </summary>
+public interface ILinkProbe
+{
+    /// <summary>建立/维持到设备的连接；成功返回 true（失败不抛）。</summary>
+    bool TryEnsureLink();
+}

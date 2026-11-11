@@ -19,7 +19,7 @@ namespace Labos.Sidecar;
 /// 要和 {@code DeviceSimulator --device} 填同一个值。
 /// </para>
 /// </summary>
-public sealed class SimBridgeTransport : ITransport
+public sealed class SimBridgeTransport : ITransport, ILinkProbe
 {
     private readonly string _host;
     private readonly int _port;
@@ -99,7 +99,30 @@ public sealed class SimBridgeTransport : ITransport
         }
     }
 
-    private void EnsureConnected()
+    /// <summary>
+    /// 长连接是否还在（给保活线程判状态用）。
+    ///
+    /// <p>注意：<c>TcpClient.Connected</c> 对**半开连接**仍返回 true ⇒
+    /// 真正的"还活着"要看有没有读到东西（见 Send 里的读超时判断）。
+    /// </summary>
+    public bool IsLinked => _client is { Connected: true } && _stream != null;
+
+    /// <summary>主动建立/维持到设备的连接；失败返回 false（不抛给调用方）。</summary>
+    public bool TryEnsureLink()
+    {
+        try
+        {
+            EnsureConnected();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>建立到设备的连接（保活线程调用）。</summary>
+    public void EnsureConnected()
     {
         if (_client is { Connected: true } && _stream != null)
         {

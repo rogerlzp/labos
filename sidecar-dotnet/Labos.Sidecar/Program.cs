@@ -78,9 +78,30 @@ public static class Program
         var transportKind = Get(opt, "transport") ?? "sim";
         using var transport = BuildTransport(transportKind, opt);
 
+        // 认领设备：**设备ID / 设备IP / 端口全部取自中控的设备清单**
+        // （清单真源在中控的表里，sidecar 不自己维护一份设备表）。
+        // 认领失败不致命：保活线程会继续重试，只是这台设备暂时不会被判在线。
+        string registryUrl = Get(opt, "registry-url") ?? "http://127.0.0.1:18080";
+        string? deviceCode = Get(opt, "device-code");
+        string? simHost = transport is SimBridgeTransport
+            ? Get(opt, "sim-host") ?? "127.0.0.1" : null;
+        int simPort = transport is SimBridgeTransport
+            ? (int.TryParse(Get(opt, "sim-port"), out var sp) ? sp : SimPort(Get(opt, "sim")))
+            : 0;
+        var device = ResolveDevice(registryUrl, simHost, simPort, deviceCode);
+        if (device is not null)
+        {
+            Console.WriteLine($"已认领设备：{device.Code}（设备ID {device.DeviceId}）"
+                + $" @ {device.Ip}:{device.Port}（来源：中控设备清单）");
+        }
+
+        // 长连接保活：sidecar 主动连上设备，把「连上了 / 断了」写进 Redis
+        // ⇒ 中控（内核）从 Redis 读这个状态来判定设备在线，不再自己开短连接去探。
+        StartLinkKeeper(transport, opt, device);
+
         if (opt.ContainsKey("once"))
         {
-            return RunOnce(Get(opt, "once")!, opt, model, transport);
+            return RunOnce(Get(opt, "once")!, opt, model, transport, device);
         }
 
         var port = int.TryParse(Get(opt, "port"), out var p) ? p : 8501;
@@ -96,7 +117,8 @@ public static class Program
 
     /// <summary>调试用：发一条命令、打印回包，不监听端口。</summary>
     private static int RunOnce(string spec, Dictionary<string, string> opt,
-                               ModelLibrary.ModelDef model, ITransport transport)
+                               ModelLibrary.ModelDef model, ITransport transport,
+                               DeviceEntry? device)
     {
         // 形式：Seal   或   MoveTray{"value":10000}
         var method = spec;
@@ -108,8 +130,12 @@ public static class Program
             paramsJson = spec[i..];
         }
 
+        // equipment_id 用**设备ID**（和中控下发的一致，也是模拟器校验的那个）
+        var equipment = device?.DeviceId.ToString()
+                       ?? Get(opt, "device")
+                       ?? "SIDECAR-1";
         var raw = $"{{\"message_id\":\"once\",\"message_type\":1,\"method\":\"{method}\","
-                + $"\"equipment_id\":\"{Get(opt, "device") ?? "SIDECAR-1"}\","
+                + $"\"equipment_id\":\"{equipment}\","
                 + $"\"parameters\":{paramsJson}}}";
         var req = Protocol.Parse(raw)!;
         var r = transport.Send(req, model);
@@ -117,6 +143,130 @@ public static class Program
             ? $"OK   {r.DataJson}"
             : $"FAIL {r.VendorCode} {r.ErrorText}");
         return r.Ok ? 0 : 1;
+    }
+
+    /// <summary>
+    /// 起一个后台线程：维持到设备的**长连接**，并把连接状态写进 Redis。
+    ///
+    /// <para>两件事，缺一不可：</para>
+    /// <list type="number">
+    ///   <item><b>认领设备</b>：从中控的设备清单里找到"我是哪台设备的 tcp client"
+    ///         （sim 按设备端点对，串口/dll 按设备编号对）。认不到就一直重试 ——
+    ///         认错了会把在线状态挂到别的设备名下，表现为"这台明明在线，页面显示离线"。</item>
+    ///   <item><b>保活 + 上报</b>：维持长连接，把 online/offline 写进
+    ///         {@code labos:link:<设备ID>:<设备IP>:<端口>}（带 TTL，断了自己过期）。</item>
+    /// </list>
+    ///
+    /// <para>设备ID / 设备IP / 端口**全部取自中控的清单**，不取命令行 ——
+    /// 命令行是"我这台进程连到哪"，清单是"中控认为设备在哪"，两个都得对。</para>
+    /// </summary>
+    private static Thread? StartLinkKeeper(ITransport transport, Dictionary<string, string> opt,
+                                          DeviceEntry? seed)
+    {
+        string redisHost = Get(opt, "redis-host") ?? "127.0.0.1";
+        int redisPort = int.TryParse(Get(opt, "redis-port"), out var rp) ? rp : 6379;
+        int ttl = int.TryParse(Get(opt, "redis-ttl"), out var tt) ? tt : 30;
+        int every = int.TryParse(Get(opt, "redis-refresh"), out var er) ? er : 10;
+        string registryUrl = Get(opt, "registry-url") ?? "http://127.0.0.1:18080";
+        string? deviceCode = Get(opt, "device-code");
+
+        // 认领方式：sim 传输按"设备端点"对（它真正连着的那台设备）；
+        // 串口 / dll 传输按"设备编号"对（中控认的是它自己那端的 ip:port）。
+        string? simHost = null;
+        int simPort = 0;
+        if (transport is SimBridgeTransport)
+        {
+            simHost = Get(opt, "sim-host") ?? "127.0.0.1";
+            simPort = int.TryParse(Get(opt, "sim-port"), out var sp) ? sp : SimPort(Get(opt, "sim"));
+        }
+
+        if (transport is not ILinkProbe)
+        {
+            Console.Error.WriteLine(
+                $"警告：传输 {transport.Name} 没有链路探测能力，"
+                + "在线状态将按\"sidecar 进程在跑\"上报（不是真的探测到设备）。");
+        }
+
+        var redis = new RedisLinkState(redisHost, redisPort);
+        var stop = 0;   // 后台线程退出标记（Thread.IsInterrupted 在 .NET 里不是这个语义）
+        var th = new Thread(() =>
+        {
+            DeviceEntry? entry = seed;
+            // key 必须**先算出来**再进循环：seed 已经认领过时不会走下面的解析分支，
+            // 早先的写法把 key 留在 null ⇒ 一次 Redis 都没写（中控侧全是离线）。
+            string? key = seed is null
+                ? null
+                : RedisLinkState.LinkKey(seed.DeviceId, seed.Ip, seed.Port);
+            bool claimedWarned = false;   // "还没认领到设备"只警告一次
+            bool alivePrinted = false;    // 保活信息只打印一次
+            while (Volatile.Read(ref stop) == 0)
+            {
+                if (entry is null)
+                {
+                    entry = ResolveDevice(registryUrl, simHost, simPort, deviceCode);
+                    if (entry is null)
+                    {
+                        if (!claimedWarned)
+                        {
+                            Console.Error.WriteLine(
+                                $"还没从中控认领到设备（{registryUrl}{DeviceRegistry.Path}）。"
+                                + "在线状态暂时不上报（中控会判这台设备离线），稍后自动重试。");
+                            claimedWarned = true;
+                        }
+                        Thread.Sleep(every * 1000);
+                        continue;
+                    }
+                    key = RedisLinkState.LinkKey(entry.DeviceId, entry.Ip, entry.Port);
+                }
+                if (key is not null && !alivePrinted)
+                {
+                    Console.WriteLine($"长连接保活：设备 {entry!.Code}（ID {entry.DeviceId}）"
+                        + $" ⇒ Redis {redisHost}:{redisPort} key={key}"
+                        + $"（每 {every}s 刷新，TTL {ttl}s）");
+                    alivePrinted = true;
+                }
+
+                bool linked = transport is ILinkProbe probe ? probe.TryEnsureLink() : true;
+                if (key is not null)
+                {
+                    redis.Report(key, linked, ttl);
+                }
+                Thread.Sleep(every * 1000);
+            }
+            // 退出时把状态清掉：别让内核一直以为设备还在线
+            if (key is not null)
+            {
+                redis.Clear(key);
+            }
+        })
+        { IsBackground = true, Name = "link-keeper" };
+        th.Start();
+        return th;
+    }
+
+    /// <summary>
+    /// 从中控的设备清单里认领"我是哪台设备的 tcp client"；认不到返回 null。
+    ///
+    /// <p>失败不抛：认领不到只意味着"在线状态暂时没法上报"，
+    /// 不该让 sidecar 整个起不来 —— 中控起来之后下一轮就认到了。</p>
+    /// </summary>
+    private static DeviceEntry? ResolveDevice(string registryUrl, string? simHost,
+                                              int simPort, string? deviceCode)
+    {
+        try
+        {
+            var items = DeviceRegistry.FetchAsync(registryUrl).GetAwaiter().GetResult();
+            if (simHost != null)
+            {
+                return DeviceRegistry.MatchByEndpoint(items, simHost, simPort);
+            }
+            return DeviceRegistry.MatchByCode(items, deviceCode ?? "");
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine("读中控设备清单失败：" + e.Message);
+            return null;
+        }
     }
 
     private static ITransport BuildTransport(string kind, Dictionary<string, string> opt) =>
