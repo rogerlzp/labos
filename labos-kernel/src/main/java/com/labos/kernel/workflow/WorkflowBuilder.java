@@ -6,6 +6,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 把「搬运序列」落成一条正式流程。
@@ -48,9 +49,17 @@ public final class WorkflowBuilder {
         if (steps.size() > 50) {
             throw new IllegalArgumentException("一条流程最多 50 步");
         }
+        // 规格 §6：choreography build ⇒ "Derive or require Island; validate every
+        // resource and robot transition server-side"。
+        //
+        // 为什么必须服务端做：前端本来就是在**同一座岛**里选设备（Island.tsx /
+        // IslandFlow.tsx），但这个接口是公开的 —— 直接调就能把两座岛的设备拼成
+        // 一条"搬运流程"，而板子根本不可能在两座岛之间移动（没有跨岛机械臂、
+        // 没有跨岛动线）。⇒ 服务端自己派生岛，并且**跨岛就拒绝**。
+        Long derivedIsland = deriveIsland(steps);
 
         return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            long wfId = insertWorkflow(c, name);
+            long wfId = insertWorkflow(c, name, derivedIsland);
 
             // 起止事件 + 每步一个 task
             long startId = insertNode(c, wfId, "S", "开始", "start", null, null, null);
@@ -84,11 +93,51 @@ public final class WorkflowBuilder {
         });
     }
 
-    private long insertWorkflow(Connection c, String name) throws SQLException {
+    private long insertWorkflow(Connection c, String name, Long islandId) throws SQLException {
         // c 形参保留（Tx 事务内调用，mapper 复用绑定连接）
         String code = "AUTO-" + System.currentTimeMillis() % 100000;
         return gm().insertWorkflowRow(tenantId, code,
-                name == null || name.isBlank() ? "搬运流程 " + code : name);
+                name == null || name.isBlank() ? "搬运流程 " + code : name, islandId);
+    }
+
+    /**
+     * 派生搬运流程的**权威岛**：每一步的设备都必须在册、且**同属一座岛**。
+     *
+     * <p>为什么必须服务端做（规格 §6「Derive or require Island」）：前端本来就在
+     * 同岛里选设备，但接口是公开的 —— 直接调就能把两座岛的设备拼成一条"搬运流程"，
+     * 而板子不可能在两座岛之间移动（没有跨岛机械臂、没有跨岛动线）。
+     *
+     * @return 派生的岛 id（设备不在册或跨岛 ⇒ 抛 {@link IllegalArgumentException}）
+     */
+    private Long deriveIsland(List<Step> steps) {
+        Map<Long, Long> deviceIsland = new java.util.LinkedHashMap<>();
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceMapper.class)
+                .selectDevicePool(tenantId, null)) {
+            Object rid = row.get("resourceId");
+            Object isl = row.get("islandId");
+            if (rid instanceof Number && isl instanceof Number) {
+                deviceIsland.put(((Number) rid).longValue(), ((Number) isl).longValue());
+            }
+        }
+        Long island = null;
+        for (int i = 0; i < steps.size(); i++) {
+            long rid = steps.get(i).resourceId();
+            Long isl = deviceIsland.get(rid);
+            if (isl == null) {
+                throw new IllegalArgumentException("第 " + (i + 1) + " 步的设备 "
+                        + rid + " 不在册（或不在任何岛上），不能建成搬运流程");
+            }
+            if (island == null) {
+                island = isl;
+            } else if (!island.equals(isl)) {
+                throw new IllegalArgumentException("跨岛的搬运序列不能建成一个流程："
+                        + "第 " + (i + 1) + " 步的设备在岛 " + isl
+                        + "，而前面几步在岛 " + island
+                        + "（板子不可能在两座岛之间移动）");
+            }
+        }
+        return island;
     }
 
     private long insertNode(Connection c, long wfId, String key, String name, String type,
