@@ -832,6 +832,83 @@ export default function DesignerPage() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const modelerRef = useRef<BpmnModeler | null>(null);
+  // ---- 运行态视图（URL 带 ?run=<runId>）：把这次运行的节点状态画在流程图上 ----
+  //
+  // 为什么要有这个：从「实验详情 → 执行历史」点进来的人，想看的是**这个流程
+  // 这一次跑得怎么样**（哪个节点还在跑、哪个转了人工、哪个失败了）。
+  // 以前只有 `/runs/:id` 那张节点表（要跳走、且看不到图）；
+  // 现在能在**流程图本身**上直接着色，一眼看出卡在哪。
+  //
+  // 状态来源：`/api/runs/{id}` 的 nodes，**level=0 的汇总行**（loopIndex=0）
+  // 就是该节点这一次的最终状态（level=1 是子步骤、loopIndex>0 是各圈）。
+  const runId = Number(sp.get('run')) || 0;
+  const runQ = useQuery({
+    queryKey: ['designer-run', runId],
+    queryFn: () => apiFetch(`/api/runs/${runId}`).then((r) => r.json()) as Promise<{
+      run?: { status?: string };
+      nodes?: Array<{ nodeKey: string; status: string; level: number }>;
+    }>,
+    enabled: runId > 0,
+  });
+  /** node_key → 状态 */
+  const runStates: Record<string, string> = {};
+  for (const n of runQ.data?.nodes ?? []) {
+    if (n.level !== 0) continue;
+    runStates[n.nodeKey] = n.status;
+  }
+  /**
+   * 最新状态放 ref 而不是闭包捕获：applyRunStates 会在**画布导入完成后**调用，
+   * 而那一刻组件这一轮渲染里的 runStates 可能还是空的（run 查询还没回来）
+   * ⇒ 闭包捕获 ⇒ marker 一个都打不上（2026-11-11 实测踩到）。
+   */
+  const runStatesRef = useRef<Record<string, string>>({});
+  runStatesRef.current = runStates;
+  /** 已经打过的 marker（状态刷新时先清掉旧的，避免 running→completed 叠两层） */
+  const markedRef = useRef<Array<[string, string]>>([]);
+  const applyRunStates = () => {
+    const m = modelerRef.current;
+    if (!m) return;
+    const canvas = m.get('canvas') as {
+      addMarker: (id: string, mk: string) => void;
+      removeMarker: (id: string, mk: string) => void;
+    };
+    const reg = m.get('elementRegistry') as { get: (id: string) => unknown };
+    for (const [id, mk] of markedRef.current) {
+      try { canvas.removeMarker(id, mk); } catch (ignore) { /* 元素可能已被删 */ }
+    }
+    markedRef.current = [];
+    for (const [key, st] of Object.entries(runStatesRef.current)) {
+      // 图里没有这个节点（流程改过、或节点被删了）⇒ 跳过，不硬套
+      if (!reg.get(key)) continue;
+      const mk = `run-state-${st}`;
+      canvas.addMarker(key, mk);
+      markedRef.current.push([key, mk]);
+    }
+  };
+  // 状态到达 / 刷新 ⇒ 重画着色
+  useEffect(() => {
+    if (runId <= 0) return;
+    applyRunStates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runQ.data]);
+  // 着色的 CSS：用 drop-shadow 而不是改 fill —— 画布上的设备节点是**自定义 renderer**
+  // 画出来的图片卡片（不是原生 rect），改 fill 未必命中；filter 对任何 SVG 结构都生效。
+  useEffect(() => {
+    if (runId <= 0) return;
+    const style = document.createElement('style');
+    style.id = 'labos-designer-run-state';
+    style.textContent = [
+      '.djs-element.run-state-running .djs-visual { filter: drop-shadow(0 0 7px #1677ff); }',
+      '.djs-element.run-state-manual .djs-visual { filter: drop-shadow(0 0 7px #faad14); }',
+      '.djs-element.run-state-failed .djs-visual { filter: drop-shadow(0 0 7px #ff4d4f); }',
+      '.djs-element.run-state-completed .djs-visual { filter: drop-shadow(0 0 5px #52c41a); }',
+      '.djs-element.run-state-bypassed .djs-visual,',
+      '.djs-element.run-state-skipped .djs-visual { opacity: .45; }',
+      '.djs-element.run-state-pending .djs-visual { opacity: .6; }',
+    ].join('\n');
+    document.head.appendChild(style);
+    return () => { style.remove(); };
+  }, [runId]);
   // 上一次拖入的节点：判断「板子换设备」→ 自动插入机械臂 Transfer 并连线
   const lastDroppedRef = useRef<LastDropped | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -1506,6 +1583,8 @@ export default function DesignerPage() {
         if (!alive || !modelerRef.current) return;
         await modelerRef.current.importXML(normalize(xml));
         (modelerRef.current.get('canvas') as CanvasApi).zoom('fit-viewport');
+        // 画布导入完才能打 marker（元素还不存在时 addMarker 无效）
+        applyRunStates();
         if (containerRef.current) {
           containerRef.current.dataset.modelImported = String(Date.now());
         }
@@ -1930,6 +2009,23 @@ export default function DesignerPage() {
 
   return (
     <>
+      {runId > 0 && (
+        <Alert
+          type="info" showIcon
+          style={{ marginBottom: 8 }}
+          message={t('designer.runState.message', {
+            id: runId, status: runQ.data?.run?.status ?? '—',
+          })}
+          description={(
+            <Space size={10} wrap style={{ fontSize: 12 }}>
+              <span>{t('designer.runState.legend')}</span>
+              <Tag color="green">{t('designer.runState.completed')}</Tag>
+              <Tag color="blue">{t('designer.runState.running')}</Tag>
+              <Tag color="orange">{t('designer.runState.manual')}</Tag>
+              <Tag color="red">{t('designer.runState.failed')}</Tag>
+              <Tag>{t('designer.runState.skipped')}</Tag>
+            </Space>
+          )}
       {fromExpId && (
         <Alert
           type="info" showIcon

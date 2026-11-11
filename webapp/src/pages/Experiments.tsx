@@ -137,6 +137,17 @@ function RunSteps({ runId, nav }: { runId: number; nav: (p: string) => void }) {
                   onClick={() => nav(`/runs/${r.runId}`)}>#{r.runId}</Button>
               : '—'),
           },
+          {
+            // 打开**流程图本身**并带上这次 run ⇒ 设计器把节点状态直接着色在图上
+            // （只点 runId 会跳到运行详情那张节点表，看不到图上的位置）
+            title: t('experiments.col.workflowGraph'), width: 110,
+            render: (_, r) => (r.runId && r.workflowId
+              ? <Button size="small" type="link"
+                  onClick={() => nav(`/designer/${r.workflowId}?run=${r.runId}`)}>
+                  {t('experiments.action.openWorkflowGraph')}
+                </Button>
+              : '—'),
+          },
           { title: t('experiments.col.error'), ellipsis: true, render: (_, r) => r.error ?? '—' },
         ]}
       />
