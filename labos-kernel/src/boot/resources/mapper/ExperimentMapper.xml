@@ -159,6 +159,12 @@
            SET graph = EXCLUDED.graph, updated_at = now()
     </insert>
 
+<select id="selectExperimentGraph" resultType="java.lang.String">
+        SELECT graph::text
+          FROM experiment_graph
+         WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </select>
+
 <update id="updateExperimentProcessLoopCount">
         UPDATE experiment_process SET loop_count = #{param4}
          WHERE tenant_id = #{param1} AND experiment_id = #{param2} AND seq = #{param3}

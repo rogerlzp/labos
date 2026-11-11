@@ -80,6 +80,14 @@ public interface ExperimentMapper {
     /** 保存实验编排图（按 experiment_id 覆盖）。 */
     int upsertExperimentGraph(long tenantId, long experimentId, String graphJson);
 
+    /**
+     * 读实验编排图（画布 JSON）；null/空 = 这个实验没用过画布编排。
+     *
+     * <p>为什么放在这个 Mapper：与 {@link #upsertExperimentGraph} 同表同域
+     * （画布 graph），读写放在一处免得口径漂。
+     */
+    String selectExperimentGraph(long tenantId, long experimentId);
+
     /** 实验流程的循环次数覆盖值（null = 用默认）。 */
     int updateExperimentProcessLoopCount(long tenantId, long experimentId, int seq,
                                          String loopCount);

@@ -216,6 +216,75 @@ export default function ExperimentsPage() {
     enabled: expId != null,
   });
 
+  /**
+   * 编排编辑：把「**已经建好的流程**」按顺序加进这个实验。
+   *
+   * <p>为什么原来界面上没有这个入口：编排表被设计成「画布编排」的**编译产物**
+   * （写入口唯一 = 画布），于是**实验建好之后没有任何地方能把已有流程加进来** ——
+   * 只有「新建实验」弹窗能带流程（2026-11-11 用户现场：新建了实验，却找不到地方
+   * 放已经建好的流程）。
+   *
+   * <p>现在后端放开 `PUT /api/experiments/{id}/processes`（**已有画布编排的实验仍拒绝**
+   * —— 画布是权威，两边都写会分裂成「画布一套、顺序一套」）。
+   * 没有画布的实验：这里保存编排后，画布页会从编排表自动派生出一致的线性画布。
+   */
+  const [procEditOpen, setProcEditOpen] = useState(false);
+  /** 当前编排顺序（workflowId 数组，顺序 = 执行顺序） */
+  const [procOrder, setProcOrder] = useState<number[]>([]);
+  /** 待加入的流程（多选） */
+  const [procPick, setProcPick] = useState<number[]>([]);
+  const [procSaving, setProcSaving] = useState(false);
+
+  const openProcEdit = () => {
+    setProcOrder([...(procs.data?.items ?? [])]
+      .sort((a, b) => a.seq - b.seq).map((x) => x.workflowId));
+    setProcPick([]);
+    setProcEditOpen(true);
+  };
+
+  const addPicked = () => {
+    setProcOrder((old) => {
+      const seen = new Set(old);
+      return [...old, ...procPick.filter((id) => !seen.has(id))];
+    });
+    setProcPick([]);
+  };
+
+  const moveProc = (i: number, delta: number) => {
+    setProcOrder((old) => {
+      const j = i + delta;
+      if (j < 0 || j >= old.length) return old;
+      const next = old.slice();
+      const tmp = next[i]; next[i] = next[j]; next[j] = tmp;
+      return next;
+    });
+  };
+
+  const removeProc = (i: number) => {
+    setProcOrder((old) => old.filter((_, k) => k !== i));
+  };
+
+  const saveProcs = async () => {
+    if (expId == null) return;
+    setProcSaving(true);
+    try {
+      const r = await apiFetch(`/api/experiments/${expId}/processes`, {
+        method: 'PUT',
+        body: JSON.stringify({ workflowIds: procOrder }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        message.error(j.error ?? t('experiments.error.saveProcsFailed'));
+        return;
+      }
+      message.success(t('experiments.toast.procsSaved'));
+      setProcEditOpen(false);
+      await procs.refetch();
+    } finally {
+      setProcSaving(false);
+    }
+  };
+
   // 默认选中第一个实验：只在"没有路由 id"时做，否则会把 URL 指定的实验覆盖掉
   useEffect(() => {
     if (!routeId && expId == null && exps.data?.items?.length) {
@@ -617,6 +686,16 @@ export default function ExperimentsPage() {
               message={t('experiments.alert.mirrorTitle')}
               description={t('experiments.alert.mirrorDesc')}
             />
+
+            <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('experiments.hint.procsList')}
+              </Typography.Text>
+              <Button size="small" type="primary" ghost {...ro} title={ro.title}
+                onClick={openProcEdit}>
+                {t('experiments.action.editProcs')}
+              </Button>
+            </Space>
 
             {(procs.data?.items?.length ?? 0) === 0 && (
               <Alert
@@ -1098,6 +1177,59 @@ export default function ExperimentsPage() {
               {t('experiments.batch.current', { text: batchSplit != null ? t('experiments.batch.currentSet', { n: batchSplit }) : t('experiments.batch.currentOff') })}
             </div>
           </div>
+        </Space>
+      </Modal>
+
+      {/* 编排编辑：把已建好的流程按顺序加进这个实验（2026-11-11 新增） */}
+      <Modal
+        title={t('experiments.modal.procsTitle')}
+        open={procEditOpen}
+        onOk={saveProcs}
+        confirmLoading={procSaving}
+        onCancel={() => setProcEditOpen(false)}
+        okText={t('experiments.modal.procsOk')}
+        width={640}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert type="info" showIcon message={t('experiments.alert.procsTitle')}
+            description={t('experiments.alert.procsDesc')} />
+          <Space style={{ width: '100%' }}>
+            <Select mode="multiple" style={{ minWidth: 420 }} value={procPick}
+              placeholder={t('experiments.placeholder.pickWorkflows')}
+              showSearch optionFilterProp="label" onChange={setProcPick}
+              options={(wfs.data?.items ?? []).map((w) => ({
+                value: w.id, label: `${w.name}（${w.code}）`,
+              }))} />
+            <Button onClick={addPicked} disabled={procPick.length === 0}>
+              {t('experiments.action.addPicked')}
+            </Button>
+          </Space>
+          <Table size="small" pagination={false} rowKey={(_, i) => String(i)}
+            dataSource={procOrder}
+            locale={{ emptyText: t('experiments.procs.empty') }}
+            columns={[
+              { title: t('experiments.col.seq'), width: 50, render: (_: unknown, __: unknown, i: number) => i + 1 },
+              {
+                title: t('experiments.col.workflowName'),
+                render: (wid: number) => {
+                  const w = (wfs.data?.items ?? []).find((x) => x.id === wid);
+                  return w ? `${w.name}（${w.code}）` : `#${wid}`;
+                },
+              },
+              {
+                title: t('experiments.col.action'), width: 190,
+                render: (_: unknown, __: unknown, i: number) => (
+                  <Space size={2}>
+                    <Button size="small" type="link" disabled={i === 0}
+                      onClick={() => moveProc(i, -1)}>{t('experiments.action.moveUp')}</Button>
+                    <Button size="small" type="link" disabled={i === procOrder.length - 1}
+                      onClick={() => moveProc(i, 1)}>{t('experiments.action.moveDown')}</Button>
+                    <Button size="small" type="link" danger
+                      onClick={() => removeProc(i)}>{t('experiments.action.removeFlow')}</Button>
+                  </Space>
+                ),
+              },
+            ]} />
         </Space>
       </Modal>
     </Space>

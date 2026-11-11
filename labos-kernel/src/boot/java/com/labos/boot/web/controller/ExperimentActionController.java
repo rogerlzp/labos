@@ -517,16 +517,42 @@ public class ExperimentActionController {
 
     @PutMapping(value = "/experiments/{id:\\d+}/processes",
             produces = "application/json; charset=utf-8")
-    public ResponseEntity<String> processesReadOnly() {
-        // 流程编排表已改为只读镜像；保存走"画布编排"，系统会自动编译成流程顺序
-        return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(err("流程编排表已改为只读镜像；请到“画布编排”保存，系统会自动编译成流程顺序"));
+    public ResponseEntity<String> saveProcesses(
+            @PathVariable long id,
+            @RequestBody(required = false) String body,
+            HttpServletRequest req) throws SQLException {
+        // 列表编排（纯顺序形态）的写入口：{"workflowIds":[12,13]}
+        //
+        // 为什么原来是 409 只读：编排表被当成「画布编排」的**编译产物**，
+        // 写入口唯一（画布）⇒ 避免两处写打架。
+        // 但那让「实验建好之后，把已经建好的流程加进来」**在界面上无处可做**
+        // —— 只有「新建实验」弹窗能带流程，实验建好后编排表就只能看不能改
+        // （2026-11-11 用户现场：新建了实验却找不到地方放已建好的流程）。
+        //
+        // 现在放开，但守住"单一权威"：**已有画布编排的实验仍然拒绝**。
+        // 因为前端画布加载时 graph 非空就用 graph（graph 优先），两边都写会出现
+        // 「画布一套、顺序一套」的分裂状态（画布还显示旧顺序）。
+        // 没有画布的实验：写编排表后，画布页会从编排表自动派生出一致的线性画布。
+        if (experimentActionService.hasCanvasGraph(id)) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(err("这个实验已经用「画布编排」保存过，画布是权威的；"
+                            + "请到画布编排里调整流程顺序（画布支持条件分支与并行，"
+                            + "列表只表达纯顺序）"));
+        }
+        java.util.List<Long> workflowIds = extractLongArray(body, "workflowIds");
+        int n = experimentActionService.replaceExperimentProcesses(id, workflowIds);
+        audit.record(session(req), "experiment.processes.save", "experiment", id,
+                "workflows=" + workflowIds.size(), null, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("saved", n, "workflowIds", workflowIds));
     }
 
     @PostMapping(value = "/experiments/{id:\\d+}/processes",
             produces = "application/json; charset=utf-8")
-    public ResponseEntity<String> processesReadOnlyPost() {
-        return processesReadOnly();
+    public ResponseEntity<String> saveProcessesPost(
+            @PathVariable long id,
+            @RequestBody(required = false) String body,
+            HttpServletRequest req) throws SQLException {
+        return saveProcesses(id, body, req);
     }
 
     @PostMapping(value = "/experiments/reorder", produces = "application/json; charset=utf-8")
@@ -645,6 +671,27 @@ public class ExperimentActionController {
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
         return m.find() ? m.group(1) : null;
+    }
+
+    /**
+     * 从 JSON 里取一个数字数组字段（如 {@code "workflowIds":[12,13]}）。
+     *
+     * <p>跟本文件其它解析一样走正则（够用即可，不追求通用 JSON 解析）：
+     * 字段缺失时返回**空列表**（不是 null）⇒ 调用方可以直接当"清空"处理。
+     */
+    private static List<Long> extractLongArray(String json, String key) {
+        List<Long> out = new ArrayList<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]")
+                .matcher(json == null ? "" : json);
+        if (!m.find()) {
+            return out;
+        }
+        java.util.regex.Matcher im = java.util.regex.Pattern.compile("\\d+").matcher(m.group(1));
+        while (im.find()) {
+            out.add(Long.parseLong(im.group()));
+        }
+        return out;
     }
 
     /** Map&lt;String,String&gt; 转 JSON（Jsons.obj 不接受 Map）。 */

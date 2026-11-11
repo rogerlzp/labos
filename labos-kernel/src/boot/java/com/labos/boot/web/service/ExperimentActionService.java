@@ -264,6 +264,23 @@ public class ExperimentActionService {
         }
     }
 
+    /**
+     * 这个实验是否已经用「画布编排」保存过（画布 graph 非空）。
+     *
+     * <p>为什么列表编排要问这个：编排表既是**画布的编译产物**，也是**列表形态的本体**
+     * —— 两边都是「全量替换」同一个 {@code experiment_process}。前端画布加载时
+     * **graph 非空就用 graph、否则用编排表派生** ⇒ 一旦某实验有了画布，
+     * 再从列表改编排就会出现「画布一套、顺序一套」的分裂状态（画布还显示旧顺序）。
+     * ⇒ 有画布时**拒绝列表编排写入**，保住"单一权威"。
+     *
+     * <p>没有画布的实验：写编排表后，画布页会从编排表自动派生出一致的线性画布
+     * （前端 {@code ExperimentCanvas} 的加载逻辑），两边不会打架。
+     */
+    public boolean hasCanvasGraph(long experimentId) throws java.sql.SQLException {
+        String g = experimentMapper.selectExperimentGraph(TENANT, experimentId);
+        return g != null && !g.isBlank();
+    }
+
     private int replaceExperimentProcesses(Connection c, long experimentId,
                                            CompiledGraph compiled, boolean bumpVersion)
             throws java.sql.SQLException {
