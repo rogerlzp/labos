@@ -37,6 +37,10 @@
 | `BUG-20261111-03` | **高** | **设备在 `device_state` 里没有状态行 ⇒ 抢锁永远失败** ⇒ 调用方只能等满 60 秒再报「设备被占用超过 60 秒：<id>」—— **误导：那台设备根本没人占**，是它压根没有状态行（库里 **43 台**有 `device_instance` 却没 `device_state` 行：多半没接驱动、心跳也覆盖不到） | `DeviceStateMapper.tryAcquireDevice`（纯 UPDATE，无行则匹配 0 行）、`DeviceLock.tryAcquire` | ✅ **已修**（2026-11-11：抢锁前 `ensureDeviceState` 补一行空闲态；顺带修掉 P-18 引入的「自己的重试被故障态挡住」；抢不到锁时补一句设备当前状态。详见下方处置） | 用户现场反馈（2026-11-11，实验 1000267 / 设备 229） |
 | `BUG-20261111-04` | **高** | **`quarantined` 不被当终态** ⇒ ① 它留下的**设备锁永远不回收**（`releaseOrphanDeviceLocks` 只认 `completed/failed/aborted/cancelled`）⇒ 那台设备**永久不可用**；② 批次 attempt 永远没有 `finished_at`；③ 启动兜底还会把隔离中的 run **误标 failed**（丢掉「待人工确认」语义） | `DeviceStateMapper.releaseOrphanDeviceLocks`、`BatchMapper.updateAttemptFromRun` / `markRunFailed` | ✅ **已修**（2026-11-11：三处状态列表分别处理 —— IN 列表加 quarantined；`markRunFailed` 的 NOT IN 也加它，含义是**别把隔离中的 run 改成 failed**） | 执行方独占窗口实测发现（2026-11-11，设备 200206 被 quarantined 的老 run 占死） |
 | `BUG-20261111-05` | **中** | **模拟器不认 `Deposit1Ex`**（`incubator` 只支持 `Deposit1`，Ex 是扩展版）⇒ 库里登记了 `Deposit1Ex` 的设备一接模拟器就被判「不支持该方法」⇒ 节点失败（`EC-99-0001`） | `labos-kernel/.../sim/DeviceProfile.java`（incubator 方法白名单） | ✅ **已修**（2026-11-11：incubator 同时支持 `Deposit1Ex` / `Withdraw1Ex`；配套补了 driver / device_method 登记并起了两个模拟器，设备随即 `online=true`，实验三个节点全 completed） | 执行方按用户要求「给这两台设备加模拟方法」时发现（2026-11-11） |
+| `BUG-20261111-06` | **高** | **编排写入口把非法输入当成「清空」** —— `extractLongArray` 只读 body ⇒ `POST .../processes?workflowIds=-1` 被当成「没传」⇒ 解析成**空列表**⇒ 走全量替换把编排**清空**，而且**校验根本没执行**（非法 id 也返回 200） | `ExperimentActionController.extractLongArray` / `saveProcesses` | ✅ **已修**（2026-11-11：body 与 query string 都认；缺参 ⇒ **400**；非法/不存在的流程 id ⇒ **400**；任何情况下都不动已有编排。显式 `[]` 仍表示「清空编排」） | 门禁 3 段实测发现（编排 1 条 → 0 条） |
+| `BUG-20261111-07` | **中** | **`run_command.sent_at` 记的是落库时刻、不是下发时刻** —— 命令台账在命令**执行完**之后才写，`sent_at` 用 `now()` ⇒ 与 `finished_at` 同毫秒 ⇒ 事后算不出「发出 → 设备响应」的时间差 | `RunMapper.insertRunCommand` / `WorkflowService.onStepStart` | ✅ **已修**（2026-11-11：在 `onStepStart`（拿完锁、即将下发那一刻）捕获真实下发时刻并落库；实测下发→完成 6.39s，与设备回的 `durationMs 6220` 吻合） | 执行方查「什么时候发出指令」时发现（2026-11-11） |
+| `BUG-20261111-08` | **中** | **顺序执行路径不回写 level=0 汇总行** ⇒ 运行中的流程图**看不到任何节点状态变化**，等整单结束才一次性变（图执行路径有 `nodeStateRecorder` 回调，顺序路径没有） | `WorkflowService.PersistingStepSink.onStepStart` | ✅ **已修**（2026-11-11：在 `onStepStart` 把 level=0 写成 `running`，**终态仍由收尾统一回填**（两条路径终态语义不一致：同一节点顺序路径是 manual、图路径是 completed ⇒ 猜终态会写错）⇒ 零语义风险） | 用户现场反馈 + 决定性实验（只切 `LABOS_EXEC_GRAPH` 一��变量） |
+| `BUG-20261111-09` | **中** | **命令台账把 jsonb 对象当字符串渲染** ⇒ React 崩（`Objects are not valid as a React child`）⇒ 运行详情页与只读运行页**整页白屏** | `webapp/src/components/RunCommands.tsx` | ✅ **已修**（2026-11-11：payload/result 类型改 `unknown`，统一用 `asText()` 转文本再渲染；playwright 实测命令台账卡片出现、2 行、发出/完成/耗时/设备都可见） | 执行方实测命令台账界面时发现（2026-11-11） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
@@ -260,3 +264,12 @@
 | 配套 | 库里补了 `DRV-SIM-X229`(19510) / `DRV-SIM-X231`(19511) 两个模拟驱动、`device_method` 的 `143→Deposit1Ex`(cap 3) 与 `145→Home`(cap 2) 登记，并把两台 `device_instance.driver_id` 指向模拟驱动 ⇒ **两台设备随即 `online=true`** |
 | 实测 | 实验 1003103 = **completed**：`Activity_16n7hh7`(Deposit1Ex@200229)、`Activity_1w5e00z`(`__sleep`)、`Activity_1vi15o6`(Home@200231) **三个节点全 completed**，子步骤 S1/S2 也 completed |
 | 注意 | 模拟器是**进程**（本轮为 19510/19511，随进程结束就没了）；库里的 driver / device_method 登记是持久的 |
+
+#### 处置：BUG-20261111-06 ~ -09（执行方 · 2026-11-11）
+
+| 编号 | 现象 | 根因 | 修法 | 验证 |
+|---|---|---|---|---|
+| -06 | 门禁 3 段「缺参数 / 非法 id / 不存在的 id 没被拦住」，且**编排条数 1 → 0** | `extractLongArray` 只读 body ⇒ query string 形态被当成"没传"⇒ 空列表 ⇒ 全量替换清空；校验从未执行 | body 与 query 都认；缺参 ⇒ 400；非法/不存在 id ⇒ 400；不动已有编排（显式 `[]` 仍=清空） | 三种非法输入都 400，编排条数始终不变 |
+| -07 | 库里所有命令 `sent_at == finished_at` ⇒ 算不出"发出→响应" | 台账在命令**执行完**后才写，`sent_at` 用 `now()` | `onStepStart` 捕获真实下发时刻并落库 | 下发 13:08:24.057 → 完成 13:08:30.445（差 6.39s，与设备 `durationMs 6220` 吻合） |
+| -08 | 运行中流程图"看不到变化，最后一次性变" | 顺序执行路径（`sm.executeAll`，图解析失败时回退到它）**没有 `nodeStateRecorder` 回调** ⇒ 汇总行直到整单结束才批量回填 | `onStepStart` 把 level=0 写成 `running`；终态留给收尾（两条路径终态语义不一致，猜会写错） | 顺序路径 8 秒即三行 `running`（修复前 8 秒仍全 pending） |
+| -09 | 加了命令台账表后运行详情页/只读运行页**整页白屏** | 后端 `keyValueArrayJson` 的 `payload`/`result` 是**已解析对象**，我当字符串塞进 `<code>` ⇒ React 崩 | 类型改 `unknown`，统一 `asText()` 转文本 | playwright 实测：卡片出现、2 行、发出/完成/耗时/设备全可见 |
