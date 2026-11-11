@@ -243,6 +243,44 @@ Layer definitions: **L1** pure-logic unit test (no DB), **L2** DB unit test,
 
 ## 6. How to maintain this table
 
+---
+
+## Cases added 2026-11-11 (writable experiment arrangement + faulted devices no longer hang)
+
+| # | Case | Layer | Script | Assertions | Status |
+|---|---|---|---|---|---|
+| 13 | **Experiment arrangement is writable**: the detail page's "Arrange workflows" adds a **workflow you already built** to the experiment | page + live DB | manual steps (below) | ① `PUT /api/experiments/{id}/processes` returns `{"saved":n}`; ② `GET /api/experiments/{id}/processes` returns the same order; ③ the canvas page (`/experiments/{id}/canvas`) shows the same order; ④ an experiment that already has a canvas arrangement returns **409** saying the canvas is authoritative | ✅ manual |
+| 14 | **Faulted and unreachable devices are not picked** (no more permanent `running`) | live DB | manual steps (below) | ① the pool contains no device with `status='error' AND online=false`; ② such a device cannot take the lock (`tryAcquireDevice` does not return it); ③ a node that cannot get a device ends **failed / manual with a written reason**, **not `running`**; ④ once `online` is true again the device is **selectable again** (nothing is stranded) | ✅ manual |
+
+### Manual acceptance steps
+
+**Case 13 (writable experiment arrangement)**
+
+1. Frontend on 5173 + kernel on 18080 + the database; log in and open `/experiments/<id>`
+   (creating a new experiment is fine);
+2. Click "**Arrange workflows**" in the arrangement area ⇒ multi-pick two workflows you
+   already built ⇒ "Add to order";
+3. Reorder with "Up" / "Down" ⇒ "Save order";
+4. Assert: the list shows the new order; `curl -X PUT /api/experiments/<id>/processes
+   -d '{"workflowIds":[a,b]}'` returns `saved:2`; `GET .../processes` matches;
+   when `GET .../graph` is empty the canvas page derives a matching canvas;
+5. Counter-case: save on the canvas first, then save from the arrangement list ⇒ must get
+   **409** (the canvas is authoritative).
+
+**Case 14 (faulted devices no longer hang)**
+
+1. Create a device that is both `error` and offline
+   (`UPDATE device_state SET status='error', online=false`);
+2. Run a workflow **without an explicit device binding** that needs that capability ⇒ assert
+   the node does **not** stay on that device but ends as "no device available" (failed/manual
+   with a reason in `run_node` / `error_occurrence`), **not `running`**;
+3. Assert that device never took the lock (`device_state.current_run_id` stays null);
+4. Restore `UPDATE device_state SET online=true` (or wait for the heartbeat) ⇒ assert the
+   device **reappears in the pool**.
+
+> ⚠ Both are **manual acceptance** for now, not yet automated; the gate thresholds are
+> unchanged (no new `MIN_*` was added).
+
 - Added a case: add the script name and layer to the matching ledger row, and sync the `MIN_*` threshold at the top of `ci-gate.sh`.
 - Removed a case: mark the row ⬜ with the reason; a lowered threshold must be explained in the commit message.
 - New page: read the four mandatory surfaces in [test-specification.md](test-specification.md) §4.3 first, then decide whether it goes into CI.
