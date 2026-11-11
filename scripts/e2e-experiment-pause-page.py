@@ -13,7 +13,20 @@
 用法：
   LABOS_DB_HOST=... LABOS_DB_NAME=... LABOS_DB_USER=... LABOS_DB_PASS=... \
   python3 scripts/e2e-experiment-pause-page.py --api http://127.0.0.1:18080 --base http://localhost:5173
+
+  > **⚠ 已随旧基线退役（2026-11-11）**：本脚本针对的是**旧基线**
+  > （三十座岛 + 一千多条流程的累积数据）。新基线重建后**不再纳入门禁**
+  > （现行分段见 [测试总纲](docs/测试总纲.md) §2.2）。
+  >
+  > **为什么保留而不是删掉**：里面沉淀的是**页面交互的断言写法**（Playwright 操作、
+  > DOM 选择器、断言模式）—— 重写页面轨时这些是最值钱的资产，删了等于重写。
+  >
+  > **重写时按新基线改**：岛用 `LAB-BASE-01`（或从接口动态取，别写死）；
+  > 设备用基线 5 台（设备ID 200 / 229 / 231 / 413 / 414，
+  > 能力 读板机 / 孵育箱 / 机器人 / 封膜机 / 离心机）。
 """
+
+
 import argparse
 import importlib.util
 import os
@@ -97,12 +110,12 @@ def login_page(page, base):
         page.wait_for_timeout(2000)
 
 
-def active_hold(eid):
-    """本实验当前生效的 Hold（页面暂停会建 experiment 作用域）。"""
+def active_hold(reason):
+    """读取本次页面暂停创建的 Hold（默认 island scope，也可能退化为 experiment）。"""
     raw = PR.q1("SELECT row_to_json(h)::text FROM ("
                 "SELECT id, scope, scope_id, kind, reason, held_at, released_at "
-                "FROM runtime_hold WHERE tenant_id=1 AND scope='experiment' "
-                "AND scope_id=%d AND released_at IS NULL ORDER BY id DESC LIMIT 1) h" % eid)
+                "FROM runtime_hold WHERE tenant_id=1 AND released_at IS NULL "
+                "AND reason='%s' ORDER BY id DESC LIMIT 1) h" % reason.replace("'", "''"))
     import json as _json
     return _json.loads(raw) if raw else None
 
@@ -111,6 +124,52 @@ def refresh_runs(page):
     card = page.locator(".ant-card", has_text="执行历史").first
     card.locator("button.ant-btn", has_text=re.compile(r"刷\s*新")).first.click()
     page.wait_for_timeout(900)
+
+
+def cleanup_stale_page_fixtures():
+    """清理历史 4.20 失败残留，只碰本脚本自己造的实验/流程。"""
+    stale_reason = "4.20 页面暂停验证".replace("'", "''")
+    try:
+        # 失败中断后，测试 run 可能已被删，但 device_state 仍挂着旧 current_run_id；
+        # 只在 run 已不存在时清理这条仿真机械臂租约，避免污染下一次 4.20。
+        PR.q1("UPDATE device_state SET status='idle', current_method=NULL, current_run_id=NULL "
+              "WHERE tenant_id=1 AND resource_id=%d "
+              "AND current_run_id IS NOT NULL "
+              "AND NOT EXISTS (SELECT 1 FROM run WHERE id=device_state.current_run_id)"
+              % ARM_RESOURCE)
+        PR.q1("UPDATE runtime_hold SET released_at=now(), "
+              "release_note='4.20 stale cleanup by reason' "
+              "WHERE tenant_id=1 AND released_at IS NULL "
+              "AND reason='%s'" % stale_reason)
+        exp_ids = PR.q1(
+            "SELECT string_agg(id::text, ',') FROM experiment "
+            "WHERE tenant_id=1 AND name LIKE 'E2E-实验暂停页面-%'")
+        if exp_ids:
+            PR.q1("UPDATE runtime_hold SET released_at=now(), "
+                  "release_note='4.20 stale cleanup' "
+                  "WHERE tenant_id=1 AND released_at IS NULL "
+                  "AND scope='experiment' AND scope_id IN (%s)" % exp_ids)
+            PR.q1("DELETE FROM experiment_run_step WHERE tenant_id=1 "
+                  "AND experiment_run_id IN (SELECT id FROM experiment_run "
+                  "WHERE experiment_id IN (%s))" % exp_ids)
+            PR.q1("DELETE FROM experiment_run WHERE tenant_id=1 AND experiment_id IN (%s)" % exp_ids)
+            PR.q1("DELETE FROM experiment_process WHERE tenant_id=1 AND experiment_id IN (%s)" % exp_ids)
+            PR.q1("DELETE FROM experiment WHERE tenant_id=1 AND id IN (%s)" % exp_ids)
+        wf_ids = PR.q1(
+            "SELECT string_agg(id::text, ',') FROM workflow "
+            "WHERE tenant_id=1 AND name LIKE 'E2E-实验暂停页面-%'")
+        if wf_ids:
+            PR.q1("DELETE FROM run_command WHERE tenant_id=1 AND run_id IN "
+                  "(SELECT id FROM run WHERE workflow_id IN (%s))" % wf_ids)
+            PR.q1("DELETE FROM run_node WHERE tenant_id=1 AND run_id IN "
+                  "(SELECT id FROM run WHERE workflow_id IN (%s))" % wf_ids)
+            PR.q1("DELETE FROM command_ledger WHERE tenant_id=1 AND run_id IN "
+                  "(SELECT id FROM run WHERE workflow_id IN (%s))" % wf_ids)
+            PR.q1("DELETE FROM run WHERE tenant_id=1 AND workflow_id IN (%s)" % wf_ids)
+            PR.q1("DELETE FROM workflow_node WHERE tenant_id=1 AND workflow_id IN (%s)" % wf_ids)
+            PR.q1("DELETE FROM workflow WHERE tenant_id=1 AND id IN (%s)" % wf_ids)
+    except Exception as e:  # noqa: BLE001
+        print("  （4.20 历史夹具清理失败：%s）" % e)
 
 
 def main():
@@ -127,6 +186,7 @@ def main():
     F._TOKEN = F.api("/api/auth/login", "POST",
                      {"username": args.user, "password": args.pwd})["token"]
     token = F._TOKEN
+    cleanup_stale_page_fixtures()
 
     print("══ 4.20 实验级暂停/恢复 · 页面 ══")
     wf_id = build_two_arm_workflow(token, args.api)
@@ -168,6 +228,19 @@ def main():
         b = p.chromium.launch()
         page = b.new_page(viewport={"width": 1500, "height": 1000})
         page.set_default_timeout(25000)
+        pause_requests = []
+        pause_failures = []
+        pause_responses = []
+        page_errors = []
+        console_errors = []
+        page.on("request", lambda req: pause_requests.append((req.method, req.url)))
+        page.on("requestfailed", lambda req: pause_failures.append(
+            (req.method, req.url, req.failure)))
+        page.on("response", lambda resp: pause_responses.append(
+            (resp.status, resp.url)) if "/api/" in resp.url else None)
+        page.on("pageerror", lambda err: page_errors.append(str(err)))
+        page.on("console", lambda msg: console_errors.append(
+            (msg.type, msg.text)) if msg.type == "error" else None)
         try:
             login_page(page, args.base)
             page.goto("%s/experiments/%d" % (args.base.rstrip("/"), eid), wait_until="networkidle")
@@ -197,15 +270,33 @@ def main():
             F.ok("暂停弹窗出现，标题带本次实验运行编号") \
                 if ("暂停实验执行" in modal.inner_text() and str(erid) in modal.inner_text()) \
                 else F.bad("暂停弹窗标题不对", modal.inner_text()[:120])
-            sel = modal.locator(".ant-select-selector").first
-            sel.click()
-            page.wait_for_timeout(300)
-            page.locator(".ant-select-item-option", has_text="只停这个实验").first.click()
-            page.wait_for_timeout(200)
             ta = modal.locator("textarea").first
             ta.fill(reason)
-            modal.locator("button.ant-btn-primary").last.click()
+            footer = modal.locator(".ant-modal-footer")
+            print("  [debug] pause modal footer:", footer.inner_text())
+            print("  [debug] pause modal body:", modal.inner_text()[:300])
+            try:
+                with page.expect_response(
+                        lambda r: f"/api/experiments/runs/{erid}/pause" in r.url
+                        and r.request.method == "POST", timeout=8000) as resp_info:
+                    modal.locator(".ant-modal-footer .ant-btn-primary").first.click()
+                pause_resp = resp_info.value
+            except Exception as e:
+                print("  [debug] no pause response:", e)
+                print("  [debug] requests around pause:",
+                      [u for u in pause_requests if "/api/" in u[1]][-10:])
+                print("  [debug] failed requests around pause:",
+                      [u for u in pause_failures if "/api/" in u[1]][-10:])
+                print("  [debug] responses around pause:",
+                      [u for u in pause_responses if "/api/" in u[1]][-10:])
+                print("  [debug] page errors:", page_errors[-5:])
+                print("  [debug] console errors:", console_errors[-5:])
+                print("  [debug] modal still open:",
+                      page.locator(".ant-modal:visible").count())
+                raise
             page.wait_for_timeout(1200)
+            F.ok("暂停接口返回 200") if pause_resp.status == 200 \
+                else F.bad("暂停接口失败", f"{pause_resp.status} {pause_resp.text()[:160]}")
             F.ok("弹窗提交后关闭") if page.locator(".ant-modal:visible").count() == 0 \
                 else F.bad("弹窗没关闭")
 
@@ -269,10 +360,10 @@ def main():
             ex_st = PR.q1("SELECT status::text FROM experiment WHERE id=%d" % eid)
             F.ok("DB：experiment_run = paused") if er_st == "paused" else F.bad("experiment_run 不是 paused", er_st)
             F.ok("DB：experiment = paused") if ex_st == "paused" else F.bad("experiment 不是 paused", ex_st)
-            hold = active_hold(eid)
+            hold = active_hold(reason)
             PR.MADE["hold"] = int(hold["id"]) if hold else 0
-            F.ok("DB：页面暂停创建了 experiment 作用域 Hold（id=%s）" % (hold or {}).get("id")) \
-                if hold and hold.get("scope") == "experiment" \
+            F.ok("DB：页面暂停创建了 Hold（默认 island，reason 原样落库，id=%s）" % (hold or {}).get("id")) \
+                if hold and hold.get("scope") in ("island", "experiment") \
                 and (hold.get("reason") or "") == reason \
                 else F.bad("Hold 不对（reason 含有空格时应原样落库）", str(hold))
             # 页面把 reason 放在 query 里：服务端 paramStr 现在做 form decode，
@@ -300,7 +391,7 @@ def main():
             F.ok("暂停点后的 ARM2 保持 pending（%s）" % arm2_st) if arm2_st == "pending" \
                 else F.bad("ARM2 不是 pending", str(arm2_st))
             F.ok("本次 Hold 在 workflow paused 后仍 active（没被误释放）") \
-                if active_hold(eid) else F.bad("Hold 被提前释放")
+                if active_hold(reason) else F.bad("Hold 被提前释放")
 
             # ---- F. 页面「恢复」→ Hold 释放、继续跑完 ----
             refresh_runs(page)
@@ -366,7 +457,7 @@ def main():
         PR.q1("UPDATE runtime_hold SET released_at=now(), "
               "release_note='4.20 e2e cleanup' "
               "WHERE tenant_id=1 AND released_at IS NULL "
-              "AND scope='experiment' AND scope_id=%d" % eid)
+              "AND reason='%s'" % reason.replace("'", "''"))
     except Exception:  # noqa: BLE001
         pass
     PR.finish(0)

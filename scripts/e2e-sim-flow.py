@@ -37,7 +37,24 @@
 用法：
   python3 scripts/e2e-sim-flow.py
   python3 scripts/e2e-sim-flow.py --base http://127.0.0.1:8080 --headed
+
+  > **⚠ 已随旧基线退役（2026-11-11）**：本脚本针对的是**旧基线**
+  > （三十座岛 + 一千多条流程的累积数据）。新基线重建后**不再纳入门禁**
+  > （现行分段见 [测试总纲](docs/测试总纲.md) §2.2）。
+  >
+  > **为什么保留而不是删掉**：里面沉淀的是**页面交互的断言写法**（Playwright 操作、
+  > DOM 选择器、断言模式）—— 重写页面轨时这些是最值钱的资产，删了等于重写。
+  >
+  > **重写时按新基线改**：岛用 `LAB-BASE-01`（或从接口动态取，别写死）；
+  > 设备用基线 5 台（设备ID 200 / 229 / 231 / 413 / 414，
+  > 能力 读板机 / 孵育箱 / 机器人 / 封膜机 / 离心机）。
+
+  > **⚠ 本脚本写死了旧岛 `LAB-DEMO-02`** —— 新基线里那个岛已不存在，
+  > 直接跑会报「找不到岛」。重写时改成动态取（`GET /api/islands` 或环境变量）。
 """
+
+
+
 import argparse
 import json
 import os
@@ -118,6 +135,15 @@ def api(path, method="GET", body=None, token=None):
             return txt
 
 
+def put_graph_xml(wf_id, xml, token):
+    req = urllib.request.Request(f"{BASE_API}/api/workflows/{wf_id}/graph",
+                                 data=xml.encode("utf-8"), method="PUT")
+    req.add_header("Content-Type", "application/xml")
+    req.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(req, timeout=90) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 def tcp_open(port, host="127.0.0.1", timeout=1.0):
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -165,6 +191,15 @@ def place(page, action, x, y):
     return new[0] if len(new) == 1 else None
 
 
+def delete_selected(page):
+    btn = page.get_by_role("button", name="删除选中节点")
+    if btn.count() == 0:
+        return False
+    btn.first.click()
+    page.wait_for_timeout(700)
+    return True
+
+
 def center(page, eid):
     bb = page.locator(f'.djs-element[data-element-id="{eid}"]').first.bounding_box()
     return bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2
@@ -202,6 +237,43 @@ def pick_in_select(page, selector, text, exact_prefix=None):
     else:
         opts.first.click()
     page.wait_for_timeout(700)
+
+
+def seeded_graph_xml(wf_id, name):
+    esc = name.replace("&", "&amp;").replace('"', "")
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Def_{wf_id}" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="Proc_{wf_id}" name="{esc}" isExecutable="false">
+    <bpmn:startEvent id="S" name="开始" />
+    <bpmn:task id="T1" name="设备任务" />
+    <bpmn:endEvent id="E" name="结束" />
+    <bpmn:sequenceFlow id="f1" sourceRef="S" targetRef="T1" />
+    <bpmn:sequenceFlow id="f2" sourceRef="T1" targetRef="E" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diag_{wf_id}">
+    <bpmndi:BPMNPlane id="Plane_{wf_id}" bpmnElement="Proc_{wf_id}">
+      <bpmndi:BPMNShape id="S_di" bpmnElement="S">
+        <dc:Bounds x="180" y="160" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="T1_di" bpmnElement="T1">
+        <dc:Bounds x="360" y="138" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="E_di" bpmnElement="E">
+        <dc:Bounds x="600" y="160" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="f1_di" bpmnElement="f1">
+        <di:waypoint x="216" y="178" /><di:waypoint x="360" y="178" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f2_di" bpmnElement="f2">
+        <di:waypoint x="460" y="178" /><di:waypoint x="600" y="178" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>"""
 
 
 # ---------------------------------------------------------------- 清理
@@ -357,21 +429,16 @@ def sec_designer_bind(page, ctx, base):
     ctx.made_wf.append(wf_id)
     ok(f"界面新建流程并进入设计器（#{wf_id} · {wf_name}）")
 
-    s = place(page, "create.start-event", 150, 150)
-    t1 = place(page, "create.task", 450, 150)
-    e = place(page, "create.end-event", 950, 150)
-    if s and t1 and e:
-        ok(f"palette 落点成功：start={s} task={t1} end={e}")
-    else:
-        bad("palette 落点失败", f"start={s} task={t1} end={e}")
-        return wf_id, wf_name, None
+    # 新流程默认已有最小图 S->E；这里复用现成 start/end，只在中间插一个 task。
+    # 4.5 已经覆盖页面画图/连线；这里聚焦"真设备绑定 + 真回包"，
+    # 直接灌入一张合法的 start→task→end 基础图，避免把 4.7 变成第二份画布脚本。
+    put_graph_xml(wf_id, seeded_graph_xml(wf_id, wf_name), ctx.token)
+    page.reload(wait_until="networkidle")
+    page.wait_for_selector(".djs-container", timeout=25000)
+    page.wait_for_timeout(1200)
+    s, t1, e = "S", "T1", "E"
+    ok(f"已灌入合法基础图：start={s} task={t1} end={e}")
 
-    connect(page, s, t1)
-    connect(page, t1, e)
-    ok("已用连线工具串成 start→task→end")
-
-    page.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
-    page.wait_for_timeout(2500)
     xml = api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
     xml = xml if isinstance(xml, str) else json.dumps(xml)
     n_flow = xml.count("sequenceFlow")

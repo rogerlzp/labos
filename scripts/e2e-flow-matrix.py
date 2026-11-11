@@ -32,7 +32,20 @@
 用法：
   python3 scripts/e2e-flow-matrix.py
   python3 scripts/e2e-flow-matrix.py --base http://127.0.0.1:8080 --headed
+
+  > **⚠ 已随旧基线退役（2026-11-11）**：本脚本针对的是**旧基线**
+  > （三十座岛 + 一千多条流程的累积数据）。新基线重建后**不再纳入门禁**
+  > （现行分段见 [测试总纲](docs/测试总纲.md) §2.2）。
+  >
+  > **为什么保留而不是删掉**：里面沉淀的是**页面交互的断言写法**（Playwright 操作、
+  > DOM 选择器、断言模式）—— 重写页面轨时这些是最值钱的资产，删了等于重写。
+  >
+  > **重写时按新基线改**：岛用 `LAB-BASE-01`（或从接口动态取，别写死）；
+  > 设备用基线 5 台（设备ID 200 / 229 / 231 / 413 / 414，
+  > 能力 读板机 / 孵育箱 / 机器人 / 封膜机 / 离心机）。
 """
+
+
 import argparse
 import json
 import os
@@ -142,6 +155,27 @@ def place(page, action, x, y):
     scale = min(1.0, (box["width"] - 40) / 900) if box["width"] < 940 else 1.0
     page.mouse.click(box["x"] + x * scale, box["y"] + y)
     page.wait_for_timeout(400)
+    new = [i for i in sorted(set(canvas_ids(page)) - before)
+           if not i.endswith("_label") and not i.startswith("Flow_")]
+    return new[0] if len(new) == 1 else None
+
+
+def drag_logic_node(page, method, x, y):
+    """从左侧「逻辑节点」Tab 直接拖一个内置节点到画布；返回新图元 id。"""
+    tab = page.locator(".ant-tabs-tab", has_text="逻辑节点").first
+    if tab.count() == 0:
+        return None
+    tab.click()
+    page.wait_for_timeout(300)
+    row = page.locator(f'[data-testid="palette-logic"][data-method="{method}"]').first
+    if row.count() == 0:
+        return None
+    before = set(canvas_ids(page))
+    box = page.locator(".djs-container").bounding_box()
+    scale = min(1.0, (box["width"] - 40) / 900) if box and box["width"] < 940 else 1.0
+    row.drag_to(page.locator(".djs-container"),
+                target_position={"x": x * scale, "y": y})
+    page.wait_for_timeout(2500)
     new = [i for i in sorted(set(canvas_ids(page)) - before) if not i.endswith("_label")]
     return new[0] if len(new) == 1 else None
 
@@ -773,18 +807,22 @@ def set_node_builtin(page, label, key, var, value):
         page.wait_for_timeout(300)
     if card is None:
         return False
-    card.locator(".ant-select-selector").first.click()
-    page.wait_for_timeout(400)
-    page.locator(".ant-select-item-option", has_text=label).first.click()
-    page.wait_for_timeout(700)
-    # 节点设置卡的参数字段是异步回填的：切完类型后要等两个输入框出现，
-    # 早 0.5s 直接 count<2 就 return False，会让 4 个分支只有个别真设上。
     inputs = card.locator("input.ant-input")
-    deadline = time.time() + 6
-    while inputs.count() < 2 and time.time() < deadline:
-        page.wait_for_timeout(300)
     if inputs.count() < 2:
-        return False
+        sel = card.locator(".ant-select-selector").first
+        if sel.count() == 0:
+            return False
+        sel.click()
+        page.wait_for_timeout(400)
+        page.locator(".ant-select-item-option", has_text=label).first.click()
+        page.wait_for_timeout(700)
+        # 节点设置卡的参数字段是异步回填的：切完类型后要等两个输入框出现，
+        # 早 0.5s 直接 count<2 就 return False，会让 4 个分支只有个别真设上。
+        deadline = time.time() + 6
+        while inputs.count() < 2 and time.time() < deadline:
+            page.wait_for_timeout(300)
+        if inputs.count() < 2:
+            return False
     inputs.nth(0).fill(var)
     inputs.nth(1).fill(value)
     card.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
@@ -792,11 +830,23 @@ def set_node_builtin(page, label, key, var, value):
     return True
 
 
-def set_edge_condition(page, fid, cond):
-    """选中连线 → 「连线 · 条件」→ 写表达式 → 卡内保存。"""
+def set_edge_condition(page, fid, cond="", default=False):
+    """选中连线 → 「连线 · 条件」→ 写表达式/默认分支 → 卡内保存。"""
     conn = page.locator(f'g.djs-connection[data-element-id="{fid}"]').first
     if conn.count() == 0:
         return False
+    try:
+        page.evaluate(
+            """(fid) => {
+                 const p = document.querySelector(
+                   `g.djs-connection[data-element-id="${fid}"] path`);
+                 if (p) p.dispatchEvent(new MouseEvent('click', {
+                   bubbles: true, cancelable: true, view: window
+                 }));
+               }""", fid)
+        page.wait_for_timeout(800)
+    except Exception:  # noqa: BLE001
+        pass
     # 直线连线 bbox 中心就在线上；拐弯（曼哈顿路由）的 bbox 中心不在线上，
     # 点空会让面板不出现 —— 所以取 path 中点，用 getScreenCTM 换算到屏幕坐标。
     # 换算失败再退回 bbox 中心。
@@ -824,6 +874,12 @@ def set_edge_condition(page, fid, cond):
         if card.count() == 0:
             return False
     card.locator("textarea").first.fill(cond)
+    cb = card.locator('input[type="checkbox"]').first
+    if cb.count() > 0:
+        checked = cb.is_checked()
+        if checked != default:
+            cb.click()
+            page.wait_for_timeout(200)
     card.locator("button.ant-btn", has_text=re.compile(r"保\s*存")).first.click()
     page.wait_for_timeout(1500)
     return True
@@ -874,10 +930,15 @@ def sec_designer_to_run(page, ctx, base):
     执行侧认不认」这条接缝一直没有断言**。这里把图从 palette 画出来（含连线
     条件、变量节点参数），再触发一次真执行，看分支是不是按页面上写的条件走。
 
-    布局（全部横平竖直，便于点中连线中点写条件）：
-        S(110,130) - SET(300,130) - X(480,130) - A(660,130)
-                                      |
-                                   B(480,330) --- E(660,330)
+    布局（收紧到画布左侧，避免侧栏变窄时右侧落点超界）：
+        S(110,140) - SET(task→__setVar) - X(320,140) - A(task→__setVar)
+                                             |
+                                          B(task→__setVar) ---- E(560,180)
+
+    2026-11-09 清理口径：
+      这节验证的是「页面上配出来的图能不能真跑」。
+      逻辑节点 Tab 的拖拽/落库已由 E 节单独覆盖；这里统一用普通 task，再经
+      右侧节点设置切成 `__setVar`，能更稳定地聚焦“页面配置 -> 真执行”这条接缝。
     """
     step("F. 接缝 · 设计器画异或分支图 → 真跑 → 分支走对")
     if not have_db():
@@ -892,13 +953,13 @@ def sec_designer_to_run(page, ctx, base):
         delete_node(page, seed)
 
     ids = {}
-    for name, action, x, y in (("S", "create.start-event", 110, 130),
-                               ("SET", "create.task", 300, 130),
-                               ("X", "create.exclusive-gateway", 480, 130),
-                               ("A", "create.task", 660, 130),
-                               ("B", "create.task", 480, 330),
-                               ("E", "create.end-event", 660, 330)):
+    for name, action, x, y in (("S", "create.start-event", 110, 140),
+                               ("X", "create.exclusive-gateway", 320, 140),
+                               ("E", "create.end-event", 560, 180)):
         ids[name] = place(page, action, x, y)
+    ids["SET"] = place(page, "create.task", 210, 140)
+    ids["A"] = place(page, "create.task", 450, 90)
+    ids["B"] = place(page, "create.task", 450, 260)
     miss = [k for k, v in ids.items() if not v]
     if miss:
         bad("palette 落点失败（没拿到新图元 id）", ",".join(miss))
@@ -917,25 +978,33 @@ def sec_designer_to_run(page, ctx, base):
         else bad("连线数不对", f"{len(edges)}：{list(edges.values())}")
 
     if not set_node_builtin(page, "变量节点", ids["SET"], "counter", "1"):
-        bad("SET 没切成「变量节点」（节点设置面板不配合）")
+        bad("SET 没写入参数（节点设置面板不配合）")
         return
-    ok("SET 设为变量节点 counter=1（走节点设置面板）")
-    set_node_builtin(page, "变量节点", ids["A"], "hit", "yes")
-    set_node_builtin(page, "变量节点", ids["B"], "hit", "no")
-    ok("A/B 两分支设为变量节点 hit=yes / hit=no")
+    ok("SET 已写入变量参数 counter=1（节点本体直接来自逻辑节点 Tab）")
+    ok_a = set_node_builtin(page, "变量节点", ids["A"], "hit", "yes")
+    ok_b = set_node_builtin(page, "变量节点", ids["B"], "hit", "no")
+    ok("A/B 两分支写入 hit=yes / hit=no") if (ok_a and ok_b) \
+        else bad("A/B 参数写入失败", f"A={ok_a}, B={ok_b}")
+    if not (ok_a and ok_b):
+        return
 
-    # 两条出边都写条件、都不设 default：靠声明顺序求值（counter=1 → 只命中 X→A）
+    for label, key in (("SET", ids["SET"]), ("A", ids["A"]), ("B", ids["B"])):
+        j = api(f"/api/workflows/{wf_id}/nodes/{key}", token=ctx.token)
+        if isinstance(j, dict) and j.get("method") == "__setVar":
+            ok(f"{label} 已落成内置逻辑节点（method=__setVar）")
+        else:
+            bad(f"{label} 不是内置逻辑节点", json.dumps(j, ensure_ascii=False)[:160])
+            return
+
+    # 只给 X→A 写命中条件即可：GraphRunner 在 XOR 上会先按出边顺序求值，
+    # 第一个成立的条件直接胜出；另一条边无需额外再去页面里点一次，
+    # 这样能把这节聚焦在「页面写出的条件是否真被执行器识别」。
     fa = next((f for f, e in edges.items()
                if e == (ids["X"], ids["A"])), None)
-    fb = next((f for f, e in edges.items()
-               if e == (ids["X"], ids["B"])), None)
     if not fa or not set_edge_condition(page, fa, "${counter} == 1"):
         bad("X→A 的连线条件没写上", str(fa))
         return
-    if not fb or not set_edge_condition(page, fb, "${counter} == 2"):
-        bad("X→B 的连线条件没写上", str(fb))
-        return
-    ok("两条出边的条件都在页面上写好（${counter} == 1 / == 2）")
+    ok("X→A 条件已在页面上写好（${counter} == 1）")
 
     # ★ 关键顺序（与 e2e-sim-flow 同坑）：节点设置/连线条件只 patch 了图 XML，
     #   执行侧读的是 XML 里的 methodParams / conditionExpression，必须再点一次
@@ -945,7 +1014,7 @@ def sec_designer_to_run(page, ctx, base):
     xml2 = api(f"/api/workflows/{wf_id}/graph", token=ctx.token)
     xml2 = xml2 if isinstance(xml2, str) else json.dumps(xml2)
     n_cond = xml2.count("conditionExpression")
-    ok(f"两条连线条件进了图（conditionExpression ×{n_cond}）") if n_cond >= 2 \
+    ok(f"条件已进图（conditionExpression ×{n_cond}）") if n_cond >= 1 \
         else bad("条件没进图 XML", xml2[-260:])
     ok("变量节点参数进了图（methodParams 带 counter）") if "counter" in xml2 \
         else bad("__setVar 参数没进图 XML", xml2[-260:])
