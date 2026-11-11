@@ -1059,7 +1059,7 @@ public class WorkflowService {
         markPlatePosition(runId, progress);
 
         recordOccurrences(runId, progress, repo, deviceToResource, validResources,
-                liveAttendance(runId, mode));
+                liveAttendance(runId, mode), nodeIdMap);
 
         // ---- 告警聚合：把本次执行的失败信号过一遍静默期聚合 ----
         List<Alert> alerts = collectAlerts(progress, Instant.now());
@@ -2343,7 +2343,8 @@ public class WorkflowService {
 
     private void recordOccurrences(long runId, RunProgress p, JdbcRecoveryPolicyRepository repo,
                                    Map<Long, Long> deviceToResource, Set<Long> validResources,
-                                   String attendance) throws SQLException {
+                                   String attendance,
+                                   Map<Long, Long> nodeIdToRunNodeId) throws SQLException {
         JdbcErrorOccurrenceStore store = new JdbcErrorOccurrenceStore(db, tenantId, repo);
         for (NodeProgress np : p.all()) {
             if (!JdbcErrorOccurrenceStore.shouldRecord(np.status())) {
@@ -2362,7 +2363,18 @@ public class WorkflowService {
             if (mapped == null || !validResources.contains(mapped)) {
                 mapped = null;   // 外键必须指向 resource_node，否则置空
             }
-            store.record(new Occurrence(runId, np.nodeId(), mapped,
+            // ⚠ **run_node_id 必须是 run_node.id，不是 workflow_node.id**（2026-11-11 修）。
+            // `np.nodeId()` 是**流程节点定义 id**（workflow_node.id，来自
+            // `GraphRunner.nodeId(node)`：优先用库里的 workflow_node.id）⇒ 直接塞进
+            // `error_occurrence.run_node_id` 会被外键
+            // `error_occurrence_run_node_id_fkey`（→ run_node(id)）拒掉：
+            // 报错形如「Key (run_node_id)=(1001186) is not present in table run_node」
+            // —— 1001186 其实是 **workflow_node.id**（实测 workflow_node 最大 id 1001246
+            // > run_node 最大 id 1000858，两个 id 空间**重叠但不同**）。
+            // 转换靠 `createNodeShells` 返回的映射（nodeId → run_node.id）；
+            // 映射不到就置空（外键允许 null）⇒ 宁可少一个关联，也不让整次执行炸掉。
+            Long runNodeId = nodeIdToRunNodeId == null ? null : nodeIdToRunNodeId.get(np.nodeId());
+            store.record(new Occurrence(runId, runNodeId, mapped,
                     np.lastErrorCode() == null ? "EC-UNKNOWN" : np.lastErrorCode(),
                     RecoveryScope.NODE, np.attempt(), RecoveryStrategy.MANUAL,
                     np.status().name(), np.lastReason(),
