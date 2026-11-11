@@ -1328,7 +1328,11 @@ export default function DesignerPage() {
     const endId = endIds[0] ?? '';
     let cursor = 0;
     for (const sid of startIds) {
-      cursor = placeSeq(sid, endId, cursor, 0);
+      // 顶层 stopId 必须传 ''：fork→EndEvent 的网关对（异或分支收口到同一个
+      // 结束节点，合法图最常见写法）也要展开成分支排版。传 endId 会把 forkToJoin
+      // 的汇合点挡在 placeSeq 门外 —— 分支摊不开，走第一条出边的节点挤在主行、
+      // 其余分支全部掉进「孤立节点」排到最下面（2026-11-11 用户在设计器 1000499 指出）。
+      cursor = placeSeq(sid, '', cursor, 0);
       if (startIds.length > 1) cursor += 1;
     }
     if (endId && !placed.has(endId)) placeNode(endId, cursor, 0);
