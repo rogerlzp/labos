@@ -5966,6 +5966,29 @@ unknown ⇒ the device may still be executing something.)
 
 **Addendum (2026-11-11, night): two real problems found by the acceptance runs (ghost lock / acceptance budget false failure); and choreography deriving its island server-side**
 
+**Zero, an earlier one: the full gate `ci-gate.sh --all` could not actually run as a
+single command** (fixed 2026-11-11 08:16, `9b6c340`)
+
+Section 1 (pure logic) requires the kernel to be **stopped** (the mutual-exclusion
+guard in `test-all.sh`: a running kernel competes with the database self-tests for
+the same rows ⇒ assertions go red at random), while 2.6/2.7 and 4.x all need the
+API **alive** ⇒ each way of running it got half wrong: with the kernel up, section 1
+goes red; with the kernel down, everything afterwards reports "cannot reach the API".
+⇒ The cause sits in `test-all.sh`: that guard protects "the **database self-tests**
+from competing with the kernel", while `--pure-only` **never touches the database**
+⇒ it should not have been blocked at all. Changed to **block only the database
+profile** (`[[ "${1:-}" != "--pure-only" ]]`); the pure profile now runs even with
+the kernel up ⇒ `--all` can be run as one command (sections 0/1/2/2.5 measured
+green in a row).
+
+**Environmental fact when two sessions share the machine**: the other session stops
+the kernel with `pkill -f "com.labos.boot.LabosApplication"` — **by class name** ⇒
+a kernel I start on **another port** (18090) is killed as well ⇒ **port isolation
+does not help**. ⇒ While the other session is still running tests/gates, **no
+verification that needs a long-lived kernel can finish** here (the flow matrix ran
+for 12 minutes with 30+ assertions green, then was cut off by the kill). ⇒ Such long
+runs must wait until the other session is done and then run exclusively.
+
 **One: the parallel-flow acceptance kept failing ⇒ two independent problems underneath**
 
 ① **Kernel side: the runtime acquire path could not reclaim a ghost lock** (fixed)
