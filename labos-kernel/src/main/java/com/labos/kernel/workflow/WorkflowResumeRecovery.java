@@ -2,9 +2,6 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,24 +41,9 @@ public final class WorkflowResumeRecovery {
     }
 
     static List<Long> queuedWorkflowRunIds(DbConfig db, long tenantId) throws SQLException {
-        List<Long> ids = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT id
-                       FROM run
-                      WHERE tenant_id = ? AND run_type = 'workflow'
-                        AND workflow_id IS NOT NULL
-                        AND status = 'queued'
-                      ORDER BY id
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    ids.add(rs.getLong(1));
-                }
-            }
-        }
-        return ids;
+        return new ArrayList<>(com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.RunMapper.class)
+                .selectQueuedWorkflowRunIds(tenantId));
     }
 
     private WorkflowResumeRecovery() {

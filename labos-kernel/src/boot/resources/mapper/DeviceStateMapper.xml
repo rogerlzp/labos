@@ -399,4 +399,15 @@
            AND ds.updated_at &lt; now() - (#{ttlSeconds} || ' seconds')::interval
     </update>
 
+    <!-- DeviceAccessManager（阶段3第41批收编）：设备的门配置，取最早一行 -->
+    <select id="selectDeviceAccess" resultType="java.util.Map">
+        SELECT id AS "id", resource_id AS "resourceId", code AS "code",
+               access_type AS "accessType", state AS "state",
+               open_method AS "openMethod", close_method AS "closeMethod",
+               open_timeout_ms AS "openTimeoutMs"
+        FROM device_access
+        WHERE tenant_id = #{param1} AND resource_id = #{param2}
+        ORDER BY id LIMIT 1
+    </select>
+
 </mapper>

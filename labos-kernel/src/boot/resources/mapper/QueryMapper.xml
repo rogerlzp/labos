@@ -85,4 +85,14 @@
                 #{before,jdbcType=VARCHAR}::jsonb, #{after,jdbcType=VARCHAR}::jsonb,
                 #{ip,jdbcType=VARCHAR}::inet, #{result})
     </insert>
+
+    <!-- RecipeCompiler（阶段3第41批收编） -->
+    <select id="selectCapabilityRecipes" resultType="java.util.Map">
+        SELECT c.code AS "capability", r.seq AS "seq",
+               r.method AS "method", r.sample_count AS "sampleCount"
+        FROM capability_recipe r
+        JOIN capability c ON c.id = r.capability_id
+        WHERE r.tenant_id = #{param1}
+        ORDER BY c.code, r.seq
+    </select>
 </mapper>

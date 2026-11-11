@@ -722,4 +722,28 @@
          WHERE tenant_id = #{tenantId} AND id = #{runId}
     </update>
 
+    <!-- JdbcEventStore 批量事件（阶段3第41批收编）：Java 侧缓冲，flush 时多行 INSERT。
+         与原 addBatch 语义等价：每 flush 一批、失败整批计入 failed。 -->
+    <insert id="insertRunEvents">
+        INSERT INTO run_event
+          (event_id, tenant_id, occurred_at, aggregate_type, aggregate_id,
+           event_type, severity, actor, trace_id, payload)
+        VALUES
+        <foreach collection="items" item="it" separator=",">
+            (#{it.eventId}, #{it.tenantId}, #{it.occurredAt},
+             'run', #{it.runId}, #{it.eventType}, 0, 'engine', #{it.traceId},
+             #{it.payloadJson}::jsonb)
+        </foreach>
+    </insert>
+
+    <!-- WorkflowResumeRecovery（阶段3第41批收编）：重启后待续跑的 workflow run -->
+    <select id="selectQueuedWorkflowRunIds" resultType="java.lang.Long">
+        SELECT id
+          FROM run
+         WHERE tenant_id = #{param1} AND run_type = 'workflow'
+           AND workflow_id IS NOT NULL
+           AND status = 'queued'
+         ORDER BY id
+    </select>
+
 </mapper>

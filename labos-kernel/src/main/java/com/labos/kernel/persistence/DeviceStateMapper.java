@@ -190,4 +190,7 @@ public interface DeviceStateMapper {
      */
     int releaseStaleDeviceLocks(@Param("tenantId") long tenantId,
                                 @Param("ttlSeconds") String ttlSeconds);
+
+    /** DeviceAccessManager：设备的门配置（device_access 最早一行；无返回 null）。 */
+    java.util.Map<String, Object> selectDeviceAccess(long tenantId, long resourceId);
 }

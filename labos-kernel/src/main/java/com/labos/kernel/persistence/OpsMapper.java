@@ -97,4 +97,28 @@ public interface OpsMapper {
     /** 全部未软删错误码的 id/code 对（errorCodeIds 映射用）。 */
     List<Map<String, Object>> selectErrorCodeIdPairs(@Param("tenantId") long tenantId);
 
+    /**
+     * 错误留痕写入 error_occurrence。errorCodeId/resourceId 可空；
+     * strategy 可空（::recovery_strategy cast）；contextJson 为 JSON 文本。
+     */
+    int insertErrorOccurrence(@Param("tenantId") long tenantId,
+                              @Param("errorCodeId") Long errorCodeId,
+                              @Param("fingerprint") String fingerprint,
+                              @Param("runId") long runId,
+                              @Param("runNodeId") long runNodeId,
+                              @Param("resourceId") Long resourceId,
+                              @Param("occurredAt") java.time.OffsetDateTime occurredAt,
+                              @Param("attempt") int attempt,
+                              @Param("strategy") String strategy,
+                              @Param("outcome") String outcome,
+                              @Param("severity") String severity,
+                              @Param("message") String message,
+                              @Param("contextJson") String contextJson);
+
+    /**
+     * 覆盖率分析：错误码出现次数与历史处置（CoverageAnalyzer 用）。
+     * 原语句硬编码 tenant_id = 1，XML 逐字保留。
+     */
+    List<Map<String, Object>> selectErrorCodeStats();
+
 }

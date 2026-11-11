@@ -317,4 +317,14 @@ public interface RunMapper {
     /** 演示验证：该 run 的事件明细前 8 条（occurredAt/eventType/payload 文本）。 */
     List<Map<String, Object>> selectDemoEventDetails(long runId);
 
+    /**
+     * 执行事件批量落库 run_event（JdbcEventStore.flush 用）。
+     * items 每行：eventId(UUID)/tenantId/occurredAt(OffsetDateTime)/runId/
+     * eventType/traceId/payloadJson。
+     */
+    int insertRunEvents(@Param("items") List<Map<String, Object>> items);
+
+    /** WorkflowResumeRecovery：重启后待续跑的 workflow run id（按 id 升序）。 */
+    List<Long> selectQueuedWorkflowRunIds(long tenantId);
+
 }

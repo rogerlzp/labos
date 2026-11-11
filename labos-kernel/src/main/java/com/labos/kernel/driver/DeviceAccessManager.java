@@ -2,10 +2,7 @@ package com.labos.kernel.driver;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import java.util.Map;
 
 /**
  * 门/闸/盖管理。
@@ -53,32 +50,23 @@ public final class DeviceAccessManager {
 
     /** 查设备有没有需要操作的门；没有返回 null。 */
     public Access accessOf(long resourceId) {
-        String sql = """
-                SELECT id, resource_id, code, access_type, state,
-                       open_method, close_method, open_timeout_ms
-                FROM device_access
-                WHERE tenant_id = ? AND resource_id = ?
-                ORDER BY id LIMIT 1
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, resourceId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return null;
-                }
-                return new Access(
-                        rs.getLong("id"),
-                        rs.getLong("resource_id"),
-                        rs.getString("code"),
-                        rs.getString("access_type"),
-                        rs.getString("state"),
-                        rs.getString("open_method"),
-                        rs.getString("close_method"),
-                        rs.getInt("open_timeout_ms"));
+        try {
+            Map<String, Object> row = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .selectDeviceAccess(tenantId, resourceId);
+            if (row == null) {
+                return null;
             }
-        } catch (SQLException e) {
+            return new Access(
+                    ((Number) row.get("id")).longValue(),
+                    ((Number) row.get("resourceId")).longValue(),
+                    (String) row.get("code"),
+                    (String) row.get("accessType"),
+                    (String) row.get("state"),
+                    (String) row.get("openMethod"),
+                    (String) row.get("closeMethod"),
+                    ((Number) row.get("openTimeoutMs")).intValue());
+        } catch (RuntimeException e) {
             return null;
         }
     }

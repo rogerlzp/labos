@@ -5,13 +5,11 @@ import com.labos.kernel.recovery.RecoveryPolicy;
 import com.labos.kernel.recovery.RecoveryPolicyResolver;
 import com.labos.kernel.recovery.RecoveryScope;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -113,21 +111,13 @@ public final class CoverageAnalyzer {
     }
 
     private static List<CodeStat> loadCodes(DbConfig db) throws SQLException {
-        String sql = """
-                SELECT code,
-                       COALESCE((attr->>'occurrences')::int, 0) AS occ,
-                       COALESCE(attr->>'top_shooting', '-')     AS shoot
-                FROM error_code
-                WHERE tenant_id = 1 AND deleted_at IS NULL
-                ORDER BY occ DESC
-                """;
         List<CodeStat> out = new ArrayList<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                out.add(new CodeStat(rs.getString("code"), rs.getInt("occ"), rs.getString("shoot")));
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.OpsMapper.class)
+                .selectErrorCodeStats()) {
+            out.add(new CodeStat((String) row.get("code"),
+                    ((Number) row.get("occ")).intValue(),
+                    (String) row.get("shoot")));
         }
         return out;
     }

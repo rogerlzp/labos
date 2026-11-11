@@ -66,6 +66,10 @@ public interface ExperimentMapper {
 
     int deleteExperimentProcesses(long tenantId, long experimentId);
 
+    /** HandoffGate：实验的全部交接配置（from/to/status/介入记录/人工窗口）。 */
+    java.util.List<java.util.Map<String, Object>> selectExperimentHandoffs(
+            long tenantId, long experimentId);
+
     /** 新增一条工位交接（重复则忽略）。 */
     int insertExperimentHandoff(long tenantId, long experimentId,
                                 long fromWorkcellId, long toWorkcellId);

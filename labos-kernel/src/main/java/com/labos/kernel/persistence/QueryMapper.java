@@ -160,6 +160,9 @@ public interface QueryMapper {
                        @Param("ip") String ip,
                        @Param("result") String result);
 
+    /** RecipeCompiler 模板加载（capability/seq/method/sampleCount，按能力+序）。 */
+    java.util.List<java.util.Map<String, Object>> selectCapabilityRecipes(long tenantId);
+
     /** workflow.attr->>'maxIterations'（原样字符串，调用方自己解析，兼容脏值）。 */
     String selectWorkflowMaxIterations(long tenantId, long workflowId);
 

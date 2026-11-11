@@ -171,4 +171,25 @@
         FROM error_code
         WHERE tenant_id = #{tenantId} AND deleted_at IS NULL
     </select>
+
+    <!-- JdbcErrorOccurrenceStore / CoverageAnalyzer（阶段3第41批收编） -->
+    <insert id="insertErrorOccurrence">
+        INSERT INTO error_occurrence
+          (tenant_id, error_code_id, fingerprint, run_id, run_node_id, resource_id,
+           occurred_at, attempt, strategy, outcome, severity, message, context)
+        VALUES (#{tenantId}, #{errorCodeId,jdbcType=BIGINT}, #{fingerprint},
+                #{runId}, #{runNodeId}, #{resourceId,jdbcType=BIGINT},
+                #{occurredAt}, #{attempt},
+                #{strategy,jdbcType=VARCHAR}::recovery_strategy, #{outcome},
+                #{severity}::error_severity, #{message}, #{contextJson}::jsonb)
+    </insert>
+    <!-- 原语句硬编码 tenant_id = 1（CLI 分析工具，逐字保留，勿改成参数）。 -->
+    <select id="selectErrorCodeStats" resultType="java.util.Map">
+        SELECT code AS "code",
+               COALESCE((attr-&gt;&gt;'occurrences')::int, 0) AS "occ",
+               COALESCE(attr-&gt;&gt;'top_shooting', '-') AS "shoot"
+        FROM error_code
+        WHERE tenant_id = 1 AND deleted_at IS NULL
+        ORDER BY occ DESC
+    </select>
 </mapper>

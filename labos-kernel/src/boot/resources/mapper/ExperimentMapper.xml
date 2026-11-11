@@ -209,4 +209,15 @@
         UPDATE experiment SET version = version + 1, updated_at = now()
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
+
+    <!-- HandoffGate（阶段3第41批收编） -->
+    <select id="selectExperimentHandoffs" resultType="java.util.Map">
+        SELECT from_workcell_id AS "fromWorkcellId",
+               to_workcell_id AS "toWorkcellId",
+               status AS "status",
+               intervention_record_id AS "interventionRecordId",
+               manual_window_id AS "manualWindowId"
+        FROM experiment_handoff
+        WHERE tenant_id = #{param1} AND experiment_id = #{param2}
+    </select>
 </mapper>

@@ -4,9 +4,6 @@ import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.workflow.RealWorkflowRunner.CapabilitySource;
 import com.labos.kernel.workflow.RealWorkflowRunner.NodeDef;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -60,23 +57,13 @@ public final class RecipeCompiler {
         Map<String, List<String>> recipes = new LinkedHashMap<>();
         Map<String, Integer> samples = new LinkedHashMap<>();
 
-        String sql = """
-                SELECT c.code, r.seq, r.method, r.sample_count
-                FROM capability_recipe r
-                JOIN capability c ON c.id = r.capability_id
-                WHERE r.tenant_id = ?
-                ORDER BY c.code, r.seq
-                """;
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String cap = rs.getString(1);
-                    recipes.computeIfAbsent(cap, k -> new ArrayList<>()).add(rs.getString(3));
-                    samples.merge(cap, rs.getInt(4), Math::max);
-                }
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.QueryMapper.class)
+                .selectCapabilityRecipes(tenantId)) {
+            String cap = (String) row.get("capability");
+            recipes.computeIfAbsent(cap, k -> new ArrayList<>())
+                    .add((String) row.get("method"));
+            samples.merge(cap, ((Number) row.get("sampleCount")).intValue(), Math::max);
         }
         return new RecipeCompiler(recipes, samples);
     }

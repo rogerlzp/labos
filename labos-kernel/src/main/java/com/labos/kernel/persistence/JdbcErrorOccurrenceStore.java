@@ -4,10 +4,7 @@ import com.labos.kernel.engine.NodeProgress;
 import com.labos.kernel.engine.NodeStatus;
 import com.labos.kernel.recovery.RecoveryStrategy;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Types;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -79,35 +76,20 @@ public final class JdbcErrorOccurrenceStore {
     public void record(Occurrence o) throws SQLException {
         Long errorCodeId = policies.errorCodeId(o.errorCode());
 
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(INSERT)) {
-            ps.setLong(1, tenantId);
-            if (errorCodeId == null) {
-                ps.setNull(2, Types.BIGINT);
-            } else {
-                ps.setLong(2, errorCodeId);
-            }
-            ps.setString(3, fingerprint(o.errorCode(), o.resourceId()));
-            ps.setLong(4, o.runId());
-            ps.setLong(5, o.runNodeId());
-            if (o.resourceId() == null) {
-                ps.setNull(6, Types.BIGINT);
-            } else {
-                ps.setLong(6, o.resourceId());
-            }
-            ps.setObject(7, OffsetDateTime.ofInstant(Instant.now(), ZoneId.systemDefault()));
-            ps.setInt(8, o.attempt());
-            if (o.strategy() == null) {
-                ps.setNull(9, Types.VARCHAR);
-            } else {
-                ps.setString(9, o.strategy().name().toLowerCase());
-            }
-            ps.setString(10, o.outcome());
-            ps.setString(11, o.severity());
-            ps.setString(12, o.message());
-            ps.setString(13, o.contextJson() == null ? "{}" : o.contextJson());
-            ps.executeUpdate();
-        }
+        Mappers.get(OpsMapper.class).insertErrorOccurrence(
+                tenantId,
+                errorCodeId,
+                fingerprint(o.errorCode(), o.resourceId()),
+                o.runId(),
+                o.runNodeId(),
+                o.resourceId(),
+                OffsetDateTime.ofInstant(Instant.now(), ZoneId.systemDefault()),
+                o.attempt(),
+                o.strategy() == null ? null : o.strategy().name().toLowerCase(),
+                o.outcome(),
+                o.severity(),
+                o.message(),
+                o.contextJson() == null ? "{}" : o.contextJson());
     }
 
     /** 便捷判断：该状态是否需要落库（三类都要）。 */

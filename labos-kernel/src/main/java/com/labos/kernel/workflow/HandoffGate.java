@@ -2,9 +2,6 @@ package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -56,29 +53,20 @@ public final class HandoffGate {
         }
         Set<String> configured = new LinkedHashSet<>();
         Set<String> unknown = new LinkedHashSet<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT from_workcell_id, to_workcell_id, status, intervention_record_id,
-                            manual_window_id
-                       FROM experiment_handoff
-                      WHERE tenant_id = ? AND experiment_id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, experimentId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String pair = rs.getLong(1) + "->" + rs.getLong(2);
-                    // ADR-ISLAND-004 / N-08：配置≠可执行；confirmed 且有人工介入记录才放行
-                    long rec = rs.getLong(4);
-                    long win = rs.getLong(5);
-                    boolean hasRecord = !rs.wasNull() && rec > 0;
-                    boolean hasWindow = !rs.wasNull() && win > 0;
-                    if ("confirmed".equalsIgnoreCase(rs.getString(3)) && hasRecord && hasWindow) {
-                        configured.add(pair);
-                    } else if ("unknown".equalsIgnoreCase(rs.getString(3))) {
-                        unknown.add(pair);
-                    }
-                }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ExperimentMapper.class)
+                .selectExperimentHandoffs(tenantId, experimentId)) {
+            String pair = row.get("fromWorkcellId") + "->" + row.get("toWorkcellId");
+            // ADR-ISLAND-004 / N-08：配置≠可执行；confirmed 且有人工介入记录才放行
+            Object rec = row.get("interventionRecordId");
+            Object win = row.get("manualWindowId");
+            boolean hasRecord = rec instanceof Number num && num.longValue() > 0;
+            boolean hasWindow = win instanceof Number num && num.longValue() > 0;
+            String status = (String) row.get("status");
+            if ("confirmed".equalsIgnoreCase(status) && hasRecord && hasWindow) {
+                configured.add(pair);
+            } else if ("unknown".equalsIgnoreCase(status)) {
+                unknown.add(pair);
             }
         }
         List<String> missing = missing(chain, configured, unknown);
