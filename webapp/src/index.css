@@ -32,3 +32,18 @@ body {
   font-weight: 600 !important;
   color: #1f2937 !important;
 }
+
+/* ---------------------------------------------------------------- 选中浮层 / 追加菜单图标
+ *
+ * bpmn-js 的图标是字体 glyph（bpmn 字体 private-use 区），靠 currentColor 上色，
+ * diagram-js 自己不设颜色。antd 暗色主题把全局文字色改成近白 rgba(255,255,255,.85)，
+ * 图标变成「白字白底」完全隐形 —— 选中节点后 context pad 表现为一摞不透明白方块，
+ * 正好盖住右边的连线和相邻节点的边框，看起来像渲染坏了（2026-11-11 用户指出）。
+ * 这里把浮层入口的 glyph 颜色钉回深色。
+ */
+.djs-context-pad .entry,
+.djs-context-pad .entry::before,
+.djs-popup .entry,
+.djs-popup .entry::before {
+  color: #1f2937 !important;
+}
