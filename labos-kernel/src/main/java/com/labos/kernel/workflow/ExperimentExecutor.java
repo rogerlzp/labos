@@ -145,12 +145,15 @@ public final class ExperimentExecutor {
         // 为什么必须在开跑前：绑定的设备被删 / 被移出岛 / 该能力在岛内没有 ⇒ 跑起来
         // 只会在某个节点上转人工，而"为什么"要翻日志才知道 ⇒ 宁可开跑前说清。
         //
+        // 只拦**阻塞级**违规（ERROR）：PF-11（绑定存成设备实例号、当前不生效）是
+        // WARN —— 流程照样能跑，拿它拦实验会把大量本来能跑的实验误杀。
+        //
         // 口径与 HandoffGate 一致：**fail-closed**（抛异常 ⇒ 调度器把这条 run 标失败，
         // 不会留下"永远 queued"的孤儿）。判定逻辑与预检共用 IslandBindingGate。
         List<String> boundaryBad = new ArrayList<>();
         for (Step st : steps) {
-            for (IslandBindingGate.Violation v
-                    : IslandBindingGate.violationsOf(db, tenantId, st.workflowId())) {
+            for (IslandBindingGate.Violation v : IslandBindingGate.blocking(
+                    IslandBindingGate.violationsOf(db, tenantId, st.workflowId()))) {
                 boundaryBad.add("workflow " + st.workflowId() + " " + v.code() + " " + v.message());
             }
         }

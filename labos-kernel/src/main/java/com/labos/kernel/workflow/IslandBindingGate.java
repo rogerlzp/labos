@@ -203,16 +203,35 @@ public final class IslandBindingGate {
     }
 
     /**
+     * 只取**阻塞级**违规（ERROR）—— 派发路径用它决定"放不放行"。
+     *
+     * <p>为什么分级：PF-11（绑定存成设备实例号 ⇒ 当前不生效）是 **WARN** ——
+     * 流程照样能跑（只是跑的不是绑的那台），拿它去拦实验会把**大量本来能跑的
+     * 实验**误杀（库里 8295 条绑定是这个形态，涉及 988 个流程）。
+     * ⇒ 派发只拦真正会让执行失败/跑偏的（PF-10 设备已失效、PF-12 越岛绑定、
+     * PF-13 岛内无该能力），WARN 级的交给预检去报。
+     */
+    public static List<Violation> blocking(List<Violation> violations) {
+        List<Violation> out = new ArrayList<>();
+        for (Violation v : violations) {
+            if (v.level() == PreflightChecker.Level.ERROR) {
+                out.add(v);
+            }
+        }
+        return out;
+    }
+
+    /**
      * **fail-closed** 门禁：校验一个流程的配置快照还有效。
      *
-     * <p>给实验派发路径用：任一违规 ⇒ 抛 {@link IllegalStateException}，
+     * <p>给实验派发路径用：任一**阻塞级**违规 ⇒ 抛 {@link IllegalStateException}，
      * 调用方**不让实验开跑**（与 {@link HandoffGate} 同样的口径：
      * 宁可开跑前说清，也不要跑起来在节点上转人工）。
      *
-     * @throws IllegalStateException 有越界/失效的绑定
+     * @throws IllegalStateException 有越界/失效的绑定（ERROR 级）
      */
     public static void check(DbConfig db, long tenantId, long workflowId) throws SQLException {
-        List<Violation> vs = violationsOf(db, tenantId, workflowId);
+        List<Violation> vs = blocking(violationsOf(db, tenantId, workflowId));
         if (vs.isEmpty()) {
             return;
         }

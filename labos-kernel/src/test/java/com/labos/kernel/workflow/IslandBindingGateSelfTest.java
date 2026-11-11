@@ -44,6 +44,7 @@ public final class IslandBindingGateSelfTest {
         noDeviceInIslandIsPf13();
         logicNodeIsExempt();
         noIslandMeansNoIslandRules();
+        onlyErrorLevelBlocks();
 
         System.out.println();
         System.out.println("通过 " + pass + ", 失败 " + fail);
@@ -133,6 +134,29 @@ public final class IslandBindingGateSelfTest {
             List<IslandBindingGate.Violation> vs = IslandBindingGate.violations(noIsland,
                     List.of(task("N2", "Incubate", 300L), task("N5", "Incubate", null)));
             eq("违规条数", 0, vs.size());
+        });
+    }
+
+    /**
+     * 派发只拦**阻塞级**（ERROR）：PF-11（WARN）不拦。
+     *
+     * <p>为什么这条必须钉死：PF-11 是"绑定存成设备实例号、当前不生效"，流程
+     * **照样能跑**（只是跑的不是绑的那台）—— 拿它去拦实验，会把大量本来能跑的
+     * 实验误杀（库里 8295 条绑定是这个形态，涉及 988 个流程）。
+     */
+    private static void onlyErrorLevelBlocks() {
+        check("派发只拦 ERROR 级：PF-11（WARN）不拦", () -> {
+            List<IslandBindingGate.Violation> warn =
+                    IslandBindingGate.violations(ctx(), List.of(task("N3", "Transfer", 20L)));
+            eq("PF-11 判为 WARN", 1, warn.size());
+            eq("PF-11 级别", PreflightChecker.Level.WARN, warn.get(0).level());
+            eq("WARN 不算阻塞", 0, IslandBindingGate.blocking(warn).size());
+            List<IslandBindingGate.Violation> err =
+                    IslandBindingGate.violations(ctx(), List.of(task("N4", "Transfer", 999L)));
+            eq("PF-10 算阻塞", 1, IslandBindingGate.blocking(err).size());
+            List<IslandBindingGate.Violation> out =
+                    IslandBindingGate.violations(ctx(), List.of(task("N2", "Incubate", 300L)));
+            eq("PF-12/PF-13 都是 ERROR ⇒ 都阻塞", 2, IslandBindingGate.blocking(out).size());
         });
     }
 
