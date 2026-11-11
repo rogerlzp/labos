@@ -6671,3 +6671,54 @@ before the file write ⇒ the change **never landed**, while the script had alre
 "ok" ⇒ I only noticed later when the API did not return it. ⇒ from now on the write comes
 after the assert, and a failed assertion must abort loudly (this time I got lucky and
 checked by hand afterwards).
+
+---
+
+**Addendum (2026-11-11, late night): the ledger mis-computed how long a delay node took (caught on site by the user)**
+
+On `/workflows/1000661/flow` the user pointed at the ledger and asked: "it says delay
+sixty seconds, so why did it stop after one second?"
+
+That row read: `延时 __sleep | — | completed | 19:50:43 | 19:50:43 | 0.1s | {"sec":"60"} | 延时 60 秒`.
+
+**The conclusion after digging was counter-intuitive: the delay node really did sleep for
+60 seconds — the ledger was computing the duration wrong.**
+
+The evidence (the ledger and the kernel log of run 1001280):
+
+```
+19:49:40.900  insertBuiltinCommand  __sleep  running    sent_at=19:49:40.899   ← start
+19:50:43.310  updateNodeStateLive   __sleep  completed
+19:50:43.318  insertBuiltinCommand  __sleep  completed  sent_at=19:50:43.318   ← end
+```
+
+The kernel inserted the `running` row at 19:49:40.90 (`sent_at` = the start) and upserted
+it 60 seconds later to change the status. **The problem was that the upsert's
+`DO UPDATE SET sent_at = EXCLUDED.sent_at` overwrote `sent_at` with the completion
+moment** ⇒ the ledger's `sent_at → finished_at` collapsed to 0.1 s.
+
+The fix: **the finishing upsert does not touch `sent_at`** (that one is the *start*).
+Measured after the fix: a flow with a 60-second delay shows **62.6 s** in the ledger
+(including the persistence overhead); the 3-second case shows 3.0 s.
+
+**The lessons of this bug**
+
+① **Think column by column about what an upsert's `DO UPDATE` may overwrite.** `sent_at`
+(start) and `finished_at` (end) are a pair; overwriting only the "end" side wipes out the
+"start" ⇒ the duration collapses to an instant. Every time semantic in the ledger rests
+on that pair (the device-command side hit the same family of bug: `sent_at` once recorded
+"the moment it was persisted" ⇒ "sent → response" could not be computed).
+
+② **When the numbers on the page do not add up, treat it as a bug — do not assume the user
+misread it.** The user's instinct ("how can a 60-second delay stop after one second?")
+was right, and my first reaction was close to "maybe the delay really is that short".
+
+③ **An assertion should pin down the relationship between numbers, not merely their
+presence.** The old assertion was "the ledger has a row for the delay node" — of course it
+passed. What it should have asserted is "**the ledger's duration equals the duration the
+node declares**"; that assertion now lives in `scripts/verify-builtin-ledger.py` (13/0).
+
+④ **One pitfall of the same family is still open**: the `actual_end` of a business node
+row (level=0) is written **once, when the whole run ends** (the five nodes differ by only
+a few milliseconds) ⇒ "how long did each node take" can only be read from the **ledger**,
+not from the node table. That is now written up in the specification, §15.2.2.

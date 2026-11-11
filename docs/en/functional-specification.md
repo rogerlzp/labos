@@ -1246,7 +1246,25 @@ nothing in it" — there was no way to tell what that node was doing.
 > row** (device commands hang on their own level=1 step row); `attempt=0` is unique to
 > logic nodes ⇒ the two never mix.
 
-#### 15.2.2 The "what it does" column
+#### 15.2.2 The ledger's "sent" must be the **start** moment
+
+A logic node first inserts a `running` row (`sent_at` = the start moment) and then upserts
+it again when it finishes.
+
+⚠ **The finishing upsert must not touch `sent_at`**: if it does, `sent_at` gets
+overwritten with the **completion** moment ⇒ "delay 60 seconds" shows up in the ledger as
+"took 0.1 seconds" — the sleep really did take 60 seconds, but the ledger says 0.1 s and
+nothing on site adds up (2026-11-11, found on site: "it says delay sixty seconds, why did
+it stop after one second?").
+
+**The criterion**: the ledger's "duration" column (`sent_at → finished_at`) must match the
+duration the node declares. `scripts/verify-builtin-ledger.py` asserts exactly that.
+
+> A related pitfall in the same family: the `actual_end` of a **business node row**
+> (level=0) is written once, when the whole run ends (the five nodes differ by only a few
+> milliseconds) ⇒ to see "how long each node took", read the **ledger**, not the node table.
+
+#### 15.2.3 The "what it does" column
 
 The internal name (`__wait`) means nothing on site ⇒ every built-in method gets a
 plain-language description:
@@ -1262,7 +1280,7 @@ That sentence shows up in three places: the **"What it does" column of the comma
 ledger**, the **node row of the run detail page**, and the **node data of the read-only
 flow page**.
 
-#### 15.2.3 A long wait is not a dead panel
+#### 15.2.4 A long wait is not a dead panel
 
 A `__wait` can wait for tens of minutes. While waiting, the ledger note is refreshed
 **every 5 seconds**:
@@ -1379,7 +1397,7 @@ broken:
 | `scripts/verify-vars-page.py` | create variables in the designer / pick them in the node dropdown / the console no longer preselects / the experiment page shows and edits the variables in use | 11/0 |
 | `scripts/verify-run-vars.py` | current value and initial value in separate columns / after the change the `__wait` walked on by itself | 9/0 |
 | `scripts/verify-run-vars-page.py` | clicking "Edit" on the page makes the flow finish by itself | 5/0 |
-| `scripts/verify-builtin-ledger.py` | logic nodes reach the ledger / plain-language note / wait progress / visible on the page | 12/0 |
+| `scripts/verify-builtin-ledger.py` | logic nodes reach the ledger / **the delay really lasted as long as it says** / plain-language note / wait progress / visible on the page | 13/0 |
 | `scripts/verify-live-refresh.py` | the ledger of the read-only flow page appears without a manual reload | 3/0 |
 | `scripts/verify-flow-readonly.py` | read-only flow page: the node note is plain language / the variable card is editable / the change releases the wait | 6/0 |
 

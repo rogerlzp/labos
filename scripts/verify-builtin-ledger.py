@@ -181,7 +181,28 @@ def main():
     else:
         bad("内置节点的台账行不该有设备")
 
-    # ---- ② 人话描述 ----
+    # ---- ② 延时节点**真睡了**多久（台账的耗时必须是真实时长）----
+    #
+    # ⚠ 这条断言是为一个真 bug 加的：`ON CONFLICT DO UPDATE` 把 `sent_at`
+    # 更新成了**完成**时刻 ⇒ 「延时 60 秒」在台账上显示成「耗时 0.1 秒」
+    # （2026-11-11 用户现场发现：页面写着延时 60 秒，耗时却只有 0.1 秒）。
+    sleep_row = next((c for c in builtin if c.get("method") == "__sleep"), None)
+    if sleep_row and sleep_row.get("sentAt") and sleep_row.get("finishedAt"):
+        from datetime import datetime
+
+        def _p(t):
+            return datetime.strptime(t[:19], "%Y-%m-%d %H:%M:%S")
+
+        secs = (_p(sleep_row["finishedAt"]) - _p(sleep_row["sentAt"])).total_seconds()
+        # 本用例的延时是 3 秒 ⇒ 允许 1 秒误差（机器慢一点不算错）
+        if 2.0 <= secs <= 8.0:
+            ok("延时节点确实睡了 %.1f 秒（台账耗时与声明一致）" % secs)
+        else:
+            bad("延时节点没真睡（或台账耗时算错）", "台账耗时 %.1f 秒，声明 3 秒" % secs)
+    else:
+        bad("延时节点在台账里没有起止时刻")
+
+    # ---- ③ 人话描述 ----
     notes = {c["method"]: (c.get("rawResponse") or "") for c in builtin}
     if "延时" in notes.get("__sleep", ""):
         ok("延时节点的人话说明写清了在延时什么：%s" % notes.get("__sleep"))
@@ -192,7 +213,7 @@ def main():
     else:
         bad("等待节点没有可读说明", notes.get("__wait"))
 
-    # ---- ③ 等待进度会更新（已等 N 秒）----
+    # ---- ④ 等待进度会更新（已等 N 秒）----
     progressed = False
     for _ in range(20):
         time.sleep(1)
@@ -208,7 +229,7 @@ def main():
     else:
         bad("等待途中台账没有进度更新", n)
 
-    # ---- ④ 页面层：运行详情页节点行有这句人话 ----
+    # ---- ⑤ 页面层：运行详情页节点行有这句人话 ----
     with sync_playwright() as pw:
         b = pw.chromium.launch()
         pg = b.new_page(viewport={"width": 1600, "height": 1000})

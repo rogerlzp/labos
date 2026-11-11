@@ -659,7 +659,11 @@
                  ORDER BY id LIMIT 1) rn
         ON CONFLICT (run_node_id, command_seq, attempt) DO UPDATE
            SET status = EXCLUDED.status,
-               sent_at = EXCLUDED.sent_at,
+               -- ⚠ **不要动 sent_at**：它是**开始**时刻。
+               --   内置节点要先插一行 running（sent_at = 开始），结束时再 upsert 一次；
+               --   若这里把 sent_at 一起更新，就会被冲成**完成**时刻
+               --   ⇒ 台账上「延时 60 秒」显示成「耗时 0.1 秒」
+               --   （2026-11-11 现场发现：sleep 真睡了 60 秒，台账说 0.1 秒）。
                finished_at = EXCLUDED.finished_at,
                result = EXCLUDED.result,
                device_raw_response = EXCLUDED.device_raw_response
