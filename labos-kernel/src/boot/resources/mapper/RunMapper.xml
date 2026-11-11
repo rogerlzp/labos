@@ -462,7 +462,8 @@
            status, attempt, sent_at, finished_at, result,
            device_raw_response, error_code, device_id)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
-                #{param6}::jsonb, #{param7}::node_status, #{param8}, now(), now(),
+                #{param6}::jsonb, #{param7}::node_status, #{param8},
+                COALESCE(#{param13}::timestamptz, now()), now(),
                 #{param9}::jsonb, to_jsonb(#{param10}::text), #{param11}, #{param12})
     </insert>
 

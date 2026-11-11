@@ -1828,6 +1828,16 @@ public class WorkflowService {
         private final java.util.concurrent.atomic.AtomicInteger seq;
         /** "nodeId:step:attempt" -> 执行设备（onStepDone 拿不到，只能在 start 记）。 */
         private final Map<String, Long> resourceByStep = new java.util.concurrent.ConcurrentHashMap<>();
+        /**
+         * 命令**真正下发到设备**的时刻（key 与 resourceByStep 相同）。
+         *
+         * <p>为什么单独记：命令台账是在命令**执行完之后**才写的，
+         * 若 sent_at 用落库时刻（now()），它会与 finished_at 同毫秒 ⇒
+         * 事后算不出「发出 → 设备响应」的时间差（2026-11-11 实测发现：
+         * 库里所有命令的 sent_at == finished_at）。
+         */
+        private final Map<String, java.sql.Timestamp> sentAtByStep =
+                new java.util.concurrent.ConcurrentHashMap<>();
 
         /** nodeId -> 设备方法参数（落库时一起记，便于复盘"当时传了什么"）。 */
         private final Map<Long, Map<String, Object>> paramsByNode;
@@ -1920,6 +1930,9 @@ public class WorkflowService {
         public void onStepStart(long nodeId, int stepSeq, String method,
                                 long resourceId, int attempt) {
             resourceByStep.put(nodeId + ":" + stepSeq + ":" + attempt, resourceId);
+            // 命令下发的时刻（拿完锁、即将下发这一刻）
+            sentAtByStep.put(nodeId + ":" + stepSeq + ":" + attempt,
+                    java.sql.Timestamp.from(java.time.Instant.now()));
             // 设备锁：抢不到就等。
             // resourceId 这里是 device_instance.id，DeviceLock 要 resource_node.id，
             // 所以先用 instanceId 查出 resource_id。
@@ -1981,9 +1994,12 @@ public class WorkflowService {
             }
             try {
                 Long dev = resourceByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
+                // 命令**下发时刻**（key 与 onStepStart 一致：nodeId 是步骤节点 id）
+                java.sql.Timestamp sentAt =
+                        sentAtByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
                 writeStep(parentId, stepSeq, method, ok, errorCode, rawResponse,
                         durationMs, attempt, dev == null ? 0L : dev,
-                        paramsByNode.getOrDefault(nodeId, Map.of()));
+                        paramsByNode.getOrDefault(nodeId, Map.of()), sentAt);
             } catch (SQLException | RuntimeException e) {
                 // 落库失败不能让执行中断：数据丢了比流程停了好
                 log.error("[WARN] 步骤落库失败: " + e.getMessage());
@@ -1993,7 +2009,8 @@ public class WorkflowService {
         private void writeStep(Long parentId, int stepSeq, String method, boolean ok,
                                String errorCode, String rawResponse, long durationMs,
                                int attempt, long deviceId,
-                               Map<String, Object> params) throws SQLException {
+                               Map<String, Object> params,
+                               java.sql.Timestamp sentAt) throws SQLException {
             // 板位登记：成功的 Deposit/Withdraw 类方法会动位置
             if (ok && deviceId > 0) {
                 try {
@@ -2038,10 +2055,11 @@ public class WorkflowService {
             kv.add("stepSeq");
             kv.add(stepSeq);
             params.forEach((k, v) -> { kv.add(k); kv.add(v); });
+            // sent_at 用**下发时刻**（不是落库时刻）⇒ 事后能算出「发出 → 响应」间隔
             rm().insertRunCommand(tenantId, runId, stepNodeId, stepSeq, method,
                     Jsons.obj(kv.toArray()), stepStatus(ok, errorCode), attempt,
                     Jsons.obj("ok", ok, "durationMs", durationMs), rawResponse, errorCode,
-                    deviceId);
+                    deviceId, sentAt);
         }
     }
 

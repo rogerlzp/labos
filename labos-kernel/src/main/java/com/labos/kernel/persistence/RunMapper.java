@@ -180,11 +180,19 @@ public interface RunMapper {
                         Long resourceId, String status, int attempt, long parentNodeId,
                         int stepSeq, String errorCode, String inputJson);
 
-    /** 命令台账（实时写路径，带 device_id）。 */
+    /**
+     * 命令台账（实时写路径，带 device_id）。
+     *
+     * @param sentAt **命令真正下发到设备的时刻**（不是落库时刻）——
+     *                命令台账是在命令**执行完**之后才写的，若 sent_at 用落库时刻
+     *                （now()），它会与 finished_at 同毫秒 ⇒ 事后算不出
+     *                「发出 → 设备响应」这段时间差（2026-11-11 实测发现：
+     *                库里所有命令的 sent_at == finished_at）。
+     */
     int insertRunCommand(long tenantId, long runId, long runNodeId, int commandSeq,
                          String method, String payloadJson, String status, int attempt,
                          String resultJson, String rawResponse, String errorCode,
-                         long deviceId);
+                         long deviceId, java.sql.Timestamp sentAt);
 
     /**
      * 节点最新一次执行的命令结果（result + 设备原始回包，按命令 id 倒序取一条）。
