@@ -333,6 +333,42 @@ function RunsTable({ wfId, onOpen }: { wfId: number; onOpen: (runId: number) => 
 
 
 /**
+ * 变量名选择器：**下拉选已有变量，也能直接输入一个新名字**。
+ *
+ * <p>为什么是"下拉 + 可输"而不是纯输入框：
+ * <ul>
+ *   <li>变量名要能当 {@code ${name}} 引用，**手打最容易打错**（大小写、下划线）⇒
+ *       下拉给出候选，选中就不会错；</li>
+ *   <li>变量有**初始值和类型** ⇒ 下拉里直接显示（"plateCount = 1"），
+ *       不用切到变量管理页才知道这个变量初值是多少；</li>
+ *   <li>但流程里**临时用一个新变量**是常态 ⇒ 必须还能直接输入。</li>
+ * </ul>
+ */
+function VariablePicker({ vars, value, onChange }: {
+  vars: Array<{ name: string; type?: string; defaultValue?: string | null }>;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const t = useT();
+  return (
+    <Select
+      size="small" style={{ width: '100%' }}
+      mode="tags" showSearch allowClear maxTagCount={1}
+      value={value ? [value] : []}
+      placeholder={t('designer.placeholder.varName')}
+      onChange={(v: string[]) => onChange(v[v.length - 1] ?? '')}
+      options={vars.map((v) => ({
+        value: v.name,
+        label: `${v.name}${v.defaultValue != null && v.defaultValue !== '' ? ` = ${v.defaultValue}` : ''}`,
+      }))}
+      // 输入新名字时按变量的命名规则校验（后端同一套规则）
+      filterOption={(input, opt) =>
+        String(opt?.label ?? '').toLowerCase().includes(input.toLowerCase())}
+    />
+  );
+}
+
+/**
  * 节点设置：把选中的 task 设成**设备任务 / 变量节点 / 表达式节点**，并填参数。
  *
  * <p>为什么单独做成一个受控小卡片：bpmn-js 的 modeling 对 `protocolName` 这种
@@ -393,6 +429,17 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
       setLoaded(true);
       return j;
     },
+  });
+
+  // 这条流程的**变量清单**：变量名改成下拉（可搜、可直接输入新名字）。
+  // 为什么要有下拉：变量名是 ${name} 引用，**手打最容易打错**（大小写/下划线），
+  // 而变量还有初始值和类型，得在选择时就能看见 —— 否则只能等运行时才发现变量不存在。
+  const vars = useQuery({
+    queryKey: ['workflow-vars', wfId],
+    queryFn: () => apiFetch(`/api/workflows/${wfId}/variables`).then((r) => r.json()) as Promise<{
+      items: Array<{ name: string; type?: string; defaultValue?: string | null;
+                     description?: string | null }>;
+    }>,
   });
 
   // 设备池：按所属岛过滤（islandId 为空 = 全部岛，兼容旧流程与岛屿视图）
@@ -608,8 +655,8 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
           </>
         ) : kind === '__wait' ? (
           <>
-            <Input size="small" placeholder={t('designer.placeholder.varName')}
-              value={varName} onChange={(e) => setVarName(e.target.value)} />
+            <VariablePicker vars={vars.data?.items ?? []}
+              value={varName} onChange={setVarName} />
             <Input size="small" placeholder={t('designer.placeholder.waitValue')}
               value={val} onChange={(e) => setVal(e.target.value)} />
             <Input size="small" placeholder={t('designer.placeholder.waitTimeout')}
@@ -620,8 +667,8 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
           </>
         ) : (
           <>
-            <Input size="small" placeholder={t('designer.placeholder.varName')}
-              value={varName} onChange={(e) => setVarName(e.target.value)} />
+            <VariablePicker vars={vars.data?.items ?? []}
+              value={varName} onChange={setVarName} />
             <Input size="small"
               placeholder={kind === '__setVar'
                 ? t('designer.placeholder.varValue')

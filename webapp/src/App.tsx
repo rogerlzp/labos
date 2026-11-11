@@ -21,6 +21,7 @@ import WorkflowsPage from './pages/Workflows';
 import DesignerPage from './pages/Designer';
 import AlertsPage from './pages/Alerts';
 import PoliciesPage from './pages/Policies';
+import VariablesPage from './pages/Variables';
 import ErrorCodesPage from './pages/ErrorCodes';
 import GanttPage from './pages/Gantt';
 import DurationsPage from './pages/Durations';
@@ -111,6 +112,7 @@ const NAV: NavGroup[] = [
       { key: '/island', labelKey: 'nav.island' },
       { key: '/island-flow', labelKey: 'nav.islandFlow' },
       { key: '/policies', labelKey: 'nav.policies' },
+      { key: '/variables', labelKey: 'nav.variables' },
       { key: '/error-codes', labelKey: 'nav.errorCodes' },
     ],
   },
@@ -271,6 +273,7 @@ export default function App() {
             <Route path="/designer/:id" element={<DesignerPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/policies" element={<PoliciesPage />} />
+            <Route path="/variables" element={<VariablesPage />} />
             <Route path="/error-codes" element={<ErrorCodesPage />} />
             <Route path="/schedule" element={<ScheduleGanttPage />} />
             <Route path="/duration" element={<DurationsPage />} />

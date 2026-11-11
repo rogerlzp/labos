@@ -56,6 +56,16 @@ public interface WorkflowWebMapper {
     /** 节点绑定的方法参数与资源 id；不存在返回 null。 */
     Map<String, Object> selectNodeBinding(long tenantId, long workflowId, String nodeKey);
 
+    /** 流程级变量（作用域：流程；实验级见 experiment_variable）。 */
+    List<Map<String, Object>> selectWorkflowVariables(long tenantId, long workflowId);
+
+    /** 新建/更新流程级变量（同名即更新）；返回受影响行数。 */
+    int insertWorkflowVariable(long tenantId, long workflowId, String name,
+                               String type, String defaultValue, String description);
+
+    /** 删一个流程级变量（按名）。 */
+    int deleteWorkflowVariable(long tenantId, long workflowId, String name);
+
     /** 流程时间轴估算：任务节点 + 历史 P50 + 型号库估值，一次 CTE 取全。 */
     List<Map<String, Object>> selectWorkflowTimelineNodes(long tenantId, long workflowId);
 

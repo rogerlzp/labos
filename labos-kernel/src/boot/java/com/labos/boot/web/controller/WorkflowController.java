@@ -14,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -265,6 +266,53 @@ public class WorkflowController {
             produces = "application/json; charset=utf-8")
     public String predict(@PathVariable long id) throws SQLException {
         return web.predict(id);
+    }
+
+    // ---------------------------------------------------------------- 流程级变量
+
+    /**
+     * 流程级变量清单。
+     *
+     * <p>变量的范围分两级：**流程级**（这里）与**实验级**（{@code experiment_variable}）。
+     * 实验启动时把实验级变量带进运行期，**同名覆盖**流程级的初始值。</p>
+     */
+    @GetMapping(value = "/workflows/{id:\\d+}/variables",
+            produces = "application/json; charset=utf-8")
+    public String workflowVariables(@PathVariable long id) throws SQLException {
+        return web.workflowVariablesJson(id);
+    }
+
+    /** 新建/更新一个流程级变量（同名即更新）。 */
+    @PostMapping(value = "/workflows/{id:\\d+}/variables",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> saveWorkflowVariable(
+            @PathVariable long id,
+            @RequestBody(required = false) String body,
+            HttpServletRequest req) throws SQLException {
+        String name = jsonField(body, "name");
+        String type = jsonField(body, "type");
+        String defaultValue = jsonField(body, "defaultValue");
+        String description = jsonField(body, "description");
+        int n = web.saveWorkflowVariable(id, name, type, defaultValue, description);
+        audit.record(session(req), "workflow.variable_save", "workflow", id,
+                name, null, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("workflowId", id, "name", name,
+                "saved", n > 0));
+    }
+
+    /** 删一个流程级变量（按名）。 */
+    @DeleteMapping(value = "/workflows/{id:\\d+}/variables/{name}",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteWorkflowVariable(
+            @PathVariable long id,
+            @PathVariable String name,
+            HttpServletRequest req) throws SQLException {
+        int n = web.deleteWorkflowVariable(id, URLDecoder.decode(name, StandardCharsets.UTF_8));
+        if (n > 0) {
+            audit.record(session(req), "workflow.variable_delete", "workflow", id,
+                    name, null, req.getRemoteAddr());
+        }
+        return ResponseEntity.ok(Jsons.obj("workflowId", id, "name", name, "deleted", n));
     }
 
     // ---------------------------------------------------------------- 节点绑定
