@@ -14,12 +14,39 @@ interface CmdRow {
   finishedAt: string | null;
   ackLatencyMs: number | null;
   errorCode: string | null;
-  payload: string | null;
-  result: string | null;
+  /** 后端 keyValueArrayJson 产出的是**已解析的对象**（不是 JSON 字符串）⇒
+   *  直接当 React child 渲染会崩（Objects are not valid as a React child）。 */
+  payload: unknown;
+  result: unknown;
   nodeKey: string | null;
 }
 
-/** 把 ISO 时间戳裁成 "MM-DD HH:MM:SS"（列表里够看清先后，不必占宽度）。 */
+/**
+ * 解析后端的时间戳。
+ *
+ * <p>后端 `java.sql.Timestamp` 序列化出来是 **"YYYY-MM-DD HH:MM:SS[.fff]"**
+ * （空格分隔、**无时区**）⇒ 直接 `new Date(...)` 在部分浏览器里是 Invalid Date
+ * ⇒ 耗时列会全变成「—」。⇒ 这里把空格换成 "T"（当成本地时间）再解析。
+ */
+function parseTime(v: string | null): number | null {
+  if (!v) return null;
+  const iso = v.includes('T') ? v : v.replace(' ', 'T');
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/** 把可能是对象/字符串的字段转成可显示的文本。 */
+function asText(v: unknown): string {
+  if (v == null) return '—';
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+/** 把时间戳裁成 "MM-DD HH:MM:SS"（列表里够看清先后，不必占宽度）。 */
 function shortTime(v: string | null): string {
   if (!v) return '—';
   return v.slice(5, 19).replace('T', ' ');
@@ -27,9 +54,10 @@ function shortTime(v: string | null): string {
 
 /** 两次时刻之差（秒），用于显示"设备耗时"。 */
 function spanSec(a: string | null, b: string | null): string {
-  if (!a || !b) return '—';
-  const d = (new Date(b).getTime() - new Date(a).getTime()) / 1000;
-  return `${d.toFixed(1)}s`;
+  const ta = parseTime(a);
+  const tb = parseTime(b);
+  if (ta == null || tb == null) return '—';
+  return `${((tb - ta) / 1000).toFixed(1)}s`;
 }
 
 /**
@@ -81,13 +109,14 @@ export default function RunCommands({ runId }: { runId: number }) {
         { title: t('runCommands.col.duration'), width: 90,
           render: (_, r) => spanSec(r.sentAt, r.finishedAt) },
         { title: t('runCommands.col.payload'), ellipsis: true,
-          render: (v: string | null) => (
-            v ? (
-              <Tooltip title={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{v}</pre>}>
-                <code style={{ fontSize: 11 }}>{v}</code>
+          render: (v: unknown) => {
+            const text = asText(v);
+            return text === '—' ? '—' : (
+              <Tooltip title={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{text}</pre>}>
+                <code style={{ fontSize: 11 }}>{text}</code>
               </Tooltip>
-            ) : '—'
-          ) },
+            );
+          } },
         { title: t('runCommands.col.error'), dataIndex: 'errorCode', width: 110,
           render: (v: string | null) => v ?? '—' },
       ]}
