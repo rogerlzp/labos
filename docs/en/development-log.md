@@ -6189,3 +6189,83 @@ radius).
    wasted rounds before I noticed. ⇒ When editing scripts in bulk, first `grep -n` every
    call site with its line number and owning function, then edit them one by one, and after
    the edit `awk` the function names against the line numbers to confirm.
+
+**Addendum (2026-11-11, morning): two gate segments, the command ledger, and live node states**
+
+**One. Gate regression (exclusive window, two segments)**
+
+| Segment | Result |
+|---|---|
+| `--fast` pure logic | **746 / 0** ✔ (threshold 738, no skips) |
+| 2.5 build-artifact parity | ✔ |
+| 2.6 in-flow parallel / same-island concurrency | **4/0**, **5/0** ✔ (peak concurrency 1, island mutual exclusion effective) |
+| **2.7 full flow matrix** | **55 / 0, all green** ✔ (1488 s; loopback passed after the wait-budget fix) |
+| 3 device chain | **41 / 0** ✔ |
+| 4.13 crash recovery | **gate passed (no skips)** ✔ 69 s |
+| designer / pause page tracks | every remaining red lands in the **concurrent session's WIP scripts** (`e2e-flow-matrix.py` / `e2e-gateway-pairs.py` / `e2e-experiment-pause-page.py`) ⇒ not caused by this round's changes; left for that side to finish |
+
+**Two. Command ledger ("when was the command sent, with what parameters, when did the device answer")**
+
+* Before there was only the node table ("this step succeeded"); it could not say which device
+  got which method, when it went out, or how long it took. The backend fields were already
+  there (`run_command`); what was missing was ① the meaning of `sent_at` and ② the table in the UI.
+* **① `sent_at` did not mean "sent"**: the command ledger is written *after* the command
+  finished, and `sent_at` used `now()` ⇒ identical to `finished_at` ⇒ the
+  "sent → answered" interval was uncomputable (every row in the DB looked like that).
+  ⇒ Now the real dispatch moment is captured in `onStepStart` (right after the lock is taken,
+  just before dispatch) and persisted.
+  ⚠ Trap hit: the key was written as `parentId` (business node id) while `onStepStart`
+  uses `nodeId` (step node id) ⇒ it never resolved ⇒ it silently fell back to the
+  write-time stamp. Measured: dispatched 13:08:24.057 → finished 13:08:30.445 ⇒
+  **6.39 s**, matching the device's own `durationMs 6220`.
+* **② New `GET /api/runs/{id}/commands`** plus a shared `components/RunCommands.tsx`,
+  mounted on both the run detail page and the read-only run flow page (method / device /
+  status / sent / ack / finished / duration / params / error code).
+  ⚠ Trap hit: the backend's `keyValueArrayJson` emits `payload`/`result` as **parsed
+  objects**, not JSON strings; I rendered them as strings inside `<code>` ⇒ React crashed
+  and the whole page went blank ⇒ now everything goes through `asText()`.
+
+**Three. "The running graph shows no change" (root cause + fix)**
+
+Decisive experiment (same workflow, same environment, only `LABOS_EXEC_GRAPH` flipped):
+
+| Path | level=0 summary row |
+|---|---|
+| `=1` (graph execution) | **live**: completed / running / pending change node by node ✔ |
+| `=0` (**sequential execution**, the fallback when graph parsing fails) | at 8 s all three rows still **pending** (while the level=1 children were already done) ⇒ they all flip to their final states at once when the order ends |
+
+⇒ Root cause: the graph path has a `nodeStateRecorder` callback that updates the summary
+row live; **the sequential path (`sm.executeAll`) has none** ⇒ the summary row is only
+backfilled when the whole order ends ⇒ the graph looks frozen and then jumps.
+⇒ Fix: `PersistingStepSink.onStepStart` (which every execution path goes through) writes
+the level=0 summary row as `running`; **the final state is still backfilled by the normal
+tail** (the two paths do not agree on final semantics — the same node is `manual` under
+sequential and `completed` under graph ⇒ guessing the terminal state would write it wrong)
+⇒ zero semantic risk.
+Verified: under the sequential path the three rows show `running` at 8 s.
+
+**Four. A data-destroying defect fixed on the way**
+
+After opening the arrangement write path (the user asked to be able to add
+already-built workflows to an existing experiment), `extractLongArray` **only read the
+body** ⇒ `?workflowIds=-1` looked like "not supplied" ⇒ parsed as an empty list ⇒ the
+full-replace path **wiped the arrangement**, and the validation never ran.
+⇒ Now both the body and the query string are read; a missing parameter ⇒ **400**; an
+illegal or non-existent workflow id ⇒ **400**; the existing arrangement is never touched
+(an explicit `[]` still means "clear the arrangement").
+
+**Five. Lessons (cross-project)**
+
+① **When the implementation changes, the assertion must change with it** — after the
+   arrangement went from read-only to writable, `verify-device-chain.sh` still asserted
+   "always 409" ⇒ the gate went red. **Implementation and assertion are two faces of
+   the same thing.**
+② **Don't conclude from "I only looked at part of it"** — I first said "payload doesn't
+   record the parameters" (it does; those two nodes simply had empty parameters), and
+   then "an isolated device was picked" (it wasn't; I had looked at a **mid-run**
+   state) ⇒ neither conclusion held.
+③ **`str.find` is dangerous for slicing code blocks** — a 6-space pattern matches the
+   tail of a 10-space line ⇒ I truncated a JSX block and committed it (`a25b811` did not
+   compile) ⇒ use **line numbers + unique anchors** instead.
+④ **Decisive experiments must change exactly one variable** — that is how the root cause
+   of the live-state problem was pinned down in one run.
