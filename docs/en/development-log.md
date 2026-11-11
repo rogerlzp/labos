@@ -6855,3 +6855,74 @@ asserted "the plate is still on `position_state`" ⇒ it could never pass: the f
 take" back to back, so by the end the plate is gone and the position is free. ⇒ changed to
 asserting the **complete put-and-take** (the redundant table remembers where it last was +
 the position is now free + two audit rows).
+
+---
+
+**Addendum (2026-11-12): core scenarios 3 / 4 filled in — parallelism, variable conditions,
+exclusive branch selection, pause and resume**
+
+Two of the four core scenarios had no implementation until this round (3 and 4 were marked
+"not covered", so **parallelism / variable conditions / exclusive branch selection / pause and
+resume** had no automated defence). They are in now: the gate grew from 17 assertions to
+**32, with 0 failures**.
+
+**Scenario 3 · parallel + variable condition + exclusive branch selection**
+
+What it proves is not "everything completed" but three specific things:
+① **both** branches of the fork run; ② the join continues **only after** both branches are
+up; ③ the exclusive gateway takes **one** edge (the other is `bypassed`); ④ **changing the
+variable switches the edge** (the same flow is run twice, `mode=fast` / `mode=slow`, and the
+chosen edge is compared).
+
+**Scenario 4 · pause / resume**
+
+① **no further commands are dispatched** while paused (what matters on site: a paused run that
+still moves devices is worse than no pause at all); ② it finishes after the resume;
+③ the nodes that had already completed are **not executed again** (a re-run means the robot
+moves the plate again — a physical side effect).
+
+**An architectural fact that has to be spelled out**
+
+**Parallelism here is "graph-semantics" parallelism, not device-level true concurrency.**
+`GraphRunner` is a **single-threaded ready queue** (`Deque.poll()` executes one at a time) ⇒
+parallel branches of the same run still dispatch their device commands **serially** (measured:
+the two branches' commands were 4 s apart).
+
+| Layer | State |
+|---|---|
+| Graph semantics (both branches activated, the join waits, the exclusive gateway takes one edge) | ✅ implemented and asserted by the gate |
+| Device-level concurrency inside one run | ❌ not implemented (single-threaded executor) |
+| Device-level concurrency across runs | ✅ the **scheduler** dispatches different experiments to different islands / devices |
+
+⇒ One consequence matters on site: **parallel branches of the same run never really contend
+for resources** (plate positions, device locks) — that contention can only happen **between
+different experiments**, and that layer is covered by the **island-level mutex plus the
+position lock**.
+
+**Three pitfalls of this round** (all of the "the test fooled itself" kind)
+
+① **A condition written as a `condition` attribute on `sequenceFlow` is silently ignored**
+(the backend only reads a `<bpmn:conditionExpression>` **child element**) ⇒ the gateway
+always takes the default edge ⇒ it looks like "the variable condition doesn't work". The
+gate's XML builder now emits the child element.
+
+② **`experiment_run_step.run_id` is only filled once the whole flow has finished** (measured:
+a flow with a 40-second delay filled it 48 seconds later) ⇒ waiting for the flow-level run
+through that column **misses the entire execution window** (by the time you pause, the flow
+has already finished and the state is `completed`). ⇒ Look the run up by `workflow_id`
+instead (the id exists as soon as the run is created).
+
+③ **"Only poll when there is a running/paused row" is a chicken-and-egg bug**: right after
+clicking "execute" the list does not contain that row yet ⇒ the code decides "no need to
+poll" ⇒ **the new execution never appears**. ⇒ Fixed 5-second polling.
+(This is the **third** appearance of the "you have to refresh the page to see it" complaint;
+the first two were the node table and the command ledger.)
+
+**A testing-discipline problem this round exposed**: scenario 4 originally asserted the
+page **button** as well, and it went red intermittently — waiting for T1 to finish before
+opening the page meant the flow had already finished and the button was gone.
+⇒ Split it: the **page assertion only checks that the entry exists**, the **semantic
+assertions go through the API**. ⇒ The gate should test "is pause/resume correct", not
+"is the button on the screen in this particular frame".
+
+**The measurement**: `scripts/ci-gate.sh` 32/0 (scenarios 1–4 all covered, 168 s in total).

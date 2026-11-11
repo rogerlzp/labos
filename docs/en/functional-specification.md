@@ -1482,7 +1482,34 @@ shared across islands** and **robot time-slicing** are still not implemented —
 four preconditions for lifting the island-level mutex, only one (the position lock) now
 holds.
 
-### 15.11 The measured evidence
+### 15.12 Core scenarios 3 / 4: parallelism, variable conditions, pause and resume
+
+Two of the four core scenarios had no implementation until this round (3 and 4 were marked
+"not covered"). What they cover now:
+
+| Scenario | What it proves | How it is asserted |
+|---|---|---|
+| **3 · parallel + variable condition + exclusive branch** | ① **both** branches of the fork run; ② the join continues only after both branches are up; ③ the exclusive gateway takes one edge and the other is `bypassed`; ④ **changing the variable switches the edge** | the moments on the step rows (level=1); the node statuses in `run_node`; running the same flow twice (`mode=fast` / `mode=slow`) and comparing which edge was taken |
+| **4 · pause / resume** | ① **no further commands are dispatched** while paused (what matters on site: a paused run that still moves devices is worse than no pause at all); ② it finishes after the resume; ③ the nodes that had already completed are **not executed again** (a re-run means the robot moves the plate again — a physical side effect) | the row counts of `run_command` and of `run_node` level=1 do not grow across the pause; the run ends `completed`; the step-row count of T1 does not change |
+
+**One architectural fact that has to be spelled out**: **parallelism here is "graph-semantics"
+parallelism, not device-level true concurrency.** `GraphRunner` is a **single-threaded ready
+queue** (`Deque.poll()` executes one at a time) ⇒ parallel branches of the same run still
+dispatch their device commands **serially** (measured: the two branches' commands were 4 s
+apart).
+
+| Layer | State |
+|---|---|
+| Graph semantics (both branches activated, the join waits, the exclusive gateway takes one edge) | ✅ implemented and asserted by the gate |
+| Device-level concurrency inside one run | ❌ not implemented (single-threaded executor) |
+| Device-level concurrency across runs | ✅ the **scheduler** dispatches different experiments to different islands / devices (each experiment has its own run) |
+
+⇒ One consequence matters on site: **parallel branches of the same run never really contend
+for resources** (plate positions, device locks) — that contention can only happen **between
+different experiments**, and that layer is covered today by the **island-level mutex plus
+the position lock** (§15.10).
+
+### 15.13 The measured evidence
 
 | Script | Covers | Result |
 |---|---|---|

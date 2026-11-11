@@ -312,6 +312,14 @@ export function ExperimentRunsPanel({ expId }: { expId: number }) {
       return r.json() as Promise<{ items: ExpRun[] }>;
     },
     enabled: Number.isFinite(expId),
+    // **列表要自己会刷新**：执行刚起来时这一页还没有那条执行单，
+    // 不轮询的话现场只能手动按「刷新」才看得到自己刚点的实验 ——
+    // 同一个毛病（"每次要刷新页面才看得到"）在执行记录页上又犯了一次。
+    //
+    // ⚠ **固定轮询，不能"有在跑的才轮"**：那是个鸡生蛋问题 ——
+    //   刚点执行时列表里还没有"在跑"的行 ⇒ 判定为"不用轮" ⇒
+    //   于是新执行单永远不会出现。实测踩过。
+    refetchInterval: 5000,
   });
 
   const doPause = async () => {

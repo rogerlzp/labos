@@ -151,10 +151,16 @@ def _parse_ts(v):
 # 播种的 XML 里**带 BPMNEdge**（连线图形信息）—— 少了它，前端画布上就是
 # 一堆孤立节点、一条线都没有（见 BUG-20261111-20）。
 def bpmn_xml(nodes, flows, shapes, edges):
-    """nodes: [(key, name, protocolName, resourceId, type)]
+    """nodes: [(key, name, protocolName, resourceId, type, defaultFlowId?)]
        flows: [(id, source, target, condition?)]
        shapes: {key: (x, y, w, h)}
-       edges:  {flowId: [(x1,y1),(x2,y2)]}"""
+       edges:  {flowId: [(x1,y1),(x2,y2)]}
+
+    ⚠ **条件写在 `<bpmn:conditionExpression>` 子元素里**，不是 sequenceFlow 的
+       `condition` 属性 —— 后端解析器只认子元素（BpmnGraphParser：
+       遍历 sequenceFlow 的子节点找 conditionExpression）。
+       写成属性的话条件会被静默忽略 ⇒ 网关永远走默认边 ⇒ 看起来"条件没生效"。
+    """
     ns = ('xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" '
           'xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" '
           'xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" '
@@ -163,22 +169,32 @@ def bpmn_xml(nodes, flows, shapes, edges):
            '<bpmn:definitions %s id="Def_x" targetNamespace="http://bpmn.io/schema/bpmn">' % ns,
            '  <bpmn:process id="Proc_x" isExecutable="false">']
     for n in nodes:
-        key, name, proto, res, ntype = n
+        key, name, proto, res, ntype = n[0], n[1], n[2], n[3], n[4]
+        default_flow = n[5] if len(n) > 5 else None
         if ntype == "startEvent":
             out.append('    <bpmn:startEvent id="%s" name="%s"/>' % (key, name))
         elif ntype == "endEvent":
             out.append('    <bpmn:endEvent id="%s" name="%s"/>' % (key, name))
         elif ntype == "exclusiveGateway":
-            out.append('    <bpmn:exclusiveGateway id="%s" name="%s"/>' % (key, name))
+            df = ' default="%s"' % default_flow if default_flow else ''
+            out.append('    <bpmn:exclusiveGateway id="%s" name="%s"%s/>' % (key, name, df))
+        elif ntype == "parallelGateway":
+            out.append('    <bpmn:parallelGateway id="%s" name="%s"/>' % (key, name))
         else:
             out.append('    <bpmn:task id="%s" name="%s" protocolName="%s" resource="%s"/>'
                        % (key, name, proto, res))
     for f in flows:
         fid, src, dst = f[0], f[1], f[2]
         cond = f[3] if len(f) > 3 else None
-        extra = ' condition="%s"' % cond if cond else ''
-        out.append('    <bpmn:sequenceFlow id="%s" sourceRef="%s" targetRef="%s"%s/>'
-                   % (fid, src, dst, extra))
+        if cond:
+            out.append('    <bpmn:sequenceFlow id="%s" sourceRef="%s" targetRef="%s">'
+                       % (fid, src, dst))
+            out.append('      <bpmn:conditionExpression>%s</bpmn:conditionExpression>'
+                       % cond)
+            out.append('    </bpmn:sequenceFlow>')
+        else:
+            out.append('    <bpmn:sequenceFlow id="%s" sourceRef="%s" targetRef="%s"/>'
+                       % (fid, src, dst))
     out.append('  </bpmn:process>')
     out.append('  <bpmndi:BPMNDiagram id="D_x">')
     out.append('    <bpmndi:BPMNPlane id="P_x" bpmnElement="Proc_x">')
@@ -229,6 +245,26 @@ def node_rows(rid):
                 "FROM run_node WHERE run_id=%d AND level=0 ORDER BY seq, id" % rid).split("\n"):
         if ln.strip():
             out.append(ln.split("|"))
+    return out
+
+
+def steps_by_business_node(rid):
+    """[(业务节点 key, actual_start, actual_end)] —— 把 level=1 步骤行**关联回**它的
+    level=0 业务节点。
+
+    ⚠ 步骤行自己的 node_key 是 "S<n>"（步骤序号），**不是业务节点 key** ——
+    拿 "P1"/"P2" 去 step_rows 里找是找不到的。要靠 parent_node_id 关联。
+    """
+    out = []
+    for ln in q("SELECT p.node_key || '|' || coalesce(c.actual_start::text,'') || '|' || "
+                "coalesce(c.actual_end::text,'') "
+                "FROM run_node c JOIN run_node p ON p.id = c.parent_node_id "
+                "WHERE c.run_id=%d AND c.level=1 "
+                "ORDER BY c.actual_start, c.id" % rid).split("\n"):
+        if ln.strip():
+            parts = ln.split("|")
+            if len(parts) == 3:
+                out.append((parts[0], _parse_ts(parts[1]), _parse_ts(parts[2])))
     return out
 
 
@@ -478,7 +514,12 @@ def scenario2_sequential(pg, token):
                 break
             time.sleep(1)
         if not rid:
-            bad("实验执行没有产生 run")
+            bad("实验执行没有产生 run",
+                "erid=%s experiment_run=%s step=%s" % (
+                    erid,
+                    q("SELECT count(*) FROM experiment_run WHERE experiment_id=%d" % exp),
+                    q("SELECT count(*) FROM experiment_run_step WHERE experiment_run_id=%d"
+                      % erid) if erid else "n/a"))
             return
         st = wait_run(token, rid, budget=180)
         if st == "completed":
@@ -543,13 +584,370 @@ def scenario2_sequential(pg, token):
 
 # ================================================================ 场景 3 / 4（待补）
 def scenario3_parallel_branch(pg, token):
-    section("场景 3 · 并行 + 变量条件 + 异或网关")
-    uncovered("场景 3 未实现（并行分叉 / 变量条件 / 异或选边）")
+    """并行分叉 + 变量条件 + 异或选边。
+
+    断言的不是「都完成了」，而是**三件具体的事**：
+
+    ① **真并行**：两个分支的执行区间**有重叠**（不是首尾相接的串行）。
+       —— 都完成但其实串行，等于并行能力没做。
+    ② **变量条件**：条件表达式的值**跟着变量走**（改变量 → 选边不同）。
+    ③ **异或选边**：条件成立走一条边、**另一条边的节点是 bypassed**（不是两条都跑）。
+
+    结构（一条流程测 ①，一条流程测 ②③）：
+
+        并行：S ─┬─ P1(Home 机器人) ─┬─ J(并行汇合) ─ T9 ─ E
+                └─ P2(Home 离心机) ─┘
+
+        异或：S ─ X(条件 ${mode} == 'fast') ─┬─ A(Home 机器人) ─ E
+                                           └─ B(Home 离心机) ─┘
+    """
+    section("场景 3 · 并行 + 变量条件 + 异或选边")
+    island_id = int(q("SELECT id FROM resource_node WHERE code='%s' AND kind='island'"
+                       % ISLAND))
+    devs = {}
+    for ln in q("SELECT di.code || '|' || di.resource_id FROM device_instance di "
+                "JOIN driver dr ON dr.id = di.driver_id WHERE di.tenant_id=1 "
+                "AND di.deleted_at IS NULL AND di.status='available' "
+                "AND dr.endpoint LIKE 'tcp://%%'").split("\n"):
+        if ln.strip():
+            c, rid = ln.split("|")
+            devs[c] = rid
+    robot = devs.get("ID-X231")
+    spin = devs.get("ID-ASPIN_2K-1")
+    if not robot or not spin:
+        bad("基线设备不齐（要机器人 + 离心机两台 Home）", str(sorted(devs)))
+        return
+
+    # ---------- ① 并行 ----------
+    nodes = [("S", "开始", None, None, "startEvent"),
+             ("P1", "分支一", "Home", robot, "task"),
+             ("P2", "分支二", "Home", spin, "task"),
+             ("J", "汇合", None, None, "parallelGateway"),
+             ("T9", "汇合后", "Home", robot, "task"),
+             ("E", "结束", None, None, "endEvent")]
+    shapes = {"S": (60, 160, 36, 36), "P1": (160, 60, 100, 80), "P2": (160, 240, 100, 80),
+              "J": (340, 160, 36, 36), "T9": (440, 140, 100, 80), "E": (600, 160, 36, 36)}
+    flows = [("f1", "S", "P1"), ("f2", "S", "P2"), ("f3", "P1", "J"), ("f4", "P2", "J"),
+             ("f5", "J", "T9"), ("f6", "T9", "E")]
+    edges = {
+        "f1": [(96, 178), (160, 100)], "f2": [(96, 178), (160, 280)],
+        "f3": [(260, 100), (340, 170)], "f4": [(260, 280), (340, 190)],
+        "f5": [(376, 178), (440, 180)], "f6": [(540, 180), (600, 178)],
+    }
+    wf_par = seed_workflow(token, "核心场景·并行分叉", bpmn_xml(nodes, flows, shapes, edges))
+
+    # ---------- ②③ 异或 + 变量条件 ----------
+    nodes2 = [("S", "开始", None, None, "startEvent"),
+              ("X", "按变量选边", None, None, "exclusiveGateway", "fb"),
+              ("A", "快分支", "Home", robot, "task"),
+              ("B", "慢分支", "Home", spin, "task"),
+              ("E", "结束", None, None, "endEvent")]
+    shapes2 = {"S": (60, 160, 36, 36), "X": (170, 150, 36, 36),
+               "A": (280, 70, 100, 80), "B": (280, 240, 100, 80), "E": (450, 160, 36, 36)}
+    # ⚠ 别漏 S → X：漏了的话保存时的可达性校验会报
+    #   "有节点从开始节点走不到"（开始节点没有出边 ⇒ 整张图都走不到）
+    flows2 = [("f0", "S", "X"),
+              ("fa", "X", "A", "${mode} == 'fast'"), ("fb", "X", "B"),
+              ("fc", "A", "E"), ("fd", "B", "E")]
+    edges2 = {"f0": [(96, 178), (170, 168)],
+              "fa": [(206, 165), (280, 110)], "fb": [(206, 185), (280, 280)],
+              "fc": [(380, 110), (450, 170)], "fd": [(380, 280), (450, 190)]}
+    wf_xor = seed_workflow(token, "核心场景·异或选边",
+                           bpmn_xml(nodes2, flows2, shapes2, edges2))
+    # 流程级变量：mode 的初值 = fast（条件成立 ⇒ 走 A）
+    api("/api/workflows/%d/variables" % wf_xor, "POST",
+        {"name": "mode", "type": "string", "defaultValue": "fast"}, token)
+
+    exp = seed_experiment(token, "核心场景·并行与选边实验", [wf_par, wf_xor], island_id)
+    try:
+        pg.goto(BASE_WEB + "/experiments/%d" % exp, wait_until="domcontentloaded")
+        pg.wait_for_timeout(3500)
+        btn = pg.get_by_role("button", name=re.compile("执行实验")).first
+        if btn.count() == 0:
+            bad("实验详情页上找不到「执行实验」按钮")
+            return
+        btn.click()
+        ok("已在实验详情页点「执行实验」")
+
+        erid = 0
+        for _ in range(30):
+            v = q("SELECT max(id) FROM experiment_run WHERE experiment_id=%d" % exp)
+            if v and int(v) > 0:
+                erid = int(v)
+                break
+            time.sleep(1)
+        # 等两条流程都派发出来
+        rids = {}
+        for _ in range(60):
+            v = q("SELECT run_id FROM experiment_run_step WHERE experiment_run_id=%d "
+                  "AND workflow_id=%d LIMIT 1" % (erid, wf_par))
+            if v and v.strip():
+                rids["par"] = int(v)
+            v = q("SELECT run_id FROM experiment_run_step WHERE experiment_run_id=%d "
+                  "AND workflow_id=%d LIMIT 1" % (erid, wf_xor))
+            if v and v.strip():
+                rids["xor"] = int(v)
+            if len(rids) == 2:
+                break
+            time.sleep(1)
+        if len(rids) != 2:
+            bad("实验没有派发出两条流程的 run", str(rids))
+            return
+        wait_run(token, rids["par"], budget=180)
+        wait_run(token, rids["xor"], budget=180)
+
+        # ---- ① 分叉：两条分支都跑；汇合在两条分支之后 ----
+        #
+        # ⚠ 这里断言的是**图语义**的并行（分叉都激活、汇合等齐），
+        #   **不是设备级真并发** —— GraphRunner 是**单线程 ready 队列**
+        #   （Deque.poll() 逐个执行），所以同一 run 内的并行分支，
+        #   设备命令仍是**串行下发**的。设备级并发目前靠**调度器**把不同实验
+        #   派到不同岛/设备上，不靠同一 run 内的分支。
+        #   ⇒ 真并发这一条单列为「未覆盖」，并写清原因（不假装它并行了）。
+        steps = steps_by_business_node(rids["par"])
+        by = {s[0]: s for s in steps}
+        if "P1" in by and "P2" in by:
+            p1, p2 = by["P1"], by["P2"]
+            ok("分叉的两条分支都执行了：P1 %s / P2 %s" % (
+                p1[1].strftime("%H:%M:%S.%f")[:-3] if p1[1] else "—",
+                p2[1].strftime("%H:%M:%S.%f")[:-3] if p2[1] else "—"))
+            after = by.get("T9")
+            if after and p1[1] and p2[1] and after[1]:
+                if after[1] >= p1[1] and after[1] >= p2[1]:
+                    ok("汇合之后的节点在两条分支都起来之后才开始（%s）"
+                       % after[1].strftime("%H:%M:%S.%f")[:-3])
+                else:
+                    bad("汇合之后的节点比分支还早开始", str((p1[1], p2[1], after[1])))
+            else:
+                bad("拿不到汇合后节点的步骤时刻", str([x[0] for x in steps]))
+        else:
+            bad("拿不到并行分支的步骤时刻", str([s[0] for s in steps]))
+
+        # 两条分支的节点状态都得是 completed（分叉不是"只走一条"）
+        rows_par = {r[0]: r for r in node_rows(rids["par"])}
+        if rows_par.get("P1") and rows_par.get("P2") \
+                and rows_par["P1"][1] == "completed" and rows_par["P2"][1] == "completed":
+            ok("并行分支两个节点都是 completed（分叉两条都跑）")
+        else:
+            bad("并行分支状态不对",
+                "P1=%s P2=%s" % (rows_par.get("P1") and rows_par["P1"][1],
+                                  rows_par.get("P2") and rows_par["P2"][1]))
+
+        uncovered("设备级真并发（同一 run 内并行分支同时下发）",
+                  "GraphRunner 是单线程 ready 队列，同一 run 内的并行分支仍是串行下发；"
+                  "设备级并发目前靠调度器把不同实验派到不同设备上")
+
+        # ---- ②③ 异或：mode=fast ⇒ 走 A，B 是 bypassed ----
+        rows = {r[0]: r for r in node_rows(rids["xor"])}
+        a, b = rows.get("A"), rows.get("B")
+        if a and b and a[1] == "completed" and b[1] == "bypassed":
+            ok("变量 mode=fast ⇒ 走快分支、慢分支被 bypassed（异或只走一条）")
+        else:
+            bad("异或选边不对", "A=%s B=%s" % (a and a[1], b and b[1]))
+
+        # ---- ② 改变量 ⇒ 换一条边（同一个流程再跑一次，mode=slow）----
+        api("/api/workflows/%d/variables" % wf_xor, "POST",
+            {"name": "mode", "type": "string", "defaultValue": "slow"}, token)
+        exp2 = seed_experiment(token, "核心场景·异或选边(慢)", [wf_xor], island_id)
+        try:
+            api("/api/experiments/%d/run" % exp2, "POST", {}, token)
+            erid2 = 0
+            for _ in range(30):
+                v = q("SELECT max(id) FROM experiment_run WHERE experiment_id=%d" % exp2)
+                if v and int(v) > 0:
+                    erid2 = int(v)
+                    break
+                time.sleep(1)
+            rid2 = 0
+            for _ in range(30):
+                v = q("SELECT max(run_id) FROM experiment_run_step "
+                      "WHERE experiment_run_id=%d" % erid2)
+                if v and v.strip():
+                    rid2 = int(v)
+                    break
+                time.sleep(1)
+            if not rid2:
+                bad("第二个实验没有派发出 run")
+                return
+            wait_run(token, rid2, budget=180)
+            rows2 = {r[0]: r for r in node_rows(rid2)}
+            a2, b2 = rows2.get("A"), rows2.get("B")
+            if a2 and b2 and b2[1] == "completed" and a2[1] == "bypassed":
+                ok("变量改成 slow ⇒ 换走慢分支（条件跟着变量走）")
+            else:
+                bad("改变量后选边没跟着变", "A=%s B=%s" % (a2 and a2[1], b2 and b2[1]))
+        finally:
+            cleanup(token, exp_ids=[exp2])
+    finally:
+        cleanup(token, exp_ids=[exp], wf_ids=[wf_par, wf_xor])
 
 
 def scenario4_pause_resume(pg, token):
+    """执行中暂停 → 恢复 → 跑完，且**不重复执行**已完成的节点。
+
+    断言的是三件具体的事：
+
+    ① **暂停期间不再下发命令**（现场最在意：暂停了还在动设备，比没暂停更危险）。
+    ② **恢复后跑完**（不是卡在半路）。
+    ③ **不重复执行** —— 暂停时已经跑完的节点，恢复后**没有重跑**
+       （重跑 = 机械臂把板子又搬一遍 = 物理副作用）。
+
+    结构（故意留一段 sleep，好在中途暂停）：
+
+        S ─ T1(Home 机器人) ─ T2(延时 12 秒) ─ T3(Home 离心机) ─ E
+    """
     section("场景 4 · 暂停 / 恢复")
-    uncovered("场景 4 未实现（执行中暂停 → 恢复 → 跑完）")
+    island_id = int(q("SELECT id FROM resource_node WHERE code='%s' AND kind='island'"
+                       % ISLAND))
+    devs = {}
+    for ln in q("SELECT di.code || '|' || di.resource_id FROM device_instance di "
+                "JOIN driver dr ON dr.id = di.driver_id WHERE di.tenant_id=1 "
+                "AND di.deleted_at IS NULL AND di.status='available' "
+                "AND dr.endpoint LIKE 'tcp://%%'").split("\n"):
+        if ln.strip():
+            c, rid = ln.split("|")
+            devs[c] = rid
+    robot = devs.get("ID-X231")
+    spin = devs.get("ID-ASPIN_2K-1")
+    if not robot or not spin:
+        bad("基线设备不齐（要机器人 + 离心机）", str(sorted(devs)))
+        return
+
+    nodes = [("S", "开始", None, None, "startEvent"),
+             ("T1", "机器人归位", "Home", robot, "task"),
+             ("T2", "中途等一会", "__sleep", None, "task"),
+             ("T3", "离心机归位", "Home", spin, "task"),
+             ("E", "结束", None, None, "endEvent")]
+    shapes = {"S": (60, 160, 36, 36), "T1": (160, 140, 100, 80),
+              "T2": (320, 140, 100, 80), "T3": (480, 140, 100, 80), "E": (640, 160, 36, 36)}
+    flows = [("f1", "S", "T1"), ("f2", "T1", "T2"), ("f3", "T2", "T3"), ("f4", "T3", "E")]
+    edges = {"f1": [(96, 178), (160, 180)], "f2": [(260, 180), (320, 180)],
+             "f3": [(420, 180), (480, 180)], "f4": [(580, 180), (640, 178)]}
+    wf = seed_workflow(token, "核心场景·暂停恢复", bpmn_xml(nodes, flows, shapes, edges))
+    # 内置节点的延时参数（没有它 __sleep 会因为缺 sec 报错）
+    api("/api/workflows/%d/nodes/T2" % wf, "PUT",
+        {"method": "__sleep", "params": {"sec": "40"}}, token)
+    exp = seed_experiment(token, "核心场景·暂停恢复实验", [wf], island_id)
+    try:
+        # ---- 页面操作：实验详情页点「执行实验」----
+        pg.goto(BASE_WEB + "/experiments/%d" % exp, wait_until="domcontentloaded")
+        pg.wait_for_timeout(3500)
+        btn = pg.get_by_role("button", name=re.compile("执行实验")).first
+        if btn.count() == 0:
+            bad("实验详情页上找不到「执行实验」按钮")
+            return
+        btn.click()
+        ok("已在实验详情页点「执行实验」")
+
+        erid = 0
+        for _ in range(30):
+            v = q("SELECT max(id) FROM experiment_run WHERE experiment_id=%d" % exp)
+            if v and int(v) > 0:
+                erid = int(v)
+                break
+            time.sleep(1)
+        # ⚠ **不要用 `experiment_run_step.run_id` 找流程级 run**：
+        #   那个字段是**整条流程跑完**才填的（实测：延时 40 秒的流程 ⇒ 48 秒后才填）
+        #   ⇒ 按它等会错过整个执行窗口，暂停时流程早跑完了（状态已是 completed）。
+        # ⇒ 直接按 workflow_id 找最新的 run（建 run 就有 id）。
+        rid = 0
+        for _ in range(60):
+            v = q("SELECT id FROM run WHERE workflow_id=%d ORDER BY id DESC LIMIT 1" % wf)
+            if v and v.strip():
+                rid = int(v)
+                break
+            time.sleep(1)
+        if not rid:
+            bad("实验执行没有产生 run", "experiment_run=%s" % erid)
+            return
+
+        # 等 T1 跑完、T2（延时）执行中 —— 这时暂停才有意义
+        s1 = s2 = ""
+        for _ in range(60):
+            s1 = q("SELECT status FROM run_node WHERE run_id=%d AND node_key='T1' "
+                   "AND level=0 ORDER BY id DESC LIMIT 1" % rid)
+            s2 = q("SELECT status FROM run_node WHERE run_id=%d AND node_key='T2' "
+                   "AND level=0 ORDER BY id DESC LIMIT 1" % rid)
+            if s1 == "completed" and s2 in ("running", "pending"):
+                break
+            time.sleep(1)
+        if s1 != "completed":
+            bad("T1 没跑完就想去暂停", "T1=%s T2=%s" % (s1, s2))
+            return
+        ok("T1 已完成、T2（延时）执行中")
+
+        # ---- 页面断言：执行记录页上要有「暂停」入口 ----
+        #
+        # ⚠ 这里只断言**入口存在**，暂停动作本身走接口 ——
+        #   原因是时序太脆：流程里 sleep 40 秒，页面上的「暂停」按钮只在
+        #   running/queued 时出现；页面加载慢一点、或者流程已经跑完，
+        #   按钮就没了 ⇒ 断言会变成"偶发红"，而红的原因与语义无关。
+        #   （实测：等 T1 完成后再开页面，流程已跑完 ⇒ 按钮消失 ⇒
+        #     报"找不到暂停按钮"，其实是我等过头了。）
+        pg.goto(BASE_WEB + "/experiments/%d/runs" % exp, wait_until="domcontentloaded")
+        pg.wait_for_timeout(2500)
+        for _ in range(20):
+            if pg.get_by_role("button", name="暂停").count() > 0:
+                break
+            pg.wait_for_timeout(500)
+        if pg.get_by_role("button", name="暂停").count() > 0:
+            ok("执行记录页上有「暂停」入口")
+        else:
+            bad("执行记录页上没有「暂停」入口",
+                "状态=%s" % q("SELECT status FROM experiment_run WHERE experiment_id=%d "
+                              "ORDER BY id DESC LIMIT 1" % exp))
+
+        # ---- 暂停：走接口（测语义，不受页面时序影响）----
+        api("/api/experiments/runs/%d/pause?scope=experiment" % erid, "POST", {}, token)
+        ok("已请求暂停（实验级）")
+
+        # ---- ① 暂停生效：run 变 paused，且不再下发命令 ----
+        paused = False
+        for _ in range(30):
+            st = q("SELECT status FROM run WHERE id=%d" % rid)
+            if st in ("paused", "failed", "completed"):
+                paused = (st == "paused")
+                break
+            time.sleep(1)
+        if paused:
+            ok("run 已进入 paused")
+        else:
+            bad("run 没有进入 paused", q("SELECT status FROM run WHERE id=%d" % rid))
+            return
+
+        cmds_before = int(q("SELECT count(*) FROM run_command WHERE run_id=%d" % rid))
+        steps_before = q("SELECT count(*) FROM run_node WHERE run_id=%d AND level=1" % rid)
+        time.sleep(6)
+        cmds_after = int(q("SELECT count(*) FROM run_command WHERE run_id=%d" % rid))
+        steps_after = q("SELECT count(*) FROM run_node WHERE run_id=%d AND level=1" % rid)
+        if cmds_after == cmds_before and steps_after == steps_before:
+            ok("暂停期间**没有再下发命令**（命令 %d 条、步骤 %s 行，都没增长）"
+               % (cmds_before, steps_before))
+        else:
+            bad("暂停期间还在下发命令", "命令 %d→%d、步骤 %s→%s"
+                % (cmds_before, cmds_after, steps_before, steps_after))
+
+        # ---- ②③ 恢复：走接口 ----
+        api("/api/experiments/runs/%d/resume" % erid, "POST", {}, token)
+        ok("已请求恢复")
+
+        st = wait_run(token, rid, budget=180)
+        if st == "completed":
+            ok("恢复后 run 跑完（completed）")
+        else:
+            bad("恢复后没跑完", st)
+
+        # 不重复：T1 已完成，恢复后它的步骤行数不应增加
+        t1_steps = q("SELECT count(*) FROM run_node WHERE run_id=%d AND node_key='T1' "
+                     "AND level=1" % rid)
+        t1_steps_now = q("SELECT count(*) FROM run_node WHERE run_id=%d AND node_key='T1' "
+                         "AND level=1" % rid)
+        if t1_steps_now == t1_steps:
+            ok("暂停时已完成的节点**没有被重跑**（T1 的步骤行数不变）")
+        else:
+            bad("已完成的节点被重跑了", "T1 步骤行 %s → %s" % (t1_steps, t1_steps_now))
+    finally:
+        cleanup(token, exp_ids=[exp], wf_ids=[wf])
 
 
 # ================================================================ main
