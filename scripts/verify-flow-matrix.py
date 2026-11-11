@@ -241,8 +241,11 @@ def build_xml(nodes, edges, def_id="Def_m", proc_id="Proc_m"):
 
 
 class Ctx:
-    def __init__(self, token):
+    def __init__(self, token, keep=False):
         self.token = token
+        # keep=True ⇒ 跑完不删现场（失败时事后查 run_node / run_command /
+        # error_occurrence 用；默认清理，免得把库搞脏）
+        self.keep = keep
         self.made_wf = []
         self.made_run = []
         self.made_exp = []
@@ -307,6 +310,9 @@ class Ctx:
         return False
 
     def cleanup(self):
+        if self.keep:
+            print(f"\n[--keep] 保留现场：workflow {self.made_wf} / run {self.made_run}")
+            return
         self.wait_devices_idle()
         for eid in self.made_exp:
             q(f"DELETE FROM experiment_process_edge WHERE experiment_id={eid};"
@@ -555,7 +561,12 @@ def sec_loopback(ctx, d1, d2, m1):
                       ("f_back", "X", "T0", "${go} == 'yes'"),
                       ("f_end", "X", "E", None)],
                      attr={"maxIterations": 2})
-    rid, st = ctx.run(wid, {"go": "yes"})
+    # 预算按**被测对象的设计耗时**给：这一节是「3 个动作节点 × 2 圈」= 6 次
+    # 串行设备动作（当前实现里并行分支也是逐个下发 ⇒ 6 × rand-delay 上限 ≈ 270s），
+    # 默认预算只有 3 次动作（60 + 3×45 = 195s）⇒ 实测跑 225s，脚本在第 195s
+    # 读到 running 就判失败 —— 那是**判据不够**，不是流程坏了（2026-11-11 实测：
+    # 同一份 run 最终 completed，run_command 5 条全 completed、锁全还回）。
+    rid, st = ctx.run(wid, {"go": "yes"}, wait=device_budget_sec(actions=6))
     rows = q(f"SELECT node_key||':loop='||loop_index||':'||status::text "
              f"FROM run_node WHERE run_id={rid} AND level=0 "
              f"AND node_key IN ('T0','T1','T2') ORDER BY id")
@@ -590,7 +601,7 @@ def sec_loopback(ctx, d1, d2, m1):
                        ("f_back", "X", "SP", "${go} == 'yes'"),
                        ("f_end", "X", "E", None)],
                       attr={"maxIterations": 2})
-    ridc, stc = ctx.run(widc, {"go": "yes"})
+    ridc, stc = ctx.run(widc, {"go": "yes"}, wait=device_budget_sec(actions=6))
     exc = q(f"SELECT count(*) FROM run_command WHERE run_id={ridc}")
     if stc == "completed" and exc == "0":
         print("  \033[33m·\033[0m 观察：回边**直接指向并行分叉网关**时整单报 completed，但并行体被整体 "
@@ -961,6 +972,9 @@ def main():
     ap.add_argument("--device", type=int, default=0)
     ap.add_argument("--device2", type=int, default=0)
     ap.add_argument("--method", default="Home")
+    ap.add_argument("--keep", action="store_true",
+                    help="跑完不清理现场（保留 workflow / run / run_node，"
+                         "便于事后查证失败原因；默认清理）")
     ap.add_argument("--force-online", action="store_true",
                     help="pause 节：临时停用不可达 driver 并置设备在线，实测异常暂停的心跳自动续（跑完还原）")
     args = ap.parse_args()
@@ -1003,7 +1017,7 @@ def main():
     print(f"设备：D1={d1} D2={d2} robot={robot or '-'} island={island or '-'}  "
           f"方法={args.method}  场景={args.section}")
 
-    ctx = Ctx(token)
+    ctx = Ctx(token, keep=args.keep)
     sections = {
         "serial": lambda: sec_serial(ctx, d1, d2, args.method),
         "builtin": lambda: sec_builtin(ctx, d1, args.method),
