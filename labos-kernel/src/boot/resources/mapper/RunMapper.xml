@@ -207,12 +207,33 @@
                rc.error_code AS "errorCode",
                rc.payload::text AS "payload",
                rc.result::text AS "result",
+               rc.device_raw_response::text AS "rawResponse",
+               -- 内置逻辑节点的**人话说明**（放在 result 对象里；
+               -- device_raw_response 存的是 JSON 字符串，取不到 ->>'note'）
+               rc.result->>'note' AS "note",
                n.node_key AS "nodeKey",
                n.parent_node_id AS "parentNodeId"
           FROM run_command rc
           LEFT JOIN run_node n ON n.id = rc.run_node_id
          WHERE rc.tenant_id = #{param1} AND rc.run_id = #{param2}
          ORDER BY rc.id
+    </select>
+
+    <!--
+      内置逻辑节点的一句人话说明（"等待 gate = open（已等 12 秒）"）。
+
+      为什么单独查：设备命令挂在自己新建的 level=1 步骤行上，
+      内置节点的台账行挂在 level=0 的业务节点行上（attempt=0 是内置节点独有的）
+      ⇒ 用 attempt=0 就能把两者区分开，不会把设备步骤的说明误当成业务节点的。
+    -->
+    <select id="selectBuiltinNotes" resultType="java.util.Map">
+        SELECT rn.node_key AS "nodeKey",
+               rc.result->>'note' AS "note",
+               rc.status::text AS "status"
+          FROM run_command rc
+          JOIN run_node rn ON rn.id = rc.run_node_id
+         WHERE rc.tenant_id = #{param1} AND rc.run_id = #{param2}
+           AND rc.attempt = 0 AND rn.level = 0
     </select>
 
 <select id="selectRunNodeStates" resultType="java.util.Map">
@@ -585,6 +606,60 @@
                 COALESCE(#{param13}::timestamptz, now()), now(),
                 #{param9}::jsonb, to_jsonb(#{param10}::text), #{param11}, #{param12})
     </insert>
+
+    <!--
+      内置逻辑节点的台账行。
+
+      为什么不用 run_command 的普通写法：普通写法要求先有 run_node 的**步骤行**
+      （level=1，node_key = "S<n>"），而内置节点不经过设备步骤 ⇒ 没有步骤行。
+      这里直接挂到**顶层节点行**（level=0，node_key = 业务节点 key）上，
+      device_id 留空（没碰设备）。
+
+      uk_run_command 是 (run_node_id, command_seq, attempt) ⇒ 这里用
+      node_key 当 run_node_id 会撞（同一个业务节点只有一行）。
+      ⇒ 用 run_node 的 **id** 当 run_node_id（顶层行），command_seq 固定 1，
+      attempt 用 0 —— 同一节点只会有一条内置台账行（重复执行时用 upsert 覆盖）。
+
+      ⚠ **参数位置按接口声明顺序**（不是按 SQL 里出现的顺序）：
+      param1=tenantId param2=runId param3=nodeKey param4=method
+      param5=payload param6=note param7=status param8=sentAt
+      （写错位过一次：status 拿到了 note ⇒ PG 报 invalid input value for enum
+      node_status，且异常被 catch 成一条 WARN ⇒ 台账静默少行。）
+    -->
+    <insert id="insertBuiltinCommand">
+        INSERT INTO run_command
+          (tenant_id, run_id, run_node_id, command_seq, method, payload,
+           status, attempt, sent_at, finished_at, result,
+           device_raw_response, error_code, device_id)
+        SELECT #{param1}, #{param2}, rn.id, 1, #{param4},
+                #{param5}::jsonb,
+                #{param7}::node_status, 0,
+                COALESCE(#{param8}::timestamptz, now()),
+                CASE WHEN #{param7}::text = 'running' THEN NULL ELSE now() END,
+                jsonb_build_object('note', #{param6}::text),
+                to_jsonb(#{param6}::text), NULL, NULL
+          FROM (SELECT id FROM run_node
+                 WHERE tenant_id = #{param1} AND run_id = #{param2}
+                   AND node_key = #{param3} AND level = 0 AND loop_index = 0
+                 ORDER BY id LIMIT 1) rn
+        ON CONFLICT (run_node_id, command_seq, attempt) DO UPDATE
+           SET status = EXCLUDED.status,
+               sent_at = EXCLUDED.sent_at,
+               finished_at = EXCLUDED.finished_at,
+               result = EXCLUDED.result,
+               device_raw_response = EXCLUDED.device_raw_response
+    </insert>
+
+    <!-- 等待途中更新"已等 N 秒"：只改那一行的说明文字，不动别的 -->
+    <update id="updateBuiltinCommandNote">
+        UPDATE run_command rc
+           SET device_raw_response = to_jsonb(#{param4}::text),
+               result = jsonb_build_object('note', #{param4}::text)
+          FROM run_node rn
+         WHERE rn.id = rc.run_node_id
+           AND rc.tenant_id = #{param1} AND rc.run_id = #{param2}
+           AND rn.node_key = #{param3} AND rn.level = 0 AND rn.loop_index = 0
+    </update>
 
     <select id="selectLatestNodeOutput" resultType="java.util.Map">
         SELECT cmd.result::text AS "result",

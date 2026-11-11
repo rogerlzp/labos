@@ -20,6 +20,10 @@ public interface ExperimentMapper {
     int insertExperimentVariable(long tenantId, long experimentId, String name,
                                  String type, String defaultValue, String description);
 
+    /** 单条 upsert（同名覆盖）—— 改一个变量的值不用整表替换。 */
+    int upsertExperimentVariable(long tenantId, long experimentId, String name,
+                                 String type, String defaultValue, String description);
+
     /** 新增一条实验流程，返回 id（用于把画布边翻译成 process 间的边）。 */
     Long insertExperimentProcess(long tenantId, long experimentId, long workflowId, int seq);
 

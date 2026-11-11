@@ -408,6 +408,8 @@ public class RunService {
                         com.labos.kernel.persistence.RunMapper.class)
                         .selectRunCommands(TENANT, runId);
         return Jsons.obj("runId", runId, "total", rows.size(),
+                // run 状态：前端据此决定台账要不要继续轮询（跑完就停）
+                "status", runMapper.selectRunStatus(TENANT, runId),
                 "commands", new Jsons.Raw(keyValueArrayJson(rows)));
     }
 
@@ -726,6 +728,12 @@ public class RunService {
                 "input", mraw(row, "input"));
 
         List<String> nodes = new ArrayList<>();
+        // 内置逻辑节点的一句人话（"等待 gate = open（已等 12 秒）"）
+        // —— 没有它，光看节点名 "__wait" 根本不知道它在等什么。
+        java.util.Map<String, String> builtinNotes = new java.util.LinkedHashMap<>();
+        for (java.util.Map<String, Object> bn : runMapper.selectBuiltinNotes(TENANT, runId)) {
+            builtinNotes.put(String.valueOf(bn.get("nodeKey")), (String) bn.get("note"));
+        }
         for (java.util.Map<String, Object> n : runMapper.selectRunDetailNodes(runId)) {
             nodes.add(Jsons.obj(
                     "id", n.get("id"),
@@ -742,6 +750,7 @@ public class RunService {
                     "loopIndex", mint(n, "loopIndex"),
                     "stepSeq", n.get("stepSeq"),
                     "reason", n.get("reason"),
+                    "note", builtinNotes.get(String.valueOf(n.get("nodeKey"))),
                     "errorCode", n.get("errorCode")));
         }
 
@@ -864,6 +873,12 @@ public class RunService {
                     (String) an.get("status"), (String) an.get("name"),
                     (String) an.get("errorCode")});
         }
+        // 内置逻辑节点的一句人话（"等待 gate = open（已等 12 秒）"）——
+        // 图上那个节点正在跑时，hover 能看出它在等什么。
+        java.util.Map<String, String> builtinNotes = new java.util.LinkedHashMap<>();
+        for (java.util.Map<String, Object> bn : runMapper.selectBuiltinNotes(TENANT, runId)) {
+            builtinNotes.put(String.valueOf(bn.get("nodeKey")), (String) bn.get("note"));
+        }
 
         List<String> nodes = new ArrayList<>();
         java.util.Set<String> keys = new java.util.LinkedHashSet<>(planName.keySet());
@@ -879,6 +894,7 @@ public class RunService {
                     "nodeKey", key,
                     "name", a == null ? planName.get(key) : a[1],
                     "status", st,
+                    "note", builtinNotes.get(key),
                     "errorCode", a == null ? null : a[2]));
         }
 

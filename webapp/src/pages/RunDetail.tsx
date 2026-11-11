@@ -386,11 +386,21 @@ export default function RunDetailPage() {
               {
                 title: t('runDetail.col.node'), dataIndex: 'name', width: 260,
                 render: (v: string, r: RunNode) => (
-                  <Space>
-                    {r.status === 'running' && <SyncOutlined spin style={{ color: '#1677ff' }} />}
-                    <span style={{ fontWeight: r.status === 'running' ? 600 : 400 }}>
-                      {localizedNeutralLabel(v) ?? v}
-                    </span>
+                  <Space direction="vertical" size={0}>
+                    <Space>
+                      {r.status === 'running' && <SyncOutlined spin style={{ color: '#1677ff' }} />}
+                      <span style={{ fontWeight: r.status === 'running' ? 600 : 400 }}>
+                        {localizedNeutralLabel(v) ?? v}
+                      </span>
+                    </Space>
+                    {/* 内置逻辑节点的一句人话（"等待 gate = open（已等 12 秒）"）。
+                        没有它，光看节点名「等待节点」根本不知道它在等什么、
+                        等了多久 —— 现场点进去啥也看不到。 */}
+                    {r.note && (
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        {r.note}
+                      </Typography.Text>
+                    )}
                   </Space>
                 ),
               },

@@ -6495,3 +6495,104 @@ passes 17/0; scenario 3 (parallel / variable condition / exclusive branch select
 | `scripts/verify-run-vars.py` | 9/0 | current value and initial value are separate; after the change the `__wait` node **walked on by itself** |
 | `scripts/verify-run-vars-page.py` | 5/0 | clicking "Edit" on the page makes the flow finish by itself (not just written into the database) |
 | `scripts/ci-gate.sh` | 17/0 | scenarios 1/2 green; scenarios 3/4 listed as not covered |
+
+---
+
+**Addendum (2026-11-11, night): logic nodes reach the command ledger, the ledger refreshes itself, and the experiment page shows the variables in use**
+
+Four things came in from the user: **the delay node was running but the command ledger had
+nothing**, **the read-only flow page needed a manual reload to see the finished node
+commands**, **clicking the wait node gave no hint at all — I can't tell what it is doing**,
+and **the variable the flow declares is neither shown nor changeable in the experiment**.
+
+They look like four small problems but they are **four severed links on one chain**:
+declaration → runtime → observation → intervention.
+
+**1. Built-in logic nodes now reach the command ledger**
+
+The root cause is plain: device commands are persisted through the `StepSink` callback,
+while the built-in nodes (`__sleep` / `__wait` / `__setVar` / `__expr`) **never touch a
+device** and therefore never went through that path ⇒ not a single row in `run_command`.
+So "the delay node shows as running, but the ledger is empty" — it was not that it did not
+run, it was that **nothing recorded it**.
+
+The fix: `GraphRunner` gained a `BuiltinListener` (onStart / onProgress / onDone), and
+`WorkflowService.BuiltinLedger` persists it as one `run_command` row: `device_id` empty
+(it never touched a device), `payload` carrying the node parameters, `result.note`
+carrying **one plain sentence** produced by `describeBuiltin()`
+(`__wait` → "waiting for gate = open (timeout 120 s)").
+
+**That one change also answers "clicking the wait node gives no hint"** — the node table,
+the node data of the read-only flow page and the ledger's "what it does" column all carry
+that sentence.
+
+**A long wait is not a dead panel**: while waiting, the note is refreshed **every 5
+seconds** ("waiting for gate = open (timeout 120 s) — waited 25 s (currently closed)").
+⚠ The progress update has to **keep the original description**: writing only "waited 12 s"
+replaces "what it is waiting for", and the ledger becomes unreadable again from that
+moment on.
+
+**2. The ledger refreshes itself (no manual page reload)**
+
+The root cause was not "it refreshes slowly" but "**the ledger component had no polling
+at all**": the run page refreshed every 2 seconds, but that was the **node table**; the
+ledger is a **separate query** and did not re-fetch ⇒ newly sent commands and freshly
+completed nodes only appeared after **reloading the whole page by hand**.
+
+The fix: the ledger refreshes every 2 seconds while the run is `running`/`paused` and
+stops at a terminal state (the endpoint now carries the run status so the front end can
+decide). Two old defects fixed on the way: the **payload column never had a
+`dataIndex`** ⇒ it showed the **whole row as JSON**; and `asText` did not parse the
+jsonb string ⇒ the column was a screenful of escaped backslashes.
+
+**3. The experiment page extracts the variables in use, and lets you change them**
+
+The experiment page used to show only `experiment_variable` (the ones the experiment
+itself wrote). So a workflow could declare a variable and really reference it as
+`${name}`, and **nothing of it showed up on the experiment page** — let alone being
+changeable.
+
+The fix: a new `GET /api/experiments/{id}/used-variables` (the workflow-level variables
+declared by every workflow in the orchestration + the experiment-level overrides, merged
+by name, each tagged with its `scope` and the effective value) and
+`PUT /api/experiments/{id}/variables/{name}` (**a single upsert**, not a full replace —
+a full replace relies on the caller sending back the snapshot it saw, so two people
+editing at once overwrite each other). The page gains a "Variables used by this
+experiment" card: value for this experiment / workflow initial value / source, plus
+inline editing.
+
+**The change lands as an experiment-level override and does not touch the workflow** —
+someone changing a value on the experiment page means "**this time** use this value", not
+"from now on use this value"; changing a workflow's initial value would affect every
+experiment that uses it.
+
+**4. The measurements (all against the real environment)**
+
+| Script | Result | What it proves |
+|---|---|---|
+| `scripts/verify-builtin-ledger.py` | 12/0 | logic nodes reach the ledger; plain-language note; wait progress; visible on the page |
+| `scripts/verify-live-refresh.py` | 3/0 | the ledger of the read-only flow page appears **without a manual reload** |
+| `scripts/verify-vars-page.py` | 11/0 | create variables in the designer; pick them in the node dropdown; the experiment page shows and edits the variables in use |
+| `scripts/ci-gate.sh` | 17/0 | scenarios 1/2 green; scenarios 3/4 listed as not covered |
+
+**5. Documentation**
+
+`LabOS功能规格说明书.md` gained **chapter 15 "Variables, the command ledger, and
+intervening at runtime (details)"**, spelling out all four items item by item (three
+scopes and three layers of precedence, why "initial value" and "current value" must be
+separate columns, what the ledger records and the "what it does" column, progress during
+a long wait, the semantics of changing a value and its two hard constraints, the
+refresh strategy of the run page, and a table of the measured evidence). The feature
+ledger gained entries 1.11 / 3.9 / 3.10 / 7.6. The English edition
+`docs/en/functional-specification.md` was synchronized (`check-en-docs.py`: 0 hard errors).
+
+**6. Two pitfalls from this round**
+
+① **MyBatis `#{paramN}` is numbered by the method's parameter order, not by the order
+they appear in the SQL** — I swapped `status` and `note` ⇒ PG reported `invalid input
+value for enum node_status`, and the exception was caught into a WARN ⇒ **the ledger
+silently lost rows** (it looked like the feature did nothing; it was a mis-numbered
+parameter).
+② **The note was stored as jsonb but read with `->>'note'`** — `device_raw_response`
+holds a **JSON string** (not an object) ⇒ `->>'note'` is always NULL ⇒ the "what it does"
+column was permanently empty. ⇒ It now lives in the `result` object (`result->>'note'`).

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Alert, Button, Card, Empty, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography, message,
+  Alert, Button, Card, Empty, Input, InputNumber, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { apiFetch, api } from '../api/client';
 import RunVariablesCard from '../components/RunVariablesCard';
@@ -29,6 +29,28 @@ interface ExpVar {
   type: string;
   defaultValue: string;
   description?: string;
+}
+
+/**
+ * 实验**用到的**变量（编排流程声明的流程级变量 + 实验级覆盖，同名合并）。
+ *
+ * <p>为什么要这个视图：以前实验页只显示"实验自己写的那批"变量，
+ * 于是流程里声明了变量、流程里也真的引用它，实验页上却一条都看不到 ——
+ * 现场看着流程引用 `${VAR001}`，在实验里找不到它、更没法改它的值。
+ */
+interface UsedVar {
+  name: string;
+  type?: string | null;
+  /** 流程里声明的初值（改它要去设计器） */
+  defaultValue?: string | null;
+  description?: string | null;
+  /** 这个实验实际会用的值 */
+  value?: string | null;
+  /** 来源：workflow = 流程声明；experiment = 实验覆盖 */
+  scope: 'workflow' | 'experiment';
+  overridden: boolean;
+  workflowId?: number | null;
+  workflowName?: string | null;
 }
 
 interface Proc {
@@ -179,6 +201,126 @@ function RunSteps({ runId, nav }: { runId: number; nav: (p: string) => void }) {
         </Space>
       )}
     </Space>
+  );
+}
+
+/**
+ * 实验**用到的**变量：看得见、改得动。
+ *
+ * <p><b>为什么要有这张卡</b>：流程里声明了变量（而且流程里真的用 {@code ${name}}
+ * 引用它），但实验页以前只显示"实验自己写的那批" ⇒ 现场看着流程引用
+ * {@code ${VAR001}}，在实验里找不到它、更没法改它的值。
+ *
+ * <p><b>改值的语义</b>：改的是**这个实验的取值**（实验级覆盖流程级），
+ * 不动流程本身 —— 别的实验用同一条流程时不受影响。
+ * 下一次启动实验时生效（正在跑的那一次不受影响）。
+ */
+function ExperimentUsedVars({ expId }: { expId: number }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const ro = useReadOnly();
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+
+  const q = useQuery({
+    queryKey: ['exp-used-vars', expId],
+    queryFn: () => apiFetch(`/api/experiments/${expId}/used-variables`)
+      .then((r) => r.json()) as Promise<{ total: number; items: UsedVar[] }>,
+    enabled: Number.isFinite(expId),
+  });
+  const items = q.data?.items ?? [];
+
+  const save = async (v: UsedVar) => {
+    try {
+      const r = await apiFetch(`/api/experiments/${expId}/variables/${encodeURIComponent(v.name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: v.name, value: draft, type: v.type ?? 'number' }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) {
+        message.error(j.error ?? t('experiments.error.saveFailed'));
+        return;
+      }
+      message.success(t('experiments.toast.varSet', { name: v.name, value: draft }));
+      setEditing(null);
+      qc.invalidateQueries({ queryKey: ['exp-used-vars', expId] });
+      qc.invalidateQueries({ queryKey: ['exp-vars', expId] });
+    } catch (e) {
+      message.error(String(e));
+    }
+  };
+
+  return (
+    <Card size="small" style={{ marginTop: 12 }}
+      title={<Space>
+        <span>{t('experiments.usedVars.title')}</span>
+        <Tag>{items.length}</Tag>
+      </Space>}>
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+        {t('experiments.usedVars.hint')}
+      </Typography.Paragraph>
+      {items.length === 0 ? (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('experiments.usedVars.empty')}
+        </Typography.Text>
+      ) : (
+        <Table<UsedVar>
+          size="small" pagination={false} rowKey="name"
+          dataSource={items}
+          columns={[
+            {
+              title: t('experiments.col.varName'), dataIndex: 'name', width: 180,
+              render: (v: string) => <strong>{v}</strong>,
+            },
+            {
+              // 这个实验实际会用的值（实验级覆盖优先，否则用流程初值）
+              title: t('experiments.usedVars.col.value'), dataIndex: 'value', width: 180,
+              render: (v: string | null, r) => (
+                editing === r.name ? (
+                  <Input size="small" autoFocus value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onPressEnter={() => save(r)}
+                    onBlur={() => setEditing(null)}
+                    style={{ width: '100%' }} />
+                ) : (
+                  <Space size={4}>
+                    <span style={{ fontFamily: 'monospace', color: v ? '#1677ff' : '#94a3b8' }}>
+                      {v || t('experiments.usedVars.noValue')}
+                    </span>
+                    {!ro.disabled && (
+                      <Button size="small" type="link" style={{ padding: '0 4px' }}
+                        onClick={() => { setEditing(r.name); setDraft(v ?? ''); }}>
+                        {t('runVars.edit')}
+                      </Button>
+                    )}
+                  </Space>
+                )
+              ),
+            },
+            {
+              title: t('experiments.usedVars.col.initial'), dataIndex: 'defaultValue', width: 140,
+              render: (v: string | null) => (
+                v == null || v === ''
+                  ? <Typography.Text type="secondary">{t('runVars.noDefault')}</Typography.Text>
+                  : <span style={{ fontFamily: 'monospace' }}>{v}</span>
+              ),
+            },
+            {
+              // 来源：流程声明的还是实验覆盖的
+              title: t('experiments.usedVars.col.source'), width: 150,
+              render: (_, r) => (
+                r.scope === 'experiment'
+                  ? <Tag color="blue">{t('experiments.usedVars.src.experiment')}</Tag>
+                  : <Tooltip title={r.workflowName ?? ''}>
+                      <Tag>{t('experiments.usedVars.src.workflow')}</Tag>
+                    </Tooltip>
+              ),
+            },
+          ]}
+        />
+      )}
+    </Card>
   );
 }
 
@@ -869,6 +1011,11 @@ export default function ExperimentsPage() {
                 ]} />
             )}
           </Card>
+
+          {/* 实验**用到的**变量：流程里声明的那些也要在这儿能看见、能改。
+              放在实验变量卡下面 —— 两张卡是"同一件事的两层"：
+              上面那张是"实验额外加的变量"，这张是"流程声明了、实验要用的变量"。 */}
+          {expId != null && <ExperimentUsedVars expId={expId} />}
 
             {/* 现场扣留：实验级暂停的"真身"。
                 只显示 run 的 paused 状态会让人以为"某个单子停了"，

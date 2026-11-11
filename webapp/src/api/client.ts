@@ -201,6 +201,9 @@ export interface RunNode {
   parentNodeId: number | null;
   stepSeq: number | null;
   reason: string | null;
+  /** 内置逻辑节点的一句人话（"等待 gate = open（已等 12 秒）"）。
+   *  没有它就只知道节点名「等待节点」，不知道它在等什么。 */
+  note?: string | null;
   /** 中控错误码（如 EC-08-400C），后端从 run_node.error_code 带出 */
   errorCode?: string | null;
 }

@@ -515,6 +515,32 @@ public class ExperimentActionController {
         return saveVariables(id, body, req);
     }
 
+    /**
+     * 改**一个**实验变量的值（同名即覆盖）。
+     *
+     * <p>body: {@code {"name":"VAR001","value":"7","type":"number"}}。
+     * 语义：这个实验用这个值（**实验级覆盖流程级**），下一次启动实验时生效。</p>
+     */
+    @PutMapping(value = "/experiments/{id:\\d+}/variables/{name}",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> setVariable(@PathVariable long id,
+                            @PathVariable String name,
+                            @RequestBody(required = false) String body,
+                            HttpServletRequest req) throws SQLException {
+        String n = URLDecoder.decode(name, StandardCharsets.UTF_8);
+        String value = extractStr(body, "value");
+        String type = extractStr(body, "type");
+        String desc = extractStr(body, "description");
+        try {
+            int c = experimentActionService.setExperimentVariableValue(id, n, type, value, desc);
+            audit.record(session(req), "experiment.var_set", "experiment", id,
+                    n, Jsons.obj("value", value), req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("ok", c > 0, "name", n, "value", value));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Jsons.obj("ok", false, "error", e.getMessage()));
+        }
+    }
+
     @PutMapping(value = "/experiments/{id:\\d+}/processes",
             produces = "application/json; charset=utf-8")
     public ResponseEntity<String> saveProcesses(

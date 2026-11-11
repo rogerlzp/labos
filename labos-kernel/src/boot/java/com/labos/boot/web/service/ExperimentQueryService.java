@@ -183,7 +183,7 @@ public class ExperimentQueryService {
                 "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
-    /** 实验变量列表。 */
+    /** 实验变量列表（**实验级**自己写的那批）。 */
     public String experimentVariablesJson(long experimentId) throws java.sql.SQLException {
         List<String> items = new ArrayList<>();
         for (java.util.Map<String, Object> row
@@ -196,6 +196,80 @@ public class ExperimentQueryService {
                     "description", row.get("description")));
         }
         return Jsons.obj("experimentId", experimentId,
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 这个实验**用到的**变量：编排流程声明的流程级变量 + 实验级覆盖（同名合并）。
+     *
+     * <p><b>为什么要这个接口</b>：{@link #experimentVariablesJson} 只给
+     * {@code experiment_variable}（实验自己写的那批）。于是流程里声明了一个变量、
+     * 流程里也真的用 {@code ${name}} 引用它，但**实验页上一条都看不到**，
+     * 更没法在那里改值 —— 现场看着流程引用 {@code ${VAR001}}，在实验里却找不到它。
+     *
+     * <p><b>合并口径</b>：同名时**实验级覆盖流程级**（与运行期口径一致）。
+     * 每项都带 {@code scope}（workflow / experiment）与 {@code value}
+     * （这个实验实际会用的值），页面据此说清"值来自哪一层、现在是多少"。
+     */
+    public String experimentUsedVariablesJson(long experimentId) throws java.sql.SQLException {
+        // 流程级（编排里的流程声明的）
+        java.util.Map<String, java.util.Map<String, Object>> flowByName =
+                new java.util.LinkedHashMap<>();
+        for (java.util.Map<String, Object> row
+                : experimentQueryMapper.selectExperimentWorkflowVariables(TENANT, experimentId)) {
+            String name = String.valueOf(row.get("name"));
+            if (!flowByName.containsKey(name)) {
+                flowByName.put(name, row);
+            }
+        }
+        // 实验级（同名覆盖流程级）
+        java.util.Map<String, java.util.Map<String, Object>> expByName =
+                new java.util.LinkedHashMap<>();
+        for (java.util.Map<String, Object> row
+                : experimentQueryMapper.selectExperimentVariables(TENANT, experimentId)) {
+            expByName.put(String.valueOf(row.get("name")), row);
+        }
+
+        List<String> items = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        // 先列流程级（实验没覆盖的那些）
+        for (java.util.Map.Entry<String, java.util.Map<String, Object>> e : flowByName.entrySet()) {
+            java.util.Map<String, Object> row = e.getValue();
+            java.util.Map<String, Object> over = expByName.get(e.getKey());
+            seen.add(e.getKey());
+            items.add(Jsons.obj(
+                    "name", e.getKey(),
+                    "type", over != null ? over.get("type") : row.get("type"),
+                    // 流程声明的初值（改它要去设计器）
+                    "defaultValue", row.get("defaultValue"),
+                    "description", over != null && over.get("description") != null
+                            ? over.get("description") : row.get("description"),
+                    // 这个实验实际会用的值：实验覆盖优先，否则用流程初值
+                    "value", over != null ? over.get("defaultValue") : row.get("defaultValue"),
+                    "scope", over != null ? "experiment" : "workflow",
+                    "overridden", over != null,
+                    "workflowId", row.get("workflowId"),
+                    "workflowName", row.get("workflowName")));
+        }
+        // 再列**只有实验才有**的（流程里没声明）
+        for (java.util.Map.Entry<String, java.util.Map<String, Object>> e : expByName.entrySet()) {
+            if (seen.contains(e.getKey())) {
+                continue;
+            }
+            java.util.Map<String, Object> row = e.getValue();
+            items.add(Jsons.obj(
+                    "name", e.getKey(),
+                    "type", row.get("type"),
+                    "defaultValue", row.get("defaultValue"),
+                    "description", row.get("description"),
+                    "value", row.get("defaultValue"),
+                    "scope", "experiment",
+                    "overridden", true,
+                    "workflowId", null,
+                    "workflowName", null));
+        }
+        return Jsons.obj("experimentId", experimentId,
+                "total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
     }
 

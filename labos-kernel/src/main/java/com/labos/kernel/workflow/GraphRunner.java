@@ -168,6 +168,71 @@ public final class GraphRunner {
     }
 
     /**
+     * 内置节点的**过程监听器**（`__sleep` / `__wait` / `__setVar` / `__expr`）。
+     *
+     * <p><b>为什么必须有</b>：内置节点**不碰设备**，所以它们从来不经过
+     * {@code StepSink}（设备步骤的回调）⇒ 命令台账（{@code run_command}）里
+     * **一条记录都没有**。现场看到的现象是：
+     * 「延时节点明明显示正在运行中，但命令台账里什么都没有」——
+     * 于是台账只剩设备指令，看不出这个节点到底在做什么。
+     *
+     * <p>三个回调：
+     * <ul>
+     *   <li>{@code onStart} —— 开始执行（{@code __wait} 这类长节点要能看出"开始了"）；</li>
+     *   <li>{@code onProgress} —— 等待途中的进度（"已等 12 秒"），
+     *       让长节点不是一块死板；</li>
+     *   <li>{@code onDone} —— 结束（成功 / 失败），带一句**人话**描述。</li>
+     * </ul>
+     *
+     * <p>默认空实现：纯逻辑单测不连库，不该被迫实现这些回调。
+     */
+    public interface BuiltinListener {
+        void onStart(String nodeKey, String method, Map<String, Object> params);
+
+        /** @param note 一句人话，例如"已等 12 秒" */
+        void onProgress(String nodeKey, String method, Map<String, Object> params, String note);
+
+        void onDone(String nodeKey, String method, Map<String, Object> params,
+                    boolean ok, String error, String note, long durationMs);
+    }
+
+    private BuiltinListener builtinListener = null;
+
+    public GraphRunner withBuiltinListener(BuiltinListener l) {
+        this.builtinListener = l;
+        return this;
+    }
+
+    /**
+     * 内置节点的一句**人话描述**（台账与节点提示都用它）。
+     *
+     * <p>为什么要有：{@code __wait} 这种节点光看方法名根本不知道它在等什么
+     * —— 参数里是 {@code var=gate, value=open}，得翻成"等待 gate = open"。</p>
+     */
+    static String describeBuiltin(String method, Map<String, Object> p) {
+        if (p == null) {
+            p = Map.of();
+        }
+        String var = str(p.get("var"));
+        switch (method == null ? "" : method) {
+            case "__sleep":
+                return "延时 " + str(p.get("sec")) + " 秒";
+            case "__wait":
+                return "等待 " + (var == null ? "(未指定变量)" : var)
+                        + " = " + str(p.get("value"))
+                        + "（超时 " + str(p.get("timeout")) + " 秒）";
+            case "__setVar":
+                return "把 " + (var == null ? "(未指定变量)" : var)
+                        + " 设为 " + str(p.get("value"));
+            case "__expr":
+                return "计算 " + (var == null ? "(未指定变量)" : var)
+                        + " = " + str(p.get("expr"));
+            default:
+                return method == null ? "" : method;
+        }
+    }
+
+    /**
      * 干跑模式（保存前预检用）：只回答「哪些节点走得到」，**不真的执行内置节点**。
      *
      * <p>为什么需要：干跑给的是一份空参数表，`__wait` 在没有真实外部写入时必然等到超时，
@@ -378,6 +443,14 @@ public final class GraphRunner {
     /** `__wait` 没写 `timeout` 时的默认上限（秒）。和"设备让出资源"的量级一致。 */
     private static final long DEFAULT_WAIT_TIMEOUT_SEC = 300L;
 
+    /**
+     * 等待途中**报进度**的间隔（毫秒）。
+     *
+     * <p>为什么要有：长等待在页面上是一块死板 —— 只知道"等待节点执行中"，
+     * 不知道它等了多久、还差多少。5 秒一次，够看出"在动"，又不至于刷爆库。</p>
+     */
+    private static final long BUILTIN_PROGRESS_MS = 5_000L;
+
     public GraphRunner(RunStateMachine stateMachine,
                        Map<String, List<Long>> capabilityPool,
                        Map<String, String> protocolCapability,
@@ -490,6 +563,16 @@ public final class GraphRunner {
                 // 内置节点：不碰设备，直接算。算不出来就转人工停下（和人工节点一致），
                 // 不能带着错值往下跑 —— 后面可能拿它做条件分支。
                 nodeStateRecorder.accept(key, "running");
+                Map<String, Object> bp = builtinParams.getOrDefault(key, Map.of());
+                String desc = describeBuiltin(node.method(), bp);
+                long t0 = System.currentTimeMillis();
+                if (builtinListener != null) {
+                    try {
+                        builtinListener.onStart(key, node.method(), bp);
+                    } catch (RuntimeException ignore) {
+                        // 台账写不进去不能影响执行
+                    }
+                }
                 try {
                     String var = executeBuiltin(node);
                     if (paused) {
@@ -497,12 +580,30 @@ public final class GraphRunner {
                         // 所以不留 completed 记录、也不往下走 —— 恢复时它不在 skipKeys 里，
                         // 会被重新执行（和在任务节点边界暂停是同一套语义）。
                         pausedAtKey = key;
+                        if (builtinListener != null) {
+                            try {
+                                builtinListener.onDone(key, node.method(), bp, false,
+                                        "paused", desc, System.currentTimeMillis() - t0);
+                            } catch (RuntimeException ignore) {
+                                // 台账写不进去不能影响执行
+                            }
+                        }
                         log.accept("[暂停] 内置节点 " + key + " 等待期间收到暂停请求，停在边界");
                         break;
                     }
                     progress.complete(nodeId(node), "[内置] " + node.method()
                             + (var == null ? "" : " → " + var + "=" + variables.get(var)));
                     nodeStateRecorder.accept(key, "completed");
+                    if (builtinListener != null) {
+                        try {
+                            String note = var == null ? desc
+                                    : desc + " → " + var + " = " + variables.get(var);
+                            builtinListener.onDone(key, node.method(), bp, true, null, note,
+                                    System.currentTimeMillis() - t0);
+                        } catch (RuntimeException ignore) {
+                            // 台账写不进去不能影响执行
+                        }
+                    }
                     log.accept("[内置] " + key + " " + node.method()
                             + (var == null ? "" : " → " + var + "=" + variables.get(var)));
                 } catch (RuntimeException ex) {
@@ -510,6 +611,14 @@ public final class GraphRunner {
                             "[内置] " + node.method() + " 失败：" + ex.getMessage(),
                             "EC-BUILTIN-001");
                     nodeStateRecorder.accept(key, "manual");
+                    if (builtinListener != null) {
+                        try {
+                            builtinListener.onDone(key, node.method(), bp, false,
+                                    ex.getMessage(), desc, System.currentTimeMillis() - t0);
+                        } catch (RuntimeException ignore) {
+                            // 台账写不进去不能影响执行
+                        }
+                    }
                     log.accept("[内置] " + key + " 失败，停止等待人工：" + ex.getMessage());
                     break;
                 }
@@ -711,6 +820,7 @@ public final class GraphRunner {
         // 用「已经睡掉的量」当计时，不读墙钟：单测注入的 Sleeper 不会推进系统时间，
         // 拿 System.currentTimeMillis() 当 deadline 会让纯逻辑用例永远等不到超时。
         long waited = 0;
+        long lastReport = 0;
         while (true) {
             try {
                 Map<String, String> ext = variablesRefresher.get();
@@ -735,6 +845,18 @@ public final class GraphRunner {
             if (waited >= timeoutMs) {
                 throw new IllegalStateException("等待超时（" + fmt(timeoutSec) + " 秒）："
                         + var + " 仍未变为 " + want + "（当前 " + (cur == null ? "未设置" : cur) + "）");
+            }
+            // 等待途中**定期报进度**：否则长等待在页面上是一块死板 ——
+            // 现场看到「等待节点 执行中」但不知道它在等什么、等了多久。
+            if (builtinListener != null && waited - lastReport >= BUILTIN_PROGRESS_MS) {
+                lastReport = waited;
+                try {
+                    builtinListener.onProgress(node.key(), node.method(), p,
+                            "已等 " + (waited / 1000) + " 秒（当前 "
+                                    + (cur == null ? "未设置" : cur) + "）");
+                } catch (RuntimeException ignore) {
+                    // 台账写不进去不能影响执行
+                }
             }
             long nap = Math.min(intervalMs, timeoutMs - waited);
             waitInterruptibly(nap);

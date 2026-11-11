@@ -21,6 +21,21 @@
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
     </insert>
 
+    <!--
+      单条 upsert（同名覆盖）。
+      为什么要有：改一个变量的值不该**整表替换** ——
+      整表替换会把别人刚加的变量冲掉（前端传上来的是它看到的那份快照）。
+    -->
+    <insert id="upsertExperimentVariable">
+        INSERT INTO experiment_variable
+          (tenant_id, experiment_id, name, type, default_value, description)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
+        ON CONFLICT (experiment_id, name) DO UPDATE
+           SET type = EXCLUDED.type,
+               default_value = EXCLUDED.default_value,
+               description = EXCLUDED.description
+    </insert>
+
     <!-- 删 process 会级联删 edge（FK ON DELETE CASCADE），所以整体替换天然一致；
          RETURNING id 用 <select> 承载，供调用方建立 nodeId -> processId 映射。 -->
     <select id="insertExperimentProcess" resultType="java.lang.Long">

@@ -244,6 +244,42 @@ public interface RunMapper {
     java.util.List<java.util.Map<String, Object>> selectRunCommands(long tenantId, long runId);
 
     /**
+     * **内置逻辑节点**（`__sleep` / `__wait` / `__setVar` / `__expr`）的命令台账行。
+     *
+     * <p>为什么需要单独一条：内置节点**不碰设备**，从来不经过
+     * {@code StepSink} ⇒ 台账里一条都没有 ⇒ 现场看到「延时节点显示正在运行中，
+     * 但命令台账里什么都没有」，完全看不出这个节点在做什么。
+     *
+     * <p>这些行：{@code device_id} 为空（没碰设备）、{@code method} 是内置方法名、
+     * {@code payload} 里带节点参数、{@code result} 里带一句**人话**描述
+     * （"等待 gate = open" / "延时 60 秒"）。
+     *
+     * @param nodeKey 业务节点 key（顶层节点行）
+     * @param payloadJson 节点参数（{@code var/value/timeout/sec/expr}）
+     * @param note 一句人话描述
+     * @param status {@code running} / {@code completed} / {@code failed}
+     */
+    int insertBuiltinCommand(long tenantId, long runId, String nodeKey,
+                              String method, String payloadJson, String note,
+                              String status, java.sql.Timestamp sentAt);
+
+    /**
+     * 更新内置节点台账行的**等待进度**（"已等 12 秒"）。
+     *
+     * <p>为什么要有：长等待（`__wait` 可能等几十分钟）期间界面要能看出
+     * 「它在等、等了多久」，否则就是一块死板。</p>
+     */
+    int updateBuiltinCommandNote(long tenantId, long runId, String nodeKey, String note);
+
+    /**
+     * 内置逻辑节点的一句人话说明（"等待 gate = open（已等 12 秒）"）。
+     *
+     * <p>给界面用：光看节点名（`__wait`）根本不知道它在等什么；
+     * 这句说明就是"这个节点在做什么"的人话版本。</p>
+     */
+    List<Map<String, Object>> selectBuiltinNotes(long tenantId, long runId);
+
+    /**
      * 按 run_node.id 更新该行状态（只用于 level=0 的业务节点汇总行）。
      *
      * <p>用途：让**顺序执行路径**（{@code sm.executeAll}，没有

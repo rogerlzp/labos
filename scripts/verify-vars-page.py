@@ -145,10 +145,11 @@ def main():
             ok("卡片里能看到已声明的变量 seedVar")
         else:
             bad("卡片里看不到 seedVar")
-        if card.get_by_text("= 7").count() > 0:
-            ok("卡片里能看到初始值（seedVar = 7）")
+        # 卡片上的措辞是「初值 7」（不是 "= 7"）——「=」会让人以为是当前值
+        if card.get_by_text("初值 7").count() > 0:
+            ok("卡片里能看到初始值（seedVar 初值 7）")
         else:
-            bad("卡片里看不到 seedVar 的初始值")
+            bad("卡片里看不到 seedVar 的初始值", card.inner_text()[:120].replace("\n", " | "))
 
         # ---- ③ 就地新建 ----
         new_name = "uiVar%d" % int(time.time() % 100000)
@@ -229,6 +230,56 @@ def main():
             bad("带 workflowId 进变量管理台 没看到那条流程的变量")
         pg.screenshot(path="/tmp/vars-console.png", full_page=False)
         b.close()
+
+    # ---------- 实验页：流程用到的变量要看得见、改得动 ----------
+    with sync_playwright() as pw:
+        b = pw.chromium.launch()
+        pg = b.new_page(viewport={"width": 1500, "height": 950})
+        pg.goto(WEB + "/login", wait_until="domcontentloaded")
+        pg.wait_for_timeout(1200)
+        pg.fill('input[type="text"]', "admin")
+        pg.fill('input[type="password"]', "admin123")
+        pg.get_by_role("button", name="登").first.click()
+        pg.wait_for_timeout(2500)
+
+        # 建一个实验，编排上面那条流程（流程里有 seedVar）
+        isl = int(q("SELECT id FROM resource_node WHERE code='LAB-BASE-01' AND kind='island'"))
+        exp = api("/api/experiments", "POST",
+                  {"name": "实测·实验用到的变量", "workflowIds": [wf], "islandId": isl},
+                  token)["id"]
+        pg.goto("%s/experiments/%d" % (WEB, exp), wait_until="domcontentloaded")
+        pg.wait_for_timeout(5000)
+        if pg.get_by_text("实验用到的变量").count() > 0:
+            ok("实验页有「实验用到的变量」区块")
+        else:
+            bad("实验页没有「实验用到的变量」区块")
+            pg.screenshot(path="/tmp/exp-used-vars-missing.png", full_page=False)
+        if pg.get_by_text("seedVar").count() > 0:
+            ok("实验页能看到流程里声明的变量 seedVar")
+        else:
+            bad("实验页看不到流程里声明的 seedVar")
+            pg.screenshot(path="/tmp/exp-used-vars-no-seed.png", full_page=False)
+        # 改值：改的是**这个实验的取值**
+        btn = pg.locator(".ant-card", has_text="实验用到的变量").get_by_role("button", name="改").first
+        if btn.count() == 0:
+            bad("实验变量行上没有「改」按钮")
+        else:
+            btn.click()
+            pg.wait_for_timeout(700)
+            box = pg.locator(".ant-card", has_text="实验用到的变量").locator("input.ant-input").first
+            box.fill("66")
+            box.press("Enter")
+            pg.wait_for_timeout(2500)
+            used = api("/api/experiments/%d/used-variables" % exp, "GET", token=token)
+            item = next((i for i in used.get("items", []) if i["name"] == "seedVar"), None)
+            if item and item.get("value") == "66" and item.get("scope") == "experiment":
+                ok("改值生效：本实验取值 = 66，标为实验覆盖")
+            else:
+                bad("改值没生效", json.dumps(item, ensure_ascii=False))
+            pg.screenshot(path="/tmp/exp-used-vars.png", full_page=False)
+        b.close()
+    # 清理这个实验上的变量（PUT 是整表替换 ⇒ 空数组即清空）
+    api("/api/experiments/%d/variables" % exp, "PUT", token=token, body=[])
 
     # 清理：删掉测试变量（别把垃圾留在库里）
     api("/api/workflows/%d/variables/%s" % (wf, new_name), "DELETE", token=token)

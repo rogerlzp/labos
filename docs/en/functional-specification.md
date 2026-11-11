@@ -521,6 +521,7 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 1.7 | Experiment blocks executed in sequence | ✅ | P1 |
 | 1.8 | Sub-processes executed as a subgraph | ✅ | P1 |
 | 1.9 | Loop, Wait Until, variables (inside a workflow); the conditions / loops / timers / semaphores between experiment blocks | 🟡 inside a workflow it is implemented and has cases; between experiment blocks it is still outside the release | Outside the release |
+| 1.11 | **Workflow-level variables**: declaration (name / type / initial value / description) + create / delete them right in the designer + pick-or-type the name in the node settings + **the initial value reaches the runtime variable table** + experiment-level override + the experiment page lists the variables *in use* and lets you change them | ✅ see §15.1 | P0 |
 | 1.10 | Plate types and gripper offsets | ⬜ | Outside the release |
 
 ### L2 Validation
@@ -546,6 +547,8 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 3.6 | Resuming from a breakpoint | ✅ `seq:loop_index` + `skipKeys`, see §13.7 | P1 |
 | 3.7 | Command-level single-step forward / backward | ⬜ not implemented | P1 |
 | 3.8 | Modify after a pause and continue from the failed command | 🟡 it can be handed over to a person and continue from the failed command, but a command cannot be modified in place | P1 |
+| 3.9 | **The command ledger covers logic nodes**: `__sleep` / `__wait` / `__setVar` / `__expr` show up there too, with a plain-language "what it does" note and wait progress | ✅ see §15.2 | P0 |
+| 3.10 | **Runtime variables visible and editable**: the run detail page and the experiment page both show the current value and let you change it in place; a change takes effect the next time it is read (and can wake a `__wait`) | ✅ see §15.3 | P0 |
 
 ### L4 Scheduling
 
@@ -592,6 +595,7 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 | 7.3 | Process Status (the vocabulary of section 7.7) | ✅ the full basis is in §13 | P0 |
 | 7.4 | The device status colouring (busy / idle / offline / error) | ✅ | P1 |
 | 7.5 | The plate-level Gantt, the scheduling decision trace | ⬜ | Outside the release |
+| 7.6 | **The run page refreshes itself**: the command ledger, the flow graph and the node states refresh on their own while a run is in progress (no manual page reload) | ✅ see §15.4 | P0 |
 
 ### L8 Device onboarding
 
@@ -1112,6 +1116,222 @@ Why always on: one Transfer involves about 6 resource requests ≈ 60 microsecon
 - An experiment that has started holds the island lock until it finishes, and the scheduler never changes it — that is the source of "an experiment that has started is not interrupted" in the current implementation, but it is **not** the commitment window of the design.
 
 **Not implemented (out of scope)**: the three mechanisms of the design — the **commitment window** (explicitly declaring that an experiment that has started is never changed), the **frozen zone** (no change in the next 15 minutes), and the **greedy rolling** (scheduling only one window at a time, and the next segment after it finishes) — are all absent from the scheduler. The rationale of that design still holds (the duration is an estimate, so computing a full-DP optimum from inaccurate data is meaningless), but it has not been landed.
+
+---
+
+## 15. Variables, the command ledger, and intervening at runtime (details)
+
+> This chapter spells out, item by item, the whole chain "variable → command ledger →
+> runtime intervention". The trigger was a series of on-site reports that looked like four
+> unrelated small problems but were actually **four severed links on one chain**:
+>
+> | What was reported | Severed link | Section |
+> |---|---|---|
+> | "I created the variable, but the flow never picks it up" | declaration → runtime | §15.1 |
+> | "The delay node shows as running, but the command ledger is empty" | runtime → observation | §15.2 |
+> | "I click the wait node, there is no hint at all — I can't tell what it is doing" | runtime → observation | §15.2 |
+> | "The flow has a variable, but the experiment neither shows it nor lets me change it" | declaration → experiment | §15.1.4 |
+
+### 15.1 Variables: three scopes, three layers of precedence
+
+#### 15.1.1 Scopes and storage
+
+| Scope | Table | Belongs to | Written by |
+|---|---|---|---|
+| **Workflow level** | `workflow_variable` | one workflow | the designer's "Workflow variables" card, the variables console |
+| **Experiment level** | `experiment_variable` | one experiment | the experiment page ("Experiment variables", "Variables used by this experiment") |
+| **Runtime** | `run.input->'vars'` | one execution | written when the run is created; changeable while it runs |
+
+The naming rule is the **same in all three places**: `[A-Za-z_][A-Za-z0-9_]*`
+(letters / digits / underscore, cannot start with a digit) — because the name has to work
+as a `${name}` reference.
+
+#### 15.1.2 The three layers of precedence (the later one overrides)
+
+| Layer | Source | Purpose | When it takes effect |
+|---|---|---|---|
+| bottom | the workflow-level variable's `default_value` | used whenever nothing assigns it | written into `run.input->'vars'` when the run is created |
+| middle | request `?vars=k=v` | one-off parameters for a single execution | written into the same table |
+| top | experiment-level variable | same name overrides the workflow level ⇒ the same workflow can produce different results in different experiments | same |
+
+**Implementation notes** (each of these was a bug first):
+
+- The variable table is written **when the run is created** (`insertRun` gained a
+  `varsJson` parameter). Before that it was never written ⇒ the table stayed empty ⇒
+  a declared initial value could not substitute `${x}` and conditions could not read it.
+- `mergeRunInputVars` has to be a **deep merge** (only the one key inside the `vars`
+  sub-object). A shallow merge (`input || {"vars":…}`) replaces the initial values
+  written at run creation **wholesale**.
+- The `${x}` inside device parameters goes through `substVars`, which has three layers:
+  `results.xxx` (async results) < `run.input->'vars'` (the runtime variable table)
+  < `runtimeVars` (explicitly passed request / experiment values).
+  **The middle layer cannot be skipped** — `runtimeVars` only holds something when the
+  caller explicitly called `withVars(...)`; pressing "run" in the designer sends no
+  variables, and an asynchronous run happens on a worker thread (a ThreadLocal does not
+  travel there) ⇒ that layer is empty.
+
+#### 15.1.3 "Initial value" and "current value" must be separate columns
+
+The initial value is the default from the **declaration**; the current value is what
+**this execution** holds right now. The two are always in separate columns on screen:
+
+- the designer's "Workflow variables" card: `VAR001 [number] initial 99`
+- the variable name dropdown in the node settings: `VAR001` + `initial 99`
+- the "Run variables" card of the run detail page: `current value` / `initial value` /
+  `source` in three separate columns
+
+> Writing `VAR001 = 99` is **ambiguous**: that 99 is the declared initial value, yet it
+> looks like "this variable currently equals 99". Once the flow runs the two can differ
+> completely (a `__setVar` changed it, a person changed it).
+
+The `source` column says where the value came from: **declared by the workflow** or
+**produced at runtime** (written by `__setVar`, passed in with the request).
+
+#### 15.1.4 The experiment page must show the variables *in use* and let you change them
+
+**The problem**: the experiment page used to show only `experiment_variable` (the ones
+the experiment itself wrote). So a workflow could declare a variable and really reference
+it as `${name}`, and **nothing of it showed up on the experiment page** — let alone
+being changeable there.
+
+**Now**: the experiment detail page carries an extra card, "Variables used by this
+experiment", fed by `GET /api/experiments/{id}/used-variables`:
+
+- it **lists** the workflow-level variables declared by every workflow in the
+  orchestration (same name merged, the first one wins);
+- it **labels the source**: declared by workflow / experiment override;
+- it keeps **three columns apart**: the value for this experiment (the effective one) /
+  the workflow's initial value / the source;
+- it is **editable**: "Edit" writes `PUT /api/experiments/{id}/variables/{name}`
+  ⇒ that lands as an **experiment-level override** (one `experiment_variable` row) and
+  **does not touch the workflow itself**
+  ⇒ other experiments using the same workflow are unaffected; it takes effect the next
+  time the experiment starts.
+
+**Why the change lands as an experiment-level override instead of editing the flow**:
+changing a workflow's initial value affects every experiment that uses that workflow.
+Someone changing a value on the experiment page means "**this time** use this value", not
+"from now on use this value".
+
+> A single upsert (`ON CONFLICT (experiment_id, name) DO UPDATE`) rather than replacing
+> the whole set: a full replace relies on the caller sending back the snapshot it saw,
+> so two people editing at once overwrite each other.
+
+### 15.2 The command ledger: logic nodes belong there, and they have to be readable
+
+#### 15.2.1 What the ledger records
+
+`run_command` is the command-level ledger: method, parameters, sent-at, finished-at,
+duration, error code.
+
+**It used to record device commands only** — because device commands are persisted by
+the `StepSink` callback, while the built-in logic nodes (`__sleep` / `__wait` / `__setVar`
+/ `__expr`) **never touch a device** and therefore never went through that path ⇒ not a
+single row.
+
+The on-site symptom: "the delay node shows as running, but the command ledger has
+nothing in it" — there was no way to tell what that node was doing.
+
+**Now**: logic nodes show up in the ledger too. One logic node = one `run_command` row:
+
+| Column | Value |
+|---|---|
+| `method` | `__sleep` / `__wait` / `__setVar` / `__expr` (the page shows the Chinese name plus the raw one) |
+| `device_id` | empty (it never touched a device) |
+| `payload` | the node parameters verbatim (`{"var":"gate","value":"open","timeout":120}`) |
+| `result.note` | **one plain sentence** ("waiting for gate = open (timeout 120 s)") |
+| `status` | `running` → `completed` / `failed` |
+
+> Implementation note: a logic node's ledger row hangs on the **level=0 business node
+> row** (device commands hang on their own level=1 step row); `attempt=0` is unique to
+> logic nodes ⇒ the two never mix.
+
+#### 15.2.2 The "what it does" column
+
+The internal name (`__wait`) means nothing on site ⇒ every built-in method gets a
+plain-language description:
+
+| Method | Plain language |
+|---|---|
+| `__sleep` | delay N seconds |
+| `__wait` | wait for `var` = `value` (timeout N seconds) |
+| `__setVar` | set `var` to `value` |
+| `__expr` | compute `var` = `expr` |
+
+That sentence shows up in three places: the **"What it does" column of the command
+ledger**, the **node row of the run detail page**, and the **node data of the read-only
+flow page**.
+
+#### 15.2.3 A long wait is not a dead panel
+
+A `__wait` can wait for tens of minutes. While waiting, the ledger note is refreshed
+**every 5 seconds**:
+
+```
+waiting for gate = open (timeout 120 s) — waited 25 s (currently closed)
+```
+
+The "currently" value is included too ⇒ you can see at a glance how far off it is.
+
+> The progress update has to **keep the original description**: writing only "waited 12 s"
+> would replace "waiting for gate = open (timeout 120 s)" ⇒ from that moment on the
+> ledger no longer says what the node is waiting for.
+
+### 15.3 Intervening at runtime: visible, editable, and actually effective
+
+#### 15.3.1 Two entry points
+
+| Entry point | Component | Where |
+|---|---|---|
+| Run detail page | `RunVariablesCard` | `/runs/{id}` |
+| Experiment page | `RunVariablesCard` + the "Variables used by this experiment" card | `/experiments/{id}` |
+
+Both list: variable name / type / **current value** / **initial value** / **source** /
+description.
+
+#### 15.3.2 What changing a value means: "it takes effect the next time it is read"
+
+Changing a value is **not** "patch the memory right now" — it is written back to
+`run.input->'vars'`:
+
+- the running flow sees the new value the **next time it reads the variable**;
+- a `__wait` node re-reads the variable table on every round ⇒ **changing a value can
+  wake a node that is waiting for a condition** — that is the proper way to "let it
+  through by hand", more precise than pressing "resume": **resume re-runs the whole
+  flow, changing a value releases only that one step**.
+
+#### 15.3.3 Two hard constraints
+
+1. **A finished run refuses the change**: nothing would read it again, yet the page
+   would show "changed" ⇒ that is misleading.
+2. **Changing one variable touches nothing else**: a single upsert, not a full replace
+   (same reasoning as §15.1.4).
+
+### 15.4 The run page refreshes itself
+
+| Component | Refresh strategy |
+|---|---|
+| Flow graph (`RunGraph`) | every 2 seconds while running |
+| Command ledger (`RunCommands`) | every 2 seconds while running or paused; stops once the run reaches a terminal state |
+| Run detail page body | every 2 seconds while running or paused |
+| "Latest execution" on the read-only flow page | every 4 seconds, stops at a terminal state |
+
+> **The command ledger used to have no polling at all** — the run page refreshed every
+> 2 seconds, but that was the node table; the ledger is a separate query and did not
+> re-fetch ⇒ newly sent commands and freshly completed nodes only appeared after
+> **reloading the whole page by hand**. That is the root cause of "every time I have to
+> refresh the page to see the finished node commands".
+
+### 15.5 The measured evidence
+
+| Script | Covers | Result |
+|---|---|---|
+| `scripts/verify-vars.py` | initial value reaches the variable table / request value overrides it / experiment-level overrides it | 12/0 |
+| `scripts/verify-vars-page.py` | create variables in the designer / pick them in the node dropdown / the console no longer preselects / the experiment page shows and edits the variables in use | 11/0 |
+| `scripts/verify-run-vars.py` | current value and initial value in separate columns / after the change the `__wait` walked on by itself | 9/0 |
+| `scripts/verify-run-vars-page.py` | clicking "Edit" on the page makes the flow finish by itself | 5/0 |
+| `scripts/verify-builtin-ledger.py` | logic nodes reach the ledger / plain-language note / wait progress / visible on the page | 12/0 |
+| `scripts/verify-live-refresh.py` | the ledger of the read-only flow page appears without a manual reload | 3/0 |
 
 ---
 

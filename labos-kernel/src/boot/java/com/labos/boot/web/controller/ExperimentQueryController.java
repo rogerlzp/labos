@@ -102,6 +102,19 @@ public class ExperimentQueryController {
         return experimentQueryService.experimentVariablesJson(id);
     }
 
+    /**
+     * 这个实验**用到的**变量：编排流程声明的流程级变量 + 实验级覆盖（同名合并）。
+     *
+     * <p>为什么要单列一个接口：{@code /variables} 给的是"实验自己写的那批"，
+     * 而流程里声明的变量在实验页上完全看不到 —— 现场看着流程引用 {@code ${VAR001}}，
+     * 却找不到它、更没法改它的值。</p>
+     */
+    @GetMapping(value = "/experiments/{id:\\d+}/used-variables",
+            produces = "application/json; charset=utf-8")
+    public String usedVariables(@PathVariable long id) throws SQLException {
+        return experimentQueryService.experimentUsedVariablesJson(id);
+    }
+
     @GetMapping(value = "/experiments/{id:\\d+}/processes",
             produces = "application/json; charset=utf-8")
     public String processes(@PathVariable long id) throws SQLException {

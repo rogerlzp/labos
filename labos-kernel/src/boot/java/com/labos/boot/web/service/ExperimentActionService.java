@@ -176,6 +176,33 @@ public class ExperimentActionService {
         }
     }
 
+    /**
+     * 改**一个**实验变量的值（同名即覆盖）。
+     *
+     * <p>为什么不用整表替换：整表替换（delete + 逐条 insert）要靠调用方传回
+     * 它看到的那份快照 —— 两个人同时改就会互相冲掉。改一个值就只动那一行。</p>
+     *
+     * <p>变量名规则与流程级变量一致（要能当 {@code ${name}} 引用）。</p>
+     */
+    public int setExperimentVariableValue(long experimentId, String name, String type,
+                                          String value, String description)
+            throws java.sql.SQLException {
+        String n = name == null ? "" : name.trim();
+        if (n.isEmpty()) {
+            throw new IllegalArgumentException("变量名不能为空");
+        }
+        if (!n.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            throw new IllegalArgumentException(
+                    "变量名只能用字母、数字、下划线，且不能以数字开头（要能当 ${name} 引用）：" + n);
+        }
+        String t = (type == null || type.isBlank()) ? "number" : type.trim();
+        if (!java.util.Set.of("number", "string", "boolean").contains(t)) {
+            throw new IllegalArgumentException("变量类型只能是 number / string / boolean：" + t);
+        }
+        return experimentMapper.upsertExperimentVariable(TENANT, experimentId, n, t,
+                value, description);
+    }
+
     public int reorderExperiments(List<Long> orderedIds) throws java.sql.SQLException {
         if (orderedIds == null || orderedIds.isEmpty()) {
             throw new IllegalArgumentException("orderedIds 不能为空");

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Table, Tag, Tooltip, Typography } from 'antd';
+import { Space, Table, Tag, Tooltip, Typography } from 'antd';
 import { apiFetch } from '../api/client';
 import { useT } from '../i18n';
 
@@ -18,8 +18,25 @@ interface CmdRow {
    *  直接当 React child 渲染会崩（Objects are not valid as a React child）。 */
   payload: unknown;
   result: unknown;
+  /** 设备回包原文。 */
+  rawResponse?: unknown;
+  /** 内置逻辑节点的**一句人话**（"等待 gate = open（超时 120 秒）—— 已等 12 秒"）。 */
+  note?: string | null;
   nodeKey: string | null;
 }
+
+/**
+ * 内置逻辑节点的方法名 → 人话。
+ *
+ * <p>台账里出现 `__wait` / `__sleep` 这种内部名，现场根本读不出来它是什么。
+ * 这里给出中文说法；设备方法名原样显示（那是设备协议里的名字，不该改）。
+ */
+const BUILTIN_LABEL: Record<string, string> = {
+  __sleep: '延时',
+  __wait: '等待',
+  __setVar: '赋值',
+  __expr: '表达式',
+};
 
 /**
  * 解析后端的时间戳。
@@ -35,10 +52,26 @@ function parseTime(v: string | null): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-/** 把可能是对象/字符串的字段转成可显示的文本。 */
+/**
+ * 把可能是对象/字符串的字段转成可显示的文本。
+ *
+ * <p>后端的 payload 是 **jsonb**，取出来是**字符串**（`"{\"sec\": \"3\"}"`）。
+ * 直接显示就是一串带反斜杠的转义 ⇒ 现场根本读不出来。
+ * ⇒ 这里先试着 parse 成对象再美化；parse 不了就按原样显示。
+ */
 function asText(v: unknown): string {
   if (v == null) return '—';
-  if (typeof v === 'string') return v;
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (t.startsWith('{') || t.startsWith('[')) {
+      try {
+        return JSON.stringify(JSON.parse(t));
+      } catch {
+        return v;
+      }
+    }
+    return v;
+  }
   try {
     return JSON.stringify(v);
   } catch {
@@ -80,6 +113,18 @@ export default function RunCommands({ runId }: { runId: number }) {
       commands: CmdRow[];
     }>,
     enabled: runId != null,
+    // 台账必须**自己会刷新**。
+    //
+    // 为什么：以前这个组件只有一次性查询 ⇒ 执行中新下的命令、刚完成的节点，
+    // 都要**手动刷整页**才看得见（2026-11-11 用户现场："每次需要刷新页面，
+    // 才能看到执行完的节点命令"）。运行页每 2 秒刷一次也没用 ——
+    // 刷的是节点表，台账是另一个查询，不会跟着重取。
+    //
+    // 跑完就停：否则一条历史 run 的页面会永远在轮询。
+    refetchInterval: (st) => {
+      const s = (st.state.data as { status?: string } | undefined)?.status;
+      return s === 'running' || s === 'paused' ? 2000 : false;
+    },
   });
 
   const rows = q.data?.commands ?? [];
@@ -93,7 +138,15 @@ export default function RunCommands({ runId }: { runId: number }) {
         { title: t('runCommands.col.seq'), width: 50, render: (_, r) => r.commandSeq },
         { title: t('runCommands.col.node'), dataIndex: 'nodeKey', width: 110,
           render: (v: string | null) => v ?? '—' },
-        { title: t('runCommands.col.method'), dataIndex: 'method', width: 120 },
+        { title: t('runCommands.col.method'), dataIndex: 'method', width: 120,
+          render: (v: string) => (
+            BUILTIN_LABEL[v]
+              ? <Space size={4}>
+                  <Tag color="purple">{BUILTIN_LABEL[v]}</Tag>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>{v}</Typography.Text>
+                </Space>
+              : v
+          ) },
         { title: t('runCommands.col.device'), dataIndex: 'deviceId', width: 80,
           render: (v: number | null) => (v == null ? '—' : `#${v}`) },
         { title: t('runCommands.col.status'), dataIndex: 'status', width: 90,
@@ -108,7 +161,7 @@ export default function RunCommands({ runId }: { runId: number }) {
           render: (v: string | null) => shortTime(v) },
         { title: t('runCommands.col.duration'), width: 90,
           render: (_, r) => spanSec(r.sentAt, r.finishedAt) },
-        { title: t('runCommands.col.payload'), ellipsis: true,
+        { title: t('runCommands.col.payload'), dataIndex: 'payload', ellipsis: true,
           render: (v: unknown) => {
             const text = asText(v);
             return text === '—' ? '—' : (
@@ -116,6 +169,17 @@ export default function RunCommands({ runId }: { runId: number }) {
                 <code style={{ fontSize: 11 }}>{text}</code>
               </Tooltip>
             );
+          } },
+        { title: t('runCommands.col.note'), ellipsis: true,
+          render: (_: unknown, r) => {
+            // 内置逻辑节点的人话说明（"等待 gate = open（已等 12 秒）"）——
+            // 没有它就不知道这个节点到底在做什么。
+            const note = r.note ?? '';
+            return note ? (
+              <Tooltip title={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{note}</pre>}>
+                <Typography.Text style={{ fontSize: 12 }}>{note}</Typography.Text>
+              </Tooltip>
+            ) : '—';
           } },
         { title: t('runCommands.col.error'), dataIndex: 'errorCode', width: 110,
           render: (v: string | null) => v ?? '—' },

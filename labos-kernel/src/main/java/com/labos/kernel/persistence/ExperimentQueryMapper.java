@@ -41,6 +41,14 @@ public interface ExperimentQueryMapper {
     /** 实验变量列表。 */
     List<Map<String, Object>> selectExperimentVariables(long tenantId, long experimentId);
 
+    /**
+     * 这个实验**用到的**流程级变量（编排里每条流程声明的变量，同名合并）。
+     *
+     * <p>为什么要单列：实验页以前只显示 {@code experiment_variable}（实验自己写的），
+     * 于是流程里声明的变量在实验页上完全看不到，也没法在那里改值。</p>
+     */
+    List<Map<String, Object>> selectExperimentWorkflowVariables(long tenantId, long experimentId);
+
     /** 实验编排的流程列表（含流程名/码与任务节点数）。 */
     List<Map<String, Object>> selectExperimentProcesses(long tenantId, long experimentId);
 

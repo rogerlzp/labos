@@ -88,7 +88,30 @@
          ORDER BY id
     </select>
 
-<select id="selectExperimentProcesses" resultType="java.util.Map">
+<!--
+      这个实验**用到的**流程级变量（编排里的每条流程声明的变量）。
+
+      为什么要有：实验页以前只显示 experiment_variable（实验自己写的那些），
+      于是「流程里声明了一个变量，实验页上一条都看不到」——
+      现场看着流程引用 ${VAR001}，却在实验里找不到它、更没法改它的值。
+      ⇒ 这里把编排里所有流程声明的变量都提出来（同名合并，取先出现的）。
+-->
+    <select id="selectExperimentWorkflowVariables" resultType="java.util.Map">
+        SELECT DISTINCT ON (v.name)
+               v.name AS "name", v.type AS "type",
+               v.default_value AS "defaultValue",
+               v.description AS "description",
+               v.workflow_id AS "workflowId",
+               w.name AS "workflowName"
+          FROM workflow_variable v
+          JOIN workflow w ON w.id = v.workflow_id
+          JOIN experiment_process p ON p.workflow_id = v.workflow_id
+         WHERE v.tenant_id = #{param1} AND p.tenant_id = #{param1}
+           AND p.experiment_id = #{param2}
+         ORDER BY v.name, p.seq
+    </select>
+
+    <select id="selectExperimentProcesses" resultType="java.util.Map">
         SELECT p.id AS "id", p.workflow_id AS "workflowId", p.seq AS "seq",
                p.run_mode AS "runMode", p.run_after AS "runAfter",
                p.loop_count AS "loopCount",

@@ -1038,7 +1038,12 @@ public class WorkflowService {
                                         .coverageForWorkflow(workflowId).blocks())
                         // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
                         // 靠这个回调把三段状态画得出来（见 createNodeShells）。
-                        .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st));
+                        .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st))
+                        // 内置逻辑节点也进**命令台账**：延时/等待/赋值/表达式节点
+                        // 不碰设备 ⇒ 从来不经过 StepSink ⇒ 台账里一条都没有 ⇒
+                        // 现场看到「延时节点显示正在运行中，命令台账却空空如也」，
+                        // 完全看不出这个节点在做什么。
+                        .withBuiltinListener(new BuiltinLedger(runId, builtinParams));
                 // B-01：退回顺序执行**只允许发生在解析期**。
                 // 解析失败时还没派发任何设备命令，退回是兼容手段；
                 // 一旦 GraphRunner 开始执行，RuntimeException 必须原样抛出——
@@ -1935,6 +1940,84 @@ public class WorkflowService {
         } catch (RuntimeException e) {
             log.error("[WARN] 读取最大步骤序号失败，从 0 开始: " + e.getMessage());
             return 0;
+        }
+    }
+
+    /**
+     * 内置逻辑节点的**命令台账**落库器。
+     *
+     * <p><b>为什么需要它</b>：内置节点（`__sleep` / `__wait` / `__setVar` / `__expr`）
+     * 不碰设备 ⇒ 从来不经过 {@link PersistingStepSink} ⇒ {@code run_command}
+     * 里一条记录都没有。现场看到的现象是：
+     * <ul>
+     *   <li>「延时节点显示正在运行中，但命令台账里什么都没有」——不知道它在延时什么；</li>
+     *   <li>「点等待节点，什么提示都没有」——不知道它在等哪个变量、等多久。</li>
+     * </ul>
+     * 两者都是同一根因：**台账只记设备命令，不记逻辑节点**。
+     *
+     * <p>落库策略：一条内置节点 = 一行 {@code run_command}，
+     * {@code device_id} 留空（没碰设备）、{@code payload} 带节点参数、
+     * {@code result.note} 带一句**人话**（"等待 gate = open"）。
+     * 等待途中每 5 秒更新一次那句人话（"已等 12 秒"）⇒ 长等待不是一块死板。
+     *
+     * <p><b>落库失败绝不影响执行</b> —— 台账是展示用的，少一行不该让流程停住。
+     */
+    final class BuiltinLedger implements GraphRunner.BuiltinListener {
+        private final long runId;
+        private final Map<String, Map<String, Object>> builtinParams;
+
+        BuiltinLedger(long runId, Map<String, Map<String, Object>> builtinParams) {
+            this.runId = runId;
+            this.builtinParams = builtinParams == null ? Map.of() : builtinParams;
+        }
+
+        @Override
+        public void onStart(String nodeKey, String method, Map<String, Object> params) {
+            write(nodeKey, method, params, "running",
+                    GraphRunner.describeBuiltin(method, params));
+        }
+
+        @Override
+        public void onProgress(String nodeKey, String method, Map<String, Object> params,
+                               String note) {
+            try {
+                // ⚠ 进度说明要**保留原描述**：只写"已等 12 秒"会把
+                // "等待 gate = open（超时 120 秒）"顶掉 ⇒ 台账从这一刻起
+                // 就看不出这个节点在等什么了。⇒ 描述 + 进度拼在一起。
+                rm().updateBuiltinCommandNote(tenantId, runId, nodeKey,
+                        GraphRunner.describeBuiltin(method, params) + " —— " + note);
+            } catch (RuntimeException e) {
+                log.error("[WARN] 内置节点等待进度落库失败 " + nodeKey + ": " + e.getMessage());
+            }
+        }
+
+        @Override
+        public void onDone(String nodeKey, String method, Map<String, Object> params,
+                           boolean ok, String error, String note, long durationMs) {
+            String text = note == null || note.isBlank()
+                    ? GraphRunner.describeBuiltin(method, params) : note;
+            if (!ok && error != null && !error.isBlank()) {
+                text = text + " —— " + error;
+            }
+            write(nodeKey, method, params, ok ? "completed" : "failed", text);
+        }
+
+        private void write(String nodeKey, String method, Map<String, Object> params,
+                           String status, String note) {
+            try {
+                Map<String, Object> p = params == null ? Map.of() : params;
+                // payload = {"var":"gate","value":"open",...}（节点参数原样）
+                java.util.List<Object> kv = new java.util.ArrayList<>();
+                p.forEach((k, v) -> {
+                    kv.add(k);
+                    kv.add(v);
+                });
+                rm().insertBuiltinCommand(tenantId, runId, nodeKey, method,
+                        Jsons.obj(kv.toArray()),
+                        note, status, java.sql.Timestamp.from(java.time.Instant.now()));
+            } catch (RuntimeException e) {
+                log.error("[WARN] 内置节点台账落库失败 " + nodeKey + ": " + e.getMessage());
+            }
         }
     }
 
