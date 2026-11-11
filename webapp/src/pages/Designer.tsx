@@ -2026,6 +2026,13 @@ export default function DesignerPage() {
               <Tag>{t('designer.runState.skipped')}</Tag>
             </Space>
           )}
+          action={(
+            <Button size="small" onClick={() => nav(`/runs/${runId}`)}>
+              {t('designer.runState.openRunDetail')}
+            </Button>
+          )}
+        />
+      )}
       {fromExpId && (
         <Alert
           type="info" showIcon
