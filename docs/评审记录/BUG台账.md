@@ -51,6 +51,7 @@
 | `BUG-20261111-17` | **中** | **设备管理台重启后不接管已经在跑的 tcp client** ⇒ 这些设备在界面上显示"不是本机托管"、**下线按钮是灰的** ⇒ 设备永远停不下来（Redis key 一直续期，中控一直判在线） | `Labos.Sidecar.Manager` 只记自己启动的进程，**不扫进程表** | ✅ **已修**（2026-11-11：每次刷新状态都扫进程表，按 `--link-only` + `--sim <ip:端口>` 认领并收编；实测管理台重启后 5 台全部 `managed=true`、pid 全部对上） | 管理台重启后设备停不掉（2026-11-11） |
 | `BUG-20261111-18` | **中** | **点了「下线」，设备仍显示在线 30 秒** ⇒ 停进程用的是 SIGKILL，进程**没有机会执行自己的清理代码** ⇒ Redis key 一直留到 TTL 过期 | `Labos.Sidecar.Manager` 停进程后不主动清 key | ✅ **已修**（2026-11-11：管理台知道 key 在哪，停完进程**直接清掉** ⇒ 中控即刻判离线；实测下线后 key **立即**消失） | 上下线联动用例实测（2026-11-11） |
 | `BUG-20261111-19` | **中** | **设备管理台打开是空白页（404）** ⇒ 现场按 dll 启动必然踩到 | ① Web SDK 默认**不把 `wwwroot` 复制到输出目录**（静态资源走 manifest，直接 `dotnet <dll>` 跑时不生效）；② 静态文件从 **ContentRoot/wwwroot** 找，而直接跑 dll 时 ContentRoot = **当前工作目录** ⇒ 从别处启动就找不到 | `Labos.Sidecar.Manager.csproj`（`Content Update="wwwroot/**" CopyToOutputDirectory`）、`Labos.Sidecar.Manager/Program.cs`（`ContentRootPath` / `WebRootPath` 显式钉死到 `AppContext.BaseDirectory`） | ✅ **已修**（2026-11-11：两处都补上；实测从 `/tmp` 启动 `dotnet <绝对路径>.dll` ⇒ `HTTP 200`，界面正常渲染 5 台设备） | 管理台启动后浏览器打开是空白页（2026-11-11） |
+| `BUG-20261111-20` | **中** | **设计器上流程节点都在、却一条连线都没有**，但**保存成功、执行也正常** ⇒ 用户看着像"流程是断的、还没校验"，实际是**画不出来** | BPMN 里「逻辑连线」是 `<bpmn:sequenceFlow sourceRef targetRef>`，「**画出来的**连线」是 DI 段的 `<bpmndi:BPMNEdge>`（带 waypoints）。前端 bpmn-js **只渲染有 DI 的元素** ⇒ XML 里有 sequenceFlow、却没有 BPMNEdge ⇒ 画布上是一堆孤立节点；而**后端存与跑都看 sequenceFlow** ⇒ 看着"没连线"却能存能跑。**保存不拦是对的**：后端 `saveGraph` 校验的是逻辑层（孤立节点 / 断头线 / 可达性，见测试总纲 §1.6），sequenceFlow 在 ⇒ 校验通过 | 造图的 XML 缺 DI（本轮 seed 的基线流程、脚本造的流程都没写 `BPMNEdge`） | ✅ **已修**（2026-11-11：① 后端 `WorkflowService.saveGraph` 落库前用新的 `BpmnDiCompleter` **补齐缺失的 BPMNEdge**（按两端 `BPMNShape` 的位置算 waypoints；**幂等** —— 页面 bpmn-js 导出的图本来就有 DI，不动）；补在**后端**是因为 XML 有三个来源（页面导出 / 脚本造 / 第三方导入），只有这里是**必经之路**；② 历史数据用 `scripts/backfill-bpmn-di.py` 批量补：实测 **28 个流程补完、0 失败**。验证：设计器 `1000641` 从 0 条连线变 6 条（f1~f6 全部可见），预检「节点 5 · 步骤 5 · 预检 通过」，执行链路不受影响） | 用户现场反馈（2026-11-11，designer/1000641） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
@@ -318,4 +319,15 @@ key 口径（-11）、调度是否尊重它（-12）、台账的时间语义（-
 | 修法 | ① csproj 里 `<Content Update="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />`；② `WebApplication.CreateBuilder(new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory, WebRootPath = "wwwroot" })` |
 | 实测 | 从 `/tmp` 启动 `dotnet /abs/path/Labos.Sidecar.Manager.dll --urls http://127.0.0.1:8600` ⇒ `HTTP 200`，界面正常渲染 5 台设备（名称/设备ID/设备IP/端口/能力/进程号/上线下线按钮齐全） |
 | 教训 | **"开发时能跑"不等于"部署后能跑"** —— `dotnet run` 会用 manifest 提供静态资源，直接跑 dll 不会。这两个坑都只出现在"按交付方式启动"的路径上，而那条路径恰恰是现场用的 |
+
+#### 处置：BUG-20261111-20（执行方 · 2026-11-11）
+
+| 项 | 结果 |
+|---|---|
+| 现象 | 设计器打开流程，**节点全在、一条连线都没有**；但**保存成功**、执行也正常 |
+| 根因 | BPMN 里「逻辑连线」是 `<bpmn:sequenceFlow sourceRef targetRef>`，「**画出来的**连线」是 DI 段的 `<bpmndi:BPMNEdge>`（带 waypoints）。前端 bpmn-js **只渲染有 DI 的元素** ⇒ XML 有 sequenceFlow、没 BPMNEdge ⇒ 画布是一堆孤立节点。**后端存与跑都看 sequenceFlow** ⇒ "看不见连线，但能存能跑" |
+| 为什么保存没拦 | 后端 `saveGraph` 校验的是**逻辑层**：start/end 数量、孤立节点、断头线、从 start 可达且能到 end（测试总纲 §1.6）。sequenceFlow 在 ⇒ **校验通过是对的**。问题不在校验，在**展示层缺 DI** |
+| 修法 | ① 后端 `WorkflowService.saveGraph` 落库前用新的 `BpmnDiCompleter` **补齐缺失的 BPMNEdge**（按两端 `BPMNShape` 的 `dc:Bounds` 算 waypoints；**幂等** —— 页面 bpmn-js 导出的图本来就有 DI，不动）。补在**后端**而不是让每个造图脚本自己写全，是因为 XML 有三个来源（页面导出 / 脚本造 / 第三方导入），只有后端这一处是**必经之路**；② 历史数据用 `scripts/backfill-bpmn-di.py` 批量补（重新 PUT 一次它的 graph，走一遍 `saveGraph`） |
+| 实测 | 批量补 **28 个流程、0 失败**；设计器 `1000641` 从 0 条连线变 **6 条**（f1~f6 全可见），顶部「节点 5 · 步骤 5 · 预检 通过」；执行链路不受影响 |
+| 教训 | **"画得出来"和"存得进去"是两件事**，缺 DI 的图属于"两层都合法、展示层空缺"—— 只校验逻辑层就会漏掉它。<br>另一条：**我造图时只写了 sequenceFlow 没写 BPMNEdge**，说明「用脚本造 BPMN」这件事本身需要一个统一的补全关口，而不是每个脚本各写各的 |
 

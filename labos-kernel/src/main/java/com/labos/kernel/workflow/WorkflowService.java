@@ -2670,6 +2670,13 @@ public class WorkflowService {
     @org.springframework.transaction.annotation.Transactional(
             rollbackFor = Exception.class)
     public SaveResult saveGraph(long workflowId, String xml, boolean draft) throws SQLException {
+        // **先补 DI**（2026-11-11）：XML 里有 sequenceFlow 但缺 BPMNEdge 时，
+        // 前端 bpmn-js 只渲染有 DI 的元素 ⇒ 画布上是一堆孤立节点、一条线都没有，
+        // 而后端存与跑都看 sequenceFlow ⇒ "看不见连线但保存成功、还能跑"。
+        // 在这里补一次，所有来源（页面导出 / 脚本造的 / 第三方导入）都受益；
+        // 补全是幂等的（页面导出的图本来就有 BPMNEdge）。
+        xml = BpmnDiCompleter.complete(xml);
+
         BpmnGraphParser.ParsedGraph graph = BpmnGraphParser.parse(xml);
 
         // ① 解析出 0 个节点 → 拒绝。否则一次误传（比如传了展开视图或坏 XML）
