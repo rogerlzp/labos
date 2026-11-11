@@ -26,6 +26,7 @@ import ErrorCodesPage from './pages/ErrorCodes';
 import GanttPage from './pages/Gantt';
 import DurationsPage from './pages/Durations';
 import ExperimentsPage from './pages/Experiments';
+import ExperimentRunsPage from './pages/ExperimentRuns';
 import ExperimentListPage from './pages/ExperimentList';
 import ScheduleGanttPage from './pages/ScheduleGantt';
 import SchedulerPage from './pages/Scheduler';
@@ -266,6 +267,8 @@ export default function App() {
             {/* 列表 → 详情：/experiments 看全量，/experiments/:id 才是编排页 */}
             <Route path="/experiments" element={<ExperimentListPage />} />
             <Route path="/experiments/:id" element={<ExperimentsPage />} />
+            {/* 实验的**执行记录**单独一页：配置与历史分开，现场看着不乱 */}
+            <Route path="/experiments/:id/runs" element={<ExperimentRunsPage />} />
             <Route path="/experiments/:id/canvas" element={<ExperimentCanvasPage />} />
             <Route path="/canvas" element={<ExperimentCanvasPage />} />
             <Route path="/canvas/:id" element={<ExperimentCanvasPage />} />

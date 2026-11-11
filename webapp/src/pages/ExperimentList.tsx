@@ -229,6 +229,16 @@ export default function ExperimentListPage() {
               title: t('experimentList.col.remark'), dataIndex: 'remark', ellipsis: true,
               render: (v: string | null) => v || '—',
             },
+            {
+              // 执行记录单独一页 ⇒ 列表里直接给一个入口（点整行仍是进实验详情）
+              title: t('experimentList.col.runs'), width: 110,
+              render: (_, r) => (
+                <Button size="small" type="link"
+                  onClick={(e) => { e.stopPropagation(); nav(`/experiments/${r.id}/runs`); }}>
+                  {t('experimentList.action.runs')}
+                </Button>
+              ),
+            },
           ]}
         />
       </Card>

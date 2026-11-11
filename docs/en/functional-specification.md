@@ -522,6 +522,7 @@ The P0 is folded into the release gate of section 1.1. The P1 is done and does n
 | 1.8 | Sub-processes executed as a subgraph | ✅ | P1 |
 | 1.9 | Loop, Wait Until, variables (inside a workflow); the conditions / loops / timers / semaphores between experiment blocks | 🟡 inside a workflow it is implemented and has cases; between experiment blocks it is still outside the release | Outside the release |
 | 1.11 | **Workflow-level variables**: declaration (name / type / initial value / description) + create / delete them right in the designer + pick-or-type the name in the node settings + **the initial value reaches the runtime variable table** + experiment-level override + the experiment page lists the variables *in use* and lets you change them | ✅ see §15.1 | P0 |
+| 1.12 | **An experiment's "configuration" and "execution records" live on two pages**: `/experiments/:id` holds only the configuration (orchestration / variables / batches / holds) plus an "open the execution records" entry; the records live at `/experiments/:id/runs` (step table, run variables, pause / resume / stop); the experiment list gives the entry per row | ✅ see §15.8 | P0 |
 | 1.10 | Plate types and gripper offsets | ⬜ | Outside the release |
 
 ### L2 Validation
@@ -1389,7 +1390,32 @@ broken:
 > and can wake a waiting node). Experiment-level variables are injected only when the
 > experiment **starts**, so they do not affect a run that is already going.
 
-### 15.7 The measured evidence
+### 15.8 An experiment's configuration and execution records live on two pages
+
+**Why split**: a single page carrying both "what this experiment is" and "how many times
+it has run" pushes the configuration down once the history grows, and on site that reads
+as a mess (2026-11-11: "the experiment list and the experiment execution list need to be
+separate — inside one experiment there is no need to put the execution records below as
+well, it looks messy").
+
+**The split**:
+
+| Page | What it holds |
+|---|---|
+| `/experiments` (experiment list) | the list of experiments; an "Executions" entry per row |
+| `/experiments/:id` (**experiment configuration**) | execution order, experiment variables, the variables in use, batch settings, site holds, and an **execution-records entry** (count + button) |
+| `/experiments/:id/runs` (**experiment execution records**) | the execution history table (status / progress / duration / start / pause reason / error), the expanded step table (which steps ran, which did not, plus "open the flow chart"), the **run variables** of each step (editable), and pause / resume / stop |
+
+**The execution-records page expands the step table by default**: it used to require
+clicking the "+" on the row ⇒ the entry was two layers deep ⇒ on site people said
+"I can't get into it and can't see the flow state" (2026-11-11). An experiment usually has
+only 1–3 execution records, so expanding by default is cheap.
+
+**The actions (pause / resume / stop) moved with the records**: what they act on is **one
+execution**, so they belong on the execution-records page. Leaving them on the
+configuration page made people think "this pauses the experiment".
+
+### 15.9 The measured evidence
 
 | Script | Covers | Result |
 |---|---|---|
@@ -1400,6 +1426,7 @@ broken:
 | `scripts/verify-builtin-ledger.py` | logic nodes reach the ledger / **the delay really lasted as long as it says** / plain-language note / wait progress / visible on the page | 13/0 |
 | `scripts/verify-live-refresh.py` | the ledger of the read-only flow page appears without a manual reload | 3/0 |
 | `scripts/verify-flow-readonly.py` | read-only flow page: the node note is plain language / the variable card is editable / the change releases the wait | 6/0 |
+| `scripts/verify-exp-runs-split.py` | the experiment configuration page no longer carries the records table / the entry leads to the records page / that page has the table and the expansion / the list page has the entry | 9/0 |
 
 ---
 

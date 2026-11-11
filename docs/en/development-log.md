@@ -6722,3 +6722,46 @@ node declares**"; that assertion now lives in `scripts/verify-builtin-ledger.py`
 row (level=0) is written **once, when the whole run ends** (the five nodes differ by only
 a few milliseconds) ⇒ "how long did each node take" can only be read from the **ledger**,
 not from the node table. That is now written up in the specification, §15.2.2.
+
+---
+
+**Addendum (2026-11-11, night): an experiment's configuration and its execution records live on two pages**
+
+On site: "the experiment list and the experiment execution list need to be separate —
+inside one experiment there is no need to put the execution records below as well, it
+looks messy".
+
+**The problem before**: `/experiments/:id` carried everything — the execution order, the
+experiment variables, the variables in use, the batch settings, the site holds and the
+**execution-records table**. Once the history grew, it pushed the configuration down.
+
+**The split**:
+
+| Page | What it holds |
+|---|---|
+| `/experiments` (experiment list) | the list of experiments; an "Executions" entry per row |
+| `/experiments/:id` (**configuration**) | orchestration / variables / variables in use / batches / holds + an **execution-records entry** (count + button) |
+| `/experiments/:id/runs` (**execution records**) | the execution history table, the **expanded-by-default** step table, the run variables of each step (editable), and pause / resume / stop |
+
+**Two decisions**
+
+① **Pause / resume / stop moved with the records.** What they act on is **one execution**;
+leaving them on the configuration page made people think "this pauses the experiment" —
+an action belongs next to the thing it acts on.
+
+② **The execution-records page expands the step table by default.** It used to require
+clicking the "+" on the row ⇒ the entry was two layers deep ⇒ on site people said "I can't
+get into it and can't see the flow state". An experiment usually has only 1–3 execution
+records, so expanding by default is cheap.
+
+**How the code moved**: `RunSteps` / `ExperimentUsedVars` / the records table and the three
+actions were extracted into reusable pieces in `ExperimentRuns.tsx`
+(`ExperimentRunsPanel`), used by both the new page and the configuration page ⇒ the step
+table, the run-variable card and the pause dialog have **one** implementation, so the two
+pages can't drift apart in behaviour.
+
+**The measurement** (`scripts/verify-exp-runs-split.py` 9/0): the configuration page no
+longer has the records table (the "run" + status + progress + pause-reason columns are
+gone) ⇒ the entry leads to `/experiments/:id/runs` ⇒ that page has the table, the
+expanded-by-default step table and a "back to the experiment" button ⇒ the list page has
+the entry per row.
