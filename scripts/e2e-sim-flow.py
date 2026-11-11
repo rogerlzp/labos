@@ -11,8 +11,8 @@
   · 台架：labos-kernel/scripts/sim-up.sh 起的 DeviceSimulator（tcp://19500..19506）
   · 链路：登录
           → 流程库建流程 → 设计器装配 start→task→end，在「节点设置」里把 task
-            绑成仿真设备任务（ID1731 / Home）→ 保存
-          → 实验列表进详情 →「新建实验」选岛 LAB-DEMO-02 + 挂上刚建的流程 → 创建
+            绑成仿真设备任务（X231 / Home）→ 保存
+          → 实验列表进详情 →「新建实验」选基线岛 + 挂上刚建的流程 → 创建
           → 详情页点「执行实验」
   · 断言：experiment.status=finished、run.status=completed，且
           **run_command.device_raw_response 非空**（= 真跟设备来回了一趟，
@@ -49,8 +49,9 @@
   > 设备用基线 5 台（设备ID 200 / 229 / 231 / 413 / 414，
   > 能力 读板机 / 孵育箱 / 机器人 / 封膜机 / 离心机）。
 
-  > **⚠ 本脚本写死了旧岛 `LAB-DEMO-02`** —— 新基线里那个岛已不存在，
-  > 直接跑会报「找不到岛」。重写时改成动态取（`GET /api/islands` 或环境变量）。
+  > **岛已改到新基线**（2026-11-11）：原来写死 `LAB-DEMO-02`，那个岛随基线重建
+  > 删掉了 ⇒ 直接跑会报「找不到岛」。现在用 `LABOS_BASELINE_ISLAND` 环境变量，
+  > 默认 `LAB-BASE-01`。
 """
 
 
@@ -71,11 +72,19 @@ PASS, FAIL, SKIP = 0, 0, 0
 BASE_API = os.environ.get("LABOS_API", "http://127.0.0.1:18080")
 
 # 仿真台架：sim-up.sh 给某座岛的设备依次分配的端口
-SIM_PORTS = list(range(19500, 19507))
-# 示例岛 + 岛上的机械臂（ID1731 的方法集里一定有 Home）
-ISLAND_CODE = "LAB-DEMO-02"
-DEV_CODE = "ID1731"
-DEV_RID = 200214
+# 基线岛 5 台设备的模拟器端口（sim-up.sh 按岛内 code 排序分配）：
+#   ASPIN_2K-1→19500  ID1021→19501  S100-1→19502  X229→19503  X231→19504
+# 原来写的是 19500..19506（旧岛 7 台）⇒ 新基线下会把没监听的端口算成"缺台"。
+SIM_PORTS = list(range(19500, 19505))
+# 基线岛 + 岛上的机械臂 X231（方法集里一定有 Home）
+# 基线岛（2026-11-11 起）：可被环境变量覆盖，但**不写死成某个历史岛** ——
+# 旧基线的 LAB-DEMO-02 已随基线重建删除，写死会直接报「找不到岛」。
+ISLAND_CODE = os.environ.get("LABOS_BASELINE_ISLAND", "LAB-BASE-01")
+# 基线机器人 X231（设备ID 231 / resource_id 200231），方法 Home 在 robot 画像里。
+# 原来绑的是 ID1731（resource_id 200214）—— 那台设备在新基线里已停用，
+# 节点拿不到设备 ⇒ run paused ⇒ 执行段全红。
+DEV_CODE = "X231"
+DEV_RID = 200231
 DEV_METHOD = "Home"
 
 
@@ -224,7 +233,7 @@ def connect(page, src, tgt):
 def pick_in_select(page, selector, text, exact_prefix=None):
     """打开一个 antd Select，用键盘搜（showSearch）后点选项。
 
-    exact_prefix：设备池里 ID1731 / ID1731-2 会同时命中，用「^ID1731 ·」这种
+    exact_prefix：设备池里同名设备会同时命中，用「^ID1731 ·」这种
     锚定前缀把两者分开。
     """
     selector.click()
@@ -405,17 +414,18 @@ def sec_sim_online():
     if not have_db():
         skip("没给库连接，跳过 device_state.online 校验")
         return True
-    n = q(f"SELECT count(*) FROM device_state WHERE online AND resource_id "
-          f"IN (200214, 504824, 200206, 200171, 200210, 504825, 504826)")
-    ok(f"device_state.online=true 的设备（演示岛）：{n} 台") if n and int(n) > 0 \
-        else bad("演示岛上没有 online=true 的设备", str(n))
+    # 基线岛 5 台设备的 resource_id（X231 / X229 / ASPIN_2K-1 / ID1021 / S100-1）
+    n = q("SELECT count(*) FROM device_state WHERE online AND resource_id "
+          "IN (200231, 200229, 504831, 200200, 504830)")
+    ok(f"device_state.online=true 的设备（基线岛）：{n} 台") if n and int(n) > 0 \
+        else bad("基线岛上没有 online=true 的设备", str(n))
     return True
 
 
 # ---------------------------------------------------------------- A. 建流程 + 绑真机
 
 def sec_designer_bind(page, ctx, base):
-    step("A. 页面建流程 → 设计器装配 → 节点设置绑仿真设备（ID1731 / Home）→ 保存")
+    step("A. 页面建流程 → 设计器装配 → 节点设置绑仿真设备（X231 / Home）→ 保存")
     nav(page, "流程库")
     page.get_by_role("button", name=re.compile(r"新建流程")).first.click()
     page.wait_for_selector(".ant-modal-content", timeout=10000)
@@ -492,7 +502,7 @@ def sec_designer_bind(page, ctx, base):
 # ---------------------------------------------------------------- B. 页面建实验
 
 def sec_create_experiment(page, ctx, base, wf_name):
-    step("B. 页面建实验（详情页「新建实验」：选岛 LAB-DEMO-02 + 挂上刚建的流程）")
+    step("B. 页面建实验（详情页「新建实验」：选岛 %s + 挂上刚建的流程）" % ISLAND_CODE)
     nav(page, "实验列表")
     rows = page.locator(".ant-table-tbody tr.ant-table-row")
     if rows.count() == 0:

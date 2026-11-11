@@ -33,8 +33,9 @@
   > 设备用基线 5 台（设备ID 200 / 229 / 231 / 413 / 414，
   > 能力 读板机 / 孵育箱 / 机器人 / 封膜机 / 离心机）。
 
-  > **⚠ 本脚本写死了旧岛 `LAB-DEMO-02`** —— 新基线里那个岛已不存在，
-  > 直接跑会报「找不到岛」。重写时改成动态取（`GET /api/islands` 或环境变量）。
+  > **岛已改到新基线**（2026-11-11）：原来写死 `LAB-DEMO-02`，那个岛随基线重建
+  > 删掉了。现在用 `LABOS_BASELINE_ISLAND` 环境变量，默认 `LAB-BASE-01`；
+  > 找不到就退到第一个岛。
 """
 
 
@@ -153,7 +154,10 @@ def main():
 
             topo = api("/api/topology", token=token)
             islands = topo.get("islands", []) if isinstance(topo, dict) else []
-            island = next((i for i in islands if i.get("code") == "LAB-DEMO-02"), None) \
+            # 基线岛（2026-11-11 起）：原来写死 "LAB-DEMO-02"，那个岛随基线重建删掉了。
+            # 找不到就退到第一个岛 —— 新基线只有一座岛，退化即命中。
+            target = os.environ.get("LABOS_BASELINE_ISLAND", "LAB-BASE-01")
+            island = next((i for i in islands if i.get("code") == target), None) \
                 or (islands[0] if islands else None)
             if not island:
                 skip("库里没有岛，跳过拖拽用例")
