@@ -35,6 +35,8 @@
 | `BUG-20261111-01` | **高** | **隔离/不可达设备仍在能力候选池里、且抢得到锁** ⇒ 节点挑中它后命令发不出去，**既不失败也不超时**，永远停在 `running` ⇒ 整单卡死（并行分支里必有一支卡住 ⇒ 汇合等不到） | `GraphMapper.selectCapabilityPools`（候选池不查 `device_state`）、`DeviceStateMapper.tryAcquireDevice`（抢锁不看设备状态） | ✅ **已修**（2026-11-11：候选池与抢锁两层都排除「既 `error` 又 `online=false`」的设备；`online` 恢复即自动重新可选，不会永久出局；详见下方处置） | 执行方独占窗口验收发现（2026-11-11） |
 | `BUG-20261111-02` | **高** | **实验建好之后，界面上没有任何地方能把「已经建好的流程」加进这个实验** —— 后端 `PUT /api/experiments/{id}/processes` 是 409 只读（「流程编排表已改为只读镜像，请到画布编排保存」），前端详情页的编排表只有只读表格；只有「新建实验」弹窗能带流程 ⇒ 用户新建实验后**无处安放已建好的流程** | `ExperimentActionController.processesReadOnly()`、`webapp/src/pages/Experiments.tsx`（编排区） | ✅ **已修**（2026-11-11：后端放开 `PUT /processes`（已有画布编排的实验仍 409，画布是权威）；前端编排区加「编排流程」弹窗：流程库多选加入 + 上下移 + 移除 + 保存；详见下方处置） | 用户现场反馈（2026-11-11，实验 1000267） |
 | `BUG-20261111-03` | **高** | **设备在 `device_state` 里没有状态行 ⇒ 抢锁永远失败** ⇒ 调用方只能等满 60 秒再报「设备被占用超过 60 秒：<id>」—— **误导：那台设备根本没人占**，是它压根没有状态行（库里 **43 台**有 `device_instance` 却没 `device_state` 行：多半没接驱动、心跳也覆盖不到） | `DeviceStateMapper.tryAcquireDevice`（纯 UPDATE，无行则匹配 0 行）、`DeviceLock.tryAcquire` | ✅ **已修**（2026-11-11：抢锁前 `ensureDeviceState` 补一行空闲态；顺带修掉 P-18 引入的「自己的重试被故障态挡住」；抢不到锁时补一句设备当前状态。详见下方处置） | 用户现场反馈（2026-11-11，实验 1000267 / 设备 229） |
+| `BUG-20261111-04` | **高** | **`quarantined` 不被当终态** ⇒ ① 它留下的**设备锁永远不回收**（`releaseOrphanDeviceLocks` 只认 `completed/failed/aborted/cancelled`）⇒ 那台设备**永久不可用**；② 批次 attempt 永远没有 `finished_at`；③ 启动兜底还会把隔离中的 run **误标 failed**（丢掉「待人工确认」语义） | `DeviceStateMapper.releaseOrphanDeviceLocks`、`BatchMapper.updateAttemptFromRun` / `markRunFailed` | ✅ **已修**（2026-11-11：三处状态列表分别处理 —— IN 列表加 quarantined；`markRunFailed` 的 NOT IN 也加它，含义是**别把隔离中的 run 改成 failed**） | 执行方独占窗口实测发现（2026-11-11，设备 200206 被 quarantined 的老 run 占死） |
+| `BUG-20261111-05` | **中** | **模拟器不认 `Deposit1Ex`**（`incubator` 只支持 `Deposit1`，Ex 是扩展版）⇒ 库里登记了 `Deposit1Ex` 的设备一接模拟器就被判「不支持该方法」⇒ 节点失败（`EC-99-0001`） | `labos-kernel/.../sim/DeviceProfile.java`（incubator 方法白名单） | ✅ **已修**（2026-11-11：incubator 同时支持 `Deposit1Ex` / `Withdraw1Ex`；配套补了 driver / device_method 登记并起了两个模拟器，设备随即 `online=true`，实验三个节点全 completed） | 执行方按用户要求「给这两台设备加模拟方法」时发现（2026-11-11） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
@@ -238,3 +240,23 @@
 | 修法 ③ | 抢不到锁时补一句设备当前状态（status/online/被谁占/上次错误）⇒ 区分「被别的 run 占用」与「设备离线/没有状态行」 |
 | 验证 | 同一个流程 1000546、同一台设备 200229：修复前 **53~63 秒还在 running、79 秒才 failed**（报"被占用"）；修复后 **13 秒**落 `paused`，level=0 父节点落 **manual**、reason 写清「策略[*@COMMAND]已耗尽：attempt=1 >= maxAttempts=1，原意图=RETRY」，子步骤 S1/S2 failed（EC-99-0001 无驱动） |
 | 遗留 | 「这条流程用的设备 200229 **没有接模拟器/驱动**」是**环境事实**（模拟器只有 7 台：206/171/214/407/210/408/409）⇒ 它本来就跑不了；本修复只是让失败**快且理由准**，不是让没驱动的设备能跑 |
+
+#### 处置：BUG-20261111-04（执行方 · 2026-11-11）
+
+| 项 | 结果 |
+|---|---|
+| 现象 | 设备 200206 被一个**已 quarantined** 的老 run（1001034）永久占着 ⇒ 抢不到锁 ⇒ 调度器一直 `stalled` ⇒ 队列里的实验永远派发不出去；只能手工清锁才恢复 |
+| 根因 | `quarantined` 是「命令物理结果未知、隔离待人工确认」的**终态**（`StatusVocabulary.RUN_TO_EXPERIMENT` 就把它映射成 failed），但三处判「run 已终态」的 SQL 都只认 `completed/failed/aborted/cancelled` |
+| 三处语义不同 | ① `releaseOrphanDeviceLocks`（**IN**）⇒ 要**加** quarantined，否则设备锁不回收；② `updateAttemptFromRun`（**IN**）⇒ 要**加**，否则批次永远没 finished_at；③ `markRunFailed`（**NOT IN**）⇒ 也要加，但含义是**别把隔离中的 run 改成 failed**（它是「待人工确认」，改成 failed 就丢了语义） |
+| 验证 | 重启内核后 200206 的孤儿锁被**自动**回收（此前要手工清）；实验 1003103 在解除现场扣留后 3 秒派发，三个节点全 completed |
+| 顺带澄清（不是缺陷） | 调度器 `stalled` 的**直接**原因是**现场扣留**（`RuntimeHold` 覆盖了实验所在的岛 100034）⇒ 按 ADR-FAULT-SCOPE-001「现场扣留优先于派发」**是设计如此**，不是调度器 bug；解除扣留后 3 秒即派发。但「上次执行转人工留下的扣留」没有明显提示，现场容易卡住 ⇒ 属体验缺口，记入待规划 |
+
+#### 处置：BUG-20261111-05（执行方 · 2026-11-11）
+
+| 项 | 结果 |
+|---|---|
+| 现象 | 设备 229（EQ143 Incubator_2C）登记的方法是 `Deposit1Ex`（真机 S100 系列的扩展进板），而模拟器 `incubator` 只认 `Deposit1` ⇒ 一接模拟器就被判「不支持该方法」⇒ 节点失败 `EC-99-0001` |
+| 修法 | `DeviceProfile` 的 incubator 白名单同时支持 `Deposit1Ex` / `Withdraw1Ex`（一行代码，不涉及内核执行逻辑） |
+| 配套 | 库里补了 `DRV-SIM-X229`(19510) / `DRV-SIM-X231`(19511) 两个模拟驱动、`device_method` 的 `143→Deposit1Ex`(cap 3) 与 `145→Home`(cap 2) 登记，并把两台 `device_instance.driver_id` 指向模拟驱动 ⇒ **两台设备随即 `online=true`** |
+| 实测 | 实验 1003103 = **completed**：`Activity_16n7hh7`(Deposit1Ex@200229)、`Activity_1w5e00z`(`__sleep`)、`Activity_1vi15o6`(Home@200231) **三个节点全 completed**，子步骤 S1/S2 也 completed |
+| 注意 | 模拟器是**进程**（本轮为 19510/19511，随进程结束就没了）；库里的 driver / device_method 登记是持久的 |
