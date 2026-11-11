@@ -347,6 +347,20 @@
     <!-- DeviceLock（设备锁，阶段3第21批收编） -->
 
     <!-- RETURNING 用 select 承载（MyBatis DTD 限制）：抢到即有一行，没抢到无行。 -->
+    <select id="selectDeviceStateRow" resultType="java.util.Map">
+        SELECT status, online,
+               current_run_id AS "currentRunId",
+               last_error AS "lastError"
+          FROM device_state
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+    </select>
+
+    <insert id="ensureDeviceState">
+        INSERT INTO device_state (tenant_id, resource_id, status, online, updated_at)
+        VALUES (#{param1}, #{param2}, 'idle', false, now())
+        ON CONFLICT (tenant_id, resource_id) DO NOTHING
+    </insert>
+
     <select id="tryAcquireDevice" resultType="java.lang.Long">
         UPDATE device_state
            SET current_run_id = #{runId}, status = 'running', updated_at = now()
@@ -359,7 +373,25 @@
            -- ③ 两个都中 ⇒ 这台设备既报过错又连不上 ⇒ 命令**必然发不出去** ⇒
            --    节点既不失败也不超时、永远停在 running ⇒ 整单卡死（这才是要治的）。
            -- online 恢复为 true（心跳探测到）后自动重新可选 ⇒ 不会永久出局。
-           AND NOT (device_state.status = 'error' AND device_state.online = false)
+           --
+           -- ⚠ **必须给"本 run 的重试"留例外**（2026-11-11 实测踩到）：同一次执行的
+           -- **重试**（设备命令失败后重试同一台设备）会再走这条抢锁
+           -- ⇒ 若这里把"故障且不可达"一刀切排除，**连自己的重试也挡掉**
+           -- ⇒ 表现为：命令 5 秒就失败了，却又在抢锁上**空等满 60 秒**
+           -- ⇒ 整单被拖成一分钟起步（实测 run 1001037）。
+           -- ⇒ 判据改成「本 run **没用过**这台设备才排除」：
+           --    · 本 run 用过（= 重试）⇒ 放行 ⇒ 重试**立刻**拿到"设备不可达"的失败，
+           --      不再空等（重试次数本来就有上限，不会无限循环）；
+           --    · 别的 run 用过、或谁都没用过 ⇒ 排除 ⇒ 不会去挑一台必然发不出命令的设备。
+           --    ⚠ 不能用 current_run_id 区分"自己的重试"：命令失败时锁**已经释放**
+           --      （current_run_id 变 NULL）⇒ 判据要落在 run_node 上。
+           AND NOT (
+               device_state.status = 'error' AND device_state.online = false
+               AND NOT EXISTS (
+                   SELECT 1 FROM run_node rn
+                    WHERE rn.tenant_id = device_state.tenant_id
+                      AND rn.run_id = #{runId}
+                      AND rn.resource_id = device_state.resource_id))
            AND (current_run_id IS NULL
                 OR current_run_id = #{runId}
                 -- 幽灵锁可回收：锁指向的 run **已经不存在或已终态** ⇒ 这把锁没人会

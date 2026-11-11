@@ -66,6 +66,14 @@ public final class DeviceLock {
      */
     public boolean tryAcquire(long resourceId, long runId) {
         try {
+            // **先确保这台设备在 device_state 里有一行**（2026-11-11 修）。
+            // 为什么：抢锁是一条 UPDATE ... WHERE resource_id=...，
+            // 设备**没有状态行**时匹配 0 行 ⇒ 永远"抢不到"
+            // ⇒ 调用方只能等满超时再报「设备被占用超过 60 秒」，
+            // 而真相是"这台设备压根没有状态行"（没接驱动/心跳没覆盖到）。
+            // 实测库里 43 台设备是这个状态 ⇒ 它们跑任何流程都是干等一分钟再失败。
+            // 已有行则不动（ON CONFLICT DO NOTHING）⇒ 不覆盖真实状态。
+            mapper().ensureDeviceState(tenantId, resourceId);
             // 抢到即 RETURNING 出一行；没抢到/无行返回 null。
             return mapper().tryAcquireDevice(tenantId, resourceId, runId) != null;
         } catch (RuntimeException e) {

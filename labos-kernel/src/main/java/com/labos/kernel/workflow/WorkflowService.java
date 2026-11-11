@@ -1880,6 +1880,42 @@ public class WorkflowService {
             }
         }
 
+        /**
+         * 抢不到设备锁时补一句现场状态。
+         *
+         * <p>为什么需要：光说"设备被占用超过 N 秒"分不清两种完全不同的情况 ——
+         * ① **被别的 run 占着**（正常，等一下就好）；② **这台设备自己有问题**
+         * （压根没有状态行、已离线、已故障）⇒ 等满超时也是白等，
+         * 现场看到的却是同一个消息 ⇒ 会误判成"别人占着设备"。
+         * （2026-11-11 实测：用户的实验卡在「设备被占用超过 60 秒：229」，
+         * 真相是那台设备**没有 device_state 行**，UPDATE 匹配 0 行 ⇒ 永远抢不到。）
+         */
+        private String deviceStateHint(long resourceNodeId) {
+            try {
+                java.util.Map<String, Object> row =
+                        dm().selectDeviceStateRow(tenantId, resourceNodeId);
+                if (row == null) {
+                    return "（该设备没有状态记录：多半没接驱动，或心跳没覆盖到）";
+                }
+                Object st = row.get("status");
+                Object on = row.get("online");
+                Object holder = row.get("currentRunId");
+                StringBuilder sb = new StringBuilder("（设备状态：");
+                sb.append(st == null ? "未知" : st);
+                sb.append(Boolean.TRUE.equals(on) ? "/在线" : "/离线");
+                if (holder instanceof Number n && n.longValue() > 0) {
+                    sb.append("；被 run #").append(n.longValue()).append(" 占用");
+                }
+                Object err = row.get("lastError");
+                if (err != null && !err.toString().isBlank()) {
+                    sb.append("；上次错误 ").append(err);
+                }
+                return sb.append("）").toString();
+            } catch (RuntimeException ignore) {
+                return "";   // 查不到状态就别添乱
+            }
+        }
+
         @Override
         public void onStepStart(long nodeId, int stepSeq, String method,
                                 long resourceId, int attempt) {
@@ -1903,7 +1939,8 @@ public class WorkflowService {
                             new com.labos.kernel.driver.DeviceLock(db, tenantId);
                     if (!lock.acquireWithWait(resNodeId, runIdOf(), waitMs)) {
                         throw new IllegalStateException(
-                                "设备被占用超过 " + (waitMs / 1000) + " 秒：" + resourceId);
+                                "设备被占用超过 " + (waitMs / 1000) + " 秒：" + resourceId
+                                + deviceStateHint(resNodeId));
                     }
                 }
             } catch (SQLException e) {

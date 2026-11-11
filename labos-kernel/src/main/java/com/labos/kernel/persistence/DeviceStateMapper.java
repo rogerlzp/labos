@@ -175,6 +175,32 @@ public interface DeviceStateMapper {
                           @Param("runId") long runId);
 
     /**
+     * 确保这台设备在 {@code device_state} 里**有一行**（没有就建一行空闲态）。
+     *
+     * <p><b>为什么需要这一步</b>（2026-11-11 实测）：抢锁用的是
+     * {@code UPDATE device_state SET current_run_id=... WHERE resource_id=...}
+     * ⇒ 设备**在 device_state 里没有行**时，UPDATE 匹配 **0 行** ⇒ 抢锁永远失败
+     * ⇒ 调用方只能等满超时（60 秒起步）再报「设备被占用超过 60 秒」——
+     * **这是误导**：那台设备根本没人占，是它压根没有状态行
+     * （实测库里 **43 台**有 device_instance 却没 device_state 行：多半没接驱动、
+     * 心跳也覆盖不到）。⇒ 先建行，让执行走到真正的失败点
+     * （发命令时明确报"没有驱动/设备不可达"），而不是干等一分钟再报个错的理由。
+     *
+     * <p>已有行则不动（{@code ON CONFLICT DO NOTHING}）⇒ 不覆盖真实状态。
+     */
+    int ensureDeviceState(@Param("tenantId") long tenantId,
+                           @Param("resourceId") long resourceId);
+
+    /**
+     * 查这台设备的状态行（status / online / current_run_id / last_error）。
+     *
+     * <p>给"抢不到设备锁"时补一句现场状态用：光说"被占用"分不清
+     * 「被别的 run 占着」与「这台设备压根没有状态行 / 已离线」。
+     */
+    java.util.Map<String, Object> selectDeviceStateRow(@Param("tenantId") long tenantId,
+                                                       @Param("resourceId") long resourceId);
+
+    /**
      * 释放设备（只释放自己占的，不误伤别人）：status 仅在无 last_error 时回落 idle。
      */
     int releaseDevice(@Param("tenantId") long tenantId,
