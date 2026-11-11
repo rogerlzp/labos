@@ -133,6 +133,30 @@ public class RunActionController {
         return attendance(id, req);
     }
 
+    /**
+     * **跳过这个失败节点，继续往下跑**。
+     *
+     * <p>body: {@code {"nodeKey":"Activity_xxx"}}（也可放 query）。
+     * 节点必须是 manual / skipped 状态；跳过后立刻续跑（其余未完成节点重做）。</p>
+     */
+    @PostMapping(value = "/runs/{id:\\d+}/skip-node", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> skipNode(@PathVariable long id,
+                            @RequestBody(required = false) String body,
+                            HttpServletRequest req,
+                            @RequestHeader(value = "X-Request-Id", required = false) String requestId)
+            throws SQLException {
+        String nodeKey = RunService.field(body, "nodeKey");
+        if (nodeKey == null || nodeKey.isBlank()) {
+            nodeKey = ApiServer.paramStr(req.getQueryString(), "nodeKey");
+        }
+        var result = runService.skipNode(id, nodeKey, requestId);
+        if (result.status() == 200) {
+            audit.record(session(req), "run.skip_node", "run", id, null, null,
+                    req.getRemoteAddr());
+        }
+        return to(result);
+    }
+
     @PostMapping(value = "/runs/dismiss", produces = "application/json; charset=utf-8")
     public ResponseEntity<String> dismissBatch(@RequestBody(required = false) String body,
                                                HttpServletRequest req) throws SQLException {

@@ -1,5 +1,6 @@
 package com.labos.kernel.workflow;
 
+import com.labos.kernel.persistence.RunMapper;
 import com.labos.kernel.persistence.DbConfig;
 
 import java.sql.Connection;
@@ -465,6 +466,19 @@ public final class PauseCoordinator {
      *
      * @param note 恢复备注，可空
      */
+    /**
+     * 实验运行（experiment_run）-> 它派出的流程运行（run）id。
+     *
+     * <p>实验级恢复要续跑的是**流程运行**（run 表），而接口传进来的是
+     * **实验运行**（experiment_run 表）—— 两者 id 不同，要反查一次。</p>
+     */
+    private Long firstWorkflowRunId(long experimentRunId) throws SQLException {
+        Long id = com.labos.kernel.persistence.Mappers.get(RunMapper.class)
+                .selectWorkflowRunIdOfExperimentRun(tenantId, experimentRunId);
+        log.debug("[暂停] 实验运行 " + experimentRunId + " ⇒ 流程运行 " + id);
+        return id;
+    }
+
     public ExperimentResume resumeExperimentRun(PauseCommand cmd, String note)
             throws SQLException {
         // P-06 V2 第二切片：解 Hold / run 回 queued / 实验表同步 / 作废旧 paused
@@ -511,12 +525,31 @@ public final class PauseCoordinator {
                             + e.getMessage());
                 }
             }
-            if (requeued && scheduler != null) {
-                try {
-                    scheduler.resumeRun(out.experimentId(), cmd.targetId());
-                } catch (Exception e) {
-                    log.error("[暂停] 恢复后重新入队失败（由启动 rehydrate 兜底）："
-                            + e.getMessage());
+            if (requeued) {
+                // ★ 实验级恢复必须**真正续跑**，不只是把 run 放回队列。
+                //
+                // 改动前这里只调 scheduler.resumeRun（重新入队）⇒ 调度器重新拾起时
+                // 按 run_node 里**已有的行**走 ⇒ manual 节点被跳过、后续节点没跑
+                // ⇒ 界面报 completed，实则只跑了前几步（**假完成**，2026-11-11 实测）。
+                //
+                // workflows.resumeAsync 做的正是"删掉未完成的节点行 + 用同一个
+                // workflow run 重跑图"—— run 级恢复一直走的就是这条路径。
+                // 这里补上它，实验级恢复才真的"从卡住的节点接着跑"。
+                Long wfRunId = firstWorkflowRunId(cmd.targetId());
+                if (wfRunId != null && workflows != null) {
+                    try {
+                        workflows.resumeAsync(wfRunId);
+                    } catch (RuntimeException ex) {
+                        log.error("[暂停] 恢复后续跑启动失败：" + ex.getMessage());
+                    }
+                } else if (scheduler != null) {
+                    // 拿不到对应的流程运行（没有 workflow 的实验级运行）⇒ 退回重新入队
+                    try {
+                        scheduler.resumeRun(out.experimentId(), cmd.targetId());
+                    } catch (Exception e) {
+                        log.error("[暂停] 恢复后重新入队失败（由启动 rehydrate 兜底）："
+                                + e.getMessage());
+                    }
                 }
             }
             return new ExperimentResume(cmd.targetId(), out.experimentId(),

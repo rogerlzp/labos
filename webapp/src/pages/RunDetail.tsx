@@ -9,7 +9,7 @@ import {
   ArrowLeftOutlined, PauseCircleOutlined, PlayCircleOutlined,
   ReloadOutlined, StopOutlined, SyncOutlined,
 } from '@ant-design/icons';
-import { api, type RunNode } from '../api/client';
+import { api, apiFetch, type RunNode } from '../api/client';
 import RunGraph from '../components/RunGraph';
 import RunCommands from '../components/RunCommands';
 import {
@@ -98,6 +98,37 @@ export default function RunDetailPage() {
   // manual = 卡在"要人处理"上。既不算完成也不算失败，原来两个数字都体现不出来，
   // 页面显示成「节点 0/1、失败 0」，读起来像"压根没跑"。
   const manual = roots.filter((r) => r.status === 'manual').length;
+
+  /**
+   * **跳过这个失败节点，继续往下跑**。
+   *
+   * <p>节点转人工（manual）之后，页面原有的动作只有「恢复」与「忽略」——
+   * 两个都不会让流程从那个节点往下跑。现场遇到"这一步就是过不去、后面还得继续"
+   * 就只能干等。这里给一个明确的出口：**这一步不做，继续**，并在节点表上留痕
+   * （状态是「跳过」，不是「完成」，一眼看得出它没做）。</p>
+   */
+  const [skipping, setSkipping] = useState<string | null>(null);
+  const skipNode = async (nodeKey: string) => {
+    setSkipping(nodeKey);
+    try {
+      const res = await apiFetch(`/api/runs/${runId}/skip-node`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodeKey }),
+      });
+      const body = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+      if (!res.ok || body.ok === false) {
+        message.error(body.error || body.message || t('runDetail.toast.skipFailed'));
+      } else {
+        message.success(t('runDetail.toast.skipped'));
+      }
+      await refetch();
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setSkipping(null);
+    }
+  };
   const percent = total === 0 ? 0 : Math.round((done / total) * 100);
 
   // 暂停类型也走词表：三种暂停态的恢复条件不同，文案/颜色必须和暂停队列页一致
@@ -375,6 +406,21 @@ export default function RunDetailPage() {
               {
                 title: t('runDetail.col.step'), width: 80,
                 render: (_, r) => (r.level === 1 ? r.stepSeq ?? '—' : '—'),
+              },
+              {
+                title: t('runDetail.col.action'), width: 160,
+                render: (_, r) => (
+                  <Space size={4}>
+                    {r.status === 'manual' ? (
+                      <Button size="small" type="link" loading={skipping === r.nodeKey}
+                        {...ro} onClick={() => skipNode(r.nodeKey)}>
+                        {t('runDetail.action.skipNode')}
+                      </Button>
+                    ) : (r.status === 'skipped' ? (
+                      <Tag color="orange">{t('runDetail.status.skippedByUser')}</Tag>
+                    ) : '—')}
+                  </Space>
+                ),
               },
               {
                 title: t('runDetail.col.attempt'), width: 80,

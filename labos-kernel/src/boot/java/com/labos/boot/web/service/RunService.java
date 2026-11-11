@@ -324,6 +324,67 @@ public class RunService {
         return Result.of(done ? 200 : 404, Jsons.obj("runId", runId, "dismissed", done), runId, null, null);
     }
 
+    // ================================================================ 跳过失败节点并继续
+
+    /**
+     * **跳过这个失败节点，继续往下跑**。
+     *
+     * <p>为什么需要：节点转人工（manual）之后，页面原有的动作只有两个 ——
+     * 「恢复」（把 run 重新排队）与「忽略」（标记为已忽略、不计失败、从队列消失），
+     * **两个都不会让流程从那个节点往下跑**。现场遇到"这一步就是过不去，
+     * 后面还得继续"就只能干等。</p>
+     *
+     * <p>做法：把该节点标成「人工确认跳过」（status='skipped' +
+     * input.skip_confirmed=true）⇒ 续跑时按"已完成"处理（不重做、不阻断下游），
+     * 但状态留痕 ≠ completed（界面能看出它是被跳过的，不是做成了）。</p>
+     *
+     * <p>与系统自动的 skipped 的区别：自动 skipped 的语义是
+     * 「板位不可信、必须停下来问人」（评审指引 D9）⇒ 仍会转人工；
+     * 这里差一个"人确认过"。</p>
+     */
+    public Result skipNode(long runId, String nodeKey, String requestId)
+            throws java.sql.SQLException {
+        if (nodeKey == null || nodeKey.isBlank()) {
+            return Result.of(400, Jsons.obj("ok", false, "error", "缺少 nodeKey"), null, null, null);
+        }
+        int n = runMapper.markNodeSkippedConfirmed(TENANT, runId, nodeKey.trim());
+        if (n == 0) {
+            return Result.of(404, Jsons.obj("ok", false,
+                    "error", "节点不存在，或它不是失败待处理的状态（只能跳过 manual / skipped 的节点）"),
+                    runId, null, null);
+        }
+        // 跳过之后要让流程**真的往下走**：删掉其余未完成的节点行并重跑图。
+        // **必须一并释放挡住派发的现场扣留**：节点失败时抬的是**岛级/实验级** Hold，
+        // 而扣留是**全局闸门** —— 不清掉它，续跑时设备仍被挡住 ⇒ 下游节点
+        // 照样拿不到设备 ⇒ 又转人工（跳过的效果就白费了）。
+        // 清扣留的动作与「恢复」一致（见 RunControl.resumeTx）。
+        Long expId = runMapper.selectExperimentIdOfRun(TENANT, runId);
+        if (expId != null) {
+            try {
+                com.labos.kernel.workflow.RuntimeHold holds =
+                        new com.labos.kernel.workflow.RuntimeHold(db, TENANT);
+                var covered = holds.coveringForExperimentChecked(expId);
+                if (covered != null) {
+                    holds.clear(com.labos.kernel.workflow.RuntimeHold.Scope.of(covered.scope()),
+                            covered.scopeId(), null, "跳过失败节点后继续执行");
+                }
+            } catch (RuntimeException | java.sql.SQLException ex) {
+                return Result.of(500, Jsons.obj("ok", false,
+                        "error", "跳过已标记，但释放现场扣留失败：" + ex.getMessage()),
+                        runId, null, null);
+            }
+        }
+        try {
+            workflows.resumeAsync(runId);
+        } catch (RuntimeException ex) {
+            return Result.of(500, Jsons.obj("ok", false,
+                    "error", "跳过已标记，但续跑启动失败：" + ex.getMessage()),
+                    runId, null, null);
+        }
+        return Result.ok(Jsons.obj("runId", runId, "nodeKey", nodeKey.trim(),
+                "skipped", true, "message", "已跳过该节点并继续执行"));
+    }
+
     // ================================================================ 只读
 
     public String pausedRuns() throws java.sql.SQLException {
@@ -386,7 +447,8 @@ public class RunService {
 
     // ================================================================ 内部
 
-    private static String field(String body, String key) {
+    /** 取 body 里的字符串字段（Controller 也要用 ⇒ public）。 */
+    public static String field(String body, String key) {
         return com.labos.kernel.api.ApiServer.jsonField(body, key);
     }
 

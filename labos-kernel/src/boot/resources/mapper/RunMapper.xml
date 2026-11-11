@@ -353,10 +353,37 @@
           FROM run WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <!--
+      续跑时「已经做完、不再执行」的节点 key。
+
+      两类：
+      ① completed —— 真做完了；
+      ② **人工确认跳过**（status='skipped' 且 input->>'skip_confirmed'='true'）
+         —— 这一步用户明确决定「不做，继续往下」⇒ 续跑时**不再重做**，
+         也不阻断下游（否则又变成"卡住等人"）。
+         区分于普通的 skipped：那个的语义是「板位不可信、必须停下来问人」，
+         两者差一个"人确认过"。
+    -->
+    <!-- 把节点标成「人工确认跳过」：状态 skipped + input.skip_confirmed 标记。 -->
+    <update id="markNodeSkippedConfirmed">
+        UPDATE run_node
+           SET status = 'skipped',
+               input = COALESCE(input, '{}'::jsonb)
+                       || jsonb_build_object('skip_confirmed', true,
+                                             'skip_confirmed_at', now()::text),
+               actual_end = COALESCE(actual_end, now()),
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND run_id = #{runId} AND level = 0
+           AND node_key = #{nodeKey}
+           AND status IN ('manual', 'skipped')
+    </update>
+
     <select id="selectCompletedNodeKeys" resultType="java.lang.String">
         SELECT node_key FROM run_node
          WHERE tenant_id = #{param1} AND run_id = #{param2}
-           AND level = 0 AND status = 'completed'
+           AND level = 0
+           AND (status = 'completed'
+                OR (status = 'skipped' AND input->>'skip_confirmed' = 'true'))
     </select>
 
     <update id="deleteIncompleteStepRows">
@@ -366,12 +393,15 @@
            AND p.id = s.parent_node_id
            AND p.tenant_id = s.tenant_id AND p.run_id = s.run_id
            AND p.level = 0 AND p.status &lt;&gt; 'completed'
+           AND NOT (p.status = 'skipped' AND p.input->>'skip_confirmed' = 'true')
     </update>
 
     <update id="deleteIncompleteTopNodes">
         DELETE FROM run_node
          WHERE tenant_id = #{param1} AND run_id = #{param2} AND level = 0
            AND status &lt;&gt; 'completed'
+           -- 人工确认跳过的节点**保留**（要留痕，且续跑时按"已完成"跳过）
+           AND NOT (status = 'skipped' AND input->>'skip_confirmed' = 'true')
     </update>
 
     <update id="markResumed">
@@ -615,6 +645,17 @@
                actual_end = COALESCE(actual_end, now())
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
+
+    <!-- 实验运行（experiment_run）-> 它派出的流程运行（run）id。
+         实验级恢复要知道"该续跑哪个 workflow run" ⇒ 需要这个反查。 -->
+    <select id="selectWorkflowRunIdOfExperimentRun" resultType="java.lang.Long">
+        SELECT run_id
+          FROM experiment_run_step
+         WHERE tenant_id = #{param1} AND experiment_run_id = #{param2}
+           AND run_id IS NOT NULL
+         ORDER BY seq
+         LIMIT 1
+    </select>
 
     <select id="selectExperimentIdOfRun" resultType="java.lang.Long">
         SELECT er.experiment_id

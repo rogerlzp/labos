@@ -134,6 +134,16 @@ public interface RunMapper {
     Map<String, Object> selectRunResumeInfo(long tenantId, long runId);
 
     /** 续跑：本轮已完成的顶层节点 key（level=0 + completed，不再执行）。 */
+    /**
+     * 把一个节点标成「**人工确认跳过**」：status='skipped' + input.skip_confirmed=true。
+     *
+     * <p>语义：这一步用户明确决定「不做，继续往下」。续跑时按"已完成"处理
+     * （不重做、不阻断下游），但状态留痕 ≠ completed，界面上能看出它是被跳过的。</p>
+     */
+    int markNodeSkippedConfirmed(@Param("tenantId") long tenantId,
+                                 @Param("runId") long runId,
+                                 @Param("nodeKey") String nodeKey);
+
     List<String> selectCompletedNodeKeys(long tenantId, long runId);
 
     /** 续跑：先删未完成业务节点的步骤行（level=1，否则重跑时 duplicate key）。 */
@@ -259,6 +269,12 @@ public interface RunMapper {
 
     /** run -> 实验 id（经 experiment_run_step 反查）；无归属返回 null。 */
     Long selectExperimentIdOfRun(long tenantId, long runId);
+
+    /**
+     * 实验运行（experiment_run）-> 它派出的流程运行（run）id。
+     * 实验级恢复要知道"该续跑哪个 workflow run" ⇒ 用它反查。
+     */
+    Long selectWorkflowRunIdOfExperimentRun(long tenantId, long experimentRunId);
 
     /** 人工确认隔离：failed + 确认说明 jsonb；仅当还是 quarantined。 */
     int confirmQuarantine(long tenantId, long runId, String inputJson);
