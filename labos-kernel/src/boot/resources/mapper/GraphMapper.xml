@@ -149,6 +149,10 @@
                array_agg(rc.resource_id ORDER BY rc.resource_id) AS "ids"
           FROM resource_capability rc
           JOIN capability c ON c.id = rc.capability_id
+         WHERE NOT EXISTS (
+               SELECT 1 FROM device_state ds
+                WHERE ds.resource_id = rc.resource_id
+                  AND ds.status = 'error' AND ds.online = false)
          GROUP BY c.code
     </select>
 

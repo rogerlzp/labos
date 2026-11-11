@@ -351,6 +351,15 @@
         UPDATE device_state
            SET current_run_id = #{runId}, status = 'running', updated_at = now()
          WHERE tenant_id = #{tenantId} AND resource_id = #{resourceId}
+           -- P-18：**既故障又不可达**的设备不参与执行（error + offline）。
+           -- 为什么是这两个条件一起：① 只有 error ⇒ 可能只是"这个方法不支持"
+           --    （设备本身是好的，别的流程还能用）⇒ 不能排除，否则设备永久出局；
+           -- ② 只有 offline ⇒ 库里大量存量设备心跳没刷新（实测 168 台 idle+offline）
+           --    ⇒ 一律排除等于把大半设备踢出候选池；
+           -- ③ 两个都中 ⇒ 这台设备既报过错又连不上 ⇒ 命令**必然发不出去** ⇒
+           --    节点既不失败也不超时、永远停在 running ⇒ 整单卡死（这才是要治的）。
+           -- online 恢复为 true（心跳探测到）后自动重新可选 ⇒ 不会永久出局。
+           AND NOT (device_state.status = 'error' AND device_state.online = false)
            AND (current_run_id IS NULL
                 OR current_run_id = #{runId}
                 -- 幽灵锁可回收：锁指向的 run **已经不存在或已终态** ⇒ 这把锁没人会
