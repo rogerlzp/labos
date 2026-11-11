@@ -105,7 +105,11 @@ public final class DeviceProfile {
 
             // 孵育箱：Thermo Heracell，室温+5 ~ 55 °C，CO2 0–20%。
             Map.entry("incubator", new DeviceProfile("incubator", 3_000,
-                    Set.of("Home", "OpenDoor", "CloseDoor", "Deposit1", "Withdraw1",
+                    // Deposit1Ex = Deposit1 的扩展版（真机 S100 系列的扩展进板）。
+                    // 之前模拟器只认 Deposit1 ⇒ 库里登记了 Deposit1Ex 的设备
+                    // 一接模拟器就被判"不支持该方法"⇒ 节点失败。
+                    Set.of("Home", "OpenDoor", "CloseDoor", "Deposit1", "Deposit1Ex",
+                            "Withdraw1", "Withdraw1Ex",
                             "SetTemp", "SetCO2", "GetTemp", "GetStatus"),
                     0, 0, 0, 0, 0, 0, 5, 55, 20,
                     true, false)),
