@@ -62,7 +62,11 @@ The node labels have two slots, and that is the key to reading the whole drawing
 - A container is written as `PCR plate [amplified product] (owning step)`
   - `[amplified product]` = **what this plate currently holds** (content state)
   - `(owning step)` = **which step this plate belongs to** (material provenance)
-- Plus a `-膜` / `-盖` / `-样品` suffix = **consumable state** (sealed / lidded / dosed)
+- Plus a `-膜` / `-盖` / `-样品` suffix = **consumable state** (sealed / lidded / dosed).
+  ⚠ **A seal and a lid are not the same thing**: a seal is a state of the plate itself
+  (it is peeled off and goes straight to waste, **it is not tracked separately**), while
+  **a lid is an entity in its own right** — it has its own position and its own
+  hand-over (taken from an ambient carrier, put on the plate, peeled off again)
 
 ⇒ **A plate has three dimensions on this drawing: identity, content, consumable state.
 LabOS currently has only the first one.**
@@ -153,7 +157,7 @@ plate reader 「incubate  read」 → 「until the reading reaches the set point
 | # | Gap | Evidence in the drawing | LabOS today | Consequence |
 |---|---|---|---|---|
 | G1 | Container content state is not modelled | every plate carries its content (amplified product / purified sample / detection mix / colour / stop …) — 18 states in total | `plate` has only `status(active)` and `position_status(IN_TRANSFER\|KNOWN)`; the `attr` column is **empty for every row** | "what does this plate hold right now" cannot be answered; the trace breaks |
-| G2 | Consumable state (seal / lid) is not modelled | `-膜` (sealed), `-盖` (lidded), `-样品` (dosed); the de-sealer removes it again | nowhere to store it | the second dimension of the container state is missing |
+| G2 | Consumables are not modelled | `-膜` (sealed), `-盖` (lidded), `-样品` (dosed); the de-sealer removes it again. ⚠ **a seal and a lid must be looked at separately**: a seal is a state of the plate (peeled off and discarded, not tracked on its own), while **a lid is an entity in its own right** (it has its own position and hand-over) | nowhere to store it | a seal only needs a column; a lid needs **a new class of entity** (its own stock and handling) — a completely different order of magnitude |
 | G3 | There is no semantics for material hand-over across processes | the container name runs all the way through; the output of one sub-process is the input of the next (grey dashed arrows) | specification §7.2: "2.0 delivers sequence only"; `experiment_run` has a single-valued `workflow_id` + a `variables` JSONB; `plate` has **no field for "which run / which step owns this"** | Orchestrating the drawing as it is ⇒ **the plate identity breaks between sub-processes**: where the plate went at the end of one process and where the next one picks it up cannot be answered |
 | G4 | There is no "station" layer under a device | multi-station platform stations ×47, inside the platform ×19, magnetic separation station, transfer positions, plate positions inside instruments | `resource_node.kind ∈ {device, incubator, island, storage, transfer_point}` — **there is no station layer**; `position_state.port_id` is the closest thing to a "channel", but it cannot express "one device with dozens of stations" | "the arm picks the plate at station 3 and puts it at station 7" has **nowhere to land** |
 
@@ -217,7 +221,8 @@ The core entity of this drawing is **material**.
 
 | Action | Landed on |
 |---|---|
-| Add content state, consumable state and ownership (run / step) to `plate` | G1, G2 |
+| Add content state, **seal** state and ownership (run / step) to `plate` | G1, the seal half of G2 |
+| **Lids and other independent consumables** become a class of entity of their own (their own stock and handling), not an attribute of the plate | the lid half of G2 |
 | Turn `plate_type` from `unknown` into a real dictionary (PCR plate / deep-well plate / assay plate / reagent reservoir / sample deep-well plate) | G12 |
 | Add a state-transition trace (modelled on `plate_location_audit`) | the "traceable" half of G1 |
 | **Nodes declare the material they produce**: a device method turns the container into a given state when it finishes | the other half of G1 — without this the state never changes by itself |
