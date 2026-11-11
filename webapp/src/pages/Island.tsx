@@ -838,6 +838,16 @@ export default function IslandPage() {
                         <div style={{ marginTop: 2, fontSize: 10, fontFamily: 'monospace', color: '#5b6376' }}>
                           {d.ip ?? t('island.device.ipMissing')}
                         </div>
+                        {/* 设备ID：设备的**唯一标识**，现场核对「这台是不是那台」时
+                            比编号/名称更硬（编号会改、名称会重名，ID 不会）。
+                            之前只显示编号与 IP，ID 藏在接口里 —— 用户在页面上
+                            根本没法拿它去跟中控/管理台/工单对账。 */}
+                        {d.instanceId != null && (
+                          <div style={{ marginTop: 1, fontSize: 10, fontFamily: 'monospace', color: '#5b6376' }}
+                            title={t('island.device.idHint')}>
+                            {t('island.device.idLabel')} {d.instanceId}
+                          </div>
+                        )}
                         <Space size={6} style={{ marginTop: 2 }}>
                           <Button size="small" type="link"
                             style={{ padding: 0, height: 18, fontSize: 10 }}
@@ -883,6 +893,11 @@ export default function IslandPage() {
                   <Tag color={CAP_COLOR[picked.capability ?? '']}>{picked.capability ?? '—'}</Tag>
                 </Descriptions.Item>
                 <Descriptions.Item label={t('island.field.model')}>{picked.model ?? '—'}</Descriptions.Item>
+                <Descriptions.Item label={t('island.device.idLabel')}>
+                  <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                    {picked.instanceId ?? '—'}
+                  </span>
+                </Descriptions.Item>
                 <Descriptions.Item label="IP">
                   <Space size={4}>
                     <span style={{ fontFamily: 'monospace', fontSize: 12 }}>

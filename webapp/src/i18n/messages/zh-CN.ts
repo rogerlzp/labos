@@ -1037,6 +1037,8 @@ export const zhCN = {
   'island.device.running': '运行中：{method}',
   'island.device.idle': '在线空闲',
   'island.device.ipMissing': 'IP 未配置',
+  'island.device.idLabel': '设备ID',
+  'island.device.idHint': '设备唯一标识（device_instance.id）—— 与中控清单、设备管理台对账用它',
   'island.action.details': '详情',
   'island.action.addToSeq': '搬运序列',
   'island.plate.label': '板子',

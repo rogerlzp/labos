@@ -1036,6 +1036,8 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'island.device.running': 'Running: {method}',
   'island.device.idle': 'Online and idle',
   'island.device.ipMissing': 'IP not configured',
+  'island.device.idLabel': 'Device ID',
+  'island.device.idHint': 'The unique device identifier (device_instance.id) — use it to reconcile against the control system list and the device console',
   'island.action.details': 'Details',
   'island.action.addToSeq': 'Transfer sequence',
   'island.plate.label': 'Plate',
