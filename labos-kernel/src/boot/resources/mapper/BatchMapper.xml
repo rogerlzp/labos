@@ -207,7 +207,8 @@
                error = r.error,
                started_at = COALESCE(br.started_at, r.started_at),
                finished_at = CASE
-                   WHEN r.status IN ('completed', 'failed', 'aborted', 'cancelled')
+                   -- quarantined 也是终态（隔离待人工确认）⇒ 也要落 finished_at
+                   WHEN r.status IN ('completed', 'failed', 'aborted', 'cancelled', 'quarantined')
                    THEN COALESCE(br.finished_at, now())
                    ELSE NULL
                END
@@ -246,7 +247,9 @@
         UPDATE experiment_run
            SET status = 'failed', error = #{param3}, finished_at = now()
          WHERE tenant_id = #{param1} AND id = #{param2}
-           AND status NOT IN ('completed', 'failed', 'aborted', 'cancelled')
+           -- ⚠ quarantined 不在此列 ⇒ 启动兜底**不会**把它改成 failed
+           -- （它是"隔离待人工确认"，不是失败；改成 failed 就丢了"待人工"这个语义）
+           AND status NOT IN ('completed', 'failed', 'aborted', 'cancelled', 'quarantined')
     </update>
 
 </mapper>

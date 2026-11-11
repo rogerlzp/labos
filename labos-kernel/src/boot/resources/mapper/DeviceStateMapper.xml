@@ -427,7 +427,13 @@
            AND EXISTS (
                  SELECT 1 FROM run r
                  WHERE r.id = ds.current_run_id
-                   AND r.status::text IN ('completed','failed','aborted','cancelled'))
+                   -- ⚠ **quarantined 也要算终态**（2026-11-11 修）：
+                   -- 它是"命令物理结果未知、隔离待人工确认"的**终态**
+                   -- （StatusVocabulary: RUN_TO_EXPERIMENT 把 quarantined 映射成 failed），
+                   -- 之前不在这个列表里 ⇒ 它留下的设备锁**永远不回收**
+                   -- ⇒ 那台设备**永久不可用**（实测 200206 被一个 quarantined 的老 run
+                   -- 占住，调度器一直 stalled；只能手工清锁才恢复）。
+                   AND r.status::text IN ('completed','failed','aborted','cancelled','quarantined'))
     </update>
 
     <!-- 超时锁：run 还在 running 但 updated_at 超过阈值（秒数文本拼 interval）。 -->
