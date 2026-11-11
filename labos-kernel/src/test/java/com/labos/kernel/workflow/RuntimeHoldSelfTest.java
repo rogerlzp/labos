@@ -75,8 +75,11 @@ public final class RuntimeHoldSelfTest {
         // 这一节是 V1-1 的核心分界：走的是 RuntimeHold 的真实读库路径（coverageFor /
         // coverageForWorkflow / siteState），不是纯函数。读库失败必须折成 UNKNOWN 阻断。
         // 关键分界：旧实现把「读库失败」和「现场无扣留」都当成放行（fail-open）。
-        // 指向一个一定连不上的库：DriverManager 要么抛「No suitable driver」，
-        // 要么连 127.0.0.1:1 被拒 —— 两种情况都是 SQLException。
+        //
+        // 收编后读库经 MyBatis Mapper（全局 standalone DataSource，不再吃实例上的
+        // DbConfig），所以「坏库」要在 JVM 级注入：test-all.sh 跑本类时把
+        // LABOS_DB_HOST/PORT 指向 127.0.0.1:1（必拒连）。下面这个 broken 实例上的
+        // 死连接串只是留作文档，说明意图是「读库一定失败」。
         RuntimeHold broken = new RuntimeHold(
                 new DbConfig("jdbc:postgresql://127.0.0.1:1/labdb-probe", "nobody", "nobody"), 1L);
         state("siteState 读库失败 -> UNKNOWN（阻断派发）", broken.siteState(),

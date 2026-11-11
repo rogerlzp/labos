@@ -2,6 +2,7 @@ package com.labos.boot.web.service;
 
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.ExperimentMapper;
+import com.labos.kernel.persistence.Tx;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
@@ -129,17 +130,16 @@ public class ExperimentActionService {
             throw new IllegalArgumentException("图不能为空");
         }
         CompiledGraph compiled = compileExperimentGraph(graphJson);
-        try (Connection c = db.open()) {
-            try {
-                experimentMapper.upsertExperimentGraph(TENANT, experimentId, graphJson);
-                validateExperimentWorkflowIds(c, compiled.workflowIds());
-                replaceExperimentProcesses(c, experimentId, compiled, false);
-                bumpExperimentVersion(c, experimentId);
-                return compiled.steps().size();
-            } catch (java.sql.SQLException | RuntimeException e) {
-                throw e;
-            }
-        }
+        // 旧实现（QueryService 拆分前）有 @Transactional(rollbackFor = Exception.class)，
+        // 阶段2 Service 拆分弄丢了：校验抛错时 upsert 的脏 graph 已 auto-commit 落库。
+        // 这里整个方法收回 Spring 事务（Tx.inTransaction），先校验再写库。
+        return Tx.inTransaction(db, c -> {
+            validateExperimentWorkflowIds(c, compiled.workflowIds());
+            experimentMapper.upsertExperimentGraph(TENANT, experimentId, graphJson);
+            replaceExperimentProcesses(c, experimentId, compiled, false);
+            bumpExperimentVersion(c, experimentId);
+            return compiled.steps().size();
+        });
     }
 
     /** 实验编排：该实验由哪些流程按什么顺序组成。 */

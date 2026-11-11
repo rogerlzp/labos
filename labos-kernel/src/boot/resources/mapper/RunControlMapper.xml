@@ -39,8 +39,8 @@
            AND r.status IN ('queued', 'running')
            AND r.control_state = 'NONE'
         <choose>
-            <when test="scope == 'SITE'"/>
-            <when test="scope == 'ISLAND'">
+            <when test="scope == 'site'"/>
+            <when test="scope == 'island'">
                 AND e.island_id = #{scopeId}
             </when>
             <otherwise>

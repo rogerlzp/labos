@@ -226,6 +226,26 @@ run_one() {
 
 echo "════════ 纯逻辑测试（不需要数据库）════════"
 for t in "${PURE[@]}"; do
+  if [[ "$t" == "workflow.RuntimeHoldSelfTest" ]]; then
+    # 该类第 7 节要验证「读库失败 ⇒ UNKNOWN 阻断」：收编后读库走全局 standalone
+    # DataSource（不吃实例 DbConfig），坏库只能在 JVM 级注入 —— 指向必拒连的
+    # 127.0.0.1:1。其余纯逻辑节不碰库，不受影响。
+    out=$(env LABOS_DB_HOST=127.0.0.1 LABOS_DB_PORT=1 java -cp "$CP" "com.labos.kernel.$t" 2>&1)
+    line=$(echo "$out" | grep -oE "通过 [0-9]+, 失败 [0-9]+" | tail -1)
+    if [[ -z "$line" ]]; then
+      printf "  %-28s 无法解析输出\n" "${t##*.}"
+      FAIL=$((FAIL + 1))
+      echo "      ↓ 失败详情：${t}"
+      echo "$out" | tail -8 | sed 's/^/      /'
+      continue
+    fi
+    p=$(echo "$line" | grep -oE "通过 [0-9]+" | grep -oE "[0-9]+")
+    f=$(echo "$line" | grep -oE "失败 [0-9]+" | grep -oE "[0-9]+")
+    PASS=$((PASS + p))
+    FAIL=$((FAIL + f))
+    printf "  %-28s %s\n" "${t##*.}" "$line"
+    continue
+  fi
   run_one "$t"
 done
 

@@ -149,7 +149,9 @@
     </select>
 
     <select id="lockExperimentBatchSplit" resultType="java.lang.Integer">
-        SELECT batch_split FROM experiment
+        <!-- batch_split 合法值只有 >0 或 NULL；COALESCE(-1) 把「行存在但开关为 NULL」
+             与「行不存在」区分开（调用方靠 null 判实验不存在，收编前的 rs.next() 语义）。 -->
+        SELECT COALESCE(batch_split, -1) FROM experiment
          WHERE tenant_id = #{param1} AND id = #{param2}
          FOR UPDATE
     </select>

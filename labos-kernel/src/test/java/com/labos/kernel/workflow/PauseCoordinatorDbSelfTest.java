@@ -1,6 +1,7 @@
 package com.labos.kernel.workflow;
 
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.Tx;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -176,18 +177,21 @@ public final class PauseCoordinatorDbSelfTest {
     // ------------------------------------------------- 4. 恢复单事务（P-06 V2 第二切片）
 
     private static void transactionalInfoLocksRunAndExperimentRows() throws Exception {
-        try (Connection c = db.open()) {
-            c.setAutoCommit(false);
-            RunControl ctl = new RunControl(db, TENANT);
-            RunControl.RunInfo info = ctl.infoTx(c, RUN_P);
-            check("事务内读取拿到目标 run", info.runId() == RUN_P, info.runId());
-            check("事务内读取拿到目标实验", info.experimentId() == EXP_P, info.experimentId());
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        // 收编后 infoTx 的 FOR UPDATE 经 Mapper 执行：在 Spring 事务内
+        // （Tx.inTransaction）会复用绑定连接，锁随事务提交/回滚释放；
+        // 裸 setAutoCommit(false) 连接不在事务同步里，Mapper 会另开连接，
+        // 锁立刻释放（原裸 JDBC 实现是直接在 c 上执行 SELECT FOR UPDATE）。
+        Future<Integer>[] runUpdate = new Future[1];
+        Future<Integer>[] experimentUpdate = new Future[1];
+        try {
+            Tx.inTransaction(db, c -> {
+                RunControl ctl = new RunControl(db, TENANT);
+                RunControl.RunInfo info = ctl.infoTx(c, RUN_P);
+                check("事务内读取拿到目标 run", info.runId() == RUN_P, info.runId());
+                check("事务内读取拿到目标实验", info.experimentId() == EXP_P, info.experimentId());
 
-            ExecutorService pool = Executors.newFixedThreadPool(2);
-            Future<Integer> runUpdate = null;
-            Future<Integer> experimentUpdate = null;
-            try {
-                runUpdate = pool.submit(() -> {
+                runUpdate[0] = pool.submit(() -> {
                     try (Connection c2 = db.open();
                          PreparedStatement ps = c2.prepareStatement("""
                                  UPDATE experiment_run SET pause_reason = 'tx-lock'
@@ -198,7 +202,7 @@ public final class PauseCoordinatorDbSelfTest {
                         return ps.executeUpdate();
                     }
                 });
-                experimentUpdate = pool.submit(() -> {
+                experimentUpdate[0] = pool.submit(() -> {
                     try (Connection c2 = db.open();
                          PreparedStatement ps = c2.prepareStatement("""
                                  UPDATE experiment SET island_id = 7
@@ -210,17 +214,18 @@ public final class PauseCoordinatorDbSelfTest {
                     }
                 });
 
-                check("run 行在提交前被锁住", blocked(runUpdate), "blocked");
-                check("experiment 行在提交前被锁住", blocked(experimentUpdate), "blocked");
-                c.commit();
-                int runUpdated = runUpdate.get(2, TimeUnit.SECONDS);
-                int experimentUpdated = experimentUpdate.get(2, TimeUnit.SECONDS);
-                check("提交后 run 行更新放行", runUpdated == 1, runUpdated);
-                check("提交后 experiment 行更新放行",
-                        experimentUpdated == 1, experimentUpdated);
-            } finally {
-                pool.shutdownNow();
-            }
+                check("run 行在提交前被锁住", blockedQuiet(runUpdate[0]), "blocked");
+                check("experiment 行在提交前被锁住", blockedQuiet(experimentUpdate[0]), "blocked");
+                return null;
+            });
+            // 事务已提交，两个 UPDATE 必须放行
+            int runUpdated = runUpdate[0].get(2, TimeUnit.SECONDS);
+            int experimentUpdated = experimentUpdate[0].get(2, TimeUnit.SECONDS);
+            check("提交后 run 行更新放行", runUpdated == 1, runUpdated);
+            check("提交后 experiment 行更新放行",
+                    experimentUpdated == 1, experimentUpdated);
+        } finally {
+            pool.shutdownNow();
         }
         exec("UPDATE experiment_run SET pause_reason = NULL WHERE tenant_id=1 AND id=" + RUN_P);
         exec("UPDATE experiment SET island_id = NULL WHERE tenant_id=1 AND id=" + EXP_P);
@@ -481,6 +486,17 @@ public final class PauseCoordinatorDbSelfTest {
             return false;
         } catch (TimeoutException expected) {
             return true;
+        }
+    }
+
+    /** {@link #blocked} 的 lambda 友好版（Tx.SqlWork 只声明 SQLException）。 */
+    private static boolean blockedQuiet(Future<Integer> f) {
+        try {
+            return blocked(f);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
