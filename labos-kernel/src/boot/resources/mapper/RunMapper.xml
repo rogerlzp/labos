@@ -342,8 +342,57 @@
 
     <!-- 执行生命周期：断点续跑（WorkflowService.doResumeAsync）。 -->
 
+    <!--
+      运行期变量并进 run.input.vars。
+
+      ⚠ 必须**深合并**（合并 vars 子对象），不能整块替换：
+      顶层 `input || {"vars":...}` 是浅合并 ⇒ 会把建 run 时写进去的
+      **流程级变量初始值**整块顶掉（只剩本次传入的那几个）。
+      现场表现就是「变量声明了初值，一跑就没了」。
+    -->
+    <!--
+      运行期变量表（run.input->'vars'），一行一个变量。
+      用 jsonb_each_text 拆开：不整块读 jsonb（那样拿到的类型随驱动而变），
+      也不在 Java 里做 JSON 解析。
+    -->
+    <select id="selectRunVars" resultType="java.util.Map">
+        SELECT e.key AS "name", e.value AS "value"
+          FROM run r
+          CROSS JOIN LATERAL jsonb_each_text(
+                  COALESCE(r.input->'vars', '{}'::jsonb)) AS e(key, value)
+         WHERE r.tenant_id = #{param1} AND r.id = #{param2}
+    </select>
+
+    <!--
+      改一个运行期变量。
+      ⚠ 只动 vars 子对象里的那一个键（深合并），不整表替换 ——
+      运行中别的节点可能正在写同一张表。
+    -->
+    <update id="setRunVar">
+        UPDATE run
+           SET input = COALESCE(input, '{}'::jsonb)
+                    || jsonb_build_object('vars',
+                         COALESCE(input->'vars', '{}'::jsonb)
+                         || jsonb_build_object(#{param3}::text, #{param4}::text))
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <select id="selectRunWorkflowId" resultType="java.lang.Long">
+        SELECT workflow_id FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectRunStatus" resultType="java.lang.String">
+        SELECT status::text FROM run
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
     <update id="mergeRunInputVars">
-        UPDATE run SET input = COALESCE(input, '{}'::jsonb) || #{param3}::jsonb
+        UPDATE run
+           SET input = COALESCE(input, '{}'::jsonb)
+                    || jsonb_build_object('vars',
+                         COALESCE(input->'vars', '{}'::jsonb)
+                         || COALESCE(#{param3}::jsonb->'vars', '{}'::jsonb))
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
 
@@ -412,11 +461,20 @@
 
     <!-- 执行写入：WorkflowService 执行体（节点外壳/状态推进/步骤+命令台账/边界暂停）。 -->
 
+    <!--
+      varsJson = {"name":"value"}（变量表）。
+
+      为什么建 run 时就把变量写进去：run.input->'vars' 就是这条 run 的**运行期变量表**，
+      __setVar / __expr / 条件判断 / 设备参数里的 ${x} 全从它取值。
+      以前这里不写 ⇒ 变量表恒为空 ⇒ 流程里声明的初始值在运行时根本不存在
+      （"设计器里看得见、跑起来读不到"）。
+    -->
     <select id="insertRun" resultType="java.lang.Long">
         INSERT INTO run (tenant_id, run_no, run_type, workflow_id, mode, priority,
-                         status, attendance, actual_start, created_at)
+                         status, attendance, actual_start, created_at, input)
         VALUES (#{param1}, #{param2}, 'workflow', #{param3}, 'normal', 5,
-                'running', #{param4}, now(), now())
+                'running', #{param4}, now(), now(),
+                jsonb_build_object('vars', COALESCE(#{param5}::jsonb, '{}'::jsonb)))
         RETURNING id
     </select>
 

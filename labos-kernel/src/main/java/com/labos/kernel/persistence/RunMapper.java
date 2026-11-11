@@ -130,6 +130,29 @@ public interface RunMapper {
     /** 运行期变量合并进 run.input.vars（启动线程读 input 之前必须落库）。 */
     int mergeRunInputVars(long tenantId, long runId, String varsJson);
 
+    /**
+     * 读这条 run 的**运行期变量表**（{@code run.input->'vars}），一行一个变量。
+     *
+     * <p>用 {@code jsonb_each_text} 拆开返回，而不是把整个 jsonb 当成一个字段读回来
+     * —— 后者拿到的类型随驱动而变（PGobject / String），还得在 Java 里二次解析。</p>
+     */
+    List<Map<String, Object>> selectRunVars(long tenantId, long runId);
+
+    /**
+     * 改**一个**运行期变量（{@code run.input->vars->name}）。
+     *
+     * <p>为什么是"改一个"而不是整表覆盖：整表覆盖会把别人刚写的值冲掉
+     * （运行中 `__setVar` / `__wait` 都在动这张表）。</p>
+     */
+    int setRunVar(@Param("tenantId") long tenantId, @Param("runId") long runId,
+                  @Param("name") String name, @Param("value") String value);
+
+    /** 这条 run 属于哪条流程（用来查它声明了哪些变量）；没有流程级 run 返回 null。 */
+    Long selectRunWorkflowId(long tenantId, long runId);
+
+    /** 这条 run 现在什么状态（改变量前要判它还能不能改）。 */
+    String selectRunStatus(long tenantId, long runId);
+
     /** 续跑前置读：workflow_id 与值守模式（attendance 为 NULL 按 'attended'）。 */
     Map<String, Object> selectRunResumeInfo(long tenantId, long runId);
 
@@ -157,8 +180,17 @@ public interface RunMapper {
 
     // ---- 执行写入（WorkflowService 执行体）----
 
-    /** 新建 run（异步执行的载体），返回自增 id。 */
-    Long insertRun(long tenantId, String runNo, long workflowId, String attendance);
+    /**
+     * 新建 run（异步执行的载体），返回自增 id。
+     *
+     * @param varsJson 运行期变量表（{@code {"name":"value"}}）；为空则写空表。
+     *                 <p>为什么要在这里就写进去：这条 run 的变量表是
+     *                 {@code run.input->'vars'}，而 {@code __setVar} / {@code __expr}
+     *                 / 条件判断 / 设备参数里的 {@code ${x}} 全都从它取值 ——
+     *                 变量表建好时就有值，才谈得上"声明了初始值就能用"。</p>
+     */
+    Long insertRun(long tenantId, String runNo, long workflowId, String attendance,
+                   String varsJson);
 
     /** 落一个顶层业务节点（level=0），返回自增 id。 */
     Long insertTopNode(long tenantId, long runId, String nodeKey, String name, int seq,

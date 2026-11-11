@@ -75,6 +75,21 @@ public class RunQueryController {
         return runService.runCommandsJson(id);
     }
 
+    /**
+     * 运行期变量表：这条执行**当前**的变量值（以及它声明了哪些变量、还没值的是哪些）。
+     *
+     * <p>为什么要有这个接口：变量以前只能在设计器里声明，运行期到底"是多少"
+     * 只有跑的人才知道（现场要对着参数看板数值）。</p>
+     */
+    @GetMapping(value = "/runs/{id:\\d+}/variables", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> runVariables(@PathVariable long id) throws SQLException {
+        String body = runService.runVariablesJson(id);
+        if (body == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("run not found"));
+        }
+        return ResponseEntity.ok(body);
+    }
+
     @GetMapping(value = "/runtime/holds", produces = "application/json; charset=utf-8")
     public String runtimeHolds() throws SQLException {
         return runService.holds();

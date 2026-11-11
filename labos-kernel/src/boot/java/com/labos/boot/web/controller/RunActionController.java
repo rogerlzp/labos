@@ -5,11 +5,13 @@ import com.labos.boot.web.AuditRecorder;
 import com.labos.boot.web.service.RunService;
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
+import com.labos.kernel.persistence.Jsons;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -153,6 +155,29 @@ public class RunActionController {
         if (result.status() == 200) {
             audit.record(session(req), "run.skip_node", "run", id, null, null,
                     req.getRemoteAddr());
+        }
+        return to(result);
+    }
+
+    /**
+     * **改一个运行期变量的值**。
+     *
+     * <p>body: {@code {"name":"plateCount","value":"7"}}。
+     * 语义：正在跑的流程**下一次读变量时**看到新值 ——
+     * {@code __wait} 节点每轮重读变量表 ⇒ 改值能唤醒一个正在等条件的节点
+     * （现场"人工放行"的正规做法）。</p>
+     */
+    @PutMapping(value = "/runs/{id:\\d+}/variables", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> setRunVariable(@PathVariable long id,
+                            @RequestBody(required = false) String body,
+                            HttpServletRequest req)
+            throws SQLException {
+        String name = RunService.field(body, "name");
+        String value = RunService.field(body, "value");
+        var result = runService.setRunVariable(id, name, value);
+        if (result.status() == 200) {
+            audit.record(session(req), "run.variable_set", "run", id,
+                    name, Jsons.obj("value", value), req.getRemoteAddr());
         }
         return to(result);
     }

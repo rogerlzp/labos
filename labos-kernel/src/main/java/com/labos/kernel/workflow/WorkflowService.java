@@ -250,17 +250,39 @@ public class WorkflowService {
      * 不替换成空串——那样分不清"漏传"和"真为空"。
      */
     private String substVars(String s) {
+        return substVars(s, Map.of());
+    }
+
+    /**
+     * 同上，但多带一层**运行期变量表**。
+     *
+     * <p>三层优先级（后者盖前者）：
+     * <ol>
+     *   <li>{@code results.xxx} —— 节点异步结果；</li>
+     *   <li>{@code runVars} —— 本次 run 的变量表（{@code run.input->'vars'}）：
+     *       流程级变量的**初始值**就在这里（声明了初值但没人赋值时用它）；</li>
+     *   <li>{@code runtimeVars} —— 请求/实验显式传入的变量（{@code ?vars=} / 实验级变量）：
+     *       最高优先 ⇒ 实验级变量能覆盖流程级同名变量。</li>
+     * </ol>
+     *
+     * <p>为什么第 2 层必须单独存在：{@code runtimeVars} 只有在调用方显式
+     * {@code withVars(...)} 时才有值；设计器点「运行」不传变量、
+     * 异步执行在工作线程上跑（ThreadLocal 带不过去）⇒ 那一层是空的。
+     * 没有第 2 层，流程里声明了初值的变量到了设备参数就替换不掉。
+     */
+    private String substVars(String s, Map<String, String> runVars) {
         Map<String, String> vars = runtimeVars.get();
         if (s == null || !com.labos.kernel.expr.Template.hasSlot(s)) {
             return s;
         }
-        if (vars.isEmpty() && resultsCache.get().isEmpty()) {
+        if (vars.isEmpty() && runVars.isEmpty() && resultsCache.get().isEmpty()) {
             return s;
         }
         // Expression 需要 Object 才能做算术（String "3" + 1 要算成 4）
         Map<String, Object> objVars = new java.util.LinkedHashMap<>();
         // 先放异步结果（results.xxx），再放流程变量——同名时流程变量优先
         objVars.putAll(resultsCache.get());
+        objVars.putAll(runVars);
         objVars.putAll(vars);
         return com.labos.kernel.expr.Template.render(s, objVars);
     }
@@ -873,7 +895,11 @@ public class WorkflowService {
             capPool = filtered;
         }
         Map<String, Long> nodeIdByKey = loadNodeIdByKey(workflowId);
-        Map<Long, Map<String, Object>> paramsByNode = loadMethodParams(workflowId, nodeIdByKey);
+        // 本次执行生效的变量表（流程级初值 + 既有 run 的变量 + 显式传入的变量）。
+        // 设备参数里的 ${x} 靠它替换 ⇒ 声明了初始值的变量在运行期真的能用。
+        Map<Long, Map<String, Object>> paramsByNode =
+                loadMethodParams(workflowId, nodeIdByKey,
+                        effectiveRunVars(workflowId, presetRunId));
         // 内置节点（__setVar/__expr）要按 node_key 取参数：GraphRunner 只认 key
         Map<String, Map<String, Object>> builtinParams = new java.util.HashMap<>();
         nodeIdByKey.forEach((k, id) -> {
@@ -1388,9 +1414,14 @@ public class WorkflowService {
      * 读节点的设备方法参数：{@code workflow_node.params->'method_params'}。
      *
      * <p>格式：{@code {"plateID":"PL001","cycles":3}}，直接透传给驱动。
+     *
+     * @param runVars 本次执行的**运行期变量表**（{@code run.input->'vars'}）：
+     *                流程级变量的初始值就在里面 ⇒ 设备参数里的 {@code ${x}}
+     *                能拿到"声明了但没人赋值"的变量的初值。
      */
     private Map<Long, Map<String, Object>> loadMethodParams(long workflowId,
-                                                            Map<String, Long> idByKey)
+                                                            Map<String, Long> idByKey,
+                                                            Map<String, String> runVars)
             throws SQLException {
         Map<Long, Map<String, Object>> out = new LinkedHashMap<>();
         for (Map<String, Object> row : wm().selectMethodParams(tenantId, workflowId)) {
@@ -1410,7 +1441,7 @@ public class WorkflowService {
                     replaced.put(k, v);
                     return;
                 }
-                String rv = substVars(sv);
+                String rv = substVars(sv, runVars);
                 if (!rv.equals(sv) && rv.matches("-?\\d+")) {
                     replaced.put(k, Long.parseLong(rv));
                 } else {
@@ -1570,6 +1601,82 @@ public class WorkflowService {
             log.error("[WARN] 读取 run 变量失败（条件表达式会按空值处理）: " + e.getMessage());
         }
         return out;
+    }
+
+    /**
+     * 流程级变量的**初始值**（{@code workflow_variable.default_value}）。
+     *
+     * <p>为什么必须有这张表：变量的「声明」和「运行」之前是断开的 ——
+     * 设计器里能声明初始值，但运行期的变量表（{@code run.input->'vars'}）
+     * 建 run 时不写任何东西 ⇒ 流程里 {@code ${x}} 替换不掉，
+     * 条件判断也读不到 ⇒ 表现为"声明了初值，跑起来像没有"。
+     *
+     * <p>没填初始值的变量不进这张表（{@code default_value} 为空）——
+     * 留空和"没这个变量"是两回事：前者该在页面上明确显示为"未设初值"。
+     */
+    private Map<String, String> loadWorkflowVarDefaults(long workflowId) {
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        try {
+            for (Map<String, Object> row : wwm().selectWorkflowVariables(tenantId, workflowId)) {
+                Object def = row.get("defaultValue");
+                Object name = row.get("name");
+                if (name == null || def == null) {
+                    continue;
+                }
+                String s = String.valueOf(def);
+                if (s.isEmpty()) {
+                    continue;
+                }
+                out.put(String.valueOf(name), s);
+            }
+        } catch (RuntimeException e) {
+            log.error("[WARN] 读取流程变量初始值失败: " + e.getMessage());
+        }
+        return out;
+    }
+
+    /**
+     * 本次执行真正生效的变量表（三层叠加，后者盖前者）：
+     * <ol>
+     *   <li>流程级变量的初始值；</li>
+     *   <li>run 已有的变量表（异步执行路径：请求里传的 {@code ?vars=}）；</li>
+     *   <li>调用方显式传入的变量（实验级变量 / 请求变量）—— 最高优先。</li>
+     * </ol>
+     *
+     * @param presetRunId 复用已有 run 时的 id；没有（同步执行）传 null
+     */
+    private Map<String, String> effectiveRunVars(long workflowId, Long presetRunId) {
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        out.putAll(loadWorkflowVarDefaults(workflowId));
+        if (presetRunId != null) {
+            try {
+                out.putAll(loadRunVars(presetRunId));
+            } catch (RuntimeException e) {
+                log.error("[WARN] 读取既有 run 变量失败: " + e.getMessage());
+            }
+        }
+        out.putAll(runtimeVars.get());
+        return out;
+    }
+
+    /** 变量表 → JSON（{@code {"name":"value"}}）。空表写 {@code {}}。 */
+    private static String varsJson(Map<String, String> vars) {
+        if (vars == null || vars.isEmpty()) {
+            return "{}";
+        }
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, String> e : vars.entrySet()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            sb.append('"').append(e.getKey().replace("\\", "\\\\").replace("\"", "\\\""))
+              .append("\":\"").append(String.valueOf(e.getValue())
+                      .replace("\\", "\\\\").replace("\"", "\\\""))
+              .append('"');
+        }
+        return sb.append('}').toString();
     }
 
     private Map<Long, Long> loadBoundInstances() throws SQLException {
@@ -2122,7 +2229,14 @@ public class WorkflowService {
         String runNo = "WF-" + LocalDateTime.now().format(RUN_FMT)
                 + "-" + String.format("%04d", java.util.concurrent.ThreadLocalRandom
                         .current().nextInt(10000));
-        return rm().insertRun(tenantId, runNo, wf.id(), attendance);
+        // 变量表在建 run 时就写好：
+        //   底 = 流程级变量的初始值（workflow_variable.default_value）
+        //   盖 = 调用方显式传入的变量（实验级变量 / ?vars=）—— 实验级覆盖流程级
+        // 没写这一层 ⇒ run.input->'vars' 恒为空，声明了初值也读不到。
+        Map<String, String> vars = new java.util.LinkedHashMap<>();
+        vars.putAll(loadWorkflowVarDefaults(wf.id()));
+        vars.putAll(runtimeVars.get());
+        return rm().insertRun(tenantId, runNo, wf.id(), attendance, varsJson(vars));
     }
 
     /** device_instance.id -> resource_node.id（驱动按实例 id 路由，落库要存资源节点 id）。 */

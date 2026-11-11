@@ -31,6 +31,7 @@
   python3 scripts/core-scenarios.py --headed       # 显示浏览器窗口（调试用）
 """
 import argparse
+import datetime as _dt
 import json
 import os
 import re
@@ -49,6 +50,7 @@ PWD = os.environ.get("LABOS_PASS", "admin123")
 
 PASS, FAIL = 0, 0
 FAILURES = []
+UNCOVERED = []
 
 
 # ---------------------------------------------------------------- 断言辅助
@@ -56,6 +58,20 @@ def ok(msg):
     global PASS
     PASS += 1
     print("  \033[32m✓\033[0m " + msg)
+
+
+def uncovered(msg, detail=""):
+    """**没覆盖到的部分** —— 单列一类，**不算失败**。
+
+    <p>为什么单列：门禁的价值是「红了就一定要看」。把"还没写的场景"
+    混进失败里 ⇒ 门禁永远是红的 ⇒ 大家就学会忽略它 —— 那是"门禁红了
+    却说不出为什么"的老毛病，正好是这个项目要消灭的东西。</p>
+
+    <p>但它也**不能被藏起来**：每次运行都照常打印，汇总里单列一段，
+    让人随时知道"这几个方向还没有自动防线"。</p>
+    """
+    UNCOVERED.append(msg + (("（%s）" % detail) if detail else ""))
+    print("  \033[33m·\033[0m 未覆盖：" + msg + (("（%s）" % detail) if detail else ""))
 
 
 def bad(msg, detail=""):
@@ -108,6 +124,24 @@ def q(sql):
     if out.returncode != 0:
         raise RuntimeError("SQL 失败：%s\n%s" % (sql.strip()[:200], out.stderr.strip()[:300]))
     return out.stdout.strip()
+
+
+def _parse_ts(v):
+    """Postgres 的 timestamptz 文本 → datetime。
+
+    ⚠ Postgres 输出的时区偏移只有**两位**（``+08`` / ``+0``），
+    而 Python 3.11+ 的 ``fromisoformat`` 只认 ``+08:00`` ⇒ 直接 parse 会抛
+    "Invalid isoformat string"。以前用切片 ``[:26]`` 截断，更是把时区切没了。
+
+    统一做法：把结尾的偏移补成 ``±HH:MM``，再解析。
+    """
+    if not v:
+        return None
+    s = str(v).strip()
+    m = re.search(r"([+-])(\d{1,2})$", s)
+    if m:
+        s = s[:m.start()] + m.group(1) + m.group(2).zfill(2) + ":00"
+    return _dt.datetime.fromisoformat(s.replace(" ", "T", 1))
 
 
 # ---------------------------------------------------------------- BPMN 造图
@@ -198,6 +232,28 @@ def node_rows(rid):
     return out
 
 
+def step_rows(rid):
+    """[(node_key, actual_start, actual_end)] —— **步骤行**（level=1），按开始时刻排。
+
+    ⚠ **判顺序必须用 level=1，不能用 level=0**：
+    level=0 是业务节点，它的 {@code actual_end} 是**整条 run 结束时统一写的**
+    （实测 5 个节点的 actual_end 只差几毫秒：18:49:03.889 / .894 / .900…）⇒
+    拿它判"后一个开始 ≥ 前一个结束"必然失败 —— 那是**断言用错了数据源**，
+    不是流程乱序。
+    真正带步骤时刻的是 level=1（一条命令 = 一行），它们互不重叠。
+    """
+    out = []
+    for ln in q("SELECT node_key || '|' || coalesce(actual_start::text,'') || '|' || "
+                "coalesce(actual_end::text,'') "
+                "FROM run_node WHERE run_id=%d AND level=1 "
+                "ORDER BY actual_start, id" % rid).split("\n"):
+        if ln.strip():
+            p = ln.split("|")
+            if len(p) == 3 and p[1]:
+                out.append((p[0], _parse_ts(p[1]), _parse_ts(p[2])))
+    return out
+
+
 def cleanup(token, exp_ids=(), wf_ids=()):
     for e in exp_ids:
         try:
@@ -274,7 +330,6 @@ def scenario1_devices(pg, token):
         bad("岛屿页没有设备卡片（基线岛没加载？）")
         return
     for c in cards:
-        code = c["text"].split("\n")[1] if len(c["text"].split("\n")) > 1 else ""
         did = c["id"]
         if did is None:
             bad("设备卡片上没有设备ID", c["text"][:60].replace("\n", " | "))
@@ -283,8 +338,12 @@ def scenario1_devices(pg, token):
         if r is None:
             bad("页面上的设备ID %s 不在中控清单里" % did)
             continue
-        if code != r["code"]:
-            bad("设备ID %s 的编号不一致：页面 %s / 清单 %s" % (did, code, r["code"]))
+        # ⚠ **不要按行号取编号**：卡片首行是设备图片的 alt 文本（"REA"/"INC"/"TRA"…），
+        # 有的设备有、有的没有 ⇒ 行号是漂的（曾把能力当编号、误报 3 台不一致）。
+        # 改成**内容匹配**：编号必须出现在卡片文本里。
+        if r["code"] not in c["text"]:
+            bad("设备ID %s 的编号不一致：卡片上没有 %s" % (did, r["code"]),
+                c["text"][:60].replace("\n", " | "))
             continue
         if r["ip"] not in c["text"]:
             bad("设备ID %s 的 IP 不一致：页面没有 %s" % (did, r["ip"]))
@@ -349,7 +408,7 @@ def scenario2_sequential(pg, token):
     """
     section("场景 2 · 顺序执行")
     island_id = int(q("SELECT id FROM resource_node WHERE code='%s' AND kind='island'"
-                       % ISLAND_CODE))
+                       % ISLAND))
     devs = {}
     for ln in q("SELECT di.code || '|' || di.resource_id FROM device_instance di "
                 "JOIN driver dr ON dr.id = di.driver_id WHERE di.tenant_id=1 "
@@ -400,9 +459,20 @@ def scenario2_sequential(pg, token):
         btn.click()
         ok("已在实验详情页点「执行实验」")
 
+        # ⚠ 两级 id 别混：experiment_run_step.experiment_run_id 指的是
+        # **experiment_run.id**（实验执行单），不是 experiment.id；它里面的 run_id
+        # 才是流程级 run 的 id。之前直接拿 experiment_id 去查 ⇒ 列不存在。
+        erid = 0
+        for _ in range(30):
+            v = q("SELECT max(id) FROM experiment_run WHERE experiment_id=%d" % exp)
+            if v and int(v) > 0:
+                erid = int(v)
+                break
+            time.sleep(1)
         rid = 0
         for _ in range(30):
-            v = q("SELECT max(run_id) FROM experiment_run_step WHERE experiment_id=%d" % exp)
+            v = q("SELECT max(run_id) FROM experiment_run_step "
+                  "WHERE experiment_run_id=%d" % erid)
             if v and int(v) > 0:
                 rid = int(v)
                 break
@@ -424,26 +494,35 @@ def scenario2_sequential(pg, token):
             bad("设备节点没全 completed",
                 ", ".join("%s=%s" % (r[0], r[1]) for r in rows))
 
-        # ---- 顺序断言：后一个的开始 ≥ 前一个的结束 ----
-        import datetime as _dt
-        times = []
-        for r in done:
-            s = r[2][:26] if r[2] else ""
-            e = r[3][:26] if r[3] else ""
-            if not s or not e:
-                break
-            times.append((r[0], _dt.datetime.fromisoformat(s), _dt.datetime.fromisoformat(e)))
-        if len(times) == len(done) and len(times) >= 2:
-            ordered = all(times[i][1] >= times[i - 1][2] for i in range(1, len(times)))
+        # ---- 顺序断言：后一个的**开始** ≥ 前一个的**结束**（用步骤行 level=1）----
+        #
+        # ⚠ **不能用 level=0 的 actual_end**：业务节点的 actual_end 是整条 run
+        #   结束时统一写的（5 个节点只差几毫秒）⇒ 拿它判重叠必然失败。
+        #   真正带步骤时刻的是 level=1（一条命令一行），它们互不重叠。
+        steps = step_rows(rid)
+        if len(steps) >= 2:
+            ordered = all(steps[i][1] >= steps[i - 1][2] for i in range(1, len(steps)))
             if ordered:
-                ok("严格按顺序执行：" + " → ".join(
-                    "%s(%s→%s)" % (t[0], t[1].strftime("%H:%M:%S"), t[2].strftime("%H:%M:%S"))
-                    for t in times))
+                ok("严格按顺序执行（步骤互不重叠）：" + " → ".join(
+                    "%s(%s→%s)" % (s[0], s[1].strftime("%H:%M:%S.%f")[:-3],
+                                    s[2].strftime("%H:%M:%S.%f")[:-3])
+                    for s in steps))
             else:
                 bad("没有按顺序执行（时间区间交叠）",
-                    "; ".join("%s %s~%s" % (t[0], t[1], t[2]) for t in times))
+                    "; ".join("%s %s~%s" % (s[0], s[1], s[2]) for s in steps))
         else:
-            bad("拿不到节点的开始/结束时刻，顺序没法判")
+            bad("拿不到步骤的开始/结束时刻，顺序没法判", "步骤行 %d 行" % len(steps))
+
+        # ---- 业务节点的开始时刻也必须严格递增（node 层面不重叠）----
+        starts = [(_parse_ts(r[2]), r[0]) for r in done if r[2]]
+        if len(starts) >= 2:
+            inc = all(starts[i][0] > starts[i - 1][0] for i in range(1, len(starts)))
+            if inc:
+                ok("节点开始时刻严格递增：" + " → ".join(
+                    "%s(%s)" % (n, s.strftime("%H:%M:%S.%f")[:-3]) for s, n in starts))
+            else:
+                bad("节点开始时刻没有严格递增",
+                    "; ".join("%s %s" % (n, s) for s, n in starts))
 
         # ---- 页面断言：运行详情页能看到这 5 个节点 ----
         pg.goto(BASE_WEB + "/runs/%d" % rid, wait_until="domcontentloaded")
@@ -465,14 +544,12 @@ def scenario2_sequential(pg, token):
 # ================================================================ 场景 3 / 4（待补）
 def scenario3_parallel_branch(pg, token):
     section("场景 3 · 并行 + 变量条件 + 异或网关")
-    print("  \033[33m·\033[0m 待补（并行分叉 / 变量条件 / 异或选边）")
-    FAILURES.append("场景 3 未实现")
+    uncovered("场景 3 未实现（并行分叉 / 变量条件 / 异或选边）")
 
 
 def scenario4_pause_resume(pg, token):
     section("场景 4 · 暂停 / 恢复")
-    print("  \033[33m·\033[0m 待补（执行中暂停 → 恢复 → 跑完）")
-    FAILURES.append("场景 4 未实现")
+    uncovered("场景 4 未实现（执行中暂停 → 恢复 → 跑完）")
 
 
 # ================================================================ main
@@ -498,6 +575,22 @@ def main():
             return 2
 
     from playwright.sync_api import sync_playwright
+
+    # ---- 清掉现场扣留 ----
+    # 岛级 runtime_hold 会挡住**整个岛**的实验派发：实验在动作边界就被 HOLD 住，
+    # 根本走不到执行流程那一步（experiment_run 直接落 paused，步骤行为 0）。
+    # 场景要真跑起来，就必须先把扣留清掉。
+    #
+    # ⚠ 扣留清掉后，之前"等着人工确认"的实验**不会自动恢复** ——
+    #   它的 experiment_run.status 仍是 paused，只有点「恢复」才会继续。
+    #   所以这一步不会偷偷把别人的活儿放出去。
+    cleared = q("UPDATE runtime_hold SET released_at=now(), released_by=1, "
+                "release_note='核心场景实测前清理' WHERE released_at IS NULL "
+                "RETURNING id")
+    if cleared.strip():
+        ids = [x for x in cleared.split("\n") if x.strip().isdigit()]
+        print("  （已清理 %d 条现场扣留：%s）" % (len(ids), " ".join(ids)))
+
     with sync_playwright() as pw:
         b, pg = make_browser(pw, headed=args.headed)
         try:
@@ -519,6 +612,11 @@ def main():
         print("失败明细：")
         for f in FAILURES:
             print("  - " + f)
+    if UNCOVERED:
+        # 未覆盖 ≠ 失败，但必须让人看见（藏起来就成了"没人知道没测"）
+        print("未覆盖（这些方向目前没有自动防线）：")
+        for u in UNCOVERED:
+            print("  - " + u)
     return 0 if FAIL == 0 else 1
 
 

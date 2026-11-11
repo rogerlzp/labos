@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import {
-  Button, Card, Input, Modal, Popconfirm, Select, Space, Table, Tag,
+  Alert, Button, Card, Input, Modal, Popconfirm, Select, Space, Table, Tag,
   Typography, message,
 } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../api/client';
 import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
@@ -49,17 +50,41 @@ export default function VariablesPage() {
     ).then((r) => r.json()) as Promise<{ items?: Owner[] }>,
   });
 
-  // 选了范围就自动选第一个对象（现场最常见的是"就改这一条流程的变量"）
+  /**
+   * 当前对象（这条流程 / 这个实验）。
+   *
+   * <p>⚠ **不能默认取列表第一条**：变量是挂在某个对象名下的，
+   * 默认取第一条 ⇒ 用户以为自己建的是「刚才在设计器里看的那条流程」的变量，
+   * 实际建到了另一条流程头上 ⇒ 回到设计器一看"我的变量呢"就没有了。
+   * （2026-11-11 现场就是这个坑：变量建到了另一条测试流程上。）
+   *
+   * <p>所以：**必须显式选**。从设计器点「变量管理」进来时带上
+   * {@code ?workflowId=} / {@code ?experimentId=} ⇒ 直接落到那条流程上。
+   */
+  const [sp] = useSearchParams();
+  const presetId = (() => {
+    const raw = scope === 'workflow'
+      ? sp.get('workflowId')
+      : sp.get('experimentId');
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
   const ownerList = owners.data?.items ?? [];
-  const effectiveOwner = ownerId ?? ownerList[0]?.id ?? null;
+  const effectiveOwner = ownerId ?? presetId;
+
+  // 预设的对象如果不在列表里（比如换了范围），别硬撑着显示一个空表。
+  const ownerKnown = effectiveOwner == null
+    || ownerList.length === 0
+    || ownerList.some((o) => o.id === effectiveOwner);
+  const activeOwner = ownerKnown ? effectiveOwner : null;
 
   const vars = useQuery({
-    queryKey: ['vars', scope, effectiveOwner],
-    enabled: effectiveOwner != null,
+    queryKey: ['vars', scope, activeOwner],
+    enabled: activeOwner != null,
     queryFn: () => apiFetch(
       scope === 'workflow'
-        ? `/api/workflows/${effectiveOwner}/variables`
-        : `/api/experiments/${effectiveOwner}/variables`,
+        ? `/api/workflows/${activeOwner}/variables`
+        : `/api/experiments/${activeOwner}/variables`,
     ).then((r) => r.json()) as Promise<{ items?: VarItem[] }>,
   });
 
@@ -75,10 +100,10 @@ export default function VariablesPage() {
       message.error(t('variables.nameRequired'));
       return;
     }
-    if (effectiveOwner == null) return;
+    if (activeOwner == null) return;
     const url = scope === 'workflow'
-      ? `/api/workflows/${effectiveOwner}/variables`
-      : `/api/experiments/${effectiveOwner}/variables`;
+      ? `/api/workflows/${activeOwner}/variables`
+      : `/api/experiments/${activeOwner}/variables`;
     const body = scope === 'workflow'
       ? { name: form.name.trim(), type: form.type,
           defaultValue: form.defaultValue, description: form.description }
@@ -105,10 +130,10 @@ export default function VariablesPage() {
   };
 
   const remove = async (name: string) => {
-    if (effectiveOwner == null) return;
+    if (activeOwner == null) return;
     const url = scope === 'workflow'
-      ? `/api/workflows/${effectiveOwner}/variables/${encodeURIComponent(name)}`
-      : `/api/experiments/${effectiveOwner}/variables`;
+      ? `/api/workflows/${activeOwner}/variables/${encodeURIComponent(name)}`
+      : `/api/experiments/${activeOwner}/variables`;
     try {
       const r = await apiFetch(url, scope === 'workflow'
         ? { method: 'DELETE' }
@@ -147,7 +172,7 @@ export default function VariablesPage() {
             <Select
               size="small" style={{ width: 260 }}
               showSearch optionFilterProp="label"
-              value={effectiveOwner ?? undefined}
+              value={activeOwner ?? undefined}
               placeholder={t('variables.pickOwner')}
               onChange={(v: number) => setOwnerId(v)}
               options={ownerList.map((o) => ({
@@ -155,7 +180,7 @@ export default function VariablesPage() {
                 label: o.name || o.code || `#${o.id}`,
               }))}
             />
-            <Button size="small" type="primary" disabled={ro.disabled}
+            <Button size="small" type="primary" disabled={ro.disabled || activeOwner == null}
               onClick={() => setOpen(true)}>
               {t('variables.new')}
             </Button>
@@ -165,6 +190,11 @@ export default function VariablesPage() {
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           {t('variables.scopeHint')}
         </Typography.Paragraph>
+        {activeOwner == null && (
+          <Alert type="info" showIcon style={{ marginBottom: 12 }}
+            message={t('variables.pickFirst')}
+            description={t('variables.pickFirstDesc')} />
+        )}
         <Table<VarItem>
           rowKey="name" size="small" pagination={false}
           dataSource={items}

@@ -8,7 +8,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert, Button, Card, Checkbox, Col, Descriptions, Empty, Input, InputNumber, Modal,
-  Row, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message,
+  Popconfirm, Row, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message,
 } from 'antd';
 import BpmnModeler from 'bpmn-js/lib/Modeler';
 import 'bpmn-js/dist/assets/diagram-js.css';
@@ -339,10 +339,14 @@ function RunsTable({ wfId, onOpen }: { wfId: number; onOpen: (runId: number) => 
  * <ul>
  *   <li>变量名要能当 {@code ${name}} 引用，**手打最容易打错**（大小写、下划线）⇒
  *       下拉给出候选，选中就不会错；</li>
- *   <li>变量有**初始值和类型** ⇒ 下拉里直接显示（"plateCount = 1"），
- *       不用切到变量管理页才知道这个变量初值是多少；</li>
+ *   <li>变量有**初始值和类型** ⇒ 下拉里顺带显示，不用切到变量管理页才知道初值；</li>
  *   <li>但流程里**临时用一个新变量**是常态 ⇒ 必须还能直接输入。</li>
  * </ul>
+ *
+ * <p><b>措辞上刻意区分「初值」和「当前值」</b>：这里显示的是**声明时的初始值**
+ * （流程级变量的 default_value），**不是**这条执行此刻的值 ——
+ * 写成 {@code "plateCount = 1"} 会让人以为是"现在这个变量等于 1"，
+ * 而运行期的真实值在运行详情页的「运行变量」里看。
  */
 function VariablePicker({ vars, value, onChange }: {
   vars: Array<{ name: string; type?: string; defaultValue?: string | null }>;
@@ -359,7 +363,17 @@ function VariablePicker({ vars, value, onChange }: {
       onChange={(v: string[]) => onChange(v[v.length - 1] ?? '')}
       options={vars.map((v) => ({
         value: v.name,
-        label: `${v.name}${v.defaultValue != null && v.defaultValue !== '' ? ` = ${v.defaultValue}` : ''}`,
+        // 明确写「初值」：这是声明的初始值，不是运行期的当前值
+        label: (
+          <span>
+            <strong>{v.name}</strong>
+            {v.defaultValue != null && v.defaultValue !== '' ? (
+              <span style={{ color: '#94a3b8', marginLeft: 6, fontSize: 12 }}>
+                {t('designer.vars.initialValue', { v: v.defaultValue })}
+              </span>
+            ) : null}
+          </span>
+        ),
       }))}
       // 输入新名字时按变量的命名规则校验（后端同一套规则）
       filterOption={(input, opt) =>
@@ -735,6 +749,181 @@ function FlowOptionsCard({ wfId }: { wfId: number }) {
           {t('designer.action.save')}
         </Button>
       </Space>
+    </Card>
+  );
+}
+
+/**
+ * 流程级变量卡片：**就在设计器里建变量**。
+ *
+ * <p>为什么必须在这里建（而不是只能去「变量管理台」）：
+ * <ul>
+ *   <li>变量的作用域是**一条流程** ⇒ 变量管理台是"流程无关"的页面，
+ *       在那儿新建必须先在下拉框里选对流程，选错就建到别的流程头上了 ——
+ *       现场表现是"我在设计器里建的变量，这儿怎么没有"；</li>
+ *   <li>设计器右栏本来就是"这条流程的配置区"（流程选项、节点设置都在这儿），
+ *       变量放这儿 ⇒ 建完立刻能在节点属性的下拉里选到。</li>
+ * </ul>
+ *
+ * <p>变量名的规则由后端统一校验（字母数字下划线、不能以数字开头），
+ * 因为它要能当 {@code ${name}} 引用。
+ */
+function WorkflowVarsCard({ wfId }: { wfId: number }) {
+  const t = useT();
+  const ro = useReadOnly();
+  const qc = useQueryClient();
+  const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    name: '', type: 'number', defaultValue: '', description: '',
+  });
+
+  const vars = useQuery({
+    queryKey: ['workflow-vars', String(wfId)],
+    queryFn: () => apiFetch(`/api/workflows/${wfId}/variables`).then((r) => r.json()) as Promise<{
+      items: Array<{ name: string; type?: string; defaultValue?: string | null;
+                     description?: string | null }>;
+    }>,
+  });
+  const items = vars.data?.items ?? [];
+
+  /** 建完/删完都要刷新：节点属性的下拉用的是同一个 queryKey。 */
+  const reload = () => {
+    qc.invalidateQueries({ queryKey: ['workflow-vars'] });
+    qc.invalidateQueries({ queryKey: ['vars'] });
+  };
+
+  const save = async () => {
+    const name = form.name.trim();
+    if (!name) {
+      message.error(t('variables.nameRequired'));
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await apiFetch(`/api/workflows/${wfId}/variables`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name, type: form.type,
+          defaultValue: form.defaultValue, description: form.description,
+        }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        message.error(j.error ?? t('variables.saveFailed'));
+        return;
+      }
+      message.success(t('designer.vars.saved'));
+      setOpen(false);
+      setForm({ name: '', type: 'number', defaultValue: '', description: '' });
+      reload();
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (name: string) => {
+    const r = await apiFetch(
+      `/api/workflows/${wfId}/variables/${encodeURIComponent(name)}`,
+      { method: 'DELETE' },
+    );
+    if (!r.ok) {
+      message.error(t('variables.deleteFailed'));
+      return;
+    }
+    message.success(t('variables.deleted'));
+    reload();
+  };
+
+  return (
+    <Card
+      size="small" style={{ marginBottom: 12 }}
+      title={t('designer.vars.title')}
+      extra={
+        <Button size="small" type="primary" disabled={ro.disabled}
+          onClick={() => setOpen(true)}>
+          {t('designer.vars.new')}
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ fontSize: 11, marginBottom: 6 }}>
+        {t('designer.vars.hint')}
+      </Typography.Paragraph>
+      <Typography.Link
+        style={{ fontSize: 11, display: 'inline-block', marginBottom: 6 }}
+        onClick={() => nav(`/variables?workflowId=${wfId}`)}
+      >
+        {t('designer.vars.openManager')}
+      </Typography.Link>
+      {items.length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('designer.vars.empty')} />
+      ) : (
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          {items.map((v) => (
+            <div key={v.name}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 6, fontSize: 12,
+              }}>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <strong>{v.name}</strong>
+                <Tag style={{ marginLeft: 4 }}>{v.type ?? 'number'}</Tag>
+                {v.defaultValue != null && v.defaultValue !== '' ? (
+                  <span style={{ color: '#1677ff' }}>
+                    {' '}{t('designer.vars.initialValue', { v: v.defaultValue })}
+                  </span>
+                ) : (
+                  <span style={{ color: '#94a3b8' }}> · {t('designer.vars.noDefault')}</span>
+                )}
+              </span>
+              <Popconfirm
+                title={t('variables.deleteConfirm')}
+                onConfirm={() => remove(v.name)}
+                disabled={ro.disabled}
+              >
+                <Button size="small" type="link" danger disabled={ro.disabled}
+                  style={{ paddingInline: 4 }}>
+                  {t('variables.delete')}
+                </Button>
+              </Popconfirm>
+            </div>
+          ))}
+        </Space>
+      )}
+
+      <Modal
+        open={open} title={t('designer.vars.new')}
+        okText={t('variables.save')} cancelText={t('variables.cancel')}
+        confirmLoading={saving} onOk={save} onCancel={() => setOpen(false)}
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Input
+            placeholder={t('designer.vars.ph.name')} value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
+          <Select
+            style={{ width: '100%' }} value={form.type}
+            onChange={(v: string) => setForm({ ...form, type: v })}
+            options={[
+              { value: 'number', label: 'number' },
+              { value: 'string', label: 'string' },
+              { value: 'boolean', label: 'boolean' },
+            ]}
+          />
+          <Input
+            placeholder={t('designer.vars.ph.default')} value={form.defaultValue}
+            onChange={(e) => setForm({ ...form, defaultValue: e.target.value })}
+          />
+          <Input
+            placeholder={t('designer.vars.ph.desc')} value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+          />
+        </Space>
+      </Modal>
     </Card>
   );
 }
@@ -2144,6 +2333,7 @@ export default function DesignerPage() {
       </Col>
 
       <Col flex="320px">
+        <WorkflowVarsCard wfId={wfId} />
         <FlowOptionsCard wfId={wfId} />
         <Card size="small" style={{ marginBottom: 12 }}>
           <Typography.Text type="secondary"

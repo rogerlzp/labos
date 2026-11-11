@@ -445,6 +445,122 @@ public class RunService {
         return Jsons.obj("total", items.size(), "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
+    // ================================================================ 运行期变量
+
+    /**
+     * 这条 run 的**运行期变量表**（当前值 + 声明情况）。
+     *
+     * <p>为什么要把「声明」和「当前值」分开列：
+     * <ul>
+     *   <li>声明了但还没值的变量 —— 页面必须看得见（"这条流程要求这个参数"），
+     *       否则现场根本不知道少了什么；</li>
+     *   <li>运行期才出现的变量（{@code __setVar} 写出来的）—— 也要看得见
+     *       （"这个值是哪来的"）。</li>
+     * </ul>
+     *
+     * <p>当前值的来源就是 {@code run.input->'vars'}：启动时写进去的
+     * （流程级初值 + 请求/实验传入的）、以及运行中 {@code __setVar} 改的。
+     */
+    public String runVariablesJson(long runId) throws java.sql.SQLException {
+        java.util.List<java.util.Map<String, Object>> rows =
+                runMapper.selectRunVars(TENANT, runId);
+        Long wfId = runMapper.selectRunWorkflowId(TENANT, runId);
+        String status = runMapper.selectRunStatus(TENANT, runId);
+        if (status == null) {
+            return null;   // run 不存在
+        }
+        // 当前值：name -> value
+        java.util.Map<String, Object> vars = new java.util.LinkedHashMap<>();
+        for (java.util.Map<String, Object> r : rows) {
+            vars.put(String.valueOf(r.get("name")), r.get("value"));
+        }
+
+        // 声明清单（流程级变量）：name -> (type, defaultValue)
+        java.util.Map<String, java.util.Map<String, Object>> declared =
+                new java.util.LinkedHashMap<>();
+        if (wfId != null) {
+            for (java.util.Map<String, Object> row
+                    : workflowWebMapper.selectWorkflowVariables(TENANT, wfId)) {
+                declared.put(String.valueOf(row.get("name")), row);
+            }
+        }
+
+        List<String> items = new ArrayList<>();
+        // 先列声明过的（含"还没值"的）
+        for (java.util.Map.Entry<String, java.util.Map<String, Object>> e : declared.entrySet()) {
+            java.util.Map<String, Object> d = e.getValue();
+            Object cur = vars.get(e.getKey());
+            items.add(Jsons.obj(
+                    "name", e.getKey(),
+                    "type", d.get("type"),
+                    "declared", true,
+                    "defaultValue", d.get("defaultValue"),
+                    "value", cur,
+                    "hasValue", cur != null,
+                    "description", d.get("description")));
+        }
+        // 再列运行期多出来的（__setVar 写出来的、请求传入的）
+        for (java.util.Map.Entry<String, Object> e : vars.entrySet()) {
+            if (declared.containsKey(e.getKey())) {
+                continue;
+            }
+            items.add(Jsons.obj(
+                    "name", e.getKey(),
+                    "type", null,
+                    "declared", false,
+                    "defaultValue", null,
+                    "value", e.getValue(),
+                    "hasValue", e.getValue() != null,
+                    "description", null));
+        }
+        return Jsons.obj(
+                "runId", runId,
+                "workflowId", wfId,
+                "status", status,
+                "editable", "running".equals(status) || "paused".equals(status)
+                        || "queued".equals(status),
+                "total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 改一个运行期变量的值。
+     *
+     * <p>这个动作的语义：**正在跑的流程下一次读变量时看到新值**。
+     * {@code __wait} 节点每轮都会重读 {@code run.input->'vars'}
+     * （见 {@code GraphRunner.withVariableRefresher}）⇒ 改值能**唤醒**一个
+     * 正在等条件的节点 —— 这是现场"人工放行"的正规做法。
+     *
+     * <p>只允许改**没结束**的 run：已完成的 run 改了也没有执行体会再读它，
+     * 页面却会显示成"改了" ⇒ 误导现场。</p>
+     */
+    public Result setRunVariable(long runId, String name, String value) {
+        if (name == null || name.isBlank()) {
+            return Result.of(400, Jsons.obj("ok", false, "error", "变量名不能为空"), null, null, null);
+        }
+        String n = name.trim();
+        if (!n.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return Result.of(400, Jsons.obj("ok", false,
+                    "error", "变量名只能用字母、数字、下划线，且不能以数字开头：" + n), null, null, null);
+        }
+        String status = runMapper.selectRunStatus(TENANT, runId);
+        if (status == null) {
+            return Result.of(404, Jsons.obj("ok", false, "error", "run 不存在"), null, null, null);
+        }
+        if (!"running".equals(status) && !"paused".equals(status)
+                && !"queued".equals(status)) {
+            return Result.of(409, Jsons.obj("ok", false,
+                    "error", "这条执行已经结束（" + status + "），改变量不会再被读到"),
+                    null, null, null);
+        }
+        int updated = runMapper.setRunVar(TENANT, runId, n, value == null ? "" : value);
+        return Result.of(200, Jsons.obj(
+                "ok", updated > 0,
+                "runId", runId,
+                "name", n,
+                "value", value == null ? "" : value), null, null, null);
+    }
+
     // ================================================================ 内部
 
     /** 取 body 里的字符串字段（Controller 也要用 ⇒ public）。 */

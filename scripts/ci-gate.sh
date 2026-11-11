@@ -48,13 +48,15 @@ export LABOS_AUTH="${LABOS_AUTH:-1}"
 WANT_FAST=1
 WANT_SCEN=1
 ONLY=""
-for a in "$@"; do
-  case "$a" in
-    --fast)      WANT_SCEN=0 ;;
-    --scenarios) WANT_FAST=0 ;;
-    --only)      ONLY="--only ${2:-1}"; shift ;;
+# 用 while 而不是 `for a in "$@"`：后者迭代的是**展开时**的参数列表，
+# shift 改不了它 ⇒ "--only 2" 里的 "2" 会被当成下一个参数（报"未知参数：2"）。
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fast)      WANT_SCEN=0; shift ;;
+    --scenarios) WANT_FAST=0; shift ;;
+    --only)      ONLY="--only ${2:-1}"; shift 2 ;;
     -h|--help)   sed -n '2,30p' "$0"; exit 0 ;;
-    *) echo "未知参数：$a" >&2; exit 2 ;;
+    *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
 

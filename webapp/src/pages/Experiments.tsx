@@ -5,6 +5,7 @@ import {
   Alert, Button, Card, Empty, Input, InputNumber, Modal, Select, Space, Table, Tag, Typography, message,
 } from 'antd';
 import { apiFetch, api } from '../api/client';
+import RunVariablesCard from '../components/RunVariablesCard';
 import type {
   ExperimentBatchAttempt, ExperimentBatchItem, HoldScope,
 } from '../api/client';
@@ -110,6 +111,10 @@ function RunSteps({ runId, nav }: { runId: number; nav: (p: string) => void }) {
   if (q.isLoading) return <Typography.Text type="secondary">{t('experiments.loading')}</Typography.Text>;
   const d = q.data;
   if (!d) return <Typography.Text type="secondary">{t('experiments.empty.noSteps')}</Typography.Text>;
+  // 这些步骤各自对应哪条流程级 run（变量表挂在 run 上，不是挂在实验上）
+  const runIdsOfSteps = Array.from(new Set(
+    d.items.map((r) => r.runId).filter((x): x is number => typeof x === 'number' && x > 0),
+  ));
   return (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -159,6 +164,20 @@ function RunSteps({ runId, nav }: { runId: number; nav: (p: string) => void }) {
           { title: t('experiments.col.error'), ellipsis: true, render: (_, r) => r.error ?? '—' },
         ]}
       />
+      {/* 运行变量：这一步真正在用的变量**当前值**（并能就地改）。
+          为什么放在实验页而不是只放运行详情页：现场盯着的是"这个实验"，
+          变量值要能就地看就地改，不用先点进某个 run 再跳回来。 */}
+      {runIdsOfSteps.length > 0 && (
+        <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
+          {runIdsOfSteps.map((rid) => (
+            <RunVariablesCard
+              key={rid} runId={rid}
+              title={t('experiments.vars.runVarsTitle', { id: rid })}
+              style={{ marginBottom: 0 }}
+            />
+          ))}
+        </Space>
+      )}
     </Space>
   );
 }

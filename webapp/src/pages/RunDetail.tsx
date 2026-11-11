@@ -12,6 +12,7 @@ import {
 import { api, apiFetch, type RunNode } from '../api/client';
 import RunGraph from '../components/RunGraph';
 import RunCommands from '../components/RunCommands';
+import RunVariablesCard from '../components/RunVariablesCard';
 import {
   pauseKindMeta, statusColor, statusLabel, useStatusVocabulary,
 } from '../utils/status';
@@ -366,6 +367,10 @@ export default function RunDetailPage() {
       <Card size="small" title={t('runCommands.title')} style={{ marginBottom: 12 }}>
         <RunCommands runId={runId} />
       </Card>
+
+      {/* 运行变量：这次执行的**当前值**，并能就地改。
+          放在命令台账下面 —— 现场排查的顺序是"发了什么参数 → 参数里的变量是多少"。 */}
+      <RunVariablesCard runId={runId} style={{ marginBottom: 12 }} />
 
       <Card size="small" title={t('runDetail.card.nodes', { n: total })}>
         {tree.length === 0 ? <Empty description={t('runDetail.empty.nodes')} /> : (

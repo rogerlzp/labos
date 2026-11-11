@@ -6376,3 +6376,122 @@ never pretends success.
 ⑤ **A PG boolean rendered as text is `true`/`false`, not `t`/`f`; a JSON number compared
    against a SQL string is always False** — both make an assertion vacuous (and it even
    printed "0 devices online", which looks like a real finding).
+
+---
+
+**Addendum (2026-11-11, night): workflow variables actually reach the runtime, variables can be created right in the designer, and at runtime they are visible and editable**
+
+This round covers three things the user raised one after another: **a variable was created but
+never made it into the flow**, **"VAR001 = 99" in the dropdown is incomprehensible**, and
+**how do I judge a variable while it runs, and can I change it**. The three are really three
+segments of one chain: declaration → runtime → on-site intervention.
+
+**1. The severed link between declaration and runtime (the important one)**
+
+Variables could already be declared in `workflow_variable` (name / type / initial value), and the
+runtime has a variable table (`run.input->'vars'`) — but **nothing connected the two**: when the
+run was created, the variable table was not written at all. Consequently a declared initial value
+could not substitute `${x}`, and condition evaluation could not read it either. On site this
+looked like "the variable is visible in the designer, but at runtime it behaves as if it does not
+exist".
+
+The fix is to write the variable table **when the run is created**, with three layers stacked on
+top of each other (the later one overrides the earlier one):
+
+| Layer | Source | Purpose |
+|---|---|---|
+| bottom | the initial value of the workflow-level variable (`workflow_variable.default_value`) | used whenever nothing assigns it |
+| middle | request `?vars=k=v` | one-off parameters for a single execution |
+| top | experiment-level variable | same name overrides the workflow-level one ⇒ the same workflow can produce different results in different experiments |
+
+**The pitfall**: `mergeRunInputVars` used to be a **shallow merge** (`input || {"vars":...}`) —
+it replaced the initial values written at run creation **wholesale**, leaving only the ones passed
+this time. A shallow merge looks fine when you only ever add, and only shows up once you stack
+the layers. It is now a deep merge (only the one key inside the `vars` sub-object is touched).
+
+**The other pitfall**: `${x}` inside device parameters goes through `substVars`, which only knew
+about `runtimeVars` (the ThreadLocal set by `withVars`). But pressing "run" in the designer sends
+no variables, and an asynchronous run happens **on a worker thread** (a ThreadLocal does not travel
+there) ⇒ that layer was empty ⇒ the initial value reached the variable table and still could not
+be substituted. So `substVars` gained a "runtime variable table" layer, sandwiched in the middle
+of the priority order.
+
+**2. Why the variable ended up on the wrong workflow**
+
+The "variables console" is a **workflow-agnostic** page: the scope object has to be picked from a
+dropdown, and the dropdown **defaults to the first entry of the list** ⇒ the user believes they
+created a variable for "the workflow I was just looking at in the designer", while it actually
+landed on a different workflow. Back in the designer, "where did the variable I just create go?"
+— the variable was in the database all along, just attached to the wrong owner.
+
+Two fixes: ① the designer sidebar now has a **"Workflow variables" card** (create in place,
+delete in place, see the initial value, bound to the current workflow, and the moment it is
+created it can be picked in the node settings dropdown); ② the console **no longer preselects
+anything** (you have to choose explicitly; while nothing is chosen the "New" button is disabled and
+the reason is spelled out), and it accepts `?workflowId=` to preselect.
+
+**3. The notation "= 99" really was ambiguous**
+
+The variable name dropdown in the node settings used to show `VAR001 = 99`. That 99 is the
+**initial value from the declaration**, but it looks exactly like "this variable currently equals
+99" — especially once the flow is running, when the real runtime value is something else entirely.
+The wording is now uniformly **`VAR001` · `initial 99`**; the real runtime value lives in the
+"Run variables" card of the run detail page, in the column called **current value**. Initial value
+and current value are **shown in separate columns** and never mixed.
+
+**4. At runtime: visible and editable**
+
+New `GET /api/runs/{id}/variables` (current value / initial value / source in three separate
+columns, plus whether the variable was "declared by the workflow" or "produced at runtime") and
+`PUT /api/runs/{id}/variables`. The frontend component `RunVariablesCard` is mounted in **two**
+places: the run detail page and the execution history of the experiment detail page — on site
+people are watching "this experiment", so the variable value must be viewable and editable right
+there, without opening a run and coming back.
+
+The semantics of a change is defined as "**takes effect the next time it is read**", not "the
+in-memory value changes immediately": a `__wait` node re-reads the variable table on every round,
+so **changing a value wakes a node that is waiting for a condition** — that is the proper way to
+"let it through by hand" (more precise than pressing resume, which re-runs the whole flow; a value
+change releases only that one step). Finished runs refuse the change: nothing would read it again,
+yet the page would show "changed" ⇒ that is misleading.
+
+**5. A string of defects in the gate itself (the red was the assertions, not the product)**
+
+While running the gate, scenario 1 reported "3 devices have inconsistent numbers" and scenario 2
+threw an exception outright. Looking at them one by one, every single one was a problem in the
+assertions themselves:
+
+1. **The device number was taken by line index** ⇒ the first line of the card is the device image
+   alt text (`REA`/`INC`/`TRA`…), present on some devices and absent on others ⇒ the index drifts.
+   It is now a **content match** (the number must appear in the card text).
+2. **`ISLAND_CODE` was undefined** ⇒ scenario 2 died with a `NameError` before doing anything.
+3. **The column of `experiment_run_step` is `experiment_run_id`, not `experiment_id`** — two levels
+   of id got mixed up (`experiment_run.id` → `experiment_run_step.experiment_run_id` → `run_id`).
+4. **The timezone of a PG timestamptz text has only two digits** (`+08`), while Python 3.11+'s
+   `fromisoformat` only accepts `+08:00` ⇒ the old slice `[:26]` did not just fail to help, it
+   cut the timezone off entirely.
+5. **The ordering assertion used the wrong data source**: the `actual_end` of a business node
+   (level=0) is written **once, when the whole run ends** (the five nodes differ by only a few
+   milliseconds) ⇒ using it for "the next one starts after the previous one ends" **always**
+   fails. The rows that really carry the step moments are **level=1 (one row per command)**, and
+   they do not overlap. — This one is the most worth remembering: **when an assertion goes red,
+   first ask "is this even the thing I meant to measure?"**
+
+**6. "Not implemented" counted as a failure ⇒ the gate was always red**
+
+Scenarios 3/4 are not written yet and used to count as failures ⇒ the gate was permanently red ⇒
+people learn to ignore it — exactly the "the gate is red but nobody can say why" problem this
+project is trying to eliminate. "Not covered" is now a category of its own: printed as usual,
+listed in its own section of the summary, and **not counted as a failure**. The gate currently
+passes 17/0; scenario 3 (parallel / variable condition / exclusive branch selection) and scenario 4
+(pause / resume) are explicitly marked as "no automated defence at the moment".
+
+**7. The measurements of this round (all against the real environment)**
+
+| Script | Result | What it proves |
+|---|---|---|
+| `scripts/verify-vars.py` | 12/0 | the initial value reaches the variable table; a request variable 9 overrides the initial value 3; an experiment-level variable 7 overrides the initial value 3 |
+| `scripts/verify-vars-page.py` | 8/0 | a variable can be created right in the designer; it can be picked in the node dropdown immediately; the console no longer defaults to the first workflow |
+| `scripts/verify-run-vars.py` | 9/0 | current value and initial value are separate; after the change the `__wait` node **walked on by itself** |
+| `scripts/verify-run-vars-page.py` | 5/0 | clicking "Edit" on the page makes the flow finish by itself (not just written into the database) |
+| `scripts/ci-gate.sh` | 17/0 | scenarios 1/2 green; scenarios 3/4 listed as not covered |
