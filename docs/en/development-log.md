@@ -6073,25 +6073,33 @@ dispatch it. Workflow 1255's 3 task nodes all bind resource 504830 (device insta
 boundary" rather than "refusing everything"**. A green out-of-island group alone cannot
 show that the "let it through" path works.
 
-**Two: what the test dug up on the side: experiment dispatch has exactly one live path**
+**Two: what the test dug up on the side: the dispatch queue lives in memory**
 
 The first attempt wrote the rows straight into the DB → the run stayed `queued` forever
 and the scheduler log never even said "dispatching experiment". Following that down:
 
 - The scheduler's dispatch queue is **in-memory** (`ExperimentScheduler.queue`); only
   `submit()` can enqueue;
-- `ExperimentScheduler.submit(experimentId[, vars])` has **no caller anywhere in the
-  repo** (`grep -rn "\.submit("` only hits the thread pools) — it is **dead code**;
-- the real live path is the **kernel start-up tail** `rehydrateQueued()`: it picks
-  `experiment_run.status='queued'` up from the DB and loads it into the queue.
+- once enqueued, a run is eligible for dispatch by the tick; **writing the row directly,
+  bypassing `submit()`, means it is never dispatched**;
+- the other way into the queue is the **kernel start-up tail** `rehydrateQueued()`: it
+  picks `experiment_run.status='queued'` up from the DB and loads it into the queue ⇒
+  hence this test went "build the rows → **restart the kernel** → start-up rehydrate
+  loads them → the tick dispatches".
 
-⇒ **"there is a queued experiment run in the DB ⇒ it will be dispatched" is false** —
-it still needs a product entry point that "writes it into the DB and triggers the load".
-The current API only offers `GET/PUT /api/experiments/{id}/processes` (orchestration);
-**there is no endpoint that creates/dispatches an experiment** ⇒ that is a gap in the
-experiment-management feature surface, recorded in the status table as to-be-planned and
-outside P-05's boundary (not mine to fix this round, and I must not silently widen the
-scope).
+⚠ **The first draft got this wrong; corrected (2026-11-11, evening)**: it said
+"`submit()` **has no caller anywhere in the repo** ⇒ there is no endpoint that
+creates/dispatches an experiment" — **that is wrong**: the grep only searched
+`labos-kernel/src/main/java/` and **missed `labos-kernel/src/boot/java/`, where the
+controllers live**; in fact `POST /api/experiments/{id}/run?async=1` calls
+`scheduler.submit(id, overrides)` (`src/boot/.../controller/ExperimentActionController.java:383`)
+⇒ **the dispatch entry point does exist**.
+
+⇒ The correct conclusion is: **"writing the row" and "enqueuing" are two steps**, and the
+normal path does both (the endpoint enqueues); **bypassing the endpoint means the run is
+never dispatched** unless the kernel restarts and rehydrates it. ⇒ That is **not a defect**
+but an **implicit contract of the API** (a `queued` row in the DB does not mean
+"submitted") — but it is worth writing down, or it will be tripped over again.
 
 **Three: lessons (cross-project)**
 
