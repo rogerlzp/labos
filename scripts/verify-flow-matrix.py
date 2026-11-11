@@ -69,10 +69,20 @@ def step(title):
 
 # ---------------------------------------------------------------- 基础设施
 
-def api(path, method="GET", body=None, token=None, raw=None):
+# token 放这里（不是局部变量）。
+# 为什么要这样：**AuthService 的 token 存在内核内存里**（进程重启即失效，TTL 12 小时）。
+# 长跑的验收脚本如果期间内核被重启过一次（别人在跑测试、或崩了），
+# 手里那个 token 就成了废的 ⇒ 下一个请求直接 401 ⇒ 脚本崩在造流程那一步，
+# 后面所有 section 一个都没跑 —— 看着像"矩阵挂了"，其实是 token 过期。
+# ⇒ 401 时自动重新登录并重试一次，同时把新 token 写回这里（后面所有调用都用它）。
+_TOKEN = {"v": None}
+
+
+def api(path, method="GET", body=None, token=None, raw=None, _retry=True):
     req = urllib.request.Request(BASE + path, method=method)
-    if token:
-        req.add_header("Authorization", "Bearer " + token)
+    tok = _TOKEN["v"] or token
+    if tok:
+        req.add_header("Authorization", "Bearer " + tok)
     data = None
     if raw is not None:
         data = raw.encode()
@@ -80,12 +90,23 @@ def api(path, method="GET", body=None, token=None, raw=None):
     elif body is not None:
         data = json.dumps(body).encode()
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, data=data, timeout=120) as r:
-        txt = r.read().decode()
-        try:
-            return json.loads(txt)
-        except json.JSONDecodeError:
-            return txt
+    try:
+        with urllib.request.urlopen(req, data=data, timeout=120) as r:
+            txt = r.read().decode()
+            try:
+                return json.loads(txt)
+            except json.JSONDecodeError:
+                return txt
+    except urllib.error.HTTPError as e:
+        # 只重试一次：登录接口本身 401（密码错）是真错误，不能无限重试。
+        if e.code == 401 and _retry and path != "/api/auth/login":
+            print("  \033[33m⏭\033[0m 收到 401（内核重启 ⇒ 内存里的 token 失效）"
+                  "，重新登录后重试")
+            new = api("/api/auth/login", "POST",
+                      {"username": "admin", "password": "admin123"})["token"]
+            _TOKEN["v"] = new
+            return api(path, method, body, new, raw, _retry=False)
+        raise
 
 
 def q(sql):
@@ -952,6 +973,7 @@ def main():
     try:
         token = api("/api/auth/login", "POST",
                     {"username": "admin", "password": "admin123"})["token"]
+        _TOKEN["v"] = token
     except Exception as e:  # noqa: BLE001
         print(f"SKIP: 连不上 API {BASE}（{e}）")
         return 0
