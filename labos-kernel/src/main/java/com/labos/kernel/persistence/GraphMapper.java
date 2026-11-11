@@ -91,6 +91,13 @@ public interface GraphMapper {
      */
     java.util.List<java.util.Map<String, Object>> selectDemoTaskNodes(@Param("limit") int limit);
 
+    /** 预检：单流程 task 节点的能力码（nodeKey/capabilityCode；JOIN 天然剔除空能力）。 */
+    java.util.List<java.util.Map<String, Object>> selectNodeCapabilityCodes(
+            long tenantId, long workflowId);
+
+    /** 预检全量：租户全部流程行（workflowId/name/xml/nodeKey/capabilityCode，LEFT JOIN 展开）。 */
+    java.util.List<java.util.Map<String, Object>> selectPreflightWorkflowRows(long tenantId);
+
     /** 删掉本次图中不存在的节点（keep 为本次节点 key 全集）。 */
     int deleteNodesNotIn(long workflowId, java.util.List<String> keep);
 

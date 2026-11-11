@@ -280,5 +280,22 @@
               GROUP BY workflow_id ORDER BY count(*) DESC LIMIT 1)
         ORDER BY n.id LIMIT #{limit}
     </select>
+    <select id="selectNodeCapabilityCodes" resultType="java.util.Map">
+        SELECT n.node_key AS "nodeKey", cap.code AS "capabilityCode"
+        FROM workflow_node n
+        JOIN capability cap ON cap.id = n.capability_id
+        WHERE n.tenant_id = #{param1} AND n.workflow_id = #{param2}
+          AND n.node_type = 'task'
+    </select>
+    <select id="selectPreflightWorkflowRows" resultType="java.util.Map">
+        SELECT w.id AS "workflowId", w.name AS "name",
+               w.graph-&gt;&gt;'xml' AS "xml",
+               n.node_key AS "nodeKey", cap.code AS "capabilityCode"
+        FROM workflow w
+        LEFT JOIN workflow_node n
+               ON n.workflow_id = w.id AND n.node_type = 'task'
+        LEFT JOIN capability cap ON cap.id = n.capability_id
+        WHERE w.tenant_id = #{param1}
+    </select>
 
 </mapper>

@@ -19,9 +19,6 @@ import com.labos.kernel.workflow.WorkflowGraphParser.GNode;
 import com.labos.kernel.workflow.WorkflowGraphParser.Graph;
 import com.labos.kernel.workflow.WorkflowGraphParser.Kind;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
@@ -472,20 +469,10 @@ public final class PreflightChecker {
 
     private Map<String, String> loadCapabilityByKey(long workflowId) throws SQLException {
         Map<String, String> out = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT n.node_key, cap.code
-                     FROM workflow_node n
-                     JOIN capability cap ON cap.id = n.capability_id
-                     WHERE n.tenant_id = ? AND n.workflow_id = ? AND n.node_type = 'task'
-                     """)) {
-            ps.setLong(1, tenantId);
-            ps.setLong(2, workflowId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    out.put(rs.getString(1), rs.getString(2));
-                }
-            }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class)
+                .selectNodeCapabilityCodes(tenantId, workflowId)) {
+            out.put((String) row.get("nodeKey"), (String) row.get("capabilityCode"));
         }
         return out;
     }
@@ -508,30 +495,19 @@ public final class PreflightChecker {
         Map<Long, String> xmlByWf = new LinkedHashMap<>();
         Map<Long, Map<String, String>> capByWf = new LinkedHashMap<>();
         Map<Long, String> nameByWf = new LinkedHashMap<>();
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement("""
-                     SELECT w.id, w.name, w.graph->>'xml' AS xml, n.node_key, cap.code
-                     FROM workflow w
-                     LEFT JOIN workflow_node n
-                            ON n.workflow_id = w.id AND n.node_type = 'task'
-                     LEFT JOIN capability cap ON cap.id = n.capability_id
-                     WHERE w.tenant_id = ?
-                     """)) {
-            ps.setLong(1, tenantId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    long id = rs.getLong(1);
-                    nameByWf.putIfAbsent(id, rs.getString(2));
-                    String xml = rs.getString(3);
-                    if (xml != null && !xml.isBlank()) {
-                        xmlByWf.putIfAbsent(id, xml);
-                    }
-                    String key = rs.getString(4);
-                    String code = rs.getString(5);
-                    if (key != null && code != null) {
-                        capByWf.computeIfAbsent(id, k -> new LinkedHashMap<>()).put(key, code);
-                    }
-                }
+        for (Map<String, Object> row : com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.GraphMapper.class)
+                .selectPreflightWorkflowRows(tenantId)) {
+            long id = ((Number) row.get("workflowId")).longValue();
+            nameByWf.putIfAbsent(id, (String) row.get("name"));
+            String xml = (String) row.get("xml");
+            if (xml != null && !xml.isBlank()) {
+                xmlByWf.putIfAbsent(id, xml);
+            }
+            String key = (String) row.get("nodeKey");
+            String code = (String) row.get("capabilityCode");
+            if (key != null && code != null) {
+                capByWf.computeIfAbsent(id, k -> new LinkedHashMap<>()).put(key, code);
             }
         }
 
