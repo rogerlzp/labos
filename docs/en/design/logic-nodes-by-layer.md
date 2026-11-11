@@ -136,3 +136,50 @@ Three boundaries follow:
 - Re-run: `./scripts/ci-gate.sh` (no database), `--all` (needs DB + sidecar + frontend); `python3 scripts/verify-flow-matrix.py` (55); `python3 scripts/e2e-flow-matrix.py` (45); `python3 scripts/e2e-canvas.py` (12).
 - Number discipline: changing cases requires updating the `MIN_*` constants in `scripts/ci-gate.sh`, `docs/测试用例总表.md`, `ROADMAP.md` and review package 04 in both languages; thresholds may only go up, and a real reduction must be explained in the commit message.
 - Do not touch the body of historical snapshots: `docs/评审包-20261103/`, `docs/评审包-20261104/`, `LabOS实现总纲_20261029.md`.
+
+---
+
+## The designer's "run view": node states right on the flow chart (2026-11-11)
+
+### Requirement
+
+While an experiment is running, the user wants to **open the flow editor** and see every
+node's state (which one is still running, which one went manual, which one failed),
+instead of jumping to a separate node table.
+
+### Why not only `/runs/:id`
+
+The run detail page does have a node table (with the current node highlighted), but it is a
+**table**: you cannot see where the nodes sit **on the graph**, nor compare one workflow
+against the next ⇒ on site you have to reconstruct "where did this workflow actually get
+to" in your head.
+
+⇒ So the **designer itself** gains a view: a URL with `?run=<runId>` enters the run view.
+
+### Shape
+
+| Aspect | Design | Why |
+|---|---|---|
+| Entry | "**Open flow chart**" per step in the experiment's "execution history" ⇒ `/designer/{workflowId}?run={runId}` | one jump lands on that workflow, that time |
+| State source | `nodes` of `/api/runs/{id}`, taking the **level=0 summary row** (`loopIndex=0`) | level=1 are sub-steps, `loopIndex>0` are the individual rounds |
+| Correspondence | graph element id == `run_node.node_key` | verified identical (workflow 1000546: `Activity_16n7hh7` ↔ `node_key`) |
+| Colouring | bpmn-js `canvas.addMarker(id, 'run-state-<status>')` + CSS `filter: drop-shadow(...)` | device nodes are drawn by a **custom renderer** as image cards (not native rects) ⇒ changing `fill` may not hit them; `filter` works on any SVG structure |
+| Colours | running = blue / manual = orange / failed = red / completed = green / skipped or not reached = faded | same family as the status vocabulary |
+| Legend | a row of tags in the top banner | no need to remember |
+
+### Boundaries
+
+- States are fetched and colours are applied **only when `?run=` is present** — a normal
+  designer session is unaffected;
+- nodes that are **not on the graph** are skipped (the workflow changed, the node was
+  deleted) ⇒ never colour something that is not there;
+- this is an **observation view, not an editing view** — a workflow that is running should
+  not be edited anyway; the banner keeps reminding "this is run #xxx";
+- **no backend change at all** — the node states were already available from
+  `/api/runs/{id}`.
+
+### Measured
+
+playwright on `/designer/1000546?run=1001035` ⇒ marker counts **running 1 / pending 2**,
+the running node is exactly `Activity_16n7hh7` (same as `run_node.node_key` in the DB),
+the other two pending; the banner shows `run #1001035 (failed)` plus the legend.

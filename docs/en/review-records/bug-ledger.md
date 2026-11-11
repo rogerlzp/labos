@@ -243,6 +243,7 @@ needed, it must write `run(id)` and not `experiment_run(id)`.
 | Item | Result |
 |---|---|
 | Symptom | Experiment 1000267 failed with "step 1 failed: device busy for more than 60 seconds: 229" while device 229 was **held by nobody** (it did not even have a row in `device_state`) |
+| Symptom | Experiment 1000267 failed with "step 1 failed: device busy for more than 60 seconds: 229" while device 229 was **held by nobody** (it did not even have a row in `device_state`) |
 | Root cause ① | The lock is `UPDATE device_state SET current_run_id=... WHERE resource_id=...` ⇒ with **no state row** it matches **0 rows** ⇒ the lock can never be taken ⇒ the caller waits out the timeout and then blames another run |
 | Root cause ② (regression) | A **retry** of the same execution (retrying the same device after a failed command) was blocked by the P-18 change that excludes `error`+`offline` devices ⇒ **even the run's own retry was blocked** ⇒ the command failed in 5 seconds and then the run sat in an empty 60-second lock wait (measured: run 1001037) |
 | Fix ① | `ensureDeviceState` before locking (`INSERT ... ON CONFLICT DO NOTHING`) ⇒ existing rows are untouched ⇒ execution reaches the **real** failure point (the command fails with "no driver / device unreachable") instead of waiting a minute to report the wrong reason |

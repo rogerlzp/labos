@@ -1110,3 +1110,47 @@ or call `POST /robot-points/sync` directly.
 | The point coordinates take part in the dispatch | Right now only the code is used, x/y/z is only a record |
 | Several robot arms | The table has `robot_resource_id`, but the interface only handles the first one |
 | The pose parameters | The robot arm usually also needs rx/ry/rz, they are not in the table |
+
+---
+
+## List arrangement (added 2026-11-11): put an already-built workflow into an experiment
+
+### The problem
+
+After an experiment exists, the **UI had no way to put an already-built workflow into it**:
+only the "new experiment" dialog could carry workflows (`workflowIds`). The backend
+`PUT /api/experiments/{id}/processes` always answered 409 ("the workflow table is now a
+read-only mirror, save from the canvas"), and the detail page's arrangement table was a
+read-only view.
+
+### The shape now: two arrangements, pick one
+
+| Form | Entry | What it expresses | Write endpoint |
+|---|---|---|---|
+| **List arrangement** (new) | "**Arrange workflows**" button on the experiment detail page | pure sequence: one workflow after another | `PUT /api/experiments/{id}/processes`, body `{"workflowIds":[12,13]}` (full replace of the arrangement + partial-order edges) |
+| Canvas arrangement | "**Canvas**" button on the experiment detail page | start/end/workflow main chain — can express conditional branches and parallelism | `PUT /api/experiments/{id}/graph` (saving **compiles** it into the arrangement) |
+
+**Why they are mutually exclusive**: the canvas loader **uses the graph when it is
+non-empty and otherwise derives one from the arrangement**. If both entry points wrote,
+the state would split into "one canvas, one order". ⇒ Rule: **an experiment that already
+has a canvas arrangement gets 409** ("the canvas is authoritative"); for an experiment
+without one, saving the list arrangement makes the canvas page derive a matching linear
+canvas, so the two never disagree.
+
+### Interaction
+
+1. Click "**Arrange workflows**" in the arrangement area;
+2. multi-pick workflows from the **workflow library** (everything you already built is in
+   it) and click "Add to order";
+3. reorder with **Up / Down**, remove with "Remove" (order = execution order);
+4. "Save order" ⇒ `PUT /api/experiments/{id}/processes`;
+5. the list refreshes and "execute experiment" runs the new order.
+
+Limits: at most **50** workflows per experiment (backend check); every workflow must
+exist (backend check).
+
+### Relation to execution
+
+The arrangement table (`experiment_process` + `experiment_process_edge`) is **what the
+executor expands the experiment from** ⇒ after saving, experiment execution, the canvas
+view and the pre-flight check all see the same order.
