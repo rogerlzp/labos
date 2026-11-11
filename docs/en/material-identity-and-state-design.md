@@ -1278,7 +1278,7 @@ as "confirmed by the device".**
 | **the whole of the v3.2 DDL run for real** (the sixth round's `20261112-07-mavis.md` §3) | ✅ **already run**: the working copy vs `git show 65fe5ef:` **byte-for-byte identical by sha256** (`d8602173…`, 162 lines / 27 statements) → the isolated schema `labos_v6_review` (PG 17.10, isomorphic prerequisite tables, **zero column-level difference**) → **27/27 statements succeeded** → **all 11 constraints took effect in their reverse tests** (the cross-tenant writes were each rejected, with the error text pasted) → **the enum regression over every value passed** (the six effect states / the six sync statuses / `seal_state` / the `process_state` dictionary FK including the cross-tenant and template-code rejections) → **the production data precheck was clean** (cross-tenant dirty data 0, orphans 0, `(tenant_id,id)` duplicate groups 0) → **the isolated schema was DROPPED** and the production `public` was not written (`plate=6 / run_node=566 / run=99`, the new tables 0, the new columns 0) |
 | ⚠ the **two gaps newly found** in that real run by the sixth round | ❌ fixed and to be re-run in S1: `fk_action_effect` was originally a **single-column FK** ⇒ a cross-tenant audit row could be written (N03, now a composite FK); the WHERE of `ix_run_node_material_sync` **missed `cancelled`** ⇒ the gate query degraded into a full table scan (N04, now completed) |
 | **the real run of the earlier v3.3 intermediate snapshot** (a later record of the sixth round's `20261112-07-mavis.md`) | ✅ the intermediate snapshot described in that record was once 30/30 statements successful; it proves that the execution-confirmation four states, the composite action FK and the index fixes were effective at that time, **it does not cover the Worker fields, the complete event version interval, the Event unique keys and the target-evidence fields added since then** |
-| **the real run of the current merged v3.3 DDL** | ⏳ **to be run, not claimed as passed**. The whole section has to be re-run in a temporary PostgreSQL, adding: the six-column run_node consistency CHECK, the PENDING/APPLIED/FAILED target and baseline CHECK, the Worker query and the two-Worker lock, the two-way `changed_fields` validation, the version step, the Effect→Event uniqueness, the same-plate version uniqueness, the automatic / manual source CHECK; only after the result is written back into this table may the prerequisite be closed |
+| **the real run of the current merged v3.3 DDL** | ✅ **already run (this session, sixth round)**: **249 lines / 35 statements** extracted (byte-for-byte identical to the working copy) → isolated schema `labos_v6_r8` (PG 17.10, isomorphic prerequisite tables) → **35/35 statements succeeded, exit code 0, zero errors** → every reverse test **PASSED**: ① `ck_run_node_physical_evidence_level` rejects an illegal evidence level; ② `ck_run_node_physical_completion` rejects "`completed` without `physical_completed_at` + evidence level + evidence" and accepts it once all are present; ③ `ck_effect_dimensions` rejects a negative `loop_index`; ④ `ck_effect_applicable_target` rejects a `PENDING` without `plate_id` + `expected_state_version`, while `NEEDS_RECONCILIATION` may omit `plate_id` (the resolution-failure path stays usable); ⑤ `ck_effect_applied` rejects an `APPLIED` without `applied_at`; ⑥ `ck_action_manual_identity` rejects a manual action without `actor_id`/`reason`; ⑦ `ck_event_changed_fields` rejects a non-array / an illegal field name; ⑧ `ck_event_changed_process` / `ck_event_changed_seal` reject a `changed_fields` that disagrees with from/to; ⑨ `ck_event_version_step` (`to_state_version = from_state_version + 1`) is rejected; ⑩ `ck_event_auto_source` rejects an `AUTO` row without `effect_id`/`source_*`; ⑪ `ck_event_manual_actor` rejects a manual event without an operator/reason; ⑫ `ck_event_evidence_level` rejects an illegal level; ⑬ `uk_plate_material_event_effect` (one event per effect) rejects the second row; ⑭ `uk_plate_material_event_version` (one event per plate version) rejects the second row; ⑮ `fk_action_effect_tenant` rejects a cross-tenant action while the same-tenant insert succeeds → **index regression**: the gate query runs on `Index Scan using ix_run_node_material_sync`, the continuation guard on `ix_run_node_exec_resolution`, and the worker claim on `ix_plate_material_effect_worker` → **the isolated schema was DROPPED**, and a re-check of the production `public` shows **0** newly created `plate_material*` tables and **0** new `run_node` columns |
 
 ⚠ **Paper DDL that is never executed will never reveal these three kinds of problem** (real defects
 caught by v3.1):
@@ -1476,7 +1476,7 @@ specification first):
 | a separate "material" overview page | re-evaluate once the dictionary and the stages are in use |
 | versioning of the whole BPMN graph | this round only snapshots the material declaration (§5.3) |
 
-## 15. List of decision points (v3.2: 18, each with a conclusion)
+## 15. List of decision points (v3.2: 13, each with a conclusion)
 
 | # | Decision point | Conclusion | Basis |
 |---|---|---|---|
@@ -1660,7 +1660,7 @@ in the §6.1 contract but never defined the level semantics (`device_ack` / `phy
 The rest of v2.2 (structured idempotence key, action table, attribution without `current_run_id`) has already
 been disposed of in M14 / M15 / M16, so nothing is missing this round.
 
-### 18.2 Decision-number register (D401-D413; merged into §7 of `docs/评审规范.md` after S0 is frozen)
+### 18.2 Decision-number register (D401-D418; merged into §7 of `docs/评审规范.md` after S0 is frozen)
 
 | Number | Decision | Where in this document |
 |---|---|---|
@@ -1677,6 +1677,11 @@ been disposed of in M14 / M15 / M16, so nothing is missing this round.
 | D411 | The old-data semantics column by column (NULL = unknown; no default value pretending to be known) | §10 |
 | D412 | The 12 cross-tenant / referential-integrity constraints of §7⑧ (= 4 unique keys + 7 foreign keys including the three-column FK + 1 NULL CHECK; the fifth round's 8 → the sixth round's N03/N07 raised it to 12) + the data precheck | §7⑧ |
 | D413 | The execution-path inventory and the S0 disposition of the flow-run / shadow-run gaps | §16.1 / §13.2 |
+| D414 | The four-state execution confirmation and the all-node physical-uncertainty replay guard | §5.2c / §7④ / §8 |
+| D415 | The complete event snapshots, the version interval, the Effect/Event uniqueness and the baseline replay | §5.4 / §7⑦ / T29/T34 |
+| D416 | The PENDING Worker, SKIP LOCKED, the bounded backoff and the retry cap | §5.8 / §7⑤ / T30/T31 |
+| D417 | The loop aligns the Effects per the declaration snapshot; REJECTED maps one-to-one onto rejected | §5.2b / §5.9 / §13.2 |
+| D418 | The target supplementary evidence, the AUTO reserved namespace and reconciling an identity conflict first | §6.3 / §8 / §17 Q1 |
 
 ### 18.3 The validation / regression items added this round (mandatory for S1 / S2)
 
@@ -1769,7 +1774,7 @@ partial index.
 | The whole causal chain of §5.2b's two-level failure semantics | **the source + the production SQL all line up** (`markRunFailed` → the resume is rejected → the incomplete nodes are deleted and re-run → the physical action is redone) |
 | §5.5's timing argument (the correction of `3ce7741`) | **independently re-checked as correct** |
 | §7's DDL (v3.2) | 27/27 succeeded; the 11 constraints all took effect in their reverse tests; every enum value passed; the production precheck was clean |
-| §7's DDL (**v3.3, with all this round's fixes**) | **30/30 succeeded, zero errors**; all **12** constraints of §7⑧ can be created; the reverse tests all PASS (including the cross-tenant action being rejected and the new CHECKs taking effect); the gate and the continuation guard **both hit an index**; the isolated schema was dropped; the production `public` was not written |
+| §7's DDL (**the merged v3.3, with all this round's fixes + the strong constraints the concurrent session added**) | **35/35 statements succeeded, exit code 0, zero errors**; all **12** constraints of §7⑧ (4 unique keys + 7 foreign keys + 1 empty-value CHECK) can be created; **15 reverse tests passed one by one** (including `ck_event_version_step` / `ck_event_changed_process` / `ck_event_changed_seal` / `ck_event_auto_source` / `ck_event_manual_actor` / `ck_effect_applicable_target` / `ck_effect_applied` / `ck_action_manual_identity` and the two event unique indexes); the gate, the continuation guard and the worker claim all run on **Index Scan**; the isolated schema was DROPPED; the production `public` has **0** newly created `plate_material*` tables and **0** new `run_node` columns |
 | **Still unverified (must be labelled honestly)** | ① **the runtime behaviour has not been reproduced by a real run** — the P0 argument of §5.2b is currently only a **static code derivation** ⇒ S2 measures it with fault injection; ② the device's ability to give "physically confirmed" evidence stays UNKNOWN (§16.2); ③ whether the schema script's `node_status` enum really lacks `manual`/`bypassed` (§13.2-9, not compared line by line); ④ running the **idempotent** S1 migration script twice (the idempotent wrapper itself is not written yet) |
 
 ### 19.5 The validation / regression items added this round (mandatory for S1 / S2)
