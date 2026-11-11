@@ -909,13 +909,19 @@ export default function DesignerPage() {
     if (runId <= 0) return;
     const style = document.createElement('style');
     style.id = 'labos-designer-run-state';
+    // 色板与 `components/RunGraph.tsx` 的 rg-* 样式**对齐**（同一套颜色语义），
+    // 但**机制不同**：RunGraph 用的是 bpmn-js 默认 renderer（fill/stroke 生效），
+    // 而设计器上的**设备节点是自定义 renderer 画出来的图片卡片**（不是原生 rect）
+    // ⇒ 改 fill 未必命中 ⇒ 这里用 drop-shadow 光晕 + 淡化。
+    // ⚠ 两处别再各写各的色板，否则同一状态两个界面颜色会漂。
     style.textContent = [
-      '.djs-element.run-state-running .djs-visual { filter: drop-shadow(0 0 7px #1677ff); }',
-      '.djs-element.run-state-manual .djs-visual { filter: drop-shadow(0 0 7px #faad14); }',
-      '.djs-element.run-state-failed .djs-visual { filter: drop-shadow(0 0 7px #ff4d4f); }',
-      '.djs-element.run-state-completed .djs-visual { filter: drop-shadow(0 0 5px #52c41a); }',
-      '.djs-element.run-state-bypassed .djs-visual,',
+      '.djs-element.run-state-running .djs-visual { filter: drop-shadow(0 0 7px #2563eb); }',
+      '.djs-element.run-state-manual .djs-visual { filter: drop-shadow(0 0 7px #ea580c); }',
+      '.djs-element.run-state-failed .djs-visual { filter: drop-shadow(0 0 7px #dc2626); }',
+      '.djs-element.run-state-aborted .djs-visual { filter: drop-shadow(0 0 7px #dc2626); }',
+      '.djs-element.run-state-completed .djs-visual { filter: drop-shadow(0 0 5px #16a34a); }',
       '.djs-element.run-state-skipped .djs-visual { opacity: .45; }',
+      '.djs-element.run-state-bypassed .djs-visual { opacity: .45; }',
       '.djs-element.run-state-pending .djs-visual { opacity: .6; }',
     ].join('\n');
     document.head.appendChild(style);
