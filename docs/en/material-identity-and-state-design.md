@@ -492,6 +492,21 @@ having detected the material state. **These two kinds of evidence must not both 
 ⚠ **The `consumable` table is not created in this round** (§4.4) ⇒ the independent consumable
 is deferred to S5 as a whole.
 
+**✅ This DDL has actually been executed (2026-11-12)**: it was run in the isolated schema
+`labos_v2_ddl_check` and four constraints were verified; that schema was then dropped
+(**no table of the production database was touched**):
+
+| Verified | Result |
+|---|---|
+| the whole DDL executes | ✅ tables / indexes / composite foreign key / CHECK all pass |
+| the dictionary reference constraint | ✅ writing `process_state='no_such_state'` is rejected by the composite foreign key |
+| the seal state CHECK | ✅ writing `seal_state='weird'` is rejected by the CHECK |
+| the idempotence unique key | ✅ a second insert with the same `effect_key` is rejected by `ux_plate_material_effect_key` |
+
+⇒ **this SQL is no longer prose**; but what was verified are **the constraints themselves**,
+not the migration script of S1 (the back-fill of old data, index concurrency and the tenant
+initialisation each need another round).
+
 ---
 
 ## 8. Interfaces
