@@ -6116,6 +6116,68 @@ scope).
    testing only "the ones that must be refused are refused" cannot distinguish "the gate
    works" from "that path was never open".
 
+**Addendum (2026-11-11, morning): the 2.7 matrix ran all 14 sections for the first time — and how those 2 reds were proven *not* to be defects**
 
+First full run: all **14 sections** were executed, 24 minutes, **53 passed / 2 failed**,
+both failures in `loopback` (back-edge across a parallel fork): "back-edge parallel did
+not complete (st=running)" and "some round's parallel branches are not paired".
 
+**One: three reversals during the diagnosis (each time "I thought I had the root cause")**
 
+**First reversal: I thought the kernel's pinned binding was not taking effect.**
+Re-running with the scene preserved, `run_node` showed `level=0` for T0/T1/T2 all with
+`resource_id = 200165` — a device with `status='error'` and `online=false` — while the XML
+binds 200171/200171/200206 ⇒ "the binding is ignored and it even picked a broken device".
+**That conclusion was wrong**: I had looked at a **mid-run** state; once that run finished,
+all three `level=0` rows were `completed` with resources 200171/200171/200206 ⇒ the pinned
+binding **worked throughout**. ⇒ The `level=0` summary row is not updated until the whole
+run ends (measured: every `level=0` row shares the same millisecond `actual_end`) ⇒ a
+mid-run look at a summary row necessarily says `running` and cannot tell you whether the
+execution was right.
+
+**Second reversal: I thought an isolated device had been selected.**
+Following that thread, `selectCapabilityPools` (the capability pool) indeed **never looks at
+`device_state`** and `tryAcquireDevice` (lock acquisition) indeed **ignores the device's own
+state** — both true (recorded as **P-18**) — but **that is not why loopback went red**: every
+node in that section has an explicit binding and takes the pinned path, which never goes
+through the candidate pool.
+
+**Third reversal (the real cause): the wait budget was too small — the assertion was wrong,
+not the flow.**
+The preserved run **ended as `completed`**, all 5 `run_command` rows were `completed`, and
+every device lock was returned; the script read `running` about 27 seconds before it finished.
+How long should this section take? `GraphRunner`'s parallelism is **logical parallelism**
+(the branches are advanced in ready-queue order, not concurrently on the wall clock) ⇒ this
+section is "3 action nodes × 2 rounds" = **6 serial device actions**, 33~40 seconds each ⇒
+**about 225 seconds**; but `device_budget_sec(actions=3)` grants only 60 + 3×45 = **195
+seconds** ⇒ **30 seconds short**. Changed to `actions=6` (330 s); re-run: the whole order
+completed and all 3 rounds had both parallel branches paired (**2/0**).
+
+**Two: an independent real defect found on the side**
+
+An isolated device (`status='error'`) is still in the capability pool and can still take the
+lock ⇒ a node **without an explicit binding** will reliably pick it ⇒ the command cannot be
+sent ⇒ the node **neither fails nor times out**, it stays `running` forever ⇒ the whole run
+hangs. Recorded in the status table as **P-18** (with both fix directions and their blast
+radius).
+
+**Three: lessons (cross-project)**
+
+① **Never draw a conclusion from a mid-run state** — the summary row (`level=0`) is not
+   updated until the run ends, so a mid-run look necessarily says `running`; either wait for
+   the terminal state, or look at **command-level** records (`run_command`'s `device_id` /
+   `sent_at`) — "which device was it sent to, and did it go out at all" is the hard evidence.
+   This time I looked at the summary row first ⇒ I produced two conclusions that were
+   **both** wrong.
+② **Derive an acceptance budget from the number of ACTIONS of the thing under test, not from
+   the number of nodes** — this section is 3 nodes × 2 rounds = 6 actions, and parallel
+   branches are dispatched one by one in the current implementation (not wall-clock parallel)
+   ⇒ 6 serial actions; the budget granted 3 ⇒ it was failed for being 30 seconds short.
+   **An insufficient budget and a broken implementation look identical on site** — those 30
+   seconds are the entire difference.
+③ **When editing scripts, locate same-named call sites by function boundary — don't use
+   `str.replace(..., 1)`** — I meant to change the budget in `sec_loopback`, but
+   `replace(...,1)` changed the **first** same-named call in the file (`sec_loop`) ⇒ two
+   wasted rounds before I noticed. ⇒ When editing scripts in bulk, first `grep -n` every
+   call site with its line number and owning function, then edit them one by one, and after
+   the edit `awk` the function names against the line numbers to confirm.
