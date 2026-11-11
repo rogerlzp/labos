@@ -11,6 +11,7 @@ import {
 } from '@ant-design/icons';
 import { api, type RunNode } from '../api/client';
 import RunGraph from '../components/RunGraph';
+import RunCommands from '../components/RunCommands';
 import {
   pauseKindMeta, statusColor, statusLabel, useStatusVocabulary,
 } from '../utils/status';
@@ -328,6 +329,11 @@ export default function RunDetailPage() {
           表格看细节，图看全局，两个都留着。 */}
       <Card size="small" title={t('runDetail.card.graph')} style={{ marginBottom: 12 }}>
         <RunGraph runId={runId} />
+      </Card>
+
+      {/* 命令台账：这次 run 给设备下发过哪些命令、什么参数、什么时候发的、等了多久 */}
+      <Card size="small" title={t('runCommands.title')} style={{ marginBottom: 12 }}>
+        <RunCommands runId={runId} />
       </Card>
 
       <Card size="small" title={t('runDetail.card.nodes', { n: total })}>

@@ -69,6 +69,12 @@ public class RunQueryController {
         return runService.interventionRecordsJson(intOr(limit, 100));
     }
 
+    /** 命令级台账：这个 run 下发过哪些命令、什么参数、发出/完成时刻、耗时。 */
+    @GetMapping(value = "/runs/{id:\\d+}/commands", produces = "application/json; charset=utf-8")
+    public String runCommands(@PathVariable long id) throws SQLException {
+        return runService.runCommandsJson(id);
+    }
+
     @GetMapping(value = "/runtime/holds", produces = "application/json; charset=utf-8")
     public String runtimeHolds() throws SQLException {
         return runService.holds();

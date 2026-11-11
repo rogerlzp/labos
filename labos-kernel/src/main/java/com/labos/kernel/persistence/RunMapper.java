@@ -195,6 +195,13 @@ public interface RunMapper {
                          long deviceId, java.sql.Timestamp sentAt);
 
     /**
+     * 命令级台账：这条 run 下发过哪些命令、参数、发出/完成时刻、耗时、错误码。
+     *
+     * <p>给界面用：只看节点表看不出"这一步到底给设备发了什么、设备什么时候回的"。
+     */
+    java.util.List<java.util.Map<String, Object>> selectRunCommands(long tenantId, long runId);
+
+    /**
      * 节点最新一次执行的命令结果（result + 设备原始回包，按命令 id 倒序取一条）。
      *
      * <p>命令挂在步骤节点（level=1）上，业务节点（level=0）是它的 parent ——

@@ -184,6 +184,31 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <!-- 命令级台账（2026-11-11）：这条 run 下发过哪些命令、什么参数、
+         什么时候发出、设备什么时候回的、耗时多少、失败原因是什么。
+         sent_at 是**命令真正下发到设备的时刻**（见 insertRunCommand 的 sentAt 参数），
+         finished_at 是命令完成落库时刻 ⇒ 两者之差 = 设备侧耗时。 -->
+    <select id="selectRunCommands" resultType="java.util.Map">
+        SELECT rc.id AS "id",
+               rc.command_seq AS "commandSeq",
+               rc.method AS "method",
+               rc.status::text AS "status",
+               rc.device_id AS "deviceId",
+               rc.sent_at AS "sentAt",
+               rc.ack_at AS "ackAt",
+               rc.finished_at AS "finishedAt",
+               rc.ack_latency_ms AS "ackLatencyMs",
+               rc.error_code AS "errorCode",
+               rc.payload::text AS "payload",
+               rc.result::text AS "result",
+               n.node_key AS "nodeKey",
+               n.parent_node_id AS "parentNodeId"
+          FROM run_command rc
+          LEFT JOIN run_node n ON n.id = rc.run_node_id
+         WHERE rc.tenant_id = #{param1} AND rc.run_id = #{param2}
+         ORDER BY rc.id
+    </select>
+
 <select id="selectRunNodeStates" resultType="java.util.Map">
         SELECT node_key AS "nodeKey", name AS "name",
                status::text AS "status", error_code AS "errorCode"

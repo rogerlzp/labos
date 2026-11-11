@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Card, Space, Tag, Typography } from 'antd';
 import { api, apiFetch } from '../api/client';
 import RunGraph from '../components/RunGraph';
+import RunCommands from '../components/RunCommands';
 import { statusColor, statusLabel, useStatusVocabulary } from '../utils/status';
 import { useT } from '../i18n';
 
@@ -80,6 +81,9 @@ export default function RunFlowViewPage() {
               ? t('runFlowView.noRunDesc')
               : t('runFlowView.desc')} />
           <RunGraph runId={runId} workflowId={workflowId} />
+          <Card size="small" title={t('runCommands.title')}>
+            <RunCommands runId={runId as number} />
+          </Card>
         </Space>
       </Card>
     </div>

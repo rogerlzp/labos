@@ -334,6 +334,22 @@ public class RunService {
         return keyValueArrayJson(new PauseManager(db, TENANT).unknownPlates());
     }
 
+    /**
+     * 命令级台账（2026-11-11）：这次 run 下发过哪些命令、什么参数、
+     * 什么时候发出、设备什么时候回的。
+     *
+     * <p>为什么要有：节点表只说"这一步成功了"，说不出"给设备发了什么、
+     * 什么时候发的、等了多久" ⇒ 现场排查设备问题时要翻库/翻日志才看得见。
+     */
+    public String runCommandsJson(long runId) throws java.sql.SQLException {
+        java.util.List<java.util.Map<String, Object>> rows =
+                com.labos.kernel.persistence.Mappers.get(
+                        com.labos.kernel.persistence.RunMapper.class)
+                        .selectRunCommands(TENANT, runId);
+        return Jsons.obj("runId", runId, "total", rows.size(),
+                "commands", new Jsons.Raw(keyValueArrayJson(rows)));
+    }
+
     public String holds() throws java.sql.SQLException {
         RuntimeHold.HoldView view = new RuntimeHold(db, TENANT).activeView();
         boolean unknown = view.state() == RuntimeHold.HoldState.UNKNOWN;
