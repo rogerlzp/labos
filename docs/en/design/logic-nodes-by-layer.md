@@ -139,47 +139,46 @@ Three boundaries follow:
 
 ---
 
-## The designer's "run view": node states right on the flow chart (2026-11-11)
+## The read-only run flow page (kept separate from the designer, 2026-11-11)
 
 ### Requirement
 
-While an experiment is running, the user wants to **open the flow editor** and see every
+While an experiment is running, the user wants to **open the flow page** and see every
 node's state (which one is still running, which one went manual, which one failed),
 instead of jumping to a separate node table.
 
-### Why not only `/runs/:id`
+### Why it must not live inside the designer (the key trade-off here)
 
-The run detail page does have a node table (with the current node highlighted), but it is a
-**table**: you cannot see where the nodes sit **on the graph**, nor compare one workflow
-against the next ⇒ on site you have to reconstruct "where did this workflow actually get
-to" in your head.
-
-⇒ So the **designer itself** gains a view: a URL with `?run=<runId>` enters the run view.
+The designer is an **editing** page (Modeler + palette + save + history restore); what the
+run view needs is "take a look at how this workflow went this time" — read-only, colours
+only, **no way to edit the graph**. Mixing the two causes two problems: ① people on site
+think they can edit (a workflow that is running should not be edited anyway); ② the
+editing controls cover the diagram and steal the eye. ⇒ **the run view is its own page**:
+`/runs/:runId/flow` (there is an execution) and `/workflows/:workflowId/flow` (this step
+failed before an execution record existed ⇒ only the definition is drawn).
 
 ### Shape
 
 | Aspect | Design | Why |
 |---|---|---|
-| Entry | "**Open flow chart**" per step in the experiment's "execution history" ⇒ `/designer/{workflowId}?run={runId}` | one jump lands on that workflow, that time |
+| Rendering | bpmn-js **Viewer** (read-only) | a different thing from the designer's Modeler: no palette, no save, no history |
 | State source | `nodes` of `/api/runs/{id}`, taking the **level=0 summary row** (`loopIndex=0`) | level=1 are sub-steps, `loopIndex>0` are the individual rounds |
 | Correspondence | graph element id == `run_node.node_key` | verified identical (workflow 1000546: `Activity_16n7hh7` ↔ `node_key`) |
-| Colouring | bpmn-js `canvas.addMarker(id, 'run-state-<status>')` + CSS `filter: drop-shadow(...)` | device nodes are drawn by a **custom renderer** as image cards (not native rects) ⇒ changing `fill` may not hit them; `filter` works on any SVG structure |
-| Colours | running = blue / manual = orange / failed = red / completed = green / skipped or not reached = faded | same family as the status vocabulary |
-| Legend | a row of tags in the top banner | no need to remember |
+| Colouring | reuses the `rg-*` styles of `components/RunGraph.tsx` (fill + stroke + bold text) | **one palette** with the run detail page's chart, so the two screens never drift |
+| Refresh | polls `/api/runs/{id}/graph` every 2 seconds | while it runs you want to see the states change |
+| Banner | run id / status / **"this is a read-only view"** / legend / open run detail / back to runs | it is obvious at a glance that this is an observation view, not an editing one |
 
 ### Boundaries
 
-- States are fetched and colours are applied **only when `?run=` is present** — a normal
-  designer session is unaffected;
-- nodes that are **not on the graph** are skipped (the workflow changed, the node was
-  deleted) ⇒ never colour something that is not there;
-- this is an **observation view, not an editing view** — a workflow that is running should
-  not be edited anyway; the banner keeps reminding "this is run #xxx";
+- **Without a runId** (the step failed before an execution record existed) ⇒ only the
+  workflow definition is drawn, with a note that there is no execution record;
+- nodes that are not on the graph are skipped (the workflow changed, the node was deleted)
+  ⇒ never colour something that is not there;
 - **no backend change at all** — the node states were already available from
   `/api/runs/{id}`.
 
 ### Measured
 
-playwright on `/designer/1000546?run=1001035` ⇒ marker counts **running 1 / pending 2**,
-the running node is exactly `Activity_16n7hh7` (same as `run_node.node_key` in the DB),
-the other two pending; the banner shows `run #1001035 (failed)` plus the legend.
+playwright on `/runs/1001040/flow` ⇒ rg-* counts manual 1 / pending 2 / start 1 / end 1, the
+read-only banner is there, 11 canvas elements, **0 palette / editing controls**; the
+experiment page's "Open flow chart" ⇒ `/runs/1001041/flow`.
