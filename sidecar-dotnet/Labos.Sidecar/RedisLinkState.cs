@@ -63,6 +63,59 @@ public sealed class RedisLinkState : IDisposable
         }
     }
 
+    /// <summary>
+    /// 读一个 key 的值（Manager 用它判"这台设备现在在线吗"）。
+    ///
+    /// <para>读不到（连不上 / key 不存在）返回 null —— 调用方据此判离线，
+    /// 与内核的口径一致（在线状态只有一个来源，就是 Redis）。</para>
+    /// </summary>
+    public string? Get(string key)
+    {
+        try
+        {
+            using var c = new TcpClient { NoDelay = true, SendTimeout = 2000 };
+            c.Connect(_host, _port);
+            using var s = c.GetStream();
+            s.ReadTimeout = 2000;
+            var cmd = $"*2\r\n$3\r\nGET\r\n${key.Length}\r\n{key}\r\n";
+            var bytes = Encoding.UTF8.GetBytes(cmd);
+            s.Write(bytes, 0, bytes.Length);
+            s.Flush();
+
+            // RESP 批量字符串：$5\r\nonline\r\n
+            //
+            // **不能只 read 一次就当拿到整个响应** —— TCP 是流，一次 read 可能
+            // 只拿到半截（"$5\r\nonli"）。按 RESP 声明的长度读满才是对的。
+            using var reader = new StreamReader(s, Encoding.UTF8, false, 1024, leaveOpen: true);
+            var head = reader.ReadLine();
+            if (head == null || !head.StartsWith("$"))
+            {
+                return null;   // 简单字符串 / 错误 / 连不上
+            }
+            if (!int.TryParse(head.Substring(1), out var len) || len < 0)
+            {
+                return null;   // $-1 ⇒ key 不存在
+            }
+            var buf = new char[len];
+            var read = 0;
+            while (read < len)
+            {
+                var n = reader.Read(buf, read, len - read);
+                if (n <= 0)
+                {
+                    break;
+                }
+                read += n;
+            }
+            reader.ReadLine();   // 吃掉结尾的 \r\n
+            return read == len ? new string(buf, 0, len) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>主动删掉 key（sidecar 退出时用：别让内核一直以为设备在线）。</summary>
     public bool Clear(string key)
     {

@@ -54,25 +54,40 @@ public static class Program
             return 0;
         }
 
-        var modelId = Get(opt, "model");
-        if (string.IsNullOrEmpty(modelId))
-        {
-            Console.Error.WriteLine("必须指定 --model（如 --model s100）。用 --list 看有哪些。");
-            return 2;
-        }
+        // --link-only：**只做长连接保活**（维持到设备的连接 + 把状态写进 Redis），
+        // 不监听端口、不需要型号知识。
+        //
+        // 为什么要有这一档：在线状态的权威是 Redis，写入方是 tcp client。
+        // 但型号库里只有能对接真机的那几个型号（s100 / aspin-2k），
+        // 而**每一台**设备都需要一个 tcp client 才有"在线"这回事 ——
+        // 让没有型号的设备也必须先学会 s100 的指令集，是把"上报在线"和
+        // "转发命令"两件事耦死了。这一档把两件事拆开：
+        //   保活（任何设备都能做，不需要型号） vs 转发命令（需要型号）。
+        bool linkOnly = opt.ContainsKey("link-only");
 
+        var modelId = Get(opt, "model");
+        ModelLibrary.ModelDef? model = null;
         var lib = ModelLibrary.Load(ModelsPath(opt));
-        var model = lib.Get(modelId);
-        if (model == null)
+        if (!linkOnly)
         {
-            Console.Error.WriteLine($"未知型号 {modelId}。可用："
-                + string.Join(", ", lib.Models.Select(m => m.Id)));
-            return 2;
-        }
-        if (model.Evidence == "PLANNED")
-        {
-            Console.Error.WriteLine($"{modelId} 还在待适配清单里（没有手册），不能对接真机。");
-            return 2;
+            if (string.IsNullOrEmpty(modelId))
+            {
+                Console.Error.WriteLine("必须指定 --model（如 --model s100）。用 --list 看有哪些。");
+                return 2;
+            }
+
+            model = lib.Get(modelId);
+            if (model == null)
+            {
+                Console.Error.WriteLine($"未知型号 {modelId}。可用："
+                    + string.Join(", ", lib.Models.Select(m => m.Id)));
+                return 2;
+            }
+            if (model.Evidence == "PLANNED")
+            {
+                Console.Error.WriteLine($"{modelId} 还在待适配清单里（没有手册），不能对接真机。");
+                return 2;
+            }
         }
 
         var transportKind = Get(opt, "transport") ?? "sim";
@@ -101,7 +116,22 @@ public static class Program
 
         if (opt.ContainsKey("once"))
         {
+            if (model is null)
+            {
+                Console.Error.WriteLine("--once 需要 --model（要按型号校验指令）。");
+                return 2;
+            }
             return RunOnce(Get(opt, "once")!, opt, model, transport, device);
+        }
+
+        if (linkOnly)
+        {
+            // 只保活：不监听端口、不接命令。进程退出即"这台设备下线"。
+            Console.WriteLine("link-only 模式：只维持长连接并上报 Redis 在线状态"
+                + "（不监听端口、不转发命令）。");
+            Console.CancelKeyPress += (_, e) => { e.Cancel = true; };
+            new ManualResetEventSlim(false).Wait();
+            return 0;
         }
 
         var port = int.TryParse(Get(opt, "port"), out var p) ? p : 8501;
@@ -111,7 +141,7 @@ public static class Program
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-        new TcpServer(bind, port, model, transport).Run(cts.Token);
+        new TcpServer(bind, port, model!, transport).Run(cts.Token);
         return 0;
     }
 
