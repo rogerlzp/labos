@@ -62,6 +62,7 @@ public final class DeviceSimulator {
         long randMin = -1;
         long randMax = -1;
         Long randSeed = null;
+        String methodsArg = null;
         // --registry URL：从**中控的设备清单**认领自己（设备ID / 编号 / 能力 / 画像）。
         String registryUrl = null;
         // 显式给了的参数优先于清单（人工显式指定是"我就要这个"），
@@ -98,6 +99,10 @@ public final class DeviceSimulator {
                 case "--long" -> longTask = true;
                 case "--profile" -> { profile = args[++i]; explicit.add("profile"); }
                 case "--model" -> modelId = args[++i];
+                // --methods "A,B,C"：这台设备**实际**有的方法（来自中控的 device_method 表）。
+                // 画像是通用机型的方法集，可能比这台设备实际支持的少
+                // （读板机画像里没有 ReadPlate，而这台读板机有）⇒ 不传就会把合法指令误拒。
+                case "--methods" -> methodsArg = args[++i];
                 case "--registry" -> registryUrl = args[++i];
                 case "--offline" -> offline = true;
                 case "--rand-delay" -> {
@@ -192,6 +197,10 @@ public final class DeviceSimulator {
         DeviceCore core = new DeviceCore(port, device, code, cap,
                 delay, longTask, failEvery, failCode, offline, profile,
                 model, failMethod, failFrom, randMin, randMax, randSeed);
+        if (methodsArg != null && !methodsArg.isBlank()) {
+            core.withExtraMethods(java.util.Arrays.asList(methodsArg.split(",")));
+            log.info("[模拟器] 设备方法表：" + methodsArg);
+        }
         if (randMax > 0) {
             log.info("[模拟器] 方法耗时随机区间 "
                     + randMin + "–" + randMax + "ms"

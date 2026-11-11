@@ -52,7 +52,7 @@
 |---|---|---|---|
 | Full run with the database | 907 / 0 | actual run of `LABOS_DB_*=192.0.2.10 ./scripts/test-all.sh`: pure logic 536 + with the database 371 (`BatchDbSelfTest` 244, `RunControlDbSelfTest` 36, `StartupSettleSelfTest` 26, `SchedulerRehydrateSelfTest` 14, the rest) = **907 / 0** | ✅ |
 | Pure logic | 536 / 0 | actual run of `./scripts/test-all.sh --pure-only` **536 / 0** (`RbacRulesSelfTest` 15, `StatusVocabularySelfTest` 20, etc.) | ✅ |
-| RBAC joint debugging | 20 / 20 | actual run of [verify-rbac.py](../../../scripts/verify-rbac.py) **20 / 0**: it covers a viewer being refused with 403, an operator not being able to escalate the privilege, an admin being demoted with 400 | ✅ |
+| RBAC joint debugging | 20 / 20 | actual run of `verify-rbac.py` (script retired with the old baseline) **20 / 0**: it covers a viewer being refused with 403, an operator not being able to escalate the privilege, an admin being demoted with 400 | ✅ |
 | The ApiServer split | 679 lines | `wc -l` of [ApiServer.java](../../../labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java) = **679** | ✅ |
 | The dispatch order | chained `\|\|`, the first hit returns | [ApiServer.java:184-191](../../../labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java#L184-L191) in order `authApi→deviceApi→schedulerApi→runApi→workflowApi→opsApi→experimentApi→metaApi` | ✅ (the equivalence is discussed separately in §6) |
 | The status vocabulary's single source | the backend is the only authority + the frontend consumes it | [StatusVocabulary.java](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/StatusVocabulary.java) is there; `labos-kernel/src/main/java/com/labos/kernel/api/MetaApi.java:90-94` provides `GET /api/meta/status-vocabulary`; the frontend uniformly does `import … from '../utils/status'`, and **no local status-mapping constants** are seen inside the pages | ✅ |
@@ -67,7 +67,7 @@
 ### B1. The e2e "24 / 0" is not reproducible —— the measurement is **23 / 1**, and `ci-gate.sh --e2e` is currently guaranteed to be red
 
 **Symptom**: `python3 scripts/e2e-smoke.py` run twice in a row gives **23 passed / 1 failed** both times, and the failing assertion is
-[e2e-smoke.py:190](../../../scripts/e2e-smoke.py#L190) `✗ 执行历史没有可展开行` ("the execution history has no expandable row").
+`e2e-smoke.py:190` (script retired with the old baseline) `✗ 执行历史没有可展开行` ("the execution history has no expandable row").
 
 **The root-cause chain (verified in a closed loop)**:
 
@@ -77,7 +77,7 @@
 | 2 | The current largest id is **962**, `experiment_no=EXP-20261104001045-2428`, `name=rbac-operator-允许建实验-22244` | `psql … ORDER BY id DESC LIMIT 3` = 962 / 844 / 843 |
 | 3 | The number of `experiment_run` rows of 962 = **0** | `psql … count(*) WHERE experiment_id=962` = 0 |
 | 4 | The execution-history table has **no `rowExpandable`** set ⇒ "it can only be expanded if there is a run"; with 0 runs there is no expand icon | [Experiments.tsx:848-854](../../../webapp/src/pages/Experiments.tsx#L848-L854) |
-| 5 | The assertion requires "there is an expandable row" ⇒ it fails | [e2e-smoke.py:180-190](../../../scripts/e2e-smoke.py#L180-L190) |
+| 5 | The assertion requires "there is an expandable row" ⇒ it fails | `e2e-smoke.py:180-190` (script retired with the old baseline) |
 
 **Counter-evidence**: the next experiment **844** has 1 run (run_id 37, completed) ⇒ after 962 is cleaned up the first row becomes 844 and the e2e should return to 24 / 0.
 
@@ -109,7 +109,7 @@ it only triggers together with the **test residue** of §4. Both have to be fixe
 | experiment 962 | `rbac-operator-允许建实验-22244` | the same (the run with PID 22244) |
 
 **Root cause**: an **interrupted** `verify-rbac.py` (the name embeds PID=22244; this round the reviewer re-ran it as 24643, which cleaned up after itself)
-did not reach the `finally` of the [cleanup section](../../../scripts/verify-rbac.py#L216-L230).
+did not reach the `finally` of the `cleanup section` (script retired with the old baseline).
 The cleanup only deletes the experiments from the `created_exp` list and the accounts by `username LIKE 'rbac_%'`; **if the process is killed outright the deletion is missed**,
 and the **experiments have no "fallback by name"** (asymmetric with the accounts).
 
@@ -162,13 +162,13 @@ and the **experiments have no "fallback by name"** (asymmetric with the accounts
 **B1 (blocking) the e2e "24 / 0" is not reproducible → fixed**
 - **Conclusion**: true. The root cause holds —— the first row of the list ordered by `ORDER BY id DESC` is the leftover experiment 962 (**0 runs**), the execution history has no expandable row, so the assertion fails for sure (deterministic, not flaky).
 - **Reason**: the script has an **implicit strong dependency** on "the first row of the list always has an execution history"; the leftover data (H1) happens to push the run-less experiment to the top, and the two together expose it.
-- **Remediation**: (1) clear the residue (see H1); (2) change [e2e-smoke.py](../../../scripts/e2e-smoke.py): step 4 changed from "click the first row" to **walking the rows and taking the first experiment that has an expandable execution history (at most 8 rows tried)**, which removes the data-distribution dependency.
+- **Remediation**: (1) clear the residue (see H1); (2) change `e2e-smoke.py` (script retired with the old baseline): step 4 changed from "click the first row" to **walking the rows and taking the first experiment that has an expandable execution history (at most 8 rows tried)**, which removes the data-distribution dependency.
 - **Verification**: `python3 scripts/e2e-smoke.py` → **24 passed / 0 failed**.
 
 **H1 (high) the RBAC joint-debugging residue pollutes the database → fixed**
 - **Conclusion**: true. The violation conflicts directly with `01` §9 "no rbac test residue".
 - **Reason**: the cleanup of `verify-rbac.py` only deletes the experiments from the `created_exp` list; if the process is killed outright (the batch with PID=22244) the `finally` is skipped and the experiments are never deleted. On the user-table side there is already a `username LIKE 'rbac_%'` fallback, but on the experiment side a **symmetric fallback is missing**.
-- **Remediation**: change the `finally` of [verify-rbac.py](../../../scripts/verify-rbac.py), and in addition to deleting the users, symmetrically add `DELETE FROM experiment WHERE name LIKE 'rbac-%'` (deleting `experiment_run` first to satisfy the foreign key), an **interruption-proof** fallback; and the historical residue has been cleared by name.
+- **Remediation**: change the `finally` of `verify-rbac.py` (script retired with the old baseline), and in addition to deleting the users, symmetrically add `DELETE FROM experiment WHERE name LIKE 'rbac-%'` (deleting `experiment_run` first to satisfy the foreign key), an **interruption-proof** fallback; and the historical residue has been cleared by name.
 - **Verification**: measured against a live database → `sys_user`=**3**, `experiment`=**678**, consistent with the `01` §9 snapshot.
 
 **P2-1 the commit count 25 → 24 → fixed**

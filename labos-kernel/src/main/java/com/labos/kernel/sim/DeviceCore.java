@@ -66,6 +66,32 @@ public final class DeviceCore {
     private final String deviceId;
     private final String code;
     private final String capability;
+
+    /**
+     * **这台设备实际有的方法**（来自中控的 device_method 表）。
+     *
+     * <p>为什么需要（2026-11-11 实测）：画像的方法集是「**通用机型**」的方法集，
+     * 可能比这台设备实际支持的**少** —— 读板机画像（酶标仪 SpectraMax 190）里
+     * 没有 {@code ReadPlate}，而库里那台 CellInsight CX7 **有** ⇒
+     * 中控按设备方法表发了合法指令，模拟器却按画像拒收（EC-06-0004）
+     * ⇒ 节点转人工、实验暂停，现场看到的却是「流程明明配对了，怎么就卡了」。
+     *
+     * <p>职责切分：**画像管参数边界（转速/温度/时长），设备方法表管方法集**。
+     * 两者取并集 —— 谁都不单独说了算。
+     */
+    private final java.util.Set<String> extraMethods = new java.util.LinkedHashSet<>();
+
+    /** 登记这台设备实际支持的方法（空集合 = 只按画像/型号校验，行为不变）。 */
+    public DeviceCore withExtraMethods(java.util.Collection<String> methods) {
+        if (methods != null) {
+            for (String m : methods) {
+                if (m != null && !m.isBlank()) {
+                    extraMethods.add(m.trim());
+                }
+            }
+        }
+        return this;
+    }
     private final long delayMs;
     /**
      * 随机耗时区间（毫秒，闭区间）；null = 不随机，按画像/型号的固定耗时。
@@ -731,12 +757,18 @@ public final class DeviceCore {
         // **有型号时不再校验"方法属不属于这个类型"** —— 型号才是方法集的权威：
         // S100 的 MoveTray/SetParam、ASpin 的 CreateModules 都不在通用画像里，
         // 按画像校验会把合法指令误拒（这个坑本轮实测踩到过）。
-        String profileError = prof.validate(alias, msg, model == null);
+        // 这台设备的方法表里有这条方法 ⇒ **不按画像的方法集拒它**
+        // （画像是通用机型的方法集，可能比这台设备实际支持的少）。
+        // checkMethods=false 只跳过"方法属不属于这个类型"，**参数边界仍然校验**。
+        boolean knownByDevice = extraMethods.contains(alias);
+        String profileError = prof.validate(alias, msg, model == null && !knownByDevice);
         if (profileError != null) {
             log.info("[" + code + "] 校验失败 " + alias + "：" + profileError);
             // 方法认识、只是参数越界 → 0005；方法本身不认识 → 0004。
             // 有型号时"认不认识"要以型号为准（画像里可能没这个方法）。
-            boolean known = prof.methods.contains(alias) || (model != null && model.supports(alias));
+            boolean known = prof.methods.contains(alias)
+                    || knownByDevice
+                    || (model != null && model.supports(alias));
             String errCode = known ? "EC-06-0005" : "EC-06-0004";
             return frame(id, method, equip, 3,
                     "{\"error_code\":\"" + errCode + "\",\"error_text\":\""

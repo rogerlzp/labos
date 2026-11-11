@@ -114,7 +114,7 @@ This directly conflicts with the project's hard constraint "an inconsistent stat
 5. That `SQLException` is [caught in `onStepDone` and turned into one `[WARN] 步骤落库失败`](../../../labos-kernel/src/main/java/com/labos/kernel/workflow/WorkflowService.java#L1789),
    and **the execution is not interrupted** → this stretch of the resumed run — "which step, what was sent, what came back" — is simply missing from the database.
 
-**Why the existing acceptance test cannot find it**: the [resume assertion of `verify-device-chain.sh`](../../../scripts/verify-device-chain.sh#L280-L286)
+**Why the existing acceptance test cannot find it**: the `resume assertion of `verify-device-chain.sh`` (script retired with the old baseline)
 checks only two things — three `completed` at `level=0`, and exactly 2 `收到 Seal` entries in the simulator log.
 **It looks at "was the command sent" and "did the business node complete", and never at whether `run_command`/`level=1` was persisted**,
 so the hole is covered by a green light. It lands right on the general principle of "traceability" ([03 §0](../review-20261103/03-design.md)).

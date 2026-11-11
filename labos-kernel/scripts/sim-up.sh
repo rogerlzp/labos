@@ -179,9 +179,24 @@ while IFS='|' read -r DEV_ID RES_ID CODE CAP; do
     if [[ -n "${RAND_DELAY}" ]]; then
         RAND_ARGS=(--rand-delay "${RAND_DELAY}")
     fi
+
+    # 这台设备**实际**有的方法（device_method 表）⇒ 传给模拟器。
+    # 为什么：画像是「通用机型」的方法集，可能比这台设备实际支持的少
+    # （读板机画像里没有 ReadPlate，而这台 CellInsight CX7 有）
+    # ⇒ 不传的话，模拟器会把中控按设备方法表发的**合法**指令拒掉
+    #    （EC-06-0004）⇒ 节点转人工、实验暂停，现场看着像"流程配错了"。
+    METHODS=$(q "SELECT string_agg(dm.method, ',' ORDER BY dm.method)
+                     FROM device_method dm
+                     JOIN device_instance di ON di.device_id = dm.device_id
+                    WHERE di.id = ${DEV_ID}")
+    METHODS_ARGS=()
+    if [[ -n "${METHODS}" ]]; then
+        METHODS_ARGS=(--methods "${METHODS}")
+    fi
+
     nohup java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" ${SIM_MAIN} \
         --port "${PORT}" --device "${DEV_ID}" --code "${CODE}" --cap "${CAP}" \
-        --profile "${PROFILE}" --delay "${DELAY_MS}" "${RAND_ARGS[@]}" \
+        --profile "${PROFILE}" --delay "${DELAY_MS}" "${METHODS_ARGS[@]}" "${RAND_ARGS[@]}" \
         >> "/tmp/sim-${CODE}.log" 2>&1 &
     # 脱离当前 shell 的作业控制：否则脚本退出时某些执行环境会把子进程一起收掉
     # （表现为"启动日志有了，一会儿进程全没了，日志只剩一句模拟器退出"）

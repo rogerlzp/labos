@@ -52,8 +52,8 @@
 | Routes | 50 patterns | [ApiServer.java](../../../labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java#L80-L148) has **50** route constants; `Pattern.compile` 52 in the whole file, the difference of 2 are inlined matches inside a method at [:597](../../../labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java#L597) / [:1140](../../../labos-kernel/src/main/java/com/labos/kernel/api/ApiServer.java#L1140) | ✅ |
 | Pure-logic cases | 379 / 0 | actual run of `./scripts/test-all.sh --pure-only`: 10 categories total 378 + `SidecarChainTest` counted as 1 = **379 / 0** | ✅ |
 | Gate thresholds | 379 / 37 / 14 | [ci-gate.sh:34-36](../../../scripts/ci-gate.sh#L34-L36) `MIN_PURE=379` `MIN_CHAIN=37` `MIN_E2E=14` | ✅ |
-| Device-chain assertions | 37 | the assertion count of [verify-device-chain.sh](../../../scripts/verify-device-chain.sh) = 37, including the new "resume steps=3 / cmds=3 / no uk conflict" added for H1 | ✅ |
-| e2e assertions | 14 | [e2e-smoke.py](../../../scripts/e2e-smoke.py) = 14 | ✅ |
+| Device-chain assertions | 37 | the assertion count of `verify-device-chain.sh` (script retired with the old baseline) = 37, including the new "resume steps=3 / cmds=3 / no uk conflict" added for H1 | ✅ |
+| e2e assertions | 14 | `e2e-smoke.py` (script retired with the old baseline) = 14 | ✅ |
 | Number of historical documents | 52 | `ls docs/*.md \| wc -l` = 52 | ✅ |
 | ADR numbering | rearranged into D1–D15 | [docs/en/review-20261103/03-design.md](../review-20261103/03-design.md) D1…D14 in order without duplicates; **the position of D15 is the exception, see §5.5** | ⚠ Partial |
 
