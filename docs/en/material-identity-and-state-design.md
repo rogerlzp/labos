@@ -478,11 +478,26 @@ and v3.2 tightened it again per the fifth review:
 | ⇒ `visit` matches the `loop_index` of the **round rows** | the two points above taken together |
 | ⚠ **but `roundRecorder` is only called when `graphHasCycle && visit >= 1`** | `GraphRunner.java:654` |
 | ⇒ **a node in an acyclic graph only has the summary row (`loop_index=0`) and never persists the 1..N round rows** | same as above |
+| ⚠ **but the round row is written only AFTER the node has executed** | `GraphRunner.java:649` `stateMachine.executeNode(...)` → `:650` writes the node state back → `:657` `roundRecorder.record(key, visit, …)` |
+| ⇒ **T1 happens inside `executeNode` ⇒ this round's row is not in the database yet** | same as above (the completion handler is hooked per §5.7) |
 
-⇒ **reading `run_node.loop_index` back from the database gives values with inconsistent
-semantics** (the same node_key has 1 summary row + N round rows; an acyclic graph only has the
-summary row) ⇒ the round of the idempotence key **can only come from the execution context**
-(graph path = the in-memory `visit`; sequential / acyclic = 0, propagated per §5.7).
+⇒ **reading the round back from the database cannot work — this is a TIMING problem, not a
+"semantic inconsistency"** (v3.2 addition · the 05 review's O-11 corrected): at the T1 point the
+database only holds the summary row (`loop_index=0`) ⇒ if T1 took the round from
+`run_node.loop_index`, rounds **2/3 would both read `0` ⇒ collide with round 1 on the same
+idempotence key ⇒ the effect would be silently swallowed** ⇒ the round of the idempotence key
+**can only come from the execution context** (graph path = the in-memory `visit`; sequential /
+acyclic = 0, propagated per §5.7).
+
+⚠ **Correcting an erroneous argument in the earlier draft** (O-11): the draft said "reading
+`run_node.loop_index` back from the database gives values with inconsistent semantics" and offered
+"an acyclic graph only has the summary row" as an example — **that example does not hold**: in an
+acyclic graph every node runs exactly once, so `loop_index=0` is its **one and only, unambiguous**
+value. The inconsistency exists only in **cyclic graphs** (the same node_key has 1 summary row + N
+round rows). And **what actually makes "read it from the database" impossible is the timing above,
+not that inconsistency** — an implementer who reads it as "inconsistency" would likely change it to
+"read it once the round row exists", and at the T1 point that **never happens**.
+
 ⇒ the benefit of keeping `attempt` out of the key is now also clear: **a device retry does not
 change `visit`** ⇒ the same logical execution retried N times keeps the same idempotence key ⇒
 the effect is applied only once ✓
@@ -1112,6 +1127,8 @@ no tables); S1 only creates tables and migrates; any execution-behaviour change 
 | 10 | `plate.location_id` and `position_state` are double-written | S1 declares `position_state` the single source of truth for position; `plate.location_id` is marked a read-only redundancy (stop the double write or mirror it only inside the transaction); **no third copy of the position may be added** |
 | 11 | `run_command.ack_at` has the column but no writer; `command_id` is in `command_ledger` | this document takes `command_ledger` as the reference; if `ack_at` is to be evidence, a write point must be added (S2) |
 | 12 | the device's ability to give "physically confirmed" evidence | stays UNKNOWN (§16.2); S0 checks it device by device, no guessing |
+| 13 | **the material status of each round of a loop has no carrier** (found by this session, **blocks the S0 freeze**) | §5.2b requires the gate to "aggregate the actual status of every round of the loop node (`loop_index=1..N`) and block when any round is not closed", but ① the round row is written **after** the node executes (`GraphRunner.java:657`), so at the T1 point the row of the current round does not exist yet; ② `insertNodeRound` (`RunMapper.xml:584-595`) **does not write** `material_sync_status`, so the new column takes the default `not_required` ⇒ the gate would read "some round needs reconciliation" as `not_required` and **let it through**. **Recommended S0 decision: (a)** — the gate aggregates the per-round effect status from `plate_material_effect` by `source_loop_index` (the effect row is persisted at T1 and naturally carries the round), without depending on the `run_node` round rows; **(b)** — move the round-row persistence earlier, add the column to `insertNodeRound`, and write it back after execution; a bigger change that also touches existing SQL semantics. **§5.2b's "aggregate every round" cannot be implemented until this is decided** |
+| 14 | **effect `REJECTED` has no corresponding value at the node level, and no mapping rule** (the 05 review's O-5 **partially landed**, found by this session) | §5.9 already lists a `REJECTED` row ("device succeeded / configuration error ⇒ node `completed` / downstream blocked / hand over to a human"), but the node-level carrier `run_node.material_sync_status` takes `not_required / pending / applied / failed / needs_reconciliation / cancelled` (§5.2b and the §7② CHECK agree) — **there is no `rejected`**, and the document nowhere writes the mapping `REJECTED → ?`. ⇒ Without a mapping, the "downstream blocked" promised by §5.9 has **no value to read at the gate**; mapping it to `failed` makes "terminal `REJECTED` (no automatic retry)" and "retryable `FAILED`" indistinguishable at the node level again (the original concern of O-5). **Recommended S0 decision: (a)** — add a `rejected` value to `material_sync_status` (`varchar(24)` fits it; add the enum value to the CHECK; §7② must be re-verified by running the DDL), and add `rejected` to the gate's blocking list; **(b)** — write down `REJECTED → failed` explicitly and note in §5.9 that "the distinction is deliberately kept in `plate_material_effect.status` + the action audit, and merged at the node level" |
 
 **Conflicts with existing documents** (per §7 of `docs/评审规范.md`: a ②③ conflict ⇒ change the
 specification first):
