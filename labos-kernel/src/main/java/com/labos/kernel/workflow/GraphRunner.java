@@ -209,7 +209,7 @@ public final class GraphRunner {
      * <p>为什么要有：{@code __wait} 这种节点光看方法名根本不知道它在等什么
      * —— 参数里是 {@code var=gate, value=open}，得翻成"等待 gate = open"。</p>
      */
-    static String describeBuiltin(String method, Map<String, Object> p) {
+    public static String describeBuiltin(String method, Map<String, Object> p) {
         if (p == null) {
             p = Map.of();
         }
@@ -218,9 +218,14 @@ public final class GraphRunner {
             case "__sleep":
                 return "延时 " + str(p.get("sec")) + " 秒";
             case "__wait":
+                // 超时没写就显示**默认值**（DEFAULT_WAIT_TIMEOUT_SEC）——
+                // 显示 "超时 null 秒" 会让人以为这个节点没设超时。
+                Object to = p.get("timeout");
+                String toText = (to == null || to.toString().isBlank())
+                        ? String.valueOf(DEFAULT_WAIT_TIMEOUT_SEC) : str(to);
                 return "等待 " + (var == null ? "(未指定变量)" : var)
                         + " = " + str(p.get("value"))
-                        + "（超时 " + str(p.get("timeout")) + " 秒）";
+                        + "（超时 " + toText + " 秒）";
             case "__setVar":
                 return "把 " + (var == null ? "(未指定变量)" : var)
                         + " 设为 " + str(p.get("value"));

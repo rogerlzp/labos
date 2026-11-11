@@ -143,6 +143,13 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+<!--
+  节点明细。
+  ⚠ 带上流程定义里的**方法名与参数**（method_params）：
+  逻辑节点的说明（"等待 gate = open（超时 120 秒）"）是从参数算出来的，
+  不能只靠运行时的台账行 —— 老 run（台账功能上线之前跑的）没有那行，
+  就会出现「节点在跑但说不清它在做什么」。
+-->
 <select id="selectRunDetailNodes" resultType="java.util.Map">
         SELECT rn.id AS "id", rn.node_key AS "nodeKey", rn.name AS "name",
                rn.status::text AS "status", rn.attempt AS "attempt",
@@ -151,8 +158,16 @@
                res.code AS "resourceCode",
                level AS "level", parent_node_id AS "parentNodeId",
                step_seq AS "stepSeq", loop_index AS "loopIndex",
-               input->>'reason' AS "reason", rn.error_code AS "errorCode"
+               input->>'reason' AS "reason", rn.error_code AS "errorCode",
+               wn.params->>'protocol_name' AS "method",
+               -- ⚠ 必须 ::text：jsonb 直接映射到 Map 时拿到的类型随驱动而变
+               --   （PGobject），Java 侧判不出是 Map ⇒ 参数全丢 ⇒ 说明变成"延时 null 秒"
+               wn.params->'method_params'::text AS "methodParams"
           FROM run_node rn
+          LEFT JOIN workflow_node wn
+                 ON wn.tenant_id = rn.tenant_id
+                AND wn.workflow_id = (SELECT workflow_id FROM run WHERE id = rn.run_id)
+                AND wn.node_key = rn.node_key
           LEFT JOIN resource_node res ON res.id = rn.resource_id
          WHERE rn.run_id = #{param1}
          ORDER BY COALESCE(rn.parent_node_id, rn.id), rn.loop_index, rn.level,

@@ -1322,7 +1322,56 @@ Changing a value is **not** "patch the memory right now" — it is written back 
 > **reloading the whole page by hand**. That is the root cause of "every time I have to
 > refresh the page to see the finished node commands".
 
-### 15.5 The measured evidence
+### 15.5 The read-only flow page: what each node does, and variables you can change
+
+The read-only flow page (`/runs/{id}/flow`, `/workflows/{id}/flow`) is the page on site
+people are actually watching, so it has to answer two questions: "what is this node doing"
+and "what is this variable right now — and can I change it".
+
+| Block | Content | Why |
+|---|---|---|
+| Flow graph | coloured by execution state, refreshed every 2 seconds | the overall view |
+| **What each node is doing** | node / status / **what it does** / device or method | the graph only shows shapes and colours; logic nodes are especially unreadable (the node name is `__wait`) |
+| **Run variables** | variable / current value / initial value / source / description, **editable** | on site people watch this page, so variables get changed here rather than on some other page |
+| Command ledger | the command-level ledger, refreshed every 2 seconds | the raw instructions sent to the devices |
+
+**Where the "what it does" column comes from**:
+
+1. the **runtime** note first (including progress such as "waited 25 s (currently closed)");
+2. otherwise it is computed from the **workflow definition** (`describeBuiltin(method, params)`).
+
+The second one is a **fallback**: the command ledger only started recording on 2026-11-11,
+so **runs from before that have no note at all** — relying on the ledger alone would leave
+the logic nodes of older runs as black boxes. Computing it from the definition means the
+sentence is **always** there.
+
+When the timeout parameter is missing, the **default** is shown (300 s) — showing
+"timeout null seconds" makes people think the node has no timeout.
+
+### 15.6 The most common on-site misunderstanding: changing an experiment variable is not the same as changing the running one
+
+The three scopes (§15.1) get mixed up in exactly one way on site:
+
+| What you change | Who it affects | When it takes effect |
+|---|---|---|
+| an **experiment-level** variable (the experiment page, "Variables used by this experiment") | the **next** start of that experiment | at the next start |
+| the **workflow-level** initial value (the designer, "Workflow variables" card) | every future run of that workflow | when the next run is created |
+| a **runtime** variable (run detail page / read-only flow page, "Run variables") | **the run that is going right now** | the next time it is read (can wake a waiting node) |
+
+**Experiment-level variables are injected only when the experiment starts** ⇒ a run that is
+already going is **not** affected. So seeing "the experiment variable is already 100, but
+the flow did not move on" is **correct behaviour** — the wrong **layer** was changed. To
+let the run that is going right now move on, the **runtime** variable is what has to
+change.
+
+The pages have to say this out loud, otherwise on site people conclude the system is
+broken:
+
+> You are changing **this run's** variables (they take effect the next time they are read,
+> and can wake a waiting node). Experiment-level variables are injected only when the
+> experiment **starts**, so they do not affect a run that is already going.
+
+### 15.7 The measured evidence
 
 | Script | Covers | Result |
 |---|---|---|
@@ -1332,6 +1381,7 @@ Changing a value is **not** "patch the memory right now" — it is written back 
 | `scripts/verify-run-vars-page.py` | clicking "Edit" on the page makes the flow finish by itself | 5/0 |
 | `scripts/verify-builtin-ledger.py` | logic nodes reach the ledger / plain-language note / wait progress / visible on the page | 12/0 |
 | `scripts/verify-live-refresh.py` | the ledger of the read-only flow page appears without a manual reload | 3/0 |
+| `scripts/verify-flow-readonly.py` | read-only flow page: the node note is plain language / the variable card is editable / the change releases the wait | 6/0 |
 
 ---
 

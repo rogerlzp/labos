@@ -447,6 +447,35 @@ public class RunService {
         return Jsons.obj("total", items.size(), "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
+    /**
+     * 按**流程定义**算出一句「这个节点在做什么」。
+     *
+     * <p>为什么要有这条兜底：运行时的说明（"已等 12 秒"）来自命令台账，
+     * 而台账是 2026-11-11 才开始记的 ⇒ **之前跑的 run 没有任何说明**。
+     * 节点名又是 {@code __wait} 这种内部名 ⇒ 现场完全看不懂。
+     * ⇒ 从流程定义里的方法与参数算一句，**任何时候都有**。
+     *
+     * <p>设备节点不返回说明（方法名本身就是说明），只对内置逻辑节点给。
+     */
+    private static String describeNode(java.util.Map<String, Object> n) {
+        String method = n.get("method") == null ? null : String.valueOf(n.get("method"));
+        if (method == null || !method.startsWith("__")) {
+            return null;
+        }
+        java.util.Map<String, Object> params = new java.util.LinkedHashMap<>();
+        Object mp = n.get("methodParams");
+        if (mp instanceof java.util.Map<?, ?> mm) {
+            mm.forEach((k, v) -> params.put(String.valueOf(k), v));
+        } else if (mp instanceof String text && !text.isBlank()) {
+            // 后端把 method_params 取成文本了（jsonb 直接映射拿不到类型稳定的对象）
+            Object parsed = com.labos.kernel.persistence.QJson.parseJson(text);
+            if (parsed instanceof java.util.Map<?, ?> mm) {
+                mm.forEach((k, v) -> params.put(String.valueOf(k), v));
+            }
+        }
+        return com.labos.kernel.workflow.GraphRunner.describeBuiltin(method, params);
+    }
+
     // ================================================================ 运行期变量
 
     /**
@@ -750,7 +779,13 @@ public class RunService {
                     "loopIndex", mint(n, "loopIndex"),
                     "stepSeq", n.get("stepSeq"),
                     "reason", n.get("reason"),
-                    "note", builtinNotes.get(String.valueOf(n.get("nodeKey"))),
+                    // 「在做什么」：优先用**运行时**的说明（含"已等 N 秒"进度）；
+                    // 没有就按**流程定义**算出来 —— 台账是 2026-11-11 才开始记的，
+                    // 之前跑的 run 没有那一行，但说明照样要看得见。
+                    "note", builtinNotes.containsKey(String.valueOf(n.get("nodeKey")))
+                            ? builtinNotes.get(String.valueOf(n.get("nodeKey")))
+                            : describeNode(n),
+                    "method", n.get("method"),
                     "errorCode", n.get("errorCode")));
         }
 

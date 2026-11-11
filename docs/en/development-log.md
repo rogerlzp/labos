@@ -6596,3 +6596,78 @@ parameter).
 ② **The note was stored as jsonb but read with `->>'note'`** — `device_raw_response`
 holds a **JSON string** (not an object) ⇒ `->>'note'` is always NULL ⇒ the "what it does"
 column was permanently empty. ⇒ It now lives in the `result` object (`result->>'note'`).
+
+---
+
+**Addendum (2026-11-11, late night): the read-only flow page explains the logic nodes and lets you change variables; "changing an experiment variable" is not "changing the run that is going"**
+
+Two questions came in on `/runs/1001270/flow`: **"I still can't see what the logic node
+is"** and **"the experiment variable VAR001 is already 100 and it did not move on — is that
+logic correct?"**
+
+**First, the facts** (run 1001270):
+
+| Fact | Value |
+|---|---|
+| the variable table of this run | `{"VAR001": "99"}` — the **workflow-level initial value** written when the run was created |
+| what the `__wait` node waits for | `VAR001 == 100` |
+| VAR001 in experiment 1000370 | 100 |
+| VAR001 in experiment 1000359 | 55 |
+| how this run was started | 18:57, a **workflow-level run on its own** (`POST /api/workflows/1000661/run`), **not an experiment run** |
+
+⇒ **The logic is right**: experiment-level variables are injected only when the
+experiment **starts**; this run is a workflow-level run, so the experiment-level variable
+never took part; and it started at 18:57, so changing an experiment variable afterwards
+cannot affect a run that is **already going**. To let it move on, the variable table of
+**this run** is what has to change.
+
+**But did the page explain that? No — and on site there was nowhere to make the right
+change.** Three links were broken:
+
+① **The read-only flow page never rendered the node note.** The backend
+`/api/runs/{id}/graph` already carried `note` from the previous round, but the front-end
+`RunGraph` component never used the field ⇒ adding it was the same as not adding it.
+
+② **The "Run variables" card only existed on the run detail page**, while the page people
+actually watch on site is the **read-only flow page** ⇒ changing a variable meant jumping
+pages, and then hopping back and forth between "run detail" and "read-only flow".
+
+③ **The node note was taken from the runtime ledger only**, and the ledger started
+recording at 19:16 ⇒ run 1001270 (18:57) is an **older run** ⇒ **not a single note** ⇒
+the logic node stayed a black box.
+
+**What this round added**:
+
+- a **"What each node is doing"** list on the read-only flow page (node / status / what it
+  does / device or method);
+- the **"Run variables" card on that page too** (editable), with the three scopes spelled
+  out: "You are changing **this run's** variables (they take effect the next time they are
+  read, and can wake a waiting node). Experiment-level variables are injected only when
+  the experiment **starts**, so they do not affect a run that is already going.";
+- the node note now **falls back to the workflow definition**
+  (`selectRunDetailNodes` carries `protocol_name` + `method_params` → `describeBuiltin`)
+  ⇒ **older runs are readable too**;
+- a missing timeout shows the **default of 300** (it used to say "timeout null seconds",
+  which reads as "no timeout was set");
+- the "device / method" column of a logic node shows the Chinese label ("waiting") instead
+  of the internal name `__wait`.
+
+**The measurement** (`scripts/verify-flow-readonly.py` 6/0): on the read-only flow page the
+note is plain language — "waiting for VAR001 = 100 (timeout 120 s)"; the variable card shows
+the current value 99; **changing it to 100 right there on the page** releases the waiting
+node and the downstream device node completes.
+
+**A second measurement** (walked by hand on the user's own run): change that run's VAR001
+to 100 → press "resume" → `__wait` completed → all 8 nodes completed → the run completed.
+
+**Two pitfalls from this round**
+
+① **MyBatis maps a jsonb column into `Map<String,Object>` as a `PGobject`, not a `Map`**
+⇒ the `instanceof Map` check failed ⇒ the node parameters were all lost ⇒ the note said
+"delay null seconds". ⇒ The SQL now casts to `::text` and the Java side parses it with
+`QJson.parseJson`.
+② **An edit got swallowed by a failed assertion**: in a python script the `assert` came
+before the file write ⇒ the change **never landed**, while the script had already printed
+"ok" ⇒ I only noticed later when the API did not return it. ⇒ from now on the write comes
+after the assert, and a failed assertion must abort loudly (this time I got lucky and
+checked by hand afterwards).

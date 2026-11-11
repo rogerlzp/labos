@@ -25,18 +25,8 @@ interface CmdRow {
   nodeKey: string | null;
 }
 
-/**
- * 内置逻辑节点的方法名 → 人话。
- *
- * <p>台账里出现 `__wait` / `__sleep` 这种内部名，现场根本读不出来它是什么。
- * 这里给出中文说法；设备方法名原样显示（那是设备协议里的名字，不该改）。
- */
-const BUILTIN_LABEL: Record<string, string> = {
-  __sleep: '延时',
-  __wait: '等待',
-  __setVar: '赋值',
-  __expr: '表达式',
-};
+// 内置逻辑节点的方法名 → 中文标签（与只读流程页共用一份口径）
+import { BUILTIN_LABEL } from '../bpmn/builtinLabels';
 
 /**
  * 解析后端的时间戳。

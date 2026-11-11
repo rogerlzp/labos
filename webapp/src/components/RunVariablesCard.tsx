@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Button, Card, Empty, Input, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Empty, Input, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../api/client';
@@ -97,6 +97,12 @@ export default function RunVariablesCard({
         </Typography.Text>
       }
     >
+      {/* 三层作用域的关系必须说清楚 —— 否则现场改了「实验变量」却发现
+          正在跑的这次执行没反应，以为是系统坏了。
+          **实验级变量只在实验启动时注入**，对**已经在跑的**这次执行无效；
+          要放行正在跑的这一次，改的是下面这张表（这条执行的变量表）。 */}
+      <Alert type="info" showIcon style={{ marginBottom: 8, fontSize: 12 }}
+        message={t('runVars.scopeHint')} />
       {q.isLoading ? (
         <Typography.Text type="secondary">{t('runVars.loading')}</Typography.Text>
       ) : items.length === 0 ? (
