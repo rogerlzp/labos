@@ -144,11 +144,11 @@ def main():
                            % (candidates, list(res)))
 
     graph = (GRAPH
-             .replace("__ROBOT__", pick("X231"))
-             .replace("__INCUBATOR__", pick("X229"))
-             .replace("__CENTRIFUGE__", pick("ASPIN_2K-1"))
-             .replace("__READER__", pick("ID1021"))
-             .replace("__SEALER__", pick("S100-1")))
+             .replace("__ROBOT__", pick("ID-X231"))
+             .replace("__INCUBATOR__", pick("ID-X229"))
+             .replace("__CENTRIFUGE__", pick("ID-ASPIN_2K-1"))
+             .replace("__READER__", pick("ID-1021"))
+             .replace("__SEALER__", pick("ID-S100-1")))
 
     island_id = q("SELECT id FROM resource_node WHERE code='%s' AND kind='island'"
                   % ISLAND_CODE)
