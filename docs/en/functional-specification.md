@@ -419,6 +419,8 @@ The editing altitude of 2.0: the designer maintains the nodes and the connection
 
 2.0 only delivers the sequence: the next workflow starts after the previous one has ended. Parallel, conditional, loop, dependency, timer, semaphore and sub-experiment keep their names but do not enter the release gate.
 
+> **Known boundary (2026-11-11)**: "sequence only" does not only affect parallel orchestration — it also affects **material**. In a real process the input of the next flow is often the **artefact** of the previous one (the same plate with a different content), and in 2.0 there is no "material hand-over" semantics between flows ⇒ orchestrating a real process breaks the material identity. The gap list and the landing route are in [Process Orchestration Capability Gaps and Landing Route](process-orchestration-gaps-and-roadmap.md) (desensitised, with a Chinese original).
+
 ### 7.3 Layer B: inside the workflow
 
 The storage continues to use BPMN XML, so that the workflow definitions can be opened. The execution semantics use the table below, not "every `sequenceFlow` is walked once".
