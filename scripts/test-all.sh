@@ -35,8 +35,13 @@ cd labos-kernel || exit 1
 #
 # 所以这里**默认拒绝**在内核运行时跑连库测试，而不是让它偶发红把真回归埋掉。
 # 需要自动停：LABOS_TESTALL_STOP_KERNEL=1 ./scripts/test-all.sh
-# ---------------------------------------------------------------------------
-if lsof -nP -iTCP:"${LABOS_API_PORT:-18080}" -sTCP:LISTEN >/dev/null 2>&1; then
+#
+# ⚠ **只有连库档才拦**（2026-11-11 改）：这个互斥保护的是「连库自测与内核抢数据」，
+# 而 `--pure-only` 一条库都不碰 ⇒ 不该被拦。之前它连纯逻辑档一起拦 ⇒
+# `ci-gate.sh --all` 变成**一条命令跑不通**：第 1 段纯逻辑要求内核停着，
+# 而 2.6/2.7 与 4.x 全都要 API 在跑 ⇒ 要么第 1 段红，要么后面成片报"连不上 API"。
+# ⇒ 纯逻辑档放行，内核在跑也照跑；连库档维持原样（内核在跑仍拒绝）。
+if [[ "${1:-}" != "--pure-only" ]] && lsof -nP -iTCP:"${LABOS_API_PORT:-18080}" -sTCP:LISTEN >/dev/null 2>&1; then
   if [ "${LABOS_TESTALL_STOP_KERNEL:-0}" = "1" ]; then
     echo "⚠ 内核在跑，按 LABOS_TESTALL_STOP_KERNEL=1 停掉后再测"
     pkill -f "com.labos.boot.LabosApplication" 2>/dev/null || true
