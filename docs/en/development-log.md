@@ -5964,5 +5964,67 @@ unknown ⇒ the device may still be executing something.)
    hang only on the "normal wrap-up" path; abnormal wrap-up (quarantine) is a terminal
    state too, and a terminal state owes the resource back.
 
+**Addendum (2026-11-11, night): two real problems found by the acceptance runs (ghost lock / acceptance budget false failure); and choreography deriving its island server-side**
+
+**One: the parallel-flow acceptance kept failing ⇒ two independent problems underneath**
+
+① **Kernel side: the runtime acquire path could not reclaim a ghost lock** (fixed)
+   Device 200171's lock pointed at run 1000891, and that run had **already been
+   deleted** (the acceptance script deletes its runs on cleanup) ⇒ `tryAcquire`
+   only accepts "empty lock or my own lock" ⇒ **nobody could ever get that device
+   again**; and the only path that clears ghost locks runs **at kernel startup** ⇒
+   in the runtime, nothing returns the lock when a run is deleted or finished.
+   Worse, it **self-infects**: every cleanup leaves one behind ⇒ the next round
+   on the same device always hangs ⇒ the same case failed three times in a row,
+   looking like "the device is broken".
+   **Fix**: the acquire condition gains "the lock's run no longer exists or is
+   terminal ⇒ reclaimable" (a lock held by a paused/running/queued run must
+   **not** be reclaimed — those runs still resume and the device is theirs).
+
+② **Script side: the wait budget was hardcoded to 60 seconds ⇒ false failure** (fixed)
+   The simulator deliberately takes 30–45 seconds per action, and the two branches
+   share one device ⇒ serialized ⇒ at least 90 seconds; the script gave up after
+   60 ⇒ **"still running" was judged as "did not complete"**.
+   Fix: derive the budget the same way the other two parallel scripts do — read
+   the `--rand-delay` upper bound from the simulator process arguments.
+
+③ The two problems sat on top of each other, which is why the early rounds looked
+   like "nothing adds up": the command was sent, the device did answer (the
+   simulator log shows "finished OpenDoor" after 42 seconds), but **the script
+   stopped waiting** and **the next round could not get the device**.
+
+**Two: choreography — derive the island server-side and refuse cross-island steps**
+(P-05 spec §6)
+
+The spec requires "choreography build ⇒ Derive or require Island; validate every
+resource server-side", and in reality **none of it existed**: only "steps
+non-empty, ≤50 steps" was checked, the resulting transfer workflow had **no
+island**, and whether the step's resource is on the roster or on the same island
+as the others was **never checked**.
+**Why it must be server-side**: the frontend already picks devices within one
+island (Island.tsx / IslandFlow.tsx), but the endpoint is public — calling it
+directly can splice devices from two islands into one "transfer workflow", and a
+plate simply cannot move between islands. ⇒ the server derives the island itself,
+refuses cross-island steps, and writes the derived island into `workflow.island_id`
+(that workflow now has an authoritative island ⇒ the execution-time island
+constraints apply to it).
+
+**Three: lessons (cross-project)**
+
+① **"The device is not responding" is often "the lock was not returned", not a
+   broken device** — look at what `device_state.current_run_id` points at, whether
+   that run still exists and whether it is terminal. What the field sees is a
+   device not responding; the cause is a lock.
+② **An acceptance script's wait budget must be derived from the designed duration
+   of what it tests** — treating "timeout" as "failure" leads you to break
+   perfectly correct kernel code (I almost did).
+③ **For the same red, separate "code regression" from "environment/assertion"** —
+   this time two independent problems were stacked; acting on the surface symptom
+   fixes the wrong thing ⇒ **follow it down to the root**.
+④ **The endpoint is public ⇒ the frontend's rule must be re-enforced server-side** —
+   the frontend doing it right does not mean the backend does; calling the API
+   directly bypasses every frontend constraint.
+
+
 
 
