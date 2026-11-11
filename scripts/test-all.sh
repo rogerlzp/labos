@@ -149,6 +149,9 @@ PURE=(
   # PG 数组列摊平（2026-11-10）：java.sql.Array / Java 数组 / null 三形态都认
   # —— 原先按 java.sql.Array 强转 ⇒ 每次执行工艺 500
   "persistence.DbArraysSelfTest"
+  # P-05：岛边界绑定门禁（PF-10/11/12/13）—— 纯函数，合成"当前资源树"快照
+  # 就能覆盖四条判定，不连库
+  "workflow.IslandBindingGateSelfTest"
 )
 
 # 连库：位置锁 / 暂停恢复 / 配方编译

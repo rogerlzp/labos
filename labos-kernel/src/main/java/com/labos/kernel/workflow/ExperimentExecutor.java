@@ -138,6 +138,27 @@ public final class ExperimentExecutor {
         // 缺失/UNKNOWN 在开跑前 fail-closed。
         HandoffGate.check(db, tenantId, experimentId, steps);
 
+        // P-05：派发前**重校验配置快照** —— 每个 Workflow 的绑定还成立吗？还在它
+        // 自己的岛上吗？（规格 §6 矩阵「Experiment execution | Revalidate Experiment
+        // → Workflow → resource Island chain before dispatch」）
+        //
+        // 为什么必须在开跑前：绑定的设备被删 / 被移出岛 / 该能力在岛内没有 ⇒ 跑起来
+        // 只会在某个节点上转人工，而"为什么"要翻日志才知道 ⇒ 宁可开跑前说清。
+        //
+        // 口径与 HandoffGate 一致：**fail-closed**（抛异常 ⇒ 调度器把这条 run 标失败，
+        // 不会留下"永远 queued"的孤儿）。判定逻辑与预检共用 IslandBindingGate。
+        List<String> boundaryBad = new ArrayList<>();
+        for (Step st : steps) {
+            for (IslandBindingGate.Violation v
+                    : IslandBindingGate.violationsOf(db, tenantId, st.workflowId())) {
+                boundaryBad.add("workflow " + st.workflowId() + " " + v.code() + " " + v.message());
+            }
+        }
+        if (!boundaryBad.isEmpty()) {
+            throw new IllegalStateException("实验的流程配置已不满足岛边界："
+                    + String.join("；", boundaryBad));
+        }
+
         long runId = existingRunId > 0
                 ? updateRun(existingRunId, vars, steps.size())
                 : createRun(experimentId, vars, steps.size());
