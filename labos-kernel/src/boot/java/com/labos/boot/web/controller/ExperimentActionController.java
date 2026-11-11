@@ -539,8 +539,25 @@ public class ExperimentActionController {
                             + "请到画布编排里调整流程顺序（画布支持条件分支与并行，"
                             + "列表只表达纯顺序）"));
         }
-        java.util.List<Long> workflowIds = extractLongArray(body, "workflowIds");
-        int n = experimentActionService.replaceExperimentProcesses(id, workflowIds);
+        // ⚠ **必须同时认 body 与 query string**（2026-11-11 修）：
+        //   只读 body 时 `POST .../processes?workflowIds=-1` 被当成"没传"⇒ 解析成空列表
+        //   ⇒ 走全量替换把编排**清空**，而且校验根本没执行（实测：非法 id -1 也返回 200、
+        //   编排 1 条 → 0 条）⇒ 数据破坏级缺陷。
+        //   现在：两处都没有 workflowIds ⇒ 400（不碰数据）；值非法 ⇒ 400（也不动数据）。
+        java.util.List<Long> workflowIds =
+                extractLongArray(body, req.getQueryString(), "workflowIds");
+        if (workflowIds == null) {
+            return ResponseEntity.badRequest()
+                    .body(err("缺少 workflowIds：请求体或查询串里都没有这个字段"
+                            + "（显式给空数组 [] 才表示清空编排）"));
+        }
+        int n;
+        try {
+            n = experimentActionService.replaceExperimentProcesses(id, workflowIds);
+        } catch (IllegalArgumentException e) {
+            // 流程不存在 / 超过 50 个 ⇒ 明确 400（**不改数据**）
+            return ResponseEntity.badRequest().body(err(String.valueOf(e.getMessage())));
+        }
         audit.record(session(req), "experiment.processes.save", "experiment", id,
                 "workflows=" + workflowIds.size(), null, req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("saved", n, "workflowIds", workflowIds));
@@ -679,14 +696,40 @@ public class ExperimentActionController {
      * <p>跟本文件其它解析一样走正则（够用即可，不追求通用 JSON 解析）：
      * 字段缺失时返回**空列表**（不是 null）⇒ 调用方可以直接当"清空"处理。
      */
-    private static List<Long> extractLongArray(String json, String key) {
-        List<Long> out = new ArrayList<>();
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]")
-                .matcher(json == null ? "" : json);
+    /**
+     * 取一个数字数组字段（如 {@code "workflowIds":[12,13]}）。
+     *
+     * <p><b>body 与 query string 都找</b>：验收脚本与部分调用方用
+     * {@code ?workflowIds=12,13} 传参 ⇒ 只看 body 会当成"没传"⇒ 解析成空列表
+     * ⇒ 全量替换把编排**清空**（2026-11-11 实测踩到：非法 id -1 也返回 200、
+     * 编排 1 条 → 0 条）。
+     *
+     * <p>返回 **null = 字段根本没给**（调用方应回 400，别当成"清空"）；
+     * 返回**空列表 = 显式给了空数组**（= 显式清空编排）。
+     */
+    private static List<Long> extractLongArray(String json, String query, String key) {
+        java.util.regex.Pattern p = java.util.regex.Pattern
+                .compile("\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]");
+        java.util.regex.Matcher m = p.matcher(json == null ? "" : json);
         if (!m.find()) {
-            return out;
+            if (query == null) {
+                return null;
+            }
+            // 查询串形态：workflowIds=12,13（没有方括号）
+            java.util.regex.Matcher q = java.util.regex.Pattern
+                    .compile("(?:^|[?&])" + key + "=([^&]*)").matcher(query);
+            if (!q.find()) {
+                return null;
+            }
+            List<Long> qids = new ArrayList<>();
+            java.util.regex.Matcher im =
+                    java.util.regex.Pattern.compile("-?\\d+").matcher(q.group(1));
+            while (im.find()) {
+                qids.add(Long.parseLong(im.group()));
+            }
+            return qids;
         }
+        List<Long> out = new ArrayList<>();
         java.util.regex.Matcher im = java.util.regex.Pattern.compile("\\d+").matcher(m.group(1));
         while (im.find()) {
             out.add(Long.parseLong(im.group()));
