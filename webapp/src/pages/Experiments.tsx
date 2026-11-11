@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
@@ -236,6 +236,23 @@ export default function ExperimentsPage() {
   });
 
   /**
+   * 生效中的**现场扣留**（runtime_hold）。
+   *
+   * <p>为什么要在这里显示：调度器按 ADR-FAULT-SCOPE-001「现场扣留优先于派发」——
+   * 扣留覆盖到本实验（本岛或本实验）时，**新执行会一直留在队列里不派发**
+   * （调度器状态显示 `stalled`）。而扣留通常是「上一次执行转人工」自动抬的
+   * ⇒ 现场只看得到"一直排队"，看不出原因（2026-11-11 用户现场卡在这里）。
+   * ⇒ 这里直接把"为什么排队"摆在实验页上。
+   */
+  const holdsQ = useQuery({
+    queryKey: ['runtime-holds'],
+    queryFn: () => apiFetch('/api/runtime/holds').then((r) => r.json()) as Promise<{
+      anyActive?: boolean; unknown?: boolean; unknownReason?: string | null;
+      holds?: Array<{ scope: string; scopeId: number; kind: string; reason?: string }>;
+    }>,
+  });
+
+  /**
    * 编排编辑：把「**已经建好的流程**」按顺序加进这个实验。
    *
    * <p>为什么原来界面上没有这个入口：编排表被设计成「画布编排」的**编译产物**
@@ -325,6 +342,23 @@ export default function ExperimentsPage() {
       islands: Array<{ code: string; id: number; name: string; devices?: unknown[] }>;
     }>,
   });
+
+  // 当前实验的岛 id（列表接口只给 islandCode，用 topology 映射成 id）
+  const expRow = exps.data?.items?.find((e) => e.id === expId);
+  const expIslandId = islands.data?.islands?.find((i) => i.code === expRow?.islandCode)?.id;
+  /** 本实验当前是否被现场扣留挡住（不派发） */
+  const holdBlock = useMemo(() => {
+    const h = holdsQ.data;
+    if (!h) return null;
+    if (h.unknown) {
+      return { kind: 'unknown', reason: h.unknownReason ?? '' };
+    }
+    const list = h.holds ?? [];
+    const hit = list.find((x) =>
+      (x.scope === 'experiment' && x.scopeId === expId)
+      || (x.scope === 'island' && expIslandId != null && x.scopeId === expIslandId));
+    return hit ? { kind: hit.scope, reason: hit.reason ?? '' } : null;
+  }, [holdsQ.data, expId, expIslandId]);
 
   /**
    * 新建实验。
@@ -700,6 +734,17 @@ export default function ExperimentsPage() {
               )}
             </Space>
 
+            {holdBlock && (
+              <Alert
+                type="warning" showIcon style={{ marginBottom: 8 }}
+                message={holdBlock.kind === 'unknown'
+                  ? t('experiments.holdBlock.unknownTitle')
+                  : t('experiments.holdBlock.title')}
+                description={holdBlock.kind === 'unknown'
+                  ? (holdBlock.reason || t('experiments.holdBlock.unknownDesc'))
+                  : t('experiments.holdBlock.desc', { reason: holdBlock.reason })}
+              />
+            )}
             <Alert
               type="info" showIcon style={{ marginBottom: 8 }}
               message={t('experiments.alert.mirrorTitle')}

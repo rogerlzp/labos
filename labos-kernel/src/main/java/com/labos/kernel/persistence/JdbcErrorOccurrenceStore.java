@@ -48,31 +48,6 @@ public final class JdbcErrorOccurrenceStore {
         return errorCode + "|" + (resourceId == null ? "any" : resourceId);
     }
 
-    /**
-     * 按节点最终状态自动决定 severity。
-     */
-    public void recordFromNode(NodeProgress np) throws SQLException {
-        String outcome = np.status().name();
-        String severity = switch (np.status()) {
-            case SKIPPED -> "info";
-            case ABORTED -> "error";
-            default -> "warn";
-        };
-        record(new Occurrence(
-                -1L,
-                np.nodeId(),
-                np.currentResourceId(),
-                np.lastErrorCode() == null ? "EC-UNKNOWN" : np.lastErrorCode(),
-                com.labos.kernel.recovery.RecoveryScope.NODE,
-                np.attempt(),
-                RecoveryStrategy.MANUAL,
-                outcome,
-                np.lastReason(),
-                Jsons.obj("failedResources", np.failedResourceIds().toString(),
-                        "attempt", np.attempt()),
-                severity));
-    }
-
     public void record(Occurrence o) throws SQLException {
         Long errorCodeId = policies.errorCodeId(o.errorCode());
 

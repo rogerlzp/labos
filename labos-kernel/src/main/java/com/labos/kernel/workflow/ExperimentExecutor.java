@@ -154,7 +154,13 @@ public final class ExperimentExecutor {
         for (Step st : steps) {
             for (IslandBindingGate.Violation v : IslandBindingGate.blocking(
                     IslandBindingGate.violationsOf(db, tenantId, st.workflowId()))) {
-                boundaryBad.add("workflow " + st.workflowId() + " " + v.code() + " " + v.message());
+                // 带 nodeKey：同一流程里多个节点可能**同名**（三个都叫「Seal」）
+                // ⇒ 只写 message 会得到同一句话重复三遍，现场看不出是哪几个节点。
+                // ⚠ 只改这里（实验派发的拼接），**不动** IslandBindingGate / 预检的文案
+                // （预检那条路线的文案承诺过「逐字保留」）。
+                boundaryBad.add("workflow " + st.workflowId()
+                        + " 节点 " + (v.nodeKey() == null ? "?" : v.nodeKey())
+                        + " " + v.code() + " " + v.message());
             }
         }
         if (!boundaryBad.isEmpty()) {
