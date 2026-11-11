@@ -35,6 +35,11 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <select id="selectNodeCode" resultType="java.lang.String">
+        SELECT code FROM resource_node
+         WHERE tenant_id = #{tenantId} AND id = #{nodeId}
+    </select>
+
     <select id="selectDeviceResourceByInstance" resultType="java.lang.Long">
         SELECT resource_id FROM device_instance WHERE id = #{param1}
     </select>

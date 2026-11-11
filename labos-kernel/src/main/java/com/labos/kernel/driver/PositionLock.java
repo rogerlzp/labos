@@ -208,6 +208,8 @@ public final class PositionLock {
         if (n > 0) {
             // 独立连接写冗余表：它失败不该影响已经提交的位置锁
             markPlateOutsideTx(plateId, resourceId, runId);
+            // **留痕**：板子放进了哪个位置 —— 这是"板子怎么流转"的唯一来源
+            auditPlateMove(plateId, "IN_TRANSFER", "KNOWN", resourceId, runId, "放板");
         }
         refreshHasPlateOfPosition(resourceId);
         return n;
@@ -261,9 +263,66 @@ public final class PositionLock {
 
     /** 登记"板取走了"：位置变空。 */
     public int takePlate(long resourceId, long runId) throws SQLException {
+        // 取走前先记住是哪个板（取完位置就空了）
+        String plate = plateOnPosition(resourceId);
         int n = takePlateInternal(resourceId, runId);
+        if (n > 0 && plate != null && !plate.isBlank()) {
+            // **留痕**：板子从哪个位置被取走了
+            auditPlateMove(plate, "KNOWN", "IN_TRANSFER", resourceId, runId, "取板");
+        }
         refreshHasPlateOfPosition(resourceId);
         return n;
+    }
+
+    /** 这个位置上现在放着哪个板（没有就 null）。 */
+    private String plateOnPosition(long resourceId) {
+        try {
+            return dm().selectPlateOnPosition(tenantId, resourceId);
+        } catch (RuntimeException e) {
+            log.error("[WARN] 读位置上的板失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * **写一条板子流转审计**（{@code plate_location_audit}）。
+     *
+     * <p><b>为什么必须有</b>：这张表以前**只在人工盘点时写**
+     * （{@code PauseManager} 的"未知板/丢失板"处置）⇒ 执行过程中
+     * 板子被放进哪个设备、又被搬到哪儿去，**一条痕迹都没有**。
+     * 现场问"PL-001 现在在哪、怎么过来的"，答不上来。
+     *
+     * <p><b>为什么不在主事务里写</b>：跟 {@code plate} 表同理 ——
+     * 审计写失败不该把位置锁的更新一起回滚（表现是"日志说放板成功，层位上没板"）。
+     * ⇒ 独立连接写，失败只记日志。
+     *
+     * <p>{@code operator} 用 {@code AUTO} 区分「自动流转」与「人工盘点」。
+     */
+    private void auditPlateMove(String barcode, String from, String to,
+                                long positionResourceId, long runId, String action) {
+        if (barcode == null || barcode.isBlank()) {
+            return;
+        }
+        try {
+            String location = positionCode(positionResourceId);
+            String note = action + (location == null ? "" : " @ " + location);
+            com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.PauseMapper.class)
+                    .insertPlateAudit(tenantId, barcode, from, to, location,
+                            "AUTO", note, runId);
+        } catch (RuntimeException e) {
+            // 审计写不进去不该影响执行（数据少了比流程停了好）
+            log.error("[PLATE-WARN] 板子流转审计写入失败 " + barcode + ": " + e.getMessage());
+        }
+    }
+
+    /** 位置的编码（{@code resource_node.code}）；查不到就返回 null。 */
+    private String positionCode(long positionResourceId) {
+        try {
+            return qm().selectNodeCode(tenantId, positionResourceId);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private int takePlateInternal(long resourceId, long runId) throws SQLException {

@@ -108,6 +108,17 @@ public interface PauseMapper {
                                        String operator, String note);
 
     /** 板位审计（盘点/解封/封锁都记）。 */
+    /**
+     * 板子流转轨迹（{@code plate_location_audit}），按时间倒序。
+     *
+     * @param barcode 板号；null/空 = 全部板子
+     * @param limit   最多取几条
+     */
+    java.util.List<java.util.Map<String, Object>> selectPlateTraces(
+            @Param("tenantId") long tenantId,
+            @Param("barcode") String barcode,
+            @Param("limit") int limit);
+
     int insertPlateAudit(long tenantId, String barcode, String fromStatus,
                          String toStatus, String actualLocation, String operator,
                          String note, Long runId);

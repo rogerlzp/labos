@@ -31,6 +31,9 @@ public interface QueryMapper {
 
     String selectWorkflowName(long tenantId, long workflowId);
 
+    /** 资源节点的编码（{@code resource_node.code}）；查不到返回 null。 */
+    String selectNodeCode(@Param("tenantId") long tenantId, @Param("nodeId") long nodeId);
+
     /**
      * 按 code 取型号 id（**不带 tenant**，code 由调用方转大写）。
      *

@@ -411,3 +411,56 @@ experiment_position (experiment_id, resource_id, action)
 | 2.2 | Pre-check interface (which positions the workflow will occupy) |
 | 2.3 | Release the island-level mutual exclusion (position level + robot arm level) |
 | 2.4 | Automatic position optimisation (which position becomes free the soonest) |
+
+---
+
+## 13. Implementation status (added 2026-11-11)
+
+This design is from 2026-11-01. The **tables and the code were already there**, but the
+whole thing **could not be used in the baseline environment**. When the question "where is
+the plate, is the position free, how did the plate travel" was asked on 2026-11-11, the root
+cause turned out to be: **not that the trail was broken, but that there were no positions to
+occupy in the first place**.
+
+| Capability | Table | Code | State |
+|---|---|---|---|
+| Position occupancy | `position_state` | `PositionLock.tryReserve / tryReserveForever / tryReserveTransfer` | ✅ always there |
+| Releasing a position | same | `PositionLock.release / releaseAll` | ✅ always there |
+| Put / take a plate | `position_state.plate_id` + `plate` (redundant) | `PositionLock.putPlate / takePlate` | ✅ always there |
+| Position state query | — | `PositionLock.byIsland` → `GET /api/positions` | ✅ used by the island page |
+| **A trail of the execution** | `plate_location_audit` | used to be written **only by manual inventory** | ✅ **added 2026-11-11**: putting and taking each write a row (`operator='AUTO'`); a manual inventory writes the person's name |
+| **Querying the trail** | same | — | ✅ **added 2026-11-11**: `GET /api/plates/traces` + the "Plate transfers" page |
+
+### 13.1 Why the baseline never had any positions
+
+The new baseline island `LAB-BASE-01` got five devices, but **not a single position**
+(`resource_node.kind='incubator'/'storage'/'transfer_point'`) ⇒
+`PositionLock.notePlateMove`'s `firstAvailablePosition(deviceResource)` always returned null
+⇒ the plate was never put anywhere ⇒ `position_state` stayed empty and
+`plate_location_audit` never got a row.
+
+This is exactly the concrete shape of the precondition this document lists in §6.3,
+"initial position state known ❌ 2,563 positions, not initialised": those 2,563 positions hang
+under the devices of the **old** islands (2,050 of them have a parent device); the baseline
+island had none.
+
+**The fix** (`scripts/baseline-build.sql` §④): give the baseline devices positions — four
+layers on incubator `ID-X229`, two transfer points on robot `ID-X231`.
+
+### 13.2 The shape of the trail
+
+| Column | Meaning |
+|---|---|
+| `barcode` | the plate barcode |
+| `from_status` / `to_status` | `IN_TRANSFER` (in transit) / `KNOWN` (in place) / `UNKNOWN` / `LOST` |
+| `actual_location` | the position code (`resource_node.code`) |
+| `operator` | `AUTO` = recorded automatically by the execution; a name = manual inventory |
+| `note` | plain language ("put the plate @ ID-X229-P1") |
+| `run_id` | which execution did it |
+
+### 13.3 What is still missing for parallelism
+
+The "lock the source and the target at once, in ascending id order" of §3 is already in
+`tryReserveTransfer`, but **positions shared across islands** and **robot time-slicing** are
+still not implemented — of the four preconditions for lifting the island-level mutex (§6.3),
+only one (the position lock) now holds.

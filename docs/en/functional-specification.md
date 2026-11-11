@@ -597,6 +597,9 @@ The basis of the duration: only the `completed` records whose cleaned duration i
 | 7.4 | The device status colouring (busy / idle / offline / error) | ✅ | P1 |
 | 7.5 | The plate-level Gantt, the scheduling decision trace | ⬜ | Outside the release |
 | 7.6 | **The run page refreshes itself**: the command ledger, the flow graph and the node states refresh on their own while a run is in progress (no manual page reload) | ✅ see §15.4 | P0 |
+| 7.7 | **Multiple tabs**: several views can be open at once and switched between (a tab bar, preserved across a reload) | ✅ see §15.9 | P0 |
+| 7.8 | **Position occupancy**: every position of a device shows empty / occupied / reserved | ✅ island page (`GET /api/positions`) | P0 |
+| 7.9 | **Plate transfer trail**: how a barcode travels between devices, recorded step by step and queryable | ✅ see §15.10 | P0 |
 
 ### L8 Device onboarding
 
@@ -1415,7 +1418,71 @@ only 1–3 execution records, so expanding by default is cheap.
 execution**, so they belong on the execution-records page. Leaving them on the
 configuration page made people think "this pauses the experiment".
 
-### 15.9 The measured evidence
+### 15.9 Multiple tabs (being able to watch several things at once)
+
+**Why**: the content area used to hold "exactly one page" — clicking the menu replaced
+whatever was there. On site the work is **watching several things at once**: what the
+experiment is doing, what the flow looks like, and the state of a particular device.
+Bouncing through the menu ⇒ every switch reloads the page and refetches everything,
+which is not something you can actually watch from.
+
+**How**:
+
+| Piece | What it does |
+|---|---|
+| `webapp/src/app/tabs.tsx` | the tab table (key = route path) + the active one; persisted in localStorage (survives a reload) |
+| `webapp/src/app/TabBar.tsx` | the tab bar: click to switch, × to close, double-click to keep only that one |
+| `webapp/src/app/nav.tsx` | the menu table + how a route becomes a tab title (static paths look up the menu, dynamic ones carry the id) |
+
+**Two implementation points that matter**:
+
+1. **Only the active tab's page is mounted.** The bar renders the tabs but not their
+   content (the content area is hidden by CSS) ⇒ the content still comes from the route.
+   Otherwise ten mounted pages fire ten times the requests and the browser locks up.
+2. **In-page navigation opens a tab too** (list → detail, ledger → flow chart) ⇒ you can
+   switch back to the list without going through the menu again.
+
+An existing bug was fixed on the way: **after logging in the URL stayed on `/login`**,
+and there was no `/login` route ⇒ the content area was **blank** (only the menu).
+⇒ added a `/login → /runs` redirect.
+
+### 15.10 Position occupancy and plate transfers
+
+**Background**: the design has been there for a while
+(`docs/板位级占用与位置互斥-设计.md`, the four-level resource model
+island → device → position → plate), and so have the tables and the code
+(`position_state` / `plate` / `plate_location_audit` + `PositionLock`) —
+but **it could never be used in the baseline environment**. When the question
+"where is the plate, is the position free, how did the plate travel" was asked on
+2026-11-11, the root cause turned out to be: **none of the five baseline devices had
+a single position**, so a plate could not be put anywhere ⇒ the occupancy table stayed
+empty, the transfer audit never got a row ⇒ nothing to look at.
+
+**Three things added in this round**:
+
+| Added | How |
+|---|---|
+| **the baseline has positions** | `scripts/baseline-build.sql` §④: four layers on incubator `ID-X229`, two transfer points on robot `ID-X231` (the `kind` must be incubator / storage / transfer_point — the position lock only accepts those three) |
+| **the execution leaves a trail** | `PositionLock.putPlate` / `takePlate` each write one `plate_location_audit` row (`operator='AUTO'`; a manual inventory writes the person's name ⇒ the two sources are distinguishable); written on an independent connection, failures only logged (an audit must not take the position lock down with it) |
+| **the trail is queryable** | `GET /api/plates/traces` (with a barcode for one plate's trail, without it for the recent stream) + the "Plate transfers" page (menu group "Run") |
+
+**The trail's columns**:
+
+| Column | Meaning |
+|---|---|
+| `from_status` / `to_status` | `IN_TRANSFER` (in transit) / `KNOWN` (in place) / `UNKNOWN` / `LOST` |
+| `actual_location` | the position code (`resource_node.code`) |
+| `operator` | `AUTO` = recorded automatically during execution; a name = manual inventory |
+| `note` | plain language ("放板 @ ID-X229-P1") |
+| `run_id` | which execution did it |
+
+**Where parallelism stands**: `tryReserveTransfer` (locking the source and the target at
+once, in ascending id order to break cycles) is already in the code; but **positions
+shared across islands** and **robot time-slicing** are still not implemented — of the
+four preconditions for lifting the island-level mutex, only one (the position lock) now
+holds.
+
+### 15.11 The measured evidence
 
 | Script | Covers | Result |
 |---|---|---|
@@ -1427,6 +1494,7 @@ configuration page made people think "this pauses the experiment".
 | `scripts/verify-live-refresh.py` | the ledger of the read-only flow page appears without a manual reload | 3/0 |
 | `scripts/verify-flow-readonly.py` | read-only flow page: the node note is plain language / the variable card is editable / the change releases the wait | 6/0 |
 | `scripts/verify-exp-runs-split.py` | the experiment configuration page no longer carries the records table / the entry leads to the records page / that page has the table and the expansion / the list page has the entry | 9/0 |
+| `scripts/verify-plate-trace.py` | the baseline has positions / putting occupies and taking releases / two audit rows with the location and the run / the trail is queryable by barcode | 8/0 |
 
 ---
 

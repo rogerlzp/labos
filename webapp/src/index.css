@@ -58,3 +58,22 @@ body {
 .djs-context-pad {
   display: none !important;
 }
+
+/* ---------------------------------------------------------------- 顶部标签条
+ *
+ * 只渲染标签条（不含内容区）：内容由路由决定 —— 只有**当前**标签的页面会挂载。
+ * 否则十个标签的页面同时挂载 ⇒ 十倍的请求同时打出去，浏览器直接卡死。
+ */
+.labos-tabbar .ant-tabs-content-holder {
+  display: none;
+}
+.labos-tabbar .ant-tabs-nav {
+  margin: 0;
+}
+.labos-tabbar .ant-tabs-tab {
+  padding: 6px 0;
+  font-size: 12px;
+}
+.labos-tabbar .ant-tabs-tab + .ant-tabs-tab {
+  margin-left: 4px;
+}

@@ -80,6 +80,31 @@
          ORDER BY r.id DESC LIMIT 20
     </select>
 
+<!--
+  **全局**实验执行记录：所有实验的执行记录（不按实验筛）。
+
+  为什么要有：菜单里要有一个「实验执行记录」入口 —— 值班员问
+  「现在有哪些实验在跑/卡着/刚失败」，要的是**一张总表**，
+  而不是逐个实验点进去看（现场反馈过"实验列表和实验执行列表要分开"）。
+
+  带实验名与实验号：只看 run 编号不知道是哪个实验。
+-->
+<select id="selectAllExperimentRuns" resultType="java.util.Map">
+    SELECT r.id AS "id", r.experiment_id AS "experimentId",
+           e.name AS "experimentName", e.experiment_no AS "experimentNo",
+           e.island_id AS "islandId",
+           r.status AS "status", r.control_state AS "controlState",
+           r.expanded_steps AS "expandedSteps", r.current_seq AS "currentSeq",
+           r.started_at AS "startedAt", r.finished_at AS "finishedAt",
+           r.error AS "error", r.pause_kind AS "pauseKind",
+           r.pause_reason AS "pauseReason", r.stop_requested AS "stopRequested",
+           EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) AS "durationSec"
+      FROM experiment_run r
+      JOIN experiment e ON e.id = r.experiment_id
+     WHERE r.tenant_id = #{param1}
+     ORDER BY r.id DESC LIMIT 200
+</select>
+
 <select id="selectExperimentVariables" resultType="java.util.Map">
         SELECT id AS "id", name AS "name", type AS "type",
                default_value AS "defaultValue", description AS "description"

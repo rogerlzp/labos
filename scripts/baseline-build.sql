@@ -32,7 +32,8 @@ VALUES
     (1, NULL, 'LAB-BASE-01', '基线岛', 'island', 'available', 1,
      '/LAB-BASE-01', '{}'::jsonb,
      jsonb_build_object('island_desc',
-         '测试基线：机器人 / 孵育箱 / 离心机 / 读板机 / 封膜机，各一台'));
+         '测试基线：机器人 / 孵育箱 / 离心机 / 读板机 / 封膜机，各一台'))
+ON CONFLICT (tenant_id, code) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
 -- ② 5 台设备拖进岛
@@ -62,7 +63,51 @@ UPDATE device_instance
  WHERE id = 200;
 
 -- ---------------------------------------------------------------------------
--- ④ 非基线的在役设备一律停用
+-- ④ 孵育箱/机器人的**层位（点位）**
+--     为什么基线必须有层位：板位机制（位置占用互斥 + 板子流转留痕）的前提是
+--     **设备下面有位置**。没有层位 ⇒ 放板动作找不到地方放
+--     （PositionLock.notePlateMove → firstAvailablePosition 返回 null）
+--     ⇒ position_state 永远空、plate_location_audit 永远没记录
+--     ⇒ "板在哪、点位空不空、板怎么流转"这三件事在现场根本没数据可看。
+--     （设计文档 docs/板位级占用与位置互斥-设计.md §7「初始化」说的就是这件事：
+--      位置初始状态未知 ⇒ 占用互斥与流转跟踪都无从谈起。）
+--
+--     孵育箱 X229 给 4 个层位（放板/取板演练用）；
+--     机器人 X231 给 2 个转运点（机械臂放板的中转位置）。
+--     kind 必须是 incubator / storage / transfer_point —— 位置锁只认这三种。
+-- ---------------------------------------------------------------------------
+INSERT INTO resource_node
+    (tenant_id, parent_id, code, name, kind, status, capacity, path, location, attr)
+SELECT 1, d.id, d.code || '-P' || p.n,
+       d.name || ' 第' || p.n || '层',
+       'incubator', 'available', 1,
+       '/LAB-BASE-01/' || d.code || '/' || d.code || '-P' || p.n,
+       '{}'::jsonb, '{}'::jsonb
+  FROM resource_node d
+  CROSS JOIN (VALUES (1), (2), (3), (4)) AS p(n)
+ WHERE d.code = 'ID-X229' AND d.tenant_id = 1
+ON CONFLICT (tenant_id, code) DO NOTHING;
+
+INSERT INTO resource_node
+    (tenant_id, parent_id, code, name, kind, status, capacity, path, location, attr)
+SELECT 1, d.id, d.code || '-TP' || p.n,
+       d.name || ' 中转位' || p.n,
+       'transfer_point', 'available', 1,
+       '/LAB-BASE-01/' || d.code || '/' || d.code || '-TP' || p.n,
+       '{}'::jsonb, '{}'::jsonb
+  FROM resource_node d
+  CROSS JOIN (VALUES (1), (2)) AS p(n)
+ WHERE d.code = 'ID-X231' AND d.tenant_id = 1
+ON CONFLICT (tenant_id, code) DO NOTHING;
+
+-- 层位也要清掉旧占用（重建基线时别把上次的板子状态带过来）
+DELETE FROM position_state ps
+ WHERE ps.resource_id IN (SELECT id FROM resource_node
+                           WHERE parent_id IN (SELECT id FROM resource_node
+                                                WHERE code IN ('ID-X229','ID-X231')));
+
+-- ---------------------------------------------------------------------------
+-- ⑤ 非基线的在役设备一律停用
 --     为什么：设备清单要能一眼看出"基线在哪"。留着 7 台不在岛里的在役设备，
 --     门禁选设备时可能挑到它们（挑不到可用方法的那些只会制造噪音）。
 --     停用 = status='disabled' + driver_id=NULL（数据保留，可随时启用）。
@@ -74,7 +119,7 @@ UPDATE device_instance
    AND status <> 'disabled';
 
 -- ---------------------------------------------------------------------------
--- ⑤ 顺带清干净这些设备的在线状态（心跳已停用它们，别留"在线"的假象）
+-- ⑥ 顺带清干净这些设备的在线状态（心跳已停用它们，别留"在线"的假象）
 -- ---------------------------------------------------------------------------
 UPDATE device_state ds
    SET online = false, updated_at = now()
@@ -86,7 +131,7 @@ UPDATE device_state ds
 COMMIT;
 
 -- ---------------------------------------------------------------------------
--- 自检：基线岛 + 5 台设备
+-- 自检：基线岛 + 5 台设备 + 层位
 -- ---------------------------------------------------------------------------
 SELECT r.code AS island, d.code AS device, c.code AS capability,
        di.status, di.id AS device_instance_id, r.id AS resource_id
@@ -97,3 +142,11 @@ SELECT r.code AS island, d.code AS device, c.code AS capability,
   JOIN capability c ON c.id = dev.capability_id
  WHERE r.code = 'LAB-BASE-01'
  ORDER BY d.code;
+
+-- 层位自检：每台有层位的设备，层位数必须 > 0（否则板位机制用不起来）
+SELECT d.code AS device, count(p.id) AS 位置数
+  FROM resource_node d
+  LEFT JOIN resource_node p
+         ON p.parent_id = d.id AND p.kind IN ('incubator','storage','transfer_point')
+ WHERE d.code IN ('ID-X229','ID-X231') AND d.tenant_id = 1
+ GROUP BY d.code ORDER BY d.code;

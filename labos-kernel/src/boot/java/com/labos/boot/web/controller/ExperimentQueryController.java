@@ -96,6 +96,17 @@ public class ExperimentQueryController {
         return runService.batchesJson(id);
     }
 
+    /**
+     * **全局**实验执行记录（所有实验）。
+     *
+     * <p>菜单里的「实验执行记录」入口用它 —— 值班员要的是一张总表：
+     * 现在有哪些实验在跑 / 卡着 / 刚失败。</p>
+     */
+    @GetMapping(value = "/experiment-runs", produces = "application/json; charset=utf-8")
+    public String allExperimentRuns() throws SQLException {
+        return experimentQueryService.allExperimentRunsJson();
+    }
+
     @GetMapping(value = "/experiments/{id:\\d+}/variables",
             produces = "application/json; charset=utf-8")
     public String variables(@PathVariable long id) throws SQLException {

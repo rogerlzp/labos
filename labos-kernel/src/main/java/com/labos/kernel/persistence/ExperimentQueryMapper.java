@@ -38,6 +38,14 @@ public interface ExperimentQueryMapper {
     /** 某实验的执行记录（最近 20 条）。 */
     List<Map<String, Object>> selectExperimentRuns(long tenantId, long experimentId);
 
+    /**
+     * **全局**实验执行记录（所有实验，最近 200 条，带实验名/号）。
+     *
+     * <p>菜单里的「实验执行记录」入口用它 —— 值班员要的是一张总表，
+     * 而不是逐个实验点进去看。</p>
+     */
+    List<Map<String, Object>> selectAllExperimentRuns(long tenantId);
+
     /** 实验变量列表。 */
     List<Map<String, Object>> selectExperimentVariables(long tenantId, long experimentId);
 

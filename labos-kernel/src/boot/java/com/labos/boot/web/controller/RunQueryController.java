@@ -105,6 +105,18 @@ public class RunQueryController {
         return runService.unknownPlates();
     }
 
+    /**
+     * 板子**流转轨迹**：谁在什么时候把板子放/取到了哪个位置。
+     *
+     * <p>board=PL-001 看单个板的轨迹；不带 board 看最近的流转流水。</p>
+     */
+    @GetMapping(value = "/plates/traces", produces = "application/json; charset=utf-8")
+    public String plateTraces(@RequestParam(required = false) String barcode,
+                               @RequestParam(required = false) Integer limit)
+            throws SQLException {
+        return runService.plateTracesJson(barcode, limit == null ? 200 : limit);
+    }
+
     @GetMapping(value = "/runs/{id:\\d+}/graph", produces = "application/json; charset=utf-8")
     public String runGraph(@PathVariable long id) throws SQLException {
         return runService.runGraphJson(id);

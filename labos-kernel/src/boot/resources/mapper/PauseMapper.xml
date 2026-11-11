@@ -174,6 +174,28 @@
         VALUES (#{param1}, #{param2}, 'MANUAL', #{param3}, #{param4}, #{param5})
     </insert>
 
+    <!--
+      板子流转轨迹：谁（哪个 run / 人工）在什么时候把板子放/取到了哪个位置。
+
+      这是"板子编号如何在设备之间流转"的唯一来源 ——
+      执行过程里的放板/取板都会写一行（operator='AUTO'），
+      人工盘点也会写（operator 是人名）。
+    -->
+    <select id="selectPlateTraces" resultType="java.util.Map">
+        SELECT a.id AS "id", a.barcode AS "barcode",
+               a.from_status AS "fromStatus", a.to_status AS "toStatus",
+               a.actual_location AS "actualLocation",
+               a.operator AS "operator", a.note AS "note",
+               a.run_id AS "runId", a.created_at AS "createdAt"
+          FROM plate_location_audit a
+         WHERE a.tenant_id = #{tenantId}
+        <if test="barcode != null and barcode != ''">
+           AND a.barcode = #{barcode}
+        </if>
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT #{limit}
+    </select>
+
     <insert id="insertPlateAudit">
         INSERT INTO plate_location_audit
           (tenant_id, barcode, from_status, to_status,

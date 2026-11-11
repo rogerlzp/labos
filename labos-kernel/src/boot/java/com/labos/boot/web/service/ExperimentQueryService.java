@@ -273,6 +273,38 @@ public class ExperimentQueryService {
                 "items", new Jsons.Raw(Jsons.arr(items)));
     }
 
+    /**
+     * **全局**实验执行记录（所有实验）。
+     *
+     * <p>菜单里的「实验执行记录」入口用它：值班员要的是**一张总表**
+     * ——「现在有哪些实验在跑 / 卡着 / 刚失败」，而不是逐个实验点进去看。</p>
+     */
+    public String allExperimentRunsJson() throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row
+                : experimentQueryMapper.selectAllExperimentRuns(TENANT)) {
+            items.add(Jsons.obj(
+                    "id", row.get("id"),
+                    "experimentId", row.get("experimentId"),
+                    "experimentName", row.get("experimentName"),
+                    "experimentNo", row.get("experimentNo"),
+                    "islandId", row.get("islandId"),
+                    "status", row.get("status"),
+                    "controlState", row.get("controlState"),
+                    "expandedSteps", row.get("expandedSteps"),
+                    "currentSeq", row.get("currentSeq"),
+                    "startedAt", mstr(row, "startedAt"),
+                    "finishedAt", mstr(row, "finishedAt"),
+                    "durationSec", row.get("durationSec"),
+                    "error", row.get("error"),
+                    "pauseKind", row.get("pauseKind"),
+                    "pauseReason", row.get("pauseReason"),
+                    "stopRequested", row.get("stopRequested")));
+        }
+        return Jsons.obj("total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
     public String experimentProcessesJson(long experimentId) throws java.sql.SQLException {
         List<String> items = new ArrayList<>();
         for (java.util.Map<String, Object> row

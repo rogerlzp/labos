@@ -6765,3 +6765,93 @@ longer has the records table (the "run" + status + progress + pause-reason colum
 gone) ⇒ the entry leads to `/experiments/:id/runs` ⇒ that page has the table, the
 expanded-by-default step table and a "back to the experiment" button ⇒ the list page has
 the entry per row.
+
+---
+
+**Addendum (2026-11-11, night): "Experiment executions" in the menu, multiple tabs, position
+occupancy and plate transfers**
+
+Four things came in at once: **① the experiment execution records need an entry in the left
+menu; ② several views should be openable at once so you can switch between them; ③ during an
+execution we need to check the plate's position and whether each position on a device is
+occupied or free — how is that recorded, and how does each action change it; ④ each plate's
+barcode has to be recorded so we can see how it travels between devices.**
+
+**① "Experiment executions" in the menu**
+
+The execution records used to live only inside **one** experiment's page (split out in the
+previous round). But what the duty engineer asks is "which experiments are running / stuck /
+just failed" — that is **one table**; with dozens of experiments, clicking through them one
+by one does not work.
+
+Added `GET /api/experiment-runs` (every experiment's execution records, with the experiment
+name and number, latest 200) + the page `/experiment-runs` + an entry in the "Authoring" menu
+group. Search, filter by status, refreshed every 5 s.
+
+**② Multiple tabs**
+
+The content area used to hold exactly one page; clicking the menu replaced it. On site the
+work is watching three things at once (what the experiment is doing / what the flow looks
+like / the state of a device) — bouncing through the menu reloads every time, which is not
+something you can watch from.
+
+Added `app/tabs.tsx` (the tab table + localStorage persistence), `app/TabBar.tsx` (the bar:
+click to switch, × to close, double-click to keep only that one) and `app/nav.tsx` (the menu
+table + how a route becomes a tab title — static paths look up the menu, dynamic ones carry
+the id).
+
+**Two implementation points that matter**:
+- **Only the active tab's page is mounted.** The bar renders the tabs but not their content
+  (the content area is hidden by CSS); the content still comes from the route. Otherwise ten
+  mounted pages fire ten times the requests and the browser locks up.
+- **In-page navigation opens a tab too** (list → detail, ledger → flow chart) ⇒ you can switch
+  back to the list without going through the menu again.
+
+**An existing bug was fixed on the way**: **after logging in the URL stayed on `/login`**, and
+there was no `/login` route ⇒ the content area was **blank** (only the menu). Added a
+`/login → /runs` redirect.
+
+**③ + ④ Position occupancy and plate transfers (the most substantive part)**
+
+`docs/板位级占用与位置互斥-设计.md` (2026-11-01, awaiting review) already has the whole
+design: the four-level resource model, the `position_state` table, reservations and
+releases, locking two positions at once, plate-level tracking. The tables are there and the
+code is there (`PositionLock.tryReserve / putPlate / takePlate / byIsland`).
+
+**But it could never be used in the baseline environment.** The root cause was not that the
+trail was broken, but that **none of the five baseline devices had a single position** ⇒ a
+plate could not be put anywhere (`notePlateMove` → `firstAvailablePosition` returns null)
+⇒ `position_state` stayed empty, `plate_location_audit` never got a row ⇒ nothing to look at
+when the question was asked.
+
+That is exactly the concrete shape of the precondition the design lists in §6.3, "initial
+position state known ❌ 2,563 positions, not initialised": those 2,563 positions hang under
+the devices of the **old** islands (2,050 of them have a parent device); the baseline island
+had none.
+
+Three things added:
+
+| Added | How |
+|---|---|
+| the baseline has positions | `baseline-build.sql` §④: four layers on incubator `ID-X229`, two transfer points on robot `ID-X231` (the `kind` must be incubator / storage / transfer_point — the position lock only accepts those three) |
+| the execution leaves a trail | `putPlate` / `takePlate` each write one `plate_location_audit` row (`operator='AUTO'`; a manual inventory writes the person's name ⇒ the two sources are distinguishable). **Written on an independent connection, failures only logged** — an audit must not roll the position lock back with it (the same lesson as the `plate` table) |
+| the trail is queryable | `GET /api/plates/traces` (with a barcode for one plate's trail) + the "Plate transfers" page (menu group "Run") |
+
+**The measurement** (`scripts/verify-plate-trace.py` 8/0): putting → the position is occupied
++ an audit row with the position code (`ID-X229-P1`) and the run number; taking → the
+position is released + an audit row; the trail is queryable by barcode.
+
+**Two lessons from this round**
+
+① **"not implemented" and "cannot be used in this environment" are two different things**
+with identical symptoms (no data to look at). Both `position_state` and
+`plate_location_audit` existed and the code wrote them, but the baseline devices had no
+positions ⇒ putting a plate never happened ⇒ **the tables stayed empty**. ⇒ when a table is
+empty, dig one layer deeper: **why was nothing written** (here: "there was no position to
+occupy").
+
+② **An assertion must pin down the process, not just the end state.** My first version
+asserted "the plate is still on `position_state`" ⇒ it could never pass: the flow runs "put →
+take" back to back, so by the end the plate is gone and the position is free. ⇒ changed to
+asserting the **complete put-and-take** (the redundant table remembers where it last was +
+the position is now free + two audit rows).

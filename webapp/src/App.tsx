@@ -1,20 +1,16 @@
-import { useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Alert, Button, Layout, Menu, Spin, Typography, Tag, Space, Select } from 'antd';
-import {
-  DatabaseOutlined,
-  DeploymentUnitOutlined,
-  PlayCircleOutlined,
-  BarChartOutlined,
-  ToolOutlined,
-  SettingOutlined,
-} from '@ant-design/icons';
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import TabBar from './app/TabBar';
+import { NAV, titleFor } from './app/nav';
+import { TabsProvider, useTabs } from './app/tabs';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import RunsPage from './pages/Runs';
 import PausedRunsPage from './pages/PausedRuns';
 import ManualWindowsPage from './pages/ManualWindows';
 import QuarantinePage from './pages/Quarantine';
 import HandoffsPage from './pages/Handoffs';
 import PlatesPage from './pages/Plates';
+import PlateTracesPage from './pages/PlateTraces';
 import RunDetailPage from './pages/RunDetail';
 import RunFlowViewPage from './pages/RunFlowView';
 import WorkflowsPage from './pages/Workflows';
@@ -27,6 +23,7 @@ import GanttPage from './pages/Gantt';
 import DurationsPage from './pages/Durations';
 import ExperimentsPage from './pages/Experiments';
 import ExperimentRunsPage from './pages/ExperimentRuns';
+import ExperimentRunsListPage from './pages/ExperimentRunsList';
 import ExperimentListPage from './pages/ExperimentList';
 import ScheduleGanttPage from './pages/ScheduleGantt';
 import SchedulerPage from './pages/Scheduler';
@@ -40,99 +37,29 @@ import { roleColor, roleLabel, useAuth } from './auth';
 import TopologyPage from './pages/Topology';
 import ModelLibraryPage from './pages/ModelLibrary';
 import { useI18n } from './i18n';
-import type { MessageKey } from './i18n/core';
 
 const { Header, Sider, Content } = Layout;
 
-/** 导航项：文案走 key，不写死中文（渲染时按当前语种查表）。 */
-interface NavChild {
-  key: string;
-  labelKey: MessageKey;
-  icon?: ReactNode;
-}
-
-interface NavGroup {
-  key: string;
-  labelKey: MessageKey;
-  icon: ReactNode;
-  children: NavChild[];
-}
-
 /**
- * 导航按角色任务分，不是按数据表分。
- * 详见 docs/UI-界面设计说明书.md 第 2 章。
+ * 外壳：只负责把标签页能力包上去。
  *
- * <p>label 存的是文案 key 而不是中文本身：英文版靠同一份 key 查另一张表，
- * 不需要第二份菜单结构（两份结构迟早会漂）。
+ * <p>为什么单独一层：标签状态要跨整棵树（菜单点击、路由变化、标签条），
+ * 而 App 里还有"未登录 → 登录页"的早退分支 —— 早退时标签能力用不上，
+ * 但 Provider 在外层就没这个问题。
  */
-const NAV: NavGroup[] = [
-  {
-    key: 'author',
-    labelKey: 'nav.group.author',
-    icon: <DeploymentUnitOutlined />,
-    children: [
-      { key: '/workflows', labelKey: 'nav.workflows' },
-      { key: '/experiments', labelKey: 'nav.experiments' },
-      { key: '/canvas', labelKey: 'nav.canvas' },
-    ],
-  },
-  {
-    key: 'run',
-    labelKey: 'nav.group.run',
-    icon: <PlayCircleOutlined />,
-    children: [
-      { key: '/runs', labelKey: 'nav.runs' },
-      { key: '/scheduler', labelKey: 'nav.scheduler' },
-      { key: '/schedule', labelKey: 'nav.schedule' },
-      { key: '/paused', labelKey: 'nav.paused' },
-      { key: '/manual-windows', labelKey: 'nav.manualWindows' },
-      { key: '/quarantined', labelKey: 'nav.quarantined' },
-      { key: '/handoffs', labelKey: 'nav.handoffs' },
-      { key: '/plates', labelKey: 'nav.plates' },
-    ],
-  },
-  {
-    key: 'analyse',
-    labelKey: 'nav.group.analyse',
-    icon: <BarChartOutlined />,
-    children: [
-      { key: '/gantt', labelKey: 'nav.gantt' },
-      { key: '/duration', labelKey: 'nav.duration' },
-    ],
-  },
-  {
-    key: 'ops',
-    labelKey: 'nav.group.ops',
-    icon: <ToolOutlined />,
-    children: [
-      { key: '/alerts', labelKey: 'nav.alerts' },
-      { key: '/topology', labelKey: 'nav.topology' },
-      // 型号库是本组里唯一"数据对账"入口，给个图标便于评审时快速定位
-      // （其余子项无图标，若要求视觉完全统一可去掉 icon）
-      { key: '/models', labelKey: 'nav.models', icon: <DatabaseOutlined /> },
-      { key: '/island', labelKey: 'nav.island' },
-      { key: '/island-flow', labelKey: 'nav.islandFlow' },
-      { key: '/policies', labelKey: 'nav.policies' },
-      { key: '/variables', labelKey: 'nav.variables' },
-      { key: '/error-codes', labelKey: 'nav.errorCodes' },
-    ],
-  },
-  {
-    key: 'system',
-    labelKey: 'nav.group.system',
-    icon: <SettingOutlined />,
-    children: [
-      { key: '/users', labelKey: 'nav.users' },
-      { key: '/audit', labelKey: 'nav.audit' },
-    ],
-  },
-];
-
 export default function App() {
-  const nav = useNavigate();
+  return (
+    <TabsProvider>
+      <AppInner />
+    </TabsProvider>
+  );
+}
+
+function AppInner() {
   const loc = useLocation();
   const { session, loading, error: authError, isAdmin, refresh, logout } = useAuth();
   const { t, locale, setLocale } = useI18n();
+  const { open, tabs } = useTabs();
 
   /**
    * 菜单按角色过滤：用户管理只有 admin 能看。
@@ -154,6 +81,24 @@ export default function App() {
       children: g.children.map((c) => ({ key: c.key, label: t(c.labelKey), icon: c.icon })),
     }));
   }, [isAdmin, t]);
+
+  /**
+   * 路由变了 ⇒ 把这个页面登记进标签表。
+   *
+   * <p>为什么要自动登记：现场从**列表点进详情**、从**台账跳到流程图**，
+   * 这些是页内跳转 —— 如果不登记，那个页面就没法在标签条上切回去。
+   * 登记时用 `titleFor` 算标题（静态路径查菜单表，动态路径带 id）。
+   */
+  useEffect(() => {
+    const path = loc.pathname;
+    // /login 不是应用视图（登录页），不该出现在标签条上
+    if (!path || path === '/' || path === '/login') return;
+    if (!tabs.some((x) => x.key === path)) {
+      open(path, titleFor(path, t));
+    }
+    // 依赖只放 path：open/t 是稳定的引用，标题变化不影响"要不要登记"
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc.pathname]);
 
   // 有 token 时先恢复会话：这期间既不闪登录页，也不闪空菜单
   if (loading) {
@@ -243,14 +188,19 @@ export default function App() {
             defaultOpenKeys={['author', 'run', 'ops']}
             items={navItems}
             onClick={({ key }) => {
-              if (key.startsWith('/')) nav(key);
+              // **开标签而不是替换**：现场要同时看几个视图，来回点菜单不该把上一个顶掉
+              if (key.startsWith('/')) open(key, titleFor(key, t));
             }}
           />
         </Sider>
 
         <Content style={{ padding: 20, overflow: 'auto', background: '#0d1014' }}>
+          <TabBar />
           <Routes>
             <Route path="/" element={<Navigate to="/runs" replace />} />
+            {/* 登录成功后 URL 停在 /login ⇒ 这里没有匹配路由 ⇒ 内容区空白
+                （2026-11-11 发现：登录后一片白，只剩菜单）。⇒ 把它重定向回运行列表。 */}
+            <Route path="/login" element={<Navigate to="/runs" replace />} />
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/scheduler" element={<SchedulerPage />} />
             <Route path="/gantt" element={<GanttPage />} />
@@ -263,12 +213,16 @@ export default function App() {
             <Route path="/quarantined" element={<QuarantinePage />} />
             <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/plates" element={<PlatesPage />} />
+            {/* 板子流转：板号在设备之间怎么流转的（执行过程的每一次放板/取板都留痕） */}
+            <Route path="/plate-traces" element={<PlateTracesPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
             {/* 列表 → 详情：/experiments 看全量，/experiments/:id 才是编排页 */}
             <Route path="/experiments" element={<ExperimentListPage />} />
             <Route path="/experiments/:id" element={<ExperimentsPage />} />
             {/* 实验的**执行记录**单独一页：配置与历史分开，现场看着不乱 */}
             <Route path="/experiments/:id/runs" element={<ExperimentRunsPage />} />
+            {/* 全局实验执行记录总表（菜单入口） */}
+            <Route path="/experiment-runs" element={<ExperimentRunsListPage />} />
             <Route path="/experiments/:id/canvas" element={<ExperimentCanvasPage />} />
             <Route path="/canvas" element={<ExperimentCanvasPage />} />
             <Route path="/canvas/:id" element={<ExperimentCanvasPage />} />

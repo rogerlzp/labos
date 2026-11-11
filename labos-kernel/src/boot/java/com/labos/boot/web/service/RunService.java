@@ -413,6 +413,40 @@ public class RunService {
                 "commands", new Jsons.Raw(keyValueArrayJson(rows)));
     }
 
+    /**
+     * 板子**流转轨迹**：谁在什么时候把板子放/取到了哪个位置。
+     *
+     * <p>为什么需要：以前这张审计表**只在人工盘点时写** ⇒ 执行过程里
+     * 板子的每一次移动都没有痕迹，现场问"PL-001 现在在哪、怎么过来的"答不上来。
+     * 现在放板/取板都会留一行（见 {@code PositionLock.auditPlateMove}）。
+     *
+     * @param barcode 板号；空 = 最近的流转（不限板）
+     */
+    public String plateTracesJson(String barcode, int limit) throws java.sql.SQLException {
+        java.util.List<java.util.Map<String, Object>> rows =
+                com.labos.kernel.persistence.Mappers.get(
+                                com.labos.kernel.persistence.PauseMapper.class)
+                        .selectPlateTraces(TENANT,
+                                barcode == null || barcode.isBlank() ? null : barcode.trim(),
+                                limit <= 0 ? 200 : Math.min(limit, 1000));
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> r : rows) {
+            items.add(Jsons.obj(
+                    "id", r.get("id"),
+                    "barcode", r.get("barcode"),
+                    "fromStatus", r.get("fromStatus"),
+                    "toStatus", r.get("toStatus"),
+                    "actualLocation", r.get("actualLocation"),
+                    "operator", r.get("operator"),
+                    "note", r.get("note"),
+                    "runId", r.get("runId"),
+                    "createdAt", mstr(r, "createdAt")));
+        }
+        return Jsons.obj("total", items.size(),
+                "barcode", barcode == null || barcode.isBlank() ? null : barcode.trim(),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
     public String holds() throws java.sql.SQLException {
         RuntimeHold.HoldView view = new RuntimeHold(db, TENANT).activeView();
         boolean unknown = view.state() == RuntimeHold.HoldState.UNKNOWN;
