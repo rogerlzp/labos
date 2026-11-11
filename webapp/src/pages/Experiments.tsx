@@ -138,12 +138,18 @@ function RunSteps({ runId, nav }: { runId: number; nav: (p: string) => void }) {
               : '—'),
           },
           {
-            // 打开**流程图本身**并带上这次 run ⇒ 设计器把节点状态直接着色在图上
-            // （只点 runId 会跳到运行详情那张节点表，看不到图上的位置）
+            // 打开**流程图本身**；有这一步的 run 时带上它 ⇒ 设计器把节点状态直接着色在图上
+            // （只点 runId 会跳到运行详情那张节点表，看不到图上的位置）。
+            //
+            // ⚠ **不要求 runId**：这一步失败在"建流程执行单之前"时（设备抢不到锁、
+            // 展开失败等）**没有 runId** ⇒ 以前这一格是「—」⇒ 实验里点不进去、
+            // 看不到这个流程长什么样。⇒ 只要有流程就给出入口：没有 run 就只看图。
             title: t('experiments.col.workflowGraph'), width: 110,
-            render: (_, r) => (r.runId && r.workflowId
+            render: (_, r) => (r.workflowId
               ? <Button size="small" type="link"
-                  onClick={() => nav(`/designer/${r.workflowId}?run=${r.runId}`)}>
+                  onClick={() => nav(r.runId
+                    ? `/designer/${r.workflowId}?run=${r.runId}`
+                    : `/designer/${r.workflowId}`)}>
                   {t('experiments.action.openWorkflowGraph')}
                 </Button>
               : '—'),
@@ -960,6 +966,11 @@ export default function ExperimentsPage() {
                   expandable={{
                     // 点开就能看到"哪几步跑了、哪几步没跑"——这是用户最想知道的
                     expandedRowRender: (r) => <RunSteps runId={r.id} nav={nav} />,
+                    // **默认展开**：进实验页就直接看到每个步骤与它的「打开流程图」入口。
+                    // 以前要点行左侧的「+」才展开 ⇒ 入口藏了两层 ⇒ 现场反馈
+                    // "在实验里点不进去、看不到流程状态"（2026-11-11）。
+                    // 实验一般只有 1~3 条执行记录 ⇒ 展开成本可接受。
+                    defaultExpandedRowKeys: (runsQuery.data?.items ?? []).map((r) => r.id),
                   }}
                   columns={[
                     { title: 'run', dataIndex: 'id', width: 80,
