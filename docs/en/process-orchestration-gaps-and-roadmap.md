@@ -219,6 +219,10 @@ The core entity of this drawing is **material**.
 
 ### Stage 1 · Material identity and state (G1 / G2 / G11 / G12)
 
+> **Detailed design**: see [Material Identity and State · Design](material-identity-and-state-design.md)
+> (up for review; contains the data model, the state transition semantics, the transaction
+> boundary, the implementation slices and the list of decision points).
+
 | Action | Landed on |
 |---|---|
 | Add content state, **seal** state and ownership (run / step) to `plate` | G1, the seal half of G2 |

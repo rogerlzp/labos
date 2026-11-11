@@ -134,8 +134,8 @@ The frontend has no i18n dependency, and none is being added:
 ## 3. Translation ledger — documents
 
 **This registry covers the Chinese documents that have an English counterpart or a
-reserved English path** — 106 entries (105 translated ✅, 1 queued ⬜). It is **not** a
-list of every Chinese document: the Chinese set has **143 documents** (139 under
+reserved English path** — 107 entries (106 translated ✅, 1 queued ⬜). It is **not** a
+list of every Chinese document: the Chinese set has **144 documents** (140 under
 `docs/`, 4 in the repository root), and the remaining **38 are Chinese-only**
 (architecture decisions, the remediation status table, review bundles, working logs) —
 they are listed in §3b. ✅ means the English document exists now; ⬜ means the English
@@ -190,6 +190,7 @@ path is reserved and the translation is queued.
 | `docs/流程控制-测试报告.md` | `docs/en/workflow-control-test-report.md` | ✅ |
 | `docs/完整流程测试矩阵-设计.md` | `docs/en/full-flow-test-matrix-design.md` | ✅ |
 | `docs/工艺编排能力缺口与落地路线.md` | `docs/en/process-orchestration-gaps-and-roadmap.md` | ✅ |
+| `docs/物料身份与状态-设计.md` | `docs/en/material-identity-and-state-design.md` | ✅ |
 | `docs/测试总纲.md` | `docs/en/testing-master.md` | ⬜ |
 | `docs/测试与上线策略.md` | `docs/en/testing-and-release-strategy.md` | ✅ |
 | `docs/测试规范.md` | `docs/en/test-specification.md` | ✅ |
