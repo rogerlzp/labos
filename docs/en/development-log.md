@@ -6048,6 +6048,74 @@ constraints apply to it).
    the frontend doing it right does not mean the backend does; calling the API
    directly bypasses every frontend constraint.
 
+**Addendum (2026-11-11): the end-to-end test of the P-05 experiment-dispatch gate — and the real shape of "dispatch"**
+
+Context: the last piece of P-05 is "re-validate the configuration snapshot before
+dispatch" (`ExperimentExecutor.run` checks the island boundary through
+`IslandBindingGate` before creating the run; an ERROR-level violation ⇒ fail-closed
+exception). The self-tests (pure logic 8/0) and the preflight DB self-test passed, but
+**the full dispatch chain was never exercised** — this round closes that gap.
+
+**One: how the test was done (real kernel + real DB + real scheduler)**
+
+Built a **single-workflow experiment**: `experiment` + `experiment_process`
+(workflow 1255) + `experiment_run` (`status='queued'`) ⇒ wait for the scheduler tick to
+dispatch it. Workflow 1255's 3 task nodes all bind resource 504830 (device instance 413,
+**on island 100030**), so setting its authoritative island `workflow.island_id` to
+**100027** produces the "out-of-island" case.
+
+| Group | Authoritative island | Result |
+|---|---|---|
+| Out-of-island | 100027 | run **1003084 = `failed`**, error: "the experiment's workflow configuration no longer satisfies the island boundary: workflow 1255 PF-12, node "Seal" binds a device (resource 504830 / instance 413) that is not inside the workflow's island 100027 — execution will be refused (device ownership is decided server-side, the device cannot be swapped at execution time)" |
+| Control (same island) | 100030 | run **1003085 really entered the execution path** (running → paused "1 node needs manual confirmation (the plate position cannot be trusted and must not be treated as completed)"), **the error contains no island-boundary wording at all** |
+
+⇒ The control group is the point: **it proves the gate refuses "because of the island
+boundary" rather than "refusing everything"**. A green out-of-island group alone cannot
+show that the "let it through" path works.
+
+**Two: what the test dug up on the side: experiment dispatch has exactly one live path**
+
+The first attempt wrote the rows straight into the DB → the run stayed `queued` forever
+and the scheduler log never even said "dispatching experiment". Following that down:
+
+- The scheduler's dispatch queue is **in-memory** (`ExperimentScheduler.queue`); only
+  `submit()` can enqueue;
+- `ExperimentScheduler.submit(experimentId[, vars])` has **no caller anywhere in the
+  repo** (`grep -rn "\.submit("` only hits the thread pools) — it is **dead code**;
+- the real live path is the **kernel start-up tail** `rehydrateQueued()`: it picks
+  `experiment_run.status='queued'` up from the DB and loads it into the queue.
+
+⇒ **"there is a queued experiment run in the DB ⇒ it will be dispatched" is false** —
+it still needs a product entry point that "writes it into the DB and triggers the load".
+The current API only offers `GET/PUT /api/experiments/{id}/processes` (orchestration);
+**there is no endpoint that creates/dispatches an experiment** ⇒ that is a gap in the
+experiment-management feature surface, recorded in the status table as to-be-planned and
+outside P-05's boundary (not mine to fix this round, and I must not silently widen the
+scope).
+
+**Three: lessons (cross-project)**
+
+① **"The data is in the DB" ≠ "something will process it"** — when the queue lives in
+   memory, inserting a row just puts it in a drawer nobody opens. The judgement has to
+   land on **"who reads it"**: `submit()` has no caller, only `rehydrate` loads ⇒ the
+   test method must follow the real path too (build the rows → **restart the kernel** →
+   rehydrate → the tick dispatches), not "build the rows and wait".
+② **When your own assertion fails, suspect the assertion first** — this time
+   `grep -q "not inside the workflow's island"` did not match, and I almost went to
+   change the implementation; the actual wording carries the island number ("…not
+   inside the workflow's island **100027**"), so the implementation was right. **A
+   phrase containing a variable value must be copied from the real wording, not written
+   from memory.**
+③ **`INSERT ... RETURNING` in psql prints one extra status line** — capturing the id
+   with `-tAc` also swallows `INSERT 0 1` (`tr -d ' '` squashes it into `INSERT01`) ⇒
+   the next SQL fails with `syntax error at or near "INSERT01"`, and **it fails as a
+   syntax error, not as an empty value**, which is very hard to connect back to "a status
+   line polluted the variable". ⇒ always `head -1` + strip whitespace + validate that the
+   result is a number.
+④ **The control group is the only evidence that the "let it through" path works** —
+   testing only "the ones that must be refused are refused" cannot distinguish "the gate
+   works" from "that path was never open".
+
 
 
 
