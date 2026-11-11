@@ -287,6 +287,22 @@ public class DeviceController {
         return deviceService.devicePoolJson(isl > 0 ? isl : null);
     }
 
+    /**
+     * 设备清单 —— 模拟端 / tcp client 从中控读的**唯一真源**。
+     *
+     * <p>一台设备 = 设备ID（device_instance.id）+ 设备IP（device_instance.ip）+ 端口。
+     * 三端（模拟端 / 中控 / tcp client）拿到的必须是同一组值，
+     * 否则 Redis 里的长连接状态会挂到别的设备名下。
+     *
+     * <p><b>免鉴权</b>（见 {@code ApiServer.isPublic}）：端侧进程（模拟器 / sidecar）
+     * 启动时必须能读到清单，而它们没有中控的账号。清单只含设备端点与型号，
+     * 不含岛归属、人员、账号等业务数据。
+     */
+    @GetMapping(value = "/devices/registry", produces = "application/json; charset=utf-8")
+    public String deviceRegistry() throws SQLException {
+        return deviceService.deviceRegistryJson();
+    }
+
     @GetMapping(value = "/devices/unassigned", produces = "application/json; charset=utf-8")
     public String unassignedDevices() throws SQLException {
         return deviceService.unassignedDevicesJson();

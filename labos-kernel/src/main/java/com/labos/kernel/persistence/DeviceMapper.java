@@ -86,6 +86,15 @@ public interface DeviceMapper {
     /** 未挂到岛上的设备（有 device_instance 但父节点不是 island）。 */
     List<Map<String, Object>> selectUnassignedDevices(long tenantId);
 
+    /**
+     * 设备清单 —— **模拟端 / tcp client 从中控读的唯一真源**。
+     *
+     * <p>口径：一台设备 = 设备ID（device_instance.id）+ 设备IP（device_instance.ip）
+     * + 端口（driver.endpoint 解析）。三端认的必须是同一组值，所以清单只报
+     * 表里的值，不做推断 —— 猜出来的 deviceId 会让 Redis 里的长连接状态挂错设备。
+     */
+    List<Map<String, Object>> selectDeviceRegistry(long tenantId);
+
     /** 设备方法清单（按 resource_node.id 关联，含型号码与参数定义）。 */
     List<Map<String, Object>> selectDeviceMethods(long resourceId);
 

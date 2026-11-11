@@ -62,6 +62,11 @@ public final class DeviceSimulator {
         long randMin = -1;
         long randMax = -1;
         Long randSeed = null;
+        // --registry URL：从**中控的设备清单**认领自己（设备ID / 编号 / 能力 / 画像）。
+        String registryUrl = null;
+        // 显式给了的参数优先于清单（人工显式指定是"我就要这个"），
+        // 但清单值与显式值不一致时要提醒 —— 那正是要消灭的"两份事实"。
+        java.util.Set<String> explicit = new java.util.HashSet<>();
 
         // --list-* 是单参数，先单独处理（下面的循环是成对解析）
         for (String a : args) {
@@ -82,17 +87,18 @@ public final class DeviceSimulator {
             switch (args[i]) {
                 case "--port" -> port = Integer.parseInt(args[++i]);
                 case "--host" -> host = args[++i];
-                case "--device" -> device = args[++i];
-                case "--code" -> code = args[++i];
-                case "--cap" -> cap = args[++i];
+                case "--device" -> { device = args[++i]; explicit.add("device"); }
+                case "--code" -> { code = args[++i]; explicit.add("code"); }
+                case "--cap" -> { cap = args[++i]; explicit.add("cap"); }
                 case "--delay" -> delay = Long.parseLong(args[++i]);
                 case "--fail" -> failEvery = Integer.parseInt(args[++i]);
                 case "--fail-code" -> failCode = args[++i];
                 case "--fail-method" -> failMethod = args[++i];
                 case "--fail-from" -> failFrom = Integer.parseInt(args[++i]);
                 case "--long" -> longTask = true;
-                case "--profile" -> profile = args[++i];
+                case "--profile" -> { profile = args[++i]; explicit.add("profile"); }
                 case "--model" -> modelId = args[++i];
+                case "--registry" -> registryUrl = args[++i];
                 case "--offline" -> offline = true;
                 case "--rand-delay" -> {
                     // 格式 MIN:MAX[:SEED]，单位毫秒
@@ -119,6 +125,51 @@ public final class DeviceSimulator {
         if (port <= 0) {
             log.error("必须指定 --port，例如 --port 19401");
             System.exit(2);
+        }
+
+        // ---- 从中控的设备清单认领自己（三端口径统一的第一步）----
+        // 手工传的 --device/--code/--cap/--profile 与中控表里的值是**同一份事实**，
+        // 手工传就多了一份可能对不上的副本（设备改了 IP、换了能力就悄悄错位）。
+        // 清单读不到时不致命（工位上中控可能还没起），但会警告。
+        if (registryUrl != null) {
+            try {
+                var items = DeviceRegistry.fetch(registryUrl);
+                var me = DeviceRegistry.match(items, host, port);
+                if (me == null) {
+                    log.warn("[模拟器] 中控清单里没有端口 " + port + " 对应的设备"
+                            + "（" + registryUrl + "）；继续用命令行参数。"
+                            + "如果这台设备已在中控登记，请检查端口是否一致。");
+                } else {
+                    log.info("[模拟器] 已从中控认领设备：" + me.code()
+                            + "（设备ID " + me.deviceId() + " @ " + me.ip() + ":" + me.port() + "）");
+                    if (explicit.contains("device")) {
+                        warnIfDiffers("设备ID", device, String.valueOf(me.deviceId()));
+                    } else {
+                        device = String.valueOf(me.deviceId());
+                    }
+                    if (explicit.contains("code")) {
+                        warnIfDiffers("设备编号", code, me.code());
+                    } else {
+                        code = me.code();
+                    }
+                    if (explicit.contains("cap")) {
+                        warnIfDiffers("设备能力", cap, me.capability());
+                    } else {
+                        cap = me.capability();
+                    }
+                    if (explicit.contains("profile")) {
+                        warnIfDiffers("设备画像", profile, me.simProfile());
+                    } else if (!me.simProfile().isBlank() && !"generic".equals(me.simProfile())) {
+                        profile = me.simProfile();
+                    }
+                    if (modelId == null && !me.modelId().isBlank()) {
+                        modelId = me.modelId();
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("[模拟器] 读中控设备清单失败（" + e.getMessage()
+                        + "）；继续用命令行参数。");
+            }
         }
 
         DeviceModel model = DeviceModels.of(modelId);
@@ -165,6 +216,22 @@ public final class DeviceSimulator {
         // 行为不可靠（实测进程会直接退出，日志只剩一句"模拟器退出"）。
         // 用 CountDownLatch 明确阻塞，只有 JVM 关闭时才结束。
         new java.util.concurrent.CountDownLatch(1).await();
+    }
+
+    /**
+     * 命令行显式给的值与中控清单里的值不一致时提醒一句。
+     *
+     * <p>不直接改（显式参数是"我就要这个"），但要说出来 ——
+     * 这种不一致正是"模拟器说在线、中控说离线"这类问题的源头。
+     */
+    private static void warnIfDiffers(String what, String given, String fromRegistry) {
+        if (fromRegistry == null || fromRegistry.isBlank()) {
+            return;
+        }
+        if (!fromRegistry.equals(given)) {
+            log.warn("[模拟器] " + what + "命令行给的是 " + given
+                    + "，中控清单里是 " + fromRegistry + "（以清单为准才不会和中控对不上）");
+        }
     }
 
     /** {@code --list-models}：已适配 / 待适配 / 错误码映射一次看全。 */

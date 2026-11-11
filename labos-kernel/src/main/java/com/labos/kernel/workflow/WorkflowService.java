@@ -1296,6 +1296,12 @@ public class WorkflowService {
     private com.labos.kernel.driver.DeviceDriver buildAdapter(
             DriverDescriptor desc, String host, int port,
             com.labos.kernel.device.DeviceErrorMapper errorMapper) {
+        // ⚠ 2026-11-11：**命令下发仍走短连接**（TcpDriverAdapter）。
+        //   在线状态那条链已经交给 **tcp client（sidecar）→ Redis** 了：
+        //   sidecar 维持到设备的**长连接**并把状态写进 Redis，中控从 Redis 读它判在线。
+        //   ⇒ 命令下发与在线状态**职责分开**：在线状态不再由内核自己开短连接去探
+        //   （那会让设备侧看到"接入→断开"反复出现，也不是真在线）；
+        //   而命令下发仍由内核直接连设备、用短连接（协议帧与设备侧一致，风险最小）。
         if ("persistent".equalsIgnoreCase(System.getenv("LABOS_DRIVER_MODE"))) {
             return new com.labos.kernel.driver.tcp.TcpPersistentDriver(desc, errorMapper);
         }

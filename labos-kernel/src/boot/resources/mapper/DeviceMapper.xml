@@ -155,6 +155,45 @@
          ORDER BY d.code
     </select>
 
+    <!--
+      设备清单 —— **模拟端 / tcp client 从中控读的唯一真源**（2026-11-11）。
+
+      口径：一台设备 = 设备ID（device_instance.id）+ 设备IP（device_instance.ip）+ 端口。
+      三端（模拟端 / 中控 / tcp client）认的必须是同一组值，所以清单**只报表里的值**，
+      不做推断、不做兜底 —— 猜出来的 deviceId 会让 Redis 里的长连接状态挂错设备。
+
+      端口从 driver.endpoint 解析（endpoint = tcp://<host>:<port>），
+      host 与 device_instance.ip 同源（已核对 48/48 一致）。
+
+      只列**在役**设备：已停用（status='disabled'）的设备不在服务状态里，
+      列进去只会让端侧把长连接挂到一台没人管的设备上。
+    -->
+    <select id="selectDeviceRegistry" resultType="java.util.Map">
+        SELECT di.id AS "deviceId",
+               di.resource_id AS "resourceId",
+               di.code AS "code",
+               di.name AS "name",
+               di.ip AS "ip",
+               di.status::text AS "status",
+               d.id AS "driverId",
+               d.code AS "driverCode",
+               d.endpoint AS "endpoint",
+               c.code AS "capability",
+               dev.device_type AS "deviceType",
+               dev.model AS "model",
+               dev.attr-&gt;&gt;'device_model' AS "modelId"
+          FROM device_instance di
+          JOIN driver d ON d.id = di.driver_id AND d.deleted_at IS NULL
+          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN capability c ON c.id = dev.capability_id
+         WHERE di.tenant_id = #{param1}
+           AND di.deleted_at IS NULL
+           AND di.status &lt;&gt; 'disabled'
+           AND d.status = 1
+           AND d.endpoint IS NOT NULL AND d.endpoint &lt;&gt; ''
+         ORDER BY di.id
+    </select>
+
 <select id="selectUnassignedDevices" resultType="java.util.Map">
         SELECT d.id AS "resourceId", d.code AS "code", d.name AS "name",
                di.ip AS "ip", c.code AS "capability"

@@ -295,6 +295,133 @@ public class DeviceService {
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
 
+    /**
+     * 设备清单 —— **模拟端 / tcp client 从中控读的唯一真源**（2026-11-11）。
+     *
+     * <p>一台设备由 <b>设备ID</b>（device_instance.id）+ <b>设备IP</b>
+     * （device_instance.ip）+ 端口 三元组唯一确定。三端（模拟端 / 中控 / tcp client）
+     * 拿到的必须是同一组值，所以这里<b>只报表里的值</b>：
+     * <ul>
+     *   <li>设备IP 取 {@code device_instance.ip}（已与 driver.endpoint 的 host 核对一致）；</li>
+     *   <li>端口从 {@code driver.endpoint}（{@code tcp://host:port}）解析；</li>
+     *   <li>不猜、不兜底 —— 猜出来的 deviceId 会让 Redis 里的长连接状态挂错设备，
+     *       表现为"这台明明在线，页面显示离线"，比直接报错更难查。</li>
+     * </ul>
+     *
+     * <p>{@code simProfile} 是给模拟端的行为画像（robot / incubator / centrifuge …），
+     * 由设备类型映射而来 —— 映射放在中控侧，模拟端就不用自己猜"我是哪种设备"。
+     */
+    public String deviceRegistryJson() throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row : deviceMapper.selectDeviceRegistry(TENANT)) {
+            String endpoint = str(row.get("endpoint"));
+            items.add(Jsons.obj(
+                    "deviceId", row.get("deviceId"),
+                    "resourceId", row.get("resourceId"),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    // **生效的**设备IP：表里的 device_instance.ip 优先，
+                    // 没填就用 driver.endpoint 的 host —— 与内核 HeartbeatService
+                    // 的 resolveHost 完全同一套规则。
+                    // ⇒ 清单给出的值就是内核会拿去拼 Redis key 的那个值，
+                    //   sidecar 直接用清单的 ip 写 key，两端必然对得上。
+                    //   （早先这里直接输出表里的空 ip，会让 sidecar 写出
+                    //     "labos:link:171::19500"，而内核找的是
+                    //     "labos:link:171:127.0.0.1:19500" —— 永远离线。）
+                    "ip", effectiveIp(str(row.get("ip")), endpoint),
+                    "port", portOf(endpoint),
+                    "endpoint", endpoint,
+                    "capability", row.get("capability"),
+                    "deviceType", row.get("deviceType"),
+                    "simProfile", simProfileOf(row.get("deviceType"), row.get("capability")),
+                    "modelId", row.get("modelId"),
+                    "driverCode", row.get("driverCode"),
+                    "status", row.get("status")));
+        }
+        return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 生效的设备IP：{@code device_instance.ip} 优先，没填就用 driver.endpoint 的 host。
+     *
+     * <p>与内核 {@code HeartbeatService.resolveHost} 同一套规则 —— 两边必须一致，
+     * 否则 sidecar 写的 Redis key 和内核找的 key 不是一个。
+     */
+    static String effectiveIp(String ip, String endpoint) {
+        if (ip != null && !ip.isBlank()) {
+            return ip.trim();
+        }
+        String hp = endpoint == null ? "" : endpoint.trim();
+        if (hp.startsWith("tcp://")) {
+            hp = hp.substring(6);
+        }
+        int idx = hp.lastIndexOf(':');
+        return idx > 0 ? hp.substring(0, idx) : hp;
+    }
+
+    /**
+     * 设备类型 → 模拟器行为画像。
+     *
+     * <p>先按设备类型（{@code device.device_type}，是厂商登记的分类）映射，
+     * 映射不到再按能力（{@code capability.code}）兜底 —— 能力比类型粗，
+     * 但比"没有"强。都匹配不上就是 generic（不校验方法、不校验参数）。
+     */
+    static String simProfileOf(Object deviceType, Object capability) {
+        String t = str(deviceType);
+        switch (t) {
+            case "Incubators": return "incubator";
+            case "Storage": return "plate_hotel";
+            case "Robots": return "robot";
+            case "Liquid Handling": return "liquid_handler";
+            case "Centrifugation": return "centrifuge";
+            case "Sealing": return "sealer";
+            case "Peeling": return "peeler";
+            case "Dispensers & Washers": return "washer";
+            case "Readers & Imagers": return "reader";
+            case "Flow Cytometers": return "reader";
+            case "Barcode Scanning & Labeling": return "barcode";
+            case "MISC": break;                      // MISC 下面能力太杂，靠能力兜底
+            default: break;
+        }
+        switch (str(capability)) {
+            case "INCUBATE": return "incubator";
+            case "STORE": return "plate_hotel";
+            case "TRANSFER": return "robot";
+            case "ALIQUOT": return "liquid_handler";
+            case "CENTRIFUGE": return "centrifuge";
+            case "SEAL": return "sealer";
+            case "PEEL": return "peeler";
+            case "WASH": return "washer";
+            case "READ_PLATE": return "reader";
+            case "SCAN": return "barcode";
+            default: return "generic";
+        }
+    }
+
+    /** 从 {@code tcp://host:port} 里取端口；取不到返回 0。 */
+    static int portOf(String endpoint) {
+        if (endpoint == null) {
+            return 0;
+        }
+        String hp = endpoint.trim();
+        if (hp.startsWith("tcp://")) {
+            hp = hp.substring(6);
+        }
+        int idx = hp.lastIndexOf(':');
+        if (idx <= 0) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(hp.substring(idx + 1).trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private static String str(Object o) {
+        return o == null ? "" : String.valueOf(o);
+    }
+
     /** 未挂到任何岛的设备（拖拽时的"设备池"）。 */
     public String unassignedDevicesJson() throws java.sql.SQLException {
         List<String> items = new ArrayList<>();

@@ -163,6 +163,12 @@ while IFS='|' read -r DEV_ID RES_ID CODE CAP; do
     # 设备指向这个驱动
     q "UPDATE device_instance SET driver_id = ${DRV_ID} WHERE id = ${DEV_ID};" >/dev/null
 
+    # 设备IP 与刚建好的 endpoint 的 host 保持一致。
+    # 为什么：设备口径是「设备ID + 设备IP + 端口」三元组（模拟端/中控/tcp client
+    # 三端统一），Redis 的长连接状态 key 也是按这三样拼的。
+    # 改了 driver.endpoint 却不同步 ip，两边就会用不同的 host 拼 key ⇒ 设备永远离线。
+    q "UPDATE device_instance SET ip = '${HOST}' WHERE id = ${DEV_ID};" >/dev/null
+
     # 起模拟器
     SIM_MAIN="com.labos.kernel.sim.DeviceSimulator"
     if [[ "${SIM_GUI:-0}" == "1" ]]; then

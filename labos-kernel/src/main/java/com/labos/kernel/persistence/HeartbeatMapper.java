@@ -14,8 +14,20 @@ import java.util.Map;
  */
 public interface HeartbeatMapper {
 
-    /** 有端点的启用 driver（id/code/endpoint，按 code 分组探测用）。 */
-    List<Map<String, Object>> selectActiveDrivers(@Param("tenantId") long tenantId);
+    /**
+     * 在线判定的目标：**逐设备**（不是逐 driver）。
+     *
+     * <p>在线状态来自 Redis 里 tcp client 报上来的长连接状态，
+     * key = {@code labos:link:<设备ID>:<设备IP>:<端口>}，**每台设备一条** ⇒
+     * 判定粒度必须与 key 粒度一致，否则会把一台设备的在线状态套到同 driver 的
+     * 其它设备上。
+     *
+     * <p>三端口径统一（模拟端 / 中控 / tcp client 认同一个设备）：
+     * {@code deviceId} = device_instance.id（设备ID）、
+     * {@code ip} = device_instance.ip（设备IP，与 driver.endpoint 的 host 同源）、
+     * 端口取 driver.endpoint。
+     */
+    List<Map<String, Object>> selectLinkTargets(@Param("tenantId") long tenantId);
 
     /** 探测结果台账（driver_health 一行）。 */
     int insertDriverHealth(@Param("driverId") long driverId,
@@ -24,15 +36,16 @@ public interface HeartbeatMapper {
                            @Param("message") String message);
 
     /**
-     * 该 driver 名下设备的在线 UPSERT：没有 device_state 行就建（idle），
+     **该设备在线状态的 UPSERT：没有 device_state 行就建（idle），
      * 有就更新 online；last_heartbeat 只在探测成功时推进（离线停在最后一次成功点）。
      *
+     * @param resourceId 设备对应的资源节点 id（device_state 的业务键）
      * @param nowMillis 探测时刻（epoch 毫秒，to_timestamp(nowMillis/1000.0)）
      */
     int upsertDeviceOnline(@Param("tenantId") long tenantId,
+                           @Param("resourceId") long resourceId,
                            @Param("online") boolean online,
-                           @Param("nowMillis") long nowMillis,
-                           @Param("driverId") long driverId);
+                           @Param("nowMillis") long nowMillis);
 
     /**
      * 离线告警幂等开：fingerprint 'DEVICE-OFFLINE|' || resource_id 做唯一键，

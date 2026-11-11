@@ -243,6 +243,10 @@ public final class ApiServer {
     public static boolean isPublic(String path) {
         return "/health".equals(path)
                 || "/api/auth/login".equals(path)
+                // 设备清单：模拟端 / tcp client 启动时要从中控读自己那台设备的
+                // 设备ID + 设备IP + 端口（它们没有中控账号）。
+                // 只含设备端点与型号，不含岛归属、人员、账号等业务数据。
+                || "/api/devices/registry".equals(path)
                 || "/".equals(path)
                 || "/index.html".equals(path)
                 || "/designer.html".equals(path)

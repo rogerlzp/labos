@@ -4,11 +4,39 @@
 <!-- 设备心跳路径（driver / driver_health / device_state 在线 UPSERT / alert_state）。调用方 com.labos.kernel.persistence.HeartbeatMapper -->
 <mapper namespace="com.labos.kernel.persistence.HeartbeatMapper">
 
-    <select id="selectActiveDrivers" resultType="java.util.Map">
-        SELECT id AS "id", code AS "code", endpoint AS "endpoint"
-          FROM driver
-         WHERE tenant_id = #{tenantId} AND status = 1
-           AND endpoint IS NOT NULL AND endpoint &lt;&gt; ''
+    <!--
+      在线判定的目标：**逐设备**，不是逐 driver。
+
+      为什么改（2026-11-11，设备口径统一）：在线状态来自 Redis 里 tcp client
+      报上来的**长连接**状态，key = labos:link:<设备ID>:<设备IP>:<端口>，
+      **每台设备一条**。一个 driver 名下挂多台设备时，"端点通就是全都通"的旧假设
+      不成立 —— 长连接是设备级的，端点通不代表每台设备的长连接都活着。
+      ⇒ 判定粒度必须与 Redis key 的粒度一致，否则会出现
+      "A 设备在线被写成 B 设备也在线"。
+
+      三端口径（模拟端 / 中控 / tcp client 认的是同一个设备）：
+        deviceId = device_instance.id     —— 设备ID（唯一）
+        ip       = device_instance.ip     —— 设备IP（与 driver.endpoint 的 host 同源）
+        port     = driver.endpoint 的端口 —— 设备端口
+    -->
+    <select id="selectLinkTargets" resultType="java.util.Map">
+        SELECT di.id          AS "deviceId",
+               di.code        AS "deviceCode",
+               di.ip          AS "ip",
+               di.resource_id AS "resourceId",
+               d.id           AS "driverId",
+               d.code         AS "driverCode",
+               d.endpoint     AS "endpoint"
+          FROM device_instance di
+          JOIN driver d ON d.id = di.driver_id
+         WHERE di.tenant_id = #{tenantId}
+           AND di.deleted_at IS NULL
+           -- 已停用的设备不参与在线判定：它不在服务状态里，
+           -- 判它离线只会刷出一堆无主的离线告警。
+           AND di.status &lt;&gt; 'disabled'
+           AND d.status = 1
+           AND d.endpoint IS NOT NULL AND d.endpoint &lt;&gt; ''
+         ORDER BY di.id
     </select>
 
     <insert id="insertDriverHealth">
@@ -19,15 +47,16 @@
     <!-- UPSERT 而不是 UPDATE：设备可能还没有 device_state 行（从没执行过），
          纯 UPDATE 静默 0 行 = "模拟器在线但显示离线"。
          last_heartbeat 只在探测成功时推进，离线后停在最后一次成功点 ——
-         now() - last_heartbeat 天然就是"离线了多久"。 -->
+         now() - last_heartbeat 天然就是"离线了多久"。
+
+         2026-11-11：由「按 driverId 批量写它名下所有设备」改为**逐设备写**
+         （在线判定粒度改成设备级后，driver 下挂多台设备时不能再一把套）。 -->
     <insert id="upsertDeviceOnline">
         INSERT INTO device_state
           (tenant_id, resource_id, status, online, last_heartbeat, updated_at)
-        SELECT #{tenantId}, di.resource_id, 'idle', #{online},
+        VALUES (#{tenantId}, #{resourceId}, 'idle', #{online},
                CASE WHEN #{online} THEN to_timestamp(#{nowMillis} / 1000.0)
-                    ELSE NULL END, now()
-          FROM device_instance di
-         WHERE di.driver_id = #{driverId} AND di.deleted_at IS NULL
+                    ELSE NULL END, now())
         ON CONFLICT (tenant_id, resource_id) DO UPDATE
         SET online = EXCLUDED.online,
             last_heartbeat = CASE WHEN EXCLUDED.online
