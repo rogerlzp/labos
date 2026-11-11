@@ -35,7 +35,7 @@ NO_KERNEL=0
 
 echo "=== ① Redis ==="
 if redis-cli -h "$LABOS_REDIS_HOST" -p "$LABOS_REDIS_PORT" ping >/dev/null 2>&1; then
-  echo "  已在跑（$LABOS_REDIS_HOST:$LABOS_REDIS_PORT）"
+  echo "  已在跑（${LABOS_REDIS_HOST}:${LABOS_REDIS_PORT}）"
 else
   redis-server --daemonize yes --port "$LABOS_REDIS_PORT" --save '' --appendonly no
   sleep 1
@@ -63,7 +63,7 @@ if [[ "$NO_KERNEL" == "0" ]]; then
   fi
 fi
 
-echo "=== ② 模拟器（岛 $ISLAND）==="
+echo "=== ② 模拟器（岛 ${ISLAND}）==="
 "$ROOT/labos-kernel/scripts/sim-up.sh" "$ISLAND" 0 fast 2>&1 | sed -n '/已启动/,+2p'
 sleep 2
 
