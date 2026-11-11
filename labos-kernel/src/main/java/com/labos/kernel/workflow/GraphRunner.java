@@ -244,6 +244,29 @@ public final class GraphRunner {
         return this;
     }
 
+    /**
+     * 离线设备实例集合（device_instance.id 口径）—— 给**显式绑定**的节点做在线校验。
+     *
+     * <p><b>为什么 pinned 也要查在线</b>（2026-11-11 实测发现）：
+     * pinned 分支不经过能力候选池 ⇒ 候选池里"排除离线设备"对它无效。
+     * 在在线状态改成「tcp client → Redis」之前，这没暴露问题：
+     * 内核自己探 TCP，设备离线 ⇒ 端口不通 ⇒ 命令发出去会失败（难看但至少不假成功）。
+     * 改成 Redis 判定之后，命令下发仍是内核短连接直连 ⇒ <b>设备端口可能仍然通</b>
+     * ⇒ 离线设备被选中后命令照样成功 ⇒ 流程 completed，而设备其实没动。
+     * 实测：把设备下线后跑流程，仍然 completed。
+     *
+     * <p>离线时怎么处理：走**既有的「无可用设备」路径**（候选列表为空 ⇒
+     * {@code initial = null} ⇒ RunStateMachine 按"没有可用设备"处理），
+     * 而不是新造一种失败语义 —— 复用现成路径，零新风险。
+     */
+    public GraphRunner withOfflineInstances(java.util.Set<Long> ids) {
+        this.offlineInstanceIds = ids == null ? null : java.util.Set.copyOf(ids);
+        return this;
+    }
+
+    /** 离线设备实例 id 集合；null = 不做在线约束（没注入就当全在线）。 */
+    private java.util.Set<Long> offlineInstanceIds;
+
     /** 本次推进中被激活的节点 key（预检用它判断"哪些节点永远走不到"）。 */
     private final Set<String> activatedKeys = new LinkedHashSet<>();
     /** 未经条件走默认边的次数（用于验收报告）。 */
@@ -888,6 +911,13 @@ public final class GraphRunner {
                 throw new IllegalArgumentException("节点 " + n.key() + " 绑定的设备（实例 "
                         + pinned + "）不在流程所属的岛内，拒绝执行：设备归属由服务端决定，"
                         + "执行时不能换设备");
+            }
+            // 绑定的设备**离线** ⇒ 走既有的「无可用设备」路径（候选列表为空）。
+            // 不能静默用别的设备（那是偷偷改了工艺要的设备），
+            // 也不能当没事发生（命令走短连接仍可能发得出去 ⇒ 假成功）。
+            if (offlineInstanceIds != null && offlineInstanceIds.contains(pinned)) {
+                return RecoverableNode.of(nodeId(n), n.key(), n.name(), cap,
+                        n.method(), null, List.of());
             }
             return RecoverableNode.of(nodeId(n), n.key(), n.name(), cap,
                     n.method(), pinned, List.of(pinned));

@@ -146,6 +146,20 @@
            AND di.deleted_at IS NULL
     </select>
 
+    <!--
+      离线设备的实例 id 集合。
+      没有 device_state 行的设备**不在这里**（NOT EXISTS 语义：没状态行 = 没被判离线）
+      —— 心跳没覆盖到它时不该直接判死。
+    -->
+    <select id="selectOfflineInstanceIds" resultType="java.lang.Long">
+        SELECT di.id
+          FROM device_instance di
+          JOIN device_state ds
+            ON ds.resource_id = di.resource_id AND ds.tenant_id = di.tenant_id
+         WHERE di.tenant_id = #{tenantId} AND di.deleted_at IS NULL
+           AND ds.online = false
+    </select>
+
     <select id="selectResourceInstancePairs" resultType="java.util.Map">
         SELECT di.resource_id AS "resourceId", di.id AS "instanceId"
           FROM device_instance di

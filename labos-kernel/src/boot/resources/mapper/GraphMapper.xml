@@ -144,6 +144,25 @@
     </select>
 
     <!-- array_agg 列在 Map 里保持 java.sql.Array，由调用方拆成 List<Long> -->
+    <!--
+      候选设备池：某个能力下**现在能用**哪些设备。
+
+      排除条件（2026-11-11 改）：**离线** 或 **故障** 的设备都排除。
+      改动前只排除 `status='error' AND online=false`（两个都要满足）⇒
+      离线的设备（online=false 但 status 还是 idle）**一直留在池里**，
+      调度照样会选中它。
+      那个缺口以前没暴露，是因为内核自己探 TCP：设备离线 ⇒ 端口不通 ⇒
+      命令发出去会失败（难看但至少不假成功）。
+      改成「在线状态完全走 Redis（tcp client 的长连接）」之后，
+      命令下发仍是内核短连接直连 ⇒ **设备端口可能仍然通**
+      ⇒ 离线设备被选中后命令照样成功 ⇒ 流程 completed，而设备其实没动。
+      实测（基线互斥/上下线用例）：把 X231 下线后跑流程，仍然 completed。
+      ⇒ 候选池必须尊重在线状态：离线设备不参与调度，
+      节点会走「无可用设备」这条路（RunStateMachine.withNoDeviceReason 有解释）。
+
+      没有 device_state 行的设备仍在池里（NOT EXISTS 对无行成立）——
+      心跳没覆盖到它时不该直接判死。
+    -->
     <select id="selectCapabilityPools" resultType="java.util.Map">
         SELECT c.code AS "code",
                array_agg(rc.resource_id ORDER BY rc.resource_id) AS "ids"
@@ -152,7 +171,7 @@
          WHERE NOT EXISTS (
                SELECT 1 FROM device_state ds
                 WHERE ds.resource_id = rc.resource_id
-                  AND ds.status = 'error' AND ds.online = false)
+                  AND (ds.online = false OR ds.status = 'error'))
          GROUP BY c.code
     </select>
 

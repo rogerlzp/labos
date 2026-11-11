@@ -91,6 +91,16 @@ public interface DeviceStateMapper {
                                                  @Param("islandId") long islandId);
 
     /**
+     * **离线**设备的 device_instance.id 集合。
+     *
+     * <p>在线状态来自 Redis（tcp client 的长连接），内核心跳把它写进 device_state。
+     * 执行器用它守住「显式绑定设备」的节点：pinned 分支不经过能力候选池 ⇒
+     * 候选池排除离线设备对它无效 ⇒ 离线设备仍会被派活，
+     * 而命令走短连接可能照样发得出去 ⇒ 流程假成功。
+     */
+    java.util.List<Long> selectOfflineInstanceIds(@Param("tenantId") long tenantId);
+
+    /**
      * resource_node.id -&gt; device_instance.id（本租户未软删、resource 非空）。
      *
      * <p>与 {@link #selectInstanceResourcePairs} 方向相反且带租户过滤 ——

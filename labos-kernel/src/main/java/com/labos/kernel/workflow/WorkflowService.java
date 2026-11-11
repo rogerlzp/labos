@@ -337,6 +337,17 @@ public class WorkflowService {
     }
 
     /**
+     * 当前**离线**的设备实例 id 集合（device_state.online = false）。
+     *
+     * <p>给「编排里显式绑定了设备」的节点做在线校验：pinned 分支不经候选池，
+     * 候选池排除离线设备对它无效 ⇒ 离线设备仍会被派活；
+     * 而命令走短连接可能照样发得出去 ⇒ 流程报 completed，设备其实没动。
+     */
+    private java.util.Set<Long> loadOfflineDeviceIds() throws SQLException {
+        return new java.util.LinkedHashSet<>(dm().selectOfflineInstanceIds(tenantId));
+    }
+
+    /**
      * 岛内设备实例 → resource_node.id（**模拟路径**的候选池是资源 id 口径）。
      *
      * <p>为什么要转：driver 路径的候选是 device_instance.id，模拟路径是
@@ -787,6 +798,11 @@ public class WorkflowService {
         final java.util.Set<Long> islandIds = islandInstances == null
                 ? null
                 : (viaDriver ? islandInstances : resourceIdsOf(islandInstances));
+        // offlineInstances：当前**离线**的设备实例 —— 给 GraphRunner 的 pinned 分支做在线校验。
+        //   为什么必须查：pinned 不经候选池 ⇒ 候选池排除离线设备对它无效；
+        //   而在线状态改成 Redis 判定后，命令走短连接可能照样发得出去 ⇒ 假成功。
+        //   没有 device_state 行的设备不在集合里（没被判离线 ≠ 离线）。
+        final java.util.Set<Long> offlineInstances = loadOfflineDeviceIds();
 
         Map<Long, String> resourceCap = RealWorkflowRunner.loadResourceCapability(db);
         List<RecoverableNode> rec = new ArrayList<>();
@@ -966,6 +982,8 @@ public class WorkflowService {
                         // 设备，不经候选池 ⇒ 岛过滤对它无效 ⇒ 这里把岛内实例集合交给
                         // 执行器，越岛绑定**明确拒绝**（不静默换设备）。
                         .withIslandInstances(islandInstances)
+                        // pinned 设备离线 ⇒ 走「无可用设备」路径（不静默换设备，也不假成功）
+                        .withOfflineInstances(offlineInstances)
                         .withSkipKeys(skipKeys)
                         // 条件表达式/循环退出条件的取值来源（run.input.vars）
                         .withVariables(loadRunVars(runId))
@@ -1955,9 +1973,6 @@ public class WorkflowService {
             } catch (RuntimeException ignore) {
                 // 回写失败不影响执行主链路（状态只是展示用；mapper 不声明受检异常）
             }
-            // 命令下发的时刻（拿完锁、即将下发这一刻）
-            sentAtByStep.put(nodeId + ":" + stepSeq + ":" + attempt,
-                    java.sql.Timestamp.from(java.time.Instant.now()));
             // 设备锁：抢不到就等。
             // resourceId 这里是 device_instance.id，DeviceLock 要 resource_node.id，
             // 所以先用 instanceId 查出 resource_id。
@@ -1984,6 +1999,19 @@ public class WorkflowService {
             } catch (SQLException e) {
                 throw new IllegalStateException("抢设备锁失败：" + e.getMessage(), e);
             }
+            // 命令下发的时刻：**拿到设备锁之后、真正下发之前**这一刻。
+            //
+            // 为什么必须放在拿锁之后（2026-11-11 实测发现）：
+            //   原来记在 onStepStart 开头 ⇒ 记的是「进入步骤」的时刻，
+            //   而设备锁是在那之后才拿的 ⇒ **排队等锁的时间被算进了 sent_at**。
+            //   实测两个并发 run 抢同一台机器人：两条 Home 的 sent_at 完全相同
+            //   （15:05:03.227），可设备侧明明是串行的 ——
+            //   命令台账因此显示"两条指令同时发出"，与设备实际行为对不上，
+            //   互斥断言也被误导成"设备命令重叠"。
+            //   ⇒ sent_at 必须是「指令真的发出去的时刻」，
+            //     这样「发出→响应」间隔只含设备耗时，排队时间单独体现在两条命令的先后上。
+            sentAtByStep.put(nodeId + ":" + stepSeq + ":" + attempt,
+                    java.sql.Timestamp.from(java.time.Instant.now()));
             // 标记"正在执行"：前端设备卡片会变成黄灯 + 显示方法名
             markDeviceBusy(resourceId, method);
             if (mirror != null) {
