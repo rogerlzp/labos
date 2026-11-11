@@ -80,7 +80,20 @@ const STYLE = `
 }
 `;
 
-export default function RunGraph({ runId }: { runId: number }) {
+/**
+ * 只读的运行态流程图。
+ *
+ * <p>两种用法：
+ * <ul>
+ *   <li>{@code runId} —— 有这次执行：图按 **这次执行的状态**着色，并每 2 秒刷新；
+ *       数据来自 {@code /api/runs/{id}/graph}（含 xml + nodes + run 状态）；</li>
+ *   <li>只有 {@code workflowId}、没有 {@code runId} —— 这一步**失败在建执行单之前**
+ *       （设备抢不到锁、展开失败等）⇒ 没有"这次执行"可着色 ⇒ 只画流程定义，
+ *       并由调用方说明"这一步没有执行记录"。</li>
+ * </ul>
+ */
+export default function RunGraph({ runId, workflowId }:
+  { runId?: number; workflowId?: number }) {
   const vocab = useStatusVocabulary();
   const t = useT();
   const { locale } = useI18n();
@@ -101,6 +114,18 @@ export default function RunGraph({ runId }: { runId: number }) {
 
     const load = async () => {
       try {
+        if (runId == null) {
+          // 没有这次执行 ⇒ 只画流程定义（不着色）
+          const r = await apiFetch(`/api/workflows/${workflowId}/graph`);
+          const txt = await r.text();
+          let xml = txt;
+          try {
+            const j = JSON.parse(txt) as { xml?: string };
+            if (j && typeof j.xml === 'string') xml = j.xml;
+          } catch { /* 不是 JSON 就是裸 XML */ }
+          if (alive) setData({ runId: 0, workflowId: workflowId ?? 0, runStatus: '', xml, nodes: [] });
+          return;
+        }
         const r = await apiFetch(`/api/runs/${runId}/graph`);
         const j = (await r.json()) as RunGraphData;
         if (alive) setData(j);
@@ -110,12 +135,13 @@ export default function RunGraph({ runId }: { runId: number }) {
     };
 
     load();
-    const timer = setInterval(load, 2000);
+    // 没有 runId 时是一次性取图，不需要轮询
+    const timer = runId == null ? undefined : setInterval(load, 2000);
     return () => {
       alive = false;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
     };
-  }, [runId]);
+  }, [runId, workflowId]);
 
   // 建 viewer + 导入 XML：**只在 XML 变化时**（轮询只更新 marker，不重建画布，否则会闪）
   useEffect(() => {

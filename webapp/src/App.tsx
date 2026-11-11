@@ -16,6 +16,7 @@ import QuarantinePage from './pages/Quarantine';
 import HandoffsPage from './pages/Handoffs';
 import PlatesPage from './pages/Plates';
 import RunDetailPage from './pages/RunDetail';
+import RunFlowViewPage from './pages/RunFlowView';
 import WorkflowsPage from './pages/Workflows';
 import DesignerPage from './pages/Designer';
 import AlertsPage from './pages/Alerts';
@@ -251,6 +252,9 @@ export default function App() {
             <Route path="/scheduler" element={<SchedulerPage />} />
             <Route path="/gantt" element={<GanttPage />} />
             <Route path="/runs/:id" element={<RunDetailPage />} />
+            {/* 只读运行态流程页（与设计器分开）：有 run 看这次执行的状态着色 */}
+            <Route path="/runs/:runId/flow" element={<RunFlowViewPage />} />
+            <Route path="/workflows/:workflowId/flow" element={<RunFlowViewPage />} />
             <Route path="/paused" element={<PausedRunsPage />} />
             <Route path="/manual-windows" element={<ManualWindowsPage />} />
             <Route path="/quarantined" element={<QuarantinePage />} />

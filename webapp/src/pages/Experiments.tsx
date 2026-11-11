@@ -138,8 +138,10 @@ function RunSteps({ runId, nav }: { runId: number; nav: (p: string) => void }) {
               : '—'),
           },
           {
-            // 打开**流程图本身**；有这一步的 run 时带上它 ⇒ 设计器把节点状态直接着色在图上
-            // （只点 runId 会跳到运行详情那张节点表，看不到图上的位置）。
+            // 打开**只读的运行态流程页**（不是设计器！）：
+            // 有这一步的 run ⇒ /runs/{runId}/flow（图按这次执行的状态着色）；
+            // 没有 run（失败在建执行单之前）⇒ /workflows/{wfId}/flow（只看流程定义）。
+            // ⚠ 页面与流程设计器**刻意分开**：设计器是编辑页（可改图），运行态是只读页。
             //
             // ⚠ **不要求 runId**：这一步失败在"建流程执行单之前"时（设备抢不到锁、
             // 展开失败等）**没有 runId** ⇒ 以前这一格是「—」⇒ 实验里点不进去、
@@ -148,8 +150,8 @@ function RunSteps({ runId, nav }: { runId: number; nav: (p: string) => void }) {
             render: (_, r) => (r.workflowId
               ? <Button size="small" type="link"
                   onClick={() => nav(r.runId
-                    ? `/designer/${r.workflowId}?run=${r.runId}`
-                    : `/designer/${r.workflowId}`)}>
+                    ? `/runs/${r.runId}/flow`
+                    : `/workflows/${r.workflowId}/flow`)}>
                   {t('experiments.action.openWorkflowGraph')}
                 </Button>
               : '—'),
