@@ -605,36 +605,27 @@ public class WorkflowWebService {
      * <p>方法名以 XML 的 protocolName 为准（执行引擎解析的就是它），
      * 参数以 workflow_node.params->'method_params' 为准。
      */
+    /**
+     * 某个节点的绑定（方法 / 设备 / 参数）—— **设计器点开节点属性时调它**。
+     *
+     * <p>⚠ 性能（2026-11-11 用户反馈「加载逻辑节点的属性太慢」）：
+     * 改动前这里**取整条流程的 XML，再用正则全量扫**找那个节点
+     * （每个属性一次 {@code Pattern.compile} + 一次回溯扫描）⇒
+     * 流程越大越慢，而逻辑节点（{@code __setVar} / {@code __expr}）
+     * 恰恰是大家最常点开属性的那类 ⇒ 现场体感就是"点一下等半天"。
+     *
+     * <p>现在**只查 workflow_node 一行**（方法名在 {@code params->>'protocol_name'}、
+     * 设备在 {@code resource_id}、参数在 {@code params->'method_params'}）⇒
+     * 一次主键查询，与流程大小无关。
+     * （XML 兜底也去掉了：{@code workflow_node} 是执行引擎真正读的那份
+     * —— 两边不一致时，以表为准。）
+     */
     public String nodeBindingJson(long workflowId, String nodeKey) throws java.sql.SQLException {
-        String xml = mapper.selectWorkflowXml(TENANT, workflowId);
-        String method = null;
-        if (xml != null) {
-            java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("<[a-zA-Z0-9_:]+[^>]*\\sid=\"" + java.util.regex.Pattern.quote(nodeKey)
-                            + "\"[^>]*?\\sprotocolName=\"([^\"]*)\"")
-                    .matcher(xml);
-            if (m.find()) {
-                method = m.group(1);
-            }
-        }
-        // 设备绑定优先读表（M9 前置债）；表里为空再退回 XML（存量未回填时兜底）
-        Long resourceId = null;
-        if (resourceId == null && xml != null) {
-            java.util.regex.Matcher em = java.util.regex.Pattern
-                    .compile("<[a-zA-Z0-9_:]+[^>]*\\sid=\"" + java.util.regex.Pattern.quote(nodeKey)
-                            + "\"[^>]*>")
-                    .matcher(xml);
-            if (em.find()) {
-                java.util.regex.Matcher rm = java.util.regex.Pattern
-                        .compile("\\sresource=\"(\\d+)\"").matcher(em.group());
-                if (rm.find()) {
-                    resourceId = Long.parseLong(rm.group(1));
-                }
-            }
-        }
-        String params = "{}";
         java.util.Map<String, Object> binding =
                 mapper.selectNodeBinding(TENANT, workflowId, nodeKey);
+        String method = null;
+        String params = "{}";
+        Long resourceId = null;
         if (binding != null) {
             Object mp = binding.get("mp");
             if (mp != null) {
@@ -643,10 +634,69 @@ public class WorkflowWebService {
             if (binding.get("resourceId") != null) {
                 resourceId = ((Number) binding.get("resourceId")).longValue();
             }
+            Object m = binding.get("method");
+            if (m != null) {
+                method = String.valueOf(m);
+            }
         }
         return Jsons.obj("workflowId", workflowId, "nodeKey", nodeKey,
                 "method", method, "resourceId", resourceId,
                 "params", new Jsons.Raw(params));
+    }
+
+    // ================================================================ 流程级变量
+
+    /**
+     * 流程级变量清单。
+     *
+     * <p>变量的**范围**分两级：
+     * <ul>
+     *   <li><b>流程级</b>（这张表）—— 属于这条流程，运行期由 {@code __setVar} /
+     *       {@code __expr} 改写；</li>
+     *   <li><b>实验级</b>（{@code experiment_variable}）—— 属于实验，
+     *       实验启动时带入，可以覆盖流程级的同名变量。</li>
+     * </ul>
+     */
+    public String workflowVariablesJson(long workflowId) throws java.sql.SQLException {
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> row : mapper.selectWorkflowVariables(TENANT, workflowId)) {
+            items.add(Jsons.obj(
+                    "name", row.get("name"),
+                    "type", row.get("type"),
+                    "defaultValue", row.get("defaultValue"),
+                    "description", row.get("description"),
+                    "scope", "workflow"));
+        }
+        return Jsons.obj("workflowId", workflowId, "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 新建/更新一个流程级变量（同名即更新 —— 现场改初始值是常事）。
+     *
+     * <p>变量名要能当 {@code ${name}} 引用 ⇒ 限字母数字下划线。
+     */
+    public int saveWorkflowVariable(long workflowId, String name, String type,
+                                    String defaultValue, String description)
+            throws java.sql.SQLException {
+        String n = name == null ? "" : name.trim();
+        if (n.isEmpty()) {
+            throw new IllegalArgumentException("变量名不能为空");
+        }
+        if (!n.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            throw new IllegalArgumentException(
+                    "变量名只能用字母、数字、下划线，且不能以数字开头（要能当 ${name} 引用）：" + n);
+        }
+        String t = (type == null || type.isBlank()) ? "number" : type.trim();
+        if (!java.util.Set.of("number", "string", "boolean").contains(t)) {
+            throw new IllegalArgumentException("变量类型只能是 number / string / boolean：" + t);
+        }
+        return mapper.insertWorkflowVariable(TENANT, workflowId, n, t,
+                defaultValue, description);
+    }
+
+    /** 删一个流程级变量（按名）。 */
+    public int deleteWorkflowVariable(long workflowId, String name) throws java.sql.SQLException {
+        return mapper.deleteWorkflowVariable(TENANT, workflowId, name == null ? "" : name.trim());
     }
 
     /** 实验列表（650 个）。 */

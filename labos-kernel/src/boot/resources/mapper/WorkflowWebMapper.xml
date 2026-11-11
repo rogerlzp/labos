@@ -94,12 +94,39 @@
          ORDER BY w.id DESC LIMIT #{param2}
     </select>
 
+<!-- 流程级变量（作用域：流程；实验级见 experiment_variable） -->
+<select id="selectWorkflowVariables" resultType="java.util.Map">
+    SELECT id AS "id", name AS "name", type AS "type",
+           default_value AS "defaultValue", description AS "description"
+      FROM workflow_variable
+     WHERE tenant_id = #{param1} AND workflow_id = #{param2}
+     ORDER BY id
+</select>
+
+<insert id="insertWorkflowVariable">
+    INSERT INTO workflow_variable
+        (tenant_id, workflow_id, name, type, default_value, description)
+    VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, #{param6})
+    ON CONFLICT (workflow_id, name) DO UPDATE
+       SET type = EXCLUDED.type,
+           default_value = EXCLUDED.default_value,
+           description = EXCLUDED.description,
+           updated_at = now()
+    RETURNING id
+</insert>
+
+<delete id="deleteWorkflowVariable">
+    DELETE FROM workflow_variable
+     WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND name = #{param3}
+</delete>
+
 <select id="selectWorkflowXml" resultType="java.lang.String">
         SELECT graph->>'xml' FROM workflow WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
 <select id="selectNodeBinding" resultType="java.util.Map">
-        SELECT (params->'method_params')::text AS "mp", resource_id AS "resourceId"
+        SELECT (params->'method_params')::text AS "mp", resource_id AS "resourceId",
+               params->>'protocol_name' AS "method"
           FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_key = #{param3}
     </select>
