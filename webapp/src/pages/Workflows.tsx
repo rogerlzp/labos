@@ -91,6 +91,8 @@ export default function WorkflowsPage() {
     queryFn: () => api.preflight(selected!),
     enabled: selected != null,
   });
+  // S0-safety：调试通路开关状态（关闭时隐藏 shadow-run 调试入口）
+  const switches = useQuery({ queryKey: ['debug-switches'], queryFn: () => api.debugSwitches() });
 
   const rows = (list.data?.items ?? []).filter(
     (w) => !kw || w.name.includes(kw) || w.code.includes(kw),
@@ -283,25 +285,27 @@ export default function WorkflowsPage() {
           extra={
             <Space>
               <Button onClick={() => nav(`/designer/${selected}`)}>{t('workflows.action.openDesigner')}</Button>
-              <Button loading={shadowBusy} {...ro} onClick={async () => {
-                if (!selected) return;
-                setShadowBusy(true);
-                setShadowReport(null);
-                setShadow(true);
-                try {
-                  const r = await apiFetch(`/api/workflows/${selected}/shadow-run`, {
-                    method: 'POST',
-                  });
-                  const j = await r.json();
-                  if (!r.ok) throw new Error(j.error);
-                  setShadowReport(j);
-                } catch (e) {
-                  message.error(String((e as Error).message));
-                  setShadow(false);
-                } finally {
-                  setShadowBusy(false);
-                }
-              }}>{t('workflows.action.shadow')}</Button>
+              {switches.data?.shadowRunEnabled && (
+                <Button loading={shadowBusy} {...ro} onClick={async () => {
+                  if (!selected) return;
+                  setShadowBusy(true);
+                  setShadowReport(null);
+                  setShadow(true);
+                  try {
+                    const r = await apiFetch(`/api/workflows/${selected}/shadow-run`, {
+                      method: 'POST',
+                    });
+                    const j = await r.json();
+                    if (!r.ok) throw new Error(j.error);
+                    setShadowReport(j);
+                  } catch (e) {
+                    message.error(String((e as Error).message));
+                    setShadow(false);
+                  } finally {
+                    setShadowBusy(false);
+                  }
+                }}>{t('workflows.action.shadow')}</Button>
+              )}
               <Button type="primary" loading={running} disabled={ro.disabled || selected == null}
                 title={ro.title} onClick={() => startFlow(selected)}>
                 {t('workflows.action.execute')}
