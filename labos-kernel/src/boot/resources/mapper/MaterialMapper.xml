@@ -158,6 +158,18 @@
          WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'PENDING'
     </update>
 
+    <!-- 对账转 PENDING：提交 confirmedTarget + 重读后的版本 -->
+    <update id="updateEffectReconcile">
+        UPDATE plate_material_effect
+           SET plate_id = #{plateId},
+               expected_state_version = #{expectedStateVersion},
+               status = 'PENDING',
+               resolution_evidence = resolution_evidence
+                   || jsonb_build_object('reconciled', true, 'confirmedPlateId', #{plateId}),
+               updated_at = now()
+         WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'NEEDS_RECONCILIATION'
+    </update>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect

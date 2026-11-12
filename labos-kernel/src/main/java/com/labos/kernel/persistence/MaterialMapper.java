@@ -124,6 +124,12 @@ public interface MaterialMapper {
                            @Param("errorCode") String errorCode,
                            @Param("errorMessage") String errorMessage);
 
+    /** 对账转 PENDING（§3.6）：提交 confirmedTarget + 重读后的 expected_state_version。 */
+    int updateEffectReconcile(@Param("t") long tenantId,
+                              @Param("effectId") long effectId,
+                              @Param("plateId") long plateId,
+                              @Param("expectedStateVersion") long expectedStateVersion);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,
