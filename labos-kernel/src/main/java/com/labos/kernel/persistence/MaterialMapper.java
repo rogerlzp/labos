@@ -90,6 +90,14 @@ public interface MaterialMapper {
     /** 读板当前 state_version（T1 计算 expected_state_version 用）。 */
     Long selectPlateStateVersion(@Param("t") long tenantId, @Param("plateId") long plateId);
 
+    /** T1 目标解析：按 barcode 找板（未删除）。 */
+    java.util.Map<String, Object> selectPlateByBarcode(@Param("t") long tenantId,
+                                                      @Param("barcode") String barcode);
+
+    /** T1 目标解析：按位置找板（position_state 投影 + 归属/在途信息）。 */
+    java.util.Map<String, Object> selectPlateByLocation(@Param("t") long tenantId,
+                                                       @Param("resourceId") long resourceId);
+
     /** 闸门（§3.7）：本 run 未闭环效果数（PENDING/FAILED/REJECTED/NEEDS_RECONCILIATION）。 */
     int countUnclosedEffects(@Param("t") long tenantId, @Param("runId") long runId);
 
