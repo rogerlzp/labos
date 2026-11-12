@@ -121,6 +121,8 @@ PURE=(
   "engine.EngineSelfTest"
   # S2 §3.2.1：错误码/驱动状态 → 执行确认四态（纯逻辑分类器，U10 载体①的消费端）
   "engine.ExecutionResolutionSelfTest"
+  # S2：物料声明 JSON 解析（mode/target.plateId/set 期望态）
+  "material.MaterialEffectServiceSelfTest"
   # 条件表达式求值：比较/逻辑/变量/拒绝注入
   "engine.ConditionEvaluatorSelfTest"
   # 时间约束（L1-1.6，P0）：最短补等 / 最长超限 EC-11-0001 / 前驱未跑不检查 / 补等上限守卫
