@@ -83,6 +83,41 @@ public final class MaterialEffectService {
     }
 
     /**
+     * 对账（§3.6）：NEEDS_RECONCILIATION → 人工对账 → PENDING(completed) / CANCELLED(not_completed)。
+     *
+     * <p>completed 需 confirmedPlateId；在同一事务重读板当前 state_version 作为
+     * expected_state_version（§3.4 对账转 PENDING 前置），随后立即尝试 T2。
+     */
+    public MaterialOutcome reconcile(long effectId, boolean completed, Long confirmedPlateId,
+                                     Long operatorUserId, String reason) throws SQLException {
+        return Tx.inTransaction(db, c -> {
+            Map<String, Object> eff = mapper.selectEffectForUpdate(tenantId, effectId);
+            if (eff == null || !"NEEDS_RECONCILIATION".equals(String.valueOf(eff.get("status")))) {
+                return MaterialOutcome.CONTINUE;   // 不存在或已处理
+            }
+            if (!completed) {
+                mapper.updateEffectStatus(tenantId, effectId, "NEEDS_RECONCILIATION",
+                        "CANCELLED", null, null);
+                mapper.insertAction(tenantId, effectId, "RECONCILE", "NEEDS_RECONCILIATION",
+                        "CANCELLED", "MANUAL", operatorUserId, reason, "{}", null);
+                return MaterialOutcome.CONTINUE;
+            }
+            if (confirmedPlateId == null) {
+                return MaterialOutcome.HOLD;   // completed 必须带 confirmedTarget
+            }
+            Long version = mapper.selectPlateStateVersion(tenantId, confirmedPlateId);
+            if (version == null) {
+                return MaterialOutcome.HOLD;   // 板不存在
+            }
+            mapper.updateEffectReconcile(tenantId, effectId, confirmedPlateId, version);
+            mapper.insertAction(tenantId, effectId, "RECONCILE", "NEEDS_RECONCILIATION",
+                    "PENDING", "MANUAL", operatorUserId, reason, "{}", null);
+            // 转 PENDING 后立即尝试 T2（同事务，applyEffect 会 JOIN）
+            return applyEffect(effectId);
+        });
+    }
+
+    /**
      * Worker：处理一个到期的 PENDING 效果（单次）。
      *
      * @return true=处理了一个；false=无到期效果
