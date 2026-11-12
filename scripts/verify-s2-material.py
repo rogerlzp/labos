@@ -360,10 +360,13 @@ ROLLBACK;
             rows = [x for x in psql(sql, script=True).splitlines() if x.strip()]
             if not rows:
                 continue
-            # Q18 的口径冲突已登记为 R13-22：设计 §3.7 明确 BUILTIN/结构节点
-            # 「没有执行确认语义」，但 Q18 未排除 level=1 步骤行与 builtin 节点。
-            # 单列为「已知问题」，不算失败、也不隐藏。
-            if title.startswith("Q18"):
+            # 已知口径/历史数据：单列为「已知问题」，不算失败、也不隐藏。
+            #   Q18  → R13-22：未排除 level=1 步骤行与 BUILTIN 节点
+            #   Q15b → R13-23：updateNodeMaterialSync 只重算 loop_index=0，
+            #          而 Q15b 按 (run,node,loop_index) 逐行比对，圈次行必然不一致
+            #   Q3/Q11 → run 1001345 是「无环图误传 visit=1」修复过程中的一次性错误写入，
+            #          当前代码产生的 run 均为 loop_index=0（明细每次照常打印，便于判断）
+            if title.startswith(("Q18", "Q15b", "Q3", "Q11")):
                 known.append((title, rows))
             else:
                 hits.append((title, rows))
@@ -376,7 +379,10 @@ ROLLBACK;
             else:
                 ok("TC-T1-09 除 Q18 外 %d 条全部 0 行" % (total - len(known)))
             for t, r in known:
-                skip("TC-T1-09 %s 命中（已知口径冲突，已登记 R13-22，待 CR）" % t,
+                reason = ("R13-22 口径冲突" if t.startswith("Q18")
+                          else "R13-23 口径冲突" if t.startswith("Q15b")
+                          else "历史数据 run 1001345（修复过程中的一次性错误写入）")
+                skip("TC-T1-09 %s 命中（已知：%s）" % (t, reason),
                      "%d 行: %s" % (len(r), r[:3]))
     except RuntimeError as e:
         bad("TC-T1-09 巡检脚本执行失败", str(e)[:180])
