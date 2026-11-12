@@ -175,6 +175,9 @@ public interface RunMapper {
     /** 续跑：再删未完成的顶层业务节点（步骤行已先删，FK 级联不再被依赖）。 */
     int deleteIncompleteTopNodes(long tenantId, long runId);
 
+    /** 续跑守卫（§3.6 / §8.2 第 7 项）：将被删的未完成节点里有设备派发证据的行数。 */
+    int countResumeGuardHits(long tenantId, long runId);
+
     /** 续跑：run 置 running，清暂停三字段，记 resumed_at。 */
     int markResumed(long tenantId, long runId);
 

@@ -712,6 +712,14 @@ public class WorkflowService {
                 new java.util.LinkedHashSet<>(rm().selectCompletedNodeKeys(tenantId, runId));
 
         com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            // 续跑守卫（§3.6 / §8.2 第 7 项）：将被删的未完成节点若存在任意
+            // command_ledger 或 run_command 行（设备已动、物料未闭环），禁止删除重建，
+            // 先对账 —— 否则会把「设备已动」的证据删掉，续跑重放设备动作。
+            int guardHits = rm().countResumeGuardHits(tenantId, runId);
+            if (guardHits > 0) {
+                throw new IllegalStateException("存在 " + guardHits
+                        + " 个有设备派发证据的未完成节点，禁止删除重建；请先对账（§3.6 续跑守卫）");
+            }
             // 必须**先删步骤行（level=1）**，再删业务节点。
             // run_command 挂在步骤行上（FK -> run_node.id ON DELETE CASCADE），
             // 而步骤行只靠裸字段 parent_node_id 指向业务节点，**没有外键** ——
