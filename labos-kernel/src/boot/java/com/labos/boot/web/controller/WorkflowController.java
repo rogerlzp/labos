@@ -420,6 +420,10 @@ public class WorkflowController {
             produces = "application/json; charset=utf-8")
     public ResponseEntity<String> shadowRun(@PathVariable long id,
                                             HttpServletRequest req) throws SQLException {
+        var denied = debugDenied(req, ApiServer.SHADOW_RUN_ENABLED, "shadow-run");
+        if (denied != null) {
+            return denied;
+        }
         var r = web.shadowRun(id);
         audit.record(session(req), "workflow.shadow", "workflow", id,
                 r.auditKey(), r.auditDetail(), req.getRemoteAddr());
@@ -429,6 +433,10 @@ public class WorkflowController {
     @PostMapping(value = "/shadow/probe", produces = "application/json; charset=utf-8")
     public ResponseEntity<String> shadowProbe(
             HttpServletRequest req) throws SQLException {
+        var denied = debugDenied(req, ApiServer.DEVICE_PROBE_ENABLED, "shadow/probe");
+        if (denied != null) {
+            return denied;
+        }
         String q = req.getQueryString();
         long rid = intOr(q != null && q.contains("resourceId=")
                 ? q.replaceAll(".*resourceId=(\\d+).*", "$1") : null, 0);
@@ -565,6 +573,20 @@ public class WorkflowController {
         } catch (NumberFormatException e) {
             return def;
         }
+    }
+
+    /** S0-safety：调试通路默认拒绝。开关关闭或非 admin 时返回 403；放行返回 null。 */
+    private static ResponseEntity<String> debugDenied(HttpServletRequest req, boolean enabled, String what) {
+        if (!enabled) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(err("调试通路已关闭（S0-safety）：" + what));
+        }
+        AuthService.Session s0 = session(req);
+        if (s0 == null || !s0.isAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(err("调试通路仅管理员可用（S0-safety）"));
+        }
+        return null;
     }
 
     private static AuthService.Session session(HttpServletRequest req) {

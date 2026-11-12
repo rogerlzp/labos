@@ -135,7 +135,9 @@ public static class Program
         }
 
         var port = int.TryParse(Get(opt, "port"), out var p) ? p : 8501;
-        var bind = Get(opt, "bind") ?? "0.0.0.0";
+        // S0-safety（第 10 轮 P0-02 / P6 处置）：默认只绑本机回环，不再绑全网卡。
+        // 确需现场直连时用 --bind 显式指定并在部署清单登记理由。
+        var bind = Get(opt, "bind") ?? "127.0.0.1";
         Console.WriteLine($"型号库：{ModelsPath(opt)}（{lib.Models.Count} 个型号）");
         Console.WriteLine($"注意：错误码由中控侧翻译（设备码 → EC-xx），sidecar 只带回原始码。");
 

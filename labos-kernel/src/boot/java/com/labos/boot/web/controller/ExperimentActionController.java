@@ -85,7 +85,8 @@ public class ExperimentActionController {
 
     // ---------------------------------------------------------------- 流程直跑（演示/调试）
 
-    @PostMapping(value = "/experiments/flow-run", produces = "application/json; charset=utf-8")
+    // S0-safety（第 10 轮 P0-02 处置）：/experiments/flow-run 物理直跑端点已下线（移除路由 ⇒ 404）。
+    // flowRun 方法与 ExperimentFlowRunner 类保留（能力保留）；未来若恢复必须走与 execute 相同边界（另开评审）。
     /** 原路由对 IllegalArgumentException 统一 400（batchSplit 负数、实验运行不存在等）。 */
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<String> badRequest(IllegalArgumentException e) {

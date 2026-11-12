@@ -100,6 +100,10 @@ public final class ApiServer {
     /** 设备心跳：每 10 秒探活一次，结果写 device_state.online。 */
     final com.labos.kernel.driver.HeartbeatService heartbeat;
     public static final boolean AUTH_ENABLED = !"0".equals(System.getenv("LABOS_AUTH"));
+    /** S0-safety：影子运行（shadow-run）开关。默认拒绝；仅非生产环境显式 LABOS_ALLOW_SHADOW_RUN=1 开启。 */
+    public static final boolean SHADOW_RUN_ENABLED = "1".equals(System.getenv("LABOS_ALLOW_SHADOW_RUN"));
+    /** S0-safety：单命令探针（shadow/probe、robot-points capture）开关。默认拒绝；仅非生产环境显式 LABOS_ALLOW_DEVICE_PROBE=1 开启。 */
+    public static final boolean DEVICE_PROBE_ENABLED = "1".equals(System.getenv("LABOS_ALLOW_DEVICE_PROBE"));
     /** 请求体上限 1 MB。 */
     private static final long MAX_BODY = 1024L * 1024L;
     final WorkflowService workflows;
