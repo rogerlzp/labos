@@ -1382,6 +1382,9 @@ export default function DesignerPage() {
       }],
     } as any);
     modelerRef.current = modeler;
+    // 页面级自动化钩子：Playwright 通过 window.__bpmnModeler 驱动同一实例
+    // （createShape/connect 与用户拖拽走同一 modeling API，落库带 DI，画布可渲染）。
+    (window as unknown as { __bpmnModeler?: unknown }).__bpmnModeler = modeler;
 
     modeler.on('commandStack.changed', () => setDirty(true));
     modeler.on('selection.changed', (e: { newSelection: Array<{ id: string; type: string }> }) => {
