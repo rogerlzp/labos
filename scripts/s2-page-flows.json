@@ -1,0 +1,86 @@
+[
+  {
+    "key": "transfer",
+    "name": "页面批量-离心到封膜",
+    "island": "LAB-BASE-01",
+    "nodes": [
+      { "id": "S", "type": "start", "x": 160, "y": 260 },
+      {
+        "id": "T", "type": "method", "resourceId": "200231", "code": "ID-X231",
+        "method": "Transfer", "x": 500, "y": 260,
+        "params": { "source": "ID-ASPIN_2K-1", "target": "ID-S100-1" }
+      },
+      { "id": "E", "type": "end", "x": 840, "y": 260 }
+    ],
+    "edges": [
+      { "from": "S", "to": "T" },
+      { "from": "T", "to": "E" }
+    ]
+  },
+  {
+    "key": "branch",
+    "name": "页面批量-双机器人分支",
+    "island": "LAB-BASE-01",
+    "nodes": [
+      { "id": "S", "type": "start", "x": 140, "y": 260 },
+      { "id": "P", "type": "exclusive", "name": "XOR_SPLIT", "x": 330, "y": 260 },
+      {
+        "id": "R1", "type": "method", "resourceId": "200231", "code": "ID-X231",
+        "method": "Home", "x": 560, "y": 130
+      },
+      {
+        "id": "R2", "type": "method", "resourceId": "504829", "code": "ID-XRobot_A10LR-1",
+        "method": "Home", "x": 560, "y": 390
+      },
+      { "id": "J", "type": "exclusive", "name": "XOR_JOIN", "x": 790, "y": 260 },
+      { "id": "E", "type": "end", "x": 1010, "y": 260 }
+    ],
+    "edges": [
+      { "from": "S", "to": "P" },
+      { "from": "P", "to": "R1" },
+      { "from": "P", "to": "R2" },
+      { "from": "R1", "to": "J" },
+      { "from": "R2", "to": "J" },
+      { "from": "J", "to": "E" }
+    ]
+  },
+  {
+    "key": "chain",
+    "name": "页面批量-读码离心封膜",
+    "island": "LAB-BASE-01",
+    "nodes": [
+      { "id": "S", "type": "start", "x": 100, "y": 260 },
+      {
+        "id": "READ", "type": "method", "resourceId": "200200", "code": "ID-1021",
+        "method": "ReadBarcode", "x": 280, "y": 260
+      },
+      {
+        "id": "MOVE1", "type": "method", "resourceId": "200231", "code": "ID-X231",
+        "method": "Transfer", "x": 480, "y": 260,
+        "params": { "source": "ID-1021", "target": "ID-ASPIN_2K-1" }
+      },
+      {
+        "id": "SPIN", "type": "method", "resourceId": "504831", "code": "ID-ASPIN_2K-1",
+        "method": "RunProgram", "x": 680, "y": 260
+      },
+      {
+        "id": "MOVE2", "type": "method", "resourceId": "200231", "code": "ID-X231",
+        "method": "Transfer", "x": 880, "y": 260,
+        "params": { "source": "ID-ASPIN_2K-1", "target": "ID-S100-1" }
+      },
+      {
+        "id": "SEAL", "type": "method", "resourceId": "504830", "code": "ID-S100-1",
+        "method": "Seal", "x": 1080, "y": 260
+      },
+      { "id": "E", "type": "end", "x": 1280, "y": 260 }
+    ],
+    "edges": [
+      { "from": "S", "to": "READ" },
+      { "from": "READ", "to": "MOVE1" },
+      { "from": "MOVE1", "to": "SPIN" },
+      { "from": "SPIN", "to": "MOVE2" },
+      { "from": "MOVE2", "to": "SEAL" },
+      { "from": "SEAL", "to": "E" }
+    ]
+  }
+]
