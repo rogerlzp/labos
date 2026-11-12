@@ -19,6 +19,7 @@ import com.labos.kernel.engine.Sleeper;
 import com.labos.kernel.engine.StepExecutor;
 import com.labos.kernel.engine.TimeConstraintExecutor;
 import com.labos.kernel.engine.StepSink;
+import com.labos.kernel.material.DeclarationValidator;
 import com.labos.kernel.material.MaterialEffectService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.JdbcErrorOccurrenceStore;
@@ -981,9 +982,22 @@ public class WorkflowService {
                     ? Sleeper.recording(new ArrayList<>())
                     : Sleeper.REAL;
             MaterialEffectService materialSvc = new MaterialEffectService(tenantId, db);
-            // 声明快照写入（run 启动时；§3.3 / §3.1 第 8 条；续跑幂等 ON CONFLICT DO NOTHING）
+            // 声明契约预检 + 声明快照写入（run 启动时；§3.3 / §3.1 第 8 条）
             for (NodeDef n : ordered) {
                 if (n.materialEffect() != null && !n.materialEffect().isBlank()) {
+                    List<DeclarationValidator.Issue> issues =
+                            DeclarationValidator.validate(n.materialEffect());
+                    boolean hasError = issues.stream()
+                            .anyMatch(i -> "ERROR".equals(i.level()));
+                    if (hasError) {
+                        throw new IllegalStateException(
+                                "声明契约预检失败（节点 " + n.key() + "）：" + issues);
+                    }
+                    if (!DeclarationValidator.taskNodeKind(n.type())) {
+                        throw new IllegalStateException(
+                                "声明只允许挂在设备 TASK 节点（节点 " + n.key()
+                                        + " type=" + n.type() + "）");
+                    }
                     materialSvc.writeDeclarationSnapshot(runId, n.key(), 0, n.materialEffect());
                 }
             }

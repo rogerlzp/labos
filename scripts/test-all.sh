@@ -123,6 +123,8 @@ PURE=(
   "engine.ExecutionResolutionSelfTest"
   # S2：物料声明 JSON 解析（mode/target.plateId/set 期望态）
   "material.MaterialEffectServiceSelfTest"
+  # S2：声明契约预检（§3.3b 规则 1-10 纯逻辑部分）
+  "material.DeclarationValidatorSelfTest"
   # 条件表达式求值：比较/逻辑/变量/拒绝注入
   "engine.ConditionEvaluatorSelfTest"
   # 时间约束（L1-1.6，P0）：最短补等 / 最长超限 EC-11-0001 / 前驱未跑不检查 / 补等上限守卫
