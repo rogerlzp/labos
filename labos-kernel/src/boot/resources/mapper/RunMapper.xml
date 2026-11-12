@@ -489,6 +489,21 @@
            AND NOT (status = 'skipped' AND input->>'skip_confirmed' = 'true')
     </update>
 
+    <!-- 续跑守卫：将被删的未完成节点里存在任意 command_ledger 或 run_command 行（设备已动） -->
+    <select id="countResumeGuardHits" resultType="int">
+        SELECT count(*) FROM run_node n
+         WHERE n.tenant_id = #{param1} AND n.run_id = #{param2} AND n.level = 0
+           AND n.status &lt;&gt; 'completed'
+           AND NOT (n.status = 'skipped' AND n.input-&gt;&gt;'skip_confirmed' = 'true')
+           AND (
+             EXISTS (SELECT 1 FROM command_ledger cl
+                      WHERE cl.tenant_id = n.tenant_id AND cl.run_id = n.run_id
+                        AND cl.node_id = n.id)
+             OR EXISTS (SELECT 1 FROM run_command rc
+                         WHERE rc.tenant_id = n.tenant_id AND rc.run_node_id = n.id)
+           )
+    </select>
+
     <update id="markResumed">
         UPDATE run SET status = 'running', pause_kind = NULL, pause_reason = NULL,
                pause_node_key = NULL, resumed_at = now(), updated_at = now()
