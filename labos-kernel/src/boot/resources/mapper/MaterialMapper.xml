@@ -79,6 +79,14 @@
          LIMIT 1
     </select>
 
+    <!-- 闸门（§3.7）：未闭环效果数 -->
+    <select id="countUnclosedEffects" resultType="int">
+        SELECT count(*) FROM plate_material_effect
+         WHERE tenant_id = #{t}
+           AND source_run_id = #{runId}
+           AND status IN ('PENDING','FAILED','REJECTED','NEEDS_RECONCILIATION')
+    </select>
+
     <!-- 读板当前 state_version -->
     <select id="selectPlateStateVersion" resultType="java.lang.Long">
         SELECT state_version FROM plate

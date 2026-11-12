@@ -90,6 +90,9 @@ public interface MaterialMapper {
     /** 读板当前 state_version（T1 计算 expected_state_version 用）。 */
     Long selectPlateStateVersion(@Param("t") long tenantId, @Param("plateId") long plateId);
 
+    /** 闸门（§3.7）：本 run 未闭环效果数（PENDING/FAILED/REJECTED/NEEDS_RECONCILIATION）。 */
+    int countUnclosedEffects(@Param("t") long tenantId, @Param("runId") long runId);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,

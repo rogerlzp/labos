@@ -361,6 +361,11 @@ public final class GraphRunner {
     /** 本次推进是否因暂停而提前停止。 */
     private boolean paused;
 
+    /** S2 §8.2 第 3 项：派发前物料闸门（true=物料未闭环，停）。 */
+    private java.util.function.BooleanSupplier materialGate = () -> false;
+    /** 本次推进是否因物料闸门而停止。 */
+    private boolean materialGateBlocked;
+
     /**
      * 因暂停而没开始执行的那个节点。
      *
@@ -388,6 +393,12 @@ public final class GraphRunner {
         return this;
     }
 
+    /** 注入派发前物料闸门（true=物料未闭环 ⇒ 停止派发后继）。 */
+    public GraphRunner withMaterialGate(java.util.function.BooleanSupplier gate) {
+        this.materialGate = gate == null ? () -> false : gate;
+        return this;
+    }
+
     /** 注入节点状态回调（nodeKey, status）；status 取 {@code node_status} 词表的小写名。 */
     public GraphRunner withNodeStateRecorder(
             java.util.function.BiConsumer<String, String> rec) {
@@ -403,6 +414,11 @@ public final class GraphRunner {
     /** 暂停停在哪个节点；没暂停时为 null。 */
     public String pausedAtKey() {
         return pausedAtKey;
+    }
+
+    /** 本次 run 是否因物料闸门而停（true 时 run 进 paused(material_sync)）。 */
+    public boolean materialGateBlocked() {
+        return materialGateBlocked;
     }
 
     /**
@@ -631,6 +647,17 @@ public final class GraphRunner {
                     break;
                 }
             } else if (node.kind() == Kind.TASK) {
+                // S2 §8.2 第 3 项：派发前物料闸门 —— 物料未闭环就停，不派发后继。
+                // 与暂停同边界（动作边界），不停在动作中间。
+                if (materialGate.getAsBoolean()) {
+                    ready.offer(key);
+                    done.remove(key);
+                    paused = true;
+                    materialGateBlocked = true;
+                    pausedAtKey = key;
+                    log.accept("[闸门] 物料未闭环，停止派发，待执行节点：" + key);
+                    break;
+                }
                 // P1-8：在**任务节点的动作边界**检查暂停。
                 // 不停在动作中间 —— 机械臂抓着板会掉。
                 // 也不停 start/gateway —— 它们不是"一步活"，停在那里没意义。
