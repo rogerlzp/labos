@@ -57,6 +57,19 @@
              #{operatorUserId}, #{note}, #{occurredAt}::timestamptz)
     </insert>
 
+    <!-- 写节点执行确认（§3.2）：completed 才写物理证据三件套，非 completed 清空 -->
+    <update id="updateNodeExecution">
+        UPDATE run_node
+           SET execution_resolution_status = #{resolution},
+               physical_completed_at = CASE WHEN #{resolution} = 'completed' THEN now() ELSE NULL END,
+               physical_evidence_level = CASE WHEN #{resolution} = 'completed' THEN #{physicalEvidenceLevel} ELSE NULL END,
+               physical_evidence = CASE WHEN #{resolution} = 'completed' THEN #{physicalEvidence}::jsonb ELSE '{}'::jsonb END,
+               updated_at = now()
+         WHERE tenant_id = #{t}
+           AND run_id = #{runId}
+           AND node_key = #{nodeKey}
+    </update>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect

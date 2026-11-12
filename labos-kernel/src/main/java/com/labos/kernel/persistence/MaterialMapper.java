@@ -74,6 +74,14 @@ public interface MaterialMapper {
                     @Param("note") String note,
                     @Param("occurredAt") String occurredAt);
 
+    /** 写节点执行确认（§3.2）：execution_resolution_status + completed 的物理证据三件套。 */
+    int updateNodeExecution(@Param("t") long tenantId,
+                            @Param("runId") long runId,
+                            @Param("nodeKey") String nodeKey,
+                            @Param("resolution") String resolution,
+                            @Param("physicalEvidenceLevel") String physicalEvidenceLevel,
+                            @Param("physicalEvidence") String physicalEvidenceJson);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,

@@ -1,5 +1,7 @@
 package com.labos.kernel.material;
 
+import com.labos.kernel.engine.MaterialOutcome;
+import com.labos.kernel.engine.NodeResolution;
 import com.labos.kernel.persistence.Hashes;
 import com.labos.kernel.persistence.Mappers;
 import com.labos.kernel.persistence.MaterialMapper;
@@ -64,5 +66,26 @@ public final class MaterialEffectService {
                              String reason, String evidenceSnapshot, String errorCode) {
         mapper.insertAction(tenantId, effectId, actionType, fromStatus, toStatus,
                 actorType, operatorUserId, reason, evidenceSnapshot, errorCode);
+    }
+
+    /**
+     * 完成处理器入口（§3.1）：写节点执行确认（§3.2 四态）。
+     *
+     * <p>第一版只落执行确认；T1 效果意图写入（声明快照已存在时）后续增量接。
+     * 返回 CONTINUE（HOLD 在效果 PENDING 未闭环时产生）。
+     */
+    public MaterialOutcome onNodeResolution(long runId, String nodeKey, NodeResolution r) {
+        switch (r.resolution()) {
+            case COMPLETED -> mapper.updateNodeExecution(tenantId, runId, nodeKey,
+                    "completed", "device_ack", "{\"source\":\"execution\"}");
+            case FAILED_CONFIRMED -> mapper.updateNodeExecution(tenantId, runId, nodeKey,
+                    "failed_confirmed", null, null);
+            case RECONCILIATION_REQUIRED -> mapper.updateNodeExecution(tenantId, runId, nodeKey,
+                    "reconciliation_required", null, null);
+            case UNRESOLVED -> {
+                // 未开始/执行中，不写执行确认
+            }
+        }
+        return MaterialOutcome.CONTINUE;
     }
 }
