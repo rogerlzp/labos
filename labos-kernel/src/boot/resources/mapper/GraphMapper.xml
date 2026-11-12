@@ -125,7 +125,8 @@
                n.node_type AS "nodeType", n.estimate_sec AS "estimateSec",
                c.code AS "capability",
                n.params->>'protocol_name' AS "protocolName",
-               (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId"
+               (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId",
+               n.material_effect AS "materialEffect"
           FROM workflow_node n
           LEFT JOIN capability c ON c.id = n.capability_id
          WHERE n.workflow_id = #{param1}
@@ -138,7 +139,8 @@
                n.node_type AS "nodeType", n.estimate_sec AS "estimateSec",
                cap.code AS "capability",
                n.params->>'protocol_name' AS "protocolName",
-               (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId"
+               (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId",
+               n.material_effect AS "materialEffect"
           FROM workflow_node n
           LEFT JOIN capability cap ON cap.id = n.capability_id
     </select>

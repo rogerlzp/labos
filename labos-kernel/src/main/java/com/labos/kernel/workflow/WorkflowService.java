@@ -981,6 +981,12 @@ public class WorkflowService {
                     ? Sleeper.recording(new ArrayList<>())
                     : Sleeper.REAL;
             MaterialEffectService materialSvc = new MaterialEffectService(tenantId);
+            // 声明快照写入（run 启动时；§3.3 / §3.1 第 8 条；续跑幂等 ON CONFLICT DO NOTHING）
+            for (NodeDef n : ordered) {
+                if (n.materialEffect() != null && !n.materialEffect().isBlank()) {
+                    materialSvc.writeDeclarationSnapshot(runId, n.key(), 0, n.materialEffect());
+                }
+            }
             RunStateMachine sm = new RunStateMachine(decider,
                     tee(events, store, monitor), recoverySleeper, Clock.systemUTC())
                     .withStepPlanner(id -> stepsByNode.getOrDefault(id, List.of()))

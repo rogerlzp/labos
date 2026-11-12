@@ -91,7 +91,7 @@ public final class RecipeCompilerTest {
     /** 构造一个已标能力的节点（protocolName 可为 null）。 */
     private static NodeDef node(String protocolName, String capability) {
         return new NodeDef(1L, "T", "测试节点", "task", capability,
-                protocolName, 10, null);
+                protocolName, 10, null, null);
     }
 
     private static void check(String name, Runnable body) {

@@ -58,7 +58,9 @@ public final class RealWorkflowRunner {
     /** 节点定义。 */
     public record NodeDef(long id, String key, String name, String type,
                    String capability, String protocolName, int estimateSec,
-                   Long equipmentInstanceId) {
+                   Long equipmentInstanceId,
+                   /** workflow_node.material_effect 声明 JSON；null=无声明 */
+                   String materialEffect) {
     }
 
     public static void main(String[] args) throws Exception {
@@ -253,7 +255,8 @@ public final class RealWorkflowRunner {
                     (String) m.get("nodeType"), (String) m.get("capability"),
                     (String) m.get("protocolName"),
                     est == null ? 0 : est.intValue(),
-                    ei == null ? null : ei.longValue()));
+                    ei == null ? null : ei.longValue(),
+                    (String) m.get("materialEffect")));
         }
         return out;
     }
@@ -569,7 +572,8 @@ public final class RealWorkflowRunner {
                             (String) m.get("nodeType"), (String) m.get("capability"),
                             (String) m.get("protocolName"),
                             est == null ? 0 : est.intValue(),
-                            ei == null ? null : ei.longValue()));
+                            ei == null ? null : ei.longValue(),
+                            (String) m.get("materialEffect")));
         }
         return out;
     }
