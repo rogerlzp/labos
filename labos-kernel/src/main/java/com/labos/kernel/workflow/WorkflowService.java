@@ -1092,8 +1092,8 @@ public class WorkflowService {
                         .withPauseChecker(() -> isRunPaused(runId)
                                 || new RuntimeHold(db, tenantId)
                                         .coverageForWorkflow(workflowId).blocks())
-                        // S2 §8.2 第 3/12 项：派发前物料闸门（未闭环效果/reconciliation_required 节点 ⇒ 停止派发）
-                        .withMaterialGate(() -> materialSvc.hasGateBlocker(runId))
+                        // S2 §8.2 第 3/12 项：派发前物料闸门（§3.7 前置域：只判直接前驱）
+                        .withMaterialGate((key, preds) -> materialSvc.hasGateBlockerFor(runId, preds))
                         // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
                         // 靠这个回调把三段状态画得出来（见 createNodeShells）。
                         .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st))

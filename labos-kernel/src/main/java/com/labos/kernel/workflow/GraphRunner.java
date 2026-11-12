@@ -365,7 +365,9 @@ public final class GraphRunner {
     private boolean paused;
 
     /** S2 §8.2 第 3 项：派发前物料闸门（true=物料未闭环，停）。 */
-    private java.util.function.BooleanSupplier materialGate = () -> false;
+    /** §3.7 闸门前置域：入参（本节点 key，直接前驱 key 列表）→ 是否阻断。默认不阻断。 */
+    private java.util.function.BiFunction<String, java.util.List<String>, Boolean> materialGate =
+            (key, preds) -> false;
     /** 本次推进是否因物料闸门而停止。 */
     private boolean materialGateBlocked;
 
@@ -396,9 +398,10 @@ public final class GraphRunner {
         return this;
     }
 
-    /** 注入派发前物料闸门（true=物料未闭环 ⇒ 停止派发后继）。 */
-    public GraphRunner withMaterialGate(java.util.function.BooleanSupplier gate) {
-        this.materialGate = gate == null ? () -> false : gate;
+    /** 注入派发前物料闸门（§3.7：按节点 + 其直接前驱判定，true=阻断）。 */
+    public GraphRunner withMaterialGate(
+            java.util.function.BiFunction<String, java.util.List<String>, Boolean> gate) {
+        this.materialGate = gate == null ? (key, preds) -> false : gate;
         return this;
     }
 
@@ -651,9 +654,11 @@ public final class GraphRunner {
                     break;
                 }
             } else if (node.kind() == Kind.TASK) {
-                // S2 §8.2 第 3 项：派发前物料闸门 —— 物料未闭环就停，不派发后继。
-                // 与暂停同边界（动作边界），不停在动作中间。
-                if (materialGate.getAsBoolean()) {
+                // S2 §8.2 第 3/12 项：派发前物料闸门（§3.7 前置域）——
+                // 只判「直接前驱」的物料是否闭环，不是整 run 一刀切。
+                java.util.List<String> preds = graph.in(key).stream()
+                        .map(GEdge::from).toList();
+                if (materialGate.apply(key, preds)) {
                     ready.offer(key);
                     done.remove(key);
                     paused = true;

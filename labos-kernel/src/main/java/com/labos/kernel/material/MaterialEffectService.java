@@ -135,6 +135,14 @@ public final class MaterialEffectService {
         return mapper.countGateBlockers(tenantId, runId) > 0;
     }
 
+    /** 闸门阻断（§3.7 前置域）：只在**直接前驱**里判未闭环效果/reconciliation_required，不是整 run。 */
+    public boolean hasGateBlockerFor(long runId, java.util.List<String> preds) {
+        if (preds == null || preds.isEmpty()) {
+            return false;
+        }
+        return mapper.countGateBlockersByNodes(tenantId, runId, preds) > 0;
+    }
+
     /** 未闭环计数（隔离确认返回清单用）。 */
     public int unclosedCount(long runId) {
         return mapper.countGateBlockers(tenantId, runId);

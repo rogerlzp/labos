@@ -139,6 +139,22 @@
                 AND execution_resolution_status = 'reconciliation_required')
     </select>
 
+    <!-- 闸门前置域（§3.7）：只在给定前驱节点里计阻断 -->
+    <select id="countGateBlockersByNodes" resultType="int">
+        SELECT
+            (SELECT count(*) FROM plate_material_effect
+              WHERE tenant_id = #{t} AND source_run_id = #{runId}
+                AND source_node_key IN
+                <foreach collection="keys" item="k" open="(" separator="," close=")">#{k}</foreach>
+                AND status IN ('PENDING','FAILED','REJECTED','NEEDS_RECONCILIATION'))
+          + (SELECT count(*) FROM run_node
+              WHERE tenant_id = #{t} AND run_id = #{runId}
+                AND level = 0 AND loop_index = 0
+                AND node_key IN
+                <foreach collection="keys" item="k" open="(" separator="," close=")">#{k}</foreach>
+                AND execution_resolution_status = 'reconciliation_required')
+    </select>
+
     <!-- 读板当前 state_version -->
     <select id="selectPlateStateVersion" resultType="java.lang.Long">
         SELECT state_version FROM plate

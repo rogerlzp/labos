@@ -119,6 +119,11 @@ public interface MaterialMapper {
     /** 闸门阻断计数（§3.7 / 第 12 项）：未闭环效果 + reconciliation_required 节点。 */
     int countGateBlockers(@Param("t") long tenantId, @Param("runId") long runId);
 
+    /** 闸门前置域（§3.7）：只在给定前驱节点里计阻断。 */
+    int countGateBlockersByNodes(@Param("t") long tenantId,
+                                 @Param("runId") long runId,
+                                 @Param("keys") java.util.List<String> keys);
+
     /** T2：锁效果行（FOR UPDATE）。 */
     java.util.Map<String, Object> selectEffectForUpdate(@Param("t") long tenantId,
                                                        @Param("effectId") long effectId);
