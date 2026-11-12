@@ -239,6 +239,51 @@ public final class EngineSelfTest {
                     ExecutionResolution.RECONCILIATION_REQUIRED, seen.get());
         });
 
+        // ============ 10. 评审 R13-01 / R13-02 回归 ============
+        run("完成处理器写成功后抛异常 → 不再二次写确认（R13-02）", () -> {
+            java.util.concurrent.atomic.AtomicInteger calls =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            List<ExecutionResolution> seen = new ArrayList<>();
+            RunStateMachine sm = machine().withMaterialCompletion(r -> {
+                calls.incrementAndGet();
+                seen.add(r.resolution());
+                throw new IllegalStateException("T1 写不进");
+            });
+            RunProgress p = new RunProgress();
+            RuntimeException thrown = null;
+            try {
+                sm.executeNode(node(1, "TRANSFER", 100L, 100L), p, new SimulatedBus());
+            } catch (RuntimeException e) {
+                thrown = e;
+            }
+            check("原异常原样传播", thrown != null
+                    && thrown.getMessage().contains("T1 写不进"));
+            eq("完成处理器只调用 1 次（无第 7 出口双写）", 1, calls.get());
+            eq("只写一次执行确认", 1, seen.size());
+            eq("写入 COMPLETED，未被覆盖成 reconciliation_required",
+                    ExecutionResolution.COMPLETED, seen.get(0));
+        });
+
+        run("顺序路径闸门命中 → 不派发任何节点 + materialHold（R13-01）", () -> {
+            SimulatedBus bus = new SimulatedBus();
+            RunStateMachine sm = machine().withMaterialGate(() -> true);
+            RunProgress p = sm.executeAll(List.of(
+                    node(1, "TRANSFER", 100L, 100L),
+                    node(2, "TRANSFER", 100L, 100L)), bus);
+            eq("设备零调用", 0, bus.callLog().size());
+            check("materialHold=true", p.materialHold());
+        });
+
+        run("顺序路径闸门放行 → 正常执行全部节点（R13-01 不误伤）", () -> {
+            SimulatedBus bus = new SimulatedBus();
+            RunStateMachine sm = machine().withMaterialGate(() -> false);
+            RunProgress p = sm.executeAll(List.of(
+                    node(1, "TRANSFER", 100L, 100L),
+                    node(2, "TRANSFER", 100L, 100L)), bus);
+            eq("设备调用 2 次", 2, bus.callLog().size());
+            check("无 materialHold", !p.materialHold());
+        });
+
         System.out.printf("%n================ 引擎自测: 通过 %d, 失败 %d ================%n",
                 passed, failed);
         if (failed > 0) {

@@ -2,6 +2,7 @@ package com.labos.kernel.material;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.labos.kernel.engine.ExecutionResolution;
 import com.labos.kernel.engine.MaterialOutcome;
 import com.labos.kernel.engine.NodeResolution;
 import com.labos.kernel.persistence.DbConfig;
@@ -55,26 +56,68 @@ public final class MaterialEffectService {
     }
 
     /**
-     * 完成处理器入口（§3.1）：写节点执行确认（§3.2 四态）+ T1 效果意图。
+     * 完成处理器入口（§3.1）：单事务写节点执行确认（§3.2 四态）+ T1 效果意图，
+     * 事务提交后再在**独立事务**立即尝试 T2；物料未闭环返回 HOLD。
      *
-     * <p>返回 CONTINUE（HOLD 在效果 PENDING 未闭环时产生——后续增量）。
+     * <p>评审 R13-01 / R13-02 / R13-04 的修复点：
+     * <ul>
+     *   <li>执行确认 + effect + DECLARE action 在同一事务原子提交，否则崩溃会留
+     *       「completed 但无 effect」或「effect 无 DECLARE action」；</li>
+     *   <li>执行确认只从 unresolved 单向写（CAS），第 7 出口不得把已写的 completed
+     *       与物理证据三件套覆盖成 reconciliation_required；</li>
+     *   <li>T2 独立于 T1：T2 回滚不能把「设备已动作」的执行确认一起回滚；
+     *       T2 失败只让 effect 保持 PENDING，由 Worker 补偿，不升级为隔离；</li>
+     *   <li>T1 写不进 ⇒ {@link MaterialPersistenceException} ⇒ 调用方隔离 run、不重跑设备；</li>
+     *   <li>HOLD 真正返回，使顺序执行路径与图路径都在后继派发前停下。</li>
+     * </ul>
      */
     public MaterialOutcome onNodeResolution(long runId, String nodeKey, NodeResolution r) {
-        switch (r.resolution()) {
-            case COMPLETED -> {
-                mapper.updateNodeExecution(tenantId, runId, nodeKey,
-                        "completed", "device_ack", "{\"source\":\"execution\"}");
-                recordEffectIntent(runId, nodeKey);
+        long pendingEffect;
+        try {
+            pendingEffect = Tx.inTransaction(db, c -> {
+                if (r.resolution() == ExecutionResolution.COMPLETED) {
+                    int written = mapper.updateNodeResolutionIfUnresolved(
+                            tenantId, runId, nodeKey, "completed",
+                            "device_ack", "{\"source\":\"execution\"}");
+                    if (written == 0) {
+                        // 已有终态确认：只补记录，禁止重新创建效果意图（§3.2 禁止重跑设备）
+                        return -1L;
+                    }
+                    return recordEffectIntent(runId, nodeKey);
+                }
+                if (r.resolution() == ExecutionResolution.FAILED_CONFIRMED) {
+                    mapper.updateNodeResolutionIfUnresolved(
+                            tenantId, runId, nodeKey, "failed_confirmed", null, null);
+                } else if (r.resolution() == ExecutionResolution.RECONCILIATION_REQUIRED) {
+                    mapper.updateNodeResolutionIfUnresolved(
+                            tenantId, runId, nodeKey, "reconciliation_required", null, null);
+                }
+                // UNRESOLVED：未开始/执行中，不写执行确认
+                return -1L;
+            });
+        } catch (SQLException | RuntimeException e) {
+            if (e instanceof MaterialPersistenceException) {
+                throw (MaterialPersistenceException) e;
             }
-            case FAILED_CONFIRMED -> mapper.updateNodeExecution(tenantId, runId, nodeKey,
-                    "failed_confirmed", null, null);
-            case RECONCILIATION_REQUIRED -> mapper.updateNodeExecution(tenantId, runId, nodeKey,
-                    "reconciliation_required", null, null);
-            case UNRESOLVED -> {
-                // 未开始/执行中，不写执行确认
+            throw new MaterialPersistenceException(runId, nodeKey, e);
+        }
+
+        if (pendingEffect > 0) {
+            try {
+                applyEffect(pendingEffect);
+            } catch (Exception e) {
+                log.warn("[T2] 立即应用失败（effect 保持 PENDING，Worker 补偿）: effect={}",
+                        pendingEffect, e);
             }
         }
-        return MaterialOutcome.CONTINUE;
+
+        // fail-closed：闸门读失败时闭环状态未知，绝不能当成「无阻断」放行后继设备动作。
+        // 同样抛 MaterialPersistenceException，由上层隔离 run 而不是标 failed 后允许续跑。
+        try {
+            return hasGateBlocker(runId) ? MaterialOutcome.HOLD : MaterialOutcome.CONTINUE;
+        } catch (RuntimeException e) {
+            throw new MaterialPersistenceException(runId, nodeKey, e);
+        }
     }
 
     /** 闸门（§3.7 / §8.2 第 3 项）：本 run 是否有未闭环效果。 */
@@ -389,15 +432,15 @@ public final class MaterialEffectService {
      * <p>第一版目标解析只处理显式 {@code target.plateId}（§3.3a 规则 1）；
      * 无 plateId 或解析不到 → 写 NEEDS_RECONCILIATION（plate_id NULL，规则 7）。
      */
-    private void recordEffectIntent(long runId, String nodeKey) {
+    private long recordEffectIntent(long runId, String nodeKey) {
         Map<String, Object> decl = mapper.selectDeclaration(tenantId, runId, nodeKey);
         if (decl == null || decl.get("declaration") == null) {
-            return;   // 无声明快照（mode=none/legacy 或非 transition 节点）
+            return -1L;   // 无声明快照（mode=none/legacy 或非 transition 节点）
         }
         String declarationJson = String.valueOf(decl.get("declaration"));
         String declHash = String.valueOf(decl.get("declarationHash"));
         if (!"transition".equals(modeOf(declarationJson))) {
-            return;   // none / legacy_unspecified：不建 effect
+            return -1L;   // none / legacy_unspecified：不建 effect
         }
 
         Long plateId = resolveTargetPlate(declarationJson, runId);
@@ -420,16 +463,9 @@ public final class MaterialEffectService {
             appendAction(effectId, "DECLARE", null,
                     pending ? "PENDING" : "NEEDS_RECONCILIATION",
                     "AUTO", null, null, "{}", null);
-            if (pending) {
-                // T1 → T2 立即尝试（§3.4：当前线程立即尝试；失败由 Worker 补偿）
-                try {
-                    applyEffect(effectId);
-                } catch (SQLException e) {
-                    log.error("[T2] 立即应用失败（effect 保持 PENDING，Worker 补偿）: "
-                            + effectId + " " + e.getMessage());
-                }
-            }
         }
+        // T2 不在这里调：它必须在 T1 事务提交之后、独立事务里执行（见 onNodeResolution）
+        return effectId;
     }
 
     /**

@@ -21,6 +21,7 @@ import com.labos.kernel.engine.TimeConstraintExecutor;
 import com.labos.kernel.engine.StepSink;
 import com.labos.kernel.material.DeclarationValidator;
 import com.labos.kernel.material.MaterialEffectService;
+import com.labos.kernel.material.MaterialPersistenceException;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.JdbcErrorOccurrenceStore;
 import com.labos.kernel.persistence.JdbcEventStore;
@@ -1030,7 +1031,10 @@ public class WorkflowService {
                     .withNoDeviceReason(islandNoDevice::get)
                     // S2 §8.2 第 1 项：完成处理器唯一注入点（写执行确认四态）
                     .withMaterialCompletion(r ->
-                            materialSvc.onNodeResolution(runId, r.nodeKey(), r));
+                            materialSvc.onNodeResolution(runId, r.nodeKey(), r))
+                    // §8.2 第 3 项：顺序执行路径（executeAll / 图解析失败退回）的派发前闸门。
+                    // 图路径另有 GraphRunner.withMaterialGate（见下）；两条路径都要拦（R13-01）。
+                    .withMaterialGate(() -> materialSvc.hasGateBlocker(runId));
             // 按图执行（含并行/异或网关）。
             // 之前这里走 executeAll，网关被忽略——批量验收用了 GraphRunner，
             // 于是出现"验收说 100%、产品路径却没有网关"的不一致。
@@ -1121,13 +1125,31 @@ public class WorkflowService {
             // run 落 failed 并记下原因，异常原样抛给调用方 —— 让上层看到"这次失败了"，
             // 而不是在背后把同一批物理动作再执行一遍。
             RunMonitor.INSTANCE.finish(runId);
-            log.error("[执行失败] run#{} 执行期异常（不重跑，不退回顺序重跑）",
-                    runId, executionFailure);
-            try {
-                markRunFailed(runId, "执行期异常：" + executionFailure);
-            } catch (SQLException e) {
-                log.error("[WARN] run#" + runId + " 异常收尾回写失败（保留原异常）："
-                        + e.getMessage());
+            if (executionFailure instanceof MaterialPersistenceException) {
+                // §3.1 / §3.6（评审 R13-02）：T1 连执行确认/效果意图都写不进 ⇒
+                // 物理可能已完成但无结论 ⇒ 隔离（quarantined），禁止续跑重放设备动作。
+                // 绝不能走 markRunFailed：failed 是可续跑态，会把设备动作再跑一遍。
+                log.error("[执行失败] run#{} T1 物料证据写入失败 → 隔离，不重跑",
+                        runId, executionFailure);
+                try {
+                    rm().quarantineRun(tenantId, runId, Jsons.obj(
+                            "quarantine", true,
+                            "quarantineReason", "T1 执行确认/效果意图写入失败（物理可能已完成）",
+                            "error", String.valueOf(executionFailure.getMessage())));
+                } catch (Exception e) {
+                    // mapper 代理不声明 checked 异常，落库失败以 RuntimeException 形式抛出
+                    log.error("[WARN] run#" + runId + " 隔离回写失败（保留原异常）："
+                            + e.getMessage());
+                }
+            } else {
+                log.error("[执行失败] run#{} 执行期异常（不重跑，不退回顺序重跑）",
+                        runId, executionFailure);
+                try {
+                    markRunFailed(runId, "执行期异常：" + executionFailure);
+                } catch (SQLException e) {
+                    log.error("[WARN] run#" + runId + " 异常收尾回写失败（保留原异常）："
+                            + e.getMessage());
+                }
             }
             throw executionFailure;
         }
