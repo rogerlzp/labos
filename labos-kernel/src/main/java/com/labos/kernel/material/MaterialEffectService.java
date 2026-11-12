@@ -86,6 +86,11 @@ public final class MaterialEffectService {
         String payloadHash = Hashes.sha256Hex(declarationJson + "|plateId=" + plateId);
         Long expectedStateVersion = plateId == null
                 ? null : mapper.selectPlateStateVersion(tenantId, plateId);
+        if (expectedStateVersion == null) {
+            // 板不存在或版本不可读 ⇒ 不能确定目标板（§3.3a 规则 7）：
+            // 写 plate_id=NULL + NEEDS_RECONCILIATION，不写悬空 plate_id。
+            plateId = null;
+        }
 
         // 第一版 target_snapshot = 原始声明（证据链/position_status 快照后续补）
         long effectId = insertEffect(runId, nodeKey, 0, 0, 0, plateId,
