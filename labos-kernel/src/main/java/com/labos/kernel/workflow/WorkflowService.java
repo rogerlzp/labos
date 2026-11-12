@@ -1047,6 +1047,8 @@ public class WorkflowService {
                         .withPauseChecker(() -> isRunPaused(runId)
                                 || new RuntimeHold(db, tenantId)
                                         .coverageForWorkflow(workflowId).blocks())
+                        // S2 §8.2 第 3 项：派发前物料闸门（物料未闭环 ⇒ 停止派发）
+                        .withMaterialGate(() -> materialSvc.hasUnclosedEffect(runId))
                         // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
                         // 靠这个回调把三段状态画得出来（见 createNodeShells）。
                         .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st))

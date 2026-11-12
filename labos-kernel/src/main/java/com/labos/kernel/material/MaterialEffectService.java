@@ -126,6 +126,11 @@ public final class MaterialEffectService {
         return id == null ? -1L : id;
     }
 
+    /** 闸门（§3.7 / §8.2 第 3 项）：本 run 是否有未闭环效果。 */
+    public boolean hasUnclosedEffect(long runId) {
+        return mapper.countUnclosedEffects(tenantId, runId) > 0;
+    }
+
     /** 追加一条效果动作（append-only）。 */
     public void appendAction(long effectId, String actionType, String fromStatus,
                              String toStatus, String actorType, Long operatorUserId,
