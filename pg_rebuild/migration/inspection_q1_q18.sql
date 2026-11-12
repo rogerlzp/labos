@@ -85,9 +85,11 @@ SELECT e.id FROM plate_material_effect e
 SELECT d.id FROM run_material_effect_declaration d
  WHERE NOT (d.declaration ? 'mode') OR length(d.declaration_hash) <> 64;
 -- Q15b 节点聚合投影可从 Effect 集合重建核对（不一致即告警）
+-- 只查汇总行（level=0、loop_index=0）；聚合覆盖该节点**全部圈次**的 Effect（§3.5 跨圈聚合）
 SELECT n.run_id, n.node_key, n.loop_index, n.material_sync_status
   FROM run_node n
- WHERE n.material_sync_status <> COALESCE((
+ WHERE n.level = 0 AND n.loop_index = 0
+   AND n.material_sync_status <> COALESCE((
         SELECT CASE
                  WHEN bool_or(e.status='NEEDS_RECONCILIATION') THEN 'needs_reconciliation'
                  WHEN bool_or(e.status='REJECTED') THEN 'rejected'
@@ -97,10 +99,10 @@ SELECT n.run_id, n.node_key, n.loop_index, n.material_sync_status
                  ELSE 'applied' END
           FROM plate_material_effect e
          WHERE e.tenant_id=n.tenant_id AND e.source_run_id=n.run_id
-           AND e.source_node_key=n.node_key AND e.source_loop_index=n.loop_index), 'not_required')
+           AND e.source_node_key=n.node_key), 'not_required')
    AND EXISTS (SELECT 1 FROM plate_material_effect x
                 WHERE x.tenant_id=n.tenant_id AND x.source_run_id=n.run_id
-                  AND x.source_node_key=n.node_key AND x.source_loop_index=n.loop_index);
+                  AND x.source_node_key=n.node_key);
 -- Q16 tenant 存在性
 SELECT 'event' AS t, v.tenant_id FROM plate_material_event v
  WHERE NOT EXISTS (SELECT 1 FROM tenant t WHERE t.id=v.tenant_id)
@@ -117,5 +119,8 @@ SELECT e.id FROM plate_material_effect e
                       AND d.node_key=e.source_node_key AND d.effect_index=e.effect_index
                       AND d.declaration_hash=e.declaration_hash);
 -- Q18 迁移后不应再出现的 legacy 组合（S1 迁移前会命中旧行，迁移后必须 0）
+-- 只查设备 TASK 业务节点（level=0 汇总行）；排除 LOGIC/BUILTIN、level=1 步骤行、圈次行
 SELECT n.run_id, n.node_key, n.loop_index FROM run_node n
- WHERE n.status='completed' AND n.execution_resolution_status='unresolved';
+ WHERE n.status='completed' AND n.execution_resolution_status='unresolved'
+   AND n.level = 0 AND n.loop_index = 0
+   AND COALESCE(n.input->>'capability', '') <> 'LOGIC';
