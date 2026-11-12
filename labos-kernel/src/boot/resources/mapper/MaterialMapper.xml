@@ -95,6 +95,48 @@
          LIMIT 1
     </select>
 
+    <!-- T2：锁效果行 -->
+    <select id="selectEffectForUpdate" resultType="java.util.Map">
+        SELECT status AS "status", plate_id AS "plateId",
+               expected_state_version AS "expectedStateVersion",
+               expected_process_state AS "expectedProcessState",
+               expected_seal_state AS "expectedSealState",
+               source_run_id AS "sourceRunId", source_node_key AS "sourceNodeKey",
+               source_loop_index AS "sourceLoopIndex",
+               declaration AS "declaration", declaration_hash AS "declarationHash",
+               payload_hash AS "payloadHash"
+          FROM plate_material_effect
+         WHERE tenant_id = #{t} AND id = #{effectId}
+           FOR UPDATE
+    </select>
+
+    <!-- T2：锁板行 -->
+    <select id="selectPlateForUpdate" resultType="java.util.Map">
+        SELECT process_state AS "processState", seal_state AS "sealState",
+               state_version AS "stateVersion"
+          FROM plate
+         WHERE tenant_id = #{t} AND id = #{plateId}
+           FOR UPDATE
+    </select>
+
+    <!-- T2：更新板投影 -->
+    <update id="updatePlateState">
+        UPDATE plate
+           SET process_state = #{processState},
+               seal_state = #{sealState},
+               state_version = #{newStateVersion},
+               updated_at = now()
+         WHERE tenant_id = #{t} AND id = #{plateId}
+    </update>
+
+    <!-- T2：更新节点物料同步状态 -->
+    <update id="updateNodeMaterialSync">
+        UPDATE run_node
+           SET material_sync_status = #{status}, updated_at = now()
+         WHERE tenant_id = #{t} AND run_id = #{runId}
+           AND node_key = #{nodeKey} AND loop_index = 0
+    </update>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect

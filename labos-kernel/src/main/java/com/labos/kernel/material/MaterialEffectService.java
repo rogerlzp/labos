@@ -4,28 +4,38 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.labos.kernel.engine.MaterialOutcome;
 import com.labos.kernel.engine.NodeResolution;
+import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Hashes;
+import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.persistence.Mappers;
 import com.labos.kernel.persistence.MaterialMapper;
+import com.labos.kernel.persistence.Tx;
 
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 物料效果处理服务（§8.2 第 4 项）：T1（执行确认 + 声明快照 + 效果意图）、
  * T2（物料投影）、Worker（重试）、隔离/对账。
  *
- * <p>第一版：执行确认（§3.2）+ 声明快照（§3.3）+ 效果意图（T1，显式 plateId 目标）。
- * T2/Worker/对账 后续增量补。目标解析完整版（§3.3a 9 条规则）后续增量。
+ * <p>第一版：执行确认（§3.2）+ 声明快照（§3.3）+ 效果意图（T1，显式 plateId 目标）
+ * + T2 物料投影（§3.4 单事务：锁 effect/plate → 校验版本 → 写 event → 更新板 → APPLIED）。
+ * Worker/隔离/对账 后续增量补。
  */
 public final class MaterialEffectService {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final long tenantId;
+    private final DbConfig db;
     private final MaterialMapper mapper;
 
-    public MaterialEffectService(long tenantId) {
+    public MaterialEffectService(long tenantId, DbConfig db) {
         this.tenantId = tenantId;
+        this.db = db;
         this.mapper = Mappers.get(MaterialMapper.class);
     }
 
@@ -63,6 +73,86 @@ public final class MaterialEffectService {
             }
         }
         return MaterialOutcome.CONTINUE;
+    }
+
+    /** 闸门（§3.7 / §8.2 第 3 项）：本 run 是否有未闭环效果。 */
+    public boolean hasUnclosedEffect(long runId) {
+        return mapper.countUnclosedEffects(tenantId, runId) > 0;
+    }
+
+    /**
+     * T2 物料投影（§3.4，单事务）：
+     * 锁 effect/plate → 校验 state_version → 写 event → 更新板 → APPLIED + action + 节点投影。
+     *
+     * @return CONTINUE=已应用；HOLD=版本冲突/目标不可用（需 rebase/reconcile）
+     */
+    public MaterialOutcome applyEffect(long effectId) throws SQLException {
+        return Tx.inTransaction(db, c -> {
+            Map<String, Object> eff = mapper.selectEffectForUpdate(tenantId, effectId);
+            if (eff == null || !"PENDING".equals(String.valueOf(eff.get("status")))) {
+                return MaterialOutcome.CONTINUE;   // 不存在或已处理
+            }
+
+            Long plateId = (Long) eff.get("plateId");
+            Long expectedVersion = (Long) eff.get("expectedStateVersion");
+            if (plateId == null || expectedVersion == null) {
+                // 无确定目标（NEEDS_RECONCILIATION 类效果不该进 T2）
+                return MaterialOutcome.HOLD;
+            }
+
+            Map<String, Object> plate = mapper.selectPlateForUpdate(tenantId, plateId);
+            if (plate == null) {
+                mapper.updateEffectStatus(tenantId, effectId, "PENDING",
+                        "NEEDS_RECONCILIATION", "PLATE_MISSING", "目标板不存在");
+                return MaterialOutcome.HOLD;
+            }
+
+            long curVersion = ((Number) plate.get("stateVersion")).longValue();
+            if (curVersion != expectedVersion) {
+                // MAT_STATE_CONFLICT（§3.4）：不自动重试，只能 rebase 或转对账
+                mapper.updateEffectStatus(tenantId, effectId, "PENDING",
+                        "FAILED", "MAT_STATE_CONFLICT",
+                        "state_version 冲突：期望 " + expectedVersion + "，实际 " + curVersion);
+                return MaterialOutcome.HOLD;
+            }
+
+            String fromProcess = (String) plate.get("processState");
+            String fromSeal = (String) plate.get("sealState");
+            String toProcess = (String) eff.get("expectedProcessState");
+            String toSeal = (String) eff.get("expectedSealState");
+            long toVersion = curVersion + 1;
+
+            List<String> changed = new ArrayList<>();
+            if (!Objects.equals(fromProcess, toProcess)) {
+                changed.add("process_state");
+            }
+            if (!Objects.equals(fromSeal, toSeal)) {
+                changed.add("seal_state");
+            }
+
+            long sourceRunId = ((Number) eff.get("sourceRunId")).longValue();
+            String sourceNodeKey = String.valueOf(eff.get("sourceNodeKey"));
+            int sourceLoopIndex = ((Number) eff.get("sourceLoopIndex")).intValue();
+
+            // ④ 写恰好一条事件（before/after + 版本区间 + changed_fields）
+            mapper.insertEvent(tenantId, plateId, effectId, "state_changed",
+                    fromProcess, toProcess, fromSeal, toSeal,
+                    Jsons.arr(changed.stream().map(Jsons::quote).toList()),
+                    curVersion, toVersion,
+                    sourceRunId, sourceNodeKey, sourceLoopIndex, null,
+                    "DEVICE_CONFIRMED", "device_ack", "{}", "AUTO",
+                    null, null, null);
+
+            // ⑤ 更新板投影
+            mapper.updatePlateState(tenantId, plateId, toProcess, toSeal, toVersion);
+            // ⑥ effect → APPLIED + action + 节点投影
+            mapper.updateEffectStatus(tenantId, effectId, "PENDING", "APPLIED", null, null);
+            mapper.insertAction(tenantId, effectId, "APPLY", "PENDING", "APPLIED",
+                    "AUTO", null, null, "{}", null);
+            mapper.updateNodeMaterialSync(tenantId, sourceRunId, sourceNodeKey, "applied");
+
+            return MaterialOutcome.CONTINUE;
+        });
     }
 
     /**
@@ -124,11 +214,6 @@ public final class MaterialEffectService {
                 expectedProcessState, expectedSealState, status);
         Long id = mapper.selectEffectId(tenantId, runId, nodeKey, loopIndex, effectIndex);
         return id == null ? -1L : id;
-    }
-
-    /** 闸门（§3.7 / §8.2 第 3 项）：本 run 是否有未闭环效果。 */
-    public boolean hasUnclosedEffect(long runId) {
-        return mapper.countUnclosedEffects(tenantId, runId) > 0;
     }
 
     /** 追加一条效果动作（append-only）。 */

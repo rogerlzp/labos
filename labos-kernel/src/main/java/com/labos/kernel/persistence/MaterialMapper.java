@@ -93,6 +93,27 @@ public interface MaterialMapper {
     /** 闸门（§3.7）：本 run 未闭环效果数（PENDING/FAILED/REJECTED/NEEDS_RECONCILIATION）。 */
     int countUnclosedEffects(@Param("t") long tenantId, @Param("runId") long runId);
 
+    /** T2：锁效果行（FOR UPDATE）。 */
+    java.util.Map<String, Object> selectEffectForUpdate(@Param("t") long tenantId,
+                                                       @Param("effectId") long effectId);
+
+    /** T2：锁板行（FOR UPDATE）。 */
+    java.util.Map<String, Object> selectPlateForUpdate(@Param("t") long tenantId,
+                                                      @Param("plateId") long plateId);
+
+    /** T2：更新板投影（process_state/seal_state/state_version）。 */
+    int updatePlateState(@Param("t") long tenantId,
+                         @Param("plateId") long plateId,
+                         @Param("processState") String processState,
+                         @Param("sealState") String sealState,
+                         @Param("newStateVersion") long newStateVersion);
+
+    /** T2：更新节点物料同步状态（汇总行 loop_index=0）。 */
+    int updateNodeMaterialSync(@Param("t") long tenantId,
+                               @Param("runId") long runId,
+                               @Param("nodeKey") String nodeKey,
+                               @Param("status") String status);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,
