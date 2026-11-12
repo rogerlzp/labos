@@ -47,6 +47,26 @@ interface CaseFile { cases: CaseDef[] }
 interface RunResult { status: Status; detail: string; at: string }
 type Row = CaseDef & { script?: ScriptEntry; browser?: RunResult };
 
+interface ComplexEvidence {
+  runId: number;
+  label: string;
+  runStatus: string;
+  declarations: string;
+  effects: string;
+  events: string;
+  actions: string;
+  q18Rows: string;
+  manualErrors: string;
+}
+interface ComplexReport {
+  generatedAt: string;
+  command: string;
+  pass: number;
+  fail: number;
+  skip: number;
+  evidence: Record<string, ComplexEvidence>;
+}
+
 const STORAGE_KEY = 's2_browser_results';
 
 const STATUS_KEY: Record<Status, MessageKey> = {
@@ -175,6 +195,15 @@ export default function S2TestCasesPage() {
     retry: false,
   });
 
+  const complex = useQuery({
+    queryKey: ['s2-complex-flow'],
+    queryFn: () => fetch('/s2-complex-flow-results.json').then((r) => {
+      if (!r.ok) throw new Error('no complex report');
+      return r.json() as Promise<ComplexReport>;
+    }),
+    retry: false,
+  });
+
   const scriptMap: Record<string, ScriptEntry> = {};
   for (const r of report.data?.results ?? []) {
     if (r.id) scriptMap[r.id] = r;
@@ -255,6 +284,42 @@ export default function S2TestCasesPage() {
         </Space>
       )}
     >
+      {complex.data ? (
+        <Alert
+          type={complex.data.fail > 0 ? 'warning' : 'info'}
+          showIcon
+          message={t('s2.complex.title')}
+          description={(
+            <Space direction="vertical" size={2}>
+              <Typography.Text type="secondary">
+                {complex.data.command} · {complex.data.generatedAt}
+              </Typography.Text>
+              {Object.values(complex.data.evidence).map((ev) => (
+                <Typography.Text key={ev.runId}>
+                  <Tag color={ev.runStatus === 'completed' ? 'green' : 'orange'}>{ev.label}</Tag>
+                  {' '}run {ev.runId} · {ev.runStatus}
+                  {' · decl '}{ev.declarations}
+                  {' · effects '}{(ev.effects.match(/APPLIED/g) ?? []).length}
+                  {' · events '}{ev.events.split('\n').filter(Boolean).length}
+                  {' · actions '}{ev.actions.split('\n').filter(Boolean).length}
+                  {' · Q18 '}{ev.q18Rows}
+                  {ev.manualErrors.split('\n').filter(Boolean).length > 0
+                    ? ` · ${ev.manualErrors.split('\n').filter(Boolean)[0]} × ${ev.manualErrors.split('\n').filter(Boolean).length}`
+                    : ''}
+                </Typography.Text>
+              ))}
+              <Typography.Text type="secondary">
+                {t('s2.complex.summary', {
+                  pass: complex.data.pass,
+                  fail: complex.data.fail,
+                  skip: complex.data.skip,
+                })}
+              </Typography.Text>
+            </Space>
+          )}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
       <Alert
         type={report.data && report.data.fail > 0 ? 'warning' : 'info'}
         showIcon
