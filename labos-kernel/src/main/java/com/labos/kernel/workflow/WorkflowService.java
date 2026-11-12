@@ -1128,6 +1128,13 @@ public class WorkflowService {
             pauseRunAtBoundary(runId, workflowId, pausedAtKey);
         }
 
+        // §8.2 第 9 项：物料未闭环（有 PENDING/FAILED/REJECTED/NEEDS_RECONCILIATION 效果）
+        // 不能把 run 标 completed —— 落 paused，等 Worker/对账闭环后再续跑；
+        // markBypassedNodes / settleRun 都按 isRunPaused 跳过，不会误标。
+        if (new MaterialEffectService(tenantId, db).hasUnclosedEffect(runId)) {
+            pauseRunAtBoundary(runId, workflowId, pausedAtKey);
+        }
+
         Map<Long, Long> deviceToResource = loadDeviceResourceMap();
         Set<Long> validResources = loadResourceIds();
 
