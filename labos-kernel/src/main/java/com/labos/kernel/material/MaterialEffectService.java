@@ -83,7 +83,7 @@ public final class MaterialEffectService {
                         // 已有终态确认：只补记录，禁止重新创建效果意图（§3.2 禁止重跑设备）
                         return -1L;
                     }
-                    return recordEffectIntent(runId, nodeKey);
+                    return recordEffectIntent(runId, nodeKey, r.loopIndex());
                 }
                 if (r.resolution() == ExecutionResolution.FAILED_CONFIRMED) {
                     mapper.updateNodeResolutionIfUnresolved(
@@ -481,7 +481,7 @@ public final class MaterialEffectService {
      * <p>第一版目标解析只处理显式 {@code target.plateId}（§3.3a 规则 1）；
      * 无 plateId 或解析不到 → 写 NEEDS_RECONCILIATION（plate_id NULL，规则 7）。
      */
-    private long recordEffectIntent(long runId, String nodeKey) {
+    private long recordEffectIntent(long runId, String nodeKey, int loopIndex) {
         Map<String, Object> decl = mapper.selectDeclaration(tenantId, runId, nodeKey);
         if (decl == null || decl.get("declaration") == null) {
             return -1L;   // 无声明快照（mode=none/legacy 或非 transition 节点）
@@ -503,7 +503,9 @@ public final class MaterialEffectService {
         }
 
         // 第一版 target_snapshot = 原始声明（证据链/position_status 快照后续补）
-        long effectId = insertEffect(runId, nodeKey, 0, 0, 0, plateId,
+        // R13-06：loopIndex 用 GraphRunner 注入的真实圈次（顺序路径为 0），
+        // 这样循环每圈各有一条 Effect；此前写死 0 会被唯一键 DO NOTHING 静默丢弃。
+        long effectId = insertEffect(runId, nodeKey, loopIndex, 0, 0, plateId,
                 declarationJson, declHash, payloadHash, declarationJson,
                 expectedStateVersion, expectedProcessState(declarationJson),
                 expectedSealState(declarationJson));
