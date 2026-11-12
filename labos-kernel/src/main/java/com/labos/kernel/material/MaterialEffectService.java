@@ -83,6 +83,28 @@ public final class MaterialEffectService {
     }
 
     /**
+     * Worker：处理一个到期的 PENDING 效果（单次）。
+     *
+     * @return true=处理了一个；false=无到期效果
+     */
+    public boolean processNextDue() throws SQLException {
+        Long effectId = mapper.selectDueEffectId(tenantId);
+        if (effectId == null) {
+            return false;
+        }
+        try {
+            applyEffect(effectId);
+        } catch (SQLException e) {
+            // applyEffect 事务已回滚，effect 保持 PENDING；独立记失败计数 + 退避
+            mapper.recordRetryFailure(tenantId, effectId,
+                    java.time.Instant.now().plusSeconds(30).toString(),
+                    "EC-MATERIAL-DB", e.getMessage());
+            log.warn("[Worker] effect {} 应用失败，退避 30s：{}", effectId, e.getMessage());
+        }
+        return true;
+    }
+
+    /**
      * T2 物料投影（§3.4，单事务）：
      * 锁 effect/plate → 校验 state_version → 写 event → 更新板 → APPLIED + action + 节点投影。
      *
