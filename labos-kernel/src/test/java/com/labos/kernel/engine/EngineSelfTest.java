@@ -187,6 +187,58 @@ public final class EngineSelfTest {
             eq("设备未被调用", 0, bus.callLog().size());
         });
 
+        // ============ 9. 完成处理器注入（§3.1 第 1 项） ============
+        run("默认 NOOP 完成处理器 → CONTINUE，无 materialHold", () -> {
+            RunStateMachine sm = machine();
+            RunProgress p = new RunProgress();
+            sm.executeNode(node(1, "TRANSFER", 100L, 100L), p, new SimulatedBus());
+            check("无 materialHold", !p.materialHold());
+        });
+
+        run("完成处理器返回 HOLD → progress.materialHold", () -> {
+            RunStateMachine sm = machine().withMaterialCompletion(r -> {
+                eq("resolution=COMPLETED", ExecutionResolution.COMPLETED, r.resolution());
+                return MaterialOutcome.HOLD;
+            });
+            RunProgress p = new RunProgress();
+            sm.executeNode(node(1, "TRANSFER", 100L, 100L), p, new SimulatedBus());
+            check("materialHold=true", p.materialHold());
+        });
+
+        run("完成处理器抛异常 → 向上传播（中止执行）", () -> {
+            RunStateMachine sm = machine().withMaterialCompletion(r -> {
+                throw new IllegalStateException("T1 写不进");
+            });
+            RunProgress p = new RunProgress();
+            RuntimeException thrown = null;
+            try {
+                sm.executeNode(node(1, "TRANSFER", 100L, 100L), p, new SimulatedBus());
+            } catch (RuntimeException e) {
+                thrown = e;
+            }
+            check("异常已传播", thrown != null && thrown.getMessage().contains("T1 写不进"));
+        });
+
+        run("第 7 出口：非 StepFailure 异常 → 先写 reconciliation_required 再抛", () -> {
+            java.util.concurrent.atomic.AtomicReference<ExecutionResolution> seen =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            RunStateMachine sm = machine().withMaterialCompletion(r -> {
+                seen.set(r.resolution());
+                return MaterialOutcome.CONTINUE;
+            });
+            RunProgress p = new RunProgress();
+            RuntimeException thrown = null;
+            try {
+                sm.executeNode(node(1, "TRANSFER", 100L, 100L), p,
+                        ctx -> { throw new IllegalStateException("驱动逃逸异常"); });
+            } catch (RuntimeException e) {
+                thrown = e;
+            }
+            check("异常已传播", thrown != null);
+            eq("先写 reconciliation_required",
+                    ExecutionResolution.RECONCILIATION_REQUIRED, seen.get());
+        });
+
         System.out.printf("%n================ 引擎自测: 通过 %d, 失败 %d ================%n",
                 passed, failed);
         if (failed > 0) {
