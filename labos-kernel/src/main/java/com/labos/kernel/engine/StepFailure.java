@@ -1,5 +1,6 @@
 package com.labos.kernel.engine;
 
+import com.labos.kernel.driver.DriverResult;
 import com.labos.kernel.recovery.RecoveryScope;
 
 /**
@@ -18,13 +19,20 @@ public final class StepFailure extends Exception {
     /** 1-based 步骤序号；0 表示未分步（单步执行）。 */
     private final int stepSeq;
     private final String stepMethod;
+    /** S0-safety U10 载体 ①：驱动状态（TIMEOUT/REJECTED/FAILED）；非驱动失败为 null。 */
+    private final DriverResult.Status driverStatus;
 
     public StepFailure(String errorCode, RecoveryScope scope, String message) {
-        this(errorCode, scope, message, 0, null);
+        this(errorCode, scope, message, 0, null, null);
     }
 
     public StepFailure(String errorCode, RecoveryScope scope, String message,
                        int stepSeq, String stepMethod) {
+        this(errorCode, scope, message, stepSeq, stepMethod, null);
+    }
+
+    public StepFailure(String errorCode, RecoveryScope scope, String message,
+                       int stepSeq, String stepMethod, DriverResult.Status driverStatus) {
         super(message);
         if (errorCode == null || errorCode.isBlank()) {
             throw new IllegalArgumentException("errorCode 不能为空");
@@ -40,6 +48,7 @@ public final class StepFailure extends Exception {
         this.scope = scope;
         this.stepSeq = stepSeq;
         this.stepMethod = stepMethod;
+        this.driverStatus = driverStatus;
     }
 
     public String errorCode() {
@@ -56,6 +65,10 @@ public final class StepFailure extends Exception {
 
     public String stepMethod() {
         return stepMethod;
+    }
+
+    public DriverResult.Status driverStatus() {
+        return driverStatus;
     }
 
     /** 给事件/日志用的简短描述。 */

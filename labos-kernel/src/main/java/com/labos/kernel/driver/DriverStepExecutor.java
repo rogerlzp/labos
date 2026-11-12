@@ -244,7 +244,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 throw new StepFailure(result.errorCode(), scopeOf(result.errorCode()),
                         String.format("%s | device=%d | raw=%s",
                                 result.message(), deviceId, result.deviceRawResponse()),
-                        stepSeq, method);
+                        stepSeq, method, result.status());
             }
         }
     }
