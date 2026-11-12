@@ -310,6 +310,10 @@ def group_b7():
                  % (",".join(ids), ",".join(ids), ",".join(ids)), stop=False)
 
     # 路径 2：completed + confirmedPlateId → 先 PENDING，再走 T2
+    # T2 会改 plate 的 process_state/seal_state/state_version，先记原始值，cleanup 时还原，
+    # 否则遗留的板状态会命中 Q12b/Q13（巡检 D2）。
+    plate_orig = q("SELECT COALESCE(process_state,'~NULL~') || '|' || COALESCE(seal_state,'~NULL~')"
+                   " || '|' || state_version FROM plate WHERE id=%s" % plate)
     ids = []
     try:
         eid = make_recon()
@@ -333,6 +337,14 @@ def group_b7():
                  " DELETE FROM plate_material_effect_action WHERE effect_id IN (%s);"
                  " DELETE FROM plate_material_effect WHERE id IN (%s);"
                  % (",".join(ids), ",".join(ids), ",".join(ids)), stop=False)
+        # 还原被 T2 改过的板状态（否则 Q12b/Q13 命中）
+        if plate_orig:
+            _ps, _ss, _sv = plate_orig.split("|")
+            psql("UPDATE plate SET process_state = %s, seal_state = %s, state_version = %s, updated_at = now()"
+                 " WHERE id = %s;"
+                 % (("NULL" if _ps == "~NULL~" else "'%s'" % _ps),
+                    ("NULL" if _ss == "~NULL~" else "'%s'" % _ss),
+                    _sv, plate), stop=False)
 
 
 # ---------------------------------------------------------------- C1
@@ -362,31 +374,60 @@ def group_c1():
          "GraphRunner:649 / executeAll 两处注入已静态核对")
 
 
+# ---------------------------------------------------------------- D2 / D6
+def group_d2_d6():
+    print("\n── D2 引用一致性巡检 Q1-Q18 全绿 ──")
+    env = dict(os.environ)
+    env.setdefault("PATH", "/opt/homebrew/opt/libpq/bin:/usr/bin:/bin")
+    env.setdefault("PGPASSWORD", os.environ.get("LABOS_DB_PASS", ""))
+    p = subprocess.run([
+        "psql", "-h", os.environ.get("LABOS_DB_HOST", "192.168.124.2"),
+        "-p", os.environ.get("LABOS_DB_PORT", "5432"),
+        "-U", os.environ.get("LABOS_DB_USER", "labos"),
+        "-d", os.environ.get("LABOS_DB_NAME", "labdb"),
+        "-tA", "-v", "ON_ERROR_STOP=1",
+        "-f", "pg_rebuild/migration/inspection_q1_q18.sql"],
+        env=env, capture_output=True, text=True)
+    # 每个查询的结果以空行分隔；有结果的行非空 ⇒ 非 0 行即违规
+    nonempty = [l for l in p.stdout.splitlines() if l.strip()]
+    if p.returncode == 0 and not nonempty:
+        ok("D2 巡检 Q1-Q18 全部 0 行", "22 条查询无一命中")
+    else:
+        bad("D2 巡检有命中", "命中 %d 行（rc=%d）：%s" % (len(nonempty), p.returncode, (nonempty[:3] or [p.stderr[:120]])))
+
+    print("\n── D6 老数据语义（legacy 回填后 Q18=0）──")
+    hits = q("SELECT count(*) FROM run_node n WHERE n.status='completed'"
+             " AND n.execution_resolution_status='unresolved' AND n.level=0 AND n.loop_index=0"
+             " AND COALESCE(n.input->>'capability','') <> 'LOGIC';")
+    if hits == "0":
+        ok("D6 legacy 组合 Q18 = 0 行", "回填后无新增 legacy 组合")
+    else:
+        bad("D6 Q18 命中", hits)
+
+
 # ---------------------------------------------------------------- D8 / D9
 def group_d8_d9():
     print("\n── D8 / D9 已知未闭环项（如实记录）──")
     bad("D8 闸门前置域",
         "未实现（R13-12）：SQL 仍按整 run 聚合，未按 §3.7 只判 TASK 前置、未区分结构节点/legacy_completed")
-    q15b = q("SELECT count(*) FROM run_node n WHERE n.material_sync_status <> CASE"
-             " WHEN NOT EXISTS (SELECT 1 FROM plate_material_effect e WHERE e.tenant_id=n.tenant_id"
-             "   AND e.source_run_id=n.run_id AND e.source_node_key=n.node_key"
-             "   AND e.status NOT IN ('CANCELLED')) THEN 'not_required'"
-             " WHEN EXISTS (SELECT 1 FROM plate_material_effect e WHERE e.tenant_id=n.tenant_id"
-             "   AND e.source_run_id=n.run_id AND e.source_node_key=n.node_key"
-             "   AND e.status IN ('PENDING','FAILED','REJECTED','NEEDS_RECONCILIATION'))"
-             "   THEN 'needs_reconciliation'"
-             " WHEN EXISTS (SELECT 1 FROM plate_material_effect e WHERE e.tenant_id=n.tenant_id"
-             "   AND e.source_run_id=n.run_id AND e.source_node_key=n.node_key"
-             "   AND e.status='APPLIED' AND NOT EXISTS (SELECT 1 FROM plate_material_effect e2"
-             "     WHERE e2.tenant_id=n.tenant_id AND e2.source_run_id=n.run_id"
-             "       AND e2.source_node_key=n.node_key"
-             "       AND e2.status IN ('PENDING','FAILED','REJECTED','NEEDS_RECONCILIATION')))"
-             "   THEN 'applied' ELSE n.material_sync_status END").strip()
+    # R13-23 已修：Q15b 只查汇总行（level=0、loop_index=0），聚合覆盖全部圈次
+    q15b = q("SELECT count(*) FROM run_node n WHERE n.level = 0 AND n.loop_index = 0"
+             " AND n.material_sync_status <> COALESCE((SELECT CASE"
+             " WHEN bool_or(e.status='NEEDS_RECONCILIATION') THEN 'needs_reconciliation'"
+             " WHEN bool_or(e.status='REJECTED') THEN 'rejected'"
+             " WHEN bool_or(e.status='FAILED') THEN 'failed'"
+             " WHEN bool_or(e.status='PENDING') THEN 'pending'"
+             " WHEN bool_or(e.status='CANCELLED') THEN 'cancelled'"
+             " ELSE 'applied' END FROM plate_material_effect e"
+             " WHERE e.tenant_id=n.tenant_id AND e.source_run_id=n.run_id"
+             " AND e.source_node_key=n.node_key), 'not_required')"
+             " AND EXISTS (SELECT 1 FROM plate_material_effect x"
+             " WHERE x.tenant_id=n.tenant_id AND x.source_run_id=n.run_id"
+             " AND x.source_node_key=n.node_key);").strip()
     if int(q15b or 0) == 0:
-        ok("D9 循环多圈聚合 Q15b = 0")
+        ok("D9 循环多圈聚合 Q15b = 0", "已排除圈次行（R13-23 已修）")
     else:
-        bad("D9 循环多圈聚合 Q15b ≠ 0",
-            "%s 行（R13-23：updateNodeMaterialSync 只重算 loop_index=0，巡检未排除圈次行）" % q15b)
+        bad("D9 循环多圈聚合 Q15b ≠ 0", "%s 行" % q15b)
 
 
 def main():
@@ -398,6 +439,7 @@ def main():
         group_b6()
         group_b7()
         group_c1()
+        group_d2_d6()
         group_d8_d9()
     except Exception as e:  # noqa: BLE001
         bad("脚本异常", "%s: %s" % (type(e).__name__, str(e)[:300]))
