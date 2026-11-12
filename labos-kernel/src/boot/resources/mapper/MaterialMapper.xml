@@ -215,6 +215,14 @@
          WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'FAILED'
     </update>
 
+    <!-- 人工改状态：已过期的 PENDING 效果 -->
+    <select id="selectStaleEffectIds" resultType="java.lang.Long">
+        SELECT id FROM plate_material_effect
+         WHERE tenant_id = #{t} AND plate_id = #{plateId}
+           AND status = 'PENDING'
+           AND expected_state_version &lt;&gt; #{newVersion}
+    </select>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect
