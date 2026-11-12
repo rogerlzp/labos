@@ -151,6 +151,19 @@ public interface MaterialMapper {
                                               @Param("plateId") long plateId,
                                               @Param("newVersion") long newVersion);
 
+    /** §6 读：效果列表（按 status/runId/plateId 过滤）。 */
+    java.util.List<java.util.Map<String, Object>> selectEffects(@Param("t") long tenantId,
+                                                               @Param("status") String status,
+                                                               @Param("runId") Long runId,
+                                                               @Param("plateId") Long plateId);
+
+    /** §6 读：效果动作历史（append-only）。 */
+    java.util.List<java.util.Map<String, Object>> selectActions(@Param("t") long tenantId,
+                                                               @Param("effectId") long effectId);
+
+    /** 规则 4：processState 是否在启用的字典里。 */
+    int countEnabledProcessState(@Param("t") long tenantId, @Param("code") String code);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,

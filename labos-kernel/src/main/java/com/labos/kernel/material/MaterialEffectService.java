@@ -92,6 +92,30 @@ public final class MaterialEffectService {
         return mapper.countGateBlockers(tenantId, runId);
     }
 
+    /** §6 读：效果列表。 */
+    public java.util.List<Map<String, Object>> listEffects(String status, Long runId, Long plateId) {
+        return mapper.selectEffects(tenantId, status, runId, plateId);
+    }
+
+    /** §6 读：效果动作历史。 */
+    public java.util.List<Map<String, Object>> listActions(long effectId) {
+        return mapper.selectActions(tenantId, effectId);
+    }
+
+    /** 规则 4：processState 是否在启用字典里。 */
+    public boolean processStateEnabled(String code) {
+        return code == null || mapper.countEnabledProcessState(tenantId, code) > 0;
+    }
+
+    /** 规则 4：声明里的 processState 必须在启用字典里。返回 null=通过，否则错误消息。 */
+    public String checkProcessStateDict(String declarationJson) {
+        String code = expectedProcessState(declarationJson);
+        if (code != null && mapper.countEnabledProcessState(tenantId, code) == 0) {
+            return "processState 不在启用字典: " + code;
+        }
+        return null;
+    }
+
     /**
      * 对账（§3.6）：NEEDS_RECONCILIATION → 人工对账 → PENDING(completed) / CANCELLED(not_completed)。
      *

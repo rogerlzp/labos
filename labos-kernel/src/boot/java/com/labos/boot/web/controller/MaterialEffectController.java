@@ -8,13 +8,16 @@ import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.persistence.Mappers;
 import com.labos.kernel.persistence.RunMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.sql.SQLException;
@@ -123,6 +126,24 @@ public class MaterialEffectController {
         }
     }
 
+    /** §6 读：效果列表（对账台用）。 */
+    @GetMapping(value = "/material-effects", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> listEffects(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Long runId,
+            @RequestParam(required = false) Long plateId) {
+        var list = new MaterialEffectService(TENANT, db).listEffects(status, runId, plateId);
+        return ResponseEntity.ok(json(list));
+    }
+
+    /** §6 读：效果动作历史（append-only）。 */
+    @GetMapping(value = "/material-effects/{id:\\d+}/actions",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> listActions(@PathVariable long id) {
+        var list = new MaterialEffectService(TENANT, db).listActions(id);
+        return ResponseEntity.ok(json(list));
+    }
+
     /** 隔离确认（§3.6 / §8.2 第 14 项）：quarantined → paused(manual_window)，返回未闭环清单。 */
     @PostMapping(value = "/runs/{id:\\d+}/material-safety/confirm",
             produces = "application/json; charset=utf-8")
@@ -165,5 +186,15 @@ public class MaterialEffectController {
     private static Long operatorId(HttpServletRequest req) {
         Object v = req.getAttribute(ApiAuthInterceptor.SESSION_ATTR);
         return v instanceof AuthService.Session s ? s.userId() : null;
+    }
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    private static String json(Object o) {
+        try {
+            return JSON.writeValueAsString(o);
+        } catch (Exception e) {
+            return "[]";
+        }
     }
 }
