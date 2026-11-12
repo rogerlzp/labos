@@ -110,6 +110,19 @@
            AND status IN ('PENDING','FAILED','REJECTED','NEEDS_RECONCILIATION')
     </select>
 
+    <!-- 闸门阻断计数（§3.7 / 第 12 项）：未闭环效果 + reconciliation_required 节点
+         （无物料声明的节点物理未知同样阻断下游） -->
+    <select id="countGateBlockers" resultType="int">
+        SELECT
+            (SELECT count(*) FROM plate_material_effect
+              WHERE tenant_id = #{t} AND source_run_id = #{runId}
+                AND status IN ('PENDING','FAILED','REJECTED','NEEDS_RECONCILIATION'))
+          + (SELECT count(*) FROM run_node
+              WHERE tenant_id = #{t} AND run_id = #{runId}
+                AND level = 0 AND loop_index = 0
+                AND execution_resolution_status = 'reconciliation_required')
+    </select>
+
     <!-- 读板当前 state_version -->
     <select id="selectPlateStateVersion" resultType="java.lang.Long">
         SELECT state_version FROM plate

@@ -1069,8 +1069,8 @@ public class WorkflowService {
                         .withPauseChecker(() -> isRunPaused(runId)
                                 || new RuntimeHold(db, tenantId)
                                         .coverageForWorkflow(workflowId).blocks())
-                        // S2 §8.2 第 3 项：派发前物料闸门（物料未闭环 ⇒ 停止派发）
-                        .withMaterialGate(() -> materialSvc.hasUnclosedEffect(runId))
+                        // S2 §8.2 第 3/12 项：派发前物料闸门（未闭环效果/reconciliation_required 节点 ⇒ 停止派发）
+                        .withMaterialGate(() -> materialSvc.hasGateBlocker(runId))
                         // 逐节点落「执行中 / 已完成」：外壳建的是 pending，
                         // 靠这个回调把三段状态画得出来（见 createNodeShells）。
                         .withNodeStateRecorder((key, st) -> recordNodeState(runId, key, st))
@@ -1128,10 +1128,10 @@ public class WorkflowService {
             pauseRunAtBoundary(runId, workflowId, pausedAtKey);
         }
 
-        // §8.2 第 9 项：物料未闭环（有 PENDING/FAILED/REJECTED/NEEDS_RECONCILIATION 效果）
+        // §8.2 第 9/12 项：物料未闭环（未闭环效果 或 reconciliation_required 节点）
         // 不能把 run 标 completed —— 落 paused，等 Worker/对账闭环后再续跑；
         // markBypassedNodes / settleRun 都按 isRunPaused 跳过，不会误标。
-        if (new MaterialEffectService(tenantId, db).hasUnclosedEffect(runId)) {
+        if (new MaterialEffectService(tenantId, db).hasGateBlocker(runId)) {
             pauseRunAtBoundary(runId, workflowId, pausedAtKey);
         }
 
