@@ -33,6 +33,7 @@ public final class SimulatorBehaviorSelfTest {
     public static void main(String[] args) throws Exception {
         testS100();
         testAspin();
+        testConcurrentCommands();
 
         System.out.println();
         System.out.printf("通过 %d, 失败 %d%n", pass, fail);
@@ -147,6 +148,52 @@ public final class SimulatorBehaviorSelfTest {
             eq("缺时间参数 → 拒绝", 3, r.status);
             eq("缺参数 → EC-06-0005", "EC-06-0005", r.errorCode());
         } finally {
+            core.stopServer();
+        }
+    }
+
+    // ---------------------------------------------------------------- 设备级互斥
+
+    private static void testConcurrentCommands() throws Exception {
+        section("通用设备：跨连接并发动作互斥 / 执行中状态可查");
+        DeviceCore core = new DeviceCore(0, "901", "ROBOT-CONC", "TRANSFER", 1200,
+                false, 0, "EC-05-0001", false, "robot", null, null, 0);
+        core.withExtraMethods(java.util.List.of("Home", "Transfer", "GetStatus"));
+        core.startServer("127.0.0.1", 0);
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (Client first = new Client(core.port(), "901");
+             Client second = new Client(core.port(), "901");
+             Client observer = new Client(core.port(), "901")) {
+            java.util.concurrent.Future<Frame> running = pool.submit(
+                    () -> first.call("busy-1", "Home", null));
+            long deadline = System.currentTimeMillis() + 2_000;
+            while (!"Home".equals(core.snapshot().get("currentMethod"))
+                    && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            eq("第一条动作已进入执行态", "Home", core.snapshot().get("currentMethod"));
+
+            Frame status = observer.call("busy-status", "GetStatus", null);
+            eq("执行中 GetStatus 不被动作阻塞", 2, status.status);
+            ok("执行中状态为 running", status.raw.contains(
+                    "\"device_state\":{\"status\":\"running\""));
+            ok("状态带当前方法", status.raw.contains("\"current_method\":\"Home\""));
+            ok("状态带当前命令", status.raw.contains("\"current_command_id\":\"busy-1\""));
+
+            Frame rejected = second.call("busy-2", "Home", null);
+            eq("第二条跨连接动作被拒绝", 3, rejected.status);
+            eq("设备忙返回 EC-06-0006", "EC-06-0006", rejected.errorCode());
+            ok("错误指出正在执行的方法", rejected.raw.contains("设备正在执行 Home"));
+            eq("第一条动作正常完成", 2, running.get(3, java.util.concurrent.TimeUnit.SECONDS).status);
+
+            Frame idle = observer.call("idle-status", "GetStatus", null);
+            ok("完成后恢复 idle", idle.raw.contains(
+                    "\"device_state\":{\"status\":\"idle\""));
+            ok("完成后清当前方法", idle.raw.contains("\"current_method\":null"));
+            eq("拒绝不污染后续动作", 2, second.call("busy-3", "Home", null).status);
+        } finally {
+            pool.shutdownNow();
             core.stopServer();
         }
     }

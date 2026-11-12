@@ -136,6 +136,15 @@ public final class DeviceCore {
     private volatile boolean doorOpen;
     /** 是否正在跑长任务。真实设备：运行中不能开门。 */
     private volatile boolean running;
+    /**
+     * 当前正在处理的动作方法；null = 可以接收新动作。
+     *
+     * <p>每个 TCP 连接都有独立线程，不能靠连接内的顺序处理保证整台设备互斥。
+     * 用原子引用把「检查空闲 + 占用」合成一步；查询不占用，动作必须独占。
+     */
+    private final java.util.concurrent.atomic.AtomicReference<String> activeMethod =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    private volatile String activeCommandId;
     /** 机械臂是否持板。真实设备：持着板不能再抓。 */
     private volatile boolean holding;
     private final String failCode;
@@ -462,7 +471,9 @@ public final class DeviceCore {
         m.put("clients", clients.size());
         m.put("delayMs", delayMs);
         m.put("doorOpen", doorOpen);
-        m.put("running", running);
+        m.put("running", activeMethod.get() != null || running);
+        m.put("currentMethod", activeMethod.get());
+        m.put("currentCommandId", activeCommandId);
         m.put("holding", holding);
         m.put("received", received.get());
         m.put("failed", failed.get());
@@ -697,11 +708,41 @@ public final class DeviceCore {
     /** 当前状态的 JSON（给"重复命令"的响应体用）。 */
     private String stateJson() {
         return "{\"door\":\"" + (doorOpen ? "open" : "closed") + "\","
-                + "\"running\":" + running + ","
+                + "\"running\":" + (activeMethod.get() != null || running) + ","
                 + "\"holding\":" + holding + ","
                 + "\"received\":" + received.get() + ","
                 + "\"failed\":" + failed.get() + ","
                 + "\"duplicated\":" + duplicated.get() + "}";
+    }
+
+    /** LabOS 设备状态词表：online 表示可达，status 表示是否正在执行。 */
+    private String deviceStateJson() {
+        String active = activeMethod.get();
+        boolean busy = active != null || running;
+        String status = busy ? "running" : (latchedFault == null ? "idle" : "error");
+        return "{\"status\":\"" + status + "\",\"online\":1,"
+                + "\"current_method\":" + (active == null ? "null" : "\"" + esc(active) + "\"")
+                + ",\"current_command_id\":" + (activeCommandId == null
+                        ? "null" : "\"" + esc(activeCommandId) + "\"")
+                + "}";
+    }
+
+    /** GetStatus 保留型号专属字段，同时统一补上 LabOS 的 device_state。 */
+    private String statusDataJson(String msg) {
+        String state = "\"device_state\":" + deviceStateJson();
+        String extra = null;
+        if (behavior != null) {
+            DeviceBehavior.Reply r = behavior.handle(this, "GetStatus", msg);
+            if (r != null && r.ok()) {
+                extra = r.dataJson();
+            }
+        }
+        if (extra == null || extra.isBlank() || "{}".equals(extra)) {
+            return "{" + state + "}";
+        }
+        String body = extra.trim();
+        body = body.substring(1, body.length() - 1).trim();
+        return "{" + state + (body.isEmpty() ? "" : "," + body) + "}";
     }
 
     /** 当前状态的一句话（给日志用）。 */
@@ -710,15 +751,52 @@ public final class DeviceCore {
         if (prof.hasDoor) {
             sb.append("门=").append(doorOpen ? "开" : "关").append(' ');
         }
-        sb.append("运行=").append(running ? "进行中" : "空闲");
+        String active = activeMethod.get();
+        sb.append("运行=").append(active != null || running ? "进行中" : "空闲");
+        if (active != null) {
+            sb.append(" 方法=").append(active);
+        }
         if (prof.holdsPlate) {
             sb.append(" 手持=").append(holding ? "有板" : "空");
         }
         return sb.toString();
     }
 
-    /** 真正的命令处理。外面包一层 {@link #process} 做幂等与日志。 */
+    /**
+     * 设备级动作互斥。连接内天然串行，连接间必须在这里串行。
+     *
+     * <p>第二条动作立即得到 {@code EC-06-0006}，不能假装接受后并发执行；
+     * 查询类命令仍可进入，以便执行中读取真实状态。
+     */
     private String processInner(String msg) {
+        String id = find(P_ID, msg);
+        String alias = find(P_METHOD, msg);
+        String equip = find(P_EQUIP, msg);
+        if (QUERY_METHODS.contains(alias)) {
+            return processInnerUnlocked(msg);
+        }
+        if (!activeMethod.compareAndSet(null, alias)) {
+            String current = activeMethod.get();
+            String text = "设备正在执行 " + current + "，拒绝并发命令 " + alias;
+            log.info("[" + code + "] " + text + "，command_id=" + id);
+            return frame(id, alias, equip, 3,
+                    "{\"error_code\":\"EC-06-0006\",\"error_text\":\""
+                            + esc(text) + "\"}",
+                    "{\"device_state\":" + deviceStateJson() + "}");
+        }
+        activeCommandId = id;
+        notifyState();
+        try {
+            return processInnerUnlocked(msg);
+        } finally {
+            activeCommandId = null;
+            activeMethod.set(null);
+            notifyState();
+        }
+    }
+
+    /** 真正的命令处理。外面包一层 {@link #process} 做幂等与日志。 */
+    private String processInnerUnlocked(String msg) {
         String id = find(P_ID, msg);
         String alias = find(P_METHOD, msg);
         String equip = find(P_EQUIP, msg);
@@ -774,6 +852,11 @@ public final class DeviceCore {
                     "{\"error_code\":\"" + errCode + "\",\"error_text\":\""
                             + esc(profileError) + "\"}",
                     "{}");
+        }
+
+        // 状态查询必须能穿透动作耗时：等设备跑完再回 idle 的 GetStatus 没有意义。
+        if ("GetStatus".equals(alias)) {
+            return frame(id, method, equip, 2, "null", statusDataJson(msg));
         }
 
         // 清除类指令先解锁存故障（现场按"清除故障"要真的有效）

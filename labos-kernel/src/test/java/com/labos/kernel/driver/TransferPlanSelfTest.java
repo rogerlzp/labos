@@ -31,6 +31,7 @@ public final class TransferPlanSelfTest {
         }
 
         testAcquireAndRelease();
+        testDoorDevicesLockedUntilClose();
         testRollbackOnFailure();
         testKeepReturnOnClose();
 
@@ -40,38 +41,37 @@ public final class TransferPlanSelfTest {
         }
     }
 
-    /** 挑两台设备各一个位置 + 一个机械臂。 */
+    /** 挑两台设备各一个位置 + 一个机械臂；旧示例不存在时使用当前自动门设备。 */
     private static boolean loadFixtures() throws Exception {
         try (Connection c = db.open()) {
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id FROM resource_node WHERE tenant_id=? AND code='ID1183'");
-                 ) {
+                    "SELECT code,id FROM resource_node"
+                            + " WHERE tenant_id=? AND code IN ('ID1183','ID1775','ID1731','ID-X231')")) {
                 ps.setLong(1, tenant);
                 try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) {
-                        return false;
+                    while (rs.next()) {
+                        switch (rs.getString(1)) {
+                            case "ID1183" -> srcRes = rs.getLong(2);
+                            case "ID1775" -> dstRes = rs.getLong(2);
+                            case "ID1731", "ID-X231" -> robotRes = rs.getLong(2);
+                            default -> { }
+                        }
                     }
-                    srcRes = rs.getLong(1);
                 }
             }
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id FROM resource_node WHERE tenant_id=? AND code='ID1775'");
-                 ) {
-                ps.setLong(1, tenant);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (!rs.next()) {
-                        return false;
-                    }
-                    dstRes = rs.getLong(1);
-                }
-            }
-            try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id FROM resource_node WHERE tenant_id=? AND code='ID1731'");
-                 ) {
-                ps.setLong(1, tenant);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        robotRes = rs.getLong(1);
+            if (srcRes == 0 || dstRes == 0) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT resource_id FROM device_access"
+                                + " WHERE tenant_id=? AND open_method IS NOT NULL"
+                                + " AND close_method IS NOT NULL ORDER BY resource_id LIMIT 2")) {
+                    ps.setLong(1, tenant);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) {
+                            srcRes = rs.getLong(1);
+                        }
+                        if (rs.next()) {
+                            dstRes = rs.getLong(1);
+                        }
                     }
                 }
             }
@@ -89,7 +89,7 @@ public final class TransferPlanSelfTest {
                 }
             }
         }
-        return true;
+        return srcRes != 0 && dstRes != 0;
     }
 
     /** 正常申请 → 资源都占到 → abort 全放。 */
@@ -108,6 +108,66 @@ public final class TransferPlanSelfTest {
         } catch (RuntimeException e) {
             fail++;
             System.out.println("  ✗ 非预期异常：" + e);
+        }
+    }
+
+    /** 有门设备从开门前到关门后都属于同一个 run，不能被另一条 run 插队。 */
+    private static void testDoorDevicesLockedUntilClose() throws Exception {
+        long[] doorResources = new long[2];
+        int count = 0;
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT resource_id FROM device_access WHERE tenant_id=?"
+                             + " AND open_method IS NOT NULL AND close_method IS NOT NULL"
+                             + " ORDER BY resource_id LIMIT 2")) {
+            ps.setLong(1, tenant);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next() && count < 2) {
+                    doorResources[count++] = rs.getLong(1);
+                }
+            }
+        }
+        if (count < 2) {
+            System.out.println("  ⏭ 少于两台自动门设备，跳过设备锁测试");
+            return;
+        }
+        DeviceLock lock = new DeviceLock(db, tenant);
+        if (lock.holder(doorResources[0]) != null || lock.holder(doorResources[1]) != null) {
+            System.out.println("  ⏭ 门设备正在被运行占用，跳过设备锁测试");
+            return;
+        }
+
+        long runId = 900004;
+        TransferPlan.AccessOpenerFactory success = resId -> method ->
+                DriverResult.success("transfer-plan-test", "{}", 0);
+        TransferPlan plan = new TransferPlan(db, tenant, runId);
+        try {
+            plan.acquireAll(doorResources[0], null, doorResources[1],
+                    null, null, null, success);
+            plan.closeAccesses(doorResources[0], doorResources[1], success);
+            boolean held = Long.valueOf(runId).equals(lock.holder(doorResources[0]))
+                    && Long.valueOf(runId).equals(lock.holder(doorResources[1]));
+            if (held) {
+                pass++;
+                System.out.println("  ✓ 源/目标设备锁保持到关门完成之后");
+            } else {
+                fail++;
+                System.out.println("  ✗ 搬运期间源/目标设备没有完整持锁");
+            }
+        } catch (RuntimeException e) {
+            fail++;
+            System.out.println("  ✗ 门设备锁测试异常：" + e.getMessage());
+        } finally {
+            plan.close();
+        }
+        boolean released = lock.holder(doorResources[0]) == null
+                && lock.holder(doorResources[1]) == null;
+        if (released) {
+            pass++;
+            System.out.println("  ✓ 搬运计划关闭后释放源/目标设备锁");
+        } else {
+            fail++;
+            System.out.println("  ✗ 搬运计划关闭后仍持有设备锁");
         }
     }
 

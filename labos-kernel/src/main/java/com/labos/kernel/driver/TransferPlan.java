@@ -11,10 +11,10 @@ import java.util.List;
  *
  * <h3>固定全序（这是防死锁的核心）</h3>
  * <pre>
- * ① 源设备的门（开）
+ * ① 源设备锁 + 源设备的门（开）
  * ② 源通道
  * ③ 源位置
- * ④ 目标设备的门（开）
+ * ④ 目标设备锁 + 目标设备的门（开）
  * ⑤ 目标通道
  * ⑥ 目标位置
  * ⑦ 回程位置（position-return，暂停也不释放）
@@ -23,6 +23,7 @@ import java.util.List;
  *    到此为止所有资源到手；板仍在源位，可安全放弃
  *    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  * ⑨ 抓板（不可逆点）
+ * ⑩ 关门之后再释放源／目标设备锁
  * </pre>
  *
  * <p><b>为什么门排最前</b>：门开了但没抢到机械臂，可以关门放弃，代价小。
@@ -83,7 +84,7 @@ public final class TransferPlan implements AutoCloseable {
 
     /** 一种已申请的资源。 */
     private record Resource(Type type, long id) {
-        enum Type { ACCESS, PORT, POSITION, RETURN, ROBOT }
+        enum Type { DEVICE, ACCESS, PORT, POSITION, RETURN, ROBOT }
     }
 
     /** 申请失败。调用方应重试或转人工。 */
@@ -158,6 +159,25 @@ public final class TransferPlan implements AutoCloseable {
         if (a == null) {
             return;   // 没门，跳过
         }
+        // 门不是独立物理设备：开门到关门期间必须独占整台源/目标设备。
+        // 否则另一条 run 能在搬运开门后抢进 RunProgram，撞到门未关闭。
+        DeviceLock deviceLock = new DeviceLock(db, tenantId);
+        if (!deviceLock.tryAcquire(resourceId, runId)) {
+            Long holder = lockHolder(resourceId);
+            if (holder != null && holder != runId && GRAPH.waitFor(runId, holder)) {
+                GRAPH.release(runId);
+                throw new AcquireException(label + "设备",
+                        "会死锁（等待成环），已拒绝。持有者 run=" + holder);
+            }
+        }
+        if (!deviceLock.acquireWithWait(resourceId, runId, 60_000)) {
+            GRAPH.release(runId);
+            throw new AcquireException(label + "设备", "被占用超过 60 秒");
+        }
+        GRAPH.release(runId);
+        // 先登记再开门：开门失败时 rollback 也必须释放设备锁。
+        acquired.add(new Resource(Resource.Type.DEVICE, resourceId));
+
         // **开门命令必须发给这台设备自己的驱动**，不是机械臂的。
         // 用同一把 mechanical driver 去开别的设备的门，真机上会开错门。
         AccessOpener opener = factory == null ? null : factory.forDevice(resourceId);
@@ -296,7 +316,7 @@ public final class TransferPlan implements AutoCloseable {
             try {
                 switch (r.type()) {
                     case PORT -> portLock.release(r.id());
-                    case ROBOT -> new DeviceLock(db, tenantId).release(r.id(), runId);
+                    case DEVICE, ROBOT -> new DeviceLock(db, tenantId).release(r.id(), runId);
                     case POSITION, RETURN -> {
                         try {
                             new PositionLock(db, tenantId).release(r.id(), runId);
