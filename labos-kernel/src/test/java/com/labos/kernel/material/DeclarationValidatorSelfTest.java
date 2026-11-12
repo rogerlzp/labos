@@ -54,6 +54,36 @@ public final class DeclarationValidatorSelfTest {
         eq("wait → 非 TASK", false, DeclarationValidator.taskNodeKind("wait"));
         eq("condition → 非 TASK", false, DeclarationValidator.taskNodeKind("condition"));
 
+        section("4. 评审 R13-11：规则 2/3/6/8 补齐");
+        codes("仅 location 不算身份", DeclarationValidator.validate(
+                        "{\"mode\":\"transition\",\"target\":{\"location\":{\"resourceId\":7}},"
+                                + "\"set\":{\"processState\":\"completed\"}}"),
+                Set.of("ME_TARGET_MISSING"));
+        codes("set 只有无关字段", DeclarationValidator.validate(
+                        "{\"mode\":\"transition\",\"target\":{\"plateId\":1},\"set\":{\"foo\":1}}"),
+                Set.of("ME_SET_EMPTY"));
+        codes("多组 outputs", DeclarationValidator.validate(
+                        "{\"mode\":\"transition\",\"target\":{\"plateId\":1},"
+                                + "\"set\":{\"processState\":\"x\"},\"outputs\":[{},{}]}"),
+                Set.of("ME_MULTI_EFFECT"));
+        codes("outputs + operations 并存", DeclarationValidator.validate(
+                        "{\"mode\":\"transition\",\"target\":{\"plateId\":1},"
+                                + "\"set\":{\"processState\":\"x\"},"
+                                + "\"outputs\":[{}],\"operations\":[{}]}"),
+                Set.of("ME_MULTI_EFFECT"));
+        codes("证据等级非数组", DeclarationValidator.validate(
+                        "{\"mode\":\"transition\",\"target\":{\"plateId\":1},"
+                                + "\"set\":{\"processState\":\"x\"},"
+                                + "\"acceptedEvidenceLevels\":\"device_ack\"}"),
+                Set.of("ME_EVIDENCE_LEVEL_INVALID"));
+        String manual = "{\"mode\":\"transition\",\"target\":{\"plateId\":1},"
+                + "\"set\":{\"processState\":\"x\"},"
+                + "\"acceptedEvidenceLevels\":[\"manual_confirmed\"]}";
+        codes("manual_confirmed 只报 WARN", DeclarationValidator.validate(manual),
+                Set.of("ME_EVIDENCE_OVERRIDE"));
+        eq("WARN 级别不阻断启动", "WARN",
+                DeclarationValidator.validate(manual).get(0).level());
+
         summary();
     }
 

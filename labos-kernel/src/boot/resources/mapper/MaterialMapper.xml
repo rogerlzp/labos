@@ -248,7 +248,19 @@
          WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'FAILED'
     </update>
 
-    <!-- 人工改状态：已过期的 PENDING 效果 -->
+    <!-- 人工改状态（§3.6a / R13-10）：先锁该板全部 PENDING 效果，再锁板。
+         与 applyEffect 的 effect→plate 同序；版本过滤在内存里做（需要先读板版本）。 -->
+    <select id="selectPendingEffectIdsForUpdate" resultType="java.util.Map">
+        SELECT id AS "id", expected_state_version AS "expectedStateVersion",
+               source_run_id AS "sourceRunId", source_node_key AS "sourceNodeKey"
+          FROM plate_material_effect
+         WHERE tenant_id = #{t} AND plate_id = #{plateId}
+           AND status = 'PENDING'
+         ORDER BY id
+           FOR UPDATE
+    </select>
+
+    <!-- 人工改状态：已过期的 PENDING 效果（保留给只读场景，写入路径不再用） -->
     <select id="selectStaleEffectIds" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect
          WHERE tenant_id = #{t} AND plate_id = #{plateId}

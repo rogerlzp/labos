@@ -50,6 +50,8 @@ public final class RbacRules {
     public static final String MATERIAL_RETRY = "material:retry";
     public static final String MATERIAL_RECONCILE = "material:reconcile";
     public static final String MATERIAL_CANCEL = "material:cancel";
+    /** §6 字典管理（新增/改名/停用）：仅 admin。 */
+    public static final String MATERIAL_ADMIN = "material:admin";
 
     /**
      * 角色是否有某物料权限（第一版：admin 全量；operator 可写/重试/对账/取消；viewer 无）。

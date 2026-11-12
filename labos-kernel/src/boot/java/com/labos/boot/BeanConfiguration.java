@@ -68,6 +68,28 @@ public class BeanConfiguration {
         return new HeartbeatService(db, TENANT);
     }
 
+    /**
+     * §3.5 / §8.2 第 4 项（评审 R13-07）：物料效果补偿 Worker。
+     *
+     * <p>此前 MaterialWorker 类写好了却没有任何 new/start，T2 失败后 PENDING
+     * 效果只能靠人工端点处理。这里在容器启动时拉起后台线程，容器停止时调 stop()。
+     * 依赖 mappersBinder：MaterialEffectService 构造时要用 Mappers.get(MaterialMapper.class)。
+     */
+    @Bean(destroyMethod = "stop")
+    @org.springframework.context.annotation.DependsOn("mappersBinder")
+    public com.labos.kernel.material.MaterialWorker materialWorker(DbConfig db) {
+        com.labos.kernel.material.MaterialWorker worker =
+                new com.labos.kernel.material.MaterialWorker(
+                        new com.labos.kernel.material.MaterialEffectService(TENANT, db), 2_000);
+        if (!"false".equalsIgnoreCase(
+                System.getProperty("labos.material.worker.enabled", "true"))) {
+            Thread t = new Thread(worker, "labos-material-worker");
+            t.setDaemon(true);
+            t.start();
+        }
+        return worker;
+    }
+
     /** 非 Bean 工具类通过 {@code Mappers.get(...)} 拿 Mapper；容器就绪时绑定一次。 */
     @Bean
     public Boolean mappersBinder(org.apache.ibatis.session.SqlSessionFactory factory) {

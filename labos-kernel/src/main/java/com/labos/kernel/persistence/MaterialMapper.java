@@ -145,7 +145,12 @@ public interface MaterialMapper {
                                   @Param("runId") long runId,
                                   @Param("nodeKey") String nodeKey);
 
-    /** Worker：扫描一个到期的 PENDING 效果（FOR UPDATE SKIP LOCKED 领取）。 */
+    /**
+     * Worker：扫描一个到期的 PENDING 效果**候选**（普通 SELECT，事务外调用）。
+     * 真正的「领取」由 {@code applyEffect} 内的 {@code SELECT ... FOR UPDATE} +
+     * 状态 CAS 完成：双 Worker 选中同一行时，后到者看到非 PENDING 直接返回，
+     * 不会重复应用（§3.5 / 评审 R13-10）。
+     */
     Long selectDueEffectId(@Param("t") long tenantId);
 
     /** Worker：失败计数 + 退避（独立于 applyEffect 事务）。 */
@@ -185,6 +190,13 @@ public interface MaterialMapper {
     int countEnabledProcessState(@Param("t") long tenantId, @Param("code") String code);
 
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
+    /**
+     * 人工改状态（§3.6a / 评审 R13-10）：先锁该板全部 PENDING effect，再锁板，
+     * 与 {@code applyEffect} 的 effect→plate 保持同一锁序，避免死锁。
+     */
+    java.util.List<java.util.Map<String, Object>> selectPendingEffectIdsForUpdate(
+            @Param("t") long tenantId, @Param("plateId") long plateId);
+
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,
                         @Param("nodeKey") String nodeKey,

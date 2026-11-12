@@ -1003,22 +1003,28 @@ public class WorkflowService {
                 if (n.materialEffect() != null && !n.materialEffect().isBlank()) {
                     List<DeclarationValidator.Issue> issues =
                             DeclarationValidator.validate(n.materialEffect());
-                    boolean hasError = issues.stream()
-                            .anyMatch(i -> "ERROR".equals(i.level()));
-                    if (hasError) {
+                    // §3.3b 分级：只有 ERROR 阻断启动；WARN（仅规则 8）放行但记日志要求人工复核
+                    List<DeclarationValidator.Issue> errors = issues.stream()
+                            .filter(i -> "ERROR".equals(i.level())).toList();
+                    issues.stream().filter(i -> !"ERROR".equals(i.level()))
+                            .forEach(i -> log.warn("[声明预检] 节点 {} {} {}: {}",
+                                    n.key(), i.level(), i.code(), i.message()));
+                    if (!errors.isEmpty()) {
                         throw new IllegalStateException(
-                                "声明契约预检失败（节点 " + n.key() + "）：" + issues);
+                                "声明契约预检失败（节点 " + n.key() + "）：" + errors);
                     }
                     if (!DeclarationValidator.taskNodeKind(n.type())) {
                         throw new IllegalStateException(
-                                "声明只允许挂在设备 TASK 节点（节点 " + n.key()
+                                DeclarationValidator.CODE_NODE_KIND_INVALID
+                                        + " 声明只允许挂在设备 TASK 节点（节点 " + n.key()
                                         + " type=" + n.type() + "）");
                     }
                     // 规则 4：processState 必须在启用字典里（DB 校验）
                     String dictErr = materialSvc.checkProcessStateDict(n.materialEffect());
                     if (dictErr != null) {
                         throw new IllegalStateException(
-                                "声明契约预检失败（节点 " + n.key() + "）：" + dictErr);
+                                DeclarationValidator.CODE_DICT_UNKNOWN
+                                        + " 声明契约预检失败（节点 " + n.key() + "）：" + dictErr);
                     }
                     materialSvc.writeDeclarationSnapshot(runId, n.key(), 0, n.materialEffect());
                 }
