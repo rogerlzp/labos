@@ -57,6 +57,17 @@
              #{operatorUserId}, #{note}, #{occurredAt}::timestamptz)
     </insert>
 
+    <!-- 按唯一键查 effect id -->
+    <select id="selectEffectId" resultType="java.lang.Long">
+        SELECT id FROM plate_material_effect
+         WHERE tenant_id = #{t}
+           AND source_run_id = #{runId}
+           AND source_node_key = #{nodeKey}
+           AND source_loop_index = #{loopIndex}
+           AND effect_index = #{effectIndex}
+         LIMIT 1
+    </select>
+
     <!-- 效果状态流转：只改状态列；APPLIED 补 applied_at；CAS 守卫 from_status 防并发覆盖 -->
     <update id="updateEffectStatus">
         UPDATE plate_material_effect

@@ -74,6 +74,13 @@ public interface MaterialMapper {
                     @Param("note") String note,
                     @Param("occurredAt") String occurredAt);
 
+    /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
+    Long selectEffectId(@Param("t") long tenantId,
+                        @Param("runId") long runId,
+                        @Param("nodeKey") String nodeKey,
+                        @Param("loopIndex") int loopIndex,
+                        @Param("effectIndex") int effectIndex);
+
     /** 效果状态流转（T2/Worker 使用；只改状态列，不改声明/快照）。 */
     int updateEffectStatus(@Param("t") long tenantId,
                            @Param("effectId") long effectId,
