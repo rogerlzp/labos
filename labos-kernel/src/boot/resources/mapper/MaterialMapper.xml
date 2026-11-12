@@ -104,7 +104,7 @@
                source_run_id AS "sourceRunId", source_node_key AS "sourceNodeKey",
                source_loop_index AS "sourceLoopIndex",
                declaration AS "declaration", declaration_hash AS "declarationHash",
-               payload_hash AS "payloadHash"
+               payload_hash AS "payloadHash", last_error_code AS "lastErrorCode"
           FROM plate_material_effect
          WHERE tenant_id = #{t} AND id = #{effectId}
            FOR UPDATE
@@ -168,6 +168,16 @@
                    || jsonb_build_object('reconciled', true, 'confirmedPlateId', #{plateId}),
                updated_at = now()
          WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'NEEDS_RECONCILIATION'
+    </update>
+
+    <!-- rebase：更新 expected_state_version 为板当前版本 + 转 PENDING -->
+    <update id="updateEffectRebase">
+        UPDATE plate_material_effect
+           SET expected_state_version = #{expectedStateVersion},
+               status = 'PENDING',
+               resolution_evidence = resolution_evidence || jsonb_build_object('rebased', true),
+               updated_at = now()
+         WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'FAILED'
     </update>
 
     <!-- 按唯一键查 effect id -->
