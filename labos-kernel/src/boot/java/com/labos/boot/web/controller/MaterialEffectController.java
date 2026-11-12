@@ -6,6 +6,8 @@ import com.labos.kernel.engine.MaterialOutcome;
 import com.labos.kernel.material.MaterialEffectService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
+import com.labos.kernel.persistence.Mappers;
+import com.labos.kernel.persistence.RunMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -119,6 +121,26 @@ public class MaterialEffectController {
         } catch (SQLException e) {
             return error(e);
         }
+    }
+
+    /** 隔离确认（§3.6 / §8.2 第 14 项）：quarantined → paused(manual_window)，返回未闭环清单。 */
+    @PostMapping(value = "/runs/{id:\\d+}/material-safety/confirm",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> materialSafetyConfirm(@PathVariable long id,
+                                                        @RequestBody(required = false) String body,
+                                                        HttpServletRequest req) {
+        String reason = jsonField(body, "reason");
+        if (reason == null || reason.isBlank()) {
+            return bad("必填 reason");
+        }
+        int n = Mappers.get(RunMapper.class).materialSafetyConfirm(TENANT, id, reason);
+        if (n == 0) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(err("run 不是 quarantined 状态，无需隔离确认"));
+        }
+        int unclosed = new MaterialEffectService(TENANT, db).unclosedCount(id);
+        return ResponseEntity.ok(Jsons.obj("runId", id, "confirmed", true,
+                "unclosedCount", unclosed));
     }
 
     // ---------------------------------------------------------------- helpers
