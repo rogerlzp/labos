@@ -101,6 +101,9 @@ public interface MaterialMapper {
     /** 闸门（§3.7）：本 run 未闭环效果数（PENDING/FAILED/REJECTED/NEEDS_RECONCILIATION）。 */
     int countUnclosedEffects(@Param("t") long tenantId, @Param("runId") long runId);
 
+    /** 闸门阻断计数（§3.7 / 第 12 项）：未闭环效果 + reconciliation_required 节点。 */
+    int countGateBlockers(@Param("t") long tenantId, @Param("runId") long runId);
+
     /** T2：锁效果行（FOR UPDATE）。 */
     java.util.Map<String, Object> selectEffectForUpdate(@Param("t") long tenantId,
                                                        @Param("effectId") long effectId);

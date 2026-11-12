@@ -82,6 +82,11 @@ public final class MaterialEffectService {
         return mapper.countUnclosedEffects(tenantId, runId) > 0;
     }
 
+    /** 闸门阻断（§3.7 / 第 12 项）：未闭环效果 或 reconciliation_required 节点（无物料声明也阻断）。 */
+    public boolean hasGateBlocker(long runId) {
+        return mapper.countGateBlockers(tenantId, runId) > 0;
+    }
+
     /**
      * 对账（§3.6）：NEEDS_RECONCILIATION → 人工对账 → PENDING(completed) / CANCELLED(not_completed)。
      *
