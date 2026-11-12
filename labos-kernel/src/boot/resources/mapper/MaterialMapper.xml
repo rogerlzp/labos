@@ -70,6 +70,22 @@
            AND node_key = #{nodeKey}
     </update>
 
+    <!-- 读声明快照 -->
+    <select id="selectDeclaration" resultType="java.util.Map">
+        SELECT declaration AS "declaration", declaration_hash AS "declarationHash"
+          FROM run_material_effect_declaration
+         WHERE tenant_id = #{t} AND run_id = #{runId} AND node_key = #{nodeKey}
+           AND effect_index = 0
+         LIMIT 1
+    </select>
+
+    <!-- 读板当前 state_version -->
+    <select id="selectPlateStateVersion" resultType="java.lang.Long">
+        SELECT state_version FROM plate
+         WHERE tenant_id = #{t} AND id = #{plateId}
+         LIMIT 1
+    </select>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect

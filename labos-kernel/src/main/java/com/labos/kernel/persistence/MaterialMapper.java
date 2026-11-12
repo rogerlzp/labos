@@ -82,6 +82,14 @@ public interface MaterialMapper {
                             @Param("physicalEvidenceLevel") String physicalEvidenceLevel,
                             @Param("physicalEvidence") String physicalEvidenceJson);
 
+    /** 读声明快照（按 run+node+effect 唯一键）。 */
+    java.util.Map<String, Object> selectDeclaration(@Param("t") long tenantId,
+                                                    @Param("runId") long runId,
+                                                    @Param("nodeKey") String nodeKey);
+
+    /** 读板当前 state_version（T1 计算 expected_state_version 用）。 */
+    Long selectPlateStateVersion(@Param("t") long tenantId, @Param("plateId") long plateId);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,
