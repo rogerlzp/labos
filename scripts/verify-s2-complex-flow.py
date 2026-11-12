@@ -23,6 +23,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 
@@ -127,24 +128,46 @@ def graph_main(d):
 
 def graph_loop(d):
     robot = d["ID-X231"]
+    # 网关必须**成对且连线完整**（前端 gatewayRoleCode 按入/出边数推角色：
+    # ins>1 ⇒ MERGE、outs>1 ⇒ SPLIT、单进单出 ⇒ 空串 ⇒ 页面上没有角色标签）。
+    # 另：孤立网关（ins=0/outs=0）是脏数据，画布下方会多出没连线的方块。
     nodes = [
         ("S", "开始", None, None, "startEvent"),
+        # 回边汇合：入边 2（S→M、V→M）、出边 1 ⇒ XOR_MERGE
+        ("M", "XOR_MERGE", None, None, "exclusiveGateway"),
         ("C1", "循环体·机器人", "Home", robot, "task"),
-        ("X", "圈数判断", None, None, "exclusiveGateway", "f_loop"),
+        # 条件分叉：入边 1、出边 2 ⇒ XOR_SPLIT
+        ("X", "XOR_SPLIT", None, None, "exclusiveGateway", "f_loop"),
         ("V", "圈数加一", "__expr", "__LOGIC__", "task"),
         ("E", "结束", None, None, "endEvent"),
     ]
     flows = [
-        ("f0", "S", "C1"), ("f1", "C1", "X"),
+        ("f0", "S", "M"), ("f_m", "M", "C1"), ("f1", "C1", "X"),
         ("f_end", "X", "E", "${n} >= 4"),
-        ("f_loop", "X", "V"), ("f_back", "V", "C1"),
+        ("f_loop", "X", "V"), ("f_back", "V", "M"),
     ]
     shapes = {
-        "S": (60, 200, 36, 36), "C1": (170, 180, 110, 76),
-        "X": (330, 200, 36, 36), "V": (430, 180, 110, 76),
-        "E": (600, 200, 36, 36),
+        "S": (60, 200, 36, 36), "M": (140, 200, 36, 36),
+        "C1": (230, 180, 110, 76),
+        "X": (390, 200, 36, 36), "V": (480, 180, 110, 76),
+        "E": (650, 200, 36, 36),
     }
     return bpmn_xml(nodes, flows, shapes, edges_for(flows, shapes))
+
+
+def assert_gateways_wired(xml, label):
+    """网关必须有入边和出边：孤立或单进单出在页面上不显示角色，属配置错误。"""
+    gws = re.findall(r'<bpmn:(?:exclusive|parallel|inclusive)Gateway\s+id="([^"]+)"', xml)
+    flows = re.findall(r'<bpmn:sequenceFlow\s+id="[^"]+"\s+sourceRef="([^"]+)"\s+'
+                       r'targetRef="([^"]+)"', xml)
+    ins, outs = {}, {}
+    for s, t in flows:
+        outs[s] = outs.get(s, 0) + 1
+        ins[t] = ins.get(t, 0) + 1
+    bad_gw = [g for g in gws if ins.get(g, 0) == 0 or outs.get(g, 0) == 0]
+    if bad_gw:
+        raise RuntimeError("%s 存在孤立网关（无入边或无出边）：%s" % (label, bad_gw))
+    return ["%s(in=%d,out=%d)" % (g, ins.get(g, 0), outs.get(g, 0)) for g in gws]
 
 
 # ---------------------------------------------------------------- 声明
@@ -355,7 +378,10 @@ def main():
 
     if args.flow in ("all", "main"):
         print("\n══════ 流程 1/2 · main（3 并行 + 异或 + 变量 + 3 声明）══════")
-        wf = cs.seed_workflow(token, "S2实测·复杂主流程", graph_main(devs))
+        g_main = graph_main(devs)
+        # 网关必须有入边和出边：孤立/单进单出在页面上没有角色标签（R13-25）
+        print("  网关连线: %s" % ", ".join(assert_gateways_wired(g_main, "main")))
+        wf = cs.seed_workflow(token, "S2实测·复杂主流程", g_main)
         api("/api/workflows/%d/nodes/V0" % wf, "PUT", token=token,
             body={"method": "__setVar", "params": {"var": "stage", "value": "1"}})
         api("/api/workflows/%d/variables" % wf, "POST", token=token,
@@ -371,7 +397,9 @@ def main():
 
     if args.flow in ("all", "loop"):
         print("\n══════ 流程 2/2 · loop（回边 4 圈，条件退出）══════")
-        wf2 = cs.seed_workflow(token, "S2实测·循环探针", graph_loop(devs))
+        g_loop = graph_loop(devs)
+        print("  网关连线: %s" % ", ".join(assert_gateways_wired(g_loop, "loop")))
+        wf2 = cs.seed_workflow(token, "S2实测·循环探针", g_loop)
         # 不再设 maxIterations 兜底：循环必须**靠条件 ${n} >= 4 自己退出**，
         # 否则「跑满上限」会被误当成通过（n: 1→2→3→4，3 圈后退出）。
         api("/api/workflows/%d/nodes/V" % wf2, "PUT", token=token,
