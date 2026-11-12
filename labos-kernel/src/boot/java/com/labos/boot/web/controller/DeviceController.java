@@ -466,6 +466,10 @@ public class DeviceController {
             @RequestParam(required = false) String robotResourceId,
             @RequestParam(required = false) String method,
             HttpServletRequest req) throws SQLException {
+        var denied = debugDenied(req, ApiServer.DEVICE_PROBE_ENABLED, "robot-points capture");
+        if (denied != null) {
+            return denied;
+        }
         String ccode = URLDecoder.decode(code, StandardCharsets.UTF_8);
         long robot = paramLongValue(robotResourceId);
         String readMethod = paramStr(req.getQueryString(), "method");
@@ -536,6 +540,20 @@ public class DeviceController {
         } catch (NumberFormatException e) {
             return 0;
         }
+    }
+
+    /** S0-safety：调试通路默认拒绝。开关关闭或非 admin 时返回 403；放行返回 null。 */
+    private static ResponseEntity<String> debugDenied(HttpServletRequest req, boolean enabled, String what) {
+        if (!enabled) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(err("调试通路已关闭（S0-safety）：" + what));
+        }
+        AuthService.Session s0 = session(req);
+        if (s0 == null || !s0.isAdmin()) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(err("调试通路仅管理员可用（S0-safety）"));
+        }
+        return null;
     }
 
     private static AuthService.Session session(HttpServletRequest req) {
