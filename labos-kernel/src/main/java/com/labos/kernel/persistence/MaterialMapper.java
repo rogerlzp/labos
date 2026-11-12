@@ -114,6 +114,16 @@ public interface MaterialMapper {
                                @Param("nodeKey") String nodeKey,
                                @Param("status") String status);
 
+    /** Worker：扫描一个到期的 PENDING 效果（FOR UPDATE SKIP LOCKED 领取）。 */
+    Long selectDueEffectId(@Param("t") long tenantId);
+
+    /** Worker：失败计数 + 退避（独立于 applyEffect 事务）。 */
+    int recordRetryFailure(@Param("t") long tenantId,
+                           @Param("effectId") long effectId,
+                           @Param("nextRetryAt") String nextRetryAt,
+                           @Param("errorCode") String errorCode,
+                           @Param("errorMessage") String errorMessage);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,
