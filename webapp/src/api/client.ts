@@ -644,6 +644,10 @@ export interface DeviceModelsMeta {
 export const api = {
   health: () => req<{ status: string; db: string }>('/health'),
 
+  /** S0-safety：调试通路开关状态（前端据此隐藏/显示 shadow-run / shadow/probe 调试入口）。 */
+  debugSwitches: () =>
+    req<{ shadowRunEnabled: boolean; deviceProbeEnabled: boolean }>('/api/meta/debug-switches'),
+
   login: (username: string, password: string) =>
     req<{ token: string; username: string; displayName: string; role: string }>(
       '/api/auth/login', {

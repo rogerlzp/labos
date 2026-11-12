@@ -184,6 +184,12 @@ export default function IslandPage() {
       }>,
     refetchInterval: demoRunning ? 700 : false,
   });
+  // S0-safety：调试通路开关状态（关闭时隐藏 shadow/probe 调试入口）
+  const switches = useQuery({
+    queryKey: ['debug-switches'],
+    queryFn: () => apiFetch('/api/meta/debug-switches')
+      .then((r) => r.json()) as Promise<{ shadowRunEnabled: boolean; deviceProbeEnabled: boolean }>,
+  });
 
 
 
@@ -717,9 +723,11 @@ export default function IslandPage() {
                       />
                     </Space>
                   ))}
-                  <Button size="small" type="primary" loading={seqRunning} {...ro} onClick={runSeq}>
-                    {t('island.action.runSeq')}
-                  </Button>
+                  {switches.data?.deviceProbeEnabled && (
+                    <Button size="small" type="primary" loading={seqRunning} {...ro} onClick={runSeq}>
+                      {t('island.action.runSeq')}
+                    </Button>
+                  )}
                   <Button size="small" loading={savingSeq} {...ro} onClick={saveAsWorkflow}>
                     {t('island.action.saveAsFlow')}
                   </Button>
@@ -993,8 +1001,10 @@ export default function IslandPage() {
                       label: `${m.method}${m.params?.length ? t('island.method.params', { n: m.params.length }) : ''}`,
                     }))} />
                 )}
-                <Button type="primary" size="small" loading={firing}
-                  disabled={ro.disabled || !method} title={ro.title} onClick={fire}>{t('island.action.fire')}</Button>
+                {switches.data?.deviceProbeEnabled && (
+                  <Button type="primary" size="small" loading={firing}
+                    disabled={ro.disabled || !method} title={ro.title} onClick={fire}>{t('island.action.fire')}</Button>
+                )}
               </Space>
 
               {(curMethod?.params?.length ?? 0) > 0 && (

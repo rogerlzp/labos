@@ -2,6 +2,8 @@ package com.labos.boot.web.controller;
 
 import com.labos.kernel.device.DeviceModels;
 import com.labos.boot.web.service.MetaService;
+import com.labos.kernel.api.ApiServer;
+import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.persistence.MetaMapper;
 import com.labos.kernel.workflow.StatusVocabulary;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -36,6 +38,14 @@ public class MetaController {
             produces = "application/json; charset=utf-8")
     public String statusVocabulary() {
         return StatusVocabulary.toJson();
+    }
+
+    /** S0-safety：调试通路开关状态，供前端决定隐藏/显示调试入口（shadow-run / shadow/probe / capture）。 */
+    @GetMapping(value = "/api/meta/debug-switches",
+            produces = "application/json; charset=utf-8")
+    public String debugSwitches() {
+        return Jsons.obj("shadowRunEnabled", ApiServer.SHADOW_RUN_ENABLED,
+                "deviceProbeEnabled", ApiServer.DEVICE_PROBE_ENABLED);
     }
 
     /**
