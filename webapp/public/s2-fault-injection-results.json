@@ -1,0 +1,83 @@
+{
+  "command": "python3 scripts/verify-s2-fault-injection.py",
+  "pass": 10,
+  "fail": 2,
+  "skip": 3,
+  "results": [
+    {
+      "case": "D1-1 重复 effect 键被拒",
+      "status": "pass",
+      "detail": "被拒绝：uk_plate_material_effect_key"
+    },
+    {
+      "case": "D1-2 effect_index≠0 被拒",
+      "status": "pass",
+      "detail": "被拒绝：ck_effect_effect_index"
+    },
+    {
+      "case": "D1-3 同一 effect 两条 event 被拒",
+      "status": "pass",
+      "detail": "被拒绝：uk_pme_effect"
+    },
+    {
+      "case": "D1-4 同板重复 to_state_version 被拒",
+      "status": "pass",
+      "detail": "被拒绝：uk_pme_version"
+    },
+    {
+      "case": "D4 五张新表 FK 计数 = 0",
+      "status": "pass",
+      "detail": "count=0"
+    },
+    {
+      "case": "B5-1 状态 CAS 幂等（第二次 UPDATE 命中 0 行）",
+      "status": "pass",
+      "detail": "SECOND=1"
+    },
+    {
+      "case": "B5-2 行锁 FOR UPDATE",
+      "status": "skip",
+      "detail": "在 applyEffect 内（selectEffectForUpdate），SQL 静态核对通过；并发实测需双进程精确时序，本轮不覆盖"
+    },
+    {
+      "case": "B6-1 FAILED 不会被 Worker 领取重试",
+      "status": "pass",
+      "detail": "selectDueEffectId 只选 PENDING"
+    },
+    {
+      "case": "B6-2 转人工告警",
+      "status": "skip",
+      "detail": "未找到 maxAttempts / 重试上限判定 ⇒ FAILED 会停在原地等人工端点，但**没有主动告警**（设计 §7.2 B6 要求的『转人工告警』未实现）"
+    },
+    {
+      "case": "B7-1 not_completed → CANCELLED + RECONCILE action",
+      "status": "pass",
+      "detail": "effect=80"
+    },
+    {
+      "case": "B7-2 completed → 转 PENDING 并尝试 T2 + RECONCILE action",
+      "status": "pass",
+      "detail": "effect=81 终态=APPLIED"
+    },
+    {
+      "case": "C1-1 PENDING effect 计入闸门阻断（countGateBlockers > 0）",
+      "status": "pass",
+      "detail": "blockers=1"
+    },
+    {
+      "case": "C1-2 / C3 后继不派发、被闸门挂起的 run 不被标 completed",
+      "status": "skip",
+      "detail": "需真实流程 + 闸门命中 + 收尾断言（端到端），本轮未覆盖；GraphRunner:649 / executeAll 两处注入已静态核对"
+    },
+    {
+      "case": "D8 闸门前置域",
+      "status": "fail",
+      "detail": "未实现（R13-12）：SQL 仍按整 run 聚合，未按 §3.7 只判 TASK 前置、未区分结构节点/legacy_completed"
+    },
+    {
+      "case": "D9 循环多圈聚合 Q15b ≠ 0",
+      "status": "fail",
+      "detail": "44 行（R13-23：updateNodeMaterialSync 只重算 loop_index=0，巡检未排除圈次行）"
+    }
+  ]
+}

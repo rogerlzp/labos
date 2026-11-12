@@ -1521,4 +1521,11 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'designer.material.cleared': 'Material effect declaration cleared',
   'designer.material.clear': 'Clear',
   'designer.material.clearConfirm': 'Clear this node material effect declaration?',
+
+  // ---- Designer · gateway wiring check before save ----
+  'designer.looseGateway.title': 'Some gateways are not connected',
+  'designer.looseGateway.hint': 'These gateways have no flows at all (0 in / 0 out). The server rejects such a graph, so connect or delete them first; click an item to locate it on the canvas.',
+  'designer.looseGateway.item': 'in {ins} / out {outs}',
+  'designer.looseGateway.fix': 'Go back and fix',
+  'designer.looseGateway.directWarn': 'Gateway with one-in/one-out ({names}): no split/merge role is shown. Continue only if it is a temporary placeholder.',
 };
