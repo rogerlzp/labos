@@ -45,10 +45,15 @@ if [[ ! -f lib/spring/spring-jdbc-6.1.6.jar || ! -f lib/spring/lettuce-core-6.3.
   echo "依赖就位：$(ls -1 lib/spring | wc -l | tr -d ' ') 个 jar"
 fi
 
-# ---- ② 编译既有源码（classpath 不含 spring：DbConfig 用反射桥接）----
+# ---- ② 编译 main + boot（一次 javac 同时编译；先清理 boot 的 stale class）----
+# 为什么合成一步：boot 依赖 main，javac 单次调用会一并解析跨源引用，
+# 不必再分两次（2026-11-12 实测单条 javac 编译 main+boot exit=0）。
+rm -rf out/com/labos/boot
+rm -f out/com/labos/kernel/api/LegacyRouteController.class \
+      out/com/labos/kernel/api/ServletHttpExchange.class
 javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
-      $(find src/main -name '*.java')
-echo "✓ 既有源码编译完成（DbConfig 直接使用 Spring JDBC）"
+      $(find src/main src/boot/java -name '*.java')
+echo "✓ main + boot 编译完成（一次 javac）"
 
 # ---- ②a mapper XML 合法性自检（**编译查不出来，只有起内核才炸**）----
 #
@@ -77,20 +82,10 @@ if bad:
 PY
 echo "✓ XML 合法性自检通过（mapper / 资源）"
 
-# ---- ②b 清理已删除源文件的 stale class（javac 不删旧产物，删类后残留会继续生效）
-rm -rf out/com/labos/boot
-rm -f out/com/labos/kernel/api/LegacyRouteController.class \
-      out/com/labos/kernel/api/ServletHttpExchange.class
-
 # ---- ③ 资源（logback / application.properties / mapper XML）----
 mkdir -p out/mapper
 cp -f src/boot/resources/* out/ 2>/dev/null || true
 cp -f src/boot/resources/mapper/*.xml out/mapper/ 2>/dev/null || true
-
-# ---- ③ 编译 Spring Boot 容器层 ----
-javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
-      $(find src/boot/java -name '*.java')
-echo "✓ Spring Boot 容器层编译完成"
 
 if [[ "${1:-}" == "--verify" ]]; then
   if [[ -z "${LABOS_DB_HOST:-}" ]]; then
