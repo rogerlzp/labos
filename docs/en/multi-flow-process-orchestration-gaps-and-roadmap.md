@@ -80,8 +80,8 @@
 
 | Flow | Evidence |
 |---|---|
-| Cell culture island | method table: the cell-counting method ← barcode input sheet / sample count sheet → output sheet; the "file source" column reads "orchestrator" / "orchestrator/imaging" |
-| Compound management island | script node calls the compound management system → generates the input sheet → uploads to object storage → assigns it to a file variable → the run-method command consumes it → output sheet comes back |
+| Cell culture island | method table: `PrepareForCellCounting` ← barcode input sheet / sample count sheet → output sheet; the "file source" column reads "orchestrator" / "orchestrator/imaging" |
+| Compound management island | script node calls the compound management system → generates the input sheet → uploads to object storage → assigns it to a file variable → `RunMethod` consumes it → output sheet comes back |
 | Library preparation island | about 25 method names; "**the orchestrator generates the file the workstation needs from the quality-control data it received**" |
 
 ⇒ **All three flows share one abstraction.** LabOS's device-command model today is
@@ -171,7 +171,7 @@ of them expresses.
 | Idempotency + restart reconciliation | a 60-min shake or a 15-h incubation is never dispatched twice | `DriverStepExecutor.java:875-889`; `99f_command_ledger.sql`; `CommandLedger.java:30` |
 | Layered long-task timeouts | `device_method.timeout_sec` → device library → node → capability → 30 s | `MethodTimeoutPolicy`; `DriverStepExecutor.java:511-556` |
 | Deck occupancy + position locks + movement trail | atomic position reservation + both locks taken in ascending id order | `PositionLock.java`; `30_business.sql:664` |
-| Named command parameters | deck position / method name / barcode / consumable identifier are all expressible | `DriverCommand.java:17-39`; `WorkflowService.java:1500-1548` |
+| Named command parameters | `nest` / `method` / `barcode` / consumable identifier are all expressible | `DriverCommand.java:17-39`; `WorkflowService.java:1500-1548` |
 | 16 capability codes | already cover aliquot / transfer / store / centrifuge / decap / peel / seal / mix / incubate / read plate / scan | `95_seed_data.sql:21-38` |
 
 ---
@@ -271,10 +271,9 @@ Reuse the material-view line's G1/G2/G11: plate-level process stage (`process_st
   magnetic-bead extractor / thermostatted incubation position / nitrogen evaporator /
   cell-count imager / plate washer / acoustic dispenser / non-contact dispenser /
   incubator / out-of-island logistics
-- Add the command semantics specific to the compound management island: the
-  run-method command (method name + file), dispense-by-type (with barcode),
-  load-labware / prepare-to-load (with deck station identifier),
-  transfer (source/target station)
+- Add the command semantics specific to the compound management island: `RunMethod`
+  (method name + file), `OutputByType` (with barcode),
+  `LoadLabware/PrepareToLoadLabware` (with nest), `Transfer` (source/target station)
 - **Depends on vendor manuals** ⇒ the schedule is decided by what the client sends, not
   by us. The `planned` list in `sidecar-dotnet/models.json` already contains **two
   centrifuges/sealers** ⇒ **ask for those two manuals first**.
