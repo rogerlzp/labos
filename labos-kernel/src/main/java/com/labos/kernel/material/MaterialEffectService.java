@@ -145,6 +145,15 @@ public final class MaterialEffectService {
         return mapper.selectActions(tenantId, effectId);
     }
 
+    /** §6 人工改状态：barcode → plate.id（与 T1 同一条查询，只认未删除的板）。 */
+    public Long plateIdByBarcode(String barcode) {
+        if (barcode == null || barcode.isBlank()) {
+            return null;
+        }
+        Map<String, Object> p = mapper.selectPlateByBarcode(tenantId, barcode);
+        return p == null ? null : ((Number) p.get("id")).longValue();
+    }
+
     /** 规则 4：processState 是否在启用字典里。 */
     public boolean processStateEnabled(String code) {
         return code == null || mapper.countEnabledProcessState(tenantId, code) > 0;
@@ -284,6 +293,10 @@ public final class MaterialEffectService {
                                   Long expectedVersion, Long operatorUserId, String note)
             throws SQLException {
         Tx.inTransaction(db, c -> {
+            // 评审 R13-10：锁序必须与 applyEffect 一致（先 effect 后 plate）。
+            // 原实现先锁板、再无锁 UPDATE effect，与 applyEffect 构成死锁环。
+            List<Map<String, Object>> pending =
+                    mapper.selectPendingEffectIdsForUpdate(tenantId, plateId);
             Map<String, Object> plate = mapper.selectPlateForUpdate(tenantId, plateId);
             if (plate == null) {
                 throw new IllegalStateException("板不存在: " + plateId);
@@ -317,12 +330,27 @@ public final class MaterialEffectService {
 
             mapper.updatePlateState(tenantId, plateId, toProcess, toSeal, toVersion);
 
-            // 步骤 6：板上已过期的 PENDING 效果 → NEEDS_RECONCILIATION + RECONCILE
-            for (Long effectId : mapper.selectStaleEffectIds(tenantId, plateId, toVersion)) {
-                mapper.updateEffectStatus(tenantId, effectId, "PENDING", "NEEDS_RECONCILIATION",
-                        null, "板已被人工改状态，期望版本过期");
+            // 步骤 6：板上已过期的 PENDING 效果 → NEEDS_RECONCILIATION + RECONCILE。
+            // 用上面已加锁的候选集，在内存里按新版本过滤（不能先读板版本再锁 effect）。
+            for (Map<String, Object> e : pending) {
+                Object v = e.get("expectedStateVersion");
+                if (v == null || ((Number) v).longValue() == toVersion) {
+                    continue;   // 期望版本仍有效，不动
+                }
+                long effectId = ((Number) e.get("id")).longValue();
+                // 评审 R13-13：CAS 失败不写 action（避免写出与实际状态不符的审计行）
+                int n = mapper.updateEffectStatus(tenantId, effectId, "PENDING",
+                        "NEEDS_RECONCILIATION", null, "板已被人工改状态，期望版本过期");
+                if (n == 0) {
+                    continue;
+                }
                 mapper.insertAction(tenantId, effectId, "RECONCILE", "PENDING",
                         "NEEDS_RECONCILIATION", "MANUAL", operatorUserId, note, "{}", null);
+                Object rid = e.get("sourceRunId");
+                Object nk = e.get("sourceNodeKey");
+                if (rid instanceof Number && nk != null) {
+                    recomputeNodeMaterialSync(((Number) rid).longValue(), String.valueOf(nk));
+                }
             }
             return null;
         });
@@ -341,10 +369,20 @@ public final class MaterialEffectService {
         try {
             applyEffect(effectId);
         } catch (SQLException e) {
-            // applyEffect 事务已回滚，effect 保持 PENDING；独立记失败计数 + 退避
-            mapper.recordRetryFailure(tenantId, effectId,
-                    java.time.Instant.now().plusSeconds(30).toString(),
-                    "EC-MATERIAL-DB", e.getMessage());
+            // §3.5 / 评审 R13-10：applyEffect 事务已回滚，失败计数与退避必须在
+            // **独立短事务**里写（此时上一层事务已结束，Tx 会新开事务），
+            // 不能与 T2 共用，也不能在事务外裸 UPDATE。
+            try {
+                Tx.inTransaction(db, c -> {
+                    mapper.recordRetryFailure(tenantId, effectId,
+                            java.time.Instant.now().plusSeconds(30).toString(),
+                            "EC-MATERIAL-DB", e.getMessage());
+                    return null;
+                });
+            } catch (SQLException inner) {
+                log.error("[Worker] effect {} 失败计数写入失败（需巡检/人工）: {}",
+                        effectId, inner.getMessage());
+            }
             log.warn("[Worker] effect {} 应用失败，退避 30s：{}", effectId, e.getMessage());
         }
         return true;
@@ -365,6 +403,8 @@ public final class MaterialEffectService {
 
             Long plateId = (Long) eff.get("plateId");
             Long expectedVersion = (Long) eff.get("expectedStateVersion");
+            long sourceRunId = ((Number) eff.get("sourceRunId")).longValue();
+            String sourceNodeKey = String.valueOf(eff.get("sourceNodeKey"));
             if (plateId == null || expectedVersion == null) {
                 // 无确定目标（NEEDS_RECONCILIATION 类效果不该进 T2）
                 return MaterialOutcome.HOLD;
@@ -372,17 +412,28 @@ public final class MaterialEffectService {
 
             Map<String, Object> plate = mapper.selectPlateForUpdate(tenantId, plateId);
             if (plate == null) {
-                mapper.updateEffectStatus(tenantId, effectId, "PENDING",
+                // 评审 R13-13：失败分支也要写 action 并重算节点投影（与成功路径对称）
+                int n = mapper.updateEffectStatus(tenantId, effectId, "PENDING",
                         "NEEDS_RECONCILIATION", "PLATE_MISSING", "目标板不存在");
+                if (n > 0) {
+                    mapper.insertAction(tenantId, effectId, "APPLY", "PENDING",
+                            "NEEDS_RECONCILIATION", "AUTO", null, null, "{}", "PLATE_MISSING");
+                    recomputeNodeMaterialSync(sourceRunId, sourceNodeKey);
+                }
                 return MaterialOutcome.HOLD;
             }
 
             long curVersion = ((Number) plate.get("stateVersion")).longValue();
             if (curVersion != expectedVersion) {
                 // MAT_STATE_CONFLICT（§3.4）：不自动重试，只能 rebase 或转对账
-                mapper.updateEffectStatus(tenantId, effectId, "PENDING",
+                int n = mapper.updateEffectStatus(tenantId, effectId, "PENDING",
                         "FAILED", "MAT_STATE_CONFLICT",
                         "state_version 冲突：期望 " + expectedVersion + "，实际 " + curVersion);
+                if (n > 0) {
+                    mapper.insertAction(tenantId, effectId, "APPLY", "PENDING",
+                            "FAILED", "AUTO", null, null, "{}", "MAT_STATE_CONFLICT");
+                    recomputeNodeMaterialSync(sourceRunId, sourceNodeKey);
+                }
                 return MaterialOutcome.HOLD;
             }
 
@@ -400,8 +451,6 @@ public final class MaterialEffectService {
                 changed.add("seal_state");
             }
 
-            long sourceRunId = ((Number) eff.get("sourceRunId")).longValue();
-            String sourceNodeKey = String.valueOf(eff.get("sourceNodeKey"));
             int sourceLoopIndex = ((Number) eff.get("sourceLoopIndex")).intValue();
 
             // ④ 写恰好一条事件（before/after + 版本区间 + changed_fields）

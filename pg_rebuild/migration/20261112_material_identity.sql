@@ -702,6 +702,17 @@ BEGIN
     PERFORM pg_temp.mig_idx('ix_pme_run','plate_material_event',
       ARRAY['tenant_id','source_run_id'], false, '{}', false);
   END IF;
+
+  -- §8.2 第 21 项（评审 R13-16）：两条查询索引，原迁移漏建。
+  -- 前者服务按工艺阶段查板，后者服务 plate_material_effect 的 plate 维度查询与 Q2 巡检。
+  IF to_regclass('public.ix_plate_process_state') IS NULL THEN
+    CREATE INDEX ix_plate_process_state ON plate (tenant_id, process_state);
+    RAISE NOTICE 'CREATE  ix_plate_process_state';
+  END IF;
+  IF to_regclass('public.ix_pme_effect_plate') IS NULL THEN
+    CREATE INDEX ix_pme_effect_plate ON plate_material_effect (tenant_id, plate_id);
+    RAISE NOTICE 'CREATE  ix_pme_effect_plate';
+  END IF;
 END $$;
 
 COMMIT;
