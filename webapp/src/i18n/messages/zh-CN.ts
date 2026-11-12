@@ -1510,4 +1510,16 @@ export const zhCN = {
   's2.status.running': '运行中',
   's2.complex.title': '复杂流程端到端证据',
   's2.complex.summary': '通过 {pass} / 失败 {fail} / 已知限制 {skip}',
+
+  // ---- 设计器 · 物料效果声明（§3.3b）----
+  'designer.material.title': '物料效果声明',
+  'designer.material.hint': '只在设备 TASK 节点生效；run 启动时冻结为声明快照',
+  'designer.material.barcode': '目标板 barcode（必填）',
+  'designer.material.processState': '工艺阶段（启用字典）',
+  'designer.material.sealState': '膜状态',
+  'designer.material.evidence': '接受的证据等级',
+  'designer.material.saved': '物料效果声明已保存',
+  'designer.material.cleared': '物料效果声明已清除',
+  'designer.material.clear': '清除声明',
+  'designer.material.clearConfirm': '确认清除该节点的物料效果声明？',
 } as const;

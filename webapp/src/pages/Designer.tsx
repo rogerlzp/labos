@@ -694,6 +694,169 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
             </Typography.Text>
           </>
         )}
+        <MaterialEffectCard wfId={wfId} nodeKey={nodeKey} />
+      </Space>
+    </Card>
+  );
+}
+
+/**
+ * §3.3b 物料效果声明表单。
+ *
+ * <p>此前 material_effect 只能直接 UPDATE 列（无 API、无设计器入口），业务上不可用。
+ * 现在在节点设置卡里直接配置，保存走 PUT /api/workflows/{id}/nodes/{key}/material-effect，
+ * 后端复用 run 启动时同一套契约预检（DeclarationValidator + 字典 + 节点种类）。
+ */
+function MaterialEffectCard({ wfId, nodeKey }: { wfId: string; nodeKey: string }) {
+  const t = useT();
+  const ro = useReadOnly();
+  const qc = useQueryClient();
+  const wfNum = Number(wfId);
+  const [mode, setMode] = useState<'none' | 'transition' | 'legacy_unspecified'>('none');
+  const [barcode, setBarcode] = useState('');
+  const [processState, setProcessState] = useState<string | undefined>(undefined);
+  const [sealState, setSealState] = useState<string | undefined>(undefined);
+  const [levels, setLevels] = useState<string[]>(['device_ack']);
+  const [saving, setSaving] = useState(false);
+
+  const decl = useQuery({
+    queryKey: ['material-effect', wfId, nodeKey],
+    queryFn: () => apiFetch(
+      `/api/workflows/${wfNum}/nodes/${encodeURIComponent(nodeKey)}/material-effect`)
+      .then((r) => r.json() as Promise<{
+        declaration: import('../api/client').MaterialEffectDecl | null;
+      }>),
+    retry: false,
+  });
+  const dict = useQuery({
+    queryKey: ['plate-process-states'],
+    queryFn: () => api.plateProcessStates(),
+    retry: false,
+  });
+
+  useEffect(() => {
+    const d = decl.data?.declaration;
+    if (!d) {
+      setMode('none');
+      setBarcode('');
+      setProcessState(undefined);
+      setSealState(undefined);
+      setLevels(['device_ack']);
+      return;
+    }
+    setMode(d.mode ?? 'none');
+    setBarcode(d.target?.barcode ?? '');
+    setProcessState(d.set?.processState);
+    setSealState(d.set?.sealState);
+    setLevels(d.acceptedEvidenceLevels ?? ['device_ack']);
+  }, [decl.data]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body: import('../api/client').MaterialEffectDecl = { mode: 'none' };
+      if (mode === 'transition') {
+        body.mode = 'transition';
+        body.target = { barcode: barcode.trim() };
+        body.set = {
+          ...(processState ? { processState } : {}),
+          ...(sealState ? { sealState } : {}),
+        };
+        body.acceptedEvidenceLevels = levels;
+      } else {
+        body.mode = mode;
+      }
+      await api.saveMaterialEffect(wfNum, nodeKey, body);
+      message.success(t('designer.material.saved'));
+      await qc.invalidateQueries({ queryKey: ['material-effect', wfId, nodeKey] });
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    try {
+      await api.clearMaterialEffect(wfNum, nodeKey);
+      message.success(t('designer.material.cleared'));
+      await qc.invalidateQueries({ queryKey: ['material-effect', wfId, nodeKey] });
+    } catch (e) {
+      message.error(String(e));
+    }
+  };
+
+  return (
+    <Card size="small" title={t('designer.material.title')}>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('designer.material.hint')}
+        </Typography.Text>
+        <Select
+          size="small"
+          value={mode}
+          onChange={(v) => setMode(v)}
+          options={[
+            { value: 'none', label: 'none' },
+            { value: 'transition', label: 'transition' },
+            { value: 'legacy_unspecified', label: 'legacy_unspecified' },
+          ]}
+        />
+        {mode === 'transition' ? (
+          <>
+            <Input
+              size="small"
+              placeholder={t('designer.material.barcode')}
+              value={barcode}
+              onChange={(e) => setBarcode(e.target.value)}
+            />
+            <Select
+              size="small"
+              allowClear
+              placeholder={t('designer.material.processState')}
+              value={processState}
+              onChange={setProcessState}
+              options={(dict.data?.items ?? []).map((x) => ({
+                value: x.code, label: x.displayName || x.code,
+              }))}
+            />
+            <Select
+              size="small"
+              allowClear
+              placeholder={t('designer.material.sealState')}
+              value={sealState}
+              onChange={setSealState}
+              options={[
+                { value: 'none', label: 'none' },
+                { value: 'sealed', label: 'sealed' },
+              ]}
+            />
+            <Select
+              size="small"
+              mode="multiple"
+              placeholder={t('designer.material.evidence')}
+              value={levels}
+              onChange={setLevels}
+              options={[
+                { value: 'device_ack', label: 'device_ack' },
+                { value: 'physical_confirmed', label: 'physical_confirmed' },
+                { value: 'manual_confirmed', label: 'manual_confirmed' },
+                { value: 'legacy', label: 'legacy' },
+              ]}
+            />
+          </>
+        ) : null}
+        <Space size={6}>
+          <Button size="small" type="primary" loading={saving}
+            disabled={ro.disabled} onClick={save}>
+            {t('designer.action.save')}
+          </Button>
+          <Popconfirm title={t('designer.material.clearConfirm')} onConfirm={clear}>
+            <Button size="small" disabled={ro.disabled}>
+              {t('designer.material.clear')}
+            </Button>
+          </Popconfirm>
+        </Space>
       </Space>
     </Card>
   );

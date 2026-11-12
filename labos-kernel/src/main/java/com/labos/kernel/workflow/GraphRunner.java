@@ -673,7 +673,12 @@ public final class GraphRunner {
                 RecoverableNode rn = toRecoverable(node);
                 java.time.Instant roundStart = java.time.Instant.now();
                 nodeStateRecorder.accept(key, "running");
-                NodeStatus st = stateMachine.executeNode(rn, progress, executor);
+                // 评审 20261112-13 / 复杂流程实证：把本圈 visit 透传到 StepContext，
+                // 让命令账本幂等键能区分圈次。第 1 圈 visit=1 与旧行为一致（不拼后缀），
+                // 第 2 圈起才加 |vN，因此非循环流程的 key 完全不变。
+                final int round = visit;
+                StepExecutor roundAware = c -> executor.execute(c.withLoopIndex(round));
+                NodeStatus st = stateMachine.executeNode(rn, progress, roundAware);
                 nodeStateRecorder.accept(key, st.name().toLowerCase());
                 // 只在**图里真有环**时记圈次：无环图每个节点只跑一次，
                 // 汇总行已经代表那一次，再记一行就是重复（会让"节点数"翻倍，

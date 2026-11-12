@@ -677,13 +677,15 @@ public final class DriverStepExecutor implements StepExecutor {
                                         DriverCommand cmd, long workflowId, int stepSeq) {
         long ledgerId = 0L;
         if (db != null && runId > 0 && cmd.commandId() != null) {
-            // P-07.2 稳定逻辑 key（§8.2 第 6 项：**不含 opSeq/loop_index**）：
-            // run|node|attempt|step|device|method —— 循环多轮（同 node/step/method）
-            // 命中同一行 ⇒ CommandLedger.begin 不 created ⇒ EC-99-0006 fail-closed，
-            // 转人工对账（不静默去重、不重复派发）。
+            // 稳定逻辑 key：run|node|attempt|step|device|method，再按圈次加 |vN。
+            // 复杂流程实证（EC-99-0006）：循环第 2 圈起若 key 不变，会被
+            // CommandLedger.begin 判成重复派发并转人工，流程跑不完。
+            // 只在 loopIndex>1 时拼后缀：无环图 / 顺序路径 / 第 1 圈的 key 与历史完全一致，
+            // 既有幂等行为与历史账本行不受影响（不静默去重、不重复派发）。
+            String loopSuffix = ctx.loopIndex() > 1 ? "|v" + ctx.loopIndex() : "";
             String ledgerKey = "r" + runId + "|n" + ctx.nodeId() + "|a" + ctx.attempt()
                     + "|s" + stepSeq + "|d" + cmd.deviceInstanceId()
-                    + "|m" + cmd.method();
+                    + "|m" + cmd.method() + loopSuffix;
             try {
                 CommandLedger.Entry e = CommandLedger.begin(db, tenantId,
                         ledgerKey, runId, ctx.nodeId(), ctx.attempt(), stepSeq,

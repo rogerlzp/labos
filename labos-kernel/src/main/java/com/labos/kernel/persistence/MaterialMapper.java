@@ -189,6 +189,10 @@ public interface MaterialMapper {
     /** 规则 4：processState 是否在启用的字典里。 */
     int countEnabledProcessState(@Param("t") long tenantId, @Param("code") String code);
 
+    /** §6 字典列表（设计器下拉用）：只返回启用的工艺阶段。 */
+    java.util.List<java.util.Map<String, Object>> selectEnabledProcessStates(
+            @Param("t") long tenantId);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     /**
      * 人工改状态（§3.6a / 评审 R13-10）：先锁该板全部 PENDING effect，再锁板，
