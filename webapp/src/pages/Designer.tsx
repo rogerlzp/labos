@@ -862,6 +862,52 @@ function MaterialEffectCard({ wfId, nodeKey }: { wfId: string; nodeKey: string }
   );
 }
 
+/** 画布上的一个网关及其入边/出边数量。 */
+interface GatewayWiring {
+  id: string;
+  name: string;
+  ins: number;
+  outs: number;
+}
+
+/**
+ * 找出「连线不成立」的网关。
+ *
+ * <p>为什么要在保存前拦：前端 {@code gatewayRoleCode} 是**按入/出边数推角色**的
+ * （`ins>1` ⇒ MERGE、`outs>1` ⇒ SPLIT、单进单出 ⇒ 空串）。孤立网关（无入边或无出边）
+ * 连角色都没有，在画布上就是一块没意义的图形；从 palette 拖进来忘了连线再保存，
+ * 就会在流程里留下这种脏节点（2026-11-12 实测 `/designer/1000789` 出现 4 个）。
+ */
+function collectGateways(m: BpmnModeler): GatewayWiring[] {
+  const reg = m.get('elementRegistry') as unknown as {
+    forEach: (fn: (el: {
+      id: string;
+      type: string;
+      /** 连线来源有两个，**两个都要读**：diagram-js 在 element 上维护
+          `incoming/outgoing`，bpmn-moddle 在 `businessObject` 上也有同名关联属性；
+          实测刚 importXML / 刚拖入时 `businessObject` 侧可能还是空集合，
+          只读它会把连好的网关误判成 0 条边。 */
+      incoming?: unknown[];
+      outgoing?: unknown[];
+      businessObject?: { name?: string; incoming?: unknown[]; outgoing?: unknown[] };
+    }) => void) => void;
+  };
+  const GW = new Set([
+    'bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:InclusiveGateway',
+  ]);
+  const out: GatewayWiring[] = [];
+  reg.forEach((el) => {
+    if (!GW.has(el.type)) return;
+    out.push({
+      id: el.id,
+      name: el.businessObject?.name ?? '',
+      ins: el.incoming?.length ?? el.businessObject?.incoming?.length ?? 0,
+      outs: el.outgoing?.length ?? el.businessObject?.outgoing?.length ?? 0,
+    });
+  });
+  return out;
+}
+
 /**
  * 流程选项：目前只有**流程级**的循环圈数上限（回边最多走几圈）。
  *
@@ -1264,6 +1310,8 @@ export default function DesignerPage() {
   const [flowSrcGateway, setFlowSrcGateway] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** 保存时检测到的孤立网关；非空即弹窗拦截（见 save()）。 */
+  const [looseGateways, setLooseGateways] = useState<GatewayWiring[] | null>(null);
   const [ready, setReady] = useState(false);
   const [paramValues, setParamValues] = useState<Record<string, unknown>>({});
   const [showHistory, setShowHistory] = useState(false);
@@ -2321,7 +2369,7 @@ export default function DesignerPage() {
     setSelected(null);
   };
 
-  const save = async () => {
+  const save = async (force = false) => {
     const m = modelerRef.current;
     if (!m) return;
 
@@ -2329,6 +2377,25 @@ export default function DesignerPage() {
     if (miss.length > 0) {
       message.warning(t('designer.warn.missingParams', { names: miss.join(', ') }));
       return;
+    }
+
+    // 保存前校验网关连线（2026-11-12 用户反馈：拖进来忘了连线就保存，流程里留下孤立网关）。
+    // 判定口径与后端 `WorkflowService` 的「孤立节点」检查**完全一致**：
+    // 入边 + 出边总数 = 0 才算孤立（只有一边的图后端是允许的，前端不能比它更严）。
+    // 单进单出只提醒不阻断 —— 页面上它没有分叉/汇合角色，但常被当临时占位。
+    if (!force) {
+      const gws = collectGateways(m);
+      const orphan = gws.filter((g) => g.ins + g.outs === 0);
+      if (orphan.length > 0) {
+        setLooseGateways(orphan);
+        return;
+      }
+      const direct = gws.filter((g) => g.ins === 1 && g.outs === 1);
+      if (direct.length > 0) {
+        message.warning(t('designer.looseGateway.directWarn', {
+          names: direct.map((g) => g.name || g.id).join(', '),
+        }));
+      }
     }
 
     setSaving(true);
@@ -2493,7 +2560,9 @@ export default function DesignerPage() {
                 {t('designer.action.autoAlign')}
               </Button>
               <Button onClick={() => nav('/workflows')}>{t('designer.action.back')}</Button>
-              <Button type="primary" loading={saving} {...ro} onClick={save}>{t('designer.action.save')}</Button>
+              <Button type="primary" loading={saving} {...ro} onClick={() => void save()}>
+                {t('designer.action.save')}
+              </Button>
             </Space>
           }
         >
@@ -2547,7 +2616,8 @@ export default function DesignerPage() {
              缩小后分不出类型，「分叉」还是「汇合」光看形状也看不出来
              （引擎按连线数自动判）—— 所以画布上另用绿边/橙边区分（见 GatewayVisuals.ts）。 */
           <Card size="small" title={t('designer.gateway.title')}
-            extra={<Button size="small" type="primary" loading={saving} {...ro} onClick={save}>
+            extra={<Button size="small" type="primary" loading={saving} {...ro}
+              onClick={() => void save()}>
               {t('designer.action.save')}
             </Button>}>
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -2802,6 +2872,31 @@ export default function DesignerPage() {
           </Space>
         )}
       </Col>
+      {/* 保存前拦截孤立网关（入边+出边 = 0）：这种节点没有角色、也不会被引擎执行，
+          留在流程里只会让画布和编译结果都出现「看不懂的方块」。
+          口径与后端 `WorkflowService` 的孤立节点校验一致 —— 后端本来就会 400 拒绝，
+          这里提前拦是为了**指出是哪几个**并能一键定位，而不是等一个泛泛的报错。 */}
+      <Modal
+        open={looseGateways !== null}
+        title={t('designer.looseGateway.title')}
+        onCancel={() => setLooseGateways(null)}
+        footer={<Button type="primary" onClick={() => setLooseGateways(null)}>
+          {t('designer.looseGateway.fix')}
+        </Button>}
+        width={560}
+      >
+        <Alert type="warning" showIcon
+          message={t('designer.looseGateway.hint')} style={{ marginBottom: 10 }} />
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          {(looseGateways ?? []).map((g) => (
+            <Typography.Text key={g.id} type="secondary">
+              <Tag color="orange">{g.name || g.id}</Tag>
+              {' '}
+              {t('designer.looseGateway.item', { ins: g.ins, outs: g.outs })}
+            </Typography.Text>
+          ))}
+        </Space>
+      </Modal>
       <Modal
         open={showTimeline}
         title={t('designer.estimate.title', { name: compile.data?.workflow.name ?? wfId })}

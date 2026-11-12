@@ -1522,4 +1522,11 @@ export const zhCN = {
   'designer.material.cleared': '物料效果声明已清除',
   'designer.material.clear': '清除声明',
   'designer.material.clearConfirm': '确认清除该节点的物料效果声明？',
+
+  // ---- 设计器 · 保存前网关连线校验 ----
+  'designer.looseGateway.title': '有网关还没连线',
+  'designer.looseGateway.hint': '这些网关一条线都没连（入边和出边都是 0）。这种图后端会拒绝保存，请先连线或直接删掉。',
+  'designer.looseGateway.item': '入边 {ins} 条 / 出边 {outs} 条',
+  'designer.looseGateway.fix': '返回修正',
+  'designer.looseGateway.directWarn': '网关只有一进一出（{names}）：页面上不会显示分叉/汇合角色，确认是临时占位再保存',
 } as const;
