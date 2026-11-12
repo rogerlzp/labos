@@ -304,9 +304,10 @@ def group_b7():
             bad("B7-1 not_completed", "HTTP %s status=%s action=%s" % (code, st, act))
     finally:
         if ids:
-            psql("DELETE FROM plate_material_effect_action WHERE effect_id IN (%s);"
+            psql("DELETE FROM plate_material_event WHERE effect_id IN (%s);"
+                 " DELETE FROM plate_material_effect_action WHERE effect_id IN (%s);"
                  " DELETE FROM plate_material_effect WHERE id IN (%s);"
-                 % (",".join(ids), ",".join(ids)), stop=False)
+                 % (",".join(ids), ",".join(ids), ",".join(ids)), stop=False)
 
     # 路径 2：completed + confirmedPlateId → 先 PENDING，再走 T2
     ids = []
@@ -328,9 +329,10 @@ def group_b7():
                 % (code, st, act, body[:120]))
     finally:
         if ids:
-            psql("DELETE FROM plate_material_effect_action WHERE effect_id IN (%s);"
+            psql("DELETE FROM plate_material_event WHERE effect_id IN (%s);"
+                 " DELETE FROM plate_material_effect_action WHERE effect_id IN (%s);"
                  " DELETE FROM plate_material_effect WHERE id IN (%s);"
-                 % (",".join(ids), ",".join(ids)), stop=False)
+                 % (",".join(ids), ",".join(ids), ",".join(ids)), stop=False)
 
 
 # ---------------------------------------------------------------- C1
