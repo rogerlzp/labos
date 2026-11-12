@@ -369,6 +369,9 @@ public final class MaterialEffectService {
         });
     }
 
+    /** B6：Worker 最多重试次数，超限转 FAILED + 人工告警（不无限重试）。 */
+    private static final int MAX_APPLY_ATTEMPTS = 5;
+
     /**
      * Worker：处理一个到期的 PENDING 效果（单次）。
      *
@@ -385,20 +388,39 @@ public final class MaterialEffectService {
             // §3.5 / 评审 R13-10：applyEffect 事务已回滚，失败计数与退避必须在
             // **独立短事务**里写（此时上一层事务已结束，Tx 会新开事务），
             // 不能与 T2 共用，也不能在事务外裸 UPDATE。
+            int exhausted = 0;
             try {
-                Tx.inTransaction(db, c -> {
+                exhausted = Tx.inTransaction(db, c -> {
                     mapper.recordRetryFailure(tenantId, effectId,
                             java.time.Instant.now().plusSeconds(30).toString(),
                             "EC-MATERIAL-DB", e.getMessage());
-                    return null;
+                    // B6：重试超限 → FAILED（转人工，不无限重试）
+                    return mapper.failEffectIfExhausted(tenantId, effectId, MAX_APPLY_ATTEMPTS);
                 });
             } catch (SQLException inner) {
                 log.error("[Worker] effect {} 失败计数写入失败（需巡检/人工）: {}",
                         effectId, inner.getMessage());
             }
-            log.warn("[Worker] effect {} 应用失败，退避 30s：{}", effectId, e.getMessage());
+            if (exhausted > 0) {
+                raiseRetryExhaustedAlert(effectId);
+                log.warn("[Worker] effect {} 重试 {} 次超限，已转 FAILED 并告警",
+                        effectId, MAX_APPLY_ATTEMPTS);
+            } else {
+                log.warn("[Worker] effect {} 应用失败，退避 30s：{}", effectId, e.getMessage());
+            }
         }
         return true;
+    }
+
+    /** B6：写一条 alert_state（fingerprint 幂等，重复不重推）。 */
+    private void raiseRetryExhaustedAlert(long effectId) {
+        try {
+            Mappers.get(com.labos.kernel.persistence.OpsUserMapper.class)
+                    .upsertAlertState(tenantId, "material-effect-failed:" + effectId,
+                            "open", null, "物料效果重试超限，转人工对账（effect #" + effectId + "）");
+        } catch (RuntimeException e) {
+            log.error("[Worker] effect {} 告警写入失败（不重试）: {}", effectId, e.getMessage());
+        }
     }
 
     /**

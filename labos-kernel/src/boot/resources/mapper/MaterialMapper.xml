@@ -242,6 +242,18 @@
          WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'PENDING'
     </update>
 
+    <!-- B6：重试超限 → FAILED（转人工，不再无限重试） -->
+    <update id="failEffectIfExhausted">
+        UPDATE plate_material_effect
+           SET status = 'FAILED',
+               last_error_code = 'EC-MATERIAL-RETRY-EXHAUSTED',
+               last_error_message = '重试超限，转人工',
+               next_retry_at = NULL,
+               updated_at = now()
+         WHERE tenant_id = #{t} AND id = #{effectId} AND status = 'PENDING'
+           AND apply_attempt_count &gt;= #{maxAttempts}
+    </update>
+
     <!-- 对账转 PENDING：提交 confirmedTarget + 重读后的版本 -->
     <update id="updateEffectReconcile">
         UPDATE plate_material_effect

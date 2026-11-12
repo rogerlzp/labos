@@ -165,6 +165,11 @@ public interface MaterialMapper {
                            @Param("errorCode") String errorCode,
                            @Param("errorMessage") String errorMessage);
 
+    /** B6：重试超限（apply_attempt_count >= max）时 PENDING → FAILED，转人工。 */
+    int failEffectIfExhausted(@Param("t") long tenantId,
+                              @Param("effectId") long effectId,
+                              @Param("maxAttempts") int maxAttempts);
+
     /** 对账转 PENDING（§3.6）：提交 confirmedTarget + 重读后的 expected_state_version。 */
     int updateEffectReconcile(@Param("t") long tenantId,
                               @Param("effectId") long effectId,
