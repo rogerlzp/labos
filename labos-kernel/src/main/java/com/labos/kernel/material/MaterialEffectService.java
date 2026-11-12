@@ -28,6 +28,8 @@ import java.util.Objects;
 public final class MaterialEffectService {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(MaterialEffectService.class);
 
     private final long tenantId;
     private final DbConfig db;
@@ -188,9 +190,19 @@ public final class MaterialEffectService {
                 expectedStateVersion, expectedProcessState(declarationJson),
                 expectedSealState(declarationJson));
         if (effectId > 0) {
+            boolean pending = plateId != null;
             appendAction(effectId, "DECLARE", null,
-                    plateId != null ? "PENDING" : "NEEDS_RECONCILIATION",
+                    pending ? "PENDING" : "NEEDS_RECONCILIATION",
                     "AUTO", null, null, "{}", null);
+            if (pending) {
+                // T1 → T2 立即尝试（§3.4：当前线程立即尝试；失败由 Worker 补偿）
+                try {
+                    applyEffect(effectId);
+                } catch (SQLException e) {
+                    log.error("[T2] 立即应用失败（effect 保持 PENDING，Worker 补偿）: "
+                            + effectId + " " + e.getMessage());
+                }
+            }
         }
     }
 
