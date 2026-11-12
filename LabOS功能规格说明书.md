@@ -267,11 +267,13 @@ ExperimentScheduler.submit()      创建 experiment_run（queued）
        └ 顺序调 WorkflowService.execute（失败即停）
 ```
 
-**画布逐步执行**
+**画布逐步执行（已下线 · S0-safety）**
+
+> `POST /api/experiments/flow-run` 物理直跑端点**已下线**（返回 404）：它绕过 RunStateMachine、自写执行事实，属调试/演示通路，第一版只下线不改造。`ExperimentFlowRunner` 类保留，未来恢复必须走与 execute 相同边界（见《方案-S0-safety-物理直跑通路处置-20261112》）。
 
 ```
-POST /api/experiments/flow-run?steps=id:method:output:params&vars=
-  ↓
+POST /api/experiments/flow-run?steps=id:method:output:params&vars=   → 404（路由已移除）
+  ↓（以下为历史实现，仅供理解，不再对外提供 HTTP 入口）
 ExperimentFlowRunner.run()
   每步：
     ├ instanceIdOf(resourceId)          ★ ID 转换
