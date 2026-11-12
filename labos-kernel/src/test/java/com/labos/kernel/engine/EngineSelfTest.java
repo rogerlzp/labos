@@ -284,6 +284,14 @@ public final class EngineSelfTest {
             check("无 materialHold", !p.materialHold());
         });
 
+        run("loopIndex 透传（循环命令账本幂等键）", () -> {
+            StepContext c = new StepContext(1L, "N1", "CAP", "M", 1L, 0, List.of());
+            eq("默认 loopIndex=0", 0, c.loopIndex());
+            eq("withLoopIndex(3)", 3, c.withLoopIndex(3).loopIndex());
+            eq("其它字段不变", "N1", c.withLoopIndex(3).nodeKey());
+            eq("步骤不变", List.of("M"), c.withLoopIndex(3).effectiveSteps());
+        });
+
         System.out.printf("%n================ 引擎自测: 通过 %d, 失败 %d ================%n",
                 passed, failed);
         if (failed > 0) {

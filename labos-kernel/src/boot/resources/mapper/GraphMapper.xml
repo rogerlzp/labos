@@ -266,6 +266,25 @@
                 OR seq IS DISTINCT FROM #{seq})
     </update>
 
+    <!-- §3.3b 物料效果声明：单节点读写。upsertNode 的 DO UPDATE 不含此列，
+         所以画布保存不会把声明冲掉；json 为 NULL 时把列置空（DELETE 语义）。 -->
+    <select id="selectMaterialEffect" resultType="java.lang.String">
+        SELECT material_effect::text FROM workflow_node
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{workflowId}
+           AND node_key = #{nodeKey}
+    </select>
+    <update id="updateMaterialEffect">
+        UPDATE workflow_node
+           SET material_effect = #{json,jdbcType=VARCHAR}::jsonb, updated_at = now()
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{workflowId}
+           AND node_key = #{nodeKey}
+    </update>
+    <select id="selectNodeType" resultType="java.lang.String">
+        SELECT node_type FROM workflow_node
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{workflowId}
+           AND node_key = #{nodeKey}
+    </select>
+
     <!-- MainPathSelector 主链加载（阶段3第34批收编） -->
     <select id="selectMainPathNodes" resultType="java.util.Map">
         SELECT node_key AS "nodeKey", node_type AS "nodeType", name AS "name",

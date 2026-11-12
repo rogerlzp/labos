@@ -639,6 +639,14 @@ export interface DeviceModelsMeta {
   planned: DeviceModelPlannedItem[];
 }
 
+/** §3.3b 物料效果声明（设计器节点设置卡用）。 */
+export interface MaterialEffectDecl {
+  mode: 'none' | 'transition' | 'legacy_unspecified';
+  target?: { plateId?: number; barcode?: string };
+  set?: { processState?: string; sealState?: string };
+  acceptedEvidenceLevels?: string[];
+}
+
 // ---------------------------------------------------------------- 接口
 
 export const api = {
@@ -678,6 +686,27 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ maxIterations }),
     }),
+
+  /** §3.3b 单节点物料效果声明：读 / 写 / 清除。 */
+  materialEffect: (id: number, nodeKey: string) =>
+    req<{ workflowId: number; nodeKey: string; declaration: MaterialEffectDecl | null }>(
+      `/api/workflows/${id}/nodes/${encodeURIComponent(nodeKey)}/material-effect`),
+
+  saveMaterialEffect: (id: number, nodeKey: string, decl: MaterialEffectDecl) =>
+    req<{ workflowId: number; nodeKey: string; updated: boolean }>(
+      `/api/workflows/${id}/nodes/${encodeURIComponent(nodeKey)}/material-effect`, {
+        method: 'PUT', body: JSON.stringify(decl),
+      }),
+
+  clearMaterialEffect: (id: number, nodeKey: string) =>
+    req<{ workflowId: number; nodeKey: string; cleared: boolean }>(
+      `/api/workflows/${id}/nodes/${encodeURIComponent(nodeKey)}/material-effect`, {
+        method: 'DELETE',
+      }),
+
+  /** §6 启用的板工艺阶段字典（processState 下拉）。 */
+  plateProcessStates: () =>
+    req<{ items: { code: string; displayName: string }[] }>('/api/plate-process-states'),
 
   /** withSteps=true 时多步节点返回为可折叠 subProcess（只影响展示，不改库） */
   graphXml: async (id: number, withSteps = false) => {

@@ -215,4 +215,25 @@ public interface GraphMapper {
             @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey,
             @org.apache.ibatis.annotations.Param("resourceId") Long resourceId,
             @org.apache.ibatis.annotations.Param("seq") int seq);
+
+    // ---- §3.3b 物料效果声明（写入 API 用；upsertNode 不覆盖该列） ----
+
+    /** 读单节点声明（jsonb 文本，无声明返回 null）。 */
+    String selectMaterialEffect(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey);
+
+    /** 写/清除声明；json 为 null 表示 DELETE 语义（置 NULL）。 */
+    int updateMaterialEffect(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey,
+            @org.apache.ibatis.annotations.Param("json") String json);
+
+    /** 读节点 DB 类型（声明契约规则 10：只允许挂设备 TASK 节点）。 */
+    String selectNodeType(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey);
 }

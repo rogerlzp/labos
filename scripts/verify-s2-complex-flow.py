@@ -157,12 +157,10 @@ def decl(barcode, state):
     }
 
 
-def attach(wf, node_key, payload):
-    text = json.dumps(payload, ensure_ascii=False)
-    if "'" in text:
-        raise RuntimeError("声明里出现单引号，需要转义")
-    q("UPDATE workflow_node SET material_effect = '%s'::jsonb "
-      "WHERE workflow_id=%d AND node_key='%s'" % (text, wf, node_key))
+def attach(token, wf, node_key, payload):
+    """通过 §3.3b 正式写入 API 落声明（此处不再直接 UPDATE 列）。"""
+    api("/api/workflows/%d/nodes/%s/material-effect" % (wf, node_key),
+        "PUT", body=payload, token=token)
 
 
 # ---------------------------------------------------------------- 执行
@@ -299,18 +297,15 @@ def assert_loop(ev):
     print("\n── 断言：循环流程（R13-06 探针）──")
     errs = [x for x in ev["manualErrors"].splitlines() if x.strip()]
     fail_closed = sum(1 for x in errs if x == "EC-99-0006")
-    if ev["runStatus"] == "completed":
-        ok("CF-L1 循环流程跑完", "run=%s" % ev["runId"])
+    if ev["runStatus"] == "completed" and fail_closed == 0:
+        ok("CF-L1 循环流程跑完（命令账本按圈次区分 key，EC-99-0006 已消除）",
+           "run=%s" % ev["runId"])
+        ok("CF-L3 循环过程无 fail-closed 转人工", "0 个 EC-99-0006")
     elif fail_closed > 0:
-        # 设计 §8.2#6 明确选定「循环多轮重复派发一律拒绝并转人工对账」，
-        # 所以这不是实现 bug，而是该取舍在真实流程里的代价：循环流程无法自动跑完。
-        skip("CF-L1 循环多圈被命令账本 fail-closed 拦住（设计 §8.2#6 已声明的代价）",
-             "status=%s，EC-99-0006×%d ⇒ 转人工，循环流程当前不可自动完成"
-             % (ev["runStatus"], fail_closed))
-        ok("CF-L3 根因定位：EC-99-0006（幂等键不含 loop_index，第 2 圈起撞键）",
-           "%d 个 manual 节点" % fail_closed)
+        bad("CF-L1 循环仍被 EC-99-0006 拦住（幂等键圈次回归）",
+            "status=%s，EC-99-0006×%d" % (ev["runStatus"], fail_closed))
     else:
-        bad("CF-L1 循环流程未跑完且非已知 fail-closed", 
+        bad("CF-L1 循环流程未跑完且非已知原因",
             "status=%s errors=%s" % (ev["runStatus"], errs[:4]))
     rounds = sum(1 for x in ev["nodes"].splitlines()
                  if x.startswith("C1|1|") or x.startswith("C1|0|"))
@@ -356,10 +351,10 @@ def main():
             body={"method": "__setVar", "params": {"var": "stage", "value": "1"}})
         api("/api/workflows/%d/variables" % wf, "POST", token=token,
             body={"name": "mode", "type": "string", "defaultValue": "fast"})
-        attach(wf, "A1", decl(PLATE_A, "ready"))
-        attach(wf, "A2", decl(PLATE_B, "in_progress"))
-        attach(wf, "T5", decl(PLATE_A, "completed"))
-        ok("material_effect 声明已写入 workflow_node", "A1/A2/T5（无 API/页面入口，直接写列）")
+        attach(token, wf, "A1", decl(PLATE_A, "ready"))
+        attach(token, wf, "A2", decl(PLATE_B, "in_progress"))
+        attach(token, wf, "T5", decl(PLATE_A, "completed"))
+        ok("material_effect 声明经 §3.3b 写入 API 落库", "A1/A2/T5（后端契约预检）")
         _, rid, st = launch(token, wf, island, "S2实测·复杂主流程")
         ev = collect(rid, "main")
         EVIDENCE["main"] = ev
@@ -368,11 +363,16 @@ def main():
     if args.flow in ("all", "loop"):
         print("\n══════ 流程 2/2 · loop（回边 3 圈）══════")
         wf2 = cs.seed_workflow(token, "S2实测·循环探针", graph_loop(devs))
+        # 循环变量跨圈不持久（__expr 算出的 n 会被下一圈刷新回初值 1，
+        # 回边条件 ${n}>=3 恒不成立）⇒ 用流程级 maxIterations=3 得到可复现的 3 圈。
+        # 该变量问题单列为新发现，不在这里掩盖。
+        api("/api/workflows/%d/options" % wf2, "PUT",
+            {"maxIterations": 3}, token)
         api("/api/workflows/%d/nodes/V" % wf2, "PUT", token=token,
             body={"method": "__expr", "params": {"var": "n", "expr": "${n} + 1"}})
         api("/api/workflows/%d/variables" % wf2, "POST", token=token,
             body={"name": "n", "type": "number", "defaultValue": "1"})
-        attach(wf2, "C1", decl(PLATE_B, "ready"))
+        attach(token, wf2, "C1", decl(PLATE_B, "ready"))
         _, rid2, st2 = launch(token, wf2, island, "S2实测·循环探针")
         ev2 = collect(rid2, "loop")
         EVIDENCE["loop"] = ev2

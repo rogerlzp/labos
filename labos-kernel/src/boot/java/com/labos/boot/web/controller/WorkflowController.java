@@ -3,10 +3,18 @@ package com.labos.boot.web.controller;
 import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.boot.web.service.WorkflowWebService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.labos.kernel.api.ApiServer;
 import com.labos.kernel.api.AuthService;
+import com.labos.kernel.api.RbacRules;
 import com.labos.kernel.driver.ShadowProbe;
+import com.labos.kernel.material.DeclarationValidator;
+import com.labos.kernel.material.MaterialEffectService;
+import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.GraphMapper;
 import com.labos.kernel.persistence.Jsons;
+import com.labos.kernel.persistence.Mappers;
+import com.labos.kernel.persistence.MaterialMapper;
 import com.labos.kernel.workflow.WorkflowBuilder;
 import com.labos.kernel.workflow.WorkflowService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -56,6 +64,9 @@ import static com.labos.kernel.api.ApiServer.paramStr;
 @RestController
 @RequestMapping("/api")
 public class WorkflowController {
+
+    private static final long TENANT = 1L;
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final WorkflowWebService web;
     private final WorkflowService workflows;
@@ -357,6 +368,114 @@ public class WorkflowController {
             @RequestBody(required = false) String body,
             HttpServletRequest req) throws SQLException {
         return saveNodeBinding(id, nodeKey, body, req);
+    }
+
+    // ---------------------------------------------------------------- §3.3b 物料效果声明
+
+    /**
+     * 读单节点声明。此前 material_effect 只能直接 UPDATE 列（无 API、设计器无入口），
+     * 业务上不可用；本组端点补上读写，校验复用 run 启动时的同一套契约预检。
+     */
+    @GetMapping(value = "/workflows/{id:\\d+}/nodes/{nodeKey}/material-effect",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> getMaterialEffect(@PathVariable long id,
+                                                     @PathVariable String nodeKey) {
+        String key = URLDecoder.decode(nodeKey, StandardCharsets.UTF_8);
+        String json = Mappers.get(GraphMapper.class).selectMaterialEffect(TENANT, id, key);
+        return ResponseEntity.ok("{\"workflowId\":" + id
+                + ",\"nodeKey\":" + Jsons.quote(key)
+                + ",\"declaration\":" + (json == null ? "null" : json) + "}");
+    }
+
+    @PutMapping(value = "/workflows/{id:\\d+}/nodes/{nodeKey}/material-effect",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> saveMaterialEffect(
+            @PathVariable long id,
+            @PathVariable String nodeKey,
+            @RequestBody(required = false) String body,
+            HttpServletRequest req) {
+        ResponseEntity<String> denied = requireMaterialWrite(req);
+        if (denied != null) {
+            return denied;
+        }
+        String key = URLDecoder.decode(nodeKey, StandardCharsets.UTF_8);
+        String json = body == null || body.isBlank() ? null : body.trim();
+        if (json != null) {
+            validateDeclaration(id, key, json);
+        }
+        int n = Mappers.get(GraphMapper.class).updateMaterialEffect(TENANT, id, key, json);
+        if (n == 0) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("节点不存在: " + key));
+        }
+        audit.record(session(req), "workflow.material_effect", "workflow", id,
+                key, null, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("workflowId", id, "nodeKey", key,
+                "updated", true));
+    }
+
+    @DeleteMapping(value = "/workflows/{id:\\d+}/nodes/{nodeKey}/material-effect",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteMaterialEffect(
+            @PathVariable long id, @PathVariable String nodeKey, HttpServletRequest req) {
+        ResponseEntity<String> denied = requireMaterialWrite(req);
+        if (denied != null) {
+            return denied;
+        }
+        String key = URLDecoder.decode(nodeKey, StandardCharsets.UTF_8);
+        int n = Mappers.get(GraphMapper.class).updateMaterialEffect(TENANT, id, key, null);
+        if (n == 0) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("节点不存在: " + key));
+        }
+        audit.record(session(req), "workflow.material_effect", "workflow", id,
+                key + " → 清除", null, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("workflowId", id, "nodeKey", key,
+                "cleared", true));
+    }
+
+    /** §6 字典列表：设计器 processState 下拉。 */
+    @GetMapping(value = "/plate-process-states",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> plateProcessStates() {
+        try {
+            return ResponseEntity.ok(JSON.writeValueAsString(Map.of("items",
+                    Mappers.get(MaterialMapper.class).selectEnabledProcessStates(TENANT))));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(err(e.getMessage()));
+        }
+    }
+
+    /** 与 WorkflowService run 启动预检同一套规则；WARN 放行只记日志，ERROR 阻断写入。 */
+    private static void validateDeclaration(long workflowId, String nodeKey, String json) {
+        List<DeclarationValidator.Issue> errors = DeclarationValidator.validate(json).stream()
+                .filter(i -> "ERROR".equals(i.level())).toList();
+        if (!errors.isEmpty()) {
+            throw new IllegalArgumentException("声明契约预检失败：" + errors);
+        }
+        String nodeType = Mappers.get(GraphMapper.class)
+                .selectNodeType(TENANT, workflowId, nodeKey);
+        if (nodeType == null) {
+            throw new IllegalArgumentException("节点不存在: " + nodeKey);
+        }
+        if (!DeclarationValidator.taskNodeKind(nodeType)) {
+            throw new IllegalArgumentException(DeclarationValidator.CODE_NODE_KIND_INVALID
+                    + " 声明只允许挂在设备 TASK 节点（nodeType=" + nodeType + "）");
+        }
+        String dictErr = new MaterialEffectService(TENANT, DbConfig.fromEnv())
+                .checkProcessStateDict(json);
+        if (dictErr != null) {
+            throw new IllegalArgumentException(
+                    DeclarationValidator.CODE_DICT_UNKNOWN + " " + dictErr);
+        }
+    }
+
+    private static ResponseEntity<String> requireMaterialWrite(HttpServletRequest req) {
+        AuthService.Session s = session(req);
+        if (s == null || !RbacRules.canMaterial(s.role(), RbacRules.MATERIAL_WRITE)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(err("当前账号无 material:write 权限"));
+        }
+        return null;
     }
 
     // ---------------------------------------------------------------- 时间线 / ETA / 运行列表 / 选项

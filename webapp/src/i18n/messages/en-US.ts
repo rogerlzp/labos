@@ -1509,4 +1509,16 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   's2.status.running': 'Running',
   's2.complex.title': 'Complex-flow end-to-end evidence',
   's2.complex.summary': '{pass} passed / {fail} failed / {skip} known limitations',
+
+  // ---- Designer · material effect declaration (§3.3b) ----
+  'designer.material.title': 'Material effect',
+  'designer.material.hint': 'Device TASK nodes only; frozen into a declaration snapshot at run start',
+  'designer.material.barcode': 'Target plate barcode (required)',
+  'designer.material.processState': 'Process state (enabled dictionary)',
+  'designer.material.sealState': 'Seal state',
+  'designer.material.evidence': 'Accepted evidence levels',
+  'designer.material.saved': 'Material effect declaration saved',
+  'designer.material.cleared': 'Material effect declaration cleared',
+  'designer.material.clear': 'Clear',
+  'designer.material.clearConfirm': 'Clear this node material effect declaration?',
 };

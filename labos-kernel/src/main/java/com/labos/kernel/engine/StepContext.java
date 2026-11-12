@@ -23,12 +23,28 @@ public record StepContext(
         int attempt,
         List<String> steps,
         /** 设备方法参数（来自 workflow_node.params.method_params）。 */
-        java.util.Map<String, Object> params) {
+        java.util.Map<String, Object> params,
+        /** 循环圈次（GraphRunner 的 visit；无环/顺序路径恒 0）。命令账本幂等键据此区分圈次。 */
+        int loopIndex) {
+
+    /** 兼容原有 8 参构造（loopIndex 默认 0）。 */
+    public StepContext(long nodeId, String nodeKey, String capabilityCode, String method,
+                       long resourceId, int attempt, List<String> steps,
+                       java.util.Map<String, Object> params) {
+        this(nodeId, nodeKey, capabilityCode, method, resourceId, attempt, steps, params, 0);
+    }
 
     /** 兼容无参构造。 */
     public StepContext(long nodeId, String nodeKey, String capabilityCode, String method,
                        long resourceId, int attempt, List<String> steps) {
-        this(nodeId, nodeKey, capabilityCode, method, resourceId, attempt, steps, java.util.Map.of());
+        this(nodeId, nodeKey, capabilityCode, method, resourceId, attempt, steps,
+                java.util.Map.of(), 0);
+    }
+
+    /** 生成携带圈次的副本（GraphRunner 在派发前包一层，不动其它字段）。 */
+    public StepContext withLoopIndex(int visit) {
+        return new StepContext(nodeId, nodeKey, capabilityCode, method, resourceId,
+                attempt, steps, params, visit);
     }
 
     public StepContext {

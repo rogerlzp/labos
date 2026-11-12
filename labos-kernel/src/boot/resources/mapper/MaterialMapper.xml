@@ -298,6 +298,14 @@
          WHERE tenant_id = #{t} AND code = #{code} AND enabled = true
     </select>
 
+    <!-- §6 字典列表：设计器物料效果表单的 processState 下拉 -->
+    <select id="selectEnabledProcessStates" resultType="java.util.Map">
+        SELECT code AS "code", display_name AS "displayName"
+          FROM plate_process_state
+         WHERE tenant_id = #{t} AND enabled = true
+         ORDER BY sort_order, code
+    </select>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect
