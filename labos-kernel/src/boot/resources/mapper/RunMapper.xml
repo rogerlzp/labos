@@ -489,18 +489,37 @@
            AND NOT (status = 'skipped' AND input->>'skip_confirmed' = 'true')
     </update>
 
-    <!-- 续跑守卫：将被删的未完成节点里存在任意 command_ledger 或 run_command 行（设备已动） -->
+    <!-- 续跑守卫（§3.6 / §8.2 第 7 项；评审 R13-03 修 join 键）：
+         将被删的未完成顶层节点若存在下列任一证据，禁止删除重建：
+           ① 执行确认 reconciliation_required（§3.6）
+           ② 该节点有未闭环的物料效果（Effect/Event 引用）
+           ③ command_ledger 有行。cl.node_id 存的是 workflow_node.id（不是 run_node.id），
+              直接 cl.node_id = n.id 会 ID 空间错位 ⇒ 经 workflow_node.node_key 反查；
+              同时兼容历史把 run_node.id 直接写进 node_id 的行。
+              覆盖 B10「ACKED 已写、run_command 未落」窗口。
+           ④ run_command 挂在 level=1 步骤行（deleteIncompleteStepRows 会删掉它们并级联删证据）。 -->
     <select id="countResumeGuardHits" resultType="int">
         SELECT count(*) FROM run_node n
          WHERE n.tenant_id = #{param1} AND n.run_id = #{param2} AND n.level = 0
            AND n.status &lt;&gt; 'completed'
            AND NOT (n.status = 'skipped' AND n.input-&gt;&gt;'skip_confirmed' = 'true')
            AND (
-             EXISTS (SELECT 1 FROM command_ledger cl
-                      WHERE cl.tenant_id = n.tenant_id AND cl.run_id = n.run_id
-                        AND cl.node_id = n.id)
-             OR EXISTS (SELECT 1 FROM run_command rc
-                         WHERE rc.tenant_id = n.tenant_id AND rc.run_node_id = n.id)
+                n.execution_resolution_status = 'reconciliation_required'
+             OR EXISTS (SELECT 1 FROM plate_material_effect e
+                         WHERE e.tenant_id = n.tenant_id
+                           AND e.source_run_id = n.run_id
+                           AND e.source_node_key = n.node_key
+                           AND e.status NOT IN ('APPLIED','CANCELLED'))
+             OR EXISTS (SELECT 1 FROM command_ledger cl
+                         LEFT JOIN workflow_node wn
+                                ON wn.id = cl.node_id AND wn.tenant_id = cl.tenant_id
+                         WHERE cl.tenant_id = n.tenant_id AND cl.run_id = n.run_id
+                           AND (wn.node_key = n.node_key OR cl.node_id = n.id))
+             OR EXISTS (SELECT 1 FROM run_node s
+                         JOIN run_command rc
+                           ON rc.run_node_id = s.id AND rc.tenant_id = s.tenant_id
+                         WHERE s.tenant_id = n.tenant_id AND s.run_id = n.run_id
+                           AND s.level = 1 AND s.parent_node_id = n.id)
            )
     </select>
 

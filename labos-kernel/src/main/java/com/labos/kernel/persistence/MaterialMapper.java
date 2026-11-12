@@ -82,6 +82,21 @@ public interface MaterialMapper {
                             @Param("physicalEvidenceLevel") String physicalEvidenceLevel,
                             @Param("physicalEvidence") String physicalEvidenceJson);
 
+    /**
+     * 执行确认单向写入（§3.2 / 评审 R13-02）：只在仍是 unresolved（或老数据 NULL）时写。
+     *
+     * <p>已形成终态（completed / failed_confirmed / reconciliation_required）**不得覆盖**：
+     * 否则「第 7 出口」在成功路径的完成处理器已写 completed 之后再抛异常时，
+     * 会把 completed 与物理证据三件套清空成 reconciliation_required。
+     * 返回 0 = 已有终态，调用方不得重复创建效果意图。
+     */
+    int updateNodeResolutionIfUnresolved(@Param("t") long tenantId,
+                                         @Param("runId") long runId,
+                                         @Param("nodeKey") String nodeKey,
+                                         @Param("resolution") String resolution,
+                                         @Param("physicalEvidenceLevel") String physicalEvidenceLevel,
+                                         @Param("physicalEvidence") String physicalEvidenceJson);
+
     /** 读声明快照（按 run+node+effect 唯一键）。 */
     java.util.Map<String, Object> selectDeclaration(@Param("t") long tenantId,
                                                     @Param("runId") long runId,

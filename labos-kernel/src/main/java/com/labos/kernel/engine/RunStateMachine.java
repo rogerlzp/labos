@@ -52,6 +52,12 @@ public final class RunStateMachine {
     private java.util.function.Function<String, String> noDeviceReason;
     /** §3.1 完成处理器注入点（默认 NOOP=未接入；主链路在 WorkflowService 接入）。 */
     private MaterialCompletion materialCompletion = MaterialCompletion.NOOP;
+    /**
+     * §8.2 第 3 项：顺序执行路径（executeAll）的**派发前**物料闸门。
+     * 图路径由 GraphRunner 自带闸门，这里补的是「LABOS_EXEC_GRAPH=0 / 图解析失败退回」
+     * 那条顺序路径 —— 评审 R13-01 发现它此前完全没有防线。
+     */
+    private java.util.function.BooleanSupplier materialGate;
 
     public RunStateMachine(RecoveryDecider decider) {
         this(decider, ExecutionListener.NOOP, Sleeper.REAL, Clock.systemUTC());
@@ -68,11 +74,17 @@ public final class RunStateMachine {
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
-    /** 批量执行：遇 MANUAL 或 ABORT 即停止后续节点。 */
+    /** 批量执行：遇 MANUAL / ABORT / 物料未闭环即停止后续节点。 */
     public RunProgress executeAll(List<RecoverableNode> nodes, StepExecutor executor) {
         RunProgress progress = new RunProgress();
         for (RecoverableNode node : nodes) {
             if (progress.aborted()) {
+                break;
+            }
+            // §8.2 第 3 项：派发前闸门（顺序路径）。命中即扣住后继并写 materialHold，
+            // 上层按「物理完成、物料未闭环」收尾，不得继续驱动设备。
+            if (materialGate != null && materialGate.getAsBoolean()) {
+                progress.markMaterialHold();
                 break;
             }
             NodeStatus st = executeNode(node, progress, executor);
@@ -81,6 +93,12 @@ public final class RunStateMachine {
             }
         }
         return progress;
+    }
+
+    /** 注入顺序路径的派发前物料闸门；图路径由 GraphRunner.withMaterialGate 负责。 */
+    public RunStateMachine withMaterialGate(java.util.function.BooleanSupplier gate) {
+        this.materialGate = gate;
+        return this;
     }
 
     /**
@@ -104,6 +122,9 @@ public final class RunStateMachine {
         emit(node, EventType.NODE_STARTED,
                 String.format("resource=%d capability=%s", resource, node.capabilityCode()));
 
+        // 评审 R13-02：成功路径的完成处理器一旦写过 completed（哪怕随后抛异常），
+        // 第 7 出口都不得再写一次 reconciliation_required 把它与物理证据三件套覆盖掉。
+        boolean materialHandlerInvoked = false;
         while (true) {
             try {
                 executor.execute(new StepContext(node.id(), node.key(),
@@ -111,6 +132,7 @@ public final class RunStateMachine {
                         stepsOf(node), paramsOf(node)));
                 np.setStatus(NodeStatus.COMPLETED);
                 emit(node, EventType.NODE_COMPLETED, "attempt=" + np.attempt());
+                materialHandlerInvoked = true;
                 invokeMaterialHandler(node, ExecutionResolution.COMPLETED, null, progress);
                 return NodeStatus.COMPLETED;
 
@@ -118,8 +140,12 @@ public final class RunStateMachine {
                 // 第 7 个物理出口（§8.2 第 1 项 / S10-03）：非 StepFailure 的
                 // RuntimeException 逃逸出 executeNode。设备可能已动作但物料未闭环 ⇒
                 // 先写执行确认（保守 reconciliation_required）再落 failed，不得直接标 failed。
-                invokeMaterialHandler(node,
-                        ExecutionResolution.classify(null, null), null, progress);
+                // 已形成终态确认的节点不再重复写；写不进时会由完成处理器抛
+                // MaterialPersistenceException，上层据此隔离 run（§3.6）。
+                if (!materialHandlerInvoked) {
+                    invokeMaterialHandler(node,
+                            ExecutionResolution.classify(null, null), null, progress);
+                }
                 throw escape;
 
             } catch (StepFailure f) {
