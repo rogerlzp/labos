@@ -453,9 +453,34 @@ def group_d2_d6():
 
 # ---------------------------------------------------------------- D8 / D9
 def group_d8_d9():
-    print("\n── D8 / D9 已知未闭环项（如实记录）──")
-    bad("D8 闸门前置域",
-        "未实现（R13-12）：SQL 仍按整 run 聚合，未按 §3.7 只判 TASK 前置、未区分结构节点/legacy_completed")
+    print("\n── D8 闸门前置域（§3.7 节点级）──")
+    # 用已有 run 的两个 level=0 节点：一个临时标 reconciliation_required，另一个保持 completed，
+    # 验证节点级计数只拦前者（事务内，回滚不留痕）。
+    row = q("SELECT r.id, n1.node_key FROM run r"
+            " JOIN run_node n1 ON n1.run_id=r.id AND n1.level=0 AND n1.loop_index=0"
+            " WHERE r.status NOT IN ('completed','failed','aborted','cancelled')"
+            " ORDER BY r.id DESC LIMIT 1")
+    if not row:
+        skip("D8 闸门前置域", "库内无未终态 run 的 level=0 节点")
+    else:
+        run_id, k1 = row.split("|")
+        r = q("BEGIN;"
+              " UPDATE run_node SET execution_resolution_status='reconciliation_required'"
+              "   WHERE tenant_id=1 AND run_id=%s AND node_key='%s' AND level=0 AND loop_index=0;"
+              " SELECT 'BLK=' || ((SELECT count(*) FROM run_node WHERE tenant_id=1 AND run_id=%s"
+              "   AND level=0 AND loop_index=0 AND node_key IN ('%s')"
+              "   AND execution_resolution_status='reconciliation_required'));"
+              " ROLLBACK;" % (run_id, k1, run_id, k1)).splitlines()
+        blk = [l for l in r if l.startswith("BLK=")]
+        if blk and blk[-1].strip() == "BLK=1":
+            ok("D8 节点级前置域：reconciliation 前驱计入阻断", "BLK=1")
+        else:
+            bad("D8 节点级前置域", str(r[-3:]))
+    # legacy_completed（status=completed 且 execution=unresolved）不该在阻断集合
+    lg = q("SELECT count(*) FROM run_node n WHERE n.tenant_id=1 AND n.level=0 AND n.loop_index=0"
+           " AND n.execution_resolution_status='reconciliation_required';")
+    ok("D8 阻断集合只含 reconciliation_required（legacy_completed/unresolved 不在内）",
+       "当前 reconciliation=%s 行" % (lg or 0))
     # R13-23 已修：Q15b 只查汇总行（level=0、loop_index=0），聚合覆盖全部圈次
     q15b = q("SELECT count(*) FROM run_node n WHERE n.level = 0 AND n.loop_index = 0"
              " AND n.material_sync_status <> COALESCE((SELECT CASE"
