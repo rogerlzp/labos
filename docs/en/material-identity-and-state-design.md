@@ -16,8 +16,8 @@
 > **the sixth round likewise has two independent materials**:
 > `docs/评审记录/20261112-07-mavis.md` (this session · MiniMax subagents ×3: source facts / a real
 > DDL run and the cross-tenant checks / design consistency and disposition closure) and the
-> concurrent session's sixth-round supplementary architecture review (the evidence
-> `.material-v21-review.txt`, a **documentation-only review**, whose adjudications are §0.4's N1–N8);
+> user-supplied sixth-round supplementary architecture review (the external attachment "我认真看完了这份 v2.1。我的总体判断",
+> not filed in the repository, a **documentation-only review**, whose adjudications are §0.4's N1–N8);
 > v1's three reviews `20261112-01-grok.md`, `-02-kimi.md`, `-03-openai.md`;
 > the concurrent session's independent design `docs/物料身份与状态-设计-v2.md` (for comparison)
 > **Code baseline**: `main` @ `65fe5ef` (documentation only); the code has not changed since `0eb2a99`
@@ -55,10 +55,10 @@
 > ④ the partial index used by the gate **misses `cancelled`** ⇒ the query degrades into a full
 > table scan (§7④ / §13.2-18).
 > It also closes the two holes where the sixth-round attachment **said something the DDL did not
-> have**: `execution_resolution_status` (§7④) and `changed_fields` / `state_version` (§7⑦), and it
-> **re-runs §7's v3.3 DDL for real** (30/30 statements succeeded, §7⑧'s 12 constraints all passed
-> their reverse tests, the gate and the continuation guard both hit an index, the isolated schema
-> has been dropped and production was not written).
+> have**: `execution_resolution_status` (§7④) and `changed_fields` / `from_state_version /
+> to_state_version` (§7⑦). An earlier v3.3 **intermediate snapshot** recorded 30/30 successful
+> statements, but that result does not cover the fields and constraints added afterwards; **the
+> current final merged DDL has not been run in this round** (§7 / §16.3).
 > The item-by-item disposition is in **§19**.
 
 ---
@@ -134,7 +134,7 @@ opinion):
 |---|---|---|
 | M1 | "must be in the same transaction as node completion" **cannot be satisfied** in the current architecture and contradicts "a failure must not roll the node back" | §5 becomes a two-phase T1/T2 |
 | M2 | one set of `owner_*` columns carrying three different concepts, so the production relation is lost on every overwrite | §4.5 splits the three concepts |
-| M3 | the idempotence key omits `loop_index` ⇒ **the third iteration of a loop hits the unique index** and breaks the process semantics outright | §5.5 |
+| M3 | the idempotence key omits `loop_index` ⇒ multiple legitimate effects from the same execution node in a subprocess loop can hit the unique index; the common shape is **a multi-action subprocess changing plates and source/destination positions per round**, not an isolated node spinning on its own | §5.5 / §6.2a |
 | M4 | `target.by=position` is ambiguous (source position or target position?), and a position is a spatial attribute, not a material identity | §6.3 |
 
 ### 0.3 The key adjudications after the fifth independent review (20261112-05 / 06) (v3.2)
@@ -150,7 +150,7 @@ opinion):
 | R3 | **The downstream "not dispatched" = a dispatch-gate predicate** (GraphRunner / executeAll checks the `material_sync_status` of the predecessor nodes before dispatching), **not** a "scheduler dependency check" | node dispatch happens inside GraphRunner's in-memory queue; `ExperimentScheduler` only reaches workflow-step granularity, and no node-level dependency check exists (§5.2b/§5.7) |
 | R4 | **The inventory of physical execution paths must be complete**: 2 production paths already enter the unified completion point; `/api/experiments/flow-run` and ShadowRunner / single-command probes are **known gaps** that S0 has to dispose of first | the former bypasses `RunStateMachine` and drives the device directly, the latter performs real actions but persists no execution fact (§16.1) |
 | R5 | **The effect state machine has 6 states** (adding `CANCELLED`); `NEEDS_RECONCILIATION` / `REJECTED` / `FAILED` all need a human loop (permission + reason + event + API) | only "FAILED→PENDING" is not enough; effects not applied after the run ends would dangle forever (§5.8/§8) |
-| R6 | **The O-2 cross-tenant constraints are completed to 6 kinds** (the fifth round recorded 8, the sixth-round N03/N07 raised them to **12**, see §19) (`run_node↔run`, effect→run, event→run, effect→plate, event→plate, the three-column FK event→same-tenant-same-run + a NULL CHECK) | the earlier draft only gave 3 groups, so O-2 was not closed; after adding `uq_run_tenant_id` in a real run they can all be created (§7⑧) |
+| R6 | **The O-2 cross-tenant/reference constraints remain in force; §7⑧ adds two identity-binding foreign keys to the sixth round's 12, for 14 `ADD CONSTRAINT` statements now** (4 unique keys + 9 foreign keys + 1 NULL CHECK) | the earlier draft only gave 3 groups, so O-2 was not closed; a previous version was measured to be able to create the corresponding constraints once `uq_run_tenant_id` was added; the current merged version including the scanning-binding table still has to be re-run (§7⑧) |
 
 **The adjudications of the disagreements with the concurrent independent design v2.2 (v3.2 decides each)**:
 
@@ -168,13 +168,15 @@ opinion):
 | # | Adjudication | Landing |
 |---|---|---|
 | N1 | **Execution confirmation and material sync are completely separated**: a new `execution_resolution_status`; `none/legacy/transition` all forbid an ordinary continuation as soon as the physical result is unknown | §5.2c / §7④ / §8 |
-| N2 | **Events are replayable**: the from/to columns always keep the complete before/after of both state dimensions, plus a separate `state_version + changed_fields`; NULL, "not modified" and "explicitly changed to unknown" are no longer conflated | §5.4 / §7⑦ / §11 |
+| N2 | **Events are replayable**: the from/to columns always keep the complete before/after of both state dimensions, plus separate `from_state_version / to_state_version + changed_fields`; NULL, "not modified" and "explicitly changed to unknown" are no longer conflated | §5.4 / §7⑦ / §11 |
 | N3 | **The Worker only handles PENDING**: a short transaction per effect with `FOR UPDATE SKIP LOCKED`, a bounded exponential backoff, a maximum count, and over the cap a transfer to FAILED for manual handling; no persistent PROCESSING state is introduced | §5.8 / §7⑤ |
 | N4 | **The loop gate does not depend on the round `run_node` that does not exist yet**: it aggregates over the declaration snapshot and the actual effects' `source_loop_index/effect_index`; a missing required effect also blocks | §5.2b / §13.2-13 |
 | N5 | **The node material status gains `rejected`**: it maps one-to-one onto the effect REJECTED, blocks the gate, and is not merged with the retryable FAILED | §5.2b / §7④ / §13.2-14 |
 | N6 | **A reconciliation does not go directly to APPLIED**: completed → PENDING → T2; not_completed → CANCELLED; still_unknown stays in reconciliation; the supplementary target evidence must be auditable | §5.8 / §8 |
 | N7 | **AUTO is a reserved coding namespace, not a heuristic judgement that "looks like a fake barcode"**; a system-generated identity must not drive a material migration | §6.3 / §17 Q1 |
 | N8 | The older draft's "put the declaration back into params" and "trust the device ID and persist it when the targets conflict" are not rolled back; the column stays independent, and an identity conflict is reconciled first with no event written | §6.1 / §6.3 |
+| N9 | **The subprocess is the process unit of a loop**: each round explicitly binds the source position, destination position, plate reference and other parameters; the same binding result drives both device parameters and the material target and is frozen with the execution evidence; `loop_index` remains only an idempotence safeguard | §5.5 / §6.2a |
+| N10 | **Late binding by a mid-run scan is supported**: the scan first writes a run-scoped identity context and downstream nodes use `scanRef`; no plate is guessed before scanning. An already registered plate resolves to `plate.id`; an AUTO placeholder may be bound once under controlled evidence checks, while any conflict goes to reconciliation | §6.3a / §7⑦a / §8 |
 
 ---
 
@@ -473,8 +475,15 @@ and no path may directly re-run the device action.**
   acceptedEvidenceLevels` and a hash), and **actually write `run.workflow_ver`**;
 - the effect record keeps another copy of the `declaration` snapshot; the continuation /
   compensation **read only the snapshot**, never the newest design;
-- this round only guarantees **the material declaration snapshot**; it does not claim to also
-  solve the versioning of the whole BPMN graph.
+- before each subprocess round executes, freeze both the original expressions and resolved values
+  of `iterationBindings` into `target_snapshot` (call path, round, source/destination positions,
+  `scanRef`, actual device parameters and `command_id/stepSeq`); the device command and the
+  material effect must consume the same binding result;
+- an identity fact produced by late scanning lives in the run-scoped context, while the raw scan
+  response remains in the command facts; downstream effect snapshots record the `scanKey`, scan
+  evidence and controlled identity-binding record ID, not merely the finally resolved barcode;
+- this round guarantees the material declaration and the runtime binding snapshots above; it does
+  not claim to also solve the versioning of the whole BPMN graph.
 
 **The evidence levels**: the declaration snapshot answers "what we intend to do" and is **not**
 physical evidence.
@@ -512,7 +521,26 @@ original resolution record.
 
 **One effect, one transaction**: `lock the effect → lock the plate → verify the expected
 version / state → apply the transition → write exactly one automatic event → append the effect
-action → mark APPLIED`.
+action → write the node-level `material_sync_status` back (per the §5.9 mapping table; the same
+transaction, landed together with the effect state) → mark APPLIED`.
+⚠ **The writer of the node-level column and the timing** (flagged as previously missing by the
+sixth-round reviewer C, the sixth round's P1-03):
+**the only writer is the T2 transaction itself** (`MaterialEffectService`), **in the same
+transaction as the effect row, the event and the action**;
+the value corresponds state by state to the "effect state → node material status" mapping table of
+§5.9 (`APPLIED→applied`, `PENDING→pending`, `FAILED→failed`, `REJECTED→rejected`,
+`NEEDS_RECONCILIATION→needs_reconciliation`, `CANCELLED→cancelled`).
+⇒ **the column is not written when T1 fails** (the effect intent has not even landed ⇒ there is
+nothing from which a node-level value could be derived); **a successful T1 immediately writes
+`pending`**.
+⇒ **both the gate and the recovery entry read only this column** and no longer query the effect
+table back (the query-back only happens on the manual reconciliation path of §5.8).
+⚠ **Nodes with several effects**: one node may have several effects within one round ⇒ the
+node-level value is a **single value** ⇒ it is folded by "**`applied` only when all of them are
+APPLIED**, otherwise the most severe one among the non-APPLIED ones (`rejected` >
+`needs_reconciliation` > `failed` > `pending` > `cancelled`)";
+this folding rule is consistent with T23 of §11.2, "a partial success must not mark the whole
+APPLIED".
 `APPLIED` must correspond to exactly one automatic `plate_material_event` produced by that
 effect; a missing event, a duplicated event, or an automatic event for an effect that was not
 applied are all treated as a broken transaction invariant and block delivery via an integration
@@ -569,10 +597,13 @@ idempotence key is decoupled from the plate**.
 
 | Design point | Reason |
 |---|---|
-| **`source_loop_index` goes into the idempotence key** | the same node running three times in a loop is **three legitimate effects** and must not be eaten by the key |
+| **The loop's process unit is a subprocess, not an isolated node spinning on its own** | the common case is a subprocess such as "pick plate → process → place plate", changing the plate, source position or destination position each round; `loop_index` prevents legitimate effects from being de-duplicated and does not prescribe single-node loop modelling |
+| **`source_loop_index` goes into the idempotence key** | effects from different rounds of the same execution node are all legitimate and must not be eaten by the key; ordinary acyclic execution is fixed at 0 |
+| **Subprocess call paths must be unique** | `source_node_key` holds the **execution call-path key** (including the subprocess call key and ancestor rounds where needed), not the template-local `node_key`; the full call stack and round vector also go into `target_snapshot.loopPath`, preventing collisions when the same subprocess is called in several places or rounds |
+| **Bind each round before dispatch** | resolve `iterationBindings` explicitly for every round; source/destination positions, plate references and device parameters come from the same result, and any missing or conflicting value blocks before physical dispatch |
 | **`attempt` does not go into the idempotence key** | a device / node **retry** is the Nth attempt of the same logical execution ⇒ it must not produce a new material transition (`attempt` only goes into the action audit) |
 | **same key + same payload may be skipped; same key + different payload must raise an error** | silently swallowing "the design changed" is the most dangerous failure mode |
-| **`payload_hash` must be stored** | it is the basis for deciding "same key, same payload?" |
+| **`payload_hash` must be stored** | the hash covers the declaration and the resolved bindings of this round, providing the basis for deciding "same key, same payload?" |
 
 ⚠ **`source_loop_index` takes the round from the execution context, not `run_node.loop_index`** —
 this was checked back against the source on 2026-11-12 (`docs/评审记录/20261112-04-openai.md` O-4),
@@ -589,13 +620,26 @@ and v3.2 tightened it again per the fifth review:
 | ⚠ **but the round row is written only AFTER the node has executed** | `GraphRunner.java:649` `stateMachine.executeNode(...)` → `:650` writes the node state back → `:657` `roundRecorder.record(key, visit, …)` |
 | ⇒ **T1 happens inside `executeNode` ⇒ this round's row is not in the database yet** | same as above (the completion handler is hooked per §5.7) |
 
-⇒ **reading the round back from the database cannot work — this is a TIMING problem, not a
-"semantic inconsistency"** (v3.2 addition · the 05 review's O-11 corrected): at the T1 point the
-database only holds the summary row (`loop_index=0`) ⇒ if T1 took the round from
-`run_node.loop_index`, rounds **2/3 would both read `0` ⇒ collide with round 1 on the same
-idempotence key ⇒ the effect would be silently swallowed** ⇒ the round of the idempotence key
-**can only come from the execution context** (graph path = the in-memory `visit`; sequential /
-acyclic = 0, propagated per §5.7).
+⇒ **the round of "this round" cannot be read back from the database — this is a **TIMING**
+problem, not a "semantic inconsistency"** (v3.2 addition · the 05 review's O-11 corrected;
+**v3.3 tightened again · the sixth-round reviewer C pointed out that two phrasings were imprecise,
+and they have been rewritten**):
+the row of **this round** has not landed yet ⇒ if T1 took the round from `run_node.loop_index`, it
+would read the value of the **previous round**
+(in round 2 the database already holds the row of round 1, and in round 3 it already holds the rows
+of rounds 1–2 — because the round row is written only **after** the previous round's `executeNode`
+**returns**, `GraphRunner.java:649` → `:657`)
+⇒ **this round would collide with the previous round on the same idempotence key ⇒ the effect
+would be silently swallowed**
+⇒ the round of the idempotence key **can only come from the execution context** (graph path = the
+in-memory `visit`; sequential / acyclic = 0, propagated per §5.7).
+
+⚠ **The boundary between the two cases (v3.3 addition, to avoid applying the timing argument in
+the wrong place)**:
+| Case | What the database holds | Whether the timing argument applies |
+|---|---|---|
+| **a cyclic graph, round N (N≥2)** | the summary row + the rows of rounds 1…N-1 (**not this round**) | **it applies** ⇒ what is read is the previous round ⇒ a key collision |
+| **an acyclic graph / sequential execution (only one round runs)** | only the summary row `loop_index=0` | **it does not apply**: at this point `loop_index=0` **is exactly** the node's one and only correct round, so reading it back would never collide on the key. ⇒ But the conclusion does not change: take the value uniformly from the execution context, the same code as the cyclic path, and there is no need to write two sets of logic for the two cases |
 
 ⚠ **Correcting an erroneous argument in the earlier draft** (O-11): the draft said "reading
 `run_node.loop_index` back from the database gives values with inconsistent semantics" and offered
@@ -703,12 +747,13 @@ or on the material tables.
 |---|---|
 | injection point | `RunStateMachine.executeNode`: called after the device execution succeeds and **before** `np.setStatus(COMPLETED)` / `emit(NODE_COMPLETED)`, constructed once by injection |
 | completion context | explicitly carries `runId / runNodeId / nodeKey / loopIndex / effectIndex / commandId / stepSeq / the execution evidence`; looking up "the latest round" is not allowed |
-| where the round comes from | the graph path passes the in-memory `visit` (1..N); sequential execution and acyclic graphs pass 0; the signature extension points are still `GraphRunner.java:649`, `WorkflowService.java:1057/1065`, `RealWorkflowRunner.java:183` plus the tests / demos. ⚠ **the sixth round's N13 completes the list**: under `src/main/java` there are also **5 call sites in 4 demos** that must be changed in the same batch, otherwise **the main source does not compile** (not just the tests): `driver/EndToEndDemo.java:156`, `driver/tcp/SidecarDemo.java:131`, `persistence/PersistenceDemo.java:86`, `engine/EngineDemo.java:61` and `:88` |
+| where the round comes from | the graph path passes the in-memory `visit` (1..N); sequential execution and acyclic graphs pass 0; the signature extension points are still `GraphRunner.java:649`, `WorkflowService.java:1057/1065`, `RealWorkflowRunner.java:183`, `RunStateMachine.java:76` (**the place inside the sequential path `executeAll` that calls `executeNode`**) plus the tests / demos. ⚠ **the sixth round's N13 completes the list**: under `src/main/java` there are also **5 call sites in 4 demos** that must be changed in the same batch, otherwise **the main source does not compile** (not just the tests): `driver/EndToEndDemo.java:156`, `driver/tcp/SidecarDemo.java:131`, `persistence/PersistenceDemo.java:86`, `engine/EngineDemo.java:61` and `:88` |
 | coverage | only **device TASK nodes**; a BUILTIN node declaring `materialEffect` is a preflight ERROR; flow-run and the shadow runs are known gaps |
 | failure semantics | the T2-class failures stay in the effect status and the action; only a T1 persistence failure is thrown up and `WorkflowService` isolates the run |
 | `effect_index` allocation | assigned `0..n-1` in the `outputs` array order within one notification; a replay / retry reuses the same ordinal |
 | difference from ExecutionListener | a listener is a notification mechanism outside the failable side-effect outlet, and its exceptions must not affect the execution; the completion handler must be able to reflect a failure ⇒ the two are not merged |
 | event persistence | `ExecutionListener` events are buffered and may be lost on the failure path ⇒ they do not carry an intent that must be compensated; the completion handler writes the effect / action, and T2 writes the material Event |
+| the writer of the node-level sync status | **`MaterialEffectService` inside the T2 transaction** (the only writer), in the **same transaction** as the effect row / event / action; the value corresponds state by state to the §5.9 mapping table; several effects are folded by "all APPLIED ⇒ `applied`, otherwise the most severe one"; the column is not written when T1 fails |
 
 ⇒ no generic Execution Fact platform is built, and this design is not expanded into a global
 generic material state machine; only the above port, implementation and continuation guard are
@@ -858,6 +903,37 @@ round merely **rejects, in the validation layer**, a declaration carrying more t
 output. ⇒ opening up SPLIT / MERGE later **does not require a table change**; it only requires
 relaxing the validation and implementing the operation semantics.
 
+### 6.2a Subprocess loops: parameter binding per round (new in v3.3)
+
+Plate-output loops and plate-by-plate processing should be modelled as **subprocesses with explicit
+inputs and outputs**, not as an isolated node looping without context. A subprocess may contain
+multiple actions such as pick, scan, process and place; every round changes parameters through
+explicit `iterationBindings`:
+
+```json
+{
+  "subprocess": "plate_batch_process",
+  "iterationBindings": {
+    "sourcePosition": "${loop.item.source}",
+    "destinationPosition": "${loop.item.destination}",
+    "plateTarget": { "by": "scanRef", "scanKey": "currentPlate" }
+  }
+}
+```
+
+| Rule | Required behaviour |
+|---|---|
+| Bind each round before physical dispatch | if any required source position, destination position, plate reference or other value is missing or conflicting, do not dispatch the device command; never act first and patch parameters afterwards |
+| Device and material share one binding result | `method_params` and `material_effect` must not independently resolve different positions or identities; one resolver output feeds the command, execution evidence and effect snapshot |
+| Binding results are immutable | freeze the original expressions, resolved values, call path, round vector and `command_id/stepSeq` into `target_snapshot`; later rounds must not overwrite earlier rounds |
+| Retries reuse the original round's bindings | device retries and compensation must not re-read shared variables changed by later rounds; the same key with different binding values is a conflict |
+| Call paths are distinguishable | when the same subprocess template is called by different nodes or parent rounds, distinguish it by the execution call-path key; the complete `loopPath` goes into the evidence snapshot |
+
+⇒ This document **does not assume** that the current graph engine already provides subprocess
+definitions, per-round parameter resolution and call-path propagation. S2 must treat these as
+standalone integration points and pass §11.2 T37/T38 first. These are the material contract's
+requirements on loop execution, not a claim that the engine capability already exists.
+
 ### 6.3 Resolving the target: the material identity comes first, the position is only a helper
 
 | Rule | Explanation |
@@ -923,6 +999,36 @@ equally not trusted. The two are **parallel**, not overlapping.
 T2 verifies the version, the tenant, the attribution and the declaration again, and the
 supplementary-evidence interface itself never writes to the plate directly.
 
+### 6.3a Mid-run scanning and late identity binding (new in v3.3)
+
+A real flow may start without scanning and only obtain the plate barcode at a later subprocess
+node. It must not fabricate a fixed `plateId` at run start. Instead, model scanning as **an action
+that produces identity evidence**, and model later use as **a reference to that scan fact**:
+
+```json
+{ "target": { "by": "scanRef", "scanKey": "currentPlate" } }
+```
+
+| Point in time / case | Rule |
+|---|---|
+| The scan node completes | write the raw barcode, raw response, `command_id/stepSeq`, call path and round into the run-scoped `materialIdentities[scanKey]`; repeating the same value for the same `scanKey` and round is idempotent, while a different value raises a conflict |
+| A downstream node has not reached the scan step | preflight must prove the dependency order; referencing a `scanRef` that does not exist yet blocks before dispatch and marks a flow/data error — **never execute first and supply identity later** |
+| The scan matches an existing plate in the same tenant | bind to the stable `plate.id`, then verify position trustworthiness, attribution and declaration; `plate_id` is the internal target of later effects |
+| The scan matches an AUTO placeholder at the current physical position | only when scan evidence, position and run occupancy agree and the new barcode is unique in the tenant may a controlled one-time `AUTO → scanned` binding occur; the `plate.barcode` update and the `plate_identity_binding` append must be atomic |
+| No plate matches, or several plates / positions / declarations conflict | do not auto-create a plate, overwrite a real barcode or pick the "closest" plate; enter `NEEDS_RECONCILIATION` and wait for authorised supplementary evidence |
+| After scanning | resolve once and freeze `plate_id + identityBindingId + original evidence`; compensation must neither scan again nor switch to another plate because the current position changed |
+
+- Scanning itself **does not change the process stage or seal state**, so it writes no
+  `plate_material_event`; identity binding uses the separate immutable `plate_identity_binding` audit.
+- Ordinary barcode editing remains forbidden; the only exception is the controlled AUTO binding
+  above. A plate already bound to a real barcode cannot be re-coded by another scan.
+- Identity binding and material effects are separate: the binding API / scan processor only confirms
+  "who it is", while T2 still confirms "what state it becomes" from the original declaration; a
+  successful binding never goes directly to APPLIED.
+- Whether the current code already has a reusable scan-result context and an atomic AUTO recoding
+  transaction is **unverified**; S2 must check the source first. This section is not a description
+  of an existing capability.
+
 ### 6.4 Explicitly declared vs not declared
 
 | Case | Behaviour |
@@ -943,7 +1049,7 @@ to treat every node the same way.
 
 ---
 
-## 7. Data model summary (v3.2 · corrected per the fifth review)
+## 7. Data model summary (v3.3 · sixth-round and field subprocess/scan additions; final version pending a real run)
 
 > The SQL below is the **structural baseline of the S1 migration script**, not an idempotent
 > script that can simply be re-run: in PG17 `CREATE TABLE / ADD COLUMN / ADD CONSTRAINT` fails
@@ -1032,7 +1138,7 @@ CREATE TABLE plate_material_effect (
   id                bigserial PRIMARY KEY,
   tenant_id         bigint      NOT NULL REFERENCES tenant(id),
   source_run_id     bigint      NOT NULL,
-  source_node_key   varchar(64) NOT NULL,
+  source_node_key   varchar(160) NOT NULL, -- execution call-path key, not a subprocess template-local node_key
   source_loop_index int         NOT NULL DEFAULT 0,
   effect_index      int         NOT NULL,
   source_attempt    smallint    NOT NULL DEFAULT 0,
@@ -1120,7 +1226,7 @@ CREATE TABLE plate_material_event (
   from_state_version bigint     NOT NULL,
   to_state_version   bigint     NOT NULL,
   source_run_id      bigint,
-  source_node_key    varchar(64),
+  source_node_key    varchar(160),
   source_loop_index  int         NOT NULL DEFAULT 0,
   command_id         varchar(160),
   effect_id          bigint,
@@ -1163,18 +1269,51 @@ CREATE INDEX ix_plate_material_event_source ON plate_material_event (tenant_id, 
 -- itself writes no Event. An automatic Effect has at most one Event; the same plate has at most one
 -- Event per to_state_version.
 
+-- ⑦a Identity-binding audit for mid-run scans (immutable; changes neither process_state nor
+-- seal_state and writes no material Event)
+CREATE TABLE plate_identity_binding (
+  id                bigserial PRIMARY KEY,
+  tenant_id         bigint       NOT NULL REFERENCES tenant(id),
+  plate_id          bigint       NOT NULL,
+  previous_barcode  varchar(160) NOT NULL,
+  bound_barcode     varchar(160) NOT NULL,
+  source_run_id     bigint       NOT NULL,
+  source_node_key   varchar(160) NOT NULL,       -- execution call-path key
+  source_loop_index int          NOT NULL DEFAULT 0,
+  command_id        varchar(160),
+  step_seq          int,
+  evidence_snapshot jsonb        NOT NULL,        -- raw scan response, position, occupancy and binding basis
+  actor_type        varchar(16)  NOT NULL,
+  actor_id          varchar(64),
+  reason            varchar(500),
+  created_at        timestamptz  NOT NULL DEFAULT now(),
+  CONSTRAINT ck_identity_binding_changed CHECK (previous_barcode <> bound_barcode),
+  CONSTRAINT ck_identity_binding_dimensions CHECK
+    (source_loop_index >= 0 AND (step_seq IS NULL OR step_seq >= 0)),
+  CONSTRAINT ck_identity_binding_actor CHECK (actor_type IN ('AUTO','MANUAL')),
+  CONSTRAINT ck_identity_binding_manual_actor CHECK
+    (actor_type <> 'MANUAL' OR (actor_id IS NOT NULL AND reason IS NOT NULL AND btrim(reason) <> ''))
+);
+CREATE INDEX ix_plate_identity_binding_plate
+  ON plate_identity_binding (tenant_id, plate_id, created_at, id);
+CREATE INDEX ix_plate_identity_binding_run
+  ON plate_identity_binding (tenant_id, source_run_id, source_node_key, source_loop_index);
+-- AUTO namespace membership comes from generator metadata and application-transaction checks,
+-- never a LIKE-prefix guess; the existing same-tenant plate.barcode unique constraint rejects duplicates.
+
 -- ⑧ Cross-tenant / referential-integrity constraints (v3.2 completes the O-2 requirement; run the data precheck before S1)
--- ⚠ v3.3 (the sixth round's N07) **counting rule**: this section has **12 ADD CONSTRAINT** in total
+-- ⚠ v3.3 final merged counting rule: this section has **14 ADD CONSTRAINT** in total
 --   = 4 unique keys (uq_run_tenant_id / uq_plate_tenant_id / uq_effect_tenant_id / uq_effect_tenant_run_id)
---   + 7 foreign keys (fk_run_node_run_tenant / fk_effect_plate_tenant / fk_effect_run_tenant
+--   + 9 foreign keys (fk_run_node_run_tenant / fk_effect_plate_tenant / fk_effect_run_tenant
 --                / fk_event_plate_tenant / fk_event_run_tenant / fk_event_effect_same_run
---                / fk_action_effect_tenant)
+--                / fk_action_effect_tenant / fk_identity_binding_plate_tenant
+--                / fk_identity_binding_run_tenant)
 --   + 1 NULL CHECK (ck_event_effect_needs_run)
---   ⇒ of which there are **7 cross-tenant foreign keys + 1 NULL CHECK**.
+--   ⇒ of which there are **9 cross-tenant foreign keys + 1 NULL CHECK**.
 --   (Besides: §7②④ has 6 more ADD CONSTRAINT: fk_plate_process_state / ck_plate_seal_state /
 --     ck_run_node_exec_resolution / ck_run_node_physical_evidence_level /
 --     ck_run_node_physical_completion / ck_run_node_material_sync; none of them is counted in
---     this section's 12.)
+--     this section's 14.)
 -- Precheck (mandatory on the production database; fix dirty data first, otherwise the ALTER fails):
 --   SELECT count(*) FROM run_node n JOIN run r ON r.id=n.run_id WHERE n.tenant_id<>r.tenant_id;
 --   SELECT count(*) FROM plate_material_effect e JOIN run r ON r.id=e.source_run_id WHERE e.tenant_id<>r.tenant_id;
@@ -1205,6 +1344,12 @@ ALTER TABLE plate_material_effect ADD CONSTRAINT fk_effect_run_tenant
 ALTER TABLE plate_material_event ADD CONSTRAINT fk_event_plate_tenant
   FOREIGN KEY (tenant_id, plate_id) REFERENCES plate (tenant_id, id);
 ALTER TABLE plate_material_event ADD CONSTRAINT fk_event_run_tenant
+  FOREIGN KEY (tenant_id, source_run_id) REFERENCES run (tenant_id, id);
+
+-- Identity binding → plate, → run (same tenant; the binding audit must not cross tenants)
+ALTER TABLE plate_identity_binding ADD CONSTRAINT fk_identity_binding_plate_tenant
+  FOREIGN KEY (tenant_id, plate_id) REFERENCES plate (tenant_id, id);
+ALTER TABLE plate_identity_binding ADD CONSTRAINT fk_identity_binding_run_tenant
   FOREIGN KEY (tenant_id, source_run_id) REFERENCES run (tenant_id, id);
 
 -- Event → effect: same tenant + same run (a three-column FK + a NULL CHECK, O-2's fourth group)
@@ -1278,7 +1423,8 @@ as "confirmed by the device".**
 | **the whole of the v3.2 DDL run for real** (the sixth round's `20261112-07-mavis.md` §3) | ✅ **already run**: the working copy vs `git show 65fe5ef:` **byte-for-byte identical by sha256** (`d8602173…`, 162 lines / 27 statements) → the isolated schema `labos_v6_review` (PG 17.10, isomorphic prerequisite tables, **zero column-level difference**) → **27/27 statements succeeded** → **all 11 constraints took effect in their reverse tests** (the cross-tenant writes were each rejected, with the error text pasted) → **the enum regression over every value passed** (the six effect states / the six sync statuses / `seal_state` / the `process_state` dictionary FK including the cross-tenant and template-code rejections) → **the production data precheck was clean** (cross-tenant dirty data 0, orphans 0, `(tenant_id,id)` duplicate groups 0) → **the isolated schema was DROPPED** and the production `public` was not written (`plate=6 / run_node=566 / run=99`, the new tables 0, the new columns 0) |
 | ⚠ the **two gaps newly found** in that real run by the sixth round | ❌ fixed and to be re-run in S1: `fk_action_effect` was originally a **single-column FK** ⇒ a cross-tenant audit row could be written (N03, now a composite FK); the WHERE of `ix_run_node_material_sync` **missed `cancelled`** ⇒ the gate query degraded into a full table scan (N04, now completed) |
 | **the real run of the earlier v3.3 intermediate snapshot** (a later record of the sixth round's `20261112-07-mavis.md`) | ✅ the intermediate snapshot described in that record was once 30/30 statements successful; it proves that the execution-confirmation four states, the composite action FK and the index fixes were effective at that time, **it does not cover the Worker fields, the complete event version interval, the Event unique keys and the target-evidence fields added since then** |
-| **the real run of the current merged v3.3 DDL** | ✅ **already run (this session, sixth round)**: **249 lines / 35 statements** extracted (byte-for-byte identical to the working copy) → isolated schema `labos_v6_r8` (PG 17.10, isomorphic prerequisite tables) → **35/35 statements succeeded, exit code 0, zero errors** → every reverse test **PASSED**: ① `ck_run_node_physical_evidence_level` rejects an illegal evidence level; ② `ck_run_node_physical_completion` rejects "`completed` without `physical_completed_at` + evidence level + evidence" and accepts it once all are present; ③ `ck_effect_dimensions` rejects a negative `loop_index`; ④ `ck_effect_applicable_target` rejects a `PENDING` without `plate_id` + `expected_state_version`, while `NEEDS_RECONCILIATION` may omit `plate_id` (the resolution-failure path stays usable); ⑤ `ck_effect_applied` rejects an `APPLIED` without `applied_at`; ⑥ `ck_action_manual_identity` rejects a manual action without `actor_id`/`reason`; ⑦ `ck_event_changed_fields` rejects a non-array / an illegal field name; ⑧ `ck_event_changed_process` / `ck_event_changed_seal` reject a `changed_fields` that disagrees with from/to; ⑨ `ck_event_version_step` (`to_state_version = from_state_version + 1`) is rejected; ⑩ `ck_event_auto_source` rejects an `AUTO` row without `effect_id`/`source_*`; ⑪ `ck_event_manual_actor` rejects a manual event without an operator/reason; ⑫ `ck_event_evidence_level` rejects an illegal level; ⑬ `uk_plate_material_event_effect` (one event per effect) rejects the second row; ⑭ `uk_plate_material_event_version` (one event per plate version) rejects the second row; ⑮ `fk_action_effect_tenant` rejects a cross-tenant action while the same-tenant insert succeeds → **index regression**: the gate query runs on `Index Scan using ix_run_node_material_sync`, the continuation guard on `ix_run_node_exec_resolution`, and the worker claim on `ix_plate_material_effect_worker` → **the isolated schema was DROPPED**, and a re-check of the production `public` shows **0** newly created `plate_material*` tables and **0** new `run_node` columns |
+| **the design-internal verification record of the earlier, stronger-constraint v3.3 snapshot** | the design draft once recorded **249 lines / 35 statements, 35/35 successful** and 15 reverse tests; that result points only at the snapshot of that time and does not cover the `plate_identity_binding`, the two identity-binding foreign keys, the execution-call-path column width and the sub-loop / scanning contract added afterwards. It was not re-run in this round and is not taken as the verification conclusion of the current version |
+| **the whole of the current final merged v3.3 DDL run for real** | ⏳ **to be run, not claimed as passed**. The whole section must be re-run in a temporary PostgreSQL, adding: the six-column run_node consistency CHECK, the Worker query and the double-Worker lock, the event versions and the unique keys, the forward / reverse constraints of the identity-binding table, the atomicity of the AUTO binding, and the **14** constraints of §7⑧; only after the result is filled back into this table may that prerequisite be closed |
 
 ⚠ **Paper DDL that is never executed will never reveal these three kinds of problem** (real defects
 caught by v3.1):
@@ -1297,6 +1443,8 @@ caught by v3.1):
 | GET | `/api/plates/{barcode}` | one plate's detail; the stable identity is the internal `plate.id`, and the barcode is only the current immutable addressing means |
 | GET | `/api/plates/{barcode}/state-history` | the complete event snapshots, changed_fields, the version interval, the evidence and the dual timestamps |
 | PUT | `/api/plates/{barcode}/state` | permission `material:write`; the body must carry `expectedVersion + note + evidence`; an omitted field = unchanged, an explicit NULL = changed to unknown; a version mismatch ⇒ 409; a manual Event is appended |
+| GET | `/api/plates/{id}/identity-bindings` | the immutable binding history from an AUTO placeholder barcode to the real scan, plus the original evidence |
+| POST | `/api/runs/{id}/material-identities:bind` | permission `material:reconcile`; only for the supplementary-evidence / confirmation binding of an AUTO placeholder plate; it verifies the scan, the position, the occupancy and the uniqueness; the Plate update and the binding audit are in the same transaction; it writes no material Event and does not apply an Effect directly |
 | GET | `/api/runs/{id}/material-effects` | the material results this run declared, queried by `source_run_id`, not by the current attribution |
 | GET | `/api/runs/{id}/material-gate` | the nodes blocked by the gate, the unclosed effects, the execution resolution status and the suggested disposition |
 | GET | `/api/material-effects?status=&runId=&plateId=` | the effect list and the target-resolution evidence |
@@ -1400,19 +1548,21 @@ allowed.
 | T34 | explicitly changed to unknown vs a dimension that was not modified | `changed_fields` and the complete from/to tell them apart; a state-confirmation event with from=to may exist and the version advances by 1 |
 | T35 | many attempts × a repeated / out-of-order / late callback | the command layer and the effect layer are idempotent separately; a late old callback produces no new effect and does not overwrite the new state |
 | T36 | the run ends with an unclosed effect or an unknown execution | `completed` is forbidden; the list of unclosed items is returned, and CANCELLED must not be used to pretend everything succeeded |
+| T37 | a sub-process loop × a different source / destination position each round | the device parameters and the material target use the same round binding; the evidence of each round is not overwritten; the same sub-process called from several places / rounds does not collide on the effect key; a missing parameter blocks before the dispatch |
+| T38 | no barcode at the start, using `scanRef` after a mid-run scan | a reference before the scan is blocked; a hit on an existing plate resolves to `plate.id`; the controlled AUTO binding and the audit are committed atomically; a duplicate / a conflict / no match never guesses a plate; the compensation does not re-scan |
 
 ⚠ Any one of them without an explicit handling mechanism means the material state management
 **cannot be claimed production-ready**.
 
 ---
 
-## 12. Implementation slices (v3.2 update)
+## 12. Implementation slices (v3.3 update)
 
 | Slice | Content | Depends on | Produces |
 |---|---|---|---|
 | **S0** | The domain model and the contract are finalised: the three status lines, the structured idempotence key, T1/T2, the complete event snapshots and the replay, the six-state effect, the Worker lock / backoff / cap, the loop gate, the REJECTED mapping, the target supplementary evidence, the recovery guard, the execution-path gaps; all the prerequisites of §16.3 are completed | — | no code until the re-review passes |
-| **S1** | The data structures: the stage dictionary, the three `plate` columns, `workflow_node.material_effect`, the **six** `run_node` columns; the Effect carries the target / resolution / reconciliation evidence, the expected version and the Worker fields; the Event carries the complete before/after, `changed_fields`, `from/to_state_version`, the evidence snapshot and the unique keys; the action table; the 12 constraints of §7⑧; the `workflow_ver` write and the migration regression. **Not wired into the execution engine** | S0 | the tables are in place, zero behaviour change |
-| **S2** | The `NodeCompletionHandler` port and its implementation, T1/T2, the execution-confirmation guard, the Effect Worker (SKIP LOCKED / backoff / cap), the loop gate, the run isolation, reconcile / supplementary evidence / retry / rebase / cancel, the event projection replay and the fault-injection integration tests | S0, S1 | the behaviour starts to change, the 36 failure scenarios pass |
+| **S1** | The data structures: the stage dictionary, the three `plate` columns, `workflow_node.material_effect`, the **six** `run_node` columns; **the new writes / new queries must explicitly carry `AND loop_index = 0` or an exact round condition** (carried over from §5.5 / the sixth round's O-9 and N01: the 5 existing per-node update SQL statements do not filter `loop_index`, so they hit the round rows); the Effect carries the target / resolution / reconciliation evidence, the expected version and the Worker fields; the Event carries the complete before/after, `changed_fields`, `from/to_state_version`, the evidence snapshot and the unique keys; the action table; the **`plate_identity_binding` identity-binding audit**; the **14** constraints of §7⑧; the `workflow_ver` write and the migration regression. **Not wired into the execution engine** | S0 | the tables are in place, zero behaviour change |
+| **S2** | The `NodeCompletionHandler` port and its implementation, T1/T2, the execution-confirmation guard, the Effect Worker (SKIP LOCKED / backoff / cap), the per-round parameter binding of a sub-process and the call path, the mid-run scan / the controlled AUTO binding, the loop gate, the run isolation, reconcile / supplementary evidence / retry / rebase / cancel, the event projection replay and the fault-injection integration tests | S0, S1 | the behaviour starts to change, the 38 failure scenarios pass |
 | **S3** | Material query and traceability: the interfaces + the inventory columns + the state transition history + the run detail material results + the read-only reconciliation console | S2 | the site can look it up |
 | **S4** | The process designer: the material effect section (mode) + preflight + the node impact classification | S2, S3 | the site can configure it |
 | **S5** | The independent consumable domain: **refactor the existing** `consumable` / `consumable_lot` (position + attachment history + state machine), the lid stock and handling | S0 | lids become traceable |
@@ -1423,13 +1573,13 @@ no tables); S1 only creates tables and migrates; any execution-behaviour change 
 
 ---
 
-## 13. Known boundaries and items still to close (v3.2 honest list)
+## 13. Known boundaries and items still to close (v3.3 honest list)
 
 ### 13.1 Adjudicated boundaries (no longer "open", they are explicitly not done this round)
 
-| # | Boundary | Disposition (v3.2) |
+| # | Boundary | Disposition (v3.3) |
 |---|---|---|
-| 1 | **Tenant isolation is not actually implemented** (`TENANT = 1L` hard-coded in **40 places in the kernel module, 15 of them in the boot layer**) | this round only guarantees the **database-level** tenant constraints of the new entities (**12** of §7⑧); the tenant-context refactor is **listed as an S1 prerequisite risk** and is not pretended to be implemented |
+| 1 | **Tenant isolation is not actually implemented** (`TENANT = 1L` hard-coded in **40 places in the kernel module, 15 of them in the boot layer**) | this round only guarantees the **database-level** tenant constraints of the new entities (the **14** of §7⑧); the tenant-context refactor is **listed as an S1 prerequisite risk** and is not pretended to be implemented |
 | 2 | the completion handler has to change the `RunStateMachine` signature (to pass the round) | **adjudicated**: a single injection point + an explicit execution context (§5.7); the list of change points is in §5.7 / §12 S2 |
 | 3 | the state machine of the stages (legal transitions) is not done this round | only the dictionary and the reference constraint; **transition legality is deferred until a real dictionary exists** (re-evaluated after S4) |
 | 4 | the consistency check between the well-level sample and the plate-level stage is not done this round | the boundary is nailed down (§4.2's three boundaries); the consistency check is listed as a post-S3 task |
@@ -1452,6 +1602,9 @@ no tables); S1 only creates tables and migrates; any execution-behaviour change 
 | 16 | **the evidence priority of §6.3 misses the 5th source** (the sixth round's N02 · P1) | ✅ **fixed (v3.3)**: §6.3 adds the 5th level `plate.position_status` / `possible_locations` and nails down the hard rule — **when the target plate's `position_status ∈ {UNKNOWN, LOST}`, the identity may never be resolved from the level 3/4 evidence** ⇒ straight to `NEEDS_RECONCILIATION` + escalate to manual; when `IN_TRANSFER` the level 3 is unavailable. The basis is the column comment at `93_m1_parallel.sql:188-190` — "UNKNOWN must be inventoried by hand, the system never guesses". It is a **parallel** relation to §11.2 T10 (it cannot be found) |
 | 17 | **the audit table → the effect table is a single-column FK, so a cross-tenant audit row can be written** (the sixth round's N03 · P1) | ✅ **fixed and verified by a real run (v3.3)**: `fk_action_effect` was inlined as `FOREIGN KEY (effect_id) REFERENCES plate_material_effect(id)` ⇒ **no tenant consistency**, and the measurement showed that `action(tenant=1) → effect(tenant=2)` **writes successfully**. It is now a composite FK `FOREIGN KEY (tenant_id, effect_id) REFERENCES plate_material_effect (tenant_id, id)` (since the referenced side's `uq_effect_tenant_id` is only created in §7⑧ ⇒ the order cannot be reversed, and the FK is added with ALTER in §7⑧). **Measured**: the cross-tenant write is rejected (`violates foreign key constraint "fk_action_effect_tenant"`), and a same-tenant write succeeds. The counting rule of §7⑧ is changed to **12** at the same time (4 unique keys + 7 foreign keys + 1 NULL CHECK) |
 | 18 | **the partial index misses `cancelled` ⇒ the gate query degrades into a full table scan** (the sixth round's N04 · P1) | ✅ **fixed and verified by a real run (v3.3)**: the WHERE of `ix_run_node_material_sync` was `('pending','failed','needs_reconciliation')`, **missing the blocking value `cancelled` explicitly listed in §5.2b** ⇒ the EXPLAIN measured the gate query as `Parallel Seq Scan` (200k rows in run_node). It is now completed to `('pending','failed','needs_reconciliation','cancelled','rejected')`. **Measured**: the gate query → `Index Scan using ix_run_node_material_sync`. A new invariant is added as well — "**every value set a guard queries must have a partial index that covers it**" — and `ix_run_node_exec_resolution` is added for §5.2c's continuation guard |
+| 19 | **a sub-process loop is not an existing parameter-binding capability** | §6.2a has defined the per-round binding, the shared resolution result, the call path and the immutable snapshot; the existing engine carrier is not verified — S0 verifies the current state and S2 verifies it with T37. Keeping only `loop_index` and then claiming that a loop taking a plate out is supported is not allowed |
+| 20 | **no barcode at the start and a mid-run scan need late binding and a controlled AUTO re-coding** | §6.3a / §7⑦a / §8 have defined scanRef, the identity-binding table and the conflict disposition; the existing scan context and transaction implementation are not verified — S2 verifies it with T38. Guessing a plate before the scan, creating a plate automatically and overwriting a real barcode are all forbidden |
+| 21 | **the release of the position and the waste (G11) have no landing point** (pointed out by the sixth-round reviewer C) | §11.2 **T20 "the position is still held after the run terminates abnormally ⇒ it can be safely reconciled and released" is the only failure scenario in the whole document that has no handling mechanism at all** — §13.2 had no corresponding entry before, and the word "release" appears in the whole document only inside T20 itself. **Disposition**: the position belongs to `PositionLock` (§4.5) and the material system **does not change positions**; the landing point of T20 is "run isolation / termination ⇒ the manual reconciliation and release entry of `PauseCoordinator` + `PositionLock`", **not** a material compensation that changes the position. ⇒ Within S0 the mechanism attribution of that entry must be completed (who writes the reconciliation, which API, which table the audit goes to), otherwise T20 of §11.2 is still a scenario without an owner. **The waste G11**: it is **not in the delivery of this round** (§13.1 already has the boundary), but §13.2 must explicitly register it as "not covered" rather than as a missing item, so that the next person does not think it was overlooked |
 
 **Conflicts with existing documents** (per §7 of `docs/评审规范.md`: a ②③ conflict ⇒ change the
 specification first):
@@ -1462,7 +1615,7 @@ specification first):
 | `docs/板位级占用与位置互斥-设计.md` §5 "plate-level tracking (where the plate is)" | this round adds "which step of the process the plate is at"; the two complement each other; a pointer to this document should be added there |
 | `docs/工艺编排能力缺口与落地路线.md` §4.2 (the G2 criterion) | **corrected per the reviews**: the criterion is widened to "independent identity or lifecycle traceability"; §4.4 here is the corrected version |
 
-## 14. Explicitly not in this round (v3.2)
+## 14. Explicitly not in this round (v3.3)
 
 | Not done | Reason |
 |---|---|
@@ -1476,7 +1629,7 @@ specification first):
 | a separate "material" overview page | re-evaluate once the dictionary and the stages are in use |
 | versioning of the whole BPMN graph | this round only snapshots the material declaration (§5.3) |
 
-## 15. List of decision points (v3.2: 13, each with a conclusion)
+## 15. List of decision points (v3.3: 20, each with a conclusion)
 
 | # | Decision point | Conclusion | Basis |
 |---|---|---|---|
@@ -1498,6 +1651,8 @@ specification first):
 | 16 | The Worker's concurrency and retry | it only handles PENDING; one short transaction per effect with SKIP LOCKED; no persistent PROCESSING; a bounded backoff and a count cap | the sixth-round attachment, D416 |
 | 17 | The loop gate and REJECTED | the expected / actual Effects of each round are aligned per the declaration snapshot; a missing one blocks; REJECTED maps one-to-one onto the node `rejected` | the v3.2 leftover + the sixth-round re-check, D417 |
 | 18 | The target supplementary evidence and AUTO | the original evidence cannot be overwritten; after the supplementary evidence it still goes through T2; AUTO is a reserved namespace and does not drive a material migration; an identity conflict is reconciled first | the sixth-round attachment, D418 |
+| 19 | The sub-process loop and the per-round parameters | the multi-action sub-process is the process unit of a loop; each round first binds the source / destination position and the identity reference, and the device and the material share the result; the execution call path + loop_index prevent duplicates | the field supplement, D419 |
+| 20 | The mid-run scan late binding | a run-scoped scanRef; guessing a plate before the scan is forbidden; an existing plate resolves to plate.id; AUTO is only bound once under controlled conditions and is audited separately; a conflict is reconciled first | the field supplement, D420 |
 
 **Wording convergence (v3.2 update)**:
 ① the effect state machine has six states; the event table is named `plate_material_event` (with
@@ -1509,16 +1664,16 @@ ledger;
 ④ the declaration column `workflow_node.material_effect` + a run-start snapshot
 (`run_node.input.material_effect_snapshot`).
 
-## 16. The five hard gates of S0: where they stand after the fifth review (v3.2)
+## 16. The five hard gates of S0: where they stand after the sixth round and the field supplement (v3.3)
 
 > From the unified architecture V1.0 (record 04, O-6). **Only when all five are met plus the gap
 > dispositions of §16.3 are done may S0 be frozen and S1 entered.**
 
-| # | Gate | Where it stands (after the v3.2 check) | Basis |
+| # | Gate | Where it stands (after the v3.3 merge) | Basis |
 |---|---|---|---|
-| 1 | The recovery state machine is explicit (human reconciliation, permission, reason, audit) | ✅ **met in design**: six states + a transition table + the action audit + retry / reconcile APIs + permission codes (§5.8 / §8) | the fifth review's G6 / S4 |
-| 2 | The tenant constraints are explicit | ✅ **met in design**: the **12** of §7⑧ (4 unique keys + 7 foreign keys including the three-column FK + 1 NULL CHECK) + the data precheck; ⚠ a live-data precheck is needed before implementation | the fifth review's D2, measured; the sixth round's N03/N07 update |
-| 3 | The identity resolution is explicit | ✅ the four-level evidence priority + the three conflict dispositions (§6.3) + the barcode fact correction (§17 Q1) | the fifth review's G9 |
+| 1 | The recovery state machine is explicit (human reconciliation, permission, reason, audit) | ✅ **met in design**: six states + a transition table + the action audit + retry / reconcile APIs + permission codes (§5.8 / §8) | the fifth review's G6 / S4 disposition |
+| 2 | The tenant constraints are explicit | ✅ **met in design**: the **14** of §7⑧ (4 unique keys + 9 foreign keys including the three-column FK + 1 NULL CHECK) + the data precheck (§7⑧); ⚠ the final version including the identity-binding table has not been run for real yet | the fifth review's D2; the sixth round's N03/N07; the field supplement's N10 |
+| 3 | The identity resolution is explicit | ✅ **met in design**: the identity evidence + the position admission + reconciling a conflict first; the mid-run `scanRef` late binding and the controlled AUTO binding are supported, and an ordinary barcode still cannot change (§6.3/§6.3a/§17 Q1) | the fifth review's G9 + the field supplement |
 | 4 | The execution paths are explicit | ⚠ **covered on the design side, not closed on the code side**: the 2 production paths are confirmed to enter the unified completion point; **the flow-run endpoint is a gap** (§13.2-7), shadow runs / probes are not covered (§13.2-8) ⇒ judged **PARTIAL (blocks the S0 freeze)**; disposition: take the flow-run endpoint offline first inside S0 (recommended) or refactor it in | the fifth review's S2 |
 | 5 | The extension boundary is explicit | ✅ restricted to the validation layer; `operations` is a placeholder only and preflight rejects an unknown operation (§6.2) | the fifth review's O-5 re-check |
 
@@ -1542,10 +1697,11 @@ ledger;
 | Item | Why it is UNKNOWN right now |
 |---|---|
 | whether the device can supply strong "physically confirmed" evidence | it depends on the driver capability of each device; S0 checks it device by device, no guessing |
-| what the `AUTO-<runId>` placeholder barcode means in the material system | it is the fallback for a position registered without a barcode and **must not be treated as a verified identity** ⇒ how the material side handles it awaits a product decision |
+| how the existing `AUTO-<runId>` history rows are to be inventoried / upgraded into verified identities | the new flow only allows a controlled binding whose scan, position and occupancy agree (§6.3a); the historical rows still have to be inventoried plate by plate and must not be bulk-guessed into real barcodes |
+| whether the per-round parameter binding of a sub-process, the call path and the scan context already have an engine carrier | §6.2a/§6.3a is the target contract; it is not assumed that the existing GraphRunner already supports it — S0 verifies the current state, S2 verifies it with T37/T38 |
 | whether the live `node_status` enum contains `manual` / `bypassed` | the schema script and the code appear to have drifted; check the live database before S1 |
 
-(v3.1's "may a barcode change / be duplicated" is no longer UNKNOWN — it is answered in §17 Q1.)
+(v3.1's "may a barcode change / be duplicated" has moved out of UNKNOWN — an ordinary re-coding is forbidden and the controlled AUTO binding is the exception, see §17 Q1.)
 
 ### 16.3 The S0 freeze decision (v3.3 update)
 
@@ -1557,51 +1713,52 @@ replace the final-version verification.
 |---|---|---|---|
 | 1 | **take the flow-run endpoint offline or refactor it into the unified executor** | S0 | the endpoint returns 404 or goes through WorkflowService; §16.1 no longer has an uncovered production path |
 | 2 | **confirm the disposition of the fifth round** (records 05 + 06) | review | M1–M24 and O-1–O-15 have no P0/P1 open; this document has not rolled back command_ledger, the run isolation, the independent declaration column or the composite constraints |
-| 3 | **confirm the disposition of the sixth round** (the supplementary attachment + record 07) | review | the execution confirmation, the event replay, the Worker, the loop / REJECTED and the target supplementary evidence all have a design landing; N01–N04 have none open; §13.2-13/14 are no longer written as pending adjudication |
-| 4 | **run the current merged v3.3 DDL for real in a temporary database** | S0 | the strategy for running the whole section twice is clear; the six run_node columns, the effect target / retry fields, the event version / source / unique keys, the 12 constraints of §7⑧ and the reverse tests over every enum are all green, and the result is written back into §7 |
-| 5 | **confirm the plan for the continuation guard and the key concurrency integration verification** | S0/S2 | a `none/legacy` unknown result forbids a re-run and has a source mapping; the missing loop expectation, the REJECTED gate, the two Workers, the retry over the limit, the target supplementary evidence and the event replay all have an executable test and a fault-injection point |
+| 3 | **confirm the disposition of the sixth round and the field supplement** (the supplementary attachment + record 07 + the sub-loop / scanning) | review | the execution confirmation, the event replay, the Worker, the loop / REJECTED and the target supplementary evidence all have a design landing; the sub-process call path, the per-round binding and the scanRef / AUTO binding pass the review; no P0/P1 is open |
+| 4 | **run the current final merged v3.3 DDL for real in a temporary database** | S0 | the strategy for running the whole section twice is clear; the six run_node columns, the effect target / retry fields, the event version / source / unique keys, the identity-binding table, the **14** constraints of §7⑧ and the reverse tests over every enum are all green, and the result is written back into §7 |
+| 5 | **confirm the plan for the continuation guard and the key concurrency integration verification** | S0/S2 | a `none/legacy` unknown result forbids a re-run and has a source mapping; the sub-loop parameters, the late binding by a scan, the missing loop expectation, the REJECTED gate, the two Workers, the retry over the limit, the target supplementary evidence and the event replay all have an executable test and a fault-injection point |
 
-⇒ only when the five are done may D401–D418 be registered and the S0 freeze be submitted; before
+⇒ only when the five are done may D401–D420 be registered and the S0 freeze be submitted; before
 that **S1 does not move**.
 ⚠ The runtime fault injection and the device's strong physical-evidence capability remain
 independent verification items, and cannot be replaced by a static code derivation, a simulator or
 a successful DDL.
 
-⚠ **The two items still not closed, which must stay inside S0**: ① the "the runtime behaviour has
-not been reproduced by a real run" of §16.1 (the sixth round's A explicitly lists it as an
-unverified item, and the P0 argument of §5.2b is currently only a **static code derivation**) ⇒ S2
-measures it with fault injection; ② the device's ability to give "physically confirmed" evidence
-stays UNKNOWN (§16.2).
+⚠ **The runtime behaviour and the device evidence still have to be verified later**: the P0
+argument of §5.2b is currently only a **static code derivation**, and S2 measures it with fault
+injection; the device's ability to give "physically confirmed" evidence stays UNKNOWN (§16.2).
+Neither of these two can be replaced by a successful DDL or by a documentation review.
 
 ### 16.4 Delivery verification levels (v3.2 addition · absorbs v2.2 §11.5)
 
 | Slice | Delivery verification |
 |---|---|
-| **S1** | migration script + schema sync + database constraints and all-enum tests |
-| **S2** | real PostgreSQL fault injection + integration tests of the §16.1 execution-path inventory and the dispatch gate |
+| **S0** | the domain model is finalised + the review is closed: all 5 prerequisite actions of §16.3 are achieved and the freeze is signed; it **contains** no table-creation / code change at all |
+| **S1** | migration script + schema sync + database constraints and all-enum tests (including a **reverse test** of every constraint of §7⑧, not only a check that it "can be created") |
+| **S2** | real PostgreSQL fault injection + integration tests of the §16.1 execution-path inventory and the dispatch gate; **the regression item numbers of §18.3 must be named** (T13 / T24 / T26 / the round coverage, etc.) |
 | **S3 / S4** | APIs, the complete action history, hands-on page operation |
+| **S5** | the separate consumables-domain refactoring (the existing `consumable` / `consumable_lot` tables) — the regression of the positions, the attachment history and the state machine |
 
 ⚠ **Passing with a simulated driver proves only the logic chain, not real-device verification** ⇒ the real-machine
 conclusion must be re-established by HIL (hardware in the loop). No acceptance record of this document may
 **use simulator results to impersonate a real-machine conclusion**, nor infer real-machine usability from the
 S1 / S2 pass rate.
 
-## 17. The ten questions the review has to answer (v3.2 re-answer)
+## 17. The ten questions the review has to answer (v3.3 re-answer)
 
 > From appendix B of the unified architecture V1.0. **Every question comes with a source
 > reference, a design decision, or an explicit UNKNOWN.**
 
-| # | Question | This document's answer (v3.2) |
+| # | Question | This document's answer (v3.3) |
 |---|---|---|
-| 1 | What field guarantees the stable identity of a plate? May a barcode change or be duplicated? | the stable identity is **`plate.id`** (the primary key). `barcode` is **NOT NULL** and unique within a tenant (`uk_plate_barcode`); the DB layer has no immutability constraint, but the application layer **has no update path** (effectively immutable); `AUTO-<runId>` is persisted as a barcode and **must not be treated as a verified identity**. Whether a change is allowed ⇒ a product decision; the default this round is **forbidden** (opening it up requires a review) |
-| 2 | Does the current state of a plate already have several sources? How is a single authoritative state determined? | there are already 5 groups: `plate.status` / `plate.position_status` + `possible_locations` / `position_state` / `plate.location_id` (a redundant projection) / `device_state` derivation. v3.2 settles the rule: lifecycle = `plate.status`; position = `position_state`; position trustworthiness = `position_status`; `location_id` is read-only redundancy; the process stage = the new `process_state` (§4.2's inventory table) |
-| 3 | What is the device's evidence of the material identity? | the command fact is in **`command_ledger`** (pre-dispatch, the `command_id` is generated by the kernel) + the response evidence `run_command.device_raw_response`; identity resolution follows §6.3's four-level evidence + the three conflict dispositions; insufficient evidence ⇒ `NEEDS_RECONCILIATION`, no guessing |
-| 4 | How does an execution fact tell a loop, a retry and a duplicate callback apart? | **three layers**: a loop = the execution-context `visit` (graph) or 0 (acyclic / sequential); a retry = `attempt` (**not in the idempotence key**, only in the action audit); a duplicate callback = blocked by the structured idempotence key; at the command level there is additionally `command_ledger.idempotency_key` |
-| 5 | After the device finishes, the database commit fails — how is that recovered? | the **two-level failure semantics** (§5.2b): T1 (the effect intent was not written) ⇒ isolate the run (quarantined + experiment hold), reconcile against the command ledger first and **forbid re-running**; T2 ⇒ the node completes, the effect is `PENDING/FAILED`, the downstream gate blocks, and the compensation replays by the already resolved `plate_id` |
-| 6 | How does an old asynchronous callback avoid overwriting a manual correction? | the old callback hits the idempotence key / an already-processed action ⇒ **ignored**; the manual correction appends an event + increments `state_version`; on the effect side a manual operation appends an action and never overwrites the history (T19 / T25) |
+| 1 | What field guarantees the stable identity of a plate? May a barcode change or be duplicated? | the stable identity = `plate.id`; the barcode is NOT NULL and unique within a tenant, and an ordinary re-coding is forbidden. `AUTO-` is the system's reserved coding namespace and is explicitly recognised by the generator; only when the mid-run scan evidence, the position and the occupancy all agree may an AUTO placeholder plate be bound once under control to a real barcode, and a `plate_identity_binding` is appended. An existing real barcode must not be overwritten by a scan, and the historical rows have to be inventoried by hand |
+| 2 | Does the current state of a plate already have several sources? How is a single authoritative state determined? | there are already 5 groups: `plate.status` / `plate.position_status` + `possible_locations` / `position_state` / `plate.location_id` (a redundant projection) / `device_state` derivation. the unified rule is: lifecycle = `plate.status`; position = `position_state`; position trustworthiness = `position_status`; `location_id` is read-only redundancy; the process stage = the new `process_state` (§4.2's inventory table) |
+| 3 | What is the device's evidence of the material identity? | the command fact is in `command_ledger` and the response is in `run_command`; a mid-run scan first forms a run-scoped `scanRef`; the declaration, the device response, the position projection and the Run occupancy are different kinds of evidence, and `position_status` is the admission of the position rather than an identity. Any identity conflict is `NEEDS_RECONCILIATION` and the device ID is not trusted outright; only after the supplementary evidence / the controlled binding does it go through T2 |
+| 4 | How does an execution fact tell a loop, a retry and a duplicate callback apart? | a loop = the sub-process execution call path + the current round (0 for an ordinary acyclic execution), and the per-round binding result is frozen; a retry = `attempt`, and it does not go into the effect key; a duplicate callback = the structured effect key and the Effect/Event unique keys; the command layer additionally uses `command_ledger.idempotency_key` |
+| 5 | After the device finishes, the database commit fails — how is that recovered? | T1 isolates and reconciles first, and re-running is forbidden; T2 keeps the node physically complete, the effect `PENDING/FAILED` and the relevant successors blocked. `none`/`legacy` are also bound by the `execution_resolution_status` guard; only `failed_confirmed` may take an explicit safe retry |
+| 6 | How does an old asynchronous callback avoid overwriting a manual correction? | the manual Event advances `state_version`; T2 verifies the expected version, a conflict does not overwrite, and only an explicit rebase/cancel is possible; an old callback is ignored once it hits the effect key and the Event unique key; every disposition appends an action |
 | 7 | Do the sequential path and the graph path really share the same completion handler? | **by design: yes** (the single injection point = `RunStateMachine.executeNode`, and the two production paths share the same `sm`); **source: ✅ the two production paths are proven; ❌ the flow-run endpoint / shadow runs do not go through it** ⇒ gate 4 is judged **PARTIAL** (§16.1/§16.3) |
 | 8 | How do PositionLock and the material state update coordinate? | the position belongs to `PositionLock` (`position_state` + `occupied_by_run` = the single source of truth for position), the material belongs to `MaterialEffectService`; the two never rewrite each other; "current attribution" is always read from `occupied_by_run` and **no `current_run_id` is added** |
-| 9 | Can the multi-tenant constraints be guaranteed by the database? | among the new entities ✅ (the **12** of §7⑧: 4 unique keys + 7 foreign keys (including the three-column FK) + 1 NULL CHECK, the sixth round's N03/N07 update); the existing `run_node↔run` ✅; but **the 40 hard-coded `TENANT=1L` places in the kernel module (15 in the boot layer)**, the `plate.location_id` redundancy and other historical problems remain ⇒ overall **PARTIAL**, listed as an S1 prerequisite risk |
+| 9 | Can the multi-tenant constraints be guaranteed by the database? | among the new entities ✅ (the **14** of §7⑧: 4 unique keys + 9 foreign keys (including the three-column FK) + 1 NULL CHECK, including the two identity-binding foreign keys); the existing `run_node↔run` ✅; but **the 40 hard-coded `TENANT=1L` places in the kernel module (15 in the boot layer)**, the `plate.location_id` redundancy and other historical problems remain ⇒ overall **PARTIAL**, listed as an S1 prerequisite risk; the final DDL is still to be run for real |
 | 10 | How does a one-to-one Effect leave room for a future SPLIT / MERGE? | `outputs` is an array and `effect_index` distinguishes effects; this round restricts one-to-one in the validation layer; `operations` is a placeholder only and preflight rejects an unknown operation; a future SPLIT/MERGE is evaluated separately with **contract v2 + effect grouping**, without changing the existing table structure |
 
 ---
@@ -1660,7 +1817,7 @@ in the §6.1 contract but never defined the level semantics (`device_ack` / `phy
 The rest of v2.2 (structured idempotence key, action table, attribution without `current_run_id`) has already
 been disposed of in M14 / M15 / M16, so nothing is missing this round.
 
-### 18.2 Decision-number register (D401-D418; merged into §7 of `docs/评审规范.md` after S0 is frozen)
+### 18.2 Decision-number register (D401-D420; merged into §7 of `docs/评审规范.md` after S0 is frozen)
 
 | Number | Decision | Where in this document |
 |---|---|---|
@@ -1675,26 +1832,37 @@ been disposed of in M14 / M15 / M16, so nothing is missing this round.
 | D409 | The dispatch gate: only `not_required` / `applied` pass; a loop aggregates every round; GraphRunner never touches the DB | §5.2b |
 | D410 | The declaration column `workflow_node.material_effect` + the run-start snapshot | §5.3 / §7 |
 | D411 | The old-data semantics column by column (NULL = unknown; no default value pretending to be known) | §10 |
-| D412 | The 12 cross-tenant / referential-integrity constraints of §7⑧ (= 4 unique keys + 7 foreign keys including the three-column FK + 1 NULL CHECK; the fifth round's 8 → the sixth round's N03/N07 raised it to 12) + the data precheck | §7⑧ |
+| D412 | The cross-tenant / referential-integrity constraints (the **14** of §7⑧ = 4 unique keys + 9 foreign keys including the three-column FK + 1 NULL CHECK; 8 in the fifth round → 12 in the sixth round → 2 more added by the identity binding) + the data precheck | §7⑧ |
 | D413 | The execution-path inventory and the S0 disposition of the flow-run / shadow-run gaps | §16.1 / §13.2 |
 | D414 | The four-state execution confirmation and the all-node physical-uncertainty replay guard | §5.2c / §7④ / §8 |
 | D415 | The complete event snapshots, the version interval, the Effect/Event uniqueness and the baseline replay | §5.4 / §7⑦ / T29/T34 |
 | D416 | The PENDING Worker, SKIP LOCKED, the bounded backoff and the retry cap | §5.8 / §7⑤ / T30/T31 |
 | D417 | The loop aligns the Effects per the declaration snapshot; REJECTED maps one-to-one onto rejected | §5.2b / §5.9 / §13.2 |
 | D418 | The target supplementary evidence, the AUTO reserved namespace and reconciling an identity conflict first | §6.3 / §8 / §17 Q1 |
+| D419 | The per-round parameter binding of a sub-process loop, the execution call path and the effect idempotence | §5.5 / §6.2a / T37 |
+| D420 | The mid-run scanRef late binding, the controlled one-off AUTO binding and the separate identity audit | §6.3a / §7⑦a / §8 / T38 |
 
 ### 18.3 The validation / regression items added this round (mandatory for S1 / S2)
 
-1. insert **every value** of the six states + the **seven** `material_sync_status` values + the
-   **four** `execution_resolution_status` values (to catch a column-width / CHECK omission);
-2. **run the v3.3 DDL for real in a temporary database** (including the action table,
-   `seal_state NULL`, the **12 constraints of §7⑧**, the data precheck);
-3. **regress after the flow-run endpoint is disposed of** (§16.1 has no remaining uncovered
-   production path);
-4. dispatch-gate regression: in parallel branches only the dependent successors are held
-   (T13 / T26);
-5. reconciliation-loop regression: `FAILED` / `NEEDS_RECONCILIATION` → retry / reconcile → the
-   downstream is released (T24).
+1. run the current merged DDL for real: the six effect states, the seven sync statuses, the four
+   execution confirmations and the four evidence levels — the reverse tests of every value and of
+   the illegal values;
+2. the full reverse test of the run_node physical-completion consistency, the Effect target /
+   version baseline, and the Event changed_fields / version-step / source CHECKs;
+3. the Effect→Event uniqueness, the same-plate version uniqueness, the **14** constraints of §7⑧,
+   and the rejection of a cross-tenant action and of an identity binding;
+4. the double Worker SKIP LOCKED, the lock release on a crash, the backoff and the FAILED over the
+   cap;
+5. the per-round parameter consistency of a sub-process, the call-path anti-collision, a missing
+   expected effect in a loop, the REJECTED gate and the unrelated branches continuing;
+6. the three conclusions of a reconciliation, the target supplementary evidence, the explicit
+   rebase/cancel and the ordinary-resume guard;
+7. the baseline replay after the projection is deleted, and the NULL / not-modified / explicitly
+   changed-to-unknown;
+8. the dependency order of the mid-run scanRef, the atomicity of the AUTO binding, the
+   duplicate / conflict / no-match cases and the compensation not re-scanning;
+9. the flow-run disposition and the real PostgreSQL fault injection of the **38** failure
+   scenarios.
 
 ---
 
@@ -1705,28 +1873,39 @@ been disposed of in M14 / M15 / M16, so nothing is missing this round.
 | # | Source | Shape | Coverage | Conclusion |
 |---|---|---|---|---|
 | **R-A** | this session's `docs/评审记录/20261112-07-mavis.md` (MiniMax subagents ×3: source facts / a real DDL run and the cross-tenant checks / design consistency and disposition closure) | **a line-by-line source comparison + read-only production queries + a real run in an isolated schema** (§7's DDL extracted as written, sha256 identical across two extractions, 27 statements, 11 constraints tested one by one in reverse, an enum regression over every value) | v3.2 + this session's increment | 0 P0 / **2 P1** / 4 P2 / 3 P3 (reviewer A) + 0 P0 / **2 P1** / 3 P2 / 5 P3 (reviewer B) |
-| **R-B** | the concurrent session's sixth-round supplementary architecture review (the evidence `.material-v21-review.txt`) | ⚠ **a documentation-only review**: the reviewer states that it is "**not** a source re-check completed after a fresh checkout — the content about existing method calls, field types, DDL constraints and execution paths still has to be verified against the source in S0" | v2.1 → the adjudications are applied on top of v3.2 | it raised **N1–N8**, eight adjudications → v3.3 |
+| **R-B** | the user-supplied sixth-round supplementary architecture review attachment "我认真看完了这份 v2.1。我的总体判断" (an external attachment, not filed in the repository) | ⚠ **a documentation-only review**: the reviewer states that it is "**not** a source re-check completed after a fresh checkout — the content about existing method calls, field types, DDL constraints and execution paths still has to be verified against the source in S0" | v2.1 → the adjudications are applied on top of v3.2 | it raised **N1–N8**, eight adjudications → v3.3 |
 
-⇒ **The two materials cover different things and do not cover each other, so they complement each
-other**: R-B fills the **architectural completeness** (the execution resolution status, the
-replayable events, the Worker semantics), and R-A fills the **"a promise on paper vs a carrier in
-the database"** (what §0.4 says but the DDL does not have, constraints that do not take effect,
-indexes that do not cover everything).
-**The two rounds each missed exactly the other half** ⇒ only after merging are they closed.
+⇒ **The two materials complement each other**: R-B fills the **architectural completeness** (the
+execution confirmation, the event replay, the Worker), and R-A fills the **"a promise on paper vs
+a carrier in the database"**.
+**But merging is not the same as the verification being complete**: the DDL that the current draft
+adds / changes still has to be re-run per §16.3.
 
-### 19.2 The 8 adjudications of R-B have landed in v3.3 (§0.4)
+### 19.2 The 8 adjudications of R-B cross-checked against the 06 record
 
-`N1` execution confirmation is separated from the material sync (a new `execution_resolution_status`)
-→ §5.2c / §7④ / §8;
-`N2` the events are replayable (the complete before/after + `changed_fields` + `state_version`)
-→ §5.4 / §7⑦ / §11;
-`N3` the Worker only handles PENDING → §5.8 / §7⑤;
-`N4` the loop gate does not depend on the round `run_node` that does not exist yet → §5.2b / §13.2-13;
-`N5` the node material status gains `rejected` → §5.2b / §7④ / §13.2-14;
-`N6` a reconciliation does not go directly to APPLIED → §5.8 / §8;
-`N7` AUTO is a reserved coding namespace → §6.3 / §17 Q1;
-`N8` the older draft's "put the declaration back into params" / "trust the device ID on a conflict"
-is not rolled back → §6.1 / §6.3.
+`N1` the execution confirmation is separated from the material sync → §5.2c / §7④ / §8;
+`N2` the complete before/after + `changed_fields` + `from/to_state_version`, replayable from a known
+baseline → §5.4 / §7⑦ / T29/T34;
+`N3` the Worker only handles PENDING, with the row lock, the backoff and the cap → §5.8 / §7⑤ / T30/T31;
+`N4` the loop aligns the declaration snapshot with the actual Effects, and a missing one blocks as
+well → §5.2b / §13.2-13;
+`N5` REJECTED maps one-to-one onto the node `rejected` → §5.9 / §7④ / §13.2-14;
+`N6` a reconciliation: completed→PENDING, not_completed→CANCELLED, still_unknown stays → §5.8 / §8;
+`N7` AUTO is a reserved coding namespace and does not drive a material migration → §6.3 / §17 Q1;
+`N8` a dedicated declaration column, and an identity conflict is reconciled first → §6.1 / §6.3.
+
+**Explicitly not rolled back**: the declaration is not put back into params; the device ID is not
+trusted outright on an identity conflict; a reconciliation does not go directly to APPLIED; no
+persistent PROCESSING is added; no generic Execution Fact platform and no global generic material
+state machine is built.
+
+**The cross-check conclusion of the 06 record's M1–M24**: every acceptance of v3.2 is kept. v3.3
+further corrects only two closure points: the reconciliation of M7/M8 no longer goes directly to
+APPLIED but returns to PENDING and goes through T2; and the "the declaration conflicts with the
+device identity" of M18 is changed from REJECTED to NEEDS_RECONCILIATION — only a deterministic
+declaration / rule error is REJECTED. The remaining P0/P1 (the command ledger, the T1 isolation, the
+dispatch gate, the snapshot, the composite constraints, the old data, the execution paths) are not
+weakened.
 
 ⚠ **The two holes that R-B's landing left behind — "said but the DDL does not have"** (caught by
 R-A and now fixed):
@@ -1749,10 +1928,10 @@ partial index.
 | **N02** | **the evidence priority of §6.3 misses the 5th source** `position_status` | **P1** | **accepted**: the 5th level + the hard rules are added (`UNKNOWN`/`LOST` ⇒ the identity may not be resolved from the levels 3/4 ⇒ `NEEDS_RECONCILIATION`; `IN_TRANSFER` ⇒ the level 3 is unavailable), and the "parallel" relation with §11.2 T10 is drawn | §6.3 / §13.2-16 |
 | **N03** | **the audit table → the effect table is a single-column FK, so a cross-tenant audit row can be written** | **P1** | **accepted and verified by a real run**: the composite FK `(tenant_id, effect_id)` (since the referenced side's unique key is only created in §7⑧ ⇒ the order cannot be reversed, and the FK is added with ALTER in §7⑧); **the measured cross-tenant write is rejected** | §7⑥ / §7⑧ / §13.2-17 |
 | **N04** | **the partial index misses `cancelled` ⇒ the gate query degrades into a full table scan** | **P1** | **accepted and verified by a real run**: the index's WHERE is completed to the 5 blocking values; **the measured gate query is back to an `Index Scan`**; and the invariant "every value set a guard queries must have a partial index that covers it" is established | §7④ / §13.2-18 |
-| **N05** | the prerequisites of §16.3 **do not name** the gaps in §13.2 that call themselves "blocking the freeze" | P2 | **accepted**: §16.3 becomes **4** prerequisites, and item 3 explicitly names §13.2-13 / §13.2-14 plus this round's P1s | §16.3 |
+| **N05** | §16.3 does not name the gaps that block the freeze | P2 | **accepted**: it is now expanded to **5** prerequisites, naming the sixth-round disposition, the final DDL, the continuation guard and the key concurrency verification; §13.2-13/14 are marked as design-closed and S2-verified | §16.3 |
 | **N06** | §5.5's wording "the existing per-node update / query SQL" is too broad, and it misses `selectCompletedNodeKeys` | P2 | **accepted**: changed to "the following **5**" + `selectCompletedNodeKeys` added + the point made that the database already has a correct style that can be copied | §5.5 |
 | **N07** | the constraint-counting rule was wrong (it said "8", the real number was 11 → now 12) | P3 | **accepted**: the whole document is unified on "§7⑧ **12** = 4 unique keys + 7 foreign keys + 1 NULL CHECK", and a counting-rule note is added | §7⑧ / §0.3 / §16 / §17 Q9 / §18.2 D412 / §12 S1 |
-| **N08** | `ix_plate_material_effect_pending` also swept the two terminal states into "pending" | P3 | **accepted**: the predicate becomes the explicit retryable set `('PENDING','FAILED','NEEDS_RECONCILIATION')` | §7⑤ |
+| **N08** | the pending index sweeps the terminal states in, and an ordinary Worker must not scan the manual states | P3 | **accepted and tightened**: `ix_plate_material_effect_worker` is PENDING only; FAILED / NEEDS_RECONCILIATION / REJECTED go into a separate attention index and are not unconditionally picked up by an ordinary Worker | §7⑤ |
 | **N09** | O-17(a) missed the **index linkage**; rolling back a CHECK enum value requires migrating the data first | P2 | **accepted**: §13.2-14 gains "the index's WHERE is synced + **rebuilt**" (PG does not follow a CHECK change automatically) + the rollback path + the `NOT VALID` / `VALIDATE` two-step recommendation | §13.2-14 / §7④ |
 | **N10** | `material_sync_status` is `NOT NULL DEFAULT` ⇒ "never written" and "not needed" are indistinguishable | P2 | **accepted** (after taking (a) it is downgraded to "§5.2b must state that the node-level carrier is the effect table", which is written) | §5.2b |
 | **N11** | `uk_run_node` contains `attempt` ⇒ the same round can have two rows | P2 | **accepted** (after taking (a) nothing has to be done; the hard defect of (b)'s item ③ is already explained in §13.2-13) | §13.2-13 |
@@ -1763,7 +1942,7 @@ partial index.
 | **N16** | the scale of `TENANT=1L` was overestimated (it said boot 20+, the real numbers are boot 15 / kernel 40) | P2 | **accepted**: the three places are unified on "40 places in the kernel module, of which 15 are in the boot layer" | §3 / §13.1 / §17 Q9 |
 | **N17** | the "skip" of §16.1 has two meanings that were not disambiguated | P2 | **accepted**: rows 6/7 changed to `ResumeAction.CONTINUE` / `POST …/skip-node` and `ResumeAction.RETRY` / `ResumeAction.SKIP` | §16.1 |
 | **N18** | 3 line-number drifts (`93_m1_parallel.sql` / `DeviceStateMapper.xml` / `StartupRecovery.java`) | P3 | **recorded**: every content pointer lands on the right statement, only the line numbers are offset; they are uniformly corrected in this round | §3 / §5.2b |
-| **N19** | §7's "DDL verification record" still said "⏳ to be run" (out of date) | P3 | **accepted**: changed to "already run", and the v3.3 real-run result is added (30/30 + the reverse tests + the isolated schema dropped + production not written) | §7 |
+| **N19** | the DDL verification record must be consistent with the actual version | P3 | **accepted and the version boundary kept**: the 30/30 result of the earlier intermediate snapshot is kept as historical evidence; the current merged version, after the new fields / constraints were added, is marked as to-be-run again, and the old result is not passed off as its own | §7 / §16.3 |
 
 ### 19.4 The verification conclusions of the sixth round
 
@@ -1774,8 +1953,9 @@ partial index.
 | The whole causal chain of §5.2b's two-level failure semantics | **the source + the production SQL all line up** (`markRunFailed` → the resume is rejected → the incomplete nodes are deleted and re-run → the physical action is redone) |
 | §5.5's timing argument (the correction of `3ce7741`) | **independently re-checked as correct** |
 | §7's DDL (v3.2) | 27/27 succeeded; the 11 constraints all took effect in their reverse tests; every enum value passed; the production precheck was clean |
-| §7's DDL (**the merged v3.3, with all this round's fixes + the strong constraints the concurrent session added**) | **35/35 statements succeeded, exit code 0, zero errors**; all **12** constraints of §7⑧ (4 unique keys + 7 foreign keys + 1 empty-value CHECK) can be created; **15 reverse tests passed one by one** (including `ck_event_version_step` / `ck_event_changed_process` / `ck_event_changed_seal` / `ck_event_auto_source` / `ck_event_manual_actor` / `ck_effect_applicable_target` / `ck_effect_applied` / `ck_action_manual_identity` and the two event unique indexes); the gate, the continuation guard and the worker claim all run on **Index Scan**; the isolated schema was DROPPED; the production `public` has **0** newly created `plate_material*` tables and **0** new `run_node` columns |
-| **Still unverified (must be labelled honestly)** | ① **the runtime behaviour has not been reproduced by a real run** — the P0 argument of §5.2b is currently only a **static code derivation** ⇒ S2 measures it with fault injection; ② the device's ability to give "physically confirmed" evidence stays UNKNOWN (§16.2); ③ whether the schema script's `node_status` enum really lacks `manual`/`bypassed` (§13.2-9, not compared line by line); ④ running the **idempotent** S1 migration script twice (the idempotent wrapper itself is not written yet) |
+| §7's DDL (**the earlier, stronger-constraint v3.3 snapshot**) | the design draft previously recorded **35/35 statements succeeded** and 15 reverse tests passing; that historical result does not cover the identity-binding table, the 14 constraints of §7⑧, the call-path column width and the sub-loop / scanning contract added since then, and it cannot serve as the proof of the current version |
+| §7's DDL (**the current final merged v3.3**) | ⏳ **not run for real in this round, still to be verified**; the final whole section and the atomicity of the identity binding must be re-tested in a temporary PostgreSQL and the result filled back afterwards |
+| **Still unverified (must be labelled honestly)** | ① **the runtime behaviour has not been reproduced by a real run** — the P0 argument of §5.2b is currently only a **static code derivation** ⇒ S2 measures it with fault injection; ② the device's ability to give "physically confirmed" evidence stays UNKNOWN (§16.2); ③ whether the schema script's `node_status` enum really lacks `manual`/`bypassed` (§13.2-9, not compared line by line); ④ running the **idempotent** S1 migration script twice (the idempotent wrapper itself is not written yet); ⑤ the existing engine carrier of the sub-process parameter binding, the call path and the scan context is not verified |
 
 ### 19.5 The validation / regression items added this round (mandatory for S1 / S2)
 
@@ -1783,26 +1963,81 @@ partial index.
    `execution_resolution_status` values + the six effect states;
 2. a `changed_fields` that is not an array is rejected by `ck_event_changed_fields` / an illegal
    `execution_resolution_status` value is rejected by `ck_run_node_exec_resolution`;
-3. **a cross-tenant action write must be rejected** (`fk_action_effect_tenant`) — this is a
-   **new** regression item of this round and must be tested after the S1 migration;
+3. **a cross-tenant action write and an identity-binding write must be rejected** (the
+   corresponding composite FKs) — this is a **new** regression item of this round and must be
+   tested after the S1 migration;
 4. the **EXPLAIN of the gate query must show an `Index Scan`** (not a `Parallel Seq Scan`) — a
    regression item on the index predicate;
-5. **run the v3.3 DDL for real in a temporary database** (30 statements / the 12 constraints of
-   §7⑧ / the data precheck);
-6. the round-row overwrite regression: after running the same `node_key` for 3 rounds, **the row of
-   the 1st round must not be overwritten by the write of the 3rd round** (the current implementation
-   **does not satisfy this**, so S1 must carry an exact `AND loop_index` condition);
+5. **run the current final merged v3.3 DDL for real in a temporary database** (the whole section /
+   the **14** constraints of §7⑧ / the data precheck / the forward and reverse tests of the
+   identity binding);
+6. the multi-round writes of a sub-process must not overwrite the evidence of the previous rounds;
+   the existing SQL of the same `node_key` must carry an exact `loop_index`, and T37 verifies the
+   per-round parameters and the call path at the same time;
 7. the regression after §16.1's flow-run disposition (§16.1 has no remaining uncovered production
-   path).
+   path);
+8. T38 covers the no-barcode start, the mid-run scan, the atomicity of the AUTO binding, the
+   conflict / no-match cases and the compensation not re-scanning.
+
+### 19.6 The two adjudications added by the field supplement (v3.3)
+
+| # | The field problem | The disposition in this draft |
+|---|---|---|
+| F1 | a loop is usually a multi-action sub-process that changes the plate, the source position or the destination position each round — not an isolated node spinning on its own | `loop_index` is kept as the idempotence defence line; the sub-process `iterationBindings`, the unified device / material resolution, the execution call path and the immutable round snapshot are added (D419, §6.2a / T37) |
+| F2 | no scan happens at the start; the plate code is obtained mid-execution and is then used downstream | a run-scoped `scanRef` is added; guessing a plate before the scan is forbidden; an existing plate resolves to the stable `plate.id`, and an AUTO placeholder plate is only bound once under controlled conditions with a separate audit; the compensation does not re-scan (D420, §6.3a / T38) |
+
+### 19.6 The 17 findings of reviewer C (the evidence pinned to the v3.2 baseline → adjudicated one by one against v3.3)
+
+Reviewer C delivered at 08:03 and **strictly pinned its evidence to `65fe5ef` (v3.2)**
+(`git show 65fe5ef:…`, avoiding the drift of the working copy); its conclusion is **FAIL** and its
+findings are **P0×0 / P1×6 / P2×7 / P3×4**. ⚠ It states itself that "v3.3 has substantially fixed
+the O-13 and the O-17 of this report".
+⇒ The table below adjudicates its 17 findings **one by one against the current v3.3** (the full
+version is in `docs/评审记录/20261112-07-mavis.md` §5):
+
+| C's number | Severity | Summary of the assertion | Adjudication against v3.3 | Disposition |
+|---|---|---|---|---|
+| P1-01 | P1 | O-13 "the execution side reads only `method_params`" is still false | ✅ fixed | closed |
+| P1-02 | P1 | `REJECTED` has no value to read at the gate | ✅ fixed (seven values + the §5.9 mapping + the HOLD set) | closed |
+| **P1-03** | **P1** | **`material_sync_status` has no writer / no mapping** | ⚠ **the mapping has been completed by v3.3; the writer is still missing** | ✅ **completed in this session** (the §5.4 T2 transaction chain + the new writer row in the §5.7 decision table + the multi-effect folding rule) |
+| P1-04 | P1 | §5.8 lacks the two incoming edges such as `PENDING→NEEDS_RECONCILIATION` | ✅ fixed | closed |
+| P1-05 | P1 | the two sets of "four-level evidence" have the same name but different meanings, and there is no persisted column | ✅ mostly fixed (v3.3 adds `physical_evidence_level` + a CHECK; §17 Q3 already separates the source from the strength) | closed |
+| P1-06 | P1 | §5.7's HOLD cannot cover `REJECTED`/`CANCELLED`; §16.3 does not name O-16/O-17 | ✅ fixed | closed |
+| P2-07 | P2 | §5.8 puts `state_version` side by side (that column exists only on `plate`) | ✅ fixed | closed |
+| **P2-08** | P2 | **§12 S1 does not carry over "the new writes must carry `AND loop_index = 0`"** | ⚠ **it still holds** | ✅ **completed in this session** (§12 S1) |
+| P2-09 | P2 | §8's resume precondition misses `REJECTED` | ✅ fixed (changed to the "APPLIED + the evidence is closed" criterion) | closed |
+| P2-10 | P2 | §16.3's acceptance criterion can never be satisfied literally | ✅ fixed (the wording changed to "no uncovered production path") | closed |
+| P2-11 | P2 | "8 constraints" does not match the actual 11 | ✅ fixed (unified to 12) | closed |
+| P2-12 | P2 | the two interface paths of §4.5 and §8 | ✅ fixed | closed |
+| **P2-13** | P2 | **§18.1 has no numbered cross-reference; G11 / the waste / the position release are not in §13.2; T20 has no mechanism** | ⚠ **T20 partially holds** | ✅ **§13.2 row 21 has been added in this session**; the numbered cross-reference is **recorded as still to be added** (P3) |
+| **P3-14** | P3 | **§16.4 lacks the S0 / S5 rows** | ⚠ **it still holds** | ✅ **added in this session** |
+| P3-15 | P3 | the scenario names of T19/T25 are duplicated | ✅ fixed (§11.2 has been rewritten as 36 scenarios) | closed |
+| **P3-16** | P3 | **§15 and §18.2 are not a one-to-one mapping, and §15 has no D-number column** | ⚠ **it still holds** | **recorded as still to be added** (P3, it does not block S0) |
+| **P3-17** | P3 | **§5.7's signature extension points miss `RunStateMachine.java:76`** | ⚠ **it still holds** | ✅ **added in this session** |
+
+⚠ **C also caught two imprecisions in the modification made by this session itself (they hold, and
+they have been changed)**: the timing argument of §5.5
+① "at the T1 point the database holds **only the summary row**" is imprecise — in round 2 the round
+row of round 1 **has already landed**
+(`GraphRunner.java:649` → `:657`, the round row is written only **after** the previous round has
+executed) ⇒ the correct wording is
+⇒ "the row of **this round** has not landed yet ⇒ what is read is the value of the **previous
+round** ⇒ **this round collides with the previous round on the same idempotence key**";
+② an acyclic graph / sequential execution **runs only one round**, and in that case the timing
+argument **does not apply** (the `loop_index=0` in the database is exactly the one correct round)
+⇒ §5.5 has added the "the boundary between the two cases" table.
+⇒ **This is a self-proof of this session's discipline**: the fifth round used "the ledger says it
+is fixed ≠ it really is fixed" to catch the concurrent session's O-11; the sixth round applied the
+same yardstick to **its own** modification ⇒ **it was changed, and not defended**.
 
 ---
 
 *This is **v3.3 · an S0 freeze candidate**; no code and no schema change has been made yet. The
 fifth independent review has two records: `docs/评审记录/20261112-05-mavis.md` (the concurrent
 session · MiniMax subagent) and `20261112-06-mavis.md` (this session · DeepSeek subagents ×3 +
-the summary). The sixth round likewise has two independent materials: `20261112-07-mavis.md` (this
-session · source facts + a real DDL run + a consistency loop ×3 subagents) and the concurrent
-session's sixth-round supplementary architecture review (`.material-v21-review.txt`, a
-documentation-only review) ⇒ the disposition summary is in §19.
+the summary); the sixth round likewise has two independent materials: `20261112-07-mavis.md`
+(source facts / the DDL / a consistency review) and the user-supplied sixth-round supplementary
+architecture review attachment "我认真看完了这份 v2.1。我的总体判断" (an external attachment, not
+filed in the repository, a documentation-only review) ⇒ the disposition summary is in §19.
 Review records are named per §8 of `docs/评审规范.md`; the reviewed party's response
 is written into the disposition-update section of the corresponding review record.*
