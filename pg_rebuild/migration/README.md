@@ -10,6 +10,7 @@
 | `20261112_material_identity.sql` | §4 DDL 的 S1 幂等迁移形态（5 新表 + 3 ALTER + 11 索引 + CHECK/UNIQUE；每个对象 DO/EXCEPTION + 定义校验，drift 即报错） | `psql -v ON_ERROR_STOP=1 -f 20261112_material_identity.sql`（**连跑两次，两次都 exit 0**） |
 | `20261112_legacy_backfill.sql` | legacy 回填：旧 `run_node.status='completed'` 回填 `execution_resolution_status='completed'` + legacy 证据（幂等） | `psql -v ON_ERROR_STOP=1 -f 20261112_legacy_backfill.sql` |
 | `inspection_q1_q18.sql` | §5.3 巡检 Q1–Q18（引用完整性兜底，必须全部 0 行） | `psql -v ON_ERROR_STOP=1 -f inspection_q1_q18.sql` |
+| `seed_plate_process_state.sql` | `plate_process_state` 推荐集 seed（5 态，产品已确认 2026-11-12） | `psql -v ON_ERROR_STOP=1 -f seed_plate_process_state.sql` |
 
 ## 执行顺序
 
@@ -23,6 +24,9 @@ psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f 20261112_legacy_backfill.
 
 # 3. 巡检（全部 0 行）
 psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f inspection_q1_q18.sql
+
+# 4. seed 字典（幂等）
+psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f seed_plate_process_state.sql
 ```
 
 ## 绑定
@@ -33,8 +37,8 @@ psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f inspection_q1_q18.sql
 
 ## 待办（未归档）
 
-- `plate_process_state` 推荐集 seed：见 `docs/S1-待确认项-20261112.md`（待产品确认）。
 - 把 §4 DDL 合并进 `schema/90_all_in_one.sql`（新装库也要有物料表）—— 待定，先只提供增量迁移。
+- D5 append-only 角色权限：延后到最后阶段（见 `docs/S1-待确认项-20261112.md`）。
 
 ## 执行记录
 
