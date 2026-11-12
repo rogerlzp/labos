@@ -36,6 +36,7 @@ import AuditPage from './pages/Audit';
 import { roleColor, roleLabel, useAuth } from './auth';
 import TopologyPage from './pages/Topology';
 import ModelLibraryPage from './pages/ModelLibrary';
+import S2TestCasesPage from './pages/S2TestCases';
 import { useI18n } from './i18n';
 
 const { Header, Sider, Content } = Layout;
@@ -211,6 +212,8 @@ function AppInner() {
             <Route path="/paused" element={<PausedRunsPage />} />
             <Route path="/manual-windows" element={<ManualWindowsPage />} />
             <Route path="/quarantined" element={<QuarantinePage />} />
+            {/* S2 物料身份与状态：测试用例台（用例清单 + 页面内运行 + 脚本结果回填） */}
+            <Route path="/s2-test-cases" element={<S2TestCasesPage />} />
             <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/plates" element={<PlatesPage />} />
             {/* 板子流转：板号在设备之间怎么流转的（执行过程的每一次放板/取板都留痕） */}

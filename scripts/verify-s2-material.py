@@ -12,6 +12,7 @@
 凭据沿用 scripts/ci-gate.sh:32-37 的环境变量，不新增连接配置。
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -28,23 +29,35 @@ USER = os.environ.get("LABOS_USER", "admin")
 PWD = os.environ.get("LABOS_PASS", "admin123")
 
 PASS, FAIL, SKIP = 0, 0, 0
+# 结构化结果：跑完回填到 webapp/public/s2-test-results.json，供前端用例页展示。
+RESULTS = []
+_CASE_RE = re.compile(r"TC-[A-Z0-9-]+")
+
+
+def _record(status, msg, detail):
+    m = _CASE_RE.search(msg)
+    RESULTS.append({"id": m.group(0) if m else None,
+                    "status": status, "message": msg, "detail": detail})
 
 
 def ok(msg, detail=""):
     global PASS
     PASS += 1
+    _record("pass", msg, detail)
     print("  \033[32m✓\033[0m " + msg + (("（%s）" % detail) if detail else ""))
 
 
 def bad(msg, detail=""):
     global FAIL
     FAIL += 1
+    _record("fail", msg, detail)
     print("  \033[31m✗\033[0m " + msg + (("（%s）" % detail) if detail else ""))
 
 
 def skip(msg, detail=""):
     global SKIP
     SKIP += 1
+    _record("skip", msg, detail)
     print("  \033[33m–\033[0m " + msg + (("（%s）" % detail) if detail else ""))
 
 
@@ -537,12 +550,26 @@ def run_page_layer():
         else:
             skip("TC-P-11 run 详情页", "库内无 run")
 
+        # TC-P-13：测试用例台本身也要被验收 —— 用例清单可见 + 脚本结果已回填
+        pg.goto(WEB + "/s2-test-cases", wait_until="domcontentloaded")
+        pg.wait_for_timeout(2000)
+        body = pg.locator("body").inner_text()
+        rows = pg.locator("table tbody tr").count()
+        if (rows >= 26 and "TC-T0-00" in body and "TC-P-12" in body
+                and "尚无脚本运行结果" not in body):
+            ok("TC-P-13 测试用例台页面可见且脚本结果已回填", "%d 行用例" % rows)
+        else:
+            bad("TC-P-13 测试用例台页面", "rows=%d 无报告提示=%s"
+                % (rows, "尚无脚本运行结果" in body))
+
         b.close()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--layer", choices=["all", "sql", "page"], default="all")
+    ap.add_argument("--no-json", action="store_true",
+                    help="不把结果回填到 webapp/public/s2-test-results.json")
     args = ap.parse_args()
     print("S2 物料身份与状态验收 | WEB=%s API=%s" % (WEB, API))
     if args.layer in ("all", "sql"):
@@ -556,6 +583,18 @@ def main():
         except Exception as e:
             bad("T2 层异常", "%s: %s" % (type(e).__name__, str(e)[:300]))
     print("\n通过 %d / 失败 %d / 跳过 %d" % (PASS, FAIL, SKIP))
+    if not args.no_json:
+        payload = {
+            "generatedAt": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "command": "python3 scripts/verify-s2-material.py --layer " + args.layer,
+            "pass": PASS, "fail": FAIL, "skip": SKIP,
+            "results": RESULTS,
+        }
+        out = os.path.join(ROOT, "webapp", "public", "s2-test-results.json")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print("结果已回填 → " + out)
     return 0 if FAIL == 0 else 1
 
 
