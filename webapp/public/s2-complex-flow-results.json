@@ -1,18 +1,18 @@
 {
-  "generatedAt": "2026-11-12T19:36:20+08:00",
+  "generatedAt": "2026-11-12T20:41:13+08:00",
   "command": "python3 scripts/verify-s2-complex-flow.py --flow all",
   "pass": 12,
   "fail": 0,
   "skip": 1,
   "evidence": {
     "main": {
-      "runId": 1001347,
+      "runId": 1001350,
       "label": "main",
       "runStatus": "completed",
       "nodes": "V0|0|0|completed|unresolved|not_required\nS1|1|0|completed|unresolved|not_required\nS2|1|0|completed|unresolved|not_required\nS3|1|0|completed|unresolved|not_required\nS4|1|0|completed|unresolved|not_required\nA1|0|0|completed|completed|applied\nA2|0|0|completed|completed|applied\nA3|0|0|completed|completed|not_required\nT5|0|0|completed|completed|applied\nT6|0|0|bypassed|unresolved|not_required",
       "declarations": "3",
       "effects": "A1|0|APPLIED|1000006|-\nA2|0|APPLIED|1000007|-\nT5|0|APPLIED|1000006|-",
-      "events": "1000006|A1|12->13|ready\n1000007|A2|12->13|in_progress\n1000006|T5|13->14|completed",
+      "events": "1000006|A1|14->15|ready\n1000007|A2|20->21|in_progress\n1000006|T5|15->16|completed",
       "actions": "DECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO\nDECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO\nDECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO",
       "ledgerRows": "4",
       "runCommandRows": "5",
@@ -20,17 +20,17 @@
       "manualErrors": ""
     },
     "loop": {
-      "runId": 1001348,
+      "runId": 1001351,
       "label": "loop",
       "runStatus": "completed",
-      "nodes": "V|0|0|completed|unresolved|not_required\nS1|1|0|completed|unresolved|not_required\nS2|1|0|completed|unresolved|not_required\nS3|1|0|completed|unresolved|not_required\nC1|0|0|completed|completed|applied\nC1|0|1|completed|unresolved|not_required\nC1|0|2|completed|unresolved|not_required\nC1|0|3|completed|unresolved|not_required",
+      "nodes": "V|0|0|completed|unresolved|not_required\nS1|1|0|completed|unresolved|not_required\nS2|1|0|completed|unresolved|not_required\nS3|1|0|completed|unresolved|not_required\nS4|1|0|completed|unresolved|not_required\nC1|0|0|completed|completed|applied\nC1|0|1|completed|unresolved|not_required\nC1|0|2|completed|unresolved|not_required\nC1|0|3|completed|unresolved|not_required\nC1|0|4|completed|unresolved|not_required",
       "declarations": "1",
-      "effects": "C1|1|APPLIED|1000007|-\nC1|2|APPLIED|1000007|-\nC1|3|APPLIED|1000007|-",
-      "events": "1000007|C1|13->14|ready\n1000007|C1|14->15|ready\n1000007|C1|15->16|ready",
-      "actions": "DECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO\nDECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO\nDECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO",
-      "ledgerRows": "3",
-      "runCommandRows": "4",
-      "q18Rows": "7",
+      "effects": "C1|1|APPLIED|1000007|-\nC1|2|APPLIED|1000007|-\nC1|3|APPLIED|1000007|-\nC1|4|APPLIED|1000007|-",
+      "events": "1000007|C1|21->22|ready\n1000007|C1|22->23|ready\n1000007|C1|23->24|ready\n1000007|C1|24->25|ready",
+      "actions": "DECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO\nDECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO\nDECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO\nDECLARE|NULL->PENDING|AUTO\nAPPLY|PENDING->APPLIED|AUTO",
+      "ledgerRows": "4",
+      "runCommandRows": "5",
+      "q18Rows": "9",
       "manualErrors": ""
     }
   }

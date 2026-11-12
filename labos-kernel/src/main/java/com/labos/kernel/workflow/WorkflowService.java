@@ -1520,6 +1520,10 @@ public class WorkflowService {
                 continue;
             }
             Map<String, Object> raw = parseFlatJson(json);
+            // `__expr` 的 expr 是**表达式本身**，必须在运行时按当时的变量求值。
+            // 提前替换会把 "${n} + 1" 固化成 "1 + 1"，于是每圈都算出同一个值，
+            // 循环退出条件永远不成立（实测跑满 maxIterations 才停）。
+            boolean exprNode = "__expr".equals(String.valueOf(row.get("protocolName")));
             // 变量替换：{"plateID":"${plate}"} → {"plateID":"PL001"}
             // 替换后如果是纯数字，转成数字——驱动端对类型敏感，
             // "7" 和 7 在某些协议里不是一回事。
@@ -1527,6 +1531,10 @@ public class WorkflowService {
             raw.forEach((k, v) -> {
                 if (!(v instanceof String sv)) {
                     replaced.put(k, v);
+                    return;
+                }
+                if (exprNode && "expr".equals(k)) {
+                    replaced.put(k, sv);
                     return;
                 }
                 String rv = substVars(sv, runVars);

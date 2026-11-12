@@ -136,7 +136,7 @@ def graph_loop(d):
     ]
     flows = [
         ("f0", "S", "C1"), ("f1", "C1", "X"),
-        ("f_end", "X", "E", "${n} >= 3"),
+        ("f_end", "X", "E", "${n} >= 4"),
         ("f_loop", "X", "V"), ("f_back", "V", "C1"),
     ]
     shapes = {
@@ -312,15 +312,20 @@ def assert_loop(ev):
     eff = [x for x in ev["effects"].splitlines() if x.strip()]
     print("  循环体节点行：%s" % [x for x in ev["nodes"].splitlines() if x.startswith("C1|")])
     print("  Effect 行：%s" % eff)
-    laps = sorted({x.split("|")[1] for x in eff if "|" in x})
-    if len(eff) >= 3 and laps == ["1", "2", "3"]:
-        ok("CF-L2 循环每圈各留一条 Effect（R13-06 已修）",
+    laps = sorted({int(x.split("|")[1]) for x in eff if "|" in x})
+    # 条件 ${n} >= 4、n 初值 1、每圈 __expr 递增：先判断后递增 ⇒ 需要 4 次 C1 才退出。
+    # 「4 圈」本身同时证明变量跨圈生效（否则会一直停在 n=2 或跑满 10 圈上限）。
+    if laps == [1, 2, 3, 4]:
+        ok("CF-L2 循环每圈各留一条 Effect 且靠条件退出（4 圈，非跑满上限）",
            "loop_index=%s，共 %d 条" % (laps, len(eff)))
-    elif len(eff) <= 1:
+    elif len(laps) >= 10:
+        bad("CF-L2 跑满 maxIterations 上限（循环变量仍未跨圈）",
+            "loop_index=%s 共 %d 条" % (laps, len(eff)))
+    elif len(laps) <= 1:
         bad("CF-L2 多圈只有 1 个 Effect（R13-06 回归）",
             "节点行=%d Effect=%d" % (rounds, len(eff)))
     else:
-        bad("CF-L2 圈次不完整", "loop_index=%s 共 %d 条" % (laps, len(eff)))
+        bad("CF-L2 圈次与预期(1..4)不符", "loop_index=%s 共 %d 条" % (laps, len(eff)))
 
 
 # ---------------------------------------------------------------- main
@@ -365,13 +370,10 @@ def main():
         assert_main(ev)
 
     if args.flow in ("all", "loop"):
-        print("\n══════ 流程 2/2 · loop（回边 3 圈）══════")
+        print("\n══════ 流程 2/2 · loop（回边 4 圈，条件退出）══════")
         wf2 = cs.seed_workflow(token, "S2实测·循环探针", graph_loop(devs))
-        # 循环变量跨圈不持久（__expr 算出的 n 会被下一圈刷新回初值 1，
-        # 回边条件 ${n}>=3 恒不成立）⇒ 用流程级 maxIterations=3 得到可复现的 3 圈。
-        # 该变量问题单列为新发现，不在这里掩盖。
-        api("/api/workflows/%d/options" % wf2, "PUT",
-            {"maxIterations": 3}, token)
+        # 不再设 maxIterations 兜底：循环必须**靠条件 ${n} >= 4 自己退出**，
+        # 否则「跑满上限」会被误当成通过（n: 1→2→3→4，3 圈后退出）。
         api("/api/workflows/%d/nodes/V" % wf2, "PUT", token=token,
             body={"method": "__expr", "params": {"var": "n", "expr": "${n} + 1"}})
         api("/api/workflows/%d/variables" % wf2, "POST", token=token,

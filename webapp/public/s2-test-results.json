@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-12T20:21:03+08:00",
+  "generatedAt": "2026-11-12T20:46:24+08:00",
   "command": "python3 scripts/verify-s2-material.py --layer all",
   "pass": 24,
   "fail": 0,
@@ -57,7 +57,7 @@
       "id": "TC-T1-09",
       "status": "skip",
       "message": "TC-T1-09 Q3 effect → 本 run 的 run_node（node_key + 圈次） 命中（已知：历史数据 run 1001345（修复过程中的一次性错误写入））",
-      "detail": "3 行: ['34', '32', '33']"
+      "detail": "3 行: ['32', '33', '34']"
     },
     {
       "id": "TC-T1-09",
@@ -69,13 +69,13 @@
       "id": "TC-T1-09",
       "status": "skip",
       "message": "TC-T1-09 Q15b 节点聚合投影可从 Effect 集合重建核对（不一致即告警） 命中（已知：R13-23 口径冲突）",
-      "detail": "4 行: ['1001348|C1|2|not_required', '1001348|C1|3|not_required', '1001348|C1|1|not_required']"
+      "detail": "12 行: ['1001351|C1|3|not_required', '1001351|C1|4|not_required', '1001349|C1|1|not_required']"
     },
     {
       "id": "TC-T1-09",
       "status": "skip",
       "message": "TC-T1-09 Q18 迁移后不应再出现的 legacy 组合（S1 迁移前会命中旧行，迁移后必须 0） 命中（已知：R13-22 口径冲突）",
-      "detail": "93 行: ['1001339|S1|0', '1001342|S1|0', '1001339|S2|0']"
+      "detail": "116 行: ['1001339|S1|0', '1001342|S1|0', '1001339|S2|0']"
     },
     {
       "id": "TC-P-01",
@@ -99,7 +99,7 @@
       "id": "TC-P-03",
       "status": "pass",
       "message": "TC-P-03 页面内 GET run material-effects",
-      "detail": "3 条"
+      "detail": "4 条"
     },
     {
       "id": "TC-P-12",

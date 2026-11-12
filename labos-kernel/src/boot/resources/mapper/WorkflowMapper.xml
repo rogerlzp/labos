@@ -68,7 +68,10 @@
     </select>
 
     <select id="selectMethodParams" resultType="java.util.Map">
-        SELECT node_key AS "nodeKey", params->'method_params' AS "mp"
+        SELECT node_key AS "nodeKey", params->'method_params' AS "mp",
+               <!-- 内置节点的表达式参数不能提前替换（见 loadMethodParams），
+                    需要 protocol_name 判断是不是 __expr。 -->
+               params->>'protocol_name' AS "protocolName"
           FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_type = 'task'
            AND params->'method_params' IS NOT NULL
