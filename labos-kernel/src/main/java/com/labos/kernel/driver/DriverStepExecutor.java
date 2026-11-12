@@ -51,10 +51,6 @@ public final class DriverStepExecutor implements StepExecutor {
     private final long tenantId;
     private final long runId;
 
-    /** 账本逻辑操作序号（同一次执行内按调用顺序递增，用于稳定 key 的 op 段）。 */
-    private final java.util.concurrent.atomic.AtomicInteger ledgerOpSeq =
-            new java.util.concurrent.atomic.AtomicInteger();
-
     /**
      * 错误码 → 恢复作用域（{@code error_code.scope}）。
      *
@@ -681,11 +677,13 @@ public final class DriverStepExecutor implements StepExecutor {
                                         DriverCommand cmd, long workflowId, int stepSeq) {
         long ledgerId = 0L;
         if (db != null && runId > 0 && cmd.commandId() != null) {
-            // P-07.2 稳定逻辑 key（不再用含 exec 计数的 commandId）：
-            // run|node|attempt|step|device|method|opSeq —— 同一逻辑操作重复派发时命中同一行。
+            // P-07.2 稳定逻辑 key（§8.2 第 6 项：**不含 opSeq/loop_index**）：
+            // run|node|attempt|step|device|method —— 循环多轮（同 node/step/method）
+            // 命中同一行 ⇒ CommandLedger.begin 不 created ⇒ EC-99-0006 fail-closed，
+            // 转人工对账（不静默去重、不重复派发）。
             String ledgerKey = "r" + runId + "|n" + ctx.nodeId() + "|a" + ctx.attempt()
                     + "|s" + stepSeq + "|d" + cmd.deviceInstanceId()
-                    + "|m" + cmd.method() + "|o" + ledgerOpSeq.incrementAndGet();
+                    + "|m" + cmd.method();
             try {
                 CommandLedger.Entry e = CommandLedger.begin(db, tenantId,
                         ledgerKey, runId, ctx.nodeId(), ctx.attempt(), stepSeq,
