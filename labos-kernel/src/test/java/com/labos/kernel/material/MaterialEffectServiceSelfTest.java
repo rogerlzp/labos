@@ -36,6 +36,16 @@ public final class MaterialEffectServiceSelfTest {
         eq("缺 set → null(seal)", null,
                 MaterialEffectService.expectedSealState("{\"mode\":\"transition\"}"));
 
+        section("4. target 目标解析字段");
+        String byBarcode = "{\"mode\":\"transition\",\"target\":{\"barcode\":\"PLT-1\"}}";
+        eq("barcode", "PLT-1", MaterialEffectService.targetBarcode(byBarcode));
+        eq("无 barcode → null", null,
+                MaterialEffectService.targetBarcode("{\"mode\":\"transition\",\"target\":{}}"));
+        String byLocation = "{\"mode\":\"transition\",\"target\":{\"location\":{\"resourceId\":7}}}";
+        eq("location.resourceId", 7L, MaterialEffectService.targetResourceId(byLocation));
+        eq("无 location → null", null,
+                MaterialEffectService.targetResourceId("{\"mode\":\"transition\",\"target\":{}}"));
+
         summary();
     }
 

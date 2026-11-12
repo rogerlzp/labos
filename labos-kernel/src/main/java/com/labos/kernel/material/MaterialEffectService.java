@@ -301,7 +301,7 @@ public final class MaterialEffectService {
             return;   // none / legacy_unspecified：不建 effect
         }
 
-        Long plateId = targetPlateId(declarationJson);
+        Long plateId = resolveTargetPlate(declarationJson, runId);
         String payloadHash = Hashes.sha256Hex(declarationJson + "|plateId=" + plateId);
         Long expectedStateVersion = plateId == null
                 ? null : mapper.selectPlateStateVersion(tenantId, plateId);
@@ -363,6 +363,44 @@ public final class MaterialEffectService {
                 actorType, operatorUserId, reason, evidenceSnapshot, errorCode);
     }
 
+    /**
+     * §3.3a 目标解析（第一版）：plateId 优先 → barcode → 位置（fail-closed）。
+     *
+     * <p>位置寻址（规则 2/3/3b）：occupied_by_run 必须 = 当前 run；
+     * position_status ∈ {UNKNOWN, LOST} 或 reserved_by_run 非空 ⇒ 不可用，返回 null。
+     */
+    private Long resolveTargetPlate(String declarationJson, long runId) {
+        Long plateId = targetPlateId(declarationJson);
+        if (plateId != null) {
+            return plateId;
+        }
+        String barcode = targetBarcode(declarationJson);
+        if (barcode != null && !barcode.isBlank()) {
+            Map<String, Object> p = mapper.selectPlateByBarcode(tenantId, barcode);
+            return p == null ? null : ((Number) p.get("id")).longValue();
+        }
+        Long resourceId = targetResourceId(declarationJson);
+        if (resourceId != null) {
+            Map<String, Object> ps = mapper.selectPlateByLocation(tenantId, resourceId);
+            if (ps == null) {
+                return null;   // 位置无板
+            }
+            Long occupiedByRun = (Long) ps.get("occupiedByRun");
+            if (occupiedByRun == null || occupiedByRun.longValue() != runId) {
+                return null;   // 归属不符（规则 2）
+            }
+            String posStatus = (String) ps.get("positionStatus");
+            if ("UNKNOWN".equals(posStatus) || "LOST".equals(posStatus)) {
+                return null;   // 位置不可信（规则 3）
+            }
+            if (ps.get("reservedByRun") != null) {
+                return null;   // 在途/预约（规则 3b）
+            }
+            return ((Number) ps.get("id")).longValue();
+        }
+        return null;
+    }
+
     // ---------------------------------------------------------------- JSON 解析
 
     static String modeOf(String declarationJson) {
@@ -387,6 +425,18 @@ public final class MaterialEffectService {
         JsonNode n = read(declarationJson);
         JsonNode v = n == null ? null : n.path("set").path("sealState");
         return v != null && v.isTextual() ? v.asText() : null;
+    }
+
+    static String targetBarcode(String declarationJson) {
+        JsonNode n = read(declarationJson);
+        JsonNode b = n == null ? null : n.path("target").path("barcode");
+        return b != null && b.isTextual() ? b.asText() : null;
+    }
+
+    static Long targetResourceId(String declarationJson) {
+        JsonNode n = read(declarationJson);
+        JsonNode rid = n == null ? null : n.path("target").path("location").path("resourceId");
+        return rid != null && rid.isNumber() ? rid.asLong() : null;
     }
 
     private static JsonNode read(String json) {

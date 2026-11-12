@@ -80,6 +80,28 @@
          LIMIT 1
     </select>
 
+    <!-- T1 目标解析：按 barcode 找板 -->
+    <select id="selectPlateByBarcode" resultType="java.util.Map">
+        SELECT id AS "id", state_version AS "stateVersion",
+               position_status AS "positionStatus"
+          FROM plate
+         WHERE tenant_id = #{t} AND barcode = #{barcode} AND deleted_at IS NULL
+         LIMIT 1
+    </select>
+
+    <!-- T1 目标解析：按位置找板（position_state 投影 + 归属/在途） -->
+    <select id="selectPlateByLocation" resultType="java.util.Map">
+        SELECT p.id AS "id", p.state_version AS "stateVersion",
+               p.position_status AS "positionStatus",
+               ps.occupied_by_run AS "occupiedByRun",
+               ps.reserved_by_run AS "reservedByRun"
+          FROM position_state ps
+          JOIN plate p ON p.barcode = ps.plate_id AND p.tenant_id = ps.tenant_id
+                      AND p.deleted_at IS NULL
+         WHERE ps.tenant_id = #{t} AND ps.resource_id = #{resourceId}
+         LIMIT 1
+    </select>
+
     <!-- 闸门（§3.7）：未闭环效果数 -->
     <select id="countUnclosedEffects" resultType="int">
         SELECT count(*) FROM plate_material_effect
