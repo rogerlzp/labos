@@ -1507,4 +1507,6 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   's2.status.skip': 'Known skip',
   's2.status.idle': 'Not run',
   's2.status.running': 'Running',
+  's2.complex.title': 'Complex-flow end-to-end evidence',
+  's2.complex.summary': '{pass} passed / {fail} failed / {skip} known limitations',
 };

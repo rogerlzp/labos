@@ -1508,4 +1508,6 @@ export const zhCN = {
   's2.status.skip': '已登记跳过',
   's2.status.idle': '未运行',
   's2.status.running': '运行中',
+  's2.complex.title': '复杂流程端到端证据',
+  's2.complex.summary': '通过 {pass} / 失败 {fail} / 已知限制 {skip}',
 } as const;
