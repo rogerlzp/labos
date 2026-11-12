@@ -87,6 +87,11 @@ public final class MaterialEffectService {
         return mapper.countGateBlockers(tenantId, runId) > 0;
     }
 
+    /** 未闭环计数（隔离确认返回清单用）。 */
+    public int unclosedCount(long runId) {
+        return mapper.countGateBlockers(tenantId, runId);
+    }
+
     /**
      * 对账（§3.6）：NEEDS_RECONCILIATION → 人工对账 → PENDING(completed) / CANCELLED(not_completed)。
      *

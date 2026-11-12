@@ -701,6 +701,13 @@ public class WorkflowService {
         if (resumeInfo == null) {
             throw new IllegalArgumentException("run 不存在: " + runId);
         }
+        // 隔离确认前 resume 一律拒绝（§3.6 / §8.2 第 14 项）：
+        // quarantined 表示物理结果未知，先人工确认隔离再续跑。
+        if ("quarantined".equals(rm().selectStatus(tenantId, runId))) {
+            throw new IllegalStateException(
+                    "run 处于隔离态，请先确认物料隔离（POST /api/runs/" + runId
+                            + "/material-safety/confirm）再续跑");
+        }
         Long wfId = resumeInfo.get("workflowId") == null ? null
                 : ((Number) resumeInfo.get("workflowId")).longValue();
         if (wfId == null) {

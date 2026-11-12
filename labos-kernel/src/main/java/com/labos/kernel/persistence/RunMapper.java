@@ -350,6 +350,9 @@ public interface RunMapper {
     /** 人工确认隔离：failed + 确认说明 jsonb；仅当还是 quarantined。 */
     int confirmQuarantine(long tenantId, long runId, String inputJson);
 
+    /** 隔离确认（§3.6 / §8.2 第 14 项）：quarantined → paused(manual_window)，可续跑。 */
+    int materialSafetyConfirm(long tenantId, long runId, String note);
+
     /** 近 7 天被中断且可恢复的 run（id/runNo/total/done/bad，按 id 倒序 50 条）。 */
     List<Map<String, Object>> selectRecoverableRuns(long tenantId);
 
