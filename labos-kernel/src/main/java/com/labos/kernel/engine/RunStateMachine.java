@@ -204,17 +204,25 @@ public final class RunStateMachine {
                     case SKIP -> {
                         np.setStatus(NodeStatus.SKIPPED);
                         emit(node, EventType.NODE_SKIPPED, d.reason());
+                        // 恢复决定跳过 = 设备确认未执行
+                        invokeMaterialHandler(node, ExecutionResolution.FAILED_CONFIRMED,
+                                f.errorCode(), progress);
                         return NodeStatus.SKIPPED;
                     }
                     case ABORT -> {
                         np.setStatus(NodeStatus.ABORTED);
                         progress.markAborted();
                         emit(node, EventType.RUN_ABORTED, d.reason());
+                        invokeMaterialHandler(node, ExecutionResolution.UNRESOLVED,
+                                f.errorCode(), progress);
                         return NodeStatus.ABORTED;
                     }
                     case MANUAL -> {
                         np.setStatus(NodeStatus.MANUAL);
                         emit(node, EventType.NODE_MANUAL, d.reason());
+                        // §3.2：超时/未知 → reconciliation_required；确认失败 → failed_confirmed
+                        invokeMaterialHandler(node, ExecutionResolution.of(f),
+                                f.errorCode(), progress);
                         return NodeStatus.MANUAL;
                     }
                     default -> throw new IllegalStateException("未覆盖的决策动作: " + d.action());
