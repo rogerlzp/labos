@@ -1013,6 +1013,12 @@ public class WorkflowService {
                                 "声明只允许挂在设备 TASK 节点（节点 " + n.key()
                                         + " type=" + n.type() + "）");
                     }
+                    // 规则 4：processState 必须在启用字典里（DB 校验）
+                    String dictErr = materialSvc.checkProcessStateDict(n.materialEffect());
+                    if (dictErr != null) {
+                        throw new IllegalStateException(
+                                "声明契约预检失败（节点 " + n.key() + "）：" + dictErr);
+                    }
                     materialSvc.writeDeclarationSnapshot(runId, n.key(), 0, n.materialEffect());
                 }
             }

@@ -44,6 +44,28 @@ public final class RbacRules {
         return "admin".equals(role);
     }
 
+    // ---- S2 物料权限码（§8.2 第 17 项）：语义权限名，映射到角色 ----
+
+    public static final String MATERIAL_WRITE = "material:write";
+    public static final String MATERIAL_RETRY = "material:retry";
+    public static final String MATERIAL_RECONCILE = "material:reconcile";
+    public static final String MATERIAL_CANCEL = "material:cancel";
+
+    /**
+     * 角色是否有某物料权限（第一版：admin 全量；operator 可写/重试/对账/取消；viewer 无）。
+     */
+    public static boolean canMaterial(String role, String permission) {
+        if (role == null) {
+            return false;
+        }
+        if ("admin".equals(role)) {
+            return true;
+        }
+        return "operator".equals(role)
+                && (MATERIAL_WRITE.equals(permission) || MATERIAL_RETRY.equals(permission)
+                    || MATERIAL_RECONCILE.equals(permission) || MATERIAL_CANCEL.equals(permission));
+    }
+
     /** 角色展示文案；未知角色原样返回（不要显示空白，便于发现脏数据）。 */
     public static String roleLabel(String role) {
         if (role == null) {

@@ -223,6 +223,36 @@
            AND expected_state_version &lt;&gt; #{newVersion}
     </select>
 
+    <!-- §6 读：效果列表 -->
+    <select id="selectEffects" resultType="java.util.Map">
+        SELECT id, source_run_id AS "runId", source_node_key AS "nodeKey",
+               source_loop_index AS "loopIndex", plate_id AS "plateId", status,
+               expected_process_state AS "processState", expected_seal_state AS "sealState",
+               last_error_code AS "lastErrorCode", updated_at AS "updatedAt"
+          FROM plate_material_effect
+         WHERE tenant_id = #{t}
+        <if test="status != null"> AND status = #{status} </if>
+        <if test="runId != null"> AND source_run_id = #{runId} </if>
+        <if test="plateId != null"> AND plate_id = #{plateId} </if>
+         ORDER BY id DESC LIMIT 200
+    </select>
+
+    <!-- §6 读：动作历史 -->
+    <select id="selectActions" resultType="java.util.Map">
+        SELECT id, action_type AS "actionType", from_status AS "fromStatus",
+               to_status AS "toStatus", actor_type AS "actorType",
+               operator_user_id AS "operatorUserId", reason, created_at AS "createdAt"
+          FROM plate_material_effect_action
+         WHERE tenant_id = #{t} AND effect_id = #{effectId}
+         ORDER BY id
+    </select>
+
+    <!-- 规则 4：启用字典存在性 -->
+    <select id="countEnabledProcessState" resultType="int">
+        SELECT count(*) FROM plate_process_state
+         WHERE tenant_id = #{t} AND code = #{code} AND enabled = true
+    </select>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect

@@ -86,6 +86,17 @@ public final class RbacRulesSelfTest {
         eq("保持 admin 身份不变时允许", null,
                 RbacRules.lastAdminGuard("admin", true, "admin", Boolean.TRUE, 1));
 
+        section("4. 物料权限码（S2 §8.2 第 17 项）");
+        eq("admin 全量", true, RbacRules.canMaterial("admin", RbacRules.MATERIAL_RECONCILE));
+        eq("operator 可 reconcile", true,
+                RbacRules.canMaterial("operator", RbacRules.MATERIAL_RECONCILE));
+        eq("operator 可 cancel", true,
+                RbacRules.canMaterial("operator", RbacRules.MATERIAL_CANCEL));
+        eq("viewer 无权限", false,
+                RbacRules.canMaterial("viewer", RbacRules.MATERIAL_RETRY));
+        eq("未知角色无权限", false,
+                RbacRules.canMaterial("boss", RbacRules.MATERIAL_WRITE));
+
         System.out.printf("%n通过 %d, 失败 %d%n", pass, fail);
         if (fail > 0) {
             System.exit(1);
