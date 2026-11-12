@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-12T19:45:39+08:00",
+  "generatedAt": "2026-11-12T20:21:03+08:00",
   "command": "python3 scripts/verify-s2-material.py --layer all",
-  "pass": 22,
+  "pass": 24,
   "fail": 0,
   "skip": 4,
   "results": [
@@ -156,10 +156,22 @@
       "detail": ""
     },
     {
+      "id": "TC-P-14",
+      "status": "pass",
+      "message": "TC-P-14 页面内 GET /plates",
+      "detail": "5 块板"
+    },
+    {
+      "id": "TC-P-15",
+      "status": "pass",
+      "message": "TC-P-15 页面内 GET state-history",
+      "detail": "AUTO-1001306 0 条事件"
+    },
+    {
       "id": "TC-P-13",
       "status": "pass",
       "message": "TC-P-13 测试用例台页面可见且脚本结果已回填",
-      "detail": "27 行用例"
+      "detail": "29 行用例"
     }
   ]
 }

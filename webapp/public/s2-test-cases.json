@@ -30,6 +30,8 @@
     { "id": "TC-P-10", "layer": "T2", "title": "/paused 页面可加载", "opinion": "—", "mode": "browser", "note": "SPA 路由返回 200" },
     { "id": "TC-P-11", "layer": "T2", "title": "run 详情页可加载", "opinion": "—", "mode": "browser", "note": "SPA 路由返回 200" },
     { "id": "TC-P-12", "layer": "T2", "title": "material-gate 与 material-effects 口径一致", "opinion": "R13-09", "mode": "browser", "note": "effects 条数一致" },
-    { "id": "TC-P-13", "layer": "T2", "title": "测试用例台页面可见且脚本结果已回填", "opinion": "—", "mode": "script", "note": "/s2-test-cases 26 条用例 + 结果标签；由页面轨脚本检查" }
+    { "id": "TC-P-13", "layer": "T2", "title": "测试用例台页面可见且脚本结果已回填", "opinion": "—", "mode": "script", "note": "/s2-test-cases 用例 + 结果标签；由页面轨脚本检查" },
+    { "id": "TC-P-14", "layer": "T2", "title": "页面内 GET /api/plates（列表）", "opinion": "R13-09", "mode": "browser", "note": "200 且返回数组，元素含 barcode/processState/stateVersion" },
+    { "id": "TC-P-15", "layer": "T2", "title": "页面内 GET /api/plates/{barcode}/state-history", "opinion": "R13-09", "mode": "browser", "note": "200 且返回数组，事件含版本链与 ISO 时间" }
   ]
 }

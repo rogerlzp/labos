@@ -8,12 +8,14 @@ import com.labos.kernel.material.MaterialEffectService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.persistence.Mappers;
+import com.labos.kernel.persistence.MaterialMapper;
 import com.labos.kernel.persistence.RunMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -246,7 +248,114 @@ public class MaterialEffectController {
         return ResponseEntity.ok(json(out));
     }
 
+    // ---------------------------------------------------------------- §6 plates / 字典
+
+    /** §6：按工艺阶段 / 板型 / 位置可信度查板（三个条件都可空）。 */
+    @GetMapping(value = "/plates", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> listPlates(
+            @RequestParam(required = false) String processState,
+            @RequestParam(required = false) String plateType,
+            @RequestParam(required = false) String positionStatus,
+            @RequestParam(required = false, defaultValue = "50") int limit) {
+        int n = Math.min(Math.max(limit, 1), 200);
+        return ResponseEntity.ok(json(Mappers.get(MaterialMapper.class)
+                .selectPlates(TENANT, processState, plateType, positionStatus, n)));
+    }
+
+    /** §6：单板详情（阶段 / 膜 / 位置 / 最近加工）。 */
+    @GetMapping(value = "/plates/{barcode}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> plateDetail(@PathVariable String barcode) {
+        java.util.Map<String, Object> p = Mappers.get(MaterialMapper.class)
+                .selectPlateDetail(TENANT, barcode);
+        if (p == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(err("板不存在: " + barcode));
+        }
+        return ResponseEntity.ok(json(p));
+    }
+
+    /** §6：单板事件历史（分页，按 id 倒序）。 */
+    @GetMapping(value = "/plates/{barcode}/state-history",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> plateStateHistory(
+            @PathVariable String barcode,
+            @RequestParam(required = false, defaultValue = "50") int limit,
+            @RequestParam(required = false, defaultValue = "0") int offset) {
+        Long plateId = new MaterialEffectService(TENANT, db).plateIdByBarcode(barcode);
+        if (plateId == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(err("板不存在: " + barcode));
+        }
+        int n = Math.min(Math.max(limit, 1), 200);
+        return ResponseEntity.ok(json(Mappers.get(MaterialMapper.class)
+                .selectPlateEvents(TENANT, plateId, n, Math.max(offset, 0))));
+    }
+
+    /** §6 字典：新增（code 不可改；重复 code ⇒ 409）。 */
+    @PostMapping(value = "/plate-process-states",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> createProcessState(
+            @RequestBody(required = false) String body, HttpServletRequest req)
+            throws SQLException {
+        ResponseEntity<String> denied = requireMaterial(req, RbacRules.MATERIAL_ADMIN);
+        if (denied != null) {
+            return denied;
+        }
+        String code = jsonField(body, "code");
+        if (code == null || code.isBlank()) {
+            return bad("必填 code");
+        }
+        String displayName = jsonField(body, "displayName");
+        if (displayName == null || displayName.isBlank()) {
+            return bad("必填 displayName");
+        }
+        MaterialMapper m = Mappers.get(MaterialMapper.class);
+        if (m.selectProcessState(TENANT, code) != null) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(err("字典已存在: " + code + "（code 不可改）"));
+        }
+        Long sort = jsonLong(body, "sortOrder");
+        m.insertProcessState(TENANT, code, displayName, sort == null ? 0 : sort.intValue());
+        return ResponseEntity.ok(Jsons.obj("code", code, "created", true));
+    }
+
+    /** §6 字典：改名 / 排序 / 停用（只改传了的字段）。 */
+    @PatchMapping(value = "/plate-process-states/{code}",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> patchProcessState(
+            @PathVariable String code,
+            @RequestBody(required = false) String body, HttpServletRequest req)
+            throws SQLException {
+        ResponseEntity<String> denied = requireMaterial(req, RbacRules.MATERIAL_ADMIN);
+        if (denied != null) {
+            return denied;
+        }
+        MaterialMapper m = Mappers.get(MaterialMapper.class);
+        if (m.selectProcessState(TENANT, code) == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("字典不存在: " + code));
+        }
+        String displayName = jsonField(body, "displayName");
+        Long sort = jsonLong(body, "sortOrder");
+        Boolean enabled = jsonBool(body, "enabled");
+        if (displayName == null && sort == null && enabled == null) {
+            return bad("至少传一个字段：displayName / sortOrder / enabled");
+        }
+        m.updateProcessState(TENANT, code, displayName,
+                sort == null ? null : sort.intValue(), enabled);
+        return ResponseEntity.ok(Jsons.obj("code", code, "updated", true));
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    /** 解析 JSON 布尔字段（ApiServer 没有现成 helper）。 */
+    private static Boolean jsonBool(String body, String key) {
+        if (body == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"" + key + "\"\\s*:\\s*(true|false)").matcher(body);
+        return m.find() ? Boolean.valueOf(m.group(1)) : null;
+    }
 
     /**
      * §8.2 第 17 项（评审 R13-08）：写端点按 material:* 细分权限校验，
@@ -285,7 +394,10 @@ public class MaterialEffectController {
         return v instanceof AuthService.Session s ? s.userId() : null;
     }
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    /** 时间列统一输出 ISO-8601 字符串（与其它 API 的 string|null 约定一致）；
+        默认会把 java.sql.Timestamp 写成 epoch 毫秒。 */
+    private static final ObjectMapper JSON = new ObjectMapper()
+            .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     private static String json(Object o) {
         try {

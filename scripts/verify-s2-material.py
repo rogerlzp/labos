@@ -556,6 +556,25 @@ def run_page_layer():
         else:
             skip("TC-P-11 run 详情页", "库内无 run")
 
+        # TC-P-14 / TC-P-15：§6 新增的 plates 查询端点
+        r = page_fetch("/api/plates?limit=5")
+        plates = r["data"]
+        if r["code"] == 200 and isinstance(plates, list):
+            ok("TC-P-14 页面内 GET /plates", "%d 块板" % len(plates))
+            if plates and plates[0].get("barcode"):
+                bc = plates[0]["barcode"]
+                r2 = page_fetch("/api/plates/%s/state-history?limit=5" % bc)
+                evs = r2["data"]
+                if r2["code"] == 200 and isinstance(evs, list):
+                    ok("TC-P-15 页面内 GET state-history", "%s %d 条事件" % (bc, len(evs)))
+                else:
+                    bad("TC-P-15 state-history", "HTTP %s %s"
+                        % (r2["code"], str(evs)[:120]))
+            else:
+                skip("TC-P-15 state-history", "库内无可用 barcode")
+        else:
+            bad("TC-P-14 plates 列表", "HTTP %s %s" % (r["code"], str(plates)[:120]))
+
         # TC-P-13：测试用例台本身也要被验收 —— 用例清单可见 + 脚本结果已回填
         pg.goto(WEB + "/s2-test-cases", wait_until="domcontentloaded")
         pg.wait_for_timeout(2000)

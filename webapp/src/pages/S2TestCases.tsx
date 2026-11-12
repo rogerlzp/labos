@@ -161,6 +161,27 @@ const checks: Record<string, (runId: number) => Promise<[boolean, string]>> = {
     const y = Array.isArray(b.data) ? b.data.length : -1;
     return [x >= 0 && x === y, `gate.effects=${x} / list=${y}`];
   },
+
+  'TC-P-14': async () => {
+    const r = await probe('/api/plates?limit=5');
+    const d = r.data;
+    const ok = r.status === 200 && Array.isArray(d)
+      && (d.length === 0 || ('barcode' in (d[0] as object)
+        && 'processState' in (d[0] as object) && 'stateVersion' in (d[0] as object)));
+    return [ok, `HTTP ${r.status} ${Array.isArray(d) ? d.length + ' 块板' : '非数组'}`];
+  },
+
+  'TC-P-15': async () => {
+    const list = await probe('/api/plates?limit=1');
+    const first = Array.isArray(list.data) ? list.data[0] as { barcode?: string } : undefined;
+    if (!first?.barcode) return [false, '无可用板'];
+    const r = await probe(`/api/plates/${encodeURIComponent(first.barcode)}/state-history?limit=5`);
+    const d = r.data;
+    const ok = r.status === 200 && Array.isArray(d)
+      && (d.length === 0 || ('toStateVersion' in (d[0] as object)
+        && 'recordedAt' in (d[0] as object) && typeof (d[0] as { recordedAt?: unknown }).recordedAt === 'string'));
+    return [ok, `HTTP ${r.status} ${Array.isArray(d) ? d.length + ' 条事件' : '非数组'}`];
+  },
 };
 
 function StatusTag({ status, detail }: { status?: Status; detail?: string }) {
