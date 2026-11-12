@@ -1,0 +1,84 @@
+package com.labos.kernel.persistence;
+
+import org.apache.ibatis.annotations.Param;
+
+/**
+ * 物料身份与状态：声明快照 / 效果 / 动作 / 事件 的写入。
+ *
+ * <p>语句见 {@code mapper/MaterialMapper.xml}。三张 append-only 表
+ * （declaration / action / event）只 INSERT；effect 是有状态表（可 UPDATE 状态列）。
+ * 第一版不建 FK，引用完整性由业务层 + 巡检兜底（§5）。
+ */
+public interface MaterialMapper {
+
+    /** 声明快照（H3，追加表；续跑幂等：ON CONFLICT DO NOTHING）。 */
+    int insertDeclaration(@Param("t") long tenantId,
+                          @Param("runId") long runId,
+                          @Param("nodeKey") String nodeKey,
+                          @Param("effectIndex") int effectIndex,
+                          @Param("declaration") String declarationJson,
+                          @Param("hash") String declarationHash,
+                          @Param("workflowVer") Integer workflowVer);
+
+    /** 效果意图（T1 写 PENDING；续跑幂等：ON CONFLICT DO NOTHING）。 */
+    int insertEffect(@Param("t") long tenantId,
+                     @Param("runId") long runId,
+                     @Param("nodeKey") String nodeKey,
+                     @Param("loopIndex") int loopIndex,
+                     @Param("effectIndex") int effectIndex,
+                     @Param("attempt") int attempt,
+                     @Param("plateId") Long plateId,
+                     @Param("declaration") String declarationJson,
+                     @Param("declHash") String declHash,
+                     @Param("payloadHash") String payloadHash,
+                     @Param("targetSnapshot") String targetSnapshot,
+                     @Param("resolutionEvidence") String resolutionEvidence,
+                     @Param("expectedStateVersion") Long expectedStateVersion,
+                     @Param("expectedProcessState") String expectedProcessState,
+                     @Param("expectedSealState") String expectedSealState,
+                     @Param("status") String status);
+
+    /** 效果动作审计（append-only）。 */
+    int insertAction(@Param("t") long tenantId,
+                     @Param("effectId") long effectId,
+                     @Param("actionType") String actionType,
+                     @Param("fromStatus") String fromStatus,
+                     @Param("toStatus") String toStatus,
+                     @Param("actorType") String actorType,
+                     @Param("operatorUserId") Long operatorUserId,
+                     @Param("reason") String reason,
+                     @Param("evidenceSnapshot") String evidenceSnapshot,
+                     @Param("errorCode") String errorCode);
+
+    /** 物料事件（append-only；完整 before/after + 版本区间 + changed_fields）。 */
+    int insertEvent(@Param("t") long tenantId,
+                    @Param("plateId") long plateId,
+                    @Param("effectId") Long effectId,
+                    @Param("eventType") String eventType,
+                    @Param("fromProcessState") String fromProcessState,
+                    @Param("toProcessState") String toProcessState,
+                    @Param("fromSealState") String fromSealState,
+                    @Param("toSealState") String toSealState,
+                    @Param("changedFields") String changedFieldsJson,
+                    @Param("fromStateVersion") long fromStateVersion,
+                    @Param("toStateVersion") long toStateVersion,
+                    @Param("sourceRunId") Long sourceRunId,
+                    @Param("sourceNodeKey") String sourceNodeKey,
+                    @Param("sourceLoopIndex") int sourceLoopIndex,
+                    @Param("commandId") String commandId,
+                    @Param("evidence") String evidence,
+                    @Param("evidenceLevel") String evidenceLevel,
+                    @Param("evidenceSnapshot") String evidenceSnapshot,
+                    @Param("operatorType") String operatorType,
+                    @Param("operatorUserId") Long operatorUserId,
+                    @Param("note") String note,
+                    @Param("occurredAt") String occurredAt);
+
+    /** 效果状态流转（T2/Worker 使用；只改状态列，不改声明/快照）。 */
+    int updateEffectStatus(@Param("t") long tenantId,
+                           @Param("effectId") long effectId,
+                           @Param("fromStatus") String fromStatus,
+                           @Param("toStatus") String toStatus,
+                           @Param("lastErrorCode") String lastErrorCode,
+                           @Param("lastErrorMessage") String lastErrorMessage);
+}
