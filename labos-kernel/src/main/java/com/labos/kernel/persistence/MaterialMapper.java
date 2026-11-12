@@ -146,6 +146,11 @@ public interface MaterialMapper {
                            @Param("effectId") long effectId,
                            @Param("expectedStateVersion") long expectedStateVersion);
 
+    /** 人工改状态（§3.6a 步骤 6）：板上已过期的 PENDING 效果 id 列表。 */
+    java.util.List<Long> selectStaleEffectIds(@Param("t") long tenantId,
+                                              @Param("plateId") long plateId,
+                                              @Param("newVersion") long newVersion);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,

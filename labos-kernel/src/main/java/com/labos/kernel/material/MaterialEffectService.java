@@ -193,6 +193,62 @@ public final class MaterialEffectService {
     }
 
     /**
+     * 人工改状态（§3.6a，单事务）：锁板 → 版本校验 → 写 MANUAL 事件 → 更新板 →
+     * 板上已过期的 PENDING 效果转 NEEDS_RECONCILIATION + RECONCILE action。
+     *
+     * <p>必须复用 T2 写入函数（同一 mapper），不允许另开直写 plate 的路径（§5.5 单写者）。
+     *
+     * @throws IllegalStateException 版本冲突（expectedVersion 不符）→ 调用方映射 409
+     */
+    public void manualStateChange(long plateId, String processState, String sealState,
+                                  Long expectedVersion, Long operatorUserId, String note)
+            throws SQLException {
+        Tx.inTransaction(db, c -> {
+            Map<String, Object> plate = mapper.selectPlateForUpdate(tenantId, plateId);
+            if (plate == null) {
+                throw new IllegalStateException("板不存在: " + plateId);
+            }
+            long curVersion = ((Number) plate.get("stateVersion")).longValue();
+            if (expectedVersion != null && expectedVersion.longValue() != curVersion) {
+                throw new IllegalStateException("版本冲突：期望 " + expectedVersion
+                        + "，当前 " + curVersion);
+            }
+            String fromProcess = (String) plate.get("processState");
+            String fromSeal = (String) plate.get("sealState");
+            String toProcess = processState != null ? processState : fromProcess;
+            String toSeal = sealState != null ? sealState : fromSeal;
+            long toVersion = curVersion + 1;
+
+            java.util.List<String> changed = new ArrayList<>();
+            if (!Objects.equals(fromProcess, toProcess)) {
+                changed.add("process_state");
+            }
+            if (!Objects.equals(fromSeal, toSeal)) {
+                changed.add("seal_state");
+            }
+
+            mapper.insertEvent(tenantId, plateId, null, "manual_correction",
+                    fromProcess, toProcess, fromSeal, toSeal,
+                    Jsons.arr(changed.stream().map(Jsons::quote).toList()),
+                    curVersion, toVersion,
+                    null, null, 0, null,
+                    "MANUAL_CORRECTION", "manual_confirmed", "{}", "MANUAL",
+                    operatorUserId, note, null);
+
+            mapper.updatePlateState(tenantId, plateId, toProcess, toSeal, toVersion);
+
+            // 步骤 6：板上已过期的 PENDING 效果 → NEEDS_RECONCILIATION + RECONCILE
+            for (Long effectId : mapper.selectStaleEffectIds(tenantId, plateId, toVersion)) {
+                mapper.updateEffectStatus(tenantId, effectId, "PENDING", "NEEDS_RECONCILIATION",
+                        null, "板已被人工改状态，期望版本过期");
+                mapper.insertAction(tenantId, effectId, "RECONCILE", "PENDING",
+                        "NEEDS_RECONCILIATION", "MANUAL", operatorUserId, note, "{}", null);
+            }
+            return null;
+        });
+    }
+
+    /**
      * Worker：处理一个到期的 PENDING 效果（单次）。
      *
      * @return true=处理了一个；false=无到期效果
