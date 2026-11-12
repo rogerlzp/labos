@@ -306,6 +306,111 @@
          ORDER BY sort_order, code
     </select>
 
+    <!-- ==================== §6 接口最小集剩余部分 ==================== -->
+
+    <!-- 按工艺阶段/板型/位置可信度查板；三个条件都可空（用 if 而不是 IS NULL，
+         避免 PostgreSQL 对 null 参数报 "could not determine data type"）。 -->
+    <select id="selectPlates" resultType="java.util.Map">
+        SELECT p.barcode AS "barcode", p.plate_type AS "plateType",
+               p.process_state AS "processState", p.seal_state AS "sealState",
+               p.state_version AS "stateVersion", p.position_status AS "positionStatus",
+               p.status AS "status", p.location_id AS "locationId",
+               <!-- 时间统一输出 UTC ISO-8601：java.sql.Timestamp 交给 Jackson 会被
+                    当成 UTC 序列化，与库里 timestamptz 的本地时区差 8 小时。 -->
+               to_char(p.updated_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "updatedAt"
+          FROM plate p
+         WHERE p.tenant_id = #{t} AND p.deleted_at IS NULL
+        <if test="processState != null and processState != ''">
+           AND p.process_state = #{processState}
+        </if>
+        <if test="plateType != null and plateType != ''">
+           AND p.plate_type = #{plateType}
+        </if>
+        <if test="positionStatus != null and positionStatus != ''">
+           AND p.position_status = #{positionStatus}
+        </if>
+         ORDER BY p.id DESC
+         LIMIT #{limit}
+    </select>
+
+    <!-- 单板详情 + 最近一次变更（时间 / 来源 run）。 -->
+    <select id="selectPlateDetail" resultType="java.util.Map">
+        SELECT p.id AS "id", p.barcode AS "barcode", p.plate_type AS "plateType",
+               p.process_state AS "processState",
+               <!-- seal_state 为 NULL 时该列不会进 Map（MyBatis callSettersOnNulls=false），
+                    前端拿不到 key；按 §3.3b 的值域统一成 none。 -->
+               COALESCE(p.seal_state, 'none') AS "sealState",
+               p.state_version AS "stateVersion", p.position_status AS "positionStatus",
+               p.status AS "status", p.location_id AS "locationId",
+               p.rows AS "rows", p.cols AS "cols",
+               to_char(p.created_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt",
+               to_char(p.updated_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "updatedAt",
+               (SELECT to_char(max(e.occurred_at) AT TIME ZONE 'UTC',
+                               'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+                  FROM plate_material_event e
+                 WHERE e.tenant_id = p.tenant_id AND e.plate_id = p.id) AS "lastChangedAt",
+               (SELECT e.source_run_id FROM plate_material_event e
+                 WHERE e.tenant_id = p.tenant_id AND e.plate_id = p.id
+                 ORDER BY e.id DESC LIMIT 1) AS "lastRunId"
+          FROM plate p
+         WHERE p.tenant_id = #{t} AND p.barcode = #{barcode}
+           AND p.deleted_at IS NULL
+    </select>
+
+    <!-- 单板事件历史（append-only，分页）。 -->
+    <select id="selectPlateEvents" resultType="java.util.Map">
+        SELECT e.id AS "id", e.event_type AS "eventType",
+               e.from_process_state AS "fromProcessState",
+               e.to_process_state AS "toProcessState",
+               e.from_seal_state AS "fromSealState",
+               e.to_seal_state AS "toSealState",
+               e.changed_fields AS "changedFields",
+               e.from_state_version AS "fromStateVersion",
+               e.to_state_version AS "toStateVersion",
+               e.source_run_id AS "sourceRunId",
+               e.source_node_key AS "sourceNodeKey",
+               e.source_loop_index AS "sourceLoopIndex",
+               e.evidence AS "evidence", e.evidence_level AS "evidenceLevel",
+               e.operator_type AS "operatorType",
+               e.operator_user_id AS "operatorUserId",
+               e.note AS "note",
+               to_char(e.occurred_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "occurredAt",
+               to_char(e.recorded_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "recordedAt"
+          FROM plate_material_event e
+         WHERE e.tenant_id = #{t} AND e.plate_id = #{plateId}
+         ORDER BY e.id DESC
+         LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="selectProcessState" resultType="java.util.Map">
+        SELECT code AS "code", display_name AS "displayName",
+               sort_order AS "sortOrder", enabled AS "enabled"
+          FROM plate_process_state
+         WHERE tenant_id = #{t} AND code = #{code}
+    </select>
+
+    <insert id="insertProcessState">
+        INSERT INTO plate_process_state
+            (tenant_id, code, display_name, sort_order, enabled)
+        VALUES (#{t}, #{code}, #{displayName}, #{sortOrder}, true)
+    </insert>
+
+    <!-- 三参数均可空：COALESCE 保留原值，PATCH 只改传了的字段。
+         jdbcType 必须显式给，否则 null 参数在 PG 上类型不确定。 -->
+    <update id="updateProcessState">
+        UPDATE plate_process_state
+           SET display_name = COALESCE(#{displayName,jdbcType=VARCHAR}, display_name),
+               sort_order = COALESCE(#{sortOrder,jdbcType=INTEGER}, sort_order),
+               enabled = COALESCE(#{enabled,jdbcType=BOOLEAN}, enabled),
+               updated_at = now()
+         WHERE tenant_id = #{t} AND code = #{code}
+    </update>
+
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect

@@ -193,6 +193,42 @@ public interface MaterialMapper {
     java.util.List<java.util.Map<String, Object>> selectEnabledProcessStates(
             @Param("t") long tenantId);
 
+    // ---- §6 接口最小集剩余部分：plates 查询 / 字典维护 ----
+
+    /** §6：按工艺阶段/板型/位置可信度查板（三条件均可空）。 */
+    java.util.List<java.util.Map<String, Object>> selectPlates(
+            @Param("t") long tenantId,
+            @Param("processState") String processState,
+            @Param("plateType") String plateType,
+            @Param("positionStatus") String positionStatus,
+            @Param("limit") int limit);
+
+    /** §6：单板详情（含最近一次变更时间与来源 run）。 */
+    java.util.Map<String, Object> selectPlateDetail(@Param("t") long tenantId,
+                                                    @Param("barcode") String barcode);
+
+    /** §6：单板事件历史（分页，按 id 倒序）。 */
+    java.util.List<java.util.Map<String, Object>> selectPlateEvents(
+            @Param("t") long tenantId, @Param("plateId") long plateId,
+            @Param("limit") int limit, @Param("offset") int offset);
+
+    /** §6 字典：单条查（新增前判重 / PATCH 前判存在）。 */
+    java.util.Map<String, Object> selectProcessState(@Param("t") long tenantId,
+                                                     @Param("code") String code);
+
+    /** §6 字典：新增（code 不可改）。 */
+    int insertProcessState(@Param("t") long tenantId,
+                           @Param("code") String code,
+                           @Param("displayName") String displayName,
+                           @Param("sortOrder") int sortOrder);
+
+    /** §6 字典：改名 / 排序 / 启停（三参数均可空，COALESCE 保留原值）。 */
+    int updateProcessState(@Param("t") long tenantId,
+                           @Param("code") String code,
+                           @Param("displayName") String displayName,
+                           @Param("sortOrder") Integer sortOrder,
+                           @Param("enabled") Boolean enabled);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     /**
      * 人工改状态（§3.6a / 评审 R13-10）：先锁该板全部 PENDING effect，再锁板，
