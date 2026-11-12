@@ -678,6 +678,9 @@ public final class GraphRunner {
                 // 第 2 圈起才加 |vN，因此非循环流程的 key 完全不变。
                 final int round = visit;
                 StepExecutor roundAware = c -> executor.execute(c.withLoopIndex(round));
+                // R13-06：完成处理器也要拿到圈次，才能把 Effect 写到真实的
+                // source_loop_index（执行确认仍写 loop_index=0 的汇总行）。
+                stateMachine.withLoopIndexSupplier(() -> round);
                 NodeStatus st = stateMachine.executeNode(rn, progress, roundAware);
                 nodeStateRecorder.accept(key, st.name().toLowerCase());
                 // 只在**图里真有环**时记圈次：无环图每个节点只跑一次，

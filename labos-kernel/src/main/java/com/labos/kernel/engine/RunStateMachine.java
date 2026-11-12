@@ -59,6 +59,12 @@ public final class RunStateMachine {
      */
     private java.util.function.BooleanSupplier materialGate;
 
+    /**
+     * 当前节点在本轮执行中的圈次（R13-06）：由 GraphRunner 在每次派发前注入 visit，
+     * 供完成处理器写 Effect 的 {@code source_loop_index}。无环图 / 顺序路径恒 0。
+     */
+    private java.util.function.IntSupplier loopIndexSupplier = () -> 0;
+
     public RunStateMachine(RecoveryDecider decider) {
         this(decider, ExecutionListener.NOOP, Sleeper.REAL, Clock.systemUTC());
     }
@@ -98,6 +104,15 @@ public final class RunStateMachine {
     /** 注入顺序路径的派发前物料闸门；图路径由 GraphRunner.withMaterialGate 负责。 */
     public RunStateMachine withMaterialGate(java.util.function.BooleanSupplier gate) {
         this.materialGate = gate;
+        return this;
+    }
+
+    /**
+     * 注入圈次来源（R13-06）。GraphRunner 每次派发前设成本圈 visit；
+     * 顺序路径不设，保持 0。
+     */
+    public RunStateMachine withLoopIndexSupplier(java.util.function.IntSupplier supplier) {
+        this.loopIndexSupplier = supplier == null ? () -> 0 : supplier;
         return this;
     }
 
@@ -213,7 +228,8 @@ public final class RunStateMachine {
                                        String errorCode, RunProgress progress) {
         try {
             MaterialOutcome outcome = materialCompletion.onNodeComplete(
-                    NodeResolution.of(node.id(), node.key(), resolution, errorCode));
+                    NodeResolution.of(node.id(), node.key(), resolution, errorCode,
+                            loopIndexSupplier.getAsInt()));
             if (outcome == MaterialOutcome.HOLD) {
                 progress.markMaterialHold();
             }

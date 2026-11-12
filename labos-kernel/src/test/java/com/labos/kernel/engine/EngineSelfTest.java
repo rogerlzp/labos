@@ -292,6 +292,30 @@ public final class EngineSelfTest {
             eq("步骤不变", List.of("M"), c.withLoopIndex(3).effectiveSteps());
         });
 
+        // ============ 11. 圈次透传（R13-06） ============
+        run("圈次透传到完成处理器（R13-06）", () -> {
+            List<Integer> laps = new ArrayList<>();
+            RunStateMachine sm = machine()
+                    .withLoopIndexSupplier(() -> 3)
+                    .withMaterialCompletion(r -> {
+                        laps.add(r.loopIndex());
+                        return MaterialOutcome.CONTINUE;
+                    });
+            sm.executeNode(node(1, "TRANSFER", 100L, 100L), new RunProgress(),
+                    new SimulatedBus());
+            eq("完成处理器收到 loopIndex=3", List.of(3), laps);
+        });
+
+        run("未注入圈次时默认 0（顺序路径）", () -> {
+            List<Integer> laps = new ArrayList<>();
+            RunStateMachine sm = machine().withMaterialCompletion(r -> {
+                laps.add(r.loopIndex());
+                return MaterialOutcome.CONTINUE;
+            });
+            sm.executeAll(List.of(node(1, "TRANSFER", 100L, 100L)), new SimulatedBus());
+            eq("顺序路径 loopIndex=0", List.of(0), laps);
+        });
+
         System.out.printf("%n================ 引擎自测: 通过 %d, 失败 %d ================%n",
                 passed, failed);
         if (failed > 0) {
