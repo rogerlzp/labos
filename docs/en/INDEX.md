@@ -134,8 +134,8 @@ The frontend has no i18n dependency, and none is being added:
 ## 3. Translation ledger — documents
 
 **This registry covers the Chinese documents that have an English counterpart or a
-reserved English path** — 107 entries (106 translated ✅, 1 queued ⬜). It is **not** a
-list of every Chinese document: the Chinese set has **144 documents** (140 under
+reserved English path** — 108 entries (107 translated ✅, 1 queued ⬜). It is **not** a
+list of every Chinese document: the Chinese set has **145 documents** (141 under
 `docs/`, 4 in the repository root), and the remaining **38 are Chinese-only**
 (architecture decisions, the remediation status table, review bundles, working logs) —
 they are listed in §3b. ✅ means the English document exists now; ⬜ means the English
@@ -190,6 +190,7 @@ path is reserved and the translation is queued.
 | `docs/流程控制-测试报告.md` | `docs/en/workflow-control-test-report.md` | ✅ |
 | `docs/完整流程测试矩阵-设计.md` | `docs/en/full-flow-test-matrix-design.md` | ✅ |
 | `docs/工艺编排能力缺口与落地路线.md` | `docs/en/process-orchestration-gaps-and-roadmap.md` | ✅ |
+| `docs/多流程工艺编排能力缺口与落地路线.md` | `docs/en/multi-flow-process-orchestration-gaps-and-roadmap.md` | ✅ |
 | `docs/物料身份与状态-设计.md` | `docs/en/material-identity-and-state-design.md` | ✅ |
 | `docs/测试总纲.md` | `docs/en/testing-master.md` | ⬜ |
 | `docs/测试与上线策略.md` | `docs/en/testing-and-release-strategy.md` | ✅ |
@@ -452,7 +453,7 @@ also wired through `scripts/gate-select.py` (runs when documents changed).
 | # | Item | Status |
 |---|---|---|
 | 1 | Translate the frontend | ✅ Done — 26/26 pages, 0 residual Chinese |
-| 1b | Translate the documents | ⚠️ **Partial** — **104 of the 142** Chinese documents have an English edition; the other **38 are Chinese-only by design** (architecture decisions, the remediation status table, review bundles, working logs) — see §3b. The earlier "89/89 — every Chinese document has an English edition" was **wrong** |
+| 1b | Translate the documents | ⚠️ **Partial** — **107 of the 145** Chinese documents have an English edition; the other **38 are Chinese-only by design** (architecture decisions, the remediation status table, review bundles, working logs) — see §3b. The earlier "89/89 — every Chinese document has an English edition" was **wrong** |
 | 2 | Translate the P0/P1 documents (roadmap, onboarding, overseas research 00–02) | ✅ **Closed** — roadmap and onboarding are translated; the **overseas research was moved into `private/`** and is deliberately **not published** (§5b), so it needs no English edition in the repository |
 | 3 | Merge `feat/auto-20261103-acb9a80e` into `main`, then translate overseas research 03–10 | ✅ **Closed** — the branch is merged; the overseas research now lives in `private/` and is not published (§5b) |
 | 4 | Wire `scan-i18n.py` into the gate | ✅ **Done** — wired through `scripts/gate-select.py` (runs when `webapp/src/i18n/**` changes); not yet in the always-run set |
