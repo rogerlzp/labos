@@ -980,7 +980,7 @@ public class WorkflowService {
             Sleeper recoverySleeper = "1".equals(System.getenv("LABOS_FAST_RECOVERY"))
                     ? Sleeper.recording(new ArrayList<>())
                     : Sleeper.REAL;
-            MaterialEffectService materialSvc = new MaterialEffectService(tenantId);
+            MaterialEffectService materialSvc = new MaterialEffectService(tenantId, db);
             // 声明快照写入（run 启动时；§3.3 / §3.1 第 8 条；续跑幂等 ON CONFLICT DO NOTHING）
             for (NodeDef n : ordered) {
                 if (n.materialEffect() != null && !n.materialEffect().isBlank()) {
