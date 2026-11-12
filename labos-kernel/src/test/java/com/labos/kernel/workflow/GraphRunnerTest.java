@@ -16,6 +16,7 @@ import com.labos.kernel.workflow.WorkflowGraphParser.Graph;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -51,6 +52,7 @@ public final class GraphRunnerTest {
         caseConditionalDryRunAllReachable();
         testPauseCheckpoint();
         caseLoopRounds();
+        caseLoopRoundScoping();
         caseBuiltinNodes();
         caseSleepNode();
         caseWaitSatisfied();
@@ -492,6 +494,46 @@ public final class GraphRunnerTest {
             // 3 圈 = 3 次回调，圈次 1/2/3
             eq("圈次回调次数", 3, rounds.size());
             eq("圈次序列", "[1, 2, 3]", rounds.toString());
+        });
+    }
+
+    /**
+     * 圈次口径是**节点级**而非图级：图里有环时，环外的前置/收尾 TASK 节点不得被写成第 1 圈。
+     *
+     * <p>根因（R13-06 遗留）：旧口径 {@code graphHasCycle ? visit : 0} 用图级有环一刀切，
+     * 环外的节点也拿到 visit=1 ⇒ source_loop_index/圈次行写错（run 1001345 的 Q3 脏数据）。
+     */
+    private static void caseLoopRoundScoping() {
+        check("圈次只在环上的节点记，环外节点为 0", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="B" name="Transfer"/>
+                    <task id="A" name="Transfer"/>
+                    <exclusiveGateway id="AGAIN" default="F4"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="B"/>
+                    <sequenceFlow id="F2" sourceRef="B" targetRef="A"/>
+                    <sequenceFlow id="F3" sourceRef="A" targetRef="AGAIN"/>
+                    <sequenceFlow id="F4" sourceRef="AGAIN" targetRef="E"/>
+                    <sequenceFlow id="F5" sourceRef="AGAIN" targetRef="A">
+                      <conditionExpression>1 == 1</conditionExpression>
+                    </sequenceFlow>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            Map<String, List<Integer>> rounds = new HashMap<>();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L, 102L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withMaxVisits(3)
+                    .withRoundRecorder((key, round, st, ec, s1, e1) ->
+                            rounds.computeIfAbsent(key, k -> new ArrayList<>()).add(round));
+            runner.run(g, new SimulatedBus());
+            eq("环上节点 A 记 3 圈", "[1, 2, 3]",
+                    String.valueOf(rounds.getOrDefault("A", List.of())));
+            eq("环外节点 B 不记圈", true, !rounds.containsKey("B"));
         });
     }
 

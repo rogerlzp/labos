@@ -267,6 +267,9 @@ public final class GraphRunner {
     /** 本次图里有没有环（run() 开头算一次）。 */
     private boolean graphHasCycle;
 
+    /** 本次图里**真正在环上**的节点（run() 开头算一次）；用于圈次/圈次行判定，非图级一刀切。 */
+    private java.util.Set<String> cyclicNodeKeys = java.util.Set.of();
+
     /** 循环最多走几圈（防止回边写错导致死循环）。 */
     private int maxVisits = 10;
 
@@ -520,6 +523,7 @@ public final class GraphRunner {
         Map<String, Integer> visits = new HashMap<>();
         boolean hasCycle = hasCycle(graph);
         this.graphHasCycle = hasCycle;
+        this.cyclicNodeKeys = cyclicNodes(graph);
         int steps = 0;
         final int maxSteps = 500;     // 兜底：表达式写错导致无限循环时也必须停下来
 
@@ -680,7 +684,9 @@ public final class GraphRunner {
                 // 无环图的 visit 恒为 1 但没有对应 run_node 行 —— 若把 1 传给物料，
                 // Effect.source_loop_index=1 会破坏 Q3（effect → run_node 按 node_key+loop_index）。
                 // 命令账本 key 只看 loopIndex>1，所以无环图传 0 不影响幂等。
-                final int round = graphHasCycle ? visit : 0;
+                // 圈次口径：只给**真正在环上**的节点 visit（1..N）；图里有环但不在环上的
+                // 节点（如环外的前置/收尾节点）仍应传 0，否则会写错 source_loop_index / 圈次行。
+                final int round = cyclicNodeKeys.contains(key) ? visit : 0;
                 StepExecutor roundAware = c -> executor.execute(c.withLoopIndex(round));
                 // R13-06：完成处理器也要拿到圈次，才能把 Effect 写到真实的
                 // source_loop_index（执行确认仍写 loop_index=0 的汇总行）。
@@ -690,7 +696,7 @@ public final class GraphRunner {
                 // 只在**图里真有环**时记圈次：无环图每个节点只跑一次，
                 // 汇总行已经代表那一次，再记一行就是重复（会让"节点数"翻倍，
                 // 2026-11-03 verify-device-chain 的 3 步流程就是这么红的）。
-                if (graphHasCycle && visit >= 1) {
+                if (cyclicNodeKeys.contains(key) && visit >= 1) {
                     try {
                         NodeProgress np = progress.node(nodeId(node));
                         roundRecorder.record(key, visit,
@@ -767,6 +773,37 @@ public final class GraphRunner {
     }
 
     // ---------------------------------------------------------------- 推进
+
+    /**
+     * 返回「真正在环上」的节点集合：存在从自己出发、经过至少一条边回到自己的路径。
+     *
+     * <p>与图级 {@link #hasCycle} 的区别：图里有环时，环外的前置/收尾节点也在同一张图里，
+     * 但它们不会被回边重入，圈次应写 0 而不是 1。逐个节点 BFS 判「能否回到自己」。
+     */
+    private static java.util.Set<String> cyclicNodes(Graph g) {
+        java.util.Set<String> cyclic = new java.util.HashSet<>();
+        for (String start : g.nodes().keySet()) {
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            java.util.ArrayDeque<String> stack = new java.util.ArrayDeque<>();
+            for (GEdge e : g.out(start)) {
+                stack.push(e.to());
+            }
+            while (!stack.isEmpty()) {
+                String cur = stack.pop();
+                if (cur.equals(start)) {
+                    cyclic.add(start);
+                    break;
+                }
+                if (!seen.add(cur)) {
+                    continue;
+                }
+                for (GEdge e : g.out(cur)) {
+                    stack.push(e.to());
+                }
+            }
+        }
+        return cyclic;
+    }
 
     /** 图里有没有环（DFS 三色标记）。决定"重入"是循环还是重复激活。 */
     private static boolean hasCycle(Graph g) {
