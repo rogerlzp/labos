@@ -19,6 +19,7 @@ import com.labos.kernel.engine.Sleeper;
 import com.labos.kernel.engine.StepExecutor;
 import com.labos.kernel.engine.TimeConstraintExecutor;
 import com.labos.kernel.engine.StepSink;
+import com.labos.kernel.material.MaterialEffectService;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.JdbcErrorOccurrenceStore;
 import com.labos.kernel.persistence.JdbcEventStore;
@@ -979,12 +980,16 @@ public class WorkflowService {
             Sleeper recoverySleeper = "1".equals(System.getenv("LABOS_FAST_RECOVERY"))
                     ? Sleeper.recording(new ArrayList<>())
                     : Sleeper.REAL;
+            MaterialEffectService materialSvc = new MaterialEffectService(tenantId);
             RunStateMachine sm = new RunStateMachine(decider,
                     tee(events, store, monitor), recoverySleeper, Clock.systemUTC())
                     .withStepPlanner(id -> stepsByNode.getOrDefault(id, List.of()))
                     .withParamPlanner(id -> paramsByNode.getOrDefault(id, Map.of()))
                     // P-05：岛内没有该能力时，把"为什么没设备"写进节点原因
-                    .withNoDeviceReason(islandNoDevice::get);
+                    .withNoDeviceReason(islandNoDevice::get)
+                    // S2 §8.2 第 1 项：完成处理器唯一注入点（写执行确认四态）
+                    .withMaterialCompletion(r ->
+                            materialSvc.onNodeResolution(runId, r.nodeKey(), r));
             // 按图执行（含并行/异或网关）。
             // 之前这里走 executeAll，网关被忽略——批量验收用了 GraphRunner，
             // 于是出现"验收说 100%、产品路径却没有网关"的不一致。
