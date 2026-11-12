@@ -116,6 +116,14 @@ public final class MaterialEffectService {
         return null;
     }
 
+    /** §3.5 跨圈聚合：重算节点物料同步状态（最阻塞者优先）并写回汇总行。 */
+    public void recomputeNodeMaterialSync(long runId, String nodeKey) {
+        String sync = mapper.selectNodeMaterialSync(tenantId, runId, nodeKey);
+        if (sync != null) {
+            mapper.updateNodeMaterialSync(tenantId, runId, nodeKey, sync);
+        }
+    }
+
     /**
      * 对账（§3.6）：NEEDS_RECONCILIATION → 人工对账 → PENDING(completed) / CANCELLED(not_completed)。
      *
@@ -368,7 +376,8 @@ public final class MaterialEffectService {
             mapper.updateEffectStatus(tenantId, effectId, "PENDING", "APPLIED", null, null);
             mapper.insertAction(tenantId, effectId, "APPLY", "PENDING", "APPLIED",
                     "AUTO", null, null, "{}", null);
-            mapper.updateNodeMaterialSync(tenantId, sourceRunId, sourceNodeKey, "applied");
+            // §3.5 跨圈聚合：节点投影按最阻塞者重算（不硬编码 applied）
+            recomputeNodeMaterialSync(sourceRunId, sourceNodeKey);
 
             return MaterialOutcome.CONTINUE;
         });

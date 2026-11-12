@@ -172,6 +172,23 @@
            AND node_key = #{nodeKey} AND loop_index = 0
     </update>
 
+    <!-- §3.5 跨圈聚合：最阻塞者优先 -->
+    <select id="selectNodeMaterialSync" resultType="java.lang.String">
+        SELECT CASE
+                 WHEN count(*) FILTER (WHERE status = 'NEEDS_RECONCILIATION') &gt; 0
+                      THEN 'needs_reconciliation'
+                 WHEN count(*) FILTER (WHERE status = 'REJECTED') &gt; 0 THEN 'rejected'
+                 WHEN count(*) FILTER (WHERE status = 'FAILED') &gt; 0 THEN 'failed'
+                 WHEN count(*) FILTER (WHERE status = 'PENDING') &gt; 0 THEN 'pending'
+                 WHEN count(*) FILTER (WHERE status = 'CANCELLED') &gt; 0 THEN 'cancelled'
+                 WHEN count(*) &gt; 0 THEN 'applied'
+                 ELSE 'not_required'
+               END
+          FROM plate_material_effect
+         WHERE tenant_id = #{t} AND source_run_id = #{runId}
+           AND source_node_key = #{nodeKey}
+    </select>
+
     <!-- Worker：扫描到期 PENDING 效果（只选候选；领取由 applyEffect 的 FOR UPDATE 完成） -->
     <select id="selectDueEffectId" resultType="java.lang.Long">
         SELECT id FROM plate_material_effect

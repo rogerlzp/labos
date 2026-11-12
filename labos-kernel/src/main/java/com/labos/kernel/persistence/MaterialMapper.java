@@ -125,6 +125,11 @@ public interface MaterialMapper {
                                @Param("nodeKey") String nodeKey,
                                @Param("status") String status);
 
+    /** §3.5 跨圈聚合：节点所有圈次效果的最阻塞状态。 */
+    String selectNodeMaterialSync(@Param("t") long tenantId,
+                                  @Param("runId") long runId,
+                                  @Param("nodeKey") String nodeKey);
+
     /** Worker：扫描一个到期的 PENDING 效果（FOR UPDATE SKIP LOCKED 领取）。 */
     Long selectDueEffectId(@Param("t") long tenantId);
 
