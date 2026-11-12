@@ -130,6 +130,11 @@ public interface MaterialMapper {
                               @Param("plateId") long plateId,
                               @Param("expectedStateVersion") long expectedStateVersion);
 
+    /** rebase：更新 expected_state_version 为板当前版本 + FAILED→PENDING。 */
+    int updateEffectRebase(@Param("t") long tenantId,
+                           @Param("effectId") long effectId,
+                           @Param("expectedStateVersion") long expectedStateVersion);
+
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     Long selectEffectId(@Param("t") long tenantId,
                         @Param("runId") long runId,

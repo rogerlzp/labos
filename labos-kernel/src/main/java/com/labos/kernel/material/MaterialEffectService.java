@@ -118,6 +118,76 @@ public final class MaterialEffectService {
     }
 
     /**
+     * retry（§3.6）：FAILED（非 MAT_STATE_CONFLICT）→ PENDING，expected_state_version 不变。
+     */
+    public MaterialOutcome retry(long effectId, Long operatorUserId, String reason)
+            throws SQLException {
+        return Tx.inTransaction(db, c -> {
+            Map<String, Object> eff = mapper.selectEffectForUpdate(tenantId, effectId);
+            if (eff == null || !"FAILED".equals(String.valueOf(eff.get("status")))) {
+                return MaterialOutcome.CONTINUE;
+            }
+            if ("MAT_STATE_CONFLICT".equals(eff.get("lastErrorCode"))) {
+                return MaterialOutcome.HOLD;   // MAT_STATE_CONFLICT 只能 rebase，不能 retry
+            }
+            mapper.updateEffectStatus(tenantId, effectId, "FAILED", "PENDING", null, null);
+            mapper.insertAction(tenantId, effectId, "RETRY", "FAILED", "PENDING",
+                    "MANUAL", operatorUserId, reason, "{}", null);
+            return applyEffect(effectId);
+        });
+    }
+
+    /**
+     * rebase（§3.6）：FAILED + MAT_STATE_CONFLICT → PENDING，
+     * 把 expected_state_version 更新为板当前 state_version（板已被别处推进）。
+     */
+    public MaterialOutcome rebase(long effectId, Long operatorUserId, String reason)
+            throws SQLException {
+        return Tx.inTransaction(db, c -> {
+            Map<String, Object> eff = mapper.selectEffectForUpdate(tenantId, effectId);
+            if (eff == null || !"FAILED".equals(String.valueOf(eff.get("status")))) {
+                return MaterialOutcome.CONTINUE;
+            }
+            if (!"MAT_STATE_CONFLICT".equals(eff.get("lastErrorCode"))) {
+                return MaterialOutcome.HOLD;   // 非 MAT_STATE_CONFLICT 不 rebase
+            }
+            Long plateId = (Long) eff.get("plateId");
+            if (plateId == null) {
+                return MaterialOutcome.HOLD;
+            }
+            Long version = mapper.selectPlateStateVersion(tenantId, plateId);
+            if (version == null) {
+                return MaterialOutcome.HOLD;
+            }
+            mapper.updateEffectRebase(tenantId, effectId, version);
+            mapper.insertAction(tenantId, effectId, "REBASE", "FAILED", "PENDING",
+                    "MANUAL", operatorUserId, reason, "{}", null);
+            return applyEffect(effectId);
+        });
+    }
+
+    /**
+     * cancel（§3.6）：未应用效果 → CANCELLED（PENDING/FAILED/NEEDS_RECONCILIATION）。
+     */
+    public MaterialOutcome cancel(long effectId, Long operatorUserId, String reason)
+            throws SQLException {
+        return Tx.inTransaction(db, c -> {
+            Map<String, Object> eff = mapper.selectEffectForUpdate(tenantId, effectId);
+            if (eff == null) {
+                return MaterialOutcome.CONTINUE;
+            }
+            String status = String.valueOf(eff.get("status"));
+            if ("APPLIED".equals(status) || "CANCELLED".equals(status)) {
+                return MaterialOutcome.CONTINUE;   // 终态不可取消
+            }
+            mapper.updateEffectStatus(tenantId, effectId, status, "CANCELLED", null, null);
+            mapper.insertAction(tenantId, effectId, "CANCEL", status, "CANCELLED",
+                    "MANUAL", operatorUserId, reason, "{}", null);
+            return MaterialOutcome.CONTINUE;
+        });
+    }
+
+    /**
      * Worker：处理一个到期的 PENDING 效果（单次）。
      *
      * @return true=处理了一个；false=无到期效果
