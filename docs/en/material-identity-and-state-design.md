@@ -1,4 +1,14 @@
-# Material Identity and State · Design (v3.3 · S0 freeze candidate)
+# Material Identity and State · Design (v3.3 · design asset, **not** the implementation baseline)
+
+> ⚠ **Mirroring notice (2026-11-12)**: this file mirrors the Chinese **v3.3**
+> (`docs/物料身份与状态-设计.md`), which is kept as a **design asset / reference draft** only.
+> The **S0-design and S1 implementation baseline** has moved to
+> **`docs/物料身份与状态-设计-v4.md` (v4.2 · frozen)** — see
+> `docs/评审记录/20261112-12-mavis.md` for the tenth-round review that froze it.
+> This English mirror has **not** been re-synced to v4/v4.2 (deferred item **D10**:
+> pages / English mirror). Any statement below that reads "S0 freeze candidate" refers to
+> v3.3's historical status and **must not** be used as the freeze decision for S1.
+> **Implementation rule: the Chinese v4.2 is authoritative; this file is out of date by design.**
 
 > **Status**: **pending re-review confirmation** (v1 2026-11-11 → v2 merged three **reviews** →
 > v3 merged three independent **designs** → v3.1 merged the fourth-round review O-1…O-9 →
