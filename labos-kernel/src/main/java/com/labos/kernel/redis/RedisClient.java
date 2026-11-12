@@ -41,7 +41,16 @@ public final class RedisClient implements AutoCloseable {
         RedisURI uri = b.build();
         uri.setTimeout(java.time.Duration.ofSeconds(5));
         this.client = io.lettuce.core.RedisClient.create(uri);
-        this.connection = client.connect(StringCodec.UTF8);
+        // connect 失败必须 shutdown 掉 client：Lettuce 内部持有 Netty EventLoopGroup，
+        // 反复失败又不释放会累积线程/句柄，把「一次连不上」放大成「永远连不上」。
+        final StatefulRedisConnection<String, String> conn;
+        try {
+            conn = client.connect(StringCodec.UTF8);
+        } catch (RuntimeException e) {
+            client.shutdown();
+            throw e;
+        }
+        this.connection = conn;
         this.sync = connection.sync();
     }
 

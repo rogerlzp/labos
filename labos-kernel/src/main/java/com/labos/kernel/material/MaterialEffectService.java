@@ -79,10 +79,15 @@ public final class MaterialEffectService {
                     int written = mapper.updateNodeResolutionIfUnresolved(
                             tenantId, runId, nodeKey, "completed",
                             "device_ack", "{\"source\":\"execution\"}");
-                    if (written == 0) {
-                        // 已有终态确认：只补记录，禁止重新创建效果意图（§3.2 禁止重跑设备）
+                    if (written == 0 && r.loopIndex() <= 1) {
+                        // 已有终态确认且不是多圈：只补记录，禁止重新创建效果意图
+                        // （§3.2 禁止重跑设备）。
                         return -1L;
                     }
+                    // 多圈（loopIndex>=2）时汇总行早已 completed，CAS 必然 0 行，
+                    // 但**每圈都要有一条 Effect**（R13-06）—— 效果是圈级数据，
+                    // 执行确认是节点级数据，两者不能共用一个「写一次」的判断。
+                    // 同圈重复调用由唯一键 (run,node,loop_index,effect_index) 兜住。
                     return recordEffectIntent(runId, nodeKey, r.loopIndex());
                 }
                 if (r.resolution() == ExecutionResolution.FAILED_CONFIRMED) {

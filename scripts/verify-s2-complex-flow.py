@@ -312,11 +312,15 @@ def assert_loop(ev):
     eff = [x for x in ev["effects"].splitlines() if x.strip()]
     print("  循环体节点行：%s" % [x for x in ev["nodes"].splitlines() if x.startswith("C1|")])
     print("  Effect 行：%s" % eff)
-    if len(eff) <= 1:
-        skip("CF-L2 多圈只有 1 个 Effect（R13-06 已知缺口，实证复现）",
-             "节点行=%d Effect=%d" % (rounds, len(eff)))
+    laps = sorted({x.split("|")[1] for x in eff if "|" in x})
+    if len(eff) >= 3 and laps == ["1", "2", "3"]:
+        ok("CF-L2 循环每圈各留一条 Effect（R13-06 已修）",
+           "loop_index=%s，共 %d 条" % (laps, len(eff)))
+    elif len(eff) <= 1:
+        bad("CF-L2 多圈只有 1 个 Effect（R13-06 回归）",
+            "节点行=%d Effect=%d" % (rounds, len(eff)))
     else:
-        ok("CF-L2 每圈都有 Effect", "%d 条" % len(eff))
+        bad("CF-L2 圈次不完整", "loop_index=%s 共 %d 条" % (laps, len(eff)))
 
 
 # ---------------------------------------------------------------- main

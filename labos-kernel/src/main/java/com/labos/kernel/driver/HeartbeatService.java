@@ -313,7 +313,10 @@ public final class HeartbeatService {
                     log.info("[心跳] 已接入 Redis：设备在线状态**完全以 Redis 为准**"
                             + "（key = labos:link:<设备ID>:<设备IP>:<端口>，由 tcp client 写）");
                 } catch (RuntimeException e) {
-                    log.warn("[心跳] Redis 不可用，设备一律判离线：" + e.getMessage());
+                    // 必须打完整堆栈：Lettuce/Netty 的初始化失败只留一行 message
+                    // （如 "failed to create a child event loop"）时，真正原因在 cause 里，
+                    // 只打 getMessage() 会让这类故障无法定位（2026-11-12 实测踩到）。
+                    log.warn("[心跳] Redis 不可用，设备一律判离线", e);
                     redis = null;
                 }
             }

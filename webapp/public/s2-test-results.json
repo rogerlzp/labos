@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-11-12T16:08:18+08:00",
+  "generatedAt": "2026-11-12T19:45:39+08:00",
   "command": "python3 scripts/verify-s2-material.py --layer all",
   "pass": 22,
   "fail": 0,
-  "skip": 1,
+  "skip": 4,
   "results": [
     {
       "id": "TC-T1-01",
@@ -15,7 +15,7 @@
       "id": "TC-T1-02",
       "status": "pass",
       "message": "TC-T1-02 B10（ACKED 已落、run_command 未落）命中",
-      "detail": "BASE=0 → B10=1"
+      "detail": "BASE=0 → B10=4"
     },
     {
       "id": "TC-T1-04",
@@ -50,14 +50,32 @@
     {
       "id": "TC-T1-09",
       "status": "pass",
-      "message": "TC-T1-09 除 Q18 外 19 条全部 0 行",
+      "message": "TC-T1-09 除 Q18 外 16 条全部 0 行",
       "detail": ""
     },
     {
       "id": "TC-T1-09",
       "status": "skip",
-      "message": "TC-T1-09 Q18 迁移后不应再出现的 legacy 组合（S1 迁移前会命中旧行，迁移后必须 0） 命中（已知口径冲突，已登记 R13-22，待 CR）",
-      "detail": "3 行: ['1001333|S1|0', '1001333|T2|0', '1001333|S2|0']"
+      "message": "TC-T1-09 Q3 effect → 本 run 的 run_node（node_key + 圈次） 命中（已知：历史数据 run 1001345（修复过程中的一次性错误写入））",
+      "detail": "3 行: ['34', '32', '33']"
+    },
+    {
+      "id": "TC-T1-09",
+      "status": "skip",
+      "message": "TC-T1-09 Q11 事件 source_node → run_node（同 run + 圈次） 命中（已知：历史数据 run 1001345（修复过程中的一次性错误写入））",
+      "detail": "3 行: ['26', '24', '25']"
+    },
+    {
+      "id": "TC-T1-09",
+      "status": "skip",
+      "message": "TC-T1-09 Q15b 节点聚合投影可从 Effect 集合重建核对（不一致即告警） 命中（已知：R13-23 口径冲突）",
+      "detail": "4 行: ['1001348|C1|2|not_required', '1001348|C1|3|not_required', '1001348|C1|1|not_required']"
+    },
+    {
+      "id": "TC-T1-09",
+      "status": "skip",
+      "message": "TC-T1-09 Q18 迁移后不应再出现的 legacy 组合（S1 迁移前会命中旧行，迁移后必须 0） 命中（已知：R13-22 口径冲突）",
+      "detail": "93 行: ['1001339|S1|0', '1001342|S1|0', '1001339|S2|0']"
     },
     {
       "id": "TC-P-01",
@@ -81,7 +99,7 @@
       "id": "TC-P-03",
       "status": "pass",
       "message": "TC-P-03 页面内 GET run material-effects",
-      "detail": "0 条"
+      "detail": "3 条"
     },
     {
       "id": "TC-P-12",

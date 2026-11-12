@@ -676,7 +676,11 @@ public final class GraphRunner {
                 // 评审 20261112-13 / 复杂流程实证：把本圈 visit 透传到 StepContext，
                 // 让命令账本幂等键能区分圈次。第 1 圈 visit=1 与旧行为一致（不拼后缀），
                 // 第 2 圈起才加 |vN，因此非循环流程的 key 完全不变。
-                final int round = visit;
+                // 圈次口径：只有**真有回边**的图才有圈次行（loop_index=1..N），
+                // 无环图的 visit 恒为 1 但没有对应 run_node 行 —— 若把 1 传给物料，
+                // Effect.source_loop_index=1 会破坏 Q3（effect → run_node 按 node_key+loop_index）。
+                // 命令账本 key 只看 loopIndex>1，所以无环图传 0 不影响幂等。
+                final int round = graphHasCycle ? visit : 0;
                 StepExecutor roundAware = c -> executor.execute(c.withLoopIndex(round));
                 // R13-06：完成处理器也要拿到圈次，才能把 Effect 写到真实的
                 // source_loop_index（执行确认仍写 loop_index=0 的汇总行）。
