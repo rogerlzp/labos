@@ -1,6 +1,6 @@
 {
   "command": "python3 scripts/verify-s2-fault-injection.py",
-  "pass": 13,
+  "pass": 15,
   "fail": 1,
   "skip": 3,
   "results": [
@@ -52,12 +52,22 @@
     {
       "case": "B7-1 not_completed → CANCELLED + RECONCILE action",
       "status": "pass",
-      "detail": "effect=96"
+      "detail": "effect=112"
     },
     {
       "case": "B7-2 completed → 转 PENDING 并尝试 T2 + RECONCILE action",
       "status": "pass",
-      "detail": "effect=97 终态=APPLIED"
+      "detail": "effect=113 终态=APPLIED"
+    },
+    {
+      "case": "B9 声明快照续跑幂等（重复 INSERT 仍只有 1 行）",
+      "status": "pass",
+      "detail": "ON CONFLICT DO NOTHING"
+    },
+    {
+      "case": "B8 续跑守卫命中有 command_ledger 证据的未完成节点",
+      "status": "pass",
+      "detail": "countResumeGuardHits>0"
     },
     {
       "case": "C1-1 PENDING effect 计入闸门阻断（countGateBlockers > 0）",

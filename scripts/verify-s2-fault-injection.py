@@ -347,6 +347,52 @@ def group_b7():
                     _sv, plate), stop=False)
 
 
+# ---------------------------------------------------------------- B9 / B8
+def group_b9_b8():
+    print("\n── B9 续跑撞唯一键（声明快照 ON CONFLICT DO NOTHING）──")
+    r = q("BEGIN;"
+          " INSERT INTO run_material_effect_declaration (tenant_id, run_id, node_key, effect_index,"
+          "   declaration, declaration_hash) VALUES (1, 999003, 'B9-N', 0,"
+          "   '{\"mode\":\"transition\"}'::jsonb, repeat('a',64))"
+          " ON CONFLICT (tenant_id, run_id, node_key, effect_index) DO NOTHING;"
+          " INSERT INTO run_material_effect_declaration (tenant_id, run_id, node_key, effect_index,"
+          "   declaration, declaration_hash) VALUES (1, 999003, 'B9-N', 0,"
+          "   '{\"mode\":\"transition\"}'::jsonb, repeat('a',64))"
+          " ON CONFLICT (tenant_id, run_id, node_key, effect_index) DO NOTHING;"
+          " SELECT 'N=' || count(*) FROM run_material_effect_declaration"
+          "   WHERE tenant_id=1 AND run_id=999003 AND node_key='B9-N' AND effect_index=0;"
+          " ROLLBACK;").splitlines()
+    n = [l for l in r if l.startswith("N=")]
+    if n and n[-1].strip() == "N=1":
+        ok("B9 声明快照续跑幂等（重复 INSERT 仍只有 1 行）", "ON CONFLICT DO NOTHING")
+    else:
+        bad("B9 声明快照幂等", str(r[-3:]))
+
+    print("\n── B8 续跑守卫（有派发证据的未完成节点不删除）──")
+    run_id = q("SELECT id FROM run WHERE status NOT IN ('completed','failed','aborted','cancelled') ORDER BY id DESC LIMIT 1")
+    if not run_id:
+        skip("B8 续跑守卫", "库内无未终态 run")
+        return
+    r2 = q("BEGIN;"
+           " INSERT INTO run_node (tenant_id, run_id, node_key, name, level, status, loop_index,"
+           "   node_type, execution_resolution_status) VALUES"
+           " (1, %s, 'B8-N', '守卫测试', 0, 'running', 0, 'task', 'unresolved');"
+           " INSERT INTO command_ledger (tenant_id, idempotency_key, run_id, node_id, attempt, step_seq,"
+           "   device_id, method, state) VALUES"
+           " (1, 'r%s|n-1|a0|s1|d1|mHome', %s, (SELECT id FROM run_node WHERE run_id=%s AND node_key='B8-N'),"
+           "   0, 1, 1, 'Home', 'UNKNOWN');"
+           " SELECT 'H=' || count(*) FROM run_node n WHERE n.tenant_id=1 AND n.run_id=%s AND n.level=0"
+           "   AND n.status <> 'completed' AND (n.execution_resolution_status='reconciliation_required'"
+           "   OR EXISTS (SELECT 1 FROM command_ledger cl LEFT JOIN workflow_node wn ON wn.id=cl.node_id"
+           "     WHERE cl.tenant_id=n.tenant_id AND cl.run_id=n.run_id AND (wn.node_key=n.node_key OR cl.node_id=n.id)));"
+           " ROLLBACK;" % (run_id, run_id, run_id, run_id, run_id)).splitlines()
+    h = [l for l in r2 if l.startswith("H=")]
+    if h and h[-1].strip() == "H=1":
+        ok("B8 续跑守卫命中有 command_ledger 证据的未完成节点", "countResumeGuardHits>0")
+    else:
+        bad("B8 续跑守卫", str(r2[-3:]))
+
+
 # ---------------------------------------------------------------- C1
 def group_c1():
     print("\n── C1 闸门：未闭环 effect 必须计入阻断 ──")
@@ -438,6 +484,7 @@ def main():
         group_b5()
         group_b6()
         group_b7()
+        group_b9_b8()
         group_c1()
         group_d2_d6()
         group_d8_d9()
