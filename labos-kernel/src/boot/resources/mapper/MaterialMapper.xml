@@ -68,6 +68,7 @@
          WHERE tenant_id = #{t}
            AND run_id = #{runId}
            AND node_key = #{nodeKey}
+           AND loop_index = 0
     </update>
 
     <!-- 读声明快照 -->
