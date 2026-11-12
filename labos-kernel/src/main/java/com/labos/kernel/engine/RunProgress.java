@@ -14,6 +14,8 @@ public final class RunProgress {
 
     private final Map<Long, NodeProgress> nodes = new LinkedHashMap<>();
     private boolean aborted;
+    /** §3.1：完成处理器返回 HOLD（物理完成、物料未闭环）⇒ run 进 paused(material_sync)。 */
+    private boolean materialHold;
 
     public NodeProgress node(long nodeId) {
         return nodes.computeIfAbsent(nodeId, NodeProgress::new);
@@ -29,6 +31,14 @@ public final class RunProgress {
 
     void markAborted() {
         this.aborted = true;
+    }
+
+    public boolean materialHold() {
+        return materialHold;
+    }
+
+    void markMaterialHold() {
+        this.materialHold = true;
     }
 
     /**

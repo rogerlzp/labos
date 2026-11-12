@@ -50,6 +50,8 @@ public final class RunStateMachine {
      * "岛内没有具备该能力的设备" —— 注入它，运营就不用猜。
      */
     private java.util.function.Function<String, String> noDeviceReason;
+    /** §3.1 完成处理器注入点（默认 NOOP=未接入；主链路在 WorkflowService 接入）。 */
+    private MaterialCompletion materialCompletion = MaterialCompletion.NOOP;
 
     public RunStateMachine(RecoveryDecider decider) {
         this(decider, ExecutionListener.NOOP, Sleeper.REAL, Clock.systemUTC());
@@ -74,7 +76,7 @@ public final class RunStateMachine {
                 break;
             }
             NodeStatus st = executeNode(node, progress, executor);
-            if (st == NodeStatus.ABORTED || st == NodeStatus.MANUAL) {
+            if (st == NodeStatus.ABORTED || st == NodeStatus.MANUAL || progress.materialHold()) {
                 break;
             }
         }
@@ -109,7 +111,16 @@ public final class RunStateMachine {
                         stepsOf(node), paramsOf(node)));
                 np.setStatus(NodeStatus.COMPLETED);
                 emit(node, EventType.NODE_COMPLETED, "attempt=" + np.attempt());
+                invokeMaterialHandler(node, ExecutionResolution.COMPLETED, null, progress);
                 return NodeStatus.COMPLETED;
+
+            } catch (RuntimeException escape) {
+                // 第 7 个物理出口（§8.2 第 1 项 / S10-03）：非 StepFailure 的
+                // RuntimeException 逃逸出 executeNode。设备可能已动作但物料未闭环 ⇒
+                // 先写执行确认（保守 reconciliation_required）再落 failed，不得直接标 failed。
+                invokeMaterialHandler(node,
+                        ExecutionResolution.classify(null, null), null, progress);
+                throw escape;
 
             } catch (StepFailure f) {
                 np.setLastErrorCode(f.errorCode());
@@ -171,6 +182,21 @@ public final class RunStateMachine {
         }
     }
 
+    /** 在节点执行结果边界调用完成处理器；HOLD 写回 progress，处理器异常向上抛（中止执行）。 */
+    private void invokeMaterialHandler(RecoverableNode node, ExecutionResolution resolution,
+                                       String errorCode, RunProgress progress) {
+        try {
+            MaterialOutcome outcome = materialCompletion.onNodeComplete(
+                    NodeResolution.of(node.id(), node.key(), resolution, errorCode));
+            if (outcome == MaterialOutcome.HOLD) {
+                progress.markMaterialHold();
+            }
+        } catch (RuntimeException ex) {
+            errorf("[执行确认] 完成处理器异常（中止执行）: %s%n", ex.toString());
+            throw ex;
+        }
+    }
+
     private boolean sleep(long millis) {
         if (millis <= 0) {
             return true;
@@ -205,6 +231,12 @@ public final class RunStateMachine {
     public RunStateMachine withNoDeviceReason(
             java.util.function.Function<String, String> reasonProvider) {
         this.noDeviceReason = reasonProvider;
+        return this;
+    }
+
+    /** 注入完成处理器（§3.1 唯一注入点）；不调则默认 NOOP（CONTINUE）。 */
+    public RunStateMachine withMaterialCompletion(MaterialCompletion completion) {
+        this.materialCompletion = completion == null ? MaterialCompletion.NOOP : completion;
         return this;
     }
 
