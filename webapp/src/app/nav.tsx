@@ -83,6 +83,8 @@ export const NAV: NavGroup[] = [
       { key: '/policies', labelKey: 'nav.policies' },
       { key: '/variables', labelKey: 'nav.variables' },
       { key: '/error-codes', labelKey: 'nav.errorCodes' },
+      // S2 物料身份与状态验收：用例清单 + 页面内运行 + 脚本结果回填
+      { key: '/s2-test-cases', labelKey: 'nav.s2TestCases' },
     ],
   },
   {

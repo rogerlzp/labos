@@ -1,0 +1,147 @@
+{
+  "generatedAt": "2026-11-12T16:08:18+08:00",
+  "command": "python3 scripts/verify-s2-material.py --layer all",
+  "pass": 22,
+  "fail": 0,
+  "skip": 1,
+  "results": [
+    {
+      "id": "TC-T1-01",
+      "status": "pass",
+      "message": "TC-T1-01 守卫 SQL 原样执行成功",
+      "detail": "BASE=0"
+    },
+    {
+      "id": "TC-T1-02",
+      "status": "pass",
+      "message": "TC-T1-02 B10（ACKED 已落、run_command 未落）命中",
+      "detail": "BASE=0 → B10=1"
+    },
+    {
+      "id": "TC-T1-04",
+      "status": "pass",
+      "message": "TC-T1-04 reconciliation_required 节点命中",
+      "detail": "BASE=0 → RECON=1"
+    },
+    {
+      "id": "TC-T1-06",
+      "status": "pass",
+      "message": "TC-T1-06 执行确认 CAS 单向写：completed 未被覆盖",
+      "detail": ""
+    },
+    {
+      "id": "TC-T1-03",
+      "status": "pass",
+      "message": "TC-T1-03 run_command 挂 level=1 步骤行时命中",
+      "detail": "BASE=0 → 1"
+    },
+    {
+      "id": "TC-T1-08",
+      "status": "pass",
+      "message": "TC-T1-08 两条查询索引已落地",
+      "detail": ""
+    },
+    {
+      "id": "TC-T1-07",
+      "status": "pass",
+      "message": "TC-T1-07 人工改状态锁序 SQL 可执行",
+      "detail": "plate=1000006 pending=0"
+    },
+    {
+      "id": "TC-T1-09",
+      "status": "pass",
+      "message": "TC-T1-09 除 Q18 外 19 条全部 0 行",
+      "detail": ""
+    },
+    {
+      "id": "TC-T1-09",
+      "status": "skip",
+      "message": "TC-T1-09 Q18 迁移后不应再出现的 legacy 组合（S1 迁移前会命中旧行，迁移后必须 0） 命中（已知口径冲突，已登记 R13-22，待 CR）",
+      "detail": "3 行: ['1001333|S1|0', '1001333|T2|0', '1001333|S2|0']"
+    },
+    {
+      "id": "TC-P-01",
+      "status": "pass",
+      "message": "TC-P-01 登录 API 取得 token",
+      "detail": ""
+    },
+    {
+      "id": "TC-P-01",
+      "status": "pass",
+      "message": "TC-P-01 页面登录成功",
+      "detail": "http://localhost:5173/runs"
+    },
+    {
+      "id": "TC-P-02",
+      "status": "pass",
+      "message": "TC-P-02 页面内 GET material-gate",
+      "detail": "blockers=0"
+    },
+    {
+      "id": "TC-P-03",
+      "status": "pass",
+      "message": "TC-P-03 页面内 GET run material-effects",
+      "detail": "0 条"
+    },
+    {
+      "id": "TC-P-12",
+      "status": "pass",
+      "message": "TC-P-12 两个端点口径一致",
+      "detail": ""
+    },
+    {
+      "id": "TC-P-04",
+      "status": "pass",
+      "message": "TC-P-04 页面内 GET material-effects?status=PENDING",
+      "detail": "0 条"
+    },
+    {
+      "id": "TC-P-05",
+      "status": "pass",
+      "message": "TC-P-05 版本冲突 409 且不写任何行",
+      "detail": "plate=PL-TRACE-2183"
+    },
+    {
+      "id": "TC-P-06",
+      "status": "pass",
+      "message": "TC-P-06 缺 reason → 400",
+      "detail": ""
+    },
+    {
+      "id": "TC-P-07",
+      "status": "pass",
+      "message": "TC-P-07 缺 reason → 400（参数校验先于业务）",
+      "detail": ""
+    },
+    {
+      "id": "TC-P-08",
+      "status": "pass",
+      "message": "TC-P-08 HOLD 返回码统一",
+      "detail": "HTTP 200 outcome=CONTINUE"
+    },
+    {
+      "id": "TC-P-09",
+      "status": "pass",
+      "message": "TC-P-09 /quarantined 页面加载无 JS 报错",
+      "detail": ""
+    },
+    {
+      "id": "TC-P-10",
+      "status": "pass",
+      "message": "TC-P-10 /paused 页面加载无 JS 报错",
+      "detail": ""
+    },
+    {
+      "id": "TC-P-11",
+      "status": "pass",
+      "message": "TC-P-11 run 详情页加载无 JS 报错",
+      "detail": ""
+    },
+    {
+      "id": "TC-P-13",
+      "status": "pass",
+      "message": "TC-P-13 测试用例台页面可见且脚本结果已回填",
+      "detail": "27 行用例"
+    }
+  ]
+}

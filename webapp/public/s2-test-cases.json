@@ -1,0 +1,35 @@
+{
+  "source": "docs/页面实操验证报告-S2物料身份与状态-20261112.md",
+  "review": "docs/评审记录/20261112-13-hunyuan.md",
+  "cases": [
+    { "id": "TC-T0-00", "layer": "T0", "title": "全量纯逻辑回归", "opinion": "全量", "mode": "script", "note": "scripts/test-all.sh --pure-only 通过 N / 失败 0" },
+    { "id": "TC-T0-01", "layer": "T0", "title": "完成处理器写成功后抛异常不二次写确认", "opinion": "R13-02", "mode": "script", "note": "完成处理器只调用 1 次，completed 未被覆盖" },
+    { "id": "TC-T0-02", "layer": "T0", "title": "顺序路径闸门命中", "opinion": "R13-01", "mode": "script", "note": "设备零调用且 materialHold=true" },
+    { "id": "TC-T0-03", "layer": "T0", "title": "顺序路径闸门放行不误伤", "opinion": "R13-01", "mode": "script", "note": "两节点正常执行" },
+    { "id": "TC-T0-04", "layer": "T0", "title": "预检规则 2/3/6/8 + WARN 分级", "opinion": "R13-11", "mode": "script", "note": "ME_TARGET_MISSING / ME_SET_EMPTY / ME_MULTI_EFFECT / ME_EVIDENCE_OVERRIDE(WARN)" },
+
+    { "id": "TC-T1-01", "layer": "T1", "title": "守卫 SQL 原样执行成功", "opinion": "R13-03", "mode": "script", "note": "从 RunMapper.xml 抽取真实 SQL" },
+    { "id": "TC-T1-02", "layer": "T1", "title": "B10：ACKED 已落、run_command 未落时守卫命中", "opinion": "R13-03", "mode": "script", "note": "设计 §7.2 B10；修复前 cl.node_id 错位会漏" },
+    { "id": "TC-T1-03", "layer": "T1", "title": "run_command 挂 level=1 步骤行时命中", "opinion": "R13-03", "mode": "script", "note": "修复前层级错位会漏" },
+    { "id": "TC-T1-04", "layer": "T1", "title": "reconciliation_required 节点无需派发证据也命中", "opinion": "R13-03", "mode": "script", "note": "§3.6 续跑守卫条件" },
+    { "id": "TC-T1-05", "layer": "T1", "title": "无派发证据的未完成节点不误拦", "opinion": "R13-03", "mode": "script", "note": "由 TC-T1-01 的 BASE=0 隐含覆盖" },
+    { "id": "TC-T1-06", "layer": "T1", "title": "执行确认 CAS 单向写", "opinion": "R13-02", "mode": "script", "note": "completed 与物理证据三件套不被覆盖" },
+    { "id": "TC-T1-07", "layer": "T1", "title": "人工改状态锁序 SQL 可执行", "opinion": "R13-10", "mode": "script", "note": "effect→plate 同序，FOR UPDATE 语法有效" },
+    { "id": "TC-T1-08", "layer": "T1", "title": "两条查询索引已落地", "opinion": "R13-16", "mode": "script", "note": "ix_plate_process_state / ix_pme_effect_plate" },
+    { "id": "TC-T1-09", "layer": "T1", "title": "巡检 Q1-Q18 引用完整性", "opinion": "R13-22", "mode": "script", "note": "Q18 命中已登记为口径冲突，单列已知问题" },
+
+    { "id": "TC-P-01", "layer": "T2", "title": "登录态可用", "opinion": "—", "mode": "browser", "note": "页面已登录，token 存在" },
+    { "id": "TC-P-02", "layer": "T2", "title": "页面内 GET /api/runs/{id}/material-gate", "opinion": "R13-09", "mode": "browser", "note": "200 且含 runId / blocked / blockerCount / effects" },
+    { "id": "TC-P-03", "layer": "T2", "title": "页面内 GET /api/runs/{id}/material-effects", "opinion": "R13-09", "mode": "browser", "note": "200 且返回数组" },
+    { "id": "TC-P-04", "layer": "T2", "title": "页面内 GET /api/material-effects?status=PENDING", "opinion": "R13-09", "mode": "browser", "note": "200 且返回数组" },
+    { "id": "TC-P-05", "layer": "T2", "title": "人工改状态版本冲突 409 且不写任何行", "opinion": "R13-09", "mode": "script", "note": "需要真实 barcode，由 Python 脚本跑" },
+    { "id": "TC-P-06", "layer": "T2", "title": "人工改状态缺 reason → 400", "opinion": "R13-09", "mode": "script", "note": "需要真实 barcode，由 Python 脚本跑" },
+    { "id": "TC-P-07", "layer": "T2", "title": "retry 缺 reason → 400", "opinion": "R13-08", "mode": "browser", "note": "参数校验先于权限与业务" },
+    { "id": "TC-P-08", "layer": "T2", "title": "HOLD 返回码统一", "opinion": "R13-15", "mode": "browser", "note": "200/409 且响应结构一致" },
+    { "id": "TC-P-09", "layer": "T2", "title": "/quarantined 页面可加载", "opinion": "—", "mode": "browser", "note": "SPA 路由返回 200" },
+    { "id": "TC-P-10", "layer": "T2", "title": "/paused 页面可加载", "opinion": "—", "mode": "browser", "note": "SPA 路由返回 200" },
+    { "id": "TC-P-11", "layer": "T2", "title": "run 详情页可加载", "opinion": "—", "mode": "browser", "note": "SPA 路由返回 200" },
+    { "id": "TC-P-12", "layer": "T2", "title": "material-gate 与 material-effects 口径一致", "opinion": "R13-09", "mode": "browser", "note": "effects 条数一致" },
+    { "id": "TC-P-13", "layer": "T2", "title": "测试用例台页面可见且脚本结果已回填", "opinion": "—", "mode": "script", "note": "/s2-test-cases 26 条用例 + 结果标签；由页面轨脚本检查" }
+  ]
+}
