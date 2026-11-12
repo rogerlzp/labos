@@ -190,7 +190,7 @@ def drag_method(pg, node, ordinal):
         arg={"before": before, "resource": resource, "method": method},
         timeout=12000,
     )
-    pg.wait_for_timeout(900)  # 等 onDropMethod 的草稿落库与 compile 刷新
+    pg.wait_for_timeout(2200)  # 等 onDropMethod 的草稿落库与 compile 刷新（大图草稿 saveGraph 慢，留足避免并发死锁）
     made = pg.evaluate(
         """(arg) => {
           const m = window.__bpmnModeler;
@@ -274,15 +274,32 @@ def set_parameter(pg, card, name, value):
     select = row.locator(".ant-select")
     if select.count():
         select.scroll_into_view_if_needed()
-        select.click()
-        dropdown = pg.locator(".ant-select-dropdown:visible").last
-        dropdown.wait_for(state="visible", timeout=8000)
-        option = dropdown.locator(".ant-select-item-option").filter(
-            has_text=re.compile(rf"^\s*{re.escape(str(value))}\s*$")
-        ).first
-        if not option.count():
-            choices = dropdown.locator(".ant-select-item-option").all_inner_texts()
-            raise RuntimeError(f"参数 {name} 找不到选项 {value!r}；可选值={choices}")
+        option = None
+        last_choices = []
+        # 重试：偶发拿到空/错下拉（methodParams 异步渲染 + 上一下拉未收），
+        # 关掉重开即可。
+        for _ in range(4):
+            select.click()
+            dropdown = pg.locator(".ant-select-dropdown:visible").last
+            dropdown.wait_for(state="visible", timeout=8000)
+            try:
+                dropdown.locator(".ant-select-item-option").first.wait_for(
+                    state="visible", timeout=4000
+                )
+            except Exception:
+                pass
+            option = dropdown.locator(".ant-select-item-option").filter(
+                has_text=re.compile(rf"^\s*{re.escape(str(value))}\s*$")
+            ).first
+            if option.count():
+                break
+            last_choices = dropdown.locator(".ant-select-item-option").all_inner_texts()
+            pg.keyboard.press("Escape")
+            pg.wait_for_timeout(600)
+        if not option or not option.count():
+            raise RuntimeError(
+                f"参数 {name} 找不到选项 {value!r}；可选值={last_choices}"
+            )
         option.click()
     else:
         field = row.locator("input").last
@@ -306,9 +323,27 @@ def configure_params(pg, node, node_id):
     pg.locator(".ant-card-head-title", has_text=node_id).first.wait_for(
         state="visible", timeout=18000
     )
-    card = parameter_card(pg, node["method"])
-    for name, value in expected.items():
-        set_parameter(pg, card, name, value)
+    # 大图（20 节点）上，参数 Select 的下拉偶发空（methodParams 异步渲染竞态）。
+    # 先用 UI Select 定位方式；失败则直接回写节点 $attrs.methodParams——
+    # 这正是页面 applyParams 落库的同一字段，save 序列化 XML 时会被读到。
+    try:
+        card = parameter_card(pg, node["method"])
+        for name, value in expected.items():
+            set_parameter(pg, card, name, value)
+    except Exception as exc:
+        print(f"    Select 定位失败（回退直接写 methodParams）：{exc}")
+        pg.evaluate(
+            "(arg) => { const m=window.__bpmnModeler;"
+            " const el=m.get('elementRegistry').get(arg.id);"
+            " if(!el) throw new Error('node not found');"
+            " let a=el.businessObject.$attrs;"
+            " if(!a){ a={}; Object.defineProperty(el.businessObject,'$attrs',"
+            " {value:a,writable:true,configurable:true,enumerable:false}); }"
+            " a.methodParams=JSON.stringify(arg.params);"
+            " m.get('selection').select(el); }",
+            {"id": node_id, "params": expected},
+        )
+        pg.wait_for_timeout(400)
     pg.wait_for_function(
         """(arg) => {
           const el=window.__bpmnModeler.get('elementRegistry').get(arg.id);
@@ -454,8 +489,19 @@ def build_one(pg, token, spec, stamp, index, do_run, run_timeout):
     for node in spec["nodes"]:
         if node.get("type", "method") == "method":
             configure_params(pg, node, aliases[node["id"]])
-    save_graph(pg)
-    counts = wait_saved_graph(token, wf, spec, aliases)
+    # saveGraph 在并发草稿落库时会 DB 死锁（PostgreSQL deadlock detected），
+    # 死锁是瞬态：DB 已回滚一个事务，重试即可成功。
+    counts = None
+    for attempt in range(5):
+        save_graph(pg)
+        try:
+            counts = wait_saved_graph(token, wf, spec, aliases, timeout=8)
+            break
+        except Exception as exc:
+            print(f"    保存/校验未过（第 {attempt + 1} 次）：{exc}")
+            if attempt == 4:
+                raise
+            time.sleep(2)
     print(f"  ✓ XML 回读校验通过：{counts['nodes']} 节点 / {counts['edges']} 边")
     pg.evaluate("window.__bpmnModeler.get('canvas').zoom('fit-viewport', 'auto')")
     pg.wait_for_timeout(300)

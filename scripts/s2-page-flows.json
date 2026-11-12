@@ -4,17 +4,41 @@
     "name": "页面批量-离心到封膜",
     "island": "LAB-BASE-01",
     "nodes": [
-      { "id": "S", "type": "start", "x": 160, "y": 260 },
       {
-        "id": "T", "type": "method", "resourceId": "200231", "code": "ID-X231",
-        "method": "Transfer", "x": 500, "y": 260,
-        "params": { "source": "ID-ASPIN_2K-1", "target": "ID-S100-1" }
+        "id": "S",
+        "type": "start",
+        "x": 160,
+        "y": 260
       },
-      { "id": "E", "type": "end", "x": 840, "y": 260 }
+      {
+        "id": "T",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 500,
+        "y": 260,
+        "params": {
+          "source": "ID-ASPIN_2K-1",
+          "target": "ID-S100-1"
+        }
+      },
+      {
+        "id": "E",
+        "type": "end",
+        "x": 840,
+        "y": 260
+      }
     ],
     "edges": [
-      { "from": "S", "to": "T" },
-      { "from": "T", "to": "E" }
+      {
+        "from": "S",
+        "to": "T"
+      },
+      {
+        "from": "T",
+        "to": "E"
+      }
     ]
   },
   {
@@ -22,26 +46,76 @@
     "name": "页面批量-双机器人分支",
     "island": "LAB-BASE-01",
     "nodes": [
-      { "id": "S", "type": "start", "x": 140, "y": 260 },
-      { "id": "P", "type": "exclusive", "name": "XOR_SPLIT", "x": 330, "y": 260 },
       {
-        "id": "R1", "type": "method", "resourceId": "200231", "code": "ID-X231",
-        "method": "Home", "x": 560, "y": 130
+        "id": "S",
+        "type": "start",
+        "x": 140,
+        "y": 260
       },
       {
-        "id": "R2", "type": "method", "resourceId": "504829", "code": "ID-XRobot_A10LR-1",
-        "method": "Home", "x": 560, "y": 390
+        "id": "P",
+        "type": "exclusive",
+        "name": "XOR_SPLIT",
+        "x": 330,
+        "y": 260
       },
-      { "id": "J", "type": "exclusive", "name": "XOR_JOIN", "x": 790, "y": 260 },
-      { "id": "E", "type": "end", "x": 1010, "y": 260 }
+      {
+        "id": "R1",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Home",
+        "x": 560,
+        "y": 130
+      },
+      {
+        "id": "R2",
+        "type": "method",
+        "resourceId": "504829",
+        "code": "ID-XRobot_A10LR-1",
+        "method": "Home",
+        "x": 560,
+        "y": 390
+      },
+      {
+        "id": "J",
+        "type": "exclusive",
+        "name": "XOR_JOIN",
+        "x": 790,
+        "y": 260
+      },
+      {
+        "id": "E",
+        "type": "end",
+        "x": 1010,
+        "y": 260
+      }
     ],
     "edges": [
-      { "from": "S", "to": "P" },
-      { "from": "P", "to": "R1" },
-      { "from": "P", "to": "R2" },
-      { "from": "R1", "to": "J" },
-      { "from": "R2", "to": "J" },
-      { "from": "J", "to": "E" }
+      {
+        "from": "S",
+        "to": "P"
+      },
+      {
+        "from": "P",
+        "to": "R1"
+      },
+      {
+        "from": "P",
+        "to": "R2"
+      },
+      {
+        "from": "R1",
+        "to": "J"
+      },
+      {
+        "from": "R2",
+        "to": "J"
+      },
+      {
+        "from": "J",
+        "to": "E"
+      }
     ]
   },
   {
@@ -49,38 +123,381 @@
     "name": "页面批量-读码离心封膜",
     "island": "LAB-BASE-01",
     "nodes": [
-      { "id": "S", "type": "start", "x": 100, "y": 260 },
       {
-        "id": "READ", "type": "method", "resourceId": "200200", "code": "ID-1021",
-        "method": "ReadBarcode", "x": 280, "y": 260
+        "id": "S",
+        "type": "start",
+        "x": 100,
+        "y": 260
       },
       {
-        "id": "MOVE1", "type": "method", "resourceId": "200231", "code": "ID-X231",
-        "method": "Transfer", "x": 480, "y": 260,
-        "params": { "source": "ID-1021", "target": "ID-ASPIN_2K-1" }
+        "id": "READ",
+        "type": "method",
+        "resourceId": "200200",
+        "code": "ID-1021",
+        "method": "ReadBarcode",
+        "x": 280,
+        "y": 260
       },
       {
-        "id": "SPIN", "type": "method", "resourceId": "504831", "code": "ID-ASPIN_2K-1",
-        "method": "RunProgram", "x": 680, "y": 260
+        "id": "MOVE1",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 480,
+        "y": 260,
+        "params": {
+          "source": "ID-1021",
+          "target": "ID-ASPIN_2K-1"
+        }
       },
       {
-        "id": "MOVE2", "type": "method", "resourceId": "200231", "code": "ID-X231",
-        "method": "Transfer", "x": 880, "y": 260,
-        "params": { "source": "ID-ASPIN_2K-1", "target": "ID-S100-1" }
+        "id": "SPIN",
+        "type": "method",
+        "resourceId": "504831",
+        "code": "ID-ASPIN_2K-1",
+        "method": "RunProgram",
+        "x": 680,
+        "y": 260
       },
       {
-        "id": "SEAL", "type": "method", "resourceId": "504830", "code": "ID-S100-1",
-        "method": "Seal", "x": 1080, "y": 260
+        "id": "MOVE2",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 880,
+        "y": 260,
+        "params": {
+          "source": "ID-ASPIN_2K-1",
+          "target": "ID-S100-1"
+        }
       },
-      { "id": "E", "type": "end", "x": 1280, "y": 260 }
+      {
+        "id": "SEAL",
+        "type": "method",
+        "resourceId": "504830",
+        "code": "ID-S100-1",
+        "method": "Seal",
+        "x": 1080,
+        "y": 260
+      },
+      {
+        "id": "E",
+        "type": "end",
+        "x": 1280,
+        "y": 260
+      }
     ],
     "edges": [
-      { "from": "S", "to": "READ" },
-      { "from": "READ", "to": "MOVE1" },
-      { "from": "MOVE1", "to": "SPIN" },
-      { "from": "SPIN", "to": "MOVE2" },
-      { "from": "MOVE2", "to": "SEAL" },
-      { "from": "SEAL", "to": "E" }
+      {
+        "from": "S",
+        "to": "READ"
+      },
+      {
+        "from": "READ",
+        "to": "MOVE1"
+      },
+      {
+        "from": "MOVE1",
+        "to": "SPIN"
+      },
+      {
+        "from": "SPIN",
+        "to": "MOVE2"
+      },
+      {
+        "from": "MOVE2",
+        "to": "SEAL"
+      },
+      {
+        "from": "SEAL",
+        "to": "E"
+      }
+    ]
+  },
+  {
+    "key": "chain20",
+    "name": "页面批量-20节点复杂流程",
+    "island": "LAB-BASE-01",
+    "nodes": [
+      {
+        "id": "S",
+        "type": "start",
+        "x": 100,
+        "y": 260
+      },
+      {
+        "id": "READ",
+        "type": "method",
+        "resourceId": "200200",
+        "code": "ID-1021",
+        "method": "ReadBarcode",
+        "x": 260,
+        "y": 260
+      },
+      {
+        "id": "MOVE1",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 420,
+        "y": 260,
+        "params": {
+          "source": "ID-1021",
+          "target": "ID-ASPIN_2K-1"
+        }
+      },
+      {
+        "id": "SPIN",
+        "type": "method",
+        "resourceId": "504831",
+        "code": "ID-ASPIN_2K-1",
+        "method": "RunProgram",
+        "x": 580,
+        "y": 260
+      },
+      {
+        "id": "MOVE2",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 740,
+        "y": 260,
+        "params": {
+          "source": "ID-ASPIN_2K-1",
+          "target": "ID-S100-1"
+        }
+      },
+      {
+        "id": "SEAL",
+        "type": "method",
+        "resourceId": "504830",
+        "code": "ID-S100-1",
+        "method": "Seal",
+        "x": 900,
+        "y": 260
+      },
+      {
+        "id": "MOVE3",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 1060,
+        "y": 260,
+        "params": {
+          "source": "ID-S100-1",
+          "target": "ID-X229"
+        }
+      },
+      {
+        "id": "INC1",
+        "type": "method",
+        "resourceId": "200229",
+        "code": "ID-X229",
+        "method": "Incubate",
+        "x": 1220,
+        "y": 260
+      },
+      {
+        "id": "MOVE4",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 1380,
+        "y": 260,
+        "params": {
+          "source": "ID-X229",
+          "target": "ID-1021"
+        }
+      },
+      {
+        "id": "READ2",
+        "type": "method",
+        "resourceId": "200200",
+        "code": "ID-1021",
+        "method": "ReadPlate",
+        "x": 1540,
+        "y": 260
+      },
+      {
+        "id": "P",
+        "type": "exclusive",
+        "name": "XOR_SPLIT",
+        "x": 1700,
+        "y": 260
+      },
+      {
+        "id": "A1",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Home",
+        "x": 1860,
+        "y": 130
+      },
+      {
+        "id": "A2",
+        "type": "method",
+        "resourceId": "504829",
+        "code": "ID-XRobot_A10LR-1",
+        "method": "Home",
+        "x": 1860,
+        "y": 390
+      },
+      {
+        "id": "J",
+        "type": "exclusive",
+        "name": "XOR_JOIN",
+        "x": 2020,
+        "y": 260
+      },
+      {
+        "id": "MOVE5",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 2180,
+        "y": 260,
+        "params": {
+          "source": "ID-1021",
+          "target": "ID-S100-1"
+        }
+      },
+      {
+        "id": "SEAL2",
+        "type": "method",
+        "resourceId": "504830",
+        "code": "ID-S100-1",
+        "method": "Seal",
+        "x": 2340,
+        "y": 260
+      },
+      {
+        "id": "MOVE6",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Transfer",
+        "x": 2500,
+        "y": 260,
+        "params": {
+          "source": "ID-S100-1",
+          "target": "ID-X229"
+        }
+      },
+      {
+        "id": "INC2",
+        "type": "method",
+        "resourceId": "200229",
+        "code": "ID-X229",
+        "method": "Incubate",
+        "x": 2660,
+        "y": 260
+      },
+      {
+        "id": "HOME",
+        "type": "method",
+        "resourceId": "200231",
+        "code": "ID-X231",
+        "method": "Home",
+        "x": 2820,
+        "y": 260
+      },
+      {
+        "id": "E",
+        "type": "end",
+        "x": 2980,
+        "y": 260
+      }
+    ],
+    "edges": [
+      {
+        "from": "S",
+        "to": "READ"
+      },
+      {
+        "from": "READ",
+        "to": "MOVE1"
+      },
+      {
+        "from": "MOVE1",
+        "to": "SPIN"
+      },
+      {
+        "from": "SPIN",
+        "to": "MOVE2"
+      },
+      {
+        "from": "MOVE2",
+        "to": "SEAL"
+      },
+      {
+        "from": "SEAL",
+        "to": "MOVE3"
+      },
+      {
+        "from": "MOVE3",
+        "to": "INC1"
+      },
+      {
+        "from": "INC1",
+        "to": "MOVE4"
+      },
+      {
+        "from": "MOVE4",
+        "to": "READ2"
+      },
+      {
+        "from": "READ2",
+        "to": "P"
+      },
+      {
+        "from": "P",
+        "to": "A1",
+        "default": true
+      },
+      {
+        "from": "P",
+        "to": "A2"
+      },
+      {
+        "from": "A1",
+        "to": "J"
+      },
+      {
+        "from": "A2",
+        "to": "J"
+      },
+      {
+        "from": "J",
+        "to": "MOVE5"
+      },
+      {
+        "from": "MOVE5",
+        "to": "SEAL2"
+      },
+      {
+        "from": "SEAL2",
+        "to": "MOVE6"
+      },
+      {
+        "from": "MOVE6",
+        "to": "INC2"
+      },
+      {
+        "from": "INC2",
+        "to": "HOME"
+      },
+      {
+        "from": "HOME",
+        "to": "E"
+      }
     ]
   }
 ]
