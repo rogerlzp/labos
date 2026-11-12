@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 物料身份与状态：声明快照 / 效果 / 动作 / 事件。调用方 com.labos.kernel.persistence.MaterialMapper -->
+<mapper namespace="com.labos.kernel.persistence.MaterialMapper">
+
+    <!-- 声明快照（H3 追加表；续跑幂等：同 (run,node,effect) 已存在则不覆盖） -->
+    <insert id="insertDeclaration">
+        INSERT INTO run_material_effect_declaration
+            (tenant_id, run_id, node_key, effect_index, declaration, declaration_hash, workflow_ver)
+        VALUES
+            (#{t}, #{runId}, #{nodeKey}, #{effectIndex}, #{declaration}::jsonb, #{hash}, #{workflowVer})
+        ON CONFLICT (tenant_id, run_id, node_key, effect_index) DO NOTHING
+    </insert>
+
+    <!-- 效果意图（T1 写 PENDING；续跑幂等：同 key 已存在则不覆盖） -->
+    <insert id="insertEffect">
+        INSERT INTO plate_material_effect
+            (tenant_id, source_run_id, source_node_key, source_loop_index, effect_index,
+             source_attempt, plate_id, declaration, declaration_hash, payload_hash,
+             target_snapshot, resolution_evidence, expected_state_version,
+             expected_process_state, expected_seal_state, status)
+        VALUES
+            (#{t}, #{runId}, #{nodeKey}, #{loopIndex}, #{effectIndex},
+             #{attempt}, #{plateId}, #{declaration}::jsonb, #{declHash}, #{payloadHash},
+             #{targetSnapshot}::jsonb, #{resolutionEvidence}::jsonb, #{expectedStateVersion},
+             #{expectedProcessState}, #{expectedSealState}, #{status})
+        ON CONFLICT (tenant_id, source_run_id, source_node_key, source_loop_index, effect_index)
+            DO NOTHING
+    </insert>
+
+    <!-- 效果动作审计（append-only） -->
+    <insert id="insertAction">
+        INSERT INTO plate_material_effect_action
+            (tenant_id, effect_id, action_type, from_status, to_status, actor_type,
+             operator_user_id, reason, evidence_snapshot, error_code)
+        VALUES
+            (#{t}, #{effectId}, #{actionType}, #{fromStatus}, #{toStatus}, #{actorType},
+             #{operatorUserId}, #{reason}, #{evidenceSnapshot}::jsonb, #{errorCode})
+    </insert>
+
+    <!-- 物料事件（append-only；完整 before/after + 版本区间 + changed_fields） -->
+    <insert id="insertEvent">
+        INSERT INTO plate_material_event
+            (tenant_id, plate_id, effect_id, event_type,
+             from_process_state, to_process_state, from_seal_state, to_seal_state,
+             changed_fields, from_state_version, to_state_version,
+             source_run_id, source_node_key, source_loop_index, command_id,
+             evidence, evidence_level, evidence_snapshot, operator_type,
+             operator_user_id, note, occurred_at)
+        VALUES
+            (#{t}, #{plateId}, #{effectId}, #{eventType},
+             #{fromProcessState}, #{toProcessState}, #{fromSealState}, #{toSealState},
+             #{changedFields}::jsonb, #{fromStateVersion}, #{toStateVersion},
+             #{sourceRunId}, #{sourceNodeKey}, #{sourceLoopIndex}, #{commandId},
+             #{evidence}, #{evidenceLevel}, #{evidenceSnapshot}::jsonb, #{operatorType},
+             #{operatorUserId}, #{note}, #{occurredAt}::timestamptz)
+    </insert>
+
+    <!-- 效果状态流转：只改状态列；APPLIED 补 applied_at；CAS 守卫 from_status 防并发覆盖 -->
+    <update id="updateEffectStatus">
+        UPDATE plate_material_effect
+           SET status = #{toStatus},
+               last_error_code = #{lastErrorCode},
+               last_error_message = #{lastErrorMessage},
+               applied_at = CASE WHEN #{toStatus} = 'APPLIED' THEN now() ELSE applied_at END,
+               updated_at = now()
+         WHERE tenant_id = #{t}
+           AND id = #{effectId}
+           AND status = #{fromStatus}
+    </update>
+
+</mapper>
