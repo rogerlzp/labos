@@ -415,6 +415,41 @@ public class BindingController {
         return ok(Map.of("deleted", r, "id", id));
     }
 
+    // ---------------------------------------------------------------- 工位（P2-1）
+
+    @GetMapping(value = "/workstations", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> workstations(@RequestParam(required = false) String deviceId) {
+        List<Map<String, Object>> rows = m().selectWorkstations(TENANT, parseLongOrNull(deviceId));
+        return ok(Map.of("total", rows.size(), "items", rows));
+    }
+
+    @GetMapping(value = "/workstations/allocatable", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> allocatable(@RequestParam(required = false) String deviceId) {
+        List<Map<String, Object>> rows = m().selectWorkstations(TENANT, parseLongOrNull(deviceId));
+        List<Map<String, Object>> free = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            Object plate = r.get("plateId");
+            if (plate == null || String.valueOf(plate).isBlank()) {
+                free.add(r);
+            }
+        }
+        return ok(Map.of("total", free.size(), "items", free));
+    }
+
+    @PostMapping(value = "/workstations/allocate", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> allocateWorkstation(@RequestBody(required = false) String body,
+                                                       HttpServletRequest req) {
+        JsonNode n = parse(body);
+        long deviceId = longOf(n, "deviceId");
+        if (deviceId <= 0) return bad("必填 deviceId");
+        Long pointId = m().selectFirstFreeWorkstation(TENANT, deviceId);
+        if (pointId == null) return conflict("该设备没有空闲工位");
+        audit.record(session(req), "workstation.allocate", "device_point", pointId, null,
+                null, req.getRemoteAddr());
+        return ok(Map.of("allocated", true, "deviceResourceId", deviceId, "pointId", pointId,
+                "note", "只读建议：实际占用走既有点位预约（原子）"));
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static final java.util.Set<String> MATERIAL_PHYSICAL =

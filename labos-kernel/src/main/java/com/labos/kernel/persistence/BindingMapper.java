@@ -156,6 +156,16 @@ public interface BindingMapper {
                                @Param("carrier") String carrier,
                                @Param("status") String status);
 
+    // ---------------------------------------------------------------- 工位（P2-1）
+
+    /** 某设备的工位列表（resource_node kind='workstation'）+ 占用态。 */
+    List<Map<String, Object>> selectWorkstations(@Param("t") long tenantId,
+                                                 @Param("deviceResourceId") Long deviceResourceId);
+
+    /** 第一个空闲工位的 device_point.id（auto_first_free 分配用）。 */
+    Long selectFirstFreeWorkstation(@Param("t") long tenantId,
+                                    @Param("deviceResourceId") long deviceResourceId);
+
     /** 节点有无绑定 + 有无 XML resource，用于回填 binding_mode。 */
     int updateNodeBindingMode(@Param("t") long tenantId,
                               @Param("workflowId") long workflowId,

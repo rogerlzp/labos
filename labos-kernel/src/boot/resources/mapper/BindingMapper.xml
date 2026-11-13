@@ -243,4 +243,28 @@
             #{fromPositionId}, #{toPositionId}, #{carrier}, #{status}, now())
   </insert>
 
+  <!-- ============================================================ 工位（P2-1） -->
+
+  <select id="selectWorkstations" resultType="java.util.Map">
+    SELECT rn.id, rn.code, rn.name, rn.parent_id AS "deviceResourceId",
+           dp.id AS "pointId", dp.workstation_slot AS "slot",
+           ps.plate_id AS "plateId", ps.occupied_by_run AS "occupiedByRun"
+      FROM resource_node rn
+      LEFT JOIN device_point dp ON dp.point_resource_id = rn.id AND dp.tenant_id = rn.tenant_id
+      LEFT JOIN position_state ps ON ps.resource_id = rn.id AND ps.tenant_id = rn.tenant_id
+     WHERE rn.tenant_id = #{t} AND rn.kind = 'workstation'
+       <if test="deviceResourceId != null">AND rn.parent_id = #{deviceResourceId}</if>
+     ORDER BY dp.workstation_slot NULLS LAST, rn.code
+  </select>
+
+  <select id="selectFirstFreeWorkstation" resultType="java.lang.Long">
+    SELECT dp.id
+      FROM device_point dp
+      JOIN resource_node rn ON rn.id = dp.point_resource_id AND rn.kind = 'workstation'
+     WHERE dp.tenant_id = #{t} AND dp.device_resource_id = #{deviceResourceId}
+       AND NOT EXISTS (SELECT 1 FROM position_state ps
+                        WHERE ps.resource_id = rn.id AND ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; '')
+     ORDER BY dp.workstation_slot NULLS LAST, dp.id LIMIT 1
+  </select>
+
 </mapper>
