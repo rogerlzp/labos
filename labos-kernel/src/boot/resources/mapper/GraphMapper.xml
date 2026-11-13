@@ -23,6 +23,12 @@
         DELETE FROM workflow_edge WHERE workflow_id = #{param1}
     </delete>
 
+    <!-- saveGraph 按流程串行：事务级 advisory lock，避免并发草稿保存对同一 workflow
+         的节点/边 upsert/delete 交错死锁。事务结束自动释放。 -->
+    <select id="acquireSaveLock" resultType="java.lang.String">
+        SELECT pg_advisory_xact_lock(#{param1})
+    </select>
+
     <select id="selectGraphXml" resultType="java.lang.String">
         SELECT graph->>'xml'
           FROM workflow

@@ -107,6 +107,17 @@ public interface GraphMapper {
     /** 保存原始 XML 到 graph->>'xml'。 */
     int updateWorkflowGraph(long tenantId, long workflowId, String xml);
 
+    /**
+     * saveGraph 的按流程串行锁（PostgreSQL 事务级 advisory lock）。
+     *
+     * <p>前端每拖入一个节点都会异步草稿保存一次，大图上这些并发保存对同一个
+     * workflow 的 workflow_node / workflow_edge 行并发 upsert/delete，事务交错时
+     * PostgreSQL 报 deadlock detected。用 {@code pg_advisory_xact_lock(workflowId)}
+     * 把同一流程的保存事务排成队：后到者在锁上等待，拿到锁后再做 upsert/delete，
+     * 不再交错。锁在事务提交/回滚时自动释放。
+     */
+    String acquireSaveLock(long workflowId);
+
     /** 把当前图存一份到历史表（存在才写，无图时 0 行）。 */
     int backupGraph(long tenantId, long workflowId);
 

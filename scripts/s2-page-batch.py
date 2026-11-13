@@ -332,6 +332,9 @@ def configure_params(pg, node, node_id):
             set_parameter(pg, card, name, value)
     except Exception as exc:
         print(f"    Select 定位失败（回退直接写 methodParams）：{exc}")
+        # 直接写 $attrs.methodParams 后，必须让 React 回读该字段更新 paramValues，
+        # 否则 missingRequired 仍认为 source/target 为空 → save() 被拦。
+        # 做法：写后先取消选中、再重新选中（两次 selection.changed 触发 useEffect）。
         pg.evaluate(
             "(arg) => { const m=window.__bpmnModeler;"
             " const el=m.get('elementRegistry').get(arg.id);"
@@ -340,10 +343,17 @@ def configure_params(pg, node, node_id):
             " if(!a){ a={}; Object.defineProperty(el.businessObject,'$attrs',"
             " {value:a,writable:true,configurable:true,enumerable:false}); }"
             " a.methodParams=JSON.stringify(arg.params);"
-            " m.get('selection').select(el); }",
+            " m.get('selection').select([]); }",
             {"id": node_id, "params": expected},
         )
-        pg.wait_for_timeout(400)
+        pg.wait_for_timeout(350)
+        pg.evaluate(
+            "(id) => { const m=window.__bpmnModeler;"
+            " const el=m.get('elementRegistry').get(id);"
+            " if(el) m.get('selection').select(el); }",
+            node_id,
+        )
+        pg.wait_for_timeout(450)
     pg.wait_for_function(
         """(arg) => {
           const el=window.__bpmnModeler.get('elementRegistry').get(arg.id);

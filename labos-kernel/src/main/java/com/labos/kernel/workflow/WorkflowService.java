@@ -2989,6 +2989,12 @@ public class WorkflowService {
             validateGraphShape(graph);
         }
 
+        // 按流程串行：并发草稿保存（前端每拖一个节点异步保存一次）对同一 workflow
+        // 的节点/边 upsert/delete 会交错死锁；advisory lock 让同流程保存排队。
+        if (graphMapper != null) {
+            graphMapper.acquireSaveLock(workflowId);
+        }
+
         // ② 保存前备份上一版图：出问题能查回上一版
         backupGraph(workflowId);
 
