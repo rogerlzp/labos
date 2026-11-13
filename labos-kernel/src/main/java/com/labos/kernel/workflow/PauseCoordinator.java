@@ -256,8 +256,10 @@ public final class PauseCoordinator {
                                                        Map<String, String> corrections)
             throws SQLException {
         // P-06 V2 第七切片：校验/板位校正/run 状态/幂等结果/事件同事务；
-        // 异步续跑是内存动作，commit 后触发。
-        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+        // 异步续跑是内存动作，**commit 后**触发（评审 P1-4：原来放在事务内，
+        // resumeAsync 内部事务异常会把外层标记 rollback-only，catch 吞掉后提交时
+        // 报 UnexpectedRollbackException，真实原因只进日志、操作员看到数据库措辞）。
+        PauseManager.ResumeResult r = com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
             Claim claim = claimTx(c, cmd);
             if (!claim.firstTime()) {
                 com.labos.kernel.persistence.Tx.rollbackOnly();
@@ -271,40 +273,46 @@ public final class PauseCoordinator {
             }
             PauseManager.ResumeAction action = PauseManager.ResumeAction.of(cmd.kind());
             // P-08 强门禁：位置未确认（仅运动报告）时不允许继续/重试，只允许终止
-            PauseManager.ResumeResult r;
+            PauseManager.ResumeResult rr;
             if (action != PauseManager.ResumeAction.ABORT
                     && TransferTransaction.hasUnconfirmed(db, tenantId, cmd.targetId())) {
-                r = new PauseManager.ResumeResult(false,
+                rr = new PauseManager.ResumeResult(false,
                         "存在未确认的搬运位置，请先扫码/人工确认"
                                 + "（POST /api/transfers/{id}/confirm）",
                         cmd.targetId(), action.name(), 0);
             } else {
-                r = new PauseManager(db, tenantId)
+                rr = new PauseManager(db, tenantId)
                         .resumeTx(c, cmd.targetId(), action, corrections, "api");
             }
-            cmd.result(r.ok() ? PauseCommand.ResultState.COMPLETED
+            cmd.result(rr.ok() ? PauseCommand.ResultState.COMPLETED
                     : PauseCommand.ResultState.REJECTED);
             Map<String, String> detail = new LinkedHashMap<>();
-            detail.put("correctedPlates", String.valueOf(r.correctedPlates()));
-            if (r.error() != null) {
-                detail.put("error", r.error());
+            detail.put("correctedPlates", String.valueOf(rr.correctedPlates()));
+            if (rr.error() != null) {
+                detail.put("error", rr.error());
             }
             settleTx(c, cmd, detail);
-            if (r.ok()) {
+            if (rr.ok()) {
                 insertPauseEvent(c, cmd, "RESUME_REQUESTED", null, null);
             }
-
-            if (r.ok() && action == PauseManager.ResumeAction.CONTINUE
-                    && workflows != null) {
-                try {
-                    workflows.resumeAsync(cmd.targetId());
-                } catch (RuntimeException ex) {
-                    log.error("[暂停] 恢复后异步续跑启动失败（run 已 queued）："
-                            + ex.getMessage());
-                }
-            }
-            return r;
+            return rr;
         });
+
+        // 异步续跑：commit 后触发（内存动作）。失败不滚回已提交的恢复，
+        // 但把真实原因带回响应，避免操作员只看到 rollback-only 措辞。
+        if (r.ok() && PauseManager.ResumeAction.CONTINUE.name().equals(r.action())
+                && workflows != null) {
+            try {
+                workflows.resumeAsync(cmd.targetId());
+            } catch (RuntimeException | SQLException ex) {
+                String msg = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+                log.error("[暂停] 恢复后异步续跑启动失败（run 已 queued）：" + msg);
+                return new PauseManager.ResumeResult(false,
+                        "恢复已提交，但异步续跑启动失败：" + msg,
+                        cmd.targetId(), r.action(), r.correctedPlates());
+            }
+        }
+        return r;
     }
 
     /**

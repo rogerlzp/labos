@@ -538,7 +538,7 @@ public final class DriverStepExecutor implements StepExecutor {
             // P2-6：机械臂资源由执行该 Transfer 方法的设备解析（多臂各自独立锁/独立段），
             // 解析不到时才退回既有的单臂 ID-X231（resource 200231）兼容旧环境。
             long robot = robotRes != null ? robotRes : 200231L;
-            bm.insertTransportSegment(tenantId, runId, null, 1, robot, fromPos, toPos,
+            bm.insertTransportSegment(tenantId, runId, null, robot, fromPos, toPos,
                     plate, "done");
         } catch (RuntimeException te) {
             log.warn("[搬运段] 写 transport_segment 失败（不阻断）：{}", te.getMessage());

@@ -250,7 +250,9 @@
   <insert id="insertTransportSegment">
     INSERT INTO transport_segment (tenant_id, run_id, run_node_id, seq, robot_resource_id,
                                    from_position_id, to_position_id, carrier, status, created_at)
-    VALUES (#{t}, #{runId}, #{runNodeId}, #{seq}, #{robotResourceId},
+    VALUES (#{t}, #{runId}, #{runNodeId},
+            COALESCE((SELECT MAX(seq) + 1 FROM transport_segment WHERE run_id = #{runId}), 1),
+            #{robotResourceId},
             #{fromPositionId}, #{toPositionId}, #{carrier}, #{status}, now())
   </insert>
 
