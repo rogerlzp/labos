@@ -140,6 +140,22 @@ public interface BindingMapper {
 
     int deleteMaterialRole(@Param("t") long tenantId, @Param("id") long id);
 
+    // ---------------------------------------------------------------- 隐式搬运段（P2-3）
+
+    /** 设备（resource_node.id）的装载口 device_point.id（standalone 位置）。 */
+    Long selectLoadPortPointId(@Param("t") long tenantId, @Param("deviceResourceId") long deviceResourceId);
+
+    /** 写一条搬运段（TransferPlan 的可观测副本）。 */
+    int insertTransportSegment(@Param("t") long tenantId,
+                               @Param("runId") long runId,
+                               @Param("runNodeId") Long runNodeId,
+                               @Param("seq") int seq,
+                               @Param("robotResourceId") Long robotResourceId,
+                               @Param("fromPositionId") Long fromPositionId,
+                               @Param("toPositionId") Long toPositionId,
+                               @Param("carrier") String carrier,
+                               @Param("status") String status);
+
     /** 节点有无绑定 + 有无 XML resource，用于回填 binding_mode。 */
     int updateNodeBindingMode(@Param("t") long tenantId,
                               @Param("workflowId") long workflowId,

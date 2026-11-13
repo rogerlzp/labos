@@ -511,6 +511,26 @@ public final class DriverStepExecutor implements StepExecutor {
 
     /** 把 params 里的 source/target（设备编号）转成 resource_node.id。 */
     /**
+     * P2-3：写一条隐式搬运段（源/目标设备的装载口），失败只告警不阻断。
+     */
+    private void writeTransportSegment(String plate, Long srcRes, Long dstRes) {
+        try {
+            com.labos.kernel.persistence.BindingMapper bm =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.BindingMapper.class);
+            Long fromPos = bm.selectLoadPortPointId(tenantId, srcRes);
+            Long toPos = bm.selectLoadPortPointId(tenantId, dstRes);
+            // 现状只有 1 台机械臂（ID-X231, resource 200231）；多臂后改为按 Transfer 节点资源解析。
+            long robot = 200231L;
+            bm.insertTransportSegment(tenantId, runId, null, 1, robot, fromPos, toPos,
+                    plate, "done");
+        } catch (RuntimeException te) {
+            log.warn("[搬运段] 写 transport_segment 失败（不阻断）：{}", te.getMessage());
+        }
+    }
+
+    /** 把 params 里的 source/target（设备编号）转成 resource_node.id。 */
+    /**
      * M 方案自动确认开关：默认**关闭**，与 {@code LABOS_TRANSFER_PLAN} 同风格。
      * 关闭时行为与改造前逐字一致（REPORTED 待人工 confirm）。
      */
@@ -568,6 +588,8 @@ public final class DriverStepExecutor implements StepExecutor {
             com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.PauseMapper.class)
                     .updatePlatePositionStatus(tenantId, plate, "KNOWN");
+            // P2-3：写隐式搬运段（TransferPlan 的可观测副本，供岛进程视图/追溯）。
+            writeTransportSegment(plate, srcRes, dstRes);
             log.info("[搬运] 事务 {} 自动 CONFIRMED：{} → {}（{}）",
                     txn, plate, dstRes, mv.reason());
             return true;

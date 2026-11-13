@@ -225,4 +225,22 @@
     DELETE FROM material_role WHERE tenant_id = #{t} AND id = #{id}
   </delete>
 
+  <!-- ============================================================ 隐式搬运段（P2-3） -->
+
+  <!-- 设备（resource_node.id）的「机械臂可达装载口」device_point.id：
+       standalone 装载口优先，否则取第一个 robot_reachable + is_entry 的点位。 -->
+  <select id="selectLoadPortPointId" resultType="java.lang.Long">
+    SELECT dp.id FROM device_point dp
+     WHERE dp.tenant_id = #{t} AND dp.device_resource_id = #{deviceResourceId}
+       AND (dp.is_standalone = true OR (dp.robot_reachable = true AND dp.is_entry = true))
+     ORDER BY dp.is_standalone DESC, dp.id LIMIT 1
+  </select>
+
+  <insert id="insertTransportSegment">
+    INSERT INTO transport_segment (tenant_id, run_id, run_node_id, seq, robot_resource_id,
+                                   from_position_id, to_position_id, carrier, status, created_at)
+    VALUES (#{t}, #{runId}, #{runNodeId}, #{seq}, #{robotResourceId},
+            #{fromPositionId}, #{toPositionId}, #{carrier}, #{status}, now())
+  </insert>
+
 </mapper>
