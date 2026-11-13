@@ -112,6 +112,11 @@ public interface BindingMapper {
 
     int deleteNodeBindings(@Param("t") long tenantId, @Param("nodeId") long nodeId);
 
+    /** 节点绑定解析：node_binding.position_id → device_point.device_resource_id → device_instance.id。
+     *  key = node_key，value = device_instance.id（pinned，跳过候选池）。 */
+    List<Map<String, Object>> selectNodeBindingInstanceIds(@Param("t") long tenantId,
+                                                           @Param("workflowId") long workflowId);
+
     /** 节点有无绑定 + 有无 XML resource，用于回填 binding_mode。 */
     int updateNodeBindingMode(@Param("t") long tenantId,
                               @Param("workflowId") long workflowId,

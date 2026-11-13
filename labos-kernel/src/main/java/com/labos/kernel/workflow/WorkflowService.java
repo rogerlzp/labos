@@ -1144,6 +1144,7 @@ public class WorkflowService {
                         })
                         .withResourceCapability(resourceCap)
                         .withBoundInstances(loadBoundInstances())
+                        .withNodeBindingInstances(loadNodeBindingInstances(workflowId))
                         // P-05：编排里**显式绑定**的节点走 pinned 分支，直接用那台
                         // 设备，不经候选池 ⇒ 岛过滤对它无效 ⇒ 这里把岛内实例集合交给
                         // 执行器，越岛绑定**明确拒绝**（不静默换设备）。
@@ -1864,6 +1865,25 @@ public class WorkflowService {
         for (Map<String, Object> row : dm().selectResourceInstancePairs(tenantId)) {
             out.put(((Number) row.get("resourceId")).longValue(),
                     ((Number) row.get("instanceId")).longValue());
+        }
+        return out;
+    }
+
+    /** 节点绑定（node_binding.position_id → device_instance.id）：node_key → instance id。 */
+    private Map<String, Long> loadNodeBindingInstances(long workflowId) {
+        Map<String, Long> out = new LinkedHashMap<>();
+        try {
+            for (Map<String, Object> row : com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.BindingMapper.class)
+                    .selectNodeBindingInstanceIds(tenantId, workflowId)) {
+                String key = String.valueOf(row.get("nodeKey"));
+                Object inst = row.get("instanceId");
+                if (inst instanceof Number n) {
+                    out.put(key, n.longValue());
+                }
+            }
+        } catch (RuntimeException e) {
+            log.warn("[绑定解析] 读 node_binding 失败（按 legacy 路径跑）：{}", e.getMessage());
         }
         return out;
     }

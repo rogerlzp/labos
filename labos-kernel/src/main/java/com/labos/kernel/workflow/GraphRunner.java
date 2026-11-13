@@ -76,6 +76,7 @@ public final class GraphRunner {
      * 编排里明明选的是 2 号机，实际跑的是 1 号机。钉住才不会跑偏。
      */
     private Map<Long, Long> boundInstanceByResource = Map.of();
+    private Map<String, Long> nodeBindingInstanceByKey = Map.of();
 
     /**
      * 本次执行允许的设备实例（岛内设备，device_instance.id 口径）。
@@ -300,6 +301,13 @@ public final class GraphRunner {
 
     public GraphRunner withBoundInstances(Map<Long, Long> m) {
         this.boundInstanceByResource = m == null ? Map.of() : m;
+        return this;
+    }
+
+    /** 节点绑定（node_binding.position_id → device_instance.id）：node_key → instance id。
+     *  命中即 pinned，跳过候选池（比 XML resource 的设备绑定优先级更高）。 */
+    public GraphRunner withNodeBindingInstances(Map<String, Long> m) {
+        this.nodeBindingInstanceByKey = m == null ? Map.of() : m;
         return this;
     }
 
@@ -1225,6 +1233,22 @@ public final class GraphRunner {
 
         List<Long> candidates;
         Long initial;
+
+        // 节点绑定（node_binding.position_id → device_instance）：优先级最高，
+        // 命中即 pinned、跳过候选池。比 XML resource 的设备绑定更优先。
+        Long bindingInstance = nodeBindingInstanceByKey.get(n.key());
+        if (bindingInstance != null) {
+            if (islandInstanceIds != null && !islandInstanceIds.contains(bindingInstance)) {
+                throw new IllegalArgumentException("节点 " + n.key() + " 绑定的点位所在设备（实例 "
+                        + bindingInstance + "）不在流程所属的岛内，拒绝执行");
+            }
+            if (offlineInstanceIds != null && offlineInstanceIds.contains(bindingInstance)) {
+                return RecoverableNode.of(nodeId(n), n.key(), n.name(), cap,
+                        n.method(), null, List.of());
+            }
+            return RecoverableNode.of(nodeId(n), n.key(), n.name(), cap,
+                    n.method(), bindingInstance, List.of(bindingInstance));
+        }
 
         // 编排里显式绑了设备 → 就用这台，不参与能力轮转
         Long pinned = n.resourceId() == null ? null : boundInstanceByResource.get(n.resourceId());

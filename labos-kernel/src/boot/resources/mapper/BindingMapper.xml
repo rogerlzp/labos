@@ -179,6 +179,16 @@
     DELETE FROM node_binding WHERE tenant_id = #{t} AND node_id = #{nodeId}
   </delete>
 
+  <select id="selectNodeBindingInstanceIds" resultType="java.util.Map">
+    SELECT wn.node_key AS "nodeKey", di.id AS "instanceId", dp.device_resource_id AS "deviceResourceId"
+      FROM node_binding nb
+      JOIN workflow_node wn ON wn.id = nb.node_id
+      JOIN device_point dp ON dp.id = nb.position_id
+      JOIN device_instance di ON di.resource_id = dp.device_resource_id
+     WHERE nb.tenant_id = #{t} AND wn.workflow_id = #{workflowId}
+       AND nb.enabled = true AND nb.position_id IS NOT NULL
+  </select>
+
   <update id="updateNodeBindingMode">
     UPDATE workflow_node SET binding_mode = #{mode}, updated_at = now()
      WHERE tenant_id = #{t} AND workflow_id = #{workflowId} AND node_key = #{nodeKey}
