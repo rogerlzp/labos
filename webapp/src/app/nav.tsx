@@ -59,6 +59,8 @@ export const NAV: NavGroup[] = [
       { key: '/manual-windows', labelKey: 'nav.manualWindows' },
       { key: '/quarantined', labelKey: 'nav.quarantined' },
       { key: '/handoffs', labelKey: 'nav.handoffs' },
+      // 操作员工作台：样品/试剂/耗材放哪、一键启动实验
+      { key: '/material-config', labelKey: 'nav.materialConfig' },
       { key: '/plates', labelKey: 'nav.plates' },
       // 板子流转：板号在设备之间怎么流转的
       { key: '/plate-traces', labelKey: 'nav.plateTraces' },
@@ -102,6 +104,8 @@ export const NAV: NavGroup[] = [
     children: [
       { key: '/users', labelKey: 'nav.users', roles: ['admin'] },
       { key: '/audit', labelKey: 'nav.audit', roles: ['admin'] },
+      // 机械臂调试台（仅管理员）
+      { key: '/arm-console', labelKey: 'nav.armConsole', roles: ['admin'] },
     ],
   },
 ];

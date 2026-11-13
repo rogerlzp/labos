@@ -122,6 +122,8 @@ export const zhCN = {
   'quarantine.tip': '解除后该执行落 failed，并解除实验级 Hold；请先确认现场无在途动作',
   'quarantine.toast.ok': '已解除隔离并记录人工确认',
   'nav.handoffs': '交接确认',
+  'nav.materialConfig': '物料配置',
+  'nav.armConsole': '机械臂调试',
   'handoffs.title': '跨 Workcell 交接确认',
   'handoffs.hint': '配置态 Handoff 必须人工确认后才允许执行实验',
   'handoffs.refresh': '刷新',

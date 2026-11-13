@@ -118,6 +118,8 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'quarantine.tip': 'Run will be marked failed and experiment hold released; verify no in-flight motion first',
   'quarantine.toast.ok': 'Quarantine released and intervention recorded',
   'nav.handoffs': 'Handoffs',
+  'nav.materialConfig': 'Material Config',
+  'nav.armConsole': 'Robot Console',
   'handoffs.title': 'Cross-Workcell handoff confirmation',
   'handoffs.hint': 'Configured handoffs must be confirmed before execution',
   'handoffs.refresh': 'Refresh',

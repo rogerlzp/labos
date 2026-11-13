@@ -114,6 +114,7 @@ public class DeviceController {
         for (PositionLock.PositionState st : lock.byIsland(isl)) {
             items.add(Jsons.obj(
                     "resourceId", st.resourceId(),
+                    "pointId", st.pointId(),
                     "code", st.code(),
                     "name", st.name(),
                     "kind", st.kind(),

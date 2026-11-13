@@ -97,6 +97,8 @@ public final class PositionLock {
     /** 位置状态快照（给前端画图用）。 */
     public record PositionState(
             long resourceId, String code, String name, String kind,
+            /** 配置层 device_point.id（物料配置/节点绑定用这个 id，不是 resourceId）。 */
+            Long pointId,
             String plateId, boolean reserved, Long reservedByRun,
             String occupiedSince,
             /** 属于哪台设备（孵箱/存储塔），null 表示直接挂在岛上。 */
@@ -121,10 +123,10 @@ public final class PositionLock {
                              String plateId, boolean reserved, Long reservedByRun,
                              String occupiedSince, Long parentDeviceId,
                              String parentDeviceCode) {
-            this(resourceId, code, name, kind, plateId, reserved, reservedByRun,
+            this(resourceId, code, name, kind, null, plateId, reserved, reservedByRun,
                     occupiedSince, parentDeviceId, parentDeviceCode,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null);
         }
     }
 
@@ -470,6 +472,8 @@ public final class PositionLock {
                     (String) row.get("code"),
                     (String) row.get("name"),
                     (String) row.get("kind"),
+                    row.get("pointId") == null ? null
+                            : ((Number) row.get("pointId")).longValue(),
                     (String) row.get("plateId"),
                     reserved,
                     rb == null ? null : ((Number) rb).longValue(),

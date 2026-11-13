@@ -281,6 +281,7 @@
                ps.occupied_since AS "occupiedSince",
                ps.content_kind AS "contentKind", ps.content_id AS "contentId",
                d.id AS "parentId", d.code AS "parentCode",
+               dp.id AS "pointId",
                dp.point_role AS "pointRole", dp.robot_reachable AS "robotReachable",
                dp.is_entry AS "isEntry", dp.is_exit AS "isExit",
                dp.order_in_device AS "orderInDevice",

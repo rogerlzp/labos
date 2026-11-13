@@ -31,6 +31,8 @@ import ExperimentCanvasPage from './pages/ExperimentCanvas';
 import IslandFlowPage from './pages/IslandFlow';
 import PositionsPage from './pages/Positions';
 import ConsumablesPage from './pages/Consumables';
+import MaterialConfigPage from './pages/MaterialConfig';
+import ArmConsolePage from './pages/ArmConsole';
 import LoginPage from './pages/Login';
 import IslandPage from './pages/Island';
 import UsersPage from './pages/Users';
@@ -247,6 +249,8 @@ function AppInner() {
             <Route path="/island-flow" element={<IslandFlowPage />} />
             <Route path="/positions" element={<PositionsPage />} />
             <Route path="/consumables" element={<ConsumablesPage />} />
+            <Route path="/material-config" element={<MaterialConfigPage />} />
+            <Route path="/arm-console" element={<ArmConsolePage />} />
             <Route path="/designer/:id" element={<DesignerPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/policies" element={<PoliciesPage />} />
