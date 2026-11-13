@@ -342,6 +342,10 @@ public final class DriverStepExecutor implements StepExecutor {
             return executeCommand(driver, ctx,
                     buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun(), stepSeq);
         }
+        // P2-6：机械臂就是执行本 Transfer 方法的设备（ctx.resourceId()）。
+        // 把它的资源 id 显式传给 TransferPlan 作为 L4 机械臂锁；多臂时每臂一个 resource_id，
+        // 天然独立锁、可并行；同臂才互斥。
+        Long robotRes = resourceOfInstance(deviceId);
 
         TransferPlan plan = new TransferPlan(db, tenantId, runId);
         // 按设备找 driver：开源设备的门用源设备的驱动，开目标门用目标的。
@@ -389,7 +393,7 @@ public final class DriverStepExecutor implements StepExecutor {
                     0, method);
         }
         try {
-            plan.acquireAll(srcRes, null, dstRes, null, null, null, factory);
+            plan.acquireAll(srcRes, null, dstRes, null, null, robotRes, factory);
         } catch (TransferPlan.AcquireException e) {
             safeReleaseTarget(posLock, targetPos);
             throw new StepFailure("EC-RESOURCE-BUSY", scopeOf("EC-RESOURCE-BUSY"),
@@ -432,7 +436,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 safeReleaseTarget(posLock, targetPos);
             } else if (transferTxn > 0 && autoConfirmEnabled()) {
                 // putPlate 写占用时会自动清掉预留；登记未成功则必须显式释放，避免占死。
-                if (!autoConfirmTransfer(transferTxn, plate, srcRes, dstRes, targetPos)) {
+                if (!autoConfirmTransfer(transferTxn, plate, srcRes, dstRes, targetPos, robotRes)) {
                     safeReleaseTarget(posLock, targetPos);
                 }
             } else {
@@ -509,19 +513,31 @@ public final class DriverStepExecutor implements StepExecutor {
         }
     }
 
+    /** device_instance.id → resource_node.id（反向转换，P2-6 机械臂锁用）。 */
+    private Long resourceOfInstance(long deviceInstanceId) {
+        try {
+            return com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.QueryMapper.class)
+                    .selectDeviceResourceByInstance(deviceInstanceId);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     /** 把 params 里的 source/target（设备编号）转成 resource_node.id。 */
     /**
      * P2-3：写一条隐式搬运段（源/目标设备的装载口），失败只告警不阻断。
      */
-    private void writeTransportSegment(String plate, Long srcRes, Long dstRes) {
+    private void writeTransportSegment(String plate, Long srcRes, Long dstRes, Long robotRes) {
         try {
             com.labos.kernel.persistence.BindingMapper bm =
                     com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.BindingMapper.class);
             Long fromPos = bm.selectLoadPortPointId(tenantId, srcRes);
             Long toPos = bm.selectLoadPortPointId(tenantId, dstRes);
-            // 现状只有 1 台机械臂（ID-X231, resource 200231）；多臂后改为按 Transfer 节点资源解析。
-            long robot = 200231L;
+            // P2-6：机械臂资源由执行该 Transfer 方法的设备解析（多臂各自独立锁/独立段），
+            // 解析不到时才退回既有的单臂 ID-X231（resource 200231）兼容旧环境。
+            long robot = robotRes != null ? robotRes : 200231L;
             bm.insertTransportSegment(tenantId, runId, null, 1, robot, fromPos, toPos,
                     plate, "done");
         } catch (RuntimeException te) {
@@ -562,7 +578,7 @@ public final class DriverStepExecutor implements StepExecutor {
      *         预留无需再释放）；false = 未登记，调用方必须释放预留。
      */
     private boolean autoConfirmTransfer(long txn, String plate, Long srcRes, Long dstRes,
-                                        Long targetPos) {
+                                        Long targetPos, Long robotRes) {
         try {
             com.labos.kernel.driver.PositionLock lock =
                     new com.labos.kernel.driver.PositionLock(db, tenantId);
@@ -589,7 +605,7 @@ public final class DriverStepExecutor implements StepExecutor {
                             com.labos.kernel.persistence.PauseMapper.class)
                     .updatePlatePositionStatus(tenantId, plate, "KNOWN");
             // P2-3：写隐式搬运段（TransferPlan 的可观测副本，供岛进程视图/追溯）。
-            writeTransportSegment(plate, srcRes, dstRes);
+            writeTransportSegment(plate, srcRes, dstRes, robotRes);
             log.info("[搬运] 事务 {} 自动 CONFIRMED：{} → {}（{}）",
                     txn, plate, dstRes, mv.reason());
             return true;
