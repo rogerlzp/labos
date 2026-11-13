@@ -117,6 +117,10 @@ public interface BindingMapper {
     List<Map<String, Object>> selectNodeBindingInstanceIds(@Param("t") long tenantId,
                                                            @Param("workflowId") long workflowId);
 
+    /** P2-7：读某节点的 barcode_policy + 期望条码（params->>'expected_barcode' / 'barcode'）。 */
+    Map<String, Object> selectBarcodePolicyByNodeId(@Param("t") long tenantId,
+                                                    @Param("nodeId") long nodeId);
+
     // ---------------------------------------------------------------- 物料角色（P2-8）
 
     List<Map<String, Object>> selectMaterialRoles(@Param("t") long tenantId);

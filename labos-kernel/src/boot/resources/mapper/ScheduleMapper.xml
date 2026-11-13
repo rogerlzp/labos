@@ -73,4 +73,14 @@
             #{status}::booking_status, #{sourceType}, #{sourceId}, #{runNodeId}, #{note})
   </insert>
 
+  <update id="markBookingsDone">
+    UPDATE resource_booking
+       SET status = 'done', updated_at = now()
+     WHERE tenant_id = #{t}
+       AND source_type = #{sourceType}
+       AND source_id = #{sourceId}
+       AND status IN ('planned', 'active')
+       AND deleted_at IS NULL
+  </update>
+
 </mapper>

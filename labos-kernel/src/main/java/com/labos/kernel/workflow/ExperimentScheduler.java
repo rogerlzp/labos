@@ -116,6 +116,11 @@ public final class ExperimentScheduler {
                            boolean loopStarted) {
     }
 
+    /** P2-5 死锁/饥饿风险条目。 */
+    public record DeadlockRisk(String kind, Long resourceId, String resourceCode,
+                               long experimentRunId, String since, String message) {
+    }
+
     /**
      * 队列快照排序口径：<b>与 {@link #dispatch()} 完全一致</b>——
      * deadline ASC（无截止最后，EDD 优先）→ priority DESC → submittedAt ASC。
@@ -464,6 +469,7 @@ public final class ExperimentScheduler {
                 queue.remove(q);
             }
             log.info("[调度] 派发实验 " + q.experimentId() + "（占资源 " + need.size() + " 项）");
+            recordBookings(need, q.experimentRunId());
             runningNow++;
             dispatched.incrementAndGet();
             running.incrementAndGet();
@@ -547,6 +553,7 @@ public final class ExperimentScheduler {
             running.decrementAndGet();
 
             releaseResources(q.experimentRunId());
+            markBookingsDone(q.experimentRunId());
         }
 
         // 异步分批续队：放到资源释放之后，下一批重新参与派发竞争
@@ -670,15 +677,20 @@ public final class ExperimentScheduler {
         if (resources.isEmpty()) {
             return true;
         }
+        // P2-5 §4.4.2：多资源按 id 升序获取，与 PositionLock 的“双锁按 id 升序”同一手法，
+        // 消除多锁场景的循环等待（防死锁）。虽然本方法整体在单互斥量内是原子的，
+        // 但升序写入让 resourceHolds 的演化顺序可预期、便于事后对账。
+        List<Long> sorted = new ArrayList<>(resources);
+        sorted.sort(Comparator.naturalOrder());
         synchronized (resourceHoldLock) {
-            for (Long r : resources) {
+            for (Long r : sorted) {
                 ResourceHold h = resourceHolds.get(r);
                 if (h != null && h.experimentRunId() != experimentRunId) {
                     return false;
                 }
             }
             Instant now = Instant.now();
-            for (Long r : resources) {
+            for (Long r : sorted) {
                 resourceHolds.put(r, new ResourceHold(experimentRunId, now));
             }
             return true;
@@ -694,6 +706,49 @@ public final class ExperimentScheduler {
     private void releaseResources(long experimentRunId) {
         synchronized (resourceHoldLock) {
             resourceHolds.entrySet().removeIf(e -> e.getValue().experimentRunId() == experimentRunId);
+        }
+    }
+
+    /**
+     * P2-4：调度决策落库——每派发一个实验，为其占用的每个资源写一行预约（甘特图/审计）。
+     *
+     * <p>best-effort：写失败只记日志，绝不阻断派发（预约是观测，不是正确性主链）。
+     * 资源 id 按升序写，与 §4.4.2 的加锁顺序一致，便于甘特图稳定排序。
+     */
+    private void recordBookings(Set<Long> resources, long experimentRunId) {
+        if (resources == null || resources.isEmpty()) {
+            return;
+        }
+        List<Long> sorted = new ArrayList<>(resources);
+        sorted.sort(Comparator.naturalOrder());
+        Instant now = Instant.now();
+        String from = now.toString();
+        String to = now.plus(LOCK_TTL).toString();   // 上限窗口；结束时会 markBookingsDone 收敛
+        try {
+            com.labos.kernel.persistence.ScheduleMapper sm =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.ScheduleMapper.class);
+            for (Long r : sorted) {
+                try {
+                    sm.insertResourceBooking(tenantId, r, from, to, "active",
+                            "scheduler", experimentRunId, null, "调度派发自动预约");
+                } catch (RuntimeException e) {
+                    log.warn("[调度预约] 资源 {} 预约落库失败（不阻断派发）: {}", r, e.getMessage());
+                }
+            }
+        } catch (RuntimeException e) {
+            log.warn("[调度预约] 预约落库失败（不阻断派发）: {}", e.getMessage());
+        }
+    }
+
+    /** P2-4：执行结束后把该 run 的调度预约标记为 done（收敛为历史事实）。 */
+    private void markBookingsDone(long experimentRunId) {
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.ScheduleMapper.class)
+                    .markBookingsDone(tenantId, "scheduler", experimentRunId);
+        } catch (RuntimeException e) {
+            log.warn("[调度预约] 标记 done 失败（不阻断）: {}", e.getMessage());
         }
     }
 
@@ -726,6 +781,53 @@ public final class ExperimentScheduler {
         synchronized (resourceHoldLock) {
             resourceHolds.entrySet().removeIf(e -> e.getValue().at().isBefore(cutoff));
         }
+    }
+
+    /**
+     * P2-5 死锁/饥饿检测：把「可能已经卡死」的信号显式暴露出来，供值班员/告警消费。
+     *
+     * <ul>
+     *   <li>{@code held_too_long}：资源被某 run 占用超过阈值（可能泄漏/死锁）；</li>
+     *   <li>{@code waiting_too_long}：实验在队列里等待超过阈值（可能饥饿）。</li>
+     * </ul>
+     *
+     * <p>本架构里循环等待（经典死锁）已被 §4.4.2 的升序加锁 + 单互斥量排除，
+     * 因此这里检测的是它的两个可观测替身：资源泄漏与饥饿。
+     */
+    public List<DeadlockRisk> deadlockRisks(Duration heldThreshold, Duration waitThreshold) {
+        List<DeadlockRisk> out = new ArrayList<>();
+        Instant now = Instant.now();
+        Instant heldCutoff = now.minus(heldThreshold);
+        Instant waitCutoff = now.minus(waitThreshold);
+
+        Map<Long, ResourceHold> holdsCopy;
+        synchronized (resourceHoldLock) {
+            holdsCopy = new HashMap<>(resourceHolds);
+        }
+        List<Queued> queueCopy;
+        synchronized (queue) {
+            queueCopy = new ArrayList<>(queue);
+        }
+
+        for (Map.Entry<Long, ResourceHold> e : holdsCopy.entrySet()) {
+            if (e.getValue().at().isBefore(heldCutoff)) {
+                out.add(new DeadlockRisk("held_too_long", e.getKey(), null,
+                        e.getValue().experimentRunId(), e.getValue().at().toString(),
+                        "资源被 run#" + e.getValue().experimentRunId() + " 占用超过 "
+                                + heldThreshold.toMinutes() + " 分钟（可能泄漏/死锁）"));
+            }
+        }
+        for (Queued q : queueCopy) {
+            Instant submitted = Instant.ofEpochMilli(q.submittedAt());
+            if (submitted.isBefore(waitCutoff)) {
+                out.add(new DeadlockRisk("waiting_too_long", null, null,
+                        q.experimentRunId(), submitted.toString(),
+                        "实验 #" + q.experimentId() + " 排队等待超过 "
+                                + waitThreshold.toMinutes() + " 分钟（可能饥饿）"));
+            }
+        }
+        out.sort(Comparator.comparing(DeadlockRisk::since));
+        return out;
     }
 
     // ---------------------------------------------------------- 查询

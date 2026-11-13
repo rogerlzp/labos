@@ -2465,7 +2465,7 @@ public class WorkflowService {
                             sentAtByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
                     writeStep(parentId, stepSeq, method, ok, errorCode, rawResponse,
                             durationMs, attempt, dev == null ? 0L : dev,
-                            paramsByNode.getOrDefault(nodeId, Map.of()), sentAt);
+                            paramsByNode.getOrDefault(nodeId, Map.of()), sentAt, nodeId);
                 } catch (SQLException | RuntimeException e) {
                     log.error("[WARN] 步骤落库失败: " + e.getMessage());
                 }
@@ -2479,7 +2479,7 @@ public class WorkflowService {
                                String errorCode, String rawResponse, long durationMs,
                                int attempt, long deviceId,
                                Map<String, Object> params,
-                               java.sql.Timestamp sentAt) throws SQLException {
+                               java.sql.Timestamp sentAt, long nodeId) throws SQLException {
             // 板位登记：成功的 Deposit/Withdraw 类方法会动位置
             if (ok && deviceId > 0) {
                 try {
@@ -2521,6 +2521,12 @@ public class WorkflowService {
                     log.warn("[扫码关联] 失败（不阻断执行）：{}", se.getMessage());
                 }
             }
+            // P2-7：扫码校验（B6）——node_binding.barcode_policy=validate_in/both 时，
+            // 进设备方向条码必须与期望一致，不一致 ⇒ 转人工停下等人（waiting_human + manual_window）。
+            if (ok && deviceId > 0 && rawResponse != null
+                    && com.labos.kernel.driver.PositionLock.isBarcodeMethod(method)) {
+                scanGate(nodeId, rawResponse);
+            }
             // 设备内部搬运通知：流程显式调用该设备方法（MoveInLabware/MoveOutLabware），
             // 设备完成进站/出站后把「板 ↔ 内部格」关系通知中控，由中控统一维护。
             // 失败只告警：通知处理是位置关系的同步，绝不阻断已经完成的物理动作。
@@ -2557,6 +2563,48 @@ public class WorkflowService {
                     Jsons.obj(kv.toArray()), stepStatus(ok, errorCode), attempt,
                     Jsons.obj("ok", ok, "durationMs", durationMs), rawResponse, errorCode,
                     deviceId, sentAt);
+        }
+
+        /**
+         * P2-7：扫码校验（B6）运行时闸门。
+         *
+         * <p>node_binding.barcode_policy ∈ {validate_in, validate_both} 时，进设备方向
+         * 条码必须与期望一致；不一致 ⇒ 转人工停下等人（waiting_human + manual_window）。
+         * best-effort：检查/转人工失败只记日志，不阻断物理执行（板已在设备里）。
+         */
+        private void scanGate(long nodeId, String rawResponse) {
+            try {
+                Map<String, Object> bp = com.labos.kernel.persistence.Mappers.get(
+                                com.labos.kernel.persistence.BindingMapper.class)
+                        .selectBarcodePolicyByNodeId(tenantId, nodeId);
+                if (bp == null || bp.get("barcodePolicy") == null) {
+                    return;   // 没配绑定/策略 ⇒ 不校验
+                }
+                String policy = String.valueOf(bp.get("barcodePolicy"));
+                if (!com.labos.kernel.driver.ScanPolicy.validateOnEnter(policy)) {
+                    return;   // none/read/update ⇒ 不校验
+                }
+                String scanned = com.labos.kernel.driver.PositionLock
+                        .resolvePlateBarcode(null, rawResponse);
+                String expected = bp.get("expectedBarcode") == null ? null
+                        : String.valueOf(bp.get("expectedBarcode"));
+                if (!com.labos.kernel.driver.ScanPolicy.violates(policy, true, expected, scanned)) {
+                    return;   // 一致 / 无期望值 ⇒ 放行
+                }
+                String nodeKey = bp.get("nodeKey") == null ? null
+                        : String.valueOf(bp.get("nodeKey"));
+                log.error("[扫码校验] run={} node={} 条码不匹配（期望 {}，扫到 {}）→ 转人工",
+                        runId, nodeKey, expected, scanned);
+                try {
+                    new PauseManager(db, tenantId).pause(runId, PauseManager.Kind.WAITING_HUMAN,
+                            "扫码校验失败：条码不匹配（期望 " + expected + "，扫到 " + scanned + "）",
+                            nodeKey);
+                } catch (Exception pe) {
+                    log.error("[扫码校验] 转人工失败：" + pe.getMessage());
+                }
+            } catch (Exception e) {
+                log.warn("[扫码校验] 检查失败（不阻断执行）：{}", e.getMessage());
+            }
         }
     }
 

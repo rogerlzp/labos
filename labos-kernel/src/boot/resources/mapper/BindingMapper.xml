@@ -189,6 +189,17 @@
        AND nb.enabled = true AND nb.position_id IS NOT NULL
   </select>
 
+  <select id="selectBarcodePolicyByNodeId" resultType="java.util.Map">
+    SELECT nb.barcode_policy AS "barcodePolicy",
+           COALESCE(nb.params->>'expected_barcode', nb.params->>'barcode') AS "expectedBarcode",
+           wn.node_key AS "nodeKey"
+      FROM node_binding nb
+      JOIN workflow_node wn ON wn.id = nb.node_id
+     WHERE nb.tenant_id = #{t} AND nb.node_id = #{nodeId} AND nb.enabled = true
+     ORDER BY nb.seq
+     LIMIT 1
+  </select>
+
   <update id="updateNodeBindingMode">
     UPDATE workflow_node SET binding_mode = #{mode}, updated_at = now()
      WHERE tenant_id = #{t} AND workflow_id = #{workflowId} AND node_key = #{nodeKey}

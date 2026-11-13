@@ -3,6 +3,7 @@ package com.labos.boot.web.controller;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.workflow.ExperimentScheduler;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
@@ -90,5 +91,28 @@ public class SchedulerController {
                 "pool", st.maxConcurrent(),
                 "active", st.running(),
                 "queue", 0);
+    }
+
+    /** P2-5 死锁/饥饿检测（阈值可传，默认 30 分钟）。 */
+    @GetMapping(value = "/api/scheduler/deadlock-check", produces = "application/json; charset=utf-8")
+    public String deadlockCheck(@RequestParam(defaultValue = "30") long heldMinutes,
+                                @RequestParam(defaultValue = "30") long waitMinutes) {
+        java.time.Duration held = java.time.Duration.ofMinutes(Math.max(heldMinutes, 1));
+        java.time.Duration wait = java.time.Duration.ofMinutes(Math.max(waitMinutes, 1));
+        List<ExperimentScheduler.DeadlockRisk> risks = scheduler.deadlockRisks(held, wait);
+        List<String> items = new ArrayList<>();
+        for (ExperimentScheduler.DeadlockRisk r : risks) {
+            items.add(Jsons.obj(
+                    "kind", r.kind(),
+                    "resourceId", r.resourceId(),
+                    "resourceCode", r.resourceCode(),
+                    "experimentRunId", r.experimentRunId(),
+                    "since", r.since(),
+                    "message", r.message()));
+        }
+        return Jsons.obj("total", risks.size(),
+                "heldThresholdMinutes", held.toMinutes(),
+                "waitThresholdMinutes", wait.toMinutes(),
+                "risks", new Jsons.Raw(Jsons.arr(items)));
     }
 }

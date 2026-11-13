@@ -46,4 +46,9 @@ public interface ScheduleMapper {
                               @Param("sourceId") Long sourceId,
                               @Param("runNodeId") Long runNodeId,
                               @Param("note") String note);
+
+    /** 把某条 run 的调度预约（active/planned）标记为 done（执行结束后）。 */
+    int markBookingsDone(@Param("t") long tenantId,
+                         @Param("sourceType") String sourceType,
+                         @Param("sourceId") long sourceId);
 }
