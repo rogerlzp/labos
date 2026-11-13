@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS manifest_placement (
   tenant_id     bigint NOT NULL,
   run_id        bigint NOT NULL REFERENCES experiment_run(id) ON DELETE CASCADE,
   manifest_item_id bigint NOT NULL REFERENCES manifest_item(id) ON DELETE CASCADE,
-  position_id   bigint NOT NULL REFERENCES device_point(id),
+  position_id   bigint REFERENCES device_point(id),
   status        text   NOT NULL DEFAULT 'unassigned',
   reserve_same_nest boolean NOT NULL DEFAULT false,
   verified_by   bigint,
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS manifest_placement (
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT ck_manifest_placement_status
-    CHECK (status IN ('assigned','verified','loaded','consumed','unloaded','absent')),
+    CHECK (status IN ('unassigned','assigned','verified','loaded','consumed','unloaded','absent')),
   CONSTRAINT uk_manifest_placement UNIQUE (run_id, manifest_item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_manifest_placement_position ON manifest_placement (position_id);

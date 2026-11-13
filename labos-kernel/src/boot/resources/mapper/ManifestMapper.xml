@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.ManifestMapper">
+
+  <!-- ============================================================ 实验模板 -->
+
+  <select id="selectTemplates" resultType="java.util.Map">
+    SELECT t.id, t.template_no AS "templateNo", t.name, t.island_id AS "islandId",
+           t.status, t.spec,
+           (SELECT count(*) FROM experiment_template_process p
+             WHERE p.template_id = t.id AND p.tenant_id = t.tenant_id) AS "processCount",
+           (SELECT count(*) FROM manifest_item m
+             WHERE m.template_id = t.id AND m.tenant_id = t.tenant_id) AS "manifestCount"
+      FROM experiment_template t
+     WHERE t.tenant_id = #{t} AND t.deleted_at IS NULL
+       <if test="islandId != null">AND t.island_id = #{islandId}</if>
+       <if test="status != null">AND t.status = #{status}</if>
+     ORDER BY t.id
+  </select>
+
+  <select id="selectTemplate" resultType="java.util.Map">
+    SELECT id, template_no AS "templateNo", name, island_id AS "islandId",
+           status, spec, point_whitelist AS "pointWhitelist"
+      FROM experiment_template
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </select>
+
+  <insert id="insertTemplate">
+    INSERT INTO experiment_template (tenant_id, template_no, name, island_id, workflow_ids, spec)
+    VALUES (#{t}, #{templateNo}, #{name}, #{islandId}, CAST(#{workflowIds} AS bigint[]),
+            #{spec}::jsonb)
+  </insert>
+
+  <update id="updateTemplate">
+    UPDATE experiment_template
+    <set>
+      <if test="name != null">name = #{name},</if>
+      <if test="status != null">status = #{status},</if>
+      <if test="spec != null">spec = #{spec}::jsonb,</if>
+      updated_at = now()
+    </set>
+    WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <update id="deleteTemplate">
+    UPDATE experiment_template SET deleted_at = now(), updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <select id="selectTemplateProcesses" resultType="java.util.Map">
+    SELECT id, seq, workflow_id AS "workflowId", loop_count AS "loopCount", params
+      FROM experiment_template_process
+     WHERE tenant_id = #{t} AND template_id = #{templateId}
+     ORDER BY seq
+  </select>
+
+  <insert id="insertTemplateProcess">
+    INSERT INTO experiment_template_process (tenant_id, template_id, seq, workflow_id, params)
+    VALUES (#{t}, #{templateId}, #{seq}, #{workflowId}, #{params}::jsonb)
+  </insert>
+
+  <delete id="deleteTemplateProcesses">
+    DELETE FROM experiment_template_process
+     WHERE tenant_id = #{t} AND template_id = #{templateId}
+  </delete>
+
+  <!-- ============================================================ 物料清单（模板侧） -->
+
+  <select id="selectManifestItems" resultType="java.util.Map">
+    SELECT id, seq, role_code AS "roleCode", material_kind AS "materialKind",
+           material_ref AS "materialRef", quantity, required
+      FROM manifest_item
+     WHERE tenant_id = #{t} AND template_id = #{templateId}
+     ORDER BY seq, id
+  </select>
+
+  <insert id="insertManifestItem">
+    INSERT INTO manifest_item (tenant_id, template_id, seq, role_code, material_kind,
+                               material_ref, quantity, required)
+    VALUES (#{t}, #{templateId}, #{seq}, #{roleCode}, #{materialKind},
+            #{materialRef}, #{quantity}, #{required})
+  </insert>
+
+  <delete id="deleteManifestItems">
+    DELETE FROM manifest_item WHERE tenant_id = #{t} AND template_id = #{templateId}
+  </delete>
+
+  <!-- ============================================================ 实例化 + 位置配置 -->
+
+  <insert id="insertExperiment">
+    INSERT INTO experiment (tenant_id, experiment_no, name, island_id, template_id, spec)
+    VALUES (#{t}, #{experimentNo}, #{name}, #{islandId}, #{templateId}, #{spec}::jsonb)
+  </insert>
+
+  <select id="selectExperimentIdByNo" resultType="java.lang.Long">
+    SELECT id FROM experiment
+     WHERE tenant_id = #{t} AND experiment_no = #{experimentNo} AND deleted_at IS NULL
+     ORDER BY id DESC LIMIT 1
+  </select>
+
+  <insert id="insertExperimentRun">
+    INSERT INTO experiment_run (tenant_id, experiment_id) VALUES (#{t}, #{experimentId})
+  </insert>
+
+  <select id="selectExperimentRunId" resultType="java.lang.Long">
+    SELECT id FROM experiment_run
+     WHERE tenant_id = #{t} AND experiment_id = #{experimentId}
+     ORDER BY id DESC LIMIT 1
+  </select>
+
+  <insert id="insertPlacementFromTemplate">
+    INSERT INTO manifest_placement (tenant_id, run_id, manifest_item_id, position_id, status)
+    SELECT #{t}, #{runId}, mi.id, NULL, 'unassigned'
+      FROM manifest_item mi
+     WHERE mi.tenant_id = #{t} AND mi.template_id = #{templateId}
+  </insert>
+
+  <select id="selectPlacements" resultType="java.util.Map">
+    SELECT mp.id, mp.run_id AS "runId", mp.manifest_item_id AS "manifestItemId",
+           mp.position_id AS "positionId", mp.status, mp.reserve_same_nest AS "reserveSameNest",
+           mp.verified_at AS "verifiedAt",
+           mi.role_code AS "roleCode", mi.material_kind AS "materialKind",
+           mi.material_ref AS "materialRef", mi.quantity, mi.required,
+           pr.code AS "positionCode", dr.code AS "deviceCode"
+      FROM manifest_placement mp
+      JOIN manifest_item mi ON mi.id = mp.manifest_item_id
+      LEFT JOIN device_point dp ON dp.id = mp.position_id
+      LEFT JOIN resource_node pr ON pr.id = dp.point_resource_id
+      LEFT JOIN resource_node dr ON dr.id = dp.device_resource_id
+     WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId}
+     ORDER BY mi.seq, mp.id
+  </select>
+
+  <update id="updatePlacementPosition">
+    UPDATE manifest_placement
+       SET position_id = #{positionId}, status = 'assigned', updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{placementId}
+  </update>
+
+  <update id="updatePlacementVerify">
+    UPDATE manifest_placement
+       SET status = 'verified', verified_by = #{verifiedBy}, verified_at = now(), updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{placementId}
+  </update>
+
+  <!-- ============================================================ 三条件 -->
+
+  <select id="selectOfflineDevices" resultType="java.lang.String">
+    SELECT DISTINCT dr.code
+      FROM run_node rn
+      JOIN resource_node dr ON dr.id = rn.resource_id
+      LEFT JOIN device_state ds ON ds.resource_id = rn.resource_id
+     WHERE rn.tenant_id = #{t} AND rn.run_id = #{runId}
+       AND rn.resource_id IS NOT NULL
+       AND (ds.online IS NULL OR ds.online = false)
+     ORDER BY dr.code
+  </select>
+
+  <select id="countUnverifiedPlacements" resultType="long">
+    SELECT count(*)
+      FROM manifest_placement mp
+      JOIN manifest_item mi ON mi.id = mp.manifest_item_id
+     WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId}
+       AND mi.required = true
+       AND mp.status &lt;&gt; 'verified'
+  </select>
+
+</mapper>
