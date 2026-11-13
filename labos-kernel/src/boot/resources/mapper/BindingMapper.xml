@@ -267,4 +267,18 @@
      ORDER BY dp.workstation_slot NULLS LAST, dp.id LIMIT 1
   </select>
 
+  <!-- PF-28：deck_in/deck_out 不成对的设备 -->
+  <select id="selectDeckUnpairedDevices" resultType="java.util.Map">
+    SELECT dp.device_resource_id AS "deviceResourceId", dr.code AS "deviceCode",
+           count(*) FILTER (WHERE dp.point_kind='deck_in') AS "deckIn",
+           count(*) FILTER (WHERE dp.point_kind='deck_out') AS "deckOut"
+      FROM device_point dp
+      JOIN resource_node dr ON dr.id = dp.device_resource_id
+     WHERE dp.tenant_id = #{t} AND dp.point_kind IN ('deck_in','deck_out')
+     GROUP BY dp.device_resource_id, dr.code
+    HAVING count(*) FILTER (WHERE dp.point_kind='deck_in') = 0
+        OR count(*) FILTER (WHERE dp.point_kind='deck_out') = 0
+     ORDER BY dr.code
+  </select>
+
 </mapper>

@@ -166,6 +166,9 @@ public interface BindingMapper {
     Long selectFirstFreeWorkstation(@Param("t") long tenantId,
                                     @Param("deviceResourceId") long deviceResourceId);
 
+    /** PF-28：deck_in/deck_out 不成对的设备（双交接位需成对）。 */
+    List<Map<String, Object>> selectDeckUnpairedDevices(@Param("t") long tenantId);
+
     /** 节点有无绑定 + 有无 XML resource，用于回填 binding_mode。 */
     int updateNodeBindingMode(@Param("t") long tenantId,
                               @Param("workflowId") long workflowId,

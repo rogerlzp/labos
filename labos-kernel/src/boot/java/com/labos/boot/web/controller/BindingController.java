@@ -450,6 +450,13 @@ public class BindingController {
                 "note", "只读建议：实际占用走既有点位预约（原子）"));
     }
 
+    /** PF-28：双交接位不成对（deck_in/deck_out）检查。 */
+    @GetMapping(value = "/deck-pairing-check", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deckPairingCheck() {
+        List<Map<String, Object>> rows = m().selectDeckUnpairedDevices(TENANT);
+        return ok(Map.of("total", rows.size(), "unpairedDevices", rows));
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static final java.util.Set<String> MATERIAL_PHYSICAL =
