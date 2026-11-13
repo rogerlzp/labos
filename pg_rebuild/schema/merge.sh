@@ -71,6 +71,7 @@ cat /tmp/_schema_header.sql \
     99u_run_exec_phase.sql \
     99v_workflow_island_id.sql \
     99w_sequence_fresh_start.sql \
+    99x_p2_rebuild.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 
