@@ -72,19 +72,20 @@ function AppInner() {
    * 用户以为系统坏了而不是"我没权限"。
    */
   const navItems = useMemo(() => {
-    const groups = isAdmin
-      ? NAV
-      : NAV.map((group) => (group.key === 'system'
-        ? { ...group, children: group.children.filter((item) => item.key !== '/users') }
-        : group));
-    // 文案在这里才查表：同一份菜单结构，中英文各查各的表
-    return groups.map((g) => ({
-      key: g.key,
-      label: t(g.labelKey),
-      icon: g.icon,
-      children: g.children.map((c) => ({ key: c.key, label: t(c.labelKey), icon: c.icon })),
-    }));
-  }, [isAdmin, t]);
+    const role = session?.role as import('./auth').Role | undefined;
+    const visible = (r?: import('./auth').Role[]) => !r || !role || r.includes(role);
+    return NAV
+      .filter((g) => visible(g.roles))
+      .map((g) => ({
+        key: g.key,
+        label: t(g.labelKey),
+        icon: g.icon,
+        children: g.children.filter((c) => visible(c.roles)).map((c) => ({
+          key: c.key, label: t(c.labelKey), icon: c.icon,
+        })),
+      }))
+      .filter((g) => g.children.length > 0);
+  }, [session?.role, t]);
 
   /**
    * 路由变了 ⇒ 把这个页面登记进标签表。

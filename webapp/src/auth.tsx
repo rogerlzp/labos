@@ -17,7 +17,7 @@ import { useI18n } from './i18n';
 import { getLocale, translate, type Locale } from './i18n/core';
 
 /** 后端角色取值（未知值按只读处理）。 */
-export type Role = 'admin' | 'operator' | 'viewer';
+export type Role = 'admin' | 'operator' | 'designer' | 'viewer';
 
 /** GET /api/auth/me 返回的会话。 */
 export interface Session {
@@ -30,7 +30,7 @@ export interface Session {
  * 角色 → antd Tag 颜色：Header 的角色 Tag 与用户管理页共用同一份。
  */
 export const ROLE_COLOR: Record<string, string> = {
-  admin: 'red', operator: 'blue', viewer: 'default',
+  admin: 'red', operator: 'blue', designer: 'purple', viewer: 'default',
 };
 
 /**
@@ -44,6 +44,7 @@ export function roleLabel(role?: string | null, locale: Locale = getLocale()): s
   if (!role) return translate('role.anonymous', undefined, locale);
   if (role === 'admin') return translate('role.admin', undefined, locale);
   if (role === 'operator') return translate('role.operator', undefined, locale);
+  if (role === 'designer') return translate('role.designer', undefined, locale);
   if (role === 'viewer') return translate('role.viewer', undefined, locale);
   return role;
 }
@@ -60,6 +61,16 @@ export function roleColor(role?: string | null): string {
  * 权限判断宁可保守，不能因为没认出来就放开写。
  */
 export function roleCanWrite(role?: string | null): boolean {
+  return role === 'admin' || role === 'operator' || role === 'designer';
+}
+
+/** 能否管编排（建/改流程、绑点位、管设备池）：admin 或 designer。 */
+export function roleCanDesign(role?: string | null): boolean {
+  return role === 'admin' || role === 'designer';
+}
+
+/** 能否管运行（配物料、启动/暂停实验）：admin 或 operator。 */
+export function roleCanOperate(role?: string | null): boolean {
   return role === 'admin' || role === 'operator';
 }
 

@@ -205,6 +205,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   // ------------------------------------------------------------ roles / permissions
   'role.admin': 'Administrator',
   'role.operator': 'Operator',
+  'role.designer': 'Designer',
   'role.viewer': 'Read-only',
   'role.anonymous': 'Signed out',
   'auth.readOnlyTitle': 'Read-only account: this action is not allowed',

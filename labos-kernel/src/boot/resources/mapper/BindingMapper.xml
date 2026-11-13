@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.BindingMapper">
+
+  <!-- ============================================================ 设备池 -->
+
+  <select id="selectPools" resultType="java.util.Map">
+    SELECT p.id, p.code, p.name, p.island_id AS "islandId", p.pool_kind AS "poolKind",
+           p.strategy, p.skip_on_error AS "skipOnError", p.skip_on_offline AS "skipOnOffline",
+           p.allow_iteration_on_error AS "allowIterationOnError",
+           p.min_nest_count AS "minNestCount", p.enabled,
+           (SELECT count(*) FROM device_pool_member m
+             WHERE m.pool_id = p.id AND m.tenant_id = p.tenant_id) AS "memberCount"
+      FROM device_pool p
+     WHERE p.tenant_id = #{t} AND p.deleted_at IS NULL
+       <if test="islandId != null">AND p.island_id = #{islandId}</if>
+       <if test="kind != null">AND p.pool_kind = #{kind}</if>
+     ORDER BY p.id
+  </select>
+
+  <select id="selectPool" resultType="java.util.Map">
+    SELECT id, code, name, island_id AS "islandId", pool_kind AS "poolKind",
+           strategy, skip_on_error AS "skipOnError", skip_on_offline AS "skipOnOffline",
+           allow_iteration_on_error AS "allowIterationOnError",
+           min_nest_count AS "minNestCount", enabled
+      FROM device_pool WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </select>
+
+  <select id="selectPoolMembers" resultType="java.util.Map">
+    SELECT m.id, m.pool_id AS "poolId", m.device_instance_id AS "deviceInstanceId",
+           m.sub_group AS "subGroup", m.priority, m.use_count AS "useCount",
+           di.code AS "deviceCode", r.code AS "deviceResourceCode"
+      FROM device_pool_member m
+      JOIN device_instance di ON di.id = m.device_instance_id
+      LEFT JOIN resource_node r ON r.id = di.resource_id
+     WHERE m.tenant_id = #{t} AND m.pool_id = #{poolId}
+     ORDER BY m.priority, m.id
+  </select>
+
+  <insert id="insertPool">
+    INSERT INTO device_pool (tenant_id, code, name, island_id, pool_kind, strategy,
+                             skip_on_error, skip_on_offline, allow_iteration_on_error, min_nest_count)
+    VALUES (#{t}, #{code}, #{name}, #{islandId}, #{poolKind}, #{strategy},
+            #{skipOnError}, #{skipOnOffline}, #{allowIterationOnError}, #{minNestCount})
+  </insert>
+
+  <update id="updatePool">
+    UPDATE device_pool
+    <set>
+      <if test="name != null">name = #{name},</if>
+      <if test="strategy != null">strategy = #{strategy},</if>
+      skip_on_error = #{skipOnError},
+      skip_on_offline = #{skipOnOffline},
+      allow_iteration_on_error = #{allowIterationOnError},
+      enabled = #{enabled},
+      updated_at = now()
+    </set>
+    WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <update id="deletePool">
+    UPDATE device_pool SET deleted_at = now(), updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <insert id="insertPoolMember">
+    INSERT INTO device_pool_member (tenant_id, pool_id, device_instance_id, sub_group, priority)
+    VALUES (#{t}, #{poolId}, #{deviceInstanceId}, #{subGroup}, #{priority})
+    ON CONFLICT (pool_id, device_instance_id) DO UPDATE
+      SET sub_group = EXCLUDED.sub_group, priority = EXCLUDED.priority, updated_at = now()
+  </insert>
+
+  <delete id="deletePoolMember">
+    DELETE FROM device_pool_member
+     WHERE tenant_id = #{t} AND pool_id = #{poolId} AND device_instance_id = #{deviceInstanceId}
+  </delete>
+
+  <select id="selectDeviceModelId" resultType="java.lang.Long">
+    SELECT device_id FROM device_instance WHERE tenant_id = #{t} AND id = #{deviceInstanceId}
+  </select>
+
+  <select id="countPoolBindings" resultType="long">
+    SELECT count(*) FROM node_binding
+     WHERE tenant_id = #{t} AND pool_id = #{poolId}
+  </select>
+
+  <!-- ============================================================ 点位方法 -->
+
+  <!-- position_id = device_point.id；此处解析出点位码与资源 id。 -->
+  <select id="selectPositionInfo" resultType="java.util.Map">
+    SELECT dp.id AS "positionId", pr.code AS "positionCode", pr.id AS "pointResourceId",
+           dp.point_role AS "pointRole", dp.robot_reachable AS "robotReachable",
+           dp.device_resource_id AS "deviceResourceId", dr.code AS "deviceCode"
+      FROM device_point dp
+      JOIN resource_node pr ON pr.id = dp.point_resource_id
+      LEFT JOIN resource_node dr ON dr.id = dp.device_resource_id
+     WHERE dp.tenant_id = #{t} AND dp.id = #{positionId}
+  </select>
+
+  <select id="selectPositionMethods" resultType="java.util.Map">
+    SELECT pm.id, pm.position_id AS "positionId", pm.method_id AS "methodId",
+           dm.method AS "methodName", pm.scope_kind AS "scopeKind", pm.scope_id AS "scopeId",
+           pm.purpose, pm.allocation, pm.priority, pm.enabled
+      FROM position_method pm
+      JOIN device_method dm ON dm.id = pm.method_id
+     WHERE pm.tenant_id = #{t} AND pm.position_id = #{positionId}
+       <if test="scopeKind != null">AND pm.scope_kind = #{scopeKind}</if>
+       <if test="scopeId != null">AND pm.scope_id = #{scopeId}</if>
+     ORDER BY pm.scope_kind, pm.priority, pm.id
+  </select>
+
+  <insert id="insertPositionMethod">
+    INSERT INTO position_method (tenant_id, position_id, method_id, scope_kind, scope_id,
+                                 purpose, allocation, priority)
+    VALUES (#{t}, #{positionId}, #{methodId}, #{scopeKind}, #{scopeId},
+            #{purpose}, #{allocation}, #{priority})
+  </insert>
+
+  <update id="updatePositionMethod">
+    UPDATE position_method
+       SET purpose = #{purpose}, allocation = #{allocation},
+           priority = #{priority}, enabled = #{enabled}, updated_at = now()
+     WHERE id = #{id}
+  </update>
+
+  <delete id="deletePositionMethod">
+    DELETE FROM position_method WHERE id = #{id}
+  </delete>
+
+  <select id="selectPositionMethodMatrix" resultType="java.util.Map">
+    SELECT dp.id AS "positionId", pr.code AS "positionCode", dr.code AS "deviceCode",
+           pm.id AS "bindingId", dm.method AS "methodName",
+           pm.scope_kind AS "scopeKind", pm.scope_id AS "scopeId", pm.purpose, pm.enabled
+      FROM device_point dp
+      JOIN resource_node pr ON pr.id = dp.point_resource_id
+      LEFT JOIN resource_node dr ON dr.id = dp.device_resource_id
+      LEFT JOIN position_method pm ON pm.position_id = dp.id AND pm.tenant_id = dp.tenant_id
+      LEFT JOIN device_method dm ON dm.id = pm.method_id
+     WHERE dp.tenant_id = #{t}
+       AND dr.parent_id = #{islandId}
+     ORDER BY dr.code, pr.code, pm.scope_kind, pm.id
+  </select>
+
+  <!-- ============================================================ 节点绑定 -->
+
+  <select id="selectNodeIdByKey" resultType="java.lang.Long">
+    SELECT id FROM workflow_node
+     WHERE tenant_id = #{t} AND workflow_id = #{workflowId} AND node_key = #{nodeKey}
+     ORDER BY id LIMIT 1
+  </select>
+
+  <select id="selectNodeBindings" resultType="java.util.Map">
+    SELECT nb.id, nb.node_id AS "nodeId", nb.seq,
+           nb.position_id AS "positionId", nb.device_instance_id AS "deviceInstanceId",
+           nb.pool_id AS "poolId", nb.method_id AS "methodId",
+           nb.material_role AS "materialRole", nb.loading_pattern AS "loadingPattern",
+           nb.leave_at_station AS "leaveAtStation", nb.barcode_policy AS "barcodePolicy",
+           nb.params, nb.enabled,
+           pr.code AS "positionCode", dm.method AS "methodName"
+      FROM node_binding nb
+      LEFT JOIN device_point dp ON dp.id = nb.position_id
+      LEFT JOIN resource_node pr ON pr.id = dp.point_resource_id
+      LEFT JOIN device_method dm ON dm.id = nb.method_id
+     WHERE nb.tenant_id = #{t} AND nb.node_id = #{nodeId}
+     ORDER BY nb.seq, nb.id
+  </select>
+
+  <insert id="insertNodeBinding">
+    INSERT INTO node_binding (tenant_id, node_id, seq, position_id, device_instance_id,
+                              pool_id, method_id, material_role, loading_pattern,
+                              leave_at_station, barcode_policy, params)
+    VALUES (#{t}, #{nodeId}, #{seq}, #{positionId}, #{deviceInstanceId}, #{poolId},
+            #{methodId}, #{materialRole}, #{loadingPattern}, #{leaveAtStation},
+            #{barcodePolicy}, #{params}::jsonb)
+  </insert>
+
+  <delete id="deleteNodeBindings">
+    DELETE FROM node_binding WHERE tenant_id = #{t} AND node_id = #{nodeId}
+  </delete>
+
+  <update id="updateNodeBindingMode">
+    UPDATE workflow_node SET binding_mode = #{mode}, updated_at = now()
+     WHERE tenant_id = #{t} AND workflow_id = #{workflowId} AND node_key = #{nodeKey}
+  </update>
+
+</mapper>

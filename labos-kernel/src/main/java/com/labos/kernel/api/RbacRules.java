@@ -23,8 +23,8 @@ import java.util.List;
  */
 public final class RbacRules {
 
-    /** 合法角色，顺序即展示权级（高 → 低）。 */
-    public static final List<String> ROLES = List.of("admin", "operator", "viewer");
+    /** 合法角色，顺序即展示权级（高 → 低）。viewer 保留为可选只读（不占主导航）。 */
+    public static final List<String> ROLES = List.of("admin", "operator", "designer", "viewer");
 
     private RbacRules() {
     }
@@ -34,8 +34,18 @@ public final class RbacRules {
         return role != null && ROLES.contains(role);
     }
 
-    /** 能否执行写操作（执行实验、暂停/停止、改配置等）：admin 或 operator。 */
+    /** 能否执行写操作（执行实验、暂停/停止、改配置等）：admin / operator / designer。 */
     public static boolean canWrite(String role) {
+        return "admin".equals(role) || "operator".equals(role) || "designer".equals(role);
+    }
+
+    /** 能否管编排（建/改流程、绑点位、管设备池与物料角色）：admin 或 designer。 */
+    public static boolean canDesign(String role) {
+        return "admin".equals(role) || "designer".equals(role);
+    }
+
+    /** 能否管运行（配物料、启动/暂停/中止实验）：admin 或 operator。 */
+    public static boolean canOperate(String role) {
         return "admin".equals(role) || "operator".equals(role);
     }
 
@@ -76,6 +86,7 @@ public final class RbacRules {
         return switch (role) {
             case "admin" -> "管理员";
             case "operator" -> "操作员";
+            case "designer" -> "编排员";
             case "viewer" -> "只读";
             default -> role;
         };

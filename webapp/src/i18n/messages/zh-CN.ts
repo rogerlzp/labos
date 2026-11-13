@@ -209,6 +209,7 @@ export const zhCN = {
   // ------------------------------------------------------------ 角色 / 权限
   'role.admin': '管理员',
   'role.operator': '操作员',
+  'role.designer': '编排员',
   'role.viewer': '只读',
   'role.anonymous': '未登录',
   'auth.readOnlyTitle': '只读账号，不能执行操作',

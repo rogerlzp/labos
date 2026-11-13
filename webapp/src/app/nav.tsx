@@ -4,12 +4,15 @@ import {
   PlayCircleOutlined, SettingOutlined, ToolOutlined,
 } from '@ant-design/icons';
 import type { MessageKey } from '../i18n/core';
+import type { Role } from '../auth';
 
 /** 导航项：文案走 key，不写死中文（渲染时按当前语种查表）。 */
 export interface NavChild {
   key: string;
   labelKey: MessageKey;
   icon?: ReactNode;
+  /** 可见角色；缺省 = 全部角色可见（逐项填 roles 是可分批的独立改动）。 */
+  roles?: Role[];
 }
 
 export interface NavGroup {
@@ -17,6 +20,8 @@ export interface NavGroup {
   labelKey: MessageKey;
   icon: ReactNode;
   children: NavChild[];
+  /** 整组可见角色；缺省 = 全部角色可见。 */
+  roles?: Role[];
 }
 
 /**
@@ -87,7 +92,7 @@ export const NAV: NavGroup[] = [
       { key: '/variables', labelKey: 'nav.variables' },
       { key: '/error-codes', labelKey: 'nav.errorCodes' },
       // S2 物料身份与状态验收：用例清单 + 页面内运行 + 脚本结果回填
-      { key: '/s2-test-cases', labelKey: 'nav.s2TestCases' },
+      { key: '/s2-test-cases', labelKey: 'nav.s2TestCases', roles: ['admin'] },
     ],
   },
   {
@@ -95,8 +100,8 @@ export const NAV: NavGroup[] = [
     labelKey: 'nav.group.system',
     icon: <SettingOutlined />,
     children: [
-      { key: '/users', labelKey: 'nav.users' },
-      { key: '/audit', labelKey: 'nav.audit' },
+      { key: '/users', labelKey: 'nav.users', roles: ['admin'] },
+      { key: '/audit', labelKey: 'nav.audit', roles: ['admin'] },
     ],
   },
 ];
