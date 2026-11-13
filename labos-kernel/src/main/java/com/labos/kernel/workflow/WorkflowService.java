@@ -2231,46 +2231,45 @@ public class WorkflowService {
             }
         }
 
+        /** 节点阶段是展示与审计信息，写失败不改变设备执行主链路。 */
+        private void executionPhase(Long nodeRowId, String phase, Long blockedBy, String reason) {
+            if (nodeRowId == null) {
+                return;
+            }
+            try {
+                rm().updateNodeExecutionPhase(tenantId, nodeRowId, phase, blockedBy, reason);
+            } catch (RuntimeException e) {
+                log.warn("[节点阶段] 回写失败 node={} phase={}: {}", nodeRowId, phase, e.getMessage());
+            }
+        }
+
         @Override
         public void onStepStart(long nodeId, int stepSeq, String method,
                                 long resourceId, int attempt) {
             resourceByStep.put(nodeId + ":" + stepSeq + ":" + attempt, resourceId);
-            // **level=0 汇总行实时回写 running**（2026-11-11 修）。
-            //
-            // 为什么：图执行路径有 `nodeStateRecorder` 回调实时改汇总行，
-            // 而**顺序执行路径**（`sm.executeAll`，图解析失败时回退到它）没有 ⇒
-            // 汇总行一直是 pending，直到整单结束才一次性回填
-            // ⇒ 运行态流程图"执行中看不到任何变化、最后一次性变"
-            // （2026-11-11 实测：顺序路径 8 秒时三行全 pending、16 秒整单结束
-            //   才变成 completed/manual/completed）。
-            //
-            // ⚠ 只在**开始**时写 running，**终态仍由收尾统一回填**
-            // （两条路径的终态语义并不完全一致，猜终态会写错）⇒ 零语义风险。
+            Long parentRowId = nodeIdMap.get(nodeId);
+            // 顺序路径没有 nodeStateRecorder，这里仍负责实时回写汇总行 running。
             try {
-                Long parentRowId = nodeIdMap.get(nodeId);
                 if (parentRowId != null) {
                     rm().updateRunNodeStatus(tenantId, parentRowId, "running");
                 }
             } catch (RuntimeException ignore) {
                 // 回写失败不影响执行主链路（状态只是展示用；mapper 不声明受检异常）
             }
-            // 设备锁：抢不到就等。
-            // resourceId 这里是 device_instance.id，DeviceLock 要 resource_node.id，
-            // 所以先用 instanceId 查出 resource_id。
+            // 设备锁：抢不到就等。resourceId 是 device_instance.id，
+            // DeviceLock 使用 resource_node.id，必须先转换。
             //
-            // ⚠ 等待预算**不再写死 60 秒**（2026-11-06）：
-            //   改动前是 60_000 —— 与驱动层固定 30 秒超时是同一类 bug：
-            //   设备方法耗时随机 30–300 秒（真机时序）时，前一条流程还占着设备，
-            //   下一条流程等 60 秒就放弃 ⇒ 「设备被占用超过 60 秒」⇒ 节点转人工。
-            //   现在按**该设备自己登记的方法超时上限**取：设备最多可能被合法占用
-            //   多久（离心 900s / 孵育 1800s / 通用 600s），就等多久，
-            //   下限 60 秒、上限 15 分钟。
+            // 等待预算按该设备登记的方法超时上限取，下限 60 秒、上限 15 分钟。
+            // WAITING_RESOURCE 在 acquireWithWait 之前落库：这段时间没有 sent_at、
+            // 没有 CommandLedger.DISPATCH_STARTED，也没有任何设备 TCP 写入。
             try {
                 Long resNodeId = resourceIdOfInstance(resourceId);
                 if (resNodeId != null) {
                     long waitMs = deviceLockWaitMs(resourceId);
                     com.labos.kernel.driver.DeviceLock lock =
                             new com.labos.kernel.driver.DeviceLock(db, tenantId);
+                    executionPhase(parentRowId, "WAITING_RESOURCE", lock.holder(resNodeId),
+                            "等待设备空闲，尚未下发：" + method);
                     if (!lock.acquireWithWait(resNodeId, runIdOf(), waitMs)) {
                         throw new IllegalStateException(
                                 "设备被占用超过 " + (waitMs / 1000) + " 秒：" + resourceId
@@ -2280,20 +2279,13 @@ public class WorkflowService {
             } catch (SQLException e) {
                 throw new IllegalStateException("抢设备锁失败：" + e.getMessage(), e);
             }
-            // 命令下发的时刻：**拿到设备锁之后、真正下发之前**这一刻。
-            //
-            // 为什么必须放在拿锁之后（2026-11-11 实测发现）：
-            //   原来记在 onStepStart 开头 ⇒ 记的是「进入步骤」的时刻，
-            //   而设备锁是在那之后才拿的 ⇒ **排队等锁的时间被算进了 sent_at**。
-            //   实测两个并发 run 抢同一台机器人：两条 Home 的 sent_at 完全相同
-            //   （15:05:03.227），可设备侧明明是串行的 ——
-            //   命令台账因此显示"两条指令同时发出"，与设备实际行为对不上，
-            //   互斥断言也被误导成"设备命令重叠"。
-            //   ⇒ sent_at 必须是「指令真的发出去的时刻」，
-            //     这样「发出→响应」间隔只含设备耗时，排队时间单独体现在两条命令的先后上。
+            if (resourceId > 0) {
+                executionPhase(parentRowId, "DISPATCHING", null, null);
+            }
+            // 中控派发开始：拿到设备锁之后、建立命令账本和调用驱动之前。
+            // 这不是设备接收时间；等锁时间已由 wait_started_at / wait_resource_ms 单独记录。
             sentAtByStep.put(nodeId + ":" + stepSeq + ":" + attempt,
                     java.sql.Timestamp.from(java.time.Instant.now()));
-            // 标记"正在执行"：前端设备卡片会变成黄灯 + 显示方法名
             markDeviceBusy(resourceId, method);
             if (mirror != null) {
                 mirror.onStepStart(nodeId, stepSeq, method, resourceId, attempt);
@@ -2303,11 +2295,12 @@ public class WorkflowService {
         @Override
         public void onStepDone(long nodeId, int stepSeq, String method, boolean ok,
                                String errorCode, String rawResponse, long durationMs, int attempt) {
-            // 清除"正在执行"：成功回 idle，失败回 error
+            Long parentId = nodeIdMap.get(nodeId);
             Long rid = resourceByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
+            // 已收到最终回包；释放设备和落结果属于 FINALIZING，不再计成设备执行。
             if (rid != null && rid > 0) {
+                executionPhase(parentId, "FINALIZING", null, null);
                 markDeviceIdle(rid, ok ? null : errorCode);
-                // 释放设备锁：只释放自己占的（DeviceLock 内部判断 current_run_id）
                 try {
                     Long resNodeId = resourceIdOfInstance(rid);
                     if (resNodeId != null) {
@@ -2318,25 +2311,27 @@ public class WorkflowService {
                     // 释放失败不影响主链路，锁会被下次执行覆盖
                 }
             }
-            if (mirror != null) {
-                mirror.onStepDone(nodeId, stepSeq, method, ok, errorCode, rawResponse,
-                        durationMs, attempt);
-            }
-            Long parentId = nodeIdMap.get(nodeId);
-            if (parentId == null) {
-                return;
-            }
             try {
-                Long dev = resourceByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
-                // 命令**下发时刻**（key 与 onStepStart 一致：nodeId 是步骤节点 id）
-                java.sql.Timestamp sentAt =
-                        sentAtByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
-                writeStep(parentId, stepSeq, method, ok, errorCode, rawResponse,
-                        durationMs, attempt, dev == null ? 0L : dev,
-                        paramsByNode.getOrDefault(nodeId, Map.of()), sentAt);
-            } catch (SQLException | RuntimeException e) {
-                // 落库失败不能让执行中断：数据丢了比流程停了好
-                log.error("[WARN] 步骤落库失败: " + e.getMessage());
+                if (mirror != null) {
+                    mirror.onStepDone(nodeId, stepSeq, method, ok, errorCode, rawResponse,
+                            durationMs, attempt);
+                }
+                if (parentId == null) {
+                    return;
+                }
+                try {
+                    Long dev = resourceByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
+                    java.sql.Timestamp sentAt =
+                            sentAtByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
+                    writeStep(parentId, stepSeq, method, ok, errorCode, rawResponse,
+                            durationMs, attempt, dev == null ? 0L : dev,
+                            paramsByNode.getOrDefault(nodeId, Map.of()), sentAt);
+                } catch (SQLException | RuntimeException e) {
+                    log.error("[WARN] 步骤落库失败: " + e.getMessage());
+                }
+            } finally {
+                // 多步节点的下一步会重新进入 WAITING_RESOURCE；最终态由统一收尾再次清空。
+                executionPhase(parentId, null, null, null);
             }
         }
 

@@ -27,6 +27,12 @@ export interface RunGraphNode {
   name?: string | null;
   status: string;
   errorCode?: string | null;
+  executionPhase?: 'WAITING_RESOURCE' | 'DISPATCHING' | 'FINALIZING' | null;
+  phaseSince?: string | null;
+  blockedByRunId?: number | null;
+  blockedReason?: string | null;
+  waitResourceMs?: number;
+  deviceExecutionMs?: number;
 }
 
 interface RunGraphData {
@@ -37,6 +43,14 @@ interface RunGraphData {
   nodes: RunGraphNode[];
 }
 
+/** running 内部再按阶段分色；其它节点继续使用 node_status。 */
+function visualKey(n: RunGraphNode): string {
+  if (n.status === 'running' && n.executionPhase === 'WAITING_RESOURCE') return 'waiting';
+  if (n.status === 'running' && n.executionPhase === 'DISPATCHING') return 'dispatching';
+  if (n.status === 'running' && n.executionPhase === 'FINALIZING') return 'finalizing';
+  return n.status;
+}
+
 /**
  * STYLE 里真正写了颜色的状态。
  *
@@ -45,6 +59,7 @@ interface RunGraphData {
  */
 const STYLED = new Set([
   'completed', 'failed', 'aborted', 'manual', 'skipped', 'running', 'pending', 'bypassed',
+  'waiting', 'dispatching', 'finalizing',
 ]);
 
 /** 节点染色规则。bpmn-js 把 marker 类加在 `.djs-element` 上，形状是它的第一个子元素。 */
@@ -55,6 +70,10 @@ const STYLE = `
 .rg-manual    .djs-visual > :first-child { fill: #ffedd5 !important; stroke: #ea580c !important; }
 .rg-skipped   .djs-visual > :first-child { fill: #fef9c3 !important; stroke: #ca8a04 !important; }
 .rg-running   .djs-visual > :first-child { fill: #dbeafe !important; stroke: #2563eb !important; }
+.rg-waiting   .djs-visual > :first-child { fill: #fef3c7 !important; stroke: #d97706 !important;
+                                             stroke-dasharray: 5 3 !important; }
+.rg-dispatching .djs-visual > :first-child { fill: #dbeafe !important; stroke: #2563eb !important; }
+.rg-finalizing .djs-visual > :first-child { fill: #cffafe !important; stroke: #0891b2 !important; }
 .rg-pending   .djs-visual > :first-child { fill: #f1f5f9 !important; stroke: #94a3b8 !important;
                                               stroke-dasharray: 5 3 !important; }
 /* 分支未选中：比"未执行"更淡，点线，一眼看出这条路没走 */
@@ -254,10 +273,9 @@ export default function RunGraph({ runId, workflowId }:
     }
     const next: Array<{ key: string; cls: string }> = [];
     for (const n of nodes) {
-      // CSS class 仍是 'rg-'+code；词表没定义 / STYLE 没写样式的退回 pending 灰
-      const cls = statusKnown('node', n.status, vocab) && STYLED.has(n.status)
-        ? `rg-${n.status}`
-        : 'rg-pending';
+      const key = visualKey(n);
+      const known = key !== n.status || statusKnown('node', n.status, vocab);
+      const cls = known && STYLED.has(key) ? `rg-${key}` : 'rg-pending';
       try {
         canvas.addMarker(n.nodeKey, cls);
         next.push({ key: n.nodeKey, cls });
@@ -287,7 +305,7 @@ export default function RunGraph({ runId, workflowId }:
     );
   }
 
-  const used = Array.from(new Set(data.nodes.map((n) => n.status)));
+  const used = Array.from(new Set(data.nodes.map(visualKey)));
 
   return (
     <div>
@@ -297,8 +315,14 @@ export default function RunGraph({ runId, workflowId }:
           {t('runGraph.legend')}
         </Typography.Text>
         {used.map((s) => {
-          const m = statusMeta('node', s, vocab);
-          const cnt = data.nodes.filter((n) => n.status === s).length;
+          const m = s === 'waiting'
+            ? { color: 'gold', label: t('runDetail.phase.WAITING_RESOURCE') }
+            : s === 'dispatching'
+              ? { color: 'blue', label: t('runDetail.phase.DISPATCHING') }
+              : s === 'finalizing'
+                ? { color: 'cyan', label: t('runDetail.phase.FINALIZING') }
+                : statusMeta('node', s, vocab);
+          const cnt = data.nodes.filter((n) => visualKey(n) === s).length;
           return <Tag key={s} color={m.color}>{m.label} {cnt}</Tag>;
         })}
       </Space>

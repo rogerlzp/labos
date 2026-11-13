@@ -155,6 +155,16 @@
                rn.status::text AS "status", rn.attempt AS "attempt",
                rn.resource_id AS "resourceId", rn.capability_id AS "capabilityId",
                rn.estimate_sec AS "estimateSec",
+               rn.execution_phase AS "executionPhase",
+               rn.phase_since AS "phaseSince",
+               rn.blocked_by_run_id AS "blockedByRunId",
+               rn.blocked_reason AS "blockedReason",
+               rn.wait_started_at AS "waitStartedAt",
+               rn.lock_acquired_at AS "lockAcquiredAt",
+               rn.dispatch_started_at AS "dispatchStartedAt",
+               rn.response_at AS "responseAt",
+               rn.wait_resource_ms AS "waitResourceMs",
+               rn.device_execution_ms AS "deviceExecutionMs",
                res.code AS "resourceCode",
                level AS "level", parent_node_id AS "parentNodeId",
                step_seq AS "stepSeq", loop_index AS "loopIndex",
@@ -199,14 +209,58 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
-    <!-- 命令级台账（2026-11-11）：这条 run 下发过哪些命令、什么参数、
-         什么时候发出、设备什么时候回的、耗时多少、失败原因是什么。
-         sent_at 是**命令真正下发到设备的时刻**（见 insertRunCommand 的 sentAt 参数），
-         finished_at 是命令完成落库时刻 ⇒ 两者之差 = 设备侧耗时。 -->
+    <!-- 命令级台账：sent_at 是取得设备锁后、调用驱动前的中控派发开始时间，
+         不是设备接收确认；finished_at 是最终回包完成落库时刻。 -->
     <update id="updateRunNodeStatus">
         UPDATE run_node
            SET status = #{param3}::node_status, updated_at = now()
          WHERE tenant_id = #{param1} AND id = #{param2} AND level = 0
+    </update>
+
+    <update id="updateNodeExecutionPhase">
+        UPDATE run_node
+           SET execution_phase = #{param3},
+               phase_since = CASE
+                   WHEN execution_phase IS DISTINCT FROM #{param3}::text THEN now()
+                   ELSE phase_since END,
+               blocked_by_run_id = #{param4},
+               blocked_reason = #{param5},
+               wait_started_at = CASE
+                   WHEN #{param3}::text = 'WAITING_RESOURCE'
+                    AND execution_phase IS DISTINCT FROM 'WAITING_RESOURCE' THEN now()
+                   ELSE wait_started_at END,
+               lock_acquired_at = CASE
+                   WHEN #{param3}::text = 'WAITING_RESOURCE' THEN NULL
+                   WHEN #{param3}::text = 'DISPATCHING'
+                    AND execution_phase IS DISTINCT FROM 'DISPATCHING' THEN now()
+                   ELSE lock_acquired_at END,
+               dispatch_started_at = CASE
+                   WHEN #{param3}::text = 'WAITING_RESOURCE' THEN NULL
+                   WHEN #{param3}::text = 'DISPATCHING'
+                    AND execution_phase IS DISTINCT FROM 'DISPATCHING' THEN now()
+                   ELSE dispatch_started_at END,
+               response_at = CASE
+                   WHEN #{param3}::text = 'WAITING_RESOURCE' THEN NULL
+                   WHEN #{param3}::text = 'FINALIZING'
+                    AND execution_phase IS DISTINCT FROM 'FINALIZING' THEN now()
+                   ELSE response_at END,
+               wait_resource_ms = wait_resource_ms + CASE
+                   WHEN #{param3}::text = 'DISPATCHING'
+                    AND execution_phase IS DISTINCT FROM 'DISPATCHING'
+                    AND wait_started_at IS NOT NULL
+                   THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - wait_started_at))
+                                          * 1000)::bigint)
+                   ELSE 0 END,
+               device_execution_ms = device_execution_ms + CASE
+                   WHEN #{param3}::text = 'FINALIZING'
+                    AND execution_phase IS DISTINCT FROM 'FINALIZING'
+                    AND dispatch_started_at IS NOT NULL
+                   THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - dispatch_started_at))
+                                          * 1000)::bigint)
+                   ELSE 0 END,
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+           AND level = 0 AND status = 'running'
     </update>
 
     <select id="selectRunCommands" resultType="java.util.Map">
@@ -253,7 +307,13 @@
 
 <select id="selectRunNodeStates" resultType="java.util.Map">
         SELECT node_key AS "nodeKey", name AS "name",
-               status::text AS "status", error_code AS "errorCode"
+               status::text AS "status", error_code AS "errorCode",
+               execution_phase AS "executionPhase",
+               phase_since AS "phaseSince",
+               blocked_by_run_id AS "blockedByRunId",
+               blocked_reason AS "blockedReason",
+               wait_resource_ms AS "waitResourceMs",
+               device_execution_ms AS "deviceExecutionMs"
           FROM run_node
          WHERE tenant_id = #{param1} AND run_id = #{param2}
            AND level = 0 AND loop_index = 0
@@ -591,7 +651,15 @@
            SET status = #{param4}::node_status,
                actual_start = COALESCE(actual_start, now()),
                actual_end = CASE WHEN #{param4}::text = 'running'
-                                 THEN NULL ELSE now() END
+                                 THEN NULL ELSE now() END,
+               execution_phase = CASE WHEN #{param4}::text = 'running'
+                                      THEN execution_phase ELSE NULL END,
+               phase_since = CASE WHEN #{param4}::text = 'running'
+                                  THEN phase_since ELSE NULL END,
+               blocked_by_run_id = CASE WHEN #{param4}::text = 'running'
+                                        THEN blocked_by_run_id ELSE NULL END,
+               blocked_reason = CASE WHEN #{param4}::text = 'running'
+                                     THEN blocked_reason ELSE NULL END
          WHERE tenant_id = #{param1} AND run_id = #{param2}
            AND node_key = #{param3} AND level = 0
     </update>
@@ -600,6 +668,8 @@
         UPDATE run_node
            SET status = 'bypassed'::node_status,
                actual_end = now(),
+               execution_phase = NULL, phase_since = NULL,
+               blocked_by_run_id = NULL, blocked_reason = NULL,
                input = COALESCE(input, '{}'::jsonb)
                        || '{"reason":"分支未选中（异或网关走了另一条）"}'::jsonb
          WHERE tenant_id = #{param1} AND run_id = #{param2} AND level = 0
@@ -610,7 +680,9 @@
         UPDATE run_node
            SET status = #{param4}::node_status, attempt = #{param5},
                resource_id = #{param6}, error_code = #{param7},
-               actual_end = now(), input = COALESCE(input, '{}'::jsonb) || #{param8}::jsonb
+               actual_end = now(), input = COALESCE(input, '{}'::jsonb) || #{param8}::jsonb,
+               execution_phase = NULL, phase_since = NULL,
+               blocked_by_run_id = NULL, blocked_reason = NULL
          WHERE tenant_id = #{param1} AND run_id = #{param2}
            AND node_key = #{param3} AND level = 0
     </update>

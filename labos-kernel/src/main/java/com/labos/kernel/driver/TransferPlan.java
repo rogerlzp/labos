@@ -162,7 +162,8 @@ public final class TransferPlan implements AutoCloseable {
         // 门不是独立物理设备：开门到关门期间必须独占整台源/目标设备。
         // 否则另一条 run 能在搬运开门后抢进 RunProgram，撞到门未关闭。
         DeviceLock deviceLock = new DeviceLock(db, tenantId);
-        if (!deviceLock.tryAcquire(resourceId, runId)) {
+        boolean acquiredDevice = deviceLock.tryAcquire(resourceId, runId);
+        if (!acquiredDevice) {
             Long holder = lockHolder(resourceId);
             if (holder != null && holder != runId && GRAPH.waitFor(runId, holder)) {
                 GRAPH.release(runId);
@@ -170,7 +171,7 @@ public final class TransferPlan implements AutoCloseable {
                         "会死锁（等待成环），已拒绝。持有者 run=" + holder);
             }
         }
-        if (!deviceLock.acquireWithWait(resourceId, runId, 60_000)) {
+        if (!acquiredDevice && !deviceLock.acquireWithWait(resourceId, runId, 60_000)) {
             GRAPH.release(runId);
             throw new AcquireException(label + "设备", "被占用超过 60 秒");
         }
@@ -253,7 +254,8 @@ public final class TransferPlan implements AutoCloseable {
         DeviceLock robotLock = new DeviceLock(db, tenantId);
 
         // 先试一次（不等），失败就查持有者、检测环
-        if (!robotLock.tryAcquire(robotResourceId, runId)) {
+        boolean acquiredRobot = robotLock.tryAcquire(robotResourceId, runId);
+        if (!acquiredRobot) {
             Long holder = lockHolder(robotResourceId);
             if (holder != null && holder != runId) {
                 // 加边并检测：会成环就立刻拒绝，不傻等 60 秒
@@ -264,8 +266,8 @@ public final class TransferPlan implements AutoCloseable {
             }
         }
 
-        // 无环才进入等待
-        if (!robotLock.acquireWithWait(robotResourceId, runId, 60_000)) {
+        // 无环才进入等待；首次 tryAcquire 已成功时不能再重入一次，否则释放次数不匹配。
+        if (!acquiredRobot && !robotLock.acquireWithWait(robotResourceId, runId, 60_000)) {
             GRAPH.release(runId);
             throw new AcquireException("机械臂", "被占用超过 60 秒");
         }

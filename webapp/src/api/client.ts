@@ -201,6 +201,18 @@ export interface RunNode {
   parentNodeId: number | null;
   stepSeq: number | null;
   reason: string | null;
+  /** running 内部的执行阶段；null=未进入、已结束或旧数据无阶段。 */
+  executionPhase?: 'WAITING_RESOURCE' | 'DISPATCHING' | 'FINALIZING' | null;
+  phaseSince?: string | null;
+  blockedByRunId?: number | null;
+  blockedReason?: string | null;
+  waitStartedAt?: string | null;
+  lockAcquiredAt?: string | null;
+  /** 中控派发开始，不是设备接收确认。 */
+  dispatchStartedAt?: string | null;
+  responseAt?: string | null;
+  waitResourceMs?: number;
+  deviceExecutionMs?: number;
   /** 内置逻辑节点的一句人话（"等待 gate = open（已等 12 秒）"）。
    *  没有它就只知道节点名「等待节点」，不知道它在等什么。 */
   note?: string | null;

@@ -296,6 +296,19 @@ public interface RunMapper {
                             @Param("status") String status);
 
     /**
+     * 更新 running 节点的执行阶段；阶段为空表示收尾完成。
+     *
+     * <p>WAITING_RESOURCE 只表示等待锁，尚未下发；DISPATCHING 从取得锁后、
+     * 调用驱动前开始；FINALIZING 表示已收到最终回包。等待与设备执行耗时在
+     * 阶段跃迁时累计，终态清阶段但保留耗时。</p>
+     */
+    int updateNodeExecutionPhase(@Param("tenantId") long tenantId,
+                                 @Param("nodeId") long nodeId,
+                                 @Param("phase") String phase,
+                                 @Param("blockedByRunId") Long blockedByRunId,
+                                 @Param("blockedReason") String blockedReason);
+
+    /**
      * 节点最新一次执行的命令结果（result + 设备原始回包，按命令 id 倒序取一条）。
      *
      * <p>命令挂在步骤节点（level=1）上，业务节点（level=0）是它的 parent ——

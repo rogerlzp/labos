@@ -91,8 +91,9 @@ function spanSec(a: string | null, b: string | null): string {
  * 现场查设备问题时，这张表就是不用翻日志也能对上的那份现场。
  *
  * <p>数据来自 {@code GET /api/runs/{id}/commands}（后端 {@code selectRunCommands}）：
- * `sentAt` 是**命令真正下发到设备的时刻**，`finishedAt` 是完成落库时刻，
- * 两者之差 = 设备侧耗时；`payload` 是实际下发的参数。
+ * `sentAt` 是**中控取得设备锁后、调用驱动前的派发开始时间**，不是设备接收确认；
+ * `finishedAt` 是最终回包完成落库时刻，两者之差包含派发与设备执行，不包含等待锁；
+ * `payload` 是实际派发的参数。
  */
 export default function RunCommands({ runId }: { runId: number }) {
   const t = useT();
@@ -146,7 +147,9 @@ export default function RunCommands({ runId }: { runId: number }) {
             </Tag>
           ) },
         { title: t('runCommands.col.sentAt'), dataIndex: 'sentAt', width: 145,
-          render: (v: string | null) => shortTime(v) },
+          render: (v: string | null) => (
+            <Tooltip title={t('runCommands.col.sentAtHint')}>{shortTime(v)}</Tooltip>
+          ) },
         { title: t('runCommands.col.finishedAt'), dataIndex: 'finishedAt', width: 145,
           render: (v: string | null) => shortTime(v) },
         { title: t('runCommands.col.duration'), width: 90,

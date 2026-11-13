@@ -166,6 +166,10 @@ PURE=(
 DB=(
   "api.ExperimentGraphPersistenceSelfTest"
   "driver.TransferPlanSelfTest"
+  # 同 run 并行分支设备互斥 + 同线程搬运重入
+  "driver.DeviceLockSameRunSelfTest"
+  # 节点等待/派发/收尾阶段、分阶段计时与终态清理
+  "workflow.NodeExecutionPhaseDbSelfTest"
   "workflow.PauseManagerSelfTest"
   # 作用域扣留落库（幂等 / 同 scope 唯一 / 解除）
   "workflow.RuntimeHoldDbSelfTest"

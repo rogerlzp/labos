@@ -20,6 +20,27 @@ import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
 import { localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 
+function parseTime(value?: string | null): number | null {
+  if (!value) return null;
+  const parsed = new Date(value.includes('T') ? value : value.replace(' ', 'T')).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function compactDuration(ms: number): string {
+  const safe = Math.max(0, ms);
+  if (safe < 10_000) return `${(safe / 1000).toFixed(1)} s`;
+  const seconds = Math.round(safe / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
+}
+
+function phaseColor(phase?: RunNode['executionPhase']): string {
+  if (phase === 'WAITING_RESOURCE') return 'gold';
+  if (phase === 'DISPATCHING') return 'blue';
+  if (phase === 'FINALIZING') return 'cyan';
+  return 'default';
+}
+
 /**
  * 执行详情：**实时看跑到哪一步**，并能暂停/继续/停止。
  *
@@ -158,6 +179,39 @@ export default function RunDetailPage() {
       : t('runDetail.duration.seconds', { s });
   }, [run, now]);
 
+  const nodeTiming = (node: RunNode): string | null => {
+    let wait = node.waitResourceMs ?? 0;
+    let device = node.deviceExecutionMs ?? 0;
+    if (node.executionPhase === 'WAITING_RESOURCE') {
+      const since = parseTime(node.waitStartedAt ?? node.phaseSince);
+      if (since != null) wait += now - since;
+    }
+    if (node.executionPhase === 'DISPATCHING') {
+      const since = parseTime(node.dispatchStartedAt ?? node.phaseSince);
+      if (since != null) device += now - since;
+    }
+    if (!node.executionPhase && !wait && !device && !node.dispatchStartedAt) return null;
+    return t('runDetail.phase.timing', {
+      wait: compactDuration(wait),
+      device: compactDuration(device),
+    });
+  };
+
+  const phaseSecondary = (node: RunNode): string | null => {
+    if (node.executionPhase !== 'WAITING_RESOURCE') return null;
+    const parts: string[] = [];
+    if (node.blockedByRunId) {
+      parts.push(node.blockedByRunId === runId
+        ? t('runDetail.phase.sameRun')
+        : t('runDetail.phase.blockedBy', { runId: node.blockedByRunId }));
+    }
+    const since = parseTime(node.phaseSince);
+    if (since != null) {
+      parts.push(t('runDetail.phase.waitElapsed', { duration: compactDuration(now - since) }));
+    }
+    return parts.length ? parts.join('；') : null;
+  };
+
   async function act(fn: () => Promise<unknown>, okMsg: string) {
     setBusy(true);
     try {
@@ -282,12 +336,17 @@ export default function RunDetailPage() {
         {current && run?.status === 'running' && (
           <Alert
             style={{ marginTop: 12 }}
-            type="info"
+            type={current.executionPhase === 'WAITING_RESOURCE' ? 'warning' : 'info'}
             showIcon
             icon={<SyncOutlined spin />}
             message={
-              <Space>
+              <Space wrap>
                 <b>{t('runDetail.current.running', { name: localizedNeutralLabel(current.name) ?? current.name })}</b>
+                {current.executionPhase && (
+                  <Tag color={phaseColor(current.executionPhase)}>
+                    {t(`runDetail.phase.${current.executionPhase}`)}
+                  </Tag>
+                )}
                 {currentStep && (
                   <Tag color="blue">
                     {t('runDetail.current.step', { seq: currentStep.stepSeq ?? '?' })}
@@ -308,9 +367,13 @@ export default function RunDetailPage() {
               </Space>
             }
             description={
-              current.estimateSec
-                ? t('runDetail.current.estimate', { n: current.estimateSec })
-                : undefined
+              <Space direction="vertical" size={2}>
+                {current.estimateSec && (
+                  <span>{t('runDetail.current.estimate', { n: current.estimateSec })}</span>
+                )}
+                {phaseSecondary(current) && <span>{phaseSecondary(current)}</span>}
+                {nodeTiming(current) && <span>{nodeTiming(current)}</span>}
+              </Space>
             }
           />
         )}
@@ -409,6 +472,33 @@ export default function RunDetailPage() {
                 render: (v: string) => (
                   <Tag color={statusColor('node', v, vocab)}>{statusLabel('node', v, vocab)}</Tag>
                 ),
+              },
+              {
+                title: t('runDetail.col.phase'), width: 270,
+                render: (_, r) => {
+                  const timing = nodeTiming(r);
+                  const secondary = phaseSecondary(r);
+                  if (!r.executionPhase && !timing) return '—';
+                  return (
+                    <Space direction="vertical" size={1}>
+                      {r.executionPhase && (
+                        <Tag color={phaseColor(r.executionPhase)} style={{ marginInlineEnd: 0 }}>
+                          {t(`runDetail.phase.${r.executionPhase}`)}
+                        </Tag>
+                      )}
+                      {secondary && (
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          {secondary}
+                        </Typography.Text>
+                      )}
+                      {timing && (
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          {timing}
+                        </Typography.Text>
+                      )}
+                    </Space>
+                  );
+                },
               },
               {
                 // 循环才有值：0 是汇总行（最终状态），1..N 是第几圈。

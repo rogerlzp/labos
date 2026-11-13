@@ -820,7 +820,17 @@ public class RunService {
                             ? builtinNotes.get(String.valueOf(n.get("nodeKey")))
                             : describeNode(n),
                     "method", n.get("method"),
-                    "errorCode", n.get("errorCode")));
+                    "errorCode", n.get("errorCode"),
+                    "executionPhase", n.get("executionPhase"),
+                    "phaseSince", mstr(n, "phaseSince"),
+                    "blockedByRunId", n.get("blockedByRunId"),
+                    "blockedReason", n.get("blockedReason"),
+                    "waitStartedAt", mstr(n, "waitStartedAt"),
+                    "lockAcquiredAt", mstr(n, "lockAcquiredAt"),
+                    "dispatchStartedAt", mstr(n, "dispatchStartedAt"),
+                    "responseAt", mstr(n, "responseAt"),
+                    "waitResourceMs", n.get("waitResourceMs"),
+                    "deviceExecutionMs", n.get("deviceExecutionMs")));
         }
 
         List<String> events = new ArrayList<>();
@@ -935,12 +945,10 @@ public class RunService {
             planName.put(String.valueOf(pn.get("nodeKey")), (String) pn.get("name"));
         }
 
-        java.util.Map<String, String[]> actual = new java.util.HashMap<>();  // key → [status,name,err]
+        java.util.Map<String, java.util.Map<String, Object>> actual = new java.util.HashMap<>();
         for (java.util.Map<String, Object> an
                 : runMapper.selectRunNodeStates(TENANT, runId)) {
-            actual.put(String.valueOf(an.get("nodeKey")), new String[]{
-                    (String) an.get("status"), (String) an.get("name"),
-                    (String) an.get("errorCode")});
+            actual.put(String.valueOf(an.get("nodeKey")), an);
         }
         // 内置逻辑节点的一句人话（"等待 gate = open（已等 12 秒）"）——
         // 图上那个节点正在跑时，hover 能看出它在等什么。
@@ -953,18 +961,24 @@ public class RunService {
         java.util.Set<String> keys = new java.util.LinkedHashSet<>(planName.keySet());
         keys.addAll(actual.keySet());
         for (String key : keys) {
-            String[] a = actual.get(key);
-            String st = a == null ? "pending" : a[0];
+            java.util.Map<String, Object> a = actual.get(key);
+            String st = a == null ? "pending" : (String) a.get("status");
             // 跑完的单子里残留 running = 压根没执行
             if (!live && "running".equals(st)) {
                 st = "pending";
             }
             nodes.add(Jsons.obj(
                     "nodeKey", key,
-                    "name", a == null ? planName.get(key) : a[1],
+                    "name", a == null ? planName.get(key) : a.get("name"),
                     "status", st,
                     "note", builtinNotes.get(key),
-                    "errorCode", a == null ? null : a[2]));
+                    "errorCode", a == null ? null : a.get("errorCode"),
+                    "executionPhase", a == null ? null : a.get("executionPhase"),
+                    "phaseSince", a == null ? null : mstr(a, "phaseSince"),
+                    "blockedByRunId", a == null ? null : a.get("blockedByRunId"),
+                    "blockedReason", a == null ? null : a.get("blockedReason"),
+                    "waitResourceMs", a == null ? null : a.get("waitResourceMs"),
+                    "deviceExecutionMs", a == null ? null : a.get("deviceExecutionMs")));
         }
 
         return Jsons.obj("runId", runId, "workflowId", workflowId,
