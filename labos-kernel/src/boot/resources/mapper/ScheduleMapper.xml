@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.ScheduleMapper">
+
+  <!-- ============================================================ schedule_plan -->
+
+  <select id="selectSchedulePlans" resultType="java.util.Map">
+    SELECT id, plan_no AS "planNo", algorithm, status,
+           optimization_factor AS "optimizationFactor",
+           max_iterations_running AS "maxIterationsRunning",
+           iteration_delay_sec AS "iterationDelaySec",
+           external_id AS "externalId", scheduled_start AS "scheduledStart",
+           created_at AS "createdAt"
+      FROM schedule_plan
+     WHERE tenant_id = #{t}
+     ORDER BY id DESC
+  </select>
+
+  <select id="selectSchedulePlan" resultType="java.util.Map">
+    SELECT id, plan_no AS "planNo", algorithm, status, objective, horizon,
+           metrics, input_snapshot AS "inputSnapshot",
+           optimization_factor AS "optimizationFactor",
+           max_iterations_running AS "maxIterationsRunning",
+           iteration_delay_sec AS "iterationDelaySec",
+           external_id AS "externalId", scheduled_start AS "scheduledStart"
+      FROM schedule_plan
+     WHERE tenant_id = #{t} AND id = #{id}
+  </select>
+
+  <insert id="insertSchedulePlan">
+    INSERT INTO schedule_plan (tenant_id, plan_no, algorithm, status,
+                               optimization_factor, max_iterations_running,
+                               iteration_delay_sec, external_id, scheduled_start)
+    VALUES (#{t}, #{planNo}, #{algorithm}, #{status}, #{optimizationFactor},
+            #{maxIterationsRunning}, #{iterationDelaySec}, #{externalId},
+            #{scheduledStart}::timestamptz)
+  </insert>
+
+  <update id="updateSchedulePlan">
+    UPDATE schedule_plan
+    <set>
+      <if test="status != null">status = #{status},</if>
+      <if test="optimizationFactor != null">optimization_factor = #{optimizationFactor},</if>
+      <if test="maxIterationsRunning != null">max_iterations_running = #{maxIterationsRunning},</if>
+      <if test="iterationDelaySec != null">iteration_delay_sec = #{iterationDelaySec},</if>
+      <if test="externalId != null">external_id = #{externalId},</if>
+      updated_at = now()
+    </set>
+    WHERE id = #{id}
+  </update>
+
+  <!-- ============================================================ resource_booking -->
+
+  <select id="selectResourceBookings" resultType="java.util.Map">
+    SELECT rb.id, rb.resource_id AS "resourceId", rn.code AS "resourceCode",
+           lower(rb.period) AS "periodFrom", upper(rb.period) AS "periodTo",
+           rb.status::text AS "status", rb.source_type AS "sourceType",
+           rb.source_id AS "sourceId", rb.run_node_id AS "runNodeId", rb.note
+      FROM resource_booking rb
+      LEFT JOIN resource_node rn ON rn.id = rb.resource_id
+     WHERE rb.tenant_id = #{t} AND rb.deleted_at IS NULL
+       <if test="runId != null">AND rb.source_id = #{runId}</if>
+     ORDER BY rb.id DESC
+     LIMIT #{limit}
+  </select>
+
+  <insert id="insertResourceBooking">
+    INSERT INTO resource_booking (tenant_id, resource_id, period, status,
+                                  source_type, source_id, run_node_id, note)
+    VALUES (#{t}, #{resourceId},
+            tstzrange(#{periodLower}::timestamptz, #{periodUpper}::timestamptz, '[)'),
+            #{status}::booking_status, #{sourceType}, #{sourceId}, #{runNodeId}, #{note})
+  </insert>
+
+</mapper>
