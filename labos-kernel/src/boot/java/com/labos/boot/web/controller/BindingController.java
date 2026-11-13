@@ -356,7 +356,69 @@ public class BindingController {
         return ok(Map.of("cleared", r, "nodeKey", nodeKey, "bindingMode", "legacy"));
     }
 
+    // ---------------------------------------------------------------- 物料角色（P2-8）
+
+    @GetMapping(value = "/material-roles", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> materialRoles() {
+        List<Map<String, Object>> rows = m().selectMaterialRoles(TENANT);
+        return ok(Map.of("total", rows.size(), "items", rows));
+    }
+
+    @PostMapping(value = "/material-roles", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> createMaterialRole(@RequestBody(required = false) String body,
+                                                     HttpServletRequest req) {
+        JsonNode n = parse(body);
+        String roleCode = text(n, "roleCode");
+        String displayName = text(n, "displayName");
+        String physicalType = text(n, "physicalType");
+        if (blank(roleCode) || blank(displayName)) return bad("必填 roleCode / displayName");
+        if (physicalType == null) physicalType = "plate";
+        if (!MATERIAL_PHYSICAL.contains(physicalType)) return bad("physicalType 非法：" + physicalType);
+        try {
+            m().insertMaterialRole(TENANT, roleCode.trim(), displayName.trim(), physicalType,
+                    text(n, "plateType"), doubleOrNull(n, "maxHeightMm"),
+                    text(n, "lidRoleCode"), text(n, "barcodeRegex"),
+                    text(n, "autoBarcodePrefix"));
+            audit.record(session(req), "materialRole.create", "material_role", 0L, null,
+                    null, req.getRemoteAddr());
+            return ok(Map.of("created", 1, "roleCode", roleCode.trim()));
+        } catch (Exception e) {
+            return writeError(e, "roleCode 可能重复");
+        }
+    }
+
+    @PutMapping(value = "/material-roles/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> updateMaterialRole(@PathVariable long id,
+                                                     @RequestBody(required = false) String body,
+                                                     HttpServletRequest req) {
+        JsonNode n = parse(body);
+        String physicalType = text(n, "physicalType");
+        if (physicalType != null && !MATERIAL_PHYSICAL.contains(physicalType)) {
+            return bad("physicalType 非法：" + physicalType);
+        }
+        int r = m().updateMaterialRole(id, text(n, "displayName"),
+                physicalType == null ? "plate" : physicalType, text(n, "plateType"),
+                doubleOrNull(n, "maxHeightMm"), text(n, "barcodeRegex"));
+        if (r == 0) return notFound("物料角色不存在: " + id);
+        audit.record(session(req), "materialRole.update", "material_role", id, null,
+                null, req.getRemoteAddr());
+        return ok(Map.of("updated", r, "id", id));
+    }
+
+    @DeleteMapping(value = "/material-roles/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteMaterialRole(@PathVariable long id,
+                                                     HttpServletRequest req) {
+        int r = m().deleteMaterialRole(TENANT, id);
+        if (r == 0) return notFound("物料角色不存在: " + id);
+        audit.record(session(req), "materialRole.delete", "material_role", id, null,
+                null, req.getRemoteAddr());
+        return ok(Map.of("deleted", r, "id", id));
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private static final java.util.Set<String> MATERIAL_PHYSICAL =
+            java.util.Set.of("plate", "lid", "rack", "reservoir", "tip_box");
 
     /** operation 池建池时校验成员同型号；返回 null=通过，否则中文错误。 */
     private String operationPoolModelCheck(List<JsonNode> members) {
@@ -418,6 +480,11 @@ public class BindingController {
     private static Long longOrNull(JsonNode n, String key) {
         JsonNode v = n == null ? null : n.get(key);
         return v == null || v.isNull() ? null : v.asLong();
+    }
+
+    private static Double doubleOrNull(JsonNode n, String key) {
+        JsonNode v = n == null ? null : n.get(key);
+        return v == null || v.isNull() ? null : v.asDouble();
     }
 
     private static List<JsonNode> membersOf(JsonNode n) {

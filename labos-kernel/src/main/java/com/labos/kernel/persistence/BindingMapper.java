@@ -117,6 +117,29 @@ public interface BindingMapper {
     List<Map<String, Object>> selectNodeBindingInstanceIds(@Param("t") long tenantId,
                                                            @Param("workflowId") long workflowId);
 
+    // ---------------------------------------------------------------- 物料角色（P2-8）
+
+    List<Map<String, Object>> selectMaterialRoles(@Param("t") long tenantId);
+
+    int insertMaterialRole(@Param("t") long tenantId,
+                           @Param("roleCode") String roleCode,
+                           @Param("displayName") String displayName,
+                           @Param("physicalType") String physicalType,
+                           @Param("plateType") String plateType,
+                           @Param("maxHeightMm") Double maxHeightMm,
+                           @Param("lidRoleCode") String lidRoleCode,
+                           @Param("barcodeRegex") String barcodeRegex,
+                           @Param("autoBarcodePrefix") String autoBarcodePrefix);
+
+    int updateMaterialRole(@Param("id") long id,
+                           @Param("displayName") String displayName,
+                           @Param("physicalType") String physicalType,
+                           @Param("plateType") String plateType,
+                           @Param("maxHeightMm") Double maxHeightMm,
+                           @Param("barcodeRegex") String barcodeRegex);
+
+    int deleteMaterialRole(@Param("t") long tenantId, @Param("id") long id);
+
     /** 节点有无绑定 + 有无 XML resource，用于回填 binding_mode。 */
     int updateNodeBindingMode(@Param("t") long tenantId,
                               @Param("workflowId") long workflowId,

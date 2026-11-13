@@ -194,4 +194,35 @@
      WHERE tenant_id = #{t} AND workflow_id = #{workflowId} AND node_key = #{nodeKey}
   </update>
 
+  <!-- ============================================================ 物料角色（P2-8） -->
+
+  <select id="selectMaterialRoles" resultType="java.util.Map">
+    SELECT id, role_code AS "roleCode", display_name AS "displayName",
+           physical_type AS "physicalType", plate_type AS "plateType",
+           max_height_mm AS "maxHeightMm", lid_role_code AS "lidRoleCode",
+           barcode_regex AS "barcodeRegex", auto_barcode_prefix AS "autoBarcodePrefix"
+      FROM material_role
+     WHERE tenant_id = #{t}
+     ORDER BY id
+  </select>
+
+  <insert id="insertMaterialRole">
+    INSERT INTO material_role (tenant_id, role_code, display_name, physical_type, plate_type,
+                               max_height_mm, lid_role_code, barcode_regex, auto_barcode_prefix)
+    VALUES (#{t}, #{roleCode}, #{displayName}, #{physicalType}, #{plateType},
+            #{maxHeightMm}, #{lidRoleCode}, #{barcodeRegex}, #{autoBarcodePrefix})
+  </insert>
+
+  <update id="updateMaterialRole">
+    UPDATE material_role
+       SET display_name = #{displayName}, physical_type = #{physicalType},
+           plate_type = #{plateType}, max_height_mm = #{maxHeightMm},
+           barcode_regex = #{barcodeRegex}, updated_at = now()
+     WHERE id = #{id}
+  </update>
+
+  <delete id="deleteMaterialRole">
+    DELETE FROM material_role WHERE tenant_id = #{t} AND id = #{id}
+  </delete>
+
 </mapper>
