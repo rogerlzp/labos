@@ -2,6 +2,7 @@ package com.labos.boot.web.controller;
 
 import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
+import com.labos.boot.web.service.AiPlanService;
 import com.labos.boot.web.service.WorkflowWebService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.labos.kernel.api.ApiServer;
@@ -71,12 +72,15 @@ public class WorkflowController {
     private final WorkflowWebService web;
     private final WorkflowService workflows;
     private final AuditRecorder audit;
+    private final AiPlanService ai;
 
     public WorkflowController(WorkflowWebService web,
-                              WorkflowService workflows, AuditRecorder audit) {
+                              WorkflowService workflows, AuditRecorder audit,
+                              AiPlanService ai) {
         this.web = web;
         this.workflows = workflows;
         this.audit = audit;
+        this.ai = ai;
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -134,10 +138,32 @@ public class WorkflowController {
 
     // ---------------------------------------------------------------- 列表 / 新建 / 详情
 
+    /**
+     * 流程库列表。
+     *
+     * <p>{@code limit}/{@code offset} 是服务端分页；{@code q} 对名称与编号做模糊匹配；
+     * {@code category} 走受控词表。返回体里的 {@code total} 是过滤后的真总数。
+     */
     @GetMapping(value = "/workflows", produces = "application/json; charset=utf-8")
     public String list(@RequestParam(required = false) String limit,
-                       @RequestParam(required = false) String category) throws SQLException {
-        return web.workflows(intOr(limit, 60), category);
+                       @RequestParam(required = false) String offset,
+                       @RequestParam(required = false) String category,
+                       @RequestParam(required = false) String q,
+                       @RequestParam(required = false) String islandId,
+                       @RequestParam(required = false) String empty) throws SQLException {
+        return web.workflows(intOr(limit, 60), intOr(offset, 0), category, q,
+                islandId, "1".equals(empty) || "true".equals(empty));
+    }
+
+    /**
+     * 台账统计（页头统计条）。
+     *
+     * <p>与 {@code /workflows} 分开：统计要覆盖全库，不能被列表的
+     * limit/offset/q 影响（否则"库里 158 条"会变成"本页 50 条"）。
+     */
+    @GetMapping(value = "/workflows/stats", produces = "application/json; charset=utf-8")
+    public String stats() throws SQLException {
+        return web.workflowStats();
     }
 
     @PostMapping(value = "/workflows", produces = "application/json; charset=utf-8")
@@ -248,6 +274,65 @@ public class WorkflowController {
                     "added", r.added(), "updated", r.updated(),
                     "removed", r.removed(), "unlabeled", r.unlabeled()));
         } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
+    // ---------------------------------------------------------------- AI 规划
+
+    /**
+     * <b>AI 规划修改</b>：把一句人话需求变成对这张图的<b>修改操作</b>（ops）。
+     *
+     * <p><b>请求体</b>：{@code {"instruction":"…","currentSpec":{…},"catalog":"…"}}
+     * <ul>
+     *   <li>{@code currentSpec} —— **当前画布的流程规格**（页面读出来发上来）；
+     *       节点 id 必须与画布一致，ops 才能定位到要改的节点；</li>
+     *   <li>{@code catalog} —— 设备目录文本（设备 + 方法 + 参数定义），
+     *       让 AI 只能选真实存在的设备/方法/参数。</li>
+     * </ul>
+     *
+     * <p><b>返回</b>：{@code {"ops":[…]}}（形状校验在服务端，业务校验在前端 ——
+     * 前端才有画布上下文）。
+     *
+     * <p><b>为什么不让浏览器直连 LLM</b>：key 会暴露在前端；也没有配额/审计。
+     * 服务端没配 {@code LABOS_AI_APIKEY} 时本端点返回 <b>503</b>，
+     * 页面据此提示"AI 未配置"，其余功能不受影响。
+     */
+    @PostMapping(value = "/workflows/{id:\\d+}/ai/plan",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> aiPlan(
+            @PathVariable long id,
+            @RequestBody(required = false) String body,
+            HttpServletRequest req) {
+        if (!ai.enabled()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(err("AI 未配置：内核缺少 LABOS_AI_APIKEY 环境变量"));
+        }
+        // ⚠ 用 Jackson 解析，**不要用 jsonField**：
+        // jsonField 的正则 `"key"\s*:\s*"((?:[^"\\]|\\.)*)"` 对**长字符串**
+        // 会逐字符递归（设备目录动辄几 KB）⇒ StackOverflowError ⇒ 500。
+        // 实测：catalog 约 4KB 就炸。
+        String instruction = "";
+        String currentSpec = "";
+        String catalog = "";
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = JSON.readTree(
+                    body == null ? "{}" : body);
+            instruction = root.path("instruction").asText("");
+            com.fasterxml.jackson.databind.JsonNode specNode = root.path("currentSpec");
+            currentSpec = specNode.isMissingNode() || specNode.isNull()
+                    ? "" : specNode.toString();
+            catalog = root.path("catalog").asText("");
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(err("请求体不是合法 JSON：" + e.getMessage()));
+        }
+        try {
+            String ops = ai.plan(instruction, currentSpec, catalog);
+            audit.record(session(req), "workflow.ai_plan", "workflow",
+                    id, "ai_plan", null, req.getRemoteAddr());
+            return ResponseEntity.ok(ops);
+        } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
         }
     }

@@ -1,0 +1,15 @@
+{
+  "job_id": "dilution-demo-001",
+  "trace_id": "trace-dilution-001",
+  "equipment_id": "LH-SIM-01",
+  "description": "示例流程：从源板 A1 分两次转移到 B1/B2（100/50 µL），再在 B1 混匀 3 次",
+  "commands": [
+    {"message_id": "d-01", "method": "Home", "parameters": {}},
+    {"message_id": "d-02", "method": "GetTips", "parameters": {"tipBox": "tips_300ul", "count": 1}},
+    {"message_id": "d-03", "method": "Transfer", "parameters": {"srcLabware": "src_plate", "srcWell": "A1", "dstLabware": "dst_plate", "dstWell": "B1", "volume": 100}},
+    {"message_id": "d-04", "method": "Transfer", "parameters": {"srcLabware": "src_plate", "srcWell": "A1", "dstLabware": "dst_plate", "dstWell": "B2", "volume": 50}},
+    {"message_id": "d-05", "method": "Mix", "parameters": {"labware": "dst_plate", "well": "B1", "volume": 20, "cycles": 3}},
+    {"message_id": "d-06", "method": "GetStatus", "parameters": {}},
+    {"message_id": "d-07", "method": "DropTips", "parameters": {}}
+  ]
+}

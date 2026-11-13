@@ -111,13 +111,39 @@ public interface PauseMapper {
     /**
      * 板子流转轨迹（{@code plate_location_audit}），按时间倒序。
      *
-     * @param barcode 板号；null/空 = 全部板子
-     * @param limit   最多取几条
+     * @param barcode      板号；null/空 = 全部板子
+     * @param experimentId 实验范围；null = 不限实验（含独立 workflow 执行）
+     * @param runId        执行单范围；null = 不限
+     * @param limit        最多取几条
      */
     java.util.List<java.util.Map<String, Object>> selectPlateTraces(
             @Param("tenantId") long tenantId,
             @Param("barcode") String barcode,
+            @Param("experimentId") Long experimentId,
+            @Param("runId") Long runId,
             @Param("limit") int limit);
+
+    /**
+     * 一个执行单内板子的**完整流转时间线**：搬运事务（源设备→目标设备）+ 位置状态变更 + 位置证据。
+     *
+     * <p>与 {@link #selectPlateTraces} 的区别：后者只查 {@code plate_location_audit}，
+     * {@code actualLocation} 是单个位置码，看不出「从哪台设备搬到哪台」；
+     * 本方法把 {@code transfer_transaction} 的 source/target 设备并进来，按时间排序。
+     *
+     * @param barcode 板号；空 = 该 run 的全部板
+     */
+    java.util.List<java.util.Map<String, Object>> selectRunPlateFlow(
+            @Param("tenantId") long tenantId,
+            @Param("runId") long runId,
+            @Param("barcode") String barcode);
+
+    /** 范围下拉：有流转记录的实验（id/号/名/条数）。 */
+    java.util.List<java.util.Map<String, Object>> selectPlateTraceExperiments(
+            @Param("tenantId") long tenantId);
+
+    /** 范围下拉：有流转记录的执行单（run.id / run_no / 条数）。 */
+    java.util.List<java.util.Map<String, Object>> selectPlateTraceRuns(
+            @Param("tenantId") long tenantId);
 
     int insertPlateAudit(long tenantId, String barcode, String fromStatus,
                          String toStatus, String actualLocation, String operator,

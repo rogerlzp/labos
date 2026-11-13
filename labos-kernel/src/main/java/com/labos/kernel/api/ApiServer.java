@@ -255,7 +255,14 @@ public final class ApiServer {
                 || "/index.html".equals(path)
                 || "/designer.html".equals(path)
                 || path.startsWith("/vendor/")
-                || path.startsWith("/assets/");
+                || path.startsWith("/assets/")
+                // 应用图标：浏览器标签页是**未登录时**也会自动去拉的，
+                // 不能要求 token —— 否则没登录的人看到的是默认图标而不是中控标识。
+                || "/favicon.svg".equals(path)
+                || "/favicon.ico".equals(path)
+                || "/favicon-16.png".equals(path)
+                || "/favicon-32.png".equals(path)
+                || "/apple-touch-icon.png".equals(path);
     }
 
     public static String bearer(HttpExchange ex) {

@@ -26,6 +26,8 @@ import sys
 import time
 import urllib.request
 from playwright.sync_api import sync_playwright
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_artifact_cleanup import drop_workflow, drop_experiment  # noqa: E402
 
 API = os.environ.get("LABOS_API", "http://127.0.0.1:18080")
 WEB = os.environ.get("LABOS_WEB", "http://localhost:5173")
@@ -284,6 +286,10 @@ def main():
     # 清理：删掉测试变量（别把垃圾留在库里）
     api("/api/workflows/%d/variables/%s" % (wf, new_name), "DELETE", token=token)
     api("/api/workflows/%d/variables/seedVar" % wf, "DELETE", token=token)
+
+    # 清理：把测试流程与实验从台账里撤掉（别让"实测·"留在流程库）
+    drop_experiment(exp)
+    drop_workflow(wf)
 
     print("\n通过 %d / 失败 %d" % (PASS, FAIL))
     return 0 if FAIL == 0 else 1

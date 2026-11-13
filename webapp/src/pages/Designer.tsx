@@ -5,6 +5,13 @@ import { workflowPaletteModule } from '../bpmn/WorkflowPalette';
 import { GatewayShapeRenderer, GatewayRoleSync, isGatewayType } from '../bpmn/GatewayVisuals';
 import { NodeAutoNameLabelRenderer, NodeAutoNameShapeRenderer } from '../bpmn/NodeAutoNameRenderer';
 import { gatewayRoleCode, isLocalizableAutoName, isMergeRole, localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
+import {
+  buildFlowSpec, parseFlowSpec, FLOW_SPEC_EXAMPLE, type FlowSpecDevice,
+} from '../bpmn/flowSpec';
+import {
+  applyOps, describeOp, parseOps, specFromCanvas, type FlowOp,
+} from '../bpmn/flowOps';
+import { compilePlan, parsePlan } from '../bpmn/flowPlan';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -1317,6 +1324,34 @@ export default function DesignerPage() {
   const [showHistory, setShowHistory] = useState(false);
   /** 执行记录：跑完的单子在别处翻不到，这里按流程查最近 20 次 */
   const [showRuns, setShowRuns] = useState(false);
+  /** 画布缩放比例（%）：跟着 viewbox 变化实时更新，工具条上显示。 */
+  const [zoomPct, setZoomPct] = useState(100);
+  /** 画布是否处于全屏（全屏时状态由 fullscreenchange 事件同步）。 */
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  /** 导入流程规格的弹窗开关。 */
+  const [showImport, setShowImport] = useState(false);
+  /** 导入弹窗里的规格文本（AI 生成 / 脚本产出的 JSON）。 */
+  const [importText, setImportText] = useState('');
+  /** 导入弹窗里的校验错误（逐条列出，别让用户猜哪错了）。 */
+  const [importErrors, setImportErrors] = useState<string[]>([]);
+  /** AI 修改流程：面板开关。 */
+  const [showAi, setShowAi] = useState(false);
+  /** 用户提的需求（一句话）。 */
+  const [aiInstruction, setAiInstruction] = useState('');
+  /** AI 给的修改清单。 */
+  const [aiOps, setAiOps] = useState<FlowOp[]>([]);
+  /** 已经问过 AI（区分"还没问"与"AI 说没得改"）。 */
+  const [aiAnalyzed, setAiAnalyzed] = useState(false);
+  /** AI 环节的错误（网络/未配置/格式）。 */
+  const [aiErrors, setAiErrors] = useState<string[]>([]);
+  /** AI 环节的忙碌态。 */
+  const [aiBusy, setAiBusy] = useState(false);
+  /** AI 的补充说明（哪部分做不到、为什么）。 */
+  const [aiNotes, setAiNotes] = useState('');
+  /** AI 给的是「局部改动（ops）」还是「结构改动（顺序图）」。 */
+  const [aiMode, setAiMode] = useState<'ops' | 'plan'>('ops');
+  /** 全屏的承载元素：canvas 外层 wrapper（bpmn-js 的 SVG 在它里面）。 */
+  const canvasWrapRef = useRef<HTMLDivElement>(null);
 
   /**
    * 现在跑要等多久：按各设备当前占用者的剩余时间取最大值。
@@ -1385,8 +1420,27 @@ export default function DesignerPage() {
     // 页面级自动化钩子：Playwright 通过 window.__bpmnModeler 驱动同一实例
     // （createShape/connect 与用户拖拽走同一 modeling API，落库带 DI，画布可渲染）。
     (window as unknown as { __bpmnModeler?: unknown }).__bpmnModeler = modeler;
+    // 流程规格导入钩子：脚本/AI 产出一份 Flow Spec JSON，直接调它建图并落库。
+    // 走的是和手工拖拽同一条通道（importFlowSpec 内部用 modeling API）。
+    (window as unknown as { __labosFlowSpec?: unknown }).__labosFlowSpec = {
+      import: (raw: string) => importFlowRef.current?.(raw),
+    };
 
     modeler.on('commandStack.changed', () => setDirty(true));
+    // 缩放比例：跟着画布视口变化实时更新，工具条上的百分比才准。
+    // （滚轮缩放 / 拖拽平移都会触发这个事件，不只是点工具条按钮。）
+    modeler.on('canvas.viewbox.changed', () => {
+      const cv = modelerRef.current?.get('canvas') as { zoom: () => number } | undefined;
+      if (cv) setZoomPct(Math.round(cv.zoom() * 100));
+    });
+    // 全屏切换：bpmn-js 的 SVG 尺寸是按容器算的，容器变了必须让它重算一次，
+    // 否则画面还是旧尺寸（右侧留白 / 拉伸变形）。
+    const onFsChange = () => {
+      const cv = modelerRef.current?.get('canvas') as { resized: () => void } | undefined;
+      cv?.resized();
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
     modeler.on('selection.changed', (e: { newSelection: Array<{ id: string; type: string }> }) => {
       const el = e.newSelection?.[0];
       setSelected(el?.id ?? null);
@@ -1402,6 +1456,7 @@ export default function DesignerPage() {
       }
     });
     return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
       modeler.destroy();
       modelerRef.current = null;
     };
@@ -1518,6 +1573,290 @@ export default function DesignerPage() {
    * <p>只移动 position，不改连线/拓扑；走 modeling.moveElements 会进 commandStack，
    * 页面会标脏，用户点「保存」后 DI 坐标一起落库（saveXML 包含 BPMNDiagram 坐标）。
    */
+  /**
+   * 画布缩放：**流程节点一多，鼠标滚轮缩放太慢、又看不见全局**。
+   *
+   * <p>工具条给的是"看得懂"的三档：缩小 / 当前比例 / 放大，再加一个
+   * 「适应画布」（把整张图缩进视口）和「全屏」（铺满整个屏幕）。
+   */
+  const zoomBy = (delta: number) => {
+    const m = modelerRef.current;
+    if (!m) return;
+    const cv = m.get('canvas') as unknown as { zoom: (v?: number | string) => number };
+    const cur = cv.zoom();
+    // 按 10% 步进并夹在 20%~400%：再小字都看不清，再大也没什么意义
+    const next = Math.min(4, Math.max(0.2, Math.round((cur + delta) * 10) / 10));
+    cv.zoom(next);
+  };
+
+  /** 适应画布：把整张图缩放进视口（节点多时的"看一眼全局"）。 */
+  const fitViewport = () => {
+    const m = modelerRef.current;
+    if (!m) return;
+    (m.get('canvas') as unknown as { zoom: (v: string) => void }).zoom('fit-viewport');
+  };
+
+  /**
+   * 全屏切换。
+   *
+   * <p>全屏的是**画布容器**（不是整个页面）—— 右侧的节点设置、顶部的保存按钮
+   * 仍然要能点到，所以只把画布那一块放大。
+   */
+  const toggleFullscreen = async () => {
+    const el = canvasWrapRef.current;
+    if (!el) return;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await el.requestFullscreen();
+    } catch (e) {
+      message.error(t('designer.error.saveFailedDetail', { msg: String((e as Error).message) }));
+    }
+  };
+
+  /**
+   * 导入一份**流程规格**（Flow Spec）并落库。
+   *
+   * <p>这是「AI / 脚本建流程」在页面上的落点：AI 只需要产出业务视角的 JSON
+   * （哪些设备、哪些方法、怎么连），画布怎么摆、图标怎么来、网关叫什么，
+   * 全部由这一层翻译 —— 与用户手工拖拽走同一条 modeling 通道。
+   *
+   * <p>落库走**草稿保存**（和拖入节点同一条路）：后端会把 protocolName /
+   * resource / methodParams 一起写进 workflow_node。参数没填全不阻塞 ——
+   * 那是「保存」按钮的守卫，不该让导入这一步就被卡住。
+   */
+  const importFlowSpec = async (
+    raw: string,
+  ): Promise<{ created: number; errors: string[] }> => {
+    const m = modelerRef.current;
+    const parsed = parseFlowSpec(raw);
+    if (!parsed.spec) return { created: 0, errors: parsed.errors };
+    if (!m) return { created: 0, errors: [t('designer.spec.err.canvasNotReady')] };
+
+    // 设备目录：设备池 → resourceId → 设备（解析图标/能力，并校验设备确实存在）。
+    // 设备池没加载出来时**不传**目录 —— 否则会把"还没加载"误判成"设备不存在"。
+    const pool = paletteDevices.data?.items ?? [];
+    const devices = pool.length
+      ? new Map<number, FlowSpecDevice>(pool.map((d) => [d.resourceId, {
+        resourceId: d.resourceId,
+        code: d.code,
+        capability: d.capability,
+        icon: d.icon ?? null,
+        islandId: d.islandId,
+      }]))
+      : undefined;
+
+    const res = buildFlowSpec(m, parsed.spec, { clear: true, devices });
+    if (res.created.length === 0) {
+      return {
+        created: 0,
+        errors: res.errors.length ? res.errors : [t('designer.spec.err.nothingBuilt')],
+      };
+    }
+
+    const { xml } = await m.saveXML({ format: true }) as { xml: string };
+    await api.saveGraph(wfId, collapse(xml), { draft: true });
+    setDirty(false);
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ['compile', wfId] }),
+      qc.invalidateQueries({ queryKey: ['preflight', wfId] }),
+    ]);
+    fitViewport();
+    return { created: res.created.length, errors: res.errors };
+  };
+
+  /** 自动化钩子用：永远指向最新的 importFlowSpec（避免闭包拿到旧状态）。 */
+  const importFlowRef = useRef(importFlowSpec);
+  importFlowRef.current = importFlowSpec;
+
+  /**
+   * AI 面板用的**设备目录**：设备 + 方法 + **参数定义**。
+   *
+   * <p>为什么必须带参数定义：AI 改参数时得知道参数名是真的（"sec" 而不是
+   * "duration"），否则改完存不进去、运行时报错。
+   */
+  const aiCatalogQ = useQuery({
+    queryKey: ['ai-catalog', effectiveIslandId],
+    enabled: showAi,
+    queryFn: async () => {
+      const pool = paletteDevices.data?.items ?? [];
+      const lines = await Promise.all(pool.map(async (d) => {
+        const r = await apiFetch(`/api/devices/${d.resourceId}/methods`);
+        const j = await r.json() as {
+          items?: Array<{
+            method: string;
+            params?: Array<{ name: string; type?: string; required?: number | boolean }>;
+          }>;
+        };
+        const ms = (j.items ?? []).map((m) => {
+          const ps = (m.params ?? [])
+            .map((p) => `${p.name}:${p.type ?? 'string'}${p.required ? '(必填)' : ''}`)
+            .join(',');
+          return ps ? `${m.method}[${ps}]` : m.method;
+        });
+        return `- ${d.code} | ${d.name ?? ''} | 能力=${d.capability ?? ''}`
+          + ` | 方法: ${ms.join(', ') || '（无）'}`;
+      }));
+      return lines.join('\n');
+    },
+  });
+
+  /**
+   * 节点 id → 人能看懂的名字（预览清单里用；AI 说的是 id，人看不懂）。
+   */
+  const aiNodeLabel = (id: string): string => {
+    const m = modelerRef.current;
+    if (!m) return id;
+    const reg = m.get('elementRegistry') as {
+      get: (i: string) => { businessObject?: { name?: string } } | undefined;
+    };
+    const el = reg.get(id);
+    const name = el?.businessObject?.name;
+    return name && name !== id ? `${name}（${id}）` : id;
+  };
+
+  /** 「生成修改建议」：把需求 + 当前图 + 设备目录交给后端，后端调 LLM 拿回 ops。 */
+  const analyzeAi = async () => {
+    const m = modelerRef.current;
+    if (!m) return;
+    setAiBusy(true);
+    setAiErrors([]);
+    try {
+      const pool = paletteDevices.data?.items ?? [];
+      const codeByResource = new Map<string, string>();
+      pool.forEach((d) => codeByResource.set(String(d.resourceId), d.code));
+      const currentSpec = specFromCanvas(
+        m as unknown as { get: (n: string) => unknown },
+        (rid) => codeByResource.get(rid),
+      );
+      const res = await api.aiPlan(wfId, {
+        instruction: aiInstruction,
+        currentSpec,
+        catalog: aiCatalogQ.data ?? '',
+      });
+      const mode = (res as { mode?: string }).mode === 'plan' ? 'plan' : 'ops';
+      setAiMode(mode);
+      if (mode === 'plan') {
+        // 结构改动：**顺序图 → 编译器 → 操作**。连线由代码做，模型不碰 connect。
+        const parsedPlan = parsePlan(res);
+        if (!parsedPlan.plan) {
+          setAiOps([]);
+          setAiErrors(parsedPlan.errors);
+          setAiAnalyzed(true);
+          return;
+        }
+        const byCode = new Map<string, number>();
+        pool.forEach((d) => byCode.set(d.code, d.resourceId));
+        const compiled = compilePlan(parsedPlan.plan, currentSpec, {
+          deviceByCode: byCode,
+          currentById: new Map(currentSpec.nodes.map((n) => [n.id, n])),
+        });
+        setAiOps(compiled.ops);
+        setAiErrors([...parsedPlan.errors, ...compiled.errors]);
+      } else {
+        const parsed = parseOps(res);
+        setAiOps(parsed.ops);
+        setAiErrors(parsed.errors);
+      }
+      setAiNotes((res as { notes?: string }).notes ?? '');
+      setAiAnalyzed(true);
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      setAiErrors([status === 503
+        ? t('designer.ai.notConfigured')
+        : `${t('designer.ai.analyzeFailed')}：${(e as Error).message}`]);
+      setAiAnalyzed(true);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  /** 「应用到画布」：逐条应用 ops → 落库 → 刷新 compile/preflight。 */
+  const applyAiOps = async () => {
+    const m = modelerRef.current;
+    if (!m || aiOps.length === 0) return;
+    setAiBusy(true);
+    try {
+      const pool = paletteDevices.data?.items ?? [];
+      const devices = new Map<number, {
+        resourceId: number; code: string; capability?: string; icon?: string | null;
+      }>();
+      const byCode = new Map<string, number>();
+      pool.forEach((d) => {
+        devices.set(d.resourceId, {
+          resourceId: d.resourceId, code: d.code,
+          capability: d.capability, icon: d.icon ?? null,
+        });
+        byCode.set(d.code, d.resourceId);
+      });
+      // 新节点的落点：放在最后一个节点右边（交给自动布局再排）
+      const ids = (m.get('elementRegistry') as { getAll: () => Array<{ id: string; x?: number; y?: number }> })
+        .getAll().filter((el) => el.x != null);
+      const last = ids[ids.length - 1];
+      const res = applyOps(
+        m as unknown as { get: (n: string) => unknown },
+        aiOps,
+        { devices, deviceByCode: byCode, layout: () => ({ x: (last?.x ?? 200) + 220, y: last?.y ?? 200 }) },
+      );
+      if (res.applied > 0) {
+        const { xml } = await m.saveXML({ format: true }) as { xml: string };
+        await api.saveGraph(wfId, collapse(xml), { draft: true });
+        setDirty(false);
+        // 落库打点：与页面「保存」同一个标记 ⇒ 自动化靠它判断"真的存上了"，
+        // 不用固定 sleep（sleep 会读到"操作应用了一半"的画布）。
+        if (containerRef.current) {
+          containerRef.current.dataset.graphSaved = String(Date.now());
+        }
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['compile', wfId] }),
+          qc.invalidateQueries({ queryKey: ['preflight', wfId] }),
+        ]);
+      }
+      // 结构重排（顺序图模式）后把图重新排一遍：结构都变了，坐标也该跟着走，
+      // 否则新节点会堆在旧坐标上、连线乱成一团。
+      if (aiMode === 'plan') autoAlign();
+      if (res.errors.length) {
+        setAiErrors(res.errors);
+        message.warning(t('designer.ai.appliedPartial', { n: res.applied, m: res.errors.length }));
+      } else {
+        message.success(t('designer.ai.applied', { n: res.applied }));
+        setShowAi(false);
+        setAiOps([]);
+        setAiInstruction('');
+        setAiAnalyzed(false);
+      }
+    } catch (e) {
+      message.error(t('designer.error.saveFailedDetail', { msg: String((e as Error).message) }));
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  /** 导入弹窗的「导入并保存」：校验 → 建图 → 落库。 */
+  const doImport = async () => {
+    setSaving(true);
+    try {
+      const res = await importFlowSpec(importText);
+      if (res.errors.length > 0) {
+        // 弹窗留着，把"哪里没建出来"逐条列出来 —— 只给一句"失败"没人能修
+        setImportErrors(res.errors);
+        if (res.created === 0) {
+          message.error(t('designer.import.invalid'));
+        } else {
+          message.warning(t('designer.toast.importPartial', { n: res.errors.length }));
+        }
+        return;
+      }
+      message.success(t('designer.toast.imported', { n: res.created }));
+      setShowImport(false);
+      setImportText('');
+      setImportErrors([]);
+    } catch (e) {
+      message.error(t('designer.error.saveFailedDetail', { msg: String((e as Error).message) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   /**
    * 自动对齐：先对齐「大节点」——网关分叉/汇合对，再排分支内部节点。
    *
@@ -1750,9 +2089,12 @@ export default function DesignerPage() {
 
     const placed = new Set<string>();
     const target = new Map<string, { x: number; y: number }>();
+    /** 每个节点占的**列号**（换行那一步要用，不能从坐标反推）。 */
+    const colOf = new Map<string, number>();
     const placeNode = (id: string, col: number, centerY: number) => {
       if (placed.has(id)) return;
       placed.add(id);
+      colOf.set(id, col);
       target.set(id, { x: MARGIN_X + col * COL_GAP, y: MARGIN_Y + centerY });
     };
 
@@ -1792,8 +2134,10 @@ export default function DesignerPage() {
       let top = centerY - total / 2;
       branches.forEach((s, i) => {
         const bandCenter = top + hs[i] / 2;
-        const offset = Math.max(0, Math.floor((maxW - widths[i]) / 2));
-        placeSeq(s, j, col + 1 + offset, bandCenter);
+        // 分支**左对齐**：所有分支都从分叉点右边同一列出发 ⇒ 分叉的出边等长、
+        // 整齐；短分支后面留空（原来是把短分支居中，两头都不对齐，更难看）。
+        // 分支长度一样时（常见情况）首尾自然都对齐。
+        placeSeq(s, j, col + 1, bandCenter);
         top += hs[i] + ROW_GAP;
       });
       return joinCol + 1;
@@ -1813,6 +2157,129 @@ export default function DesignerPage() {
       if (startIds.length > 1) cursor += 1;
     }
     if (endId && !placed.has(endId)) placeNode(endId, cursor, 0);
+
+    // =====================================================================
+    // 换行：一整条排成一行看不下去 ⇒ 按列数折行，串行接续到下一行。
+    //
+    // 口径（用户 2026-11-13 提的）：
+    //   ① 先按节点顺序一个接一个摆 —— 串行的（现有行为）；
+    //   ② 遇到并行网关，分支并列、**前后端对齐**（现有行为）；
+    //   ③ 整条太长 ⇒ 折行，从下一行继续往后排（**本次新增**）。
+    //
+    // 实现：上面算出来的是一条**线性列序**（列号单调递增）。这里把它切成
+    // 若干**原子块**——「网关对 + 它的分支」算一块（**不许拆**：
+    // 拆了分支的前后端就对不齐了），其余节点各自成块；
+    // 然后按块打包进各行，最后把列号换算成坐标。
+    // =====================================================================
+    /** 一行最多放多少列（列距 200px ⇒ 一行约 2000px 宽）。 */
+    const MAX_COLS_PER_ROW = 10;
+    /** 行与行之间的间距。 */
+    const ROW_GAP_Y = 150;
+
+    type Block = {
+      start: number; end: number;
+      ids: string[];
+      /** 这块的"主车道" y（网关对 = 分叉节点的 y；单节点 = 自己的 y）。 */
+      mainY: number;
+      /** 相对主车道的上下范围。 */
+      relTop: number; relBot: number;
+      /** 打包结果：落在第几行、第几列。 */
+      rowIdx: number; newCol: number;
+    };
+
+    // ---- ① 切原子块 ----
+    const blocks: Block[] = [];
+    const taken = new Set<string>();
+    const pairs = [...forkToJoin.entries()]
+      .map(([f, j]) => ({
+        f, j,
+        c0: colOf.get(f) ?? 0,
+        c1: colOf.get(j) ?? 0,
+      }))
+      // 外层网关对先处理（起点相同则跨度大的先来），内层的会被外层吸收
+      .sort((a, b) => (a.c0 - b.c0) || (b.c1 - a.c1));
+    for (const p of pairs) {
+      if (taken.has(p.f) || taken.has(p.j)) continue;
+      const ids = shapes
+        .filter((s) => {
+          const c = colOf.get(s.id) ?? 0;
+          return c >= p.c0 && c <= p.c1;
+        })
+        .map((s) => s.id);
+      ids.forEach((id) => taken.add(id));
+      blocks.push({
+        start: p.c0, end: p.c1, ids,
+        mainY: target.get(p.f)?.y ?? MARGIN_Y,
+        relTop: 0, relBot: 0, rowIdx: 0, newCol: 0,
+      });
+    }
+    shapes.forEach((s) => {
+      if (taken.has(s.id)) return;
+      const c = colOf.get(s.id) ?? 0;
+      blocks.push({
+        start: c, end: c, ids: [s.id],
+        mainY: target.get(s.id)?.y ?? MARGIN_Y,
+        relTop: 0, relBot: 0, rowIdx: 0, newCol: 0,
+      });
+    });
+    blocks.sort((a, b) => a.start - b.start);
+
+    // ---- ② 每块的上下范围（相对主车道） ----
+    blocks.forEach((b) => {
+      b.ids.forEach((id) => {
+        const p = target.get(id);
+        if (!p) return;
+        const dy = p.y - b.mainY;
+        if (dy < b.relTop) b.relTop = dy;
+        if (dy > b.relBot) b.relBot = dy;
+      });
+    });
+
+    // ---- ③ 打包进各行 ----
+    type Row = { blocks: Block[]; above: number; below: number; mainY: number };
+    const rows: Row[] = [];
+    let curRow: Row = { blocks: [], above: 0, below: 0, mainY: MARGIN_Y };
+    let rowCursor = 0;
+    blocks.forEach((b) => {
+      const w = b.end - b.start + 1;
+      // 放不下就换行（已经有的内容才换；单块超宽就让它独占一行）
+      if (curRow.blocks.length > 0 && rowCursor + w > MAX_COLS_PER_ROW) {
+        rows.push(curRow);
+        curRow = { blocks: [], above: 0, below: 0, mainY: MARGIN_Y };
+        rowCursor = 0;
+      }
+      b.rowIdx = rows.length;
+      b.newCol = rowCursor;
+      curRow.blocks.push(b);
+      rowCursor += w;
+    });
+    rows.push(curRow);
+
+    // ---- ④ 每行的高度与主车道 y ----
+    rows.forEach((r) => {
+      r.above = Math.max(0, ...r.blocks.map((b) => -b.relTop));
+      r.below = Math.max(0, ...r.blocks.map((b) => b.relBot));
+    });
+    rows.forEach((r, i) => {
+      if (i === 0) {
+        r.mainY = MARGIN_Y;
+        return;
+      }
+      const prev = rows[i - 1];
+      // 上一行的下沿 + 行距 + 本行上探的高度 ⇒ 本行主车道的 y
+      r.mainY = prev.mainY + prev.below + ROW_GAP_Y + r.above;
+    });
+
+    // ---- ⑤ 列号换算成坐标 ----
+    const blockOf = new Map<string, Block>();
+    blocks.forEach((b) => b.ids.forEach((id) => blockOf.set(id, b)));
+    target.forEach((p, id) => {
+      const b = blockOf.get(id);
+      if (!b) return;
+      const newCol = b.newCol + ((colOf.get(id) ?? 0) - b.start);
+      p.x = MARGIN_X + newCol * COL_GAP;
+      p.y = rows[b.rowIdx].mainY + (p.y - b.mainY);
+    });
 
     // 孤立/没走到的节点：单独一排放在最下面（不参与主链排版）
     let maxY = 0;
@@ -1944,6 +2411,47 @@ export default function DesignerPage() {
       pts.push({ x: round(z.x), y: round(z.y) });
       return pts;
     };
+
+    // ---- 换行边：从上一行末尾回到下一行开头 ----
+    // 默认走法是"从出点水平走到中点再垂直"，换行边会**横穿整张图**（从行尾
+    // 一路拉回行首），很难看 ⇒ 这类边单独走**行间通道**：
+    // 出点往右让一让 → 垂直下到两行之间的空档 → 水平回到目标左侧 → 进入目标。
+    const rowOf = new Map<string, number>();
+    blocks.forEach((b) => b.ids.forEach((id) => rowOf.set(id, b.rowIdx)));
+    const rowTop = rows.map((r) => r.mainY - r.above);
+    const rowBot = rows.map((r) => r.mainY + r.below);
+    const isWrapEdge = (e: EdgeRef) =>
+      (rowOf.get(e.tgt) ?? 0) > (rowOf.get(e.src) ?? 0);
+
+    // 换行边的锚点：出点强制在**右**、入点强制在**左**
+    // （默认按"目标在左/右"分组，换行边目标在左 ⇒ 出点会跑到源的左边，
+    //   那条线就得横穿整行，比原来还糟）。
+    edgeRefs.forEach((e) => {
+      if (!isWrapEdge(e)) return;
+      const sb = box.get(e.src)!;
+      const tb = box.get(e.tgt)!;
+      const a = outAnchor.get(e.conn);
+      const z = inAnchor.get(e.conn);
+      if (a) outAnchor.set(e.conn, { x: sb.cx + sb.w / 2, y: a.y, side: 'right' });
+      if (z) inAnchor.set(e.conn, { x: tb.cx - tb.w / 2, y: z.y, side: 'left' });
+    });
+
+    const wrapRoute = (e: EdgeRef, a: Anchor, z: Anchor): { x: number; y: number }[] => {
+      const rSrc = rowOf.get(e.src) ?? 0;
+      const rTgt = rowOf.get(e.tgt) ?? 0;
+      const channelY = (rowBot[rSrc] + rowTop[rTgt]) / 2;
+      const outX = a.x + 40;    // 先往右让一让，别贴着源节点
+      const inX = z.x - 40;     // 到目标左边再进
+      return [
+        { x: round(a.x), y: round(a.y) },
+        { x: round(outX), y: round(a.y) },
+        { x: round(outX), y: round(channelY) },
+        { x: round(inX), y: round(channelY) },
+        { x: round(inX), y: round(z.y) },
+        { x: round(z.x), y: round(z.y) },
+      ];
+    };
+
     const updateWp = (modeling as unknown as {
       updateWaypoints?: (conn: unknown, wps: { x: number; y: number }[]) => void;
     }).updateWaypoints;
@@ -1951,7 +2459,9 @@ export default function DesignerPage() {
       edgeRefs.forEach((e) => {
         const a = outAnchor.get(e.conn);
         const z = inAnchor.get(e.conn);
-        if (a && z) updateWp.call(modeling, e.conn, routePoints(a, z));
+        if (!a || !z) return;
+        updateWp.call(modeling, e.conn,
+          isWrapEdge(e) ? wrapRoute(e, a, z) : routePoints(a, z));
       });
     }
     const cv = m.get('canvas') as unknown as {
@@ -2453,7 +2963,17 @@ export default function DesignerPage() {
           )}
         />
       )}
-      <Row gutter={16} style={{ height: fromExpId ? 'calc(100vh - 64px - 64px)' : 'calc(100vh - 64px)' }}>
+      {/*
+        wrap={false} 是画布进首屏的前提：Row 默认 flex-wrap: wrap，三列一旦
+        宽度不够就会被挤成三行，bpmn-js 的画布随之掉到视口之外（实测 y≈921）。
+        中间列必须同时给 minWidth: 0 —— flex 子项默认 min-width: auto，
+        会被 SVG 的固有宽度顶住不让收缩，于是三轮换行。
+      */}
+      <Row
+        gutter={16}
+        wrap={false}
+        style={{ height: fromExpId ? 'calc(100vh - 64px - 64px)' : 'calc(100vh - 64px)' }}
+      >
       {/* 按岛设备：岛 → 设备 → 方法；把方法拖进画布直接生成已绑定节点 */}
       <Col flex="240px" style={{ minHeight: 0 }}>
         <Card size="small" title={t('designer.palette.title')}>
@@ -2533,7 +3053,12 @@ export default function DesignerPage() {
           />
         </Card>
       </Col>
-      <Col flex="auto" style={{ display: 'flex', flexDirection: 'column' }}>
+      {/* minWidth: 0 / minHeight: 0：允许这一列被压缩到比自身内容更窄，
+          否则 SVG 会把列撑到内容宽度，把右侧属性栏顶到下一行（三栏塌陷的根因）。 */}
+      <Col
+        flex="auto"
+        style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}
+      >
         <Card
           size="small"
           style={{ flex: 'none' }}
@@ -2562,6 +3087,17 @@ export default function DesignerPage() {
               <Button onClick={autoAlign} disabled={ro.disabled} title={t('designer.action.autoAlignHint')}>
                 {t('designer.action.autoAlign')}
               </Button>
+              {/* 导入流程规格：AI / 脚本产出的 JSON → 一键建图。
+                  流程一多就没法手工拖了 —— 这条是"不拖"的入口。 */}
+              <Button onClick={() => { setShowImport(true); setImportErrors([]); }}
+                disabled={ro.disabled} title={t('designer.import.hint')}>
+                {t('designer.action.importFlow')}
+              </Button>
+              {/* AI 修改流程：在页面上提需求，AI 改这张图、改参数。 */}
+              <Button onClick={() => { setShowAi(true); setAiErrors([]); setAiNotes(''); setAiAnalyzed(false); }}
+                disabled={ro.disabled} title={t('designer.ai.hint')}>
+                {t('designer.action.aiAssist')}
+              </Button>
               <Button onClick={() => nav('/workflows')}>{t('designer.action.back')}</Button>
               <Button type="primary" loading={saving} {...ro} onClick={() => void save()}>
                 {t('designer.action.save')}
@@ -2585,15 +3121,74 @@ export default function DesignerPage() {
 
         {/* 拖放挂在外层 wrapper：bpmn-js 的 SVG 会吞掉 drop 事件 */}
         <div
-          style={{ flex: 1, minHeight: 420, position: 'relative', background: '#fff', borderRadius: 6 }}
+          ref={canvasWrapRef}
+          style={{
+            flex: 1, minHeight: 420, position: 'relative',
+            // width:100% + overflow:hidden：画布只能长成"列有多宽就多宽"，
+            // 不能让 bpmn-js 的 SVG 反过来决定列宽。
+            width: '100%', overflow: 'hidden',
+            background: '#fff', borderRadius: 6,
+          }}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
           onDrop={onDropMethod}
         >
           <div ref={containerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }} />
+          {/* 画布视图工具条：缩放 / 适应 / 全屏。
+              放在画布容器**里面** —— 全屏时承载的就是这个容器，工具条跟着走。
+
+              ⚠ 位置选**右上角**而不是右下角：bpmn-js 会把 "powered by bpmn.io"
+              的 logo 钉在 `bottom:15px; right:15px; z-index:100`，
+              放右下角必然被它压住（全屏按钮点不到）。
+              z-index 取 200 压过 logo 与 context-pad。
+
+              ⚠ 颜色必须**显式指定**：整个控制台是暗色主题，antd 的按钮文字是
+              浅色（rgba(255,255,255,0.85)），而画布是白的 ⇒ 白字白底看不见。 */}
+          <div
+            data-testid="canvas-toolbar"
+            style={{
+              position: 'absolute', right: 12, top: 12, zIndex: 200,
+              display: 'flex', alignItems: 'center', gap: 2,
+              padding: '3px 5px', borderRadius: 6,
+              background: 'rgba(255,255,255,0.98)', border: '1px solid #d9d9d9',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+              color: '#1f2937',
+            }}
+          >
+            <Tooltip title={t('designer.canvas.zoomOut')}>
+              <Button size="small" type="text" aria-label="zoom-out"
+                onClick={() => zoomBy(-0.1)}
+                style={{ width: 26, padding: 0, fontSize: 15, lineHeight: '24px',
+                         color: '#1f2937' }}>−</Button>
+            </Tooltip>
+            <Typography.Text
+              style={{ fontSize: 11, minWidth: 46, textAlign: 'center',
+                       cursor: 'default', color: '#1f2937' }}
+            >
+              {t('designer.canvas.zoomLevel', { pct: zoomPct })}
+            </Typography.Text>
+            <Tooltip title={t('designer.canvas.zoomIn')}>
+              <Button size="small" type="text" aria-label="zoom-in"
+                onClick={() => zoomBy(0.1)}
+                style={{ width: 26, padding: 0, fontSize: 15, lineHeight: '24px',
+                         color: '#1f2937' }}>+</Button>
+            </Tooltip>
+            <Button size="small" type="text" onClick={fitViewport}
+              style={{ fontSize: 12, padding: '0 8px', color: '#1f2937' }}>
+              {t('designer.canvas.fit')}
+            </Button>
+            <Tooltip title={isFullscreen ? t('designer.canvas.exitFullscreen')
+              : t('designer.canvas.fullscreen')}>
+              <Button size="small" type="text" aria-label="fullscreen"
+                onClick={() => void toggleFullscreen()}
+                style={{ fontSize: 13, padding: '0 6px', color: '#1f2937' }}>⛶</Button>
+            </Tooltip>
+          </div>
         </div>
       </Col>
 
-      <Col flex="320px">
+      {/* 右侧属性栏：三栏不再换行后它只占 320px，内容（变量/选项/节点设置）
+          会比列高，必须自己滚动，否则会溢出到视口外。 */}
+      <Col flex="320px" style={{ minWidth: 0, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
         <WorkflowVarsCard wfId={wfId} />
         <FlowOptionsCard wfId={wfId} />
         <Card size="small" style={{ marginBottom: 12 }}>
@@ -2908,6 +3503,129 @@ export default function DesignerPage() {
         width={720}
       >
         <TimelineChart data={timeline.data} />
+      </Modal>
+
+      {/* 导入流程规格：AI / 脚本产出的 JSON → 直接建图并落库。 */}
+      <Modal
+        open={showImport}
+        title={t('designer.import.title')}
+        onCancel={() => { setShowImport(false); setImportErrors([]); }}
+        onOk={() => void doImport()}
+        okText={t('designer.import.ok')}
+        cancelText={t('designer.import.cancel')}
+        confirmLoading={saving}
+        width={760}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Alert type="warning" showIcon message={t('designer.import.clearWarn')} />
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
+            {t('designer.import.hint')}
+          </Typography.Paragraph>
+          <Input.TextArea
+            data-testid="flow-spec-input"
+            rows={14}
+            value={importText}
+            onChange={(e) => { setImportText(e.target.value); setImportErrors([]); }}
+            placeholder={t('designer.import.placeholder')}
+            style={{ fontFamily: 'monospace', fontSize: 12 }}
+          />
+          {importErrors.length > 0 && (
+            <Alert
+              type="error" showIcon
+              message={t('designer.import.invalid')}
+              description={
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, maxHeight: 180, overflow: 'auto' }}>
+                  {importErrors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              }
+            />
+          )}
+          <Button size="small" onClick={() => {
+            setImportText(JSON.stringify(FLOW_SPEC_EXAMPLE, null, 2));
+            setImportErrors([]);
+          }}>
+            {t('designer.import.example')}
+          </Button>
+        </Space>
+      </Modal>
+
+      {/* AI 修改流程：页面上提需求 → AI 给修改清单 → 预览后应用。 */}
+      <Modal
+        open={showAi}
+        title={t('designer.ai.title')}
+        onCancel={() => { setShowAi(false); setAiOps([]); setAiErrors([]); }}
+        footer={[
+          <Button key="close" onClick={() => { setShowAi(false); setAiOps([]); setAiErrors([]); }}>
+            {t('designer.import.cancel')}
+          </Button>,
+          aiOps.length > 0 && (
+            <Button key="apply" type="primary" loading={aiBusy}
+              onClick={() => void applyAiOps()}>
+              {t('designer.ai.apply')}
+            </Button>
+          ),
+        ].filter(Boolean) as React.ReactNode[]}
+        width={760}
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
+            {t('designer.ai.hint')}
+          </Typography.Paragraph>
+          <Input.TextArea
+            data-testid="ai-instruction"
+            rows={3}
+            value={aiInstruction}
+            onChange={(e) => setAiInstruction(e.target.value)}
+            placeholder={t('designer.ai.placeholder')}
+          />
+          <Space>
+            <Button type="primary" loading={aiBusy}
+              disabled={!aiInstruction.trim()}
+              onClick={() => void analyzeAi()}>
+              {aiOps.length ? t('designer.ai.reanalyze') : t('designer.ai.analyze')}
+            </Button>
+            {aiCatalogQ.isFetching && (
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {t('designer.palette.title')}…
+              </Typography.Text>
+            )}
+          </Space>
+
+          {aiOps.length > 0 && (
+            <Card size="small" style={{ width: '100%' }}
+              title={t('designer.ai.preview', { n: aiOps.length })}
+              extra={
+                <Tag color={aiMode === 'plan' ? 'purple' : 'blue'}>
+                  {aiMode === 'plan'
+                    ? t('designer.ai.mode.plan')
+                    : t('designer.ai.mode.ops')}
+                </Tag>
+              }>
+              <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12, lineHeight: 1.9 }}>
+                {aiOps.map((op, i) => (
+                  <li key={i}>{describeOp(op, aiNodeLabel)}</li>
+                ))}
+              </ol>
+            </Card>
+          )}
+          {aiOps.length === 0 && aiAnalyzed && !aiBusy && (
+            <Alert type="info" showIcon message={t('designer.ai.previewEmpty')} />
+          )}
+          {aiNotes && (
+            <Alert type="warning" showIcon message={aiNotes} />
+          )}
+          {aiErrors.length > 0 && (
+            <Alert
+              type="error" showIcon
+              message={t('designer.ai.analyzeFailed')}
+              description={
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, maxHeight: 160, overflow: 'auto' }}>
+                  {aiErrors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              }
+            />
+          )}
+        </Space>
       </Modal>
 
       <Modal

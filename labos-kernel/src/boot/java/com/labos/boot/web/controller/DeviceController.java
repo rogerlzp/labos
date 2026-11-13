@@ -8,7 +8,9 @@ import com.labos.boot.web.service.DeviceService;
 import com.labos.kernel.driver.HeartbeatService;
 import com.labos.kernel.driver.ShadowProbe;
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.persistence.DeviceStateMapper;
 import com.labos.kernel.persistence.Jsons;
+import com.labos.kernel.persistence.Mappers;
 import com.labos.kernel.driver.PositionLock;
 import com.labos.kernel.workflow.WorkflowService;
 import jakarta.servlet.http.HttpServletRequest;
@@ -121,9 +123,51 @@ public class DeviceController {
                     "occupiedSince", st.occupiedSince(),
                     "available", st.available(),
                     "parentDeviceId", st.parentDeviceId(),
-                    "parentDeviceCode", st.parentDeviceCode()));
+                    "parentDeviceCode", st.parentDeviceCode(),
+                    "pointRole", st.pointRole(),
+                    "robotReachable", st.robotReachable(),
+                    "isEntry", st.isEntry(),
+                    "isExit", st.isExit(),
+                    "contentKind", st.contentKind(),
+                    "plateUid", st.plateUid(),
+                    "identityStatus", st.identityStatus(),
+                    "contentCode", st.contentCode(),
+                    "contentName", st.contentName(),
+                    "gridRow", st.gridRow(),
+                    "gridCol", st.gridCol(),
+                    "maxHeightMm", st.maxHeightMm(),
+                    "plateTypes", st.plateTypes(),
+                    "positionLabel", st.positionLabel(),
+                    "standalone", st.standalone()));
         }
         return ResponseEntity.ok(Jsons.obj("islandId", isl,
+                "total", items.size(),
+                "items", new Jsons.Raw(Jsons.arr(items))));
+    }
+
+    /** P2：实验开始前的点位与物料清单快照（append-only，按 run 查询）。 */
+    @GetMapping(value = "/positions/snapshot", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> positionSnapshot(
+            @RequestParam(required = false) String runId) throws SQLException {
+        long rid = paramLongValue(runId);
+        if (rid <= 0) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("需要 runId"));
+        }
+        List<String> items = new ArrayList<>();
+        for (Map<String, Object> row : Mappers.get(DeviceStateMapper.class)
+                .selectRunPositionSnapshot(TENANT, rid)) {
+            items.add(Jsons.obj(
+                    "pointCode", row.get("pointCode"),
+                    "deviceResourceId", row.get("deviceResourceId"),
+                    "pointRole", row.get("pointRole"),
+                    "robotReachable", row.get("robotReachable"),
+                    "occupied", row.get("occupied"),
+                    "plateBarcode", row.get("plateBarcode"),
+                    "plateUid", row.get("plateUid"),
+                    "contentKind", row.get("contentKind"),
+                    "reservedByRun", row.get("reservedByRun")));
+        }
+        return ResponseEntity.ok(Jsons.obj("runId", rid, "total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items))));
     }
 

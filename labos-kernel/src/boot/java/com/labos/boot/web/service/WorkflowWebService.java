@@ -8,7 +8,6 @@ import com.labos.kernel.workflow.PreflightChecker;
 import com.labos.kernel.workflow.RecipeCompiler;
 import com.labos.kernel.driver.ShadowRunner;
 import com.labos.kernel.workflow.WorkflowBuilder;
-import com.labos.kernel.workflow.RealWorkflowRunner.WorkflowDef;
 import com.labos.kernel.workflow.WorkflowService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,20 +86,67 @@ public class WorkflowWebService {
 
     // ---------------------------------------------------------------- 列表 / 新建 / 详情
 
-    public String workflows(int limit, String category) throws SQLException {
-        // 节点数：前端「添加流程」下拉和流程库列表都要显示。
-        // 改动前这个字段没返回，界面上显示成"(AUTO-7659, undefined 节点)"。
-        Map<Long, Integer> counts = workflowTaskCounts();
+    /**
+     * 流程库列表。
+     *
+     * <p>治理维度（version/status/岛/时间戳）由 SQL 一次取出，这里只做 JSON 组装。
+     * 节点数用 SQL 里的 task_count，不再额外 group by 全表一遍。
+     *
+     * <p><b>total 是真总数</b>（COUNT 查询），不是 items.size()。改动前
+     * total 恒等于本页条数，前端据此算页数永远得 1 页，"流程超 300 条后
+     * 静默消失"就藏在这个数字后面。
+     *
+     * <p>{@code category} 从前在 Controller 接了、Service 也实现了，但这里
+     * 调的是单参数 {@code list(limit)}，参数被悄悄丢掉 —— 前端就算传了
+     * category 也没有任何效果。本次一并接上。
+     */
+    public String workflows(int limit, int offset, String category, String q,
+                           String islandId, boolean emptyGraph) throws SQLException {
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        int safeOffset = Math.max(0, offset);
+        List<Map<String, Object>> rows = workflows.listRows(safeLimit, safeOffset, category, q,
+                islandId, emptyGraph);
+        int total = workflows.countRows(category, q, islandId, emptyGraph);
         List<String> items = new ArrayList<>();
-        for (WorkflowDef w : workflows.list(limit)) {
+        for (Map<String, Object> row : rows) {
             items.add(Jsons.obj(
-                    "id", w.id(),
-                    "code", w.code(),
-                    "name", w.name(),
-                    "category", w.category(),
-                    "nodeCount", counts.getOrDefault(w.id(), 0)));
+                    "id", ((Number) row.get("id")).longValue(),
+                    "code", row.get("code"),
+                    "name", row.get("name"),
+                    "category", row.get("category"),
+                    "nodeCount", mint(row, "task_count"),
+                    "version", mint(row, "version"),
+                    "status", mint(row, "status"),
+                    "islandId", row.get("islandId"),
+                    "islandCode", mstr(row, "islandCode"),
+                    "islandName", mstr(row, "islandName"),
+                    "createdAt", mstr(row, "createdAt"),
+                    "updatedAt", mstr(row, "updatedAt"),
+                    "updatedBy", row.get("updatedBy")));
         }
-        return Jsons.obj("total", items.size(), "items", new Jsons.Raw(Jsons.arr(items)));
+        return Jsons.obj(
+                "total", total,
+                "limit", safeLimit,
+                "offset", safeOffset,
+                "islandId", islandId,
+                "emptyGraph", emptyGraph,
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 台账统计：页头统计条（总数 / 已发布 / 草稿 / 未指定岛 / 空流程）。
+     *
+     * <p>与列表分页无关：统计覆盖全库，不受当前页与搜索词影响 ——
+     * 统计条回答的是"这个台账整体什么状况"，不是"当前这页有什么"。
+     */
+    public String workflowStats() throws SQLException {
+        Map<String, Object> s = workflows.statsRows();
+        return Jsons.obj(
+                "total", mint(s, "total"),
+                "published", mint(s, "published"),
+                "draft", mint(s, "draft"),
+                "noIsland", mint(s, "noIsland"),
+                "emptyGraph", mint(s, "emptyGraph"));
     }
 
     public Result create(String name, String code, String category, Long islandId)
@@ -144,6 +190,7 @@ public class WorkflowWebService {
                     "key", t.key(),
                     "name", t.name(),
                     "capability", t.capability(),
+                    "capabilityName", t.capabilityName(),
                     "source", t.source(),
                     "method", t.method(),
                     "resourceId", boundByKey.get(t.key())));
@@ -152,9 +199,25 @@ public class WorkflowWebService {
         // 前端不再让用户用 localStorage 里随手选的岛挑设备（P-04）。
         // 没有岛（NULL，旧流程）时前端仍可手动选岛，保持兼容。
         Object islandId = null;
+        Object islandCode = null;
+        Object islandName = null;
+        int version = 1;
+        int status = 1;
+        Object createdAt = null;
+        Object updatedAt = null;
+        Object updatedBy = null;
         java.util.Map<String, Object> header = graphMapper.selectWorkflowHeader(TENANT, workflowId);
-        if (header != null && header.get("islandId") != null) {
-            islandId = ((Number) header.get("islandId")).longValue();
+        if (header != null) {
+            if (header.get("islandId") != null) {
+                islandId = ((Number) header.get("islandId")).longValue();
+            }
+            islandCode = header.get("islandCode");
+            islandName = header.get("islandName");
+            version = mint(header, "version");
+            status = mint(header, "status");
+            createdAt = header.get("createdAt");
+            updatedAt = header.get("updatedAt");
+            updatedBy = header.get("updatedBy");
         }
         return Jsons.obj(
                 "workflow", new Jsons.Raw(Jsons.obj(
@@ -162,7 +225,15 @@ public class WorkflowWebService {
                         "code", d.workflow().code(),
                         "name", d.workflow().name(),
                         "category", d.workflow().category(),
-                        "islandId", islandId)),
+                        "nodeCount", d.tasks().size(),
+                        "islandId", islandId,
+                        "islandCode", islandCode,
+                        "islandName", islandName,
+                        "version", version,
+                        "status", status,
+                        "createdAt", createdAt,
+                        "updatedAt", updatedAt,
+                        "updatedBy", updatedBy)),
                 "edgeCount", d.edgeCount(),
                 "tasks", new Jsons.Raw(Jsons.arr(tasks)));
     }
@@ -423,20 +494,6 @@ public class WorkflowWebService {
         return out;
     }
 
-    /** workflow_id → 任务节点数（只数 task，开始/结束/网关不算"一步活"）。 */
-    private Map<Long, Integer> workflowTaskCounts() {
-        Map<Long, Integer> m = new java.util.HashMap<>();
-        try {
-            for (Map<String, Object> row : mapper.selectWorkflowTaskCounts(TENANT)) {
-                m.put(((Number) row.get("workflowId")).longValue(),
-                        ((Number) row.get("n")).intValue());
-            }
-        } catch (RuntimeException e) {
-            // 数不出来就当 0，不能让列表整体 500
-            log.error("[WARN] 统计流程节点数失败: {}", e.getMessage());
-        }
-        return m;
-    }
     // ---------------------------------------------------------------- 节点绑定
 
     /** Spring 声明式事务（checked 异常也回滚）。 */

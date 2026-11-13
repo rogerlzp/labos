@@ -180,20 +180,132 @@
       这是"板子编号如何在设备之间流转"的唯一来源 ——
       执行过程里的放板/取板都会写一行（operator='AUTO'），
       人工盘点也会写（operator 是人名）。
+
+      【实验范围 v1】审计表只有 run_id（= workflow run.id），没有 experiment_id。
+      实验归属在查询时解析，不改执行链、不回填历史行：
+        ① experiment_run_step.run_id → experiment_run.experiment_id（实验编排执行的主路径）
+        ② experiment.run_id（单 run 实验的兜底路径）
+      解析不到的行 = 独立 workflow 执行 / 人工盘点，实验列显示「—」，
+      只有选了「全部实验」范围时才会出现。绝不用时间窗猜归属（并行实验会串台）。
     -->
+    <sql id="traceExperimentId">
+        COALESCE(
+          (SELECT er.experiment_id
+             FROM experiment_run_step s
+             JOIN experiment_run er ON er.id = s.experiment_run_id
+            WHERE s.run_id = a.run_id AND s.tenant_id = a.tenant_id
+            ORDER BY s.id DESC LIMIT 1),
+          (SELECT e2.id FROM experiment e2
+            WHERE e2.run_id = a.run_id AND e2.tenant_id = a.tenant_id
+            ORDER BY e2.id DESC LIMIT 1))
+    </sql>
+
     <select id="selectPlateTraces" resultType="java.util.Map">
         SELECT a.id AS "id", a.barcode AS "barcode",
                a.from_status AS "fromStatus", a.to_status AS "toStatus",
                a.actual_location AS "actualLocation",
                a.operator AS "operator", a.note AS "note",
-               a.run_id AS "runId", a.created_at AS "createdAt"
+               a.run_id AS "runId", a.created_at AS "createdAt",
+               ex.id AS "experimentId", ex.experiment_no AS "experimentNo",
+               ex.name AS "experimentName"
           FROM plate_location_audit a
+          LEFT JOIN LATERAL (
+                SELECT e.id, e.experiment_no, e.name
+                  FROM experiment e
+                 WHERE e.id = <include refid="traceExperimentId"/>
+                 LIMIT 1
+          ) ex ON TRUE
          WHERE a.tenant_id = #{tenantId}
         <if test="barcode != null and barcode != ''">
            AND a.barcode = #{barcode}
         </if>
+        <if test="experimentId != null">
+           AND ex.id = #{experimentId}
+        </if>
+        <if test="runId != null">
+           AND a.run_id = #{runId}
+        </if>
          ORDER BY a.created_at DESC, a.id DESC
          LIMIT #{limit}
+    </select>
+
+    <!-- 实验（执行单）范围内的板子流转时间线：三类事件合并按时间排序。
+         搬运事件带「源设备 → 目标设备」，这是 selectPlateTraces 看不到的部分。 -->
+    <select id="selectRunPlateFlow" resultType="java.util.Map">
+        SELECT 'transfer' AS "kind",
+               tt.id::text AS "refId",
+               tt.plate_barcode AS "plateBarcode",
+               s.code AS "fromCode",
+               t.code AS "toCode",
+               tt.status::text AS "status",
+               tt.error_code AS "errorCode",
+               NULL::text AS "detail",
+               tt.created_at AS "at"
+          FROM transfer_transaction tt
+          LEFT JOIN resource_node s ON s.id = tt.source_resource_id
+          LEFT JOIN resource_node t ON t.id = tt.target_resource_id
+         WHERE tt.tenant_id = #{tenantId} AND tt.run_id = #{runId}
+        <if test="barcode != null and barcode != ''">
+           AND tt.plate_barcode = #{barcode}
+        </if>
+        UNION ALL
+        SELECT 'audit',
+               a.id::text,
+               a.barcode,
+               NULL,
+               a.actual_location,
+               a.from_status || ' -> ' || a.to_status,
+               NULL,
+               a.note,
+               a.created_at
+          FROM plate_location_audit a
+         WHERE a.tenant_id = #{tenantId} AND a.run_id = #{runId}
+        <if test="barcode != null and barcode != ''">
+           AND a.barcode = #{barcode}
+        </if>
+        UNION ALL
+        SELECT 'evidence',
+               e.id::text,
+               e.plate_barcode,
+               NULL,
+               r.code,
+               e.evidence_type,
+               NULL,
+               e.note,
+               e.created_at
+          FROM position_evidence e
+          LEFT JOIN resource_node r ON r.id = e.resource_id
+         WHERE e.tenant_id = #{tenantId} AND e.run_id = #{runId}
+        <if test="barcode != null and barcode != ''">
+           AND e.plate_barcode = #{barcode}
+        </if>
+         ORDER BY "at", "kind"
+    </select>
+
+    <!-- 范围下拉：只列「确实有流转记录」的实验和执行单，避免选了空列表。 -->
+    <select id="selectPlateTraceExperiments" resultType="java.util.Map">
+        SELECT e.id AS "id", e.experiment_no AS "experimentNo", e.name AS "name",
+               count(*) AS "traceCount"
+          FROM plate_location_audit a
+          JOIN LATERAL (
+                SELECT <include refid="traceExperimentId"/> AS eid
+          ) x ON TRUE
+          JOIN experiment e ON e.id = x.eid
+         WHERE a.tenant_id = #{tenantId}
+         GROUP BY e.id, e.experiment_no, e.name
+         ORDER BY max(a.created_at) DESC
+         LIMIT 100
+    </select>
+
+    <select id="selectPlateTraceRuns" resultType="java.util.Map">
+        SELECT a.run_id AS "id", r.run_no AS "runNo",
+               count(*) AS "traceCount"
+          FROM plate_location_audit a
+          LEFT JOIN run r ON r.id = a.run_id
+         WHERE a.tenant_id = #{tenantId} AND a.run_id IS NOT NULL
+         GROUP BY a.run_id, r.run_no
+         ORDER BY max(a.created_at) DESC
+         LIMIT 100
     </select>
 
     <insert id="insertPlateAudit">

@@ -24,6 +24,8 @@ import sys
 import time
 import urllib.request
 from playwright.sync_api import sync_playwright
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_artifact_cleanup import drop_workflow, drop_experiment  # noqa: E402
 
 API = os.environ.get("LABOS_API", "http://127.0.0.1:18080")
 WEB = os.environ.get("LABOS_WEB", "http://localhost:5173")
@@ -215,6 +217,9 @@ def main():
         else:
             bad("改值后流程没往下走", st2)
         b.close()
+
+    # 清理：把测试流程与它的 run 从台账里撤掉
+    drop_workflow(wf)
 
     print("\n通过 %d / 失败 %d" % (PASS, FAIL))
     return 0 if FAIL == 0 else 1

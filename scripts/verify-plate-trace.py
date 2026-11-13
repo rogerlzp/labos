@@ -128,18 +128,21 @@ def main():
     token = api("/api/auth/login", "POST",
                 {"username": "admin", "password": "admin123"})["token"]
 
-    # ---- ① 基线设备有层位 ----
+    # ---- ① 基线培养箱有网格层位 + 网格外的单独位置 ----
+    # v3（2026-11-13）：机械臂刻意 0 点位，旧断言「机器人 2 个中转位」已过时；
+    # 培养箱应有 2 列 × 15 层内部格 + 1 个进出口装载口（单独位置）。
     n_inc = q("SELECT count(*) FROM resource_node p JOIN resource_node d "
               "ON d.id = p.parent_id WHERE d.code='ID-X229' AND d.kind='device' "
               "AND p.kind IN ('incubator','storage','transfer_point')")
-    n_rob = q("SELECT count(*) FROM resource_node p JOIN resource_node d "
-              "ON d.id = p.parent_id WHERE d.code='ID-X231' AND d.kind='device' "
-              "AND p.kind IN ('incubator','storage','transfer_point')")
-    if int(n_inc) >= 1 and int(n_rob) >= 1:
-        ok("基线设备有层位（孵育箱 %s 个 / 机器人 %s 个中转位）" % (n_inc, n_rob))
+    n_port = q("SELECT count(*) FROM device_point dp "
+               "JOIN resource_node p ON p.id = dp.point_resource_id "
+               "WHERE p.code='ID-X229-IN' AND dp.is_standalone")
+    if int(n_inc) >= 1 and int(n_port) >= 1:
+        ok("基线培养箱有 %s 个点位，其中进出口单独位置 %s 个（机械臂按 v3 无点位）"
+           % (n_inc, n_port))
     else:
-        bad("基线设备没有层位（板位机制用不起来）",
-            "孵育箱 %s / 机器人 %s —— 先跑 psql -f scripts/baseline-build.sql" % (n_inc, n_rob))
+        bad("基线培养箱点位不完整",
+            "点位 %s / 单独位置 %s —— 用 gen-grid-points.py --load-port 生成" % (n_inc, n_port))
         return 1
 
     inc = int(q("SELECT id FROM resource_node WHERE code='ID-X229' AND kind='device'"))
@@ -210,6 +213,37 @@ def main():
         ok("按板号能查出这个板的完整轨迹")
     else:
         bad("按板号查轨迹不对", json.dumps(items, ensure_ascii=False)[:200])
+
+    # ---- ⑤ 实验范围：scopes 清单 + 实验/执行单过滤 + 每行带实验归属 ----
+    all_traces = api("/api/plates/traces?limit=500", "GET", token=token)
+    scopes = all_traces.get("scopes") or {}
+    exps = scopes.get("experiments") or []
+    runs = scopes.get("runs") or []
+    if isinstance(exps, list) and isinstance(runs, list):
+        ok("接口返回范围清单：%d 个实验 / %d 张执行单" % (len(exps), len(runs)))
+    else:
+        bad("接口缺 scopes 范围清单")
+    # 用范围清单里的第一张执行单验证，不依赖上面放/取板流程是否跑通
+    if runs:
+        rid = runs[0]["id"]
+        scoped = api("/api/plates/traces?runId=%s" % rid, "GET", token=token)
+        scoped_items = scoped.get("items", [])
+        if scoped_items and all(x.get("runId") == rid for x in scoped_items):
+            ok("按执行单范围过滤生效：run #%s 有 %d 条" % (rid, len(scoped_items)))
+        else:
+            bad("按执行单范围过滤不对", json.dumps(scoped_items[:2], ensure_ascii=False)[:200])
+    else:
+        bad("执行单范围清单为空")
+    if exps:
+        eid = exps[0]["id"]
+        scoped = api("/api/plates/traces?experimentId=%s" % eid, "GET", token=token)
+        scoped_items = scoped.get("items", [])
+        if scoped_items and all(x.get("experimentId") == eid for x in scoped_items):
+            ok("按实验范围过滤生效：实验 #%s 有 %d 条" % (eid, len(scoped_items)))
+        else:
+            bad("按实验范围过滤不对", json.dumps(scoped_items[:2], ensure_ascii=False)[:200])
+    else:
+        ok("库里暂无关联实验的流转（本脚本跑的是独立执行单），实验范围清单为空属正常")
 
     print("\n通过 %d / 失败 %d" % (PASS, FAIL))
     return 0 if FAIL == 0 else 1

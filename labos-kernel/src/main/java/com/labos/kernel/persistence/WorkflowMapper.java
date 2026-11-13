@@ -28,15 +28,36 @@ public interface WorkflowMapper {
     int countByCode(long tenantId, String code);
 
     /**
-     * 流程列表：最近改动在前（NULLS LAST），带 task 数统计。
+     * 流程列表：最近改动在前（NULLS LAST），带 task 数统计与治理维度
+     * （version/status/岛/时间戳）。
      *
-     * <p>{@code category} 为 null/空时不过滤——不写成 "?::text IS NULL"：
+     * <p>{@code category}、{@code q} 为 null/空时不过滤——不写成 "?::text IS NULL"：
      * JDBC 推断不出 NULL 的类型，条件永远为假。
+     *
+     * <p>{@code offset} 与 {@code limit} 一起做服务端分页；前端不再"拉 300 条本地切页"。
      */
     java.util.List<java.util.Map<String, Object>> selectWorkflowList(
             @Param("tenantId") long tenantId,
             @Param("category") String category,
-            @Param("limit") int limit);
+            @Param("q") String q,
+            @Param("islandId") String islandId,
+            @Param("emptyGraph") boolean emptyGraph,
+            @Param("limit") int limit,
+            @Param("offset") int offset);
+
+    /** 列表总数：过滤条件必须与 {@link #selectWorkflowList} 保持一致。 */
+    int countWorkflowList(@Param("tenantId") long tenantId,
+                          @Param("category") String category,
+                          @Param("q") String q,
+                          @Param("islandId") String islandId,
+                          @Param("emptyGraph") boolean emptyGraph);
+
+    /**
+     * 台账统计（总数/已发布/草稿/未指定岛/空流程）。
+     *
+     * <p>页头的统计条用：统计必须覆盖**全库**，按当前页条数算会骗人。
+     */
+    java.util.Map<String, Object> countWorkflowStats(@Param("tenantId") long tenantId);
 
     // ---- workflow_node 读侧（WorkflowService 执行前的图装配）----
 

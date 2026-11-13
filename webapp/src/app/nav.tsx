@@ -80,6 +80,9 @@ export const NAV: NavGroup[] = [
       { key: '/models', labelKey: 'nav.models', icon: <DatabaseOutlined /> },
       { key: '/island', labelKey: 'nav.island' },
       { key: '/island-flow', labelKey: 'nav.islandFlow' },
+      // 位置/耗材两个视角看整个岛，并可关联设备修改
+      { key: '/positions', labelKey: 'nav.positions' },
+      { key: '/consumables', labelKey: 'nav.consumables' },
       { key: '/policies', labelKey: 'nav.policies' },
       { key: '/variables', labelKey: 'nav.variables' },
       { key: '/error-codes', labelKey: 'nav.errorCodes' },

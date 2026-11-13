@@ -943,6 +943,104 @@ public final class DeviceCore {
                             + ",\"finished\":true}");
         }
 
+        // P3：扫码类方法返回稳定的真 barcode，供中控把 TMP- 临时身份关联到真实板。
+        // 请求里带 barcode 时优先回显（便于验收注入指定值），否则按设备+序号生成。
+        if ("ReadBarcode".equals(alias) || "BarcodeScan".equals(alias)
+                || "BarcodeScanEx".equals(alias) || "Scan".equals(alias)) {
+            String bc = find(java.util.regex.Pattern.compile(
+                    "\"barcode\"\\s*:\\s*\"([^\"]+)\""), msg);
+            if (bc.isEmpty()) {
+                bc = "SCAN-" + equip + "-" + seq;
+            }
+            bc = bc.replace("\"", "").replace("\\", "");
+            return frame(id, method, equip, 2, "null",
+                    "{\"barcode\":\"" + bc + "\",\"plate\":\"" + bc + "\"}");
+        }
+
+        // 设备内部搬运（培养箱/堆栈）：入口兼出口。
+        // 进站 = 入口 → 设备自己决定的内部格；出站 = 内部格 → 出口。
+        // 中控把候选格与板的板型/高度放在请求参数里，设备做最终校验并通知结果。
+        // 回包字段尽量齐全：plate/from/to、grid_row/grid_col、板型/高度约束、拒绝原因。
+        if ("MoveInLabware".equals(alias) || "LoadPlate".equals(alias)
+                || "MoveOutLabware".equals(alias) || "UnloadPlate".equals(alias)) {
+            boolean inbound = alias.startsWith("MoveIn") || alias.startsWith("LoadPlate");
+            String plate = find(java.util.regex.Pattern.compile(
+                    "\"plate\"\\s*:\\s*\"([^\"]+)\""), msg);
+            if (plate.isEmpty()) {
+                plate = find(java.util.regex.Pattern.compile(
+                        "\"barcode\"\\s*:\\s*\"([^\"]+)\""), msg);
+            }
+            String from = find(java.util.regex.Pattern.compile(
+                    "\"from_position\"\\s*:\\s*\"([^\"]+)\""), msg);
+            String to = find(java.util.regex.Pattern.compile(
+                    "\"to_position\"\\s*:\\s*\"([^\"]+)\""), msg);
+            if (to.isEmpty()) {
+                to = find(java.util.regex.Pattern.compile(
+                        "\"slot_code\"\\s*:\\s*\"([^\"]+)\""), msg);
+            }
+            // 数字参数可能被下发成字符串（"10"），正则两种形态都认。
+            String gr = find(java.util.regex.Pattern.compile(
+                    "\"grid_row\"\\s*:\\s*\"?([0-9.]+)\"?"), msg);
+            String gc = find(java.util.regex.Pattern.compile(
+                    "\"grid_col\"\\s*:\\s*\"?([0-9.]+)\"?"), msg);
+            String ph = find(java.util.regex.Pattern.compile(
+                    "\"plate_height\"\\s*:\\s*\"?([0-9.]+)\"?"), msg);
+            String mh = find(java.util.regex.Pattern.compile(
+                    "\"max_height_mm\"\\s*:\\s*\"?([0-9.]+)\"?"), msg);
+            String pt = find(java.util.regex.Pattern.compile(
+                    "\"plate_type\"\\s*:\\s*\"([^\"]+)\""), msg);
+            String allowed = find(java.util.regex.Pattern.compile(
+                    "\"allowed_plate_types\"\\s*:\\s*\"([^\"]+)\""), msg);
+            if (from.isEmpty()) {
+                from = equip + "-IN";
+            }
+            if (to.isEmpty()) {
+                to = equip + "-G1-1";
+            }
+            if (gr.isEmpty()) { gr = "1"; }
+            if (gc.isEmpty()) { gc = "1"; }
+
+            String errCode = null;
+            String errMsg = null;
+            try {
+                if (!ph.isEmpty() && !mh.isEmpty()
+                        && Double.parseDouble(ph) > Double.parseDouble(mh)) {
+                    errCode = "PLATE_TOO_HIGH";
+                    errMsg = "板高 " + ph + "mm 超过内部格最大 " + mh + "mm";
+                } else if (!pt.isEmpty() && !allowed.isEmpty()
+                        && !("|" + allowed.replace(",", "|") + "|")
+                        .contains("|" + pt + "|")) {
+                    // 允许集合用 | 分隔（逗号会被中控极简 JSON 解析器当分隔符截断）。
+                    errCode = "PLATE_TYPE_NOT_ALLOWED";
+                    errMsg = "板型 " + pt + " 不在允许集合 [" + allowed + "]";
+                }
+            } catch (NumberFormatException ignore) {
+                // 参数不合法时按通过处理，由中控侧 checkPlateFits 二次校验
+            }
+            java.util.function.UnaryOperator<String> clean =
+                    s -> s.replace("\"", "").replace("\\", "");
+            StringBuilder data = new StringBuilder();
+            data.append("{\"direction\":\"").append(inbound ? "inbound" : "outbound")
+                    .append("\",\"plate\":\"").append(clean.apply(plate))
+                    .append("\",\"barcode\":\"").append(clean.apply(plate))
+                    .append("\",\"from_position\":\"").append(clean.apply(from))
+                    .append("\",\"to_position\":")
+                    .append(errCode == null ? "\"" + clean.apply(to) + "\"" : "null")
+                    .append(",\"grid_row\":").append(gr)
+                    .append(",\"grid_col\":").append(gc)
+                    .append(",\"plate_type\":\"").append(clean.apply(pt))
+                    .append("\",\"plate_height\":").append(ph.isEmpty() ? "null" : ph)
+                    .append(",\"max_height_mm\":").append(mh.isEmpty() ? "null" : mh)
+                    .append(",\"allowed_plate_types\":\"").append(clean.apply(allowed))
+                    .append("\",\"error_code\":")
+                    .append(errCode == null ? "null" : "\"" + errCode + "\"")
+                    .append(",\"error_message\":")
+                    .append(errMsg == null ? "null" : "\"" + clean.apply(errMsg) + "\"")
+                    .append(",\"finished\":").append(errCode == null)
+                    .append("}");
+            return frame(id, method, equip, 2, "null", data.toString());
+        }
+
         String done = frame(id, method, equip, 2, "null",
                 "{\"position\":\"A1\",\"plate\":\"SIM-PLATE-" + seq + "\"}");
 

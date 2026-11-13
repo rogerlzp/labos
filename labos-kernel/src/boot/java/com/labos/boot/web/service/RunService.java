@@ -420,15 +420,24 @@ public class RunService {
      * 板子的每一次移动都没有痕迹，现场问"PL-001 现在在哪、怎么过来的"答不上来。
      * 现在放板/取板都会留一行（见 {@code PositionLock.auditPlateMove}）。
      *
-     * @param barcode 板号；空 = 最近的流转（不限板）
+     * <p><b>实验范围</b>：审计表只存 run_id，实验归属由
+     * {@code PauseMapper.xml#traceExperimentId} 在查询时解析（不改执行链）。
+     * 同时返回 {@code scopes}（有流转记录的实验/执行单清单）给页面做下拉，
+     * 避免用户从 90+ 个没数据的实验里盲选。
+     *
+     * @param barcode      板号；空 = 不限板
+     * @param experimentId 实验范围；null = 不限实验
+     * @param runId        执行单范围；null = 不限
      */
-    public String plateTracesJson(String barcode, int limit) throws java.sql.SQLException {
-        java.util.List<java.util.Map<String, Object>> rows =
+    public String plateTracesJson(String barcode, int limit, Long experimentId, Long runId)
+            throws java.sql.SQLException {
+        com.labos.kernel.persistence.PauseMapper pm =
                 com.labos.kernel.persistence.Mappers.get(
-                                com.labos.kernel.persistence.PauseMapper.class)
-                        .selectPlateTraces(TENANT,
-                                barcode == null || barcode.isBlank() ? null : barcode.trim(),
-                                limit <= 0 ? 200 : Math.min(limit, 1000));
+                        com.labos.kernel.persistence.PauseMapper.class);
+        java.util.List<java.util.Map<String, Object>> rows = pm.selectPlateTraces(TENANT,
+                barcode == null || barcode.isBlank() ? null : barcode.trim(),
+                experimentId, runId,
+                limit <= 0 ? 200 : Math.min(limit, 1000));
         List<String> items = new ArrayList<>();
         for (java.util.Map<String, Object> r : rows) {
             items.add(Jsons.obj(
@@ -440,10 +449,64 @@ public class RunService {
                     "operator", r.get("operator"),
                     "note", r.get("note"),
                     "runId", r.get("runId"),
+                    "experimentId", r.get("experimentId"),
+                    "experimentNo", r.get("experimentNo"),
+                    "experimentName", r.get("experimentName"),
                     "createdAt", mstr(r, "createdAt")));
+        }
+        List<String> experiments = new ArrayList<>();
+        for (java.util.Map<String, Object> r : pm.selectPlateTraceExperiments(TENANT)) {
+            experiments.add(Jsons.obj("id", r.get("id"),
+                    "experimentNo", r.get("experimentNo"),
+                    "name", r.get("name"),
+                    "traceCount", r.get("traceCount")));
+        }
+        List<String> runs = new ArrayList<>();
+        for (java.util.Map<String, Object> r : pm.selectPlateTraceRuns(TENANT)) {
+            runs.add(Jsons.obj("id", r.get("id"),
+                    "runNo", r.get("runNo"),
+                    "traceCount", r.get("traceCount")));
         }
         return Jsons.obj("total", items.size(),
                 "barcode", barcode == null || barcode.isBlank() ? null : barcode.trim(),
+                "experimentId", experimentId,
+                "runId", runId,
+                "scopes", new Jsons.Raw(Jsons.obj(
+                        "experiments", new Jsons.Raw(Jsons.arr(experiments)),
+                        "runs", new Jsons.Raw(Jsons.arr(runs)))),
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 一个执行单内板子的**完整流转时间线**（搬运源→目标 + 位置状态变更 + 位置证据）。
+     *
+     * <p>与 {@link #plateTracesJson} 互补：后者面向「跨实验/跨执行单的板号检索」，
+     * 本方法是「在一个实验里面看板子怎么走」——搬运事件带源/目标设备码。
+     *
+     * @param barcode 板号；空 = 该 run 的全部板
+     */
+    public String plateFlowJson(long runId, String barcode) throws java.sql.SQLException {
+        com.labos.kernel.persistence.PauseMapper pm =
+                com.labos.kernel.persistence.Mappers.get(
+                        com.labos.kernel.persistence.PauseMapper.class);
+        String code = barcode == null || barcode.isBlank() ? null : barcode.trim();
+        java.util.List<java.util.Map<String, Object>> rows =
+                pm.selectRunPlateFlow(TENANT, runId, code);
+        List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> r : rows) {
+            items.add(Jsons.obj(
+                    "kind", r.get("kind"),
+                    "refId", r.get("refId"),
+                    "plateBarcode", r.get("plateBarcode"),
+                    "fromCode", r.get("fromCode"),
+                    "toCode", r.get("toCode"),
+                    "status", r.get("status"),
+                    "errorCode", r.get("errorCode"),
+                    "detail", r.get("detail"),
+                    "at", mstr(r, "at")));
+        }
+        return Jsons.obj("runId", runId, "barcode", code,
+                "total", items.size(),
                 "items", new Jsons.Raw(Jsons.arr(items)));
     }
 

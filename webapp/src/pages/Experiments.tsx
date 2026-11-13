@@ -609,6 +609,10 @@ export default function ExperimentsPage() {
               <Button type="primary" ghost onClick={() => nav(`/experiments/${expId}/canvas`)}>
                 {t('experiments.action.canvas')}
               </Button>
+              {/* 实验范围内看板子怎么流转：直接带 experimentId 打开流转页 */}
+              <Button onClick={() => nav(`/plate-traces?experimentId=${expId}`)}>
+                {t('experiments.action.plateTraces')}
+              </Button>
               {runResult && (
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                   {runResult}

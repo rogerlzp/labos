@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS transfer_transaction (
 );
 
 COMMENT ON TABLE transfer_transaction IS
-    'P-08 TransferTransaction：设备回包=运动报告；CONFIRMED 需独立位置证据';
+    'P-08 TransferTransaction：设备回包=运动报告；CONFIRMED 需人工/扫码/传感器，或满足九项条件的 DEVICE_REPORT 自动确认（M 方案 2026-11-13）';
 
 CREATE INDEX IF NOT EXISTS ix_transfer_txn_pending
     ON transfer_transaction (tenant_id, id) WHERE status IN ('REPORTED', 'UNKNOWN');

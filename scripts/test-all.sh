@@ -117,6 +117,8 @@ PURE=(
   "workflow.ExperimentStateProjectorSelfTest"
   "expr.ExpressionSelfTest"
   "driver.WaitForGraphSelfTest"
+  # 板号单一真源：别名/优先级/拒绝数值 plate.id 与 ${}/AUTO- 占位（搬运事务与位置链路共用）
+  "driver.PlateBarcodeSelfTest"
   "alert.AlertSelfTest"
   "engine.EngineSelfTest"
   # S2 §3.2.1：错误码/驱动状态 → 执行确认四态（纯逻辑分类器，U10 载体①的消费端）

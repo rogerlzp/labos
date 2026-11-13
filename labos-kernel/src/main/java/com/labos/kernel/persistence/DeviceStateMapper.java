@@ -163,6 +163,39 @@ public interface DeviceStateMapper {
     /** 设备下第一个"本 run 放的板"的层位（归属过滤，fail-closed）。 */
     Long selectFirstOccupiedPosition(long tenantId, long deviceResourceId, long runId);
 
+    /**
+     * 设备下第一个有板的层位（**不限归属**）。
+     *
+     * <p>自动位置确认要区分「源位确实没板（首次搬运，可引导）」与
+     * 「源位有别人的板（禁止自动确认）」；带 runId 的归属过滤查询两者都返回 null，
+     * 无法区分，误判成引导会凭空在目标位复制一块板。
+     */
+    Long selectFirstOccupiedPositionAny(long tenantId, long deviceResourceId);
+
+    /** P3 扫码接入：该设备下当前放着的板号（可能是 TMP- 临时身份）。 */
+    String selectPlateIdOnDevice(long tenantId, long deviceResourceId);
+
+    // ---- 设备内部搬运通知（装载口 ↔ 内部格） ----
+
+    /** 清空一个点位的全部占用/预留/内容（不带 run 归属条件，设备内部机构搬运用）。 */
+    int clearPositionForInternalMove(long tenantId, long resourceId);
+
+    /** 写内部格：板 + 统一内容模型 + 归属，同时清掉预留。 */
+    int setPositionForInternalMove(long tenantId, long resourceId, String plate,
+                                   long contentId, long runId);
+
+    /** 放板后补写统一内容模型（只动 content_*，不动 plate_id）。 */
+    int markPositionPlateContent(long tenantId, long resourceId, long plateId);
+
+    /** P2-4：设备下有几块板（>1 时扫码无法凭空关联到具体层位）。 */
+    long selectPlateCountOnDevice(long tenantId, long deviceResourceId);
+
+    /** 放板前校验：点位的板型/高度约束。 */
+    java.util.Map<String, Object> selectPointConstraints(long tenantId, long resourceId);
+
+    /** 放板前校验：板的板型与高度。 */
+    java.util.Map<String, Object> selectPlateType(long tenantId, String barcode);
+
     /** 占位统计（withPlate/reserved/tracked）。 */
     java.util.Map<String, Object> selectPositionStats(long tenantId);
 
@@ -229,4 +262,33 @@ public interface DeviceStateMapper {
 
     /** DeviceAccessManager：设备的门配置（device_access 最早一行；无返回 null）。 */
     java.util.Map<String, Object> selectDeviceAccess(long tenantId, long resourceId);
+
+    // ---- P2：实验开始前的点位与物料清单快照（append-only，幂等） ----
+
+    /** 一次性把全部点位快照写入 run_position_snapshot；返回写入行数。 */
+    int insertRunPositionSnapshot(long tenantId, long runId);
+
+    /** 读取某 run 的启动前点位清单。 */
+    java.util.List<java.util.Map<String, Object>> selectRunPositionSnapshot(
+            long tenantId, long runId);
+
+    // ---- P3：板身份别名层（位置参数，与 XML 的 paramN 对应） ----
+
+    /** 真 barcode 或临时号统一解析到 plate_uid（plate.id）。 */
+    Long selectPlateUidByBarcode(long tenantId, String barcode);
+
+    /** 只看别名表（判重 / 冲突检测）。 */
+    Long selectPlateUidByAlias(long tenantId, String alias);
+
+    /** 给「plate 表里已有同码行」的临时号补一条 alias。 */
+    int insertPlateAlias(long tenantId, String alias, String aliasKind,
+                         boolean isCanonical, Long seenRunId, String note);
+
+    /** 给指定 plate_uid 补一条 alias（扫码确认真 barcode 用）。 */
+    int insertPlateAliasForUid(long tenantId, long plateUid, String alias,
+                               String aliasKind, boolean isCanonical,
+                               Long seenRunId, String note);
+
+    /** 扫码确认后把板身份升级为 CONFIRMED（不改 barcode、不改历史证据字符串）。 */
+    int markPlateIdentityConfirmed(long tenantId, long plateUid);
 }

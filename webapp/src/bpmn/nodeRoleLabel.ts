@@ -72,11 +72,37 @@ const BUILTIN_CODE_TO_KEY: Record<string, MessageKey> = {
   ARM_TRANSFER: 'designer.node.armTransfer',
 };
 
+/**
+ * 起止事件的中性 code → i18n 键。
+ *
+ * <p>和网关角色、内置节点同一套机制：库里存 {@code START} / {@code END}，
+ * 界面渲染时再本地化。老数据里存的是中文「开始」「结束」，不在本表里 ⇒
+ * 显示层不动它们（和网关角色老中文名一样，只在显示层处理，库里的数据一个字不改）。
+ */
+const EVENT_CODE_TO_KEY: Record<string, MessageKey> = {
+  START: 'designer.node.start',
+  END: 'designer.node.end',
+};
+
 /** 本表收录的全部网关角色中性 code。 */
 export const NEUTRAL_CODES = Object.keys(CODE_TO_KEY);
 
 /** 本表收录的全部内置节点中性 code。 */
 export const BUILTIN_CODES = Object.keys(BUILTIN_CODE_TO_KEY);
+
+/** 本表收录的全部起止事件中性 code。 */
+export const EVENT_CODES = Object.keys(EVENT_CODE_TO_KEY);
+
+/**
+ * 名字 → 起止事件中性 code。
+ *
+ * @param name 持久化下来的名字
+ * @returns 中性 code；不是起止事件名时返回 null
+ */
+export function eventCodeOf(name?: string | null): string | null {
+  if (!name) return null;
+  return Object.prototype.hasOwnProperty.call(EVENT_CODE_TO_KEY, name) ? name : null;
+}
 
 /**
  * 按网关类型与入/出边数推角色 code。
@@ -190,7 +216,7 @@ export function builtinCodeOf(name?: string | null): string | null {
  * 否则返回 null，调用方按原样显示。
  */
 export function autoNameCode(name?: string | null): string | null {
-  return roleCodeOf(name) ?? builtinCodeOf(name);
+  return roleCodeOf(name) ?? builtinCodeOf(name) ?? eventCodeOf(name);
 }
 
 /**
@@ -216,7 +242,7 @@ export function isLocalizableAutoName(name?: string | null): boolean {
 export function localizedNeutralLabel(name?: string | null): string | null {
   const code = autoNameCode(name);
   if (!code) return null;
-  const key = CODE_TO_KEY[code] ?? BUILTIN_CODE_TO_KEY[code];
+  const key = CODE_TO_KEY[code] ?? BUILTIN_CODE_TO_KEY[code] ?? EVENT_CODE_TO_KEY[code];
   return key ? translate(key) : null;
 }
 

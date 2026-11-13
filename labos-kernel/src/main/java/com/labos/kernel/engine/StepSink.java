@@ -19,6 +19,21 @@ public interface StepSink {
                             String errorCode, String rawResponse, long durationMs, int attempt) {
     }
 
+    /**
+     * 某步在**下发前**就失败（例如装载口等待超时 EC-RESOURCE-BUSY）。
+     *
+     * <p>与 {@link #onStepDone} 的关键区别：命令根本没到设备，**不能**写
+     * run_command / command_ledger。否则续跑守卫
+     * （{@code RunMapper.countResumeGuardHits}）会把它当成「设备已动」而禁止
+     * 删除重建 ⇒ 人工修复后点继续永远失败（run 1001411 实测）。
+     *
+     * <p>默认退化为 onStepDone，保持既有实现零改动。
+     */
+    default void onStepAborted(long nodeId, int seq, String method,
+                               long resourceId, int attempt, String errorCode) {
+        onStepDone(nodeId, seq, method, false, errorCode, null, 0L, attempt);
+    }
+
     /** 什么都不做。 */
     StepSink NOOP = new StepSink() {
     };

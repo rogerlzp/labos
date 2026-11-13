@@ -3,6 +3,7 @@ import { Alert, Button, Card, Form, Input, Select, Typography } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { api, tokenStore } from '../api/client';
 import { useI18n, useT } from '../i18n';
+import markUrl from '../assets/labos-mark.svg';
 
 export default function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   const [loading, setLoading] = useState(false);
@@ -44,10 +45,25 @@ export default function LoginPage({ onSuccess }: { onSuccess: () => void }) {
             ]}
           />
         </div>
-        <Typography.Title level={4} style={{ marginBottom: 4 }}>{t('app.title')}</Typography.Title>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('login.subtitle')}
-        </Typography.Text>
+        {/* 登录页是"没账号的人"看到的第一屏：徽标 + 系统名 + 副标题一起给，
+            别让人以为是别家系统的登录框。 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <img
+            src={markUrl}
+            alt="LabOS"
+            width={40}
+            height={40}
+            style={{ borderRadius: 10, display: 'block' }}
+          />
+          <div>
+            <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 2 }}>
+              {t('app.title')}
+            </Typography.Title>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('login.subtitle')}
+            </Typography.Text>
+          </div>
+        </div>
 
         {error && <Alert type="error" showIcon message={error} style={{ marginTop: 16 }} />}
 

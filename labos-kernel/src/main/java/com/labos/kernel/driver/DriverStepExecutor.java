@@ -213,6 +213,19 @@ public final class DriverStepExecutor implements StepExecutor {
             DriverResult result;
             try {
                 result = executeWithPlan(driver, ctx, deviceId, method, stepSeq, exec);
+            } catch (StepFailure f) {
+                // 预留/规划阶段失败（如装载口等待超时 EC-RESOURCE-BUSY）也必须收尾，
+                // 否则设备锁会泄漏 —— DB 的 current_run_id 仍挂着、JVM 内
+                // ReentrantLock 仍被旧执行线程持有；续跑时新线程只能等满 60s，
+                // 报「设备被占用超过 60 秒：231（设备状态：idle/在线）」。
+                // 不写 run_command：命令压根没下发，写了会让续跑守卫误判「设备已动」。
+                try {
+                    sink.onStepAborted(ctx.nodeId(), stepSeq, method, deviceId,
+                            ctx.attempt(), f.errorCode());
+                } catch (RuntimeException ignore) {
+                    // 收尾失败不能掩盖原始 StepFailure
+                }
+                throw f;
             } catch (RuntimeException e) {
                 long ms = System.currentTimeMillis() - t0;
                 sink.onStepDone(ctx.nodeId(), stepSeq, method, false,
@@ -346,19 +359,53 @@ public final class DriverStepExecutor implements StepExecutor {
             return executeCommand(d.get(), ctx,
                     buildCommand(ctx, instId, m, stepSeq, exec), workflowIdOfRun(), stepSeq);
         };
+        // P0 安全：机械臂动作**之前**先原子预留目标可达装载口。
+        // 此前 acquireAll 的位置参数全为 null，选位发生在 driver.execute 之后，
+        // 两个并发 run 会选到同一格、物理相撞。预留 + putPlate 写占用构成无窗口保护。
+        com.labos.kernel.driver.PositionLock posLock =
+                new com.labos.kernel.driver.PositionLock(db, tenantId);
+        // 默认等待 60s；验收「超时拒绝转人工」时可用环境变量缩短，不必改代码。
+        long reserveTimeout = 60_000L;
+        String envTimeout = System.getenv("LABOS_TRANSFER_RESERVE_TIMEOUT_MS");
+        if (envTimeout != null && !envTimeout.isBlank()) {
+            try {
+                reserveTimeout = Long.parseLong(envTimeout.trim());
+            } catch (NumberFormatException ignore) {
+                log.warn("[搬运] 非法 LABOS_TRANSFER_RESERVE_TIMEOUT_MS={}，沿用 60s", envTimeout);
+            }
+        }
+        Long targetPos;
+        try {
+            targetPos = posLock.reserveTargetPosition(dstRes, runId, reserveTimeout);
+        } catch (java.sql.SQLException e) {
+            throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
+                    "目标位置预留失败：" + e.getMessage(), 0, method);
+        }
+        if (targetPos == null) {
+            // 等待超时：拒绝搬运并转人工；人工修复后点击继续，会重新走本方法再次预留。
+            throw new StepFailure("EC-RESOURCE-BUSY", scopeOf("EC-RESOURCE-BUSY"),
+                    "目标设备没有可用装载口（等待 " + reserveTimeout
+                            + "ms 超时），已拒绝搬运，请人工修复后继续",
+                    0, method);
+        }
         try {
             plan.acquireAll(srcRes, null, dstRes, null, null, null, factory);
         } catch (TransferPlan.AcquireException e) {
+            safeReleaseTarget(posLock, targetPos);
             throw new StepFailure("EC-RESOURCE-BUSY", scopeOf("EC-RESOURCE-BUSY"),
                     e.getMessage(), 0, method);
         } catch (java.sql.SQLException e) {
+            safeReleaseTarget(posLock, targetPos);
             throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
                     "申请资源时数据库错误：" + e.getMessage(), 0, method);
         }
 
         // P-08：搬运事务（设备回包=运动报告，位置需另证）
         long transferTxn = 0L;
-        String plate = ctx.params().get("plate") instanceof String p ? p : null;
+        // 板号统一走 PositionLock 的单一真源解析器：搬运事务与位置链路读同一批别名，
+        // 且拒绝数值 plate.id / 未替换的 ${...} / AUTO- 占位（详见该方法注释）。
+        String plate = com.labos.kernel.driver.PositionLock
+                .resolvePlateBarcode(ctx.params(), null);
         if (db != null && runId > 0) {
             try {
                 transferTxn = com.labos.kernel.workflow.TransferTransaction.begin(
@@ -382,9 +429,19 @@ public final class DriverStepExecutor implements StepExecutor {
             // 不标的话系统会以为板还在源位，下一个节点去取就是撞机。
             if (r.errorCode() != null) {
                 markPlatePositionUnknown(ctx, srcRes, dstRes);
+                safeReleaseTarget(posLock, targetPos);
+            } else if (transferTxn > 0 && autoConfirmEnabled()) {
+                // putPlate 写占用时会自动清掉预留；登记未成功则必须显式释放，避免占死。
+                if (!autoConfirmTransfer(transferTxn, plate, srcRes, dstRes, targetPos)) {
+                    safeReleaseTarget(posLock, targetPos);
+                }
+            } else {
+                // 开关关闭：不改位置/状态（改造前行为），但预留必须释放。
+                safeReleaseTarget(posLock, targetPos);
             }
             return r;
         } catch (RuntimeException e) {
+            safeReleaseTarget(posLock, targetPos);
             if (transferTxn > 0) {
                 try {
                     com.labos.kernel.workflow.TransferTransaction.report(db, tenantId,
@@ -419,8 +476,10 @@ public final class DriverStepExecutor implements StepExecutor {
         if (db == null || runId <= 0) {
             return;
         }
-        Object raw = ctx.params() == null ? null : ctx.params().get("plate");
-        String barcode = raw == null ? null : String.valueOf(raw);
+        // 与搬运事务同一解析器：搬运失败时也能用真板号把板标成 UNKNOWN，
+        // 否则系统仍以为板在源位，下一节点会「机械臂伸进空位置」。
+        String barcode = com.labos.kernel.driver.PositionLock
+                .resolvePlateBarcode(ctx.params(), null);
         if (barcode == null || barcode.isBlank()) {
             log.error("[搬运] 失败但拿不到板号（params.plate），无法标记位置未知");
             return;
@@ -451,6 +510,85 @@ public final class DriverStepExecutor implements StepExecutor {
     }
 
     /** 把 params 里的 source/target（设备编号）转成 resource_node.id。 */
+    /**
+     * M 方案自动确认开关：默认**关闭**，与 {@code LABOS_TRANSFER_PLAN} 同风格。
+     * 关闭时行为与改造前逐字一致（REPORTED 待人工 confirm）。
+     */
+    private volatile Long autoConfirmWfCache;
+
+    private boolean autoConfirmEnabled() {
+        if (db == null || runId <= 0) {
+            return false;
+        }
+        Long wf = autoConfirmWfCache;
+        if (wf == null) {
+            wf = workflowIdOfRun();
+            // 只在拿到有效 workflowId 时缓存：0 = 无 run / 读库失败，
+            // 不缓存 0，避免一次瞬时错误把本次执行永久判为「关闭」。
+            // 执行器是 per-run（构造带 runId），无跨 run 串扰。
+            if (wf != 0L) {
+                autoConfirmWfCache = wf;
+            }
+        }
+        return com.labos.kernel.driver.PositionLock.autoConfirmEnabledFor(wf);
+    }
+
+    /**
+     * M 方案：位置登记 + 自动确认。任何一步不满足都保持 REPORTED/UNKNOWN，
+     * 由 PauseManager/PauseCoordinator 的恢复门禁转人工，绝不静默放行。
+     */
+    /**
+     * @return true = 目标位置已登记（{@code putPlateOnPosition} 已把预留转成占用，
+     *         预留无需再释放）；false = 未登记，调用方必须释放预留。
+     */
+    private boolean autoConfirmTransfer(long txn, String plate, Long srcRes, Long dstRes,
+                                        Long targetPos) {
+        try {
+            com.labos.kernel.driver.PositionLock lock =
+                    new com.labos.kernel.driver.PositionLock(db, tenantId);
+            com.labos.kernel.driver.PositionLock.TransferMove mv =
+                    lock.noteTransferMove(srcRes, dstRes, targetPos, plate, runId);
+            if (!mv.ok()) {
+                log.warn("[搬运] 不自动确认（保持 REPORTED）：{}", mv.reason());
+                return false;
+            }
+            boolean confirmed = com.labos.kernel.workflow.TransferTransaction
+                    .confirmByDeviceReport(db, tenantId, txn, plate, dstRes, runId,
+                            "DEVICE_REPORT 自动确认：" + mv.reason());
+            if (!confirmed) {
+                // P1-1（Option A）：位置登记与 confirm 分两个事务，这里接受这个窄窗口，
+                // 但失败必须显式告警——此时板已实际搬到 dstRes（take/put 已提交），
+                // 事务却仍 REPORTED，需人工 confirm 消除「位置已动、事务未确认」的不一致。
+                log.error("[搬运] 位置已登记但事务 {} 未确认（板 {} 已到 {}，保持 REPORTED，需人工 confirm）",
+                        txn, plate, dstRes);
+                return true;   // putPlate 已消费预留
+            }
+            // 补既有缺口：putPlate 只写 audit 的 IN_TRANSFER→KNOWN，
+            // plate.position_status 本身仍停在 IN_TRANSFER（原只有人工 locatePlate 写回）。
+            com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.PauseMapper.class)
+                    .updatePlatePositionStatus(tenantId, plate, "KNOWN");
+            log.info("[搬运] 事务 {} 自动 CONFIRMED：{} → {}（{}）",
+                    txn, plate, dstRes, mv.reason());
+            return true;
+        } catch (Exception e) {
+            log.error("[搬运] 自动确认失败（保持 REPORTED 待人工）：" + e.getMessage());
+            return false;
+        }
+    }
+
+    /** 释放事前预留（幂等；已转成占用的位置上 releasePosition 是 no-op）。 */
+    private void safeReleaseTarget(com.labos.kernel.driver.PositionLock lock, Long pos) {
+        if (pos == null) {
+            return;
+        }
+        try {
+            lock.release(pos, runId);
+        } catch (Exception e) {
+            log.warn("[搬运] 释放目标位置预留失败：" + e.getMessage());
+        }
+    }
+
     private Long resourceOfParam(StepContext ctx, String key) {
         Object v = ctx.params() == null ? null : ctx.params().get(key);
         if (v == null) {
@@ -718,6 +856,21 @@ public final class DriverStepExecutor implements StepExecutor {
         }
         try {
             DriverResult r = doExecuteCommand(driver, ctx, cmd, workflowId, ledgerId);
+            // 设备内部搬运（MoveInLabware/MoveOutLabware）的**业务拒绝**：
+            // 设备协议层回 method_status=2，但 data.error_code 非空（板型/高度不匹配）。
+            // 语义是「设备明确拒绝、未执行」⇒ 必须升级成 REJECTED，由上层
+            // StepFailure → MANUAL 停流程转人工。不能当成功继续：板还在装载口，
+            // 后续却会按「已进站」推进。
+            if (r.ok() && DeviceInternalTransfer.isInternalMoveMethod(cmd.method())) {
+                String reject = DeviceInternalTransfer.rejectionCode(r.deviceRawResponse());
+                if (reject != null) {
+                    String msg = DeviceInternalTransfer
+                            .rejectionMessage(r.deviceRawResponse());
+                    log.warn("[内部搬运] 设备拒绝：{} {}（板留在原处，转人工）", reject, msg);
+                    r = new DriverResult(cmd.commandId(), DriverResult.Status.REJECTED,
+                            reject, msg, r.deviceRawResponse(), r.durationMs(), r.outputs());
+                }
+            }
             if (ledgerId > 0L) {
                 try {
                     CommandLedger.finish(db, ledgerId, r.errorCode() == null,

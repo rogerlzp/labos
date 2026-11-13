@@ -130,8 +130,10 @@ public final class TransferPlan implements AutoCloseable {
         try {
             // ① 源设备的门
             acquireAccess(sourceResourceId, "源门", factory);
-            // ② 源通道
-            acquirePort(sourceResourceId, "in", "源通道");
+            // ② 源通道：搬「出」源设备，方向是 out（不是 in）。
+            // 安全兜底：acquirePort 先查 hasPorts，没配通道的存量设备直接跳过；
+            // 已配通道的 direction='both' 同时满足 in/out 匹配，故本次改动零回归。
+            acquirePort(sourceResourceId, "out", "源通道");
             // ③ 源位置
             acquirePosition(sourcePositionId, "源位置");
             // ④ 目标设备的门

@@ -1,0 +1,14 @@
+{
+  "name": "实验室中控 LabOS Console",
+  "short_name": "LabOS",
+  "description": "实验室中控 / LabOS Console —— 实验流程编排与设备调度",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1014",
+  "theme_color": "#0d1014",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

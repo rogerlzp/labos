@@ -50,4 +50,24 @@ public interface TransferMapper {
                                         @Param("evidenceType") String evidenceType,
                                         @Param("operator") String operator,
                                         @Param("note") String note);
+
+    /**
+     * DEVICE_REPORT 自动确认：与人工 confirm 共用同一状态机（status 白名单 + CAS），
+     * 额外写 confirmed_by（0 = 系统）。只允许 REPORTED/UNKNOWN → CONFIRMED。
+     */
+    int markTransferConfirmedAuto(@Param("tenantId") long tenantId,
+                                  @Param("id") long id,
+                                  @Param("operatorId") long operatorId);
+
+    /**
+     * DEVICE_REPORT 位置证据：比人工确认多写 run_id，便于按 run 回溯。
+     * 人工路径保持 {@code insertPositionEvidenceOnConfirm} 原样，不受影响。
+     */
+    int insertPositionEvidenceAuto(@Param("tenantId") long tenantId,
+                                   @Param("plateBarcode") String plateBarcode,
+                                   @Param("resourceId") Long resourceId,
+                                   @Param("evidenceType") String evidenceType,
+                                   @Param("operator") String operator,
+                                   @Param("note") String note,
+                                   @Param("runId") long runId);
 }

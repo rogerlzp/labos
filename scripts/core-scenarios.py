@@ -117,9 +117,12 @@ def q(sql):
     env.setdefault("PATH", "/opt/homebrew/opt/libpq/bin:/usr/bin:/bin")
     env.setdefault("PGPASSWORD", os.environ.get("LABOS_DB_PASS", ""))
     psql = os.environ.get("PSQL", "psql")
+    # -q：psql 的 -t 只会吞 SELECT 表头，不吞 INSERT 0 1 / UPDATE 1 / CREATE TABLE
+    # 等命令标签；带 RETURNING 的语句会把标签和真实值混在 stdout 里。
+    # 加 -q 从源头不产生标签（实测 psql 18.3 有效），比事后正则过滤更彻底。
     out = subprocess.run(
         [psql, "-h", os.environ["LABOS_DB_HOST"], "-U", os.environ["LABOS_DB_USER"],
-         "-d", os.environ["LABOS_DB_NAME"], "-tAc", sql],
+         "-d", os.environ["LABOS_DB_NAME"], "-q", "-tAc", sql],
         env=env, capture_output=True, text=True)
     if out.returncode != 0:
         raise RuntimeError("SQL 失败：%s\n%s" % (sql.strip()[:200], out.stderr.strip()[:300]))

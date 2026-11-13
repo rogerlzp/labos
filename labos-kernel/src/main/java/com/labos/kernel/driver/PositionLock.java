@@ -54,17 +54,77 @@ public final class PositionLock {
     /** 默认预约时长：搬运正常几秒，留足余量。 */
     public static final Duration DEFAULT_TTL = Duration.ofSeconds(120);
 
+    /**
+     * 板号别名优先级（权威键 {@code barcode} 优先）。
+     *
+     * <p>搬运事务（{@code DriverStepExecutor}）与位置链路（{@code writeStep → resolvePlateId}）
+     * 原先读的键集合不相交：前者只读 {@code plate}，后者只读
+     * {@code plate_id/plateID/plateId/barcode}。只写 {@code plate} 时搬运表有板号、
+     * 位置链路却仍兜底成 {@code AUTO-<runId>}。故收敛为这一份清单，两边共用。
+     */
+    public static final String[] PLATE_BARCODE_KEYS = {
+            "barcode", "plate", "plateBarcode", "plateId", "plateID", "plate_id"};
+
+    /**
+     * M 方案自动确认开关：按 workflow 生效，**默认全关**。
+     *
+     * <p>为什么不能做成全局布尔：全库 23 个 workflow 含 Transfer 节点，目前只有
+     * 1000830 配了板号；全局开启会让启动预检把另外 22 个流程一并阻断。
+     * 取值：空=关；{@code 1/true/*}=全局；逗号分隔的 workflow id = 仅这些流程。
+     */
+    public static boolean autoConfirmEnabledFor(long workflowId) {
+        return parseAutoConfirmScope(
+                System.getenv("LABOS_TRANSFER_AUTO_CONFIRM"), workflowId);
+    }
+
+    /** 纯逻辑部分（{@code System.getenv} 运行时不可改，抽出来才能自测覆盖）。 */
+    public static boolean parseAutoConfirmScope(String v, long workflowId) {
+        if (v == null || v.isBlank()) {
+            return false;
+        }
+        String t = v.trim();
+        if ("1".equals(t) || "true".equalsIgnoreCase(t) || "*".equals(t)) {
+            return true;
+        }
+        for (String s : t.split(",")) {
+            if (s.trim().equals(String.valueOf(workflowId))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 位置状态快照（给前端画图用）。 */
     public record PositionState(
             long resourceId, String code, String name, String kind,
             String plateId, boolean reserved, Long reservedByRun,
             String occupiedSince,
             /** 属于哪台设备（孵箱/存储塔），null 表示直接挂在岛上。 */
-            Long parentDeviceId, String parentDeviceCode) {
+            Long parentDeviceId, String parentDeviceCode,
+            /** P2：点位语义（未配置的老点位为 null）。 */
+            String pointRole, Boolean robotReachable, Boolean isEntry, Boolean isExit,
+            String contentKind, Long plateUid, String identityStatus,
+            String contentCode, String contentName,
+            Integer gridRow, Integer gridCol, Double maxHeightMm, String plateTypes,
+            /** 现场贴的位置标识（空 = 前端回退显示 code）。 */
+            String positionLabel,
+            /** true = 网格之外的单独位置（培养箱/堆栈的进出口装载口）。 */
+            Boolean standalone) {
 
         /** 可用 = 没有板 且 没有有效预约。 */
         public boolean available() {
             return (plateId == null || plateId.isBlank()) && !reserved;
+        }
+
+        /** 兼容旧调用方（只要前 10 个字段）。 */
+        public PositionState(long resourceId, String code, String name, String kind,
+                             String plateId, boolean reserved, Long reservedByRun,
+                             String occupiedSince, Long parentDeviceId,
+                             String parentDeviceCode) {
+            this(resourceId, code, name, kind, plateId, reserved, reservedByRun,
+                    occupiedSince, parentDeviceId, parentDeviceCode,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null);
         }
     }
 
@@ -181,6 +241,49 @@ public final class PositionLock {
         return ReserveResult.OK;
     }
 
+    /**
+     * P0 安全：机械臂动作**之前**为目标设备原子预留一个可达装载口。
+     *
+     * <p>为什么必须事前预留：此前 {@code TransferPlan.acquireAll(srcRes, null,
+     * dstRes, null, ...)} 的位置参数全为 null，{@code acquirePosition} 直接 return；
+     * 位置选位发生在 {@code driver.execute} 之后的 {@code noteTransferMove}。
+     * 两个并发 run 会选到同一个空载位，机械臂物理上都往那里放板 —— 生产级相撞。
+     *
+     * <p>本方法用 {@code tryReserve} 的一条原子 UPSERT（带 TTL + 归属）抢占；
+     * 抢不到时按用户口径「等待 + 提醒」，超时才拒绝转人工（不静默放行、也不无限等）。
+     * 预留后续由 {@code putPlateOnPosition} 写占用时自动清除，中间无窗口。
+     *
+     * @return 预留成功的位置 id；超时/中断返回 null（调用方必须拒绝搬运并转人工）
+     */
+    public Long reserveTargetPosition(long deviceResourceId, long runId,
+                                      long timeoutMs) throws SQLException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        boolean warned = false;
+        for (;;) {
+            Long candidate = firstAvailablePosition(deviceResourceId);
+            if (candidate != null
+                    && tryReserve(candidate, runId, Duration.ofMinutes(30))
+                    == ReserveResult.OK) {
+                return candidate;
+            }
+            if (!warned) {
+                log.warn("[搬运] 目标设备 {} 暂无可用装载口（或已被别的 run 预留），等待中…",
+                        deviceResourceId);
+                warned = true;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                log.error("[搬运] 等待装载口超时 {}ms，拒绝搬运并转人工", timeoutMs);
+                return null;
+            }
+            try {
+                Thread.sleep(2000);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+    }
+
     /** 释放预约（不板——板还在位置上）。 */
     public void release(long resourceId, long runId) throws SQLException {
         dm().releasePosition(tenantId, resourceId, runId);
@@ -226,10 +329,15 @@ public final class PositionLock {
      */
     private void markPlateOutsideTx(String plateId, long positionResourceId, long runId) {
         try {
-            if (dm().updatePlateLocation(tenantId, plateId, positionResourceId) > 0) {
-                return;
+            if (dm().updatePlateLocation(tenantId, plateId, positionResourceId) == 0) {
+                dm().insertPlateIfAbsent(tenantId, plateId, positionResourceId);
             }
-            dm().insertPlateIfAbsent(tenantId, plateId, positionResourceId);
+            // P3：临时板号补一条 alias 指向刚建/已有的 plate.id。扫码后只需再加一条
+            // canonical 真条码别名，历史证据表里的 TMP- 字符串一律不改写。
+            if (plateId != null && plateId.startsWith("TMP-")) {
+                dm().insertPlateAlias(tenantId, plateId, "TEMP", false, runId,
+                        "点位 " + positionResourceId + " 上未扫码的板");
+            }
         } catch (RuntimeException e) {
             log.error("[PLATE-WARN] 冗余表 plate 写入失败（不影响位置锁）："
                     + e.getMessage());
@@ -367,7 +475,26 @@ public final class PositionLock {
                     rb == null ? null : ((Number) rb).longValue(),
                     occ == null ? null : occ.toLocalDateTime().toString(),
                     pid == null ? null : ((Number) pid).longValue(),
-                    (String) row.get("parentCode")));
+                    (String) row.get("parentCode"),
+                    (String) row.get("pointRole"),
+                    (Boolean) row.get("robotReachable"),
+                    (Boolean) row.get("isEntry"),
+                    (Boolean) row.get("isExit"),
+                    (String) row.get("contentKind"),
+                    row.get("plateUid") == null ? null
+                            : ((Number) row.get("plateUid")).longValue(),
+                    (String) row.get("identityStatus"),
+                    (String) row.get("contentCode"),
+                    (String) row.get("contentName"),
+                    row.get("gridRow") == null ? null
+                            : ((Number) row.get("gridRow")).intValue(),
+                    row.get("gridCol") == null ? null
+                            : ((Number) row.get("gridCol")).intValue(),
+                    row.get("maxHeightMm") == null ? null
+                            : ((Number) row.get("maxHeightMm")).doubleValue(),
+                    (String) row.get("plateTypes"),
+                    (String) row.get("positionLabel"),
+                    (Boolean) row.get("standalone")));
         }
         return out;
     }
@@ -459,14 +586,41 @@ public final class PositionLock {
      * <p>不用 UUID 兜底：{@code AUTO-} 前缀一眼能看出"这板没扫描"，
      * 而 UUID 会被误认为真实条码。
      */
-    public static String resolvePlateId(java.util.Map<String, Object> params,
-                                        String rawResponse, long runId) {
+    /**
+     * 板号**单一真源**解析器：搬运事务与位置链路都必须调它。
+     *
+     * <p>只接受字符串条码，三类值一律拒绝（否则会造出不存在的板）：
+     * <ul>
+     *   <li>数值型：material 声明的 {@code target.plateId} 是 bigint {@code plate.id}，
+     *       {@code String.valueOf} 会把 123 变成假条码 "123"，
+     *       {@code insertPlateIfAbsent} 会据此建板并撞 {@code uk_plate_barcode}；</li>
+     *   <li>{@code ${...}}：变量未被 {@code substVars} 替换时会落成字面量条码；</li>
+     *   <li>{@code AUTO-...}：占位板号会让并行分支的两块板共用一个假身份。</li>
+     * </ul>
+     *
+     * @return 合法板号，或 {@code null}（调用方决定兜底，禁止把 null 当身份落库）
+     */
+    public static String resolvePlateBarcode(java.util.Map<String, Object> params,
+                                             String rawResponse) {
         if (params != null) {
-            for (String k : new String[]{"plate_id", "plateID", "plateId", "barcode"}) {
+            for (String k : PLATE_BARCODE_KEYS) {
                 Object v = params.get(k);
-                if (v != null && !String.valueOf(v).isBlank()) {
-                    return String.valueOf(v).trim();
+                if (v == null) {
+                    continue;
                 }
+                if (v instanceof CharSequence s) {
+                    String t = s.toString().trim();
+                    if (t.isEmpty()) {
+                        continue;
+                    }
+                    if (t.startsWith("${") || t.startsWith("AUTO-")) {
+                        log.warn("[PLATE] 忽略非法板号 {}（键 {}）", t, k);
+                        continue;
+                    }
+                    return t;
+                }
+                log.warn("[PLATE] 忽略非字符串板号 {}（键 {}，类型 {}）：plate.id 不是条码",
+                        v, k, v.getClass().getSimpleName());
             }
         }
         if (rawResponse != null) {
@@ -476,13 +630,24 @@ public final class PositionLock {
                         .compile("\"" + k + "\"\\s*:\\s*\"([^\"]+)\"").matcher(rawResponse);
                 if (m.find()) {
                     String v = m.group(1).trim();
-                    if (!v.isEmpty()) {
+                    if (!v.isEmpty() && !v.startsWith("${") && !v.startsWith("AUTO-")) {
                         return v;
                     }
                 }
             }
         }
-        return "AUTO-" + runId;
+        return null;
+    }
+
+    /**
+     * 兼容旧调用（{@code writeStep} 的日志/占位路径）：解析不到时仍返回
+     * {@code AUTO-<runId>}。**自动确认链路不得用这个方法**——它必须用
+     * {@link #resolvePlateBarcode} 并显式判 null。
+     */
+    public static String resolvePlateId(java.util.Map<String, Object> params,
+                                        String rawResponse, long runId) {
+        String barcode = resolvePlateBarcode(params, rawResponse);
+        return barcode != null ? barcode : "AUTO-" + runId;
     }
 
     /**
@@ -526,8 +691,13 @@ public final class PositionLock {
             if (r != ReserveResult.OK) {
                 return null;
             }
-            int written = putPlate(pos,
-                    plateId == null ? ("AUTO-" + runId) : plateId, runId);
+            // P3：未知板按「点位」生成 TMP- 临时身份，同一 run 多板不再共用一个
+            // AUTO-{runId}（后者受 uk_plate_barcode 唯一约束会串账）。
+            String effective = plateId;
+            if (effective == null || effective.isBlank() || effective.startsWith("AUTO-")) {
+                effective = "TMP-" + runId + "-" + pos + "-1";
+            }
+            int written = putPlate(pos, effective, runId);
             if (written <= 0) {
                 // 写入 0 行 = 层位上还是没板。不能返回 pos 骗调用方，
                 // 否则日志说"放板成功"、层位上空着，取板时取不到。
@@ -549,6 +719,205 @@ public final class PositionLock {
         }
         takePlate(pos, runId);
         return pos;
+    }
+
+    /** 一次 Transfer 的位置登记结果（供上层判定能否自动确认）。 */
+    public record TransferMove(boolean ok, String reason, String plate,
+                               Long srcPosition, Long dstPosition, boolean guided) {
+    }
+
+    /**
+     * M 方案：搬运成功后登记「源位释放 + 目标位占用」。
+     *
+     * <p>复用既有 {@code takePlate/putPlate} —— 它们自带
+     * {@code plate_location_audit} 两行（取板 KNOWN→IN_TRANSFER / 放板
+     * IN_TRANSFER→KNOWN）、{@code occupied_by_run} 归属校验与
+     * {@code device_state.has_plate} 派生刷新；这里不另写裸 INSERT。
+     *
+     * <p>{@code ok=false} 时调用方**必须**保持 transfer_transaction 为
+     * REPORTED/UNKNOWN 并转人工 confirm，绝不能据此置 CONFIRMED。
+     *
+     * <p>源位分三种情况：本 run 的板 → 正常取板；确实无板 → 记为「首次引导」
+     * （简化流程起点 position_state 尚未初始化）；有别人的板 → 拒绝。
+     * 不区分第三种会凭空在目标位复制出一块板。
+     */
+    /** 兼容旧调用：未传预预留位置时自行选位（仅用于非 protect 路径）。 */
+    public TransferMove noteTransferMove(long srcDeviceRes, long dstDeviceRes,
+                                         String plate, long runId) throws SQLException {
+        return noteTransferMove(srcDeviceRes, dstDeviceRes, null, plate, runId);
+    }
+
+    /**
+     * @param reservedDstPos 机械臂动作前已原子预留的目标位置；非 null 时**直接使用**，
+     *                       不再 {@code firstAvailablePosition} 事后选位（防并发相撞）。
+     *                       {@code putPlateOnPosition} 写占用时会自动清掉该预留。
+     */
+    public TransferMove noteTransferMove(long srcDeviceRes, long dstDeviceRes,
+                                         Long reservedDstPos, String plate, long runId)
+            throws SQLException {
+        if (plate == null || plate.isBlank() || plate.startsWith("AUTO-")) {
+            return new TransferMove(false, "板号缺失或为 AUTO- 占位",
+                    plate, null, null, false);
+        }
+
+        // ① 源位
+        Long srcPos = firstOccupiedPosition(srcDeviceRes, runId);
+        boolean guided = false;
+        if (srcPos == null) {
+            Long any = dm().selectFirstOccupiedPositionAny(tenantId, srcDeviceRes);
+            if (any != null) {
+                return new TransferMove(false,
+                        "源位有板但不属于本 run（层位 " + any + "），禁止自动确认",
+                        plate, null, null, false);
+            }
+            guided = true;
+        } else {
+            String onSrc = plateOnPosition(srcPos);
+            if (onSrc != null && !onSrc.isBlank() && !onSrc.equals(plate)) {
+                return new TransferMove(false,
+                        "源位上是 " + onSrc + "，与声明板号 " + plate + " 不一致，禁止自动确认",
+                        plate, srcPos, null, false);
+            }
+        }
+
+        // ② 目标位：优先用事前原子预留的位置，绝不事后重选（否则并发会选到同一格）。
+        Long dstPos = reservedDstPos != null
+                ? reservedDstPos : firstAvailablePosition(dstDeviceRes);
+        if (dstPos == null) {
+            return new TransferMove(false, "目标设备没有空层位",
+                    plate, srcPos, null, guided);
+        }
+
+        // ②a 板型/高度校验不在这里做：机械臂到达的是装载口（通常无约束），
+        // 约束配置在 internal 内部格上。校验已移到 DeviceInternalTransfer
+        // 收到设备进站通知、知道真实格位之后才执行（见交接文档 §10.3）。
+        // 此处保留校验会让两处口径混淆，已清理。
+
+        // ③ 取板（首次引导时源位本来就没板，跳过）
+        if (!guided) {
+            int taken = takePlate(srcPos, runId);
+            if (taken <= 0) {
+                return new TransferMove(false, "取板影响 0 行（归属校验未通过）",
+                        plate, srcPos, dstPos, false);
+            }
+        }
+
+        // ④ 放板
+        int put = putPlate(dstPos, plate, runId);
+        if (put <= 0) {
+            return new TransferMove(false, "放板影响 0 行（目标位已被占用）",
+                    plate, srcPos, dstPos, guided);
+        }
+        // 统一「点位内容」真源：putPlateOnPosition 只写 plate_id，补写 content_*。
+        // 板尚未建立身份（TMP- 等）时跳过，不影响位置登记。
+        Long uid = dm().selectPlateUidByBarcode(tenantId, plate);
+        if (uid != null) {
+            dm().markPositionPlateContent(tenantId, dstPos, uid);
+        }
+
+        // ⑤ 目标位落的确是这块板
+        String onDst = plateOnPosition(dstPos);
+        if (!plate.equals(onDst)) {
+            return new TransferMove(false, "目标位板号不一致：" + onDst,
+                    plate, srcPos, dstPos, guided);
+        }
+
+        // ⑥ 源/目标设备的 has_plate 都派生刷新
+        refreshHasPlateOfPosition(dstPos);
+        if (!guided) {
+            refreshHasPlateOfPosition(srcPos);
+        }
+        return new TransferMove(true,
+                guided ? "首次引导：源位无板，直接占用目标位" : "取板+放板均成功且板号一致",
+                plate, srcPos, dstPos, guided);
+    }
+
+    /**
+     * 放板前校验板型/高度（点位配置了约束才拦，空约束 = 不限制）。
+     *
+     * @return null=通过；否则返回拒绝原因（用于 TransferMove.reason）
+     */
+    public String checkPlateFits(long resourceId, String plate) {
+        if (plate == null || plate.isBlank()
+                || plate.startsWith("TMP-") || plate.startsWith("AUTO-")) {
+            return null;   // 临时/占位身份跳过
+        }
+        try {
+            java.util.Map<String, Object> pt = dm().selectPlateType(tenantId, plate);
+            if (pt == null) {
+                return null;   // 板不存在（可能尚未建身份）→ 不拦
+            }
+            java.util.Map<String, Object> cons = dm().selectPointConstraints(tenantId, resourceId);
+            if (cons == null) {
+                return null;
+            }
+            String plateTypes = (String) cons.get("plateTypes");
+            if (plateTypes != null && !plateTypes.isBlank()) {
+                String plateType = (String) pt.get("plateType");
+                boolean hit = false;
+                for (String s : plateTypes.split(",")) {
+                    if (s.trim().equals(plateType)) {
+                        hit = true;
+                        break;
+                    }
+                }
+                if (!hit) {
+                    return "板型 " + plateType + " 不在点位允许板型 [" + plateTypes + "]";
+                }
+            }
+            Object maxH = cons.get("maxHeightMm");
+            Object plateH = pt.get("heightMm");
+            if (maxH instanceof Number && plateH instanceof Number
+                    && ((Number) plateH).doubleValue() > ((Number) maxH).doubleValue()) {
+                return "板高 " + plateH + "mm 超过点位最大 " + maxH + "mm";
+            }
+            return null;
+        } catch (RuntimeException e) {
+            // 校验失败不应阻断搬运（约束查询是附加保护，不是主链）——但失败要显式告警
+            log.error("[PLATE-FIT] 校验异常（放行）: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** 扫码类方法：设备回包里会带真 barcode。 */
+    public static boolean isBarcodeMethod(String method) {
+        if (method == null) {
+            return false;
+        }
+        return "ReadBarcode".equals(method) || "BarcodeScan".equals(method)
+                || "BarcodeScanEx".equals(method) || "Scan".equals(method)
+                || method.startsWith("Barcode");
+    }
+
+    /**
+     * P3：扫码成功后，把该设备当前放着的板（可能是 {@code TMP-} 临时身份）
+     * 关联到回包里的真 barcode。
+     *
+     * <p>不改写任何历史字符串：只新增一条 canonical alias + 升级 identity_status。
+     * 回包里没有合法 barcode、设备上没有板、或真 barcode 属于另一块板时返回 false。
+     */
+    public boolean confirmScanAtDevice(long deviceInstanceId, String rawResponse, long runId) {
+        String scanned = resolvePlateBarcode(null, rawResponse);
+        if (scanned == null) {
+            return false;
+        }
+        Long devRes = qm().selectDeviceResourceByInstance(deviceInstanceId);
+        if (devRes == null) {
+            return false;
+        }
+        // P2-4：设备下有多块板时无法凭空定位到具体层位，拒绝关联（避免错板）。
+        long platesOnDevice = dm().selectPlateCountOnDevice(tenantId, devRes);
+        if (platesOnDevice != 1L) {
+            log.warn("[扫码] 设备 {} 下有 {} 块板，无法唯一关联到具体层位，跳过（保持 TMP- 身份）",
+                    devRes, platesOnDevice);
+            return false;
+        }
+        String current = dm().selectPlateIdOnDevice(tenantId, devRes);
+        if (current == null || current.isBlank()) {
+            return false;
+        }
+        return com.labos.kernel.material.PlateIdentity
+                .confirmScanned(tenantId, current, scanned, runId);
     }
 
     private static boolean startsWithAny(String s, String... prefixes) {

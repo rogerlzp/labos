@@ -251,9 +251,18 @@
     <update id="clearPlateFromPosition">
         UPDATE position_state
            SET plate_id = NULL, occupied_since = NULL, occupied_by_run = NULL,
+               content_kind = NULL, content_id = NULL,
                updated_at = now()
          WHERE tenant_id = #{param1} AND resource_id = #{param2}
            AND occupied_by_run = #{param3}
+    </update>
+
+    <!-- 统一「点位内容」真源：putPlateOnPosition 只写 plate_id，
+         这里补写 content_kind/content_id，避免板被放上后内容模型仍是 NULL。 -->
+    <update id="markPositionPlateContent">
+        UPDATE position_state
+           SET content_kind = 'plate', content_id = #{param3}, updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
     </update>
 
     <update id="sweepExpiredReservations">
@@ -263,22 +272,49 @@
            AND reserved_until &lt; now()
     </update>
 
+    <!-- P2（2026-11-13）：实验前点位清单。LEFT JOIN 保证 2569 个点位全部出现，
+         而不是只显示 position_state 里有状态行的那几行；未配置的老点位角色为 null。 -->
     <select id="selectPositionsByIsland" resultType="java.util.Map">
         SELECT r.id AS "id", r.code AS "code", r.name AS "name", r.kind::text AS "kind",
                ps.plate_id AS "plateId", ps.reserved_until AS "reservedUntil",
                ps.reserved_by_run AS "reservedByRun",
                ps.occupied_since AS "occupiedSince",
-               d.id AS "parentId", d.code AS "parentCode"
+               ps.content_kind AS "contentKind", ps.content_id AS "contentId",
+               d.id AS "parentId", d.code AS "parentCode",
+               dp.point_role AS "pointRole", dp.robot_reachable AS "robotReachable",
+               dp.is_entry AS "isEntry", dp.is_exit AS "isExit",
+               dp.order_in_device AS "orderInDevice",
+               dp.position_label AS "positionLabel",
+               dp.is_standalone AS "standalone",
+               dp.grid_row AS "gridRow", dp.grid_col AS "gridCol",
+               dp.max_height_mm AS "maxHeightMm",
+               array_to_string(dp.plate_types, ',') AS "plateTypes",
+               p.id AS "plateUid", p.identity_status AS "identityStatus",
+               COALESCE(cc.code, rg.code) AS "contentCode",
+               COALESCE(cc.name, rg.name) AS "contentName"
           FROM resource_node r
           LEFT JOIN position_state ps
                  ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
           LEFT JOIN resource_node d
                  ON d.id = r.parent_id AND d.kind = 'device'
+          LEFT JOIN device_point dp
+                 ON dp.point_resource_id = r.id AND dp.tenant_id = r.tenant_id
+          LEFT JOIN plate p
+                 ON p.barcode = ps.plate_id AND p.tenant_id = r.tenant_id
+                AND p.deleted_at IS NULL
+          LEFT JOIN consumable_lot cl
+                 ON ps.content_kind = 'consumable' AND cl.id = ps.content_id
+                AND cl.tenant_id = r.tenant_id AND cl.deleted_at IS NULL
+          LEFT JOIN consumable cc ON cc.id = cl.consumable_id AND cc.tenant_id = r.tenant_id
+          LEFT JOIN reagent_lot rl
+                 ON ps.content_kind = 'reagent' AND rl.id = ps.content_id
+                AND rl.tenant_id = r.tenant_id AND rl.deleted_at IS NULL
+          LEFT JOIN reagent rg ON rg.id = rl.reagent_id AND rg.tenant_id = r.tenant_id
          WHERE r.tenant_id = #{param1}
            AND r.kind IN ('incubator', 'storage', 'transfer_point')
            AND (r.parent_id = #{param2} OR r.parent_id IN
                 (SELECT id FROM resource_node WHERE parent_id = #{param2} AND kind = 'device'))
-         ORDER BY r.code
+         ORDER BY dp.order_in_device NULLS LAST, r.code
     </select>
 
     <select id="selectPositionKind" resultType="java.lang.String">
@@ -306,29 +342,109 @@
          WHERE ds.tenant_id = #{param1} AND ds.resource_id = #{param2}
     </update>
 
-    <!-- A2 修复：与 tryReserve 同三态判定，永久承诺位不当空位。 -->
+    <!-- A2 修复：与 tryReserve 同三态判定，永久承诺位不当空位。
+         P1（2026-11-13）：按 device_point 配置层的「进口 / 机械臂可达」过滤放板目标位。
+         ⚠ 用 LEFT JOIN + dp.id IS NULL 兜底：老系统迁移的 2563 个点位还没有配置行，
+         必须保持改造前行为，不能因为 JOIN 把它们全排除掉。 -->
     <select id="selectFirstAvailablePosition" resultType="java.lang.Long">
         SELECT r.id FROM resource_node r
           LEFT JOIN position_state ps
                  ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
+          LEFT JOIN device_point dp
+                 ON dp.point_resource_id = r.id AND dp.tenant_id = r.tenant_id
          WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2}
            AND r.kind IN ('incubator', 'storage', 'transfer_point')
            AND (ps.plate_id IS NULL OR ps.plate_id = '')
            AND (ps.reserved_by_run IS NULL
                 OR (ps.reserved_until IS NOT NULL
                     AND ps.reserved_until &lt; now()))
-         ORDER BY r.id LIMIT 1
+           AND (dp.id IS NULL OR (dp.is_entry AND dp.robot_reachable))
+         ORDER BY dp.order_in_device NULLS LAST, r.id LIMIT 1
     </select>
 
-    <!-- ⚠ 归属过滤（2026-11-10）：只认本 run 放上去的板（岛内并行）。 -->
+    <!-- ⚠ 归属过滤（2026-11-10）：只认本 run 放上去的板（岛内并行）。
+         P1：取板源位按「出口 / 机械臂可达」过滤；无配置行的点位保持旧行为。 -->
     <select id="selectFirstOccupiedPosition" resultType="java.lang.Long">
+        SELECT r.id FROM resource_node r
+          JOIN position_state ps
+               ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
+          LEFT JOIN device_point dp
+                 ON dp.point_resource_id = r.id AND dp.tenant_id = r.tenant_id
+         WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2}
+           AND ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; ''
+           AND ps.occupied_by_run = #{param3}
+           AND (dp.id IS NULL OR (dp.is_exit AND dp.robot_reachable))
+         ORDER BY dp.order_in_device NULLS LAST, r.id LIMIT 1
+    </select>
+
+    <!-- 「源位到底有没有别人的板」的检测：必须看全部点位，不加角色/可达过滤。 -->
+    <select id="selectFirstOccupiedPositionAny" resultType="java.lang.Long">
         SELECT r.id FROM resource_node r
           JOIN position_state ps
                ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
          WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2}
            AND ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; ''
-           AND ps.occupied_by_run = #{param3}
          ORDER BY r.id LIMIT 1
+    </select>
+
+    <!-- 设备内部搬运通知：装载口 ↔ 内部格。
+         不带 occupied_by_run 条件——内部格的板可能由前一个 run 放入。 -->
+    <update id="clearPositionForInternalMove">
+        UPDATE position_state
+           SET plate_id = NULL, content_kind = NULL, content_id = NULL,
+               occupied_since = NULL, occupied_by_run = NULL,
+               reserved_until = NULL, reserved_by_run = NULL,
+               updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+    </update>
+
+    <insert id="setPositionForInternalMove">
+        INSERT INTO position_state
+          (tenant_id, resource_id, plate_id, content_kind, content_id,
+           occupied_since, occupied_by_run, updated_at)
+        VALUES (#{param1}, #{param2}, #{param3}, 'plate', #{param4},
+                now(), #{param5}, now())
+        ON CONFLICT (tenant_id, resource_id) DO UPDATE
+          SET plate_id = EXCLUDED.plate_id,
+              content_kind = 'plate',
+              content_id = EXCLUDED.content_id,
+              occupied_since = now(),
+              occupied_by_run = EXCLUDED.occupied_by_run,
+              reserved_until = NULL,
+              reserved_by_run = NULL,
+              updated_at = now()
+    </insert>
+
+    <!-- P3 扫码接入：取该设备下当前放着的板号（可能是 TMP- 临时身份）。 -->
+    <select id="selectPlateIdOnDevice" resultType="java.lang.String">
+        SELECT ps.plate_id FROM position_state ps
+          JOIN resource_node r ON r.id = ps.resource_id AND r.tenant_id = ps.tenant_id
+         WHERE ps.tenant_id = #{param1} AND r.parent_id = #{param2}
+           AND ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; ''
+         ORDER BY r.id LIMIT 1
+    </select>
+
+    <!-- P2-4：设备下有几块板（>1 时扫码无法凭空关联到具体层位）。 -->
+    <select id="selectPlateCountOnDevice" resultType="long">
+        SELECT count(*) FROM position_state ps
+          JOIN resource_node r ON r.id = ps.resource_id AND r.tenant_id = ps.tenant_id
+         WHERE ps.tenant_id = #{param1} AND r.parent_id = #{param2}
+           AND ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; ''
+    </select>
+
+    <!-- 放板前校验：点位约束（板型/高度）。 -->
+    <select id="selectPointConstraints" resultType="java.util.Map">
+        SELECT array_to_string(plate_types, ',') AS "plateTypes",
+               max_height_mm AS "maxHeightMm"
+          FROM device_point
+         WHERE tenant_id = #{param1} AND point_resource_id = #{param2}
+    </select>
+
+    <!-- 放板前校验：板的板型与高度。 -->
+    <select id="selectPlateType" resultType="java.util.Map">
+        SELECT plate_type AS "plateType", height_mm AS "heightMm"
+          FROM plate
+         WHERE tenant_id = #{param1} AND barcode = #{param2} AND deleted_at IS NULL
     </select>
 
     <!-- reserved 含永久承诺位（reserved_until IS NULL + reserved_by_run 非空）。 -->
@@ -348,15 +464,92 @@
          WHERE tenant_id = #{param1} AND barcode = #{param2} AND deleted_at IS NULL
     </update>
 
+    <!-- P3：未扫码的板落成 PROVISIONAL，不再把 AUTO- 当永久真身份。
+         并发安全用 ON CONFLICT DO NOTHING（WHERE NOT EXISTS 在并发下有撞 uk_plate_barcode 的窗口，
+         异常会被 markPlateOutsideTx 吞掉、连带把 alias 写入也丢了）。 -->
     <insert id="insertPlateIfAbsent">
         INSERT INTO plate (tenant_id, barcode, plate_type, rows, cols,
-                           status, location_id, created_at, updated_at)
-        SELECT #{param1}, #{param2}, 'unknown', 8, 12, 'active', #{param3}, now(), now()
-        WHERE NOT EXISTS (
-            SELECT 1 FROM plate
-            WHERE tenant_id = #{param1} AND barcode = #{param2} AND deleted_at IS NULL
-        )
+                           status, location_id, identity_status, created_at, updated_at)
+        VALUES (#{param1}, #{param2}, 'unknown', 8, 12, 'active', #{param3},
+                'PROVISIONAL', now(), now())
+        ON CONFLICT (tenant_id, barcode) DO NOTHING
     </insert>
+
+    <!-- P2：实验开始前的点位与物料清单快照（一条 INSERT...SELECT 批量写，幂等）。 -->
+    <insert id="insertRunPositionSnapshot">
+        INSERT INTO run_position_snapshot
+          (tenant_id, run_id, resource_id, point_code, device_resource_id,
+           point_role, robot_reachable, occupied, plate_barcode, plate_uid,
+           content_kind, content_id, reserved_by_run, payload)
+        SELECT r.tenant_id, #{param2}, r.id, r.code, r.parent_id,
+               dp.point_role, dp.robot_reachable,
+               (ps.plate_id IS NOT NULL AND ps.plate_id &lt;&gt; ''),
+               ps.plate_id, p.id, ps.content_kind, ps.content_id, ps.reserved_by_run,
+               jsonb_build_object('kind', r.kind::text, 'location', r.location,
+                                  'attr', r.attr, 'note', dp.note)
+          FROM resource_node r
+          LEFT JOIN position_state ps
+                 ON ps.resource_id = r.id AND ps.tenant_id = r.tenant_id
+          LEFT JOIN device_point dp
+                 ON dp.point_resource_id = r.id AND dp.tenant_id = r.tenant_id
+          LEFT JOIN plate p
+                 ON p.barcode = ps.plate_id AND p.tenant_id = r.tenant_id
+                AND p.deleted_at IS NULL
+         WHERE r.tenant_id = #{param1}
+           AND r.kind IN ('incubator', 'storage', 'transfer_point')
+           AND r.deleted_at IS NULL
+        ON CONFLICT (tenant_id, run_id, resource_id) DO NOTHING
+    </insert>
+
+    <select id="selectRunPositionSnapshot" resultType="java.util.Map">
+        SELECT point_code AS "pointCode", device_resource_id AS "deviceResourceId",
+               point_role AS "pointRole", robot_reachable AS "robotReachable",
+               occupied AS "occupied", plate_barcode AS "plateBarcode",
+               plate_uid AS "plateUid", content_kind AS "contentKind",
+               reserved_by_run AS "reservedByRun", payload AS "payload"
+          FROM run_position_snapshot
+         WHERE tenant_id = #{param1} AND run_id = #{param2}
+         ORDER BY point_code
+    </select>
+
+    <!-- P3 身份层：真 barcode / 临时号统一解析到同一个 plate_uid。 -->
+    <select id="selectPlateUidByBarcode" resultType="java.lang.Long">
+        SELECT p.id FROM plate p
+         WHERE p.tenant_id = #{param1} AND p.barcode = #{param2}
+           AND p.deleted_at IS NULL
+        UNION ALL
+        SELECT a.plate_uid FROM plate_barcode_alias a
+         WHERE a.tenant_id = #{param1} AND a.alias = #{param2}
+        LIMIT 1
+    </select>
+
+    <select id="selectPlateUidByAlias" resultType="java.lang.Long">
+        SELECT plate_uid FROM plate_barcode_alias
+         WHERE tenant_id = #{param1} AND alias = #{param2}
+    </select>
+
+    <insert id="insertPlateAlias">
+        INSERT INTO plate_barcode_alias
+          (tenant_id, plate_uid, alias, alias_kind, is_canonical, seen_run_id, note)
+        SELECT #{param1}, p.id, #{param2}, #{param3}, #{param4}, #{param5}, #{param6}
+          FROM plate p
+         WHERE p.tenant_id = #{param1} AND p.barcode = #{param2}
+           AND p.deleted_at IS NULL
+        ON CONFLICT DO NOTHING
+    </insert>
+
+    <insert id="insertPlateAliasForUid">
+        INSERT INTO plate_barcode_alias
+          (tenant_id, plate_uid, alias, alias_kind, is_canonical, seen_run_id, note)
+        VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
+                #{param6}, #{param7})
+        ON CONFLICT DO NOTHING
+    </insert>
+
+    <update id="markPlateIdentityConfirmed">
+        UPDATE plate SET identity_status = 'CONFIRMED', updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
 
     <!-- DeviceLock（设备锁，阶段3第21批收编） -->
 

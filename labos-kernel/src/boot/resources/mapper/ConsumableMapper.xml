@@ -1,0 +1,329 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.ConsumableMapper">
+
+  <!-- ============================================================ 耗材目录 -->
+
+  <select id="selectConsumables" resultType="java.util.Map">
+    SELECT c.id, c.code, c.name, c.category, c.specification, c.unit,
+           c.max_stack AS "maxStack",
+           (SELECT count(*) FROM consumable_lot cl
+             WHERE cl.consumable_id = c.id AND cl.tenant_id = c.tenant_id
+               AND cl.deleted_at IS NULL) AS "lotCount",
+           (SELECT coalesce(sum(cl.remaining), 0) FROM consumable_lot cl
+             WHERE cl.consumable_id = c.id AND cl.tenant_id = c.tenant_id
+               AND cl.deleted_at IS NULL) AS "totalRemaining"
+      FROM consumable c
+     WHERE c.tenant_id = #{t} AND c.deleted_at IS NULL
+       <if test="category != null">
+         AND c.category = #{category}
+       </if>
+       <if test="islandId != null">
+         AND EXISTS (
+               SELECT 1 FROM consumable_lot cl
+                 JOIN resource_node dev
+                   ON dev.id = cl.device_id AND dev.tenant_id = cl.tenant_id
+                WHERE cl.consumable_id = c.id AND cl.tenant_id = c.tenant_id
+                  AND cl.deleted_at IS NULL AND dev.parent_id = #{islandId})
+       </if>
+     ORDER BY c.id
+  </select>
+
+  <select id="selectConsumable" resultType="java.util.Map">
+    SELECT id, code, name, category, specification, unit,
+           max_stack AS "maxStack"
+      FROM consumable
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </select>
+
+  <insert id="insertConsumable">
+    INSERT INTO consumable (tenant_id, code, name, category, specification, unit, max_stack)
+    VALUES (#{t}, #{code}, #{name}, #{category}, #{specification}, #{unit}, #{maxStack})
+  </insert>
+
+  <update id="updateConsumable">
+    UPDATE consumable
+       SET name = #{name}, category = #{category}, specification = #{specification},
+           unit = #{unit}, max_stack = #{maxStack}, updated_at = now()
+     WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <update id="deleteConsumable">
+    UPDATE consumable SET deleted_at = now(), updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <!-- ============================================================ 耗材库存 -->
+
+  <select id="selectLots" resultType="java.util.Map">
+    SELECT cl.id, cl.consumable_id AS "consumableId",
+           cl.lot_no AS "lotNo", cl.barcode,
+           cl.quantity, cl.remaining,
+           cl.location_id AS "locationId", cl.device_id AS "deviceId",
+           cl.expire_at AS "expireAt", cl.status, cl.received_at AS "receivedAt",
+           c.code AS "consumableCode", c.name AS "consumableName",
+           dev.code AS "deviceCode", dev.name AS "deviceName",
+           pos.code AS "positionCode"
+      FROM consumable_lot cl
+      JOIN consumable c ON c.id = cl.consumable_id AND c.tenant_id = cl.tenant_id
+      LEFT JOIN resource_node dev ON dev.id = cl.device_id AND dev.tenant_id = cl.tenant_id
+      LEFT JOIN resource_node pos ON pos.id = cl.location_id AND pos.tenant_id = cl.tenant_id
+     WHERE cl.tenant_id = #{t} AND cl.deleted_at IS NULL
+       <if test="consumableId != null">
+         AND cl.consumable_id = #{consumableId}
+       </if>
+       <if test="islandId != null">
+         AND dev.parent_id = #{islandId}
+       </if>
+     ORDER BY cl.id
+  </select>
+
+  <select id="selectLot" resultType="java.util.Map">
+    SELECT id, consumable_id AS "consumableId", lot_no AS "lotNo", barcode,
+           quantity, remaining, location_id AS "locationId", device_id AS "deviceId",
+           expire_at AS "expireAt", status
+      FROM consumable_lot
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </select>
+
+  <insert id="insertLot">
+    INSERT INTO consumable_lot (tenant_id, consumable_id, lot_no, barcode,
+                                quantity, remaining, location_id, device_id,
+                                expire_at, status)
+    VALUES (#{t}, #{consumableId}, #{lotNo}, #{barcode},
+            #{quantity}, #{remaining}, #{locationId}, #{deviceId},
+            #{expireAt}::timestamptz, #{status})
+  </insert>
+
+  <update id="updateLot">
+    UPDATE consumable_lot
+    <set>
+      remaining = #{remaining},
+      <if test="locationId != null">location_id = #{locationId},</if>
+      <if test="deviceId != null">device_id = #{deviceId},</if>
+      <if test="expireAt != null">expire_at = #{expireAt}::timestamptz,</if>
+      <if test="status != null">status = #{status},</if>
+      updated_at = now()
+    </set>
+    WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <update id="deleteLot">
+    UPDATE consumable_lot SET deleted_at = now(), updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <!-- ============================================================ 点位配置 -->
+
+  <!--
+    单独位置（培养箱/堆栈的进出口装载口）不属于网格：is_standalone=true 时
+    强制把 grid_row/grid_col 清成 NULL，否则它会混进「几行几列」的网格视图。
+    position_label 传 null = 保持现场已改的标识不动；传空串 = 清空（页面回退显示 code）。
+  -->
+  <update id="updateDevicePoint">
+    UPDATE device_point
+       SET point_role = #{pointRole}, robot_reachable = #{robotReachable},
+           is_entry = #{isEntry}, is_exit = #{isExit},
+           order_in_device = #{orderInDevice},
+           -- 编辑弹窗不填备注时不该把已有「装载口」备注冲掉
+           note = COALESCE(NULLIF(#{note,jdbcType=VARCHAR}, ''), note),
+           position_label = CASE WHEN #{positionLabel,jdbcType=VARCHAR} IS NULL
+                                 THEN position_label
+                                 ELSE NULLIF(#{positionLabel,jdbcType=VARCHAR}, '') END,
+           is_standalone = COALESCE(#{isStandalone,jdbcType=BOOLEAN}, is_standalone),
+           -- grid_row/grid_col 保持直接赋值：包进 CASE 时 untyped 参数会被 PG 推断成
+           -- text，赋给 smallint 列会报错。「单独位置清空坐标」放在 Java 层做。
+           grid_row = #{gridRow}, grid_col = #{gridCol},
+           max_height_mm = #{maxHeightMm},
+           plate_types = CASE WHEN #{plateTypes} IS NULL OR #{plateTypes} = ''
+                              THEN NULL ELSE string_to_array(#{plateTypes}, ',') END,
+           updated_at = now()
+     WHERE tenant_id = #{t} AND point_resource_id = #{pointResourceId}
+  </update>
+
+  <select id="selectDeviceCode" resultType="java.lang.String">
+    SELECT code FROM resource_node
+     WHERE tenant_id = #{t} AND id = #{deviceResourceId} AND kind = 'device'
+  </select>
+
+  <!--
+    网格之外的单独位置（进出口装载口）：一条语句原子写三张表。
+    · kind 沿用设备下已有网格点位的 kind（incubator/storage），没有就 storage；
+      用子查询而不是参数，避免 varchar 参数写 enum 列的类型问题。
+    · 同 code 已存在时复用（ON CONFLICT DO UPDATE），重复点「新建」不会造重复点位。
+  -->
+  <insert id="insertStandalonePoint">
+    WITH rn AS (
+      INSERT INTO resource_node (tenant_id, code, name, parent_id, kind, location, attr, sort_order)
+      VALUES (#{t}, #{pointCode}, #{pointCode}, #{deviceResourceId},
+              COALESCE((SELECT r2.kind FROM resource_node r2
+                         WHERE r2.tenant_id = #{t} AND r2.parent_id = #{deviceResourceId}
+                           AND r2.kind IN ('incubator','storage')
+                         ORDER BY r2.id LIMIT 1), 'storage'),
+              jsonb_build_object('zone', #{deviceCode}, 'point', #{pointCode}),
+              '{"source":"load-port"}'::jsonb, 0)
+      ON CONFLICT (tenant_id, code) DO UPDATE
+        SET parent_id = EXCLUDED.parent_id, updated_at = now()
+      RETURNING id
+    ), dp AS (
+      INSERT INTO device_point (tenant_id, device_resource_id, point_resource_id, point_role,
+                                robot_reachable, is_entry, is_exit, order_in_device,
+                                is_standalone, position_label, note)
+      SELECT #{t}, #{deviceResourceId}, rn.id, 'both', true, #{isEntry}, #{isExit}, 0,
+             true, #{positionLabel}, '单独位置（进口/出口，网格外；机械臂装载口）'
+        FROM rn
+      ON CONFLICT (tenant_id, point_resource_id) DO UPDATE SET
+        point_role = 'both', robot_reachable = true,
+        is_entry = EXCLUDED.is_entry, is_exit = EXCLUDED.is_exit,
+        is_standalone = true,
+        position_label = COALESCE(NULLIF(EXCLUDED.position_label, ''), device_point.position_label),
+        grid_row = NULL, grid_col = NULL, updated_at = now()
+      RETURNING point_resource_id
+    ), ps AS (
+      INSERT INTO position_state (tenant_id, resource_id, plate_id, updated_at)
+      SELECT #{t}, dp.point_resource_id, NULL, now() FROM dp
+      ON CONFLICT (tenant_id, resource_id) DO NOTHING
+      RETURNING resource_id
+    )
+    SELECT id FROM rn
+  </insert>
+
+  <!-- ============================================================ 统一「点位内容」模型 -->
+
+  <select id="selectLotIdByNo" resultType="java.lang.Long">
+    SELECT id FROM consumable_lot
+     WHERE tenant_id = #{t} AND consumable_id = #{consumableId}
+       AND lot_no = #{lotNo} AND deleted_at IS NULL
+     ORDER BY id DESC LIMIT 1
+  </select>
+
+  <select id="selectParentDeviceId" resultType="java.lang.Long">
+    SELECT parent_id FROM resource_node
+     WHERE tenant_id = #{t} AND id = #{resourceId} AND parent_id IS NOT NULL
+  </select>
+
+  <insert id="upsertPositionContent">
+    INSERT INTO position_state (tenant_id, resource_id, plate_id, content_kind, content_id, updated_at)
+    VALUES (#{t}, #{resourceId}, NULL, #{contentKind}, #{contentId}, now())
+    ON CONFLICT (tenant_id, resource_id) DO UPDATE
+      SET plate_id = NULL,
+          content_kind = EXCLUDED.content_kind,
+          content_id = EXCLUDED.content_id,
+          updated_at = now()
+  </insert>
+
+  <update id="clearPositionContent">
+    UPDATE position_state
+       SET content_kind = NULL, content_id = NULL, updated_at = now()
+     WHERE tenant_id = #{t} AND resource_id = #{resourceId}
+  </update>
+
+  <!-- ============================================================ 试剂目录 -->
+
+  <select id="selectReagents" resultType="java.util.Map">
+    SELECT r.id, r.code, r.name, r.category, r.specification, r.unit,
+           (SELECT count(*) FROM reagent_lot rl
+             WHERE rl.reagent_id = r.id AND rl.tenant_id = r.tenant_id
+               AND rl.deleted_at IS NULL) AS "lotCount",
+           (SELECT coalesce(sum(rl.remaining), 0) FROM reagent_lot rl
+             WHERE rl.reagent_id = r.id AND rl.tenant_id = r.tenant_id
+               AND rl.deleted_at IS NULL) AS "totalRemaining"
+      FROM reagent r
+     WHERE r.tenant_id = #{t} AND r.deleted_at IS NULL
+       <if test="category != null">
+         AND r.category = #{category}
+       </if>
+       <if test="islandId != null">
+         AND EXISTS (
+               SELECT 1 FROM reagent_lot rl
+                 JOIN resource_node dev
+                   ON dev.id = rl.device_id AND dev.tenant_id = rl.tenant_id
+                WHERE rl.reagent_id = r.id AND rl.tenant_id = r.tenant_id
+                  AND rl.deleted_at IS NULL AND dev.parent_id = #{islandId})
+       </if>
+     ORDER BY r.id
+  </select>
+
+  <insert id="insertReagent">
+    INSERT INTO reagent (tenant_id, code, name, category, specification, unit)
+    VALUES (#{t}, #{code}, #{name}, #{category}, #{specification}, #{unit})
+  </insert>
+
+  <update id="updateReagent">
+    UPDATE reagent
+       SET name = #{name}, category = #{category}, specification = #{specification},
+           unit = #{unit}, updated_at = now()
+     WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <update id="deleteReagent">
+    UPDATE reagent SET deleted_at = now(), updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <!-- ============================================================ 试剂库存 -->
+
+  <select id="selectReagentLots" resultType="java.util.Map">
+    SELECT rl.id, rl.reagent_id AS "reagentId",
+           rl.lot_no AS "lotNo",
+           rl.volume, rl.remaining,
+           rl.location_id AS "locationId", rl.device_id AS "deviceId",
+           rl.expire_at AS "expireAt", rl.status,
+           r.code AS "reagentCode", r.name AS "reagentName",
+           dev.code AS "deviceCode", pos.code AS "positionCode"
+      FROM reagent_lot rl
+      JOIN reagent r ON r.id = rl.reagent_id AND r.tenant_id = rl.tenant_id
+      LEFT JOIN resource_node dev ON dev.id = rl.device_id AND dev.tenant_id = rl.tenant_id
+      LEFT JOIN resource_node pos ON pos.id = rl.location_id AND pos.tenant_id = rl.tenant_id
+     WHERE rl.tenant_id = #{t} AND rl.deleted_at IS NULL
+       <if test="reagentId != null">
+         AND rl.reagent_id = #{reagentId}
+       </if>
+       <if test="islandId != null">
+         AND dev.parent_id = #{islandId}
+       </if>
+     ORDER BY rl.id
+  </select>
+
+  <select id="selectReagentLot" resultType="java.util.Map">
+    SELECT id, reagent_id AS "reagentId", lot_no AS "lotNo",
+           volume, remaining, location_id AS "locationId", device_id AS "deviceId",
+           expire_at AS "expireAt", status
+      FROM reagent_lot
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </select>
+
+  <insert id="insertReagentLot">
+    INSERT INTO reagent_lot (tenant_id, reagent_id, lot_no, volume, remaining,
+                             location_id, device_id, expire_at, status)
+    VALUES (#{t}, #{reagentId}, #{lotNo}, #{volume}, #{remaining},
+            #{locationId}, #{deviceId}, #{expireAt}::timestamptz, #{status})
+  </insert>
+
+  <update id="updateReagentLot">
+    UPDATE reagent_lot
+    <set>
+      remaining = #{remaining},
+      <if test="locationId != null">location_id = #{locationId},</if>
+      <if test="deviceId != null">device_id = #{deviceId},</if>
+      <if test="expireAt != null">expire_at = #{expireAt}::timestamptz,</if>
+      <if test="status != null">status = #{status},</if>
+      updated_at = now()
+    </set>
+    WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <update id="deleteReagentLot">
+    UPDATE reagent_lot SET deleted_at = now(), updated_at = now()
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <select id="selectReagentLotIdByNo" resultType="java.lang.Long">
+    SELECT id FROM reagent_lot
+     WHERE tenant_id = #{t} AND reagent_id = #{reagentId}
+       AND lot_no = #{lotNo} AND deleted_at IS NULL
+     ORDER BY id DESC LIMIT 1
+  </select>
+
+</mapper>

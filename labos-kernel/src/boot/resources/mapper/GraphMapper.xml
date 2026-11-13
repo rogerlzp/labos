@@ -65,11 +65,26 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
 
+    <!--
+      流程头信息。除了设计器要用的 islandId，这里一并带上治理维度
+      （version/status/时间戳/岛名），让详情抽屉在**深链直接打开**（?wf=xxx）
+      时也能显示完整信息 —— 那时列表里没有这一行，取不到 selectedRow。
+      调用方只读自己关心的键，多出来的列不影响既有行为。
+    -->
     <select id="selectWorkflowHeader" resultType="java.util.Map">
-        SELECT id AS "id", code AS "code", name AS "name", category AS "category",
-               island_id AS "islandId"
-          FROM workflow
-         WHERE tenant_id = #{param1} AND id = #{param2}
+        SELECT w.id AS "id", w.code AS "code", w.name AS "name", w.category AS "category",
+               w.island_id  AS "islandId",
+               rn.code      AS "islandCode",
+               rn.name      AS "islandName",
+               w.version    AS "version",
+               w.status     AS "status",
+               w.created_at AS "createdAt",
+               w.updated_at AS "updatedAt",
+               w.updated_by AS "updatedBy"
+          FROM workflow w
+          LEFT JOIN resource_node rn
+                 ON rn.id = w.island_id AND rn.kind = 'island'
+         WHERE w.tenant_id = #{param1} AND w.id = #{param2}
     </select>
 
     <select id="selectWorkflowHeaders" resultType="java.util.Map">

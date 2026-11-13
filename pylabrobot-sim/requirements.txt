@@ -1,0 +1,3 @@
+# 基础包已自带 websocket 可视化前端与全部耗材模型，无需 [hamilton] extra
+pylabrobot==0.2.2
+websockets==17.4

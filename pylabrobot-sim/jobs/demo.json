@@ -1,0 +1,16 @@
+{
+  "job_id": "demo-liquid-handler-001",
+  "trace_id": "trace-demo-001",
+  "equipment_id": "LH-SIM-01",
+  "commands": [
+    {"message_id": "cmd-001", "method": "Home", "parameters": {}},
+    {"message_id": "cmd-002", "method": "GetTips", "parameters": {"tipBox": "tips_300ul", "count": 1}},
+    {"message_id": "cmd-003", "method": "Aspirate", "parameters": {"volume": 100, "labware": "src_plate", "well": "A1"}},
+    {"message_id": "cmd-004", "method": "Dispense", "parameters": {"volume": 100, "labware": "dst_plate", "well": "B1"}},
+    {"message_id": "cmd-005", "method": "Transfer", "parameters": {"srcLabware": "src_plate", "srcWell": "A2", "dstLabware": "dst_plate", "dstWell": "B2", "volume": 50}},
+    {"message_id": "cmd-006", "method": "Mix", "parameters": {"labware": "dst_plate", "well": "B1", "volume": 20, "cycles": 3}},
+    {"message_id": "cmd-007", "method": "GetStatus", "parameters": {}},
+    {"message_id": "cmd-008", "method": "DropTips", "parameters": {}},
+    {"message_id": "cmd-009", "method": "Stop", "parameters": {}}
+  ]
+}

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="实验室中控 LabOS">
+  <defs>
+    <linearGradient id="labos-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="rgb(74, 155, 255)"/>
+      <stop offset="1" stop-color="rgb(11, 69, 184)"/>
+    </linearGradient>
+    <radialGradient id="labos-hl" cx="0.30" cy="0.23" r="0.55">
+      <stop offset="0" stop-color="rgb(255, 255, 255)" stop-opacity="0.180"/>
+      <stop offset="1" stop-color="rgb(255, 255, 255)" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- 背板：圆角徽章 + 对角渐变 + 左上柔光 -->
+  <rect x="0" y="0" width="64" height="64" rx="14.0" fill="url(#labos-bg)"/>
+  <rect x="0" y="0" width="64" height="64" rx="14.0" fill="url(#labos-hl)"/>
+  <!-- "中"字：方框(口) + 贯穿竖线(中枢) -->
+  <g fill="none" stroke="rgb(255, 255, 255)" stroke-width="5.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="17.0" y="20.0" width="30.0" height="25.0" rx="6.0"/>
+    <line x1="32.0" y1="9.0" x2="32.0" y2="55.0"/>
+  </g>
+</svg>

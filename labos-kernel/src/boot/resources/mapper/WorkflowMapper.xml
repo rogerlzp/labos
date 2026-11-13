@@ -42,17 +42,114 @@
            AND code = #{param2}
     </select>
 
-    <!-- 流程列表：category 传 null/空时整段条件不渲染（勿用 ?::text IS NULL，JDBC 推不出 NULL 类型）。 -->
+    <!--
+      流程列表：category / q 传 null/空时整段条件不渲染（勿用 ?::text IS NULL，
+      JDBC 推不出 NULL 类型）。
+
+      治理维度（version/status/island/时间戳）在这里一次性取出来：workflow 表
+      本来就有这些列，只是从前没 select，界面因此无法回答"这条归哪个岛、
+      改过没有、最后谁动的"。
+
+      岛只给 code/name，不给裸 id —— ADR-ISLAND-005 / N-09：界面上不显示
+      island_id，数字对现场没有意义。resource_node 里 kind='island' 才有岛，
+      这里用 LEFT JOIN 是因为存量流程 island_id 允许 NULL（P-01：存量不推断、
+      不回填，由 IslandBoundaryValidator 判 UNKNOWN）。
+
+      别名用双引号写成驼峰，resultType 是 Map 时 MyBatis 不会做下划线转驼峰，
+      所以只能在 SQL 里定好 key。
+
+      deleted_at IS NULL：软删的流程不能再出现在流程库里（历史遗漏）。
+    -->
     <select id="selectWorkflowList" resultType="java.util.Map">
         SELECT w.id, w.code, w.name, w.category,
+               w.version, w.status,
+               w.island_id   AS "islandId",
+               rn.code       AS "islandCode",
+               rn.name       AS "islandName",
+               w.created_at  AS "createdAt",
+               w.updated_at  AS "updatedAt",
+               w.updated_by  AS "updatedBy",
                (SELECT count(*) FROM workflow_node n
                  WHERE n.workflow_id = w.id AND n.node_type = 'task') AS task_count
           FROM workflow w
+          LEFT JOIN resource_node rn
+                 ON rn.id = w.island_id AND rn.kind = 'island'
          WHERE w.tenant_id = #{tenantId}
+           AND w.deleted_at IS NULL
         <if test="category != null and category != ''">
            AND w.category = #{category}
         </if>
-         ORDER BY w.updated_at DESC NULLS LAST, w.id DESC LIMIT #{limit}
+        <if test="q != null and q != ''">
+           AND (w.name ILIKE '%' || #{q} || '%' OR w.code ILIKE '%' || #{q} || '%')
+        </if>
+        <if test="islandId != null and islandId != ''">
+          <!-- 'none' = 未指定岛（P-01：存量不推断、不回填，这一档长期非空，
+               它本身就是"待补录归属"的清单规模，必须能一键筛出来）。 -->
+          <choose>
+            <when test="islandId == 'none'">AND w.island_id IS NULL</when>
+            <otherwise>AND w.island_id = #{islandId}::bigint</otherwise>
+          </choose>
+        </if>
+        <if test="emptyGraph">
+           AND NOT EXISTS (SELECT 1 FROM workflow_node n
+                            WHERE n.workflow_id = w.id AND n.node_type = 'task')
+        </if>
+         ORDER BY w.updated_at DESC NULLS LAST, w.id DESC
+         LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!--
+      流程库台账统计：给页头的统计条用。
+
+      为什么单独一条查询而不是让前端数当前页：统计条必须覆盖**全库**
+      （"库里 158 条里有 8 条空流程"是台账级事实），按当前页数会骗人。
+
+      空流程 = 一个 task 节点都没有（只建了开始/结束的壳）。
+      未指定岛 = workflow.island_id IS NULL（P-01：存量不推断、不回填，
+      所以这个数会长期大于 0，它本身就是"待补录"的清单规模）。
+    -->
+    <select id="countWorkflowStats" resultType="java.util.Map">
+        SELECT count(*)                                                   AS "total",
+               count(*) FILTER (WHERE w.status = 2)                       AS "published",
+               count(*) FILTER (WHERE w.status = 1)                       AS "draft",
+               count(*) FILTER (WHERE w.island_id IS NULL)                AS "noIsland",
+               count(*) FILTER (
+                   WHERE NOT EXISTS (SELECT 1 FROM workflow_node n
+                                     WHERE n.workflow_id = w.id AND n.node_type = 'task')
+               )                                                          AS "emptyGraph"
+          FROM workflow w
+         WHERE w.tenant_id = #{tenantId}
+           AND w.deleted_at IS NULL
+    </select>
+
+    <!--
+      列表总数：分页必须知道自己有多少条，否则前端只能按"返回条数"猜，
+      而返回条数永远等于本页条数 —— 表现就是"永远只有 1 页"。
+      过滤条件必须和 selectWorkflowList 保持一致，否则页数会算错。
+    -->
+    <select id="countWorkflowList" resultType="int">
+        SELECT count(*)
+          FROM workflow w
+         WHERE w.tenant_id = #{tenantId}
+           AND w.deleted_at IS NULL
+        <if test="category != null and category != ''">
+           AND w.category = #{category}
+        </if>
+        <if test="q != null and q != ''">
+           AND (w.name ILIKE '%' || #{q} || '%' OR w.code ILIKE '%' || #{q} || '%')
+        </if>
+        <if test="islandId != null and islandId != ''">
+          <!-- 'none' = 未指定岛（P-01：存量不推断、不回填，这一档长期非空，
+               它本身就是"待补录归属"的清单规模，必须能一键筛出来）。 -->
+          <choose>
+            <when test="islandId == 'none'">AND w.island_id IS NULL</when>
+            <otherwise>AND w.island_id = #{islandId}::bigint</otherwise>
+          </choose>
+        </if>
+        <if test="emptyGraph">
+           AND NOT EXISTS (SELECT 1 FROM workflow_node n
+                            WHERE n.workflow_id = w.id AND n.node_type = 'task')
+        </if>
     </select>
 
     <!-- workflow_node 读侧（WorkflowService 执行前的图装配）。 -->

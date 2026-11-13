@@ -29,6 +29,8 @@ import ScheduleGanttPage from './pages/ScheduleGantt';
 import SchedulerPage from './pages/Scheduler';
 import ExperimentCanvasPage from './pages/ExperimentCanvas';
 import IslandFlowPage from './pages/IslandFlow';
+import PositionsPage from './pages/Positions';
+import ConsumablesPage from './pages/Consumables';
 import LoginPage from './pages/Login';
 import IslandPage from './pages/Island';
 import UsersPage from './pages/Users';
@@ -38,6 +40,7 @@ import TopologyPage from './pages/Topology';
 import ModelLibraryPage from './pages/ModelLibrary';
 import S2TestCasesPage from './pages/S2TestCases';
 import { useI18n } from './i18n';
+import markUrl from './assets/labos-mark.svg';
 
 const { Header, Sider, Content } = Layout;
 
@@ -152,7 +155,18 @@ function AppInner() {
           padding: '0 20px', background: '#151920', borderBottom: '1px solid #262c38',
         }}
       >
-        <Typography.Text strong style={{ fontSize: 15 }}>{t('app.title')}</Typography.Text>
+        {/* 徽标 + 系统名：徽标跟浏览器标签页是同一张图（同一个脚本产出），
+            免得"标签页一个样、顶栏另一个样"。 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <img
+            src={markUrl}
+            alt="LabOS"
+            width={24}
+            height={24}
+            style={{ borderRadius: 6, display: 'block' }}
+          />
+          <Typography.Text strong style={{ fontSize: 15 }}>{t('app.title')}</Typography.Text>
+        </div>
         <Tag color="blue">{t('app.tag.intranet')}</Tag>
         <div style={{ flex: 1 }} />
         <Space size={12}>
@@ -230,6 +244,8 @@ function AppInner() {
             <Route path="/canvas" element={<ExperimentCanvasPage />} />
             <Route path="/canvas/:id" element={<ExperimentCanvasPage />} />
             <Route path="/island-flow" element={<IslandFlowPage />} />
+            <Route path="/positions" element={<PositionsPage />} />
+            <Route path="/consumables" element={<ConsumablesPage />} />
             <Route path="/designer/:id" element={<DesignerPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/policies" element={<PoliciesPage />} />

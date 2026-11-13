@@ -29,6 +29,9 @@ public final class ExecutionResolutionSelfTest {
         eq("null(非驱动失败) → 保守 reconciliation_required",
                 ExecutionResolution.RECONCILIATION_REQUIRED,
                 ExecutionResolution.classify(null, "EC-99-0001"));
+        eq("资源预留失败(命令未下发) → failed_confirmed",
+                ExecutionResolution.FAILED_CONFIRMED,
+                ExecutionResolution.classify(null, "EC-RESOURCE-BUSY"));
 
         section("2. dbValue 与 DDL CHECK 对齐");
         eq("unresolved", "unresolved", ExecutionResolution.UNRESOLVED.dbValue());

@@ -3531,7 +3531,7 @@ CREATE TABLE IF NOT EXISTS position_evidence (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE position_evidence IS 'P-08 物理位置证据：人工盘点/扫码/传感器；设备回包只算运动报告';
+COMMENT ON TABLE position_evidence IS 'P-08 物理位置证据：人工盘点/扫码/传感器；DEVICE_REPORT 需满足自动确认条件且开关启用（M 方案 2026-11-13）';
 
 CREATE INDEX IF NOT EXISTS ix_position_evidence_plate
     ON position_evidence (tenant_id, plate_barcode, created_at DESC);
@@ -3558,7 +3558,7 @@ CREATE TABLE IF NOT EXISTS transfer_transaction (
 );
 
 COMMENT ON TABLE transfer_transaction IS
-    'P-08 TransferTransaction：设备回包=运动报告；CONFIRMED 需独立位置证据';
+    'P-08 TransferTransaction：设备回包=运动报告；CONFIRMED 需人工/扫码/传感器，或满足九项条件的 DEVICE_REPORT 自动确认（M 方案 2026-11-13）';
 
 CREATE INDEX IF NOT EXISTS ix_transfer_txn_pending
     ON transfer_transaction (tenant_id, id) WHERE status IN ('REPORTED', 'UNKNOWN');

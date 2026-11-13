@@ -130,19 +130,78 @@ export interface WorkflowSummary {
   name: string;
   category: string;
   nodeCount: number;
+  /**
+   * 流程版本号（`workflow.version`）。
+   *
+   * <p>现状：`GraphMapper.updateWorkflowGraph` 只更新 graph/updated_at，**不递增 version**，
+   * 新建固定 version=1 ⇒ 库里这一列目前恒为 1，真正的版本留存靠
+   * `workflow_graph_history`。列表展示时不要拿它当"改过几次"用。
+   */
+  version?: number;
+  /** 状态码：1=草稿 / 2=已发布 / 3=已停用（见 Workflows.tsx 的 STATUS_META） */
+  status?: number;
   /** 权威岛（`workflow.island_id`）：流程的执行边界。null = 未定岛（旧流程） */
   islandId?: number | null;
+  /** 岛编号（`resource_node.code`，如 LAB-01）。界面只显示这个，不显示裸 id */
+  islandCode?: string | null;
+  islandName?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  updatedBy?: number | null;
+}
+
+/** `GET /api/workflows` 的分页响应：`total` 是过滤后的真总数（不是本页条数）。 */
+export interface WorkflowListPage {
+  total: number;
+  limit: number;
+  offset: number;
+  items: WorkflowSummary[];
 }
 
 export interface WorkflowDetail {
   workflow: WorkflowSummary;
   tasks: Array<{
+    /** 节点 id（列表 key 用；接口一直有返回） */
+    id?: number;
     name: string;
+    /** 能力 code（内核词，如 INCUBATE） */
     capability: string;
+    /**
+     * 能力的中文业务名（capability.name，如 INCUBATE→孵育）。
+     *
+     * <p>界面显示它而不是裸 code：SEAL/TRANSFER/CENTRIFUGE 是内核词表，
+     * 现场看的是"封膜/转运/离心"。缺名字时回落到 code。
+     */
+    capabilityName?: string;
     source: 'explicit' | 'protocol' | 'protocol-short' | 'heuristic' | 'logic' | 'unknown';
     method: string;
   }>;
   edgeCount: number;
+}
+
+/**
+ * 台账统计（`GET /api/workflows/stats`）：页头统计条用。
+ *
+ * <p>覆盖**全库**，不受列表的 limit/offset/搜索词影响 —— 统计条回答的是
+ * "这个台账整体什么状况"，不是"当前这页有什么"。
+ */
+export interface WorkflowStats {
+  total: number;
+  published: number;
+  draft: number;
+  /** 未指定岛的流程数（P-01：存量不推断、不回填，这一档长期非空） */
+  noIsland: number;
+  /** 一个 task 节点都没有的"空流程"数（只建了开始/结束的壳） */
+  emptyGraph: number;
+}
+
+/** 一次保存的图快照（`workflow_graph_history`）。 */
+export interface WorkflowHistoryItem {
+  id: number;
+  nodeCount: number;
+  edgeCount: number;
+  bytes: number;
+  savedAt: string;
 }
 
 /** 编译预览：一个业务节点展开成几步。 */
@@ -680,8 +739,68 @@ export const api = {
 
   logout: () => req<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
-  workflows: (limit = 100) =>
-    req<{ items: WorkflowSummary[] }>(`/api/workflows?limit=${limit}`),
+  /**
+   * 流程列表。
+   *
+   * <p>两种调用形态都支持：
+   * - `api.workflows(300)` —— 老写法，只要前 N 条（实验页的"选流程"下拉仍在用，
+   *   它需要尽量全的清单，不走分页）；
+   * - `api.workflows({ limit, offset, q, category })` —— 流程库的服务端分页 + 筛选。
+   *
+   * <p>⚠ 两个页面**不要共用同一个 queryKey**：流程库按页取 50 条、实验页取 300 条，
+   * 用同一个 key 会互相覆盖缓存，实验页下拉会静默只剩一页流程。
+   */
+  workflows: (
+    p: {
+      limit?: number; offset?: number; q?: string; category?: string;
+      /** 岛 id；'none' = 未指定岛（后端按 island_id IS NULL 处理） */
+      islandId?: string;
+      /** 只看空流程（一个 task 节点都没有的壳） */
+      empty?: boolean;
+    } | number = {},
+  ) => {
+    const o = typeof p === 'number' ? { limit: p } : p;
+    const qs = new URLSearchParams();
+    qs.set('limit', String(o.limit ?? 100));
+    if (o.offset) qs.set('offset', String(o.offset));
+    if (o.q) qs.set('q', o.q);
+    if (o.category) qs.set('category', o.category);
+    if (o.islandId) qs.set('islandId', o.islandId);
+    if (o.empty) qs.set('empty', '1');
+    return req<WorkflowListPage>(`/api/workflows?${qs.toString()}`);
+  },
+
+  /** 台账统计：页头统计条（总数/已发布/草稿/未指定岛/空流程）。 */
+  workflowStats: () => req<WorkflowStats>('/api/workflows/stats'),
+
+  /** 某条流程的运行记录（抽屉里的"最近运行"）：最近 N 次执行的结果。 */
+  workflowRuns: (id: number, limit = 5) =>
+    req<{
+      workflowId: number;
+      total: number;
+      items: Array<{
+        id: number;
+        runNo: string;
+        status: string;
+        startedAt: string | null;
+        finishedAt: string | null;
+        durationSec: number | null;
+        total: number;
+        done: number;
+        manual: number;
+        failed: number;
+      }>;
+    }>(`/api/workflows/${id}/runs?limit=${limit}`),
+
+  /** 图版本历史：每次保存一条，可回滚（回滚走已有审计）。 */
+  workflowHistory: (id: number) =>
+    req<{ workflowId: number; items: WorkflowHistoryItem[] }>(
+      `/api/workflows/${id}/history`),
+
+  /** 回滚到某个历史版本（后端写 workflow.restore 审计）。 */
+  restoreWorkflowHistory: (id: number, hid: number) =>
+    req<{ restored: boolean; historyId: number }>(
+      `/api/workflows/${id}/history/${hid}/restore`, { method: 'POST' }),
 
   workflow: (id: number) => req<WorkflowDetail>(`/api/workflows/${id}`),
 
@@ -749,6 +868,22 @@ export const api = {
    *
    * <p>现在：带 token；非 2xx 一律抛 ApiError，让调用方的 catch 能提示失败。
    */
+  /**
+   * AI 规划修改：把「需求 + 当前流程规格 + 设备目录」交给后端，
+   * 后端调 LLM 拿回一串**修改操作**（ops）。
+   *
+   * <p>为什么 LLM 在服务端调：key 不能暴露在前端；也要有配额与审计。
+   * 后端没配 {@code LABOS_AI_APIKEY} 时返回 503 ⇒ 页面提示"AI 未配置"。
+   */
+  aiPlan: (id: number, body: {
+    instruction: string;
+    currentSpec: unknown;
+    catalog: string;
+  }) => req<{ ops: unknown[] }>(`/api/workflows/${id}/ai/plan`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+
   saveGraph: async (id: number, xml: string, opts?: { draft?: boolean }) => {
     const token = tokenStore.get();
     // 自动化/编辑器中间态：拖入节点、自动插机械臂、删节点后还没补全整图，

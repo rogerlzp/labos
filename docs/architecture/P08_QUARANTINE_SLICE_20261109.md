@@ -89,3 +89,42 @@ Batch 2 要求「启动恢复不无条件清理设备锁」。
 2. TransferTransaction + 物理到位确认未做；
 3. 隔离 run 的页面入口（目前 Runs 列表状态可见，无单独处置页）；
 4. QUARANTINED 与人工窗口/Handoff 的联动仍待做。
+
+---
+
+## 五、后续变更 · M 方案自动位置确认（2026-11-13）
+
+> 本节记录 2026-11-09 之后的设计变更；**上面各节是当时口径，保留不改以便追溯**。
+> 用户 2026-11-13 拍板 M，要求「按严谨方式」实施。完整设计见
+> `docs/评审记录/20261113-02-物料追踪-评审检查清单.md`「区 4 定稿方案 · M」。
+
+- **CONFIRMED 的证据来源扩展**：人工盘点/扫码/传感器 **+** `DEVICE_REPORT`。
+  `DEVICE_REPORT` 仅在九项条件全部满足、且 `LABOS_TRANSFER_AUTO_CONFIRM` 开关
+  （**默认关、按 workflow 生效**：空=关 / `1`=全局 / 逗号分隔的 wf id=仅这些流程）
+  启用时由 `TransferTransaction.confirmByDeviceReport` 写入；与人工 `confirm`
+  共用状态白名单 CAS 与同一组 mapper，不另开状态机。
+  ⚠️ 不设全局：全库 23 个 wf 含 Transfer 节点，只有 1000830 配了板号。
+- **恢复强门禁判定不变**：`PauseManager.resume` / `PauseCoordinator.resumeWorkflowRun`
+  的 `count(status IN ('REPORTED','UNKNOWN')) > 0` 保持原样。自动确认提供的是一条
+  合法的 CONFIRMED 路径，**不是短路门禁**；fail-closed 不丢。
+- **位置登记入口**：`DriverStepExecutor.executeWithPlan` 成功分支 →
+  `PositionLock.noteTransferMove`（复用 `takePlate/putPlate`，写 audit 两行：
+  取板 `KNOWN→IN_TRANSFER`、放板 `IN_TRANSFER→KNOWN`）。
+  `writeStep/notePlateMove` 不参与，仍只服务 Deposit/Withdraw。
+- **板号单一真源**：`PositionLock.resolvePlateBarcode` 统一
+  `barcode/plate/plateBarcode/plateId/plateID/plate_id`，拒绝数值 `plate.id`、
+  未替换的 `${}` 与 `AUTO-` 占位（后两者会造出假板或让两块板串账）。
+- **补既有缺口**：`putPlate` 后 `plate.position_status` 仍停在 `IN_TRANSFER`，
+  自动确认时由 `PauseMapper.updatePlatePositionStatus` 写回 `KNOWN`。
+- **回滚**：摘掉 `LABOS_TRANSFER_AUTO_CONFIRM` 环境变量即恢复改造前行为
+  （代码保留但默认不生效）。
+
+### 仍未闭合
+
+1. 位置写入沿用既有「独立事务 / 独立连接」语义（audit 也是独立连接），
+   `noteTransferMove` 与 `confirmByDeviceReport` **不是同一个数据库事务**；
+   部分成功而确认失败会留下不一致，靠开关默认关 + 人工复核兜底。要做强原子需重构
+   `PositionLock` 的事务边界，属后续改造。
+2. 简化版 20 节点为单板主线（`${mainPlate}`），多板 / 并行分支需按节点写死不同板号。
+3. 真实物理确认（扫码 / 传感器）仍未接入；`DEVICE_REPORT` 是设备侧闭环证据，
+   不等价于独立物理确认。

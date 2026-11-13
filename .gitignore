@@ -5,6 +5,8 @@ labos-gateway/out/
 # Python 脚本的字节码缓存（scripts/ 下有多个 .py）
 __pycache__/
 *.pyc
+# PyLabRobot 仿真器的隔离虚拟环境
+pylabrobot-sim/.venv/
 # sidecar 的构建产能在子目录里（Labos.Sidecar/bin），必须用 ** 才匹配得到。
 # 🔴 但带斜杠的模式会锚定到 .gitignore 所在目录，所以必须写成 **/sidecar-dotnet/...，
 #    否则匹配不到 labos-kernel/sidecar-dotnet/obj/（构建产物会混进仓库）。
@@ -30,6 +32,13 @@ out/
 !docs/media/designer-*.png
 # 运行详情界面截图（同样是文档里的示意图）
 !docs/media/rundetail-*.png
+# 应用图标（favicon / 主屏 / PWA）：**不是设备实物照，是产品资源，必须入库**。
+# 漏掉的后果：换个机器 clone 下来，浏览器标签页回退成默认图标 —— 现场以为是装错了。
+!webapp/public/favicon-*.png
+!webapp/public/icon-*.png
+!webapp/public/apple-touch-icon.png
+!labos-kernel/web/favicon-*.png
+!labos-kernel/web/apple-touch-icon.png
 *.log
 /tmp/
 

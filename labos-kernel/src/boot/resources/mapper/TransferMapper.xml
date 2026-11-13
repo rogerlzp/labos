@@ -45,4 +45,19 @@
                 #{note, jdbcType=VARCHAR})
     </insert>
 
+    <update id="markTransferConfirmedAuto">
+        UPDATE transfer_transaction
+           SET status = 'CONFIRMED', confirmed_at = now(), confirmed_by = #{operatorId}
+         WHERE tenant_id = #{tenantId} AND id = #{id}
+           AND status IN ('REPORTED', 'UNKNOWN')
+    </update>
+
+    <insert id="insertPositionEvidenceAuto">
+        INSERT INTO position_evidence
+          (tenant_id, plate_barcode, resource_id, evidence_type, operator, note, run_id)
+        VALUES (#{tenantId}, #{plateBarcode}, #{resourceId, jdbcType=BIGINT},
+                #{evidenceType}, #{operator, jdbcType=VARCHAR},
+                #{note, jdbcType=VARCHAR}, #{runId})
+    </insert>
+
 </mapper>

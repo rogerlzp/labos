@@ -70,12 +70,27 @@ public class FallbackController {
                 .body(body);
     }
 
-    @GetMapping(value = {"/vendor/**", "/designer.html"})
+    /**
+     * 应用图标路径：浏览器标签页 / 收藏夹 / 添加到主屏都会自动来取。
+     *
+     * <p>为什么单独列出来：这些是**产品资源**，不是设备实物照；
+     * 而且浏览器在**未登录**时也会拉 favicon，所以必须走免鉴权分支
+     * （见 {@code ApiServer.isPublic}）。
+     */
+    private static final java.util.Set<String> ICON_PATHS = java.util.Set.of(
+            "/favicon.svg", "/favicon.ico", "/favicon-16.png", "/favicon-32.png",
+            "/apple-touch-icon.png");
+
+    @GetMapping(value = {"/vendor/**", "/designer.html",
+                         "/favicon.svg", "/favicon.ico", "/favicon-16.png", "/favicon-32.png",
+                         "/apple-touch-icon.png"})
     public ResponseEntity<byte[]> assets(HttpServletRequest req) throws IOException {
-        // 兜底集合与原 route() 一致：/vendor/* 与 designer.html；/assets/* 之前
-        // 就不在 serveStatic 的分支里（由前端 dev server 提供），不新增。
+        // 兜底集合 = /vendor/* + designer.html + 应用图标。
+        // /assets/* 之前就不在 serveStatic 的分支里（由前端 dev server 提供），不新增。
         String path = req.getRequestURI();
-        if (!"/designer.html".equals(path) && !path.startsWith("/vendor/")) {
+        if (!"/designer.html".equals(path)
+                && !path.startsWith("/vendor/")
+                && !ICON_PATHS.contains(path)) {
             return bytes(notFound(req));
         }
         String rel = path.startsWith("/") ? path.substring(1) : path;
@@ -96,6 +111,8 @@ public class FallbackController {
                 : rel.endsWith(".woff") ? "font/woff"
                 : rel.endsWith(".ttf") ? "font/ttf"
                 : rel.endsWith(".svg") ? "image/svg+xml"
+                : rel.endsWith(".ico") ? "image/x-icon"
+                : rel.endsWith(".png") ? "image/png"
                 : "application/octet-stream";
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(ct))

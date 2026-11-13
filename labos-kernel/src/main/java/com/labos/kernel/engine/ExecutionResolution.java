@@ -42,8 +42,14 @@ public enum ExecutionResolution {
      */
     public static ExecutionResolution classify(DriverResult.Status status, String errorCode) {
         if (status == null) {
-            // 没有 DriverResult.Status = 命令没走到「驱动回包」这一步。
-            // 但「驱动异常 RuntimeException」可能已经半路发出命令（未知是否发生），
+            // 资源预留失败：机械臂命令**根本没下发**，属于「确认未执行，且无派发迹象」。
+            // 若仍归 RECONCILIATION_REQUIRED，续跑守卫会把这个节点当成
+            // 「设备可能已动」而禁止删除重建，人工释放装载口后点继续会被拦
+            // （实测 run 1001401：resume 报 rollback-only）。
+            if ("EC-RESOURCE-BUSY".equals(errorCode)) {
+                return FAILED_CONFIRMED;
+            }
+            // 其余「没有 DriverResult.Status」：驱动异常可能半路已发命令，
             // 保守按「需对账」处理，不冒险当「确认未执行」。
             return RECONCILIATION_REQUIRED;
         }

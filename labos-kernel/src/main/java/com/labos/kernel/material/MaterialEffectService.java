@@ -321,8 +321,10 @@ public final class MaterialEffectService {
             }
             String fromProcess = (String) plate.get("processState");
             String fromSeal = (String) plate.get("sealState");
-            String toProcess = processState != null ? processState : fromProcess;
-            String toSeal = sealState != null ? sealState : fromSeal;
+            // 与 T2 共用同一个纯函数：null = 不改，不能两条路径各写一份口径。
+            TargetStates to = TargetStates.merge(fromProcess, fromSeal, processState, sealState);
+            String toProcess = to.processState();
+            String toSeal = to.sealState();
             long toVersion = curVersion + 1;
 
             java.util.List<String> changed = new ArrayList<>();
@@ -474,8 +476,15 @@ public final class MaterialEffectService {
 
             String fromProcess = (String) plate.get("processState");
             String fromSeal = (String) plate.get("sealState");
-            String toProcess = (String) eff.get("expectedProcessState");
-            String toSeal = (String) eff.get("expectedSealState");
+            // 声明只改了其中一个字段时，另一个字段必须保持现值：
+            // set 里没写 = 不改（null）；写 sealState="none" 才是显式清膜。
+            // 与 manualStateChange 共用同一个纯函数（可纯逻辑单测），
+            // 否则没写的那个字段会被写成 NULL 清掉。
+            TargetStates to = TargetStates.merge(fromProcess, fromSeal,
+                    (String) eff.get("expectedProcessState"),
+                    (String) eff.get("expectedSealState"));
+            String toProcess = to.processState();
+            String toSeal = to.sealState();
             long toVersion = curVersion + 1;
 
             List<String> changed = new ArrayList<>();
@@ -620,6 +629,26 @@ public final class MaterialEffectService {
             return ((Number) ps.get("id")).longValue();
         }
         return null;
+    }
+
+    /**
+     * 目标态合并（纯逻辑、单写者）：声明里没写的字段保持现值。
+     *
+     * <p>{@code null} = 不改；写 {@code sealState="none"} 才是显式清膜。
+     * {@link #applyEffect}（T2 设备确认）与 {@link #manualStateChange}（人工改状态）
+     * 必须共用这一个函数：两条路径对「没写的字段」若给出不同解释，就会出现
+     * 「封膜后只改 process_state，seal_state 被清成 NULL」这类静默数据损坏。
+     *
+     * <p>抽成纯函数是为了能在 {@code MaterialEffectServiceSelfTest}（不连库）里
+     * 锁住该语义；SelfTest 无法覆盖 {@code applyEffect} 的事务内运行时行为。
+     */
+    public record TargetStates(String processState, String sealState) {
+        public static TargetStates merge(String fromProcess, String fromSeal,
+                                         String declaredProcess, String declaredSeal) {
+            return new TargetStates(
+                    declaredProcess != null ? declaredProcess : fromProcess,
+                    declaredSeal != null ? declaredSeal : fromSeal);
+        }
     }
 
     // ---------------------------------------------------------------- JSON 解析

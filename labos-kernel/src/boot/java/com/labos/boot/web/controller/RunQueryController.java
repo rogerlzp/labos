@@ -109,12 +109,33 @@ public class RunQueryController {
      * 板子**流转轨迹**：谁在什么时候把板子放/取到了哪个位置。
      *
      * <p>board=PL-001 看单个板的轨迹；不带 board 看最近的流转流水。</p>
+     * <p>experimentId 限定「一个实验里面」板子怎么流转；runId 再缩小到某张执行单。
+     * 两者都不带 = 全部（含独立 workflow 执行与人工盘点）。</p>
      */
     @GetMapping(value = "/plates/traces", produces = "application/json; charset=utf-8")
     public String plateTraces(@RequestParam(required = false) String barcode,
-                               @RequestParam(required = false) Integer limit)
+                               @RequestParam(required = false) Integer limit,
+                               @RequestParam(required = false) Long experimentId,
+                               @RequestParam(required = false) Long runId)
             throws SQLException {
-        return runService.plateTracesJson(barcode, limit == null ? 200 : limit);
+        return runService.plateTracesJson(barcode, limit == null ? 200 : limit,
+                experimentId, runId);
+    }
+
+    /**
+     * 一个执行单内板子的**完整流转时间线**：搬运（源设备→目标设备）+ 位置状态变更 + 位置证据。
+     *
+     * <p>与 {@code /plates/traces} 的分工：后者跨实验检索板号；本端点是
+     * 「在一个实验里面，看板子是怎么走的」，每条搬运自带 from/to 设备码。
+     *
+     * @param id      执行单 id
+     * @param barcode 可选；只看某一块板
+     */
+    @GetMapping(value = "/runs/{id:\\d+}/plate-flow", produces = "application/json; charset=utf-8")
+    public String runPlateFlow(@PathVariable long id,
+                               @RequestParam(required = false) String barcode)
+            throws SQLException {
+        return runService.plateFlowJson(id, barcode);
     }
 
     @GetMapping(value = "/runs/{id:\\d+}/graph", produces = "application/json; charset=utf-8")

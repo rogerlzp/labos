@@ -50,6 +50,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -409,13 +410,52 @@ public class WorkflowService {
         // **最近改动的在前**。改动前按 task_count DESC 排 —— 结果新建的
         // 单步流程（任务数少）永远落在 limit 之外，界面上根本搜不到，
         // 现象是"刚建的流程不见了"。复杂流程并不等于更该被看见。
-        for (Map<String, Object> r : wm().selectWorkflowList(tenantId,
-                byCategory ? category : null, Math.max(1, Math.min(limit, 500)))) {
+        for (Map<String, Object> r : listRows(Math.max(1, Math.min(limit, 500)), 0,
+                byCategory ? category : null, null, null, false)) {
             out.add(new WorkflowDef(((Number) r.get("id")).longValue(),
                     (String) r.get("code"), (String) r.get("name"),
                     (String) r.get("category")));
         }
         return out;
+    }
+
+    /**
+     * 流程库列表的原始行（含 version/status/岛/时间戳）。
+     *
+     * <p>为什么不扩 {@link WorkflowDef}：那是 record，构造点在
+     * {@code RealWorkflowRunner}（命令行运行器）里还有两处，为了给界面加列
+     * 去改运行器的入参不值得。这里直接把 SQL 行透传给 Web 层组装 JSON，
+     * 老调用方的签名一动不动。
+     */
+    public List<Map<String, Object>> listRows(int limit, int offset,
+                                              String category, String q,
+                                              String islandId, boolean emptyGraph)
+            throws SQLException {
+        return wm().selectWorkflowList(tenantId,
+                blankToNull(category), blankToNull(q), blankToNull(islandId), emptyGraph,
+                Math.max(1, Math.min(limit, 500)),
+                Math.max(0, offset));
+    }
+
+    /** 列表总数：给服务端分页用，过滤条件与 {@link #listRows} 同源。 */
+    public int countRows(String category, String q, String islandId, boolean emptyGraph)
+            throws SQLException {
+        return wm().countWorkflowList(tenantId, blankToNull(category), blankToNull(q),
+                blankToNull(islandId), emptyGraph);
+    }
+
+    /**
+     * 台账统计：页头统计条用（总数/已发布/草稿/未指定岛/空流程）。
+     *
+     * <p>一条 SQL 出全部计数，不让前端数当前页——按页数算的"统计"是假的。
+     */
+    public Map<String, Object> statsRows() throws SQLException {
+        Map<String, Object> row = wm().countWorkflowStats(tenantId);
+        return row == null ? new LinkedHashMap<>() : row;
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s;
     }
 
     public Detail detail(long workflowId) throws SQLException {
@@ -425,6 +465,13 @@ public class WorkflowService {
         Map<String, String> protocolCap = RealWorkflowRunner.loadProtocolCapability(db);
         Map<Long, String> resourceCap = RealWorkflowRunner.loadResourceCapability(db);
 
+        // 能力中文名：capability 表自带 name（SEAL→封膜、TRANSFER→转运…）。
+        // 界面直接显示裸 code（ALIQUOT/SEAL/CENTRIFUGE）是内核词，不是现场话。
+        Map<String, String> capName = new HashMap<>();
+        for (Map<String, Object> row : qm().selectAllCapabilities()) {
+            capName.put(String.valueOf(row.get("code")), String.valueOf(row.get("name")));
+        }
+
         List<TaskView> tasks = new ArrayList<>();
         for (NodeDef n : nodes) {
             if (!"task".equals(n.type())) {
@@ -432,7 +479,7 @@ public class WorkflowService {
             }
             CapabilitySource cs = RealWorkflowRunner.resolveCapability(n, protocolCap, resourceCap);
             tasks.add(new TaskView(n.id(), n.key(), n.name(), cs.capability(), cs.source(),
-                    n.protocolName()));
+                    n.protocolName(), capName.getOrDefault(cs.capability(), cs.capability())));
         }
         return new Detail(wf, tasks, edges.size());
     }
@@ -481,7 +528,8 @@ public class WorkflowService {
     }
 
     public record TaskView(long id, String key, String name,
-                           String capability, String source, String method) {
+                           String capability, String source, String method,
+                           String capabilityName) {
     }
 
     // ---------------------------------------------------------------- 执行
@@ -998,6 +1046,42 @@ public class WorkflowService {
                     ? Sleeper.recording(new ArrayList<>())
                     : Sleeper.REAL;
             MaterialEffectService materialSvc = new MaterialEffectService(tenantId, db);
+
+            // P2：实验开始前的点位与物料清单快照。这是「说明」不是闸门：
+            // 写失败只告警，绝不能因为清单写不进去就挡住实验执行。
+            try {
+                int snap = com.labos.kernel.persistence.Mappers.get(
+                                com.labos.kernel.persistence.DeviceStateMapper.class)
+                        .insertRunPositionSnapshot(tenantId, runId);
+                log.info("[点位快照] run={} 写入 {} 个点位", runId, snap);
+            } catch (RuntimeException e) {
+                log.warn("[点位快照] 写入失败（不阻断执行）：{}", e.getMessage());
+            }
+
+            // M 方案：自动位置确认开启时，Transfer 节点必须有可解析的真实板号。
+            // 用 paramsByNode（已由 loadMethodParams 做过 ${x} 替换），所以连
+            // 「变量声明了但没初值」也会被这里拦住，不会把 ${mainPlate} 当条码落库。
+            // ⚠ 开关关闭时**不校验**，保持改造前行为逐字一致（默认关）。
+            if (com.labos.kernel.driver.PositionLock.autoConfirmEnabledFor(workflowId)) {
+                for (NodeDef n : ordered) {
+                    String proto = n.protocolName();
+                    if (proto == null || !proto.startsWith("Transfer")) {
+                        continue;
+                    }
+                    Long nid = nodeIdByKey.get(n.key());
+                    java.util.Map<String, Object> pp =
+                            nid == null ? null : paramsByNode.get(nid);
+                    String barcode = com.labos.kernel.driver.PositionLock
+                            .resolvePlateBarcode(pp, null);
+                    if (barcode == null) {
+                        throw new IllegalStateException(
+                                "ME_TRANSFER_PLATE_MISSING 自动位置确认已启用，但 Transfer 节点 "
+                                        + n.key() + " 没有合法板号（需 method_params.barcode，"
+                                        + "且不能是未替换的 ${} / AUTO- 占位 / 数值 plate.id）");
+                    }
+                }
+            }
+
             // 声明契约预检 + 声明快照写入（run 启动时；§3.3 / §3.1 第 8 条）
             for (NodeDef n : ordered) {
                 if (n.materialEffect() != null && !n.materialEffect().isBlank()) {
@@ -2292,6 +2376,42 @@ public class WorkflowService {
             }
         }
 
+        /**
+         * 下发前失败：只收回设备锁与执行阶段，**不写 run_command**。
+         *
+         * <p>不能复用 {@link #onStepDone}：它会 insertStepNode + insertRunCommand，
+         * 而续跑守卫 {@code RunMapper.countResumeGuardHits} 只要看到未完成节点下
+         * 有 run_command 就判「设备已动」⇒ 禁止删除重建 ⇒ 人工修复后点继续
+         * 永远失败。run 1001411 实测：装载口等待超时 EC-RESOURCE-BUSY，命令根本
+         * 没下发，却被自己的失败记录挡住。
+         */
+        @Override
+        public void onStepAborted(long nodeId, int stepSeq, String method,
+                                  long resourceId, int attempt, String errorCode) {
+            String key = nodeId + ":" + stepSeq + ":" + attempt;
+            Long parentId = nodeIdMap.get(nodeId);
+            Long rid = resourceByStep.get(key);
+            if (rid != null && rid > 0) {
+                executionPhase(parentId, "FINALIZING", null, null);
+                markDeviceIdle(rid, errorCode);
+                try {
+                    Long resNodeId = resourceIdOfInstance(rid);
+                    if (resNodeId != null) {
+                        new com.labos.kernel.driver.DeviceLock(db, tenantId)
+                                .release(resNodeId, runIdOf());
+                    }
+                } catch (SQLException ignore) {
+                    // 释放失败不影响主链路，锁会被下次执行覆盖
+                }
+            }
+            sentAtByStep.remove(key);
+            resourceByStep.remove(key);
+            executionPhase(parentId, null, null, null);
+            if (mirror != null) {
+                mirror.onStepAborted(nodeId, stepSeq, method, resourceId, attempt, errorCode);
+            }
+        }
+
         @Override
         public void onStepDone(long nodeId, int stepSeq, String method, boolean ok,
                                String errorCode, String rawResponse, long durationMs, int attempt) {
@@ -2364,6 +2484,34 @@ public class WorkflowService {
                 } catch (Exception pe) {
                     log.error("[PLATE-ERR] " + method + " dev=" + deviceId
                             + " : " + pe.getClass().getSimpleName() + " " + pe.getMessage());
+                }
+            }
+            // P3：扫码成功 → 把该设备当前板的 TMP- 临时身份关联到真 barcode。
+            // 独立于板位登记，失败只告警：身份关联是增强，绝不阻断物理执行。
+            if (ok && deviceId > 0 && rawResponse != null
+                    && com.labos.kernel.driver.PositionLock.isBarcodeMethod(method)) {
+                try {
+                    boolean linked = new com.labos.kernel.driver.PositionLock(db, tenantId)
+                            .confirmScanAtDevice(deviceId, rawResponse, runId);
+                    if (linked) {
+                        log.info("[扫码关联] run={} dev={} 已把临时板号关联到真 barcode",
+                                runId, deviceId);
+                    }
+                } catch (Exception se) {
+                    log.warn("[扫码关联] 失败（不阻断执行）：{}", se.getMessage());
+                }
+            }
+            // 设备内部搬运通知：流程显式调用该设备方法（MoveInLabware/MoveOutLabware），
+            // 设备完成进站/出站后把「板 ↔ 内部格」关系通知中控，由中控统一维护。
+            // 失败只告警：通知处理是位置关系的同步，绝不阻断已经完成的物理动作。
+            if (ok && rawResponse != null
+                    && com.labos.kernel.driver.DeviceInternalTransfer
+                    .isInternalMoveMethod(method)) {
+                try {
+                    new com.labos.kernel.driver.DeviceInternalTransfer(db, tenantId)
+                            .applyNotification(rawResponse, runId);
+                } catch (Exception ie) {
+                    log.warn("[内部搬运] 通知处理失败（不阻断执行）：{}", ie.getMessage());
                 }
             }
             Long rid = resolveResource(deviceId <= 0 ? null : deviceId,

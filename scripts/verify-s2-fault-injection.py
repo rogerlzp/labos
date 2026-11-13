@@ -63,7 +63,7 @@ def psql(sql, stop=True):
            "-p", os.environ.get("LABOS_DB_PORT", "5432"),
            "-U", os.environ.get("LABOS_DB_USER", "labos"),
            "-d", os.environ.get("LABOS_DB_NAME", "labdb"),
-           "-tA", "-v", "ON_ERROR_STOP=%d" % (1 if stop else 0),
+           "-q", "-tA", "-v", "ON_ERROR_STOP=%d" % (1 if stop else 0),
            "-c", sql]
     p = subprocess.run(cmd, env=env, capture_output=True, text=True)
     return p.returncode, p.stdout.strip(), p.stderr.strip()
