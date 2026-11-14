@@ -384,6 +384,11 @@ DO $$ BEGIN
   ALTER TABLE device_point ADD CONSTRAINT ck_device_point_kind
     CHECK (point_kind IN ('nest','deck_in','deck_out','waste'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE device_point ADD CONSTRAINT ck_device_point_deck_in_unreachable
+    CHECK (point_kind <> 'deck_in'
+           OR (robot_reachable = false AND point_role = 'internal'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 ALTER TABLE device_method ADD COLUMN IF NOT EXISTS device_instance_id bigint;
 ALTER TABLE device_method ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT 'model';

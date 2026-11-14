@@ -71,22 +71,31 @@ public class OpsUserController {
     }
 
     @PostMapping(value = "/users", produces = "application/json; charset=utf-8")
-    public String createUser(@RequestBody(required = false) String body,
+    public ResponseEntity<String> createUser(@RequestBody(required = false) String body,
                              @RequestAttribute(name = ApiAuthInterceptor.SESSION_ATTR,
                                      required = false) AuthService.Session session,
                              HttpServletRequest req) throws SQLException {
-        int n = opsUserService.createUser(
-                jsonField(body, "username"),
-                jsonField(body, "displayName"),
-                jsonField(body, "role"),
-                jsonField(body, "password"));
+        int n;
+        try {
+            n = opsUserService.createUser(
+                    jsonField(body, "username"),
+                    jsonField(body, "displayName"),
+                    jsonField(body, "role"),
+                    jsonField(body, "password"));
+        } catch (IllegalArgumentException e) {
+            // 评审 F2：重复用户名/校验不通过别再冒成 Spring 默认 500；
+            // 重复 → 409，其它校验 → 400。
+            boolean dup = e.getMessage() != null && e.getMessage().contains("已存在");
+            return ResponseEntity.status(dup ? HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST)
+                    .body(err(e.getMessage()));
+        }
         // 绝不能把 password 写进审计——那是明文凭证
         audit.record(session, "user.create", "user", null,
                 jsonField(body, "username"),
                 Jsons.obj("role", jsonField(body, "role"),
                         "displayName", jsonField(body, "displayName")),
                 req.getRemoteAddr());
-        return Jsons.obj("created", n);
+        return ResponseEntity.ok(Jsons.obj("created", n));
     }
 
     @PutMapping(value = "/users/{id}", produces = "application/json; charset=utf-8")
