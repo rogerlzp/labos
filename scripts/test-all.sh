@@ -198,6 +198,8 @@ DB=(
   "workflow.MaterialUnloadPathsDbSelfTest"
   # R3 暂停确认状态机：reconciliation_required 节点计数 + 暂停收敛改 manual（PauseUnknown）
   "workflow.PauseUnknownDbSelfTest"
+  # R6 物料门禁：IN_TRANSFER（在途未确认）板不可做目标寻址（fail-closed），KNOWN 正常
+  "material.InTransitGateDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据
   "workflow.StartupSettleSelfTest"
   # S3.2-A 重启 rehydrate：queued run 装回调度队列 / running+paused 不枚举 / 幂等

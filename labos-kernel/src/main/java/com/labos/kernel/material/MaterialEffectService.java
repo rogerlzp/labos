@@ -599,7 +599,8 @@ public final class MaterialEffectService {
      * <p>位置寻址（规则 2/3/3b）：occupied_by_run 必须 = 当前 run；
      * position_status ∈ {UNKNOWN, LOST} 或 reserved_by_run 非空 ⇒ 不可用，返回 null。
      */
-    private Long resolveTargetPlate(String declarationJson, long runId) {
+    /** 包内可见（DbSelfTest 直接打 R6 IN_TRANSFER 门禁）。 */
+    Long resolveTargetPlate(String declarationJson, long runId) {
         Long plateId = targetPlateId(declarationJson);
         if (plateId != null) {
             return plateId;
@@ -620,8 +621,11 @@ public final class MaterialEffectService {
                 return null;   // 归属不符（规则 2）
             }
             String posStatus = (String) ps.get("positionStatus");
-            if ("UNKNOWN".equals(posStatus) || "LOST".equals(posStatus)) {
-                return null;   // 位置不可信（规则 3）
+            // R6：IN_TRANSFER = 已取板、在途未确认到位，位置不可信（与 UNKNOWN/LOST 同口径）。
+            // 不能用它做目标寻址——板可能还停在源位或夹在机械臂上。
+            if ("UNKNOWN".equals(posStatus) || "LOST".equals(posStatus)
+                    || "IN_TRANSFER".equals(posStatus)) {
+                return null;   // 位置不可信 / 在途未确认（规则 3）
             }
             if (ps.get("reservedByRun") != null) {
                 return null;   // 在途/预约（规则 3b）
