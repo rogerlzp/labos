@@ -1327,6 +1327,15 @@ export const zhCN = {
   'scheduleGantt.legend.exp': '每个色块=一步；颜色对应设备',
   'scheduleGantt.legend.device': '每行=一台设备；色块位置=它什么时候在干活',
   'scheduleGantt.total': '合计 {total}',
+  'scheduleGantt.bookings.title': '设备预约（{n}）',
+  'scheduleGantt.bookings.hint': 'resource_booking：谁占过哪台设备、从什么时候到什么时候（调度派发自动写）',
+  'scheduleGantt.bookings.empty': '无设备预约',
+  'scheduleGantt.bookings.col.resource': '设备',
+  'scheduleGantt.bookings.col.from': '开始',
+  'scheduleGantt.bookings.col.to': '结束',
+  'scheduleGantt.bookings.col.status': '状态',
+  'scheduleGantt.bookings.col.source': '来源',
+  'scheduleGantt.bookings.col.note': '备注',
 
 
 

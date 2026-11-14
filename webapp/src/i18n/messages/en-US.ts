@@ -1326,6 +1326,15 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   'scheduleGantt.legend.exp': 'Each colour block = one step; the colour identifies the device',
   'scheduleGantt.legend.device': 'Each row = one device; the block position = when it is working',
   'scheduleGantt.total': 'Total {total}',
+  'scheduleGantt.bookings.title': 'Device bookings ({n})',
+  'scheduleGantt.bookings.hint': 'resource_booking: who held which device and when (written on dispatch)',
+  'scheduleGantt.bookings.empty': 'No device bookings',
+  'scheduleGantt.bookings.col.resource': 'Device',
+  'scheduleGantt.bookings.col.from': 'From',
+  'scheduleGantt.bookings.col.to': 'To',
+  'scheduleGantt.bookings.col.status': 'Status',
+  'scheduleGantt.bookings.col.source': 'Source',
+  'scheduleGantt.bookings.col.note': 'Note',
 
 
 

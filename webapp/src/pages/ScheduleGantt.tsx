@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Alert, Card, Empty, Segmented, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
-import { apiFetch } from '../api/client';
+import { Alert, Card, Empty, Segmented, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { apiFetch, api } from '../api/client';
 import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
+import { formatTime } from '../utils/format';
 import type { MessageKey, MessageVars } from '../i18n/core';
 import { localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
 
@@ -85,6 +86,13 @@ export default function ScheduleGanttPage() {
     queryFn: () => apiFetch('/api/experiments?limit=60').then((r) => r.json()) as Promise<{
       items: ExpRow[];
     }>,
+  });
+
+  // 设备预约（resource_booking）：谁占了哪台设备、从什么时候到什么时候（甘特溯源）
+  const bookings = useQuery({
+    queryKey: ['resource-bookings'],
+    queryFn: () => api.resourceBookings(200),
+    refetchInterval: 30000,
   });
 
   /**
@@ -352,6 +360,49 @@ export default function ScheduleGanttPage() {
             </Space>
           </div>
         )}
+      </Card>
+
+      <Card size="small" title={t('scheduleGantt.bookings.title', { n: bookings.data?.total ?? 0 })}
+        extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('scheduleGantt.bookings.hint')}</Typography.Text>}>
+        <Table
+          rowKey="id"
+          size="small"
+          loading={bookings.isLoading}
+          dataSource={bookings.data?.items ?? []}
+          pagination={{ pageSize: 10, size: 'small' }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={t('scheduleGantt.bookings.empty')} /> }}
+          columns={[
+            {
+              title: t('scheduleGantt.bookings.col.resource'), dataIndex: 'resourceCode',
+              render: (v: string | null) => v
+                ? <Tag color="blue">{v}</Tag>
+                : <Typography.Text type="secondary">—</Typography.Text>,
+            },
+            {
+              title: t('scheduleGantt.bookings.col.from'), dataIndex: 'periodFrom', width: 170,
+              render: (v: string | null) => (v ? formatTime(v) : '—'),
+            },
+            {
+              title: t('scheduleGantt.bookings.col.to'), dataIndex: 'periodTo', width: 170,
+              render: (v: string | null) => (v ? formatTime(v) : '—'),
+            },
+            {
+              title: t('scheduleGantt.bookings.col.status'), dataIndex: 'status', width: 100,
+              render: (v: string) => <Tag>{v}</Tag>,
+            },
+            {
+              title: t('scheduleGantt.bookings.col.source'), dataIndex: 'sourceType', width: 110,
+              render: (v: string, r) => (
+                <Typography.Text style={{ fontSize: 12 }}>
+                  {v}{r.sourceId ? ` #${r.sourceId}` : ''}
+                </Typography.Text>
+              ),
+            },
+            { title: t('scheduleGantt.bookings.col.note'), dataIndex: 'note', ellipsis: true },
+          ]}
+        />
       </Card>
     </Space>
   );

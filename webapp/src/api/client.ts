@@ -1165,6 +1165,13 @@ export const api = {
     method: 'PUT', body: JSON.stringify(body),
   }),
 
+  /** 设备预约（resource_booking，甘特溯源）。 */
+  resourceBookings: (limit = 200) => req<{ total: number;
+    items: Array<{ id: number; resourceId: number; resourceCode: string | null;
+                   periodFrom: string | null; periodTo: string | null; status: string;
+                   sourceType: string; sourceId: number | null; note: string | null }> }>(
+    `/api/resource-bookings?limit=${limit}`),
+
   /**
    * 实验预计等待（M9 §7.2）。
    *
