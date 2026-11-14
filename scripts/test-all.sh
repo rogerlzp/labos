@@ -196,6 +196,8 @@ DB=(
   # §4.5.2 物料生命周期的**两条自动卸载路径**（非批次 settle / 批次聚合终态）：
   # process 物料卸载、inventory 原位不动；判别点 = 单批终态不得卸载、整单终态才卸载
   "workflow.MaterialUnloadPathsDbSelfTest"
+  # R3 暂停确认状态机：reconciliation_required 节点计数 + 暂停收敛改 manual（PauseUnknown）
+  "workflow.PauseUnknownDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据
   "workflow.StartupSettleSelfTest"
   # S3.2-A 重启 rehydrate：queued run 装回调度队列 / running+paused 不枚举 / 幂等
