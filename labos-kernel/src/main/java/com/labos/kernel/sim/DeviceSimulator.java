@@ -30,6 +30,12 @@ import com.labos.kernel.device.DeviceModels;
  *   --model s100          按**具体型号**模拟（真实指令名 + 专属错误码 + 时序约束）
  *   --list-models         列出已登记型号 / 待适配清单 / 错误码映射
  *   --list-profiles       列出所有设备类型
+ *
+ *   --spontaneous "Start=waiting_interaction@2000;Continue=waiting_interaction@2000;Continue=process_done@2000"
+ *                         命令成功后，设备**主动**上报（没有 message_id 的那种帧）。
+ *                         格式 method=eventType@delayMs，多条用 ; 分隔；
+ *                         同一个 method 可写多条 ⇒ 按写的顺序（FIFO）依次上报；
+ *                         delayMs 省略 = 立即上报
  * </pre>
  */
 public final class DeviceSimulator {
@@ -63,6 +69,10 @@ public final class DeviceSimulator {
         long randMax = -1;
         Long randSeed = null;
         String methodsArg = null;
+        // --spontaneous "method=eventType@delayMs;..."：命令成功后设备主动上报的脚本。
+        // 为什么要有：真设备不是只回命令 —— 提取仪会自己走到交换位然后喊一声
+        // "我等着呢，给我继续信号"。没有这条通道，中控的等待节点永远等不到。
+        String spontaneousArg = null;
         // --registry URL：从**中控的设备清单**认领自己（设备ID / 编号 / 能力 / 画像）。
         String registryUrl = null;
         // 显式给了的参数优先于清单（人工显式指定是"我就要这个"），
@@ -103,6 +113,7 @@ public final class DeviceSimulator {
                 // 画像是通用机型的方法集，可能比这台设备实际支持的少
                 // （读板机画像里没有 ReadPlate，而这台读板机有）⇒ 不传就会把合法指令误拒。
                 case "--methods" -> methodsArg = args[++i];
+                case "--spontaneous" -> spontaneousArg = args[++i];
                 case "--registry" -> registryUrl = args[++i];
                 case "--offline" -> offline = true;
                 case "--rand-delay" -> {
@@ -201,6 +212,19 @@ public final class DeviceSimulator {
             core.withExtraMethods(java.util.Arrays.asList(methodsArg.split(",")));
             log.info("[模拟器] 设备方法表：" + methodsArg);
         }
+        if (spontaneousArg != null && !spontaneousArg.isBlank()) {
+            // 解析在 DeviceCore 里（脚本的"形状"归它管），CLI 只负责传进去。
+            // 坏条目由解析器报到 stderr 并跳过 —— 模拟器照常起，别让一条手写错误停机。
+            java.util.Map<String, java.util.List<DeviceCore.SpontaneousEvent>> script =
+                    DeviceCore.parseSpontaneousScript(spontaneousArg);
+            core.withSpontaneousScript(script);
+            log.info("[模拟器] 自发上报脚本：" + spontaneousArg
+                    + "（" + script.size() + " 个方法，共 " + countEvents(script) + " 条）");
+            if (code == null || code.isBlank() || "-".equals(code)) {
+                log.warn("[模拟器] 自发上报要用**设备编号**认领事件（--code），当前没给"
+                        + "⇒ 自发帧的 equipment_id 退回用设备实例 id " + device);
+            }
+        }
         if (randMax > 0) {
             log.info("[模拟器] 方法耗时随机区间 "
                     + randMin + "–" + randMax + "ms"
@@ -225,6 +249,16 @@ public final class DeviceSimulator {
         // 行为不可靠（实测进程会直接退出，日志只剩一句"模拟器退出"）。
         // 用 CountDownLatch 明确阻塞，只有 JVM 关闭时才结束。
         new java.util.concurrent.CountDownLatch(1).await();
+    }
+
+    /** 脚本里一共写了多少条上报（只用于启动那行日志）。 */
+    private static int countEvents(
+            java.util.Map<String, java.util.List<DeviceCore.SpontaneousEvent>> script) {
+        int n = 0;
+        for (var v : script.values()) {
+            n += v == null ? 0 : v.size();
+        }
+        return n;
     }
 
     /**

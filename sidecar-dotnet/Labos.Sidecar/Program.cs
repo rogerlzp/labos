@@ -29,12 +29,23 @@ namespace Labos.Sidecar;
 ///   # 调试：发一条就退出（不占用端口）
 ///   dotnet run -- --model s100 --transport sim --sim 127.0.0.1:19501 --once Seal
 /// </code>
+///
+/// <para><b>设备事件转发</b>：设备是"自驱"的（例：分盘式提取仪跑到交换点，
+/// 主动报【等待交互】）⇒ sidecar 把这种<b>没有 message_id 的帧</b>翻译成统一形状，
+/// 转发到中控的 {@code POST /api/device-events}，内核的等待节点才能等到它。
+/// 中控装了 {@code LABOS_DEVICE_EVENT_TOKEN} 时，用
+/// {@code --device-event-token} / 环境变量把令牌带上。</para>
 /// </summary>
 public static class Program
 {
     public static int Main(string[] args)
     {
         var opt = ParseArgs(args);
+
+        if (opt.ContainsKey("selftest"))
+        {
+            return DeviceEventSelfTest.Run();
+        }
 
         if (opt.ContainsKey("list"))
         {
@@ -143,7 +154,14 @@ public static class Program
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-        new TcpServer(bind, port, model!, transport).Run(cts.Token);
+        // 设备事件转发器：把设备**主动上报**的帧翻译成统一形状转给中控。
+        // 令牌：中控设了 LABOS_DEVICE_EVENT_TOKEN 时才校验（没设就是内网免鉴权口径，
+        // 与 /api/devices/registry 同一档 —— sidecar 没有中控账号）。
+        var eventToken = Get(opt, "device-event-token")
+            ?? Environment.GetEnvironmentVariable("LABOS_DEVICE_EVENT_TOKEN");
+        var forwarder = new DeviceEventForwarder(
+            registryUrl, device?.Code, eventToken, m => Console.WriteLine("[device-event] " + m));
+        new TcpServer(bind, port, model!, transport, forwarder).Run(cts.Token);
         return 0;
     }
 

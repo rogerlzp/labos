@@ -50,6 +50,7 @@ import java.util.regex.Pattern;
  *   <tr><td>{@code --fail-from}</td><td>第 N 条动作类命令起才开始失败</td></tr>
  *   <tr><td>{@code --offline}</td><td>直接拒绝连接（模拟设备没上电）</td></tr>
  *   <tr><td>{@code --model}</td><td>按具体型号模拟（真实指令名、错误码、时序约束）</td></tr>
+ *   <tr><td>{@code --spontaneous}</td><td>自发上报脚本（{@code method=eventType@delayMs;...}）</td></tr>
  * </table>
  */
 public final class DeviceCore {
@@ -214,6 +215,38 @@ public final class DeviceCore {
     private volatile ServerSocket serverSocket;
     private final java.util.Set<Socket> clients =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * 已连接客户端的**输出流**（socket → 流）。
+     *
+     * <p>为什么要另存一份：自发上报是设备**主动往外推**的帧，
+     * 不走 {@link #handle(Socket)} 那条"读到请求才回包"的路 ——
+     * 那条路在设备自己想说话的时候根本没有请求可回。
+     */
+    private final java.util.Map<Socket, OutputStream> clientOuts =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 自发上报脚本：method → 该方法成功后依次要推的帧（**FIFO**）。
+     *
+     * <p>为什么是队列而不是一条：真机上同一条指令会触发**多次**上报
+     * （"我到站了" → "我处理完了"），先后顺序就是现场看到的顺序。
+     * 队列让"同方法的多个条目"按写的顺序依次消费。
+     *
+     * <p>所有读写都在 {@code synchronized (spontaneousScript)} 里做 ——
+     * 多条连接可以同时命中同一个方法，取条目必须原子，否则会重复推同一帧。
+     */
+    private final java.util.Map<String, java.util.ArrayDeque<SpontaneousEvent>> spontaneousScript =
+            new java.util.LinkedHashMap<>();
+
+    /**
+     * 一条自发上报。
+     *
+     * @param eventType 事件类型（如 {@code waiting_interaction}）
+     * @param delayMs  相对"命令处理成功"的延迟（毫秒）；0 = 立刻推
+     */
+    public record SpontaneousEvent(String eventType, long delayMs) {
+    }
 
     /** GUI 订阅：日志 + 状态变化。CLI 模式可不设。 */
     public interface Listener {
@@ -403,6 +436,7 @@ public final class DeviceCore {
             }
         }
         clients.clear();
+        clientOuts.clear();
         log("已停止监听");
         notifyState();
     }
@@ -601,6 +635,8 @@ public final class DeviceCore {
             BufferedReader in = new BufferedReader(
                     new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
             OutputStream out = client.getOutputStream();
+            // 登记输出流：自发上报要能主动往这条连接上写（见 pushEvent）
+            clientOuts.put(client, out);
 
             StringBuilder buf = new StringBuilder();
             int ch;
@@ -615,13 +651,249 @@ public final class DeviceCore {
 
                 String reply = process(msg);
                 if (reply != null) {
-                    out.write((reply + SEP).getBytes(StandardCharsets.UTF_8));
-                    out.flush();
+                    writeFrame(out, (reply + SEP).getBytes(StandardCharsets.UTF_8));
+                    // 命令成功之后才排自发帧（先回包、后上报，顺序不能反：
+                    // 中控看到回包才知道这条命令被受理了，随后的"我到站了"才是自发的）
+                    scheduleSpontaneous(msg, reply);
                 }
             }
         } catch (IOException ignore) {
             // 客户端断开
+        } finally {
+            clientOuts.remove(client);
         }
+    }
+
+    /**
+     * 写一帧（含分隔符）。
+     *
+     * <p>为什么加锁：回包（连接线程）与自发上报（调度线程）可能**同时**写同一条
+     * socket —— 不加锁两段字节会交错，接收端看到的是半截 JSON。
+     */
+    private void writeFrame(OutputStream out, byte[] payload) throws IOException {
+        synchronized (out) {
+            out.write(payload);
+            out.flush();
+        }
+    }
+
+    // ---- 自发上报（设备主动说话，不是命令回包）----
+
+    /**
+     * 解析 {@code --spontaneous} 的脚本文本。
+     *
+     * <p>格式：{@code method=eventType@delayMs}，多条用 {@code ;} 分隔。
+     * 同一个 method 可以出现多次 ⇒ 排成 FIFO 队列，按写的顺序依次消费。
+     *
+     * <p><b>为什么坏条目只跳过、不让模拟器起不来</b>：脚本是运维手写的，
+     * 一条写错就整个模拟器起不来，现场排查成本远高于少推一帧。
+     * 坏条目报到 <b>stderr</b>（stdout 是协议输出的地盘，不能混）。
+     *
+     * @param spec 脚本文本；null/空 = 没有脚本
+     * @return method → 该方法要依次推的帧（保持写的顺序）
+     */
+    public static java.util.Map<String, java.util.List<SpontaneousEvent>> parseSpontaneousScript(
+            String spec) {
+        java.util.Map<String, java.util.List<SpontaneousEvent>> out =
+                new java.util.LinkedHashMap<>();
+        if (spec == null || spec.isBlank()) {
+            return out;
+        }
+        for (String raw : spec.split(";")) {
+            String entry = raw.trim();
+            if (entry.isEmpty()) {
+                continue;   // 末尾多一个分号不是错误
+            }
+            int eq = entry.indexOf('=');
+            if (eq <= 0) {
+                System.err.println("[模拟器] 自发上报脚本条目格式不对"
+                        + "（应为 method=eventType@delayMs），已跳过：" + entry);
+                continue;
+            }
+            String method = entry.substring(0, eq).trim();
+            String rest = entry.substring(eq + 1).trim();
+            int at = rest.lastIndexOf('@');
+            String eventType = (at < 0 ? rest : rest.substring(0, at)).trim();
+            String delayText = at < 0 ? "" : rest.substring(at + 1).trim();
+            if (method.isEmpty() || eventType.isEmpty()) {
+                System.err.println("[模拟器] 自发上报脚本条目缺方法名或事件类型，已跳过：" + entry);
+                continue;
+            }
+            long delay = 0;
+            if (!delayText.isEmpty()) {
+                try {
+                    delay = Long.parseLong(delayText);
+                } catch (NumberFormatException e) {
+                    System.err.println("[模拟器] 自发上报脚本条目的延迟不是数字，已跳过：" + entry);
+                    continue;
+                }
+                if (delay < 0) {
+                    System.err.println("[模拟器] 自发上报脚本条目的延迟是负数，已跳过：" + entry);
+                    continue;
+                }
+            }
+            out.computeIfAbsent(method, k -> new java.util.ArrayList<>())
+                    .add(new SpontaneousEvent(eventType, delay));
+        }
+        return out;
+    }
+
+    /**
+     * 登记自发上报脚本。
+     *
+     * @param script {@link #parseSpontaneousScript} 的解析结果；null = 不推
+     */
+    public DeviceCore withSpontaneousScript(
+            java.util.Map<String, java.util.List<SpontaneousEvent>> script) {
+        if (script == null || script.isEmpty()) {
+            return this;
+        }
+        synchronized (spontaneousScript) {
+            for (var e : script.entrySet()) {
+                if (e.getKey() == null || e.getKey().isBlank() || e.getValue() == null) {
+                    continue;
+                }
+                java.util.ArrayDeque<SpontaneousEvent> q = spontaneousScript.computeIfAbsent(
+                        e.getKey().trim(), k -> new java.util.ArrayDeque<>());
+                q.addAll(e.getValue());
+            }
+        }
+        return this;
+    }
+
+    /**
+     * 命令成功后按脚本排发自帧。
+     *
+     * <p>触发条件是"**真的执行成功**"（method_status=2）：
+     * <ul>
+     *   <li>失败/被拒的命令不触发 —— 设备没动，就没什么可报的；</li>
+     *   <li>幂等去重命中的重复命令**不触发** —— 设备没再动一次，
+     *       不该再报一次"我到站了"（否则中控会收到两条同样的事件）。</li>
+     * </ul>
+     */
+    private void scheduleSpontaneous(String request, String reply) {
+        if (reply == null) {
+            return;
+        }
+        if (!reply.contains("\"method_status\":2") || reply.contains("\"duplicate\":true")) {
+            return;
+        }
+        // 先按**中控发来的方法名**（别名）找，找不到再按回包里的真实指令名找 ——
+        // 有型号时别名与手册指令名可能不同，两边都认才不会出现"脚本写了不响"。
+        String alias = find(P_METHOD, request);
+        String real = find(P_METHOD, reply);
+        SpontaneousEvent ev;
+        synchronized (spontaneousScript) {
+            if (spontaneousScript.isEmpty()) {
+                return;
+            }
+            ev = pollSpontaneous(alias);
+            if (ev == null && real != null && !real.equals(alias)) {
+                ev = pollSpontaneous(real);
+            }
+        }
+        if (ev == null) {
+            return;
+        }
+        final SpontaneousEvent event = ev;
+        Thread t = new Thread(() -> {
+            sleep(event.delayMs());
+            pushEvent(event.eventType(), "{}");
+        }, "sim-spontaneous-" + code);
+        t.setDaemon(true);
+        t.start();
+        log("自发上报 " + alias + " → " + event.eventType()
+                + (event.delayMs() > 0 ? "（" + event.delayMs() + "ms 后）" : "（立即）"));
+    }
+
+    /** 取该方法队列里的下一条（没有就 null）。调用方必须持有 spontaneousScript 的锁。 */
+    private SpontaneousEvent pollSpontaneous(String method) {
+        if (method == null || method.isEmpty()) {
+            return null;
+        }
+        java.util.ArrayDeque<SpontaneousEvent> q = spontaneousScript.get(method);
+        if (q == null || q.isEmpty()) {
+            return null;
+        }
+        return q.poll();
+    }
+
+    /**
+     * 推一帧**自发上报**给所有已连接的客户端。
+     *
+     * <p><b>帧里绝不能有 message_id</b>：那是接收端区分"设备主动上报"与
+     * "命令回包"的唯一判据（内核与 sidecar 用的是同一条规则：没有 message_id
+     * 的帧就是设备主动上报）。带上 message_id 就会被当成回包丢掉。
+     *
+     * @param eventType 事件类型（如 {@code waiting_interaction}）
+     * @param dataJson  载荷 JSON 文本；null/空 = {@code {}}
+     * @return 实际推送成功的客户端数
+     */
+    public synchronized int pushEvent(String eventType, String dataJson) {
+        byte[] payload;
+        try {
+            payload = (spontaneousFrame(eventType, dataJson) + SEP)
+                    .getBytes(StandardCharsets.UTF_8);
+        } catch (RuntimeException e) {
+            // 帧都造不出来也不能把调用方（调度线程 / accept 循环）带崩
+            log("自发上报帧构造失败：" + e.getMessage());
+            return 0;
+        }
+        int sent = 0;
+        for (Socket s : clients) {
+            OutputStream out = clientOuts.get(s);
+            if (out == null) {
+                continue;   // 刚接入还没登记输出流（或已经注销）
+            }
+            try {
+                writeFrame(out, payload);
+                sent++;
+            } catch (IOException e) {
+                // 客户端已经断开：这**不是**故障，更不能把 accept/handle 循环带崩
+                log("自发上报推送失败（客户端已断开）：" + e.getMessage());
+            } catch (RuntimeException e) {
+                log("自发上报推送异常（忽略）：" + e.getMessage());
+            }
+        }
+        return sent;
+    }
+
+    /**
+     * 自发上报帧。
+     *
+     * <p>形状（与 sidecar 解析自发帧的规则对齐）：
+     * <pre>
+     * {"message_type":6,"equipment_id":"ID1183","event_type":"waiting_interaction",
+     *  "data":{},"timestamp":"2026-11-15 09:30:00","checksum":"","connected":1}
+     * </pre>
+     *
+     * <p><b>没有 message_id、没有 method</b> —— 它不是任何一条命令的回包。
+     */
+    private String spontaneousFrame(String eventType, String dataJson) {
+        return "{\"message_type\":6,"
+                + "\"equipment_id\":\"" + esc(spontaneousEquipmentId()) + "\","
+                + "\"event_type\":\"" + esc(eventType) + "\","
+                + "\"data\":" + (dataJson == null || dataJson.isBlank() ? "{}" : dataJson) + ","
+                + "\"timestamp\":\"" + java.time.LocalDateTime.now()
+                        .withNano(0).toString().replace('T', ' ') + "\","
+                + "\"checksum\":\"\","
+                + "\"connected\":1}";
+    }
+
+    /**
+     * 自发帧里用的设备标识。
+     *
+     * <p>用**设备编号（code）**：内核的事件通道按设备码认领事件
+     * （事件表里的 device_code、{@code __awaitEvent} 的 device 参数都是设备码），
+     * 填实例 id 的话事件落库后没人认领。
+     *
+     * <p>没给编号时退回实例 id —— 总比发一个 "-" 出去强（谁也认不出）。
+     */
+    private String spontaneousEquipmentId() {
+        if (code != null && !code.isBlank() && !"-".equals(code)) {
+            return code;
+        }
+        return deviceId;
     }
 
     /**

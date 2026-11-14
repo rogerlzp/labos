@@ -31,6 +31,83 @@ public static class Protocol
     public sealed record Request(string MessageId, string Method, string EquipmentId,
                                  Dictionary<string, JsonElement> Parameters, string Raw);
 
+    /// <summary>
+    /// 一条设备<b>主动上报</b>的帧（没有 message_id 的那种）。
+    /// </summary>
+    /// <param name="EquipmentId">设备码 —— 用来对上中控那台设备。</param>
+    /// <param name="EventType">事件类型（例：waiting_interaction）。</param>
+    /// <param name="PayloadJson">载荷 JSON 文本。</param>
+    public sealed record SpontaneousFrame(string EquipmentId, string EventType, string PayloadJson);
+
+    /// <summary>
+    /// 解析一条<b>自发帧</b>（设备主动上报，不是回包）。
+    ///
+    /// <para><b>判据与内核完全一致</b>：<b>没有 message_id 的帧 = 设备主动上报</b>
+    /// （内核的 <c>TcpPersistentDriver.dispatch()</c> 用的是同一条规则）。
+    /// 两边必须一致 —— 判据一漂移，自发帧会被当成回包丢掉，或者回包被当成自发帧发出去。</para>
+    ///
+    /// <para>返回 null 表示"这不是自发帧"（是回包 / 不是合法 JSON / 没有设备码认不出是谁报的）。</para>
+    /// </summary>
+    public static SpontaneousFrame? ParseSpontaneous(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            // 有 message_id ⇒ 是回包，不是自发帧
+            if (!string.IsNullOrEmpty(Get(root, "message_id")))
+            {
+                return null;
+            }
+            var equipmentId = Get(root, "equipment_id");
+            if (string.IsNullOrEmpty(equipmentId))
+            {
+                // 没有设备码 ⇒ 认不出是谁报的 ⇒ 不发（发出去也没人认领）
+                return null;
+            }
+            // 事件类型：帧里明写就用它；没写就按 message_type 归一类
+            var eventType = Get(root, "event_type");
+            if (string.IsNullOrEmpty(eventType))
+            {
+                eventType = root.TryGetProperty("message_type", out var mt)
+                            && mt.ValueKind == JsonValueKind.Number && mt.TryGetInt32(out var mv)
+                            ? $"device_event_{mv}"
+                            : "device_event";
+            }
+            var payload = root.TryGetProperty("data", out var d)
+                        && d.ValueKind == JsonValueKind.Object
+                        ? d.GetRawText()
+                        : "{}";
+            return new SpontaneousFrame(equipmentId, eventType, payload);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>帧里有没有 message_id（有 = 回包；没有 = 设备主动上报）。</summary>
+    public static bool HasMessageId(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return !string.IsNullOrEmpty(Get(doc.RootElement, "message_id"));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     public static Request? Parse(string json)
     {
         try

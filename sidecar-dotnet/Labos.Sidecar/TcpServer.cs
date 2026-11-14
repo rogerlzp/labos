@@ -25,13 +25,16 @@ public sealed class TcpServer
     private readonly string _bind;
     private readonly ModelLibrary.ModelDef _model;
     private readonly ITransport _transport;
+    private readonly DeviceEventForwarder? _eventForwarder;
 
-    public TcpServer(string bind, int port, ModelLibrary.ModelDef model, ITransport transport)
+    public TcpServer(string bind, int port, ModelLibrary.ModelDef model, ITransport transport,
+                     DeviceEventForwarder? eventForwarder = null)
     {
         _bind = bind;
         _port = port;
         _model = model;
         _transport = transport;
+        _eventForwarder = eventForwarder;
     }
 
     public void Run(CancellationToken token)
@@ -44,6 +47,7 @@ public sealed class TcpServer
         {
             Log("⚠ 该型号不是手册依据（Evidence!=MANUAL），只能跑流程骨架，不能对接真机");
         }
+        RunSpontaneousPump(token);
 
         var clients = 0;
         while (!token.IsCancellationRequested)
@@ -66,6 +70,51 @@ public sealed class TcpServer
             };
             t.Start();
         }
+    }
+
+    /// <summary>
+    /// 自发帧转发泵：把设备**主动上报**的帧转给中控。
+    ///
+    /// <para><b>为什么要独立一个线程</b>：内核此刻可能正卡在"等这个事件"上，
+    /// <b>不会再发命令</b> ⇒ 如果只在"有命令时才读设备"，这条事件就永远读不到（死等）。
+    /// 所以读侧必须一直在读，转发也必须一直在做。</para>
+    ///
+    /// <para>串口/dll 传输不支持自发帧（{@link ITransport.TryDequeueSpontaneous} 默认返回 false），
+    /// 此时这个泵空转，不影响命令下发。</para>
+    /// </summary>
+    private void RunSpontaneousPump(CancellationToken token)
+    {
+        if (_eventForwarder == null)
+        {
+            return;
+        }
+        var t = new Thread(() =>
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    if (_transport.TryDequeueSpontaneous(out var frame))
+                    {
+                        _ = _eventForwarder.ForwardAsync(frame, token);
+                    }
+                    else
+                    {
+                        Thread.Sleep(100);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Log("自发帧转发异常（忽略）：" + e.Message);
+                    Thread.Sleep(500);
+                }
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "labos-sidecar-spontaneous",
+        };
+        t.Start();
     }
 
     private void Serve(TcpClient client)

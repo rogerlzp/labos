@@ -34,6 +34,9 @@ public final class SimulatorBehaviorSelfTest {
         testS100();
         testAspin();
         testConcurrentCommands();
+        testSpontaneousFrame();
+        testSpontaneousScriptParsing();
+        testSpontaneousToDeadClient();
 
         System.out.println();
         System.out.printf("通过 %d, 失败 %d%n", pass, fail);
@@ -198,6 +201,117 @@ public final class SimulatorBehaviorSelfTest {
         }
     }
 
+    // ---------------------------------------------------------------- 自发上报
+
+    /**
+     * 设备**主动**上报（没有 message_id 的那种帧）。
+     *
+     * <p>为什么单独测：自发帧与回包混在同一条 TCP 连接上，
+     * 唯一的区别就是"帧里有没有 message_id" —— 判据漂了，
+     * 自发帧会被当成回包丢掉（现场表现：设备明明报了，中控就是等不到）。
+     */
+    private static void testSpontaneousFrame() throws Exception {
+        section("自发上报：帧形状 / 同方法 FIFO");
+        DeviceCore core = new DeviceCore(0, "701", "EXTRACT-01", "EXTRACT", 1,
+                false, 0, "EC-05-0001", false, "generic", null, null, 0);
+        core.withSpontaneousScript(DeviceCore.parseSpontaneousScript(
+                "Start=waiting_interaction@0;"
+                        + "Continue=waiting_interaction@0;"
+                        + "Continue=process_done@400"));
+        core.startServer("127.0.0.1", 0);
+        try (Client c = new Client(core.port(), "701")) {
+            // 1) 命令先正常回包，紧接着设备自己报了一帧
+            Frame r = c.call("s1", "Start", null);
+            eq("Start 成功", 2, r.status);
+            ok("回包带 message_id（它是命令回包）", r.raw.contains("\"message_id\":\"s1\""));
+
+            String ev = c.readFrame();
+            ok("自发帧**没有** message_id", !ev.contains("message_id"));
+            ok("自发帧带 equipment_id", ev.contains("\"equipment_id\":\"EXTRACT-01\""));
+            ok("自发帧带 event_type", ev.contains("\"event_type\""));
+            ok("自发帧带 data", ev.contains("\"data\":"));
+            ok("自发帧 message_type=6", ev.contains("\"message_type\":6"));
+            ok("自发帧带 connected", ev.contains("\"connected\":1"));
+            eq("自发帧的 event_type", "waiting_interaction", strField(ev, "event_type"));
+            eq("自发帧的 equipment_id", "EXTRACT-01", strField(ev, "equipment_id"));
+
+            // 2) 同一个方法的多个条目：按写的顺序依次消费
+            eq("第一次 Continue 成功", 2, c.call("s2", "Continue", null).status);
+            eq("Continue 第 1 条先报",
+                    "waiting_interaction", strField(c.readFrame(), "event_type"));
+            eq("第二次 Continue 成功", 2, c.call("s3", "Continue", null).status);
+            eq("Continue 第 2 条后报",
+                    "process_done", strField(c.readFrame(), "event_type"));
+
+            // 3) 脚本用完了 ⇒ 不再多报（多报会让中控收到重复事件）
+            eq("没有脚本的方法正常回包", 2, c.call("s4", "Home", null).status);
+            ok("脚本用完不再多发自发帧", c.readFrameOrNull(400) == null);
+        } finally {
+            core.stopServer();
+        }
+    }
+
+    /** 脚本解析：FIFO / 缺省延迟 / 坏条目跳过。 */
+    private static void testSpontaneousScriptParsing() {
+        section("自发上报脚本解析：FIFO / 缺省延迟 / 坏条目跳过");
+        java.util.Map<String, java.util.List<DeviceCore.SpontaneousEvent>> script =
+                DeviceCore.parseSpontaneousScript(
+                        "Start=waiting_interaction@2000;"
+                                + "Continue=waiting_interaction@2000;"
+                                + "Continue=process_done@2000");
+        eq("解析出 2 个方法", 2, script.size());
+        eq("Start 只有 1 条", 1, script.get("Start").size());
+        eq("Continue 有 2 条（FIFO）", 2, script.get("Continue").size());
+        eq("Continue 第 1 条", "waiting_interaction", script.get("Continue").get(0).eventType());
+        eq("Continue 第 2 条", "process_done", script.get("Continue").get(1).eventType());
+        eq("延迟读得出来", 2000L, script.get("Start").get(0).delayMs());
+
+        java.util.Map<String, java.util.List<DeviceCore.SpontaneousEvent>> noDelay =
+                DeviceCore.parseSpontaneousScript("Ping=pong");
+        eq("没写延迟 ⇒ 缺省 0（立即上报）", 0L, noDelay.get("Ping").get(0).delayMs());
+        eq("事件类型读得出来", "pong", noDelay.get("Ping").get(0).eventType());
+
+        // 坏条目：报到 stderr 并跳过，**不能让模拟器起不来**
+        java.util.Map<String, java.util.List<DeviceCore.SpontaneousEvent>> bad =
+                DeviceCore.parseSpontaneousScript(
+                        "garbage;=x;X=;Y=ev@abc;Z=ev@-5;Ok=ev");
+        eq("坏条目全部跳过，只剩 1 个好条目", 1, bad.size());
+        ok("好条目还在", bad.containsKey("Ok"));
+        eq("空脚本 = 空表", 0, DeviceCore.parseSpontaneousScript("").size());
+        eq("null 脚本 = 空表", 0, DeviceCore.parseSpontaneousScript(null).size());
+    }
+
+    /** 客户端已经断开：推送不能抛异常，更不能把模拟器带崩。 */
+    private static void testSpontaneousToDeadClient() throws Exception {
+        section("自发上报：客户端已断开也不抛异常、不带崩模拟器");
+        DeviceCore core = new DeviceCore(0, "702", "EXTRACT-02", "EXTRACT", 1,
+                false, 0, "EC-05-0001", false, "generic", null, null, 0);
+        core.startServer("127.0.0.1", 0);
+        try {
+            // 客户端直接走人（发 RST）：服务端可能还没察觉，推送会写到死 socket
+            Socket raw = new Socket("127.0.0.1", core.port());
+            raw.setSoLinger(true, 0);
+            raw.close();
+            try {
+                core.pushEvent("waiting_interaction", "{}");
+                ok("往已断开的客户端推送不抛异常", true);
+            } catch (RuntimeException e) {
+                ok("往已断开的客户端推送不抛异常（" + e + "）", false);
+            }
+
+            // 等服务端发现断开后再推一次：此时没有客户端，推送数 = 0
+            Thread.sleep(300);
+            eq("没有客户端时推送数 = 0", 0, core.pushEvent("waiting_interaction", "{}"));
+
+            // 模拟器还活着：还能正常服务新连接
+            try (Client c = new Client(core.port(), "702")) {
+                eq("模拟器仍然正常服务新连接", 2, c.call("d2", "GetStatus", null).status);
+            }
+        } finally {
+            core.stopServer();
+        }
+    }
+
     // ---------------------------------------------------------------- 工具
 
     /** 一条回包。 */
@@ -228,6 +342,17 @@ public final class SimulatorBehaviorSelfTest {
             out.write((msg + SEP).getBytes(StandardCharsets.UTF_8));
             out.flush();
 
+            String raw = readFrame();
+            return new Frame(intField(raw, "method_status"), strField(raw, "error_code"), raw);
+        }
+
+        /**
+         * 读一帧（读到分隔符为止）。
+         *
+         * <p>自发上报是**异步**来的（命令回包之后另一个线程才推），
+         * 所以读帧不能假设"下一帧就是回包"。
+         */
+        String readFrame() throws Exception {
             StringBuilder sb = new StringBuilder();
             int ch;
             while ((ch = in.read()) != -1) {
@@ -235,11 +360,26 @@ public final class SimulatorBehaviorSelfTest {
                 int idx = sb.indexOf(SEP);
                 if (idx >= 0) {
                     sb.setLength(idx);
-                    break;
+                    return sb.toString();
                 }
             }
-            String raw = sb.toString();
-            return new Frame(intField(raw, "method_status"), strField(raw, "error_code"), raw);
+            return sb.toString();
+        }
+
+        /**
+         * 读一帧；超时返回 null。
+         *
+         * <p>用来断言"**没有**多余的自发帧"：没有帧时不能一直等下去。
+         */
+        String readFrameOrNull(int timeoutMs) throws Exception {
+            socket.setSoTimeout(timeoutMs);
+            try {
+                return readFrame();
+            } catch (java.net.SocketTimeoutException e) {
+                return null;
+            } finally {
+                socket.setSoTimeout(8_000);
+            }
         }
 
         @Override

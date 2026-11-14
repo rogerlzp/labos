@@ -33,6 +33,23 @@ public interface ITransport : IDisposable
     string Name { get; }
 
     TransportReply Send(Protocol.Request req, ModelLibrary.ModelDef model);
+
+    /// <summary>
+    /// 取一条设备<b>主动上报</b>的帧（<b>没有 message_id</b> 的那种）。
+    ///
+    /// <para><b>为什么需要</b>：有些设备是"自驱"的 —— 它自己跑到某个状态就停下，
+    /// 主动上报一声（例：分盘式提取仪跑到交换点，报【等待交互】等上位机换板）。
+    /// 这类帧<b>不是</b>对任何命令的回应 ⇒ 不能混进回包队列，
+    /// 否则下一条命令会拿到上一条的陈旧回包。</para>
+    ///
+    /// <para>默认不支持：串口/dll 传输是"问一句答一句"，拿不到自发帧。
+    /// 支持的传输（现在只有 sim 档）覆写它。</para>
+    /// </summary>
+    bool TryDequeueSpontaneous(out string frame)
+    {
+        frame = "";
+        return false;
+    }
 }
 
 /// <summary>

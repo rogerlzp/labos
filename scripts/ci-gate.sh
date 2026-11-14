@@ -115,6 +115,21 @@ if [[ "$WANT_FAST" == "1" ]]; then
     fail "内置节点跨层不一致"
     grep '✘' /tmp/gate-builtins.log | head -8
   fi
+
+  # 设备主动上报事件的全链路：模拟器推帧 → sidecar 转发 → 中控入站端点。
+  # 中控那端用桩服务顶替 ⇒ 不连库也能跑。缺 dotnet 时脚本自己跳过。
+  if [[ -x ./scripts/test-sidecar-device-event.sh ]]; then
+    OUT=$(./scripts/test-sidecar-device-event.sh 2>&1)
+    N=$(echo "$OUT" | grep -oE '通过 [0-9]+, 失败' | grep -oE '[0-9]+' | head -1)
+    F=$(echo "$OUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | head -1)
+    N=${N:-0}; F=${F:-1}
+    if [[ "$F" != "0" ]]; then
+      fail "设备事件全链路有失败（$F 条）"
+      echo "$OUT" | grep -E '✘' | head -6 | sed 's/^/      /'
+    else
+      pass "设备事件全链路 $N / 0"
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------- 段 1

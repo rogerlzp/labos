@@ -63,6 +63,16 @@ public class DeviceEventController {
     @PostMapping(produces = "application/json; charset=utf-8")
     public ResponseEntity<String> ingest(@RequestBody(required = false) String body,
                                           HttpServletRequest req) {
+        // 令牌：中控设了 LABOS_DEVICE_EVENT_TOKEN 就必须带对（sidecar 没有中控账号，
+        // 免鉴权只在内网可信口径下成立；装了令牌就收口到"知道令牌的人才能写事件"）。
+        String expected = eventToken();
+        if (expected != null) {
+            String got = req.getHeader("X-Labos-Device-Token");
+            if (got == null || !expected.equals(got.trim())) {
+                return ResponseEntity.status(401).body(Jsons.obj("ok", false,
+                        "error", "设备事件令牌不对（X-Labos-Device-Token）"));
+            }
+        }
         String device = trimmed(com.labos.kernel.api.ApiServer.jsonField(body, "device"));
         String eventType = trimmed(com.labos.kernel.api.ApiServer.jsonField(body, "eventType"));
         if (eventType == null) {
@@ -133,6 +143,18 @@ public class DeviceEventController {
         }
         String t = s.trim();
         return t.isEmpty() ? null : t;
+    }
+
+    /**
+     * 设备事件令牌（{@code LABOS_DEVICE_EVENT_TOKEN}）。
+     *
+     * <p>没配 ⇒ 内网免鉴权口径（与 {@code /api/devices/registry} 同档：
+     * sidecar 没有中控账号，它要把设备上报转上来）。
+     * 配了 ⇒ 端点校验 {@code X-Labos-Device-Token}，对不上直接 401。
+     */
+    private static String eventToken() {
+        String t = System.getenv("LABOS_DEVICE_EVENT_TOKEN");
+        return t == null || t.isBlank() ? null : t.trim();
     }
 
     /**
