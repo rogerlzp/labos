@@ -51,6 +51,31 @@ public final class RuntimeHoldSelfTest {
         kind("manual -> MANUAL", "manual", RuntimeHold.Kind.MANUAL);
         kind("未知 -> HUMAN（保守：按需人工处理）", "???", RuntimeHold.Kind.HUMAN);
 
+        section("4b. R8 步骤 2：双向词表一致性（PauseManager.Kind ↔ RuntimeHold.Kind）");
+        for (PauseManager.Kind pk : PauseManager.Kind.values()) {
+            RuntimeHold.Kind hk = pk.toHoldKind();
+            // 正向：PauseManager.Kind -> RuntimeHold.Kind
+            if (hk != null && pk.code().equals(hk.toPauseKindCode())) {
+                passed++;
+                System.out.printf("  ✓ %-34s -> %s -> %s（round-trip）%n", pk.code(), hk.code(), hk.toPauseKindCode());
+            } else {
+                failed++;
+                System.out.printf("  ✗ %s 双向映射不一致%n", pk.code());
+            }
+        }
+        // 反向：RuntimeHold.Kind -> PauseManager.Kind.of
+        for (RuntimeHold.Kind hk : RuntimeHold.Kind.values()) {
+            String code = hk.toPauseKindCode();
+            PauseManager.Kind pk = PauseManager.Kind.of(code);
+            if (pk != null && pk.toHoldKind() == hk) {
+                passed++;
+                System.out.printf("  ✓ %-34s -> %s -> %s（反向 round-trip）%n", hk.code(), code, pk.code());
+            } else {
+                failed++;
+                System.out.printf("  ✗ %s 反向映射不一致（code=%s -> %s）%n", hk.code(), code, pk);
+            }
+        }
+
         section("5. 范围解析");
         scope("site -> SITE", "site", RuntimeHold.Scope.SITE);
         scope("island -> ISLAND", "island", RuntimeHold.Scope.ISLAND);

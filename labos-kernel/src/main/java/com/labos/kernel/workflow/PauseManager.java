@@ -49,7 +49,9 @@ public final class PauseManager {
         /** 需人工确认。 */
         WAITING_HUMAN("waiting_human"),
         /** 板位置未知，必须盘点。 */
-        PAUSED_UNKNOWN("paused_unknown");
+        PAUSED_UNKNOWN("paused_unknown"),
+        /** R8 步骤 2：人工主动暂停（PauseUnknown 转人工）。 */
+        MANUAL("manual");
 
         private final String code;
 
@@ -67,7 +69,32 @@ public final class PauseManager {
                     return k;
                 }
             }
+            // R8 步骤 2：也认现场扣留 RuntimeHold.Kind 的 code（唯一真源），避免两套词表漂移。
+            if (code != null) {
+                switch (code.trim()) {
+                    case "fault":
+                        return PAUSED_FAULT;
+                    case "plate_unknown":
+                        return PAUSED_UNKNOWN;
+                    case "human":
+                        return WAITING_HUMAN;
+                    case "manual":
+                        return MANUAL;
+                    default:
+                        break;
+                }
+            }
             return WAITING_HUMAN;
+        }
+
+        /** R8 步骤 2：到现场扣留 RuntimeHold.Kind 的别名映射（唯一真源是 RuntimeHold.Kind）。 */
+        public RuntimeHold.Kind toHoldKind() {
+            return switch (this) {
+                case PAUSED_FAULT -> RuntimeHold.Kind.FAULT;
+                case WAITING_HUMAN -> RuntimeHold.Kind.HUMAN;
+                case PAUSED_UNKNOWN -> RuntimeHold.Kind.PLATE_UNKNOWN;
+                case MANUAL -> RuntimeHold.Kind.MANUAL;
+            };
         }
     }
 

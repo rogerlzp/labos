@@ -117,6 +117,16 @@ public final class RuntimeHold {
             }
             return HUMAN;
         }
+
+        /** R8 步骤 2：到流程级 pause_kind 码（run.pause_kind / experiment_run.pause_kind）。 */
+        public String toPauseKindCode() {
+            return switch (this) {
+                case FAULT -> "paused_fault";
+                case HUMAN -> "waiting_human";
+                case PLATE_UNKNOWN -> "paused_unknown";
+                case MANUAL -> "manual";
+            };
+        }
     }
 
     /** 边界闸门判定结果。 */
