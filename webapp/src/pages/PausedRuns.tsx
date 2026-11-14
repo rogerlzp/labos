@@ -14,6 +14,14 @@ import { pauseKindMeta, useStatusVocabulary } from '../utils/status';
 import { useReadOnly } from '../auth';
 import { useT } from '../i18n';
 
+/** 陈旧阈值：暂停超过 N 天标红（与后端 /api/scheduler/stale-pauses 默认 7 天同口径）。 */
+const STALE_DAYS = 7;
+
+function isStale(pausedAt?: string): boolean {
+  if (!pausedAt) return false;
+  return Date.now() - new Date(pausedAt).getTime() > STALE_DAYS * 24 * 3600 * 1000;
+}
+
 /**
  * 暂停队列：**所有停下来的执行集中在一页**。
  *
@@ -295,7 +303,7 @@ export default function PausedRunsPage() {
               {
                 title: t('pausedRuns.col.run'), dataIndex: 'runNo', width: 220,
                 render: (v: string, r) => (
-                  <Space>
+                  <Space size={6}>
                     <Button type="link" size="small" style={{ padding: 0 }}
                       onClick={() => nav(`/runs/${r.runId}`)}>
                       #{r.runId}
@@ -303,6 +311,7 @@ export default function PausedRunsPage() {
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       {v}
                     </Typography.Text>
+                    {isStale(r.pausedAt) && <Tag color="red">{t('pausedRuns.stale')}</Tag>}
                   </Space>
                 ),
               },

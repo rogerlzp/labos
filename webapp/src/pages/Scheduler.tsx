@@ -107,6 +107,20 @@ export default function SchedulerPage() {
   });
   const qc = useQueryClient();
   const [form] = Form.useForm();
+  const plans = useQuery({
+    queryKey: ['schedule-plans'],
+    queryFn: api.schedulePlans,
+    refetchInterval: 60000,
+  });
+  const archivePlan = useMutation({
+    mutationFn: (id: number) => api.updateSchedulePlan(id, { status: 'archived' }),
+    onSuccess: () => {
+      message.success(t('scheduler.config.archived'));
+      qc.invalidateQueries({ queryKey: ['schedule-plans'] });
+      qc.invalidateQueries({ queryKey: ['scheduler-config'] });
+    },
+    onError: (e) => message.error(String((e as Error).message)),
+  });
   const createPlan = useMutation({
     mutationFn: api.createSchedulePlan,
     onSuccess: (r) => {
@@ -358,6 +372,29 @@ export default function SchedulerPage() {
                   {t('scheduler.config.submit')}
                 </Button>
               </Form>
+              {plans.data && plans.data.total > 0 && (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('scheduler.config.planList')}
+                  </Typography.Text>
+                  {plans.data.items.slice(0, 8).map((p) => (
+                    <Space key={p.id} size={8} wrap>
+                      <Typography.Text code style={{ fontSize: 12 }}>{p.planNo}</Typography.Text>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        factor={p.optimizationFactor} · max={p.maxIterationsRunning} · delay={p.iterationDelaySec}s
+                      </Typography.Text>
+                      <Tag color={p.status === 'archived' ? 'default' : 'blue'}>{p.status}</Tag>
+                      {p.status !== 'archived' && (
+                        <Button size="small" type="link" danger
+                          loading={archivePlan.isPending}
+                          onClick={() => archivePlan.mutate(p.id)}>
+                          {t('scheduler.config.archive')}
+                        </Button>
+                      )}
+                    </Space>
+                  ))}
+                </Space>
+              )}
             </Space>
           </Card>
         </Col>
