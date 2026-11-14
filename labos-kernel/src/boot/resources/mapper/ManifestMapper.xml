@@ -162,14 +162,29 @@
              LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
              LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
              LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
-            WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId} AND mp.status = 'loaded'
+            WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId} AND mp.status = 'unloading'
               AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
   </update>
 
+  <!-- R12 请求卸载：loaded → unloading（位置仍占用，不清理） -->
+  <update id="markProcessPlacementsUnloading">
+    UPDATE manifest_placement mp
+       SET status = 'unloading', updated_at = now()
+     WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId} AND mp.status = 'loaded'
+       AND EXISTS (
+           SELECT 1 FROM manifest_item mi
+             LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
+             LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
+             LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
+            WHERE mi.id = mp.manifest_item_id
+              AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
+  </update>
+
+  <!-- R12 确认卸载：unloading → unloaded（配合 clearProcessPositionStates 清位置） -->
   <update id="markProcessPlacementsUnloaded">
     UPDATE manifest_placement mp
        SET status = 'unloaded', updated_at = now()
-     WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId} AND mp.status = 'loaded'
+     WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId} AND mp.status = 'unloading'
        AND EXISTS (
            SELECT 1 FROM manifest_item mi
              LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
@@ -194,14 +209,28 @@
              LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
              LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
              LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
-            WHERE mp.tenant_id = #{t} AND er.experiment_id = #{experimentId} AND mp.status = 'loaded'
+            WHERE mp.tenant_id = #{t} AND er.experiment_id = #{experimentId} AND mp.status = 'unloading'
+              AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
+  </update>
+
+  <update id="markProcessPlacementsUnloadingByExperiment">
+    UPDATE manifest_placement mp
+       SET status = 'unloading', updated_at = now()
+     WHERE mp.tenant_id = #{t} AND mp.status = 'loaded'
+       AND mp.run_id IN (SELECT id FROM experiment_run WHERE tenant_id = #{t} AND experiment_id = #{experimentId})
+       AND EXISTS (
+           SELECT 1 FROM manifest_item mi
+             LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
+             LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
+             LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
+            WHERE mi.id = mp.manifest_item_id
               AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
   </update>
 
   <update id="markProcessPlacementsUnloadedByExperiment">
     UPDATE manifest_placement mp
        SET status = 'unloaded', updated_at = now()
-     WHERE mp.tenant_id = #{t} AND mp.status = 'loaded'
+     WHERE mp.tenant_id = #{t} AND mp.status = 'unloading'
        AND mp.run_id IN (SELECT id FROM experiment_run WHERE tenant_id = #{t} AND experiment_id = #{experimentId})
        AND EXISTS (
            SELECT 1 FROM manifest_item mi

@@ -104,16 +104,31 @@ public final class MaterialUnloadPathsDbSelfTest {
         // 直接打 settle 的终态分支（包内可见）：这正是"实验跑完"时走的那条路
         executor.settle(RUN_DIRECT, "completed", 0, null, null, null, true);
 
+        // R12：settle 只「请求卸载」（loaded→unloading），位置仍占用
         String st = placementStatus(RUN_DIRECT, MI_PROC_A);
-        if ("unloaded".equals(st)) {
-            ok("process 物料 placement → unloaded", st);
+        if ("unloading".equals(st)) {
+            ok("process 物料 → unloading（请求卸载，位置未清）", st);
         } else {
-            bad("process 物料未卸载", "placement.status=" + st);
+            bad("process 物料未进入 unloading", "placement.status=" + st);
         }
         if (positionOccupied(RES_PROC_A)) {
-            bad("process 物料点位仍被占用", "resource=" + RES_PROC_A);
+            ok("请求卸载后 process 点位仍占用（未确认不清位置）", "resource=" + RES_PROC_A);
         } else {
-            ok("process 物料点位已清空", "resource=" + RES_PROC_A);
+            bad("请求卸载后 process 点位被提前清空", "resource=" + RES_PROC_A);
+        }
+
+        // R12：确认卸载（unloading→unloaded + 清位置）
+        confirmUnload(RUN_DIRECT);
+        st = placementStatus(RUN_DIRECT, MI_PROC_A);
+        if ("unloaded".equals(st)) {
+            ok("确认卸载后 process 物料 → unloaded", st);
+        } else {
+            bad("确认卸载后未到 unloaded", "placement.status=" + st);
+        }
+        if (positionOccupied(RES_PROC_A)) {
+            bad("确认卸载后 process 点位仍占用", "resource=" + RES_PROC_A);
+        } else {
+            ok("确认卸载后 process 点位已清空", "resource=" + RES_PROC_A);
         }
 
         String stInv = placementStatus(RUN_DIRECT, MI_INV_A);
@@ -179,15 +194,29 @@ public final class MaterialUnloadPathsDbSelfTest {
         }
 
         st = placementStatus(RUN_BATCH1, MI_PROC_B);
-        if ("unloaded".equals(st)) {
-            ok("process 物料跨批次被卸载", st);
+        if ("unloading".equals(st)) {
+            ok("整单终态后 process 物料 → unloading（请求卸载）", st);
         } else {
-            bad("整单终态后 process 物料未卸载", "placement.status=" + st);
+            bad("整单终态后 process 物料未进入 unloading", "placement.status=" + st);
         }
         if (positionOccupied(RES_PROC_B)) {
-            bad("整单终态后 process 点位仍占用", "resource=" + RES_PROC_B);
+            ok("请求卸载后 process 点位仍占用", "resource=" + RES_PROC_B);
         } else {
-            ok("整单终态后 process 点位已清空", "resource=" + RES_PROC_B);
+            bad("请求卸载后 process 点位被提前清空", "resource=" + RES_PROC_B);
+        }
+
+        // R12：确认卸载（unloading→unloaded + 清位置）
+        confirmUnloadByExperiment(EXP_BATCH);
+        st = placementStatus(RUN_BATCH1, MI_PROC_B);
+        if ("unloaded".equals(st)) {
+            ok("确认卸载后 process 物料跨批次被卸载", st);
+        } else {
+            bad("确认卸载后 process 物料未 unloaded", "placement.status=" + st);
+        }
+        if (positionOccupied(RES_PROC_B)) {
+            bad("确认卸载后 process 点位仍占用", "resource=" + RES_PROC_B);
+        } else {
+            ok("确认卸载后 process 点位已清空", "resource=" + RES_PROC_B);
         }
 
         String stInv = placementStatus(RUN_BATCH1, MI_INV_B);
@@ -328,6 +357,27 @@ public final class MaterialUnloadPathsDbSelfTest {
         return queryOne("SELECT status FROM manifest_placement "
                 + "WHERE tenant_id = ? AND run_id = ? AND manifest_item_id = ?",
                 TENANT, runId, itemId);
+    }
+
+    /** R12 确认卸载（unloading→unloaded + 清位置），直接打 Mapper（与 Controller 同逻辑）。 */
+    private static void confirmUnload(long runId) throws SQLException {
+        com.labos.kernel.persistence.ManifestMapper mm = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ManifestMapper.class);
+        com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            mm.clearProcessPositionStates(TENANT, runId);
+            mm.markProcessPlacementsUnloaded(TENANT, runId);
+            return null;
+        });
+    }
+
+    private static void confirmUnloadByExperiment(long experimentId) throws SQLException {
+        com.labos.kernel.persistence.ManifestMapper mm = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ManifestMapper.class);
+        com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            mm.clearProcessPositionStatesByExperiment(TENANT, experimentId);
+            mm.markProcessPlacementsUnloadedByExperiment(TENANT, experimentId);
+            return null;
+        });
     }
 
     private static boolean positionOccupied(long resourceId) throws SQLException {

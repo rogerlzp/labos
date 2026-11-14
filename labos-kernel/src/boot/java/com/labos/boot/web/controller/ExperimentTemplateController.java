@@ -260,9 +260,8 @@ public class ExperimentTemplateController {
     }
 
     /**
-     * §4.5.2 物料生命周期：实验结束后，自动卸载 lifecycle='process' 的物料
-     * （清 position_state + 置 placement unloaded）；lifecycle='inventory' 的保持原位。
-     * 单事务；返回卸载条数。
+     * R12 §4.5.2：请求卸载 lifecycle='process' 的物料（loaded → unloading，位置仍占用）。
+     * 确认卸载（unloading → unloaded + 清位置）走 confirm-unload。
      */
     @PostMapping(value = "/experiment-runs/{runId:\\d+}/unload-process-materials",
             produces = "application/json; charset=utf-8")
@@ -271,17 +270,41 @@ public class ExperimentTemplateController {
         try {
             int[] n = {0};
             com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-                // 先清点位（此时 placement 仍 loaded，WHERE 能命中），再置 unloaded
-                m().clearProcessPositionStates(TENANT, runId);
-                n[0] = m().markProcessPlacementsUnloaded(TENANT, runId);
+                n[0] = m().markProcessPlacementsUnloading(TENANT, runId);
                 return null;
             });
             audit.record(session(req), "material.unloadProcess", "experiment_run", runId,
                     null, null, req.getRemoteAddr());
+            return ok(Map.of("runId", runId, "unloading", n[0], "note",
+                    "已请求卸载（unloading），位置仍占用；确认卸载走 confirm-unload"));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(err("请求卸载失败：" + e.getMessage()));
+        }
+    }
+
+    /**
+     * R12：确认卸载——unloading → unloaded + 清 position_state。
+     * 「发了卸载请求 ≠ 物料已卸载」，确认后才清位置。
+     */
+    @PostMapping(value = "/experiment-runs/{runId:\\d+}/confirm-unload",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> confirmUnload(@PathVariable long runId,
+                                                HttpServletRequest req) {
+        try {
+            int[] n = {0};
+            com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+                // 先清位置（placement 仍 unloading 才能命中 WHERE），再置 unloaded
+                m().clearProcessPositionStates(TENANT, runId);
+                n[0] = m().markProcessPlacementsUnloaded(TENANT, runId);
+                return null;
+            });
+            audit.record(session(req), "material.confirmUnload", "experiment_run", runId,
+                    null, null, req.getRemoteAddr());
             return ok(Map.of("runId", runId, "unloaded", n[0]));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(err("卸载失败：" + e.getMessage()));
+                    .body(err("确认卸载失败：" + e.getMessage()));
         }
     }
 

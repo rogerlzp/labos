@@ -114,31 +114,47 @@ def main():
       "content_kind=EXCLUDED.content_kind, content_id=EXCLUDED.content_id, occupied_by_run=EXCLUDED.occupied_by_run"
       % (pres1, p_proc, run_id, pres2, p_inv, run_id))
 
-    print("── 用例：卸载 process 物料，inventory 保持原位 ──")
+    print("── 用例：请求卸载 → 确认卸载（R12 两段式），inventory 保持原位 ──")
     r = api(f"/api/experiment-runs/{run_id}/unload-process-materials", "POST", token=token)
-    if r.get("unloaded") == 1:
-        ok("卸载返回 unloaded=1", str(r))
+    if r.get("unloading") == 1:
+        ok("请求卸载返回 unloading=1（位置未清）", str(r))
     else:
-        bad("卸载返回非预期", str(r))
+        bad("请求卸载返回非预期", str(r))
 
-    # 断言 process 板卸载、inventory 板不动
+    # ① 请求卸载后：process → unloading，位置仍占用；inventory 不动
     proc_status = q("SELECT status FROM manifest_placement WHERE manifest_item_id=%d" % mi_proc)
     inv_status = q("SELECT status FROM manifest_placement WHERE manifest_item_id=%d" % mi_inv)
-    if proc_status.strip() == "unloaded":
-        ok("process placement → unloaded")
+    if proc_status.strip() == "unloading":
+        ok("process placement → unloading（请求卸载）")
     else:
-        bad("process placement 未卸载", proc_status.strip())
+        bad("process placement 未进入 unloading", proc_status.strip())
     if inv_status.strip() == "loaded":
         ok("inventory placement 保持 loaded")
     else:
-        bad("inventory placement 被误卸载", inv_status.strip())
-
-    proc_pos = q("SELECT plate_id IS NULL AND content_kind IS NULL FROM position_state WHERE resource_id=%d" % pres1)
-    inv_pos = q("SELECT plate_id IS NOT NULL FROM position_state WHERE resource_id=%d" % pres2)
+        bad("inventory placement 被误卸", inv_status.strip())
+    proc_pos = q("SELECT plate_id IS NOT NULL FROM position_state WHERE resource_id=%d" % pres1)
     if proc_pos.strip() == "t":
-        ok("process 板 position_state 已清空")
+        ok("请求卸载后 process 板位置仍占用（未确认不清位置）")
     else:
-        bad("process 板 position_state 未清空", proc_pos.strip())
+        bad("请求卸载后 process 板位置被提前清空", proc_pos.strip())
+
+    # ② 确认卸载：process → unloaded + 位置清空
+    r = api(f"/api/experiment-runs/{run_id}/confirm-unload", "POST", token=token)
+    if r.get("unloaded") == 1:
+        ok("确认卸载返回 unloaded=1", str(r))
+    else:
+        bad("确认卸载返回非预期", str(r))
+    proc_status = q("SELECT status FROM manifest_placement WHERE manifest_item_id=%d" % mi_proc)
+    if proc_status.strip() == "unloaded":
+        ok("确认卸载后 process placement → unloaded")
+    else:
+        bad("确认卸载后 process 未 unloaded", proc_status.strip())
+    proc_pos = q("SELECT plate_id IS NULL AND content_kind IS NULL FROM position_state WHERE resource_id=%d" % pres1)
+    if proc_pos.strip() == "t":
+        ok("确认卸载后 process 板 position_state 已清空")
+    else:
+        bad("确认卸载后 process 板 position_state 未清空", proc_pos.strip())
+    inv_pos = q("SELECT plate_id IS NOT NULL FROM position_state WHERE resource_id=%d" % pres2)
     if inv_pos.strip() == "t":
         ok("inventory 板 position_state 保持占用")
     else:

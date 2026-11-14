@@ -984,14 +984,13 @@ public final class BatchOrchestrator {
                     com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.ManifestMapper.class);
             com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-                // 先清点位（placement 仍 loaded 才能命中 WHERE），再置 unloaded
-                mm.clearProcessPositionStatesByExperiment(tenantId, experimentId);
-                mm.markProcessPlacementsUnloadedByExperiment(tenantId, experimentId);
+                // R12：批次整单终态「请求卸载」（loaded → unloading，位置仍占用）
+                mm.markProcessPlacementsUnloadingByExperiment(tenantId, experimentId);
                 return null;
             });
         } catch (Exception e) {
             org.slf4j.LoggerFactory.getLogger(BatchOrchestrator.class)
-                    .warn("[物料] 批次实验终态卸载 process 物料失败（不阻断聚合）: {}", e.getMessage());
+                    .warn("[物料] 批次实验终态请求卸载 process 物料失败（不阻断聚合）: {}", e.getMessage());
         }
     }
 

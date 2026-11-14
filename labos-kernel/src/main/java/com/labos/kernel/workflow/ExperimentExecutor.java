@@ -560,21 +560,20 @@ public final class ExperimentExecutor {
         }
     }
 
-    /** §4.5.2：卸载 lifecycle='process' 的物料（清点位状态 + placement 置 unloaded）。 */
+    /** R12 §4.5.2：实验终态「请求卸载」 lifecycle='process' 的物料（loaded → unloading，位置仍占用）。
+     * 确认卸载（unloading → unloaded + 清位置）走 confirmUnload。 */
     private void unloadProcessMaterials(long runId) {
         try {
             com.labos.kernel.persistence.ManifestMapper mm =
                     com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.ManifestMapper.class);
             com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-                // 先清点位（placement 仍 loaded 才能命中 WHERE），再置 unloaded
-                mm.clearProcessPositionStates(tenantId, runId);
-                mm.markProcessPlacementsUnloaded(tenantId, runId);
+                mm.markProcessPlacementsUnloading(tenantId, runId);
                 return null;
             });
         } catch (Exception e) {
             org.slf4j.LoggerFactory.getLogger(ExperimentExecutor.class)
-                    .warn("[物料] 实验结束卸载 process 物料失败（不阻断收尾）: {}", e.getMessage());
+                    .warn("[物料] 实验结束请求卸载 process 物料失败（不阻断收尾）: {}", e.getMessage());
         }
     }
 
