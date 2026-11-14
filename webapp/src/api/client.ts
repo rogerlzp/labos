@@ -1113,6 +1113,45 @@ export const api = {
    */
   schedulerStatus: () => req<SchedulerStatus>('/api/scheduler/status'),
 
+  /** 调度器当前排程参数（消费 schedule_plan 的结果，P2-4）。 */
+  schedulerConfig: () => req<{
+    maxConcurrent: number; optimizationFactor: number; tickMs: number;
+  }>('/api/scheduler/config'),
+
+  /** 死锁/饥饿风险清单（P2-5）。 */
+  schedulerDeadlockCheck: (heldMinutes = 30, waitMinutes = 30) =>
+    req<{ total: number; heldThresholdMinutes: number; waitThresholdMinutes: number;
+         risks: Array<{ kind: string; resourceId: number | null; resourceCode: string | null;
+                        experimentRunId: number; since: string | null; message: string }> }>(
+      `/api/scheduler/deadlock-check?heldMinutes=${heldMinutes}&waitMinutes=${waitMinutes}`),
+
+  /** 陈旧暂停 run（P2 治理）。 */
+  schedulerStalePauses: (days = 7) =>
+    req<{ total: number; days: number;
+         items: Array<{ runId: number; runNo: string | null; pauseKind: string | null;
+                        pausedAt: string | null; pauseNodeKey: string | null; nodeName: string | null }> }>(
+      `/api/scheduler/stale-pauses?days=${days}`),
+
+  /** 排程 plan 列表（P2-4 配置入口）。 */
+  schedulePlans: () => req<{ total: number;
+    items: Array<{ id: number; planNo: string; status: string;
+                   optimizationFactor: number; maxIterationsRunning: number;
+                   iterationDelaySec: number }> }>('/api/schedule-plans'),
+
+  createSchedulePlan: (body: {
+    planNo?: string; optimizationFactor?: number;
+    maxIterationsRunning?: number; iterationDelaySec?: number;
+  }) => req<{ created: number; planNo: string }>('/api/schedule-plans', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+
+  updateSchedulePlan: (id: number, body: {
+    optimizationFactor?: number; maxIterationsRunning?: number;
+    iterationDelaySec?: number; status?: string;
+  }) => req<{ updated: number; id: number }>(`/api/schedule-plans/${id}`, {
+    method: 'PUT', body: JSON.stringify(body),
+  }),
+
   /**
    * 实验预计等待（M9 §7.2）。
    *

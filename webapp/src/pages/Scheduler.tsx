@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Alert, Card, Col, Empty, Row, Space, Statistic, Table, Tag, Tooltip, Typography,
+  Alert, Button, Card, Col, Empty, Form, Input, InputNumber, Row, Space, Statistic,
+  Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -87,6 +88,35 @@ export default function SchedulerPage() {
     for (const it of eta.data?.items ?? []) m.set(it.experimentId, it);
     return m;
   }, [eta.data]);
+
+  // P2 完善：当前排程参数 + 陈旧暂停 + 死锁风险（低频，60s 刷一次）
+  const config = useQuery({
+    queryKey: ['scheduler-config'],
+    queryFn: api.schedulerConfig,
+    refetchInterval: 60000,
+  });
+  const stale = useQuery({
+    queryKey: ['scheduler-stale'],
+    queryFn: () => api.schedulerStalePauses(7),
+    refetchInterval: 60000,
+  });
+  const deadlock = useQuery({
+    queryKey: ['scheduler-deadlock'],
+    queryFn: () => api.schedulerDeadlockCheck(30, 30),
+    refetchInterval: 60000,
+  });
+  const qc = useQueryClient();
+  const [form] = Form.useForm();
+  const createPlan = useMutation({
+    mutationFn: api.createSchedulePlan,
+    onSuccess: (r) => {
+      message.success(t('scheduler.config.submitted', { planNo: r.planNo }));
+      form.resetFields();
+      qc.invalidateQueries({ queryKey: ['scheduler-config'] });
+      qc.invalidateQueries({ queryKey: ['schedule-plans'] });
+    },
+    onError: (e) => message.error(String((e as Error).message)),
+  });
 
   if (status.error) {
     return (
@@ -285,6 +315,97 @@ export default function SchedulerPage() {
           ]}
         />
       </Card>
+
+      {/* P2 完善：排程参数配置 + 陈旧暂停 + 死锁风险 */}
+      <Row gutter={[12, 12]}>
+        <Col xs={24} lg={12}>
+          <Card size="small" title={t('scheduler.config.title')}
+                extra={<Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {t('scheduler.config.reloadHint')}</Typography.Text>}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space size={16} wrap>
+                <Statistic title={t('scheduler.config.optimizationFactor')}
+                  value={config.data?.optimizationFactor ?? '—'} valueStyle={{ fontSize: 14 }} />
+                <Statistic title={t('scheduler.config.maxIterationsRunning')}
+                  value={config.data?.maxConcurrent ?? '—'} valueStyle={{ fontSize: 14 }} />
+                <Statistic title={t('scheduler.config.iterationDelaySec')}
+                  value={config.data ? Math.round((config.data.tickMs - 2000) / 1000) : '—'}
+                  valueStyle={{ fontSize: 14 }} />
+              </Space>
+              <Form form={form} layout="inline"
+                onFinish={(v) => createPlan.mutate({
+                  planNo: v.planNo || undefined,
+                  optimizationFactor: v.optimizationFactor,
+                  maxIterationsRunning: v.maxIterationsRunning,
+                  iterationDelaySec: v.iterationDelaySec,
+                })}>
+                <Form.Item name="optimizationFactor" initialValue={50}
+                  tooltip={t('scheduler.config.factorHint')}>
+                  <InputNumber min={0} max={100} placeholder="50" />
+                </Form.Item>
+                <Form.Item name="maxIterationsRunning" initialValue={4}
+                  tooltip={t('scheduler.config.maxHint')}>
+                  <InputNumber min={1} max={4} placeholder="4" />
+                </Form.Item>
+                <Form.Item name="iterationDelaySec" initialValue={0}>
+                  <InputNumber min={0} placeholder="0" />
+                </Form.Item>
+                <Form.Item name="planNo">
+                  <Input placeholder={t('scheduler.config.planPlaceholder')}
+                    style={{ width: 180 }} allowClear />
+                </Form.Item>
+                <Button type="primary" htmlType="submit" loading={createPlan.isPending}>
+                  {t('scheduler.config.submit')}
+                </Button>
+              </Form>
+            </Space>
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Card size="small" title={t('scheduler.stale.title', { n: stale.data?.total ?? 0 })}>
+              {stale.data && stale.data.total > 0 ? (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  {stale.data.items.slice(0, 5).map((it) => (
+                    <Space key={it.runId} size={8}>
+                      <a onClick={() => nav(`/runs/${it.runId}`)}>{it.runNo || `#${it.runId}`}</a>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {it.pauseKind} · {formatTime(it.pausedAt)}
+                      </Typography.Text>
+                    </Space>
+                  ))}
+                  {stale.data.total > 5 && (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      …+{stale.data.total - 5}
+                    </Typography.Text>
+                  )}
+                </Space>
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description={t('scheduler.stale.empty')} />
+              )}
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {t('scheduler.stale.hint', { days: stale.data?.days ?? 7 })}
+              </Typography.Text>
+            </Card>
+            <Card size="small" title={t('scheduler.deadlock.title', { n: deadlock.data?.total ?? 0 })}>
+              {deadlock.data && deadlock.data.total > 0 ? (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  {deadlock.data.risks.slice(0, 5).map((r, i) => (
+                    <Typography.Text key={i} type="warning" style={{ fontSize: 12 }}>
+                      {r.message}
+                    </Typography.Text>
+                  ))}
+                </Space>
+              ) : (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('scheduler.deadlock.empty')}
+                </Typography.Text>
+              )}
+            </Card>
+          </Space>
+        </Col>
+      </Row>
 
       <Card size="small" title={t('scheduler.card.note')}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
