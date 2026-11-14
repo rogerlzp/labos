@@ -130,6 +130,21 @@ jobs:
       - name: 门禁（纯逻辑 624 + tsc + 页面轨 e2e）
         run: ./scripts/ci-gate.sh --e2e
 
+      # 需要模拟器（设备真实回包）⇒ 放 nightly 而不是 idempotency job。
+      # 两个脚本各自 SKIP 保护：模拟器没起来就显式 SKIP，不静默算通过。
+      - name: P1-8 · transport_segment.seq run 内递增（端到端证据）
+        # 缺口背景：P1-8 的修复（seq 由硬编码 1 改成 run 内 MAX(seq)+1）
+        # 此前只有**代码**证据、库里历史段的 seq 全是 1，看起来像没修。
+        # 本脚本跑一次含多个搬运段的流程，断言 seq 严格递增 1..N。
+        run: python3 scripts/verify-transport-seq.py
+
+      - name: P2-7 · 扫码校验运行时接线（端到端证据）
+        # 缺口背景：ScanPolicy 的五值判定有 19 例纯逻辑自测，
+        # 但"运行时真的会转人工并开 manual_window"一直没有端到端证据。
+        # 本脚本给扫码类节点绑 validate_in + 永不匹配的期望条码，
+        # 断言 run 停在 waiting_human + 人工窗口 pending + 理由含「条码不匹配」。
+        run: python3 scripts/verify-scan-policy-gate.py
+
       - name: 失败时附日志
         if: failure()
         run: |

@@ -132,6 +132,14 @@ def cleanup_bindings():
 def cleanup_run(run_id):
     if not run_id:
         return
+    # ⚠ 释放点位占用：run 被删了但 position_state 还占着 ⇒ 后续流程撞 EC-RESOURCE-BUSY
+    #   （实测：删掉的 run 留下的点位占用会让下一个 run 卡在"资源忙"）
+    try:
+        q("UPDATE position_state SET plate_id = NULL, content_kind = NULL, "
+           "content_id = NULL, occupied_by_run = NULL, occupied_since = NULL, "
+           "updated_at = now() WHERE occupied_by_run = %d" % run_id)
+    except Exception as e:
+        print("  [清理] position_state 失败：%s" % str(e)[:80])
     for t, col in (("manual_window", "run_id"), ("transport_segment", "run_id"),
                    ("run_artifact", "run_id"), ("run_variable", "run_id"),
                    ("intervention_record", "run_id"), ("run_command", "run_id")):
@@ -225,7 +233,8 @@ def main():
             return 1
 
         # ⑤ 人工窗口（直接查库：端点返回的字段名不稳定）
-        mrow = q("SELECT id || '|' || status || '|' || COALESCE(note,'') "
+        # 理由在 decision_reason（note 是空的）；窗口键形如 pause:<runId>
+        mrow = q("SELECT id || '|' || status || '|' || COALESCE(decision_reason,'') "
                  "FROM manual_window WHERE run_id = %d ORDER BY id DESC LIMIT 1" % run_id)
         if not mrow:
             bad("没有人工窗口")
@@ -236,7 +245,7 @@ def main():
         else:
             bad("人工窗口不是 pending", "status=%s" % mstat)
         if "条码不匹配" in mnote:
-            ok("窗口理由含「条码不匹配」", mnote[:70])
+            ok("窗口理由含「条码不匹配」", mnote[:90])
         else:
             bad("窗口理由没提条码不匹配", mnote[:110])
 

@@ -3,7 +3,7 @@ name: Idempotency
 # 幂等门禁：同一批 verify 脚本**连跑两遍**，断言两遍结果完全一致 + 终态基线归零。
 #
 # 为什么单独一个 workflow（而不是塞进 ci.yml）：
-#   ci.yml 的定位写得很清楚 ——「只跑**不需要数据库**的部分」。
+#   ci.yml 只跑**不需要数据库**的部分（纯逻辑 + tsc）。
 #   幂等门禁必须连库（要造数、要清数据），所以另起一个带 PG 的 job。
 #
 # 为什么需要它（2026-11-13/14 两轮独立评审连续踩到）：
@@ -13,9 +13,11 @@ name: Idempotency
 #   两个坑的共同点：**只在"跑一次"的时候看不出来**。
 #   所以验收门槛不能是"跑一遍全绿"，必须是"**跑两遍、数字一样**"。
 #
-# 覆盖：scripts/verify-idempotency.py
-#   ① 两轮各 0 失败；② 同脚本两轮「通过数/失败数」逐个一致；
-#   ③ 终态 schedule_plan=0 / resource_booking=0 / 陈旧 run=0。
+# 覆盖：
+#   job idempotency  → scripts/verify-idempotency.py（4 个 hermetic 脚本 × 2 轮 + 终态断言）
+#   job db-selftest  → MaterialUnloadPathsDbSelfTest（两条自动卸载路径的判别性自测）
+#                      ★ 这个 job **不启动内核** —— 连库自测与运行中的内核会抢同一批数据
+#                        （固定负数 id / tenant 1），内核在跑时断言会随机变红。
 #
 # 与 e2e-nightly 的分工：那边跑**页面轨 e2e**（流程行为），这边跑**可复现性**（数字稳定性）。
 
@@ -127,3 +129,72 @@ jobs:
         run: |
           echo "==== 内核日志 ===="; tail -80 /tmp/labos-api.log || true
           echo "==== 前端日志 ===="; tail -80 /tmp/labos-web.log || true
+
+  # ---------------------------------------------------------------- 连库自测
+  db-selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: labos
+          POSTGRES_PASSWORD: Labos@DbSelf
+          POSTGRES_DB: labdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U labos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      LABOS_DB_HOST: 127.0.0.1
+      LABOS_DB_PORT: '5432'
+      LABOS_DB_NAME: labdb
+      LABOS_DB_USER: labos
+      LABOS_DB_PASS: Labos@DbSelf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 灌库（90_all_in_one + seed）
+        env:
+          PGPASSWORD: Labos@DbSelf
+        run: |
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/90_all_in_one.sql
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/95_seed_data.sql
+
+      - name: 编译内核 + 测试类
+        # ⚠ **不启动内核**：连库自测与运行中的内核抢同一批数据
+        #   （固定负数 id / tenant 1）⇒ 内核在跑时断言会随机变红。
+        run: |
+          cd labos-kernel
+          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
+            $(find src/main -name '*.java')
+          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+            $(find src/test -name '*.java')
+
+      - name: 物料卸载路径判别性自测（两条自动路径）
+        # 非批次：ExperimentExecutor.settle；批次：BatchOrchestrator.syncExperimentStatusFromBatches
+        # 判别点 = 单批终态不得卸载、整单聚合终态才卸载
+        run: |
+          cd labos-kernel
+          java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+            com.labos.kernel.workflow.MaterialUnloadPathsDbSelfTest
+
+      - name: 失败时附数据库现场
+        if: failure()
+        env:
+          PGPASSWORD: Labos@DbSelf
+        run: |
+          psql -h 127.0.0.1 -U labos -d labdb -c "SELECT id, plan_no, status FROM schedule_plan ORDER BY id DESC LIMIT 10;"
+          psql -h 127.0.0.1 -U labos -d labdb -c "SELECT resource_id, plate_id, occupied_by_run FROM position_state WHERE plate_id IS NOT NULL LIMIT 10;"
