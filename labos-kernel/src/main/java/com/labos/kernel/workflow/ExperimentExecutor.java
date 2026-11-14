@@ -555,8 +555,9 @@ public final class ExperimentExecutor {
                     com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.ManifestMapper.class);
             com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-                mm.markProcessPlacementsUnloaded(tenantId, runId);
+                // 先清点位（placement 仍 loaded 才能命中 WHERE），再置 unloaded
                 mm.clearProcessPositionStates(tenantId, runId);
+                mm.markProcessPlacementsUnloaded(tenantId, runId);
                 return null;
             });
         } catch (Exception e) {

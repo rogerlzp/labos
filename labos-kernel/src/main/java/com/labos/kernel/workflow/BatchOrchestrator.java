@@ -951,8 +951,9 @@ public final class BatchOrchestrator {
                     com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.ManifestMapper.class);
             com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-                mm.markProcessPlacementsUnloadedByExperiment(tenantId, experimentId);
+                // 先清点位（placement 仍 loaded 才能命中 WHERE），再置 unloaded
                 mm.clearProcessPositionStatesByExperiment(tenantId, experimentId);
+                mm.markProcessPlacementsUnloadedByExperiment(tenantId, experimentId);
                 return null;
             });
         } catch (Exception e) {

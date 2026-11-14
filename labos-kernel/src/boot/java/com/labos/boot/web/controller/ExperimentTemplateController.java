@@ -271,8 +271,9 @@ public class ExperimentTemplateController {
         try {
             int[] n = {0};
             com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-                n[0] = m().markProcessPlacementsUnloaded(TENANT, runId);
+                // 先清点位（此时 placement 仍 loaded，WHERE 能命中），再置 unloaded
                 m().clearProcessPositionStates(TENANT, runId);
+                n[0] = m().markProcessPlacementsUnloaded(TENANT, runId);
                 return null;
             });
             audit.record(session(req), "material.unloadProcess", "experiment_run", runId,
