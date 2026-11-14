@@ -155,6 +155,9 @@ public interface PauseMapper {
     /** 位置未知的板（id 数组翻成 code，操作员看得懂）。 */
     java.util.List<java.util.Map<String, Object>> selectUnknownPlates(long tenantId);
 
+    /** R5：在途未确认的板（position_status='IN_TRANSFER'，重启/断连后需盘点）。 */
+    java.util.List<java.util.Map<String, Object>> selectInTransitPlates(long tenantId);
+
     /**
      * 故障类暂停自动恢复（paused_fault）：只看本 run 流程用到的设备是否在线
      * （旧口径"全租户设备都在线"会让一台无关离线就永不恢复）。

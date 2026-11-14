@@ -524,6 +524,23 @@ public final class ApiServer {
             log.info("  [启动收尾] 物理未知隔离跳过: " + e.getMessage());
         }
 
+        // R5：物料位置对账——重启/断连后，position_status='IN_TRANSFER' 的板
+        // （已取板、未确认放板到位）需要人工盘点真实位置，不能默认"还在原位"或"已到位"。
+        // 只提示，不自动处置（R6 已让这些板在物料门禁 fail-closed，这里补操作员可见性）。
+        try {
+            var inTransit = com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.PauseMapper.class)
+                    .selectInTransitPlates(TENANT);
+            log.info("  [启动收尾] 在途未确认板对账：" + inTransit.size() + " 块"
+                    + (inTransit.isEmpty() ? "（无遗留）" : ""));
+            for (var p : inTransit) {
+                printf("    %-20s position_status=IN_TRANSFER 需盘点实际位置%n",
+                        String.valueOf(p.get("barcode")));
+            }
+        } catch (Exception e) {
+            log.info("  [启动收尾] 在途未确认板对账跳过: " + e.getMessage());
+        }
+
         // S3.2-A：重启 rehydrate 待派发队列。
         // 调度器队列是内存态：进程重启后库里仍 queued 的 experiment_run（async 整单 run、
         // 异步分批已建出来的下一批）没人入队就永远不会执行。启动时一次性装回内存队列；

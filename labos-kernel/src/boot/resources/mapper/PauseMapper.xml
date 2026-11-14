@@ -345,6 +345,16 @@
          ORDER BY p.barcode LIMIT 100
     </select>
 
+    <!-- R5：在途未确认的板（取板后未确认放板到位，重启/断连后需人工盘点） -->
+    <select id="selectInTransitPlates" resultType="java.util.Map">
+        SELECT p.barcode AS "barcode", p.position_status AS "positionStatus",
+               p.updated_at AS "updatedAt"
+          FROM plate p
+         WHERE p.tenant_id = #{param1} AND p.position_status = 'IN_TRANSFER'
+           AND p.deleted_at IS NULL
+         ORDER BY p.updated_at DESC LIMIT 100
+    </select>
+
     <update id="autoResumeFaulted">
         UPDATE run SET status = 'running', pause_kind = NULL,
                pause_reason = NULL, resumed_at = now(), updated_at = now()

@@ -49,6 +49,22 @@ public final class InTransitGateDbSelfTest {
             } else {
                 bad("KNOWN 板寻址失败", String.valueOf(known));
             }
+
+            section("3. selectInTransitPlates 只数 IN_TRANSFER（R5 对账）");
+            java.util.List<java.util.Map<String, Object>> inTransit =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.PauseMapper.class)
+                            .selectInTransitPlates(TENANT);
+            java.util.Set<String> codes = new java.util.HashSet<>();
+            for (var p : inTransit) {
+                codes.add(String.valueOf(p.get("barcode")));
+            }
+            if (codes.contains("VERIFY-R6-IT") && !codes.contains("VERIFY-R6-KN")) {
+                ok("IN_TRANSFER 板在对账清单里，KNOWN 不在", "n=" + inTransit.size());
+            } else {
+                bad("对账清单口径错", "IN_TRANSFER=" + codes.contains("VERIFY-R6-IT")
+                        + " KNOWN=" + codes.contains("VERIFY-R6-KN"));
+            }
         } finally {
             cleanup();
         }
