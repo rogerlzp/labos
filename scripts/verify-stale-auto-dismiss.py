@@ -47,8 +47,8 @@ def main():
     token = api("/api/auth/login", "POST",
                 {"username": "admin", "password": "admin123"})["token"]
 
-    # 幂等守卫：清残留 + 还原设置
-    q("DELETE FROM run WHERE pause_reason = 'VERIFY-STALE';")
+    # 幂等守卫：清残留 + 还原设置（按 run_no 清，因为 dismiss 会把 pause_reason 置 NULL）
+    q("DELETE FROM run WHERE run_no LIKE 'VERIFY-STALE-%';")
     api("/api/settings/stale-pause", "PUT", token=token, body={"autoDismissDays": 0})
 
     # 造一条 2 天前的 waiting_human run（run 表，workflow 类型）；
@@ -81,7 +81,7 @@ def main():
 
     # 还原 + 清理
     api("/api/settings/stale-pause", "PUT", token=token, body={"autoDismissDays": 0})
-    q("DELETE FROM run WHERE pause_reason = 'VERIFY-STALE';")
+    q("DELETE FROM run WHERE run_no LIKE 'VERIFY-STALE-%';")
 
     print("\n通过 %d / 失败 %d" % (PASS, FAIL))
     return 0 if FAIL == 0 else 1
