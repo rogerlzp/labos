@@ -43,6 +43,12 @@ def bad(msg, detail=""):
 
 
 def preclean():
+    # 按本脚本前缀精确清 position_state，且必须放在删 plate / placement 之前
+    #（旧版放在最后、且只按「所有 unloaded placement 的点位」通配删：inventory 板的
+    #  placement 仍是 loaded ⇒ 每跑一次留 1 条 VERIFY-LC-INV 残留；通配条件还可能误删
+    #  其它 run 仍占用的点位）。
+    q("DELETE FROM position_state WHERE plate_id LIKE 'VERIFY-LC-%' "
+      "OR content_id IN (SELECT id FROM plate WHERE barcode LIKE 'VERIFY-LC-%');")
     q("DELETE FROM manifest_placement WHERE run_id IN "
       "(SELECT id FROM experiment_run WHERE experiment_id IN "
       "(SELECT id FROM experiment WHERE experiment_no LIKE 'VERIFY-LC-%'));")
@@ -53,9 +59,6 @@ def preclean():
     q("DELETE FROM experiment WHERE experiment_no LIKE 'VERIFY-LC-%';")
     q("DELETE FROM experiment_template WHERE template_no LIKE 'VERIFY-LC-%';")
     q("DELETE FROM plate WHERE barcode LIKE 'VERIFY-LC-%';")
-    q("DELETE FROM position_state WHERE resource_id IN "
-      "(SELECT point_resource_id FROM device_point WHERE id IN "
-      "(SELECT position_id FROM manifest_placement WHERE status='unloaded'));")
 
 
 def main():
@@ -63,11 +66,18 @@ def main():
                 {"username": "admin", "password": "admin123"})["token"]
     preclean()
 
-    # 两个有效点位（id + point_resource_id）
-    points = q("SELECT id, point_resource_id FROM device_point ORDER BY id LIMIT 2")
+    # 只挑空闲点位：写入用 ON CONFLICT DO UPDATE，若取到其它 run 正在占用的点位会覆盖生产数据。
+    points = q(
+        "SELECT dp.id, dp.point_resource_id FROM device_point dp "
+        "LEFT JOIN position_state ps "
+        "  ON ps.resource_id = dp.point_resource_id AND ps.tenant_id = 1 "
+        "WHERE ps.resource_id IS NULL "
+        "   OR (ps.plate_id IS NULL AND ps.content_kind IS NULL "
+        "       AND ps.content_id IS NULL AND ps.occupied_by_run IS NULL) "
+        "ORDER BY dp.id LIMIT 2")
     rows = [r.split("|") for r in points.split("\n") if r.strip()]
     if len(rows) < 2:
-        bad("设备点位不足 2 个，无法跑判别性用例")
+        bad("空闲设备点位不足 2 个，无法跑判别性用例")
         return 1
     pid1, pres1 = int(rows[0][0]), int(rows[0][1])
     pid2, pres2 = int(rows[1][0]), int(rows[1][1])
