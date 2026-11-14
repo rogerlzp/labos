@@ -179,6 +179,39 @@
               AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
   </update>
 
+  <!-- §4.5.2 批次：按实验（跨所有批次 run）卸载 process 物料 -->
+  <update id="clearProcessPositionStatesByExperiment">
+    UPDATE position_state ps
+       SET plate_id = NULL, content_kind = NULL, content_id = NULL,
+           occupied_by_run = NULL, updated_at = now()
+     WHERE ps.tenant_id = #{t}
+       AND ps.resource_id IN (
+           SELECT dp.point_resource_id
+             FROM manifest_placement mp
+             JOIN manifest_item mi ON mi.id = mp.manifest_item_id
+             JOIN experiment_run er ON er.id = mp.run_id
+             JOIN device_point dp ON dp.id = mp.position_id
+             LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
+             LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
+             LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
+            WHERE mp.tenant_id = #{t} AND er.experiment_id = #{experimentId} AND mp.status = 'loaded'
+              AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
+  </update>
+
+  <update id="markProcessPlacementsUnloadedByExperiment">
+    UPDATE manifest_placement mp
+       SET status = 'unloaded', updated_at = now()
+     WHERE mp.tenant_id = #{t} AND mp.status = 'loaded'
+       AND mp.run_id IN (SELECT id FROM experiment_run WHERE tenant_id = #{t} AND experiment_id = #{experimentId})
+       AND EXISTS (
+           SELECT 1 FROM manifest_item mi
+             LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
+             LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
+             LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
+            WHERE mi.id = mp.manifest_item_id
+              AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
+  </update>
+
   <!-- ============================================================ 三条件 -->
 
   <select id="selectOfflineDevices" resultType="java.lang.String">

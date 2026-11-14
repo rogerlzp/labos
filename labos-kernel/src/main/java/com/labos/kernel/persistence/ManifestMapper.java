@@ -96,6 +96,14 @@ public interface ManifestMapper {
     /** §4.5.2：把上述 placement 置 unloaded（lifecycle=inventory 的保持原位不动）。 */
     int markProcessPlacementsUnloaded(@Param("t") long tenantId, @Param("runId") long runId);
 
+    /** §4.5.2 批次：按实验（跨所有批次 run）清点位状态。 */
+    int clearProcessPositionStatesByExperiment(@Param("t") long tenantId,
+                                                @Param("experimentId") long experimentId);
+
+    /** §4.5.2 批次：按实验（跨所有批次 run）置 unloaded。 */
+    int markProcessPlacementsUnloadedByExperiment(@Param("t") long tenantId,
+                                                   @Param("experimentId") long experimentId);
+
     // ---------------------------------------------------------------- 三条件
 
     /** 该 run 涉及的所有设备是否在线（C1）。返回离线设备码列表。 */

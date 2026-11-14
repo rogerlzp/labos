@@ -936,7 +936,29 @@ public final class BatchOrchestrator {
         try (Connection c = db.open()) {
             ExperimentStateProjector.syncByBatchAggregate(c, tenantId, experimentId, aggregate);
         }
+        // §4.5.2 批次：整单终态时卸载全部批次 run 的 process 物料（失败只 warn，不阻断聚合）。
+        if ("completed".equals(aggregate) || "failed".equals(aggregate)
+                || "aborted".equals(aggregate) || "cancelled".equals(aggregate)) {
+            unloadProcessMaterialsByExperiment(experimentId);
+        }
         return aggregate;
+    }
+
+    /** §4.5.2 批次：实验终态卸载跨所有批次 run 的 lifecycle='process' 物料。 */
+    private void unloadProcessMaterialsByExperiment(long experimentId) {
+        try {
+            com.labos.kernel.persistence.ManifestMapper mm =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.ManifestMapper.class);
+            com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+                mm.markProcessPlacementsUnloadedByExperiment(tenantId, experimentId);
+                mm.clearProcessPositionStatesByExperiment(tenantId, experimentId);
+                return null;
+            });
+        } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger(BatchOrchestrator.class)
+                    .warn("[物料] 批次实验终态卸载 process 物料失败（不阻断聚合）: {}", e.getMessage());
+        }
     }
 
     private String aggregateStatus(long experimentId) throws SQLException {
