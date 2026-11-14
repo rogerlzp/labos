@@ -259,6 +259,31 @@ public class ExperimentTemplateController {
                 "readiness 通过，实际派发走既有调度链路（P1 未改派发核心）"));
     }
 
+    /**
+     * §4.5.2 物料生命周期：实验结束后，自动卸载 lifecycle='process' 的物料
+     * （清 position_state + 置 placement unloaded）；lifecycle='inventory' 的保持原位。
+     * 单事务；返回卸载条数。
+     */
+    @PostMapping(value = "/experiment-runs/{runId:\\d+}/unload-process-materials",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> unloadProcessMaterials(@PathVariable long runId,
+                                                         HttpServletRequest req) {
+        try {
+            int[] n = {0};
+            com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+                n[0] = m().markProcessPlacementsUnloaded(TENANT, runId);
+                m().clearProcessPositionStates(TENANT, runId);
+                return null;
+            });
+            audit.record(session(req), "material.unloadProcess", "experiment_run", runId,
+                    null, null, req.getRemoteAddr());
+            return ok(Map.of("runId", runId, "unloaded", n[0]));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(err("卸载失败：" + e.getMessage()));
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private Long lastTemplateId(String no) {

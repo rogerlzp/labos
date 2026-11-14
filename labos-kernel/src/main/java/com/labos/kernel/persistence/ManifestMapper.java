@@ -90,6 +90,12 @@ public interface ManifestMapper {
                               @Param("placementId") long placementId,
                               @Param("verifiedBy") long verifiedBy);
 
+    /** §4.5.2：清掉「本次实验专属（lifecycle=process）且 loaded」物料占用的点位状态。 */
+    int clearProcessPositionStates(@Param("t") long tenantId, @Param("runId") long runId);
+
+    /** §4.5.2：把上述 placement 置 unloaded（lifecycle=inventory 的保持原位不动）。 */
+    int markProcessPlacementsUnloaded(@Param("t") long tenantId, @Param("runId") long runId);
+
     // ---------------------------------------------------------------- 三条件
 
     /** 该 run 涉及的所有设备是否在线（C1）。返回离线设备码列表。 */

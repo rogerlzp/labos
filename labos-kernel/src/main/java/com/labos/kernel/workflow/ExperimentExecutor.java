@@ -541,6 +541,27 @@ public final class ExperimentExecutor {
                 syncExperimentStatus(c, tenantId, runId);
             }
         }
+        // §4.5.2：终态（completed/failed/aborted/cancelled）卸载本次实验专属物料，失败不阻断收尾。
+        if (terminal) {
+            unloadProcessMaterials(runId);
+        }
+    }
+
+    /** §4.5.2：卸载 lifecycle='process' 的物料（清点位状态 + placement 置 unloaded）。 */
+    private void unloadProcessMaterials(long runId) {
+        try {
+            com.labos.kernel.persistence.ManifestMapper mm =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.ManifestMapper.class);
+            com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+                mm.markProcessPlacementsUnloaded(tenantId, runId);
+                mm.clearProcessPositionStates(tenantId, runId);
+                return null;
+            });
+        } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger(ExperimentExecutor.class)
+                    .warn("[物料] 实验结束卸载 process 物料失败（不阻断收尾）: {}", e.getMessage());
+        }
     }
 
     /**

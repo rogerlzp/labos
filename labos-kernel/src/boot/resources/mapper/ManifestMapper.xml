@@ -144,6 +144,37 @@
      WHERE tenant_id = #{t} AND id = #{placementId}
   </update>
 
+  <!-- §4.5.2 物料生命周期：实验结束后，lifecycle='process' 且 loaded 的物料自动卸载 -->
+  <update id="clearProcessPositionStates">
+    UPDATE position_state ps
+       SET plate_id = NULL, content_kind = NULL, content_id = NULL,
+           occupied_by_run = NULL, updated_at = now()
+     WHERE ps.tenant_id = #{t}
+       AND ps.resource_id IN (
+           SELECT dp.point_resource_id
+             FROM manifest_placement mp
+             JOIN manifest_item mi ON mi.id = mp.manifest_item_id
+             JOIN device_point dp ON dp.id = mp.position_id
+             LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
+             LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
+             LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
+            WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId} AND mp.status = 'loaded'
+              AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
+  </update>
+
+  <update id="markProcessPlacementsUnloaded">
+    UPDATE manifest_placement mp
+       SET status = 'unloaded', updated_at = now()
+     WHERE mp.tenant_id = #{t} AND mp.run_id = #{runId} AND mp.status = 'loaded'
+       AND EXISTS (
+           SELECT 1 FROM manifest_item mi
+             LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
+             LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
+             LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
+            WHERE mi.id = mp.manifest_item_id
+              AND (p.lifecycle = 'process' OR c.lifecycle = 'process' OR r.lifecycle = 'process'))
+  </update>
+
   <!-- ============================================================ 三条件 -->
 
   <select id="selectOfflineDevices" resultType="java.lang.String">
