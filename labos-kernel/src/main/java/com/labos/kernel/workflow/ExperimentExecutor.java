@@ -525,16 +525,18 @@ public final class ExperimentExecutor {
             return;
         }
 
-        // R3：暂停收敛时，若本 run 有「物理结果不确定」的节点（reconciliation_required），
-        // 不写干净的 paused，改为 manual 转人工对账（PauseUnknown）。
-        // 只拦 waiting_human/manual 这类「人在等」的暂停；paused_fault 是故障自动恢复，不受影响。
-        if (paused && pauseKind != null && !"paused_fault".equals(pauseKind)
-                && hasReconciliationRequired(runId)) {
-            pauseKind = "manual";
-            pauseReason = (pauseReason == null ? "" : pauseReason + "；")
-                    + "设备物理结果不确定（需对账）";
-            org.slf4j.LoggerFactory.getLogger(ExperimentExecutor.class)
-                    .warn("[暂停] run {} 有 reconciliation_required 节点，PauseUnknown 转人工", runId);
+        // R3/R8 步骤 1：暂停收敛的 pause_kind 投影收口到纯函数（事实 → 投影）。
+        // reconciliation_required 节点 ⇒ manual（PauseUnknown 转人工），paused_fault 不拦。
+        if (paused) {
+            boolean hasUnresolved = hasReconciliationRequired(runId);
+            String projected = ExperimentStateProjector.resolvePauseKind(pauseKind, hasUnresolved);
+            if (!java.util.Objects.equals(projected, pauseKind)) {
+                pauseKind = projected;
+                pauseReason = (pauseReason == null ? "" : pauseReason + "；")
+                        + "设备物理结果不确定（需对账）";
+                org.slf4j.LoggerFactory.getLogger(ExperimentExecutor.class)
+                        .warn("[暂停] run {} 有 reconciliation_required 节点，PauseUnknown 转人工", runId);
+            }
         }
 
         // S-04-B：任何收尾都表示控制过程走完，control_state 回到 NONE

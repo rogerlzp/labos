@@ -179,6 +179,17 @@ public final class ExperimentStateProjectorSelfTest {
         check("runToExperimentCaseSql 在全量 main 源码中仍被引用",
                 referencedAnywhere(javaFiles, "runToExperimentCaseSql"));
 
+        section("5. R8 步骤 1：resolvePauseKind 纯函数（事实 → 投影 pause_kind）");
+        eq("null 原样", null, ExperimentStateProjector.resolvePauseKind(null, false));
+        eq("paused_fault 不拦（自动恢复）", "paused_fault",
+                ExperimentStateProjector.resolvePauseKind("paused_fault", true));
+        eq("waiting_human + 不确定 → manual", "manual",
+                ExperimentStateProjector.resolvePauseKind("waiting_human", true));
+        eq("waiting_human + 无不确定 → 保持", "waiting_human",
+                ExperimentStateProjector.resolvePauseKind("waiting_human", false));
+        eq("manual + 无不确定 → 保持", "manual",
+                ExperimentStateProjector.resolvePauseKind("manual", false));
+
         System.out.printf("%n通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {
             System.exit(1);

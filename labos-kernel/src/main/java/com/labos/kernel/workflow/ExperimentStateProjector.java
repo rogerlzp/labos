@@ -44,6 +44,27 @@ public final class ExperimentStateProjector {
     }
 
     /**
+     * R8 步骤 1：暂停收敛的「事实 → 投影 pause_kind」纯函数。
+     *
+     * <p>事实 = 请求的 pause_kind + 本 run 是否含物理结果不确定（reconciliation_required）节点。
+     * 投影规则：
+     * <ul>
+     *   <li>{@code paused_fault}（设备故障，自动恢复）不拦，原样返回；</li>
+     *   <li>其余且 {@code hasReconciliationRequired=true} ⇒ {@code manual}（PauseUnknown 转人工，不写干净 paused）；</li>
+     *   <li>否则原样返回（干净 paused）。</li>
+     * </ul>
+     */
+    public static String resolvePauseKind(String requestedKind, boolean hasReconciliationRequired) {
+        if (requestedKind == null || "paused_fault".equals(requestedKind)) {
+            return requestedKind;
+        }
+        if (hasReconciliationRequired) {
+            return "manual";
+        }
+        return requestedKind;
+    }
+
+    /**
      * 事实：一条 {@code experiment_run} 起跑/恢复。
      * 投影：其所属 {@code experiment} 标 {@code running}（列表不再一直停在「待执行」）。
      *
