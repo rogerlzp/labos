@@ -74,4 +74,15 @@ public interface ExperimentProjectorMapper {
     int syncByBatchAggregate(@Param("tenantId") long tenantId,
                              @Param("experimentId") long experimentId,
                              @Param("aggregate") String aggregate);
+
+    /**
+     * S-04-B 收敛（R8 实验侧收口）：暂停请求已受理、仍 {@code queued} 的
+     * {@code experiment_run} 直接收成 {@code paused}。
+     *
+     * <p>排队中的 run 没有在途动作，可立即收敛；<b>正在跑的 run 不走这里</b>——
+     * 必须由执行器在动作边界 {@code settle}，否则是「设备还在动就显示暂停」的假收敛。
+     *
+     * <p>原实现散在 {@code RunControlMapper}；2026-11-15 按 R8 方案收口到投影器。
+     */
+    int convergeQueuedPausedRuns(@Param("tenantId") long tenantId);
 }

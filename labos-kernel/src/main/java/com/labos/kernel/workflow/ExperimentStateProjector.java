@@ -91,6 +91,21 @@ public final class ExperimentStateProjector {
     }
 
     /**
+     * R8 实验侧收口（2026-11-15）：暂停请求已受理、仍 {@code queued} 的
+     * {@code experiment_run} 直接收成 {@code paused}。
+     *
+     * <p>排队中的 run 没有在途动作，可以立即收敛；<b>正在跑的 run 不走这里</b>——
+     * 必须由执行器在动作边界 {@code settle}，否则是「设备还在动就显示暂停」的假收敛。
+     *
+     * <p>原实现是 {@code RunControlMapper.convergeQueuedPauses} 的独立 SQL；
+     * 按 R8 方案收口到投影器后，{@code experiment_run.status='paused'} 的写入口与
+     * {@code run.status='paused'} 一样只剩本类的 mapper。
+     */
+    public static int convergeQueuedPausedRuns(Connection c, long tenantId) {
+        return mapper().convergeQueuedPausedRuns(tenantId);
+    }
+
+    /**
      * 事实：一条 {@code experiment_run} 起跑/恢复。
      * 投影：其所属 {@code experiment} 标 {@code running}（列表不再一直停在「待执行」）。
      *

@@ -98,6 +98,17 @@ public final class ExperimentStateProjectorSelfTest {
                     + "(?:\\w+\\.)?status\\s*=\\s*'paused'",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
+    /**
+     * R8 实验侧收口：{@code UPDATE experiment_run … SET … status = 'paused'} 的直写形态。
+     *
+     * <p>与 {@link #RUN_PAUSED_WRITE} 同构；{@code \b} 边界保证不会误匹配
+     * {@code UPDATE experiment}（后者 {@code experiment} 后是空白，而本表名带 {@code _run}）。
+     */
+    private static final Pattern EXPERIMENT_RUN_PAUSED_WRITE = Pattern.compile(
+            "UPDATE\\s+experiment_run\\b[^;<]{0,600}?SET\\s+(?:(?!WHERE)[^;<]){0,300}?"
+                    + "(?:\\w+\\.)?status\\s*=\\s*'paused'",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
     /** Java 源码用 {@link #WRITE_STATUS}，mapper XML 用 {@link #WRITE_STATUS_XML}。 */
     private static List<Integer> matchingLines(String code, boolean xml) {
         Matcher m = (xml ? WRITE_STATUS_XML : WRITE_STATUS).matcher(code);
@@ -220,6 +231,24 @@ public final class ExperimentStateProjectorSelfTest {
         check("ExperimentProjectorMapper.xml 有 run.status='paused' 写入口", projectorHasPaused);
         check("除投影器外，全 mapper 无 run.status='paused' 直写",
                 pausedWriters.isEmpty(), String.join(",", pausedWriters));
+
+        section("5c. R8 实验侧收口：experiment_run.status='paused' 直写仅剩投影器 mapper");
+        boolean projectorHasRunPaused = false;
+        List<String> runPausedWriters = new ArrayList<>();
+        for (Path f : mapperXmls) {
+            String code = stripComments(Files.readString(f, StandardCharsets.UTF_8));
+            boolean hasPaused = EXPERIMENT_RUN_PAUSED_WRITE.matcher(code).find();
+            String name = f.getFileName().toString();
+            if (PROJECTOR_MAPPER_FILE.equals(name)) {
+                projectorHasRunPaused = hasPaused;
+            } else if (hasPaused) {
+                runPausedWriters.add(name);
+            }
+        }
+        check("ExperimentProjectorMapper.xml 有 experiment_run.status='paused' 写入口",
+                projectorHasRunPaused);
+        check("除投影器外，全 mapper 无 experiment_run.status='paused' 直写",
+                runPausedWriters.isEmpty(), String.join(",", runPausedWriters));
 
         section("5. R8 步骤 1：resolvePauseKind 纯函数（事实 → 投影 pause_kind）");
         eq("null 原样", null, ExperimentStateProjector.resolvePauseKind(null, false));

@@ -194,7 +194,8 @@ public final class RunControl {
     public static int convergeQueuedPauses(com.labos.kernel.persistence.DbConfig db,
                                            long tenantId) throws SQLException {
         try (Connection c = db.open()) {
-            int n = mapper().convergeQueuedPauses(tenantId);
+            // R8 实验侧收口：SQL 已迁到投影器（ExperimentProjectorMapper.convergeQueuedPausedRuns）
+            int n = ExperimentStateProjector.convergeQueuedPausedRuns(c, tenantId);
             if (n > 0) {
                 ExperimentStateProjector.syncPausedByRuns(c, tenantId);
             }

@@ -49,15 +49,6 @@
         </choose>
     </update>
 
-    <update id="convergeQueuedPauses">
-        UPDATE experiment_run
-           SET status = 'paused', control_state = 'NONE',
-               pause_requested_at = NULL, paused_at = now()
-         WHERE tenant_id = #{tenantId}
-           AND status = 'queued'
-           AND control_state IN ('PAUSE_REQUESTED', 'PAUSING')
-    </update>
-
     <update id="requestStop">
         UPDATE experiment_run SET stop_requested = true
          WHERE tenant_id = #{tenantId} AND id = #{runId} AND status = 'running'

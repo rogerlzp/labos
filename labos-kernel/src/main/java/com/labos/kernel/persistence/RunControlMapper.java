@@ -44,9 +44,6 @@ public interface RunControlMapper {
                              @Param("kind") String kind,
                              @Param("reason") String reason);
 
-    /** S-04-B 收敛兜底：暂停请求已受理但仍 queued 的直接收成 paused。 */
-    int convergeQueuedPauses(@Param("tenantId") long tenantId);
-
     /** 协作式停止第一步：只落 stop_requested（在途动作由执行器在边界收尾）。 */
     int requestStop(@Param("tenantId") long tenantId, @Param("runId") long runId);
 

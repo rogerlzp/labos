@@ -100,4 +100,18 @@
          WHERE tenant_id = #{tenantId} AND id = #{runId} AND status = 'quarantined'
     </update>
 
+    <!-- R8 实验侧收口（2026-11-15）：暂停请求已受理、仍 queued 的 experiment_run 直接收敛为 paused。
+         排队中的 run 无在途动作；**正在跑的 run 不走这里**（必须由执行器动作边界 settle，
+         否则是「设备还在动就显示暂停」的假收敛）。原实现散在 RunControlMapper。 -->
+    <update id="convergeQueuedPausedRuns">
+        UPDATE experiment_run
+           SET status = 'paused',
+               control_state = 'NONE',
+               pause_requested_at = NULL,
+               paused_at = now()
+         WHERE tenant_id = #{tenantId}
+           AND status = 'queued'
+           AND control_state IN ('PAUSE_REQUESTED', 'PAUSING')
+    </update>
+
 </mapper>
