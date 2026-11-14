@@ -45,7 +45,6 @@
       <if test="maxIterationsRunning != null">max_iterations_running = #{maxIterationsRunning},</if>
       <if test="iterationDelaySec != null">iteration_delay_sec = #{iterationDelaySec},</if>
       <if test="externalId != null">external_id = #{externalId},</if>
-      updated_at = now()
     </set>
     WHERE id = #{id}
   </update>
