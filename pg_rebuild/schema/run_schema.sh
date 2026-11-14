@@ -23,7 +23,10 @@ PSQL=$(command -v psql || true)
 psql_db() { PGPASSWORD="$PASS" "$PSQL" -h "$HOST" -p "$PORT" -U "$USER" -d "$DB" -v ON_ERROR_STOP=1 "$@"; }
 
 cd "$(dirname "$0")"
-FILES=(10_base_platform.sql 20_kernel.sql 30_business.sql 40_ops.sql)
+# F5（评审）：FILES 原只列 10/20/30/40，漏掉 92..99x（含 99x_p2_rebuild）——
+# 与 merge.sh 不同源会导致 run_schema.sh 建出的库缺分片表。
+# 改为自动发现全部 DDL 分片（排除 95_seed_data 数据 + 99_verify 校验），与 merge.sh 同源。
+FILES=( $(ls [0-9]*.sql | grep -vE '^(95_seed_data|99_verify)\.sql$' | sort) )
 
 case "${1:-}" in
   --check)
