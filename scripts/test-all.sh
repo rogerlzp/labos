@@ -74,6 +74,16 @@ if ! javac -encoding UTF-8 -d out -cp "$CP" $(find src/test -name '*.java') 2>/t
   head -20 /tmp/test-compile.err
   exit 1
 fi
+
+# 资源同步（2026-11-15）：javac 只编 Java、**不搬 resources**，而内核与连库自测的
+# classpath 只有 out/。不同步时改 mapper XML 会「编译通过、跑的是旧 SQL」，
+# 只在走到那条语句时报 `BindingException: Invalid bound statement`（编译与纯逻辑测试都发现不了）。
+# 与 build-kernel.sh 共用同一实现，避免两处复制逻辑漂移。
+# 注意本脚本是 `set -uo pipefail`（无 -e）：必须显式判返回值，否则同步失败会被吞掉。
+if ! bash ../scripts/sync-resources.sh; then
+  echo "✗ 资源同步失败：编译产物可能与 out/ 下的 mapper 不一致，拒绝继续（避免假绿）" >&2
+  exit 1
+fi
 PASS=0
 FAIL=0
 SKIP=0
@@ -298,6 +308,29 @@ if command -v dotnet >/dev/null 2>&1 && [[ -x ../scripts/test-sidecar.sh ]]; the
 else
   SKIP=$((SKIP + 1))
   printf "  %-28s %s\n" "SidecarChainTest" "跳过（没有 dotnet）"
+fi
+
+# 设备主动上报事件的全链路（模拟器推帧 → sidecar 转发 → 中控入站端点）
+# 中控那端用桩服务顶替（只实现 registry 读 + device-events 写），所以不连库也能跑。
+if command -v dotnet >/dev/null 2>&1 && [[ -x ../scripts/test-sidecar-device-event.sh ]]; then
+  if out=$(../scripts/test-sidecar-device-event.sh 2>&1); then
+    line=$(echo "$out" | grep -E '^通过 [0-9]+, 失败' | tail -1)
+    if [[ -z "$line" ]]; then
+      SKIP=$((SKIP + 1))
+      printf "  %-28s %s\n" "SidecarDeviceEventTest" "$(echo "$out" | grep -E '跳过' | tail -1)"
+    else
+      p=$(echo "$line" | grep -oE '通过 [0-9]+' | grep -oE '[0-9]+')
+      PASS=$((PASS + p))
+      printf "  %-28s %s\n" "SidecarDeviceEventTest" "$line"
+    fi
+  else
+    FAIL=$((FAIL + 1))
+    printf "  %-28s %s\n" "SidecarDeviceEventTest" "FAIL（单独跑 scripts/test-sidecar-device-event.sh 看详情）"
+    echo "$out" | tail -8 | sed 's/^/      /'
+  fi
+else
+  SKIP=$((SKIP + 1))
+  printf "  %-28s %s\n" "SidecarDeviceEventTest" "跳过（没有 dotnet）"
 fi
 
 DB_HOST="${LABOS_DB_HOST:-}"

@@ -83,9 +83,10 @@ PY
 echo "✓ XML 合法性自检通过（mapper / 资源）"
 
 # ---- ③ 资源（logback / application.properties / mapper XML）----
-mkdir -p out/mapper
-cp -f src/boot/resources/* out/ 2>/dev/null || true
-cp -f src/boot/resources/mapper/*.xml out/mapper/ 2>/dev/null || true
+# 单一实现抽到 scripts/sync-resources.sh（test-all.sh 也调用它）：
+# 两处各写一份复制逻辑，迟早出现「编译产物新 / 资源旧」的混合态
+#（2026-11-15 实测过：mapper XML 没同步，自测报 BindingException）。
+bash "$ROOT/scripts/sync-resources.sh"
 
 if [[ "${1:-}" == "--verify" ]]; then
   if [[ -z "${LABOS_DB_HOST:-}" ]]; then
