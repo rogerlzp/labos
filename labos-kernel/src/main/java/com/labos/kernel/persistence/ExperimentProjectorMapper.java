@@ -25,6 +25,18 @@ public interface ExperimentProjectorMapper {
                        @Param("kind") String kind, @Param("reason") String reason,
                        @Param("nodeKey") String nodeKey);
 
+    /** 转人工=暂停（waiting_human）。 */
+    int applyPausedRunManual(@Param("tenantId") long tenantId, @Param("runId") long runId);
+
+    /** 节点边界暂停（COALESCE 保留已有值）。 */
+    int applyPausedRunAtBoundary(@Param("tenantId") long tenantId, @Param("runId") long runId,
+                                 @Param("kind") String kind, @Param("reason") String reason,
+                                 @Param("nodeKey") String nodeKey);
+
+    /** 物料隔离确认 → paused(manual_window)。 */
+    int applyPausedRunMaterialSafety(@Param("tenantId") long tenantId, @Param("runId") long runId,
+                                     @Param("note") String note);
+
     /**
      * 事实：一条 {@code experiment_run} 起跑/恢复。
      * 投影：其所属 {@code experiment} 标 {@code running}。

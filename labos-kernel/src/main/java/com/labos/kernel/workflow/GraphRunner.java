@@ -123,11 +123,78 @@ public final class GraphRunner {
      */
     private final Set<String> locallyWrittenVars = new HashSet<>();
 
+    /**
+     * **已被消费**的键 → 消费时它当时的值。
+     *
+     * <p><b>为什么需要（电平 → 边）</b>：外部拥有者（设备 / 上游系统）推来的标志位是
+     * <b>电平</b>而不是<b>边</b> —— 设备报了"等待交互"就一直是 {@code 1}，
+     * 直到收到【继续信号】才回 {@code 0}。
+     * 图里第二次等同一个标志时，如果只看"当前值 == 目标值"，会**立刻通过** ——
+     * 等于把上一条陈旧上报当成新事件（机械臂会白跑一趟）。
+     *
+     * <p>消费语义把电平转成边：记下"这个键已经消费过值 V"，
+     * 只有当它<b>先离开 V</b>（外部复位了）再回到 V，才算一次新事件。
+     *
+     * <p>键 → 值的映射，值为 {@code null} 表示"没消费过"。
+     */
+    private final Map<String, String> consumedValues = new java.util.LinkedHashMap<>();
+
+    /**
+     * **外部拥有**的键：消费过之后，外部刷新对它重新生效。
+     *
+     * <p><b>为什么需要</b>：{@link #locallyWrittenVars} 是 run 生命周期内<b>只增不减</b>的集合，
+     * 一次 {@code __setVar} 复位就会把这个键<b>永久</b>挡在刷新之外 ⇒
+     * 设备再报同一个值，{@code __wait} 永远等不到 —— 这正是
+     * "复位标志 → 再等"这个最自然的模式今天走不通的原因。
+     *
+     * <p>消费时把键从 {@code locallyWrittenVars} 摘掉，并登记到这里：
+     * 此后本图再写它（复位成 0 之类）**不会**把它重新挡在刷新之外，
+     * 外部的下一个值照样进得来。
+     */
+    private final Set<String> externallyOwnedVars = new HashSet<>();
+
     /** 记一次"本图自己写过的变量"，供 {@link #withVariableRefresher} 的刷新过滤用。 */
     private String writeVar(String var, String value) {
         variables.put(var, value);
-        locallyWrittenVars.add(var);
+        // 消费过的键：外部是权威，本图的赋值不再挡住刷新（否则复位一次就永远等不到）。
+        if (!externallyOwnedVars.contains(var)) {
+            locallyWrittenVars.add(var);
+        }
         return var;
+    }
+
+    /**
+     * 这个键是不是"已经消费过当前这个值"（同一轮里不该再当成新事件）。
+     *
+     * <p>规则：记下消费过的值 V；只要观察到它<b>不再是 V</b>，就认为标志位已经**复位**过
+     * ⇒ 清掉记录，之后再回到 V 就算一次新事件。
+     *
+     * <p>本方法<b>总是</b>被调用（哪怕本次等待不消费），因为它顺带负责"复位后清记录"；
+     * 是否因此<b>挡住</b>本次等待，由调用方按 {@code consume} 决定。
+     */
+    private boolean alreadyConsumed(String key, String current) {
+        String prev = consumedValues.get(key);
+        if (prev == null) {
+            return false;
+        }
+        if (!sameValue(prev, current)) {
+            // 标志位已经离开旧值 ⇒ 复位过，清记录（下次回到旧值算新事件）
+            consumedValues.remove(key);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 消费一个键：记下消费过的值，并把它移交给外部拥有。
+     *
+     * <p>移交之后，本图对这个键的赋值不再挡住外部刷新 ⇒
+     * "设备上报 → 图里复位 → 再等下一次上报"这条链才走得通。
+     */
+    private void consumeVar(String key, String value) {
+        consumedValues.put(key, value == null ? "" : value);
+        externallyOwnedVars.add(key);
+        locallyWrittenVars.remove(key);
     }
 
     /**
@@ -226,7 +293,27 @@ public final class GraphRunner {
                         ? String.valueOf(DEFAULT_WAIT_TIMEOUT_SEC) : str(to);
                 return "等待 " + (var == null ? "(未指定变量)" : var)
                         + " = " + str(p.get("value"))
-                        + "（超时 " + toText + " 秒）";
+                        + "（超时 " + toText + " 秒"
+                        + (boolParam(p.get("consume")) ? "，消费式" : "") + "）";
+            case "__waitAny": {
+                List<WaitTarget> ts = parseWaitAnyTargets(p);
+                if (ts.isEmpty()) {
+                    return "等待任一变量（未指定）";
+                }
+                StringBuilder d = new StringBuilder();
+                for (WaitTarget t : ts) {
+                    if (d.length() > 0) {
+                        d.append(" 或 ");
+                    }
+                    d.append(t.name).append(" = ").append(t.want);
+                }
+                Object to2 = p.get("timeout");
+                String toText2 = (to2 == null || to2.toString().isBlank())
+                        ? String.valueOf(DEFAULT_WAIT_TIMEOUT_SEC) : str(to2);
+                return "等待任一：" + d
+                        + "（超时 " + toText2 + " 秒"
+                        + (boolParam(p.get("consume")) ? "，消费式" : "") + "）";
+            }
             case "__setVar":
                 return "把 " + (var == null ? "(未指定变量)" : var)
                         + " 设为 " + str(p.get("value"));
@@ -278,6 +365,16 @@ public final class GraphRunner {
     public GraphRunner withVariables(Map<String, String> vars) {
         this.variables = new java.util.LinkedHashMap<>(vars == null ? Map.of() : vars);
         return this;
+    }
+
+    /**
+     * 读一个运行期变量的当前值（自测与调试用）。
+     *
+     * <p>{@code __waitAny} 的 {@code into} 会把"命中的变量名"写进变量表 ——
+     * 没有这个读口就没法断言"下游拿到的是哪一个设备"。
+     */
+    public String variableValue(String name) {
+        return variables.get(name);
     }
 
     /** 注入最大圈数（1 = 不允许循环）。 */
@@ -852,16 +949,20 @@ public final class GraphRunner {
     /**
      * 执行一个内置节点，返回被赋值的变量名（没赋值返回 null）。
      *
-     * <p>四种（`protocolName` 以 `__` 开头，解析器直接归为 {@link Kind#BUILTIN}）：
+     * <p>五种（`protocolName` 以 `__` 开头，解析器直接归为 {@link Kind#BUILTIN}）：
      * <ul>
      *   <li>{@code __setVar}：`var` + `value`（value 里的 `${x}` 会先替换）</li>
      *   <li>{@code __expr}：`var` + `expr`（用条件求值器算，支持 `+ - * /`）</li>
      *   <li>{@code __sleep}：`sec`（在这里停多少秒）</li>
      *   <li>{@code __wait}：`var` + `value`（等它变成这个值才算通过）+
-     *       `timeout`（秒，默认 300）+ `interval`（轮询间隔秒，默认 1）</li>
+     *       `timeout`（秒，默认 300）+ `interval`（轮询间隔秒，默认 1）+
+     *       `consume`（true = 消费式等待，见 {@link #waitForVariable}）</li>
+     *   <li>{@code __waitAny}：`vars`（逗号分隔的变量名，可写成 {@code a=1,b=2} 逐个给目标值）+
+     *       `value`（各变量共用的目标值）+ `timeout` + `interval` + `consume` +
+     *       `into`（把命中的变量名写进这个变量）</li>
      * </ul>
      *
-     * <p>`__sleep` / `__wait` 都会**真的等**，但分成 500ms 的片，每片之间查一次暂停 ——
+     * <p>`__sleep` / `__wait` / `__waitAny` 都会**真的等**，但分成 500ms 的片，每片之间查一次暂停 ——
      * 否则一个"停 1800 秒"会让暂停按钮半小时没反应（暂停是现场级事件）。
      */
     private String executeBuiltin(GNode node) {
@@ -873,6 +974,10 @@ public final class GraphRunner {
         }
         if ("__wait".equals(method)) {
             waitForVariable(node, p);
+            return null;
+        }
+        if ("__waitAny".equals(method)) {
+            waitForAnyVariable(node, p);
             return null;
         }
         String var = requireVar(p);
@@ -919,6 +1024,7 @@ public final class GraphRunner {
         String var = requireVar(p);
         String rawWant = str(p.get("value"));
         String want = rawWant == null ? "" : substitute(rawWant);
+        boolean consume = boolParam(p.get("consume"));
         double timeoutSec = toDouble(p.get("timeout"));
         if (timeoutSec <= 0) {
             timeoutSec = DEFAULT_WAIT_TIMEOUT_SEC;
@@ -930,30 +1036,26 @@ public final class GraphRunner {
         }
         long intervalMs = Math.max(1L, Math.min(Math.round(intervalSec * 1000L), timeoutMs));
         log.accept("[内置] " + node.key() + " 等待 " + var + " = " + want
-                + "（超时 " + fmt(timeoutSec) + " 秒）");
+                + "（超时 " + fmt(timeoutSec) + " 秒"
+                + (consume ? "，消费式" : "") + "）");
         // 用「已经睡掉的量」当计时，不读墙钟：单测注入的 Sleeper 不会推进系统时间，
         // 拿 System.currentTimeMillis() 当 deadline 会让纯逻辑用例永远等不到超时。
         long waited = 0;
         long lastReport = 0;
         while (true) {
-            try {
-                Map<String, String> ext = variablesRefresher.get();
-                if (ext != null && !ext.isEmpty()) {
-                    // 只补本图没写过的键：本图的 `__setVar` / `__expr` 只改内存、
-                    // 不回写 run.input.vars，整表 putAll 会把刚写的值盖回旧值，
-                    // 于是"前面赋值、后面等它"在有同名初始变量时必然等到超时。
-                    for (Map.Entry<String, String> e : ext.entrySet()) {
-                        if (!locallyWrittenVars.contains(e.getKey())) {
-                            variables.put(e.getKey(), e.getValue());
-                        }
-                    }
-                }
-            } catch (RuntimeException ex) {
-                log.accept("[内置] 读取外部变量失败（忽略）：" + ex.getMessage());
-            }
+            refreshVariables();
             String cur = variables.get(var);
-            if (sameValue(cur, want)) {
+            // 消费式等待：陈旧值不算新事件（设备报了"等待交互"就一直是 1，
+            // 第二次等同一个标志时不能拿这条旧上报当新的）。
+            // 无论本次消不消费都要调：它顺带负责"外部复位过 ⇒ 清掉旧记录"。
+            boolean stale = alreadyConsumed(var, cur);
+            if (sameValue(cur, want) && !(consume && stale)) {
                 log.accept("[内置] " + node.key() + " 条件成立：" + var + " = " + want);
+                if (consume) {
+                    // 消费：把键移交给外部拥有 ⇒ 本图之后复位它也不会挡住刷新，
+                    // 设备下一次上报照样进得来（"复位标志 → 再等"今天走不通的根因）。
+                    consumeVar(var, cur);
+                }
                 return;
             }
             if (waited >= timeoutMs) {
@@ -979,6 +1081,208 @@ public final class GraphRunner {
                 return;   // 上层看到 paused 会停在边界，这一步不算完成
             }
         }
+    }
+
+    /**
+     * `__waitAny`：等**一组**变量里**任意一个**变成目标值。
+     *
+     * <p><b>为什么需要</b>：多台设备各自独立上报时，谁先来是不确定的 ——
+     * "等 4 台提取仪里任意一台上报【等待交互】"用 {@code __wait} 表达不了
+     * （它只等一个变量）。这是"事件驱动"落地前的**最小可用近似**：
+     * 用状态位（电平）代替事件流，不建事件表就能先跑影子验收。
+     *
+     * <p><b>参数</b>：
+     * <ul>
+     *   <li>{@code vars}：逗号分隔的变量名；可写成 {@code a=1,b=2} 逐个给目标值
+     *       （逐个给的目标值优先于公共的 {@code value}）；也接受用 {@code var} 传。</li>
+     *   <li>{@code value}：各变量共用的目标值。</li>
+     *   <li>{@code timeout} / {@code interval}：同 {@code __wait}。</li>
+     *   <li>{@code consume}：同 {@code __wait}（消费命中的那一个键）。</li>
+     *   <li>{@code into}：把**命中的变量名**写进这个变量（下游要知道是哪台设备触发的）。</li>
+     * </ul>
+     *
+     * <p>⚠ 覆盖不了"带 payload 的事件"（哪块板、哪个工位、事件序号）——
+     * 那要靠事件表（{@code device_event}）+ 真正的等待事件节点。
+     */
+    private void waitForAnyVariable(GNode node, Map<String, Object> p) {
+        List<WaitTarget> rawTargets = parseWaitAnyTargets(p);
+        if (rawTargets.isEmpty()) {
+            throw new IllegalArgumentException("缺参数 vars（等哪几个变量？用逗号分隔，例如 ext1,ext2）");
+        }
+        // 目标值做 ${} 替换（与 __wait 的 value 同口径）；变量名不做（与 __wait 的 var 同口径）。
+        List<WaitTarget> targets = new ArrayList<>(rawTargets.size());
+        for (WaitTarget t : rawTargets) {
+            targets.add(new WaitTarget(t.name, substitute(t.want)));
+        }
+        boolean consume = boolParam(p.get("consume"));
+        String into = str(p.get("into"));
+        double timeoutSec = toDouble(p.get("timeout"));
+        if (timeoutSec <= 0) {
+            timeoutSec = DEFAULT_WAIT_TIMEOUT_SEC;
+        }
+        long timeoutMs = Math.min(Math.round(timeoutSec * 1000L), BUILTIN_WAIT_MAX_MS);
+        double intervalSec = toDouble(p.get("interval"));
+        if (intervalSec <= 0) {
+            intervalSec = 1;
+        }
+        long intervalMs = Math.max(1L, Math.min(Math.round(intervalSec * 1000L), timeoutMs));
+        StringBuilder desc = new StringBuilder();
+        for (WaitTarget t : targets) {
+            if (desc.length() > 0) {
+                desc.append(" 或 ");
+            }
+            desc.append(t.name).append(" = ").append(t.want);
+        }
+        log.accept("[内置] " + node.key() + " 等待任一：" + desc
+                + "（超时 " + fmt(timeoutSec) + " 秒" + (consume ? "，消费式" : "") + "）");
+        long waited = 0;
+        long lastReport = 0;
+        while (true) {
+            refreshVariables();
+            WaitTarget hit = null;
+            String current = "";
+            for (WaitTarget t : targets) {
+                String cur = variables.get(t.name);
+                // 总是调：顺带清掉"外部复位过"的旧记录。
+                boolean stale = alreadyConsumed(t.name, cur);
+                if (!sameValue(cur, t.want) || (consume && stale)) {
+                    continue;
+                }
+                hit = t;
+                current = cur == null ? "未设置" : cur;
+                break;
+            }
+            if (hit != null) {
+                log.accept("[内置] " + node.key() + " 条件成立：" + hit.name + " 命中");
+                if (consume) {
+                    consumeVar(hit.name, current);
+                }
+                if (into != null && !into.isBlank()) {
+                    // 下游要知道"是哪台设备触发的" ⇒ 把命中的变量名交出去。
+                    writeVar(into.trim(), hit.name);
+                }
+                return;
+            }
+            if (waited >= timeoutMs) {
+                throw new IllegalStateException("等待超时（" + fmt(timeoutSec) + " 秒）："
+                        + desc + " 均未命中（当前 " + (current.isEmpty() ? "无命中" : current) + "）");
+            }
+            if (builtinListener != null && waited - lastReport >= BUILTIN_PROGRESS_MS) {
+                lastReport = waited;
+                try {
+                    builtinListener.onProgress(node.key(), node.method(), p,
+                            "已等 " + (waited / 1000) + " 秒（当前 " + desc + " 均未命中）");
+                } catch (RuntimeException ignore) {
+                    // 台账写不进去不能影响执行
+                }
+            }
+            long nap = Math.min(intervalMs, timeoutMs - waited);
+            waitInterruptibly(nap);
+            waited += nap;
+            if (paused) {
+                return;   // 上层看到 paused 会停在边界，这一步不算完成
+            }
+        }
+    }
+
+    /**
+     * 刷新一次外部变量表：只补本图没写过的键。
+     *
+     * <p>本图的 {@code __setVar} / {@code __expr} 只改内存、不回写 {@code run.input.vars}，
+     * 整表 {@code putAll} 会把刚写的值盖回旧值 ⇒ 于是"前面赋值、后面等它"
+     * 在有同名初始变量时必然等到超时。
+     *
+     * <p>例外：**被消费过**的键不在 {@code locallyWrittenVars} 里 ⇒ 外部值照旧生效
+     * （这正是"复位标志 → 再等"能走通的关键）。
+     */
+    private void refreshVariables() {
+        try {
+            Map<String, String> ext = variablesRefresher.get();
+            if (ext == null || ext.isEmpty()) {
+                return;
+            }
+            for (Map.Entry<String, String> e : ext.entrySet()) {
+                if (!locallyWrittenVars.contains(e.getKey())) {
+                    variables.put(e.getKey(), e.getValue());
+                }
+            }
+        } catch (RuntimeException ex) {
+            log.accept("[内置] 读取外部变量失败（忽略）：" + ex.getMessage());
+        }
+    }
+
+    /** `__waitAny` 的一个目标：变量名 + 目标值。 */
+    private static final class WaitTarget {
+        final String name;
+        final String want;
+
+        WaitTarget(String name, String want) {
+            this.name = name;
+            this.want = want == null ? "" : want;
+        }
+    }
+
+    /**
+     * 解析 {@code __waitAny} 的目标变量表。
+     *
+     * <p>两种写法：
+     * <ul>
+     *   <li>{@code vars=ext1,ext2,ext3} + {@code value=1} —— 共用一个目标值；</li>
+     *   <li>{@code vars=ext1=1,ext2=idle} —— 逐个给目标值（覆盖公共的 {@code value}）。</li>
+     * </ul>
+     *
+     * <p>变量名**不做** {@code ${}} 替换（与 {@code __wait} 的 {@code var} 同口径）；
+     * 目标值**做**替换（与 {@code __wait} 的 {@code value} 同口径）。
+     */
+    private static List<WaitTarget> parseWaitAnyTargets(Map<String, Object> p) {
+        String raw = str(p.get("vars"));
+        if (raw == null || raw.isBlank()) {
+            raw = str(p.get("var"));   // 也接受 var=a,b（设计器只有一个"变量"输入框）
+        }
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        String common = str(p.get("value"));
+        List<WaitTarget> out = new ArrayList<>();
+        for (String part : raw.split("[,;，；]")) {
+            String item = part.trim();
+            if (item.isEmpty()) {
+                continue;
+            }
+            String name = item;
+            String target = common == null ? "" : common;
+            int eq = item.indexOf('=');
+            if (eq > 0) {
+                name = item.substring(0, eq).trim();
+                target = item.substring(eq + 1).trim();
+            }
+            if (name.isEmpty()) {
+                continue;
+            }
+            out.add(new WaitTarget(name, target));
+        }
+        return out;
+    }
+
+    /**
+     * 布尔参数（{@code consume} 等）。
+     *
+     * <p>JSON 里可能是真正的 {@code true/false}，也可能是字符串 {@code "true"} / {@code "1"}
+     * （参数表走的是扁平 JSON，设计器存的是字符串）。
+     */
+    private static boolean boolParam(Object o) {
+        if (o == null) {
+            return false;
+        }
+        if (o instanceof Boolean b) {
+            return b;
+        }
+        String s = str(o);
+        if (s == null) {
+            return false;
+        }
+        s = s.trim().toLowerCase(java.util.Locale.ROOT);
+        return "true".equals(s) || "1".equals(s) || "yes".equals(s) || "on".equals(s);
     }
 
     /**

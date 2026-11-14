@@ -2789,7 +2789,7 @@ public class WorkflowService {
                 reason = a.reason();
             }
         }
-        rm().pauseRunAtBoundary(tenantId, runId, kind, reason, pendingKey);
+        ExperimentStateProjector.applyPausedRunAtBoundary(null, tenantId, runId, kind, reason, pendingKey);
         // 页面暂停 / e2e 探针在动作进行中就把 status 写成了 paused。
         // 上面那条 WHERE status <> 'paused' 因此更新 0 行，pause_node_key 仍是空。
         // 边界到达后补上执行线程看到的待执行节点；已有值不覆盖。
@@ -2817,7 +2817,7 @@ public class WorkflowService {
         } else if (manual) {
             // 转人工 = 暂停，不是失败
             status = "paused";
-            runMapper.settleManual(tenantId, runId);
+            ExperimentStateProjector.applyPausedRunManual(null, tenantId, runId);
         } else {
             status = "completed";
             runMapper.settleTerminal(tenantId, runId, status);

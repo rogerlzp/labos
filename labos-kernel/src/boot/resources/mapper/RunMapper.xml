@@ -25,15 +25,7 @@
     </update>
 
     <!-- 转人工 = 暂停；不写 actual_end，恢复时还要接着跑。 -->
-    <update id="settleManual">
-        UPDATE run
-           SET status = 'paused',
-               pause_kind = 'waiting_human',
-               pause_reason = '执行到需要人工确认的节点，处理后点继续',
-               paused_at = now()
-         WHERE tenant_id = #{param1}
-           AND id = #{param2}
-    </update>
+    <!-- R8 步骤 4：已迁到 ExperimentProjectorMapper。 -->
 
     <!-- P-09 执行阶段：SETTLED 表示执行体已收尾。 -->
     <update id="markSettledPhase">
@@ -798,15 +790,7 @@
          LIMIT 1
     </select>
 
-    <update id="pauseRunAtBoundary">
-        UPDATE run
-           SET status = 'paused'::run_status,
-               pause_kind = COALESCE(pause_kind, #{param3}),
-               pause_reason = COALESCE(pause_reason, #{param4}),
-               pause_node_key = COALESCE(pause_node_key, #{param5}),
-               paused_at = COALESCE(paused_at, now())
-         WHERE tenant_id = #{param1} AND id = #{param2} AND status &lt;&gt; 'paused'
-    </update>
+    <!-- R8 步骤 4：已迁到 ExperimentProjectorMapper。 -->
 
     <update id="fillPauseNodeKey">
         UPDATE run
@@ -934,18 +918,7 @@
     </update>
 
     <!-- 隔离确认（§3.6 / 第 14 项）：quarantined → paused(manual_window)，可续跑 -->
-    <update id="materialSafetyConfirm">
-        UPDATE run
-           SET status = 'paused'::run_status,
-               pause_kind = 'manual_window',
-               pause_reason = '物料隔离确认：' || #{param3},
-               pause_node_key = NULL,
-               input = COALESCE(input, '{}'::jsonb)
-                   || jsonb_build_object('quarantineConfirmed', true, 'quarantineNote', #{param3}),
-               paused_at = now(),
-               updated_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'quarantined'
-    </update>
+    <!-- R8 步骤 4：已迁到 ExperimentProjectorMapper。 -->
 
     <!-- 只列近 7 天被中断的：十天前的单子点"继续"会真的重跑，不是恢复是事故。 -->
     <select id="selectRecoverableRuns" resultType="java.util.Map">

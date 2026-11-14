@@ -178,7 +178,8 @@ public class MaterialEffectController {
         if (reason == null || reason.isBlank()) {
             return bad("必填 reason");
         }
-        int n = Mappers.get(RunMapper.class).materialSafetyConfirm(TENANT, id, reason);
+        int n = com.labos.kernel.workflow.ExperimentStateProjector
+                .applyPausedRunMaterialSafety(null, TENANT, id, reason);
         if (n == 0) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body(err("run 不是 quarantined 状态，无需隔离确认"));

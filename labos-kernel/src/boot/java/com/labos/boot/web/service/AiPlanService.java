@@ -93,7 +93,8 @@ public class AiPlanService {
               **"并行网关开始"和"并行网关结束"两个节点由系统自动生成并接好** ——
               你不需要（也不该）自己写这两个网关。
             - 顺序图里**没出现**的已有节点会被删掉 ⇒ 要把它改完之后的**全部**步骤都列出来。
-            - 逻辑节点 type=logic，method 只能是 __setVar / __expr / __sleep / __wait。
+            - 逻辑节点 type=logic，method 只能是 __setVar / __expr / __sleep / __wait / __waitAny。
+              __waitAny 的参数用 vars（逗号分隔的变量名，可写成 a=1,b=2 逐个给目标值）+ value（公共目标值）。
 
             共同的硬规则：
             1. id 必须是「当前流程图」里**真实存在**的节点 id，不许编。

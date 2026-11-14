@@ -73,6 +73,23 @@ public final class ExperimentStateProjector {
         return mapper().applyPausedRun(tenantId, runId, kind, reason, nodeKey);
     }
 
+    /** R8 步骤 4：转人工=暂停（waiting_human），唯一写入口。 */
+    public static int applyPausedRunManual(Connection c, long tenantId, long runId) {
+        return mapper().applyPausedRunManual(tenantId, runId);
+    }
+
+    /** R8 步骤 4：节点边界暂停（COALESCE 保留已有值），唯一写入口。 */
+    public static int applyPausedRunAtBoundary(Connection c, long tenantId, long runId,
+                                               String kind, String reason, String nodeKey) {
+        return mapper().applyPausedRunAtBoundary(tenantId, runId, kind, reason, nodeKey);
+    }
+
+    /** R8 步骤 4：物料隔离确认 → paused(manual_window)，唯一写入口。 */
+    public static int applyPausedRunMaterialSafety(Connection c, long tenantId, long runId,
+                                                   String note) {
+        return mapper().applyPausedRunMaterialSafety(tenantId, runId, note);
+    }
+
     /**
      * 事实：一条 {@code experiment_run} 起跑/恢复。
      * 投影：其所属 {@code experiment} 标 {@code running}（列表不再一直停在「待执行」）。

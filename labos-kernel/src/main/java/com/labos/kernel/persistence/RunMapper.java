@@ -21,7 +21,8 @@ public interface RunMapper {
     int settleTerminal(long tenantId, long runId, String status);
 
     /** 转人工：paused + waiting_human（不写 actual_end）。 */
-    int settleManual(long tenantId, long runId);
+    // R8 步骤 4：已迁到 ExperimentProjectorMapper.applyPausedRunManual。
+    // int settleManual(long tenantId, long runId);
 
     /** P-09：执行体收尾，不再派发新命令。 */
     int markSettledPhase(long tenantId, long runId);
@@ -317,8 +318,9 @@ public interface RunMapper {
     Map<String, Object> selectLatestNodeOutput(long tenantId, long runId, String nodeKey);
 
     /** 节点边界暂停：paused + 扣留类型/原因/边界节点（已有值不覆盖）。 */
-    int pauseRunAtBoundary(long tenantId, long runId, String kind, String reason,
-                           String pendingKey);
+    // R8 步骤 4：已迁到 ExperimentProjectorMapper.applyPausedRunAtBoundary。
+    // int pauseRunAtBoundary(long tenantId, long runId, String kind, String reason,
+    //                        String pendingKey);
 
     /** 边界到达后补 pause_node_key（仅当 paused 且仍为空）。 */
     int fillPauseNodeKey(long tenantId, long runId, String pendingKey);
@@ -364,7 +366,8 @@ public interface RunMapper {
     int confirmQuarantine(long tenantId, long runId, String inputJson);
 
     /** 隔离确认（§3.6 / §8.2 第 14 项）：quarantined → paused(manual_window)，可续跑。 */
-    int materialSafetyConfirm(long tenantId, long runId, String note);
+    // R8 步骤 4：已迁到 ExperimentProjectorMapper.applyPausedRunMaterialSafety。
+    // int materialSafetyConfirm(long tenantId, long runId, String note);
 
     /** 近 7 天被中断且可恢复的 run（id/runNo/total/done/bad，按 id 倒序 50 条）。 */
     List<Map<String, Object>> selectRecoverableRuns(long tenantId);

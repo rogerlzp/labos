@@ -58,6 +58,11 @@ public final class GraphRunnerTest {
         caseWaitSatisfied();
         caseWaitTimeout();
         caseWaitNotClobberedByRefresh();
+        caseWaitConsumeChain();
+        caseWaitConsumeRejectsStale();
+        caseWaitWithoutConsumePassesStale();
+        caseWaitAnyHits();
+        caseWaitAnyTimeout();
         caseBuiltinProtocolResolvesToLogic();
         caseBuiltinDryRunNoOp();
         caseSkipKeysResume();
@@ -717,6 +722,213 @@ public final class GraphRunnerTest {
             eq("等待节点没有转人工（被盖回就会超时）", 0, p.count(NodeStatus.MANUAL));
             eq("赋值与等待两个内置节点都完成", 2, p.count(NodeStatus.COMPLETED));
             eq("没有产生任何设备命令", 0, bus.callLog().size());
+        });
+    }
+
+    /**
+     * `__wait consume=true`：**复位标志 → 再等下一次上报**这条链走得通。
+     *
+     * <p>背景（2026-11-14 高通量核酸提取工作站线）：设备上报的"等待交互"是
+     * **电平**（一直是 1），上位机要等的是**一次新的上报**（边）。
+     *
+     * <p>今天走不通的原因：{@code locallyWrittenVars} 是 run 生命周期内**只增不减**的集合 ——
+     * 图里用 {@code __setVar} 复位一次，这个键就**永久**被挡在外部刷新之外 ⇒
+     * 设备再报同一个值，{@code __wait} 永远等不到。
+     *
+     * <p>消费语义解决它：等待成功即把键**移交给外部拥有** ⇒
+     * 本图之后复位它不再挡刷新，设备的下一次上报照样进得来。
+     *
+     * <p>钉住的语义：设备第 2 轮上报 1 → 图里复位成 0 → 设备第 6 轮再上报 1 ⇒ 第二次等待通过。
+     */
+    private static void caseWaitConsumeChain() {
+        check("内置节点：__wait consume=true —— 复位标志后还能等到下一次上报", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W1" name="等第一次" protocolName="__wait"/>
+                    <task id="R" name="复位" protocolName="__setVar"/>
+                    <task id="W2" name="等第二次" protocolName="__wait"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W1"/>
+                    <sequenceFlow id="F2" sourceRef="W1" targetRef="R"/>
+                    <sequenceFlow id="F3" sourceRef="R" targetRef="W2"/>
+                    <sequenceFlow id="F4" sourceRef="W2" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            java.util.concurrent.atomic.AtomicInteger polls =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    // 设备行为：第 2 轮上报 1；之后外部回到 0；第 6 轮再上报 1。
+                    .withVariableRefresher(() -> {
+                        int n = polls.incrementAndGet();
+                        return Map.of("ext", (n == 2 || n >= 6) ? "1" : "0");
+                    })
+                    .withBuiltinParams(Map.of(
+                            "W1", Map.of("var", "ext", "value", "1", "consume", "true",
+                                    "timeout", "30", "interval", "1"),
+                            "R", Map.of("var", "ext", "value", "0"),
+                            "W2", Map.of("var", "ext", "value", "1", "consume", "true",
+                                    "timeout", "30", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("两次等待都通过（没有转人工）", 0, p.count(NodeStatus.MANUAL));
+            eq("三个内置节点都完成", 3, p.count(NodeStatus.COMPLETED));
+            eq("第二次上报在第 6 轮才等到", 6, polls.get());
+        });
+    }
+
+    /**
+     * `__wait consume=true`：**陈旧值不算新事件** —— 第二次等同一个标志不能立刻通过。
+     *
+     * <p>外部一直保持 1（设备没复位，也没重新上报）⇒ 第二次等待必须**等到超时**，
+     * 而不是拿这条旧上报当新事件（那会让机械臂白跑一趟）。
+     */
+    private static void caseWaitConsumeRejectsStale() {
+        check("内置节点：__wait consume=true —— 陈旧值不算新事件", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W1" name="等第一次" protocolName="__wait"/>
+                    <task id="W2" name="等第二次" protocolName="__wait"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W1"/>
+                    <sequenceFlow id="F2" sourceRef="W1" targetRef="W2"/>
+                    <sequenceFlow id="F3" sourceRef="W2" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    // 外部一直是 1：从没复位过 ⇒ 第二次没有"新上报"
+                    .withVariableRefresher(() -> Map.of("ext", "1"))
+                    .withBuiltinParams(Map.of(
+                            "W1", Map.of("var", "ext", "value", "1", "consume", "true",
+                                    "timeout", "30", "interval", "1"),
+                            "W2", Map.of("var", "ext", "value", "1", "consume", "true",
+                                    "timeout", "5", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("第一次等待通过", 1, p.count(NodeStatus.COMPLETED));
+            eq("第二次等待因陈旧值转人工（不能把旧上报当新事件）",
+                    1, p.count(NodeStatus.MANUAL));
+        });
+    }
+
+    /**
+     * 对照组：**不带** `consume` 时，陈旧值会立刻通过。
+     *
+     * <p>这条用例存在的意义是把"consume 到底改了什么"钉死：
+     * 两次等同一个标志、外部不变 ⇒ 不消费就**第二次立刻通过**（把旧上报当新事件）。
+     */
+    private static void caseWaitWithoutConsumePassesStale() {
+        check("内置节点：__wait 不带 consume —— 陈旧值会立刻通过（consume 修的就是这个）", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W1" name="等第一次" protocolName="__wait"/>
+                    <task id="W2" name="等第二次" protocolName="__wait"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W1"/>
+                    <sequenceFlow id="F2" sourceRef="W1" targetRef="W2"/>
+                    <sequenceFlow id="F3" sourceRef="W2" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    .withVariableRefresher(() -> Map.of("ext", "1"))
+                    .withBuiltinParams(Map.of(
+                            "W1", Map.of("var", "ext", "value", "1",
+                                    "timeout", "10", "interval", "1"),
+                            "W2", Map.of("var", "ext", "value", "1",
+                                    "timeout", "10", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("两次都立刻通过（旧语义：电平，不是边）", 2, p.count(NodeStatus.COMPLETED));
+            eq("没有转人工", 0, p.count(NodeStatus.MANUAL));
+        });
+    }
+
+    /**
+     * `__waitAny`：等**一组**变量里**任意一个**变成目标值；并把命中的变量名交给下游。
+     *
+     * <p>为什么需要：多台设备各自独立上报时，谁先来是不确定的 ——
+     * "等 4 台提取仪里任意一台上报【等待交互】"用 {@code __wait} 表达不了。
+     * 这是"事件驱动"落地前的**最小可用近似**：用状态位（电平）代替事件流。
+     */
+    private static void caseWaitAnyHits() {
+        check("内置节点：__waitAny —— 任意一个变量命中即通过，并记下命中的是哪一个", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W" name="等任一上报" protocolName="__waitAny"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W"/>
+                    <sequenceFlow id="F2" sourceRef="W" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    // 4 台设备，ext3 先报
+                    .withVariableRefresher(() -> Map.of(
+                            "ext1", "0", "ext2", "0", "ext3", "1", "ext4", "0"))
+                    .withBuiltinParams(Map.of("W", Map.of(
+                            "vars", "ext1,ext2,ext3,ext4", "value", "1",
+                            "into", "which", "timeout", "10", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("等待节点通过", 1, p.count(NodeStatus.COMPLETED));
+            eq("没有转人工", 0, p.count(NodeStatus.MANUAL));
+            eq("命中的变量名写进了 into（下游才知道是哪台设备）",
+                    "ext3", runner.variableValue("which"));
+        });
+    }
+
+    /**
+     * `__waitAny` 超时：转人工停下，**不带错值往下走**。
+     */
+    private static void caseWaitAnyTimeout() {
+        check("内置节点：__waitAny 超时转人工，不驱动下游", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W" name="等任一上报" protocolName="__waitAny"/>
+                    <task id="T" name="Transfer"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W"/>
+                    <sequenceFlow id="F2" sourceRef="W" targetRef="T"/>
+                    <sequenceFlow id="F3" sourceRef="T" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    .withVariableRefresher(() -> Map.of("ext1", "0", "ext2", "0"))
+                    .withBuiltinParams(Map.of("W", Map.of(
+                            "vars", "ext1,ext2", "value", "1",
+                            "timeout", "3", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("等待节点转人工", 1, p.count(NodeStatus.MANUAL));
+            eq("超时后不驱动下游设备", 0, bus.callLog().size());
         });
     }
 

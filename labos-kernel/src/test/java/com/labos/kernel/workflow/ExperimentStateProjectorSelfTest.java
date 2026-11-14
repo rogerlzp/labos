@@ -184,19 +184,23 @@ public final class ExperimentStateProjectorSelfTest {
         // 本轮只收口 PauseManager 这条路径；其余是 R8 步骤 3/4 的剩余工作。
         boolean projectorHasPaused = false;
         boolean pauseMapperStillHas = false;
+        boolean runMapperStillHas = false;
         for (Path f : mapperXmls) {
             String code = stripComments(Files.readString(f, StandardCharsets.UTF_8));
-            if (PROJECTOR_MAPPER_FILE.equals(f.getFileName().toString())
-                    && code.contains("SET status = 'paused'")) {
+            boolean hasPaused = code.contains("UPDATE run") && code.contains("SET status = 'paused'");
+            if (PROJECTOR_MAPPER_FILE.equals(f.getFileName().toString()) && hasPaused) {
                 projectorHasPaused = true;
             }
-            if ("PauseMapper.xml".equals(f.getFileName().toString())
-                    && code.contains("SET status = 'paused'")) {
+            if ("PauseMapper.xml".equals(f.getFileName().toString()) && hasPaused) {
                 pauseMapperStillHas = true;
             }
+            if ("RunMapper.xml".equals(f.getFileName().toString()) && hasPaused) {
+                runMapperStillHas = true;
+            }
         }
-        check("ExperimentProjectorMapper.xml 有 applyPausedRun（PauseManager 路径已收口）", projectorHasPaused);
-        check("PauseMapper.xml 不再 SET status='paused'（pauseRun 已迁走）", !pauseMapperStillHas);
+        check("ExperimentProjectorMapper.xml 有 run.status='paused' 写入口", projectorHasPaused);
+        check("PauseMapper.xml 不再 SET run.status='paused'", !pauseMapperStillHas);
+        check("RunMapper.xml 不再 SET run.status='paused'（4 处已迁走）", !runMapperStillHas);
 
         section("5. R8 步骤 1：resolvePauseKind 纯函数（事实 → 投影 pause_kind）");
         eq("null 原样", null, ExperimentStateProjector.resolvePauseKind(null, false));

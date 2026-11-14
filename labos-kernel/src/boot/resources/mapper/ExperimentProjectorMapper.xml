@@ -66,4 +66,38 @@
          WHERE tenant_id = #{tenantId} AND id = #{experimentId}
     </update>
 
+    <!-- R8 步骤 4：run.status='paused' 的另外三个写入口（从 RunMapper 迁来）。
+         不同暂停场景各有 pause_kind/reason 语义，收口到本 mapper 单一落点。 -->
+    <update id="applyPausedRunManual">
+        UPDATE run
+           SET status = 'paused',
+               pause_kind = 'waiting_human',
+               pause_reason = '执行到需要人工确认的节点，处理后点继续',
+               paused_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{runId}
+    </update>
+
+    <update id="applyPausedRunAtBoundary">
+        UPDATE run
+           SET status = 'paused'::run_status,
+               pause_kind = COALESCE(pause_kind, #{kind}),
+               pause_reason = COALESCE(pause_reason, #{reason}),
+               pause_node_key = COALESCE(pause_node_key, #{nodeKey}),
+               paused_at = COALESCE(paused_at, now())
+         WHERE tenant_id = #{tenantId} AND id = #{runId} AND status &lt;&gt; 'paused'
+    </update>
+
+    <update id="applyPausedRunMaterialSafety">
+        UPDATE run
+           SET status = 'paused'::run_status,
+               pause_kind = 'manual_window',
+               pause_reason = '物料隔离确认：' || #{note},
+               pause_node_key = NULL,
+               input = COALESCE(input, '{}'::jsonb)
+                   || jsonb_build_object('quarantineConfirmed', true, 'quarantineNote', #{note}),
+               paused_at = now(),
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{runId} AND status = 'quarantined'
+    </update>
+
 </mapper>
