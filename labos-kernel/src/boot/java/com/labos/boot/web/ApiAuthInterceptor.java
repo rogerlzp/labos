@@ -67,6 +67,16 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
             reject(resp, 403, "仅管理员可管理账号");
             return false;
         }
+        // 全局运行治理参数（调度/自动清理）收口 admin：designer/operator 只配业务排程，
+        // 不该改影响所有实验的全局开关（评审权限模型建议）。
+        boolean adminOnlyGovernance = (path.startsWith("/api/settings/stale-pause")
+                && "PUT".equals(req.getMethod()))
+                || (path.startsWith("/api/scheduler/stale-check")
+                && "POST".equals(req.getMethod()));
+        if (adminOnlyGovernance && !s0.isAdmin()) {
+            reject(resp, 403, "仅管理员可修改全局调度/自动清理参数");
+            return false;
+        }
         return true;
     }
 

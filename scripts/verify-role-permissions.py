@@ -164,13 +164,13 @@ def main():
     print("── 写：admin/operator/designer 200，viewer 403 ──")
     # planNo 带运行期唯一后缀：不靠清理保证不撞（同一个号建两次就是 409）
     stamp = "%d" % int(time.time() * 1000)
-    for name, (method, path, body) in WRITE_ENDPOINTS:
+    for name, (method, path, body), allowed in WRITE_ENDPOINTS:
         for role in ("admin", "operator", "designer", "viewer"):
             actual_body = body
             if name == "POST /api/schedule-plans" and body:
                 actual_body = dict(body, planNo="VERIFY-PERM-%s-%s" % (role, stamp))
             st, resp = call(tokens[role], path, method, actual_body)
-            expect = 403 if role == "viewer" else 200
+            expect = 200 if role in allowed else 403
             if st == expect:
                 ok("%s %s → %d（期望）" % (role, name, st))
             else:
@@ -241,11 +241,18 @@ def main():
 
 
 WRITE_ENDPOINTS = [
+    # (名称, (方法, 路径, body), 可写角色集合)：不在集合里的角色期望 403
     ("POST /api/schedule-plans",
      ("POST", "/api/schedule-plans", {"planNo": "VERIFY-PERM", "optimizationFactor": 50,
-                                      "maxIterationsRunning": 4, "iterationDelaySec": 0})),
-    ("POST /api/scheduler/reload-config", ("POST", "/api/scheduler/reload-config", None)),
-    ("PUT /api/settings/stale-pause", ("PUT", "/api/settings/stale-pause", {"autoDismissDays": 0})),
+                                      "maxIterationsRunning": 4, "iterationDelaySec": 0}),
+     {"admin", "operator", "designer"}),
+    ("POST /api/scheduler/reload-config",
+     ("POST", "/api/scheduler/reload-config", None),
+     {"admin", "operator", "designer"}),
+    # 全局调度/自动清理治理参数：仅 admin（评审权限模型收口）
+    ("PUT /api/settings/stale-pause",
+     ("PUT", "/api/settings/stale-pause", {"autoDismissDays": 0}),
+     {"admin"}),
 ]
 
 
