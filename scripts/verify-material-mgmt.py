@@ -40,9 +40,36 @@ def bad(msg, detail=""):
     print("  \033[31m✗\033[0m " + msg + (("（%s）" % detail) if detail else ""))
 
 
+def preclean(token):
+    """幂等守卫：硬删上次中途失败的残留。
+
+    注意必须**硬删**（SQL）：脚本自己的清理走 API 是软删，软删行的 lot_no
+    仍占用唯一键 ⇒ 下次重跑 POST 会 409（评审实测踩到）。"""
+    try:
+        cs.q("DELETE FROM consumable_lot WHERE lot_no LIKE 'VERIFY-%';")  # noqa: S608
+        cs.q("DELETE FROM reagent_lot WHERE lot_no LIKE 'VERIFY-%';")  # noqa: S608
+    except Exception:
+        pass
+    # 双保险：万一 SQL 表名不对（不同环境），再走 API 软删一遍。
+    for base, fid in (("consumable-lots", "consumableId=5"),
+                      ("reagent-lots", "reagentId=16")):
+        try:
+            for x in api(f"/api/{base}?{fid}", token=token)["items"]:
+                if x.get("lotNo", "").startswith("VERIFY-"):
+                    try:
+                        api(f"/api/{base}/{x['id']}", "DELETE", token=token)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
 def main():
     token = api("/api/auth/login", "POST",
                 {"username": "admin", "password": "admin123"})["token"]
+
+    # 幂等守卫：先清掉上次中途失败的残留（否则 VERIFY-* 批次已存在 → 409 卡死重跑）
+    preclean(token)
 
     print("── 1. 位置属性 ──")
     d = api(f"/api/positions?islandId={ISLAND}", token=token)
