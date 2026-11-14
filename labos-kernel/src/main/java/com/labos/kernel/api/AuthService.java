@@ -41,7 +41,9 @@ public final class AuthService {
                           String displayName, String role, Instant expiresAt) {
 
         public boolean canWrite() {
-            return "admin".equals(role) || "operator".equals(role);
+            // 口径单一真源：与 RbacRules.canWrite 一致（admin/operator/designer 可写）。
+            // 改动前这里只认 admin/operator，designer 进得去 /schedule-plans 却全 403。
+            return com.labos.kernel.api.RbacRules.canWrite(role);
         }
 
         public boolean isAdmin() {
