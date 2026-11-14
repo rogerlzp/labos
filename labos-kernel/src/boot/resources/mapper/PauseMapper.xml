@@ -51,11 +51,7 @@
 
     <!-- 暂停/恢复写路径（PauseManager）。 -->
 
-    <update id="pauseRun">
-        UPDATE run SET status = 'paused', pause_kind = #{param3}, pause_reason = #{param4},
-               paused_at = now(), pause_node_key = #{param5}, updated_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'running'
-    </update>
+    <!-- R8 步骤 3：pauseRun 已迁到 ExperimentProjectorMapper.applyPausedRun（唯一写入口）。 -->
 
     <insert id="insertManualWindow">
         INSERT INTO manual_window

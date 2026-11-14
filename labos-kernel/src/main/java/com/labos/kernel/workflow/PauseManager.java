@@ -156,7 +156,8 @@ public final class PauseManager {
      */
     public int pauseTx(Connection c, long runId, Kind kind, String reason, String nodeKey)
             throws SQLException {
-        if (mappers().pauseRun(tenantId, runId, kind.code(), reason, nodeKey) == 0) {
+        // R8 步骤 3：run.status='paused' 收口到 ExperimentStateProjector（唯一写入口）。
+        if (ExperimentStateProjector.applyPausedRun(c, tenantId, runId, kind.code(), reason, nodeKey) == 0) {
             return 0;   // 不在 running，不用暂停
         }
         // N-08：waiting_human 暂停自动开人工窗口（复用 manual_window）

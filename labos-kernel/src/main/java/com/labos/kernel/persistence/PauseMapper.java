@@ -47,7 +47,8 @@ public interface PauseMapper {
     // ---- PauseManager 暂停/恢复写路径 ----
 
     /** run 落 paused（仅当还在 running）；返回 0 = 无需暂停。 */
-    int pauseRun(long tenantId, long runId, String kind, String reason, String nodeKey);
+    /** run 落 paused（仅当还在 running）；返回 0 = 无需暂停。已迁到 ExperimentProjectorMapper.applyPausedRun。 */
+    // int pauseRun(long tenantId, long runId, String kind, String reason, String nodeKey);
 
     /** waiting_human 暂停自动开 pending 人工窗口。 */
     int insertManualWindow(long tenantId, long runId, String windowKey,

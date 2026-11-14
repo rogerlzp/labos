@@ -6,6 +6,15 @@
      （ExperimentStateProjectorSelfTest 扫描全部 mapper XML 强制）。 -->
 <mapper namespace="com.labos.kernel.persistence.ExperimentProjectorMapper">
 
+    <!-- R8 步骤 3：run.status='paused' 的唯一写入口（从 PauseMapper.pauseRun 迁来）。
+         事实=操作员暂停一条 workflow run，投影=该 run 标 paused。 -->
+    <update id="applyPausedRun">
+        UPDATE run
+           SET status = 'paused', pause_kind = #{kind}, pause_reason = #{reason},
+               paused_at = now(), pause_node_key = #{nodeKey}, updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{runId} AND status = 'running'
+    </update>
+
     <!-- 不写 run_id：experiment.run_id 外键指向 run(id)，与 experiment_run.id
          不是一个 id 空间，写进去语义错且可能 23503。 -->
     <update id="markRunningByRun">

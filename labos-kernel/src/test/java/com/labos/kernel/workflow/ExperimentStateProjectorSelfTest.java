@@ -179,6 +179,25 @@ public final class ExperimentStateProjectorSelfTest {
         check("runToExperimentCaseSql 在全量 main 源码中仍被引用",
                 referencedAnywhere(javaFiles, "runToExperimentCaseSql"));
 
+        section("5b. R8 步骤 3：PauseManager 的 run.status='paused' 写入口已迁到投影器");
+        // 全仓现状还有多处写 run.status='paused'（ExecutionMapper/RunControlMapper/RunMapper 等），
+        // 本轮只收口 PauseManager 这条路径；其余是 R8 步骤 3/4 的剩余工作。
+        boolean projectorHasPaused = false;
+        boolean pauseMapperStillHas = false;
+        for (Path f : mapperXmls) {
+            String code = stripComments(Files.readString(f, StandardCharsets.UTF_8));
+            if (PROJECTOR_MAPPER_FILE.equals(f.getFileName().toString())
+                    && code.contains("SET status = 'paused'")) {
+                projectorHasPaused = true;
+            }
+            if ("PauseMapper.xml".equals(f.getFileName().toString())
+                    && code.contains("SET status = 'paused'")) {
+                pauseMapperStillHas = true;
+            }
+        }
+        check("ExperimentProjectorMapper.xml 有 applyPausedRun（PauseManager 路径已收口）", projectorHasPaused);
+        check("PauseMapper.xml 不再 SET status='paused'（pauseRun 已迁走）", !pauseMapperStillHas);
+
         section("5. R8 步骤 1：resolvePauseKind 纯函数（事实 → 投影 pause_kind）");
         eq("null 原样", null, ExperimentStateProjector.resolvePauseKind(null, false));
         eq("paused_fault 不拦（自动恢复）", "paused_fault",

@@ -65,6 +65,15 @@ public final class ExperimentStateProjector {
     }
 
     /**
+     * R8 步骤 3：run.status='paused' 的唯一写入口（事实=操作员暂停一条 workflow run）。
+     * 返回受影响行数（0 = run 不在 running，无需暂停）。
+     */
+    public static int applyPausedRun(Connection c, long tenantId, long runId,
+                                     String kind, String reason, String nodeKey) {
+        return mapper().applyPausedRun(tenantId, runId, kind, reason, nodeKey);
+    }
+
+    /**
      * 事实：一条 {@code experiment_run} 起跑/恢复。
      * 投影：其所属 {@code experiment} 标 {@code running}（列表不再一直停在「待执行」）。
      *

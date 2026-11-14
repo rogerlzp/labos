@@ -19,6 +19,13 @@ import org.apache.ibatis.annotations.Param;
 public interface ExperimentProjectorMapper {
 
     /**
+     * R8 步骤 3：事实=操作员暂停一条 workflow run；投影=该 run 标 paused（唯一写入口）。
+     */
+    int applyPausedRun(@Param("tenantId") long tenantId, @Param("runId") long runId,
+                       @Param("kind") String kind, @Param("reason") String reason,
+                       @Param("nodeKey") String nodeKey);
+
+    /**
      * 事实：一条 {@code experiment_run} 起跑/恢复。
      * 投影：其所属 {@code experiment} 标 {@code running}。
      */
