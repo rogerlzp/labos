@@ -27,6 +27,11 @@ public final class PauseUnknownDbSelfTest {
     private static final long WF_RUN = -995001L;
     private static final long NODE = -995002L;
     private static final long EXP_RUN = -995003L;
+    // 反例（无 reconciliation_required，应保持干净 paused）
+    private static final long EXP2 = -995004L;
+    private static final long WF_RUN2 = -995005L;
+    private static final long NODE2 = -995006L;
+    private static final long EXP_RUN2 = -995007L;
 
     private static DbConfig db;
     private static int pass;
@@ -58,6 +63,16 @@ public final class PauseUnknownDbSelfTest {
             } else {
                 bad("pause_kind 未转 manual", String.valueOf(pk));
             }
+
+            section("3. 反例：无 reconciliation_required 保持干净 paused");
+            executor.settle(EXP_RUN2, "paused", 0, null, "waiting_human", "验证暂停", true);
+            String pk2 = queryOne("SELECT pause_kind FROM experiment_run WHERE tenant_id = ? AND id = ?",
+                    TENANT, EXP_RUN2);
+            if ("waiting_human".equals(pk2)) {
+                ok("无不确定节点 → pause_kind 保持 waiting_human（不是一律转 manual）", pk2);
+            } else {
+                bad("无不确定节点也被转 manual（假阳性）", String.valueOf(pk2));
+            }
         } finally {
             cleanup();
         }
@@ -85,14 +100,26 @@ public final class PauseUnknownDbSelfTest {
                 + "VALUES (?, ?, 'VERIFY-PAUSEUNK-EXP', '暂停确认验证', ?)", EXP, TENANT, WF_RUN);
         exec("INSERT INTO experiment_run (id, tenant_id, experiment_id, status) "
                 + "VALUES (?, ?, ?, 'running')", EXP_RUN, TENANT, EXP);
+
+        // 反例：无 reconciliation_required（节点 resolution=unresolved，非不确定态）
+        exec("INSERT INTO run (id, tenant_id, run_no, run_type) VALUES (?, ?, 'VERIFY-PAUSEUNK-WF2', 'workflow')",
+                WF_RUN2, TENANT);
+        exec("INSERT INTO run_node (id, tenant_id, run_id, node_key, status, level, "
+                + "execution_resolution_status) "
+                + "VALUES (?, ?, ?, 'T1', 'running', 0, 'unresolved')",
+                NODE2, TENANT, WF_RUN2);
+        exec("INSERT INTO experiment (id, tenant_id, experiment_no, name, run_id) "
+                + "VALUES (?, ?, 'VERIFY-PAUSEUNK-EXP2', '暂停确认反例', ?)", EXP2, TENANT, WF_RUN2);
+        exec("INSERT INTO experiment_run (id, tenant_id, experiment_id, status) "
+                + "VALUES (?, ?, ?, 'running')", EXP_RUN2, TENANT, EXP2);
     }
 
     private static void cleanup() {
         // 先删 experiment_run（FK→experiment），再删 run_node（FK→run），再删 experiment/run
-        del("experiment_run", "DELETE FROM experiment_run WHERE id = ?", EXP_RUN);
-        del("run_node", "DELETE FROM run_node WHERE id = ?", NODE);
-        del("experiment", "DELETE FROM experiment WHERE id = ?", EXP);
-        del("run", "DELETE FROM run WHERE id = ?", WF_RUN);
+        del("experiment_run", "DELETE FROM experiment_run WHERE id IN (?, ?)", EXP_RUN, EXP_RUN2);
+        del("run_node", "DELETE FROM run_node WHERE id IN (?, ?)", NODE, NODE2);
+        del("experiment", "DELETE FROM experiment WHERE id IN (?, ?)", EXP, EXP2);
+        del("run", "DELETE FROM run WHERE id IN (?, ?)", WF_RUN, WF_RUN2);
     }
 
     // ================================================================ 小工具
