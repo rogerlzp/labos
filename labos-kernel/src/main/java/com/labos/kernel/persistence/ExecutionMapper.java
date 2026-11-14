@@ -97,6 +97,9 @@ public interface ExecutionMapper {
     /** 断点续跑：本 run 已完成的步（seq/loopIndex）。 */
     java.util.List<java.util.Map<String, Object>> selectCompletedSteps(long tenantId, long runId);
 
+    /** R3：本 run 物理结果不确定（reconciliation_required）的节点数（暂停时判 PauseUnknown）。 */
+    int countReconciliationRequired(long tenantId, long experimentRunId);
+
     /** 落一条 step 记录（running），返回 id。 */
     long insertRunStep(long tenantId, long runId, int seq, int loopIndex, long workflowId);
 

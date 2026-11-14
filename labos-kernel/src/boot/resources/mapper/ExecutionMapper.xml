@@ -187,4 +187,16 @@
          WHERE tenant_id=#{param1} AND id=#{param2}
     </update>
 
+    <!-- R3：experiment_run → experiment.run_id → workflow run → run_node，
+         数「物理结果不确定」的节点（暂停时判 PauseUnknown，不写干净 paused）。 -->
+    <select id="countReconciliationRequired" resultType="int">
+        SELECT count(*)
+          FROM run_node rn
+          JOIN run r ON r.id = rn.run_id
+          JOIN experiment e ON e.run_id = r.id
+          JOIN experiment_run er ON er.experiment_id = e.id
+         WHERE er.tenant_id = #{param1} AND er.id = #{param2}
+           AND rn.execution_resolution_status = 'reconciliation_required'
+    </select>
+
 </mapper>

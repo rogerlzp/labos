@@ -525,6 +525,18 @@ public final class ExperimentExecutor {
             return;
         }
 
+        // R3：暂停收敛时，若本 run 有「物理结果不确定」的节点（reconciliation_required），
+        // 不写干净的 paused，改为 manual 转人工对账（PauseUnknown）。
+        // 只拦 waiting_human/manual 这类「人在等」的暂停；paused_fault 是故障自动恢复，不受影响。
+        if (paused && pauseKind != null && !"paused_fault".equals(pauseKind)
+                && hasReconciliationRequired(runId)) {
+            pauseKind = "manual";
+            pauseReason = (pauseReason == null ? "" : pauseReason + "；")
+                    + "设备物理结果不确定（需对账）";
+            org.slf4j.LoggerFactory.getLogger(ExperimentExecutor.class)
+                    .warn("[暂停] run {} 有 reconciliation_required 节点，PauseUnknown 转人工", runId);
+        }
+
         // S-04-B：任何收尾都表示控制过程走完，control_state 回到 NONE
         // （pause → 执行器在动作边界 settle paused；stop/complete/fail 同理）。
         em().settleExperimentRun(tenantId, runId, status, error,
@@ -603,6 +615,17 @@ public final class ExperimentExecutor {
     boolean stopRequested(long runId) throws SQLException {
         Boolean v = em().selectStopRequested(tenantId, runId);
         return v != null && v;
+    }
+
+    /** R3：本 run 是否含物理结果不确定（reconciliation_required）的节点。 */
+    private boolean hasReconciliationRequired(long experimentRunId) {
+        try {
+            return em().countReconciliationRequired(tenantId, experimentRunId) > 0;
+        } catch (RuntimeException e) {
+            org.slf4j.LoggerFactory.getLogger(ExperimentExecutor.class)
+                    .warn("[暂停] 查 reconciliation_required 失败（按 clean paused 收敛）: {}", e.getMessage());
+            return false;
+        }
     }
 
     /** 实验所属岛；未分配返回 0（0 表示不匹配任何 island 级扣留）。 */
