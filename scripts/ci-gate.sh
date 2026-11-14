@@ -106,6 +106,15 @@ if [[ "$WANT_FAST" == "1" ]]; then
     fail "建库产物过期"
     grep '✗' /tmp/gate-schema.log | head -6
   fi
+
+  # 内置逻辑节点的跨层一致性（前端设计器 / i18n / 内核引擎三层的名字与参数对齐）。
+  # 纯静态、不连库不启服务 ⇒ 放这一段。
+  if python3 scripts/verify-builtin-nodes.py >/tmp/gate-builtins.log 2>&1; then
+    pass "内置节点跨层一致（前端/文案/内核）"
+  else
+    fail "内置节点跨层不一致"
+    grep '✘' /tmp/gate-builtins.log | head -8
+  fi
 fi
 
 # ---------------------------------------------------------------- 段 1

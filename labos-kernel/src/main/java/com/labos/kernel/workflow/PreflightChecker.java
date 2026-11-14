@@ -55,6 +55,111 @@ public final class PreflightChecker {
                 com.labos.kernel.persistence.QueryMapper.class);
     }
 
+    private static com.labos.kernel.persistence.WorkflowMapper wm() {
+        return com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.WorkflowMapper.class);
+    }
+
+    /**
+     * 内置逻辑节点的**必填参数**。
+     *
+     * <p>为什么要有（2026-11-15）：内置节点缺参数是**运行期**才炸
+     * （{@code __sleep} 缺 sec → 抛异常 → 转人工；{@code __waitAny} 缺 vars → 同样）。
+     * 现场看到的是"流程跑到一半停了"，而不是"设计的时候少填了一个参数"
+     * ⇒ 应该在设计期就报出来。
+     *
+     * <p>口径：只查**必填**项。像 {@code value} 这种可选值不查
+     * （等一个空串也是合法语义）。
+     */
+    private static java.util.List<String> missingBuiltinParams(String method, String paramsJson) {
+        java.util.List<String> missing = new ArrayList<>();
+        String m = method == null ? "" : method;
+        switch (m) {
+            case "__setVar":
+            case "__expr":
+            case "__wait":
+                if (!hasParam(paramsJson, "var")) {
+                    missing.add("var");
+                }
+                break;
+            case "__sleep":
+                if (!hasParam(paramsJson, "sec") && !hasParam(paramsJson, "seconds")) {
+                    missing.add("sec");
+                }
+                break;
+            case "__waitAny":
+                // vars 或 var 二选一都认
+                if (!hasParam(paramsJson, "vars") && !hasParam(paramsJson, "var")) {
+                    missing.add("vars");
+                }
+                break;
+            case "__awaitEvent":
+                if (!hasParam(paramsJson, "eventType")) {
+                    missing.add("eventType");
+                }
+                break;
+            default:
+                break;
+        }
+        return missing;
+    }
+
+    /** method_params 的 JSON 文本里某个键有没有填（非空）。 */
+    private static boolean hasParam(String paramsJson, String key) {
+        if (paramsJson == null || paramsJson.isBlank()) {
+            return false;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"" + key + "\"\\s*:\\s*\"?([^\",}]*)").matcher(paramsJson);
+        if (!m.find()) {
+            return false;
+        }
+        return !m.group(1).isBlank();
+    }
+
+    /**
+     * 内置逻辑节点的必填参数预检（PF-20）。
+     *
+     * <p>读不到节点参数就**不查**（不该因此让整个预检失败）。
+     */
+    private void checkBuiltinParams(long workflowId, Graph graph, List<Issue> issues) {
+        boolean anyBuiltin = false;
+        for (GNode n : graph.nodes().values()) {
+            if (n.kind() == WorkflowGraphParser.Kind.BUILTIN) {
+                anyBuiltin = true;
+                break;
+            }
+        }
+        if (!anyBuiltin) {
+            return;
+        }
+        java.util.Map<String, String> paramsJsonByKey = new java.util.LinkedHashMap<>();
+        try {
+            for (java.util.Map<String, Object> row : wm().selectMethodParams(tenantId, workflowId)) {
+                Object key = row.get("nodeKey");
+                Object mp = row.get("mp");
+                if (key == null || mp == null) {
+                    continue;
+                }
+                paramsJsonByKey.put(String.valueOf(key), String.valueOf(mp));
+            }
+        } catch (RuntimeException ex) {
+            return;   // 读不到参数就跳过这项检查
+        }
+        for (GNode n : graph.nodes().values()) {
+            if (n.kind() != WorkflowGraphParser.Kind.BUILTIN) {
+                continue;
+            }
+            java.util.List<String> missing =
+                    missingBuiltinParams(n.method(), paramsJsonByKey.get(n.key()));
+            if (!missing.isEmpty()) {
+                issues.add(new Issue(Level.ERROR, "PF-20", n.key(),
+                        "内置节点「" + n.method() + "」缺少必填参数：" + String.join("、", missing)
+                                + "（运行期会直接转人工停住）"));
+            }
+        }
+    }
+
     public enum Level { ERROR, WARN, INFO }
 
     public record Issue(Level level, String code, String nodeKey, String message) {
@@ -170,6 +275,9 @@ public final class PreflightChecker {
             issues.add(new Issue(Level.ERROR, "PF-08", null, "BPMN 解析失败: " + e.getMessage()));
             return new Report(workflowId, name, 0, 0, 0, issues);
         }
+
+        // 内置逻辑节点的必填参数（PF-20）：缺参数是运行期才炸 ⇒ 设计期就要报出来。
+        checkBuiltinParams(workflowId, graph, issues);
 
         // tasks 只收设备任务（能力/设备检查、任务数统计只认它）；
         // 但"有没有可执行的东西"要把内置逻辑节点（`__setVar` / `__sleep` / `__wait` …）

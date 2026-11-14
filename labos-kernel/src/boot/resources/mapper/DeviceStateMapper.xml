@@ -665,4 +665,29 @@
         ORDER BY id LIMIT 1
     </select>
 
+    <!--
+      设备运行态（按设备实例 id 批量取，供「设备状态 → 运行时变量」投影用）。
+      左连接 device_state：设备还没上报过状态时 status 为 NULL（区别于"设备不存在"）。
+      两套 ID 空间的转换在 SQL 里做（device_instance.id → resource_node.id）。
+    -->
+    <select id="selectStatesForInstances" resultType="java.util.Map">
+        SELECT di.id              AS "deviceInstanceId",
+               di.code            AS "code",
+               ds.status          AS "status",
+               ds.has_plate       AS "hasPlate",
+               ds.ready_give      AS "readyGive",
+               ds.ready_take      AS "readyTake",
+               ds.last_error      AS "lastError",
+               ds.current_method  AS "currentMethod"
+          FROM device_instance di
+          LEFT JOIN device_state ds
+                 ON ds.tenant_id = di.tenant_id
+                AND ds.resource_id = di.resource_id
+         WHERE di.tenant_id = #{tenantId}
+           AND di.deleted_at IS NULL
+           AND di.id IN
+               <foreach item="id" collection="deviceInstanceIds" open="(" separator="," close=")">#{id}</foreach>
+         ORDER BY di.id
+    </select>
+
 </mapper>

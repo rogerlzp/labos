@@ -154,6 +154,20 @@ public interface DeviceStateMapper {
     /** 板标"在途"（SAVEPOINT 内调用，失败由调用方局部回滚）。 */
     int markPlateInTransfer(long tenantId, String barcode);
 
+    /**
+     * 批量取设备运行态（按设备实例 id）。
+     *
+     * <p>用途：**设备状态 → 运行时变量**的投影。
+     * 设备状态住在 {@code device_state}（按 resource_node.id），
+     * 而流程条件只能读扁平的变量表 ⇒ 不投影的话，"4 台提取仪是否都在裂解阶段"
+     * 这种**设备状态驱动**的条件根本表达不了。
+     *
+     * <p>左连接 {@code device_state} ⇒ 没有状态行的设备也会出现（status 为 null），
+     * 这样"设备存在但还没上报过状态"和"设备不存在"能区分开。
+     */
+    java.util.List<java.util.Map<String, Object>> selectStatesForInstances(
+            @Param("tenantId") long tenantId,
+            @Param("deviceInstanceIds") java.util.List<Long> deviceInstanceIds);
     /** 从 position_state 重算 device_state.has_plate（派生单一数据源）。 */
     int refreshDeviceHasPlate(long tenantId, long deviceResourceId);
 

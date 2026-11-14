@@ -204,8 +204,8 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
   );
 }
 
-/** 内置逻辑节点的四种方法名（protocolName 以 __ 开头，不找设备、不走驱动）。 */
-type BuiltinKind = '__setVar' | '__expr' | '__sleep' | '__wait' | '__waitAny';
+/** 内置逻辑节点的六种方法名（protocolName 以 __ 开头，不找设备、不走驱动）。 */
+type BuiltinKind = '__setVar' | '__expr' | '__sleep' | '__wait' | '__waitAny' | '__awaitEvent';
 
 /** 左侧「逻辑节点」面板里的一行：拖到画布生成内置节点（不带设备）。 */
 function LogicNodeRow({ method, label, disabled }: {
@@ -415,12 +415,28 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
   const [kind, setKind] = useState<'device' | BuiltinKind>('device');
   const [varName, setVarName] = useState('');
   const [val, setVal] = useState('');
-  /** 等待节点的超时秒数（留空 = 后端默认 300）。 */
+  /** 等待节点的超时秒数（留空 = 后端默认 300）。`__awaitEvent` 也用这一个输入框。 */
   const [waitTimeout, setWaitTimeout] = useState('');
   /** `__waitAny` 的变量组（逗号分隔，可写成 a=1,b=2 逐个给目标值）。 */
   const [waitVars, setWaitVars] = useState('');
   /** `__waitAny` 命中后把「命中的变量名」写进哪个变量（可留空）。 */
   const [waitInto, setWaitInto] = useState('');
+  /** `__awaitEvent` 等的设备码（留空 = 任意设备）。 */
+  const [evtDevice, setEvtDevice] = useState('');
+  /** `__awaitEvent` 等的事件类型码（必填，如 waiting_interaction）。 */
+  const [evtType, setEvtType] = useState('');
+  /** `__awaitEvent` 命中后把事件载荷（JSON）写进哪个变量（可留空）。 */
+  const [evtInto, setEvtInto] = useState('');
+  /** `__awaitEvent` 命中后把设备码写进哪个变量（可留空）。 */
+  const [evtDeviceInto, setEvtDeviceInto] = useState('');
+  /**
+   * `__awaitEvent` 的轮询间隔秒数。
+   *
+   * <p>界面上**不暴露**这个输入框（与 `__wait` / `__waitAny` 一致），
+   * 但存过的值必须原样带回 —— 否则在节点设置里改一次别的参数，
+   * 间隔就被悄悄抹成后端默认值了。
+   */
+  const [evtInterval, setEvtInterval] = useState('');
   /**
    * 消费式等待：等一次**新的**上报，而不是当前的旧值。
    *
@@ -444,17 +460,23 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
       const j = await r.json();
       const m: string = j.method ?? '';
       const builtin = m === '__setVar' || m === '__expr' || m === '__sleep'
-        || m === '__wait' || m === '__waitAny';
+        || m === '__wait' || m === '__waitAny' || m === '__awaitEvent';
       setKind(builtin ? (m as BuiltinKind) : 'device');
       setVarName(j.params?.var ?? '');
       setVal(m === '__expr' ? (j.params?.expr ?? '')
         : m === '__sleep' ? (j.params?.sec ?? '')
         : (j.params?.value ?? ''));
-      setWaitTimeout((m === '__wait' || m === '__waitAny') ? (j.params?.timeout ?? '') : '');
+      setWaitTimeout((m === '__wait' || m === '__waitAny' || m === '__awaitEvent')
+        ? (j.params?.timeout ?? '') : '');
       setWaitVars(m === '__waitAny' ? (j.params?.vars ?? '') : '');
       setWaitInto(m === '__waitAny' ? (j.params?.into ?? '') : '');
       setWaitConsume((m === '__wait' || m === '__waitAny')
         ? (j.params?.consume === true || j.params?.consume === 'true') : false);
+      setEvtDevice(m === '__awaitEvent' ? (j.params?.device ?? '') : '');
+      setEvtType(m === '__awaitEvent' ? (j.params?.eventType ?? '') : '');
+      setEvtInto(m === '__awaitEvent' ? (j.params?.into ?? '') : '');
+      setEvtDeviceInto(m === '__awaitEvent' ? (j.params?.deviceInto ?? '') : '');
+      setEvtInterval(m === '__awaitEvent' ? (j.params?.interval ?? '') : '');
       if (!builtin) {
         setDeviceId(j.resourceId ?? null);
         setMethodName(m);
@@ -574,6 +596,20 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
         if (waitInto.trim()) wp.into = waitInto.trim();
         if (waitConsume) wp.consume = 'true';
         params = wp;
+      } else if (kind === '__awaitEvent') {
+        // 等待设备事件：等设备**主动上报**的一次事件（device_event 表）。
+        // device 留空 = 任意设备；eventType 必填；timeout 留空由后端兜底 300；
+        // into（事件载荷）/ deviceInto（设备码）可留空。
+        const wp: Record<string, unknown> = {
+          device: evtDevice.trim(),
+          eventType: evtType.trim(),
+        };
+        if (waitTimeout.trim()) wp.timeout = waitTimeout.trim();
+        if (evtInto.trim()) wp.into = evtInto.trim();
+        if (evtDeviceInto.trim()) wp.deviceInto = evtDeviceInto.trim();
+        // interval 界面上没有输入框，但存过的要原样带回去（见 evtInterval 的说明）
+        if (evtInterval.trim()) wp.interval = evtInterval.trim();
+        params = wp;
       } else {
         params = kind === '__setVar'
           ? { var: varName, value: val }
@@ -624,6 +660,7 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
             { value: '__sleep', label: t('designer.kind.sleep') },
             { value: '__wait', label: t('designer.kind.wait') },
             { value: '__waitAny', label: t('designer.kind.waitAny') },
+            { value: '__awaitEvent', label: t('designer.kind.awaitEvent') },
           ]}
         />
         {kind === 'device' ? (
@@ -732,6 +769,22 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
             </Checkbox>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {t('designer.waitAny.hint')}
+            </Typography.Text>
+          </>
+        ) : kind === '__awaitEvent' ? (
+          <>
+            <Input size="small" placeholder={t('designer.placeholder.awaitEventDevice')}
+              value={evtDevice} onChange={(e) => setEvtDevice(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.awaitEventType')}
+              value={evtType} onChange={(e) => setEvtType(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.waitTimeout')}
+              value={waitTimeout} onChange={(e) => setWaitTimeout(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.awaitEventInto')}
+              value={evtInto} onChange={(e) => setEvtInto(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.awaitEventDeviceInto')}
+              value={evtDeviceInto} onChange={(e) => setEvtDeviceInto(e.target.value)} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('designer.awaitEvent.hint')}
             </Typography.Text>
           </>
         ) : (
@@ -3094,6 +3147,8 @@ export default function DesignerPage() {
                     <LogicNodeRow method="__wait" label={t('designer.kind.wait')}
                       disabled={ro.disabled} />
                     <LogicNodeRow method="__waitAny" label={t('designer.kind.waitAny')}
+                      disabled={ro.disabled} />
+                    <LogicNodeRow method="__awaitEvent" label={t('designer.kind.awaitEvent')}
                       disabled={ro.disabled} />
                   </>
                 ),

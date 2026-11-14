@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 设备事件。调用方 com.labos.kernel.persistence.DeviceEventMapper -->
+<mapper namespace="com.labos.kernel.persistence.DeviceEventMapper">
+
+    <!-- 写一条设备事件。payload 非法/空 ⇒ 兜底成 {}（事件本身不能因为载荷脏就丢）。 -->
+    <insert id="insertEvent">
+        INSERT INTO device_event
+            (tenant_id, device_id, device_code, event_type, payload, run_id)
+        VALUES
+            (#{tenantId}, #{deviceId}, #{deviceCode}, #{eventType},
+             COALESCE(CAST(NULLIF(#{payloadJson}, '') AS jsonb), '{}'::jsonb),
+             #{runId})
+    </insert>
+
+    <!--
+      取 afterId 之后的新事件（按 id 升序）。
+      device_code / event_type 为空 = 不按它过滤（等"任意设备 / 任意类型"）。
+      payload::text ⇒ 出来是字符串，不是 PGobject。
+    -->
+    <select id="selectEventsSince" resultType="com.labos.kernel.persistence.DeviceEventRow">
+        SELECT id,
+               device_id,
+               device_code,
+               event_type,
+               payload::text AS payload,
+               run_id,
+               created_at
+          FROM device_event
+         WHERE tenant_id = #{tenantId}
+           AND id &gt; #{afterId}
+        <if test="deviceCode != null and deviceCode != ''">
+           AND device_code = #{deviceCode}
+        </if>
+        <if test="eventType != null and eventType != ''">
+           AND event_type = #{eventType}
+        </if>
+         ORDER BY id
+         LIMIT #{limit}
+    </select>
+
+    <!-- 游标：等待节点起手时取一次 ⇒ 只看"起手之后"新来的事件，不吃历史存量。 -->
+    <select id="selectMaxEventId" resultType="long">
+        SELECT COALESCE(MAX(id), 0)
+          FROM device_event
+         WHERE tenant_id = #{tenantId}
+    </select>
+
+    <!-- 消费标记：已标记的不再改（幂等）。 -->
+    <update id="markDispatched">
+        UPDATE device_event
+           SET dispatched_at = now(),
+               attempts = attempts + 1
+         WHERE tenant_id = #{tenantId}
+           AND id = #{id}
+           AND dispatched_at IS NULL
+    </update>
+
+    <!-- 设备码 → 设备实例 id。解析不出来（设备还没建档）返回 null。 -->
+    <select id="selectInstanceIdByCode" resultType="java.lang.Long">
+        SELECT id
+          FROM device_instance
+         WHERE tenant_id = #{tenantId}
+           AND code = #{code}
+           AND deleted_at IS NULL
+         ORDER BY id
+         LIMIT 1
+    </select>
+</mapper>

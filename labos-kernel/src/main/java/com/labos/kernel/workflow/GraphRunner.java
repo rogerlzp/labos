@@ -314,6 +314,15 @@ public final class GraphRunner {
                         + "（超时 " + toText2 + " 秒"
                         + (boolParam(p.get("consume")) ? "，消费式" : "") + "）";
             }
+            case "__awaitEvent": {
+                String dev = str(p.get("device"));
+                Object to3 = p.get("timeout");
+                String toText3 = (to3 == null || to3.toString().isBlank())
+                        ? String.valueOf(DEFAULT_WAIT_TIMEOUT_SEC) : str(to3);
+                return "等待设备事件 " + str(p.get("eventType"))
+                        + "（设备 " + (dev == null || dev.isBlank() ? "任意" : dev)
+                        + "，超时 " + toText3 + " 秒）";
+            }
             case "__setVar":
                 return "把 " + (var == null ? "(未指定变量)" : var)
                         + " 设为 " + str(p.get("value"));
@@ -360,6 +369,55 @@ public final class GraphRunner {
 
     /** 循环最多走几圈（防止回边写错导致死循环）。 */
     private int maxVisits = 10;
+
+    /**
+     * **设备事件源**（`__awaitEvent` 用）。
+     *
+     * <p>默认空实现 ⇒ 没有事件通道时 `__awaitEvent` 直接报错，不会假装在等。
+     */
+    private com.labos.kernel.event.DeviceEventSource deviceEventSource = null;
+
+    public GraphRunner withDeviceEventSource(com.labos.kernel.event.DeviceEventSource s) {
+        this.deviceEventSource = s;
+        return this;
+    }
+
+    /**
+     * 事件游标的**基准值**：run 起手时的最大事件 id。
+     *
+     * <p>为什么不能取"节点起手时"的值：设备可能在**本节点开始之前**就报了
+     * （比如上位机还在做别的事，提取仪已经到交换点等着了）⇒
+     * 按节点起手取游标会把这条事件漏掉。
+     * ⇒ 基准取 **run 起手**，本 run 期间到达的事件一律可见。
+     */
+    private long eventBaseCursor = 0L;
+
+    public GraphRunner withEventBaseCursor(long cursor) {
+        this.eventBaseCursor = cursor;
+        return this;
+    }
+
+    /**
+     * 已消费的事件游标：键 = {@code 设备码|事件类型}。
+     *
+     * <p>为什么按「设备+类型」分键而不是一个总游标：总游标会把
+     * "别的类型的事件"也一并跨过去（等 process_done 的节点会漏掉先前到的
+     * waiting_interaction）。分键 ⇒ 每个等待只看自己那类事件。
+     */
+    private final Map<String, Long> eventCursors = new java.util.LinkedHashMap<>();
+
+    private String eventCursorKey(String deviceCode, String eventType) {
+        return (deviceCode == null ? "" : deviceCode) + "|" + (eventType == null ? "" : eventType);
+    }
+
+    private long eventCursorFor(String deviceCode, String eventType) {
+        return eventCursors.computeIfAbsent(eventCursorKey(deviceCode, eventType),
+                k -> eventBaseCursor);
+    }
+
+    private void advanceEventCursor(String deviceCode, String eventType, long eventId) {
+        eventCursors.put(eventCursorKey(deviceCode, eventType), eventId);
+    }
 
     /** 注入运行期变量。 */
     public GraphRunner withVariables(Map<String, String> vars) {
@@ -960,9 +1018,12 @@ public final class GraphRunner {
      *   <li>{@code __waitAny}：`vars`（逗号分隔的变量名，可写成 {@code a=1,b=2} 逐个给目标值）+
      *       `value`（各变量共用的目标值）+ `timeout` + `interval` + `consume` +
      *       `into`（把命中的变量名写进这个变量）</li>
+     *   <li>{@code __awaitEvent}：`device`（设备码，留空 = 任意）+ `eventType`（必填）+
+     *       `timeout` + `interval` + `into`（载荷 JSON）+ `deviceInto`（命中的设备码）</li>
      * </ul>
      *
-     * <p>`__sleep` / `__wait` / `__waitAny` 都会**真的等**，但分成 500ms 的片，每片之间查一次暂停 ——
+     * <p>`__sleep` / `__wait` / `__waitAny` / `__awaitEvent` 都会**真的等**，
+     * 但分成 500ms 的片，每片之间查一次暂停 ——
      * 否则一个"停 1800 秒"会让暂停按钮半小时没反应（暂停是现场级事件）。
      */
     private String executeBuiltin(GNode node) {
@@ -978,6 +1039,10 @@ public final class GraphRunner {
         }
         if ("__waitAny".equals(method)) {
             waitForAnyVariable(node, p);
+            return null;
+        }
+        if ("__awaitEvent".equals(method)) {
+            waitForDeviceEvent(node, p);
             return null;
         }
         String var = requireVar(p);
@@ -1088,6 +1153,114 @@ public final class GraphRunner {
                     builtinListener.onProgress(node.key(), node.method(), p,
                             "已等 " + (waited / 1000) + " 秒（当前 "
                                     + (cur == null ? "未设置" : cur) + "）");
+                } catch (RuntimeException ignore) {
+                    // 台账写不进去不能影响执行
+                }
+            }
+            long nap = Math.min(intervalMs, timeoutMs - waited);
+            waitInterruptibly(nap);
+            waited += nap;
+            if (paused) {
+                return;   // 上层看到 paused 会停在边界，这一步不算完成
+            }
+        }
+    }
+
+    /**
+     * `__awaitEvent`：等**设备主动上报**的一次事件（带载荷）。
+     *
+     * <p><b>与 {@code __wait} / {@code __waitAny} 的本质差别</b>：
+     * 那两个等的是「某个变量当前等于某值」（<b>电平</b>），
+     * 这个等的是「一次事件」（<b>边</b>）——设备自己跑到交换点、报【等待交互】，
+     * 上位机被动响应。事件带 <b>载荷</b>（哪块板、哪个工位）和 <b>游标</b>
+     * （不会把历史存量当新事件）。
+     *
+     * <p><b>参数</b>：
+     * <ul>
+     *   <li>{@code device}：设备码（例 {@code ID-EXT1}）；留空 = 任意设备。</li>
+     *   <li>{@code eventType}：事件类型（例 {@code waiting_interaction}）；<b>必填</b>。</li>
+     *   <li>{@code timeout} / {@code interval}：同 {@code __wait}。</li>
+     *   <li>{@code into}：把命中事件的<b>载荷 JSON</b>写进这个变量。</li>
+     *   <li>{@code deviceInto}：把命中事件的<b>设备码</b>写进这个变量。</li>
+     * </ul>
+     *
+     * <p><b>游标语义</b>：基准取 <b>run 起手</b>（不是节点起手）——
+     * 设备可能在本节点开始之前就报了（上位机还在做别的事，设备已经等着了），
+     * 按节点起手取游标会漏掉那条事件。
+     */
+    private void waitForDeviceEvent(GNode node, Map<String, Object> p) {
+        com.labos.kernel.event.DeviceEventSource src = deviceEventSource;
+        if (src == null) {
+            throw new IllegalStateException(
+                    "__awaitEvent 需要设备事件源，但本次运行没有注入（没有设备主动上报通道）");
+        }
+        String device = str(p.get("device"));
+        device = device == null ? null : device.trim();
+        if (device != null && device.isEmpty()) {
+            device = null;   // 留空 = 任意设备
+        }
+        String eventType = str(p.get("eventType"));
+        if (eventType == null || eventType.isBlank()) {
+            throw new IllegalArgumentException("缺参数 eventType（等哪个事件？例 waiting_interaction）");
+        }
+        eventType = eventType.trim();
+        String into = str(p.get("into"));
+        String deviceInto = str(p.get("deviceInto"));
+        double timeoutSec = toDouble(p.get("timeout"));
+        if (timeoutSec <= 0) {
+            timeoutSec = DEFAULT_WAIT_TIMEOUT_SEC;
+        }
+        long timeoutMs = Math.min(Math.round(timeoutSec * 1000L), BUILTIN_WAIT_MAX_MS);
+        double intervalSec = toDouble(p.get("interval"));
+        if (intervalSec <= 0) {
+            intervalSec = 1;
+        }
+        long intervalMs = Math.max(1L, Math.min(Math.round(intervalSec * 1000L), timeoutMs));
+        log.accept("[内置] " + node.key() + " 等待设备事件 " + eventType
+                + "（设备 " + (device == null ? "任意" : device)
+                + "，超时 " + fmt(timeoutSec) + " 秒）");
+        long waited = 0;
+        long lastReport = 0;
+        while (true) {
+            java.util.List<com.labos.kernel.event.DeviceEvent> events = null;
+            try {
+                events = src.since(device, eventType, eventCursorFor(device, eventType), 20);
+            } catch (RuntimeException ex) {
+                // 事件源坏了不能带崩流程：按"暂时没有事件"继续等，超时再转人工。
+                log.accept("[内置] 读取设备事件失败（忽略）：" + ex.getMessage());
+            }
+            if (events != null) {
+                for (com.labos.kernel.event.DeviceEvent e : events) {
+                    if (e == null) {
+                        continue;
+                    }
+                    log.accept("[内置] " + node.key() + " 命中设备事件："
+                            + e.deviceCode() + " " + e.eventType());
+                    // 消费：推进游标（下次不再等同一条），并标记已消费（观测用）。
+                    advanceEventCursor(device, eventType, e.id());
+                    try {
+                        src.markDispatched(e.id());
+                    } catch (RuntimeException ignore) {
+                        // 标记失败不影响流程
+                    }
+                    if (into != null && !into.isBlank()) {
+                        writeVar(into.trim(), e.payload());
+                    }
+                    if (deviceInto != null && !deviceInto.isBlank()) {
+                        writeVar(deviceInto.trim(), e.deviceCode());
+                    }
+                    return;
+                }
+            }
+            if (waited >= timeoutMs) {
+                throw new IllegalStateException("等待设备事件超时（" + fmt(timeoutSec) + " 秒）："
+                        + eventType + "（设备 " + (device == null ? "任意" : device) + "）未上报");
+            }
+            if (builtinListener != null && waited - lastReport >= BUILTIN_PROGRESS_MS) {
+                lastReport = waited;
+                try {
+                    builtinListener.onProgress(node.key(), node.method(), p,
+                            "已等 " + (waited / 1000) + " 秒（尚未收到 " + eventType + "）");
                 } catch (RuntimeException ignore) {
                     // 台账写不进去不能影响执行
                 }

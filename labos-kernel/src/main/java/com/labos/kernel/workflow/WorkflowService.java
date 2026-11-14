@@ -1113,6 +1113,23 @@ public class WorkflowService {
                     materialSvc.writeDeclarationSnapshot(runId, n.key(), 0, n.materialEffect());
                 }
             }
+            // 设备事件源（`__awaitEvent` 用）+ 游标基准。
+            //
+            // 基准取**此刻**的最大事件 id ⇒ 本 run 期间到达的事件一律可见，
+            // 而 run 之前的历史存量不会被当成新事件（等的是"一次新的上报"）。
+            // ⚠ 基准**不能**取"节点起手时"的值：设备可能在本节点开始之前就报了
+            // （上位机还在做别的事，提取仪已经到交换点等着了）⇒ 按节点起手会漏掉那条事件。
+            final com.labos.kernel.event.MapperDeviceEventSource eventSource =
+                    new com.labos.kernel.event.MapperDeviceEventSource(tenantId);
+            final long eventBaseCursor = currentMaxEventIdSafely(eventSource);
+            // 本次执行用到的设备实例（设备状态投影用）。
+            final java.util.List<Long> runDeviceIds = new java.util.ArrayList<>();
+            for (NodeDef nd : ordered) {
+                Long ei = nd.equipmentInstanceId();
+                if (ei != null && !runDeviceIds.contains(ei)) {
+                    runDeviceIds.add(ei);
+                }
+            }
             RunStateMachine sm = new RunStateMachine(decider,
                     tee(events, store, monitor), recoverySleeper, Clock.systemUTC())
                     .withStepPlanner(id -> stepsByNode.getOrDefault(id, List.of()))
@@ -1167,7 +1184,13 @@ public class WorkflowService {
                         // 并且每轮重读一次 run.input.vars —— 变量的变化来自执行体之外，
                         // 只读内存表等于永远等不到（见 GraphRunner.withVariableRefresher）。
                         .withSleeper(Sleeper.REAL)
-                        .withVariableRefresher(() -> loadRunVars(runId))
+                        .withVariableRefresher(() -> mergedVars(runId, runDeviceIds))
+                        // 设备事件源（__awaitEvent 用）：设备主动上报的事件落 device_event 表，
+                        // 等待节点按（设备码, 事件类型）取游标之后的新事件。
+                        // 游标基准取 **run 起手**（不是节点起手）：设备可能在本节点开始之前
+                        // 就报了（上位机还在做别的事，提取仪已经到交换点等着了）。
+                        .withDeviceEventSource(eventSource)
+                        .withEventBaseCursor(eventBaseCursor)
 
                         // P1-8：每到一个节点边界查一次 DB —— 状态是 paused 就停。
                         // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
@@ -1508,6 +1531,77 @@ public class WorkflowService {
         merged.putAll(dbBindings);   // DB 覆盖 env
         String def = System.getenv("LABOS_DEFAULT_DEVICE_MODEL");
         return new com.labos.kernel.device.DeviceErrorMapper(merged, def);
+    }
+
+    /**
+     * 刷新用的变量表 = **运行期变量** + **设备状态投影**。
+     *
+     * <p>为什么要把设备状态投影进来：设备状态住在 {@code device_state}，
+     * 而条件表达式只吃扁平的变量表（{@code ConditionEvaluator} 只读
+     * {@code Map<String,String>}）⇒ 不投影的话，"4 台提取仪是否都在裂解阶段"
+     * 这种**设备状态驱动**的触发条件根本表达不了（只能拿时间近似）。
+     *
+     * <p>投影出来的键：{@code <设备码>_status} / {@code <设备码>_has_plate} /
+     * {@code <设备码>_ready_give} / {@code <设备码>_ready_take} /
+     * {@code <设备码>_current_method} / {@code <设备码>_last_error}。
+     */
+    private Map<String, String> mergedVars(long runId, List<Long> deviceInstanceIds) {
+        Map<String, String> vars = loadRunVars(runId);
+        vars.putAll(projectDeviceStates(deviceInstanceIds));
+        return vars;
+    }
+
+    /**
+     * 把设备运行态投影成变量。
+     *
+     * <p>投影失败**不抛** —— 状态投影是"锦上添花"，读不到就少几个变量，
+     * 不能因此让整条流程起不来。
+     */
+    private Map<String, String> projectDeviceStates(List<Long> deviceInstanceIds) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (deviceInstanceIds == null || deviceInstanceIds.isEmpty()) {
+            return out;
+        }
+        try {
+            for (Map<String, Object> row : dm().selectStatesForInstances(tenantId, deviceInstanceIds)) {
+                Object code = row.get("code");
+                if (code == null || String.valueOf(code).isBlank()) {
+                    continue;
+                }
+                String c = String.valueOf(code);
+                putIfPresent(out, c + "_status", row.get("status"));
+                putIfPresent(out, c + "_has_plate", row.get("hasPlate"));
+                putIfPresent(out, c + "_ready_give", row.get("readyGive"));
+                putIfPresent(out, c + "_ready_take", row.get("readyTake"));
+                putIfPresent(out, c + "_current_method", row.get("currentMethod"));
+                putIfPresent(out, c + "_last_error", row.get("lastError"));
+            }
+        } catch (RuntimeException ex) {
+            log.warn("[设备状态投影] 读取失败（忽略，本次不投影）：{}", ex.getMessage());
+        }
+        return out;
+    }
+
+    private static void putIfPresent(Map<String, String> out, String key, Object value) {
+        if (value == null) {
+            return;
+        }
+        out.put(key, String.valueOf(value));
+    }
+
+    /**
+     * 取当前最大设备事件 id（`__awaitEvent` 的游标基准）。
+     *
+     * <p>事件表还没建（迁移没跑）⇒ 返回 0，**不让整条流程起不来**：
+     * {@code __awaitEvent} 会等到超时转人工，而不是在建库阶段就崩。
+     */
+    private long currentMaxEventIdSafely(
+            com.labos.kernel.event.MapperDeviceEventSource src) {
+        try {
+            return src.currentMaxEventId();
+        } catch (RuntimeException ex) {
+            return 0L;
+        }
     }
 
     private com.labos.kernel.driver.DeviceDriver buildAdapter(

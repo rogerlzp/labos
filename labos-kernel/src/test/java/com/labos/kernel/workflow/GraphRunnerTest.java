@@ -65,6 +65,9 @@ public final class GraphRunnerTest {
         caseWaitAnyTimeout();
         caseWaitAnyConsumeRejectsStale();
         caseWaitVarSubstituted();
+        caseAwaitEventHits();
+        caseAwaitEventIgnoresOld();
+        caseAwaitEventNoSource();
         caseBuiltinProtocolResolvesToLogic();
         caseBuiltinDryRunNoOp();
         caseSkipKeysResume();
@@ -1007,6 +1010,161 @@ public final class GraphRunnerTest {
             RunProgress p = runner.run(g, bus);
             eq("按替换后的变量名等到了（没有转人工）", 0, p.count(NodeStatus.MANUAL));
             eq("等待节点完成", 1, p.count(NodeStatus.COMPLETED));
+        });
+    }
+
+    /**
+     * 内存事件源：按 id 游标 + 设备码 + 事件类型过滤。
+     *
+     * <p>不连库也能验事件语义 —— 事件源是接口，自测塞一个内存实现即可。
+     */
+    private static final class MemEventSource
+            implements com.labos.kernel.event.DeviceEventSource {
+        final List<com.labos.kernel.event.DeviceEvent> events = new ArrayList<>();
+        int polls;
+        long marked = -1L;
+
+        @Override
+        public List<com.labos.kernel.event.DeviceEvent> since(
+                String deviceCode, String eventType, long afterId, int limit) {
+            polls++;
+            List<com.labos.kernel.event.DeviceEvent> out = new ArrayList<>();
+            for (com.labos.kernel.event.DeviceEvent e : events) {
+                if (e.id() <= afterId) {
+                    continue;   // 游标之前的历史存量不是新事件
+                }
+                if (deviceCode != null && !deviceCode.equals(e.deviceCode())) {
+                    continue;
+                }
+                if (eventType != null && !eventType.equals(e.eventType())) {
+                    continue;
+                }
+                out.add(e);
+                if (out.size() >= limit) {
+                    break;
+                }
+            }
+            return out;
+        }
+
+        @Override
+        public void markDispatched(long eventId) {
+            marked = eventId;
+        }
+    }
+
+    /**
+     * `__awaitEvent`：设备事件到达即通过，**载荷**与**设备码**交给下游。
+     *
+     * <p>这是"事件驱动"的地基：设备的【等待交互】带着上下文（哪台设备、什么载荷），
+     * 上位机据此决定机械臂去哪儿 —— 这是 {@code __wait}/{@code __waitAny} 表达不了的
+     * （它们只读"当前值"，没有载荷、也不知道是哪台设备触发的）。
+     */
+    private static void caseAwaitEventHits() {
+        check("内置节点：__awaitEvent —— 事件到达即通过，载荷与设备码交给下游", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W" name="等设备事件" protocolName="__awaitEvent"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W"/>
+                    <sequenceFlow id="F2" sourceRef="W" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            MemEventSource src = new MemEventSource();
+            src.events.add(new com.labos.kernel.event.DeviceEvent(
+                    7L, "ID-EXT1", "waiting_interaction", "{\"station\":\"exchange\"}"));
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    .withDeviceEventSource(src)
+                    .withEventBaseCursor(3L)
+                    .withBuiltinParams(Map.of("W", Map.of(
+                            "device", "ID-EXT1", "eventType", "waiting_interaction",
+                            "timeout", "10", "interval", "1",
+                            "into", "payload", "deviceInto", "which")));
+            RunProgress p = runner.run(g, bus);
+            eq("等待节点通过", 1, p.count(NodeStatus.COMPLETED));
+            eq("没有转人工", 0, p.count(NodeStatus.MANUAL));
+            eq("事件载荷写进了 into",
+                    "{\"station\":\"exchange\"}", runner.variableValue("payload"));
+            eq("命中的设备码写进了 deviceInto",
+                    "ID-EXT1", runner.variableValue("which"));
+            eq("事件被标记为已消费（观测用）", 7L, src.marked);
+            eq("没有产生任何设备命令", 0, bus.callLog().size());
+        });
+    }
+
+    /**
+     * `__awaitEvent`：**游标之前的历史存量不算新事件**。
+     *
+     * <p>这是事件与变量的分水岭：变量是电平（历史值就在那儿），
+     * 事件是边（必须发生在等待之后）⇒ 没有游标就会把存量当新上报。
+     */
+    private static void caseAwaitEventIgnoresOld() {
+        check("内置节点：__awaitEvent —— 游标之前的历史存量不算新事件", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W" name="等设备事件" protocolName="__awaitEvent"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W"/>
+                    <sequenceFlow id="F2" sourceRef="W" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            MemEventSource src = new MemEventSource();
+            // 这条事件 id=2，早于游标 5 ⇒ 是存量，不是新上报
+            src.events.add(new com.labos.kernel.event.DeviceEvent(
+                    2L, "ID-EXT1", "waiting_interaction", "{}"));
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    .withDeviceEventSource(src)
+                    .withEventBaseCursor(5L)
+                    .withBuiltinParams(Map.of("W", Map.of(
+                            "device", "ID-EXT1", "eventType", "waiting_interaction",
+                            "timeout", "3", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("等不到新事件 ⇒ 转人工", 1, p.count(NodeStatus.MANUAL));
+            eq("存量事件没有被消费", -1L, src.marked);
+        });
+    }
+
+    /**
+     * `__awaitEvent`：**没有事件源就明说**，不假装在等。
+     *
+     * <p>静默等待是最坏的一种失败：现场看着节点"执行中"，其实根本没人在听。
+     */
+    private static void caseAwaitEventNoSource() {
+        check("内置节点：__awaitEvent —— 没有事件源就报错（不静默干等）", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W" name="等设备事件" protocolName="__awaitEvent"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W"/>
+                    <sequenceFlow id="F2" sourceRef="W" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    .withBuiltinParams(Map.of("W", Map.of(
+                            "eventType", "waiting_interaction", "timeout", "3")));
+            RunProgress p = runner.run(g, bus);
+            eq("没有事件源 ⇒ 转人工（不是假装在等）", 1, p.count(NodeStatus.MANUAL));
         });
     }
 
