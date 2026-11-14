@@ -122,9 +122,13 @@
            mp.verified_at AS "verifiedAt",
            mi.role_code AS "roleCode", mi.material_kind AS "materialKind",
            mi.material_ref AS "materialRef", mi.quantity, mi.required,
+           COALESCE(p.lifecycle, c.lifecycle, r.lifecycle) AS "lifecycle",
            pr.code AS "positionCode", dr.code AS "deviceCode"
       FROM manifest_placement mp
       JOIN manifest_item mi ON mi.id = mp.manifest_item_id
+      LEFT JOIN plate p ON mi.material_kind IN ('plate','sample','lid') AND p.id = mi.material_ref
+      LEFT JOIN consumable c ON mi.material_kind = 'consumable' AND c.id = mi.material_ref
+      LEFT JOIN reagent r ON mi.material_kind = 'reagent' AND r.id = mi.material_ref
       LEFT JOIN device_point dp ON dp.id = mp.position_id
       LEFT JOIN resource_node pr ON pr.id = dp.point_resource_id
       LEFT JOIN resource_node dr ON dr.id = dp.device_resource_id

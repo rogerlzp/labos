@@ -541,8 +541,9 @@ public final class ExperimentExecutor {
                 syncExperimentStatus(c, tenantId, runId);
             }
         }
-        // §4.5.2：终态（completed/failed/aborted/cancelled）卸载本次实验专属物料，失败不阻断收尾。
-        if (terminal) {
+        // §4.5.2：非批次（syncExperimentStatus=true）终态卸载本次实验专属物料；
+        // 批次实验的 run 终态不等于实验终态，卸载留给 BatchOrchestrator 在整单聚合终态时做（§4.5.2 语义）。
+        if (terminal && syncExperimentStatus) {
             unloadProcessMaterials(runId);
         }
     }

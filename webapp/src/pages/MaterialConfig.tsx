@@ -11,6 +11,7 @@ interface Placement {
   id: number; roleCode: string; materialKind: string; materialRef?: number | null;
   quantity: number; required: boolean; status: string;
   positionId?: number | null; positionCode?: string | null; deviceCode?: string | null;
+  lifecycle?: string | null;
 }
 
 const STATUS_TEXT: Record<string, { zh: string; color: string }> = {
@@ -151,6 +152,12 @@ export default function MaterialConfigPage() {
                   render: (v: string) => {
                     const s = STATUS_TEXT[v] ?? { zh: v, color: 'default' };
                     return <Tag color={s.color}>{s.zh}</Tag>;
+                  } },
+                { title: '生命周期', dataIndex: 'lifecycle', width: 110,
+                  render: (v: string | null | undefined) => {
+                    if (v === 'process') return <Tag color="orange">本次专属</Tag>;
+                    if (v === 'inventory') return <Tag color="green">永久库存</Tag>;
+                    return '—';
                   } },
               ]} />
             <Space style={{ marginTop: 12 }}>
