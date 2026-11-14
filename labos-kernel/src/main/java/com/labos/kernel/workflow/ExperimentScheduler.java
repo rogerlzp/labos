@@ -266,20 +266,43 @@ public final class ExperimentScheduler {
         return v instanceof Number n ? n.intValue() : null;
     }
 
-    /** 当前队列排序：optimizationFactor>=50 → priority 优先（优化）；否则 EDD 优先（现状）。 */
-    private Comparator<Queued> queueOrder() {
-        return queueOrderFor(optimizationFactor);
-    }
-
-    /** 纯逻辑（可单测）：给定 optimizationFactor 返回队列排序。 */
-    static Comparator<Queued> queueOrderFor(int optimizationFactor) {
-        if (optimizationFactor >= 50) {
-            return Comparator
-                    .comparingInt(Queued::priority).reversed()
-                    .thenComparing((Queued q) -> q.deadline() == null ? "9999" : q.deadline())
-                    .thenComparingLong(Queued::submittedAt);
+    /**
+     * P2-4 连续优化因子：按加权分数排序（分数越小越先）。
+     *
+     * <p>score = (100-factor) × eddRank + factor × priorityRank。
+     * <ul>
+     *   <li>factor=0：纯 EDD（最早截止优先，与 QUEUE_ORDER 同）；</li>
+     *   <li>factor=100：纯 priority（高优先优先）；</li>
+     *   <li>中间值：连续插值（秩都归一化到 1..n，同尺度可加）。</li>
+     * </ul>
+     * 无截止的 EDD 排最后（与 QUEUE_ORDER 同口径）。
+     */
+    static void sortByOptimization(List<Queued> qs, int optimizationFactor) {
+        int n = qs.size();
+        if (n <= 1) {
+            return;
         }
-        return QUEUE_ORDER;
+        int f = Math.max(0, Math.min(100, optimizationFactor));
+        // EDD 秩（1..n；无截止排最后）
+        List<Queued> byDeadline = new ArrayList<>(qs);
+        byDeadline.sort(Comparator.comparing((Queued q) -> q.deadline() == null ? "9999" : q.deadline())
+                .thenComparingLong(Queued::submittedAt));
+        Map<Long, Integer> eddRank = new HashMap<>();
+        for (int i = 0; i < n; i++) {
+            eddRank.put(byDeadline.get(i).experimentRunId(), i + 1);
+        }
+        // priority 秩（1..n；priority 高者 rank 小）
+        List<Queued> byPriority = new ArrayList<>(qs);
+        byPriority.sort(Comparator.comparingInt(Queued::priority).reversed()
+                .thenComparingLong(Queued::submittedAt));
+        Map<Long, Integer> priRank = new HashMap<>();
+        for (int i = 0; i < n; i++) {
+            priRank.put(byPriority.get(i).experimentRunId(), i + 1);
+        }
+        qs.sort(Comparator
+                .comparingDouble((Queued q) -> (100 - f) * eddRank.get(q.experimentRunId())
+                        + (double) f * priRank.get(q.experimentRunId()))
+                .thenComparingLong(Queued::submittedAt));
     }
 
     /**
@@ -619,9 +642,9 @@ public final class ExperimentScheduler {
         //   - 读不到扣留状态（UNKNOWN）⇒ 整轮不派发（fail-closed，绝不 fail-open）。
         RuntimeHold holds = new RuntimeHold(db, tenantId);
 
-        // 单一来源：直接复用 queueOrder()（P2-4 消费 optimization_factor），
-        // 避免页面位次与真实出队顺序各写一份比较器、日后只改一份导致两边分叉。
-        snapshot.sort(queueOrder());
+        // 单一来源：直接复用 sortByOptimization（P2-4 连续优化因子），
+        // 避免页面位次与真实出队顺序各写一份、日后只改一份导致两边分叉。
+        sortByOptimization(snapshot, optimizationFactor);
 
         // P1-6：从"当前在跑数"起算，而不是每轮归零
         int runningNow = running.get();
@@ -1042,7 +1065,7 @@ public final class ExperimentScheduler {
         synchronized (queue) {
             queueNow = new ArrayList<>(queue);
         }
-        queueNow.sort(queueOrder());
+        sortByOptimization(queueNow, optimizationFactor);
 
         Set<Long> resourceIds = new HashSet<>();
         Set<Long> lockRunIds = new HashSet<>();

@@ -57,17 +57,24 @@ public final class SchedulerOrderSelfTest {
         eq("三级全同按原顺序（稳定排序）", "5,6",
                 order(q(5, "2026-11-05T09:00:00", 1, 1), q(6, "2026-11-05T09:00:00", 1, 1)));
 
-        section("7. P2-4 optimizationFactor 排序切换（queueOrderFor）");
-        // factor >= 50 → priority 优先（优化）；factor < 50 → EDD 优先（现状）
-        eq("factor=50 priority 优先", "3,2,1",
-                orderBy(50, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T08:00:00", 2, 2),
-                        q(3, "2026-11-05T09:00:00", 9, 3)));
-        eq("factor=0 EDD 优先", "2,1,3",
-                orderBy(0, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T08:00:00", 2, 2),
-                        q(3, "2026-11-05T09:00:00", 9, 3)));
-        eq("factor=100 同 priority 再比 EDD", "1,3,2",
-                orderBy(100, q(1, "2026-11-05T08:00:00", 9, 1), q(2, "2026-11-05T09:00:00", 5, 2),
-                        q(3, "2026-11-05T08:00:00", 9, 3)));
+        section("7. P2-4 连续 optimizationFactor 加权排序（sortByOptimization）");
+        // 项：q1(pri=1, 08:00), q2(pri=5, 09:00), q3(pri=9, 08:30)
+        // EDD 秩：q1=1, q3=2, q2=3；priority 秩：q3=1, q2=2, q1=3
+        eq("factor=0 纯 EDD", "1,3,2",
+                orderBy(0, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T09:00:00", 5, 2),
+                        q(3, "2026-11-05T08:30:00", 9, 3)));
+        eq("factor=100 纯 priority", "3,2,1",
+                orderBy(100, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T09:00:00", 5, 2),
+                        q(3, "2026-11-05T08:30:00", 9, 3)));
+        eq("factor=50 各半：score q3=150,q1=200,q2=250", "3,1,2",
+                orderBy(50, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T09:00:00", 5, 2),
+                        q(3, "2026-11-05T08:30:00", 9, 3)));
+        eq("factor=25 偏 EDD：score q1=150,q3=175,q2=275", "1,3,2",
+                orderBy(25, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T09:00:00", 5, 2),
+                        q(3, "2026-11-05T08:30:00", 9, 3)));
+        eq("factor 越界夹紧：factor=-5 等同 0", "1,3,2",
+                orderBy(-5, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T09:00:00", 5, 2),
+                        q(3, "2026-11-05T08:30:00", 9, 3)));
 
         System.out.printf("%n通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {
@@ -90,10 +97,10 @@ public final class SchedulerOrderSelfTest {
                 .collect(Collectors.joining(","));
     }
 
-    /** 按 queueOrderFor(factor) 排序（P2-4 optimizationFactor 切换）。 */
+    /** 按 sortByOptimization(factor) 排序（P2-4 连续优化因子，秩加权）。 */
     private static String orderBy(int factor, ExperimentScheduler.Queued... items) {
         List<ExperimentScheduler.Queued> list = new ArrayList<>(List.of(items));
-        list.sort(ExperimentScheduler.queueOrderFor(factor));
+        ExperimentScheduler.sortByOptimization(list, factor);
         return list.stream().map(x -> String.valueOf(x.experimentRunId()))
                 .collect(Collectors.joining(","));
     }
