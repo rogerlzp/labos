@@ -55,6 +55,8 @@ export const NAV: NavGroup[] = [
       { key: '/runs', labelKey: 'nav.runs' },
       { key: '/scheduler', labelKey: 'nav.scheduler' },
       { key: '/schedule', labelKey: 'nav.schedule' },
+      // 排程参数管理（designer/admin）
+      { key: '/schedule-plans', labelKey: 'nav.schedulePlans', roles: ['designer', 'admin'] },
       { key: '/paused', labelKey: 'nav.paused' },
       { key: '/manual-windows', labelKey: 'nav.manualWindows' },
       { key: '/quarantined', labelKey: 'nav.quarantined' },

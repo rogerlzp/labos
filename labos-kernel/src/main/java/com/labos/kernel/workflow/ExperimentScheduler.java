@@ -297,19 +297,44 @@ public final class ExperimentScheduler {
         return out;
     }
 
-    /** 陈旧暂停告警（不自动处置）：每 30 tick 扫一次，有就 warn + 计数。 */
+    /**
+     * 陈旧暂停治理：每 30 tick 扫一次。
+     * <ul>
+     *   <li>{@code LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS}>0：自动 dismiss 该天数前的 waiting_human（默认关）</li>
+     *   <li>否则：只 warn 告警，不自动处置（人确认后去暂停队列 dismiss）</li>
+     * </ul>
+     */
     private void warnStalePauses() {
         int staleDays = 7;
+        int autoDismissDays = 0;
         try {
             String env = System.getenv("LABOS_STALE_PAUSE_DAYS");
             if (env != null && !env.isBlank()) {
                 staleDays = Math.max(1, Integer.parseInt(env.trim()));
             }
+            String auto = System.getenv("LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS");
+            if (auto != null && !auto.isBlank()) {
+                autoDismissDays = Math.max(0, Integer.parseInt(auto.trim()));
+            }
         } catch (NumberFormatException ignore) {
-            // 非法值用默认 7 天
+            // 非法值用默认 7 天 / 关
         }
         List<Map<String, Object>> stale = stalePausedRuns(staleDays);
-        if (!stale.isEmpty()) {
+        if (stale.isEmpty()) {
+            return;
+        }
+        if (autoDismissDays > 0) {
+            try {
+                int n = new PauseManager(db, tenantId)
+                        .dismissBatch(null, "waiting_human", autoDismissDays * 24);
+                if (n > 0) {
+                    log.warn("[调度] 自动 dismiss {} 条暂停超过 {} 天的 waiting_human run"
+                            + "（LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS={}）", n, autoDismissDays, autoDismissDays);
+                }
+            } catch (Exception e) {
+                log.error("[调度] 自动 dismiss 陈旧暂停失败: {}", e.getMessage());
+            }
+        } else {
             log.warn("[调度] 有 {} 条暂停超过 {} 天的 run（等待人工处置，不自动 dismiss）",
                     stale.size(), staleDays);
         }

@@ -26,6 +26,7 @@ import ExperimentRunsPage from './pages/ExperimentRuns';
 import ExperimentRunsListPage from './pages/ExperimentRunsList';
 import ExperimentListPage from './pages/ExperimentList';
 import ScheduleGanttPage from './pages/ScheduleGantt';
+import SchedulePlansPage from './pages/SchedulePlans';
 import SchedulerPage from './pages/Scheduler';
 import ExperimentCanvasPage from './pages/ExperimentCanvas';
 import IslandFlowPage from './pages/IslandFlow';
@@ -257,6 +258,8 @@ function AppInner() {
             <Route path="/variables" element={<VariablesPage />} />
             <Route path="/error-codes" element={<ErrorCodesPage />} />
             <Route path="/schedule" element={<ScheduleGanttPage />} />
+            {/* 排程参数管理（designer） */}
+            <Route path="/schedule-plans" element={<SchedulePlansPage />} />
             <Route path="/duration" element={<DurationsPage />} />
             {/* 账号管理仅 admin：非管理员直接给结论，不让它先请求再吃 403 */}
             <Route path="/users" element={isAdmin ? <UsersPage /> : (

@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
-  Alert, Button, Card, Col, Empty, Form, Input, InputNumber, Row, Space, Statistic,
-  Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Col, Empty, Row, Space, Statistic,
+  Table, Tag, Tooltip, Typography,
 } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -104,32 +104,6 @@ export default function SchedulerPage() {
     queryKey: ['scheduler-deadlock'],
     queryFn: () => api.schedulerDeadlockCheck(30, 30),
     refetchInterval: 60000,
-  });
-  const qc = useQueryClient();
-  const [form] = Form.useForm();
-  const plans = useQuery({
-    queryKey: ['schedule-plans'],
-    queryFn: api.schedulePlans,
-    refetchInterval: 60000,
-  });
-  const archivePlan = useMutation({
-    mutationFn: (id: number) => api.updateSchedulePlan(id, { status: 'archived' }),
-    onSuccess: () => {
-      message.success(t('scheduler.config.archived'));
-      qc.invalidateQueries({ queryKey: ['schedule-plans'] });
-      qc.invalidateQueries({ queryKey: ['scheduler-config'] });
-    },
-    onError: (e) => message.error(String((e as Error).message)),
-  });
-  const createPlan = useMutation({
-    mutationFn: api.createSchedulePlan,
-    onSuccess: (r) => {
-      message.success(t('scheduler.config.submitted', { planNo: r.planNo }));
-      form.resetFields();
-      qc.invalidateQueries({ queryKey: ['scheduler-config'] });
-      qc.invalidateQueries({ queryKey: ['schedule-plans'] });
-    },
-    onError: (e) => message.error(String((e as Error).message)),
   });
 
   if (status.error) {
@@ -346,55 +320,10 @@ export default function SchedulerPage() {
                   value={config.data ? Math.round((config.data.tickMs - 2000) / 1000) : '—'}
                   valueStyle={{ fontSize: 14 }} />
               </Space>
-              <Form form={form} layout="inline"
-                onFinish={(v) => createPlan.mutate({
-                  planNo: v.planNo || undefined,
-                  optimizationFactor: v.optimizationFactor,
-                  maxIterationsRunning: v.maxIterationsRunning,
-                  iterationDelaySec: v.iterationDelaySec,
-                })}>
-                <Form.Item name="optimizationFactor" initialValue={50}
-                  tooltip={t('scheduler.config.factorHint')}>
-                  <InputNumber min={0} max={100} placeholder="50" />
-                </Form.Item>
-                <Form.Item name="maxIterationsRunning" initialValue={4}
-                  tooltip={t('scheduler.config.maxHint')}>
-                  <InputNumber min={1} max={4} placeholder="4" />
-                </Form.Item>
-                <Form.Item name="iterationDelaySec" initialValue={0}>
-                  <InputNumber min={0} placeholder="0" />
-                </Form.Item>
-                <Form.Item name="planNo">
-                  <Input placeholder={t('scheduler.config.planPlaceholder')}
-                    style={{ width: 180 }} allowClear />
-                </Form.Item>
-                <Button type="primary" htmlType="submit" loading={createPlan.isPending}>
-                  {t('scheduler.config.submit')}
-                </Button>
-              </Form>
-              {plans.data && plans.data.total > 0 && (
-                <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('scheduler.config.planList')}
-                  </Typography.Text>
-                  {plans.data.items.slice(0, 8).map((p) => (
-                    <Space key={p.id} size={8} wrap>
-                      <Typography.Text code style={{ fontSize: 12 }}>{p.planNo}</Typography.Text>
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        factor={p.optimizationFactor} · max={p.maxIterationsRunning} · delay={p.iterationDelaySec}s
-                      </Typography.Text>
-                      <Tag color={p.status === 'archived' ? 'default' : 'blue'}>{p.status}</Tag>
-                      {p.status !== 'archived' && (
-                        <Button size="small" type="link" danger
-                          loading={archivePlan.isPending}
-                          onClick={() => archivePlan.mutate(p.id)}>
-                          {t('scheduler.config.archive')}
-                        </Button>
-                      )}
-                    </Space>
-                  ))}
-                </Space>
-              )}
+              <Button size="small" type="link" style={{ padding: 0 }}
+                onClick={() => nav('/schedule-plans')}>
+                {t('scheduler.config.manage')}
+              </Button>
             </Space>
           </Card>
         </Col>

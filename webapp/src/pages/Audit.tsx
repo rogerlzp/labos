@@ -63,6 +63,9 @@ export default function AuditPage() {
               { value: 'alert.close', label: t('audit.action.alertClose') },
               { value: 'user.create', label: t('audit.action.userCreate') },
               { value: 'user.update', label: t('audit.action.userUpdate') },
+              { value: 'schedulePlan.create', label: t('audit.action.schedulePlanCreate') },
+              { value: 'schedulePlan.update', label: t('audit.action.schedulePlanUpdate') },
+              { value: 'resourceBooking.create', label: t('audit.action.resourceBookingCreate') },
             ]}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
