@@ -8,6 +8,7 @@
 export const BUILTIN_LABEL: Record<string, string> = {
   __sleep: '延时',
   __wait: '等待',
+  __waitAny: '等待任一',
   __setVar: '赋值',
   __expr: '表达式',
 };

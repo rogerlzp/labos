@@ -50,7 +50,7 @@ export interface FlowSpecNode {
   code?: string;
   /** 设备任务：方法名（protocolName）。 */
   method?: string;
-  /** 逻辑节点：方法名，必须是 __setVar / __expr / __sleep / __wait 之一。 */
+  /** 逻辑节点：方法名，必须是 __setVar / __expr / __sleep / __wait / __waitAny 之一。 */
   params?: Record<string, unknown>;
   /** 形状中心坐标；省略则自动布局。 */
   x?: number;
@@ -87,7 +87,7 @@ export interface FlowSpecDevice {
 }
 
 /** 内置逻辑节点允许的 method。 */
-export const LOGIC_METHODS = ['__setVar', '__expr', '__sleep', '__wait'] as const;
+export const LOGIC_METHODS = ['__setVar', '__expr', '__sleep', '__wait', '__waitAny'] as const;
 
 /** 解析结果：要么拿到合法 spec，要么拿到一组**人话**错误。 */
 export interface ParseResult {

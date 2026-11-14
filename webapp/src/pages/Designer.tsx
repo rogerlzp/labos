@@ -205,7 +205,7 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
 }
 
 /** 内置逻辑节点的四种方法名（protocolName 以 __ 开头，不找设备、不走驱动）。 */
-type BuiltinKind = '__setVar' | '__expr' | '__sleep' | '__wait';
+type BuiltinKind = '__setVar' | '__expr' | '__sleep' | '__wait' | '__waitAny';
 
 /** 左侧「逻辑节点」面板里的一行：拖到画布生成内置节点（不带设备）。 */
 function LogicNodeRow({ method, label, disabled }: {
@@ -417,6 +417,17 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
   const [val, setVal] = useState('');
   /** 等待节点的超时秒数（留空 = 后端默认 300）。 */
   const [waitTimeout, setWaitTimeout] = useState('');
+  /** `__waitAny` 的变量组（逗号分隔，可写成 a=1,b=2 逐个给目标值）。 */
+  const [waitVars, setWaitVars] = useState('');
+  /** `__waitAny` 命中后把「命中的变量名」写进哪个变量（可留空）。 */
+  const [waitInto, setWaitInto] = useState('');
+  /**
+   * 消费式等待：等一次**新的**上报，而不是当前的旧值。
+   *
+   * <p>为什么需要：设备上报的标志位是电平（一直是 1），上位机要等的是**一次新上报**（边）。
+   * 不勾选时，同一个旧值会被当成新事件（机械臂会白跑一趟）。
+   */
+  const [waitConsume, setWaitConsume] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
   /** 设备任务的绑定：设备 → 方法 → 参数（JSON） */
@@ -432,13 +443,18 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
       const r = await apiFetch(`/api/workflows/${wfId}/nodes/${encodeURIComponent(nodeKey)}`);
       const j = await r.json();
       const m: string = j.method ?? '';
-      const builtin = m === '__setVar' || m === '__expr' || m === '__sleep' || m === '__wait';
+      const builtin = m === '__setVar' || m === '__expr' || m === '__sleep'
+        || m === '__wait' || m === '__waitAny';
       setKind(builtin ? (m as BuiltinKind) : 'device');
       setVarName(j.params?.var ?? '');
       setVal(m === '__expr' ? (j.params?.expr ?? '')
         : m === '__sleep' ? (j.params?.sec ?? '')
         : (j.params?.value ?? ''));
-      setWaitTimeout(m === '__wait' ? (j.params?.timeout ?? '') : '');
+      setWaitTimeout((m === '__wait' || m === '__waitAny') ? (j.params?.timeout ?? '') : '');
+      setWaitVars(m === '__waitAny' ? (j.params?.vars ?? '') : '');
+      setWaitInto(m === '__waitAny' ? (j.params?.into ?? '') : '');
+      setWaitConsume((m === '__wait' || m === '__waitAny')
+        ? (j.params?.consume === true || j.params?.consume === 'true') : false);
       if (!builtin) {
         setDeviceId(j.resourceId ?? null);
         setMethodName(m);
@@ -545,9 +561,19 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
         params = { sec: val };
       } else if (kind === '__wait') {
         // 等待节点：var/value 必填；timeout 留空则由后端按 300 秒兜底
-        params = waitTimeout.trim()
-          ? { var: varName, value: val, timeout: waitTimeout.trim() }
-          : { var: varName, value: val };
+        const wp: Record<string, unknown> = { var: varName, value: val };
+        if (waitTimeout.trim()) wp.timeout = waitTimeout.trim();
+        // consume：等一次「新的」上报，而不是当前的旧值（设备标志位是电平）
+        if (waitConsume) wp.consume = 'true';
+        params = wp;
+      } else if (kind === '__waitAny') {
+        // 等待任一：vars 是逗号分隔的变量组；value 是各变量共用的目标值
+        // （也可写成 a=1,b=2 逐个给）；timeout 留空由后端兜底；into 可留空
+        const wp: Record<string, unknown> = { vars: waitVars.trim(), value: val };
+        if (waitTimeout.trim()) wp.timeout = waitTimeout.trim();
+        if (waitInto.trim()) wp.into = waitInto.trim();
+        if (waitConsume) wp.consume = 'true';
+        params = wp;
       } else {
         params = kind === '__setVar'
           ? { var: varName, value: val }
@@ -597,6 +623,7 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
             { value: '__expr', label: t('designer.kind.expr') },
             { value: '__sleep', label: t('designer.kind.sleep') },
             { value: '__wait', label: t('designer.kind.wait') },
+            { value: '__waitAny', label: t('designer.kind.waitAny') },
           ]}
         />
         {kind === 'device' ? (
@@ -683,8 +710,28 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
               value={val} onChange={(e) => setVal(e.target.value)} />
             <Input size="small" placeholder={t('designer.placeholder.waitTimeout')}
               value={waitTimeout} onChange={(e) => setWaitTimeout(e.target.value)} />
+            <Checkbox checked={waitConsume} onChange={(e) => setWaitConsume(e.target.checked)}>
+              {t('designer.label.waitConsume')}
+            </Checkbox>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {t('designer.wait.hint')}
+            </Typography.Text>
+          </>
+        ) : kind === '__waitAny' ? (
+          <>
+            <Input size="small" placeholder={t('designer.placeholder.waitAnyVars')}
+              value={waitVars} onChange={(e) => setWaitVars(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.waitValue')}
+              value={val} onChange={(e) => setVal(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.waitTimeout')}
+              value={waitTimeout} onChange={(e) => setWaitTimeout(e.target.value)} />
+            <Input size="small" placeholder={t('designer.placeholder.waitAnyInto')}
+              value={waitInto} onChange={(e) => setWaitInto(e.target.value)} />
+            <Checkbox checked={waitConsume} onChange={(e) => setWaitConsume(e.target.checked)}>
+              {t('designer.label.waitConsume')}
+            </Checkbox>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('designer.waitAny.hint')}
             </Typography.Text>
           </>
         ) : (
@@ -3045,6 +3092,8 @@ export default function DesignerPage() {
                     <LogicNodeRow method="__sleep" label={t('designer.kind.sleep')}
                       disabled={ro.disabled} />
                     <LogicNodeRow method="__wait" label={t('designer.kind.wait')}
+                      disabled={ro.disabled} />
+                    <LogicNodeRow method="__waitAny" label={t('designer.kind.waitAny')}
                       disabled={ro.disabled} />
                   </>
                 ),

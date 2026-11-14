@@ -940,10 +940,12 @@ export const zhCN = {
   'designer.expr.hint': '表达式支持 + - * / 与 ${变量}；变量节点不做计算。',
   'designer.sleep.hint': '到这一步会真的停若干秒；等待期间收到暂停请求会在 500ms 内停下。',
   'designer.wait.hint': '每轮重读一次运行变量；超时仍未变成目标值就转人工停下，不会带着未满足的条件往下走。',
+  'designer.waitAny.hint': '等这一组变量里任意一个变成目标值就通过；用来等「多台设备里谁先上报」。勾选消费式后，同一个旧值不会被当成新事件。',
   'designer.node.setVar': '变量节点',
   'designer.node.expr': '表达式节点',
   'designer.node.sleep': '延时',
   'designer.node.wait': '等待变量',
+  'designer.node.waitAny': '等待任一变量',
   // 起止事件的中性 code（库里存的 START / END）对应的显示文案。
   'designer.node.start': '开始',
   'designer.node.end': '结束',

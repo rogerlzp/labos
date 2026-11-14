@@ -959,6 +959,10 @@ public final class GraphRunnerTest {
                     RealWorkflowRunner.LOGIC,
                     RealWorkflowRunner.resolveCapability(
                             "等待变量", "__wait", null, null, Map.of(), Map.of()).capability());
+            eq("__waitAny 同样不需要设备（LOGIC）",
+                    RealWorkflowRunner.LOGIC,
+                    RealWorkflowRunner.resolveCapability(
+                            "等待任一变量", "__waitAny", null, null, Map.of(), Map.of()).capability());
         });
     }
 

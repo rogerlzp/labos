@@ -69,6 +69,7 @@ const BUILTIN_CODE_TO_KEY: Record<string, MessageKey> = {
   __expr: 'designer.node.expr',
   __sleep: 'designer.node.sleep',
   __wait: 'designer.node.wait',
+  __waitAny: 'designer.node.waitAny',
   ARM_TRANSFER: 'designer.node.armTransfer',
 };
 
