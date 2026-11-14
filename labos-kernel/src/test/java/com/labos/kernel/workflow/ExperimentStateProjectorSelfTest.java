@@ -75,6 +75,29 @@ public final class ExperimentStateProjectorSelfTest {
             "UPDATE\\s+experiment\\b[^;<]{0,300}?SET\\s+status",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
+    /**
+     * R8 步骤 4：{@code UPDATE run … SET … status = 'paused'} 的**直写**形态。
+     *
+     * <p>为什么不用 {@code contains("SET status = 'paused'")}（2026-11-15 评审强化）：
+     * <ul>
+     *   <li>换成 {@code SET status='paused'}（等号无空格）、多空格、跨行排版都会**静默漏检**；</li>
+     *   <li>只对三个具名文件断言时，**新增一个 mapper 直写不会红**。</li>
+     * </ul>
+     *
+     * <p>两个护栏：
+     * <ul>
+     *   <li>{@code (?:(?!WHERE)[^;<])} —— 不许跨过 {@code WHERE}：排除
+     *       「{@code UPDATE run SET 别的列 … WHERE status='paused'}」这类只把 paused
+     *       当**查询条件**的语句（全仓有大量，会误报）；</li>
+     *   <li>{@code [^;<]} —— 不许跨过标签边界 {@code <}（XML 语句无分号收尾，
+     *       与 {@link #WRITE_STATUS_XML} 同一护栏）。</li>
+     * </ul>
+     */
+    private static final Pattern RUN_PAUSED_WRITE = Pattern.compile(
+            "UPDATE\\s+run\\b[^;<]{0,600}?SET\\s+(?:(?!WHERE)[^;<]){0,300}?"
+                    + "(?:\\w+\\.)?status\\s*=\\s*'paused'",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
     /** Java 源码用 {@link #WRITE_STATUS}，mapper XML 用 {@link #WRITE_STATUS_XML}。 */
     private static List<Integer> matchingLines(String code, boolean xml) {
         Matcher m = (xml ? WRITE_STATUS_XML : WRITE_STATUS).matcher(code);
@@ -179,28 +202,24 @@ public final class ExperimentStateProjectorSelfTest {
         check("runToExperimentCaseSql 在全量 main 源码中仍被引用",
                 referencedAnywhere(javaFiles, "runToExperimentCaseSql"));
 
-        section("5b. R8 步骤 3：PauseManager 的 run.status='paused' 写入口已迁到投影器");
-        // 全仓现状还有多处写 run.status='paused'（ExecutionMapper/RunControlMapper/RunMapper 等），
-        // 本轮只收口 PauseManager 这条路径；其余是 R8 步骤 3/4 的剩余工作。
+        section("5b. R8 步骤 4：run.status='paused' 直写全仓仅剩投影器 mapper");
+        // 判据见 {@link #RUN_PAUSED_WRITE}：正则（不依赖固定空格写法）+ 全部 mapper XML
+        // （新增 mapper 直写也会红）+ 不跨 WHERE（不误报「WHERE status='paused'」）。
         boolean projectorHasPaused = false;
-        boolean pauseMapperStillHas = false;
-        boolean runMapperStillHas = false;
+        List<String> pausedWriters = new ArrayList<>();
         for (Path f : mapperXmls) {
             String code = stripComments(Files.readString(f, StandardCharsets.UTF_8));
-            boolean hasPaused = code.contains("UPDATE run") && code.contains("SET status = 'paused'");
-            if (PROJECTOR_MAPPER_FILE.equals(f.getFileName().toString()) && hasPaused) {
-                projectorHasPaused = true;
-            }
-            if ("PauseMapper.xml".equals(f.getFileName().toString()) && hasPaused) {
-                pauseMapperStillHas = true;
-            }
-            if ("RunMapper.xml".equals(f.getFileName().toString()) && hasPaused) {
-                runMapperStillHas = true;
+            boolean hasPaused = RUN_PAUSED_WRITE.matcher(code).find();
+            String name = f.getFileName().toString();
+            if (PROJECTOR_MAPPER_FILE.equals(name)) {
+                projectorHasPaused = hasPaused;
+            } else if (hasPaused) {
+                pausedWriters.add(name);
             }
         }
         check("ExperimentProjectorMapper.xml 有 run.status='paused' 写入口", projectorHasPaused);
-        check("PauseMapper.xml 不再 SET run.status='paused'", !pauseMapperStillHas);
-        check("RunMapper.xml 不再 SET run.status='paused'（4 处已迁走）", !runMapperStillHas);
+        check("除投影器外，全 mapper 无 run.status='paused' 直写",
+                pausedWriters.isEmpty(), String.join(",", pausedWriters));
 
         section("5. R8 步骤 1：resolvePauseKind 纯函数（事实 → 投影 pause_kind）");
         eq("null 原样", null, ExperimentStateProjector.resolvePauseKind(null, false));

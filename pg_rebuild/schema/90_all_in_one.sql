@@ -2615,7 +2615,7 @@ ALTER TABLE run ADD COLUMN IF NOT EXISTS resumed_at timestamptz;
 ALTER TABLE run ADD COLUMN IF NOT EXISTS pause_node_key varchar(128);
 
 COMMENT ON COLUMN run.pause_kind IS
-    '暂停类型：paused_fault=设备故障 waiting_human=需人工确认 paused_unknown=板位未知';
+    '暂停类型：paused_fault=设备故障 waiting_human=需人工确认 paused_unknown=板位未知 manual=人工主动暂停 manual_window=物料隔离确认自动暂停';
 COMMENT ON COLUMN run.pause_reason IS
     '暂停原因（给人看的，含错误码和设备编号）';
 COMMENT ON COLUMN run.pause_node_key IS

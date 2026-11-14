@@ -42,7 +42,17 @@ public final class PauseManager {
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(PauseManager.class);
 
-    /** 三种暂停类型。 */
+    /**
+     * 暂停类型（`run.pause_kind` 的取值）。
+     *
+     * <p><b>唯一例外（2026-11-15 评审记录）</b>：{@code run.pause_kind} 还有一个
+     * {@code manual_window}（物料隔离确认触发的暂停），由投影器
+     * {@code ExperimentProjectorMapper.applyPausedRunMaterialSafety} 直写。
+     * 它**不来自 {@code runtime_hold}**，因此不进本枚举——{@link #toHoldKind()} 无法映射，
+     * 强行入表会破坏「{@code PauseManager.Kind} ↔ {@code RuntimeHold.Kind}」的 1:1 round-trip。
+     * 所以「词表单一真源」在 run 侧严格讲是 **5 个值 / 4 个可映射**；
+     * DB 注释（`90_all_in_one.sql`）已补全 5 个值。
+     */
     public enum Kind {
         /** 设备故障，心跳恢复后自动继续。 */
         PAUSED_FAULT("paused_fault"),
