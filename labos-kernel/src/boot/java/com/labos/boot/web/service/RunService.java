@@ -395,6 +395,12 @@ public class RunService {
         return keyValueArrayJson(new PauseManager(db, TENANT).unknownPlates());
     }
 
+    /** R5/P2-2：在途未确认的板（position_status='IN_TRANSFER'），操作员只读视图。 */
+    public String inTransitPlates() throws java.sql.SQLException {
+        return keyValueArrayJson(com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.PauseMapper.class).selectInTransitPlates(TENANT));
+    }
+
     /**
      * 命令级台账（2026-11-11）：这次 run 下发过哪些命令、什么参数、
      * 什么时候发出、设备什么时候回的。

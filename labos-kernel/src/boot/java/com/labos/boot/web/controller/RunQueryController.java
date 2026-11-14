@@ -105,6 +105,11 @@ public class RunQueryController {
         return runService.unknownPlates();
     }
 
+    @GetMapping(value = "/plates/in-transit", produces = "application/json; charset=utf-8")
+    public String inTransitPlates() throws SQLException {
+        return runService.inTransitPlates();
+    }
+
     /**
      * 板子**流转轨迹**：谁在什么时候把板子放/取到了哪个位置。
      *

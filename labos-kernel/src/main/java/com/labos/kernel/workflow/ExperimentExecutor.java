@@ -616,14 +616,15 @@ public final class ExperimentExecutor {
         return v != null && v;
     }
 
-    /** R3：本 run 是否含物理结果不确定（reconciliation_required）的节点。 */
+    /** R3：本 run 是否含物理结果不确定（reconciliation_required）的节点。
+     * 查询失败时 fail-closed：当作「有」→ 转 manual（不写干净 paused），符合 UNKNOWN 铁律。 */
     private boolean hasReconciliationRequired(long experimentRunId) {
         try {
             return em().countReconciliationRequired(tenantId, experimentRunId) > 0;
         } catch (RuntimeException e) {
             org.slf4j.LoggerFactory.getLogger(ExperimentExecutor.class)
-                    .warn("[暂停] 查 reconciliation_required 失败（按 clean paused 收敛）: {}", e.getMessage());
-            return false;
+                    .warn("[暂停] 查 reconciliation_required 失败，按有对待（PauseUnknown 转人工）: {}", e.getMessage());
+            return true;   // fail-closed：查不到就当有，宁可转人工也不假装干净暂停
         }
     }
 
