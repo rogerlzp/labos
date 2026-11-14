@@ -361,13 +361,15 @@ public final class ExperimentScheduler {
     }
 
     /**
-     * 陈旧暂停治理：每 30 tick 扫一次。
+     * 陈旧暂停治理：每 30 tick 扫一次（也可经 POST /api/scheduler/stale-check 手动触发）。
      * <ul>
-     *   <li>{@code LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS}>0：自动 dismiss 该天数前的 waiting_human（默认关）</li>
+     *   <li>autoDismissDays>0：自动 dismiss 该天数前的 waiting_human（默认关，见 RuntimeSettings）</li>
      *   <li>否则：只 warn 告警，不自动处置（人确认后去暂停队列 dismiss）</li>
      * </ul>
+     *
+     * @return 本次自动 dismiss 的条数（autoDismissDays<=0 时为 0）
      */
-    private void warnStalePauses() {
+    public int checkStalePauses() {
         int staleDays = 7;
         int autoDismissDays = com.labos.kernel.driver.RuntimeSettings.stalePauseAutoDismissDays();
         try {
@@ -378,25 +380,32 @@ public final class ExperimentScheduler {
         } catch (NumberFormatException ignore) {
             // 非法值用默认 7 天
         }
-        List<Map<String, Object>> stale = stalePausedRuns(staleDays);
-        if (stale.isEmpty()) {
-            return;
-        }
         if (autoDismissDays > 0) {
+            // 自动处置用 autoDismissDays 阈值（不是 warn 的 staleDays），否则 1..7 天之间的
+            // 旧 run 会被 7 天阈值挡在门外（评审 B9 实测踩到）。
+            List<Map<String, Object>> toDismiss = stalePausedRuns(autoDismissDays);
+            if (toDismiss.isEmpty()) {
+                return 0;
+            }
             try {
                 int n = new PauseManager(db, tenantId)
                         .dismissBatch(null, "waiting_human", autoDismissDays * 24);
                 if (n > 0) {
                     log.warn("[调度] 自动 dismiss {} 条暂停超过 {} 天的 waiting_human run"
-                            + "（LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS={}）", n, autoDismissDays, autoDismissDays);
+                            + "（autoDismissDays={}）", n, autoDismissDays, autoDismissDays);
                 }
+                return n;
             } catch (Exception e) {
                 log.error("[调度] 自动 dismiss 陈旧暂停失败: {}", e.getMessage());
+                return 0;
             }
-        } else {
+        }
+        List<Map<String, Object>> stale = stalePausedRuns(staleDays);
+        if (!stale.isEmpty()) {
             log.warn("[调度] 有 {} 条暂停超过 {} 天的 run（等待人工处置，不自动 dismiss）",
                     stale.size(), staleDays);
         }
+        return 0;
     }
 
     /**
@@ -542,7 +551,7 @@ public final class ExperimentScheduler {
                 // P2-4/P2 治理：每 30 tick（约 1 分钟）重载排程参数 + 扫陈旧暂停告警 + 搬运段保留期清理。
                 if (ticks % 30 == 0) {
                     reloadConfig();
-                    warnStalePauses();
+                    checkStalePauses();
                     cleanupTransportSegments(30);
                 }
             } catch (Exception e) {

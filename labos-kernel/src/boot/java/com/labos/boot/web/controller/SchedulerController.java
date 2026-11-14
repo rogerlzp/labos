@@ -151,4 +151,12 @@ public class SchedulerController {
         return Jsons.obj("total", stale.size(), "days", days,
                 "items", new Jsons.Raw(Jsons.arr(items)));
     }
+
+    /** P2 治理：手动触发陈旧暂停扫描（含自动 dismiss，绕过 60s 周期，供测试/运维）。 */
+    @PostMapping(value = "/api/scheduler/stale-check", produces = "application/json; charset=utf-8")
+    public String staleCheck() {
+        int dismissed = scheduler.checkStalePauses();
+        return Jsons.obj("dismissed", dismissed, "autoDismissDays",
+                com.labos.kernel.driver.RuntimeSettings.stalePauseAutoDismissDays());
+    }
 }
