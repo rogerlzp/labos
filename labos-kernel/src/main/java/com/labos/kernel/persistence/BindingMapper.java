@@ -159,6 +159,9 @@ public interface BindingMapper {
                                @Param("carrier") String carrier,
                                @Param("status") String status);
 
+    /** P2-10：删除 created_at 早于 cutoff 的历史搬运段（保留期清理）。 */
+    int deleteTransportSegmentsBefore(@Param("t") long tenantId, @Param("cutoff") String cutoff);
+
     // ---------------------------------------------------------------- 工位（P2-1）
 
     /** 某设备的工位列表（resource_node kind='workstation'）+ 占用态。 */

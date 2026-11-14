@@ -256,6 +256,11 @@
             #{fromPositionId}, #{toPositionId}, #{carrier}, #{status}, now())
   </insert>
 
+  <delete id="deleteTransportSegmentsBefore">
+    DELETE FROM transport_segment
+     WHERE tenant_id = #{t} AND created_at &lt; #{cutoff}::timestamptz
+  </delete>
+
   <!-- ============================================================ 工位（P2-1） -->
 
   <select id="selectWorkstations" resultType="java.util.Map">

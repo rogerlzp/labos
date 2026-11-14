@@ -298,6 +298,35 @@ public final class ExperimentScheduler {
     }
 
     /**
+     * P2-10：搬运段保留期清理。删除 created_at 早于 N 天的历史段（可观测记录，无软删、会累积）。
+     * 保留期 {@code LABOS_TRANSPORT_SEGMENT_RETENTION_DAYS}（默认 30 天）。
+     */
+    public int cleanupTransportSegments(int days) {
+        int retain = Math.max(days, 1);
+        try {
+            String env = System.getenv("LABOS_TRANSPORT_SEGMENT_RETENTION_DAYS");
+            if (env != null && !env.isBlank()) {
+                retain = Math.max(1, Integer.parseInt(env.trim()));
+            }
+        } catch (NumberFormatException ignore) {
+            // 非法值用默认
+        }
+        try {
+            int n = com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.BindingMapper.class)
+                    .deleteTransportSegmentsBefore(tenantId,
+                            Instant.now().minus(Duration.ofDays(retain)).toString());
+            if (n > 0) {
+                log.info("[调度] 清理 {} 条超过 {} 天的历史搬运段", n, retain);
+            }
+            return n;
+        } catch (RuntimeException e) {
+            log.warn("[调度] 搬运段保留期清理失败: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
      * 陈旧暂停治理：每 30 tick 扫一次。
      * <ul>
      *   <li>{@code LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS}>0：自动 dismiss 该天数前的 waiting_human（默认关）</li>
@@ -480,10 +509,11 @@ public final class ExperimentScheduler {
                 if (ticks % AUTO_CONTINUE_EVERY_TICKS == 0) {
                     autoContinueHeldBatches();
                 }
-                // P2-4/P2 治理：每 30 tick（约 1 分钟）重载排程参数 + 扫陈旧暂停告警。
+                // P2-4/P2 治理：每 30 tick（约 1 分钟）重载排程参数 + 扫陈旧暂停告警 + 搬运段保留期清理。
                 if (ticks % 30 == 0) {
                     reloadConfig();
                     warnStalePauses();
+                    cleanupTransportSegments(30);
                 }
             } catch (Exception e) {
                 log.error("[调度] 循环异常: " + e.getMessage());

@@ -3,6 +3,7 @@ package com.labos.boot.web.controller;
 import com.labos.kernel.persistence.Jsons;
 import com.labos.kernel.workflow.ExperimentScheduler;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -121,6 +122,17 @@ public class SchedulerController {
     public String config() {
         java.util.Map<String, Object> c = scheduler.config();
         return Jsons.obj("maxConcurrent", c.get("maxConcurrent"),
+                "optimizationFactor", c.get("optimizationFactor"),
+                "tickMs", c.get("tickMs"));
+    }
+
+    /** P2-4 手动重载排程参数（绕过 60s 自动重载，建/改 schedule_plan 后立即生效）。 */
+    @PostMapping(value = "/api/scheduler/reload-config", produces = "application/json; charset=utf-8")
+    public String reloadConfig() {
+        scheduler.reloadConfig();
+        java.util.Map<String, Object> c = scheduler.config();
+        return Jsons.obj("reloaded", true,
+                "maxConcurrent", c.get("maxConcurrent"),
                 "optimizationFactor", c.get("optimizationFactor"),
                 "tickMs", c.get("tickMs"));
     }
