@@ -63,6 +63,8 @@ public final class GraphRunnerTest {
         caseWaitWithoutConsumePassesStale();
         caseWaitAnyHits();
         caseWaitAnyTimeout();
+        caseWaitAnyConsumeRejectsStale();
+        caseWaitVarSubstituted();
         caseBuiltinProtocolResolvesToLogic();
         caseBuiltinDryRunNoOp();
         caseSkipKeysResume();
@@ -929,6 +931,82 @@ public final class GraphRunnerTest {
             RunProgress p = runner.run(g, bus);
             eq("等待节点转人工", 1, p.count(NodeStatus.MANUAL));
             eq("超时后不驱动下游设备", 0, bus.callLog().size());
+        });
+    }
+
+    /**
+     * `__waitAny` + `consume=true`：**陈旧值不算新事件**。
+     *
+     * <p>与 `__wait` 的消费语义一致：命中的那个键被消费掉后，
+     * 同一个旧值再出现也不算新事件 ⇒ 第二个 `__waitAny` 必须等到超时，
+     * 而不是拿上一条旧上报立刻通过。
+     */
+    private static void caseWaitAnyConsumeRejectsStale() {
+        check("内置节点：__waitAny consume=true —— 陈旧值不算新事件", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W1" name="等第一次" protocolName="__waitAny"/>
+                    <task id="W2" name="等第二次" protocolName="__waitAny"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W1"/>
+                    <sequenceFlow id="F2" sourceRef="W1" targetRef="W2"/>
+                    <sequenceFlow id="F3" sourceRef="W2" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    // 外部一直是 1：从没复位过 ⇒ 第二次没有"新上报"
+                    .withVariableRefresher(() -> Map.of("ext1", "1", "ext2", "0"))
+                    .withBuiltinParams(Map.of(
+                            "W1", Map.of("vars", "ext1,ext2", "value", "1", "consume", "true",
+                                    "timeout", "10", "interval", "1"),
+                            "W2", Map.of("vars", "ext1,ext2", "value", "1", "consume", "true",
+                                    "timeout", "5", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("第一次等待通过", 1, p.count(NodeStatus.COMPLETED));
+            eq("第二次等待因陈旧值转人工", 1, p.count(NodeStatus.MANUAL));
+        });
+    }
+
+    /**
+     * `__wait` 的**变量名**支持 `${x}` 替换（坑③）。
+     *
+     * <p>等待侧是"读"外部变量，名字常由别处算出来（"等刚才那条消息里提到的那个标志位"）。
+     * 没有 `${}` 的普通名字原样返回 ⇒ 存量流程语义不变。
+     */
+    private static void caseWaitVarSubstituted() {
+        check("内置节点：__wait 的变量名支持 ${} 替换", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W" name="等待" protocolName="__wait"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W"/>
+                    <sequenceFlow id="F2" sourceRef="W" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            RunStateMachine sm = new RunStateMachine(decider(), e -> { },
+                    Sleeper.recording(new ArrayList<>()), Clock.systemUTC());
+            SimulatedBus bus = new SimulatedBus();
+            GraphRunner runner = new GraphRunner(sm,
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    // 变量名本身由另一个变量算出来
+                    .withVariables(Map.of("target", "ext"))
+                    .withVariableRefresher(() -> Map.of("ext", "1"))
+                    .withBuiltinParams(Map.of("W", Map.of(
+                            "var", "${target}", "value", "1",
+                            "timeout", "10", "interval", "1")));
+            RunProgress p = runner.run(g, bus);
+            eq("按替换后的变量名等到了（没有转人工）", 0, p.count(NodeStatus.MANUAL));
+            eq("等待节点完成", 1, p.count(NodeStatus.COMPLETED));
         });
     }
 

@@ -1001,6 +1001,24 @@ public final class GraphRunner {
         return var.trim();
     }
 
+    /**
+     * 取"要等的变量名"，**允许 `${x}` 替换**（坑③）。
+     *
+     * <p>为什么只给等待侧开这个口子：等待是**读**外部变量，名字由别处算出来很常见
+     * （比如"等刚才那条消息里提到的那个标志位"）；
+     * 而 {@code __setVar} / {@code __expr} 是**写**，变量名是目的地，
+     * 改它们的语义会动到存量流程 ⇒ 写侧维持原样。
+     *
+     * <p>没有 `${}` 的普通名字原样返回（{@link #substitute} 只替换 `${...}` 模式）。
+     */
+    private String requireWaitVar(Map<String, Object> p) {
+        String var = str(p.get("var"));
+        if (var == null || var.isBlank()) {
+            throw new IllegalArgumentException("缺参数 var（等哪个变量）");
+        }
+        return substitute(var.trim());
+    }
+
     /** `__sleep`：在这里停多少秒（`sec`，也接受 `seconds`）。缺失或非正数直接报错，不做静默空转。 */
     private void sleepSeconds(GNode node, Map<String, Object> p) {
         Object raw = p.get("sec") != null ? p.get("sec") : p.get("seconds");
@@ -1021,7 +1039,7 @@ public final class GraphRunner {
      * 不会带着"条件没满足"继续往下跑。
      */
     private void waitForVariable(GNode node, Map<String, Object> p) {
-        String var = requireVar(p);
+        String var = requireWaitVar(p);
         String rawWant = str(p.get("value"));
         String want = rawWant == null ? "" : substitute(rawWant);
         boolean consume = boolParam(p.get("consume"));
@@ -1109,10 +1127,10 @@ public final class GraphRunner {
         if (rawTargets.isEmpty()) {
             throw new IllegalArgumentException("缺参数 vars（等哪几个变量？用逗号分隔，例如 ext1,ext2）");
         }
-        // 目标值做 ${} 替换（与 __wait 的 value 同口径）；变量名不做（与 __wait 的 var 同口径）。
+        // 变量名与目标值都做 ${} 替换（等待侧是"读"，名字由别处算出来很常见）
         List<WaitTarget> targets = new ArrayList<>(rawTargets.size());
         for (WaitTarget t : rawTargets) {
-            targets.add(new WaitTarget(t.name, substitute(t.want)));
+            targets.add(new WaitTarget(substitute(t.name), substitute(t.want)));
         }
         boolean consume = boolParam(p.get("consume"));
         String into = str(p.get("into"));
@@ -1231,8 +1249,8 @@ public final class GraphRunner {
      *   <li>{@code vars=ext1=1,ext2=idle} —— 逐个给目标值（覆盖公共的 {@code value}）。</li>
      * </ul>
      *
-     * <p>变量名**不做** {@code ${}} 替换（与 {@code __wait} 的 {@code var} 同口径）；
-     * 目标值**做**替换（与 {@code __wait} 的 {@code value} 同口径）。
+     * <p>本方法只做**解析**，不做 `${}` 替换 —— 替换在调用方做
+     * （{@link #describeBuiltin} 是静态的，拿不到运行期变量表）。
      */
     private static List<WaitTarget> parseWaitAnyTargets(Map<String, Object> p) {
         String raw = str(p.get("vars"));
