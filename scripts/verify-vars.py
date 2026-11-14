@@ -38,7 +38,7 @@ PASS, FAIL = [], []
 def q(sql):
     """跑 SQL。**失败必须抛错** —— 返回空串会被当成「库里没有」⇒ 假绿。"""
     env = dict(os.environ)
-    env["PGPASSWORD"] = os.environ.get("LABOS_DB_PASS", "$LABOS_DB_PASS")
+    env["PGPASSWORD"] = os.environ.get("LABOS_DB_PASS", "")
     p = subprocess.run(PSQL + [sql], capture_output=True, text=True, env=env)
     if p.returncode != 0:
         raise RuntimeError("SQL 失败: %s\n%s" % (sql, p.stderr.strip()))

@@ -13,7 +13,7 @@ import re
 import subprocess
 import time
 
-DB = ["psql", "-h", "192.0.2.2", "-p", "5432", "-U", "labos", "-d", "labdb"]
+DB = ["psql", "-h", "192.168.124.2", "-p", "5432", "-U", "labos", "-d", "labdb"]
 ISLAND = 1000005  # LAB-BASE-01
 JAVA = "java"
 CP = "out:lib/postgresql-42.7.3.jar:lib/spring/*"
@@ -39,7 +39,7 @@ _CMD_TAG = re.compile(
 
 
 def q(sql):
-    env = dict(os.environ, PGPASSWORD="REDACTED_DB_PASSWORD")
+    env = dict(os.environ, PGPASSWORD=os.environ.get("LABOS_DB_PASS", ""))
     # lock_timeout：拿不到锁就立刻报错；statement_timeout：SQL 本身执行太久也报错。
     # 两者都比 subprocess 的 timeout 先触发，能拿到更明确的报错信息。
     env["PGOPTIONS"] = (f"-c lock_timeout={DB_TIMEOUT_SEC * 1000} "

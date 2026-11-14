@@ -39,7 +39,7 @@ def check(name, ok, detail=""):
 
 def q(sql):
     env = dict(os.environ)
-    env.setdefault("PGPASSWORD", os.environ.get("LABOS_DB_PASS", "$LABOS_DB_PASS"))
+    env.setdefault("PGPASSWORD", os.environ.get("LABOS_DB_PASS", ""))
     p = subprocess.run(["psql", "-h", os.environ.get("LABOS_DB_HOST", "192.168.124.2"),
                         "-p", "5432", "-U", os.environ.get("LABOS_DB_USER", "labos"),
                         "-d", os.environ.get("LABOS_DB_NAME", "labdb"), "-tAc", sql],

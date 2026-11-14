@@ -24,7 +24,7 @@ export LABOS_DB_HOST="${LABOS_DB_HOST:-192.168.124.2}"
 export LABOS_DB_PORT="${LABOS_DB_PORT:-5432}"
 export LABOS_DB_USER="${LABOS_DB_USER:-labos}"
 export LABOS_DB_NAME="${LABOS_DB_NAME:-labdb}"
-export PGPASSWORD="${LABOS_DB_PASS:-$LABOS_DB_PASS}"
+export PGPASSWORD="$LABOS_DB_PASS"
 export LABOS_REDIS_HOST="${LABOS_REDIS_HOST:-127.0.0.1}"
 export LABOS_REDIS_PORT="${LABOS_REDIS_PORT:-6379}"
 ISLAND="${LABOS_BASELINE_ISLAND:-LAB-BASE-01}"
@@ -72,7 +72,7 @@ if ! curl -s -m 3 -o /dev/null "$MANAGER_URL/health"; then
   # 管理台不在 ⇒ 直接起 link-only sidecar（不监听端口的纯保活进程）
   DLL="$ROOT/sidecar-dotnet/Labos.Sidecar/bin/Debug/net10.0/Labos.Sidecar.dll"
   echo "  管理台没跑，直接起 link-only 进程"
-  for line in $(psql -h "$LABOS_DB_HOST" -U "$LABOS_DB_USER" -d "$LABOS_DB_NAME" -tAc "
+  for line in $(psql -h 192.168.124.2 -U "$LABOS_DB_USER" -d "$LABOS_DB_NAME" -tAc "
       SELECT di.id || '|' || di.ip || '|' || split_part(replace(d.endpoint,'tcp://',''),':',2)
         FROM device_instance di JOIN driver d ON d.id = di.driver_id
        WHERE di.tenant_id = 1 AND di.deleted_at IS NULL AND di.status = 'available'

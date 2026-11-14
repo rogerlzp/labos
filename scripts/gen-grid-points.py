@@ -24,8 +24,8 @@ TENANT = 1
 
 def q(sql, dry=False):
     env = dict(os.environ)
-    env["PGPASSWORD"] = os.environ.get("LABOS_DB_PASS", "REDACTED_DB_PASSWORD")
-    cmd = ["psql", "-h", os.environ.get("LABOS_DB_HOST", "192.0.2.2"),
+    env["PGPASSWORD"] = os.environ.get("LABOS_DB_PASS", "")
+    cmd = ["psql", "-h", os.environ.get("LABOS_DB_HOST", "192.168.124.2"),
            "-p", os.environ.get("LABOS_DB_PORT", "5432"),
            "-U", os.environ.get("LABOS_DB_USER", "labos"),
            "-d", os.environ.get("LABOS_DB_NAME", "labdb"),
