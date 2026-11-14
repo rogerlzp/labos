@@ -32,6 +32,10 @@ public final class RuntimeSettings {
     private static volatile long offlineAlertMs =
             envLong("LABOS_OFFLINE_ALERT_MS", Math.max(heartbeatIntervalMs * 3, 30_000L));
 
+    /** 陈旧暂停自动 dismiss 天数（0=关，只 warn）。 */
+    private static volatile int stalePauseAutoDismissDays =
+            (int) envLong("LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS", 0L);
+
     private RuntimeSettings() {
     }
 
@@ -41,6 +45,10 @@ public final class RuntimeSettings {
 
     public static long offlineAlertMs() {
         return offlineAlertMs;
+    }
+
+    public static int stalePauseAutoDismissDays() {
+        return stalePauseAutoDismissDays;
     }
 
     /**
@@ -69,6 +77,11 @@ public final class RuntimeSettings {
                 log.info("[设置] 心跳参数来自库：间隔 " + (heartbeatIntervalMs / 1000)
                         + "s、离线阈值 " + (offlineAlertMs / 1000) + "s");
             }
+            Long auto = readLong(tenantId, "stale_pause.auto_dismiss_days");
+            if (auto != null) {
+                stalePauseAutoDismissDays = Math.max(0, auto.intValue());
+                log.info("[设置] 陈旧暂停自动 dismiss：{} 天（0=关）", stalePauseAutoDismissDays);
+            }
         } catch (RuntimeException e) {
             log.error("[WARN] 读取 sys_setting 失败，沿用环境变量: " + e.getMessage());
         }
@@ -80,6 +93,14 @@ public final class RuntimeSettings {
         long[] eff = updateHeartbeat(intervalMs, offlineMs);
         upsert(tenantId, "heartbeat.interval_ms", eff[0]);
         upsert(tenantId, "heartbeat.offline_ms", eff[1]);
+    }
+
+    /** 陈旧暂停自动 dismiss 天数落库 + 立即生效（0=关）。 */
+    public static void saveStalePauseAutoDismiss(DbConfig db, long tenantId, int days)
+            throws SQLException {
+        int eff = Math.max(0, days);
+        stalePauseAutoDismissDays = eff;
+        upsert(tenantId, "stale_pause.auto_dismiss_days", eff);
     }
 
     /**

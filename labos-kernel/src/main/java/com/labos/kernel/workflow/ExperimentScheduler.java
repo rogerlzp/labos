@@ -335,18 +335,14 @@ public final class ExperimentScheduler {
      */
     private void warnStalePauses() {
         int staleDays = 7;
-        int autoDismissDays = 0;
+        int autoDismissDays = com.labos.kernel.driver.RuntimeSettings.stalePauseAutoDismissDays();
         try {
             String env = System.getenv("LABOS_STALE_PAUSE_DAYS");
             if (env != null && !env.isBlank()) {
                 staleDays = Math.max(1, Integer.parseInt(env.trim()));
             }
-            String auto = System.getenv("LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS");
-            if (auto != null && !auto.isBlank()) {
-                autoDismissDays = Math.max(0, Integer.parseInt(auto.trim()));
-            }
         } catch (NumberFormatException ignore) {
-            // 非法值用默认 7 天 / 关
+            // 非法值用默认 7 天
         }
         List<Map<String, Object>> stale = stalePausedRuns(staleDays);
         if (stale.isEmpty()) {

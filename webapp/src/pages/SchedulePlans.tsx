@@ -71,6 +71,30 @@ export default function SchedulePlansPage() {
     onError: (e) => message.error(String((e as Error).message)),
   });
 
+  const reloadNow = useMutation({
+    mutationFn: api.reloadSchedulerConfig,
+    onSuccess: (r) => {
+      message.success(t('schedulePlans.toast.reloaded', {
+        factor: r.optimizationFactor, max: r.maxConcurrent,
+      }));
+      qc.invalidateQueries({ queryKey: ['scheduler-config'] });
+    },
+    onError: (e) => message.error(String((e as Error).message)),
+  });
+
+  const staleSetting = useQuery({
+    queryKey: ['stale-pause-setting'],
+    queryFn: api.stalePauseSetting,
+  });
+  const saveStaleSetting = useMutation({
+    mutationFn: (days: number) => api.updateStalePauseSetting(days),
+    onSuccess: (r) => {
+      message.success(t('schedulePlans.toast.staleSaved', { d: r.autoDismissDays }));
+      qc.invalidateQueries({ queryKey: ['stale-pause-setting'] });
+    },
+    onError: (e) => message.error(String((e as Error).message)),
+  });
+
   if (error) {
     return <Alert type="error" showIcon message={t('schedulePlans.error.load')}
       description={String((error as Error).message)} />;
@@ -114,8 +138,15 @@ export default function SchedulePlansPage() {
 
       <Card size="small"
         title={t('schedulePlans.listTitle', { n: items.length })}
-        extra={<Button size="small" icon={<ReloadOutlined />} onClick={() => refetch()}>
-          {t('schedulePlans.refresh')}</Button>}>
+        extra={<Space>
+          <Button size="small" type="primary" loading={reloadNow.isPending}
+            onClick={() => reloadNow.mutate()}>
+            {t('schedulePlans.action.reloadNow')}
+          </Button>
+          <Button size="small" icon={<ReloadOutlined />} onClick={() => refetch()}>
+            {t('schedulePlans.refresh')}
+          </Button>
+        </Space>}>
         <Table<Plan>
           rowKey="id"
           size="small"
@@ -167,6 +198,26 @@ export default function SchedulePlansPage() {
             },
           ]}
         />
+      </Card>
+
+      <Card size="small" title={t('schedulePlans.staleTitle')}>
+        <Space size={12} wrap>
+          <Typography.Text>{t('schedulePlans.staleAutoDismiss')}</Typography.Text>
+          <InputNumber
+            min={0} max={365}
+            value={staleSetting.data?.autoDismissDays ?? 0}
+            onChange={(v) => {
+              if (v != null) {
+                // 本地先改，点保存才落库（与排程参数一样，保存后约 60s 生效）
+                saveStaleSetting.mutate(v);
+              }
+            }}
+            disabled={saveStaleSetting.isPending}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {t('schedulePlans.staleHint')}
+          </Typography.Text>
+        </Space>
       </Card>
 
       <Modal

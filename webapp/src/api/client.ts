@@ -1118,6 +1118,11 @@ export const api = {
     maxConcurrent: number; optimizationFactor: number; tickMs: number;
   }>('/api/scheduler/config'),
 
+  /** 手动重载排程参数（绕过 60s 自动重载）。 */
+  reloadSchedulerConfig: () => req<{
+    reloaded: boolean; maxConcurrent: number; optimizationFactor: number; tickMs: number;
+  }>('/api/scheduler/reload-config', { method: 'POST' }),
+
   /** 死锁/饥饿风险清单（P2-5）。 */
   schedulerDeadlockCheck: (heldMinutes = 30, waitMinutes = 30) =>
     req<{ total: number; heldThresholdMinutes: number; waitThresholdMinutes: number;
@@ -1144,6 +1149,14 @@ export const api = {
   }) => req<{ created: number; planNo: string }>('/api/schedule-plans', {
     method: 'POST', body: JSON.stringify(body),
   }),
+
+  /** 陈旧暂停自动 dismiss 天数（0=关）。 */
+  stalePauseSetting: () => req<{ autoDismissDays: number }>('/api/settings/stale-pause'),
+
+  updateStalePauseSetting: (autoDismissDays: number) =>
+    req<{ autoDismissDays: number }>('/api/settings/stale-pause', {
+      method: 'PUT', body: JSON.stringify({ autoDismissDays }),
+    }),
 
   updateSchedulePlan: (id: number, body: {
     optimizationFactor?: number; maxIterationsRunning?: number;

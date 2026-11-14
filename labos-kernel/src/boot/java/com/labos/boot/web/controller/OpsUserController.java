@@ -271,6 +271,31 @@ public class OpsUserController {
         return updateHeartbeat(body, session, req);
     }
 
+    // ---------------------------------------------------------------- 陈旧暂停自动处置设置
+
+    @GetMapping(value = "/settings/stale-pause", produces = "application/json; charset=utf-8")
+    public String stalePauseSetting() {
+        return Jsons.obj("autoDismissDays", RuntimeSettings.stalePauseAutoDismissDays());
+    }
+
+    @PutMapping(value = "/settings/stale-pause", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> updateStalePauseSetting(
+            @RequestBody(required = false) String body,
+            @RequestAttribute(name = ApiAuthInterceptor.SESSION_ATTR, required = false)
+                    AuthService.Session session,
+            HttpServletRequest req) throws SQLException {
+        Integer days = jsonInt(body, "autoDismissDays");
+        if (days == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(err("必填 autoDismissDays（0=关）"));
+        }
+        RuntimeSettings.saveStalePauseAutoDismiss(db, TENANT, days);
+        audit.record(session, "settings.stalePauseAutoDismiss", "sys_setting", null,
+                "autoDismissDays=" + days, null, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("autoDismissDays",
+                RuntimeSettings.stalePauseAutoDismissDays()));
+    }
+
     /** 与原 {@code intParam(ex, name, def)} 一致的宽松解析：非法值回退默认。 */
     private static int intOr(String raw, int def) {
         if (raw == null || raw.isBlank()) {
