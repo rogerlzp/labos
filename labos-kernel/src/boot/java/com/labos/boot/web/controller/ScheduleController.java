@@ -11,6 +11,7 @@ import com.labos.kernel.persistence.ScheduleMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -92,6 +93,23 @@ public class ScheduleController {
         audit.record(session(req), "schedulePlan.update", "schedule_plan", id, null,
                 null, req.getRemoteAddr());
         return ok(Map.of("updated", r, "id", id));
+    }
+
+    /**
+     * 删一条排程计划。
+     *
+     * <p>为什么需要它：{@code uk_schedule_plan UNIQUE (tenant_id, plan_no)} 不带状态条件
+     * ⇒ 归档（status=archived）<b>不释放 plan_no</b>，同一个号再也建不了。
+     * 排程计划建多了要能删（生产需求，也是测试脚本能真正清干净的前提）。
+     */
+    @DeleteMapping(value = "/schedule-plans/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deletePlan(@PathVariable long id,
+                                             HttpServletRequest req) {
+        int r = m().deleteSchedulePlan(TENANT, id);
+        if (r == 0) return notFound("排程不存在: " + id);
+        audit.record(session(req), "schedulePlan.delete", "schedule_plan", id, null,
+                null, req.getRemoteAddr());
+        return ok(Map.of("deleted", r, "id", id));
     }
 
     // ---------------------------------------------------------------- resource_booking

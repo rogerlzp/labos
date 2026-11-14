@@ -32,6 +32,9 @@ public interface ScheduleMapper {
                            @Param("iterationDelaySec") Integer iterationDelaySec,
                            @Param("externalId") String externalId);
 
+    /** 物理删除一条排程计划（释放 plan_no —— uk_schedule_plan 不带状态条件，归档不释放号）。 */
+    int deleteSchedulePlan(@Param("t") long tenantId, @Param("id") long id);
+
     List<Map<String, Object>> selectResourceBookings(@Param("t") long tenantId,
                                                      @Param("runId") Long runId,
                                                      @Param("limit") int limit);

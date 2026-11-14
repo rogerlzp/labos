@@ -13,8 +13,9 @@ import { useT } from '../i18n';
  * 排程参数（schedule_plan）管理页——designer 角色。
  *
  * <p>对应 Director §5.6 的 Schedule / Optimization Factor / Max Iterations Running。
- * 这些参数由调度循环每 30 tick（约 60s）自动重载（见 /api/scheduler/config），
- * 新建/编辑后约 1 分钟生效。
+ * 这些参数由调度循环每 30 tick 自动重载（见 /api/scheduler/config）。
+ * ⚠ 重载周期**不是固定 60s**：周期 = tickMs × 30，默认配置下约 60s，
+ * 但 delay=1 时约 90s、delay=5 时约 210s（tickMs 随排程参数一起变）。
  */
 interface Plan {
   id: number;
@@ -208,7 +209,9 @@ export default function SchedulePlansPage() {
             value={staleSetting.data?.autoDismissDays ?? 0}
             onChange={(v) => {
               if (v != null) {
-                // 本地先改，点保存才落库（与排程参数一样，保存后约 60s 生效）
+                // 改动**即时落库**（onChange 直接提交，这一栏没有「保存」按钮）——
+                // 生效要等调度器下一次重载，周期随 tickMs 变化：默认 60s、
+                // delay=1 时 90s、delay=5 时 210s（不是固定 60s）
                 saveStaleSetting.mutate(v);
               }
             }}

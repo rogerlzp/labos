@@ -193,6 +193,9 @@ DB=(
   # S3 分批执行落库：建批幂等/快照、失败批重跑 attempt_no=2、成功批拒重跑、
   # NULL 回归、状态聚合、批边界扣留（用假执行体，不真动设备）
   "workflow.BatchDbSelfTest"
+  # §4.5.2 物料生命周期的**两条自动卸载路径**（非批次 settle / 批次聚合终态）：
+  # process 物料卸载、inventory 原位不动；判别点 = 单批终态不得卸载、整单终态才卸载
+  "workflow.MaterialUnloadPathsDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据
   "workflow.StartupSettleSelfTest"
   # S3.2-A 重启 rehydrate：queued run 装回调度队列 / running+paused 不枚举 / 幂等

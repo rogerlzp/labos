@@ -937,11 +937,44 @@ public final class BatchOrchestrator {
             ExperimentStateProjector.syncByBatchAggregate(c, tenantId, experimentId, aggregate);
         }
         // §4.5.2 批次：整单终态时卸载全部批次 run 的 process 物料（失败只 warn，不阻断聚合）。
-        if ("completed".equals(aggregate) || "failed".equals(aggregate)
-                || "aborted".equals(aggregate) || "cancelled".equals(aggregate)) {
+        //
+        // ⚠ **口径陷阱（2026-11-14 独立评审挖出）**：
+        //   BatchPlanner.aggregateExperimentStatus 的"全部批次跑完"终态值是 **"finished"**，
+        //   **不是** "completed"。而这里原来只列了 completed/failed/aborted/cancelled
+        //   ⇒ **正常跑完的批次实验永远不会卸载 process 物料**（板子一直占着点位）。
+        //   ⇒ 终态判定必须走同一个口径（见 isExperimentTerminal）。
+        if (isExperimentTerminal(aggregate)) {
             unloadProcessMaterialsByExperiment(experimentId);
         }
         return aggregate;
+    }
+
+    /**
+     * 实验级终态判定（§4.5.2 卸载的唯一口径）。
+     *
+     * <p><b>为什么要有这个方法</b>：实验状态的"终态"有两个来源，**字面量不一样**：
+     * <ul>
+     *   <li>{@link BatchPlanner#aggregateExperimentStatus} 全部批次跑完 ⇒ <b>"finished"</b>；</li>
+     *   <li>非批次路径 {@code ExperimentExecutor.settle} 用 <b>"completed"</b>。</li>
+     * </ul>
+     * 两边各写一份字面量列表，早晚有一边漏（本次就漏了 "finished"）⇒ 统一走这里。
+     *
+     * <p>覆盖：completed / finished / failed / aborted / cancelled。
+     */
+    static boolean isExperimentTerminal(String status) {
+        if (status == null) {
+            return false;
+        }
+        switch (status) {
+            case "completed":
+            case "finished":
+            case "failed":
+            case "aborted":
+            case "cancelled":
+                return true;
+            default:
+                return false;
+        }
     }
 
     /** §4.5.2 批次：实验终态卸载跨所有批次 run 的 lifecycle='process' 物料。 */

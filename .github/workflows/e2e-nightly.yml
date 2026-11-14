@@ -83,20 +83,24 @@ jobs:
           psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/95_seed_data.sql
           psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/99_verify.sql
 
-      - name: 编译内核并起 ApiServer（18080）
+      - name: 编译内核并起 LabosApplication（18080）
+        # ⚠ 启动方式：**必须是** com.labos.boot.LabosApplication。
+        #   `com.labos.kernel.api.ApiServer` 的 main 已在 A 批删除（见 scripts/start-kernel.sh 头注）
+        #   —— 原来这里写的是旧方式，等于内核压根起不来，health 检查必然失败。
+        #   classpath 也必须带 `lib/spring/*`（Spring Boot 依赖，漏了启动即报错）。
         run: |
           cd labos-kernel
           javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
             $(find src/main -name '*.java')
-          nohup java -cp "out:lib/postgresql-42.7.3.jar" \
-            com.labos.kernel.api.ApiServer 18080 >/tmp/labos-api.log 2>&1 &
+          nohup java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+            com.labos.boot.LabosApplication >/tmp/labos-api.log 2>&1 &
           cd "$GITHUB_WORKSPACE"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && break
             sleep 1
           done
           curl -sf http://127.0.0.1:18080/health >/dev/null \
-            || { echo "API 没起来"; tail -60 /tmp/labos-api.log; exit 1; }
+            || { echo "内核没起来"; tail -60 /tmp/labos-api.log; exit 1; }
 
       - name: 前端依赖 + 起 dev server（5173）
         run: |

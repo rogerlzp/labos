@@ -1,0 +1,129 @@
+name: Idempotency
+
+# 幂等门禁：同一批 verify 脚本**连跑两遍**，断言两遍结果完全一致 + 终态基线归零。
+#
+# 为什么单独一个 workflow（而不是塞进 ci.yml）：
+#   ci.yml 的定位写得很清楚 ——「只跑**不需要数据库**的部分」。
+#   幂等门禁必须连库（要造数、要清数据），所以另起一个带 PG 的 job。
+#
+# 为什么需要它（2026-11-13/14 两轮独立评审连续踩到）：
+#   · verify-role-permissions.py 用固定 planNo + 归档式清理
+#     ⇒ uk_schedule_plan 不带状态条件，归档不释放 plan_no ⇒ 第二次跑必 409；
+#   · verify-schedule-plans-page.py 压根不清理 ⇒ 每跑一次多一条排程 ⇒「plan=0」不成立。
+#   两个坑的共同点：**只在"跑一次"的时候看不出来**。
+#   所以验收门槛不能是"跑一遍全绿"，必须是"**跑两遍、数字一样**"。
+#
+# 覆盖：scripts/verify-idempotency.py
+#   ① 两轮各 0 失败；② 同脚本两轮「通过数/失败数」逐个一致；
+#   ③ 终态 schedule_plan=0 / resource_booking=0 / 陈旧 run=0。
+#
+# 与 e2e-nightly 的分工：那边跑**页面轨 e2e**（流程行为），这边跑**可复现性**（数字稳定性）。
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    # 每天 19:00 UTC = 次日 03:00 北京时间（错开 e2e-nightly 的 18:00 UTC）
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+jobs:
+  idempotency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: labos
+          POSTGRES_PASSWORD: Labos@Idem
+          POSTGRES_DB: labdb
+        ports:
+          - 5432:5432
+        # 等库真的能连上再往下走，否则灌库会偶发 connection refused
+        options: >-
+          --health-cmd "pg_isready -U labos"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      LABOS_DB_HOST: 127.0.0.1
+      LABOS_DB_PORT: '5432'
+      LABOS_DB_NAME: labdb
+      LABOS_DB_USER: labos
+      LABOS_DB_PASS: Labos@Idem
+      LABOS_API: http://127.0.0.1:18080
+      LABOS_WEB: http://127.0.0.1:5173
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: 'webapp/package-lock.json'
+
+      - name: 灌库（90_all_in_one + seed + 自检）
+        env:
+          PGPASSWORD: Labos@Idem
+        run: |
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/90_all_in_one.sql
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/95_seed_data.sql
+          psql -h 127.0.0.1 -U labos -d labdb -v ON_ERROR_STOP=1 -f pg_rebuild/schema/99_verify.sql
+
+      - name: 编译内核并起 LabosApplication（18080）
+        # ⚠ 启动方式必须是 com.labos.boot.LabosApplication：
+        #   `com.labos.kernel.api.ApiServer` 的 main 已在 A 批删除（见 scripts/start-kernel.sh 头注），
+        #   e2e-nightly.yml 里还写着旧方式 —— 那条 workflow 现在起不来内核。
+        #   classpath 也必须带 `lib/spring/*`（Spring Boot 依赖）。
+        run: |
+          cd labos-kernel
+          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
+            $(find src/main -name '*.java')
+          nohup java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+            com.labos.boot.LabosApplication >/tmp/labos-api.log 2>&1 &
+          cd "$GITHUB_WORKSPACE"
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:18080/health >/dev/null \
+            || { echo "内核没起来"; tail -60 /tmp/labos-api.log; exit 1; }
+
+      - name: 前端依赖 + 起 dev server（5173）
+        run: |
+          cd webapp
+          npm ci
+          nohup npm run dev >/tmp/labos-web.log 2>&1 &
+          cd "$GITHUB_WORKSPACE"
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:5173 >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:5173 >/dev/null \
+            || { echo "前端没起来"; tail -60 /tmp/labos-web.log; exit 1; }
+
+      - name: 安装 Playwright（Chromium）
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: 幂等门禁（连跑两遍 + 终态基线）
+        run: ./scripts/ci-gate.sh --idem
+
+      - name: 失败时附日志
+        if: failure()
+        run: |
+          echo "==== 内核日志 ===="; tail -80 /tmp/labos-api.log || true
+          echo "==== 前端日志 ===="; tail -80 /tmp/labos-web.log || true

@@ -17,11 +17,20 @@
 #           ② 顺序执行（节点严格按顺序发生，不只是"都完成了"）
 #           ③ 并行 + 变量条件 + 异或网关（真并行、按变量选边）
 #           ④ 暂停 / 恢复（暂停期间不再下发指令，恢复后跑完且不重复）
+#   段 2 · 幂等门禁（要环境，约 1 分钟，`--idem` 开启）
+#         `scripts/verify-idempotency.py`：**同一批脚本连跑两遍**，
+#         断言两遍的「通过数/失败数」逐个一致 + 终态基线归零
+#         （schedule_plan=0 / resource_booking=0 / 陈旧 run=0）。
+#         为什么单独一段：2026-11-13/14 连续两轮评审踩的都是
+#         「**只跑一次看不出来**」的坑（固定 planNo 撞唯一键、脚本不清理）。
+#         这段就是专门防这个的 —— 所以它默认**不开**，由 CI 单独一个 job 触发。
 #
 # 用法：
-#   ./scripts/ci-gate.sh              # 两段都跑
+#   ./scripts/ci-gate.sh              # 段 0 + 段 1
 #   ./scripts/ci-gate.sh --fast       # 只跑段 0（不需要设备/库）
 #   ./scripts/ci-gate.sh --scenarios  # 只跑段 1（核心场景）
+#   ./scripts/ci-gate.sh --idem       # 只跑段 2（幂等门禁）
+#   ./scripts/ci-gate.sh --all        # 三段都跑
 #   ./scripts/ci-gate.sh --only 1     # 只跑场景 1（透传给 core-scenarios.py）
 # ============================================================================
 set -uo pipefail
@@ -46,6 +55,7 @@ export LABOS_AUTH="${LABOS_AUTH:-1}"
 
 WANT_FAST=1
 WANT_SCEN=1
+WANT_IDEM=0
 ONLY=""
 # 用 while 而不是 `for a in "$@"`：后者迭代的是**展开时**的参数列表，
 # shift 改不了它 ⇒ "--only 2" 里的 "2" 会被当成下一个参数（报"未知参数：2"）。
@@ -53,8 +63,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --fast)      WANT_SCEN=0; shift ;;
     --scenarios) WANT_FAST=0; shift ;;
+    --idem)      WANT_IDEM=1; WANT_FAST=0; WANT_SCEN=0; shift ;;
+    --all)       WANT_IDEM=1; shift ;;
     --only)      ONLY="--only ${2:-1}"; shift 2 ;;
-    -h|--help)   sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
@@ -109,6 +121,22 @@ if [[ "$WANT_SCEN" == "1" ]]; then
     fail "核心场景有失败（$F 条）"
   else
     pass "核心场景 $N / 0"
+  fi
+fi
+
+# ---------------------------------------------------------------- 段 2 · 幂等门禁
+if [[ "$WANT_IDEM" == "1" ]]; then
+  note "2. 幂等门禁（同一批脚本连跑两遍 + 终态基线归零）"
+  echo "  需要：中控 ${LABOS_API} · 前端 ${LABOS_WEB} · DB ${LABOS_DB_HOST}:${LABOS_DB_PORT}/${LABOS_DB_NAME}"
+  OUT=$(python3 scripts/verify-idempotency.py 2>&1)
+  echo "$OUT"
+  N=$(echo "$OUT" | grep -oE '通过 [0-9]+ /' | grep -oE '[0-9]+' | tail -1)
+  F=$(echo "$OUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | tail -1)
+  N=${N:-0}; F=${F:-1}
+  if [[ "$F" != "0" ]]; then
+    fail "幂等门禁有失败（$F 条）"
+  else
+    pass "幂等门禁 $N / 0"
   fi
 fi
 

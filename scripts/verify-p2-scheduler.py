@@ -149,6 +149,29 @@ def main():
     else:
         bad("deck-pairing-check 结构缺失", str(d)[:120])
 
+    print("── 陈旧暂停治理天数：上下限夹紧（与前端 max=365 同口径）──")
+    # 原值先存下来，测完还原（别把设置留在非默认值上）
+    try:
+        orig = api("/api/settings/stale-pause", token=token).get("autoDismissDays", 0)
+    except Exception as e:
+        orig = 0
+        bad("读陈旧暂停设置失败", str(e)[:80])
+    r = api("/api/settings/stale-pause", "PUT", token=token, body={"autoDismissDays": -5})
+    if r.get("autoDismissDays") == 0:
+        ok("负数 → 夹到 0", "")
+    else:
+        bad("负数未夹到 0", str(r)[:80])
+    r = api("/api/settings/stale-pause", "PUT", token=token, body={"autoDismissDays": 99999})
+    if r.get("autoDismissDays") == 365:
+        ok("超上限 → 夹到 365（与前端 max=365 同口径）", "")
+    else:
+        bad("超上限未夹到 365（前后端口径仍不一致）", str(r)[:80])
+    r = api("/api/settings/stale-pause", "PUT", token=token, body={"autoDismissDays": orig})
+    if r.get("autoDismissDays") == orig:
+        ok("设置已还原为原值", "autoDismissDays=%s" % orig)
+    else:
+        bad("设置还原失败", str(r)[:80])
+
     # 清理
     preclean(token)
 

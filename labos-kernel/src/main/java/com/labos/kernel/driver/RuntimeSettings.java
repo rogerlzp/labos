@@ -36,6 +36,15 @@ public final class RuntimeSettings {
     private static volatile int stalePauseAutoDismissDays =
             (int) envLong("LABOS_AUTO_DISMISS_STALE_PAUSE_DAYS", 0L);
 
+    /**
+     * 陈旧暂停自动 dismiss 天数的上限。
+     *
+     * <p>为什么要有上限：前端输入框限死 365（一年），但后端原来只夹下限
+     * （Math.max(0, days)）⇒ 前后端校验不一致：直接调接口能写进 99999 这种值，
+     * 读回来还是 99999（测试方案 B1 实测记录过）。口径统一到 365。
+     */
+    public static final int MAX_STALE_AUTO_DISMISS_DAYS = 365;
+
     private RuntimeSettings() {
     }
 
@@ -79,7 +88,8 @@ public final class RuntimeSettings {
             }
             Long auto = readLong(tenantId, "stale_pause.auto_dismiss_days");
             if (auto != null) {
-                stalePauseAutoDismissDays = Math.max(0, auto.intValue());
+                stalePauseAutoDismissDays = Math.min(MAX_STALE_AUTO_DISMISS_DAYS,
+                        Math.max(0, auto.intValue()));
                 log.info("[设置] 陈旧暂停自动 dismiss：{} 天（0=关）", stalePauseAutoDismissDays);
             }
         } catch (RuntimeException e) {
@@ -98,7 +108,7 @@ public final class RuntimeSettings {
     /** 陈旧暂停自动 dismiss 天数落库 + 立即生效（0=关）。 */
     public static void saveStalePauseAutoDismiss(DbConfig db, long tenantId, int days)
             throws SQLException {
-        int eff = Math.max(0, days);
+        int eff = Math.min(MAX_STALE_AUTO_DISMISS_DAYS, Math.max(0, days));
         stalePauseAutoDismissDays = eff;
         upsert(tenantId, "stale_pause.auto_dismiss_days", eff);
     }

@@ -49,6 +49,11 @@
     WHERE id = #{id}
   </update>
 
+  <delete id="deleteSchedulePlan">
+    DELETE FROM schedule_plan
+     WHERE tenant_id = #{t} AND id = #{id}
+  </delete>
+
   <!-- ============================================================ resource_booking -->
 
   <select id="selectResourceBookings" resultType="java.util.Map">
