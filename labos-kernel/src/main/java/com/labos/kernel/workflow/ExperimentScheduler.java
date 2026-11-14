@@ -220,31 +220,42 @@ public final class ExperimentScheduler {
      * <p>映射（Director §5.6）：{@code max_iterations_running → maxConcurrent}（硬上限=线程池 4）；
      * {@code iteration_delay_sec → tickMs}（在基础 tick 上追加错峰延迟）；
      * {@code optimization_factor → optimizationFactor}（队列排序权重）。
-     * 幂等；任何异常保持现值（fail-closed：排程参数不可读也不影响已有行为）。
+     *
+     * <p><b>无 active plan ⇒ 回默认 4/50/2000</b>（评审 P1 缺陷：原来只在循环体内赋值，
+     * 表空时循环不执行、旧值残留；删掉排程参数后系统仍按旧参数调度）。
+     * 读库异常 ⇒ 保持现值（fail-closed，不拿默认盖掉最后一次已知配置）。
      */
     public void reloadConfig() {
         try {
             com.labos.kernel.persistence.ScheduleMapper sm =
                     com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.ScheduleMapper.class);
+            Map<String, Object> active = null;
             for (Map<String, Object> p : sm.selectSchedulePlans(tenantId)) {
                 String status = p.get("status") == null ? "" : String.valueOf(p.get("status"));
                 if ("archived".equals(status) || "done".equals(status)) {
                     continue;   // 只取 active/queued/draft
                 }
-                Integer mi = intOrNull(p.get("maxIterationsRunning"));
-                if (mi != null && mi > 0) {
-                    maxConcurrent = Math.min(mi, MAX_CONCURRENT);
-                }
-                Integer delay = intOrNull(p.get("iterationDelaySec"));
-                if (delay != null && delay > 0) {
-                    tickMs = TICK_MS + delay * 1000L;
-                }
-                Integer of = intOrNull(p.get("optimizationFactor"));
-                if (of != null) {
-                    optimizationFactor = Math.max(0, Math.min(100, of));
-                }
+                active = p;
                 break;   // selectSchedulePlans 按 id DESC，第一条即最新
+            }
+            if (active == null) {
+                maxConcurrent = MAX_CONCURRENT;
+                tickMs = TICK_MS;
+                optimizationFactor = 50;
+                return;
+            }
+            Integer mi = intOrNull(active.get("maxIterationsRunning"));
+            if (mi != null && mi > 0) {
+                maxConcurrent = Math.min(mi, MAX_CONCURRENT);
+            }
+            Integer delay = intOrNull(active.get("iterationDelaySec"));
+            if (delay != null && delay > 0) {
+                tickMs = TICK_MS + delay * 1000L;
+            }
+            Integer of = intOrNull(active.get("optimizationFactor"));
+            if (of != null) {
+                optimizationFactor = Math.max(0, Math.min(100, of));
             }
         } catch (RuntimeException e) {
             log.warn("[调度] 重载排程参数失败（保持现值）: {}", e.getMessage());
