@@ -115,4 +115,28 @@ public class SchedulerController {
                 "waitThresholdMinutes", wait.toMinutes(),
                 "risks", new Jsons.Raw(Jsons.arr(items)));
     }
+
+    /** P2-4 当前排程参数（消费 schedule_plan 的结果）。 */
+    @GetMapping(value = "/api/scheduler/config", produces = "application/json; charset=utf-8")
+    public String config() {
+        java.util.Map<String, Object> c = scheduler.config();
+        return Jsons.obj("maxConcurrent", c.get("maxConcurrent"),
+                "optimizationFactor", c.get("optimizationFactor"),
+                "tickMs", c.get("tickMs"));
+    }
+
+    /** P2 暂停堆积治理：列出暂停超过 N 天的 run（默认 7 天，不自动处置）。 */
+    @GetMapping(value = "/api/scheduler/stale-pauses", produces = "application/json; charset=utf-8")
+    public String stalePauses(@RequestParam(defaultValue = "7") int days) {
+        java.util.List<java.util.Map<String, Object>> stale = scheduler.stalePausedRuns(days);
+        java.util.List<String> items = new ArrayList<>();
+        for (java.util.Map<String, Object> m : stale) {
+            items.add(Jsons.obj(
+                    "runId", m.get("runId"), "runNo", m.get("runNo"),
+                    "pauseKind", m.get("pauseKind"), "pausedAt", m.get("pausedAt"),
+                    "pauseNodeKey", m.get("pauseNodeKey"), "nodeName", m.get("nodeName")));
+        }
+        return Jsons.obj("total", stale.size(), "days", days,
+                "items", new Jsons.Raw(Jsons.arr(items)));
+    }
 }

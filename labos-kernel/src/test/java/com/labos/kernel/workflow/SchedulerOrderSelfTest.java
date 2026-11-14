@@ -57,6 +57,18 @@ public final class SchedulerOrderSelfTest {
         eq("三级全同按原顺序（稳定排序）", "5,6",
                 order(q(5, "2026-11-05T09:00:00", 1, 1), q(6, "2026-11-05T09:00:00", 1, 1)));
 
+        section("7. P2-4 optimizationFactor 排序切换（queueOrderFor）");
+        // factor >= 50 → priority 优先（优化）；factor < 50 → EDD 优先（现状）
+        eq("factor=50 priority 优先", "3,2,1",
+                orderBy(50, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T08:00:00", 2, 2),
+                        q(3, "2026-11-05T09:00:00", 9, 3)));
+        eq("factor=0 EDD 优先", "2,1,3",
+                orderBy(0, q(1, "2026-11-05T08:00:00", 1, 1), q(2, "2026-11-05T08:00:00", 2, 2),
+                        q(3, "2026-11-05T09:00:00", 9, 3)));
+        eq("factor=100 同 priority 再比 EDD", "1,3,2",
+                orderBy(100, q(1, "2026-11-05T08:00:00", 9, 1), q(2, "2026-11-05T09:00:00", 5, 2),
+                        q(3, "2026-11-05T08:00:00", 9, 3)));
+
         System.out.printf("%n通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {
             System.exit(1);
@@ -74,6 +86,14 @@ public final class SchedulerOrderSelfTest {
     private static String order(ExperimentScheduler.Queued... items) {
         List<ExperimentScheduler.Queued> list = new ArrayList<>(List.of(items));
         list.sort(ExperimentScheduler.QUEUE_ORDER);
+        return list.stream().map(x -> String.valueOf(x.experimentRunId()))
+                .collect(Collectors.joining(","));
+    }
+
+    /** 按 queueOrderFor(factor) 排序（P2-4 optimizationFactor 切换）。 */
+    private static String orderBy(int factor, ExperimentScheduler.Queued... items) {
+        List<ExperimentScheduler.Queued> list = new ArrayList<>(List.of(items));
+        list.sort(ExperimentScheduler.queueOrderFor(factor));
         return list.stream().map(x -> String.valueOf(x.experimentRunId()))
                 .collect(Collectors.joining(","));
     }

@@ -121,6 +121,12 @@ public final class ExperimentScheduler {
                                long experimentRunId, String since, String message) {
     }
 
+    /** 当前排程参数（P2-4 可观测，供 /api/scheduler/config）。 */
+    public Map<String, Object> config() {
+        return Map.of("maxConcurrent", maxConcurrent, "optimizationFactor", optimizationFactor,
+                "tickMs", tickMs);
+    }
+
     /**
      * 队列快照排序口径：<b>与 {@link #dispatch()} 完全一致</b>——
      * deadline ASC（无截止最后，EDD 优先）→ priority DESC → submittedAt ASC。
@@ -179,6 +185,11 @@ public final class ExperimentScheduler {
             new java.util.concurrent.atomic.AtomicLong();
     private final AtomicBoolean started = new AtomicBoolean(false);
 
+    // P2-4 消费 schedule_plan：动态排程参数（reloadConfig 从最新 active plan 读，失败保持现值）。
+    private volatile int maxConcurrent = MAX_CONCURRENT;   // max_iterations_running（硬上限=线程池大小）
+    private volatile long tickMs = TICK_MS;                // iteration_delay_sec → 追加延迟
+    private volatile int optimizationFactor = 50;          // 队列排序权重（>=50 priority 优先；否则 EDD 优先）
+
     /** 调度循环 tick 计数（只在 loop 线程读写，用于自动续队节流）。 */
     private long ticks;
 
@@ -195,10 +206,113 @@ public final class ExperimentScheduler {
         if (!started.compareAndSet(false, true)) {
             return;
         }
+        reloadConfig();   // P2-4：消费 schedule_plan 的排程参数
         Thread t = new Thread(this::loop, "experiment-scheduler");
         t.setDaemon(true);
         t.start();
-        log.info("[调度] 已启动（资源级准入，最多 " + MAX_CONCURRENT + " 个实验并行）");
+        log.info("[调度] 已启动（资源级准入，最多 " + maxConcurrent + " 个实验并行，optimizationFactor="
+                + optimizationFactor + "，tick=" + tickMs + "ms）");
+    }
+
+    /**
+     * P2-4：从最新一条 active schedule_plan 重载排程参数。
+     *
+     * <p>映射（Director §5.6）：{@code max_iterations_running → maxConcurrent}（硬上限=线程池 4）；
+     * {@code iteration_delay_sec → tickMs}（在基础 tick 上追加错峰延迟）；
+     * {@code optimization_factor → optimizationFactor}（队列排序权重）。
+     * 幂等；任何异常保持现值（fail-closed：排程参数不可读也不影响已有行为）。
+     */
+    public void reloadConfig() {
+        try {
+            com.labos.kernel.persistence.ScheduleMapper sm =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.ScheduleMapper.class);
+            for (Map<String, Object> p : sm.selectSchedulePlans(tenantId)) {
+                String status = p.get("status") == null ? "" : String.valueOf(p.get("status"));
+                if ("archived".equals(status) || "done".equals(status)) {
+                    continue;   // 只取 active/queued/draft
+                }
+                Integer mi = intOrNull(p.get("maxIterationsRunning"));
+                if (mi != null && mi > 0) {
+                    maxConcurrent = Math.min(mi, MAX_CONCURRENT);
+                }
+                Integer delay = intOrNull(p.get("iterationDelaySec"));
+                if (delay != null && delay > 0) {
+                    tickMs = TICK_MS + delay * 1000L;
+                }
+                Integer of = intOrNull(p.get("optimizationFactor"));
+                if (of != null) {
+                    optimizationFactor = Math.max(0, Math.min(100, of));
+                }
+                break;   // selectSchedulePlans 按 id DESC，第一条即最新
+            }
+        } catch (RuntimeException e) {
+            log.warn("[调度] 重载排程参数失败（保持现值）: {}", e.getMessage());
+        }
+    }
+
+    private static Integer intOrNull(Object v) {
+        return v instanceof Number n ? n.intValue() : null;
+    }
+
+    /** 当前队列排序：optimizationFactor>=50 → priority 优先（优化）；否则 EDD 优先（现状）。 */
+    private Comparator<Queued> queueOrder() {
+        return queueOrderFor(optimizationFactor);
+    }
+
+    /** 纯逻辑（可单测）：给定 optimizationFactor 返回队列排序。 */
+    static Comparator<Queued> queueOrderFor(int optimizationFactor) {
+        if (optimizationFactor >= 50) {
+            return Comparator
+                    .comparingInt(Queued::priority).reversed()
+                    .thenComparing((Queued q) -> q.deadline() == null ? "9999" : q.deadline())
+                    .thenComparingLong(Queued::submittedAt);
+        }
+        return QUEUE_ORDER;
+    }
+
+    /**
+     * P2 暂停堆积治理：找出暂停超过 {@code days} 天的 run（不自动处置，只供告警/人确认）。
+     */
+    public List<Map<String, Object>> stalePausedRuns(int days) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        try {
+            java.time.Instant cutoff = Instant.now().minus(Duration.ofDays(Math.max(days, 1)));
+            for (Map<String, Object> m : com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.PauseMapper.class).selectPausedRuns(tenantId)) {
+                Object at = m.get("pausedAt");
+                java.time.Instant pausedAt = null;
+                if (at instanceof java.sql.Timestamp ts) {
+                    pausedAt = ts.toInstant();
+                } else if (at instanceof java.time.OffsetDateTime odt) {
+                    pausedAt = odt.toInstant();
+                }
+                if (pausedAt != null && pausedAt.isBefore(cutoff)) {
+                    out.add(m);
+                }
+            }
+        } catch (RuntimeException e) {
+            log.warn("[调度] 查陈旧暂停失败: {}", e.getMessage());
+        }
+        return out;
+    }
+
+    /** 陈旧暂停告警（不自动处置）：每 30 tick 扫一次，有就 warn + 计数。 */
+    private void warnStalePauses() {
+        int staleDays = 7;
+        try {
+            String env = System.getenv("LABOS_STALE_PAUSE_DAYS");
+            if (env != null && !env.isBlank()) {
+                staleDays = Math.max(1, Integer.parseInt(env.trim()));
+            }
+        } catch (NumberFormatException ignore) {
+            // 非法值用默认 7 天
+        }
+        List<Map<String, Object>> stale = stalePausedRuns(staleDays);
+        if (!stale.isEmpty()) {
+            log.warn("[调度] 有 {} 条暂停超过 {} 天的 run（等待人工处置，不自动 dismiss）",
+                    stale.size(), staleDays);
+        }
     }
 
     /**
@@ -341,11 +455,16 @@ public final class ExperimentScheduler {
                 if (ticks % AUTO_CONTINUE_EVERY_TICKS == 0) {
                     autoContinueHeldBatches();
                 }
+                // P2-4/P2 治理：每 30 tick（约 1 分钟）重载排程参数 + 扫陈旧暂停告警。
+                if (ticks % 30 == 0) {
+                    reloadConfig();
+                    warnStalePauses();
+                }
             } catch (Exception e) {
                 log.error("[调度] 循环异常: " + e.getMessage());
             }
             try {
-                Thread.sleep(TICK_MS);
+                Thread.sleep(tickMs);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 return;
@@ -438,14 +557,14 @@ public final class ExperimentScheduler {
         //   - 读不到扣留状态（UNKNOWN）⇒ 整轮不派发（fail-closed，绝不 fail-open）。
         RuntimeHold holds = new RuntimeHold(db, tenantId);
 
-        // 单一来源：直接复用 QUEUE_ORDER，避免页面位次（同样用 QUEUE_ORDER）与
-        // 实际出队顺序各写一份比较器、日后只改一份导致两边分叉。
-        snapshot.sort(QUEUE_ORDER);
+        // 单一来源：直接复用 queueOrder()（P2-4 消费 optimization_factor），
+        // 避免页面位次与真实出队顺序各写一份比较器、日后只改一份导致两边分叉。
+        snapshot.sort(queueOrder());
 
         // P1-6：从"当前在跑数"起算，而不是每轮归零
         int runningNow = running.get();
         for (Queued q : snapshot) {
-            if (runningNow >= MAX_CONCURRENT) {
+            if (runningNow >= maxConcurrent) {
                 break;
             }
             RuntimeHold.Coverage cov = holds.coveringForExperiment(q.experimentId());
@@ -861,7 +980,7 @@ public final class ExperimentScheduler {
         synchronized (queue) {
             queueNow = new ArrayList<>(queue);
         }
-        queueNow.sort(QUEUE_ORDER);
+        queueNow.sort(queueOrder());
 
         Set<Long> resourceIds = new HashSet<>();
         Set<Long> lockRunIds = new HashSet<>();
@@ -917,7 +1036,7 @@ public final class ExperimentScheduler {
         int runningCount = lockRunIds.size();
         int queuedCount = queueEntries.size();
         return new Snapshot(lockEntries, queueEntries, runningCount, queuedCount,
-                MAX_CONCURRENT, runningCount == 0 && queuedCount > 0,
+                maxConcurrent, runningCount == 0 && queuedCount > 0,
                 lastDispatchAt.toString(), dispatched.get(), started.get());
     }
 
