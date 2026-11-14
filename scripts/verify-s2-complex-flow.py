@@ -128,13 +128,18 @@ def graph_main(d):
 
 def graph_loop(d):
     robot = d["ID-X231"]
-    # 网关必须**成对且连线完整**（前端 gatewayRoleCode 按入/出边数推角色：
-    # ins>1 ⇒ MERGE、outs>1 ⇒ SPLIT、单进单出 ⇒ 空串 ⇒ 页面上没有角色标签）。
-    # 另：孤立网关（ins=0/outs=0）是脏数据，画布下方会多出没连线的方块。
+    # 🔴 结构规则（用户 2026-11-14 明确）：异或「汇合」是异或的 end，
+    #    它之前必须先有异或的「start」（分叉）。R13-25 修复孤立网关时
+    #    曾在 S 与 C1 之间塞一个 XOR_MERGE 凑成对，产出
+    #    「开始 → 异或汇合 → 循环体」——汇合出现在配对分叉之前，结构错误。
+    #    循环回边**不需要**汇合网关：default 分支经 V 圈数加一后直接回 C1
+    #    （引擎对回边重入的支持见 docs/流程控制-技术设计.md §3.2，本结构
+    #    与 复杂流程验证-S2物料身份与状态-20261112.md §2.2 原始设计一致）。
+    # 网关仍必须有入边和出边：前端 gatewayRoleCode 按入/出边数推角色
+    # （ins>1 ⇒ MERGE、outs>1 ⇒ SPLIT、单进单出 ⇒ 空串 ⇒ 页面上没有角色标签）；
+    # 孤立网关（ins=0/outs=0）是脏数据，画布下方会多出没连线的方块。
     nodes = [
         ("S", "开始", None, None, "startEvent"),
-        # 回边汇合：入边 2（S→M、V→M）、出边 1 ⇒ XOR_MERGE
-        ("M", "XOR_MERGE", None, None, "exclusiveGateway"),
         ("C1", "循环体·机器人", "Home", robot, "task"),
         # 条件分叉：入边 1、出边 2 ⇒ XOR_SPLIT
         ("X", "XOR_SPLIT", None, None, "exclusiveGateway", "f_loop"),
@@ -142,15 +147,15 @@ def graph_loop(d):
         ("E", "结束", None, None, "endEvent"),
     ]
     flows = [
-        ("f0", "S", "M"), ("f_m", "M", "C1"), ("f1", "C1", "X"),
+        ("f0", "S", "C1"), ("f1", "C1", "X"),
         ("f_end", "X", "E", "${n} >= 4"),
-        ("f_loop", "X", "V"), ("f_back", "V", "M"),
+        ("f_loop", "X", "V"), ("f_back", "V", "C1"),
     ]
     shapes = {
-        "S": (60, 200, 36, 36), "M": (140, 200, 36, 36),
-        "C1": (230, 180, 110, 76),
-        "X": (390, 200, 36, 36), "V": (480, 180, 110, 76),
-        "E": (650, 200, 36, 36),
+        "S": (60, 200, 36, 36),
+        "C1": (140, 180, 110, 76),
+        "X": (300, 200, 36, 36), "V": (390, 180, 110, 76),
+        "E": (560, 200, 36, 36),
     }
     return bpmn_xml(nodes, flows, shapes, edges_for(flows, shapes))
 
@@ -167,6 +172,24 @@ def assert_gateways_wired(xml, label):
     bad_gw = [g for g in gws if ins.get(g, 0) == 0 or outs.get(g, 0) == 0]
     if bad_gw:
         raise RuntimeError("%s 存在孤立网关（无入边或无出边）：%s" % (label, bad_gw))
+    # 汇合必须在其配对分叉**之后**（用户 2026-11-14）：某网关角色是 MERGE
+    # （ins>1）时，沿入边向上游必须能走到一个 SPLIT（outs>1）网关。
+    # 反例即 R13-25 产出的「开始 → 异或汇合 → 循环体」。
+    rev = {}
+    for s, t in flows:
+        rev.setdefault(t, []).append(s)
+    splits = {g for g in gws if outs.get(g, 0) > 1}
+    for m in [g for g in gws if ins.get(g, 0) > 1]:
+        seen, stack = set(), list(rev.get(m, []))
+        while stack:
+            u = stack.pop()
+            if u in seen:
+                continue
+            seen.add(u)
+            stack.extend(rev.get(u, []))
+        if not (seen & splits):
+            raise RuntimeError("%s 网关 %s 是汇合（in=%d）但上游没有任何分叉网关"
+                               % (label, m, ins.get(m, 0)))
     return ["%s(in=%d,out=%d)" % (g, ins.get(g, 0), outs.get(g, 0)) for g in gws]
 
 
