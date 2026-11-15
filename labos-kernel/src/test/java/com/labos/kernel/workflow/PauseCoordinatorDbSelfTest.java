@@ -54,6 +54,16 @@ public final class PauseCoordinatorDbSelfTest {
     private static final long WF_RUN = -992401L;
     private static final String REQ_DISMISS = "SELF-PC-DISMISS-1";
     private static final String REQ_WF_RESUME = "SELF-PC-WF-RESUME-1";
+    /**
+     * 自建流程 id（负数，不撞 identity 序列）。
+     *
+     * <p>原来这里硬编码 {@code workflow_id=239} —— 那是旧基线里某条真实流程。
+     * 旧基线拆掉后 239 没了 ⇒ 本自测直接 FK 报错、**整条用例跑不起来**。
+     * ⇒ 改成自建：自测**不依赖任何历史数据**（这本来就是它该有的样子）。
+     *
+     * <p>修法与 {@code QuarantineDbSelfTest} / {@code PauseManagerSelfTest} 一致。
+     */
+    private static final long WF = -993010L;
 
     public static void main(String[] args) throws Exception {
         // 触发自测容器：绑定 Mappers（非 Bean 工具类通过 Mappers.get 取 Mapper），
@@ -62,6 +72,12 @@ public final class PauseCoordinatorDbSelfTest {
         db = DbConfig.fromEnv();
         cleanup();
         try {
+            // ⚠ 下面几处 INSERT 的 workflow_id 写的是**字面量**（文本块里没法插 Java 常量：
+            // 文本块的起始分隔符必须跟在行终止符后，不能在同一行中途开）。
+            // ⇒ 这里用断言把字面量与常量绑死：改了常量忘了改 SQL，**立刻**在这里炸，
+            // 而不是等到 FK 报错（那时报错信息指向的是"workflow 不存在"，很难看出根因）。
+            check("SQL 里的 workflow_id 字面量与常量一致", -993010L == WF, WF);
+
             PauseCoordinator coord = new PauseCoordinator(db, TENANT, null, null);
 
             idempotentPauseReplays(coord);
@@ -297,7 +313,7 @@ public final class PauseCoordinatorDbSelfTest {
              PreparedStatement ps = c.prepareStatement("""
                      INSERT INTO run (tenant_id, run_no, run_type, workflow_id,
                                       workflow_ver, mode, status, actual_start, progress)
-                     VALUES (?, 'SELF-PC-WF', 'workflow', 239, 1, 'normal',
+                     VALUES (?, 'SELF-PC-WF', 'workflow', -993010, 1, 'normal',
                              'running', now(), 0)
                      """)) {
             ps.setLong(1, TENANT);
@@ -333,7 +349,7 @@ public final class PauseCoordinatorDbSelfTest {
         exec("""
                 INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
                                  mode, status, actual_start, progress, input)
-                VALUES (1, 'SELF-PC-CRASH', 'workflow', 239, 1, 'normal',
+                VALUES (1, 'SELF-PC-CRASH', 'workflow', -993010, 1, 'normal',
                         'failed', now(), 0, '{"recoverable":true}'::jsonb)
                 """);
         long crashRun = Long.parseLong(one(
@@ -357,13 +373,13 @@ public final class PauseCoordinatorDbSelfTest {
         exec("""
                 INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
                                  mode, status, actual_start, progress)
-                SELECT 1, 'SELF-PC-DISM-A', 'workflow', 239, 1, 'normal',
+                SELECT 1, 'SELF-PC-DISM-A', 'workflow', -993010, 1, 'normal',
                        'paused', now(), 0
                 """);
         exec("""
                 INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
                                  mode, status, actual_start, progress)
-                SELECT 1, 'SELF-PC-DISM-B', 'workflow', 239, 1, 'normal',
+                SELECT 1, 'SELF-PC-DISM-B', 'workflow', -993010, 1, 'normal',
                        'paused', now(), 0
                 """);
         long a = Long.parseLong(one(
@@ -390,7 +406,7 @@ public final class PauseCoordinatorDbSelfTest {
                 INSERT INTO run (tenant_id, run_no, run_type, workflow_id, workflow_ver,
                                  mode, status, pause_kind, pause_reason,
                                  actual_start, progress)
-                VALUES (1, 'SELF-PC-WF-RESUME', 'workflow', 239, 1, 'normal',
+                VALUES (1, 'SELF-PC-WF-RESUME', 'workflow', -993010, 1, 'normal',
                         'paused', 'waiting_human', '自测：待恢复', now(), 0)
                 """);
         long runId = Long.parseLong(one(
@@ -420,8 +436,25 @@ public final class PauseCoordinatorDbSelfTest {
 
     private static void seed() throws SQLException {
         try (Connection c = db.open()) {
+            insertWorkflow(c);
             insertExperiment(c);
             insertRun(c, RUN_P, EXP_P, "running");
+        }
+    }
+
+    /**
+     * 自建流程（run.workflow_id 的 FK 目标）。
+     *
+     * <p>没有它 ⇒ 造 run 时 FK 报错 ⇒ 整条用例跑不起来（原来硬编码 239 的后果）。
+     */
+    private static void insertWorkflow(Connection c) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO workflow (id, tenant_id, code, name, version, status, graph)
+                VALUES (?, ?, 'SELF-PC-WF', '暂停协调自测流程', 1, 1, '{}'::jsonb)
+                """)) {
+            ps.setLong(1, WF);
+            ps.setLong(2, TENANT);
+            ps.executeUpdate();
         }
     }
 
@@ -637,6 +670,20 @@ public final class PauseCoordinatorDbSelfTest {
                     "DELETE FROM experiment WHERE tenant_id = ? AND id = ?")) {
                 ps.setLong(1, TENANT);
                 ps.setLong(2, EXP_P);
+                ps.executeUpdate();
+            }
+            // 自建流程也要清干净：先删引用它的 run（FK），再删流程本身。
+            // ⚠ 顺序不能反 —— run.workflow_id 有外键，流程先删会 FK 报错。
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM run WHERE tenant_id = ? AND workflow_id = ?")) {
+                ps.setLong(1, TENANT);
+                ps.setLong(2, WF);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "DELETE FROM workflow WHERE tenant_id = ? AND id = ?")) {
+                ps.setLong(1, TENANT);
+                ps.setLong(2, WF);
                 ps.executeUpdate();
             }
         }
