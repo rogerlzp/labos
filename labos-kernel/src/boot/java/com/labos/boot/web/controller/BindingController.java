@@ -362,6 +362,77 @@ public class BindingController {
         return ok(Map.of("cleared", r, "nodeKey", nodeKey, "bindingMode", "legacy"));
     }
 
+    // ---------------------------------------------------------------- 设备业务状态字典
+
+    /**
+     * 设备业务状态字典（客户文档 §1.5 的口径，2026-11-15）。
+     *
+     * <p><b>为什么要有这张字典</b>：客户文档 §1.5 给的是**业务状态机**
+     * （提取仪：空闲 / 初始化中 / 等待交互 / 转盘运行中 / 操作位执行工序 / 流程结束 / 故障报错；
+     * 分液器、搅拌单元、机械臂、耗材栈各有自己的一套）。
+     * 平台已有的 {@code device_state.status} 是**运行时健康/占用标记**
+     * （idle / running / error）—— 两者**不是一回事**，不能混用。
+     *
+     * <p>⇒ 枚举存库（{@code device_business_state}），界面与流程从这张表取；
+     * 工艺变更时改表即可，不用改代码。
+     *
+     * <p>⚠ {@code deviceKind} 用**平台自己的 device_type 口径**
+     * （extractor / dispenser / stirrer / robot / plate_hotel），不自造一套。
+     */
+    @GetMapping(value = "/device-business-states", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deviceBusinessStates(
+            @RequestParam(required = false) String deviceKind) {
+        List<Map<String, Object>> rows = m().selectDeviceBusinessStates(TENANT, deviceKind);
+        return ok(Map.of("total", rows.size(), "items", rows));
+    }
+
+    @PostMapping(value = "/device-business-states", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> createDeviceBusinessState(
+            @RequestBody(required = false) String body, HttpServletRequest req) {
+        JsonNode n = parse(body);
+        String deviceKind = text(n, "deviceKind");
+        String stateCode = text(n, "stateCode");
+        String stateName = text(n, "stateName");
+        if (blank(deviceKind) || blank(stateCode) || blank(stateName)) {
+            return bad("必填 deviceKind / stateCode / stateName");
+        }
+        try {
+            m().insertDeviceBusinessState(TENANT, deviceKind.trim(), stateCode.trim(),
+                    stateName.trim(), intOf(n, "sortOrder", 100));
+            audit.record(session(req), "deviceBusinessState.create", "device_business_state", 0L,
+                    deviceKind.trim() + "/" + stateCode.trim(), null, req.getRemoteAddr());
+            return ok(Map.of("created", 1, "deviceKind", deviceKind.trim(),
+                    "stateCode", stateCode.trim()));
+        } catch (Exception e) {
+            return writeError(e, "stateCode 可能重复");
+        }
+    }
+
+    @PutMapping(value = "/device-business-states/{id:\\d+}",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> updateDeviceBusinessState(@PathVariable long id,
+                                                           @RequestBody(required = false) String body,
+                                                           HttpServletRequest req) {
+        JsonNode n = parse(body);
+        int r = m().updateDeviceBusinessState(id, text(n, "stateName"),
+                intOf(n, "sortOrder", 100), boolOf(n, "enabled", true));
+        if (r == 0) return notFound("设备业务状态不存在: " + id);
+        audit.record(session(req), "deviceBusinessState.update", "device_business_state", id,
+                null, null, req.getRemoteAddr());
+        return ok(Map.of("updated", r, "id", id));
+    }
+
+    @DeleteMapping(value = "/device-business-states/{id:\\d+}",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteDeviceBusinessState(@PathVariable long id,
+                                                           HttpServletRequest req) {
+        int r = m().deleteDeviceBusinessState(TENANT, id);
+        if (r == 0) return notFound("设备业务状态不存在: " + id);
+        audit.record(session(req), "deviceBusinessState.delete", "device_business_state", id,
+                null, null, req.getRemoteAddr());
+        return ok(Map.of("deleted", r, "id", id));
+    }
+
     // ---------------------------------------------------------------- 设备事件类型字典
 
     /**

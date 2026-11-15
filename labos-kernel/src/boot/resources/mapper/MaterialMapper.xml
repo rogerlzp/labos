@@ -334,6 +334,19 @@
          ORDER BY sort_order, code
     </select>
 
+    <!-- §6 字典管理页：**完整**列表（含停用项 + 客户文档叫法）。2026-11-15。 -->
+    <select id="selectProcessStates" resultType="java.util.Map">
+        SELECT code AS "code", display_name AS "displayName",
+               doc_label AS "docLabel", sort_order AS "sortOrder",
+               enabled AS "enabled"
+          FROM plate_process_state
+         WHERE tenant_id = #{t}
+        <if test="includeDisabled == null or !includeDisabled">
+           AND enabled = true
+        </if>
+         ORDER BY sort_order, code
+    </select>
+
     <!-- ==================== §6 接口最小集剩余部分 ==================== -->
 
     <!-- 按工艺阶段/板型/位置可信度查板；三个条件都可空（用 if 而不是 IS NULL，
@@ -417,6 +430,7 @@
 
     <select id="selectProcessState" resultType="java.util.Map">
         SELECT code AS "code", display_name AS "displayName",
+               doc_label AS "docLabel",
                sort_order AS "sortOrder", enabled AS "enabled"
           FROM plate_process_state
          WHERE tenant_id = #{t} AND code = #{code}
@@ -424,20 +438,34 @@
 
     <insert id="insertProcessState">
         INSERT INTO plate_process_state
-            (tenant_id, code, display_name, sort_order, enabled)
-        VALUES (#{t}, #{code}, #{displayName}, #{sortOrder}, true)
+            (tenant_id, code, display_name, sort_order, enabled, doc_label)
+        VALUES (#{t}, #{code}, #{displayName}, #{sortOrder}, true,
+                #{docLabel,jdbcType=VARCHAR})
     </insert>
 
-    <!-- 三参数均可空：COALESCE 保留原值，PATCH 只改传了的字段。
+    <!-- 四参数均可空：COALESCE 保留原值，PATCH 只改传了的字段。
          jdbcType 必须显式给，否则 null 参数在 PG 上类型不确定。 -->
     <update id="updateProcessState">
         UPDATE plate_process_state
            SET display_name = COALESCE(#{displayName,jdbcType=VARCHAR}, display_name),
                sort_order = COALESCE(#{sortOrder,jdbcType=INTEGER}, sort_order),
                enabled = COALESCE(#{enabled,jdbcType=BOOLEAN}, enabled),
+               doc_label = COALESCE(#{docLabel,jdbcType=VARCHAR}, doc_label),
                updated_at = now()
          WHERE tenant_id = #{t} AND code = #{code}
     </update>
+
+    <!-- 删除：⚠ **仍被引用就不许删**（否则那些板的状态变成非法值 ⇒ 静默失配）。
+         引用来源：① 板自身的 process_state；② 物料效果声明里写的 process_state。 -->
+    <delete id="deleteProcessState">
+        DELETE FROM plate_process_state
+         WHERE tenant_id = #{t} AND code = #{code}
+           AND NOT EXISTS (SELECT 1 FROM plate p
+                            WHERE p.tenant_id = #{t} AND p.process_state = #{code})
+           AND NOT EXISTS (SELECT 1 FROM plate_material_effect e
+                            WHERE e.tenant_id = #{t}
+                              AND e.declaration::text LIKE ('%' || #{code} || '%'))
+    </delete>
 
     <!-- 按唯一键查 effect id -->
     <select id="selectEffectId" resultType="java.lang.Long">

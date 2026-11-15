@@ -21,6 +21,7 @@ import PoliciesPage from './pages/Policies';
 import VariablesPage from './pages/Variables';
 import ErrorCodesPage from './pages/ErrorCodes';
 import EventTypesPage from './pages/EventTypes';
+import StateDictsPage from './pages/StateDicts';
 import GanttPage from './pages/Gantt';
 import DurationsPage from './pages/Durations';
 import ExperimentsPage from './pages/Experiments';
@@ -288,6 +289,8 @@ function AppInner() {
             <Route path="/error-codes" element={<ErrorCodesPage />} />
             {/* 设备事件类型字典：事件码是三方对齐的唯一键，改字串不改内核 */}
             <Route path="/event-types" element={<EventTypesPage />} />
+            {/* 状态字典：板状态（物料工艺阶段）+ 设备业务状态（设备在干什么）—— 两套枚举 */}
+            <Route path="/state-dicts" element={<StateDictsPage />} />
             <Route path="/schedule" element={<ScheduleGanttPage />} />
             {/* 排程参数管理（designer） */}
             <Route path="/schedule-plans" element={<SchedulePlansPage />} />

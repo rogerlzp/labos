@@ -73,6 +73,8 @@ cat /tmp/_schema_header.sql \
     99w_sequence_fresh_start.sql \
     99x_p2_rebuild.sql \
     ../migration/20261115_device_event.sql \
+    ../migration/20261115_device_event_type.sql \
+    ../migration/20261115_device_business_state.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

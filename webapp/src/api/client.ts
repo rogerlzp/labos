@@ -900,6 +900,41 @@ export interface DeviceEventType {
 }
 
 /**
+ * 板状态字典（§6 工艺阶段）。
+ *
+ * <p>`docLabel` 是**客户/工艺文档里对同一状态的叫法**（客户文档 §1.4：
+ * 空板 / 待分液 / 实验中 / 待交互 / 已完成（产物板）/ 废弃耗材板）。
+ * 平台通用叫法与客户叫法**不是同一套词** ⇒ 两套对照做成配置列，
+ * 而不是写死在代码里 —— 客户看得见，也不绑死任何一边。
+ */
+export interface PlateProcessState {
+  code: string;
+  displayName: string;
+  /** 客户/工艺文档叫法（可空） */
+  docLabel?: string | null;
+  sortOrder?: number;
+  enabled?: boolean;
+}
+
+/**
+ * 设备业务状态（客户文档 §1.5 的口径）。
+ *
+ * <p>⚠ 与 `device_state.status`（运行时 idle/running/error）**不是一回事**：
+ * 那个是运行时健康/占用标记，这个是**业务状态机**（设备在干什么）。
+ *
+ * <p>`deviceKind` 用**平台自己的 device_type 口径**（extractor / dispenser /
+ * stirrer / robot / plate_hotel），不自造一套 ⇒ 字典和设备天然对得上。
+ */
+export interface DeviceBusinessState {
+  id: number;
+  deviceKind: string;
+  stateCode: string;
+  stateName: string;
+  sortOrder: number;
+  enabled: boolean;
+}
+
+/**
  * 时长模型的一项（`duration_model` 表）。
  *
  * <p>为什么要有写口：这张表原来**只有 GET** ⇒ 现场标定出来的真实时长进不去
@@ -1459,6 +1494,62 @@ export const api = {
   /** 删事件类型。 */
   deleteDeviceEventType: (id: number) =>
     req<{ deleted: number; id: number }>(`/api/device-event-types/${id}`, { method: 'DELETE' }),
+
+  // ---------------------------------------------------------------- 状态字典
+
+  /**
+   * 板状态字典（§6 工艺阶段）。
+   *
+   * <p>`includeDisabled=true` 才带停用项（字典管理页要看得到停用项才能启用回来）；
+   * 不传时行为与从前完全一致（设计器下拉只用启用项）。
+   */
+  plateStateDicts: (includeDisabled?: boolean) =>
+    req<{ items: PlateProcessState[] }>(
+      `/api/plate-process-states${includeDisabled ? '?includeDisabled=true' : ''}`),
+
+  /** 新建板状态（code 不可改）。 */
+  createPlateState: (body: {
+    code: string; displayName: string; sortOrder?: number; docLabel?: string;
+  }) => req<{ code: string; created: boolean }>('/api/plate-process-states', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+
+  /** 改板状态（改名 / 排序 / 启停 / 改客户叫法）。 */
+  updatePlateState: (code: string, body: {
+    displayName?: string; sortOrder?: number; enabled?: boolean; docLabel?: string;
+  }) => req<{ code: string; updated: boolean }>(`/api/plate-process-states/${code}`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+
+  /** 删板状态（**仍被引用时后端会拒** —— 那些板的状态会变成非法值）。 */
+  deletePlateState: (code: string) =>
+    req<{ code: string; deleted: boolean }>(`/api/plate-process-states/${code}`, {
+      method: 'DELETE',
+    }),
+
+  /** 设备业务状态字典（客户文档 §1.5 的口径；按平台 device_type 分组）。 */
+  deviceBusinessStates: (deviceKind?: string) =>
+    req<{ total: number; items: DeviceBusinessState[] }>(
+      `/api/device-business-states${deviceKind ? `?deviceKind=${deviceKind}` : ''}`),
+
+  /** 新建设备业务状态。 */
+  createDeviceBusinessState: (body: {
+    deviceKind: string; stateCode: string; stateName: string; sortOrder?: number;
+  }) => req<{ created: number; deviceKind: string; stateCode: string }>(
+    '/api/device-business-states', { method: 'POST', body: JSON.stringify(body) }),
+
+  /** 改设备业务状态（**stateCode 不可改** —— 它是字典的键）。 */
+  updateDeviceBusinessState: (id: number, body: {
+    stateName?: string; sortOrder?: number; enabled?: boolean;
+  }) => req<{ updated: number; id: number }>(`/api/device-business-states/${id}`, {
+    method: 'PUT', body: JSON.stringify(body),
+  }),
+
+  /** 删设备业务状态。 */
+  deleteDeviceBusinessState: (id: number) =>
+    req<{ deleted: number; id: number }>(`/api/device-business-states/${id}`, {
+      method: 'DELETE',
+    }),
 
   /** 时长模型（命令 → p50/p90），甘特预测与仿真共用。 */
   durations: () => req<{ items: DurationModelItem[] }>('/api/durations'),

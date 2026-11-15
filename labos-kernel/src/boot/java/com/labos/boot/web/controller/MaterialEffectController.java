@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -316,7 +317,9 @@ public class MaterialEffectController {
                     .body(err("字典已存在: " + code + "（code 不可改）"));
         }
         Long sort = jsonLong(body, "sortOrder");
-        m.insertProcessState(TENANT, code, displayName, sort == null ? 0 : sort.intValue());
+        // 客户/工艺文档里对同一状态的叫法（可空）：§1.4 的「空板」= 平台的 raw 之类。
+        m.insertProcessState(TENANT, code, displayName, sort == null ? 0 : sort.intValue(),
+                jsonField(body, "docLabel"));
         return ResponseEntity.ok(Jsons.obj("code", code, "created", true));
     }
 
@@ -338,12 +341,41 @@ public class MaterialEffectController {
         String displayName = jsonField(body, "displayName");
         Long sort = jsonLong(body, "sortOrder");
         Boolean enabled = jsonBool(body, "enabled");
-        if (displayName == null && sort == null && enabled == null) {
-            return bad("至少传一个字段：displayName / sortOrder / enabled");
+        // 客户/工艺文档叫法（可空）：§1.4 的「空板」= 平台的 raw 之类。
+        String docLabel = jsonField(body, "docLabel");
+        if (displayName == null && sort == null && enabled == null && docLabel == null) {
+            return bad("至少传一个字段：displayName / docLabel / sortOrder / enabled");
         }
         m.updateProcessState(TENANT, code, displayName,
-                sort == null ? null : sort.intValue(), enabled);
+                sort == null ? null : sort.intValue(), enabled, docLabel);
         return ResponseEntity.ok(Jsons.obj("code", code, "updated", true));
+    }
+
+    /**
+     * §6 字典：删除。
+     *
+     * <p>⚠ **仍被引用时拒绝删**：板已经在某个工艺阶段上、或物料效果声明里写了它
+     * ⇒ 删掉字典会让那些板的状态**变成非法值**（静默失配，现场表现为"板状态不认识"）。
+     * ⇒ 引用判定在 SQL 里（{@code deleteProcessState} 的 NOT EXISTS），返回 0 = 仍被引用。
+     */
+    @DeleteMapping(value = "/plate-process-states/{code}",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteProcessState(
+            @PathVariable String code, HttpServletRequest req) throws SQLException {
+        ResponseEntity<String> denied = requireMaterial(req, RbacRules.MATERIAL_ADMIN);
+        if (denied != null) {
+            return denied;
+        }
+        MaterialMapper m = Mappers.get(MaterialMapper.class);
+        if (m.selectProcessState(TENANT, code) == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err("字典不存在: " + code));
+        }
+        int r = m.deleteProcessState(TENANT, code);
+        if (r == 0) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(err("仍被引用，不能删（板或物料效果声明里用着这个状态）: " + code));
+        }
+        return ResponseEntity.ok(Jsons.obj("code", code, "deleted", true));
     }
 
     // ---------------------------------------------------------------- helpers

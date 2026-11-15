@@ -226,18 +226,45 @@ public interface MaterialMapper {
     java.util.Map<String, Object> selectProcessState(@Param("t") long tenantId,
                                                      @Param("code") String code);
 
+    /**
+     * §6 字典：**完整**列表（管理页用；含停用项与「客户文档叫法」）。
+     *
+     * <p>与 {@link #selectEnabledProcessStates} 的区别：那个只给设计器下拉
+     * （只返回启用的），这个给**字典管理页**（要看到停用项才能启用回来）。
+     *
+     * <p>2026-11-15：加 {@code docLabel}（客户/工艺文档里对同一状态的叫法）。
+     * 客户文档 §1.4 的叫法（空板/待分液/实验中/待交互/已完成/废弃耗材板）
+     * 与平台通用叫法（raw/ready/…）**不是同一套词** ⇒ 两套对照做成配置列，
+     * 而不是写死在注释里 —— 客户看得见，也不绑死任何一边。
+     */
+    java.util.List<java.util.Map<String, Object>> selectProcessStates(
+            @Param("t") long tenantId,
+            @Param("includeDisabled") boolean includeDisabled);
+
     /** §6 字典：新增（code 不可改）。 */
     int insertProcessState(@Param("t") long tenantId,
                            @Param("code") String code,
                            @Param("displayName") String displayName,
-                           @Param("sortOrder") int sortOrder);
+                           @Param("sortOrder") int sortOrder,
+                           @Param("docLabel") String docLabel);
 
-    /** §6 字典：改名 / 排序 / 启停（三参数均可空，COALESCE 保留原值）。 */
+    /** §6 字典：改名 / 排序 / 启停 / 改叫法（四参数均可空，COALESCE 保留原值）。 */
     int updateProcessState(@Param("t") long tenantId,
                            @Param("code") String code,
                            @Param("displayName") String displayName,
                            @Param("sortOrder") Integer sortOrder,
-                           @Param("enabled") Boolean enabled);
+                           @Param("enabled") Boolean enabled,
+                           @Param("docLabel") String docLabel);
+
+    /**
+     * §6 字典：删除。
+     *
+     * <p>⚠ **被引用时必须拒绝**：板已经在某个工艺阶段上（{@code plate.process_state}
+     * 或物料效果声明里），删掉字典会让那些板的状态**变成非法值** ⇒ 静默失配。
+     * ⇒ 由 SQL 里的 EXISTS 判定；返回 0 表示"仍被引用"。
+     */
+    int deleteProcessState(@Param("t") long tenantId,
+                           @Param("code") String code);
 
     /** 按唯一键查 effect id（insertEffect 后取回 id 用）。 */
     /**

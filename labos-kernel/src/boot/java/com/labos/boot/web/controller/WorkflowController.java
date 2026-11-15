@@ -518,13 +518,22 @@ public class WorkflowController {
                 "cleared", true));
     }
 
-    /** §6 字典列表：设计器 processState 下拉。 */
+    /**
+     * §6 字典列表：设计器 processState 下拉。
+     *
+     * <p>2026-11-15：加 {@code includeDisabled} 与 {@code docLabel}
+     * （客户/工艺文档里对同一状态的叫法，如 §1.4 的「空板」= 平台的 raw）。
+     * 不传 {@code includeDisabled} 时行为与从前完全一致（只给启用项），
+     * 设计器下拉不受影响；字典管理页传 {@code includeDisabled=true} 才看得到停用项。
+     */
     @GetMapping(value = "/plate-process-states",
             produces = "application/json; charset=utf-8")
-    public ResponseEntity<String> plateProcessStates() {
+    public ResponseEntity<String> plateProcessStates(
+            @RequestParam(required = false) Boolean includeDisabled) {
         try {
             return ResponseEntity.ok(JSON.writeValueAsString(Map.of("items",
-                    Mappers.get(MaterialMapper.class).selectEnabledProcessStates(TENANT))));
+                    Mappers.get(MaterialMapper.class).selectProcessStates(TENANT,
+                            includeDisabled != null && includeDisabled))));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(err(e.getMessage()));

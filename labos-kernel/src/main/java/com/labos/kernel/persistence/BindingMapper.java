@@ -162,6 +162,34 @@ public interface BindingMapper {
 
     int deleteDeviceEventType(@Param("t") long tenantId, @Param("id") long id);
 
+    /**
+     * 设备业务状态字典（客户文档 §1.5 的口径）。
+     *
+     * <p><b>与 {@code device_state.status} 不是一回事</b>：后者是**运行时健康/占用**
+     * 标记（idle / running / error），前者是**业务状态机**（设备"在干什么"：
+     * 初始化中 / 等待交互 / 转盘运行中 / 操作位执行工序 …）。
+     * ⇒ 两套并存，各管各的，别混用。
+     *
+     * <p>{@code device_kind} 用**平台自己的 device_type 口径**
+     * （extractor / dispenser / stirrer / robot / plate_hotel），
+     * 不自造一套 ⇒ 字典和设备天然对得上。
+     */
+    List<Map<String, Object>> selectDeviceBusinessStates(
+            @Param("t") long tenantId, @Param("deviceKind") String deviceKind);
+
+    int insertDeviceBusinessState(@Param("t") long tenantId,
+                                   @Param("deviceKind") String deviceKind,
+                                   @Param("stateCode") String stateCode,
+                                   @Param("stateName") String stateName,
+                                   @Param("sortOrder") int sortOrder);
+
+    int updateDeviceBusinessState(@Param("id") long id,
+                                   @Param("stateName") String stateName,
+                                   @Param("sortOrder") Integer sortOrder,
+                                   @Param("enabled") Boolean enabled);
+
+    int deleteDeviceBusinessState(@Param("t") long tenantId, @Param("id") long id);
+
     int insertMaterialRole(@Param("t") long tenantId,
                            @Param("roleCode") String roleCode,
                            @Param("displayName") String displayName,

@@ -293,6 +293,41 @@
     DELETE FROM device_event_type WHERE tenant_id = #{t} AND id = #{id}
   </delete>
 
+  <!-- ============================================================ 设备业务状态字典 -->
+
+  <!-- 客户文档 §1.5 的口径：按**平台 device_type** 分组的设备业务状态。
+       deviceKind 为空 ⇒ 全部类别。 -->
+  <select id="selectDeviceBusinessStates" resultType="java.util.Map">
+    SELECT id, device_kind AS "deviceKind", state_code AS "stateCode",
+           state_name AS "stateName", sort_order AS "sortOrder", enabled AS "enabled"
+      FROM device_business_state
+     WHERE tenant_id = #{t}
+     <if test="deviceKind != null and deviceKind != ''">
+       AND device_kind = #{deviceKind}
+     </if>
+     ORDER BY device_kind, sort_order, id
+  </select>
+
+  <insert id="insertDeviceBusinessState">
+    INSERT INTO device_business_state
+        (tenant_id, device_kind, state_code, state_name, sort_order, enabled)
+    VALUES (#{t}, #{deviceKind}, #{stateCode}, #{stateName}, #{sortOrder}, true)
+  </insert>
+
+  <!-- 三参数均可空：COALESCE 保留原值，PATCH 只改传了的字段。 -->
+  <update id="updateDeviceBusinessState">
+    UPDATE device_business_state
+       SET state_name = COALESCE(#{stateName,jdbcType=VARCHAR}, state_name),
+           sort_order = COALESCE(#{sortOrder,jdbcType=INTEGER}, sort_order),
+           enabled = COALESCE(#{enabled,jdbcType=BOOLEAN}, enabled),
+           updated_at = now()
+     WHERE id = #{id}
+  </update>
+
+  <delete id="deleteDeviceBusinessState">
+    DELETE FROM device_business_state WHERE tenant_id = #{t} AND id = #{id}
+  </delete>
+
   <!-- ============================================================ 隐式搬运段（P2-3） -->
 
   <!-- 设备（resource_node.id）的「机械臂可达装载口」device_point.id：
