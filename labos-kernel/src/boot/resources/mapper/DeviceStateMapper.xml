@@ -291,6 +291,33 @@
            AND reserved_until &lt; now()
     </update>
 
+    <!-- P2 B-3：孤儿永久承诺（只报警不释放）。
+         永久语义 = reserved_until IS NULL；持有 run 已进终态（completed/failed/
+         aborted/cancelled）或已被删除 ⇒ 不会再有执行线程去确认/消费它。
+         ⚠ 运行中/排队/暂停的 run 不算孤儿——它的承诺由执行路径（confirmWithPosition）
+         或 ABORT 后的人工盘点处置。 -->
+    <select id="selectOrphanedPromises" resultType="java.util.Map">
+        SELECT ps.resource_id        AS "resourceId",
+               ps.reserved_by_run    AS "reservedByRun",
+               ps.plate_id           AS "plateId",
+               tt.id                 AS "transferId",
+               tt.status             AS "transferStatus"
+          FROM position_state ps
+          LEFT JOIN transfer_transaction tt
+                 ON tt.tenant_id = ps.tenant_id
+                AND tt.run_id = ps.reserved_by_run
+                AND tt.target_position_id = ps.resource_id
+                AND tt.status IN ('REPORTED', 'UNKNOWN')
+         WHERE ps.tenant_id = #{param1}
+           AND ps.reserved_until IS NULL
+           AND ps.reserved_by_run IS NOT NULL
+           AND NOT EXISTS (
+                 SELECT 1 FROM run r
+                  WHERE r.tenant_id = ps.tenant_id
+                    AND r.id = ps.reserved_by_run
+                    AND r.status::text IN ('pending', 'queued', 'running', 'paused'))
+    </select>
+
     <!-- P2（2026-11-13）：实验前点位清单。LEFT JOIN 保证 2569 个点位全部出现，
          而不是只显示 position_state 里有状态行的那几行；未配置的老点位角色为 null。 -->
     <select id="selectPositionsByIsland" resultType="java.util.Map">

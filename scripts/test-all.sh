@@ -264,7 +264,8 @@ DB=(
   "driver.ScanEvidenceAuthorizeDbSelfTest"
   # P2 阶段 B：扫码节点落证据——recordScanEvidence（源位+期望码+实扫码）→闸门消费端到端
   "driver.ScanEvidenceRecordDbSelfTest"
-  # P2 阶段 C：L4 搅拌—分液运行时守卫——故障拒绝+EC-INTERLOCK-STIRRER/可用放行/未配对不拦
+  # P2 阶段 C：L4 搅拌—分液运行时守卫——故障拒绝+EC-INTERLOCK-STIRRER/可用放行/
+  # 未配对的分液方法拒绝（EC-STATE-UNKNOWN）/非分液方法不拦
   "driver.StirrerDispenserGuardDbSelfTest"
   # P2 阶段 C：L4 恢复前重新取证 + 设备事实重连重查（断线置过期→拒绝，重新上报→放行）
   "driver.L4RecoveryAndReconnectDbSelfTest"
@@ -280,6 +281,9 @@ DB=(
   "driver.FinalRecheckDbSelfTest"
   # P2 阶段 B：崩溃恢复——REPORTED 未确认 hasUnconfirmed 阻断继续，确认后放行
   "workflow.TransferCrashRecoveryDbSelfTest"
+  # P2 B-3：永久承诺生命周期——孤儿巡检命中 / pause 清理只删 TTL 不删承诺（回归）/
+  # 盘点写占用消费承诺 / 第二位置按位精确写入
+  "driver.PositionPromiseSweepDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据

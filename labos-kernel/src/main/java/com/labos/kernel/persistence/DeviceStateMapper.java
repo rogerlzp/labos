@@ -156,6 +156,14 @@ public interface DeviceStateMapper {
     /** 清掉过期预约（定时任务）；返回清理条数。 */
     int sweepExpiredReservations(long tenantId);
 
+    /**
+     * P2 B-3：孤儿永久承诺——reserved_until IS NULL（永久语义）且持有 run 已结束
+     * （终态/不存在）的位置。只读报警，不释放：板物理可能在那个位上，
+     * 处置必须走 confirmWithPosition 或人工盘点（方案 §4.4）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectOrphanedPromises(
+            @Param("tenantId") long tenantId);
+
     /** 岛下所有层位占用状态（byIsland 画图用，键见 XML）。 */
     java.util.List<java.util.Map<String, Object>> selectPositionsByIsland(long tenantId,
                                                                           long islandId);

@@ -545,6 +545,31 @@ public final class PositionLock {
         return dm().sweepExpiredReservations(tenantId);
     }
 
+    /**
+     * P2 B-3：孤儿永久承诺巡检（只报警，<b>不释放</b>）。
+     *
+     * <p>永久承诺（{@code reserved_until IS NULL}）= 证据确认路径 REPORTED 未确认的
+     * 目标位 / 回程承诺——板物理可能在那个位上，<b>自动释放 = 别的 run 往物理有板的
+     * 格子里放板</b>（方案 §4.2「确认前不得被其他 run 选用」）。所以这里只把
+     * 「持有 run 已终态/已删除、永远不会再有人来确认」的承诺找出来报警，
+     * 处置路径 = {@code POST /transfers/{id}/confirm}（confirmWithPosition 原子写位置
+     * + 消费承诺）或人工盘点（locatePlate 按位写占用）。
+     *
+     * @return 本次发现的孤儿承诺条数（由心跳定期调，每次报警）
+     */
+    public int reportOrphanedPromises() throws SQLException {
+        int n = 0;
+        for (Map<String, Object> row : dm().selectOrphanedPromises(tenantId)) {
+            n++;
+            log.error("[位置承诺] 孤儿永久承诺：位置 {} 被 run {} 永久占用（板 {}，搬运事务 {} 状态 {}）"
+                            + "——run 已结束，无人会再确认。处置：POST /transfers/{id}/confirm "
+                            + "或人工盘点写占用；处置前该位保持封锁（勿手工清库）",
+                    row.get("resourceId"), row.get("reservedByRun"),
+                    row.get("plateId"), row.get("transferId"), row.get("transferStatus"));
+        }
+        return n;
+    }
+
     /** 某个岛下所有位置的占用状态（前端画图用）。 */
     public List<PositionState> byIsland(long islandId) throws SQLException {
         List<PositionState> out = new ArrayList<>();

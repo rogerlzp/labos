@@ -68,6 +68,25 @@ public final class HeartbeatService {
 
     private volatile long lastRunAt;
 
+    /** 上次孤儿承诺巡检时间（节流用）；0 = 启动后第一轮就扫。 */
+    private volatile long lastPromiseSweepAt;
+
+    /** 孤儿承诺巡检间隔：LABOS_PROMISE_SWEEP_SEC，默认 300 秒。 */
+    private static long promiseSweepIntervalMs() {
+        String v = System.getenv("LABOS_PROMISE_SWEEP_SEC");
+        if (v != null && !v.isBlank()) {
+            try {
+                long sec = Long.parseLong(v.trim());
+                if (sec > 0) {
+                    return sec * 1_000L;
+                }
+            } catch (NumberFormatException ignore) {
+                // 沿用默认
+            }
+        }
+        return 300_000L;
+    }
+
     public HeartbeatService(DbConfig db, long tenantId) {
         this(db, tenantId,
                 // 现场按设备调：廉价设备 10 秒探一次没问题，
@@ -144,6 +163,23 @@ public final class HeartbeatService {
                     }
                 } catch (RuntimeException e) {
                     log.error("[心跳] 自动恢复失败：" + e.getMessage());
+                }
+
+                // P2 B-3（2026-11-15）：孤儿永久承诺巡检（节流，默认 5 分钟一次）。
+                // 只报警不释放——物理未知不得自动放行（方案 §4.4）；
+                // 处置 = confirmWithPosition 或人工盘点。
+                long nowMs = System.currentTimeMillis();
+                if (nowMs - lastPromiseSweepAt >= promiseSweepIntervalMs()) {
+                    lastPromiseSweepAt = nowMs;
+                    try {
+                        int orphaned = new PositionLock(db, tenantId).reportOrphanedPromises();
+                        if (orphaned > 0) {
+                            log.error("[心跳] 发现 " + orphaned + " 个孤儿位置永久承诺"
+                                    + "（run 已结束但搬运未确认）——请处置");
+                        }
+                    } catch (java.sql.SQLException | RuntimeException e) {
+                        log.error("[心跳] 孤儿承诺巡检失败：" + e.getMessage());
+                    }
                 }
             } catch (Exception e) {
                 log.error("[心跳] 探测失败：" + e.getMessage());

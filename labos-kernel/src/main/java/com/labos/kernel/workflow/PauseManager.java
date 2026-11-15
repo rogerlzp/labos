@@ -467,6 +467,12 @@ public final class PauseManager {
             mappers().unblockPossiblePositions(tenantId, possible);
         }
 
+        // 3a) P2 B-3：人工盘点给出具体位置时，把位置账本一并写对——
+        // putPlateOnPosition 写占用会顺带清掉该位的永久承诺（证据确认路径
+        // REPORTED 未确认的目标位）。改动前盘点只改 plate.position_status，
+        // position_state 的承诺/占用不更新 ⇒ 板回 KNOWN 但目标位仍被永久锁死。
+        reconcileLocatedPosition(barcode, actualLocation, possible, runId);
+
         audit(barcode, "UNKNOWN", toStatus, actualLocation,
                 operator == null ? "unknown" : operator,
                 lost ? "人工确认丢失" : "人工盘点", runId);
@@ -540,6 +546,8 @@ public final class PauseManager {
             if (!possible.isEmpty()) {
                 mappers().unblockPossiblePositions(tenantId, possible);
             }
+            // P2 B-3：同 locatePlate——盘点给出具体位置时写位置账本（清永久承诺）。
+            reconcileLocatedPosition(barcode, actualLocation, possible, runId);
             auditTx(c, barcode, "UNKNOWN", toStatus, actualLocation,
                     operator == null ? "unknown" : operator,
                     lost ? "人工确认丢失" : "人工盘点", runId);
@@ -575,6 +583,63 @@ public final class PauseManager {
 
     private List<Long> possibleLocationsOf(String barcode) {
         return mappers().selectPossibleLocations(tenantId, barcode);
+    }
+
+    /**
+     * P2 B-3：人工盘点给出<b>具体位置</b>时，把 {@code position_state} 一并写对
+     * （putPlateOnPosition 写占用 + 清该位永久承诺）。
+     *
+     * <p>口径：
+     * <ul>
+     *   <li>actualLocation 必须是<b>位置资源 id（数字）</b>才写账本——盘点页按
+     *       2026-11-02 修复的约定精确传 id；设备编号/位置 code 暂不解析
+     *       （一台设备多个层位，无法安全定位），保持改动前行为；</li>
+     *   <li>候选集（possible_locations）非空时，id 不在候选内不写——
+     *       操作员报的位和系统封的位对不上 ⇒ 账本不动，转人工核实；</li>
+     *   <li>目标位已被别的板占着 ⇒ putPlate 影响 0 行，只告警不改账本
+     *       （绝不覆盖别人的板）；</li>
+     *   <li>"LOST" 不写占用——物理未知，封锁保持，等人工核实。</li>
+     * </ul>
+     */
+    private void reconcileLocatedPosition(String barcode, String actualLocation,
+                                          List<Long> possible, Long runId) {
+        if (actualLocation == null || actualLocation.isBlank()
+                || "LOST".equalsIgnoreCase(actualLocation.trim())) {
+            return;
+        }
+        Long posId;
+        try {
+            posId = Long.parseLong(actualLocation.trim());
+        } catch (NumberFormatException e) {
+            return;   // 非 id（设备编号/位置 code）：暂不解析，见上方口径
+        }
+        if (!possible.isEmpty() && !possible.contains(posId)) {
+            log.warn("[盘点] 板 {} 人工报位 {} 不在候选集 {} 内，不写位置账本（请人工核实）",
+                    barcode, posId, possible);
+            return;
+        }
+        try {
+            com.labos.kernel.persistence.DeviceStateMapper ds =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.DeviceStateMapper.class);
+            if (ds.selectPositionKind(tenantId, posId) == null) {
+                log.warn("[盘点] 板 {} 人工报位 {} 不是可放板的位置类型，不写位置账本",
+                        barcode, posId);
+                return;
+            }
+            int n = ds.putPlateOnPosition(tenantId, posId, barcode,
+                    runId == null ? 0L : runId);
+            if (n > 0) {
+                log.info("[盘点] 板 {} 位置账本已按人工盘点写入位置 {}（占用 + 清承诺）",
+                        barcode, posId);
+            } else {
+                log.warn("[盘点] 板 {} 人工报位 {} 写占用 0 行（该位已有其他板？）账本未动",
+                        barcode, posId);
+            }
+        } catch (RuntimeException e) {
+            log.error("[盘点] 板 {} 位置账本写入失败（板状态已更新，账本请人工核实）：{}",
+                    barcode, e.getMessage());
+        }
     }
 
     private void audit(String barcode, String from, String to, String actual,

@@ -70,10 +70,17 @@
          WHERE tenant_id = #{param1} AND run_id = #{param2} AND status = 'pending'
     </update>
 
+    <!-- P2 B-3（2026-11-15）：只清 TTL 预约（reserved_until IS NOT NULL）。
+         永久承诺（reserved_until IS NULL）= 证据确认路径 REPORTED 未确认的目标位
+         / 回程承诺 —— 板物理可能在那个位上，暂停清理删掉它会被别的 run 抢占
+         （物理相撞）。承诺按 tryReserveForever 的既有约定：只有持有者
+         （confirmWithPosition 的 putPlate 消费）或人工处置能放；
+         run 已结束仍挂着的承诺由心跳的孤儿承诺巡检报警（reportOrphanedPromises）。 -->
     <update id="releasePositionReservations">
         DELETE FROM position_state
          WHERE tenant_id = #{param1} AND reserved_by_run = #{param2}
            AND plate_id IS NULL
+           AND reserved_until IS NOT NULL
            AND COALESCE(block_reason, '') &lt;&gt; 'PLATE_UNKNOWN'
     </update>
 
