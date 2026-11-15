@@ -70,6 +70,22 @@ public final class PlateBarcodeSelfTest {
         eq("带空格的列表", true,
                 PositionLock.parseAutoConfirmScope(" 1000830 , 1000831 ", 1000831L));
 
+        section("6b. 禁止名单（P2 阶段 B）：允许 && !禁止，禁止优先级更高");
+        eq("允许且未禁止 → 开", true,
+                PositionLock.autoConfirmDecision("1000830", null, 1000830L));
+        eq("允许但被禁止 → 关", false,
+                PositionLock.autoConfirmDecision("1000830", "1000830", 1000830L));
+        eq("允许但被禁止（带空格）→ 关", false,
+                PositionLock.autoConfirmDecision("1000830", " 1000830 ", 1000830L));
+        eq("禁止名单 * 全局禁 → 关", false,
+                PositionLock.autoConfirmDecision("*", "*", 1000830L));
+        eq("禁止名单 * 但允许名单不命中 → 关（本就关）", false,
+                PositionLock.autoConfirmDecision("1000831", "*", 1000830L));
+        eq("禁止其它流程不影响本流程 → 开", true,
+                PositionLock.autoConfirmDecision("1000830", "1000661", 1000830L));
+        eq("允许名单空 + 禁止名单空 → 关", false,
+                PositionLock.autoConfirmDecision(null, null, 1000830L));
+
         section("7. 临时板号身份（P3）");
         eq("TMP- 是合法临时身份", "TMP-1001392-1000025-1",
                 r(Map.of("barcode", "TMP-1001392-1000025-1")));

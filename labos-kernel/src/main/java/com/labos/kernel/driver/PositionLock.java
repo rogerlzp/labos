@@ -71,10 +71,25 @@ public final class PositionLock {
      * <p>为什么不能做成全局布尔：全库 23 个 workflow 含 Transfer 节点，目前只有
      * 1000830 配了板号；全局开启会让启动预检把另外 22 个流程一并阻断。
      * 取值：空=关；{@code 1/true/*}=全局；逗号分隔的 workflow id = 仅这些流程。
+     *
+     * <p>P2 阶段 B：{@code LABOS_TRANSFER_NO_AUTO_CONFIRM} 是**禁止名单**（优先级更高），
+     * 逗号分隔的 workflow id / {@code 1/true/*} = 这些流程**永远禁用** DEVICE_REPORT 自动确认
+     * （核酸提取工作站必须走物理证据确认，不能靠设备运动回包写位置）。
      */
     public static boolean autoConfirmEnabledFor(long workflowId) {
-        return parseAutoConfirmScope(
-                System.getenv("LABOS_TRANSFER_AUTO_CONFIRM"), workflowId);
+        return autoConfirmDecision(
+                System.getenv("LABOS_TRANSFER_AUTO_CONFIRM"),
+                System.getenv("LABOS_TRANSFER_NO_AUTO_CONFIRM"),
+                workflowId);
+    }
+
+    /**
+     * 纯函数：允许名单 {@code allow} 与禁止名单 {@code forbid} 的合并判定。
+     * 禁止名单优先级更高（允许 && !禁止）。
+     */
+    public static boolean autoConfirmDecision(String allow, String forbid, long workflowId) {
+        return parseAutoConfirmScope(allow, workflowId)
+                && !parseAutoConfirmScope(forbid, workflowId);
     }
 
     /** 纯逻辑部分（{@code System.getenv} 运行时不可改，抽出来才能自测覆盖）。 */
