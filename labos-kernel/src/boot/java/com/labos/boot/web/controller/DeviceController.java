@@ -436,16 +436,22 @@ public class DeviceController {
                                                     @RequestBody(required = false) String body,
                                                     HttpServletRequest req) throws SQLException {
         try {
-            int cols = (int) paramLongValue(jsonField(body, "cols"));
-            int rows = (int) paramLongValue(jsonField(body, "rows"));
-            Double maxHeight = jsonField(body, "maxHeightMm") == null ? null
-                    : Double.parseDouble(jsonField(body, "maxHeightMm"));
+            // ⚠ 用 jsonInt：**带不带引号都要认**。
+            // jsonField 只匹配引号里的值 ⇒ 裸数字（{"cols":8}）会被读成 null→0 ⇒
+            // 直接撞"列数/行数要在 1–200 之间"；而前端表单发的是字符串，又对不上。
+            Integer cols = jsonInt(body, "cols");
+            Integer rows = jsonInt(body, "rows");
+            Integer maxStack = jsonInt(body, "maxStack");
+            Integer slotIndexBase = jsonInt(body, "slotIndexBase");
+            Double maxHeight = jsonDouble(body, "maxHeightMm");
             int n = deviceService.createGridPoints(id,
                     jsonField(body, "deviceCode"),
-                    cols, rows,
+                    cols == null ? 0 : cols,
+                    rows == null ? 0 : rows,
                     jsonField(body, "pointKind"),
                     jsonField(body, "slotKind"),
-                    (int) paramLongValue(jsonField(body, "maxStack")),
+                    slotIndexBase == null ? 1 : slotIndexBase,
+                    maxStack == null ? 0 : maxStack,
                     maxHeight,
                     jsonField(body, "plateTypes"),
                     !body.contains("\"isEntry\":false"),
@@ -457,6 +463,76 @@ public class DeviceController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
         }
+    }
+
+    /**
+     * 按**规格**造点位（不是均匀网格）—— 提取仪的<b>双工位</b>：
+     * 外部交换位（deck_out，机械臂可达）+ 内部操作位（deck_in，够不到）。
+     *
+     * <p>body: {@code {"deviceCode":"ID-EXT1","points":[
+     * {"code":"ID-EXT1-EXT2","label":"EXT2","slotKind":"deck_out","slotIndex":1,
+     *  "pointKind":"transfer_point"},
+     * {"code":"ID-EXT1-INT1","label":"INT1","slotKind":"deck_in",
+     *  "pointKind":"transfer_point"}]}}
+     */
+    @PostMapping(value = "/devices/{id:\\d+}/points/spec",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> createSpecPoints(@PathVariable long id,
+                                                    @RequestBody(required = false) String body,
+                                                    HttpServletRequest req) throws SQLException {
+        try {
+            List<java.util.Map<String, Object>> points = new ArrayList<>();
+            String raw = rawJsonField(body, "points");
+            if (raw != null && raw.startsWith("[")) {
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("\\{([^{}]*)\\}").matcher(raw);
+                while (m.find()) {
+                    java.util.Map<String, Object> one = new java.util.LinkedHashMap<>();
+                    java.util.regex.Matcher kv = java.util.regex.Pattern
+                            .compile("\\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:\\s*"
+                                    + "(?:\"([^\"]*)\"|(-?\\d+(?:\\.\\d+)?)|(true|false))")
+                            .matcher(m.group(1));
+                    while (kv.find()) {
+                        String k = kv.group(1);
+                        if (kv.group(2) != null) {
+                            one.put(k, kv.group(2));
+                        } else if (kv.group(3) != null) {
+                            one.put(k, Double.valueOf(kv.group(3)));
+                        } else if (kv.group(4) != null) {
+                            one.put(k, Boolean.valueOf(kv.group(4)));
+                        }
+                    }
+                    points.add(one);
+                }
+            }
+            int n = deviceService.createSpecPoints(id, jsonField(body, "deviceCode"), points);
+            audit.record(session(req), "device.points_spec", "device", id,
+                    "n=" + n, body, req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("created", n, "deviceId", id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
+    /**
+     * 取一个数字字段（带不带引号都认）。
+     *
+     * <p>为什么不能只用 {@code jsonField}：它只匹配引号里的值 ⇒
+     * 裸数字（{@code {"maxHeightMm":45}}）会被读成 null。
+     */
+    private static Double jsonDouble(String body, String key) {
+        if (body == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"" + key + "\"\\s*:\\s*\"?(-?\\d+(?:\\.\\d+)?)\"?")
+                .matcher(body);
+        return m.find() ? Double.valueOf(m.group(1)) : null;
+    }
+
+    /** 取一段原始 JSON（对象/数组），用于 body 里的嵌套数组。 */
+    private static String rawJsonField(String body, String key) {
+        return com.labos.boot.web.controller.DeviceEventController.rawJsonField(body, key);
     }
 
     @GetMapping(value = "/drivers", produces = "application/json; charset=utf-8")

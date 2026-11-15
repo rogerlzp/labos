@@ -712,9 +712,10 @@ public class DeviceService {
      * @return 写了多少个点位
      */
     public int createGridPoints(long deviceResourceId, String deviceCode, int cols, int rows,
-                                String pointKind, String slotKind, int maxStack,
-                                Double maxHeightMm, String plateTypes, boolean isEntry,
-                                boolean isExit, boolean robotReachable) throws java.sql.SQLException {
+                                String pointKind, String slotKind, int slotIndexBase,
+                                int maxStack, Double maxHeightMm, String plateTypes,
+                                boolean isEntry, boolean isExit, boolean robotReachable)
+            throws java.sql.SQLException {
         if (deviceResourceId <= 0) {
             throw new IllegalArgumentException("设备 id 不对");
         }
@@ -732,9 +733,27 @@ public class DeviceService {
         //   slotKind → device_point.point_kind = "这个坑位在设备里扮演什么角色"
         //             （CHECK 只允许 nest/deck_in/deck_out/waste）
         String slot = slotKind == null || slotKind.isBlank() ? "nest" : slotKind.trim();
-        if (!java.util.Set.of("nest", "waste").contains(slot)) {
+        if (!java.util.Set.of("nest", "waste", "deck_in", "deck_out").contains(slot)) {
             throw new IllegalArgumentException(
-                    "坑位语义（slotKind）只能是 nest（网格式坑位）或 waste（废弃位）");
+                    "坑位语义（slotKind）只能是 nest / waste / deck_in / deck_out");
+        }
+        // deck_in = 设备**内部**工位（机械臂够不到）；deck_out = 设备**外部**工位（可达）。
+        // ⇒ 这两种的 point_role / robot_reachable 由语义**推导**，不接受调用方乱传
+        //   （CHECK ck_device_point_deck_in_unreachable：deck_in 必须 internal + 不可达）。
+        String role = "both";
+        boolean reachable = robotReachable;
+        boolean entry = isEntry;
+        boolean exit = isExit;
+        if ("deck_in".equals(slot)) {
+            role = "internal";
+            reachable = false;
+            entry = false;
+            exit = false;
+        } else if ("deck_out".equals(slot)) {
+            role = "both";
+            reachable = true;
+            entry = true;
+            exit = true;
         }
         if (deviceCode == null || deviceCode.isBlank()) {
             // 没传就按资源 id 反查设备编号（点位编号按它拼）
@@ -751,11 +770,78 @@ public class DeviceService {
         for (int r = 1; r <= rows; r++) {
             for (int c = 1; c <= cols; c++) {
                 String code = deviceCode.trim() + "-R" + r + "C" + c;
+                // 槽位稳定编码 1..N（与 P1 的 device_point.slot_index 对齐：
+                // 「从第 N 槽取哪块板」要能精确表达，不随插入顺序漂移）
+                int slotIndex = slotIndexBase + (r - 1) * cols + (c - 1);
                 cm.insertGridPoint(TENANT, deviceResourceId, code, code, kind, slot,
-                        r, c, maxStack, maxHeightMm, plateTypes,
-                        isEntry, isExit, robotReachable, (r - 1) * cols + c);
+                        slotIndex, role, r, c, maxStack, maxHeightMm, plateTypes,
+                        entry, exit, reachable, (r - 1) * cols + c);
                 n++;
             }
+        }
+        return n;
+    }
+
+    /**
+     * 按**规格**造点位（不是均匀网格）—— 提取仪的<b>双工位</b>就是这种：
+     * 外部交换位（deck_out，机械臂可达）+ 内部操作位（deck_in，够不到）。
+     *
+     * <p>每条规格：{@code {code, label, slotKind, slotIndex}}。
+     * 幂等：同 code 复用并更新。
+     *
+     * @return 写了多少个点位
+     */
+    public int createSpecPoints(long deviceResourceId, String deviceCode,
+                                java.util.List<java.util.Map<String, Object>> points)
+            throws java.sql.SQLException {
+        if (deviceResourceId <= 0) {
+            throw new IllegalArgumentException("设备 id 不对");
+        }
+        if (points == null || points.isEmpty()) {
+            throw new IllegalArgumentException("缺点位规格（points 不能为空）");
+        }
+        if (deviceCode == null || deviceCode.isBlank()) {
+            deviceCode = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.ConsumableMapper.class)
+                    .selectDeviceCode(TENANT, deviceResourceId);
+            if (deviceCode == null || deviceCode.isBlank()) {
+                throw new IllegalArgumentException("设备编号不能为空（点位编号按它拼）");
+            }
+        }
+        var cm = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ConsumableMapper.class);
+        int n = 0;
+        int seq = 0;
+        for (java.util.Map<String, Object> spec : points) {
+            String code = str(spec.get("code"));
+            if (code == null || code.isBlank()) {
+                code = deviceCode.trim() + "-P" + (seq + 1);
+            }
+            String label = str(spec.get("label"));
+            String slot = str(spec.get("slotKind"));
+            slot = slot == null || slot.isBlank() ? "nest" : slot.trim();
+            if (!java.util.Set.of("nest", "waste", "deck_in", "deck_out").contains(slot)) {
+                throw new IllegalArgumentException(
+                        "坑位语义（slotKind）只能是 nest / waste / deck_in / deck_out");
+            }
+            String role = "both";
+            boolean reachable = true;
+            boolean entry = true;
+            boolean exit = true;
+            if ("deck_in".equals(slot)) {
+                role = "internal";
+                reachable = false;
+                entry = false;
+                exit = false;
+            }
+            Object si = spec.get("slotIndex");
+            Integer slotIndex = si == null ? null : ((Number) si).intValue();
+            cm.insertGridPoint(TENANT, deviceResourceId, code.trim(),
+                    label == null || label.isBlank() ? code.trim() : label.trim(),
+                    "device", slot, slotIndex, role,
+                    0, 0, 1, null, null, entry, exit, reachable, seq);
+            seq++;
+            n++;
         }
         return n;
     }

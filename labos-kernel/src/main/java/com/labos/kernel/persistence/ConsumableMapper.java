@@ -194,6 +194,8 @@ public interface ConsumableMapper {
                         @Param("positionLabel") String positionLabel,
                         @Param("pointKind") String pointKind,
                         @Param("slotKind") String slotKind,
+                        @Param("slotIndex") Integer slotIndex,
+                        @Param("pointRole") String pointRole,
                         @Param("gridRow") int gridRow,
                         @Param("gridCol") int gridCol,
                         @Param("maxStack") int maxStack,
