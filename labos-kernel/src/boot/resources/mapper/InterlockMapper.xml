@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.InterlockMapper">
+
+    <insert id="insertDecision">
+        INSERT INTO interlock_decision
+            (tenant_id, run_id, node_id, command_id, resource_id, interlock_code,
+             fact_type, fact_value, observed_at, received_at, state_version,
+             device_session_id, workflow_step_id, interaction_id,
+             decision, reason, error_code)
+        VALUES
+            (#{tenantId}, #{runId}, #{nodeId}, #{commandId}, #{resourceId}, #{interlockCode},
+             #{factType}, #{factValue}, CAST(#{observedAt} AS timestamptz),
+             CAST(#{receivedAt} AS timestamptz), #{stateVersion},
+             #{deviceSessionId}, #{workflowStepId}, #{interactionId},
+             #{decision}, #{reason}, #{errorCode})
+    </insert>
+
+</mapper>

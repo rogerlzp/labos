@@ -240,6 +240,8 @@ DB=(
   "material.InTransitGateDbSelfTest"
   # P1 精确点位：slot_index/code 解析 + 显式预留 + 占用即拒绝换位（反例）
   "driver.ExplicitPositionDbSelfTest"
+  # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
+  "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据
   "workflow.StartupSettleSelfTest"
   # S3.2-A 重启 rehydrate：queued run 装回调度队列 / running+paused 不枚举 / 幂等

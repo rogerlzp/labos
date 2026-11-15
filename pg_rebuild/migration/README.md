@@ -36,6 +36,14 @@
 |---|---|---|
 | `20261114_deck_in_reachable_fix.sql` | P0-1：deck_in（台面内工位）机器人不可达口径修正（internal/robot_reachable=false） | `psql -v ON_ERROR_STOP=1 -f 20261114_deck_in_reachable_fix.sql`（幂等） |
 
+### 20261115 · 运行时一致性与 P2 阶段 A
+
+| 文件 | 作用 | 用法 |
+|---|---|---|
+| `20261115_command_phase.sql` | R4 命令阶段（command_ledger.phase：PENDING/SENT/DONE/UNKNOWN） | `psql -v ON_ERROR_STOP=1 -f 20261115_command_phase.sql`（幂等） |
+| `20261115_device_event.sql` | P0 设备事件可靠投递（device_event + run 游标 + 消费关系） | `psql -v ON_ERROR_STOP=1 -f 20261115_device_event.sql`（幂等） |
+| `20261115_p2_interlock_decision.sql` | P2 阶段 A：互锁决策快照（只增不改，回答「当时凭什么放行/拒绝」） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_interlock_decision.sql`（幂等） |
+
 ## 执行顺序
 
 ```bash
