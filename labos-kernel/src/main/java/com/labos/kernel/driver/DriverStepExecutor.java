@@ -414,6 +414,17 @@ public final class DriverStepExecutor implements StepExecutor {
                             + "ms 超时），已拒绝搬运，请人工修复后继续",
                     0, method);
         }
+        // P2 阶段 B：动作前固定源位（证据确认路径要凭它写位置，动作后源位已空无法重查）。
+        // 显式 sourcePosition 优先；未指定时取本 run 第一个有板位置。
+        if (sourcePos == null) {
+            try {
+                sourcePos = posLock.currentSourcePosition(srcRes, runId);
+            } catch (java.sql.SQLException e) {
+                safeReleaseTarget(posLock, targetPos);
+                throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
+                        "解析源位失败：" + e.getMessage(), 0, method);
+            }
+        }
         try {
             plan.acquireAll(srcRes, sourcePos, dstRes, targetPos, null, robotRes, factory);
         } catch (TransferPlan.AcquireException e) {
@@ -435,7 +446,7 @@ public final class DriverStepExecutor implements StepExecutor {
         if (db != null && runId > 0) {
             try {
                 transferTxn = com.labos.kernel.workflow.TransferTransaction.begin(
-                        db, tenantId, runId, plate, srcRes, dstRes);
+                        db, tenantId, runId, plate, srcRes, dstRes, sourcePos, targetPos);
             } catch (java.sql.SQLException e) {
                 log.error("[搬运事务] 创建失败（不阻断执行）：" + e.getMessage());
             }
@@ -465,8 +476,13 @@ public final class DriverStepExecutor implements StepExecutor {
                     safeReleaseTarget(posLock, targetPos);
                 }
             } else {
-                // 开关关闭：不改位置/状态（改造前行为），但预留必须释放。
-                safeReleaseTarget(posLock, targetPos);
+                // P2 阶段 B：证据确认路径（该工作站/流程禁 DEVICE_REPORT 自动确认）。
+                // 设备回包只算运动报告：事务已 REPORTED，板标 IN_TRANSFER（在途未确认），
+                // 目标位置保持预留（不放给别的 run），等扫码/传感器/人工证据确认后才写位置。
+                markPlateInTransit(plate);
+                // 预留不释放：由证据确认（putPlate 消费）或 30 分钟 TTL 兜底。
+                log.info("[搬运] 事务 {} 已 REPORTED（板 {} 在途），等待位置证据确认",
+                        transferTxn, plate);
             }
             return r;
         } catch (RuntimeException e) {
@@ -520,6 +536,23 @@ public final class DriverStepExecutor implements StepExecutor {
                     + blocked + " 个可能位置（需人工盘点）");
         } catch (java.sql.SQLException e) {
             log.error("[搬运] 标记板位置未知失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * P2 阶段 B：证据确认路径里，设备回包后把板标 IN_TRANSFER（在途未确认），
+     * 直到扫码/传感器/人工证据确认才写 KNOWN。失败只记日志不阻断（最佳努力）。
+     */
+    private void markPlateInTransit(String plate) {
+        if (db == null || runId <= 0 || plate == null || plate.isBlank()) {
+            return;
+        }
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.PauseMapper.class)
+                    .updatePlatePositionStatus(tenantId, plate, "IN_TRANSFER");
+        } catch (RuntimeException e) {
+            log.error("[搬运] 板 {} 标 IN_TRANSFER 失败：{}", plate, e.getMessage());
         }
     }
 

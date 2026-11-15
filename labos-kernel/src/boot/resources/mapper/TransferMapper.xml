@@ -8,10 +8,12 @@
     <select id="beginTransfer" resultType="java.lang.Long">
         INSERT INTO transfer_transaction
           (tenant_id, run_id, plate_barcode, source_resource_id,
-           target_resource_id, status)
+           target_resource_id, source_position_id, target_position_id, status)
         VALUES (#{tenantId}, #{runId}, #{plateBarcode},
                 #{sourceResourceId, jdbcType=BIGINT},
-                #{targetResourceId, jdbcType=BIGINT}, 'REPORTED')
+                #{targetResourceId, jdbcType=BIGINT},
+                #{sourcePositionId, jdbcType=BIGINT},
+                #{targetPositionId, jdbcType=BIGINT}, 'REPORTED')
         RETURNING id
     </select>
 
@@ -25,7 +27,11 @@
     </update>
 
     <select id="selectConfirmableTransfer" resultType="java.util.Map">
-        SELECT plate_barcode AS "plateBarcode", target_resource_id AS "targetResourceId"
+        SELECT plate_barcode AS "plateBarcode",
+               source_resource_id AS "sourceResourceId",
+               target_resource_id AS "targetResourceId",
+               source_position_id AS "sourcePositionId",
+               target_position_id AS "targetPositionId"
           FROM transfer_transaction
          WHERE tenant_id = #{tenantId} AND id = #{id}
            AND status IN ('REPORTED', 'UNKNOWN')

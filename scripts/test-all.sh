@@ -244,6 +244,8 @@ DB=(
   "driver.ExplicitPositionDbSelfTest"
   # P2 阶段 B：L2 一板一位置数据库硬约束（uk_pos_plate 唯一索引，同板两位被拒）
   "driver.PlateUniquePositionDbSelfTest"
+  # P2 阶段 B：证据确认路径——REPORTED 不写位置，confirmWithPosition 原子写位置+CONFIRMED
+  "workflow.TransferConfirmWithPositionDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据

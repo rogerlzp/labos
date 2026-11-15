@@ -19,7 +19,9 @@ public interface TransferMapper {
                        @Param("runId") long runId,
                        @Param("plateBarcode") String plateBarcode,
                        @Param("sourceResourceId") Long sourceResourceId,
-                       @Param("targetResourceId") Long targetResourceId);
+                       @Param("targetResourceId") Long targetResourceId,
+                       @Param("sourcePositionId") Long sourcePositionId,
+                       @Param("targetPositionId") Long targetPositionId);
 
     /** 设备回包后写运动报告：REPORTED（成功）/ UNKNOWN（失败/异常）。 */
     int reportTransfer(@Param("tenantId") long tenantId,

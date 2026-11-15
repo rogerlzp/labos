@@ -334,6 +334,16 @@ public final class PositionLock {
         return pos;
     }
 
+    /**
+     * P2 阶段 B：取板前解析本 run 的第一个有板位置（证据路径需要动作前固定源位，
+     * 动作后源位已空，无法事后重查）。仅认本 run 的板（归属过滤）。
+     *
+     * @return 本 run 第一个有板位置资源 id；没有返回 null。
+     */
+    public Long currentSourcePosition(long deviceResourceId, long runId) throws SQLException {
+        return firstOccupiedPosition(deviceResourceId, runId);
+    }
+
     /** 释放预约（不板——板还在位置上）。 */
     public void release(long resourceId, long runId) throws SQLException {
         dm().releasePosition(tenantId, resourceId, runId);

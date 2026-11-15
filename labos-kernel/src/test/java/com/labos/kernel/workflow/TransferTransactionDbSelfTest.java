@@ -18,7 +18,7 @@ public final class TransferTransactionDbSelfTest {
         DbConfig db = DbConfig.fromEnv();
         cleanup(db);
 
-        long okId = TransferTransaction.begin(db, TENANT, -998001L, PLATE, 1L, 2L);
+        long okId = TransferTransaction.begin(db, TENANT, -998001L, PLATE, 1L, 2L, null, null);
         check("搬运事务可创建", okId > 0, okId);
         check("创建后状态 REPORTED（仅运动报告）",
                 "REPORTED".equals(TransferTransaction.statusOf(db, TENANT, okId)),
@@ -37,7 +37,7 @@ public final class TransferTransactionDbSelfTest {
         check("重复确认返回 false",
                 !TransferTransaction.confirm(db, TENANT, okId, "MANUAL", "t", "again"), true);
 
-        long badId = TransferTransaction.begin(db, TENANT, -998002L, PLATE, 1L, 2L);
+        long badId = TransferTransaction.begin(db, TENANT, -998002L, PLATE, 1L, 2L, null, null);
         TransferTransaction.report(db, TENANT, badId, false, "EC-99-0005", "中断", null);
         check("设备失败回包 → UNKNOWN",
                 "UNKNOWN".equals(TransferTransaction.statusOf(db, TENANT, badId)),

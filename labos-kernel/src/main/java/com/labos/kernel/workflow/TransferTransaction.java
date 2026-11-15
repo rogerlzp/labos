@@ -28,12 +28,13 @@ public final class TransferTransaction {
                 com.labos.kernel.persistence.TransferMapper.class);
     }
 
-    /** 搬运动作开始前落一条事务。 */
+    /** 搬运动作开始前落一条事务（含精确源/目标点位，供证据确认路径写位置）。 */
     public static long begin(DbConfig db, long tenantId, long runId, String plate,
-                             Long sourceResourceId, Long targetResourceId)
+                             Long sourceResourceId, Long targetResourceId,
+                             Long sourcePositionId, Long targetPositionId)
             throws SQLException {
         Long id = transfers().beginTransfer(tenantId, runId, plate,
-                sourceResourceId, targetResourceId);
+                sourceResourceId, targetResourceId, sourcePositionId, targetPositionId);
         return id == null ? 0L : id;
     }
 
@@ -109,6 +110,62 @@ public final class TransferTransaction {
                     "DEVICE_REPORT", "AUTO", note, runId);
             return true;
         });
+    }
+
+    /**
+     * P2 阶段 B：证据确认（位置证据确认后再写 KNOWN/占用 + CONFIRMED）。
+     *
+     * <p>与旧 {@link #confirm} 的区别：旧 confirm 只写 evidence + 事务状态，
+     * 位置写发生在设备回包时的 {@code noteTransferMove}；本方法把「位置写 + 事务确认」
+     * 放进<b>同一个事务</b>，满足「获得有效位置证据后，原子写位置与板状态」。
+     *
+     * <p>要求事务已记录精确点位（{@code source_position_id/target_position_id}），
+     * 否则无法知道该写哪个位置 ⇒ 返回 false（调用方保持 REPORTED 转人工）。
+     *
+     * @return true = 位置已写 + 事务已 CONFIRMED；false = 不可确认（保持 REPORTED/UNKNOWN）
+     */
+    public static boolean confirmWithPosition(DbConfig db, long tenantId, long id,
+                                              long runId, String evidenceType,
+                                              String operator, String note)
+            throws SQLException {
+        return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
+            java.util.Map<String, Object> row = transfers().selectConfirmableTransfer(tenantId, id);
+            if (row == null) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                return false;
+            }
+            String plate = (String) row.get("plateBarcode");
+            Long srcRes = toLong(row.get("sourceResourceId"));
+            Long dstRes = toLong(row.get("targetResourceId"));
+            Long srcPos = toLong(row.get("sourcePositionId"));
+            Long dstPos = toLong(row.get("targetPositionId"));
+            if (plate == null || plate.isBlank() || srcRes == null || dstRes == null
+                    || srcPos == null || dstPos == null) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                return false;
+            }
+            com.labos.kernel.driver.PositionLock lock =
+                    new com.labos.kernel.driver.PositionLock(db, tenantId);
+            com.labos.kernel.driver.PositionLock.TransferMove mv =
+                    lock.noteTransferMove(srcRes, dstRes, srcPos, dstPos, plate, runId);
+            if (!mv.ok()) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                return false;
+            }
+            int n = transfers().markTransferConfirmed(tenantId, id);
+            if (n <= 0) {
+                com.labos.kernel.persistence.Tx.rollbackOnly();
+                return false;
+            }
+            transfers().insertPositionEvidenceOnConfirm(tenantId, plate, dstPos,
+                    evidenceType == null ? "MANUAL" : evidenceType.toUpperCase(),
+                    operator, note);
+            return true;
+        });
+    }
+
+    private static Long toLong(Object o) {
+        return o instanceof Number n ? n.longValue() : null;
     }
 
     /** 该 run 是否还有未确认的搬运位置（REPORTED/UNKNOWN）。 */

@@ -44,6 +44,7 @@
 | `20261115_device_event.sql` | P0 设备事件可靠投递（device_event + run 游标 + 消费关系） | `psql -v ON_ERROR_STOP=1 -f 20261115_device_event.sql`（幂等） |
 | `20261115_p2_interlock_decision.sql` | P2 阶段 A：互锁决策快照（只增不改，回答「当时凭什么放行/拒绝」） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_interlock_decision.sql`（幂等） |
 | `20261115_p2_uk_pos_plate.sql` | P2 阶段 B：L2「一板一位置」唯一索引（建前查重复，有则失败） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_uk_pos_plate.sql`（幂等） |
+| `20261115_p2_transfer_position.sql` | P2 阶段 B：搬运事务记录精确源/目标点位（证据确认路径写位置用） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_transfer_position.sql`（幂等） |
 
 ## 执行顺序
 
