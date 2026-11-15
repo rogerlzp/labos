@@ -70,6 +70,67 @@ public static class DeviceEventSelfTest
             !plain.TryDequeueSpontaneous(out _));
 
         Console.WriteLine();
+        Console.WriteLine("── 4. 按型号翻译（接真机时唯一要改的地方）──");
+        var json = """
+            {"message_type":6,"equipment_id":"ID-EXT1","event_type":"waiting_interaction",
+             "data":{"station":"exchange"}}
+            """;
+        // 未登记的型号 ⇒ 回退通用 JSON（模拟器走的就是这条）
+        var fallback = SpontaneousTranslators.For("no-such-model");
+        var fb = fallback.Translate(json);
+        ok("未登记型号回退通用 JSON 翻译器",
+            fallback is JsonSpontaneousTranslator && fb?.EventType == "waiting_interaction");
+
+        // 登记一个型号专属翻译器 ⇒ 它优先于通用的
+        SpontaneousTranslators.Register(new SampleXmlSpontaneousTranslator());
+        var xmlTranslator = SpontaneousTranslators.For("sample-xml");
+        ok("登记后按型号取到专属翻译器",
+            xmlTranslator is SampleXmlSpontaneousTranslator);
+
+        // 模拟的 **XML 风格**厂商帧（真机协议还不知道，这是"样子"）
+        var xmlFrame = """
+            <DeviceFrame><EquipmentId>ID-ASPIN</EquipmentId>
+            <EventType>plate_detected</EventType>
+            <Payload><Slot>2</Slot><Plate>PL001</Plate></Payload></DeviceFrame>
+            """;
+        var xs = xmlTranslator.Translate(xmlFrame);
+        ok("XML 风格帧：设备码对", xs?.EquipmentId == "ID-ASPIN", xs?.EquipmentId);
+        ok("XML 风格帧：事件类型对", xs?.EventType == "plate_detected", xs?.EventType);
+        ok("XML 风格帧：载荷转成 JSON",
+            xs?.PayloadJson == "{\"Slot\":\"2\",\"Plate\":\"PL001\"}", xs?.PayloadJson);
+        ok("XML 风格帧：不是 JSON 的通用翻译器认不出来的",
+            JsonSpontaneousTranslator.Instance.Translate(xmlFrame) == null);
+
+        // 模拟的 **二进制风格**厂商帧
+        SpontaneousTranslators.Register(new SampleBinarySpontaneousTranslator());
+        var binTranslator = SpontaneousTranslators.For("sample-binary");
+        var payload = "ID-CELL1|slot=3";
+        var bin = new List<byte> { 0xAA, 0xF0, 0x02, (byte)payload.Length };
+        bin.AddRange(System.Text.Encoding.UTF8.GetBytes(payload));
+        bin.Add(0xFF);
+        var binFrame = Convert.ToBase64String(bin.ToArray());
+        var bs = binTranslator.Translate(binFrame);
+        ok("二进制风格帧：设备码对", bs?.EquipmentId == "ID-CELL1", bs?.EquipmentId);
+        ok("二进制风格帧：事件码映射对", bs?.EventType == "plate_detected", bs?.EventType);
+        ok("二进制风格帧：载荷转成 JSON",
+            bs?.PayloadJson == "{\"detail\":\"slot=3\"}", bs?.PayloadJson);
+        // 回包（不是自发帧）必须被拒
+        var replyBin = new List<byte> { 0xAA, 0x02, 0x00, 0x00, 0xFF };
+        ok("二进制风格帧：回包被拒（不是自发帧）",
+            binTranslator.Translate(Convert.ToBase64String(replyBin.ToArray())) == null);
+        ok("二进制风格帧：未知事件码不认领",
+            binTranslator.Translate(Convert.ToBase64String(
+                new List<byte> { 0xAA, 0xF0, 0x7F, 0x00, 0xFF }.ToArray())) == null);
+
+        // 翻译器不得把脏数据变成异常
+        ok("XML 翻译器：脏数据不抛异常",
+            xmlTranslator.Translate("<<<not xml") == null);
+        ok("二进制翻译器：脏数据不抛异常",
+            binTranslator.Translate("not base64 at all!!") == null);
+        ok("二进制翻译器：长度不够不抛异常",
+            binTranslator.Translate(Convert.ToBase64String(new byte[] { 0xAA, 0xF0 })) == null);
+
+        Console.WriteLine();
         Console.WriteLine($"通过 {_pass}, 失败 {_fail}");
         return _fail == 0 ? 0 : 1;
     }

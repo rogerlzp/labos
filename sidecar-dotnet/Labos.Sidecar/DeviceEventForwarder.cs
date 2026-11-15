@@ -27,17 +27,21 @@ public sealed class DeviceEventForwarder
     private readonly string _baseUrl;
     private readonly string? _deviceCode;
     private readonly string? _token;
+    private readonly ISpontaneousTranslator _translator;
     private readonly Action<string> _log;
 
     /// <param name="baseUrl">中控地址（与 --registry-url 同一个：那是中控）。</param>
     /// <param name="deviceCode">本 sidecar 认领的设备码；为空则用帧里的 equipment_id。</param>
     /// <param name="token">设备事件令牌（中控配了 LABOS_DEVICE_EVENT_TOKEN 时才校验）。</param>
+    /// <param name="translator">该型号的自发帧翻译器（按型号专属；没有就通用 JSON）。</param>
     /// <param name="log">日志出口（sidecar 用 Console.WriteLine）。</param>
-    public DeviceEventForwarder(string baseUrl, string? deviceCode, string? token, Action<string> log)
+    public DeviceEventForwarder(string baseUrl, string? deviceCode, string? token,
+                                 ISpontaneousTranslator translator, Action<string> log)
     {
         _baseUrl = baseUrl.TrimEnd('/');
         _deviceCode = string.IsNullOrWhiteSpace(deviceCode) ? null : deviceCode.Trim();
         _token = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+        _translator = translator ?? JsonSpontaneousTranslator.Instance;
         _log = log;
     }
 
@@ -46,7 +50,7 @@ public sealed class DeviceEventForwarder
     /// </summary>
     public async Task<bool> ForwardAsync(string frame, CancellationToken ct = default)
     {
-        var sp = Protocol.ParseSpontaneous(frame);
+        var sp = _translator.Translate(frame);
         if (sp == null)
         {
             return false;

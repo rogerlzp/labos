@@ -160,7 +160,8 @@ public static class Program
         var eventToken = Get(opt, "device-event-token")
             ?? Environment.GetEnvironmentVariable("LABOS_DEVICE_EVENT_TOKEN");
         var forwarder = new DeviceEventForwarder(
-            registryUrl, device?.Code, eventToken, m => Console.WriteLine("[device-event] " + m));
+            registryUrl, device?.Code, eventToken,
+            SpontaneousTranslators.For(model!.Id), m => Console.WriteLine("[device-event] " + m));
         new TcpServer(bind, port, model!, transport, forwarder).Run(cts.Token);
         return 0;
     }

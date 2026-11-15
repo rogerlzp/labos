@@ -34,6 +34,13 @@ namespace Labos.Sidecar;
 /// <c>x86</c> 或 <c>AnyCPU(32 位优先)</c> 运行在 Windows 上。本类在非 Windows 上
 /// 只在真正调用时报错，便于在 Mac 上把整条 TCP 链路跑通（用 sim 档）。
 /// </para>
+///
+/// <para><b>设备主动上报（自发帧）目前不支持</b>（{@link ITransport.TryDequeueSpontaneous}
+/// 走接口默认实现 = 不支持）：本传输是"调一次 DLL、读一次回包"，
+/// 没有后台读线程 ⇒ 设备自己冒出来的帧读不到。<br/>
+/// 要支持需要两件事：① 手册给出自发帧的报文形状（现在<b>没有</b>）；
+/// ② 加一个后台读线程把自发帧挑出来（sim 档已有这个模式，见 {@link SimBridgeTransport}）。
+/// 届时再给本型号写一个 {@link ISpontaneousTranslator} 即可，其余不用动。</para>
 /// </summary>
 public sealed class AspinClusterTransport : ITransport
 {

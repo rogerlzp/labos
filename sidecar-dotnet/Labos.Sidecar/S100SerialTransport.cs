@@ -22,6 +22,13 @@ namespace Labos.Sidecar;
 /// {@code 0x8000000C}；"无纸 → 转人工"由 labos-kernel 的型号库决定。
 /// 这样换一台封膜机，只改型号库，sidecar 一行不用动。
 /// </para>
+///
+/// <para><b>设备主动上报（自发帧）目前不支持</b>（{@link ITransport.TryDequeueSpontaneous}
+/// 走接口默认实现 = 不支持）：本传输是"发一条、读满 12 字节"，
+/// 没有后台读线程 ⇒ 设备自己冒出来的帧读不到。<br/>
+/// 要支持需要两件事：① 手册给出自发帧的帧格式（现在<b>没有</b>）；
+/// ② 加一个后台读线程把自发帧挑出来（sim 档已有这个模式，见 {@link SimBridgeTransport}）。
+/// 届时再给本型号写一个 {@link ISpontaneousTranslator} 即可，其余不用动。</para>
 /// </summary>
 public sealed class S100SerialTransport : ITransport
 {
