@@ -344,6 +344,14 @@ public final class PositionLock {
         return firstOccupiedPosition(deviceResourceId, runId);
     }
 
+    /**
+     * P2 阶段 B：把已有 TTL 预约升级为永久承诺（reserved_until = NULL）。
+     * 证据确认路径用：REPORTED 未确认时目标位不得被 TTL 过期/清理释放或抢占。
+     */
+    public void promoteReservationToForever(long resourceId, long runId) throws SQLException {
+        dm().reservePositionForever(tenantId, resourceId, runId);
+    }
+
     /** 释放预约（不板——板还在位置上）。 */
     public void release(long resourceId, long runId) throws SQLException {
         dm().releasePosition(tenantId, resourceId, runId);

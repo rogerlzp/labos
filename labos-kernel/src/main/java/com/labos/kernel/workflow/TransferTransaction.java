@@ -116,20 +116,23 @@ public final class TransferTransaction {
      * P2 阶段 B：证据确认（位置证据确认后再写 KNOWN/占用 + CONFIRMED）。
      *
      * <p>与旧 {@link #confirm} 的区别：旧 confirm 只写 evidence + 事务状态，
-     * 位置写发生在设备回包时的 {@code noteTransferMove}；本方法把「位置写 + 事务确认」
-     * 放进<b>同一个事务</b>，满足「获得有效位置证据后，原子写位置与板状态」。
+     * 位置写发生在设备回包时的 {@code noteTransferMove}；本方法把「位置写 + 事务确认 +
+     * 板状态 KNOWN」放进<b>同一个事务</b>，满足「获得有效位置证据后，原子写位置与板状态」。
      *
-     * <p>要求事务已记录精确点位（{@code source_position_id/target_position_id}），
-     * 否则无法知道该写哪个位置 ⇒ 返回 false（调用方保持 REPORTED 转人工）。
+     * <p><b>只接受 REPORTED</b>（UNKNOWN = 物理结果未知，必须走人工盘点 locatePlate）；
+     * 要求事务已记录精确点位；{@code evidenceType=SCAN} 时必须消费扫码证据成功（防复用），
+     * 否则整体回滚。
      *
-     * @return true = 位置已写 + 事务已 CONFIRMED；false = 不可确认（保持 REPORTED/UNKNOWN）
+     * @param scanId 扫码证据 id（evidenceType=SCAN 时必填）
+     * @return true = 位置已写 + 板 KNOWN + 事务 CONFIRMED；false = 不可确认（保持 REPORTED 转人工）
      */
     public static boolean confirmWithPosition(DbConfig db, long tenantId, long id,
-                                              long runId, String evidenceType,
-                                              String operator, String note)
+                                              String evidenceType, String operator,
+                                              String note, String scanId)
             throws SQLException {
+        String et = evidenceType == null ? "MANUAL" : evidenceType.toUpperCase();
         return com.labos.kernel.persistence.Tx.inTransaction(db, c -> {
-            java.util.Map<String, Object> row = transfers().selectConfirmableTransfer(tenantId, id);
+            java.util.Map<String, Object> row = transfers().selectReportedTransfer(tenantId, id);
             if (row == null) {
                 com.labos.kernel.persistence.Tx.rollbackOnly();
                 return false;
@@ -139,10 +142,24 @@ public final class TransferTransaction {
             Long dstRes = toLong(row.get("targetResourceId"));
             Long srcPos = toLong(row.get("sourcePositionId"));
             Long dstPos = toLong(row.get("targetPositionId"));
+            long runId = row.get("runId") instanceof Number n ? n.longValue() : 0L;
             if (plate == null || plate.isBlank() || srcRes == null || dstRes == null
-                    || srcPos == null || dstPos == null) {
+                    || srcPos == null || dstPos == null || runId == 0L) {
                 com.labos.kernel.persistence.Tx.rollbackOnly();
                 return false;
+            }
+            // P1-4：SCAN 证据必须原子消费成功（防复用旧扫码），失败整体回滚。
+            if ("SCAN".equals(et)) {
+                if (scanId == null || scanId.isBlank()) {
+                    com.labos.kernel.persistence.Tx.rollbackOnly();
+                    return false;
+                }
+                boolean consumed = com.labos.kernel.driver.ScanEvidence.consumeForGrab(
+                        db, tenantId, scanId, runId, dstPos, plate, plate, id);
+                if (!consumed) {
+                    com.labos.kernel.persistence.Tx.rollbackOnly();
+                    return false;
+                }
             }
             com.labos.kernel.driver.PositionLock lock =
                     new com.labos.kernel.driver.PositionLock(db, tenantId);
@@ -157,9 +174,12 @@ public final class TransferTransaction {
                 com.labos.kernel.persistence.Tx.rollbackOnly();
                 return false;
             }
-            transfers().insertPositionEvidenceOnConfirm(tenantId, plate, dstPos,
-                    evidenceType == null ? "MANUAL" : evidenceType.toUpperCase(),
+            transfers().insertPositionEvidenceOnConfirm(tenantId, plate, dstPos, et,
                     operator, note);
+            // P1-8：板状态 IN_TRANSFER → KNOWN（否则位置账本与板状态漂移）。
+            com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.PauseMapper.class)
+                    .updatePlatePositionStatus(tenantId, plate, "KNOWN");
             return true;
         });
     }

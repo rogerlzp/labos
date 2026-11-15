@@ -22,4 +22,16 @@
            AND consumed = false
     </update>
 
+    <!-- P2 阶段 B（评审 P0-5）：严格消费——run/点位/期望码/实扫码全匹配 + 未消费 -->
+    <update id="consumeForGrab">
+        UPDATE position_scan_evidence
+           SET consumed = true, transfer_id = #{transferId}
+         WHERE tenant_id = #{tenantId} AND scan_id = #{scanId}
+           AND consumed = false
+           AND run_id = #{runId}
+           AND source_position_id = #{sourcePositionId}
+           AND expected_barcode = #{expectedBarcode}
+           AND scanned_barcode = #{scannedBarcode}
+    </update>
+
 </mapper>

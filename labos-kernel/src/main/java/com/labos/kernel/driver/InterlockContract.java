@@ -39,6 +39,7 @@ public final class InterlockContract {
             Map.entry("EC-STATE-UNKNOWN", Scope.MANUAL),
             Map.entry("EC-SCAN-MISMATCH", Scope.MANUAL),
             Map.entry("EC-SCAN-EVIDENCE-MISSING", Scope.MANUAL),
+            Map.entry("EC-SCAN-EVIDENCE-CONSUMED", Scope.MANUAL),
             Map.entry("EC-PLACE-UNCONFIRMED", Scope.BLOCK_RECONCILE));
 
     /**
@@ -59,9 +60,6 @@ public final class InterlockContract {
 
     // ------------------------------------------------------------ 状态时效
 
-    /** 默认事实时效（设备不报 freshness 配置时用）。 */
-    private static final Duration DEFAULT_TTL = Duration.ofSeconds(30);
-
     private static final Map<String, Duration> TTLS = Map.of(
             "turntable", Duration.ofSeconds(5),
             "stirrer_status", Duration.ofSeconds(10),
@@ -69,14 +67,16 @@ public final class InterlockContract {
             "rail_zone", Duration.ofSeconds(30));
 
     /**
-     * 事实类型 → 时效。未知事实类型返回 {@link #DEFAULT_TTL}；返回 {@code ZERO}
-     * 表示「该事实类型不允许用缓存/旧值，必须实时取证」。
+     * 事实类型 → 时效。未知事实类型返回 {@link #ZERO}（fail-closed：未知 = 必须实时取证，
+     * 不许用默认宽限放过）；返回 {@code ZERO} 表示「该事实类型不允许用缓存/旧值」。
      */
+    public static final Duration ZERO = Duration.ZERO;
+
     public static Duration freshnessTtl(String factType) {
         if (factType == null || factType.isBlank()) {
             return Duration.ZERO;
         }
-        return TTLS.getOrDefault(factType, DEFAULT_TTL);
+        return TTLS.getOrDefault(factType, Duration.ZERO);
     }
 
     private InterlockContract() {

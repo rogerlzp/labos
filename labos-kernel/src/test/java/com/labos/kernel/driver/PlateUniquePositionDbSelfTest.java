@@ -41,14 +41,17 @@ public final class PlateUniquePositionDbSelfTest {
 
             section("2. 反例：同一块板写进两个位置 → 违反唯一约束");
             insertPos(POS_A, "PLATE-L2-1");
-            boolean violated = false;
+            String sqlState = null;
+            boolean isUkPosPlate = false;
             try {
                 insertPos(POS_B, "PLATE-L2-1");
             } catch (SQLException e) {
-                // 违反 uk_pos_plate（或主键）都算拦下；本测试专门验证同板两位。
-                violated = e.getMessage() != null;
+                sqlState = e.getSQLState();
+                isUkPosPlate = e.getMessage() != null
+                        && e.getMessage().contains("uk_pos_plate");
             }
-            eq("同板两位被数据库拒绝", true, violated);
+            eq("违反 uk_pos_plate（SQLState 23505）", "23505", sqlState);
+            eq("约束名命中 uk_pos_plate", true, isUkPosPlate);
             cleanupRow(POS_B);
 
             section("3. 不同板写两个位置 → 成功");

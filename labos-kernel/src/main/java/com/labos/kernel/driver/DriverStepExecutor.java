@@ -368,6 +368,10 @@ public final class DriverStepExecutor implements StepExecutor {
         // 两个并发 run 会选到同一格、物理相撞。预留 + putPlate 写占用构成无窗口保护。
         com.labos.kernel.driver.PositionLock posLock =
                 new com.labos.kernel.driver.PositionLock(db, tenantId);
+        // P2 阶段 B：证据确认路径（该工作站/流程禁 DEVICE_REPORT 自动确认）。
+        // 目标位在证据确认前必须永久承诺，不能依赖 30 分钟 TTL（否则板已物理到位，
+        // 预约却过期被别的 run 抢走）。
+        boolean evidenceRequired = db != null && runId > 0 && !autoConfirmEnabled();
         // 默认等待 60s；验收「超时拒绝转人工」时可用环境变量缩短，不必改代码。
         long reserveTimeout = 60_000L;
         String envTimeout = System.getenv("LABOS_TRANSFER_RESERVE_TIMEOUT_MS");
@@ -414,6 +418,16 @@ public final class DriverStepExecutor implements StepExecutor {
                             + "ms 超时），已拒绝搬运，请人工修复后继续",
                     0, method);
         }
+        // 证据确认路径：目标位永久承诺（REPORTED 未确认不得被 TTL 释放/抢占）。
+        if (evidenceRequired) {
+            try {
+                posLock.promoteReservationToForever(targetPos, runId);
+            } catch (java.sql.SQLException e) {
+                safeReleaseTarget(posLock, targetPos);
+                throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
+                        "目标位永久承诺失败：" + e.getMessage(), 0, method);
+            }
+        }
         // P2 阶段 B：动作前固定源位（证据确认路径要凭它写位置，动作后源位已空无法重查）。
         // 显式 sourcePosition 优先；未指定时取本 run 第一个有板位置。
         if (sourcePos == null) {
@@ -448,7 +462,14 @@ public final class DriverStepExecutor implements StepExecutor {
                 transferTxn = com.labos.kernel.workflow.TransferTransaction.begin(
                         db, tenantId, runId, plate, srcRes, dstRes, sourcePos, targetPos);
             } catch (java.sql.SQLException e) {
-                log.error("[搬运事务] 创建失败（不阻断执行）：" + e.getMessage());
+                safeReleaseTarget(posLock, targetPos);
+                throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
+                        "搬运事务创建失败（拒绝下发）：" + e.getMessage(), 0, method);
+            }
+            if (transferTxn == 0) {
+                safeReleaseTarget(posLock, targetPos);
+                throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
+                        "搬运事务创建失败（无事务 id，拒绝下发）", 0, method);
             }
         }
         try {
@@ -468,7 +489,9 @@ public final class DriverStepExecutor implements StepExecutor {
             // P1-10：动作失败 → 板可能既不在源位也不在目标位，必须标 UNKNOWN。
             // 不标的话系统会以为板还在源位，下一个节点去取就是撞机。
             if (r.errorCode() != null) {
-                markPlatePositionUnknown(ctx, srcRes, dstRes);
+                // P1-10 + P2 阶段 B：UNKNOWN 封锁必须用精确源/目标点位（sourcePos/targetPos），
+                // 而不是设备资源 srcRes/dstRes——否则实际候选格没被封锁，别的 run 会抢占。
+                markPlatePositionUnknown(ctx, sourcePos, targetPos);
                 safeReleaseTarget(posLock, targetPos);
             } else if (transferTxn > 0 && autoConfirmEnabled()) {
                 // putPlate 写占用时会自动清掉预留；登记未成功则必须显式释放，避免占死。
@@ -495,8 +518,8 @@ public final class DriverStepExecutor implements StepExecutor {
                     log.error("[搬运事务] 异常回写失败：" + ex.getMessage());
                 }
             }
-            // 抛异常同理：板的位置已不可信
-            markPlatePositionUnknown(ctx, srcRes, dstRes);
+            // 抛异常同理：板的位置已不可信（精确源/目标点位封锁）
+            markPlatePositionUnknown(ctx, sourcePos, targetPos);
             throw e;
         } finally {
             plan.closeAccesses(srcRes, dstRes, factory);
@@ -517,7 +540,7 @@ public final class DriverStepExecutor implements StepExecutor {
      *
      * <p>板号取 {@code params.plate}；取不到就只记日志不标（没有板号无法封锁）。
      */
-    private void markPlatePositionUnknown(StepContext ctx, long srcRes, long dstRes) {
+    private void markPlatePositionUnknown(StepContext ctx, Long srcPos, Long dstPos) {
         if (db == null || runId <= 0) {
             return;
         }
@@ -530,8 +553,9 @@ public final class DriverStepExecutor implements StepExecutor {
             return;
         }
         try {
+            // P2 阶段 B：srcPos/dstPos 是精确点位（非设备资源），封锁才覆盖真实候选格。
             int blocked = new com.labos.kernel.workflow.PauseManager(db, tenantId)
-                    .markPlateUnknown(barcode, srcRes, dstRes, null, runId);
+                    .markPlateUnknown(barcode, srcPos, dstPos, null, runId);
             log.error("[搬运] 板 " + barcode + " 位置未知，已封锁 "
                     + blocked + " 个可能位置（需人工盘点）");
         } catch (java.sql.SQLException e) {

@@ -47,20 +47,21 @@ public final class TransferConfirmWithPositionDbSelfTest {
             eq("源位仍有板（未写位置）", PLATE, plateOn(SRC_POS));
             eq("目标位仍空（未写位置）", null, plateOn(DST_POS));
 
-            section("3. confirmWithPosition 原子写位置 + CONFIRMED");
+            section("3. confirmWithPosition 原子写位置 + CONFIRMED + KNOWN");
             boolean ok = TransferTransaction.confirmWithPosition(db, TENANT, txn,
-                    RUN, "SCAN", "tester", "扫码确认到位");
+                    "MANUAL", "tester", "扫码确认到位", null);
             eq("证据确认成功", true, ok);
             eq("状态 CONFIRMED", "CONFIRMED", TransferTransaction.statusOf(db, TENANT, txn));
             eq("源位已清空", null, plateOn(SRC_POS));
             eq("目标位是这块板", PLATE, plateOn(DST_POS));
+            eq("板状态已回 KNOWN", "KNOWN", plateStatus());
 
             section("4. 反例：缺精确点位的事务 confirmWithPosition 返回 false");
             long txn2 = TransferTransaction.begin(db, TENANT, RUN, PLATE,
                     SRC_RES, DST_RES, null, null);
             eq("无点位不可确认（fail-closed）", false,
                     TransferTransaction.confirmWithPosition(db, TENANT, txn2,
-                            RUN, "MANUAL", "t", "无点位"));
+                            "MANUAL", "t", "无点位", null));
         } finally {
             cleanup();
         }
@@ -92,6 +93,18 @@ public final class TransferConfirmWithPositionDbSelfTest {
                      "SELECT plate_id FROM position_state WHERE tenant_id = ? AND resource_id = ?")) {
             ps.setLong(1, TENANT);
             ps.setLong(2, resourceId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
+    private static String plateStatus() throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT position_status FROM plate WHERE tenant_id = ? AND barcode = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, PLATE);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? rs.getString(1) : null;
             }

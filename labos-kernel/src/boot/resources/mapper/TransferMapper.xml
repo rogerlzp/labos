@@ -37,6 +37,19 @@
            AND status IN ('REPORTED', 'UNKNOWN')
     </select>
 
+    <!-- P2 阶段 B：证据确认路径只认 REPORTED；UNKNOWN 走人工盘点 -->
+    <select id="selectReportedTransfer" resultType="java.util.Map">
+        SELECT plate_barcode AS "plateBarcode",
+               source_resource_id AS "sourceResourceId",
+               target_resource_id AS "targetResourceId",
+               source_position_id AS "sourcePositionId",
+               target_position_id AS "targetPositionId",
+               run_id AS "runId"
+          FROM transfer_transaction
+         WHERE tenant_id = #{tenantId} AND id = #{id}
+           AND status = 'REPORTED'
+    </select>
+
     <update id="markTransferConfirmed">
         UPDATE transfer_transaction
            SET status = 'CONFIRMED', confirmed_at = now()

@@ -37,6 +37,8 @@ public final class InterlockContractSelfTest {
                 InterlockContract.recoveryScope("EC-SCAN-MISMATCH"));
         eq("EC-SCAN-EVIDENCE-MISSING → MANUAL", InterlockContract.Scope.MANUAL,
                 InterlockContract.recoveryScope("EC-SCAN-EVIDENCE-MISSING"));
+        eq("EC-SCAN-EVIDENCE-CONSUMED → MANUAL", InterlockContract.Scope.MANUAL,
+                InterlockContract.recoveryScope("EC-SCAN-EVIDENCE-CONSUMED"));
         eq("EC-PLACE-UNCONFIRMED → BLOCK_RECONCILE", InterlockContract.Scope.BLOCK_RECONCILE,
                 InterlockContract.recoveryScope("EC-PLACE-UNCONFIRMED"));
 
@@ -48,13 +50,14 @@ public final class InterlockContractSelfTest {
         eq("空串 → MANUAL", InterlockContract.Scope.MANUAL,
                 InterlockContract.recoveryScope(""));
 
-        section("3. 词表不被悄悄删减（评审 §6 的 11 个互锁码一个不少）");
+        section("3. 词表不被悄悄删减（评审 §6 的 12 个互锁码一个不少）");
         List<String> required = List.of(
                 "EC-RESOURCE-BUSY", "EC-INTERLOCK-TURNTABLE", "EC-PLATE-DUPLICATE-POS",
                 "EC-INTERLOCK-RAIL", "EC-INTERLOCK-STIRRER", "EC-INTERLOCK-NO-WAIT",
                 "EC-STATE-STALE", "EC-STATE-UNKNOWN", "EC-SCAN-MISMATCH",
-                "EC-SCAN-EVIDENCE-MISSING", "EC-PLACE-UNCONFIRMED");
-        eq("词表覆盖 11 个必需码", true,
+                "EC-SCAN-EVIDENCE-MISSING", "EC-SCAN-EVIDENCE-CONSUMED",
+                "EC-PLACE-UNCONFIRMED");
+        eq("词表覆盖 12 个必需码", true,
                 InterlockContract.errorCodes().containsAll(required));
 
         section("4. 事实时效");
@@ -64,7 +67,7 @@ public final class InterlockContractSelfTest {
                 InterlockContract.freshnessTtl("stirrer_status"));
         eq("waiting_interaction 60s", Duration.ofSeconds(60),
                 InterlockContract.freshnessTtl("waiting_interaction"));
-        eq("未知事实走默认 30s", Duration.ofSeconds(30),
+        eq("未知事实走 ZERO（fail-closed：未知必须实时取证）", Duration.ZERO,
                 InterlockContract.freshnessTtl("whatever"));
         eq("空事实 ZERO（禁止用缓存/旧值，必须实时取证）", Duration.ZERO,
                 InterlockContract.freshnessTtl(null));

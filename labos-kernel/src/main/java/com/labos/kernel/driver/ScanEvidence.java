@@ -56,6 +56,26 @@ public final class ScanEvidence {
         }
     }
 
+    /**
+     * 严格消费（评审 P0-5）：run / 点位 / 期望码 / 实扫码全匹配 + 未消费才成功。
+     */
+    public static boolean consumeForGrab(DbConfig db, long tenantId, String scanId,
+                                         long runId, long sourcePositionId,
+                                         String expectedBarcode, String scannedBarcode,
+                                         Long transferId) {
+        if (db == null || scanId == null || scanId.isBlank()) {
+            return false;
+        }
+        try {
+            return Mappers.get(ScanEvidenceMapper.class)
+                    .consumeForGrab(tenantId, scanId, runId, sourcePositionId,
+                            expectedBarcode, scannedBarcode, transferId) == 1;
+        } catch (RuntimeException e) {
+            log.warn("[扫码证据] 严格消费失败（按未消费处理，拒绝）：{}", e.getMessage());
+            return false;
+        }
+    }
+
     private ScanEvidence() {
     }
 }

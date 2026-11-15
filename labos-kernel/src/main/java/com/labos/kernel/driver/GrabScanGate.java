@@ -64,7 +64,7 @@ public final class GrabScanGate {
             return Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "扫码未绑定源位置");
         }
         if (alreadyConsumed) {
-            return Verdict.reject("EC-SCAN-MISMATCH", "扫码证据已被别的搬运消费");
+            return Verdict.reject("EC-SCAN-EVIDENCE-CONSUMED", "扫码证据已被别的搬运消费");
         }
         if (!expectedBarcode.equals(scannedBarcode)) {
             return Verdict.reject("EC-SCAN-MISMATCH",

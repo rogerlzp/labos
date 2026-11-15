@@ -10,7 +10,7 @@ BEGIN
         SELECT plate_id
           FROM position_state
          WHERE plate_id IS NOT NULL
-         GROUP BY plate_id
+         GROUP BY tenant_id, plate_id
         HAVING count(*) > 1
     ) d;
     IF dup_count > 0 THEN

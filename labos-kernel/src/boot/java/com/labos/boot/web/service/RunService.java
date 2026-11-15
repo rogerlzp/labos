@@ -191,7 +191,7 @@ public class RunService {
     public Result confirmTransfer(long id, String body, String operator)
             throws java.sql.SQLException {
         boolean ok = confirmTransfer(id, field(body, "evidenceType"),
-                operator, field(body, "note"));
+                operator, field(body, "note"), field(body, "scanId"));
         if (!ok) {
             return Result.of(409, Jsons.obj("ok", false, "error", "搬运事务不存在或已确认"), null, null, null);
         }
@@ -1202,9 +1202,9 @@ public class RunService {
 
     /** P-08：人工/扫码确认搬运物理位置。 */
     public boolean confirmTransfer(long id, String evidenceType, String operator,
-                                   String note) throws java.sql.SQLException {
-        return com.labos.kernel.workflow.TransferTransaction.confirm(
-                db, TENANT, id, evidenceType, operator, note);
+                                   String note, String scanId) throws java.sql.SQLException {
+        return com.labos.kernel.workflow.TransferTransaction.confirmWithPosition(
+                db, TENANT, id, evidenceType, operator, note, scanId);
     }
 
     /** P-07：重放一条已派发的外部事件（不重发物理命令）。 */

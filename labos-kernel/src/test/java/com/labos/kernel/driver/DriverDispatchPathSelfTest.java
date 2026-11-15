@@ -53,15 +53,116 @@ public final class DriverDispatchPathSelfTest {
         check(TARGET + " 有 driver.execute( 调用（" + total.size() + " 处）", !total.isEmpty());
         eq("全部落在 " + DISPATCH_METHOD + " 内", total, inDispatch);
 
+        section("3. 全仓 driver.execute 只有两处受控例外（DriverStepExecutor + ShadowProbe）");
+        java.util.List<String> others = new java.util.ArrayList<>();
+        boolean shadowRestricted = false;
+        Path srcRoot = findMainJavaRoot();
+        if (srcRoot != null) {
+            try (java.util.stream.Stream<Path> s = Files.walk(srcRoot)) {
+                for (Path p : s.filter(x -> x.toString().endsWith(".java")).toList()) {
+                    String name = p.getFileName().toString();
+                    String src = stripComments(Files.readString(p, StandardCharsets.UTF_8));
+                    if (!src.contains("driver.execute(")) {
+                        continue;
+                    }
+                    if (TARGET.equals(name)) {
+                        continue;
+                    }
+                    if ("ShadowProbe.java".equals(name)) {
+                        shadowRestricted = src.contains("isMotionMethod");
+                        continue;
+                    }
+                    others.add(relativize(p));
+                }
+            } catch (IOException ignore) {
+                // 扫描失败按不通过处理（others 可能为空，下面仍断言）
+            }
+        }
+        eq("除两处受控例外外 0 个 driver.execute 旁路（违规文件）",
+                java.util.List.of(), others);
+        check("ShadowProbe 已加运动类方法限制（isMotionMethod）", shadowRestricted);
+
         System.out.printf("%n通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {
             System.exit(1);
         }
     }
 
-    /** 从 cwd 起向上找 {@code DriverStepExecutor.java}。 */
-    private static Path findFile() {
+    /** 从 cwd 起向上找 {@code src/main/java}。 */
+    private static Path findMainJavaRoot() {
         Path p = Path.of("").toAbsolutePath();
+        for (int i = 0; i < 6 && p != null; i++, p = p.getParent()) {
+            Path cand = p.resolve("labos-kernel/src/main/java");
+            if (Files.isDirectory(cand)) {
+                return cand;
+            }
+            Path cand2 = p.resolve("src/main/java");
+            if (Files.isDirectory(cand2) && Files.isDirectory(p.resolve("src/test/java"))) {
+                return cand2;
+            }
+        }
+        return null;
+    }
+
+    private static String relativize(Path f) {
+        try {
+            return Path.of("").toAbsolutePath().relativize(f).toString();
+        } catch (RuntimeException e) {
+            return f.toString();
+        }
+    }
+
+    /** 去行注释 / 块注释 / javadoc（保留字符串与换行），注释里提一嘴不算旁路。 */
+    private static String stripComments(String src) {
+        StringBuilder out = new StringBuilder(src.length());
+        int n = src.length();
+        int i = 0;
+        while (i < n) {
+            char ch = src.charAt(i);
+            if (ch == '"') {
+                out.append(ch);
+                i++;
+                while (i < n) {
+                    char c = src.charAt(i);
+                    out.append(c);
+                    i++;
+                    if (c == '\\' && i < n) {
+                        out.append(src.charAt(i));
+                        i++;
+                    } else if (c == '"') {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if (ch == '/' && i + 1 < n && src.charAt(i + 1) == '/') {
+                while (i < n && src.charAt(i) != '\n') {
+                    out.append(' ');
+                    i++;
+                }
+                continue;
+            }
+            if (ch == '/' && i + 1 < n && src.charAt(i + 1) == '*') {
+                out.append("  ");
+                i += 2;
+                while (i < n && !(src.charAt(i) == '*' && i + 1 < n && src.charAt(i + 1) == '/')) {
+                    out.append(src.charAt(i) == '\n' ? '\n' : ' ');
+                    i++;
+                }
+                if (i < n) {
+                    out.append("  ");
+                    i += 2;
+                }
+                continue;
+            }
+            out.append(ch);
+            i++;
+        }
+        return out.toString();
+    }
+
+    /** 从 cwd 起向上找 {@code DriverStepExecutor.java}。 */
+    private static Path findFile() {        Path p = Path.of("").toAbsolutePath();
         for (int i = 0; i < 6 && p != null; i++, p = p.getParent()) {
             Path cand = p.resolve("labos-kernel/src/main/java/com/labos/kernel/driver/"
                     + TARGET);

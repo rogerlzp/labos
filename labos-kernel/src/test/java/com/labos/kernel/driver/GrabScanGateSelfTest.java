@@ -41,7 +41,7 @@ public final class GrabScanGateSelfTest {
         GrabScanGate.Verdict reused = GrabScanGate.check("PLATE-1", "PLATE-1", 100L,
                 "scan-1", now, true, null);
         eq("已消费 → 拒绝", false, reused.allow());
-        eq("已消费错误码 EC-SCAN-MISMATCH", "EC-SCAN-MISMATCH", reused.errorCode());
+        eq("已消费错误码 EC-SCAN-EVIDENCE-CONSUMED", "EC-SCAN-EVIDENCE-CONSUMED", reused.errorCode());
 
         GrabScanGate.Verdict stale = GrabScanGate.check("PLATE-1", "PLATE-1", 100L,
                 "scan-1", now - 120_000L, false, Duration.ofSeconds(60));

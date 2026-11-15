@@ -27,4 +27,16 @@ public interface ScanEvidenceMapper {
                             @Param("scanId") String scanId,
                             @Param("transferId") Long transferId,
                             @Param("runId") long runId);
+
+    /**
+     * P2 阶段 B（评审 P0-5）：严格消费——匹配 run、点位、期望码、实扫码 + 未消费，
+     * 全部满足才置 consumed 并绑定 transfer。任一不匹配返回 0。
+     */
+    int consumeForGrab(@Param("tenantId") long tenantId,
+                       @Param("scanId") String scanId,
+                       @Param("runId") long runId,
+                       @Param("sourcePositionId") long sourcePositionId,
+                       @Param("expectedBarcode") String expectedBarcode,
+                       @Param("scannedBarcode") String scannedBarcode,
+                       @Param("transferId") Long transferId);
 }

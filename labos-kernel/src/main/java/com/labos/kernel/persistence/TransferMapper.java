@@ -38,6 +38,13 @@ public interface TransferMapper {
     Map<String, Object> selectConfirmableTransfer(@Param("tenantId") long tenantId,
                                                   @Param("id") long id);
 
+    /**
+     * P2 阶段 B：证据确认路径只认 REPORTED（UNKNOWN 必须走人工盘点 locatePlate）。
+     * 返回板条码、源/目标设备资源、精确源/目标点位、run_id；不可确认返回 null。
+     */
+    Map<String, Object> selectReportedTransfer(@Param("tenantId") long tenantId,
+                                               @Param("id") long id);
+
     /** 人工/扫码确认：roll 到 CONFIRMED；返回 0 = 行不存在（调用方已预检，防御）。 */
     int markTransferConfirmed(@Param("tenantId") long tenantId,
                               @Param("id") long id);

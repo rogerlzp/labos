@@ -58,6 +58,14 @@ public final class ShadowProbe {
         contract.put("method", false);
         contract.put("methodStatus", false);
 
+        // P2 评审（P2-9）：影子探针是诊断用途，但仍属 driver.execute 旁路。
+        // 限制只能发非运动类命令（状态/查询/读码类），运动类一律拒绝——
+        // 防止探针变成绕过互锁门禁的第二个物理下发通道。
+        if (isMotionMethod(method)) {
+            return new Probe(resourceId, method, false, "EC-PROBE-MOTION-DENIED",
+                    "影子探针禁止发运动类命令：" + method, 0, null, contract);
+        }
+
         long t0 = System.nanoTime();
 
         DeviceDriver driver = registry.driverFor(resourceId).orElse(null);
@@ -101,9 +109,28 @@ public final class ShadowProbe {
         return out;
     }
 
+    /**
+     * 运动类方法（会使机械臂/开合/取放动作发生）——影子探针拒绝下发。
+     * 非运动类（读码/状态/查询/标定只读）才允许。
+     */
+    private static boolean isMotionMethod(String method) {
+        if (method == null || method.isBlank()) {
+            return true;
+        }
+        String m = method.trim();
+        String[] prefixes = {"Transfer", "Move", "Pick", "Place", "Home",
+                "Open", "Close", "Seal", "Peel", "Decap", "Recap", "Mix",
+                "Incubate", "Centrifuge", "Thermocycle", "Wash", "Aliquot"};
+        for (String p : prefixes) {
+            if (m.startsWith(p)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 给 {@link StepContext} 用的便捷入口（影子模式下忽略 steps）。 */
-    public static String describe(Probe p) {
-        StringBuilder sb = new StringBuilder();
+    public static String describe(Probe p) {        StringBuilder sb = new StringBuilder();
         sb.append(p.ok() ? "OK" : "FAIL");
         sb.append(" | ").append(p.method()).append(" @").append(p.resourceId());
         sb.append(" | ").append(p.elapsedMs()).append("ms");
