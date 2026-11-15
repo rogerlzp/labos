@@ -653,6 +653,12 @@ public class DeviceService {
         if (endpoint == null || endpoint.isBlank()) {
             throw new IllegalArgumentException("驱动端点不能为空（如 tcp://192.168.1.10:8501）");
         }
+        // ⚠ 编号必须先查：uk_driver 是 UNIQUE(code, version)，而 version 可为 NULL
+        // （PG 里 NULL 不参与唯一判断）⇒ 库里已有 17 条 version 为 NULL 的驱动，
+        // 只靠唯一键拦不住重复编号。
+        if (deviceMapper.existsDriverCode(TENANT, code.trim())) {
+            throw new IllegalArgumentException("驱动编号已存在: " + code);
+        }
         try {
             Long id = deviceMapper.insertDriver(TENANT, code.trim(), name.trim(),
                     protocol.trim().toLowerCase(java.util.Locale.ROOT), endpoint.trim(),

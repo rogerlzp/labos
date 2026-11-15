@@ -288,6 +288,7 @@
                dp.position_label AS "positionLabel",
                dp.is_standalone AS "standalone",
                dp.grid_row AS "gridRow", dp.grid_col AS "gridCol",
+               dp.slot_index AS "slotIndex",
                dp.max_height_mm AS "maxHeightMm",
                array_to_string(dp.plate_types, ',') AS "plateTypes",
                p.id AS "plateUid", p.identity_status AS "identityStatus",

@@ -162,7 +162,9 @@
     WITH rn AS (
       INSERT INTO resource_node (tenant_id, code, name, parent_id, kind, location, attr, sort_order)
       VALUES (#{t}, #{pointCode}, #{pointCode}, #{deviceResourceId},
-              #{pointKind},
+              -- kind 是 resource_kind **枚举**，不 cast 会报
+              -- "column kind is of type resource_kind but expression is of type character varying"
+              CAST(#{pointKind} AS resource_kind),
               jsonb_build_object('zone', #{pointCode}, 'point', #{pointCode}),
               jsonb_build_object('source', 'grid'), 0)
       ON CONFLICT (tenant_id, code) DO UPDATE

@@ -293,11 +293,24 @@
     </update>
 
     <!-- 登记驱动：代码唯一；协议走 driver_protocol 枚举（写错会直接报错，不静默降级）。 -->
+    <select id="existsDriverCode" resultType="boolean">
+        SELECT EXISTS (SELECT 1 FROM driver
+                       WHERE tenant_id = #{tenantId} AND code = #{code}
+                         AND deleted_at IS NULL)
+    </select>
+
+    <!--
+      登记驱动。
+      ⚠ version 必须给值：uk_driver 是 UNIQUE(tenant_id, code, version)，
+      而 version 可为 NULL —— PG 里 NULL 不参与唯一性判断 ⇒ 不给 version
+      的话同一个编号能插进去好多条（存量里就有 17 条 version 为 NULL 的驱动）。
+      ⇒ 这里固定写 '1.0'，与存量带版本的驱动一致。
+    -->
     <select id="insertDriver" resultType="java.lang.Long">
         INSERT INTO driver
-          (tenant_id, code, name, protocol, endpoint, vendor, resident, status)
+          (tenant_id, code, name, version, protocol, endpoint, vendor, resident, status)
         VALUES
-          (#{tenantId}, #{code}, #{name},
+          (#{tenantId}, #{code}, #{name}, '1.0',
            CAST(#{protocol} AS driver_protocol), #{endpoint}, #{vendor},
            COALESCE(#{resident}, false), 1)
         RETURNING id

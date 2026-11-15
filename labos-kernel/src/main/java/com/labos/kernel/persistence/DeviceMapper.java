@@ -134,6 +134,9 @@ public interface DeviceMapper {
      * @param protocol 协议枚举（tcp / http / mock / netdll …）
      * @param endpoint  端点（如 {@code tcp://192.168.1.10:8501}）
      */
+    /** 驱动编号是否已被占用（uk_driver 是 (code, version)，version 为 NULL 时不生效 ⇒ 必须先查）。 */
+    boolean existsDriverCode(@Param("tenantId") long tenantId, @Param("code") String code);
+
     Long insertDriver(@Param("tenantId") long tenantId, @Param("code") String code,
                       @Param("name") String name, @Param("protocol") String protocol,
                       @Param("endpoint") String endpoint, @Param("vendor") String vendor,
