@@ -245,6 +245,18 @@ def start_one(item, registry_url):
     args = ["java", "-cp", CP, MAIN,
             "--registry", registry_url,
             "--port", str(port)]
+    # ⚠ **设备号/实例号/型号直接传下去**（2026-11-15 修）：
+    #   模拟器启动时若自己再读一遍中控清单，13 个模拟器同时读会打爆内核
+    #   ⇒ 读超时 ⇒ 回退到命令行参数 ⇒ **设备 id = 0**
+    #   ⇒ 收不下任何设备的命令（中控下发的 equipment_id 对不上 ⇒ EC-06-0001）
+    #   （实测 2026-11-15 23:22：13 台模拟器全部 device=0，整线一台命令都发不出去。）
+    #   ⇒ 清单就在本脚本手里（deviceId = 实例 id、code = 设备码），直接传。
+    if item.get("deviceId"):
+        args += ["--device", str(item["deviceId"])]
+    if code and code != "?":
+        args += ["--code", code]
+    if item.get("modelId"):
+        args += ["--model", str(item["modelId"])]
     if methods:
         args += ["--methods", methods]
     spont = SPONTANEOUS.get(item.get("deviceType") or "")

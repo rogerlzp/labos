@@ -2062,12 +2062,44 @@ public class WorkflowService {
      *
      * <p>它只是「说明性预置」，写失败绝不阻断实验启动。
      */
+    /**
+     * 扫码节点「扫的那个点位」= 节点参数里声明的 {@code sourcePosition}（点位码）。
+     *
+     * <p>扫码证据的 {@code source_position_id} 必须与搬运节点的源位是同一个 id，
+     * 抓板闸门 {@code authorizeAndConsume} 才匹配得上。扫码设备是机械臂（手上没有板位），
+     * 所以源位只能由**扫码节点自己声明**。
+     *
+     * @return 被扫位置 id（point_resource_id）；没声明 / 解析不到 ⇒ null（回退旧口径）
+     */
+    private Long scannedPositionOf(java.util.Map<String, Object> params) {
+        if (params == null) {
+            return null;
+        }
+        Object raw = params.get("sourcePosition");
+        if (raw == null) {
+            return null;
+        }
+        String pointCode = String.valueOf(raw).trim();
+        if (pointCode.isEmpty()) {
+            return null;
+        }
+        try {
+            return com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .selectPositionResourceByPointCode(tenantId, pointCode);
+        } catch (RuntimeException e) {
+            log.warn("[扫码证据] 解析被扫点位 {} 失败：{}", pointCode, e.getMessage());
+            return null;
+        }
+    }
+
     private void seedStartPlatePosition(long runId, List<NodeDef> ordered,
                                         Map<Long, Map<String, Object>> paramsByNode,
                                         Map<String, Long> nodeIdByKey) {
         try {
             String srcCode = null;
             String plate = null;
+            String sourceSpec = null;
             for (NodeDef n : ordered) {
                 String proto = n.protocolName();
                 if (proto == null || !proto.startsWith("Transfer")) {
@@ -2084,6 +2116,8 @@ public class WorkflowService {
                 }
                 srcCode = String.valueOf(s).trim();
                 plate = com.labos.kernel.driver.PositionLock.resolvePlateBarcode(pp, null);
+                Object sp = pp.get("sourcePosition");
+                sourceSpec = sp == null ? null : String.valueOf(sp).trim();
                 break;
             }
             if (srcCode == null || plate == null) {
@@ -2107,13 +2141,34 @@ public class WorkflowService {
                 return;
             }
 
-            // ② 板不在任何点位：预置到起点设备
+            // ② 板不在任何点位：预置到起点设备。
+            // ⚠ **流程声明了 sourcePosition 就用它**（2026-11-15 接线）：
+            //   搬运节点的 sourcePosition 与扫码节点的绑定点位必须是**同一个点位**，
+            //   否则「扫码证据的源位」与「搬运的源位」对不上 ⇒ 抓板闸门匹配失败。
+            //   所以板必须先被放到流程声明的那个点位上，而不是"第一个空位"。
             Long devRes = dm.selectResourceIdByCode(tenantId, srcCode);
             if (devRes == null) {
                 log.warn("[起点引导] 起点设备 {} 未找到资源，跳过", srcCode);
                 return;
             }
-            Long pos = dm.selectFirstAvailablePosition(tenantId, devRes);
+            Long pos = null;
+            if (sourceSpec != null && !sourceSpec.isBlank()) {
+                pos = dm.selectPositionResourceBySpec(tenantId, devRes, sourceSpec);
+                if (pos == null) {
+                    log.warn("[起点引导] 流程声明的源位 {} 在设备 {} 下不存在，跳过（不静默换位）",
+                            sourceSpec, srcCode);
+                    return;
+                }
+                String occupant = dm.selectPlateOnPosition(tenantId, pos);
+                if (occupant != null && !occupant.isBlank()) {
+                    log.warn("[起点引导] 流程声明的源位 {} 已被板 {} 占用，不预置（不覆盖）",
+                            sourceSpec, occupant);
+                    return;
+                }
+            }
+            if (pos == null) {
+                pos = dm.selectFirstAvailablePosition(tenantId, devRes);
+            }
             if (pos == null) {
                 log.warn("[起点引导] 起点设备 {} 没有可用点位，跳过", srcCode);
                 return;
@@ -2835,14 +2890,29 @@ public class WorkflowService {
             // P2 阶段 B：扫码节点落证据（抓板前扫码，绑定源位 + 期望码 + 实扫码），
             // 供后续 Transfer 节点的抓板闸门 authorizeAndConsume 消费。
             // 失败只告警：抓板闸门会因「无证据」拒绝抓板，fail-closed。
+            //
+            // ⚠ **被扫位置从哪来**（2026-11-15 接线）：原来是「扫描设备上本 run 的板位」
+            //   （PositionLock.recordScanEvidence 内部的 firstOccupiedPosition）——
+            //   但扫码设备是**机械臂**，ARM1 没有 device_point ⇒ 它手上没有板位
+            //   ⇒ 源位 null ⇒ 证据落不下来 ⇒ 搬运被 EC-SCAN-EVIDENCE-MISSING 拒绝
+            //   （实测 run 1001662）。
+            //   ⇒ 改为：扫码节点在**自己的参数**里声明「扫哪个点位」
+            //     （method_params.sourcePosition = 点位码，如 STACK1-S09）。
+            //   为什么不走 node_binding.position_id：平台的绑定模型要求
+            //   「节点绑的点位属于该节点自己的设备」（陈旧绑定守卫会按点位反查设备），
+            //   而机械臂去**别的设备**（耗材栈/提取仪）上的点位扫码 ⇒ 绑定表达不了。
+            //   参数路线还顺带解决跨设备解析：selectPositionResourceBySpec 是设备内解析，
+            //   这里要用 selectPositionResourceByPointCode（按点位码全局解析）。
+            //   扫码节点没声明 sourcePosition ⇒ 传 null ⇒ 回退旧口径（不改变旧行为）。
             if (ok && deviceId > 0 && rawResponse != null
                     && com.labos.kernel.driver.PositionLock.isBarcodeMethod(method)) {
                 try {
                     String scanId = "scan-r" + runId + "-n" + nodeId
                             + "-s" + stepSeq + "-a" + attempt;
+                    Long scannedPos = scannedPositionOf(params);
                     new com.labos.kernel.driver.PositionLock(db, tenantId)
                             .recordScanEvidence(deviceId, rawResponse, runId, nodeId,
-                                    scanId, null);
+                                    scanId, scannedPos);
                 } catch (Exception se) {
                     log.warn("[扫码证据] 落库失败（不阻断执行，抓板闸门会按无证据拒绝）：{}",
                             se.getMessage());

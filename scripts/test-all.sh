@@ -264,6 +264,9 @@ DB=(
   "driver.ScanEvidenceAuthorizeDbSelfTest"
   # P2 阶段 B：扫码节点落证据——recordScanEvidence（源位+期望码+实扫码）→闸门消费端到端
   "driver.ScanEvidenceRecordDbSelfTest"
+  # 2026-11-15 扫码证据接线：按点位码全局解析的位置 == 设备内解析的位置（接线不变量），
+  # 证据落在该点位 ⇒ 抓板闸门放行并消费；源位是别的点位 ⇒ 拒绝（证明"源位必须一致"）
+  "driver.ScanEvidencePositionDbSelfTest"
   # P2 阶段 C：L4 搅拌—分液运行时守卫——故障拒绝+EC-INTERLOCK-STIRRER/可用放行/
   # 未配对的分液方法拒绝（EC-STATE-UNKNOWN）/非分液方法不拦
   "driver.StirrerDispenserGuardDbSelfTest"

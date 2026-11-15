@@ -45,6 +45,18 @@ public interface DeviceStateMapper {
                                       @Param("deviceResourceId") long deviceResourceId,
                                       @Param("spec") String spec);
 
+    /**
+     * 按**点位码**（resource_node.code，如 {@code STACK1-S09}）全局解析位置资源 id。
+     *
+     * <p>{@link #selectPositionResourceBySpec} 是**设备内**解析（带 device_resource_id 约束），
+     * 只能解析"该设备自己的点位"；而扫码节点扫的是**别的设备上的板**
+     * （机械臂去耗材栈的磁套槽扫码）⇒ 必须全局解析。
+     *
+     * <p>返回 {@code point_resource_id} —— 与运行期的位置 id 空间一致。
+     */
+    Long selectPositionResourceByPointCode(@Param("tenantId") long tenantId,
+                                            @Param("pointCode") String pointCode);
+
     /** 谁占着这台设备（device_state.current_run_id）；空表示空闲。 */
     Long selectCurrentRunId(long tenantId, long resourceId);
 

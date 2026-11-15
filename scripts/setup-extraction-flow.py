@@ -57,6 +57,9 @@ ISLAND_CODE = "LAB-EXT-01"
 
 # 事件类型（**配置项**，来自 /api/device-event-types 字典，不是写死的字面量）
 EV_WAIT_INTERACTION = "waiting_interaction"
+# 抓板前扫码用的方法名：必须是 ARM1（型号 GANTRY_ROBOT_GENERIC）在 device_method
+# 里**真实登记**的名字 —— 写画像里的名字会"节点找不到方法"（派发失败 → 转人工）。
+SCAN_METHOD = "BarcodeScan"
 
 TOKEN = None
 
@@ -305,6 +308,22 @@ def main():
             sys.exit(f"✘ 设备 {c} 不在拓扑里（先跑 setup-extraction-station.py）")
     ok(f"设备齐备：{len(ext_codes)} 提取仪 + {len(disp_codes)} 分液器 + 机械臂 + 耗材栈")
 
+    # ---- 点位（一次取全，后面绑定与"磁套槽"都用它）
+    st, pos = call("GET", "/api/positions", query={"islandId": island_id})
+    pos_items = pos.get("items") or []
+    point_by_code = {p.get("code"): p.get("pointId") for p in pos_items}
+    ok(f"点位 {len(point_by_code)} 个（绑定用 pointId）")
+
+    # 磁套板槽位：耗材栈 MAGNET 区的前 N 个（每台提取仪一块磁套板，客户文档 §1.1）。
+    # **从库里按标签推导**，不手编槽号 —— 现场分区变了这里自动跟着变。
+    magnet_slots = [p["code"] for p in pos_items
+                    if (p.get("positionLabel") or "").upper() == "MAGNET"]
+    if len(magnet_slots) < len(ext_codes):
+        sys.exit(f"✘ 耗材栈的 MAGNET 槽只有 {len(magnet_slots)} 个，"
+                 f"不够 {len(ext_codes)} 台提取仪各一块磁套板")
+    magnet_slots = magnet_slots[:len(ext_codes)]
+    ok(f"磁套板槽位（按标签 MAGNET 推导）：{', '.join(magnet_slots)}")
+
     # ---- 建流程
     section("3. 建流程")
     st, lst = call("GET", "/api/workflows", query={"limit": "300", "q": "EXT-WORKFLOW-01"})
@@ -387,14 +406,30 @@ def main():
     b.flow(cur, split_a)
     cur = split_a
     chain_a_ends = []
-    for code in ext_codes:
+    for idx, code in enumerate(ext_codes):
         d = devs[code]
+        src_slot = magnet_slots[idx]      # 本条链的磁套板在耗材栈里的槽位
         n_pick = b.task(f"{code} 取磁套", protocol="PickTipComb",
                         resource=d["resourceId"], params={"plateIndex": 0},
                         icon="/devices/EXTRACT.svg")
         n_wait = b.task(f"等 {code} 等待交互", protocol="__awaitEvent",
                         params={"device": code, "eventType": EV_WAIT_INTERACTION,
                                 "timeout": 600, "into": f"{code}_wait"})
+        # 扫码节点：抓板前的强制扫码（P2 §4.1）。
+        #   ① 方法用 ARM1 真实登记的 `BarcodeScan`（机械臂的扫码枪）；
+        #   ② **被扫点位写在 method_params.sourcePosition**（点位码）——
+        #      扫码证据要绑这个点位，抓板闸门按「run + 源位 + 未消费」匹配
+        #      ⇒ 必须与搬运节点的 sourcePosition 是**同一个点位**。
+        #      为什么不写在 node_binding.position_id：平台的绑定模型要求
+        #      「节点绑的点位属于该节点自己的设备」（陈旧绑定守卫按点位反查设备），
+        #      而机械臂扫的是**别的设备**上的板（耗材栈的磁套槽 / 提取仪的交换位）
+        #      ⇒ 绑定表达不了（实测会被守卫判成"编排与绑定不是同一台"）。
+        #   ③ barcode 带 `${mainPlate}`：模拟器收到请求里的 barcode 会**原样回显**
+        #      （DeviceCore 扫码分支），于是"扫到的码"与"期望码"一致 ⇒ 闸门放行。
+        n_scan = b.task(f"机械臂 扫码（取磁套板前）", protocol=SCAN_METHOD,
+                        resource=arm, params={"barcode": "${mainPlate}",
+                                              "sourcePosition": src_slot},
+                        icon="/devices/TRANSFER.svg")
         n_move = b.task(f"机械臂 放磁套板到 {code} 交互位", protocol="Transfer",
                         # ⚠ source/target 必须是**设备码**，不能写点位码（2026-11-15 修）：
                         #   DriverStepExecutor.resourceOfParam 用 selectResourceIdByCode
@@ -403,15 +438,19 @@ def main():
                         #   ⇒ 会被解析成**点位资源 id**，于是"目标设备"成了点位本身
                         #   ⇒ reserveTargetPosition 找不到装载口 ⇒ 60s 超时
                         #   ⇒ EC-RESOURCE-BUSY ⇒ 节点转人工（实测 run 1001660）。
-                        #   精确点位由 sourcePosition/targetPosition 承担（节点绑定注入），
-                        #   或由目标设备自身的可达位自动选（提取仪只有 EXT 一个可达位）。
+                        #   精确点位由 sourcePosition/targetPosition 承担（见下）。
                         # ⚠ barcode 必填：搬运要知道搬哪块板。resolvePlateBarcode 只认
                         #   **字面条码**（`${...}` 未替换会被拒），所以这里写变量引用，
                         #   由 loadMethodParams 在运行期替换成 workflow_variable.mainPlate。
                         #   少了它 ⇒ 源位解析不到归属本 run 的板 ⇒ EC-POSITION-OCCUPIED
                         #   （实测 run 1001661）。
+                        # ⚠ sourcePosition/targetPosition 显式写点位码：
+                        #   ① 起点板位引导据此把板放到**这个**槽位（不放"第一个空位"）；
+                        #   ② 抓板闸门按源位匹配扫码证据 ⇒ 扫码节点绑的点位必须与它一致。
                         resource=arm, params={"source": "STACK1", "target": code,
-                                              "barcode": "${mainPlate}"},
+                                              "barcode": "${mainPlate}",
+                                              "sourcePosition": src_slot,
+                                              "targetPosition": f"{code}-EXT"},
                         icon="/devices/TRANSFER.svg")
         n_drop = b.task(f"{code} 卸磁套", protocol="DropTipComb",
                         resource=d["resourceId"], params={"plateIndex": 0},
@@ -419,11 +458,14 @@ def main():
         node_bind[n_pick] = (code, "PickTipComb")
         node_bind[n_drop] = (code, "DropTipComb")
         node_bind[n_move] = ("ARM1", "Transfer")
+        # 扫码节点：设备=机械臂（**不绑点位**：被扫点位走 method_params.sourcePosition，
+        #   见上面的注释 —— 绑定模型不允许绑别的设备的点位）
+        node_bind[n_scan] = ("ARM1", SCAN_METHOD)
         # ⚠ 每条链都从 **split_a** 出发（不是从上一条链的尾巴）⇒ 才是真正的并行分叉。
         #   写成 `b.flow(cur, nxt)` 且 cur 在循环里推进 ⇒ 4 条链被串成一条
         #   ⇒ 预检 PF-15 报「网关 1 进 1 出（直通）」。
         node = split_a
-        for nxt in (n_pick, n_wait, n_move, n_drop):
+        for nxt in (n_pick, n_wait, n_scan, n_move, n_drop):
             b.flow(node, nxt)
             node = nxt
         chain_a_ends.append(node)
@@ -450,15 +492,23 @@ def main():
     b.flow(cur, split_b)
     cur = split_b
     chain_b_ends = []
-    for code in ext_codes:
+    for idx, code in enumerate(ext_codes):
         d = devs[code]
+        src_slot = magnet_slots[idx]
         n_wait = b.task(f"等 {code} 等待交互（收尾）", protocol="__awaitEvent",
                         params={"device": code, "eventType": EV_WAIT_INTERACTION,
                                 "timeout": 900, "into": f"{code}_wait2"})
+        # 扫码节点：取产物板前扫**提取仪的交换位**（板此刻在那儿）
+        n_scan = b.task(f"机械臂 扫码（取产物板前）", protocol=SCAN_METHOD,
+                        resource=arm, params={"barcode": "${mainPlate}",
+                                              "sourcePosition": f"{code}-EXT"},
+                        icon="/devices/TRANSFER.svg")
         n_take = b.task(f"机械臂 从 {code} 取产物板", protocol="Transfer",
-                        # 同上：设备码 + 板号（见 n_move 处的注释）
+                        # 同上：设备码 + 板号 + 显式点位（见 n_move 处的注释）
                         resource=arm, params={"source": code, "target": "STACK1",
-                                              "barcode": "${mainPlate}"},
+                                              "barcode": "${mainPlate}",
+                                              "sourcePosition": f"{code}-EXT",
+                                              "targetPosition": src_slot},
                         icon="/devices/TRANSFER.svg")
         action, action_cn = stage_action["DISP6"]
         n_action = b.task(f"{code} {action_cn}", protocol=action,
@@ -466,6 +516,8 @@ def main():
                           icon="/devices/EXTRACT.svg")
         node_bind[n_action] = (code, action)
         node_bind[n_take] = ("ARM1", "Transfer")
+        # 扫码节点：设备=机械臂（不绑点位，同上）
+        node_bind[n_scan] = ("ARM1", SCAN_METHOD)
         # ⚠ **拍序：设备动作 → 等交互 → 机械臂**（2026-11-15 修）
         #   【等待交互】是**设备动作触发**的：设备自己跑完内部工序才报
         #   （模拟器：命令成功 → 300ms 后推 waiting_interaction）。
@@ -477,7 +529,7 @@ def main():
         #   （段 A 是「取磁套 → 等交互 → 放板 → 卸磁套」，同样是动作在前的三拍。）
         # 每条链都从 **split_b** 出发（见并行段 A 的说明）
         node = split_b
-        for nxt in (n_action, n_wait, n_take):
+        for nxt in (n_action, n_wait, n_scan, n_take):
             b.flow(node, nxt)
             node = nxt
         chain_b_ends.append(node)
@@ -518,9 +570,7 @@ def main():
     #      （不该绑的写空绑定 ⇒ 把陈旧绑定清掉），最后**回读自检**。
 
     # 点位：提取仪绑交互位（机械臂可达那侧），分液器绑板位
-    st, pos = call("GET", "/api/positions", query={"islandId": island_id})
-    point_by_code = {p.get("code"): p.get("pointId") for p in pos.get("items", [])}
-    ok(f"点位 {len(point_by_code)} 个（绑定用 pointId）")
+    # （点位已在第 2 节取过，这里直接复用，别再打一次 API）
 
     # 方法 id：绑定的 methodId 取**该节点自己要执行的那个方法**，不是随便第一个
     method_id_by = {}
@@ -550,8 +600,12 @@ def main():
             else:
                 bad(f"清空节点绑定失败：{nid}（{st}）", str(r)[:150])
             continue
-        code, method = target
-        st, r = bind_node(wf_id, nid, code, devs[code], position_for(code),
+        code, method = target[0], target[1]
+        # 第三个元素 = 点位码覆盖（扫码节点绑的是**别的设备**的点位：
+        #   机械臂去耗材栈的磁套槽/提取仪的交换位扫码）
+        pos_override = target[2] if len(target) > 2 else None
+        pos_id = point_by_code.get(pos_override) if pos_override else position_for(code)
+        st, r = bind_node(wf_id, nid, code, devs[code], pos_id,
                           method_id_by.get((code, method)))
         if st == 200:
             written += 1
@@ -578,7 +632,8 @@ def main():
         bound_mid = rows[0].get("methodId") if rows else None
         want = node_bind.get(key)
         want_inst = devs[want[0]].get("instanceId") if want else None
-        want_pos = position_for(want[0]) if want else None
+        want_pos = (point_by_code.get(want[2]) if (want and len(want) > 2)
+                    else (position_for(want[0]) if want else None))
         want_mid = method_id_by.get((want[0], want[1])) if want else None
         # 扫码策略与装板方式也自检（客户文档 §1.1：机械臂含扫码枪，每次抓板扫码记录）
         want_bar = "validate_both" if want and want[0] == "ARM1" else ("validate_in" if want else None)

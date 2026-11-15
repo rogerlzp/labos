@@ -35,6 +35,23 @@
         SELECT id FROM resource_node WHERE tenant_id = #{param1} AND code = #{param2}
     </select>
 
+    <!--
+      按**点位码**（resource_node.code）全局解析点位资源 id。
+      为什么需要它（而不是 selectPositionResourceBySpec）：
+        那个查询是**设备内**解析（带 dp.device_resource_id 约束）⇒ 只能解析"该设备自己的点位"。
+        但扫码节点扫的是**别的设备上的板**（机械臂去耗材栈的磁套槽扫码）⇒ 必须全局解析。
+      返回 point_resource_id —— 与运行期的位置 id 空间一致
+      （selectPositionResourceBySpec / selectFirstOccupiedPosition 都返回它）。
+    -->
+    <select id="selectPositionResourceByPointCode" resultType="java.lang.Long">
+        SELECT dp.point_resource_id
+          FROM device_point dp
+          JOIN resource_node rn ON rn.id = dp.point_resource_id
+         WHERE dp.tenant_id = #{param1}
+           AND rn.code = #{param2}
+         LIMIT 1
+    </select>
+
     <select id="selectMethodInterruptible" resultType="java.lang.Boolean">
         SELECT interruptible FROM device_method
          WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
