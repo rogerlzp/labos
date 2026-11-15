@@ -513,17 +513,6 @@ public final class DriverStepExecutor implements StepExecutor {
             }
         }
         try {
-            // P2 阶段 B：抓板前扫码闸门（证据确认路径强制）。
-            // 按「run + 源位 + 未消费」解析最新证据 → 纯判定 → 原子消费，任一失败拒绝下发。
-            if (evidenceRequired) {
-                GrabScanGate.Verdict gate = ScanEvidence.authorizeAndConsume(
-                        db, tenantId, runId, sourcePos, plate, transferTxn, null);
-                if (!gate.allow()) {
-                    safeReleaseTarget(posLock, targetPos);
-                    throw new StepFailure(gate.errorCode(), scopeOf(gate.errorCode()),
-                            gate.reason(), 0, method);
-                }
-            }
             // P2 阶段 C/D：锁内最终复核——下发前重读 L1 转盘 + L5 等待交互，
             // 状态已变/过期/无有效等待 → 拒绝（不留等待窗口）。
             if (db != null && runId > 0) {
@@ -540,6 +529,20 @@ public final class DriverStepExecutor implements StepExecutor {
                     safeReleaseTarget(posLock, targetPos);
                     throw new StepFailure(l5r.errorCode(), scopeOf(l5r.errorCode()),
                             l5r.message(), 0, method);
+                }
+            }
+            // P2 阶段 B：抓板前扫码闸门（证据确认路径强制）。
+            // 按「run + 源位 + 未消费」解析最新证据 → 纯判定 → 原子消费，任一失败拒绝下发。
+            // ⚠ 评审 20261115：消费放在 L1/L5 复核**之后**、物理下发**之前**——
+            //   消费不可撤销，若先消费后被复核拒绝，证据已烧掉，重试必须重新扫码；
+            //   放复核之后可让「状态突变」类拒绝不烧证据，只把闸门留给物理前的最后一步。
+            if (evidenceRequired) {
+                GrabScanGate.Verdict gate = ScanEvidence.authorizeAndConsume(
+                        db, tenantId, runId, sourcePos, plate, transferTxn, null);
+                if (!gate.allow()) {
+                    safeReleaseTarget(posLock, targetPos);
+                    throw new StepFailure(gate.errorCode(), scopeOf(gate.errorCode()),
+                            gate.reason(), 0, method);
                 }
             }
             // 阶段 A：主机械臂动作也走统一派发门禁（CommandLedger.begin + 物理下发），
@@ -1074,7 +1077,11 @@ public final class DriverStepExecutor implements StepExecutor {
         }
         try {
             // P2 阶段 C：L4 锁内最终复核——下发前重读搅拌状态，故障/过期/未知拒绝（不 pause）。
-            if (db != null && runId > 0) {
+            // ⚠ 只对分液类方法生效（2026-11-15 修）：改动前对**每条**设备命令都复核，
+            //   配对表 0 行时全平台每条命令都被 EC-STATE-UNKNOWN 拒（实测停摆）。
+            //   L4 的语义就是「搅拌故障禁**分液**」——非分液命令与 L4 无关。
+            //   分液命令上的「配对缺失」fail-closed 由 checkBeforeDispense 把关。
+            if (db != null && runId > 0 && StirrerDispenserGuard.isDispenseMethod(cmd.method())) {
                 Long dispRes = resourceOfInstance(cmd.deviceInstanceId());
                 if (dispRes != null) {
                     DriverResult l4r = StirrerDispenserGuard.finalRecheck(db, tenantId, dispRes);

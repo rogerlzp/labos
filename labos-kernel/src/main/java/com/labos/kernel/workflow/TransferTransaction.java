@@ -52,6 +52,14 @@ public final class TransferTransaction {
      *
      * @return true=确认成功（只允许 REPORTED/UNKNOWN）
      */
+    /**
+     * @deprecated P2 阶段 B（2026-11-15）：本方法<b>不写 position_state</b>（不写位置、
+     * 不清源位、不写目标占用、不把板回 KNOWN）——证据确认请改用
+     * {@link #confirmWithPosition}（原子写位置 + CONFIRMED + KNOWN，只认 REPORTED）。
+     * UNKNOWN 的处置走人工盘点 {@code PauseManager.locatePlate}。
+     * 仅自测保留（历史口径回归对照）；生产调用方已全部迁移。
+     */
+    @Deprecated
     public static boolean confirm(DbConfig db, long tenantId, long id, String evidenceType,
                                   String operator, String note) throws SQLException {
         // c 形参保留（SqlWork 签名）：mapper 在 Tx 事务内复用绑定连接
