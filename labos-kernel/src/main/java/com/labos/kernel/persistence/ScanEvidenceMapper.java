@@ -45,4 +45,9 @@ public interface ScanEvidenceMapper {
     /** 查一条扫码证据（按 scan_id）；不存在返回 null。 */
     Map<String, Object> selectScanEvidence(@Param("tenantId") long tenantId,
                                            @Param("scanId") String scanId);
+
+    /** 按「当前 run + 源位 + 未消费」查最新一条扫码证据（抓板闸门不用预先填 scanId）。 */
+    Map<String, Object> selectLatestUnconsumed(@Param("tenantId") long tenantId,
+                                               @Param("runId") long runId,
+                                               @Param("sourcePositionId") long sourcePositionId);
 }

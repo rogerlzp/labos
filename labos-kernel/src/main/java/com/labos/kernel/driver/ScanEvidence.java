@@ -77,39 +77,37 @@ public final class ScanEvidence {
     }
 
     /**
-     * P2 阶段 B · 抓板闸门接线（唯一入口）：查证据 → 纯判定 → 原子消费。
+     * P2 阶段 B · 抓板闸门接线（唯一入口）：按「当前 run + 源位 + 未消费」查最新证据 →
+     * 纯判定 → 原子消费。不需流程预先填写 scanId（评审 B1：scanId 由扫码节点写入证据表，
+     * 抓板节点按 run + 源位解析）。
      *
      * <p>证据必须绑定<b>本次抓取的源位</b>；纯判定做错误码分档，原子消费做防复用与
-     * 全匹配（run/点位/期望码/实扫码）。三步任一失败都拒绝抓板。
+     * 全匹配（run/点位/期望码/实扫码）。任一失败都拒绝抓板。
      */
     public static GrabScanGate.Verdict authorizeAndConsume(DbConfig db, long tenantId,
-            String scanId, long runId, long sourcePositionId, String expectedBarcode,
+            long runId, long sourcePositionId, String expectedBarcode,
             Long transferId, java.time.Duration ttl) {
-        if (db == null || scanId == null || scanId.isBlank()) {
-            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "无扫码证据（scanId 缺失）");
+        if (db == null || runId <= 0 || sourcePositionId <= 0) {
+            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "无扫码证据（run/源位缺失）");
         }
         java.util.Map<String, Object> ev;
         try {
-            ev = Mappers.get(ScanEvidenceMapper.class).selectScanEvidence(tenantId, scanId);
+            ev = Mappers.get(ScanEvidenceMapper.class)
+                    .selectLatestUnconsumed(tenantId, runId, sourcePositionId);
         } catch (RuntimeException e) {
             return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "读扫码证据失败：" + e.getMessage());
         }
         if (ev == null) {
-            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "扫码证据不存在：" + scanId);
+            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING",
+                    "无未消费扫码证据（run=" + runId + " 源位=" + sourcePositionId + "）");
         }
-        Long evPos = toLong(ev.get("sourcePositionId"));
+        String scanId = (String) ev.get("scanId");
         String scanned = (String) ev.get("scannedBarcode");
         String evExpected = (String) ev.get("expectedBarcode");
-        boolean consumed = Boolean.TRUE.equals(ev.get("consumed"));
         long observedAt = toMillis(ev.get("observedAt"));
 
-        // 证据源位必须 == 本次抓取源位（来源位置不明 = 拒绝）
-        if (evPos == null || evPos.longValue() != sourcePositionId) {
-            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING",
-                    "扫码未绑定本次抓取源位");
-        }
-        GrabScanGate.Verdict v = GrabScanGate.check(evExpected, scanned, evPos, scanId,
-                observedAt, consumed, ttl);
+        GrabScanGate.Verdict v = GrabScanGate.check(evExpected, scanned, sourcePositionId,
+                scanId, observedAt, false, ttl);
         if (!v.allow()) {
             return v;
         }

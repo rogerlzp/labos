@@ -45,10 +45,12 @@ public final class StirrerDispenserGuardDbSelfTest {
                     StirrerDispenserGuard.checkBeforeDispense(db, TENANT, RUN,
                             DISPENSER, "Aliquot"));
 
-            section("3. 反例：未配对分液器 → 不拦（null）");
-            eq("未配对 → null", null,
-                    StirrerDispenserGuard.checkBeforeDispense(db, TENANT, RUN,
-                            OTHER, "Aliquot"));
+            section("3. 反例：未配对分液器 → 拒绝 EC-STATE-UNKNOWN（fail-closed）");
+            DriverResult unpaired = StirrerDispenserGuard.checkBeforeDispense(db, TENANT, RUN,
+                    OTHER, "Aliquot");
+            eq("未配对 → 拒绝", true, unpaired != null);
+            eq("错误码 EC-STATE-UNKNOWN", "EC-STATE-UNKNOWN",
+                    unpaired == null ? null : unpaired.errorCode());
 
             section("4. 反例：非分液方法 → 不拦（null）");
             updateStirrer("error");

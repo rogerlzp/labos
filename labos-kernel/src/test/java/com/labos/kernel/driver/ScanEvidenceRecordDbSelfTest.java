@@ -18,11 +18,11 @@ import java.util.Objects;
 public final class ScanEvidenceRecordDbSelfTest {
 
     private static final long TENANT = 1L;
-    private static final long RUN = -998401L;
+    private static final long RUN = 998401L;
     private static final long NODE = -998402L;
-    private static final long DEV = -998411L;
-    private static final long INST = -998412L;
-    private static final long SRC_POS = -998413L;
+    private static final long DEV = 998411L;
+    private static final long INST = 998412L;
+    private static final long SRC_POS = 998413L;
     private static final String SCAN = "SELF-REC-1";
 
     private static DbConfig db;
@@ -45,12 +45,12 @@ public final class ScanEvidenceRecordDbSelfTest {
             eq("实扫码正确", "PLATE-A", evidenceField(SCAN, "scanned_barcode"));
 
             section("2. 端到端：抓板闸门消费刚落的证据");
-            GrabScanGate.Verdict v = ScanEvidence.authorizeAndConsume(db, TENANT, SCAN,
+            GrabScanGate.Verdict v = ScanEvidence.authorizeAndConsume(db, TENANT,
                     RUN, SRC_POS, "PLATE-A", 88L, Duration.ofMinutes(30));
             eq("闸门放行", true, v.allow());
 
             section("3. 反例：重复消费拒绝");
-            GrabScanGate.Verdict again = ScanEvidence.authorizeAndConsume(db, TENANT, SCAN,
+            GrabScanGate.Verdict again = ScanEvidence.authorizeAndConsume(db, TENANT,
                     RUN, SRC_POS, "PLATE-A", 89L, Duration.ofMinutes(30));
             eq("已消费拒绝", false, again.allow());
         } finally {

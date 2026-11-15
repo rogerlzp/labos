@@ -41,22 +41,54 @@ public final class StirrerDispenserGuard {
                     "搅拌配对查询失败：" + e.getMessage());
         }
         if (stirrer == null) {
-            return null;   // 未配对分液器：无事实源，不在此拦（配置层预检负责）
-        }
-        Map<String, Object> state;
-        try {
-            state = Mappers.get(DeviceStateMapper.class).selectDeviceStateRow(tenantId, stirrer);
-        } catch (RuntimeException e) {
+            // 评审 P0：配对缺失按未知处理，不放行分液。
             return blocked(db, tenantId, runId, "EC-STATE-UNKNOWN",
-                    "搅拌状态查询失败：" + e.getMessage());
+                    "分液器无搅拌配对（配置缺失，fail-closed）");
         }
-        String status = state == null ? null : (String) state.get("status");
-        long observedAt = toMillis(state == null ? null : state.get("updatedAt"));
-        StirrerDispenserGate.Verdict v = StirrerDispenserGate.check(status, observedAt, null);
-        if (v.allow() || v.busy()) {
-            return null;   // 可用 / 暂态忙（忙由设备锁有界等待处理）
+        // 有界等待：busy 时重查，直到可用或超时；error/过期/未知直接拒绝。
+        long deadline = System.currentTimeMillis() + stirrerWaitTimeoutMs();
+        for (;;) {
+            Map<String, Object> state;
+            try {
+                state = Mappers.get(DeviceStateMapper.class).selectDeviceStateRow(tenantId, stirrer);
+            } catch (RuntimeException e) {
+                return blocked(db, tenantId, runId, "EC-STATE-UNKNOWN",
+                        "搅拌状态查询失败：" + e.getMessage());
+            }
+            String status = state == null ? null : (String) state.get("status");
+            long observedAt = toMillis(state == null ? null : state.get("updatedAt"));
+            StirrerDispenserGate.Verdict v = StirrerDispenserGate.check(status, observedAt, null);
+            if (v.allow()) {
+                return null;
+            }
+            if (!v.busy()) {
+                return blocked(db, tenantId, runId, v.errorCode(), v.reason());
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                log.error("[L4] 搅拌单元 busy 等待超时 {}ms，拒绝分液", stirrerWaitTimeoutMs());
+                return blocked(db, tenantId, runId, "EC-RESOURCE-BUSY",
+                        "搅拌单元暂态忙等待超时");
+            }
+            try {
+                Thread.sleep(2000L);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return blocked(db, tenantId, runId, "EC-RESOURCE-BUSY",
+                        "等待搅拌单元被中断");
+            }
         }
-        return blocked(db, tenantId, runId, v.errorCode(), v.reason());
+    }
+
+    private static long stirrerWaitTimeoutMs() {
+        String v = System.getenv("LABOS_STIRRER_WAIT_TIMEOUT_MS");
+        if (v != null && !v.isBlank()) {
+            try {
+                return Long.parseLong(v.trim());
+            } catch (NumberFormatException ignore) {
+                // 沿用默认
+            }
+        }
+        return 60_000L;
     }
 
     /**

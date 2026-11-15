@@ -69,6 +69,9 @@ public final class TransferPlan implements AutoCloseable {
     private long rollbackTargetRes = -1;
     private AccessOpenerFactory rollbackFactory;
 
+    /** 关闭时保留的位置（证据确认路径的目标位：REPORTED 待证据，不能被 close() 释放）。 */
+    private Long keepPosition;
+
     private DevicePortLock portLock;
     private DeviceAccessManager accessManager;
 
@@ -311,11 +314,20 @@ public final class TransferPlan implements AutoCloseable {
         releaseAll(false);
     }
 
+    /** 证据确认路径：关闭时保留指定位置（目标位 REPORTED 待证据确认，不得释放）。 */
+    public void keepPosition(long positionId) {
+        this.keepPosition = positionId;
+    }
+
     private void releaseAll(boolean keepReturn) {
         for (int i = acquired.size() - 1; i >= 0; i--) {
             Resource r = acquired.get(i);
             if (keepReturn && r.type() == Resource.Type.RETURN) {
                 continue;   // 回程承诺保持
+            }
+            if (keepPosition != null && r.id() == keepPosition.longValue()
+                    && r.type() == Resource.Type.POSITION) {
+                continue;   // 证据确认路径：目标位保持永久承诺，不被 close() 释放
             }
             try {
                 switch (r.type()) {

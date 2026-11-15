@@ -45,4 +45,18 @@
          WHERE tenant_id = #{tenantId} AND scan_id = #{scanId}
     </select>
 
+    <!-- 抓板闸门：按 run + 源位 + 未消费 取最新证据，不需流程预先填 scanId -->
+    <select id="selectLatestUnconsumed" resultType="java.util.Map">
+        SELECT scan_id AS "scanId",
+               expected_barcode AS "expectedBarcode",
+               scanned_barcode AS "scannedBarcode",
+               observed_at AS "observedAt",
+               consumed AS "consumed"
+          FROM position_scan_evidence
+         WHERE tenant_id = #{tenantId} AND run_id = #{runId}
+           AND source_position_id = #{sourcePositionId}
+           AND consumed = false
+         ORDER BY id DESC LIMIT 1
+    </select>
+
 </mapper>

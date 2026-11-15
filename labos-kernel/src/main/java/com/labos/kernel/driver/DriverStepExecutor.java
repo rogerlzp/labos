@@ -410,16 +410,6 @@ public final class DriverStepExecutor implements StepExecutor {
                             + "ms 超时），已拒绝搬运，请人工修复后继续",
                     0, method);
         }
-        // 证据确认路径：目标位永久承诺（REPORTED 未确认不得被 TTL 释放/抢占）。
-        if (evidenceRequired) {
-            try {
-                posLock.promoteReservationToForever(targetPos, runId);
-            } catch (java.sql.SQLException e) {
-                safeReleaseTarget(posLock, targetPos);
-                throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
-                        "目标位永久承诺失败：" + e.getMessage(), 0, method);
-            }
-        }
         // P2 阶段 B：动作前固定源位（源位是**已占用**板位，非空位预留）。
         // 显式 sourcePosition 优先；未指定时取本 run 第一个有板位置；归属校验不过 = 不换位。
         try {
@@ -444,6 +434,18 @@ public final class DriverStepExecutor implements StepExecutor {
             safeReleaseTarget(posLock, targetPos);
             throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
                     "申请资源时数据库错误：" + e.getMessage(), 0, method);
+        }
+        // 证据确认路径：acquireAll（acquirePosition 带 TTL）之后把目标位升级为永久承诺，
+        // 并标记 close() 时保留——REPORTED 未确认不得被 TTL/清理/close 释放或抢占。
+        if (evidenceRequired) {
+            try {
+                posLock.promoteReservationToForever(targetPos, runId);
+            } catch (java.sql.SQLException e) {
+                safeReleaseTarget(posLock, targetPos);
+                throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
+                        "目标位永久承诺失败：" + e.getMessage(), 0, method);
+            }
+            plan.keepPosition(targetPos);
         }
 
         // P2 阶段 D：L3 轨道分区互锁（acquire 后持有，finally 释放）。
@@ -511,11 +513,10 @@ public final class DriverStepExecutor implements StepExecutor {
         }
         try {
             // P2 阶段 B：抓板前扫码闸门（证据确认路径强制）。
-            // 查证据 → 纯判定 → 原子消费，任一失败都拒绝下发（板留在原位）。
+            // 按「run + 源位 + 未消费」解析最新证据 → 纯判定 → 原子消费，任一失败拒绝下发。
             if (evidenceRequired) {
-                String scanId = strParam(ctx, "scanId");
                 GrabScanGate.Verdict gate = ScanEvidence.authorizeAndConsume(
-                        db, tenantId, scanId, runId, sourcePos, plate, transferTxn, null);
+                        db, tenantId, runId, sourcePos, plate, transferTxn, null);
                 if (!gate.allow()) {
                     safeReleaseTarget(posLock, targetPos);
                     throw new StepFailure(gate.errorCode(), scopeOf(gate.errorCode()),
