@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.DeviceFactMapper">
+
+    <insert id="upsertFact">
+        INSERT INTO device_fact
+          (tenant_id, device_resource_id, fact_type, fact_value, state_version, observed_at)
+        VALUES (#{tenantId}, #{deviceResourceId}, #{factType}, #{factValue},
+                #{stateVersion}, CAST(#{observedAt} AS timestamptz))
+        ON CONFLICT (tenant_id, device_resource_id, fact_type) DO UPDATE
+        SET fact_value = EXCLUDED.fact_value,
+            state_version = EXCLUDED.state_version,
+            observed_at = EXCLUDED.observed_at,
+            updated_at = now()
+    </insert>
+
+    <select id="selectFact" resultType="java.util.Map">
+        SELECT fact_value AS "factValue",
+               state_version AS "stateVersion",
+               observed_at AS "observedAt"
+          FROM device_fact
+         WHERE tenant_id = #{tenantId} AND device_resource_id = #{deviceResourceId}
+           AND fact_type = #{factType}
+    </select>
+
+</mapper>

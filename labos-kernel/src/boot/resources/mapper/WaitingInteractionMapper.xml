@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.WaitingInteractionMapper">
+
+    <insert id="upsertWaiting">
+        INSERT INTO waiting_interaction
+          (tenant_id, device_resource_id, device_session_id, workflow_step_id,
+           interaction_id, status, state_version)
+        VALUES (#{tenantId}, #{deviceResourceId}, #{deviceSessionId}, #{workflowStepId},
+                #{interactionId}, #{status}, #{stateVersion})
+        ON CONFLICT (tenant_id, device_resource_id, device_session_id, interaction_id) DO UPDATE
+        SET workflow_step_id = EXCLUDED.workflow_step_id,
+            status = EXCLUDED.status,
+            state_version = EXCLUDED.state_version,
+            updated_at = now()
+    </insert>
+
+    <select id="selectEffective" resultType="java.util.Map">
+        SELECT id, status AS "status",
+               interaction_id AS "interactionId",
+               state_version AS "stateVersion"
+          FROM waiting_interaction
+         WHERE tenant_id = #{tenantId} AND device_resource_id = #{deviceResourceId}
+           AND device_session_id = #{deviceSessionId}
+           AND (workflow_step_id = #{workflowStepId} OR workflow_step_id IS NULL)
+           AND status = 'WAITING'
+         ORDER BY id DESC LIMIT 1
+    </select>
+
+    <update id="consumeWaiting">
+        UPDATE waiting_interaction
+           SET status = 'CONSUMED', updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{id} AND status = 'WAITING'
+    </update>
+
+</mapper>
