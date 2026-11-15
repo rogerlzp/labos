@@ -284,6 +284,9 @@ DB=(
   # P2 B-3：永久承诺生命周期——孤儿巡检命中 / pause 清理只删 TTL 不删承诺（回归）/
   # 盘点写占用消费承诺 / 第二位置按位精确写入
   "driver.PositionPromiseSweepDbSelfTest"
+  # 状态字典（§1.4 板状态 / §1.5 设备业务状态）：CRUD 落库 + doc_label 不被覆盖 +
+  # 仍被引用的板状态不许删（2026-11-15）。⚠ 依赖 migration 20261115_device_business_state.sql
+  "boot.web.service.StateDictDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据
