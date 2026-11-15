@@ -136,6 +136,9 @@ PURE=(
   "driver.PlateBarcodeSelfTest"
   # P2-7 扫码校验（B6）：barcode_policy 五值的进/出方向判定与 fail-closed 不匹配契约
   "driver.ScanPolicySelfTest"
+  # P2 阶段 A：统一物理派发门禁（源码不变量）——driver.execute 只允许落在 doExecuteCommand，
+  # 受保护 Transfer 主机械臂动作不得绕过 executeCommand（旁路形态会红）
+  "driver.DriverDispatchPathSelfTest"
   "alert.AlertSelfTest"
   "engine.EngineSelfTest"
   # S2 §3.2.1：错误码/驱动状态 → 执行确认四态（纯逻辑分类器，U10 载体①的消费端）
@@ -260,6 +263,9 @@ DB=(
   "workflow.QuarantineDbSelfTest"
   # 板子归属校验：取板只取自己的（别人的板取不动 / 归属不明 fail-closed）
   "driver.PlateOwnershipDbSelfTest"
+  # 三条绑定链的契约（2026-11-15）：枚举白名单 + device_method.id 可达
+  # —— 绑定 API 强制要 methodId，而这个 id 之前没有任何接口暴露
+  "device.BindingContractDbSelfTest"
 )
 
 run_one() {
