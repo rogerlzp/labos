@@ -3355,6 +3355,7 @@ CREATE TABLE IF NOT EXISTS command_ledger (
     command_id      VARCHAR(160),
     trace_id        VARCHAR(64),
     state           VARCHAR(16)  NOT NULL,
+    phase           VARCHAR(16)  NOT NULL DEFAULT 'PENDING',
     error_code      VARCHAR(32),
     error_message   VARCHAR(256),
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -3371,6 +3372,15 @@ CREATE INDEX IF NOT EXISTS ix_command_ledger_run
 CREATE INDEX IF NOT EXISTS ix_command_ledger_open
     ON command_ledger (tenant_id, state)
     WHERE state IN ('DISPATCH_STARTED', 'UNKNOWN');
+
+-- R4（2026-11-15）：命令可观测阶段。只进不退（array_position 比较），DONE/UNKNOWN 终态封闭。
+-- 当前同步驱动只能观测 PENDING/SENT/DONE；RECEIVED/EXECUTING 预留（驱动无 ACK 回调）。
+COMMENT ON COLUMN command_ledger.phase IS
+    '命令阶段（R4）：PENDING→SENT→RECEIVED→EXECUTING→DONE，异常 UNKNOWN；只进不退，DONE/UNKNOWN 为终态';
+
+CREATE INDEX IF NOT EXISTS ix_command_ledger_phase_open
+    ON command_ledger (tenant_id, phase)
+    WHERE phase NOT IN ('DONE', 'UNKNOWN');
 -- ============================================================================
 -- P-06 V2 收尾：PAUSING 异步中间态（2026-11-08 第四切片）
 --

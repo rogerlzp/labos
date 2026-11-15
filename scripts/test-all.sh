@@ -200,6 +200,10 @@ DB=(
   "workflow.PauseCoordinatorDbSelfTest"
   # P-07 第一切片：设备命令账本（派发前落账 / 回包终态 / 重启陈旧派发标 UNKNOWN）
   "driver.CommandLedgerDbSelfTest"
+  # R4（2026-11-15）：命令阶段只进不退 + 终态封闭 + 陈旧转 UNKNOWN
+  "driver.CommandPhaseDbSelfTest"
+  # R5（2026-11-15）：重启对账阻断态（阻断期间 0 派发，且确实走阻断分支）
+  "workflow.ReconcilingGateDbSelfTest"
   # P-11：状态词表 ↔ 库落库能力（枚举双向一致 / varchar 列宽放得下最长码）
   "workflow.StatusVocabularyDbSelfTest"
   # P-09：run.exec_phase 单向推进（PREPARED → DISPATCH_STARTED → SETTLED，不倒退）

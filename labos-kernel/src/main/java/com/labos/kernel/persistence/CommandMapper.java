@@ -62,6 +62,17 @@ public interface CommandMapper {
                      @Param("errorMessage") String errorMessage,
                      @Param("commandId") String commandId);
 
+    /**
+     * R4：推进命令阶段（**只进不退**）。
+     *
+     * <p>SQL 用 {@code array_position} 比较序号：倒退 / 乱序命中 0 行；
+     * {@code DONE} / {@code UNKNOWN} 是终态，之后不再接受推进。
+     * 未知阶段值（不在枚举里）同样命中 0 行。
+     *
+     * @return 1 = 推进成功；0 = 阶段未变 / 倒退 / 已终态
+     */
+    int advancePhase(@Param("ledgerId") long ledgerId, @Param("phase") String phase);
+
     /** 启动对账：陈旧 DISPATCH_STARTED 标 UNKNOWN（返回标记条数）。 */
     int markStaleUnknown(@Param("tenantId") long tenantId,
                          @Param("staleMinutes") int staleMinutes);

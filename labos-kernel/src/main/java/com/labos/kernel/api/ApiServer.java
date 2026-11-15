@@ -452,6 +452,10 @@ public final class ApiServer {
     public void runKernel() throws Exception {
         // HTTP 由 Spring MVC 容器启动，这里只跑启动收尾。
 
+        // R5：先进入 reconciling 阻断态，再启动调度循环 —— 保证「对账完成前不派发」，
+        // 避免调度线程在启动收尾跑到一半时抢先派发（设备/物料状态还没查清）。
+        // 顺序依据 runtime-consistency/05 §1：阻断 → 对账命令 → 对账位置 → 扫锁 → rehydrate → 解除。
+        this.scheduler.beginReconciling();
         this.scheduler.start();
         this.heartbeat.start();
 
@@ -558,6 +562,8 @@ public final class ApiServer {
             log.info("  [启动收尾] 待派发 rehydrate 跳过: " + e.getMessage());
         }
 
+
+
         // FIX-P0-04：workflow 级 continue/retry 在 commit 后若进程退出，会遗留 status='queued'。
         // 启动时把这些 run 再交给 resumeAsync，避免一直卡在 queued。
         try {
@@ -570,6 +576,12 @@ public final class ApiServer {
         } catch (Exception e) {
             log.info("  [启动收尾] queued workflow rehydrate 跳过: " + e.getMessage());
         }
+
+        // R5：解除 reconciling 阻断态 —— **必须在全部对账与两处 rehydrate 之后**。
+        // 顺序依据 runtime-consistency/05 §1：阻断 → 对账命令 → 对账位置 → 扫锁 → rehydrate → 解除。
+        // 早解除的两个具体危害：① 调度线程抢在新队列装回前空转一轮；
+        // ② 「位置未知的板」在对账清单打印完之前就参与派发。
+        this.scheduler.endReconciling();
 
         log.info("=".repeat(72));
         log.info("  实验室中控 v0.1 内核服务已启动");

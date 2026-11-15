@@ -105,6 +105,36 @@ public final class CommandLedger {
                               String commandId) throws SQLException {
         mapper().finishLedger(ledgerId, ok ? "ACKED" : "FAILED", errorCode,
                 trunc(errorMessage, 250), commandId);
+        // R4：回包即终态 —— phase 推到 DONE。
+        // 只进不退：若已经是 UNKNOWN（启动对账先标过），这句命中 0 行，无副作用。
+        mapper().advancePhase(ledgerId, PHASE_DONE);
+    }
+
+    // ================================================================ R4：命令阶段
+    //
+    // 设计要求（runtime-consistency/02 §1）：PENDING → SENT → RECEIVED → EXECUTING → DONE，
+    // 异常落 UNKNOWN。当前驱动是**同步阻塞**调用（begin → driver.execute() → finish），
+    // 拿不到设备 ACK / 「开始执行」回调，所以真实可达的是 PENDING/SENT/DONE；
+    // RECEIVED/EXECUTING 先常量预留，等驱动支持流式回包再在 DriverStepExecutor 补推进点。
+
+    public static final String PHASE_PENDING = "PENDING";
+    public static final String PHASE_SENT = "SENT";
+    /** 预留：当前同步驱动拿不到设备 ACK，暂不可达。 */
+    public static final String PHASE_RECEIVED = "RECEIVED";
+    /** 预留：当前同步驱动拿不到「开始执行」回调，暂不可达。 */
+    public static final String PHASE_EXECUTING = "EXECUTING";
+    public static final String PHASE_DONE = "DONE";
+    public static final String PHASE_UNKNOWN = "UNKNOWN";
+
+    /**
+     * R4：推进命令阶段（**只进不退**）。
+     *
+     * <p>守卫在 SQL 里（{@code array_position} 比序号 + 终态封闭），
+     * 倒退 / 乱序 / 已终态 / 未知值都返回 false。调用方无须先读当前阶段，并发安全。
+     */
+    public static boolean advancePhase(DbConfig db, long ledgerId, String phase)
+            throws SQLException {
+        return ledgerId > 0L && mapper().advancePhase(ledgerId, phase) > 0;
     }
 
     /**

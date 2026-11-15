@@ -875,6 +875,13 @@ public final class DriverStepExecutor implements StepExecutor {
                             null, 0);
                 }
                 ledgerId = e.id();
+                // R4：真正下发前把 phase 推到 SENT（可观测「已发出、未回包」）。
+                // 只是观测字段，失败不阻断设备动作（账本主路径已成功）。
+                try {
+                    CommandLedger.advancePhase(db, ledgerId, CommandLedger.PHASE_SENT);
+                } catch (java.sql.SQLException ignore) {
+                    log.warn("[命令账本] phase→SENT 失败（不阻断下发）：" + ignore.getMessage());
+                }
             } catch (java.sql.SQLException ex) {
                 return DriverResult.failed(cmd.commandId(), "EC-99-0002",
                         "命令账本写入失败：" + ex.getMessage(), null, 0);

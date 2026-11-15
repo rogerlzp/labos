@@ -185,6 +185,28 @@ public final class ExperimentScheduler {
             new java.util.concurrent.atomic.AtomicLong();
     private final AtomicBoolean started = new AtomicBoolean(false);
 
+    /**
+     * R5：重启对账阻断态。
+     *
+     * <p>进程重启后，库里可能还有「已下发、未回包」的命令（L4 未知）与「在途未确认」的物料
+     * （L5 未知）。在对账完成前一律不派发新命令 —— 设备到底在哪、还动不动都不知道，
+     * 此时叠新动作比等待更危险。
+     *
+     * <p>生命周期由 {@code ApiServer.runKernel()} 控制：
+     * 启动收尾**开始前** {@link #beginReconciling()}，对账 + 扫锁 + rehydrate 全部完成后
+     * {@link #endReconciling()}。见 runtime-consistency/05 §1 的步骤顺序。
+     */
+    private final AtomicBoolean reconciling = new AtomicBoolean(false);
+
+    /**
+     * R5：因阻断态被跳过的派发轮次。
+     *
+     * <p>自测用它证明「dispatch 返回 0 是因为被阻断」，而不是「队列本来就是空」——
+     * 没有这个计数，阻断断言会变成假绿（队列空时不管有没有阻断都返回 0）。
+     */
+    private final java.util.concurrent.atomic.AtomicLong reconcilingSkips =
+            new java.util.concurrent.atomic.AtomicLong();
+
     // P2-4 消费 schedule_plan：动态排程参数（reloadConfig 从最新 active plan 读，失败保持现值）。
     private volatile int maxConcurrent = MAX_CONCURRENT;   // max_iterations_running（硬上限=线程池大小）
     private volatile long tickMs = TICK_MS;                // iteration_delay_sec → 追加延迟
@@ -199,6 +221,47 @@ public final class ExperimentScheduler {
         this.db = db;
         this.tenantId = tenantId;
         this.workflows = workflows;
+    }
+
+    // ================================================================ R5：重启对账阻断态
+
+    /** 进入重启对账阻断态：对账完成前不派发新命令（幂等）。 */
+    public void beginReconciling() {
+        reconciling.set(true);
+        log.info("[调度] 进入 reconciling 阻断态：对账完成前不派发新命令");
+    }
+
+    /** 解除阻断态，恢复派发（幂等；只在真的从 true 变 false 时打日志）。 */
+    public void endReconciling() {
+        if (reconciling.compareAndSet(true, false)) {
+            log.info("[调度] 解除 reconciling 阻断态，恢复派发");
+        }
+    }
+
+    /** 当前是否处于对账阻断态（供状态接口/自测读取）。 */
+    public boolean isReconciling() {
+        return reconciling.get();
+    }
+
+    /**
+     * 包内可见：供连库自测直接压一次派发（不启循环线程）。
+     *
+     * @return 本轮派发条数（阻断态下恒为 0）
+     */
+    int dispatchOnce() {
+        return dispatch();
+    }
+
+    /** 包内可见：被阻断态跳过的派发轮次（自测用来排除「队列空导致 0」的假绿）。 */
+    long reconcilingSkips() {
+        return reconcilingSkips.get();
+    }
+
+    /** 包内可见：当前内存队列长度。 */
+    int queueSize() {
+        synchronized (queue) {
+            return queue.size();
+        }
     }
 
     /** 启动调度循环（幂等）。 */
@@ -530,7 +593,11 @@ public final class ExperimentScheduler {
     private void loop() {
         while (true) {
             try {
-                sweepExpiredLocks();
+                // R5：对账期间也不扫锁 —— 在途命令还没查清就回收 TTL 锁，
+                // 等于把「可能还在动」的设备让给别人（见 runtime-consistency/05 §1 步骤 4）。
+                if (!reconciling.get()) {
+                    sweepExpiredLocks();
+                }
                 dispatch();
                 // P-06 V2：受理久了还没到边界的 running run 标 PAUSING（只展示，不写 paused）
                 RunControl.markPausing(db, tenantId, 5);
@@ -634,12 +701,23 @@ public final class ExperimentScheduler {
         return created;
     }
 
-    /** 派发：按 EDD → 优先级 → 提交时间排序，抢岛。 */
-    private void dispatch() {
+    /**
+     * 派发：按 EDD → 优先级 → 提交时间排序，抢岛。
+     *
+     * @return 本轮实际派发条数（0 = 队列空 / 被阻断 / 全被扣留或资源冲突挡下）
+     */
+    private int dispatch() {
+        // R5：重启对账未完成前**一律不派发**。
+        // 重启后库里可能还有「已下发、未回包」的命令与「在途未确认」的物料，
+        // 此时叠新动作比等待更危险（设备到底在哪、在动没有都不知道）。
+        if (reconciling.get()) {
+            reconcilingSkips.incrementAndGet();
+            return 0;
+        }
         List<Queued> snapshot;
         synchronized (queue) {
             if (queue.isEmpty()) {
-                return;
+                return 0;
             }
             snapshot = new ArrayList<>(queue);
         }
@@ -657,13 +735,14 @@ public final class ExperimentScheduler {
 
         // P1-6：从"当前在跑数"起算，而不是每轮归零
         int runningNow = running.get();
+        int count = 0;   // R5：本轮派发条数（供自测断言阻断态确实 0 派发）
         for (Queued q : snapshot) {
             if (runningNow >= maxConcurrent) {
                 break;
             }
             RuntimeHold.Coverage cov = holds.coveringForExperiment(q.experimentId());
             if (cov.state() == RuntimeHold.HoldState.UNKNOWN) {
-                return;   // 读不到扣留状态 ⇒ 整轮阻断（fail-closed）
+                return count;   // 读不到扣留状态 ⇒ 整轮阻断（fail-closed）
             }
             if (cov.blocks()) {
                 continue; // 该实验被 site / 所属 Workcell / experiment 级扣留覆盖
@@ -684,12 +763,14 @@ public final class ExperimentScheduler {
             log.info("[调度] 派发实验 " + q.experimentId() + "（占资源 " + need.size() + " 项）");
             recordBookings(need, q.experimentRunId());
             runningNow++;
+            count++;
             dispatched.incrementAndGet();
             running.incrementAndGet();
             lastDispatchAt = Instant.now();
 
             pool.submit(() -> executeOne(q));
         }
+        return count;
     }
 
     /** 执行一个实验，结束后释放岛；批次 run 跑完还要把下一批续进队列（异步分批）。 */
