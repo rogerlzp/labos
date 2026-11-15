@@ -355,7 +355,6 @@
         UPDATE run SET status = 'running', pause_kind = NULL,
                pause_reason = NULL, resumed_at = now(), updated_at = now()
          WHERE tenant_id = #{param1} AND status = 'paused' AND pause_kind = 'paused_fault'
-           AND needs_manual_recovery = false
            AND NOT EXISTS (
                  SELECT 1
                    FROM device_state ds
@@ -365,11 +364,6 @@
                   WHERE ds.tenant_id = run.tenant_id
                     AND ds.online = false
                     AND wn.workflow_id = run.workflow_id)
-    </update>
-
-    <update id="markManualRecovery">
-        UPDATE run SET needs_manual_recovery = true, updated_at = now()
-         WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
 
     <select id="selectActiveRunsUsingDevice" resultType="java.lang.Long">

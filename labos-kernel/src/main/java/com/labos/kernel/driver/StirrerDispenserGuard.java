@@ -124,8 +124,9 @@ public final class StirrerDispenserGuard {
     }
 
     /**
-     * 拒绝下发 + 暂停所有受影响 run（paused_fault + 禁自动恢复）。
+     * 拒绝下发 + 暂停所有受影响 run（paused_fault）。
      * 同一搅拌单元服务多个并发 run 时，受影响的分液器 run 都要停，不能只停先发现的一条。
+     * 恢复由心跳自动恢复（网络离线恢复）或操作员手动恢复（物理故障，可绕过重取证）。
      */
     private static DriverResult blocked(DbConfig db, long tenantId, long runId,
                                         long dispenserResourceId, String code, String reason) {
@@ -148,8 +149,6 @@ public final class StirrerDispenserGuard {
             for (long r : affected) {
                 try {
                     pm.pause(r, PauseManager.Kind.PAUSED_FAULT, reason, null);
-                    Mappers.get(com.labos.kernel.persistence.PauseMapper.class)
-                            .markManualRecovery(tenantId, r);
                 } catch (Exception e) {
                     log.warn("[L4] 暂停 run {} 失败：{}", r, e.getMessage());
                 }

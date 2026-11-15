@@ -49,7 +49,8 @@
 | `20261115_p2_stirrer_pair.sql` | P2 阶段 C：L4 搅拌—分液配对（一个分液器最多配一个搅拌单元） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_stirrer_pair.sql`（幂等） |
 | `20261115_p2_device_fact_waiting.sql` | P2 阶段 C：设备事实（状态版本）+ 有效等待投影（L1/L5 基础） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_device_fact_waiting.sql`（幂等） |
 | `20261115_p2_rail_zone.sql` | P2 阶段 D：L3 轨道分区（每分区一个互斥资源 + 路径→分区集） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_rail_zone.sql`（幂等） |
-| `20261115_p2_manual_recovery.sql` | P2 阶段 C：L4 物理故障需人工恢复（run.needs_manual_recovery，禁心跳自动恢复） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_manual_recovery.sql`（幂等） |
+| `20261115_p2_manual_recovery.sql` | ~~P2 阶段 C：L4 物理故障需人工恢复~~ **已回退**（见下） | 不要执行 |
+| `20261115_p2_revert_manual_recovery.sql` | 回退 manual_recovery：心跳自动恢复是正确行为（网络闪断→离线→恢复自动继续），物理故障由操作员手动恢复（可绕过重取证） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_revert_manual_recovery.sql` |
 | `20261115_p2_rail_zone_exemption.sql` | P2 阶段 D：L3 路径粒度豁免（已验证无冲突的路径显式放行） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_rail_zone_exemption.sql`（幂等） |
 
 ### 配置完整性预检
