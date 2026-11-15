@@ -24,4 +24,11 @@
            AND fact_type = #{factType}
     </select>
 
+    <!-- 重连重查：断线置过期，下次守卫拒绝直到设备重新上报 -->
+    <update id="invalidateDeviceFacts">
+        UPDATE device_fact
+           SET observed_at = NULL, updated_at = now()
+         WHERE tenant_id = #{tenantId} AND device_resource_id = #{deviceResourceId}
+    </update>
+
 </mapper>

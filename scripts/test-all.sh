@@ -266,6 +266,8 @@ DB=(
   "driver.ScanEvidenceRecordDbSelfTest"
   # P2 阶段 C：L4 搅拌—分液运行时守卫——故障拒绝+EC-INTERLOCK-STIRRER/可用放行/未配对不拦
   "driver.StirrerDispenserGuardDbSelfTest"
+  # P2 阶段 C：L4 恢复前重新取证 + 设备事实重连重查（断线置过期→拒绝，重新上报→放行）
+  "driver.L4RecoveryAndReconnectDbSelfTest"
   # P2 阶段 C：设备事实（状态版本）+ 有效等待投影（消费后/旧会话查不到）
   "driver.DeviceFactWaitingDbSelfTest"
   # P2 阶段 C：L1 转盘 + L5 等待交互 运行时守卫（停止放行/未知拒绝/无等待拒绝/不匹配拒绝）

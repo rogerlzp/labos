@@ -59,6 +59,38 @@ public final class StirrerDispenserGuard {
         return blocked(db, tenantId, runId, v.errorCode(), v.reason());
     }
 
+    /**
+     * P2 阶段 C · L4 恢复前重新取证：paused_fault 恢复前必须重新读搅拌单元状态，
+     * 只有「明确可用 + 新鲜」才算恢复，不得仅凭状态从 error 变回 idle 自动续跑。
+     *
+     * @return true = 搅拌单元已恢复（可用 + 新鲜）；false = 仍故障/过期/未知/未配对。
+     */
+    public static boolean isRecovered(DbConfig db, long tenantId, long runId,
+                                      long dispenserResourceId) {
+        if (db == null || runId <= 0 || dispenserResourceId <= 0) {
+            return false;
+        }
+        Long stirrer;
+        try {
+            stirrer = Mappers.get(StirrerMapper.class)
+                    .selectStirrerByDispenser(tenantId, dispenserResourceId);
+        } catch (RuntimeException e) {
+            return false;
+        }
+        if (stirrer == null) {
+            return false;
+        }
+        Map<String, Object> state;
+        try {
+            state = Mappers.get(DeviceStateMapper.class).selectDeviceStateRow(tenantId, stirrer);
+        } catch (RuntimeException e) {
+            return false;
+        }
+        String status = state == null ? null : (String) state.get("status");
+        long observedAt = toMillis(state == null ? null : state.get("updatedAt"));
+        return StirrerDispenserGate.check(status, observedAt, null).allow();
+    }
+
     /** 拒绝下发 + 当前 run paused_fault（转人工恢复）。 */
     private static DriverResult blocked(DbConfig db, long tenantId, long runId,
                                         String code, String reason) {

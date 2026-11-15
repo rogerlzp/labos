@@ -21,4 +21,8 @@ public interface DeviceFactMapper {
     Map<String, Object> selectFact(@Param("tenantId") long tenantId,
                                    @Param("deviceResourceId") long deviceResourceId,
                                    @Param("factType") String factType);
+
+    /** 重连重查：断线时把该设备所有事实置过期（observed_at 置空），下次守卫拒绝直到重新上报。 */
+    int invalidateDeviceFacts(@Param("tenantId") long tenantId,
+                              @Param("deviceResourceId") long deviceResourceId);
 }
