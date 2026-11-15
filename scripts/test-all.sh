@@ -160,6 +160,8 @@ PURE=(
   # JSON 取值转义解码：Unicode 转义（\uXXXX）解成中文 / 脏数据不崩（纯逻辑）
   "api.JsonFieldSelfTest"
   "sim.SimulatorBehaviorSelfTest"
+  # 画像四维度（2026-11-15）：方法集 / 步骤时长 / 时长由参数决定 / 参数边界 / 结果字段
+  "sim.DeviceProfileSelfTest"
   "driver.DeviceErrorChainSelfTest"
   # 超时按方法取（2026-11-06）：优先级 device_method > device_capability > workflow_node
   # > 能力默认 > 兜底 30s；0 = 没配；显式设备库值不被能力默认抬高；保底 ≥ 300s

@@ -14,7 +14,7 @@ import java.util.Objects;
  * <ol>
  *   <li><b>已适配（manual）</b>：只有 {@code aspin-2k} / {@code s100}，且必须是 MANUAL
  *       依据、手册路径非空、指令/错误码非空 —— 这些是能对客户说"能直接接"的型号；</li>
- *   <li><b>占位（planned）</b>：恰好 6 条；只有 360R / PlateLoc 能对上生产库
+ *   <li><b>占位（planned）</b>：恰好 11 条；只有 360R / PlateLoc 能对上生产库
  *       {@code device.model} 写法（用于统计产线在跑台数），其余必须为 null，
  *       防止"瞎猜别名"把台数算到别的设备头上；</li>
  *   <li><b>JSON 形状</b>：totals / manual / planned 三块与字段名固定，
@@ -51,21 +51,25 @@ public final class DeviceModelLibrarySelfTest {
         eq("全部 evidence=MANUAL", List.of(), notManual);
         eq("全部 manual 路径非空", List.of(), noManualPath);
 
-        section("3. 待适配（planned）清单：6 条 + 生产库别名");
+        section("3. 待适配（planned）清单：11 条 + 生产库别名");
         List<String> plannedIds = new ArrayList<>();
         for (DeviceModels.Planned p : DeviceModels.planned()) {
             plannedIds.add(p.id());
         }
-        eq("planned 恰好 6 条、顺序固定", List.of(
+        eq("planned 恰好 11 条、顺序固定", List.of(
                 "hettich-rotanta-460r", "agilent-placeloc", "eppendorf-5810r",
                 "thermo-multifuge-x1r", "beckman-allegra-x15r",
-                "domestic-centrifuge-generic"), plannedIds);
+                "domestic-centrifuge-generic",
+                // 「高通量核酸提取工作站」线的 5 类设备（2026-11-15 补）
+                "carousel-extractor-generic", "dispenser-plate-generic",
+                "stirrer-generic", "gantry-robot-generic", "plate-stack-generic"), plannedIds);
         List<String> aliases = new ArrayList<>();
         for (DeviceModels.Planned p : DeviceModels.planned()) {
             aliases.add(p.dbModelAlias());
         }
         eq("只有 360R / PlateLoc 有库别名，其余为 null",
-                Arrays.asList("360R", "PlateLoc", null, null, null, null), aliases);
+                Arrays.asList("360R", "PlateLoc", null, null, null, null,
+                        null, null, null, null, null), aliases);
 
         section("4. 每个 manual 型号的元数据（决定能否对客户承诺可对接）");
         eq("每个 manual 型号 methodCount > 0", List.of(), failingManual(
@@ -90,14 +94,14 @@ public final class DeviceModelLibrarySelfTest {
         check("含 totals / manual / planned 三块",
                 json.contains("\"totals\":{") && json.contains("\"manual\":[")
                         && json.contains("\"planned\":["));
-        check("totals 数值固定", json.contains("\"totals\":{\"manual\":2,\"planned\":6}"));
+        check("totals 数值固定", json.contains("\"totals\":{\"manual\":2,\"planned\":11}"));
         eq("manual 数组 2 条", 2, countOccurrences(json, "\"evidence\":\"MANUAL\""));
-        eq("planned 数组 6 条且都带 dbModelAlias", 6,
+        eq("planned 数组 11 条且都带 dbModelAlias", 11,
                 countOccurrences(json, "\"dbModelAlias\":"));
         check("360R / PlateLoc 别名正确、其余 4 条 null",
                 json.contains("\"dbModelAlias\":\"360R\"")
                         && json.contains("\"dbModelAlias\":\"PlateLoc\"")
-                        && countOccurrences(json, "\"dbModelAlias\":null") == 4);
+                        && countOccurrences(json, "\"dbModelAlias\":null") == 9);
         check("manual 条目字段齐全（含 documented/unverified/errorBlock/note）",
                 json.contains("\"id\":\"aspin-2k\",\"type\":\"centrifuge\","
                         + "\"vendor\":\"上海爱翱生物科技\",\"model\":\"ASpin 2K\","
@@ -139,9 +143,9 @@ public final class DeviceModelLibrarySelfTest {
                 withDeployed.contains("\"dbModelAlias\":\"360R\",\"deployedCount\":1")
                         && withDeployed.contains(
                                 "\"dbModelAlias\":\"PlateLoc\",\"deployedCount\":2"));
-        eq("其余 4 条占位 deployedCount=0", 4,
+        eq("其余 9 条占位 deployedCount=0", 9,
                 countOccurrences(withDeployed, "\"deployedCount\":0"));
-        eq("deployedCount 只出现在 planned 的 6 条里", 6,
+        eq("deployedCount 只出现在 planned 的 11 条里", 11,
                 countOccurrences(withDeployed, "\"deployedCount\":"));
 
         System.out.printf("%n通过 %d, 失败 %d%n", pass, fail);

@@ -1139,7 +1139,9 @@ public final class DeviceCore {
             latchedFault = null;
         }
 
-        long waited = delayMs > 0 ? delayMs : methodDelayMs(alias, method);
+        // 型号/命令行的耗时（--delay、型号表里的 delayMs）优先；
+        // 没有才按"时长由参数决定"、再按步骤时长表、最后按通用规则。
+        long waited = delayMs > 0 ? delayMs : methodDelayMs(alias, method, msg);
         // 随机耗时优先（--rand-delay）：每次调用在区间里取一个值。
         // 为什么放在 delayMs 之后判断：--delay 是「所有方法统一固定耗时」，
         // 自动化测试要它；--rand-delay 是「模拟真机时序」，两者互斥时
@@ -1335,14 +1337,27 @@ public final class DeviceCore {
     }
 
     /** 这台型号的某个方法模拟耗时（型号里给了就用型号的）。 */
-    private long methodDelayMs(String alias, String method) {
+    private long methodDelayMs(String alias, String method, String msg) {
         if (model != null) {
             DeviceModel.Method m = model.method(alias);
             if (m != null && m.delayMs() > 0) {
                 return m.delayMs();
             }
         }
-        return prof.methodDelayMs(method);
+        // 时长**由参数决定**（离心 30 秒 vs 30 分钟是同一个方法，差别只在参数）。
+        // ⚠ 排在型号/命令行的耗时**之后** —— 手册给的模拟耗时与 --delay（测试用）
+        // 都比"请求里写的物理时长"更该决定模拟器跑多久。
+        long d = durationFromParams(alias, method, msg);
+        if (d > 0) {
+            return d;
+        }
+        // 步骤时长表（画像级）：同一类设备里不同工艺步骤差着数量级时用它
+        // （转盘切换 2 秒 vs 孵育 5 分钟）⇒ 整类一个默认耗时表达不了。
+        long t = prof.timingOf(alias);
+        if (t < 0) {
+            t = prof.timingOf(method);
+        }
+        return t >= 0 ? t : prof.methodDelayMs(method);
     }
 
     /** 清除故障类指令：锁存的故障能被它们解开。 */
@@ -1516,6 +1531,11 @@ public final class DeviceCore {
 
     private String frame(String id, String method, String equip,
                          int status, String errorJson, String dataJson) {
+        if (status == 2) {
+            // 成功回包带上画像声明的**结果字段**（模拟器以前对绝大多数方法回 data:{}，
+            // 流程里"读设备状态/读板号/读剩余板数"这些结果根本拿不到）
+            dataJson = withResultFields(method, dataJson);
+        }
         return "{\"message_id\":\"" + id + "\","
                 + "\"message_type\":5,"
                 + "\"method\":\"" + method + "\","
@@ -1540,6 +1560,57 @@ public final class DeviceCore {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * 把画像声明的<b>结果字段</b>并进成功回包的 {@code data}。
+     *
+     * <p><b>为什么</b>：模拟器以前对绝大多数方法回 {@code data:{}} ⇒ 流程里
+     * 「读设备状态 / 读板号 / 读剩余板数」这些<b>结果</b>拿不到，
+     * 流程要么不敢用设备输出，要么只能另开一条路去查库。</p>
+     *
+     * <p>已有的同名字段<b>不覆盖</b> —— 型号专属行为（{@link DeviceBehavior}）给的值更具体。
+     * 字段值是<b>合理的模拟值</b>，不是实测值。</p>
+     */
+    private String withResultFields(String method, String dataJson) {
+        java.util.List<String> fields = prof.resultFieldsOf(method);
+        if (fields.isEmpty()) {
+            return dataJson;
+        }
+        String base = dataJson == null || dataJson.isBlank() ? "{}" : dataJson.trim();
+        if (!base.startsWith("{") || !base.endsWith("}")) {
+            return base;   // 不是 JSON 对象 ⇒ 不动它
+        }
+        StringBuilder add = new StringBuilder();
+        for (String f : fields) {
+            if (base.contains("\"" + f + "\"")) {
+                continue;   // 已有（型号行为给的更具体）⇒ 不覆盖
+            }
+            if (add.length() > 0) {
+                add.append(',');
+            }
+            add.append('"').append(f).append("\":\"").append(prof.resultValue(f)).append('"');
+        }
+        if (add.length() == 0) {
+            return base;
+        }
+        String inner = base.substring(1, base.length() - 1).trim();
+        return "{" + (inner.isEmpty() ? "" : inner + ",") + add + "}";
+    }
+
+    /**
+     * 时长<b>由参数决定</b>时的模拟耗时（毫秒）。
+     *
+     * <p>离心 30 秒和离心 30 分钟是同一台设备的同一个方法，差别只在参数。
+     * 模拟器若用固定耗时 ⇒ 流程要么跑得不像现场，要么直接超时。
+     * ⇒ 这类方法的耗时按请求参数走（再按机型允许范围夹一下）。
+     */
+    private long durationFromParams(String alias, String method, String msg) {
+        long sec = prof.durationSecondsOf(alias, msg);
+        if (sec < 0 && method != null) {
+            sec = prof.durationSecondsOf(method, msg);
+        }
+        return sec < 0 ? -1L : sec * 1000L;
     }
 
     private static String find(Pattern p, String s) {
