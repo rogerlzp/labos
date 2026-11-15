@@ -489,7 +489,7 @@ public class DeviceController {
                 while (m.find()) {
                     java.util.Map<String, Object> one = new java.util.LinkedHashMap<>();
                     java.util.regex.Matcher kv = java.util.regex.Pattern
-                            .compile("\\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:\\s*"
+                            .compile("\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:\\s*"
                                     + "(?:\"([^\"]*)\"|(-?\\d+(?:\\.\\d+)?)|(true|false))")
                             .matcher(m.group(1));
                     while (kv.find()) {

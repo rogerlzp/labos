@@ -9,6 +9,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 「建岛 → 拖设备 → 造点位 → 登记驱动」这条交付链的**连库**判别性自测（2026-11-15）。
@@ -91,7 +94,7 @@ public final class DeviceSetupDbSelfTest {
 
             section("4. 批量造网格点位（原来只有脚本）");
             String devCode = str("SELECT code FROM resource_node WHERE id = ?", rid);
-            int n = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point", "nest",
+            int n = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point", "nest", 1,
                     1, 45.0, "pcr96,deep96", true, true, true);
             eq("造了 6 个点位（3 列 × 2 行）", 6, n);
             eq("点位行数对上了", 6, intOf("SELECT count(*) FROM device_point dp"
@@ -117,7 +120,7 @@ public final class DeviceSetupDbSelfTest {
                             + " ON p.id = dp.point_resource_id"
                             + " WHERE dp.device_resource_id = ? AND dp.grid_row = 2", rid));
             // 幂等：再跑一次不新增
-            int n2 = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point", "nest",
+            int n2 = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point", "nest", 1,
                     1, 45.0, "pcr96,deep96", true, true, true);
             eq("幂等：再跑一次不新增点位", 6,
                     intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
@@ -125,9 +128,45 @@ public final class DeviceSetupDbSelfTest {
                             + " WHERE dp.device_resource_id = ?", rid));
             ok("返回的写入数仍是 6（复用更新，不是新建）", n2 == 6);
 
-            section("5. 危险动作要有护栏");
+            section("5. 槽位稳定编码（slot_index）—— 「从第 N 槽取哪块板」要能精确表达");
+            eq("槽位编码 1..N 落库了（行优先）", 1,
+                    intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
+                            + " ON p.id = dp.point_resource_id"
+                            + " WHERE dp.device_resource_id = ? AND dp.slot_index = 1", rid));
+            eq("最后一个槽是第 6 号（3 列 × 2 行）", 1,
+                    intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
+                            + " ON p.id = dp.point_resource_id"
+                            + " WHERE dp.device_resource_id = ? AND dp.slot_index = 6", rid));
+
+            section("6. 双工位规格（提取仪：外部交换位 + 内部操作位）");
+            // 另一台设备：造两个"不一样"的工位
+            long rid2 = svc.deployModel(modelId, islandId, "192.168.77.22", drvId);
+            String devCode2 = str("SELECT code FROM resource_node WHERE id = ?", rid2);
+            List<Map<String, Object>> spec = new ArrayList<>();
+            spec.add(Map.of("code", devCode2 + "-EXT2", "label", "EXT2",
+                    "slotKind", "deck_out", "slotIndex", 1, "pointKind", "transfer_point"));
+            spec.add(Map.of("code", devCode2 + "-INT1", "label", "INT1",
+                    "slotKind", "deck_in", "pointKind", "transfer_point"));
+            int sn = svc.createSpecPoints(rid2, devCode2, spec);
+            eq("造了 2 个工位", 2, sn);
+            eq("外部交换位：机械臂可达（both）", 1,
+                    intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
+                            + " ON p.id = dp.point_resource_id"
+                            + " WHERE dp.device_resource_id = ? AND dp.point_kind = 'deck_out'"
+                            + " AND dp.point_role = 'both' AND dp.robot_reachable", rid2));
+            eq("内部操作位：机械臂够不到（internal + 不可达）", 1,
+                    intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
+                            + " ON p.id = dp.point_resource_id"
+                            + " WHERE dp.device_resource_id = ? AND dp.point_kind = 'deck_in'"
+                            + " AND dp.point_role = 'internal' AND NOT dp.robot_reachable", rid2));
+            eq("两个工位的节点类型都是机械臂看得见的 transfer_point", 2,
+                    intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
+                            + " ON p.id = dp.point_resource_id"
+                            + " WHERE dp.device_resource_id = ? AND p.kind = 'transfer_point'", rid2));
+
+            section("7. 危险动作要有护栏");
             try {
-                svc.createGridPoints(rid, devCode, 3, 2, "workstation", "nest", 1, null, null,
+                svc.createGridPoints(rid, devCode, 3, 2, "workstation", "nest", 1, 1, null, null,
                         true, true, true);
                 bad("点位 kind 不在机械臂可见的三类里，没有被拒绝");
             } catch (IllegalArgumentException e) {
@@ -135,7 +174,7 @@ public final class DeviceSetupDbSelfTest {
                         e.getMessage() != null && e.getMessage().contains("transfer_point"));
             }
             try {
-                svc.createGridPoints(rid, devCode, 0, 2, "storage", "nest", 1, null, null,
+                svc.createGridPoints(rid, devCode, 0, 2, "storage", "nest", 1, 1, null, null,
                         true, true, true);
                 bad("列数为 0 没有被拒绝");
             } catch (IllegalArgumentException e) {

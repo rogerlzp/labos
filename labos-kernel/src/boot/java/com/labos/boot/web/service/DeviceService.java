@@ -836,9 +836,20 @@ public class DeviceService {
             }
             Object si = spec.get("slotIndex");
             Integer slotIndex = si == null ? null : ((Number) si).intValue();
+            // ⚠ 节点的 kind 必须是机械臂**看得见**的三类之一
+            //   （选位 SQL 硬性过滤 resource_node.kind IN
+            //    ('incubator','storage','transfer_point')）⇒ 写成 'device' 的话
+            //   点位建出来了但**永远选不到**（不报错，只是选不中）。
+            String nodeKind = str(spec.get("pointKind"));
+            nodeKind = nodeKind == null || nodeKind.isBlank() ? "transfer_point" : nodeKind.trim();
+            if (!java.util.Set.of("incubator", "storage", "transfer_point").contains(nodeKind)) {
+                throw new IllegalArgumentException(
+                        "节点类型（pointKind）只能是 incubator / storage / transfer_point"
+                        + "（机械臂只能取这三类）");
+            }
             cm.insertGridPoint(TENANT, deviceResourceId, code.trim(),
                     label == null || label.isBlank() ? code.trim() : label.trim(),
-                    "device", slot, slotIndex, role,
+                    nodeKind, slot, slotIndex, role,
                     0, 0, 1, null, null, entry, exit, reachable, seq);
             seq++;
             n++;
