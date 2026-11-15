@@ -65,6 +65,12 @@ need "experiment_batch 存在（S3 逻辑批次）" 'CREATE TABLE IF NOT EXISTS 
 need "experiment_batch_run 存在（S3 每次尝试）" 'CREATE TABLE IF NOT EXISTS experiment_batch_run \('
 need "experiment_batch 按实验+批号唯一" 'CONSTRAINT uk_experiment_batch UNIQUE \(tenant_id, experiment_id, batch_no\)'
 need "experiment_batch_run 按批+尝试号唯一" 'CONSTRAINT uk_experiment_batch_run UNIQUE \(batch_id, attempt_no\)'
+# ---- 设备事件 P0：新环境必须包含幂等、持久游标与原子消费结构 ----
+need "device_event 来源幂等键存在" 'source_event_id\s+VARCHAR\(128\)'
+need "device_event 来源幂等唯一索引" 'uk_device_event_source'
+need "device_event_run_cursor 持久游标存在" 'CREATE TABLE IF NOT EXISTS device_event_run_cursor \('
+need "device_event_consumption 消费关系存在" 'CREATE TABLE IF NOT EXISTS device_event_consumption \('
+need "同一等待者唯一约束存在" 'uk_device_event_waiter'
 
 echo
 if [[ $FAIL -eq 0 ]]; then

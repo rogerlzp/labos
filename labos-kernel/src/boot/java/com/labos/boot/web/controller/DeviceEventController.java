@@ -63,9 +63,14 @@ public class DeviceEventController {
     @PostMapping(produces = "application/json; charset=utf-8")
     public ResponseEntity<String> ingest(@RequestBody(required = false) String body,
                                           HttpServletRequest req) {
-        // 令牌：中控设了 LABOS_DEVICE_EVENT_TOKEN 就必须带对（sidecar 没有中控账号，
-        // 免鉴权只在内网可信口径下成立；装了令牌就收口到"知道令牌的人才能写事件"）。
+        // POST 不走账号体系，但必须显式持有设备令牌。未配令牌时只有显式联调开关才放行。
         String expected = eventToken();
+        if (expected == null && !anonymousIngestAllowed(System.getenv(
+                "LABOS_DEVICE_EVENT_ALLOW_ANONYMOUS"))) {
+            return ResponseEntity.status(503).body(Jsons.obj("ok", false,
+                    "error", "设备事件入站未启用：请配置 LABOS_DEVICE_EVENT_TOKEN；"
+                            + "仅本机联调可显式设置 LABOS_DEVICE_EVENT_ALLOW_ANONYMOUS=1"));
+        }
         if (expected != null) {
             String got = req.getHeader("X-Labos-Device-Token");
             if (got == null || !expected.equals(got.trim())) {
@@ -81,22 +86,26 @@ public class DeviceEventController {
         }
         String payload = rawJsonField(body, "payload");
         Long runId = com.labos.kernel.api.ApiServer.jsonLong(body, "runId");
+        String sourceEventId = trimmed(com.labos.kernel.api.ApiServer.jsonField(body, "sourceEventId"));
+        String processId = trimmed(com.labos.kernel.api.ApiServer.jsonField(body, "processId"));
+        String interactionStep = trimmed(com.labos.kernel.api.ApiServer.jsonField(body, "interactionStep"));
         Long deviceId = null;
         if (device != null) {
             try {
                 deviceId = mapper().selectInstanceIdByCode(TENANT, device);
             } catch (RuntimeException ex) {
-                // 设备还没建档 ⇒ device_id 留空，事件照样落库
                 deviceId = null;
             }
         }
         try {
-            int n = mapper().insertEvent(TENANT, deviceId, device, eventType, payload, runId);
-            audit.record(session(req), "device.event_ingest", "device_event", null,
-                    device, Jsons.obj("eventType", eventType, "runId", runId),
-                    req.getRemoteAddr());
-            return ResponseEntity.ok(Jsons.obj("ok", n > 0, "device", device,
-                    "eventType", eventType, "runId", runId));
+            Long eventId = mapper().insertEvent(TENANT, deviceId, device, eventType, payload,
+                    runId, sourceEventId, processId, interactionStep);
+            audit.record(session(req), "device.event_ingest", "device_event", eventId,
+                    device, Jsons.obj("eventType", eventType, "runId", runId,
+                            "sourceEventId", sourceEventId), req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("ok", eventId != null, "eventId", eventId,
+                    "device", device, "eventType", eventType, "runId", runId,
+                    "sourceEventId", sourceEventId));
         } catch (RuntimeException ex) {
             return ResponseEntity.status(500).body(Jsons.obj("ok", false,
                     "error", "写入设备事件失败：" + ex.getMessage()));
@@ -145,13 +154,11 @@ public class DeviceEventController {
         return t.isEmpty() ? null : t;
     }
 
-    /**
-     * 设备事件令牌（{@code LABOS_DEVICE_EVENT_TOKEN}）。
-     *
-     * <p>没配 ⇒ 内网免鉴权口径（与 {@code /api/devices/registry} 同档：
-     * sidecar 没有中控账号，它要把设备上报转上来）。
-     * 配了 ⇒ 端点校验 {@code X-Labos-Device-Token}，对不上直接 401。
-     */
+    /** 未配置令牌时是否显式允许匿名联调；生产默认关闭。 */
+    public static boolean anonymousIngestAllowed(String configuredFlag) {
+        return "1".equals(configuredFlag == null ? null : configuredFlag.trim());
+    }
+
     private static String eventToken() {
         String t = System.getenv("LABOS_DEVICE_EVENT_TOKEN");
         return t == null || t.isBlank() ? null : t.trim();

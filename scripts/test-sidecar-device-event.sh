@@ -34,6 +34,7 @@ CODE=${CODE:-S100T}
 # ⚠ macOS 的 mktemp 要求 X 必须在**结尾**（BSD 与 GNU 不一样）——
 # 写成 .XXXXXX.jsonl 会得到空路径，桩服务写文件时直接 FileNotFoundError。
 EVENTS_FILE=$(mktemp /tmp/labos-device-events.XXXXXX)
+OUTBOX_DIR=$(mktemp -d /tmp/labos-device-outbox.XXXXXX)
 STUB_PID=""
 
 cleanup() {
@@ -42,6 +43,8 @@ cleanup() {
     [[ -n "$STUB_PID"     ]] && { pkill -P "$STUB_PID" 2>/dev/null; kill "$STUB_PID" 2>/dev/null; }
     sleep 0.2
     wait 2>/dev/null
+    rm -f "$EVENTS_FILE"
+    rm -rf "$OUTBOX_DIR"
 }
 trap cleanup EXIT
 
@@ -73,9 +76,9 @@ python3 - "$STUB_PORT" "$EVENTS_FILE" <<'PYEOF' > /tmp/labos-stub.log 2>&1 &
 import http.server, json, sys
 port, out = int(sys.argv[1]), sys.argv[2]
 class H(http.server.BaseHTTPRequestHandler):
-    def _send(self, body):
+    def _send(self, body, status=200):
         b = body.encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
@@ -86,9 +89,16 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(n).decode("utf-8", "replace")
+        try:
+            with open(out, encoding="utf-8") as f:
+                attempt = sum(1 for line in f if line.strip()) + 1
+        except FileNotFoundError:
+            attempt = 1
         with open(out, "a", encoding="utf-8") as f:
             f.write(raw + "\n")
-        self._send(json.dumps({"ok": True}))
+        # 第一次明确失败：sidecar 必须保留 outbox，并以同一 sourceEventId 补发。
+        status = 500 if attempt == 1 else 200
+        self._send(json.dumps({"ok": status == 200}), status)
     def log_message(self, *a):
         pass
 http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
@@ -122,6 +132,7 @@ ok "模拟器监听 $SIM_PORT"
        --model s100 --transport sim \
        --sim-host 127.0.0.1 --sim-port "$SIM_PORT" --port "$SIDE_PORT" --device "$DEVICE" \
        --registry-url "http://127.0.0.1:$STUB_PORT" \
+       --device-event-outbox "$OUTBOX_DIR" \
        > /tmp/sidecar-dev-run.log 2>&1 ) &
 SIDE_PID=$!
 sleep 3
@@ -157,9 +168,9 @@ s.close()
 PYEOF
 ok "命令已发出（模拟器会顺手推一帧）"
 
-# 等转发落地（模拟器推 300ms 后，sidecar 泵 100ms 轮询一次）
-for _ in $(seq 1 30); do
-    [[ -s "$EVENTS_FILE" ]] && break
+# 等第一次 500 和随后补发的 2xx 都发生（不能只看到第一条失败请求就开始断言）。
+for _ in $(seq 1 50); do
+    [[ -s "$EVENTS_FILE" ]] && [[ $(wc -l < "$EVENTS_FILE") -ge 2 ]] && break
     sleep 0.2
 done
 
@@ -174,10 +185,10 @@ import json, sys
 path, code = sys.argv[1], sys.argv[2]
 rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 bad = 0
-if not rows:
-    print("  ✘ 事件列表为空")
+if len(rows) < 2:
+    print("  ✘ 第一次 HTTP 500 后没有补发成功，尝试次数：%d" % len(rows))
     sys.exit(1)
-ev = rows[0]
+ev = rows[1]
 if ev.get("device") != code:
     print("  ✘ 设备码不对：%r（期望 %r）" % (ev.get("device"), code)); bad += 1
 else:
@@ -190,6 +201,12 @@ if not isinstance(ev.get("payload"), dict):
     print("  ✘ 载荷不是对象：%r" % ev.get("payload")); bad += 1
 else:
     print("  ✔ 载荷是对象：%s" % json.dumps(ev.get("payload"), ensure_ascii=False))
+source_id = ev.get("sourceEventId")
+if not source_id or rows[0].get("sourceEventId") != source_id:
+    print("  ✘ 重试没有复用同一个 sourceEventId：%r / %r" %
+          (rows[0].get("sourceEventId"), source_id)); bad += 1
+else:
+    print("  ✔ HTTP 500 后以同一 sourceEventId 补发成功：%s" % source_id)
 sys.exit(1 if bad else 0)
 PYEOF
     if [[ $? -eq 0 ]]; then

@@ -11,9 +11,8 @@ import java.util.Map;
  * <p><b>为什么要有</b>：这个端点是 sidecar 往内核送设备事件的唯一入口，
  * 两处容易出错且都很隐蔽：
  * <ol>
- *   <li><b>鉴权口径</b>：sidecar 没有中控账号 ⇒ 端点必须免鉴权
- *       （同 {@code /api/devices/registry} 那一档）。忘了加 ⇒ 现场看到
- *       "未登录或会话已过期"，事件永远送不进来。</li>
+ *   <li><b>鉴权口径</b>：设备事件 POST 使用独立令牌，路径本身不能进入公开白名单，
+ *       否则同一路径的 GET 查询也会绕过登录会话。匿名写入仅由显式联调开关开启。</li>
  *   <li><b>载荷解析</b>：{@code payload} 可能是对象、也可能是字符串/数字，
  *       解析器只认字符串就会把对象载荷丢掉。</li>
  * </ol>
@@ -28,10 +27,14 @@ public final class DeviceEventApiSelfTest {
         System.out.println("════ 设备事件入站端点 · 纯逻辑自测 ════");
         System.out.println();
 
-        section("1. 鉴权口径：sidecar 没有中控账号 ⇒ 端点免鉴权");
-        ok("端点已免鉴权（sidecar 送得进来）",
-                ApiServer.isPublic("/api/device-events"));
-        ok("其它端点**没有**被顺带放开（别误伤）",
+        section("1. 鉴权口径：POST 用独立设备令牌，GET 查询仍需登录");
+        ok("路径本身不在公开白名单（GET 不会绕过会话鉴权）",
+                !ApiServer.isPublic("/api/device-events"));
+        ok("默认不允许匿名写入",
+                !DeviceEventController.anonymousIngestAllowed(null));
+        ok("只有显式联调开关允许匿名写入",
+                DeviceEventController.anonymousIngestAllowed("1"));
+        ok("其它端点没有被顺带放开",
                 !ApiServer.isPublic("/api/plates"));
 
         section("2. 载荷解析：对象 / 字符串 / 数字 / 缺失 / 脏数据");

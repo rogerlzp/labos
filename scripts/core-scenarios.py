@@ -216,16 +216,44 @@ def bpmn_xml(nodes, flows, shapes, edges):
     return "\n".join(out)
 
 
+# 本次运行建立的流程/实验 id —— 跑完统一清理（见 cleanup_created()）
+CREATED_WF = []
+CREATED_EXP = []
+
+
 def seed_workflow(token, name, xml):
     wf = api("/api/workflows", "POST", {"name": name}, token)["id"]
     api("/api/workflows/%d/graph" % wf, "PUT", raw=xml, token=token)
+    CREATED_WF.append(wf)
     return wf
 
 
 def seed_experiment(token, name, wf_ids, island_id):
     exp = api("/api/experiments", "POST",
               {"name": name, "workflowIds": wf_ids, "islandId": island_id}, token)["id"]
+    CREATED_EXP.append(exp)
     return exp
+
+
+def cleanup_created():
+    """跑完自清理：只删本次运行建的流程/实验（含其 run），不碰别人的数据。
+
+    为什么必须清：这些脚本只建不删，跑几轮就能在流程库/实验列表里堆出上百条
+    「实测·xxx」（2026-11-15 实测 165 条流程 + 85 个实验全是这么来的）。
+    想保留现场排查时：``LABOS_KEEP_TEST_DATA=1 python3 scripts/core-scenarios.py``。
+    """
+    if os.environ.get("LABOS_KEEP_TEST_DATA") == "1":
+        print("  [cleanup] LABOS_KEEP_TEST_DATA=1，保留本次数据 %d 流程 / %d 实验"
+              % (len(CREATED_WF), len(CREATED_EXP)))
+        return
+    if not CREATED_WF and not CREATED_EXP:
+        return
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_artifact_cleanup as tdc
+        tdc.cleanup(workflow_ids=CREATED_WF, experiment_ids=CREATED_EXP, with_runs=True)
+    except Exception as e:      # noqa: BLE001 —— 清理失败不能影响测试结论
+        print("  [cleanup] 失败（不影响测试结论）：%s" % e)
 
 
 def wait_run(token, rid, budget=120):
@@ -598,8 +626,8 @@ def scenario3_parallel_branch(pg, token):
 
     结构（一条流程测 ①，一条流程测 ②③）：
 
-        并行：S ─┬─ P1(Home 机器人) ─┬─ J(并行汇合) ─ T9 ─ E
-                └─ P2(Home 离心机) ─┘
+        并行：S ─ P0(并行分叉) ─┬─ P1(Home 机器人) ─┬─ J(并行汇合) ─ T9 ─ E
+                                 └─ P2(Home 离心机) ─┘
 
         异或：S ─ X(条件 ${mode} == 'fast') ─┬─ A(Home 机器人) ─ E
                                            └─ B(Home 离心机) ─┘
@@ -622,20 +650,30 @@ def scenario3_parallel_branch(pg, token):
         return
 
     # ---------- ① 并行 ----------
+    # 网关必须**成对**：汇合是分叉的 end，前面必须先有分叉网关。
+    # 早先把两条出边直接挂在开始节点上（S 出 2 条 → J 汇合），
+    # 页面上 J 显示「并行汇合」却找不到对应的「并行分叉」——同一类结构错误
+    # （用户 2026-11-14 判定「开始 → 异或汇合 → 循环体」不合法）。
+    # 因此这里显式加 P0（并行分叉）。
     nodes = [("S", "开始", None, None, "startEvent"),
+             ("P0", "并行分叉", None, None, "parallelGateway"),
              ("P1", "分支一", "Home", robot, "task"),
              ("P2", "分支二", "Home", spin, "task"),
-             ("J", "汇合", None, None, "parallelGateway"),
+             ("J", "并行汇合", None, None, "parallelGateway"),
              ("T9", "汇合后", "Home", robot, "task"),
              ("E", "结束", None, None, "endEvent")]
-    shapes = {"S": (60, 160, 36, 36), "P1": (160, 60, 100, 80), "P2": (160, 240, 100, 80),
-              "J": (340, 160, 36, 36), "T9": (440, 140, 100, 80), "E": (600, 160, 36, 36)}
-    flows = [("f1", "S", "P1"), ("f2", "S", "P2"), ("f3", "P1", "J"), ("f4", "P2", "J"),
+    shapes = {"S": (60, 160, 36, 36), "P0": (130, 160, 36, 36),
+              "P1": (210, 60, 100, 80), "P2": (210, 240, 100, 80),
+              "J": (370, 160, 36, 36), "T9": (460, 140, 100, 80), "E": (620, 160, 36, 36)}
+    flows = [("f0", "S", "P0"),
+             ("f1", "P0", "P1"), ("f2", "P0", "P2"),
+             ("f3", "P1", "J"), ("f4", "P2", "J"),
              ("f5", "J", "T9"), ("f6", "T9", "E")]
     edges = {
-        "f1": [(96, 178), (160, 100)], "f2": [(96, 178), (160, 280)],
-        "f3": [(260, 100), (340, 170)], "f4": [(260, 280), (340, 190)],
-        "f5": [(376, 178), (440, 180)], "f6": [(540, 180), (600, 178)],
+        "f0": [(96, 178), (130, 178)],
+        "f1": [(166, 168), (210, 100)], "f2": [(166, 185), (210, 280)],
+        "f3": [(310, 100), (370, 170)], "f4": [(310, 280), (370, 190)],
+        "f5": [(406, 178), (460, 180)], "f6": [(560, 180), (620, 178)],
     }
     wf_par = seed_workflow(token, "核心场景·并行分叉", bpmn_xml(nodes, flows, shapes, edges))
 
@@ -1018,6 +1056,7 @@ def main():
         print("未覆盖（这些方向目前没有自动防线）：")
         for u in UNCOVERED:
             print("  - " + u)
+    cleanup_created()
     return 0 if FAIL == 0 else 1
 
 

@@ -96,7 +96,8 @@ public sealed class TcpServer
                 {
                     if (_transport.TryDequeueSpontaneous(out var frame))
                     {
-                        _ = _eventForwarder.ForwardAsync(frame, token);
+                        // 等待到请求体原子落盘才继续；没有无人观察的 fire-and-forget。
+                        _eventForwarder.ForwardAsync(frame, token).GetAwaiter().GetResult();
                     }
                     else
                     {

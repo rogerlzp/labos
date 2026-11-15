@@ -48,6 +48,19 @@ def q(sql):
     return out.stdout.strip()
 
 
+# 本次运行建的流程/实验（跑完自清理）
+CREATED_WF = []
+CREATED_EXP = []
+
+
+def cleanup_created():
+    try:
+        import test_artifact_cleanup as tdc
+        tdc.cleanup_created(CREATED_WF, CREATED_EXP)
+    except Exception as e:      # noqa: BLE001
+        print("  [cleanup] 失败（不影响测试结论）：%s" % e)
+
+
 XML = """<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
   xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
@@ -107,6 +120,8 @@ def main():
     isl = int(q("SELECT id FROM resource_node WHERE code='LAB-BASE-01' AND kind='island'"))
     exp = api("/api/experiments", "POST",
               {"name": "实测·页面恢复", "workflowIds": [wf], "islandId": isl}, token)["id"]
+    CREATED_WF.append(wf)
+    CREATED_EXP.append(exp)
     api("/api/experiments/%d/run" % exp, "POST", {}, token)
 
     erid = 0
@@ -178,6 +193,7 @@ def main():
         bad("点「恢复」后节点没被重做", "attempt %s→%s" % (before, after))
 
     print("\n通过 %d / 失败 %d" % (PASS, FAIL))
+    cleanup_created()
     return 0 if FAIL == 0 else 1
 
 

@@ -53,6 +53,7 @@
 | `BUG-20261111-19` | **中** | **设备管理台打开是空白页（404）** ⇒ 现场按 dll 启动必然踩到 | ① Web SDK 默认**不把 `wwwroot` 复制到输出目录**（静态资源走 manifest，直接 `dotnet <dll>` 跑时不生效）；② 静态文件从 **ContentRoot/wwwroot** 找，而直接跑 dll 时 ContentRoot = **当前工作目录** ⇒ 从别处启动就找不到 | `Labos.Sidecar.Manager.csproj`（`Content Update="wwwroot/**" CopyToOutputDirectory`）、`Labos.Sidecar.Manager/Program.cs`（`ContentRootPath` / `WebRootPath` 显式钉死到 `AppContext.BaseDirectory`） | ✅ **已修**（2026-11-11：两处都补上；实测从 `/tmp` 启动 `dotnet <绝对路径>.dll` ⇒ `HTTP 200`，界面正常渲染 5 台设备） | 管理台启动后浏览器打开是空白页（2026-11-11） |
 | `BUG-20261111-20` | **中** | **设计器上流程节点都在、却一条连线都没有**，但**保存成功、执行也正常** ⇒ 用户看着像"流程是断的、还没校验"，实际是**画不出来** | BPMN 里「逻辑连线」是 `<bpmn:sequenceFlow sourceRef targetRef>`，「**画出来的**连线」是 DI 段的 `<bpmndi:BPMNEdge>`（带 waypoints）。前端 bpmn-js **只渲染有 DI 的元素** ⇒ XML 里有 sequenceFlow、却没有 BPMNEdge ⇒ 画布上是一堆孤立节点；而**后端存与跑都看 sequenceFlow** ⇒ 看着"没连线"却能存能跑。**保存不拦是对的**：后端 `saveGraph` 校验的是逻辑层（孤立节点 / 断头线 / 可达性，见测试总纲 §1.6），sequenceFlow 在 ⇒ 校验通过 | 造图的 XML 缺 DI（本轮 seed 的基线流程、脚本造的流程都没写 `BPMNEdge`） | ✅ **已修**（2026-11-11：① 后端 `WorkflowService.saveGraph` 落库前用新的 `BpmnDiCompleter` **补齐缺失的 BPMNEdge**（按两端 `BPMNShape` 的位置算 waypoints；**幂等** —— 页面 bpmn-js 导出的图本来就有 DI，不动）；补在**后端**是因为 XML 有三个来源（页面导出 / 脚本造 / 第三方导入），只有这里是**必经之路**；② 历史数据用 `scripts/backfill-bpmn-di.py` 批量补：实测 **28 个流程补完、0 失败**。验证：设计器 `1000641` 从 0 条连线变 6 条（f1~f6 全部可见），预检「节点 5 · 步骤 5 · 预检 通过」，执行链路不受影响） | 用户现场反馈（2026-11-11，designer/1000641） |
 | `BUG-20261111-21` | **高** | **设备方法表里有的方法，模拟器却按「通用机型画像」拒收**（EC-06-0004）⇒ 节点转人工、实验暂停，现场看着像"流程配错了"，其实流程完全正确 | 模拟器的方法集校验：`prof.validate(alias, msg, model == null)` —— **没有型号时，通用画像的方法集就是权威**。而画像是**机型级**的（读板机画像 = 酶标仪 SpectraMax 190，里面没有 `ReadPlate`），这台设备（CellInsight CX7）**方法表里明明有** ⇒ 合法指令被误拒 | `sim/DeviceCore.java`（`prof.validate` + `known` 判定）、`sim/DeviceSimulator.java`（新增 `--methods`）、`labos-kernel/scripts/sim-up.sh`（把设备方法表传给模拟器） | ✅ **已修**（2026-11-11：模拟器新增 `--methods`（该设备**实际**有的方法，来自中控的 `device_method` 表）；校验时**画像管参数边界、设备方法表管方法集**，两者取并集 —— 谁都不单独说了算。`sim-up.sh` 从库里查方法集并传进去；不传时行为不变（现场真机照旧按型号/画像校验）。实测：读板机 `ReadPlate` 之前被拒，现在被接受（回 `{"position":"A1","plate":"SIM-PLATE-1"}`），用户那条 5 节点流程重跑后**全部 completed**） | 用户现场反馈（2026-11-11，实验 1000336 暂停于 ReadPlate 节点） |
+| `BUG-20261114-01` | **中** | 「S2实测·循环探针」图结构错误：`开始 → 异或汇合 → 循环体` —— R13-25 修孤立网关时塞的 `XOR_MERGE` 出现在其配对分叉**之前**，违反"汇合是异或的 end、之前必须先有异或的 start" | `scripts/verify-s2-complex-flow.py` `graph_loop()`；11 条存量流程（1000792/1000789/1000787/…） | ✅ **已修**（2026-11-14：删 `M`，回边 `V → C1`；断言加「汇合必须在分叉之后」；11 条存量重排 + preflight 0 error / 0 warning） | 用户现场反馈（2026-11-14，流程 1000792） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
 
@@ -331,4 +332,33 @@ key 口径（-11）、调度是否尊重它（-12）、台账的时间语义（-
 | 修法 | ① 后端 `WorkflowService.saveGraph` 落库前用新的 `BpmnDiCompleter` **补齐缺失的 BPMNEdge**（按两端 `BPMNShape` 的 `dc:Bounds` 算 waypoints；**幂等** —— 页面 bpmn-js 导出的图本来就有 DI，不动）。补在**后端**而不是让每个造图脚本自己写全，是因为 XML 有三个来源（页面导出 / 脚本造 / 第三方导入），只有后端这一处是**必经之路**；② 历史数据用 `scripts/backfill-bpmn-di.py` 批量补（重新 PUT 一次它的 graph，走一遍 `saveGraph`） |
 | 实测 | 批量补 **28 个流程、0 失败**；设计器 `1000641` 从 0 条连线变 **6 条**（f1~f6 全可见），顶部「节点 5 · 步骤 5 · 预检 通过」；执行链路不受影响 |
 | 教训 | **"画得出来"和"存得进去"是两件事**，缺 DI 的图属于"两层都合法、展示层空缺"—— 只校验逻辑层就会漏掉它。<br>另一条：**我造图时只写了 sequenceFlow 没写 BPMNEdge**，说明「用脚本造 BPMN」这件事本身需要一个统一的补全关口，而不是每个脚本各写各的 |
+
+### 🟨 BUG-20261114-01（中）循环探针图结构错误：异或汇合出现在配对分叉之前
+
+**现象**：用户打开 `/designer/1000792`（`S2实测·循环探针`）看到
+`开始 → 异或汇合 → 循环体·机器人 → 异或分叉 → …`，判定结构错误 ——
+**异或「汇合」是异或的 end，它之前必须先有异或的 start（分叉）**。
+
+**归属**：workflow 由 `scripts/verify-s2-complex-flow.py` 的 `loop` 段
+（`graph_loop()` + `core-scenarios.py::seed_workflow`）生成；
+`seed_workflow` 每次运行都 `POST /api/workflows` 新建一条，所以同名的
+「S2实测·循环探针」存量 **12 条**（1000773~1000792）。
+
+**根因**：R13-25 修「孤立网关」时，为让网关"成对"，
+在 `S` 与 `C1` 之间塞了一个 `M`（XOR_MERGE，入边 2 = `S→M` + 回边 `V→M`）。
+`ins>1 ⇒ 角色=汇合` 的判定只看度数，**不看它在流上是否位于配对分叉之后**，
+于是产出「汇合 → 循环体 → 分叉」的倒置结构。
+
+**修复**：
+
+| 项 | 结果 |
+|---|---|
+| 脚本（根因） | `graph_loop()` 删除 `M`，回边改 `V → C1`（与 `复杂流程验证…20261112.md` §2.2 原始设计一致）；`V` 移到主线下方、回边走折线，避免「圈数加一 → 结束」的读图误判 |
+| 断言（防复发） | `assert_gateways_wired()` 新增：任一 `ins>1` 的网关，沿入边向上游必须能到达一个 `outs>1` 的网关，否则抛错 |
+| 存量数据 | 11 条标准循环结构流程经 `PUT /graph` 重建（1000790 是另一张已修正的并行图，跳过）；`saveGraph` 是增量 upsert，`params` 为 COALESCE 合并、`material_effect` 列不在 DO UPDATE 中 ⇒ `V` 的 `__expr` 参数、`C1` 的物料声明（`PL-TRACE-2214 → ready`）、变量 `n` 均保留 |
+| 验收 | 图：`S→C1→X(XOR_SPLIT, default=f_loop) ├ 条件→E └→V→回 C1`，无 `M`；页面 `/designer/1000792` 元素 `S/C1/X/V/E` + 5 连线、0 JS 错误；`GET /preflight` = `errors 0 / warnings 0 / blocking false`，`can-start = true` |
+
+**教训**：角色标签（分叉/汇合）是**拓扑语义**，不只是入/出度的算术 ——
+度数检查只能抓「孤立/单进单出」，抓不到「汇合在分叉之前」。
+凡是按度数推角色的地方，都需要再补一条**可达性**方向的断言。
 

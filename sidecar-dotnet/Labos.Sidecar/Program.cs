@@ -155,13 +155,16 @@ public static class Program
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
         // 设备事件转发器：把设备**主动上报**的帧翻译成统一形状转给中控。
-        // 令牌：中控设了 LABOS_DEVICE_EVENT_TOKEN 时才校验（没设就是内网免鉴权口径，
-        // 与 /api/devices/registry 同一档 —— sidecar 没有中控账号）。
+        // 令牌：生产必须配置 LABOS_DEVICE_EVENT_TOKEN；匿名仅用于显式联调模式。
         var eventToken = Get(opt, "device-event-token")
             ?? Environment.GetEnvironmentVariable("LABOS_DEVICE_EVENT_TOKEN");
+        var outboxDirectory = Get(opt, "device-event-outbox")
+            ?? Environment.GetEnvironmentVariable("LABOS_DEVICE_EVENT_OUTBOX")
+            ?? DeviceEventOutbox.DefaultDirectory(device?.Code ?? Get(opt, "device"), port);
         var forwarder = new DeviceEventForwarder(
             registryUrl, device?.Code, eventToken,
-            SpontaneousTranslators.For(model!.Id), m => Console.WriteLine("[device-event] " + m));
+            SpontaneousTranslators.For(model!.Id), m => Console.WriteLine("[device-event] " + m),
+            outboxDirectory);
         new TcpServer(bind, port, model!, transport, forwarder).Run(cts.Token);
         return 0;
     }

@@ -1,32 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<!-- 设备事件。调用方 com.labos.kernel.persistence.DeviceEventMapper -->
 <mapper namespace="com.labos.kernel.persistence.DeviceEventMapper">
 
-    <!-- 写一条设备事件。payload 非法/空 ⇒ 兜底成 {}（事件本身不能因为载荷脏就丢）。 -->
-    <insert id="insertEvent">
+    <!-- RETURNING 让调用方拿到事件 id；重复幂等键通过 no-op UPDATE 返回原行。 -->
+    <select id="insertEvent" resultType="long">
         INSERT INTO device_event
-            (tenant_id, device_id, device_code, event_type, payload, run_id)
+            (tenant_id, device_id, device_code, event_type, payload, run_id,
+             source_event_id, process_id, interaction_step)
         VALUES
             (#{tenantId}, #{deviceId}, #{deviceCode}, #{eventType},
              COALESCE(CAST(NULLIF(#{payloadJson}, '') AS jsonb), '{}'::jsonb),
-             #{runId})
-    </insert>
+             #{runId}, #{sourceEventId}, #{processId}, #{interactionStep})
+        ON CONFLICT (tenant_id, device_code, source_event_id)
+            WHERE source_event_id IS NOT NULL
+        DO UPDATE SET source_event_id = EXCLUDED.source_event_id
+        RETURNING id
+    </select>
 
-    <!--
-      取 afterId 之后的新事件（按 id 升序）。
-      device_code / event_type 为空 = 不按它过滤（等"任意设备 / 任意类型"）。
-      payload::text ⇒ 出来是字符串，不是 PGobject。
-    -->
     <select id="selectEventsSince" resultType="com.labos.kernel.persistence.DeviceEventRow">
-        SELECT id,
-               device_id,
-               device_code,
-               event_type,
-               payload::text AS payload,
-               run_id,
-               created_at
+        SELECT id, device_id, device_code, event_type, payload::text AS payload,
+               run_id, source_event_id, process_id, interaction_step, created_at
           FROM device_event
          WHERE tenant_id = #{tenantId}
            AND id &gt; #{afterId}
@@ -40,31 +34,88 @@
          LIMIT #{limit}
     </select>
 
-    <!-- 游标：等待节点起手时取一次 ⇒ 只看"起手之后"新来的事件，不吃历史存量。 -->
     <select id="selectMaxEventId" resultType="long">
-        SELECT COALESCE(MAX(id), 0)
-          FROM device_event
-         WHERE tenant_id = #{tenantId}
+        SELECT COALESCE(MAX(id), 0) FROM device_event WHERE tenant_id = #{tenantId}
     </select>
 
-    <!-- 消费标记：已标记的不再改（幂等）。 -->
+    <select id="ensureRunCursor" resultType="long">
+        INSERT INTO device_event_run_cursor (tenant_id, run_id, base_event_id)
+        SELECT #{tenantId}, #{runId}, COALESCE(MAX(id), 0)
+          FROM device_event
+         WHERE tenant_id = #{tenantId}
+        ON CONFLICT (tenant_id, run_id)
+        DO UPDATE SET base_event_id = device_event_run_cursor.base_event_id
+        RETURNING base_event_id
+    </select>
+
+    <!--
+      existing：崩溃/暂停后同一等待者重入，返回首次认领的事件。
+      candidate：只选游标之后、从未消费的事件；SKIP LOCKED 避免并发等同一条。
+      claimed：event_id 主键拦截跨 run 重复，等待者唯一键拦截同节点并发。
+      整条 CTE 在一个 PostgreSQL 语句/事务里完成，不存在“查到后、标记前”的窗口。
+    -->
+    <select id="claimEvent" resultType="com.labos.kernel.persistence.DeviceEventRow">
+        WITH existing AS (
+            SELECT c.event_id
+              FROM device_event_consumption c
+             WHERE c.tenant_id = #{tenantId}
+               AND c.run_id = #{runId}
+               AND c.node_key = #{nodeKey}
+               AND c.loop_index = #{loopIndex}
+        ), candidate AS (
+            SELECT e.id
+              FROM device_event e
+             WHERE e.tenant_id = #{tenantId}
+               AND e.id &gt; #{afterId}
+               AND e.dispatched_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM existing)
+               AND NOT EXISTS (SELECT 1 FROM device_event_consumption c
+                                WHERE c.event_id = e.id)
+            <if test="deviceCode != null and deviceCode != ''">
+               AND e.device_code = #{deviceCode}
+            </if>
+            <if test="eventType != null and eventType != ''">
+               AND e.event_type = #{eventType}
+            </if>
+             ORDER BY e.id
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED
+        ), claimed AS (
+            INSERT INTO device_event_consumption
+                (event_id, tenant_id, run_id, node_key, loop_index)
+            SELECT id, #{tenantId}, #{runId}, #{nodeKey}, #{loopIndex}
+              FROM candidate
+            ON CONFLICT DO NOTHING
+            RETURNING event_id
+        ), selected AS (
+            SELECT event_id FROM claimed
+            UNION ALL
+            SELECT event_id FROM existing
+            LIMIT 1
+        ), touched AS (
+            UPDATE device_event e
+               SET dispatched_at = COALESCE(e.dispatched_at, now()),
+                   attempts = e.attempts + 1,
+                   last_error = NULL
+              FROM selected s
+             WHERE e.id = s.event_id
+               AND e.tenant_id = #{tenantId}
+            RETURNING e.id, e.device_id, e.device_code, e.event_type,
+                      e.payload::text AS payload, e.run_id, e.source_event_id,
+                      e.process_id, e.interaction_step, e.created_at
+        )
+        SELECT * FROM touched
+    </select>
+
     <update id="markDispatched">
         UPDATE device_event
-           SET dispatched_at = now(),
-               attempts = attempts + 1
-         WHERE tenant_id = #{tenantId}
-           AND id = #{id}
-           AND dispatched_at IS NULL
+           SET dispatched_at = COALESCE(dispatched_at, now()), attempts = attempts + 1
+         WHERE tenant_id = #{tenantId} AND id = #{id}
     </update>
 
-    <!-- 设备码 → 设备实例 id。解析不出来（设备还没建档）返回 null。 -->
     <select id="selectInstanceIdByCode" resultType="java.lang.Long">
-        SELECT id
-          FROM device_instance
-         WHERE tenant_id = #{tenantId}
-           AND code = #{code}
-           AND deleted_at IS NULL
-         ORDER BY id
-         LIMIT 1
+        SELECT id FROM device_instance
+         WHERE tenant_id = #{tenantId} AND code = #{code} AND deleted_at IS NULL
+         ORDER BY id LIMIT 1
     </select>
 </mapper>

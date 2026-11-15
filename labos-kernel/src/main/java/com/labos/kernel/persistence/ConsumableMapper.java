@@ -165,6 +165,37 @@ public interface ConsumableMapper {
      *
      * @return 点位 resource_node.id
      */
+    /**
+     * 新建一个**网格点位**（批量造层位用，2026-11-15）。
+     *
+     * <p><b>为什么要有</b>：交付一条流程要造几十上百个层位
+     * （转盘式提取仪 8 个板位 ×4 台、耗材栈 60 个槽位），
+     * 而全仓只有 {@code scripts/gen-grid-points.py} 能造（要 DB 口令 + shell）
+     * ⇒ 交付时这一步要么手写 SQL，要么改脚本。
+     * <b>把它搬进 API + 界面</b> ⇒ 建岛后当场把层位点齐。
+     *
+     * <p>单条语句里写 resource_node + device_point + position_state，避免半成品；
+     * 同 code 已存在时复用并更新（幂等，可反复跑）。
+     *
+     * @param gridRow 网格行号（1 起）
+     * @param gridCol 网格列号（1 起）
+     * @param maxStack 该点最多叠几块板（0 = 不限）
+     */
+    int insertGridPoint(@Param("t") long tenantId,
+                        @Param("deviceResourceId") long deviceResourceId,
+                        @Param("pointCode") String pointCode,
+                        @Param("positionLabel") String positionLabel,
+                        @Param("pointKind") String pointKind,
+                        @Param("gridRow") int gridRow,
+                        @Param("gridCol") int gridCol,
+                        @Param("maxStack") int maxStack,
+                        @Param("maxHeightMm") Double maxHeightMm,
+                        @Param("plateTypes") String plateTypes,
+                        @Param("isEntry") boolean isEntry,
+                        @Param("isExit") boolean isExit,
+                        @Param("robotReachable") boolean robotReachable,
+                        @Param("orderInDevice") int orderInDevice);
+
     int insertStandalonePoint(@Param("t") long tenantId,
                               @Param("deviceResourceId") long deviceResourceId,
                               @Param("deviceCode") String deviceCode,

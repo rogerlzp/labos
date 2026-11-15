@@ -113,6 +113,44 @@ public interface DeviceMapper {
     /** 建岛，返回 id。 */
     Long insertIsland(long tenantId, String code, String name, String path);
 
+    /**
+     * 改岛（2026-11-15）：名字 / 物理坐标 / 容量。
+     *
+     * <p><b>为什么要有</b>：原来岛<b>建完就不能改</b>（全仓没有 {@code PUT /api/islands/{id}}）
+     * ⇒ 改个名或挪个位置只能删了重建，而删岛要求"岛上没有设备" ⇒ 现场根本改不动。
+     *
+     * @param locationJson 物理坐标 JSON（可空 = 不动）；{@code capacity} 同理（<=0 = 不动）
+     */
+    int updateIsland(@Param("tenantId") long tenantId, @Param("islandId") long islandId,
+                     @Param("name") String name, @Param("locationJson") String locationJson,
+                     @Param("capacity") int capacity);
+
+    /**
+     * 登记驱动（2026-11-15）。
+     *
+     * <p><b>为什么要有</b>：原来<b>全仓没有一条 {@code INSERT INTO driver} 的 Java 路径</b>
+     * ⇒ 新设备只能手写 SQL 登记驱动 ⇒ 交付时这一步必卡。
+     *
+     * @param protocol 协议枚举（tcp / http / mock / netdll …）
+     * @param endpoint  端点（如 {@code tcp://192.168.1.10:8501}）
+     */
+    Long insertDriver(@Param("tenantId") long tenantId, @Param("code") String code,
+                      @Param("name") String name, @Param("protocol") String protocol,
+                      @Param("endpoint") String endpoint, @Param("vendor") String vendor,
+                      @Param("resident") Boolean resident);
+
+    /** 改驱动（端点 / 协议 / 名字）。 */
+    int updateDriver(@Param("tenantId") long tenantId, @Param("driverId") long driverId,
+                     @Param("name") String name, @Param("protocol") String protocol,
+                     @Param("endpoint") String endpoint, @Param("vendor") String vendor,
+                     @Param("resident") Boolean resident);
+
+    /** 删驱动。 */
+    int deleteDriver(@Param("tenantId") long tenantId, @Param("driverId") long driverId);
+
+    /** 驱动是否已被设备实例引用（引用中不许删）。 */
+    int countInstancesByDriver(@Param("tenantId") long tenantId, @Param("driverId") long driverId);
+
     int countDevicesUnderIsland(long tenantId, long islandId);
 
     /** 删岛（只删 kind='island' 的资源节点）。 */

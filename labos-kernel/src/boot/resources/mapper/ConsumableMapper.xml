@@ -153,6 +153,51 @@
       用子查询而不是参数，避免 varchar 参数写 enum 列的类型问题。
     · 同 code 已存在时复用（ON CONFLICT DO UPDATE），重复点「新建」不会造重复点位。
   -->
+  <!--
+    批量造网格点位（一次一条，调用方循环 cols×rows）。
+    resource_node + device_point + position_state 一条语句写完 ⇒ 不会留半成品。
+    幂等：同 code 复用并更新配置，可反复跑。
+  -->
+  <insert id="insertGridPoint">
+    WITH rn AS (
+      INSERT INTO resource_node (tenant_id, code, name, parent_id, kind, location, attr, sort_order)
+      VALUES (#{t}, #{pointCode}, #{pointCode}, #{deviceResourceId},
+              #{pointKind},
+              jsonb_build_object('zone', #{pointCode}, 'point', #{pointCode}),
+              jsonb_build_object('source', 'grid'), 0)
+      ON CONFLICT (tenant_id, code) DO UPDATE
+        SET parent_id = EXCLUDED.parent_id, kind = EXCLUDED.kind, updated_at = now()
+      RETURNING id
+    ), dp AS (
+      INSERT INTO device_point (tenant_id, device_resource_id, point_resource_id, point_role,
+                                robot_reachable, is_entry, is_exit, order_in_device,
+                                max_stack, max_height_mm, plate_types, position_label,
+                                point_kind, note, updated_at)
+      SELECT #{t}, #{deviceResourceId}, rn.id, 'both', #{robotReachable},
+             #{isEntry}, #{isExit}, #{orderInDevice},
+             #{maxStack}, #{maxHeightMm},
+             CASE WHEN COALESCE(#{plateTypes}, '') = '' THEN NULL
+                  ELSE string_to_array(#{plateTypes}, ',') END,
+             #{positionLabel}, #{pointKind},
+             '网格点位（批量生成）', now()
+        FROM rn
+      ON CONFLICT (tenant_id, point_resource_id) DO UPDATE SET
+        point_role = 'both', robot_reachable = EXCLUDED.robot_reachable,
+        is_entry = EXCLUDED.is_entry, is_exit = EXCLUDED.is_exit,
+        order_in_device = EXCLUDED.order_in_device,
+        max_stack = EXCLUDED.max_stack, max_height_mm = EXCLUDED.max_height_mm,
+        plate_types = EXCLUDED.plate_types,
+        position_label = COALESCE(NULLIF(EXCLUDED.position_label, ''), device_point.position_label),
+        point_kind = EXCLUDED.point_kind, updated_at = now()
+      RETURNING point_resource_id
+    ), ps AS (
+      INSERT INTO position_state (tenant_id, resource_id, plate_id, updated_at)
+      SELECT #{t}, dp.point_resource_id, NULL, now() FROM dp
+      ON CONFLICT (tenant_id, resource_id) DO NOTHING
+    )
+    SELECT count(*) FROM dp
+  </insert>
+
   <insert id="insertStandalonePoint">
     WITH rn AS (
       INSERT INTO resource_node (tenant_id, code, name, parent_id, kind, location, attr, sort_order)

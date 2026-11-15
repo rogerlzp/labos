@@ -251,11 +251,6 @@ public final class ApiServer {
                 // 设备ID + 设备IP + 端口（它们没有中控账号）。
                 // 只含设备端点与型号，不含岛归属、人员、账号等业务数据。
                 || "/api/devices/registry".equals(path)
-                // 设备事件入站：sidecar（tcp client）把设备**主动上报**的帧翻译成
-                // 统一形状后转发过来 —— 它和中控没有账号体系（同 registry 那一档）。
-                // 装了 LABOS_DEVICE_EVENT_TOKEN 时，端点内部会校验
-                // X-Labos-Device-Token（没装 = 内网免鉴权口径）。
-                || "/api/device-events".equals(path)
                 || "/".equals(path)
                 || "/index.html".equals(path)
                 || "/designer.html".equals(path)

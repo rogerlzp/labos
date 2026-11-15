@@ -70,7 +70,38 @@ public static class DeviceEventSelfTest
             !plain.TryDequeueSpontaneous(out _));
 
         Console.WriteLine();
-        Console.WriteLine("── 4. 按型号翻译（接真机时唯一要改的地方）──");
+        Console.WriteLine("── 4. 磁盘 outbox：写入、重启恢复、确认删除 ──");
+        var outboxPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+            "labos-outbox-selftest-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var outbox = new DeviceEventOutbox(outboxPath);
+            const string id = "5a1a0fa6-baa0-4f2d-9d65-selftest";
+            const string body = "{\"sourceEventId\":\"" + id + "\",\"eventType\":\"waiting_interaction\"}";
+            var appended = outbox.Append(id, body);
+            ok("事件先落盘，sourceEventId 固定", appended.SourceEventId == id);
+            ok("待发送请求体能读回", outbox.LoadPending().Single().Body == body);
+
+            // 新实例模拟进程重启：文件和幂等键不重新生成。
+            var restarted = new DeviceEventOutbox(outboxPath);
+            var recovered = restarted.LoadPending();
+            ok("重启后恢复同一条待发事件",
+                recovered.Count == 1 && recovered[0].SourceEventId == id);
+            restarted.Ack(recovered[0]);
+            ok("只有确认后才删除 outbox 文件", restarted.LoadPending().Count == 0);
+            ok("原子发布不遗留临时文件",
+                !System.IO.Directory.EnumerateFiles(outboxPath, "*.tmp").Any());
+        }
+        finally
+        {
+            if (System.IO.Directory.Exists(outboxPath))
+            {
+                System.IO.Directory.Delete(outboxPath, true);
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("── 5. 按型号翻译（接真机时唯一要改的地方）──");
         var json = """
             {"message_type":6,"equipment_id":"ID-EXT1","event_type":"waiting_interaction",
              "data":{"station":"exchange"}}

@@ -94,10 +94,15 @@ public class DeviceController {
         if (toIsl <= 0) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("需要 islandId"));
         }
-        long newRid = deviceService.deployModel(id, toIsl);
+        // 部署时就能填 IP 与驱动（原来只能建完再回头补，现场很容易漏 ⇒ 设备点不动）
+        String ip = paramStr(req.getQueryString(), "ip");
+        Long driverId = paramLong(req.getQueryString(), "driverId");
+        long newRid = deviceService.deployModel(id, toIsl, ip, driverId);
         audit.record(session(req), "device.deploy", "device", newRid, "model=" + id,
-                Jsons.obj("islandId", toIsl), req.getRemoteAddr());
-        return ResponseEntity.ok(Jsons.obj("resourceId", newRid, "modelId", id));
+                Jsons.obj("islandId", toIsl, "ip", ip, "driverId", driverId),
+                req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("resourceId", newRid, "modelId", id,
+                "ip", ip, "driverId", driverId));
     }
 
     // ---------------------------------------------------------------- 位置 / 心跳
@@ -364,6 +369,95 @@ public class DeviceController {
         return deviceService.methodParamsJson(URLDecoder.decode(code, StandardCharsets.UTF_8));
     }
 
+    /**
+     * 登记驱动（2026-11-15）。
+     *
+     * <p><b>为什么</b>：原来全仓没有一条 {@code INSERT INTO driver} 的 Java 路径
+     * ⇒ 新设备只能手写 SQL 登记驱动 ⇒ 交付时这一步必卡。
+     */
+    @PostMapping(value = "/drivers", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> createDriver(@RequestBody(required = false) String body,
+                                               HttpServletRequest req) throws SQLException {
+        try {
+            long id = deviceService.createDriver(
+                    jsonField(body, "code"), jsonField(body, "name"),
+                    jsonField(body, "protocol"), jsonField(body, "endpoint"),
+                    jsonField(body, "vendor"),
+                    body != null && body.contains("\"resident\":true"));
+            audit.record(session(req), "driver.create", "driver", id,
+                    jsonField(body, "code"), body, req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("id", id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
+    /** 改驱动（端点 / 协议 / 名字）。 */
+    @PutMapping(value = "/drivers/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> updateDriver(@PathVariable long id,
+                                                @RequestBody(required = false) String body,
+                                                HttpServletRequest req) throws SQLException {
+        try {
+            int n = deviceService.updateDriver(id,
+                    jsonField(body, "name"), jsonField(body, "protocol"),
+                    jsonField(body, "endpoint"), jsonField(body, "vendor"),
+                    body != null && body.contains("\"resident\":true") ? Boolean.TRUE : null);
+            audit.record(session(req), "driver.update", "driver", id, null, body,
+                    req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("updated", n, "id", id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
+    /** 删驱动（仍被设备实例引用时拒绝）。 */
+    @DeleteMapping(value = "/drivers/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteDriver(@PathVariable long id,
+                                               HttpServletRequest req) throws SQLException {
+        try {
+            int n = deviceService.deleteDriver(id);
+            audit.record(session(req), "driver.delete", "driver", id, null, null,
+                    req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("deleted", n, "id", id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
+    /**
+     * 批量造网格点位（2026-11-15）。
+     *
+     * <p>交付一条流程要造几十上百个层位（转盘式提取仪 8 个板位 ×4 台、耗材栈 60 槽），
+     * 原来只有 {@code scripts/gen-grid-points.py} 能造（要 DB 口令 + shell）。
+     */
+    @PostMapping(value = "/devices/{id:\\d+}/points/grid",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> createGridPoints(@PathVariable long id,
+                                                    @RequestBody(required = false) String body,
+                                                    HttpServletRequest req) throws SQLException {
+        try {
+            int cols = (int) paramLongValue(jsonField(body, "cols"));
+            int rows = (int) paramLongValue(jsonField(body, "rows"));
+            Double maxHeight = jsonField(body, "maxHeightMm") == null ? null
+                    : Double.parseDouble(jsonField(body, "maxHeightMm"));
+            int n = deviceService.createGridPoints(id,
+                    jsonField(body, "deviceCode"),
+                    cols, rows,
+                    jsonField(body, "pointKind"),
+                    (int) paramLongValue(jsonField(body, "maxStack")),
+                    maxHeight,
+                    jsonField(body, "plateTypes"),
+                    !body.contains("\"isEntry\":false"),
+                    !body.contains("\"isExit\":false"),
+                    !body.contains("\"robotReachable\":false"));
+            audit.record(session(req), "device.points_grid", "device", id,
+                    "cols=" + cols + ",rows=" + rows, body, req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("created", n, "deviceId", id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
     @GetMapping(value = "/drivers", produces = "application/json; charset=utf-8")
     public String drivers() throws SQLException {
         return deviceService.driversJson();
@@ -416,6 +510,20 @@ public class DeviceController {
         audit.record(session(req), "island.create", "island", id,
                 jsonField(body, "code"), body, req.getRemoteAddr());
         return Jsons.obj("id", id);
+    }
+
+    /** 改岛（名字 / 物理坐标 / 容量）——2026-11-15：原来岛建完就只能删了重建。 */
+    @PutMapping(value = "/islands/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> updateIsland(@PathVariable long id,
+                                                @RequestBody(required = false) String body,
+                                                HttpServletRequest req) throws SQLException {
+        int n = deviceService.updateIsland(id,
+                jsonField(body, "name"),
+                jsonField(body, "location"),
+                (int) paramLongValue(jsonField(body, "capacity")));
+        audit.record(session(req), "island.update", "island", id, null, body,
+                req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("updated", n, "id", id));
     }
 
     @DeleteMapping(value = "/islands/{id:\\d+}", produces = "application/json; charset=utf-8")

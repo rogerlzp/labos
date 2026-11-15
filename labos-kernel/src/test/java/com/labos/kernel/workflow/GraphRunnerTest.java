@@ -68,6 +68,7 @@ public final class GraphRunnerTest {
         caseAwaitEventHits();
         caseAwaitEventIgnoresOld();
         caseAwaitEventNoSource();
+        caseAwaitEventPersistentReadFailure();
         caseBuiltinProtocolResolvesToLogic();
         caseBuiltinDryRunNoOp();
         caseSkipKeysResume();
@@ -1018,7 +1019,7 @@ public final class GraphRunnerTest {
      *
      * <p>不连库也能验事件语义 —— 事件源是接口，自测塞一个内存实现即可。
      */
-    private static final class MemEventSource
+    private static class MemEventSource
             implements com.labos.kernel.event.DeviceEventSource {
         final List<com.labos.kernel.event.DeviceEvent> events = new ArrayList<>();
         int polls;
@@ -1165,6 +1166,39 @@ public final class GraphRunnerTest {
                             "eventType", "waiting_interaction", "timeout", "3")));
             RunProgress p = runner.run(g, bus);
             eq("没有事件源 ⇒ 转人工（不是假装在等）", 1, p.count(NodeStatus.MANUAL));
+        });
+    }
+
+    private static void caseAwaitEventPersistentReadFailure() {
+        check("内置节点：__awaitEvent —— 连续三次事件源故障立即转人工", () -> {
+            String xml = bpmn("""
+                    <startEvent id="S"/>
+                    <task id="W" name="等设备事件" protocolName="__awaitEvent"/>
+                    <endEvent id="E"/>
+                    <sequenceFlow id="F1" sourceRef="S" targetRef="W"/>
+                    <sequenceFlow id="F2" sourceRef="W" targetRef="E"/>
+                    """);
+            Graph g = WorkflowGraphParser.parse(xml);
+            MemEventSource src = new MemEventSource() {
+                @Override
+                public List<com.labos.kernel.event.DeviceEvent> since(
+                        String deviceCode, String eventType, long afterId, int limit) {
+                    polls++;
+                    throw new IllegalStateException("database unavailable");
+                }
+            };
+            GraphRunner runner = new GraphRunner(new RunStateMachine(decider(), e -> { },
+                            Sleeper.recording(new ArrayList<>()), Clock.systemUTC()),
+                    Map.of("TRANSFER", List.of(101L)),
+                    Map.of("Transfer", "TRANSFER"),
+                    s -> { })
+                    .withSleeper(Sleeper.recording(new ArrayList<>()))
+                    .withDeviceEventSource(src)
+                    .withBuiltinParams(Map.of("W", Map.of(
+                            "eventType", "waiting_interaction", "timeout", "300", "interval", "1")));
+            RunProgress p = runner.run(g, new SimulatedBus());
+            eq("连续故障明确转人工", 1, p.count(NodeStatus.MANUAL));
+            eq("第三次失败就停止，不拖到超时", 3, src.polls);
         });
     }
 

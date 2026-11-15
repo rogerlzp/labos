@@ -397,6 +397,14 @@ public final class GraphRunner {
         return this;
     }
 
+    /** 数据库认领键中的 run id；纯逻辑内存测试可以不注入（按 0 处理）。 */
+    private long eventRunId;
+
+    public GraphRunner withEventRunId(long runId) {
+        this.eventRunId = runId;
+        return this;
+    }
+
     /**
      * 已消费的事件游标：键 = {@code 设备码|事件类型}。
      *
@@ -768,7 +776,8 @@ public final class GraphRunner {
                     }
                 }
                 try {
-                    String var = executeBuiltin(node);
+                    int eventLoopIndex = cyclicNodeKeys.contains(key) ? visit : 0;
+                    String var = executeBuiltin(node, eventLoopIndex);
                     if (paused) {
                         // `__sleep` / `__wait` 在等待途中收到暂停请求：这一步**没做完**，
                         // 所以不留 completed 记录、也不往下走 —— 恢复时它不在 skipKeys 里，
@@ -1026,7 +1035,7 @@ public final class GraphRunner {
      * 但分成 500ms 的片，每片之间查一次暂停 ——
      * 否则一个"停 1800 秒"会让暂停按钮半小时没反应（暂停是现场级事件）。
      */
-    private String executeBuiltin(GNode node) {
+    private String executeBuiltin(GNode node, int eventLoopIndex) {
         Map<String, Object> p = builtinParams.getOrDefault(node.key(), Map.of());
         String method = node.method();
         if ("__sleep".equals(method)) {
@@ -1042,7 +1051,7 @@ public final class GraphRunner {
             return null;
         }
         if ("__awaitEvent".equals(method)) {
-            waitForDeviceEvent(node, p);
+            waitForDeviceEvent(node, p, eventLoopIndex);
             return null;
         }
         String var = requireVar(p);
@@ -1188,7 +1197,7 @@ public final class GraphRunner {
      * 设备可能在本节点开始之前就报了（上位机还在做别的事，设备已经等着了），
      * 按节点起手取游标会漏掉那条事件。
      */
-    private void waitForDeviceEvent(GNode node, Map<String, Object> p) {
+    private void waitForDeviceEvent(GNode node, Map<String, Object> p, int loopIndex) {
         com.labos.kernel.event.DeviceEventSource src = deviceEventSource;
         if (src == null) {
             throw new IllegalStateException(
@@ -1197,7 +1206,7 @@ public final class GraphRunner {
         String device = str(p.get("device"));
         device = device == null ? null : device.trim();
         if (device != null && device.isEmpty()) {
-            device = null;   // 留空 = 任意设备
+            device = null;
         }
         String eventType = str(p.get("eventType"));
         if (eventType == null || eventType.isBlank()) {
@@ -1221,36 +1230,34 @@ public final class GraphRunner {
                 + "，超时 " + fmt(timeoutSec) + " 秒）");
         long waited = 0;
         long lastReport = 0;
+        int consecutiveReadFailures = 0;
         while (true) {
-            java.util.List<com.labos.kernel.event.DeviceEvent> events = null;
+            com.labos.kernel.event.DeviceEvent e = null;
             try {
-                events = src.since(device, eventType, eventCursorFor(device, eventType), 20);
+                e = src.claim(eventRunId, node.key(), loopIndex,
+                        device, eventType, eventCursorFor(device, eventType), 1);
+                consecutiveReadFailures = 0;
             } catch (RuntimeException ex) {
-                // 事件源坏了不能带崩流程：按"暂时没有事件"继续等，超时再转人工。
-                log.accept("[内置] 读取设备事件失败（忽略）：" + ex.getMessage());
-            }
-            if (events != null) {
-                for (com.labos.kernel.event.DeviceEvent e : events) {
-                    if (e == null) {
-                        continue;
-                    }
-                    log.accept("[内置] " + node.key() + " 命中设备事件："
-                            + e.deviceCode() + " " + e.eventType());
-                    // 消费：推进游标（下次不再等同一条），并标记已消费（观测用）。
-                    advanceEventCursor(device, eventType, e.id());
-                    try {
-                        src.markDispatched(e.id());
-                    } catch (RuntimeException ignore) {
-                        // 标记失败不影响流程
-                    }
-                    if (into != null && !into.isBlank()) {
-                        writeVar(into.trim(), e.payload());
-                    }
-                    if (deviceInto != null && !deviceInto.isBlank()) {
-                        writeVar(deviceInto.trim(), e.deviceCode());
-                    }
-                    return;
+                consecutiveReadFailures++;
+                log.accept("[内置] 读取/认领设备事件失败（连续 " + consecutiveReadFailures
+                        + " 次）：" + ex.getMessage());
+                if (consecutiveReadFailures >= 3) {
+                    throw new IllegalStateException("设备事件通道连续 3 次读取/认领失败，"
+                            + "停止等待并转人工：" + ex.getMessage(), ex);
                 }
+            }
+            if (e != null) {
+                log.accept("[内置] " + node.key() + " 命中设备事件："
+                        + e.deviceCode() + " " + e.eventType());
+                // 数据库实现已在 claim 内原子标记；这里只推进本图游标。
+                advanceEventCursor(device, eventType, e.id());
+                if (into != null && !into.isBlank()) {
+                    writeVar(into.trim(), e.payload());
+                }
+                if (deviceInto != null && !deviceInto.isBlank()) {
+                    writeVar(deviceInto.trim(), e.deviceCode());
+                }
+                return;
             }
             if (waited >= timeoutMs) {
                 throw new IllegalStateException("等待设备事件超时（" + fmt(timeoutSec) + " 秒）："
@@ -1269,7 +1276,7 @@ public final class GraphRunner {
             waitInterruptibly(nap);
             waited += nap;
             if (paused) {
-                return;   // 上层看到 paused 会停在边界，这一步不算完成
+                return;
             }
         }
     }

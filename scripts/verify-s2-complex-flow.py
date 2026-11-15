@@ -154,10 +154,22 @@ def graph_loop(d):
     shapes = {
         "S": (60, 200, 36, 36),
         "C1": (140, 180, 110, 76),
-        "X": (300, 200, 36, 36), "V": (390, 180, 110, 76),
-        "E": (560, 200, 36, 36),
+        "X": (300, 200, 36, 36),
+        # 回边排在主线**下方**：摆在 X/E 之间会让「圈数加一 → 结束」看起来像主干，
+        # 而实际它是 default 分支回 C1（见 docs/复杂流程验证…§2.2 的读图习惯）。
+        "V": (270, 320, 110, 76),
+        "E": (520, 200, 36, 36),
     }
-    return bpmn_xml(nodes, flows, shapes, edges_for(flows, shapes))
+    edges = {
+        "f0": [(96, 218), (140, 218)],
+        "f1": [(250, 218), (300, 218)],
+        "f_end": [(336, 218), (520, 218)],
+        # X 底 → V 顶（向下出分支）
+        "f_loop": [(318, 236), (325, 320)],
+        # V 左 → C1 底（折线回边，绕开 C1 与 X 之间的主干线）
+        "f_back": [(270, 358), (195, 358), (195, 256)],
+    }
+    return bpmn_xml(nodes, flows, shapes, edges)
 
 
 def assert_gateways_wired(xml, label):
@@ -446,6 +458,8 @@ def main():
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print("\n通过 %d / 失败 %d / 跳过 %d" % (PASS, FAIL, SKIP))
     print("证据已写入 " + out)
+    # 跑完自清理：只删本次建的流程/实验（含 run）；LABOS_KEEP_TEST_DATA=1 可保留
+    cs.cleanup_created()
     return 0 if FAIL == 0 else 1
 
 

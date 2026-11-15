@@ -126,14 +126,15 @@ public final class DeviceEventDbSelfTest {
             section("3. __awaitEvent 从真表里捞到事件，载荷与设备码交给下游");
             DeviceEventMapper dem = Mappers.get(DeviceEventMapper.class);
             dem.insertEvent(TENANT, null, DEV_CODE, "waiting_interaction",
-                    "{\"station\":\"exchange\"}", null);
+                    "{\"station\":\"exchange\"}", null, null, null, null);
             MapperDeviceEventSource src = new MapperDeviceEventSource(TENANT, dem);
             long base = src.currentMaxEventId();
             // 游标取 base ⇒ 只看 base 之后的新事件；先插一条"存量"再插一条"新的"
-            dem.insertEvent(TENANT, null, DEV_CODE, "waiting_interaction", "{\"old\":1}", null);
+            dem.insertEvent(TENANT, null, DEV_CODE, "waiting_interaction", "{\"old\":1}",
+                    null, null, null, null);
             long afterOld = src.currentMaxEventId();
             dem.insertEvent(TENANT, null, DEV_CODE, "waiting_interaction",
-                    "{\"station\":\"exchange\",\"seq\":2}", null);
+                    "{\"station\":\"exchange\",\"seq\":2}", null, null, null, null);
 
             String xml2 = """
                     <?xml version="1.0" encoding="UTF-8"?>
@@ -157,6 +158,7 @@ public final class DeviceEventDbSelfTest {
                     s -> { })
                     .withSleeper(Sleeper.recording(new ArrayList<>()))
                     .withDeviceEventSource(src)
+                    .withEventRunId(RUN)
                     // 游标取 afterOld ⇒ 跳过"存量"那条，只吃之后新来的
                     .withEventBaseCursor(afterOld)
                     .withBuiltinParams(Map.of("W", Map.of(
@@ -187,6 +189,7 @@ public final class DeviceEventDbSelfTest {
                     s -> { })
                     .withSleeper(Sleeper.recording(new ArrayList<>()))
                     .withDeviceEventSource(src)
+                    .withEventRunId(RUN - 1)
                     // 游标取最新 ⇒ 表里所有存量都在游标之前 ⇒ 等不到
                     .withEventBaseCursor(src.currentMaxEventId())
                     .withBuiltinParams(Map.of("W", Map.of(
@@ -198,6 +201,85 @@ public final class DeviceEventDbSelfTest {
             } else {
                 bad("存量事件被当成了新上报",
                         "manual=" + p3.count(NodeStatus.MANUAL));
+            }
+
+            section("5. sourceEventId 重试幂等；事件跨 run 互斥、同等待者重入");
+            String claimCode = DEV_CODE + "-CLAIM";
+            long claimBase = src.currentMaxEventId();
+            Long firstId = dem.insertEvent(TENANT, null, claimCode, "waiting_interaction",
+                    "{\"seq\":1}", null, "verify-source-dedupe-1", "process-A", "exchange");
+            Long retryId = dem.insertEvent(TENANT, null, claimCode, "waiting_interaction",
+                    "{\"seq\":1}", null, "verify-source-dedupe-1", "process-A", "exchange");
+            com.labos.kernel.event.DeviceEvent claimed = src.claim(
+                    RUN, "W-CLAIM", 0, claimCode, "waiting_interaction", claimBase, 1);
+            com.labos.kernel.event.DeviceEvent reentered = src.claim(
+                    RUN, "W-CLAIM", 0, claimCode, "waiting_interaction", claimBase, 1);
+            com.labos.kernel.event.DeviceEvent otherRun = src.claim(
+                    RUN - 1, "W-CLAIM", 0, claimCode, "waiting_interaction", claimBase, 1);
+            if (firstId != null && firstId.equals(retryId)
+                    && claimed != null && claimed.id() == firstId
+                    && reentered != null && reentered.id() == firstId && otherRun == null) {
+                ok("重复投递只插一次；同等待者拿原事件，其它 run 拿不到", "eventId=" + firstId);
+            } else {
+                bad("事件幂等/互斥/重入不符合契约", "first=" + firstId + " retry=" + retryId
+                        + " claimed=" + claimed + " reentered=" + reentered + " other=" + otherRun);
+            }
+
+            section("6. run 游标持久化：续跑读回旧基准，停机期间事件仍可见");
+            long persistentBase = src.runBaseCursor(RUN);
+            String cursorCode = DEV_CODE + "-CURSOR";
+            Long duringRestart = dem.insertEvent(TENANT, null, cursorCode, "process_done",
+                    "{\"during\":\"restart\"}", null, "verify-cursor-restart-1", null, null);
+            long resumedBase = src.runBaseCursor(RUN);
+            com.labos.kernel.event.DeviceEvent afterRestart = src.claim(
+                    RUN, "W-CURSOR", 0, cursorCode, "process_done", resumedBase, 1);
+            if (resumedBase == persistentBase && duringRestart != null
+                    && afterRestart != null && afterRestart.id() == duringRestart) {
+                ok("基准没有重置，重启期间到达的事件被认领", "base=" + resumedBase
+                        + " eventId=" + duringRestart);
+            } else {
+                bad("续跑游标或重启期间事件丢失", "base=" + persistentBase + "/" + resumedBase
+                        + " inserted=" + duringRestart + " claimed=" + afterRestart);
+            }
+
+            section("7. 两个 run 并发抢同一事件：只能一个认领成功");
+            String raceCode = DEV_CODE + "-RACE";
+            long raceBase = src.currentMaxEventId();
+            Long raceId = dem.insertEvent(TENANT, null, raceCode, "fault", "{\"race\":1}",
+                    null, "verify-race-1", null, null);
+            java.util.concurrent.ExecutorService pool =
+                    java.util.concurrent.Executors.newFixedThreadPool(2);
+            java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(2);
+            java.util.concurrent.CountDownLatch fire = new java.util.concurrent.CountDownLatch(1);
+            try {
+                java.util.concurrent.Callable<com.labos.kernel.event.DeviceEvent> claimRun = () -> {
+                    ready.countDown();
+                    fire.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    return src.claim(RUN, "W-RACE", 0, raceCode, "fault", raceBase, 1);
+                };
+                java.util.concurrent.Callable<com.labos.kernel.event.DeviceEvent> claimOther = () -> {
+                    ready.countDown();
+                    fire.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    return src.claim(RUN - 1, "W-RACE", 0, raceCode, "fault", raceBase, 1);
+                };
+                var first = pool.submit(claimRun);
+                var second = pool.submit(claimOther);
+                if (!ready.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("并发认领线程未就绪");
+                }
+                fire.countDown();
+                var one = first.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                var two = second.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                int winners = (one == null ? 0 : 1) + (two == null ? 0 : 1);
+                var winner = one != null ? one : two;
+                if (winners == 1 && winner != null && winner.id() == raceId) {
+                    ok("并发下恰好一个 run 认领，另一个返回空", "eventId=" + raceId);
+                } else {
+                    bad("并发认领出现重复或丢失", "one=" + one + " two=" + two);
+                }
+            } finally {
+                fire.countDown();
+                pool.shutdownNow();
             }
         } finally {
             cleanup();
@@ -243,7 +325,11 @@ public final class DeviceEventDbSelfTest {
 
     private static void cleanup() {
         try {
-            exec("DELETE FROM device_event WHERE device_code = ?", DEV_CODE);
+            exec("DELETE FROM device_event_consumption "
+                    + "WHERE tenant_id = ? AND run_id IN (?, ?)", TENANT, RUN, RUN - 1);
+            exec("DELETE FROM device_event WHERE device_code LIKE ?", DEV_CODE + "%");
+            exec("DELETE FROM device_event_run_cursor WHERE tenant_id = ? AND run_id = ?",
+                    TENANT, RUN);
             exec("DELETE FROM run WHERE id = ?", RUN);
         } catch (RuntimeException ignore) {
             // 清理失败不掩盖正文结果

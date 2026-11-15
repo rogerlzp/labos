@@ -78,7 +78,19 @@ public class DeviceService {
     }
 
     /** 从型号库部署一台真实设备到岛上（能力必须一起写，否则驱动跳过整条）。 */
+    /** 部署型号实例（不带 IP / 驱动 —— 事后补）。 */
     public long deployModel(long modelId, long islandId) throws java.sql.SQLException {
+        return deployModel(modelId, islandId, null, null);
+    }
+
+    /**
+     * 部署型号实例（2026-11-15：可同时带 IP 与驱动）。
+     *
+     * <p><b>为什么</b>：原来 deploy 建出来的实例 {@code ip=NULL}、{@code driver_id} 也不写
+     * ⇒ 部署完还得回头去设备卡片上补，交付时**很容易漏** ⇒ 设备在界面上有、点不动。
+     */
+    public long deployModel(long modelId, long islandId, String ip, Long driverId)
+            throws java.sql.SQLException {
         try (Connection c = db.open()) {
             try {
                 Map<String, Object> row = deviceMapper.selectModelForDeploy(
@@ -113,6 +125,11 @@ public class DeviceService {
                 // 只建实例不建能力，驱动会因为"名下设备都没有声明能力"被整条跳过，
                 // 现象是设备在界面上有、点不动，报 EC-06-0001（驱动未加载）。
                 deviceMapper.insertResourceCapabilityFromModel(rid, modelId);
+                // 部署时就能填 IP / 驱动（原来只能建完再回头补，现场很容易漏）
+                if (rid != null && ((ip != null && !ip.isBlank()) || driverId != null)) {
+                    deviceMapper.updateDeviceInstanceEndpoint(TENANT, rid,
+                            ip == null ? null : ip.trim(), driverId);
+                }
                 return rid == null ? 0L : rid;
             } catch (RuntimeException e) {
                 throw e;
@@ -543,7 +560,12 @@ public class DeviceService {
                         "online", Boolean.TRUE.equals(row.get("online")),
                         "status", row.get("devStatus"),
                         "currentMethod", row.get("currentMethod"),
-                        "hasPlate", Boolean.TRUE.equals(row.get("hasPlate"))));
+                        "hasPlate", Boolean.TRUE.equals(row.get("hasPlate")),
+                        // 2026-11-15：接板/交板就绪与最近错误（提取仪握手的关键状态）
+                        "readyGive", Boolean.TRUE.equals(row.get("readyGive")),
+                        "readyTake", Boolean.TRUE.equals(row.get("readyTake")),
+                        "lastError", row.get("lastError"),
+                        "currentRunId", row.get("currentRunId")));
             }
         }
 
@@ -593,6 +615,134 @@ public class DeviceService {
             }
             throw e;
         }
+    }
+
+    /**
+     * 改岛（名字 / 物理坐标 / 容量）。
+     *
+     * <p><b>为什么</b>：原来岛<b>建完就不能改</b>（没有 {@code PUT /api/islands/{id}}）
+     * ⇒ 改个名或挪个位置只能删了重建，而删岛要求"岛上没有设备" ⇒ 现场根本改不动。
+     */
+    public int updateIsland(long islandId, String name, String locationJson, int capacity)
+            throws java.sql.SQLException {
+        if (islandId <= 0) {
+            throw new IllegalArgumentException("岛屿 id 不对");
+        }
+        return deviceMapper.updateIsland(TENANT, islandId, name, locationJson, capacity);
+    }
+
+    // ---------------------------------------------------------------- 驱动登记
+
+    /**
+     * 登记驱动（2026-11-15）。
+     *
+     * <p><b>为什么</b>：原来<b>全仓没有一条 {@code INSERT INTO driver} 的 Java 路径</b>
+     * ⇒ 新设备只能手写 SQL 登记驱动 ⇒ 交付时这一步必卡。
+     */
+    public long createDriver(String code, String name, String protocol, String endpoint,
+                             String vendor, Boolean resident) throws java.sql.SQLException {
+        if (code == null || code.isBlank()) {
+            throw new IllegalArgumentException("驱动编号不能为空");
+        }
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("驱动名称不能为空");
+        }
+        if (protocol == null || protocol.isBlank()) {
+            throw new IllegalArgumentException("驱动协议不能为空（tcp / http / mock / netdll …）");
+        }
+        if (endpoint == null || endpoint.isBlank()) {
+            throw new IllegalArgumentException("驱动端点不能为空（如 tcp://192.168.1.10:8501）");
+        }
+        try {
+            Long id = deviceMapper.insertDriver(TENANT, code.trim(), name.trim(),
+                    protocol.trim().toLowerCase(java.util.Locale.ROOT), endpoint.trim(),
+                    vendor == null ? null : vendor.trim(), resident);
+            return id == null ? 0L : id;
+        } catch (RuntimeException e) {
+            if (e.getMessage() != null && e.getMessage().contains("duplicate key")) {
+                throw new IllegalArgumentException("驱动编号已存在: " + code);
+            }
+            throw e;
+        }
+    }
+
+    /** 改驱动（端点 / 协议 / 名字）。 */
+    public int updateDriver(long driverId, String name, String protocol, String endpoint,
+                            String vendor, Boolean resident) throws java.sql.SQLException {
+        if (driverId <= 0) {
+            throw new IllegalArgumentException("驱动 id 不对");
+        }
+        return deviceMapper.updateDriver(TENANT, driverId, name,
+                protocol == null || protocol.isBlank() ? null
+                        : protocol.trim().toLowerCase(java.util.Locale.ROOT),
+                endpoint, vendor, resident);
+    }
+
+    /** 删驱动；有设备实例在用时拒绝（否则那些设备会变成"没驱动"的孤儿）。 */
+    public int deleteDriver(long driverId) throws java.sql.SQLException {
+        if (driverId <= 0) {
+            throw new IllegalArgumentException("驱动 id 不对");
+        }
+        int used = deviceMapper.countInstancesByDriver(TENANT, driverId);
+        if (used > 0) {
+            throw new IllegalArgumentException(
+                    "还有 " + used + " 台设备在用这个驱动，先把设备改到别的驱动再删");
+        }
+        return deviceMapper.deleteDriver(TENANT, driverId);
+    }
+
+    // ---------------------------------------------------------------- 批量造点位
+
+    /**
+     * 批量造网格点位（cols × rows 个层位挂在某台设备下）。
+     *
+     * <p><b>为什么</b>：交付一条流程要造几十上百个层位（转盘式提取仪 8 个板位 ×4 台、
+     * 耗材栈 60 个槽位），而原来只有 {@code scripts/gen-grid-points.py} 能造
+     * （要 DB 口令 + shell）⇒ 交付时要么手写 SQL，要么改脚本。
+     * <b>搬进 API + 界面</b> ⇒ 建岛后当场把层位点齐。
+     *
+     * <p>幂等：同 code 复用并更新配置，可反复跑。
+     *
+     * @return 写了多少个点位
+     */
+    public int createGridPoints(long deviceResourceId, String deviceCode, int cols, int rows,
+                                String pointKind, int maxStack, Double maxHeightMm,
+                                String plateTypes, boolean isEntry, boolean isExit,
+                                boolean robotReachable) throws java.sql.SQLException {
+        if (deviceResourceId <= 0) {
+            throw new IllegalArgumentException("设备 id 不对");
+        }
+        if (cols <= 0 || rows <= 0 || cols > 200 || rows > 200) {
+            throw new IllegalArgumentException("列数/行数要在 1–200 之间");
+        }
+        String kind = pointKind == null || pointKind.isBlank() ? "storage" : pointKind.trim();
+        // ⚠ 这三类之外的 kind，机械臂**根本看不见这个点**（选位 SQL 硬性过滤）
+        if (!java.util.Set.of("incubator", "storage", "transfer_point").contains(kind)) {
+            throw new IllegalArgumentException(
+                    "点位 kind 只能是 incubator / storage / transfer_point（机械臂只能取这三类）");
+        }
+        if (deviceCode == null || deviceCode.isBlank()) {
+            // 没传就按资源 id 反查设备编号（点位编号按它拼）
+            deviceCode = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.ConsumableMapper.class)
+                    .selectDeviceCode(TENANT, deviceResourceId);
+            if (deviceCode == null || deviceCode.isBlank()) {
+                throw new IllegalArgumentException("设备编号不能为空（点位编号按它拼）");
+            }
+        }
+        var cm = com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.ConsumableMapper.class);
+        int n = 0;
+        for (int r = 1; r <= rows; r++) {
+            for (int c = 1; c <= cols; c++) {
+                String code = deviceCode.trim() + "-R" + r + "C" + c;
+                cm.insertGridPoint(TENANT, deviceResourceId, code, code, kind,
+                        r, c, maxStack, maxHeightMm, plateTypes,
+                        isEntry, isExit, robotReachable, (r - 1) * cols + c);
+                n++;
+            }
+        }
+        return n;
     }
 
     /**

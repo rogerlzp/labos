@@ -109,6 +109,11 @@ def nodes(rid):
         "SELECT node_key || '|' || status FROM run_node WHERE run_id=%d AND level=0" % rid
     ).split("\n") if ln.strip()}
 
+# 本次运行建的流程/实验（跑完自清理，见 cleanup_created）
+CREATED_WF = []
+CREATED_EXP = []
+
+
 def build(token, name, fail_mode=False):
     reader = q("SELECT di.resource_id FROM device_instance di WHERE di.code='ID-1021'")
     robot = q("SELECT di.resource_id FROM device_instance di WHERE di.code='ID-X231'")
@@ -118,7 +123,18 @@ def build(token, name, fail_mode=False):
     isl = int(q("SELECT id FROM resource_node WHERE code='LAB-BASE-01' AND kind='island'"))
     exp = api("/api/experiments", "POST",
               {"name": name, "workflowIds": [wf], "islandId": isl}, token)["id"]
+    CREATED_WF.append(wf)
+    CREATED_EXP.append(exp)
     return wf, exp
+
+
+def cleanup_created():
+    """跑完自清理：只删本次建的流程/实验（含 run）。"""
+    try:
+        import test_artifact_cleanup as tdc
+        tdc.cleanup_created(CREATED_WF, CREATED_EXP)
+    except Exception as e:      # noqa: BLE001
+        print("  [cleanup] 失败（不影响测试结论）：%s" % e)
 
 def run_exp(token, exp):
     api("/api/experiments/%d/run" % exp, "POST", {}, token)
@@ -274,6 +290,7 @@ def main():
         bad("T1 没有留痕", flag)
 
     print("\n通过 %d / 失败 %d" % (PASS, FAIL))
+    cleanup_created()
     return 0 if FAIL == 0 else 1
 
 if __name__ == "__main__":

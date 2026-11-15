@@ -94,12 +94,26 @@ XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+# 本次运行建的流程/实验（跑完自清理，见 cleanup_created）
+CREATED_WF = []
+CREATED_EXP = []
+
+
+def cleanup_created():
+    try:
+        import test_artifact_cleanup as tdc
+        tdc.cleanup_created(CREATED_WF, CREATED_EXP)
+    except Exception as e:      # noqa: BLE001
+        print("  [cleanup] 失败（不影响测试结论）：%s" % e)
+
+
 def build_workflow(token, name):
     robot = q("SELECT di.resource_id FROM device_instance di WHERE di.code='ID-X231'")
     if not robot:
         raise RuntimeError("找不到机器人 ID-X231 的 device_instance —— 先跑 sim-up.sh")
     xml = XML.replace("__ROBOT__", robot)
     wf = api("/api/workflows", "POST", {"name": name}, token)["id"]
+    CREATED_WF.append(wf)
     api("/api/workflows/%d/graph" % wf, "PUT", raw=xml, token=token)
     # 绑方法 + 参数（参数里引用 ${plateCount}）
     api("/api/workflows/%d/nodes/T1" % wf, "PUT", token=token, body={
@@ -234,6 +248,7 @@ def main():
         exp = api("/api/experiments", "POST",
                   {"name": name + "·实验", "workflowIds": [wf], "islandId": int(isl)},
                   token)["id"]
+        CREATED_EXP.append(exp)
         api("/api/experiments/%d/variables" % exp, "PUT", token=token, body=[
             {"name": "plateCount", "type": "number", "defaultValue": "7"}])
         api("/api/experiments/%d/run" % exp, "POST", {}, token)
@@ -279,6 +294,7 @@ def finish():
     print("\n=== %d 通过 / %d 失败 ===" % (len(PASS), len(FAIL)))
     for f in FAIL:
         print("  失败: " + f)
+    cleanup_created()
     return 1 if FAIL else 0
 
 

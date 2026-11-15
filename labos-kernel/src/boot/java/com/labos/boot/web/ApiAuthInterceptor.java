@@ -47,6 +47,10 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
 
     private boolean check(HttpServletRequest req, HttpServletResponse resp) throws Exception {
         String path = req.getRequestURI();
+        // 只有设备事件 POST 使用独立令牌；GET 查询仍走普通登录会话。
+        if ("/api/device-events".equals(path) && "POST".equals(req.getMethod())) {
+            return true;
+        }
         if (!ApiServer.AUTH_ENABLED || ApiServer.isPublic(path)) {
             return true;
         }

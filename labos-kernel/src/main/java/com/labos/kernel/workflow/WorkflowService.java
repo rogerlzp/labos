@@ -1113,15 +1113,14 @@ public class WorkflowService {
                     materialSvc.writeDeclarationSnapshot(runId, n.key(), 0, n.materialEffect());
                 }
             }
-            // 设备事件源（`__awaitEvent` 用）+ 游标基准。
-            //
-            // 基准取**此刻**的最大事件 id ⇒ 本 run 期间到达的事件一律可见，
-            // 而 run 之前的历史存量不会被当成新事件（等的是"一次新的上报"）。
-            // ⚠ 基准**不能**取"节点起手时"的值：设备可能在本节点开始之前就报了
-            // （上位机还在做别的事，提取仪已经到交换点等着了）⇒ 按节点起手会漏掉那条事件。
+            // 首次执行把当前 MAX(id) 固定到 device_event_run_cursor；
+            // 暂停恢复或进程重启后的续跑读回同一基准，停机期间到达的事件不会被跳过。
             final com.labos.kernel.event.MapperDeviceEventSource eventSource =
                     new com.labos.kernel.event.MapperDeviceEventSource(tenantId);
-            final long eventBaseCursor = currentMaxEventIdSafely(eventSource);
+            final boolean hasDeviceEventWait = ordered.stream()
+                    .anyMatch(n -> "__awaitEvent".equals(n.protocolName()));
+            final long eventBaseCursor = hasDeviceEventWait
+                    ? eventSource.runBaseCursor(runId) : 0L;
             // 本次执行用到的设备实例（设备状态投影用）。
             final java.util.List<Long> runDeviceIds = new java.util.ArrayList<>();
             for (NodeDef nd : ordered) {
@@ -1191,6 +1190,7 @@ public class WorkflowService {
                         // 就报了（上位机还在做别的事，提取仪已经到交换点等着了）。
                         .withDeviceEventSource(eventSource)
                         .withEventBaseCursor(eventBaseCursor)
+                        .withEventRunId(runId)
 
                         // P1-8：每到一个节点边界查一次 DB —— 状态是 paused 就停。
                         // 只查单行主键，开销可忽略；不查的话暂停按钮等于没用。
@@ -1587,21 +1587,6 @@ public class WorkflowService {
             return;
         }
         out.put(key, String.valueOf(value));
-    }
-
-    /**
-     * 取当前最大设备事件 id（`__awaitEvent` 的游标基准）。
-     *
-     * <p>事件表还没建（迁移没跑）⇒ 返回 0，**不让整条流程起不来**：
-     * {@code __awaitEvent} 会等到超时转人工，而不是在建库阶段就崩。
-     */
-    private long currentMaxEventIdSafely(
-            com.labos.kernel.event.MapperDeviceEventSource src) {
-        try {
-            return src.currentMaxEventId();
-        } catch (RuntimeException ex) {
-            return 0L;
-        }
     }
 
     private com.labos.kernel.driver.DeviceDriver buildAdapter(

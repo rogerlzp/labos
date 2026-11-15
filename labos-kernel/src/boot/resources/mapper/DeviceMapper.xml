@@ -247,7 +247,12 @@
                (d.attr->>'pos_y')::numeric AS "posY",
                COALESCE(ds.online, false) AS "online",
                COALESCE(ds.status, 'idle') AS "devStatus",
-               ds.current_method AS "currentMethod", ds.has_plate AS "hasPlate"
+               ds.current_method AS "currentMethod", ds.has_plate AS "hasPlate",
+               -- 2026-11-15：把"这台现在能不能接板/交板"的状态暴露出去。
+               -- 分盘式提取仪报【等待交互】后，现场要能一眼看到"交互位现在可不可用"；
+               -- 之前这几个字段只存在于 device_state 表里，接口不出 ⇒ 现场看不见。
+               ds.ready_give AS "readyGive", ds.ready_take AS "readyTake",
+               ds.last_error AS "lastError", ds.current_run_id AS "currentRunId"
           FROM resource_node i
           LEFT JOIN resource_node d
                  ON d.parent_id = i.id AND d.kind = 'device'
@@ -272,6 +277,53 @@
           (tenant_id, parent_id, code, name, kind, path, sort_order)
         VALUES (#{param1}, NULL, #{param2}, #{param3}, 'island', #{param4}, 100)
         RETURNING id
+    </select>
+
+    <!-- 改岛：名字 / 物理坐标 / 容量。location 与 capacity 传空/<=0 时保持原值（不动）。 -->
+    <update id="updateIsland">
+        UPDATE resource_node
+           SET name = COALESCE(NULLIF(#{name}, ''), name),
+               location = CASE WHEN COALESCE(#{locationJson}, '') = ''
+                               THEN location
+                               ELSE COALESCE(NULLIF(#{locationJson}, '')::jsonb, location)
+                          END,
+               capacity = CASE WHEN #{capacity} &lt;= 0 THEN capacity ELSE #{capacity} END,
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{islandId} AND kind = 'island'
+    </update>
+
+    <!-- 登记驱动：代码唯一；协议走 driver_protocol 枚举（写错会直接报错，不静默降级）。 -->
+    <select id="insertDriver" resultType="java.lang.Long">
+        INSERT INTO driver
+          (tenant_id, code, name, protocol, endpoint, vendor, resident, status)
+        VALUES
+          (#{tenantId}, #{code}, #{name},
+           CAST(#{protocol} AS driver_protocol), #{endpoint}, #{vendor},
+           COALESCE(#{resident}, false), 1)
+        RETURNING id
+    </select>
+
+    <update id="updateDriver">
+        UPDATE driver
+           SET name = COALESCE(NULLIF(#{name}, ''), name),
+               protocol = CASE WHEN COALESCE(#{protocol}, '') = ''
+                               THEN protocol
+                               ELSE CAST(#{protocol} AS driver_protocol) END,
+               endpoint = COALESCE(NULLIF(#{endpoint}, ''), endpoint),
+               vendor = COALESCE(NULLIF(#{vendor}, ''), vendor),
+               resident = COALESCE(#{resident}, resident),
+               updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{driverId} AND deleted_at IS NULL
+    </update>
+
+    <delete id="deleteDriver">
+        DELETE FROM driver
+         WHERE tenant_id = #{tenantId} AND id = #{driverId} AND deleted_at IS NULL
+    </delete>
+
+    <select id="countInstancesByDriver" resultType="int">
+        SELECT count(*) FROM device_instance
+         WHERE tenant_id = #{tenantId} AND driver_id = #{driverId} AND deleted_at IS NULL
     </select>
 
 <select id="countDevicesUnderIsland" resultType="int">

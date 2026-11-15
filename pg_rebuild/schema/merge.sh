@@ -72,6 +72,7 @@ cat /tmp/_schema_header.sql \
     99v_workflow_island_id.sql \
     99w_sequence_fresh_start.sql \
     99x_p2_rebuild.sql \
+    ../migration/20261115_device_event.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 
