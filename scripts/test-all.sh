@@ -141,6 +141,8 @@ PURE=(
   "driver.DriverDispatchPathSelfTest"
   # P2 阶段 A：互锁契约——错误码→恢复作用域分档 + 事实状态时效（未知码 fail-closed 转人工）
   "driver.InterlockContractSelfTest"
+  # P2 阶段 B：抓板扫码闸门（纯逻辑）——无码/无期望/无源位/不匹配/已消费/过期 一律拒抓
+  "driver.GrabScanGateSelfTest"
   "alert.AlertSelfTest"
   "engine.EngineSelfTest"
   # S2 §3.2.1：错误码/驱动状态 → 执行确认四态（纯逻辑分类器，U10 载体①的消费端）
@@ -246,6 +248,8 @@ DB=(
   "driver.PlateUniquePositionDbSelfTest"
   # P2 阶段 B：证据确认路径——REPORTED 不写位置，confirmWithPosition 原子写位置+CONFIRMED
   "workflow.TransferConfirmWithPositionDbSelfTest"
+  # P2 阶段 B：位置级扫码证据——登记幂等 + 原子消费（已消费/不存在防复用）
+  "driver.ScanEvidenceDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据

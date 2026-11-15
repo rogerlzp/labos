@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.ScanEvidenceMapper">
+
+    <insert id="insertScanEvidence">
+        INSERT INTO position_scan_evidence
+          (tenant_id, run_id, node_id, source_position_id,
+           expected_barcode, scanned_barcode, observed_at,
+           scan_id, transfer_id, command_id)
+        VALUES (#{tenantId}, #{runId}, #{nodeId}, #{sourcePositionId},
+                #{expectedBarcode}, #{scannedBarcode},
+                CAST(#{observedAt} AS timestamptz),
+                #{scanId}, #{transferId}, #{commandId})
+        ON CONFLICT (tenant_id, scan_id) DO NOTHING
+    </insert>
+
+    <update id="consumeScanEvidence">
+        UPDATE position_scan_evidence
+           SET consumed = true, transfer_id = #{transferId}
+         WHERE tenant_id = #{tenantId} AND scan_id = #{scanId}
+           AND consumed = false
+    </update>
+
+</mapper>
