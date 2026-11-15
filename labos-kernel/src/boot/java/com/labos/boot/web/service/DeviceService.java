@@ -534,7 +534,16 @@ public class DeviceService {
             case "Centrifugation": return "centrifuge";
             case "Sealing": return "sealer";
             case "Peeling": return "peeler";
-            case "Dispensers & Washers": return "washer";
+            // 同一类型下**能力不同、参数边界差一个数量级**：
+            //   ALIQUOT = 分液器（0.5–2500 µL，如 9608）
+            //   WASH    = 洗板机（50–300 µL，如 EL406）
+            // 不区分会把 9608 的 5 µL 加液判成「参数越界」。
+            case "Dispensers & Washers":
+                return "ALIQUOT".equals(str(capability)) ? "dispenser" : "washer";
+            // 提取仪：先落转盘式提取仪画像拿体积/温度边界。
+            // ⚠ 画像的 slots=8 比 PAuto 手册的 2 个板位宽 ⇒ 板位越界这一条要靠
+            //   device_method.param_schema（plateIndex 0–1）精确校验，画像只是兜底。
+            case "Extractors": return "carousel_extractor";
             case "Readers & Imagers": return "reader";
             case "Flow Cytometers": return "reader";
             case "Barcode Scanning & Labeling": return "barcode";
