@@ -80,8 +80,28 @@ public final class StirrerDispenserGuard {
     }
 
     /**
-     * 锁内最终复核：下发前重读搅拌状态，不再等待——故障/过期/未知/未配对一律拒绝。
+     * 锁内最终复核：下发前重读搅拌状态，不再等待——故障/过期/未知一律拒绝。
      * 不 pause（初始检查已 pause 过）；只返回失败结果。
+     *
+     * <p><b>⚠ 未配对 ⇒ 跳过复核（不是拒绝）**（2026-11-15 修，实测全平台停摆）：
+     * <ul>
+     *   <li><b>改之前</b>：配对缺失一律 {@code EC-STATE-UNKNOWN} 拒绝。
+     *       而这个复核是**对每一条设备命令**调用的（不限于分液方法），
+     *       且 {@code stirrer_dispenser_pair} 在客户现场落地前一直是 <b>0 行</b>
+     *       ⇒ <b>平台里每一台设备的每一条命令都被拒</b>
+     *       （实测：提取仪的 PickTipComb 直接 EC-STATE-UNKNOWN 转人工）。
+     *       ⇒ 这不是"守门更严"，是<b>整台平台发不出命令</b>。</li>
+     *   <li><b>为什么应当跳过</b>：L4 的事实源是「配对搅拌单元的状态」。
+     *       没有配对就<b>没有事实源</b> ⇒ 这台设备根本不是 L4 的目标
+     *       ⇒ 同门的 L1（无 turntable 事实 ⇒ 非 L1 目标）与
+     *       L5（无交互上下文 ⇒ 跳过）都是这么处理的。</li>
+     *   <li><b>「配对缺失 fail-closed」有没有丢？</b>：没有 ——
+     *       {@link #checkBeforeDispense} 仍然对<b>真正的分液方法</b>
+     *       （Aliquot/Dispense/Pipette/TransferLiquid）在<b>下发前</b>
+     *       把「无搅拌配对」拒掉（配对缺失属配置层问题），
+     *       且那条路径会 pause 转人工。finalRecheck 只是"已放行后的锁内再确认"，
+     *       不承担配置缺失的判定。</li>
+     * </ul>
      */
     public static DriverResult finalRecheck(DbConfig db, long tenantId, long dispenserResourceId) {
         if (db == null || dispenserResourceId <= 0) {
@@ -96,8 +116,9 @@ public final class StirrerDispenserGuard {
                     "搅拌配对复核失败：" + e.getMessage(), null, 0);
         }
         if (stirrer == null) {
-            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
-                    "下发前复核：分液器无搅拌配对", null, 0);
+            // 无配对 ⇒ 无事实源 ⇒ 非 L4 目标 ⇒ 跳过（与 L1/L5 一致）。
+            // 「配对缺失」的 fail-closed 由 checkBeforeDispense 在分液方法上把关。
+            return null;
         }
         Map<String, Object> state;
         try {
