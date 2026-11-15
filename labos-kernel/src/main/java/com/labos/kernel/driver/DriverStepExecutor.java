@@ -446,6 +446,31 @@ public final class DriverStepExecutor implements StepExecutor {
                     "申请资源时数据库错误：" + e.getMessage(), 0, method);
         }
 
+        // P2 阶段 C：L1 转盘 + L5 等待交互互锁（机械臂操作前守卫，begin 之前）。
+        // 任一拒绝都释放已拿到的一切并拒绝下发（板不动作）。
+        if (db != null && runId > 0) {
+            // L1：转盘运动禁操作该提取仪交互位（目标设备有 turntable 事实才启用）
+            DriverResult l1 = TurntableGuard.checkBeforeTransfer(db, tenantId, runId, dstRes);
+            if (l1 != null) {
+                safeReleaseTarget(posLock, targetPos);
+                plan.closeAccesses(srcRes, dstRes, factory);
+                plan.close();
+                throw new StepFailure(l1.errorCode(), scopeOf(l1.errorCode()),
+                        l1.message(), 0, method);
+            }
+            // L5：无有效等待交互禁操作交换位（节点带 interactionId 参数才启用）
+            DriverResult l5 = WaitingInteractionGuard.checkBeforeTransfer(db, tenantId, runId,
+                    dstRes, strParam(ctx, "deviceSessionId"),
+                    strParam(ctx, "workflowStepId"), strParam(ctx, "interactionId"));
+            if (l5 != null) {
+                safeReleaseTarget(posLock, targetPos);
+                plan.closeAccesses(srcRes, dstRes, factory);
+                plan.close();
+                throw new StepFailure(l5.errorCode(), scopeOf(l5.errorCode()),
+                        l5.message(), 0, method);
+            }
+        }
+
         // P-08：搬运事务（设备回包=运动报告，位置需另证）
         long transferTxn = 0L;
         // 板号统一走 PositionLock 的单一真源解析器：搬运事务与位置链路读同一批别名，

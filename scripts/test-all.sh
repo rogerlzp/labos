@@ -109,6 +109,8 @@ PURE=(
   "api.ExperimentGraphCompileSelfTest"
   # 路由级权限收口（2026-11-15）：审计日志只给 admin（原先菜单藏了但路由没拦）
   "api.RbacRouteGuardSelfTest"
+  # 参数解析 / PLANNED 型号登记（2026-11-15）：paramLong 不再返回 0（那是外键报错的真凶）
+  "api.ParamAndModelRegistrationSelfTest"
   # 实验编排偏序求序（S2-A 迁移边界：无边=seq 序，有边=拓扑序，环要拒绝）
   "workflow.ExperimentOrderSelfTest"
   # 作用域扣留覆盖优先级 + 边界闸门（暂停是现场事件：experiment>island>site）
@@ -149,6 +151,8 @@ PURE=(
   "driver.StirrerDispenserGateSelfTest"
   # P2 阶段 C：L5 有效等待投影纯逻辑——WAITING+当前会话/步骤才授权，消费/旧会话/旧步骤拒绝
   "driver.WaitingInteractionProjectionSelfTest"
+  # P2 阶段 C：L1 转盘互锁纯逻辑——停止放行/运动有界等待/过期/未知
+  "driver.TurntableGateSelfTest"
   "alert.AlertSelfTest"
   "engine.EngineSelfTest"
   # S2 §3.2.1：错误码/驱动状态 → 执行确认四态（纯逻辑分类器，U10 载体①的消费端）
@@ -264,6 +268,8 @@ DB=(
   "driver.StirrerDispenserGuardDbSelfTest"
   # P2 阶段 C：设备事实（状态版本）+ 有效等待投影（消费后/旧会话查不到）
   "driver.DeviceFactWaitingDbSelfTest"
+  # P2 阶段 C：L1 转盘 + L5 等待交互 运行时守卫（停止放行/未知拒绝/无等待拒绝/不匹配拒绝）
+  "driver.TransferInterlockDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据
