@@ -163,7 +163,7 @@ public class DeviceEventController {
      * <p>为什么不用 {@code jsonField}：它只认字符串值，
      * 而事件的 {@code payload} 是个对象（{@code {"station":"exchange"}}）。
      */
-    static String rawJsonField(String body, String key) {
+    public static String rawJsonField(String body, String key) {
         if (body == null || body.isBlank()) {
             return null;
         }

@@ -28,6 +28,51 @@ public final class DeviceModels {
     }
 
     /**
+     * 这个型号是不是"已知但手册未到"（{@link #planned()} 里的占位）。
+     *
+     * <p><b>为什么要单独问</b>：占位型号**允许登记设备** ——
+     * 方法集可以从模拟器画像（厂商公开规格）派生 ⇒ 设计器里能选到方法、流程能配出来；
+     * 但**接真机还不行**（没手册 ⇒ 没协议、没错误码）⇒ 登记时要打一行警告。
+     */
+    public static boolean isPlanned(String modelId) {
+        if (modelId == null || modelId.isBlank()) {
+            return false;
+        }
+        String id = modelId.trim();
+        for (Planned p : PLANNED) {
+            if (id.equals(p.id())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 型号 → 模拟器画像。
+     *
+     * <p><b>为什么按型号而不是按设备类型</b>：设备类型（{@code device.device_type}）
+     * 分不出"通用机械臂"与"轨道四轴臂"、"通用板存储"与"自动化耗材栈" ——
+     * 而这两者对模拟器是**不同的画像**（轨道臂每次抓板要扫码、耗材栈 288 位）。
+     * 型号 id 是唯一的 ⇒ 用它区分。
+     *
+     * <p>只列**型号级特有**的映射；通用型号（aspin-2k / s100）走
+     * {@code DeviceService.simProfileOf} 的设备类型/能力兜底。
+     */
+    public static String simProfileOf(String modelId) {
+        if (modelId == null) {
+            return null;
+        }
+        return switch (modelId.trim()) {
+            case "carousel-extractor-generic" -> "carousel_extractor";
+            case "dispenser-plate-generic" -> "dispenser";
+            case "stirrer-generic" -> "stirrer";
+            case "gantry-robot-generic" -> "gantry";
+            case "plate-stack-generic" -> "plate_stack";
+            default -> null;
+        };
+    }
+
+    /**
      * 已知型号、但手册还没拿到：不进 {@link #TABLE}，只在清单里提醒。
      *
      * @param dbModelAlias 生产库 {@code device.model} 列里的写法（如 {@code "360R"}）。

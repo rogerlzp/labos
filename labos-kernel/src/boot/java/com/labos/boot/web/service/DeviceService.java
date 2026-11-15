@@ -1,5 +1,6 @@
 package com.labos.boot.web.service;
 
+import com.labos.kernel.device.DeviceModels;
 import com.labos.kernel.persistence.DbConfig;
 import com.labos.kernel.persistence.DeviceMapper;
 import org.springframework.stereotype.Service;
@@ -333,7 +334,8 @@ public class DeviceService {
                     "endpoint", endpoint,
                     "capability", row.get("capability"),
                     "deviceType", row.get("deviceType"),
-                    "simProfile", simProfileOf(row.get("deviceType"), row.get("capability")),
+                    "simProfile", simProfileOf(row.get("modelId"), row.get("deviceType"),
+                            row.get("capability")),
                     "modelId", row.get("modelId"),
                     "driverCode", row.get("driverCode"),
                     "status", row.get("status")));
@@ -367,6 +369,20 @@ public class DeviceService {
      * 但比"没有"强。都匹配不上就是 generic（不校验方法、不校验参数）。
      */
     static String simProfileOf(Object deviceType, Object capability) {
+        return simProfileOf(null, deviceType, capability);
+    }
+
+    /**
+     * 设备类型/能力 → 模拟器画像。
+     *
+     * <p><b>型号优先</b>：设备类型分不出"通用机械臂"与"轨道四轴臂"、
+     * "通用板存储"与"自动化耗材栈"（对模拟器是不同画像）⇒ 型号 id 优先。
+     */
+    public static String simProfileOf(Object modelId, Object deviceType, Object capability) {
+        String byModel = DeviceModels.simProfileOf(str(modelId));
+        if (byModel != null) {
+            return byModel;
+        }
         String t = str(deviceType);
         switch (t) {
             case "Incubators": return "incubator";

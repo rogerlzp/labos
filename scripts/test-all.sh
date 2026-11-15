@@ -162,6 +162,10 @@ PURE=(
   "sim.SimulatorBehaviorSelfTest"
   # 画像四维度（2026-11-15）：方法集 / 步骤时长 / 时长由参数决定 / 参数边界 / 结果字段
   "sim.DeviceProfileSelfTest"
+  # 设备事件入站端点（2026-11-15）：免鉴权口径 + 载荷解析（对象/字符串/数字/脏数据）
+  "event.DeviceEventApiSelfTest"
+  # 新设备类型接入（2026-11-15）：PLANNED 型号可登记 / 方法从画像派生 / 型号优先的画像路由
+  "device.DeviceOnboardingSelfTest"
   "driver.DeviceErrorChainSelfTest"
   # 超时按方法取（2026-11-06）：优先级 device_method > device_capability > workflow_node
   # > 能力默认 > 兜底 30s；0 = 没配；显式设备库值不被能力默认抬高；保底 ≥ 300s

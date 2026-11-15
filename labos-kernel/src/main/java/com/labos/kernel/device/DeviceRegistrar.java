@@ -226,7 +226,12 @@ public final class DeviceRegistrar {
                 return "color 要写成 #RRGGBB：" + color;
             }
             if (deviceModel != null && DeviceModels.of(deviceModel) == null) {
-                return "deviceModel=" + deviceModel + " 不在型号库里（见 DeviceErrorSql --list）";
+                // PLANNED 型号（已知型号、手册未到）**允许登记**：
+                // 方法集从模拟器画像（厂商公开规格）派生 ⇒ 设计器里能选到方法、流程能配出来；
+                // 但**接真机还不行**（没手册 ⇒ 没协议、没错误码）⇒ 登记时会打警告。
+                if (!DeviceModels.isPlanned(deviceModel)) {
+                    return "deviceModel=" + deviceModel + " 不在型号库里（见 DeviceErrorSql --list）";
+                }
             }
             return null;
         }
@@ -364,7 +369,11 @@ public final class DeviceRegistrar {
         }
         DeviceModel m = DeviceModels.of(modelId);
         if (m == null) {
-            return 0;
+            // PLANNED 型号（手册还没到）：方法集从**模拟器画像**派生（公开规格级）。
+            // ⚠ 不做这一步 ⇒ 这类设备的 device_method 是 0 行 ⇒
+            //   设计器里一个方法都选不到 ⇒ 流程根本配不出来（交付直接卡死）。
+            //   手册到位后按 DeviceModels 的 MANUAL 条目覆盖（syncMethods 只增改不删）。
+            return syncMethodsFromProfile(deviceId, capId, modelId);
         }
         // 每行一个方法：label / estimate / timeout 的计算留在 Java 侧（同原 addBatch 循环）。
         java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
@@ -393,8 +402,55 @@ public final class DeviceRegistrar {
         return items.size();
     }
 
-    /** 参数说明进 param_schema.params（界面「详情」里能看到"这条指令带什么参数"）。 */
-    private static String paramsJson(DeviceModel.Method mm) {
+    /**
+     * 从**模拟器画像**派生方法行（PLANNED 型号：手册还没到）。
+     *
+     * <p><b>为什么</b>：{@code device_method} 是设计器选方法的唯一来源
+     * （界面「详情」读的就是这张表）。手册没到的型号若不派生，
+     * 这类设备在设计器里<b>一个方法都选不到</b> ⇒ 流程配不出来。
+     *
+     * <p>方法名与估算时长来自**厂商公开规格**（画像就是按公开规格建的），
+     * 标签上标「公开规格派生」⇒ 现场一眼能看出这条方法还没对手册。
+     *
+     * <p>手册到位后按 {@link DeviceModels} 的 MANUAL 条目覆盖 ——
+     * {@code syncMethods} 只增改不删，所以老的画像派生行会留在库里（可人工清理）。
+     */
+    private static int syncMethodsFromProfile(long deviceId, Long capId, String modelId) {
+        String profileName = DeviceModels.simProfileOf(modelId);
+        if (profileName == null) {
+            return 0;
+        }
+        com.labos.kernel.sim.DeviceProfile prof =
+                com.labos.kernel.sim.DeviceProfile.of(profileName);
+        if (prof == com.labos.kernel.sim.DeviceProfile.GENERIC || prof.methods.isEmpty()) {
+            return 0;
+        }
+        java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+        for (String alias : prof.methods) {
+            long ms = prof.timingOf(alias);
+            int estimate = ms > 0
+                    ? (int) Math.max(1, ms / 1000)
+                    : (int) Math.max(1, prof.defaultDelayMs / 1000);
+            int timeout = estimate + 2;
+            java.util.Map<String, Object> it = new java.util.LinkedHashMap<>();
+            it.put("method", alias);
+            it.put("label", alias + "（公开规格派生，手册未到）");
+            it.put("capabilityId", capId);
+            it.put("paramsJson", "{\"params\":[]}");
+            it.put("estimate", estimate);
+            it.put("timeout", timeout);
+            items.add(it);
+        }
+        if (items.isEmpty()) {
+            return 0;
+        }
+        com.labos.kernel.persistence.Mappers.get(
+                com.labos.kernel.persistence.DeviceMapper.class)
+                .upsertDeviceMethods(tenantId(), deviceId, items);
+        return items.size();
+    }
+
+    /** 参数说明进 param_schema.params（界面「详情」里能看到"这条指令带什么参数"）。 */    private static String paramsJson(DeviceModel.Method mm) {
         if (mm.args() == null || mm.args().isBlank()) {
             return "{\"params\":[]}";
         }

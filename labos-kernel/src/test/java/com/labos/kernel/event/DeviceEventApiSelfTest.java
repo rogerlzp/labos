@@ -1,6 +1,7 @@
-package com.labos.boot.web.controller;
+package com.labos.kernel.event;
 
 import com.labos.kernel.api.ApiServer;
+import com.labos.boot.web.controller.DeviceEventController;
 
 import java.util.Map;
 
