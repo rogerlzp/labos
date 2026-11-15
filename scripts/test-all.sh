@@ -171,6 +171,8 @@ PURE=(
   "event.DeviceEventApiSelfTest"
   # 新设备类型接入（2026-11-15）：PLANNED 型号可登记 / 方法从画像派生 / 型号优先的画像路由
   "device.DeviceOnboardingSelfTest"
+  # 设备接入端点的参数解析（带不带引号都认 —— 这里出过一次真事故）
+  "device.DeviceEndpointParsingSelfTest"
   "driver.DeviceErrorChainSelfTest"
   # 超时按方法取（2026-11-06）：优先级 device_method > device_capability > workflow_node
   # > 能力默认 > 兜底 30s；0 = 没配；显式设备库值不被能力默认抬高；保底 ≥ 300s

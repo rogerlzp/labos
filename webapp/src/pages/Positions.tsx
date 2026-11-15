@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert, Button, Card, Empty, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography, message,
@@ -48,9 +48,45 @@ const ROLE_COLORS: Record<string, string> = {
   entry: 'blue', exit: 'purple', both: 'green', internal: 'default',
 };
 
+/**
+ * 坑位语义（slotKind ⇒ device_point.point_kind）——**与点位类型（pointKind）是两个轴**：
+ * pointKind 说「这个节点是什么」（机械臂只认 incubator/storage/transfer_point），
+ * slotKind 说「这个坑位在设备里扮演什么角色」。
+ */
+const SLOT_KINDS = ['nest', 'waste', 'deck_in', 'deck_out'] as const;
+type SlotKind = (typeof SLOT_KINDS)[number];
+/** 坑位语义 → 文案 key。 */
+const SLOT_KIND_KEYS: Record<SlotKind, MessageKey> = {
+  nest: 'positions.slotKind.nest',
+  waste: 'positions.slotKind.waste',
+  deck_in: 'positions.slotKind.deck_in',
+  deck_out: 'positions.slotKind.deck_out',
+};
+/**
+ * 这两种语义由**后端推导**点位角色与机械臂可达性
+ * （deck_in ⇒ 内部位 + 不可达；deck_out ⇒ 进出共用 + 可达），
+ * 所以界面上不用让用户再单独设那两个开关。
+ */
+const DECK_SLOT_KINDS: readonly string[] = ['deck_in', 'deck_out'];
+
+/** 一行点位规格（按规格造点位用）。 */
+interface SpecRow {
+  /** React key（后端不认）。 */
+  key: number;
+  /** 点位编号（留空则由设备编码自动拼）。 */
+  code: string;
+  /** 位置标签（现场贴的那个）。 */
+  label: string;
+  slotKind: SlotKind;
+  /** 槽位编号（留空 = 不指定）。 */
+  slotIndex: number | null;
+  pointKind: string;
+}
+
 /** 批量造点位的默认参数（转盘式提取仪 8 板位这一类最常见）。 */
 const GRID_INITIAL = {
   cols: 8, rows: 1, pointKind: 'transfer_point',
+  slotKind: 'nest', slotIndexBase: 1,
   maxStack: 1, maxHeightMm: 45, plateTypes: 'pcr96,deep96',
   isEntry: true, isExit: true, robotReachable: true,
 };
@@ -68,6 +104,14 @@ export default function PositionsPage() {
   const [createForm] = Form.useForm();
   // 批量造网格点位
   const [gridForm] = Form.useForm();
+  // 坑位语义：选 deck_in / deck_out 时，后端按语义推导角色与可达性 ⇒ 那三个开关不生效
+  const gridSlotKind = Form.useWatch('slotKind', gridForm) as SlotKind | undefined;
+  const gridIsDeck = !!gridSlotKind && DECK_SLOT_KINDS.includes(gridSlotKind);
+  // 按规格造点位：一行一个点位规格（可增删）
+  const [specRows, setSpecRows] = useState<SpecRow[]>([
+    { key: 0, code: '', label: '', slotKind: 'nest', slotIndex: null, pointKind: 'transfer_point' },
+  ]);
+  const specKeyRef = useRef(0);
 
   const islandsQ = useQuery({
     queryKey: ['topology'],
@@ -184,6 +228,8 @@ export default function PositionsPage() {
    * <p>后端幂等：同编码复用并更新，所以重复执行不会造出第二个点位。
    * <p>板高留空就不发这个字段 —— 后端对板高做 Double.parseDouble，收到空串会直接炸。
    * <p>点位类型只能是 incubator / storage / transfer_point，后端会校验并回 400。
+   * <p>坑位语义 slotKind 选 deck_in / deck_out 时，点位角色与机械臂可达性由**后端推导**
+   * （界面上的进口/出口/机械臂可达开关对这两项不生效）。
    */
   const generateGrid = async () => {
     const v = await gridForm.validateFields();
@@ -194,19 +240,24 @@ export default function PositionsPage() {
     }
     const body: Record<string, unknown> = {
       deviceCode: dev.code,
-      // ⚠ 数值字段发字符串：内核用 jsonField 解析请求体，它只认**带引号**的值
-      // （裸数字会被当成 0 ⇒ 列数/行数直接被拒；板高也会被悄悄丢掉）。
-      cols: String(v.cols),
-      rows: String(v.rows),
+      // 数值字段发**裸数字**（不带引号）：内核的 jsonInt / jsonDouble 带不带引号都认，
+      // 统一发数字 —— 一来不用赌「哪个字段用哪种解析」，二来"按规格造点位"的槽位编号
+      // 必须发数字（那边按 Number 读，带引号会读不出来）。
+      cols: Number(v.cols),
+      rows: Number(v.rows),
       pointKind: v.pointKind,
-      maxStack: String(v.maxStack ?? 1),
+      // 坑位语义：deck_in / deck_out 的角色与可达性由后端按语义推导
+      slotKind: v.slotKind ?? 'nest',
+      // 槽位起始编号：后端按行优先写稳定的 1..N 槽号
+      slotIndexBase: Number(v.slotIndexBase ?? 1),
+      maxStack: Number(v.maxStack ?? 1),
       plateTypes: v.plateTypes ?? '',
       // 这三个是 JSON 布尔：后端按 body 里有没有 "isEntry":false 判断，不能发字符串
       isEntry: !!v.isEntry,
       isExit: !!v.isExit,
       robotReachable: !!v.robotReachable,
     };
-    if (v.maxHeightMm != null) body.maxHeightMm = String(v.maxHeightMm);
+    if (v.maxHeightMm != null) body.maxHeightMm = Number(v.maxHeightMm);
     try {
       const r = await apiFetch(`/api/devices/${dev.resourceId}/points/grid`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -220,6 +271,63 @@ export default function PositionsPage() {
       qc.invalidateQueries({ queryKey: ['positions'] });
     } catch (e) {
       message.error(t('positions.grid.error.generate', { error: (e as Error).message }));
+    }
+  };
+
+  /** 新一行点位规格（默认：中转位 / 网格式坑位，槽位编号留空）。 */
+  const newSpecRow = (): SpecRow => {
+    const key = ++specKeyRef.current;
+    return { key, code: '', label: '', slotKind: 'nest', slotIndex: null, pointKind: 'transfer_point' };
+  };
+  const addSpecRow = () => setSpecRows((rows) => [...rows, newSpecRow()]);
+  const removeSpecRow = (key: number) => setSpecRows((rows) => rows.filter((r) => r.key !== key));
+  const updateSpecRow = (key: number, patch: Partial<SpecRow>) =>
+    setSpecRows((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+
+  /**
+   * 按**规格**造点位：POST /api/devices/{resourceId}/points/spec。
+   *
+   * <p>给「一台设备多个不同工位」用（转盘式提取仪：外部交换位 + 内部操作位）——
+   * 网格那套（几行几列）表达不了这种不均匀布局。
+   * <p>后端幂等：同编码复用并更新，重复执行不会造出第二个点位。
+   */
+  const generateSpec = async () => {
+    // 设备沿用上方网格表单里选的那台（同一个卡片、同一个设备上下文）
+    const dev = allDevices.find((d) => d.resourceId === gridForm.getFieldValue('deviceResourceId'));
+    if (!dev) {
+      message.error(t('positions.spec.error.deviceRequired'));
+      return;
+    }
+    if (specRows.length === 0) {
+      message.error(t('positions.spec.error.empty'));
+      return;
+    }
+    const points = specRows.map((r) => {
+      const p: Record<string, unknown> = {
+        code: r.code.trim(),
+        label: r.label.trim(),
+        slotKind: r.slotKind,
+        pointKind: r.pointKind,
+      };
+      // 槽位编号：留空就**不带这个 key**（后端 slotIndex=null）；
+      // 有值必须发**裸数字** —— 后端按 Number 读槽位编号，带引号会读不出来。
+      if (r.slotIndex != null) p.slotIndex = r.slotIndex;
+      return p;
+    });
+    try {
+      const r = await apiFetch(`/api/devices/${dev.resourceId}/points/spec`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceCode: dev.code, points }),
+      });
+      const j = await r.json() as { created?: number };
+      message.success(t('positions.spec.toast.created', { n: j.created ?? 0 }));
+      // 点位列表按岛过滤 ⇒ 设备在别的岛时先把岛切过去，否则看不到刚造的点位
+      setIslandId(dev.islandId);
+      setDeviceId(dev.resourceId);
+      qc.invalidateQueries({ queryKey: ['positions'] });
+    } catch (e) {
+      // 后端 400 的原文（槽位语义非法 / 缺点位规格 …）直接显示给用户
+      message.error(t('positions.spec.error.generate', { error: (e as Error).message }));
     }
   };
 
@@ -406,6 +514,14 @@ export default function PositionsPage() {
                 { value: 'incubator', label: t('positions.kind.incubator') },
               ]} />
             </Form.Item>
+            <Form.Item name="slotKind" label={t('positions.grid.field.slotKind')} style={{ width: 200 }}
+              tooltip={t('positions.grid.field.slotKindTooltip')}>
+              <Select options={SLOT_KINDS.map((k) => ({ value: k, label: t(SLOT_KIND_KEYS[k]) }))} />
+            </Form.Item>
+            <Form.Item name="slotIndexBase" label={t('positions.grid.field.slotIndexBase')} style={{ width: 150 }}
+              tooltip={t('positions.grid.field.slotIndexBaseTooltip')}>
+              <InputNumber min={1} max={10000} style={{ width: '100%' }} />
+            </Form.Item>
             <Form.Item name="maxStack" label={t('positions.grid.field.maxStack')} style={{ width: 140 }}>
               <InputNumber min={1} style={{ width: '100%' }} />
             </Form.Item>
@@ -416,17 +532,81 @@ export default function PositionsPage() {
               <Input placeholder="pcr96,deep96" />
             </Form.Item>
             <Form.Item name="isEntry" label={t('positions.grid.field.isEntry')} valuePropName="checked">
-              <Switch />
+              <Switch disabled={gridIsDeck} />
             </Form.Item>
             <Form.Item name="isExit" label={t('positions.grid.field.isExit')} valuePropName="checked">
-              <Switch />
+              <Switch disabled={gridIsDeck} />
             </Form.Item>
             <Form.Item name="robotReachable" label={t('positions.grid.field.robotReachable')} valuePropName="checked">
-              <Switch />
+              <Switch disabled={gridIsDeck} />
             </Form.Item>
           </Space>
+          {gridIsDeck && (
+            <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              message={t('positions.grid.slotKind.derived')} />
+          )}
           <Button type="primary" onClick={generateGrid}>{t('positions.grid.action.generate')}</Button>
         </Form>
+
+        {/* 按规格造点位：同一张卡片里的**第二个**入口 —— 给「一台设备多个不同工位」用
+            （转盘式提取仪：外部交换位 deck_out + 内部操作位 deck_in，网格那套表达不了）。 */}
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px dashed #d9d9d9' }}>
+          <Typography.Text strong>{t('positions.spec.title')}</Typography.Text>
+          <div style={{ fontSize: 12, color: '#888', margin: '4px 0 8px' }}>{t('positions.spec.hint')}</div>
+          {specRows.length === 0 ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('positions.spec.empty')}</Typography.Text>
+          ) : (
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(140px, 1.3fr) minmax(110px, 1fr) minmax(190px, 1.7fr) 120px minmax(150px, 1.2fr) 44px',
+              gap: 8, alignItems: 'start',
+            }}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('positions.spec.field.code')}</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('positions.spec.field.label')}</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('positions.spec.field.slotKind')}</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('positions.spec.field.slotIndex')}</Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t('positions.spec.field.pointKind')}</Typography.Text>
+              <span />
+              {specRows.map((r) => (
+                <Fragment key={r.key}>
+                  <Input size="small" value={r.code} placeholder={t('positions.spec.placeholder.code')}
+                    onChange={(e) => updateSpecRow(r.key, { code: e.target.value })} />
+                  <Input size="small" value={r.label} placeholder={t('positions.spec.placeholder.label')}
+                    onChange={(e) => updateSpecRow(r.key, { label: e.target.value })} />
+                  <div>
+                    <Select size="small" style={{ width: '100%' }} value={r.slotKind}
+                      onChange={(v) => updateSpecRow(r.key, { slotKind: v as SlotKind })}
+                      options={SLOT_KINDS.map((k) => ({ value: k, label: t(SLOT_KIND_KEYS[k]) }))} />
+                    {/* deck_in / deck_out 的角色与可达性由后端推导 ⇒ 写清楚，免得用户以为漏设 */}
+                    {r.slotKind === 'deck_in' && (
+                      <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>{t('positions.slotKind.deckInDesc')}</div>
+                    )}
+                    {r.slotKind === 'deck_out' && (
+                      <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>{t('positions.slotKind.deckOutDesc')}</div>
+                    )}
+                  </div>
+                  <InputNumber size="small" style={{ width: '100%' }} min={1} value={r.slotIndex ?? undefined}
+                    placeholder={t('positions.spec.placeholder.slotIndex')}
+                    onChange={(v) => updateSpecRow(r.key, { slotIndex: typeof v === 'number' ? v : null })} />
+                  <Select size="small" style={{ width: '100%' }} value={r.pointKind}
+                    onChange={(v) => updateSpecRow(r.key, { pointKind: v })}
+                    options={[
+                      { value: 'transfer_point', label: t('positions.kind.transfer_point') },
+                      { value: 'storage', label: t('positions.kind.storage') },
+                      { value: 'incubator', label: t('positions.kind.incubator') },
+                    ]} />
+                  <Button size="small" type="text" danger title={t('positions.spec.action.removeRow')}
+                    aria-label={t('positions.spec.action.removeRow')}
+                    onClick={() => removeSpecRow(r.key)}>×</Button>
+                </Fragment>
+              ))}
+            </div>
+          )}
+          <Space style={{ marginTop: 10 }}>
+            <Button size="small" onClick={addSpecRow}>{t('positions.spec.action.addRow')}</Button>
+            <Button type="primary" onClick={generateSpec}>{t('positions.spec.action.generate')}</Button>
+          </Space>
+        </div>
       </Card>
 
       <Modal title={`编辑点位 · ${editing?.code ?? ''}`} open={editing != null}

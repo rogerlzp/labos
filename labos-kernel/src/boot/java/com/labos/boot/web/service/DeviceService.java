@@ -835,7 +835,18 @@ public class DeviceService {
                 exit = false;
             }
             Object si = spec.get("slotIndex");
-            Integer slotIndex = si == null ? null : ((Number) si).intValue();
+            // ⚠ slotIndex 可能是数字也可能是字符串（不同客户端习惯不同）⇒ 两种都认，
+            //   别让它抛 ClassCastException 变成 500（这是客户端能修的问题，不该 500）。
+            Integer slotIndex = null;
+            if (si instanceof Number num) {
+                slotIndex = num.intValue();
+            } else if (si != null) {
+                try {
+                    slotIndex = Integer.valueOf(String.valueOf(si).trim());
+                } catch (NumberFormatException ignore) {
+                    slotIndex = null;   // 认不出来就当没给
+                }
+            }
             // ⚠ 节点的 kind 必须是机械臂**看得见**的三类之一
             //   （选位 SQL 硬性过滤 resource_node.kind IN
             //    ('incubator','storage','transfer_point')）⇒ 写成 'device' 的话

@@ -481,30 +481,7 @@ public class DeviceController {
                                                     @RequestBody(required = false) String body,
                                                     HttpServletRequest req) throws SQLException {
         try {
-            List<java.util.Map<String, Object>> points = new ArrayList<>();
-            String raw = rawJsonField(body, "points");
-            if (raw != null && raw.startsWith("[")) {
-                java.util.regex.Matcher m = java.util.regex.Pattern
-                        .compile("\\{([^{}]*)\\}").matcher(raw);
-                while (m.find()) {
-                    java.util.Map<String, Object> one = new java.util.LinkedHashMap<>();
-                    java.util.regex.Matcher kv = java.util.regex.Pattern
-                            .compile("\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:\\s*"
-                                    + "(?:\"([^\"]*)\"|(-?\\d+(?:\\.\\d+)?)|(true|false))")
-                            .matcher(m.group(1));
-                    while (kv.find()) {
-                        String k = kv.group(1);
-                        if (kv.group(2) != null) {
-                            one.put(k, kv.group(2));
-                        } else if (kv.group(3) != null) {
-                            one.put(k, Double.valueOf(kv.group(3)));
-                        } else if (kv.group(4) != null) {
-                            one.put(k, Boolean.valueOf(kv.group(4)));
-                        }
-                    }
-                    points.add(one);
-                }
-            }
+            List<java.util.Map<String, Object>> points = parseSpecPoints(body);
             int n = deviceService.createSpecPoints(id, jsonField(body, "deviceCode"), points);
             audit.record(session(req), "device.points_spec", "device", id,
                     "n=" + n, body, req.getRemoteAddr());
@@ -515,12 +492,51 @@ public class DeviceController {
     }
 
     /**
+     * 解析 body 里的**点位规格数组**（{@code points: [ {...}, {...} ]}）。
+     *
+     * <p>做成<b>可单测的纯函数</b>：这一层的解析曾经出过一次真事故 ——
+     * 数字参数用 {@code jsonField} 取（只认引号里的值）⇒ 裸数字被读成 0，
+     * 端点直接 400，而表单发字符串时又对不上。
+     * ⇒ 解析逻辑单独拎出来钉住，比端到端跑一遍更容易发现问题。
+     *
+     * @return 每条规格一个 map（字符串值给 String、数字给 Double、布尔给 Boolean）
+     */
+    public static List<java.util.Map<String, Object>> parseSpecPoints(String body) {
+        List<java.util.Map<String, Object>> points = new ArrayList<>();
+        String raw = rawJsonField(body, "points");
+        if (raw == null || !raw.startsWith("[")) {
+            return points;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\{([^{}]*)\\}").matcher(raw);
+        while (m.find()) {
+            java.util.Map<String, Object> one = new java.util.LinkedHashMap<>();
+            java.util.regex.Matcher kv = java.util.regex.Pattern
+                    .compile("\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*:\\s*"
+                            + "(?:\"([^\"]*)\"|(-?\\d+(?:\\.\\d+)?)|(true|false))")
+                    .matcher(m.group(1));
+            while (kv.find()) {
+                String k = kv.group(1);
+                if (kv.group(2) != null) {
+                    one.put(k, kv.group(2));
+                } else if (kv.group(3) != null) {
+                    one.put(k, Double.valueOf(kv.group(3)));
+                } else if (kv.group(4) != null) {
+                    one.put(k, Boolean.valueOf(kv.group(4)));
+                }
+            }
+            points.add(one);
+        }
+        return points;
+    }
+
+    /**
      * 取一个数字字段（带不带引号都认）。
      *
      * <p>为什么不能只用 {@code jsonField}：它只匹配引号里的值 ⇒
      * 裸数字（{@code {"maxHeightMm":45}}）会被读成 null。
      */
-    private static Double jsonDouble(String body, String key) {
+    public static Double jsonDouble(String body, String key) {
         if (body == null) {
             return null;
         }
