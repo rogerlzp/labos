@@ -79,6 +79,42 @@ public final class StirrerDispenserGuard {
         }
     }
 
+    /**
+     * 锁内最终复核：下发前重读搅拌状态，不再等待——故障/过期/未知/未配对一律拒绝。
+     * 不 pause（初始检查已 pause 过）；只返回失败结果。
+     */
+    public static DriverResult finalRecheck(DbConfig db, long tenantId, long dispenserResourceId) {
+        if (db == null || dispenserResourceId <= 0) {
+            return null;
+        }
+        Long stirrer;
+        try {
+            stirrer = Mappers.get(StirrerMapper.class)
+                    .selectStirrerByDispenser(tenantId, dispenserResourceId);
+        } catch (RuntimeException e) {
+            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
+                    "搅拌配对复核失败：" + e.getMessage(), null, 0);
+        }
+        if (stirrer == null) {
+            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
+                    "下发前复核：分液器无搅拌配对", null, 0);
+        }
+        Map<String, Object> state;
+        try {
+            state = Mappers.get(DeviceStateMapper.class).selectDeviceStateRow(tenantId, stirrer);
+        } catch (RuntimeException e) {
+            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
+                    "搅拌状态复核失败：" + e.getMessage(), null, 0);
+        }
+        String status = state == null ? null : (String) state.get("status");
+        StirrerDispenserGate.Verdict v = StirrerDispenserGate.check(
+                status, toMillis(state == null ? null : state.get("updatedAt")), null);
+        if (v.allow()) {
+            return null;
+        }
+        return DriverResult.failed("0", v.errorCode(), "下发前复核：" + v.reason(), null, 0);
+    }
+
     private static long stirrerWaitTimeoutMs() {
         String v = System.getenv("LABOS_STIRRER_WAIT_TIMEOUT_MS");
         if (v != null && !v.isBlank()) {

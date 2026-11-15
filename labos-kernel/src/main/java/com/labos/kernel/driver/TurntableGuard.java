@@ -81,6 +81,34 @@ public final class TurntableGuard {
         }
     }
 
+    /**
+     * 锁内最终复核：下发前重读转盘事实，不再等待——运动中/过期/未知一律拒绝。
+     * 与 {@link #checkBeforeTransfer} 的区别：check 在资源申请后做（可等待），
+     * 这里在物理下发前做（状态已变就拒绝，不留等待窗口）。
+     */
+    public static DriverResult finalRecheck(DbConfig db, long tenantId, long deviceResourceId) {
+        if (db == null || deviceResourceId <= 0) {
+            return null;
+        }
+        Map<String, Object> fact;
+        try {
+            fact = Mappers.get(DeviceFactMapper.class)
+                    .selectFact(tenantId, deviceResourceId, "turntable");
+        } catch (RuntimeException e) {
+            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
+                    "转盘事实复核失败：" + e.getMessage(), null, 0);
+        }
+        if (fact == null) {
+            return null;   // 无事实 → 非 L1 目标
+        }
+        TurntableGate.Verdict v = TurntableGate.check(
+                (String) fact.get("factValue"), toMillis(fact.get("observedAt")), null);
+        if (v.allow()) {
+            return null;
+        }
+        return DriverResult.failed("0", v.errorCode(), "下发前复核：" + v.reason(), null, 0);
+    }
+
     private static long toMillis(Object o) {
         if (o instanceof java.sql.Timestamp ts) {
             return ts.getTime();

@@ -523,6 +523,24 @@ public final class DriverStepExecutor implements StepExecutor {
                             gate.reason(), 0, method);
                 }
             }
+            // P2 阶段 C/D：锁内最终复核——下发前重读 L1 转盘 + L5 等待交互，
+            // 状态已变/过期/无有效等待 → 拒绝（不留等待窗口）。
+            if (db != null && runId > 0) {
+                DriverResult l1r = TurntableGuard.finalRecheck(db, tenantId, dstRes);
+                if (l1r != null) {
+                    safeReleaseTarget(posLock, targetPos);
+                    throw new StepFailure(l1r.errorCode(), scopeOf(l1r.errorCode()),
+                            l1r.message(), 0, method);
+                }
+                DriverResult l5r = WaitingInteractionGuard.checkBeforeTransfer(db, tenantId,
+                        runId, dstRes, strParam(ctx, "deviceSessionId"),
+                        strParam(ctx, "workflowStepId"), strParam(ctx, "interactionId"));
+                if (l5r != null) {
+                    safeReleaseTarget(posLock, targetPos);
+                    throw new StepFailure(l5r.errorCode(), scopeOf(l5r.errorCode()),
+                            l5r.message(), 0, method);
+                }
+            }
             // 阶段 A：主机械臂动作也走统一派发门禁（CommandLedger.begin + 物理下发），
             // 消除受保护 Transfer 直接 driver.execute 的旁路。
             DriverResult r = executeCommand(driver, ctx,
@@ -1054,6 +1072,16 @@ public final class DriverStepExecutor implements StepExecutor {
             }
         }
         try {
+            // P2 阶段 C：L4 锁内最终复核——下发前重读搅拌状态，故障/过期/未知拒绝（不 pause）。
+            if (db != null && runId > 0) {
+                Long dispRes = resourceOfInstance(cmd.deviceInstanceId());
+                if (dispRes != null) {
+                    DriverResult l4r = StirrerDispenserGuard.finalRecheck(db, tenantId, dispRes);
+                    if (l4r != null) {
+                        return l4r;
+                    }
+                }
+            }
             DriverResult r = doExecuteCommand(driver, ctx, cmd, workflowId, ledgerId);
             // 设备内部搬运（MoveInLabware/MoveOutLabware）的**业务拒绝**：
             // 设备协议层回 method_status=2，但 data.error_code 非空（板型/高度不匹配）。

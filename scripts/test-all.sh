@@ -274,6 +274,12 @@ DB=(
   "driver.TransferInterlockDbSelfTest"
   # P2 阶段 D：L3 轨道分区——多分区全有或全无 + 升序 + 未配置 fail-closed
   "driver.RailZoneGuardDbSelfTest"
+  # P2 阶段 D：L3 轨道分区并发——两 run 抢同一分区排队超时返回忙，释放后可获取
+  "driver.RailZoneConcurrencyDbSelfTest"
+  # P2 阶段 C/D：锁内最终复核——检查后状态变（转盘运动/搅拌故障）→下发前复核拒绝
+  "driver.FinalRecheckDbSelfTest"
+  # P2 阶段 B：崩溃恢复——REPORTED 未确认 hasUnconfirmed 阻断继续，确认后放行
+  "workflow.TransferCrashRecoveryDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据
