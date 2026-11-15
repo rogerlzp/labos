@@ -144,7 +144,9 @@ public class DeviceController {
                     "maxHeightMm", st.maxHeightMm(),
                     "plateTypes", st.plateTypes(),
                     "positionLabel", st.positionLabel(),
-                    "standalone", st.standalone()));
+                    "standalone", st.standalone(),
+                    // P1：稳定槽位号（1..N）。null = P1 之前建的老点位，前端回退显示 code。
+                    "slotIndex", st.slotIndex()));
         }
         return ResponseEntity.ok(Jsons.obj("islandId", isl,
                 "total", items.size(),

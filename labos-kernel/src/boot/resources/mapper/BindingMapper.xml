@@ -189,6 +189,29 @@
        AND nb.enabled = true AND nb.position_id IS NOT NULL
   </select>
 
+  <!-- P1 精确点位：节点绑定的**点位本身**（device_point.id + 稳定槽位号 + 现场标签）。
+
+       与 selectNodeBindingInstanceIds 的差别：那个只把设备实例 pin 住（dp.device_resource_id
+       → device_instance），点位在 JOIN 里被丢掉了。执行期要按「第 N 槽」搬运，必须拿到点位。
+       seq 用于一个节点绑多个位（如 seq=1 源位、seq=2 目标位），调用方按 seq 顺序判定方向。 -->
+  <select id="selectNodeBindingPoints" resultType="java.util.Map">
+    SELECT wn.id AS "nodeId", wn.node_key AS "nodeKey",
+           wn.params->>'protocol_name' AS "protocolName",
+           nb.seq AS "seq",
+           dp.id AS "pointId",
+           dp.device_resource_id AS "deviceResourceId",
+           rn.code AS "pointCode",
+           dp.position_label AS "positionLabel",
+           dp.slot_index AS "slotIndex"
+      FROM node_binding nb
+      JOIN workflow_node wn ON wn.id = nb.node_id
+      JOIN device_point dp ON dp.id = nb.position_id
+      JOIN resource_node rn ON rn.id = dp.point_resource_id
+     WHERE nb.tenant_id = #{t} AND wn.workflow_id = #{workflowId}
+       AND nb.enabled = true AND nb.position_id IS NOT NULL
+     ORDER BY wn.id, nb.seq
+  </select>
+
   <select id="selectBarcodePolicyByNodeId" resultType="java.util.Map">
     SELECT nb.barcode_policy AS "barcodePolicy",
            COALESCE(nb.params->>'expected_barcode', nb.params->>'barcode') AS "expectedBarcode",

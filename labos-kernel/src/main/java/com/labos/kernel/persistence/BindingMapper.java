@@ -117,6 +117,16 @@ public interface BindingMapper {
     List<Map<String, Object>> selectNodeBindingInstanceIds(@Param("t") long tenantId,
                                                            @Param("workflowId") long workflowId);
 
+    /**
+     * P1 精确点位：节点绑定的点位（device_point.id / 槽位号 / 现场标签）。
+     *
+     * <p>与 {@link #selectNodeBindingInstanceIds} 互补：那个只解析到「哪台设备」，
+     * 搬运要按「第几个槽」走，点位必须在执行期带下去。按 {@code (nodeId, seq)} 排序，
+     * 一个节点可绑多位（seq 表达顺序）。
+     */
+    List<Map<String, Object>> selectNodeBindingPoints(@Param("t") long tenantId,
+                                                      @Param("workflowId") long workflowId);
+
     /** P2-7：读某节点的 barcode_policy + 期望条码（params->>'expected_barcode' / 'barcode'）。 */
     Map<String, Object> selectBarcodePolicyByNodeId(@Param("t") long tenantId,
                                                     @Param("nodeId") long nodeId);

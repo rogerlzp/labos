@@ -187,6 +187,9 @@ PURE=(
   # P-05：岛边界绑定门禁（PF-10/11/12/13）—— 纯函数，合成"当前资源树"快照
   # 就能覆盖四条判定，不连库
   "workflow.IslandBindingGateSelfTest"
+  # P1 精确点位：节点绑的点位 → 设备参数（targetPosition/sourcePosition）
+  # 方向判错就是搬错位置，所以方向矩阵与 spec 优先级单独测（不连库）
+  "workflow.NodeBindingPositionSelfTest"
 )
 
 # 连库：位置锁 / 暂停恢复 / 配方编译

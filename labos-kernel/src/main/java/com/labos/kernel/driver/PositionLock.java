@@ -111,7 +111,15 @@ public final class PositionLock {
             /** 现场贴的位置标识（空 = 前端回退显示 code）。 */
             String positionLabel,
             /** true = 网格之外的单独位置（培养箱/堆栈的进出口装载口）。 */
-            Boolean standalone) {
+            Boolean standalone,
+            /**
+             * P1：耗材栈/提取仪的稳定槽位号（1..N）。
+             *
+             * <p>与 {@code gridRow/gridCol}（几何排布）、{@code orderInDevice}（加载顺序）**正交**：
+             * 槽位号是「第几个坑」这个稳定事实，搬板/换板都不变，页面与搬运参数都按它寻址。
+             * 老点位（P1 之前建的）为 null —— 前端回退显示 {@code code}。
+             */
+            Integer slotIndex) {
 
         /** 可用 = 没有板 且 没有有效预约。 */
         public boolean available() {
@@ -126,7 +134,7 @@ public final class PositionLock {
             this(resourceId, code, name, kind, null, plateId, reserved, reservedByRun,
                     occupiedSince, parentDeviceId, parentDeviceCode,
                     null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null);
+                    null, null, null, null);
         }
     }
 
@@ -523,7 +531,9 @@ public final class PositionLock {
                             : ((Number) row.get("maxHeightMm")).doubleValue(),
                     (String) row.get("plateTypes"),
                     (String) row.get("positionLabel"),
-                    (Boolean) row.get("standalone")));
+                    (Boolean) row.get("standalone"),
+                    row.get("slotIndex") == null ? null
+                            : ((Number) row.get("slotIndex")).intValue()));
         }
         return out;
     }

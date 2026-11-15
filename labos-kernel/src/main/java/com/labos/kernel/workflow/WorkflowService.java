@@ -966,6 +966,12 @@ public class WorkflowService {
         Map<Long, Map<String, Object>> paramsByNode =
                 loadMethodParams(workflowId, nodeIdByKey,
                         effectiveRunVars(workflowId, presetRunId));
+        // P1 精确点位：节点绑的「点位」要在执行期生效。
+        // 以前 node_binding 只解析到 device_instance（哪台设备），点位在 JOIN 里被丢掉
+        // ⇒ 配了「第 37 槽」实际跑成「自动挑一个空槽」。这里把点位翻译成
+        // sourcePosition / targetPosition（DriverStepExecutor 早已消费这两个参数），
+        // 显式写在 method_params 里的同名字段优先，不覆盖。
+        applyNodeBindingPositions(workflowId, ordered, paramsByNode);
         // 内置节点（__setVar/__expr）要按 node_key 取参数：GraphRunner 只认 key
         Map<String, Map<String, Object>> builtinParams = new java.util.HashMap<>();
         nodeIdByKey.forEach((k, id) -> {
@@ -1753,6 +1759,127 @@ public class WorkflowService {
                     ((Number) row.get("id")).longValue());
         }
         return out;
+    }
+
+    /**
+     * P1 精确点位：把 {@code node_binding} 绑的「点位」注入该节点的设备参数。
+     *
+     * <p><b>为什么需要</b>：{@code node_binding.position_id} 原先只被翻译成
+     * 「设备实例」（{@code selectNodeBindingInstanceIds} 的 {@code dp.device_resource_id → device_instance}），
+     * 点位本身在 JOIN 里丢了 ⇒ 页面配了「第 37 槽」，执行期仍然走
+     * {@code reserveTargetPosition} 的「自动挑一个空位」。搬运的正确性取决于**哪个槽**，
+     * 所以必须落成 {@code sourcePosition / targetPosition}（{@code DriverStepExecutor} 已消费）。
+     *
+     * <p><b>方向判定</b>：只有两个方向说得清楚，判不出来就不注入 ——
+     * <ul>
+     *   <li>绑定点位所属设备 == 该节点的 {@code target} 设备 ⇒ {@code targetPosition}（放板位）</li>
+     *   <li>绑定点位所属设备 == 该节点的 {@code source} 设备 ⇒ {@code sourcePosition}（取板位）</li>
+     * </ul>
+     * 一个节点绑多位时按 {@code seq} 顺序（SQL 已排序），同一方向只认第一条；
+     * {@code method_params} 里显式写了的同名字段优先，不覆盖。
+     *
+     * <p><b>为什么"判不出方向"不报错</b>：老流程可能绑的是设备**内部位**（不参与搬运端点），
+     * 断然拒绝会让既有流程跑不动。真正的配置错误由预检拦，执行期不猜。
+     */
+    private void applyNodeBindingPositions(long workflowId, List<NodeDef> ordered,
+                                           Map<Long, Map<String, Object>> paramsByNode)
+            throws SQLException {
+        List<Map<String, Object>> rows = com.labos.kernel.persistence.Mappers
+                .get(com.labos.kernel.persistence.BindingMapper.class)
+                .selectNodeBindingPoints(tenantId, workflowId);
+        if (rows.isEmpty()) {
+            return;
+        }
+        Map<Long, String> protocolByNode = new LinkedHashMap<>();
+        for (NodeDef n : ordered) {
+            protocolByNode.put(n.id(), n.protocolName());
+        }
+        for (Map<String, Object> row : rows) {
+            Object rawId = row.get("nodeId");
+            if (!(rawId instanceof Number idNum)) {
+                continue;
+            }
+            long nodeId = idNum.longValue();
+            String protocol = protocolByNode.get(nodeId);
+            // 只对搬运节点注入：别的设备方法没有 source/target 语义，多塞参数只是噪音。
+            if (protocol == null || !protocol.startsWith("Transfer")) {
+                continue;
+            }
+            String spec = bindingPointSpec(row);
+            Object bindDevRaw = row.get("deviceResourceId");
+            if (spec == null || !(bindDevRaw instanceof Number bindNum)) {
+                continue;
+            }
+            long bindDev = bindNum.longValue();
+            Map<String, Object> p = paramsByNode.computeIfAbsent(nodeId,
+                    k -> new LinkedHashMap<>());
+            Long dst = resourceIdOfDeviceCode(p.get("target"));
+            Long src = resourceIdOfDeviceCode(p.get("source"));
+            String param = bindingPositionParam(bindDev, src, dst);
+            if (param != null) {
+                p.putIfAbsent(param, spec);
+            } else {
+                log.warn("[点位绑定] 节点 {}（{}）绑的位置 {} 既不属于源设备也不属于目标设备"
+                                + "（绑定设备 {}，source={}，target={}），本次不注入精确点位",
+                        nodeId, protocol, spec, bindDev, p.get("source"), p.get("target"));
+            }
+        }
+    }
+
+    /**
+     * 绑定点位落在哪个方向：{@code targetPosition} / {@code sourcePosition} / 判不出来（null）。
+     *
+     * <p>纯函数，单独可测（方向判错就等于让机械臂去搬错位置，是最贵的一类 bug）：
+     * <ul>
+     *   <li>绑定设备 == 目标设备 ⇒ {@code targetPosition}（放板位，优先判这个：一个节点
+     *       同时是某台的源、另一台的目标时，绑的是搬运目的地的可能性更大）</li>
+     *   <li>绑定设备 == 源设备 ⇒ {@code sourcePosition}（取板位）</li>
+     *   <li>两个都不是 / 设备 id 缺失 ⇒ null（调用方不注入，也不阻断）</li>
+     * </ul>
+     */
+    static String bindingPositionParam(Long bindDevice, Long sourceDevice, Long targetDevice) {
+        if (bindDevice == null) {
+            return null;
+        }
+        if (bindDevice.equals(targetDevice)) {
+            return "targetPosition";
+        }
+        if (bindDevice.equals(sourceDevice)) {
+            return "sourcePosition";
+        }
+        return null;
+    }
+
+    /** 绑定点位 → 驱动认的 spec 字符串：现场标签 > 槽位号 > 点位编码。 */
+    static String bindingPointSpec(Map<String, Object> row) {
+        Object label = row.get("positionLabel");
+        if (label != null && !String.valueOf(label).isBlank()) {
+            return String.valueOf(label).trim();
+        }
+        Object slot = row.get("slotIndex");
+        if (slot instanceof Number n) {
+            return String.valueOf(n.intValue());
+        }
+        Object code = row.get("pointCode");
+        return code == null ? null : String.valueOf(code);
+    }
+
+    /** 设备编码 → 资源 id（判不出来返回 null，调用方按"方向不确定"处理）。 */
+    private Long resourceIdOfDeviceCode(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String code = String.valueOf(value).trim();
+        if (code.isEmpty()) {
+            return null;
+        }
+        try {
+            return com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .selectResourceIdByCode(tenantId, code);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /** workflow_id -> (node_key -> capability_code)。 */
