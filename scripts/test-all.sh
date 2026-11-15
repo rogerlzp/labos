@@ -270,6 +270,8 @@ DB=(
   "driver.DeviceFactWaitingDbSelfTest"
   # P2 阶段 C：L1 转盘 + L5 等待交互 运行时守卫（停止放行/未知拒绝/无等待拒绝/不匹配拒绝）
   "driver.TransferInterlockDbSelfTest"
+  # P2 阶段 D：L3 轨道分区——多分区全有或全无 + 升序 + 未配置 fail-closed
+  "driver.RailZoneGuardDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据

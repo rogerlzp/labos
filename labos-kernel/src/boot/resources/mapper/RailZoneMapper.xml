@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.RailZoneMapper">
+
+    <select id="selectZonesByPath" resultType="java.lang.Long">
+        SELECT zone_resource_id
+          FROM transfer_rail_zone
+         WHERE tenant_id = #{tenantId} AND path_key = #{pathKey}
+         ORDER BY seq, zone_resource_id
+    </select>
+
+    <select id="selectZoneResource" resultType="java.lang.Long">
+        SELECT resource_id
+          FROM rail_zone
+         WHERE tenant_id = #{tenantId} AND resource_id = #{zoneResourceId}
+         LIMIT 1
+    </select>
+
+</mapper>

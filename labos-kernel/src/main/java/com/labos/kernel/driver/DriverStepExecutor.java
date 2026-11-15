@@ -446,6 +446,9 @@ public final class DriverStepExecutor implements StepExecutor {
                     "申请资源时数据库错误：" + e.getMessage(), 0, method);
         }
 
+        // P2 阶段 D：L3 轨道分区互锁（acquire 后持有，finally 释放）。
+        RailZoneGuard.Lease railLease = null;
+
         // P2 阶段 C：L1 转盘 + L5 等待交互互锁（机械臂操作前守卫，begin 之前）。
         // 任一拒绝都释放已拿到的一切并拒绝下发（板不动作）。
         if (db != null && runId > 0) {
@@ -469,6 +472,18 @@ public final class DriverStepExecutor implements StepExecutor {
                 throw new StepFailure(l5.errorCode(), scopeOf(l5.errorCode()),
                         l5.message(), 0, method);
             }
+            // L3：轨道分区互锁——完整运动包络分区集，缺配置/占满都拒绝。
+            String railPathKey = (sourcePos != null && targetPos != null)
+                    ? sourcePos + "->" + targetPos : srcRes + "->" + dstRes;
+            RailZoneGuard.Acquire rail = RailZoneGuard.acquire(db, tenantId, runId, railPathKey);
+            if (!rail.ok()) {
+                safeReleaseTarget(posLock, targetPos);
+                plan.closeAccesses(srcRes, dstRes, factory);
+                plan.close();
+                throw new StepFailure(rail.errorCode(), scopeOf(rail.errorCode()),
+                        rail.reason(), 0, method);
+            }
+            railLease = rail.lease();
         }
 
         // P-08：搬运事务（设备回包=运动报告，位置需另证）
@@ -483,11 +498,13 @@ public final class DriverStepExecutor implements StepExecutor {
                         db, tenantId, runId, plate, srcRes, dstRes, sourcePos, targetPos);
             } catch (java.sql.SQLException e) {
                 safeReleaseTarget(posLock, targetPos);
+                RailZoneGuard.release(db, tenantId, railLease);
                 throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
                         "搬运事务创建失败（拒绝下发）：" + e.getMessage(), 0, method);
             }
             if (transferTxn == 0) {
                 safeReleaseTarget(posLock, targetPos);
+                RailZoneGuard.release(db, tenantId, railLease);
                 throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
                         "搬运事务创建失败（无事务 id，拒绝下发）", 0, method);
             }
@@ -556,6 +573,8 @@ public final class DriverStepExecutor implements StepExecutor {
         } finally {
             plan.closeAccesses(srcRes, dstRes, factory);
             plan.close();
+            // L3：物理动作结束（或未开始）后释放轨道分区租约
+            RailZoneGuard.release(db, tenantId, railLease);
         }
     }
 
