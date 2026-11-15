@@ -52,6 +52,9 @@ export const NAV: NavGroup[] = [
     labelKey: 'nav.group.run',
     icon: <PlayCircleOutlined />,
     children: [
+      // 单页运行看板（2026-11-15）：把「跑得怎么样/卡在哪/谁在等我/有没有炸/设备状态」
+      // 收进一页。原来这些信息要跨 /runs → /runs/:id → /manual-windows → /alerts → /island 五个页面。
+      { key: '/live', labelKey: 'nav.liveBoard' },
       { key: '/runs', labelKey: 'nav.runs' },
       { key: '/scheduler', labelKey: 'nav.scheduler' },
       { key: '/schedule', labelKey: 'nav.schedule' },

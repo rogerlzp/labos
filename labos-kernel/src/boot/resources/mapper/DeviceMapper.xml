@@ -209,7 +209,8 @@
     </select>
 
 <select id="selectDeviceMethods" resultType="java.util.Map">
-        SELECT dm.method AS "method", dm.name AS "name", c.code AS "capability",
+        SELECT dm.id AS "methodId",
+               dm.method AS "method", dm.name AS "name", c.code AS "capability",
                dm.estimate_sec AS "estimateSec", dm.timeout_sec AS "timeoutSec",
                dm.interruptible AS "interruptible",
                dm.param_schema->'params' AS "params"

@@ -5,6 +5,7 @@ import { NAV, titleFor } from './app/nav';
 import { TabsProvider, useTabs } from './app/tabs';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import RunsPage from './pages/Runs';
+import LiveBoardPage from './pages/LiveBoard';
 import PausedRunsPage from './pages/PausedRuns';
 import ManualWindowsPage from './pages/ManualWindows';
 import QuarantinePage from './pages/Quarantine';
@@ -216,10 +217,12 @@ function AppInner() {
         <Content style={{ padding: 20, overflow: 'auto', background: '#0d1014' }}>
           <TabBar />
           <Routes>
-            <Route path="/" element={<Navigate to="/runs" replace />} />
+            <Route path="/" element={<Navigate to="/live" replace />} />
             {/* 登录成功后 URL 停在 /login ⇒ 这里没有匹配路由 ⇒ 内容区空白
-                （2026-11-11 发现：登录后一片白，只剩菜单）。⇒ 把它重定向回运行列表。 */}
-            <Route path="/login" element={<Navigate to="/runs" replace />} />
+                （2026-11-11 发现：登录后一片白，只剩菜单）。⇒ 把它重定向回运行看板。 */}
+            <Route path="/login" element={<Navigate to="/live" replace />} />
+            {/* 单页运行看板：现场第一眼看的页面（2026-11-15） */}
+            <Route path="/live" element={<LiveBoardPage />} />
             <Route path="/runs" element={<RunsPage />} />
             <Route path="/scheduler" element={<SchedulerPage />} />
             <Route path="/gantt" element={<GanttPage />} />

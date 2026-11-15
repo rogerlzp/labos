@@ -22,7 +22,11 @@ import BpmnModeler from 'bpmn-js/lib/Modeler';
 import 'bpmn-js/dist/assets/diagram-js.css';
 import 'bpmn-js/dist/assets/bpmn-js.css';
 import 'bpmn-js/dist/assets/bpmn-font/css/bpmn.css';
-import { apiFetch, api, type PreflightIssue } from '../api/client';
+import {
+  apiFetch, api,
+  type PreflightIssue, type DevicePool, type MaterialRole,
+  type NodeBinding, type NodeBindingInput,
+} from '../api/client';
 import { statusColor, useStatusVocabulary } from '../utils/status';
 import { useReadOnly } from '../auth';
 import { useI18n, useT } from '../i18n';
@@ -802,6 +806,7 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
           </>
         )}
         <MaterialEffectCard wfId={wfId} nodeKey={nodeKey} />
+        <NodeBindingCard wfId={wfId} nodeKey={nodeKey} islandId={islandId} />
       </Space>
     </Card>
   );
@@ -961,6 +966,509 @@ function MaterialEffectCard({ wfId, nodeKey }: { wfId: string; nodeKey: string }
           <Popconfirm title={t('designer.material.clearConfirm')} onConfirm={clear}>
             <Button size="small" disabled={ro.disabled}>
               {t('designer.material.clear')}
+            </Button>
+          </Popconfirm>
+        </Space>
+      </Space>
+    </Card>
+  );
+}
+
+// ================================================================ 节点绑定（node_binding）
+
+/** 节点绑定的目标类型：点位 / 设备实例 / 设备池（三选一，后端有 CHECK 约束）。 */
+type BindingTargetKind = 'position' | 'device' | 'pool';
+
+/**
+ * 一条绑定（node_binding 的一行）—— 界面态。
+ *
+ * <p>⚠ 保存是**整体替换**（后端 PUT 先删后插）⇒ 必须把界面上**全部**的行一起提交，
+ * 只提交改动的那一条会把没动过的绑定一起删掉。
+ */
+interface BindingRow {
+  /** React key：已保存的行用后端 id，新增行用本地序号。 */
+  key: string;
+  kind: BindingTargetKind;
+  /** 点位：device_point.id（**不是** resourceId）。 */
+  positionId: number | null;
+  /** 设备实例：device_instance.id。 */
+  deviceInstanceId: number | null;
+  /** 设备池：device_pool.id。 */
+  poolId: number | null;
+  /** 方法：device_method.id（方法名在同型号多实例下会重复，只有 id 唯一）。 */
+  methodId: number | null;
+  /** 物料角色 code（material_role.role_code）。 */
+  materialRole: string | null;
+  /** 装板方式：do_not_load / load_single / load_selected / load_all_remaining。 */
+  loadingPattern: string;
+  /** 扫码策略：none / read / update / validate_in / validate_out / validate_both。 */
+  barcodePolicy: string;
+  /** 执行完是否留在工位。 */
+  leaveAtStation: boolean;
+  /** 额外参数的原始 JSON 文本（界面上是文本框，保存时解析成对象再提交）。 */
+  params: string;
+}
+
+/** 点位下拉项：GET /api/positions 的 items[]。 */
+interface BindingPositionItem {
+  /** device_point.id —— 提交用这个。 */
+  pointId: number;
+  code: string;
+  name?: string | null;
+  /** 所属设备的 resource_node.id —— 取方法列表要用它。 */
+  parentDeviceId?: number | null;
+  parentDeviceCode?: string | null;
+}
+
+/** 设备实例下拉项：GET /api/topology 的 islands[].devices[]。 */
+interface BindingDeviceItem {
+  /** device_instance.id —— 提交用这个。 */
+  instanceId?: number | null;
+  /** resource_node.id —— 取方法列表要用它。 */
+  resourceId: number;
+  code: string;
+  name?: string | null;
+  model?: string | null;
+  capability?: string | null;
+  /** 所属岛（跨岛平铺时用来区分同名的设备）。 */
+  islandCode?: string | null;
+}
+
+/** 方法下拉项：GET /api/devices/{resourceId}/methods 的 items[]。 */
+interface BindingMethodItem {
+  /** device_method.id —— 提交用这个。 */
+  methodId: number;
+  method: string;
+  name?: string | null;
+  capability?: string | null;
+}
+
+/** 后端一行 → 界面一行。 */
+function rowFromBinding(b: NodeBinding): BindingRow {
+  const kind: BindingTargetKind = b.positionId != null ? 'position'
+    : b.deviceInstanceId != null ? 'device'
+      : b.poolId != null ? 'pool' : 'position';
+  // params 运行时是 JSON 文本；但类型上只声明了 string ⇒ 这里做一次防御性归一。
+  const rawParams = b.params as unknown;
+  return {
+    key: `b${b.id}`,
+    kind,
+    positionId: b.positionId ?? null,
+    deviceInstanceId: b.deviceInstanceId ?? null,
+    poolId: b.poolId ?? null,
+    methodId: b.methodId ?? null,
+    materialRole: b.materialRole ?? null,
+    loadingPattern: b.loadingPattern ?? 'load_single',
+    barcodePolicy: b.barcodePolicy ?? 'none',
+    leaveAtStation: b.leaveAtStation === true,
+    params: typeof rawParams === 'string' ? rawParams
+      : rawParams == null ? '' : JSON.stringify(rawParams),
+  };
+}
+
+/**
+ * 一条绑定行的编辑器。
+ *
+ * <p>方法列表是**按设备**取的：点位属于某台设备（parentDeviceId），设备实例有自己的
+ * resourceId —— 所以要先选目标，方法下拉才有内容（后端 methodId 可空，允许留空）。
+ */
+function BindingRowEditor({ row, index, total, disabled, positions, devices, pools, roles,
+  onChange, onRemove, onMove }: {
+  row: BindingRow;
+  index: number;
+  total: number;
+  disabled: boolean;
+  positions: BindingPositionItem[];
+  devices: BindingDeviceItem[];
+  pools: DevicePool[];
+  roles: MaterialRole[];
+  onChange: (next: BindingRow) => void;
+  onRemove: () => void;
+  onMove: (delta: number) => void;
+}) {
+  const t = useT();
+
+  /** 这一行该向哪台设备要方法列表（设备池没有确定设备 ⇒ 没有方法）。 */
+  const methodResourceId = row.kind === 'position'
+    ? (positions.find((p) => p.pointId === row.positionId)?.parentDeviceId ?? null)
+    : row.kind === 'device'
+      ? (devices.find((d) => d.instanceId === row.deviceInstanceId)?.resourceId ?? null)
+      : null;
+
+  // 独立 queryKey：Design 里已有 ['device-methods', resourceId]（那份没有 methodId），
+  // 复用会命中没有 id 的缓存 ⇒ 方法下拉选不出东西。
+  const methods = useQuery({
+    queryKey: ['node-binding-methods', methodResourceId],
+    queryFn: () => apiFetch(`/api/devices/${methodResourceId}/methods`)
+      .then((r) => r.json()) as Promise<{ items?: BindingMethodItem[] }>,
+    enabled: methodResourceId != null,
+    retry: false,
+  });
+
+  const targetOptions = row.kind === 'position'
+    ? positions.map((p) => ({
+        value: p.pointId,
+        label: `${p.code}${p.name ? ' · ' + p.name : ''}`
+          + `${p.parentDeviceCode ? ' @' + p.parentDeviceCode : ''}`,
+      }))
+    : row.kind === 'device'
+      ? devices.map((d) => ({
+          value: d.instanceId,
+          label: `${d.code}${d.name ? ' · ' + d.name : ''}`
+            + `${d.capability ? ' (' + d.capability + ')' : ''}`
+            + `${d.islandCode ? ' @' + d.islandCode : ''}`,
+        }))
+      : pools.map((p) => ({
+          value: p.id,
+          label: `${p.code}${p.name ? ' · ' + p.name : ''}`
+            + `${p.poolKind ? ' (' + p.poolKind + ')' : ''}`,
+        }));
+
+  const targetValue = row.kind === 'position' ? row.positionId
+    : row.kind === 'device' ? row.deviceInstanceId : row.poolId;
+
+  /** 换目标类型：清掉另外两类的 id 与已选方法（方法属于旧目标的设备）。 */
+  const setKind = (kind: BindingTargetKind) => {
+    onChange({
+      ...row,
+      kind,
+      positionId: kind === 'position' ? row.positionId : null,
+      deviceInstanceId: kind === 'device' ? row.deviceInstanceId : null,
+      poolId: kind === 'pool' ? row.poolId : null,
+      methodId: null,
+    });
+  };
+
+  /** 换目标：目标换了 ⇒ 之前选的方法多半属于另一台设备，清掉重选。 */
+  const setTarget = (v: number) => {
+    onChange({
+      ...row,
+      positionId: row.kind === 'position' ? v : null,
+      deviceInstanceId: row.kind === 'device' ? v : null,
+      poolId: row.kind === 'pool' ? v : null,
+      methodId: null,
+    });
+  };
+
+  return (
+    <div style={{ border: '1px solid #ffffff14', borderRadius: 6, padding: 8 }}>
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Typography.Text style={{ fontSize: 12, flex: 1 }}>
+            {t('designer.binding.row', { n: index + 1 })}
+          </Typography.Text>
+          <Button size="small" type="text" disabled={disabled || index === 0}
+            title={t('designer.binding.moveUp')} onClick={() => onMove(-1)}>
+            ↑
+          </Button>
+          <Button size="small" type="text" disabled={disabled || index >= total - 1}
+            title={t('designer.binding.moveDown')} onClick={() => onMove(1)}>
+            ↓
+          </Button>
+          <Button size="small" type="text" danger disabled={disabled}
+            title={t('designer.binding.remove')} onClick={onRemove}>
+            ✕
+          </Button>
+        </div>
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.binding.field.targetKind')}
+        </Typography.Text>
+        <Select size="small" style={{ width: '100%' }} value={row.kind} disabled={disabled}
+          onChange={(v) => setKind(v as BindingTargetKind)}
+          options={[
+            { value: 'position', label: t('designer.binding.target.position') },
+            { value: 'device', label: t('designer.binding.target.device') },
+            { value: 'pool', label: t('designer.binding.target.pool') },
+          ]} />
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.binding.field.target')}
+        </Typography.Text>
+        <Select size="small" style={{ width: '100%' }} showSearch optionFilterProp="label"
+          value={targetValue ?? undefined} disabled={disabled}
+          placeholder={t('designer.binding.placeholder.target')}
+          onChange={(v: number) => setTarget(v)}
+          options={targetOptions} />
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.binding.field.method')}
+        </Typography.Text>
+        <Select size="small" style={{ width: '100%' }} showSearch optionFilterProp="label"
+          allowClear value={row.methodId ?? undefined} disabled={disabled}
+          placeholder={methodResourceId == null
+            ? t('designer.binding.placeholder.noMethod')
+            : t('designer.binding.placeholder.method')}
+          onChange={(v: number | undefined) => onChange({ ...row, methodId: v ?? null })}
+          options={(methods.data?.items ?? []).map((m) => ({
+            value: m.methodId,
+            label: `${m.method}${m.name ? ' · ' + m.name : ''}`,
+          }))} />
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.binding.field.loading')}
+        </Typography.Text>
+        <Select size="small" style={{ width: '100%' }} value={row.loadingPattern} disabled={disabled}
+          onChange={(v) => onChange({ ...row, loadingPattern: v })}
+          options={[
+            { value: 'do_not_load', label: t('designer.binding.loading.do_not_load') },
+            { value: 'load_single', label: t('designer.binding.loading.load_single') },
+            { value: 'load_selected', label: t('designer.binding.loading.load_selected') },
+            { value: 'load_all_remaining', label: t('designer.binding.loading.load_all_remaining') },
+          ]} />
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.binding.field.barcode')}
+        </Typography.Text>
+        <Select size="small" style={{ width: '100%' }} value={row.barcodePolicy} disabled={disabled}
+          onChange={(v) => onChange({ ...row, barcodePolicy: v })}
+          options={[
+            { value: 'none', label: t('designer.binding.barcode.none') },
+            { value: 'read', label: t('designer.binding.barcode.read') },
+            { value: 'update', label: t('designer.binding.barcode.update') },
+            { value: 'validate_in', label: t('designer.binding.barcode.validate_in') },
+            { value: 'validate_out', label: t('designer.binding.barcode.validate_out') },
+            { value: 'validate_both', label: t('designer.binding.barcode.validate_both') },
+          ]} />
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.binding.field.role')}
+        </Typography.Text>
+        <Select size="small" style={{ width: '100%' }} showSearch optionFilterProp="label"
+          allowClear value={row.materialRole ?? undefined} disabled={disabled}
+          placeholder={t('designer.binding.placeholder.role')}
+          onChange={(v: string | undefined) => onChange({ ...row, materialRole: v ?? null })}
+          options={roles.map((r) => ({ value: r.roleCode, label: r.displayName || r.roleCode }))} />
+
+        <Checkbox checked={row.leaveAtStation} disabled={disabled}
+          onChange={(e) => onChange({ ...row, leaveAtStation: e.target.checked })}>
+          {t('designer.binding.field.leave')}
+        </Checkbox>
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.binding.field.params')}
+        </Typography.Text>
+        <Input.TextArea size="small" rows={2} value={row.params} disabled={disabled}
+          placeholder={'{"cycles":3}'}
+          onChange={(e) => onChange({ ...row, params: e.target.value })} />
+      </Space>
+    </div>
+  );
+}
+
+/**
+ * §3.3c 节点绑定配置面板（node_binding）。
+ *
+ * <p>node_binding 是流程节点的**真绑定**：点位 / 设备实例 / 设备池 + 方法 +
+ * 物料角色 + 装板方式 + 扫码策略。装板方式与扫码策略是「分段自驱」的业务核心：
+ * 「这一步装几块板」和「进出要不要扫码」。
+ *
+ * <p>⚠ PUT 是**整体替换**（后端先删后插）⇒ 保存时提交界面上**全部**的行。
+ */
+function NodeBindingCard({ wfId, nodeKey, islandId }: {
+  wfId: string;
+  nodeKey: string;
+  /** 点位清单按岛取（GET /api/positions 必须带 islandId）；null = 没有岛。 */
+  islandId: number | null;
+}) {
+  const t = useT();
+  const ro = useReadOnly();
+  const qc = useQueryClient();
+  const wfNum = Number(wfId);
+  const [rows, setRows] = useState<BindingRow[]>([]);
+  const [saving, setSaving] = useState(false);
+  const newSeq = useRef(0);
+
+  // ⚠ queryKey 与 NodeSettings 里那个 ['node-binding', ...] 差一个 s：
+  // 那个是**节点参数**的缓存，这个才是 node_binding。撞了会串数据。
+  const q = useQuery({
+    queryKey: ['node-bindings', wfId, nodeKey],
+    queryFn: () => api.nodeBindings(wfNum, nodeKey),
+    enabled: Number.isFinite(wfNum) && wfNum > 0 && !!nodeKey,
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  // 载入：后端返回的顺序就是 seq 顺序（ORDER BY seq, id）。
+  useEffect(() => {
+    if (!q.data) return;
+    setRows(q.data.bindings.map(rowFromBinding));
+  }, [q.data]);
+
+  const positionsQ = useQuery({
+    queryKey: ['node-binding-positions', islandId],
+    queryFn: () => apiFetch(`/api/positions?islandId=${islandId}`)
+      .then((r) => r.json()) as Promise<{ items?: BindingPositionItem[] }>,
+    enabled: islandId != null,
+    retry: false,
+  });
+
+  // 设备实例要 instanceId（device_instance.id），只有 /api/topology 给得出。
+  const topoQ = useQuery({
+    queryKey: ['topology'],
+    queryFn: () => apiFetch('/api/topology').then((r) => r.json()) as Promise<{
+      islands?: Array<{ id: number; code?: string; name?: string; devices?: BindingDeviceItem[] }>;
+    }>,
+    retry: false,
+  });
+
+  const poolsQ = useQuery({
+    queryKey: ['node-binding-pools'],
+    queryFn: () => api.pools(),
+    retry: false,
+  });
+
+  const rolesQ = useQuery({
+    queryKey: ['node-binding-roles'],
+    queryFn: () => api.materialRoles(),
+    retry: false,
+  });
+
+  /** 拓扑里的设备实例（跨岛平铺，标签里带岛名免得选错）。 */
+  const devices: BindingDeviceItem[] = [];
+  (topoQ.data?.islands ?? []).forEach((isl) => {
+    (isl.devices ?? []).forEach((d) => {
+      if (d.instanceId == null) return;
+      devices.push({ ...d, islandCode: isl.code ?? null });
+    });
+  });
+
+  const addRow = () => {
+    newSeq.current += 1;
+    const key = `new-${newSeq.current}`;
+    setRows((prev) => [...prev, {
+      key,
+      kind: 'position',
+      positionId: null,
+      deviceInstanceId: null,
+      poolId: null,
+      methodId: null,
+      materialRole: null,
+      loadingPattern: 'load_single',
+      barcodePolicy: 'none',
+      leaveAtStation: false,
+      params: '',
+    }]);
+  };
+
+  const save = async () => {
+    const payload: NodeBindingInput[] = [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const r = rows[i];
+      const hasTarget = r.kind === 'position' ? r.positionId != null
+        : r.kind === 'device' ? r.deviceInstanceId != null : r.poolId != null;
+      if (!hasTarget) {
+        message.error(t('designer.binding.needTarget', { n: i + 1 }));
+        return;
+      }
+      // 后端 raw() 取的是 JSON 节点的字符串形式：提交**对象**才落成 jsonb 对象；
+      // 提交字符串会存成 jsonb 字符串标量（多一层引号），语义就错了。
+      let params: unknown = {};
+      const text = r.params.trim();
+      if (text) {
+        try {
+          params = JSON.parse(text);
+        } catch {
+          message.error(t('designer.binding.badJson'));
+          return;
+        }
+      }
+      payload.push({
+        positionId: r.kind === 'position' ? r.positionId : null,
+        deviceInstanceId: r.kind === 'device' ? r.deviceInstanceId : null,
+        poolId: r.kind === 'pool' ? r.poolId : null,
+        methodId: r.methodId ?? null,
+        materialRole: r.materialRole ?? null,
+        loadingPattern: r.loadingPattern,
+        barcodePolicy: r.barcodePolicy,
+        leaveAtStation: r.leaveAtStation,
+        params,
+      });
+    }
+    setSaving(true);
+    try {
+      await api.replaceNodeBindings(wfNum, nodeKey, payload);
+      message.success(t('designer.binding.saved', { n: payload.length }));
+      await qc.invalidateQueries({ queryKey: ['node-bindings', wfId, nodeKey] });
+    } catch (e) {
+      // 后端 400/409 的原文透出去（"每条绑定至少一个 positionId / ..." 之类）。
+      message.error(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    try {
+      await api.clearNodeBindings(wfNum, nodeKey);
+      message.success(t('designer.binding.cleared'));
+      setRows([]);
+      await qc.invalidateQueries({ queryKey: ['node-bindings', wfId, nodeKey] });
+    } catch (e) {
+      message.error(String(e));
+    }
+  };
+
+  return (
+    <Card size="small" title={t('designer.binding.title')}>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('designer.binding.hint')}
+        </Typography.Text>
+
+        {q.isError ? (
+          <Typography.Text type="danger" style={{ fontSize: 12 }}>
+            {t('designer.binding.loadFailed')}: {String((q.error as Error)?.message ?? q.error)}
+          </Typography.Text>
+        ) : null}
+
+        {islandId == null ? (
+          <Typography.Text type="warning" style={{ fontSize: 12 }}>
+            {t('designer.binding.placeholder.noIsland')}
+          </Typography.Text>
+        ) : null}
+
+        {rows.length === 0 && !q.isLoading ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {t('designer.binding.empty')}
+          </Typography.Text>
+        ) : null}
+
+        {rows.map((r, i) => (
+          <BindingRowEditor
+            key={r.key}
+            row={r}
+            index={i}
+            total={rows.length}
+            disabled={ro.disabled}
+            positions={positionsQ.data?.items ?? []}
+            devices={devices}
+            pools={poolsQ.data?.items ?? []}
+            roles={rolesQ.data?.items ?? []}
+            onChange={(next) => setRows((prev) => prev.map((x, xi) => (xi === i ? next : x)))}
+            onRemove={() => setRows((prev) => prev.filter((_, xi) => xi !== i))}
+            onMove={(delta) => setRows((prev) => {
+              const j = i + delta;
+              if (j < 0 || j >= prev.length) return prev;
+              const copy = [...prev];
+              const tmp = copy[i];
+              copy[i] = copy[j];
+              copy[j] = tmp;
+              return copy;
+            })}
+          />
+        ))}
+
+        <Space size={6} wrap>
+          <Button size="small" disabled={ro.disabled} onClick={addRow}>
+            {t('designer.binding.add')}
+          </Button>
+          <Button size="small" type="primary" loading={saving} disabled={ro.disabled} onClick={save}>
+            {t('designer.action.save')}
+          </Button>
+          <Popconfirm title={t('designer.binding.clearConfirm')} onConfirm={clear}>
+            <Button size="small" disabled={ro.disabled}>
+              {t('designer.binding.clear')}
             </Button>
           </Popconfirm>
         </Space>

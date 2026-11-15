@@ -478,6 +478,11 @@ public class DeviceService {
             // 参数定义原样透出：{seq,name,desc,type,default,required,control_type,unit,range}
             Object params = row.get("params");
             items.add(Jsons.obj(
+                    // device_method.id：绑定链（position_method.method_id / node_binding.method_id）
+                    // 强制要这个 id，而它是**配置层主键**（不是方法名字符串）——
+                    // 方法名在同型号多实例下会重复，只有 id 唯一。
+                    // 2026-11-15 之前没暴露，前端连"选哪个方法"都做不了。
+                    "methodId", row.get("methodId"),
                     "method", row.get("method"),
                     "name", row.get("name"),
                     "capability", row.get("capability"),

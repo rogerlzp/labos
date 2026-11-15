@@ -718,6 +718,164 @@ export interface MaterialEffectDecl {
   acceptedEvidenceLevels?: string[];
 }
 
+// ---------------------------------------------------------------- 三条绑定链（P0）
+
+/**
+ * 设备池（`device_pool`）：同型号多台设备的集合 + 选位策略。
+ *
+ * <p>为什么要池：一台提取仪不够用时，流程要能在 4 台里挑一台空闲的。
+ * 池成员是**设备实例**（device_instance.id），不是资源节点 ——
+ * 同一个资源节点在重装后实例 id 会变。
+ */
+export interface DevicePoolMember {
+  id: number;
+  poolId: number;
+  /** 设备实例 id（device_instance.id）—— 池成员引用的就是它 */
+  deviceInstanceId: number;
+  /** 子组：同池内再分组（如「A 组/ B 组」），运行时按子组选 */
+  subGroup?: string | null;
+  /** 优先级：数字小的先用 */
+  priority: number;
+  /** 已用次数（轮转/最久未用策略的记账） */
+  useCount?: number | null;
+  /** 设备实例编号（人读） */
+  deviceCode?: string | null;
+  /** 设备资源节点编号（人读） */
+  deviceResourceCode?: string | null;
+}
+
+export interface DevicePool {
+  id: number;
+  code: string;
+  name: string;
+  islandId: number;
+  /** operation = 操作池（同型号，运行时挑一台做） / storage = 存储池 */
+  poolKind: 'operation' | 'storage';
+  /** 选位策略：首个可用 / 最久未用 / 轮转 / 优先级承诺 */
+  strategy: 'first_available' | 'least_recently_used' | 'round_robin' | 'priority_commit';
+  skipOnError: boolean;
+  skipOnOffline: boolean;
+  allowIterationOnError: boolean;
+  /** 最少可用成员数：低于这个值就不派发 */
+  minNestCount: number;
+  enabled: boolean;
+  /** 成员数（列表接口带；详情接口的 members 数组另给） */
+  memberCount?: number;
+  /** 详情接口（GET /api/pools/{id}）才有的成员明细 */
+  members?: DevicePoolMember[];
+}
+
+/** 池成员提交体。 */
+export interface DevicePoolMemberInput {
+  deviceInstanceId: number;
+  subGroup?: string | null;
+  priority?: number;
+}
+
+/**
+ * 点位×方法绑定（`position_method`）：某个点位允许执行哪些方法。
+ *
+ * <p>ID 空间警告：`positionId` 是 **device_point.id**（配置层），
+ * 不是 resource_node.id。后端 {@code BindingController} 明确要求前者。
+ */
+export interface PositionMethodBinding {
+  id: number;
+  positionId: number;
+  /** device_method.id —— 方法**配置主键**，不是方法名字符串 */
+  methodId: number;
+  /** 方法名（人读，来自 device_method.method） */
+  methodName: string;
+  /** 作用域：全局 / 流程 / 实验 */
+  scopeKind: 'global' | 'workflow' | 'experiment';
+  /** 作用域目标 id（workflow/experiment 时有效） */
+  scopeId?: number | null;
+  /** 用途说明（人读备注） */
+  purpose?: string | null;
+  /** 分配方式：指定 / 自动选第一个空闲 / 自动选下一个空闲 */
+  allocation: 'explicit' | 'auto_first_free' | 'auto_next_free';
+  priority: number;
+  enabled: boolean;
+}
+
+/** GET /api/positions/{positionId}/methods 的响应（点位信息 + 绑定列表）。 */
+export interface PositionMethodsView {
+  positionId: number;
+  /** 点位资源节点编号（如 EXT-R1C1） */
+  positionCode?: string | null;
+  /** 点位资源节点 id（resource_node.id） */
+  pointResourceId?: number | null;
+  pointRole?: string | null;
+  robotReachable?: boolean | null;
+  /** 所属设备资源节点 id */
+  deviceResourceId?: number | null;
+  /** 所属设备编号 */
+  deviceCode?: string | null;
+  bindings: PositionMethodBinding[];
+}
+
+/**
+ * 节点绑定（`node_binding`）：流程节点绑到点位 / 设备实例 / 设备池。
+ *
+ * <p>装板方式与扫码策略是这条链的业务核心：
+ * 「这台提取仪这一步装几块板」和「进出要不要扫���」。
+ */
+export interface NodeBinding {
+  id: number;
+  nodeId: number;
+  /** 顺序号（1..N，绑定的执行次序） */
+  seq: number;
+  /** 点位配置 id（device_point.id） */
+  positionId?: number | null;
+  /** 设备实例 id（device_instance.id） */
+  deviceInstanceId?: number | null;
+  /** 设备池 id */
+  poolId?: number | null;
+  /** 方法配置 id（device_method.id） */
+  methodId?: number | null;
+  /** 物料角色 code（如 sample / plate） */
+  materialRole?: string | null;
+  /** 装板方式：不装 / 装一块 / 装选中的 / 装满剩余 */
+  loadingPattern?: string | null;
+  /** 执行完是否留在工位 */
+  leaveAtStation?: boolean | null;
+  /** 扫码策略：不扫 / 读取 / 更新 / 进时校验 / 出时校验 / 进出都校验 */
+  barcodePolicy?: string | null;
+  /** 额外参数（原始 JSON） */
+  params?: string | null;
+  enabled?: boolean | null;
+  /** 点位资源节点编号（人读） */
+  positionCode?: string | null;
+  /** 方法名（人读） */
+  methodName?: string | null;
+}
+
+/** 节点绑定提交体（PUT 是**整体替换**）。 */
+export interface NodeBindingInput {
+  positionId?: number | null;
+  deviceInstanceId?: number | null;
+  poolId?: number | null;
+  methodId?: number | null;
+  materialRole?: string | null;
+  loadingPattern?: string | null;
+  leaveAtStation?: boolean | null;
+  barcodePolicy?: string | null;
+  params?: unknown;
+}
+
+/** 物料角色（`material_role`）：板/耗材的分类字典。 */
+export interface MaterialRole {
+  id: number;
+  roleCode: string;
+  displayName: string;
+  /** plate / tube / consumable … */
+  physicalType: string;
+  plateType?: string | null;
+  maxHeightMm?: number | null;
+  lidRoleCode?: string | null;
+  barcodeRegex?: string | null;
+  autoBarcodePrefix?: string | null;
+}
+
 // ---------------------------------------------------------------- 接口
 
 export const api = {
@@ -1085,6 +1243,140 @@ export const api = {
     req<{ updated: number; note: string }>(`/api/runs/${runId}/attendance?mode=${mode}`, {
       method: 'POST',
     }),
+
+  // -------------------------------------------------------------- 三条绑定链（P0）
+
+  /**
+   * 设备池列表。
+   *
+   * <p>不传 islandId = 全部岛；传 kind='operation' 只看操作池。
+   */
+  pools: (params?: { islandId?: number; kind?: 'operation' | 'storage' }) => {
+    const q = new URLSearchParams();
+    if (params?.islandId) q.set('islandId', String(params.islandId));
+    if (params?.kind) q.set('kind', params.kind);
+    const s = q.toString();
+    return req<{ total: number; items: DevicePool[] }>(`/api/pools${s ? '?' + s : ''}`);
+  },
+
+  /** 池详情（含成员明细）。 */
+  pool: (id: number) => req<DevicePool>(`/api/pools/${id}`),
+
+  /**
+   * 建池。
+   *
+   * <p>operation 池的成员必须**同型号**，否则后端回 409 ——
+   * 原因在运行语义：池成员是拿来互换的，型号不同就换不了。
+   */
+  createPool: (body: {
+    code: string; name: string; islandId: number;
+    poolKind?: 'operation' | 'storage';
+    strategy?: DevicePool['strategy'];
+    skipOnError?: boolean; skipOnOffline?: boolean;
+    allowIterationOnError?: boolean; minNestCount?: number;
+    members?: DevicePoolMemberInput[];
+  }) => req<{ id: number; code: string; memberCount: number }>('/api/pools', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+
+  /** 改池（策略/容错开关等）。 */
+  updatePool: (id: number, body: {
+    name?: string; strategy?: DevicePool['strategy'];
+    skipOnError?: boolean; skipOnOffline?: boolean;
+    allowIterationOnError?: boolean; enabled?: boolean;
+  }) => req<{ updated: number; id: number }>(`/api/pools/${id}`, {
+    method: 'PUT', body: JSON.stringify(body),
+  }),
+
+  /** 删池（被 node_binding 引用时后端回 409）。 */
+  deletePool: (id: number) =>
+    req<{ deleted: number; id: number }>(`/api/pools/${id}`, { method: 'DELETE' }),
+
+  /** 加成员（operation 池会校验同型号）。 */
+  addPoolMember: (id: number, body: DevicePoolMemberInput) =>
+    req<{ added: number; poolId: number; deviceInstanceId: number }>(
+      `/api/pools/${id}/members`, { method: 'POST', body: JSON.stringify(body) }),
+
+  /** 移成员。 */
+  removePoolMember: (id: number, deviceInstanceId: number) =>
+    req<{ removed: number; poolId: number; deviceInstanceId: number }>(
+      `/api/pools/${id}/members/${deviceInstanceId}`, { method: 'DELETE' }),
+
+  /**
+   * 点位可用的方法列表（点位信息 + 绑定明细）。
+   *
+   * <p>⚠ `positionId` 是 **device_point.id**（配置层），不是 resource_node.id。
+   */
+  positionMethods: (positionId: number) =>
+    req<PositionMethodsView>(`/api/positions/${positionId}/methods`),
+
+  /** 给点位加一个可用方法。 */
+  addPositionMethod: (positionId: number, body: {
+    methodId: number;
+    scopeKind?: 'global' | 'workflow' | 'experiment';
+    scopeId?: number | null;
+    purpose?: string | null;
+    allocation?: 'explicit' | 'auto_first_free' | 'auto_next_free';
+    priority?: number;
+  }) => req<{ created: number; positionId: number; methodId: number }>(
+    `/api/positions/${positionId}/methods`, { method: 'POST', body: JSON.stringify(body) }),
+
+  /** 改绑定（用途/分配方式/优先级/启用）。 */
+  updatePositionMethod: (positionId: number, bindingId: number, body: {
+    purpose?: string | null;
+    allocation?: 'explicit' | 'auto_first_free' | 'auto_next_free';
+    priority?: number; enabled?: boolean;
+  }) => req<{ updated: number; id: number }>(
+    `/api/positions/${positionId}/methods/${bindingId}`, {
+      method: 'PUT', body: JSON.stringify(body),
+    }),
+
+  /** 删绑定。 */
+  deletePositionMethod: (positionId: number, bindingId: number) =>
+    req<{ deleted: number; id: number }>(
+      `/api/positions/${positionId}/methods/${bindingId}`, { method: 'DELETE' }),
+
+  /** 全岛点位×方法矩阵（一行一个绑定，含未绑定的点位）。 */
+  positionMethodMatrix: (islandId: number) =>
+    req<{ total: number; items: Array<{
+      positionId: number; positionCode?: string | null; deviceCode?: string | null;
+      bindingId?: number | null; methodName?: string | null;
+      scopeKind?: string | null; scopeId?: number | null;
+      purpose?: string | null; enabled?: boolean | null;
+    }> }>(`/api/positions/method-matrix?islandId=${islandId}`),
+
+  /**
+   * 读节点的绑定列表。
+   *
+   * <p>节点不存在（nodeKey 对不上）时后端回 404 —— 界面要显式提示，
+   * 不能当成"空绑定"（空绑定 = 合法状态 = 走 legacy 模式）。
+   */
+  nodeBindings: (workflowId: number, nodeKey: string) =>
+    req<{ nodeKey: string; count: number; bindings: NodeBinding[] }>(
+      `/api/workflows/${workflowId}/nodes/${encodeURIComponent(nodeKey)}/bindings`),
+
+  /**
+   * **整体替换**节点的绑定列表。
+   *
+   * <p>⚠ 语义是「先删后插」：传空数组 = 清空绑定（节点退回 legacy 模式）。
+   * 所以编辑时必须带上全部条目，否则会静默删掉别人的绑定。
+   */
+  replaceNodeBindings: (workflowId: number, nodeKey: string, bindings: NodeBindingInput[]) =>
+    req<{ nodeKey: string; count: number; bindingMode: string }>(
+      `/api/workflows/${workflowId}/nodes/${encodeURIComponent(nodeKey)}/bindings`, {
+        method: 'PUT', body: JSON.stringify({ bindings }),
+      }),
+
+  /** 清空节点的绑定（退回 legacy 模式）。 */
+  clearNodeBindings: (workflowId: number, nodeKey: string) =>
+    req<{ cleared: number; nodeKey: string; bindingMode: string }>(
+      `/api/workflows/${workflowId}/nodes/${encodeURIComponent(nodeKey)}/bindings`, {
+        method: 'DELETE',
+      }),
+
+  /** 物料角色字典。 */
+  materialRoles: () =>
+    req<{ total: number; items: MaterialRole[] }>('/api/material-roles'),
 
   processStatus: () => req<ProcessStatus>('/api/process-status'),
 

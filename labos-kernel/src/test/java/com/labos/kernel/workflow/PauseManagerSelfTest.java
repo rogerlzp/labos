@@ -24,6 +24,8 @@ public final class PauseManagerSelfTest {
     private static int fail;
     private static DbConfig db;
     private static final long TENANT = 1L;
+    /** 自建流程 id（负数，不撞 identity 序列，也不依赖任何历史数据）。 */
+    private static final long WF = -994001L;
 
     public static void main(String[] args) throws Exception {
         // 触发自测容器：绑定 Mappers（非 Bean 工具类通过 Mappers.get 取 Mapper），
@@ -312,15 +314,24 @@ public final class PauseManagerSelfTest {
     }
 
     private static long createRun() throws Exception {
+        // 自建流程（负数 id 不撞 identity 序列）——
+        // 原来这里硬编码 workflow_id=239，那是旧基线里某条真实流程。
+        // 旧基线拆掉后 239 没了 ⇒ 本自测直接 FK 报错、整条用例跑不起来。
+        // 改成自建：自测**不依赖任何历史数据**（这本来就是它该有的样子）。
+        // 修法与 QuarantineDbSelfTest 一致（那里早就改过了，本文件是漏网的）。
+        exec("DELETE FROM workflow WHERE id = " + WF);
+        exec("INSERT INTO workflow (id, tenant_id, code, name, version, status, graph) "
+                + "VALUES (" + WF + ", 1, 'M4-SELFTEST-WF', 'M4 自测流程', 1, 1, '{}'::jsonb)");
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement("""
                      INSERT INTO run (tenant_id, run_no, run_type, workflow_id,
                                       workflow_ver, mode, status, actual_start, progress)
-                     SELECT 1, 'M4-SELFTEST', 'workflow', 239, 1, mode,
+                     SELECT 1, 'M4-SELFTEST', 'workflow', ?, 1, mode,
                             'running', now(), 10
                      FROM run ORDER BY id DESC LIMIT 1
                      RETURNING id
                      """)) {
+            ps.setLong(1, WF);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     return rs.getLong(1);
@@ -335,6 +346,9 @@ public final class PauseManagerSelfTest {
         exec("DELETE FROM transfer_transaction WHERE tenant_id = 1 AND run_id = " + runId);
         exec("DELETE FROM plate_location_audit WHERE run_id = " + runId);
         exec("DELETE FROM run WHERE id = " + runId);
+        // 自建流程也要清干净（workflow_node 有 FK ⇒ 先删节点再删流程）
+        exec("DELETE FROM workflow_node WHERE workflow_id = " + WF);
+        exec("DELETE FROM workflow WHERE id = " + WF);
         exec("DELETE FROM plate WHERE tenant_id = 1 AND barcode = 'PL-TEST-M4'");
         exec("DELETE FROM position_evidence WHERE tenant_id = 1 AND plate_barcode = 'PL-TEST-M4'");
     }

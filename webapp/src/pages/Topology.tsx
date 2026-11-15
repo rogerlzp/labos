@@ -1,9 +1,12 @@
-import { apiFetch } from '../api/client';
+import {
+  api, apiFetch, type DevicePool, type DevicePoolMember,
+} from '../api/client';
 import { useReadOnly } from '../auth';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Button, Card, Checkbox, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography, message,
+  Alert, Button, Card, Checkbox, Empty, Form, Input, InputNumber, Modal, Select, Space, Table, Tag,
+  Typography, message,
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useT, type MessageKey } from '../i18n';
@@ -59,6 +62,24 @@ const DRIVER_PROTOCOLS: { value: string; labelKey: MessageKey }[] = [
 
 const TOKEN = () => localStorage.getItem('labos_token');
 
+/**
+ * 池类型：operation = 操作池（同型号，运行时挑一台做）/ storage = 存储池。
+ *
+ * <p>后端是白名单校验（POOL_KINDS），写错会直接 400 ⇒ 只能从下拉里选。
+ */
+const POOL_KINDS: { value: DevicePool['poolKind']; labelKey: MessageKey }[] = [
+  { value: 'operation', labelKey: 'topology.pool.kind.operation' },
+  { value: 'storage', labelKey: 'topology.pool.kind.storage' },
+];
+
+/** 选位策略：后端枚举，值必须原样传（写错 400）。 */
+const POOL_STRATEGIES: { value: DevicePool['strategy']; labelKey: MessageKey }[] = [
+  { value: 'first_available', labelKey: 'topology.pool.strategy.first_available' },
+  { value: 'least_recently_used', labelKey: 'topology.pool.strategy.least_recently_used' },
+  { value: 'round_robin', labelKey: 'topology.pool.strategy.round_robin' },
+  { value: 'priority_commit', labelKey: 'topology.pool.strategy.priority_commit' },
+];
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(path, {
     method: 'POST',
@@ -93,6 +114,17 @@ export default function TopologyPage() {
   const [driverForm] = Form.useForm();
   const [driverEditForm] = Form.useForm();
 
+  // ---- 设备池 ----
+  const [poolIsland, setPoolIsland] = useState<number | undefined>(undefined);
+  const [poolKindFilter, setPoolKindFilter] = useState<DevicePool['poolKind'] | undefined>(undefined);
+  const [addPoolOpen, setAddPoolOpen] = useState(false);
+  const [editPoolRow, setEditPoolRow] = useState<DevicePool | null>(null);
+  const [detailPoolId, setDetailPoolId] = useState<number | null>(null);
+  const [addMemberOpen, setAddMemberOpen] = useState(false);
+  const [poolForm] = Form.useForm();
+  const [poolEditForm] = Form.useForm();
+  const [memberForm] = Form.useForm();
+
   const topo = useQuery({
     queryKey: ['topology'],
     queryFn: () => apiFetch('/api/topology', {
@@ -121,6 +153,17 @@ export default function TopologyPage() {
       headers: { Authorization: `Bearer ${TOKEN()}` },
     }).then((r) => r.json()),
     enabled: picked != null,
+  });
+
+  const pools = useQuery({
+    queryKey: ['pools', poolIsland ?? 'all', poolKindFilter ?? 'all'],
+    queryFn: () => api.pools({ islandId: poolIsland, kind: poolKindFilter }),
+  });
+
+  const poolDetail = useQuery({
+    queryKey: ['pool', detailPoolId],
+    queryFn: () => api.pool(detailPoolId!),
+    enabled: detailPoolId != null,
   });
 
   const islands = topo.data?.islands ?? [];
@@ -210,6 +253,225 @@ export default function TopologyPage() {
       message.error(String((e as Error).message));
     }
   };
+
+  // ---------------------------------------------------------------- 设备池
+
+  /**
+   * 可入池的设备实例。
+   *
+   * <p>池成员引用的是 **device_instance.id**，不是 resource_node.id ——
+   * 拓扑里 devices[].instanceId 才是它；没有实例的设备（软删/未建实例）不能入池。
+   */
+  const instances = useMemo(() => {
+    const out: { instanceId: number; code: string; name: string; model?: string }[] = [];
+    for (const isl of topo.data?.islands ?? []) {
+      for (const d of isl.devices) {
+        if (d.instanceId == null) continue;
+        out.push({ instanceId: d.instanceId, code: d.code, name: d.name, model: d.model });
+      }
+    }
+    return out;
+  }, [topo.data?.islands]);
+
+  /** 型号：拓扑的 devices[].model（型号字符串）；查不到就没有，不瞎猜。 */
+  const modelOf = (instanceId: number): string | undefined =>
+    instances.find((x) => x.instanceId === instanceId)?.model;
+
+  /**
+   * operation 池的成员必须同型号 —— 后端会回 409，这里提前拦。
+   *
+   * <p>依据：拓扑 devices[].model。型号为空/查不到的**不参与判断**（不做推断）。
+   * 返回不一致的型号列表（去重）；一致或无从判断时返回 null。
+   */
+  const modelMismatch = (instanceIds: number[]): string[] | null => {
+    const models = Array.from(new Set(
+      instanceIds
+        .map((id) => modelOf(id))
+        .filter((m): m is string => !!m && m.trim() !== ''),
+    ));
+    return models.length > 1 ? models : null;
+  };
+
+  /** 建池表单里已选的成员（用于同型号预校验）。 */
+  const draftMembers = Form.useWatch('members', poolForm) as
+    { deviceInstanceId?: number }[] | undefined;
+  const draftInstanceIds = (draftMembers ?? [])
+    .map((m) => m?.deviceInstanceId)
+    .filter((x): x is number => typeof x === 'number');
+  const draftKind = Form.useWatch('poolKind', poolForm);
+  const draftMismatch = draftKind === 'operation' ? modelMismatch(draftInstanceIds) : null;
+
+  /** 加成员表单里选中的实例（用于同型号预校验）。 */
+  const pickedInstanceId = Form.useWatch('deviceInstanceId', memberForm) as number | undefined;
+  const memberMismatch = (() => {
+    const pool = poolDetail.data;
+    if (!pool || pool.poolKind !== 'operation' || pickedInstanceId == null) return null;
+    const existing = (pool.members ?? []).map((m) => m.deviceInstanceId);
+    return modelMismatch([...existing, pickedInstanceId]);
+  })();
+
+  /** 建池：后端 400（编号重复 / 缺字段）会把原因放在 error 字段里，直接透给用户。 */
+  const submitPool = async () => {
+    let v: {
+      code?: string; name?: string; islandId?: number;
+      poolKind?: DevicePool['poolKind']; strategy?: DevicePool['strategy'];
+      skipOnError?: boolean; skipOnOffline?: boolean; allowIterationOnError?: boolean;
+      minNestCount?: number;
+      members?: { deviceInstanceId?: number; subGroup?: string; priority?: number }[];
+    };
+    try {
+      v = await poolForm.validateFields();
+    } catch {
+      // 字段没过校验：antd 已在字段下方标红，这里不重复弹窗
+      return;
+    }
+    const rows = (v.members ?? []).filter((m) => typeof m?.deviceInstanceId === 'number');
+    if (rows.length !== (v.members ?? []).length) {
+      message.error(t('topology.pool.warn.memberMissing'));
+      return;
+    }
+    const memberIds = rows.map((m) => m.deviceInstanceId as number);
+    if (new Set(memberIds).size !== memberIds.length) {
+      message.error(t('topology.pool.warn.duplicateMember'));
+      return;
+    }
+    if (v.poolKind === 'operation') {
+      const bad = modelMismatch(memberIds);
+      if (bad) {
+        message.error(t('topology.pool.warn.modelMismatch', { models: bad.join(' / ') }));
+        return;
+      }
+    }
+    try {
+      await api.createPool({
+        code: v.code ?? '',
+        name: v.name ?? '',
+        islandId: v.islandId ?? 0,
+        poolKind: v.poolKind ?? 'operation',
+        strategy: v.strategy ?? 'first_available',
+        skipOnError: !!v.skipOnError,
+        skipOnOffline: !!v.skipOnOffline,
+        allowIterationOnError: !!v.allowIterationOnError,
+        minNestCount: v.minNestCount ?? 0,
+        members: rows.map((m) => ({
+          deviceInstanceId: m.deviceInstanceId as number,
+          subGroup: m.subGroup?.trim() ? m.subGroup.trim() : null,
+          priority: typeof m.priority === 'number' ? m.priority : 100,
+        })),
+      });
+      message.success(t('topology.pool.toast.created'));
+      setAddPoolOpen(false);
+      poolForm.resetFields();
+      await qc.invalidateQueries({ queryKey: ['pools'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /** 改池：编号/类型不可改（后端 PUT 不收）；容错开关必须全传（后端缺省=true）。 */
+  const submitPoolEdit = async () => {
+    if (!editPoolRow) return;
+    let v: {
+      name?: string; strategy?: DevicePool['strategy'];
+      skipOnError?: boolean; skipOnOffline?: boolean; allowIterationOnError?: boolean; enabled?: boolean;
+    };
+    try {
+      v = await poolEditForm.validateFields();
+    } catch {
+      return;
+    }
+    try {
+      await api.updatePool(editPoolRow.id, {
+        name: v.name ?? '',
+        strategy: v.strategy ?? 'first_available',
+        skipOnError: !!v.skipOnError,
+        skipOnOffline: !!v.skipOnOffline,
+        allowIterationOnError: !!v.allowIterationOnError,
+        enabled: !!v.enabled,
+      });
+      message.success(t('topology.pool.toast.saved'));
+      setEditPoolRow(null);
+      await qc.invalidateQueries({ queryKey: ['pools'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /** 删池：被 node_binding 引用时后端回 409，原文透给用户。 */
+  const deletePool = async (p: DevicePool) => {
+    if (!confirm(t('topology.pool.confirm.delete', { code: p.code }))) return;
+    try {
+      await api.deletePool(p.id);
+      message.success(t('topology.pool.toast.deleted'));
+      await qc.invalidateQueries({ queryKey: ['pools'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /** 加成员：operation 池先在前端校验同型号（后端还会再校验一次）。 */
+  const submitAddMember = async () => {
+    const pool = poolDetail.data;
+    if (!pool) return;
+    let v: { deviceInstanceId?: number; subGroup?: string; priority?: number };
+    try {
+      v = await memberForm.validateFields();
+    } catch {
+      return;
+    }
+    const di = v.deviceInstanceId;
+    if (typeof di !== 'number') return;
+    if (pool.poolKind === 'operation') {
+      const existing = (pool.members ?? []).map((m) => m.deviceInstanceId);
+      const bad = modelMismatch([...existing, di]);
+      if (bad) {
+        message.error(t('topology.pool.warn.modelMismatch', { models: bad.join(' / ') }));
+        return;
+      }
+    }
+    try {
+      await api.addPoolMember(pool.id, {
+        deviceInstanceId: di,
+        subGroup: v.subGroup?.trim() ? v.subGroup.trim() : null,
+        priority: typeof v.priority === 'number' ? v.priority : 100,
+      });
+      message.success(t('topology.pool.toast.memberAdded'));
+      setAddMemberOpen(false);
+      memberForm.resetFields();
+      await qc.invalidateQueries({ queryKey: ['pool', pool.id] });
+      await qc.invalidateQueries({ queryKey: ['pools'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /** 移成员。 */
+  const removeMember = async (m: DevicePoolMember) => {
+    const pool = poolDetail.data;
+    if (!pool) return;
+    const code = m.deviceResourceCode ?? m.deviceCode ?? String(m.deviceInstanceId);
+    if (!confirm(t('topology.pool.confirm.removeMember', { code, pool: pool.code }))) return;
+    try {
+      await api.removePoolMember(pool.id, m.deviceInstanceId);
+      message.success(t('topology.pool.toast.memberRemoved'));
+      await qc.invalidateQueries({ queryKey: ['pool', pool.id] });
+      await qc.invalidateQueries({ queryKey: ['pools'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /** 池类型/策略的下拉文案：后端枚举不认识的值原样显示，不吞掉。 */
+  const poolKindLabel = (k?: string) => {
+    const hit = POOL_KINDS.find((x) => x.value === k);
+    return hit ? t(hit.labelKey) : (k ?? '—');
+  };
+  const poolStrategyLabel = (s?: string) => {
+    const hit = POOL_STRATEGIES.find((x) => x.value === s);
+    return hit ? t(hit.labelKey) : (s ?? '—');
+  };
+
+  const poolList = pools.data?.items ?? [];
 
   return (
     <>
@@ -346,6 +608,93 @@ export default function TopologyPage() {
                       }}>{t('topology.action.edit')}</Button>
                       <Button size="small" type="link" danger {...ro}
                         onClick={() => deleteDriver(d)}>{t('topology.action.delete')}</Button>
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </Card>
+
+        <Card
+          size="small"
+          title={t('topology.pool.title', { n: poolList.length })}
+          extra={
+            <Space>
+              <Select
+                allowClear size="small" style={{ width: 170 }}
+                placeholder={t('topology.pool.filter.island')}
+                value={poolIsland}
+                onChange={(v) => setPoolIsland(v)}
+                options={islands.map((i) => ({ value: i.id, label: `${i.code}  ${i.name}` }))}
+              />
+              <Select
+                allowClear size="small" style={{ width: 150 }}
+                placeholder={t('topology.pool.filter.kind')}
+                value={poolKindFilter}
+                onChange={(v) => setPoolKindFilter(v)}
+                options={POOL_KINDS.map((k) => ({ value: k.value, label: t(k.labelKey) }))}
+              />
+              <Button type="primary" icon={<PlusOutlined />} {...ro}
+                onClick={() => { poolForm.resetFields(); setAddPoolOpen(true); }}>
+                {t('topology.pool.action.add')}
+              </Button>
+            </Space>
+          }
+        >
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+            {t('topology.pool.hint')}
+          </Typography.Text>
+          {poolList.length === 0 ? <Empty description={t('topology.pool.empty')} /> : (
+            <Table<DevicePool>
+              rowKey="id" size="small" loading={pools.isLoading}
+              dataSource={poolList}
+              pagination={false}
+              columns={[
+                {
+                  title: t('topology.pool.col.code'), dataIndex: 'code', width: 180,
+                  render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
+                },
+                { title: t('topology.pool.col.name'), dataIndex: 'name' },
+                {
+                  title: t('topology.pool.col.kind'), dataIndex: 'poolKind', width: 120,
+                  render: (v: string) => (
+                    <Tag color={v === 'operation' ? 'blue' : 'green'}>{poolKindLabel(v)}</Tag>
+                  ),
+                },
+                {
+                  title: t('topology.pool.col.strategy'), dataIndex: 'strategy', width: 140,
+                  render: (v: string) => poolStrategyLabel(v),
+                },
+                {
+                  title: t('topology.pool.col.memberCount'), dataIndex: 'memberCount', width: 90,
+                  render: (v?: number) => <Tag>{v ?? 0}</Tag>,
+                },
+                {
+                  title: t('topology.pool.col.enabled'), dataIndex: 'enabled', width: 90,
+                  render: (v: boolean) => (v
+                    ? <Tag color="green">{t('topology.pool.enabled.on')}</Tag>
+                    : <Tag>{t('topology.pool.enabled.off')}</Tag>),
+                },
+                {
+                  title: t('topology.pool.col.action'), width: 180,
+                  render: (_, p) => (
+                    <Space size={2}>
+                      <Button size="small" type="link" {...ro}
+                        onClick={() => setDetailPoolId(p.id)}>{t('topology.pool.action.members')}</Button>
+                      <Button size="small" type="link" {...ro} onClick={() => {
+                        setEditPoolRow(p);
+                        poolEditForm.setFieldsValue({
+                          name: p.name ?? '',
+                          strategy: p.strategy ?? 'first_available',
+                          skipOnError: !!p.skipOnError,
+                          skipOnOffline: !!p.skipOnOffline,
+                          allowIterationOnError: !!p.allowIterationOnError,
+                          enabled: p.enabled !== false,
+                        });
+                      }}>{t('topology.pool.action.edit')}</Button>
+                      <Button size="small" type="link" danger {...ro}
+                        onClick={() => deletePool(p)}>{t('topology.pool.action.delete')}</Button>
                     </Space>
                   ),
                 },
@@ -523,6 +872,205 @@ export default function TopologyPage() {
           <Form.Item name="resident" label={t('topology.driver.field.resident')}
             valuePropName="checked" extra={t('topology.driver.field.residentEditExtra')}>
             <Checkbox />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* ---- 设备池 ---- */}
+
+      <Modal open={addPoolOpen} width={760} forceRender
+        title={t('topology.pool.modal.createTitle')}
+        onCancel={() => setAddPoolOpen(false)}
+        onOk={submitPool} okText={t('topology.pool.modal.create')}>
+        <Form form={poolForm} layout="vertical"
+          initialValues={{
+            poolKind: 'operation', strategy: 'first_available',
+            skipOnError: true, skipOnOffline: true, allowIterationOnError: true,
+            minNestCount: 0, members: [],
+          }}>
+          <Space size={12} style={{ width: '100%' }} align="start">
+            <Form.Item name="code" label={t('topology.pool.field.code')} rules={[{ required: true }]}
+              extra={t('topology.pool.field.codeExtra')} style={{ width: 280 }}>
+              <Input placeholder="POOL-EXTRACT-1" />
+            </Form.Item>
+            <Form.Item name="name" label={t('topology.pool.field.name')} rules={[{ required: true }]}
+              style={{ width: 280 }}>
+              <Input placeholder={t('topology.pool.placeholder.poolName')} />
+            </Form.Item>
+          </Space>
+
+          <Space size={12} style={{ width: '100%' }} align="start">
+            <Form.Item name="islandId" label={t('topology.pool.field.island')} rules={[{ required: true }]}
+              style={{ width: 280 }}>
+              <Select placeholder={t('topology.pool.filter.island')}
+                options={islands.map((i) => ({ value: i.id, label: `${i.code}  ${i.name}` }))} />
+            </Form.Item>
+            <Form.Item name="poolKind" label={t('topology.pool.field.kind')} rules={[{ required: true }]}
+              extra={t('topology.pool.field.kindExtra')} style={{ width: 220 }}>
+              <Select options={POOL_KINDS.map((k) => ({ value: k.value, label: t(k.labelKey) }))} />
+            </Form.Item>
+            <Form.Item name="strategy" label={t('topology.pool.field.strategy')} rules={[{ required: true }]}
+              style={{ width: 220 }}>
+              <Select options={POOL_STRATEGIES.map((s) => ({ value: s.value, label: t(s.labelKey) }))} />
+            </Form.Item>
+          </Space>
+
+          <Space size={12} style={{ width: '100%' }} align="start" wrap>
+            <Form.Item name="skipOnError" label={t('topology.pool.field.skipOnError')}
+              valuePropName="checked" extra={t('topology.pool.field.skipOnErrorExtra')}>
+              <Checkbox />
+            </Form.Item>
+            <Form.Item name="skipOnOffline" label={t('topology.pool.field.skipOnOffline')}
+              valuePropName="checked" extra={t('topology.pool.field.skipOnOfflineExtra')}>
+              <Checkbox />
+            </Form.Item>
+            <Form.Item name="allowIterationOnError" label={t('topology.pool.field.allowIterationOnError')}
+              valuePropName="checked" extra={t('topology.pool.field.allowIterationOnErrorExtra')}>
+              <Checkbox />
+            </Form.Item>
+            <Form.Item name="minNestCount" label={t('topology.pool.field.minNestCount')}
+              extra={t('topology.pool.field.minNestCountExtra')}>
+              <InputNumber min={0} style={{ width: 140 }} />
+            </Form.Item>
+          </Space>
+
+          <Form.Item label={t('topology.pool.field.members')} extra={t('topology.pool.field.membersExtra')}>
+            <Form.List name="members">
+              {(fields, { add, remove }) => (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  {fields.map((f) => (
+                    <Space key={f.key} size={8} align="start">
+                      <Form.Item {...f} name={[f.name, 'deviceInstanceId']}
+                        rules={[{ required: true }]}>
+                        <Select showSearch allowClear style={{ width: 320 }}
+                          placeholder={t('topology.pool.placeholder.device')}
+                          optionFilterProp="label"
+                          options={instances.map((x) => ({
+                            value: x.instanceId,
+                            label: `${x.code}  ${x.name}${x.model ? ` · ${x.model}` : ''}`,
+                          }))} />
+                      </Form.Item>
+                      <Form.Item {...f} name={[f.name, 'subGroup']} noStyle>
+                        <Input style={{ width: 130 }} placeholder={t('topology.pool.placeholder.subGroup')} />
+                      </Form.Item>
+                      <Form.Item {...f} name={[f.name, 'priority']} noStyle>
+                        <InputNumber min={0} style={{ width: 110 }}
+                          placeholder={t('topology.pool.placeholder.priority')} />
+                      </Form.Item>
+                      <Button size="small" type="link" danger {...ro}
+                        onClick={() => remove(f.name)}>{t('topology.pool.action.removeMemberRow')}</Button>
+                    </Space>
+                  ))}
+                  <Button size="small" icon={<PlusOutlined />} {...ro}
+                    onClick={() => add({ priority: 100 })}>
+                    {t('topology.pool.action.addMemberRow')}
+                  </Button>
+                </Space>
+              )}
+            </Form.List>
+          </Form.Item>
+
+          {draftMismatch && (
+            <Alert type="error" showIcon
+              message={t('topology.pool.warn.modelMismatch', { models: draftMismatch.join(' / ') })} />
+          )}
+        </Form>
+      </Modal>
+
+      <Modal open={editPoolRow != null} width={560}
+        title={t('topology.pool.modal.editTitle', { code: editPoolRow?.code ?? '' })}
+        onCancel={() => setEditPoolRow(null)}
+        onOk={submitPoolEdit} okText={t('topology.pool.modal.save')}>
+        <Form form={poolEditForm} layout="vertical">
+          <Form.Item name="name" label={t('topology.pool.field.name')} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="strategy" label={t('topology.pool.field.strategy')} rules={[{ required: true }]}>
+            <Select options={POOL_STRATEGIES.map((s) => ({ value: s.value, label: t(s.labelKey) }))} />
+          </Form.Item>
+          <Space size={12} align="start" wrap>
+            <Form.Item name="skipOnError" label={t('topology.pool.field.skipOnError')} valuePropName="checked">
+              <Checkbox />
+            </Form.Item>
+            <Form.Item name="skipOnOffline" label={t('topology.pool.field.skipOnOffline')} valuePropName="checked">
+              <Checkbox />
+            </Form.Item>
+            <Form.Item name="allowIterationOnError" label={t('topology.pool.field.allowIterationOnError')}
+              valuePropName="checked">
+              <Checkbox />
+            </Form.Item>
+            <Form.Item name="enabled" label={t('topology.pool.field.enabled')} valuePropName="checked">
+              <Checkbox />
+            </Form.Item>
+          </Space>
+        </Form>
+      </Modal>
+
+      <Modal open={detailPoolId != null} width={760}
+        title={t('topology.pool.modal.membersTitle', { code: poolDetail.data?.code ?? '' })}
+        onCancel={() => setDetailPoolId(null)}
+        footer={
+          <Space>
+            <Button onClick={() => setDetailPoolId(null)}>{t('topology.pool.modal.close')}</Button>
+            <Button type="primary" {...ro} disabled={ro.disabled || !poolDetail.data}
+              onClick={() => { memberForm.resetFields(); setAddMemberOpen(true); }}>
+              {t('topology.pool.action.addMember')}
+            </Button>
+          </Space>
+        }>
+        <Table<DevicePoolMember> rowKey="deviceInstanceId" size="small" loading={poolDetail.isLoading}
+          dataSource={poolDetail.data?.members ?? []}
+          pagination={false}
+          locale={{ emptyText: <Empty description={t('topology.pool.emptyMembers')} /> }}
+          columns={[
+            {
+              title: t('topology.pool.col.memberDevice'), dataIndex: 'deviceResourceCode', width: 180,
+              render: (v: string | null | undefined, m) => v || m.deviceCode || String(m.deviceInstanceId),
+            },
+            { title: t('topology.pool.col.instanceId'), dataIndex: 'deviceInstanceId', width: 100 },
+            {
+              title: t('topology.pool.col.subGroup'), dataIndex: 'subGroup', width: 120,
+              render: (v: string | null | undefined) => (v ? <Tag>{v}</Tag> : '—'),
+            },
+            { title: t('topology.pool.col.priority'), dataIndex: 'priority', width: 90 },
+            {
+              title: t('topology.pool.col.useCount'), dataIndex: 'useCount', width: 100,
+              render: (v?: number | null) => v ?? '—',
+            },
+            {
+              title: t('topology.pool.col.action'), width: 120,
+              render: (_, m) => (
+                <Button size="small" type="link" danger {...ro}
+                  onClick={() => removeMember(m)}>{t('topology.pool.action.removeMember')}</Button>
+              ),
+            },
+          ]} />
+      </Modal>
+
+      <Modal open={addMemberOpen} width={560} forceRender
+        title={t('topology.pool.modal.addMemberTitle', { code: poolDetail.data?.code ?? '' })}
+        onCancel={() => setAddMemberOpen(false)}
+        onOk={submitAddMember} okText={t('topology.pool.modal.add')}>
+        <Form form={memberForm} layout="vertical" initialValues={{ priority: 100 }}>
+          <Form.Item name="deviceInstanceId" label={t('topology.pool.field.device')} rules={[{ required: true }]}>
+            <Select showSearch allowClear placeholder={t('topology.pool.placeholder.device')}
+              optionFilterProp="label"
+              options={instances.map((x) => ({
+                value: x.instanceId,
+                label: `${x.code}  ${x.name}${x.model ? ` · ${x.model}` : ''}`,
+              }))} />
+          </Form.Item>
+          {memberMismatch && (
+            <Alert type="error" showIcon
+              message={t('topology.pool.warn.modelMismatch', { models: memberMismatch.join(' / ') })} />
+          )}
+          <Form.Item name="subGroup" label={t('topology.pool.field.subGroup')}
+            extra={t('topology.pool.field.subGroupExtra')}>
+            <Input placeholder={t('topology.pool.placeholder.subGroup')} />
+          </Form.Item>
+          <Form.Item name="priority" label={t('topology.pool.field.priority')}
+            extra={t('topology.pool.field.priorityExtra')}>
+            <InputNumber min={0} style={{ width: 160 }} />
           </Form.Item>
         </Form>
       </Modal>

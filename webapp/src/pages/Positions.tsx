@@ -1,9 +1,9 @@
-import { Fragment, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Alert, Button, Card, Empty, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography, message,
+  Alert, Button, Card, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography, message,
 } from 'antd';
-import { apiFetch } from '../api/client';
+import { api, apiFetch, type PositionMethodBinding } from '../api/client';
 import { useT, type MessageKey } from '../i18n';
 
 interface Island { id: number; code: string; name: string; }
@@ -23,6 +23,13 @@ interface Position {
   positionLabel?: string | null;
   /** true = 网格之外的单独位置（培养箱/堆栈的进口/出口装载口）。 */
   standalone?: boolean | null;
+  /**
+   * 配置层主键 **device_point.id**。
+   *
+   * <p>⚠ 点位×方法绑定（position_method）用的就是这个 id，**不是** resourceId ——
+   * 后端 BindingController 按 device_point.id 查，绑到 resourceId 会绑错行。
+   */
+  pointId?: number | null;
 }
 
 /**
@@ -47,6 +54,65 @@ const ROLE_KEYS: Record<string, MessageKey> = {
 const ROLE_COLORS: Record<string, string> = {
   entry: 'blue', exit: 'purple', both: 'green', internal: 'default',
 };
+
+/**
+ * 点位×方法绑定（position_method）的作用域 / 分配方式词表。
+ *
+ * <p>这六个取值是**后端词表**（BindingController 的 SCOPE_KINDS / ALLOCATIONS），
+ * 前端只做展示映射与下拉选项，不自己发明取值。
+ */
+const METHOD_SCOPE_KINDS = ['global', 'workflow', 'experiment'] as const;
+type MethodScopeKind = (typeof METHOD_SCOPE_KINDS)[number];
+const METHOD_SCOPE_KEYS: Record<MethodScopeKind, MessageKey> = {
+  global: 'positions.method.scope.global',
+  workflow: 'positions.method.scope.workflow',
+  experiment: 'positions.method.scope.experiment',
+};
+const METHOD_ALLOCATIONS = ['explicit', 'auto_first_free', 'auto_next_free'] as const;
+type MethodAllocation = (typeof METHOD_ALLOCATIONS)[number];
+const METHOD_ALLOCATION_KEYS: Record<MethodAllocation, MessageKey> = {
+  explicit: 'positions.method.allocation.explicit',
+  auto_first_free: 'positions.method.allocation.auto_first_free',
+  auto_next_free: 'positions.method.allocation.auto_next_free',
+};
+
+/** 设备方法清单里的一项（GET /api/devices/{resourceId}/methods）。 */
+interface DeviceMethod {
+  /**
+   * device_method.id —— position_method.method_id 强制要它。
+   *
+   * <p>方法名字符串在同型号多实例下会重复，只有 id 唯一。
+   */
+  methodId?: number | null;
+  method: string;
+  name?: string | null;
+  capability?: string | null;
+}
+
+/** 全岛矩阵的一行（GET /api/positions/method-matrix）。 */
+interface MatrixRow {
+  positionId: number;
+  positionCode?: string | null;
+  deviceCode?: string | null;
+  /** null = 这个点位一条绑定都没有。 */
+  bindingId?: number | null;
+  methodName?: string | null;
+  scopeKind?: string | null;
+  scopeId?: number | null;
+  purpose?: string | null;
+  enabled?: boolean | null;
+}
+
+/** 绑定表单的值（加方法 / 编辑绑定共用一套字段）。 */
+interface MethodFormValues {
+  methodId?: number;
+  scopeKind?: MethodScopeKind;
+  scopeId?: number | null;
+  purpose?: string;
+  allocation?: MethodAllocation;
+  priority?: number;
+  enabled?: boolean;
+}
 
 /**
  * 坑位语义（slotKind ⇒ device_point.point_kind）——**与点位类型（pointKind）是两个轴**：
@@ -113,6 +179,15 @@ export default function PositionsPage() {
   ]);
   const specKeyRef = useRef(0);
 
+  // ---- 点位×方法绑定（position_method）----
+  // 抽屉里配单个点位；矩阵卡片做全岛总览
+  const [methodTarget, setMethodTarget] = useState<Position | null>(null);
+  /** 正在编辑的绑定；null = 「加方法」模式。 */
+  const [editingBinding, setEditingBinding] = useState<PositionMethodBinding | null>(null);
+  const [methodForm] = Form.useForm<MethodFormValues>();
+  // 作用域选了「全局」时不显示 scopeId 输入（global 作用域不认 scope_id）
+  const [methodScopeKind, setMethodScopeKind] = useState<MethodScopeKind>('global');
+
   const islandsQ = useQuery({
     queryKey: ['topology'],
     queryFn: () => apiFetch('/api/topology').then((r) => r.json()) as Promise<{
@@ -132,6 +207,49 @@ export default function PositionsPage() {
   });
   const positions = positionsQ.data?.items ?? [];
 
+  /**
+   * 全岛点位×方法矩阵：一行一个绑定；**没绑过方法的点位也会有一行**
+   * （bindingId / methodName 为 null）—— 这正是"一眼看出谁没绑"的来源。
+   */
+  const matrixQ = useQuery({
+    queryKey: ['position-method-matrix', islandId],
+    queryFn: () => api.positionMethodMatrix(islandId!),
+    enabled: islandId != null && islandId > 0,
+  });
+  const matrixRows: MatrixRow[] = matrixQ.data?.items ?? [];
+
+  /** 抽屉里那一个点位的绑定明细（positionId = device_point.id）。 */
+  const bindingsQ = useQuery({
+    queryKey: ['position-methods', methodTarget?.pointId],
+    queryFn: () => api.positionMethods(methodTarget!.pointId!),
+    enabled: methodTarget?.pointId != null,
+  });
+  const bindings = bindingsQ.data?.bindings ?? [];
+
+  /**
+   * 「加方法」下拉的数据源：点位**所属设备**的方法清单。
+   *
+   * <p>关联字段是点位的 parentDeviceId（= 设备 resource_node.id）——
+   * 点位只能绑自己那台设备有的方法。
+   */
+  const deviceMethodsQ = useQuery({
+    queryKey: ['device-methods', methodTarget?.parentDeviceId],
+    queryFn: () => apiFetch(`/api/devices/${methodTarget!.parentDeviceId}/methods`)
+      .then((r) => r.json()) as Promise<{ items?: DeviceMethod[] }>,
+    enabled: methodTarget?.parentDeviceId != null,
+  });
+  const deviceMethods = deviceMethodsQ.data?.items ?? [];
+  /** 下拉选项：值是 methodId（device_method.id），**不是**方法名字符串。 */
+  const methodOptions = useMemo(
+    () => deviceMethods
+      .filter((m) => m.methodId != null)
+      .map((m) => ({
+        value: m.methodId as number,
+        label: m.name ? `${m.method} · ${m.name}` : m.method,
+      })),
+    [deviceMethods],
+  );
+
   // 每台设备的点位数（合并 topology 设备 + positions）
   const devWithCount = useMemo(() => devices.map((d) => ({
     ...d,
@@ -143,6 +261,28 @@ export default function PositionsPage() {
     () => islands.flatMap((i) => i.devices.map((d) => ({ ...d, islandId: i.id, islandName: i.name }))),
     [islands],
   );
+
+  /** positionId → 该点位在矩阵里的所有行（未绑定的点位也会有一行）。 */
+  const matrixByPoint = useMemo(() => {
+    const m = new Map<number, MatrixRow[]>();
+    for (const r of matrixRows) {
+      const list = m.get(r.positionId);
+      if (list) list.push(r);
+      else m.set(r.positionId, [r]);
+    }
+    return m;
+  }, [matrixRows]);
+
+  /** 矩阵概览：多少点位、多少没绑任何方法（运行时调度不到）。 */
+  const matrixStats = useMemo(() => {
+    const points = new Set<number>();
+    let unbound = 0;
+    for (const r of matrixRows) {
+      points.add(r.positionId);
+      if (r.bindingId == null) unbound++;
+    }
+    return { points: points.size, unbound };
+  }, [matrixRows]);
 
   const selectedPositions = useMemo(() => {
     if (deviceId == null) return [];
@@ -331,6 +471,136 @@ export default function PositionsPage() {
     }
   };
 
+  // ---- 点位×方法绑定：抽屉的读写 ----
+
+  /** 打开某个点位的「可用方法」抽屉。 */
+  const openMethods = (p: Position) => {
+    // ⚠ 绑定用的是 device_point.id（pointId），不是 resourceId
+    if (p.pointId == null) {
+      message.error(t('positions.method.error.noPointId'));
+      return;
+    }
+    setMethodTarget(p);
+    setEditingBinding(null);
+  };
+
+  /** 切到「加方法」模式。 */
+  const startAdd = () => setEditingBinding(null);
+
+  /** 切到「编辑绑定」模式（后端只允许改用途 / 分配方式 / 优先级 / 启用）。 */
+  const startEdit = (b: PositionMethodBinding) => setEditingBinding(b);
+
+  /**
+   * 表单值跟着当前编辑对象走。
+   *
+   * <p>方法与作用域是**创建时**定的（后端 update 只改 purpose / allocation /
+   * priority / enabled），所以编辑模式下这两项只读显示。
+   */
+  useEffect(() => {
+    if (!methodTarget) return;
+    if (editingBinding) {
+      const scope = editingBinding.scopeKind as MethodScopeKind;
+      setMethodScopeKind(METHOD_SCOPE_KEYS[scope] ? scope : 'global');
+      methodForm.setFieldsValue({
+        purpose: editingBinding.purpose ?? '',
+        allocation: editingBinding.allocation,
+        priority: editingBinding.priority,
+        enabled: editingBinding.enabled,
+      });
+    } else {
+      setMethodScopeKind('global');
+      methodForm.setFieldsValue({
+        methodId: undefined,
+        scopeKind: 'global',
+        scopeId: undefined,
+        purpose: undefined,
+        allocation: 'explicit',
+        priority: 100,
+      });
+    }
+  }, [methodTarget, editingBinding, methodForm]);
+
+  /** 保存（新增或更新）一条绑定。 */
+  const submitBinding = async () => {
+    const pointId = methodTarget?.pointId;
+    if (pointId == null) return;
+    // 校验失败由 antd 在字段上标红，这里静默返回，别弹错误提示
+    let v: MethodFormValues;
+    try {
+      v = await methodForm.validateFields();
+    } catch {
+      return;
+    }
+    try {
+      if (editingBinding) {
+        await api.updatePositionMethod(pointId, editingBinding.id, {
+          purpose: v.purpose ?? null,
+          allocation: v.allocation,
+          priority: Number(v.priority ?? 100),
+          enabled: !!v.enabled,
+        });
+        message.success(t('positions.method.toast.updated'));
+      } else {
+        if (v.methodId == null) {
+          message.error(t('positions.method.error.methodRequired'));
+          return;
+        }
+        await api.addPositionMethod(pointId, {
+          methodId: Number(v.methodId),
+          scopeKind: v.scopeKind,
+          scopeId: v.scopeId ?? null,
+          purpose: v.purpose ?? null,
+          allocation: v.allocation,
+          priority: Number(v.priority ?? 100),
+        });
+        message.success(t('positions.method.toast.added'));
+      }
+      setEditingBinding(null);
+      qc.invalidateQueries({ queryKey: ['position-methods'] });
+      qc.invalidateQueries({ queryKey: ['position-method-matrix'] });
+    } catch (e) {
+      // 后端 400 / 409 原文透给用户（例：绑定已存在）
+      message.error(t(editingBinding ? 'positions.method.error.update' : 'positions.method.error.add',
+        { error: (e as Error).message }));
+    }
+  };
+
+  /** 删一条绑定。 */
+  const removeBinding = async (b: PositionMethodBinding) => {
+    const pointId = methodTarget?.pointId;
+    if (pointId == null) return;
+    try {
+      await api.deletePositionMethod(pointId, b.id);
+      message.success(t('positions.method.toast.deleted'));
+      qc.invalidateQueries({ queryKey: ['position-methods'] });
+      qc.invalidateQueries({ queryKey: ['position-method-matrix'] });
+    } catch (e) {
+      message.error(t('positions.method.error.delete', { error: (e as Error).message }));
+    }
+  };
+
+  /** 某个点位已绑的方法标签（没绑过就标「未绑定」）。 */
+  const boundTags = (p: Position) => {
+    const rows = p.pointId == null ? [] : (matrixByPoint.get(p.pointId) ?? []);
+    const bound = rows.filter((r) => r.bindingId != null);
+    if (bound.length === 0) {
+      return <Tag color="warning">{t('positions.method.matrix.unbound')}</Tag>;
+    }
+    return (
+      <Space size={4} wrap>
+        {bound.map((r) => (
+          <Tag key={r.bindingId!} color={r.enabled === false ? 'default' : 'blue'}>{r.methodName}</Tag>
+        ))}
+      </Space>
+    );
+  };
+
+  /** 作用域 → 文案（后端词表之外的值原样透出，不吞掉）。 */
+  const scopeText = (v?: string | null) => {
+    const k = v as MethodScopeKind;
+    return v && METHOD_SCOPE_KEYS[k] ? t(METHOD_SCOPE_KEYS[k]) : (v ?? '—');
+  };
+
   const cellText = (p?: Position) => {
     if (!p) return '';
     if (p.plateId) return `板 ${p.plateId}`;
@@ -386,6 +656,12 @@ export default function PositionsPage() {
                   {!p.isEntry && !p.isExit && <Tag>未标记进出口</Tag>}
                   {cellText(p) ? <Tag color="orange">{cellText(p)}</Tag> : <Tag>空</Tag>}
                 </Space>
+                <div style={{ marginTop: 6 }}>
+                  <Button size="small" type="link" style={{ padding: 0, height: 18, fontSize: 11 }}
+                    onClick={(e) => { e.stopPropagation(); openMethods(p); }}>
+                    {t('positions.method.action.configure')}
+                  </Button>
+                </div>
               </div>
             );
           })}
@@ -461,6 +737,12 @@ export default function PositionsPage() {
                                     <div style={{ fontFamily: 'monospace', fontSize: 10, color: '#888' }}>{p.code}</div>
                                   )}
                                   <div style={{ color: '#888' }}>{cellText(p)}</div>
+                                  {p && (
+                                    <Button size="small" type="link" style={{ padding: 0, height: 18, fontSize: 11 }}
+                                      onClick={(e) => { e.stopPropagation(); openMethods(p); }}>
+                                      {t('positions.method.action.configure')}
+                                    </Button>
+                                  )}
                                 </div>
                               );
                             }))}
@@ -474,12 +756,43 @@ export default function PositionsPage() {
                           { title: '类型', dataIndex: 'kind', width: 90, render: (v: string) => (KIND_KEYS[v] ? t(KIND_KEYS[v]) : v) },
                           { title: '角色', dataIndex: 'pointRole', width: 90, render: (v: string) => <Tag color={ROLE_COLORS[v] ?? 'default'}>{ROLE_KEYS[v] ? t(ROLE_KEYS[v]) : (v ?? '—')}</Tag> },
                           { title: '占用', key: 'occ', render: (_, p) => cellText(p) ? <Tag color="orange">{cellText(p)}</Tag> : <Tag>空</Tag> },
-                          { title: '', key: 'op', width: 60, render: (_, p) => <Button size="small" type="link" onClick={() => openEdit(p)}>编辑</Button> },
+                          { title: t('positions.method.field.boundMethods'), key: 'methods', render: (_, p) => boundTags(p) },
+                          { title: '', key: 'op', width: 140, render: (_, p) => (
+                            <Space size={0}>
+                              <Button size="small" type="link" onClick={() => openEdit(p)}>编辑</Button>
+                              <Button size="small" type="link" onClick={() => openMethods(p)}>
+                                {t('positions.method.action.configure')}
+                              </Button>
+                            </Space>
+                          ) },
                         ]} />
                     ) : (
                       <Empty description="该设备只有单独位置（见下方）" />
                     )}
                   {standaloneBlock}
+
+                  {/* 点位可用方法：本设备的点位 → 绑了哪些方法（未绑的标出来） */}
+                  <Card size="small" title={t('positions.method.title')} style={{ marginTop: 16 }}
+                    extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('positions.method.hint')}
+                    </Typography.Text>}>
+                    {selectedPositions.length === 0 ? (
+                      <Empty description={t('positions.method.noPoints')} />
+                    ) : (
+                      <Table<Position> size="small" rowKey="resourceId" dataSource={selectedPositions}
+                        pagination={false} columns={[
+                          { title: t('positions.method.field.point'), key: 'p', width: 170,
+                            render: (_, p) => <Typography.Text code>{p.positionLabel || p.code}</Typography.Text> },
+                          { title: t('positions.method.field.boundMethods'), key: 'm', render: (_, p) => boundTags(p) },
+                          { title: '', key: 'op', width: 90,
+                            render: (_, p) => (
+                              <Button size="small" onClick={() => openMethods(p)}>
+                                {t('positions.method.action.configure')}
+                              </Button>
+                            ) },
+                        ]} />
+                    )}
+                  </Card>
                 </>
               )}
             </div>
@@ -608,6 +921,159 @@ export default function PositionsPage() {
           </Space>
         </div>
       </Card>
+
+      {/* 全岛点位×方法矩阵总览：一眼看出哪些点位还没绑方法（运行时调度不到） */}
+      <Card size="small" title={t('positions.method.matrix.title')} style={{ marginTop: 16 }}
+        extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('positions.method.matrix.hint')}
+        </Typography.Text>}>
+        {islandId == null ? (
+          <Empty description={t('positions.method.matrix.empty')} />
+        ) : matrixQ.isError ? (
+          <Alert type="error" showIcon
+            message={t('positions.method.error.load', { error: (matrixQ.error as Error)?.message ?? '' })} />
+        ) : matrixRows.length === 0 ? (
+          <Empty description={t('positions.method.matrix.empty')} />
+        ) : (
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('positions.method.matrix.summary', { points: matrixStats.points, unbound: matrixStats.unbound })}
+            </Typography.Text>
+            <Table<MatrixRow> size="small" style={{ marginTop: 8 }}
+              rowKey={(r) => `${r.positionId}-${r.bindingId ?? 'none'}`}
+              dataSource={matrixRows} pagination={false} columns={[
+                { title: t('positions.method.matrix.device'), dataIndex: 'deviceCode', width: 150 },
+                { title: t('positions.method.matrix.position'), dataIndex: 'positionCode', width: 180,
+                  render: (v: string | null) => <Typography.Text code>{v ?? '—'}</Typography.Text> },
+                { title: t('positions.method.matrix.method'), dataIndex: 'methodName', width: 180,
+                  render: (v: string | null) => (v
+                    ? <Typography.Text code>{v}</Typography.Text>
+                    : <Tag color="warning">{t('positions.method.matrix.unbound')}</Tag>) },
+                { title: t('positions.method.matrix.scope'), dataIndex: 'scopeKind', width: 110,
+                  render: (v: string | null) => scopeText(v) },
+                { title: t('positions.method.matrix.purpose'), dataIndex: 'purpose',
+                  render: (v: string | null) => v || '—' },
+                { title: t('positions.method.matrix.status'), key: 'st', width: 100,
+                  render: (_, r) => (r.bindingId == null
+                    ? <Tag color="warning">{t('positions.method.matrix.unbound')}</Tag>
+                    : r.enabled === false
+                      ? <Tag>{t('positions.method.matrix.disabled')}</Tag>
+                      : <Tag color="green">{t('positions.method.matrix.bound')}</Tag>) },
+              ]} />
+          </>
+        )}
+      </Card>
+
+      {/* 点位×方法绑定抽屉：单个点位的增删改 */}
+      <Drawer open={methodTarget != null} width={760}
+        onClose={() => { setMethodTarget(null); setEditingBinding(null); }}
+        title={t('positions.method.drawer.title', { code: methodTarget?.code ?? '' })}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('positions.method.drawer.desc')}
+        </Typography.Text>
+
+        <Table<PositionMethodBinding> size="small" rowKey="id" dataSource={bindings}
+          pagination={false} style={{ marginTop: 12 }}
+          locale={{ emptyText: t('positions.method.empty') }}
+          columns={[
+            { title: t('positions.method.field.method'), dataIndex: 'methodName', width: 160,
+              render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
+            { title: t('positions.method.field.scopeKind'), dataIndex: 'scopeKind', width: 100,
+              render: (v: string) => <Tag>{scopeText(v)}</Tag> },
+            { title: t('positions.method.field.scopeId'), dataIndex: 'scopeId', width: 90,
+              render: (v: number | null) => v ?? '—' },
+            { title: t('positions.method.field.purpose'), dataIndex: 'purpose',
+              render: (v: string | null) => v || '—' },
+            { title: t('positions.method.field.allocation'), dataIndex: 'allocation', width: 150,
+              render: (v: string) => (METHOD_ALLOCATION_KEYS[v as MethodAllocation]
+                ? t(METHOD_ALLOCATION_KEYS[v as MethodAllocation]) : v) },
+            { title: t('positions.method.field.priority'), dataIndex: 'priority', width: 70 },
+            { title: t('positions.method.field.enabled'), dataIndex: 'enabled', width: 90,
+              render: (v: boolean) => (v
+                ? <Tag color="green">{t('positions.method.matrix.bound')}</Tag>
+                : <Tag>{t('positions.method.matrix.disabled')}</Tag>) },
+            { title: '', key: 'op', width: 120, render: (_, b) => (
+              <Space size={0}>
+                <Button size="small" type="link" onClick={() => startEdit(b)}>
+                  {t('positions.method.action.edit')}
+                </Button>
+                <Popconfirm title={t('positions.method.action.deleteConfirm')}
+                  okText={t('positions.method.action.delete')}
+                  cancelText={t('positions.method.action.cancel')}
+                  onConfirm={() => removeBinding(b)}>
+                  <Button size="small" type="link" danger>{t('positions.method.action.delete')}</Button>
+                </Popconfirm>
+              </Space>
+            ) },
+          ]} />
+
+        {/* 加方法 / 编辑绑定：同一套字段，编辑时方法与作用域只读 */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px dashed #d9d9d9' }}>
+          <Typography.Text strong>
+            {editingBinding ? t('positions.method.form.editTitle') : t('positions.method.form.addTitle')}
+          </Typography.Text>
+          {!editingBinding && deviceMethodsQ.isError && (
+            <Alert type="error" showIcon style={{ marginTop: 8, marginBottom: 12 }}
+              message={t('positions.method.error.load', { error: (deviceMethodsQ.error as Error)?.message ?? '' })} />
+          )}
+          {!editingBinding && !deviceMethodsQ.isError && deviceMethods.length === 0 && (
+            <Alert type="warning" showIcon style={{ marginTop: 8, marginBottom: 12 }}
+              message={t('positions.method.noDeviceMethods')} />
+          )}
+          <Form form={methodForm} layout="vertical" style={{ marginTop: 8 }}>
+            {editingBinding ? (
+              <Alert type="info" showIcon style={{ marginBottom: 12 }}
+                message={t('positions.method.form.editLocked')} />
+            ) : (
+              <>
+                <Form.Item name="methodId" label={t('positions.method.field.method')}
+                  rules={[{ required: true, message: t('positions.method.error.methodRequired') }]}>
+                  <Select showSearch optionFilterProp="label"
+                    placeholder={t('positions.method.placeholder.method')}
+                    options={methodOptions} />
+                </Form.Item>
+                <Form.Item name="scopeKind" label={t('positions.method.field.scopeKind')}>
+                  <Select options={METHOD_SCOPE_KINDS.map((k) => ({ value: k, label: t(METHOD_SCOPE_KEYS[k]) }))}
+                    onChange={(v: MethodScopeKind) => {
+                      setMethodScopeKind(v);
+                      // 切回「全局」时清掉 scopeId，别把上一个流程 id 带过去
+                      if (v === 'global') methodForm.setFieldValue('scopeId', undefined);
+                    }} />
+                </Form.Item>
+                {methodScopeKind !== 'global' && (
+                  <Form.Item name="scopeId" label={t('positions.method.field.scopeId')}
+                    extra={t('positions.method.scopeIdHint')}>
+                    <InputNumber min={1} style={{ width: '100%' }}
+                      placeholder={t('positions.method.placeholder.scopeId')} />
+                  </Form.Item>
+                )}
+              </>
+            )}
+            <Form.Item name="purpose" label={t('positions.method.field.purpose')}>
+              <Input placeholder={t('positions.method.placeholder.purpose')} />
+            </Form.Item>
+            <Form.Item name="allocation" label={t('positions.method.field.allocation')}>
+              <Select options={METHOD_ALLOCATIONS.map((a) => ({ value: a, label: t(METHOD_ALLOCATION_KEYS[a]) }))} />
+            </Form.Item>
+            <Form.Item name="priority" label={t('positions.method.field.priority')}>
+              <InputNumber min={0} max={9999} style={{ width: '100%' }} />
+            </Form.Item>
+            {editingBinding && (
+              <Form.Item name="enabled" label={t('positions.method.field.enabled')} valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            )}
+            <Space>
+              <Button type="primary" onClick={submitBinding}>
+                {editingBinding ? t('positions.method.action.save') : t('positions.method.action.add')}
+              </Button>
+              {editingBinding && (
+                <Button onClick={startAdd}>{t('positions.method.action.cancel')}</Button>
+              )}
+            </Space>
+          </Form>
+        </div>
+      </Drawer>
 
       <Modal title={`编辑点位 · ${editing?.code ?? ''}`} open={editing != null}
         onCancel={() => setEditing(null)} onOk={save} okText="保存" cancelText="取消">
