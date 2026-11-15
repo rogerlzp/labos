@@ -302,6 +302,8 @@ DB=(
   # 三条绑定链的契约（2026-11-15）：枚举白名单 + device_method.id 可达
   # —— 绑定 API 强制要 methodId，而这个 id 之前没有任何接口暴露
   "device.BindingContractDbSelfTest"
+  # 设备编号三处同步改（2026-11-15）：resource_node.code/path + device_instance.code
+  "device.DeviceCodeSyncDbSelfTest"
   # 三条绑定链的**端到端**：点位×方法 / 节点绑定 / 设备池
   # —— 界面配出来的东西后端真的存得进去、读得回来吗？
   "device.BindingEndToEndDbSelfTest"
