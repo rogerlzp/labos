@@ -460,13 +460,45 @@ public class DeviceService {
                     // 该型号在库里登记的方法名（device_method）。
                     // 模拟器拿它和画像方法集取并集：新设备只 INSERT 数据就能跑，
                     // 不用再往 DeviceProfile.TABLE 里加一份硬编码画像。
+                    //
+                    // ⚠ **modelId 为空时要回退用型号 code**（2026-11-15 修）：
+                    //   modelId 取的是 `device.attr->>'device_model'`（画像 id），
+                    //   而**历史型号**（EQ145 / EQ146 / EQ165 这类从旧系统迁过来的）
+                    //   压根没有这个 attr ⇒ modelId 为空 ⇒ 方法集查不到 ⇒
+                    //   清单里 methods 是空数组 ⇒ 模拟器按**画像**校验方法集
+                    //   ⇒ 把合法指令拒了（EC-06-0004）⇒ 节点转人工、流程暂停。
+                    //   ⇒ 空了就用 `device.code` 再查一次（selectModelMethodNames
+                    //   同时认 code 与 attr.device_model）。
                     "methods", new Jsons.Raw(Jsons.arr(
-                            methodsOfModel(methodsByModel, str(row.get("modelId")))
+                            methodsOfModel(methodsByModel,
+                                    modelKeyOf(row))
                                     .stream().map(Jsons::quote).toList())),
                     "driverCode", row.get("driverCode"),
                     "status", row.get("status")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /**
+     * 查方法集用的型号键：**画像 id 优先，空了用型号 code**。
+     *
+     * <p>为什么要回退（2026-11-15）：清单里的 {@code modelId} 取的是
+     * {@code device.attr->>'device_model'}（画像 id），
+     * 而**历史型号**（旧系统迁过来的 EQ145 / EQ146 / EQ165 之类）没有这个 attr
+     * ⇒ modelId 为空 ⇒ 方法集查不到 ⇒ 清单里 {@code methods} 是空数组
+     * ⇒ 模拟器退回按**画像**校验方法集 ⇒ 把合法指令拒了（EC-06-0004）
+     * ⇒ 节点转人工、流程暂停 —— 现场看到的是"流程明明配对了，怎么就卡了"。
+     *
+     * <p>{@code selectModelMethodNames} 同时认 {@code device.code} 与
+     * {@code attr->>'device_model'}，所以回退用 code 是安全的。
+     */
+    private String modelKeyOf(Map<String, Object> row) {
+        String modelId = str(row.get("modelId"));
+        if (modelId != null && !modelId.isBlank()) {
+            return modelId;
+        }
+        String code = str(row.get("model"));
+        return code == null ? "" : code;
     }
 
     /** 型号 → 方法名（带本次请求内的缓存；查库失败按空处理，不影响清单返回）。 */

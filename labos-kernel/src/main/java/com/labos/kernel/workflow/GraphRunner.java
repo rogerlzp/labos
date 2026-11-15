@@ -1740,6 +1740,32 @@ public final class GraphRunner {
         // 命中即 pinned、跳过候选池。比 XML resource 的设备绑定更优先。
         Long bindingInstance = nodeBindingInstanceByKey.get(n.key());
         if (bindingInstance != null) {
+            // ⚠ **陈旧绑定守卫**（2026-11-15 补，实测踩到）：
+            //   节点的 **编排绑定**（XML 的 resource → resource_node → 设备实例）
+            //   与 **节点绑定**（node_binding 里的 device_instance_id）
+            //   都明确指向一台设备、但**不是同一台** ⇒ 配置自相矛盾。
+            //
+            //   为什么会发生：流程图一改，**node_key 会按位置重新分配**
+            //   （Activity_0004 原来是谁，改完图可能是另一台设备）；
+            //   而 node_binding 挂在 node_id 上 ⇒ 旧绑定**原地存活**，
+            //   转头指向了另一个节点 ⇒ 成了**陈旧绑定**。
+            //
+            //   旧行为（绑定优先级最高 ⇒ 静默用绑定那台）造成的现场后果：
+            //   「P_AUTO-3 洗脱」的 Elute **发给了 P_AUTO-1** ⇒
+            //   P_AUTO-3 永远不报【等待交互】⇒ 流程卡死在等待节点，
+            //   而日志/界面**没有任何一处指向真凶**（命令成功、节点成功）。
+            //
+            //   现在：**明确拒绝**，把矛盾摆到台面上。
+            //   与越岛绑定的处置原则一致（不静默换设备 —— 那等于偷偷改了工艺要的设备）。
+            Long graphInstance = n.resourceId() == null ? null
+                    : boundInstanceByResource.get(n.resourceId());
+            if (graphInstance != null && !graphInstance.equals(bindingInstance)) {
+                throw new IllegalArgumentException("节点 " + n.key() + "（" + n.name() + "）"
+                        + "的配置自相矛盾：编排里绑的设备实例 " + graphInstance
+                        + " 与节点绑定里绑的设备实例 " + bindingInstance + " 不是同一台。"
+                        + "（流程图一改 node_key 会按位置重分配，旧节点绑定会原地存活指向别的节点。）"
+                        + "拒绝执行：不能静默换成另一台设备。请重配该节点的绑定。");
+            }
             if (islandInstanceIds != null && !islandInstanceIds.contains(bindingInstance)) {
                 throw new IllegalArgumentException("节点 " + n.key() + " 绑定的点位所在设备（实例 "
                         + bindingInstance + "）不在流程所属的岛内，拒绝执行");

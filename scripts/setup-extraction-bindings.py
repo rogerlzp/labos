@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""配「高通量核酸提取工作站」的绑定链：点位×方法 + 节点绑定。
+"""配「高通量核酸提取工作站」的**点位×方法**与**设备池**。
 
-**三条绑定链**（后端全套都有，前端界面本轮刚补齐）：
+**两条与流程图无关的绑定链**（后端全套都有，前端界面已补齐）：
 
 | 链 | 表 | 配什么 | 本脚本怎么配 |
 |---|---|---|---|
 | 点位×方法 | `position_method` | 哪个点位允许跑哪些方法 | 提取仪两个工位各绑该型号的全部方法；分液器板位绑分液方法 |
-| 节点绑定 | `node_binding` | 流程节点 → 点位/设备实例/池 + 装板方式 + **扫码策略** | 每个设备节点绑到对应点位；机械臂节点绑到机械臂 |
 | 设备池 | `device_pool` | 同型号多实例池 | 已在 setup-extraction-station.py 建好 |
 
-**扫码策略**（客户文档 §1.1：机械臂含扫码枪，每次抓板扫码记录）：
-⇒ 机械臂的搬运节点用 `validate_both`（进出都校验）；
-   设备的换板节点用 `validate_in`（送进去时校验）。
+⚠ **节点绑定（`node_binding`）不在本脚本里**（2026-11-15 移走）——
+   节点绑定必须**与流程图同源生成**（`setup-extraction-flow.py`）：
+   node_key 是按位置分配的，图一改旧绑定就会原地存活指向别的节点，
+   运行期「绑定优先级最高」⇒ **静默用错设备**（实测踩到）。
+   详见 setup-extraction-flow.py 里的说明。
 
 用法：
     LABOS_API=http://127.0.0.1:18082 python3 scripts/setup-extraction-bindings.py
 
-⚠ 幂等：点位×方法是「已存在就跳过」（后端唯一键），节点绑定是**整体替换**
-   （PUT 语义）⇒ 重跑结果一样。
+⚠ 幂等：点位×方法是「已存在就跳过」（后端唯一键）⇒ 重跑结果一样。
 """
 
 import json
@@ -182,81 +182,28 @@ def main():
     ok(f"点位×方法：新增 {added} · 已存在 {skipped} · 失败 {failed}")
 
     # ---- 节点绑定
-    section("5. 配节点绑定（node_binding）—— 扫码策略在这里")
-    st, lst = call("GET", "/api/workflows", query={"limit": "300", "q": WF_CODE})
-    wf = next((w for w in lst.get("items", []) if w.get("code") == WF_CODE), None)
-    if wf is None:
-        sys.exit(f"✘ 找不到流程 {WF_CODE}（先跑 setup-extraction-flow.py）")
-    wf_id = wf["id"]
-    st, detail = call("GET", f"/api/workflows/{wf_id}")
-    tasks = detail.get("tasks", [])
-    ok(f"流程 {WF_CODE}（id={wf_id}）：{len(tasks)} 个节点")
-
-    # 节点名 → 绑定目标。看板/设计器里的节点名是脚本生成的（"P_AUTO-1 启动提取流程" 等）
-    bound = 0
-    for t in tasks:
-        name = t.get("name") or ""
-        method = t.get("method") or ""
-        if method == "__awaitEvent":
-            continue  # 逻辑节点不绑设备
-        # 从节点名里认出目标设备与工位
-        target = None
-        for code in devs:
-            if name.startswith(code + " "):
-                target = code
-                break
-        if target is None and name.startswith("机械臂 "):
-            # 机械臂节点的名字是「机械臂 放磁套板到 P_AUTO-1 交互位」⇒ 绑到 ARM1
-            target = "ARM1"
-        if target is None:
-            continue
-        d = devs[target]
-        # 提取仪：绑交互位（deck_out，机械臂可达那侧）
-        suffix = "EXT" if target.startswith("P_AUTO-") else "PLATE"
-        pc = f"{target}-{suffix}"
-        p = by_code.get(pc)
-        position_id = p.get("pointId") if p else None
-        if position_id is None and target != "ARM1":
-            continue
-        # 扫码策略：
-        #   设备节点 = 换板/执行动作 ⇒ 进板时校验（validate_in）
-        #   机械臂节点 = 抓板扫码 ⇒ 进出都校验（validate_both）
-        is_arm = target == "ARM1"
-        barcode = "validate_both" if is_arm else "validate_in"
-        # 装板方式：设备节点装一块板；机械臂节点不放板
-        loading = "do_not_load" if is_arm else "load_single"
-        payload = {
-            "bindings": [{
-                # 机械臂没有自己的板位（它去别人的点位取放板）⇒ 只绑设备实例
-                "positionId": position_id,
-                "deviceInstanceId": d.get("instanceId"),
-                "methodId": (methods_by_device.get(target) or [{}])[0].get("methodId"),
-                "loadingPattern": loading,
-                "barcodePolicy": barcode,
-                "leaveAtStation": False,
-                "params": {},
-            }]
-        }
-        # ⚠ URL 里要用 **nodeKey**（tasks[].key，如 Activity_0002），
-        #   不是节点名（tasks[].name）—— 名字有中文和空格，得 URL 编码。
-        node_key = t.get("key")
-        if not node_key:
-            continue
-        st, r = call("PUT",
-                     f"/api/workflows/{wf_id}/nodes/{urllib.parse.quote(node_key, safe='')}/bindings",
-                     payload)
-        if st == 200:
-            bound += 1
-        else:
-            bad(f"节点绑定失败：{name}（{st}）", str(r)[:180])
-    ok(f"节点绑定：{bound} 个节点")
+    #
+    # ⚠ **节点绑定不在这里配了**（2026-11-15 移走）：
+    #   节点绑定挂在 `node_binding.node_id` 上，而 **node_key 是按位置分配的**
+    #   （Activity_0004 = 第 4 个建出来的节点）。流程图一改，同一个 Activity_0004
+    #   可能变成**另一台设备的节点**，而 node_id 还在 ⇒ **旧绑定原地存活、指向新节点**
+    #   ⇒ 运行期「绑定优先级最高」⇒ **静默用错设备**。
+    #   实测踩到：「P_AUTO-3 洗脱」的 Elute 发给了 P_AUTO-1 ⇒ P_AUTO-3 永不报
+    #   【等待交互】⇒ 流程卡死，而日志/界面没有一处指向真凶。
+    #
+    #   ⇒ 现在**图和绑定在同一个脚本里一起生成**（setup-extraction-flow.py），
+    #      生成器知道每个节点绑谁 ⇒ 不可能张冠李戴；写完还**回读自检**。
+    #
+    #   本脚本只管**与图无关**的两件事：点位×方法、设备池。
+    section("5. 节点绑定归流程脚本管（本脚本不再写）")
+    ok("节点绑定 = setup-extraction-flow.py（与图同源生成 + 回读自检）")
 
     print()
     print("=" * 68)
-    print("绑定链配完。")
+    print("绑定链配完（点位×方法 + 设备池）。")
     print("  · 点位×方法：设计器里节点能选到方法了")
-    print("  · 节点绑定：扫码策略已设（机械臂 validate_both / 设备 validate_in）")
-    print("下一步：在设计器 /designer/%d 里核对；然后起模拟器跑一次端到端" % wf_id)
+    print("  · 节点绑定：在 setup-extraction-flow.py 里与图同源生成（不在这里）")
+    print("下一步：setup-extraction-flow.py → seed-extraction-durations.py → 起模拟器跑一次端到端")
     print("=" * 68)
 
 

@@ -244,8 +244,15 @@ public final class DeviceCore {
      *
      * @param eventType 事件类型（如 {@code waiting_interaction}）
      * @param delayMs  相对"命令处理成功"的延迟（毫秒）；0 = 立刻推
+     * @param repeat   这条事件可以触发几次；{@code 1} = 一次性（老行为），
+     *                 {@code -1} = **每次该方法执行成功都报**（真实设备的行为：
+     *                 一台提取仪做完全部内部工序后会**反复**报【等待交互】，
+     *                 每次换板都要报一次）。{@code 0} 视为 1。
      */
-    public record SpontaneousEvent(String eventType, long delayMs) {
+    public record SpontaneousEvent(String eventType, long delayMs, int repeat) {
+        public SpontaneousEvent(String eventType, long delayMs) {
+            this(eventType, delayMs, 1);
+        }
     }
 
     /** GUI 订阅：日志 + 状态变化。CLI 模式可不设。 */
@@ -719,6 +726,30 @@ public final class DeviceCore {
                 System.err.println("[模拟器] 自发上报脚本条目缺方法名或事件类型，已跳过：" + entry);
                 continue;
             }
+            // 🔁 **重复次数**（2026-11-15 加）：`method=eventType@delayMs*N` 或 `@*`
+            //   —— N 次；`*` = 无限（每次该方法执行成功都报）。
+            //   为什么要有：真实设备做完全部内部工序后会**反复**报【等待交互】
+            //   （每次换板都要报一次）；老语义是"一次性队列" ⇒ 一台设备在一条流程里
+            //   只能报一次 ⇒ 第二次等待必然超时。
+            int repeat = 1;
+            int star = delayText.indexOf('*');
+            if (star >= 0) {
+                String n = delayText.substring(0, star).trim();
+                delayText = delayText.substring(star + 1).trim();
+                if (n.isEmpty()) {
+                    repeat = -1;   // * = 无限
+                } else {
+                    try {
+                        repeat = Integer.parseInt(n);
+                        if (repeat <= 0) {
+                            repeat = 1;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("[模拟器] 自发上报脚本条目的重复次数不是数字，已跳过：" + entry);
+                        continue;
+                    }
+                }
+            }
             long delay = 0;
             if (!delayText.isEmpty()) {
                 try {
@@ -733,7 +764,7 @@ public final class DeviceCore {
                 }
             }
             out.computeIfAbsent(method, k -> new java.util.ArrayList<>())
-                    .add(new SpontaneousEvent(eventType, delay));
+                    .add(new SpontaneousEvent(eventType, delay, repeat));
         }
         return out;
     }
@@ -806,7 +837,13 @@ public final class DeviceCore {
                 + (event.delayMs() > 0 ? "（" + event.delayMs() + "ms 后）" : "（立即）"));
     }
 
-    /** 取该方法队列里的下一条（没有就 null）。调用方必须持有 spontaneousScript 的锁。 */
+    /**
+     * 取该方法队列里的下一条（没有就 null）。调用方必须持有 spontaneousScript 的锁。
+     *
+     * <p>🔁 **重复语义**（2026-11-15）：条目的 {@code repeat > 1} 时，取出后**放回队尾**
+     * 并把剩余次数减一 ⇒ 该方法每执行成功一次就报一次（真实设备的行为）。
+     * {@code repeat == -1} = 无限（每次都报）。{@code repeat == 1} = 一次性（老行为）。
+     */
     private SpontaneousEvent pollSpontaneous(String method) {
         if (method == null || method.isEmpty()) {
             return null;
@@ -815,7 +852,17 @@ public final class DeviceCore {
         if (q == null || q.isEmpty()) {
             return null;
         }
-        return q.poll();
+        SpontaneousEvent ev = q.poll();
+        if (ev == null) {
+            return null;
+        }
+        int repeat = ev.repeat();
+        if (repeat == -1) {
+            q.add(ev);                    // 无限：放回去，下次还报
+        } else if (repeat > 1) {
+            q.add(new SpontaneousEvent(ev.eventType(), ev.delayMs(), repeat - 1));
+        }
+        return ev;
     }
 
     /**

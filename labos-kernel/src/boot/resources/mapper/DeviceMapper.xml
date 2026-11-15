@@ -209,7 +209,17 @@
           FROM device_method m
           JOIN device d ON d.id = m.device_id AND d.tenant_id = m.tenant_id
          WHERE m.tenant_id = #{param1}
-           AND (d.code = #{param2} OR d.attr-&gt;&gt;'device_model' = #{param2})
+           -- 三种键都认（2026-11-15 补 d.model）：
+           --   d.code                   型号池编号（如 EQ145 / P_AUTO）
+           --   d.attr-&gt;&gt;'device_model'  画像 id（如 carousel-extractor-generic）
+           --   d.model                  型号名字符串（如 XRobot A10LR / EL406）
+           -- ⚠ 少了第三种：**历史型号**（旧系统迁过来的）既没有 attr.device_model，
+           --   而它的 code（EQ145）与 model（XRobot A10LR）又不是同一个值
+           --   ⇒ 三个键各查一遍都落空 ⇒ 方法集查不到 ⇒
+           --   清单里 methods 是空数组 ⇒ 模拟器按**画像**校验方法集
+           --   ⇒ 把合法指令拒了（EC-06-0004）⇒ 节点转人工、流程暂停。
+           AND (d.code = #{param2} OR d.attr-&gt;&gt;'device_model' = #{param2}
+                OR d.model = #{param2})
          ORDER BY 1
     </select>
 
