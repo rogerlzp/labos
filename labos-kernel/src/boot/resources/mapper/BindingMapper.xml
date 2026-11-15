@@ -202,7 +202,8 @@
            dp.device_resource_id AS "deviceResourceId",
            rn.code AS "pointCode",
            dp.position_label AS "positionLabel",
-           dp.slot_index AS "slotIndex"
+           dp.slot_index AS "slotIndex",
+           dp.robot_reachable AS "robotReachable"
       FROM node_binding nb
       JOIN workflow_node wn ON wn.id = nb.node_id
       JOIN device_point dp ON dp.id = nb.position_id

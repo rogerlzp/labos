@@ -1810,6 +1810,13 @@ public class WorkflowService {
             if (spec == null || !(bindDevRaw instanceof Number bindNum)) {
                 continue;
             }
+            // 机械臂到不了的点位（如提取仪内部操作位 deck_in）不能当搬运端点：
+            // 注入了也必然在预留/驱动阶段失败，不如不注入（该点位由设备自己搬，
+            // 见约束 ck_device_point_deck_in_unreachable）。可达性守卫由 P2 L5 兜。
+            if (Boolean.FALSE.equals(row.get("robotReachable"))) {
+                log.debug("[点位绑定] 节点 {} 绑的 {} 机械臂不可达，跳过注入", nodeId, spec);
+                continue;
+            }
             long bindDev = bindNum.longValue();
             Map<String, Object> p = paramsByNode.computeIfAbsent(nodeId,
                     k -> new LinkedHashMap<>());
