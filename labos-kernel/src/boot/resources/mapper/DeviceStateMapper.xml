@@ -435,6 +435,21 @@
          ORDER BY r.id LIMIT 1
     </select>
 
+    <!-- 起点板位引导：这块板当前在哪个点位。 -->
+    <select id="selectPositionByPlate" resultType="java.lang.Long">
+        SELECT resource_id FROM position_state
+         WHERE tenant_id = #{param1} AND plate_id = #{param2}
+         ORDER BY resource_id LIMIT 1
+    </select>
+
+    <!-- 只认领「无归属」的位置；已有归属（别人的板）不抢占。 -->
+    <update id="claimPosition">
+        UPDATE position_state
+           SET occupied_by_run = #{param3}, occupied_since = now(), updated_at = now()
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+           AND occupied_by_run IS NULL
+    </update>
+
     <!-- 设备内部搬运通知：装载口 ↔ 内部格。
          不带 occupied_by_run 条件——内部格的板可能由前一个 run 放入。 -->
     <update id="clearPositionForInternalMove">

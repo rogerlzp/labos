@@ -221,6 +221,20 @@ public interface DeviceStateMapper {
     /** 放板后补写统一内容模型（只动 content_*，不动 plate_id）。 */
     int markPositionPlateContent(long tenantId, long resourceId, long plateId);
 
+    // ---- 实验开始前的起点板位引导 ----
+
+    /** 这块板当前在哪个点位（null = 不在任何点位）。 */
+    Long selectPositionByPlate(long tenantId, String plate);
+
+    /**
+     * 把「无归属」的点位认领给本 run（{@code occupied_by_run IS NULL} 才生效）。
+     *
+     * <p>fail-closed 的 {@code resolveSourcePositionBySpec} 要求源位归属本 run；
+     * 历史/手工放进去的板没有归属，需要这一步才能被第一次搬运接受。
+     * 已有归属（别人的板）返回 0，绝不抢占。
+     */
+    int claimPosition(long tenantId, long resourceId, long runId);
+
     /** P2-4：设备下有几块板（>1 时扫码无法凭空关联到具体层位）。 */
     long selectPlateCountOnDevice(long tenantId, long deviceResourceId);
 

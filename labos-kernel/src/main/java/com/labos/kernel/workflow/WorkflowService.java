@@ -1064,6 +1064,10 @@ public class WorkflowService {
                 log.warn("[点位快照] 写入失败（不阻断执行）：{}", e.getMessage());
             }
 
+            // 实验开始前的起点板位引导：把主物料板预置到第一个 Transfer 的 source 设备，
+            // 否则 fail-closed 的源位归属校验会让第一次搬运直接 EC-POSITION-OCCUPIED。
+            seedStartPlatePosition(runId, ordered, paramsByNode, nodeIdByKey);
+
             // M 方案：自动位置确认开启时，Transfer 节点必须有可解析的真实板号。
             // 用 paramsByNode（已由 loadMethodParams 做过 ${x} 替换），所以连
             // 「变量声明了但没初值」也会被这里拦住，不会把 ${mainPlate} 当条码落库。
@@ -2039,6 +2043,94 @@ public class WorkflowService {
      *
      * @param presetRunId 复用已有 run 时的 id；没有（同步执行）传 null
      */
+    /**
+     * 实验开始前的**起点板位引导**。
+     *
+     * <p>为什么需要：{@code PositionLock.resolveSourcePositionBySpec} 已改为 fail-closed —
+     * 源位的 {@code occupied_by_run} 必须等于当前 runId，否则拒绝搬运（防「换位/搬别人的板」）。
+     * 但简化流程的起点是「板从外部放进读板机」，{@code position_state} 里没有归属本 run 的板
+     * ⇒ 第一次搬运必然 {@code EC-POSITION-OCCUPIED}。
+     *
+     * <p>本方法在 run 启动时把主物料板预置到**第一个 Transfer 节点的 source 设备**的一个
+     * 可达点位（复用 {@code selectFirstAvailablePosition} 的进口/可达过滤）：
+     * <ul>
+     *   <li>板已在某点位且**无归属** → 只补归属，不搬动（历史/手工放进去的板）；</li>
+     *   <li>板已在某点位且**有归属** → 不动（可能是别的 run 的板，交给人工）；</li>
+     *   <li>板不在任何点位 → 预置到起点设备的空点位；</li>
+     *   <li>起点设备没有空点位 / 板未建档 → 只告警，不阻断（由后续搬运报错转人工）。</li>
+     * </ul>
+     *
+     * <p>它只是「说明性预置」，写失败绝不阻断实验启动。
+     */
+    private void seedStartPlatePosition(long runId, List<NodeDef> ordered,
+                                        Map<Long, Map<String, Object>> paramsByNode,
+                                        Map<String, Long> nodeIdByKey) {
+        try {
+            String srcCode = null;
+            String plate = null;
+            for (NodeDef n : ordered) {
+                String proto = n.protocolName();
+                if (proto == null || !proto.startsWith("Transfer")) {
+                    continue;
+                }
+                Long nid = nodeIdByKey.get(n.key());
+                Map<String, Object> pp = nid == null ? null : paramsByNode.get(nid);
+                if (pp == null) {
+                    continue;
+                }
+                Object s = pp.get("source");
+                if (s == null || String.valueOf(s).isBlank()) {
+                    continue;
+                }
+                srcCode = String.valueOf(s).trim();
+                plate = com.labos.kernel.driver.PositionLock.resolvePlateBarcode(pp, null);
+                break;
+            }
+            if (srcCode == null || plate == null) {
+                return;
+            }
+
+            com.labos.kernel.persistence.DeviceStateMapper dm =
+                    com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.DeviceStateMapper.class);
+
+            // ① 板已在某点位：只在「无归属」时认领，绝不抢占别人的板
+            Long existing = dm.selectPositionByPlate(tenantId, plate);
+            if (existing != null) {
+                int claimed = dm.claimPosition(tenantId, existing, runId);
+                if (claimed > 0) {
+                    log.info("[起点引导] 板 {} 已在点位 {}，归属到 run {}", plate, existing, runId);
+                } else {
+                    log.warn("[起点引导] 板 {} 已在点位 {} 且已有归属，不自动搬动（需人工确认）",
+                            plate, existing);
+                }
+                return;
+            }
+
+            // ② 板不在任何点位：预置到起点设备
+            Long devRes = dm.selectResourceIdByCode(tenantId, srcCode);
+            if (devRes == null) {
+                log.warn("[起点引导] 起点设备 {} 未找到资源，跳过", srcCode);
+                return;
+            }
+            Long pos = dm.selectFirstAvailablePosition(tenantId, devRes);
+            if (pos == null) {
+                log.warn("[起点引导] 起点设备 {} 没有可用点位，跳过", srcCode);
+                return;
+            }
+            Long uid = dm.selectPlateUidByBarcode(tenantId, plate);
+            if (uid == null) {
+                log.warn("[起点引导] 板 {} 尚未建档，跳过（请先建板）", plate);
+                return;
+            }
+            dm.setPositionForInternalMove(tenantId, pos, plate, uid, runId);
+            log.info("[起点引导] 板 {} 预置到 {}（resource {}），归属 run {}",
+                    plate, srcCode, pos, runId);
+        } catch (Exception e) {
+            log.warn("[起点引导] 失败（不阻断执行）：{}", e.getMessage());
+        }
+    }
+
     private Map<String, String> effectiveRunVars(long workflowId, Long presetRunId) {
         Map<String, String> out = new java.util.LinkedHashMap<>();
         out.putAll(loadWorkflowVarDefaults(workflowId));
