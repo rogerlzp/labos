@@ -429,6 +429,11 @@ public final class DriverStepExecutor implements StepExecutor {
             plan.acquireAll(srcRes, sourcePos, dstRes, targetPos, null, robotRes, factory);
         } catch (TransferPlan.AcquireException e) {
             safeReleaseTarget(posLock, targetPos);
+            // 申请资源失败必须留下「是哪一类资源」的痕迹：AcquireException 的 message
+            // 是「标签 + 原因」（如「机械臂 被占用超过 60 秒」），但上层策略会把
+            // StepFailure 的 message 覆盖成策略文案，事后只能从这里回溯。
+            log.warn("[搬运] 申请资源失败（src={} dst={} srcPos={} dstPos={}）：{}",
+                    srcRes, dstRes, sourcePos, targetPos, e.getMessage());
             throw new StepFailure("EC-RESOURCE-BUSY", scopeOf("EC-RESOURCE-BUSY"),
                     e.getMessage(), 0, method);
         } catch (java.sql.SQLException e) {
