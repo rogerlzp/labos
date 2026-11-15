@@ -6,6 +6,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -30,8 +31,11 @@ public final class ScanEvidenceAuthorizeDbSelfTest {
         cleanup();
 
         try {
+            // ⚠ 观测时间必须取**当前时刻**：这里是扫码证据，闸门按 TTL（下面传 30 分钟）判过期。
+            // 曾经写死成 "2026-11-15T12:00:00Z" ⇒ 过了 20:30 再跑就必然 EC-STATE-STALE
+            // （12:00Z 距今超 30 分钟），表现为「上午绿、晚上红」的时间炸弹。
             ScanEvidence.record(db, TENANT, RUN, 5L, SRC_POS, "PLATE-A", "PLATE-A",
-                    "2026-11-15T12:00:00Z", SCAN, null, "cmd-1");
+                    Instant.now().toString(), SCAN, null, "cmd-1");
 
             section("1. 正确证据放行并消费（按 run+源位解析，不需填 scanId）");
             GrabScanGate.Verdict v = ScanEvidence.authorizeAndConsume(db, TENANT,
@@ -47,7 +51,7 @@ public final class ScanEvidenceAuthorizeDbSelfTest {
 
             section("3. 反例：证据点位 ≠ 本次抓取源位 → 查不到 → 拒绝");
             ScanEvidence.record(db, TENANT, RUN, 5L, SRC_POS + 1, "PLATE-B", "PLATE-B",
-                    "2026-11-15T12:00:00Z", "SELF-AUTH-2", null, "cmd-2");
+                    Instant.now().toString(), "SELF-AUTH-2", null, "cmd-2");
             GrabScanGate.Verdict wrongPos = ScanEvidence.authorizeAndConsume(db, TENANT,
                     RUN, SRC_POS, "PLATE-B", 101L, Duration.ofMinutes(30));
             eq("点位不符拒绝", false, wrongPos.allow());
