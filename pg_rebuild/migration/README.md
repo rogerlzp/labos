@@ -53,13 +53,19 @@
 | `20261115_p2_revert_manual_recovery.sql` | 回退 manual_recovery：心跳自动恢复是正确行为（网络闪断→离线→恢复自动继续），物理故障由操作员手动恢复（可绕过重取证） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_revert_manual_recovery.sql` |
 | `20261115_p2_rail_zone_exemption.sql` | P2 阶段 D：L3 路径粒度豁免（已验证无冲突的路径显式放行） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_rail_zone_exemption.sql`（幂等） |
 
-### 配置完整性预检
+### 配置完整性预检 + 种子
 
 ```bash
 source /tmp/labos-env.txt
-python3 scripts/verify-p2-interlock-config.py   # 缺配置以非 0 退出
+
+# 1. 客户填 p2-interlock-config.example.json（真实物理布局：分区映射/搅拌配对/豁免）
+# 2. 落库（幂等，自动建虚拟分区资源 + 校验配对设备存在）
+python3 scripts/seed-p2-interlock.py scripts/p2-interlock-config.example.json
+
+# 3. 预检（缺配置以非 0 退出）
+python3 scripts/verify-p2-interlock-config.py
 ```
-分区映射 / 搅拌配对 / 转盘事实是物理布局，由客户现场提供；本脚本只做「缺失即报错」。
+分区映射 / 搅拌配对是物理布局，由客户现场提供；device_fact(turntable) / waiting_interaction 是运行时数据（设备/侧车上报），不由种子脚本落库。
 
 ## 执行顺序
 

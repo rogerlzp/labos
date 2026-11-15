@@ -1,0 +1,23 @@
+{
+  "tenant_id": 1,
+  "说明": "这是 P2 互锁配置模板。按真实物理布局填写后，用 scripts/seed-p2-interlock.py 落库。path_key 用「源资源id->目标资源id」（精确点位优先，退设备级）。",
+
+  "rail_zones": [
+    {"code": "Z1", "resource_id": 210001, "name": "机械臂轨道 A 区（示例，改成真实值）"},
+    {"code": "Z2", "resource_id": 210002, "name": "机械臂轨道 B 区（示例，改成真实值）"}
+  ],
+
+  "transfer_rail_zones": [
+    {"path_key": "200231->200387", "zones": [210001, 210002],
+     "说明": "搬运路径 源->目标 经过的完整运动包络分区（接近/源位/途经/目标位/退出）"}
+  ],
+
+  "rail_zone_exemptions": [
+    {"path_key": "200231->200388", "reason": "已验证无轨道冲突（示例）", "operator": "现场工程师"}
+  ],
+
+  "stirrer_dispenser_pairs": [
+    {"stirrer_resource_id": 210101, "dispenser_resource_id": 210201,
+     "说明": "搅拌单元 -> 分液器 配对；一个分液器最多一个搅拌"}
+  ]
+}
