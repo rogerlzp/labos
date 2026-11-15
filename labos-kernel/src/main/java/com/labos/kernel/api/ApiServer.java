@@ -505,16 +505,20 @@ public final class ApiServer {
             log.info("  [启动收尾] 孤儿 running settle 跳过: " + e.getMessage());
         }
 
-        // P-07 第一切片：命令账本启动对账。
-        // 进程崩溃时可能有「已下发、没拿到回包」的设备指令；把陈旧 DISPATCH_STARTED
-        // 标成 UNKNOWN（物理结果未知），后续同 commandId 重发会被账本 fail-closed 拦住，
-        // 必须人工确认后处置。只标记，不自动重发。
+        // P-07/R4：命令账本启动对账。陈旧命令必须逐条先 QueryStatus：
+        // 设备明确完成/失败就落对应终态，仍在执行就保持在途；
+        // 只有查不到、无响应或查询不可用后才标 UNKNOWN（物理结果未知），禁止自动重发。
         try {
-            int unknown = com.labos.kernel.driver.CommandLedger.reconcileOnStartup(
+            var reconciliation = com.labos.kernel.driver.CommandLedger.reconcileWithQuery(
                     com.labos.kernel.persistence.DbConfig.fromEnv(), TENANT,
-                    com.labos.kernel.driver.CommandLedger.STALE_MINUTES);
-            log.info("  [启动收尾] 命令账本对账：标记 UNKNOWN " + unknown + " 条"
-                    + (unknown == 0 ? "（无遗留）" : ""));
+                    com.labos.kernel.driver.CommandLedger.STALE_MINUTES,
+                    this.workflows.buildDriverRegistry());
+            log.info("  [启动收尾] 命令账本对账：查询确认完成 " + reconciliation.settled()
+                    + " 条（成功 " + reconciliation.confirmedCompleted()
+                    + " / 失败 " + reconciliation.confirmedFailed() + "），仍在执行 "
+                    + reconciliation.stillRunning() + " 条，UNKNOWN "
+                    + reconciliation.unknown() + " 条"
+                    + (reconciliation.unknown() == 0 ? "" : "（需人工处置）"));
         } catch (Exception e) {
             log.info("  [启动收尾] 命令账本对账跳过: " + e.getMessage());
         }

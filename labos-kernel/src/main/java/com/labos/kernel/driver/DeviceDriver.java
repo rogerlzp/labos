@@ -53,6 +53,17 @@ public interface DeviceDriver extends AutoCloseable {
         return false;
     }
 
+    /**
+     * 查询一条已下发命令在设备侧的真实状态（R4 超时先查询）。
+     *
+     * <p>默认不支持：实现必须返回 {@link CommandQueryResult.State#UNKNOWN}，
+     * 不能因为本地没有回包就猜成 NOT_FOUND、COMPLETED 或 FAILED。
+     * 只有设备协议确实能按 commandId 查询时，驱动才应覆盖本方法。
+     */
+    default CommandQueryResult queryStatus(String commandId) {
+        return CommandQueryResult.unknown("该驱动未实现设备侧命令状态查询");
+    }
+
     /** 驱动自身是否健康（进程活着、连接正常）。 */
     boolean healthy();
 

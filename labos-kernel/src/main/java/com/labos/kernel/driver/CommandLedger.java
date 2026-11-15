@@ -137,14 +137,121 @@ public final class CommandLedger {
         return ledgerId > 0L && mapper().advancePhase(ledgerId, phase) > 0;
     }
 
+    /** R4 超时对账结果。stillRunning 不是终态，不能计入 unknown。 */
+    public record ReconcileSummary(int confirmedCompleted, int confirmedFailed,
+                                   int stillRunning, int unknown) {
+        public int settled() {
+            return confirmedCompleted + confirmedFailed;
+        }
+    }
+
     /**
-     * 启动对账：把陈旧的 DISPATCH_STARTED 标 UNKNOWN。
+     * 兼容旧调用：没有注册表时逐条尝试查询（会得到「无法查询」），仍无法确认才落 UNKNOWN。
      *
-     * @return 标记条数
+     * @return 查询后仍 UNKNOWN 的条数
      */
     public static int reconcileOnStartup(DbConfig db, long tenantId, int staleMinutes)
             throws SQLException {
-        return mapper().markStaleUnknown(tenantId, Math.max(0, staleMinutes));
+        return reconcileWithQuery(db, tenantId, staleMinutes, null).unknown();
+    }
+
+    /**
+     * R4 超时对账：**逐条先查询设备真实状态，再决定账本终态**。
+     *
+     * <ul>
+     *   <li>设备明确完成 / 失败 → ACKED / FAILED + phase=DONE；</li>
+     *   <li>设备明确仍在执行 → 保留 DISPATCH_STARTED，phase 推进到 EXECUTING；</li>
+     *   <li>无此命令、无响应、无驱动、查询不支持或查询异常 → UNKNOWN，转人工，
+     *       不自动重发。</li>
+     * </ul>
+     *
+     * <p>所有写库都有 {@code state='DISPATCH_STARTED'} 护栏，正常回包若在对账期间先到，
+     * 对账结果不会覆盖它。NOT_FOUND 不等于「设备没动过」，同样落 UNKNOWN。
+     */
+    public static ReconcileSummary reconcileWithQuery(DbConfig db, long tenantId,
+                                                      int staleMinutes,
+                                                      DriverRegistry registry)
+            throws SQLException {
+        int completed = 0;
+        int failed = 0;
+        int running = 0;
+        int unknown = 0;
+        for (java.util.Map<String, Object> row
+                : mapper().selectStaleDispatches(tenantId, Math.max(0, staleMinutes))) {
+            long ledgerId = ((Number) row.get("id")).longValue();
+            Number device = (Number) row.get("deviceId");
+            long deviceId = device == null ? 0L : device.longValue();
+            String commandId = (String) row.get("commandId");
+            CommandQueryResult query = queryDevice(registry, deviceId, commandId);
+
+            switch (query.state()) {
+                case COMPLETED -> {
+                    int n = mapper().completeQueriedLedger(ledgerId, "ACKED", null,
+                            queryEvidence(query));
+                    if (n > 0) {
+                        mapper().advancePhase(ledgerId, PHASE_DONE);
+                        completed++;
+                    }
+                }
+                case FAILED -> {
+                    int n = mapper().completeQueriedLedger(ledgerId, "FAILED", "EC-99-0001",
+                            queryEvidence(query));
+                    if (n > 0) {
+                        mapper().advancePhase(ledgerId, PHASE_DONE);
+                        failed++;
+                    }
+                }
+                case IN_PROGRESS -> {
+                    // 设备明确还在动：绝不 UNKNOWN、绝不重发；仅补齐可观测阶段。
+                    mapper().advancePhase(ledgerId, PHASE_EXECUTING);
+                    running++;
+                    log.info("[命令对账] ledger={} command={} 设备仍在执行，保持在途",
+                            ledgerId, commandId);
+                }
+                case NOT_FOUND, UNKNOWN -> {
+                    int n = mapper().markQueriedUnknown(ledgerId,
+                            trunc("查询后仍无法确认，需人工对账；" + queryEvidence(query), 250));
+                    if (n > 0) {
+                        unknown++;
+                        log.warn("[命令对账] ledger={} command={} 查询后仍 UNKNOWN：{}",
+                                ledgerId, commandId, query.detail());
+                    }
+                }
+            }
+        }
+        return new ReconcileSummary(completed, failed, running, unknown);
+    }
+
+    private static CommandQueryResult queryDevice(DriverRegistry registry,
+                                                  long deviceId, String commandId) {
+        if (commandId == null || commandId.isBlank()) {
+            return CommandQueryResult.unknown("账本缺 command_id，无法按命令查询");
+        }
+        if (registry == null) {
+            return CommandQueryResult.unknown("无驱动注册表，无法查询设备");
+        }
+        try {
+            DeviceDriver driver = registry.driverFor(deviceId).orElse(null);
+            if (driver == null) {
+                return CommandQueryResult.unknown("找不到设备驱动 device=" + deviceId);
+            }
+            if (!driver.healthy()) {
+                return CommandQueryResult.unknown("设备驱动不健康，查询无响应 device=" + deviceId);
+            }
+            CommandQueryResult result = driver.queryStatus(commandId);
+            return result == null
+                    ? CommandQueryResult.unknown("驱动查询返回空结果")
+                    : result;
+        } catch (RuntimeException e) {
+            return CommandQueryResult.unknown("QueryStatus 异常：" + e.getMessage());
+        }
+    }
+
+    private static String queryEvidence(CommandQueryResult query) {
+        String detail = query.detail() == null || query.detail().isBlank()
+                ? "无设备详情" : query.detail();
+        // error_message 是 varchar(256)：设备原始回包可能很长，先截断再落证据。
+        return trunc("QueryStatus=" + query.state() + "；" + detail, 240);
     }
 
     /** UNKNOWN 账本行（人工核对处置入口用）。 */

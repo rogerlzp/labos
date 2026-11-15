@@ -88,6 +88,20 @@ public final class VirtualDriver implements DeviceDriver {
     }
 
     @Override
+    public synchronized CommandQueryResult queryStatus(String commandId) {
+        if (!healthy) {
+            return CommandQueryResult.unknown("虚拟驱动不可用，无法确认命令状态");
+        }
+        DriverResult done = succeeded.get(commandId);
+        if (done != null) {
+            return CommandQueryResult.completed(done.deviceRawResponse());
+        }
+        // 内存里没有该命令只能证明「虚拟驱动不知道」，不能证明设备未动作；
+        // 账本层会把 NOT_FOUND 归为 UNKNOWN，而不是 FAILED。
+        return CommandQueryResult.notFound("虚拟驱动无此命令的完成记录");
+    }
+
+    @Override
     public synchronized AbortResult abort(String commandId) {
         // 虚拟驱动瞬时完成，没有"在途动作"可中止；
         // 若哪天改成按 estimate_sec 睡眠，这里要真的停并返回 stopped。

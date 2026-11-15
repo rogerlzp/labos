@@ -53,16 +53,30 @@
          WHERE id = #{ledgerId}
     </update>
 
-    <update id="markStaleUnknown">
-        UPDATE command_ledger
-           SET state = 'UNKNOWN',
-               phase = 'UNKNOWN',
-               error_code = COALESCE(error_code, 'EC-99-0006'),
-               error_message = COALESCE(error_message,
-                   '进程重启时命令仍处于派发中，物理结果未知；需人工确认后处置'),
-               updated_at = now()
+    <!-- R4：先取出陈旧在途行，由 CommandLedger 逐条 QueryStatus 后再落终态。
+         不能再批量 UNKNOWN：设备可能明确回答「已完成」或「仍在执行」。 -->
+    <select id="selectStaleDispatches" resultType="java.util.Map">
+        SELECT id AS "id", device_id AS "deviceId", command_id AS "commandId",
+               method AS "method", idempotency_key AS "key"
+          FROM command_ledger
          WHERE tenant_id = #{tenantId} AND state = 'DISPATCH_STARTED'
            AND created_at &lt; now() - (#{staleMinutes} || ' minutes')::interval
+         ORDER BY id
+    </select>
+
+    <update id="completeQueriedLedger">
+        UPDATE command_ledger
+           SET state = #{state}, error_code = #{errorCode},
+               error_message = #{errorMessage}, updated_at = now()
+         WHERE id = #{ledgerId} AND state = 'DISPATCH_STARTED'
+    </update>
+
+    <update id="markQueriedUnknown">
+        UPDATE command_ledger
+           SET state = 'UNKNOWN', phase = 'UNKNOWN',
+               error_code = COALESCE(error_code, 'EC-99-0006'),
+               error_message = #{errorMessage}, updated_at = now()
+         WHERE id = #{ledgerId} AND state = 'DISPATCH_STARTED'
     </update>
 
     <!-- R4：只进不退的阶段推进。array_position 比序号，倒退/乱序命中 0 行；

@@ -73,9 +73,19 @@ public interface CommandMapper {
      */
     int advancePhase(@Param("ledgerId") long ledgerId, @Param("phase") String phase);
 
-    /** 启动对账：陈旧 DISPATCH_STARTED 标 UNKNOWN（返回标记条数）。 */
-    int markStaleUnknown(@Param("tenantId") long tenantId,
-                         @Param("staleMinutes") int staleMinutes);
+    /** R4：取出需要超时对账的陈旧在途命令（逐条先 QueryStatus，再决定终态）。 */
+    List<Map<String, Object>> selectStaleDispatches(@Param("tenantId") long tenantId,
+                                                    @Param("staleMinutes") int staleMinutes);
+
+    /** R4：设备查询确认完成/失败后落终态；只允许从 DISPATCH_STARTED 转移。 */
+    int completeQueriedLedger(@Param("ledgerId") long ledgerId,
+                              @Param("state") String state,
+                              @Param("errorCode") String errorCode,
+                              @Param("errorMessage") String errorMessage);
+
+    /** R4：查询后仍不能确认物理结果时落 UNKNOWN；只允许从 DISPATCH_STARTED 转移。 */
+    int markQueriedUnknown(@Param("ledgerId") long ledgerId,
+                           @Param("errorMessage") String errorMessage);
 
     /** UNKNOWN 账本行（id/key/runId/nodeId/method/commandId/traceId/errorCode/errorMessage/createdAt）。 */
     List<Map<String, Object>> selectUnknownList(@Param("tenantId") long tenantId,
