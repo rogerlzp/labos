@@ -396,7 +396,22 @@ def main():
                         params={"device": code, "eventType": EV_WAIT_INTERACTION,
                                 "timeout": 600, "into": f"{code}_wait"})
         n_move = b.task(f"机械臂 放磁套板到 {code} 交互位", protocol="Transfer",
-                        resource=arm, params={"source": "STACK1-S02", "target": f"{code}-EXT"},
+                        # ⚠ source/target 必须是**设备码**，不能写点位码（2026-11-15 修）：
+                        #   DriverStepExecutor.resourceOfParam 用 selectResourceIdByCode
+                        #   解析这两个参数，而该查询对 resource_node.code 生效 —— 点位码
+                        #   （STACK1-S02 / P_AUTO-1-EXT）也是 resource_node 的 code
+                        #   ⇒ 会被解析成**点位资源 id**，于是"目标设备"成了点位本身
+                        #   ⇒ reserveTargetPosition 找不到装载口 ⇒ 60s 超时
+                        #   ⇒ EC-RESOURCE-BUSY ⇒ 节点转人工（实测 run 1001660）。
+                        #   精确点位由 sourcePosition/targetPosition 承担（节点绑定注入），
+                        #   或由目标设备自身的可达位自动选（提取仪只有 EXT 一个可达位）。
+                        # ⚠ barcode 必填：搬运要知道搬哪块板。resolvePlateBarcode 只认
+                        #   **字面条码**（`${...}` 未替换会被拒），所以这里写变量引用，
+                        #   由 loadMethodParams 在运行期替换成 workflow_variable.mainPlate。
+                        #   少了它 ⇒ 源位解析不到归属本 run 的板 ⇒ EC-POSITION-OCCUPIED
+                        #   （实测 run 1001661）。
+                        resource=arm, params={"source": "STACK1", "target": code,
+                                              "barcode": "${mainPlate}"},
                         icon="/devices/TRANSFER.svg")
         n_drop = b.task(f"{code} 卸磁套", protocol="DropTipComb",
                         resource=d["resourceId"], params={"plateIndex": 0},
@@ -441,7 +456,9 @@ def main():
                         params={"device": code, "eventType": EV_WAIT_INTERACTION,
                                 "timeout": 900, "into": f"{code}_wait2"})
         n_take = b.task(f"机械臂 从 {code} 取产物板", protocol="Transfer",
-                        resource=arm, params={"source": f"{code}-EXT", "target": "STACK1"},
+                        # 同上：设备码 + 板号（见 n_move 处的注释）
+                        resource=arm, params={"source": code, "target": "STACK1",
+                                              "barcode": "${mainPlate}"},
                         icon="/devices/TRANSFER.svg")
         action, action_cn = stage_action["DISP6"]
         n_action = b.task(f"{code} {action_cn}", protocol=action,
