@@ -139,6 +139,8 @@ PURE=(
   # P2 阶段 A：统一物理派发门禁（源码不变量）——driver.execute 只允许落在 doExecuteCommand，
   # 受保护 Transfer 主机械臂动作不得绕过 executeCommand（旁路形态会红）
   "driver.DriverDispatchPathSelfTest"
+  # P2 阶段 A：互锁契约——错误码→恢复作用域分档 + 事实状态时效（未知码 fail-closed 转人工）
+  "driver.InterlockContractSelfTest"
   "alert.AlertSelfTest"
   "engine.EngineSelfTest"
   # S2 §3.2.1：错误码/驱动状态 → 执行确认四态（纯逻辑分类器，U10 载体①的消费端）
