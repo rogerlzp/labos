@@ -741,7 +741,13 @@ public class WorkflowController {
         if (p50 < 0 || min < 0) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("时长不能为负"));
         }
-        int updated = web.upsertDuration(method.trim(), p50, p90, min, max, Math.max(1, n));
+        // ⚠ sample_count 允许 **0**（2026-11-15）：
+        //   0 = "这是**预估**值，**没有实测样本**"（厂商公开规格推出来的）。
+        //   之前这里 Math.max(1, n) 把它抬成 1 ⇒ 页面显示"1 个样本"⇒
+        //   **把预估值伪装成实测值** —— 现场会以为这个数是量出来的。
+        //   ⇒ 负数仍按 0 处理（非负下限）。
+        int samples = Math.max(0, n);
+        int updated = web.upsertDuration(method.trim(), p50, p90, min, max, samples);
         audit.record(session(req), "duration.upsert", "duration_model", 0L, method.trim(),
                 body, req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("updated", updated, "method", method.trim()));
