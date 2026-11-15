@@ -12,6 +12,14 @@
          WHERE r.tenant_id = #{param1} AND r.id = #{param2} AND r.kind = 'device'
     </select>
 
+    <!-- 设备所属**岛**的层级路径（改设备编号时要按新 code 重拼 path）。 -->
+    <select id="selectIslandPathOfDevice" resultType="java.lang.String">
+        SELECT p.path
+          FROM resource_node d
+          JOIN resource_node p ON p.id = d.parent_id AND p.kind = 'island'
+         WHERE d.tenant_id = #{t} AND d.id = #{resourceId} AND d.kind = 'device'
+    </select>
+
     <select id="selectModelForDeploy" resultType="java.util.Map">
         SELECT d.name AS "name", d.code AS "modelCode",
                c.code AS "capability", p.path AS "islandPath"
@@ -73,11 +81,35 @@
          WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'device'
     </update>
 
+    <!-- 改设备编号（2026-11-15）：**三处必须同步改**，否则一半系统认新编号一半认旧的。
+         resource_node.code（资源树/机械臂选点）
+         resource_node.path（层级路径）
+         device_instance.code（设备清单/侧车对端）
+         ⚠ 改了编号，已建的点位编码（EXT1-EXT 这类）不会跟着变 ——
+           那要重建点位，本端点不代劳（避免半途改坏已有引用）。 -->
+    <update id="updateDeviceCode">
+        UPDATE resource_node
+           SET code = #{code}, path = #{path}, updated_at = now()
+         WHERE tenant_id = #{t} AND id = #{resourceId} AND kind = 'device'
+    </update>
+    <update id="updateDeviceInstanceCode">
+        UPDATE device_instance
+           SET code = #{code}, updated_at = now()
+         WHERE tenant_id = #{t} AND resource_id = #{resourceId} AND deleted_at IS NULL
+    </update>
+
     <update id="updateModelCapability">
         UPDATE device SET capability_id = #{param3}
          WHERE tenant_id = #{param1}
            AND id = (SELECT device_id FROM device_instance
                       WHERE tenant_id = #{param1} AND resource_id = #{param2})
+    </update>
+
+    <!-- 合并设备型号属性：只覆盖传入的键，保留 attr 里其它键（legacy_* / pos_x / pos_y） -->
+    <update id="mergeDeviceAttr">
+        UPDATE device SET attr = COALESCE(attr, '{}'::jsonb) || #{patch}::jsonb,
+                          updated_at = now()
+         WHERE tenant_id = #{t} AND id = #{deviceId}
     </update>
 
     <update id="updateDeviceInstanceEndpoint">
@@ -242,6 +274,9 @@
         SELECT i.id AS "id", i.code AS "code", i.name AS "name",
                d.id AS "devId", d.code AS "devCode", d.name AS "devName",
                dev.model AS "model", dev.vendor AS "vendor", dev.icon AS "icon",
+               <!-- 协议级属性（帧格式/波特率/证据等级/手册路径/缺口）在 attr->'protocol'，
+                    原样以文本透出，前端自己 JSON.parse —— 不让 MyBatis 把 jsonb 转成 PGobject -->
+               dev.attr::text AS "deviceAttr",
                c.code AS "capability", di.id AS "instanceId", di.ip AS "ip",
                dr.endpoint AS "driverEndpoint", dr.code AS "driverCode",
                (d.attr->>'pos_x')::numeric AS "posX",

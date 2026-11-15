@@ -135,6 +135,33 @@ public interface BindingMapper {
 
     List<Map<String, Object>> selectMaterialRoles(@Param("t") long tenantId);
 
+    // ---------------------------------------------------------------- 设备事件类型字典
+
+    /**
+     * 设备事件类型字典。
+     *
+     * <p>事件类型字串（waiting_interaction / process_done / …）**不能写死在代码里** ——
+     * 它是三方对齐的唯一键：侧车产出、内核匹配、流程节点引用。
+     * 写死 ⇒ 任何一边改了字串，另一边静默失配 ⇒ 上位机永远等不到那个事件。
+     */
+    List<Map<String, Object>> selectDeviceEventTypes(@Param("t") long tenantId);
+
+    int insertDeviceEventType(@Param("t") long tenantId,
+                              @Param("eventCode") String eventCode,
+                              @Param("displayName") String displayName,
+                              @Param("category") String category,
+                              @Param("needsAction") boolean needsAction,
+                              @Param("sortOrder") int sortOrder);
+
+    int updateDeviceEventType(@Param("id") long id,
+                              @Param("displayName") String displayName,
+                              @Param("category") String category,
+                              @Param("needsAction") boolean needsAction,
+                              @Param("sortOrder") int sortOrder,
+                              @Param("enabled") boolean enabled);
+
+    int deleteDeviceEventType(@Param("t") long tenantId, @Param("id") long id);
+
     int insertMaterialRole(@Param("t") long tenantId,
                            @Param("roleCode") String roleCode,
                            @Param("displayName") String displayName,

@@ -377,7 +377,10 @@ public class ExperimentActionController {
         BatchOrchestrator orchestrator = new BatchOrchestrator(db, TENANT, workflows);
         Integer batchSplit = orchestrator.batchSplit(id);
         // async=1 交给调度器（岛级互斥 + 排队）；默认同步执行
-        if (paramLong(req.getQueryString(), "async") == 1L) {
+        // ⚠ paramLong 找不到参数时返回 null（2026-11-15 改，原来返回 0L）⇒ 这里要判空，
+        //    直接 `== 1L` 会 NPE。
+        Long asyncFlag = paramLong(req.getQueryString(), "async");
+        if (asyncFlag != null && asyncFlag == 1L) {
             if (batchSplit == null) {
                 // S3.2-C：async 请求体的 vars 落 experiment_run.variables，
                 // 调度器执行时作为用户 overrides（响应形状不变）

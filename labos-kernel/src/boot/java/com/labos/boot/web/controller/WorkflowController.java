@@ -45,6 +45,7 @@ import java.util.Map;
 
 import static com.labos.kernel.api.ApiServer.err;
 import static com.labos.kernel.api.ApiServer.jsonField;
+import static com.labos.kernel.api.ApiServer.jsonInt;
 import static com.labos.kernel.api.ApiServer.jsonLong;
 import static com.labos.kernel.api.ApiServer.paramStr;
 
@@ -710,6 +711,53 @@ public class WorkflowController {
     @GetMapping(value = "/durations", produces = "application/json; charset=utf-8")
     public String durations() throws SQLException {
         return web.durationsJson(200);
+    }
+
+    /**
+     * 写时长模型（upsert）—— 2026-11-15。
+     *
+     * <p>原来只有 GET ⇒ 现场标定出来的真实时长进不去。用户口径：
+     * 「各阶段时长先预估一个，**可以在页面上修改**」。
+     */
+    @PutMapping(value = "/durations", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> saveDuration(@RequestBody(required = false) String body,
+                                               HttpServletRequest req) throws SQLException {
+        String method = jsonField(body, "method");
+        if (method == null || method.isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("必填 method"));
+        }
+        int p50 = jsonInt(body, "p50Ms") == null ? 0 : jsonInt(body, "p50Ms");
+        int p90 = jsonInt(body, "p90Ms") == null ? p50 : jsonInt(body, "p90Ms");
+        int min = jsonInt(body, "minMs") == null ? p50 : jsonInt(body, "minMs");
+        int max = jsonInt(body, "maxMs") == null ? p90 : jsonInt(body, "maxMs");
+        int n = jsonInt(body, "sampleCount") == null ? 1 : jsonInt(body, "sampleCount");
+        // 合理性护栏：p50 ≤ p90、min ≤ max。写反了会让甘特预测出负数时长。
+        if (p50 > p90) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("p50 不能大于 p90"));
+        }
+        if (min > max) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("min 不能大于 max"));
+        }
+        if (p50 < 0 || min < 0) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("时长不能为负"));
+        }
+        int updated = web.upsertDuration(method.trim(), p50, p90, min, max, Math.max(1, n));
+        audit.record(session(req), "duration.upsert", "duration_model", 0L, method.trim(),
+                body, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("updated", updated, "method", method.trim()));
+    }
+
+    /** 删时长模型（按 method）。 */
+    @DeleteMapping(value = "/durations", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteDuration(@RequestParam(required = false) String method,
+                                                 HttpServletRequest req) throws SQLException {
+        if (method == null || method.isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("需要 method"));
+        }
+        int deleted = web.deleteDuration(method.trim());
+        audit.record(session(req), "duration.delete", "duration_model", 0L, method.trim(),
+                null, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("deleted", deleted, "method", method.trim()));
     }
 
     // ---------------------------------------------------------------- 内部

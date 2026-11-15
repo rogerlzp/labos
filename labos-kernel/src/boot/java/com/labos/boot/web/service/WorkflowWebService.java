@@ -944,6 +944,25 @@ public class WorkflowWebService {
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
     }
 
+    /**
+     * 写时长模型（upsert）。
+     *
+     * <p>为什么要有写口：时长模型原来**只有 GET** ⇒ 现场标定出来的真实时长进不去
+     * ⇒ 甘特预测与仿真一直用旧值。用户口径：「各阶段时长先预估一个，
+     * **可以在页面上修改**」。
+     *
+     * @param method 方法名（主键的一部分，不可改 —— 改了等于换了个方法）
+     */
+    public int upsertDuration(String method, int p50Ms, int p90Ms, int minMs, int maxMs,
+                              int sampleCount) throws java.sql.SQLException {
+        return mapper.upsertDuration(TENANT, method, p50Ms, p90Ms, minMs, maxMs, sampleCount);
+    }
+
+    /** 删时长模型（按 method）。 */
+    public int deleteDuration(String method) throws java.sql.SQLException {
+        return mapper.deleteDuration(TENANT, method);
+    }
+
     /** 流程图保存历史（按时间倒序）。 */
     public String graphHistoryJson(long workflowId) throws java.sql.SQLException {
         List<String> items = new ArrayList<>();

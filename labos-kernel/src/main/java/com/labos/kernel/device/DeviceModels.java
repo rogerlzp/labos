@@ -345,6 +345,24 @@ public final class DeviceModels {
         return PLANNED;
     }
 
+    /**
+     * 按 id 找 PLANNED 型号（已知型号、手册未到）。
+     *
+     * <p>为什么需要它：{@link #of(String)} 只认 MANUAL 型号表 ⇒ PLANNED 型号
+     * （提取仪/分液器/搅拌/轨道臂/耗材栈）登记不了 ⇒ 那 5 类设备一台都建不出来。
+     */
+    public static Planned plannedOf(String id) {
+        if (id == null || id.isBlank()) {
+            return null;
+        }
+        for (Planned p : PLANNED) {
+            if (p.id().equals(id.trim())) {
+                return p;
+            }
+        }
+        return null;
+    }
+
     // ---------------------------------------------------------------- 元数据 JSON
 
     /**

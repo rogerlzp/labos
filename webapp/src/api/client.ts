@@ -876,6 +876,47 @@ export interface MaterialRole {
   autoBarcodePrefix?: string | null;
 }
 
+/**
+ * 设备事件类型（`device_event_type`）：事件字串的**配置化字典**。
+ *
+ * <p>为什么要有这张表：事件码是「侧车产出 / 内核匹配 / 流程节点引用」三方对齐的
+ * 唯一键。写死在代码里 ⇒ 任何一边改了字串，另一边**静默失配** ⇒
+ * 上位机永远等不到那个事件，现场只看到"卡住不动"，没有任何报错指向真凶。
+ *
+ * <p>⇒ 字串存库，设计器从这张表下拉选；真机手册到手后改表 + 改侧车 translator 即可，
+ * **不用改内核**（内核只按字串匹配，不认具体字面量）。
+ */
+export interface DeviceEventType {
+  id: number;
+  /** 事件码（三方对齐的唯一键） */
+  eventCode: string;
+  displayName: string;
+  /** interaction=需上位机响应 · progress=进度播报 · terminal=终态 · fault=故障 */
+  category: 'interaction' | 'progress' | 'terminal' | 'fault';
+  /** true = 收到后应开人工窗口等决策 */
+  needsAction: boolean;
+  sortOrder: number;
+  enabled: boolean;
+}
+
+/**
+ * 时长模型的一项（`duration_model` 表）。
+ *
+ * <p>为什么要有写口：这张表原来**只有 GET** ⇒ 现场标定出来的真实时长进不去
+ * ⇒ 甘特预测与排程一直用旧值。用户口径：「各阶段时长先预估一个，
+ * **可以在页面上修改**」。
+ */
+export interface DurationModelItem {
+  /** 方法名（主键 `(tenant_id, method)` 的一部分） */
+  method: string;
+  p50Ms: number;
+  p90Ms: number;
+  minMs: number;
+  maxMs: number;
+  /** 样本数（观测到多少次） */
+  sampleCount: number;
+}
+
 // ---------------------------------------------------------------- 接口
 
 export const api = {
@@ -1386,6 +1427,58 @@ export const api = {
   /** 物料角色字典。 */
   materialRoles: () =>
     req<{ total: number; items: MaterialRole[] }>('/api/material-roles'),
+
+  /**
+   * 设备事件类型字典。
+   *
+   * <p>事件类型码（waiting_interaction / …）是**三方对齐的唯一键**：
+   * 侧车产出、内核匹配、流程节点引用。**不写死在代码里** ⇒ 设计器从这张表下拉选，
+   * 现场配置人员与侧车按表约定。
+   */
+  deviceEventTypes: () =>
+    req<{ total: number; items: DeviceEventType[] }>('/api/device-event-types'),
+
+  /** 新建事件类型。 */
+  createDeviceEventType: (body: {
+    eventCode: string; displayName: string;
+    category?: DeviceEventType['category'];
+    needsAction?: boolean; sortOrder?: number;
+  }) => req<{ created: number; eventCode: string }>('/api/device-event-types', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+
+  /** 改事件类型（**不能改 eventCode** —— 那是三方对齐的主键）。 */
+  updateDeviceEventType: (id: number, body: {
+    displayName?: string;
+    category?: DeviceEventType['category'];
+    needsAction?: boolean; sortOrder?: number; enabled?: boolean;
+  }) => req<{ updated: number; id: number }>(`/api/device-event-types/${id}`, {
+    method: 'PUT', body: JSON.stringify(body),
+  }),
+
+  /** 删事件类型。 */
+  deleteDeviceEventType: (id: number) =>
+    req<{ deleted: number; id: number }>(`/api/device-event-types/${id}`, { method: 'DELETE' }),
+
+  /** 时长模型（命令 → p50/p90），甘特预测与仿真共用。 */
+  durations: () => req<{ items: DurationModelItem[] }>('/api/durations'),
+
+  /**
+   * 写时长模型（**upsert** —— 同名会覆盖）。
+   *
+   * <p>后端护栏：`p50 > p90` / `min > max` / 负数 ⇒ 400（原文透出）。
+   */
+  saveDuration: (d: {
+    method: string; p50Ms: number; p90Ms: number;
+    minMs: number; maxMs: number; sampleCount: number;
+  }) => req<{ updated: number; method: string }>('/api/durations', {
+    method: 'PUT', body: JSON.stringify(d),
+  }),
+
+  /** 删时长模型（按 method）。 */
+  deleteDuration: (method: string) =>
+    req<{ deleted: number; method: string }>(
+      `/api/durations?method=${encodeURIComponent(method)}`, { method: 'DELETE' }),
 
   processStatus: () => req<ProcessStatus>('/api/process-status'),
 

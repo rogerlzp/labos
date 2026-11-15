@@ -136,7 +136,16 @@ public final class DeviceRegistrar {
             // 命令行覆盖 JSON
             String modelId = opt.get("model");
             if (modelId != null && !modelId.isBlank()) {
-                s.applyModel(DeviceModels.of(modelId));
+                DeviceModel lib = DeviceModels.of(modelId);
+                if (lib != null) {
+                    s.applyModel(lib);
+                } else {
+                    // 型号库里的 **PLANNED**（已知型号、手册未到）：也要能登记。
+                    // 2026-11-15 之前这里只认 MANUAL ⇒ PLANNED 型号登记不了
+                    // ⇒ 「高通量核酸提取工作站」那 5 类设备（提取仪/分液器/搅拌/
+                    // 轨道臂/耗材栈）**一台都建不出来**。
+                    s.applyPlanned(DeviceModels.plannedOf(modelId));
+                }
                 s.deviceModel = modelId;
                 // 没给 code 就按型号 id 推：s100 → S100，aspin-2k → ASPIN_2K
                 if (s.code == null || s.code.isBlank()) {
@@ -154,9 +163,67 @@ public final class DeviceRegistrar {
             return s;
         }
 
+        /**
+         * 从型号库的 **PLANNED** 条目填默认值（已知型号、手册未到）。
+         *
+         * <p><b>为什么要有这条</b>：PLANNED 型号（提取仪/分液器/搅拌/轨道臂/耗材栈）
+         * 之前**登记不了** —— {@code applyModel} 只认 MANUAL 型号库表，
+         * 而 {@code DeviceModels.of()} 对 PLANNED 返回 null ⇒ 字段全是空
+         * ⇒ capability 为 null ⇒ 设备建出来"点不动"（EC-06-0001 驱动未加载）。
+         *
+         * <p>⇒ 这里按**类型**给出设备类型与能力（都是平台词表里的既有值，
+         * 不新造）；厂商/型号从 PLANNED 的 vendorModel 里拆。
+         */
+        void applyPlanned(DeviceModels.Planned p) {
+            if (p == null) {
+                return;
+            }
+            // PLANNED 的 vendorModel 是一句话（如"转盘式磁珠核酸提取仪（96 孔，如 …）"）
+            // ⇒ 取第一个括号前的中文名当"型号"，厂商留空（现场自己认）。
+            String vm = p.vendorModel() == null ? "" : p.vendorModel().trim();
+            int paren = vm.indexOf('（');
+            if (paren < 0) {
+                paren = vm.indexOf('(');
+            }
+            String modelName = paren > 0 ? vm.substring(0, paren).trim() : vm;
+            model = modelName;
+            vendor = "";
+            name = name != null ? name : modelName;
+            name = name.trim();
+            switch (p.type()) {
+                case "extractor" -> {
+                    deviceType = "Extraction";
+                    capability = capability != null ? capability : "EXTRACT";
+                    color = "#B7E1CD";
+                }
+                case "dispenser" -> {
+                    deviceType = "Dispensers & Washers";
+                    capability = capability != null ? capability : "WASH";
+                    color = "#FFD9A0";
+                }
+                case "stirrer" -> {
+                    deviceType = "MIX";
+                    capability = capability != null ? capability : "MIX";
+                    color = "#C9DAF8";
+                }
+                case "robot" -> {
+                    deviceType = "Robots";
+                    capability = capability != null ? capability : "TRANSFER";
+                    color = "#E6D0F0";
+                }
+                case "plate_hotel" -> {
+                    deviceType = "Storage";
+                    capability = capability != null ? capability : "STORE";
+                    color = "#DDEBC8";
+                }
+                default -> {
+                    // 未知类型：留空，由调用方补 —— 不猜
+                }
+            }
+        }
+
         /** 从型号库填默认值 —— 这是"不手抄参数"的关键。 */
-        void applyModel(DeviceModel m) {
-            if (m == null) {
+        void applyModel(DeviceModel m) {            if (m == null) {
                 return;
             }
             model = m.model;

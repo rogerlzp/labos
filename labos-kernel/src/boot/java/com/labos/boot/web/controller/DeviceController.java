@@ -249,11 +249,71 @@ public class DeviceController {
         return Jsons.obj("updated", n, "resourceId", id);
     }
 
+    /**
+     * 改设备型号的**协议属性**（{@code device.attr}，合并式）。
+     *
+     * <p>body: {@code {"attr": {"protocol": {...}}}} —— 只允许写
+     * {@code protocol / device_model / pos_x / pos_y / tags / notes} 六个键，
+     * 迁移元数据（legacy_id 等）不许改，避免把"从哪张老表迁来的"抹掉。
+     */
+    @PutMapping(value = "/devices/{id:\\d+}/attr", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> patchDeviceAttr(@PathVariable long id,
+                                                  @RequestBody(required = false) String body,
+                                                  HttpServletRequest req) throws SQLException {
+        String patch = rawJsonField(body, "attr");
+        if (patch == null || patch.isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(err("body 需要 {\"attr\": {...}}"));
+        }
+        try {
+            int n = deviceService.mergeDeviceAttr(id, patch);
+            audit.record(session(req), "device.attr", "device", id, null, body,
+                    req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("updated", n, "deviceId", id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
     @PatchMapping(value = "/devices/{id:\\d+}", produces = "application/json; charset=utf-8")
     public String patchDevice(@PathVariable long id,
                               @RequestBody(required = false) String body,
                               HttpServletRequest req) throws SQLException {
         return updateDevice(id, body, req);
+    }
+
+    /**
+     * 改设备**编号**（2026-11-15）。
+     *
+     * <p>为什么单独一个端点（而不是塞进 PUT /api/devices/{id}）：
+     * 编号是**流程引用的键**（{@code __awaitEvent} 的 device 参数、点位编码
+     * {@code EXT1-EXT}、客户现场口语全靠它），而 deploy 生成的编号是
+     * 「型号 code + 序号」（{@code carousel-extractor-generic-1}）⇒ 现场没法用。
+     *
+     * <p>⚠ 三处（resource_node.code / resource_node.path / device_instance.code）
+     * 在**同一事务**里同步改 —— 只改一处 ⇒ 一半系统认新编号一半认旧的。
+     *
+     * <p>⚠ 已建的点位编码不会跟着改（那要重建点位）—— 改完编号请检查点位。
+     */
+    @PutMapping(value = "/devices/{id:\\d+}/code", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> updateDeviceCode(@PathVariable long id,
+                                                   @RequestBody(required = false) String body,
+                                                   HttpServletRequest req) throws SQLException {
+        String code = jsonField(body, "code");
+        if (code == null || code.isBlank()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err("必填 code"));
+        }
+        try {
+            int n = deviceService.updateDeviceCode(id, code.trim());
+            audit.record(session(req), "device.code.update", "device", id, code.trim(),
+                    null, req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("updated", n, "resourceId", id,
+                    "code", code.trim()));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(err(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
     }
 
     @DeleteMapping(value = "/devices/{id:\\d+}", produces = "application/json; charset=utf-8")

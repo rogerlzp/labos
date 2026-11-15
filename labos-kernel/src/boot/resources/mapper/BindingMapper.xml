@@ -260,6 +260,39 @@
     DELETE FROM material_role WHERE tenant_id = #{t} AND id = #{id}
   </delete>
 
+  <!-- ============================================================ 设备事件类型字典 -->
+  <!--
+    事件类型字串是「侧车产出 / 内核匹配 / 流程节点引用」三方对齐的唯一键。
+    放库里而不是写死在代码里：改字串不改代码，且设计器能下拉选。
+  -->
+  <select id="selectDeviceEventTypes" resultType="java.util.Map">
+    SELECT id, event_code AS "eventCode", display_name AS "displayName",
+           category AS "category", needs_action AS "needsAction",
+           sort_order AS "sortOrder", enabled AS "enabled"
+      FROM device_event_type
+     WHERE tenant_id = #{t}
+     ORDER BY sort_order, id
+  </select>
+
+  <insert id="insertDeviceEventType">
+    INSERT INTO device_event_type (tenant_id, event_code, display_name, category,
+                                   needs_action, sort_order, enabled)
+    VALUES (#{t}, #{eventCode}, #{displayName}, #{category},
+            #{needsAction}, #{sortOrder}, true)
+  </insert>
+
+  <update id="updateDeviceEventType">
+    UPDATE device_event_type
+       SET display_name = #{displayName}, category = #{category},
+           needs_action = #{needsAction}, sort_order = #{sortOrder},
+           enabled = #{enabled}, updated_at = now()
+     WHERE id = #{id}
+  </update>
+
+  <delete id="deleteDeviceEventType">
+    DELETE FROM device_event_type WHERE tenant_id = #{t} AND id = #{id}
+  </delete>
+
   <!-- ============================================================ 隐式搬运段（P2-3） -->
 
   <!-- 设备（resource_node.id）的「机械臂可达装载口」device_point.id：

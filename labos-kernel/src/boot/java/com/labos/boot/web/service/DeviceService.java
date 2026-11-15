@@ -31,6 +31,20 @@ public class DeviceService {
 
     private static final long TENANT = 1L;
 
+    /**
+     * 允许前端写进 {@code device.attr} 的键。
+     *
+     * <p>其余键（{@code legacy_id}/{@code legacy_table}/{@code capability_source} 等迁移元数据）
+     * 是数据来源标记，被误改后无法追溯设备从哪张老表来；而 {@code pos_x/pos_y} 虽然可写，
+     * 但归拓扑页管。这里只放**协议与型号标识**，配合 Mapper 的「合并」语义，
+     * 避免前端整对象覆盖把别的键冲掉。
+     */
+    private static final java.util.Set<String> ATTR_WRITABLE = java.util.Set.of(
+            "protocol", "device_model", "pos_x", "pos_y", "tags", "notes");
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper OM =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
     private final DbConfig db;
     private final DeviceMapper deviceMapper;
 
@@ -222,6 +236,93 @@ public class DeviceService {
             } catch (RuntimeException e) {
                 throw e;
             }
+        }
+    }
+
+    /**
+     * 合并设备型号的属性（{@code device.attr}）：协议字段就住在这里。
+     *
+     * <p><b>为什么协议不进专门的表</b>：帧格式/波特率/校验算法/证据等级/手册路径
+     * 是**一台型号一份、结构随协议族变化**（12 字节定长帧 vs 变长 TLV），
+     * 建表就会为每种协议加列；`device.attr` 是现成的 jsonb 扩展位，
+     * 与既有的 {@code device_model}、{@code pos_x/pos_y} 同住，零 DDL 且能整体展示。
+     *
+     * <p>写的是**合并**（{@code attr || patch}），不是替换：见
+     * {@link DeviceMapper#mergeDeviceAttr}。
+     *
+     * @param patchJson 顶层键必须在 {@link #ATTR_WRITABLE} 内，否则 400
+     * @return 受影响行数（0 = 设备不存在）
+     */
+    public int mergeDeviceAttr(long deviceId, String patchJson) throws java.sql.SQLException {
+        if (deviceId <= 0) {
+            throw new IllegalArgumentException("设备 id 不对");
+        }
+        if (patchJson == null || patchJson.isBlank()) {
+            throw new IllegalArgumentException("缺少 attr 补丁");
+        }
+        java.util.Map<String, Object> patch;
+        try {
+            patch = OM.readValue(patchJson, java.util.Map.class);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("attr 必须是 JSON 对象：" + e.getMessage());
+        }
+        if (patch == null || patch.isEmpty()) {
+            throw new IllegalArgumentException("attr 补丁为空");
+        }
+        for (String key : patch.keySet()) {
+            if (!ATTR_WRITABLE.contains(key)) {
+                throw new IllegalArgumentException("attr 不允许修改键 " + key
+                        + "（只允许 " + ATTR_WRITABLE + "）");
+            }
+        }
+        return deviceMapper.mergeDeviceAttr(TENANT, deviceId, patchJson);
+    }
+
+    /**
+     * 改设备编号（2026-11-15）。
+     *
+     * <p><b>为什么必须有这个能力</b>：设备编号是**流程引用的键** ——
+     * {@code __awaitEvent} 的 device 参数、点位编码（{@code EXT1-EXT}）、
+     * 客户现场的口语（"EXT2 报等了"）全靠它。
+     * 而 deploy 生成的编号是「型号 code + 序号」（{@code carousel-extractor-generic-1}）
+     * ⇒ 现场根本没法用 ⇒ 必须能改。
+     *
+     * <p>⚠ **三处必须同步改**（同一事务里），只改一处 ⇒ 一半系统认新编号、
+     * 一半认旧的 ⇒ 现场表现为"设备找不到"：
+     * <ol>
+     *   <li>{@code resource_node.code} —— 资源树 / 机械臂选点</li>
+     *   <li>{@code resource_node.path} —— 层级路径</li>
+     *   <li>{@code device_instance.code} —— 设备清单 / 侧车对端</li>
+     * </ol>
+     *
+     * <p>⚠ 已建的点位编码（{@code EXT1-EXT} 这类）**不会跟着改** ——
+     * 那要重建点位，本方法不代劳（避免半途改坏已有引用）。
+     */
+    @org.springframework.transaction.annotation.Transactional(
+            rollbackFor = Exception.class)
+    public int updateDeviceCode(long resourceId, String newCode) throws java.sql.SQLException {
+        if (newCode == null || newCode.isBlank()) {
+            throw new IllegalArgumentException("新编号不能为空");
+        }
+        String code = newCode.trim();
+        // 编号唯一：撞了会静默改成别人的身份
+        if (deviceMapper.existsDeviceCode(TENANT, code)) {
+            throw new IllegalStateException("编号已被占用：" + code);
+        }
+        try (Connection c = db.open()) {
+            // path 形如 <岛路径>/<code>：取岛路径再拼新编号
+            String islandPath = deviceMapper.selectIslandPathOfDevice(
+                    TENANT, resourceId);
+            if (islandPath == null || islandPath.isBlank()) {
+                throw new IllegalStateException("找不到设备所属岛，无法拼层级路径");
+            }
+            int n = deviceMapper.updateDeviceCode(TENANT, resourceId, code,
+                    islandPath + "/" + code);
+            if (n == 0) {
+                throw new IllegalStateException("设备不存在：" + resourceId);
+            }
+            deviceMapper.updateDeviceInstanceCode(TENANT, resourceId, code);
+            return n;
         }
     }
 
@@ -556,6 +657,9 @@ public class DeviceService {
                         "capability", row.get("capability"),
                         // 设备示意图（/devices/xxx.svg）。没有就由前端退回能力色块
                         "icon", row.get("icon"),
+                        // 协议级属性（attr->protocol / device_model / 证据等级 / 缺口清单）。
+                        // 以**文本**透出：jsonb 里存的帧格式是嵌套结构，前端 parse 后按协议卡渲染。
+                        "deviceAttr", row.get("deviceAttr"),
                         "instanceId", row.get("instanceId"),
                         "ip", row.get("ip"),
                         "driverEndpoint", row.get("driverEndpoint"),

@@ -52,8 +52,52 @@ public interface DeviceMapper {
     /** 改资源树节点显示名。 */
     int updateResourceNodeName(long tenantId, long resourceId, String name);
 
+    /**
+     * 改设备编号（2026-11-15）。
+     *
+     * <p><b>为什么要能改编号</b>：设备编号是**流程引用的键** ——
+     * {@code __awaitEvent} 的 device 参数、点位码（{@code EXT1-EXT}）、
+     * 客户现场的口语（"EXT2 报等了"）全靠它。
+     * 而 deploy 生成的编号是「型号 code + 序号」（{@code carousel-extractor-generic-1}）
+     * ⇒ 现场根本没法用。
+     *
+     * <p>⚠ 改编号要同步三处，否则**静默不一致**：
+     * {@code resource_node.code}（资源树/机械臂选点用）、
+     * {@code resource_node.path}（层级路径）、
+     * {@code device_instance.code}（设备清单/侧车对端用）。
+     * 只改其中一处 ⇒ 一半的系统认新编号、另一半认旧的 ⇒ 现场表现为"设备找不到"。
+     *
+     * @param newPath 新的层级路径（调用方按新 code 拼好传进来）
+     */
+    int updateDeviceCode(@Param("t") long tenantId,
+                         @Param("resourceId") long resourceId,
+                         @Param("code") String code,
+                         @Param("path") String path);
+
+    /** 设备所属**岛**的层级路径（改编号时要按新 code 重拼 path）。 */
+    String selectIslandPathOfDevice(@Param("t") long tenantId,
+                                    @Param("resourceId") long resourceId);
+
+    /** 改设备实例的编号（与 resource_node.code 必须同步改 —— 见 updateDeviceCode 的说明）。 */
+    int updateDeviceInstanceCode(@Param("t") long tenantId,
+                                 @Param("resourceId") long resourceId,
+                                 @Param("code") String code);
+
     /** 改型号能力（影响同型号所有实例——能力属于型号，不属于单台）。 */
     int updateModelCapability(long tenantId, long resourceId, long capabilityId);
+
+    /**
+     * 合并设备型号的属性（{@code device.attr}）。
+     *
+     * <p>为什么是**合并**而不是整替换：attr 里有迁移元数据（{@code legacy_id} /
+     * {@code legacy_table} / {@code capability_source}）和拓扑坐标（{@code pos_x/pos_y}），
+     * 整替换会把它们冲掉 —— 前端只该改自己关心的那几个键。
+     *
+     * @param patchJson 只含白名单键的 JSON 对象（白名单在 Service 层校验）
+     */
+    int mergeDeviceAttr(@Param("t") long tenantId,
+                        @Param("deviceId") long deviceId,
+                        @Param("patch") String patchJson);
 
     /** 改设备实例的 IP / 驱动（没传的列保持原值）。 */
     int updateDeviceInstanceEndpoint(long tenantId, long resourceId,

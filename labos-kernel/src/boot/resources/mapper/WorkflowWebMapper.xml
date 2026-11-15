@@ -208,6 +208,21 @@
          ORDER BY sample_count DESC LIMIT #{param2}
     </select>
 
+<!-- 时长模型可写（2026-11-15）：现场标定出来的真实时长要能录进来。
+     主键是 (tenant_id, method) ⇒ upsert，按 method 定位。 -->
+<insert id="upsertDuration">
+    INSERT INTO duration_model (tenant_id, method, p50_ms, p90_ms, min_ms, max_ms, sample_count)
+    VALUES (#{t}, #{method}, #{p50Ms}, #{p90Ms}, #{minMs}, #{maxMs}, #{sampleCount})
+    ON CONFLICT (tenant_id, method) DO UPDATE
+       SET p50_ms = EXCLUDED.p50_ms, p90_ms = EXCLUDED.p90_ms,
+           min_ms = EXCLUDED.min_ms, max_ms = EXCLUDED.max_ms,
+           sample_count = EXCLUDED.sample_count, updated_at = now()
+</insert>
+
+<delete id="deleteDuration">
+    DELETE FROM duration_model WHERE tenant_id = #{t} AND method = #{method}
+</delete>
+
 <select id="selectGraphHistory" resultType="java.util.Map">
         SELECT id AS "id", node_count AS "nodeCount", edge_count AS "edgeCount",
                length(xml) AS "bytes", saved_at AS "savedAt"

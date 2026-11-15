@@ -98,6 +98,8 @@ export const NAV: NavGroup[] = [
       { key: '/policies', labelKey: 'nav.policies' },
       { key: '/variables', labelKey: 'nav.variables' },
       { key: '/error-codes', labelKey: 'nav.errorCodes' },
+      // 设备事件类型字典：与错误码同类 —— 都是「写在代码里会静默失配」的字串表
+      { key: '/event-types', labelKey: 'nav.eventTypes' },
       // S2 物料身份与状态验收：用例清单 + 页面内运行 + 脚本结果回填
       { key: '/s2-test-cases', labelKey: 'nav.s2TestCases', roles: ['admin'] },
     ],

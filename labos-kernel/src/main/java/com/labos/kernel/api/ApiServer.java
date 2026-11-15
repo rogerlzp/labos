@@ -282,14 +282,24 @@ public final class ApiServer {
         return a == null || a.getAddress() == null ? null : a.getAddress().getHostAddress();
     }
 
-    /** 从 query string 取整型参数。 */
-    public static long paramLong(String query, String key) {
+    /**
+     * 从 query string 取整型参数。
+     *
+     * <p><b>⚠ 2026-11-15 修</b>：原来找不到参数时返回 {@code 0L}，
+     * 而调用方把它当"驱动 id / 设备 id"往库里写 ⇒
+     * {@code device_instance_driver_id_fkey} 外键报错 ⇒
+     * **「不带 driverId 部署设备」这条路径必然 500**（现场部署设备最常见的就是先不填驱动）。
+     *
+     * <p>⇒ 找不到就返回 {@code null}（= 不修改），
+     * 调用方用 {@code > 0} 之类的判空来判断"没传"。
+     */
+    public static Long paramLong(String query, String key) {
         if (query == null) {
-            return 0L;
+            return null;
         }
         java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile(key + "=(-?\\d+)").matcher(query);
-        return m.find() ? Long.parseLong(m.group(1)) : 0L;
+        return m.find() ? Long.valueOf(m.group(1)) : null;
     }
 
     /**

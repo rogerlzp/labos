@@ -1,5 +1,7 @@
 package com.labos.kernel.persistence;
 
+import org.apache.ibatis.annotations.Param;
+
 import java.util.List;
 import java.util.Map;
 
@@ -80,6 +82,26 @@ public interface WorkflowWebMapper {
 
     /** 时长模型（按样本数倒序，limit 由调用方钳位）。 */
     List<Map<String, Object>> selectDurations(long tenantId, int limit);
+
+    /**
+     * 写时长模型（**upsert**）。
+     *
+     * <p>为什么需要写：时长模型原来是**只读**的（只有 GET）⇒ 现场标定出来的真实
+     * 时长进不去 ⇒ 排程与 ETA 一直用旧值/默认值。
+     * 用户口径：「各阶段时长先预估一个，**可以在页面上修改**」。
+     *
+     * <p>主键是 {@code (tenant_id, method)} ⇒ 按 method 定位，不按 id。
+     */
+    int upsertDuration(@Param("t") long tenantId,
+                       @Param("method") String method,
+                       @Param("p50Ms") int p50Ms,
+                       @Param("p90Ms") int p90Ms,
+                       @Param("minMs") int minMs,
+                       @Param("maxMs") int maxMs,
+                       @Param("sampleCount") int sampleCount);
+
+    /** 删时长模型（按 method）。 */
+    int deleteDuration(@Param("t") long tenantId, @Param("method") String method);
 
     /** 图历史版本列表（最近 30 条）。 */
     List<Map<String, Object>> selectGraphHistory(long tenantId, long workflowId);

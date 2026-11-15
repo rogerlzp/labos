@@ -506,6 +506,20 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
     }>,
   });
 
+  /**
+   * 设备事件类型字典（2026-11-15）。
+   *
+   * <p>事件码是「侧车产出 / 内核匹配 / 流程节点引用」三方对齐的唯一键 ⇒
+   * **从库里下拉选**，不手打自由文本。
+   * （手打的话，配了字典也用不上，现场会"下拉里没有、上位机等不到"。）
+   */
+  const eventTypesQ = useQuery({
+    queryKey: ['device-event-types'],
+    queryFn: api.deviceEventTypes,
+    staleTime: 60_000,
+  });
+  const eventTypes = (eventTypesQ.data?.items ?? []).filter((e) => e.enabled);
+
   // 设备池：按所属岛过滤（islandId 为空 = 全部岛，兼容旧流程与岛屿视图）
   const pool = useQuery({
     queryKey: ['device-pool', islandId],
@@ -779,8 +793,24 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
           <>
             <Input size="small" placeholder={t('designer.placeholder.awaitEventDevice')}
               value={evtDevice} onChange={(e) => setEvtDevice(e.target.value)} />
-            <Input size="small" placeholder={t('designer.placeholder.awaitEventType')}
-              value={evtType} onChange={(e) => setEvtType(e.target.value)} />
+            {/* 事件类型**从字典下拉选**，不再手打自由文本（2026-11-15）。
+                事件码是「侧车产出 / 内核匹配 / 流程节点引用」三方对齐的唯一键 ——
+                手打就会出现"下拉里没有、上位机等不到"的静默失配。
+                字典没配 ⇒ 允许手填（现场临时加一个码），但会提示去字典页登记。 */}
+            <Select
+              size="small"
+              showSearch
+              allowClear
+              placeholder={t('designer.placeholder.awaitEventType')}
+              value={evtType || undefined}
+              onChange={(v) => setEvtType(v ?? '')}
+              options={eventTypes.map((e) => ({
+                value: e.eventCode,
+                label: `${e.displayName}（${e.eventCode}）`,
+              }))}
+              notFoundContent={t('designer.awaitEvent.noEventTypes')}
+              style={{ minWidth: 220 }}
+            />
             <Input size="small" placeholder={t('designer.placeholder.waitTimeout')}
               value={waitTimeout} onChange={(e) => setWaitTimeout(e.target.value)} />
             <Input size="small" placeholder={t('designer.placeholder.awaitEventInto')}

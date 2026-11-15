@@ -52,6 +52,12 @@ public class BindingController {
             Set.of("do_not_load", "load_single", "load_selected", "load_all_remaining");
     private static final Set<String> BARCODE_POLICIES =
             Set.of("none", "read", "update", "validate_in", "validate_out", "validate_both");
+    /**
+     * 事件类型的语义分类（界面分组用，不是行为开关）：
+     * interaction = 需上位机响应 · progress = 进度播报 · terminal = 终态 · fault = 故障。
+     */
+    private static final Set<String> EVENT_CATEGORIES =
+            Set.of("interaction", "progress", "terminal", "fault");
 
     private final DbConfig db;
     private final AuditRecorder audit;
@@ -354,6 +360,75 @@ public class BindingController {
         audit.record(session(req), "nodeBinding.clear", "node_binding", nodeId, null,
                 null, req.getRemoteAddr());
         return ok(Map.of("cleared", r, "nodeKey", nodeKey, "bindingMode", "legacy"));
+    }
+
+    // ---------------------------------------------------------------- 设备事件类型字典
+
+    /**
+     * 设备事件类型字典（2026-11-15）。
+     *
+     * <p><b>为什么要把字串变成配置</b>：事件类型码（waiting_interaction /
+     * process_done / …）是**三方对齐的唯一键** ——
+     * 侧车 {@code ISpontaneousTranslator} 产出它、内核 {@code __awaitEvent} 匹配它、
+     * 流程节点引用它。写死在代码里 ⇒ 任何一边改了字串，另一边**静默失配** ⇒
+     * 上位机永远等不到那个事件，现场只看到"卡住不动"，**没有任何报错指向真凶**。
+     *
+     * <p>⇒ 字串存库，设计器从这张表下拉选；侧车与现场按表约定。
+     */
+    @GetMapping(value = "/device-event-types", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deviceEventTypes() {
+        List<Map<String, Object>> rows = m().selectDeviceEventTypes(TENANT);
+        return ok(Map.of("total", rows.size(), "items", rows));
+    }
+
+    @PostMapping(value = "/device-event-types", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> createDeviceEventType(@RequestBody(required = false) String body,
+                                                        HttpServletRequest req) {
+        JsonNode n = parse(body);
+        String eventCode = text(n, "eventCode");
+        String displayName = text(n, "displayName");
+        if (blank(eventCode) || blank(displayName)) return bad("必填 eventCode / displayName");
+        String category = text(n, "category");
+        if (category == null) category = "progress";
+        if (!EVENT_CATEGORIES.contains(category)) return bad("category 非法：" + category);
+        try {
+            m().insertDeviceEventType(TENANT, eventCode.trim(), displayName.trim(), category,
+                    boolOf(n, "needsAction", false), intOf(n, "sortOrder", 100));
+            audit.record(session(req), "deviceEventType.create", "device_event_type", 0L,
+                    eventCode.trim(), null, req.getRemoteAddr());
+            return ok(Map.of("created", 1, "eventCode", eventCode.trim()));
+        } catch (Exception e) {
+            return writeError(e, "eventCode 可能重复");
+        }
+    }
+
+    @PutMapping(value = "/device-event-types/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> updateDeviceEventType(@PathVariable long id,
+                                                        @RequestBody(required = false) String body,
+                                                        HttpServletRequest req) {
+        JsonNode n = parse(body);
+        String category = text(n, "category");
+        if (category != null && !EVENT_CATEGORIES.contains(category)) {
+            return bad("category 非法：" + category);
+        }
+        int r = m().updateDeviceEventType(id, text(n, "displayName"),
+                category == null ? "progress" : category,
+                boolOf(n, "needsAction", false), intOf(n, "sortOrder", 100),
+                boolOf(n, "enabled", true));
+        if (r == 0) return notFound("事件类型不存在: " + id);
+        audit.record(session(req), "deviceEventType.update", "device_event_type", id, null,
+                null, req.getRemoteAddr());
+        return ok(Map.of("updated", r, "id", id));
+    }
+
+    @DeleteMapping(value = "/device-event-types/{id:\\d+}", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> deleteDeviceEventType(@PathVariable long id,
+                                                        HttpServletRequest req) {
+        int r = m().deleteDeviceEventType(TENANT, id);
+        if (r == 0) return notFound("事件类型不存在: " + id);
+        audit.record(session(req), "deviceEventType.delete", "device_event_type", id, null,
+                null, req.getRemoteAddr());
+        return ok(Map.of("deleted", r, "id", id));
     }
 
     // ---------------------------------------------------------------- 物料角色（P2-8）
