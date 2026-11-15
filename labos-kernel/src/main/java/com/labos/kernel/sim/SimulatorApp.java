@@ -614,8 +614,10 @@ public final class SimulatorApp {
 
         DeviceModel model = DeviceModels.of(modelId);
         if (modelId != null && model == null) {
-            log.error("未知型号 " + modelId + "，可用：" + DeviceModels.knownIds());
-            System.exit(2);
+            // 与 CLI 同一口径：型号/协议/方法都是配置（库为准），代码里的静态型号表只是兜底，
+            // 不因为"代码里没有这个型号"拒绝启动。
+            log.warn("[模拟器] 型号 " + modelId + " 不在静态型号库（协议与方法以库为准）；"
+                    + "按画像参数边界运行。静态库已有：" + DeviceModels.knownIds());
         }
         if (model != null) {
             profile = model.type;

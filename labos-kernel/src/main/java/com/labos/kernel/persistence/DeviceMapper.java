@@ -151,6 +151,17 @@ public interface DeviceMapper {
     /** 拓扑：岛 + 其下设备（一次 JOIN 出全部字段，Java 侧按岛分组）。 */
     List<Map<String, Object>> selectTopology(long tenantId);
 
+    /**
+     * 某型号下登记的方法名（{@code device_method}）。
+     *
+     * <p>给模拟器做「方法集并集」：协议与方法是**配置**（库里），代码只留兜底 ——
+     * 新加一台设备只该 INSERT 数据，模拟器不能因为"代码里没有这个型号"起不来。
+     *
+     * @param modelId {@code device.code} 或 {@code device.attr->>'device_model'}
+     *                （与 {@code GET /api/devices/registry} 的 modelId 同一口径）
+     */
+    List<String> selectModelMethodNames(long tenantId, String modelId);
+
     int setDeviceMethodInterruptible(long tenantId, long deviceId,
                                      String method, boolean value);
 

@@ -45,7 +45,15 @@ public final class DeviceRegistry {
                         String endpoint,
                         String capability,
                         String simProfile,
-                        String modelId) {
+                        String modelId,
+                        /**
+                         * 该型号在库里登记的方法名（{@code device_method}）。
+                         *
+                         * <p>为什么模型端要它：协议与方法是**配置**，代码里不该再有第二份。
+                         * 模拟器把它与画像方法集取并集 —— 新设备只 INSERT 数据即可，
+                         * 不必再往 {@code DeviceProfile.TABLE} 加硬编码画像。
+                         */
+                        java.util.List<String> methods) {
     }
 
     /** 拉一次清单；失败抛异常（调用方决定降级还是退出）。 */
@@ -79,6 +87,16 @@ public final class DeviceRegistry {
             if (id <= 0) {
                 continue;   // 没有设备ID的条目没法定位，跳过
             }
+            List<String> methods = new ArrayList<>();
+            JsonNode arr = it.path("methods");
+            if (arr.isArray()) {
+                for (JsonNode m : arr) {
+                    String name = m.asText("");
+                    if (!name.isBlank()) {
+                        methods.add(name);
+                    }
+                }
+            }
             out.add(new Entry(
                     id,
                     it.path("code").asText(""),
@@ -87,7 +105,8 @@ public final class DeviceRegistry {
                     it.path("endpoint").asText(""),
                     it.path("capability").asText(""),
                     it.path("simProfile").asText(""),
-                    it.path("modelId").asText("")));
+                    it.path("modelId").asText(""),
+                    List.copyOf(methods)));
         }
         return out;
     }

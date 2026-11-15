@@ -432,6 +432,8 @@ public class DeviceService {
      */
     public String deviceRegistryJson() throws java.sql.SQLException {
         List<String> items = new ArrayList<>();
+        // 型号 → 方法名（同一型号可能有多台实例，查一次就够）
+        Map<String, List<String>> methodsByModel = new java.util.LinkedHashMap<>();
         for (java.util.Map<String, Object> row : deviceMapper.selectDeviceRegistry(TENANT)) {
             String endpoint = str(row.get("endpoint"));
             items.add(Jsons.obj(
@@ -455,10 +457,32 @@ public class DeviceService {
                     "simProfile", simProfileOf(row.get("modelId"), row.get("deviceType"),
                             row.get("capability")),
                     "modelId", row.get("modelId"),
+                    // 该型号在库里登记的方法名（device_method）。
+                    // 模拟器拿它和画像方法集取并集：新设备只 INSERT 数据就能跑，
+                    // 不用再往 DeviceProfile.TABLE 里加一份硬编码画像。
+                    "methods", new Jsons.Raw(Jsons.arr(
+                            methodsOfModel(methodsByModel, str(row.get("modelId")))
+                                    .stream().map(Jsons::quote).toList())),
                     "driverCode", row.get("driverCode"),
                     "status", row.get("status")));
         }
         return Jsons.obj("items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
+    /** 型号 → 方法名（带本次请求内的缓存；查库失败按空处理，不影响清单返回）。 */
+    private List<String> methodsOfModel(Map<String, List<String>> cache, String modelId) {
+        if (modelId.isBlank()) {
+            return List.of();
+        }
+        return cache.computeIfAbsent(modelId, k -> {
+            try {
+                List<String> names = deviceMapper.selectModelMethodNames(TENANT, k);
+                return names == null ? List.of() : names;
+            } catch (RuntimeException e) {
+                // 老库没有 device_method / 连接抖动：清单照常返回，模拟器按画像校验
+                return List.of();
+            }
+        });
     }
 
     /**

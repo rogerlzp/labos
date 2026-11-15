@@ -147,6 +147,9 @@ public final class DeviceSimulator {
         // 手工传的 --device/--code/--cap/--profile 与中控表里的值是**同一份事实**，
         // 手工传就多了一份可能对不上的副本（设备改了 IP、换了能力就悄悄错位）。
         // 清单读不到时不致命（工位上中控可能还没起），但会警告。
+        // 清单里带的"该型号登记的方法名"：与画像方法集取并集（DeviceCore.withExtraMethods）。
+        // 这样新设备只要在库里登记 device_method，模拟器不用改代码就能认它的方法。
+        java.util.List<String> registryMethods = java.util.List.of();
         if (registryUrl != null) {
             try {
                 var items = DeviceRegistry.fetch(registryUrl);
@@ -181,6 +184,7 @@ public final class DeviceSimulator {
                     if (modelId == null && !me.modelId().isBlank()) {
                         modelId = me.modelId();
                     }
+                    registryMethods = me.methods();
                 }
             } catch (Exception e) {
                 log.warn("[模拟器] 读中控设备清单失败（" + e.getMessage()
@@ -190,8 +194,13 @@ public final class DeviceSimulator {
 
         DeviceModel model = DeviceModels.of(modelId);
         if (modelId != null && model == null) {
-            log.error("未知型号 " + modelId + "，可用：" + DeviceModels.knownIds());
-            System.exit(2);
+            // 不再退出：型号/协议/方法都是**配置**（device / device_method 表），
+            // 代码里的 DeviceModels 只是兜底。现场新登记一台设备不该因为
+            // "代码里没有这个型号"就起不来 —— 方法集从清单带（registryMethods），
+            // 参数边界按画像校验，行为与 generic 兜底一致。
+            log.warn("[模拟器] 型号 " + modelId + " 不在静态型号库（协议与方法以库为准），"
+                    + "按清单给的方法集 + 画像参数边界运行；静态库已有："
+                    + DeviceModels.knownIds());
         }
         // 有型号时，类型从型号推出来（省得两处写不一致）
         if (model != null) {
@@ -211,6 +220,13 @@ public final class DeviceSimulator {
         if (methodsArg != null && !methodsArg.isBlank()) {
             core.withExtraMethods(java.util.Arrays.asList(methodsArg.split(",")));
             log.info("[模拟器] 设备方法表：" + methodsArg);
+        }
+        if (!registryMethods.isEmpty()) {
+            // 清单带过来的型号方法（device_method）。命令行 --methods 仍优先叠加，
+            // 两边都保留：现场手工补的方法不该因为库里有登记就被丢掉。
+            core.withExtraMethods(registryMethods);
+            log.info("[模拟器] 型号方法（中控清单：" + modelId + "）共 "
+                    + registryMethods.size() + " 条：" + registryMethods);
         }
         if (spontaneousArg != null && !spontaneousArg.isBlank()) {
             // 解析在 DeviceCore 里（脚本的"形状"归它管），CLI 只负责传进去。

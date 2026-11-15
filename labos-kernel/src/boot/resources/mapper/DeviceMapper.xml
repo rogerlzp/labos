@@ -200,6 +200,19 @@
       只列**在役**设备：已停用（status='disabled'）的设备不在服务状态里，
       列进去只会让端侧把长连接挂到一台没人管的设备上。
     -->
+    <!-- 型号下登记的方法名：给模拟器做「方法集并集」用。
+         为什么要从库读：协议与方法是**配置**（device_method），不是代码 ——
+         加一台设备只该 INSERT 数据，模拟器不该因为"代码里没有这个型号"就起不来。
+         匹配口径与 registry 的 modelId 一致：device.code 或 attr->>'device_model'。 -->
+    <select id="selectModelMethodNames" resultType="java.lang.String">
+        SELECT DISTINCT m.method
+          FROM device_method m
+          JOIN device d ON d.id = m.device_id AND d.tenant_id = m.tenant_id
+         WHERE m.tenant_id = #{param1}
+           AND (d.code = #{param2} OR d.attr-&gt;&gt;'device_model' = #{param2})
+         ORDER BY 1
+    </select>
+
     <select id="selectDeviceRegistry" resultType="java.util.Map">
         SELECT di.id AS "deviceId",
                di.resource_id AS "resourceId",
