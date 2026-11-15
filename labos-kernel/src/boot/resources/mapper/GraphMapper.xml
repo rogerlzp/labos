@@ -148,7 +148,23 @@
 
     <select id="selectWorkflowNodes" resultType="java.util.Map">
         SELECT n.id AS "id", n.node_key AS "nodeKey", n.name AS "name",
-               n.node_type AS "nodeType", n.estimate_sec AS "estimateSec",
+               n.node_type AS "nodeType",
+               <!-- 节点时长的优先级（2026-11-15）：
+                    ① duration_model（方法级，**页面上可改**）—— 现场标定后的真实耗时
+                    ② device_method.estimate_sec（型号级，厂商公开规格/画像派生）
+                    ③ workflow_node.estimate_sec（节点级手工值）
+                    ⚠ 改之前**只有 ③ 和 ②**（节点列与型号列），
+                       而 duration_model 这张表**没有任何运行时消费方** ⇒
+                       「时长可改」改了也不影响执行 ⇒ 白改。
+                       现在把它接进这条主查询，页面改的时长才真的影响 ETA / 排程 / 甘特。 -->
+               COALESCE(
+                   (SELECT dm2.p50_ms FROM duration_model dm2
+                     WHERE dm2.tenant_id = n.tenant_id
+                       AND dm2.method = n.params->>'protocol_name'),
+                   (SELECT max(dm.estimate_sec) FROM device_method dm
+                     WHERE dm.method = n.params->>'protocol_name' AND dm.estimate_sec > 0),
+                   n.estimate_sec,
+                   0) / 1000 AS "estimateSec",
                c.code AS "capability",
                n.params->>'protocol_name' AS "protocolName",
                (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId",

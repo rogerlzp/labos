@@ -279,23 +279,32 @@ def main():
     chain = [cur]
 
     # ---- 阶段 1：磁套加载（4 台提取仪依次）
-    #     每个换板点都是三拍：**等交互 → 机械臂换板 → 继续信号**
+    #     每个换板点都是三拍：**等交互 → 机械臂换板 → 设备动作**
     #     （机械臂节点不能省 —— 少了就没人把板送进去）
+    #
+    # ⚠ **方法名用 PAuto 的真实指令**（Bind/Elute/PickTipComb/DropTipComb/…），
+    #   **不是**客户文档里的抽象名（【启动提取流程】/【继续信号】）。
+    #   原因：PAuto 协议里**没有** StartProcess/Continue 这两个指令
+    #   （见 docs/设备/PAuto-磁珠法核酸提取仪.md §6.2 的方法表）⇒
+    #   引用不存在的指令 ⇒ 派发时必然找不到方法、节点永远 MANUAL。
+    #   ⚠ 而【等待交互】**保留** —— 那是**平台能力**（__awaitEvent 等设备上报），
+    #   与设备指令是两回事；PAuto 协议不支持主动上报 ⇒ 这一拍在 PAuto 上
+    #   **要等真机手册确认**（见审核清单的待定项）。
     for i, code in enumerate(ext_codes):
         d = devs[code]
-        n_start = b.task(f"{code} 启动提取流程", protocol="StartProcess",
-                         resource=d["resourceId"], params={},
-                         icon="/devices/EXTRACT.svg")
+        n_pick = b.task(f"{code} 取磁套", protocol="PickTipComb",
+                        resource=d["resourceId"], params={"plateIndex": 0},
+                        icon="/devices/EXTRACT.svg")
         n_wait = b.task(f"等 {code} 等待交互", protocol="__awaitEvent",
                         params={"device": code, "eventType": EV_WAIT_INTERACTION,
                                 "timeout": 600, "into": f"{code}_wait"})
         n_move = b.task(f"机械臂 放磁套板到 {code} 交互位", protocol="Transfer",
                         resource=arm, params={"source": "STACK1-S02", "target": f"{code}-EXT"},
                         icon="/devices/TRANSFER.svg")
-        n_continue = b.task(f"{code} 继续信号", protocol="Continue",
-                            resource=d["resourceId"], params={},
-                            icon="/devices/EXTRACT.svg")
-        for nxt in (n_start, n_wait, n_move, n_continue):
+        n_drop = b.task(f"{code} 卸磁套", protocol="DropTipComb",
+                        resource=d["resourceId"], params={"plateIndex": 0},
+                        icon="/devices/EXTRACT.svg")
+        for nxt in (n_pick, n_wait, n_move, n_drop):
             b.flow(cur, nxt)
             cur = nxt
         chain.append(cur)
@@ -308,6 +317,15 @@ def main():
         "DISP4": "W2 洗涤分液",
         "DISP5": "W3 洗涤分液",
         "DISP6": "洗脱液分液",
+    }
+    # 每个阶段对应的**提取仪真实动作**（客户文档 §3 的阶段 → PAuto 指令）
+    stage_action = {
+        "DISP1": ("Incubate", "孵育（裂解）"),
+        "DISP2": ("Bind", "结合（磁珠）"),
+        "DISP3": ("Wash", "漂洗 W1"),
+        "DISP4": ("Wash", "漂洗 W2"),
+        "DISP5": ("Wash", "漂洗 W3"),
+        "DISP6": ("Elute", "洗脱"),
     }
     for code in disp_codes:
         d = devs[code]
@@ -322,10 +340,12 @@ def main():
                         resource=arm, params={"source": f"{code}-PLATE",
                                               "target": f"{ext_codes[0]}-EXT"},
                         icon="/devices/TRANSFER.svg")
-        n_continue = b.task(f"{ext_codes[0]} 继续信号", protocol="Continue",
-                            resource=devs[ext_codes[0]]["resourceId"], params={},
-                            icon="/devices/EXTRACT.svg")
-        for nxt in (n_disp, n_wait, n_move, n_continue):
+        action, action_cn = stage_action[code]
+        n_action = b.task(f"{ext_codes[0]} {action_cn}", protocol=action,
+                          resource=devs[ext_codes[0]]["resourceId"],
+                          params={"plateIndex": 0},
+                          icon="/devices/EXTRACT.svg")
+        for nxt in (n_disp, n_wait, n_move, n_action):
             b.flow(cur, nxt)
             cur = nxt
         chain.append(cur)
@@ -341,7 +361,7 @@ def main():
                                   "timeout": 900, "into": "final_wait"})
     b.flow(cur, n_final_wait)
     cur = n_final_wait
-    n_done = b.task("下发继续，流程结束", protocol="Continue",
+    n_done = b.task("收尾：读状态", protocol="GetStatus",
                     resource=devs[ext_codes[0]]["resourceId"], params={},
                     icon="/devices/EXTRACT.svg")
     b.flow(cur, n_done)
