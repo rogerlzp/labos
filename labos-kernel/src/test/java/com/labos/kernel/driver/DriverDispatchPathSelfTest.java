@@ -53,23 +53,32 @@ public final class DriverDispatchPathSelfTest {
         check(TARGET + " 有 driver.execute( 调用（" + total.size() + " 处）", !total.isEmpty());
         eq("全部落在 " + DISPATCH_METHOD + " 内", total, inDispatch);
 
-        section("3. 全仓 driver.execute 只有两处受控例外（DriverStepExecutor + ShadowProbe）");
+        section("3. 全仓物理下发只有三处受控例外（DriverStepExecutor + ShadowProbe + DriverContractDemo）");
         java.util.List<String> others = new java.util.ArrayList<>();
         boolean shadowRestricted = false;
+        boolean demoRegistered = false;
         Path srcRoot = findMainJavaRoot();
         if (srcRoot != null) {
             try (java.util.stream.Stream<Path> s = Files.walk(srcRoot)) {
                 for (Path p : s.filter(x -> x.toString().endsWith(".java")).toList()) {
                     String name = p.getFileName().toString();
                     String src = stripComments(Files.readString(p, StandardCharsets.UTF_8));
-                    if (!src.contains("driver.execute(")) {
+                    // 物理下发 = .execute(cmd) / .execute(new DriverCommand(...))；
+                    // 不匹配 JDBC ps.execute() 或 Spring TransactionTemplate.execute。
+                    boolean physical = src.contains(".execute(cmd")
+                            || src.contains(".execute(new DriverCommand");
+                    if (!physical) {
                         continue;
                     }
                     if (TARGET.equals(name)) {
                         continue;
                     }
                     if ("ShadowProbe.java".equals(name)) {
-                        shadowRestricted = src.contains("isMotionMethod");
+                        shadowRestricted = src.contains("isReadOnlyMethod");
+                        continue;
+                    }
+                    if ("DriverContractDemo.java".equals(name)) {
+                        demoRegistered = true;   // demo（手动跑，非生产派发）
                         continue;
                     }
                     others.add(relativize(p));
@@ -78,9 +87,10 @@ public final class DriverDispatchPathSelfTest {
                 // 扫描失败按不通过处理（others 可能为空，下面仍断言）
             }
         }
-        eq("除两处受控例外外 0 个 driver.execute 旁路（违规文件）",
+        eq("除三处受控例外外 0 处物理下发旁路（违规文件）",
                 java.util.List.of(), others);
-        check("ShadowProbe 已加运动类方法限制（isMotionMethod）", shadowRestricted);
+        check("ShadowProbe 已改只读方法白名单（isReadOnlyMethod）", shadowRestricted);
+        check("DriverContractDemo 已登记为 demo 例外", demoRegistered);
 
         System.out.printf("%n通过 %d, 失败 %d%n", passed, failed);
         if (failed > 0) {

@@ -307,8 +307,9 @@ public final class DriverStepExecutor implements StepExecutor {
         if (code == null || code.isBlank()) {
             return com.labos.kernel.recovery.RecoveryScope.NODE;
         }
-        if (code.startsWith("EC-05-10") || code.startsWith("EC-99-")) {
-            return com.labos.kernel.recovery.RecoveryScope.COMMAND;   // 通讯/发不出去
+        if (code.startsWith("EC-05-10") || code.startsWith("EC-99-")
+                || code.startsWith("EC-STATE-")) {
+            return com.labos.kernel.recovery.RecoveryScope.COMMAND;   // 通讯/状态未知（重查后重试命令）
         }
         if (code.startsWith("EC-06-")) {
             return com.labos.kernel.recovery.RecoveryScope.DEVICE;    // 驱动/部署问题

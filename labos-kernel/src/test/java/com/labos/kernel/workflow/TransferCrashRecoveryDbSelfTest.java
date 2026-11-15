@@ -81,6 +81,16 @@ public final class TransferCrashRecoveryDbSelfTest {
     }
 
     private static void cleanup() {
+        // plate 行（confirmWithPosition 会写 plate.location_id → 引用了 DST_POS），先删。
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "DELETE FROM plate WHERE tenant_id = ? AND barcode = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, PLATE);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.out.println("  [清理] plate 失败：" + e.getMessage());
+        }
         for (long pos : new long[]{SRC_POS, DST_POS}) {
             try (Connection c = db.open();
                  PreparedStatement ps = c.prepareStatement(

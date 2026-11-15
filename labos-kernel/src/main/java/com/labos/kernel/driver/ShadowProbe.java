@@ -59,11 +59,11 @@ public final class ShadowProbe {
         contract.put("methodStatus", false);
 
         // P2 评审（P2-9）：影子探针是诊断用途，但仍属 driver.execute 旁路。
-        // 限制只能发非运动类命令（状态/查询/读码类），运动类一律拒绝——
+        // 限制只能发只读命令（白名单：Get/Read/Status/Query 等），运动类/未知一律拒绝——
         // 防止探针变成绕过互锁门禁的第二个物理下发通道。
-        if (isMotionMethod(method)) {
+        if (!isReadOnlyMethod(method)) {
             return new Probe(resourceId, method, false, "EC-PROBE-MOTION-DENIED",
-                    "影子探针禁止发运动类命令：" + method, 0, null, contract);
+                    "影子探针只允许只读方法（白名单）：" + method, 0, null, contract);
         }
 
         long t0 = System.nanoTime();
@@ -110,17 +110,17 @@ public final class ShadowProbe {
     }
 
     /**
-     * 运动类方法（会使机械臂/开合/取放动作发生）——影子探针拒绝下发。
-     * 非运动类（读码/状态/查询/标定只读）才允许。
+     * 只读方法白名单（评审：不能只靠运动前缀黑名单，漏 Start/Reset/Rotate/Aspirate）。
+     * 只允许查询/读码/状态类方法；其余（含运动与未知方法）一律拒绝（fail-closed）。
      */
-    private static boolean isMotionMethod(String method) {
+    private static boolean isReadOnlyMethod(String method) {
         if (method == null || method.isBlank()) {
-            return true;
+            return false;
         }
         String m = method.trim();
-        String[] prefixes = {"Transfer", "Move", "Pick", "Place", "Home",
-                "Open", "Close", "Seal", "Peel", "Decap", "Recap", "Mix",
-                "Incubate", "Centrifuge", "Thermocycle", "Wash", "Aliquot"};
+        String[] prefixes = {"Get", "Read", "Status", "Query", "Info", "State",
+                "Heartbeat", "Ping", "Version", "List", "Check", "Probe",
+                "Describe", "Report"};
         for (String p : prefixes) {
             if (m.startsWith(p)) {
                 return true;
