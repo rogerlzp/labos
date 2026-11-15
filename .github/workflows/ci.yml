@@ -42,11 +42,14 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: 编译内核
-        working-directory: labos-kernel
-        run: |
-          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
-            $(find src/main -name '*.java')
+      - name: 编译内核（main + boot + 资源）
+        # 走**单一编译入口** scripts/build-kernel.sh（→ compile-kernel.sh）：
+        # 依赖就位 → 编 main + boot → mapper XML 合法性自检 → 资源同步。
+        # ⚠ 旧写法只编 src/main：CI 里 out/com/labos/boot 压根不存在，而
+        #   src/test 有 9 个类直接引用 com.labos.boot.* ⇒ test-all.sh 编译测试代码
+        #   直接报「程序包不存在」；另外三个 workflow 里
+        #   `com.labos.boot.LabosApplication` 也因此起不来。
+        run: ./scripts/build-kernel.sh
 
       - name: 前端依赖
         working-directory: webapp

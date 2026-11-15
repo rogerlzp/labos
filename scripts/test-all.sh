@@ -58,32 +58,37 @@ fi
 
 CP="out:lib/postgresql-42.7.3.jar:lib/spring/*"
 
-# 每轮都编 src/main：原来只在 out/ 为空时编，本机 out/ 已存在时新增的主类
-# 不会进 out，src/test 就会报"找不到符号"，而且脚本只把它算成一次失败，
-# 看不出是"没编译"还是"真挂了"（2026-11-05 台账 6.5 新增 ManualWindow 时踩到）。
-if ! javac -encoding UTF-8 -d out -cp "$CP" $(find src/main -name '*.java') 2>/tmp/main-compile.err; then
-  echo "主代码编译失败："
-  head -20 /tmp/main-compile.err
+# 编译入口：main + boot + 资源同步（scripts/compile-kernel.sh，**单一实现**）。
+#
+# 2026-11-15 修「第三个构建坑」：原来这里只编 src/main，而 src/test 里有 9 个类
+# 直接引用 com.labos.boot.*（TestSpringSupport / ExperimentGraphCompileSelfTest /
+# DeviceEventApiSelfTest …）⇒ **out/com/labos/boot 不在时，测试源码编译直接失败**
+# （报「程序包 com.labos.boot 不存在」）。旧做法能跑通只是因为 out/ 里恰好留着
+# 上一次 build-kernel.sh 编出来的 boot class —— 靠磁盘残留兜底，脆弱。
+# 现在编 main+boot+资源只有一处实现，与 build-kernel.sh / CI 同一入口。
+#
+# 顺带修掉的漂移：旧 test-all.sh 编译**不带** -parameters（build-kernel.sh 带），
+# 于是跑一次单测就把 out/ 里的 class 覆盖成「没有参数名」的版本，
+# 接着起内核时 Spring MVC 的按名绑定会悄悄失配。
+#
+# 注意本脚本是 `set -uo pipefail`（无 -e）：必须显式判返回值，否则编译失败会被吞掉。
+if ! bash ../scripts/compile-kernel.sh; then
+  echo "✗ 内核编译/资源同步失败：拒绝继续（避免拿旧 class 跑出假绿）" >&2
   exit 1
 fi
 
 # 再把 src/test 的用例编进 out —— 否则新加的测试类"找不到主类"，
 # 而脚本只会把它算成一次失败，看不出是"没编译"还是"真挂了"。
-if ! javac -encoding UTF-8 -d out -cp "$CP" $(find src/test -name '*.java') 2>/tmp/test-compile.err; then
+# 用 @argfile 而不是 $(find ...)：源文件多起来后命令行会撞长度上限。
+TEST_SOURCES="$(mktemp)"
+find src/test -name '*.java' | LC_ALL=C sort > "$TEST_SOURCES"
+if ! javac -encoding UTF-8 -parameters -d out -cp "$CP" "@$TEST_SOURCES" 2>/tmp/test-compile.err; then
   echo "测试源码编译失败："
   head -20 /tmp/test-compile.err
+  rm -f "$TEST_SOURCES"
   exit 1
 fi
-
-# 资源同步（2026-11-15）：javac 只编 Java、**不搬 resources**，而内核与连库自测的
-# classpath 只有 out/。不同步时改 mapper XML 会「编译通过、跑的是旧 SQL」，
-# 只在走到那条语句时报 `BindingException: Invalid bound statement`（编译与纯逻辑测试都发现不了）。
-# 与 build-kernel.sh 共用同一实现，避免两处复制逻辑漂移。
-# 注意本脚本是 `set -uo pipefail`（无 -e）：必须显式判返回值，否则同步失败会被吞掉。
-if ! bash ../scripts/sync-resources.sh; then
-  echo "✗ 资源同步失败：编译产物可能与 out/ 下的 mapper 不一致，拒绝继续（避免假绿）" >&2
-  exit 1
-fi
+rm -f "$TEST_SOURCES"
 PASS=0
 FAIL=0
 SKIP=0

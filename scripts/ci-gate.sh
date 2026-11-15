@@ -118,8 +118,11 @@ if [[ "$WANT_FAST" == "1" ]]; then
 
   # 设备事件入站端点的纯逻辑自测（鉴权口径 + 载荷解析）。
   # 端点是 sidecar 送设备事件的唯一入口，两处错了现场都只看到"等不到事件"。
+  # ⚠ 类名必须是 com.labos.kernel.event.*：2026-11-15 这两个自测从 boot 包
+  #   挪进了 kernel 包（见 test-all.sh 的 PURE 列表），这里还写着旧路径 ⇒
+  #   java 报 ClassNotFoundException ⇒ 这段门禁**恒红**，且红得毫无信息量。
   OUT=$(java -cp "labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" \
-        com.labos.boot.web.controller.DeviceEventApiSelfTest 2>&1)
+        com.labos.kernel.event.DeviceEventApiSelfTest 2>&1)
   F=$(echo "$OUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | head -1)
   N=$(echo "$OUT" | grep -oE '通过 [0-9]+, 失败' | grep -oE '[0-9]+' | head -1)
   if [[ "${F:-1}" != "0" ]]; then

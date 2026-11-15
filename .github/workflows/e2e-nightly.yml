@@ -88,10 +88,11 @@ jobs:
         #   `com.labos.kernel.api.ApiServer` 的 main 已在 A 批删除（见 scripts/start-kernel.sh 头注）
         #   —— 原来这里写的是旧方式，等于内核压根起不来，health 检查必然失败。
         #   classpath 也必须带 `lib/spring/*`（Spring Boot 依赖，漏了启动即报错）。
+        # ⚠ 编译必须走 scripts/build-kernel.sh（单一入口）：旧写法只编 src/main，
+        #   boot 类压根没编 ⇒ `com.labos.boot.LabosApplication` 必然 ClassNotFound。
         run: |
+          ./scripts/build-kernel.sh
           cd labos-kernel
-          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
-            $(find src/main -name '*.java')
           nohup java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
             com.labos.boot.LabosApplication >/tmp/labos-api.log 2>&1 &
           cd "$GITHUB_WORKSPACE"

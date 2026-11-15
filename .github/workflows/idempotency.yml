@@ -88,10 +88,11 @@ jobs:
         #   `com.labos.kernel.api.ApiServer` 的 main 已在 A 批删除（见 scripts/start-kernel.sh 头注），
         #   e2e-nightly.yml 里还写着旧方式 —— 那条 workflow 现在起不来内核。
         #   classpath 也必须带 `lib/spring/*`（Spring Boot 依赖）。
+        # ⚠ 编译必须走 scripts/build-kernel.sh（单一入口）：旧写法只编 src/main，
+        #   boot 类压根没编 ⇒ `com.labos.boot.LabosApplication` 必然 ClassNotFound。
         run: |
+          ./scripts/build-kernel.sh
           cd labos-kernel
-          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
-            $(find src/main -name '*.java')
           nohup java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
             com.labos.boot.LabosApplication >/tmp/labos-api.log 2>&1 &
           cd "$GITHUB_WORKSPACE"
@@ -176,11 +177,12 @@ jobs:
       - name: 编译内核 + 测试类
         # ⚠ **不启动内核**：连库自测与运行中的内核抢同一批数据
         #   （固定负数 id / tenant 1）⇒ 内核在跑时断言会随机变红。
+        # ⚠ 编译走单一入口（main + boot + 资源）：src/test 有 9 个类引用
+        #   com.labos.boot.* ⇒ 只编 src/main 时测试源码根本编不过。
         run: |
+          ./scripts/compile-kernel.sh
           cd labos-kernel
-          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar" \
-            $(find src/main -name '*.java')
-          javac -encoding UTF-8 -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
+          javac -encoding UTF-8 -parameters -d out -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
             $(find src/test -name '*.java')
 
       - name: 物料卸载路径判别性自测（两条自动路径）
