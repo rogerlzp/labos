@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.labos.kernel.persistence.StirrerMapper">
+
+    <select id="selectStirrerByDispenser" resultType="java.lang.Long">
+        SELECT stirrer_resource_id
+          FROM stirrer_dispenser_pair
+         WHERE tenant_id = #{tenantId} AND dispenser_resource_id = #{dispenserResourceId}
+         LIMIT 1
+    </select>
+
+</mapper>

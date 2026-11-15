@@ -46,6 +46,7 @@
 | `20261115_p2_uk_pos_plate.sql` | P2 阶段 B：L2「一板一位置」唯一索引（建前查重复，有则失败） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_uk_pos_plate.sql`（幂等） |
 | `20261115_p2_transfer_position.sql` | P2 阶段 B：搬运事务记录精确源/目标点位（证据确认路径写位置用） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_transfer_position.sql`（幂等） |
 | `20261115_p2_scan_evidence.sql` | P2 阶段 B：位置级扫码证据（抓板前绑定源位置+期望+实际扫码，同 scan_id 只能消费一次） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_scan_evidence.sql`（幂等） |
+| `20261115_p2_stirrer_pair.sql` | P2 阶段 C：L4 搅拌—分液配对（一个分液器最多配一个搅拌单元） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_stirrer_pair.sql`（幂等） |
 
 ## 执行顺序
 

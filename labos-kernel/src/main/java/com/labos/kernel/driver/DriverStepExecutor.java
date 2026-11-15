@@ -948,6 +948,18 @@ public final class DriverStepExecutor implements StepExecutor {
      */
     private DriverResult executeCommand(DeviceDriver driver, StepContext ctx,
                                         DriverCommand cmd, long workflowId, int stepSeq) {
+        // P2 阶段 C · L4：分液器启动前查配对搅拌单元（故障/过期/未知 → 拒绝 + paused_fault）。
+        // 放在账本登记之前：命令从未下发，无需 REJECTED_NOT_SENT 账本行（暂停已留痕）。
+        if (db != null && runId > 0) {
+            Long dispenserRes = resourceOfInstance(cmd.deviceInstanceId());
+            if (dispenserRes != null) {
+                DriverResult blocked = StirrerDispenserGuard.checkBeforeDispense(
+                        db, tenantId, runId, dispenserRes, cmd.method());
+                if (blocked != null) {
+                    return blocked;
+                }
+            }
+        }
         long ledgerId = 0L;
         if (db != null && runId > 0 && cmd.commandId() != null) {
             // 稳定逻辑 key：run|node|attempt|step|device|method，再按圈次加 |vN。

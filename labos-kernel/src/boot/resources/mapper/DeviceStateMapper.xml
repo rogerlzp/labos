@@ -578,7 +578,8 @@
     <select id="selectDeviceStateRow" resultType="java.util.Map">
         SELECT status, online,
                current_run_id AS "currentRunId",
-               last_error AS "lastError"
+               last_error AS "lastError",
+               updated_at AS "updatedAt"
           FROM device_state
          WHERE tenant_id = #{param1} AND resource_id = #{param2}
     </select>
