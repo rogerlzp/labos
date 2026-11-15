@@ -5,8 +5,8 @@ import { useReadOnly } from '../auth';
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Alert, Button, Card, Checkbox, Empty, Form, Input, InputNumber, Modal, Select, Space, Table, Tag,
-  Typography, message,
+  Alert, Button, Card, Checkbox, Descriptions, Empty, Form, Input, InputNumber, Modal, Select, Space,
+  Table, Tag, Typography, message,
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useT, type MessageKey } from '../i18n';
@@ -19,6 +19,17 @@ interface Dev {
   vendor?: string;
   capability?: string;
   instanceId?: number;
+  /** 设备示意图（/devices/xxx.svg）；空 = 前端退回能力色块。 */
+  icon?: string;
+  /**
+   * 型号协议属性（后端 `device.attr::text` 原样透出）。
+   *
+   * <p>内含 {@code device_model} / {@code protocol}（帧格式、波特率、校验算法）/
+   * {@code manual}（手册路径）/ {@code evidence}（MANUAL|SPEC|PLANNED）/
+   * {@code gaps}（手册没写、必须现场确认的点）。**权威值在数据库**，
+   * 这里只读展示 —— 写入走 `PUT /api/devices/{id}/attr`（白名单 6 键）。
+   */
+  deviceAttr?: string;
 }
 
 interface Island {
@@ -819,6 +830,8 @@ export default function TopologyPage() {
               }))} />
           </Form.Item>
         </Form>
+        {/* 协议卡只读：帧格式/串口/证据等级/待确认清单都来自 device.attr（库里的配置） */}
+        <ProtocolPanel attr={editing?.deviceAttr} />
       </Modal>
 
       <Modal open={addDriver} width={560} title={t('topology.driver.modal.addTitle')}
@@ -1075,5 +1088,98 @@ export default function TopologyPage() {
         </Form>
       </Modal>
     </>
+  );
+}
+
+/** 协议属性的形状（device.attr 的松散结构，字段都可能缺）。 */
+interface ProtoAttr {
+  device_model?: string;
+  manual?: string;
+  evidence?: string;
+  gaps?: string[];
+  protocol?: {
+    kind?: string;
+    baud?: number;
+    dataBits?: number;
+    stopBits?: number;
+    parity?: string;
+    bits?: string;
+    frame?: Record<string, unknown>;
+  };
+}
+
+function asText(v: unknown): string {
+  return Array.isArray(v) ? v.map((x) => String(x)).join(' ') : String(v);
+}
+
+/**
+ * 型号协议卡（**只读**）。
+ *
+ * <p>为什么放在设备编辑弹窗里：现场调设备时第一个要回答的就是"这台的帧怎么发、
+ * 波特率多少、校验怎么算"，这些以前只在手册 PDF 里，现在随型号存在 `device.attr`。
+ *
+ * <p>为什么不在这里做编辑：写接口是 `PUT /api/devices/{id}/attr`（白名单 6 键），
+ * 归型号库维护；拓扑页只负责让人**看得到**。`gaps` 是手册里没写、必须现场确认的点，
+ * 用黄色告警显式列出 —— 这类"以为文档写了"的假设最容易在接真机时踩坑。
+ */
+function ProtocolPanel({ attr }: { attr?: string }) {
+  const t = useT();
+  let parsed: ProtoAttr | null = null;
+  if (attr) {
+    try {
+      parsed = JSON.parse(attr) as ProtoAttr;
+    } catch {
+      // 脏数据不炸页面：退回"未登记"
+      parsed = null;
+    }
+  }
+  const p = parsed?.protocol;
+  if (!p) {
+    return (
+      <Alert style={{ marginTop: 12 }} type="info" showIcon
+        message={t('topology.device.protocol.empty')} />
+    );
+  }
+  const f = p.frame ?? {};
+  const frameText = [
+    f.sof ? `SOF ${asText(f.sof)}` : null,
+    f.bytes ? `${asText(f.bytes)} 字节` : null,
+    f.cmdBytes ? `CMD ${asText(f.cmdBytes)}B` : null,
+    f.lenBytes ? `LEN ${asText(f.lenBytes)}B` : null,
+    f.dataBytes ? `DATA ${asText(f.dataBytes)}B` : null,
+    f.eof ? `EOF ${asText(f.eof)}` : null,
+    f.checksum ? `CHK ${asText(f.checksum)}` : null,
+  ].filter(Boolean).join(' · ');
+  const serial = p.kind === 'binary-serial'
+    ? `${p.baud ?? '?'} bps · ${p.dataBits ?? 8}${p.parity === 'none' ? 'N' : (p.parity ?? 'N')}${p.stopBits ?? 1}`
+    : (p.kind ?? '—');
+
+  return (
+    <Card size="small" style={{ marginTop: 12 }} title={t('topology.device.protocol.title')}>
+      <Descriptions size="small" column={2} bordered>
+        <Descriptions.Item label={t('topology.device.protocol.serial')}>
+          <Typography.Text code>{serial}</Typography.Text>
+        </Descriptions.Item>
+        <Descriptions.Item label={t('topology.device.protocol.evidence')}>
+          {parsed?.evidence ?? '—'}
+          {parsed?.device_model ? ` · ${parsed.device_model}` : ''}
+        </Descriptions.Item>
+        <Descriptions.Item label={t('topology.device.protocol.frame')} span={2}>
+          <Typography.Text code>{frameText || '—'}</Typography.Text>
+        </Descriptions.Item>
+        <Descriptions.Item label={t('topology.device.protocol.manual')} span={2}>
+          {parsed?.manual ? <Typography.Text code>{parsed.manual}</Typography.Text> : '—'}
+        </Descriptions.Item>
+      </Descriptions>
+      {Array.isArray(parsed?.gaps) && parsed.gaps.length > 0 && (
+        <Alert style={{ marginTop: 8 }} type="warning" showIcon
+          message={t('topology.device.protocol.gaps')}
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {parsed.gaps.map((g) => <li key={g}>{g}</li>)}
+            </ul>
+          } />
+      )}
+    </Card>
   );
 }

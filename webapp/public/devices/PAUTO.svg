@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200">
+  <!-- PAuto 磁珠法核酸提取仪：转盘（X）+ 磁套/磁棒（Z/M）+ 双板位。示意图，不是实物照片。
+       配色沿用现有设备图的线稿风格（顶部色条 + 单色描边 + 底部能力标签）。 -->
+  <rect width="320" height="200" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
+  <rect x="0" y="0" width="320" height="8" rx="4" fill="#8b5cf6"/>
+
+  <g stroke="#8b5cf6" fill="none" stroke-width="5" stroke-linejoin="round">
+    <!-- 机箱 -->
+    <rect x="52" y="38" width="216" height="114" rx="10" stroke-width="7"/>
+    <!-- 转盘（X 轴） -->
+    <circle cx="122" cy="102" r="36"/>
+    <!-- 转盘上的两个板位（D1 只有 0/1 → 双工位） -->
+    <circle cx="122" cy="72" r="9" fill="#c4b5fd" stroke-width="4"/>
+    <circle cx="122" cy="132" r="9" fill="#c4b5fd" stroke-width="4"/>
+    <!-- 磁套（Z）+ 磁棒（M）：机箱右侧竖排 -->
+    <path d="M186 62 V96 M204 62 V96 M222 62 V96 M240 62 V96" stroke-linecap="round" stroke-width="4"/>
+    <path d="M186 104 V120 M204 104 V120 M222 104 V120 M240 104 V120"
+          stroke-linecap="round" stroke-width="4" stroke-dasharray="7 5"/>
+  </g>
+
+  <!-- 前面板：小屏 + 两个状态灯 -->
+  <rect x="176" y="126" width="70" height="16" rx="3" fill="#ede9fe" stroke="#a78bfa" stroke-width="2"/>
+  <circle cx="258" cy="134" r="4" fill="#22c55e"/>
+  <circle cx="272" cy="134" r="4" fill="#cbd5e1"/>
+
+  <text x="160" y="172" text-anchor="middle" font-family="sans-serif" font-size="16"
+        font-weight="bold" fill="#334155">磁珠法核酸提取仪</text>
+  <text x="160" y="190" text-anchor="middle" font-family="sans-serif" font-size="10"
+        fill="#94A3B8">PAuto · EXTRACT · 示意圖</text>
+</svg>
