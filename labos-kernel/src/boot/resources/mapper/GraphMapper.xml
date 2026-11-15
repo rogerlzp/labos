@@ -136,12 +136,7 @@
                params = COALESCE(workflow_node.params, '{}'::jsonb) || #{updateParams}::jsonb,
                resource_id = EXCLUDED.resource_id,
                seq = EXCLUDED.seq,
-               updated_at = now(),
-               -- 能力按**节点绑的设备**重算（2026-11-15）。
-               -- 之前不更新 ⇒ 一次算错就永远改不回来（能力是设备的事实，不是用户的偏好；
-               -- 用户也没有手工设 capability_id 的入口 ⇒ 这里覆盖是安全的）。
-               -- 只在能算出能力时覆盖（COALESCE：算不出就保留原值，别把已对的抹成 NULL）。
-               capability_id = COALESCE(EXCLUDED.capability_id, workflow_node.capability_id)
+               updated_at = now()
     </insert>
 
     <!-- ==== 执行器的图读取（RealWorkflowRunner，与 GM.java 既有区合并） ==== -->

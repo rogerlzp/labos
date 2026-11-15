@@ -3472,31 +3472,6 @@ public class WorkflowService {
                             : (n.protocolName() == null ? null
                                     : methodCap.get(n.protocolName()));
 
-                    // ⚠ **能力要从"节点绑的设备"反查，不能只按方法名猜**（2026-11-15 修）。
-                    //
-                    // <p>为什么：`loadMethodCapability()` 是**全局**的「方法名 → 能力」映射
-                    // （同名方法按投票取多数）。而同名方法**跨设备重复**很常见 ——
-                    // PAuto 提取仪的 `Continue`、机械臂的 `Continue`、分液器的 `Start`…
-                    // ⇒ 票多的那个能力被套到**所有**同名节点上 ⇒ **能力串行**。
-                    //
-                    // <p>实测症状（客户流程 43 节点）：
-                    //   「P_AUTO-1 启动提取流程」拿到 TRANSFER（机械臂的能力）
-                    //   「机械臂 放磁套板」拿到 EXTRACT（提取仪的能力）
-                    // ⇒ 预检 PF-02 报"需要 EXTRACT 能力，但没有任何设备提供"。
-                    //
-                    // <p>⇒ 节点带了 resource（设备）时，**一律**以该设备的能力为准
-                    //     （`selectCapabilityCodeOfResource`）；没有 resource 才退回方法名映射。
-                    //
-                    // <p>⚠ 这里**不再受 isExisting 限制**：能力是**设备的事实**，
-                    //   不是用户手工设的偏好 ⇒ 每次保存都按设备重算，
-                    //   才能修掉"第一次保存时算错了"的老节点。
-                    if (n.resourceId() != null) {
-                        Long byDevice = capabilityOfResource(n.resourceId());
-                        if (byDevice != null) {
-                            cap = byDevice;
-                        }
-                    }
-
                     // params 两个形态必须分开：
                     //  - 新节点：带 origin=bpmn_editor（编辑器来源标记）；
                     //  - 老节点：只回写 protocol_name / method_params。
@@ -3559,22 +3534,6 @@ public class WorkflowService {
     }
 
     /** protocol_name -> capability（多数表决），用于新增节点自动标能力。 */
-    /**
-     * 某台设备（resource_node.id）的能力 code → capability.id。
-     *
-     * <p>节点能力**以绑的设备为准**（见 saveGraph 里的注释）：同名方法跨设备重复，
-     * 按方法名猜会把能力串行。
-     */
-    private Long capabilityOfResource(long resourceId) throws SQLException {
-        String code = graphMapper.selectCapabilityCodeOfResource(resourceId);
-        if (code == null || code.isBlank()) {
-            return null;
-        }
-        return com.labos.kernel.persistence.Mappers.get(
-                com.labos.kernel.persistence.DeviceMapper.class)
-                .selectCapabilityId(tenantId, code);
-    }
-
     private Map<String, Long> loadMethodCapability() throws SQLException {
         Map<String, Long> out = new LinkedHashMap<>();
         for (Map<String, Object> row : dm().selectMethodCapabilityVotes()) {
