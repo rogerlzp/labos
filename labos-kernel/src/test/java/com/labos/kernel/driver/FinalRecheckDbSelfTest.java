@@ -22,6 +22,8 @@ public final class FinalRecheckDbSelfTest {
     private static final long DEV = 9995011L;
     private static final long STIRRER = 9995012L;
     private static final long DISPENSER = 9995013L;
+    /** 有设备节点但**没有** stirrer_dispenser_pair 的分液器（客户现场落地前的常态）。 */
+    private static final long UNPAIRED_DISPENSER = 9995014L;
 
     private static DbConfig db;
     private static int pass;
@@ -54,6 +56,15 @@ public final class FinalRecheckDbSelfTest {
             eq("error → 拒绝", true, r4 != null);
             eq("错误码 EC-INTERLOCK-STIRRER", "EC-INTERLOCK-STIRRER",
                     r4 == null ? null : r4.errorCode());
+
+            // 回归守卫（562c663）：finalRecheck 是**物理下发前**的通用复核，
+            // 若「无配对 ⇒ 拒绝」，则 stirrer_dispenser_pair 为 0 行时凡是走到复核的命令
+            // 全被拒（实测：提取仪 PickTipComb 直接 EC-STATE-UNKNOWN 转人工，平台发不出命令）。
+            // 无配对 = 无事实源 = 非 L4 目标 ⇒ 必须跳过；配置缺失的 fail-closed 由
+            // checkBeforeDispense 在分液方法上把关（StirrerDispenserGuardDbSelfTest §3 覆盖）。
+            section("5. 无搅拌配对 → 最终复核跳过（不得拒绝，否则全平台停摆）");
+            eq("无配对 → null", null,
+                    StirrerDispenserGuard.finalRecheck(db, TENANT, UNPAIRED_DISPENSER));
         } finally {
             cleanup();
         }
@@ -72,6 +83,10 @@ public final class FinalRecheckDbSelfTest {
                 + "VALUES (?, ?, 'EV-STIRRER', '搅拌', 'device')", STIRRER, TENANT);
         exec("INSERT INTO resource_node (id, tenant_id, code, name, kind) "
                 + "VALUES (?, ?, 'EV-DISPENSER', '分液器', 'device')", DISPENSER, TENANT);
+        // 故意**不**写 stirrer_dispenser_pair：§5 用它验证「无配对 ⇒ 跳过」。
+        exec("INSERT INTO resource_node (id, tenant_id, code, name, kind) "
+                + "VALUES (?, ?, 'EV-DISPENSER-UNPAIRED', '未配对分液器', 'device')",
+                UNPAIRED_DISPENSER, TENANT);
         exec("INSERT INTO stirrer_dispenser_pair (tenant_id, stirrer_resource_id, dispenser_resource_id) "
                 + "VALUES (?, ?, ?)", TENANT, STIRRER, DISPENSER);
         updateStirrer("idle");
@@ -106,7 +121,7 @@ public final class FinalRecheckDbSelfTest {
                 System.out.println("  [清理] 失败：" + e.getMessage());
             }
         }
-        for (long id : new long[]{DEV, STIRRER, DISPENSER}) {
+        for (long id : new long[]{DEV, STIRRER, DISPENSER, UNPAIRED_DISPENSER}) {
             try (Connection c = db.open();
                  PreparedStatement ps = c.prepareStatement(
                          "DELETE FROM device_state WHERE tenant_id = ? AND resource_id = ?")) {
