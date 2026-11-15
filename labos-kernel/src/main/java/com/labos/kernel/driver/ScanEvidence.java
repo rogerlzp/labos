@@ -30,6 +30,20 @@ public final class ScanEvidence {
             return;
         }
         try {
+            // P2 评审：真实唯一设备事件 ID 下才可幂等；内容不同必须报冲突，不静默覆盖。
+            java.util.Map<String, Object> existing = Mappers.get(ScanEvidenceMapper.class)
+                    .selectScanEvidence(tenantId, scanId);
+            if (existing != null) {
+                String oldScanned = (String) existing.get("scannedBarcode");
+                String oldExpected = (String) existing.get("expectedBarcode");
+                if (!java.util.Objects.equals(oldScanned, scannedBarcode)
+                        || !java.util.Objects.equals(oldExpected, expectedBarcode)) {
+                    log.error("[扫码证据] scan_id {} 内容冲突：旧 期望={}/扫码={}，新 期望={}/扫码={}",
+                            scanId, oldExpected, oldScanned, expectedBarcode, scannedBarcode);
+                    return;   // 冲突：不静默覆盖
+                }
+                return;   // 内容一致：幂等，不重复插入
+            }
             Mappers.get(ScanEvidenceMapper.class).insertScanEvidence(
                     tenantId, runId, nodeId, sourcePositionId,
                     expectedBarcode, scannedBarcode, observedAt,

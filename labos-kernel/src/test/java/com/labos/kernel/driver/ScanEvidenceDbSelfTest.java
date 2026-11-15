@@ -43,6 +43,14 @@ public final class ScanEvidenceDbSelfTest {
 
             section("4. 反例：不存在的 scan_id 不能消费");
             eq("不存在 → false", false, ScanEvidence.consume(db, TENANT, "SELF-SCAN-NOPE", 1L, RUN));
+
+            section("5. 内容冲突：同 scan_id 不同内容 → 报冲突不覆盖");
+            ScanEvidence.record(db, TENANT, RUN, 5L, 100L, "PLATE-A", "PLATE-A",
+                    "2026-11-15T12:00:00Z", "SELF-SCAN-CONFLICT", null, "cmd");
+            ScanEvidence.record(db, TENANT, RUN, 5L, 100L, "PLATE-B", "PLATE-B",
+                    "2026-11-15T12:00:00Z", "SELF-SCAN-CONFLICT", null, "cmd");
+            eq("冲突后保持首次内容（scanned=PLATE-A）", "PLATE-A",
+                    evidenceField("SELF-SCAN-CONFLICT", "scanned_barcode"));
         } finally {
             cleanup();
         }
@@ -63,6 +71,18 @@ public final class ScanEvidenceDbSelfTest {
             try (var rs = ps.executeQuery()) {
                 rs.next();
                 return rs.getLong(1);
+            }
+        }
+    }
+
+    private static String evidenceField(String scanId, String col) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT " + col + " FROM position_scan_evidence WHERE tenant_id = ? AND scan_id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, scanId);
+            try (var rs = ps.executeQuery()) {
+                return rs.next() ? String.valueOf(rs.getObject(1)) : null;
             }
         }
     }

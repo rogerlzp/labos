@@ -693,9 +693,30 @@ public final class PositionLock {
      *
      * @return 合法板号，或 {@code null}（调用方决定兜底，禁止把 null 当身份落库）
      */
+    /**
+     * P2 阶段 B · 扫码证据的真实设备事件 ID：从设备回包抽 message_id。
+     *
+     * <p>命令回包的 message_id = 命令幂等键（重试同 id），比本地合成
+     * {@code scan-r{run}-n{node}-s{step}-a{attempt}（含 attempt）更稳定：同一命令重试
+     * 不会产生新的 scan_id，同一条码不会被两次抓板消费。抽不到返回 null（调用方回退本地合成）。
+     */
+    public static String resolveScanEventId(String rawResponse) {
+        if (rawResponse == null || rawResponse.isBlank()) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"message_id\"\\s*:\\s*\"([^\"]+)\"").matcher(rawResponse);
+        if (m.find()) {
+            String v = m.group(1).trim();
+            if (!v.isEmpty()) {
+                return v;
+            }
+        }
+        return null;
+    }
+
     public static String resolvePlateBarcode(java.util.Map<String, Object> params,
-                                             String rawResponse) {
-        if (params != null) {
+                                             String rawResponse) {        if (params != null) {
             for (String k : PLATE_BARCODE_KEYS) {
                 Object v = params.get(k);
                 if (v == null) {
@@ -1058,9 +1079,17 @@ public final class PositionLock {
         if (expected == null || expected.isBlank()) {
             return;
         }
+        // P2 评审 B1：scanId 优先用设备回包的 message_id（命令幂等键，重试同 id），
+        // 抽不到才回退本地合成（scan-r{run}-n{node}-s{step}-a{attempt}）。
+        String deviceScanId = resolveScanEventId(rawResponse);
+        String effectiveScanId = (deviceScanId != null && !deviceScanId.isBlank())
+                ? deviceScanId : scanId;
+        if (effectiveScanId == null || effectiveScanId.isBlank()) {
+            return;
+        }
         String observedAt = java.time.Instant.now().toString();
         ScanEvidence.record(db, tenantId, runId, nodeId, srcPos, expected, scanned,
-                observedAt, scanId, null, "scan-node");
+                observedAt, effectiveScanId, null, "scan-node");
     }
 
     private static boolean startsWithAny(String s, String... prefixes) {

@@ -97,6 +97,13 @@ public final class PlateBarcodeSelfTest {
                                 .newTempBarcode(9L, 8L, 1)));
         eq("AUTO- 仍被拒绝（同一个假身份）", null, r(Map.of("barcode", "AUTO-9")));
 
+        section("8. 扫码事件 ID（message_id 提取，P2 评审）");
+        eq("message_id 提取", "msg-123", PositionLock.resolveScanEventId(
+                "{\"message_id\":\"msg-123\",\"data\":{\"barcode\":\"X\"}}"));
+        eq("无 message_id → null", null, PositionLock.resolveScanEventId(
+                "{\"data\":{\"barcode\":\"X\"}}"));
+        eq("空回包 → null", null, PositionLock.resolveScanEventId(null));
+
         summary();
     }
 
