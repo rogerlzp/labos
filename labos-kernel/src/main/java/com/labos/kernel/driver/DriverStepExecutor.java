@@ -441,7 +441,10 @@ public final class DriverStepExecutor implements StepExecutor {
             }
         }
         try {
-            DriverResult r = driver.execute(buildCommand(ctx, deviceId, method, stepSeq, exec));
+            // 阶段 A：主机械臂动作也走统一派发门禁（CommandLedger.begin + 物理下发），
+            // 消除受保护 Transfer 直接 driver.execute 的旁路。
+            DriverResult r = executeCommand(driver, ctx,
+                    buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun(), stepSeq);
             if (transferTxn > 0) {
                 try {
                     com.labos.kernel.workflow.TransferTransaction.report(db, tenantId,
