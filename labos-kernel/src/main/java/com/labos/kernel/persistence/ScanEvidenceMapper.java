@@ -2,6 +2,8 @@ package com.labos.kernel.persistence;
 
 import org.apache.ibatis.annotations.Param;
 
+import java.util.Map;
+
 /**
  * P2 阶段 B · 位置级扫码证据（只增不改 + 原子消费）。
  */
@@ -39,4 +41,8 @@ public interface ScanEvidenceMapper {
                        @Param("expectedBarcode") String expectedBarcode,
                        @Param("scannedBarcode") String scannedBarcode,
                        @Param("transferId") Long transferId);
+
+    /** 查一条扫码证据（按 scan_id）；不存在返回 null。 */
+    Map<String, Object> selectScanEvidence(@Param("tenantId") long tenantId,
+                                           @Param("scanId") String scanId);
 }

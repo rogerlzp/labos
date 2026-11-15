@@ -34,4 +34,15 @@
            AND scanned_barcode = #{scannedBarcode}
     </update>
 
+    <select id="selectScanEvidence" resultType="java.util.Map">
+        SELECT source_position_id AS "sourcePositionId",
+               expected_barcode AS "expectedBarcode",
+               scanned_barcode AS "scannedBarcode",
+               observed_at AS "observedAt",
+               consumed AS "consumed",
+               run_id AS "runId"
+          FROM position_scan_evidence
+         WHERE tenant_id = #{tenantId} AND scan_id = #{scanId}
+    </select>
+
 </mapper>

@@ -398,14 +398,6 @@ public final class DriverStepExecutor implements StepExecutor {
             } else {
                 targetPos = posLock.reserveTargetPosition(dstRes, runId, reserveTimeout);
             }
-            if (sourceSpec != null && !sourceSpec.isBlank()) {
-                sourcePos = posLock.reserveExplicitPosition(srcRes, sourceSpec, runId);
-                if (sourcePos == null) {
-                    safeReleaseTarget(posLock, targetPos);
-                    throw new StepFailure("EC-POSITION-OCCUPIED", scopeOf("EC-POSITION-OCCUPIED"),
-                            "指定源位置 " + sourceSpec + " 不存在或被占用（不换位）", 0, method);
-                }
-            }
         } catch (java.sql.SQLException e) {
             safeReleaseTarget(posLock, targetPos == null ? null : targetPos);
             throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
@@ -428,16 +420,19 @@ public final class DriverStepExecutor implements StepExecutor {
                         "目标位永久承诺失败：" + e.getMessage(), 0, method);
             }
         }
-        // P2 阶段 B：动作前固定源位（证据确认路径要凭它写位置，动作后源位已空无法重查）。
-        // 显式 sourcePosition 优先；未指定时取本 run 第一个有板位置。
+        // P2 阶段 B：动作前固定源位（源位是**已占用**板位，非空位预留）。
+        // 显式 sourcePosition 优先；未指定时取本 run 第一个有板位置；归属校验不过 = 不换位。
+        try {
+            sourcePos = posLock.resolveSourcePositionBySpec(srcRes, sourceSpec, runId);
+        } catch (java.sql.SQLException e) {
+            safeReleaseTarget(posLock, targetPos);
+            throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
+                    "解析源位失败：" + e.getMessage(), 0, method);
+        }
         if (sourcePos == null) {
-            try {
-                sourcePos = posLock.currentSourcePosition(srcRes, runId);
-            } catch (java.sql.SQLException e) {
-                safeReleaseTarget(posLock, targetPos);
-                throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
-                        "解析源位失败：" + e.getMessage(), 0, method);
-            }
+            safeReleaseTarget(posLock, targetPos);
+            throw new StepFailure("EC-POSITION-OCCUPIED", scopeOf("EC-POSITION-OCCUPIED"),
+                    "源位置不存在或非本 run 占用（不换位）", 0, method);
         }
         try {
             plan.acquireAll(srcRes, sourcePos, dstRes, targetPos, null, robotRes, factory);
@@ -473,6 +468,18 @@ public final class DriverStepExecutor implements StepExecutor {
             }
         }
         try {
+            // P2 阶段 B：抓板前扫码闸门（证据确认路径强制）。
+            // 查证据 → 纯判定 → 原子消费，任一失败都拒绝下发（板留在原位）。
+            if (evidenceRequired) {
+                String scanId = strParam(ctx, "scanId");
+                GrabScanGate.Verdict gate = ScanEvidence.authorizeAndConsume(
+                        db, tenantId, scanId, runId, sourcePos, plate, transferTxn, null);
+                if (!gate.allow()) {
+                    safeReleaseTarget(posLock, targetPos);
+                    throw new StepFailure(gate.errorCode(), scopeOf(gate.errorCode()),
+                            gate.reason(), 0, method);
+                }
+            }
             // 阶段 A：主机械臂动作也走统一派发门禁（CommandLedger.begin + 物理下发），
             // 消除受保护 Transfer 直接 driver.execute 的旁路。
             DriverResult r = executeCommand(driver, ctx,

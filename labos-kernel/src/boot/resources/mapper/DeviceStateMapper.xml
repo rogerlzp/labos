@@ -46,6 +46,11 @@
          WHERE tenant_id = #{param1} AND resource_id = #{param2}
     </select>
 
+    <select id="selectPositionOccupiedBy" resultType="java.lang.Long">
+        SELECT occupied_by_run FROM position_state
+         WHERE tenant_id = #{param1} AND resource_id = #{param2}
+    </select>
+
     <!-- P1 精确点位：按 spec 解析位置资源 id（id / code / position_label / slot_index） -->
     <select id="selectPositionResourceBySpec" resultType="java.lang.Long">
         SELECT dp.point_resource_id

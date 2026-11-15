@@ -345,6 +345,27 @@ public final class PositionLock {
     }
 
     /**
+     * P2 阶段 B：按 spec 解析「取板源位」并校验归属。源位是<b>已占用</b>的板位，
+     * 与 {@link #reserveExplicitPosition}（预留空位）相反；只认本 run 放上去的板。
+     *
+     * @return 源位资源 id；spec 空则取本 run 第一个有板位置；不存在/非本 run 占用返回 null。
+     */
+    public Long resolveSourcePositionBySpec(long deviceResourceId, String spec, long runId)
+            throws SQLException {
+        Long pos = (spec == null || spec.isBlank())
+                ? firstOccupiedPosition(deviceResourceId, runId)
+                : dm().selectPositionResourceBySpec(tenantId, deviceResourceId, spec.trim());
+        if (pos == null) {
+            return null;
+        }
+        Long owner = dm().selectPositionOccupiedBy(tenantId, pos);
+        if (owner == null || owner.longValue() != runId) {
+            return null;
+        }
+        return pos;
+    }
+
+    /**
      * P2 阶段 B：把已有 TTL 预约升级为永久承诺（reserved_until = NULL）。
      * 证据确认路径用：REPORTED 未确认时目标位不得被 TTL 过期/清理释放或抢占。
      */

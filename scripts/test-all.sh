@@ -252,6 +252,8 @@ DB=(
   "workflow.TransferConfirmWithPositionDbSelfTest"
   # P2 阶段 B：位置级扫码证据——登记幂等 + 原子消费（已消费/不存在防复用）
   "driver.ScanEvidenceDbSelfTest"
+  # P2 阶段 B：抓板闸门接线——authorizeAndConsume（查证据→纯判定→原子消费）防复用/点位/缺失
+  "driver.ScanEvidenceAuthorizeDbSelfTest"
   # P2 阶段 A：互锁决策快照落库可读回（决策/错误码/会话/版本）+ db/rec null no-op
   "driver.InterlockDecisionDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据

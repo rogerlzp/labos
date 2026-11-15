@@ -76,6 +76,72 @@ public final class ScanEvidence {
         }
     }
 
+    /**
+     * P2 阶段 B · 抓板闸门接线（唯一入口）：查证据 → 纯判定 → 原子消费。
+     *
+     * <p>证据必须绑定<b>本次抓取的源位</b>；纯判定做错误码分档，原子消费做防复用与
+     * 全匹配（run/点位/期望码/实扫码）。三步任一失败都拒绝抓板。
+     */
+    public static GrabScanGate.Verdict authorizeAndConsume(DbConfig db, long tenantId,
+            String scanId, long runId, long sourcePositionId, String expectedBarcode,
+            Long transferId, java.time.Duration ttl) {
+        if (db == null || scanId == null || scanId.isBlank()) {
+            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "无扫码证据（scanId 缺失）");
+        }
+        java.util.Map<String, Object> ev;
+        try {
+            ev = Mappers.get(ScanEvidenceMapper.class).selectScanEvidence(tenantId, scanId);
+        } catch (RuntimeException e) {
+            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "读扫码证据失败：" + e.getMessage());
+        }
+        if (ev == null) {
+            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING", "扫码证据不存在：" + scanId);
+        }
+        Long evPos = toLong(ev.get("sourcePositionId"));
+        String scanned = (String) ev.get("scannedBarcode");
+        String evExpected = (String) ev.get("expectedBarcode");
+        boolean consumed = Boolean.TRUE.equals(ev.get("consumed"));
+        long observedAt = toMillis(ev.get("observedAt"));
+
+        // 证据源位必须 == 本次抓取源位（来源位置不明 = 拒绝）
+        if (evPos == null || evPos.longValue() != sourcePositionId) {
+            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-MISSING",
+                    "扫码未绑定本次抓取源位");
+        }
+        GrabScanGate.Verdict v = GrabScanGate.check(evExpected, scanned, evPos, scanId,
+                observedAt, consumed, ttl);
+        if (!v.allow()) {
+            return v;
+        }
+        boolean ok = consumeForGrab(db, tenantId, scanId, runId, sourcePositionId,
+                expectedBarcode, scanned, transferId);
+        if (!ok) {
+            return GrabScanGate.Verdict.reject("EC-SCAN-EVIDENCE-CONSUMED",
+                    "扫码证据已被消费或不匹配（防复用）");
+        }
+        return GrabScanGate.Verdict.ok();
+    }
+
+    private static Long toLong(Object o) {
+        return o instanceof Number n ? n.longValue() : null;
+    }
+
+    private static long toMillis(Object o) {
+        if (o instanceof java.sql.Timestamp ts) {
+            return ts.getTime();
+        }
+        if (o instanceof java.time.OffsetDateTime odt) {
+            return odt.toInstant().toEpochMilli();
+        }
+        if (o instanceof java.time.Instant inst) {
+            return inst.toEpochMilli();
+        }
+        if (o instanceof java.util.Date d) {
+            return d.getTime();
+        }
+        return 0L;
+    }
+
     private ScanEvidence() {
     }
 }
