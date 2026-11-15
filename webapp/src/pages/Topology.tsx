@@ -3,10 +3,10 @@ import { useReadOnly } from '../auth';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Button, Card, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography, message,
+  Button, Card, Checkbox, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography, message,
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import { useT } from '../i18n';
+import { useT, type MessageKey } from '../i18n';
 
 interface Dev {
   resourceId: number;
@@ -29,7 +29,10 @@ interface Island {
 interface Driver {
   id: number;
   code: string;
+  name?: string;
+  protocol?: string;
   endpoint: string;
+  status?: number;
 }
 
 interface Cap {
@@ -37,6 +40,22 @@ interface Cap {
   name: string;
   devices: number;
 }
+
+/**
+ * 驱动协议：内核枚举 driver_protocol（grpc/http/tcp/sila2/modbus/opcua/netdll/mock）。
+ *
+ * <p>后端是 CAST(... AS driver_protocol)，写错会直接报错 ⇒ 这里只能从下拉里选。
+ */
+const DRIVER_PROTOCOLS: { value: string; labelKey: MessageKey }[] = [
+  { value: 'grpc', labelKey: 'topology.driver.protocol.grpc' },
+  { value: 'http', labelKey: 'topology.driver.protocol.http' },
+  { value: 'tcp', labelKey: 'topology.driver.protocol.tcp' },
+  { value: 'sila2', labelKey: 'topology.driver.protocol.sila2' },
+  { value: 'modbus', labelKey: 'topology.driver.protocol.modbus' },
+  { value: 'opcua', labelKey: 'topology.driver.protocol.opcua' },
+  { value: 'netdll', labelKey: 'topology.driver.protocol.netdll' },
+  { value: 'mock', labelKey: 'topology.driver.protocol.mock' },
+];
 
 const TOKEN = () => localStorage.getItem('labos_token');
 
@@ -66,9 +85,13 @@ export default function TopologyPage() {
   const [addIsland, setAddIsland] = useState(false);
   const [addDevice, setAddDevice] = useState<Island | null>(null);
   const [editing, setEditing] = useState<Dev | null>(null);
+  const [addDriver, setAddDriver] = useState(false);
+  const [editDriver, setEditDriver] = useState<Driver | null>(null);
   const [editForm] = Form.useForm();
   const [islandForm] = Form.useForm();
   const [deviceForm] = Form.useForm();
+  const [driverForm] = Form.useForm();
+  const [driverEditForm] = Form.useForm();
 
   const topo = useQuery({
     queryKey: ['topology'],
@@ -82,7 +105,6 @@ export default function TopologyPage() {
     queryFn: () => apiFetch('/api/drivers', {
       headers: { Authorization: `Bearer ${TOKEN()}` },
     }).then((r) => r.json()) as Promise<{ items: Driver[] }>,
-    enabled: addDevice != null || editing != null,
   });
 
   const caps = useQuery({
@@ -125,6 +147,65 @@ export default function TopologyPage() {
       setAddDevice(null);
       deviceForm.resetFields();
       await qc.invalidateQueries({ queryKey: ['topology'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  const driverList = drivers.data?.items ?? [];
+
+  /** 协议下拉/表格共用同一份枚举文案。 */
+  const protocolLabel = (p?: string) => {
+    const hit = DRIVER_PROTOCOLS.find((x) => x.value === p);
+    return hit ? t(hit.labelKey) : (p ?? '—');
+  };
+
+  /** 登记驱动：后端 400（编号重复 / 缺字段）会把原因放在 error 字段里，直接透给用户。 */
+  const submitDriver = async () => {
+    const v = await driverForm.validateFields();
+    try {
+      await apiFetch('/api/drivers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN()}` },
+        body: JSON.stringify({ ...v, resident: !!v.resident }),
+      });
+      message.success(t('topology.driver.toast.created'));
+      setAddDriver(false);
+      driverForm.resetFields();
+      await qc.invalidateQueries({ queryKey: ['drivers'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /** 改驱动：编号不可改（后端 PUT 不收 code）；空字段 = 不修改。 */
+  const submitDriverEdit = async () => {
+    if (!editDriver) return;
+    const v = await driverEditForm.validateFields();
+    try {
+      await apiFetch(`/api/drivers/${editDriver.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN()}` },
+        body: JSON.stringify({ ...v, resident: !!v.resident }),
+      });
+      message.success(t('topology.driver.toast.saved'));
+      setEditDriver(null);
+      await qc.invalidateQueries({ queryKey: ['drivers'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /** 删驱动：还被设备实例引用时后端回 400 并说明占用台数，透给用户。 */
+  const deleteDriver = async (d: Driver) => {
+    if (!confirm(t('topology.driver.confirm.delete', { code: d.code }))) return;
+    try {
+      await apiFetch(`/api/drivers/${d.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${TOKEN()}` },
+      });
+      message.success(t('topology.driver.toast.deleted'));
+      await qc.invalidateQueries({ queryKey: ['drivers'] });
     } catch (e) {
       message.error(String((e as Error).message));
     }
@@ -208,6 +289,65 @@ export default function TopologyPage() {
                 {
                   title: t('topology.col.deviceCount'), dataIndex: 'deviceCount', width: 100,
                   render: (v: number) => <Tag>{v}</Tag>,
+                },
+              ]}
+            />
+          )}
+        </Card>
+
+        <Card
+          size="small"
+          title={t('topology.driver.title', { n: driverList.length })}
+          extra={
+            <Space>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {t('topology.driver.hint')}
+              </Typography.Text>
+              <Button type="primary" icon={<PlusOutlined />} {...ro}
+                onClick={() => { setAddDriver(true); driverForm.resetFields(); }}>
+                {t('topology.driver.action.add')}
+              </Button>
+            </Space>
+          }
+        >
+          {driverList.length === 0 ? <Empty description={t('topology.driver.empty')} /> : (
+            <Table<Driver>
+              rowKey="id" size="small" loading={drivers.isLoading}
+              dataSource={driverList}
+              pagination={false}
+              columns={[
+                {
+                  title: t('topology.driver.col.code'), dataIndex: 'code', width: 200,
+                  render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
+                },
+                { title: t('topology.driver.col.name'), dataIndex: 'name' },
+                {
+                  title: t('topology.driver.col.protocol'), dataIndex: 'protocol', width: 220,
+                  render: (v: string) => (v ? <Tag color="blue">{protocolLabel(v)}</Tag> : '—'),
+                },
+                {
+                  title: t('topology.driver.col.endpoint'), dataIndex: 'endpoint',
+                  render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
+                },
+                {
+                  title: t('topology.driver.col.action'), width: 120,
+                  render: (_, d) => (
+                    <Space size={2}>
+                      <Button size="small" type="link" {...ro} onClick={() => {
+                        setEditDriver(d);
+                        driverEditForm.setFieldsValue({
+                          name: d.name ?? '',
+                          protocol: d.protocol ?? 'tcp',
+                          endpoint: d.endpoint ?? '',
+                          // 列表接口不返回厂商/常驻 ⇒ 留空 = 不修改
+                          vendor: '',
+                          resident: false,
+                        });
+                      }}>{t('topology.action.edit')}</Button>
+                      <Button size="small" type="link" danger {...ro}
+                        onClick={() => deleteDriver(d)}>{t('topology.action.delete')}</Button>
+                    </Space>
+                  ),
                 },
               ]}
             />
@@ -328,6 +468,61 @@ export default function TopologyPage() {
               options={(caps.data?.items ?? []).map((c) => ({
                 value: c.code, label: `${c.code}（${c.name}）`,
               }))} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal open={addDriver} width={560} title={t('topology.driver.modal.addTitle')}
+        onCancel={() => setAddDriver(false)} onOk={submitDriver} okText={t('topology.modal.create')}>
+        <Form form={driverForm} layout="vertical">
+          <Form.Item name="code" label={t('topology.driver.field.code')} rules={[{ required: true }]}
+            extra={t('topology.driver.field.codeExtra')}>
+            <Input placeholder="DRV-SIDECAR-EXT1" />
+          </Form.Item>
+          <Form.Item name="name" label={t('topology.driver.field.name')} rules={[{ required: true }]}>
+            <Input placeholder={t('topology.driver.placeholder.name')} />
+          </Form.Item>
+          <Form.Item name="protocol" label={t('topology.driver.field.protocol')} rules={[{ required: true }]}
+            extra={t('topology.driver.field.protocolExtra')}>
+            <Select placeholder={t('topology.driver.placeholder.pickProtocol')}
+              options={DRIVER_PROTOCOLS.map((p) => ({ value: p.value, label: t(p.labelKey) }))} />
+          </Form.Item>
+          <Form.Item name="endpoint" label={t('topology.driver.field.endpoint')} rules={[{ required: true }]}
+            extra={t('topology.driver.field.endpointExtra')}>
+            <Input placeholder="tcp://192.168.1.10:8501" />
+          </Form.Item>
+          <Form.Item name="vendor" label={t('topology.driver.field.vendor')}>
+            <Input placeholder={t('topology.driver.placeholder.vendor')} />
+          </Form.Item>
+          <Form.Item name="resident" label={t('topology.driver.field.resident')}
+            valuePropName="checked" extra={t('topology.driver.field.residentExtra')}>
+            <Checkbox />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal open={editDriver != null} width={560}
+        title={t('topology.driver.modal.editTitle', { code: editDriver?.code ?? '' })}
+        onCancel={() => setEditDriver(null)} onOk={submitDriverEdit} okText={t('topology.modal.save')}>
+        <Form form={driverEditForm} layout="vertical">
+          <Form.Item name="name" label={t('topology.driver.field.name')} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="protocol" label={t('topology.driver.field.protocol')} rules={[{ required: true }]}
+            extra={t('topology.driver.field.protocolExtra')}>
+            <Select options={DRIVER_PROTOCOLS.map((p) => ({ value: p.value, label: t(p.labelKey) }))} />
+          </Form.Item>
+          <Form.Item name="endpoint" label={t('topology.driver.field.endpoint')} rules={[{ required: true }]}
+            extra={t('topology.driver.field.endpointExtra')}>
+            <Input placeholder="tcp://192.168.1.10:8501" />
+          </Form.Item>
+          <Form.Item name="vendor" label={t('topology.driver.field.vendor')}
+            extra={t('topology.driver.field.vendorEditExtra')}>
+            <Input placeholder={t('topology.driver.placeholder.vendor')} />
+          </Form.Item>
+          <Form.Item name="resident" label={t('topology.driver.field.resident')}
+            valuePropName="checked" extra={t('topology.driver.field.residentEditExtra')}>
+            <Checkbox />
           </Form.Item>
         </Form>
       </Modal>

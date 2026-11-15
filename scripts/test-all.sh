@@ -226,6 +226,8 @@ DB=(
   # 设备事件 + 外部写入的**整条链路**：setRunVar → run.input.vars → __wait 唤醒；
   # 设备上报 → device_event 表 → __awaitEvent 取到新事件（带载荷）+ 存量不算新事件
   "workflow.DeviceEventDbSelfTest"
+  # 设备接入（建岛/拖设备/造点位/登记驱动）—— 交付第一道坎
+  "web.service.DeviceSetupDbSelfTest"
   # R6 物料门禁：IN_TRANSFER（在途未确认）板不可做目标寻址（fail-closed），KNOWN 正常
   "material.InTransitGateDbSelfTest"
   # BUG-14 启动兜底 settle：孤儿 running 落 failed + 批次/实验回写；不碰合法数据

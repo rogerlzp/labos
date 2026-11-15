@@ -46,6 +46,20 @@
          WHERE tenant_id = #{param1} AND resource_id = #{param2}
     </select>
 
+    <!-- P1 精确点位：按 spec 解析位置资源 id（id / code / position_label / slot_index） -->
+    <select id="selectPositionResourceBySpec" resultType="java.lang.Long">
+        SELECT dp.point_resource_id
+          FROM device_point dp
+          LEFT JOIN resource_node rn ON rn.id = dp.point_resource_id
+         WHERE dp.tenant_id = #{tenantId}
+           AND dp.device_resource_id = #{deviceResourceId}
+           AND (dp.id::text = #{spec}
+                OR rn.code = #{spec}
+                OR dp.position_label = #{spec}
+                OR dp.slot_index::text = #{spec})
+         LIMIT 1
+    </select>
+
     <select id="selectCurrentRunId" resultType="java.lang.Long">
         SELECT current_run_id FROM device_state
          WHERE tenant_id = #{param1} AND resource_id = #{param2}

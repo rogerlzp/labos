@@ -712,9 +712,9 @@ public class DeviceService {
      * @return 写了多少个点位
      */
     public int createGridPoints(long deviceResourceId, String deviceCode, int cols, int rows,
-                                String pointKind, int maxStack, Double maxHeightMm,
-                                String plateTypes, boolean isEntry, boolean isExit,
-                                boolean robotReachable) throws java.sql.SQLException {
+                                String pointKind, String slotKind, int maxStack,
+                                Double maxHeightMm, String plateTypes, boolean isEntry,
+                                boolean isExit, boolean robotReachable) throws java.sql.SQLException {
         if (deviceResourceId <= 0) {
             throw new IllegalArgumentException("设备 id 不对");
         }
@@ -726,6 +726,15 @@ public class DeviceService {
         if (!java.util.Set.of("incubator", "storage", "transfer_point").contains(kind)) {
             throw new IllegalArgumentException(
                     "点位 kind 只能是 incubator / storage / transfer_point（机械臂只能取这三类）");
+        }
+        // ⚠ 两个 kind 是**两个不同的轴**，别混：
+        //   pointKind → resource_node.kind = "这个节点是什么"（机械臂只看得见这三类）
+        //   slotKind → device_point.point_kind = "这个坑位在设备里扮演什么角色"
+        //             （CHECK 只允许 nest/deck_in/deck_out/waste）
+        String slot = slotKind == null || slotKind.isBlank() ? "nest" : slotKind.trim();
+        if (!java.util.Set.of("nest", "waste").contains(slot)) {
+            throw new IllegalArgumentException(
+                    "坑位语义（slotKind）只能是 nest（网格式坑位）或 waste（废弃位）");
         }
         if (deviceCode == null || deviceCode.isBlank()) {
             // 没传就按资源 id 反查设备编号（点位编号按它拼）
@@ -742,7 +751,7 @@ public class DeviceService {
         for (int r = 1; r <= rows; r++) {
             for (int c = 1; c <= cols; c++) {
                 String code = deviceCode.trim() + "-R" + r + "C" + c;
-                cm.insertGridPoint(TENANT, deviceResourceId, code, code, kind,
+                cm.insertGridPoint(TENANT, deviceResourceId, code, code, kind, slot,
                         r, c, maxStack, maxHeightMm, plateTypes,
                         isEntry, isExit, robotReachable, (r - 1) * cols + c);
                 n++;

@@ -91,7 +91,7 @@ public final class DeviceSetupDbSelfTest {
 
             section("4. 批量造网格点位（原来只有脚本）");
             String devCode = str("SELECT code FROM resource_node WHERE id = ?", rid);
-            int n = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point",
+            int n = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point", "nest",
                     1, 45.0, "pcr96,deep96", true, true, true);
             eq("造了 6 个点位（3 列 × 2 行）", 6, n);
             eq("点位行数对上了", 6, intOf("SELECT count(*) FROM device_point dp"
@@ -102,16 +102,22 @@ public final class DeviceSetupDbSelfTest {
                             + " ON p.id = dp.point_resource_id"
                             + " WHERE dp.device_resource_id = ? AND p.code = ?",
                             rid, devCode + "-R1C1"));
-            eq("点位 kind 落对了", 1,
+            // 两个 kind 是**两个轴**：resource_node.kind = 节点是什么（机械臂可见的三类）、
+            // device_point.point_kind = 坑位在设备里扮演什么角色（nest/deck_in/…）
+            eq("节点类型（resource_node.kind）落对了", 6,
                     intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
                             + " ON p.id = dp.point_resource_id"
-                            + " WHERE dp.device_resource_id = ? AND dp.point_kind = 'transfer_point'", rid));
-            eq("网格行列落对了", 2,
+                            + " WHERE dp.device_resource_id = ? AND p.kind = 'transfer_point'", rid));
+            eq("坑位语义（device_point.point_kind）落对了", 6,
+                    intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
+                            + " ON p.id = dp.point_resource_id"
+                            + " WHERE dp.device_resource_id = ? AND dp.point_kind = 'nest'", rid));
+            eq("网格行列落对了（第 2 行有 3 列 ⇒ 3 个点）", 3,
                     intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
                             + " ON p.id = dp.point_resource_id"
                             + " WHERE dp.device_resource_id = ? AND dp.grid_row = 2", rid));
             // 幂等：再跑一次不新增
-            int n2 = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point",
+            int n2 = svc.createGridPoints(rid, devCode, 3, 2, "transfer_point", "nest",
                     1, 45.0, "pcr96,deep96", true, true, true);
             eq("幂等：再跑一次不新增点位", 6,
                     intOf("SELECT count(*) FROM device_point dp JOIN resource_node p"
@@ -121,7 +127,7 @@ public final class DeviceSetupDbSelfTest {
 
             section("5. 危险动作要有护栏");
             try {
-                svc.createGridPoints(rid, devCode, 3, 2, "workstation", 1, null, null,
+                svc.createGridPoints(rid, devCode, 3, 2, "workstation", "nest", 1, null, null,
                         true, true, true);
                 bad("点位 kind 不在机械臂可见的三类里，没有被拒绝");
             } catch (IllegalArgumentException e) {
@@ -129,7 +135,7 @@ public final class DeviceSetupDbSelfTest {
                         e.getMessage() != null && e.getMessage().contains("transfer_point"));
             }
             try {
-                svc.createGridPoints(rid, devCode, 0, 2, "storage", 1, null, null,
+                svc.createGridPoints(rid, devCode, 0, 2, "storage", "nest", 1, null, null,
                         true, true, true);
                 bad("列数为 0 没有被拒绝");
             } catch (IllegalArgumentException e) {
@@ -183,20 +189,20 @@ public final class DeviceSetupDbSelfTest {
         // ⇒ 之前一次失败就留下 2 个岛 + 4 个驱动的残留。
         String[] sqls = {
             "DELETE FROM position_state WHERE resource_id IN"
-                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY-SETUP-DEV%')",
+                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY%SETUP%')",
             "DELETE FROM device_point WHERE device_resource_id IN"
-                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY-SETUP-DEV%')",
+                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY%SETUP%')",
             "DELETE FROM device_point WHERE point_resource_id IN"
-                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY-SETUP-DEV%')",
+                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY%SETUP%')",
             "DELETE FROM device_state WHERE resource_id IN"
-                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY-SETUP-DEV%')",
+                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY%SETUP%')",
             "DELETE FROM resource_capability WHERE resource_id IN"
-                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY-SETUP-DEV%')",
-            "DELETE FROM device_instance WHERE code LIKE 'VERIFY-SETUP-DEV%'",
-            "DELETE FROM resource_node WHERE code LIKE 'VERIFY-SETUP-DEV%'",
-            "DELETE FROM device WHERE code = 'VERIFY-SETUP-MODEL'",
-            "DELETE FROM resource_node WHERE code = '" + ISLAND_CODE + "'",
-            "DELETE FROM driver WHERE code = '" + DRIVER_CODE + "'",
+                    + " (SELECT id FROM resource_node WHERE code LIKE 'VERIFY%SETUP%')",
+            "DELETE FROM device_instance WHERE code LIKE 'VERIFY%SETUP%'",
+            "DELETE FROM resource_node WHERE code LIKE 'VERIFY%SETUP%'",
+            "DELETE FROM device WHERE code LIKE 'VERIFY%SETUP%MODEL%'",
+            "DELETE FROM resource_node WHERE code LIKE 'VERIFY%SETUP%ISLAND%'",
+            "DELETE FROM driver WHERE code LIKE 'VERIFY%SETUP%DRV%'",
         };
         for (String sql : sqls) {
             try {

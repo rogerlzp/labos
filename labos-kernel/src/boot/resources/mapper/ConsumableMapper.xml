@@ -174,14 +174,14 @@
       INSERT INTO device_point (tenant_id, device_resource_id, point_resource_id, point_role,
                                 robot_reachable, is_entry, is_exit, order_in_device,
                                 max_stack, max_height_mm, plate_types, position_label,
-                                point_kind, note, updated_at)
+                                point_kind, note, grid_row, grid_col, updated_at)
       SELECT #{t}, #{deviceResourceId}, rn.id, 'both', #{robotReachable},
              #{isEntry}, #{isExit}, #{orderInDevice},
              #{maxStack}, #{maxHeightMm},
              CASE WHEN COALESCE(#{plateTypes}, '') = '' THEN NULL
                   ELSE string_to_array(#{plateTypes}, ',') END,
-             #{positionLabel}, #{pointKind},
-             '网格点位（批量生成）', now()
+             #{positionLabel}, #{slotKind},
+             '网格点位（批量生成）', #{gridRow}, #{gridCol}, now()
         FROM rn
       ON CONFLICT (tenant_id, point_resource_id) DO UPDATE SET
         point_role = 'both', robot_reachable = EXCLUDED.robot_reachable,
@@ -190,7 +190,8 @@
         max_stack = EXCLUDED.max_stack, max_height_mm = EXCLUDED.max_height_mm,
         plate_types = EXCLUDED.plate_types,
         position_label = COALESCE(NULLIF(EXCLUDED.position_label, ''), device_point.position_label),
-        point_kind = EXCLUDED.point_kind, updated_at = now()
+        point_kind = EXCLUDED.point_kind,
+        grid_row = EXCLUDED.grid_row, grid_col = EXCLUDED.grid_col, updated_at = now()
       RETURNING point_resource_id
     ), ps AS (
       INSERT INTO position_state (tenant_id, resource_id, plate_id, updated_at)

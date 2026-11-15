@@ -33,6 +33,15 @@ public interface DeviceStateMapper {
     /** 层位被哪个 run 预占（position_state.reserved_by_run）。 */
     Long selectPositionReservedBy(long tenantId, long resourceId);
 
+    /**
+     * P1 精确点位：按 spec 解析某设备下的位置资源 id（resource_node.id）。
+     * spec 可为：device_point.id（数字）、resource_node.code、position_label、slot_index。
+     * 查不到返回 null。
+     */
+    Long selectPositionResourceBySpec(@Param("tenantId") long tenantId,
+                                      @Param("deviceResourceId") long deviceResourceId,
+                                      @Param("spec") String spec);
+
     /** 谁占着这台设备（device_state.current_run_id）；空表示空闲。 */
     Long selectCurrentRunId(long tenantId, long resourceId);
 

@@ -378,12 +378,34 @@ public final class DriverStepExecutor implements StepExecutor {
                 log.warn("[搬运] 非法 LABOS_TRANSFER_RESERVE_TIMEOUT_MS={}，沿用 60s", envTimeout);
             }
         }
-        Long targetPos;
+        // P1 精确点位：sourcePosition / targetPosition 显式指定点位（code / slot_index / 位置标签）。
+        // 指定点位被占用 ⇒ 拒绝搬运（不悄悄换位）；未指定 ⇒ 回退自动取第一个空位。
+        String sourceSpec = strParam(ctx, "sourcePosition");
+        String targetSpec = strParam(ctx, "targetPosition");
+        Long targetPos = null;
+        Long sourcePos = null;
         try {
-            targetPos = posLock.reserveTargetPosition(dstRes, runId, reserveTimeout);
+            if (targetSpec != null && !targetSpec.isBlank()) {
+                targetPos = posLock.reserveExplicitPosition(dstRes, targetSpec, runId);
+                if (targetPos == null) {
+                    throw new StepFailure("EC-POSITION-OCCUPIED", scopeOf("EC-POSITION-OCCUPIED"),
+                            "指定目标位置 " + targetSpec + " 不存在或被占用（不换位）", 0, method);
+                }
+            } else {
+                targetPos = posLock.reserveTargetPosition(dstRes, runId, reserveTimeout);
+            }
+            if (sourceSpec != null && !sourceSpec.isBlank()) {
+                sourcePos = posLock.reserveExplicitPosition(srcRes, sourceSpec, runId);
+                if (sourcePos == null) {
+                    safeReleaseTarget(posLock, targetPos);
+                    throw new StepFailure("EC-POSITION-OCCUPIED", scopeOf("EC-POSITION-OCCUPIED"),
+                            "指定源位置 " + sourceSpec + " 不存在或被占用（不换位）", 0, method);
+                }
+            }
         } catch (java.sql.SQLException e) {
+            safeReleaseTarget(posLock, targetPos == null ? null : targetPos);
             throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
-                    "目标位置预留失败：" + e.getMessage(), 0, method);
+                    "位置预留失败：" + e.getMessage(), 0, method);
         }
         if (targetPos == null) {
             // 等待超时：拒绝搬运并转人工；人工修复后点击继续，会重新走本方法再次预留。
@@ -393,7 +415,7 @@ public final class DriverStepExecutor implements StepExecutor {
                     0, method);
         }
         try {
-            plan.acquireAll(srcRes, null, dstRes, null, null, robotRes, factory);
+            plan.acquireAll(srcRes, sourcePos, dstRes, targetPos, null, robotRes, factory);
         } catch (TransferPlan.AcquireException e) {
             safeReleaseTarget(posLock, targetPos);
             throw new StepFailure("EC-RESOURCE-BUSY", scopeOf("EC-RESOURCE-BUSY"),
@@ -436,7 +458,7 @@ public final class DriverStepExecutor implements StepExecutor {
                 safeReleaseTarget(posLock, targetPos);
             } else if (transferTxn > 0 && autoConfirmEnabled()) {
                 // putPlate 写占用时会自动清掉预留；登记未成功则必须显式释放，避免占死。
-                if (!autoConfirmTransfer(transferTxn, plate, srcRes, dstRes, targetPos, robotRes)) {
+                if (!autoConfirmTransfer(transferTxn, plate, srcRes, dstRes, sourcePos, targetPos, robotRes)) {
                     safeReleaseTarget(posLock, targetPos);
                 }
             } else {
@@ -528,13 +550,15 @@ public final class DriverStepExecutor implements StepExecutor {
     /**
      * P2-3：写一条隐式搬运段（源/目标设备的装载口），失败只告警不阻断。
      */
-    private void writeTransportSegment(String plate, Long srcRes, Long dstRes, Long robotRes) {
+    private void writeTransportSegment(String plate, Long srcRes, Long dstRes,
+                                       Long sourcePos, Long targetPos, Long robotRes) {
         try {
             com.labos.kernel.persistence.BindingMapper bm =
                     com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.BindingMapper.class);
-            Long fromPos = bm.selectLoadPortPointId(tenantId, srcRes);
-            Long toPos = bm.selectLoadPortPointId(tenantId, dstRes);
+            // P1 精确点位：显式 sourcePos/targetPos 优先；未指定才回退装载口解析。
+            Long fromPos = sourcePos != null ? sourcePos : bm.selectLoadPortPointId(tenantId, srcRes);
+            Long toPos = targetPos != null ? targetPos : bm.selectLoadPortPointId(tenantId, dstRes);
             // P2-6：机械臂资源由执行该 Transfer 方法的设备解析（多臂各自独立锁/独立段），
             // 解析不到时才退回既有的单臂 ID-X231（resource 200231）兼容旧环境。
             long robot = robotRes != null ? robotRes : 200231L;
@@ -578,12 +602,12 @@ public final class DriverStepExecutor implements StepExecutor {
      *         预留无需再释放）；false = 未登记，调用方必须释放预留。
      */
     private boolean autoConfirmTransfer(long txn, String plate, Long srcRes, Long dstRes,
-                                        Long targetPos, Long robotRes) {
+                                        Long sourcePos, Long targetPos, Long robotRes) {
         try {
             com.labos.kernel.driver.PositionLock lock =
                     new com.labos.kernel.driver.PositionLock(db, tenantId);
             com.labos.kernel.driver.PositionLock.TransferMove mv =
-                    lock.noteTransferMove(srcRes, dstRes, targetPos, plate, runId);
+                    lock.noteTransferMove(srcRes, dstRes, sourcePos, targetPos, plate, runId);
             if (!mv.ok()) {
                 log.warn("[搬运] 不自动确认（保持 REPORTED）：{}", mv.reason());
                 return false;
@@ -605,7 +629,7 @@ public final class DriverStepExecutor implements StepExecutor {
                             com.labos.kernel.persistence.PauseMapper.class)
                     .updatePlatePositionStatus(tenantId, plate, "KNOWN");
             // P2-3：写隐式搬运段（TransferPlan 的可观测副本，供岛进程视图/追溯）。
-            writeTransportSegment(plate, srcRes, dstRes, robotRes);
+            writeTransportSegment(plate, srcRes, dstRes, sourcePos, targetPos, robotRes);
             log.info("[搬运] 事务 {} 自动 CONFIRMED：{} → {}（{}）",
                     txn, plate, dstRes, mv.reason());
             return true;
@@ -638,6 +662,12 @@ public final class DriverStepExecutor implements StepExecutor {
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    /** P1 精确点位：读字符串参数（sourcePosition/targetPosition）。 */
+    private static String strParam(StepContext ctx, String key) {
+        Object v = ctx.params() == null ? null : ctx.params().get(key);
+        return v == null ? null : String.valueOf(v);
     }
 
     private static Map<String, Object> mergeParams(StepContext ctx) {

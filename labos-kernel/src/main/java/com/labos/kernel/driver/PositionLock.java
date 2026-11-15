@@ -286,6 +286,31 @@ public final class PositionLock {
         }
     }
 
+    /**
+     * P1 精确点位：按 spec（device_point.id / code / position_label / slot_index）解析并
+     * 原子预留指定位置。与 {@link #reserveTargetPosition} 的「自动取第一个空位」不同：
+     * 指定位置被占用 ⇒ 返回 null（调用方拒绝搬运，不悄悄换位）。
+     *
+     * @return 预留成功的位置资源 id；解析不到或已被占用返回 null。
+     */
+    public Long reserveExplicitPosition(long deviceResourceId, String spec, long runId)
+            throws SQLException {
+        if (spec == null || spec.isBlank()) {
+            return null;
+        }
+        Long pos = dm().selectPositionResourceBySpec(tenantId, deviceResourceId, spec.trim());
+        if (pos == null) {
+            log.warn("[搬运] 指定位置 {} 不存在（设备 {}）", spec, deviceResourceId);
+            return null;
+        }
+        ReserveResult r = tryReserve(pos, runId, java.time.Duration.ofMinutes(30));
+        if (r != ReserveResult.OK) {
+            log.warn("[搬运] 指定位置 {}（资源 {}）被占用或不可预留，拒绝换位", spec, pos);
+            return null;
+        }
+        return pos;
+    }
+
     /** 释放预约（不板——板还在位置上）。 */
     public void release(long resourceId, long runId) throws SQLException {
         dm().releasePosition(tenantId, resourceId, runId);
@@ -759,13 +784,24 @@ public final class PositionLock {
     public TransferMove noteTransferMove(long srcDeviceRes, long dstDeviceRes,
                                          Long reservedDstPos, String plate, long runId)
             throws SQLException {
+        return noteTransferMove(srcDeviceRes, dstDeviceRes, null, reservedDstPos, plate, runId);
+    }
+
+    /**
+     * P1 精确点位：多一个 {@code reservedSrcPos}（动作前已原子预留的源位）。
+     * 非 null 时直接使用，不再 {@code firstOccupiedPosition} 事后选位（防并发相撞 + 支持「从第 N 槽取板」）。
+     */
+    public TransferMove noteTransferMove(long srcDeviceRes, long dstDeviceRes,
+                                         Long reservedSrcPos, Long reservedDstPos,
+                                         String plate, long runId)
+            throws SQLException {
         if (plate == null || plate.isBlank() || plate.startsWith("AUTO-")) {
             return new TransferMove(false, "板号缺失或为 AUTO- 占位",
                     plate, null, null, false);
         }
 
-        // ① 源位
-        Long srcPos = firstOccupiedPosition(srcDeviceRes, runId);
+        // ① 源位：显式 reservedSrcPos 优先，否则自动取本 run 第一个有板位。
+        Long srcPos = reservedSrcPos != null ? reservedSrcPos : firstOccupiedPosition(srcDeviceRes, runId);
         boolean guided = false;
         if (srcPos == null) {
             Long any = dm().selectFirstOccupiedPositionAny(tenantId, srcDeviceRes);

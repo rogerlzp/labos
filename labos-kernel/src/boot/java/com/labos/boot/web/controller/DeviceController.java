@@ -444,6 +444,7 @@ public class DeviceController {
                     jsonField(body, "deviceCode"),
                     cols, rows,
                     jsonField(body, "pointKind"),
+                    jsonField(body, "slotKind"),
                     (int) paramLongValue(jsonField(body, "maxStack")),
                     maxHeight,
                     jsonField(body, "plateTypes"),

@@ -180,12 +180,20 @@ public interface ConsumableMapper {
      * @param gridRow 网格行号（1 起）
      * @param gridCol 网格列号（1 起）
      * @param maxStack 该点最多叠几块板（0 = 不限）
+     * @param slotKind 坑位语义（device_point.point_kind）：<b>nest</b>（网格式坑位）/
+     *                   <b>waste</b>（废弃位）。
+     *                   ⚠ <b>与 resource_node.kind 是两个不同的轴</b>：
+     *                   resource_node.kind ∈ (incubator/storage/transfer_point/…)
+     *                   = "这个节点是什么"（机械臂只看得见这三类）；
+     *                   device_point.point_kind ∈ (nest/deck_in/deck_out/waste)
+     *                   = "这个坑位在设备里扮演什么角色"。别混。
      */
     int insertGridPoint(@Param("t") long tenantId,
                         @Param("deviceResourceId") long deviceResourceId,
                         @Param("pointCode") String pointCode,
                         @Param("positionLabel") String positionLabel,
                         @Param("pointKind") String pointKind,
+                        @Param("slotKind") String slotKind,
                         @Param("gridRow") int gridRow,
                         @Param("gridCol") int gridCol,
                         @Param("maxStack") int maxStack,

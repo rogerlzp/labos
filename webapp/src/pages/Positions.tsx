@@ -4,6 +4,7 @@ import {
   Alert, Button, Card, Empty, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography, message,
 } from 'antd';
 import { apiFetch } from '../api/client';
+import { useT, type MessageKey } from '../i18n';
 
 interface Island { id: number; code: string; name: string; }
 interface Device { resourceId: number; code: string; name: string; }
@@ -24,15 +25,38 @@ interface Position {
   standalone?: boolean | null;
 }
 
-const ROLE_TEXT: Record<string, { zh: string; color: string }> = {
-  entry: { zh: '进口', color: 'blue' }, exit: { zh: '出口', color: 'purple' },
-  both: { zh: '进出共用', color: 'green' }, internal: { zh: '内部位', color: 'default' },
+/**
+ * 点位类型 → 文案 key。
+ *
+ * <p>机械臂只认 incubator / storage / transfer_point 三类（后端选位 SQL 硬过滤），
+ * 所以批量造点位与点位表共用同一份词表。
+ */
+const KIND_KEYS: Record<string, MessageKey> = {
+  storage: 'positions.kind.storage',
+  incubator: 'positions.kind.incubator',
+  transfer_point: 'positions.kind.transfer_point',
 };
-const KIND_TEXT: Record<string, string> = {
-  storage: '存储位', incubator: '孵育位', transfer_point: '中转位',
+/** 角色 → 文案 key（进口/出口那套说法，批量造点位里的两个开关也用它）。 */
+const ROLE_KEYS: Record<string, MessageKey> = {
+  entry: 'positions.role.entry',
+  exit: 'positions.role.exit',
+  both: 'positions.role.both',
+  internal: 'positions.role.internal',
+};
+/** 角色 → 标签颜色（展示约定，跟着角色走，文案在 i18n）。 */
+const ROLE_COLORS: Record<string, string> = {
+  entry: 'blue', exit: 'purple', both: 'green', internal: 'default',
+};
+
+/** 批量造点位的默认参数（转盘式提取仪 8 板位这一类最常见）。 */
+const GRID_INITIAL = {
+  cols: 8, rows: 1, pointKind: 'transfer_point',
+  maxStack: 1, maxHeightMm: 45, plateTypes: 'pcr96,deep96',
+  isEntry: true, isExit: true, robotReachable: true,
 };
 
 export default function PositionsPage() {
+  const t = useT();
   const qc = useQueryClient();
   const [islandId, setIslandId] = useState<number | undefined>();
   const [deviceId, setDeviceId] = useState<number | undefined>();
@@ -42,6 +66,8 @@ export default function PositionsPage() {
   const isStandalone = Form.useWatch('standalone', form);
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm] = Form.useForm();
+  // 批量造网格点位
+  const [gridForm] = Form.useForm();
 
   const islandsQ = useQuery({
     queryKey: ['topology'],
@@ -67,6 +93,12 @@ export default function PositionsPage() {
     ...d,
     count: positions.filter((p) => p.parentDeviceId === d.resourceId).length,
   })), [devices, positions]);
+
+  /** 批量造点位要选设备：全岛设备平铺（带岛名，跨岛同名也分得清）。 */
+  const allDevices = useMemo(
+    () => islands.flatMap((i) => i.devices.map((d) => ({ ...d, islandId: i.id, islandName: i.name }))),
+    [islands],
+  );
 
   const selectedPositions = useMemo(() => {
     if (deviceId == null) return [];
@@ -144,6 +176,51 @@ export default function PositionsPage() {
       setCreateOpen(false);
       qc.invalidateQueries({ queryKey: ['positions'] });
     } catch (e) { message.error(`创建失败：${(e as Error).message}`); }
+  };
+
+  /**
+   * 批量造网格点位：POST /api/devices/{resourceId}/points/grid。
+   *
+   * <p>后端幂等：同编码复用并更新，所以重复执行不会造出第二个点位。
+   * <p>板高留空就不发这个字段 —— 后端对板高做 Double.parseDouble，收到空串会直接炸。
+   * <p>点位类型只能是 incubator / storage / transfer_point，后端会校验并回 400。
+   */
+  const generateGrid = async () => {
+    const v = await gridForm.validateFields();
+    const dev = allDevices.find((d) => d.resourceId === v.deviceResourceId);
+    if (!dev) {
+      message.error(t('positions.grid.error.deviceRequired'));
+      return;
+    }
+    const body: Record<string, unknown> = {
+      deviceCode: dev.code,
+      // ⚠ 数值字段发字符串：内核用 jsonField 解析请求体，它只认**带引号**的值
+      // （裸数字会被当成 0 ⇒ 列数/行数直接被拒；板高也会被悄悄丢掉）。
+      cols: String(v.cols),
+      rows: String(v.rows),
+      pointKind: v.pointKind,
+      maxStack: String(v.maxStack ?? 1),
+      plateTypes: v.plateTypes ?? '',
+      // 这三个是 JSON 布尔：后端按 body 里有没有 "isEntry":false 判断，不能发字符串
+      isEntry: !!v.isEntry,
+      isExit: !!v.isExit,
+      robotReachable: !!v.robotReachable,
+    };
+    if (v.maxHeightMm != null) body.maxHeightMm = String(v.maxHeightMm);
+    try {
+      const r = await apiFetch(`/api/devices/${dev.resourceId}/points/grid`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json() as { created?: number };
+      message.success(t('positions.grid.toast.created', { n: j.created ?? 0 }));
+      // 点位列表按岛过滤 ⇒ 设备在别的岛时先把岛切过去，否则看不到刚造的点位
+      setIslandId(dev.islandId);
+      setDeviceId(dev.resourceId);
+      qc.invalidateQueries({ queryKey: ['positions'] });
+    } catch (e) {
+      message.error(t('positions.grid.error.generate', { error: (e as Error).message }));
+    }
   };
 
   const cellText = (p?: Position) => {
@@ -226,7 +303,11 @@ export default function PositionsPage() {
               <div style={{ marginTop: 8, maxHeight: 600, overflow: 'auto' }}>
                 {devWithCount.map((d) => (
                   <div key={d.resourceId}
-                    onClick={() => setDeviceId(d.resourceId)}
+                    onClick={() => {
+                      setDeviceId(d.resourceId);
+                      // 左侧选中的设备同步到批量造点位的表单，省一次再选
+                      gridForm.setFieldsValue({ deviceResourceId: d.resourceId });
+                    }}
                     style={{
                       padding: '6px 10px', cursor: 'pointer', borderRadius: 6, marginBottom: 4,
                       background: deviceId === d.resourceId ? '#e6f4ff' : '#fafafa',
@@ -282,8 +363,8 @@ export default function PositionsPage() {
                         pagination={false} columns={[
                           { title: '位置标识', key: 'label', width: 150, render: (_, p) => <Typography.Text code>{p.positionLabel || p.code}</Typography.Text> },
                           { title: '点位编码', dataIndex: 'code', width: 150, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
-                          { title: '类型', dataIndex: 'kind', width: 90, render: (v: string) => KIND_TEXT[v] ?? v },
-                          { title: '角色', dataIndex: 'pointRole', width: 90, render: (v: string) => { const r = ROLE_TEXT[v] ?? { zh: v ?? '—', color: 'default' }; return <Tag color={r.color}>{r.zh}</Tag>; } },
+                          { title: '类型', dataIndex: 'kind', width: 90, render: (v: string) => (KIND_KEYS[v] ? t(KIND_KEYS[v]) : v) },
+                          { title: '角色', dataIndex: 'pointRole', width: 90, render: (v: string) => <Tag color={ROLE_COLORS[v] ?? 'default'}>{ROLE_KEYS[v] ? t(ROLE_KEYS[v]) : (v ?? '—')}</Tag> },
                           { title: '占用', key: 'occ', render: (_, p) => cellText(p) ? <Tag color="orange">{cellText(p)}</Tag> : <Tag>空</Tag> },
                           { title: '', key: 'op', width: 60, render: (_, p) => <Button size="small" type="link" onClick={() => openEdit(p)}>编辑</Button> },
                         ]} />
@@ -296,6 +377,56 @@ export default function PositionsPage() {
             </div>
           </div>
         )}
+      </Card>
+
+      <Card size="small" title={t('positions.grid.title')}
+        extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('positions.grid.hint')}
+        </Typography.Text>}>
+        <Form form={gridForm} layout="vertical" initialValues={GRID_INITIAL}>
+          <Space size={12} wrap align="start" style={{ width: '100%' }}>
+            <Form.Item name="deviceResourceId" label={t('positions.grid.field.device')} style={{ width: 280 }}>
+              <Select showSearch allowClear placeholder={t('positions.grid.placeholder.pickDevice')}
+                optionFilterProp="label"
+                options={allDevices.map((d) => ({
+                  value: d.resourceId,
+                  label: `${d.code}（${d.name}）· ${d.islandName}`,
+                }))} />
+            </Form.Item>
+            <Form.Item name="cols" label={t('positions.grid.field.cols')} style={{ width: 120 }}>
+              <InputNumber min={1} max={200} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="rows" label={t('positions.grid.field.rows')} style={{ width: 120 }}>
+              <InputNumber min={1} max={200} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="pointKind" label={t('positions.grid.field.kind')} style={{ width: 180 }}>
+              <Select options={[
+                { value: 'transfer_point', label: t('positions.kind.transfer_point') },
+                { value: 'storage', label: t('positions.kind.storage') },
+                { value: 'incubator', label: t('positions.kind.incubator') },
+              ]} />
+            </Form.Item>
+            <Form.Item name="maxStack" label={t('positions.grid.field.maxStack')} style={{ width: 140 }}>
+              <InputNumber min={1} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="maxHeightMm" label={t('positions.grid.field.maxHeightMm')} style={{ width: 150 }}>
+              <InputNumber min={0} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item name="plateTypes" label={t('positions.grid.field.plateTypes')} style={{ width: 200 }}>
+              <Input placeholder="pcr96,deep96" />
+            </Form.Item>
+            <Form.Item name="isEntry" label={t('positions.grid.field.isEntry')} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item name="isExit" label={t('positions.grid.field.isExit')} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item name="robotReachable" label={t('positions.grid.field.robotReachable')} valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </Space>
+          <Button type="primary" onClick={generateGrid}>{t('positions.grid.action.generate')}</Button>
+        </Form>
       </Card>
 
       <Modal title={`编辑点位 · ${editing?.code ?? ''}`} open={editing != null}
@@ -311,9 +442,10 @@ export default function PositionsPage() {
           </Form.Item>
           <Form.Item name="pointRole" label="角色" rules={[{ required: true }]}>
             <Select options={[
-              { value: 'entry', label: '进口' }, { value: 'exit', label: '出口' },
-              { value: 'both', label: '进出共用' },
-              ...(isStandalone ? [] : [{ value: 'internal', label: '内部位（机械臂不可达）' }]),
+              { value: 'entry', label: t('positions.role.entry') },
+              { value: 'exit', label: t('positions.role.exit') },
+              { value: 'both', label: t('positions.role.both') },
+              ...(isStandalone ? [] : [{ value: 'internal', label: t('positions.role.internalHint') }]),
             ]} />
           </Form.Item>
           <Form.Item name="robotReachable" label="机械臂可达" valuePropName="checked"><Switch /></Form.Item>
