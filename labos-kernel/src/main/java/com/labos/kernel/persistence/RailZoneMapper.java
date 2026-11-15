@@ -16,4 +16,8 @@ public interface RailZoneMapper {
     /** 某分区是否存在（配置完整性校验用）。 */
     Long selectZoneResource(@Param("tenantId") long tenantId,
                             @Param("zoneResourceId") long zoneResourceId);
+
+    /** 路径是否已豁免（rail_zone_exemption 有该 path_key）；豁免返回 1，否则 0。 */
+    Long selectExemption(@Param("tenantId") long tenantId,
+                         @Param("pathKey") String pathKey);
 }

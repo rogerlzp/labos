@@ -49,6 +49,16 @@
 | `20261115_p2_stirrer_pair.sql` | P2 阶段 C：L4 搅拌—分液配对（一个分液器最多配一个搅拌单元） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_stirrer_pair.sql`（幂等） |
 | `20261115_p2_device_fact_waiting.sql` | P2 阶段 C：设备事实（状态版本）+ 有效等待投影（L1/L5 基础） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_device_fact_waiting.sql`（幂等） |
 | `20261115_p2_rail_zone.sql` | P2 阶段 D：L3 轨道分区（每分区一个互斥资源 + 路径→分区集） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_rail_zone.sql`（幂等） |
+| `20261115_p2_manual_recovery.sql` | P2 阶段 C：L4 物理故障需人工恢复（run.needs_manual_recovery，禁心跳自动恢复） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_manual_recovery.sql`（幂等） |
+| `20261115_p2_rail_zone_exemption.sql` | P2 阶段 D：L3 路径粒度豁免（已验证无冲突的路径显式放行） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_rail_zone_exemption.sql`（幂等） |
+
+### 配置完整性预检
+
+```bash
+source /tmp/labos-env.txt
+python3 scripts/verify-p2-interlock-config.py   # 缺配置以非 0 退出
+```
+分区映射 / 搅拌配对 / 转盘事实是物理布局，由客户现场提供；本脚本只做「缺失即报错」。
 
 ## 执行顺序
 

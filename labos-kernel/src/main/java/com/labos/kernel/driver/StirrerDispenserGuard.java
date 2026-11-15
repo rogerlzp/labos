@@ -37,12 +37,12 @@ public final class StirrerDispenserGuard {
             stirrer = Mappers.get(StirrerMapper.class)
                     .selectStirrerByDispenser(tenantId, dispenserResourceId);
         } catch (RuntimeException e) {
-            return blocked(db, tenantId, runId, "EC-STATE-UNKNOWN",
+            return blocked(db, tenantId, runId, dispenserResourceId, "EC-STATE-UNKNOWN",
                     "搅拌配对查询失败：" + e.getMessage());
         }
         if (stirrer == null) {
             // 评审 P0：配对缺失按未知处理，不放行分液。
-            return blocked(db, tenantId, runId, "EC-STATE-UNKNOWN",
+            return blocked(db, tenantId, runId, dispenserResourceId, "EC-STATE-UNKNOWN",
                     "分液器无搅拌配对（配置缺失，fail-closed）");
         }
         // 有界等待：busy 时重查，直到可用或超时；error/过期/未知直接拒绝。
@@ -52,7 +52,7 @@ public final class StirrerDispenserGuard {
             try {
                 state = Mappers.get(DeviceStateMapper.class).selectDeviceStateRow(tenantId, stirrer);
             } catch (RuntimeException e) {
-                return blocked(db, tenantId, runId, "EC-STATE-UNKNOWN",
+                return blocked(db, tenantId, runId, dispenserResourceId, "EC-STATE-UNKNOWN",
                         "搅拌状态查询失败：" + e.getMessage());
             }
             String status = state == null ? null : (String) state.get("status");
@@ -62,18 +62,18 @@ public final class StirrerDispenserGuard {
                 return null;
             }
             if (!v.busy()) {
-                return blocked(db, tenantId, runId, v.errorCode(), v.reason());
+                return blocked(db, tenantId, runId, dispenserResourceId, v.errorCode(), v.reason());
             }
             if (System.currentTimeMillis() >= deadline) {
                 log.error("[L4] 搅拌单元 busy 等待超时 {}ms，拒绝分液", stirrerWaitTimeoutMs());
-                return blocked(db, tenantId, runId, "EC-RESOURCE-BUSY",
+                return blocked(db, tenantId, runId, dispenserResourceId, "EC-RESOURCE-BUSY",
                         "搅拌单元暂态忙等待超时");
             }
             try {
                 Thread.sleep(2000L);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                return blocked(db, tenantId, runId, "EC-RESOURCE-BUSY",
+                return blocked(db, tenantId, runId, dispenserResourceId, "EC-RESOURCE-BUSY",
                         "等待搅拌单元被中断");
             }
         }
@@ -123,11 +123,37 @@ public final class StirrerDispenserGuard {
         return StirrerDispenserGate.check(status, observedAt, null).allow();
     }
 
-    /** 拒绝下发 + 当前 run paused_fault（转人工恢复）。 */
+    /**
+     * 拒绝下发 + 暂停所有受影响 run（paused_fault + 禁自动恢复）。
+     * 同一搅拌单元服务多个并发 run 时，受影响的分液器 run 都要停，不能只停先发现的一条。
+     */
     private static DriverResult blocked(DbConfig db, long tenantId, long runId,
-                                        String code, String reason) {
+                                        long dispenserResourceId, String code, String reason) {
         try {
-            new PauseManager(db, tenantId).pause(runId, PauseManager.Kind.PAUSED_FAULT, reason, null);
+            java.util.List<Long> affected;
+            try {
+                affected = Mappers.get(com.labos.kernel.persistence.PauseMapper.class)
+                        .selectActiveRunsUsingDevice(tenantId, dispenserResourceId);
+            } catch (RuntimeException e) {
+                affected = new java.util.ArrayList<>();
+            }
+            if (affected == null) {
+                affected = new java.util.ArrayList<>();
+            }
+            if (!affected.contains(runId)) {
+                affected = new java.util.ArrayList<>(affected);
+                affected.add(runId);
+            }
+            PauseManager pm = new PauseManager(db, tenantId);
+            for (long r : affected) {
+                try {
+                    pm.pause(r, PauseManager.Kind.PAUSED_FAULT, reason, null);
+                    Mappers.get(com.labos.kernel.persistence.PauseMapper.class)
+                            .markManualRecovery(tenantId, r);
+                } catch (Exception e) {
+                    log.warn("[L4] 暂停 run {} 失败：{}", r, e.getMessage());
+                }
+            }
         } catch (Exception e) {
             log.warn("[L4] paused_fault 暂停失败（仍拒绝下发）：{}", e.getMessage());
         }

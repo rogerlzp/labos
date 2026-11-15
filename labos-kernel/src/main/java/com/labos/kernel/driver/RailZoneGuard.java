@@ -69,8 +69,15 @@ public final class RailZoneGuard {
             return Acquire.fail("EC-STATE-UNKNOWN", "分区查询失败：" + e.getMessage());
         }
         if (zones == null || zones.isEmpty()) {
+            // 路径粒度豁免：已人工验证无冲突的路径显式登记后放行；否则 fail-closed。
+            Long exempted = Mappers.get(RailZoneMapper.class)
+                    .selectExemption(tenantId, pathKey);
+            if (exempted != null) {
+                log.info("[L3] 路径 {} 已豁免（无分区锁），放行", pathKey);
+                return Acquire.ok(new Lease(runId, java.util.List.of()));
+            }
             return Acquire.fail("EC-INTERLOCK-RAIL",
-                    "搬运路径未配置轨道分区集，禁止自动运行（fail-closed）");
+                    "搬运路径未配置轨道分区集且无豁免，禁止自动运行（fail-closed）");
         }
         // 固定序：resource_id 升序，防循环等待
         List<Long> ordered = new ArrayList<>(zones);

@@ -162,8 +162,15 @@ public interface PauseMapper {
     /**
      * 故障类暂停自动恢复（paused_fault）：只看本 run 流程用到的设备是否在线
      * （旧口径"全租户设备都在线"会让一台无关离线就永不恢复）。
+     * 物理故障（needs_manual_recovery=true）不自动恢复。
      */
     int autoResumeFaulted(long tenantId);
+
+    /** 标记该 run 需要人工恢复（禁心跳自动恢复）。 */
+    int markManualRecovery(long tenantId, long runId);
+
+    /** 正在运行的、其流程用到某设备的 run（物理故障暂停影响范围用）。 */
+    java.util.List<Long> selectActiveRunsUsingDevice(long tenantId, long deviceResourceId);
 
     // ---- PauseCoordinator（V1-5 幂等键 + pause_event，ADR-PAUSE-009）----
 

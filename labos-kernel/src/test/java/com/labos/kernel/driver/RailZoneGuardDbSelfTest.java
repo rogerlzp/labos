@@ -46,6 +46,13 @@ public final class RailZoneGuardDbSelfTest {
             RailZoneGuard.Acquire missing = RailZoneGuard.acquire(db, TENANT, RUN, "nope->nope");
             eq("未配置拒绝", false, missing.ok());
             eq("错误码 EC-INTERLOCK-RAIL", "EC-INTERLOCK-RAIL", missing.errorCode());
+
+            section("4. 路径豁免：显式豁免后放行（无分区锁）");
+            exec("INSERT INTO rail_zone_exemption (tenant_id, path_key, reason, operator) "
+                    + "VALUES (?, ?, '已验证无冲突', 'tester')", TENANT, "exempt->path");
+            RailZoneGuard.Acquire exempted = RailZoneGuard.acquire(db, TENANT, RUN, "exempt->path");
+            eq("豁免 → 放行", true, exempted.ok());
+            eq("豁免租约无分区", 0, exempted.lease() == null ? -1 : exempted.lease().zones().size());
         } finally {
             cleanup();
         }
@@ -84,21 +91,34 @@ public final class RailZoneGuardDbSelfTest {
     }
 
     private static void cleanup() {
-        for (String sql : new String[]{
-                "DELETE FROM transfer_rail_zone WHERE tenant_id = ? AND path_key = ?",
-                "DELETE FROM rail_zone WHERE tenant_id = ? AND resource_id IN (?,?,?)",
-                "DELETE FROM device_state WHERE tenant_id = ? AND resource_id IN (?,?,?)"}) {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "DELETE FROM rail_zone_exemption WHERE tenant_id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.out.println("  [清理] exemption 失败：" + e.getMessage());
+        }
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "DELETE FROM transfer_rail_zone WHERE tenant_id = ? AND path_key = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setString(2, PATH);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.out.println("  [清理] transfer 失败：" + e.getMessage());
+        }
+        for (String table : new String[]{"rail_zone", "device_state"}) {
             try (Connection c = db.open();
-                 PreparedStatement ps = c.prepareStatement(sql)) {
+                 PreparedStatement ps = c.prepareStatement(
+                         "DELETE FROM " + table + " WHERE tenant_id = ? AND resource_id IN (?,?,?)")) {
                 ps.setLong(1, TENANT);
-                ps.setObject(2, sql.contains("path_key") ? PATH : Z1);
-                if (!sql.contains("path_key")) {
-                    ps.setObject(3, Z2);
-                    ps.setObject(4, Z3);
-                }
+                ps.setLong(2, Z1);
+                ps.setLong(3, Z2);
+                ps.setLong(4, Z3);
                 ps.executeUpdate();
             } catch (SQLException e) {
-                System.out.println("  [清理] 失败：" + e.getMessage());
+                System.out.println("  [清理] " + table + " 失败：" + e.getMessage());
             }
         }
         for (long z : new long[]{Z1, Z2, Z3}) {

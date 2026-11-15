@@ -17,4 +17,11 @@
          LIMIT 1
     </select>
 
+    <select id="selectExemption" resultType="java.lang.Long">
+        SELECT id
+          FROM rail_zone_exemption
+         WHERE tenant_id = #{tenantId} AND path_key = #{pathKey}
+         LIMIT 1
+    </select>
+
 </mapper>

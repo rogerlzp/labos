@@ -355,6 +355,7 @@
         UPDATE run SET status = 'running', pause_kind = NULL,
                pause_reason = NULL, resumed_at = now(), updated_at = now()
          WHERE tenant_id = #{param1} AND status = 'paused' AND pause_kind = 'paused_fault'
+           AND needs_manual_recovery = false
            AND NOT EXISTS (
                  SELECT 1
                    FROM device_state ds
@@ -365,6 +366,19 @@
                     AND ds.online = false
                     AND wn.workflow_id = run.workflow_id)
     </update>
+
+    <update id="markManualRecovery">
+        UPDATE run SET needs_manual_recovery = true, updated_at = now()
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
+
+    <select id="selectActiveRunsUsingDevice" resultType="java.lang.Long">
+        SELECT DISTINCT r.id
+          FROM run r
+          JOIN workflow_node wn ON wn.tenant_id = r.tenant_id AND wn.workflow_id = r.workflow_id
+         WHERE r.tenant_id = #{param1} AND wn.resource_id = #{param2}
+           AND r.status IN ('running', 'paused')
+    </select>
 
     <!-- ==== PauseCoordinator（V1-5 幂等键 + pause_event，ADR-PAUSE-009） ==== -->
 
