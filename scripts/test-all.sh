@@ -107,6 +107,8 @@ fi
 # 纯逻辑：不碰数据库
 PURE=(
   "api.ExperimentGraphCompileSelfTest"
+  # 路由级权限收口（2026-11-15）：审计日志只给 admin（原先菜单藏了但路由没拦）
+  "api.RbacRouteGuardSelfTest"
   # 实验编排偏序求序（S2-A 迁移边界：无边=seq 序，有边=拓扑序，环要拒绝）
   "workflow.ExperimentOrderSelfTest"
   # 作用域扣留覆盖优先级 + 边界闸门（暂停是现场事件：experiment>island>site）

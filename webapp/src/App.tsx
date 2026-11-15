@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 import { Alert, Button, Layout, Menu, Spin, Typography, Tag, Space, Select } from 'antd';
 import TabBar from './app/TabBar';
 import { NAV, titleFor } from './app/nav';
@@ -152,6 +152,31 @@ function AppInner() {
     return <LoginPage onSuccess={() => { void refresh(); }} />;
   }
 
+  /**
+   * admin 专属路由的守卫（2026-11-15）。
+   *
+   * <p><b>为什么菜单隐藏不够</b>：左侧菜单按角色过滤了（`nav.tsx` 的 `roles`），
+   * 但**路由本身不拦** —— 直接敲 URL 就能进。
+   * `/audit`（审计日志，含操作人账号/IP/改前改后值）与 `/arm-console`（机械臂调试台）
+   * 都是 admin 专属数据，前端不拦就等于没设防。
+   *
+   * <p>（后端也要收口：审计已加进 `ApiAuthInterceptor` 的 admin 白名单；
+   * 机械臂侧后端本来就有 `debugDenied` 双重闸。）
+   *
+   * <p>非管理员直接给结论，不让它先请求再吃 403 —— 现场看不懂那是权限问题，
+   * 还以为系统坏了。
+   */
+  const adminOnly = (node: ReactNode) => (isAdmin ? node : (
+    <Alert
+      type="warning" showIcon message={t('app.error.adminOnly')}
+      description={t('app.error.adminOnlyDesc', {
+        name: session.displayName,
+        username: session.username,
+        role: roleLabel(session.role, locale),
+      })}
+    />
+  ));
+
   return (
     <Layout style={{ height: '100vh' }}>
       <Header
@@ -234,7 +259,7 @@ function AppInner() {
             <Route path="/manual-windows" element={<ManualWindowsPage />} />
             <Route path="/quarantined" element={<QuarantinePage />} />
             {/* S2 物料身份与状态：测试用例台（用例清单 + 页面内运行 + 脚本结果回填） */}
-            <Route path="/s2-test-cases" element={<S2TestCasesPage />} />
+            <Route path="/s2-test-cases" element={adminOnly(<S2TestCasesPage />)} />
             <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/plates" element={<PlatesPage />} />
             {/* 板子流转：板号在设备之间怎么流转的（执行过程的每一次放板/取板都留痕） */}
@@ -254,7 +279,7 @@ function AppInner() {
             <Route path="/positions" element={<PositionsPage />} />
             <Route path="/consumables" element={<ConsumablesPage />} />
             <Route path="/material-config" element={<MaterialConfigPage />} />
-            <Route path="/arm-console" element={<ArmConsolePage />} />
+            <Route path="/arm-console" element={adminOnly(<ArmConsolePage />)} />
             <Route path="/designer/:id" element={<DesignerPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/policies" element={<PoliciesPage />} />
@@ -265,17 +290,8 @@ function AppInner() {
             <Route path="/schedule-plans" element={<SchedulePlansPage />} />
             <Route path="/duration" element={<DurationsPage />} />
             {/* 账号管理仅 admin：非管理员直接给结论，不让它先请求再吃 403 */}
-            <Route path="/users" element={isAdmin ? <UsersPage /> : (
-              <Alert
-                type="warning" showIcon message={t('app.error.adminOnly')}
-                description={t('app.error.adminOnlyDesc', {
-                  name: session.displayName,
-                  username: session.username,
-                  role: roleLabel(session.role, locale),
-                })}
-              />
-            )} />
-            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/users" element={adminOnly(<UsersPage />)} />
+            <Route path="/audit" element={adminOnly(<AuditPage />)} />
             <Route path="/topology" element={<TopologyPage />} />
             <Route path="/models" element={<ModelLibraryPage />} />
             <Route path="/island" element={<IslandPage />} />

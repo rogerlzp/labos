@@ -1070,10 +1070,19 @@ export const api = {
     return r.json();
   },
 
-  /** 执行工艺。mode=unattended 以无人值守启动；async=1 立即返回 runId */
-  execute: (id: number, opts?: { mode?: Attendance; async?: boolean }) => {
+  /**
+   * 执行工艺。attendance=unattended 以无人值守启动；async=1 立即返回 runId
+   *
+   * <p>⚠ 参数名是 **`attendance`**，不是 `mode` —— 后端
+   * {@code WorkflowController.run(@RequestParam String attendance)} 只认这个名。
+   * 2026-11-15 之前这里写的是 `mode` ⇒ 后端拿到 null ⇒ **一律按 attended 跑**，
+   * 「无人值守」这个选项在界面上选了也没用（静默失效，不报错）。
+   *
+   * <p>（审计日志里那个 `mode` 字段是**另一回事** —— 那是后端记审计时的键名。）
+   */
+  execute: (id: number, opts?: { attendance?: Attendance; async?: boolean }) => {
     const q = new URLSearchParams();
-    if (opts?.mode) q.set('mode', opts.mode);
+    if (opts?.attendance) q.set('attendance', opts.attendance);
     if (opts?.async) q.set('async', '1');
     const s = q.toString();
     return req<ExecuteResult>(`/api/workflows/${id}/run${s ? '?' + s : ''}`, { method: 'POST' });

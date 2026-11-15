@@ -71,6 +71,18 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
             reject(resp, 403, "仅管理员可管理账号");
             return false;
         }
+        // 审计日志收口 admin（2026-11-15 修的越权）。
+        //
+        // <p>为什么：审计里记着"谁在什么时候改了什么"—— 包含操作人账号、IP、
+        // 改前改后的值。前端菜单虽然把 /audit 标成 admin-only，但**菜单隐藏 ≠ 权限收口**：
+        // 直接敲 URL 任何登录用户都能读全量审计（这是运营与合规数据，不是普通业务数据）。
+        //
+        // <p>为什么用 equals 而不是 startsWith：将来若加 /api/audit/export 之类的新端点，
+        // startsWith 会把它一并收进来；这里只精确收 /api/audit 这一个路径。
+        if ("/api/audit".equals(path) && !s0.isAdmin()) {
+            reject(resp, 403, "仅管理员可查看审计日志");
+            return false;
+        }
         // 全局运行治理参数（调度/自动清理）收口 admin：designer/operator 只配业务排程，
         // 不该改影响所有实验的全局开关（评审权限模型建议）。
         boolean adminOnlyGovernance = (path.startsWith("/api/settings/stale-pause")

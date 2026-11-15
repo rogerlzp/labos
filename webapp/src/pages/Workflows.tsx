@@ -123,6 +123,17 @@ export default function WorkflowsPage() {
   /** 预检结果：资源不够时不直接跑，先问用户 */
   const [gate, setGate] = useState<Awaited<ReturnType<typeof api.canStart>> | null>(null);
   const [gateOpen, setGateOpen] = useState(false);
+  /**
+   * 值守模式（有人 / 无人）。
+   *
+   * <p>为什么要有这个选择：无人值守下 MANUAL 人工窗口会**升为 error 告警**
+   * （`WorkflowService.java:3137`）—— 也就是说选「无人值守」意味着"这个流程
+   * 不该出现人工窗口"。
+   *
+   * <p>⚠ 2026-11-15 之前这里根本没法选：`api.execute` 发的参数名是 `mode`，
+   * 而后端只认 `attendance` ⇒ 参数被静默丢弃 ⇒ **永远按 attended 跑**。
+   */
+  const [attendance, setAttendance] = useState<'attended' | 'unattended'>('attended');
   const [shadowReport, setShadowReport] = useState<{
     workflowName: string; total: number; ok: number; failed: number; contractGaps: number;
     nodes: Array<{ nodeKey: string; name: string; capability: string; method: string;
@@ -237,7 +248,7 @@ export default function WorkflowsPage() {
 
   /** 异步启动并跳到执行监控页，让用户能实时看进度、随时暂停。 */
   async function runNow(id: number) {
-    const r = await api.execute(id, { mode: 'attended', async: true });
+    const r = await api.execute(id, { attendance, async: true });
     if (r.runId) {
       message.success(t('workflows.toast.started'));
       nav(`/runs/${r.runId}`);
@@ -647,6 +658,25 @@ export default function WorkflowsPage() {
                 </Button>
               </span>
             </Tooltip>
+            {/* 值守模式：执行前就能选「无人值守」。
+                无人值守下 MANUAL 人工窗口会升为 error 告警
+                （WorkflowService.UNATTENDED 分支）—— 选它意味着"这个流程不该等人"。 */}
+            <Select
+              size="small"
+              value={attendance}
+              style={{ width: 120 }}
+              disabled={ro.disabled}
+              onChange={(v) => setAttendance(v as 'attended' | 'unattended')}
+              options={[
+                { value: 'attended', label: t('workflows.attendance.attended') },
+                { value: 'unattended', label: t('workflows.attendance.unattended') },
+              ]}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {attendance === 'unattended'
+                ? t('workflows.attendance.unattendedHint')
+                : t('workflows.attendance.attendedHint')}
+            </Typography.Text>
           </Space>
         )}
       >

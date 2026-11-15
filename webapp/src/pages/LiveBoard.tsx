@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Alert, Badge, Button, Card, Empty, Progress, Space, Statistic, Table, Tag, Typography, message,
+  Alert, Badge, Button, Card, Empty, Input, Modal, Progress, Space, Statistic, Table, Tag, Typography, message,
 } from 'antd';
 import {
   api, apiFetch, type AlertItem, type ProcessStatusItem, type RuntimeHoldItem,
@@ -79,6 +79,24 @@ type BoardHold = RuntimeHoldItem;
 
 /** 告警严重度 → 颜色。 */
 const SEVERITY_COLOR: Record<string, string> = { error: 'red', warn: 'orange', info: 'default' };
+
+/**
+ * 人工窗口决策要落的**证据字段**（后端 `RunService.decide` → L-01 人工介入记录）。
+ *
+ * <p>这些不是"备注"，是**追溯链**：这块板是谁的、从哪来、到哪去、谁处理的。
+ * 少了它们，事后复盘只能看到"某人在某时刻点了继续"，看不到"哪块板"。
+ */
+interface DecisionEvidence {
+  plateBarcode: string;
+  sampleId: string;
+  fromLocation: string;
+  toLocation: string;
+  note: string;
+}
+
+const EMPTY_EVIDENCE: DecisionEvidence = {
+  plateBarcode: '', sampleId: '', fromLocation: '', toLocation: '', note: '',
+};
 /** 扣留作用域 → 文案 key。 */
 const HOLD_SCOPE_KEYS: Record<string, MessageKey> = {
   site: 'board.hold.scope.site',
@@ -139,6 +157,9 @@ export default function LiveBoardPage() {
   const [islandFilter, setIslandFilter] = useState<number | null>(null);
   /** 展开的 run id（看该 run 的节点进度） */
   const [expandedRun, setExpandedRun] = useState<number | null>(null);
+  /** 正在决策的人工窗口 + 选中的动作（证据字段在弹窗里补） */
+  const [decideTarget, setDecideTarget] = useState<{ w: BoardWindow; action: string } | null>(null);
+  const [evidence, setEvidence] = useState<DecisionEvidence>(EMPTY_EVIDENCE);
 
   // ---------------------------------------------------------------- 数据源
 
@@ -224,14 +245,24 @@ export default function LiveBoardPage() {
     ]);
   };
 
-  /** 处理人工窗口的决策（与 ManualWindows 页同口径）。 */
-  const decideWindow = async (w: BoardWindow, action: string) => {
+  /**
+   * 处理人工窗口的决策（与 ManualWindows 页**同口径**）。
+   *
+   * <p>⚠ 2026-11-15 之前这里是 `body: JSON.stringify({ action })` —— 只发动作，
+   * **把 5 个证据字段全丢了**（板号/样本号/原位置/目标位置/备注）。
+   * 后端 `RunService.decide` 会拿这些字段落人工介入记录（L-01），
+   * 所以看板上做的每一次决策，在台账里都是**一条空记录** —— 追溯断链。
+   *
+   * <p>⇒ 改成：点动作先开弹窗补证据字段，再提交（与 ManualWindows 页完全一致）。
+   */
+  const decideWindow = async (w: BoardWindow, action: string, evidence: DecisionEvidence) => {
     try {
       await apiFetch(`/api/manual-windows/${w.windowId}/decide`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, ...evidence }),
       });
       message.success(t('board.toast.decided', { action }));
+      setDecideTarget(null);
       await refreshAll();
     } catch (e) {
       message.error(String((e as Error).message));
@@ -485,7 +516,12 @@ export default function LiveBoardPage() {
                           type={a === 'CONTINUE' ? 'primary' : 'default'}
                           disabled={ro.disabled}
                           title={ro.title}
-                          onClick={() => { void decideWindow(w, a); }}
+                          onClick={() => {
+                            // 不直接提交：先开弹窗补证据字段（板号/样本/交接点），
+                            // 否则人工介入台账里会是一条空记录。
+                            setEvidence(EMPTY_EVIDENCE);
+                            setDecideTarget({ w, action: a });
+                          }}
                         >
                           {a}
                         </Button>
@@ -611,6 +647,54 @@ export default function LiveBoardPage() {
           />
         )}
       </Card>
+
+      {/* 人工窗口决策弹窗：补齐 5 个证据字段（与 ManualWindows 页同口径） */}
+      <Modal
+        open={decideTarget != null}
+        title={t('board.decide.title', { action: decideTarget?.action ?? '' })}
+        onCancel={() => setDecideTarget(null)}
+        onOk={() => {
+          if (decideTarget) {
+            void decideWindow(decideTarget.w, decideTarget.action, evidence);
+          }
+        }}
+        okText={t('board.decide.ok')}
+        cancelText={t('board.decide.cancel')}
+      >
+        {decideTarget && (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('board.decide.hint')}
+            </Typography.Text>
+            <Input
+              placeholder={t('board.decide.field.plate')}
+              value={evidence.plateBarcode}
+              onChange={(e) => setEvidence({ ...evidence, plateBarcode: e.target.value })}
+            />
+            <Input
+              placeholder={t('board.decide.field.sample')}
+              value={evidence.sampleId}
+              onChange={(e) => setEvidence({ ...evidence, sampleId: e.target.value })}
+            />
+            <Input
+              placeholder={t('board.decide.field.from')}
+              value={evidence.fromLocation}
+              onChange={(e) => setEvidence({ ...evidence, fromLocation: e.target.value })}
+            />
+            <Input
+              placeholder={t('board.decide.field.to')}
+              value={evidence.toLocation}
+              onChange={(e) => setEvidence({ ...evidence, toLocation: e.target.value })}
+            />
+            <Input.TextArea
+              rows={2}
+              placeholder={t('board.decide.field.note')}
+              value={evidence.note}
+              onChange={(e) => setEvidence({ ...evidence, note: e.target.value })}
+            />
+          </Space>
+        )}
+      </Modal>
     </Space>
   );
 }

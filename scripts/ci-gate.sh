@@ -116,6 +116,16 @@ if [[ "$WANT_FAST" == "1" ]]; then
     grep '✘' /tmp/gate-builtins.log | head -8
   fi
 
+  # 前后端 query 参数名的跨层一致性。
+  # 这类问题的症状是**静默失效**（2026-11-15 的实例：前端发 mode=、后端收 attendance
+  # ⇒ 无人值守永远选不上，界面不报错、现场看不出来）⇒ 必须在门禁里挡住。
+  if python3 scripts/verify-api-params.py >/tmp/gate-apiparams.log 2>&1; then
+    pass "前后端参数名一致"
+  else
+    fail "前后端参数名不一致"
+    grep '✘' /tmp/gate-apiparams.log | head -8
+  fi
+
   # 设备事件入站端点的纯逻辑自测（鉴权口径 + 载荷解析）。
   # 端点是 sidecar 送设备事件的唯一入口，两处错了现场都只看到"等不到事件"。
   # ⚠ 类名必须是 com.labos.kernel.event.*：2026-11-15 这两个自测从 boot 包

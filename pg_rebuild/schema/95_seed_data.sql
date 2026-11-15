@@ -34,7 +34,13 @@ INSERT INTO capability (tenant_id, code, name, category, duration_model) VALUES
   (1,'PICK',      '挑克隆',     'handling',  '{"base":15,"per_colony":2,"unit":"s"}'),
   (1,'SENSE',     '光电检测',   'sensing',   '{"base":5,"unit":"s"}'),
   (1,'ANALYZE',   '流式分析',   'optical',   '{"base":60,"per_sample":5,"unit":"s"}'),
-  (1,'MIX',       '混匀/振荡',  'handling',  '{"base":60,"unit":"s"}')
+  (1,'MIX',       '混匀/振荡',  'handling',  '{"base":60,"unit":"s"}'),
+  -- EXTRACT（核酸提取）：2026-11-15 由 P1 补进 capability 表（338e529），
+  -- 但**没同步进这个 seed 分片** ⇒ 重建库时会整条丢失 ⇒ 新环境又变回
+  -- "提取仪只能硬套 MIX/ANALYZE"。这里补齐。
+  -- duration_model 留空 {}：真实时长取决于洗涤液配方与设备规格，
+  -- **没有实测数据就不编数字**（与 338e529 落库时的值保持一致）。
+  (1,'EXTRACT',   '核酸提取',   'extraction','{}')
 ON CONFLICT (tenant_id, code) DO NOTHING;
 
 INSERT INTO error_code (tenant_id, code, source, severity, title) VALUES
