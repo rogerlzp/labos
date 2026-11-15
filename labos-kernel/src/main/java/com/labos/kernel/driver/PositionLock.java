@@ -1024,6 +1024,45 @@ public final class PositionLock {
                 .confirmScanned(tenantId, current, scanned, runId);
     }
 
+    /**
+     * P2 阶段 B：扫码节点把证据落进 {@code position_scan_evidence}（抓板闸门的输入端）。
+     *
+     * <p>源位取「显式指定」或「本 run 第一个有板位置」；期望码 = 该源位上的板；
+     * 实扫码 = 设备回包里的真 barcode。无码/无源位/无期望码时<b>不记录</b>——
+     * 抓板闸门（{@code authorizeAndConsume}）会因「无证据」拒绝抓板，fail-closed。
+     *
+     * <p>登记失败只记日志不阻断（与 {@link ScanEvidence#record} 同口径）。
+     */
+    public void recordScanEvidence(long deviceInstanceId, String rawResponse, long runId,
+                                   long nodeId, String scanId, Long sourcePositionId) {
+        String scanned = resolvePlateBarcode(null, rawResponse);
+        if (scanned == null || scanId == null || scanId.isBlank()) {
+            return;
+        }
+        Long devRes = qm().selectDeviceResourceByInstance(deviceInstanceId);
+        if (devRes == null) {
+            return;
+        }
+        Long srcPos;
+        try {
+            srcPos = sourcePositionId != null
+                    ? sourcePositionId : firstOccupiedPosition(devRes, runId);
+        } catch (SQLException e) {
+            log.warn("[扫码证据] 源位解析失败：{}", e.getMessage());
+            return;
+        }
+        if (srcPos == null) {
+            return;
+        }
+        String expected = plateOnPosition(srcPos);
+        if (expected == null || expected.isBlank()) {
+            return;
+        }
+        String observedAt = java.time.Instant.now().toString();
+        ScanEvidence.record(db, tenantId, runId, nodeId, srcPos, expected, scanned,
+                observedAt, scanId, null, "scan-node");
+    }
+
     private static boolean startsWithAny(String s, String... prefixes) {
         for (String p : prefixes) {
             if (s.startsWith(p)) {

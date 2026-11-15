@@ -2740,6 +2740,22 @@ public class WorkflowService {
                     && com.labos.kernel.driver.PositionLock.isBarcodeMethod(method)) {
                 scanGate(nodeId, rawResponse);
             }
+            // P2 阶段 B：扫码节点落证据（抓板前扫码，绑定源位 + 期望码 + 实扫码），
+            // 供后续 Transfer 节点的抓板闸门 authorizeAndConsume 消费。
+            // 失败只告警：抓板闸门会因「无证据」拒绝抓板，fail-closed。
+            if (ok && deviceId > 0 && rawResponse != null
+                    && com.labos.kernel.driver.PositionLock.isBarcodeMethod(method)) {
+                try {
+                    String scanId = "scan-r" + runId + "-n" + nodeId
+                            + "-s" + stepSeq + "-a" + attempt;
+                    new com.labos.kernel.driver.PositionLock(db, tenantId)
+                            .recordScanEvidence(deviceId, rawResponse, runId, nodeId,
+                                    scanId, null);
+                } catch (Exception se) {
+                    log.warn("[扫码证据] 落库失败（不阻断执行，抓板闸门会按无证据拒绝）：{}",
+                            se.getMessage());
+                }
+            }
             // 设备内部搬运通知：流程显式调用该设备方法（MoveInLabware/MoveOutLabware），
             // 设备完成进站/出站后把「板 ↔ 内部格」关系通知中控，由中控统一维护。
             // 失败只告警：通知处理是位置关系的同步，绝不阻断已经完成的物理动作。
