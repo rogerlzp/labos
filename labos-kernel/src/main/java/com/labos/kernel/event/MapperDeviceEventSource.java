@@ -29,7 +29,9 @@ public final class MapperDeviceEventSource implements DeviceEventSource {
     @Override
     public List<DeviceEvent> since(String deviceCode, String eventType, long afterId, int limit) {
         List<DeviceEventRow> rows =
-                mapper().selectEventsSince(tenantId, deviceCode, eventType, afterId, limit);
+                // 时间窗传 null = 不筛（这个调用点按 id 游标取，不按时间）
+                mapper().selectEventsSince(tenantId, deviceCode, eventType, afterId,
+                        null, null, limit);
         if (rows == null || rows.isEmpty()) {
             return List.of();
         }

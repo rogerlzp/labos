@@ -30,6 +30,14 @@
         <if test="eventType != null and eventType != ''">
            AND event_type = #{eventType}
         </if>
+        <!-- 演示回放：按**时间窗**取某一次运行期间的事件 ——
+             只靠 afterId+limit 只能拿到"最新 N 条"，旧 run 的事件取不到。 -->
+        <if test="sinceTs != null">
+           AND created_at &gt;= #{sinceTs}
+        </if>
+        <if test="untilTs != null">
+           AND created_at &lt;= #{untilTs}
+        </if>
          ORDER BY id
          LIMIT #{limit}
     </select>

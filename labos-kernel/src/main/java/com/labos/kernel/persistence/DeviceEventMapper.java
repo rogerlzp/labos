@@ -19,10 +19,19 @@ public interface DeviceEventMapper {
                      @Param("interactionStep") String interactionStep);
 
     /** 查询观测口；不用于生产等待节点认领。 */
+    /**
+     * 取事件（观测 / **演示回放**用）。
+     *
+     * <p>{@code sinceTs}/{@code untilTs} 是 ISO-8601 时间戳（可空）：
+     * 回放要按**时间窗**取某一次运行期间的事件 ——
+     * 只靠 {@code afterId}+limit 只能拿到"最新 N 条"，旧 run 的事件会取不到。
+     */
     List<DeviceEventRow> selectEventsSince(@Param("tenantId") long tenantId,
                                             @Param("deviceCode") String deviceCode,
                                             @Param("eventType") String eventType,
                                             @Param("afterId") long afterId,
+                                            @Param("sinceTs") java.time.Instant sinceTs,
+                                            @Param("untilTs") java.time.Instant untilTs,
                                             @Param("limit") int limit);
 
     long selectMaxEventId(@Param("tenantId") long tenantId);

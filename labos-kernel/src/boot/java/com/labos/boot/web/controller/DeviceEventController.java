@@ -119,12 +119,15 @@ public class DeviceEventController {
     public ResponseEntity<String> list(@RequestParam(required = false) String device,
                                         @RequestParam(required = false) String eventType,
                                         @RequestParam(required = false) Long afterId,
+                                        @RequestParam(required = false) String since,
+                                        @RequestParam(required = false) String until,
                                         @RequestParam(required = false) Integer limit) {
         long after = afterId == null ? 0L : afterId;
         int lim = limit == null ? 50 : Math.max(1, Math.min(limit, 500));
         try {
             List<DeviceEventRow> rows = mapper().selectEventsSince(
-                    TENANT, trimmed(device), trimmed(eventType), after, lim);
+                    TENANT, trimmed(device), trimmed(eventType), after,
+                    ts(since), ts(until), lim);
             StringBuilder sb = new StringBuilder("{\"ok\":true,\"items\":[");
             for (int i = 0; i < rows.size(); i++) {
                 DeviceEventRow r = rows.get(i);
@@ -136,6 +139,10 @@ public class DeviceEventController {
                         .append(",\"eventType\":").append(Jsons.quote(r.eventType()))
                         .append(",\"payload\":").append(r.payload() == null ? "{}" : r.payload())
                         .append(",\"runId\":").append(r.runId() == null ? "null" : r.runId())
+                        // createdAt：做**演示回放/时间轴**必须要它
+                        // （没有发生时刻，事件就只能"看个列表"，排不出先后）
+                        .append(",\"createdAt\":")
+                        .append(r.createdAt() == null ? "null" : Jsons.quote(r.createdAt().toString()))
                         .append('}');
             }
             sb.append("]}");
@@ -143,6 +150,23 @@ public class DeviceEventController {
         } catch (RuntimeException ex) {
             return ResponseEntity.status(500).body(Jsons.obj("ok", false,
                     "error", "查询设备事件失败：" + ex.getMessage()));
+        }
+    }
+
+    /**
+     * 解析 ISO-8601 时间戳（可空）。
+     *
+     * <p>用于**演示回放**：按时间窗取某一次运行期间的事件。
+     * 解析不了就当"没给"（不筛），**不因此报错** ⇒ 参数写错不会让端点 500。
+     */
+    private static java.time.Instant ts(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return java.time.Instant.parse(raw.trim());
+        } catch (RuntimeException e) {
+            return null;
         }
     }
 
