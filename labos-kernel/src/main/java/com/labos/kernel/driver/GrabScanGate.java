@@ -33,8 +33,34 @@ public final class GrabScanGate {
         }
     }
 
-    /** 扫码证据默认时效（超过则拒绝抓板）。 */
-    private static final Duration DEFAULT_SCAN_TTL = Duration.ofSeconds(60);
+    /**
+     * 扫码证据默认时效（超过则拒绝抓板）。
+     *
+     * <p>可用环境变量 {@code LABOS_SCAN_TTL_SEC} 覆盖（默认 60 秒）——现场"扫码→抓板"
+     * 的实际间隔随机械臂行程/换手速度变化，写死 60s 会让慢节拍的现场频繁报
+     * {@code EC-STATE-STALE}（证据过期），而调太快又等于放弃防复用。
+     * 与 {@code LABOS_RAIL_WAIT_TIMEOUT_MS} / {@code LABOS_STIRRER_WAIT_TIMEOUT_MS} 同一套做法：
+     * 非法值（非数字/<=0）静默回落默认，不让配置错误把闸门变成"永远过期"。
+     *
+     * <p>⚠ 实际调用方多数显式传 {@code ttl}（见 {@code ScanEvidence.authorizeAndConsume}），
+     * 那时以传入值为准；本默认只在 {@code ttl == null} 时生效。
+     */
+    private static final Duration DEFAULT_SCAN_TTL = defaultScanTtl();
+
+    private static Duration defaultScanTtl() {
+        String v = System.getenv("LABOS_SCAN_TTL_SEC");
+        if (v != null && !v.isBlank()) {
+            try {
+                long s = Long.parseLong(v.trim());
+                if (s > 0) {
+                    return Duration.ofSeconds(s);
+                }
+            } catch (NumberFormatException ignore) {
+                // 非法值回落默认
+            }
+        }
+        return Duration.ofSeconds(60);
+    }
 
     /**
      * 位置级抓板闸门判定（纯函数，不碰 IO）。
