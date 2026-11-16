@@ -23,6 +23,7 @@ import ErrorCodesPage from './pages/ErrorCodes';
 import EventTypesPage from './pages/EventTypes';
 import StateDictsPage from './pages/StateDicts';
 import PlateFocusPage from './pages/PlateFocus';
+import TwinDiffPage from './pages/TwinDiff';
 import GanttPage from './pages/Gantt';
 import DurationsPage from './pages/Durations';
 import ExperimentsPage from './pages/Experiments';
@@ -46,6 +47,7 @@ import { roleColor, roleLabel, useAuth } from './auth';
 import TopologyPage from './pages/Topology';
 import ModelLibraryPage from './pages/ModelLibrary';
 import S2TestCasesPage from './pages/S2TestCases';
+import QpcrPlateLayoutPage from './pages/QpcrPlateLayout';
 import { useI18n } from './i18n';
 import markUrl from './assets/labos-mark.svg';
 
@@ -265,6 +267,8 @@ function AppInner() {
             <Route path="/s2-test-cases" element={adminOnly(<S2TestCasesPage />)} />
             <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/plates" element={<PlatesPage />} />
+            {/* qPCR 96→384 孔位设计器：确定性布局 + worklist/trace 导出，纯前端 */}
+            <Route path="/qpcr-layout" element={<QpcrPlateLayoutPage />} />
             {/* 板子流转：板号在设备之间怎么流转的（执行过程的每一次放板/取板都留痕） */}
             <Route path="/plate-traces" element={<PlateTracesPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
@@ -294,6 +298,8 @@ function AppInner() {
             <Route path="/state-dicts" element={<StateDictsPage />} />
             {/* 板特写屏：演示主角是「一块板」，不是一堆设备状态 */}
             <Route path="/plate-focus" element={<PlateFocusPage />} />
+            {/* 孪生差分报告：仿真器 --compare-twin 产物的只读查看器（文件入口，不连后端） */}
+            <Route path="/twin-diff" element={<TwinDiffPage />} />
             <Route path="/schedule" element={<ScheduleGanttPage />} />
             {/* 排程参数管理（designer） */}
             <Route path="/schedule-plans" element={<SchedulePlansPage />} />

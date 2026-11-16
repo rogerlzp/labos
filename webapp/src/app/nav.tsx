@@ -45,6 +45,8 @@ export const NAV: NavGroup[] = [
       // 实验的**执行记录**总表：所有实验跑过哪几次、现在哪些卡着
       { key: '/experiment-runs', labelKey: 'nav.experimentRuns' },
       { key: '/canvas', labelKey: 'nav.canvas' },
+      // qPCR 96→384 孔位设计器：把实验设计（布局）与机器执行解耦的确定性入口
+      { key: '/qpcr-layout', labelKey: 'nav.qpcrLayout' },
     ],
   },
   {
@@ -104,6 +106,8 @@ export const NAV: NavGroup[] = [
       { key: '/state-dicts', labelKey: 'nav.stateDicts' },
       // 板特写屏：演示时「跟着**一块板**走」
       { key: '/plate-focus', labelKey: 'nav.plateFocus' },
+      // 孪生差分报告：PyLabRobot 与 plate_well 的逐孔状态对账（只读文件查看器）
+      { key: '/twin-diff', labelKey: 'nav.twinDiff' },
       // S2 物料身份与状态验收：用例清单 + 页面内运行 + 脚本结果回填
       { key: '/s2-test-cases', labelKey: 'nav.s2TestCases', roles: ['admin'] },
     ],

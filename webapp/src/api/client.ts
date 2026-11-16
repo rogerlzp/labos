@@ -1345,6 +1345,43 @@ export const api = {
       },
     ),
 
+  /** qPCR 96→384 布局：保存到 plate + plate_well_design（设计态：实验设计意图体积） */
+  saveQpcrLayout: (body: Record<string, unknown>) =>
+    req<{ saved: number; plateId: number; barcode: string }>('/api/qpcr-layout', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** qPCR 布局：从 plate_well_design 读回（含 attr 元数据） */
+  loadQpcrLayout: (barcode: string) =>
+    req<{
+      barcode: string; plateId: number;
+      attr: Record<string, unknown>;
+      wells: Array<{ wellRow: number; wellCol: number; wellLabel: string; volume: number; status: string }>;
+    }>(`/api/qpcr-layout?barcode=${encodeURIComponent(barcode)}`),
+
+  /** qPCR worklist 下发 PyLabRobot(i8) 仿真，返回逐孔体积报告 */
+  simulateQpcr: (body: Record<string, unknown>) =>
+    req<{
+      mode: string; status: string; error?: string;
+      channels: number; batches: number;
+      summary: { match: number; mismatch: number; total: number };
+      comparisons: Array<{ targetWell: string; expected: number; simulated: number; delta: number; result: string }>;
+    }>('/api/qpcr-layout/simulate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** qPCR i8 仿真 + 与 plate_well 差分，并把报告写入 TwinDiff */
+  simulateQpcrCompareDb: (body: Record<string, unknown>) =>
+    req<{
+      report: { status: string; comparisons: { twin: { status: string; summary: Record<string, number> } } };
+      twinDiffPush: { id: number; duplicate: boolean; reportUid: string };
+    }>('/api/qpcr-layout/simulate', {
+      method: 'POST',
+      body: JSON.stringify({ ...body, compareDb: true }),
+    }),
+
   setAttendance: (runId: number, mode: Attendance) =>
     req<{ updated: number; note: string }>(`/api/runs/${runId}/attendance?mode=${mode}`, {
       method: 'POST',
