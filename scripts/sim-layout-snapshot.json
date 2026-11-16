@@ -1,6 +1,6 @@
 {
   "island": "LAB-EXT-01",
-  "generated_at": "2026-11-15T22:41:20",
+  "generated_at": "2026-11-16T08:51:40",
   "island_id": 1000505,
   "arm": {
     "code": "ARM1",
@@ -884,7 +884,7 @@
     "transfer_rail_zone": 1680,
     "stirrer_dispenser_pair": 6,
     "device_state": 6,
-    "plate": 1,
-    "workflow_variable": 1
+    "plate": 5,
+    "workflow_variable": 5
   }
 }
