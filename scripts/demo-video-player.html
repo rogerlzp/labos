@@ -179,7 +179,7 @@
     const devPanelH = Math.min(480, 58 + n*36 + 12);
     const gapY = L.devY + devPanelH + 10;
     const gapH = L.evtY - gapY - 10;
-    if (gapH < 140) return;
+    if (gapH < 150) return;
     const x=L.rightX, w=L.rightW;
     rrect(x, gapY, w, gapH, 12, C.panel);
     text('本次运行小结', x+18, gapY+26, f(17,700));
@@ -196,16 +196,19 @@
       ['发现问题', ps.length? `${ps.length} 处` : '无', ps.length?C.err:C.ok],
       ['建模缺口', gapN? `${gapN} 处（阶段 2~7 还没接全）` : '无', gapN?C.warn:C.ok],
     ];
-    for (const [k,v,col] of rows){
+    for (const [k,v,col] of rows.slice(0, Math.max(3, Math.floor((gapH-60)/28)))){
       text(k, x+18, ry, f(13), C.muted);
       text(v, x+w-18, ry, f(13,700), col, 'right');
       ry += 28;
     }
-    if (ps.length){
+    // 「处理方式」只在**放得下**时才画（设备少 ⇒ 卡片高；设备多 ⇒ 没这段空间）
+    const room = gapY + gapH - ry;
+    if (ps.length && room >= 80){
       ry += 6;
       text('处理方式', x+18, ry, f(13,600), C.text);
       ry += 22;
-      for (const p of ps.slice(0,3)){
+      const maxItems = Math.max(1, Math.floor((room - 28) / 20));
+      for (const p of ps.slice(0, maxItems)){
         text('• '+fit(p.say||p.name||'', w-40, f(12)), x+18, ry, f(12), C.muted);
         ry += 20;
       }
