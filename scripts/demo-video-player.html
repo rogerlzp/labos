@@ -1,0 +1,477 @@
+<!doctype html>
+<!--
+  演示视频播放器（模板）
+  ============================================================
+  用途：把「一次真实运行的回放剧本」渲染成**动态演示画面**。
+
+  为什么要有它（2026-11-16）：
+  客户演示的三条腿里，第三条是「把模拟跑的各个状态做成一个动态视频」。
+  而"每个环节在做什么、此刻哪台设备在干什么"**本来就是结构化数据**
+  （命令流水 + 事件流水 + 节点时间轴）⇒ 直接渲染，不需要另做一套动画。
+
+  **画面为什么是「设备 × 时间轴」而不是「甘特图」**（踩过的坑）：
+  节点的 durationMs 是**墙钟时间** —— 流程节点要等设备上报事件才结束，
+  所以同一个阶段的 4 台设备、4 个先后步骤，duration 全部大幅重叠。
+  ⇒ 按节点画甘特必然溢出、必然看不出并行。
+  ⇒ 改成：**行 = 设备**、**列 = 真实时间**，
+     命令画成短刻度、事件画成菱形、节点跨度画成顶部淡色条。
+     这样"4 台提取仪并行"和"阶段2 只有 DISP1 在动"都一眼可见。
+
+  本文件只负责"画"：
+    · 数据由 render-demo-video.py 注入 window.__DATA__
+    · 真实时间由外部驱动 window.__renderAt(ms)
+    · 画布固定 1920×1080（交付视频 1080p）
+  ============================================================
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  html,body{margin:0;padding:0;background:#0b1020;}
+  canvas{display:block;}
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+(function () {
+  const D = window.__DATA__ || {};
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+
+  const C = {
+    bg:'#0b1020', panel:'#131c33', panel2:'#1a2a4d', line:'#22304f',
+    text:'#e6edf7', muted:'#8ea3c0', dim:'#5d7a3c0',
+    accent:'#38bdf8', ok:'#34d399', warn:'#fbbf24', err:'#f87171', wait:'#a78bfa'
+  };
+
+  const FONT = '"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,sans-serif';
+  const MONO = '"SF Mono",Menlo,Consolas,monospace';
+  const f = (size, weight) => `${weight||400} ${size}px ${FONT}`;
+
+  const TOTAL = Math.max(1, D.totalMs || 1);
+  const STAGES = D.stages || [];
+  const DEVICES = D.devices || [];
+  const EVENTS = (D.events || []).slice().sort((a,b)=>(a.atMs||0)-(b.atMs||0));
+
+  // ---------- 布局
+  const L = {
+    leftX: 24, leftW: 1142,
+    bandY: 120, bandH: 76,
+    axisY: 202, axisH: 22,
+    rowY: 230, rowH: 64,
+    tlX: 236, tlW: 776,          // 时间轴区（右边留 120 给行内状态 chip）
+    rightX: 1186, rightW: 710,
+    devY: 120, devH: 480,
+    evtY: 616, evtH: 324,
+    footY: 956,
+  };
+
+  // ---------- 设备配色（同一台设备在时间轴和设备面板里同色）
+  const PALETTE = ['#38bdf8','#34d399','#fbbf24','#f472b6','#a78bfa','#fb923c',
+                   '#22d3ee','#4ade80','#e879f9','#facc15','#60a5fa','#f87171'];
+  const devColor = {};
+  DEVICES.forEach((d,i)=>{ devColor[d.code] = PALETTE[i % PALETTE.length]; });
+  const colorOf = (code)=> devColor[code] || '#64748b';
+
+  // ---------- 小工具
+  function rrect(x,y,w,h,r,fill,stroke){
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x,y,Math.max(0,w),Math.max(0,h),r);
+    else ctx.rect(x,y,Math.max(0,w),Math.max(0,h));
+    if (fill){ ctx.fillStyle=fill; ctx.fill(); }
+    if (stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.stroke(); }
+  }
+  function text(s,x,y,font,color,align){
+    ctx.font = font; ctx.fillStyle = color||C.text;
+    ctx.textAlign = align||'left'; ctx.textBaseline='middle';
+    ctx.fillText(s,x,y);
+  }
+  function fit(s,max,font){
+    ctx.font=font||f(12);
+    s = String(s==null?'':s);
+    if (ctx.measureText(s).width <= max) return s;
+    let lo=0, hi=s.length;
+    while(lo<hi){ const mid=(lo+hi+1)>>1; if(ctx.measureText(s.slice(0,mid)+'…').width<=max) lo=mid; else hi=mid-1; }
+    return s.slice(0,lo)+'…';
+  }
+  const sec = ms => (ms/1000).toFixed(1)+'s';
+  const clock = ms => {
+    const s=Math.max(0,ms)/1000;
+    return String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0')+'.'+String(Math.floor((s%1)*10));
+  };
+  const x2t = ms => L.tlX + (ms/TOTAL)*L.tlW;   // 时间 → 像素
+  const t2x = px => (px-L.tlX)/L.tlW*TOTAL;     // 像素 → 时间
+
+  // ---------- 节点归属到哪台设备
+  function nodeDevice(n){
+    if (n.commands && n.commands.length && n.commands[0].deviceCode) return n.commands[0].deviceCode;
+    const nm = n.name||'';
+    for (const d of DEVICES) if (nm.includes(d.code)) return d.code;
+    return '__other__';
+  }
+  const NODE_DEV = {};
+  STAGES.forEach(s=>(s.nodes||[]).forEach(n=>{ NODE_DEV[s.id+'|'+n.nodeKey] = nodeDevice(n); }));
+
+  // ---------- 设备"此刻在干什么"（读时派生，和中控 LiveBoard 同一口径）
+  //
+  // ⚠ 口径坑（2026-11-16 踩过）：
+  //   「设备上报等待交互」这个事件，是在**命令执行期间**就发出来的
+  //   （P_AUTO-1：PickTipComb 6018→6696ms，等待交互事件 6639ms —— 事件比命令**结束**还早）。
+  //   ⇒ 拿"事件时间 vs 命令**结束**时间"比，会判定"事件比命令旧" ⇒ 错判成"空闲"。
+  //   ⇒ 正确口径：**以命令开始为界分回合**，事件属于它**之后**的那一回合，
+  //     并一直保持到下一条命令开始。
+  function devState(dev, t){
+    for (const c of dev.commands){
+      if (t >= c.startMs && t < c.endMs) {
+        return {kind:'running', text:'执行 '+(c.method||''), color:C.accent};
+      }
+    }
+    const evState = (e)=>{
+      if (e.eventType==='waiting_interaction') return {kind:'wait', text:'等待交互', color:C.wait};
+      if (e.eventType==='process_done') return {kind:'done', text:'流程完成', color:C.ok};
+      return {kind:'evt', text:e.eventType, color:C.warn};
+    };
+    // 当前回合 = 最后一条**已开始**的命令
+    let cur=null;
+    for (const c of dev.commands){
+      if (c.startMs<=t && (!cur || c.startMs>cur.startMs)) cur=c;
+    }
+    let ev=null;
+    for (const e of dev.events){
+      if (e.atMs<=t && (!cur || e.atMs>=cur.startMs) && (!ev || e.atMs>ev.atMs)) ev=e;
+    }
+    if (ev) return evState(ev);
+    if (cur) return {kind:'idle', text:'空闲', color:'#7c8ca8'};
+    return {kind:'idle', text:'待命', color:'#64748b'};
+  }
+
+  // ---------- 当前正在跑的节点（字幕用）
+  function currentNode(t){
+    let cur=null;
+    for (const s of STAGES){
+      for (const n of (s.nodes||[])){
+        const a=n.offsetMs||0, b=a+(n.durationMs||0);
+        if (t>=a && t<b) if(!cur || a>cur.a) cur={s:s,n:n,a:a,live:true};
+      }
+    }
+    if (cur) return cur;
+    // 没有在跑的环节 ⇒ 退到"最近一个已经开始过的环节"（别让字幕一直空着）
+    let last=null;
+    for (const s of STAGES){
+      for (const n of (s.nodes||[])){
+        const a=n.offsetMs||0;
+        if (a<=t && (!last || a>last.a)) last={s:s,n:n,a:a,live:false};
+      }
+    }
+    return last;
+  }
+
+  // ---------- 左侧大面板底 + 本次运行小结
+  function drawLeftBg(){
+    rrect(L.leftX, L.bandY, L.leftW, 940-L.bandY, 12, '#0e1526');
+  }
+
+  function drawSummary(t){
+    // 设备少的时候，右栏会空出一块 ⇒ 用它放「本次运行小结」
+    const n = DEVICES.length;
+    const devPanelH = Math.min(480, 58 + n*36 + 12);
+    const gapY = L.devY + devPanelH + 10;
+    const gapH = L.evtY - gapY - 10;
+    if (gapH < 140) return;
+    const x=L.rightX, w=L.rightW;
+    rrect(x, gapY, w, gapH, 12, C.panel);
+    text('本次运行小结', x+18, gapY+26, f(17,700));
+    const done = STAGES.reduce((a,s)=>a+(s.nodes||[]).filter(n=>n.status==='completed').length,0);
+    const tot  = STAGES.reduce((a,s)=>a+(s.nodes||[]).length,0);
+    const ps = D.problems||[];
+    const gapN = STAGES.reduce((a,s)=>a+((s.gaps||[]).length),0);
+    let ry = gapY+60;
+    const rows = [
+      ['运行结果', D.status==='completed' ? '✅ 全部跑通' : '⚠ '+D.status, D.status==='completed'?C.ok:C.err],
+      ['环节完成', `${done} / ${tot}`, done===tot?C.ok:C.warn],
+      ['设备 / 并发峰值', `${n} 台 / 峰值 ${D.peakConcurrency||'-'} 台`, C.text],
+      ['真实耗时', sec(TOTAL), C.text],
+      ['发现问题', ps.length? `${ps.length} 处` : '无', ps.length?C.err:C.ok],
+      ['建模缺口', gapN? `${gapN} 处（阶段 2~7 还没接全）` : '无', gapN?C.warn:C.ok],
+    ];
+    for (const [k,v,col] of rows){
+      text(k, x+18, ry, f(13), C.muted);
+      text(v, x+w-18, ry, f(13,700), col, 'right');
+      ry += 28;
+    }
+    if (ps.length){
+      ry += 6;
+      text('处理方式', x+18, ry, f(13,600), C.text);
+      ry += 22;
+      for (const p of ps.slice(0,3)){
+        text('• '+fit(p.say||p.name||'', w-40, f(12)), x+18, ry, f(12), C.muted);
+        ry += 20;
+      }
+    }
+  }
+
+  // ---------- 顶部：阶段带
+  function drawStageBand(t){
+    const n = STAGES.length;
+    const w = (L.leftW - (n-1)*8) / n;
+    const cur = currentNode(t);
+    const curStage = (cur && cur.live) ? cur.s.id : null;
+    for (let i=0;i<n;i++){
+      const s = STAGES[i];
+      const x = L.leftX + i*(w+8);
+      const active = s.id===curStage;
+      rrect(x, L.bandY, w, L.bandH, 10, active? C.panel2 : C.panel, active? '#2f4a78':null);
+      rrect(x+9, L.bandY+9, 54, 21, 10, active? C.accent:'#243356');
+      text(s.id, x+36, L.bandY+20, f(12,700), active?'#06101f':'#9fb6d8','center');
+      // 标题（两行）
+      const title = s.title||'';
+      const tw = w-24;
+      let l1 = title, l2 = '';
+      if (ctx.measureText(title).width > tw){
+        const br = title.indexOf('（');
+        if (br>0 && br<title.length-1){ l1=title.slice(0,br); l2=title.slice(br); }
+        else { const half=Math.ceil(title.length/2); l1=title.slice(0,half); l2=title.slice(half); }
+      }
+      text(fit(l1, tw, f(11,600)), x+9, L.bandY+41, f(11,600), active?C.text:C.muted);
+      if (l2) text(fit(l2, tw, f(10)), x+9, L.bandY+56, f(10), C.dim);
+      // 环节数 + 缺口（两行排，避免打架）
+      const cnt = (s.nodes||[]).length;
+      text(`${cnt} 个环节`, x+9, L.bandY+(l2?68:58), f(10), C.dim);
+      if ((s.gaps||[]).length){
+        rrect(x+w-62, L.bandY+(l2?60:50), 53, 16, 8, '#3a2a12');
+        text(`⚠ 缺 ${s.gaps.length}`, x+w-35, L.bandY+(l2?68:58), f(9,500), C.warn,'center');
+      }
+    }
+  }
+
+  // ---------- 时间刻度
+  function drawAxis(t){
+    const y = L.axisY;
+    ctx.strokeStyle=C.line; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(L.tlX, y+16); ctx.lineTo(L.tlX+L.tlW, y+16); ctx.stroke();
+    const step = TOTAL>60000?10:(TOTAL>20000?5:2);
+    for (let s=0; s<=TOTAL/1000; s+=step){
+      const x = x2t(s*1000);
+      ctx.strokeStyle=C.line;
+      ctx.beginPath(); ctx.moveTo(x, y+8); ctx.lineTo(x, y+16); ctx.stroke();
+      text(s+'s', x, y+4, `11px ${MONO}`, C.dim, 'center');
+    }
+  }
+
+  // ---------- 设备行时间轴
+  function drawRows(t){
+    let y = L.rowY;
+    for (const d of DEVICES){
+      const col = colorOf(d.code);
+      const st = devState(d, t);
+      // 行底
+      rrect(L.leftX, y, L.leftW, L.rowH-6, 8, st.kind==='running'? C.panel2 : C.panel);
+      // 设备名
+      rrect(L.leftX+14, y+L.rowH/2-11, 12, 12, 6, col);
+      text(d.code, L.leftX+34, y+18, f(14,700), C.text);
+      text(fit(d.name||'', 178, f(11)), L.leftX+34, y+36, f(11), C.dim);
+      // 当前状态（放在时间轴右边，不跟时间轴抢位置）
+      ctx.font=f(10,600);
+      const cw = ctx.measureText(st.text).width+16;
+      const cx = L.tlX + L.tlW + 14;
+      rrect(cx, y+L.rowH/2-11, cw, 22, 11, st.color+'22', st.color+'55');
+      text(st.text, cx+cw/2, y+L.rowH/2, f(10,600), st.color,'center');
+
+      const tx0 = L.tlX, tx1 = L.tlX+L.tlW;
+      // 网格竖线
+      const step = TOTAL>60000?10:(TOTAL>20000?5:2);
+      ctx.strokeStyle='#1b2743'; ctx.lineWidth=1;
+      for (let s=0; s<=TOTAL/1000; s+=step){
+        const gx = x2t(s*1000);
+        ctx.beginPath(); ctx.moveTo(gx, y+6); ctx.lineTo(gx, y+L.rowH-14); ctx.stroke();
+      }
+      // 节点跨度（顶部淡色条）—— 只表示"这个环节占着这个设备"，不是甘特
+      for (const s of STAGES){
+        for (const n of (s.nodes||[])){
+          if (NODE_DEV[s.id+'|'+n.nodeKey] !== d.code) continue;
+          const a=n.offsetMs||0, b=a+(n.durationMs||0);
+          const bx=x2t(a), bw=Math.max(3, x2t(b)-bx);
+          const running = t>=a && t<b;
+          ctx.globalAlpha = running?0.45:0.15;
+          rrect(bx, y+6, bw, 5, 2, col);
+          ctx.globalAlpha = 1;
+        }
+      }
+      // 命令刻度（真正在动的那一下）—— 亮、竖、带白顶
+      for (const c of d.commands){
+        const a=Math.max(0,c.startMs), b=Math.max(a+1,c.endMs);
+        const bx=x2t(a), bw=Math.max(6, x2t(b)-bx);
+        const done = c.endMs<=t, running = t>=c.startMs && t<c.endMs;
+        rrect(bx, y+14, bw, running?22:18, 3,
+              done? col : (running? C.warn : col+'66'));
+        if (!done){ rrect(bx, y+14, bw, running?22:18, 3, null, C.warn+'99'); }
+        if (bw>52){
+          ctx.save(); ctx.beginPath(); ctx.rect(bx+4, y+14, bw-8, 20); ctx.clip();
+          text(c.method||'', bx+6, y+25, f(10,600), done?'#06101f':'#0b1020');
+          ctx.restore();
+        }
+      }
+      // 事件菱形
+      for (const e of d.events){
+        const ex=x2t(e.atMs);
+        const isWait = e.eventType==='waiting_interaction';
+        const col2 = isWait? C.wait : (e.eventType==='process_done'? C.ok : C.warn);
+        ctx.fillStyle=col2;
+        ctx.beginPath();
+        ctx.moveTo(ex, y+42); ctx.lineTo(ex+5, y+47); ctx.lineTo(ex, y+52); ctx.lineTo(ex-5, y+47);
+        ctx.closePath(); ctx.fill();
+        if (e.atMs<=t){ ctx.strokeStyle=col2+'66'; ctx.lineWidth=1; ctx.stroke(); }
+      }
+      y += L.rowH;
+    }
+  }
+
+  // ---------- 游标
+  function drawCursor(t){
+    const x = x2t(t);
+    ctx.strokeStyle='#ffffffaa'; ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(x, L.axisY); ctx.lineTo(x, L.rowY + DEVICES.length*L.rowH - 14); ctx.stroke();
+    ctx.fillStyle='#ffffff';
+    ctx.beginPath(); ctx.moveTo(x, L.axisY-4); ctx.lineTo(x+5, L.axisY-11); ctx.lineTo(x-5, L.axisY-11);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // ---------- 设备面板
+  function drawDevices(t){
+    const x=L.rightX, w=L.rightW, y=L.devY;
+    // 面板高度按设备数收缩（设备少的时候，下方空出来放「本次运行小结」）
+    const h = Math.min(L.devH, 58 + DEVICES.length*36 + 12);
+    rrect(x,y,w,h,12,C.panel);
+    text('设备此刻在做什么', x+18, y+26, f(17,700));
+    text('（读时派生：与 LiveBoard 同一口径）', x+w-18, y+26, f(11), C.muted,'right');
+    let ry=y+58;
+    for (const d of DEVICES){
+      const st = devState(d, t);
+      const col = colorOf(d.code);
+      if (st.kind==='running') rrect(x+10, ry-14, w-20, 28, 7, '#1d2b4a');
+      rrect(x+18, ry-5, 10, 10, 5, col);
+      text(d.code, x+36, ry, f(13,600), C.text);
+      text(fit(d.name||'', 250, f(11)), x+150, ry, f(11), C.muted);
+      if (d.capability) text(d.capability, x+410, ry, `10px ${MONO}`, '#4a5b78','left');
+      ctx.font=f(11,600);
+      const cw = ctx.measureText(st.text).width+18;
+      rrect(x+w-18-cw, ry-10, cw, 20, 10, st.color+'28', st.color+'66');
+      text(st.text, x+w-18-cw/2, ry, f(11,600), st.color,'center');
+      ry += 36;
+    }
+  }
+
+  // ---------- 事件流水
+  function drawEvents(t){
+    const x=L.rightX, w=L.rightW, y=L.evtY, h=L.evtH;
+    rrect(x,y,w,h,12,C.panel);
+    text('设备主动上报（设备自驱的证据）', x+18, y+26, f(17,700));
+    const upto = EVENTS.filter(e=>(e.atMs||0)<=t);
+    const shown = upto.slice(-7);
+    let ry=y+58;
+    if (!shown.length) text('（还没有设备上报）', x+18, ry, f(13), C.dim);
+    for (const e of shown){
+      const recent = (t-(e.atMs||0))<2500;
+      rrect(x+12, ry-16, w-24, 32, 6, recent?'#1b2a48':'#101830');
+      text(clock(e.atMs), x+24, ry, `11px ${MONO}`, recent?C.accent:C.dim);
+      text(e.device||'', x+104, ry, f(13,600), C.text);
+      const et = e.eventType||'';
+      ctx.font=f(10,600);
+      const ew = ctx.measureText(et).width+14;
+      rrect(x+204, ry-9, ew, 18, 9, '#2a3f66');
+      text(et, x+204+ew/2, ry, f(10,600), '#a9c4ea','center');
+      text(fit((e.say||'').replace(/\*\*/g,''), w-250, f(11)), x+212+ew, ry, f(11), C.muted);
+      ry += 35;
+    }
+  }
+
+  // ---------- 问题（客户最想看的一段：出了问题会怎样）
+  function drawProblems(t){
+    const ps = (D.problems||[]).slice().sort((a,b)=>(a.atMs||0)-(b.atMs||0));
+    const x=L.rightX, w=L.rightW;
+    if (!ps.length) return;
+    const y=L.evtY, h=L.evtH;
+    rrect(x,y,w,h,12,'#2a1420');
+    text('出了什么问题', x+18, y+26, f(17,700), '#fca5a5');
+    text(`${ps.length} 处`, x+w-18, y+26, f(13), '#f87171','right');
+    let ry=y+58;
+    for (const p of ps.slice(0,6)){
+      const hit = (p.atMs||0) <= t;
+      rrect(x+12, ry-16, w-24, 32, 6, hit? '#3d1a26':'#24141d');
+      text('+'+((p.atMs||0)/1000).toFixed(1)+'s', x+24, ry, `11px ${MONO}`, hit?C.err:C.dim);
+      const kind = ({node:'环节失败',command:'命令失败',stuck:'卡住不回话',run:'整批中止'})[p.kind]||p.kind;
+      ctx.font=f(10,600);
+      const kw = ctx.measureText(kind).width+14;
+      rrect(x+104, ry-9, kw, 18, 9, '#5b2233');
+      text(kind, x+104+kw/2, ry, f(10,600), '#fca5a5','center');
+      text(fit(p.say||p.name||'', w-130-kw, f(11)), x+112+kw, ry, f(11), hit?C.text:C.dim);
+      ry += 35;
+    }
+  }
+
+  // ---------- 页脚字幕
+  function drawFooter(t){
+    const y=L.footY, h=H-y;
+    rrect(0,y,W,h,C.panel);
+    ctx.fillStyle=C.accent; ctx.fillRect(0,y,W,2);
+    const cur = currentNode(t);
+    const ps = (D.problems||[]);
+    const live = ps.filter(p=>(p.atMs||0)<=t);
+    let line1, line2='';
+    if (cur){
+      line1 = `${cur.s.id} · ${cur.n.name}` + (cur.live?'':'（已结束）');
+      line2 = cur.n.say||'';
+    } else if (t>=TOTAL){ line1='本批运行结束'; }
+    else { line1='准备中'; }
+    if (live.length && !cur){ line1='⚠ '+(live[live.length-1].say||'出现问题'); line2=''; }
+    text(line1, 36, y+34, f(21,700), live.length? C.err : C.accent);
+    text(fit(line2, W-460, f(15)), 36, y+66, f(15), C.text);
+    let running=0, waiting=0;
+    for (const d of DEVICES){
+      const k = devState(d,t).kind;
+      if (k==='running') running++;
+      if (k==='wait') waiting++;
+    }
+    text(`执行中 ${running} 台 · 等待交互 ${waiting} 台`, W-36, y+34, f(18,700), C.ok,'right');
+    text(`并发峰值 ${D.peakConcurrency||'-'} 台 · 真实耗时 ${sec(TOTAL)} · 节点 ${D.nodeCount||'-'} 个`, W-36, y+66, f(13), C.muted,'right');
+  }
+
+  // ---------- 顶栏
+  function drawHeader(t){
+    rrect(0,0,W,104,C.bg);
+    ctx.fillStyle=C.accent; ctx.fillRect(0,100,W,2);
+    text('高通量核酸提取工作站 · 一次完整运行的动态回放', 36, 38, f(30,700));
+    const done = STAGES.reduce((a,s)=>a+(s.nodes||[]).length,0);
+    const okc  = STAGES.reduce((a,s)=>a+(s.nodes||[]).filter(n=>n.status==='completed').length,0);
+    const st = D.status==='completed' ? '✅ '+D.status : '⚠ '+D.status;
+    text(`run ${D.runId} · ${st} · 节点 ${okc}/${done} · 设备 ${DEVICES.length} 台 · 真实耗时 ${sec(TOTAL)}`,
+         36, 74, f(16), C.muted);
+    const pw=420, px=W-36-pw;
+    text(`真实时间 ${clock(t)} / ${clock(TOTAL)}`, W-36, 38, f(18,600), C.text,'right');
+    rrect(px,58,pw,10,5,'#1e293b');
+    rrect(px,58,Math.max(4,pw*Math.min(1,t/TOTAL)),10,5,C.accent);
+  }
+
+  window.__renderAt = function(t){
+    ctx.save();
+    ctx.fillStyle=C.bg; ctx.fillRect(0,0,W,H);
+    drawHeader(t);
+    drawLeftBg();
+    drawStageBand(t);
+    drawAxis(t);
+    drawRows(t);
+    drawCursor(t);
+    drawDevices(t);
+    drawSummary(t);
+    if ((D.problems||[]).length) drawProblems(t); else drawEvents(t);
+    drawFooter(t);
+    ctx.restore();
+  };
+
+  window.__ready = true;
+})();
+</script>
+</body>
+</html>

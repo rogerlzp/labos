@@ -123,6 +123,26 @@ EVENT_CN = {
     "fault": "设备故障",
 }
 
+# 方法 → 客户语言（演示解说词 / 视频字幕直接用）
+METHOD_CN = {
+    "PickTipComb": "取磁套",
+    "DropTipComb": "卸磁套",
+    "Transfer": "机械臂搬运",
+    "Run": "执行分液/洗涤protocol",
+    "RunProtocol": "执行protocol",
+    "Incubate": "孵育/计时",
+    "Bind": "磁吸结合",
+    "Wash": "洗涤",
+    "Elute": "洗脱",
+    "GetStatus": "读设备状态",
+    "SetTemperature": "设温",
+    "OpenDoor": "开门",
+    "CloseDoor": "关门",
+}
+
+def method_cn(m):
+    return METHOD_CN.get(m, m or "")
+
 
 def stage_of(name):
     for sid, title, pats, _ in STAGES:
@@ -176,6 +196,19 @@ def main():
     commands = cmds.get("commands", [])
     events = evs.get("items", [])
 
+    # ---- 设备实例 id → 设备名（命令流水里只有数字 id，演示/视频必须说人话）
+    #      注意 id 空间：命令里的 deviceId 是 **device_instance.id**，
+    #      而 /api/devices/pool 给的是 resource_id（另一套 id）⇒ 用 registry。
+    dev_by_id = {}
+    try:
+        reg = call("GET", "/api/devices/registry")
+        for d in reg.get("items", []):
+            dev_by_id[d.get("deviceId")] = {
+                "code": d.get("code"), "name": d.get("name"),
+                "capability": d.get("capability")}
+    except Exception as e:
+        print(f"  ! 设备名映射拉取失败（视频里将显示 id）：{e}")
+
     started = tl.get("startedAt")
     total_ms = tl.get("totalMs") or 0
 
@@ -212,13 +245,6 @@ def main():
             run_events.append((ed, e))
     run_events.sort(key=lambda x: x[0])
 
-    # ---- 问题清单（失败 / 转人工 / 中止）
-    problems = []
-    for n in top_nodes:
-        if n.get("status") in ("failed", "manual", "aborted", "skipped"):
-            problems.append(n)
-    failed_cmds = [c for c in commands if c.get("status") in ("failed", "manual", "aborted")]
-
     # ---- 并发特征：每个时刻有几台设备同时在跑
     spans = []
     for c in commands:
@@ -237,6 +263,177 @@ def main():
         if n > peak:
             peak, peak_at = n, t
     devices = sorted({c.get("deviceId") for c in commands if c.get("deviceId")})
+
+    # ---- 相对时间（毫秒，从 run 开始算）—— 视频渲染要靠它把画面和真实时间对齐
+    #
+    # ⚠ **时区坑（2026-11-16 踩过）**：
+    #   · run 的 startedAt 是 **UTC**（"2026-11-15T09:08:10.416490Z"）
+    #   · 命令流水的时间戳是**库里存的本地时间**（naive，"2026-11-15 17:08:16.3652"）
+    #   ⇒ 直接相减会差一个时区（本地是 UTC+8 ⇒ 差 8 小时 ⇒ 全部画到画布外，
+    #     命令刻度整条看不见，而且**不报错**）。
+    # ⇒ 这里**自校准**：拿「命令时间」和「节点相对 offsetMs」对齐，反推时差。
+    #    不写死 +8 —— 部署环境时区可能不是 UTC+8。
+    local_offset = None
+    _pairs = []
+    for c in commands:
+        cs = c.get("sentAt")
+        if not cs:
+            continue
+        try:
+            s = dt.datetime.fromisoformat(str(cs).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if s.tzinfo is not None:
+            continue                      # 带时区的不用校准
+        s_as_utc = s.replace(tzinfo=dt.timezone.utc)
+        parent = next((n for n in top_nodes if n.get("id") == c.get("parentNodeId")), None)
+        if parent and parent.get("offsetMs") is not None and t0d:
+            _pairs.append((s_as_utc - t0d) - dt.timedelta(milliseconds=parent["offsetMs"]))
+    if _pairs:
+        _pairs.sort()
+        local_offset = _pairs[len(_pairs) // 2]      # 中位数，抗个别异常
+    else:
+        local_offset = dt.datetime.now().astimezone().utcoffset() or dt.timedelta(0)
+    if total_ms and local_offset:
+        print(f"  · 时间戳时差自校准：{local_offset}（命令流水是本地时间，run 起止是 UTC）")
+
+    def rel_ms(iso):
+        """ISO/naive 时间 → 相对 run 起点的毫秒；解析不了返回 None。"""
+        if not iso or not t0d:
+            return None
+        try:
+            d = dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        except Exception:
+            return None
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc) - local_offset
+        return int((d - t0d).total_seconds() * 1000)
+
+    # ---- 自检：换算出来的相对时间必须落在 run 的时间窗内
+    #      （时区搞错时，相对时间会整体偏移一个时区 ⇒ 这里直接拦住）
+    _rel = [rel_ms(c.get("sentAt")) for c in commands if c.get("sentAt")]
+    _rel = [x for x in _rel if x is not None]
+    if _rel and total_ms:
+        _out = [x for x in _rel if x < -1000 or x > total_ms + 60000]
+        if len(_out) > len(_rel) * 0.2:
+            raise SystemExit(
+                f"✘ 命令时间换算异常：{len(_out)}/{len(_rel)} 条落在 run 时间窗"
+                f"（0..{total_ms}ms）之外 ⇒ 多半是时区/校准出了问题，不要拿这份数据出视频")
+
+    # ---- 问题清单（**四类都要抓**，只扫节点状态会漏）
+    #
+    #   ① 节点失败 / 转人工 / 中止   —— 节点自己说了不算
+    #   ② 命令失败                   —— 设备回了错
+    #   ③ 命令卡在 running           —— 设备**没吭声**（等事件等到超时）
+    #      ⚠ 实测踩过：run 1001668 全部节点 completed，
+    #        但 `__awaitEvent` 一直 running（设备没上报 waiting_interaction），
+    #        run 本身 failed ⇒ 只看节点状态会把这次失败整个漏掉。
+    #   ④ run 本身不是 completed      —— 上面都没抓到时的兜底
+    problems = []
+    for n in top_nodes:
+        if n.get("status") in ("failed", "manual", "aborted", "skipped"):
+            problems.append({
+                "kind": "node", "nodeKey": n.get("nodeKey"), "name": n.get("name"),
+                "status": n.get("status"), "errorCode": n.get("errorCode"),
+                "atMs": n.get("offsetMs") or 0,
+                "say": f"环节「{n.get('name')}」状态 {n.get('status')}",
+            })
+    failed_cmds = [c for c in commands if c.get("status") in ("failed", "manual", "aborted")]
+    for c in failed_cmds:
+        problems.append({
+            "kind": "command", "nodeKey": c.get("nodeKey"),
+            "name": f"{c.get('method')}（设备 {c.get('deviceId')}）",
+            "status": c.get("status"),
+            "errorCode": (c.get("result") or "")[:120],
+            "atMs": rel_ms(c.get("sentAt")) or 0,
+            "say": f"设备命令 {c.get('method')} 返回 {c.get('status')}",
+        })
+    for c in commands:
+        if c.get("status") == "running" and not c.get("finishedAt"):
+            problems.append({
+                "kind": "stuck", "nodeKey": c.get("nodeKey"),
+                "name": f"{c.get('method')}（设备 {c.get('deviceId')}）",
+                "status": "running",
+                "errorCode": (c.get("result") or "")[:120],
+                "atMs": rel_ms(c.get("sentAt")) or 0,
+                "say": f"卡在 {c.get('method')}：设备一直没回话"
+                        + ("（在等设备主动上报事件）" if c.get("method") == "__awaitEvent" else ""),
+            })
+    if run.get("status") != "completed" and not problems:
+        problems.append({
+            "kind": "run", "nodeKey": None, "name": f"运行状态 {run.get('status')}",
+            "status": run.get("status"), "errorCode": run.get("errorCode"),
+            "atMs": 0,
+            "say": f"整批运行以 {run.get('status')} 结束",
+        })
+
+    # ---- 每台设备的"时间线"：命令区间 + 事件点
+    #      ⇒ 视频里"此刻这台设备在干什么"可以离线重放（不需要新增任何存储）
+    dev_tl = defaultdict(lambda: {"commands": [], "events": []})
+    for c in commands:
+        did = c.get("deviceId")
+        if not did:
+            continue
+        s = rel_ms(c.get("sentAt"))
+        e = rel_ms(c.get("finishedAt"))
+        dev_tl[did]["commands"].append({
+            "method": c.get("method"),
+            "nodeKey": c.get("nodeKey"),
+            "status": c.get("status"),
+            "startMs": s if s is not None else 0,
+            "endMs": e if e is not None else (s or 0),
+            "errorCode": (c.get("result") or "")[:120],
+        })
+    # 把事件挂到设备时间线上（事件端点给的是设备 **code**，不是实例 id ⇒ 按 code 关联）
+    # ⚠ 必须在 dev_list 构造**之前**挂：dev_list 里是对 dev_tl 的快照，晚挂就漏了。
+    dev_id_by_code = {meta.get("code"): did
+                      for did, meta in dev_by_id.items() if meta.get("code")}
+    for ed, e in run_events:
+        did = e.get("deviceId") or dev_id_by_code.get(e.get("device"))
+        if did is None or did not in dev_tl:
+            continue
+        dev_tl[did]["events"].append({
+            "atMs": rel_ms(e.get("createdAt")) or 0,
+            "eventType": e.get("eventType"),
+        })
+    dev_list = []
+    for did in sorted(dev_tl):
+        meta = dev_by_id.get(did, {})
+        dev_list.append({
+            "deviceId": did,
+            "code": meta.get("code") or f"device-{did}",
+            "name": meta.get("name") or "",
+            "capability": meta.get("capability") or "",
+            "commands": sorted(dev_tl[did]["commands"], key=lambda x: x["startMs"]),
+            "events": sorted(dev_tl[did]["events"], key=lambda x: x["atMs"]),
+        })
+
+    # ---- 每个节点一句"人话"（演示解说词 / 视频字幕直接用）
+    def node_say(n, cs):
+        """节点的一句话说明：谁 · 做什么 · 落到哪个方法。"""
+        methods = [c.get("method") for c in cs if c.get("method")]
+        name = n.get("name") or ""
+        if not methods:
+            return f"{name}（等待设备上报，不发命令）"
+        parts = []
+        for c in cs[:2]:
+            dmeta = dev_by_id.get(c.get("deviceId"), {})
+            who = dmeta.get("code") or f"设备{c.get('deviceId')}"
+            parts.append(f"{who} 执行 {method_cn(c.get('method'))}")
+        tail = f" 等 {len(cs)} 个动作" if len(cs) > 2 else ""
+        return f"{name} ⇒ " + "、".join(parts) + tail
+
+    def stage_gaps(ns, expect):
+        """这一阶段里，客户 §3 要求发生、但这次**没对上**的事（= 还没建模完整的地方）。
+
+        判据：客户期望的关键动作，要能在「本次跑过的方法名」或「本阶段节点名」里找到。
+        """
+        if not ns:
+            return [d for d, _ in expect]
+        hay = " ".join(
+            [c.get("method") or "" for n in ns for c in cmd_by_parent.get(n.get("id"), [])]
+            + [(n.get("name") or "") for n in ns])
+        return [desc for desc, keys in expect if not any(k in hay for k in keys)]
 
     # ---------------------------------------------------------------- 输出
     md = []
@@ -282,12 +479,7 @@ def main():
               f"　`{n.get('status')}`")
         # 缺口：客户期望的动作里，这次**没有对应关键词**的
         # （关键词同时看：跑过的方法名 + 本阶段的节点名）
-        missing = []
-        for desc, keys in expect:
-            hay = " ".join([m or "" for m in done_kinds]
-                           + [(n.get("name") or "") for n in ns])
-            if not any(k in hay for k in keys):
-                missing.append(desc)
+        missing = stage_gaps(ns, expect)
         if missing:
             A("")
             A("> ⚠ **这一段还没建模完整**（客户 §3 要求 vs 本次实际跑到）：")
@@ -325,11 +517,13 @@ def main():
         A("> | 搅拌故障 | **对应分液器禁止启动分液**（§1.6 互锁④） | 改搅拌单元状态 |")
         A("> | 耗材不足 | 弹【耗材不足，请补料】，**在跑的批次继续跑完**（§3 阶段9-2） | 减少耗材栈可用板 |")
     else:
-        A("| 时刻 | 环节 | 问题 | 状态 |")
+        A("| 时刻 | 类型 | 问题 | 说明 |")
         A("|---|---|---|---|")
+        KIND_CN = {"node": "环节失败", "command": "命令失败",
+                   "stuck": "卡住不回话", "run": "整批中止"}
         for n in problems:
-            A(f"| +{(n.get('offsetMs') or 0)/1000:.1f}s | {n.get('name')} | "
-              f"`{n.get('errorCode') or '—'}` | {n.get('status')} |")
+            A(f"| +{(n.get('atMs') or 0)/1000:.1f}s | {KIND_CN.get(n.get('kind'), n.get('kind'))} "
+              f"| {n.get('name')} | {n.get('say') or ''} |")
         A("")
         for c in failed_cmds:
             A(f"- 失败命令：`{c.get('method')}` → `{c.get('errorCode') or '—'}`"
@@ -361,40 +555,90 @@ def main():
         print(md_text)
 
     if out_json:
+        # ---- 阶段 → 节点（**这里必须用函数参数，不能引用外层的 ns**）
+        #      2026-11-16 修：原来这里写的是 `for n in ns`，
+        #      而 ns 是上面 .md 循环留下的**最后一个阶段**的节点
+        #      ⇒ 8 个阶段全装上了同一批节点（机读剧本整个是错的）。
+        #      现在显式取各阶段的节点，并**自检**：各阶段互不相交、并集 = 全部顶层节点。
+        def build_stage(sid, title, expect):
+            ns_ = by_stage.get(sid, [])
+            return {
+                "id": sid,
+                "title": title,
+                "expect": [{"desc": d, "keys": k} for d, k in expect],
+                "gaps": stage_gaps(ns_, expect),
+                "nodes": [
+                    {
+                        "nodeKey": n.get("nodeKey"),
+                        "name": n.get("name"),
+                        "status": n.get("status"),
+                        "offsetMs": n.get("offsetMs") or 0,
+                        "durationMs": n.get("durationMs") or 0,
+                        "say": node_say(n, cmd_by_parent.get(n.get("id"), [])),
+                        "commands": [
+                            {
+                                "method": c.get("method"),
+                                "methodCn": method_cn(c.get("method")),
+                                "deviceId": c.get("deviceId"),
+                                "deviceCode": (dev_by_id.get(c.get("deviceId"), {}) or {}).get("code"),
+                                "status": c.get("status"),
+                                "sentAt": c.get("sentAt"),
+                                "finishedAt": c.get("finishedAt"),
+                                "errorCode": (c.get("result") or "")[:120],
+                            }
+                            for c in cmd_by_parent.get(n.get("id"), [])],
+                    }
+                    for n in ns_],
+            }
+
+        stages_json = [build_stage(sid, title, expect)
+                       for sid, title, _, expect in STAGES if by_stage.get(sid)]
+
+        # ---- 自检：阶段之间不重不漏（这个 bug 就是这么漏出去的）
+        seen = set()
+        dup = []
+        for s in stages_json:
+            for n in s["nodes"]:
+                if n["nodeKey"] in seen:
+                    dup.append(n["nodeKey"])
+                seen.add(n["nodeKey"])
+        if dup:
+            raise SystemExit(
+                "✘ 机读剧本自检失败：同一个节点落进了多个阶段 → "
+                + ", ".join(sorted(set(dup))[:5]))
+        missed = [n.get("nodeKey") for n in top_nodes if n.get("nodeKey") not in seen]
+        if missed:
+            raise SystemExit(
+                "✘ 机读剧本自检失败：有节点没落进任何阶段 → "
+                + ", ".join(str(x) for x in missed[:5]))
+
         payload = {
             "runId": run_id, "status": run.get("status"),
             "startedAt": started, "totalMs": total_ms,
-            "peakConcurrency": peak, "devices": len(devices),
-            "stages": [
-                {
-                    "id": sid, "title": title,
-                    "expect": expect,
-                    "nodes": [
-                        {"nodeKey": n.get("nodeKey"), "name": n.get("name"),
-                         "status": n.get("status"),
-                         "offsetMs": n.get("offsetMs"), "durationMs": n.get("durationMs"),
-                         "commands": [
-                             {"method": c.get("method"), "deviceId": c.get("deviceId"),
-                              "status": c.get("status"), "sentAt": c.get("sentAt"),
-                              "finishedAt": c.get("finishedAt"),
-                              "errorCode": (c.get("result") or "")[:120]}
-                             for c in cmd_by_parent.get(n.get("id"), [])]}
-                        for n in ns],
-                }
-                for sid, title, _, expect in STAGES if by_stage.get(sid)
-            ],
+            "peakConcurrency": peak, "deviceCount": len(devices),
+            "nodeCount": len(top_nodes),
+            "stages": stages_json,
+            # 设备时间线：视频里"此刻这台设备在干什么"靠它离线重放
+            "devices": dev_list,
             "events": [
-                {"at": ed.isoformat(), "device": e.get("device"),
-                 "eventType": e.get("eventType")}
+                {"at": ed.isoformat(),
+                 "atMs": rel_ms(e.get("createdAt")) or 0,
+                 "device": e.get("device"),
+                 "deviceId": e.get("deviceId"),
+                 "eventType": e.get("eventType"),
+                 "say": EVENT_CN.get(e.get("eventType"), "")}
                 for ed, e in run_events],
             "problems": [
-                {"nodeKey": n.get("nodeKey"), "name": n.get("name"),
-                 "status": n.get("status"), "errorCode": n.get("errorCode")}
-                for n in problems],
+                {"kind": p.get("kind"), "nodeKey": p.get("nodeKey"),
+                 "name": p.get("name"), "status": p.get("status"),
+                 "errorCode": p.get("errorCode"), "atMs": p.get("atMs"),
+                 "say": p.get("say")}
+                for p in problems],
         }
         with open(out_json, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        print(f"✓ 机读剧本已写：{out_json}")
+        print(f"✓ 机读剧本已写：{out_json}"
+              f"（阶段 {len(stages_json)} · 节点 {len(seen)} · 设备 {len(dev_list)}）")
 
     return 0
 
