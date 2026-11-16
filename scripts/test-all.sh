@@ -77,12 +77,24 @@ if ! bash ../scripts/compile-kernel.sh; then
   exit 1
 fi
 
-# 再把 src/test 的用例编进 out —— 否则新加的测试类"找不到主类"，
+# 再把 src/test 的用例编进 **out-test**（不是 out）—— 否则新加的测试类"找不到主类"，
 # 而脚本只会把它算成一次失败，看不出是"没编译"还是"真挂了"。
+#
+# ⚠ 为什么必须单独一个目录（2026-11-16 实测踩到）：`compile-kernel.sh` 第 43 行
+# 用 `rm -rf out/com/labos/boot` 清 stale class，而这个动作**同时删掉了
+# 位于 com/labos/boot/** 下的连库自测 class**（StateDictDbSelfTest 就住在这里）。
+# 现象：`./test-all.sh` 刚跑完能跑，**中间任何人跑一次 build-kernel.sh（或另一个窗口
+# 在并发构建）**，手工 `java -cp out ... StateDictDbSelfTest` 就报
+# 「找不到或无法加载主类」——看起来像测试代码坏了，其实是产物被清了。
+# 放到 out-test 后，生产构建与测试产物互不影响。
 # 用 @argfile 而不是 $(find ...)：源文件多起来后命令行会撞长度上限。
+TEST_OUT="out-test"
+TEST_CP="$TEST_OUT:$CP"
 TEST_SOURCES="$(mktemp)"
 find src/test -name '*.java' | LC_ALL=C sort > "$TEST_SOURCES"
-if ! javac -encoding UTF-8 -parameters -d out -cp "$CP" "@$TEST_SOURCES" 2>/tmp/test-compile.err; then
+rm -rf "$TEST_OUT"
+mkdir -p "$TEST_OUT"
+if ! javac -encoding UTF-8 -parameters -d "$TEST_OUT" -cp "$CP" "@$TEST_SOURCES" 2>/tmp/test-compile.err; then
   echo "测试源码编译失败："
   head -20 /tmp/test-compile.err
   rm -f "$TEST_SOURCES"
@@ -332,7 +344,7 @@ DB=(
 run_one() {
   local t="$1"
   local out
-  out=$(java -cp "$CP" "com.labos.kernel.$t" 2>&1)
+  out=$(java -cp "$TEST_CP" "com.labos.kernel.$t" 2>&1)
   local line
   line=$(echo "$out" | grep -oE "通过 [0-9]+, 失败 [0-9]+" | tail -1)
   if [[ -z "$line" ]]; then
@@ -357,7 +369,7 @@ for t in "${PURE[@]}"; do
     # 该类第 7 节要验证「读库失败 ⇒ UNKNOWN 阻断」：收编后读库走全局 standalone
     # DataSource（不吃实例 DbConfig），坏库只能在 JVM 级注入 —— 指向必拒连的
     # 127.0.0.1:1。其余纯逻辑节不碰库，不受影响。
-    out=$(env LABOS_DB_HOST=127.0.0.1 LABOS_DB_PORT=1 java -cp "$CP" "com.labos.kernel.$t" 2>&1)
+    out=$(env LABOS_DB_HOST=127.0.0.1 LABOS_DB_PORT=1 java -cp "$TEST_CP" "com.labos.kernel.$t" 2>&1)
     line=$(echo "$out" | grep -oE "通过 [0-9]+, 失败 [0-9]+" | tail -1)
     if [[ -z "$line" ]]; then
       printf "  %-28s 无法解析输出\n" "${t##*.}"

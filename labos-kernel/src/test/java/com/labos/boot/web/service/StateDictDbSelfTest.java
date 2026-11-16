@@ -46,13 +46,22 @@ public final class StateDictDbSelfTest {
             "raw", "ready", "in_progress", "waiting_transfer", "completed", "discarded");
 
     // ---------------------------------------------------------------- 客户文档 §1.5 口径
+    //
+    // ⚠ 键是**能力**（capability），不是 device_type（2026-11-16 口径改正）：
+    //   库里 `device.device_type` 的实际值是厂商登记的原始分类
+    //   （"Extractors" / "Dispensers & Washers" / "Robots" / "Storage" …，复数、
+    //   含空格，还有 29 个 MISC 与 4 个空值）⇒ 按 device_type 查字典一条都查不到。
+    //   能力是平台自己的分类，且每台设备都有（resource_capability）：
+    //     EXTRACT 提取仪 · WASH 分液器/洗板机 · MIX 搅拌单元 · TRANSFER 机械臂 · STORE 耗材栈
+    //   ⇒ migration 20261116_device_business_runtime.sql 把 device_kind 从
+    //   extractor/dispenser/stirrer/robot/plate_hotel 改成了上面这五个能力码。
     private static final Map<String, List<String>> DEVICE_STATES = Map.of(
-            "extractor", List.of("idle", "initializing", "waiting_interaction",
+            "EXTRACT", List.of("idle", "initializing", "waiting_interaction",
                     "turntable_running", "operating", "finished", "fault"),
-            "dispenser", List.of("ready", "dispensing", "dispensed", "fault"),
-            "stirrer", List.of("running", "stopped", "fault"),
-            "robot", List.of("home", "moving", "handling", "occupied", "fault"),
-            "plate_hotel", List.of("sufficient", "warning", "insufficient"));
+            "WASH", List.of("ready", "dispensing", "dispensed", "fault"),
+            "MIX", List.of("running", "stopped", "fault"),
+            "TRANSFER", List.of("home", "moving", "handling", "occupied", "fault"),
+            "STORE", List.of("sufficient", "warning", "insufficient"));
 
     public static void main(String[] args) throws Exception {
         db = DbConfig.fromEnv();
