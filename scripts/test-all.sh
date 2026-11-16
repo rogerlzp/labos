@@ -267,6 +267,10 @@ DB=(
   # 2026-11-15 扫码证据接线：按点位码全局解析的位置 == 设备内解析的位置（接线不变量），
   # 证据落在该点位 ⇒ 抓板闸门放行并消费；源位是别的点位 ⇒ 拒绝（证明"源位必须一致"）
   "driver.ScanEvidencePositionDbSelfTest"
+  # 2026-11-16 到位扫码→落位确认（P2 §4.3「目标位置扫码」是到位证据）：
+  # 按 run+目标位置找到 REPORTED 的搬运事务 → SCAN 证据确认 → 写位置+CONFIRMED+KNOWN；
+  # 反例：证据的期望码与在途板不一致 ⇒ 不得确认
+  "workflow.PlacementConfirmByScanDbSelfTest"
   # P2 阶段 C：L4 搅拌—分液运行时守卫——故障拒绝+EC-INTERLOCK-STIRRER/可用放行/
   # 未配对的分液方法拒绝（EC-STATE-UNKNOWN）/非分液方法不拦
   "driver.StirrerDispenserGuardDbSelfTest"

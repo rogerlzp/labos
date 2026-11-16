@@ -175,6 +175,20 @@
          ORDER BY n.id
     </select>
 
+    <!--
+      节点的设计者创建顺序（workflow_node.seq）。
+      为什么要它：**拓扑序不等于"物料流向"** —— 并行分支的 Kahn 队列会把不同链的节点
+      交错排序（实测：回程搬运排到了出程搬运前面），所以"流程里第一个提到某块板的搬运"
+      未必是"板从哪儿出发"的那个搬运 ⇒ 起点引导会把它预置到**错误的位置**
+      （实测 run 1001672：MAG-2 被放到 P_AUTO-2-EXT 而不是 STACK1-S10）。
+      ⇒ 按**创建顺序**取"最先声明这块板的搬运"，那才是设计者的取板动作。
+    -->
+    <select id="selectWorkflowNodeSeqs" resultType="java.util.Map">
+        SELECT id AS "id", seq AS "seq"
+          FROM workflow_node
+         WHERE workflow_id = #{param1}
+    </select>
+
     <select id="selectAllWorkflowNodes" resultType="java.util.Map">
         SELECT n.workflow_id AS "workflowId", n.id AS "id",
                n.node_key AS "nodeKey", n.name AS "name",

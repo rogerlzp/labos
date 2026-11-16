@@ -1079,15 +1079,23 @@ public final class PositionLock {
      *
      * <p>登记失败只记日志不阻断（与 {@link ScanEvidence#record} 同口径）。
      */
-    public void recordScanEvidence(long deviceInstanceId, String rawResponse, long runId,
-                                   long nodeId, String scanId, Long sourcePositionId) {
+    /**
+     * 扫码节点落证据（抓板闸门的输入端）。
+     *
+     * @param sourcePositionId 被扫位置（扫码节点在参数里声明）；null ⇒ 回退旧口径
+     *                          （按扫描设备上本 run 的板位）
+     * @return **有效**的 scanId（优先设备回包的 message_id，回退本地合成）；
+     *         没落成证据 ⇒ null
+     */
+    public String recordScanEvidence(long deviceInstanceId, String rawResponse, long runId,
+                                     long nodeId, String scanId, Long sourcePositionId) {
         String scanned = resolvePlateBarcode(null, rawResponse);
         if (scanned == null || scanId == null || scanId.isBlank()) {
-            return;
+            return null;
         }
         Long devRes = qm().selectDeviceResourceByInstance(deviceInstanceId);
         if (devRes == null) {
-            return;
+            return null;
         }
         Long srcPos;
         try {
@@ -1095,14 +1103,20 @@ public final class PositionLock {
                     ? sourcePositionId : firstOccupiedPosition(devRes, runId);
         } catch (SQLException e) {
             log.warn("[扫码证据] 源位解析失败：{}", e.getMessage());
-            return;
+            return null;
         }
         if (srcPos == null) {
-            return;
+            return null;
         }
         String expected = plateOnPosition(srcPos);
         if (expected == null || expected.isBlank()) {
-            return;
+            // 位置还没写板（**确认前**的目标位就是空的）⇒ 期望码取
+            // 「等这次确认的那次搬运」的板号：P2 §4.3 的「目标位置扫码」就是这种情形
+            // （板已物理到位、位置账本还没写 ⇒ 用在途搬运的板号当期望码）。
+            expected = plateOfReportedTransferTo(runId, srcPos);
+            if (expected == null || expected.isBlank()) {
+                return null;
+            }
         }
         // P2 评审 B1：scanId 优先用设备回包的 message_id（命令幂等键，重试同 id），
         // 抽不到才回退本地合成（scan-r{run}-n{node}-s{step}-a{attempt}）。
@@ -1110,11 +1124,35 @@ public final class PositionLock {
         String effectiveScanId = (deviceScanId != null && !deviceScanId.isBlank())
                 ? deviceScanId : scanId;
         if (effectiveScanId == null || effectiveScanId.isBlank()) {
-            return;
+            return null;
         }
         String observedAt = java.time.Instant.now().toString();
         ScanEvidence.record(db, tenantId, runId, nodeId, srcPos, expected, scanned,
                 observedAt, effectiveScanId, null, "scan-node");
+        return effectiveScanId;
+    }
+
+    /**
+     * 「等确认的那次搬运」的板号：按 run + 目标位置找 REPORTED 的搬运事务。
+     *
+     * <p>确认前目标位上还没写板 ⇒ {@code plateOnPosition} 拿不到期望码
+     * ⇒ 到位扫码就落不了证据。用在途搬运的板号当期望码，正好对上 P2 §4.3 的
+     * 「目标位置扫码」语义（板已物理到位、位置账本待确认）。
+     */
+    private String plateOfReportedTransferTo(long runId, long targetPositionId) {
+        try {
+            java.util.Map<String, Object> row = com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.TransferMapper.class)
+                    .selectReportedTransferByTarget(tenantId, runId, targetPositionId);
+            if (row == null) {
+                return null;
+            }
+            Object p = row.get("plateBarcode");
+            return p == null ? null : String.valueOf(p);
+        } catch (RuntimeException e) {
+            log.warn("[扫码证据] 查在途搬运的板号失败：{}", e.getMessage());
+            return null;
+        }
     }
 
     private static boolean startsWithAny(String s, String... prefixes) {

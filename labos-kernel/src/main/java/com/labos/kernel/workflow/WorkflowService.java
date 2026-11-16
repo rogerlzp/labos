@@ -1066,7 +1066,7 @@ public class WorkflowService {
 
             // 实验开始前的起点板位引导：把主物料板预置到第一个 Transfer 的 source 设备，
             // 否则 fail-closed 的源位归属校验会让第一次搬运直接 EC-POSITION-OCCUPIED。
-            seedStartPlatePosition(runId, ordered, paramsByNode, nodeIdByKey);
+            seedStartPlatePosition(runId, workflowId, ordered, paramsByNode, nodeIdByKey);
 
             // M 方案：自动位置确认开启时，Transfer 节点必须有可解析的真实板号。
             // 用 paramsByNode（已由 loadMethodParams 做过 ${x} 替换），所以连
@@ -2093,97 +2093,188 @@ public class WorkflowService {
         }
     }
 
-    private void seedStartPlatePosition(long runId, List<NodeDef> ordered,
+    /**
+     * 到位扫码 → 确认那次搬运落位（P2 方案 §4.3 的「目标位置扫码」证据）。
+     *
+     * <p>流程：扫码证据落在**目标位置**上 ⇒ 找「run + 板 + 目标位置」那条 REPORTED 的搬运事务
+     * ⇒ {@link com.labos.kernel.workflow.TransferTransaction#confirmWithPosition}
+     * 原子写位置 + 事务 CONFIRMED + 板状态 IN_TRANSFER→KNOWN。
+     *
+     * <p>⚠ 抓板扫码（源位）与到位扫码（目标位）落在**不同位置** ⇒ 两条证据不会互相抢。
+     * 抓板闸门仍然按「run + 源位 + 未消费」消费它自己的证据。
+     */
+    private void confirmPlacementByScan(long runId, String scanId, long scannedPositionId) {
+        try {
+            // 找「等这次确认」的搬运：run + 目标位置 + REPORTED
+            java.util.Map<String, Object> tx = com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.TransferMapper.class)
+                    .selectReportedTransferByTarget(tenantId, runId, scannedPositionId);
+            if (tx == null) {
+                return;   // 这个位置没有等确认的搬运（抓板扫码就是这种情况）
+            }
+            Object idObj = tx.get("id");
+            if (!(idObj instanceof Number idNum)) {
+                return;
+            }
+            long txId = idNum.longValue();
+            String plate = (String) tx.get("plateBarcode");
+            if (plate == null || plate.isBlank()) {
+                return;
+            }
+            // 证据里的期望码必须与这次搬运的板一致（防拿别的扫码来确认）
+            java.util.Map<String, Object> ev = com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.ScanEvidenceMapper.class)
+                    .selectScanEvidence(tenantId, scanId);
+            if (ev == null || !plate.equals(ev.get("expectedBarcode"))) {
+                return;
+            }
+            boolean ok = com.labos.kernel.workflow.TransferTransaction.confirmWithPosition(
+                    db, tenantId, txId, "SCAN", "AUTO-SCAN",
+                    "到位扫码确认（目标位置 " + scannedPositionId + "）", scanId);
+            if (ok) {
+                log.info("[到位确认] 事务 {} 已由扫码证据 {} 确认落位（板 {} → 位置 {}）",
+                        txId, scanId, plate, scannedPositionId);
+            } else {
+                log.warn("[到位确认] 事务 {} 用扫码证据 {} 确认落位失败，保持 REPORTED 等人工处置",
+                        txId, scanId);
+            }
+        } catch (Exception e) {
+            log.warn("[到位确认] 失败（不阻断执行，搬运事务保持 REPORTED 等人工处置）：{}",
+                    e.getMessage());
+        }
+    }
+
+    private void seedStartPlatePosition(long runId, long workflowId, List<NodeDef> ordered,
                                         Map<Long, Map<String, Object>> paramsByNode,
                                         Map<String, Long> nodeIdByKey) {
+        // ⚠ **多板**（2026-11-15）：一块板不够用。
+        //   客户工艺是「4 台提取仪各一块磁套板」⇒ 4 条并行链各搬一块板，
+        //   各自的槽位不同（STACK1-S09..S12）、板号也不同。
+        //   ⇒ 这里**逐个搬运节点**处理：每块板按"**第一个提到它的搬运节点**"
+        //     声明的 sourcePosition 预置；同一块板后面再出现（回程搬运）就跳过。
+        // ⚠ **按「设计者创建顺序」而不是拓扑序**取每块板的取板动作（2026-11-16 修）：
+        //   拓扑序**不等于物料流向** —— 并行分支的 Kahn 队列会把不同链的节点交错排序
+        //   （实测 run 1001672：回程搬运 Activity_0073 排到了出程搬运 Activity_0017 前面）
+        //   ⇒ "流程里第一个提到这块板的搬运"可能是**回程**（源位在提取仪交换位）
+        //   ⇒ 板被预置到错误位置 ⇒ 真正的出程搬运报 EC-POSITION-OCCUPIED
+        //   （实测：MAG-2 被放到 P_AUTO-2-EXT，而不是 STACK1-S10）。
+        //   ⇒ workflow_node.seq 是设计者写流程时的顺序 ⇒ 那是"取板动作"的真相。
+        java.util.Map<Long, Integer> seqByNode = new java.util.HashMap<>();
         try {
-            String srcCode = null;
-            String plate = null;
-            String sourceSpec = null;
-            for (NodeDef n : ordered) {
-                String proto = n.protocolName();
-                if (proto == null || !proto.startsWith("Transfer")) {
-                    continue;
-                }
-                Long nid = nodeIdByKey.get(n.key());
-                Map<String, Object> pp = nid == null ? null : paramsByNode.get(nid);
-                if (pp == null) {
-                    continue;
-                }
-                Object s = pp.get("source");
-                if (s == null || String.valueOf(s).isBlank()) {
-                    continue;
-                }
-                srcCode = String.valueOf(s).trim();
-                plate = com.labos.kernel.driver.PositionLock.resolvePlateBarcode(pp, null);
-                Object sp = pp.get("sourcePosition");
-                sourceSpec = sp == null ? null : String.valueOf(sp).trim();
-                break;
-            }
-            if (srcCode == null || plate == null) {
-                return;
-            }
-
-            com.labos.kernel.persistence.DeviceStateMapper dm =
-                    com.labos.kernel.persistence.Mappers.get(
-                            com.labos.kernel.persistence.DeviceStateMapper.class);
-
-            // ① 板已在某点位：只在「无归属」时认领，绝不抢占别人的板
-            Long existing = dm.selectPositionByPlate(tenantId, plate);
-            if (existing != null) {
-                int claimed = dm.claimPosition(tenantId, existing, runId);
-                if (claimed > 0) {
-                    log.info("[起点引导] 板 {} 已在点位 {}，归属到 run {}", plate, existing, runId);
-                } else {
-                    log.warn("[起点引导] 板 {} 已在点位 {} 且已有归属，不自动搬动（需人工确认）",
-                            plate, existing);
-                }
-                return;
-            }
-
-            // ② 板不在任何点位：预置到起点设备。
-            // ⚠ **流程声明了 sourcePosition 就用它**（2026-11-15 接线）：
-            //   搬运节点的 sourcePosition 与扫码节点的绑定点位必须是**同一个点位**，
-            //   否则「扫码证据的源位」与「搬运的源位」对不上 ⇒ 抓板闸门匹配失败。
-            //   所以板必须先被放到流程声明的那个点位上，而不是"第一个空位"。
-            Long devRes = dm.selectResourceIdByCode(tenantId, srcCode);
-            if (devRes == null) {
-                log.warn("[起点引导] 起点设备 {} 未找到资源，跳过", srcCode);
-                return;
-            }
-            Long pos = null;
-            if (sourceSpec != null && !sourceSpec.isBlank()) {
-                pos = dm.selectPositionResourceBySpec(tenantId, devRes, sourceSpec);
-                if (pos == null) {
-                    log.warn("[起点引导] 流程声明的源位 {} 在设备 {} 下不存在，跳过（不静默换位）",
-                            sourceSpec, srcCode);
-                    return;
-                }
-                String occupant = dm.selectPlateOnPosition(tenantId, pos);
-                if (occupant != null && !occupant.isBlank()) {
-                    log.warn("[起点引导] 流程声明的源位 {} 已被板 {} 占用，不预置（不覆盖）",
-                            sourceSpec, occupant);
-                    return;
+            for (java.util.Map<String, Object> m : com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.GraphMapper.class)
+                    .selectWorkflowNodeSeqs(workflowId)) {
+                Object id = m.get("id");
+                Object sq = m.get("seq");
+                if (id instanceof Number i && sq instanceof Number q) {
+                    seqByNode.put(i.longValue(), q.intValue());
                 }
             }
-            if (pos == null) {
-                pos = dm.selectFirstAvailablePosition(tenantId, devRes);
-            }
-            if (pos == null) {
-                log.warn("[起点引导] 起点设备 {} 没有可用点位，跳过", srcCode);
-                return;
-            }
-            Long uid = dm.selectPlateUidByBarcode(tenantId, plate);
-            if (uid == null) {
-                log.warn("[起点引导] 板 {} 尚未建档，跳过（请先建板）", plate);
-                return;
-            }
-            dm.setPositionForInternalMove(tenantId, pos, plate, uid, runId);
-            log.info("[起点引导] 板 {} 预置到 {}（resource {}），归属 run {}",
-                    plate, srcCode, pos, runId);
-        } catch (Exception e) {
-            log.warn("[起点引导] 失败（不阻断执行）：{}", e.getMessage());
+        } catch (RuntimeException e) {
+            log.warn("[起点引导] 读节点创建顺序失败（退回拓扑序）：{}", e.getMessage());
         }
+        List<NodeDef> byDesignOrder = new java.util.ArrayList<>(ordered);
+        byDesignOrder.sort(java.util.Comparator
+                .comparingInt((NodeDef n) -> seqByNode.getOrDefault(n.id(), Integer.MAX_VALUE))
+                .thenComparingLong(NodeDef::id));
+
+        java.util.Set<String> handled = new java.util.LinkedHashSet<>();
+        for (NodeDef n : byDesignOrder) {
+            String proto = n.protocolName();
+            if (proto == null || !proto.startsWith("Transfer")) {
+                continue;
+            }
+            Long nid = nodeIdByKey.get(n.key());
+            Map<String, Object> pp = nid == null ? null : paramsByNode.get(nid);
+            if (pp == null) {
+                continue;
+            }
+            Object s = pp.get("source");
+            if (s == null || String.valueOf(s).isBlank()) {
+                continue;
+            }
+            String srcCode = String.valueOf(s).trim();
+            String plate = com.labos.kernel.driver.PositionLock.resolvePlateBarcode(pp, null);
+            if (plate == null || !handled.add(plate)) {
+                continue;   // 没板号 / 这块板已按第一次出现处理过
+            }
+            Object sp = pp.get("sourcePosition");
+            String sourceSpec = sp == null ? null : String.valueOf(sp).trim();
+            try {
+                seedOnePlate(runId, srcCode, plate, sourceSpec);
+            } catch (Exception e) {
+                // 单块板失败不阻断其它板，也不阻断实验启动
+                log.warn("[起点引导] 板 {} 预置失败（不阻断执行）：{}", plate, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 预置**一块**板到它的起点位。
+     *
+     * @param srcCode     起点设备码（搬运节点的 source）
+     * @param plate       板号（字面，不能是 {@code ${...}}）
+     * @param sourceSpec  流程声明的源位（点位码）；null ⇒ 回退「设备第一个空位」
+     */
+    private void seedOnePlate(long runId, String srcCode, String plate, String sourceSpec)
+            throws java.sql.SQLException {
+        com.labos.kernel.persistence.DeviceStateMapper dm =
+                com.labos.kernel.persistence.Mappers.get(
+                        com.labos.kernel.persistence.DeviceStateMapper.class);
+
+        // ① 板已在某点位：只在「无归属」时认领，绝不抢占别人的板
+        Long existing = dm.selectPositionByPlate(tenantId, plate);
+        if (existing != null) {
+            int claimed = dm.claimPosition(tenantId, existing, runId);
+            if (claimed > 0) {
+                log.info("[起点引导] 板 {} 已在点位 {}，归属到 run {}", plate, existing, runId);
+            } else {
+                log.warn("[起点引导] 板 {} 已在点位 {} 且已有归属，不自动搬动（需人工确认）",
+                        plate, existing);
+            }
+            return;
+        }
+
+        // ② 板不在任何点位：预置到起点设备。
+        // ⚠ **流程声明了 sourcePosition 就用它**（2026-11-15 接线）：
+        //   搬运节点的 sourcePosition 与扫码节点的 sourcePosition 必须是**同一个点位**，
+        //   否则「扫码证据的源位」与「搬运的源位」对不上 ⇒ 抓板闸门匹配失败。
+        //   所以板必须先被放到流程声明的那个点位上，而不是"第一个空位"。
+        Long devRes = dm.selectResourceIdByCode(tenantId, srcCode);
+        if (devRes == null) {
+            log.warn("[起点引导] 起点设备 {} 未找到资源，跳过", srcCode);
+            return;
+        }
+        Long pos = null;
+        if (sourceSpec != null && !sourceSpec.isBlank()) {
+            pos = dm.selectPositionResourceBySpec(tenantId, devRes, sourceSpec);
+            if (pos == null) {
+                log.warn("[起点引导] 流程声明的源位 {} 在设备 {} 下不存在，跳过（不静默换位）",
+                        sourceSpec, srcCode);
+                return;
+            }
+            String occupant = dm.selectPlateOnPosition(tenantId, pos);
+            if (occupant != null && !occupant.isBlank()) {
+                log.warn("[起点引导] 流程声明的源位 {} 已被板 {} 占用，不预置（不覆盖）",
+                        sourceSpec, occupant);
+                return;
+            }
+        }
+        if (pos == null) {
+            pos = dm.selectFirstAvailablePosition(tenantId, devRes);
+        }
+        if (pos == null) {
+            log.warn("[起点引导] 起点设备 {} 没有可用点位，跳过", srcCode);
+            return;
+        }
+        Long uid = dm.selectPlateUidByBarcode(tenantId, plate);
+        if (uid == null) {
+            log.warn("[起点引导] 板 {} 尚未建档，跳过（请先建板）", plate);
+            return;
+        }
+        dm.setPositionForInternalMove(tenantId, pos, plate, uid, runId);
+        log.info("[起点引导] 板 {} 预置到 {}（resource {}，声明源位 {}），归属 run {}",
+                plate, srcCode, pos, sourceSpec == null ? "（未声明）" : sourceSpec, runId);
     }
 
     private Map<String, String> effectiveRunVars(long workflowId, Long presetRunId) {
@@ -2910,9 +3001,14 @@ public class WorkflowService {
                     String scanId = "scan-r" + runId + "-n" + nodeId
                             + "-s" + stepSeq + "-a" + attempt;
                     Long scannedPos = scannedPositionOf(params);
-                    new com.labos.kernel.driver.PositionLock(db, tenantId)
+                    String effectiveScanId = new com.labos.kernel.driver.PositionLock(db, tenantId)
                             .recordScanEvidence(deviceId, rawResponse, runId, nodeId,
                                     scanId, scannedPos);
+                    // P2 方案 §4.3：**目标位置扫码**是到位证据 ⇒ 扫到目标位就确认那次搬运落位。
+                    //   （DEVICE_REPORT 不得据此自动确认位置；这正是"扫码确认"的用武之地。）
+                    if (effectiveScanId != null && scannedPos != null) {
+                        confirmPlacementByScan(runId, effectiveScanId, scannedPos);
+                    }
                 } catch (Exception se) {
                     log.warn("[扫码证据] 落库失败（不阻断执行，抓板闸门会按无证据拒绝）：{}",
                             se.getMessage());

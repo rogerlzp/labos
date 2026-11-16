@@ -37,6 +37,29 @@
            AND status IN ('REPORTED', 'UNKNOWN')
     </select>
 
+    <!--
+      到位扫码确认：按「run + 板 + 目标位置」找那条 REPORTED 的搬运事务。
+      为什么需要它：P2 方案 §4.3 明确「**目标位置扫码**」是到位证据，
+      而「DEVICE_REPORT 不得据此自动确认位置」⇒ 到位确认必须由**扫码**触发。
+      扫码证据落在目标位置上 ⇒ 就能找到"等这条证据确认"的那次搬运 ⇒ 原子确认落位。
+    -->
+    <select id="selectReportedTransferByTarget" resultType="java.util.Map">
+        SELECT id AS "id",
+               plate_barcode AS "plateBarcode",
+               source_resource_id AS "sourceResourceId",
+               target_resource_id AS "targetResourceId",
+               source_position_id AS "sourcePositionId",
+               target_position_id AS "targetPositionId",
+               run_id AS "runId"
+          FROM transfer_transaction
+         WHERE tenant_id = #{tenantId}
+           AND run_id = #{runId}
+           AND target_position_id = #{targetPositionId}
+           AND status = 'REPORTED'
+         ORDER BY id DESC
+         LIMIT 1
+    </select>
+
     <!-- P2 阶段 B：证据确认路径只认 REPORTED；UNKNOWN 走人工盘点 -->
     <select id="selectReportedTransfer" resultType="java.util.Map">
         SELECT plate_barcode AS "plateBarcode",

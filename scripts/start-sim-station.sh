@@ -40,8 +40,11 @@ export LABOS_REDIS_HOST="${LABOS_REDIS_HOST:-127.0.0.1}"
 export LABOS_REDIS_PORT="${LABOS_REDIS_PORT:-6379}"
 # ① 设备事件入站：本机联调模式（匿名）
 export LABOS_DEVICE_EVENT_ALLOW_ANONYMOUS="${LABOS_DEVICE_EVENT_ALLOW_ANONYMOUS:-1}"
-# ② 抓板证据闸门：仿真态放开（按流程 id 粒度；真机禁用）
-export LABOS_TRANSFER_AUTO_CONFIRM="${LABOS_TRANSFER_AUTO_CONFIRM:-1000830,1000929}"
+# ② 自动确认（DEVICE_REPORT 证据）：**只保留 env 文件里已有的流程**。
+#    ⚠ P2 方案 §4.3 明确：「DEVICE_REPORT 不得据此自动确认位置」——
+#      所以**不要**把核酸提取流程（1000929）加进这个名单；
+#      提取线靠「到位扫码」证据闭环（见 docs/模拟布局与现场数据替换-20261115.md）。
+export LABOS_TRANSFER_AUTO_CONFIRM="${LABOS_TRANSFER_AUTO_CONFIRM:-1000830}"
 
 MODE="${1:-start}"
 

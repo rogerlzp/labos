@@ -301,20 +301,47 @@ def main():
                     (stirrer_res[d["id"]], d["id"]))
                 created["stirrer_dispenser_pair"] += 1
 
-            # ---- 5. 模拟主物料板 + 流程变量 ----
-            # 为什么也要造板：搬运节点要带 barcode（resolvePlateBarcode 只认字面条码），
-            #   而 barcode 引用 ${mainPlate} ⇒ mainPlate 必须有**流程变量**声明。
-            #   现场这块是"操作员扫码得到的真实板号"，模拟环境用固定模拟板号顶上。
+            # ---- 5. 模拟物料板 + 流程变量 ----
+            # 为什么要有**多块**板：客户工艺是「4 台提取仪各一块磁套板」
+            # ⇒ 4 条并行链各搬一块，各自在栈上的不同槽位（STACK1-S09..S12）、
+            # 板号也各不相同 ⇒ 流程里每条链用自己的板变量（magPlate1..N）。
+            # 板数从库里的**磁套槽数**推导（不手编）：N = 磁套槽的个数。
             cur.execute(
+                "SELECT count(*) FROM device_point dp "
+                "  JOIN resource_node dev ON dev.id = dp.device_resource_id "
+                " WHERE dp.tenant_id=1 AND dev.parent_id=%s "
+                "   AND upper(coalesce(dp.position_label,''))='MAGNET'", (island_id,))
+            magnet_slots = cur.fetchone()[0]
+            # 板数 = min(磁套槽数, 提取仪台数)：每台提取仪一块磁套板
+            cur.execute(
+                "SELECT count(*) FROM resource_node "
+                " WHERE tenant_id=1 AND parent_id=%s AND kind='device' AND code LIKE 'P_AUTO%%'",
+                (island_id,))
+            extractor_count = cur.fetchone()[0]
+            magnet_count = min(magnet_slots, extractor_count)
+            if magnet_count < 1:
+                raise SystemExit("耗材栈没有 MAGNET 槽位或岛上没有提取仪（无法推导磁套板数量）")
+            log("  磁套槽 %d 个 · 提取仪 %d 台 ⇒ 造 %d 块模拟磁套板"
+                % (magnet_slots, extractor_count, magnet_count))
+
+            plate_rows = []
+            for i in range(1, magnet_count + 1):
+                barcode = "SIM-PLATE-MAG-%d" % i
+                plate_rows.append((barcode, "magnet96"))
+            # 批次主物料板（8 阶段补全时用；当前流程不引用它 ⇒ 不会被预置）
+            plate_rows.append((args.plate_barcode, "magnet96"))
+            cur.executemany(
                 "INSERT INTO plate (id, tenant_id, barcode, plate_type, rows, cols, status, "
                 "       identity_status, lifecycle, created_at, updated_at) "
-                "VALUES (nextval('plate_id_seq'), 1, %s, 'magnet96', 8, 12, 'available', "
+                "VALUES (nextval('plate_id_seq'), 1, %s, %s, 8, 12, 'available', "
                 "        'CONFIRMED', 'process', now(), now()) "
-                "ON CONFLICT (tenant_id, barcode) DO NOTHING", (args.plate_barcode,))
-            created["plate"] = 1
+                "ON CONFLICT (tenant_id, barcode) DO NOTHING", plate_rows)
+            created["plate"] = len(plate_rows)
+
             cur.execute("SELECT id, code FROM workflow WHERE tenant_id=1 AND island_id=%s",
                         (island_id,))
             for wf_id, wf_code in cur.fetchall():
+                # 批次主物料
                 cur.execute(
                     "INSERT INTO workflow_variable (tenant_id, workflow_id, name, type, "
                     "       default_value, description) "
@@ -324,7 +351,20 @@ def main():
                     (wf_id, args.plate_barcode,
                      "模拟主物料板号（现场换成操作员扫码得到的真实板号）"))
                 created["workflow_variable"] = created.get("workflow_variable", 0) + 1
-                log("  流程 %s（%s）变量 mainPlate = %s" % (wf_code, wf_id, args.plate_barcode))
+                # 每条并行链一块磁套板
+                for i in range(1, magnet_count + 1):
+                    bc = "SIM-PLATE-MAG-%d" % i
+                    cur.execute(
+                        "INSERT INTO workflow_variable (tenant_id, workflow_id, name, type, "
+                        "       default_value, description) "
+                        "VALUES (1, %s, %s, 'string', %s, %s) "
+                        "ON CONFLICT (workflow_id, name) DO UPDATE "
+                        "SET default_value=EXCLUDED.default_value, updated_at=now()",
+                        (wf_id, "magPlate%d" % i, bc,
+                         "第 %d 台提取仪的磁套板（现场换成操作员扫码得到的真实板号）" % i))
+                    created["workflow_variable"] = created.get("workflow_variable", 0) + 1
+                log("  流程 %s（%s）变量：mainPlate + magPlate1..%d"
+                    % (wf_code, wf_id, magnet_count))
 
             # ---- 6. 机械臂标定 ----
             for p in reach:

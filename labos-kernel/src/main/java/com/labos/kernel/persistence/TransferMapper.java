@@ -45,6 +45,19 @@ public interface TransferMapper {
     Map<String, Object> selectReportedTransfer(@Param("tenantId") long tenantId,
                                                @Param("id") long id);
 
+    /**
+     * 到位扫码确认：按「run + 板 + 目标位置」找那条 REPORTED 的搬运事务。
+     *
+     * <p>P2 方案 §4.3：「目标位置扫码」是到位证据；DEVICE_REPORT 不得据此自动确认位置
+     * ⇒ 到位确认必须由**扫码**触发。扫码证据落在目标位置上时，用它找到等确认的那次搬运。
+     *
+     * @return 事务 id；没有等确认的搬运 ⇒ null
+     */
+    java.util.Map<String, Object> selectReportedTransferByTarget(
+            @Param("tenantId") long tenantId,
+            @Param("runId") long runId,
+            @Param("targetPositionId") long targetPositionId);
+
     /** 人工/扫码确认：roll 到 CONFIRMED；返回 0 = 行不存在（调用方已预检，防御）。 */
     int markTransferConfirmed(@Param("tenantId") long tenantId,
                               @Param("id") long id);

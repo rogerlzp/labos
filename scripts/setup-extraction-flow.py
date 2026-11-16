@@ -426,8 +426,11 @@ def main():
         #      ⇒ 绑定表达不了（实测会被守卫判成"编排与绑定不是同一台"）。
         #   ③ barcode 带 `${mainPlate}`：模拟器收到请求里的 barcode 会**原样回显**
         #      （DeviceCore 扫码分支），于是"扫到的码"与"期望码"一致 ⇒ 闸门放行。
+        # 本链用**自己那块**磁套板（magPlate1..N）—— 4 台提取仪各一块，
+        # 板号不同、板位不同（STACK1-S09..S12），不能共用一块。
+        plate_var = "${magPlate%d}" % (idx + 1)
         n_scan = b.task(f"机械臂 扫码（取磁套板前）", protocol=SCAN_METHOD,
-                        resource=arm, params={"barcode": "${mainPlate}",
+                        resource=arm, params={"barcode": plate_var,
                                               "sourcePosition": src_slot},
                         icon="/devices/TRANSFER.svg")
         n_move = b.task(f"机械臂 放磁套板到 {code} 交互位", protocol="Transfer",
@@ -448,10 +451,17 @@ def main():
                         #   ① 起点板位引导据此把板放到**这个**槽位（不放"第一个空位"）；
                         #   ② 抓板闸门按源位匹配扫码证据 ⇒ 扫码节点绑的点位必须与它一致。
                         resource=arm, params={"source": "STACK1", "target": code,
-                                              "barcode": "${mainPlate}",
+                                              "barcode": plate_var,
                                               "sourcePosition": src_slot,
                                               "targetPosition": f"{code}-EXT"},
                         icon="/devices/TRANSFER.svg")
+        # 到位扫码（P2 方案 §4.3：「目标位置扫码」是到位证据）
+        #   板已物理放到 {code}-EXT，但**位置账本还没写**（确认前）⇒ 靠这次扫码确认落位。
+        #   ⚠ DEVICE_REPORT 不得据此自动确认位置（方案明令），所以必须有这次扫码。
+        n_done_scan = b.task(f"机械臂 扫码（放板到位确认）", protocol=SCAN_METHOD,
+                             resource=arm, params={"barcode": plate_var,
+                                                   "sourcePosition": f"{code}-EXT"},
+                             icon="/devices/TRANSFER.svg")
         n_drop = b.task(f"{code} 卸磁套", protocol="DropTipComb",
                         resource=d["resourceId"], params={"plateIndex": 0},
                         icon="/devices/EXTRACT.svg")
@@ -461,11 +471,12 @@ def main():
         # 扫码节点：设备=机械臂（**不绑点位**：被扫点位走 method_params.sourcePosition，
         #   见上面的注释 —— 绑定模型不允许绑别的设备的点位）
         node_bind[n_scan] = ("ARM1", SCAN_METHOD)
+        node_bind[n_done_scan] = ("ARM1", SCAN_METHOD)
         # ⚠ 每条链都从 **split_a** 出发（不是从上一条链的尾巴）⇒ 才是真正的并行分叉。
         #   写成 `b.flow(cur, nxt)` 且 cur 在循环里推进 ⇒ 4 条链被串成一条
         #   ⇒ 预检 PF-15 报「网关 1 进 1 出（直通）」。
         node = split_a
-        for nxt in (n_pick, n_wait, n_scan, n_move, n_drop):
+        for nxt in (n_pick, n_wait, n_scan, n_move, n_done_scan, n_drop):
             b.flow(node, nxt)
             node = nxt
         chain_a_ends.append(node)
@@ -499,17 +510,24 @@ def main():
                         params={"device": code, "eventType": EV_WAIT_INTERACTION,
                                 "timeout": 900, "into": f"{code}_wait2"})
         # 扫码节点：取产物板前扫**提取仪的交换位**（板此刻在那儿）
+        # 回程搬的是**同一块**磁套板（它跟着流程走了一个来回）
+        plate_var = "${magPlate%d}" % (idx + 1)
         n_scan = b.task(f"机械臂 扫码（取产物板前）", protocol=SCAN_METHOD,
-                        resource=arm, params={"barcode": "${mainPlate}",
+                        resource=arm, params={"barcode": plate_var,
                                               "sourcePosition": f"{code}-EXT"},
                         icon="/devices/TRANSFER.svg")
         n_take = b.task(f"机械臂 从 {code} 取产物板", protocol="Transfer",
                         # 同上：设备码 + 板号 + 显式点位（见 n_move 处的注释）
                         resource=arm, params={"source": code, "target": "STACK1",
-                                              "barcode": "${mainPlate}",
+                                              "barcode": plate_var,
                                               "sourcePosition": f"{code}-EXT",
                                               "targetPosition": src_slot},
                         icon="/devices/TRANSFER.svg")
+        # 到位扫码（回程：板回到栈槽 {src_slot}）
+        n_done_scan = b.task(f"机械臂 扫码（放板到位确认）", protocol=SCAN_METHOD,
+                             resource=arm, params={"barcode": plate_var,
+                                                   "sourcePosition": src_slot},
+                             icon="/devices/TRANSFER.svg")
         action, action_cn = stage_action["DISP6"]
         n_action = b.task(f"{code} {action_cn}", protocol=action,
                           resource=d["resourceId"], params={"plateIndex": 0},
@@ -518,6 +536,7 @@ def main():
         node_bind[n_take] = ("ARM1", "Transfer")
         # 扫码节点：设备=机械臂（不绑点位，同上）
         node_bind[n_scan] = ("ARM1", SCAN_METHOD)
+        node_bind[n_done_scan] = ("ARM1", SCAN_METHOD)
         # ⚠ **拍序：设备动作 → 等交互 → 机械臂**（2026-11-15 修）
         #   【等待交互】是**设备动作触发**的：设备自己跑完内部工序才报
         #   （模拟器：命令成功 → 300ms 后推 waiting_interaction）。
@@ -529,7 +548,7 @@ def main():
         #   （段 A 是「取磁套 → 等交互 → 放板 → 卸磁套」，同样是动作在前的三拍。）
         # 每条链都从 **split_b** 出发（见并行段 A 的说明）
         node = split_b
-        for nxt in (n_action, n_wait, n_scan, n_take):
+        for nxt in (n_action, n_wait, n_scan, n_take, n_done_scan):
             b.flow(node, nxt)
             node = nxt
         chain_b_ends.append(node)

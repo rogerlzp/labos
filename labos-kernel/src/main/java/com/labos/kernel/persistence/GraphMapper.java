@@ -131,6 +131,16 @@ public interface GraphMapper {
     java.util.List<java.util.Map<String, Object>> selectWorkflowNodes(long workflowId);
 
     /**
+     * 节点的设计者创建顺序（workflow_node.seq）。
+     *
+     * <p>拓扑序**不等于物料流向**：并行分支的 Kahn 队列会把不同链的节点交错排序
+     * （回程搬运可能排在出程搬运前面）⇒ 判断"板从哪个位置出发"必须用**创建顺序**。
+     *
+     * @return [{id, seq}, ...]；节点没有 seq 时按 id 兜底排序
+     */
+    java.util.List<java.util.Map<String, Object>> selectWorkflowNodeSeqs(long workflowId);
+
+    /**
      * 全库节点定义（批量验收避免按流程逐条查）。
      * 列与 {@link #selectWorkflowNodes} 相同，多 workflowId。
      */
