@@ -85,7 +85,7 @@ export default function StateDictsPage() {
   });
   const deviceQuery = useQuery({
     queryKey: ['device-business-states'],
-    queryFn: () => api.deviceBusinessStates(),
+    queryFn: () => api.deviceBusinessStateDefs(),
   });
 
   const plateItems = plateQuery.data?.items ?? [];

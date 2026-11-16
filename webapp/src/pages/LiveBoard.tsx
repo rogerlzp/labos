@@ -2,14 +2,16 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Alert, Badge, Button, Card, Empty, Input, Modal, Progress, Space, Statistic, Table, Tag, Typography, message,
+  Alert, Badge, Button, Card, Empty, Input, Modal, Progress, Space, Statistic, Table, Tag,
+  Tooltip, Typography, message,
 } from 'antd';
 import {
-  api, apiFetch, type AlertItem, type ProcessStatusItem, type RuntimeHoldItem,
+  api, apiFetch, type AlertItem, type DeviceBusinessStateNow, type ProcessStatusItem,
+  type RuntimeHoldItem,
 } from '../api/client';
-import { statusColor, statusLabel, useStatusVocabulary } from '../utils/status';
+import { businessStateColor, businessStateLabel, statusColor, statusLabel, useStatusVocabulary } from '../utils/status';
 import { useReadOnly } from '../auth';
-import { useT, type MessageKey } from '../i18n';
+import { useI18n, useT, type MessageKey } from '../i18n';
 
 /**
  * 单页运行看板（2026-11-15）。
@@ -149,6 +151,7 @@ interface BoardStats {
 
 export default function LiveBoardPage() {
   const t = useT();
+  const { locale } = useI18n();
   const nav = useNavigate();
   const qc = useQueryClient();
   const ro = useReadOnly();
@@ -171,6 +174,19 @@ export default function LiveBoardPage() {
   });
 
   /** 设备实时状态（拓扑，3 秒）。 */
+  // 设备**业务状态**（客户文档 §1.5）：提取仪在不在等人、分液器在不在分液…
+  // ⚠ 与 device_state.status（运行时 idle/running/error）**不是一回事**。
+  const bizQ = useQuery({
+    queryKey: ['device-business-states'],
+    queryFn: () => api.deviceBusinessStates(),
+    refetchInterval: 3000,
+  });
+  const bizByDevice = useMemo(() => {
+    const m = new Map<number, DeviceBusinessStateNow>();
+    for (const it of bizQ.data?.items ?? []) m.set(it.deviceId, it);
+    return m;
+  }, [bizQ.data]);
+
   const topoQ = useQuery({
     queryKey: ['topology'],
     queryFn: () => apiFetch('/api/topology').then((r) => r.json()) as Promise<{
@@ -569,6 +585,27 @@ export default function LiveBoardPage() {
                 render: (_, d) => (
                   <Tag color={deviceStatusColor(d)}>{deviceStatusLabel(d, vocab)}</Tag>
                 ),
+              },
+              {
+                // **业务状态**（客户 §1.5）：这台设备"在干什么" ——
+                // 与上面的运行时状态（idle/running/error）**不是一回事**。
+                title: t('board.devices.col.businessState'), width: 150,
+                render: (_, d) => {
+                  const b = d.instanceId != null ? bizByDevice.get(d.instanceId) : undefined;
+                  if (!b || !b.stateCode) {
+                    return <Typography.Text type="secondary">—</Typography.Text>;
+                  }
+                  const label = businessStateLabel(b.stateCode, b.stateName, locale);
+                  return (
+                    <Tooltip
+                      title={t('board.devices.businessStateTip', {
+                        source: b.sourceDetail || b.source,
+                      })}
+                    >
+                      <Tag color={businessStateColor(b.stateCode)}>{label}</Tag>
+                    </Tooltip>
+                  );
+                },
               },
               {
                 title: t('board.devices.col.plate'), width: 80,

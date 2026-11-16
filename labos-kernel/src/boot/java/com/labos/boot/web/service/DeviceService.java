@@ -2,6 +2,7 @@ package com.labos.boot.web.service;
 
 import com.labos.kernel.device.DeviceModels;
 import com.labos.kernel.persistence.DbConfig;
+import com.labos.kernel.device.DeviceBusinessStateResolver;
 import com.labos.kernel.persistence.DeviceMapper;
 import org.springframework.stereotype.Service;
 
@@ -430,6 +431,38 @@ public class DeviceService {
      * <p>{@code simProfile} 是给模拟端的行为画像（robot / incubator / centrifuge …），
      * 由设备类型映射而来 —— 映射放在中控侧，模拟端就不用自己猜"我是哪种设备"。
      */
+    /**
+     * 设备当前的**业务状态**（客户文档 §1.5 的口径），**读时派生**。
+     *
+     * <p>与 {@code device_state.status}（运行时 idle/running/error 健康标记）**不是一回事**：
+     * 那个是"这台设备在不在跑、有没有错"，这个是"**这台设备在干什么**"
+     * （提取仪：空闲/初始化中/等待交互/转盘运行中/操作位执行工序/流程结束/故障报错）。
+     *
+     * <p>⚠ **不落库**：每次查询现算（见 {@link DeviceBusinessStateResolver}）——
+     * 存一列就要有人负责更新，漏一次界面就一直骗人；而 {@code device_state} 那张表
+     * 正在被别的线改动，加列会撞。
+     *
+     * @param islandId 岛 id；null ⇒ 全租户
+     */
+    public String deviceBusinessStatesJson(Long islandId) {
+        Map<Long, DeviceBusinessStateResolver.DeviceBusinessState> states =
+                new DeviceBusinessStateResolver(db, TENANT).resolve(islandId);
+        List<String> items = new ArrayList<>();
+        for (DeviceBusinessStateResolver.DeviceBusinessState s : states.values()) {
+            items.add(Jsons.obj(
+                    "deviceId", s.instanceId(),
+                    "deviceCode", s.deviceCode(),
+                    "resourceId", s.resourceId(),
+                    "kind", s.kind(),
+                    "stateCode", s.stateCode(),
+                    "stateName", s.stateName(),
+                    "source", s.source(),
+                    "sourceDetail", s.sourceDetail(),
+                    "since", s.since() == null ? null : s.since().toInstant().toString()));
+        }
+        return Jsons.obj("total", items.size(), "items", new Jsons.Raw(Jsons.arr(items)));
+    }
+
     public String deviceRegistryJson() throws java.sql.SQLException {
         List<String> items = new ArrayList<>();
         // 型号 → 方法名（同一型号可能有多台实例，查一次就够）

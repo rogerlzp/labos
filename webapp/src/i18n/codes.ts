@@ -24,6 +24,30 @@
 
 /** code → 英文文案（中文侧不在这里：走后端词表）。 */
 export const CODE_TEXT_EN: Record<string, string> = {
+  // ---- 设备业务状态（客户文档 §1.5）----
+  // 中文侧的后端权威是 device_business_state 表（state_name），
+  // 英文侧按 code 查这张表 ⇒ 英文界面里不出现中文。
+  // ⚠ code **跨设备类别不唯一**（fault 出现在提取仪/分液器/搅拌/机械臂四类），
+  //   所以命名空间只带 code、不带 kind。
+  'bizState.idle': 'Idle',
+  'bizState.initializing': 'Initializing',
+  'bizState.waiting_interaction': 'Waiting for interaction',
+  'bizState.turntable_running': 'Turntable running',
+  'bizState.operating': 'Running internal procedure',
+  'bizState.finished': 'Finished',
+  'bizState.fault': 'Fault',
+  'bizState.ready': 'Ready',
+  'bizState.dispensing': 'Dispensing',
+  'bizState.dispensed': 'Dispensed',
+  'bizState.running': 'Running',
+  'bizState.stopped': 'Stopped',
+  'bizState.home': 'At home',
+  'bizState.moving': 'Moving',
+  'bizState.handling': 'Handling plate',
+  'bizState.occupied': 'Occupied',
+  'bizState.sufficient': 'Sufficient',
+  'bizState.warning': 'Warning',
+  'bizState.insufficient': 'Insufficient',
   // ------------------------------------------------------------ run
   'status.run.draft': 'Draft',
   'status.run.pending': 'Pending',

@@ -102,6 +102,8 @@ export const NAV: NavGroup[] = [
       { key: '/event-types', labelKey: 'nav.eventTypes' },
       // 状态字典：板状态 + 设备业务状态（枚举写死会与工艺文档静默失配）
       { key: '/state-dicts', labelKey: 'nav.stateDicts' },
+      // 板特写屏：演示时「跟着**一块板**走」
+      { key: '/plate-focus', labelKey: 'nav.plateFocus' },
       // S2 物料身份与状态验收：用例清单 + 页面内运行 + 脚本结果回填
       { key: '/s2-test-cases', labelKey: 'nav.s2TestCases', roles: ['admin'] },
     ],

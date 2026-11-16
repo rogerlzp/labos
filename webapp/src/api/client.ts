@@ -920,10 +920,13 @@ export interface PlateProcessState {
  * 设备业务状态（客户文档 §1.5 的口径）。
  *
  * <p>⚠ 与 `device_state.status`（运行时 idle/running/error）**不是一回事**：
- * 那个是运行时健康/占用标记，这个是**业务状态机**（设备在干什么）。
+ * 那个是运行时健康/占用标记，这个是**业务状态机**（设备在干什么）：
+ * 提取仪在不在等人、分液器在不在分液、机械臂在不在搬板。
  *
- * <p>`deviceKind` 用**平台自己的 device_type 口径**（extractor / dispenser /
- * stirrer / robot / plate_hotel），不自造一套 ⇒ 字典和设备天然对得上。
+ * <p>`kind` 是**能力口径**的设备类别（EXTRACT/WASH/MIX/TRANSFER/STORE）——
+ * 与客户 §1.5 的 5 类设备一一对应。
+ * ⚠ **不是** `device.device_type`：那是厂商登记的原始分类
+ * （"Extractors"/"Robots"/… 复数、含空格、有空值）⇒ 按它查字典会一条都查不到。
  */
 export interface DeviceBusinessState {
   id: number;
@@ -932,6 +935,24 @@ export interface DeviceBusinessState {
   stateName: string;
   sortOrder: number;
   enabled: boolean;
+}
+
+/** 一台设备**此刻**的业务状态（读时派生，不落库）。 */
+export interface DeviceBusinessStateNow {
+  deviceId: number;
+  deviceCode: string;
+  resourceId: number;
+  /** 能力口径的设备类别；没配能力 ⇒ null */
+  kind: string | null;
+  /** 业务状态码；该类别没配字典 ⇒ null（不编一个不存在的状态） */
+  stateCode: string | null;
+  stateName: string | null;
+  /** 触发来源：fault / command / event / command_done / idle / derived / none */
+  source: string;
+  /** 触发细节（方法名或事件码）—— 现场能看懂"为什么它在这个状态" */
+  sourceDetail: string | null;
+  /** 该状态的判定时间（ISO-8601） */
+  since: string | null;
 }
 
 /**
@@ -1527,8 +1548,22 @@ export const api = {
       method: 'DELETE',
     }),
 
-  /** 设备业务状态字典（客户文档 §1.5 的口径；按平台 device_type 分组）。 */
-  deviceBusinessStates: (deviceKind?: string) =>
+  /**
+   * 设备**此刻**的业务状态（读时派生）。
+   *
+   * @param islandId 岛 id；不传 ⇒ 全租户
+   */
+  deviceBusinessStates: (islandId?: number) =>
+    req<{ total: number; items: DeviceBusinessStateNow[] }>(
+      `/api/devices/business-states${islandId ? `?islandId=${islandId}` : ''}`),
+
+  /**
+   * 设备业务状态**字典**（客户文档 §1.5 的口径；按能力口径的设备类别分组）。
+   *
+   * <p>与 {@link api.deviceBusinessStates}（**此刻**的状态）分工：
+   * 这个是**配置**（有哪些合法状态、怎么触发），那个是**派生**（现在处在哪个）。
+   */
+  deviceBusinessStateDefs: (deviceKind?: string) =>
     req<{ total: number; items: DeviceBusinessState[] }>(
       `/api/device-business-states${deviceKind ? `?deviceKind=${deviceKind}` : ''}`),
 

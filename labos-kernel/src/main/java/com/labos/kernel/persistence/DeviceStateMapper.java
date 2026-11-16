@@ -351,4 +351,46 @@ public interface DeviceStateMapper {
 
     /** 扫码确认后把板身份升级为 CONFIRMED（不改 barcode、不改历史证据字符串）。 */
     int markPlateIdentityConfirmed(long tenantId, long plateUid);
+
+    // ---- 设备业务状态（客户文档 §1.5）：**读时派生**，不落库 ----
+
+    /**
+     * 设备清单（实例 → 资源 → **能力**）。
+     *
+     * <p>⚠ 能力是**能力口径**（EXTRACT/WASH/MIX/TRANSFER/STORE），
+     * **不是** {@code device.device_type}（那是厂商登记的原始分类：
+     * "Extractors"/"Robots"/… 复数、含空格、有空值 ⇒ 按它查字典会一条都查不到）。
+     */
+    java.util.List<java.util.Map<String, Object>> selectDeviceKindList(
+            @Param("tenantId") long tenantId,
+            @Param("islandId") Long islandId);
+
+    /** 业务状态字典（含 trigger / source_key / is_idle），按能力分组。 */
+    java.util.List<java.util.Map<String, Object>> selectBusinessStateDefs(
+            @Param("tenantId") long tenantId);
+
+    /** 每台设备**当前在跑**的命令（若有）。 */
+    java.util.List<java.util.Map<String, Object>> selectRunningCommands(
+            @Param("tenantId") long tenantId);
+
+    /** 每台设备**最近一条已结束**的命令（成功/失败都要 —— 失败也是一次"做完"）。 */
+    java.util.List<java.util.Map<String, Object>> selectLastFinishedCommands(
+            @Param("tenantId") long tenantId);
+
+    /** 每台设备**最近一条**设备事件（事件驱动的业务状态靠它）。 */
+    java.util.List<java.util.Map<String, Object>> selectLatestDeviceEvents(
+            @Param("tenantId") long tenantId);
+
+    /**
+     * 耗材栈槽位统计（**批量**，一次查所有资源）：resource_id → 槽位总数 / 空闲数。
+     *
+     * <p>⚠ 为什么必须批量：设备有几百台，**逐台查**就是几百次往返 ⇒ 端点慢到不可用。
+     * ⇒ 一次 GROUP BY 拿全量。
+     */
+    java.util.List<java.util.Map<String, Object>> selectStackSlotStats(
+            @Param("tenantId") long tenantId);
+
+    /** 设备状态行（按资源）：在线/故障/当前方法 —— 业务状态的「故障优先」判定要用。 */
+    java.util.List<java.util.Map<String, Object>> selectDeviceStates(
+            @Param("tenantId") long tenantId);
 }

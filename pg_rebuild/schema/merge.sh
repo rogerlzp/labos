@@ -75,6 +75,7 @@ cat /tmp/_schema_header.sql \
     ../migration/20261115_device_event.sql \
     ../migration/20261115_device_event_type.sql \
     ../migration/20261115_device_business_state.sql \
+    ../migration/20261116_device_business_runtime.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

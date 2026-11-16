@@ -198,6 +198,48 @@ export interface StatusMeta { label: string; color: string; terminal?: boolean; 
  *
  * @param vocab 使用哪份词表（页面从 useStatusVocabulary() 拿；省略则用 FALLBACK）
  */
+/**
+ * 设备**业务状态**（客户文档 §1.5）的文案与颜色。
+ *
+ * <p>中文侧的权威是**后端字典**（`device_business_state.state_name`）⇒ 这里直接用；
+ * 英文侧按 code 查 `i18n/codes.ts` 的 `bizState.*`（查不到显示 code 本身，
+ * 英文界面里不出现中文 —— 与状态词表同一套规矩）。
+ *
+ * <p>⚠ 与 {@link statusLabel}（运行时 idle/running/error）**不是一回事**：
+ * 那个是"有没有错、在不在跑"，这个是"在干什么"。
+ */
+
+/** 业务状态 → antd Tag 颜色。 */
+export function businessStateColor(code: string | null | undefined): string {
+  switch (code) {
+    case 'fault': return 'red';
+    case 'waiting_interaction': return 'blue';
+    case 'operating':
+    case 'turntable_running':
+    case 'dispensing':
+    case 'moving':
+    case 'handling':
+    case 'running': return 'processing';
+    case 'finished':
+    case 'dispensed':
+    case 'sufficient': return 'green';
+    case 'warning': return 'orange';
+    case 'insufficient': return 'volcano';
+    default: return 'default';
+  }
+}
+
+/** 业务状态的显示文案（英文界面按 code 查本地表）。 */
+export function businessStateLabel(
+  code: string | null | undefined,
+  dbLabel: string | null | undefined,
+  locale: Locale,
+): string {
+  if (!code) return '—';
+  if (locale === 'zh-CN') return dbLabel || code;
+  return CODE_TEXT_EN[`bizState.${code}`] ?? code;
+}
+
 export function statusMeta(
   scope: StatusScope, code: string, vocab: StatusVocabulary = FALLBACK,
 ): StatusMeta {

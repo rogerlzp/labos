@@ -420,6 +420,24 @@ public class DeviceController {
         return deviceService.unassignedDevicesJson();
     }
 
+    /**
+     * 设备当前的**业务状态**（客户文档 §1.5 的口径）：提取仪在不在等人、
+     * 分液器在不在分液、机械臂在不在搬板 …
+     *
+     * <p>⚠ 与 {@code device_state.status}（运行时 idle/running/error）**不是一回事**，
+     * 也不与它在同一个表里 —— 前者是"在干什么"，后者是"有没有错、在不在跑"。
+     *
+     * <p><b>读时派生</b>，不落库 ⇒ 不会"忘了更新"而界面一直骗人。
+     *
+     * @param islandId 岛 id；不传 ⇒ 全租户
+     */
+    @GetMapping(value = "/devices/business-states",
+            produces = "application/json; charset=utf-8")
+    public String deviceBusinessStates(@RequestParam(required = false) Long islandId)
+            throws SQLException {
+        return deviceService.deviceBusinessStatesJson(islandId);
+    }
+
     @GetMapping(value = "/devices/{id:\\d+}/methods",
             produces = "application/json; charset=utf-8")
     public String deviceMethods(@PathVariable long id) throws SQLException {

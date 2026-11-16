@@ -770,4 +770,104 @@
          ORDER BY di.id
     </select>
 
+    <!-- ============================================================
+         设备业务状态（客户文档 §1.5）· **读时派生**
+         不落库：每次查询现算 ⇒ 不会"忘了更新/写歪"，
+         也不会给 device_state 表加一列（那张表正在被别的线改）。
+         ============================================================ -->
+
+    <!-- 设备清单：实例 → 资源 → 能力（能力口径，不是 device.device_type） -->
+    <select id="selectDeviceKindList" resultType="java.util.Map">
+        SELECT di.id           AS "instanceId",
+               di.code         AS "deviceCode",
+               di.resource_id  AS "resourceId",
+               c.code          AS "capability"
+          FROM device_instance di
+          LEFT JOIN resource_capability rc ON rc.resource_id = di.resource_id
+          LEFT JOIN capability c ON c.id = rc.capability_id
+         WHERE di.tenant_id = #{tenantId}
+           AND di.deleted_at IS NULL
+        <if test="islandId != null">
+           AND di.resource_id IN (SELECT r.id FROM resource_node r
+                                  WHERE r.tenant_id = #{tenantId}
+                                    AND r.parent_id = #{islandId})
+        </if>
+         ORDER BY di.id
+    </select>
+
+    <!-- 业务状态字典：按能力分组，含 trigger/source_key/is_idle -->
+    <select id="selectBusinessStateDefs" resultType="java.util.Map">
+        SELECT id, device_kind AS "deviceKind", state_code AS "stateCode",
+               state_name AS "stateName", sort_order AS "sortOrder",
+               enabled AS "enabled", trigger AS "trigger",
+               source_key AS "sourceKey", is_idle AS "isIdle"
+          FROM device_business_state
+         WHERE tenant_id = #{tenantId}
+         ORDER BY device_kind, sort_order, id
+    </select>
+
+    <!-- 每台设备当前在跑的命令（status='running'）。
+         ⚠ **必须限定 run 未结束**：崩溃/被杀会留下 status='running' 的陈旧命令行
+         （实测库里就有几条）⇒ 不限定的话设备会**永远显示"在忙"**。 -->
+    <select id="selectRunningCommands" resultType="java.util.Map">
+        SELECT DISTINCT ON (rc.device_id)
+               rc.device_id AS "deviceId", rc.method AS "method", rc.sent_at AS "sentAt"
+          FROM run_command rc
+          JOIN run r ON r.tenant_id = rc.tenant_id AND r.id = rc.run_id
+         WHERE rc.tenant_id = #{tenantId}
+           AND rc.device_id IS NOT NULL
+           AND rc.status = 'running'
+           AND r.status IN ('running','paused')
+         ORDER BY rc.device_id, rc.sent_at DESC
+    </select>
+
+    <!-- 每台设备最近一条已结束的命令（完成或失败 —— 失败也是"做完"） -->
+    <select id="selectLastFinishedCommands" resultType="java.util.Map">
+        SELECT DISTINCT ON (device_id)
+               device_id AS "deviceId", method AS "method",
+               status AS "status", finished_at AS "finishedAt"
+          FROM run_command
+         WHERE tenant_id = #{tenantId}
+           AND device_id IS NOT NULL
+           AND status IN ('completed','failed')
+         ORDER BY device_id, finished_at DESC
+    </select>
+
+    <!-- 每台设备最近一条设备事件 -->
+    <select id="selectLatestDeviceEvents" resultType="java.util.Map">
+        SELECT DISTINCT ON (device_code)
+               device_code AS "deviceCode", event_type AS "eventType",
+               created_at AS "createdAt"
+          FROM device_event
+         WHERE tenant_id = #{tenantId}
+           AND device_code IS NOT NULL
+         ORDER BY device_code, id DESC
+    </select>
+
+    <!-- 耗材栈空闲槽位（上面没板的位置） -->
+    <!-- 耗材栈槽位统计（批量）：槽位总数 + 空闲数（上面没板的位）
+         ⚠ 必须批量：设备几百台，逐台查就是几百次往返 ⇒ 端点慢到不可用。 -->
+    <select id="selectStackSlotStats" resultType="java.util.Map">
+        SELECT dp.device_resource_id AS "resourceId",
+               count(*) AS "slots",
+               count(*) FILTER (WHERE NOT EXISTS (
+                   SELECT 1 FROM plate p
+                    WHERE p.tenant_id = #{tenantId}
+                      AND p.location_id = dp.id
+                      AND p.deleted_at IS NULL)) AS "freeSlots"
+          FROM device_point dp
+         WHERE dp.tenant_id = #{tenantId}
+         GROUP BY dp.device_resource_id
+    </select>
+
+    <!-- 设备状态行（按资源）：故障判定用（status='error' 或 last_error 非空） -->
+    <select id="selectDeviceStates" resultType="java.util.Map">
+        SELECT resource_id AS "resourceId", status AS "status",
+               online AS "online", last_error AS "lastError",
+               current_method AS "currentMethod", updated_at AS "updatedAt"
+          FROM device_state
+         WHERE tenant_id = #{tenantId}
+    </select>
+
+    <!-- 耗材栈槽位总数（0 ⇒ 这不是耗材栈） -->
 </mapper>

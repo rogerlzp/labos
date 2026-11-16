@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WEBAPP = ROOT / "webapp"
 SRC = WEBAPP / "src"
 JAVA_VOCAB = ROOT / "labos-kernel/src/main/java/com/labos/kernel/workflow/StatusVocabulary.java"
+BIZ_STATE_SEED = ROOT / "pg_rebuild/schema/97y_seed_business_state.sql"
 
 CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 # 只认真正的占位符：${变量} 是界面上的字面提示（提示用户可写 ${var}），
@@ -136,6 +137,21 @@ def run_probe() -> dict:
 # ---------------------------------------------------------------- 后端词表解析
 
 
+def parse_business_states() -> list[str]:
+    """从**业务状态字典种子**里抽出 state_code 全集（客户文档 §1.5 的口径）。
+
+    <p>为什么不从数据库查：这个脚本要能在**没连库**的环境跑（CI），
+    所以从**仓库里的种子 SQL**解析 —— 种子就是权威清单。
+    """
+    if not BIZ_STATE_SEED.exists():
+        return []
+    text = BIZ_STATE_SEED.read_text(encoding="utf-8")
+    # 形如：  (1, 'extractor', 'idle',  '空闲', 10, true),
+    codes = re.findall(
+        r"\(\s*1\s*,\s*'[a-zA-Z_]+'\s*,\s*'([a-zA-Z_]+)'\s*,", text)
+    return sorted(set(codes))
+
+
 def parse_backend_vocab() -> dict:
     """从 StatusVocabulary.java 抽出 code 全集（正则够用：格式固定且是本仓库自有文件）。"""
     if not JAVA_VOCAB.exists():
@@ -172,6 +188,7 @@ def parse_backend_vocab() -> dict:
     out["pauseKinds"] = codes_of("PAUSE_KINDS", "PauseKindDef")
     out["holdKinds"] = codes_of("HOLD_KINDS", "HoldKindDef")
     out["holdScopes"] = codes_of("HOLD_SCOPES", "HoldScopeDef")
+    out["businessStates"] = parse_business_states()
     return out
 
 
@@ -303,6 +320,10 @@ def check_codes(backend: dict, codes: dict) -> tuple[list[str], list[str]]:
         expected.add(f"hold.{c}")
     for c in backend["holdScopes"]:
         expected.add(f"holdScope.{c}")
+    # 设备业务状态（客户文档 §1.5）：中文侧是后端字典（state_name），
+    # 英文侧按 code 查本地表 ⇒ 同样是"后端有、英文表必须���"的一等公民。
+    for c in backend.get("businessStates", []):
+        expected.add(f"bizState.{c}")
 
     for k in sorted(expected):
         if k not in codes:
@@ -355,7 +376,8 @@ def main() -> int:
     print(f"领域 code 英文条目：{len(codes)}")
     print(f"后端词表 code 数：{sum(len(v) for v in backend['status'].values())} 个状态 + "
           f"{len(backend['pauseKinds'])} 暂停类型 + {len(backend['holdKinds'])} 扣留类型 + "
-          f"{len(backend['holdScopes'])} 扣留作用域")
+          f"{len(backend['holdScopes'])} 扣留作用域 + "
+          f"{len(backend.get('businessStates', []))} 设备业务状态")
     print(f"英文界面实跑校验：{len(probe['shown'])} 条会显示的文案")
     print(f"前端残留中文（面向用户，注释不计）：{total_residual} 字 / {len(residual)} 个文件")
     print("-" * 68)

@@ -22,6 +22,7 @@ import VariablesPage from './pages/Variables';
 import ErrorCodesPage from './pages/ErrorCodes';
 import EventTypesPage from './pages/EventTypes';
 import StateDictsPage from './pages/StateDicts';
+import PlateFocusPage from './pages/PlateFocus';
 import GanttPage from './pages/Gantt';
 import DurationsPage from './pages/Durations';
 import ExperimentsPage from './pages/Experiments';
@@ -291,6 +292,8 @@ function AppInner() {
             <Route path="/event-types" element={<EventTypesPage />} />
             {/* 状态字典：板状态（物料工艺阶段）+ 设备业务状态（设备在干什么）—— 两套枚举 */}
             <Route path="/state-dicts" element={<StateDictsPage />} />
+            {/* 板特写屏：演示主角是「一块板」，不是一堆设备状态 */}
+            <Route path="/plate-focus" element={<PlateFocusPage />} />
             <Route path="/schedule" element={<ScheduleGanttPage />} />
             {/* 排程参数管理（designer） */}
             <Route path="/schedule-plans" element={<SchedulePlansPage />} />
