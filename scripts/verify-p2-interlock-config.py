@@ -28,7 +28,6 @@ ENV_FILE_CANDIDATES = ("/tmp/labos-env.txt",)
 CHECKS = [
     ("L3", "轨道分区 rail_zone", "SELECT count(*) FROM rail_zone"),
     ("L3", "路径→分区集 transfer_rail_zone", "SELECT count(*) FROM transfer_rail_zone"),
-    ("L3", "分区豁免 rail_zone_exemption", "SELECT count(*) FROM rail_zone_exemption"),
     ("L4", "搅拌—分液配对 stirrer_dispenser_pair", "SELECT count(*) FROM stirrer_dispenser_pair"),
     ("L1", "设备事实 device_fact", "SELECT count(*) FROM device_fact"),
     ("L5", "有效等待投影 waiting_interaction", "SELECT count(*) FROM waiting_interaction"),
@@ -37,14 +36,27 @@ CHECKS = [
      "SELECT count(*) FROM device_fact WHERE fact_type='turntable'"),
 ]
 
+# 只提示、**不计入缺失**的项：0 行是正常状态，报成"缺失"会把好配置也说成缺。
+#   rail_zone_exemption：只有"某条路径确实无冲突、不需要分区锁"时才要落一行；
+#   路径已全部有分区集时，0 行恰恰是正确状态（2026-11-15 修：原先算作 L3 缺失，
+#   导致 L3 明明已配置却仍打印"L3 fail-closed，把不该拦的路径全拦死"）。
+INFOS = [
+    ("L3", "分区豁免 rail_zone_exemption", "SELECT count(*) FROM rail_zone_exemption"),
+]
+
 # 缺配置时各层的实际行为 —— 必须与代码一致，别让现场按错误方向排查。
-# 口径（2026-11-15 复核代码确认）：
+# 口径（2026-11-15 二次复核，含 abd5a70 把 finalRecheck 收窄到分液方法）：
 #   L3 = fail-closed（RailZoneGuard 无分区集且无豁免 ⇒ EC-INTERLOCK-RAIL 拒绝）
-#   L1/L4/L5 = 静默跳过（守卫拿不到事实/配对/投影就 return null，不拦也不告警）
+#   L1 = 静默跳过（无 turntable 事实 ⇒ 非 L1 目标）
+#   L5 = 静默跳过（无交互上下文 ⇒ 非 L5 目标）
+#   L4 = **两段语义**：checkBeforeDispense 对分液/移液方法无配对 ⇒ 拒绝并 paused_fault；
+#        finalRecheck（物理下发前）无配对 ⇒ 跳过。⇒ 配对表 0 行时客户流程会卡在
+#        第一个分液节点，不是"静默空转"。
 LAYER_EFFECT = {
     "L3": "L3 轨道分区 fail-closed：未配置且未豁免的搬运路径一律拒绝（EC-INTERLOCK-RAIL）",
     "L1": "L1 转盘守卫无 device_fact(turntable) ⇒ **静默跳过**（不拦、不告警）",
-    "L4": "L4 搅拌—分液未配对 ⇒ **静默跳过**（不拦、不告警）",
+    "L4": ("L4 搅拌—分液未配对 ⇒ **分液/移液命令**（Aliquot/Dispense/Pipette/TransferLiquid）"
+           "下发前**拒绝** EC-STATE-UNKNOWN 并 paused_fault 转人工；其它命令不拦"),
     "L5": "L5 无 waiting_interaction 投影 ⇒ **静默跳过**（不拦、不告警）",
 }
 
@@ -136,6 +148,14 @@ def main():
                 print(f"  ✗ 查询失败 [{layer}] {label}: {e}")
                 gaps.append(label)
                 missing_layers.add(layer)
+        for layer, label, sql in INFOS:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    n = cur.fetchone()[0]
+                print(f"  · [{layer}] {label}: {n}（提示，不计入缺失）")
+            except Exception as e:  # noqa: BLE001
+                print(f"  · 查询失败 [{layer}] {label}: {e}")
     finally:
         conn.close()
 
@@ -145,13 +165,15 @@ def main():
         return 0
 
     print(f"结论：{len(gaps)} 项缺失。缺配置的效果**不是统一的 fail-closed**：")
-    for layer in ("L3", "L1", "L4", "L5"):
+    for layer in ("L3", "L4", "L1", "L5"):
         if layer in missing_layers:
             print(f"  · {LAYER_EFFECT[layer]}")
     if "L3" in missing_layers:
-        print("  即：L3 把不该拦的搬运路径全拦死；L1/L4/L5 该拦的反而静默放行。")
-    else:
-        print("  即：L3 已配置；L1/L4/L5 仍因缺配置而空转（该拦的没拦）。")
+        print("  即：L3 还没配全 —— 未配置的搬运路径会被拦死（这是**该拦的**，不是 bug）。")
+    if "L4" in missing_layers:
+        print("  即：配对表 0 行 ⇒ 客户流程会卡在**第一个分液节点**（EC-STATE-UNKNOWN → 转人工）。")
+    if "L1" in missing_layers or "L5" in missing_layers:
+        print("  即：L1/L5 仍空转（拿不到事实/投影就跳过，该拦的没拦）。")
     print("  处置：落客户现场的分区映射/配对/事实；已人工验证无冲突的路径可落 rail_zone_exemption。")
     return 1
 
