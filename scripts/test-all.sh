@@ -336,15 +336,42 @@ DB=(
   "device.BindingContractDbSelfTest"
   # 设备编号三处同步改（2026-11-15）：resource_node.code/path + device_instance.code
   "device.DeviceCodeSyncDbSelfTest"
+  # 设备业务状态（客户文档 §1.5）读时派生 + 变异测试
+  "device.DeviceBusinessStateDbSelfTest"
   # 三条绑定链的**端到端**：点位×方法 / 节点绑定 / 设备池
   # —— 界面配出来的东西后端真的存得进去、读得回来吗？
   "device.BindingEndToEndDbSelfTest"
 )
 
+# 连库自测的**类名候选**（2026-11-16 修）：
+#
+# ⚠ 原来只试 `com.labos.kernel.$t` ⇒ **凡是放在 com/labos/boot/** 下的自测全都跑不了**
+#   （DeviceSetupDbSelfTest / StateDictDbSelfTest 实测报
+#    "找不到或无法加载主类 com.labos.kernel.web.service.DeviceSetupDbSelfTest"）
+#   —— 脚本只把它算成一次失败 ⇒ **看起来像测试挂了，其实是"从来没跑过"**，
+#   证据链上是**假绿**（没跑 ≠ 绿）。
+#
+# ⇒ 候选：① `com.labos.kernel.$t`（常规）
+#         ② `com.labos.boot.<去掉 boot. 前缀>`（boot 包里的自测）
+# 逐个试，谁先跑起来用谁。
+run_class() {
+  local t="$1"
+  local out
+  for cand in "com.labos.kernel.$t" "com.labos.boot.${t#boot.}"; do
+    out=$(java -cp "$TEST_CP" "$cand" 2>&1)
+    if ! grep -qE "ClassNotFoundException|找不到或无法加载主类" <<<"$out"; then
+      printf '%s' "$out"
+      return 0
+    fi
+  done
+  printf '%s' "$out"
+  return 0
+}
+
 run_one() {
   local t="$1"
   local out
-  out=$(java -cp "$TEST_CP" "com.labos.kernel.$t" 2>&1)
+  out=$(run_class "$t")
   local line
   line=$(echo "$out" | grep -oE "通过 [0-9]+, 失败 [0-9]+" | tail -1)
   if [[ -z "$line" ]]; then
