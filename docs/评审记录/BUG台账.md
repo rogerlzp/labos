@@ -78,6 +78,8 @@
 | 回归 | `DeviceBusinessState 15/0`、`BindingContract 14/0`、`BindingEndToEnd 36/0`、`DeviceLockSameRun 9/0`、`NodeExecutionPhase 25/0`、`MethodTimeoutPolicy 20/0`；`test-all.sh --pure-only` **1263/0** |
 | 遗留 | ① 部分实例 `device_model_id` 为空（型号登记不全）⇒ 仍退回能力默认，但已可观测；② `migration/20261115_device_register_pauto_d9608.sql` 用旧列名，**改名后不要重跑**（历史脚本不回改，已写入 migration README）；③ `device_method.device_instance_id`（实例级覆盖）本次未接入超时优先级 |
 | **2026-11-17 续做** | ① `device_method.device_instance_id` / `scope='instance'` **已接入**：唯一键拆成 `uk_device_method_model` / `uk_device_method_instance`（`20261117_*`），解析加两层（实例级方法 > 实例级库上限 > 型号级…），可中断实例级优先，新增写入口 `PUT /device-instances/{id}/methods/{m}/interruptible`；② 型号登记不全有了体检工具 `scripts/diag-device-model-id.py`（5 项 + 唯一命中回填，默认 dry-run）；③ `20261115` 旧列名脚本加了守卫（重跑给一句人话，不再抛 `column does not exist`） |
+| **入库提交（追溯用）** | 本条的代码/迁移/脚本落在 **`40510a8`**（`fix(build): 补齐 main 上缺失的被引用文件与依赖…`，111 文件，含 `DeviceIds` / `DeviceIdentityResolver` / `TimeoutDiagnostics` / `DriverStepExecutor` / `MethodTimeoutPolicy` / 3 个 Mapper / XML / 两个迁移 / `diag-device-model-id.py` / 两个自测）；设计文档落在 **`2fc8037`**。⚠ 两次都不是本条作者提交的（并发会话批量收起工作区），**提交信息里看不出"设备 ID 空间"** ⇒ 追溯请用 `git log -- pg_rebuild/migration/20261116_*` 或本行 |
+| **门禁口径更正** | 2026-11-17 晚曾报「`DeviceModelLibrarySelfTest` 5 条红」，实为**编译产物过期**的假红（并发会话已改测试源码断言为 4 个 manual 型号，本地 `out-test` 仍是旧 class）。重编译后 `ci-gate.sh --fast` **失败 0**（Java 纯逻辑 1548/0、tsc 0、建库产物同源、内置节点、参数名、设备事件 17/0 + 8/0）。教训：**改完测试源码必须重编译再判红**，否则会把别人的已修问题记成未修 |
 
 #### 处置：BUG-20261103-08（执行方 · 2026-11-03）
 
