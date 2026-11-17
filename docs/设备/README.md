@@ -13,6 +13,8 @@
 | `S100封膜机通信接口说明 .docx` | **真实手册** | S100 封膜机，串口 115200，二进制帧协议 |
 | `离心机-ASpin2K.md` | 我整理的解读 | 协议拆解 + 型号库映射 + 模拟器对齐 |
 | `封膜机-S100.md` | 我整理的解读 | 帧格式 + 14 个错误码 + 中控怎么用 + 模拟器对齐 |
+| `洗板机-BioTek-LHC.md` | 我整理的解读 | **LHC Runner 29 个方法** + RunStatus/Runner 码 + SiLA 备选通道 + 单口点位 |
+| `酶标仪-BioTek-Gen5.md` | 我整理的解读 | **Gen5 OLE Automation 43 个方法** + 对象树/释放顺序 + BTI 负数码 + 单口点位 |
 | `型号库与错误码映射.md` | **接入规范** | 加一台设备五步、错误码链路、码段规则、真库现状 |
 | `现场确认清单.md` | **空档清单** | 手册没写、但接真机前必须测的项（超时/单位/互锁） |
 | `协议与断线处理.md` | 架构说明 | **设备要不要回消息、断电怎么办、为什么要幂等** |
@@ -29,9 +31,9 @@
 | 2 | 封膜机 | `sealer` | ✅ **真实手册（S100）** | ✅ `--model s100`（托盘原点、板型、14 个错误码） |
 | 3 | 机械臂 | `robot` | 厂商公开规格（Brooks PreciseFlex） | ✅ 点位/抓放已对 |
 | 4 | 移液工作站 | `liquid_handler` | 厂商公开规格（Tecan / Biomek） | ✅ 量程已对 |
-| 5 | 酶标仪 | `reader` | 厂商公开规格（SpectraMax） | ✅ 波长已对 |
+| 5 | 酶标仪 | `reader` | ✅ **真实手册（BioTek Gen5 OLE Automation）** | ✅ `--model biotek-gen5`（43 方法、对象树、BTI 负数码） |
 | 6 | 孵育箱 | `incubator` | 厂商公开规格（Thermo） | ✅ 温控已对 |
-| 7 | 洗板机 | `washer` | 厂商公开规格（BioTek） | 🟡 只有基础方法 |
+| 7 | 洗板机 / 分液机 | `washer` | ✅ **真实手册（BioTek LHC Runner）** | ✅ `--model biotek-lhc`（29 方法、初始化顺序、50TS 条范围） |
 | 8 | 分液器 | `dispenser` | 厂商公开规格（Multidrop） | 🟡 同上 |
 | 9 | 板存储 | `plate_hotel` | 厂商公开规格（LiCONiC/Cytomat） | 🟡 同上 |
 | 10 | 撕膜机 | `peeler` | 推测 | 🟡 同上 |
@@ -40,8 +42,11 @@
 | 13 | 摇床 | `shaker` | 通用 | 🟡 同上 |
 | 14 | 低温存储 | `freezer` | 通用 | 🟡 同上 |
 
-> **只有 1、2 两行有真手册。**其余是按公开规格定的**边界值**，
-> 用途是"参数配错时能报错"，**不是**"这台设备就是这么工作的"。
+> **1、2、5、7 四行有真手册**（S100 封膜机、ASpin 2K 离心机、BioTek Gen5 酶标仪、BioTek LHC 洗板/分液机）。
+> 其余是按公开规格定的**边界值**，用途是"参数配错时能报错"，**不是**"这台设备就是这么工作的"。
+>
+> 型号库现有 4 个可对接真机的型号：`aspin-2k`、`s100`、`biotek-lhc`、`biotek-gen5`
+> （`java -cp out com.labos.kernel.sim.DeviceSimulator --list-models` 可查）。
 
 ---
 
@@ -83,9 +88,11 @@ java -cp out com.labos.kernel.sim.DeviceSimulator --list-models
 型号库回答了"这台机器说什么话"，**谁去说**是 sidecar 的事（`sidecar-dotnet/`）：
 
 ```
-labos-kernel ──TCP──> sidecar ──┬── 串口 12 字节帧    (S100)
-                                ├── Cluster.dll+XML  (ASpin 2K)
-                                └── 转发模拟器       (工位上没有硬件)
+labos-kernel ──TCP──> sidecar ──┬── 串口 12 字节帧        (S100)
+                                ├── Cluster.dll+XML      (ASpin 2K)
+                                ├── COM BTILHCRunner.dll (BioTek LHC 洗板机)
+                                ├── OLE Gen5.Application (BioTek Gen5 酶标仪)
+                                └── 转发模拟器           (工位上没有硬件)
 ```
 
 中控只认一个端点；换设备只换传输。错误码由中控侧翻译，sidecar 只带回原始码
@@ -143,10 +150,11 @@ labos-kernel ──TCP──> sidecar ──┬── 串口 12 字节帧    (S1
 - [ ] 离心机：Eppendorf 5810R / Thermo Multifuge X1R / Beckman Allegra X-15R（见第三节）
 - [ ] 机械臂（现场是什么牌子？Brooks / KUKA / 其他）
 - [ ] 移液工作站
-- [ ] 酶标仪
+- [x] 酶标仪 —— **已到**（BioTek Gen5 OLE Automation，见 `酶标仪-BioTek-Gen5.md`）
 - [ ] 孵育箱
 - [ ] 板存储
-- [ ] 洗板机 / 分液器
+- [x] 洗板机 —— **已到**（BioTek LHC Runner，见 `洗板机-BioTek-LHC.md`）
+- [ ] 分液器（Multidrop 等 LHC 之外的独立分液器）
 - [ ] 条码扫描
 
 **没有手册时，模拟器只能"形似"**：界面像、参数范围像，

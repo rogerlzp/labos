@@ -59,6 +59,12 @@ Labos.Sidecar.exe --model s100 --transport serial --serial-port COM3 --baud 1152
 
 # ASpin 2K 离心机（必须 Windows + 32 位，Cluster.dll 是 32 位）
 Labos.Sidecar.exe --model aspin-2k --transport dll --dll "C:\Lab\Cluster.dll" --node PlateCtri --port 8501
+
+# BioTek LHC 洗板/分液机（Windows；装 LHC 的那台机器）
+Labos.Sidecar.exe --model biotek-lhc --transport lhc --port 8501 --poll-ms 500
+
+# BioTek Gen5 酶标仪（Windows；装 Gen5 的那台机器）
+Labos.Sidecar.exe --model biotek-gen5 --transport gen5 --port 8502 --poll-ms 500
 ```
 
 ### 2.3 调试单条命令
@@ -77,11 +83,13 @@ dotnet run -- --model s100 --transport sim --sim-port 19501 --device 501 \
 | `--model <id>` | **必填**。型号 id（`s100` / `aspin-2k`），见 `--list` |
 | `--models <path>` | 型号库路径，默认 exe 同目录 `models.json` |
 | `--port <n>` | 监听端口，默认 8501 |
-| `--transport sim\|serial\|dll` | 传输方式，默认 `sim` |
+| `--transport sim\|serial\|dll\|lhc\|gen5` | 传输方式，默认 `sim` |
 | `--sim-host/--sim-port` | sim 档转发目标（默认 127.0.0.1:19501） |
 | `--serial-port` / `--baud` | 串口档：`COM3` / 115200 |
 | `--read-ms` | 串口档最小读超时（默认 3000ms；每条命令会按型号的耗时自动放宽） |
 | `--dll` / `--node` | dll 档：`Cluster.dll` 路径与模块节点名（默认 `PlateCtri`） |
+| `--progid` | lhc/gen5 档：COM 组件的 ProgID（默认 `BTILHCRunner.ClassLHCRunner` / `Gen5.Application`） |
+| `--poll-ms` | lhc/gen5 档：轮询间隔（默认 500ms；LHC 手册明确"不要快于 500ms"） |
 | `--device` | 调试用设备号；sim 档要**和模拟器的 `--device` 一致** |
 | `--list` | 列出已适配 / 待适配型号后退出 |
 | `--once <Method[{json}]>` | 发一条命令后退出 |
@@ -90,7 +98,7 @@ dotnet run -- --model s100 --transport sim --sim-port 19501 --device 501 \
 
 ## 四、`models.json` 从哪来
 
-**不要手改**。它由型号库导出：
+**不要手改**。它由型号库导出（现有 4 个可对接型号：`aspin-2k` / `s100` / `biotek-lhc` / `biotek-gen5`）：
 
 ```bash
 cd labos-kernel
@@ -104,13 +112,28 @@ java -cp out com.labos.kernel.device.DeviceModelExport > ../sidecar-dotnet/model
 
 ---
 
-## 五、三种传输的边界
+## 五、五种传输的边界
 
 | 传输 | 能干什么 | 不能干什么 |
 |---|---|---|
 | `sim` | 把整条链（中控→sidecar→设备）在工位跑通 | 验证不了帧格式/字节序 |
 | `serial` | S100 的 12 字节帧、低字节在前、错误帧第 5 字节 | 没接过真机，`ReadTimeout` 只能靠手册估 |
 | `dll` | ASpin 的 XML + `Cluster.dll` | 只能在 Windows 跑；DLL 内部阻塞无法超时 |
+| `lhc` | BioTek LHC：29 个方法 + RunStatus 轮询（`LhcRunnerTransport`） | 只能在 Windows 跑；COM 未装时报 `EC-05-2208` |
+| `gen5` | BioTek Gen5：对象树 + 读板轮询 + 取数据集（`Gen5OleTransport`） | 只能在 Windows 跑；必须与 Gen5 同机 |
+
+### 为什么 lhc / gen5 不并进 dll 档
+
+`dll` 档是"一个 P/Invoke 函数，发进去一段字符串"；这两台不是：
+
+* **LHC** 是**有状态的 COM 组件**：`RunProtocol` 只是"启动"，要自己轮询 `GetProtocolStatus`
+  直到 `eReady/eNotReady/eError`，还要记住"装载后是否验证过"；
+* **Gen5** 是**对象树**：`Application → Experiment → Plates → Plate → PlateReadMonitor`，
+  状态必须跨命令持有（重开实验会丢上一块板的读数）。
+
+⇒ 状态由 `ITransport` 实现持有，才能让"中控的一条命令"对上"设备的一个完整动作"。
+两者都用**晚绑定 COM**（`ComDispatch`）：开发机（macOS）编得过、跑不了；
+非 Windows 直接返回失败码，**不假装连上**。
 
 ### 已知限制（写在代码注释里，别指望它消失）
 

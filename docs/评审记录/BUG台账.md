@@ -54,8 +54,30 @@
 | `BUG-20261111-20` | **中** | **设计器上流程节点都在、却一条连线都没有**，但**保存成功、执行也正常** ⇒ 用户看着像"流程是断的、还没校验"，实际是**画不出来** | BPMN 里「逻辑连线」是 `<bpmn:sequenceFlow sourceRef targetRef>`，「**画出来的**连线」是 DI 段的 `<bpmndi:BPMNEdge>`（带 waypoints）。前端 bpmn-js **只渲染有 DI 的元素** ⇒ XML 里有 sequenceFlow、却没有 BPMNEdge ⇒ 画布上是一堆孤立节点；而**后端存与跑都看 sequenceFlow** ⇒ 看着"没连线"却能存能跑。**保存不拦是对的**：后端 `saveGraph` 校验的是逻辑层（孤立节点 / 断头线 / 可达性，见测试总纲 §1.6），sequenceFlow 在 ⇒ 校验通过 | 造图的 XML 缺 DI（本轮 seed 的基线流程、脚本造的流程都没写 `BPMNEdge`） | ✅ **已修**（2026-11-11：① 后端 `WorkflowService.saveGraph` 落库前用新的 `BpmnDiCompleter` **补齐缺失的 BPMNEdge**（按两端 `BPMNShape` 的位置算 waypoints；**幂等** —— 页面 bpmn-js 导出的图本来就有 DI，不动）；补在**后端**是因为 XML 有三个来源（页面导出 / 脚本造 / 第三方导入），只有这里是**必经之路**；② 历史数据用 `scripts/backfill-bpmn-di.py` 批量补：实测 **28 个流程补完、0 失败**。验证：设计器 `1000641` 从 0 条连线变 6 条（f1~f6 全部可见），预检「节点 5 · 步骤 5 · 预检 通过」，执行链路不受影响） | 用户现场反馈（2026-11-11，designer/1000641） |
 | `BUG-20261111-21` | **高** | **设备方法表里有的方法，模拟器却按「通用机型画像」拒收**（EC-06-0004）⇒ 节点转人工、实验暂停，现场看着像"流程配错了"，其实流程完全正确 | 模拟器的方法集校验：`prof.validate(alias, msg, model == null)` —— **没有型号时，通用画像的方法集就是权威**。而画像是**机型级**的（读板机画像 = 酶标仪 SpectraMax 190，里面没有 `ReadPlate`），这台设备（CellInsight CX7）**方法表里明明有** ⇒ 合法指令被误拒 | `sim/DeviceCore.java`（`prof.validate` + `known` 判定）、`sim/DeviceSimulator.java`（新增 `--methods`）、`labos-kernel/scripts/sim-up.sh`（把设备方法表传给模拟器） | ✅ **已修**（2026-11-11：模拟器新增 `--methods`（该设备**实际**有的方法，来自中控的 `device_method` 表）；校验时**画像管参数边界、设备方法表管方法集**，两者取并集 —— 谁都不单独说了算。`sim-up.sh` 从库里查方法集并传进去；不传时行为不变（现场真机照旧按型号/画像校验）。实测：读板机 `ReadPlate` 之前被拒，现在被接受（回 `{"position":"A1","plate":"SIM-PLATE-1"}`），用户那条 5 节点流程重跑后**全部 completed**） | 用户现场反馈（2026-11-11，实验 1000336 暂停于 ReadPlate 节点） |
 | `BUG-20261114-01` | **中** | 「S2实测·循环探针」图结构错误：`开始 → 异或汇合 → 循环体` —— R13-25 修孤立网关时塞的 `XOR_MERGE` 出现在其配对分叉**之前**，违反"汇合是异或的 end、之前必须先有异或的 start" | `scripts/verify-s2-complex-flow.py` `graph_loop()`；11 条存量流程（1000792/1000789/1000787/…） | ✅ **已修**（2026-11-14：删 `M`，回边 `V → C1`；断言加「汇合必须在分叉之后」；11 条存量重排 + preflight 0 error / 0 warning） | 用户现场反馈（2026-11-14，流程 1000792） |
+| `BUG-20261116-01` | **中** | **自动对齐折行时，行尾回行首的横线从上一排节点身上穿过去** —— 1000929 的 `Activity_0057(DISP1) → Activity_0059(DISP2)` 走在 y=665，而上一排 `P_AUTO-3` 那 6 个节点占 630~710 ⇒ 线压着 6 个节点过去。同一处根因的第二个表现：循环回边 `X → 圈数加一` 横穿「循环体·机器人」（1000792） | `webapp/src/pages/Designer.tsx` · `autoAlign()`（`channelBelowRow` / `freeChannelY` / `wrapRoute` / `backRoute`） | ✅ **已修**（2026-11-16：通道按**最终坐标的外框**算 + 横向空档下探 + 回边绕行；`scripts/verify-designer-autolayout.py` 新增第 ④ 组断言"连线不穿节点"+ 防空转的"跨幅横线"计数） | 用户现场反馈（2026-11-16，designer/1000929） |
+| `BUG-20261116-02` | **高** | **同一台设备有三套 bigint id，超时/可中断/设备锁三处查表把「实例号」当「型号行号」用** —— 不撞号 ⇒ 0 行 ⇒ `COALESCE(MAX(..),0)` 吞成 0 ⇒ 静默退回能力默认；撞号 ⇒ 白捡别人型号的上限。实锤：DISP3 实例号 `1000039` 撞上 `GANTRY_ROBOT_GENERIC` 型号行 ⇒ 分液被套上「轨道机械臂 7 秒」⇒ 8 秒的 Run 判 `EC-05-1007` ⇒ 重试 3 次 ⇒ 转人工（4 个失败节点） | `DeviceStateMapper.xml`（`selectMethodTimeoutSec` / `selectLibraryTimeoutSec` / `selectMethodInterruptible`）、`QueryMapper.xml`（`selectDeviceLockTimeoutSec`）、`DriverStepExecutor.resolveTimeoutMs`、`WorkflowService.deviceLockWaitMs`；根因是 `device_method.device_id` / `device_instance.device_id` 列名歧义 | ✅ **已修**（2026-11-16：两列改名 `device_model_id`（幂等迁移）+ 换算收成 `DeviceIdentityResolver` 唯一入口 + `DeviceIds` 三套强类型 record + `TimeoutDiagnostics` 落空计数与 WARN + 新增两个自测（`DeviceIdSpaceSelfTest` 37 条 / `DeviceModelIdResolutionDbSelfTest` 15 条，撞号 1:1 复现）。详见 `docs/architecture/设备ID空间与型号解析-20261116.md`） | 用户现场反馈（2026-11-16，提取线 4 个失败节点；用户先定位到 id 混用，本轮落地修复） |
+
+| `BUG-20261117-01` | **中** | **5 篇英文文档标着 `✅` 但中文侧早已扩写** —— `check-en-docs.py` 报 **89 条**硬错误（`development-log` 表格行 614/574、`simulator-device-library` 146/103、`ui-design-spec` 132/128、`onboarding` 代码块 14/16、`contribution-guidelines` 标题 22/21）。`✅` 的语义是「已译且结构逐项对齐」，这 5 篇都不满足 ⇒ 状态本身是错的 | `docs/en/INDEX.md` §3、`scripts/check-en-docs.py` | 🔶 **部分关闭**（2026-11-17：5 篇如实降为 🔶 并在 INDEX 列出每篇差值；`database-design.md` 本轮改过已完整同步回 ✅；检查器自身的状态过滤不一致已修。**重译是独立任务**） | 本轮 `check-en-docs.py` 复核时发现（2026-11-17） |
 
 > **表结构修复（2026-11-03 晚）**：`-08` / `-09` 此前被空行与「处置」段隔出总表，`-09` / `-10` 两行没有表头，Markdown 渲染不成表格。本次只调行位置，判定/状态/证据文字未改。
+
+#### 处置：BUG-20261116-02（执行方 · 2026-11-16）
+
+| 项 | 结果 |
+|---|---|
+| 三套 id | `device_instance.id`（实例号，运行期 `ctx.resourceId()`/设备锁/心跳）、`resource_node.id`（资源号，拓扑/点位/能力）、`device.id`（**型号行号**，`device_method`/错误码）。三者都是 bigint |
+| 缺陷形态 | `WHERE tenant_id=? AND device_id = <?>` 传的是实例号，而该列存型号行号。不撞号 ⇒ 0 行 ⇒ `COALESCE(MAX(...),0)` 吞成 0 ⇒ 静默降级；撞号 ⇒ 命中别人型号 |
+| 撞号实例（实测编号） | DISP1 `1000037`→转盘提取仪 22s；DISP2 `1000038`→分液器 32s；**DISP3 `1000039`→轨道机械臂 7s**；DISP4 `1000040`→耗材栈 12s |
+| 为什么难发现 | ① 三套都是 bigint，SQL 不报错只查错行；② `COALESCE` 把落空吞成 0 而 0 是合法值；③ 只有"撞号且上限 < 真实耗时"才炸，且间歇性；④ 列名 `device_id` 与"设备"混淆 |
+| 范围扩大 | 同一病根还有**设备锁等待上限**（`QueryMapper.selectDeviceLockTimeoutSec`）与**可中断判定**（`selectMethodInterruptible`，撞号会把不该停的动作判成可停） |
+| 影响面（测试库 `labdb` 实测，迁移前数据） | 262 台未删实例里 **63 台（24%）撞号**，且 **63 台全部撞到"别的型号"**（无一撞到自己）；其中 **56 台**撞上的型号有非 0 `timeout_sec` ⇒ 真的套上去了。抽样：`ID-1131` 20s→600s（**偏小，超 20 秒的动作全被误判超时**）、`ID-1183` 600s→1800s（偏小）、`ID-1161` 1800s→600s（偏大，真挂了干等 30 分钟才转人工）。根因是两套 IDENTITY 序列都从 1 自增 ⇒ 数值区间高度重叠，撞号是常态 |
+| 修法（六步） | ① 两列改名 `device_model_id`（含唯一约束/视图/注释）；② 换算收成 `DeviceIdentityResolver`（唯一 SQL 出口 `selectModelIdOfInstance`，带缓存/失败计数/一次 WARN）；③ `TimeoutDiagnostics` 记来源与落空（`bySource` / `deviceLevelMissing` / `modelUnresolved`）；④ `DeviceIds` 三套 record 编译期互斥；⑤ `selectDeviceMethods` 标为"按实例取方法"的模板；⑥ **不做** bigint→varchar 前缀（理由见设计文档 §4.6） |
+| 迁移 | `pg_rebuild/migration/20261116_device_model_id_rename.sql`：幂等（只在旧列在/新列不在时改名），半迁移状态直接 `RAISE EXCEPTION`，含约束/视图/注释/bigint 类型自检。测试库实跑**两次均 exit 0** |
+| 测试（纯逻辑） | `driver.DeviceIdSpaceSelfTest` **37/0**：mapper 不得再有裸 `device_id` 列、四条语句必须用 `device_model_id`、Java 不得把 `instanceId`/`ctx.resourceId()` 喂给型号语义方法、换算 SQL 只许一处、三套 record 不可互换、诊断计数契约 |
+| 测试（连库） | `device.DeviceModelIdResolutionDbSelfTest` **15/0**：造「型号 A 7s / 型号 B 120s + 实例 id 故意等于型号 A 行号」⇒ 断言"直接拿实例号查得 7s（缺陷机理复现，作回归护栏）"、"经 resolver 得 120s"、"型号未登记→ModelId(0) 且 unresolved 增长"、"缓存与 invalidate" |
+| 回归 | `DeviceBusinessState 15/0`、`BindingContract 14/0`、`BindingEndToEnd 36/0`、`DeviceLockSameRun 9/0`、`NodeExecutionPhase 25/0`、`MethodTimeoutPolicy 20/0`；`test-all.sh --pure-only` **1263/0** |
+| 遗留 | ① 部分实例 `device_model_id` 为空（型号登记不全）⇒ 仍退回能力默认，但已可观测；② `migration/20261115_device_register_pauto_d9608.sql` 用旧列名，**改名后不要重跑**（历史脚本不回改，已写入 migration README）；③ `device_method.device_instance_id`（实例级覆盖）本次未接入超时优先级 |
+| **2026-11-17 续做** | ① `device_method.device_instance_id` / `scope='instance'` **已接入**：唯一键拆成 `uk_device_method_model` / `uk_device_method_instance`（`20261117_*`），解析加两层（实例级方法 > 实例级库上限 > 型号级…），可中断实例级优先，新增写入口 `PUT /device-instances/{id}/methods/{m}/interruptible`；② 型号登记不全有了体检工具 `scripts/diag-device-model-id.py`（5 项 + 唯一命中回填，默认 dry-run）；③ `20261115` 旧列名脚本加了守卫（重跑给一句人话，不再抛 `column does not exist`） |
 
 #### 处置：BUG-20261103-08（执行方 · 2026-11-03）
 
@@ -361,4 +383,55 @@ key 口径（-11）、调度是否尊重它（-12）、台账的时间语义（-
 **教训**：角色标签（分叉/汇合）是**拓扑语义**，不只是入/出度的算术 ——
 度数检查只能抓「孤立/单进单出」，抓不到「汇合在分叉之前」。
 凡是按度数推角色的地方，都需要再补一条**可达性**方向的断言。
+
+### 🟨 BUG-20261116-01（中）自动对齐折行时，横线从上一排节点身上穿过去
+
+**现象**：`/designer/1000929` 点「自动对齐」后，折行边
+`Activity_0057（DISP1 分液）→ Activity_0059（DISP2 分液）` 的横线走在 **y=665**，
+而上一排 `P_AUTO-3` 那组 6 个节点占 **630~710** ⇒ 线压着 6 个节点横穿过去。
+用户描述："要换行的时候，那个线从现有的节点里面穿过去了，应该往下一点"。
+
+同类第二处（同轮一起收）：`/designer/1000792` 的循环回边
+`X → 圈数加一` 从 `X` 左侧水平直连到 `V` 右侧，把中间的「循环体·机器人」穿了一遍。
+
+**根因**（两个，都在 `autoAlign()` 里）：
+
+| # | 根因 | 说明 |
+|---|---|---|
+| ① | 通道高度取自**排版中间量** | `wrapRoute` 用 `(rowBot[src] + rowTop[tgt]) / 2`，而 `rowBot/rowTop` 来自 `rows[].mainY / above / below` —— 那三个量是"排完版、但还没落地"的中间结果，**没跟着后面那次"整体下移（本图 340px）"走** ⇒ 通道回到平移前的坐标，正好落在平移后上一排节点的带内 |
+| ② | 那两个量还**按中心**算 | 不含节点自身高度的一半 ⇒ 就算坐标没错，通道也只是擦着节点边沿，没有真正落在空档里 |
+| ③ | 回边只有"水平直连"一种走法 | `routePoints` 对同高度的目标是"源出点 → 中点 → 目标入点"，目标在左边时就是一条**横穿整行**的直线 |
+
+**修复**：
+
+| 项 | 结果 |
+|---|---|
+| 行沿改成按**最终外框**算 | 新增 `rowTopEdge/rowBotEdge`，从 `target`（平移后）+ `size` 的 `中心 ± 半高` 求，`rows[]` 只留给分栏用 |
+| 通道口径 | `channelBelowRow()`：取「源行下沿 ↔ **紧邻下一行**上沿」的中点（不是目标行上沿）—— 跨多行的边也是"先下到源行下面的空档 → 横移 → 再沿边距下到目标行"，不在中间几行里穿行 |
+| 空档下探（兜底） | `freeChannelY()`：从给定高度按 20px 逐步下探（上限 800px），找到第一条"横线所经 x 区间内没有节点框"的高度。原因：`行` 是按**列号打包**的，同一行带里可能有更靠下的孤立节点（1000792 的 `圈数加一` 就在本行下方 400px）⇒ 只按行沿算会让回边绕到整张图底下 |
+| 回边 | 新增 `isBackEdge`（`tgt.cx < src.cx` 且不是折行边）+ `backRoute`：「源左侧 → 下到本行下方空档 → 左移到目标右侧 → 上下到目标高度 → 进入目标」，与折行边同一套通道口径、方向相反 |
+| 顺手 | 上边界的整体平移也改成按外框判（原来按中心判，高 80 的任务中心落在 150 时上沿只有 110，看着还是贴边），`TOP_MARGIN = 110` |
+
+**验证**：
+
+| 项 | 结果 |
+|---|---|
+| 1000929 穿节点 | **6 处 → 0 处**；通道 y **665 → 1005**（上排下沿 970 / 下排上沿 1040 的正中） |
+| 1000792 穿节点 | **1 处 → 0 处**；回边改走 `(782,200)→(742,262)→(295,262)→(295,600)→(255,600)`，贴着本行下方绕过去 |
+| 全库 11 条流程扫描 | 无回归；1000830 由 31 → 16（仍红，根因是**另一个** bug：`seqWidth` 对"单节点直达 join"的分支返回 0 ⇒ join 与分支同列、整图挤成一行，见 `交接-流程库改造-第二批-20261113.md` §5.1），其余 9 条全 0 |
+| 门禁 | `scripts/verify-designer-autolayout.py` 新增第 ④ 组（2 个流程 × 「穿 0 处」+「有跨幅横线」）**4/4 通过**；脚本仍只剩既有那条「前后端对齐」红 |
+| `tsc --noEmit` | 0 |
+
+**教训**：
+
+1. **"排版中间量"和"最终坐标"必须分清**。这个 bug 不是算法算错，而是拿 `rows[]`
+   （排完版、还没落地的一次中间结果）当坐标去画线。同一函数里已经在平移后重建了
+   `target`，画到画布上的东西一律该从 `target` + `size` 推导。
+2. **断言要防"空转"**。只查"穿节点 = 0"会被"根本没走通道（直连）"骗过 ——
+   所以同时要求"存在横跨大半幅的横线"，证明走的确实是绕行通道。
+3. **页面自动化要等图真的导入完**（`getRootElement().type === 'bpmn:Process'`），
+   只等 `window.__bpmnModeler != null` 会点在空画布上，读到的是**没排过版的旧坐标**，
+   会得到"没有穿线"的**假绿**（本轮第一次扫描就是这么被骗的）。
+
+**遗留**：1000830 的列宽/分支同列问题未修（另立条目）；本轮只改画布坐标，**没有保存任何流程**。
 

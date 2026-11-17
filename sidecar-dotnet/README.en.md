@@ -70,6 +70,12 @@ Labos.Sidecar.exe --model s100 --transport serial --serial-port COM3 --baud 1152
 
 # ASpin 2K centrifuge (must be Windows + 32-bit, Cluster.dll is 32-bit)
 Labos.Sidecar.exe --model aspin-2k --transport dll --dll "C:\Lab\Cluster.dll" --node PlateCtri --port 8501
+
+# BioTek LHC plate washer / dispenser (Windows; the machine running LHC)
+Labos.Sidecar.exe --model biotek-lhc --transport lhc --port 8501 --poll-ms 500
+
+# BioTek Gen5 plate reader (Windows; the machine running Gen5)
+Labos.Sidecar.exe --model biotek-gen5 --transport gen5 --port 8502 --poll-ms 500
 ```
 
 ### 2.3 Debugging a single command
@@ -88,11 +94,13 @@ dotnet run -- --model s100 --transport sim --sim-port 19501 --device 501 \
 | `--model <id>` | **Required**. Model id (`s100` / `aspin-2k`), see `--list` |
 | `--models <path>` | Path to the model library, defaults to `models.json` next to the exe |
 | `--port <n>` | Listening port, default 8501 |
-| `--transport sim\|serial\|dll` | Transport, default `sim` |
+| `--transport sim\|serial\|dll\|lhc\|gen5` | Transport, default `sim` |
 | `--sim-host/--sim-port` | Forwarding target for the sim mode (default 127.0.0.1:19501) |
 | `--serial-port` / `--baud` | Serial mode: `COM3` / 115200 |
 | `--read-ms` | Minimum read timeout in serial mode (default 3000 ms; each command automatically relaxes it according to the model's duration) |
 | `--dll` / `--node` | DLL mode: the `Cluster.dll` path and the module node name (default `PlateCtri`) |
+| `--progid` | lhc/gen5 mode: the COM ProgID (default `BTILHCRunner.ClassLHCRunner` / `Gen5.Application`) |
+| `--poll-ms` | lhc/gen5 mode: poll interval (default 500ms; the LHC manual explicitly says "not faster than 500ms") |
 | `--device` | Device number for debugging; in sim mode it **must match the simulator's `--device`** |
 | `--list` | List the already-adapted and pending models, then exit |
 | `--once <Method[{json}]>` | Send one command, then exit |
@@ -116,13 +124,31 @@ but nobody re-exported, so the sidecar on site is still using the stale command 
 
 ---
 
-## 5. The boundaries of the three transports
+## 5. The boundaries of the five transports
 
 | Transport | What it can do | What it cannot do |
 |---|---|---|
 | `sim` | Runs the whole chain (console → sidecar → device) at a station | Cannot verify the frame format or the byte order |
 | `serial` | S100's 12-byte frames, low byte first, error frame in byte 5 | Never run against a real device, so `ReadTimeout` can only be estimated from the manual |
 | `dll` | ASpin's XML + `Cluster.dll` | Windows only; a blocking call inside the DLL cannot time out |
+| `lhc` | BioTek LHC: 29 methods + RunStatus polling (`LhcRunnerTransport`) | Windows only; when COM is missing it reports `EC-05-2208` |
+| `gen5` | BioTek Gen5: object tree + read polling + data sets (`Gen5OleTransport`) | Windows only; must run on the same machine as Gen5 |
+
+### Why lhc / gen5 are not folded into the dll mode
+
+The `dll` mode is "one P/Invoke function that takes a string". These two are not that:
+
+* **LHC** is a **stateful COM component**: `RunProtocol` only *starts*; you must poll
+  `GetProtocolStatus` until `eReady/eNotReady/eError`, and remember whether the loaded
+  protocol has been validated;
+* **Gen5** is an **object tree**: `Application → Experiment → Plates → Plate → PlateReadMonitor`,
+  and that state must survive across commands (reopening an experiment loses the previous
+  plate's results).
+
+⇒ The state lives inside the `ITransport` implementation, so that "one console command"
+lines up with "one complete device action". Both use **late-bound COM** (`ComDispatch`):
+they compile on a developer machine (macOS) but cannot run there; off Windows they return a
+failure code instead of pretending to be connected.
 
 ### Known limitations (written in the code comments — do not expect them to disappear)
 

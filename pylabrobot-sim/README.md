@@ -92,6 +92,49 @@ TCP 请求示例（`--device` 必须与中控登记的设备号一致，否则�
 
 成功回帧 `method_status=2`，失败 `method_status=3` 且 `error={"error_code":"EC-06-0004","error_text":"..."}`。`message_id` 幂等（对齐 `CommandLedger`），重复下发不重复执行、记一条 `NODE_SKIPPED`。
 
+## 差分校验（`--compare-twin`，孪生状态对照）
+
+PyLabRobot 的 `volume_tracker` 与 LabOS 的 `plate_well` 是两套独立状态追踪。本模式跑完作业后
+**逐孔比对液面账**，回答"两边对不对得上"；不写库、不碰真机、强制 headless，可直接进 CI。
+
+```bash
+# 1) 本机恒可用：独立账本口径（只读命令参数做体积守恒，不调用 PyLabRobot 的 tracker）
+.venv/bin/python run_simulator.py --compare-twin ledger --job jobs/dilution.json
+
+# 2) 以一份孪生状态 JSON 为期望值（支持报告 state 字段 / plate_well 行数组 / twin state）
+.venv/bin/python run_simulator.py --compare-twin out/run-20261112_002038.json --job jobs/dilution.json
+
+# 3) 直读 labdb.plate_well（走 psql 子进程，仿真 venv 无需装数据库驱动）
+LABOS_DB_HOST=... LABOS_DB_USER=... LABOS_DB_NAME=... LABOS_DB_PASS=... \
+  .venv/bin/python run_simulator.py --compare-twin db --job jobs/dilution.json \
+  --twin-src <源板barcode> --twin-dst <目标板barcode>
+```
+
+退出码 `0`=全部通过 / `1`=孔体积不一致 / `2`=孪生源无数据或不可用。报告落 `out/compare_*.json`，
+`comparisons.ledger` 与 `comparisons.twin` 分开记，每条 mismatch 带 `sim_ul / twin_ul / delta_ul`。
+容差默认 0.001 µL（对齐 `plate_well.volume numeric(12,3)`），可用 `--twin-tolerance-ul` 覆盖。
+
+**当前真实状态（2026-11-17）**：运行态 `plate_well` 尚无写入方（对齐设计稿 G2；设计态已拆到 `plate_well_design`），所以 `--compare-twin db`
+今天返回 `NO_DATA` / 退出码 2 —— 这是正确结果，不是故障。`ledger` 与 JSON 来源已实测：
+正例 5/5 match，注入 10 µL 错配能定位到 `dst_plate/B1`。
+
+## 事前 L1 闸门（`preflight`，已内建在 `--compare-twin`）
+
+每次 `--compare-twin` 在**任何物理动作之前**，先用独立内存账本预演整段协议，
+回答「这条指令，此刻能不能真的执行」。报告里 `preflight` 字段与事后 `comparisons` 同存，
+形成「事前预测 vs 事后实测」的交叉验证。
+
+- 检查项：体积守恒（源孔不足）、枪头状态（未取就吸/重复取）、孔容量溢出、
+  设备量程（复用 `DeviceProfile.validate`）、多通道几何跨度（8 通道 72.0 mm > 槽 71.2 mm ⇒ 拦）。
+- **增量拦截语义**：只拦「确定不可能」（`EC-PHYS-*`）；孔体积未知/参数缺失记 WARN 放行
+  （未登记=不拦，对齐设计稿 D4），不误伤生产链路。
+- 内核侧有语义对齐的 `LiquidLedgerGate.java`（`com.labos.kernel.driver`），
+  自检 17/17：`java ... com.labos.kernel.driver.LiquidLedgerGateSelfTest`。
+- 两侧独立实现、同错误码：给出同一结论才说明闸门不是复读某一侧状态。
+
+实测：正常稀释作业 `preflight=PASS`（0 block / 0 warn，账本 A1=50/B1=100/B2=50），
+9000 µL 超量程作业 `preflight=BLOCK`（`EC-PHYS-RANGE`），退出码 1。
+
 ## 边界与证据等级
 
 - 仿真只有运动逻辑、液位、枪头状态；**没有**压力传感、液面探测、移液 CV 误差模型（与网上说明一致）。

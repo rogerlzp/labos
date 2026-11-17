@@ -18,6 +18,8 @@ the manual first and only then talk about onboarding.
 | `S100封膜机通信接口说明 .docx` | **Real manual** | S100 sealer, serial port 115200, binary frame protocol |
 | `离心机-ASpin2K.md` | My own write-up | Protocol breakdown + model-library mapping + simulator alignment |
 | `封膜机-S100.md` | My own write-up | Frame format + 14 error codes + how the control console uses them + simulator alignment |
+| `洗板机-BioTek-LHC.md` | My own write-up | **LHC Runner, 29 methods** + RunStatus/Runner codes + the SiLA alternative + the single-port position |
+| `酶标仪-BioTek-Gen5.md` | My own write-up | **Gen5 OLE Automation, 43 methods** + object tree / release order + BTI negative codes + the single-port position |
 | `型号库与错误码映射.md` | **Onboarding specification** | The five steps to add a device, the error-code chain, the code-range rules, the state of the real database |
 | `现场确认清单.md` | **Gap checklist** | The items the manual does not write down but that must be tested before connecting a real machine (timeouts / units / interlocks) |
 | `协议与断线处理.md` | Architecture note | **Does the device have to answer, what happens on a power cut, why idempotency** |
@@ -34,9 +36,9 @@ This has to be spelled out, otherwise "the parameters I guessed" get mistaken fo
 | 2 | Sealer | `sealer` | ✅ **Real manual (S100)** | ✅ `--model s100` (tray origin, plate type, 14 error codes) |
 | 3 | Robot arm | `robot` | Vendor public specification (Brooks PreciseFlex) | ✅ Pick-and-place already aligned |
 | 4 | Liquid-handling workstation | `liquid_handler` | Vendor public specification (Tecan / Biomek) | ✅ Volume range already aligned |
-| 5 | Plate reader | `reader` | Vendor public specification (SpectraMax) | ✅ Wavelength already aligned |
+| 5 | Plate reader | `reader` | ✅ **Real manual (BioTek Gen5 OLE Automation)** | ✅ `--model biotek-gen5` (43 methods, object tree, BTI negative codes) |
 | 6 | Incubator | `incubator` | Vendor public specification (Thermo) | ✅ Temperature control already aligned |
-| 7 | Plate washer | `washer` | Vendor public specification (BioTek) | 🟡 Only the basic methods |
+| 7 | Plate washer / dispenser | `washer` | ✅ **Real manual (BioTek LHC Runner)** | ✅ `--model biotek-lhc` (29 methods, init order, 50 TS strip range) |
 | 8 | Dispenser | `dispenser` | Vendor public specification (Multidrop) | 🟡 Same |
 | 9 | Plate storage | `plate_hotel` | Vendor public specification (LiCONiC/Cytomat) | 🟡 Same |
 | 10 | Plate peeler | `peeler` | Inferred | 🟡 Same |
@@ -45,9 +47,14 @@ This has to be spelled out, otherwise "the parameters I guessed" get mistaken fo
 | 13 | Shaker | `shaker` | Generic | 🟡 Same |
 | 14 | Low-temperature storage | `freezer` | Generic | 🟡 Same |
 
-> **Only rows 1 and 2 have a real manual.** The rest are **boundary values** defined from the public
-> specification, their purpose is "so that a wrong parameter can raise an error" — **not** "this is
-> how the device actually works".
+> **Rows 1, 2, 5 and 7 have a real manual** (the S100 sealer, the ASpin 2K centrifuge, the
+> BioTek Gen5 reader and the BioTek LHC washer/dispenser). The rest are **boundary values**
+> defined from the public specification, their purpose is "so that a wrong parameter can raise an
+> error" — **not** "this is how the device actually works".
+>
+> The model library currently has four models that can be wired to real hardware:
+> `aspin-2k`, `s100`, `biotek-lhc`, `biotek-gen5`
+> (`java -cp out com.labos.kernel.sim.DeviceSimulator --list-models` lists them).
 
 ---
 
@@ -91,9 +98,11 @@ See [`model-library-and-error-code-mapping.md`](model-library-and-error-code-map
 The model library answered "what does this machine say"; **who says it** is the sidecar's job (`sidecar-dotnet/`):
 
 ```
-labos-kernel ──TCP──> sidecar ──┬── serial port, 12-byte frame    (S100)
-                                ├── Cluster.dll+XML  (ASpin 2K)
-                                └── forward to the simulator       (no hardware at the station)
+labos-kernel ──TCP──> sidecar ──┬── serial 12-byte frame     (S100)
+                                ├── Cluster.dll + XML        (ASpin 2K)
+                                ├── COM BTILHCRunner.dll     (BioTek LHC washer)
+                                ├── OLE Gen5.Application     (BioTek Gen5 reader)
+                                └── forward to simulator     (no hardware at the workstation)
 ```
 
 The control console only knows one endpoint; changing the device only changes the transport. The error
@@ -154,10 +163,11 @@ specifications** are needed (not the operator manuals):
 - [ ] Centrifuge: Eppendorf 5810R / Thermo Multifuge X1R / Beckman Allegra X-15R (see section 3)
 - [ ] Robot arm (what brand is it on site? Brooks / KUKA / other)
 - [ ] Liquid-handling workstation
-- [ ] Plate reader
+- [x] Plate reader — **received** (BioTek Gen5 OLE Automation, see `酶标仪-BioTek-Gen5.md`)
 - [ ] Incubator
 - [ ] Plate storage
-- [ ] Plate washer / dispenser
+- [x] Plate washer — **received** (BioTek LHC Runner, see `洗板机-BioTek-LHC.md`)
+- [ ] Dispenser (standalone dispensers outside LHC, e.g. Multidrop)
 - [ ] Barcode scanning
 
 **Without a manual the simulator can only be "superficially similar"**: the interface looks right, the

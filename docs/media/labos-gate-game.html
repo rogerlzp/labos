@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0.8 毫米 · 中间件守卫</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#fafafa; --card:#fff; --line:#e6e6e6; --line-soft:#f2f2f2;
+  --ink:#14171e; --muted:#6b7280; --faint:#9aa1ab;
+  --pass:#10b981; --block:#f43f5e; --warn:#f59e0b; --primary:#0f9d76;
+  --pass-bg:rgba(16,185,129,.08); --block-bg:rgba(244,63,94,.08); --warn-bg:rgba(245,158,11,.10);
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:'Outfit','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55;
+  -webkit-font-smoothing:antialiased;padding:0 0 64px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+h1,h2,h3{font-weight:600;letter-spacing:-.01em}
+.mono{font-family:var(--mono)}
+
+/* header */
+header{background:var(--card);border-bottom:1px solid var(--line);padding:18px 0 0;margin-bottom:26px}
+.hrow{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.title{font-size:26px;line-height:1.2}
+.title .thin{color:var(--faint);font-weight:400}
+.sub{color:var(--muted);font-size:13px;margin-top:4px;max-width:620px}
+.lvlbar{display:flex;gap:6px;margin-top:14px}
+.lvlbar i{height:4px;flex:1;background:var(--line);border-radius:3px;display:block}
+.lvlbar i.done{background:var(--pass)} i.cur{background:var(--warn)}
+.stars{display:flex;gap:3px;align-items:center}
+.stars b{width:16px;height:16px;display:block}
+
+/* layout */
+.grid{display:grid;grid-template-columns:1.62fr 1fr;gap:18px}
+@media(max-width:940px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;
+  box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.card h3{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;
+  display:flex;align-items:center;gap:8px}
+.card h3 svg{width:15px;height:15px;color:var(--primary)}
+.stack{display:flex;flex-direction:column;gap:18px;margin-bottom:18px}
+
+/* bench */
+.bench{background:#fcfcfa;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.bench svg{display:block;width:100%;height:auto}
+.benchlegend{display:flex;gap:14px;flex-wrap:wrap;padding:9px 14px;border-top:1px solid var(--line-soft);
+  font-size:12px;color:var(--muted);align-items:center}
+.dot{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px;vertical-align:-1px}
+
+/* kv */
+.kv{display:grid;grid-template-columns:auto 1fr;row-gap:7px;column-gap:12px;margin:0;font-size:13px}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0;font-family:var(--mono);font-size:12.5px;text-align:right}
+.kv dd.bad{color:var(--block)} .kv dd.ok{color:var(--pass)}
+
+/* controls */
+.ctrl{margin-bottom:14px}
+.ctrl>label{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;color:var(--muted);margin-bottom:7px}
+.ctrl>label b{font-family:var(--mono);color:var(--ink);font-weight:500;font-size:12.5px}
+.opts{display:flex;flex-wrap:wrap;gap:6px}
+.opt{border:1px solid var(--line);background:#fff;border-radius:8px;padding:6px 11px;font-size:12.5px;
+  cursor:pointer;color:var(--ink);font-family:var(--mono);transition:all .16s}
+.opt:hover{border-color:var(--primary);transform:translateY(-1px);box-shadow:0 3px 8px rgba(0,0,0,.05)}
+.opt[aria-pressed="true"]{background:var(--primary);border-color:var(--primary);color:#fff}
+.opt:disabled{opacity:.38;cursor:not-allowed;transform:none;box-shadow:none}
+.opt small{color:var(--faint);font-family:var(--sans);margin-left:5px}
+.opt[aria-pressed="true"] small{color:rgba(255,255,255,.72)}
+
+.btn{width:100%;border:none;border-radius:10px;padding:12px 16px;font-size:14px;font-weight:600;cursor:pointer;
+  font-family:var(--sans);transition:all .16s;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.08)}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+.btn.go{background:var(--primary);color:#fff}
+.btn.ghost{background:#fff;border:1px solid var(--line);color:var(--muted);width:auto;padding:7px 12px;font-size:12.5px;font-weight:500}
+.btn.ghost:hover{border-color:var(--faint);color:var(--ink)}
+
+/* gates */
+.gate{display:flex;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line-soft);font-size:12.5px;align-items:flex-start}
+.gate:last-child{border-bottom:none}
+.gate .ic{width:17px;height:17px;flex:none;margin-top:1px}
+.gate .tx{flex:1}
+.gate .code{font-family:var(--mono);font-size:11.5px;color:var(--muted);display:block}
+.gate .rsn{color:var(--muted);font-size:12px;margin-top:2px}
+.gate.pass .ic{color:var(--pass)} .gate.block .ic{color:var(--block)} .gate.skip .ic{color:var(--faint)}
+.gate.pass .code{color:var(--pass)} .gate.block .code{color:var(--block);font-weight:500}
+
+/* result */
+.verdict{border-radius:11px;padding:13px 15px;font-size:13px;margin-bottom:14px;border:1px solid}
+.verdict.ok{background:var(--pass-bg);border-color:rgba(16,185,129,.3)}
+.verdict.bad{background:var(--block-bg);border-color:rgba(244,63,94,.3)}
+.verdict.warn{background:var(--warn-bg);border-color:rgba(245,158,11,.35)}
+.verdict .h{font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:7px}
+.verdict .h svg{width:16px;height:16px}
+.verdict p{color:var(--muted);font-size:12.5px}
+.verdict p+p{margin-top:6px}
+
+.bars{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.bar{display:grid;grid-template-columns:58px 1fr 92px;gap:10px;align-items:center;font-size:12px}
+.bar .track{height:15px;background:var(--line-soft);border-radius:5px;overflow:hidden;position:relative}
+.bar .fill{height:100%;border-radius:5px;transition:width .35s cubic-bezier(.4,0,.2,1)}
+.bar .val{font-family:var(--mono);font-size:11.5px;color:var(--muted);text-align:right}
+.bar .nm{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.bar.hot .fill{background:var(--block)} .bar.cool .fill{background:var(--pass)}
+.bar .flag{color:var(--block);font-weight:600}
+
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+.kpi{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fdfdfc}
+.kpi .k{font-size:11.5px;color:var(--muted)}
+.kpi .v{font-family:var(--mono);font-size:17px;margin-top:2px}
+.kpi .v.ok{color:var(--pass)} .kpi .v.bad{color:var(--block)} .kpi .v.warn{color:var(--warn)}
+
+.goalbox{background:#fdfdfc;border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin-bottom:14px;font-size:13px}
+.goalbox .g{font-weight:600;margin-bottom:3px}
+.goalbox .d{color:var(--muted);font-size:12.5px}
+
+.lesson{border-left:3px solid var(--primary);background:var(--pass-bg);border-radius:0 10px 10px 0;
+  padding:12px 14px;font-size:13px;margin-top:14px}
+.lesson .t{font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:7px}
+.lesson .t svg{width:15px;height:15px;color:var(--primary)}
+.lesson p{color:var(--muted);font-size:12.5px}
+
+.note{font-size:11.5px;color:var(--faint);line-height:1.5}
+.pill{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:5px;
+  background:var(--line-soft);color:var(--muted)}
+.pill.warn{background:var(--warn-bg);color:#a16207}
+.pill.block{background:var(--block-bg);color:#be123c}
+.pill.pass{background:var(--pass-bg);color:#047857}
+.nextbtn{display:none;margin-top:12px}
+.nextbtn.on{display:flex}
+.modal{position:fixed;inset:0;background:rgba(20,23,30,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:50}
+.modal.on{display:flex}
+.modal .box{background:#fff;border-radius:16px;max-width:560px;width:100%;padding:26px;box-shadow:0 20px 50px rgba(0,0,0,.2)}
+.modal h2{font-size:21px;margin-bottom:8px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;background:var(--ink);color:#fff;
+  padding:10px 18px;border-radius:9px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:60}
+.toast.on{opacity:.95}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="hrow">
+      <div>
+        <h1 class="title">0.8 毫米 <span class="thin">· 中间件守卫</span></h1>
+        <div class="sub">你是实验室里的智能体。你能写协议、能提问、能试跑——但每一条物理动作都必须过中间件那道闸门。
+          这一关里最危险的不是报错，而是<b>不报错</b>。</div>
+      </div>
+      <div style="text-align:right">
+        <div class="mono" style="font-size:12px;color:var(--muted)">关卡 <span id="lvNum">1</span>/6</div>
+        <div class="stars" id="stars" style="margin-top:6px;justify-content:flex-end"></div>
+      </div>
+    </div>
+    <div class="lvlbar" id="lvlbar"></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+    <!-- 左列 -->
+    <div class="stack">
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="bench">
+          <svg id="bench" viewBox="0 0 720 470"></svg>
+          <div class="benchlegend">
+            <span><i class="dot" style="background:#f0b429"></i>试剂槽 71.2 mm</span>
+            <span><i class="dot" style="background:#3b82f6"></i>吸液高度</span>
+            <span><i class="dot" style="background:#94a3b8"></i>枪头</span>
+            <span style="margin-left:auto" class="mono" id="benchNote"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="resultCard" style="display:none">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg>执行结果</h3>
+        <div id="resultBody"></div>
+      </div>
+    </div>
+
+    <!-- 右列 -->
+    <div class="stack">
+      <div class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="9"/></svg>孪生状态 · 此刻现场</h3>
+        <dl class="kv" id="twin"></dl>
+        <div class="note" style="margin-top:12px">这些不是日志里猜出来的，是现场读出来的。<b>没有这份状态，任何指令都无从判断。</b></div>
+      </div>
+
+      <div class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg>协议编辑器</h3>
+        <div id="proto"></div>
+        <button class="btn go" id="submit">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          提交给中间件
+        </button>
+      </div>
+
+      <div class="card">
+        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>闸门裁决</h3>
+        <div id="gates"><div class="note">提交协议后，这里会逐条给出裁决与错误码。</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+   模型说明（教学用简化模型，非流体仿真）：
+   · 槽长与通道间距：通道占用宽度 = 通道数 × 9.0 mm
+   · 底部沉积：分液高度为 0 时染料沉在孔底 1.5 mm 内（底部层占染料 58%）
+   · 吸液高度 0：吸取 100 µL 会刮到浓缩底液 ⇒ 携带富集系数 m = 2(0.2727+0.7273β)
+   · 吸液高度 ≥1.5：吸取上层 ⇒ m = 1.4545(1-β)
+   · 枪头内壁挂膜：槽内混匀后，组内枪头挂上浓染料，转移时多带体积
+   ============================================================ */
+
+const CH_MM = 9.0;                 // 通道间距
+const BOTTOM = 1.5;                // 底部间隙 mm
+const BETA_POOR = 0.58;            // 底部沉积时底层的染料占比
+const BETA_GOOD = 0.3125;          // 均匀混合时底层染料占比
+const MIX_EFF = 0.985;             // 混匀效率（→ 梯度 1.97）
+
+const LEVELS = [
+{
+  id:1, title:'0.8 毫米', goal:'完成一次 8 通道混匀（客户流程写的是 8 通道）',
+  desc:'移液器有 8 个通道，试剂槽是 71.2 mm 宽。按 9.0 mm 的通道间距，8 个枪头要占 72.0 mm。差 0.8 mm——屏幕上根本看不出来，机器臂也不会抱怨，它只会撞上去。',
+  twin:{trough:71.2, tips:8, srcVol:300, calibrated:true, evidence:0, film:0},
+  proto:{channels:8, mixFrom:1, mixTo:8, aspZ:0, dispZ:0, vol:100, replace:false},
+  gates:['geom'],
+  pass:p=>p.channels<=7 ? {ok:true,msg:'7 通道 = 63.0 mm ≤ 71.2 mm，放行'} : {ok:false,msg:'8 通道 = 72.0 mm > 71.2 mm'},
+  lesson:'几何冲突是<b>可计算的</b>，不必等撞机才知道。中间件把"看不见的 0.8 毫米"变成一条拒绝理由。'
+},
+{
+  id:2, title:'少了一滴', goal:'从 A1 吸取 100 µL 染料',
+  desc:'这一条完全合法：参数是整数、语法正确、能力也对得上。问题是那个孔里只剩 60 µL 了。',
+  twin:{trough:80, tips:8, srcVol:60, calibrated:true, evidence:0, film:0},
+  proto:{channels:1, mixFrom:1, mixTo:1, aspZ:1.5, dispZ:4.8, vol:100, replace:false},
+  gates:['vol'],
+  pass:p=>p.vol<=60 ? {ok:true,msg:`取 ${p.vol} µL ≤ 孔内剩余 60 µL，放行`} : {ok:false,msg:'取液量超过孔内剩余'},
+  lesson:'<b>语法合法 ≠ 物理合法。</b>这条错误在语法层面永远不会出现——它只存在于"此刻这个孔里还有多少液体"这个事实里。'
+},
+{
+  id:3, title:'弹尽粮绝', goal:'用 8 通道完成一次孔内混匀',
+  desc:'耗材仓里只剩 5 支枪头。流程要 8 个通道。',
+  twin:{trough:80, tips:5, srcVol:300, calibrated:true, evidence:0, film:0},
+  proto:{channels:8, mixFrom:1, mixTo:8, aspZ:1.5, dispZ:4.8, vol:100, replace:false},
+  gates:['cons'],
+  pass:p=>p.channels<=5 ? {ok:true,msg:'5 通道 ≤ 可用枪头 5，放行'} : {ok:false,msg:'可用枪头不足'},
+  lesson:'耗材余量也是物理事实。枪头用完了，命令再合法也执行不了——这是"流程上无效"，不是"物理上不可能"。'
+},
+{
+  id:4, title:'梯度不听话', goal:'11 步二倍梯度稀释，目标 log2 斜率 −1.00（实测折叠比 2.00 ± 0.06）',
+  desc:'这一关没有拦你。所有闸门全过，执行成功，没有一条错误。现在看读数：目标每列浓度降一半，实测只降了 1.44 倍。<b>它没有报错，它给了你一个漂亮的、错的数。</b>',
+  twin:{trough:80, tips:8, srcVol:300, calibrated:true, evidence:0, film:0},
+  proto:{channels:8, mixFrom:1, mixTo:8, aspZ:0, dispZ:0, vol:100, replace:false},
+  gates:['geom','vol','cons'],
+  sim:'gradient',
+  pass:null,
+  lesson:'第三类故障最阴险：前两类会报错，<b>这一类不报错</b>。而且重复实验修不好——重复只会把同一个偏差复制得更精确。'
+},
+{
+  id:5, title:'让缺陷自己搬家', goal:'8 通道各自分装到 8 个孔，8 个孔的吸光度应当一致（±5%）',
+  desc:'读数出来了：第 8 个孔明显偏低。换个位置就好了吗？不。想想物理机制——<b>设计一组因子实验，让缺陷自己搬家</b>，它搬到哪里，就说明它跟着什么走。',
+  twin:{trough:80, tips:8, srcVol:300, calibrated:true, evidence:0, film:9.8, troughConc:4.0},
+  proto:{channels:8, mixFrom:1, mixTo:7, aspZ:1.5, dispZ:4.8, vol:100, replace:false},
+  gates:['geom','vol','cons'],
+  sim:'channels',
+  factor:true,
+  pass:null,
+  lesson:'残差挂在<b>枪头内壁</b>上，不是挂在某个孔或某个位置上。所以换个孔位没用，换枪头（或不在槽里混匀）才有用。'
+},
+{
+  id:6, title:'沉默的第三类', goal:'四列染料各做 6 步二倍梯度。声明 log2 斜率 −1.00，容差 ±0.06',
+  desc:'所有闸门通过，执行成功，没有错误码。可结果对不上：<b>三列是 −1.00，只有一列不是</b>。系统不会告诉你哪里错了——它只会把四个数摆在一起。',
+  twin:{trough:80, tips:8, srcVol:300, calibrated:true, evidence:0, film:0, colFactors:[1,1,0.88,1]},
+  proto:{channels:8, mixFrom:1, mixTo:8, aspZ:1.5, dispZ:4.8, vol:100, replace:false},
+  gates:['geom','vol','cons'],
+  sim:'columns',
+  attribute:true,
+  pass:null,
+  lesson:'最后一步不是"发现错了"，而是<b>用对照组把错误归到某个机制上</b>：基线漂移会让所有列同向偏；染料本身浓度低不改变比值；只有"这一列取到的量偏少"才解释得了为什么偏偏是它。<b>把偏差归因并登记，下一次才躲得开。</b>'
+}
+];
+
+let L=0, stars=[0,0,0,0,0,0], protocol={}, tries={}, factors=[], lastFactor=null;
+
+/* ---------- 工具 ---------- */
+const $=s=>document.querySelector(s);
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('on'),1900);}
+function fmt(n,d=2){return (Math.round(n*10**d)/10**d).toFixed(d);}
+
+/* ---------- 孪生状态 ---------- */
+function twinKV(){
+  const Lv=LEVELS[L], t=Lv.twin, out=[];
+  const troughBad = protocol.channels*CH_MM > t.trough;
+  out.push(['试剂槽长', fmt(t.trough,1)+' mm', troughBad?'bad':'ok']);
+  out.push(['通道间距', fmt(CH_MM,1)+' mm', '']);
+  out.push(['本次占用', fmt(protocol.channels*CH_MM,1)+' mm', troughBad?'bad':'']);
+  out.push(['可用枪头', t.tips+' 支', protocol.channels>t.tips?'bad':'ok']);
+  out.push(['源孔余量', t.srcVol+' µL', protocol.vol>t.srcVol?'bad':'ok']);
+  out.push(['机器人标定', t.calibrated?'已完成':'缺失', t.calibrated?'ok':'bad']);
+  out.push(['扫码证据', t.evidence+' s 前', t.evidence>60?'bad':'ok']);
+  if(Lv.twin.film) out.push(['枪头挂膜', fmt(t.film,1)+' µL', 'warn']);
+  return out;
+}
+
+/* ---------- 闸门 ---------- */
+function runGates(){
+  const Lv=LEVELS[L], t=Lv.twin, g=[];
+  const need = Lv.gates;
+  if(need.includes('geom')){
+    const span=protocol.channels*CH_MM;
+    g.push({st: span<=t.trough?'pass':'block',
+      code:'EC-PHYS-GEOMETRY',
+      rsn: span<=t.trough ? `占用 ${fmt(span,1)} mm ≤ 槽长 ${fmt(t.trough,1)} mm` :
+        `占用 ${fmt(span,1)} mm > 槽长 ${fmt(t.trough,1)} mm，差 ${fmt(span-t.trough,1)} mm`});
+  }
+  if(need.includes('vol')){
+    g.push({st: protocol.vol<=t.srcVol?'pass':'block', code:'EC-PHYS-VOLUME',
+      rsn: protocol.vol<=t.srcVol ? `取 ${protocol.vol} µL ≤ 剩余 ${t.srcVol} µL` : `取 ${protocol.vol} µL > 孔内剩余 ${t.srcVol} µL`});
+  }
+  if(need.includes('cons')){
+    g.push({st: protocol.channels<=t.tips?'pass':'block', code:'EC-PHYS-CONSUMABLE',
+      rsn: protocol.channels<=t.tips ? `${protocol.channels} 通道 ≤ 可用 ${t.tips} 支` : `需要 ${protocol.channels} 通道，可用仅 ${t.tips} 支`});
+  }
+  g.push({st:'pass', code:'L1-POSITION / SCAN', rsn:'板位占用与扫码证据一致（本关不启用）'});
+  return g;
+}
+
+/* ---------- 物理 ---------- */
+function betaOf(p){ return (p.aspZ<BOTTOM && p.dispZ<BOTTOM) ? BETA_POOR : (p.aspZ>=BOTTOM && p.dispZ>=4.0 ? BETA_GOOD : 0.45); }
+function mOf(p){
+  const b=betaOf(p);
+  return p.aspZ<BOTTOM ? 2*(0.2727+0.7273*b) : 1.4545*(1-b);
+}
+function foldOf(p){ return 1/(0.5*mOf(p)*MIX_EFF); }
+
+function simGradient(p){
+  const b=betaOf(p), m=mOf(p);
+  let c=1.0; const wells=[];
+  for(let i=0;i<11;i++){
+    if(i>0) c = 0.5*m*MIX_EFF*c;
+    wells.push({step:i, conc:c, abs:c});
+  }
+  const drift = LEVELS[L].twin.drift ? (LEVELS[L].twin.troughConc||1) : 1;
+  if(drift!==1) wells.forEach(w=>{w.conc*=drift;w.abs=w.conc;});
+  return {wells, fold: foldOf(p)*(drift!==1?drift:1)};
+}
+function simChannels(p){
+  const Lv=LEVELS[L], t=Lv.twin;
+  const group=[]; for(let i=p.mixFrom;i<=p.mixTo;i++) group.push(i);
+  const filmOn = (p.replace||p.mixFrom>p.mixTo) ? 0 : (t.film||0);
+  const wells=[];
+  for(let ch=1;ch<=p.channels;ch++){
+    const film = group.includes(ch) ? filmOn : 0;
+    const dye = 100*1.0 + film*(t.troughConc||1);
+    const vol = 200 + film;
+    wells.push({ch, conc:dye/vol, abs:dye/vol, film});
+  }
+  const vals=wells.map(w=>w.conc), mx=Math.max(...vals), mn=Math.min(...vals);
+  const lo=1-mn/mx;
+  return {wells, spread:lo, group};
+}
+
+/* ---------- 渲染：台面 ---------- */
+function renderBench(){
+  const Lv=LEVELS[L], t=Lv.twin, s=$('#bench');
+  const MM=2.6, troughW=t.trough*MM, troughX=28, troughY=66;
+  const span=protocol.channels*CH_MM;
+  const overflow=span>t.trough;
+  const headX=troughX+16, headY=14;
+  const pipW=8*CH_MM*MM;
+  const ox=headX+(8-CH_MM*protocol.channels*0+0); // 占位
+  const startX = headX + (protocol.channels===8?0:(8-protocol.channels)*CH_MM*MM/2);
+  const chanW = CH_MM*MM;
+  let g='';
+  // 槽
+  g+=`<rect x="${troughX}" y="${troughY}" width="${troughW}" height="34" rx="5" fill="#fdf6e3" stroke="#f0b429" stroke-width="1.5"/>`;
+  g+=`<text x="${troughX}" y="${troughY+22}" font-size="12" fill="#8a6d1f" font-family="var(--mono)">试剂槽 ${fmt(t.trough,1)} mm</text>`;
+  // 枪头组
+  const mixFrom=protocol.mixFrom, mixTo=protocol.mixTo;
+  for(let i=0;i<protocol.channels;i++){
+    const ch=i+1, x=startX+i*chanW;
+    const inGroup = ch>=mixFrom && ch<=mixTo;
+    const cl = inGroup?'#10b981':'#94a3b8';
+    g+=`<rect x="${x+2}" y="${headY}" width="${chanW-4}" height="30" rx="3" fill="${cl}" opacity="${inGroup?.95:.5}"/>`;
+    g+=`<path d="M${x+5} ${headY+30} L${x+chanW-5} ${headY+30} L${x+chanW/2-1} ${headY+46} L${x+chanW/2+1} ${headY+46} Z" fill="${cl}" opacity="${inGroup?.95:.5}"/>`;
+    g+=`<text x="${x+chanW/2}" y="${headY+20}" font-size="10" text-anchor="middle" fill="#fff" font-family="var(--mono)">${ch}</text>`;
+    g+=`<line x1="${x+chanW/2}" y1="${headY+46}" x2="${x+chanW/2}" y2="${troughY}" stroke="${cl}" stroke-width="1" stroke-dasharray="3 3" opacity=".5"/>`;
+  }
+  // 溢出标记
+  if(overflow){
+    const overW=span*MM-troughW;
+    g+=`<rect x="${troughX+troughW}" y="${troughY}" width="${Math.max(overW,2)}" height="34" fill="rgba(244,63,94,.18)" stroke="#f43f5e" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+    g+=`<line x1="${troughX+troughW+2}" y1="${troughY+34}" x2="${troughX+troughW+26}" y2="${troughY+48}" stroke="#f43f5e" stroke-width="1"/>`;
+    g+=`<text x="${troughX+troughW+30}" y="${troughY+51}" font-size="11" fill="#be123c" font-family="var(--mono)">溢出 +${fmt(overW/MM,1)} mm</text>`;
+  }
+  // 吸液高度指示
+  const plateY=142, plateX=28;
+  // 孔板
+  const cols=12, rows=8, cw=38, chh=26, gap=3;
+  const px=plateX, py=plateY;
+  g+=`<rect x="${px-8}" y="${py-8}" width="${cols*cw+16}" height="${rows*chh+16}" rx="8" fill="#f7f7f5" stroke="#e0e0dd"/>`;
+  const res = LEVELS[L].sim? (protocol._res||null):null;
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const x=px+c*(cw+gap), y=py+r*(chh+gap);
+      let fill='#fff', stroke='#e4e4e2', label='';
+      if(Lv.sim==='gradient'){
+        const step=r, col=c;
+        if(col<2){ const cn=Math.pow(0.5,step); fill=mixColor(cn); }
+        else { fill='#fbfbfa'; }
+        g+=`<rect x="${x}" y="${y}" width="${cw}" height="${chh}" rx="4" fill="${fill}" stroke="${stroke}"/>`;
+      } else if(Lv.sim==='channels'){
+        fill='#fbfbfa';
+        g+=`<rect x="${x}" y="${y}" width="${cw}" height="${chh}" rx="4" fill="${fill}" stroke="${stroke}"/>`;
+      } else if(Lv.sim==='columns'){
+        const rr=protocol._res;
+        const badIdx = rr ? rr.cols.findIndex(c=>Math.abs(Math.abs(c.slope)-1)>0.06) : 2;
+        if(c<4){ fill = (c===badIdx)?'#fecdd3':'#e0f2fe'; stroke=(c===badIdx)?'#fca5a5':'#bae6fd'; }
+        g+=`<rect x="${x}" y="${y}" width="${cw}" height="${chh}" rx="4" fill="${fill}" stroke="${stroke}"/>`;
+      } else {
+        g+=`<rect x="${x}" y="${y}" width="${cw}" height="${chh}" rx="4" fill="#fbfbfa" stroke="${stroke}"/>`;
+      }
+      if(c==0) g+=`<text x="${x-6}" y="${y+20}" font-size="10" text-anchor="end" fill="#b4b4b0" font-family="var(--mono)">${String.fromCharCode(65+r)}</text>`;
+    }
+  }
+  g+=`<text x="${px-8}" y="${py-16}" font-size="11" fill="#9aa1ab" font-family="var(--mono)">96 孔板 · 台面俯视</text>`;
+  // 右侧：读数柱（L4 梯度 / L5 通道）
+  const rx=px+cols*(cw+gap)+26;
+  if(res && res.wells){
+    g+=`<text x="${rx}" y="${py-16}" font-size="11" fill="#9aa1ab" font-family="var(--mono)">${Lv.sim==='gradient'?'11 步梯度':'8 通道读数'}</text>`;
+    const maxv=Math.max(...res.wells.map(w=>w.abs));
+    res.wells.forEach((w,i)=>{
+      const y=py+i*(Lv.sim==='gradient'?24:30);
+      const w2=Math.max(4,(w.abs/maxv)*150);
+      const bad = (Lv.sim==='channels') ? (w.conc<maxv*0.9) : false;
+      g+=`<rect x="${rx+26}" y="${y}" width="${w2}" height="13" rx="3" fill="${bad?'#f43f5e':'#3b82f6'}" opacity="${bad?1:.85}"/>`;
+      g+=`<text x="${rx}" y="${y+11}" font-size="10" fill="#9aa1ab" font-family="var(--mono)">${Lv.sim==='gradient'?'#'+i:'Ch'+w.ch}</text>`;
+      g+=`<text x="${rx+26+w2+5}" y="${y+11}" font-size="10" fill="${bad?'#be123c':'#8a8f98'}" font-family="var(--mono)">${fmt(w.abs,3)}</text>`;
+    });
+  }
+  // 吸液高度标尺
+  const sx=px+cols*(cw+gap)+18, sy=py+rows*chh+18;
+  g+=`<text x="${px-8}" y="${sy-6}" font-size="11" fill="#9aa1ab" font-family="var(--mono)">吸液高度 z = ${protocol.aspZ.toFixed(1)} mm</text>`;
+  g+=`<line x1="${px-8}" y1="${sy}" x2="${px+120}" y2="${sy}" stroke="#3b82f6" stroke-width="2"/>`;
+  g+=`<circle cx="${px-8+protocol.aspZ*20}" cy="${sy}" r="4" fill="#3b82f6"/>`;
+  g+=`<text x="${px+128}" y="${sy+4}" font-size="10" fill="#8a8f98" font-family="var(--mono)">z=0 刮底${protocol.aspZ<1.5?'（当前）':'　'}</text>`;
+  s.innerHTML=g;
+  $('#benchNote').textContent = overflow
+    ? `通道占用 ${fmt(span,1)} mm > 槽长 ${fmt(t.trough,1)} mm`
+    : `通道占用 ${fmt(span,1)} mm ≤ 槽长 ${fmt(t.trough,1)} mm`;
+}
+function mixColor(cn){
+  // 蓝(稀) → 紫 → 红(浓)
+  const c=Math.max(0,Math.min(1,cn));
+  const stops=[[248,250,252],[191,219,254],[167,139,250],[244,114,182],[239,68,68]];
+  const p=c*(stops.length-1), i=Math.min(stops.length-2,Math.floor(p)), f=p-i;
+  const a=stops[i], b=stops[i+1];
+  return `rgb(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)})`;
+}
+
+/* ---------- 渲染：面板 ---------- */
+function renderTwin(){
+  $('#twin').innerHTML=twinKV().map(([k,v,c])=>`<dt>${k}</dt><dd class="${c}">${v}</dd>`).join('');
+}
+function renderGates(g){
+  if(!g){$('#gates').innerHTML='<div class="note">提交协议后，这里会逐条给出裁决与错误码。</div>';return;}
+  const ic={
+    pass:'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg>',
+    block:'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>',
+    skip:'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14"/></svg>'};
+  $('#gates').innerHTML=g.map(x=>`<div class="gate ${x.st}">${ic[x.st]||ic.skip}<div class="tx">
+    <span class="code">${x.code}</span><span class="rsn">${x.rsn}</span></div></div>`).join('');
+}
+function renderProto(){
+  const Lv=LEVELS[L];
+  const opts=(label,key,choices,fmtFn)=>{
+    const cur=protocol[key];
+    return `<div class="ctrl"><label><span>${label}</span><b>${fmtFn?fmtFn(cur):cur}</b></label><div class="opts">`+
+      choices.map(c=>{
+        const val=c.v!==undefined?c.v:c;
+        const txt=c.t!==undefined?c.t:(c.v!==undefined?c.v:c);
+        const dis=c.dis?'disabled':'';
+        return `<button class="opt" data-k="${key}" data-v="${val}" aria-pressed="${String(cur)===String(val)}" ${dis}>${txt}${c.s?`<small>${c.s}</small>`:''}</button>`;
+      }).join('')+`</div></div>`;
+  };
+  let h='';
+  if(Lv.gates.includes('geom')||Lv.gates.includes('cons'))
+    h+=opts('通道数','channels',[1,2,4,6,7,8].filter(n=>n<=8).map(n=>({v:n})),v=>v+' 通道');
+  if(Lv.gates.includes('vol'))
+    h+=opts('取液量 (µL)','vol',[20,50,60,100,150].map(v=>({v})),v=>v+' µL');
+  if(Lv.sim==='gradient'||Lv.sim==='channels'){
+    h+=opts('吸液高度 z (mm)','aspZ',[{v:0,t:'0.0',s:'刮底'},{v:1.5,t:'1.5',s:'留间隙'}],v=>v.toFixed(1)+' mm');
+    h+=opts('分液高度 z (mm)','dispZ',[{v:0,t:'0.0',s:'沉积'},{v:4.8,t:'4.8',s:'液面之上'}],v=>v.toFixed(1)+' mm');
+  }
+  // 混匀通道组不放进协议编辑器：它是因子实验手段，只能从「执行结果」里点，改完必须重跑。
+  if(Lv.id===5||Lv.id===6)
+    h+=opts('枪头','replace',[{v:false,t:'复用现有'},{v:true,t:'更换新枪头'}],v=>v?'已更换':'复用');
+  $('#proto').innerHTML=h;
+  $('#proto').querySelectorAll('.opt').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.k; let v=b.dataset.v;
+    if(v==='true')v=true; else if(v==='false')v=false; else if(/^-?\d+(\.\d+)?$/.test(v))v=Number(v);
+    protocol[k]=v;
+    if(k==='mixFrom'){ protocol.mixTo = v===0?0:(v===1?7:8); }
+    renderProto(); renderTwin(); renderBench(); $('#resultCard').style.display='none';
+  });
+}
+
+function simColumns(p){
+  const t=LEVELS[L].twin;
+  const f=t.colFactors||[1,1,1,1];
+  const m=mOf(p), W=100;
+  const cols=f.map((fac,ci)=>{
+    const v=100*fac;
+    let c=1.0; const steps=[];
+    for(let i=0;i<6;i++){
+      if(i>0) c=(v*m*c)/(W+v);          // 本关用理想混匀系数，读的是"纯体积/几何"偏差
+      steps.push(c);
+    }
+    let s=0,n=0;
+    for(let i=1;i<steps.length;i++){ s+=Math.log2(steps[i-1]/steps[i]); n++; }
+    const slope=-(s/n);
+    return {ci, slope, fold:Math.pow(2,-slope), steps};
+  });
+  return {cols};
+}
+
+/* ---------- 过关判定 ---------- */
+function evaluatePass(Lv, res){
+  const p=protocol, t=Lv.twin;
+  if(Lv.id===1) return p.channels<=7
+    ? {ok:true,msg:`${p.channels} 通道 = ${fmt(p.channels*CH_MM,1)} mm ≤ 槽长 ${fmt(t.trough,1)} mm`}
+    : {ok:false,msg:'8 通道放不进 71.2 mm 的槽'};
+  if(Lv.id===2) return p.vol<=t.srcVol
+    ? {ok:true,msg:`取 ${p.vol} µL，不超过孔内剩余 ${t.srcVol} µL`}
+    : {ok:false,msg:'取液量超过孔内剩余'};
+  if(Lv.id===3) return p.channels<=t.tips
+    ? {ok:true,msg:`${p.channels} 通道 ≤ 可用枪头 ${t.tips} 支`}
+    : {ok:false,msg:'枪头不够'};
+  if(Lv.id===4){
+    const ok=Math.abs(res.fold-2.0)<=0.06;
+    return {ok, msg: ok?`折叠比 ${fmt(res.fold)}，落在 2.00 ± 0.06 内`
+                       :`折叠比 ${fmt(res.fold)}，偏离目标 2.00`};
+  }
+  if(Lv.id===5){
+    const ok=res.spread<=0.05;
+    return {ok, msg: ok?`孔间偏差 ${fmt(res.spread*100,1)}%，各孔一致`
+                       :`孔间偏差 ${fmt(res.spread*100,1)}%，仍有异常孔`};
+  }
+  return {ok:false,msg:'这一关要靠归因收口'};
+}
+
+/* ---------- 执行 ---------- */
+function execute(){
+  const Lv=LEVELS[L];
+  tries[L]=(tries[L]||0)+1;
+  const gates=runGates();
+  const blocked=gates.filter(g=>g.st==='block');
+  renderGates(gates);
+  if(blocked.length){
+    $('#resultCard').style.display='none';
+    toast('被 '+blocked.map(b=>b.code).join(' / ')+' 拦下');
+    return;
+  }
+  let res=null, body='';
+  if(Lv.sim==='gradient'){
+    res=simGradient(protocol); protocol._res=res;
+    const fold=res.fold, ok=Math.abs(fold-2.0)<=0.06;
+    body+=`<div class="verdict ${ok?'ok':'warn'}"><div class="h">${
+      ok?'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg>折叠比 '+fmt(fold):
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/></svg>折叠比 '+fmt(fold)+'（目标 2.00）'}</div>
+      <p>${ok?'梯度合格，log2 斜率接近 −1.00。':'<b>没有报错，没有告警。</b>执行成功，但折叠比偏离目标 '+(100*(fold-2)/2).toFixed(1)+'%。这就是第三类故障：不报错，只给一个漂亮的错的数。'}</p></div>`;
+    body+=`<div class="kpis">
+      <div class="kpi"><div class="k">声明值 log2 斜率</div><div class="v">−1.000</div></div>
+      <div class="kpi"><div class="k">实测 log2 斜率</div><div class="v ${ok?'ok':'warn'}">${fmt(Math.log2(1/fold),3)}</div></div>
+      <div class="kpi"><div class="k">折叠比</div><div class="v ${ok?'ok':'warn'}">${fmt(fold)}</div></div>
+      <div class="kpi"><div class="k">执行状态</div><div class="v ok">成功</div></div>
+    </div>`;
+    body+=`<div class="bars">`+res.wells.map(w=>{
+      const v=Math.max(0,Math.min(1,w.conc));
+      return `<div class="bar"><span class="nm">#${w.step}</span><span class="track"><span class="fill" style="width:${v*100}%;background:${mixColor(v)}"></span></span><span class="val">${fmt(w.abs,3)}</span></div>`;
+    }).join('')+`</div>`;
+    if(!ok){
+      body+=`<div class="goalbox" style="margin-top:14px"><div class="g">怎么修？</div>
+        <div class="d">染料为什么没降一半？想想混匀：分液高度 0 mm 时染料全沉在孔底 1.5 mm 内；
+        吸液高度 0 mm 时吸头会刮到那层浓缩液，带走的是富集液而不是均匀液。
+        <b>改高度</b>，让转移的是均匀液。</div></div>`;
+    }
+  } else if(Lv.sim==='channels'){
+    res=simChannels(protocol); protocol._res=res;
+    const ok=res.spread<=0.05;
+    body+=`<div class="verdict ${ok?'ok':'warn'}"><div class="h">${
+      ok?'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg>8 孔一致':
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/></svg>孔间偏差 '+fmt(res.spread*100,1)+'%（限 5%）'}</div>
+      <p>${ok?'各孔读数一致，残差已消除。':`异常孔：<b>${res.wells.filter(w=>w.conc<Math.max(...res.wells.map(x=>x.conc))*0.9).map(w=>'Ch'+w.ch).join('、')||'无'}</b>（偏低）。位置和孔号没关系——<b>别急着换孔位</b>。`}</p></div>`;
+    body+=`<div class="bars">`+res.wells.map(w=>{
+      const mx=Math.max(...res.wells.map(x=>x.conc));
+      const bad=w.conc<mx*0.9;
+      return `<div class="bar ${bad?'hot':'cool'}"><span class="nm">Ch${w.ch}</span><span class="track"><span class="fill" style="width:${(w.conc/mx)*100}%"></span></span><span class="val">${fmt(w.abs,3)}${bad?' <span class="flag">偏低</span>':''}</span></div>`;
+    }).join('')+`</div>`;
+    body+=`<div class="goalbox" style="margin-top:14px"><div class="g">因子诊断</div>
+      <div class="d">换一个槽内混匀通道组再跑一次，看异常孔会不会<b>搬家</b>。
+      它跟着什么走，就说明残差挂在什么上。</div></div>
+      <div class="opts" style="margin-top:10px">
+        ${[[1,'1–7'],[2,'2–8'],[0,'不混匀']].map(([v,t])=>
+          `<button class="opt" data-fact="${v}" ${protocol.mixFrom===v?'disabled':''}>${t}</button>`).join('')}
+      </div>`;
+    body+=`<div class="note" style="margin-top:8px">已做因子实验 ${factors.length} 次</div>`;
+  } else if(Lv.sim==='columns'){
+    res=simColumns(protocol); protocol._res=res;
+    const dev=c=>Math.abs(Math.abs(c.slope)-1);
+    const badIdx=res.cols.findIndex(c=>dev(c)>0.06);
+    const worst=res.cols[badIdx]||res.cols[0];
+    body+=`<div class="verdict warn"><div class="h">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/></svg>
+      执行成功，但有列的斜率对不上声明值</div>
+      <p>四列全部跑完，没有错误码、没有告警。<b>系统不会告诉你是哪一列、也不会告诉你是为什么</b>——它只是把四个数摆在一起。要靠你自己归因。</p></div>`;
+    body+=`<div class="bars">`+res.cols.map(c=>{
+      const bad=dev(c)>0.06;
+      return `<div class="bar ${bad?'hot':'cool'}"><span class="nm">列 ${c.ci+1}</span>
+        <span class="track"><span class="fill" style="width:${Math.min(100,Math.abs(c.slope)/1.2*100)}%"></span></span>
+        <span class="val">斜率 ${fmt(c.slope,3)}${bad?` <span class="flag">偏差 ${fmt(dev(c)*100,1)}%</span>`:''}</span></div>`;
+    }).join('')+`</div>`;
+    body+=`<div class="kpis" style="margin-top:14px">
+      <div class="kpi"><div class="k">声明值 log2 斜率</div><div class="v">−1.000</div></div>
+      <div class="kpi"><div class="k">容差</div><div class="v">±0.060</div></div>
+      <div class="kpi"><div class="k">超差列</div><div class="v bad">${badIdx>=0?'列 '+(badIdx+1):'—'}</div></div>
+      <div class="kpi"><div class="k">执行状态</div><div class="v ok">成功</div></div>
+    </div>`;
+  }
+  if(Lv.attribute){
+    body+=`<div class="goalbox" style="margin-top:14px"><div class="g">归因</div>
+      <div class="d">四列同批、同机、同协议，为什么只有一列不对？<b>选一个能同时解释"只有这一列"和"其余三列都正常"的机制</b>，并登记进未建模物理清单。</div></div>
+      <div class="opts" id="attrOpts">
+        ${[['conc','该染料本身浓度偏低'],['volume','这一列取到的量偏少（枪头／液面公差）'],['baseline','读板机基线漂移']]
+          .map(([k,t])=>`<button class="opt" data-attr="${k}">${t}</button>`).join('')}
+      </div>`;
+  }
+  $('#resultBody').innerHTML=body;
+  $('#resultCard').style.display='block';
+  renderBench();
+
+  /* ---- 过关判定（各关统一在这里收口） ---- */
+  const verdict = evaluatePass(Lv, res);
+  if(verdict.ok){
+    body += `<div class="lesson"><div class="t">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+      合格 · ${verdict.msg}</div></div>
+      <button class="btn go nextbtn on" id="passBtn" style="margin-top:12px">完成本关</button>`;
+    $('#resultBody').innerHTML=body;
+    $('#passBtn').onclick=()=>finishLevel(true);
+  }
+
+  $('#resultBody').querySelectorAll('[data-fact]').forEach(b=>b.onclick=()=>{
+    const v=Number(b.dataset.fact);
+    factors.push(v);
+    protocol.mixFrom=v; protocol.mixTo=v===0?0:(v===1?7:8);
+    renderProto(); renderTwin(); execute();
+    toast('因子实验：混匀组 '+(v===0?'不混匀':(v===1?'1–7':'2–8')));
+  });
+  $('#resultBody').querySelectorAll('[data-attr]').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.attr;
+    if(k==='volume'){ finishLevel(true); return; }
+    if(k==='conc') toast('不对：浓度整体偏低只是等比缩放，比值不变——三列同染料的斜率都是 −1.00。');
+    if(k==='baseline') toast('不对：基线漂移会让四列同向偏，不会只偏一列。');
+  });
+}
+
+/* ---------- 关卡流转 ---------- */
+function finishLevel(ok){
+  const Lv=LEVELS[L];
+  if(!ok) return;
+  let s=3;
+  const t=tries[L]||1;
+  if(Lv.factor){
+    if(factors.length>2) s=2;
+    if(factors.length>3) s=1;
+    if(factors.length===0 && !protocol.replace) s=Math.min(s,2);   // 没做因子实验就蒙对
+  } else if(t>1) s=2;
+  if(t>3) s=1;
+  stars[L]=s;
+  $('#modalBox').innerHTML=`
+    <h2>过关 · ${Lv.title}</h2>
+    <p style="color:var(--muted);font-size:13.5px;margin-bottom:16px">${Lv.lesson}</p>
+    <div class="kpis" style="margin-bottom:18px">
+      <div class="kpi"><div class="k">提交次数</div><div class="v">${t}</div></div>
+      <div class="kpi"><div class="k">因子实验</div><div class="v">${factors.length}</div></div>
+      <div class="kpi"><div class="k">评级</div><div class="v ok">${'★'.repeat(s)}${'☆'.repeat(3-s)}</div></div>
+    </div>
+    <button class="btn go" id="nextLvl">${L<LEVELS.length-1?'进入下一关':'查看总结'}</button>`;
+  $('#modal').classList.add('on');
+  $('#nextLvl').onclick=()=>{
+    $('#modal').classList.remove('on');
+    if(L<LEVELS.length-1){ L++; factors=[]; protocol=Object.assign({},LEVELS[L].proto); loadLevel(); }
+    else summary();
+  };
+}
+function summary(){
+  const total=stars.reduce((a,b)=>a+b,0);
+  $('#modalBox').innerHTML=`
+    <h2>全部通关 · ${total}/18 星</h2>
+    <p style="color:var(--muted);font-size:13.5px;margin-bottom:16px">
+      你已经经历了中间件要处理的三类故障：<b>物理上不可能</b>（0.8 毫米）、<b>流程上无效</b>（少了一滴、弹尽粮绝）、
+      以及最阴险的<b>科学上被污染</b>——它不报错，只给一个漂亮的错的数。<br><br>
+      最后两关要的不是"拦住"，而是<b>把偏差归到某个物理机制上</b>：残差挂在枪头内壁，就换个枪头；
+      四列里只有一列对不上，就用对照组排除等比缩放与基线漂移，锁定"这一列取到的量偏少"。
+      <b>重复实验修不好这些——重复只会把同一个偏差复制得更精确。</b></p>
+    <div class="bars" style="margin-bottom:18px">
+      ${LEVELS.map((l,i)=>`<div class="bar"><span class="nm">L${i+1} ${l.title}</span>
+        <span class="track"><span class="fill" style="width:${stars[i]/3*100}%;background:#10b981"></span></span>
+        <span class="val">${'★'.repeat(stars[i])}${'☆'.repeat(3-stars[i])}</span></div>`).join('')}
+    </div>
+    <button class="btn go" id="again">再来一轮</button>`;
+  $('#modal').classList.add('on');
+  $('#again').onclick=()=>{$('#modal').classList.remove('on'); L=0; stars=[0,0,0,0,0,0]; tries={}; factors=[]; protocol=Object.assign({},LEVELS[0].proto); loadLevel();};
+}
+function loadLevel(){
+  const Lv=LEVELS[L];
+  $('#lvNum').textContent=L+1;
+  $('#lvlbar').innerHTML=LEVELS.map((_,i)=>`<i class="${i<L?'done':(i===L?'cur':'')}"></i>`).join('');
+  $('#stars').innerHTML=[0,1,2].map(i=>`<b><svg viewBox="0 0 24 24" fill="${i<stars[L]?'#f59e0b':'#e4e4e2'}"><path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.3 5.9 20.6l1.4-6.8L2.2 9.1l6.9-.8z"/></svg></b>`).join('');
+  $('#resultCard').style.display='none';
+  $('#gates').innerHTML='<div class="note">提交协议后，这里会逐条给出裁决与错误码。</div>';
+  renderProto(); renderTwin(); renderBench();
+  $('#submit').onclick=execute;
+  toast('第 '+(L+1)+' 关 · '+Lv.title);
+}
+
+/* 目标卡：插到左列最上面 */
+(function initGoal(){
+  const holder=document.querySelectorAll('.stack')[0];
+  const card=document.createElement('div');
+  card.className='card';
+  card.innerHTML='<h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>本关目标</h3><div id="goalBox"></div>';
+  holder.insertBefore(card, holder.firstChild);
+})();
+
+function renderGoal(){
+  const Lv=LEVELS[L];
+  $('#goalBox').innerHTML=`<div class="goalbox" style="border:none;padding:0;margin:0;background:none">
+    <div class="g">${Lv.goal}</div><div class="d">${Lv.desc}</div></div>`;
+}
+
+loadLevel=function(){
+  const Lv=LEVELS[L];
+  protocol=Object.assign({},Lv.proto);
+  factors=[];
+  $('#lvNum').textContent=L+1;
+  $('#lvlbar').innerHTML=LEVELS.map((_,i)=>`<i class="${i<L?'done':(i===L?'cur':'')}"></i>`).join('');
+  $('#stars').innerHTML=[0,1,2].map(i=>`<b><svg viewBox="0 0 24 24" fill="${i<stars[L]?'#f59e0b':'#e4e4e2'}"><path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.3 5.9 20.6l1.4-6.8L2.2 9.1l6.9-.8z"/></svg></b>`).join('');
+  $('#resultCard').style.display='none';
+  $('#gates').innerHTML='<div class="note">提交协议后，这里会逐条给出裁决与错误码。</div>';
+  renderGoal(); renderProto(); renderTwin(); renderBench();
+  $('#submit').onclick=execute;
+  toast('第 '+(L+1)+' 关 · '+Lv.title);
+};
+
+(function(){
+  const q=(new URLSearchParams(location.search).get('L'))||'';
+  const m=(location.hash||'').match(/^#L(\d+)$/);
+  const n=parseInt(q||(m?m[1]:''),10);
+  if(n){ L=Math.max(1,Math.min(LEVELS.length,n))-1; }
+})();
+
+window.addEventListener('hashchange',()=>{
+  const m=(location.hash||'').match(/^#L(\d+)$/);
+  if(!m) return;
+  const n=Math.max(1,Math.min(LEVELS.length,parseInt(m[1],10)));
+  if(n-1===L) return;
+  L=n-1; tries={}; stars[L]=stars[L]||0; loadLevel();
+});
+
+loadLevel();
+</script>
+</body>
+</html>

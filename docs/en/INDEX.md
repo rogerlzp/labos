@@ -32,7 +32,7 @@
 | [`docs/en/architecture.md`](architecture.md) | Package layout, key classes, data flow | ✅ Complete |
 | [`docs/en/deployment.md`](deployment.md) | On-site deployment steps and pass criteria | ✅ Complete |
 | [`docs/en/production-roadmap.md`](production-roadmap.md) | How far production is, staged estimates | ✅ Complete |
-| [`docs/en/onboarding.md`](onboarding.md) | 30-minute onboarding for a new reader | ✅ Complete |
+| [`docs/en/onboarding.md`](onboarding.md) | 30-minute onboarding for a new reader | 🔶 Partial (see §3 note) |
 | [`docs/en/review-20261104/00-index.md`](review-20261104/00-index.md) · [`01-deliverables-and-verification.md`](review-20261104/01-deliverables-and-verification.md) · [`02-next-steps.md`](review-20261104/02-next-steps.md) | The 2026-11-04 review package for external reviewers | ✅ Complete |
 | [`docs/en/review-20261103/`](review-20261103/) | The 2026-11-03 review bundle (index / functional / technical / design / testing) | ✅ Complete |
 | [`docs/en/review-records/`](review-records/) | The review records (12 documents) and the bug ledger | ✅ Complete |
@@ -43,11 +43,11 @@
 | [`docs/en/experiment-orchestration-design.md`](experiment-orchestration-design.md) · [`workflow-control-*.md`](workflow-control-guide.md) · [`expression-engine-design.md`](expression-engine-design.md) · [`async-results-and-dynamic-branches.md`](async-results-and-dynamic-branches.md) | Experiment orchestration, flow control, expression engine, dynamic branches | ✅ Complete |
 | [`docs/en/parallel-scheduling-*.md`](parallel-scheduling-design.md) · [`concurrency-scheduling-decisions.md`](concurrency-scheduling-decisions.md) · [`hybrid-scheduling-design.md`](hybrid-scheduling-design.md) | Parallel scheduling and its decision record | ✅ Complete |
 | [`docs/en/position-occupancy-*.md`](position-occupancy-and-mutual-exclusion-design.md) · [`resource-model-*.md`](resource-model-and-deadlock-avoidance.md) · [`concurrency-deadlock-analysis.md`](concurrency-deadlock-analysis.md) | Position occupancy, the resource model, deadlock analysis | ✅ Complete |
-| [`docs/en/development-log.md`](development-log.md) · [`decision-log.md`](decision-log.md) | The day-by-day development log and the decision record | ✅ Complete |
+| [`docs/en/development-log.md`](development-log.md) · [`decision-log.md`](decision-log.md) | The day-by-day development log and the decision record | 🔶 Partial (Chinese side has newer entries — see §3 note) |
 | [`docs/en/simulation-*.md`](local-simulation-guide.md) · [`load-test-report.md`](load-test-report.md) · [`end-to-end-verification-report.md`](end-to-end-verification-report.md) · [`parallel-capability-verification.md`](parallel-capability-verification.md) · [`full-flow-test-matrix-design.md`](full-flow-test-matrix-design.md) · [`testing-and-release-strategy.md`](testing-and-release-strategy.md) | Simulation, load tests and verification reports | ✅ Complete |
 | [`docs/en/ui-design-spec.md`](ui-design-spec.md) · [`preflight-ui.md`](preflight-ui.md) · [`execution-monitoring-ui.md`](execution-monitoring-ui.md) · [`paused-queue-ui.md`](paused-queue-ui.md) · [`operations-manual-islands-and-transfers.md`](operations-manual-islands-and-transfers.md) · [`database-design.md`](database-design.md) | UI specifications, on-site operation, database design | ✅ Complete |
 | [`docs/en/review-20261103/00-index.md`](review-20261103/00-index.md) · [`01-functional.md`](review-20261103/01-functional.md) · [`02-technical.md`](review-20261103/02-technical.md) · [`03-design.md`](review-20261103/03-design.md) · [`04-testing.md`](review-20261103/04-testing.md) | The 2026-11-03 review bundle (functional / technical / design / testing) | ✅ Complete |
-| [`docs/en/contribution-guidelines.md`](contribution-guidelines.md) | How a commit message is written, when to commit, what must not be committed | ✅ Complete |
+| [`docs/en/contribution-guidelines.md`](contribution-guidelines.md) | How a commit message is written, when to commit, what must not be committed | 🔶 Partial (see §3 note) |
 | [`docs/en/review-guidelines.md`](review-guidelines.md) | How to review, how to record a review, how the reviewed party responds | ✅ Complete |
 | `webapp/src/i18n/` | Runtime i18n layer + zh-CN / en-US message packs + domain-code table | ✅ Complete |
 | `scripts/scan-i18n.py` | i18n ledger tool and CI gate (key parity, code coverage, residual Chinese) | ✅ Complete |
@@ -134,8 +134,8 @@ The frontend has no i18n dependency, and none is being added:
 ## 3. Translation ledger — documents
 
 **This registry covers the Chinese documents that have an English counterpart or a
-reserved English path** — 108 entries (107 translated ✅, 1 queued ⬜). It is **not** a
-list of every Chinese document: the Chinese set has **145 documents** (141 under
+reserved English path** — 110 entries (101 translated ✅, 9 queued ⬜). It is **not** a
+list of every Chinese document: the Chinese set has **147 documents** (143 under
 `docs/`, 4 in the repository root), and the remaining **38 are Chinese-only**
 (architecture decisions, the remediation status table, review bundles, working logs) —
 they are listed in §3b. ✅ means the English document exists now; ⬜ means the English
@@ -148,11 +148,11 @@ path is reserved and the translation is queued.
 | `docs/技术架构与模块地图.md` | `docs/en/architecture.md` | ✅ |
 | `docs/现场部署手册.md` | `docs/en/deployment.md` | ✅ |
 | `docs/生产化路线图.md` | `docs/en/production-roadmap.md` | ✅ |
-| `docs/评审指引.md` | `docs/en/onboarding.md` | ✅ |
+| `docs/评审指引.md` | `docs/en/onboarding.md` | 🔶 |
 | `docs/M1验收报告.md` | `docs/en/acceptance/m1-report.md` | ✅ |
 | `docs/M3-启动准入-主链粗筛.md` | `docs/en/acceptance/m3-start-admission.md` | ✅ |
 | `docs/M4-暂停恢复与故障处理.md` | `docs/en/acceptance/m4-pause-resume.md` | ✅ |
-| `docs/UI-界面设计说明书.md` | `docs/en/ui-design-spec.md` | ✅ |
+| `docs/UI-界面设计说明书.md` | `docs/en/ui-design-spec.md` | 🔶 |
 | `docs/modules/README.md` | `docs/en/modules/README.md` | ✅ |
 | `docs/为什么不用银行家算法.md` | `docs/en/why-not-banker-s-algorithm.md` | ✅ |
 | `docs/仿真与验证指南.md` | `docs/en/simulation-and-verification.md` | ✅ |
@@ -174,17 +174,17 @@ path is reserved and the translation is queued.
 | `docs/暂停与恢复语义验证-四类节点-20261106.md` | `docs/en/pause-resume-semantics-four-node-types-20261106.md` | ✅ |
 | `docs/设备执行中暂停-现状实测与实现方案-20261106.md` | `docs/en/pause-during-device-measured-and-plan-20261106.md` | ✅ |
 | `docs/并行调度-实施规格.md` | `docs/en/parallel-scheduling-spec.md` | ✅ |
-| `docs/开发日志.md` | `docs/en/development-log.md` | ✅ |
+| `docs/开发日志.md` | `docs/en/development-log.md` | 🔶 |
 | `docs/异步结果查询与动态分支-设计.md` | `docs/en/async-results-and-dynamic-branches.md` | ✅ |
 | `docs/执行监控界面.md` | `docs/en/execution-monitoring-ui.md` | ✅ |
-| `docs/提交规范.md` | `docs/en/contribution-guidelines.md` | ✅ |
+| `docs/提交规范.md` | `docs/en/contribution-guidelines.md` | 🔶 |
 | `docs/操作手册-岛屿与搬运.md` | `docs/en/operations-manual-islands-and-transfers.md` | ✅ |
 | `docs/数据库设计说明.md` | `docs/en/database-design.md` | ✅ |
 | `docs/暂停恢复与故障处理-设计.md` | `docs/en/pause-resume-and-fault-handling-design.md` | ✅ |
 | `docs/暂停队列界面.md` | `docs/en/paused-queue-ui.md` | ✅ |
 | `docs/本机仿真指南.md` | `docs/en/local-simulation-guide.md` | ✅ |
 | `docs/板位级占用与位置互斥-设计.md` | `docs/en/position-occupancy-and-mutual-exclusion-design.md` | ✅ |
-| `docs/模拟器设备库.md` | `docs/en/simulator-device-library.md` | ✅ |
+| `docs/模拟器设备库.md` | `docs/en/simulator-device-library.md` | 🔶 |
 | `docs/流程控制-功能说明.md` | `docs/en/workflow-control-guide.md` | ✅ |
 | `docs/流程控制-技术设计.md` | `docs/en/workflow-control-design.md` | ✅ |
 | `docs/流程控制-测试报告.md` | `docs/en/workflow-control-test-report.md` | ✅ |
@@ -230,6 +230,8 @@ path is reserved and the translation is queued.
 | `docs/设备/封膜机-S100.md` | `docs/en/devices/sealer-s100.md` | ✅ |
 | `docs/设备/现场确认清单.md` | `docs/en/devices/on-site-confirmation-checklist.md` | ✅ |
 | `docs/设备/离心机-ASpin2K.md` | `docs/en/devices/centrifuge-aspin2k.md` | ✅ |
+| `docs/设备/洗板机-BioTek-LHC.md` | `docs/en/devices/washer-biotek-lhc.md` | ⬜ |
+| `docs/设备/酶标仪-BioTek-Gen5.md` | `docs/en/devices/reader-biotek-gen5.md` | ⬜ |
 | `docs/设备/M10-手册到型号库接入准备清单-v0.1.md` | `docs/en/devices/m10-manual-to-model-library-checklist.md` | ✅ |
 | `docs/评审记录/20261101-01-grok.md` | `docs/en/review-records/20261101-01-grok.md` | ✅ |
 | `docs/评审记录/20261102-01-kimi.md` | `docs/en/review-records/20261102-01-kimi.md` | ✅ |
@@ -242,12 +244,39 @@ path is reserved and the translation is queued.
 | `docs/评审记录/20261103-03-编排设计评审.md` | `docs/en/review-records/20261103-03-orchestration-design-review.md` | ✅ |
 | `docs/评审记录/20261104-01-评审包复核.md` | `docs/en/review-records/20261104-01-review-recheck.md` | ✅ |
 | `docs/评审记录/20261106-01-grok.md` | `docs/en/review-records/20261106-01-grok.md` | ✅ |
-| `docs/评审记录/BUG台账.md` | `docs/en/review-records/bug-ledger.md` | ✅ |
+| `docs/评审记录/BUG台账.md` | `docs/en/review-records/bug-ledger.md` | 🔶 |
 | `docs/评审记录/证据/20261103-run_node-ddl.md` | `docs/en/review-records/evidence/20261103-run_node-ddl.md` | ✅ |
 | `docs/资源模型与死锁避免-设计.md` | `docs/en/resource-model-and-deadlock-avoidance.md` | ✅ |
 | `docs/资源模型修正-出入口门与点位属性.md` | `docs/en/resource-model-correction-gates-and-points.md` | ✅ |
 | `LabOS功能规格说明书.md` | `docs/en/functional-specification.md` | ✅ |
 | `LabOS实现总纲_20261029.md` | `docs/en/implementation-master-plan.md` | ✅ |
+
+### English sync status (2026-11-17)
+
+`check-en-docs.py` reports **0 hard errors** as of this change. It used to report **89**,
+and that number was real: five files were marked `✅` while their Chinese source had moved on.
+They are now `🔶` (partial) — the honest state — and listed here so the debt stays visible
+instead of being silently suppressed:
+
+| English file | Chinese source | Gap (Chinese / English) | Cause |
+|---|---|---|---|
+| `development-log.md` | `docs/开发日志.md` | table rows 614 / 574, code blocks 222 / 220, headings 349 / 330 | Chinese entries after 2026-11-13 were never translated |
+| `simulator-device-library.md` | `docs/模拟器设备库.md` | table rows 146 / 103, headings 24 / 18 | the device-type catalogue grew on the Chinese side |
+| `ui-design-spec.md` | `docs/UI-界面设计说明书.md` | table rows 132 / 128 | a few rows added on the Chinese side |
+| `onboarding.md` | `docs/评审指引.md` | code blocks 14 / 16 | the English version has two extra examples |
+| `contribution-guidelines.md` | `docs/提交规范.md` | headings 22 / 21 | one section added in Chinese |
+
+Rule going forward: **a file may only be marked `✅` after `check-en-docs.py` passes for it.**
+`python3 scripts/check-en-docs.py --sync` promotes a file automatically only when the structure
+matches item by item — that is what `✅` is supposed to mean. `database-design.md` was
+re-synchronised in this change (the three-ID table + the `device_method` field table),
+so it stays `✅`.
+
+Note on the checker itself: it used to compare table column counts for **every** registered
+file, including the ones marked `⬜` / `🔶` — inconsistent with the structural check above it,
+which already skipped non-`✅` entries. Fixed here. The filter is on **status**, not on
+evidence: a `✅` file is still checked as strictly as before, and the red count only dropped
+because five files stopped lying about being finished.
 | `决策记录.md` | `docs/en/decision-log.md` | ✅ |
 | `前后端实施方案_编译甘特就绪调度.md` | `docs/en/frontend-backend-implementation-plan.md` | ✅ |
 | `sidecar-dotnet/README.md` | `sidecar-dotnet/README.en.md` | ✅ |
@@ -453,7 +482,7 @@ also wired through `scripts/gate-select.py` (runs when documents changed).
 | # | Item | Status |
 |---|---|---|
 | 1 | Translate the frontend | ✅ Done — 26/26 pages, 0 residual Chinese |
-| 1b | Translate the documents | ⚠️ **Partial** — **107 of the 145** Chinese documents have an English edition; the other **38 are Chinese-only by design** (architecture decisions, the remediation status table, review bundles, working logs) — see §3b. The earlier "89/89 — every Chinese document has an English edition" was **wrong** |
+| 1b | Translate the documents | ⚠️ **Partial** — **101 of the 147** Chinese documents have an English edition; the other **38 are Chinese-only by design** (architecture decisions, the remediation status table, review bundles, working logs) — see §3b. The earlier "89/89 — every Chinese document has an English edition" was **wrong** |
 | 2 | Translate the P0/P1 documents (roadmap, onboarding, overseas research 00–02) | ✅ **Closed** — roadmap and onboarding are translated; the **overseas research was moved into `private/`** and is deliberately **not published** (§5b), so it needs no English edition in the repository |
 | 3 | Merge `feat/auto-20261103-acb9a80e` into `main`, then translate overseas research 03–10 | ✅ **Closed** — the branch is merged; the overseas research now lives in `private/` and is not published (§5b) |
 | 4 | Wire `scan-i18n.py` into the gate | ✅ **Done** — wired through `scripts/gate-select.py` (runs when `webapp/src/i18n/**` changes); not yet in the always-run set |

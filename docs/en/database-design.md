@@ -77,18 +77,40 @@ WHERE parent_id = (SELECT id FROM resource_node WHERE code = 'ID1183')
 | Used by | The graph, the execution records, the positions | **The drivers, the probes** ★ |
 | Relation | `device_instance.resource_id → resource_node.id` | |
 
-**⚠ This is the easiest pitfall in this project**: both are `long`, mixing them up raises
-no error but behaves wrongly.
-The upper layers uniformly use `resource_node.id`; **it is only converted into
-`device_instance.id` right before calling the driver**.
+**⚠ This is the easiest pitfall in this project**: two/three sets of IDs are all
+`long`/`bigint`, mixing them up raises no error but behaves wrongly.
+
+**Three sets of IDs** (settled 2026-11-16, see `docs/architecture/设备ID空间与型号解析-20261116.md`):
+
+| ID space | Column | Who uses it |
+|---|---|---|
+| **Instance id** | `device_instance.id` | `StepContext.resourceId()` at run time, device lock, heartbeat, command ledger |
+| **Resource id** | `resource_node.id` | Topology tree, points, capability binding, position lock |
+| **Model row id** | `device.id` (the `device` table is the **model definition**) | `device_method`, error codes, model attributes |
+
+There is exactly one chain:
 
 ```sql
--- The conversion (wrapped in instanceIdOf() in the code)
+device_instance.resource_id      → resource_node.id      -- resource id
+device_instance.device_model_id  → device.id             -- model row id (named device_id before 2026-11-16)
+device_method.device_model_id    → device.id             -- the method library hangs off the model
+```
+
+Converting between `device_instance.id` and `resource_node.id` (wrapped in `instanceOfResource()`):
+
+```sql
 SELECT id FROM device_instance WHERE resource_id = ? AND deleted_at IS NULL;
 ```
 
+**Instance → model must go through one entry point only**: `DeviceIdentityResolver.modelIdOf(instanceId)`
+(Java). The only SQL it executes is `DeviceStateMapper.selectModelIdOfInstance`.
+Do not write that query yourself in business code, and never pass an instance id into any
+`device_method` query — the column has been renamed to `device_model_id`, so a wrong id now
+fails with "column does not exist"; the three `DeviceIds` records also catch it at compile time.
+
 The key fields: `driver_id` (which driver endpoint it goes through), `ip` (ownership
-identifier + troubleshooting, **not the communication address**).
+identifier + troubleshooting, **not the communication address**), and `device_model_id`
+(**empty = the model is not registered** ⇒ method/timeout resolution falls back and warns).
 
 ### `capability` — the capability dictionary
 
@@ -285,13 +307,17 @@ so `device_instance.ip` is not the communication address — `driver.endpoint` i
 
 | Field | Explanation |
 |---|---|
-| `device_id` / `capability_id` | Which devices / capabilities can call this method |
+| `device_model_id` / `capability_id` | Which **model** / capability can call this method. ⚠ it is `device.id` (the model row), **not** an instance id (named `device_id` before 2026-11-16, see `BUG-20261116-02`) |
+| `device_instance_id` / `scope` / `position_id` | P1 **instance-level / purpose-level overrides** (the model level is the default, the instance level is more specific) |
 | `method` | The method name, e.g. `Deposit1`, `Transfer`, `Home` |
-| `params` jsonb | The parameter definition (`control_type`, `required`, `options`) |
-| `timeout_ms` | The timeout |
+| `param_schema` jsonb | The parameter definition (`params` array: `control_type`, `required`, `options`) |
+| `estimate_sec` / `timeout_sec` | Estimated duration / timeout (**seconds**, 0 = not configured) |
+| `interruptible` | Whether it may be safely interrupted mid-execution (default false) |
 
 After the frontend has picked a method it fetches `GET /api/methods/{method}/params` to
 render the form; the data comes from here.
+The **correct** way to read the methods of a device is `DeviceMapper.xml#selectDeviceMethods`:
+`di.resource_id = ?` then `JOIN device_method dm ON dm.device_model_id = di.device_model_id`.
 
 ### `device_log` — the communication log (partitioned by month)
 
