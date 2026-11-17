@@ -362,6 +362,16 @@ public class WorkflowWebService {
         } catch (IllegalArgumentException e) {
             return Jsons.obj("error", e.getMessage());
         }
+        // P3：阶段编码不参与编译，但设计器/甘特/看板都要按阶段着色与聚合 ⇒
+        // 直接从 workflow_node 补一列，避免为它改动 GNode/NodePlan 的整条链。
+        java.util.Map<String, String> stageByKey = new java.util.HashMap<>();
+        for (java.util.Map<String, Object> row : graphMapper.selectWorkflowNodes(workflowId)) {
+            Object k = row.get("nodeKey");
+            Object st = row.get("stageCode");
+            if (k != null && st != null) {
+                stageByKey.put(String.valueOf(k), String.valueOf(st));
+            }
+        }
         List<String> nodes = new ArrayList<>();
         for (RecipeCompiler.NodePlan p : r.nodes()) {
             List<String> steps = new ArrayList<>();
@@ -377,6 +387,7 @@ public class WorkflowWebService {
                     "fromRecipe", p.fromRecipe(),
                     "sampleCount", p.sampleCount(),
                     "stepCount", p.stepCount(),
+                    "stageCode", stageByKey.get(p.nodeKey()),
                     "steps", new Jsons.Raw(Jsons.arr(steps))));
         }
         return Jsons.obj(
@@ -521,6 +532,21 @@ public class WorkflowWebService {
     public boolean updateNodeBinding(long workflowId, String nodeKey,
                                      String method, String methodParamsJson,
                                      Long resourceId) throws SQLException {
+        return updateNodeBinding(workflowId, nodeKey, method, methodParamsJson,
+                resourceId, null);
+    }
+
+    /**
+     * 同 {@link #updateNodeBinding(long, String, String, String, Long)}，额外写阶段编码。
+     *
+     * @param stageCode 客户§3阶段（S1..S8/S0/S9）。{@code null} = 不改动；
+     *                  空串 = 清除阶段。**必须同时改表与 XML**：
+     *                  表是甘特/看板聚合用的，XML 是下次保存图的真源 ——
+     *                  只改表的话，下次点保存会被 XML 里没有该属性覆盖成 NULL。
+     */
+    public boolean updateNodeBinding(long workflowId, String nodeKey,
+                                     String method, String methodParamsJson,
+                                     Long resourceId, String stageCode) throws SQLException {
         if (nodeKey == null || nodeKey.isBlank()) {
             throw new IllegalArgumentException("nodeKey 不能为空");
         }
@@ -539,9 +565,13 @@ public class WorkflowWebService {
                                 ? "{}" : methodParamsJson,
                         m.startsWith("__"), m);
 
+                if (stageCode != null) {
+                    graphMapper.updateNodeStage(TENANT, workflowId, nodeKey, stageCode);
+                }
+
                 String xml = mapper.selectWorkflowXml(TENANT, workflowId);
                 if (xml != null && !xml.isBlank()) {
-                    String patched = patchNodeAttrs(xml, nodeKey, m, resourceId);
+                    String patched = patchNodeAttrs(xml, nodeKey, m, resourceId, stageCode);
                     if (!patched.equals(xml)) {
                         graphMapper.updateWorkflowGraph(TENANT, workflowId, patched);
                     }
@@ -571,6 +601,11 @@ public class WorkflowWebService {
      */
     private static String patchNodeAttrs(String xml, String nodeKey,
                                          String method, Long resourceId) {
+        return patchNodeAttrs(xml, nodeKey, method, resourceId, null);
+    }
+
+    private static String patchNodeAttrs(String xml, String nodeKey,
+                                         String method, Long resourceId, String stageCode) {
         java.util.regex.Pattern pat = java.util.regex.Pattern.compile(
                 "<([a-zA-Z0-9_:]+)([^>]*?\\sid=\"" + java.util.regex.Pattern.quote(nodeKey)
                         + "\")([^>]*?)(/?)>");
@@ -615,6 +650,13 @@ public class WorkflowWebService {
             } else {
                 attrs.remove("resource");
                 attrs.remove("resourceName");
+            }
+        }
+        if (stageCode != null) {
+            if (stageCode.isBlank()) {
+                attrs.remove("stageCode");
+            } else {
+                attrs.put("stageCode", stageCode.trim());
             }
         }
 
@@ -696,8 +738,10 @@ public class WorkflowWebService {
                 method = String.valueOf(m);
             }
         }
+        Object stage = binding == null ? null : binding.get("stageCode");
         return Jsons.obj("workflowId", workflowId, "nodeKey", nodeKey,
                 "method", method, "resourceId", resourceId,
+                "stageCode", stage == null ? null : String.valueOf(stage),
                 "params", new Jsons.Raw(params));
     }
 

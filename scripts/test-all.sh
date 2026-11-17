@@ -178,6 +178,10 @@ PURE=(
   # 时间约束（L1-1.6，P0）：最短补等 / 最长超限 EC-11-0001 / 前驱未跑不检查 / 补等上限守卫
   "engine.TimeConstraintSelfTest"
   "workflow.GraphRunnerTest"
+  # 点位视角的执行期搬运插入（跨设备才插 / 同设备不插 / 存量写法不插 / 参数口径 / 幂等）
+  "workflow.PositionFlowPlannerTest"
+  # 阶段编码（P3）在解析层不能丢：自定义属性 stageCode → GNode.stageCode
+  "workflow.WorkflowGraphParserStageTest"
   # 网关结构预检 PF-15/16/17/18（成对 / 直通 / 条件齐备）—— 纯逻辑，只看图
   "workflow.PreflightGatewayStructureSelfTest"
   # 调度队列排序收口（规格 §14.6）：EDD → priority DESC → FIFO，直接排 QUEUE_ORDER
@@ -219,6 +223,10 @@ PURE=(
   # P1 精确点位：节点绑的点位 → 设备参数（targetPosition/sourcePosition）
   # 方向判错就是搬错位置，所以方向矩阵与 spec 优先级单独测（不连库）
   "workflow.NodeBindingPositionSelfTest"
+  # 设备 id 空间（2026-11-16）：实例号/资源号/型号行号三套 bigint 混用会静默查错行。
+  # 源码不变量扫描：mapper 不得再用 device_id 列 / Java 不得把实例号喂给型号语义方法 /
+  # DeviceIds 三套 record 不可互换 / 换算只在 selectModelIdOfInstance 一处 / 诊断计数契约
+  "driver.DeviceIdSpaceSelfTest"
 )
 
 # 连库：位置锁 / 暂停恢复 / 配方编译
@@ -344,6 +352,9 @@ DB=(
   # 三条绑定链的**端到端**：点位×方法 / 节点绑定 / 设备池
   # —— 界面配出来的东西后端真的存得进去、读得回来吗？
   "device.BindingEndToEndDbSelfTest"
+  # 设备型号解析（2026-11-16）：撞号 1:1 复现（实例号 == 另一型号的行号）
+  # + 换算后正确 + 落空计数 + 缓存/invalidate
+  "device.DeviceModelIdResolutionDbSelfTest"
 )
 
 # 连库自测的**类名候选**（2026-11-16 修）：

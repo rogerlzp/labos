@@ -661,6 +661,15 @@ public class WorkflowService {
      *             供条件表达式/循环退出条件使用
      */
     public long startAsync(long workflowId, String attendance, String vars) throws SQLException {
+        return startAsync(workflowId, attendance, vars, null);
+    }
+
+    /**
+     * @param stages 本次只跑这些阶段（客户§3 编码，如 {@code S1,S2}）；null/空 = 全部阶段。
+     *               裁剪在**执行期**做（节点记 SKIPPED 继续下游），图与绑定一个字不改。
+     */
+    public long startAsync(long workflowId, String attendance, String vars,
+                           java.util.Set<String> stages) throws SQLException {
         WorkflowDef wf = RealWorkflowRunner.loadWorkflow(db, workflowId);
         String mode = UNATTENDED.equalsIgnoreCase(attendance) ? UNATTENDED : ATTENDED;
         long runId = createRun(wf, mode);
@@ -681,11 +690,21 @@ public class WorkflowService {
             vj.append('}');
             rm().mergeRunInputVars(tenantId, runId, "{\"vars\":" + vj + "}");
         }
+        if (stages != null && !stages.isEmpty()) {
+            // 记进 run.input.stages：事后能回答"这次为什么有些节点是 skipped"。
+            StringBuilder sj = new StringBuilder("[");
+            for (String st : stages) {
+                if (sj.length() > 1) sj.append(',');
+                sj.append('"').append(st.trim()).append('"');
+            }
+            sj.append(']');
+            rm().mergeRunInputJson(tenantId, runId, "{\"stages\":" + sj + "}");
+        }
 
         try {
             submitRunWorker(runId, "run-exec-" + runId, () -> {
                 try {
-                    execute(workflowId, mode, runId);
+                    execute(workflowId, mode, runId, java.util.Set.of(), stages);
                 } catch (Exception e) {
                     try {
                         markRunFailed(runId, e.getMessage());
@@ -825,6 +844,16 @@ public class WorkflowService {
      */
     public Execution execute(long workflowId, String attendance, Long presetRunId,
                              java.util.Set<String> skipKeys) throws SQLException {
+        return execute(workflowId, attendance, presetRunId, skipKeys, null);
+    }
+
+    /**
+     * @param stageFilter 本次只跑这些阶段（客户§3 编码）；null/空 = 全部。
+     *                    不属于所选阶段的节点记 SKIPPED 后继续下游。
+     */
+    public Execution execute(long workflowId, String attendance, Long presetRunId,
+                             java.util.Set<String> skipKeys,
+                             java.util.Set<String> stageFilter) throws SQLException {
         // 分段计时：排查"命令只花 312ms 但总耗时 5 秒"用。
         // 打开方式：LABOS_TRACE_TIMING=1
         final boolean trace = System.getenv("LABOS_TRACE_TIMING") != null;
@@ -1160,6 +1189,45 @@ public class WorkflowService {
             String xml = graphEnabled ? loadGraphXml(workflowId) : null;
             boolean viaGraph = false;
             if (xml != null && !xml.isBlank()) {
+                // ---- 点位视角的搬运规划（执行期图变换，图本身不被写库）----
+                // 应用者的图里只有点位；两点位跨设备时在这里补机械臂 Transfer。
+                // 三条 map 必须是**可变**的：planner 的合成节点要追加进去，
+                // 而 GraphRunner / RunStateMachine 持有的是同一个对象引用。
+                final Map<String, Long> bindingInstances =
+                        new java.util.LinkedHashMap<>(loadNodeBindingInstances(workflowId));
+                final Map<String, PositionFlowPlanner.BindingPoint> pointBindings =
+                        loadPointBindings(workflowId);
+                final Long armResourceId = resolveTransferResource(capPool, viaDriver, effIsland);
+                // 阶段裁剪：本次不跑的节点。给 planner 也要用 —— 被裁掉的节点
+                // 不能再去插搬运，否则"只跑 S1"却因为 S2 的边需要板而卡住。
+                final java.util.Set<String> trimKeys = stageTrimKeys(workflowId, stageFilter);
+                final java.util.function.UnaryOperator<WorkflowGraphParser.Graph> planTransports =
+                        graph -> {
+                            WorkflowGraphParser.Graph planned = applyTransportPlan(
+                                    graph, pointBindings, armResourceId, nodeIdByKey,
+                                    paramsByNode, trimKeys);
+                            // 合成节点也要有 run_node 行：命令台账 / 状态回写 / 人工窗口
+                            // 全都按「节点 id → 行 id」挂载，缺行会在失败路径上 NPE
+                            // （实测：搬运因无板失败 ⇒ 落命令时 Long 拆箱 NPE）。
+                            List<RecoverableNode> extra = new ArrayList<>();
+                            for (Map.Entry<String, Long> e : nodeIdByKey.entrySet()) {
+                                if (e.getValue() == null || e.getValue() >= 0) {
+                                    continue;   // 只有合成节点用负数 id
+                                }
+                                extra.add(RecoverableNode.of(e.getValue(), e.getKey(),
+                                        "ARM_TRANSFER", "TRANSFER", "Transfer", null, List.of()));
+                            }
+                            if (!extra.isEmpty()) {
+                                try {
+                                    nodeIdMap.putAll(createNodeShells(runId, extra,
+                                            deviceToResourceOf(), validResourcesOf()));
+                                } catch (SQLException e) {
+                                    log.error("[搬运规划] 建合成节点壳行失败（台账会缺行）: "
+                                            + e.getMessage());
+                                }
+                            }
+                            return planned;
+                        };
                 GraphRunner gr = new GraphRunner(sm, capPool, protocolCap, capByKey,
                         nodeIdByKey, line -> {
                             // 其余图日志仍不刷屏；暂停落点必须进内核 stdout，
@@ -1170,7 +1238,7 @@ public class WorkflowService {
                         })
                         .withResourceCapability(resourceCap)
                         .withBoundInstances(loadBoundInstances())
-                        .withNodeBindingInstances(loadNodeBindingInstances(workflowId))
+                        .withNodeBindingInstances(bindingInstances)
                         // P-05：编排里**显式绑定**的节点走 pinned 分支，直接用那台
                         // 设备，不经候选池 ⇒ 岛过滤对它无效 ⇒ 这里把岛内实例集合交给
                         // 执行器，越岛绑定**明确拒绝**（不静默换设备）。
@@ -1178,6 +1246,7 @@ public class WorkflowService {
                         // pinned 设备离线 ⇒ 走「无可用设备」路径（不静默换设备，也不假成功）
                         .withOfflineInstances(offlineInstances)
                         .withSkipKeys(skipKeys)
+                        .withTrimKeys(trimKeys)
                         // 条件表达式/循环退出条件的取值来源（run.input.vars）
                         .withVariables(loadRunVars(runId))
                         // 节点输出 → 变量（循环靠它走够次数退出）
@@ -1230,7 +1299,8 @@ public class WorkflowService {
                 final StepExecutor seqExecutor = executor;
                 final List<RecoverableNode> recFinal = rec;
                 GraphExecution graphExecution = executeGraphWithParseFallback(
-                        xml, () -> sm.executeAll(recFinal, seqExecutor), gr, seqExecutor);
+                        xml, () -> sm.executeAll(recFinal, seqExecutor), gr, seqExecutor,
+                        planTransports);
                 progress = graphExecution.progress();
                 viaGraph = graphExecution.viaGraph();
                 if (viaGraph) {
@@ -1371,6 +1441,194 @@ public class WorkflowService {
         }
         // 故意放在 try/catch 之外：执行期异常绝不能触发顺序重跑。
         return new GraphExecution(graphRunner.run(graph, executor), true);
+    }
+
+    /**
+     * 阶段裁剪：算出本次**不执行**的节点（stage_code 有值且不在所选集合里）。
+     *
+     * <p>未分阶段的节点（变量/网关/公共步骤）一律**照常执行** —— 它们通常是把板号
+     * 从上一阶段传到下一阶段的胶水，裁掉会让下游拿不到参数。
+     */
+    private java.util.Set<String> stageTrimKeys(long workflowId,
+                                                java.util.Set<String> stageFilter)
+            throws SQLException {
+        if (stageFilter == null || stageFilter.isEmpty() || graphMapper == null) {
+            return java.util.Set.of();
+        }
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (Map<String, Object> row : graphMapper.selectWorkflowNodes(workflowId)) {
+            Object key = row.get("nodeKey");
+            Object stage = row.get("stageCode");
+            if (key == null || stage == null) {
+                continue;
+            }
+            if (!stageFilter.contains(String.valueOf(stage))) {
+                out.add(String.valueOf(key));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 带**图变换**的图执行：解析后先过一遍 {@code transform}（点位视角插搬运），再执行。
+     *
+     * <p>为什么变换放在解析之后、执行之前：变换只改内存里的 Graph，
+     * **不写 workflow.graph**（应用者的图必须保持"只有点位"）。
+     * 解析失败仍然退回顺序执行（那条路径没有图，也就没有搬运可插）。
+     */
+    static GraphExecution executeGraphWithParseFallback(
+            String xml,
+            java.util.function.Supplier<RunProgress> sequentialFallback,
+            GraphRunner graphRunner,
+            StepExecutor executor,
+            java.util.function.UnaryOperator<WorkflowGraphParser.Graph> transform) {
+        final WorkflowGraphParser.Graph graph;
+        try {
+            graph = WorkflowGraphParser.parse(xml);
+        } catch (RuntimeException parseFailure) {
+            log.error("[WARN] BPMN 解析失败（尚未派发设备命令），退回顺序执行: "
+                    + parseFailure.getMessage());
+            return new GraphExecution(sequentialFallback.get(), false);
+        }
+        WorkflowGraphParser.Graph planned = graph;
+        if (transform != null) {
+            try {
+                planned = transform.apply(graph);
+            } catch (RuntimeException planFailure) {
+                // 规划失败不阻断执行：老行为（按原图跑）比整单跑不起来更可接受，
+                // 但要留下明确日志 —— 静默跳过搬运会让板子停在半路。
+                log.error("[搬运规划] 失败，按原图执行（可能搬不过去）: "
+                        + planFailure.getMessage(), planFailure);
+            }
+        }
+        return new GraphExecution(graphRunner.run(planned, executor), true);
+    }
+
+    /** 合成搬运节点的 id 基数（负数，避免与 workflow_node.id 撞号）。 */
+    private static final long SYNTHETIC_NODE_ID_BASE = -1_000_000L;
+
+    /**
+     * 点位绑定 → 规划的输入。
+     *
+     * <p>一个节点绑了多个点位时只取 **seq 最小的那一条**：搬运只关心"这个节点在哪个坑"，
+     * 多绑位的语义（一个节点处理多块板）还没进规划器。
+     */
+    private Map<String, PositionFlowPlanner.BindingPoint> loadPointBindings(long workflowId)
+            throws SQLException {
+        Map<String, PositionFlowPlanner.BindingPoint> out = new LinkedHashMap<>();
+        List<Map<String, Object>> rows = com.labos.kernel.persistence.Mappers
+                .get(com.labos.kernel.persistence.BindingMapper.class)
+                .selectNodeBindingPoints(tenantId, workflowId);
+        for (Map<String, Object> row : rows) {
+            Object key = row.get("nodeKey");
+            Object pointId = row.get("pointId");
+            Object devId = row.get("deviceResourceId");
+            Object devCode = row.get("deviceCode");
+            if (!(key instanceof String k) || !(pointId instanceof Number pid)
+                    || !(devId instanceof Number did)) {
+                continue;
+            }
+            if (out.containsKey(k)) {
+                continue;   // 已有（seq 更小）的那条
+            }
+            String pointCode = row.get("pointCode") == null
+                    ? null : String.valueOf(row.get("pointCode"));
+            out.put(k, new PositionFlowPlanner.BindingPoint(
+                    k, pid.longValue(), did.longValue(), pointCode,
+                    // ⚠ 驱动认的是**点位编码**（唯一），不是 position_label：
+                    // 两个设备的板位都可能标 "PLATE" ⇒ 用 label 会解析不到/串位
+                    // （实测 EC-POSITION-OCCUPIED，还指向机械臂自己的资源）。
+                    pointCode,
+                    devCode == null ? null : String.valueOf(devCode),
+                    !Boolean.FALSE.equals(row.get("robotReachable"))));
+        }
+        return out;
+    }
+
+    /**
+     * 第一台 TRANSFER 能力设备（多臂时先取一台；以后按区域/示教覆盖选）。
+     *
+     * <p>⚠ 这里返回的是 **resource_node.id**，不是 device_instance.id ——
+     * `selectCapabilityPools` 查的是 `resource_capability.resource_id`。
+     * 两套 id 混用会静默失效：按 instance 过滤岛 ⇒ 一台都匹配不上 ⇒ 规划器整体跳过，
+     * 现场表现是"图上两点位相邻，跑完却没有搬运"（2026-11-17 实测踩到）。
+     */
+    private Long resolveTransferResource(Map<String, List<Long>> capPool, boolean viaDriver,
+                                         Long islandId) throws SQLException {
+        List<Long> arms = capPool == null ? List.of() : capPool.getOrDefault("TRANSFER", List.of());
+        // 模拟路径的能力池就是 resource_node.id 口径 ⇒ 直接用。
+        if (!viaDriver && !arms.isEmpty()) {
+            return arms.get(0);
+        }
+        // 驱动路径的能力池是 device_instance.id 口径，而合成节点要写 **resource** ⇒
+        // 回库按岛取 resource_id（同时兜住"机械臂驱动没注册 ⇒ 池里没有"）。
+        if (islandId == null) {
+            return null;
+        }
+        try {
+            Map<String, Object> row = com.labos.kernel.persistence.Mappers
+                    .get(com.labos.kernel.persistence.BindingMapper.class)
+                    .selectTransferDeviceInIsland(tenantId, islandId);
+            Object id = row == null ? null : row.get("resourceId");
+            return id instanceof Number n ? n.longValue() : null;
+        } catch (RuntimeException e) {
+            // 拿不到机械臂不该让整单跑不起来：按原图执行 + 明确日志（板会停在半路）。
+            log.error("[搬运规划] 取岛内机械臂失败，本次不插搬运: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 执行期搬运规划：在跨设备的相邻点位之间插入机械臂 {@code Transfer}。
+     *
+     * <p>三张图必须**原地追加**（调用方传进来的是可变 map，且被 GraphRunner /
+     * RunStateMachine 以引用持有）：
+     * <ul>
+     *   <li>{@code nodeIdByKey} —— 合成节点也要有 id（用负数基数，见上）</li>
+     *   <li>{@code paramsByNode} —— Transfer 的 source/target/position/barcode</li>
+     * </ul>
+     *
+     * <p>机械臂用 **resource id** 写进合成节点的 `resource`：执行器本来就有
+     * `resource_node.id → device_instance.id` 的映射（`loadBoundInstances`），
+     * 复用那条路比再造一套 pin 更稳。
+     */
+    static WorkflowGraphParser.Graph applyTransportPlan(
+            WorkflowGraphParser.Graph graph,
+            Map<String, PositionFlowPlanner.BindingPoint> pointBindings,
+            Long armResourceId,
+            Map<String, Long> nodeIdByKey,
+            Map<Long, Map<String, Object>> paramsByNode,
+            java.util.Set<String> trimKeys) {
+        if (graph == null || armResourceId == null
+                || pointBindings == null || pointBindings.isEmpty()) {
+            return graph;
+        }
+        // 现有节点的参数（planner 顺 barcode 用）
+        Map<String, Map<String, Object>> paramsByKey = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> e : nodeIdByKey.entrySet()) {
+            Map<String, Object> p = paramsByNode.get(e.getValue());
+            if (p != null) {
+                paramsByKey.put(e.getKey(), p);
+            }
+        }
+        PositionFlowPlanner.Plan plan =
+                PositionFlowPlanner.plan(graph, pointBindings, armResourceId, paramsByKey,
+                        trimKeys);
+        if (plan.transports().isEmpty()) {
+            return graph;
+        }
+        long nextId = SYNTHETIC_NODE_ID_BASE;
+        for (Map.Entry<String, Map<String, Object>> e : plan.paramsByNodeKey().entrySet()) {
+            long id = nextId--;
+            nodeIdByKey.put(e.getKey(), id);
+            paramsByNode.put(id, e.getValue());
+        }
+        log.info("[搬运规划] 插入 {} 段机械臂搬运：{}", plan.transports().size(),
+                plan.transports().stream()
+                        .map(t -> t.fromDevice() + "." + t.fromPoint()
+                                + " → " + t.toDevice() + "." + t.toPoint())
+                        .toList());
+        return plan.graph();
     }
 
     /** {@link #executeGraphWithParseFallback} 的结果：进度 + 这次是否真的走了图执行。 */
@@ -3159,12 +3417,36 @@ public class WorkflowService {
     private long deviceLockWaitMs(long instanceId) {
         Long sec = null;
         try {
-            sec = qm().selectDeviceLockTimeoutSec(tenantId, instanceId);
+            // ⚠ 这里传进来的是**实例号**，而 device_method 挂的是**型号行号**
+            //   （device.id）。2026-11-16 之前直接拿实例号去查 ⇒ 设备锁等待上限也查错行
+            //   （与超时那条同源）。换算走唯一入口。
+            com.labos.kernel.device.DeviceIds.ModelId modelId =
+                    identityResolver().modelIdOf(instanceId);
+            if (modelId.known()) {
+                sec = qm().selectDeviceLockTimeoutSec(tenantId, modelId.value());
+            }
         } catch (RuntimeException e) {
             sec = null;
         }
         long ms = (sec == null ? 0L : sec) * 1000L;
         return Math.min(DEVICE_LOCK_WAIT_MAX_MS, Math.max(DEVICE_LOCK_WAIT_MIN_MS, ms));
+    }
+
+    /** 实例号 → 型号行号换算器（懒建；与 DriverStepExecutor 共用同一套缓存口径）。 */
+    private volatile com.labos.kernel.device.DeviceIdentityResolver identityResolver;
+
+    private com.labos.kernel.device.DeviceIdentityResolver identityResolver() {
+        com.labos.kernel.device.DeviceIdentityResolver r = identityResolver;
+        if (r == null) {
+            synchronized (this) {
+                r = identityResolver;
+                if (r == null) {
+                    r = new com.labos.kernel.device.DeviceIdentityResolver(tenantId);
+                    identityResolver = r;
+                }
+            }
+        }
+        return r;
     }
 
     /**
@@ -3506,6 +3788,47 @@ public class WorkflowService {
         return id;
     }
 
+    /**
+     * 克隆一条流程：**图 + 节点 + 节点绑定 + 边 + 流程变量**，返回新流程 id。
+     *
+     * <p>为什么模板层必须有它：模板要复用整条工艺图（43 节点 / 30 条绑定），
+     * 不复制就只能"多模板共用一个流程"——应用者改 A 模板会串到 B 模板上。
+     *
+     * <p>绑定的对齐键是 **node_key**（不是位置序号）：位置序号对齐正是
+     * 2026-11-15「Elute 发给 P_AUTO-1」事故的成因。
+     *
+     * <p>没有显式事务（mapper 每次各开一个会话）⇒ 失败时把半截流程软删，
+     * 避免留下一张"看着能跑、绑定只复制了一半"的脏资产。
+     */
+    public long cloneWorkflow(long srcId, String name, String code, Long createdBy)
+            throws SQLException {
+        if (graphMapper == null) {
+            throw new IllegalStateException("GraphMapper 未注入");
+        }
+        if (graphMapper.selectGraphXml(tenantId, srcId) == null) {
+            throw new IllegalArgumentException("源流程不存在: " + srcId);
+        }
+        String nm = (name == null || name.isBlank())
+                ? "副本-" + srcId : name.trim();
+        String cd = (code == null || code.isBlank())
+                ? "CLONE-" + System.currentTimeMillis() % 100000000L : code.trim();
+
+        Long newId = graphMapper.cloneWorkflowRow(tenantId, srcId, cd, nm, createdBy);
+        if (newId == null) {
+            throw new IllegalArgumentException("源流程不存在: " + srcId);
+        }
+        try {
+            graphMapper.cloneWorkflowNodes(tenantId, srcId, newId);
+            graphMapper.cloneNodeBindings(tenantId, srcId, newId);
+            graphMapper.cloneWorkflowEdges(tenantId, srcId, newId);
+            graphMapper.cloneWorkflowVariables(tenantId, srcId, newId);
+            return newId;
+        } catch (RuntimeException e) {
+            graphMapper.softDeleteWorkflow(tenantId, newId);
+            throw e;
+        }
+    }
+
     /** 最小可用图：开始 → 结束（带 DI，否则 bpmn-js 画不出来）。 */
     private static String blankGraphXml(long id, String name) {
         return """
@@ -3777,6 +4100,13 @@ public class WorkflowService {
 
                     graphMapper.upsertNode(tenantId, workflowId, n.key(), n.name(),
                             n.type(), cap, insertParams, updateParams, n.resourceId(), seq);
+
+                    // P3：阶段编码单独回写。**只在 XML 明确带 stageCode 时才写** ——
+                    // 若对"没这个属性"也写 NULL，用脚本重建图（不带属性）就会把
+                    // 界面上分好的阶段全抹掉。清除阶段走节点设置接口（显式空串）。
+                    if (n.stageCode() != null) {
+                        graphMapper.updateNodeStage(tenantId, workflowId, n.key(), n.stageCode());
+                    }
 
                     if (isExisting) {
                         updated++;
