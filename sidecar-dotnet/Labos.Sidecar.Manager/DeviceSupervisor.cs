@@ -41,6 +41,10 @@ public sealed class DeviceSupervisor
     private readonly string _dotnetPath;
     private readonly RedisLinkState _redis;
     private readonly Dictionary<long, Process> _children = new();
+    /// <summary>设备被认领时的**原命令行**：下线再上线要原样恢复它（2026-11-17）。</summary>
+    private readonly Dictionary<long, string> _childArgs = new();
+    /// <summary>哪些设备是被**完整形态**（--device-code）认领的（2026-11-17）。</summary>
+    private readonly HashSet<long> _fullAdopted = new();
     private readonly Dictionary<long, DeviceEntry> _lastEntries = new();
     private readonly object _lock = new();
     private DateTime _lastAdopt = DateTime.MinValue;
@@ -167,19 +171,65 @@ public sealed class DeviceSupervisor
             _lastAdopt = now;
         }
 
-        foreach (var (pid, args) in ListSidecarProcesses())
+        var procs = ListSidecarProcesses();
+
+        // ---- 第一轮：--device-code <编号>（**完整** tcp client，优先认领）----
+        // 仿真站 / 起跑脚本起的形态：既保活，又**转发命令**、处理设备事件。
+        // 认它，下线才停得干净、上线才恢复得原样 —— 若认的是 link-only，
+        // "上线"会用 link-only 顶替完整 tcp client ⇒ 设备变成「在线但命令发不出去」。
+        AdoptPass(procs, items, preferFull: true);
+
+        // ---- 第二轮：--link-only --sim <ip:port>（管理台自己起的保活进程）----
+        // 只在第一轮没认领到该设备时才用（同一设备两份进程时，完整形态优先）。
+        AdoptPass(procs, items, preferFull: false);
+    }
+
+    /// <summary>
+    /// 认领一轮。
+    ///
+    /// <p>⚠ 认领要认**两种**形态（2026-11-17 修，只认一种 ⇒ 绝大多数设备管不了）：
+    /// <ul>
+    ///   <li>{@code --device-code <编号>}：仿真站 / 起跑脚本起的完整 tcp client（**现场主流形态**）</li>
+    ///   <li>{@code --link-only --sim <ip:port>}：管理台自己起的保活进程</li>
+    /// </ul>
+    /// 原来只认后者 ⇒ 前者收编不进来 ⇒ 管理台以为"不是本机托管" ⇒
+    /// 下线只清 Redis key，而前者的进程**每 10 秒又把 key 写回来** ⇒
+    /// 中控永远判在线、页面永远显示在线（2026-11-17 实测：X231 就是这样）。
+    /// ⇒ 「下线」按钮对这类设备形同虚设 —— 而它恰恰是现场最需要的那一个。
+    /// </summary>
+    private void AdoptPass(List<(int Pid, string Args)> procs, List<DeviceEntry> items, bool preferFull)
+    {
+        foreach (var (pid, args) in procs)
         {
-            if (!args.Contains("--link-only", StringComparison.Ordinal))
+            bool isFull = ExtractArg(args, "--device-code") is not null;
+            bool isLink = args.Contains("--link-only", StringComparison.Ordinal);
+            if (preferFull ? !isFull : (!isLink || isFull))
             {
                 continue;
             }
-            var sim = ExtractArg(args, "--sim");
-            if (sim is null)
+
+            DeviceEntry? dev = null;
+            if (preferFull)
             {
-                continue;
+                // 按**设备编号**认领（编号在清单里唯一；不要按 ip:port —— 同机多台会撞）。
+                var code = ExtractArg(args, "--device-code");
+                if (code is null)
+                {
+                    continue;
+                }
+                dev = items.FirstOrDefault(i =>
+                    string.Equals(i.Code, code, StringComparison.OrdinalIgnoreCase));
             }
-            var dev = items.FirstOrDefault(i =>
-                string.Equals($"{i.Ip}:{i.Port}", sim, StringComparison.OrdinalIgnoreCase));
+            else
+            {
+                var sim = ExtractArg(args, "--sim");
+                if (sim is null)
+                {
+                    continue;
+                }
+                dev = items.FirstOrDefault(i =>
+                    string.Equals($"{i.Ip}:{i.Port}", sim, StringComparison.OrdinalIgnoreCase));
+            }
             if (dev is null)
             {
                 continue;
@@ -188,12 +238,33 @@ public sealed class DeviceSupervisor
             {
                 if (_children.ContainsKey(dev.DeviceId))
                 {
-                    continue;
+                    // 已被认领过：
+                    //   这一轮是 link-only ⇒ 认领过的更可能是完整形态 ⇒ 不动；
+                    //   这一轮是完整形态而认领过的是 link-only ⇒ **换更完整的接管**
+                    //     （否则"上线"会拿 link-only 顶替完整 tcp client ⇒
+                    //       设备在线但命令发不出去）。
+                    if (!preferFull || _fullAdopted.Contains(dev.DeviceId))
+                    {
+                        continue;
+                    }
                 }
                 try
                 {
                     var p = Process.GetProcessById(pid);
                     _children[dev.DeviceId] = p;
+                    if (preferFull)
+                    {
+                        _fullAdopted.Add(dev.DeviceId);
+                    }
+                    else
+                    {
+                        _fullAdopted.Remove(dev.DeviceId);
+                    }
+                    // 记下原命令行：下线再上线时**原样恢复**它。
+                    // 为什么要记：管理台的通用起法是 --link-only（只保活、不转发命令），
+                    // 而现场主流形态是带 --device-code/--model 的完整 tcp client（仿真站起的），
+                    // 它还负责**转发命令**。用 link-only 顶替 ⇒ 设备"在线但命令发不出去"。
+                    _childArgs[dev.DeviceId] = args;
                 }
                 catch
                 {
@@ -264,6 +335,83 @@ public sealed class DeviceSupervisor
         return null;
     }
 
+    /// <summary>
+    /// 这条命令行是不是属于这台设备？
+    ///
+    /// <p>两种认领口径（2026-11-17）：{@code --device-code <编号>}
+    /// （仿真站/起跑脚本起的完整 tcp client）与 {@code --sim <ip:port>}
+    /// （管理台自己起的 link-only）。
+    /// </summary>
+    private static bool BelongsToDevice(string args, DeviceEntry dev)
+    {
+        var code = ExtractArg(args, "--device-code");
+        if (code is not null && string.Equals(code, dev.Code, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        var sim = ExtractArg(args, "--sim");
+        return sim is not null
+            && string.Equals(sim, $"{dev.Ip}:{dev.Port}", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>按**原命令行**把 tcp client 重新拉起来（下线再上线的"原样恢复"）。</summary>
+    private (bool ok, string message) RelaunchOriginal(long deviceId, string originalArgs)
+    {
+        var tokens = originalArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length < 2)
+        {
+            return (false, "原命令行无法解析");
+        }
+        // 两种起法：`dotnet <dll> <flags...>` 与 `<可执行文件> <flags...>`。
+        var first = tokens[0];
+        var file = first.EndsWith("dotnet", StringComparison.OrdinalIgnoreCase) ? _dotnetPath : first;
+        var rest = tokens.Skip(1).ToArray();
+        var psi = new ProcessStartInfo
+        {
+            FileName = file,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetDirectoryName(_sidecarDll) ?? ".",
+        };
+        foreach (var t in rest)
+        {
+            // ⚠ 原命令行里可能是**相对路径**（如 `./Labos.Sidecar.dll`）——
+            //   工作目录变了就找不到文件 ⇒ 进程一起来就死，而且**没有任何输出**
+            //   （没重定向就没人看见）⇒ 表现为"上线成功但设备还是离线"。
+            //   ⇒ 一律换成管理台自己的绝对路径。
+            psi.ArgumentList.Add(t.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                ? _sidecarDll : t);
+        }
+        try
+        {
+            var proc = Process.Start(psi);
+            if (proc is null)
+            {
+                return (false, "按原命令行重起 tcp client 失败");
+            }
+            // 子进程输出落文件：不然它一起来就死根本没人知道（2026-11-17 实测踩到）。
+            var logDir = Path.Combine(Path.GetTempPath(), "labos-sidecar-manager");
+            Directory.CreateDirectory(logDir);
+            var logPath = Path.Combine(logDir, $"sidecar-{deviceId}.log");
+            try
+            {
+                _ = proc.StandardOutput.BaseStream.CopyToAsync(File.Create(logPath));
+                _ = proc.StandardError.BaseStream.CopyToAsync(File.Create(logPath + ".err"));
+            }
+            catch { /* 日志失败不影响主流程 */ }
+            lock (_lock)
+            {
+                _children[deviceId] = proc;
+            }
+            return (true, $"已按原命令行重新上线（pid={proc.Id}）");
+        }
+        catch (Exception e)
+        {
+            return (false, "按原命令行重起 tcp client 失败：" + e.Message);
+        }
+    }
+
     /// <summary>上线：起一个 tcp client 子进程（保活 + 写 Redis）。</summary>
     public async Task<(bool ok, string message)> StartAsync(long deviceId)
     {
@@ -286,6 +434,25 @@ public sealed class DeviceSupervisor
                 return (false, "这台设备的 tcp client 已经在跑了");
             }
             _children.Remove(deviceId);
+        }
+
+        // 优先**原样恢复**：这台设备之前跑的是哪条命令行，就用哪条重新拉起来。
+        // 为什么不能一律用下面的通用起法：通用起法是 --link-only（只保活、不转发命令），
+        //   现场主流形态是带 --device-code/--model 的完整 tcp client（仿真站/起跑脚本起的），
+        //   它还负责**转发命令**与设备事件。用 link-only 顶替 ⇒ 设备"在线但命令发不出去"
+        //   ⇒ 下线再上线之后这台设备就废了。⇒ 原样恢复才叫"恢复"。
+        string? original = null;
+        lock (_lock)
+        {
+            _childArgs.TryGetValue(deviceId, out original);
+        }
+        if (!string.IsNullOrWhiteSpace(original))
+        {
+            var (ok2, msg2) = RelaunchOriginal(deviceId, original!);
+            if (ok2)
+            {
+                return (true, msg2);
+            }
         }
 
         var psi = new ProcessStartInfo
@@ -347,17 +514,56 @@ public sealed class DeviceSupervisor
                 _children.Remove(deviceId);
             }
         }
-        if (proc is null)
+        // 缓存里没有这台设备（页面还没刷新过）⇒ 拉一次清单，否则清不掉 key。
+        await EnsureEntryAsync(deviceId).ConfigureAwait(false);
+
+        // ⚠ 同一台设备可能同时有**多个** tcp client 在保活（管理台自己起的
+        //   --link-only + 仿真站/起跑脚本起的 --device-code）⇒ 只杀"自己认领的那个"，
+        //   另一个每 10 秒就把 Redis key 写回来 ⇒ 「点了下线，页面还是在线」。
+        //   ⇒ 这里把**属于这台设备的全部** sidecar 进程都停掉。
+        int killed = 0;
+        List<DeviceEntry> all;
+        try
         {
-            // 本机没托管 ⇒ 可能是别的机器上的 sidecar。Redis key 自然会过期，
+            all = await DeviceRegistry.FetchAsync(_registryUrl).ConfigureAwait(false);
+        }
+        catch
+        {
+            all = new List<DeviceEntry>();
+        }
+        var entry = all.FirstOrDefault(i => i.DeviceId == deviceId);
+        foreach (var (pid, args) in ListSidecarProcesses())
+        {
+            if (proc is not null && pid == proc.Id)
+            {
+                killed++;
+                continue;
+            }
+            if (entry is null || !BelongsToDevice(args, entry))
+            {
+                continue;
+            }
+            try
+            {
+                var p = Process.GetProcessById(pid);
+                p.Kill(entireProcessTree: true);
+                p.WaitForExit(2000);
+                killed++;
+            }
+            catch
+            {
+                // 进程刚好退了：忽略
+            }
+        }
+        if (killed == 0)
+        {
+            // 本机一个都没有 ⇒ 可能是别的机器上的 sidecar。Redis key 自然会过期，
             // 但那要等 TTL。这里直接告诉你"管不到"。
             return (false, "这台设备不是本机托管的，停不掉");
         }
-        // 缓存里没有这台设备（页面还没刷新过）⇒ 拉一次清单，否则清不掉 key。
-        await EnsureEntryAsync(deviceId).ConfigureAwait(false);
         try
         {
-            if (!proc.HasExited)
+            if (proc is not null && !proc.HasExited)
             {
                 proc.Kill(entireProcessTree: true);
                 proc.WaitForExit(3000);
@@ -370,8 +576,8 @@ public sealed class DeviceSupervisor
             var key = LockedKey(deviceId);
             var cleared = key is not null && _redis.Clear(key);
             return (true, cleared
-                ? "已下线（Redis 状态已清除，中控即刻判这台设备离线）"
-                : "已下线（Redis 状态将在 TTL 内过期）");
+                ? $"已下线（停了 {killed} 个 tcp client 进程，Redis 状态已清除，中控即刻判这台设备离线）"
+                : $"已下线（停了 {killed} 个 tcp client 进程，Redis 状态将在 TTL 内过期）");
         }
         catch (Exception e)
         {

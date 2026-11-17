@@ -431,15 +431,33 @@ def scenario1_devices(pg, token):
     manager_act(target["deviceId"], "stop")
     ok("已在设备管理台点「下线」（设备ID %s）" % target["deviceId"])
 
+    # ⚠ 断言必须**只看目标设备**，不能扫全岛（2026-11-17 修）。
+    #
+    #   旧写法：②「全岛任意一台离线」就算下线成功；③「全岛没有一台离线」才算上线成功。
+    #   而基线岛本来就有若干台设备**没起 sidecar**（如 ID-ASPIN_2K-1、ID-MAG-1、
+    #   ID-PCR-1、ID-S100-1…）⇒ 它们一直显示离线。
+    #   ⇒ ③ 于是把"目标设备已经恢复在线"误判成失败（实测：231 的 device_state.online
+    #   已是 true、页面也显示了在线，断言仍然红）。
+    #   ⇒ 而且 ② 是反向的假绿：目标设备根本没下线，只要**别的**设备离线就能过。
+    #   断言口径必须对准被操作的那一台，否则红绿都不可信。
+    def card_state(code):
+        """目标设备卡片上的状态文字（'在线'/'离线'）；找不到卡片返回 None。"""
+        return pg.evaluate(
+            """(code) => {
+                const cards = Array.from(document.querySelectorAll("div[style*='width: 150px']"));
+                const card = cards.find(c => (c.innerText||'').includes(code));
+                if (!card) return null;
+                const dot = card.querySelector('span[title]');
+                return dot ? (dot.getAttribute('title')||'') : '';
+            }""", code)
+
     # 内核的心跳周期 10 秒 ⇒ 等它把 offline 刷进 device_state
     offline = False
     for _ in range(20):
         pg.reload(wait_until="domcontentloaded")
         pg.wait_for_timeout(2000)
-        st = pg.eval_on_selector_all(
-            "div[style*='width: 150px'] span[title]",
-            """els => els.map(e => e.getAttribute('title')||'')""")
-        if any("离线" in s for s in st):
+        s = card_state(target["code"])
+        if s and "离线" in s:
             offline = True
             break
     if offline:
@@ -454,10 +472,8 @@ def scenario1_devices(pg, token):
     for _ in range(20):
         pg.reload(wait_until="domcontentloaded")
         pg.wait_for_timeout(2000)
-        st = pg.eval_on_selector_all(
-            "div[style*='width: 150px'] span[title]",
-            """els => els.map(e => e.getAttribute('title')||'')""")
-        if st and all("离线" not in s for s in st):
+        s = card_state(target["code"])
+        if s and "离线" not in s:
             back = True
             break
     if back:
