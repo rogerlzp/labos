@@ -32,8 +32,16 @@ API = os.environ.get("LABOS_API", "http://127.0.0.1:18080").rstrip("/")
 USER = os.environ.get("LABOS_USER", "admin")
 PASSWORD = os.environ.get("LABOS_PASS", "admin123")
 
-ISLAND_CODE = "LAB-EXT-01"
-WF_CODE = "EXT-WORKFLOW-01"
+# 岛 / 设备编号 / 流程编号都在共享配置层（scripts/extraction_config.py）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from extraction_config import (  # noqa: E402
+    ISLAND_CODE, disp_codes, ext_codes, stack_code,
+)
+
+WF_CODE = os.environ.get("LABOS_WF_CODE", "EXT-WORKFLOW-01")
+EXT_CODES = ext_codes()
+DISP_CODES = disp_codes()
+STACK_CODE = stack_code()
 
 TOKEN = None
 
@@ -139,8 +147,7 @@ def main():
     # 提取仪：两个工位各绑该型号全部方法
     #   操作位（INT，机械臂够不到）：内部工序方法
     #   交互位（EXT，机械臂可达）：换板相关方法
-    for i in range(1, 5):
-        code = f"P_AUTO-{i}"
+    for code in EXT_CODES:
         d = devs.get(code)
         if not d:
             continue
@@ -158,8 +165,7 @@ def main():
             for m in ms:
                 bind_position_method(pid, m["methodId"])
     # 分液器：板位绑分液/搅拌方法；搅拌工位绑搅拌方法
-    for i in range(1, 7):
-        code = f"DISP{i}"
+    for code in DISP_CODES:
         d = devs.get(code)
         if not d:
             continue
@@ -174,9 +180,9 @@ def main():
                 bind_position_method(pid, m["methodId"])
     # 耗材栈：板位绑取放板方法
     st = None
-    p = by_code.get("STACK1-S01")
+    p = by_code.get(f"{STACK_CODE}-S01")
     if p and p.get("pointId"):
-        ms = methods_by_device.get("STACK1", [])
+        ms = methods_by_device.get(STACK_CODE, [])
         for m in ms:
             bind_position_method(p["pointId"], m["methodId"])
     ok(f"点位×方法：新增 {added} · 已存在 {skipped} · 失败 {failed}")

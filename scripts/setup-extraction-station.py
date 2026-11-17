@@ -32,8 +32,13 @@ API = os.environ.get("LABOS_API", "http://127.0.0.1:18080").rstrip("/")
 USER = os.environ.get("LABOS_USER", "admin")
 PASSWORD = os.environ.get("LABOS_PASS", "admin123")
 
-ISLAND_CODE = "LAB-EXT-01"
-ISLAND_NAME = "高通量核酸提取工作站岛"
+# 岛 / 设备编号 / 端口段都在共享配置层（scripts/extraction_config.py）：
+# 环境变量可覆盖 ⇒ 同一套脚本能建**多个**岛，且编号与端口都不撞。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from extraction_config import (  # noqa: E402
+    ISLAND_CODE, ISLAND_NAME, arm_code, disp_codes, ext_codes, pick_ports,
+    pool_code, stack_code,
+)
 
 TOKEN = None
 
@@ -116,6 +121,20 @@ def find_model(models, device_type=None, capability=None):
         if not device_type and not capability:
             continue
         return mid, m
+    return None, None
+
+
+def find_model_by_code(models, code):
+    """按**型号 code** 精确找（如 P_AUTO）。
+
+    为什么需要它：EXTRACT 能力下有两个型号 —— P_AUTO（客户真设备，方法集 12 个
+    真实动作）与 CAROUSEL_EXTRACTOR_GENERIC（泛型，方法名完全不同）⇒
+    按 capability 取第一个会**取错型号**，流程要的 Bind/Elute/Incubate/Wash/
+    PickTipComb/DropTipComb 只有 P_AUTO 有（实测泛型只命中 1/7）。
+    """
+    for mid, m in models.items():
+        if m.get("code") == code:
+            return mid, m
     return None, None
 
 
@@ -294,17 +313,27 @@ def main():
 
     # ---- 设备
     section("3. 登记驱动（每台设备一个 mock 驱动 —— 没驱动就点不动）")
-    # 端点端口从 19600 起顺排（模拟器按端口连，别与既有驱动撞）
-    dev_list = ([(f"DISP{i}", f"自动化分液器 DISP{i}", disp_model) for i in range(1, 7)]
-                + [("ARM1", "轨道式四轴机械臂 ARM1", gantry_model),
-                   ("STACK1", "自动化耗材栈 STACK1", stack_model)])
+    # 端点端口**挑空闲的**（不固定顺排）：固定顺排会与既有岛撞端口
+    #   （实测撞过 4 组：DISP5 与 P_AUTO-1 同为 19608 ⇒ 两台设备连同一端点 ⇒ 状态串台）。
+    st, drv_rows = call("GET", "/api/drivers")
+    used_ports = []
+    for row in (drv_rows.get("items") or []):
+        ep = str(row.get("endpoint") or "")
+        if ":" in ep:
+            try:
+                used_ports.append(int(ep.rsplit(":", 1)[1]))
+            except ValueError:
+                pass
+    ext_list = ext_codes()
+    dev_list = ([(c, f"自动化分液器 {c}", disp_model) for c in disp_codes()]
+                + [(arm_code(), f"轨道式四轴机械臂 {arm_code()}", gantry_model),
+                   (stack_code(), f"自动化耗材栈 {stack_code()}", stack_model)])
+    ports = pick_ports(len(dev_list) + len(ext_list), used=used_ports)
     drivers = {}
-    port = 19600
-    for code, name, model_id in dev_list:
+    for (code, name, model_id), port in zip(dev_list, ports):
         drv = ensure_driver(f"DRV-SIM-{code}", f"{name} 模拟驱动",
                             f"tcp://127.0.0.1:{port}")
         drivers[code] = drv
-        port += 1
 
     section("4. 部署设备")
     # 提取仪：**用既有的 P_AUTO-1~4**（PAuto 磁珠法核酸提取仪 = 客户真设备型号，
@@ -333,13 +362,14 @@ def main():
         return rid
 
     disp_ids = []
-    for i in range(1, 7):
-        rid = deploy_named(disp_model, f"DISP{i}", f"自动化分液器 DISP{i}",
-                           drivers.get(f"DISP{i}"))
+    for c in disp_codes():
+        rid = deploy_named(disp_model, c, f"自动化分液器 {c}", drivers.get(c))
         if rid:
             disp_ids.append(rid)
-    arm_id = deploy_named(gantry_model, "ARM1", "轨道式四轴机械臂 ARM1", drivers.get("ARM1"))
-    stack_id = deploy_named(stack_model, "STACK1", "自动化耗材栈 STACK1", drivers.get("STACK1"))
+    arm_id = deploy_named(gantry_model, arm_code(), f"轨道式四轴机械臂 {arm_code()}",
+                          drivers.get(arm_code()))
+    stack_id = deploy_named(stack_model, stack_code(), f"自动化耗材栈 {stack_code()}",
+                             drivers.get(stack_code()))
 
     # 重新取一次，拿改完的编号与 instanceId
     st, topo = call("GET", "/api/topology")
@@ -350,28 +380,53 @@ def main():
                 by_code[d["code"]] = d
     ok(f"拓扑里已有 {len(by_code)} 台设备")
 
-    # 提取仪：既有的 P_AUTO-1~4（客户真设备）。给它补 mock 驱动。
-    ext_codes = [f"P_AUTO-{i}" for i in range(1, 5)]
-    have_ext = [c for c in ext_codes if c in by_code]
-    if len(have_ext) == 4:
-        ok(f"提取仪：沿用既有的 {', '.join(have_ext)}（PAuto 磁珠法核酸提取仪）")
-        for c in have_ext:
-            rid = by_code[c]["resourceId"]
-            drv = ensure_driver(f"DRV-SIM-{c}", f"{c} 模拟驱动",
-                                f"tcp://127.0.0.1:{port}")
-            port += 1
-            if drv:
-                st, j = call("PUT", f"/api/devices/{rid}", {"driverId": drv})
-                if st != 200:
-                    bad(f"给 {c} 绑驱动失败（{st}）", str(j)[:150])
+    # 提取仪：型号 **P_AUTO**（客户真设备型号，方法集 12 个真实动作）。
+    #   编号带岛标记（LABOS_DEV_TAG）⇒ 能建第二个岛而不撞编号
+    #   （device_instance 的唯一约束 UNIQUE(tenant_id, code) **不按岛隔离**）。
+    #   ⚠ 型号不能选泛型 CAROUSEL_EXTRACTOR_GENERIC：流程要的 7 个方法
+    #     （Bind/Elute/Incubate/Wash/PickTipComb/DropTipComb/GetStatus）
+    #     泛型只命中 1 个 ⇒ 流程一跑就「方法未授权」。
+    ext_list = ext_codes()
+    have_ext = [c for c in ext_list if c in by_code]
+    if len(have_ext) != len(ext_list):
+        # 本岛还没有这 4 台 ⇒ 用 P_AUTO 型号**新建**（建第二个岛走这条路）
+        pauto_model, pauto_m = find_model_by_code(models, "P_AUTO")
+        if pauto_model is None:
+            bad("型号库里找不到 P_AUTO（客户真设备型号）")
+            sys.exit(1)
+        ok(f"提取仪型号：P_AUTO（modelId={pauto_model}，厂商 {pauto_m.get('vendor')}）")
+        for c in ext_list:
+            if c in by_code:
+                continue
+            deploy_named(pauto_model, c, f"PAuto 磁珠法核酸提取仪 {c}", drivers.get(c))
     else:
-        bad(f"提取仪 P_AUTO-1~4 只找到 {len(have_ext)} 台 —— "
-            f"（PAuto 真设备实例应已存在；缺的话先建）")
+        ok(f"提取仪：沿用本岛既有的 {', '.join(have_ext)}（PAuto 磁珠法核酸提取仪）")
+
+    # 给 4 台提取仪补 mock 驱动（端口取预留段里的，不与别的设备撞）
+    for c, port in zip(ext_list, ports[len(dev_list):]):
+        d = by_code.get(c)
+        if not d:
+            continue
+        drv = ensure_driver(f"DRV-SIM-{c}", f"{c} 模拟驱动",
+                            f"tcp://127.0.0.1:{port}")
+        if drv:
+            st, j = call("PUT", f"/api/devices/{d['resourceId']}", {"driverId": drv})
+            if st != 200:
+                bad(f"给 {c} 绑驱动失败（{st}）", str(j)[:150])
+
+    # 提取仪可能是刚部署的 ⇒ 造点位前再取一次拓扑
+    st, topo = call("GET", "/api/topology")
+    by_code = {}
+    for isl in topo.get("islands", []):
+        if isl.get("id") == island_id:
+            for d in isl.get("devices", []):
+                by_code[d["code"]] = d
+    ok(f"拓扑里共有 {len(by_code)} 台设备")
 
     # ---- 点位
     section("5. 造点位")
     # 5a. 提取仪双工位：操作位（机械臂够不到）+ 交互位（够得到）
-    for code in ext_codes:
+    for code in ext_list:
         d = by_code.get(code)
         if not d:
             bad(f"{code} 不在拓扑里，跳过")
@@ -388,8 +443,7 @@ def main():
     #     不是另一台设备 ⇒ 这里只给 DISP 建两个点位：
     #       PLATE   —— 机械臂放板处
     #       STIR    —— 搅拌工位（对应搅拌单元；DISP2 是顶置搅拌，其余是磁力搅拌）
-    for i in range(1, 7):
-        code = f"DISP{i}"
+    for i, code in enumerate(disp_codes(), start=1):
         d = by_code.get(code)
         if not d:
             bad(f"{code} 不在拓扑里，跳过")
@@ -416,7 +470,7 @@ def main():
         ("W2", 8), ("W3", 8), ("ELUTE", 8), ("WASTE", 4),
     ]
     if stack_id:
-        d = by_code.get("STACK1")
+        d = by_code.get(stack_code())
         if d:
             points = []
             slot = 0
@@ -424,13 +478,13 @@ def main():
                 for _ in range(count):
                     slot += 1
                     points.append({
-                        "code": f"STACK1-S{slot:02d}",
+                        "code": f"{stack_code()}-S{slot:02d}",
                         "label": role,          # ← 耗材类型（现场贴的槽位标签）
                         "slotKind": "nest",
                         "slotIndex": slot,      # 稳定槽位号 1..60
                         "pointKind": "transfer_point",
                     })
-            n = spec_points(d["resourceId"], "STACK1", points)
+            n = spec_points(d["resourceId"], stack_code(), points)
             if n == len(points):
                 ok(f"耗材栈 {len(points)} 槽已按耗材类型分区："
                    + " · ".join(f"{r}×{c}" for r, c in STACK_ROLES))
@@ -443,24 +497,27 @@ def main():
         d = by_code.get(code)
         return d.get("instanceId") if d else None
 
-    ext_instances = [instance_of(c) for c in ext_codes]
+    ext_instances = [instance_of(c) for c in ext_list]
     ext_instances = [i for i in ext_instances if i]
     if len(ext_instances) == 4:
-        ensure_pool(island_id, "POOL-EXT", "提取仪池（4 台同型号，运行时挑一台）",
+        ensure_pool(island_id, pool_code("POOL-EXT"), "提取仪池（4 台同型号，运行时挑一台）",
                     "operation", "first_available", ext_instances)
     else:
         bad(f"提取仪实例不齐（{len(ext_instances)}/4），跳过建池")
 
     # 分液器：DISP2 是磁珠工位（顶置搅拌），其余 5 台是试剂工位（磁力搅拌）
     # ⇒ 分两个池，让流程能分别选"做磁珠分装的那台"和"做洗涤分液的那台"
-    disp2 = instance_of("DISP2")
-    others = [instance_of(f"DISP{i}") for i in (1, 3, 4, 5, 6)]
+    disp_all = disp_codes()
+    disp2 = instance_of(disp_all[1])          # 第 2 台 = 磁珠工位（顶置搅拌）
+    others = [instance_of(c) for i, c in enumerate(disp_all, start=1) if i != 2]
     others = [i for i in others if i]
     if disp2:
-        ensure_pool(island_id, "POOL-DISP-MAGNET", "磁珠分装分液器池（DISP2，顶置搅拌）",
+        ensure_pool(island_id, pool_code("POOL-DISP-MAGNET"),
+                    f"磁珠分装分液器池（{disp_all[1]}，顶置搅拌）",
                     "operation", "first_available", [disp2])
     if len(others) == 5:
-        ensure_pool(island_id, "POOL-DISP-REAGENT", "试剂分液器池（5 台，磁力搅拌）",
+        ensure_pool(island_id, pool_code("POOL-DISP-REAGENT"),
+                    "试剂分液器池（5 台，磁力搅拌）",
                     "operation", "first_available", others)
     else:
         bad(f"试剂分液器实例不齐（{len(others)}/5），跳过建池")

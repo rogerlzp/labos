@@ -48,7 +48,13 @@ import urllib.request
 API = os.environ.get("LABOS_API", "http://127.0.0.1:18080").rstrip("/")
 USER = os.environ.get("LABOS_USER", "admin")
 PASSWORD = os.environ.get("LABOS_PASS", "admin123")
-ISLAND_CODE = "LAB-EXT-01"
+# 岛 / 设备编号 / 端口段都在共享配置层（scripts/extraction_config.py）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from extraction_config import (  # noqa: E402
+    ISLAND_CODE, SIM_PORT_BASE, SIDECAR_PORT_BASE, arm_code, disp_codes,
+    ext_codes, pick_ports, stack_code,
+)
+
 REDIS_HOST = os.environ.get("LABOS_REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.environ.get("LABOS_REDIS_PORT", "6379"))
 # 设备事件入站令牌（内核与侧车必须一致；内核不配就回 503）
@@ -61,21 +67,28 @@ SIM_CP = "out:lib/postgresql-42.7.3.jar:lib/spring/*"
 # 共享的 out/ 会被并发会话的编译覆盖 ⇒ 模拟器可能半路 ClassNotFound。
 SIM_HOME = os.environ.get("LABOS_SIM_HOME", KERNEL)
 
-# 设备 → (端口, 模拟器画像)。端口从 19620 起，避开既有驱动。
-DEVICES = [
-    ("P_AUTO-1", 19620, "carousel_extractor"),
-    ("P_AUTO-2", 19621, "carousel_extractor"),
-    ("P_AUTO-3", 19622, "carousel_extractor"),
-    ("P_AUTO-4", 19623, "carousel_extractor"),
-    ("DISP1", 19624, "dispenser"),
-    ("DISP2", 19625, "dispenser"),
-    ("DISP3", 19626, "dispenser"),
-    ("DISP4", 19627, "dispenser"),
-    ("DISP5", 19628, "dispenser"),
-    ("DISP6", 19629, "dispenser"),
-    ("ARM1", 19630, "gantry"),
-    ("STACK1", 19631, "plate_stack"),
-]
+# 设备 → (端口, 模拟器画像)。**运行时按空闲端口生成**（不固定顺排）。
+#   ⚠ 固定顺排会与别的岛撞端口 ⇒ 两台设备连同一端点 ⇒ 状态互相串台
+#     （实测撞过 4 组：DISP5 与 P_AUTO-1 同为 19608）。
+DEVICES = []
+
+
+def build_devices():
+    """列出本岛设备，并给每台挑一个**空闲**的模拟器端口。"""
+    st, drvs = call("GET", "/api/drivers")
+    used = []
+    for d in (drvs.get("items") or []):
+        ep = str(d.get("endpoint") or "")
+        if ":" in ep:
+            try:
+                used.append(int(ep.rsplit(":", 1)[1]))
+            except ValueError:
+                pass
+    specs = ([(c, "carousel_extractor") for c in ext_codes()]
+             + [(c, "dispenser") for c in disp_codes()]
+             + [(arm_code(), "gantry"), (stack_code(), "plate_stack")])
+    ports = pick_ports(len(specs), base=SIM_PORT_BASE, used=used)
+    return [(code, port, prof) for (code, prof), port in zip(specs, ports)]
 
 TOKEN = None
 PROCS = []
@@ -143,11 +156,14 @@ def island_id():
 
 
 def main():
+    global DEVICES
     print("=" * 68)
-    print("把 LAB-EXT-01 的设备拉上线")
+    print(f"把 {ISLAND_CODE} 的设备拉上线")
     print("=" * 68)
     login()
     iid = island_id()
+    DEVICES = build_devices()
+    ok(f"端口分配（挑空闲的）：{', '.join(f'{c}={p}' for c, p, _ in DEVICES)}")
 
     # ---- ① 端口重排 + ② 填 IP
     section("① 修端口冲突 + 填 IP=127.0.0.1")
@@ -295,7 +311,8 @@ def main():
     # 而自发帧翻译走**通用 JSON 翻译器**（`SpontaneousTranslators.For` 的兜底）⇒
     # 用哪个已适配型号都不影响事件翻译。
     sidecar_dir = os.path.join(ROOT, "sidecar-dotnet/Labos.Sidecar")
-    sc_port = 19700
+    sc_ports = pick_ports(len(DEVICES), base=SIDECAR_PORT_BASE)
+    sc_port = sc_ports[0] if sc_ports else SIDECAR_PORT_BASE
     for code, port, _ in DEVICES:
         st, reg = call("GET", "/api/devices/registry")
         rid = None

@@ -51,9 +51,19 @@ API = os.environ.get("LABOS_API", "http://127.0.0.1:18080").rstrip("/")
 USER = os.environ.get("LABOS_USER", "admin")
 PASSWORD = os.environ.get("LABOS_PASS", "admin123")
 
-WF_CODE = "EXT-WORKFLOW-01"
-WF_NAME = "高通量核酸提取工作站 · 单批标准流程"
-ISLAND_CODE = "LAB-EXT-01"
+# 岛 / 设备编号 / 流程编号都在共享配置层（scripts/extraction_config.py）。
+# ⚠ 流程 code 也必须带岛标记：**workflow.code 全局唯一** ⇒ 两个岛不能同名流程。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from extraction_config import (  # noqa: E402
+    ISLAND_CODE, arm_code, disp_codes, ext_codes, mag_plate_barcodes, stack_code,
+)
+
+WF_CODE = os.environ.get("LABOS_WF_CODE", "EXT-WORKFLOW-01")
+WF_NAME = os.environ.get("LABOS_WF_NAME", "高通量核酸提取工作站 · 单批标准流程")
+ARM_CODE = arm_code()
+STACK_CODE = stack_code()
+DISP_CODES = disp_codes()
+EXT_CODES = ext_codes()
 
 # 事件类型（**配置项**，来自 /api/device-event-types 字典，不是写死的字面量）
 EV_WAIT_INTERACTION = "waiting_interaction"
@@ -250,7 +260,7 @@ def bind_node(wf_id, node_key, device_code, device, position_id, method_id):
     if device is None:
         payload = {"bindings": []}
     else:
-        is_arm = device_code == "ARM1"
+        is_arm = device_code == ARM_CODE
         payload = {"bindings": [{
             # 机械臂没有自己的板位（它去别人的点位取放板）⇒ 只绑设备实例
             "positionId": position_id,
@@ -301,9 +311,9 @@ def main():
     ok(f"岛 {ISLAND_CODE}（id={island_id}）")
 
     devs = {d["code"]: d for d in island.get("devices", [])}
-    ext_codes = [f"P_AUTO-{i}" for i in range(1, 5)]
-    disp_codes = [f"DISP{i}" for i in range(1, 7)]
-    for c in ext_codes + disp_codes + ["ARM1", "STACK1"]:
+    ext_codes = EXT_CODES
+    disp_codes = DISP_CODES
+    for c in ext_codes + disp_codes + [ARM_CODE, STACK_CODE]:
         if c not in devs:
             sys.exit(f"✘ 设备 {c} 不在拓扑里（先跑 setup-extraction-station.py）")
     ok(f"设备齐备：{len(ext_codes)} 提取仪 + {len(disp_codes)} 分液器 + 机械臂 + 耗材栈")
@@ -326,7 +336,9 @@ def main():
 
     # ---- 建流程
     section("3. 建流程")
-    st, lst = call("GET", "/api/workflows", query={"limit": "300", "q": "EXT-WORKFLOW-01"})
+    # ⚠ 查询词必须跟着 WF_CODE 走（写死 EXT-WORKFLOW-01 ⇒ 建第二个岛时
+    #   找不到已建流程 ⇒ 重复创建 ⇒ 500「code 唯一冲突」⇒ 脚本中途退出）。
+    st, lst = call("GET", "/api/workflows", query={"limit": "300", "q": WF_CODE})
     wf_id = None
     for w in lst.get("items", []):
         if w.get("code") == WF_CODE:
@@ -343,10 +355,34 @@ def main():
     else:
         ok(f"流程已存在：{WF_CODE}（id={wf_id}）")
 
+    # ---- 流程变量（幂等）
+    #
+    # ⚠ **这一步不能少**（2026-11-17 从零建岛实测踩到）：
+    #   下面图里扫码节点用 `${magPlate1..4}` / `${mainPlate}` 当**期望条码**，
+    #   而扫码闸门比对的是"节点参数里的变量替换结果 vs 扫到的码"。
+    #   变量不存在 ⇒ 期望值解析成 **null** ⇒ 闸门报
+    #   「扫码校验失败：条码不匹配（期望 null，扫到 null）」⇒ 节点转人工、run 暂停。
+    #   ⇒ 变量必须由脚本**一并建**（原流程的那 5 个变量是手工在页面上加的 ——
+    #   这正是"从 0 建岛"会漏掉的一步）。
+    section("3b. 建流程变量（扫码闸门要用）")
+    # ⚠ 板条码必须**每个岛一套**：板在库里是一板一位（uk_pos_plate）⇒
+    #   原岛那 4 块磁套板还占着原岛的槽位，新岛只能用新条码。
+    var_defs = [(f"magPlate{i}", bc)
+                for i, bc in enumerate(mag_plate_barcodes(), start=1)]
+    var_defs.append(("mainPlate", "SIM-PLATE-EXT-001"))
+    for vname, vdef in var_defs:
+        st, j = call("POST", f"/api/workflows/{wf_id}/variables",
+                     {"name": vname, "type": "string", "defaultValue": vdef,
+                      "description": "模拟板条码（仿真用；真实条码由现场扫码写入）"})
+        if st != 200:
+            bad(f"建变量 {vname} 失败（{st}）", str(j)[:150])
+        else:
+            ok(f"变量 {vname} = {vdef}")
+
     # ---- 生成图
     section("4. 生成流程图（8 阶段 + 8 个 __awaitEvent）")
     b = Bpmn(f"Proc_{wf_id}", WF_NAME)
-    arm = devs["ARM1"]["resourceId"]
+    arm = devs[ARM_CODE]["resourceId"]
 
     # 节点键 → (设备码, 方法名)：**图和绑定一起生成**，
     # 保证「节点绑的设备」与「节点要执行的设备」永远是同一台。
@@ -384,21 +420,21 @@ def main():
     #   ⇒ 现在：每台提取仪在自己的链里等**自己**的【等待交互】。
 
     stage_names = {
-        "DISP1": "裂解液+蛋白酶K 分液",
-        "DISP2": "磁珠分装（顶置搅拌）",
-        "DISP3": "W1 洗涤分液",
-        "DISP4": "W2 洗涤分液",
-        "DISP5": "W3 洗涤分液",
-        "DISP6": "洗脱液分液",
+        DISP_CODES[0]: "裂解液+蛋白酶K 分液",
+        DISP_CODES[1]: "磁珠分装（顶置搅拌）",
+        DISP_CODES[2]: "W1 洗涤分液",
+        DISP_CODES[3]: "W2 洗涤分液",
+        DISP_CODES[4]: "W3 洗涤分液",
+        DISP_CODES[5]: "洗脱液分液",
     }
     # 每个分液阶段对应的**提取仪真实动作**（客户文档 §3 阶段 → PAuto 指令）
     stage_action = {
-        "DISP1": ("Incubate", "孵育（裂解）"),
-        "DISP2": ("Bind", "结合（磁珠）"),
-        "DISP3": ("Wash", "漂洗 W1"),
-        "DISP4": ("Wash", "漂洗 W2"),
-        "DISP5": ("Wash", "漂洗 W3"),
-        "DISP6": ("Elute", "洗脱"),
+        DISP_CODES[0]: ("Incubate", "孵育（裂解）"),
+        DISP_CODES[1]: ("Bind", "结合（磁珠）"),
+        DISP_CODES[2]: ("Wash", "漂洗 W1"),
+        DISP_CODES[3]: ("Wash", "漂洗 W2"),
+        DISP_CODES[4]: ("Wash", "漂洗 W3"),
+        DISP_CODES[5]: ("Elute", "洗脱"),
     }
 
     # ---- 并行段 A：4 台提取仪各自加载磁套
@@ -450,7 +486,7 @@ def main():
                         # ⚠ sourcePosition/targetPosition 显式写点位码：
                         #   ① 起点板位引导据此把板放到**这个**槽位（不放"第一个空位"）；
                         #   ② 抓板闸门按源位匹配扫码证据 ⇒ 扫码节点绑的点位必须与它一致。
-                        resource=arm, params={"source": "STACK1", "target": code,
+                        resource=arm, params={"source": STACK_CODE, "target": code,
                                               "barcode": plate_var,
                                               "sourcePosition": src_slot,
                                               "targetPosition": f"{code}-EXT"},
@@ -467,11 +503,11 @@ def main():
                         icon="/devices/EXTRACT.svg")
         node_bind[n_pick] = (code, "PickTipComb")
         node_bind[n_drop] = (code, "DropTipComb")
-        node_bind[n_move] = ("ARM1", "Transfer")
+        node_bind[n_move] = (ARM_CODE, "Transfer")
         # 扫码节点：设备=机械臂（**不绑点位**：被扫点位走 method_params.sourcePosition，
         #   见上面的注释 —— 绑定模型不允许绑别的设备的点位）
-        node_bind[n_scan] = ("ARM1", SCAN_METHOD)
-        node_bind[n_done_scan] = ("ARM1", SCAN_METHOD)
+        node_bind[n_scan] = (ARM_CODE, SCAN_METHOD)
+        node_bind[n_done_scan] = (ARM_CODE, SCAN_METHOD)
         # ⚠ 每条链都从 **split_a** 出发（不是从上一条链的尾巴）⇒ 才是真正的并行分叉。
         #   写成 `b.flow(cur, nxt)` 且 cur 在循环里推进 ⇒ 4 条链被串成一条
         #   ⇒ 预检 PF-15 报「网关 1 进 1 出（直通）」。
@@ -518,7 +554,7 @@ def main():
                         icon="/devices/TRANSFER.svg")
         n_take = b.task(f"机械臂 从 {code} 取产物板", protocol="Transfer",
                         # 同上：设备码 + 板号 + 显式点位（见 n_move 处的注释）
-                        resource=arm, params={"source": code, "target": "STACK1",
+                        resource=arm, params={"source": code, "target": STACK_CODE,
                                               "barcode": plate_var,
                                               "sourcePosition": f"{code}-EXT",
                                               "targetPosition": src_slot},
@@ -528,15 +564,15 @@ def main():
                              resource=arm, params={"barcode": plate_var,
                                                    "sourcePosition": src_slot},
                              icon="/devices/TRANSFER.svg")
-        action, action_cn = stage_action["DISP6"]
+        action, action_cn = stage_action[DISP_CODES[5]]
         n_action = b.task(f"{code} {action_cn}", protocol=action,
                           resource=d["resourceId"], params={"plateIndex": 0},
                           icon="/devices/EXTRACT.svg")
         node_bind[n_action] = (code, action)
-        node_bind[n_take] = ("ARM1", "Transfer")
+        node_bind[n_take] = (ARM_CODE, "Transfer")
         # 扫码节点：设备=机械臂（不绑点位，同上）
-        node_bind[n_scan] = ("ARM1", SCAN_METHOD)
-        node_bind[n_done_scan] = ("ARM1", SCAN_METHOD)
+        node_bind[n_scan] = (ARM_CODE, SCAN_METHOD)
+        node_bind[n_done_scan] = (ARM_CODE, SCAN_METHOD)
         # ⚠ **拍序：设备动作 → 等交互 → 机械臂**（2026-11-15 修）
         #   【等待交互】是**设备动作触发**的：设备自己跑完内部工序才报
         #   （模拟器：命令成功 → 300ms 后推 waiting_interaction）。
@@ -655,8 +691,8 @@ def main():
                     else (position_for(want[0]) if want else None))
         want_mid = method_id_by.get((want[0], want[1])) if want else None
         # 扫码策略与装板方式也自检（客户文档 §1.1：机械臂含扫码枪，每次抓板扫码记录）
-        want_bar = "validate_both" if want and want[0] == "ARM1" else ("validate_in" if want else None)
-        want_load = "do_not_load" if want and want[0] == "ARM1" else ("load_single" if want else None)
+        want_bar = "validate_both" if want and want[0] == ARM_CODE else ("validate_in" if want else None)
+        want_load = "do_not_load" if want and want[0] == ARM_CODE else ("load_single" if want else None)
         if (bound_inst != want_inst or bound_pos != want_pos
                 or bound_bar != want_bar or bound_load != want_load
                 or bound_mid != want_mid):

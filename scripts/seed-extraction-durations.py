@@ -35,6 +35,10 @@ API = os.environ.get("LABOS_API", "http://127.0.0.1:18080").rstrip("/")
 USER = os.environ.get("LABOS_USER", "admin")
 PASSWORD = os.environ.get("LABOS_PASS", "admin123")
 
+# 岛编号在共享配置层（scripts/extraction_config.py）：能按岛分别播种时长。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from extraction_config import ISLAND_CODE  # noqa: E402
+
 TOKEN = None
 
 
@@ -90,9 +94,9 @@ def main():
     print()
     print("── 1. 取设备方法的公开规格估值")
     st, topo = call("GET", "/api/topology")
-    island = next((i for i in topo.get("islands", []) if i.get("code") == "LAB-EXT-01"), None)
+    island = next((i for i in topo.get("islands", []) if i.get("code") == ISLAND_CODE), None)
     if island is None:
-        sys.exit("✘ 找不到岛 LAB-EXT-01")
+        sys.exit(f"✘ 找不到岛 {ISLAND_CODE}")
     # 这 5 个型号是这条流程线的（PLANNED 登记时带进来的）
     wanted_models = {"P_AUTO", "DISPENSER_PLATE_GENERIC", "GANTRY_ROBOT_GENERIC",
                      "PLATE_STACK_GENERIC"}
