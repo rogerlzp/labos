@@ -229,7 +229,19 @@ def video_time(segs, t):
     return segs[-1][3]
 
 
-def build(d, speed, fps, out):
+def load_script(path):
+    """吃 replay-run.py 产出的**机读剧本**（另一条线的产出）。
+
+    为什么接：那份 JSON 里有「客户 8 阶段的分界 + 每个环节在做什么 + 缺口清单」，
+    是**讲解词**；本脚本产出的是**空间与运动画面**。两者互补：
+    剧本给"说什么"，画面给"在哪动"。
+    """
+    import json as _json
+    with open(path, "r", encoding="utf-8") as f:
+        return _json.load(f)
+
+
+def build(d, speed, fps, out, script=None):
     run = d["run"]
     t0, t1 = run["start"], run["end"]
     span = max(1.0, (t1 - t0).total_seconds())
@@ -290,6 +302,19 @@ def build(d, speed, fps, out):
     txt(0.034, 0.252, "阶段进度", 13, DIM)
     stages = [("取磁套", 0.06, 0.22), ("6 路分液", 0.28, 0.44),
               ("内部洗脱", 0.44, 0.70), ("回取产物板", 0.70, 0.98)]
+    if script and script.get("stages"):
+        # 用剧本的阶段与真实时间边界（offsetMs/durationMs）⇒ 进度条与讲解词对齐
+        total = max(1.0, float(script.get("totalMs") or span * 1000))
+        st = []
+        for s_ in script["stages"]:
+            ns_ = s_.get("nodes") or []
+            if not ns_:
+                continue
+            a = min((n.get("offsetMs") or 0) for n in ns_) / total
+            b = max((n.get("offsetMs") or 0) + (n.get("durationMs") or 0) for n_ in [ns_] for n in ns_) / total
+            st.append((s_.get("title", "")[:10], max(0.0, a), min(1.0, max(b, a + 0.02))))
+        if st:
+            stages = st
     prog_bar = ax.add_patch(patches.Rectangle((0.035, 0.185), 0.0, 0.022,
                                               facecolor=BLUE, edgecolor="none"))
     prog_head, = ax.plot([0.035], [0.205], marker="v", color=RED, markersize=9)
@@ -305,6 +330,8 @@ def build(d, speed, fps, out):
     ev_texts = [txt(0.774, 0.770 - k * 0.036, "", 10.5, DIM) for k in range(10)]
     cur_node = txt(0.774, 0.115, "", 12, FG, "bold")
     cur_label = txt(0.774, 0.085, "", 11, DIM)
+    gap_title = txt(0.774, 0.055, "", 11, DIM)
+    gap_texts = [txt(0.774, 0.038 - k * 0.0, "", 10, YELLOW) for k in range(3)]
 
     plates = sorted({tr["plate"] for tr in d["transfers"]})
     plate_art = []
@@ -387,6 +414,16 @@ def build(d, speed, fps, out):
                 t.set_color(FG)
             else:
                 t.set_text("")
+        if script:
+            gaps = []
+            for s_ in script.get("stages", []):
+                for g in (s_.get("gaps") or [])[:1]:
+                    gaps.append("%s：%s" % (s_.get("title", "")[:6], str(g)[:26]))
+            for p_ in (script.get("problems") or [])[:2]:
+                gaps.append("问题 %s：%s" % (p_.get("errorCode") or "", str(p_.get("say") or "")[:24]))
+            gap_title.set_text("剧本要点 / 缺口清单" if gaps else "")
+            for k, t in enumerate(gap_texts):
+                t.set_text("· " + gaps[k] if k < len(gaps) else "")
         recent = [nd for nd in d["nodes"] if nd["end"] and nd["end"] <= now]
         if recent:
             last = recent[-1]
@@ -411,5 +448,10 @@ if __name__ == "__main__":
     ap.add_argument("--speed", type=float, default=70.0, help="加速倍数")
     ap.add_argument("--fps", type=int, default=24)
     ap.add_argument("--out", default="docs/media/提取线仿真回放.mp4")
+    ap.add_argument("--script", default="",
+                    help="replay-run.py 产出的机读剧本 JSON（讲解词/阶段边界/缺口清单）")
     a = ap.parse_args()
-    build(load(a.run), a.speed, a.fps, a.out)
+    script = load_script(a.script) if a.script and os.path.isfile(a.script) else None
+    if a.script and script is None:
+        print("⚠ 剧本文件不存在：%s（继续用内置阶段标签）" % a.script)
+    build(load(a.run), a.speed, a.fps, a.out, script)
