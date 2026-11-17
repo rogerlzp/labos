@@ -71,6 +71,15 @@ need "device_event 来源幂等唯一索引" 'uk_device_event_source'
 need "device_event_run_cursor 持久游标存在" 'CREATE TABLE IF NOT EXISTS device_event_run_cursor \('
 need "device_event_consumption 消费关系存在" 'CREATE TABLE IF NOT EXISTS device_event_consumption \('
 need "同一等待者唯一约束存在" 'uk_device_event_waiter'
+# ---- 孪生差分报告：离线对账产物，不挂 run_artifact（run_id 是 NOT NULL 外键）----
+need "twin_diff_report 存在" 'CREATE TABLE IF NOT EXISTS twin_diff_report \('
+need "twin_diff_report 报告幂等键存在" 'CONSTRAINT uk_twin_diff_report_uid UNIQUE \(tenant_id, report_uid\)'
+
+# ---- plate_well 设计态/运行态拆分（Q10 已裁决：拆表）----
+need "plate_well_design 存在" 'CREATE TABLE IF NOT EXISTS plate_well_design'
+need "plate_well_design 唯一键存在" 'CONSTRAINT uk_plate_well_design UNIQUE \(plate_id, well_row, well_col\)'
+need "plate_well_design 索引存在" 'CREATE INDEX IF NOT EXISTS ix_well_design_sample'
+need "plate_well 运行态表仍在（拆分不得删表）" 'CREATE TABLE IF NOT EXISTS plate_well \('
 
 echo
 if [[ $FAIL -eq 0 ]]; then

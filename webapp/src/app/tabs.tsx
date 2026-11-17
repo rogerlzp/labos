@@ -83,8 +83,15 @@ export function TabsProvider({ children }: { children: ReactNode }) {
       }
       return [...prev, { key, title }];
     });
-    nav(key);
-  }, [nav]);
+    // ⚠ 只在**不在当前路径**时导航。
+    // 以前无条件 nav(key)，而 key 是纯 pathname ⇒ 首帧登记标签时会把
+    // `?templateId=..&runId=..` / `?islandId=..` 这类深链参数整段洗掉
+    // （实测：直接打开 /material-config?templateId=28 变成 /material-config）。
+    // open 的语义是"登记标签"，不是"跳转"。
+    if (loc.pathname !== key) {
+      nav(key);
+    }
+  }, [nav, loc.pathname]);
 
   const activate = useCallback((key: string) => {
     nav(key);

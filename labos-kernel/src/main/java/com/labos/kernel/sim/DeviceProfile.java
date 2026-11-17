@@ -148,11 +148,53 @@ public final class DeviceProfile {
                     .build()),
 
             // 酶标仪：SpectraMax 190（190–850 nm）。
-            Map.entry("reader", new DeviceProfile("reader", 5_000,
-                    Set.of("Home", "OpenDoor", "CloseDoor", "Load", "Unload",
-                            "Read", "GetResult", "GetStatus"),
-                    0, 0, 0, 0, 190, 850, 0, 0, 4,
-                    true, false)),
+            //   2026-11-17 补 BioTek Gen5 的**真实方法名**（依据 Gen5 OLE Automation
+            //   Programmer's Guide）：机型由 Gen5 独占，中控只与 Gen5 对话，
+            //   所以方法集既有 LabOS 习惯名（Load/Unload/Read），也有 Gen5 真名
+            //   （CarrierIn/CarrierOut/StartRead/GetDataSetResults…）。
+            Map.entry("reader", DeviceProfile.builder("reader")
+                    .delayMs(5_000)
+                    .methods(Set.of(
+                            // —— Gen5 真名 ——
+                            "ConfigureSerialReader", "ConfigureUSBReader", "ConfigureOleReader",
+                            "TestReaderCommunication", "GetReaderStatus", "GetLastReaderError",
+                            "GetReaderCharacteristics", "StartSystemTest",
+                            "NewExperiment", "NewExperimentEx", "OpenExperiment", "Close",
+                            "Save", "SaveAs", "SetPlateLayout", "GetPlateLayout",
+                            "GetPlateTypeNames",
+                            "CarrierIn", "CarrierInEx", "CarrierOut", "RunReaderControlCommand",
+                            "StartRead", "StartReadEx", "StartSimulatedRead", "AbortRead",
+                            "KeepPlateInAfterRead", "SetPartialPlate", "ImportSampleIDs",
+                            "GetDataSetNames", "GetDataSetInfo", "GetDataSetResults", "GetRawData",
+                            "ExportFile", "PrintReport",
+                            "GetCurrentTemperature", "SetTemperatureSetPoint",
+                            "GetTemperatureSetPoint",
+                            // —— LabOS 习惯名 ——
+                            "Home", "OpenDoor", "CloseDoor", "Load", "Unload",
+                            "Read", "ReadPlate", "ReadEx", "SimulatedRead", "Stop",
+                            "GetResult", "GetStatus", "SelfCheck", "Connect",
+                            "GetTemperature", "SetTemperature"))
+                    .wavelength(190, 850)
+                    .temp(20, 50)
+                    .slots(4)
+                    .door(true)
+                    .timing("CarrierIn", 4_000)
+                    .timing("CarrierOut", 4_000)
+                    .timing("Load", 4_000)
+                    .timing("Unload", 4_000)
+                    .timing("Read", 15_000)          // 96 孔单波长静态读板
+                    .timing("ReadPlate", 15_000)
+                    .timing("ReadEx", 15_000)
+                    .timing("SimulatedRead", 3_000)
+                    .timing("StartSystemTest", 60_000)
+                    .timing("SelfCheck", 60_000)
+                    .timing("NewExperiment", 2_000)
+                    .timing("OpenExperiment", 2_000)
+                    .result("GetStatus", "readerStatus", "plateOnCarrier", "temperature")
+                    .result("GetReaderStatus", "readerStatus", "readerType", "plateOnCarrier")
+                    .result("GetTemperature", "temperature", "status")
+                    .result("GetResult", "plate", "dataSet")
+                    .build()),
 
             // 孵育箱：Thermo Heracell，室温+5 ~ 55 °C，CO2 0–20%。
             Map.entry("incubator", new DeviceProfile("incubator", 3_000,
@@ -165,11 +207,61 @@ public final class DeviceProfile {
                     0, 0, 0, 0, 0, 0, 5, 55, 20,
                     true, false)),
 
-            // 洗板机：BioTek 405 TS。
-            Map.entry("washer", new DeviceProfile("washer", 8_000,
-                    Set.of("Home", "Load", "Unload", "Wash", "Dispense", "GetStatus"),
-                    0, 0, 50, 300, 0, 0, 0, 0, 0,
-                    false, false)),
+            // 洗板机：BioTek 405 TS / EL406（LHC 软件；2026-11-17 按手册补真方法集）。
+            //   **关键认识**：LHC 下"洗 / 分液 / 预填充"是同一件事 —— 跑已装载的 .LHC 协议，
+            //   体积/次数/浸泡全在协议文件里，所以这些方法**不接受 volume 参数**。
+            //   ⇒ 画像的 volume 边界只对历史方法名（Wash 带 volume）兜底；
+            //     真正的量程校验在协议文件与 LHC 内部（模拟器不假装知道）。
+            Map.entry("washer", DeviceProfile.builder("washer")
+                    .delayMs(8_000)
+                    .methods(Set.of(
+                            // —— LHC Runner 真名 ——
+                            "LHC_SetProductName", "LHC_SetCommunications", "LHC_TestCommunications",
+                            "LHC_PerformSelfCheck", "LHC_LoadProtocolFromFile",
+                            "LHC_LoadProtocolFromFlash", "LHC_RunProtocol",
+                            "LHC_GetProtocolStatus", "LHC_PauseProtocol", "LHC_ResumeProtocol",
+                            "LHC_AbortProtocol", "LHC_ValidateProtocol", "LHC_OverrideValidation",
+                            "LHC_LeaveVacuumPumpOn", "LHC_SetRunnerThreading",
+                            "LHC_GetLastErrorCode", "LHC_GetErrorString", "LHC_GetProductName",
+                            "LHC_GetProductSerialNumber", "LHC_GetWellCount",
+                            "LHC_GetOnBoardProtocolCount", "LHC_GetOnBoardProtocolName",
+                            "LHC_SetFirstStrip", "LHC_SetNumberOfStrips",
+                            "LHC_RunVerifyManifoldTest", "LHC_GetVerifyManifoldRunStatus",
+                            "LHC_GetVerifyManifoldTestResults",
+                            "LHC_CreateVerifyManifoldTestReport",
+                            // —— LabOS 习惯名 ——
+                            "SetProductName", "SetCommunications", "TestCommunications",
+                            "Home", "SelfCheck", "LoadProtocol", "LoadProtocolFromFlash",
+                            "RunProtocol", "Run", "Wash", "Dispense", "Prime",
+                            "GetProtocolStatus", "Pause", "PauseProtocol",
+                            "Resume", "ResumeProtocol", "Abort", "AbortProtocol", "Stop",
+                            "ValidateProtocol", "OverrideValidation", "LeaveVacuumPumpOn",
+                            "GetLastErrorCode", "GetErrorString", "GetProductName",
+                            "GetSerialNumber", "GetWellCount", "GetOnBoardProtocolCount",
+                            "GetOnBoardProtocolName", "SetFirstStrip", "SetNumberOfStrips",
+                            "RunVerifyManifoldTest", "GetVerifyManifoldRunStatus",
+                            "GetVerifyManifoldResults", "CreateVerifyManifoldReport",
+                            "GetStatus", "Load", "Unload"))
+                    // 历史方法名 Wash(volume) 的量程兜底：LHC 的洗涤体积在协议里，
+                    // 这里保留 50–300 µL 只是让"老流程把体积配错"仍能在仿真阶段暴露。
+                    .volume(50, 300)
+                    .timing("RunProtocol", 60_000)   // 96 孔整板洗一遍是分钟级
+                    .timing("Wash", 60_000)
+                    .timing("Dispense", 8_000)
+                    .timing("Prime", 30_000)
+                    .timing("Run", 60_000)
+                    .timing("LoadProtocol", 2_000)
+                    .timing("LoadProtocolFromFlash", 2_000)
+                    .timing("ValidateProtocol", 5_000)
+                    .timing("SelfCheck", 30_000)
+                    .timing("Home", 30_000)
+                    .timing("TestCommunications", 3_000)
+                    .timing("RunVerifyManifoldTest", 60_000)
+                    .result("GetStatus", "runStatus", "runStatusText", "protocol")
+                    .result("GetProtocolStatus", "runStatus", "runStatusText", "protocol")
+                    .result("GetProductName", "productName")
+                    .result("GetWellCount", "wellCount")
+                    .build()),
 
             // 分液器：Thermo Multidrop，0.5–2500 µL。
             //  资料：Hamilton Microlab STAR 1–5000 µL；杭州奥铂 KX100-1（**96 孔 8 s**，

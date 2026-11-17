@@ -72,10 +72,14 @@ cat /tmp/_schema_header.sql \
     99v_workflow_island_id.sql \
     99w_sequence_fresh_start.sql \
     99x_p2_rebuild.sql \
+    ../migration/20261112_material_identity.sql \
     ../migration/20261115_device_event.sql \
     ../migration/20261115_device_event_type.sql \
     ../migration/20261115_device_business_state.sql \
     ../migration/20261116_device_business_runtime.sql \
+    ../migration/20261116_twin_diff_report.sql \
+    ../migration/20261117_plate_well_split.sql \
+    ../migration/20261117_stage_code.sql \
     > 90_all_in_one.sql
 rm -f /tmp/_schema_header.sql
 

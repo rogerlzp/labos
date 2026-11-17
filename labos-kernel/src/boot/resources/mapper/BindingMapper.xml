@@ -76,8 +76,10 @@
      WHERE tenant_id = #{t} AND pool_id = #{poolId} AND device_instance_id = #{deviceInstanceId}
   </delete>
 
+  <!-- 实例号 -> 型号行号。列名是 device_model_id（不是 device_id），
+       上层拿到的是 device.id，可以直接喂给 device_method / setDeviceMethodInterruptible。 -->
   <select id="selectDeviceModelId" resultType="java.lang.Long">
-    SELECT device_id FROM device_instance WHERE tenant_id = #{t} AND id = #{deviceInstanceId}
+    SELECT device_model_id FROM device_instance WHERE tenant_id = #{t} AND id = #{deviceInstanceId}
   </select>
 
   <select id="countPoolBindings" resultType="long">
@@ -203,11 +205,13 @@
            rn.code AS "pointCode",
            dp.position_label AS "positionLabel",
            dp.slot_index AS "slotIndex",
-           dp.robot_reachable AS "robotReachable"
+           dp.robot_reachable AS "robotReachable",
+           dc.code AS "deviceCode"
       FROM node_binding nb
       JOIN workflow_node wn ON wn.id = nb.node_id
       JOIN device_point dp ON dp.id = nb.position_id
       JOIN resource_node rn ON rn.id = dp.point_resource_id
+      LEFT JOIN resource_node dc ON dc.id = dp.device_resource_id
      WHERE nb.tenant_id = #{t} AND wn.workflow_id = #{workflowId}
        AND nb.enabled = true AND nb.position_id IS NOT NULL
      ORDER BY wn.id, nb.seq
@@ -221,6 +225,70 @@
       JOIN workflow_node wn ON wn.id = nb.node_id
      WHERE nb.tenant_id = #{t} AND nb.node_id = #{nodeId} AND nb.enabled = true
      ORDER BY nb.seq
+     LIMIT 1
+  </select>
+
+  <!-- PF-21/23/27/30：点位绑定的可执行性（一次取全，判定在 PreflightChecker）。
+       methodAllowed 走 position_method 的 **任意 scope**：只要该点位在某个作用域
+       授权过这个方法就算能跑（精确 scope 解析在执行期做，预检不重复那套规则）。 -->
+  <select id="selectNodeBindingPreflight" resultType="java.util.Map">
+    SELECT wn.node_key AS "nodeKey", wn.name AS "nodeName",
+           wn.binding_mode AS "bindingMode",
+           nb.seq AS "seq",
+           nb.position_id AS "positionId",
+           nb.method_id AS "methodId",
+           nb.material_role AS "materialRole",
+           dp.device_resource_id AS "deviceResourceId",
+           dp.robot_reachable AS "robotReachable",
+           dp.point_kind AS "pointKind",
+           dp.point_role AS "pointRole",
+           rn.code AS "pointCode",
+           CASE WHEN dp.id IS NULL THEN NULL
+                WHEN nb.method_id IS NULL THEN NULL
+                WHEN EXISTS (SELECT 1 FROM position_method pm
+                              WHERE pm.tenant_id = nb.tenant_id
+                                AND pm.position_id = nb.position_id
+                                AND pm.method_id = nb.method_id
+                                AND pm.enabled) THEN true
+                ELSE false END AS "methodAllowed",
+           EXISTS (SELECT 1 FROM robot_point rp
+                    WHERE rp.tenant_id = nb.tenant_id
+                      AND rp.code = rn.code) AS "hasRobotPoint"
+      FROM workflow_node wn
+      JOIN node_binding nb ON nb.node_id = wn.id AND nb.enabled = true
+      LEFT JOIN device_point dp ON dp.id = nb.position_id AND dp.tenant_id = nb.tenant_id
+      LEFT JOIN resource_node rn ON rn.id = dp.point_resource_id
+     WHERE wn.tenant_id = #{t} AND wn.workflow_id = #{workflowId}
+     ORDER BY wn.node_key, nb.seq
+  </select>
+
+  <select id="selectPointModeNodesWithoutBinding" resultType="java.util.Map">
+    SELECT wn.node_key AS "nodeKey", wn.name AS "nodeName"
+      FROM workflow_node wn
+     WHERE wn.tenant_id = #{t} AND wn.workflow_id = #{workflowId}
+       AND wn.binding_mode = 'point'
+       AND NOT EXISTS (SELECT 1 FROM node_binding nb
+                        WHERE nb.node_id = wn.id AND nb.enabled = true)
+     ORDER BY wn.node_key
+  </select>
+
+  <!-- 岛内第一台 TRANSFER 设备：岛是资源树祖先（resource_node 无 island_id）⇒ 递归向下。
+       同时给 resource_id 与 instance_id，调用方按执行器口径（模拟=resource / 驱动=instance）二选一。 -->
+  <select id="selectTransferDeviceInIsland" resultType="java.util.Map">
+    WITH RECURSIVE sub AS (
+      SELECT id, parent_id FROM resource_node
+       WHERE id = #{islandId} AND tenant_id = #{t} AND deleted_at IS NULL
+      UNION ALL
+      SELECT r.id, r.parent_id FROM resource_node r
+        JOIN sub s ON r.parent_id = s.id
+       WHERE r.tenant_id = #{t} AND r.deleted_at IS NULL
+    )
+    SELECT rn.id AS "resourceId", di.id AS "instanceId", rn.code AS "code"
+      FROM resource_capability rc
+      JOIN capability c ON c.id = rc.capability_id AND c.code = 'TRANSFER'
+      JOIN resource_node rn ON rn.id = rc.resource_id AND rn.id IN (SELECT id FROM sub)
+      LEFT JOIN device_instance di ON di.resource_id = rn.id AND di.deleted_at IS NULL
+     ORDER BY rn.id
      LIMIT 1
   </select>
 
@@ -338,6 +406,25 @@
        AND (dp.is_standalone = true OR (dp.robot_reachable = true AND dp.is_entry = true))
      ORDER BY dp.is_standalone DESC, dp.id LIMIT 1
   </select>
+
+  <select id="selectDevicePointIdByResource" resultType="java.lang.Long">
+    SELECT dp.id FROM device_point dp
+     WHERE dp.tenant_id = #{t} AND dp.point_resource_id = #{resourceId}
+     LIMIT 1
+  </select>
+
+  <insert id="insertTransportSegmentManual">
+    INSERT INTO transport_segment (tenant_id, run_id, seq, robot_resource_id,
+                                   from_position_id, to_position_id, carrier, status,
+                                   started_at, finished_at)
+    SELECT #{t}, #{runId},
+           COALESCE((SELECT max(seq) FROM transport_segment WHERE run_id = #{runId}), 0) + 1,
+           NULL, #{fromPos}, #{toPos}, #{carrier}, 'done', now(), now()
+     WHERE NOT EXISTS (SELECT 1 FROM transport_segment
+                        WHERE tenant_id = #{t} AND run_id = #{runId}
+                          AND from_position_id = #{fromPos}
+                          AND to_position_id = #{toPos})
+  </insert>
 
   <insert id="insertTransportSegment">
     INSERT INTO transport_segment (tenant_id, run_id, run_node_id, seq, robot_resource_id,

@@ -129,6 +129,16 @@ public interface RunMapper {
     // ---- 执行生命周期（WorkflowService 断点续跑路径）----
 
     /** 运行期变量合并进 run.input.vars（启动线程读 input 之前必须落库）。 */
+    /**
+     * 通用 run.input 合并（浅合并顶层键）。
+     *
+     * <p>为什么不能复用 {@link #mergeRunInputVars}：那条 SQL **只合并 vars 子对象**
+     * （{@code input->'vars' || ...}），塞 stages 进去会被静默丢掉（实测）。
+     */
+    int mergeRunInputJson(@Param("param1") long tenantId,
+                          @Param("param2") long runId,
+                          @Param("param3") String json);
+
     int mergeRunInputVars(long tenantId, long runId, String varsJson);
 
     /**

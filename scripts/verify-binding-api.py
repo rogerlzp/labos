@@ -41,12 +41,13 @@ def main():
                 {"username": "admin", "password": "admin123"})["token"]
 
     # 找两台同型号 + 一台异型号的 device_instance
-    model = q("SELECT device_id FROM device_instance GROUP BY device_id "
+    # 列名 2026-11-16 改名：device_instance.device_id -> device_model_id（指向 device.id 型号行）
+    model = q("SELECT device_model_id FROM device_instance GROUP BY device_model_id "
               "HAVING count(*)>=2 ORDER BY count(*) DESC LIMIT 1")
     same = q("SELECT string_agg(id::text, ' ') FROM "
-             "(SELECT id FROM device_instance WHERE device_id=%s ORDER BY id LIMIT 2) t" % model)
+             "(SELECT id FROM device_instance WHERE device_model_id=%s ORDER BY id LIMIT 2) t" % model)
     m1, m2 = same.split(" ")[:2]
-    diff = q("SELECT id FROM device_instance WHERE device_id<>%s LIMIT 1" % model)
+    diff = q("SELECT id FROM device_instance WHERE device_model_id<>%s LIMIT 1" % model)
 
     print("── ① 设备池 ──")
     pool = None
@@ -79,11 +80,11 @@ def main():
            "JOIN resource_node pr ON pr.id=dp.point_resource_id "
            "WHERE dp.tenant_id=1 AND pr.code='ID-1021-P1'")
     pos_id, pos_code = dp.split("|")
-    mid = q("SELECT dm.id FROM device_method dm JOIN device dev ON dev.id=dm.device_id "
-            "JOIN device_instance di ON di.device_id=dev.id "
+    mid = q("SELECT dm.id FROM device_method dm JOIN device dev ON dev.id=dm.device_model_id "
+            "JOIN device_instance di ON di.device_model_id=dev.id "
             "WHERE di.code='ID-1021' AND dm.method='ReadBarcode' LIMIT 1")
-    mid2 = q("SELECT dm.id FROM device_method dm JOIN device dev ON dev.id=dm.device_id "
-             "JOIN device_instance di ON di.device_id=dev.id "
+    mid2 = q("SELECT dm.id FROM device_method dm JOIN device dev ON dev.id=dm.device_model_id "
+             "JOIN device_instance di ON di.device_model_id=dev.id "
              "WHERE di.code='ID-1021' AND dm.method='ReadPlate' LIMIT 1")
     b1 = b2 = None
     try:

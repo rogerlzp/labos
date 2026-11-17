@@ -324,15 +324,22 @@
     </select>
 
 <select id="selectTimelineNodes" resultType="java.util.Map">
-        SELECT id AS "id", node_key AS "nodeKey", name AS "name",
-               status::text AS "status", level AS "level",
-               parent_node_id AS "parentNodeId", step_seq AS "stepSeq",
-               resource_id AS "resourceId", loop_index AS "loopIndex",
-               actual_start AS "actualStart", actual_end AS "actualEnd",
-               EXTRACT(EPOCH FROM (actual_end - actual_start)) * 1000 AS "durMs"
-          FROM run_node
-         WHERE run_id = #{param1} AND actual_start IS NOT NULL
-         ORDER BY COALESCE(parent_node_id, id), level, COALESCE(step_seq, 0), id
+        SELECT rn.id AS "id", rn.node_key AS "nodeKey", rn.name AS "name",
+               rn.status::text AS "status", rn.level AS "level",
+               rn.parent_node_id AS "parentNodeId", rn.step_seq AS "stepSeq",
+               rn.resource_id AS "resourceId", rn.loop_index AS "loopIndex",
+               rn.actual_start AS "actualStart", rn.actual_end AS "actualEnd",
+               EXTRACT(EPOCH FROM (rn.actual_end - rn.actual_start)) * 1000 AS "durMs",
+               <!-- P3：阶段编码跟着时间轴走，甘特/看板才能按阶段聚合。
+                    run_node 没有 workflow_id ⇒ 经 run 表 join workflow_node。 -->
+               wn.stage_code AS "stageCode"
+          FROM run_node rn
+          LEFT JOIN run r ON r.id = rn.run_id
+          LEFT JOIN workflow_node wn
+                 ON wn.workflow_id = r.workflow_id AND wn.node_key = rn.node_key
+         WHERE rn.run_id = #{param1} AND rn.actual_start IS NOT NULL
+         ORDER BY COALESCE(rn.parent_node_id, rn.id), rn.level,
+                  COALESCE(rn.step_seq, 0), rn.id
     </select>
 
 <select id="selectCommandOutbox" resultType="java.util.Map">
@@ -474,6 +481,12 @@
         SELECT status::text FROM run
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
+
+    <update id="mergeRunInputJson">
+        UPDATE run
+           SET input = COALESCE(input, '{}'::jsonb) || #{param3}::jsonb
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </update>
 
     <update id="mergeRunInputVars">
         UPDATE run

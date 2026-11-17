@@ -215,6 +215,8 @@ export interface CompileResult {
     name: string;
     capability: string;
     capabilitySource: string;
+    /** 客户§3阶段编码（S1..S8/S0/S9）；null = 未分阶段。P3 新增。 */
+    stageCode?: string | null;
     fromRecipe: boolean;
     sampleCount: number;
     stepCount: number;
@@ -1177,10 +1179,15 @@ export const api = {
    *
    * <p>（审计日志里那个 `mode` 字段是**另一回事** —— 那是后端记审计时的键名。）
    */
-  execute: (id: number, opts?: { attendance?: Attendance; async?: boolean }) => {
+  execute: (id: number, opts?: {
+    attendance?: Attendance; async?: boolean;
+    /** 只跑这些阶段（客户§3 编码）；空/不传 = 全部阶段。仅 async 生效。 */
+    stages?: string[];
+  }) => {
     const q = new URLSearchParams();
     if (opts?.attendance) q.set('attendance', opts.attendance);
     if (opts?.async) q.set('async', '1');
+    if (opts?.stages?.length) q.set('stages', opts.stages.join(','));
     const s = q.toString();
     return req<ExecuteResult>(`/api/workflows/${id}/run${s ? '?' + s : ''}`, { method: 'POST' });
   },

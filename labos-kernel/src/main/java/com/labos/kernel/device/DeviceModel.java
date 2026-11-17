@@ -135,10 +135,14 @@ public final class DeviceModel {
      * 块 {@code 0x40} + 字节 {@code 0x0C} → {@code EC-08-400C}。
      * 现场看到 {@code 400C} 能立刻拆成"块 40 = S100，字节 0C = 无纸"。
      *
-     * <p>分配表（**新加型号时从 42 往后取，不要复用**）：
+     * <p>分配表（**新加型号时从 44 往后取，不要复用**）：
      * <pre>
      *   0x40  s100        S100 封膜机
      *   0x41  aspin-2k    上海爱翱 ASpin 2K（手册未提供错误码表，预留）
+     *   0x42  biotek-lhc  BioTek LHC 洗板/分液机（Runner_ReturnCode 是十进制 0..6，
+     *                     用 {@link #errorAs} 显式编号：EC-08-42-0x）
+     *   0x43  biotek-gen5 BioTek Gen5 酶标仪（BTIStatusCodes 是负数分段编号，
+     *                     用 {@link #errorAs} 显式编号：EC-08-43-&lt;绝对值&gt;）
      * </pre>
      *
      * <p>{@code 0} = 这个型号不占用错误码块（手册没给码表的型号）。
@@ -207,6 +211,41 @@ public final class DeviceModel {
         int b = byteOf(vendorCode);
         String code = String.format("EC-08-%02X%02X", errorBlock, b);
         errors.put(vendorCode, new ErrorDef(vendorCode, meaning, d, code, action));
+        return this;
+    }
+
+    /**
+     * 注册一个**取不出十六进制字节**的厂商码（十进制 / 负数编号），中控码由调用方显式给出。
+     *
+     * <p><b>为什么需要它</b>（2026-11-17，接 BioTek 两台设备时暴露）：
+     * {@link #error} 的编号规则是"块 + 手册码低字节"，前提是厂商码是
+     * {@code 0x8000000C} 这种**带结构**的十六进制码。但另外两类真实设备不是：
+     * <ul>
+     *   <li>BioTek LHC Runner 返回 {@code Int16 0..6}（{@code Runner_ReturnCode}）；</li>
+     *   <li>BioTek Gen5 返回 {@code -1 … -700} 的**负数十进制**，且按段分配
+     *       （-100 文件、-200 记录、-500 串口、-600 读板机…）。</li>
+     * </ul>
+     * 取低字节会**撞码**：Gen5 的 {@code -526}（端口不存在）与 {@code -782} 低字节都是
+     * {@code 0xF2}，两台不同的故障会被翻成同一个中控码，恢复策略就串了。
+     * 而"块+字节"的初衷正是防撞码 —— 那就不能用它。
+     *
+     * <p>所以这里不猜：<b>登记时显式写出中控码</b>，并把厂商码原样保留为查表键
+     * （{@link #error(String)} 仍按 {@code vendorCode} 精确命中）。
+     *
+     * @param vendorCode 设备原始码（写进 {@code device_raw_response} 的那个字符串，
+     *                   十进制就写十进制："-526" / "4"）
+     * @param kernelCode 中控码，必须自带型号块以免跨型号撞码，例：{@code EC-08-43-526}
+     */
+    public DeviceModel errorAs(String vendorCode, String kernelCode, String meaning,
+                               Disposition d, String action) {
+        if (vendorCode == null || vendorCode.isBlank()) {
+            throw new IllegalArgumentException(id + " 的 errorAs 缺 vendorCode");
+        }
+        if (kernelCode == null || !kernelCode.matches("^EC-[A-Z0-9]+(-[A-Z0-9]+)+$")) {
+            throw new IllegalArgumentException("中控码格式不对：" + kernelCode
+                    + "（要写成 EC-08-43-526 这种分段形式）");
+        }
+        errors.put(vendorCode.trim(), new ErrorDef(vendorCode.trim(), meaning, d, kernelCode, action));
         return this;
     }
 

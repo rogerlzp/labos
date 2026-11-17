@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  整岛导出 / 导入（岛 + 设备 + 点位 + 点位方法 + 示教）。
+
+  共同点：**只用业务码**（islandCode / deviceCode / pointCode / methodName / driverCode），
+  不出现任何自增 id —— 跨环境 id 必然不同，带 id 的包会"导进去了但全错位"。
+
+  岛下资源的范围一律用递归 CTE（resource_node 没有 island_id，岛是树根）。
+-->
+<mapper namespace="com.labos.kernel.persistence.TopologyMapper">
+
+  <select id="selectIslandRow" resultType="java.util.Map">
+    SELECT id AS "id", code AS "code", name AS "name", path AS "path"
+      FROM resource_node
+     WHERE tenant_id = #{t} AND id = #{islandId} AND kind = 'island' AND deleted_at IS NULL
+  </select>
+
+  <select id="selectIslandDevices" resultType="java.util.Map">
+    WITH RECURSIVE sub AS (
+      SELECT id FROM resource_node
+       WHERE tenant_id = #{t} AND id = #{islandId} AND deleted_at IS NULL
+      UNION ALL
+      SELECT r.id FROM resource_node r JOIN sub s ON r.parent_id = s.id
+       WHERE r.tenant_id = #{t} AND r.deleted_at IS NULL
+    )
+    SELECT rn.code AS "code", rn.name AS "name",
+           d.device_type AS "deviceType", c.code AS "capability",
+           di.ip AS "ip", di.code AS "instanceCode", drv.code AS "driverCode"
+      FROM resource_node rn
+      LEFT JOIN device d ON d.tenant_id = rn.tenant_id AND d.code = rn.code
+      LEFT JOIN capability c ON c.id = d.capability_id
+      LEFT JOIN device_instance di ON di.resource_id = rn.id AND di.deleted_at IS NULL
+      LEFT JOIN driver drv ON drv.id = di.driver_id
+     WHERE rn.tenant_id = #{t} AND rn.kind = 'device' AND rn.deleted_at IS NULL
+       AND rn.id IN (SELECT id FROM sub)
+     ORDER BY rn.code
+  </select>
+
+  <select id="selectIslandPoints" resultType="java.util.Map">
+    WITH RECURSIVE sub AS (
+      SELECT id FROM resource_node
+       WHERE tenant_id = #{t} AND id = #{islandId} AND deleted_at IS NULL
+      UNION ALL
+      SELECT r.id FROM resource_node r JOIN sub s ON r.parent_id = s.id
+       WHERE r.tenant_id = #{t} AND r.deleted_at IS NULL
+    )
+    SELECT dev.code AS "deviceCode", rp.code AS "pointCode", rp.name AS "pointName",
+           rp.kind::text AS "nodeKind",
+           dp.point_kind AS "pointKind", dp.point_role AS "pointRole",
+           dp.robot_reachable AS "robotReachable",
+           dp.position_label AS "positionLabel", dp.slot_index AS "slotIndex",
+           dp.grid_row AS "gridRow", dp.grid_col AS "gridCol",
+           dp.max_stack AS "maxStack", dp.max_height_mm AS "maxHeightMm",
+           array_to_string(dp.plate_types, ',') AS "plateTypes",
+           dp.is_entry AS "isEntry", dp.is_exit AS "isExit",
+           dp.is_standalone AS "isStandalone", dp.is_primary AS "isPrimary",
+           dp.order_in_device AS "orderInDevice"
+      FROM device_point dp
+      JOIN resource_node rp ON rp.id = dp.point_resource_id
+      JOIN resource_node dev ON dev.id = dp.device_resource_id
+     WHERE dp.tenant_id = #{t} AND dev.id IN (SELECT id FROM sub)
+     ORDER BY dev.code, dp.order_in_device NULLS LAST, rp.code
+  </select>
+
+  <select id="selectIslandPointMethods" resultType="java.util.Map">
+    WITH RECURSIVE sub AS (
+      SELECT id FROM resource_node
+       WHERE tenant_id = #{t} AND id = #{islandId} AND deleted_at IS NULL
+      UNION ALL
+      SELECT r.id FROM resource_node r JOIN sub s ON r.parent_id = s.id
+       WHERE r.tenant_id = #{t} AND r.deleted_at IS NULL
+    )
+    SELECT dev.code AS "deviceCode", rp.code AS "pointCode",
+           dm.method AS "methodName", pm.purpose AS "purpose",
+           pm.allocation AS "allocation", pm.scope_kind AS "scopeKind",
+           pm.priority AS "priority"
+      FROM position_method pm
+      JOIN device_point dp ON dp.id = pm.position_id
+      JOIN resource_node rp ON rp.id = dp.point_resource_id
+      JOIN resource_node dev ON dev.id = dp.device_resource_id
+      JOIN device_method dm ON dm.id = pm.method_id
+     WHERE pm.tenant_id = #{t} AND pm.enabled
+       AND dev.id IN (SELECT id FROM sub)
+     ORDER BY dev.code, rp.code, dm.method
+  </select>
+
+  <select id="selectIslandRobotPoints" resultType="java.util.Map">
+    SELECT robot.code AS "robotCode", rp.code AS "code", rp.name AS "name",
+           rp.x AS "x", rp.y AS "y", rp.z AS "z",
+           rp.point_type::text AS "pointType", rp.fill_status AS "fillStatus",
+           dev.code AS "deviceCode"
+      FROM robot_point rp
+      JOIN resource_node robot ON robot.id = rp.robot_resource_id
+      LEFT JOIN resource_node dev ON dev.id = rp.device_resource_id
+     WHERE rp.tenant_id = #{t} AND rp.island_id = #{islandId}
+     ORDER BY robot.code, rp.code
+  </select>
+
+  <select id="selectResourceIdByCode" resultType="java.lang.Long">
+    SELECT id FROM resource_node
+     WHERE tenant_id = #{t} AND code = #{code} AND deleted_at IS NULL
+     LIMIT 1
+  </select>
+
+  <select id="selectDriverIdByCode" resultType="java.lang.Long">
+    SELECT id FROM driver
+     WHERE tenant_id = #{t} AND code = #{code} AND deleted_at IS NULL
+     LIMIT 1
+  </select>
+
+  <!--
+    建点位：resource_node + device_point + position_state 一条语句写完。
+    · kind 是枚举，必须 CAST，否则 "column kind is of type resource_kind but expression is character varying"
+    · 同 code 已存在时复用并更新配置 ⇒ 导入可重复跑
+  -->
+  <insert id="insertPointForImport">
+    WITH rn AS (
+      INSERT INTO resource_node (tenant_id, code, name, parent_id, kind, location, attr, sort_order)
+      VALUES (#{t}, #{pointCode}, #{pointCode}, #{deviceResourceId},
+              CAST(#{resourceKind} AS resource_kind),
+              jsonb_build_object('zone', #{deviceCode}, 'point', #{pointCode}),
+              jsonb_build_object('source', 'island-import'), 0)
+      ON CONFLICT (tenant_id, code) DO UPDATE
+        SET parent_id = EXCLUDED.parent_id, kind = EXCLUDED.kind, updated_at = now()
+      RETURNING id
+    ), dp AS (
+      INSERT INTO device_point (tenant_id, device_resource_id, point_resource_id, point_role,
+                                robot_reachable, is_entry, is_exit, order_in_device,
+                                max_stack, max_height_mm, plate_types, position_label,
+                                point_kind, grid_row, grid_col, slot_index,
+                                is_standalone, is_primary, updated_at)
+      SELECT #{t}, #{deviceResourceId}, rn.id,
+             COALESCE(#{pointRole}, 'both'), COALESCE(#{robotReachable}, true),
+             COALESCE(#{isEntry}, false), COALESCE(#{isExit}, false),
+             -- max_stack 是 NOT NULL：导出文件里可能没这个字段（老包/手写包），给默认 1
+             COALESCE(#{orderInDevice}, 0), COALESCE(#{maxStack}, 1), #{maxHeightMm},
+             CASE WHEN COALESCE(#{plateTypes}, '') = '' THEN NULL
+                  ELSE string_to_array(#{plateTypes}, ',') END,
+             #{positionLabel}, #{pointKind}, #{gridRow}, #{gridCol}, #{slotIndex},
+             #{isStandalone}, #{isPrimary}, now()
+        FROM rn
+      ON CONFLICT (tenant_id, point_resource_id) DO UPDATE SET
+        point_role = EXCLUDED.point_role, robot_reachable = EXCLUDED.robot_reachable,
+        is_entry = EXCLUDED.is_entry, is_exit = EXCLUDED.is_exit,
+        order_in_device = EXCLUDED.order_in_device,
+        max_stack = EXCLUDED.max_stack, max_height_mm = EXCLUDED.max_height_mm,
+        plate_types = EXCLUDED.plate_types,
+        position_label = COALESCE(NULLIF(EXCLUDED.position_label, ''),
+                                  device_point.position_label),
+        point_kind = EXCLUDED.point_kind,
+        grid_row = EXCLUDED.grid_row, grid_col = EXCLUDED.grid_col,
+        slot_index = EXCLUDED.slot_index,
+        is_standalone = EXCLUDED.is_standalone, is_primary = EXCLUDED.is_primary,
+        updated_at = now()
+      RETURNING point_resource_id
+    ), ps AS (
+      INSERT INTO position_state (tenant_id, resource_id, plate_id, updated_at)
+      SELECT #{t}, dp.point_resource_id, NULL, now() FROM dp
+      ON CONFLICT (tenant_id, resource_id) DO NOTHING
+    )
+    SELECT count(*) FROM dp
+  </insert>
+
+  <insert id="upsertRobotPointForImport">
+    INSERT INTO robot_point (tenant_id, island_id, robot_resource_id, code, name,
+                             x, y, z, point_type, fill_status, device_resource_id)
+    VALUES (#{t}, #{islandId}, #{robotResourceId}, #{code}, #{name},
+            #{x}, #{y}, #{z}, #{pointType}, #{fillStatus},
+            #{deviceResourceId})
+    ON CONFLICT (tenant_id, robot_resource_id, code) DO UPDATE SET
+      name = EXCLUDED.name, x = EXCLUDED.x, y = EXCLUDED.y, z = EXCLUDED.z,
+      point_type = EXCLUDED.point_type, fill_status = EXCLUDED.fill_status,
+      device_resource_id = EXCLUDED.device_resource_id, updated_at = now()
+  </insert>
+
+</mapper>

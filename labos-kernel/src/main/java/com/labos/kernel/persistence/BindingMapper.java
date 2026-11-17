@@ -131,6 +131,32 @@ public interface BindingMapper {
     Map<String, Object> selectBarcodePolicyByNodeId(@Param("t") long tenantId,
                                                     @Param("nodeId") long nodeId);
 
+    /**
+     * 点位绑定预检（PF-21/23/27/30）：一条绑定一行，带点位/方法/可达性/示教/授权。
+     *
+     * <p>为什么单独一条查询而不是在 Java 里逐个节点查：预检要跑全量流程，
+     * 逐节点查是 N+1；这里一次按 workflow 取全，判定全在内存。
+     */
+    List<Map<String, Object>> selectNodeBindingPreflight(@Param("t") long tenantId,
+                                                         @Param("workflowId") long workflowId);
+
+    /** PF-22：声明了点位模式（binding_mode='point'）却没有任何绑定的节点。 */
+    List<Map<String, Object>> selectPointModeNodesWithoutBinding(@Param("t") long tenantId,
+                                                                 @Param("workflowId") long workflowId);
+
+    /**
+     * 岛内第一台 TRANSFER 能力设备（点位视角搬运规划的机械臂来源）。
+     *
+     * <p>为什么不用能力池：能力池是**运行时**快照（驱动注册/在线过滤），
+     * 而机械臂可能刚好没注册驱动；规划阶段只需要"这个岛里有没有臂、是哪个"，
+     * 不能因为一台模拟器没上线就把整条工艺的搬运静默跳过。
+     *
+     * <p>岛的归属是资源树祖先（`resource_node` 没有 island_id 列）⇒ 递归向下找。
+     * 返回 `resource_id` 与 `instance_id` 两列，调用方按执行器口径二选一。
+     */
+    Map<String, Object> selectTransferDeviceInIsland(@Param("t") long tenantId,
+                                                     @Param("islandId") long islandId);
+
     // ---------------------------------------------------------------- 物料角色（P2-8）
 
     List<Map<String, Object>> selectMaterialRoles(@Param("t") long tenantId);
@@ -215,6 +241,23 @@ public interface BindingMapper {
     Long selectLoadPortPointId(@Param("t") long tenantId, @Param("deviceResourceId") long deviceResourceId);
 
     /** 写一条搬运段（TransferPlan 的可观测副本）；seq 由 SQL 按 run 内递增自动算。 */
+    /**
+     * 人工/扫码确认路径落搬运段（P2 遗留补齐）。
+     *
+     * <p>为什么单独一条：`insertTransportSegment` 的 robot 是必填 long，
+     * 而人工确认时执行者（机械臂）已无从得知（事务行里没有 robot 列）⇒ 允许 NULL。
+     * 去重键 `(run_id, from_position_id, to_position_id)`：重复确认不重复落段。
+     */
+    /** 点位实体 id（resource_node）→ 配置层 device_point.id（transport_segment 的外键口径）。 */
+    Long selectDevicePointIdByResource(@Param("t") long tenantId,
+                                       @Param("resourceId") long resourceId);
+
+    int insertTransportSegmentManual(@Param("t") long tenantId,
+                                     @Param("runId") long runId,
+                                     @Param("fromPos") Long fromPos,
+                                     @Param("toPos") Long toPos,
+                                     @Param("carrier") String carrier);
+
     int insertTransportSegment(@Param("t") long tenantId,
                                @Param("runId") long runId,
                                @Param("runNodeId") Long runNodeId,

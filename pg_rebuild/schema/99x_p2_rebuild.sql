@@ -398,6 +398,23 @@ DO $$ BEGIN
     CHECK (scope IN ('model','instance'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- ★ 2026-11-17：唯一键按 scope 分离。
+--   原来只有 UNIQUE (device_model_id, method) ⇒ 同一型号同一方法只能一行
+--   ⇒ 实例级覆盖行（scope='instance'）根本插不进去，那一层是死设计。
+--   这里写进分片是为了让「90_all_in_one 建出的库」与「跑过迁移的库」结构一致
+--   （否则 ON CONFLICT 的部分索引推断会失败）。与
+--   migration/20261117_device_method_instance_scope.sql 同源。
+ALTER TABLE device_method DROP CONSTRAINT IF EXISTS uk_device_method;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_device_method_model
+  ON device_method (tenant_id, device_model_id, method) WHERE scope = 'model';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_device_method_instance
+  ON device_method (tenant_id, device_instance_id, method) WHERE scope = 'instance';
+DO $$ BEGIN
+  ALTER TABLE device_method ADD CONSTRAINT ck_device_method_scope_pair CHECK (
+    (scope = 'model'    AND device_instance_id IS NULL) OR
+    (scope = 'instance' AND device_instance_id IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 ALTER TABLE recovery_policy ADD COLUMN IF NOT EXISTS match_type text NOT NULL DEFAULT 'exact';
 ALTER TABLE recovery_policy ADD COLUMN IF NOT EXISTS rule_weight integer NOT NULL DEFAULT 50;
 ALTER TABLE recovery_policy ADD COLUMN IF NOT EXISTS device_filter bigint;

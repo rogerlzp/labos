@@ -168,7 +168,8 @@
                c.code AS "capability",
                n.params->>'protocol_name' AS "protocolName",
                (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId",
-               n.material_effect AS "materialEffect"
+               n.material_effect AS "materialEffect",
+               n.stage_code AS "stageCode"
           FROM workflow_node n
           LEFT JOIN capability c ON c.id = n.capability_id
          WHERE n.workflow_id = #{param1}
@@ -196,7 +197,8 @@
                cap.code AS "capability",
                n.params->>'protocol_name' AS "protocolName",
                (n.params->>'equipment_instance_id')::bigint AS "equipmentInstanceId",
-               n.material_effect AS "materialEffect"
+               n.material_effect AS "materialEffect",
+               n.stage_code AS "stageCode"
           FROM workflow_node n
           LEFT JOIN capability cap ON cap.id = n.capability_id
     </select>
@@ -291,7 +293,7 @@
 
     <select id="selectCapabilityCodeOfResource" resultType="java.lang.String">
         SELECT cap.code FROM device_instance di
-          JOIN device d ON d.id = di.device_id
+          JOIN device d ON d.id = di.device_model_id
           JOIN capability cap ON cap.id = d.capability_id
          WHERE di.resource_id = #{resourceId}
          LIMIT 1
@@ -397,5 +399,80 @@
         LEFT JOIN capability cap ON cap.id = n.capability_id
         WHERE w.tenant_id = #{param1}
     </select>
+
+    <!-- ============================================================
+         P3：阶段编码（客户§3 的 8 阶段）
+         ============================================================ -->
+    <update id="updateNodeStage">
+        UPDATE workflow_node
+           SET stage_code = NULLIF(#{stageCode}, ''),
+               updated_at = now()
+         WHERE tenant_id = #{tenantId}
+           AND workflow_id = #{workflowId}
+           AND node_key = #{nodeKey}
+    </update>
+
+    <!-- ============================================================
+         P4：流程克隆（模板层要复用整条工艺图）
+
+         三件事必须一起复制，少一件模板就只能用一次：
+           ① 头（graph / attr / island）
+           ② 节点（node_key 不变 —— 绑定靠它重映射）
+           ③ 绑定 / 边 / 变量
+         ============================================================ -->
+    <select id="cloneWorkflowRow" resultType="java.lang.Long">
+        INSERT INTO workflow (tenant_id, code, name, category, version, status,
+                              graph, attr, island_id, created_by)
+        SELECT tenant_id, #{code}, #{name}, category, 1, 1,
+               graph, attr, island_id, #{createdBy}
+          FROM workflow
+         WHERE tenant_id = #{tenantId} AND id = #{srcId} AND deleted_at IS NULL
+        RETURNING id
+    </select>
+
+    <insert id="cloneWorkflowNodes">
+        INSERT INTO workflow_node
+          (tenant_id, workflow_id, node_key, name, node_type, protocol_id, capability_id,
+           params, condition, estimate_sec, timeout_sec, pos, resource_id, seq,
+           material_effect, binding_mode, stage_code)
+        SELECT tenant_id, #{newId}, node_key, name, node_type, protocol_id, capability_id,
+               params, condition, estimate_sec, timeout_sec, pos, resource_id, seq,
+               material_effect, binding_mode, stage_code
+          FROM workflow_node
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{srcId}
+    </insert>
+
+    <!-- ⚠ 按 node_key 对齐：位置序号对齐会把绑定挂到别的节点上（2026-11-15 事故） -->
+    <insert id="cloneNodeBindings">
+        INSERT INTO node_binding
+          (tenant_id, node_id, seq, position_id, device_instance_id, pool_id, method_id,
+           material_role, loading_pattern, leave_at_station, barcode_policy, params, enabled)
+        SELECT nb.tenant_id, nn.id, nb.seq, nb.position_id, nb.device_instance_id, nb.pool_id,
+               nb.method_id, nb.material_role, nb.loading_pattern, nb.leave_at_station,
+               nb.barcode_policy, nb.params, nb.enabled
+          FROM node_binding nb
+          JOIN workflow_node src ON src.id = nb.node_id AND src.workflow_id = #{srcId}
+          JOIN workflow_node nn ON nn.workflow_id = #{newId} AND nn.node_key = src.node_key
+         WHERE nb.tenant_id = #{tenantId}
+    </insert>
+
+    <insert id="cloneWorkflowEdges">
+        INSERT INTO workflow_edge (tenant_id, workflow_id, from_key, to_key, edge_type, condition)
+        SELECT tenant_id, #{newId}, from_key, to_key, edge_type, condition
+          FROM workflow_edge
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{srcId}
+    </insert>
+
+    <update id="softDeleteWorkflow">
+        UPDATE workflow SET deleted_at = now(), updated_at = now()
+         WHERE tenant_id = #{tenantId} AND id = #{workflowId} AND deleted_at IS NULL
+    </update>
+
+    <insert id="cloneWorkflowVariables">
+        INSERT INTO workflow_variable (tenant_id, workflow_id, name, type, default_value, description)
+        SELECT tenant_id, #{newId}, name, type, default_value, description
+          FROM workflow_variable
+         WHERE tenant_id = #{tenantId} AND workflow_id = #{srcId}
+    </insert>
 
 </mapper>

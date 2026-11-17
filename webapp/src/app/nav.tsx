@@ -41,6 +41,8 @@ export const NAV: NavGroup[] = [
     icon: <DeploymentUnitOutlined />,
     children: [
       { key: '/workflows', labelKey: 'nav.workflows' },
+      // 模板是"工程师图 → 应用者组合"的那一层，放在流程库紧后面
+      { key: '/templates', labelKey: 'nav.templates' },
       { key: '/experiments', labelKey: 'nav.experiments' },
       // 实验的**执行记录**总表：所有实验跑过哪几次、现在哪些卡着
       { key: '/experiment-runs', labelKey: 'nav.experimentRuns' },
@@ -97,6 +99,8 @@ export const NAV: NavGroup[] = [
       // 位置/耗材两个视角看整个岛，并可关联设备修改
       { key: '/positions', labelKey: 'nav.positions' },
       { key: '/consumables', labelKey: 'nav.consumables' },
+      // 物料角色字典（绑定/模板都用它）：写操作需设计权限，故只给 admin/designer
+      { key: '/material-roles', labelKey: 'nav.materialRoles', roles: ['admin', 'designer'] },
       { key: '/policies', labelKey: 'nav.policies' },
       { key: '/variables', labelKey: 'nav.variables' },
       { key: '/error-codes', labelKey: 'nav.errorCodes' },

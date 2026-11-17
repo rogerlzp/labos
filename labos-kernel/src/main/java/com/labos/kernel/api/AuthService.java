@@ -46,6 +46,16 @@ public final class AuthService {
             return com.labos.kernel.api.RbacRules.canWrite(role);
         }
 
+        /** 能否改工艺资产（图/绑定/点位方法/物料角色/示教/模板）：admin 或 designer。 */
+        public boolean canDesign() {
+            return com.labos.kernel.api.RbacRules.canDesign(role);
+        }
+
+        /** 能否执行/启动这一批（起停、配位置核验、确认搬运）：admin 或 operator。 */
+        public boolean canOperate() {
+            return com.labos.kernel.api.RbacRules.canOperate(role);
+        }
+
         public boolean isAdmin() {
             return "admin".equals(role);
         }

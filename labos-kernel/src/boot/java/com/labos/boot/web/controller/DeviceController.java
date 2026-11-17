@@ -641,6 +641,15 @@ public class DeviceController {
         return deviceService.topologyJson();
     }
 
+    /**
+     * 设置「该型号的某方法执行中可中断」。
+     *
+     * <p>⚠ 路径里的 {@code id} 是 <b>{@code device.id}（型号行号）</b>，
+     * 不是 {@code device_instance.id} 也不是 {@code resource_node.id}。
+     * 三者都是 bigint，传错不会报错只会改错型号 —— 详见
+     * {@code docs/architecture/设备ID空间与型号解析-20261116.md}。
+     * 前端若要按"某台设备"调用，需先经 {@code DeviceIdentityResolver} 换算。
+     */
     @PutMapping(value = "/devices/{id:\\d+}/methods/{method}/interruptible",
             produces = "application/json; charset=utf-8")
     public ResponseEntity<String> setInterruptible(
@@ -672,6 +681,49 @@ public class DeviceController {
                 dMethod + "=" + value, null, req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("deviceId", id, "method", dMethod,
                 "interruptible", value));
+    }
+
+    /**
+     * 设置「**这一台设备**的某方法执行中可中断」（实例级覆盖，{@code scope='instance'}）。
+     *
+     * <p>与 {@code PUT /devices/{id}/methods/{method}/interruptible} 的分工：
+     * 那个的 {@code id} 是**型号行号**（改一次影响所有同型号实例）；
+     * 这个的 {@code instanceId} 是**实例号**（只改这一台）。
+     * 两条路径刻意用不同的路径前缀（{@code /devices} vs {@code /device-instances}）——
+     * 三套 id 都是 bigint，靠路径名区分比靠注释可靠。
+     *
+     * <p>没有实例级行时会插一行（{@code timeout_sec=0} 表示不覆盖超时，
+     * 只覆盖可中断标志；超时仍走型号级）。
+     */
+    @PutMapping(value = "/device-instances/{instanceId:\\d+}/methods/{method}/interruptible",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> setInstanceInterruptible(
+            @PathVariable long instanceId,
+            @PathVariable String method,
+            @RequestBody(required = false) String body,
+            HttpServletRequest req) throws SQLException {
+        String dMethod = URLDecoder.decode(method, StandardCharsets.UTF_8);
+        String raw = null;
+        java.util.regex.Matcher bm = java.util.regex.Pattern
+                .compile("\"interruptible\"\\s*:\\s*(true|false)").matcher(body);
+        if (bm.find()) {
+            raw = bm.group(1);
+        }
+        if (raw == null) {
+            raw = paramStr(req.getQueryString(), "interruptible");
+        }
+        if (!"true".equalsIgnoreCase(raw) && !"false".equalsIgnoreCase(raw)) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(err("需要 interruptible=true/false"));
+        }
+        boolean value = Boolean.parseBoolean(raw);
+        int n = deviceService.setInstanceMethodInterruptible(instanceId, dMethod, value);
+        com.labos.kernel.driver.DriverStepExecutor
+                .invalidateInterruptibleForInstance(instanceId, dMethod);
+        audit.record(session(req), "device.method.interruptible.instance", "device", instanceId,
+                dMethod + "=" + value, null, req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj("instanceId", instanceId, "method", dMethod,
+                "interruptible", value, "scope", "instance", "affected", n));
     }
 
     // ---------------------------------------------------------------- 岛

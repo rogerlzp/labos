@@ -28,7 +28,8 @@ import {
   type NodeBinding, type NodeBindingInput,
 } from '../api/client';
 import { statusColor, useStatusVocabulary } from '../utils/status';
-import { useReadOnly } from '../auth';
+import { useDesignOnly } from '../auth';
+import { STAGES, STAGE_COLOR } from '../utils/stages';
 import { useI18n, useT } from '../i18n';
 import type { MessageKey, MessageVars } from '../i18n/core';
 
@@ -110,6 +111,29 @@ interface DroppedMethod {
   islandCode?: string;
 }
 
+/**
+ * 点位视角拖进画布的一条「点位 × 方法」。
+ *
+ * <p>与 {@link DroppedMethod} 分开走 MIME：点位视角**不插机械臂节点**（搬运归执行期
+ * Planner），且落节点时同时写一条 `node_binding`，不再需要人去右栏绑一次。
+ */
+interface DroppedPositionMethod {
+  /** device_point.id（绑定用这个，不是 resource_node.id）。 */
+  positionId: number;
+  positionCode: string;
+  /** 点位所属设备的 resource_node.id（写 BPMN 的 resource，与设备视角同口径）。 */
+  parentDeviceId?: number | null;
+  parentDeviceCode?: string | null;
+  /** device_method.id */
+  methodId: number;
+  /** 方法名（protocolName / 显示名） */
+  method: string;
+  materialRole?: string | null;
+  loadingPattern: string;
+  barcodePolicy: string;
+  islandId?: number;
+}
+
 /** 上一次拖入的节点：用于判断「板子换设备了」并自动插入机械臂搬运。 */
 interface LastDropped {
   shapeId: string;
@@ -120,6 +144,8 @@ interface LastDropped {
   icon: string;
   /** 这个节点**属于哪个岛**：搬运的机械臂必须同岛（P-04「LastDropped 保存归属」）。 */
   islandId?: number;
+  /** 点位视角建的节点：不参与设计期机械臂插入（图里不该出现机械臂）。 */
+  positionMode?: boolean;
   x: number;
 }
 
@@ -200,6 +226,109 @@ function DeviceMethodRow({ d, disabled }: { d: PaletteDevice; disabled: boolean 
               }}
             >
               ⠿ {m.method}{m.name ? ' · ' + m.name : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 点位视角 palette 里的一行：点位 + 该点位允许的方法（拖出即建绑定）。 */
+function PositionMethodRow({ p, role, loading, barcodePolicy, islandId, disabled }: {
+  p: BindingPositionItem;
+  role: string | null;
+  loading: string;
+  barcodePolicy: string;
+  islandId?: number | null;
+  disabled: boolean;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  // 后端 GET /api/positions/{id}/methods 的返回体里，方法列表键名就是 bindings。
+  const methods = useQuery({
+    queryKey: ['position-methods', p.pointId],
+    queryFn: () => apiFetch(`/api/positions/${p.pointId}/methods`)
+      .then((r) => r.json()) as Promise<{
+        bindings?: Array<{
+          methodId: number;
+          methodName: string;
+          purpose?: string | null;
+          allocation?: string | null;
+        }>;
+      }>,
+    enabled: open,
+    retry: false,
+  });
+  const list = methods.data?.bindings ?? [];
+  const tags = [
+    p.positionLabel || null,
+    p.pointRole || null,
+    p.robotReachable === true ? t('designer.position.reachable')
+      : p.robotReachable === false ? t('designer.position.internal') : null,
+    p.available === false ? t('designer.position.occupied') : null,
+  ].filter(Boolean) as string[];
+
+  return (
+    <div style={{ marginBottom: 4, border: '1px solid #ffffff14', borderRadius: 4 }}>
+      <div
+        data-testid="palette-position"
+        data-position-id={p.pointId}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, padding: '5px 7px',
+          cursor: 'pointer', fontSize: 12, userSelect: 'none',
+        }}
+      >
+        <span style={{ color: '#8b93a7' }}>{open ? '▾' : '▸'}</span>
+        <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {p.code}
+        </span>
+        {tags.length > 0 && (
+          <span style={{ color: '#8b93a7', fontSize: 10, marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+            {tags.join(' · ')}
+          </span>
+        )}
+      </div>
+      {open && (
+        <div style={{ padding: '2px 6px 6px 18px' }}>
+          {methods.isLoading && <Spin size="small" />}
+          {!methods.isLoading && list.length === 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              {t('designer.palette.noMethods')}
+            </Typography.Text>
+          )}
+          {list.map((m) => (
+            <div
+              key={m.methodId}
+              data-testid="palette-position-method"
+              data-method={m.methodName}
+              data-position-id={p.pointId}
+              draggable={!disabled}
+              onDragStart={(e) => {
+                const payload: DroppedPositionMethod = {
+                  positionId: p.pointId,
+                  positionCode: p.code,
+                  parentDeviceId: p.parentDeviceId,
+                  parentDeviceCode: p.parentDeviceCode,
+                  methodId: m.methodId,
+                  method: m.methodName,
+                  materialRole: role,
+                  loadingPattern: loading,
+                  barcodePolicy,
+                  islandId: islandId ?? undefined,
+                };
+                e.dataTransfer.setData('application/x-labos-position-method', JSON.stringify(payload));
+                e.dataTransfer.effectAllowed = 'copy';
+              }}
+              title={disabled ? t('designer.palette.readonly') : t('designer.palette.dragHint')}
+              style={{
+                padding: '4px 7px', marginBottom: 3, borderRadius: 3,
+                border: '1px dashed #22c55e55', background: '#22c55e14',
+                fontSize: 11, cursor: disabled ? 'not-allowed' : 'grab',
+              }}
+            >
+              ⠿ {m.methodName}{m.purpose ? ' · ' + m.purpose : ''}
             </div>
           ))}
         </div>
@@ -415,7 +544,7 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
 }) {
   const t = useT();
   // 节点设置里的"保存"会改 workflow_node.params：viewer 禁用
-  const ro = useReadOnly();
+  const ro = useDesignOnly();
   const [kind, setKind] = useState<'device' | BuiltinKind>('device');
   const [varName, setVarName] = useState('');
   const [val, setVal] = useState('');
@@ -455,6 +584,8 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
   /** 设备任务要调的方法名（设备任务的 protocolName） */
   const [methodName, setMethodName] = useState<string>('');
   const [paramsText, setParamsText] = useState('{}');
+  /** 客户§3阶段编码（'' = 未分阶段）。只影响分组与甘特聚合，不影响执行顺序。 */
+  const [stageCode, setStageCode] = useState('');
 
   // 选中节点变化时读一次当前配置
   useQuery({
@@ -481,6 +612,7 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
       setEvtInto(m === '__awaitEvent' ? (j.params?.into ?? '') : '');
       setEvtDeviceInto(m === '__awaitEvent' ? (j.params?.deviceInto ?? '') : '');
       setEvtInterval(m === '__awaitEvent' ? (j.params?.interval ?? '') : '');
+      setStageCode(j.stageCode ?? '');
       if (!builtin) {
         setDeviceId(j.resourceId ?? null);
         setMethodName(m);
@@ -640,6 +772,8 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
           // P-10：0 = 显式解绑，缺字段 = 不改。内置节点不是设备节点，
           // 必须显式解绑（否则历史绑定会留在表/图里）；设备节点没选设备也是 0。
           resourceId: isDevice ? (deviceId ?? 0) : 0,
+          // 阶段：'' = 清除（后端 null=不改，空串=清除，语义不同）
+          stageCode,
         }),
       });
       const j = await r.json();
@@ -668,6 +802,24 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
         {t('designer.action.save')}
       </Button>}>
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            {t('designer.settings.stage')}
+          </Typography.Text>
+          <Select
+            size="small" allowClear style={{ width: '100%' }}
+            value={stageCode || undefined}
+            placeholder={t('stage.none')}
+            onChange={(v: string | undefined) => setStageCode(v ?? '')}
+            options={STAGES.map((x) => ({
+              value: x.code,
+              label: t(`stage.${x.code}` as Parameters<typeof t>[0]),
+            }))}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 10 }}>
+            {t('designer.stage.hint')}
+          </Typography.Text>
+        </div>
         <Select
           size="small" style={{ width: '100%' }} value={kind}
           onChange={(v) => setKind(v as 'device' | BuiltinKind)}
@@ -851,7 +1003,7 @@ function NodeSettings({ wfId, nodeKey, islandId, onSaved, onPatched }: {
  */
 function MaterialEffectCard({ wfId, nodeKey }: { wfId: string; nodeKey: string }) {
   const t = useT();
-  const ro = useReadOnly();
+  const ro = useDesignOnly();
   const qc = useQueryClient();
   const wfNum = Number(wfId);
   const [mode, setMode] = useState<'none' | 'transition' | 'legacy_unspecified'>('none');
@@ -1048,6 +1200,13 @@ interface BindingPositionItem {
   /** 所属设备的 resource_node.id —— 取方法列表要用它。 */
   parentDeviceId?: number | null;
   parentDeviceCode?: string | null;
+  /** 点位视角 palette 的标注：角色 / 可达性 / 耗材类型 / 槽位 / 占用。 */
+  pointRole?: string | null;
+  robotReachable?: boolean | null;
+  positionLabel?: string | null;
+  slotIndex?: number | null;
+  available?: boolean;
+  plateTypes?: string | null;
 }
 
 /** 设备实例下拉项：GET /api/topology 的 islands[].devices[]。 */
@@ -1302,7 +1461,7 @@ function NodeBindingCard({ wfId, nodeKey, islandId }: {
   islandId: number | null;
 }) {
   const t = useT();
-  const ro = useReadOnly();
+  const ro = useDesignOnly();
   const qc = useQueryClient();
   const wfNum = Number(wfId);
   const [rows, setRows] = useState<BindingRow[]>([]);
@@ -1561,7 +1720,7 @@ function collectGateways(m: BpmnModeler): GatewayWiring[] {
  */
 function FlowOptionsCard({ wfId }: { wfId: number }) {
   const t = useT();
-  const ro = useReadOnly();
+  const ro = useDesignOnly();
   const qc = useQueryClient();
   const [n, setN] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1625,7 +1784,7 @@ function FlowOptionsCard({ wfId }: { wfId: number }) {
  */
 function WorkflowVarsCard({ wfId }: { wfId: number }) {
   const t = useT();
-  const ro = useReadOnly();
+  const ro = useDesignOnly();
   const qc = useQueryClient();
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
@@ -1888,7 +2047,7 @@ export default function DesignerPage() {
   const { id } = useParams();
   const nav = useNavigate();
   // 流程设计器：浏览/缩放不拦，保存与历史恢复是写操作
-  const ro = useReadOnly();
+  const ro = useDesignOnly();
   // 从「实验详情 → 新建流程」过来时会带实验上下文（不请求接口，直接透传展示）
   const [sp] = useSearchParams();
   const fromExpId = sp.get('expId');
@@ -1899,6 +2058,10 @@ export default function DesignerPage() {
     const v = Number(sp.get('islandId'));
     return Number.isFinite(v) && v > 0 ? v : null;
   });
+  /** 点位视角拖入节点时预填的绑定字段（拖完仍可在右栏改）。 */
+  const [positionRole, setPositionRole] = useState<string | null>(null);
+  const [positionLoading, setPositionLoading] = useState('load_single');
+  const [positionBarcode, setPositionBarcode] = useState('validate_in');
   const wfId = Number(id);
   const islandsQ = useQuery({
     queryKey: ['designer-islands'],
@@ -1930,6 +2093,26 @@ export default function DesignerPage() {
     queryFn: () => apiFetch(`/api/devices/pool${effectiveIslandId ? `?islandId=${effectiveIslandId}` : ''}`)
       .then((r) => r.json()) as Promise<{ items?: PaletteDevice[] }>,
   });
+  // 点位视角 palette：与右栏节点绑定卡共用 queryKey，切视角不重复请求。
+  const positionItemsQ = useQuery({
+    queryKey: ['node-binding-positions', effectiveIslandId],
+    queryFn: () => apiFetch(`/api/positions?islandId=${effectiveIslandId}`)
+      .then((r) => r.json()) as Promise<{ items?: BindingPositionItem[] }>,
+    enabled: effectiveIslandId != null,
+    retry: false,
+  });
+  const roleItemsQ = useQuery({
+    queryKey: ['node-binding-roles'],
+    queryFn: () => api.materialRoles(),
+    retry: false,
+  });
+  const roleOptions = (roleItemsQ.data?.items ?? []).map((r) => ({
+    value: r.roleCode,
+    label: r.displayName || r.roleCode,
+  }));
+  useEffect(() => {
+    if (!positionRole && roleOptions.length > 0) setPositionRole(roleOptions[0].value);
+  }, [roleOptions.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const qc = useQueryClient();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2929,11 +3112,16 @@ export default function DesignerPage() {
       }
     });
 
-    // 分支上下展开后可能超过上边界：整体平移到留白以内
-    let minY = Infinity;
-    target.forEach((p) => { minY = Math.min(minY, p.y); });
-    if (minY < 150) {
-      const shift = 150 - minY;
+    // 分支上下展开后可能超过上边界：整体平移到留白以内。
+    // 按**实际外框**（中心 − 半高）判，不是按中心判：按中心判时高 80 的任务
+    // 中心落在 150，上沿只有 110，看着还是贴边。
+    const TOP_MARGIN = 110;
+    let minTop = Infinity;
+    target.forEach((p, id) => {
+      minTop = Math.min(minTop, p.y - (size.get(id)?.h ?? 80) / 2);
+    });
+    if (minTop < TOP_MARGIN) {
+      const shift = TOP_MARGIN - minTop;
       target.forEach((p) => { p.y += shift; });
     }
 
@@ -3056,8 +3244,23 @@ export default function DesignerPage() {
     // 出点往右让一让 → 垂直下到两行之间的空档 → 水平回到目标左侧 → 进入目标。
     const rowOf = new Map<string, number>();
     blocks.forEach((b) => b.ids.forEach((id) => rowOf.set(id, b.rowIdx)));
-    const rowTop = rows.map((r) => r.mainY - r.above);
-    const rowBot = rows.map((r) => r.mainY + r.below);
+    // 行间通道要落在**真实空档**里。不能再用 rows[].mainY / above / below：
+    //   ① 那三个是排版中间量，**没经过上面那次整体平移**（分支一展开就要下移
+    //      三五百像素），拿它算通道 = 通道回到平移前的坐标，横线直接从上一排
+    //      节点身上横穿过去（2026-11-16 用户指出）；
+    //   ② 它也不含节点自身高度的一半 ⇒ 通道会贴着节点边沿。
+    // 改为按**最终坐标的实际外框**重算每行的上沿/下沿。
+    const rowTopEdge = rows.map(() => Number.POSITIVE_INFINITY);
+    const rowBotEdge = rows.map(() => Number.NEGATIVE_INFINITY);
+    blocks.forEach((b) => {
+      b.ids.forEach((id) => {
+        const p = target.get(id);
+        if (!p) return;
+        const hh = (size.get(id)?.h ?? 80) / 2;
+        rowTopEdge[b.rowIdx] = Math.min(rowTopEdge[b.rowIdx], p.y - hh);
+        rowBotEdge[b.rowIdx] = Math.max(rowBotEdge[b.rowIdx], p.y + hh);
+      });
+    });
     const isWrapEdge = (e: EdgeRef) =>
       (rowOf.get(e.tgt) ?? 0) > (rowOf.get(e.src) ?? 0);
 
@@ -3074,12 +3277,93 @@ export default function DesignerPage() {
       if (z) inAnchor.set(e.conn, { x: tb.cx - tb.w / 2, y: z.y, side: 'left' });
     });
 
+    /**
+     * 源行正下方的空档 y —— 换行边与回边共用同一套通道口径。
+     * 取「源行下沿 ↔ 紧邻下一行上沿」的中点，**不是目标行上沿**：跨多行的边
+     * （源在第 0 行、目标在第 3 行）也应是"先下到源行下面的空档 → 沿空档横移 →
+     * 再沿边距下到目标行"，取目标行会让横线在中间那几行里穿行。
+     * 空档算不出来（没有下一行 / 行信息缺失）就退化成"下沿再往下半个行距"，
+     * 绝不能退回行内 —— 那正是"线压在节点身上"的来源。
+     */
+    const channelBelowRow = (row: number | undefined, fallbackY: number): number => {
+      const bot = row != null ? rowBotEdge[row] : Number.NaN;
+      const nextTop = row != null ? rowTopEdge[row + 1] : Number.NaN;
+      if (Number.isFinite(bot) && Number.isFinite(nextTop) && nextTop - bot > 8) {
+        return (bot + nextTop) / 2;
+      }
+      if (Number.isFinite(bot)) return bot + ROW_GAP_Y / 2;
+      return fallbackY + ROW_GAP_Y;
+    };
+
+    /**
+     * 在 fromY 往下找一个**真正空着的水平通道**：横线要跑的 x 区间内没有节点框。
+     *
+     * <p>为什么还要再找一次：`channelBelowRow` 用的是"行"的上下沿，而"行"是按
+     * **列号打包**出来的，一个行带里可能既有主车道、又有更靠下的孤立节点
+     * （循环探针 1000792：圈数加一 被单独摆在整行下方 400px，仍算同一行）——
+     * 于是"行下方沿"跑到图最底下，回边只好绕一大圈。这里从给定高度逐步下探，
+     * 找到第一条不压节点的横线就停，既有中心感、又绝不穿节点。
+     */
+    const freeChannelY = (fromY: number, x1: number, x2: number, ids: string[]): number => {
+      const lo = Math.min(x1, x2);
+      const hi = Math.max(x1, x2);
+      const blockers = [...box.entries()].filter(([id]) => !ids.includes(id));
+      const STEP = 20;
+      const LIMIT = 40; // 最多下探 800px，防病态图无限往下
+      for (let i = 0; i <= LIMIT; i += 1) {
+        const y = fromY + i * STEP;
+        const hit = blockers.some(([, b]) => {
+          const top = b.cy - b.h / 2 - 10;
+          const bot = b.cy + b.h / 2 + 10;
+          return y > top && y < bot
+            && b.cx + b.w / 2 > lo && b.cx - b.w / 2 < hi;
+        });
+        if (!hit) return y;
+      }
+      return fromY;
+    };
+
     const wrapRoute = (e: EdgeRef, a: Anchor, z: Anchor): { x: number; y: number }[] => {
-      const rSrc = rowOf.get(e.src) ?? 0;
-      const rTgt = rowOf.get(e.tgt) ?? 0;
-      const channelY = (rowBot[rSrc] + rowTop[rTgt]) / 2;
       const outX = a.x + 40;    // 先往右让一让，别贴着源节点
       const inX = z.x - 40;     // 到目标左边再进
+      const channelY = freeChannelY(channelBelowRow(rowOf.get(e.src), a.y),
+        outX, inX, [e.src, e.tgt]);
+      return [
+        { x: round(a.x), y: round(a.y) },
+        { x: round(outX), y: round(a.y) },
+        { x: round(outX), y: round(channelY) },
+        { x: round(inX), y: round(channelY) },
+        { x: round(inX), y: round(z.y) },
+        { x: round(z.x), y: round(z.y) },
+      ];
+    };
+
+    /**
+     * 回边（目标在源**左边**、又不是换行边）：原来的走法是"水平直连"——
+     * 从源左侧一路拉到目标右侧，中间夹着的节点全被穿一遍
+     * （2026-11-16 用户在循环探针 1000792 上指出：`X → 圈数加一` 的线横穿「循环体·机器人」）。
+     * 改走「源左侧 → 下到源行下方空档 → 左移到目标右侧 → 上下到目标高度 → 进入目标」，
+     * 与换行边同一条通道口径，只是方向相反（换行是"右出左进"，回边是"左出右进"）。
+     */
+    const isBackEdge = (e: EdgeRef): boolean => {
+      const sb = box.get(e.src);
+      const tb = box.get(e.tgt);
+      if (!sb || !tb) return false;
+      if (isWrapEdge(e)) return false;
+      // 只有"目标明显在左边"才算回边；同一列或右侧是正常直连，别改它的走法。
+      return tb.cx < sb.cx - 1;
+    };
+
+    const backRoute = (e: EdgeRef, a: Anchor, z: Anchor): { x: number; y: number }[] => {
+      // 左移 40 落在源节点与其左邻之间的空隙（列距 200 − 节点宽 120 ⇒ 空 80），
+      // 这个 x 也在同列下方节点的左沿之外，竖着走不会蹭到分支节点。
+      const outX = a.x - 40;
+      const inX = z.x + 40;     // 到目标右侧再进
+      // 从"源节点下沿再让 24"开始找空档 —— 回边要的是**贴着本行走**，
+      // 不是像换行边那样居中到两行之间（那会绕到整张图底下）。
+      const sb = box.get(e.src)!;
+      const startY = sb.cy + sb.h / 2 + 24;
+      const channelY = freeChannelY(startY, outX, inX, [e.src, e.tgt]);
       return [
         { x: round(a.x), y: round(a.y) },
         { x: round(outX), y: round(a.y) },
@@ -3099,7 +3383,9 @@ export default function DesignerPage() {
         const z = inAnchor.get(e.conn);
         if (!a || !z) return;
         updateWp.call(modeling, e.conn,
-          isWrapEdge(e) ? wrapRoute(e, a, z) : routePoints(a, z));
+          isWrapEdge(e) ? wrapRoute(e, a, z)
+            : isBackEdge(e) ? backRoute(e, a, z)
+              : routePoints(a, z));
       });
     }
     const cv = m.get('canvas') as unknown as {
@@ -3154,13 +3440,23 @@ export default function DesignerPage() {
     reg.forEach((el) => {
       canvas.removeMarker(el.id, 'pf-unreachable');
       canvas.removeMarker(el.id, 'pf-deadlock');
+      for (const s of STAGES) canvas.removeMarker(el.id, `labos-stage-${s.code}`);
     });
     for (const i of data.issues) {
       if (!i.nodeKey || !reg.get(i.nodeKey)) continue;
       if (i.code === 'PF-03') canvas.addMarker(i.nodeKey, 'pf-unreachable');
       if (i.code === 'PF-05') canvas.addMarker(i.nodeKey, 'pf-deadlock');
     }
-  }, [pre.data]);
+    // P3：阶段色带。用 compile 的 stageCode（而不是本地 XML 属性）——
+    // 节点设置保存只 patch 后端，本地 model 不会变；靠 compile 失效重取才准。
+    const stageByKey = new Map<string, string>();
+    for (const n of compile.data?.nodes ?? []) {
+      if (n.stageCode) stageByKey.set(n.nodeKey, n.stageCode);
+    }
+    stageByKey.forEach((code, key) => {
+      if (STAGE_COLOR[code] && reg.get(key)) canvas.addMarker(key, `labos-stage-${code}`);
+    });
+  }, [pre.data, compile.data]);
 
   useEffect(() => { if (ready) applyMarkers(); }, [ready, applyMarkers]);
 
@@ -3286,8 +3582,22 @@ export default function DesignerPage() {
     setDirty(true);
   };
 
-  /** 图变更后立刻落库并刷新 compile（拖入 / 插机械臂 / 删除共用）。 */
-  const persistAfterDrop = async (nodeKey: string, toast?: string) => {
+  /**
+   * 图变更后立刻落库并刷新 compile（拖入 / 插机械臂 / 删除共用）。
+   *
+   * <p>`afterSave` 在 saveGraph 之后、query 失效之前执行：点位视角要趁 workflow_node
+   * 刚落库立刻写 node_binding（后端按 nodeKey 找 node_id，早一步会 404）。
+   *
+   * <p>`deferInvalidate` 让失效刷新不阻塞后续动作 —— 实测 compile 查询的
+   * invalidateQueries 在拖放链路里可能长时间不 resolve，不能让它挡住绑定写入与
+   * `setSaving(false)`；默认 false，老调用方行为不变。
+   */
+  const persistAfterDrop = async (
+    nodeKey: string,
+    toast?: string,
+    afterSave?: (nodeKey: string) => Promise<void>,
+    deferInvalidate = false,
+  ) => {
     const m = modelerRef.current;
     if (!m) return;
     setSaving(true);
@@ -3299,12 +3609,15 @@ export default function DesignerPage() {
       // saveGraph 的 INSERT 分支会把 protocolName/resource 直接写进 workflow_node，
       // 也就避开了 e2e-sim-flow 里「绑完设备还要再点一次保存」的老坑。
       await api.saveGraph(wfId, collapse(xml), { draft: true });
+      if (afterSave) await afterSave(nodeKey);
       setDirty(false);
-      await Promise.all([
+      const refresh = Promise.all([
         qc.invalidateQueries({ queryKey: ['compile', wfId] }),
         qc.invalidateQueries({ queryKey: ['preflight', wfId] }),
         qc.invalidateQueries({ queryKey: ['node-binding', String(wfId), nodeKey] }),
       ]);
+      if (deferInvalidate) void refresh.catch(() => undefined);
+      else await refresh;
       message.success(toast ?? t('designer.toast.methodDropped'));
     } catch (e) {
       message.error(t('designer.error.saveFailedDetail', { msg: String((e as Error).message) }));
@@ -3330,6 +3643,100 @@ export default function DesignerPage() {
   };
 
   /**
+   * 点位视角：拖「点位 × 方法」建节点，并**同时**写一条 node_binding。
+   *
+   * <p>与设备视角的关键差别：**不插机械臂节点**（`docs/architecture/点位视角设计器-设计_20261116.md`
+   * §2）—— 点位间的搬运留给执行期 Planner。图上只有点位，应用者不用关心搬运。
+   *
+   * <p>顺序不能反：`api.replaceNodeBindings` 要按 nodeKey 找 workflow_node.id，
+   * 新拖的节点必须先经 persistAfterDrop 落库，否则后端 404。
+   */
+  const onDropPositionMethod = async (e: ReactDragEvent<HTMLDivElement>, raw: string) => {
+    if (ro.disabled) return;
+    let p: DroppedPositionMethod;
+    try {
+      p = JSON.parse(raw) as DroppedPositionMethod;
+    } catch {
+      return;
+    }
+    const m = modelerRef.current;
+    if (!m || !p?.positionId || !p?.methodId || !p?.method) return;
+    // 独立点位（不挂在任何设备下）没有可执行方法的承载对象 —— 明确拒绝，不建空壳节点。
+    if (p.parentDeviceId == null) {
+      message.error(t('designer.error.positionNoDevice'));
+      return;
+    }
+
+    const factory = m.get('elementFactory') as unknown as BpmnElementFactoryApi;
+    const modeling = m.get('modeling') as unknown as BpmnModelingApi;
+    const canvasApi = m.get('canvas') as unknown as BpmnDragApi;
+    const selection = m.get('selection') as unknown as BpmnSelectionApi;
+    const registry = m.get('elementRegistry') as unknown as BpmnRegistryApi;
+    const vb = canvasApi.viewbox();
+    const scale = vb?.scale && vb.scale > 0 ? vb.scale : 1;
+    const rect = canvasApi.getContainer?.()?.getBoundingClientRect?.()
+      ?? (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const dropX = (e.clientX - rect.left) / scale + (vb?.x ?? 0) + 50;
+    const y = (e.clientY - rect.top) / scale + (vb?.y ?? 0) + 40;
+    const prev = lastDroppedRef.current;
+    const x = prev ? Math.max(dropX, prev.x + 300) : dropX;
+    const root = canvasApi.getRootElement();
+
+    const shape = factory.createShape({ type: 'bpmn:Task' });
+    // resource 写点位所属设备的 resource_node.id（与设备视角同口径）；
+    // positionId/positionCode 只是 XML 上的可追溯标注，解析器不认也不影响执行。
+    setShapeAttrs(shape, {
+      protocolName: p.method,
+      resource: String(p.parentDeviceId),
+      methodParams: '{}',
+      positionId: String(p.positionId),
+      positionCode: p.positionCode,
+    });
+    shape.businessObject.name = p.method;
+    modeling.createShape(shape, { x, y }, root);
+    const prevEl = prev ? registry.get(prev.shapeId) : null;
+    if (prevEl) modeling.connect(prevEl, shape);
+
+    lastDroppedRef.current = {
+      shapeId: shape.id,
+      resourceId: p.parentDeviceId,
+      code: p.positionCode,
+      icon: '',
+      islandId: p.islandId ?? effectiveIslandId ?? undefined,
+      // 点位视角的节点不参与设计期机械臂插入
+      positionMode: true,
+      x,
+    };
+    selection.select(shape);
+    const saveBinding = async (nodeKey: string) => {
+      try {
+        await api.replaceNodeBindings(wfId, nodeKey, [{
+          positionId: p.positionId,
+          methodId: p.methodId,
+          materialRole: p.materialRole ?? null,
+          loadingPattern: p.loadingPattern,
+          barcodePolicy: p.barcodePolicy,
+          leaveAtStation: false,
+          params: {},
+        }]);
+        void qc.invalidateQueries({
+          queryKey: ['node-bindings', String(wfId), nodeKey],
+        }).catch(() => undefined);
+      } catch (err) {
+        message.error(t('designer.error.bindingSaveFailed', {
+          msg: String((err as Error).message),
+        }));
+      }
+    };
+    await persistAfterDrop(
+      shape.id,
+      t('designer.toast.positionDropped', { code: p.positionCode, method: p.method }),
+      saveBinding,
+      true,
+    );
+  };
+
+  /**
    * 把左侧的「设备方法」拖到画布：生成已绑定设备 + 方法 + 图片的 bpmn:Task。
    * 若板子从设备 A 换到设备 B，按设计 §14.2/§14.3 在中间自动插入岛上机械臂的
    * Transfer 节点并用 SequenceFlow 串起来 —— 否则板子永远搬不过去。
@@ -3337,6 +3744,12 @@ export default function DesignerPage() {
   const onDropMethod = async (e: ReactDragEvent<HTMLDivElement>) => {
     e.preventDefault();
     if (ro.disabled) return;
+    // 点位视角走单独通道：不插机械臂，且落节点即写绑定。
+    const positionRaw = e.dataTransfer.getData('application/x-labos-position-method');
+    if (positionRaw) {
+      await onDropPositionMethod(e, positionRaw);
+      return;
+    }
     const raw = e.dataTransfer.getData('application/x-labos-method');
     if (!raw) return;
     let p: DroppedMethod;
@@ -3389,7 +3802,7 @@ export default function DesignerPage() {
     const armIsland = prev?.islandId ?? effectiveIslandId;
     const arm = isBuiltin ? undefined : (paletteDevices.data?.items ?? []).find((d) =>
       isArm(d.capability) && (!armIsland || d.islandId === armIsland));
-    const needTransfer = !!(prev && !prev.builtin && !isBuiltin
+    const needTransfer = !!(prev && !prev.builtin && !prev.positionMode && !isBuiltin
       && prev.resourceId !== p.resourceId
       && !isArm(prev.capability) && !isArm(p.capability) && arm);
     const prevEl = prev ? registry.get(prev.shapeId) : null;
@@ -3573,6 +3986,15 @@ export default function DesignerPage() {
     }
   };
 
+  // 点位视角 palette：按所属设备分组（管理员配好的点位集合，designer 只在里面选）。
+  const positionGroups: Array<{ device: string; items: BindingPositionItem[] }> = [];
+  (positionItemsQ.data?.items ?? []).forEach((p) => {
+    const device = p.parentDeviceCode || t('designer.position.standalone');
+    let g = positionGroups.find((x) => x.device === device);
+    if (!g) { g = { device, items: [] }; positionGroups.push(g); }
+    g.items.push(p);
+  });
+
   const issues: PreflightIssue[] = pre.data?.issues ?? [];
 
   // 网关「名字写的是什么」与「图里实际是什么角色」的对照。
@@ -3663,6 +4085,84 @@ export default function DesignerPage() {
                       )}
                       {(paletteDevices.data?.items ?? []).map((d) => (
                         <DeviceMethodRow key={d.resourceId} d={d} disabled={ro.disabled} />
+                      ))}
+                    </div>
+                  </>
+                ),
+              },
+              {
+                key: 'positions',
+                label: t('designer.palette.tabPositions'),
+                children: (
+                  <>
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 10, marginBottom: 8 }}>
+                      {t('designer.palette.positionHint')}
+                    </Typography.Paragraph>
+                    <Row gutter={4} style={{ marginBottom: 4 }}>
+                      <Col span={12}>
+                        <Select
+                          size="small" allowClear style={{ width: '100%' }}
+                          placeholder={t('designer.palette.rolePlaceholder')}
+                          value={positionRole ?? undefined}
+                          onChange={(v: string | undefined) => setPositionRole(v ?? null)}
+                          options={roleOptions}
+                        />
+                      </Col>
+                      <Col span={12}>
+                        <Select
+                          size="small" style={{ width: '100%' }}
+                          value={positionLoading}
+                          onChange={setPositionLoading}
+                          options={[
+                            { value: 'do_not_load', label: t('designer.binding.loading.do_not_load') },
+                            { value: 'load_single', label: t('designer.binding.loading.load_single') },
+                            { value: 'load_selected', label: t('designer.binding.loading.load_selected') },
+                            { value: 'load_all_remaining', label: t('designer.binding.loading.load_all_remaining') },
+                          ]}
+                        />
+                      </Col>
+                    </Row>
+                    <Select
+                      size="small" style={{ width: '100%', marginBottom: 6 }}
+                      value={positionBarcode}
+                      onChange={setPositionBarcode}
+                      options={[
+                        { value: 'none', label: t('designer.binding.barcode.none') },
+                        { value: 'read', label: t('designer.binding.barcode.read') },
+                        { value: 'update', label: t('designer.binding.barcode.update') },
+                        { value: 'validate_in', label: t('designer.binding.barcode.validate_in') },
+                        { value: 'validate_out', label: t('designer.binding.barcode.validate_out') },
+                        { value: 'validate_both', label: t('designer.binding.barcode.validate_both') },
+                      ]}
+                    />
+                    <div style={{ maxHeight: 'calc(100vh - 400px)', overflow: 'auto' }}>
+                      {positionItemsQ.isLoading && <Spin size="small" />}
+                      {positionGroups.length === 0 && !positionItemsQ.isLoading && (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          description={t('designer.palette.noPositions')} />
+                      )}
+                      {positionGroups.map((g) => (
+                        <div key={g.device} style={{ marginBottom: 6 }}>
+                          <div style={{
+                            fontSize: 11, color: '#8b93a7', fontWeight: 600,
+                            padding: '3px 4px', borderBottom: '1px solid #ffffff14',
+                          }}>
+                            {g.device} <span style={{ fontWeight: 400 }}>({g.items.length})</span>
+                          </div>
+                          <div style={{ marginTop: 4 }}>
+                            {g.items.map((p) => (
+                              <PositionMethodRow
+                                key={p.pointId}
+                                p={p}
+                                role={positionRole}
+                                loading={positionLoading}
+                                barcodePolicy={positionBarcode}
+                                islandId={effectiveIslandId}
+                                disabled={ro.disabled}
+                              />
+                            ))}
+                          </div>
+                        </div>
                       ))}
                     </div>
                   </>
@@ -3764,6 +4264,7 @@ export default function DesignerPage() {
         {/* 拖放挂在外层 wrapper：bpmn-js 的 SVG 会吞掉 drop 事件 */}
         <div
           ref={canvasWrapRef}
+          data-testid="designer-canvas-wrap"
           style={{
             flex: 1, minHeight: 420, position: 'relative',
             // width:100% + overflow:hidden：画布只能长成"列有多宽就多宽"，

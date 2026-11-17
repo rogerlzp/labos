@@ -27,10 +27,17 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>
 
+    <!--
+      ⚠ 入参 param2 = **device_model_id（device.id 型号行）**，不是 device_instance.id。
+      原写法把设备锁等待上限也按实例号去查 device_method，与超时那条同一个病根
+      （2026-11-16 一并修掉）。换算走 DeviceIdentityResolver。
+    -->
     <select id="selectDeviceLockTimeoutSec" resultType="long">
         SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
-         WHERE tenant_id = #{param1} AND device_id = #{param2}
-    </select><select id="selectParentIdOfNode" resultType="java.lang.Long">
+         WHERE tenant_id = #{param1} AND device_model_id = #{param2} AND scope = 'model'
+    </select>
+
+    <select id="selectParentIdOfNode" resultType="java.lang.Long">
         SELECT parent_id FROM resource_node
          WHERE tenant_id = #{param1} AND id = #{param2}
     </select>

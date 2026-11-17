@@ -120,14 +120,15 @@ SELECT
   di.code                        AS code,
   di.name                        AS name,
   d.name                         AS equipment_name,
-  di.device_id                   AS equipment_id,
+  -- 对外列名保持 equipment_id（兼容旧消费者），内部来源列已改名 device_model_id
+  di.device_model_id             AS equipment_id,
   rn.code                        AS island_code,
   di.status::text                AS status,
   di.attr,
   di.created_at                  AS create_time,
   di.updated_at                  AS update_time
 FROM device_instance di
-LEFT JOIN device d        ON d.id  = di.device_id
+LEFT JOIN device d        ON d.id  = di.device_model_id
 LEFT JOIN resource_node rn ON rn.id = di.resource_id;
 COMMENT ON VIEW v_equipment_instance_ro IS '只读映射视图：以 equipment_instance 的列语义暴露等价查询';
 

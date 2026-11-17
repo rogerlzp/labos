@@ -29,12 +29,19 @@ public final class BpmnGraphParser {
     public record ParsedNode(String key, String name, String type,
                              String protocolName, Long resourceId,
                              /** 设备方法参数（JSON 字符串），来自 BPMN 自定义属性 methodParams。 */
-                             String methodParams) {
+                             String methodParams,
+                             /** 客户§3阶段编码（S1..S8 / S0 / S9），来自自定义属性 stageCode。 */
+                             String stageCode) {
 
         /** 兼容无参构造。 */
         public ParsedNode(String key, String name, String type,
                           String protocolName, Long resourceId) {
-            this(key, name, type, protocolName, resourceId, null);
+            this(key, name, type, protocolName, resourceId, null, null);
+        }
+
+        public ParsedNode(String key, String name, String type,
+                          String protocolName, Long resourceId, String methodParams) {
+            this(key, name, type, protocolName, resourceId, methodParams, null);
         }
     }
 
@@ -129,9 +136,12 @@ public final class BpmnGraphParser {
                     Long resource = parseLong(el.getAttribute("resource"));
                     // 设计器填的参数存在自定义属性 methodParams（JSON 字符串）
                     String mp = el.getAttribute("methodParams");
+                    // 阶段编码也走自定义属性：设计器只改 XML，保存时由这里落 stage_code。
+                    String stage = el.getAttribute("stageCode");
                     nodes.putIfAbsent(id, new ParsedNode(id, name, TYPE_MAP.get(tag),
                             protocol == null || protocol.isBlank() ? null : protocol, resource,
-                            mp == null || mp.isBlank() ? null : mp));
+                            mp == null || mp.isBlank() ? null : mp,
+                            stage == null || stage.isBlank() ? null : stage.trim()));
                 }
             }
 

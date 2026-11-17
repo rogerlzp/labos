@@ -33,6 +33,66 @@ public interface ManifestMapper {
 
     int deleteTemplate(@Param("t") long tenantId, @Param("id") long id);
 
+    /**
+     * 模板编辑器的两个"整包替换"字段。
+     *
+     * <p>为什么不塞进 {@link #updateTemplate}：那是**部分更新**语义（name/status/spec
+     * 各自可空），而流程清单与点位白名单在界面上是"整张表提交"⇒ 语义不同，混在一起
+     * 会让"只改名字"意外清空流程清单。
+     */
+    int updateTemplateWhitelist(@Param("id") long id, @Param("whitelist") String whitelistJson);
+
+    int updateTemplateWorkflowIds(@Param("id") long id, @Param("workflowIds") String workflowIds);
+
+    /**
+     * 模板自检：一条流程的概况（是否存在 / 是否软删 / 岛 / 任务节点数）。
+     *
+     * <p>用一条查询而不是"先查 workflow 再查 node"：自检要对每个流程各查一次，
+     * 两次往返会让"模板自检"在多流程模板上明显变慢。
+     */
+    Map<String, Object> selectWorkflowBrief(@Param("t") long tenantId,
+                                            @Param("workflowId") long workflowId);
+
+    /**
+     * 模板自检：点位所属的岛（资源树向上走到 kind='island'）。
+     *
+     * <p>资源节点没有 island_id 列（岛就是树根），所以必须递归上行 —— 这也保证了
+     * "白名单里的点位属于这个岛"是真判定，而不是拿 code 前缀猜。
+     */
+    Long selectPointIsland(@Param("t") long tenantId, @Param("pointId") long pointId);
+
+    // ---- 模板导出 / 导入（跨环境搬运：一切用**业务码**，不用本环境的 id） ----
+
+    /** 资源节点（岛 / 设备）的 code。 */
+    String selectResourceCodeById(@Param("t") long tenantId, @Param("id") long id);
+
+    /** 流程 code 是否已存在（导入时重名要改名，不能撞 uk_workflow）。 */
+    Long selectWorkflowIdByCode(@Param("t") long tenantId, @Param("code") String code);
+
+    /** 岛 code → 岛资源 id（导入时定位目标岛）。 */
+    Long selectIslandIdByCode(@Param("t") long tenantId, @Param("code") String code);
+
+    /** 点位 code（可带设备 code 消歧）→ device_point.id。 */
+    Long selectPointIdByCode(@Param("t") long tenantId,
+                             @Param("pointCode") String pointCode,
+                             @Param("deviceCode") String deviceCode);
+
+    /** device_point.id → 点位 code（导出用）。 */
+    String selectPointCodeById(@Param("t") long tenantId, @Param("pointId") long pointId);
+
+    /** 设备 code + 方法名 → device_method.id（方法按型号登记，scoped model）。 */
+    Long selectMethodIdByDeviceAndName(@Param("t") long tenantId,
+                                       @Param("deviceCode") String deviceCode,
+                                       @Param("methodName") String methodName);
+
+    /** 物料角色 code 是否存在（导入时决定是警告还是静默）。 */
+    Long selectMaterialRoleIdByCode(@Param("t") long tenantId,
+                                    @Param("roleCode") String roleCode);
+
+    /** 导出：一条流程的全部绑定（点位/方法都用 code 表达）。 */
+    List<Map<String, Object>> selectBindingsForExport(@Param("t") long tenantId,
+                                                      @Param("workflowId") long workflowId);
+
     List<Map<String, Object>> selectTemplateProcesses(@Param("t") long tenantId,
                                                       @Param("templateId") long templateId);
 

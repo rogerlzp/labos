@@ -40,8 +40,8 @@
 
     <insert id="cloneDeviceInstance">
         INSERT INTO device_instance
-          (tenant_id, code, name, device_id, resource_id, ip, driver_id)
-        SELECT #{param1}, #{param2}, #{param3}, device_id, #{param4}, NULL, driver_id
+          (tenant_id, code, name, device_model_id, resource_id, ip, driver_id)
+        SELECT #{param1}, #{param2}, #{param3}, device_model_id, #{param4}, NULL, driver_id
           FROM device_instance
          WHERE tenant_id = #{param1} AND resource_id = #{param5}
            AND deleted_at IS NULL
@@ -49,7 +49,7 @@
 
     <insert id="insertModelDeviceInstance">
         INSERT INTO device_instance
-          (tenant_id, code, name, device_id, resource_id, ip)
+          (tenant_id, code, name, device_model_id, resource_id, ip)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5}, NULL)
     </insert>
 
@@ -71,7 +71,7 @@
 
     <insert id="insertDeviceInstance">
         INSERT INTO device_instance
-          (tenant_id, code, name, device_id, resource_id, ip, driver_id)
+          (tenant_id, code, name, device_model_id, resource_id, ip, driver_id)
         VALUES (#{param1}, #{param2}, #{param3}, #{param4}, #{param5},
                 #{param6}, #{param7})
     </insert>
@@ -101,7 +101,7 @@
     <update id="updateModelCapability">
         UPDATE device SET capability_id = #{param3}
          WHERE tenant_id = #{param1}
-           AND id = (SELECT device_id FROM device_instance
+           AND id = (SELECT device_model_id FROM device_instance
                       WHERE tenant_id = #{param1} AND resource_id = #{param2})
     </update>
 
@@ -126,7 +126,7 @@
                d.device_type AS "deviceType", d.vendor AS "vendor", d.icon AS "icon",
                c.code AS "capability",
                (SELECT count(*) FROM device_instance di
-                 WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS "deployed"
+                 WHERE di.device_model_id = d.id AND di.deleted_at IS NULL) AS "deployed"
           FROM device d
           LEFT JOIN capability c ON c.id = d.capability_id
          WHERE d.tenant_id = #{param1}
@@ -180,7 +180,7 @@
                  WHERE p.id = d.parent_id AND p.kind = 'island') AS "islandCode"
           FROM resource_node d
           JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
-          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN device dev ON dev.id = di.device_model_id
           LEFT JOIN capability c ON c.id = dev.capability_id
          WHERE d.tenant_id = #{param1} AND d.kind = 'device'
            AND (#{param2}::bigint IS NULL OR d.parent_id = #{param2})
@@ -207,7 +207,7 @@
     <select id="selectModelMethodNames" resultType="java.lang.String">
         SELECT DISTINCT m.method
           FROM device_method m
-          JOIN device d ON d.id = m.device_id AND d.tenant_id = m.tenant_id
+          JOIN device d ON d.id = m.device_model_id AND d.tenant_id = m.tenant_id
          WHERE m.tenant_id = #{param1}
            -- 三种键都认（2026-11-15 补 d.model）：
            --   d.code                   型号池编号（如 EQ145 / P_AUTO）
@@ -239,7 +239,7 @@
                dev.attr-&gt;&gt;'device_model' AS "modelId"
           FROM device_instance di
           JOIN driver d ON d.id = di.driver_id AND d.deleted_at IS NULL
-          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN device dev ON dev.id = di.device_model_id
           LEFT JOIN capability c ON c.id = dev.capability_id
          WHERE di.tenant_id = #{param1}
            AND di.deleted_at IS NULL
@@ -255,7 +255,7 @@
           FROM resource_node d
           LEFT JOIN resource_node p ON p.id = d.parent_id
           LEFT JOIN device_instance di ON di.resource_id = d.id AND di.deleted_at IS NULL
-          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN device dev ON dev.id = di.device_model_id
           LEFT JOIN capability c ON c.id = dev.capability_id
          WHERE d.tenant_id = #{param1} AND d.kind = 'device'
            AND (p.id IS NULL OR p.kind &lt;&gt; 'island')
@@ -263,6 +263,9 @@
          ORDER BY d.code
     </select>
 
+<!-- 按**资源号**（resource_node.id）取该实例型号登记的方法。
+         这是"实例 → 型号 → 方法"的**正确口径**，其它地方要按实例取方法请复用这条
+         （不要直接写 device_method.device_id = <实例号>，2026-11-16 就是那样撞的号）。 -->
 <select id="selectDeviceMethods" resultType="java.util.Map">
         SELECT dm.id AS "methodId",
                dm.method AS "method", dm.name AS "name", c.code AS "capability",
@@ -270,7 +273,8 @@
                dm.interruptible AS "interruptible",
                dm.param_schema->'params' AS "params"
           FROM device_instance di
-          JOIN device_method dm ON dm.device_id = di.device_id
+          JOIN device_method dm ON dm.device_model_id = di.device_model_id
+                              AND dm.scope = 'model'
           LEFT JOIN capability c ON c.id = dm.capability_id
          WHERE di.resource_id = #{param1}
          ORDER BY dm.method
@@ -317,7 +321,7 @@
                  ON d.parent_id = i.id AND d.kind = 'device'
           LEFT JOIN device_instance di
                  ON di.resource_id = d.id AND di.deleted_at IS NULL
-          LEFT JOIN device dev ON dev.id = di.device_id
+          LEFT JOIN device dev ON dev.id = di.device_model_id
           LEFT JOIN capability c ON c.id = dev.capability_id
           LEFT JOIN driver dr ON dr.id = di.driver_id AND dr.deleted_at IS NULL
           LEFT JOIN device_state ds
@@ -326,10 +330,25 @@
          ORDER BY i.code, d.code
     </select>
 
+<!-- 入参 param2 = **型号行号**（device.id）—— 方法库是型号级的，不是实例级的。 -->
+<!-- 只改型号级行（scope='model'）：实例级覆盖行的 interruptible 是属于那一台设备的，
+     从"型号配置"入口一键改掉会连现场特例一起覆盖。实例级要用独立入口。 -->
 <update id="setDeviceMethodInterruptible">
-        UPDATE device_method SET interruptible = #{param4}
-         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
-    </update>
+    UPDATE device_method SET interruptible = #{param4}, updated_at = now()
+     WHERE tenant_id = #{param1} AND device_model_id = #{param2}
+       AND method = #{param3} AND scope = 'model'
+</update>
+
+<!-- 实例级可中断覆盖（2026-11-17）：没有就插一行，有就改。 -->
+<insert id="upsertInstanceMethodInterruptible">
+    INSERT INTO device_method
+      (tenant_id, device_model_id, device_instance_id, method, name, scope,
+       param_schema, estimate_sec, timeout_sec, interruptible)
+    VALUES (#{tenantId}, #{modelId}, #{instanceId}, #{method}, #{method}, 'instance',
+            '{}'::jsonb, 0, 0, #{value})
+    ON CONFLICT (tenant_id, device_instance_id, method) WHERE scope = 'instance'
+    DO UPDATE SET interruptible = EXCLUDED.interruptible, updated_at = now()
+</insert>
 
 <select id="insertIsland" resultType="java.lang.Long">
         INSERT INTO resource_node
@@ -528,17 +547,23 @@
                updated_at = now()
         RETURNING id
     </select>
+    <!-- modelId = 型号行号（device.id）；列名是 device_model_id（2026-11-16 改名）。
+         冲突目标 2026-11-17 起必须带 WHERE scope='model'：唯一键已拆成两个**部分**索引
+         （uk_device_method_model / uk_device_method_instance），不带谓词推断不到索引，
+         PG 会报 "there is no unique or exclusion constraint matching the ON CONFLICT specification"。
+         scope/device_instance_id 显式写死，不依赖列默认值 —— 默认值一旦被人改，
+         这里会静默变成"往实例级索引里插型号级行"。 -->
     <insert id="upsertDeviceMethods">
         INSERT INTO device_method
-          (tenant_id, device_id, method, name, capability_id,
-           param_schema, estimate_sec, timeout_sec)
+          (tenant_id, device_model_id, method, name, capability_id,
+           param_schema, estimate_sec, timeout_sec, scope, device_instance_id)
         VALUES
         <foreach collection="items" item="it" separator=",">
-            (#{tenantId}, #{deviceId}, #{it.method}, #{it.label},
+            (#{tenantId}, #{modelId}, #{it.method}, #{it.label},
              #{it.capabilityId,jdbcType=BIGINT}, #{it.paramsJson}::jsonb,
-             #{it.estimate}, #{it.timeout})
+             #{it.estimate}, #{it.timeout}, 'model', NULL)
         </foreach>
-        ON CONFLICT (device_id, method) DO UPDATE
+        ON CONFLICT (tenant_id, device_model_id, method) WHERE scope = 'model' DO UPDATE
            SET name = EXCLUDED.name,
                capability_id = EXCLUDED.capability_id,
                param_schema = EXCLUDED.param_schema,
@@ -551,7 +576,7 @@
                c.code AS "cap", d.icon AS "icon",
                d.attr-&gt;&gt;'device_model' AS "modelId",
                (SELECT count(*) FROM device_instance di
-                 WHERE di.device_id = d.id AND di.deleted_at IS NULL) AS "deployed"
+                 WHERE di.device_model_id = d.id AND di.deleted_at IS NULL) AS "deployed"
         FROM device d
         LEFT JOIN capability c ON c.id = d.capability_id
         WHERE d.tenant_id = #{tenantId}

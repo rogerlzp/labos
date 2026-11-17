@@ -175,8 +175,15 @@ public interface QueryMapper {
     /** run.attendance 当前值（运行中可被切换）。 */
     String selectRunAttendance(long tenantId, long runId);
 
-    /** 设备方法的超时上限（秒），无配置返回 0。 */
-    long selectDeviceLockTimeoutSec(long tenantId, long deviceInstanceId);
+    /**
+     * 设备方法库的超时上限（秒），无配置返回 0 —— 设备锁等待上限就用它。
+     *
+     * <p>⚠ 入参是 {@code device.id}（型号行号）。调用方
+     * （{@code WorkflowService.deviceLockWaitMs}）拿到的是实例号，
+     * 必须先用 {@link com.labos.kernel.device.DeviceIdentityResolver} 换算 ——
+     * 2026-11-16 之前这里直接把实例号传进来，与超时那条同源，也是查错行。
+     */
+    long selectDeviceLockTimeoutSec(long tenantId, long deviceModelId);
 
 
 

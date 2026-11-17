@@ -177,6 +177,27 @@ public class WorkflowController {
         return to(r);
     }
 
+    /**
+     * 克隆流程（图 + 节点 + 节点绑定 + 边 + 变量）。
+     *
+     * <p>模板层用它把"工程师维护的工艺图"复制成模板专属副本：
+     * 复制后改模板不会串到别的模板，也不动原图。
+     */
+    @PostMapping(value = "/workflows/{id:\\d+}/clone", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> clone(@PathVariable long id,
+                                        @RequestBody(required = false) String body,
+                                        HttpServletRequest req) throws SQLException {
+        try {
+            long nid = workflows.cloneWorkflow(id,
+                    jsonField(body, "name"), jsonField(body, "code"), null);
+            audit.record(session(req), "workflow.clone", "workflow", nid,
+                    null, Jsons.obj("sourceId", id), req.getRemoteAddr());
+            return ResponseEntity.ok(Jsons.obj("id", nid, "sourceId", id));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(err(e.getMessage()));
+        }
+    }
+
     @GetMapping(value = "/workflows/{id:\\d+}", produces = "application/json; charset=utf-8")
     public ResponseEntity<String> detail(@PathVariable long id) throws SQLException {
         String body = web.detail(id);
@@ -196,15 +217,26 @@ public class WorkflowController {
             HttpServletRequest req) throws SQLException {
         String md = attendance != null && !attendance.isBlank() ? attendance : "attended";
         String qs = req.getQueryString();
+        // ?stages=S1,S2：本次只跑这些阶段（客户§3编码）。裁剪在执行期做，图不改。
+        java.util.Set<String> stages = parseStages(paramStr(qs, "stages"));
         if (qs != null && qs.contains("async=1")) {
-            long runId = workflows.startAsync(id, md, paramStr(qs, "vars"));
+            long runId = workflows.startAsync(id, md, paramStr(qs, "vars"), stages);
             audit.record(session(req), "run.start", "workflow", id,
-                    null, Jsons.obj("mode", md, "async", true), req.getRemoteAddr());
+                    null, Jsons.obj("mode", md, "async", true,
+                            "stages", stages.isEmpty() ? null : String.join(",", stages)),
+                    req.getRemoteAddr());
             return ResponseEntity.ok(Jsons.obj(
                     "runId", runId,
                     "status", "running",
                     "attendance", md,
+                    "stages", stages.isEmpty() ? null : String.join(",", stages),
                     "pollUrl", "/api/runs/" + runId));
+        }
+        if (!stages.isEmpty()) {
+            // 同步执行没有"跳过节点"的进度回写路径（直接返回 Execution），
+            // 先只支持异步 —— 比"静默忽略 stages"安全。
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Jsons.obj(
+                    "error", "阶段裁剪（stages）只支持 async=1 执行"));
         }
         // ?islandId=n 限定从该岛选设备；?vars=k1=v1,k2=v2 代入参数
         long islId = intOr(qs != null && qs.contains("islandId=")
@@ -234,6 +266,21 @@ public class WorkflowController {
         audit.record(session(req), "run.start", "workflow", id,
                 null, Jsons.obj("mode", md, "async", false), req.getRemoteAddr());
         return ResponseEntity.ok(json);
+    }
+
+    /** "S1,S2" → {S1,S2}；空/非法值忽略（不猜测用户意图）。 */
+    static java.util.Set<String> parseStages(String raw) {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        if (raw == null || raw.isBlank()) {
+            return out;
+        }
+        for (String s : raw.split(",")) {
+            String v = s.trim().toUpperCase();
+            if (!v.isEmpty()) {
+                out.add(v);
+            }
+        }
+        return out;
     }
 
     // ---------------------------------------------------------------- 图
@@ -439,11 +486,14 @@ public class WorkflowController {
             prm = prm.replace("\\\"", "\"");
         }
         Long resId = jsonLong(body, "resourceId");
-        web.updateNodeBinding(id, key, mth, prm, resId);
+        // 阶段编码：null = 不改（老客户端不受影响）；"" = 清除阶段分组
+        String stage = jsonField(body, "stageCode");
+        web.updateNodeBinding(id, key, mth, prm, resId, stage);
         audit.record(session(req), "workflow.node_binding", "workflow", id,
-                key + " → " + (mth == null ? "" : mth), null, req.getRemoteAddr());
+                key + " → " + (mth == null ? "" : mth)
+                        + (stage == null ? "" : " @" + stage), null, req.getRemoteAddr());
         return ResponseEntity.ok(Jsons.obj("workflowId", id, "nodeKey", key,
-                "method", mth, "updated", true));
+                "method", mth, "stageCode", stage, "updated", true));
     }
 
     @PostMapping(value = "/workflows/{id:\\d+}/nodes/{nodeKey}",

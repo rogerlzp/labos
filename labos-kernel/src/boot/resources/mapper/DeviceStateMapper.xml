@@ -52,9 +52,36 @@
          LIMIT 1
     </select>
 
+    <!--
+      ⚠ 入参 param2 = **device_model_id（device.id 型号行）**，不是 device_instance.id。
+
+      历史上这里写的是 device_method.device_id，调用方传的却是实例号 ——
+      三套 id 都是 bigint ⇒ 不报错，只是查错行：
+        · 不撞号 ⇒ 0 行 ⇒ COALESCE 吞成 0 ⇒ 静默退回能力默认；
+        · 撞号 ⇒ 白捡另一个型号的上限（DISP3 分液被套上「轨道机械臂 7 秒」）。
+      列名已改名为 device_model_id，误传实例号会直接报 column does not exist。
+      换算的唯一入口：com.labos.kernel.device.DeviceIdentityResolver。
+    -->
+    <select id="selectModelIdOfInstance" resultType="java.lang.Long">
+        SELECT device_model_id FROM device_instance
+         WHERE tenant_id = #{param1} AND id = #{param2} AND deleted_at IS NULL
+    </select>
+
+    <!-- 型号级可中断标志。scope='model' 是必须的：实例级覆盖行（scope='instance'）
+         会有自己的同方法行，不过滤就会把"某台设备专门配的值"当成全型号的默认。 -->
     <select id="selectMethodInterruptible" resultType="java.lang.Boolean">
         SELECT interruptible FROM device_method
-         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
+         WHERE tenant_id = #{param1} AND device_model_id = #{param2}
+           AND method = #{param3} AND scope = 'model'
+         LIMIT 1
+    </select>
+
+    <!-- 实例级可中断覆盖（2026-11-17）。入参 param2 是**实例号**，这是唯一
+         名称里带 Instance 且确实吃实例号的查询 —— 别照抄它的参数名去写型号级查询。 -->
+    <select id="selectInstanceMethodInterruptible" resultType="java.lang.Boolean">
+        SELECT interruptible FROM device_method
+         WHERE tenant_id = #{param1} AND device_instance_id = #{param2}
+           AND method = #{param3} AND scope = 'instance'
          LIMIT 1
     </select>
 
@@ -93,14 +120,39 @@
          WHERE tenant_id = #{param1} AND id = #{param2}
     </update>
 
+    <!-- 入参 param2 = device_model_id（型号行），详见 selectModelIdOfInstance 上方注释。
+         scope='model' 必须有：实例级覆盖行也会填 device_model_id（表示"基于哪个型号"），
+         不加过滤就会被型号级查询捡到 ⇒ 一台设备的专属配置泄漏成全型号默认。 -->
     <select id="selectMethodTimeoutSec" resultType="long">
         SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
-         WHERE tenant_id = #{param1} AND device_id = #{param2} AND method = #{param3}
+         WHERE tenant_id = #{param1} AND device_model_id = #{param2}
+           AND method = #{param3} AND scope = 'model'
     </select>
 
     <select id="selectLibraryTimeoutSec" resultType="long">
         SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
-         WHERE tenant_id = #{param1} AND device_id = #{param2}
+         WHERE tenant_id = #{param1} AND device_model_id = #{param2} AND scope = 'model'
+    </select>
+
+    <!-- ================= 实例级覆盖（2026-11-17，优先级高于上面两条）=================
+
+         为什么单独两条：device_method 从 P1 起就有 scope/device_instance_id，
+         但唯一键 UNIQUE (device_model_id, method) 让实例级行插不进去 ⇒ 那一层是死设计。
+         20261117_device_method_instance_scope.sql 把唯一键按 scope 拆成两个部分唯一索引后，
+         这里才能真的读到"这台设备单独配的超时"。
+
+         入参 param2 = **device_instance.id（实例号）**。这是本文件里唯一吃实例号的两条，
+         不要拿它们跟型号级那两条混着传（2026-11-16 的事故形态）。 -->
+
+    <select id="selectInstanceMethodTimeoutSec" resultType="long">
+        SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
+         WHERE tenant_id = #{param1} AND device_instance_id = #{param2}
+           AND method = #{param3} AND scope = 'instance'
+    </select>
+
+    <select id="selectInstanceLibraryTimeoutSec" resultType="long">
+        SELECT COALESCE(MAX(timeout_sec), 0) FROM device_method
+         WHERE tenant_id = #{param1} AND device_instance_id = #{param2} AND scope = 'instance'
     </select>
 
     <!-- resource_capability 没有 tenant_id 列（带上会直接报错），这里只用 rc.resource_id。 -->

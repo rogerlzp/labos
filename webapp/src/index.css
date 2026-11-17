@@ -77,3 +77,23 @@ body {
 .labos-tabbar .ant-tabs-tab + .ant-tabs-tab {
   margin-left: 4px;
 }
+
+/* ---------------------------------------------------------------- 设计器阶段色带（P3）
+ *
+ * bpmn-js 的 canvas.addMarker 只是给元素加一个 class，样式必须自己写。
+ * 颜色与 utils/stages.ts 的 STAGE_COLOR 一一对应（S1→S8 冷→暖）。
+ * 只描边、不填充：填充会盖住设备图标，描边在深色主题下也够醒目。
+ */
+[class*="labos-stage-"] .djs-visual > :first-child {
+  stroke-width: 3px !important;
+}
+.labos-stage-S0 .djs-visual > :first-child { stroke: #8b93a7 !important; }
+.labos-stage-S1 .djs-visual > :first-child { stroke: #3b82f6 !important; }
+.labos-stage-S2 .djs-visual > :first-child { stroke: #0ea5e9 !important; }
+.labos-stage-S3 .djs-visual > :first-child { stroke: #06b6d4 !important; }
+.labos-stage-S4 .djs-visual > :first-child { stroke: #14b8a6 !important; }
+.labos-stage-S5 .djs-visual > :first-child { stroke: #22c55e !important; }
+.labos-stage-S6 .djs-visual > :first-child { stroke: #eab308 !important; }
+.labos-stage-S7 .djs-visual > :first-child { stroke: #f97316 !important; }
+.labos-stage-S8 .djs-visual > :first-child { stroke: #ef4444 !important; }
+.labos-stage-S9 .djs-visual > :first-child { stroke: #a855f7 !important; }

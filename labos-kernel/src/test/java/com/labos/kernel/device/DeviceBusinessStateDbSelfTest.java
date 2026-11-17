@@ -225,7 +225,8 @@ public final class DeviceBusinessStateDbSelfTest {
                 ps.executeUpdate();
             }
             try (PreparedStatement ps = c.prepareStatement(
-                    "INSERT INTO device_instance (id, tenant_id, code, name, device_id, resource_id, status) "
+                    // 2026-11-16：列名 device_id -> device_model_id（指向 device.id 型号行）
+                    "INSERT INTO device_instance (id, tenant_id, code, name, device_model_id, resource_id, status) "
                             + "VALUES (?, 1, 'ZZTEST-BIZ-DEV', 'ZZTEST 自测设备', ?, ?, 'available')")) {
                 ps.setLong(1, TEST_INST);
                 ps.setLong(2, TEST_NODE);

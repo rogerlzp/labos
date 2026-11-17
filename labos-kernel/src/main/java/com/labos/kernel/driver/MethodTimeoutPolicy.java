@@ -70,6 +70,10 @@ public final class MethodTimeoutPolicy {
     public static final String SRC_DEVICE_METHOD = "device_method";
     /** 来源标签：设备方法库上限。 */
     public static final String SRC_DEVICE_LIBRARY = "device_library";
+    /** 来源标签：**实例级**方法覆盖（{@code scope='instance'} 的精确匹配，2026-11-17）。 */
+    public static final String SRC_INSTANCE_METHOD = "device_instance_method";
+    /** 来源标签：**实例级**方法库上限（{@code scope='instance'} 里所有方法的最大值）。 */
+    public static final String SRC_INSTANCE_LIBRARY = "device_instance_library";
     /** 来源标签：流程节点级。 */
     public static final String SRC_WORKFLOW_NODE = "workflow_node";
     /** 来源标签：能力默认。 */
@@ -105,7 +109,82 @@ public final class MethodTimeoutPolicy {
     }
 
     /**
-     * 按优先级解析超时。
+     * 各级超时的原始取值（秒），0 = 那一级没配。
+     *
+     * <p>为什么用 record 而不是继续加 long 形参：下面已经是一串**同类型**的 long
+     * （实例方法级 / 实例库上限 / 型号方法级 / 型号库上限 / 节点级），
+     * 位置传错编译器不会吭声 —— 那正是 {@code BUG-20261116-02} 的同一种病
+     * （三套 bigint 混用，SQL 不报错只查错行）。命名参数式的 record 让调用点自解释。
+     *
+     * @param instanceMethodSec  实例级方法超时（{@code scope='instance'} 精确匹配）
+     * @param instanceLibrarySec 实例级方法库上限（实例级行里的最大值）
+     * @param modelMethodSec     型号级方法超时（{@code scope='model'} 精确匹配）
+     * @param modelLibrarySec    型号级方法库上限
+     * @param workflowNodeSec    流程节点级
+     * @param capabilityCode     能力编码（算能力默认用）—— 传**设备的真实能力**
+     */
+    public record Sources(long instanceMethodSec,
+                          long instanceLibrarySec,
+                          long modelMethodSec,
+                          long modelLibrarySec,
+                          long workflowNodeSec,
+                          String capabilityCode) {
+
+        /** 只有型号级（兼容 2026-11-17 之前的调用方式）。 */
+        public static Sources ofModel(long modelMethodSec, long modelLibrarySec,
+                                      long workflowNodeSec, String capabilityCode) {
+            return new Sources(0L, 0L, modelMethodSec, modelLibrarySec,
+                    workflowNodeSec, capabilityCode);
+        }
+
+        /**
+         * 设备侧（实例级 + 型号级）四级是否全部为 0。
+         *
+         * <p>为 true 说明「这台设备的超时不是从设备库来的」——
+         * 要么方法库没配，要么型号没解析出来（{@code DeviceIdentityResolver} 返回 0）。
+         * {@code TimeoutDiagnostics.deviceLevelMissing} 就记这个。
+         */
+        public boolean deviceLevelMissing() {
+            return instanceMethodSec <= 0 && instanceLibrarySec <= 0
+                    && modelMethodSec <= 0 && modelLibrarySec <= 0;
+        }
+    }
+
+    /**
+     * 按优先级解析超时（完整版）。
+     *
+     * <p>顺序：<b>实例级方法 &gt; 实例级库上限 &gt; 型号级方法 &gt; 型号级库上限
+     * &gt; 流程节点 &gt; 能力默认 &gt; 兜底</b>。
+     * 实例级排在型号级前面，因为"这一台设备"比"这一款设备"更具体。
+     *
+     * @param s          各级取值
+     * @param fallbackMs 兜底（毫秒）
+     */
+    public static Resolved resolve(Sources s, long fallbackMs) {
+        if (s.instanceMethodSec() > 0) {
+            return new Resolved(s.instanceMethodSec() * 1000L, SRC_INSTANCE_METHOD);
+        }
+        if (s.instanceLibrarySec() > 0) {
+            return new Resolved(s.instanceLibrarySec() * 1000L, SRC_INSTANCE_LIBRARY);
+        }
+        if (s.modelMethodSec() > 0) {
+            return new Resolved(s.modelMethodSec() * 1000L, SRC_DEVICE_METHOD);
+        }
+        if (s.modelLibrarySec() > 0) {
+            return new Resolved(s.modelLibrarySec() * 1000L, SRC_DEVICE_LIBRARY);
+        }
+        if (s.workflowNodeSec() > 0) {
+            return new Resolved(s.workflowNodeSec() * 1000L, SRC_WORKFLOW_NODE);
+        }
+        long capSec = capabilityDefaultSec(s.capabilityCode());
+        if (capSec > 0) {
+            return new Resolved(capSec * 1000L, SRC_CAPABILITY_DEFAULT);
+        }
+        return new Resolved(fallbackMs, SRC_FALLBACK);
+    }
+
+    /**
+     * 按优先级解析超时（型号级兼容版，等价于实例级传 0）。
      *
      * @param deviceMethodSec  设备方法级超时（秒），0 = 没配
      * @param deviceLibrarySec 设备方法库上限（秒），0 = 没配
@@ -119,19 +198,7 @@ public final class MethodTimeoutPolicy {
                                    long workflowNodeSec,
                                    String capabilityCode,
                                    long fallbackMs) {
-        if (deviceMethodSec > 0) {
-            return new Resolved(deviceMethodSec * 1000L, SRC_DEVICE_METHOD);
-        }
-        if (deviceLibrarySec > 0) {
-            return new Resolved(deviceLibrarySec * 1000L, SRC_DEVICE_LIBRARY);
-        }
-        if (workflowNodeSec > 0) {
-            return new Resolved(workflowNodeSec * 1000L, SRC_WORKFLOW_NODE);
-        }
-        long capSec = capabilityDefaultSec(capabilityCode);
-        if (capSec > 0) {
-            return new Resolved(capSec * 1000L, SRC_CAPABILITY_DEFAULT);
-        }
-        return new Resolved(fallbackMs, SRC_FALLBACK);
+        return resolve(Sources.ofModel(deviceMethodSec, deviceLibrarySec,
+                workflowNodeSec, capabilityCode), fallbackMs);
     }
 }

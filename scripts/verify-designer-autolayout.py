@@ -5,7 +5,10 @@
   ① 先按节点顺序一个接一个摆 —— 串行的；
   ② 遇到并行网关，分支并列、**前后端对齐**；
   ③ 整条太长 ⇒ **折行**，从下一行继续往后排；
-  ④ 网关对（分叉+它的分支+汇合）是**不可拆**的整体，换行也不许从中间断开。
+  ④ 网关对（分叉+它的分支+汇合）是**不可拆**的整体，换行也不许从中间断开；
+  ⑤ 连线不许穿过节点框：折行时的"行间通道"要落在两行之间的空档里，
+     回边（目标在源左边）要绕到本行下方再进 —— 不许横穿中间夹着的节点
+     （2026-11-16 用户提出：折行那条线从上一排节点身上穿过去了）。
 
 用法：
   python3 scripts/verify-designer-autolayout.py
@@ -82,6 +85,54 @@ def layout(pg) -> list[dict]:
 def align(pg) -> None:
     pg.get_by_role("button", name="自动对齐").click()
     pg.wait_for_timeout(1600)
+
+
+# 连线 × 节点框 的相交扫描：逐段轴对齐线段 vs 矩形（留 2px 容差抓"擦边"）。
+# 排除连线自己的源/目标节点（进出它们本来就要贴边）。
+# spans = "横跨大半幅"的水平段条数 —— 折行通道/回边通道的特征，
+# 用来防断言空转（真没走通道时，穿节点数也可能是 0）。
+EDGE_SCAN = """() => {
+  const reg = window.__bpmnModeler.get('elementRegistry');
+  const shapes = reg.getAll()
+    .filter(e => e.type !== 'label' && e.type !== 'bpmn:SequenceFlow' && e.x != null)
+    .map(e => ({ id: e.id, x: e.x, y: e.y, w: e.width || 0, h: e.height || 0 }));
+  const edges = reg.getAll().filter(e => e.type === 'bpmn:SequenceFlow').map(e => ({
+    src: e.businessObject.sourceRef && e.businessObject.sourceRef.id,
+    tgt: e.businessObject.targetRef && e.businessObject.targetRef.id,
+    wps: (e.waypoints || []).map(w => ({ x: w.x, y: w.y })),
+  }));
+  const xs = shapes.map(s => s.x);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const hitBox = (a, z, s) => {
+    const l = s.x - 2, r = s.x + s.w + 2, t = s.y - 2, b = s.y + s.h + 2;
+    if (Math.abs(a.x - z.x) < 0.5) {            // 竖直线段
+      if (!(l <= a.x && a.x <= r)) return false;
+      return Math.max(a.y, z.y) > t && Math.min(a.y, z.y) < b;
+    }
+    if (Math.abs(a.y - z.y) < 0.5) {            // 水平线段
+      if (!(t <= a.y && a.y <= b)) return false;
+      return Math.max(a.x, z.x) > l && Math.min(a.x, z.x) < r;
+    }
+    return false;
+  };
+  const hits = [];
+  let spans = 0;
+  for (const e of edges) {
+    for (let i = 0; i < e.wps.length - 1; i++) {
+      const a = e.wps[i], z = e.wps[i + 1];
+      for (const s of shapes) {
+        if (s.id === e.src || s.id === e.tgt) continue;
+        if (hitBox(a, z, s)) hits.push(e.src + '>' + e.tgt + '#' + i + '@' + s.id);
+      }
+      if (Math.abs(a.y - z.y) < 0.5 && Math.abs(a.x - z.x) > width * 0.4) spans += 1;
+    }
+  }
+  return { nHits: hits.length, hits: hits.slice(0, 6), spans };
+}"""
+
+
+def edge_scan(pg) -> dict:
+    return pg.evaluate(EDGE_SCAN)
 
 
 def main() -> int:
@@ -172,6 +223,28 @@ def main() -> int:
         pg.get_by_role("button", name="适应画布").click()
         pg.wait_for_timeout(800)
         pg.screenshot(path=os.path.join(OUT, "autolayout-wrapped.png"))
+
+        # ---------- ④ 连线不穿节点（折行通道 / 回边通道） ----------
+        # 换行边的横线必须走两行之间的空档，回边必须绕到本行下方 ——
+        # 走到节点身上就是 bug（2026-11-16 用户在设计器 1000929 指出）。
+        # 两条断言缺一不可：只查"穿 0 处"会被"根本没走通道"骗过。
+        print("[4] 连线不穿节点（折行通道 + 回边通道）")
+        for wid, label, min_spans in (
+            ("1000929", "长流程折行", 2),   # 2 条换行边 ⇒ 至少 2 条跨幅横线
+            ("1000792", "循环回边", 1),     # 1 条回边
+        ):
+            pg.goto(f"{BASE}/designer/{wid}", wait_until="domcontentloaded")
+            wait_designer(pg)
+            align(pg)
+            scan = edge_scan(pg)
+            check(scan["nHits"] == 0, f"{label}：没有连线穿过节点",
+                  f"{scan['nHits']} 处 {scan['hits'][:3]}")
+            check(scan["spans"] >= min_spans,
+                  f"{label}：走的是绕行通道（有横跨大半幅的横线），不是直连",
+                  f"跨幅横线 {scan['spans']} 条（期望 ≥{min_spans}）")
+        pg.get_by_role("button", name="适应画布").click()
+        pg.wait_for_timeout(600)
+        pg.screenshot(path=os.path.join(OUT, "autolayout-edges.png"))
 
         real = [e for e in errors if "Static function can not consume context" not in e]
         check(not real, "页面无 JS 报错", "; ".join(real[:3]))

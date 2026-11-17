@@ -791,11 +791,39 @@ public class DeviceService {
     /**
      * 设置设备方法的「执行中可中断」标志（产品写入口；方法必须已在设备库中）。
      *
-     * @return 受影响行数（0 = 设备/方法不存在，调用方回 404）
+     * <p>⚠ {@code deviceModelId} 是 {@code device.id}（**型号行号**），不是实例号 ——
+     * {@code device_method} 是型号级的。传实例号时要么 0 行（回 404），
+     * 要么撞号改到别的型号上（2026-11-16 记录的同族风险）。
+     *
+     * @return 受影响行数（0 = 型号/方法不存在，调用方回 404）
      */
-    public int setDeviceMethodInterruptible(long deviceId, String method, boolean value)
+    public int setDeviceMethodInterruptible(long deviceModelId, String method, boolean value)
             throws java.sql.SQLException {
-        return deviceMapper.setDeviceMethodInterruptible(TENANT, deviceId, method, value);
+        return deviceMapper.setDeviceMethodInterruptible(TENANT, deviceModelId, method, value);
+    }
+
+    /**
+     * 设置**某一台设备**的某方法「执行中可中断」（实例级覆盖，{@code scope='instance'}）。
+     *
+     * <p>与 {@link #setDeviceMethodInterruptible} 的区别：那个改型号（影响所有同型号实例），
+     * 这个只改这一台。现场常有"这台的分液可以打断、同型号另一台不行"的差异 ——
+     * 型号级标志做不到这件事，所以 P1 才在 {@code device_method} 上留了
+     * {@code device_instance_id} / {@code scope} 两列；2026-11-17 唯一键按 scope 拆开之后才真的能写。
+     *
+     * <p>插入的实例级行要带上该实例的型号行号（表示"基于哪个型号覆盖"），
+     * 所以型号解析不出来时直接拒绝 —— 否则会写出一行 {@code device_model_id} 为空的孤儿配置。
+     */
+    public int setInstanceMethodInterruptible(long instanceId, String method, boolean value)
+            throws java.sql.SQLException {
+        com.labos.kernel.device.DeviceIds.ModelId model =
+                new com.labos.kernel.device.DeviceIdentityResolver(TENANT).modelIdOf(instanceId);
+        if (!model.known()) {
+            throw new IllegalArgumentException(
+                    "设备未登记型号（device_instance.device_model_id 为空），无法建立实例级覆盖："
+                            + "instance=" + instanceId);
+        }
+        return deviceMapper.upsertInstanceMethodInterruptible(
+                TENANT, model.value(), instanceId, method, value);
     }
 
     /**

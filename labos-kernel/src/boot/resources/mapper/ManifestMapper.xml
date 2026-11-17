@@ -43,6 +43,115 @@
     WHERE id = #{id} AND deleted_at IS NULL
   </update>
 
+  <!-- ============ 模板导出 / 导入（全用业务码：code / 点位码 / 方法名） ============ -->
+  <select id="selectResourceCodeById" resultType="java.lang.String">
+    SELECT code FROM resource_node
+     WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL
+  </select>
+
+  <select id="selectWorkflowIdByCode" resultType="java.lang.Long">
+    SELECT id FROM workflow
+     WHERE tenant_id = #{t} AND code = #{code} AND deleted_at IS NULL
+     LIMIT 1
+  </select>
+
+  <select id="selectIslandIdByCode" resultType="java.lang.Long">
+    SELECT id FROM resource_node
+     WHERE tenant_id = #{t} AND kind = 'island' AND code = #{code} AND deleted_at IS NULL
+     LIMIT 1
+  </select>
+
+  <select id="selectPointIdByCode" resultType="java.lang.Long">
+    SELECT dp.id
+      FROM device_point dp
+      JOIN resource_node rn ON rn.id = dp.point_resource_id
+      LEFT JOIN resource_node dev ON dev.id = dp.device_resource_id
+     WHERE dp.tenant_id = #{t} AND rn.code = #{pointCode}
+       <if test="deviceCode != null and deviceCode != ''">
+         AND dev.code = #{deviceCode}
+       </if>
+     ORDER BY dp.id
+     LIMIT 1
+  </select>
+
+  <select id="selectPointCodeById" resultType="java.lang.String">
+    SELECT rn.code
+      FROM device_point dp JOIN resource_node rn ON rn.id = dp.point_resource_id
+     WHERE dp.tenant_id = #{t} AND dp.id = #{pointId}
+  </select>
+
+  <select id="selectMethodIdByDeviceAndName" resultType="java.lang.Long">
+    SELECT dm.id
+      FROM device_instance di
+      JOIN device_method dm ON dm.device_model_id = di.device_model_id AND dm.scope = 'model'
+      JOIN resource_node rn ON rn.id = di.resource_id
+     WHERE dm.tenant_id = #{t} AND rn.code = #{deviceCode} AND dm.method = #{methodName}
+     ORDER BY dm.id
+     LIMIT 1
+  </select>
+
+  <select id="selectMaterialRoleIdByCode" resultType="java.lang.Long">
+    SELECT id FROM material_role WHERE tenant_id = #{t} AND role_code = #{roleCode} LIMIT 1
+  </select>
+
+  <select id="selectBindingsForExport" resultType="java.util.Map">
+    SELECT wn.node_key AS "nodeKey", nb.seq AS "seq",
+           dev.code AS "deviceCode",
+           rn.code AS "pointCode",
+           dm.method AS "methodName",
+           nb.material_role AS "materialRole",
+           nb.loading_pattern AS "loadingPattern",
+           nb.barcode_policy AS "barcodePolicy",
+           nb.leave_at_station AS "leaveAtStation",
+           nb.enabled AS "enabled",
+           nb.params::text AS "params"
+      FROM node_binding nb
+      JOIN workflow_node wn ON wn.id = nb.node_id
+      LEFT JOIN device_point dp ON dp.id = nb.position_id
+      LEFT JOIN resource_node rn ON rn.id = dp.point_resource_id
+      LEFT JOIN resource_node dev ON dev.id = dp.device_resource_id
+      LEFT JOIN device_method dm ON dm.id = nb.method_id
+     WHERE nb.tenant_id = #{t} AND wn.workflow_id = #{workflowId}
+     ORDER BY wn.node_key, nb.seq
+  </select>
+
+  <select id="selectWorkflowBrief" resultType="java.util.Map">
+    SELECT w.id AS "id", w.code AS "code", w.name AS "name",
+           w.island_id AS "islandId",
+           (w.deleted_at IS NOT NULL) AS "deleted",
+           COALESCE((SELECT count(*) FROM workflow_node n
+                      WHERE n.workflow_id = w.id AND n.node_type = 'task'), 0) AS "taskCount"
+      FROM workflow w
+     WHERE w.tenant_id = #{t} AND w.id = #{workflowId}
+  </select>
+
+  <select id="selectPointIsland" resultType="java.lang.Long">
+    WITH RECURSIVE up AS (
+      SELECT rn.id, rn.parent_id, rn.kind::text AS kind
+        FROM resource_node rn
+        JOIN device_point dp ON dp.point_resource_id = rn.id
+       WHERE dp.tenant_id = #{t} AND dp.id = #{pointId} AND rn.deleted_at IS NULL
+      UNION ALL
+      SELECT rn.id, rn.parent_id, rn.kind::text AS kind
+        FROM resource_node rn
+        JOIN up ON rn.id = up.parent_id
+       WHERE rn.tenant_id = #{t} AND rn.deleted_at IS NULL
+    )
+    SELECT id FROM up WHERE kind = 'island' LIMIT 1
+  </select>
+
+  <update id="updateTemplateWhitelist">
+    UPDATE experiment_template
+       SET point_whitelist = #{whitelist}::jsonb, updated_at = now()
+     WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
+  <update id="updateTemplateWorkflowIds">
+    UPDATE experiment_template
+       SET workflow_ids = #{workflowIds}::bigint[], updated_at = now()
+     WHERE id = #{id} AND deleted_at IS NULL
+  </update>
+
   <update id="deleteTemplate">
     UPDATE experiment_template SET deleted_at = now(), updated_at = now()
      WHERE tenant_id = #{t} AND id = #{id} AND deleted_at IS NULL

@@ -101,6 +101,8 @@ public final class GraphRunner {
      * 有了它，续跑就是"已经做完的不再做，从卡住那一步接着来"。
      */
     private Set<String> skipKeys = Set.of();
+    /** 阶段裁剪：本次不执行的节点（按 node_key）。与 skipKeys 语义不同，见下方分支。 */
+    private Set<String> trimKeys = Set.of();
 
     /**
      * 运行期变量（{@code ${name}} 的取值来源）：条件表达式和循环退出条件用。
@@ -450,6 +452,12 @@ public final class GraphRunner {
     }
 
     /** 注入"已完成、跳过"的节点 key。 */
+    /** 阶段裁剪：这些节点本次不执行，记 SKIPPED 后继续下游（图不改）。 */
+    public GraphRunner withTrimKeys(Set<String> keys) {
+        this.trimKeys = keys == null ? Set.of() : Set.copyOf(keys);
+        return this;
+    }
+
     public GraphRunner withSkipKeys(Set<String> keys) {
         this.skipKeys = keys == null ? Set.of() : Set.copyOf(keys);
         return this;
@@ -752,6 +760,13 @@ public final class GraphRunner {
             activatedKeys.add(key);
 
             if ((node.kind() == Kind.TASK || node.kind() == Kind.BUILTIN)
+                    && trimKeys.contains(key)) {
+                // 阶段裁剪：不在本次选择的阶段里 ⇒ 跳过但继续下游（图与绑定都不动）。
+                // 落 SKIPPED 而不是 COMPLETED：台账要能区分"没做"和"做完了"。
+                log.accept("[裁剪] 节点 " + key + " 不在所选阶段，跳过");
+                nodeStateRecorder.accept(key, "bypassed");
+                progress.bypass(nodeId(node), "[裁剪] 不在所选阶段");
+            } else if ((node.kind() == Kind.TASK || node.kind() == Kind.BUILTIN)
                     && skipKeys.contains(key)) {
                 // 断点续跑：这个节点上一轮已经做完了，直接当完成往下走
                 log.accept("[续跑] 节点 " + key + " 已完成，跳过");

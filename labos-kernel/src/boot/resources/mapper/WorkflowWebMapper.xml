@@ -126,7 +126,7 @@
 
 <select id="selectNodeBinding" resultType="java.util.Map">
         SELECT (params->'method_params')::text AS "mp", resource_id AS "resourceId",
-               params->>'protocol_name' AS "method"
+               params->>'protocol_name' AS "method", stage_code AS "stageCode"
           FROM workflow_node
          WHERE tenant_id = #{param1} AND workflow_id = #{param2} AND node_key = #{param3}
     </select>

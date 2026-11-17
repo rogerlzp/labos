@@ -53,6 +53,53 @@
 | `20261115_p2_revert_manual_recovery.sql` | 回退 manual_recovery：心跳自动恢复是正确行为（网络闪断→离线→恢复自动继续），物理故障由操作员手动恢复（可绕过重取证） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_revert_manual_recovery.sql` |
 | `20261115_p2_rail_zone_exemption.sql` | P2 阶段 D：L3 路径粒度豁免（已验证无冲突的路径显式放行） | `psql -v ON_ERROR_STOP=1 -f 20261115_p2_rail_zone_exemption.sql`（幂等） |
 
+### 20261116 · 设备 ID 空间收口
+
+| 文件 | 作用 | 用法 |
+|---|---|---|
+| `20261116_device_model_id_rename.sql` | 把 `device_method.device_id` 与 `device_instance.device_id` 改名为 **`device_model_id`**（列存的是 `device.id` 型号行号，不是实例号）。含唯一约束/视图/注释/bigint 类型自检；半迁移状态（两列都在）直接 `RAISE EXCEPTION` | `psql -v ON_ERROR_STOP=1 -f 20261116_device_model_id_rename.sql`（**连跑两次，两次都 exit 0**） |
+
+> **背景**：三套 id（`device_instance.id` 实例号 / `resource_node.id` 资源号 / `device.id` 型号行号）
+> 都是 bigint，混用不报错只查错行。实锤见 `BUG-20261116-02` 与
+> `docs/architecture/设备ID空间与型号解析-20261116.md`。
+>
+> **⚠ 改名后不要重跑 `20261115_device_register_pauto_d9608.sql`**：它写的是旧列名
+> `INSERT INTO device_method (tenant_id, device_id, …)`，在改名后的库里会报列不存在。
+> 历史迁移脚本按「当时的形态」保留不回改；按日期顺序执行时它天然排在 20261116 之前，
+> 正常流程不受影响 —— 只有"单独重跑某个历史脚本"这一种情况会撞上。
+
+### 20261117 · `plate_well` 设计态/运行态拆分（Q10 已裁决：拆表）
+
+| 文件 | 作用 | 用法 |
+|---|---|---|
+| `20261117_plate_well_split.sql` | 把 `plate_well` 拆成**设计态** `plate_well_design`（实验设计的意图体积，唯一写入方 = qPCR 布局控制器）与**运行态** `plate_well`（执行后的实测孔内液体，唯一写入方 = 物料投影 T2）。含定义 drift 校验与首拆判据 | `psql -v ON_ERROR_STOP=1 -f 20261117_plate_well_split.sql`（幂等，连跑两次 exit 0） |
+
+> **为什么拆**：`plate_well.volume` 原本同时被两种语义写入（设计态 = qPCR 布局的意图体积；运行态 = 实测体积）。
+> 混在一列 ⇒ 物理闸门无法判断"这是计划值还是实测值"，且违反"唯一写入方"原则。
+> 两表列名/类型/精度全同（`volume` 同为 `numeric(12,3)`），用 `plate_id` 关联但**不做值同步** —— 差异本身就是诊断信号。
+>
+> **迁移的关键设计**：首拆判据用"`plate_well_design` 为空"，**不是**"每次都复制"。
+> 否则 M1 运行期写入方上线后重跑本脚本，会把**运行态实测体积**复制进设计表，不可逆地污染。
+>
+> **回滚窗口**：M1 运行期写入方上线**之前**可反向搬移（见脚本末尾注释）；
+> 之后 `plate_well` 里已是运行态数据，反向搬移会覆盖它 ⇒ **不可回滚**。
+
+### 20261117 · 实例级方法覆盖真的能用
+
+| 文件 | 作用 | 用法 |
+|---|---|---|
+| `20261117_device_method_instance_scope.sql` | 把 `device_method` 的唯一键按 `scope` 拆成两个**部分**唯一索引（`uk_device_method_model` / `uk_device_method_instance`），并加 `ck_device_method_scope_pair`（`model` 无实例号 / `instance` 必有实例号）。**为什么必须**：原来只有 `UNIQUE (device_model_id, method)` ⇒ 同一型号同一方法只能一行 ⇒ 实例级覆盖行根本插不进去，超时/可中断的实例级那一层是死设计 | `psql -v ON_ERROR_STOP=1 -f 20261117_device_method_instance_scope.sql`（连跑两次都 exit 0） |
+
+> **写入侧影响**：`device_method` 的 `ON CONFLICT` 必须带谓词 ——
+> `ON CONFLICT (tenant_id, device_model_id, method) WHERE scope='model' DO UPDATE …`。
+> 部分索引不写 `WHERE` 推断不到索引，PG 会报
+> 「there is no unique or exclusion constraint matching the ON CONFLICT specification」。
+> 代码侧只有 `DeviceMapper.upsertDeviceMethods` / `upsertInstanceMethodInterruptible` 两处，已改。
+>
+> **与 20261116 的关系**：`20261116` 里有一段断言"`uk_device_method` 存在且含
+> `device_model_id`"；跑过 `20261117` 之后那条约束已被删除，该段会自动打印
+> 「已由 scope 分离索引取代，跳过本段」并继续 —— 两个脚本**互为幂等**，任意顺序重跑都安全。
+
 ### 配置完整性预检 + 种子
 
 ```bash
@@ -90,10 +137,18 @@ done
 # 4. 独立评审修正（P0-1 deck_in 可达性）
 psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f 20261114_deck_in_reachable_fix.sql
 
-# 5. 巡检（全部 0 行）
+# 5. 设备 ID 空间收口（2026-11-16 / 11-17；各连跑两次验证幂等）
+#    5a 把 device_method.device_id / device_instance.device_id 改名为 device_model_id
+psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f 20261116_device_model_id_rename.sql
+psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f 20261116_device_model_id_rename.sql
+#    5b 唯一键按 scope 分离（让 scope='instance' 的覆盖行能写进去）
+psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f 20261117_device_method_instance_scope.sql
+psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f 20261117_device_method_instance_scope.sql
+
+# 6. 巡检（全部 0 行）
 psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f inspection_q1_q18.sql
 
-# 6. seed 字典（幂等）
+# 7. seed 字典（幂等）
 psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f seed_plate_process_state.sql
 ```
 
@@ -113,3 +168,10 @@ psql -h <host> -U <user> -d <db> -v ON_ERROR_STOP=1 -f seed_plate_process_state.
 测试库 `192.168.124.2`（2026-11-12）：迁移连跑 2 次 exit=0、回填 467 行（幂等）、巡检 22/22 = 0 行。
 详见 `docs/S1-迁移执行记录-测试库-20261112.md`。
 - 测试库 `192.168.124.2`（2026-11-14）：`20261114_deck_in_reachable_fix.sql` 修正 4 行 deck_in（WS1..4 → internal）。
+- 测试库 `192.168.124.2`（2026-11-16）：`20261116_device_model_id_rename.sql` **连跑 2 次均 exit=0**（第 1 次改名，第 2 次全部跳过）。
+  改列前后行数不变：`device_method` 435 行、`device_instance` 262 行；视图 `v_equipment_instance_ro` 重建成功。
+  → 11-17 追加 `20261117` 后，该约束被删，`20261116` 重跑时打印「已由 scope 分离索引取代，跳过本段」（见下一条）。
+- 测试库 `192.168.124.2`（2026-11-17）：`20261117_device_method_instance_scope.sql` **连跑 2 次均 exit=0**；
+  `uk_device_method` → `uk_device_method_model` + `uk_device_method_instance`，`ck_device_method_scope_pair` 就位。
+  写入路径实测（事务内 ROLLBACK）：`ON CONFLICT (tenant_id, device_model_id, method) WHERE scope='model'`
+  两次插入只留 1 行且 `name` 被更新；同型号同方法再加 `scope='instance'` 行成功。

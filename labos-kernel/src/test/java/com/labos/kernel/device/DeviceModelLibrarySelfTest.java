@@ -14,6 +14,8 @@ import java.util.Objects;
  * <ol>
  *   <li><b>已适配（manual）</b>：只有 {@code aspin-2k} / {@code s100}，且必须是 MANUAL
  *       依据、手册路径非空、指令/错误码非空 —— 这些是能对客户说"能直接接"的型号；</li>
+ *   <li><b>已适配（manual）</b>：恰好 4 条（aspin-2k / s100 / biotek-lhc / biotek-gen5）；
+ *       依据、手册路径非空、指令/错误码非空、错误码块不重复；</li>
  *   <li><b>占位（planned）</b>：恰好 11 条；只有 360R / PlateLoc 能对上生产库
  *       {@code device.model} 写法（用于统计产线在跑台数），其余必须为 null，
  *       防止"瞎猜别名"把台数算到别的设备头上；</li>
@@ -34,8 +36,11 @@ public final class DeviceModelLibrarySelfTest {
         section("1. 已适配（manual）型号集");
         List<String> manualIds = new ArrayList<>(DeviceModels.knownIds());
         java.util.Collections.sort(manualIds);
-        eq("manual 型号 id 恰好 {aspin-2k, s100}", List.of("aspin-2k", "s100"), manualIds);
-        eq("totals.manual = TABLE 条数", 2, DeviceModels.all().size());
+        // 基线：**故意写死**。型号库扩容是一次需要评审的决定，
+        // 不该被"数量自动跟着变"的写法悄悄放过。
+        eq("manual 型号 id 恰好 {aspin-2k, biotek-gen5, biotek-lhc, s100}",
+                List.of("aspin-2k", "biotek-gen5", "biotek-lhc", "s100"), manualIds);
+        eq("totals.manual = TABLE 条数", 4, DeviceModels.all().size());
 
         section("2. TABLE 全部 MANUAL 且手册路径非空");
         List<String> notManual = new ArrayList<>();
@@ -85,17 +90,20 @@ public final class DeviceModelLibrarySelfTest {
         }));
         eq("每个 manual 型号 errorCount > 0", List.of(), failingManual(
                 m -> m.errorTable().size() > 0));
-        eq("错误码块：aspin=0x41 / s100=0x40",
-                List.of(0x41, 0x40),
-                List.of(DeviceModels.of("aspin-2k").errorBlock,
-                        DeviceModels.of("s100").errorBlock));
+        // 块是"防跨型号撞码"的唯一手段，所以逐个钉死，不许复用
+        eq("错误码块：s100=0x40 / aspin=0x41 / lhc=0x42 / gen5=0x43",
+                List.of(0x40, 0x41, 0x42, 0x43),
+                List.of(DeviceModels.of("s100").errorBlock,
+                        DeviceModels.of("aspin-2k").errorBlock,
+                        DeviceModels.of("biotek-lhc").errorBlock,
+                        DeviceModels.of("biotek-gen5").errorBlock));
 
         section("5. 纯逻辑 JSON 形状（/api/meta/device-models 的基础）");
         check("含 totals / manual / planned 三块",
                 json.contains("\"totals\":{") && json.contains("\"manual\":[")
                         && json.contains("\"planned\":["));
-        check("totals 数值固定", json.contains("\"totals\":{\"manual\":2,\"planned\":11}"));
-        eq("manual 数组 2 条", 2, countOccurrences(json, "\"evidence\":\"MANUAL\""));
+        check("totals 数值固定", json.contains("\"totals\":{\"manual\":4,\"planned\":11}"));
+        eq("manual 数组 4 条", 4, countOccurrences(json, "\"evidence\":\"MANUAL\""));
         eq("planned 数组 11 条且都带 dbModelAlias", 11,
                 countOccurrences(json, "\"dbModelAlias\":"));
         check("360R / PlateLoc 别名正确、其余 4 条 null",
@@ -109,11 +117,11 @@ public final class DeviceModelLibrarySelfTest {
                         && json.contains("\"manual\":\"docs/设备/")
                         && json.contains("\"doorCount\":")
                         && json.contains("\"actionTimeoutMs\":")
-                        && countOccurrences(json, "\"documentedMethodCount\":") == 2
-                        && countOccurrences(json, "\"unverifiedMethodCount\":") == 2
-                        && countOccurrences(json, "\"errorCount\":") == 2
-                        && countOccurrences(json, "\"errorBlock\":") == 2
-                        && countOccurrences(json, "\"note\":") == 2);
+                        && countOccurrences(json, "\"documentedMethodCount\":") == 4
+                        && countOccurrences(json, "\"unverifiedMethodCount\":") == 4
+                        && countOccurrences(json, "\"errorCount\":") == 4
+                        && countOccurrences(json, "\"errorBlock\":") == 4
+                        && countOccurrences(json, "\"note\":") == 4);
         // 每个 manual 型号的 documented/unverified 数值必须与词表逐条一致
         // （unverifiedMethodCount = methodCount - documentedMethodCount）
         List<String> countMismatch = new ArrayList<>();

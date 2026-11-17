@@ -15,6 +15,8 @@ import PlateTracesPage from './pages/PlateTraces';
 import RunDetailPage from './pages/RunDetail';
 import RunFlowViewPage from './pages/RunFlowView';
 import WorkflowsPage from './pages/Workflows';
+import TemplatesPage from './pages/Templates';
+import MaterialRolesPage from './pages/MaterialRoles';
 import DesignerPage from './pages/Designer';
 import AlertsPage from './pages/Alerts';
 import PoliciesPage from './pages/Policies';
@@ -272,6 +274,8 @@ function AppInner() {
             {/* 板子流转：板号在设备之间怎么流转的（执行过程的每一次放板/取板都留痕） */}
             <Route path="/plate-traces" element={<PlateTracesPage />} />
             <Route path="/workflows" element={<WorkflowsPage />} />
+            {/* 实验模板（组合层）：应用者选流程/填参数/声明耗材，不碰设计器 */}
+            <Route path="/templates" element={<TemplatesPage />} />
             {/* 列表 → 详情：/experiments 看全量，/experiments/:id 才是编排页 */}
             <Route path="/experiments" element={<ExperimentListPage />} />
             <Route path="/experiments/:id" element={<ExperimentsPage />} />
@@ -286,6 +290,8 @@ function AppInner() {
             <Route path="/positions" element={<PositionsPage />} />
             <Route path="/consumables" element={<ConsumablesPage />} />
             <Route path="/material-config" element={<MaterialConfigPage />} />
+            {/* 物料角色字典：绑定/模板/点位视角下拉的数据源 */}
+            <Route path="/material-roles" element={<MaterialRolesPage />} />
             <Route path="/arm-console" element={adminOnly(<ArmConsolePage />)} />
             <Route path="/designer/:id" element={<DesignerPage />} />
             <Route path="/alerts" element={<AlertsPage />} />

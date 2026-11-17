@@ -18,6 +18,21 @@
 -- 幂等：可反复执行，已存在的行不覆盖（现场改过的值不会被冲掉）。
 -- ============================================================================
 
+-- ★ 2026-11-17 守卫：本脚本用的是**旧列名** device_method.device_id /
+--   device_instance.device_id，2026-11-16 已改名为 device_model_id（BUG-20261116-02）。
+--   历史脚本按当时的形态保留、不回改（它记录的是首次执行的形态，数据早已在库里）；
+--   但在改名后的库上重跑会撞一句难懂的 `column does not exist`，这里提前给人话。
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_schema = current_schema()
+                AND table_name = 'device_method' AND column_name = 'device_model_id') THEN
+    RAISE EXCEPTION '本脚本使用旧列名 device_id，而库已在 2026-11-16 改名为 device_model_id。
+它的数据（型号 + 方法集）在首次执行时已入库，改名后无需也不应重跑。
+若要新增/更新型号，请走 DeviceRegistrar 或设备池 API。';
+  END IF;
+END $$;
+
 -- ---------------------------------------------------------------- 型号主数据
 -- PAuto：磁珠法核酸提取仪（RS232 9600 8N1；帧 0xFA 0xFB + Cmd + Len(2) + Data(25) + Checksum）
 INSERT INTO device (tenant_id, code, name, model, vendor, device_type, capability_id, icon, attr)

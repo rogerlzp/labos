@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert, Button, Card, Checkbox, Descriptions, Drawer, Empty, Input, Modal, Select, Space,
@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import { apiFetch } from '../api/client';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, type WorkflowSummary } from '../api/client';
-import { useReadOnly } from '../auth';
+import { useOperateOnly, useReadOnly } from '../auth';
 import { useT } from '../i18n';
 import type { MessageKey, MessageVars } from '../i18n/core';
 import { localizedNeutralLabel } from '../bpmn/nodeRoleLabel';
@@ -61,6 +61,8 @@ export default function WorkflowsPage() {
   const vocab = useStatusVocabulary();
   // 新建/执行/影子检查都是写操作（影子检查也会落 run 记录）：viewer 只读
   const ro = useReadOnly();
+  // 执行 / 值守 / 阶段裁剪属于运行侧：designer 能改图但不能起跑
+  const roOp = useOperateOnly();
   /** 新建流程：原来界面里没有任何创建入口，流程库只能看 */
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
@@ -113,6 +115,13 @@ export default function WorkflowsPage() {
   /** 只看空流程（一个 task 节点都没有的壳）。 */
   const [onlyEmpty, setOnlyEmpty] = useState(false);
   // 支持深链：/workflows?wf=239 直接选中某条并展开抽屉
+  /**
+   * 本次只跑这些阶段（客户§3 编码）。空 = 全部。
+   *
+   * <p>为什么放在"执行"旁边而不是设计器里：裁剪是**一次运行**的选择
+   * （"今天只做 W1/W2"），不是工艺图的属性 —— 图必须保持完整。
+   */
+  const [stages, setStages] = useState<string[]>([]);
   const [selected, setSelected] = useState<number | null>(() => {
     const v = Number(sp.get('wf'));
     return Number.isFinite(v) && v > 0 ? v : null;
@@ -183,6 +192,20 @@ export default function WorkflowsPage() {
     enabled: selected != null,
   });
   /** 最近运行：抽屉里的"这条流程最近跑得怎么样"。 */
+  /** 该流程里出现过的阶段（来自 /compile 的 nodes[].stageCode）。 */
+  const compileQ = useQuery({
+    queryKey: ['compile', selected],
+    queryFn: () => api.compile(selected!),
+    enabled: selected != null,
+  });
+  const stageOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const n of compileQ.data?.nodes ?? []) {
+      if (n.stageCode) set.add(n.stageCode);
+    }
+    return [...set].sort();
+  }, [compileQ.data]);
+
   const runsQ = useQuery({
     queryKey: ['workflow-runs', selected],
     queryFn: () => api.workflowRuns(selected!),
@@ -248,7 +271,7 @@ export default function WorkflowsPage() {
 
   /** 异步启动并跳到执行监控页，让用户能实时看进度、随时暂停。 */
   async function runNow(id: number) {
-    const r = await api.execute(id, { attendance, async: true });
+    const r = await api.execute(id, { attendance, async: true, stages });
     if (r.runId) {
       message.success(t('workflows.toast.started'));
       nav(`/runs/${r.runId}`);
@@ -651,13 +674,31 @@ export default function WorkflowsPage() {
               <span>
                 <Button
                   type="primary" loading={running}
-                  disabled={ro.disabled || preflightBlocking || selected == null}
+                  disabled={roOp.disabled || preflightBlocking || selected == null}
+                  title={roOp.title}
                   onClick={() => startFlow(selected)}
                 >
                   {t('workflows.action.execute')}
                 </Button>
               </span>
             </Tooltip>
+            {/* 按阶段裁剪：只跑勾选的阶段，其余节点记 SKIPPED（图不改） */}
+            {stageOptions.length > 0 && (
+              <Select
+                size="small"
+                mode="multiple"
+                allowClear
+                style={{ minWidth: 200, maxWidth: 340 }}
+                placeholder={t('workflows.stage.all')}
+                value={stages}
+                disabled={roOp.disabled}
+                onChange={(v: string[]) => setStages(v)}
+                options={stageOptions.map((c) => ({
+                  value: c,
+                  label: t(`stage.${c}` as Parameters<typeof t>[0]),
+                }))}
+              />
+            )}
             {/* 值守模式：执行前就能选「无人值守」。
                 无人值守下 MANUAL 人工窗口会升为 error 告警
                 （WorkflowService.UNATTENDED 分支）—— 选它意味着"这个流程不该等人"。 */}
@@ -665,7 +706,7 @@ export default function WorkflowsPage() {
               size="small"
               value={attendance}
               style={{ width: 120 }}
-              disabled={ro.disabled}
+              disabled={roOp.disabled}
               onChange={(v) => setAttendance(v as 'attended' | 'unattended')}
               options={[
                 { value: 'attended', label: t('workflows.attendance.attended') },

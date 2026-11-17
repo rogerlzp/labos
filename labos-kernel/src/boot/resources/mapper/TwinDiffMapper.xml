@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 孪生差分报告。调用方 com.labos.kernel.persistence.TwinDiffMapper -->
+<mapper namespace="com.labos.kernel.persistence.TwinDiffMapper">
+
+    <select id="selectReports" resultType="java.util.Map">
+        SELECT id, report_uid AS "reportUid", job_id AS "jobId",
+               device_id AS "deviceId", source_kind AS "sourceKind",
+               status, job_status AS "jobStatus", created_at AS "createdAt"
+          FROM twin_diff_report
+         WHERE tenant_id = #{param1}
+         ORDER BY created_at DESC, id DESC
+         LIMIT #{param2}
+    </select>
+
+    <select id="selectReportById" resultType="java.util.Map">
+        SELECT id, report_uid AS "reportUid", job_id AS "jobId",
+               device_id AS "deviceId", source_kind AS "sourceKind",
+               source_detail AS "sourceDetail", status,
+               job_status AS "jobStatus", payload,
+               created_by AS "createdBy", created_at AS "createdAt"
+          FROM twin_diff_report
+         WHERE tenant_id = #{param1} AND id = #{param2}
+    </select>
+
+    <select id="selectReportByUid" resultType="java.util.Map">
+        SELECT id, report_uid AS "reportUid", status
+          FROM twin_diff_report
+         WHERE tenant_id = #{param1} AND report_uid = #{param2}
+    </select>
+
+    <insert id="insertReport" parameterType="map">
+        INSERT INTO twin_diff_report
+            (tenant_id, report_uid, job_id, device_id, source_kind,
+             source_detail, status, job_status, payload, created_by)
+        VALUES
+            (#{tenantId}, #{reportUid}, #{jobId}, #{deviceId}, #{sourceKind},
+             #{sourceDetail}, #{status}, #{jobStatus}, #{payload}::jsonb, #{createdBy})
+    </insert>
+</mapper>

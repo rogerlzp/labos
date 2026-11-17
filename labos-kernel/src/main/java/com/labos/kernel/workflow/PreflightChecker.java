@@ -160,6 +160,110 @@ public final class PreflightChecker {
         }
     }
 
+    /**
+     * 点位绑定的可执行性预检（PF-21/22/23/27/30）。
+     *
+     * <p><b>为什么必须放在设计期</b>：这些错一条都不会当场报 —— 运行期表现是
+     * 「节点转人工」「板搬不过去」「机械臂到不了」，日志里没有一句指向"点位没授权
+     * 这个方法"。应用者一旦能自己拖图，配错概率比工程师高一个量级。
+     *
+     * <p><b>为什么 PF-23 是 WARN 不是 ERROR</b>：存量 30 条绑定（43 节点流程）
+     * 全都没有 material_role；判 ERROR 会让既有流程整单预检变红 —— 那是把
+     * "新模型的要求"回溯成"老流程的故障"，比不报更糟。
+     *
+     * <p><b>为什么 PF-27 只在"没有显式搬运节点"时判</b>：老流程用显式机械臂节点
+     * 表达搬运，端点里面就有不可达的内部位（如提取仪操作位）；那是合法写法。
+     * 点位模式下才要求"相邻两点位之间的搬运自己成立"。
+     */
+    private void checkPointBindings(long workflowId, Graph graph, List<Issue> issues) {
+        final java.util.List<java.util.Map<String, Object>> rows;
+        final java.util.List<java.util.Map<String, Object>> unbound;
+        try {
+            var bm = com.labos.kernel.persistence.Mappers.get(
+                    com.labos.kernel.persistence.BindingMapper.class);
+            rows = bm.selectNodeBindingPreflight(tenantId, workflowId);
+            unbound = bm.selectPointModeNodesWithoutBinding(tenantId, workflowId);
+        } catch (RuntimeException e) {
+            return;   // 读不到绑定就跳过（不该让预检整体失败）
+        }
+
+        for (java.util.Map<String, Object> r : unbound) {
+            issues.add(new Issue(Level.ERROR, "PF-22", str(r.get("nodeKey")),
+                    "节点「" + str(r.get("nodeName")) + "」声明了点位模式，但没有绑定"
+                            + "（运行期会拒绝执行）"));
+        }
+        if (rows.isEmpty()) {
+            return;
+        }
+
+        // node_key → 第一行（PF-21/23/30 按节点报一次就够，避免多绑定刷屏）
+        java.util.Map<String, java.util.Map<String, Object>> firstByNode =
+                new java.util.LinkedHashMap<>();
+        // 存量写法（显式机械臂节点）里"板由哪个 Transfer 搬"写在节点参数里，
+        // 不依赖 material_role ⇒ PF-23/PF-27 只对"点位模式"（无显式搬运）生效，
+        // 否则 43 节点流程会一次刷出 43 条 WARN，把真问题埋掉。
+        boolean hasExplicitTransfer = graph.nodes().values().stream()
+                .anyMatch(n -> n.method() != null && n.method().startsWith("Transfer"));
+        for (java.util.Map<String, Object> r : rows) {
+            String key = str(r.get("nodeKey"));
+            firstByNode.putIfAbsent(key, r);
+            if (Boolean.FALSE.equals(r.get("methodAllowed"))) {
+                issues.add(new Issue(Level.ERROR, "PF-21", key,
+                        "节点「" + str(r.get("nodeName")) + "」绑的点位 " + str(r.get("pointCode"))
+                                + " 没有授权方法（method_id=" + str(r.get("methodId"))
+                                + "）；运行期会直接转人工。请先在该点位的「可用方法」里授权"));
+            }
+            if (hasExplicitTransfer) {
+                continue;
+            }
+            boolean pointMode = "point".equals(str(r.get("bindingMode")));
+            boolean noRole = str(r.get("materialRole")) == null
+                    || str(r.get("materialRole")).isBlank();
+            if (pointMode && noRole && r.get("positionId") != null) {
+                issues.add(new Issue(Level.WARN, "PF-23", key,
+                        "节点「" + str(r.get("nodeName")) + "」的点位绑定没有物料角色："
+                                + "跨点位搬运时无法定位「搬哪块板」（点位模式建议必填）"));
+            }
+            if (Boolean.TRUE.equals(r.get("robotReachable"))
+                    && Boolean.FALSE.equals(r.get("hasRobotPoint"))) {
+                issues.add(new Issue(Level.WARN, "PF-30", key,
+                        "点位 " + str(r.get("pointCode")) + " 标了「机械臂可达」，但没有示教坐标"
+                                + "（robot_point）；搬运会在运行期超时"));
+            }
+        }
+
+        // PF-27：点位模式下，相邻两节点跨设备 ⇒ 需要机械臂；目标点位必须可达。
+        if (hasExplicitTransfer) {
+            return;
+        }
+        for (GEdge e : graph.edges()) {
+            java.util.Map<String, Object> from = firstByNode.get(e.from());
+            java.util.Map<String, Object> to = firstByNode.get(e.to());
+            if (from == null || to == null) {
+                continue;
+            }
+            Long fromDev = lng(from.get("deviceResourceId"));
+            Long toDev = lng(to.get("deviceResourceId"));
+            if (fromDev == null || toDev == null || fromDev.equals(toDev)) {
+                continue;   // 同设备：由设备内部机构搬，不需要机械臂
+            }
+            if (Boolean.FALSE.equals(to.get("robotReachable"))) {
+                issues.add(new Issue(Level.ERROR, "PF-27", e.to(),
+                        "上游点位 " + str(from.get("pointCode")) + " → 目标点位 "
+                                + str(to.get("pointCode")) + " 跨设备，但目标点位机械臂不可达"
+                                + "（内部位只能由该设备自己搬）"));
+            }
+        }
+    }
+
+    private static String str(Object o) {
+        return o == null ? null : String.valueOf(o);
+    }
+
+    private static Long lng(Object o) {
+        return o instanceof Number n ? n.longValue() : null;
+    }
+
     public enum Level { ERROR, WARN, INFO }
 
     public record Issue(Level level, String code, String nodeKey, String message) {
@@ -278,6 +382,10 @@ public final class PreflightChecker {
 
         // 内置逻辑节点的必填参数（PF-20）：缺参数是运行期才炸 ⇒ 设计期就要报出来。
         checkBuiltinParams(workflowId, graph, issues);
+
+        // 点位绑定的可执行性（PF-21/22/23/27/30）：点位视角下应用者自己配，
+        // 配错在运行期只会表现为"转人工/搬不过去"，必须提前报。
+        checkPointBindings(workflowId, graph, issues);
 
         // tasks 只收设备任务（能力/设备检查、任务数统计只认它）；
         // 但"有没有可执行的东西"要把内置逻辑节点（`__setVar` / `__sleep` / `__wait` …）

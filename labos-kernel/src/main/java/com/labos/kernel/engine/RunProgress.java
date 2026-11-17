@@ -55,6 +55,20 @@ public final class RunProgress {
         return p;
     }
 
+    /**
+     * 阶段裁剪：节点不属于本次选择的阶段 ⇒ 记 **BYPASSED**（分支未选中语义），下游照常走。
+     *
+     * <p>为什么不能用 SKIPPED：那个状态的既定语义是"这步该做但没做，板位不可信"——
+     * `settleRun` / 恢复策略会因此把整单转人工（实测：裁剪后 run 直接 paused）。
+     * 阶段裁剪是**预期内的不做**，与"异或网关另一条分支没选中"完全同类。
+     */
+    public NodeProgress bypass(long nodeId, String reason) {
+        NodeProgress p = node(nodeId);
+        p.setStatus(NodeStatus.BYPASSED);
+        p.setLastReason(reason);
+        return p;
+    }
+
     /** 内置节点算不出来（表达式写错）：记成转人工，让整单停下而不是带着错值继续。 */
     public NodeProgress manual(long nodeId, String reason, String errorCode) {
         NodeProgress p = node(nodeId);

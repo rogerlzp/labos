@@ -187,7 +187,8 @@ while IFS='|' read -r DEV_ID RES_ID CODE CAP; do
     #    （EC-06-0004）⇒ 节点转人工、实验暂停，现场看着像"流程配错了"。
     METHODS=$(q "SELECT string_agg(dm.method, ',' ORDER BY dm.method)
                      FROM device_method dm
-                     JOIN device_instance di ON di.device_id = dm.device_id
+                     JOIN device_instance di ON di.device_model_id = dm.device_model_id
+                     -- 列名 2026-11-16 改名：device_id -> device_model_id（型号行）
                     WHERE di.id = ${DEV_ID}")
     METHODS_ARGS=()
     if [[ -n "${METHODS}" ]]; then

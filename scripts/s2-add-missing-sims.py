@@ -91,19 +91,21 @@ def create_new_device(code, name, cap_id, cap_code, profile, port, methods):
             f"ON CONFLICT (tenant_id, code) DO UPDATE SET name = EXCLUDED.name, "
             f"model = EXCLUDED.model, device_type = EXCLUDED.device_type, "
             f"capability_id = EXCLUDED.capability_id RETURNING id")
-    di = q(f"INSERT INTO device_instance (tenant_id, code, name, device_id, resource_id, ip) "
+    # 列名 2026-11-16 改名：device_instance.device_id -> device_model_id（指向 device.id 型号行）
+    di = q(f"INSERT INTO device_instance (tenant_id, code, name, device_model_id, resource_id, ip) "
            f"VALUES (1, '{code}', '{name}', {dev}, {res}, '127.0.0.1') "
            f"ON CONFLICT (tenant_id, code) DO UPDATE SET name = EXCLUDED.name, "
-           f"device_id = EXCLUDED.device_id, resource_id = EXCLUDED.resource_id, "
+           f"device_model_id = EXCLUDED.device_model_id, resource_id = EXCLUDED.resource_id, "
            f"ip = EXCLUDED.ip RETURNING id")
     q(f"INSERT INTO resource_capability (resource_id, capability_id, params) "
       f"SELECT {res}, {cap_id}, '{{}}' WHERE NOT EXISTS "
       f"(SELECT 1 FROM resource_capability WHERE resource_id={res} AND capability_id={cap_id})")
     for m in methods.split(","):
-        q(f"INSERT INTO device_method (tenant_id, device_id, method, name, capability_id, "
+        q(f"INSERT INTO device_method (tenant_id, device_model_id, method, name, capability_id, "
           f"param_schema, estimate_sec, timeout_sec) "
           f"SELECT 1, {dev}, '{m}', '{m}', {cap_id}, '{{}}'::jsonb, 5, 600 "
-          f"WHERE NOT EXISTS (SELECT 1 FROM device_method WHERE device_id={dev} AND method='{m}')")
+          f"WHERE NOT EXISTS (SELECT 1 FROM device_method "
+          f"WHERE device_model_id={dev} AND method='{m}')")
     drv = f"DRV-SIM-{code}"
     create_driver(drv, f"模拟-{code}", port)
     q(f"UPDATE device_instance SET driver_id = (SELECT id FROM driver WHERE code='{drv}') "

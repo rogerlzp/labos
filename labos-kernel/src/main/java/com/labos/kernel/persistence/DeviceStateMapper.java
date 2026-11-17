@@ -27,8 +27,24 @@ public interface DeviceStateMapper {
     /** 设备编号 -> resource_node.id（params 里的 source/target 换算）。 */
     Long selectResourceIdByCode(long tenantId, String code);
 
-    /** 设备方法是否可中断；查不到返回 null。 */
-    Boolean selectMethodInterruptible(long tenantId, long deviceInstanceId, String method);
+    /**
+     * 实例号 → 型号行号（{@code device_instance.device_model_id}）。
+     *
+     * <p><b>这是三套 id 换算的唯一 SQL 出口</b>，业务代码请改用
+     * {@link com.labos.kernel.device.DeviceIdentityResolver}（带缓存与失败告警）。
+     *
+     * <p>返回 null 表示实例不存在 / 已软删 / 型号未登记 —— 三种情况对调用方都是
+     * "不知道型号"，但别把它当成"型号 0"继续查，那会落空并静默降级。
+     */
+    Long selectModelIdOfInstance(long tenantId, long instanceId);
+
+    /**
+     * 设备方法是否可中断；查不到返回 null。
+     *
+     * <p>⚠ {@code deviceModelId} 是 <b>device.id（型号行号）</b>，
+     * 不是 {@code device_instance.id} —— 方法库是型号级的。
+     */
+    Boolean selectMethodInterruptible(long tenantId, long deviceModelId, String method);
 
     /** 层位被哪个 run 预占（position_state.reserved_by_run）。 */
     Long selectPositionReservedBy(long tenantId, long resourceId);
@@ -63,11 +79,31 @@ public interface DeviceStateMapper {
     /** 门禁状态回写（设备访问控制）。 */
     int updateAccessState(long tenantId, long accessId, String state);
 
-    /** 某设备某方法的超时上限（秒），无配置返回 0。 */
-    long selectMethodTimeoutSec(long tenantId, long deviceInstanceId, String method);
+    /**
+     * 某**型号**某方法的超时上限（秒），无配置返回 0。
+     *
+     * <p>⚠ 入参是 {@code device.id}（型号行号），不是实例号。原签名写成
+     * {@code deviceInstanceId} 并直接怼 {@code device_method.device_id}，
+     * 导致 2026-11-16 那次撞号事故（DISP3 被套上机械臂 7 秒）。现在列名与参数名
+     * 都写明 model，误传实例号会在 SQL 层报列不存在。
+     */
+    long selectMethodTimeoutSec(long tenantId, long deviceModelId, String method);
 
-    /** 该设备全部方法里的超时上限（秒），无配置返回 0。 */
-    long selectLibraryTimeoutSec(long tenantId, long deviceInstanceId);
+    /** 该**型号**全部方法里的超时上限（秒），无配置返回 0。入参同上（型号行号）。 */
+    long selectLibraryTimeoutSec(long tenantId, long deviceModelId);
+
+    // ---------------------------------------------------------------- 实例级覆盖（2026-11-17）
+    // 下面三条是**唯一吃实例号**的超时/可中断查询（scope='instance'），
+    // 与上面三条"型号级"是两组，名字里的 Instance 就是提示。别混用（BUG-20261116-02）。
+
+    /** 该**实例**该方法的超时（秒，scope='instance'），没有实例级行返回 0。 */
+    long selectInstanceMethodTimeoutSec(long tenantId, long instanceId, String method);
+
+    /** 该**实例**实例级方法里的超时上限（秒），无实例级行返回 0。 */
+    long selectInstanceLibraryTimeoutSec(long tenantId, long instanceId);
+
+    /** 该**实例**该方法的可中断标志（scope='instance'）；没有实例级行返回 null（= 回落型号级）。 */
+    Boolean selectInstanceMethodInterruptible(long tenantId, long instanceId, String method);
 
     /**
      * 设备的真实能力编码（resource_capability），查不到返回 null。

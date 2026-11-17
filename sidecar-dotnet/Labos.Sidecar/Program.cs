@@ -11,12 +11,18 @@ namespace Labos.Sidecar;
 /// 的最后一公里：中控不知道设备型号，sidecar 知道。
 /// </para>
 ///
-/// <para><b>三种传输</b>：</para>
+/// <para><b>五种传输</b>：</para>
 /// <list type="bullet">
 ///   <item><c>--transport sim</c>    转发给 Java 模拟器（工位上跑，不需要硬件）</item>
 ///   <item><c>--transport serial</c> S100 封膜机串口（12 字节帧）</item>
 ///   <item><c>--transport dll</c>    ASpin 2K 经 Cluster.dll 发 XML</item>
+///   <item><c>--transport lhc</c>    BioTek LHC 洗板/分液机（COM，BTILHCRunner.ClassLHCRunner）</item>
+///   <item><c>--transport gen5</c>   BioTek Gen5 酶标仪（OLE Automation，Gen5.Application）</item>
 /// </list>
+///
+/// <para><b>为什么 lhc/gen5 单独两档而不是并进 dll</b>：这两个不是"一个 P/Invoke 函数"，
+/// 而是**有状态的 COM 对象树**（LHC 要轮询协议状态；Gen5 要持有 Experiment/Plates/Plate）。
+/// 状态由 ITransport 持有，才能让"中控的一条命令"对上"设备的一个完整动作"。</para>
 ///
 /// <para><b>常用命令</b>：</para>
 /// <code>
@@ -337,7 +343,17 @@ public static class Program
             "dll" => new AspinClusterTransport(
                 Get(opt, "dll") ?? "Cluster.dll",
                 Get(opt, "node") ?? "PlateCtri"),
-            _ => throw new ArgumentException($"未知传输 {kind}（sim / serial / dll）"),
+            // BioTek LHC 洗板/分液机：晚绑定 COM（BTILHCRunner.dll）
+            //   为什么单独一档而不是复用 dll：LHC 不是一个 P/Invoke 函数，
+            //   是一个有状态的 COM 组件（29 个方法 + 轮询），必须由 ITransport 持有状态。
+            "lhc" => new LhcRunnerTransport(
+                Get(opt, "progid") ?? "BTILHCRunner.ClassLHCRunner",
+                int.TryParse(Get(opt, "poll-ms"), out var lpm) ? lpm : 500),
+            // BioTek Gen5 酶标仪：晚绑定 OLE Automation（Gen5.Application）
+            "gen5" => new Gen5OleTransport(
+                Get(opt, "progid") ?? "Gen5.Application",
+                int.TryParse(Get(opt, "poll-ms"), out var gpm) ? gpm : 500),
+            _ => throw new ArgumentException($"未知传输 {kind}（sim / serial / dll / lhc / gen5）"),
         };
 
     private static int SimPort(string? v)

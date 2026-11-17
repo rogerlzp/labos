@@ -355,6 +355,10 @@ public final class DeviceCore {
         return switch (model.id) {
             case "s100" -> new S100Behavior();
             case "aspin-2k" -> new AspinBehavior();
+            // BioTek LHC（洗板/分液）：初始化顺序、装载/验证、RunStatus 轮询、50TS 条范围
+            case "biotek-lhc" -> new LhcBehavior();
+            // BioTek Gen5（酶标仪）：配置→实验→进板→读→取数据集的对象模型
+            case "biotek-gen5" -> new Gen5Behavior();
             default -> null;
         };
     }
@@ -1688,5 +1692,46 @@ public final class DeviceCore {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /**
+     * 从命令 JSON 里取一个浮点字段（数字或字符串数字都认）；取不到返回 null。
+     *
+     * <p>给温度/体积这类连续量用。和 {@link #intParam} 一样，
+     * <b>取不到就返回 null，不能当 0</b> —— 把"没传"当 0 会让参数缺失在仿真里看不出来。
+     */
+    static Double doubleParam(String msg, String key) {
+        if (msg == null) {
+            return null;
+        }
+        Matcher m = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"?(-?\\d+(?:\\.\\d+)?)\"?")
+                .matcher(msg);
+        if (!m.find()) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(m.group(1));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 从命令 JSON 里取一个字符串字段；取不到返回 null。
+     *
+     * <p>给"参数是路径/名字"的型号用（BioTek LHC 的 {@code protocolPath}、
+     * Gen5 的 {@code protocolPathName}）：这些参数没法用
+     * {@link #intParam} 取，也不能当空串处理 —— 空串和"没传"对设备是不同的意思。
+     */
+    static String strParam(String msg, String key) {
+        if (msg == null) {
+            return null;
+        }
+        Matcher m = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+                .matcher(msg);
+        if (!m.find()) {
+            return null;
+        }
+        return m.group(1).replace("\\\"", "\"").replace("\\\\", "\\");
     }
 }

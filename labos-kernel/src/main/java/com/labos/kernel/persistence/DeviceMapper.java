@@ -45,9 +45,13 @@ public interface DeviceMapper {
     Long insertDeviceModel(long tenantId, String code, String name,
                            String deviceType, Long capabilityId);
 
-    /** 新建设备实例（手工建设备路径）。 */
+    /**
+     * 新建设备实例（手工建设备路径）。
+     *
+     * @param deviceModelId {@code device.id}（型号行号），不是实例号
+     */
     int insertDeviceInstance(long tenantId, String code, String name,
-                             long deviceId, long resourceId, String ip, Long driverId);
+                             long deviceModelId, long resourceId, String ip, Long driverId);
 
     /** 改资源树节点显示名。 */
     int updateResourceNodeName(long tenantId, long resourceId, String name);
@@ -162,8 +166,29 @@ public interface DeviceMapper {
      */
     List<String> selectModelMethodNames(long tenantId, String modelId);
 
-    int setDeviceMethodInterruptible(long tenantId, long deviceId,
+    /**
+     * 改「该型号的某方法是否可中断」（只改 {@code scope='model'} 的行）。
+     *
+     * <p>⚠ {@code deviceModelId} 是 {@code device.id}（型号行号），不是实例号 ——
+     * 方法库是型号级的，实例级差异用 {@link #upsertInstanceMethodInterruptible}。
+     */
+    int setDeviceMethodInterruptible(long tenantId, long deviceModelId,
                                      String method, boolean value);
+
+    /**
+     * 改「**这一台设备**的某方法是否可中断」（{@code scope='instance'}），没有就插一行。
+     *
+     * <p>为什么需要单独的入口：型号级标志一改就影响所有同型号实例；
+     * 现场常有"这台的分液可以打断、别的不能"这种差异。
+     *
+     * @param modelId    该实例的型号行号（插入时必须填，表示"基于哪个型号覆盖"）
+     * @param instanceId 实例号
+     */
+    int upsertInstanceMethodInterruptible(@Param("tenantId") long tenantId,
+                                          @Param("modelId") long modelId,
+                                          @Param("instanceId") long instanceId,
+                                          @Param("method") String method,
+                                          @Param("value") boolean value);
 
     /** 建岛，返回 id。 */
     Long insertIsland(long tenantId, String code, String name, String path);
@@ -284,12 +309,15 @@ public interface DeviceMapper {
                           @Param("attrJson") String attrJson);
 
     /**
-     * 方法集同步（{@code device_method}，{@code (device_id, method)} 冲突时更新；
+     * 方法集同步（{@code device_method}，{@code (device_model_id, method)} 冲突时更新；
      * 只增改不删 —— 存量方法可能被历史流程引用）。items 每行：
      * method/label/capabilityId(可空)/paramsJson/estimate/timeout。
+     *
+     * <p>⚠ {@code modelId} 是 {@code device.id}（型号行号）。参数名从 {@code deviceId}
+     * 改成 {@code modelId} 是刻意的：原名字让"这里填设备"和"这里填型号"分不清。
      */
     int upsertDeviceMethods(@Param("tenantId") long tenantId,
-                            @Param("deviceId") long deviceId,
+                            @Param("modelId") long modelId,
                             @Param("items") List<Map<String, Object>> items);
 
     /** 设备池清单（{@code --list} 用；deployed = 未软删实例数，按它降序）。 */

@@ -214,8 +214,17 @@ def main() -> int:
         report_rows.append((zh_rel, en_rel, zl, el, zs, es))
 
     # 表格列数一致性
+    #
+    # ⚠ 2026-11-17：只对**已译（✅）**的条目做结构验收 —— 与上面 structure() 那段口径统一。
+    #   原来这里漏了状态过滤：标 ⬜（未译）/ 🔶（部分）的条目只要英文文件存在，
+    #   也会被逐行比对表格列数 ⇒ 一个"半成品英文文件"会持续产出几十条红，
+    #   而该条目的 correct 状态本应是"还没译完"而不是"结构坏了"。
+    #   这也解释了为什么当时 `BUG台账` 标 ✅ 却一致报错：它实际是 🔶 的状态。
+    #   过滤后仍然保留硬校验：✅ 的条目无论是结构项还是表格项都必须一致。
     tbl_bad = 0
-    for zh_rel, en_rel, _ in reg:
+    for zh_rel, en_rel, st in reg:
+        if st != "✅":
+            continue
         if not (ROOT / en_rel).exists():
             continue
         if zh_rel in EXEMPT:

@@ -5,10 +5,13 @@ import java.util.Map;
 /**
  * 超时按方法取 —— 纯逻辑自测（不连库）。
  *
- * <p>锁住四条不能退的语义：
+ * <p>锁住五条不能退的语义：
  * <ol>
- *   <li><b>优先级</b>：设备方法级 &gt; 设备能力级 &gt; 流程节点级 &gt; 能力默认 &gt; 兜底 30 秒。
- *       顺序反了就会出现「设备库明明写了 3 秒，却按 10 分钟等」的怪事。</li>
+ *   <li><b>优先级</b>：实例级方法 &gt; 实例级库上限 &gt; 型号级方法 &gt; 型号级库上限
+ *       &gt; 流程节点级 &gt; 能力默认 &gt; 兜底 30 秒。
+ *       顺序反了就会出现「设备库明明写了 3 秒，却按 10 分钟等」的怪事；
+ *       尤其是**实例级必须排在型号级前面**（"这一台"比"这一款"更具体），
+ *       2026-11-17 接入时专门锁了这一条。</li>
  *   <li><b>0 = 没配</b>：三级的 0 都当「没配」跳过，而不是「超时 0 秒」——
  *       库里 6161 个 workflow_node、300 多个 device_method 的 timeout_sec 就是 0。</li>
  *   <li><b>显式值不被抬高</b>：设备库的 3s/5s/20s 是真机契约，
@@ -63,9 +66,66 @@ public final class MethodTimeoutPolicySelfTest {
         resolved("设备库 20 秒不被抬到能力默认", 20, 0, 0, "INCUBATE", 20_000L,
                 MethodTimeoutPolicy.SRC_DEVICE_METHOD);
 
+        // ---- 实例级覆盖（2026-11-17）：比型号级更具体，必须优先 ----
+        // 为什么单独测：device_method 从 P1 起就有 scope/device_instance_id，
+        // 但唯一键 UNIQUE(device_model_id, method) 让实例级行插不进去 ⇒ 那一层是死设计；
+        // 2026-11-17 拆开唯一键后接入解析，这里锁住"顺序不能反"。
+        sourcesResolved("实例级方法 > 型号级方法",
+                new MethodTimeoutPolicy.Sources(45, 0, 3, 120, 60, "SEAL"),
+                45_000L, MethodTimeoutPolicy.SRC_INSTANCE_METHOD);
+        sourcesResolved("实例级库上限 > 型号级方法（实例级整体更具体）",
+                new MethodTimeoutPolicy.Sources(0, 90, 3, 120, 60, "SEAL"),
+                90_000L, MethodTimeoutPolicy.SRC_INSTANCE_LIBRARY);
+        sourcesResolved("实例级全 0 → 回落型号级方法",
+                new MethodTimeoutPolicy.Sources(0, 0, 3, 120, 60, "SEAL"),
+                3_000L, MethodTimeoutPolicy.SRC_DEVICE_METHOD);
+        sourcesResolved("实例级 + 型号级全 0 → 节点级",
+                new MethodTimeoutPolicy.Sources(0, 0, 0, 0, 60, "SEAL"),
+                60_000L, MethodTimeoutPolicy.SRC_WORKFLOW_NODE);
+        sourcesResolved("四级全 0 → 能力默认",
+                new MethodTimeoutPolicy.Sources(0, 0, 0, 0, 0, "SEAL"),
+                600_000L, MethodTimeoutPolicy.SRC_CAPABILITY_DEFAULT);
+        sourcesResolved("四级全 0 + 空能力 → 兜底 30 秒",
+                new MethodTimeoutPolicy.Sources(0, 0, 0, 0, 0, null),
+                MethodTimeoutPolicy.FALLBACK_MS, MethodTimeoutPolicy.SRC_FALLBACK);
+
+        // ---- deviceLevelMissing 只判设备侧四级（节点级/能力默认不算）----
+        missing("四级全 0 ⇒ deviceLevelMissing", 0, 0, 0, 0, true);
+        missing("型号方法级有值 ⇒ 不算 missing", 0, 0, 3, 0, false);
+        missing("型号库上限有值 ⇒ 不算 missing", 0, 0, 0, 120, false);
+        missing("实例级方法有值 ⇒ 不算 missing", 45, 0, 0, 0, false);
+        missing("实例级库上限有值 ⇒ 不算 missing", 0, 90, 0, 0, false);
+
         System.out.println("通过 " + pass + ", 失败 " + fail);
         if (fail > 0) {
             System.exit(1);
+        }
+    }
+
+    private static void sourcesResolved(String label, MethodTimeoutPolicy.Sources s,
+                                        long expectMs, String expectSource) {
+        MethodTimeoutPolicy.Resolved r =
+                MethodTimeoutPolicy.resolve(s, MethodTimeoutPolicy.FALLBACK_MS);
+        if (r.timeoutMs() == expectMs && expectSource.equals(r.source())) {
+            pass++;
+            System.out.println("  ✓ " + label + "：" + (expectMs / 1000) + "s / " + r.source());
+        } else {
+            fail++;
+            System.out.println("  ✗ " + label + "：期望 " + (expectMs / 1000) + "s/" + expectSource
+                    + "，实际 " + (r.timeoutMs() / 1000) + "s/" + r.source());
+        }
+    }
+
+    private static void missing(String label, long instMethod, long instLib,
+                                long modelMethod, long modelLib, boolean expect) {
+        boolean actual = new MethodTimeoutPolicy.Sources(
+                instMethod, instLib, modelMethod, modelLib, 60, "SEAL").deviceLevelMissing();
+        if (actual == expect) {
+            pass++;
+            System.out.println("  ✓ " + label + "（" + actual + "）");
+        } else {
+            fail++;
+            System.out.println("  ✗ " + label + "：期望 " + expect + "，实际 " + actual);
         }
     }
 

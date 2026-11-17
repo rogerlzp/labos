@@ -60,7 +60,8 @@ DELETE FROM workflow;
 --     是 NO ACTION 外键 ⇒ 必须在删岛**之前**清掉，否则删岛会撞外键。
 -- ---------------------------------------------------------------------------
 DELETE FROM resource_booking;
-DELETE FROM plate_well;
+DELETE FROM plate_well_design;   -- 设计态孔位（Q10 拆表）
+DELETE FROM plate_well;        -- 运行态孔位
 DELETE FROM plate;
 DELETE FROM position_state;
 DELETE FROM device_access;

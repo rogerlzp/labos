@@ -428,9 +428,10 @@ public final class DeviceRegistrar {
      * <p>不去删"型号库里已经没有"的现有方法：存量方法可能有历史流程在引用，
      * 删掉会让那些流程点开就报"方法不存在"。只增改。
      *
+     * @param deviceModelId {@code device.id}（型号行号）—— {@code upsertDevicePool} 的返回值
      * @return 写了多少条
      */
-    private static int syncMethods(long deviceId, Long capId, String modelId) {
+    private static int syncMethods(long deviceModelId, Long capId, String modelId) {
         if (modelId == null || modelId.isBlank()) {
             return 0;
         }
@@ -440,7 +441,7 @@ public final class DeviceRegistrar {
             // ⚠ 不做这一步 ⇒ 这类设备的 device_method 是 0 行 ⇒
             //   设计器里一个方法都选不到 ⇒ 流程根本配不出来（交付直接卡死）。
             //   手册到位后按 DeviceModels 的 MANUAL 条目覆盖（syncMethods 只增改不删）。
-            return syncMethodsFromProfile(deviceId, capId, modelId);
+            return syncMethodsFromProfile(deviceModelId, capId, modelId);
         }
         // 每行一个方法：label / estimate / timeout 的计算留在 Java 侧（同原 addBatch 循环）。
         java.util.List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
@@ -465,7 +466,7 @@ public final class DeviceRegistrar {
         }
         com.labos.kernel.persistence.Mappers.get(
                 com.labos.kernel.persistence.DeviceMapper.class)
-                .upsertDeviceMethods(tenantId(), deviceId, items);
+                .upsertDeviceMethods(tenantId(), deviceModelId, items);
         return items.size();
     }
 
@@ -482,7 +483,7 @@ public final class DeviceRegistrar {
      * <p>手册到位后按 {@link DeviceModels} 的 MANUAL 条目覆盖 ——
      * {@code syncMethods} 只增改不删，所以老的画像派生行会留在库里（可人工清理）。
      */
-    private static int syncMethodsFromProfile(long deviceId, Long capId, String modelId) {
+    private static int syncMethodsFromProfile(long deviceModelId, Long capId, String modelId) {
         String profileName = DeviceModels.simProfileOf(modelId);
         if (profileName == null) {
             return 0;
@@ -513,7 +514,7 @@ public final class DeviceRegistrar {
         }
         com.labos.kernel.persistence.Mappers.get(
                 com.labos.kernel.persistence.DeviceMapper.class)
-                .upsertDeviceMethods(tenantId(), deviceId, items);
+                .upsertDeviceMethods(tenantId(), deviceModelId, items);
         return items.size();
     }
 

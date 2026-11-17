@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, Empty, Select, Space, Statistic, Tag, Typography } from 'antd';
 import { apiFetch, api } from '../api/client';
 import { statusHex, useStatusVocabulary } from '../utils/status';
+import { STAGE_CODES, stageColor } from '../utils/stages';
 import { useT } from '../i18n';
 
 interface TimelineItem {
@@ -16,6 +17,8 @@ interface TimelineItem {
   resourceId: number | null;
   offsetMs: number;
   durationMs: number;
+  /** P3：客户§3阶段编码；null = 未分阶段 */
+  stageCode?: string | null;
 }
 
 interface Timeline {
@@ -75,6 +78,35 @@ export default function GanttPage() {
     return out;
   }, [items]);
 
+  /**
+   * 按阶段分组（P3）。
+   *
+   * <p>为什么在甘特上分：客户是按 §3 的 8 个阶段验收的（"这次做了几个阶段、
+   * 每阶段多久"），单纯按节点排下来他数不出来。未分阶段的节点归到最后一组，
+   * 且只有在**确实存在**分阶段节点时才显示组标题（否则老流程会多一行空标题）。
+   */
+  const renderRows = useMemo(() => {
+    const order = [...STAGE_CODES, ''];
+    const groups = new Map<string, Array<{ item: TimelineItem; indent: number }>>();
+    for (const r of rows) {
+      const code = r.item.stageCode || '';
+      if (!groups.has(code)) groups.set(code, []);
+      groups.get(code)!.push(r);
+    }
+    const hasStage = [...groups.keys()].some((k) => k !== '');
+    const out: Array<
+      | { kind: 'header'; code: string; count: number }
+      | { kind: 'row'; item: TimelineItem; indent: number }
+    > = [];
+    for (const code of order) {
+      const g = groups.get(code);
+      if (!g || g.length === 0) continue;
+      if (hasStage) out.push({ kind: 'header', code, count: g.length });
+      for (const r of g) out.push({ kind: 'row', item: r.item, indent: r.indent });
+    }
+    return out;
+  }, [rows]);
+
   const total = data?.totalMs ?? 0;
   const rowH = 24;
   const labelW = 200;
@@ -118,7 +150,7 @@ export default function GanttPage() {
 
             <svg
               width={labelW + chartW + 20}
-              height={rows.length * rowH + 28}
+              height={renderRows.length * rowH + 28}
               style={{ display: 'block' }}
             >
               {/* 时间刻度 */}
@@ -126,11 +158,11 @@ export default function GanttPage() {
                 <g key={p}>
                   <line
                     x1={labelW + p * chartW} y1={0}
-                    x2={labelW + p * chartW} y2={rows.length * rowH + 8}
+                    x2={labelW + p * chartW} y2={renderRows.length * rowH + 8}
                     stroke="#262c38" strokeDasharray="2 4"
                   />
                   <text
-                    x={labelW + p * chartW} y={rows.length * rowH + 22}
+                    x={labelW + p * chartW} y={renderRows.length * rowH + 22}
                     fill="#5b6376" fontSize={10} textAnchor="middle"
                   >
                     {(maxMs * p / 1000).toFixed(1)}s
@@ -138,15 +170,32 @@ export default function GanttPage() {
                 </g>
               ))}
 
-              {rows.map(({ item, indent }, i) => {
+              {renderRows.map((r, i) => {
                 const y = i * rowH + 4;
+                if (r.kind === 'header') {
+                  return (
+                    <g key={`stage-${r.code || 'none'}`}>
+                      <rect
+                        x={0} y={y} width={labelW + chartW + 20} height={rowH - 6}
+                        fill={stageColor(r.code)} opacity={0.14} rx={3}
+                      />
+                      <rect x={0} y={y} width={3} height={rowH - 6} fill={stageColor(r.code)} />
+                      <text x={10} y={y + 12} fill={stageColor(r.code)} fontSize={11}
+                        fontWeight={600}>
+                        {r.code ? t(`stage.${r.code}` as never) : t('stage.none')}
+                        {'  ·  '}{r.count}
+                      </text>
+                    </g>
+                  );
+                }
+                const { item, indent } = r;
                 const x = labelW + (item.offsetMs / maxMs) * chartW;
                 const w = Math.max(2, (item.durationMs / maxMs) * chartW);
                 const color = statusHex('node', item.status, vocab);
                 return (
                   <g key={item.id}>
                     <text
-                      x={indent * 12} y={y + 11}
+                      x={indent * 12 + (item.stageCode ? 6 : 0)} y={y + 11}
                       fill={indent ? '#8b93a7' : '#e6e9ef'} fontSize={11}
                     >
                       {indent ? '└ ' : ''}{item.name.slice(0, 16)}

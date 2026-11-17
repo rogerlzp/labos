@@ -86,8 +86,12 @@ interface AuthValue {
    * 而不是像 401 那样直接踢回登录页。
    */
   error: string | null;
-  /** 可执行写操作（admin/operator） */
+  /** 可执行写操作（admin/operator/designer） */
   canWrite: boolean;
+  /** 可改工艺资产：图/绑定/点位方法/物料角色/示教/模板（admin/designer） */
+  canDesign: boolean;
+  /** 可执行/启动这一批：起停、配位置核验、确认搬运（admin/operator） */
+  canOperate: boolean;
   /** 管理员（账号管理等仅 admin 的能力） */
   isAdmin: boolean;
   /** 重新拉会话：登录成功后调用 */
@@ -170,6 +174,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     error,
     canWrite: roleCanWrite(session?.role),
+    canDesign: roleCanDesign(session?.role),
+    canOperate: roleCanOperate(session?.role),
     isAdmin: session?.role === 'admin',
     refresh,
     logout,
@@ -191,6 +197,30 @@ export function useAuth(): AuthValue {
  * <p>用原生 title 而不是 antd Tooltip：disabled 的按钮不触发 Tooltip（鼠标事件被丢弃），
  * 但原生 title 在 Chrome/Firefox 仍会显示，正好满足"禁用 + 告诉为什么"。
  */
+/**
+ * 编排类写操作的只读属性（改图/绑点位/模板/物料角色）。
+ *
+ * <p>与 {@link useReadOnly} 的区别：那个是"能不能写"，这个是"能不能改**工艺**"。
+ * operator 能写但不能改工艺 —— 后端已按此返回 403，前端同步禁用，
+ * 否则用户点了才报错。
+ */
+export function useDesignOnly(): { disabled: boolean; title?: string } {
+  const { canDesign } = useAuth();
+  const { locale } = useI18n();
+  return canDesign
+    ? { disabled: false }
+    : { disabled: true, title: translate('auth.designOnlyTitle', undefined, locale) };
+}
+
+/** 运行类写操作的只读属性（起停实验/配位置/核验/确认搬运）。 */
+export function useOperateOnly(): { disabled: boolean; title?: string } {
+  const { canOperate } = useAuth();
+  const { locale } = useI18n();
+  return canOperate
+    ? { disabled: false }
+    : { disabled: true, title: translate('auth.operateOnlyTitle', undefined, locale) };
+}
+
 export function useReadOnly(): { disabled: boolean; title?: string } {
   const { canWrite } = useAuth();
   const { locale } = useI18n();

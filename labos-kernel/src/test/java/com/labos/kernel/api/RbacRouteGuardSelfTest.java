@@ -43,10 +43,39 @@ public final class RbacRouteGuardSelfTest {
         eq("operator 读账号 → 403", 403, guard("/api/users", "GET", "operator"));
         eq("admin 读账号 → 放行", 200, guard("/api/users", "GET", "admin"));
 
-        section("3. 写权限：operator/designer 可写，viewer 不可");
-        eq("operator 写流程 → 放行", 200, guard("/api/workflows/1/run", "POST", "operator"));
-        eq("designer 写流程 → 放行", 200, guard("/api/workflows/1/run", "POST", "designer"));
-        eq("viewer 写流程 → 403", 403, guard("/api/workflows/1/run", "POST", "viewer"));
+        section("3. 编排 / 运行 两类写权限（2026-11-17 接线）");
+        // 运行类：起跑 / 起一批 —— admin 或 operator
+        eq("operator 起跑 → 放行", 200,
+                guard("/api/workflows/1/run", "POST", "operator"));
+        // ⚠ 这一条以前是「放行」：那时只有一刀切的 canWrite。
+        // 现在 designer 只编工艺、不启动实验 —— 改了流程不能顺手把这一批也跑了。
+        eq("designer 起跑 → 403（只编工艺）", 403,
+                guard("/api/workflows/1/run", "POST", "designer"));
+        eq("viewer 起跑 → 403", 403,
+                guard("/api/workflows/1/run", "POST", "viewer"));
+
+        // 编排类：改图 / 绑点位 / 物料角色 / 模板 —— admin 或 designer
+        eq("designer 改图 → 放行", 200,
+                guard("/api/workflows/1/graph", "PUT", "designer"));
+        eq("operator 改图 → 403（不能改工艺）", 403,
+                guard("/api/workflows/1/graph", "PUT", "operator"));
+        eq("designer 写节点绑定 → 放行", 200,
+                guard("/api/workflows/1/nodes/A/bindings", "PUT", "designer"));
+        eq("operator 写节点绑定 → 403", 403,
+                guard("/api/workflows/1/nodes/A/bindings", "PUT", "operator"));
+        eq("designer 建物料角色 → 放行", 200,
+                guard("/api/material-roles", "POST", "designer"));
+        eq("operator 建物料角色 → 403", 403,
+                guard("/api/material-roles", "POST", "operator"));
+
+        // 模板实例化 = 开一批（运行类），不是编排
+        eq("operator 实例化模板 → 放行", 200,
+                guard("/api/experiment-templates/1/instantiate", "POST", "operator"));
+        eq("designer 实例化模板 → 403", 403,
+                guard("/api/experiment-templates/1/instantiate", "POST", "designer"));
+
+        // 读不受影响
+        eq("viewer 读图 → 放行", 200, guard("/api/workflows/1/graph", "GET", "viewer"));
 
         section("4. 设备事件入站 POST 走独立令牌（不能被这次改动挡住）");
         eq("设备事件 POST（无会话）→ 放行", 200,

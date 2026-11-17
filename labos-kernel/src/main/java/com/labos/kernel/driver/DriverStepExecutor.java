@@ -78,6 +78,18 @@ public final class DriverStepExecutor implements StepExecutor {
     private final Map<String, String> timeoutSource = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
+     * 实例号 → 型号行号（{@code device_instance.id → device.id}）换算器，**懒建**。
+     *
+     * <p>为什么必须有它：{@code device_method} 挂的是型号行号，而运行期的
+     * {@code ctx.resourceId()} 是实例号。2026-11-16 之前两者直接混用，
+     * 不撞号就静默落空、撞号就白捡别人的超时上限。
+     * 详见 {@link com.labos.kernel.device.DeviceIdentityResolver}。
+     *
+     * <p>懒建的原因：{@code db == null} 的影子执行路径不该碰 {@code Mappers.get()}。
+     */
+    private volatile com.labos.kernel.device.DeviceIdentityResolver identityResolver;
+
+    /**
      * 「可中断方法」判定缓存：key = {@code deviceInstanceId|method}。
      *
      * <p>默认全是 false（{@code device_method.interruptible} 默认 false），
@@ -92,9 +104,18 @@ public final class DriverStepExecutor implements StepExecutor {
      * <p>缓存原来是实例字段、无失效入口：API 改库后要等进程重启才生效。静态 cache +
      * 显式失效后，设备库配置改完下一次下发就按新值走。
      */
-    public static void invalidateInterruptible(long deviceId, String method) {
+    public static void invalidateInterruptible(long deviceModelId, String method) {
+        // 2026-11-17 起缓存键是「**实例**|方法」（因为实例级覆盖会改变结果），
+        // 而这里只知道型号行号 ⇒ 无法反查受影响的实例。设备方法配置的改动频率极低
+        // （一个人一天改不了几次），直接清空：多清一次只是重查一次库；
+        // 漏清才会让"改完配置不生效"，那正是这个失效入口存在的理由。
+        INTERRUPTIBLE_CACHE.clear();
+    }
+
+    /** 精确失效**某一台设备**的某方法（实例级覆盖改动后用这个）。 */
+    public static void invalidateInterruptibleForInstance(long deviceInstanceId, String method) {
         if (method != null) {
-            INTERRUPTIBLE_CACHE.remove(deviceId + "|" + method);
+            INTERRUPTIBLE_CACHE.remove(deviceInstanceId + "|" + method);
         }
     }
 
@@ -426,7 +447,13 @@ public final class DriverStepExecutor implements StepExecutor {
                     "源位置不存在或非本 run 占用（不换位）", 0, method);
         }
         try {
-            plan.acquireAll(srcRes, sourcePos, dstRes, targetPos, null, robotRes, factory);
+            // ⚠ 源位**不**传给 acquireAll：acquirePosition 是「预留空位」语义（
+            // reservePosition 的 WHERE 要求 plate_id IS NULL），而源位本来就是**已有板**的
+            // 位置 ⇒ 传进去必然 OCCUPIED_BY_PLATE（实测 run 1001657）。
+            // 源位的正确保护是 resolveSourcePositionBySpec 的归属校验（occupied_by_run
+            // 必须等于本 run），而且「有板的点位」不会被别的 run 的 tryReserve 抢走
+            // （它们只预留空位）。
+            plan.acquireAll(srcRes, null, dstRes, targetPos, null, robotRes, factory);
         } catch (TransferPlan.AcquireException e) {
             safeReleaseTarget(posLock, targetPos);
             // 申请资源失败必须留下「是哪一类资源」的痕迹：AcquireException 的 message
@@ -863,8 +890,10 @@ public final class DriverStepExecutor implements StepExecutor {
         if (cached != null) {
             return cached;
         }
-        long methodSec = 0L;
-        long libSec = 0L;
+        long instMethodSec = 0L;
+        long instLibSec = 0L;
+        long modelMethodSec = 0L;
+        long modelLibSec = 0L;
         long nodeSec = 0L;
         String effectiveCap = cap;
         try {
@@ -872,9 +901,41 @@ public final class DriverStepExecutor implements StepExecutor {
             //   不是 resource_node.id —— 证据：DriverRegistry.driverFor(long deviceInstanceId)
             //   与 candidates() 返回的都是实例 id（机械臂是 214，不是 200214）。
             //   搞错 id 空间 ⇒ 查表全部落空 ⇒ 静默退回 30 秒兜底（2026-11-06 实踩）。
+            //
+            // 2026-11-16 再修一层：device_method 挂的是 **device.id（型号行）**，
+            // 不是实例号。原来把 instanceId 直接传进去 ⇒ 不撞号就落空（0 ⇒ 静默降级），
+            // 撞号就白捡别人的上限（DISP3 分液被套上机械臂 7 秒 ⇒ EC-05-1007）。
+            // ⇒ 换算必须走 DeviceIdentityResolver（唯一入口），不许在这里自己查。
             long instanceId = ctx.resourceId();
-            methodSec = deviceMethodTimeoutSec(instanceId, method);
-            libSec = deviceLibraryTimeoutSec(instanceId);
+            com.labos.kernel.device.DeviceIds.ModelId modelId =
+                    identityResolver().modelIdOf(instanceId);
+            TimeoutDiagnostics.recordModel(modelId.known());
+
+            // ① 实例级（scope='instance'）：**这台设备**单独配的，优先级最高。
+            //    这两条查询吃的是实例号（与下面型号级那两条不同），2026-11-17 接入。
+            instMethodSec = instanceMethodTimeoutSec(instanceId, method);
+            instLibSec = instanceLibraryTimeoutSec(instanceId);
+
+            // ② 型号级（scope='model'）：同型号共享的默认。
+            if (modelId.known()) {
+                modelMethodSec = deviceMethodTimeoutSec(modelId, method);
+                modelLibSec = deviceLibraryTimeoutSec(modelId);
+            }
+
+            if (instMethodSec == 0L && instLibSec == 0L
+                    && modelMethodSec == 0L && modelLibSec == 0L) {
+                // 四级全空 —— 设备库对这台设备的超时约束是"死的"。
+                // 只计数不抛错（退回能力默认继续跑），但要让它**看得见**：
+                // 每个 (实例, 方法) 只吵一次，避免每步刷屏。
+                TimeoutDiagnostics.recordDeviceLevelMissing();
+                if (TimeoutDiagnostics.warnOnce(instanceId + "|" + method)) {
+                    log.warn("[超时] {} 方法 {} 在 device_method 里查不到超时配置"
+                                    + "（实例 {} → 型号 {}，实例级与型号级四级全空）"
+                                    + "⇒ 本次按能力默认；若现场标定过耗时，"
+                                    + "检查 device_model_id 是否挂对型号、或该型号是否登记了 timeout_sec",
+                            ctx.nodeKey(), method, instanceId, modelId);
+                }
+            }
             // 能力默认要用**设备的真实能力**，不是节点上启发式猜出来的那个 ——
             // 节点名「机械臂搬运」会被猜成 WASH（resolveCapability 第 6 级），
             // 拿猜出来的能力去查设备的方法库与默认表，两头都对不上。
@@ -887,17 +948,40 @@ public final class DriverStepExecutor implements StepExecutor {
             // 查库失败不该把执行搞挂 —— 退回兜底值继续跑
             log.error("[超时] 解析失败，退回兜底 " + timeoutMs + "ms：" + e.getMessage());
         }
-        MethodTimeoutPolicy.Resolved r = MethodTimeoutPolicy.resolve(
-                methodSec, libSec, nodeSec, effectiveCap, timeoutMs);
+        MethodTimeoutPolicy.Sources sources = new MethodTimeoutPolicy.Sources(
+                instMethodSec, instLibSec, modelMethodSec, modelLibSec, nodeSec, effectiveCap);
+        MethodTimeoutPolicy.Resolved r = MethodTimeoutPolicy.resolve(sources, timeoutMs);
         timeoutCache.put(key, r.timeoutMs());
         timeoutSource.put(key, r.source());
+        TimeoutDiagnostics.recordSource(r.source());
         if (r.timeoutMs() > 60_000L) {
             log.info("[超时] " + ctx.nodeKey() + " " + method
                     + " → " + (r.timeoutMs() / 1000L) + " 秒（来源 " + r.source()
-                    + "：设备方法=" + methodSec + "s 设备库上限=" + libSec
+                    + "：实例方法=" + instMethodSec + "s 实例库上限=" + instLibSec
+                    + "s 型号方法=" + modelMethodSec + "s 型号库上限=" + modelLibSec
                     + "s 节点=" + nodeSec + "s 能力=" + effectiveCap + "）");
         }
         return r.timeoutMs();
+    }
+
+    /**
+     * 实例号 → 型号行号的换算器（懒建，进程内实例缓存）。
+     *
+     * <p>为什么懒建：{@code db == null} 的影子执行路径不该碰 {@code Mappers.get()}；
+     * 而 {@link #resolveTimeoutMs} 已经在入口判过 {@code db == null}。
+     */
+    private com.labos.kernel.device.DeviceIdentityResolver identityResolver() {
+        com.labos.kernel.device.DeviceIdentityResolver r = identityResolver;
+        if (r == null) {
+            synchronized (this) {
+                r = identityResolver;
+                if (r == null) {
+                    r = new com.labos.kernel.device.DeviceIdentityResolver(tenantId);
+                    identityResolver = r;
+                }
+            }
+        }
+        return r;
     }
 
     /**
@@ -910,6 +994,8 @@ public final class DriverStepExecutor implements StepExecutor {
         if (db == null || method == null || method.isBlank()) {
             return false;
         }
+        // 缓存键是「实例|方法」而不是「型号|方法」：2026-11-17 起支持实例级覆盖，
+        // 同一型号的两台设备可以有不同答案（现场常有"这台能停、别的不能"）。
         String key = instanceId + "|" + method;
         Boolean cached = INTERRUPTIBLE_CACHE.get(key);
         if (cached != null) {
@@ -917,11 +1003,23 @@ public final class DriverStepExecutor implements StepExecutor {
         }
         boolean v = false;
         try {
-            Boolean b = dm().selectMethodInterruptible(tenantId, instanceId, method);
-            if (b != null) {
-                v = b;
+            // ① 实例级优先（scope='instance'）。它按实例号查，不需要先解析型号。
+            Boolean inst = dm().selectInstanceMethodInterruptible(tenantId, instanceId, method);
+            if (inst != null) {
+                v = inst;
+            } else {
+                // ② 实例级没有这一行 ⇒ 回落型号级（scope='model'）。
+                com.labos.kernel.device.DeviceIds.ModelId modelId =
+                        identityResolver().modelIdOf(instanceId);
+                if (modelId.known()) {
+                    Boolean b = dm().selectMethodInterruptible(tenantId, modelId.value(), method);
+                    if (b != null) {
+                        v = b;
+                    }
+                }
             }
         } catch (RuntimeException e) {
+            // 查不到 / 查失败 ⇒ false（安全默认：宁可不停，也不要把搬板的机械臂停掉）
             v = false;
         }
         INTERRUPTIBLE_CACHE.put(key, v);
@@ -1205,13 +1303,19 @@ public final class DriverStepExecutor implements StepExecutor {
         }
     }
 
-    /** 设备方法级超时（秒）：该设备该方法名登记的值，没有则 0。 */
-    private long deviceMethodTimeoutSec(long instanceId, String method) {
-        if (method == null || method.isBlank()) {
+    /**
+     * 设备方法级超时（秒）：该**型号**该方法名登记的值，没有则 0。
+     *
+     * @param modelId {@code device.id}（型号行号）—— 由 {@link #identityResolver()} 换算，
+     *                不接受实例号（那正是 2026-11-16 事故的形态）
+     */
+    private long deviceMethodTimeoutSec(com.labos.kernel.device.DeviceIds.ModelId modelId,
+                                        String method) {
+        if (method == null || method.isBlank() || modelId == null || !modelId.known()) {
             return 0L;
         }
         try {
-            return dm().selectMethodTimeoutSec(tenantId, instanceId, method);
+            return dm().selectMethodTimeoutSec(tenantId, modelId.value(), method);
         } catch (RuntimeException e) {
             return 0L;
         }
@@ -1228,9 +1332,41 @@ public final class DriverStepExecutor implements StepExecutor {
      * （{@code resolveCapability} 第 6 级：节点名「机械臂搬运」会被猜成 WASH），
      * 拿它去过滤设备自己的方法库必然匹配不上 ⇒ 宁可取该设备全部方法的上限。
      */
-    private long deviceLibraryTimeoutSec(long instanceId) {
+    private long deviceLibraryTimeoutSec(com.labos.kernel.device.DeviceIds.ModelId modelId) {
+        if (modelId == null || !modelId.known()) {
+            return 0L;
+        }
         try {
-            return dm().selectLibraryTimeoutSec(tenantId, instanceId);
+            return dm().selectLibraryTimeoutSec(tenantId, modelId.value());
+        } catch (RuntimeException e) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 实例级方法超时（秒）：该**实例**该方法登记的值（{@code scope='instance'}），没有则 0。
+     *
+     * <p>与 {@link #deviceMethodTimeoutSec} 的区别只在 id 空间：这个吃**实例号**，
+     * 那个吃**型号行号**。2026-11-17 之前实例级行根本插不进库（唯一键挡住），这一层是死设计。
+     */
+    private long instanceMethodTimeoutSec(long instanceId, String method) {
+        if (instanceId <= 0L || method == null || method.isBlank()) {
+            return 0L;
+        }
+        try {
+            return dm().selectInstanceMethodTimeoutSec(tenantId, instanceId, method);
+        } catch (RuntimeException e) {
+            return 0L;
+        }
+    }
+
+    /** 实例级方法库上限（秒）：该实例所有 {@code scope='instance'} 行里的最大值，没有则 0。 */
+    private long instanceLibraryTimeoutSec(long instanceId) {
+        if (instanceId <= 0L) {
+            return 0L;
+        }
+        try {
+            return dm().selectInstanceLibraryTimeoutSec(tenantId, instanceId);
         } catch (RuntimeException e) {
             return 0L;
         }

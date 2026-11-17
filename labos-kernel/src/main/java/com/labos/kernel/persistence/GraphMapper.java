@@ -257,4 +257,69 @@ public interface GraphMapper {
             @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
             @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
             @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey);
+
+    // ---- P3 §阶段（客户§3 的 8 阶段） ----
+
+    /**
+     * 写一个节点的阶段编码（null = 清除）。
+     *
+     * <p>为什么单独一条 update 而不是塞进 {@code upsertNode}：upsert 在
+     * "已存在"分支走的是**合并**语义（只回写 protocol_name / method_params），
+     * 加参数会牵动两处 SQL 与全部调用方；阶段只由设计器写，单独一条更稳。
+     */
+    int updateNodeStage(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId,
+            @org.apache.ibatis.annotations.Param("nodeKey") String nodeKey,
+            @org.apache.ibatis.annotations.Param("stageCode") String stageCode);
+
+    // ---- P4 §流程克隆（模板层复用整条工艺图） ----
+
+    /**
+     * 克隆 workflow 头（图/分类/岛/attr 全带走），返回新 id。
+     *
+     * <p>为什么要克隆而不是"多模板共用一个流程"：应用者改模板时可能要调整
+     * 顺序/参数，共用会把 A 模板的改动串到 B 模板上（模板之间必须隔离）。
+     */
+    Long cloneWorkflowRow(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("srcId") long srcId,
+            @org.apache.ibatis.annotations.Param("code") String code,
+            @org.apache.ibatis.annotations.Param("name") String name,
+            @org.apache.ibatis.annotations.Param("createdBy") Long createdBy);
+
+    /** 克隆 workflow_node（node_key 保持不变，node_binding 靠它重映射）。 */
+    int cloneWorkflowNodes(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("srcId") long srcId,
+            @org.apache.ibatis.annotations.Param("newId") long newId);
+
+    /**
+     * 克隆节点绑定：源流程的绑定按 **node_key** 找到新流程的同名节点重新挂。
+     *
+     * <p>⚠ 不能按 node 序号/位置对齐 —— 那正是 2026-11-15 事故的成因。
+     */
+    int cloneNodeBindings(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("srcId") long srcId,
+            @org.apache.ibatis.annotations.Param("newId") long newId);
+
+    /** 克隆顺序边。 */
+    int cloneWorkflowEdges(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("srcId") long srcId,
+            @org.apache.ibatis.annotations.Param("newId") long newId);
+
+    /**
+     * 软删流程（仅用于克隆失败补偿：半截流程不能留成可执行资产）。
+     */
+    int softDeleteWorkflow(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("workflowId") long workflowId);
+
+    /** 克隆流程变量（阶段/契约靠它传板号与参数）。 */
+    int cloneWorkflowVariables(
+            @org.apache.ibatis.annotations.Param("tenantId") long tenantId,
+            @org.apache.ibatis.annotations.Param("srcId") long srcId,
+            @org.apache.ibatis.annotations.Param("newId") long newId);
 }

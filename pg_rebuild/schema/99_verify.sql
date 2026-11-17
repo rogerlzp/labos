@@ -32,7 +32,7 @@ SELECT CASE
     WHEN c.relname LIKE 'driver%'   THEN '04 驱动'
     WHEN c.relname LIKE 'schedule%' THEN '05 调度'
     WHEN c.relname LIKE 'error%' OR c.relname LIKE 'recovery%' THEN '06 错误恢复'
-    WHEN c.relname IN ('sample','sample_aliquot','plate','plate_well','sample_order','sample_order_item') THEN '07 样本'
+    WHEN c.relname IN ('sample','sample_aliquot','plate','plate_well','plate_well_design','sample_order','sample_order_item') THEN '07 样本'
     WHEN c.relname LIKE 'consumable%' OR c.relname LIKE 'reagent%' THEN '08 耗材试剂'
     WHEN c.relname IN ('project','experiment','experiment_sample') THEN '09 项目实验'
     WHEN c.relname LIKE 'device%'   THEN '10 设备'

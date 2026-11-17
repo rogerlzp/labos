@@ -93,7 +93,73 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
             reject(resp, 403, "仅管理员可修改全局调度/自动清理参数");
             return false;
         }
+        // ---- 编排 / 运行 两类写权限（2026-11-17 接线）----
+        //
+        // <p>为什么必须分开：此前只有一刀切的 {@code canWrite}（admin/operator/designer），
+        // 结果是 operator 能改工艺图、designer 能启动实验。这两件事的责任完全不同：
+        // 改图改的是"以后每次都这么做"，启动改的是"这一批现在做"。
+        // 角色规则早就写在 {@code RbacRules}，这里把它接到端点上。
+        //
+        // <p>只覆盖**意图明确**的端点，其余仍走 canWrite —— 一次改动把 60+ 端点
+        // 全收紧，最容易误伤现场和自测脚本。
+        if (requiresDesign(req.getMethod(), path) && !s0.canDesign()) {
+            reject(resp, 403, "当前账号（" + s0.role() + "）不能修改工艺配置"
+                    + "（需要 admin 或 designer）");
+            return false;
+        }
+        if (requiresOperate(req.getMethod(), path) && !s0.canOperate()) {
+            reject(resp, 403, "当前账号（" + s0.role() + "）不能执行/启动实验"
+                    + "（需要 admin 或 operator）");
+            return false;
+        }
         return true;
+    }
+
+    /**
+     * 编排类写操作：改的是**工艺资产**（图、绑定、点位方法、物料角色、示教、模板）。
+     *
+     * <p>先判 operate 再判 design 会互相打架的地方都在这里显式排除：
+     * 起跑（run）属于 operate；模板实例化属于 operate。
+     */
+    static boolean requiresDesign(String method, String path) {
+        if (method == null || "GET".equals(method) || "OPTIONS".equals(method)) {
+            return false;
+        }
+        // 模板实例化 = 按模板开一批 → 运行侧，不是编排
+        if (path.matches("^/api/experiment-templates/\\d+/instantiate$")) {
+            return false;
+        }
+        // 起跑 = 运行侧
+        if (path.matches("^/api/workflows/\\d+/run$")) {
+            return false;
+        }
+        // 整岛导入 = 改现场配置（设备/点位/示教），属于编排侧
+        if (path.startsWith("/api/islands/import")) {
+            return true;
+        }
+        return path.startsWith("/api/workflows")
+                || path.startsWith("/api/experiment-templates")
+                || path.startsWith("/api/positions")
+                || path.startsWith("/api/material-roles")
+                || (path.startsWith("/api/islands/") && path.contains("/robot-points"))
+                || (path.startsWith("/api/devices/") && path.contains("/points"));
+    }
+
+    /**
+     * 运行类写操作：改的是**这一批**（起停、配位置/核验、确认搬运、处理人工窗口）。
+     */
+    static boolean requiresOperate(String method, String path) {
+        if (method == null || "GET".equals(method) || "OPTIONS".equals(method)) {
+            return false;
+        }
+        return path.matches("^/api/workflows/\\d+/run$")
+                || path.matches("^/api/experiment-templates/\\d+/instantiate$")
+                || path.startsWith("/api/runs")
+                || path.startsWith("/api/experiment-runs")
+                || path.startsWith("/api/transfers")
+                || path.startsWith("/api/plates")
+                || path.startsWith("/api/manual-windows")
+                || path.startsWith("/api/paused");
     }
 
     private static void reject(HttpServletResponse resp, int code, String msg) throws Exception {

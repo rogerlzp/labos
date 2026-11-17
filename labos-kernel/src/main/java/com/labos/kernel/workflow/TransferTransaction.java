@@ -188,6 +188,24 @@ public final class TransferTransaction {
             com.labos.kernel.persistence.Mappers.get(
                             com.labos.kernel.persistence.PauseMapper.class)
                     .updatePlatePositionStatus(tenantId, plate, "KNOWN");
+            // 搬运段（可观测副本）：自动确认路径由 DriverStepExecutor 写，
+            // 人工/扫码确认路径原先一条都不写 ⇒ 甘特与岛进程视图看不到这次搬运。
+            try {
+                com.labos.kernel.persistence.BindingMapper bm =
+                        com.labos.kernel.persistence.Mappers.get(
+                                com.labos.kernel.persistence.BindingMapper.class);
+                // ⚠ transport_segment 的 from/to 是 **device_point.id**（外键指向 device_point），
+                // 而事务行里存的是点位实体 id（resource_node）⇒ 必须先转换；
+                // 直接塞实体 id 会 FK 失败，而 PG 一旦语句报错整个事务就作废 ⇒
+                // 表现为"返回 OK 但什么都没落库"（实测踩到）。
+                Long fromDp = bm.selectDevicePointIdByResource(tenantId, srcPos);
+                Long toDp = bm.selectDevicePointIdByResource(tenantId, dstPos);
+                if (fromDp != null && toDp != null) {
+                    bm.insertTransportSegmentManual(tenantId, runId, fromDp, toDp, plate);
+                }
+            } catch (RuntimeException ignore) {
+                // 观测数据不该让"确认"失败（物理已经搬完了）
+            }
             return true;
         });
     }
