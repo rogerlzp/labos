@@ -66,7 +66,9 @@ public final class RailZoneGuard {
         try {
             zones = Mappers.get(RailZoneMapper.class).selectZonesByPath(tenantId, pathKey);
         } catch (RuntimeException e) {
-            return Acquire.fail("EC-STATE-UNKNOWN", "分区查询失败：" + e.getMessage());
+            String reason = "分区查询失败：" + e.getMessage();
+            rec(db, tenantId, runId, pathKey, InterlockDecision.REJECT, reason, "EC-STATE-UNKNOWN");
+            return Acquire.fail("EC-STATE-UNKNOWN", reason);
         }
         if (zones == null || zones.isEmpty()) {
             // 路径粒度豁免：已人工验证无冲突的路径显式登记后放行；否则 fail-closed。
@@ -74,10 +76,14 @@ public final class RailZoneGuard {
                     .selectExemption(tenantId, pathKey);
             if (exempted != null) {
                 log.info("[L3] 路径 {} 已豁免（无分区锁），放行", pathKey);
+                rec(db, tenantId, runId, pathKey, InterlockDecision.ALLOW,
+                        "路径已豁免（无分区锁），放行", null);
                 return Acquire.ok(new Lease(runId, java.util.List.of()));
             }
-            return Acquire.fail("EC-INTERLOCK-RAIL",
-                    "搬运路径未配置轨道分区集且无豁免，禁止自动运行（fail-closed）");
+            String reason = "搬运路径未配置轨道分区集且无豁免，禁止自动运行（fail-closed）";
+            rec(db, tenantId, runId, pathKey, InterlockDecision.REJECT, reason,
+                    "EC-INTERLOCK-RAIL");
+            return Acquire.fail("EC-INTERLOCK-RAIL", reason);
         }
         // 固定序：resource_id 升序，防循环等待
         List<Long> ordered = new ArrayList<>(zones);
@@ -97,6 +103,8 @@ public final class RailZoneGuard {
                 }
             }
             if (all) {
+                rec(db, tenantId, runId, pathKey, InterlockDecision.ALLOW,
+                        "已获取 " + ordered.size() + " 个分区锁", null);
                 return Acquire.ok(new Lease(runId, ordered));
             }
             // 释放已拿到的（半成品锁集不留），再排队重试
@@ -105,15 +113,37 @@ public final class RailZoneGuard {
             }
             if (System.currentTimeMillis() >= deadline) {
                 log.error("[L3] 分区锁等待超时 {}ms（路径 {}）", waitTimeoutMs(), pathKey);
-                return Acquire.fail("EC-RESOURCE-BUSY", "轨道分区被占用，等待超时");
+                String reason = "轨道分区被占用，等待超时";
+                rec(db, tenantId, runId, pathKey, InterlockDecision.REJECT, reason,
+                        "EC-RESOURCE-BUSY");
+                return Acquire.fail("EC-RESOURCE-BUSY", reason);
             }
             try {
                 Thread.sleep(200L);
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                return Acquire.fail("EC-RESOURCE-BUSY", "等待分区锁被中断");
+                String reason = "等待分区锁被中断";
+                rec(db, tenantId, runId, pathKey, InterlockDecision.REJECT, reason,
+                        "EC-RESOURCE-BUSY");
+                return Acquire.fail("EC-RESOURCE-BUSY", reason);
             }
         }
+    }
+
+    /**
+     * 落一条 L3 决策快照（旁路审计，失败不影响判定）。
+     *
+     * <p>只在**最终判定点**调用，不在 200ms 重试循环里 —— 否则一次等待会写出上百条。
+     */
+    private static void rec(DbConfig db, long tenantId, long runId, String pathKey,
+                            String decision, String reason, String errorCode) {
+        InterlockDecision.Rec r = new InterlockDecision.Rec(
+                InterlockDecision.L3_RAIL_ZONE, decision)
+                .fact("rail_zone", pathKey)
+                .times(null, java.time.OffsetDateTime.now().toString())
+                .reason(reason)
+                .error(errorCode);
+        InterlockDecision.record(db, tenantId, runId, null, null, null, r);
     }
 
     /** 释放租约（物理动作完成后调用）。 */

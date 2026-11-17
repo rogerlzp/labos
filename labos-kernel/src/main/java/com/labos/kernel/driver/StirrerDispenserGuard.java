@@ -59,6 +59,8 @@ public final class StirrerDispenserGuard {
             long observedAt = toMillis(state == null ? null : state.get("updatedAt"));
             StirrerDispenserGate.Verdict v = StirrerDispenserGate.check(status, observedAt, null);
             if (v.allow()) {
+                rec(db, tenantId, runId, dispenserResourceId, InterlockDecision.ALLOW,
+                        status, observedAt, v.reason(), null);
                 return null;
             }
             if (!v.busy()) {
@@ -112,8 +114,10 @@ public final class StirrerDispenserGuard {
             stirrer = Mappers.get(StirrerMapper.class)
                     .selectStirrerByDispenser(tenantId, dispenserResourceId);
         } catch (RuntimeException e) {
-            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
-                    "搅拌配对复核失败：" + e.getMessage(), null, 0);
+            String reason = "搅拌配对复核失败：" + e.getMessage();
+            rec(db, tenantId, null, dispenserResourceId, InterlockDecision.REJECT,
+                    null, 0, reason, "EC-STATE-UNKNOWN");
+            return DriverResult.failed("0", "EC-STATE-UNKNOWN", reason, null, 0);
         }
         if (stirrer == null) {
             // 无配对 ⇒ 无事实源 ⇒ 非 L4 目标 ⇒ 跳过（与 L1/L5 一致）。
@@ -124,16 +128,41 @@ public final class StirrerDispenserGuard {
         try {
             state = Mappers.get(DeviceStateMapper.class).selectDeviceStateRow(tenantId, stirrer);
         } catch (RuntimeException e) {
-            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
-                    "搅拌状态复核失败：" + e.getMessage(), null, 0);
+            String reason = "搅拌状态复核失败：" + e.getMessage();
+            rec(db, tenantId, null, dispenserResourceId, InterlockDecision.REJECT,
+                    null, 0, reason, "EC-STATE-UNKNOWN");
+            return DriverResult.failed("0", "EC-STATE-UNKNOWN", reason, null, 0);
         }
         String status = state == null ? null : (String) state.get("status");
-        StirrerDispenserGate.Verdict v = StirrerDispenserGate.check(
-                status, toMillis(state == null ? null : state.get("updatedAt")), null);
+        long observedAt = toMillis(state == null ? null : state.get("updatedAt"));
+        StirrerDispenserGate.Verdict v = StirrerDispenserGate.check(status, observedAt, null);
         if (v.allow()) {
-            return null;
+            return null;   // 复核放行不重复落（初检已落 ALLOW）
         }
-        return DriverResult.failed("0", v.errorCode(), "下发前复核：" + v.reason(), null, 0);
+        String reason = "下发前复核：" + v.reason();
+        rec(db, tenantId, null, dispenserResourceId, InterlockDecision.REJECT,
+                status, observedAt, reason, v.errorCode());
+        return DriverResult.failed("0", v.errorCode(), reason, null, 0);
+    }
+
+    /**
+     * 落一条 L4 决策快照（旁路审计，失败不影响判定）。
+     *
+     * <p>只在最终判定点调用（拒绝统一走 {@link #blocked}），不在 2s 等待循环里。
+     * {@code finalRecheck} 只落拒绝：复核是同一决策的第二次，放行不重复落。
+     */
+    private static void rec(DbConfig db, long tenantId, Long runId, long resourceId,
+                            String decision, String factValue, long observedAtMs,
+                            String reason, String errorCode) {
+        InterlockDecision.Rec r = new InterlockDecision.Rec(
+                InterlockDecision.L4_STIRRER, decision)
+                .fact("stirrer_status", factValue)
+                .times(observedAtMs > 0
+                                ? java.time.Instant.ofEpochMilli(observedAtMs).toString() : null,
+                        java.time.OffsetDateTime.now().toString())
+                .reason(reason)
+                .error(errorCode);
+        InterlockDecision.record(db, tenantId, runId, null, null, resourceId, r);
     }
 
     private static long stirrerWaitTimeoutMs() {
@@ -187,6 +216,10 @@ public final class StirrerDispenserGuard {
      */
     private static DriverResult blocked(DbConfig db, long tenantId, long runId,
                                         long dispenserResourceId, String code, String reason) {
+        // 统一拒绝出口：这里落一条 REJECT 即可覆盖本类全部拒绝分支（查询失败/未配对/
+        // 状态不可用/超时/中断），不必在每个 return 前各写一遍。
+        rec(db, tenantId, runId, dispenserResourceId, InterlockDecision.REJECT,
+                null, 0, reason, code);
         try {
             java.util.List<Long> affected;
             try {

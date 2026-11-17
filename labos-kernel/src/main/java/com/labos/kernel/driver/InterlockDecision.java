@@ -14,12 +14,34 @@ import org.slf4j.LoggerFactory;
  *
  * <p>定位与 {@link CommandLedger#recordAbort} 相同：审计旁路，记不上只打日志、
  * 不阻断物理动作 —— 宁可少一条审计行，也不能因为审计失败重发一条物理命令。
+ *
+ * <p><b>决策取值</b>（2026-11-17 接线时收口，表无 CHECK 约束）：
+ * <ul>
+ *   <li>{@link #ALLOW} 放行；{@link #WAIT} 有界等待中；{@link #REJECT} 拒绝；</li>
+ *   <li>{@link #SKIP} <b>守卫未启用</b>——无事实源/未配对/未携带交互上下文。
+ *       这一条是「为什么该拦的没拦」的唯一答案：缺配置时守卫静默跳过，
+ *       没有 SKIP 快照就只能看到表里空空，无法区分「放行」和「根本没判」。</li>
+ * </ul>
+ *
+ * <p><b>互锁编号</b>（{@code interlock_code} 此前无既有词表，这里定为唯一真源；
+ * 与设计文档 L1~L5 编号对齐，便于按层统计命中率）。
  */
 public final class InterlockDecision {
 
     public static final String ALLOW = "ALLOW";
     public static final String WAIT = "WAIT";
     public static final String REJECT = "REJECT";
+    /** 守卫未启用（无事实源/未配对/无交互上下文）—— 不是放行，是「没判」。 */
+    public static final String SKIP = "SKIP";
+
+    /** L1 转盘互锁。 */
+    public static final String L1_TURNTABLE = "L1_TURNTABLE";
+    /** L3 轨道分区互锁。 */
+    public static final String L3_RAIL_ZONE = "L3_RAIL_ZONE";
+    /** L4 搅拌—分液互锁。 */
+    public static final String L4_STIRRER = "L4_STIRRER";
+    /** L5 等待交互互锁。 */
+    public static final String L5_WAIT = "L5_WAIT";
 
     private static final Logger log = LoggerFactory.getLogger(InterlockDecision.class);
 

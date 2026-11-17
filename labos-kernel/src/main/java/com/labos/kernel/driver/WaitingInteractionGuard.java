@@ -27,9 +27,16 @@ public final class WaitingInteractionGuard {
                                                    String deviceSessionId,
                                                    String workflowStepId,
                                                    String interactionId) {
-        if (db == null || runId <= 0 || deviceResourceId <= 0
-                || interactionId == null || interactionId.isBlank()) {
-            return null;   // 未携带交互上下文 → 非交换位操作，跳过 L5
+        if (db == null || runId <= 0 || deviceResourceId <= 0) {
+            return null;   // 上下文不全，无从判定（也不落审计）
+        }
+        if (interactionId == null || interactionId.isBlank()) {
+            // 未携带交互上下文 → 非交换位操作，跳过 L5。
+            // 落 SKIP：区分「没判」与「放行」——否则 L5 全跳过时表里空空，无从解释。
+            rec(db, tenantId, runId, deviceResourceId, InterlockDecision.SKIP,
+                    null, deviceSessionId, workflowStepId, null,
+                    "未携带 interactionId，非交换位操作，L5 跳过", null);
+            return null;
         }
         Map<String, Object> eff;
         try {
@@ -37,19 +44,47 @@ public final class WaitingInteractionGuard {
                     .selectEffective(tenantId, deviceResourceId,
                             deviceSessionId, workflowStepId);
         } catch (RuntimeException e) {
-            return DriverResult.failed("0", "EC-STATE-UNKNOWN",
-                    "等待交互查询失败：" + e.getMessage(), null, 0);
+            String reason = "等待交互查询失败：" + e.getMessage();
+            rec(db, tenantId, runId, deviceResourceId, InterlockDecision.REJECT,
+                    null, deviceSessionId, workflowStepId, interactionId,
+                    reason, "EC-STATE-UNKNOWN");
+            return DriverResult.failed("0", "EC-STATE-UNKNOWN", reason, null, 0);
         }
         if (eff == null) {
-            return DriverResult.failed("0", "EC-INTERLOCK-NO-WAIT",
-                    "无有效等待交互（会话/步骤无 WAITING）", null, 0);
+            String reason = "无有效等待交互（会话/步骤无 WAITING）";
+            rec(db, tenantId, runId, deviceResourceId, InterlockDecision.REJECT,
+                    null, deviceSessionId, workflowStepId, interactionId,
+                    reason, "EC-INTERLOCK-NO-WAIT");
+            return DriverResult.failed("0", "EC-INTERLOCK-NO-WAIT", reason, null, 0);
         }
         String ix = (String) eff.get("interactionId");
         if (ix == null || !ix.equals(interactionId)) {
-            return DriverResult.failed("0", "EC-INTERLOCK-NO-WAIT",
-                    "等待交互不匹配（期望 " + interactionId + "，当前 " + ix + "）", null, 0);
+            String reason = "等待交互不匹配（期望 " + interactionId + "，当前 " + ix + "）";
+            rec(db, tenantId, runId, deviceResourceId, InterlockDecision.REJECT,
+                    ix, deviceSessionId, workflowStepId, interactionId,
+                    reason, "EC-INTERLOCK-NO-WAIT");
+            return DriverResult.failed("0", "EC-INTERLOCK-NO-WAIT", reason, null, 0);
         }
-        return null;   // 有效等待匹配 → 放行
+        // 有效等待匹配 → 放行
+        rec(db, tenantId, runId, deviceResourceId, InterlockDecision.ALLOW,
+                ix, deviceSessionId, workflowStepId, interactionId,
+                "有效等待匹配", null);
+        return null;
+    }
+
+    /** 落一条 L5 决策快照（旁路审计，失败不影响判定）。 */
+    private static void rec(DbConfig db, long tenantId, long runId, long resourceId,
+                            String decision, String factValue,
+                            String deviceSessionId, String workflowStepId, String interactionId,
+                            String reason, String errorCode) {
+        InterlockDecision.Rec r = new InterlockDecision.Rec(
+                InterlockDecision.L5_WAIT, decision)
+                .fact("waiting_interaction", factValue)
+                .times(null, java.time.OffsetDateTime.now().toString())
+                .session(deviceSessionId, workflowStepId, interactionId)
+                .reason(reason)
+                .error(errorCode);
+        InterlockDecision.record(db, tenantId, runId, null, null, resourceId, r);
     }
 
     private WaitingInteractionGuard() {

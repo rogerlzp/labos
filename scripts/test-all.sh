@@ -223,6 +223,9 @@ PURE=(
 
 # 连库：位置锁 / 暂停恢复 / 配方编译
 DB=(
+  # P2 互锁决策快照（2026-11-17 接线）：四个守卫的最终判定各落一条；
+  # 判别点 = SKIP（没判：无事实源/未携带上下文）必须与 ALLOW（判过且放行）可区分
+  "driver.InterlockDecisionDbSelfTest"
   "api.ExperimentGraphPersistenceSelfTest"
   "driver.TransferPlanSelfTest"
   # 同 run 并行分支设备互斥 + 同线程搬运重入
