@@ -2,7 +2,7 @@ import {
   api, apiFetch, type DevicePool, type DevicePoolMember,
 } from '../api/client';
 import { useReadOnly } from '../auth';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert, Button, Card, Checkbox, Descriptions, Empty, Form, Input, InputNumber, Modal, Select, Space,
@@ -484,6 +484,69 @@ export default function TopologyPage() {
 
   const poolList = pools.data?.items ?? [];
 
+  const islandFileRef = useRef<HTMLInputElement>(null);
+
+  /** 整岛导出：岛 + 设备 + 点位 + 点位方法 + 示教（全部业务码，可跨环境）。 */
+  const exportIsland = async (row: Island) => {
+    try {
+      const r = await apiFetch(`/api/islands/${row.id}/export`);
+      if (!r.ok) {
+        message.error(t('topology.io.error.export'));
+        return;
+      }
+      const j = await r.json();
+      const blob = new Blob([JSON.stringify(j, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `island-${row.code}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
+  /**
+   * 整岛导入：目标环境缺的东西会新建，已存在的按 code 跳过（幂等）。
+   *
+   * <p>返回里 problems 非空 = 有对象没建成（整单 409），这时**不要**当成功提示。
+   */
+  const importIsland = async (file: File) => {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      message.error(t('topology.io.error.json'));
+      return;
+    }
+    try {
+      const r = await apiFetch('/api/islands/import', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!r.ok || (j.problems && j.problems.length)) {
+        message.error((j.problems && j.problems[0]) || j.error || t('topology.io.error.import'), 8);
+        return;
+      }
+      message.success(t('topology.io.toast.imported', {
+        island: j.islandCode,
+        dev: j.devicesCreated,
+        points: j.pointsUpserted,
+        methods: j.pointMethodsCreated,
+        robot: j.robotPointsUpserted,
+      }), 6);
+      if (j.warnings && j.warnings.length) {
+        message.warning(j.warnings.slice(0, 3).join('；'), 8);
+      }
+      await qc.invalidateQueries({ queryKey: ['topology'] });
+    } catch (e) {
+      message.error(String((e as Error).message));
+    }
+  };
+
   return (
     <>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -495,6 +558,21 @@ export default function TopologyPage() {
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('topology.hint.methods')}
               </Typography.Text>
+              <input
+                ref={islandFileRef}
+                type="file"
+                accept=".json,application/json"
+                data-testid="island-import-input"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void importIsland(f);
+                  e.target.value = '';
+                }}
+              />
+              <Button size="small" {...ro} onClick={() => islandFileRef.current?.click()}>
+                {t('topology.io.action.import')}
+              </Button>
               <Button type="primary" icon={<PlusOutlined />} {...ro} onClick={() => setAddIsland(true)}>
                 {t('topology.action.addIsland')}
               </Button>
@@ -562,6 +640,15 @@ export default function TopologyPage() {
                 {
                   title: t('topology.col.deviceCount'), dataIndex: 'deviceCount', width: 100,
                   render: (v: number) => <Tag>{v}</Tag>,
+                },
+                {
+                  title: '', key: 'io', width: 110, align: 'right' as const,
+                  render: (_: unknown, row: Island) => (
+                    <Button size="small" type="link" disabled={ro.disabled}
+                      title={ro.title} onClick={() => exportIsland(row)}>
+                      {t('topology.io.action.export')}
+                    </Button>
+                  ),
                 },
               ]}
             />

@@ -80,6 +80,21 @@ public interface TopologyMapper {
                              @Param("deviceCode") String deviceCode);
 
     /**
+     * 点位方法授权（幂等）。
+     *
+     * <p>为什么不用 {@code BindingMapper.insertPositionMethod}：那条是裸 INSERT，
+     * 重复时会抛唯一键错误；在事务里 PG 会把**整个事务置为 aborted**，
+     * 后续语句全部失败（实测：整岛导入 500）。这里用 {@code ON CONFLICT DO NOTHING}。
+     */
+    int insertPointMethodIfAbsent(@Param("t") long tenantId,
+                                  @Param("positionId") long positionId,
+                                  @Param("methodId") long methodId,
+                                  @Param("scopeKind") String scopeKind,
+                                  @Param("purpose") String purpose,
+                                  @Param("allocation") String allocation,
+                                  @Param("priority") int priority);
+
+    /**
      * 写示教点（按 uk_robot_point=(tenant, robot_resource_id, code) 幂等）。
      */
     int upsertRobotPointForImport(@Param("t") long tenantId,

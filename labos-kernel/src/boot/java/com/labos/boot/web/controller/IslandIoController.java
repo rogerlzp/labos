@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.boot.web.service.DeviceService;
-import com.labos.kernel.persistence.BindingMapper;
 import com.labos.kernel.persistence.ManifestMapper;
 import com.labos.kernel.persistence.Mappers;
 import com.labos.kernel.persistence.TopologyMapper;
@@ -93,6 +92,7 @@ public class IslandIoController {
     /**
      * @param dryRun 1 = 只解析与校验，不写库（先看"会建什么、会缺什么"）
      */
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     @PostMapping(value = "/islands/import", produces = "application/json; charset=utf-8")
     public ResponseEntity<String> importIsland(@RequestBody(required = false) String body,
                                                @RequestParam(required = false) String dryRun,
@@ -192,6 +192,18 @@ public class IslandIoController {
                 continue;
             }
             try {
+                // ck_device_point_flags：point_role≠internal 时 **必须** is_entry 或 is_exit 为真。
+                // 导出包里一般都有，但手写/老包常常只有 pointRole ⇒ 这里补一个默认，
+                // 否则整岛导入会在第一个点位上撞约束（实测）。
+                String role = defaultIfBlank(text(p, "pointRole"), "both");
+                boolean entry = Boolean.TRUE.equals(boolOrNull(p, "isEntry"));
+                boolean exit = Boolean.TRUE.equals(boolOrNull(p, "isExit"));
+                if ("internal".equals(role)) {
+                    entry = false;
+                    exit = false;
+                } else if (!entry && !exit) {
+                    entry = true;
+                }
                 topo().insertPointForImport(TENANT, devRes, pointCode,
                         // ⚠ 两个 kind 不是一回事：
                         //   resourceKind = 资源树节点类型（storage/incubator/transfer_point）
@@ -199,14 +211,14 @@ public class IslandIoController {
                         // 混用会撞 ck_device_point_kind（实测）
                         defaultIfBlank(text(p, "nodeKind"), "storage"),
                         defaultIfBlank(text(p, "pointKind"), "nest"),
-                        defaultIfBlank(text(p, "pointRole"), "both"),
+                        role,
                         !Boolean.FALSE.equals(boolOrNull(p, "robotReachable")),
                         text(p, "positionLabel"),
                         intOrNull(p, "slotIndex"), intOrNull(p, "gridRow"),
                         intOrNull(p, "gridCol"), intOrNull(p, "maxStack"),
                         doubleOrNull(p, "maxHeightMm"), text(p, "plateTypes"),
-                        Boolean.TRUE.equals(boolOrNull(p, "isEntry")),
-                        Boolean.TRUE.equals(boolOrNull(p, "isExit")),
+                        entry,
+                        exit,
                         Boolean.TRUE.equals(boolOrNull(p, "isStandalone")),
                         Boolean.TRUE.equals(boolOrNull(p, "isPrimary")),
                         intOrNull(p, "orderInDevice"), deviceCode);
@@ -217,7 +229,6 @@ public class IslandIoController {
         }
 
         // ---- ④ 点位 × 方法 ----
-        BindingMapper bm = Mappers.get(BindingMapper.class);
         for (JsonNode m : array(n, "pointMethods")) {
             String deviceCode = text(m, "deviceCode");
             String pointCode = text(m, "pointCode");
@@ -242,18 +253,14 @@ public class IslandIoController {
                 continue;
             }
             try {
-                bm.insertPositionMethod(TENANT, positionId, methodId,
-                        defaultIfBlank(text(m, "scopeKind"), "global"), null,
+                topo().insertPointMethodIfAbsent(TENANT, positionId, methodId,
+                        defaultIfBlank(text(m, "scopeKind"), "global"),
                         text(m, "purpose"), defaultIfBlank(text(m, "allocation"), "explicit"),
                         intOrNull(m, "priority") == null ? 100 : intOrNull(m, "priority"));
                 methodCreated++;
             } catch (Exception e) {
-                // 已存在（唯一键）→ 视为幂等成功，不计问题
-                String msg = e.getMessage() == null ? "" : e.getMessage();
-                if (!msg.contains("duplicate key")) {
-                    problems.add("授权「" + deviceCode + "/" + pointCode + "/"
-                            + methodName + "」失败：" + msg);
-                }
+                problems.add("授权「" + deviceCode + "/" + pointCode + "/"
+                        + methodName + "」失败：" + e.getMessage());
             }
         }
 

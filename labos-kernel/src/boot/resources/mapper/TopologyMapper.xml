@@ -163,6 +163,14 @@
     SELECT count(*) FROM dp
   </insert>
 
+  <insert id="insertPointMethodIfAbsent">
+    INSERT INTO position_method (tenant_id, position_id, method_id, scope_kind, purpose,
+                                 allocation, priority, enabled)
+    VALUES (#{t}, #{positionId}, #{methodId}, #{scopeKind}, #{purpose},
+            #{allocation}, #{priority}, true)
+    ON CONFLICT DO NOTHING
+  </insert>
+
   <insert id="upsertRobotPointForImport">
     INSERT INTO robot_point (tenant_id, island_id, robot_resource_id, code, name,
                              x, y, z, point_type, fill_status, device_resource_id)
