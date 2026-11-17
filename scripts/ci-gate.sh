@@ -131,7 +131,15 @@ if [[ "$WANT_FAST" == "1" ]]; then
   # ⚠ 类名必须是 com.labos.kernel.event.*：2026-11-15 这两个自测从 boot 包
   #   挪进了 kernel 包（见 test-all.sh 的 PURE 列表），这里还写着旧路径 ⇒
   #   java 报 ClassNotFoundException ⇒ 这段门禁**恒红**，且红得毫无信息量。
-  OUT=$(java -cp "labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" \
+  #
+  # ⚠ classpath 必须含 out-test（2026-11-17 修）：测试类编进 **out-test**，
+  #   不在 out/（out/ 是生产产物，test-all.sh 从 2026-11-16 起把测试类单独编到
+  #   out-test，正是为了让生产构建与测试产物互不影响）。
+  #   旧写法只给 out/ ⇒ **任何干净检出上这一项恒红**（ClassNotFoundException），
+  #   而本机长期能过，是因为 out/ 里还躺着 2026-11-16 之前遗留下来的测试 class
+  #   —— 典型的「靠磁盘残留兜底」。门禁红在别人机器上、红不出原因，
+  #   等于没有门禁（这正是 2026-11-11 重写门禁时写下的原则）。
+  OUT=$(java -cp "labos-kernel/out-test:labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" \
         com.labos.kernel.event.DeviceEventApiSelfTest 2>&1)
   F=$(echo "$OUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | head -1)
   N=$(echo "$OUT" | grep -oE '通过 [0-9]+, 失败' | grep -oE '[0-9]+' | head -1)
