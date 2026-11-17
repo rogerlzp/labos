@@ -210,18 +210,9 @@ public class ScheduleController {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err(msg));
     }
 
+    /** 统一走 ApiErrors：不再吞真因（带 detail + 约束名），2026-11-17。 */
     private static ResponseEntity<String> writeError(Exception e, String hint) {
-        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-        if (msg.contains("duplicate key") || msg.contains("violates unique") || msg.contains("uk_")) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(err(hint != null ? hint : "唯一约束冲突"));
-        }
-        if (msg.contains("exclude") || msg.contains("overlap") || msg.contains("ex_booking")) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(err(hint != null ? hint : "时间区间重叠"));
-        }
-        if (msg.contains("ck_") || msg.contains("check constraint")) {
-            return ResponseEntity.status(HttpStatus.CONFLICT).body(err(hint != null ? hint : "数据约束冲突"));
-        }
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(err("写失败：" + msg));
+        return com.labos.boot.web.ApiErrors.writeError(e, hint);
     }
 
     private static String json(Object o) {

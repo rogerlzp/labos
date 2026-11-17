@@ -133,6 +133,84 @@
          ORDER BY "deployed" DESC, d.name
     </select>
 
+<!-- ============ 彻底删除（purge）：物理删掉这台设备 ============ -->
+<!--
+  背景（2026-11-17）：设备删除只有**软删**（softDeleteDeviceInstance，不删
+  resource_node）⇒ 软删的行仍然占着编号（uk_device_instance）⇒
+  「删掉再重建同名设备」必然 409；而「真删」在平台上也做不到
+  （没有 purge 路径）⇒ 测试残留/报废设备永远清不掉。
+  ⇒ 这里补一条**有护栏**的物理删除路径。
+-->
+<select id="selectDeviceInstanceId" resultType="java.lang.Long">
+    SELECT id FROM device_instance
+     WHERE tenant_id = #{param1} AND resource_id = #{param2}
+     ORDER BY id LIMIT 1
+</select>
+
+<!-- 护栏：这台设备还被哪些表引用（>0 ⇒ 不能物理删）。
+     ⚠ 表别名不是装饰：rc.device_id 是 run_command 的**实例号**列（该表自己的列，
+     不是 device_method/device_instance 被改名的 device_id）⇒ 写成裸 device_id
+     会被 DeviceIdSpaceSelfTest 的「裸列名」扫描判成违规（真实一次：P0 门禁红）。
+     ⇒ 一律带别名，让扫描能认出「这是别的表的同名列」。 -->
+<select id="countDeviceReferences" resultType="int">
+    SELECT (SELECT count(*) FROM run_node rn
+             WHERE rn.tenant_id = #{param1} AND rn.resource_id = #{param2})
+         + (SELECT count(*) FROM run_command rc
+             WHERE rc.tenant_id = #{param1} AND rc.device_id = #{param3})
+         + (SELECT count(*) FROM plate pl
+             WHERE pl.tenant_id = #{param1} AND pl.location_id = #{param2})
+         + (SELECT count(*) FROM node_binding nb
+             WHERE nb.tenant_id = #{param1} AND nb.device_instance_id = #{param3})
+         + (SELECT count(*) FROM manifest_placement mp
+             JOIN device_point dp ON dp.id = mp.position_id
+             WHERE mp.tenant_id = #{param1} AND dp.device_resource_id = #{param2})
+</select>
+
+<!-- 删除顺序按依赖倒排：绑定 → 物料配置 → 位置账本 → 示教 → 点位 → 实例 → 资源节点。 -->
+<delete id="purgeDeviceBindings">
+    DELETE FROM node_binding
+     WHERE tenant_id = #{param1}
+       AND (device_instance_id = #{param3}
+            OR position_id IN (SELECT id FROM device_point
+                                WHERE tenant_id = #{param1} AND device_resource_id = #{param2}))
+</delete>
+
+<delete id="purgeDevicePlacements">
+    DELETE FROM manifest_placement
+     WHERE tenant_id = #{param1}
+       AND position_id IN (SELECT id FROM device_point
+                            WHERE tenant_id = #{param1} AND device_resource_id = #{param2})
+</delete>
+
+<delete id="purgeDevicePositionStates">
+    DELETE FROM position_state
+     WHERE tenant_id = #{param1}
+       AND resource_id IN (SELECT id FROM resource_node
+                            WHERE tenant_id = #{param1} AND (id = #{param2} OR parent_id = #{param2}))
+</delete>
+
+<delete id="purgeDeviceRobotPoints">
+    DELETE FROM robot_point
+     WHERE tenant_id = #{param1}
+       AND robot_resource_id IN (SELECT id FROM resource_node
+                                 WHERE tenant_id = #{param1} AND (id = #{param2} OR parent_id = #{param2}))
+</delete>
+
+<delete id="purgeDevicePoints">
+    DELETE FROM device_point
+     WHERE tenant_id = #{param1} AND device_resource_id = #{param2}
+</delete>
+
+<delete id="purgeDeviceInstanceRow">
+    DELETE FROM device_instance
+     WHERE tenant_id = #{param1} AND resource_id = #{param2}
+</delete>
+
+<delete id="purgeDeviceNodes">
+    DELETE FROM resource_node
+     WHERE tenant_id = #{param1} AND (id = #{param2} OR parent_id = #{param2})
+</delete>
+
 <update id="softDeleteDeviceInstance">
         UPDATE device_instance
            SET deleted_at = now(), updated_at = now()

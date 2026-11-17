@@ -231,6 +231,9 @@ PURE=(
 
 # 连库：位置锁 / 暂停恢复 / 配方编译
 DB=(
+  # 2026-11-17：四个平台缺口的判别性自测
+  # （设备编号可重用 + purge / run 终结释放位置归属 / 错误响应带真因 / 同角色多块板）
+  "boot.web.PlatformGapDbSelfTest"
   "api.ExperimentGraphPersistenceSelfTest"
   "driver.TransferPlanSelfTest"
   # 同 run 并行分支设备互斥 + 同线程搬运重入

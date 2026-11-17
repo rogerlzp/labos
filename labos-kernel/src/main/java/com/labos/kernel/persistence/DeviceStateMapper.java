@@ -192,6 +192,15 @@ public interface DeviceStateMapper {
     /** 释放某 run 的全部预约（run 结束兜底）；返回清理条数。 */
     int releaseAllPositions(long tenantId, long runId);
 
+    /**
+     * run 终结时释放它对位置的**占用归属**（板留在原位，只是不再绑定这个 run）。
+     *
+     * <p>为什么必须有：内核启动时按流程声明的 sourcePosition 预置板并把归属设成本 run；
+     * 下一轮只认领「无归属」的位置 ⇒ 上一轮的归属还挂着就认领不到
+     * ⇒ 搬运的归属校验失败 ⇒ EC-POSITION-OCCUPIED（同一个岛连跑两次必撞）。
+     */
+    int releaseRunOccupancy(long tenantId, long runId);
+
     /** UPSERT 登记"板放进去了"（预约转实际占用）。 */
     int putPlateOnPosition(long tenantId, long resourceId, String plateId, long runId);
 

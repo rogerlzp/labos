@@ -18,6 +18,29 @@ import java.util.Map;
  */
 public interface DeviceMapper {
 
+    // ---- 彻底删除（purge）：物理删设备，带「有引用就不许删」的护栏（2026-11-17）
+
+    /** 该设备对应的 device_instance.id（没有则 null）。 */
+    Long selectDeviceInstanceId(long tenantId, long resourceId);
+
+    /** 这台设备还有多少处历史/配置引用（>0 ⇒ 不能物理删）。 */
+    int countDeviceReferences(long tenantId, long resourceId, long instanceId);
+
+    /** purge 的一串删除（按依赖倒排），返回各步影响行数（求和）。 */
+    int purgeDeviceBindings(long tenantId, long resourceId, long instanceId);
+
+    int purgeDevicePlacements(long tenantId, long resourceId);
+
+    int purgeDevicePositionStates(long tenantId, long resourceId);
+
+    int purgeDeviceRobotPoints(long tenantId, long resourceId);
+
+    int purgeDevicePoints(long tenantId, long resourceId);
+
+    int purgeDeviceInstanceRow(long tenantId, long resourceId);
+
+    int purgeDeviceNodes(long tenantId, long resourceId);
+
     /** 克隆源：设备 code/name + 目标岛的 path（岛不存在时 path 为 null）。 */
     Map<String, Object> selectCloneSource(long tenantId, long sourceResourceId,
                                           long islandId);

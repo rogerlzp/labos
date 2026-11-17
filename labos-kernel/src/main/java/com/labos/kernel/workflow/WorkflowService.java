@@ -734,6 +734,25 @@ public class WorkflowService {
         } catch (RuntimeException e) {
             log.error("[WARN] run#{} exec_phase 未落 SETTLED：{}", runId, e.getMessage());
         }
+        // 失败也是终结 ⇒ 释放位置归属，否则下一轮认领不到预置的板（见 DeviceStateMapper#releaseRunOccupancy）。
+        releaseRunOccupancy(runId);
+    }
+
+    /**
+     * 释放本 run 对位置的占用归属（板留在原位）。
+     *
+     * <p>为什么在「终态」才做：paused 的 run 可能被 resume 继续跑，板还归它；
+     * completed / failed / dismissed 才真正终结。
+     */
+    private void releaseRunOccupancy(long runId) {
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .releaseRunOccupancy(tenantId, runId);
+        } catch (RuntimeException e) {
+            // 归属没释放不该让 run 收尾失败 —— 下一轮 claimPosition 还有兜底（认领已终结 run 的板）。
+            log.warn("[WARN] run#{} 位置归属释放失败：{}", runId, e.getMessage());
+        }
     }
 
     /**
@@ -3583,6 +3602,9 @@ public class WorkflowService {
         if (aborted) {
             status = "failed";
             runMapper.settleTerminal(tenantId, runId, status);
+            // 终态 ⇒ 释放位置归属（板留在原位，但不再绑定这个 run）。
+            // 不释放的话，下一轮的 claimPosition 认领不到预置的板 ⇒ EC-POSITION-OCCUPIED。
+            releaseRunOccupancy(runId);
         } else if (manual) {
             // 转人工 = 暂停，不是失败
             status = "paused";
@@ -3590,6 +3612,9 @@ public class WorkflowService {
         } else {
             status = "completed";
             runMapper.settleTerminal(tenantId, runId, status);
+            // ⚠ completed 也要释放：板留在槽里（跑完的产物），但归属不能一直挂着这个 run，
+            //   否则**同一个岛第二次跑必撞**（claimPosition 只认领无归属的位置）。
+            releaseRunOccupancy(runId);
         }
         // P-09：执行体收尾（含转人工的 paused）—— 但真正的"暂停等我点继续"
         // 走的是上面 isRunPaused 的 early return，那种单不落 SETTLED。

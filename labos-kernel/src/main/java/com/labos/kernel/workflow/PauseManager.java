@@ -353,7 +353,22 @@ public final class PauseManager {
      * 没人会一条条点"终止"，结果页面永远脏着，真出事的单子反而看不见。
      */
     public boolean dismiss(long runId) throws SQLException {
-        return mappers().dismissRun(tenantId, runId) > 0;
+        boolean ok = mappers().dismissRun(tenantId, runId) > 0;
+        // 人工放弃 = 这个 run 终结了 ⇒ 释放它对位置的占用归属，
+        // 否则下一轮认领不到它预置的板 ⇒ EC-POSITION-OCCUPIED。
+        releaseRunOccupancy(runId);
+        return ok;
+    }
+
+    /** 释放本 run 对位置的占用归属（板留在原位）；失败只记日志，不影响主流程。 */
+    private void releaseRunOccupancy(long runId) {
+        try {
+            com.labos.kernel.persistence.Mappers.get(
+                            com.labos.kernel.persistence.DeviceStateMapper.class)
+                    .releaseRunOccupancy(tenantId, runId);
+        } catch (RuntimeException e) {
+            log.warn("[暂停] run#{} 位置归属释放失败：{}", runId, e.getMessage());
+        }
     }
 
     /**

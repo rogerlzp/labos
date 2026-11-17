@@ -347,8 +347,48 @@ public class DeviceService {
         // 不删 resource_node：run_node.resource_id 可能引用它（外键会挡住），
         // 且历史执行记录要能查回"这台设备当时在哪"。
         // 拓扑查询会过滤 deleted_at IS NOT NULL，界面上等于删掉了。
+        // ⚠ 软删的行**仍占着编号** ⇒ 「删掉再重建同名设备」会 409；
+        //   2026-11-17 起编号唯一性只看活着的实例（部分唯一索引）⇒ 软删后编号可重用。
         deviceMapper.softDeleteDeviceInstance(TENANT, resourceId);
         return 1;
+    }
+
+    /**
+     * **彻底删除**一台设备（物理删除，不是软删）。
+     *
+     * <p>为什么要有（2026-11-17）：
+     * <ul>
+     *   <li>普通删除只有软删 ⇒ 平台**没有**任何物理删除路径 ⇒
+     *       测试残留、报废设备永远清不掉（界面上删了，库里还在）；</li>
+     *   <li>软删的行仍占编号 ⇒ 「删掉再重建同名设备」必然 409。</li>
+     * </ul>
+     *
+     * <p><b>护栏</b>：设备只要还有历史/配置引用（执行记录、停在它上面的板、
+     * 流程节点绑定、实验物料配置），就**拒绝**物理删 —— 否则历史记录会挂空。
+     * 这种情况下请用普通删除（软删：界面上等于删掉，编号也能重用）。
+     */
+    public int purgeDevice(long resourceId) throws java.sql.SQLException {
+        Long instanceId = deviceMapper.selectDeviceInstanceId(TENANT, resourceId);
+        if (instanceId == null) {
+            throw new IllegalArgumentException("设备不存在（或已删除）: " + resourceId);
+        }
+        int refs = deviceMapper.countDeviceReferences(TENANT, resourceId, instanceId);
+        if (refs > 0) {
+            throw new IllegalArgumentException(
+                    "这台设备还有 " + refs + " 处历史/配置引用（执行记录 / 停在上面的板 / "
+                            + "流程节点绑定 / 实验物料配置）⇒ 不能物理删除；"
+                            + "请用普通删除（软删：界面上等于删掉，编号也能重用）");
+        }
+        // 删除顺序按依赖倒排（绑定 → 物料配置 → 位置账本 → 示教 → 点位 → 实例 → 资源节点）。
+        int n = 0;
+        n += deviceMapper.purgeDeviceBindings(TENANT, resourceId, instanceId);
+        n += deviceMapper.purgeDevicePlacements(TENANT, resourceId);
+        n += deviceMapper.purgeDevicePositionStates(TENANT, resourceId);
+        n += deviceMapper.purgeDeviceRobotPoints(TENANT, resourceId);
+        n += deviceMapper.purgeDevicePoints(TENANT, resourceId);
+        n += deviceMapper.purgeDeviceInstanceRow(TENANT, resourceId);
+        n += deviceMapper.purgeDeviceNodes(TENANT, resourceId);
+        return n;
     }
 
     public int moveDeviceToIsland(long resourceId, long islandId) throws java.sql.SQLException {

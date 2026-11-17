@@ -511,12 +511,38 @@
          ORDER BY resource_id LIMIT 1
     </select>
 
-    <!-- 只认领「无归属」的位置；已有归属（别人的板）不抢占。 -->
+    <!-- 只认领「无归属」的位置；已有归属（别人的板）不抢占。
+
+         ⚠ 2026-11-17 放宽一档：原归属的 run **已经终结**（completed/failed/aborted/
+         cancelled）⇒ 那块板是「上一轮留下的」（板确实还在槽里），本轮可以接管。
+         ⇒ 否则同一个岛连跑两次必撞：上一轮 run 的归属还挂着 ⇒ 这里认领不到
+         ⇒ 搬运的归属校验失败 ⇒ EC-POSITION-OCCUPIED。
+         ⚠ 仍然**不抢占在跑的 run 的板**（paused/running/queued 一律不接管）。 -->
     <update id="claimPosition">
-        UPDATE position_state
+        UPDATE position_state ps
            SET occupied_by_run = #{param3}, occupied_since = now(), updated_at = now()
-         WHERE tenant_id = #{param1} AND resource_id = #{param2}
-           AND occupied_by_run IS NULL
+         WHERE ps.tenant_id = #{param1} AND ps.resource_id = #{param2}
+           AND (ps.occupied_by_run IS NULL
+                OR ps.occupied_by_run = #{param3}
+                OR EXISTS (SELECT 1 FROM run r
+                            WHERE r.tenant_id = ps.tenant_id
+                              AND r.id = ps.occupied_by_run
+                              AND r.status IN ('completed','failed','aborted','cancelled')))
+    </update>
+
+    <!-- run 终结：释放它对位置的**占用归属**（板**留在原位**，只是不再绑定这个 run）。
+
+         为什么必须有（2026-11-17 从零建岛实测）：内核在 run 启动时按流程声明的
+         sourcePosition **预置板**（seedStartPlatePosition），归属设成本 run；
+         下一轮的 claimPosition 只认领「无归属」的位置 ⇒ 上一轮的归属还挂着 ⇒
+         认领不到 ⇒ 搬运的归属校验失败 ⇒ EC-POSITION-OCCUPIED
+         ⇒ **同一个岛连跑两次，第二轮必撞**（第一轮成功也一样撞）。
+
+         ⚠ 只清归属、不清板号：板物理上确实在那个槽里（跑完的产物要留住）。 -->
+    <update id="releaseRunOccupancy">
+        UPDATE position_state
+           SET occupied_by_run = NULL, occupied_since = NULL, updated_at = now()
+         WHERE tenant_id = #{param1} AND occupied_by_run = #{param2}
     </update>
 
     <!-- 设备内部搬运通知：装载口 ↔ 内部格。

@@ -1133,14 +1133,18 @@ CREATE TABLE IF NOT EXISTS device_instance (
   attr              jsonb        NOT NULL DEFAULT '{}'::jsonb,
   created_at        timestamptz  NOT NULL DEFAULT now(),
   updated_at        timestamptz  NOT NULL DEFAULT now(),
-  deleted_at        timestamptz,
-  CONSTRAINT uk_device_instance UNIQUE (tenant_id, code)
+  deleted_at        timestamptz
 );
 COMMENT ON TABLE device_instance IS '设备实例';
 COMMENT ON COLUMN device_instance.id IS '实例号：运行期 ctx.resourceId() / 设备锁 / 心跳用的就是它';
 COMMENT ON COLUMN device_instance.device_model_id IS 'device.id（型号行）；为空表示型号未登记，按实例解析方法/超时会落空';
 COMMENT ON COLUMN device_instance.resource_id IS 'resource_node.id（资源号）：拓扑树/点位/能力绑定用它';
 CREATE INDEX IF NOT EXISTS ix_device_instance_res ON device_instance (resource_id);
+-- 编号唯一性只对**活着的**实例生效（2026-11-17 修）。
+-- 原来 UNIQUE (tenant_id, code) 不看 deleted_at ⇒ 软删的行仍占着编号 ⇒
+-- 「删掉再重建同名设备」必然 409（现场表现：设备明明删了，重建却报编号被占）。
+CREATE UNIQUE INDEX IF NOT EXISTS uk_device_instance
+  ON device_instance (tenant_id, code) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS ix_device_instance_model ON device_instance (device_model_id);
 
 CREATE TABLE IF NOT EXISTS device_log (
@@ -4120,7 +4124,11 @@ CREATE TABLE IF NOT EXISTS manifest_item (
     CHECK (material_kind IN ('sample','reagent','consumable','plate','lid')),
   CONSTRAINT ck_manifest_item_qty CHECK (quantity > 0)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uk_manifest_item_role
+-- 同角色**可多行**（2026-11-17 修）：原来 UNIQUE(template_id, role_code) ⇒
+-- 一个模板里同一角色只能有一行 ⇒ 「4 台提取仪各一块磁套板」写不出 4 行，
+-- 而 manifest_placement 是每个 manifest_item 一行 ⇒ 一行一角色 ⇒ 其余板无处可放。
+-- 现在「一行 = 一块板 + 一个位置」成立；数量语义仍由 quantity 表达。
+CREATE INDEX IF NOT EXISTS ix_manifest_item_role
   ON manifest_item (template_id, role_code);
 
 CREATE TABLE IF NOT EXISTS manifest_placement (

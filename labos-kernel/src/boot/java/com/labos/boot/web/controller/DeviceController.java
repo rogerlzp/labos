@@ -316,9 +316,22 @@ public class DeviceController {
         }
     }
 
+    /**
+     * 删设备。
+     *
+     * <p>{@code purge=true} ⇒ **物理删除**（连 resource_node / 点位 / 绑定一起删）。
+     * 设备只要还有历史或配置引用就**拒绝**（会挂空历史记录）⇒ 那种情况用默认的软删。
+     */
     @DeleteMapping(value = "/devices/{id:\\d+}", produces = "application/json; charset=utf-8")
     public String deleteDevice(@PathVariable long id,
+                               @RequestParam(required = false) Boolean purge,
                                HttpServletRequest req) throws SQLException {
+        if (Boolean.TRUE.equals(purge)) {
+            int n = deviceService.purgeDevice(id);
+            audit.record(session(req), "device.purge", "device", id, null, null,
+                    req.getRemoteAddr());
+            return Jsons.obj("purged", n, "resourceId", id);
+        }
         int n = deviceService.deleteDevice(id);
         audit.record(session(req), "device.delete", "device", id, null, null,
                 req.getRemoteAddr());

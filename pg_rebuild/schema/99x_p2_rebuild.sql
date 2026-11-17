@@ -331,7 +331,11 @@ CREATE TABLE IF NOT EXISTS manifest_item (
     CHECK (material_kind IN ('sample','reagent','consumable','plate','lid')),
   CONSTRAINT ck_manifest_item_qty CHECK (quantity > 0)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uk_manifest_item_role
+-- 同角色**可多行**（2026-11-17 修）：原来 UNIQUE(template_id, role_code) ⇒
+-- 一个模板里同一角色只能有一行 ⇒ 「4 台提取仪各一块磁套板」写不出 4 行，
+-- 而 manifest_placement 是每个 manifest_item 一行 ⇒ 一行一角色 ⇒ 其余板无处可放。
+-- 现在「一行 = 一块板 + 一个位置」成立；数量语义仍由 quantity 表达。
+CREATE INDEX IF NOT EXISTS ix_manifest_item_role
   ON manifest_item (template_id, role_code);
 
 CREATE TABLE IF NOT EXISTS manifest_placement (

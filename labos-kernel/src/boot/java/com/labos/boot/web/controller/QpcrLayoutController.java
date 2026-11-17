@@ -327,9 +327,9 @@ public class QpcrLayoutController {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err(msg));
     }
 
+    /** 统一走 ApiErrors：不再吞真因（带 detail），2026-11-17。 */
     private static ResponseEntity<String> writeError(Exception e) {
-        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(err("操作失败：" + msg));
+        return com.labos.boot.web.ApiErrors.writeError(e);
     }
 
     private static ResponseEntity<String> ok(String json) {
