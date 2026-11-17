@@ -8,6 +8,9 @@
 > not be committed.
 > Purpose: three months later, reading `git log` should tell you **why it changed**,
 > not only **what changed**.
+>
+> **Branching, code / database / environment discipline:** [development-standards.md](development-standards.md)
+> (English) · [`docs/开发规范.md`](../开发规范.md) (Chinese original).
 
 ---
 
