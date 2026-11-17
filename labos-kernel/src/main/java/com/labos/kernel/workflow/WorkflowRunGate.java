@@ -40,14 +40,17 @@ import java.util.List;
  * 一个岛里还有孵箱/离心机/读板机，"孵育 30 分钟"会把整岛挡住。这里的粒度是**同一流程**，
  * 正好对应"会互相抢同一批设备事件"的那个范围。
  *
- * <h3>⚠ 接线点（下一步）</h3>
- * 应在 {@code WorkflowWebService.run(long workflowId, String attendance)} 取到
- * {@link Decision} 后，{@code !allowed} 时直接返回
- * {@code {"error": <reason>, "errorCode": "EC-WORKFLOW-RUNNING", "activeRunId": <runId>}}，
- * 与既有的 {@code EC-ISLAND-BUSY} 分支同一位置、同一返回形状。
- * 本轮未接线的原因：该文件（以及 {@code WorkflowService} / {@code WorkflowController}）
- * 正被另一条并发线的大改占用，改进去会把对方的在制品一起带进提交。
- * 判别性自测已就绪：{@code WorkflowRunGateDbSelfTest}（13/0）。
+ * <h3>接线点（已接，2026-11-17）</h3>
+ * <ul>
+ *   <li>{@code WorkflowWebService.run(long, String)}：首页「运行流程」的 HTTP 入口，
+ *       {@code !allowed} 时返回 {@code {"error":…, "errorCode":"EC-WORKFLOW-RUNNING",
+ *       "activeRunId":…}}（与既有 {@code EC-ISLAND-BUSY} 同一返回形状）；</li>
+ *   <li>{@code ExperimentExecutor.run(...)}：实验/批次/定时起 run 的入口，
+ *       {@code existingRunId <= 0}（新建，非续跑）时对实验涉及的每个 workflow 逐个检查，
+ *       不通过就抛 {@code IllegalStateException} ⇒ 与 HandoffGate / 岛边界同口径 fail-closed。</li>
+ * </ul>
+ *
+ * <p>判别性自测：{@code WorkflowRunGateDbSelfTest}（13/0）。
  */
 public final class WorkflowRunGate {
 

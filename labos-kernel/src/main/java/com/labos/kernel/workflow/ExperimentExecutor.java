@@ -168,6 +168,25 @@ public final class ExperimentExecutor {
                     + String.join("；", boundaryBad));
         }
 
+        // 同流程并发门禁（2026-11-17）：实验的每一步都会起一个 run，若其中某个流程**已经有
+        // 在途 run**，两个 run 会互相抢 device_event（先到先得、一个 run 只消费一次），
+        // 且机械臂是唯一物理资源（实测可并行 run 数 ≈1.9）⇒ 开跑前 fail-closed，
+        // 与 HandoffGate / 岛边界同口径（抛异常 ⇒ 调度器把这条 run 标失败，不留孤儿）。
+        // 续跑（existingRunId>0）不检查：那条 run 本来就在途。
+        if (existingRunId <= 0) {
+            java.util.LinkedHashSet<Long> wfIds = new java.util.LinkedHashSet<>();
+            for (Step st : steps) {
+                wfIds.add(st.workflowId());
+            }
+            for (Long wfId : wfIds) {
+                WorkflowRunGate.Decision gate = WorkflowRunGate.check(db, tenantId, wfId, null);
+                if (!gate.allowed()) {
+                    throw new IllegalStateException("实验包含的流程 " + wfId
+                            + " 已有在途运行，不能并发启动：" + gate.reason());
+                }
+            }
+        }
+
         long runId = existingRunId > 0
                 ? updateRun(existingRunId, vars, steps.size())
                 : createRun(experimentId, vars, steps.size());

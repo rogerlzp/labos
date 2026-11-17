@@ -280,6 +280,22 @@ public class WorkflowWebService {
     }
 
     public String run(long workflowId, String attendance) throws SQLException {
+        // 准入：**同一流程不允许并发启动**（2026-11-17）。
+        // 为什么：① device_event 先到先得、一个 run 只消费一次 ⇒ 两个 run 同时等同一台设备的
+        // 同一个事件时，后到的永远等不到；② 机械臂是唯一物理资源（全部 9,312 条搬运路径都含
+        // RAIL-X231-1）⇒ 搬运只能串行，实测单臂吞吐 ≈6.46 次/分钟、单 run 需求 p50 ≈3.35
+        // 次/分钟 ⇒ 可并行 run 数 ≈1.9 个（run 1001411 曾等满 62.7s 后 EC-RESOURCE-BUSY）。
+        // 放开开关：LABOS_WORKFLOW_CONCURRENT_RUN=allow。
+        com.labos.kernel.workflow.WorkflowRunGate.Decision gate =
+                com.labos.kernel.workflow.WorkflowRunGate.check(db, TENANT, workflowId, null);
+        if (!gate.allowed()) {
+            return Jsons.obj(
+                    "error", gate.reason(),
+                    "errorCode", "EC-WORKFLOW-RUNNING",
+                    "activeRunId", gate.runId(),
+                    "activeRunNo", gate.runNo(),
+                    "activeStatus", gate.status());
+        }
         WorkflowService.Execution e;
         try {
             e = workflows.execute(workflowId, attendance);

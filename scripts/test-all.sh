@@ -314,6 +314,9 @@ DB=(
   # P2 B-3：永久承诺生命周期——孤儿巡检命中 / pause 清理只删 TTL 不删承诺（回归）/
   # 盘点写占用消费承诺 / 第二位置按位精确写入
   "driver.PositionPromiseSweepDbSelfTest"
+  # 同流程并发运行门禁（2026-11-17）：在途 run 拦得住 / paused 也拦 / draft 不拦 /
+  # exclude 自己放行 / 另一个流程不受影响。⚠ 依赖 LABOS_WORKFLOW_CONCURRENT_RUN 未设置
+  "workflow.WorkflowRunGateDbSelfTest"
   # 状态字典（§1.4 板状态 / §1.5 设备业务状态）：CRUD 落库 + doc_label 不被覆盖 +
   # 仍被引用的板状态不许删（2026-11-15）。⚠ 依赖 migration 20261115_device_business_state.sql
   "boot.web.service.StateDictDbSelfTest"
