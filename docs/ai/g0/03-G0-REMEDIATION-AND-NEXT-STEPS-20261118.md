@@ -19,8 +19,8 @@
 
 | 顺序 | ID | 工作项 | 级别 | 交付 | 验收 |
 |---|---|---|---|---|---|
-| 1 | G0-01 | WorkflowRunGate UNKNOWN/ERROR fail-closed 独立热修 | P0 | 门禁返回三态/错误态；生产禁止静默放行 | DB 断开、词表为空、参数非法、并发竞态均不允许启动；Web `run` 与 `ExperimentExecutor` 消费同一决策 |
-| 2 | G0-07 | RecipeCompiler 能力映射透传独立修复 | P0 | `compileAll` 使用 `capabilityByResource` | 节点能力与绑定设备冲突时，三参数 `compileAll` 与 `compile` 解析一致；新增回归测试实际通过 |
+| 1 | [G0-01](04-G0-01-WORKFLOW-RUNGATE-HOTFIX-TASK-CARD.md) | WorkflowRunGate UNKNOWN/ERROR fail-closed 独立热修 | P0 | 三态决策、稳定错误语义与跨入口原子准入；生产禁止静默放行 | DB 断开、词表为空、参数非法均拒绝；并发竞争恰好一个新建准入；Web `run` 与 `ExperimentExecutor` 消费同一决策 |
+| 2 | [G0-07](05-G0-07-RECIPE-COMPILER-FIX-TASK-CARD.md) | RecipeCompiler 能力映射透传独立修复 | P0 | `compileAll` 与执行展开都使用同一 `capabilityByResource/resourceCap` | 保持既有能力优先级；三参数 `compileAll` 与 `compile` 一致；预览与执行前展开计划经服务级测试证明一致 |
 | 3 | G0-03 | 设备事件身份与幂等 | P1 | 设备身份、租户绑定、sourceEventId 必填、run 归属校验 | 重复/迟到/伪造/跨租户事件全部拒绝或幂等 |
 | 4 | G0-11 | 统一 tenant/user/project context | P1 | 请求上下文和服务调用统一传递，不再硬编码 TENANT=1 | 不同 tenant 数据隔离测试；无上下文 fail-closed |
 | 5 | G0-05 | 高风险审计可靠化 | P1 | 审计 Outbox 或与业务事务原子落库 | 审计不可写时高风险动作不产生未审计副作用 |
@@ -30,7 +30,7 @@
 | 9 | G0-08 | 驱动阶段观测能力 | P2 | 设备 ACK/执行事件接口契约 | 只在设备真实回调存在时推进 RECEIVED/EXECUTING |
 | 10 | G0-09 | Agent Runtime 最小骨架 | P2 | AgentRun/ToolCall/Approval/DecisionEvidence | 任务超时、取消、重试、人工接管和审计可追溯 |
 
-G0-01 是现有执行系统的独立 P0 热修，G0-07 是独立代码缺陷；二者应立即单独立项、单独提交并补回归，不占 AI Workbench 工期，也不等待 G1。本文档只调整优先级和归属，不修改业务代码。上述结论属于历史基线，基线之后的当前源码状态须经增量核查；核查前保持 UNKNOWN。G0-01 还须排查历史事件串扰，现场日志不足时不得断言从未发生；G0-07 未做真实设备能力比对前，不得宣称“预览与真机一致”。
+G0-01 是现有执行系统的独立 P0 热修，G0-07 是独立代码缺陷；二者应立即单独立项、单独提交并补回归，不占 AI Workbench 工期，也不等待 G1。详细实施步骤、验收矩阵和证据回填位置见 04/05 任务卡。本次已在任务卡中记录限定路径的静态复核；未覆盖源码、构建、测试和现场结论仍保持 UNKNOWN。G0-01 还须排查历史事件串扰，现场日志不足时不得断言从未发生；G0-07 未做真实设备能力比对前，不得宣称“预览与真机一致”。
 
 后续增量核查按 README 的维护契约分别记录“实现就绪度”“证据就绪度”和“本轮是否执行”；不因补证据任务而降低上述两个代码缺陷的优先级，也不在本轮重写历史快照的 20 项结论。
 

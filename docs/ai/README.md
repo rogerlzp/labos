@@ -18,7 +18,7 @@
 | 8 | [安全与数据治理](07-SECURITY-DATA-GOVERNANCE.md) | Project ACL、Agent 委托授权、模型出域、审计可靠性与知识产权 |
 | 9 | [Capability 验证标准](08-CAPABILITY-VERIFICATION-STANDARD.md) | Capability/Skill/Agent/设备/实验成熟度等级和验收证据 |
 | 10 | [AI Workbench 独立评审](09-AI-WORKBENCH-INDEPENDENT-REVIEW-20261118.md) | 评审结论、P1 整改、G0 准入矩阵和最终决策 |
-| 11 | [G0 源码核查](g0/README-G0-SOURCE-AUDIT-20261118.md) | 固定历史基线上的执行底座源码证据、实现矩阵、风险与整改顺序 |
+| 11 | [G0 源码核查](g0/README-G0-SOURCE-AUDIT-20261118.md) | 固定历史基线证据、实现矩阵、整改顺序，以及 G0-01/G0-07 独立修复任务卡与验收清单 |
 
 ## 核心路线
 
