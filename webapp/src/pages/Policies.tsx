@@ -5,7 +5,7 @@ import {
   Table, Tag, Typography, message,
 } from 'antd';
 import { api, type Policy, type PolicyValidation } from '../api/client';
-import { useReadOnly } from '../auth';
+import { useAdminOnly, useReadOnly } from '../auth';
 import { useT } from '../i18n';
 
 const STRATEGIES = ['RETRY', 'REASSIGN', 'SKIP', 'ABORT', 'MANUAL'];
@@ -15,6 +15,9 @@ export default function PoliciesPage() {
   const qc = useQueryClient();
   // 策略影响真实执行，属于配置写操作：viewer 只读
   const ro = useReadOnly();
+  // 资产类写（建岛/建设备/改驱动/建池/改系统字典）＝仅管理员
+  // 与后端 ApiAuthInterceptor.isAdminOnlyAssetWrite 对齐（2026-11-18）
+  const ao = useAdminOnly();
   const { data, isLoading } = useQuery({ queryKey: ['policies'], queryFn: api.policies });
 
   const [editing, setEditing] = useState<Policy | null>(null);
@@ -116,7 +119,7 @@ export default function PoliciesPage() {
             },
             {
               title: t('policies.col.operation'), width: 90,
-              render: (_, r) => <Button size="small" type="link" {...ro} onClick={() => open(r)}>{t('policies.action.edit')}</Button>,
+              render: (_, r) => <Button size="small" type="link" {...ao} onClick={() => open(r)}>{t('policies.action.edit')}</Button>,
             },
           ]}
         />
@@ -161,7 +164,7 @@ export default function PoliciesPage() {
           </Space>
 
           <Space>
-            <Button onClick={runValidate} loading={busy}>{t('policies.action.validate')}</Button>
+            <Button onClick={runValidate} loading={busy} {...ro}>{t('policies.action.validate')}</Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {t('policies.action.validateHint')}
             </Typography.Text>

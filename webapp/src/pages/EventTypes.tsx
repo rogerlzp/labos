@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import { api } from '../api/client';
 import type { DeviceEventType } from '../api/client';
-import { useReadOnly } from '../auth';
+import { useAdminOnly } from '../auth';
 import { useT } from '../i18n';
 import type { MessageKey } from '../i18n/core';
 
@@ -84,7 +84,9 @@ export default function EventTypesPage() {
   const t = useT();
   const qc = useQueryClient();
   // 事件码字典是配置类写操作：viewer 只读
-  const ro = useReadOnly();
+  // 资产类写（建岛/建设备/改驱动/建池/改系统字典）＝仅管理员
+  // 与后端 ApiAuthInterceptor.isAdminOnlyAssetWrite 对齐（2026-11-18）
+  const ao = useAdminOnly();
 
   const [open, setOpen] = useState(false);
   /** 非 null = 编辑模式；null = 新建模式（新建时才允许填事件码）。 */
@@ -205,7 +207,7 @@ export default function EventTypesPage() {
         size="small"
         title={t('eventTypes.title', { n: items.length })}
         extra={
-          <Button type="primary" {...ro} onClick={openCreate}>
+          <Button type="primary" {...ao} onClick={openCreate}>
             {t('eventTypes.action.create')}
           </Button>
         }
@@ -260,7 +262,7 @@ export default function EventTypesPage() {
                 title: t('eventTypes.col.action'), width: 140,
                 render: (_, r) => (
                   <Space size={0}>
-                    <Button size="small" type="link" {...ro} onClick={() => openEdit(r)}>
+                    <Button size="small" type="link" {...ao} onClick={() => openEdit(r)}>
                       {t('eventTypes.action.edit')}
                     </Button>
                     <Popconfirm
@@ -269,7 +271,7 @@ export default function EventTypesPage() {
                       okText={t('eventTypes.confirm.deleteOk')} okButtonProps={{ danger: true }}
                       onConfirm={() => remove(r)}
                     >
-                      <Button size="small" type="link" danger {...ro}>
+                      <Button size="small" type="link" danger {...ao}>
                         {t('eventTypes.action.delete')}
                       </Button>
                     </Popconfirm>
@@ -289,7 +291,7 @@ export default function EventTypesPage() {
         onCancel={() => setOpen(false)}
         footer={[
           <Button key="close" onClick={() => setOpen(false)}>{t('eventTypes.action.close')}</Button>,
-          <Button key="save" type="primary" loading={busy} {...ro}
+          <Button key="save" type="primary" loading={busy} {...ao}
             onClick={isEdit ? save : create}>
             {t('eventTypes.action.save')}
           </Button>,

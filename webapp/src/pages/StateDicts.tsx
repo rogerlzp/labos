@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import { api } from '../api/client';
 import type { DeviceBusinessState, PlateProcessState } from '../api/client';
-import { useReadOnly } from '../auth';
+import { useAdminOnly } from '../auth';
 import { useT } from '../i18n';
 import type { MessageKey } from '../i18n/core';
 
@@ -67,7 +67,9 @@ export default function StateDictsPage() {
   const t = useT();
   const qc = useQueryClient();
   // 字典是配置类写操作：viewer 只读
-  const ro = useReadOnly();
+  // 资产类写（建岛/建设备/改驱动/建池/改系统字典）＝仅管理员
+  // 与后端 ApiAuthInterceptor.isAdminOnlyAssetWrite 对齐（2026-11-18）
+  const ao = useAdminOnly();
 
   const [tab, setTab] = useState('plate');
   const [plateOpen, setPlateOpen] = useState(false);
@@ -243,7 +245,7 @@ export default function StateDictsPage() {
       size="small"
       title={t('stateDicts.plate.title', { n: plateItems.length })}
       extra={
-        <Button type="primary" {...ro} onClick={openPlateCreate}>
+        <Button type="primary" {...ao} onClick={openPlateCreate}>
           {t('stateDicts.action.create')}
         </Button>
       }
@@ -284,7 +286,7 @@ export default function StateDictsPage() {
               title: t('stateDicts.col.action'), width: 140,
               render: (_, r) => (
                 <Space size={0}>
-                  <Button size="small" type="link" {...ro} onClick={() => openPlateEdit(r)}>
+                  <Button size="small" type="link" {...ao} onClick={() => openPlateEdit(r)}>
                     {t('stateDicts.action.edit')}
                   </Button>
                   <Popconfirm
@@ -293,7 +295,7 @@ export default function StateDictsPage() {
                     okText={t('stateDicts.confirm.deleteOk')} okButtonProps={{ danger: true }}
                     onConfirm={() => removePlate(r)}
                   >
-                    <Button size="small" type="link" danger {...ro}>
+                    <Button size="small" type="link" danger {...ao}>
                       {t('stateDicts.action.delete')}
                     </Button>
                   </Popconfirm>
@@ -311,7 +313,7 @@ export default function StateDictsPage() {
       size="small"
       title={t('stateDicts.device.title', { n: deviceItems.length })}
       extra={
-        <Button type="primary" {...ro} onClick={openDeviceCreate}>
+        <Button type="primary" {...ao} onClick={openDeviceCreate}>
           {t('stateDicts.action.create')}
         </Button>
       }
@@ -352,7 +354,7 @@ export default function StateDictsPage() {
               title: t('stateDicts.col.action'), width: 140,
               render: (_, r) => (
                 <Space size={0}>
-                  <Button size="small" type="link" {...ro} onClick={() => openDeviceEdit(r)}>
+                  <Button size="small" type="link" {...ao} onClick={() => openDeviceEdit(r)}>
                     {t('stateDicts.action.edit')}
                   </Button>
                   <Popconfirm
@@ -361,7 +363,7 @@ export default function StateDictsPage() {
                     okText={t('stateDicts.confirm.deleteOk')} okButtonProps={{ danger: true }}
                     onConfirm={() => removeDevice(r)}
                   >
-                    <Button size="small" type="link" danger {...ro}>
+                    <Button size="small" type="link" danger {...ao}>
                       {t('stateDicts.action.delete')}
                     </Button>
                   </Popconfirm>
@@ -399,7 +401,7 @@ export default function StateDictsPage() {
         onCancel={() => setPlateOpen(false)}
         footer={[
           <Button key="close" onClick={() => setPlateOpen(false)}>{t('stateDicts.action.close')}</Button>,
-          <Button key="save" type="primary" loading={busy} {...ro} onClick={savePlate}>
+          <Button key="save" type="primary" loading={busy} {...ao} onClick={savePlate}>
             {t('stateDicts.action.save')}
           </Button>,
         ]}
@@ -484,7 +486,7 @@ export default function StateDictsPage() {
         onCancel={() => setDeviceOpen(false)}
         footer={[
           <Button key="close" onClick={() => setDeviceOpen(false)}>{t('stateDicts.action.close')}</Button>,
-          <Button key="save" type="primary" loading={busy} {...ro} onClick={saveDevice}>
+          <Button key="save" type="primary" loading={busy} {...ao} onClick={saveDevice}>
             {t('stateDicts.action.save')}
           </Button>,
         ]}

@@ -140,6 +140,7 @@ export default function UsersPage() {
           <Form.Item name="role" label={t('users.field.role')} rules={[{ required: true }]}>
             <Select options={[
               { value: 'admin', label: t('users.roleOption.adminFull') },
+              { value: 'designer', label: t('users.roleOption.designerFull') },
               { value: 'operator', label: t('users.roleOption.operatorFull') },
               { value: 'viewer', label: t('users.roleOption.viewer') },
             ]} />
@@ -157,6 +158,7 @@ export default function UsersPage() {
           <Form.Item name="role" label={t('users.field.role')}>
             <Select options={[
               { value: 'admin', label: t('users.roleOption.admin') },
+              { value: 'designer', label: t('users.roleOption.designer') },
               { value: 'operator', label: t('users.roleOption.operator') },
               { value: 'viewer', label: t('users.roleOption.viewer') },
             ]} />

@@ -1,7 +1,7 @@
 import {
   api, apiFetch, type DevicePool, type DevicePoolMember,
 } from '../api/client';
-import { useReadOnly } from '../auth';
+import { useAdminOnly, useReadOnly } from '../auth';
 import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -113,6 +113,9 @@ export default function TopologyPage() {
   const qc = useQueryClient();
   // 设备/岛屿增删改都是写操作：viewer 只读浏览拓扑
   const ro = useReadOnly();
+  // 资产类写（建岛/建设备/改驱动/建池/改系统字典）＝仅管理员
+  // 与后端 ApiAuthInterceptor.isAdminOnlyAssetWrite 对齐（2026-11-18）
+  const ao = useAdminOnly();
   const [picked, setPicked] = useState<Dev | null>(null);
   const [addIsland, setAddIsland] = useState(false);
   const [addDevice, setAddDevice] = useState<Island | null>(null);
@@ -570,10 +573,10 @@ export default function TopologyPage() {
                   e.target.value = '';
                 }}
               />
-              <Button size="small" {...ro} onClick={() => islandFileRef.current?.click()}>
+              <Button size="small" {...ao} onClick={() => islandFileRef.current?.click()}>
                 {t('topology.io.action.import')}
               </Button>
-              <Button type="primary" icon={<PlusOutlined />} {...ro} onClick={() => setAddIsland(true)}>
+              <Button type="primary" icon={<PlusOutlined />} {...ao} onClick={() => setAddIsland(true)}>
                 {t('topology.action.addIsland')}
               </Button>
             </Space>
@@ -587,7 +590,7 @@ export default function TopologyPage() {
               expandable={{
                 expandedRowRender: (row) => (
                   <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Button size="small" icon={<PlusOutlined />} {...ro}
+                    <Button size="small" icon={<PlusOutlined />} {...ao}
                       onClick={() => { setAddDevice(row); deviceForm.resetFields(); }}>
                       {t('topology.hint.addDevice')}
                     </Button>
@@ -608,12 +611,12 @@ export default function TopologyPage() {
                           title: t('topology.col.action'), width: 120,
                           render: (_, d) => (
                             <Space size={2}>
-                              <Button size="small" type="link" {...ro} onClick={(e) => {
+                              <Button size="small" type="link" {...ao} onClick={(e) => {
                                 e.stopPropagation();
                                 setEditing(d);
                                 editForm.setFieldsValue({ name: d.name });
                               }}>{t('topology.action.edit')}</Button>
-                              <Button size="small" type="link" danger {...ro} onClick={async (e) => {
+                              <Button size="small" type="link" danger {...ao} onClick={async (e) => {
                                 e.stopPropagation();
                                 if (!confirm(t('topology.confirm.deleteDevice', { code: d.code }))) return;
                                 try {
@@ -663,7 +666,7 @@ export default function TopologyPage() {
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {t('topology.driver.hint')}
               </Typography.Text>
-              <Button type="primary" icon={<PlusOutlined />} {...ro}
+              <Button type="primary" icon={<PlusOutlined />} {...ao}
                 onClick={() => { setAddDriver(true); driverForm.resetFields(); }}>
                 {t('topology.driver.action.add')}
               </Button>
@@ -693,7 +696,7 @@ export default function TopologyPage() {
                   title: t('topology.driver.col.action'), width: 120,
                   render: (_, d) => (
                     <Space size={2}>
-                      <Button size="small" type="link" {...ro} onClick={() => {
+                      <Button size="small" type="link" {...ao} onClick={() => {
                         setEditDriver(d);
                         driverEditForm.setFieldsValue({
                           name: d.name ?? '',
@@ -704,7 +707,7 @@ export default function TopologyPage() {
                           resident: false,
                         });
                       }}>{t('topology.action.edit')}</Button>
-                      <Button size="small" type="link" danger {...ro}
+                      <Button size="small" type="link" danger {...ao}
                         onClick={() => deleteDriver(d)}>{t('topology.action.delete')}</Button>
                     </Space>
                   ),
@@ -733,7 +736,7 @@ export default function TopologyPage() {
                 onChange={(v) => setPoolKindFilter(v)}
                 options={POOL_KINDS.map((k) => ({ value: k.value, label: t(k.labelKey) }))}
               />
-              <Button type="primary" icon={<PlusOutlined />} {...ro}
+              <Button type="primary" icon={<PlusOutlined />} {...ao}
                 onClick={() => { poolForm.resetFields(); setAddPoolOpen(true); }}>
                 {t('topology.pool.action.add')}
               </Button>
@@ -778,9 +781,9 @@ export default function TopologyPage() {
                   title: t('topology.pool.col.action'), width: 180,
                   render: (_, p) => (
                     <Space size={2}>
-                      <Button size="small" type="link" {...ro}
+                      <Button size="small" type="link" {...ao}
                         onClick={() => setDetailPoolId(p.id)}>{t('topology.pool.action.members')}</Button>
-                      <Button size="small" type="link" {...ro} onClick={() => {
+                      <Button size="small" type="link" {...ao} onClick={() => {
                         setEditPoolRow(p);
                         poolEditForm.setFieldsValue({
                           name: p.name ?? '',
@@ -791,7 +794,7 @@ export default function TopologyPage() {
                           enabled: p.enabled !== false,
                         });
                       }}>{t('topology.pool.action.edit')}</Button>
-                      <Button size="small" type="link" danger {...ro}
+                      <Button size="small" type="link" danger {...ao}
                         onClick={() => deletePool(p)}>{t('topology.pool.action.delete')}</Button>
                     </Space>
                   ),
@@ -1057,11 +1060,11 @@ export default function TopologyPage() {
                         <InputNumber min={0} style={{ width: 110 }}
                           placeholder={t('topology.pool.placeholder.priority')} />
                       </Form.Item>
-                      <Button size="small" type="link" danger {...ro}
+                      <Button size="small" type="link" danger {...ao}
                         onClick={() => remove(f.name)}>{t('topology.pool.action.removeMemberRow')}</Button>
                     </Space>
                   ))}
-                  <Button size="small" icon={<PlusOutlined />} {...ro}
+                  <Button size="small" icon={<PlusOutlined />} {...ao}
                     onClick={() => add({ priority: 100 })}>
                     {t('topology.pool.action.addMemberRow')}
                   </Button>
@@ -1112,7 +1115,7 @@ export default function TopologyPage() {
         footer={
           <Space>
             <Button onClick={() => setDetailPoolId(null)}>{t('topology.pool.modal.close')}</Button>
-            <Button type="primary" {...ro} disabled={ro.disabled || !poolDetail.data}
+            <Button type="primary" {...ao} disabled={ro.disabled || !poolDetail.data}
               onClick={() => { memberForm.resetFields(); setAddMemberOpen(true); }}>
               {t('topology.pool.action.addMember')}
             </Button>
@@ -1140,7 +1143,7 @@ export default function TopologyPage() {
             {
               title: t('topology.pool.col.action'), width: 120,
               render: (_, m) => (
-                <Button size="small" type="link" danger {...ro}
+                <Button size="small" type="link" danger {...ao}
                   onClick={() => removeMember(m)}>{t('topology.pool.action.removeMember')}</Button>
               ),
             },

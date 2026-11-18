@@ -221,6 +221,20 @@ export function useOperateOnly(): { disabled: boolean; title?: string } {
     : { disabled: true, title: translate('auth.operateOnlyTitle', undefined, locale) };
 }
 
+/**
+ * 资产类写操作的只读属性（建岛/建设备/改驱动/建池/改系统字典 —— 仅 admin）。
+ *
+ * <p>2026-11-18 起后端对这些端点收口到 admin（`ApiAuthInterceptor.isAdminOnlyAssetWrite`）⇒
+ * 前端必须同步：**否则用户点下去才吃 403**，现场会当成"系统坏了"。
+ */
+export function useAdminOnly(): { disabled: boolean; title?: string } {
+  const { isAdmin } = useAuth();
+  const { locale } = useI18n();
+  return isAdmin
+    ? { disabled: false }
+    : { disabled: true, title: translate('auth.adminOnlyTitle', undefined, locale) };
+}
+
 export function useReadOnly(): { disabled: boolean; title?: string } {
   const { canWrite } = useAuth();
   const { locale } = useI18n();

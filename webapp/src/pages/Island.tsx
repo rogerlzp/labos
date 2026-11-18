@@ -6,7 +6,7 @@ import {
   Modal, Row, Select, Space, Spin, Tag, Typography, message,
 } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { useReadOnly } from '../auth';
+import { useAdminOnly, useReadOnly } from '../auth';
 import { useT } from '../i18n';
 import { translate } from '../i18n/core';
 
@@ -139,6 +139,8 @@ export default function IslandPage() {
   const nav = useNavigate();
   // 设备部署/移出/删除/改位置、建岛删岛、下发指令都是写操作：viewer 只读
   const ro = useReadOnly();
+  // 资产类写（建岛/删岛/建设备）＝仅管理员：与后端 isAdminOnlyAssetWrite 对齐（2026-11-18）
+  const ao = useAdminOnly();
   const [code, setCode] = useState<string | null>(
     new URLSearchParams(window.location.search).get('code'));
   const [picked, setPicked] = useState<Dev | null>(null);
@@ -595,7 +597,7 @@ export default function IslandPage() {
           title={<Space><span>{t('island.pool.title')}</span><Tag>{poolDevs.length}</Tag></Space>}
           extra={
             <Space size={4}>
-              <Button size="small" type="primary" ghost icon={<PlusOutlined />} {...ro}
+              <Button size="small" type="primary" ghost icon={<PlusOutlined />} {...ao}
                 onClick={() => { setNewDevice(true); deviceForm.resetFields(); }}>
                 {t('island.action.addDevice')}
               </Button>
@@ -683,8 +685,8 @@ export default function IslandPage() {
               <Button type="primary" ghost loading={demoRunning} {...ro} onClick={runFlow}>
                 {t('island.hint.runToSeePlate')}
               </Button>
-              <Button icon={<PlusOutlined />} {...ro} onClick={() => setNewIsland(true)}>{t('island.action.newIsland')}</Button>
-              <Button danger disabled={ro.disabled || !current} title={ro.title} onClick={async () => {
+              <Button icon={<PlusOutlined />} {...ao} onClick={() => setNewIsland(true)}>{t('island.action.newIsland')}</Button>
+              <Button danger disabled={ao.disabled || !current} title={ao.title} onClick={async () => {
                 if (!current) return;
                 if (!confirm(t('island.confirm.deleteIsland', { name: current.name }))) return;
                 const r = await apiFetch(`/api/islands/${current.id}`, {

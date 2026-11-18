@@ -5,7 +5,7 @@ import {
   Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { apiFetch } from '../api/client';
-import { useReadOnly } from '../auth';
+import { useAdminOnly } from '../auth';
 import { useT } from '../i18n';
 import type { MessageKey } from '../i18n/core';
 
@@ -72,7 +72,9 @@ interface ErrorCode {
 export default function ErrorCodesPage() {
   const qc = useQueryClient();
   // 错误码/处置策略都是配置类写操作：viewer 只读
-  const ro = useReadOnly();
+  // 资产类写（建岛/建设备/改驱动/建池/改系统字典）＝仅管理员
+  // 与后端 ApiAuthInterceptor.isAdminOnlyAssetWrite 对齐（2026-11-18）
+  const ao = useAdminOnly();
   const t = useT();
   const [scope, setScope] = useState<string>();
   const [severity, setSeverity] = useState<string>();
@@ -272,7 +274,7 @@ export default function ErrorCodesPage() {
             <Select allowClear placeholder={t('errorCodes.placeholder.severity')} style={{ width: 120 }}
               options={['info', 'warn', 'error', 'fatal'].map((v) => ({ value: v, label: v }))}
               onChange={(v) => setSeverity(v)} />
-            <Button type="primary" {...ro} onClick={() => setCreating(true)}>{t('errorCodes.action.create')}</Button>
+            <Button type="primary" {...ao} onClick={() => setCreating(true)}>{t('errorCodes.action.create')}</Button>
           </Space>
         }
       >
@@ -355,14 +357,14 @@ export default function ErrorCodesPage() {
                 title: t('errorCodes.col.action'), width: 130,
                 render: (_, r) => (
                   <Space size={0}>
-                    <Button size="small" type="link" {...ro} onClick={() => openEdit(r)}>{t('errorCodes.action.edit')}</Button>
+                    <Button size="small" type="link" {...ao} onClick={() => openEdit(r)}>{t('errorCodes.action.edit')}</Button>
                     <Popconfirm
                       title={t('errorCodes.confirm.deleteTitle', { code: r.code })}
                       description={t('errorCodes.confirm.deleteDesc')}
                       okText={t('errorCodes.confirm.deleteOk')} okButtonProps={{ danger: true }}
                       onConfirm={() => removeCode(r.id)}
                     >
-                      <Button size="small" type="link" danger {...ro}>{t('errorCodes.action.delete')}</Button>
+                      <Button size="small" type="link" danger {...ao}>{t('errorCodes.action.delete')}</Button>
                     </Popconfirm>
                   </Space>
                 ),
@@ -378,7 +380,7 @@ export default function ErrorCodesPage() {
         onCancel={() => setEditing(null)}
         footer={[
           <Button key="close" onClick={() => setEditing(null)}>{t('errorCodes.action.close')}</Button>,
-          <Button key="save" type="primary" loading={busy} {...ro} onClick={saveCode}>
+          <Button key="save" type="primary" loading={busy} {...ao} onClick={saveCode}>
             {t('errorCodes.action.saveCode')}
           </Button>,
         ]}
@@ -451,10 +453,10 @@ export default function ErrorCodesPage() {
                   title: t('errorCodes.col.action'), width: 130,
                   render: (_, p) => (
                     <Space size={4}>
-                      <Button size="small" type="link" {...ro} onClick={() => savePolicy(p)}>{t('errorCodes.modal.saveOk')}</Button>
+                      <Button size="small" type="link" {...ao} onClick={() => savePolicy(p)}>{t('errorCodes.modal.saveOk')}</Button>
                       <Popconfirm title={t('errorCodes.confirm.deletePolicyTitle', { scope: p.scope })}
                         onConfirm={() => removePolicy(p)}>
-                        <Button size="small" type="link" danger {...ro}>{t('errorCodes.action.delete')}</Button>
+                        <Button size="small" type="link" danger {...ao}>{t('errorCodes.action.delete')}</Button>
                       </Popconfirm>
                     </Space>
                   ),
@@ -470,7 +472,7 @@ export default function ErrorCodesPage() {
               <Select size="small" style={{ width: 160 }} value={newStrategy}
                 options={STRATEGIES.map((s) => ({ value: s.value, label: t(s.labelKey) }))}
                 onChange={setNewStrategy} />
-              <Button size="small" {...ro} onClick={addPolicy}>{t('errorCodes.action.add')}</Button>
+              <Button size="small" {...ao} onClick={addPolicy}>{t('errorCodes.action.add')}</Button>
             </Space>
           </Space>
         )}

@@ -161,7 +161,7 @@ def main():
         else:
             bad("%s GET config 非 200" % role, "HTTP %d" % st)
 
-    print("── 写：admin/operator/designer 200，viewer 403 ──")
+    print("── 写：admin/designer 200，operator/viewer 403 ──")
     # planNo 带运行期唯一后缀：不靠清理保证不撞（同一个号建两次就是 409）
     stamp = "%d" % int(time.time() * 1000)
     for name, (method, path, body), allowed in WRITE_ENDPOINTS:
@@ -176,7 +176,74 @@ def main():
             else:
                 bad("%s %s → %d（期望 %d）" % (role, name, st, expect), str(resp)[:80])
 
-    print("── 删：admin/operator/designer 200，viewer 403 ──")
+    # ---- 2026-11-18：资产层 / 字典层收口（仅 admin 写）----
+    #
+    # 用**不存在的 id** 打写端点：admin 会拿到 404（说明**过了权限检查**，只是资源不存在），
+    # 其余角色必须 403 ⇒ 既有判据（谁被拦），又无副作用（不会删掉任何真东西）。
+    ADMIN_ONLY_ENDPOINTS = [
+        ("DELETE /api/islands/{id}", "DELETE", "/api/islands/999999999"),
+        ("DELETE /api/devices/{id}", "DELETE", "/api/devices/999999999"),
+        ("DELETE /api/drivers/{id}", "DELETE", "/api/drivers/999999999"),
+        ("DELETE /api/pools/{id}", "DELETE", "/api/pools/999999999"),
+        ("DELETE /api/device-event-types/{id}", "DELETE", "/api/device-event-types/999999999"),
+        ("DELETE /api/error-codes/{id}", "DELETE", "/api/error-codes/999999999"),
+    ]
+    print("── 资产层/字典层：只有 admin 能写（其余角色 403）──")
+    for name, method, path in ADMIN_ONLY_ENDPOINTS:
+        for role in ("admin", "operator", "designer", "viewer"):
+            st, resp = call(tokens[role], path, method)
+            if role == "admin":
+                good = st != 403
+                why = "admin 不该被权限拦（%d）" % st
+            else:
+                good = st == 403
+                why = "期望 403"
+            if good:
+                ok("%s %s → %d（%s）" % (role, name, st, why))
+            else:
+                bad("%s %s → %d（%s）" % (role, name, st, why), str(resp)[:80])
+
+    # ---- 2026-11-18：实验域收口（编排侧 / 运行侧分权）----
+    EXPERIMENT_CASES = [
+        # (名称, 方法, 路径, body, 允许写的角色)
+        ("PUT /api/experiments/{id}/graph（编排侧）", "PUT", "/api/experiments/999999999/graph",
+         {"nodes": []}, {"admin", "designer"}),
+        ("PUT /api/experiments/{id}/workcells（编排侧）", "PUT", "/api/experiments/999999999/workcells",
+         [], {"admin", "designer"}),
+        ("POST /api/experiments/{id}/run（运行侧）", "POST", "/api/experiments/999999999/run",
+         None, {"admin", "operator"}),
+        ("PUT /api/experiments/{id}/variables（运行侧）", "PUT", "/api/experiments/999999999/variables",
+         [], {"admin", "operator"}),
+        ("POST /api/experiments/runs/{id}/resume（运行侧）", "POST", "/api/experiments/runs/999999999/resume",
+         None, {"admin", "operator"}),
+    ]
+    print("── 实验域：编排侧 admin/designer，运行侧 admin/operator ──")
+    for name, method, path, body, allowed in EXPERIMENT_CASES:
+        for role in ("admin", "operator", "designer", "viewer"):
+            st, resp = call(tokens[role], path, method, body)
+            if role in allowed:
+                good = st != 403
+                why = "不该被拦（%d）" % st
+            else:
+                good = st == 403
+                why = "期望 403"
+            if good:
+                ok("%s %s → %d（%s）" % (role, name, st, why))
+            else:
+                bad("%s %s → %d（%s）" % (role, name, st, why), str(resp)[:80])
+
+    print("── 读不受影响：四角色都应 200 ──")
+    # ⚠ 读端点只列**真实存在**的路由（GET /api/islands 没有这个端点，列表走 /api/topology）
+    for path in ("/api/topology", "/api/devices/registry", "/api/drivers", "/api/pools",
+                 "/api/device-event-types", "/api/error-codes"):
+        for role in ("admin", "operator", "designer", "viewer"):
+            st, body = call(tokens[role], path)
+            if st == 200:
+                ok("%s GET %s 200" % (role, path))
+            else:
+                bad("%s GET %s → %d（期望 200）" % (role, path, st), str(body)[:80])
+
+    print("── 删：admin/designer 200，viewer 403（operator 无权建排程）──")
     # 每个可写角色**自己建一条再删自己那条**：
     # 共用一条会让先删的那个（admin）把后面的变 404 —— 测的就不是权限了。
     victim_no = "VERIFY-PERM-DELVICTIM-%s" % stamp
@@ -210,7 +277,8 @@ def main():
             else:
                 bad("viewer 被拒后排程消失了", victim_no)
 
-    for role in ("admin", "operator", "designer"):
+    # operator 已无权建排程（口径对齐前端）⇒ 这里只测 admin / designer
+    for role in ("admin", "designer"):
         plan_no = "VERIFY-PERM-DEL-%s-%s" % (role, stamp)
         st, body = call(tokens[role], "/api/schedule-plans", "POST",
                          {"planNo": plan_no, "optimizationFactor": 50,
@@ -242,10 +310,12 @@ def main():
 
 WRITE_ENDPOINTS = [
     # (名称, (方法, 路径, body), 可写角色集合)：不在集合里的角色期望 403
+    # ⚠ 2026-11-18 口径变更：排程参数**对齐前端**（nav 只给 designer+admin）⇒ operator 不再能建/改排程。
+    #    前端藏了、后端没藏 ⇒ 口径不一致；这次收口把后端对齐到前端。
     ("POST /api/schedule-plans",
      ("POST", "/api/schedule-plans", {"planNo": "VERIFY-PERM", "optimizationFactor": 50,
                                       "maxIterationsRunning": 4, "iterationDelaySec": 0}),
-     {"admin", "operator", "designer"}),
+     {"admin", "designer"}),
     ("POST /api/scheduler/reload-config",
      ("POST", "/api/scheduler/reload-config", None),
      {"admin", "operator", "designer"}),
