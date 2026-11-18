@@ -190,12 +190,24 @@ Skill 元数据至少包括：
 - 检索已验证 SOP。
 - 生成 Workflow DSL 草案。
 - 显示缺失信息、设备/耗材不匹配和风险。
-- 通过静态验证后提交用户审批；不自动启动实验。
+- 通过静态验证后提交 `PLAN_APPROVAL`；不自动启动实验，`PLAN_APPROVAL` 不等于 `START`。
 
 ### MVP-C：执行监控与异常助手
 - 订阅执行事件，解释等待/超时/异常。
 - 提供候选恢复方案和依据。
 - 操作员确认后由 LabOS 执行恢复事务。
+
+### 与 0–30 天 Workbench 的范围映射
+
+05 的三类异步任务不是三个 MVP 的完整实现，也不是另一套“第一阶段”。它们是同一个场景化 P0 试点对三类能力的裁剪，统一纳入 04 的 G1 准备阶段实施包；30 天公开交付范围以 05 为准。
+
+| 30 天任务 | 对应 MVP 能力裁剪 | 本期明确边界 | 可复用的 G1 只读 Capability |
+|---|---|---|---|
+| `EXPERIMENT_DRAFT` | MVP-B 的现有模板约束裁剪 | 只选择现有模板并修改白名单参数；不是通用 Workflow DSL Agent，不自动启动 | 项目/模板只读上下文；通用 `search_verified_protocols` 后置 |
+| `READINESS_EXPLAIN` | MVP-A 的场景化状态与阻塞解释 | 只解释权威 readiness 快照，不参与判定或核验 | `get_experiment_status`、`explain_blocker`；设备/物料查询作为证据依赖 |
+| `RUN_REVIEW` | MVP-C 的只读监控与复盘裁剪 | 只读汇总事实、假设与未知；不含恢复写操作 | `get_run_timeline`；设备/物料查询作为证据依赖 |
+
+[g0/03 首批工具](g0/03-G0-REMEDIATION-AND-NEXT-STEPS-20261118.md)是后续可复用的只读 Capability 清单，不是 30 天必须全部公开交付的六个界面。任何任务或工具未实际联调通过前，能力状态保持 UNKNOWN。
 
 ## 11. 验收指标
 - 工具调用成功/失败分类准确率；

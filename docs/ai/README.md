@@ -12,9 +12,14 @@
 | 2 | [参考架构](02-REFERENCE-ARCHITECTURE.md) | 五层架构、命令/物理双事实流、Workflow Compiler、执行快照与权限边界 |
 | 3 | [Agent 与 Capability 平台](03-AGENT-AND-CAPABILITY-PLATFORM.md) | Agent Runtime、个人/项目上下文、工具权限、Skill 验证与记忆治理 |
 | 4 | [12 个月路线图](04-ROADMAP.md) | G0 源码核查、只读助手、编译器、受控执行和单一实验域闭环 |
-| 5 | [AI Workbench：第 0–30 天](05-AI-WORKBENCH-0-30D.md) | 页面、接口、数据对象、权限、四批交付、30 条验收用例与度量口径 |
+| 5 | [AI Workbench：第 0–30 天](05-AI-WORKBENCH-0-30D.md) | 页面、接口、数据对象、权限、四批交付、验收用例与度量口径 |
 | 6 | [AI Workbench：第 1–7 天任务卡](06-AI-WORKBENCH-DAY1-7.md) | 数据迁移、异步 worker、RBAC、降级与审计的开发任务拆解 |
-| 7 | [G0 源码核查](g0/README-G0-SOURCE-AUDIT-20261118.md) | 当前执行底座的源码证据、实现矩阵、风险与整改顺序 |
+| 7 | [05/06 实施修订附录](05-06-WORKBENCH-REVIEW-ADDENDUM-20261118.md) | 项目 ACL、原子实例化、参数白名单、worker fencing、审计和数据出域的强制补充 |
+| 8 | [安全与数据治理](07-SECURITY-DATA-GOVERNANCE.md) | Project ACL、Agent 委托授权、模型出域、审计可靠性与知识产权 |
+| 9 | [Capability 验证标准](08-CAPABILITY-VERIFICATION-STANDARD.md) | Capability/Skill/Agent/设备/实验成熟度等级和验收证据 |
+| 10 | [AI Workbench 独立评审](09-AI-WORKBENCH-INDEPENDENT-REVIEW-20261118.md) | 评审结论、P1 整改、G0 准入矩阵和最终决策 |
+| 11 | [G0 源码核查](g0/README-G0-SOURCE-AUDIT-20261118.md) | 固定历史基线证据、实现矩阵、整改顺序，以及 G0-01/G0-07 独立修复任务卡与验收清单 |
+| 12 | [G0-01/G0-07 统一评审基线](g0/07-G0-UNIFIED-IMPLEMENTATION-REVIEW-BASELINE-20261118.md) | 两项修复的实施与验收统一入口：源码事实、实施契约、28 组＋14 项验收矩阵和评审处理结果 |
 
 ## 核心路线
 
@@ -34,6 +39,8 @@
 - Agent 不直接访问数据库、Mapper、驱动或设备网络，只能调用受控业务工具。
 - 命令完成不等于物理完成；设备报告、物料位置与实验结果必须分别取证。
 - 先做一个真实实验场景，不先建设通用自主科研平台。
+- Tenant 隔离不等于 Project ACL；真实项目数据必须有对象级授权和数据出域策略。
+- Capability/Skill/Agent 的成熟度必须由对应版本和环境的证据证明，不能以文档或模拟器结果替代现场验收。
 
 ## 其他 AI 如何参与评审
 
@@ -54,6 +61,7 @@
 - **目标设计**：只是提案，不描述为已具备能力。
 - **实施计划**：未开发、未运行、未验收时应明确标注。
 - **未知事项**：证据不足时保持 UNKNOWN，不用推测补齐。
+- **成熟度**：按具体能力版本、环境和证据分级，不以平台级概括替代。
 
 ## 当前最值得讨论的问题
 
@@ -63,3 +71,5 @@
 4. Agent 的用户、项目、实验和资源级委托权限应如何表达与审计？
 5. AI Workbench 的 30 天范围是否仍然过大，哪些交付应进一步删减？
 6. 哪些验收指标能同时证明配置更快、执行更稳、失败更可归因、下一轮更有依据？
+
+> **2026-11-18 综合收敛：** G0-01/G0-07 的实施与验收统一使用 [G0 统一基线](g0/07-G0-UNIFIED-IMPLEMENTATION-REVIEW-BASELINE-20261118.md)。本版已纳入同一数据库事务／物理连接、真实 resume 再激活、worker 启动失败、精确 async 参数解析、完整 NodePlan 同快照一致性及判别性测试要求；G0-01 当前为 28 组验收（T24 四子项），G0-07 为 14 项。统一基线不关闭第一阶段范围、G1 ACL 和整体时间线三项跨文档冲突。04/05 为实施任务卡，实施完成前不得视为风险已关闭。

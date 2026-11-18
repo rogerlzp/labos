@@ -109,13 +109,23 @@ L0  Physical Laboratory
 3. Static Validation：Schema、变量、依赖、设备能力、参数范围、样本身份和安全策略校验。
 4. Planning：设备/资源/位置/耗材/时间窗分配。
 5. Simulation：检查逻辑、资源冲突、容量、位置和可模拟物理约束。
-6. Approval：展示差异、风险、资源占用、预计人工任务，记录批准人和批准版本。
+6. `PLAN_APPROVAL`：展示差异、风险、资源占用、预计人工任务，记录批准主体和不可变 ExecutionPlan hash。
 7. Execution Snapshot：冻结 DSL、编译器版本、能力版本、设备配置、物料分配和校验结果。
 8. Dispatch：由 L2 调度器创建节点和命令。
 9. Reconciliation：将设备事件与物理观察对账，处理偏差。
 10. Results：原始数据、派生数据、质量指标、偏差和分析版本关联到实验。
 
-### 5.2 DSL 最小设计要求
+### 5.2 人工动作术语
+
+| 术语 | 授权主体 | 绑定对象 | 明确不代表 |
+|---|---|---|---|
+| `DRAFT_CONFIRM` | 具有草稿确认与实例化权限的操作员 | AIArtifact 的不可变 content hash、模板/schema 版本 | 只允许按现有模板实例化；不是执行计划批准，不启动实验 |
+| `PLAN_APPROVAL` | 未来 G3 定义的计划批准人 | 不可变 ExecutionPlan hash、编译器/能力版本和校验结果 | 只表示计划可提交；不等于启动，也不绕过实时 readiness |
+| `START` | 既有系统中具有启动权限的操作员 | 已实例化对象的当前启动请求 | 启动前仍检查实时 readiness、资源和启动权限；本期不开放给 AI |
+
+`DRAFT_CONFIRM` 或 `PLAN_APPROVAL` 后内容发生变化，都必须生成新版本并重新执行对应动作。`PLAN_APPROVAL` 尚未实现前，UI 不得出现“批准执行”字样。
+
+### 5.3 DSL 最小设计要求
 - Schema 有版本，字段类型明确。
 - 数量、体积、温度、时间必须带单位；不接受无单位裸数。
 - 样本、容器、位置、试剂引用使用稳定 ID，不用显示名称作为身份。
