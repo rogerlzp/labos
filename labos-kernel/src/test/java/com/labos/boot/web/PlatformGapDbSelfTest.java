@@ -57,6 +57,7 @@ public final class PlatformGapDbSelfTest {
     private static final long ISL_RUN = -999358L;
     private static final long ISL_RN = -999359L;
     private static final long ISL_BIND = -999360L;
+    private static final long ISL_DRV = -999362L;
     private static final String ISL_PLATE = "PGAP-PLATE-ISL-1";
     private static final String ISL_PLATE2 = "PGAP-PLATE-ISL-2";
 
@@ -220,6 +221,12 @@ public final class PlatformGapDbSelfTest {
         exec("UPDATE resource_node SET parent_id = ? WHERE id = ?", ISL_RES, ISL_PNT2);
         insertPositionState(ISL_PNT2, ISL_PLATE2, RUN_REF);
         insertDeviceInstance(ISL_INST, "PGAP-ISL-INST-1", ISL_DEV);
+        // 本岛**专用**的驱动：purge 后没人用了 ⇒ 应一起删（2026-11-18 实测：老岛删完后
+        // 留下 17 个孤儿驱动占着 DRV-SIM-P_AUTO-1 这类编号 ⇒ 客户现场编号腾不出来）
+        exec("INSERT INTO driver (id, tenant_id, code, name, protocol, endpoint, manifest, "
+                + "resident, status) VALUES (?, ?, 'PGAP-DRV-ISL-1', 'PGAP-DRV-ISL-1', 'tcp', "
+                + "'tcp://127.0.0.1:19999', '{}'::jsonb, false, 1)", ISL_DRV, TENANT);
+        exec("UPDATE device_instance SET driver_id = ? WHERE id = ?", ISL_DRV, ISL_INST);
         // point_role 只能是 entry/exit/both/internal（ck_device_point_role）；
         // 非 internal 必须 is_entry 或 is_exit 为真（ck_device_point_flags）
         exec("INSERT INTO device_point (id, tenant_id, device_resource_id, point_resource_id, "
@@ -286,6 +293,8 @@ public final class PlatformGapDbSelfTest {
         eq("run_node 已删", 0, queryLong("SELECT count(*) FROM run_node WHERE id = ?", ISL_RN));
         eq("绑定已删", 0, queryLong("SELECT count(*) FROM node_binding WHERE id = ?", ISL_BIND));
         eq("板已删", 0, queryLong("SELECT count(*) FROM plate WHERE barcode = ?", ISL_PLATE));
+        eq("本岛专用驱动也删了（否则占着客户现场编号）", 0,
+                queryLong("SELECT count(*) FROM driver WHERE id = ?", ISL_DRV));
         eq("岛下点位节点也删了", false, resourceNodeExists(ISL_PNT2));
         eq("岛下点位节点的位置账本没留孤儿", 0,
                 queryLong("SELECT count(*) FROM position_state WHERE resource_id = ?", ISL_PNT2));
@@ -504,6 +513,7 @@ public final class PlatformGapDbSelfTest {
             safe("DELETE FROM device_point WHERE device_resource_id = ?", ISL_DEV);
             safe("DELETE FROM device_state WHERE resource_id = ?", ISL_DEV);
             safe("DELETE FROM device_instance WHERE resource_id = ?", ISL_DEV);
+            safe("DELETE FROM driver WHERE id = ?", ISL_DRV);
             safe("DELETE FROM position_state WHERE resource_id = ?", ISL_PNT2);
             safe("DELETE FROM resource_node WHERE id = ? OR parent_id = ? OR id IN "
                     + "(SELECT id FROM resource_node WHERE parent_id = ?)", ISL_RES, ISL_RES, ISL_DEV);

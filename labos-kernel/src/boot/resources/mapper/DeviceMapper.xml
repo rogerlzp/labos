@@ -896,6 +896,23 @@
         d_dmethod AS (DELETE FROM device_method                   WHERE tenant_id = #{param1} AND device_instance_id IN (SELECT id FROM di)),
         d_inst    AS (DELETE FROM device_instance                WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM dev) RETURNING 1),
         d_islflow AS (DELETE FROM island_flow                    WHERE tenant_id = #{param1} AND island_id = (SELECT id FROM isl)),
+        -- 本岛**专用**的驱动（建岛脚本按设备编号建的那种）：删岛后没人用了 ⇒ 一起删，
+        -- 否则它们占着 DRV-SIM-P_AUTO-1 这类编号 ⇒ 客户现场编号永远腾不出来
+        -- （2026-11-18 实测踩到：老岛删干净后留下 17 个孤儿驱动占位）。
+        -- 判据：**除本岛的实例外没有别的活实例用它**（本岛的实例随岛一起删）。
+        d_drv     AS (DELETE FROM driver d
+                       WHERE d.tenant_id = #{param1}
+                         AND d.id IN (SELECT DISTINCT di.driver_id FROM device_instance di
+                                       JOIN resource_node c ON c.id = di.resource_id
+                                      WHERE di.tenant_id = #{param1}
+                                        AND c.parent_id = (SELECT id FROM isl) AND c.kind = 'device')
+                         AND NOT EXISTS (SELECT 1 FROM device_instance di2
+                                          WHERE di2.driver_id = d.id AND di2.deleted_at IS NULL
+                                            AND di2.id NOT IN (SELECT di3.id FROM device_instance di3
+                                                                JOIN resource_node c3 ON c3.id = di3.resource_id
+                                                               WHERE di3.tenant_id = #{param1}
+                                                                 AND c3.parent_id = (SELECT id FROM isl)
+                                                                 AND c3.kind = 'device'))),
         d_node    AS (DELETE FROM resource_node                  WHERE tenant_id = #{param1} AND id IN (SELECT id FROM scoped) RETURNING 1)
         SELECT
             (SELECT count(*) FROM d_node)    AS "nodes",

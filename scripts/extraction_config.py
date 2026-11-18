@@ -14,7 +14,9 @@
 ⇒ 抽成配置层并让端口**挑空闲的**，同一套脚本就能建多个岛。
 
 环境变量：
-  LABOS_ISLAND_CODE   岛编号（默认 LAB-EXT-01）
+  LABOS_ISLAND_CODE   岛编号（默认 LAB-EXT-02 —— 2026-11-18 起：老岛 LAB-EXT-01
+                    已整岛 purge 删除，提取线只剩这一个岛；它的设备编号已改回
+                    客户现场编号 P_AUTO-1..4 / DISP1..6 / ARM1 / STACK1）
   LABOS_ISLAND_NAME   岛名称（默认 高通量核酸提取工作站岛）
   LABOS_DEV_TAG       设备编号的岛标记（默认空；例 `-02-` ⇒ P_AUTO-02-1 / DISP-02-1）
   LABOS_PORT_BASE     端口段起点（默认 19600；实际取端口时会跳过已被占用的）
@@ -23,7 +25,7 @@
 import os
 import socket
 
-ISLAND_CODE = os.environ.get("LABOS_ISLAND_CODE", "LAB-EXT-01")
+ISLAND_CODE = os.environ.get("LABOS_ISLAND_CODE", "LAB-EXT-02")
 ISLAND_NAME = os.environ.get("LABOS_ISLAND_NAME", "高通量核酸提取工作站岛")
 DEV_TAG = os.environ.get("LABOS_DEV_TAG", "")
 PORT_BASE = int(os.environ.get("LABOS_PORT_BASE", "19600"))
