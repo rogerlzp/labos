@@ -53,7 +53,16 @@ public final class DeviceRegistry {
                          * 模拟器把它与画像方法集取并集 —— 新设备只 INSERT 数据即可，
                          * 不必再往 {@code DeviceProfile.TABLE} 加硬编码画像。
                          */
-                        java.util.List<String> methods) {
+                        java.util.List<String> methods,
+                        /**
+                         * 中控登记的**方法预估时长**（method → 秒）。
+                         *
+                         * <p>为什么需要：画像的 step timing 只登记了一部分方法名
+                         * （如 carousel_extractor 记的是 BindIncubate/Wash/Elute），
+                         * 而中控登记的是**厂商动作名**（PAuto：Bind/Incubate/…）⇒ 对不上 ⇒
+                         * 那些工序落回画像默认的 20 秒 ⇒ 「按真实时长跑」其实没真等。
+                         */
+                        java.util.Map<String, Integer> methodEstimates) {
     }
 
     /** 拉一次清单；失败抛异常（调用方决定降级还是退出）。 */
@@ -97,6 +106,16 @@ public final class DeviceRegistry {
                     }
                 }
             }
+            java.util.Map<String, Integer> estimates = new java.util.LinkedHashMap<>();
+            JsonNode est = it.path("methodEstimates");
+            if (est.isObject()) {
+                est.fields().forEachRemaining(f -> {
+                    int sec = f.getValue().asInt(0);
+                    if (sec > 0) {
+                        estimates.put(f.getKey(), sec);
+                    }
+                });
+            }
             out.add(new Entry(
                     id,
                     it.path("code").asText(""),
@@ -106,7 +125,8 @@ public final class DeviceRegistry {
                     it.path("capability").asText(""),
                     it.path("simProfile").asText(""),
                     it.path("modelId").asText(""),
-                    List.copyOf(methods)));
+                    List.copyOf(methods),
+                    java.util.Map.copyOf(estimates)));
         }
         return out;
     }

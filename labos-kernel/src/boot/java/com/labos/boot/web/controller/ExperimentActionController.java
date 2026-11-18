@@ -30,6 +30,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -136,6 +139,51 @@ public class ExperimentActionController {
     }
 
     // ---------------------------------------------------------------- 交接
+
+    /**
+     * 把一条**已存在**的 queued {@code experiment_run} 重新入队。
+     *
+     * <p>为什么需要（2026-11-18 实测踩到）：模板实例化出来的 run 在库里是
+     * {@code queued}，但**调度队列是内存态** ⇒ 只有内核重启（rehydrateQueued）
+     * 才会把它拾取 ⇒ 「模板 → 实例化 → 配位置 → 核验 → 启动」这条链走完，
+     * run 永远不动（页面一直显示"排队中"），现场看着像"点了没反应"。
+     *
+     * <p>与 {@code POST /api/experiments/{id}/run?async=1} 的区别：那个会**新建**一条
+     * experiment_run ⇒ 实验模板配好的物料位置（manifest_placement）不在新 run 上
+     * ⇒ 搬运节点找不到板 ⇒ 第一段搬运就报 EC-POSITION-OCCUPIED。
+     * 本端点**沿用同一条 run**（不新建），断点续跑与物料位置都对得上。
+     */
+    @PostMapping(value = "/experiment-runs/{runId:\\d+}/dispatch",
+            produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> dispatchExperimentRun(@PathVariable long runId,
+                                                         HttpServletRequest req) throws SQLException {
+        Long experimentId = experimentIdOfRun(runId);
+        if (experimentId == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(err("实验 run 不存在: " + runId));
+        }
+        scheduler.resumeRun(experimentId, runId);
+        audit.record(session(req), "experiment.dispatch", "experiment_run", runId, null, null,
+                req.getRemoteAddr());
+        return ResponseEntity.ok(Jsons.obj(
+                "experimentId", experimentId,
+                "experimentRunId", runId,
+                "dispatched", true,
+                "note", "已重新入队，等调度器派发（岛级互斥 + 资源占用判定）"));
+    }
+
+    /** experiment_run → experiment（自己查，避免给 mapper 加方法）。 */
+    private Long experimentIdOfRun(long runId) throws SQLException {
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT experiment_id FROM experiment_run WHERE tenant_id = ? AND id = ?")) {
+            ps.setLong(1, TENANT);
+            ps.setLong(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : null;
+            }
+        }
+    }
 
     @PostMapping(value = "/experiments/{id:\\d+}/handoffs/confirm",
             produces = "application/json; charset=utf-8")

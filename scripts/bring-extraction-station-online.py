@@ -237,10 +237,12 @@ def main():
         #   （给模拟器加 token 参数是另一条路，但改内核/模拟器代码不属本轮范围。）
         st, reg = call("GET", "/api/devices/registry")
         methods = []
+        estimates = {}
         rid = None
         for it in reg.get("items", []):
             if it.get("code") == code:
                 methods = it.get("methods") or []
+                estimates = it.get("methodEstimates") or {}
                 rid = it.get("resourceId")
                 break
         if rid is None or not methods:
@@ -250,6 +252,16 @@ def main():
                "--port", str(port),
                "--device", str(inst_id), "--code", code,
                "--methods", ",".join(methods)]
+        # ⚠ **中控登记的方法预估时长也要传给模拟器**（2026-11-18）：
+        #   模拟器的"该方法跑多久"优先级是
+        #     型号/命令行 delay → 请求参数里的时长 → **画像 step timing** → 画像默认 20s
+        #   画像的 step timing 记的是 BindIncubate（转盘机的合并动作），
+        #   而 PAuto 登记的是厂商动作名 Bind / Incubate ⇒ 对不上 ⇒ 落回 20s
+        #   ⇒ "按真实时长跑"其实没真等（结合 480s 变成 20s）。
+        #   把清单里的 methodEstimates 传下去，模拟器就按中控登记的时长等。
+        if estimates:
+            cmd += ["--method-estimates",
+                    ",".join(f"{k}={v}" for k, v in estimates.items())]
         # **自发上报脚本**：命令成功后设备主动上报【等待交互】。
         # 这是「分段自驱」的触发器 —— 没有它，`__awaitEvent` 永远等不到事件。
         #

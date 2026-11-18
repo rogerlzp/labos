@@ -57,6 +57,9 @@ public interface DeviceMapper {
      */
     Map<String, Object> purgeIslandData(long tenantId, long islandId);
 
+    /** 型号登记的方法预估时长（method → estimateSec），给模拟器当"真实时长"。 */
+    List<Map<String, Object>> selectModelMethodEstimates(long tenantId, String modelKey);
+
     /** 克隆源：设备 code/name + 目标岛的 path（岛不存在时 path 为 null）。 */
     Map<String, Object> selectCloneSource(long tenantId, long sourceResourceId,
                                           long islandId);

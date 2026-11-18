@@ -37,6 +37,7 @@ public final class SimulatorBehaviorSelfTest {
         testSpontaneousFrame();
         testSpontaneousScriptParsing();
         testSpontaneousToDeadClient();
+        testMethodEstimates();
 
         System.out.println();
         System.out.printf("通过 %d, 失败 %d%n", pass, fail);
@@ -197,6 +198,36 @@ public final class SimulatorBehaviorSelfTest {
             eq("拒绝不污染后续动作", 2, second.call("busy-3", "Home", null).status);
         } finally {
             pool.shutdownNow();
+            core.stopServer();
+        }
+    }
+
+    // ---------------------------------------------------------------- 方法时长
+
+    /**
+     * 模拟器按**中控登记的方法预估时长**等 —— 画像没登记该方法名时也一样。
+     *
+     * <p>为什么测这个（2026-11-18 实测踩到）：画像的 step timing 记的是
+     * {@code BindIncubate}，而中控登记的是厂商动作名 {@code Bind} ⇒ 对不上 ⇒
+     * 落回画像默认的 20 秒 ⇒ 「按真实时长跑」其实没真等
+     * （PAuto 结合 480s 被当成 20s）。
+     */
+    private static void testMethodEstimates() throws Exception {
+        section("模拟器按中控登记的方法时长等（画像没登记的方法名也照等）");
+        // delay=0 ⇒ 不给"统一固定耗时"，走方法时长解析（否则命令行耗时会盖住一切）
+        DeviceCore core = new DeviceCore(0, "9901", "PAUTO-T", "EXTRACT", 0,
+                false, 0, "EC-05-0001", false, "carousel_extractor", null, null, 0);
+        core.withExtraMethods(java.util.List.of("Bind"));
+        core.withMethodEstimates(java.util.Map.of("Bind", 2));
+        core.startServer("127.0.0.1", 0);
+        try (Client c = new Client(core.port(), "9901")) {
+            long t0 = System.currentTimeMillis();
+            Frame r = c.call("est-1", "Bind", null);
+            long waited = System.currentTimeMillis() - t0;
+            eq("Bind 执行成功", 2, r.status);
+            ok("按登记时长等了（≥1.9s）", waited >= 1_900);
+            ok("没落回画像默认的 20s", waited < 15_000);
+        } finally {
             core.stopServer();
         }
     }

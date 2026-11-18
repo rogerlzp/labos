@@ -301,6 +301,23 @@
          ORDER BY 1
     </select>
 
+    <!-- 型号 → 方法预估时长（秒）。模拟器按这个等"真实时长" ——
+         画像的 step timing 只登记了部分方法名（BindIncubate/Wash/Elute），
+         而中控登记的是 **PAuto 的动作名**（Bind/Incubate/…）⇒ 对不上 ⇒
+         那些工序会落回画像默认的 20 秒 ⇒ "按真实时长跑"其实没真等。 -->
+    <select id="selectModelMethodEstimates" resultType="java.util.Map">
+        SELECT m.method AS "method",
+               max(m.estimate_sec) AS "estimateSec"
+          FROM device_method m
+          JOIN device d ON d.id = m.device_model_id AND d.tenant_id = m.tenant_id
+         WHERE m.tenant_id = #{param1}
+           AND (d.code = #{param2} OR d.attr-&gt;&gt;'device_model' = #{param2}
+                OR d.model = #{param2})
+           AND m.estimate_sec IS NOT NULL AND m.estimate_sec > 0
+         GROUP BY m.method
+         ORDER BY 1
+    </select>
+
     <select id="selectDeviceRegistry" resultType="java.util.Map">
         SELECT di.id AS "deviceId",
                di.resource_id AS "resourceId",

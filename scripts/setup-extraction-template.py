@@ -110,6 +110,25 @@ def main():
     slots = magnet[:4]
     ok(f"磁套槽 4 个：{', '.join(s['code'] for s in slots)}")
 
+    # ---- 物料清单引用的板：**按槽位实际在位的板**取，不能写死 id。
+    # ⚠ 2026-11-18 实测踩到：原来写死 1000266~1000269（老岛 LAB-EXT-01 的板），
+    #   老岛删掉后这 4 个 id 已不存在 ⇒ 模板引用空板 ⇒ 搬运节点找不到板
+    #   ⇒ 现场表现是"模板自检 ok、位置也核验通过，起跑后搬运才炸"。
+    mag_plates = []
+    for s in slots:
+        # ⚠ 位置接口里 plateId 是**条码字符串**、plateUid 才是数字 id
+        #   （2026-11-18 实测踩到：直接 int(plateId) 报 ValueError）
+        pid = s.get("plateUid")
+        if pid is None:
+            pid = s.get("plateId")
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            sys.exit(f"✘ 磁套槽 {s['code']} 上没有板（plateUid={s.get('plateUid')}）"
+                     f"⇒ 先放板（磁套板）再起跑")
+        mag_plates.append(pid)
+    ok(f"磁套板 4 块（按槽位实取）：{mag_plates}")
+
     # ---- 模板
     section("2. 建模板（物料清单 = 4 块磁套板）")
     st, lst = call("GET", "/api/experiment-templates", query={"limit": "100"})
@@ -124,13 +143,8 @@ def main():
             "workflowIds": [{"workflowId": wf_id}],
             "manifestItems": [
                 {"roleCode": "magPlate", "materialKind": "plate",
-                 "materialRef": 1000266, "quantity": 1, "required": True},
-                {"roleCode": "magPlate", "materialKind": "plate",
-                 "materialRef": 1000267, "quantity": 1, "required": True},
-                {"roleCode": "magPlate", "materialKind": "plate",
-                 "materialRef": 1000268, "quantity": 1, "required": True},
-                {"roleCode": "magPlate", "materialKind": "plate",
-                 "materialRef": 1000269, "quantity": 1, "required": True},
+                 "materialRef": pid, "quantity": 1, "required": True}
+                for pid in mag_plates
             ],
             "pointWhitelist": [],
         })
@@ -141,6 +155,28 @@ def main():
     else:
         tpl_id = tpl.get("id")
         ok(f"模板已存在：{TPL_NAME}（id={tpl_id}）")
+        # 已有模板的物料清单可能还指着**已删的板**（老岛那批 id）
+        # ⇒ 物料自检会报错 ⇒ 这里直接重建一份，别拿旧的凑合。
+        st, chk0 = call("GET", f"/api/experiment-templates/{tpl_id}/check")
+        issues = chk0.get("issues") or []
+        if any("板" in str(i) or "material" in str(i).lower() for i in issues):
+            st, j = call("DELETE", f"/api/experiment-templates/{tpl_id}")
+            if st != 200:
+                sys.exit(f"✘ 旧模板（物料指向已删的板）删不掉（{st}）：{j}")
+            st, j = call("POST", "/api/experiment-templates", {
+                "name": TPL_NAME, "islandId": island_id,
+                "workflowIds": [{"workflowId": wf_id}],
+                "manifestItems": [
+                    {"roleCode": "magPlate", "materialKind": "plate",
+                     "materialRef": pid, "quantity": 1, "required": True}
+                    for pid in mag_plates
+                ],
+                "pointWhitelist": [],
+            })
+            if st != 200:
+                sys.exit(f"✘ 重建模板失败（{st}）：{j}")
+            tpl_id = j.get("id") or (j.get("template") or {}).get("id")
+            ok(f"旧模板物料指向已删的板 ⇒ 已重建：id={tpl_id}")
     st, chk = call("GET", f"/api/experiment-templates/{tpl_id}/check")
     ok(f"模板自检：ok={chk.get('ok')} errors={len(chk.get('issues') or [])} 条 issue")
 

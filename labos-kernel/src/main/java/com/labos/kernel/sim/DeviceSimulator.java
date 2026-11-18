@@ -61,6 +61,7 @@ public final class DeviceSimulator {
         boolean longTask = false;
         boolean offline = false;
         String profile = "generic";
+        String methodEstimatesArg = null;
         String modelId = null;
         // --rand-delay MIN:MAX[:SEED] —— 方法耗时在区间内随机（毫秒）。
         // 为什么需要：固定耗时（默认几百毫秒）测不出「设备还在执行时来暂停」
@@ -108,6 +109,10 @@ public final class DeviceSimulator {
                 case "--fail-from" -> failFrom = Integer.parseInt(args[++i]);
                 case "--long" -> longTask = true;
                 case "--profile" -> { profile = args[++i]; explicit.add("profile"); }
+                // 中控登记的方法预估时长（"Bind=480,Elute=300"）：
+                // 画像的 step timing 记的是 BindIncubate，中控记的是厂商动作名 Bind
+                // ⇒ 对不上 ⇒ 落回画像默认 20 秒 ⇒ "按真实时长跑"其实没真等。
+                case "--method-estimates" -> { methodEstimatesArg = args[++i]; }
                 case "--model" -> modelId = args[++i];
                 // --methods "A,B,C"：这台设备**实际**有的方法（来自中控的 device_method 表）。
                 // 画像是通用机型的方法集，可能比这台设备实际支持的少
@@ -150,6 +155,7 @@ public final class DeviceSimulator {
         // 清单里带的"该型号登记的方法名"：与画像方法集取并集（DeviceCore.withExtraMethods）。
         // 这样新设备只要在库里登记 device_method，模拟器不用改代码就能认它的方法。
         java.util.List<String> registryMethods = java.util.List.of();
+        java.util.Map<String, Integer> methodEstimates = java.util.Map.of();
         if (registryUrl != null) {
             try {
                 var items = DeviceRegistry.fetch(registryUrl);
@@ -185,6 +191,7 @@ public final class DeviceSimulator {
                         modelId = me.modelId();
                     }
                     registryMethods = me.methods();
+                    methodEstimates = me.methodEstimates();
                 }
             } catch (Exception e) {
                 log.warn("[模拟器] 读中控设备清单失败（" + e.getMessage()
@@ -220,6 +227,32 @@ public final class DeviceSimulator {
         if (methodsArg != null && !methodsArg.isBlank()) {
             core.withExtraMethods(java.util.Arrays.asList(methodsArg.split(",")));
             log.info("[模拟器] 设备方法表：" + methodsArg);
+        }
+        if (!methodEstimates.isEmpty()) {
+            core.withMethodEstimates(methodEstimates);
+            log.info("[模拟器] 中控登记的方法时长（秒）：" + methodEstimates);
+        }
+        if (methodEstimatesArg != null && !methodEstimatesArg.isBlank()) {
+            // 命令行给的时长（脚本从中控清单取来传进来）—— 与清单那份合并，命令行优先
+            java.util.Map<String, Integer> est = new java.util.LinkedHashMap<>();
+            for (String pair : methodEstimatesArg.split(",")) {
+                int eq = pair.indexOf('=');
+                if (eq <= 0) {
+                    continue;
+                }
+                try {
+                    int sec = Integer.parseInt(pair.substring(eq + 1).trim());
+                    if (sec > 0) {
+                        est.put(pair.substring(0, eq).trim(), sec);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // 解析不了的片段跳过：时长只是兜底，不该让模拟器起不来
+                }
+            }
+            if (!est.isEmpty()) {
+                core.withMethodEstimates(est);
+                log.info("[模拟器] 命令行给的方法时长（秒）：" + est);
+            }
         }
         if (!registryMethods.isEmpty()) {
             // 清单带过来的型号方法（device_method）。命令行 --methods 仍优先叠加，

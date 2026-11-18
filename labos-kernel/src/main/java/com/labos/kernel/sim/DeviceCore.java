@@ -82,6 +82,28 @@ public final class DeviceCore {
      */
     private final java.util.Set<String> extraMethods = new java.util.LinkedHashSet<>();
 
+    /**
+     * **中控登记的方法预估时长**（method → 秒）：画像没登记该方法时的兜底。
+     *
+     * <p>为什么要有（2026-11-18 实测）：画像的 step timing 记的是
+     * {@code BindIncubate}，中控登记的是厂商动作名 {@code Bind} ⇒ 对不上 ⇒
+     * 落回画像默认的 20 秒 ⇒ 「按真实时长跑」其实没真等（PAuto 结合 480s 变成 20s）。
+     */
+    private final java.util.Map<String, Integer> methodEstimates = new java.util.LinkedHashMap<>();
+
+    /** 登记中控给的方法预估时长（空 = 只按画像/型号，行为不变）。 */
+    public DeviceCore withMethodEstimates(java.util.Map<String, Integer> estimates) {
+        if (estimates != null) {
+            for (java.util.Map.Entry<String, Integer> e : estimates.entrySet()) {
+                if (e.getKey() != null && !e.getKey().isBlank()
+                        && e.getValue() != null && e.getValue() > 0) {
+                    methodEstimates.put(e.getKey().trim(), e.getValue());
+                }
+            }
+        }
+        return this;
+    }
+
     /** 登记这台设备实际支持的方法（空集合 = 只按画像/型号校验，行为不变）。 */
     public DeviceCore withExtraMethods(java.util.Collection<String> methods) {
         if (methods != null) {
@@ -1408,7 +1430,19 @@ public final class DeviceCore {
         if (t < 0) {
             t = prof.timingOf(method);
         }
-        return t >= 0 ? t : prof.methodDelayMs(method);
+        if (t >= 0) {
+            return t;
+        }
+        // 画像没登记这个方法名 ⇒ 用**中控登记的方法预估时长**
+        // （Bind 480s / Incubate 300s / Wash 180s … 都登记在 device_method 上）
+        Integer est = methodEstimates.get(alias);
+        if (est == null && method != null) {
+            est = methodEstimates.get(method);
+        }
+        if (est != null && est > 0) {
+            return est * 1000L;
+        }
+        return prof.methodDelayMs(method);
     }
 
     /** 清除故障类指令：锁存的故障能被它们解开。 */

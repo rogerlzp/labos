@@ -619,6 +619,7 @@ public class DeviceService {
         List<String> items = new ArrayList<>();
         // 型号 → 方法名（同一型号可能有多台实例，查一次就够）
         Map<String, List<String>> methodsByModel = new java.util.LinkedHashMap<>();
+        Map<String, Map<String, Object>> estimatesByModel = new java.util.LinkedHashMap<>();
         for (java.util.Map<String, Object> row : deviceMapper.selectDeviceRegistry(TENANT)) {
             String endpoint = str(row.get("endpoint"));
             items.add(Jsons.obj(
@@ -658,6 +659,11 @@ public class DeviceService {
                             methodsOfModel(methodsByModel,
                                     modelKeyOf(row))
                                     .stream().map(Jsons::quote).toList())),
+                    // 方法预估时长（method → 秒）：模拟器**按这个等**。
+                    // 没有它 ⇒ 画像没登记的方法名（PAuto 的 Bind/Incubate…）
+                    // 会落回画像默认的 20 秒 ⇒ "按真实时长跑"其实没真等。
+                    "methodEstimates", new Jsons.Raw(mapJson(
+                            estimatesOfModel(estimatesByModel, modelKeyOf(row)))),
                     "driverCode", row.get("driverCode"),
                     "status", row.get("status")));
         }
@@ -687,6 +693,28 @@ public class DeviceService {
     }
 
     /** 型号 → 方法名（带本次请求内的缓存；查库失败按空处理，不影响清单返回）。 */
+    /** 型号 → 方法预估时长（method → 秒）。 */
+    private Map<String, Object> estimatesOfModel(Map<String, Map<String, Object>> cache, String modelId) {
+        if (modelId.isBlank()) {
+            return Map.of();
+        }
+        return cache.computeIfAbsent(modelId, k -> {
+            try {
+                Map<String, Object> out = new java.util.LinkedHashMap<>();
+                for (Map<String, Object> r : deviceMapper.selectModelMethodEstimates(TENANT, k)) {
+                    Object m = r.get("method");
+                    Object sec = r.get("estimateSec");
+                    if (m != null && sec != null) {
+                        out.put(String.valueOf(m), sec);
+                    }
+                }
+                return out;
+            } catch (RuntimeException e) {
+                return Map.of();
+            }
+        });
+    }
+
     private List<String> methodsOfModel(Map<String, List<String>> cache, String modelId) {
         if (modelId.isBlank()) {
             return List.of();
