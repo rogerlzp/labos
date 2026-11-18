@@ -28,5 +28,26 @@ bash "$ROOT/scripts/build-kernel.sh" >&2
 # 等满 62.7s 后 EC-RESOURCE-BUSY。⇒ 默认抬到 120s（同名环境变量可覆盖，0 表示不等待）。
 export LABOS_RAIL_WAIT_TIMEOUT_MS="${LABOS_RAIL_WAIT_TIMEOUT_MS:-120000}"
 
+# ⚠ **搬运保护的三个开关必须默认打开**（2026-11-18 实测踩坑）。
+#
+#   DriverStepExecutor.executeWithPlan 的守卫是
+#     `System.getenv("LABOS_TRANSFER_PLAN") != null`（**非 null 即开**，不看值）。
+#   没开 ⇒ 搬运**静默降级**：不抢位置锁、不建 transfer_transaction、不做轨道分区互锁、
+#   不走扫码证据确认 ⇒ 板位账本不落账、两个 run 会选到同一格物理相撞。
+#   现场表现：搬运节点全部 completed，但 transfer_transaction **零行**、板位账实不符。
+#   （2026-11-18 实测：run 1001777/1001779/1001781 三次 completed、0 条事务；
+#     同一内核开着开关时 run 1001790/1001791/1001792 三段各 3/4/4 条事务全部 CONFIRMED。）
+#
+#   LABOS_EXEC_GRAPH  执行图（节点 → 步骤展开）
+#   LABOS_AUTH         API 鉴权
+#   口径与 scripts/ci-gate.sh 第 52-54 行保持一致：**门禁跑得通 ≠ 内核跑得通**，
+#   两者必须用同一套开关，否则门禁绿灯掩盖了生产内核的降级。
+#
+#   要关闭：启动前 `env -u LABOS_TRANSFER_PLAN ./scripts/start-kernel.sh`
+#   （置 0 无效——非 null 即开）。
+export LABOS_EXEC_GRAPH="${LABOS_EXEC_GRAPH:-1}"
+export LABOS_TRANSFER_PLAN="${LABOS_TRANSFER_PLAN:-1}"
+export LABOS_AUTH="${LABOS_AUTH:-1}"
+
 exec java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
      com.labos.boot.LabosApplication "$@"
