@@ -41,6 +41,22 @@ public interface DeviceMapper {
 
     int purgeDeviceNodes(long tenantId, long resourceId);
 
+    // ---- 整岛彻底删除（purge island）：物理删岛 + 其下设备/点位/流程/run/历史（2026-11-18）
+
+    /**
+     * 岛的清理范围 + 护栏数据（设备/点位/绑定/池/流程/run/run 节点/快照/事件/模板/板 数，
+     * 以及在飞 run、在线设备、岛外引用）。一行结果，key 见 SQL 的别名。
+     */
+    Map<String, Object> selectIslandPurgeScope(long tenantId, long islandId);
+
+    /**
+     * 物理删除岛及其全部从属数据。
+     *
+     * <p>**一条语句**（数据修改 CTE 链）⇒ 天然原子：中途出错整体回滚，不留半删状态。
+     * 返回各步实际删掉的行数。
+     */
+    Map<String, Object> purgeIslandData(long tenantId, long islandId);
+
     /** 克隆源：设备 code/name + 目标岛的 path（岛不存在时 path 为 null）。 */
     Map<String, Object> selectCloneSource(long tenantId, long sourceResourceId,
                                           long islandId);

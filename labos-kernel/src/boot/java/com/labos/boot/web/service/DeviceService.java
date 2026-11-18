@@ -391,6 +391,118 @@ public class DeviceService {
         return n;
     }
 
+    /**
+     * **彻底删除**一个岛（物理删除，不是软删）。
+     *
+     * <p>为什么要有（2026-11-18）：设备已经能 purge，**岛却只能软删** ——
+     * 岛下的设备会变成孤儿（parent 指向已删节点），点位/绑定/流程/run/历史全留在库里。
+     * ⇒ "把一个岛删干净"在平台上做不到，测试残留与报废岛永远清不掉。
+     *
+     * <p><b>护栏</b>（都不是"删不掉"，而是"先处理掉这些再删"）：
+     * <ul>
+     *   <li>① 还有<b>在飞的 run</b>（未终态）⇒ 拒绝，避免删掉正在跑的批次的台账；</li>
+     *   <li>② 还有<b>在线设备</b> ⇒ 拒绝，sidecar 还连着，删完设备就是野进程；</li>
+     *   <li>③ <b>岛外还有引用</b>（实验/模板/协议/耗材/试剂/排程/预约）⇒ 拒绝，先解绑。</li>
+     * </ul>
+     *
+     * <p>删除本体是**一条 SQL 语句**（数据修改 CTE 链）：PostgreSQL 的外键是 AFTER 触发器，
+     * 语句结束才检查 ⇒ 同一条语句里的删除互相可见、顺序无关；而一条语句天然原子。
+     *
+     * <p>删完再查一次范围做<b>复核</b>：还有残留就报错，不装作成功。
+     */
+    public String purgeIsland(long islandId) throws java.sql.SQLException {
+        Map<String, Object> scope = deviceMapper.selectIslandPurgeScope(TENANT, islandId);
+        if (lng(scope, "island") == 0) {
+            throw new IllegalArgumentException("岛不存在（或不是岛）: " + islandId);
+        }
+        long live = lng(scope, "liveRuns");
+        if (live > 0) {
+            throw new IllegalArgumentException(
+                    "这个岛还有 " + live + " 个在飞的 run（未终态）⇒ 不能彻底删除；先停掉它们");
+        }
+        long online = lng(scope, "onlineDevices");
+        if (online > 0) {
+            throw new IllegalArgumentException(
+                    "这个岛还有 " + online + " 台设备在线 ⇒ 先下线（sidecar 还连着，"
+                            + "删完设备就变成野进程）");
+        }
+        String[][] guards = {
+                {"foreignExperiments", "实验"},
+                {"foreignTemplates", "实验模板"},
+                {"pinnedProtocols", "协议步骤"},
+                {"consumableLots", "耗材批次"},
+                {"reagentLots", "试剂批次"},
+                {"scheduleItems", "排程项"},
+                {"bookings", "资源预约"},
+        };
+        for (String[] g : guards) {
+            long v = lng(scope, g[0]);
+            if (v > 0) {
+                throw new IllegalArgumentException(
+                        "岛外还有 " + v + " 处" + g[1] + "引用这个岛 ⇒ 先解绑再删");
+            }
+        }
+        Map<String, Object> done = deviceMapper.purgeIslandData(TENANT, islandId);
+        // 复核：再查一次范围，岛级计数必须全为 0
+        Map<String, Object> after = deviceMapper.selectIslandPurgeScope(TENANT, islandId);
+        List<String> left = new ArrayList<>();
+        for (String k : new String[]{"island", "devices", "points", "bindings", "pools",
+                "workflows", "runs", "runNodes", "runCommands", "snapshots", "deviceEvents",
+                "templates", "plates", "robotPoints", "experiments",
+                "positionStates", "positionEvidence"}) {
+            long v = lng(after, k);
+            if (v > 0) {
+                left.add(k + "=" + v);
+            }
+        }
+        if (!left.isEmpty()) {
+            throw new IllegalStateException("彻底删除后仍有残留：" + String.join(", ", left));
+        }
+        return Jsons.obj("purged", true, "islandId", islandId,
+                "deleted", new Jsons.Raw(mapJson(done)),
+                "before", new Jsons.Raw(mapJson(scope)));
+    }
+
+    /** 从 mapper 的 Map 结果里取一个计数（MyBatis 可能给 Long / BigDecimal）。 */
+    private static long lng(Map<String, Object> m, String key) {
+        Object v = m == null ? null : m.get(key);
+        if (v == null) {
+            return 0L;
+        }
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(v).trim());
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
+    /** 把 mapper 的 Map 结果拼成 JSON 对象（值是数字就原样输出，不加引号）。 */
+    private static String mapJson(Map<String, Object> m) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        if (m != null) {
+            for (Map.Entry<String, Object> e : m.entrySet()) {
+                if (!first) {
+                    sb.append(',');
+                }
+                first = false;
+                sb.append('"').append(Jsons.escape(e.getKey())).append("\":");
+                Object v = e.getValue();
+                if (v == null) {
+                    sb.append("null");
+                } else if (v instanceof Number || v instanceof Boolean) {
+                    sb.append(v);
+                } else {
+                    sb.append(Jsons.quote(String.valueOf(v)));
+                }
+            }
+        }
+        return sb.append('}').toString();
+    }
+
     public int moveDeviceToIsland(long resourceId, long islandId) throws java.sql.SQLException {
         // islandId <= 0 表示移出（放回设备池）
         if (islandId <= 0) {

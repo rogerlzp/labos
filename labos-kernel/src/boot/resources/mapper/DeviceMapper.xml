@@ -660,4 +660,237 @@
         WHERE d.tenant_id = #{tenantId}
         ORDER BY deployed DESC, d.code
     </select>
+    <!-- ==================== 整岛彻底删除（purge island） ====================
+
+         为什么要有（2026-11-18）：设备已经能 purge（物理删），**岛却只能软删** ——
+         岛下的设备会变成孤儿（parent 指向已删节点），点位/绑定/流程/run 全部留在库里。
+         "删掉一个岛"做不到 ⇒ 测试残留、报废岛永远清不掉。
+
+         两条语句：
+           selectIslandPurgeScope —— 清理范围 + 护栏数据（谁能删 / 谁拦着）；
+           purgeIslandData       —— **一条语句**把岛连同从属数据物理删干净。
+
+         为什么删除是「一条语句」而不是一串 DELETE：
+           PostgreSQL 的外键约束是 AFTER 触发器 ⇒ **语句结束时才检查** ⇒
+           同一条语句里的所有 DELETE 互相可见，删除顺序不影响约束通过；
+           而「一条语句」天然原子 ⇒ 中途出错整体回滚，不会留下半删状态。 -->
+
+    <select id="selectIslandPurgeScope" resultType="java.util.Map">
+        WITH RECURSIVE scoped AS (
+            SELECT r.id FROM resource_node r
+             WHERE r.tenant_id = #{param1} AND r.id = #{param2}
+            UNION
+            SELECT r.id FROM resource_node r JOIN scoped s ON r.parent_id = s.id
+             WHERE r.tenant_id = #{param1}
+        )
+        SELECT
+            (SELECT count(*) FROM resource_node r
+              WHERE r.tenant_id = #{param1} AND r.id = #{param2} AND r.kind = 'island') AS "island",
+            (SELECT count(*) FROM resource_node r
+              WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device') AS "devices",
+            (SELECT count(*) FROM device_point dp
+              WHERE dp.tenant_id = #{param1}
+                AND dp.device_resource_id IN (SELECT id FROM resource_node r
+                      WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device')) AS "points",
+            (SELECT count(*) FROM node_binding nb
+              WHERE nb.tenant_id = #{param1}
+                AND nb.device_instance_id IN (SELECT di.id FROM device_instance di
+                      WHERE di.tenant_id = #{param1} AND di.resource_id IN (SELECT id FROM resource_node r
+                            WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device'))) AS "bindings",
+            (SELECT count(*) FROM device_pool p
+              WHERE p.tenant_id = #{param1} AND p.island_id = #{param2}) AS "pools",
+            (SELECT count(*) FROM workflow w
+              WHERE w.tenant_id = #{param1} AND w.island_id = #{param2}) AS "workflows",
+            (SELECT count(*) FROM run r
+              WHERE r.tenant_id = #{param1} AND r.workflow_id IN (SELECT id FROM workflow w
+                    WHERE w.tenant_id = #{param1} AND w.island_id = #{param2})) AS "runs",
+            (SELECT count(*) FROM run_node rn
+              WHERE rn.tenant_id = #{param1} AND rn.run_id IN (SELECT id FROM run r
+                    WHERE r.tenant_id = #{param1} AND r.workflow_id IN (SELECT id FROM workflow w
+                          WHERE w.tenant_id = #{param1} AND w.island_id = #{param2}))) AS "runNodes",
+            (SELECT count(*) FROM run_command rc
+              WHERE rc.tenant_id = #{param1} AND rc.run_id IN (SELECT id FROM run r
+                    WHERE r.tenant_id = #{param1} AND r.workflow_id IN (SELECT id FROM workflow w
+                          WHERE w.tenant_id = #{param1} AND w.island_id = #{param2}))) AS "runCommands",
+            (SELECT count(*) FROM run_position_snapshot s
+              WHERE s.tenant_id = #{param1} AND s.run_id IN (SELECT id FROM run r
+                    WHERE r.tenant_id = #{param1} AND r.workflow_id IN (SELECT id FROM workflow w
+                          WHERE w.tenant_id = #{param1} AND w.island_id = #{param2}))) AS "snapshots",
+            (SELECT count(*) FROM device_event e
+              WHERE e.tenant_id = #{param1} AND e.device_id IN (SELECT di.id FROM device_instance di
+                    WHERE di.tenant_id = #{param1} AND di.resource_id IN (SELECT id FROM resource_node r
+                          WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device'))) AS "deviceEvents",
+            (SELECT count(*) FROM experiment_template t
+              WHERE t.tenant_id = #{param1} AND t.island_id = #{param2}) AS "templates",
+            (SELECT count(*) FROM plate p
+              WHERE p.tenant_id = #{param1} AND p.location_id IN (
+                  SELECT id FROM resource_node r WHERE r.tenant_id = #{param1}
+                    AND (r.parent_id = #{param2}
+                         OR r.parent_id IN (SELECT id FROM resource_node r2
+                                WHERE r2.tenant_id = #{param1} AND r2.parent_id = #{param2})))) AS "plates",
+            (SELECT count(*) FROM robot_point rp
+              WHERE rp.tenant_id = #{param1} AND rp.island_id = #{param2}) AS "robotPoints",
+            (SELECT count(*) FROM position_state ps
+              WHERE ps.tenant_id = #{param1} AND ps.resource_id IN (SELECT id FROM scoped)) AS "positionStates",
+            (SELECT count(*) FROM position_evidence pe
+              WHERE pe.tenant_id = #{param1} AND pe.resource_id IN (SELECT id FROM scoped)) AS "positionEvidence",
+            (SELECT count(*) FROM experiment e
+              WHERE e.tenant_id = #{param1} AND e.island_id = #{param2}) AS "experiments",
+            <!-- 护栏 ①：还有在飞的 run（未终态）⇒ 不能删 -->
+            (SELECT count(*) FROM run r
+              WHERE r.tenant_id = #{param1} AND r.workflow_id IN (SELECT id FROM workflow w
+                    WHERE w.tenant_id = #{param1} AND w.island_id = #{param2})
+                AND r.status IN ('draft','pending','planned','queued','running','paused')) AS "liveRuns",
+            <!-- 护栏 ②：设备还在线 ⇒ 先下线（sidecar 还连着，删完设备变成野进程） -->
+            (SELECT count(*) FROM device_state ds
+              WHERE ds.tenant_id = #{param1} AND ds.online
+                AND ds.resource_id IN (SELECT id FROM resource_node r
+                      WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device')) AS "onlineDevices",
+            <!-- 护栏 ③：岛外还有引用 ⇒ 先解绑（实验 / 模板 / 协议 / 耗材 / 排程 / 预约） -->
+            (SELECT count(*) FROM experiment e
+              WHERE e.tenant_id = #{param1}
+                AND e.workflow_id IN (SELECT id FROM workflow w
+                      WHERE w.tenant_id = #{param1} AND w.island_id = #{param2})
+                AND e.island_id IS NOT NULL AND e.island_id &lt;&gt; #{param2}) AS "foreignExperiments",
+            (SELECT count(*) FROM experiment_template t
+              WHERE t.tenant_id = #{param1} AND t.island_id IS DISTINCT FROM #{param2}
+                AND t.workflow_ids &amp;&amp; (SELECT array_agg(id) FROM workflow w
+                      WHERE w.tenant_id = #{param1} AND w.island_id = #{param2})) AS "foreignTemplates",
+            (SELECT count(*) FROM protocol_step ps
+              WHERE ps.pinned_resource_id IN (SELECT id FROM resource_node r
+                    WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device')) AS "pinnedProtocols",
+            (SELECT count(*) FROM consumable_lot cl
+              WHERE cl.tenant_id = #{param1} AND (cl.location_id IN (SELECT id FROM resource_node r
+                      WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device')
+                    OR cl.device_id IN (SELECT id FROM resource_node r
+                      WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device'))) AS "consumableLots",
+            (SELECT count(*) FROM reagent_lot rl
+              WHERE rl.tenant_id = #{param1} AND (rl.location_id IN (SELECT id FROM resource_node r
+                      WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device')
+                    OR rl.device_id IN (SELECT id FROM resource_node r
+                      WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device'))) AS "reagentLots",
+            (SELECT count(*) FROM schedule_item si
+              WHERE si.tenant_id = #{param1} AND si.resource_id IN (SELECT id FROM resource_node r
+                    WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device')) AS "scheduleItems",
+            (SELECT count(*) FROM resource_booking rb
+              WHERE rb.tenant_id = #{param1} AND rb.resource_id IN (SELECT id FROM resource_node r
+                    WHERE r.tenant_id = #{param1} AND r.parent_id = #{param2} AND r.kind = 'device')) AS "bookings"
+        FROM (SELECT 1) x
+    </select>
+
+    <select id="purgeIslandData" resultType="java.util.Map">
+        WITH RECURSIVE
+        isl AS (
+            SELECT id, code FROM resource_node
+             WHERE tenant_id = #{param1} AND id = #{param2} AND kind = 'island'
+        ),
+        scoped AS (
+            -- 岛 + 它的**全部后代**（沿 parent 链递归，不看 path ——
+            -- path 可能没填；而点位节点既可能是设备的子节点，也可能是直接挂在岛下的）
+            SELECT r.id, r.kind FROM resource_node r
+             WHERE r.tenant_id = #{param1} AND r.id = (SELECT id FROM isl)
+            UNION
+            SELECT r.id, r.kind FROM resource_node r
+              JOIN scoped s ON r.parent_id = s.id
+             WHERE r.tenant_id = #{param1}
+        ),
+        dev AS (
+            SELECT id FROM scoped WHERE kind = 'device'
+        ),
+        pnt AS (
+            SELECT id FROM scoped
+             WHERE kind &lt;&gt; 'device' AND id &lt;&gt; (SELECT id FROM isl)
+        ),
+        di AS (
+            SELECT id FROM device_instance
+             WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM dev)
+        ),
+        pts AS (
+            SELECT id FROM device_point
+             WHERE tenant_id = #{param1} AND device_resource_id IN (SELECT id FROM dev)
+        ),
+        wf AS (
+            SELECT id FROM workflow
+             WHERE tenant_id = #{param1} AND island_id = (SELECT id FROM isl)
+        ),
+        rn AS (
+            SELECT id FROM run
+             WHERE tenant_id = #{param1} AND workflow_id IN (SELECT id FROM wf)
+        ),
+        rnode AS (
+            SELECT id FROM run_node
+             WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)
+        ),
+        pl AS (
+            SELECT id FROM plate
+             WHERE tenant_id = #{param1}
+               AND location_id IN (SELECT id FROM scoped)
+        ),
+        d_snap   AS (DELETE FROM run_position_snapshot          WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn) RETURNING 1),
+        d_scan   AS (DELETE FROM position_scan_evidence          WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_ilock  AS (DELETE FROM interlock_decision              WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_ttx    AS (DELETE FROM transfer_transaction            WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_tseg   AS (DELETE FROM transport_segment               WHERE tenant_id = #{param1} AND (run_id IN (SELECT id FROM rn) OR robot_resource_id IN (SELECT id FROM dev))),
+        d_plaud  AS (DELETE FROM plate_location_audit            WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_pme    AS (DELETE FROM plate_material_effect           WHERE tenant_id = #{param1} AND (source_run_id IN (SELECT id FROM rn) OR plate_id IN (SELECT id FROM pl))),
+        d_rmed   AS (DELETE FROM run_material_effect_declaration WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_rres   AS (DELETE FROM run_result                      WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_rart   AS (DELETE FROM run_artifact                    WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_rvar   AS (DELETE FROM run_variable                    WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_err    AS (DELETE FROM error_occurrence                WHERE tenant_id = #{param1} AND (run_id IN (SELECT id FROM rn) OR resource_id IN (SELECT id FROM scoped))),
+        d_sched  AS (DELETE FROM schedule_item                   WHERE tenant_id = #{param1} AND (run_id IN (SELECT id FROM rn) OR run_node_id IN (SELECT id FROM rnode) OR resource_id IN (SELECT id FROM dev))),
+        d_cursor AS (DELETE FROM device_event_run_cursor         WHERE tenant_id = #{param1} AND run_id IN (SELECT id FROM rn)),
+        d_revent AS (DELETE FROM run_event                       WHERE tenant_id = #{param1} AND aggregate_id IN (SELECT id FROM rn)),
+        d_deconsu AS (DELETE FROM device_event_consumption       WHERE tenant_id = #{param1} AND event_id IN (SELECT id FROM device_event WHERE tenant_id = #{param1} AND device_id IN (SELECT id FROM di))),
+        d_devent  AS (DELETE FROM device_event                   WHERE tenant_id = #{param1} AND device_id IN (SELECT id FROM di) RETURNING 1),
+        d_manifp  AS (DELETE FROM manifest_placement             WHERE tenant_id = #{param1} AND (run_id IN (SELECT id FROM rn) OR position_id IN (SELECT id FROM pts))),
+        d_exp     AS (DELETE FROM experiment                     WHERE tenant_id = #{param1} AND (island_id = (SELECT id FROM isl) OR workflow_id IN (SELECT id FROM wf) OR run_id IN (SELECT id FROM rn))),
+        d_expproc AS (DELETE FROM experiment_process              WHERE tenant_id = #{param1} AND (workflow_id IN (SELECT id FROM wf) OR experiment_id IN (SELECT id FROM experiment WHERE tenant_id = #{param1} AND (island_id = (SELECT id FROM isl) OR workflow_id IN (SELECT id FROM wf))))),
+        d_tpl     AS (DELETE FROM experiment_template            WHERE tenant_id = #{param1} AND island_id = (SELECT id FROM isl)),
+        d_wfvar   AS (DELETE FROM workflow_variable              WHERE tenant_id = #{param1} AND workflow_id IN (SELECT id FROM wf)),
+        d_wfstep  AS (DELETE FROM workflow_node_step             WHERE tenant_id = #{param1} AND workflow_id IN (SELECT id FROM wf)),
+        d_bind    AS (DELETE FROM node_binding                   WHERE tenant_id = #{param1} AND (node_id IN (SELECT id FROM workflow_node WHERE tenant_id = #{param1} AND workflow_id IN (SELECT id FROM wf)) OR device_instance_id IN (SELECT id FROM di) OR position_id IN (SELECT id FROM pts) OR method_id IN (SELECT id FROM device_method WHERE tenant_id = #{param1} AND device_instance_id IN (SELECT id FROM di))) RETURNING 1),
+        d_wf      AS (DELETE FROM workflow                       WHERE tenant_id = #{param1} AND island_id = (SELECT id FROM isl) RETURNING 1),
+        d_rnode   AS (DELETE FROM run_node                       WHERE tenant_id = #{param1} AND (run_id IN (SELECT id FROM rn) OR resource_id IN (SELECT id FROM scoped)) RETURNING 1),
+        d_run     AS (DELETE FROM run                            WHERE tenant_id = #{param1} AND workflow_id IN (SELECT id FROM wf) RETURNING 1),
+        d_pwell   AS (DELETE FROM plate_well                     WHERE tenant_id = #{param1} AND plate_id IN (SELECT id FROM pl)),
+        d_pwelld  AS (DELETE FROM plate_well_design              WHERE tenant_id = #{param1} AND plate_id IN (SELECT id FROM pl)),
+        d_pbar    AS (DELETE FROM plate_barcode_alias            WHERE tenant_id = #{param1} AND plate_uid IN (SELECT id FROM pl)),
+        d_plate   AS (DELETE FROM plate                          WHERE tenant_id = #{param1} AND location_id IN (SELECT id FROM scoped) RETURNING 1),
+        d_pevid   AS (DELETE FROM position_evidence              WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM scoped)),
+        d_pstate  AS (DELETE FROM position_state                 WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM scoped)),
+        d_dstate  AS (DELETE FROM device_state                   WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM scoped)),
+        d_rcap    AS (DELETE FROM resource_capability            WHERE resource_id IN (SELECT id FROM scoped)),
+        d_pmethod AS (DELETE FROM position_method                WHERE tenant_id = #{param1} AND position_id IN (SELECT id FROM pts)),
+        d_point   AS (DELETE FROM device_point                   WHERE tenant_id = #{param1} AND device_resource_id IN (SELECT id FROM dev) RETURNING 1),
+        d_robot   AS (DELETE FROM robot_point                    WHERE tenant_id = #{param1} AND (island_id = (SELECT id FROM isl) OR robot_resource_id IN (SELECT id FROM scoped) OR device_resource_id IN (SELECT id FROM scoped))),
+        d_fact    AS (DELETE FROM device_fact                    WHERE tenant_id = #{param1} AND device_resource_id IN (SELECT id FROM scoped)),
+        d_waiting AS (DELETE FROM waiting_interaction            WHERE tenant_id = #{param1} AND device_resource_id IN (SELECT id FROM scoped)),
+        d_dlog    AS (DELETE FROM device_log                     WHERE tenant_id = #{param1} AND device_id IN (SELECT id FROM di)),
+        d_pair    AS (DELETE FROM stirrer_dispenser_pair         WHERE tenant_id = #{param1} AND (stirrer_resource_id IN (SELECT id FROM dev) OR dispenser_resource_id IN (SELECT id FROM dev))),
+        d_rzone   AS (DELETE FROM rail_zone                      WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM scoped)),
+        d_trzone  AS (DELETE FROM transfer_rail_zone             WHERE tenant_id = #{param1} AND (zone_resource_id IN (SELECT id FROM scoped) OR path_key ~ ('(^|->)(' || (SELECT string_agg(id::text, '|') FROM (SELECT id FROM scoped)) || ')(->|$)'))),
+        d_poolmem AS (DELETE FROM device_pool_member             WHERE tenant_id = #{param1} AND device_instance_id IN (SELECT id FROM di)),
+        d_pool    AS (DELETE FROM device_pool                    WHERE tenant_id = #{param1} AND island_id = (SELECT id FROM isl) RETURNING 1),
+        d_access  AS (DELETE FROM device_access                  WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM dev)),
+        d_portuse AS (DELETE FROM device_port_usage              WHERE tenant_id = #{param1} AND port_id IN (SELECT id FROM device_port WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM dev))),
+        d_port    AS (DELETE FROM device_port                     WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM dev)),
+        d_book    AS (DELETE FROM resource_booking               WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM dev)),
+        d_dmethod AS (DELETE FROM device_method                   WHERE tenant_id = #{param1} AND device_instance_id IN (SELECT id FROM di)),
+        d_inst    AS (DELETE FROM device_instance                WHERE tenant_id = #{param1} AND resource_id IN (SELECT id FROM dev) RETURNING 1),
+        d_islflow AS (DELETE FROM island_flow                    WHERE tenant_id = #{param1} AND island_id = (SELECT id FROM isl)),
+        d_node    AS (DELETE FROM resource_node                  WHERE tenant_id = #{param1} AND id IN (SELECT id FROM scoped) RETURNING 1)
+        SELECT
+            (SELECT count(*) FROM d_node)    AS "nodes",
+            (SELECT count(*) FROM d_inst)    AS "devices",
+            (SELECT count(*) FROM d_point)   AS "points",
+            (SELECT count(*) FROM d_bind)    AS "bindings",
+            (SELECT count(*) FROM d_pool)    AS "pools",
+            (SELECT count(*) FROM d_wf)      AS "workflows",
+            (SELECT count(*) FROM d_run)     AS "runs",
+            (SELECT count(*) FROM d_plate)   AS "plates",
+            (SELECT count(*) FROM d_snap)    AS "snapshots",
+            (SELECT count(*) FROM d_devent)  AS "deviceEvents"
+    </select>
 </mapper>
+

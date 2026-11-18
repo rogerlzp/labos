@@ -764,13 +764,26 @@ public class DeviceController {
         return ResponseEntity.ok(Jsons.obj("updated", n, "id", id));
     }
 
+    /**
+     * 删岛。
+     *
+     * <p>{@code purge=true} ⇒ **物理删除**（连设备/点位/绑定/池/流程/run/历史一起删）；
+     * 不带 purge ⇒ 原行为（岛下还有设备时拒绝）。
+     */
     @DeleteMapping(value = "/islands/{id:\\d+}", produces = "application/json; charset=utf-8")
-    public String deleteIsland(@PathVariable long id,
-                               HttpServletRequest req) throws SQLException {
+    public ResponseEntity<String> deleteIsland(@PathVariable long id,
+                                                @RequestParam(required = false) Boolean purge,
+                                                HttpServletRequest req) throws SQLException {
+        if (Boolean.TRUE.equals(purge)) {
+            String out = deviceService.purgeIsland(id);
+            audit.record(session(req), "island.purge", "island", id, null, null,
+                    req.getRemoteAddr());
+            return ResponseEntity.ok(out);
+        }
         int n = deviceService.deleteIsland(id);
         audit.record(session(req), "island.delete", "island", id, null, null,
                 req.getRemoteAddr());
-        return Jsons.obj("deleted", n, "id", id);
+        return ResponseEntity.ok(Jsons.obj("deleted", n, "id", id));
     }
 
     // ---------------------------------------------------------------- 机器人点位

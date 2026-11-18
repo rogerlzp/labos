@@ -9,6 +9,7 @@ import com.labos.kernel.persistence.Mappers;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.util.Map;
 
 /**
  * 2026-11-17 · 四个平台缺口的连库判别性自测。
@@ -44,6 +45,20 @@ public final class PlatformGapDbSelfTest {
     private static final String PLATE = "PGAP-PLATE-1";
     private static final String PLATE2 = "PGAP-PLATE-2";
     private static final String PLATE3 = "PGAP-PLATE-3";
+    // 缺口 5（整岛 purge）的一次性小岛：岛 → 设备 → 点位节点 → 点位 → 实例 → 流程 → run → 绑定 → 板
+    private static final long ISL_RES = -999351L;
+    private static final long ISL_DEV = -999352L;
+    private static final long ISL_PNT = -999353L;
+    private static final long ISL_PNT2 = -999361L;
+    private static final long ISL_INST = -999354L;
+    private static final long ISL_POINT = -999355L;
+    private static final long ISL_WF = -999356L;
+    private static final long ISL_WFN = -999357L;
+    private static final long ISL_RUN = -999358L;
+    private static final long ISL_RN = -999359L;
+    private static final long ISL_BIND = -999360L;
+    private static final String ISL_PLATE = "PGAP-PLATE-ISL-1";
+    private static final String ISL_PLATE2 = "PGAP-PLATE-ISL-2";
 
     private static DbConfig db;
     private static int pass;
@@ -57,6 +72,7 @@ public final class PlatformGapDbSelfTest {
             gap2_occupancyReleaseAndClaim();
             gap3_errorKeepsRealCause();
             gap4_sameRoleManyRows();
+            gap5_islandPurge();
         } finally {
             cleanup();
         }
@@ -175,6 +191,114 @@ public final class PlatformGapDbSelfTest {
         insertManifestItem(TPL_ID, 1, "magPlate");
         insertManifestItem(TPL_ID, 2, "magPlate");
         eq("同角色插了两行", 2, countManifestItems(TPL_ID, "magPlate"));
+    }
+
+    // ------------------------------------------------------------ 缺口 5
+    /**
+     * 整岛彻底删除（2026-11-18 新增能力）。
+     *
+     * <p>判别性：① 设备在线 ⇒ 拒绝；② 有在飞的 run ⇒ 拒绝；
+     * ③ 条件齐了 ⇒ 岛/设备/点位/实例/流程/run/run_node/绑定/板 全删干净；
+     * ④ <b>全局时长表 duration_model 一点没动</b>（它是全局方法级表，不是岛的数据）。
+     */
+    private static void gap5_islandPurge() throws Exception {
+        section("缺口 5 · 整岛彻底删除（purge island）");
+        DeviceMapper mapper = Mappers.get(DeviceMapper.class);
+        DeviceService svc = new DeviceService(db, mapper);
+        long durBefore = queryLong("SELECT count(*) FROM duration_model");
+
+        // 造一座一次性的小岛
+        insertResourceNode(ISL_RES, "PGAP-ISL-1", "island");
+        insertResourceNode(ISL_DEV, "PGAP-ISL-DEV-1", "device");
+        exec("UPDATE resource_node SET parent_id = ? WHERE id = ?", ISL_RES, ISL_DEV);
+        insertResourceNode(ISL_PNT, "PGAP-ISL-PT-1", "transfer_point");
+        exec("UPDATE resource_node SET parent_id = ? WHERE id = ?", ISL_DEV, ISL_PNT);
+        // ⚠ 点位节点也可能**直接挂在岛下**（不是挂在设备下）——
+        //   2026-11-18 实测踩到：清理范围只覆盖「设备的子节点」⇒ 岛下节点的
+        //   position_state / position_evidence 变成孤儿行（当时漏了 24 行）。
+        insertResourceNode(ISL_PNT2, "PGAP-ISL-PT-2", "transfer_point");
+        exec("UPDATE resource_node SET parent_id = ? WHERE id = ?", ISL_RES, ISL_PNT2);
+        insertPositionState(ISL_PNT2, ISL_PLATE2, RUN_REF);
+        insertDeviceInstance(ISL_INST, "PGAP-ISL-INST-1", ISL_DEV);
+        // point_role 只能是 entry/exit/both/internal（ck_device_point_role）；
+        // 非 internal 必须 is_entry 或 is_exit 为真（ck_device_point_flags）
+        exec("INSERT INTO device_point (id, tenant_id, device_resource_id, point_resource_id, "
+                + "point_role, is_entry, is_exit) VALUES (?, ?, ?, ?, 'both', true, true)",
+                ISL_POINT, TENANT, ISL_DEV, ISL_PNT);
+        exec("INSERT INTO workflow (id, tenant_id, code, name, island_id, version, status) "
+                + "VALUES (?, ?, 'PGAP-WF-ISL-1', 'PGAP-WF-ISL-1', ?, 1, 1)", ISL_WF, TENANT, ISL_RES);
+        exec("INSERT INTO workflow_node (id, tenant_id, workflow_id, node_key, name, node_type) "
+                + "VALUES (?, ?, ?, 'PGAP-N1', 'PGAP-N1', 'task')", ISL_WFN, TENANT, ISL_WF);
+        exec("INSERT INTO node_binding (id, tenant_id, node_id, seq, position_id, device_instance_id) "
+                + "VALUES (?, ?, ?, 1, ?, ?)", ISL_BIND, TENANT, ISL_WFN, ISL_POINT, ISL_INST);
+        // 先造一个**已终态**的 run（这样第一条护栏命中的是「设备在线」而不是「在飞」）
+        exec("INSERT INTO run (id, tenant_id, run_no, run_type, status, workflow_id) "
+                + "VALUES (?, ?, 'PGAP-RUN-ISL-1', 'experiment', 'completed'::run_status, ?)",
+                ISL_RUN, TENANT, ISL_WF);
+        exec("INSERT INTO run_node (id, tenant_id, run_id, node_key, resource_id) "
+                + "VALUES (?, ?, ?, 'PGAP-N1', ?)", ISL_RN, TENANT, ISL_RUN, ISL_DEV);
+        exec("INSERT INTO plate (tenant_id, barcode, plate_type, status, location_id) "
+                + "VALUES (?, ?, 'magnet96', 'available', ?)", TENANT, ISL_PLATE, ISL_PNT);
+        exec("INSERT INTO device_state (tenant_id, resource_id, status, online) "
+                + "VALUES (?, ?, 'available', true)", TENANT, ISL_DEV);
+
+        // 护栏 ①：设备还在线 ⇒ 拒绝
+        boolean refusedOnline = false;
+        String whyOnline = "";
+        try {
+            svc.purgeIsland(ISL_RES);
+        } catch (IllegalArgumentException e) {
+            refusedOnline = true;
+            whyOnline = e.getMessage();
+        }
+        eq("设备在线时拒绝删岛", true, refusedOnline);
+        eq("拒绝原因说清了是「在线」", true, whyOnline.contains("在线"));
+        eq("拒绝时岛还在（没误删）", true, resourceNodeExists(ISL_RES));
+
+        // 护栏 ②：还有在飞的 run ⇒ 拒绝
+        exec("UPDATE device_state SET online = false WHERE resource_id = ?", ISL_DEV);
+        exec("UPDATE run SET status = 'running'::run_status WHERE id = ?", ISL_RUN);
+        boolean refusedRun = false;
+        String whyRun = "";
+        try {
+            svc.purgeIsland(ISL_RES);
+        } catch (IllegalArgumentException e) {
+            refusedRun = true;
+            whyRun = e.getMessage();
+        }
+        eq("有在飞的 run 时拒绝删岛", true, refusedRun);
+        eq("拒绝原因说清了是「在飞」", true, whyRun.contains("在飞"));
+        eq("拒绝时流程还在（没误删）", true,
+                queryLong("SELECT count(*) FROM workflow WHERE id = ?", ISL_WF) == 1);
+
+        // 条件齐了 ⇒ 删干净
+        exec("UPDATE run SET status = 'completed'::run_status WHERE id = ?", ISL_RUN);
+        String out = svc.purgeIsland(ISL_RES);
+        eq("返回体标明已删", true, out.contains("\"purged\":true"));
+        eq("岛节点已删", false, resourceNodeExists(ISL_RES));
+        eq("设备节点已删", false, resourceNodeExists(ISL_DEV));
+        eq("点位节点已删", false, resourceNodeExists(ISL_PNT));
+        eq("设备实例已删", false, deviceInstanceExists(ISL_INST));
+        eq("点位已删", 0, queryLong("SELECT count(*) FROM device_point WHERE id = ?", ISL_POINT));
+        eq("流程已删", 0, queryLong("SELECT count(*) FROM workflow WHERE id = ?", ISL_WF));
+        eq("流程节点已删", 0, queryLong("SELECT count(*) FROM workflow_node WHERE id = ?", ISL_WFN));
+        eq("run 已删", 0, queryLong("SELECT count(*) FROM run WHERE id = ?", ISL_RUN));
+        eq("run_node 已删", 0, queryLong("SELECT count(*) FROM run_node WHERE id = ?", ISL_RN));
+        eq("绑定已删", 0, queryLong("SELECT count(*) FROM node_binding WHERE id = ?", ISL_BIND));
+        eq("板已删", 0, queryLong("SELECT count(*) FROM plate WHERE barcode = ?", ISL_PLATE));
+        eq("岛下点位节点也删了", false, resourceNodeExists(ISL_PNT2));
+        eq("岛下点位节点的位置账本没留孤儿", 0,
+                queryLong("SELECT count(*) FROM position_state WHERE resource_id = ?", ISL_PNT2));
+
+        // 复核：范围查询必须全 0（服务内部也做了这道复核）
+        Map<String, Object> after = mapper.selectIslandPurgeScope(TENANT, ISL_RES);
+        eq("复核：设备数 0", 0, numOf(after, "devices"));
+        eq("复核：流程数 0", 0, numOf(after, "workflows"));
+        eq("复核：run 数 0", 0, numOf(after, "runs"));
+        eq("复核：板数 0", 0, numOf(after, "plates"));
+
+        // 全局表不许动
+        eq("全局时长表没被动", durBefore, queryLong("SELECT count(*) FROM duration_model"));
     }
 
     // ------------------------------------------------------------ 工具
@@ -316,6 +440,22 @@ public final class PlatformGapDbSelfTest {
                 tpl, role);
     }
 
+    /** 从 mapper 的 Map 结果里取计数。 */
+    private static long numOf(Map<String, Object> m, String key) {
+        Object v = m == null ? null : m.get(key);
+        if (v == null) {
+            return 0L;
+        }
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(v).trim());
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
     /** 清理专用：单条失败不挡后面的（否则一条失败 ⇒ 残留 ⇒ 下轮又撞）。 */
     private static void safe(String sql, Object... args) {
         try {
@@ -352,6 +492,24 @@ public final class PlatformGapDbSelfTest {
             }
             safe("DELETE FROM manifest_item WHERE template_id = ?", TPL_ID);
             safe("DELETE FROM experiment_template WHERE id = ?", TPL_ID);
+            // 缺口 5 的小岛（中途失败时残留）
+            safe("DELETE FROM run_node WHERE id = ?", ISL_RN);
+            safe("DELETE FROM run WHERE id = ?", ISL_RUN);
+            safe("DELETE FROM node_binding WHERE id = ?", ISL_BIND);
+            safe("DELETE FROM workflow_node WHERE id = ?", ISL_WFN);
+            safe("DELETE FROM workflow WHERE id = ?", ISL_WF);
+            safe("DELETE FROM plate_well WHERE plate_id IN (SELECT id FROM plate WHERE barcode = ?)",
+                    ISL_PLATE);
+            safe("DELETE FROM plate WHERE barcode = ?", ISL_PLATE);
+            safe("DELETE FROM device_point WHERE device_resource_id = ?", ISL_DEV);
+            safe("DELETE FROM device_state WHERE resource_id = ?", ISL_DEV);
+            safe("DELETE FROM device_instance WHERE resource_id = ?", ISL_DEV);
+            safe("DELETE FROM position_state WHERE resource_id = ?", ISL_PNT2);
+            safe("DELETE FROM resource_node WHERE id = ? OR parent_id = ? OR id IN "
+                    + "(SELECT id FROM resource_node WHERE parent_id = ?)", ISL_RES, ISL_RES, ISL_DEV);
+            for (long id : new long[] {ISL_DEV, ISL_PNT, ISL_PNT2, ISL_RES}) {
+                safe("DELETE FROM resource_node WHERE id = ? OR parent_id = ?", id, id);
+            }
         } catch (Exception e) {
             // 清理失败**不许掩盖主体结果**（finally 抛异常会把真错吞掉）
             System.out.println("  ! 清理残留：" + e.getMessage().replace('\n', ' '));
