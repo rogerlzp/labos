@@ -48,7 +48,7 @@
 1. 三参数 `compileAll` 对每个 task 节点调用三参数 `compile(n, protocolCap, capabilityByResource)`；非 task 节点继续跳过。
 2. `WorkflowService` 执行展开调用 `compile(n, protocolCap, resourceCap)`，与预览使用同一份绑定能力映射。
 3. 对相同 NodeDef、protocolCap、capabilityByResource 和 recipe 数据，三参数 `compileAll` 中某节点结果必须与直接三参数 `compile` 一致。
-4. 对相同工作流版本、节点绑定和模板版本，编译预览与实际执行前截获的 `RecipeCompiler.NodePlan` 具有一致的 nodeId、capability、capabilitySource、method 序列、sampleCount 和 fromRecipe。
+4. 对同一不可变输入快照，至少固定或记录 Workflow 版本、NodeDef／节点定义、设备绑定版本、Recipe 模板版本和 Capability 映射版本；编译预览与实际执行前截获的 `RecipeCompiler.NodePlan` 具有一致的 nodeId、capability、capabilitySource、method 序列、sampleCount 和 fromRecipe。
 5. 服务级一致性断言必须直接针对预览 NodePlan 与执行展开 NodePlan；不得用 RecoverableNode、GraphRunner 能力或最终设备事件代替。
 6. 显式节点能力仍优先于绑定设备能力；绑定设备能力优先于协议反查。不得为解决丢参而调整 `resolveCapability` 的优先级。
 7. 两参数 `compile` / `compileAll` 继续使用空映射并保持既有回退；null／空映射、资源未登记能力时不得抛新增异常或错误选中绑定能力。
@@ -86,11 +86,11 @@
 
 ## 5. 实施步骤
 
-1. **固定修复基线**：记录实际 HEAD、预览与执行展开的调用链；先运行现有 RecipeCompiler 测试并保存结果。
+1. **固定基线并全仓清查调用点**：记录实际 HEAD；列出所有 `RecipeCompiler.compile` / `compileAll` 调用文件、方法、场景，逐项分类为应传 capability mapping 或保持两参数回退，并登记对应测试或无需额外测试的理由；先运行现有 RecipeCompiler 测试并保存结果。
 2. **先写判别性回归**：按第 4 节构造空 protocolName、合法 equipmentInstanceId、不同 bound／protocol recipe 的节点，证明旧 `compileAll` 丢失 bound 结果；另构造显式能力用例钉住既有优先级。
 3. **最小修复两处透传**：批量预览与执行展开共享 `resourceCap`；不复制一份新的能力解析逻辑。
 4. **保持重载兼容**：两参数入口、空／缺映射和 protocol fallback 行为均有回归；非 task 节点仍被批量编译跳过。
-5. **做 NodePlan 级一致性测试**：在同一 fixture 上比较预览与执行前展开的完整 NodePlan，测试在任何设备动作前截获计划；不得只比较 GraphRunner／RecoverableNode，也不依赖真实设备运行。
+5. **做同快照 NodePlan 一致性测试**：固定 Workflow、NodeDef、设备绑定、Recipe 模板和 Capability 映射版本，在同一 fixture 上比较直接编译、预览与执行前展开的完整 NodePlan；测试在任何设备动作前截获计划，不得只比较 GraphRunner／RecoverableNode，也不依赖真实设备运行。
 6. **运行回归**：执行本卡测试、`./scripts/ci-gate.sh --fast`，以及 `docs/测试总纲` §4 对 workflow 改动要求的当前可用测试段；记录命令、退出码、日志和 SKIP。
 7. **独立评审与提交**：提交信息写现象、根因、两处修法、实际验证和遗留 UNKNOWN；QA/Integration 对照测试 ID 验收。
 
@@ -109,12 +109,16 @@
 | G07-T07 | 批量输入同时含 task 与非 task 节点 | 非 task 跳过；每个 task 都收到同一 capabilityByResource | 待执行 |
 | G07-T08 | 已指定具体 protocolName 的节点 | 能力解析正确，仍单步且不展开 recipe；不把它当作 G07-T02 的替代证明 | 待执行 |
 | G07-T09 | 无模板能力、逻辑节点、伪资源 ID、既有 INCUBATE/READ_PLATE 展开 | 步数、方法序列、sampleCount/fromRecipe 无回归；使用确定性 fixture | 待执行 |
-| G07-T10 | 相同 fixture 下服务级预览与执行前展开，直接截获两侧 RecipeCompiler.NodePlan | nodeId、capability、source、method 序列、sampleCount、fromRecipe 全部一致；旧实现必须失败；不得用 RecoverableNode／GraphRunner 代替 | 待执行 |
-| G07-T11 | 绑定关系或模板版本变化 | 新版本重新计算并得到各自明确结果；不混用旧缓存／旧计划 | 待执行 |
+| G07-T10 | 同一不可变输入快照下服务级预览与执行前展开，直接截获两侧 RecipeCompiler.NodePlan | nodeId、capability、source、method 序列、sampleCount、fromRecipe 全部一致；旧实现必须失败；不得用 RecoverableNode／GraphRunner 代替 | 待执行 |
+| G07-T11 | 设备绑定、Recipe 模板或 Capability 映射版本变化 | 新版本重新计算并得到各自明确结果；不混用旧缓存／旧计划 | 待执行 |
 | G07-T12 | 既有 RecipeCompiler 与 workflow 回归集 | 无回归；新增测试已接入当前测试入口且退出码可信 | 待执行 |
+| G07-T13 | 全仓 compile／compileAll 调用点清单逐项复核 | 每个调用点均记录文件、方法、场景、两／三参数语义及测试或豁免理由；无未分类调用点 | 待执行 |
+| G07-T14 | 同一不可变快照下直接 compile、compileAll 预览和执行前展开三方比较 | 三者完整 NodePlan 一致；快照标识一致，任一方使用旧快照时测试不得判 PASS | 待执行 |
 
 ### 发布前检查
 
+- [ ] 全仓 `compile` / `compileAll` 调用点已列出并分类；不是只检查当前已知两处。
+- [ ] 同一不可变快照明确记录 Workflow、NodeDef、绑定、Recipe 和 Capability 映射版本；版本变化后的重新计算有实测。
 - [ ] `compileAll` 与执行展开两处都传递同一能力映射；不是只修一行预览代码。
 - [ ] 判别性夹具满足空 protocolName、合法 equipmentInstanceId、不同 bound／protocol recipe；旧代码至少被 G07-T02 与 G07-T10 检出。
 - [ ] 服务级一致性直接比较执行前 NodePlan，不用 RecoverableNode／GraphRunner 的既有能力字段制造假阴性。
@@ -134,6 +138,8 @@
 | 修复基线 HEAD | 待填 |
 | 修复 commit / PR | 待填 |
 | 涉及文件与方法签名 | 待填 |
+| 全仓 compile／compileAll 调用点清单与分类 | 待填 |
+| 同一不可变输入快照标识与版本记录 | 待填 |
 | 判别性夹具与修复前失败证据 | 待填 |
 | 预览／执行 NodePlan 截获点与一致性测试位置 | 待填 |
 | 测试命令、退出码和原始日志位置 | 待填 |

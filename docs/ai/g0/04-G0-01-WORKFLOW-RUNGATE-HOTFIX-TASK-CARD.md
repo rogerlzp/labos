@@ -49,10 +49,10 @@
 3. 参数非法、active 状态词表为空、数据库不可用或查询失败时，返回可区分的 `DENY_UNKNOWN`；所有新建流程 Run 的入口均不得准入。
 4. 建议决策结果至少包含 `outcome + reasonCode + runId/runNo/status + safeReason`；`allowed()` 只能在 `ALLOW` 时为 true，不能把 active 冲突与未知故障合并。
 5. `LABOS_WORKFLOW_CONCURRENT_RUN=allow` 只能跳过“已有 active Run”这一种拒绝，不能跳过非法参数、空词表或 DB 故障。实现顺序必须保证这一点。
-6. 新流程 Run 的“检查—准入—插入”必须在 `createRun` / `insertRun` 边界原子化，覆盖同步、异步、实验直接执行和调度首次派发。预检可保留用于提前反馈，但不是安全边界。
-7. 采用 `(tenant, workflow)` 粒度的事务锁、部分唯一约束或等价机制时，必须覆盖全部流程 Run 插入点，并明确 active 状态集合、事务边界、显式 allow 语义、冲突映射、迁移和回滚；不得只给现有 `check` 加锁。
-8. `excludeRunId` 只用于经过身份与归属校验的合法流程续跑；不能成为通用绕过参数，也不能用实验 Run ID 代替。
-9. 被拒绝的请求不得留下新的 `running` 流程 Run、启动 worker、推进运行状态、产生设备命令或改变物料／位置事实。
+6. 新流程 Run 的“检查—准入—插入”必须在 `createRun` / `insertRun` 边界原子化，覆盖同步、异步、实验直接执行和调度首次派发。预检可保留用于提前反馈，但不是安全边界；单 JVM 的 `synchronized` 或内存锁不能作为跨线程、跨进程、跨实例的最终协调机制。
+7. 采用 `(tenant, workflow)` 粒度的事务锁、部分唯一约束、guard row、可串行化事务或等价机制时，必须覆盖全部流程 Run 插入点，并明确 active 状态集合、显式 allow 语义、迁移和回滚。实施记录必须写明锁获取、active 检查、Run 创建、初始状态写入和事务提交的顺序及原子范围。
+8. 锁等待超时、死锁、连接中断、事务回滚和提交结果未知均不得放行。准入成功后若事务回滚，锁释放后另一请求应能正常竞争；不同 workflow 不得被无谓全局串行。
+9. `excludeRunId` 只用于经过身份与归属校验的合法流程续跑。其他 tenant、其他 workflow、不存在或不属于当前续跑上下文的 Run ID 均不得被排除；实验 Run ID 不能代替流程 Run ID。
 10. 调度器预先创建的 `experiment_run` 已存在时，准入失败必须按现有失败收尾机制处理，不得永远滞留 `queued`；本卡不要求倒删这条既有审计记录。
 
 ### 建议错误语义
@@ -94,9 +94,9 @@
 1. **固定修复基线并普查入口**：记录实际 HEAD；枚举 `WorkflowService.execute/startAsync/createRun`、`RunMapper.insertRun`、同步／异步 Controller、ExperimentExecutor 和 ExperimentScheduler 的全部相关调用，形成入口清单。
 2. **先补失败用例**：覆盖非法参数、空词表、SQL 异常、异步绕过、调度首次派发和 check→create 竞态；确认旧实现会失败，避免写出永远为绿的测试。
 3. **建立三态决策**：区分 `ALLOW / DENY_ACTIVE / DENY_UNKNOWN`，按稳定 `reasonCode` 映射响应；调整 allow 开关位置，使其只覆盖 active 冲突；记录安全日志，不泄露 SQL、连接信息或敏感数据。
-4. **在真正插入点收口原子准入**：由 Core/Control 选择共享事务锁、数据库约束或等价机制，覆盖所有 `createRun` 调用。若引入锁或唯一约束，说明锁粒度、事务边界、死锁／冲突映射、显式 allow 行为、迁移与回滚。
+4. **在真正插入点收口原子准入**：由 Core/Control 选择数据库唯一约束、advisory lock、guard row、可串行化事务或等价数据库级机制，覆盖所有 `createRun` 调用。记录锁／唯一键粒度、active 检查、Run 创建、初始状态写入、提交的事务顺序，以及锁等待超时、死锁、连接中断、提交结果未知和回滚行为。不得只给现有 `check` 加锁，也不得只依赖单 JVM 内存锁。
 5. **闭合异步路径**：只有原子准入成功后才能提交 worker；竞争败者不得留下新 Run、worker 或设备命令。不得把“先插入 running、事后标 failed”当作并发败者的合格实现。
-6. **修正实验语义**：调度器复用 `experiment_run` 不等于流程续跑；每个真正的新流程 Run 都经过统一原子准入。合法续跑单独识别并只排除自身。
+6. **修正实验与续跑语义**：调度器复用 `experiment_run` 不等于流程续跑；每个真正的新流程 Run 都经过统一原子准入。合法续跑单独识别，校验 Run 存在、tenant／workflow 归属和当前续跑上下文，并且只排除自身；任意构造的 ID 必须拒绝。
 7. **固定 HTTP 契约**：同步和异步拒绝均返回非 2xx 与独立 `errorCode`。同步现有 `{"error"...}` 路径当前统一映射 400；新增字段或 JSON 形状不得使其落回 200。active 冲突与未知故障必须可区分。
 8. **验证无副作用**：所有拒绝和并发失败路径都核对流程 Run 数、实验 Run 收尾、worker 数、状态和设备命令数；入口测试通过真实 API／服务动作驱动，不用 SQL `UPDATE` 冒充被测业务动作。
 9. **回归与登记**：执行本卡测试、`./scripts/ci-gate.sh --fast`，以及 `docs/测试总纲` §4 对 workflow 改动要求的当前可用测试段；记录命令、退出码、日志和 SKIP。历史段号或已删除脚本不得直接照抄。
@@ -128,10 +128,17 @@
 | G01-T18 | 同步与异步入口分别发生 active、invalid、status-unknown、DB unavailable | 均返回稳定且可区分的 `errorCode` 与非 2xx；JSON 形状变化不产生 200 | 待执行 |
 | G01-T19 | 调度首次派发在准入处失败 | 既有 experiment_run 按当前契约明确失败收尾，不滞留 queued；无流程 Run、worker 或设备命令 | 待执行 |
 | G01-T20 | 同步、异步、直接实验、调度首次派发的两两竞争矩阵 | 每一组合均恰好一个流程 Run 准入；不同 workflow 对照组不受误伤 | 待执行 |
+| G01-T21 | 两个独立进程／实例、两个独立数据库连接同时争抢同一 workflow | 数据库级协调下最多一个准入；单 JVM 内存锁不能作为证据 | 待执行 |
+| G01-T22 | excludeRunId 指向其他 tenant、其他 workflow、不存在或不属于当前续跑上下文的 Run | 全部拒绝且不排除任何 Run；合法自身归属对照用例按设计通过 | 待执行 |
+| G01-T23 | 准入成功后事务回滚，随后另一请求竞争同一 workflow | 回滚请求不留 active Run；锁释放后另一请求可正常取得准入 | 待执行 |
+| G01-T24 | 锁等待超时、死锁、连接中断、提交结果未知 | 均不得放行或产生新 Run／worker／设备命令；错误原因可诊断、可审计 | 待执行 |
 
 ### 发布前检查
 
 - [ ] 不是只修改三个 `return Decision.allow()`；真正插入点的全入口原子准入有实现和并发证据。
+- [ ] 数据库级协调机制、事务顺序和异常语义已记录；两个独立进程／连接的并发测试实际通过，未只依赖内存锁或单元模拟锁。
+- [ ] 锁等待超时、死锁、连接中断、提交结果未知均 fail-closed；准入后回滚与锁释放已有实测。
+- [ ] 续跑 Run 的存在性、tenant／workflow 归属和请求上下文均校验；跨 tenant、跨 workflow、不存在及无关 ID 负向用例通过。
 - [ ] 同步、异步、直接实验、调度首次派发均纳入入口清单；没有只保护两个预检调用点。
 - [ ] `existingRunId` 的实验 Run 语义与流程续跑语义已分开；调度首次派发不能绕过门禁。
 - [ ] allow 开关只覆盖 active 冲突，非法参数、空词表和 DB 故障仍 fail-closed。
