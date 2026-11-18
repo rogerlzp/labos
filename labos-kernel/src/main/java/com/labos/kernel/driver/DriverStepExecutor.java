@@ -371,6 +371,12 @@ public final class DriverStepExecutor implements StepExecutor {
      * 降级内核的症状是 run 照样 completed、只是位置锁/搬运事务/轨道互锁/扫码证据确认全没有，
      * 不留痕就等于静默降级。
      *
+     * <p>⚠ <b>判别字段是 {@code fact_type='guard'}，不是 {@code decision='SKIP'}</b>：
+     * 平台**正常运行**时 L1（无 turntable 事实）、L5（未携带 interactionId）本来也记 SKIP，
+     * 拿 decision 判会误报。平台的行用 {@code fact_type} ∈ {{@code rail_zone},
+     * {@code stirrer_status}, {@code turntable}, {@code waiting_interaction}}，
+     * 本方法的行用 {@code guard} + {@code fact_value='LABOS_TRANSFER_PLAN'}。
+     *
      * <p>⚠ **这里不改成「未设变量 = 开启」**：轨道分区互锁是 fail-closed 的
      * （{@code RailZoneGuard.acquire}：路径未配置分区集且无豁免 ⇒ {@code EC-INTERLOCK-RAIL} 拒搬），
      * 没配分区的岛一旦默认开启，搬运会被全量拒掉。
