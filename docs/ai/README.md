@@ -19,7 +19,7 @@
 | 9 | [Capability 验证标准](08-CAPABILITY-VERIFICATION-STANDARD.md) | Capability/Skill/Agent/设备/实验成熟度等级和验收证据 |
 | 10 | [AI Workbench 独立评审](09-AI-WORKBENCH-INDEPENDENT-REVIEW-20261118.md) | 评审结论、P1 整改、G0 准入矩阵和最终决策 |
 | 11 | [G0 源码核查](g0/README-G0-SOURCE-AUDIT-20261118.md) | 固定历史基线证据、实现矩阵、整改顺序，以及 G0-01/G0-07 独立修复任务卡与验收清单 |
-| 12 | [G0-01/G0-07 统一评审基线](g0/07-G0-UNIFIED-IMPLEMENTATION-REVIEW-BASELINE-20261118.md) | 后续交叉评审唯一入口：源码事实、实施契约、24＋14 项验收矩阵和评审处理结果 |
+| 12 | [G0-01/G0-07 统一评审基线](g0/07-G0-UNIFIED-IMPLEMENTATION-REVIEW-BASELINE-20261118.md) | 两项修复的实施与验收统一入口：源码事实、实施契约、28 组＋14 项验收矩阵和评审处理结果 |
 
 ## 核心路线
 
@@ -72,5 +72,4 @@
 5. AI Workbench 的 30 天范围是否仍然过大，哪些交付应进一步删减？
 6. 哪些验收指标能同时证明配置更快、执行更稳、失败更可归因、下一轮更有依据？
 
-
-> **2026-11-18 更新：** G0-01/G0-07 后续交叉评审只使用 [统一实施与交叉评审基线](g0/07-G0-UNIFIED-IMPLEMENTATION-REVIEW-BASELINE-20261118.md)。该基线已冻结数据库级原子准入的事务/连接边界、默认互斥与显式 allow、完整 NodePlan 同快照一致性和统一源码复核基线；04/05 为实施任务卡，实施完成前不得视为风险已关闭。
+> **2026-11-18 综合收敛：** G0-01/G0-07 的实施与验收统一使用 [G0 统一基线](g0/07-G0-UNIFIED-IMPLEMENTATION-REVIEW-BASELINE-20261118.md)。本版已纳入同一数据库事务／物理连接、真实 resume 再激活、worker 启动失败、精确 async 参数解析、完整 NodePlan 同快照一致性及判别性测试要求；G0-01 当前为 28 组验收（T24 四子项），G0-07 为 14 项。统一基线不关闭第一阶段范围、G1 ACL 和整体时间线三项跨文档冲突。04/05 为实施任务卡，实施完成前不得视为风险已关闭。
