@@ -25,7 +25,7 @@ L2  LabOS Core / Control Plane
                          v
 L1  Device & Edge Integration
     Device Drivers · Sidecars · Protocol Adapters · Edge Collector
-    SiLA 2 / Vendor API / TCP / Serial / OPC-UA (as applicable)
+    开放设备互操作协议 / Vendor API / TCP / Serial / OPC-UA (as applicable)
                          |
                          v
 L0  Physical Laboratory
@@ -165,9 +165,9 @@ experiment:
 设备接口建议：
 - 内部定义稳定的 Lab Capability API。
 - 设备适配器将厂商协议映射到 Capability。
-- 对支持的设备研究 SiLA 2 Features/Commands/Properties。
+- 对支持的设备研究 开放设备互操作协议 Features/Commands/Properties。
 - 不支持标准协议的设备通过 Adapter/Sidecar 接入，保持内部语义一致。
-- 不将 SiLA 2 当作实验流程语言，也不要求第一阶段全面重写驱动。
+- 不将 开放设备互操作协议 当作实验流程语言，也不要求第一阶段全面重写驱动。
 
 ## 7. 数字孪生边界
 
