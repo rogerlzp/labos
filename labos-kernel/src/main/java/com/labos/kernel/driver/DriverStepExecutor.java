@@ -340,6 +340,64 @@ public final class DriverStepExecutor implements StepExecutor {
 
     /** 业务参数 + 追踪字段。业务参数在前，追踪字段不会覆盖它们。 */
     /**
+     * 搬运保护是否生效（唯一判据，2026-11-18）。
+     *
+     * <p>规则：
+     * <ul>
+     *   <li><b>未设置</b> ⇒ <b>关</b>。⚠ 刻意**不**改成「未设置=开」：轨道分区互锁是 fail-closed 的
+     *       （{@code RailZoneGuard.acquire}：路径未配置分区集且无豁免 ⇒ {@code EC-INTERLOCK-RAIL} 拒搬），
+     *       没配分区的岛一旦默认开启，搬运会被全量拒掉。
+     *       所以补偿手段是<b>不静默</b>：启动时回显生效值 + 每次搬运留 SKIP 痕迹。</li>
+     *   <li>值 ∈ {off, none, false, no}（大小写不敏感、去前后空格）⇒ <b>关</b>
+     *       —— 与 {@code scripts/start-kernel.sh} 的关闭约定一致，
+     *       免得「脚本认 off、内核不认」变成两套口径。</li>
+     *   <li>其余任何值（含 {@code 0} 与空串）⇒ <b>开</b>。</li>
+     * </ul>
+     */
+    public static boolean transferProtectionEnabled() {
+        String v = System.getenv("LABOS_TRANSFER_PLAN");
+        if (v == null) {
+            return false;
+        }
+        String t = v.trim().toLowerCase(java.util.Locale.ROOT);
+        return !(t.equals("off") || t.equals("none") || t.equals("false") || t.equals("no"));
+    }
+
+    /**
+     * 搬运保护未开启时的留痕：把被整段跳过的 L1/L3/L4/L5 各记一条 <b>SKIP</b> 决策。
+     *
+     * <p>语义对齐 {@link InterlockDecision#SKIP}：守卫未启用不是「放行」，是「没判」。
+     * 留痕之后，{@code interlock_decision} 里能直接分清「判过且放行」与「根本没判」——
+     * 降级内核的症状是 run 照样 completed、只是位置锁/搬运事务/轨道互锁/扫码证据确认全没有，
+     * 不留痕就等于静默降级。
+     *
+     * <p>⚠ **这里不改成「未设变量 = 开启」**：轨道分区互锁是 fail-closed 的
+     * （{@code RailZoneGuard.acquire}：路径未配置分区集且无豁免 ⇒ {@code EC-INTERLOCK-RAIL} 拒搬），
+     * 没配分区的岛一旦默认开启，搬运会被全量拒掉。
+     * 所以做法是 <b>行为不变、但不静默</b>。
+     *
+     * <p>旁路审计，写失败不影响搬运本身（与 {@code InterlockDecision.record} 的语义一致）。
+     */
+    private void recordProtectionBypass(String method) {
+        if (db == null || runId <= 0 || method == null || !method.startsWith("Transfer")) {
+            return;
+        }
+        String reason = "搬运保护未开启（LABOS_TRANSFER_PLAN 未设置或被显式关闭）："
+                + "未做位置锁、未建搬运事务、未做轨道分区互锁、未走扫码证据确认";
+        for (String code : new String[]{InterlockDecision.L1_TURNTABLE,
+                InterlockDecision.L3_RAIL_ZONE, InterlockDecision.L4_STIRRER,
+                InterlockDecision.L5_WAIT}) {
+            InterlockDecision.Rec r = new InterlockDecision.Rec(code, InterlockDecision.SKIP)
+                    .fact("guard", "LABOS_TRANSFER_PLAN")
+                    .reason(reason)
+                    .error(null);
+            InterlockDecision.record(db, tenantId, runId, null, null, null, r);
+        }
+        log.warn("[搬运] 保护未开启（LABOS_TRANSFER_PLAN 未设置）：本次搬运无位置锁、无搬运事务、"
+                + "无轨道分区互锁、无扫码证据确认");
+    }
+
+    /**
      * 执行一步。Transfer 且开了保护时，先抢门和通道。
      *
      * <p><b>顺序</b>：源门 → 源通道 → 目标门 → 目标通道。
@@ -351,9 +409,13 @@ public final class DriverStepExecutor implements StepExecutor {
                                          long deviceId, String method,
                                          int stepSeq, int exec) throws StepFailure {
         boolean protect = db != null
-                && System.getenv("LABOS_TRANSFER_PLAN") != null
+                && transferProtectionEnabled()
                 && method != null && method.startsWith("Transfer");
         if (!protect) {
+            // 「降级」必须留痕（2026-11-18）：搬运保护没开时不是「放行」，是「没判」。
+            // 不留痕的后果：interlock_decision 里空空如也，事后分不清「判过且放行」
+            // 与「根本没判」——今天就踩过：run completed 但 transfer_transaction 零行。
+            recordProtectionBypass(method);
             return executeCommand(driver, ctx,
                     buildCommand(ctx, deviceId, method, stepSeq, exec), workflowIdOfRun(), stepSeq);
         }

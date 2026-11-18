@@ -52,16 +52,13 @@ export LABOS_RAIL_WAIT_TIMEOUT_MS="${LABOS_RAIL_WAIT_TIMEOUT_MS:-120000}"
 #   关闭搬运保护：`LABOS_TRANSFER_PLAN=off ./scripts/start-kernel.sh`
 export LABOS_EXEC_GRAPH="${LABOS_EXEC_GRAPH:-1}"
 export LABOS_AUTH="${LABOS_AUTH:-1}"
-# 「关」用显式 token：大小写不敏感 + 前后空格忽略（OFF / Off / " off " 都算关）
-_tp="${LABOS_TRANSFER_PLAN:-}"
-_tp="${_tp#"${_tp%%[![:space:]]*}"}"
-_tp="${_tp%"${_tp##*[![:space:]]}"}"
-_tp="$(printf '%s' "$_tp" | tr '[:upper:]' '[:lower:]')"
-case "$_tp" in
-  off|none|false|no) unset LABOS_TRANSFER_PLAN ;;
-  *)                  export LABOS_TRANSFER_PLAN="${LABOS_TRANSFER_PLAN:-1}" ;;
-esac
-unset _tp
+# ⚠ 搬运保护的「关」语义**由内核判**（DriverStepExecutor#transferProtectionEnabled，
+#    唯一判据）：未设置 = 关；值 ∈ {off,none,false,no}（大小写不敏感、去前后空格）= 关；
+#    其余（含 0 与空串）= 开。
+#    本脚本只负责「没设就给个默认值 1」，**不翻译 token** —— 翻译留给内核，
+#    免得脚本一套口径、内核另一套口径（两套口径出过事）。
+#    要关：LABOS_TRANSFER_PLAN=off ./scripts/start-kernel.sh
+export LABOS_TRANSFER_PLAN="${LABOS_TRANSFER_PLAN:-1}"
 # 生效值回显：现场/门禁靠这一行判断内核到底带没带搬运保护（不依赖另一个 ps eww）
 echo "[start-kernel] LABOS_TRANSFER_PLAN=${LABOS_TRANSFER_PLAN:-<未设置=搬运保护关闭>} LABOS_EXEC_GRAPH=${LABOS_EXEC_GRAPH} LABOS_AUTH=${LABOS_AUTH}" >&2
 
