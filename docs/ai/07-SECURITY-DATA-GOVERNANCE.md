@@ -56,6 +56,23 @@ Agent 每次工具调用都携带：
 
 有效权限取交集，不得取并集。工具执行前重新授权，不能只在 Agent Session 创建时检查一次。长任务在项目成员撤权后，后续工具调用必须被拒绝；已运行任务按取消/安全停止策略处理。
 
+### 2.4 跨执行链的 principal 传播
+
+```text
+user → agent → run → device → callback
+```
+
+| 环节 | 授权/认证主体 | 校验时点 | 审计必须记录 |
+|---|---|---|---|
+| user → agent | 发起用户及其 Project 成员关系；Agent 只获得委托权限 | 创建 Agent 任务时及每次工具调用前 | initiating user、agent/task、Project、Capability、授权决策 ID |
+| agent → run | 发起用户委托权限与 Run 所属资源策略的交集 | 创建/关联 Run、提交计划及每个后续 Agent 写动作前 | initiating user、agent/task/run、ExecutionPlan/Artifact hash、授权决策 ID |
+| run → device | 设备的独立机器身份及其 tenant/device/run 绑定；不伪造用户 Session | 下发前校验 Run 授权快照、实时资源状态和设备绑定 | run、device identity、命令/计划 hash、下发策略与设备来源 |
+| device → callback | 回调设备机器身份、稳定 sourceEventId 及其 tenant/run 归属 | 每次接收回调时校验 device↔tenant↔run、事件幂等与状态转换 | device/source event、tenant/run、接收时间、接受/拒绝/幂等结果 |
+
+Run 保存发起主体和授权决策引用，但异步 callback 不会因为关联了 Run 就重新获得发起用户权限；它只能提交该设备身份被允许的事实事件。审计同时保留 initiating user、agent/task/run 和设备来源，不能只记录其中一个主体。
+
+用户撤权必须阻断后续 Agent 工具调用；设备身份撤销按设备安全策略阻断后续下发与回调。设备↔tenant↔run 绑定、稳定设备身份和回调幂等未实现并测试前，对应隔离能力保持 UNKNOWN。
+
 ## 3. 数据分类与模型出域
 
 ### 3.1 数据分类

@@ -270,8 +270,8 @@ FOR UPDATE SKIP LOCKED
 ### C. 租约与长任务
 
 - 建议配置：`LABOS_AI_WORKER_ENABLED=false`（默认关闭，B2 再开启）、`LABOS_AI_WORKER_POLL_MS=1000`、`LABOS_AI_TASK_LEASE_SEC=120`。
-- 长模型调用期间必须续租；续租条件带 `taskId + tenantId + projectId + leaseOwner + attempt + status=RUNNING`。
-- 若使用 scheduled pool，至少为“执行”和“心跳”保留独立线程，不能让一个长调用堵住自己的续租。
+- 续租由 worker 层独立心跳调度统一负责，handler 不感知、不自行续租；worker 为“执行”和“心跳”保留独立线程，长模型调用不能堵住自己的续租。
+- 续租条件带 `taskId + tenantId + projectId + leaseOwner + attempt + status=RUNNING`。
 - 租约过期由恢复器标为 `FAILED/LEASE_EXPIRED`，默认等待人工重试；不在旧执行体仍可能运行时直接让另一个 worker 写同一 attempt。
 - 完成/失败提交必须再次锁任务并核对 `projectId + leaseOwner + attempt + RUNNING`；不匹配即丢弃本次写入。
 - 本设计以单调 attempt 作为 fencing 代数：同一 attempt 不更换执行体，retry 才增加 attempt，且所有写路径都在数据库条件更新/事务锁中校验。若未来允许同一 attempt 更换执行体，必须先引入独立 fencing token。
@@ -318,10 +318,11 @@ FOR UPDATE SKIP LOCKED
 7. RUNNING 取消后，旧 handler 成功也不能写产物/覆盖状态。
 8. attempt 1 超时，人工 retry 后 attempt 2 成功，旧 attempt 1 迟到结果不能覆盖。
 9. worker 崩溃且租约到期后变为 `FAILED/LEASE_EXPIRED`，可人工重试。
-10. 全过程中 experiment/run/placement/设备命令测试表计数不变。
-11. 跨租户、同租户跨项目的 task/artifact 查询和更新均为 0 行或 404。
+10. 假 handler 运行超过 120 秒时，worker 层独立心跳持续续租且任务不重复领取；旧执行体迟到完成不能重复写 artifact 或覆盖新 attempt。
+11. 全过程中 experiment/run/placement/设备命令测试表计数不变。
+12. 跨租户、同租户跨项目的 task/artifact 查询和更新均为 0 行或 404。
 
-**Done 条件**：自测登记并实际通过；可用假 handler 完整演示 202→QUEUED→RUNNING→SUCCEEDED/FAILED；默认 worker 关闭；代码中无执行服务依赖。未使用真实模型不构成本卡失败，因为真实 handler 属下一批。
+**Done 条件**：自测登记并实际通过；可用假 handler 完整演示 202→QUEUED→RUNNING→SUCCEEDED/FAILED；默认 worker 关闭；代码中无执行服务依赖。未使用真实模型不构成本卡失败，因为真实 handler 属下一批。超过 120 秒的长任务和迟到写入连库测试未实际执行前，租约恢复状态保持 UNKNOWN，不得宣称已验证。
 
 ---
 
