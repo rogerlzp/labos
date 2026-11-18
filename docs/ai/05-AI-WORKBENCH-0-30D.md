@@ -4,6 +4,7 @@
 > **性质**：可评审、可估工的实施设计稿；尚未实施，也未通过验收。
 > **上游方向**：[AI 产品战略](01-PRODUCT-STRATEGY.md)与[公开路线图](04-ROADMAP.md)。
 > **本稿范围**：页面、接口、数据对象、权限、四批交付、验收用例和度量口径；不包含业务代码改动。
+> **实施前必读**：[05/06 实施修订附录](05-06-WORKBENCH-REVIEW-ADDENDUM-20261118.md)是本稿的约束性组成部分；安全准入、事务与验收要求冲突时以附录为准。
 
 ---
 
@@ -52,7 +53,7 @@
 | 项目数据 | 数据库已有 `project` 表，但当前未核到项目列表 API/页面；本期只补只读选择接口 |
 | 租户 | 当前大量 Controller 与 AuthService 使用固定租户；本期新代码必须带租户条件，但不能宣称多租户改造已完成 |
 | 鉴权 | 新端点默认经过现有 `ApiAuthInterceptor`；所有写动作同时做服务端角色检查 |
-| 估工 | 按后端 1 人、前端 1 人、测试/领域专家兼职投入估算，总计约 35–42 人日；不是交付承诺 |
+| 估工 | 按后端 1 人、前端 1 人、测试/领域专家兼职投入估算，四阶段合计约 **35–44 人日**；不含安全治理、Project ACL 与审计补强可能产生的额外工作，需由研发重新估工，不是交付承诺 |
 | AI 配置 | 复用服务端密钥与模型配置；密钥、原始供应商响应和敏感上下文不得进入浏览器或日志 |
 
 ---
@@ -153,38 +154,38 @@
 | 字段 | 类型/示例 | 用途 |
 |---|---|---|
 | `id` | bigint | 任务 ID；同时便于复用 `audit_log.entity_id` |
-| `tenant_id` | bigint | 租户隔离必填 |
+| `tenant_id/project_id` | bigint + bigint | 租户与项目双重边界；由服务端按资源关系解析，不信任客户端或模型给出的项目归属 |
 | `task_type` | 三类任务枚举 | 决定输入、上下文构建器和产物 schema |
-| `subject_type/subject_id` | `PROJECT/EXPERIMENT_RUN/RUN` + bigint | 绑定业务主体；不得接受任意 URL 作为主体 |
+| `subject_type/subject_id` | `PROJECT/EXPERIMENT_RUN/RUN` + bigint | 绑定业务主体；服务端验证主体所属 Project 与 `project_id` 一致 |
 | `status` | 任务状态枚举 | 驱动任务流 |
-| `input_json` | jsonb | 用户需求及受控参数；不存密钥 |
+| `input_json/input_hash` | jsonb + SHA-256 | 保存受控输入及其规范化哈希；不存密钥；同幂等键不同哈希必须拒绝 |
 | `context_snapshot_json/context_hash` | jsonb + SHA-256 | 记录生成时实际采用的模板、readiness 或证据包版本 |
 | `requested_by` | bigint | 创建人 |
 | `model_name/prompt_version/artifact_schema_version` | text | 复现与质量追踪 |
 | `stage/progress` | text + 0–100 | 阶段展示；进度不伪装成精确科学计算 |
-| `attempt` | int | 重试次数 |
+| `attempt` | int | 单调递增的重试代数；在所有 worker 写入都校验该代数且同一 attempt 不更换执行体时可作为 fencing 代数 |
 | `error_code/error_detail_safe` | text | 面向用户的稳定错误码与脱敏摘要 |
 | `lease_owner/lease_until` | text + timestamptz | worker 崩溃后的租约恢复，避免任务永久卡住 |
 | `created_at/started_at/finished_at/updated_at` | timestamptz | 耗时与审计 |
 
-约束建议：任务类型、状态和主体类型使用检查约束；所有查询同时带 `tenant_id + id`；列表按主体和时间建索引。
+约束建议：任务类型、状态和主体类型使用检查约束；`UNIQUE(tenant_id, project_id, requested_by, idempotency_key)` 限定幂等作用域；同 key 同 input hash 返回原 Task，同 key 不同 hash 返回 `409 IDEMPOTENCY_KEY_REUSED`。所有查询同时带 `tenant_id + project_id + id`；列表按项目和主体建索引。
 
 ### 3.2 最小新增：`ai_artifact`
 
 | 字段 | 类型/示例 | 用途 |
 |---|---|---|
 | `id` | bigint | 产物 ID |
-| `tenant_id/task_id` | bigint | 所属租户与任务 |
+| `tenant_id/project_id/task_id` | bigint + bigint + bigint | 所属租户、项目与任务；通过任务上的组合唯一键和外键保证三者归属一致 |
 | `kind` | `EXPERIMENT_DRAFT/READINESS_EXPLAIN/RUN_REVIEW` | 与任务类型一致 |
 | `schema_version` | text，如 `experiment-draft.v1` | 强校验与向前兼容 |
 | `content_json` | jsonb | 结构化产物，不存可执行脚本 |
 | `content_hash` | SHA-256 | 防旧草稿误确认、便于审计 |
-| `evidence_refs_json` | jsonb | 证据引用数组 |
+| `evidence_refs_json` | jsonb | 证据引用数组；读取时仍逐项校验 Project ACL |
 | `review_status` | `UNREVIEWED/CONFIRMED/REJECTED` | 仅表示草稿审阅，不是执行审批 |
 | `confirmed_by/confirmed_at` | bigint + timestamptz | 人工确认留痕 |
-| `consumed_experiment_id/consumed_run_id/consumed_at` | bigint + bigint + timestamptz | 实例化幂等；同时保存 experiment/run 映射，重复确认才能返回同一组 ID |
+| `consumed_experiment_id/consumed_run_id/consumed_at` | bigint + bigint + timestamptz | 实例化幂等；成组写入并受唯一约束，重复确认返回同一组 ID |
 
-约束建议：`UNIQUE(task_id, kind)`；同一 artifact 只能成功消费一次。任务成功后若要重新生成，应创建新任务，保留旧产物供比较。
+约束建议：`UNIQUE(task_id, kind)`；为 Task 的 `(tenant_id, project_id, id)` 建组合唯一键，Artifact 用对应组合外键防止跨项目挂接；consumption 字段必须同空或同非空，并对非空 `(consumed_experiment_id, consumed_run_id)` 建唯一约束。实例化、consumption 与审计 Outbox 必须在同一数据库事务中提交；业务服务仍需校验 Experiment/Run 的项目归属，不能只依赖多态主体 ID。任务成功后若要重新生成，应创建新任务，保留旧产物供比较。
 
 ### 3.3 复用对象，不新增平行副本
 
@@ -325,11 +326,13 @@ worker 通过数据库租约领取任务；租约过期且心跳未更新时，�
 
 服务端顺序：
 
-1. 校验 admin/operator、artifact 类型、review 状态、模板 check 和 `expectedContentHash`。
-2. 锁定 artifact；若已消费，同一确认请求直接返回既有 experiment/run 映射，不再次实例化。
-3. 调用从现有 instantiate Controller 抽出的同一业务服务，创建实验、experiment_run 和 placements。
-4. 记录 consumption 与审计；**不调用 `/start`，不创建 run 执行命令**。
-5. 内容哈希变化、模板已变更或已存在不匹配的编号时返回 409，由人重新审阅。
+1. 校验调用者 Project ACL、admin/operator 角色、artifact 类型、review 状态、模板版本、schema 版本、模板 check 和 `expectedContentHash`。
+2. 在数据库事务中锁定 artifact；若已消费，同一确认请求返回既有 experiment/run 映射，不再次实例化。
+3. 复核模板与参数白名单，调用从现有 instantiate Controller 抽出的同一业务服务，创建实验、experiment_run 和 placements。
+4. 在同一事务中写入 Artifact consumption、唯一消费映射和 `ai_audit_outbox`；任一步骤失败全部回滚。
+5. 事务提交后返回 ID；客户端超时后的重复请求必须能查回原 ID，同幂等键不同 input hash 返回 `409 IDEMPOTENCY_KEY_REUSED`。
+6. 内容哈希变化、模板已变更或已存在不匹配的编号时返回 409，由人重新审阅。
+7. 全链路**不调用 `/start`，不创建设备命令，不改变 readiness**。
 
 ### 4.6 明确不提供的接口
 
