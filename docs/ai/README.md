@@ -19,6 +19,7 @@
 | 9 | [Capability 验证标准](08-CAPABILITY-VERIFICATION-STANDARD.md) | Capability/Skill/Agent/设备/实验成熟度等级和验收证据 |
 | 10 | [AI Workbench 独立评审](09-AI-WORKBENCH-INDEPENDENT-REVIEW-20261118.md) | 评审结论、P1 整改、G0 准入矩阵和最终决策 |
 | 11 | [G0 源码核查](g0/README-G0-SOURCE-AUDIT-20261118.md) | 固定历史基线证据、实现矩阵、整改顺序，以及 G0-01/G0-07 独立修复任务卡与验收清单 |
+| 12 | [G0-01/G0-07 统一评审基线](g0/07-G0-UNIFIED-IMPLEMENTATION-REVIEW-BASELINE-20261118.md) | 后续交叉评审唯一入口：源码事实、实施契约、24＋14 项验收矩阵和评审处理结果 |
 
 ## 核心路线
 
