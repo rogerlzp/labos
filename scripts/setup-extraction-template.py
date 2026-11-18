@@ -13,8 +13,8 @@
     岛 → 驱动 → 设备 → 点位 → 方法授权 → 流程(+绑定) → 变量 → **模板** → 实例化
     → 配位置 → 核验 → 启动
 
-用法：
-    LABOS_ISLAND_CODE=LAB-EXT-02 LABOS_DEV_TAG=-02- \\
+用法（**设备编号用现场编号 ⇒ DEV_TAG 留空**；只有现场编号已被别的岛占用时才加标记）：
+    LABOS_ISLAND_CODE=LAB-EXT-02 LABOS_DEV_TAG= \\
     LABOS_WF_CODE=EXT-WORKFLOW-02 \\
     python3 scripts/setup-extraction-template.py
 

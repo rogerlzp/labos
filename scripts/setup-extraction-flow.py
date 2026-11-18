@@ -52,7 +52,8 @@ USER = os.environ.get("LABOS_USER", "admin")
 PASSWORD = os.environ.get("LABOS_PASS", "admin123")
 
 # 岛 / 设备编号 / 流程编号都在共享配置层（scripts/extraction_config.py）。
-# ⚠ 流程 code 也必须带岛标记：**workflow.code 全局唯一** ⇒ 两个岛不能同名流程。
+# ⚠ 流程 code 也是**全局唯一**（workflow.code）⇒ 两个岛不能同名流程 ⇒ 流程号要带区分。
+#    这与《点位编号规范》§1.3 是同一条口径：code 全局唯一，岛间同名要用标记兜底。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from extraction_config import (  # noqa: E402
     ISLAND_CODE, arm_code, disp_codes, ext_codes, mag_plate_barcodes, stack_code,
