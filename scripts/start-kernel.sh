@@ -52,10 +52,18 @@ export LABOS_RAIL_WAIT_TIMEOUT_MS="${LABOS_RAIL_WAIT_TIMEOUT_MS:-120000}"
 #   关闭搬运保护：`LABOS_TRANSFER_PLAN=off ./scripts/start-kernel.sh`
 export LABOS_EXEC_GRAPH="${LABOS_EXEC_GRAPH:-1}"
 export LABOS_AUTH="${LABOS_AUTH:-1}"
-case "$(printf '%s' "${LABOS_TRANSFER_PLAN:-}")" in
+# 「关」用显式 token：大小写不敏感 + 前后空格忽略（OFF / Off / " off " 都算关）
+_tp="${LABOS_TRANSFER_PLAN:-}"
+_tp="${_tp#"${_tp%%[![:space:]]*}"}"
+_tp="${_tp%"${_tp##*[![:space:]]}"}"
+_tp="$(printf '%s' "$_tp" | tr '[:upper:]' '[:lower:]')"
+case "$_tp" in
   off|none|false|no) unset LABOS_TRANSFER_PLAN ;;
   *)                  export LABOS_TRANSFER_PLAN="${LABOS_TRANSFER_PLAN:-1}" ;;
 esac
+unset _tp
+# 生效值回显：现场/门禁靠这一行判断内核到底带没带搬运保护（不依赖另一个 ps eww）
+echo "[start-kernel] LABOS_TRANSFER_PLAN=${LABOS_TRANSFER_PLAN:-<未设置=搬运保护关闭>} LABOS_EXEC_GRAPH=${LABOS_EXEC_GRAPH} LABOS_AUTH=${LABOS_AUTH}" >&2
 
 exec java -cp "out:lib/postgresql-42.7.3.jar:lib/spring/*" \
      com.labos.boot.LabosApplication "$@"
