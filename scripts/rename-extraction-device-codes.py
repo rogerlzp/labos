@@ -200,6 +200,13 @@ def main():
             expr = "replace(%s, %s, %s)" % (expr, q(o), q(n))
         return "(%s)::jsonb" % expr
 
+    def text_expr(col, ps):
+        # 纯文本列的嵌套替换（节点显示名用）
+        expr = col
+        for o, n in ps:
+            expr = "replace(%s, %s, %s)" % (expr, q(o), q(n))
+        return expr
+
     sub = ("WITH RECURSIVE sub AS (SELECT id FROM resource_node WHERE tenant_id=1 AND id=%s"
            " UNION SELECT r.id FROM resource_node r JOIN sub s ON r.parent_id=s.id"
            " WHERE r.tenant_id=1) SELECT id FROM sub")
@@ -226,6 +233,12 @@ def main():
     stmts.append("UPDATE device_pool p SET code = %s WHERE p.tenant_id=1 AND p.island_id=%s"
                  % (case_expr("p.code", pairs), island_id))
     # 流程：节点参数 + 流程图（jsonb ⇒ 文本替换）
+    # ⚠ **节点显示名（workflow_node.name）也要改**：界面上节点标题就是它
+    #   （2026-11-18 实测漏改 ⇒ 设计器里写"P_AUTO-02-1 洗脱"而设备叫"P_AUTO-1"）
+    stmts.append("UPDATE workflow_node wn SET name = %s"
+                 " WHERE wn.tenant_id=1 AND wn.workflow_id IN"
+                 " (SELECT id FROM workflow WHERE tenant_id=1 AND island_id=%s)"
+                 % (text_expr("wn.name", jsonb_pairs), island_id))
     stmts.append("UPDATE workflow_node wn SET params = %s"
                  " WHERE wn.tenant_id=1 AND wn.workflow_id IN"
                  " (SELECT id FROM workflow WHERE tenant_id=1 AND island_id=%s)"
