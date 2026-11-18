@@ -152,3 +152,18 @@
 本修复预期为小范围参数透传，可按独立 commit 回滚；但回滚必须同时考虑预览与执行两处，不能只回滚一处而制造新的差异。若服务级测试发现除丢参外还有缓存、版本或计划快照分歧，应停止发布并另开问题，不在本卡扩大重写。
 
 完成本卡不等于真实设备能力登记正确，也不等于设备动作与预览物理一致。真机能力比对、设备原始证据和现场验收仍需独立记录；未执行前保持 UNKNOWN。
+
+
+## 9. 冻结前补充约束（2026-11-18）
+
+本节补充统一评审基线的最终实施约束，不删除前述 14 项验收。
+
+### 9.1 完整 NodePlan 比较
+
+预览与执行前展开的一致性必须直接比较完整 RecipeCompiler.NodePlan，至少包括 nodeId、nodeKey、name、capability、capabilitySource、每个 Step 的 seq/method、sampleCount、fromRecipe。不得只比较外围 RecoverableNode、GraphRunner 能力字段或最终设备事件。
+
+### 9.2 输入快照
+
+同一一致性测试至少固定或记录 Workflow、NodeDef、设备绑定、Recipe 模板、Capability 映射以及 protocolCap 的版本或规范化内容 hash。若 Recipe 没有版本号，可使用规范化输入 hash，不要求为本任务额外建设版本管理系统。输入版本变化必须重新计算，不得复用旧缓存/旧计划。
+
+G07-T10/T14 必须在任何设备动作前截获并比较直接 compile、compileAll 预览和执行前展开的 NodePlan；若任一方使用旧快照，测试不得判 PASS。
