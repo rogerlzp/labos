@@ -1613,6 +1613,14 @@ public final class WorkflowRuntimeRepository {
                    AND expires_at>clock_timestamp() FOR UPDATE
                 """,(rs,n)->rs.getLong(1),tenantId,attemptId,workerId,dispatchId,dispatchEpoch,leaseEpoch);
             if(leases.size()!=1) throw new StaleRuntimeWriteException("Worker execution lease is expired or fenced");
+            if(!"SIDE_EFFECT_STARTED".equals(factType)) {
+                Integer started=jdbc.queryForObject("""
+                    SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                     WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
+                    """,Integer.class,tenantId,attemptId);
+                if(started==null||started==0)
+                    throw new InvalidTransitionException("Side-effect completion/unknown requires a prior SIDE_EFFECT_STARTED fact");
+            }
             return appendWorkerFactInTransaction(tenantId,runId,attemptId,factKey,factType,
                     "WORKER",workerId,dispatchId,dispatchEpoch,leaseEpoch,payloadJson)>0;
         });
@@ -1739,6 +1747,9 @@ public final class WorkflowRuntimeRepository {
                    (SELECT command_id FROM workflow_runtime.command_ledger WHERE tenant_id=? AND attempt_id=?)
                    AND dispatch_state='SEND_STARTED'
                 """,tenantId,tenantId,attemptId);
+            appendWorkerFactInTransaction(tenantId,runId,attemptId,"recovery-side-effect-unknown","SIDE_EFFECT_UNKNOWN",
+                    "RECOVERY",recoveryActor,dispatchId,dispatchEpoch,leaseEpoch,
+                    "{\"reason\":\"expired-after-side-effect-boundary\"}");
             jdbc.update("""
                 UPDATE workflow_runtime.worker_execution_lease SET lease_state='EXPIRED_UNVERIFIED',
                        lease_version=lease_version+1,ended_at=clock_timestamp()
