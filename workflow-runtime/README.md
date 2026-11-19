@@ -10,19 +10,29 @@ V1 只部署一个 Runtime Host 进程，由部署配置保证实例唯一。V1 
 
 ## 当前实现
 
-已完成单实例 Repository/DDL 核心收敛：
-- 移除 Worker DB Lease、Coordinator/dispatch epoch、resource fencing counter/token；
-- Worker Attempt 生命周期改为 Attempt 状态 + 进程内 Registry；
-- Worker 执行事实 append-only，factSeq 由锁定 Attempt 行后分配；
-- ResourceLease 仅表达设备/资源业务占用；
-- Outbox 改为单 Host PENDING→SENDING，无 claim owner/epoch/lease；
-- 新增 Host 重启 Outbox/Attempt 恢复逻辑，副作用边界后不确定时转 UNKNOWN/MANUAL_REQUIRED；
-- Java Repository 集成测试 7/7、WorkerExecutionRegistry 测试 2/2，以及 PostgreSQL 17 Schema/CON-01..14/原子性测试均已通过代码基线 b4df784 的 CI。
-
-实现边界仍需注意：当前模块提供 Repository、Registry 和 RecoveryService；完整 Runtime Host 的启动装配、WorkerPool/Coordinator/Adapter 真机集成及设备回读验收不由本模块 CI 单独证明。
+V1 单实例 Repository/DDL 核心收敛已完成，具体包括：
+- Schema 采用 31 张 Runtime 专属表；不存在 worker_execution_lease、resource_fence_counter 或分布式 epoch/fencing/Outbox claim 字段；
+- Worker Attempt 执行登记使用进程内 WorkerExecutionRegistry，不使用 DB Worker Lease；
+- Worker 执行事实 append-only，factSeq 在锁定 Attempt 行后分配；
+- ResourceLease 仅表达设备/资源业务占用，不包含 fencing token；
+- Outbox 使用单 Host PENDING→SENDING，不含 claim owner/epoch/lease；
+- 启动恢复覆盖 DISPATCHED、ACCEPTED、STARTED Attempt；先完成 Attempt 核验，再恢复 Outbox；
+- 已恢复 Attempt 的旧 WORKER_DISPATCH 标记 DEAD_LETTER，避免重复派发；
+- 设备命令仅在可证明未越过 SEND_STARTED 时允许恢复投递；结果不确定时转 UNKNOWN/MANUAL_REQUIRED，不自动重发。
 
 ## 验证
 
-CI：.github/workflows/workflow-runtime-db.yml
+- PostgreSQL 17 CI Run：44560926448
+- 代码基线：40c1033a59167631c724678b1bfadbfdf7a7188a
+- Schema Contract：31 张表，PASS
+- PostgreSQL 两会话基础并发测试：PASS
+- CON-01..CON-14：14/14 PASS
+- 事务原子性与 Inbox 冲突：PASS
+- Java Repository 集成测试：8/8 PASS
+- WorkerExecutionRegistry 测试：2/2 PASS
 
-验收覆盖 PostgreSQL 17 空库初始化、31 表 Schema Contract、CON-01..14、事务原子性、Inbox 冲突、Repository 集成测试和本地 Worker Registry 测试。
+CI 配置：.github/workflows/workflow-runtime-db.yml
+
+## 未完成边界
+
+本模块提供 Repository、进程内 Worker Registry 和启动恢复服务；它不等于完整 Runtime Host 已装配完成。完整 Coordinator/WorkerPool/Outbox Dispatcher/Adapter 的端到端运行、真机 commandId 幂等、设备状态回读、硬件安全点以及断电/断网 HIL 测试仍需单独完成。
