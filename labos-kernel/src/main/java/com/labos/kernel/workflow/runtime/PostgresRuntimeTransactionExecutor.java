@@ -28,7 +28,7 @@ public final class PostgresRuntimeTransactionExecutor {
         this.checkpointTemplate = new TransactionTemplate(manager);
         this.checkpointTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.checkpointTemplate.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
-        this.checkpointTemplate.setReadOnly(true);
+        this.checkpointTemplate.setReadOnly(false);
     }
 
     public <T> T write(Supplier<T> work) {
