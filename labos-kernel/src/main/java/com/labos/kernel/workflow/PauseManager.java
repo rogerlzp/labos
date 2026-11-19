@@ -525,6 +525,19 @@ public final class PauseManager {
                     "板位置未知，必须提供 corrections（板号 → 实际位置）才能恢复",
                     runId, action.name(), 0);
         }
+        // ① 先做带状态守卫的 UPDATE。affected==0 表示状态已变（并发 resume 或流程已终结），
+        //    此刻还没写任何板位/审计/人工窗口 —— 直接返回，不留副作用。
+        //    （事务在正常返回时是提交，所以"先写后失败"会留下半成品。）
+        int affected = action == ResumeAction.ABORT
+                ? mappers().resumeToAborted(tenantId, runId)
+                : mappers().resumeToQueued(tenantId, runId);
+        if (affected == 0) {
+            return new ResumeResult(false,
+                    "状态已变更（可能已被其他请求恢复或已终结），请刷新后重试",
+                    runId, action.name(), 0);
+        }
+
+        // ② 状态已锁定，再做板位校正与人工窗口收口
         int corrected = 0;
         if (corrections != null) {
             for (Map.Entry<String, String> e : corrections.entrySet()) {
@@ -532,11 +545,6 @@ public final class PauseManager {
                     corrected++;
                 }
             }
-        }
-        if (action == ResumeAction.ABORT) {
-            mappers().resumeToAborted(tenantId, runId);
-        } else {
-            mappers().resumeToQueued(tenantId, runId);
         }
         closeManualWindow(c, runId, operator, action.name());
         return new ResumeResult(true, null, runId, action.name(), corrected);

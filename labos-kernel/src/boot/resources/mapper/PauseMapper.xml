@@ -16,12 +16,21 @@
          WHERE tenant_id = #{param1} AND id = #{param2} AND status = 'paused'
     </select>
 
+    <!--
+      quarantined（隔离待确认）与 failed+recoverable 同类：都允许进入恢复链。
+
+      不加这一条时，resumeTx 的判定链会在服务层提前返回"该执行不在暂停状态"，
+      PauseMapper 里 resumeToQueued 的 quarantined 守卫成了死代码——
+      请求根本走不到那条 SQL。
+    -->
     <select id="isCrashRecoverable" resultType="boolean">
         SELECT EXISTS(
             SELECT 1 FROM run
              WHERE tenant_id = #{param1} AND id = #{param2}
-               AND status = 'failed'
-               AND (input->>'recoverable')::boolean IS TRUE)
+               AND (
+                 (status = 'failed' AND (input->>'recoverable')::boolean IS TRUE)
+                 OR status::text = 'quarantined'
+               ))
     </select>
 
     <update id="updatePlatePositionStatus">
@@ -104,17 +113,28 @@
            AND status &lt;&gt; 'running'
     </update>
 
+    <!--
+      状态守卫（2026-11-19）：只允许从"暂停 / 崩溃可恢复 / 隔离待确认"三种状态恢复。
+
+      不加守卫时是 TOCTOU：resumeTx 先读 pause_kind='paused'，再在这里 UPDATE，
+      两步之间状态可能已被别的请求改掉（例如另一个 resume 已把它置 queued，
+      或流程已自行终结），UPDATE 仍然"成功"（影响 0 行）。
+      调用方必须检查返回值，0 行视为并发冲突。
+    -->
     <update id="resumeToQueued">
         UPDATE run SET status = 'queued'::run_status, pause_kind = NULL,
                pause_reason = NULL, resumed_at = now(), updated_at = now()
          WHERE tenant_id = #{param1} AND id = #{param2}
+           AND status::text IN ('paused', 'failed', 'quarantined')
     </update>
 
+    <!-- 同 resumeToQueued：加状态守卫，避免把已终结的 run 改成 aborted。 -->
     <update id="resumeToAborted">
         UPDATE run SET status = 'aborted'::run_status, pause_kind = NULL,
                resumed_at = now(),
                error_code = COALESCE(error_code, 'EC-HUMAN-ABORT'), updated_at = now()
          WHERE tenant_id = #{param1} AND id = #{param2}
+           AND status::text IN ('paused', 'failed', 'quarantined')
     </update>
 
     <update id="dismissRun">
