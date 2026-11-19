@@ -10,9 +10,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class SchedulingGate {
     private final AtomicBoolean open = new AtomicBoolean(false);
 
-    public void open() { open.set(true); }
+    void open() { open.set(true); }
 
-    public void close() { open.set(false); }
+    void close() { open.set(false); }
 
     public boolean isOpen() { return open.get(); }
 
