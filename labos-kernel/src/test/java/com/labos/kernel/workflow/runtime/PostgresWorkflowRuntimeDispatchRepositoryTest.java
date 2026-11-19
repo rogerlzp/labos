@@ -6,6 +6,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
@@ -105,12 +106,17 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         assertEquals("REPLAYED", replay.outcome());
         assertTrue(replay.replayed());
 
+        var claim = f.repository().claimNextWorkerDispatch("dispatcher-1", Duration.ofSeconds(30));
+        assertNotNull(claim);
+        assertEquals(dispatch, claim.dispatchId());
+
         var workerPayload = Map.of(
                 "tokenId", p.tokenId().toString(),
                 "activationId", p.activationId().toString(),
                 "attemptId", attempt.toString(),
                 "dispatchId", dispatch.toString(),
                 "dispatchEpoch", 0L,
+                "dispatcherId", "dispatcher-1",
                 "workerId", "worker-1"
         );
         var sendStarted = new WorkflowRuntimeTransactionPort.Request(
