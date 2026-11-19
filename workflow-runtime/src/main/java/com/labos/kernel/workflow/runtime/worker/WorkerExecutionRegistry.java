@@ -36,8 +36,9 @@ public final class WorkerExecutionRegistry {
             if (cancellationRequested.compareAndSet(false, true)) {
                 try { cancellation.run(); }
                 finally { thread.interrupt(); }
+                return true;
             }
-            return true;
+            return false;
         }
 
         synchronized void finish() { finished = true; }
