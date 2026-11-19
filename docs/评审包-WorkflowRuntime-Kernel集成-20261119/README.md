@@ -27,11 +27,18 @@
 - Kernel MyBatis Adapter 读取原始 BPMN XML 和租户限定的节点元数据。
 - 旧 bigint tenant 到 Runtime UUID 的稳定映射。
 - GraphPlan 按租户与 workflow 标识，创建 Run 时固化 snapshot。
+- Runtime 定义读取采用 REQUIRES_NEW + REPEATABLE_READ，Header 排除软删除，并强化 MyBatis BoundSql 参数与租户谓词测试。
 - 保留 Kernel 既有 javac/out 构建方式，构建脚本先安装 Runtime JAR。
 
 ## 不要误判为已完成
 
 这不是 Runtime 全量投产 PR。GraphCoordinator、条件表达式求值、真实 EventIngress、OutboxDispatcher、DeviceAdapter、EventDispatcher、Mock E2E 和真机 readback 仍未完成。RuntimeHost 尚未被装配为实际启动服务，也未切换旧 GraphRunner 流量。
+
+## 当前实现基线
+
+- 最近一次已确认 Runtime PostgreSQL 17 全绿：Run #230，提交 `9d7cff5d7ff0c88dfab17196864903c9b9ea6a4e`。
+- Kernel CI 正在针对集成分支运行；评审时必须重新读取最新 PR HEAD 对应的 Actions，不得沿用历史绿灯。
+- 当前最新 HEAD 以 PR 页面为准；本评审包内容更新后，HEAD 会继续变化。
 
 ## 审核结论格式
 
