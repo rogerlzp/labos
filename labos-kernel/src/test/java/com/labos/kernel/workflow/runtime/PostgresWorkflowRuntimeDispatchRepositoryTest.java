@@ -289,5 +289,7 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         assertEquals("DISPATCH_COMMITTED", f.repository().reserveAndCommitDispatch(request).outcome());
         assertEquals(sourceAttempt, f.jdbc().queryForObject(
                 "SELECT retry_of_attempt_id FROM wf_node_attempt WHERE attempt_id=?", UUID.class, attempt));
+        // This test validates RetryDue gating, not Worker delivery; keep the global claim queue isolated.
+        f.jdbc().update("UPDATE wf_worker_dispatch_outbox SET status='CLOSED' WHERE dispatch_id=?", dispatch);
     }
 }
