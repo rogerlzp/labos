@@ -1025,6 +1025,7 @@ DDL 使用独立 wf_ 命名空间，不修改既有 GraphRunner 表，不承担�
 7. Run 内 eventSeq 唯一；
 8. Inbox (source,message_id) 唯一；
 9. Scheduler capacity 通过行锁/CAS 和 CHECK 防止超卖；
+11. T03 在 Run/Capacity/Lease 后、Token 之前检查并锁定 RetryRegistration；只要存在 ACTIVE retry 就拒绝派发，RetryDue 先关闭 RetryRegistration 并恢复 Activation/Token 后才能重试；
 10. Checkpoint 对 (run_id, run_commit_version) 唯一。
 
 ## 9.3 Repository / Transaction Port 接口清单
@@ -1072,6 +1073,7 @@ DDL 使用独立 wf_ 命名空间，不修改既有 GraphRunner 表，不承担�
 
 **L1：PostgreSQL 真实数据库**
 - DDL 可重复应用；
+- 活动 RetryRegistration 阻止 T03 Dispatch，RetryDue 后才可派发；
 - 唯一约束和 CHECK；
 - affected_rows/CAS；
 - Run 行锁线性化；
