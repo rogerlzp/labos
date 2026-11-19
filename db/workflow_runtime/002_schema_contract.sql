@@ -3,9 +3,9 @@ DECLARE
   expected text[] := ARRAY['tenant','definition_snapshot','workflow_run','run_request_dedup','execution_token','node_activation','node_attempt','scheduler_capacity','dispatch_reservation','split_activation','branch_activation','join_activation','loop_context','wait_registration','retry_registration','flow_variable','branch_output','runtime_event','inbox_receipt','inbox_protocol_violation','runtime_outbox','command_ledger','command_dispatch_attempt','resource_fence_counter','resource_lease','drain_record','drain_item','runtime_checkpoint','manual_intervention','quarantine_record','runtime_audit'];
   missing text[];
 BEGIN
-  SELECT array_agg(t) INTO missing FROM unnest(expected) t
+  SELECT array_agg(t) INTO missing FROM unnest(expected) AS x(table_name)
   WHERE NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE n.nspname='workflow_runtime' AND c.relname=t AND c.relkind='r');
+    WHERE n.nspname='workflow_runtime' AND c.relname=x.table_name AND c.relkind='r');
   IF missing IS NOT NULL THEN RAISE EXCEPTION 'Missing tables: %',missing; END IF;
   IF (SELECT count(*) FROM pg_indexes WHERE schemaname='workflow_runtime') < 19 THEN
     RAISE EXCEPTION 'Insufficient indexes';
