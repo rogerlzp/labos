@@ -38,21 +38,28 @@ public final class WorkerExecutionRecoveryService {
         if (recoveryActor == null || recoveryActor.isBlank())
             throw new IllegalArgumentException("recoveryActor is required");
         var outbox = repository.recoverOutboxAfterRestart();
-        List<WorkflowRuntimeRepository.InterruptedAttempt> candidates =
-                repository.findInterruptedAttempts(limit);
-        List<RecoveryItem> items = new ArrayList<>(candidates.size());
-        int safe = 0, manual = 0, skipped = 0;
-        for (var candidate : candidates) {
-            var result = repository.recoverInterruptedAttempt(
-                    candidate.tenantId(), candidate.runId(), candidate.attemptId(), recoveryActor);
-            items.add(new RecoveryItem(candidate, result));
-            switch (result.outcome()) {
-                case "SAFE_TO_RETRY" -> safe++;
-                case "MANUAL_REQUIRED" -> manual++;
-                default -> skipped++;
+        List<RecoveryItem> items = new ArrayList<>();
+        int scanned = 0, safe = 0, manual = 0, skipped = 0;
+        while (true) {
+            List<WorkflowRuntimeRepository.InterruptedAttempt> candidates =
+                    repository.findInterruptedAttempts(limit);
+            if (candidates.isEmpty()) break;
+            scanned += candidates.size();
+            for (var candidate : candidates) {
+                var result = repository.recoverInterruptedAttempt(
+                        candidate.tenantId(), candidate.runId(), candidate.attemptId(), recoveryActor);
+                items.add(new RecoveryItem(candidate, result));
+                switch (result.outcome()) {
+                    case "SAFE_TO_RETRY" -> safe++;
+                    case "MANUAL_REQUIRED" -> manual++;
+                    default -> skipped++;
+                }
             }
+            // Recovery changes every STARTED candidate to a non-STARTED state.
+            // Re-read from the beginning until no candidate remains; a single
+            // bounded page must never be mistaken for a complete startup scan.
         }
-        return new StartupResult(outbox,candidates.size(),safe,manual,skipped,items);
+        return new StartupResult(outbox,scanned,safe,manual,skipped,items);
     }
 
     /** Cancel a live local Worker first, then reconcile from durable facts. */
