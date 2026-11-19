@@ -3542,7 +3542,17 @@ v2.1 状态机闭合版的冻结不代表数据库、设备 Adapter 和 Worker �
 
 V1 不支持的定义必须在 WorkflowCompiler 阶段给出稳定错误码和节点/边定位信息。不能在运行时降级成串行执行，也不能把未支持分支自动视为 SKIPPED。
 
-## 40.3 V1 的实现准入条件
+## 40.3 并行执行与暂停语义约束
+
+1. **单 Run 单写者：** 每个 Run 只有一个 GraphCoordinator 能提交图状态变化；Coordinator 通过 mailbox 串行消费消息。Worker 只能返回不可变完成事实，不能直接修改 Token/Activation/Split/Join/Loop。
+2. **有界执行：** 使用全局有界 WorkerPool + Run 级并发额度；提交 Dispatch 前先获得额度。Worker 不得递归提交子任务后阻塞等待，不得在 Worker 内调用 `allOf().join()` 等待同池任务。
+3. **结构化并行：** V1 只支持编译期配对的 SplitActivation → 互不重叠的线性 BranchPlan → 显式 JoinActivation。普通业务节点不得被多个并行分支共享；多分支汇合必须经过显式 Join。SplitActivation/BranchActivation 是身份事实，不能只用 pending 计数替代。
+4. **循环边界：** 并行分支内部不允许 Loop，Loop 内部不允许 Parallel Split；禁止嵌套并行，避免线程池自阻塞和组合状态爆炸。
+5. **设备等待：** 设备等待必须持久化为 SUSPENDED continuation，Worker 立即归还执行额度；不得用阻塞 Worker 等待设备回包。
+6. **失败与暂停：** 任一分支失败后全 Run 停止提交新的普通 Dispatch；已提交/可能已发送的动作进入 Drain，按设备事实收敛。等待时间上限只触发告警、MANUAL_REQUIRED 或 QUARANTINED，不得超时伪造设备已停止或释放资源。
+7. **事件序号：** eventSeq 是 Run 级单调连续序号，由 Run 行锁保护，在业务投影与 Runtime Event 同一事务中递增；并行分支不自行分配全局序号。
+
+## 40.4 V1 的实现准入条件
 
 1. Definition Compiler 对 V1 能力矩阵有正反例测试；
 2. Repository/DDL 对一对一 attempt-command 约束有唯一索引；
