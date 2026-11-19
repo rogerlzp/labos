@@ -87,6 +87,15 @@
          WHERE w.tenant_id = #{param1} AND w.id = #{param2}
     </select>
 
+    <select id="selectRuntimeWorkflowHeader" resultType="java.util.Map">
+        SELECT id AS "id", version AS "version", updated_at AS "updatedAt",
+               status AS "status"
+          FROM workflow
+         WHERE tenant_id = #{tenantId}
+           AND id = #{workflowId}
+           AND deleted_at IS NULL
+    </select>
+
     <select id="selectWorkflowHeaders" resultType="java.util.Map">
         SELECT id AS "id", code AS "code", name AS "name", category AS "category"
           FROM workflow
