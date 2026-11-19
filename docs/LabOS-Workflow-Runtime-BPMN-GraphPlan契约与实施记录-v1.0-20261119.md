@@ -63,27 +63,31 @@ V1 GraphPlan 包含：
 
 ## 5. 尚未完成的集成项（不能提前标记完成）
 
-1. **Kernel DefinitionSource Adapter**：需要在 Kernel 的 MyBatis 层实现端口，组合 `selectGraphXml` 和 `selectWorkflowNodes`，并将 `workflow_node.params`、`capability`、`resource_binding` 正确映射到 NodeMetadata。
-2. **Tenant identity bridge**：旧 Kernel 以 bigint tenant id 为主；Runtime DDL 使用 UUID tenant_id + tenant_key。必须建立显式、持久、可审计的 bigint → Runtime UUID 映射；禁止 hash/随机临时映射。已增加 `resolveTenantId` / `findTenantKey` 和 `LegacyKernelWorkflowDefinitionSource`。该适配器通过注入的 reader 调用旧 Kernel；具体 MyBatis reader 和 Spring Bean 装配仍未完成。
-3. **Kernel Spring Boot 装配**：当前 Kernel POM 未依赖 workflow-runtime，旧构建脚本仍走 javac。需建立可重复构建/打包路径，注入 Kernel 同一 DataSource 与 PlatformTransactionManager，禁止 RuntimeRepository 自建第二个 DataSourceTransactionManager。
-4. **Snapshot read API / codec**：创建路径已序列化 GraphPlan 并持久化；Repository 已增加按 Run 读取不可变 snapshot、枚举非终态 Run 的 API；GraphPlanCodec 已增加 JSON 反序列化和 schemaVersion/hash 校验。Coordinator 尚未接入这些 API。
+1. **Kernel DefinitionSource Adapter：已实现首版。** `WorkflowRuntimeKernelConfiguration` 组合 tenant-scoped `selectWorkflowHeader`、`selectGraphXml` 与新增 `selectRuntimeWorkflowNodeMetadata`。元数据只映射 capabilityCode / workflowNodeId；protocol/resource/methodParams/stageCode 从原始 BPMN XML 解析。
+2. **Tenant identity bridge：已实现首版。** Repository `resolveTenantId` / `findTenantKey` 维护 stable tenant_key；`WorkflowRuntimeTenantResolver` 以 `kernel-tenant:<bigint>` 解析；`LegacyKernelWorkflowDefinitionSource` 严格拒绝非正数/格式错误的旧租户 key。
+3. **Kernel Spring Boot 装配：已实现首版。** Kernel POM 声明普通 Maven 依赖；`ensure-deps.sh` 与 `compile-kernel.sh` 构建 Runtime JAR 并放入既有 classpath；`WorkflowRuntimeKernelConfiguration` 注入 Kernel 同一个 DataSource / PlatformTransactionManager。Repository 主构造函数不再自行创建事务管理器。
+4. **Snapshot read API / codec：基础已实现。** 创建路径固化 GraphPlan；Repository 提供按 Run 读取与非终态 Run 枚举；Codec 提供 JSON 反序列化及 schemaVersion/hash 校验。Coordinator 尚未接入这些 API。
 5. **GraphCoordinator**：还需读取 Token/Activation 状态并以 Repository 事务原语推进；Worker 不得修改图状态。
 6. **条件表达式**：本次只保留条件文本；尚未接入受限、确定性的表达式求值器。条件表达式未实现前，不允许把 XOR/Inclusive 分支判定宣称为可执行。
 7. **Outbox/Adapter/Inbox、Mock E2E、故障注入**：仍按 T24-C/D/E 推进；真机 readback/reconciliation 仍不在本轮完成范围。
 
 ## 6. 重要 tenant 设计约束
 
-Runtime DDL 的 tenant 主键是 UUID，另有唯一 `tenant_key`。Kernel 现有 Mapper 使用 bigint tenantId。应用边界必须维护唯一稳定映射，例如 `kernel-tenant:<bigint>` 对应一个 Runtime tenant UUID，并在首次初始化时持久化。不能把 bigint 直接 cast 成 UUID，也不能每次启动重新生成 UUID，否则同一租户历史 Run 将不可访问。
+Runtime DDL 的 tenant 主键是 UUID，另有唯一 `tenant_key`。Kernel 现有 Mapper 使用 bigint tenantId。当前 Kernel 集成通过 `kernel-tenant:<bigint>` 稳定 key 持久化映射到 Runtime UUID；禁止直接 cast 或每次启动随机生成 UUID。
 
-## 7. 后续执行顺序
+## 7. 已完成的 Kernel 集成与下一阶段顺序
 
-1. 在 Kernel 注册 workflow-runtime JAR；确保旧构建脚本和 Maven 构建都能复现该依赖。
-2. Kernel 提供 MyBatis reader：tenant-scoped 读取原始 XML、版本/更新时间、节点能力与 workflow_node.id；禁止使用不带 tenant 的旧查询。
-3. Spring Boot 配置统一注入 DataSource + PlatformTransactionManager；Repository 增加接收共享事务管理器的构造入口，移除 Kernel 集成路径上的独立事务管理器。
-4. 创建 Run 时由应用层稳定映射 `kernel-tenant:<id>` → Runtime UUID，调用 WorkflowRunFactory。
-5. RuntimeHost 启动时分页读取非终态 Run snapshot，构造 GraphCoordinator；完成 Token/Activation 只读装载 API。
-6. 实现串行 GraphCoordinator 状态推进与受限表达式求值；先覆盖顺序节点，再覆盖 XOR/Parallel/Inclusive Split/Join，未支持语义继续编译拒绝。
-7. 接入 Outbox/Adapter/Inbox，完成 Mock E2E 与故障注入。
+已完成：
+1. Kernel 注册 workflow-runtime JAR；保留既有 javac/out 构建方式。
+2. MyBatis reader tenant-scoped 读取 BPMN XML、Header、节点元数据。
+3. Spring Boot 注入共享 DataSource + PlatformTransactionManager；Repository 主构造函数显式依赖共享事务管理器。
+4. 稳定映射 `kernel-tenant:<id>` → Runtime UUID，创建 Run 时调用 WorkflowRunFactory。
+
+下一阶段：
+5. 增加 Spring ApplicationContext 装配测试，验证真实 Bean 注册与 Mapper statement binding。
+6. RuntimeHost 启动时分页读取非终态 Run snapshot，构造 GraphCoordinator；完成 Token/Activation 只读装载 API。
+7. 实现串行 GraphCoordinator 状态推进与受限表达式求值；先覆盖顺序节点，再覆盖 XOR/Parallel/Inclusive Split/Join，未支持语义继续编译拒绝。
+8. 接入 Outbox/Adapter/Inbox，完成 Mock E2E 与故障注入。
 
 ## 8. 验收
 
