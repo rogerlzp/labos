@@ -3030,7 +3030,7 @@ UNKNOWN 不允许直接套用普通 Retry。核验结果必须是以下三类之
 
 - **EffectConfirmed**：外部动作已发生且后置条件满足。Command/Resource/Attempt/Activation/Token 在一个协调事务中推进；若原节点输出可确定，则提交输出、Activation=COMPLETED、Token=CONSUMED 并创建后继 Token。
 - **NoEffectProven**：有权威证据证明动作没有发生。Command 标记为经核验未执行，Attempt→ABANDONED_SAFE，Activation→READY 或 RETRY_WAIT，Token→READY 或 WAITING，按 retry policy 决定。
-- **Unresolved**：证据不足或互相矛盾。Activation/Attempt/Command/相关 ResourceLease 进入 UNKNOWN/QUARANTINED；Run 进入 MANUAL_REQUIRED 或 QUARANTINED；不得创建新 Attempt 或下游 Token。
+- **Unresolved**：证据不足或互相矛盾。Activation/Attempt 进入 UNKNOWN；Command 按其所处阶段分别保持/转为 DELIVERY_UNKNOWN（投递结果未确认）或 QUARANTINED（已 ACK/运行后结果无法核验）；相关 ResourceLease 按物理状态进入 QUARANTINED。Run 进入 MANUAL_REQUIRED 或 QUARANTINED；不得创建新 Attempt 或下游 Token。Command 不存在 UNKNOWN 状态。
 
 核验事务必须记录 evidenceRef、evidenceHash、核验来源、操作者/自动核验器身份、核验时间、对象版本和决策。核验事实、状态变化、Runtime Event、审计记录及必要 Outbox 同事务提交。
 
