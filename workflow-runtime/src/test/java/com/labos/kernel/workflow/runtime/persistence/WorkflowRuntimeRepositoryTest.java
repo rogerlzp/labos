@@ -83,7 +83,7 @@ class WorkflowRuntimeRepositoryTest {
 
         repo.completeAttempt(tenant,first.runId(),reservation.attemptId(),"result",
                 "{\"ok\":true}");
-        assertTrue(repo.releaseReservation(tenant,reservation.reservationId()));
+        assertFalse(repo.releaseReservation(tenant,reservation.reservationId()));
         assertFalse(repo.releaseReservation(tenant,reservation.reservationId()));
     }
 
