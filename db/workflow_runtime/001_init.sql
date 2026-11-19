@@ -464,7 +464,7 @@ CREATE TABLE resource_lease (
   released_at timestamptz,
   evidence jsonb,
   PRIMARY KEY (tenant_id, lease_id),
-  FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id),
+  FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id)
 );
 CREATE UNIQUE INDEX resource_one_live_lease_uq ON resource_lease(tenant_id, resource_id)
   WHERE lease_state IN ('ACTIVE','RELEASING','QUARANTINED','EXPIRED_UNVERIFIED');
