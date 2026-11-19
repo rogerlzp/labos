@@ -79,7 +79,7 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                 Map.of("tenantId", 7L, "workflowId", 9L), 2,
                 "tenant_id", "workflow_id");
 
-        System.out.println("✓ Workflow Runtime Kernel Spring composition and MyBatis binding 16 / 0");
+        System.out.println("✓ Workflow Runtime Kernel Spring composition and MyBatis binding 21 / 0");
     }
 
 
