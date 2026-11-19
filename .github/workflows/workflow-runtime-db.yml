@@ -56,7 +56,7 @@ jobs:
       - name: Run Java Workflow Runtime repository integration tests
         env:
           RUN_RUNTIME_PG_IT: '1'
-        run: mvn -B -f labos-kernel/pom.xml test
+        run: mvn -B -f workflow-runtime/pom.xml test
       - name: Verify bootstrap is repeatably isolated
         run: |
           psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 31) exit 1 }'
