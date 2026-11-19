@@ -14,6 +14,7 @@
 - scripts/compile-kernel.sh 每次编译前执行 mvn -f workflow-runtime/pom.xml -DskipTests install，把 JAR 复制到 labos-kernel/lib/spring/。
 - workflow-runtime/pom.xml 显式固定 maven-resources-plugin 3.3.1，避免生命周期插件默认版本漂移。
 - Kernel 保持既有 javac → labos-kernel/out 构建和运行布局；JAR 由既有 lib/spring/* classpath 加载。
+- `.github/workflows/ci.yml` 增加 `feat/workflow-runtime-*` push 触发，确保后续集成分支提交持续执行 Kernel CI。
 - 不提交二进制产物。
 
 ### 1.2 共享 DataSource 与事务管理器
@@ -63,6 +64,7 @@
 - 没有将旧 workflow_edge 投影当成 BPMN 控制流来源。
 - 没有实现网关条件表达式求值器；编译器只保留条件文本。
 - 没有启用新 Runtime 替换现有 GraphRunner，也没有迁移生产执行流量。
+- Kernel 启动不自动创建 `workflow_runtime` schema；首次开放 Run 创建前必须由正式部署迁移流程应用 `db/workflow_runtime/001_init.sql`。
 
 ## 3. 关键代码
 
@@ -74,6 +76,7 @@
 | workflow-runtime/.../WorkflowRunFactory.java | 编译并创建带 snapshot 的 Run |
 | workflow-runtime/.../BpmnGraphCompiler.java | BPMN → GraphPlan |
 | labos-kernel/.../WorkflowRuntimeKernelConfiguration.java | Spring Bean 装配 |
+| labos-kernel/.../WorkflowRuntimeKernelFacade.java | Kernel 应用入口：稳定租户映射 + Run 创建 |
 | labos-kernel/.../GraphMapper.java | tenant-scoped Mapper 声明 |
 | labos-kernel/.../GraphMapper.xml | BPMN XML / 节点元数据 SQL |
 | labos-kernel/pom.xml | 普通 Maven 模块依赖 |
