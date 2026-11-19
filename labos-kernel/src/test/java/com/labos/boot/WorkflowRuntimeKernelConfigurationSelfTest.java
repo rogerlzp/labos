@@ -16,6 +16,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import javax.sql.DataSource;
 import java.io.InputStream;
 import java.lang.reflect.Proxy;
+import java.util.Map;
 
 /**
  * Spring composition + MyBatis XML binding smoke test for the embedded Runtime.
@@ -61,14 +62,38 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
         try (InputStream xml = Resources.getResourceAsStream("mapper/GraphMapper.xml")) {
             new XMLMapperBuilder(xml, mybatis, "mapper/GraphMapper.xml", mybatis.getSqlFragments()).parse();
         }
-        require(mybatis.hasStatement("com.labos.kernel.persistence.GraphMapper.selectWorkflowHeader"),
-                "tenant-scoped workflow header statement missing");
+        require(mybatis.hasStatement("com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowHeader"),
+                "Runtime-only tenant-scoped workflow header statement missing");
         require(mybatis.hasStatement("com.labos.kernel.persistence.GraphMapper.selectGraphXml"),
                 "tenant-scoped BPMN XML statement missing");
         require(mybatis.hasStatement("com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowNodeMetadata"),
                 "tenant-scoped Runtime metadata statement missing");
 
-        System.out.println("✓ Workflow Runtime Kernel Spring composition and MyBatis binding 10 / 0");
+        assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowHeader",
+                Map.of("tenantId", 7L, "workflowId", 9L), 2,
+                "tenant_id", "workflow_id", "deleted_at");
+        assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectGraphXml",
+                Map.of("param1", 7L, "param2", 9L), 2,
+                "tenant_id", "id");
+        assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowNodeMetadata",
+                Map.of("tenantId", 7L, "workflowId", 9L), 2,
+                "tenant_id", "workflow_id");
+
+        System.out.println("✓ Workflow Runtime Kernel Spring composition and MyBatis binding 16 / 0");
+    }
+
+
+    private static void assertBoundSql(Configuration configuration, String statementId,
+                                        Object parameters, int expectedParameterCount,
+                                        String... requiredSqlTokens) {
+        var bound = configuration.getMappedStatement(statementId).getBoundSql(parameters);
+        require(bound.getParameterMappings().size() == expectedParameterCount,
+                statementId + " parameter mapping count mismatch");
+        String sql = bound.getSql().toLowerCase().replaceAll("\\s+", " ");
+        for (String token : requiredSqlTokens) {
+            require(sql.contains(token.toLowerCase()),
+                    statementId + " SQL missing required token: " + token);
+        }
     }
 
     private static void require(boolean condition, String message) {
