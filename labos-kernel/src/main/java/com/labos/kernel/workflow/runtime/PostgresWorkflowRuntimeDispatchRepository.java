@@ -188,8 +188,8 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
     /** Claim one Worker Dispatch Outbox item with SKIP LOCKED; no Run projection is changed. */
     public DispatchClaim claimNextWorkerDispatch(String dispatcherId, Duration claimTtl) {
         if (dispatcherId == null || dispatcherId.isBlank()) throw new IllegalArgumentException("dispatcherId required");
-        if (claimTtl == null || claimTtl.isNegative() || claimTtl.isZero()) {
-            throw new IllegalArgumentException("claimTtl must be positive");
+        if (claimTtl == null || claimTtl.isNegative() || claimTtl.isZero() || claimTtl.toMillis() < 1) {
+            throw new IllegalArgumentException("claimTtl must be at least one millisecond");
         }
         return transactions.write(() -> {
             List<Map<String, Object>> rows = jdbc.queryForList("""
@@ -207,7 +207,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             int changed = jdbc.update("""
                     UPDATE wf_worker_dispatch_outbox
                     SET status='CLAIMED',claim_owner=?,
-                        claim_until=clock_timestamp() + (? * interval '1 millisecond')
+                        claim_until=clock_timestamp() + (?::double precision * interval '1 millisecond')
                     WHERE outbox_id=? AND status IN ('PENDING','CLAIMED')
                     """, dispatcherId, claimTtl.toMillis(), outboxId);
             if (changed != 1) throw new IllegalStateException("Worker Dispatch Outbox claim CAS failed");
