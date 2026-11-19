@@ -109,6 +109,34 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         assertEquals("REPLAYED", replay.outcome());
         assertTrue(replay.replayed());
 
+        UUID secondToken = UUID.randomUUID();
+        UUID secondActivation = UUID.randomUUID();
+        String secondCapacity = "separate-capacity-" + UUID.randomUUID();
+        f.jdbc().update("INSERT INTO wf_execution_token(token_id,run_id,current_node_id,status) VALUES (?,?,'second-node','READY')",
+                secondToken, p.runId());
+        f.jdbc().update("INSERT INTO wf_node_activation(activation_id,run_id,token_id,node_id,status) VALUES (?,?,?,'second-node','READY')",
+                secondActivation, p.runId(), secondToken);
+        f.jdbc().update("INSERT INTO wf_scheduler_capacity(capacity_key,capacity_limit,reserved_count) VALUES (?,1,0)",
+                secondCapacity);
+        Map<String, Object> secondPayload = Map.ofEntries(
+                Map.entry("tokenId", secondToken.toString()),
+                Map.entry("activationId", secondActivation.toString()),
+                Map.entry("attemptId", UUID.randomUUID().toString()),
+                Map.entry("dispatchId", UUID.randomUUID().toString()),
+                Map.entry("outboxId", UUID.randomUUID().toString()),
+                Map.entry("reservationId", UUID.randomUUID().toString()),
+                Map.entry("capacityKey", secondCapacity),
+                Map.entry("expiresAt", Instant.now().plusSeconds(120).toString()),
+                Map.entry("sideEffectClass", "PURE"),
+                Map.entry("attemptNo", 1),
+                Map.entry("workerPayloadJson", "{}")
+        );
+        var secondRequest = new WorkflowRuntimeTransactionPort.Request(
+                p.runId(), "second-dispatch-" + UUID.randomUUID(), "second-dispatch-message", hash(), 2, 0, secondPayload);
+        assertThrows(IllegalStateException.class, () -> f.repository().reserveAndCommitDispatch(secondRequest));
+        assertEquals(0, f.jdbc().queryForObject(
+                "SELECT reserved_count FROM wf_scheduler_capacity WHERE capacity_key=?", Integer.class, secondCapacity));
+
         var claim = f.repository().claimNextWorkerDispatch("dispatcher-1", Duration.ofSeconds(30));
         assertNotNull(claim);
         assertEquals(dispatch, claim.dispatchId());
