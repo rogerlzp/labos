@@ -141,7 +141,7 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         assertNotNull(claim);
         assertEquals(dispatch, claim.dispatchId());
 
-        var workerPayload = Map.of(
+        Map<String, Object> workerPayload = Map.of(
                 "tokenId", p.tokenId().toString(),
                 "activationId", p.activationId().toString(),
                 "attemptId", attempt.toString(),
@@ -180,7 +180,7 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
                 "SELECT event_seq FROM wf_workflow_run WHERE run_id=?", Long.class, p.runId()));
 
         UUID nextToken = UUID.randomUUID();
-        var completionPayload = Map.of(
+        Map<String, Object> completionPayload = Map.of(
                 "tokenId", p.tokenId().toString(),
                 "activationId", p.activationId().toString(),
                 "attemptId", attempt.toString(),
