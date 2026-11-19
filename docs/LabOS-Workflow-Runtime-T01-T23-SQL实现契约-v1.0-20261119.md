@@ -58,16 +58,21 @@ V1 由部署约束保证一个 Runtime Host。数据库不负责 Host 唯一性�
 - Worker 执行 handle 仅存于进程内 WorkerExecutionRegistry，不持久化执行权租约。
 - Worker 外部副作用必须先调用 recordSideEffectFact(..., SIDE_EFFECT_STARTED, ...)，再调用 Adapter。
 - 同一 Attempt 的 factSeq 由锁定 Attempt 行后查询 MAX+1 分配；factKey 幂等，冲突拒绝。
-- Host 启动时 WorkerExecutionRecoveryService.recoverAtStartup 先恢复 Outbox，再扫描 STARTED Attempt。
-- 无 SIDE_EFFECT_STARTED 且无 SEND_STARTED/不确定 Command：ABANDONED_SAFE，可重试。
+- 启动恢复扫描 DISPATCHED、ACCEPTED、STARTED Attempt；按 Run → Token → Activation → Attempt 锁序重新核验。
+- 无 SIDE_EFFECT_STARTED 且无 SEND_STARTED/不确定 Command：Attempt、Activation 安全结束，Token 恢复 READY，Scheduler reservation 释放。
 - 已越过副作用边界：Command/Attempt UNKNOWN，Run MANUAL_REQUIRED，等待 commandId 查询、设备回读或人工核验。
+- 已恢复 Attempt 的旧 WORKER_DISPATCH Outbox 必须 DEAD_LETTER，不能再次派发。
+- 启动恢复按 1..1000 条分批；若 scanned 达到 batch limit，必须继续恢复下一批，直到 scanned 小于 limit 后才能启动 WorkerPool/Dispatcher。
 - Future.cancel、线程中断、Worker 消失都不代表设备动作停止。
 
 ## 5. Outbox 单实例语义
 
-Outbox 不使用 claim owner/epoch/claim_until。Dispatcher 在短事务中锁定 PENDING 行并改为 SENDING，提交后调用外部 Adapter。发送前持久化 SEND_STARTED。进程重启后：
-- 普通内部消息和未越过 SEND_STARTED 的设备命令可恢复为 PENDING；
-- 已越过 SEND_STARTED 的设备命令保持不自动重发，进入查询/UNKNOWN 恢复路径。
+Outbox 不使用 claim owner/epoch/claim_until。唯一 Dispatcher 在短事务中锁定 PENDING 行并改为 SENDING，提交后调用外部 Adapter。设备命令发送前持久化 SEND_STARTED。Runtime 重启恢复顺序必须是**先核验 Attempt，再恢复 Outbox**：
+- 普通内部消息可恢复为 PENDING；
+- WORKER_DISPATCH 只有在其 Attempt 仍为 DISPATCHED 时才允许重新排队；已 ACCEPTED/STARTED 或已恢复的 Attempt 对应旧消息必须 DEAD_LETTER；
+- DEVICE_COMMAND 只有在 Command 仍为 CREATED/DISPATCH_PENDING、且未越过 SEND_STARTED 边界时才允许恢复为 PENDING；
+- 已越过 SEND_STARTED 的设备命令保持不自动重发，进入 commandId 查询/UNKNOWN/MANUAL_REQUIRED 恢复路径；
+- dispatchAttempt 必须把 attemptId 写入 Outbox payload，供重启恢复核验消息归属。
 
 ## 6. 测试和完成标准
 
@@ -76,7 +81,7 @@ CI 必须在 PostgreSQL 17 上依次通过：
 2. Schema Contract（31 张表，禁止分布式字段/表）；
 3. 双会话并发矩阵 CON-01..14；
 4. 事务原子性和 Inbox 冲突；
-5. Java Repository 集成测试；
-6. WorkerExecutionRegistry 生命周期测试。
+5. Java Repository 集成测试（8/8）；
+6. WorkerExecutionRegistry 生命周期测试（2/2）。
 
-CI 通过只证明上述测试覆盖范围内的正确性，不代表真机 Adapter、设备状态回读或完整 Runtime Host 装配已经验收。
+当前代码基线 40c1033a59167631c724678b1bfadbfdf7a7188a 的 PostgreSQL 17 CI Run 44560926448 已通过：31 表 Schema Contract、CON-01..14、事务原子性、Inbox 冲突、Repository 8/8、Registry 2/2。CI 通过只证明上述测试覆盖范围内的正确性，不代表真机 Adapter、设备状态回读或完整 Runtime Host 装配已经验收。
