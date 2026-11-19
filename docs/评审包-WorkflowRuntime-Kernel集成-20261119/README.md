@@ -39,7 +39,7 @@
 
 - 最近一次 Runtime PostgreSQL 17 全绿：Run #252，提交 `4e6dbc9dedba7d453ba6d49210a5da115013ed4c`；30 tests，0 failures/errors。
 - Kernel CI #592：success，HEAD `703ff84b292ed0f6ece5d2b1b180e44ec2b00730`；Java 纯逻辑 1576/0、TypeScript 0 错误、DeviceEventApi 17/0、Sidecar 8/0。评审时仍需重新核对 PR 最新 HEAD 对应 Actions。
-- 当前评审基线 HEAD：`703ff84b292ed0f6ece5d2b1b180e44ec2b00730`。如果后续有提交，评审开始时必须重新确认。
+- 最近一次代码验证 SHA：`703ff84b292ed0f6ece5d2b1b180e44ec2b00730`（Kernel CI #592 success）；之后只有 Kernel/评审文档更新，未改 workflow-runtime 模块代码。当前 PR HEAD 仍以 PR 页面为准，评审开始时必须重新记录。
 
 ## 审核结论格式
 
