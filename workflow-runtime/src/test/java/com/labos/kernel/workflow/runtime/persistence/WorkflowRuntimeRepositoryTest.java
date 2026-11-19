@@ -56,11 +56,13 @@ class WorkflowRuntimeRepositoryTest {
         repo.dispatchAttempt(tenant,first.runId(),1L,reservation.attemptId(),"worker-q",
                 "{\"attemptId\":\""+reservation.attemptId()+"\"}");
 
+        Instant workerLeaseUntil=Instant.now().plusSeconds(120);
         assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
-                repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),1L,"worker-1"));
+                repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),1L,"worker-1",workerLeaseUntil));
         repo.acceptAttempt(tenant,first.runId(),reservation.attemptId(),
                 reservation.dispatchId(),1L,"worker-1");
-        repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),1L,"worker-1");
+        repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),1L,"worker-1",workerLeaseUntil);
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='HANDLER_STARTED'"));
 
         UUID command=repo.createCommand(tenant,first.runId(),1L,
                 activationForAttempt(ds,tenant,reservation.attemptId()),reservation.attemptId(),
@@ -71,6 +73,7 @@ class WorkflowRuntimeRepositoryTest {
         UUID dispatchId=UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
                 commandOutbox.owner(),commandOutbox.claimEpoch(),dispatchId,1,"dispatcher-1",1L));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='SIDE_EFFECT_STARTED'"));
         assertTrue(repo.markOutboxDelivered(tenant,commandOutbox.outboxId(),
                 commandOutbox.owner(),commandOutbox.claimEpoch()));
         assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
@@ -83,6 +86,7 @@ class WorkflowRuntimeRepositoryTest {
 
         repo.completeAttempt(tenant,first.runId(),reservation.attemptId(),"result",
                 "{\"ok\":true}");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='EXECUTION_RIGHT_RELEASED'"));
         assertFalse(repo.releaseReservation(tenant,reservation.reservationId()));
         assertFalse(repo.releaseReservation(tenant,reservation.reservationId()));
     }
@@ -205,6 +209,45 @@ class WorkflowRuntimeRepositoryTest {
         var checkpoint=repo.createCheckpoint(tenant,created.runId(),"TEST");
         assertTrue(checkpoint.eventSeq()>0);
         assertEquals(32,checkpoint.sha256().length);
+    }
+
+    private int scalar(DriverManagerDataSource ds, String sql) throws Exception {
+        try(Connection c=ds.getConnection(); var st=c.createStatement(); var rs=st.executeQuery(sql)) {
+            assertTrue(rs.next()); return rs.getInt(1);
+        }
+    }
+
+    @Test
+    void expiredPureWorkerLeaseCanBeSafelyRequeuedOnlyBeforeSideEffect() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','recovery-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        var created=repo.createRun(tenant,"recovery-"+UUID.randomUUID(),"CREATE","{}",
+                "recovery-flow-"+tenant,"1",new byte[32],"ci","{}","{}","start");
+        repo.startRun(tenant,created.runId(),UUID.randomUUID(),1L);
+        var reservation=repo.reserveCapacity(tenant,created.runId(),1L,"recovery-capacity",1,
+                "pure-node","PURE",Instant.now().plusSeconds(120));
+        repo.dispatchAttempt(tenant,created.runId(),1L,reservation.attemptId(),"worker-recovery",
+                "{\"attemptId\":\""+reservation.attemptId()+"\"}");
+        repo.acceptAttempt(tenant,created.runId(),reservation.attemptId(),
+                reservation.dispatchId(),1L,"worker-recovery");
+        repo.startAttempt(tenant,created.runId(),reservation.attemptId(),reservation.dispatchId(),
+                1L,"worker-recovery",Instant.now().plusSeconds(120));
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                UPDATE workflow_runtime.worker_execution_lease SET expires_at=clock_timestamp()-interval '1 second'
+                 WHERE tenant_id=? AND attempt_id=?
+                """)) {ps.setObject(1,tenant);ps.setObject(2,reservation.attemptId());assertEquals(1,ps.executeUpdate());}
+        var recovered=repo.recoverExpiredWorkerAttempt(tenant,created.runId(),reservation.attemptId(),"recovery-test");
+        assertEquals("SAFE_TO_RETRY",recovered.outcome());
+        assertNull(recovered.interventionId());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='ABANDONED_SAFE'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+tenant+"' AND run_id='"+created.runId()+"' AND token_state='READY'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_lease WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND lease_state='EXPIRED_SAFE'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id='"+tenant+"' AND run_id='"+created.runId()+"' AND intervention_state='OPEN'"));
     }
 
     @Test
