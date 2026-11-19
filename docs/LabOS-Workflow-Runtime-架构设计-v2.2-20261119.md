@@ -3594,7 +3594,11 @@ V1 不支持的定义必须在 WorkflowCompiler 阶段给出稳定错误码和�
 - Mavis F8：**采纳**。设备完成不因共享变量 CAS 冲突而丢失；设备输出与 Run Variable 聚合分离。
 - Mavis F9：**登记为容量压测项**。Run 行锁热点必须与 WorkerPool/Run quota 一并压测，不改变 V1 单 Run 单写者正确性模型。
 - Mavis F10：**采纳并关闭设计歧义**。V1 使用 PostgreSQL MVCC REPEATABLE READ Checkpoint；不采用未定义的“暂停 Run 提交”。
-- 并行网关评审中关于单 Run 单写者 Coordinator、有界全局 WorkerPool、禁止 ForkJoin commonPool 和禁止 Worker 阻塞等待子任务的建议：**保留为新 Runtime 的实现约束**，这些原则已体现在 §8/§10；关于旧 GraphRunner 锁改造、渐进迁移和历史行为兼容的建议：**不纳入本新系统实施范围**。
+- 并行网关三方评审的共同结论：**采纳**单 Run 单写者 Coordinator、有界全局 WorkerPool、Run 级并发额度、禁止每分支独立 GraphRunner、禁止 Worker 阻塞等待同池子任务；V1 使用 SplitActivation/BranchActivation/JoinActivation，而非仅用 pending 计数。
+- 并行评审关于普通共享节点、嵌套并行和 loop+parallel 组合的风险：**采纳**。V1 编译器拒绝共享普通汇合节点、嵌套并行和跨 Loop/Parallel 结构；所有汇合必须显式 Join。
+- 并行评审关于设备挂起与事件序号的建议：**采纳并按新 Runtime 语义重述**。设备等待持久化为 SUSPENDED continuation；eventSeq 保持 Run 级连续序号，由 Run 行锁和同一事务分配，不采用旧内存 AtomicLong 方案。
+- 并行评审关于停止等待上限的建议：**收窄采纳**。等待上限只能触发 MANUAL_REQUIRED/QUARANTINED，不得强制伪造设备安全状态。
+- 并行网关评审中关于旧 GraphRunner 的线程安全容器修复、渐进迁移和历史行为兼容的建议：**不纳入本新系统实施范围**。
 - Mavis 对存量 GraphRunner 迁移、历史流程扫描和旧数据映射的意见：**不纳入本新系统规范**。新 Runtime 不承担历史兼容、迁移副作用或旧代码搬迁约束；业务领域所需的物料/台账事实仍由新系统的 Domain Service/Handler 显式定义，不作为旧表兼容要求。
 
 ## 41.3 实施验证状态
