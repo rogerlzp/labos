@@ -4,7 +4,9 @@
 
 ## V1 部署约束
 
-V1 只支持一个 Runtime Host 进程。禁止多实例、Leader Election、分布式 Worker Lease、Coordinator epoch、dispatchEpoch、Resource fencing token 和多实例 Outbox claim lease。单实例仍然使用数据库事务、约束、CAS、进程内有界 WorkerPool、Command Ledger、Inbox/Outbox 和崩溃恢复。
+V1 只部署一个 Runtime Host 进程，由部署配置保证实例唯一。V1 不实现多实例、Leader Election、分布式锁、数据库启动锁、分布式 Worker Lease、Coordinator epoch、dispatchEpoch、Resource fencing token 或多实例 Outbox claim lease。
+
+单实例仍然使用数据库事务、行锁、唯一约束、普通对象 version/CAS、进程内有界 WorkerPool、Command Ledger、Inbox/Outbox 和崩溃恢复。这些机制服务于单进程线程并发、持久化和设备副作用安全，不承担实例选举或跨进程协调。
 
 规范基线：docs/LabOS-Workflow-Runtime-V1-单实例架构规范-v1.0-20261119.md。
 
@@ -16,7 +18,7 @@ V1 只支持一个 Runtime Host 进程。禁止多实例、Leader Election、分
 
 - PostgreSQL 17 空库初始化；
 - Schema Contract 不含被删除的表/字段；
-- 单实例 Host 锁与 fail-stop；
+- 单实例 Host 部署约束（不使用数据库锁或选举）；
 - WorkerPool 全局容量和每 Run 配额；
 - ResourceLease 单实例资源互斥；
 - Worker 超时和 Runtime 崩溃恢复；
