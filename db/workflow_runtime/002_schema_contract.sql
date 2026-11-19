@@ -19,6 +19,19 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='resource_one_live_lease_uq') THEN
     RAISE EXCEPTION 'Missing live lease partial unique index';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='wait_one_active_per_activation_uq') THEN
+    RAISE EXCEPTION 'Missing one-active-Wait-per-Activation index';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='retry_activation_attempt_uq') THEN
+    RAISE EXCEPTION 'Missing unique Retry activation/attempt key';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='split_one_open_per_activation_uq') THEN
+    RAISE EXCEPTION 'Missing one-open-Split-per-source-Activation index';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='workflow_runtime'
+      AND table_name='inbox_receipt' AND column_name='message_payload') THEN
+    RAISE EXCEPTION 'Inbox original message payload is not persisted';
+  END IF;
 END $$;
 BEGIN;
 SET LOCAL search_path=workflow_runtime,public;
