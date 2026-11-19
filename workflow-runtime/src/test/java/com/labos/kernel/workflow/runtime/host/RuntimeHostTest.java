@@ -91,6 +91,6 @@ class RuntimeHostTest {
         assertFalse(gate.isOpen());
         assertEquals(RuntimeHost.State.FAILED, host.state());
         assertEquals(List.of("start:ingress", "start:first", "start:second",
-                "stop:first", "stop:ingress"), trace);
+                "stop:second", "stop:first", "stop:ingress"), trace);
     }
 }
