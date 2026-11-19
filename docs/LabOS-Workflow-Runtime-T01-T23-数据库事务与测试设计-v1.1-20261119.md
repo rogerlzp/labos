@@ -576,7 +576,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **锁/CAS：** Run → Lease → Token → Activation → Attempt → Command；每个对象 expectedVersion CAS；证据不可变并与 commandId/resourceId 绑定。
 
-**允许决策：** PROVEN_NOT_SENT、PROVEN_COMPLETED、PROVEN_RUNNING、PROVEN_FAILED_SAFE、STATE_UNDETERMINED。每个决策必须有对应 Adapter/Worker 证据能力；STATE_UNDETERMINED 维持 UNKNOWN/隔离，不得解除。
+**允许决策：** PROVEN_NOT_SENT、PROVEN_COMPLETED、PROVEN_RUNNING、PROVEN_FAILED_SAFE、STATE_UNDETERMINED。每个决策必须有对应 Adapter/Worker 证据能力；STATE_UNDETERMINED 使 Attempt/Activation 维持 UNKNOWN，Command 保持 DELIVERY_UNKNOWN 或转 QUARANTINED，Lease 按事实隔离，不得解除。
 
 **核心测试：** DB-T21-01 有证据证明未送达；DB-T21-02 证明已完成；DB-T21-03 证明仍运行；DB-T21-04 证据不足保持 UNKNOWN；DB-T21-05 缺 evidenceHash 拒绝；DB-T21-06 过期对象版本拒绝；DB-T21-07 同一核验请求幂等；DB-T21-08 Command/Lease/Attempt 关联状态同事务一致。
 
@@ -638,7 +638,7 @@ L0 快速且覆盖全面，但不能代替 L1–L5。任何“状态机测试通
 | Wait | ACTIVE/SATISFIED/EXPIRED/CANCELLED | Satisfied/Expired/Cancel | 仅一个终态胜者 |
 | Split/Branch/Join | OPEN/ARRIVED/CLOSED/RELEASED/FAILED 等定义状态 | Expand/Arrival/Fail/JoinRelease | expected 集合闭合、Join 单次释放 |
 | Loop | ACTIVE/ITERATION_CLOSING/ITERATION_ADVANCED/COMPLETED/FAILED | Close/Advance/Limit | iteration 单调、无重复轮次 |
-| Command | CREATED/PREPARED/DISPATCHING/ACKNOWLEDGED/RUNNING/SUCCEEDED/REJECTED/FAILED/CANCEL_REQUESTED/CANCELLED_CONFIRMED/DELIVERY_UNKNOWN/UNKNOWN | Dispatch/Ack/Progress/Final/Cancel/Reconcile | ACK 不等于完成、未知不重发 |
+| Command | CREATED/PREPARED/DISPATCHING/ACKNOWLEDGED/RUNNING/SUCCEEDED/REJECTED/FAILED/CANCEL_REQUESTED/CANCELLED_CONFIRMED/DELIVERY_UNKNOWN/QUARANTINED | Dispatch/Ack/Progress/Final/Cancel/Reconcile | ACK 不等于完成；Command 不设 UNKNOWN，投递不确定为 DELIVERY_UNKNOWN，执行结果无法核验为 QUARANTINED |
 | ResourceLease | ACQUIRING/ACQUIRED/RELEASE_PENDING/RELEASED/EXPIRED_UNVERIFIED/QUARANTINED | Acquire/Release/TTL/PhysicalState/Clear | 未证实释放不得重新分配 |
 | Inbox | RECEIVED/PROCESSING/PROCESSED/REJECTED | Receive/Retry/Conflict | 同身份同 hash 幂等、不同 hash 冲突审计 |
 | Coordinator | owner epoch/lease 状态 | Acquire/Renew/Expire/Recover | 旧 owner 控制命令拒绝，事实消息按对象核验 |
@@ -703,7 +703,7 @@ L0 快速且覆盖全面，但不能代替 L1–L5。任何“状态机测试通
 | INV-DB-04 | Join RELEASED 仍有参与 Branch Token 非 CONSUMED | 0 行 |
 | INV-DB-05 | Split CLOSED 仍有 Branch ACTIVE/WAITING | 0 行 |
 | INV-DB-06 | Wait 非 ACTIVE 却存在有效 continuation owner 冲突 | 0 行 |
-| INV-DB-07 | Command UNKNOWN 被 Outbox 标记普通可重试 | 0 行 |
+| INV-DB-07 | Command=DELIVERY_UNKNOWN/QUARANTINED 被 Outbox 标记普通可重试 | 0 行 |
 | INV-DB-08 | Lease QUARANTINED/EXPIRED_UNVERIFIED 却存在新 owner | 0 行 |
 | INV-DB-09 | Inbox 同 source/messageId 多 payloadHash 被覆盖/缺 ProtocolViolation | 0 行 |
 | INV-DB-10 | Run 终态但仍有未决 Command/Lease/Token | 0 行 |
