@@ -22,8 +22,8 @@ V1 单实例 Repository/DDL 核心收敛已完成，具体包括：
 
 ## 验证
 
-- PostgreSQL 17 CI Run：44560926448
-- 代码基线：40c1033a59167631c724678b1bfadbfdf7a7188a
+- PostgreSQL 17 CI Run：44562728674
+- 代码基线：f1e6ec0fb7a429bb894b7cd14770b85b67b44828
 - Schema Contract：31 张表，PASS
 - PostgreSQL 两会话基础并发测试：PASS
 - CON-01..CON-14：14/14 PASS
