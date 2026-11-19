@@ -952,12 +952,39 @@ public final class WorkflowRuntimeRepository {
                                           UUID dispatchId, int dispatchNo, String dispatcherId,
                                           long fencingToken) {
         return required(() -> {
-            UUID runId=jdbc.queryForObject("""
-                SELECT run_id FROM workflow_runtime.command_ledger
+            List<String> identity=jdbc.query("""
+                SELECT run_id::text||'|'||attempt_id::text FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND command_id=?
-                """,UUID.class,tenantId,commandId);
+                """,(rs,n)->rs.getString(1),tenantId,commandId);
+            if(identity.size()!=1) throw new IllegalStateException("Command not found");
+            String[] ids=identity.get(0).split("\\|");
+            UUID runId=UUID.fromString(ids[0]), attemptId=UUID.fromString(ids[1]);
             RunHead head=lockRun(tenantId,runId);
-            if(!"OPEN".equals(head.controlGate())) return false;
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
+                """,UUID.class,tenantId,runId,attemptId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            String attemptState=jdbc.queryForObject("""
+                SELECT attempt_state FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+                """,String.class,tenantId,attemptId);
+            if(!"STARTED".equals(attemptState) || !"OPEN".equals(head.controlGate())) return false;
+            List<Long> leaseEpochs=jdbc.query("""
+                SELECT lease_epoch FROM workflow_runtime.worker_execution_lease
+                 WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
+                   AND expires_at>clock_timestamp() FOR UPDATE
+                """,(rs,n)->rs.getLong(1),tenantId,attemptId);
+            if(leaseEpochs.size()!=1)
+                throw new StaleRuntimeWriteException("Worker execution right expired before Command dispatch");
+            long leaseEpoch=leaseEpochs.get(0);
             jdbc.queryForObject("""
                 SELECT command_id FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND command_id=? FOR UPDATE
@@ -982,6 +1009,9 @@ public final class WorkflowRuntimeRepository {
                    fencing_token,started_at)
                 VALUES (?,?,?,?,'SEND_STARTED',?,?,clock_timestamp())
                 """,tenantId,dispatchId,commandId,dispatchNo,dispatcherId,fencingToken);
+            appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-send:"+dispatchId,
+                    "SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,dispatchId,head.coordinatorEpoch(),
+                    leaseEpoch,"{\"commandId\":\""+commandId+"\",\"dispatchNo\":"+dispatchNo+"}");
             return true;
         });
     }
