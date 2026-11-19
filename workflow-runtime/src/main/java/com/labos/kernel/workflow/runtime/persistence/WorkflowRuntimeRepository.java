@@ -1474,6 +1474,51 @@ public final class WorkflowRuntimeRepository {
     }
 
     public record WorkerRecoveryResult(String outcome, UUID interventionId) {}
+    public record InterruptedAttempt(UUID tenantId, UUID runId, UUID attemptId) {}
+    public record OutboxRestartResult(int safelyRequeued, int leftUncertain) {}
+
+    /** Requeue only SENDING messages whose external side-effect boundary was not crossed. */
+    public OutboxRestartResult recoverOutboxAfterRestart() {
+        return required(() -> {
+            int requeued=jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox o SET outbox_state='PENDING'
+                 WHERE o.outbox_state='SENDING'
+                   AND (
+                     o.message_kind <> 'DEVICE_COMMAND'
+                     OR EXISTS (
+                       SELECT 1 FROM workflow_runtime.command_ledger c
+                        WHERE c.tenant_id=o.tenant_id
+                          AND c.command_id::text=o.payload->>'commandId'
+                          AND c.command_state IN ('CREATED','DISPATCH_PENDING')
+                     )
+                   )
+                """);
+            Integer uncertain=jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.runtime_outbox o
+                 WHERE o.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
+                   AND EXISTS (
+                     SELECT 1 FROM workflow_runtime.command_ledger c
+                      WHERE c.tenant_id=o.tenant_id
+                        AND c.command_id::text=o.payload->>'commandId'
+                        AND c.command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING',
+                                                'DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
+                   )
+                """,Integer.class);
+            return new OutboxRestartResult(requeued,uncertain==null?0:uncertain);
+        });
+    }
+
+    /** Startup candidate list; each row is revalidated under its Run lock. */
+    public List<InterruptedAttempt> findInterruptedAttempts(int limit) {
+        if(limit<1 || limit>1000) throw new IllegalArgumentException("Recovery batch limit must be 1..1000");
+        return jdbc.query("""
+            SELECT tenant_id,run_id,attempt_id FROM workflow_runtime.node_attempt
+             WHERE attempt_state='STARTED'
+             ORDER BY started_at,tenant_id,run_id,attempt_id LIMIT ?
+            """,(rs,n)->new InterruptedAttempt(rs.getObject(1,UUID.class),
+                    rs.getObject(2,UUID.class),rs.getObject(3,UUID.class)),limit);
+    }
+
 
     /**
      * Reconcile an interrupted Attempt during the sole Host's startup.
@@ -1488,7 +1533,7 @@ public final class WorkflowRuntimeRepository {
                 SELECT attempt_state FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
-            if(attemptStates.size()!=1 || !List.of("STARTED","UNKNOWN").contains(attemptStates.get(0)))
+            if(attemptStates.size()!=1 || !"STARTED".equals(attemptStates.get(0)))
                 return new WorkerRecoveryResult("NOT_RECOVERABLE",null);
             UUID activationId=jdbc.queryForObject("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
