@@ -208,6 +208,40 @@ class WorkflowRuntimeRepositoryTest {
     }
 
     @Test
+    void pauseDrainPreservesReadyTokensAtSafePoint() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','pause-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        var created=repo.createRun(tenant,"pause-"+UUID.randomUUID(),"CREATE","{}",
+                "pause-"+tenant,"1",new byte[32],"ci","{}","{}","start");
+        repo.startRun(tenant,created.runId(),UUID.randomUUID(),1L);
+        UUID drain=repo.requestDrain(tenant,created.runId(),1L,"PAUSE");
+        repo.advanceDrainScan(tenant,created.runId(),drain,0L,"{\"page\":1}",java.util.List.of());
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='DELIVERED',delivered_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=? AND outbox_state='PENDING'
+                """)) {ps.setObject(1,tenant);ps.setObject(2,created.runId());ps.executeUpdate();}
+        assertTrue(repo.tryFinalizeDrain(tenant,created.runId(),drain,"PAUSED"));
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                SELECT status,control_gate FROM workflow_runtime.workflow_run WHERE tenant_id=? AND run_id=?
+                """)) {
+            ps.setObject(1,tenant);ps.setObject(2,created.runId());
+            try(var rs=ps.executeQuery()){assertTrue(rs.next());assertEquals("PAUSED",rs.getString(1));assertEquals("PAUSE",rs.getString(2));}
+        }
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                SELECT count(*) FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND run_id=? AND token_state='READY'
+                """)) {
+            ps.setObject(1,tenant);ps.setObject(2,created.runId());
+            try(var rs=ps.executeQuery()){assertTrue(rs.next());assertEquals(1,rs.getInt(1));}
+        }
+    }
+
+    @Test
     void stopDrainLeaseEvidenceAndManualQuarantineDecisionsAreAudited() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
         var ds=dataSource(); UUID tenant=UUID.randomUUID();
