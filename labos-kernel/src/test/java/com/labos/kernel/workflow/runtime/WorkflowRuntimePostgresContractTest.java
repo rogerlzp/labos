@@ -88,7 +88,7 @@ class WorkflowRuntimePostgresContractTest {
             UUID duplicateRun = UUID.randomUUID();
             try (PreparedStatement p = c.prepareStatement("""
                     INSERT INTO wf_workflow_run
-                      (run_id, tenant_id, request_id, definition_id, definition_version,
+                      (run_id, tenant_id, request_id, request_payload_hash, definition_id, definition_version,
                        definition_hash, compiler_version, status)
                     SELECT ?, tenant_id, request_id, request_payload_hash, definition_id, definition_version,
                            definition_hash, compiler_version, 'CREATED'
