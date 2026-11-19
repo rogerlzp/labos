@@ -514,11 +514,14 @@ public final class WorkflowRuntimeRepository {
         return required(() -> {
             lockRun(tenantId,runId);
             List<String> states=jdbc.query("""
-                SELECT attempt_state FROM workflow_runtime.node_attempt
+                SELECT attempt_state || chr(31) || COALESCE(worker_id,'')
+                  FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
-            if(states.size()!=1 || !"STARTED".equals(states.get(0)))
-                throw new StaleRuntimeWriteException("Only a STARTED Attempt may append side-effect facts");
+            if(states.size()!=1) throw new StaleRuntimeWriteException("Attempt not found");
+            String[] owner=states.get(0).split(String.valueOf((char)31),2);
+            if(!"STARTED".equals(owner[0]) || !workerId.equals(owner[1]))
+                throw new StaleRuntimeWriteException("Only the owning local Worker may append side-effect facts");
             if(!"SIDE_EFFECT_STARTED".equals(factType)) {
                 Integer started=jdbc.queryForObject("""
                     SELECT count(*) FROM workflow_runtime.worker_execution_fact
