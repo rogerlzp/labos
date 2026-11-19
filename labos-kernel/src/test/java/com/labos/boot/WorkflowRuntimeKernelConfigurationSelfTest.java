@@ -71,7 +71,7 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
 
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowHeader",
                 Map.of("tenantId", 7L, "workflowId", 9L), 2,
-                "tenant_id", "workflow_id", "deleted_at");
+                "tenant_id", "id", "deleted_at");
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectGraphXml",
                 Map.of("param1", 7L, "param2", 9L), 2,
                 "tenant_id", "id");
