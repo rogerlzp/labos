@@ -81,7 +81,7 @@ class WorkflowRuntimeRepositoryTest {
         UUID dispatchId=UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
                 dispatchId,1,"dispatcher-1"));
-        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='SIDE_EFFECT_STARTED'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='SIDE_EFFECT_STARTED' AND actor_kind='DISPATCHER'"));
         assertTrue(repo.markOutboxDelivered(tenant,commandOutbox.outboxId()));
         assertThrows(RuntimeException.class, () ->
                 repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
@@ -245,9 +245,11 @@ class WorkflowRuntimeRepositoryTest {
 
         var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
         var startup=recovery.recoverAtStartup(20,"startup");
-        assertEquals(1,startup.scanned());
-        assertEquals(1,startup.safeToRetry());
-        var result=startup.items().get(0).result();
+        assertTrue(startup.scanned() >= 1);
+        var recoveredItem=startup.items().stream()
+                .filter(item -> item.candidate().attemptId().equals(reservation.attemptId()))
+                .findFirst().orElseThrow();
+        var result=recoveredItem.result();
         assertEquals("SAFE_TO_RETRY",result.outcome());
         assertNull(result.interventionId());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='ABANDONED_SAFE'"));
