@@ -24,6 +24,11 @@
   </properties>
 
   <dependencies>
+    <dependency>
+      <groupId>com.labos</groupId>
+      <artifactId>workflow-runtime</artifactId>
+      <version>1.0.0-SNAPSHOT</version>
+    </dependency>
     <!-- HTTP 层已迁 Spring MVC：Tomcat 接管 18080，JDK HttpServer 退役 -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
