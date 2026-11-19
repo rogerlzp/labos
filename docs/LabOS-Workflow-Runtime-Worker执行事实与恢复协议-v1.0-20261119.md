@@ -2,7 +2,7 @@
 
 日期：2026-11-19  
 适用架构：LabOS Workflow Runtime V1 单实例规范  
-状态：Repository、DDL、Registry 和恢复入口已实现；最新代码需以 PostgreSQL 17 CI 验证
+状态：Repository、DDL、Registry 和恢复入口已实现；代码基线 b4df784 已通过 PostgreSQL 17 CI
 
 ## 1. 设计边界
 
