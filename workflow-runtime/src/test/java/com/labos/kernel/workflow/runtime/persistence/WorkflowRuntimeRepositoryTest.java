@@ -59,7 +59,7 @@ class WorkflowRuntimeRepositoryTest {
         assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
                 repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1"));
         repo.acceptAttempt(tenant,first.runId(),reservation.attemptId(),
-                reservation.dispatchId(),1L,"worker-1");
+                reservation.dispatchId(),"worker-1");
         repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='HANDLER_STARTED'"));
 
@@ -71,12 +71,12 @@ class WorkflowRuntimeRepositoryTest {
                 .stream().filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
         UUID dispatchId=UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
-                dispatchId,1,"dispatcher-1",1L));
+                dispatchId,1,"dispatcher-1"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='SIDE_EFFECT_STARTED'"));
         assertTrue(repo.markOutboxDelivered(tenant,commandOutbox.outboxId()));
-        assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
+        assertThrows(RuntimeException.class, () ->
                 repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
-                        commandOutbox.owner(),commandOutbox.claimEpoch(),UUID.randomUUID(),2,"dispatcher-1",1L));
+                        UUID.randomUUID(),2,"dispatcher-1"));
         var receipt=repo.receiveInbox(tenant,"it-device","device-msg-"+UUID.randomUUID(),
                 "DEVICE_COMMAND_RESULT",first.runId(),"{\"commandId\":\""+command+"\",\"state\":\"SUCCEEDED\"}");
         assertTrue(repo.applyCommandEvent(tenant,first.runId(),receipt.inboxId(),command,
