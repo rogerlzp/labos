@@ -186,7 +186,7 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
                 "attemptId", attempt.toString(),
                 "dispatchId", dispatch.toString(),
                 "dispatchEpoch", 0L,
-                "outputPayloadJson", "{\\"result\\":\\"ok\\"}",
+                "outputPayloadJson", "{\"result\":\"ok\"}",
                 "outputHash", hash(),
                 "nextTokenId", nextToken.toString(),
                 "nextNodeId", "next-task",
