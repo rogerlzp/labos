@@ -31,7 +31,8 @@
 - BpmnGraphCompiler；
 - WorkflowDefinitionSource；
 - WorkflowRunFactory；
-- 稳定租户身份解析器 WorkflowRuntimeTenantResolver。
+- 稳定租户身份解析器 WorkflowRuntimeTenantResolver；
+- Kernel-facing WorkflowRuntimeKernelFacade，统一接收 legacy bigint tenant + workflowId，内部完成稳定租户映射并创建 Run/Snapshot。
 
 读取路径：
 1. Runtime UUID → Repository findTenantKey；
@@ -134,4 +135,4 @@ CI 链接：
 
 ## 8. Spring / MyBatis Smoke Test
 
-新增纯逻辑自测：labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeKernelConfigurationSelfTest.java，并加入 scripts/test-all.sh 的 PURE 列表。该测试不连接数据库、不启动 RuntimeHost，验证 Runtime Spring Bean composition、唯一 DataSource / PlatformTransactionManager、未提前创建 RuntimeHost，以及 GraphMapper.xml 三个关键 statement 的 MyBatis 解析绑定。最新 CI 结果以新提交对应 Actions 为准。
+新增纯逻辑自测：labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeKernelConfigurationSelfTest.java，并加入 scripts/test-all.sh 的 PURE 列表。当前检查覆盖 Bean composition、RuntimeFacade、无 RuntimeHost、三个 Mapper 的 BoundSql 参数映射及租户/软删除 SQL 谓词。该测试不连接数据库、不启动 RuntimeHost，验证 Runtime Spring Bean composition、唯一 DataSource / PlatformTransactionManager、未提前创建 RuntimeHost，以及 GraphMapper.xml 三个关键 statement 的 MyBatis 解析绑定。最新 CI 结果以新提交对应 Actions 为准。
