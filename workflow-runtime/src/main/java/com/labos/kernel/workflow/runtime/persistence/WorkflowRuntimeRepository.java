@@ -354,8 +354,10 @@ public final class WorkflowRuntimeRepository {
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
-                VALUES (?,?,'WORKER_DISPATCH',?,jsonb_set(?::jsonb,'{queue}',to_jsonb(?::text),true))
-                """,tenantId,runId,"dispatch:"+attemptId,payloadJson,workerQueue);
+                VALUES (?,?,'WORKER_DISPATCH',?,
+                        jsonb_set(jsonb_set(?::jsonb,'{queue}',to_jsonb(?::text),true),
+                                  '{attemptId}',to_jsonb(?::text),true))
+                """,tenantId,runId,"dispatch:"+attemptId,payloadJson,workerQueue,attemptId.toString());
             appendEvents(tenantId,runId,List.of(new EventDraft("ATTEMPT_DISPATCHED",
                     "ATTEMPT",attemptId,1L,null,null,"{}")));
             return null;
