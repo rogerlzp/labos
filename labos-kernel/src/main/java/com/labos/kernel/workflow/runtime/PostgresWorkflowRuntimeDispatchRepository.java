@@ -47,6 +47,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             String sideEffectClass = required(request, "sideEffectClass");
             String workerPayload = optional(request, "workerPayloadJson", "{}");
             UUID leaseId = optionalUuid(request, "leaseId");
+            UUID retryOfAttemptId = optionalUuid(request, "retryOfAttemptId");
 
             List<Map<String, Object>> duplicate = jdbc.queryForList("""
                     SELECT attempt_id,payload_hash,run_id FROM wf_worker_dispatch_outbox
@@ -152,10 +153,10 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             jdbc.update("""
                     INSERT INTO wf_node_attempt
                       (attempt_id,run_id,activation_id,attempt_no,status,dispatch_id,
-                       dispatch_epoch,side_effect_class)
-                    VALUES (?,?,?,?, 'DISPATCH_PENDING', ?, ?, ?)
+                       dispatch_epoch,side_effect_class,retry_of_attempt_id)
+                    VALUES (?,?,?,?, 'DISPATCH_PENDING', ?, ?, ?, ?)
                     """, attemptId, request.runId(), activationId,
-                    integer(request, "attemptNo"), dispatchId, epoch, sideEffectClass);
+                    integer(request, "attemptNo"), dispatchId, epoch, sideEffectClass, retryOfAttemptId);
 
             jdbc.update("""
                     UPDATE wf_node_activation
