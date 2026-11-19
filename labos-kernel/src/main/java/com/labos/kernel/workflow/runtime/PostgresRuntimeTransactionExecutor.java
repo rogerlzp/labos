@@ -3,7 +3,6 @@ package com.labos.kernel.workflow.runtime;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
