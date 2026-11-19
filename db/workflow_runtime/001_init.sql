@@ -39,7 +39,6 @@ CREATE TABLE workflow_run (
   control_gate text NOT NULL DEFAULT 'OPEN' CHECK (control_gate IN ('OPEN','PAUSE','STOP','CLOSED')),
   commit_version bigint NOT NULL DEFAULT 0 CHECK (commit_version >= 0),
   event_seq bigint NOT NULL DEFAULT 0 CHECK (event_seq >= 0),
-  coordinator_id uuid,
   recovery_state text NOT NULL DEFAULT 'NOT_REQUIRED'
     CHECK (recovery_state IN ('NOT_REQUIRED','RECOVERING','RECOVERY_COMPLETED','BLOCKED')),
   input jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -441,7 +440,7 @@ CREATE TABLE command_dispatch_attempt (
   command_id uuid NOT NULL,
   dispatch_no integer NOT NULL CHECK (dispatch_no > 0),
   dispatch_state text NOT NULL CHECK (dispatch_state IN
-    ('READY','CLAIMED','SEND_STARTED','DELIVERED','DELIVERY_UNKNOWN','REJECTED')),
+    ('READY','SEND_STARTED','DELIVERED','DELIVERY_UNKNOWN','REJECTED')),
   dispatcher_id text,
   started_at timestamptz,
   finished_at timestamptz,
