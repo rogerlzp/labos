@@ -1600,6 +1600,21 @@ public final class WorkflowRuntimeRepository {
                                                             UUID attemptId, String recoveryActor) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId);
+            List<UUID> activationIds=jdbc.query("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
+                """,(rs,n)->rs.getObject(1,UUID.class),tenantId,runId,attemptId);
+            if(activationIds.size()!=1) return new WorkerRecoveryResult("NOT_RECOVERABLE",null);
+            UUID activationId=activationIds.get(0);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            // Keep the documented single-Run lock order: Run -> Token -> Activation -> Attempt.
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
             List<String> attemptStates=jdbc.query("""
                 SELECT attempt_state FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
@@ -1607,18 +1622,6 @@ public final class WorkflowRuntimeRepository {
             String interruptedState=attemptStates.isEmpty()?null:attemptStates.get(0);
             if(!List.of("DISPATCHED","ACCEPTED","STARTED").contains(interruptedState))
                 return new WorkerRecoveryResult("NOT_RECOVERABLE",null);
-            UUID activationId=jdbc.queryForObject("""
-                SELECT activation_id FROM workflow_runtime.node_attempt
-                 WHERE tenant_id=? AND attempt_id=?
-                """,UUID.class,tenantId,attemptId);
-            UUID tokenId=jdbc.queryForObject("""
-                SELECT token_id FROM workflow_runtime.node_activation
-                 WHERE tenant_id=? AND activation_id=?
-                """,UUID.class,tenantId,activationId);
-            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
-                    UUID.class,tenantId,tokenId);
-            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
-                    UUID.class,tenantId,activationId);
             Integer sideEffects=jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.worker_execution_fact
                  WHERE tenant_id=? AND attempt_id=? AND fact_type IN
@@ -1666,7 +1669,7 @@ public final class WorkflowRuntimeRepository {
                 releaseReservationInTransaction(tenantId,attemptId);
                 appendEvents(tenantId,runId,List.of(new EventDraft(
                         "ATTEMPT_ABANDONED_SAFE","ATTEMPT",attemptId,null,null,null,
-                        "{\\"previousState\\":\\""+interruptedState+"\\"}")));
+                        "{\"previousState\":\""+interruptedState+"\"}")));
                 return new WorkerRecoveryResult("SAFE_TO_RETRY",null);
             }
 
