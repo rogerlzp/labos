@@ -208,7 +208,7 @@ Inbox 采用两阶段持久化，但只有第二阶段与业务投影原子提�
 
 **失败/恢复：** 任一步失败整体回滚。Commit 响应丢失时按 requestId 查询；不得创建新 requestId 代替原请求。
 
-**核心测试：** DB-T01-01 正常创建；02 同 request/hash 并发仅一个 Run；03 同 request 不同 hash 拒绝；04 Definition 不存在回滚；05 Commit 后响应丢失返回原 Run；06 初始 Token/Event/变量不存在部分提交。
+**核心测试：** DB-T01-01 正常创建；DB-T01-02 同 request/hash 并发仅一个 Run；DB-T01-03 同 request 不同 hash 拒绝；DB-T01-04 Definition 不存在回滚；DB-T01-05 Commit 后响应丢失返回原 Run；DB-T01-06 初始 Token/Event/变量不存在部分提交。
 
 ## T02 — Start Run
 
@@ -232,7 +232,7 @@ Inbox 采用两阶段持久化，但只有第二阶段与业务投影原子提�
 
 **失败/恢复：** 重复 StartRun 返回首次 outcome；错误定义或非法状态拒绝，不得重复创建 Activation。
 
-**核心测试：** DB-T02-01 正常启动；02 两个 Coordinator 并发启动仅一个成功；03 重复消息不重复 Activation；04 STARTING 时 Scheduler 不派发普通 Token；05 Run 版本过期拒绝。
+**核心测试：** DB-T02-01 正常启动；DB-T02-02 两个 Coordinator 并发启动仅一个成功；DB-T02-03 重复消息不重复 Activation；DB-T02-04 STARTING 时 Scheduler 不派发普通 Token；DB-T02-05 Run 版本过期拒绝。
 
 ## T03 — Reservation 与 Dispatch Commit
 
@@ -276,7 +276,7 @@ T03 包含两个独立短事务：T03-R Reservation、T03-D Dispatch Commit。�
 
 **失败/恢复：** 两个阶段不能拼成一个长事务。Reservation 重复请求返回同 reservation；Dispatch 重复请求返回原 dispatchId/outbox；过期 reservation 不得发送。
 
-**核心测试：** DB-T03-01 capacity 无超卖；02 token 只 reserve 一次；03 Pause 先提交则 Dispatch 拒绝；04 Dispatch 先提交则纳入 Drain；05 Lease 无效拒绝；06 DispatchCommit 响应丢失仍只一个 Outbox；07 reservation 过期回收不释放物理 Lease。
+**核心测试：** DB-T03-01 capacity 无超卖；DB-T03-02 token 只 reserve 一次；DB-T03-03 Pause 先提交则 Dispatch 拒绝；DB-T03-04 Dispatch 先提交则纳入 Drain；DB-T03-05 Lease 无效拒绝；DB-T03-06 DispatchCommit 响应丢失仍只一个 Outbox；DB-T03-07 reservation 过期回收不释放物理 Lease。
 
 ## T04 — Worker Accepted 与 Started
 
@@ -304,7 +304,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **失败/恢复：** Worker Accepted 后、Started 前崩溃不能直接判定未执行；由 Worker 执行器持久化事实和副作用分类核验。纯计算且证明未开始才可 ABANDONED_SAFE；否则 UNKNOWN/人工核验。
 
-**核心测试：** DB-T04-01 Accepted 不等于 Started；02 Started 越级拒绝；03 重复 Accepted/Started 幂等；04 旧 dispatchEpoch 但身份有效的 Worker 结果可由新 Coordinator 验证；05 旧 attempt 的 Started 拒绝；06 Worker 接收回执丢失不自动重发设备动作。
+**核心测试：** DB-T04-01 Accepted 不等于 Started；DB-T04-02 Started 越级拒绝；DB-T04-03 重复 Accepted/Started 幂等；DB-T04-04 旧 dispatchEpoch 但身份有效的 Worker 结果可由新 Coordinator 验证；DB-T04-05 旧 attempt 的 Started 拒绝；DB-T04-06 Worker 接收回执丢失不自动重发设备动作。
 
 ## T05 — 纯计算节点成功完成
 
@@ -325,7 +325,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **失败/恢复：** 同一完成消息重复返回首次结果；旧 Attempt completion 只记 STALE_COMPLETION，不覆盖当前状态。变量 CAS 冲突不能静默 last-write-wins。
 
-**核心测试：** DB-T05-01 正常完成；02 双 completion 并发仅一次消费 Token；03 output schema 失败全回滚；04 variable CAS 冲突无部分输出；05 Drain 期间完成可收敛但不新派发；06 旧 Attempt 结果不覆盖新 Attempt。
+**核心测试：** DB-T05-01 正常完成；DB-T05-02 双 completion 并发仅一次消费 Token；DB-T05-03 output schema 失败全回滚；DB-T05-04 variable CAS 冲突无部分输出；DB-T05-05 Drain 期间完成可收敛但不新派发；DB-T05-06 旧 Attempt 结果不覆盖新 Attempt。
 
 ## T06 — 节点失败与 Retry Registration
 
@@ -344,7 +344,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 - MANUAL：Activation→MANUAL_REQUIRED，创建人工工作项。
 - Run 已 Pause/Stop：不得新建可派发 Retry；记录失败事实并交给 Drain。
 
-**核心测试：** DB-T06-01 四类错误分别转移；02 retryable 但有未决设备命令强制 UNKNOWN；03 RetryRegistration 唯一；04 Retry 与 Stop 竞态；05 重复 NodeFailed 幂等；06 timeout 不等于无副作用。
+**核心测试：** DB-T06-01 四类错误分别转移；DB-T06-02 retryable 但有未决设备命令强制 UNKNOWN；DB-T06-03 RetryRegistration 唯一；DB-T06-04 Retry 与 Stop 竞态；DB-T06-05 重复 NodeFailed 幂等；DB-T06-06 timeout 不等于无副作用。
 
 ## T07 — Suspend
 
@@ -360,7 +360,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **失败/恢复：** 同一 suspend identity 重放返回原 Wait；任何一个对象状态不符则整体不提交；不能先发订阅再写 Wait。
 
-**核心测试：** DB-T07-01 四对象同事务一致；02 Wait 唯一；03 Worker 释放事实可追踪；04 Command 仍运行时 Suspend 不伪造命令完成；05 提交前崩溃不产生有效外部订阅。
+**核心测试：** DB-T07-01 四对象同事务一致；DB-T07-02 Wait 唯一；DB-T07-03 Worker 释放事实可追踪；DB-T07-04 Command 仍运行时 Suspend 不伪造命令完成；DB-T07-05 提交前崩溃不产生有效外部订阅。
 
 ## T08 — Wait Satisfied / Expired
 
@@ -379,7 +379,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 4. Expired：按 Definition timeout policy 唯一推进；不得同时创建 satisfied continuation。
 5. 写事件、Outbox、Inbox outcome，提交。
 
-**核心测试：** DB-T08-01 Satisfied；02 Expired；03 两者并发单一胜者；04 重复 Satisfied 不重复 Token；05 旧 Attempt completion 不覆盖 continuation；06 旧 Attempt 关闭与 Token READY 原子；07 correlation 不匹配拒绝。
+**核心测试：** DB-T08-01 Satisfied；DB-T08-02 Expired；DB-T08-03 两者并发单一胜者；DB-T08-04 重复 Satisfied 不重复 Token；DB-T08-05 旧 Attempt completion 不覆盖 continuation；DB-T08-06 旧 Attempt 关闭与 Token READY 原子；DB-T08-07 correlation 不匹配拒绝。
 
 ## T09 — Split Expand
 
@@ -389,11 +389,11 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **写集合：** SplitActivation(OPEN)；实际分支 BranchActivation；每个分支 Token(READY)；父 Token CONSUMED；Event；SchedulerWakeup Outbox。
 
-**锁/CAS：** Run → Split identity guard（新建时以唯一键争抢，不持有子表锁）→ parent Token → Activation；随后插入本次 Split 的 BranchActivation 与 branch Token。若实现需要锁定已存在的结构行，必须按 §1.4 的 Split→Token→Branch 顺序。Split identity 对 parent activation + split node + execution version 唯一。
+**锁/CAS：** Run → Split identity guard（新建时以唯一键争抢，不持有子表锁）→ parent Token → Activation；随后先插入本次 Split 的 branch Token，再插入 BranchActivation，保持与 §1.4 一致的锁定顺序。若实现需要锁定已存在的结构行，必须按 §1.4 的 Split→Token→Branch 顺序。Split identity 对 parent activation + split node + execution version 唯一。
 
 **步骤：** 计算实际激活集合并校验 GatewayPlan；集合必须非空且符合 AND/XOR/OR 编译语义；一次事务创建完整集合并消费父 Token。不得分批创建分支。
 
-**核心测试：** DB-T09-01 AND 全部分支；02 XOR 仅选中分支；03 OR 动态集合与 expectedBranchIds 一致；04 空集合拒绝或走定义的显式空路径；05 任一插入失败全回滚；06 重复 Expand 不产生第二个 Split。
+**核心测试：** DB-T09-01 AND 全部分支；DB-T09-02 XOR 仅选中分支；DB-T09-03 OR 动态集合与 expectedBranchIds 一致；DB-T09-04 空集合拒绝或走定义的显式空路径；DB-T09-05 任一插入失败全回滚；DB-T09-06 重复 Expand 不产生第二个 Split。
 
 ## T10 — Branch Arrival / Join Release
 
@@ -412,7 +412,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 4. 满足时在同一事务关闭所有参与 Branch、消费全部 Branch Token、释放 Join、关闭 Split、创建唯一 downstream Token。
 5. 不满足则只提交本次 Arrival。
 
-**核心测试：** DB-T10-01 普通 Arrival；02 最后两个 Branch 并发仅释放一次；03 Join release 同时消费全部 Branch Token；04 重复 Arrival 幂等；05 未激活 OR 分支不计入 expected；06 FAILED/UNKNOWN 不当作 ARRIVED；07 Join 后迟到 Arrival 不产生新 Token；08 内层 Split 未闭合禁止 Arrival。
+**核心测试：** DB-T10-01 普通 Arrival；DB-T10-02 最后两个 Branch 并发仅释放一次；DB-T10-03 Join release 同时消费全部 Branch Token；DB-T10-04 重复 Arrival 幂等；DB-T10-05 未激活 OR 分支不计入 expected；DB-T10-06 FAILED/UNKNOWN 不当作 ARRIVED；DB-T10-07 Join 后迟到 Arrival 不产生新 Token；DB-T10-08 内层 Split 未闭合禁止 Arrival。
 
 ## T11 — Loop Iteration Advance
 
@@ -426,7 +426,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **步骤：** 校验当前轮全部 Token 已完成、Split/Join 已闭合；校验 iteration+1 不超过 maxIterations；原子推进 iteration 并创建下一轮 Token。达到上限按定义终止/失败，不允许溢出。
 
-**核心测试：** DB-T11-01 正常推进；02 并发推进只加一次；03 未闭合分支拒绝；04 maxIterations 边界；05 恢复后不重复创建下一轮；06 iteration 不回退。
+**核心测试：** DB-T11-01 正常推进；DB-T11-02 并发推进只加一次；DB-T11-03 未闭合分支拒绝；DB-T11-04 maxIterations 边界；DB-T11-05 恢复后不重复创建下一轮；DB-T11-06 iteration 不回退。
 
 ## T12 — Command Create
 
@@ -440,7 +440,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **步骤：** 同 requestId 同 hash 返回原 commandId；不同 hash 协议冲突。验证 Adapter capability 和资源要求，生成 commandId，写不可变 payloadHash 和关联关系，创建 Outbox。Command 创建与设备调用严格分离。
 
-**核心测试：** DB-T12-01 正常创建；02 重复 requestId 单命令；03 同 request 不同 payload 拒绝；04 无 Lease/能力拒绝；05 Command 与 Outbox 原子；06 Attempt 已关闭拒绝创建。
+**核心测试：** DB-T12-01 正常创建；DB-T12-02 重复 requestId 单命令；DB-T12-03 同 request 不同 payload 拒绝；DB-T12-04 无 Lease/能力拒绝；DB-T12-05 Command 与 Outbox 原子；DB-T12-06 Attempt 已关闭拒绝创建。
 
 ## T13 — Command Dispatch
 
@@ -460,7 +460,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **重试裁决：** 仅 Adapter 明确证明未送达，或提供已验证的 commandId 幂等+查询协议，才允许沿用原 commandId 重试；禁止创建新 commandId 掩盖未知结果。
 
-**核心测试：** DB-T13-01 Claim fencing；02 SEND_STARTED 先于网络调用；03 发送前崩溃恢复为未知待核验；04 调用后响应丢失不盲重发；05 Adapter 明确拒绝；06 重复调用同 commandId 按能力矩阵；07 旧 Dispatcher claim 不能发送。
+**核心测试：** DB-T13-01 Claim fencing；DB-T13-02 SEND_STARTED 先于网络调用；DB-T13-03 发送前崩溃恢复为未知待核验；DB-T13-04 调用后响应丢失不盲重发；DB-T13-05 Adapter 明确拒绝；DB-T13-06 重复调用同 commandId 按能力矩阵；DB-T13-07 旧 Dispatcher claim 不能发送。
 
 ## T14 — Device Event Consume
 
@@ -474,7 +474,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **步骤：** 按 commandId 唯一归属；核验 deviceId/operation/sequence/payload；只接受合法单调状态迁移；物理释放必须有权威释放证据。无 commandId/未知 commandId 进入 UNATTRIBUTED，不推进 Activation、不释放 Lease。
 
-**核心测试：** DB-T14-01 合法事件；02 重复事件；03 同 messageId 不同 hash 协议冲突；04 乱序/旧序号事件不回退；05 未知 commandId 不猜归属；06 ACK 不代表完成；07 final event + cancel 并发单一裁决；08 无物理空闲证据不得 RELEASED；09 Receipt 提交后、业务处理前崩溃可重新处理；10 业务提交后响应丢失返回首次 outcome；11 不允许 Inbox 先于业务投影标记 PROCESSED。
+**核心测试：** DB-T14-01 合法事件；DB-T14-02 重复事件；DB-T14-03 同 messageId 不同 hash 协议冲突；DB-T14-04 乱序/旧序号事件不回退；DB-T14-05 未知 commandId 不猜归属；DB-T14-06 ACK 不代表完成；DB-T14-07 final event + cancel 并发单一裁决；DB-T14-08 无物理空闲证据不得 RELEASED；DB-T14-09 Receipt 提交后、业务处理前崩溃可重新处理；DB-T14-10 业务提交后响应丢失返回首次 outcome；DB-T14-11 不允许 Inbox 先于业务投影标记 PROCESSED。
 
 ## T15 — Pause/Stop Request
 
@@ -488,7 +488,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **步骤：** 相同 requestId 幂等；不同 requestId 依据当前 Run 状态和优先级裁决；同事务关闭新 Dispatch 准入、写请求 Event/Outbox；不把设备命令标记为停止，不释放未决 Lease。
 
-**核心测试：** DB-T15-01 Pause 正常；02 Stop 正常；03 Pause/Dispatch 竞争；04 Stop/Dispatch 竞争；05 Stop 覆盖 Pause 且继承 drain items；06 重复请求幂等；07 请求后仍在途命令不被伪造为完成。
+**核心测试：** DB-T15-01 Pause 正常；DB-T15-02 Stop 正常；DB-T15-03 Pause/Dispatch 竞争；DB-T15-04 Stop/Dispatch 竞争；DB-T15-05 Stop 覆盖 Pause 且继承 drain items；DB-T15-06 重复请求幂等；DB-T15-07 请求后仍在途命令不被伪造为完成。
 
 ## T16 — Drain Start
 
@@ -502,7 +502,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **步骤：** 创建唯一 drainId；记录开始版本与扫描边界；登记需要核验的对象类别和扫描游标。DrainItem 初始快照不是完成证明，后续 T17/T18 仍须追踪新发现对象。
 
-**核心测试：** DB-T16-01 Drain 创建；02 重复 StartDrain 幂等；03 分页扫描无漏项；04 Dispatch gate 关闭后不存在新合法 Dispatch；05 Stop 替代 Pause drain 的归属切换。
+**核心测试：** DB-T16-01 Drain 创建；DB-T16-02 重复 StartDrain 幂等；DB-T16-03 分页扫描无漏项；DB-T16-04 Dispatch gate 关闭后不存在新合法 Dispatch；DB-T16-05 Stop 替代 Pause drain 的归属切换。
 
 ## T17 — Reservation Reconcile
 
@@ -516,7 +516,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **步骤：** T17 不只回收 RESERVED reservation，还必须重复扫描 Drain 期间新产生的、尚未 Dispatch 的 READY Token（例如在途节点完成后产生的后继 Token）。Pause 保留 READY Token 作为 Resume continuation；Stop 必须将 READY/RESERVED Token 置 INVALIDATED，并关闭其未派发 Activation/Attempt。仅对可证明尚未 DispatchCommitted 的对象释放软件额度。若已有 DispatchCommitted/可能发送，不能按 reservation 回收路径处理，必须转入 T18。绝不在本事务释放物理 ResourceLease。扫描必须可续跑，直至没有未处理 READY/RESERVED 对象。
 
-**核心测试：** DB-T17-01 未派发 reservation 回收；02 Pause 下 Token 恢复/保留 READY 但 gate 仍阻止派发；03 Stop 下 READY 与 RESERVED Token 均 INVALIDATED；04 在途完成产生新 READY Token 后被后续扫描捕获；05 已提交 Dispatch 不得误回收；06 重复 reconcile 幂等；07 容量返还恰好一次。
+**核心测试：** DB-T17-01 未派发 reservation 回收；DB-T17-02 Pause 下 Token 恢复/保留 READY 但 gate 仍阻止派发；DB-T17-03 Stop 下 READY 与 RESERVED Token 均 INVALIDATED；DB-T17-04 在途完成产生新 READY Token 后被后续扫描捕获；DB-T17-05 已提交 Dispatch 不得误回收；DB-T17-06 重复 reconcile 幂等；DB-T17-07 容量返还恰好一次。
 
 ## T18 — Safe Point / Device Stop Progress
 
@@ -530,7 +530,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **边界：** 外部暂停/取消/停止命令在事务外调用；调用请求先由 Command Ledger/Outbox 持久化。T18 只提交 Worker/设备/资源已发生的可验证事实。ACK 不自动等于物理安全点。对 Stop，T18 还负责在所有相关物理副作用已安全收敛后，关闭持久化 Wait/RetryRegistration、Split/Branch/Join/Loop 等控制流结构并使残余 Token 进入合法终结/INVALIDATED 状态；不得在物理副作用未核验时先关闭结构以制造 StopSafePredicate。Pause 则保留可恢复的 Wait/Loop/Join continuation。
 
-**核心测试：** DB-T18-01 纯计算 Worker 安全结束；02 设备明确停止且物理回读通过；03 ACK 但物理仍运行不得安全；04 未知结果进入 MANUAL_REQUIRED/QUARANTINED；05 迟到完成只影响匹配对象；06 Release 未确认不得释放 Lease；07 重复证据幂等；08 Stop 物理收敛后关闭 Wait/Retry/Split/Branch/Join/Loop；09 物理未收敛时禁止提前关闭控制流结构；10 Pause 保留可恢复 continuation。
+**核心测试：** DB-T18-01 纯计算 Worker 安全结束；DB-T18-02 设备明确停止且物理回读通过；DB-T18-03 ACK 但物理仍运行不得安全；DB-T18-04 未知结果进入 MANUAL_REQUIRED/QUARANTINED；DB-T18-05 迟到完成只影响匹配对象；DB-T18-06 Release 未确认不得释放 Lease；DB-T18-07 重复证据幂等；DB-T18-08 Stop 物理收敛后关闭 Wait/Retry/Split/Branch/Join/Loop；DB-T18-09 物理未收敛时禁止提前关闭控制流结构；DB-T18-10 Pause 保留可恢复 continuation。
 
 ## T19 — Drain Complete
 
@@ -549,7 +549,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 - 物理/执行结果未知进入 MANUAL_REQUIRED/QUARANTINED；
 - 仍有确定在途动作则 Drain 保持进行中，不得提前终结。
 
-**核心测试：** DB-T19-01 Pause 成功谓词；02 Stop 成功谓词；03 任一未决 Command 阻止普通终态；04 任一非 RELEASED Lease 阻止普通终态；05 UNKNOWN 转隔离；06 Drain 完成与迟到事件并发；07 重复 CompleteDrain 返回既有结果。
+**核心测试：** DB-T19-01 Pause 成功谓词；DB-T19-02 Stop 成功谓词；DB-T19-03 任一未决 Command 阻止普通终态；DB-T19-04 任一非 RELEASED Lease 阻止普通终态；DB-T19-05 UNKNOWN 转隔离；DB-T19-06 Drain 完成与迟到事件并发；DB-T19-07 重复 CompleteDrain 返回既有结果。
 
 ## T20 — Checkpoint
 
@@ -563,7 +563,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **锁/CAS：** Checkpoint metadata 唯一 requestId；记录实际 snapshot 游标，校验 eventSeqHighWatermark 不大于快照中的 Run eventSeq。
 
-**核心测试：** DB-T20-01 同一快照多表一致；02 并发 Event 提交不会混入半个事务；03 Snapshot 不支持时 barrier 正确；04 payloadHash 可复算；05 Checkpoint 写入失败不影响 Runtime；06 恢复从 checkpoint + 后续 Event 得到相同投影。
+**核心测试：** DB-T20-01 同一快照多表一致；DB-T20-02 并发 Event 提交不会混入半个事务；DB-T20-03 Snapshot 不支持时 barrier 正确；DB-T20-04 payloadHash 可复算；DB-T20-05 Checkpoint 写入失败不影响 Runtime；DB-T20-06 恢复从 checkpoint + 后续 Event 得到相同投影。
 
 ## T21 — Unknown Reconciliation
 
@@ -577,7 +577,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **允许决策：** PROVEN_NOT_SENT、PROVEN_COMPLETED、PROVEN_RUNNING、PROVEN_FAILED_SAFE、STATE_UNDETERMINED。每个决策必须有对应 Adapter/Worker 证据能力；STATE_UNDETERMINED 维持 UNKNOWN/隔离，不得解除。
 
-**核心测试：** DB-T21-01 有证据证明未送达；02 证明已完成；03 证明仍运行；04 证据不足保持 UNKNOWN；05 缺 evidenceHash 拒绝；06 过期对象版本拒绝；07 同一核验请求幂等；08 Command/Lease/Attempt 关联状态同事务一致。
+**核心测试：** DB-T21-01 有证据证明未送达；DB-T21-02 证明已完成；DB-T21-03 证明仍运行；DB-T21-04 证据不足保持 UNKNOWN；DB-T21-05 缺 evidenceHash 拒绝；DB-T21-06 过期对象版本拒绝；DB-T21-07 同一核验请求幂等；DB-T21-08 Command/Lease/Attempt 关联状态同事务一致。
 
 ## T22 — Manual Resolution
 
@@ -591,7 +591,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **规则：** 只允许预定义 decision enum；禁止直接写状态字段绕过状态机；一次 workItem 只允许一个成功决策，后续更正需新 interventionId 并引用前一记录。
 
-**核心测试：** DB-T22-01 合法人工决策；02 无授权拒绝；03 无证据拒绝（决策类型要求证据时）；04 同一 workItem 并发只一个胜者；05 只改 Run 不改对象被拒绝；06 审计不可变；07 后续更正形成新记录。
+**核心测试：** DB-T22-01 合法人工决策；DB-T22-02 无授权拒绝；DB-T22-03 无证据拒绝（决策类型要求证据时）；DB-T22-04 同一 workItem 并发只一个胜者；DB-T22-05 只改 Run 不改对象被拒绝；DB-T22-06 审计不可变；DB-T22-07 后续更正形成新记录。
 
 ## T23 — Quarantine Clear
 
@@ -605,7 +605,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **规则：** 资源权威方证明物理空闲、没有未决 command、证据与 resourceId/leaseId 匹配且授权有效，才可解除。数据库人工勾选、TTL 到期、Worker 消失、ACK 或超时均不是解除证据。
 
-**核心测试：** DB-T23-01 有权威空闲证据解除；02 仍运行拒绝；03 证据不匹配拒绝；04 过期版本拒绝；05 并发 Clear 只成功一次；06 Clear 前新 owner 获取被拒绝；07 Clear 后才恢复准入；08 审计记录不可变。
+**核心测试：** DB-T23-01 有权威空闲证据解除；DB-T23-02 仍运行拒绝；DB-T23-03 证据不匹配拒绝；DB-T23-04 过期版本拒绝；DB-T23-05 并发 Clear 只成功一次；DB-T23-06 Clear 前新 owner 获取被拒绝；DB-T23-07 Clear 后才恢复准入；DB-T23-08 审计记录不可变。
 
 ---
 
