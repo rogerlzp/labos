@@ -3,6 +3,7 @@ package com.labos.kernel.workflow.runtime.persistence;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.labos.kernel.workflow.runtime.recovery.WorkerLeaseRecoveryService;
 
 import java.sql.Connection;
 import java.sql.Statement;
@@ -246,7 +247,10 @@ class WorkflowRuntimeRepositoryTest {
                 UPDATE workflow_runtime.worker_execution_lease SET expires_at=clock_timestamp()-interval '1 second'
                  WHERE tenant_id=? AND attempt_id=?
                 """)) {ps.setObject(1,tenant);ps.setObject(2,reservation.attemptId());assertEquals(1,ps.executeUpdate());}
-        var recovered=repo.recoverExpiredWorkerAttempt(tenant,created.runId(),reservation.attemptId(),"recovery-test");
+        var batch=new WorkerLeaseRecoveryService(repo).recoverExpiredBatch(10,"recovery-test");
+        assertEquals(1,batch.scanned());
+        assertEquals(1,batch.safeToRetry());
+        var recovered=batch.items().get(0).result();
         assertEquals("SAFE_TO_RETRY",recovered.outcome());
         assertNull(recovered.interventionId());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='ABANDONED_SAFE'"));
@@ -289,7 +293,10 @@ class WorkflowRuntimeRepositoryTest {
                 UPDATE workflow_runtime.worker_execution_lease SET expires_at=clock_timestamp()-interval '1 second'
                  WHERE tenant_id=? AND attempt_id=?
                 """)) {ps.setObject(1,tenant);ps.setObject(2,reservation.attemptId());assertEquals(1,ps.executeUpdate());}
-        var recovered=repo.recoverExpiredWorkerAttempt(tenant,created.runId(),reservation.attemptId(),"recovery-test");
+        var batch=new WorkerLeaseRecoveryService(repo).recoverExpiredBatch(10,"recovery-test");
+        assertEquals(1,batch.scanned());
+        assertEquals(1,batch.manualRequired());
+        var recovered=batch.items().get(0).result();
         assertEquals("MANUAL_REQUIRED",recovered.outcome());
         assertNotNull(recovered.interventionId());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='UNKNOWN'"));
