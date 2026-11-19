@@ -73,8 +73,9 @@ class WorkflowRuntimeRepositoryTest {
                 commandOutbox.owner(),commandOutbox.claimEpoch(),dispatchId,1,"dispatcher-1",1L));
         assertTrue(repo.markOutboxDelivered(tenant,commandOutbox.outboxId(),
                 commandOutbox.owner(),commandOutbox.claimEpoch()));
-        assertFalse(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
-                commandOutbox.owner(),commandOutbox.claimEpoch(),UUID.randomUUID(),2,"dispatcher-1",1L));
+        assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
+                repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
+                        commandOutbox.owner(),commandOutbox.claimEpoch(),UUID.randomUUID(),2,"dispatcher-1",1L));
         var receipt=repo.receiveInbox(tenant,"it-device","device-msg-"+UUID.randomUUID(),
                 "DEVICE_COMMAND_RESULT",first.runId(),"{\"commandId\":\""+command+"\",\"state\":\"SUCCEEDED\"}");
         assertTrue(repo.applyCommandEvent(tenant,first.runId(),receipt.inboxId(),command,
