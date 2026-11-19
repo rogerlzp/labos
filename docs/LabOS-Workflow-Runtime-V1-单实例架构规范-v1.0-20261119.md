@@ -2,7 +2,7 @@
 
 - 日期：2026-11-19
 - 版本：V1 Single Instance
-- 状态：目标架构；数据库与运行时代码正在按本规范收敛，未完成的实现不得标记为 PASS
+- 状态：实现基线；Repository/DDL/Schema Contract/恢复服务已按单实例模型重构，最终 CI 需以最新提交结果为准
 - PostgreSQL：17
 - 部署：一个 Runtime Host 进程，一个 PostgreSQL 数据库
 
