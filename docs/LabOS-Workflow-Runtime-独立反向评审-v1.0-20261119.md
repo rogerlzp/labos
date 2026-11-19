@@ -170,3 +170,8 @@ Repository 中主要锁路径已调整，但需要对 T01–T23 的完整 SQL tr
 - DDL / Schema contract / atomicity / Inbox conflict：PASS
 
 此验证不覆盖真实 Worker 多进程、Coordinator takeover 服务、Recovery Orchestrator 服务或 Adapter/HIL。
+
+
+### R-01 新增批次服务后的边界
+
+WorkerLeaseRecoveryService 已提供有界、可重复调用的候选扫描与恢复批次；但它不负责后台调度、leader election、宿主生命周期或告警。多实例恢复的正确性依赖 Repository 中 Run/对象锁和 Lease 状态重验，仍需增加真实多进程压力与故障测试。
