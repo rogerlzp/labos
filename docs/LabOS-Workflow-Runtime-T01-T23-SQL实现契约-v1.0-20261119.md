@@ -1,4 +1,6 @@
-# Workflow Runtime 数据库 SQL 实现契约 v1.0
+# [待重写] Workflow Runtime 数据库 SQL 实现契约 v1.0
+
+> 本 SQL 合同仍包含 coordinator_epoch、Worker DB Lease、dispatchEpoch、resource_fence_counter 和 fencingToken。它与 V1 单实例架构收敛决议冲突，不能作为最终 V1 合同。后续必须同步删除相关字段/表并重写 T01–T23 锁序与事务合同；在 PG17 CI 重新通过前，不得宣称 Schema 收敛完成。
 
 本文件将 T01–T23 推进到 SQL 级实现合同。SQL 为 PostgreSQL 17 模板，参数由驱动绑定。默认 READ COMMITTED；同 Run 控制流写事务先锁 Run 行；禁止跨 Run 事务。
 
