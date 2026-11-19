@@ -280,9 +280,16 @@ class WorkflowRuntimeRepositoryTest {
                 .filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,outbox.outboxId(),
                 UUID.randomUUID(),1,"dispatcher"));
-        var result=repo.recoverInterruptedAttempt(tenant,run.runId(),reservation.attemptId(),"startup");
+        var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
+        var startup=recovery.recoverAtStartup(100,"startup");
+        assertEquals(1,startup.outbox().leftUncertain());
+        var recoveredItem=startup.items().stream()
+                .filter(item -> item.candidate().attemptId().equals(reservation.attemptId()))
+                .findFirst().orElseThrow();
+        var result=recoveredItem.result();
         assertEquals("MANUAL_REQUIRED",result.outcome());
         assertNotNull(result.interventionId());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"+tenant+"' AND dedup_key='command:"+command+"' AND outbox_state='SENDING'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='UNKNOWN'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id='"+tenant+"' AND intervention_id='"+result.interventionId()+"' AND intervention_state='OPEN'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+tenant+"' AND run_id='"+run.runId()+"' AND status='MANUAL_REQUIRED' AND recovery_state='BLOCKED'"));
