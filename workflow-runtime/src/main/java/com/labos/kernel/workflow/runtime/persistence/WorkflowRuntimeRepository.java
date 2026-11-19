@@ -452,12 +452,41 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND wait_id=? AND run_id=? AND wait_state='ACTIVE'
                 """,satisfied?"SATISFIED":"EXPIRED",tenantId,waitId,runId);
             if(changed==0) return false;
+            String continuationNode=jdbc.queryForObject("""
+                SELECT continuation->>'nodeKey' FROM workflow_runtime.wait_registration
+                 WHERE tenant_id=? AND wait_id=?
+                """,String.class,tenantId,waitId);
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.wait_registration
+                 WHERE tenant_id=? AND wait_id=?
+                """,UUID.class,tenantId,waitId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
             int attempt=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='ABANDONED_SAFE',
                        attempt_version=attempt_version+1,finished_at=clock_timestamp()
                  WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED')
                 """,tenantId,oldAttemptId);
             if(attempt==0) throw new IllegalStateException("Wait closed but old Attempt was not safely abandonable");
+            jdbc.update("""
+                UPDATE workflow_runtime.node_activation SET activation_state='ABANDONED_SAFE',
+                       activation_version=activation_version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND activation_id=? AND activation_state='WAITING'
+                """,tenantId,activationId);
+            jdbc.update("""
+                UPDATE workflow_runtime.execution_token SET token_state='CONSUMED',
+                       token_version=token_version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND token_id=? AND token_state='WAITING'
+                """,tenantId,tokenId);
+            if(continuationNode==null||continuationNode.isBlank())
+                throw new IllegalStateException("Wait continuation has no nodeKey");
+            jdbc.update("""
+                INSERT INTO workflow_runtime.execution_token
+                  (tenant_id,run_id,token_state,node_key,parent_token_id,payload)
+                VALUES (?,?,'READY',?,?,?::jsonb)
+                """,tenantId,runId,continuationNode,tokenId,"{}");
             appendEvents(tenantId,runId,epoch,List.of(new EventDraft(
                     satisfied?"WAIT_SATISFIED":"WAIT_EXPIRED","WAIT",waitId,null,null,null,"{}")));
             return true;
@@ -470,6 +499,20 @@ public final class WorkflowRuntimeRepository {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
             if(branchKeys==null||branchKeys.isEmpty()) throw new IllegalArgumentException("Split needs branches");
+            UUID sourceToken=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND run_id=? AND activation_id=? FOR UPDATE
+                """,UUID.class,tenantId,runId,sourceActivationId);
+            jdbc.update("""
+                UPDATE workflow_runtime.node_activation SET activation_state='SUCCEEDED',
+                       activation_version=activation_version+1
+                 WHERE tenant_id=? AND activation_id=? AND activation_state IN ('RUNNING','RESERVED')
+                """,tenantId,sourceActivationId);
+            jdbc.update("""
+                UPDATE workflow_runtime.execution_token SET token_state='CONSUMED',
+                       token_version=token_version+1
+                 WHERE tenant_id=? AND token_id=?
+                """,tenantId,sourceToken);
             UUID splitId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.split_activation
@@ -510,6 +553,15 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND split_id=? AND branch_key=? AND branch_state IN ('ACTIVE','WAITING')
                 """,arrivalActivationId,tenantId,splitId,branchKey);
             if(arrived==0) return false;
+            UUID branchId=jdbc.queryForObject("""
+                SELECT branch_id FROM workflow_runtime.branch_activation
+                 WHERE tenant_id=? AND split_id=? AND branch_key=?
+                """,UUID.class,tenantId,splitId,branchKey);
+            jdbc.update("""
+                UPDATE workflow_runtime.execution_token SET token_state='CONSUMED',
+                       token_version=token_version+1
+                 WHERE tenant_id=? AND branch_id=? AND token_state IN ('READY','RUNNING','WAITING')
+                """,tenantId,branchId);
             jdbc.update("""
                 UPDATE workflow_runtime.split_activation SET arrived_branch_count=arrived_branch_count+1,
                        version=version+1
@@ -549,7 +601,8 @@ public final class WorkflowRuntimeRepository {
 
     /** T11: compare-and-set Loop iteration and persist next iteration in the same transaction. */
     public long advanceLoop(UUID tenantId, UUID runId, long epoch, UUID loopId,
-                            long expectedVersion, long expectedIteration, String contextJson) {
+                            long expectedVersion, long expectedIteration, String nextNodeKey,
+                            String contextJson) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
             Long next=jdbc.queryForObject("""
@@ -560,6 +613,11 @@ public final class WorkflowRuntimeRepository {
              RETURNING iteration
                 """,Long.class,contextJson,tenantId,runId,loopId,expectedVersion,expectedIteration);
             if(next==null) throw new StaleRuntimeWriteException("Loop version/iteration stale");
+            jdbc.update("""
+                INSERT INTO workflow_runtime.execution_token
+                  (tenant_id,run_id,token_state,node_key,loop_context_id)
+                VALUES (?,?,'READY',?,?)
+                """,tenantId,runId,nextNodeKey,loopId);
             appendEvents(tenantId,runId,epoch,List.of(new EventDraft("LOOP_ADVANCED","LOOP",
                     loopId,expectedVersion+1,null,null,"{\"iteration\":"+next+"}")));
             return next;
@@ -621,10 +679,10 @@ public final class WorkflowRuntimeRepository {
             UUID inboxId=UUID.randomUUID();
             int inserted=jdbc.update("""
                 INSERT INTO workflow_runtime.inbox_receipt
-                  (tenant_id,inbox_id,source,source_message_id,payload_hash,message_type,run_id)
-                VALUES (?,?,?,?,?,?,?)
+                  (tenant_id,inbox_id,source,source_message_id,payload_hash,message_type,message_payload,run_id)
+                VALUES (?,?,?,?,?,?,?::jsonb,?)
                 ON CONFLICT (tenant_id,source,source_message_id) DO NOTHING
-                """,tenantId,inboxId,source,messageId,hash,messageType,runId);
+                """,tenantId,inboxId,source,messageId,hash,messageType,payloadJson,runId);
             if(inserted==1) return new InboxReceipt(inboxId,true,false);
             UUID originalId=jdbc.queryForObject("""
                 SELECT inbox_id FROM workflow_runtime.inbox_receipt
@@ -657,6 +715,12 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND run_id=? AND command_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,commandId);
             if(states.size()!=1) throw new IllegalStateException("command_id does not belong to this Run");
+            String inboxCommandId=jdbc.queryForObject("""
+                SELECT message_payload->>'commandId' FROM workflow_runtime.inbox_receipt
+                 WHERE tenant_id=? AND inbox_id=? AND run_id=? AND receipt_state IN ('RECEIVED','PROCESSING')
+                """,String.class,tenantId,inboxId,runId);
+            if(!commandId.toString().equals(inboxCommandId))
+                throw new IllegalStateException("Inbox commandId does not match command row; event attribution rejected");
             String current=states.get(0);
             boolean allowed=switch(current) {
                 case "SEND_STARTED" -> List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","DELIVERY_UNKNOWN","UNKNOWN").contains(targetState);
@@ -809,6 +873,27 @@ public final class WorkflowRuntimeRepository {
                 """,safe?"SAFE":"MANUAL_REQUIRED",observedVersion,evidenceJson,
                     tenantId,drainId,itemKind,itemId);
             if(changed!=1) throw new StaleRuntimeWriteException("Drain item already terminal or missing");
+            if("LEASE".equals(itemKind)) {
+                List<String> leaseRows=jdbc.query("""
+                    SELECT resource_id FROM workflow_runtime.resource_lease
+                     WHERE tenant_id=? AND run_id=? AND lease_id=? FOR UPDATE
+                    """,(rs,n)->rs.getString(1),tenantId,runId,itemId);
+                if(leaseRows.size()!=1) throw new IllegalStateException("Drain Lease item not found");
+                String leaseState=safe?"RELEASED":"QUARANTINED";
+                jdbc.update("""
+                    UPDATE workflow_runtime.resource_lease SET lease_state=?,lease_version=lease_version+1,
+                           released_at=CASE WHEN ? THEN clock_timestamp() ELSE released_at END,
+                           evidence=?::jsonb
+                     WHERE tenant_id=? AND lease_id=? AND lease_state IN ('ACTIVE','RELEASING','EXPIRED_UNVERIFIED','QUARANTINED')
+                    """,leaseState,safe,evidenceJson,tenantId,itemId);
+                if(!safe) jdbc.update("""
+                    INSERT INTO workflow_runtime.quarantine_record
+                      (tenant_id,resource_id,run_id,lease_id,quarantine_state,reason_code,evidence)
+                    VALUES (?,?,?,?,'ACTIVE','DRAIN_PHYSICAL_STATE_UNVERIFIED',?::jsonb)
+                    ON CONFLICT (tenant_id,resource_id) WHERE quarantine_state IN ('ACTIVE','CLEAR_PENDING')
+                    DO NOTHING
+                    """,tenantId,leaseRows.get(0),runId,itemId,evidenceJson);
+            }
             return null;
         });
     }
@@ -838,18 +923,21 @@ public final class WorkflowRuntimeRepository {
                     WHERE tenant_id=? AND run_id=? AND loop_state='ACTIVE') +
                   (SELECT count(*) FROM workflow_runtime.execution_token
                     WHERE tenant_id=? AND run_id=? AND token_state IN ('READY','RESERVED','RUNNING','WAITING')) +
+                  (SELECT count(*) FROM workflow_runtime.node_attempt
+                    WHERE tenant_id=? AND run_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')) +
                   (SELECT count(*) FROM workflow_runtime.drain_item
                     WHERE tenant_id=? AND drain_id=? AND item_state <> 'SAFE')
                 """,Long.class,tenantId,runId,tenantId,runId,tenantId,runId,tenantId,runId,
                     tenantId,runId,tenantId,runId,tenantId,drainId);
             if(unsafe==null||unsafe>0) return false;
             int changed=jdbc.update("""
-                UPDATE workflow_runtime.workflow_run SET status=?,control_gate='CLOSED',
-                       terminal_reason='DRAIN_COMPLETED',finished_at=clock_timestamp(),
+                UPDATE workflow_runtime.workflow_run SET status=?,
+                       control_gate=CASE WHEN ?='PAUSED' THEN 'PAUSE' ELSE 'CLOSED' END,
+                       terminal_reason='DRAIN_COMPLETED',finished_at=CASE WHEN ?='PAUSED' THEN NULL ELSE clock_timestamp() END,
                        commit_version=commit_version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND run_id=? AND status IN
                    ('PAUSING','STOPPING','PAUSE_REQUESTED','STOP_REQUESTED','RUNNING')
-                """,terminalStatus,tenantId,runId);
+                """,terminalStatus,terminalStatus,terminalStatus,tenantId,runId);
             if(changed==1) jdbc.update("""
                 UPDATE workflow_runtime.drain_record SET drain_state='COMPLETED',
                        completed_at=clock_timestamp(),version=version+1
@@ -900,7 +988,7 @@ public final class WorkflowRuntimeRepository {
                     head.coordinatorEpoch(),snapshot,hash);
         });
         if (draft == null) throw new IllegalStateException("Checkpoint snapshot was not produced");
-        tx.execute(status -> {
+        UUID persistedId=tx.execute(status -> {
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_checkpoint
                   (tenant_id,checkpoint_id,run_id,checkpoint_kind,run_commit_version,event_seq,
@@ -909,9 +997,20 @@ public final class WorkflowRuntimeRepository {
                 ON CONFLICT (tenant_id,run_id,run_commit_version) DO NOTHING
                 """,tenantId,draft.checkpointId(),runId,checkpointKind,draft.commitVersion(),
                     draft.eventSeq(),draft.coordinatorEpoch(),draft.snapshotJson(),draft.sha256());
-            return null;
+            UUID id=jdbc.queryForObject("""
+                SELECT checkpoint_id FROM workflow_runtime.runtime_checkpoint
+                 WHERE tenant_id=? AND run_id=? AND run_commit_version=?
+                """,UUID.class,tenantId,runId,draft.commitVersion());
+            byte[] storedHash=jdbc.queryForObject("""
+                SELECT snapshot_hash FROM workflow_runtime.runtime_checkpoint
+                 WHERE tenant_id=? AND checkpoint_id=?
+                """,byte[].class,tenantId,id);
+            if(!MessageDigest.isEqual(storedHash,draft.sha256()))
+                throw new IllegalStateException("Checkpoint version already exists with different snapshot hash");
+            return id;
         });
-        return draft;
+        return new Checkpoint(persistedId,draft.commitVersion(),draft.eventSeq(),
+                draft.coordinatorEpoch(),draft.snapshotJson(),draft.sha256());
     }
 
     private String readJsonArray(String table, UUID tenantId, UUID runId) {
