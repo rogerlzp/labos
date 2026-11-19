@@ -241,20 +241,17 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    /** T02: CREATED -> RUNNING; a stale coordinator cannot start the Run. */
-    public void startRun(UUID tenantId, UUID runId, UUID coordinatorId, long expectedEpoch) {
+    /** T02: CREATED -> RUNNING. */
+    public void startRun(UUID tenantId, UUID runId) {
         required(() -> {
-            RunHead head = lockRun(tenantId, runId);
-            if (!"CREATED".equals(head.status())) throw new InvalidTransitionException("T02 requires CREATED");
-            if (expectedEpoch <= head.coordinatorEpoch())
-                throw new StaleRuntimeWriteException("Coordinator epoch must strictly advance");
+            RunHead head=lockRun(tenantId,runId);
+            if(!"CREATED".equals(head.status())) throw new InvalidTransitionException("T02 requires CREATED");
             jdbc.update("""
                 UPDATE workflow_runtime.workflow_run
-                   SET status='RUNNING', coordinator_id=?, =?,
-                       started_at=clock_timestamp(), updated_at=clock_timestamp()
+                   SET status='RUNNING',started_at=clock_timestamp(),updated_at=clock_timestamp()
                  WHERE tenant_id=? AND run_id=? AND status='CREATED'
-                """, coordinatorId, expectedEpoch, tenantId, runId);
-            appendEvents(tenantId, runId, expectedEpoch, List.of(new EventDraft(
+                """,tenantId,runId);
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "RUN_STARTED","RUN",runId,head.commitVersion()+1,null,null,"{}")));
             return null;
         });
@@ -331,60 +328,58 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T03-D: make a reserved Attempt dispatchable and enqueue a durable Worker message. */
-    public void dispatchAttempt(UUID tenantId, UUID runId, long epoch, UUID attemptId,
+    public void dispatchAttempt(UUID tenantId, UUID runId, UUID attemptId,
                                 String workerQueue, String payloadJson) {
         required(() -> {
-            RunHead head = lockRun(tenantId, runId); requireCoordinator(head, epoch);
-            int changed = jdbc.update("""
+            lockRun(tenantId,runId);
+            int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='DISPATCHED',
                        attempt_version=attempt_version+1
                  WHERE tenant_id=? AND attempt_id=? AND run_id=? AND attempt_state='CREATED'
-                """, tenantId, attemptId, runId);
-            if (changed != 1) throw new StaleRuntimeWriteException("Attempt is not CREATED");
+                """,tenantId,attemptId,runId);
+            if(changed!=1) throw new StaleRuntimeWriteException("Attempt is not CREATED");
             int activationReserved=jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='RESERVED',
                        current_attempt_id=?,activation_version=activation_version+1
                  WHERE tenant_id=? AND run_id=? AND activation_id=(SELECT activation_id
                    FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=?)
                    AND activation_state='RESERVED'
-                """, attemptId, tenantId, runId, tenantId, attemptId);
+                """,attemptId,tenantId,runId,tenantId,attemptId);
             if(activationReserved!=1) throw new StaleRuntimeWriteException("Activation reservation lost");
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
                 VALUES (?,?,'WORKER_DISPATCH',?,jsonb_set(?::jsonb,'{queue}',to_jsonb(?::text),true))
-                """, tenantId, runId, "dispatch:"+attemptId, payloadJson, workerQueue);
-            appendEvents(tenantId,runId,List.of(new EventDraft(
-                    "ATTEMPT_DISPATCHED","ATTEMPT",attemptId,1L,null,null,"{}")));
+                """,tenantId,runId,"dispatch:"+attemptId,payloadJson,workerQueue);
+            appendEvents(tenantId,runId,List.of(new EventDraft("ATTEMPT_DISPATCHED",
+                    "ATTEMPT",attemptId,1L,null,null,"{}")));
             return null;
         });
     }
 
-    /** T04-A: accept only the exact dispatch identity. */
+    /** T04-A: accept the exact locally issued dispatch identity. */
     public void acceptAttempt(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
-                              long dispatchEpoch, String workerId) {
+                              String workerId) {
         required(() -> {
-            RunHead head=lockRun(tenantId, runId);
-            int changed = jdbc.update("""
+            lockRun(tenantId,runId);
+            int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='ACCEPTED',
                        worker_id=?,attempt_version=attempt_version+1
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? AND dispatch_id=?
-                   AND dispatch_epoch=? AND attempt_state='DISPATCHED'
-                """, workerId, tenantId, runId, attemptId, dispatchId, dispatchEpoch);
-            if (changed != 1) throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
+                   AND attempt_state='DISPATCHED'
+                """,workerId,tenantId,runId,attemptId,dispatchId);
+            if(changed!=1) throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
             appendEvents(tenantId,runId,List.of(new EventDraft(
                     "ATTEMPT_ACCEPTED","ATTEMPT",attemptId,null,null,null,"{}")));
             return null;
         });
     }
 
-    /** T04-S: Started is strictly ACCEPTED -> STARTED, never DISPATCHED -> STARTED. */
+    /** T04-S: ACCEPTED -> STARTED. Worker ownership is process-local, not a DB lease. */
     public void startAttempt(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
-                             long dispatchEpoch, String workerId, Instant leaseExpiresAt) {
+                             String workerId) {
         required(() -> {
-            if(leaseExpiresAt==null || !leaseExpiresAt.isAfter(Instant.now()))
-                throw new IllegalArgumentException("Worker lease expiry must be in the future");
-            RunHead head = lockRun(tenantId, runId);
+            RunHead head=lockRun(tenantId,runId);
             UUID activationId=jdbc.queryForObject("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=?
@@ -399,13 +394,13 @@ public final class WorkflowRuntimeRepository {
                     UUID.class,tenantId,activationId);
             jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
                     UUID.class,tenantId,attemptId);
-            int changed = jdbc.update("""
+            int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='STARTED',
                        started_at=clock_timestamp(),attempt_version=attempt_version+1
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? AND dispatch_id=?
-                   AND dispatch_epoch=? AND worker_id=? AND attempt_state='ACCEPTED'
-                """, tenantId, runId, attemptId, dispatchId, dispatchEpoch, workerId);
-            if (changed != 1) throw new StaleRuntimeWriteException("Only accepted owning Worker may start");
+                   AND worker_id=? AND attempt_state='ACCEPTED'
+                """,tenantId,runId,attemptId,dispatchId,workerId);
+            if(changed!=1) throw new StaleRuntimeWriteException("Only accepted local Worker may start");
             int activationChanged=jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='RUNNING',
                        activation_version=activation_version+1,updated_at=clock_timestamp()
@@ -421,29 +416,23 @@ public final class WorkflowRuntimeRepository {
                    AND token_state='RESERVED'
                 """,tenantId,tenantId,attemptId);
             if(tokenChanged!=1) throw new StaleRuntimeWriteException("Token is not RESERVED for this Attempt");
-            jdbc.update("""
-                INSERT INTO workflow_runtime.worker_execution_lease
-                  (tenant_id,run_id,attempt_id,worker_id,dispatch_id,dispatch_epoch,
-                   lease_epoch,lease_state,expires_at)
-                VALUES (?,?,?,?,?,?,1,'ACTIVE',?)
-                """,tenantId,runId,attemptId,workerId,dispatchId,dispatchEpoch,Timestamp.from(leaseExpiresAt));
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"handler-start","HANDLER_STARTED",
-                    "WORKER",workerId,dispatchId,dispatchEpoch,1L,"{}");
+                    "WORKER",workerId,dispatchId,"{}");
             appendEvents(tenantId,runId,List.of(new EventDraft(
                     "ATTEMPT_STARTED","ATTEMPT",attemptId,null,null,null,"{}")));
             return null;
         });
     }
 
-    /** T05: persist immutable BranchOutput before any later shared-variable aggregation. */
+    /** T05: commit Attempt output after its durable side-effect conditions are satisfied. */
     public void completeAttempt(UUID tenantId, UUID runId, UUID attemptId,
                                 String outputKey, String outputJson) {
         required(() -> {
-            RunHead head = lockRun(tenantId, runId);
-            UUID activationId = jdbc.queryForObject("""
+            RunHead head=lockRun(tenantId,runId);
+            UUID activationId=jdbc.queryForObject("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=?
-                """, UUID.class, tenantId, runId, attemptId);
+                """,UUID.class,tenantId,runId,attemptId);
             UUID tokenId=jdbc.queryForObject("""
                 SELECT token_id FROM workflow_runtime.node_activation
                  WHERE tenant_id=? AND activation_id=?
@@ -454,13 +443,6 @@ public final class WorkflowRuntimeRepository {
                     UUID.class,tenantId,activationId);
             jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
                     UUID.class,tenantId,attemptId);
-            List<Long> liveWorkerLease=jdbc.query("""
-                SELECT lease_epoch FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=? AND lease_state='ACTIVE'
-                   AND expires_at>clock_timestamp() FOR UPDATE
-                """,(rs,n)->rs.getLong(1),tenantId,runId,attemptId);
-            if(liveWorkerLease.size()!=1)
-                throw new StaleRuntimeWriteException("Expired or released Worker cannot complete an Attempt");
             String sideEffectClass=jdbc.queryForObject("""
                 SELECT side_effect_class FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND attempt_id=?
@@ -473,65 +455,44 @@ public final class WorkflowRuntimeRepository {
                 if(commandSucceeded==null||commandSucceeded!=1)
                     throw new IllegalStateException("Device Attempt requires a SUCCEEDED Command before output commit");
             }
-            List<String> existingAttemptState=jdbc.query("""
+            List<String> states=jdbc.query("""
                 SELECT attempt_state FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
-            if(existingAttemptState.size()!=1) throw new IllegalStateException("Attempt not found");
-            if("SUCCEEDED".equals(existingAttemptState.get(0))) {
-                String stored=jdbc.queryForObject("""
-                    SELECT result::text FROM workflow_runtime.node_attempt
-                     WHERE tenant_id=? AND attempt_id=?
-                    """,String.class,tenantId,attemptId);
-                if(stored!=null && jdbc.queryForObject("SELECT ?::jsonb = ?::jsonb",Boolean.class,stored,outputJson))
-                    return null;
+            if(states.size()!=1) throw new IllegalStateException("Attempt not found");
+            if("SUCCEEDED".equals(states.get(0))) {
+                String stored=jdbc.queryForObject("SELECT result::text FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=?",
+                        String.class,tenantId,attemptId);
+                if(stored!=null && jdbc.queryForObject("SELECT ?::jsonb = ?::jsonb",Boolean.class,stored,outputJson)) return null;
                 throw new IdempotencyConflictException("Attempt completion replay differs from committed result");
             }
-            int changed = jdbc.update("""
+            int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='SUCCEEDED',
-                       finished_at=clock_timestamp(),attempt_version=attempt_version+1,
-                       result=?::jsonb
+                       finished_at=clock_timestamp(),attempt_version=attempt_version+1,result=?::jsonb
                  WHERE tenant_id=? AND attempt_id=? AND run_id=? AND attempt_state='STARTED'
-                """, outputJson, tenantId, attemptId, runId);
-            if (changed != 1) throw new StaleRuntimeWriteException("Attempt is not STARTED");
+                """,outputJson,tenantId,attemptId,runId);
+            if(changed!=1) throw new StaleRuntimeWriteException("Attempt is not STARTED");
             jdbc.update("""
-                INSERT INTO workflow_runtime.branch_output
-                  (tenant_id,run_id,activation_id,output_key,value)
+                INSERT INTO workflow_runtime.branch_output(tenant_id,run_id,activation_id,output_key,value)
                 VALUES (?,?,?,?,?::jsonb)
                 ON CONFLICT (tenant_id,activation_id,output_key) DO NOTHING
-                """, tenantId, runId, activationId, outputKey, outputJson);
-            int activationChanged=jdbc.update("""
+                """,tenantId,runId,activationId,outputKey,outputJson);
+            if(jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='SUCCEEDED',
                        activation_version=activation_version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND activation_id=? AND activation_state='RUNNING'
-                """, tenantId, activationId);
-            if(activationChanged!=1) throw new StaleRuntimeWriteException("Activation is not RUNNING");
-            int tokenChanged=jdbc.update("""
+                """,tenantId,activationId)!=1) throw new StaleRuntimeWriteException("Activation is not RUNNING");
+            if(jdbc.update("""
                 UPDATE workflow_runtime.execution_token SET token_state='CONSUMED',
                        token_version=token_version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND token_id=(SELECT token_id FROM workflow_runtime.node_activation
                    WHERE tenant_id=? AND activation_id=?) AND token_state IN ('RUNNING','RESERVED','WAITING')
-                """, tenantId, tenantId, activationId);
-            if(tokenChanged!=1) throw new StaleRuntimeWriteException("Token is not active");
+                """,tenantId,tenantId,activationId)!=1) throw new StaleRuntimeWriteException("Token is not active");
             releaseReservationInTransaction(tenantId,attemptId);
-            List<String> leaseIdentity=jdbc.query("""
-                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
-                  FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE' FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,attemptId);
-            if(leaseIdentity.size()!=1) throw new StaleRuntimeWriteException("Worker execution lease is not active at completion");
-            String[] leaseParts=leaseIdentity.get(0).split("\\|");
-            appendWorkerFactInTransaction(tenantId,runId,attemptId,"execution-right-released","EXECUTION_RIGHT_RELEASED",
-                    "WORKER","completion",UUID.fromString(leaseParts[0]),Long.parseLong(leaseParts[1]),
-                    Long.parseLong(leaseParts[2]),"{\"reason\":\"attempt-succeeded\"}");
-            jdbc.update("""
-                UPDATE workflow_runtime.worker_execution_lease SET lease_state='RELEASED',
-                       lease_version=lease_version+1,ended_at=clock_timestamp()
-                 WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
-                """,tenantId,attemptId);
-            appendEvents(tenantId,runId,List.of(new EventDraft(
-                    "ATTEMPT_SUCCEEDED","ATTEMPT",attemptId,null,null,null,
-                    "{\"activationId\":\""+activationId+"\",\"outputKey\":\""+jsonEscape(outputKey)+"\"}")));
+            appendWorkerFactInTransaction(tenantId,runId,attemptId,"execution-completed","EXECUTION_RIGHT_RELEASED",
+                    "WORKER","completion",null,"{\"reason\":\"attempt-succeeded\"}");
+            appendEvents(tenantId,runId,List.of(new EventDraft("ATTEMPT_SUCCEEDED","ATTEMPT",attemptId,
+                    null,null,null,"{\"activationId\":\""+activationId+"\",\"outputKey\":\""+jsonEscape(outputKey)+"\"}")));
             return null;
         });
     }
