@@ -11,10 +11,10 @@ import java.util.UUID;
 /**
  * Recovery coordinator for the single Runtime Host process.
  *
- * <p>Run after acquiring the local host lock and before starting WorkerPool
- * or Outbox dispatch. It does not elect a leader or acquire ownership from
- * another process. Local cancellation is best-effort and never proves that
- * a physical device action has stopped.
+ * <p>Run after deployment has ensured that this is the sole Runtime Host
+ * process, and before starting WorkerPool or Outbox dispatch. It does not
+ * elect a leader or acquire ownership from another process. Local cancellation
+ * is best-effort and never proves that a physical device action has stopped.
  */
 public final class WorkerExecutionRecoveryService {
     private final WorkflowRuntimeRepository repository;
