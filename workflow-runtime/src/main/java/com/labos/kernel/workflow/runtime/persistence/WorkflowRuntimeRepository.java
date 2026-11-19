@@ -80,6 +80,10 @@ public final class WorkflowRuntimeRepository {
     private long appendWorkerFactInTransaction(UUID tenantId, UUID runId, UUID attemptId,
                                                 String factKey, String factType, String actorKind,
                                                 String actorId, UUID dispatchId, String payloadJson) {
+        jdbc.queryForObject("""
+            SELECT attempt_id FROM workflow_runtime.node_attempt
+             WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+            """,UUID.class,tenantId,attemptId);
         List<Long> existing=jdbc.query("""
             SELECT fact_seq FROM workflow_runtime.worker_execution_fact
              WHERE tenant_id=? AND attempt_id=? AND fact_key=?
@@ -96,10 +100,6 @@ public final class WorkflowRuntimeRepository {
                 throw new IdempotencyConflictException("Worker fact key replay differs from original fact");
             return existing.get(0);
         }
-        jdbc.queryForObject("""
-            SELECT attempt_id FROM workflow_runtime.node_attempt
-             WHERE tenant_id=? AND attempt_id=? FOR UPDATE
-            """,UUID.class,tenantId,attemptId);
         Long seq=jdbc.queryForObject("""
             SELECT COALESCE(MAX(fact_seq),0)+1
               FROM workflow_runtime.worker_execution_fact
@@ -499,6 +499,36 @@ public final class WorkflowRuntimeRepository {
             appendEvents(tenantId,runId,List.of(new EventDraft("ATTEMPT_SUCCEEDED","ATTEMPT",attemptId,
                     null,null,null,"{\"activationId\":\""+activationId+"\",\"outputKey\":\""+jsonEscape(outputKey)+"\"}")));
             return null;
+        });
+    }
+
+    /**
+     * Persist a Worker-side effect boundary before/after the corresponding Adapter call.
+     * There is no database Worker lease: Run + Attempt locks and state checks serialize facts.
+     */
+    public boolean recordSideEffectFact(UUID tenantId, UUID runId, UUID attemptId,
+                                        String workerId, String factKey, String factType,
+                                        String payloadJson) {
+        if(!List.of("SIDE_EFFECT_STARTED","SIDE_EFFECT_COMPLETED","SIDE_EFFECT_UNKNOWN").contains(factType))
+            throw new IllegalArgumentException("Unsupported Worker side-effect fact type");
+        return required(() -> {
+            lockRun(tenantId,runId);
+            List<String> states=jdbc.query("""
+                SELECT attempt_state FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
+            if(states.size()!=1 || !"STARTED".equals(states.get(0)))
+                throw new StaleRuntimeWriteException("Only a STARTED Attempt may append side-effect facts");
+            if(!"SIDE_EFFECT_STARTED".equals(factType)) {
+                Integer started=jdbc.queryForObject("""
+                    SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                     WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
+                    """,Integer.class,tenantId,attemptId);
+                if(started==null || started==0)
+                    throw new InvalidTransitionException("Side-effect completion/unknown requires SIDE_EFFECT_STARTED");
+            }
+            return appendWorkerFactInTransaction(tenantId,runId,attemptId,factKey,factType,
+                    "WORKER",workerId,commandDispatchId(tenantId,attemptId),payloadJson)>0;
         });
     }
 
