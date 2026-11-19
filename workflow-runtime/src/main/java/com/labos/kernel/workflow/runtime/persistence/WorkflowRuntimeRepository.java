@@ -2,7 +2,7 @@ package com.labos.kernel.workflow.runtime.persistence;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -36,12 +36,13 @@ public final class WorkflowRuntimeRepository {
     private final TransactionTemplate tx;
     private final TransactionTemplate snapshotTx;
 
-    public WorkflowRuntimeRepository(DataSource dataSource) {
+    public WorkflowRuntimeRepository(DataSource dataSource, PlatformTransactionManager transactionManager) {
         Objects.requireNonNull(dataSource, "dataSource");
+        Objects.requireNonNull(transactionManager, "transactionManager");
         this.jdbc = new JdbcTemplate(dataSource);
-        this.tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        this.tx = new TransactionTemplate(transactionManager);
         this.tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
-        this.snapshotTx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        this.snapshotTx = new TransactionTemplate(transactionManager);
         this.snapshotTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         this.snapshotTx.setReadOnly(true);
     }
