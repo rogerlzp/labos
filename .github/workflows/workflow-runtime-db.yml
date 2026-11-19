@@ -35,6 +35,11 @@ jobs:
       PGDATABASE: runtime_test
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
       - name: Verify PostgreSQL major version
         run: |
           psql -v ON_ERROR_STOP=1 -Atc "SHOW server_version_num" | awk '{ if ($1 < 170000 || $1 >= 180000) exit 1 }'
@@ -48,6 +53,10 @@ jobs:
         run: python db/workflow_runtime/tests/test_pg_concurrency.py
       - name: Run transaction atomicity and Inbox conflict tests
         run: python db/workflow_runtime/tests/test_pg_atomicity.py
+      - name: Run Java Workflow Runtime repository integration tests
+        env:
+          RUN_RUNTIME_PG_IT: '1'
+        run: mvn -B -f labos-kernel/pom.xml test
       - name: Verify bootstrap is repeatably isolated
         run: |
           psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 31) exit 1 }'
