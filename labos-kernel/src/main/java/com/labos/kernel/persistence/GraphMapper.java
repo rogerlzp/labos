@@ -131,6 +131,13 @@ public interface GraphMapper {
     java.util.List<java.util.Map<String, Object>> selectWorkflowNodes(long workflowId);
 
     /**
+     * Tenant-scoped metadata projection for the new Workflow Runtime.
+     * Unlike the legacy query above, both tenant_id and workflow_id are mandatory predicates.
+     */
+    java.util.List<java.util.Map<String, Object>> selectRuntimeWorkflowNodeMetadata(
+            @Param("tenantId") long tenantId, @Param("workflowId") long workflowId);
+
+    /**
      * 节点的设计者创建顺序（workflow_node.seq）。
      *
      * <p>拓扑序**不等于物料流向**：并行分支的 Kahn 队列会把不同链的节点交错排序
