@@ -181,7 +181,7 @@ CREATE TABLE worker_execution_fact (
   fact_type text NOT NULL CHECK (fact_type IN
     ('HANDLER_STARTED','SIDE_EFFECT_STARTED','SIDE_EFFECT_COMPLETED',
      'SIDE_EFFECT_UNKNOWN','EXECUTION_RIGHT_RELEASED')),
-  actor_kind text NOT NULL CHECK (actor_kind IN ('WORKER','DISPATCHER','RECOVERY')),
+  actor_kind text NOT NULL CHECK (actor_kind IN ('WORKER','DISPATCHER','DEVICE','RECOVERY')),
   actor_id text NOT NULL,
   dispatch_id uuid NOT NULL,
   dispatch_epoch bigint NOT NULL,
