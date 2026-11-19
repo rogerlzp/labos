@@ -46,7 +46,7 @@ class WorkflowRuntimePostgresContractTest {
         UUID runId = UUID.randomUUID();
         String definitionId = "test-" + UUID.randomUUID();
         String definitionVersion = "1";
-        String hash = "a".repeat(64);
+        String hash = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
         try (PreparedStatement p = c.prepareStatement("""
                 INSERT INTO wf_workflow_definition_version
                   (tenant_id, definition_id, definition_version, definition_hash,
@@ -61,8 +61,8 @@ class WorkflowRuntimePostgresContractTest {
         try (PreparedStatement p = c.prepareStatement("""
                 INSERT INTO wf_workflow_run
                   (run_id, tenant_id, request_id, definition_id, definition_version,
-                   definition_hash, compiler_version, status)
-                VALUES (?, 1, ?, ?, ?, ?, 'test-compiler', 'RUNNING')
+                   definition_hash, compiler_version, status, dispatch_gate_open)
+                VALUES (?, 1, ?, ?, ?, ?, 'test-compiler', 'RUNNING', true)
                 """)) {
             p.setObject(1, runId);
             p.setString(2, "request-" + UUID.randomUUID());
