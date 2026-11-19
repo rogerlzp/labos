@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS wf_workflow_run (
     owner_lease_version     bigint NOT NULL DEFAULT 0 CHECK (owner_lease_version >= 0),
     owner_lease_until       timestamptz,
     dispatch_gate_open      boolean NOT NULL DEFAULT false,
+    max_in_flight            integer NOT NULL DEFAULT 4 CHECK (max_in_flight > 0),
+    in_flight_count          integer NOT NULL DEFAULT 0 CHECK (in_flight_count >= 0),
     initial_variables       jsonb NOT NULL DEFAULT '{}'::jsonb,
     failure_code            text,
     failure_detail          jsonb,
@@ -62,6 +64,7 @@ CREATE TABLE IF NOT EXISTS wf_workflow_run (
     completed_at            timestamptz,
     updated_at              timestamptz NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT uq_wf_run_request UNIQUE (tenant_id, request_id),
+    CONSTRAINT ck_wf_run_in_flight CHECK (in_flight_count <= max_in_flight),
     CONSTRAINT fk_wf_run_definition FOREIGN KEY
       (tenant_id, definition_id, definition_version, definition_hash, compiler_version)
       REFERENCES wf_workflow_definition_version
