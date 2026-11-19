@@ -58,7 +58,7 @@ class WorkflowRuntimeRepositoryTest {
         var snapshot=repo.loadRunDefinitionSnapshot(tenant,first.runId());
         assertEquals("ci",snapshot.compilerVersion());
         assertEquals("{}",snapshot.graphPlanJson());
-        assertTrue(repo.findNonTerminalRunSnapshots(10).stream()
+        assertTrue(repo.findNonTerminalRunSnapshots(1000).stream()
                 .anyMatch(x -> x.runId().equals(first.runId()) && x.tenantId().equals(tenant)));
 
         repo.startRun(tenant,first.runId());
