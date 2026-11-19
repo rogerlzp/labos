@@ -75,13 +75,13 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                 Map.of("tenantId", 7L, "workflowId", 9L), 2,
                 "tenant_id", "id", "deleted_at");
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectGraphXml",
-                Map.of("param1", 7L, "param2", 9L), 2,
-                "tenant_id", "id");
+                Map.of("tenantId", 7L, "workflowId", 9L), 2,
+                "tenant_id", "id", "deleted_at");
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowNodeMetadata",
                 Map.of("tenantId", 7L, "workflowId", 9L), 2,
                 "tenant_id", "workflow_id", "c.tenant_id", "n.tenant_id");
 
-        System.out.println("Workflow Runtime Kernel Spring composition and MyBatis binding：通过 24 / 失败 0");
+        System.out.println("Workflow Runtime Kernel Spring composition and MyBatis binding：通过 25 / 失败 0");
     }
 
 
