@@ -1,5 +1,6 @@
 package com.labos.kernel.workflow.runtime.worker;
 
+import com.labos.kernel.workflow.runtime.host.RuntimeHost;
 import com.labos.kernel.workflow.runtime.host.SchedulingGate;
 
 import java.util.List;
@@ -26,7 +27,7 @@ import java.util.concurrent.ConcurrentMap;
  * from filling the global queue. Worker handles are registered only after a
  * task starts executing on a real pool thread.
  */
-public final class WorkerPool implements AutoCloseable {
+public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoCloseable {
     private final ThreadPoolExecutor executor;
     private final WorkerExecutionRegistry registry;
     private final SchedulingGate schedulingGate;
@@ -49,7 +50,7 @@ public final class WorkerPool implements AutoCloseable {
                 new ArrayBlockingQueue<>(queueCapacity), new ThreadPoolExecutor.AbortPolicy());
     }
 
-    public void start() {
+    @Override public void start() {
         if (closing.get() || closed.get()) throw new IllegalStateException("WorkerPool is closing or closed");
         if (!started.compareAndSet(false, true))
             throw new IllegalStateException("WorkerPool already started");
@@ -145,6 +146,9 @@ public final class WorkerPool implements AutoCloseable {
         inFlightByRun.computeIfPresent(runId, (key, count) ->
                 count.decrementAndGet() == 0 ? null : count);
     }
+
+    @Override
+    public void stop() { close(); }
 
     @Override
     public void close() {
