@@ -1572,7 +1572,7 @@ public final class WorkflowRuntimeRepository {
                      SELECT 1 FROM workflow_runtime.command_ledger c
                       WHERE c.tenant_id=o.tenant_id
                         AND c.command_id::text=o.payload->>'commandId'
-                        AND c.command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING',
+                        AND c.command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING','CANCEL_REQUESTED',
                                                 'DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
                    )
                 """,Integer.class);
