@@ -1,6 +1,6 @@
 DO $$
 DECLARE
-  expected text[] := ARRAY['tenant','definition_snapshot','workflow_run','run_request_dedup','execution_token','node_activation','node_attempt','scheduler_capacity','dispatch_reservation','split_activation','branch_activation','join_activation','loop_context','wait_registration','retry_registration','flow_variable','branch_output','runtime_event','inbox_receipt','inbox_protocol_violation','runtime_outbox','command_ledger','command_dispatch_attempt','resource_fence_counter','resource_lease','drain_record','drain_item','runtime_checkpoint','manual_intervention','quarantine_record','runtime_audit'];
+  expected text[] := ARRAY['tenant','definition_snapshot','workflow_run','run_request_dedup','execution_token','node_activation','node_attempt','worker_execution_lease','worker_execution_fact','scheduler_capacity','dispatch_reservation','split_activation','branch_activation','join_activation','loop_context','wait_registration','retry_registration','flow_variable','branch_output','runtime_event','inbox_receipt','inbox_protocol_violation','runtime_outbox','command_ledger','command_dispatch_attempt','resource_fence_counter','resource_lease','drain_record','drain_item','runtime_checkpoint','manual_intervention','quarantine_record','runtime_audit'];
   missing text[];
 BEGIN
   SELECT array_agg(x.table_name) INTO missing FROM unnest(expected) AS x(table_name)
@@ -39,7 +39,7 @@ DO $$
 DECLARE
  t uuid:=gen_random_uuid(); d uuid:=gen_random_uuid(); r uuid:=gen_random_uuid();
  tok uuid:=gen_random_uuid(); act uuid:=gen_random_uuid(); att uuid:=gen_random_uuid();
- cmd uuid:=gen_random_uuid(); l1 uuid:=gen_random_uuid();
+ cmd uuid:=gen_random_uuid(); l1 uuid:=gen_random_uuid(); wfact uuid:=gen_random_uuid();
 BEGIN
  INSERT INTO tenant(tenant_id,tenant_key,display_name) VALUES(t,'contract-'||t::text,'contract');
  INSERT INTO definition_snapshot(tenant_id,definition_id,definition_key,definition_version,definition_hash,compiler_version,graph_plan)
@@ -50,6 +50,17 @@ BEGIN
  VALUES(t,act,r,tok,1,'n1','RUNNING');
  INSERT INTO node_attempt(tenant_id,attempt_id,run_id,activation_id,attempt_no,dispatch_id,dispatch_epoch,attempt_state,side_effect_class)
  VALUES(t,att,r,act,1,gen_random_uuid(),1,'STARTED','PURE');
+ INSERT INTO worker_execution_lease(tenant_id,run_id,attempt_id,worker_id,dispatch_id,dispatch_epoch,lease_state,expires_at)
+ VALUES(t,r,att,'worker-contract',(SELECT dispatch_id FROM node_attempt WHERE tenant_id=t AND attempt_id=att),1,'ACTIVE',clock_timestamp()+interval '1 minute');
+ INSERT INTO worker_execution_fact(tenant_id,fact_id,run_id,attempt_id,fact_seq,fact_key,fact_type,actor_kind,actor_id,dispatch_id,dispatch_epoch,lease_epoch,payload)
+ SELECT t,wfact,r,att,1,'handler-start','HANDLER_STARTED','WORKER','worker-contract',dispatch_id,1,1,'{}'
+ FROM node_attempt WHERE tenant_id=t AND attempt_id=att;
+ BEGIN
+  UPDATE worker_execution_fact SET payload='{"tampered":true}' WHERE tenant_id=t AND fact_id=wfact;
+  RAISE EXCEPTION 'expected immutable Worker fact trigger';
+ EXCEPTION WHEN raise_exception THEN
+  IF SQLERRM <> 'worker_execution_fact is append-only' THEN RAISE; END IF;
+ END;
  INSERT INTO command_ledger(tenant_id,command_id,run_id,activation_id,attempt_id,device_id,command_kind,command_state,idempotency_class,command_payload,payload_hash)
  VALUES(t,cmd,r,act,att,'dev','test','CREATED','IDEMPOTENT','{}',decode(repeat('cd',32),'hex'));
  BEGIN
