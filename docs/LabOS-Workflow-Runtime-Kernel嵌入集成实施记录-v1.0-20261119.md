@@ -22,7 +22,7 @@
 - Kernel 配置从既有 DataSourceConfiguration 注入唯一 Hikari DataSource 与唯一 PlatformTransactionManager。
 - Kernel 集成路径不创建新的 DataSourceTransactionManager，不创建新的连接池。
 - PostgreSQL 集成测试新增外层事务回滚验证：Repository 内部 resolveTenantId 必须加入外层事务；外层回滚后租户映射不得残留。
-- 新增 WorkflowRuntimeKernelConfigurationSelfTest：启动 AnnotationConfigApplicationContext，验证唯一 DataSource / PlatformTransactionManager 和 Runtime Bean 组合；断言未注册 RuntimeHost；解析 GraphMapper.xml 并验证 Header/XML/Runtime metadata 三个 statement 均已绑定。
+- 新增 WorkflowRuntimeKernelConfigurationSelfTest：启动 AnnotationConfigApplicationContext，验证唯一 DataSource / PlatformTransactionManager 和 Runtime Bean 组合；断言未注册 RuntimeHost；解析 GraphMapper.xml，并对 Runtime Header/XML/Runtime metadata 三个 statement 执行 BoundSql 参数映射与 SQL 租户过滤断言（21 个检查点）。
 
 ### 1.3 Kernel MyBatis BPMN DefinitionSource Adapter
 
@@ -38,8 +38,10 @@
 2. LegacyKernelWorkflowDefinitionSource 只接受 kernel-tenant:<positive bigint>；
 3. Kernel MyBatis GraphMapper.selectWorkflowHeader(tenantId, workflowId) 读取版本/更新时间；
 4. GraphMapper.selectGraphXml(tenantId, workflowId) 读取原始 BPMN XML；
-5. 新增 selectRuntimeWorkflowNodeMetadata(tenantId, workflowId)，同时按 tenant_id + workflow_id 过滤，只取 node_key、node id、capability code；
-6. 编译 GraphPlan；
+5. 新增 selectRuntimeWorkflowHeader(tenantId, workflowId)，仅读取 Runtime 所需字段，并排除 deleted_at 非空的软删除流程；
+6. 新增 selectRuntimeWorkflowNodeMetadata(tenantId, workflowId)，同时按 tenant_id + workflow_id 过滤，只取 node_key、node id、capability code；
+7. Header、XML、节点元数据三次 MyBatis 读取被包装在同一个 REQUIRES_NEW + REPEATABLE_READ + readOnly 事务，避免并发保存期间拼接出混合版本；
+8. 编译 GraphPlan；
 7. WorkflowRunFactory 将 GraphPlan snapshot 写入 Runtime Repository。
 
 新增 Mapper 查询，不改变旧的 selectWorkflowNodes(workflowId) 等历史查询行为。
@@ -95,9 +97,9 @@ Kernel 全量 CI 还包括前端与现有纯逻辑门禁。不要只凭 Maven Ru
 
 1. Maven 依赖安装顺序与 ensure-deps.sh 的缓存分支是否在全新机器/已有依赖机器都成立。
 2. compile-kernel.sh 生成的 Runtime JAR 是否始终与当前源码一致，classpath 是否有重复旧版本。
-3. Kernel Spring Bean 是否确实注入同一个 DataSource / PlatformTransactionManager；Repository 是否还存在隐式创建事务管理器的路径。
+3. Kernel Spring Bean 是否确实注入同一个 DataSource / PlatformTransactionManager；Repository 是否还存在隐式创建事务管理器的路径；定义读取事务是否在同一 REPEATABLE_READ snapshot 中。
 4. MyBatis Mapper XML namespace、方法名、参数名和结果 Map key 是否完全匹配。
-5. 三个 BPMN/metadata 查询是否都带 tenant_id + workflow_id；是否有 workflow_node 与 workflow 表租户归属不一致的异常需要显式拒绝。
+5. Runtime Header/XML/metadata 查询是否均租户限定；Header 是否过滤软删除；REPEATABLE_READ 是否确实覆盖三次查询；是否有 workflow_node 与 workflow 表租户归属不一致的异常需要显式拒绝。
 6. workflow.version + updated_at 是否足以作为 definition_version；Definition Hash 是否始终由原始 XML 计算。
 7. 节点元数据只补 capabilityCode / workflowNodeId；protocol/resource/methodParams/stageCode 是否始终从 BPMN XML 来，且和存量 XML 兼容。
 8. Kernel 配置是否被 @SpringBootApplication 扫描；Mapper 是否被 @MapperScan 注册。
