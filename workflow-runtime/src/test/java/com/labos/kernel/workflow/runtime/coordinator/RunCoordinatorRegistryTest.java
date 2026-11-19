@@ -25,6 +25,8 @@ class RunCoordinatorRegistryTest {
             registry.submit(runB, "b").get(2, TimeUnit.SECONDS);
             assertEquals(2, registry.runCount());
             assertEquals(2, handled.size());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!registry.mailboxFor(runA).isIdle() && System.nanoTime() < deadline) Thread.yield();
             assertTrue(registry.remove(runA));
             assertFalse(registry.remove(runA));
             assertThrows(IllegalStateException.class, () -> registry.submit(runA, "after-close"));
