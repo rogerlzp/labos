@@ -2,6 +2,7 @@ package com.labos.kernel.workflow.runtime;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -15,6 +16,8 @@ import static com.labos.kernel.workflow.runtime.WorkflowRuntimeTransactionPort.R
  * Adapter/device dispatch (T13) is intentionally separate.
  */
 public final class PostgresWorkflowRuntimeDispatchRepository {
+    public record DispatchClaim(UUID outboxId, UUID runId, UUID attemptId, UUID dispatchId, long dispatchEpoch) {}
+
     private final JdbcTemplate jdbc;
     private final PostgresRuntimeTransactionExecutor transactions;
 
@@ -90,6 +93,15 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             }
 
             if (leaseId != null) {
+                Map<String, Object> leaseIdentity = jdbc.queryForMap("""
+                        SELECT group_id FROM wf_resource_lease WHERE lease_id=? AND run_id=?
+                        """, leaseId, request.runId());
+                Object groupId = leaseIdentity.get("group_id");
+                if (groupId != null) {
+                    jdbc.queryForMap("""
+                            SELECT status FROM wf_resource_acquisition_group WHERE group_id=? FOR UPDATE
+                            """, groupId);
+                }
                 Map<String, Object> lease = jdbc.queryForMap("""
                         SELECT status,owner_type,owner_id,fencing_token FROM wf_resource_lease
                         WHERE lease_id=? AND run_id=? FOR UPDATE
@@ -173,6 +185,38 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
         });
     }
 
+    /** Claim one Worker Dispatch Outbox item with SKIP LOCKED; no Run projection is changed. */
+    public DispatchClaim claimNextWorkerDispatch(String dispatcherId, Duration claimTtl) {
+        if (dispatcherId == null || dispatcherId.isBlank()) throw new IllegalArgumentException("dispatcherId required");
+        if (claimTtl == null || claimTtl.isNegative() || claimTtl.isZero()) {
+            throw new IllegalArgumentException("claimTtl must be positive");
+        }
+        return transactions.write(() -> {
+            List<Map<String, Object>> rows = jdbc.queryForList("""
+                    SELECT outbox_id,run_id,attempt_id,dispatch_id,dispatch_epoch
+                    FROM wf_worker_dispatch_outbox
+                    WHERE status='PENDING'
+                       OR (status='CLAIMED' AND claim_until < clock_timestamp())
+                    ORDER BY created_at
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                    """);
+            if (rows.isEmpty()) return null;
+            Map<String, Object> row = rows.get(0);
+            UUID outboxId = (UUID) row.get("outbox_id");
+            int changed = jdbc.update("""
+                    UPDATE wf_worker_dispatch_outbox
+                    SET status='CLAIMED',claim_owner=?,
+                        claim_until=clock_timestamp() + (? * interval '1 millisecond')
+                    WHERE outbox_id=? AND status IN ('PENDING','CLAIMED')
+                    """, dispatcherId, claimTtl.toMillis(), outboxId);
+            if (changed != 1) throw new IllegalStateException("Worker Dispatch Outbox claim CAS failed");
+            return new DispatchClaim(outboxId, (UUID) row.get("run_id"),
+                    (UUID) row.get("attempt_id"), (UUID) row.get("dispatch_id"),
+                    longValue(row, "dispatch_epoch"));
+        });
+    }
+
     /** Dispatcher has crossed the external send boundary; this is not Worker acceptance. */
     public Result workerDispatchStarted(Request request) {
         return transactions.write(() -> {
@@ -205,8 +249,9 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             int outboxRows = jdbc.update("""
                     UPDATE wf_worker_dispatch_outbox
                     SET status='SEND_STARTED',sent_at=clock_timestamp(),attempts=attempts+1
-                    WHERE dispatch_id=? AND status IN ('PENDING','CLAIMED')
-                    """, dispatchId);
+                    WHERE dispatch_id=? AND status='CLAIMED'
+                      AND claim_owner=? AND claim_until > clock_timestamp()
+                    """, dispatchId, required(request, "dispatcherId"));
             if (attemptRows != 1 || outboxRows != 1) throw new IllegalStateException("T03 send CAS failed");
 
             long[] cursor = bumpRun(request.runId());
