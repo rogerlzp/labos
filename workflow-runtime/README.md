@@ -1,64 +1,24 @@
 # Workflow Runtime 独立模块
 
-> **架构收敛进行中（2026-11-19）：** V1 已决定只支持单 Runtime 实例。当前 DDL/Repository 仍含 Worker DB Lease、Coordinator epoch 和 fencing 字段，尚未完成删除；不得将其视为最终架构。规范以《LabOS Workflow Runtime V1 单实例架构收敛决议 v1.0》为准。此 README 和实现说明将在代码/DDL 收敛提交后同步重写。
+本模块是全新 Workflow Runtime 的 PostgreSQL 持久化层，不依赖旧 GraphRunner 表。
 
-本模块是全新 Workflow Runtime 的 PostgreSQL 持久化与事务边界，不依赖旧 GraphRunner 表，也不属于 labos-kernel 的旧 Maven 编译单元。
+## V1 部署约束
 
-## 运行
+V1 只支持一个 Runtime Host 进程。禁止多实例、Leader Election、分布式 Worker Lease、Coordinator epoch、dispatchEpoch、Resource fencing token 和多实例 Outbox claim lease。单实例仍然使用数据库事务、约束、CAS、进程内有界 WorkerPool、Command Ledger、Inbox/Outbox 和崩溃恢复。
 
-要求 Java 17、Maven、PostgreSQL 17。
+规范基线：docs/LabOS-Workflow-Runtime-V1-单实例架构规范-v1.0-20261119.md。
 
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/workflow_runtime/001_init.sql
-mvn -f workflow-runtime/pom.xml test
-```
+## 当前实现状态
 
-启用真实 PostgreSQL 集成测试：
+**重要：当前 DDL、Repository 和测试仍包含旧分布式字段/逻辑，尚未完成 V1 收敛。** 旧版 33 表 Schema 与此前 CI 成功结果不能作为单实例 Schema 的验收结果。后续必须同步更新 DDL、Schema Contract、Repository、RecoveryService、测试和 CI。
 
-```bash
-RUN_RUNTIME_PG_IT=1 \
-PGHOST=localhost PGPORT=5432 PGUSER=runtime PGPASSWORD=runtime PGDATABASE=runtime_test \
-mvn -f workflow-runtime/pom.xml test
-```
+## 目标验证
 
-GitHub Actions 在 PostgreSQL 17 服务容器内执行空库 DDL、Schema 合同、双连接并发测试、CON-01..CON-14、原子性测试和 Java Repository 集成测试。
-
-## 事务实现入口
-
-主类：**com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository**
-
-| 事务 | Repository 方法 |
-|---|---|
-| T01 | createRun |
-| T02 | startRun |
-| T03-R / T03-D | reserveCapacity / dispatchAttempt |
-| T04-A / T04-S | acceptAttempt / startAttempt |
-| T05 | completeAttempt |
-| T06 | scheduleRetry |
-| T07 / T08 | registerWait / closeWait |
-| T09 / T10 | createSplit / arriveBranch |
-| T11 | advanceLoop / completeLoop |
-| T12 / T13 | createCommand / claimOutbox / markCommandSendStarted / markOutboxDelivered |
-| T14 | receiveInbox / applyCommandEvent / markInboxProcessed |
-| T15 / T16 | requestDrain / advanceDrainScan |
-| T17 | releaseReservation |
-| T18 | acquireResourceLease / recordSafePointEvidence |
-| T19 | tryFinalizeDrain / markDrainManualRequired |
-| T20 | createCheckpoint |
-| T21 | markCommandUnknown / resolveUnknownCommand |
-| T22 | decideIntervention |
-| T23 | clearQuarantine |
-
-## 必须保持的边界
-
-- 所有 Repository 方法只执行数据库操作；Adapter、设备、Worker 网络调用不得放进事务回调。
-- Outbox claim 提交后才能尝试外部发送；SEND_STARTED 提交后调用 Adapter；结果再由 Inbox 按 commandId 核验。
-- Worker lease + append-only execution facts 记录执行权与外部副作用边界；WorkerLeaseRecoveryService 提供有界扫描与恢复批次，过期恢复区分 SAFE_TO_RETRY 与 MANUAL_REQUIRED。它不能物理终止复活的旧 Worker。
-- DB resource fencing token 只证明数据库单调递增，不证明设备/网关拒绝旧 token。设备侧 fencing 必须逐设备 HIL。
-- 设备 Attempt 的输出必须等关联 Command 达到 SUCCEEDED 后才能写入 BranchOutput。
-- Stop 不能把 UNKNOWN、MANUAL_REQUIRED、QUARANTINED 或未释放 Lease 视为安全完成。
-- Checkpoint 多表读取在一个 PostgreSQL REPEATABLE READ READ ONLY 快照中完成；Checkpoint 元数据在快照事务结束后单独短事务写入。
-
-## 实现成熟度
-
-当前是可执行的事务持久化层与 Worker 执行事实/过期恢复原语，不是完整运行时。Coordinator mailbox、WorkerPool、设备 Adapter 调用器、Outbox 后台 Dispatcher、Recovery Orchestrator 的后台调度、领导权、生命周期管理和硬件 fencing 尚未由本模块交付。T01–T23 有 SQL Repository primitives，但并非所有崩溃/外部副作用场景均已验证；请以 CI 与反向评审状态文档为准。
+- PostgreSQL 17 空库初始化；
+- Schema Contract 不含被删除的表/字段；
+- 单实例 Host 锁与 fail-stop；
+- WorkerPool 全局容量和每 Run 配额；
+- ResourceLease 单实例资源互斥；
+- Worker 超时和 Runtime 崩溃恢复；
+- SEND_STARTED 后不确定命令不自动重发；
+- Inbox 幂等、事务原子性和故障注入。
