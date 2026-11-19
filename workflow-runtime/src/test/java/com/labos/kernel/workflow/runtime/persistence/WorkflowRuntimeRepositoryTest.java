@@ -130,11 +130,11 @@ class WorkflowRuntimeRepositoryTest {
         UUID activation=UUID.randomUUID(), attempt=UUID.randomUUID(), dispatch=UUID.randomUUID();
         try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
                 INSERT INTO workflow_runtime.node_activation
-                  (tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state,current_attempt_id)
-                VALUES (?,?,?, ?,1,'wait-node','RESERVED',?)
+                  (tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
+                VALUES (?,?,?, ?,1,'wait-node','RESERVED')
                 """)) {
             ps.setObject(1,tenant);ps.setObject(2,activation);ps.setObject(3,created.runId());
-            ps.setObject(4,token);ps.setObject(5,attempt);ps.executeUpdate();
+            ps.setObject(4,token);ps.executeUpdate();
         }
         try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
                 INSERT INTO workflow_runtime.node_attempt
@@ -143,6 +143,12 @@ class WorkflowRuntimeRepositoryTest {
                 """)) {
             ps.setObject(1,tenant);ps.setObject(2,attempt);ps.setObject(3,created.runId());
             ps.setObject(4,activation);ps.setObject(5,dispatch);ps.executeUpdate();
+        }
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                UPDATE workflow_runtime.node_activation SET current_attempt_id=?
+                 WHERE tenant_id=? AND activation_id=?
+                """)) {
+            ps.setObject(1,attempt);ps.setObject(2,tenant);ps.setObject(3,activation);ps.executeUpdate();
         }
         repo.scheduleRetry(tenant,created.runId(),1L,activation,Instant.now().plusSeconds(5),2,"{\"max\":3}");
         UUID wait=repo.registerWait(tenant,created.runId(),1L,activation,"EVENT","corr-1",
