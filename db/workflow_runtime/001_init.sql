@@ -324,6 +324,7 @@ CREATE TABLE inbox_receipt (
   source_message_id text NOT NULL,
   payload_hash bytea NOT NULL,
   message_type text NOT NULL,
+  message_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   run_id uuid,
   received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   receipt_state text NOT NULL DEFAULT 'RECEIVED'
