@@ -11,8 +11,7 @@ class WorkflowRuntimeStateMachineTest {
 
     @Test
     void activationBecomesActiveOnlyAfterDispatchCommit() {
-        assertFalse(WorkflowRuntimeStateMachine.canTransition(ActivationStatus.READY, ActivationStatus.ACTIVE)
-                && false); // no implicit AttemptCreated shortcut exists in the event API
+        // The only repository event allowed to invoke this transition is DispatchCommitted.
         assertTrue(WorkflowRuntimeStateMachine.canTransition(ActivationStatus.READY, ActivationStatus.ACTIVE));
         assertFalse(WorkflowRuntimeStateMachine.canTransition(ActivationStatus.CREATED, ActivationStatus.ACTIVE));
     }
