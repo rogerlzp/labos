@@ -1185,10 +1185,13 @@ public final class WorkflowRuntimeRepository {
             if(!List.of("PAUSED","STOPPED","FAILED").contains(terminalStatus))
                 throw new IllegalArgumentException("T19 terminalStatus must be PAUSED, STOPPED or FAILED");
             RunHead head=lockRun(tenantId,runId);
-            String drainState=jdbc.queryForObject("""
-                SELECT drain_state FROM workflow_runtime.drain_record
+            List<String> drainMeta=jdbc.query("""
+                SELECT drain_kind,drain_state FROM workflow_runtime.drain_record
                  WHERE tenant_id=? AND run_id=? AND drain_id=? FOR UPDATE
-                """,String.class,tenantId,runId,drainId);
+                """,(rs,n)->rs.getString(1)+"|"+rs.getString(2),tenantId,runId,drainId);
+            if(drainMeta.size()!=1) return false;
+            String[] meta=drainMeta.get(0).split("\\|",2);
+            String drainKind=meta[0], drainState=meta[1];
             if(!List.of("REQUESTED","DRAINING","SAFE_POINT").contains(drainState)) return false;
             Long unsafe=jdbc.queryForObject("""
                 SELECT
@@ -1210,7 +1213,8 @@ public final class WorkflowRuntimeRepository {
                   (SELECT count(*) FROM workflow_runtime.loop_context
                     WHERE tenant_id=? AND run_id=? AND loop_state='ACTIVE') +
                   (SELECT count(*) FROM workflow_runtime.execution_token
-                    WHERE tenant_id=? AND run_id=? AND token_state IN ('READY','RESERVED','RUNNING','WAITING')) +
+                    WHERE tenant_id=? AND run_id=? AND
+                      (token_state IN ('RESERVED','RUNNING','WAITING') OR (? <> 'PAUSE' AND token_state='READY'))) +
                   (SELECT count(*) FROM workflow_runtime.node_attempt
                     WHERE tenant_id=? AND run_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')) +
                   (SELECT count(*) FROM workflow_runtime.drain_item
@@ -1230,7 +1234,7 @@ public final class WorkflowRuntimeRepository {
                     tenantId,runId,  // Joins
                     tenantId,runId,  // Branches
                     tenantId,runId,  // Loops
-                    tenantId,runId,  // Tokens
+                    tenantId,runId,drainKind, // Tokens (Pause preserves READY; Stop invalidates)
                     tenantId,runId,  // Attempts
                     tenantId,drainId, // Drain items
                     tenantId,runId,   // Open manual interventions
