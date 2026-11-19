@@ -57,6 +57,9 @@ class WorkflowRuntimeStateMachineTest {
         assertFalse(WorkflowRuntimeStateMachine.canClearQuarantinedLease(true, false));
         assertTrue(WorkflowRuntimeStateMachine.canClearQuarantinedLease(true, true));
         assertFalse(WorkflowRuntimeStateMachine.canTransition(LeaseStatus.QUARANTINED, LeaseStatus.RELEASED));
+        assertTrue(WorkflowRuntimeStateMachine.canReconcileQuarantinedJoin(JoinStatus.CLOSED_FAILED, true, true));
+        assertFalse(WorkflowRuntimeStateMachine.canReconcileQuarantinedJoin(JoinStatus.RELEASED, true, true));
+        assertFalse(WorkflowRuntimeStateMachine.canReconcileQuarantinedJoin(JoinStatus.WAITING, true, false));
     }
 
     @Test
