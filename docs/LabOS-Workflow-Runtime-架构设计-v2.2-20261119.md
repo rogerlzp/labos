@@ -3550,7 +3550,8 @@ V1 不支持的定义必须在 WorkflowCompiler 阶段给出稳定错误码和�
 4. **循环边界：** 并行分支内部不允许 Loop，Loop 内部不允许 Parallel Split；禁止嵌套并行，避免线程池自阻塞和组合状态爆炸。
 5. **设备等待：** 设备等待必须持久化为 SUSPENDED continuation，Worker 立即归还执行额度；不得用阻塞 Worker 等待设备回包。
 6. **失败与暂停：** 任一分支失败后全 Run 停止提交新的普通 Dispatch；已提交/可能已发送的动作进入 Drain，按设备事实收敛。等待时间上限只触发告警、MANUAL_REQUIRED 或 QUARANTINED，不得超时伪造设备已停止或释放资源。
-7. **事件序号：** eventSeq 是 Run 级单调连续序号，由 Run 行锁保护，在业务投影与 Runtime Event 同一事务中递增；并行分支不自行分配全局序号。
+7. **重试派发门控：** 只要 Activation 存在 ACTIVE RetryRegistration，T03 必须拒绝 Dispatch；只有 RetryDue 事务同时关闭 RetryRegistration 并将 Activation/Token 恢复 READY 后，Scheduler 才能重新预约。
+8. **事件序号：** eventSeq 是 Run 级单调连续序号，由 Run 行锁保护，在业务投影与 Runtime Event 同一事务中递增；并行分支不自行分配全局序号。
 
 ## 40.4 V1 的实现准入条件
 
@@ -3580,6 +3581,7 @@ V1 不支持的定义必须在 WorkflowCompiler 阶段给出稳定错误码和�
 | §31.9 T01–T14 “保持不变”与 §32 冲突 | §31.9 + §32 | 事务主题保留，T03/T04/T07/T08/T10/T13 以 §32 为准 |
 | T17 已 ACQUIRED Lease 未定义 | §31.4.3 + T17/T18 | Pause 按 pausePolicy 保留或释放；Stop 必须核验释放 |
 | T05 变量 CAS 与设备动作完成冲突 | §26 + §32.7 | 设备 Attempt 只提交不可变输出；共享变量由后续纯节点聚合 |
+| T03 RetryDue 门控缺失 | §32 T03 + §40.3 | 活动 RetryRegistration 存在时拒绝派发；必须先完成 RetryDue |
 | Checkpoint “暂停 Run 提交”机制未定义 | §31.7.3 | PostgreSQL REPEATABLE READ 单快照，不暂停 Run mailbox |
 
 ## 41.2 评审结论
@@ -3594,6 +3596,9 @@ V1 不支持的定义必须在 WorkflowCompiler 阶段给出稳定错误码和�
 - Mavis F8：**采纳**。设备完成不因共享变量 CAS 冲突而丢失；设备输出与 Run Variable 聚合分离。
 - Mavis F9：**登记为容量压测项**。Run 行锁热点必须与 WorkerPool/Run quota 一并压测，不改变 V1 单 Run 单写者正确性模型。
 - Mavis F10：**采纳并关闭设计歧义**。V1 使用 PostgreSQL MVCC REPEATABLE READ Checkpoint；不采用未定义的“暂停 Run 提交”。
+- Mavis v2.0 F5.4 重试门控：**采纳**。T03 在 Run 行锁后锁定/检查 RetryRegistration；存在 ACTIVE retry 时不得派发，只有 RetryDue 事务提交后才允许 READY Token 进入调度。
+- Mavis v2.0 F5.5 前端实时推送：**登记为 Stage E 产品集成项**。Runtime Event 是持久事实源；WebSocket/SSE/消息推送通道及断线重放游标需在 UI 集成设计中明确，不阻塞当前数据库事务基线。
+- Mavis v2.0 F5.6 旧新 Runtime 切换/存量 Run 收尾：**不纳入当前新系统设计前提**。当前不做旧引擎兼容、历史 Run 迁移或旧表副作用处理；若部署阶段决定新旧引擎并存，再单独形成部署 ADR，而不是让 Runtime 核心状态机承担兼容。
 - 并行网关三方评审的共同结论：**采纳**单 Run 单写者 Coordinator、有界全局 WorkerPool、Run 级并发额度、禁止每分支独立 GraphRunner、禁止 Worker 阻塞等待同池子任务；V1 使用 SplitActivation/BranchActivation/JoinActivation，而非仅用 pending 计数。
 - 并行评审关于普通共享节点、嵌套并行和 loop+parallel 组合的风险：**采纳**。V1 编译器拒绝共享普通汇合节点、嵌套并行和跨 Loop/Parallel 结构；所有汇合必须显式 Join。
 - 并行评审关于设备挂起与事件序号的建议：**采纳并按新 Runtime 语义重述**。设备等待持久化为 SUSPENDED continuation；eventSeq 保持 Run 级连续序号，由 Run 行锁和同一事务分配，不采用旧内存 AtomicLong 方案。
