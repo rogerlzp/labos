@@ -34,8 +34,8 @@ def attempt_fixture(t,r,token,state='STARTED'):
           (tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
           VALUES(%s,%s,%s,%s,1,'node','RUNNING')""",(t,activation,r,token))
         q.execute("""INSERT INTO workflow_runtime.node_attempt
-          (tenant_id,attempt_id,run_id,activation_id,attempt_no,dispatch_id,dispatch_epoch,attempt_state,side_effect_class)
-          VALUES(%s,%s,%s,%s,1,%s,1,%s,'PURE')""",(t,attempt,r,activation,dispatch,state))
+          (tenant_id,attempt_id,run_id,activation_id,attempt_no,dispatch_id,attempt_state,side_effect_class)
+          VALUES(%s,%s,%s,%s,1,%s,%s,'PURE')""",(t,attempt,r,activation,dispatch,state))
         q.execute("UPDATE workflow_runtime.node_activation SET current_attempt_id=%s WHERE tenant_id=%s AND activation_id=%s",(attempt,t,activation))
     return activation,attempt,dispatch
 
@@ -222,8 +222,8 @@ def con09():
     t,r,token=seed(); lease=uuid.uuid4()
     with connect() as c,c.cursor() as q:
         q.execute("""INSERT INTO workflow_runtime.resource_lease
-          (tenant_id,lease_id,run_id,resource_id,lease_state,owner_kind,owner_id,fencing_token,expires_at)
-          VALUES(%s,%s,%s,'lease-race','ACTIVE','RUN',%s,1,clock_timestamp()-interval '1 second')""",(t,lease,r,r))
+          (tenant_id,lease_id,run_id,resource_id,lease_state,owner_kind,owner_id,expires_at)
+          VALUES(%s,%s,%s,'lease-race','ACTIVE','RUN',%s,clock_timestamp()-interval '1 second')""",(t,lease,r,r))
     def renew(_):
         with connect() as c,c.cursor() as q:
             q.execute("""UPDATE workflow_runtime.resource_lease SET expires_at=clock_timestamp()+interval '1 minute',
@@ -240,40 +240,33 @@ def con09():
     assert sum(x in ('renewed','expired') for x in outcomes)==1,outcomes
 
 def con10():
-    t,r,token=seed()
-    b=threading.Barrier(2)
-    def takeover(_):
-        with connect() as c,c.cursor() as q:
-            q.execute("UPDATE workflow_runtime.workflow_run SET coordinator_epoch=coordinator_epoch+1,recovery_state='RECOVERING' WHERE tenant_id=%s AND run_id=%s",(t,r))
-    def inbox(_):
+    # No database coordinator election in the single-host model.
+    # Verify Inbox identity uniqueness under concurrent duplicate delivery.
+    t,r,token=seed(); message=f"same-{uuid.uuid4()}"
+    def receive(_):
         with connect() as c,c.cursor() as q:
             q.execute("""INSERT INTO workflow_runtime.inbox_receipt
               (tenant_id,source,source_message_id,payload_hash,message_type,run_id)
-              VALUES(%s,'adapter',%s,decode(repeat('aa',32),'hex'),'EVENT',%s)""",(t,str(uuid.uuid4()),r))
-    def w(fn): b.wait(); fn(0)
-    with ThreadPoolExecutor(max_workers=2) as p: list(p.map(w,(takeover,inbox)))
-    with connect() as c,c.cursor() as q:
-        q.execute("SELECT recovery_state,coordinator_epoch FROM workflow_runtime.workflow_run WHERE tenant_id=%s AND run_id=%s",(t,r))
-        assert q.fetchone()==('RECOVERING',1)
-        q.execute("SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id=%s AND run_id=%s AND receipt_state='RECEIVED'",(t,r))
-        assert q.fetchone()[0]==1
+              VALUES(%s,'adapter',%s,decode(repeat('aa',32),'hex'),'EVENT',%s)
+              ON CONFLICT(tenant_id,source,source_message_id) DO NOTHING RETURNING inbox_id""",(t,message,r))
+            return "inserted" if q.fetchone() else "duplicate"
+    assert sorted(race(receive))==["duplicate","inserted"]
 
 def con11():
+    # A local dispatcher transitions a pending Outbox row to SENDING once.
     t,r,token=seed(); outbox=uuid.uuid4()
     with connect() as c,c.cursor() as q:
         q.execute("""INSERT INTO workflow_runtime.runtime_outbox
           (tenant_id,outbox_id,run_id,message_kind,dedup_key,payload)
           VALUES(%s,%s,%s,'TEST',%s,'{}')""",(t,outbox,r,str(uuid.uuid4())))
-    def claim(i):
+    def send(_):
         with connect() as c,c.cursor() as q:
-            q.execute("""UPDATE workflow_runtime.runtime_outbox SET outbox_state='CLAIMED',
-              claim_owner=%s,claim_epoch=claim_epoch+1,claim_until=clock_timestamp()+interval '1 minute'
-              WHERE tenant_id=%s AND outbox_id=%s AND (outbox_state='PENDING' OR
-              (outbox_state='CLAIMED' AND claim_until<clock_timestamp())) RETURNING claim_owner""",(f"d{i}",t,outbox))
-            row=q.fetchone()
-            return row[0] if row else "stale"
-    results=race(claim)
-    assert sum(x in ('d1','d2') for x in results)==1,results
+            q.execute("""UPDATE workflow_runtime.runtime_outbox SET outbox_state='SENDING',
+              delivery_attempts=delivery_attempts+1
+              WHERE tenant_id=%s AND outbox_id=%s AND outbox_state='PENDING'
+              RETURNING outbox_id""",(t,outbox))
+            return "sending" if q.fetchone() else "stale"
+    assert sorted(race(send))==["sending","stale"]
 
 def con12():
     t,r,token=seed(); qid=uuid.uuid4()
