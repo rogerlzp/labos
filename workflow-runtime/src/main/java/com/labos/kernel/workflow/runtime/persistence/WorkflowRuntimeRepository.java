@@ -181,6 +181,46 @@ public final class WorkflowRuntimeRepository {
         return true;
     }
 
+    public record RunDefinitionSnapshot(UUID tenantId, UUID runId, String runStatus,
+                                         String controlGate, String compilerVersion,
+                                         String graphPlanJson) {}
+
+    /** Read the immutable definition snapshot referenced by one Run. */
+    public RunDefinitionSnapshot loadRunDefinitionSnapshot(UUID tenantId, UUID runId) {
+        List<RunDefinitionSnapshot> rows = snapshotTx.execute(status -> jdbc.query("""
+            SELECT r.tenant_id, r.run_id, r.status, r.control_gate,
+                   d.compiler_version, d.graph_plan::text AS graph_plan_json
+              FROM workflow_runtime.workflow_run r
+              JOIN workflow_runtime.definition_snapshot d
+                ON d.tenant_id=r.tenant_id AND d.definition_id=r.definition_id
+             WHERE r.tenant_id=? AND r.run_id=?
+            """, (rs,n) -> new RunDefinitionSnapshot(rs.getObject("tenant_id",UUID.class),
+                    rs.getObject("run_id",UUID.class),rs.getString("status"),
+                    rs.getString("control_gate"),rs.getString("compiler_version"),
+                    rs.getString("graph_plan_json")), tenantId, runId));
+        if(rows==null || rows.size()!=1) throw new IllegalStateException("Run definition snapshot not found or tenant mismatch");
+        return rows.get(0);
+    }
+
+    /** Enumerate non-terminal Runs for single-Host Coordinator restoration. */
+    public List<RunDefinitionSnapshot> findNonTerminalRunSnapshots(int limit) {
+        if(limit<1 || limit>1000) throw new IllegalArgumentException("limit must be 1..1000");
+        List<RunDefinitionSnapshot> rows = snapshotTx.execute(status -> jdbc.query("""
+            SELECT r.tenant_id, r.run_id, r.status, r.control_gate,
+                   d.compiler_version, d.graph_plan::text AS graph_plan_json
+              FROM workflow_runtime.workflow_run r
+              JOIN workflow_runtime.definition_snapshot d
+                ON d.tenant_id=r.tenant_id AND d.definition_id=r.definition_id
+             WHERE r.status NOT IN ('SUCCEEDED','FAILED','STOPPED')
+             ORDER BY r.created_at, r.tenant_id, r.run_id
+             LIMIT ?
+            """, (rs,n) -> new RunDefinitionSnapshot(rs.getObject("tenant_id",UUID.class),
+                    rs.getObject("run_id",UUID.class),rs.getString("status"),
+                    rs.getString("control_gate"),rs.getString("compiler_version"),
+                    rs.getString("graph_plan_json")), limit));
+        return rows==null ? List.of() : List.copyOf(rows);
+    }
+
     /** T01: idempotently create a Run and its initial READY token. */
     public CreatedRun createRun(UUID tenantId, String requestId, String requestKind,
                                 String canonicalPayloadJson, String definitionKey,
