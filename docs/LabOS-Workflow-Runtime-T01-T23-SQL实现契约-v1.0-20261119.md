@@ -40,7 +40,7 @@ V1 由部署约束保证一个 Runtime Host。数据库不负责 Host 唯一性�
 | T09 | arriveBranch | 分支到达幂等、Join 唯一释放 |
 | T10 | advanceLoop / completeLoop | Loop 版本与迭代边界 |
 | T11 | createCommand | commandId 稳定、命令 payload 不可变 |
-| T12 | claimOutbox | 单 Host 本地 Dispatcher 将 PENDING→SENDING |
+| T12 | beginOutboxSend | 单 Host 本地 Dispatcher 将 PENDING→SENDING |
 | T13 | markCommandSendStarted | SEND_STARTED 必须先于 Adapter 调用持久化 |
 | T14 | receiveInbox / applyCommandEvent | messageId 去重、payload 冲突审计、commandId 归属 |
 | T15 | requestDrain | Run gate 与 Drain 记录同事务 |
