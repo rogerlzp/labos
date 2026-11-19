@@ -40,6 +40,12 @@
   </dependencies>
   <build>
     <plugins>
+      <!-- Pin the lifecycle plugin instead of inheriting a runner/Maven-default version. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
