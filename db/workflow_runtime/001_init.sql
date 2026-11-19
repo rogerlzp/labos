@@ -146,6 +146,65 @@ CREATE INDEX attempt_active_idx ON node_attempt(tenant_id, run_id, attempt_state
 CREATE UNIQUE INDEX attempt_one_live_per_activation_uq ON node_attempt(tenant_id, activation_id)
   WHERE attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN');
 
+-- Worker execution right is a DB lease; it does not imply that a process is alive.
+CREATE TABLE worker_execution_lease (
+  tenant_id uuid NOT NULL,
+  run_id uuid NOT NULL,
+  attempt_id uuid NOT NULL,
+  worker_id text NOT NULL,
+  dispatch_id uuid NOT NULL,
+  dispatch_epoch bigint NOT NULL,
+  lease_epoch bigint NOT NULL DEFAULT 1 CHECK (lease_epoch > 0),
+  lease_state text NOT NULL CHECK (lease_state IN
+    ('ACTIVE','RELEASED','EXPIRED_SAFE','EXPIRED_UNVERIFIED')),
+  expires_at timestamptz NOT NULL,
+  lease_version bigint NOT NULL DEFAULT 0,
+  last_fact_seq bigint NOT NULL DEFAULT 0,
+  started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  heartbeat_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  ended_at timestamptz,
+  PRIMARY KEY (tenant_id, attempt_id),
+  FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id),
+  FOREIGN KEY (tenant_id, attempt_id) REFERENCES node_attempt(tenant_id, attempt_id)
+);
+CREATE INDEX worker_lease_expiry_idx ON worker_execution_lease(tenant_id, expires_at)
+  WHERE lease_state='ACTIVE';
+
+-- Append-only evidence. SIDE_EFFECT_STARTED must commit before any external call.
+CREATE TABLE worker_execution_fact (
+  tenant_id uuid NOT NULL,
+  fact_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL,
+  attempt_id uuid NOT NULL,
+  fact_seq bigint NOT NULL CHECK (fact_seq > 0),
+  fact_key text NOT NULL,
+  fact_type text NOT NULL CHECK (fact_type IN
+    ('HANDLER_STARTED','SIDE_EFFECT_STARTED','SIDE_EFFECT_COMPLETED',
+     'SIDE_EFFECT_UNKNOWN','EXECUTION_RIGHT_RELEASED')),
+  actor_kind text NOT NULL CHECK (actor_kind IN ('WORKER','DISPATCHER','RECOVERY')),
+  actor_id text NOT NULL,
+  dispatch_id uuid NOT NULL,
+  dispatch_epoch bigint NOT NULL,
+  lease_epoch bigint NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (tenant_id, fact_id),
+  UNIQUE (tenant_id, attempt_id, fact_seq),
+  UNIQUE (tenant_id, attempt_id, fact_key),
+  FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id),
+  FOREIGN KEY (tenant_id, attempt_id) REFERENCES node_attempt(tenant_id, attempt_id)
+);
+CREATE INDEX worker_fact_attempt_idx ON worker_execution_fact(tenant_id, attempt_id, fact_seq);
+
+CREATE FUNCTION reject_worker_fact_mutation() RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+  RAISE EXCEPTION 'worker_execution_fact is append-only';
+END;
+$;
+CREATE TRIGGER worker_execution_fact_immutable
+  BEFORE UPDATE OR DELETE ON worker_execution_fact
+  FOR EACH ROW EXECUTE FUNCTION reject_worker_fact_mutation();
+
 CREATE TABLE scheduler_capacity (
   tenant_id uuid NOT NULL REFERENCES tenant,
   capacity_key text NOT NULL,
