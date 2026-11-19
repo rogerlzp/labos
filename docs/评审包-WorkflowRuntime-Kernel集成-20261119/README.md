@@ -25,7 +25,8 @@
 - 独立 Maven workflow-runtime 模块作为 JAR 嵌入 Kernel。
 - Repository 显式注入 Kernel 同一个 DataSource 和 PlatformTransactionManager。
 - Kernel MyBatis Adapter 读取原始 BPMN XML 和租户限定的节点元数据。
-- 旧 bigint tenant 到 Runtime UUID 的稳定映射。
+- 旧 bigint tenant 到 Runtime UUID 的稳定映射，以及 Kernel-facing Run 创建 Facade。
+- 定义读取使用一致的 REPEATABLE_READ snapshot，Runtime Header/XML 排除软删除流程，能力元数据 join 按 tenant 隔离。
 - GraphPlan 按租户与 workflow 标识，创建 Run 时固化 snapshot。
 - Runtime 定义读取采用 REQUIRES_NEW + REPEATABLE_READ，Header 排除软删除，并强化 MyBatis BoundSql 参数与租户谓词测试。
 - 保留 Kernel 既有 javac/out 构建方式，构建脚本先安装 Runtime JAR。
