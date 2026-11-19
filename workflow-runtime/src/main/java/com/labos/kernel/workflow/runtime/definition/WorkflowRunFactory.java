@@ -33,7 +33,7 @@ public final class WorkflowRunFactory {
         Objects.requireNonNull(runtimeTenantId,"runtimeTenantId");
         if(legacyWorkflowId<=0) throw new IllegalArgumentException("workflowId must be positive");
         WorkflowDefinitionSource.WorkflowDefinition source=definitions.load(
-                sourceTenantId(runtimeTenantId),legacyWorkflowId);
+                runtimeTenantId,legacyWorkflowId);
         if(source==null) throw new IllegalArgumentException("Workflow definition not found");
         Map<String,BpmnGraphCompiler.NodeMetadata> metadata=source.nodeMetadata().entrySet().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
@@ -60,11 +60,4 @@ public final class WorkflowRunFactory {
         return outgoing.get(0).to();
     }
 
-    /**
-     * Runtime tenant identity is deliberately supplied by the caller. Kernel's legacy tenant
-     * bigint must be mapped to a stable Runtime UUID by the application boundary, not guessed here.
-     */
-    private static UUID sourceTenantId(UUID runtimeTenantId) {
-        return runtimeTenantId;
-    }
 }
