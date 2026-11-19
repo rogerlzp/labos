@@ -460,6 +460,13 @@ public final class WorkflowRuntimeRepository {
                     UUID.class,tenantId,activationId);
             jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
                     UUID.class,tenantId,attemptId);
+            Integer liveWorkerLease=jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.worker_execution_lease
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? AND lease_state='ACTIVE'
+                   AND expires_at>clock_timestamp() FOR UPDATE
+                """,Integer.class,tenantId,runId,attemptId);
+            if(liveWorkerLease==null||liveWorkerLease!=1)
+                throw new StaleRuntimeWriteException("Expired or released Worker cannot complete an Attempt");
             String sideEffectClass=jdbc.queryForObject("""
                 SELECT side_effect_class FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND attempt_id=?
