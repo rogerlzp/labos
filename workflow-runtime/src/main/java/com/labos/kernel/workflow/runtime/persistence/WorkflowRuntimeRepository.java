@@ -594,11 +594,12 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND branch_id=? AND token_state IN ('READY','RUNNING','WAITING')
                 """,tenantId,branchId);
             if(branchTokenChanged!=1) throw new StaleRuntimeWriteException("Branch Token is not active");
-            jdbc.update("""
+            int splitAdvanced=jdbc.update("""
                 UPDATE workflow_runtime.split_activation SET arrived_branch_count=arrived_branch_count+1,
                        version=version+1
                  WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
                 """,tenantId,splitId);
+            if(splitAdvanced!=1) throw new StaleRuntimeWriteException("Split is no longer OPEN");
             UUID joinId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.join_activation
@@ -744,9 +745,23 @@ public final class WorkflowRuntimeRepository {
 
     /** T13: persist SEND_STARTED before calling an Adapter outside this repository. */
     public boolean markCommandSendStarted(UUID tenantId, UUID commandId, long expectedVersion,
+                                          UUID outboxId, String outboxOwner, long outboxClaimEpoch,
                                           UUID dispatchId, int dispatchNo, String dispatcherId,
                                           long fencingToken) {
         return required(() -> {
+            UUID runId=jdbc.queryForObject("""
+                SELECT run_id FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND command_id=?
+                """,UUID.class,tenantId,commandId);
+            RunHead head=lockRun(tenantId,runId);
+            if(!"OPEN".equals(head.controlGate())) return false;
+            List<String> outboxPayload=jdbc.query("""
+                SELECT payload->>'commandId' FROM workflow_runtime.runtime_outbox
+                 WHERE tenant_id=? AND outbox_id=? AND outbox_state='CLAIMED'
+                   AND claim_owner=? AND claim_epoch=? FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,outboxId,outboxOwner,outboxClaimEpoch);
+            if(outboxPayload.size()!=1 || !commandId.toString().equals(outboxPayload.get(0)))
+                throw new StaleRuntimeWriteException("Dispatcher does not own the Command Outbox claim");
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state='SEND_STARTED',
                        version=version+1,updated_at=clock_timestamp()
@@ -913,19 +928,6 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    /** T16 helper: idempotently materialize one drain item. */
-    public void addDrainItem(UUID tenantId, UUID drainId, String itemKind, UUID itemId) {
-        required(() -> {
-            jdbc.update("""
-                INSERT INTO workflow_runtime.drain_item
-                  (tenant_id,drain_id,item_kind,item_id,item_state)
-                VALUES (?,?,?,?,'PENDING')
-                ON CONFLICT (tenant_id,drain_id,item_kind,item_id) DO NOTHING
-                """,tenantId,drainId,itemKind,itemId);
-            return null;
-        });
-    }
-
     /** T17: release a held reservation once; decrement capacity only for the CAS winner. */
     public boolean releaseReservation(UUID tenantId, UUID reservationId) {
         return required(() -> {
@@ -974,12 +976,13 @@ public final class WorkflowRuntimeRepository {
                     """,(rs,n)->rs.getString(1),tenantId,runId,itemId);
                 if(leaseRows.size()!=1) throw new IllegalStateException("Drain Lease item not found");
                 String leaseState=safe?"RELEASED":"QUARANTINED";
-                jdbc.update("""
+                int leaseChanged=jdbc.update("""
                     UPDATE workflow_runtime.resource_lease SET lease_state=?,lease_version=lease_version+1,
                            released_at=CASE WHEN ? THEN clock_timestamp() ELSE released_at END,
                            evidence=?::jsonb
                      WHERE tenant_id=? AND lease_id=? AND lease_state IN ('ACTIVE','RELEASING','EXPIRED_UNVERIFIED','QUARANTINED')
                     """,leaseState,safe,evidenceJson,tenantId,itemId);
+                if(leaseChanged!=1) throw new StaleRuntimeWriteException("Lease state changed during physical verification");
                 if(!safe) jdbc.update("""
                     INSERT INTO workflow_runtime.quarantine_record
                       (tenant_id,resource_id,run_id,lease_id,quarantine_state,reason_code,evidence)
@@ -998,6 +1001,11 @@ public final class WorkflowRuntimeRepository {
             if(!List.of("PAUSED","STOPPED","FAILED").contains(terminalStatus))
                 throw new IllegalArgumentException("T19 terminalStatus must be PAUSED, STOPPED or FAILED");
             RunHead head=lockRun(tenantId,runId);
+            String drainState=jdbc.queryForObject("""
+                SELECT drain_state FROM workflow_runtime.drain_record
+                 WHERE tenant_id=? AND run_id=? AND drain_id=? FOR UPDATE
+                """,String.class,tenantId,runId,drainId);
+            if(!List.of("REQUESTED","DRAINING","SAFE_POINT").contains(drainState)) return false;
             Long unsafe=jdbc.queryForObject("""
                 SELECT
                   (SELECT count(*) FROM workflow_runtime.command_ledger
@@ -1208,6 +1216,8 @@ public final class WorkflowRuntimeRepository {
     /** T23: clear quarantine only with explicit evidence; associated Lease must be RELEASED. */
     public boolean clearQuarantine(UUID tenantId, UUID quarantineId, String actor, String evidenceJson) {
         return required(() -> {
+            if(evidenceJson==null||evidenceJson.isBlank()||"{}".equals(evidenceJson.trim()))
+                throw new IllegalArgumentException("Quarantine clearance requires non-empty evidence");
             UUID leaseId=jdbc.queryForObject("""
                 SELECT lease_id FROM workflow_runtime.quarantine_record
                  WHERE tenant_id=? AND quarantine_id=? FOR UPDATE
