@@ -79,7 +79,7 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                 "tenant_id", "id");
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowNodeMetadata",
                 Map.of("tenantId", 7L, "workflowId", 9L), 2,
-                "tenant_id", "workflow_id");
+                "tenant_id", "workflow_id", "c.tenant_id", "n.tenant_id");
 
         System.out.println("✓ Workflow Runtime Kernel Spring composition and MyBatis binding 22 / 0");
     }
