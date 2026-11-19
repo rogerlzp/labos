@@ -61,6 +61,13 @@ class WorkflowRuntimeRepositoryTest {
         repo.acceptAttempt(tenant,first.runId(),reservation.attemptId(),
                 reservation.dispatchId(),"worker-1");
         repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
+        assertTrue(repo.recordSideEffectFact(tenant,first.runId(),reservation.attemptId(),
+                "worker-1","worker-call-1","SIDE_EFFECT_STARTED","{\\"phase\\":\\"before-adapter\\"}"));
+        assertTrue(repo.recordSideEffectFact(tenant,first.runId(),reservation.attemptId(),
+                "worker-1","worker-call-1","SIDE_EFFECT_STARTED","{\\"phase\\":\\"before-adapter\\"}"));
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,() ->
+                repo.recordSideEffectFact(tenant,first.runId(),reservation.attemptId(),
+                        "worker-1","worker-call-1","SIDE_EFFECT_STARTED","{\\"phase\\":\\"different\\"}"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='HANDLER_STARTED'"));
 
         UUID command=repo.createCommand(tenant,first.runId(),
