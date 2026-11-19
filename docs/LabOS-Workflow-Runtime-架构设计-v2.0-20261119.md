@@ -3008,7 +3008,7 @@ Suspend 事务必须原子提交 WaitRegistration(ACTIVE)、Activation=SUSPENDED
 
 WaitSatisfied 与 WaitExpired 竞争时，对 waitId 执行唯一状态 CAS；只有一个事件可将 ACTIVE 改为 SATISFIED 或 EXPIRED。另一事件作为迟到/冲突事件记录，不得再创建 Token 或 Attempt。
 
-WaitSatisfied 的恢复事务将 Wait→SATISFIED、Token WAITING→READY、Activation SUSPENDED→READY，并写 continuation metadata。它不复活旧 Attempt。下一次 Dispatch 创建新 Attempt，记录 continuationOfAttemptId。若等待期间设备命令仍在运行，WaitSatisfied 只有在匹配 commandId 且命令事件满足定义的等待条件时才有效；不能因通用定时器或无关设备事件恢复节点。
+WaitSatisfied 的恢复事务将 Wait→SATISFIED、Token WAITING→READY、Activation SUSPENDED→READY，并在同一事务将旧 Attempt SUSPENDED→ABANDONED_SAFE（reason=CONTINUATION_PERSISTED），写 continuation metadata。该关闭只表示旧 Worker 执行权已释放，不表示设备命令完成。只有在 Worker 已确认释放执行权、continuation 已持久化且不存在未跟踪的 Worker 副作用时，才允许关闭旧 Attempt。它不复活旧 Attempt。下一次 Dispatch 创建新 Attempt，记录 continuationOfAttemptId。若等待期间设备命令仍在运行，WaitSatisfied 只有在匹配 commandId 且命令事件满足定义的等待条件时才有效；不能因通用定时器或无关设备事件恢复节点。
 
 ### 31.2.4 UNKNOWN 核验
 
@@ -3082,10 +3082,10 @@ Run 状态变更与 drainId 创建、DrainStarted Event、DrainCoordinator Outbo
 
 Drain 快照中的对象按以下规则处理：
 
-- RESERVED 且无 Dispatch Outbox：Token RESERVED→READY（Pause）或 INVALIDATED（Stop）；撤销软件调度配额。仅当 ResourceLease 尚未取得物理资源所有权时才可释放该软件预留。
+- RESERVED 且无 Dispatch Outbox：Token RESERVED→READY（Pause）或 INVALIDATED（Stop）；若已创建 Attempt，则 Attempt CREATED→ABANDONED_SAFE，Activation 保持 READY（Pause）或转 CANCELLED（Stop）；撤销软件调度配额。仅当 ResourceLease 尚未取得物理资源所有权时才可释放该软件预留。
 - DISPATCH_PENDING 但 Dispatch Commit 尚未提交：按 RESERVED 处理。
 - Dispatch Commit 已提交（Token=IN_FLIGHT）：视为已派发，不得假定 Worker 未接收；等待 Worker/DispatchLease 核验。纯计算可按 Handler 的安全取消协议收敛；副作用节点必须核验。
-- ACTIVE 纯计算节点：仅在 Handler 明确声明 cancellationSafe 且报告安全检查点后，Activation 可转 SUSPENDED；否则等待完成或转 MANUAL_REQUIRED。
+- ACTIVE 纯计算节点：仅在 Handler 明确声明 cancellationSafe 且报告安全检查点后，才能在同一事务创建/更新 WaitRegistration、将 Activation→SUSPENDED、Attempt→SUSPENDED、Token IN_FLIGHT→WAITING，并记录 checkpoint/continuation；否则等待完成或转 MANUAL_REQUIRED。
 - SUSPENDED 且无未决命令的 Activation：可作为可恢复安全点保留。
 - 设备命令 ACKNOWLEDGED/RUNNING：只有设备明确确认进入 PauseSafeState 或 StopSafeState，或自然完成且后置条件已核验，才视为收敛。
 - Command/Resource UNKNOWN：不满足 PauseSafePredicate/StopSafePredicate，必须 MANUAL_REQUIRED 或 QUARANTINED。
@@ -3107,7 +3107,7 @@ StopSafePredicate 必须全部满足：
 3. 所有设备命令均已最终完成、取消且有物理停止确认，或其不确定性已导致 MANUAL_REQUIRED/QUARANTINED；
 4. 所有资源已安全释放，或明确隔离并使 Run 进入 QUARANTINED；
 5. 无未决物料/板位/耗材副作用；
-6. 所有 Token/Activation/Split/Join/Loop/Wait 均已关闭、终结或保留为明确可恢复状态；
+6. 所有 Token/Activation/Split/Join/Loop/Wait 均已关闭、终结或 INVALIDATED；STOPPED/FAILED 不得保留可恢复的 READY/WAITING/RESERVED/IN_FLIGHT 路径；
 7. 无未处理关键 Inbox。
 
 设备仍在运行但没有得到设备暂停确认时，不得进入 PAUSED。设备状态未知时，不得进入普通 STOPPED 或释放资源。Drain 超时只触发告警/人工介入，不改变上述谓词。
@@ -3194,7 +3194,7 @@ Checkpoint 必须在一个一致性数据库快照中读取 Run、Token、Activa
 
 ### 31.7.4 Coordinator epoch fencing
 
-Coordinator owner 获取/续期事务必须在 Run 行上 CAS 更新 ownerId、coordinatorEpoch 和 ownerLeaseVersion。每条可能改变 Runtime 状态的消息处理事务都必须校验 envelope.coordinatorEpoch 等于当前 Run epoch。旧 epoch 的 Worker completion 可以进入 Inbox 作为迟到审计，但不得推进 Runtime。Worker/Dispatcher 只能提交结果，不得直接写 Run 控制流投影。恢复期间 Inbox 可以接收消息，但在新 Coordinator 完成恢复检查并提交 RecoveryCompleted 之前，不处理会推进状态的消息或开放 Scheduler。
+Coordinator owner 获取/续期事务必须在 Run 行上 CAS 更新 ownerId、coordinatorEpoch 和 ownerLeaseVersion。**只有由 Coordinator/Dispatcher owner 发出的控制类命令**必须校验 envelope.coordinatorEpoch 等于当前 Run epoch；旧 Coordinator/Dispatcher 发出的调度、取消、租约管理等控制消息不得推进 Runtime。Worker completion、设备事件和外部 Wait 事件不是 Coordinator owner 命令，不得仅因其携带派发时的旧 epoch 而丢弃：Worker completion 必须匹配当前有效的 activationId、attemptId、dispatchId、attemptVersion，并匹配该 Attempt 持久化的 dispatchEpoch；当前 Coordinator 在自己的有效 epoch 下消费并提交该结果。设备事件按 commandId/deviceId/sourceEventId/设备序号核验，外部 Wait 事件按 waitId/correlationKey 核验。旧 epoch 的 Worker/设备/Wait 消息可以进入 Inbox；只有对象身份和当前状态校验通过时，才由当前 Coordinator 推进 Runtime。Worker/Dispatcher 只能提交结果，不得直接写 Run 控制流投影。恢复期间 Inbox 可以接收消息，但在新 Coordinator 完成恢复检查并提交 RecoveryCompleted 之前，不处理会推进状态的消息或开放 Scheduler。
 
 ## 31.8 Run 终态谓词与人工处置事务
 
@@ -3262,11 +3262,11 @@ T17–T19 的 Drain 过程可以由多个事务多次推进；每次只提交已
 
 Reservation 事务只保留软件配额和 Token RESERVED，不得把“已获得设备物理资源”与“调度配额预留”混为一谈。物理资源必须通过 ResourceLease 状态机独立获取并持久化。
 
-Dispatch Commit 事务必须锁定 Run、Token、Activation、Attempt，验证 Run=RUNNING、Coordinator epoch、Token=RESERVED、Reservation 未过期、Lease 有效、attemptId/dispatchId 未使用；同事务写 Attempt=DISPATCH_PENDING、Activation=ACTIVE、Token=IN_FLIGHT、WorkerDispatch Outbox 和事件。Dispatcher 领取 Outbox 后事务外调用 Worker；发送前后分别更新 Dispatch/Attempt 状态。Worker 接收与 Handler 开始必须分别有可幂等处理的消息，不能把网络发送成功等同于 Worker 已开始。
+Dispatch Commit 事务必须锁定 Run、Token、Activation、Attempt，验证 Run=RUNNING、Coordinator epoch、Token=RESERVED、Reservation 未过期、Lease 有效、attemptId/dispatchId 未使用；同事务写 Attempt=DISPATCH_PENDING、Activation=ACTIVE、Token=IN_FLIGHT、WorkerDispatch Outbox 和事件。Dispatcher 领取 Outbox 后事务外调用 Worker；Dispatcher 开始发送时将 Attempt DISPATCH_PENDING→DISPATCHED 并记录 dispatchEpoch。Worker 接收消息只将 Attempt DISPATCHED→ACCEPTED；Handler 真正开始时由独立 NodeStarted 消息将 Attempt ACCEPTED→STARTED。两条消息均按 messageId/dispatchId 幂等处理。若 Worker 在接受后、开始前崩溃，必须通过 Worker 执行器的接受/开始事实及副作用分类核验；不能仅因没有 NodeStarted 就断言未执行。
 
 ## 32.2 T07/T08 Suspend 与 Wait 恢复
 
-T07 提交 Wait、Activation、Attempt、Token 四者状态必须原子一致。T08 只将 Wait 从 ACTIVE 改为 SATISFIED/EXPIRED，并将 Token/Activation 置 READY；不得在 T08 内复用旧 Attempt。下一次 T03 创建新 Attempt。设备仍未完成的动作继续由 Command Ledger 管理，不因 Worker 已释放而被当作完成。
+T07 提交 Wait、Activation、Attempt、Token 四者状态必须原子一致。T08 的成功恢复路径将 Wait 从 ACTIVE 改为 SATISFIED，将 Token/Activation 置 READY，并将旧 Attempt SUSPENDED→ABANDONED_SAFE；若 Wait 到期则按 Definition 中编译的 timeout edge/failure policy 提交唯一超时结果，不得同时执行满足路径。不得在 T08 内复用旧 Attempt。下一次 T03 创建新 Attempt。设备仍未完成的动作继续由 Command Ledger 管理，不因 Worker 已释放而被当作完成。
 
 ## 32.3 T10 Join 原子关闭
 
