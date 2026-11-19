@@ -226,7 +226,7 @@ class WorkflowRuntimeRepositoryTest {
         UUID pauseDrain=repo.requestDrain(tenant,created.runId(),1L,"PAUSE");
         UUID drain=repo.requestDrain(tenant,created.runId(),1L,"STOP");
         assertEquals(pauseDrain,drain,"Stop must supersede the in-flight Pause drain");
-        repo.advanceDrainScan(tenant,created.runId(),drain,0L,"{\"page\":1}",
+        repo.advanceDrainScan(tenant,created.runId(),drain,1L,"{\"page\":1}",
                 java.util.List.of(new WorkflowRuntimeRepository.DrainItemRef("LEASE",lease)));
         repo.recordSafePointEvidence(tenant,created.runId(),drain,"LEASE",lease,0L,
                 "{\"deviceReadback\":\"released\"}",true);
