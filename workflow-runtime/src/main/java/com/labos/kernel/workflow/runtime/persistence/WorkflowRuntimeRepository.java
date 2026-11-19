@@ -495,7 +495,7 @@ public final class WorkflowRuntimeRepository {
                 """,tenantId,tenantId,activationId)!=1) throw new StaleRuntimeWriteException("Token is not active");
             releaseReservationInTransaction(tenantId,attemptId);
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"execution-completed","EXECUTION_RIGHT_RELEASED",
-                    "WORKER","completion",null,"{\"reason\":\"attempt-succeeded\"}");
+                    "WORKER","completion",commandDispatchId(tenantId,attemptId),"{\"reason\":\"attempt-succeeded\"}");
             appendEvents(tenantId,runId,List.of(new EventDraft("ATTEMPT_SUCCEEDED","ATTEMPT",attemptId,
                     null,null,null,"{\"activationId\":\""+activationId+"\",\"outputKey\":\""+jsonEscape(outputKey)+"\"}")));
             return null;
