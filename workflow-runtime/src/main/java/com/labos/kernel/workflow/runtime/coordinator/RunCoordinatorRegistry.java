@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
  * Process-local registry that gives each Run exactly one serial mailbox.
@@ -18,21 +19,28 @@ import java.util.function.Consumer;
 public final class RunCoordinatorRegistry<T> implements AutoCloseable {
     private final Executor mailboxExecutor;
     private final int mailboxCapacity;
+    private final Predicate<UUID> runIsActive;
     private final java.util.function.Function<UUID, Consumer<T>> handlerFactory;
     private final ConcurrentMap<UUID, SerialMailbox<T>> mailboxes = new ConcurrentHashMap<>();
     private boolean closed;
 
     public RunCoordinatorRegistry(Executor mailboxExecutor, int mailboxCapacity,
+                                  Predicate<UUID> runIsActive,
                                   java.util.function.Function<UUID, Consumer<T>> handlerFactory) {
         this.mailboxExecutor = Objects.requireNonNull(mailboxExecutor, "mailboxExecutor");
         if (mailboxCapacity < 1) throw new IllegalArgumentException("mailboxCapacity must be >= 1");
         this.mailboxCapacity = mailboxCapacity;
+        this.runIsActive = Objects.requireNonNull(runIsActive, "runIsActive");
         this.handlerFactory = Objects.requireNonNull(handlerFactory, "handlerFactory");
     }
 
     public synchronized SerialMailbox<T> mailboxFor(UUID runId) {
         Objects.requireNonNull(runId, "runId");
         if (closed) throw new IllegalStateException("RunCoordinatorRegistry is closed");
+        SerialMailbox<T> existing = mailboxes.get(runId);
+        if (existing != null) return existing;
+        if (!runIsActive.test(runId))
+            throw new IllegalStateException("Run is not active; refusing to create a new coordinator mailbox");
         return mailboxes.computeIfAbsent(runId, id ->
                 new SerialMailbox<>(mailboxCapacity, mailboxExecutor,
                         Objects.requireNonNull(handlerFactory.apply(id), "Run event handler")));
