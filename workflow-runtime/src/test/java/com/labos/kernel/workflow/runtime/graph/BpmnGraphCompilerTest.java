@@ -1,0 +1,49 @@
+package com.labos.kernel.workflow.runtime.graph;
+
+import org.junit.jupiter.api.Test;
+import java.util.Map;
+import static org.junit.jupiter.api.Assertions.*;
+
+class BpmnGraphCompilerTest {
+    private static final String NS="http://www.omg.org/spec/BPMN/20100524/MODEL";
+    private final BpmnGraphCompiler compiler=new BpmnGraphCompiler();
+
+    @Test void compilesTaskGatewaysConditionsAndDefaultFlow() {
+        String xml="""
+          <bpmn:definitions xmlns:bpmn="%s">
+            <bpmn:process id="p">
+              <bpmn:startEvent id="s"/>
+              <bpmn:exclusiveGateway id="g" default="f2"/>
+              <bpmn:serviceTask id="t" name="dispense" protocolName="Dispense" resource="17" methodParams="{&quot;volume&quot;:10}"/>
+              <bpmn:endEvent id="e"/>
+              <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="g"/>
+              <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="t"/>
+              <bpmn:sequenceFlow id="f3" sourceRef="t" targetRef="e"/>
+            </bpmn:process>
+          </bpmn:definitions>
+          """.formatted(NS);
+        GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput("42","7",xml,
+                Map.of("t",new BpmnGraphCompiler.NodeMetadata("LIQUID_HANDLING",9L))));
+        assertEquals(4,plan.nodes().size());
+        assertEquals(3,plan.edges().size());
+        assertTrue(plan.edges().stream().filter(e->e.key().equals("f2")).findFirst().orElseThrow().defaultFlow());
+        GraphPlan.Node task=plan.nodes().stream().filter(n->n.key().equals("t")).findFirst().orElseThrow();
+        assertEquals("LIQUID_HANDLING",task.capabilityCode());
+        assertEquals(9L,task.workflowNodeId());
+        assertTrue(GraphPlanCodec.toJson(plan).contains("\"condition\""));
+        assertEquals(GraphPlanCodec.sha256(xml),plan.bpmnSha256());
+    }
+
+    @Test void rejectsUnsupportedExecutableElementsInsteadOfDroppingThem() {
+        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:subProcess id=\"sub\"/></bpmn:process></bpmn:definitions>";
+        IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
+        assertTrue(ex.getMessage().contains("Unsupported BPMN element"));
+    }
+
+    @Test void rejectsDanglingEdgesAndDuplicateIds() {
+        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"missing\"/></bpmn:process></bpmn:definitions>";
+        assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
+    }
+}
