@@ -7,8 +7,6 @@ import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
-
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.Instant;
