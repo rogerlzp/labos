@@ -934,7 +934,7 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    public record OutboxMessage(UUID outboxId, String dedupKey, String payloadJson) {}
+    public record OutboxMessage(UUID outboxId, String messageKind, String dedupKey, String payloadJson) {}
 
     /** Single-host dispatcher: lock and transition pending rows without distributed claims. */
     public List<OutboxMessage> beginOutboxSend(UUID tenantId, int batchSize) {
@@ -949,8 +949,8 @@ public final class WorkflowRuntimeRepository {
             UPDATE workflow_runtime.runtime_outbox o
                SET outbox_state='SENDING',delivery_attempts=delivery_attempts+1
               FROM picked p WHERE o.tenant_id=? AND o.outbox_id=p.outbox_id
-            RETURNING o.outbox_id,o.dedup_key,o.payload::text
-            """,(rs,n)->new OutboxMessage(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3)),
+            RETURNING o.outbox_id,o.message_kind,o.dedup_key,o.payload::text
+            """,(rs,n)->new OutboxMessage(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3),rs.getString(4)),
                 tenantId,batchSize,tenantId));
     }
 
