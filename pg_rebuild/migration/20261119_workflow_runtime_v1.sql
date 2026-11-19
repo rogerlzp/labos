@@ -8,6 +8,19 @@
 
 BEGIN;
 
+CREATE TABLE IF NOT EXISTS wf_workflow_definition_version (
+    tenant_id               bigint NOT NULL,
+    definition_id           text NOT NULL,
+    definition_version      text NOT NULL,
+    definition_hash         char(64) NOT NULL,
+    compiler_version        text NOT NULL,
+    definition_payload      jsonb NOT NULL,
+    graph_plan_payload      jsonb NOT NULL,
+    published_at            timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant_id, definition_id, definition_version),
+    CONSTRAINT uq_wf_definition_hash UNIQUE (tenant_id, definition_hash)
+);
+
 CREATE TABLE IF NOT EXISTS wf_workflow_run (
     run_id                  uuid PRIMARY KEY,
     tenant_id               bigint NOT NULL,
@@ -32,6 +45,8 @@ CREATE TABLE IF NOT EXISTS wf_workflow_run (
     completed_at            timestamptz,
     updated_at              timestamptz NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT uq_wf_run_request UNIQUE (tenant_id, request_id),
+    CONSTRAINT fk_wf_run_definition FOREIGN KEY (tenant_id, definition_id, definition_version)
+      REFERENCES wf_workflow_definition_version(tenant_id, definition_id, definition_version),
     CONSTRAINT ck_wf_run_status CHECK (status IN (
       'CREATED','STARTING','RUNNING','PAUSE_REQUESTED','PAUSE_DRAINING',
       'PAUSED','RESUME_REQUESTED','STOP_REQUESTED','STOP_DRAINING',
@@ -62,7 +77,7 @@ CREATE TABLE IF NOT EXISTS wf_execution_token (
       'CREATED','READY','RESERVED','IN_FLIGHT','WAITING','CONSUMED','TERMINAL','INVALIDATED'
     )),
     CONSTRAINT ck_wf_token_wait_owner CHECK (
-      (status = 'WAITING' AND wait_kind IS NOT NULL AND wait_owner_type IS NOT NULL AND wait_owner_id IS NOT NULL)
+      (status = 'WAITING' AND wait_kind IN ('RETRY','EXTERNAL_EVENT','TIMER','MANUAL','JOIN','RESOURCE') AND wait_owner_type IN ('WAIT_REGISTRATION','RETRY_REGISTRATION','JOIN_ACTIVATION') AND wait_owner_id IS NOT NULL)
       OR
       (status <> 'WAITING' AND wait_kind IS NULL AND wait_owner_type IS NULL AND wait_owner_id IS NULL)
     )
@@ -462,7 +477,7 @@ CREATE TABLE IF NOT EXISTS wf_scheduler_capacity (
 CREATE TABLE IF NOT EXISTS wf_reservation (
     reservation_id          uuid PRIMARY KEY,
     run_id                  uuid NOT NULL REFERENCES wf_workflow_run(run_id) ON DELETE CASCADE,
-    token_id                uuid NOT NULL UNIQUE REFERENCES wf_execution_token(token_id),
+    token_id                uuid NOT NULL REFERENCES wf_execution_token(token_id),
     activation_id           uuid NOT NULL REFERENCES wf_node_activation(activation_id),
     attempt_id              uuid REFERENCES wf_node_attempt(attempt_id),
     capacity_key            text NOT NULL REFERENCES wf_scheduler_capacity(capacity_key),
@@ -473,6 +488,9 @@ CREATE TABLE IF NOT EXISTS wf_reservation (
     released_at             timestamptz,
     CONSTRAINT ck_wf_reservation_status CHECK (status IN ('RESERVED','COMMITTED','RELEASED','CANCELLED','EXPIRED'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wf_reservation_active_token
+    ON wf_reservation (token_id)
+    WHERE status IN ('RESERVED','COMMITTED');
 CREATE INDEX IF NOT EXISTS ix_wf_reservation_expiry
     ON wf_reservation (expires_at, run_id)
     WHERE status = 'RESERVED';
@@ -561,29 +579,33 @@ CREATE INDEX IF NOT EXISTS ix_wf_intervention_run
     ON wf_intervention_record (run_id, created_at);
 
 -- Circular identity references are added after both sides exist.
-ALTER TABLE wf_node_activation
-    ADD CONSTRAINT fk_wf_activation_current_attempt
-    FOREIGN KEY (current_attempt_id) REFERENCES wf_node_attempt(attempt_id)
-    DEFERRABLE INITIALLY DEFERRED;
-
-ALTER TABLE wf_execution_token
-    ADD CONSTRAINT fk_wf_token_split
-    FOREIGN KEY (split_activation_id) REFERENCES wf_split_activation(split_activation_id)
-    DEFERRABLE INITIALLY DEFERRED;
-
-ALTER TABLE wf_execution_token
-    ADD CONSTRAINT fk_wf_token_branch
-    FOREIGN KEY (branch_activation_id) REFERENCES wf_branch_activation(branch_activation_id)
-    DEFERRABLE INITIALLY DEFERRED;
-
-ALTER TABLE wf_execution_token
-    ADD CONSTRAINT fk_wf_token_loop
-    FOREIGN KEY (loop_context_id) REFERENCES wf_loop_context(loop_context_id)
-    DEFERRABLE INITIALLY DEFERRED;
-
-ALTER TABLE wf_execution_token
-    ADD CONSTRAINT fk_wf_token_wait
-    FOREIGN KEY (wait_owner_id) REFERENCES wf_wait_registration(wait_id)
-    DEFERRABLE INITIALLY DEFERRED;
+-- Guard each constraint so the additive migration can be re-applied safely.
+DO $
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_wf_activation_current_attempt') THEN
+    ALTER TABLE wf_node_activation
+      ADD CONSTRAINT fk_wf_activation_current_attempt
+      FOREIGN KEY (current_attempt_id) REFERENCES wf_node_attempt(attempt_id)
+      DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_wf_token_split') THEN
+    ALTER TABLE wf_execution_token
+      ADD CONSTRAINT fk_wf_token_split
+      FOREIGN KEY (split_activation_id) REFERENCES wf_split_activation(split_activation_id)
+      DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_wf_token_branch') THEN
+    ALTER TABLE wf_execution_token
+      ADD CONSTRAINT fk_wf_token_branch
+      FOREIGN KEY (branch_activation_id) REFERENCES wf_branch_activation(branch_activation_id)
+      DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_wf_token_loop') THEN
+    ALTER TABLE wf_execution_token
+      ADD CONSTRAINT fk_wf_token_loop
+      FOREIGN KEY (loop_context_id) REFERENCES wf_loop_context(loop_context_id)
+      DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END $;
 
 COMMIT;
