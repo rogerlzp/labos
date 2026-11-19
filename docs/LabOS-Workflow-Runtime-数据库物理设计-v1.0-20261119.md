@@ -204,4 +204,6 @@ psql -d labos_runtime_test -c "SELECT schemaname, tablename FROM pg_tables WHERE
 - GitHub Actions：`.github/workflows/workflow-runtime-db.yml`。在 PostgreSQL 17 服务容器中执行空库 DDL、Schema 合同和并发测试。
 - T01–T23 SQL 实现合同：`docs/LabOS-Workflow-Runtime-T01-T23-SQL实现契约-v1.0-20261119.md`。
 
-**验证边界：** 本轮环境没有可用的 PostgreSQL 客户端/服务，也没有本地 Docker/Podman，因此没有在当前会话实际执行 SQL。CI 已配置为在 GitHub Actions 上执行；在取得成功的 workflow run 结果前，DDL 语法、目录检查与并发测试仍标记为 UNKNOWN。CI 通过也只证明当前合同覆盖的数据库结构和两类竞态，不等价于 T01–T23 全部事务已实现或全量故障矩阵通过。
+**验证结果：** PostgreSQL 17.12 GitHub Actions 实测通过（Run #7，commit `054adb263242bc516f58e6d36f1255f1fb38b49a`）：空库 DDL 初始化、31 张表与关键索引目录检查、Schema 行为约束测试、两个独立连接的 live Activation 竞争、SchedulerCapacity 不超卖竞争、最终表数检查均 PASS。此前两次失败分别是测试 SQL 列引用错误和并发夹具预先创建了 live Activation；均已修复，最终 Run 全绿。
+
+**验证边界：** 本次 PASS 只覆盖初始化 DDL、schema 合同和两类并发竞态。T01–T23 Repository 事务尚未实现；CON-01 至 CON-14 全集、完整故障注入矩阵、Checkpoint MVCC 并发证明、Adapter/Worker/硬件 HIL 仍未验证，不能据此宣称 Runtime 数据库实现全部完成。
