@@ -106,3 +106,24 @@ Kernel 全量 CI 还包括前端与现有纯逻辑门禁。不要只凭 Maven Ru
 ## 6. 验收状态
 
 CI 结果以本分支最新 SHA 的 Actions 为准。此文档不把正在运行或历史运行写成 PASS。Runtime PostgreSQL 测试、Kernel CI、人工源码审查必须分别给结论。
+
+
+## 7. 最新 CI 验证（PR HEAD 0de6619c1c5791e6793734544da924b658320ba8）
+
+- Kernel CI #556：success。
+  - Workflow Runtime JAR 构建 / 安装 + Kernel main/boot javac + 资源同步：success。
+  - Java 纯逻辑单测：1551 / 0。
+  - 前端 TypeScript：0 错误。
+  - 设备事件入站端点：17 / 0。
+  - Sidecar 设备事件全链路：8 / 0。
+  - 门禁总结果：失败 0。
+- Workflow Runtime PostgreSQL 17 #227：success。
+  - Schema Contract、双会话并发、CON-01..14、事务原子性 / Inbox 冲突：success。
+  - Java Workflow Runtime Repository 集成测试：28 tests，0 failures，0 errors。
+  - Bootstrap repeatable isolation：success。
+
+CI 链接：
+- https://github.com/rogerlzp/labos/actions/runs/44558687714
+- https://github.com/rogerlzp/labos/actions/runs/44558687751
+
+注意：这证明构建链和当前自动化门禁通过；仍不等于 Spring ApplicationContext 启动测试或 Runtime 端到端设备执行闭环已经完成。
