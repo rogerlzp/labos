@@ -228,7 +228,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             lockTokenActivationAttempt(request.runId(), tokenId, activationId, attemptId);
 
             Map<String, Object> attempt = jdbc.queryForMap("""
-                    SELECT status,dispatch_id,dispatch_epoch FROM wf_node_attempt
+                    SELECT status,dispatch_id,dispatch_epoch,worker_id FROM wf_node_attempt
                     WHERE attempt_id=? FOR UPDATE
                     """, attemptId);
             requireDispatchIdentity(attempt, dispatchId, request);
@@ -276,7 +276,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             lockTokenActivationAttempt(request.runId(), tokenId, activationId, attemptId);
 
             Map<String, Object> attempt = jdbc.queryForMap("""
-                    SELECT status,dispatch_id,dispatch_epoch FROM wf_node_attempt
+                    SELECT status,dispatch_id,dispatch_epoch,worker_id FROM wf_node_attempt
                     WHERE attempt_id=? FOR UPDATE
                     """, attemptId);
             requireDispatchIdentity(attempt, dispatchId, request);
@@ -293,9 +293,6 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             }
             if (!workerId.equals(attempt.get("worker_id"))) {
                 throw new IllegalStateException("WorkerStarted workerId mismatch");
-            }
-            if (!"ACCEPTED".equals(status)) {
-                throw new IllegalStateException("WorkerStarted requires ACCEPTED Attempt");
             }
 
             int changed = jdbc.update("""
