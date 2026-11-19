@@ -4,6 +4,7 @@ on:
     branches: [docs/workflow-runtime-architecture-v2-20261119]
     paths:
       - 'db/workflow_runtime/**'
+      - 'workflow-runtime/**'
       - '.github/workflows/workflow-runtime-db.yml'
   pull_request:
     paths:
