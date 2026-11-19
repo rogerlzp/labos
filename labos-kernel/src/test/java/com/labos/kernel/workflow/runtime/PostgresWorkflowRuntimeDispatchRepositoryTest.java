@@ -14,7 +14,9 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PostgresWorkflowRuntimeDispatchRepositoryTest {
-    private record Fixture(PostgresWorkflowRuntimeDispatchRepository repository, JdbcTemplate jdbc) {}
+    private record Fixture(PostgresWorkflowRuntimeDispatchRepository repository,
+                           PostgresWorkflowRuntimeCompletionRepository completion,
+                           JdbcTemplate jdbc) {}
 
     private Fixture fixture() {
         String url = System.getenv("LABOS_RUNTIME_TEST_URL");
@@ -27,8 +29,9 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
                 System.getenv().getOrDefault("LABOS_RUNTIME_TEST_USER", ""),
                 System.getenv().getOrDefault("LABOS_RUNTIME_TEST_PASSWORD", ""));
         JdbcTemplate jdbc = new JdbcTemplate(ds);
-        return new Fixture(new PostgresWorkflowRuntimeDispatchRepository(
-                jdbc, new PostgresRuntimeTransactionExecutor(new DataSourceTransactionManager(ds))), jdbc);
+        PostgresRuntimeTransactionExecutor tx = new PostgresRuntimeTransactionExecutor(new DataSourceTransactionManager(ds));
+        return new Fixture(new PostgresWorkflowRuntimeDispatchRepository(jdbc, tx),
+                new PostgresWorkflowRuntimeCompletionRepository(jdbc, tx), jdbc);
     }
 
     private String hash() {
@@ -146,6 +149,44 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         assertEquals(1, f.jdbc().queryForObject(
                 "SELECT reserved_count FROM wf_scheduler_capacity WHERE capacity_key=?", Integer.class, p.capacityKey()));
         assertEquals(5L, f.jdbc().queryForObject(
+                "SELECT event_seq FROM wf_workflow_run WHERE run_id=?", Long.class, p.runId()));
+
+        UUID nextToken = UUID.randomUUID();
+        var completionPayload = Map.of(
+                "tokenId", p.tokenId().toString(),
+                "activationId", p.activationId().toString(),
+                "attemptId", attempt.toString(),
+                "dispatchId", dispatch.toString(),
+                "dispatchEpoch", 0L,
+                "outputPayloadJson", "{\\"result\\":\\"ok\\"}",
+                "outputHash", hash(),
+                "nextTokenId", nextToken.toString(),
+                "nextNodeId", "next-task",
+                "incomingEdgeId", "edge-next"
+        );
+        var completionRequest = new WorkflowRuntimeTransactionPort.Request(
+                p.runId(), "complete-" + dispatch, "complete-message", hash(), 5, 0, completionPayload);
+        var completed = f.completion().completeNode(completionRequest);
+        assertEquals("COMPLETED", completed.outcome());
+        assertEquals(6, completed.runCommitVersion());
+        assertEquals("SUCCEEDED", f.jdbc().queryForObject(
+                "SELECT status FROM wf_node_attempt WHERE attempt_id=?", String.class, attempt));
+        assertEquals("COMPLETED", f.jdbc().queryForObject(
+                "SELECT status FROM wf_node_activation WHERE activation_id=?", String.class, p.activationId()));
+        assertEquals("CONSUMED", f.jdbc().queryForObject(
+                "SELECT status FROM wf_execution_token WHERE token_id=?", String.class, p.tokenId()));
+        assertEquals("READY", f.jdbc().queryForObject(
+                "SELECT status FROM wf_execution_token WHERE token_id=?", String.class, nextToken));
+        assertEquals("RELEASED", f.jdbc().queryForObject(
+                "SELECT status FROM wf_reservation WHERE attempt_id=?", String.class, attempt));
+        assertEquals(0, f.jdbc().queryForObject(
+                "SELECT in_flight_count FROM wf_workflow_run WHERE run_id=?", Integer.class, p.runId()));
+        assertEquals(0, f.jdbc().queryForObject(
+                "SELECT reserved_count FROM wf_scheduler_capacity WHERE capacity_key=?", Integer.class, p.capacityKey()));
+        assertEquals(6L, f.jdbc().queryForObject(
+                "SELECT event_seq FROM wf_workflow_run WHERE run_id=?", Long.class, p.runId()));
+        assertEquals("REPLAYED", f.completion().completeNode(completionRequest).outcome());
+        assertEquals(6L, f.jdbc().queryForObject(
                 "SELECT event_seq FROM wf_workflow_run WHERE run_id=?", Long.class, p.runId()));
     }
 }
