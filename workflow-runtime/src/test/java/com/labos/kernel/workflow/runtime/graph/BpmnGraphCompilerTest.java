@@ -35,7 +35,7 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void graphPlanSnapshotRoundTripsWithoutChangingItsHash() {
-        String xml="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\"><bpmn:startEvent id=\\"s\\"/><bpmn:endEvent id=\\"e\\"/><bpmn:sequenceFlow id=\\"f\\" sourceRef=\\"s\\" targetRef=\\"e\\"/></bpmn:process></bpmn:definitions>";
+        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"e\"/></bpmn:process></bpmn:definitions>";
         GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput("1","v1",xml,Map.of()));
         GraphPlan decoded=GraphPlanCodec.fromJson(GraphPlanCodec.toJson(plan));
         assertEquals(plan,decoded);
@@ -51,7 +51,7 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void rejectsDanglingEdgesAndDuplicateIds() {
-        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"missing\"/></bpmn:process></bpmn:definitions>";
+        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"e\"/></bpmn:process></bpmn:definitions>";
         assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
     }
