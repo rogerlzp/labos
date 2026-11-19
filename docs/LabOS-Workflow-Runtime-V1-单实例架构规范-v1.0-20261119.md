@@ -2,7 +2,9 @@
 
 - 日期：2026-11-19
 - 版本：V1 Single Instance
-- 状态：实现基线；Repository/DDL/Schema Contract/恢复服务已按单实例模型重构，最新 HEAD 的 PostgreSQL 17 CI 已通过
+- 状态：实现基线；Repository/DDL/Schema Contract/恢复服务已按单实例模型收敛
+- 已验证代码基线：40c1033a59167631c724678b1bfadbfdf7a7188a
+- PostgreSQL 17 CI：Run 44560926448（success）
 - PostgreSQL：17
 - 部署：一个 Runtime Host 进程，一个 PostgreSQL 数据库
 
@@ -94,7 +96,7 @@ Lease 超时不表示设备空闲。只有设备状态回读、安全点和释�
 
 ### 8.2 Runtime 进程崩溃后重启
 
-进程内 Worker 已随进程退出，但物理设备可能仍在动作。启动恢复扫描所有非终态 Attempt：未越过外部副作用边界的可安全 ABANDONED_SAFE 并重新调度；有 SIDE_EFFECT_STARTED、SEND_STARTED、ACKNOWLEDGED/RUNNING 或状态未知的先查询 commandId / 读取设备状态；不能确认时转 UNKNOWN/MANUAL_REQUIRED；设备明确完成则按已持久化设备回执完成 Attempt，不重复执行动作。
+进程内 Worker 已随进程退出，但物理设备可能仍在动作。启动恢复扫描 DISPATCHED、ACCEPTED、STARTED Attempt：未越过外部副作用边界的可安全 ABANDONED_SAFE 并重新调度；有 SIDE_EFFECT_STARTED、SEND_STARTED、ACKNOWLEDGED/RUNNING 或状态未知的先查询 commandId / 读取设备状态；不能确认时转 UNKNOWN/MANUAL_REQUIRED；设备明确完成则按已持久化设备回执完成 Attempt，不重复执行动作。
 
 恢复服务只在唯一 Runtime Host 启动流程内执行，不存在多实例接管或 Recovery 竞争。
 
@@ -114,7 +116,7 @@ Lease 超时不表示设备空闲。只有设备状态回读、安全点和释�
 
 worker_execution_fact、resource_lease、command_dispatch_attempt 本身仍有单实例审计/业务用途，不应因字段中存在旧 fencing 设计而整表删除。
 
-最终 Schema 表数须由新的 DDL 与 Schema Contract 共同定义，不再沿用旧版 33 表断言。
+最终 Schema 为 31 张表，由 001_init.sql 与 002_schema_contract.sql 共同定义。
 
 ## 10. V1 验收
 
@@ -131,4 +133,4 @@ worker_execution_fact、resource_lease、command_dispatch_attempt 本身仍有�
 
 ## 11. 实施状态声明
 
-本文件定义目标架构，不宣称当前代码已经达到目标。代码收敛必须同步更新 DDL、Schema Contract、Repository、RecoveryService、测试、CI 和实现文档。只有 PG17 CI 对最终提交成功，才可将相应项目标记 PASS。
+本文件是 V1 单实例规范基线。代码基线 40c1033a59167631c724678b1bfadbfdf7a7188a 已通过 PostgreSQL 17 CI Run 44560926448，覆盖 31 表 Schema Contract、CON-01..14、原子性、Inbox 冲突、Repository 8/8 和 WorkerExecutionRegistry 2/2。完整 Coordinator/WorkerPool/Dispatcher/Adapter 装配与设备 HIL 不在该 CI 的证明范围内。
