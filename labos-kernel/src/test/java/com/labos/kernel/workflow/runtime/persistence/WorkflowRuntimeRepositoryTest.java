@@ -70,6 +70,10 @@ class WorkflowRuntimeRepositoryTest {
                 "dispatcher-1",1L));
         assertFalse(repo.markCommandSendStarted(tenant,command,0L,UUID.randomUUID(),2,
                 "dispatcher-1",1L));
+        var receipt=repo.receiveInbox(tenant,"it-device","device-msg-"+UUID.randomUUID(),
+                "DEVICE_COMMAND_RESULT",first.runId(),"{\"commandId\":\""+command+"\",\"state\":\"SUCCEEDED\"}");
+        assertTrue(repo.applyCommandEvent(tenant,first.runId(),receipt.inboxId(),command,
+                "SUCCEEDED","seq-1","{\"verified\":true}"));
 
         repo.completeAttempt(tenant,first.runId(),reservation.attemptId(),"result",
                 "{\"ok\":true}");
