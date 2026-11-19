@@ -40,6 +40,7 @@ public interface WorkflowRuntimeTransactionPort {
     Result createRun(Request request);                       // T01
     Result startRun(Request request);                        // T02
     Result reserveAndCommitDispatch(Request request);        // T03
+    Result workerDispatchStarted(Request request);            // T03 Dispatch Outbox send boundary
     Result workerAccepted(Request request);                  // T04a
     Result workerStarted(Request request);                   // T04b
     Result completeNode(Request request);                    // T05
