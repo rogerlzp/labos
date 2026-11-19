@@ -1,4 +1,6 @@
-# Workflow Runtime Worker 执行事实与租约恢复协议 v1.0
+# [已废弃待删除] Workflow Runtime Worker 执行事实与租约恢复协议 v1.0
+
+> 本协议基于 Worker DB Lease、leaseEpoch、dispatchEpoch 和多执行者恢复模型，与 V1 单实例决议冲突。它不再是 V1 目标设计；后续以进程内 Worker 执行登记 + Attempt 状态 + append-only 副作用事实替代。当前代码仍存在这些实现，必须在后续代码收敛提交中删除，不能只删除本文。
 
 日期：2026-11-19  
 适用数据库：PostgreSQL 17  
