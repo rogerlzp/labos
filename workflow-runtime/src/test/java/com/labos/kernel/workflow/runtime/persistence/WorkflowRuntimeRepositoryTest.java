@@ -66,10 +66,15 @@ class WorkflowRuntimeRepositoryTest {
                 activationForAttempt(ds,tenant,reservation.attemptId()),reservation.attemptId(),
                 "device-1","RunMethod","QUERYABLE","{\"method\":\"test\"}");
         assertNotNull(command);
-        assertTrue(repo.markCommandSendStarted(tenant,command,0L,UUID.randomUUID(),1,
-                "dispatcher-1",1L));
-        assertFalse(repo.markCommandSendStarted(tenant,command,0L,UUID.randomUUID(),2,
-                "dispatcher-1",1L));
+        var commandOutbox=repo.claimOutbox(tenant,"dispatcher-1",10,Instant.now().plusSeconds(30))
+                .stream().filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
+        UUID dispatchId=UUID.randomUUID();
+        assertTrue(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
+                commandOutbox.owner(),commandOutbox.claimEpoch(),dispatchId,1,"dispatcher-1",1L));
+        assertTrue(repo.markOutboxDelivered(tenant,commandOutbox.outboxId(),
+                commandOutbox.owner(),commandOutbox.claimEpoch()));
+        assertFalse(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
+                commandOutbox.owner(),commandOutbox.claimEpoch(),UUID.randomUUID(),2,"dispatcher-1",1L));
         var receipt=repo.receiveInbox(tenant,"it-device","device-msg-"+UUID.randomUUID(),
                 "DEVICE_COMMAND_RESULT",first.runId(),"{\"commandId\":\""+command+"\",\"state\":\"SUCCEEDED\"}");
         assertTrue(repo.applyCommandEvent(tenant,first.runId(),receipt.inboxId(),command,
