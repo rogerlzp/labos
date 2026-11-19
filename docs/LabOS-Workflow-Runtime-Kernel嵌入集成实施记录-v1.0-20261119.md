@@ -12,6 +12,7 @@
 - labos-kernel/pom.xml 增加普通 Maven 依赖 com.labos:workflow-runtime:1.0.0-SNAPSHOT。
 - scripts/ensure-deps.sh 保证 Maven 可用；在依赖缺失、需要解析 Kernel Maven 依赖时，先安装 workflow-runtime 模块。
 - scripts/compile-kernel.sh 每次编译前执行 mvn -f workflow-runtime/pom.xml -DskipTests install，把 JAR 复制到 labos-kernel/lib/spring/。
+- workflow-runtime/pom.xml 显式固定 maven-resources-plugin 3.3.1，避免生命周期插件默认版本漂移。
 - Kernel 保持既有 javac → labos-kernel/out 构建和运行布局；JAR 由既有 lib/spring/* classpath 加载。
 - 不提交二进制产物。
 
@@ -22,7 +23,7 @@
 - Kernel 配置从既有 DataSourceConfiguration 注入唯一 Hikari DataSource 与唯一 PlatformTransactionManager。
 - Kernel 集成路径不创建新的 DataSourceTransactionManager，不创建新的连接池。
 - PostgreSQL 集成测试新增外层事务回滚验证：Repository 内部 resolveTenantId 必须加入外层事务；外层回滚后租户映射不得残留。
-- 新增 WorkflowRuntimeKernelConfigurationSelfTest：启动 AnnotationConfigApplicationContext，验证唯一 DataSource / PlatformTransactionManager 和 Runtime Bean 组合；断言未注册 RuntimeHost；解析 GraphMapper.xml，并对 Runtime Header/XML/Runtime metadata 三个 statement 执行 BoundSql 参数映射与 SQL 租户过滤断言（21 个检查点）。
+- 新增 WorkflowRuntimeKernelConfigurationSelfTest：启动 AnnotationConfigApplicationContext，验证唯一 DataSource / PlatformTransactionManager 和 Runtime Bean 组合；断言未注册 RuntimeHost；解析 GraphMapper.xml，并对 Runtime Header/XML/Runtime metadata 三个 statement 执行 BoundSql 参数映射与 SQL 租户过滤断言（25 个检查点）。
 
 ### 1.3 Kernel MyBatis BPMN DefinitionSource Adapter
 
@@ -37,13 +38,12 @@
 读取路径：
 1. Runtime UUID → Repository findTenantKey；
 2. LegacyKernelWorkflowDefinitionSource 只接受 kernel-tenant:<positive bigint>；
-3. Kernel MyBatis GraphMapper.selectWorkflowHeader(tenantId, workflowId) 读取版本/更新时间；
-4. GraphMapper.selectGraphXml(tenantId, workflowId) 读取原始 BPMN XML；
-5. 新增 selectRuntimeWorkflowHeader(tenantId, workflowId)，仅读取 Runtime 所需字段，并排除 deleted_at 非空的软删除流程；
-6. 新增 selectRuntimeWorkflowNodeMetadata(tenantId, workflowId)，同时按 tenant_id + workflow_id 过滤，只取 node_key、node id、capability code；
-7. Header、XML、节点元数据三次 MyBatis 读取被包装在同一个 REQUIRES_NEW + REPEATABLE_READ + readOnly 事务，避免并发保存期间拼接出混合版本；
-8. 编译 GraphPlan；
-7. WorkflowRunFactory 将 GraphPlan snapshot 写入 Runtime Repository。
+3. 新增 selectRuntimeWorkflowHeader(tenantId, workflowId)，读取版本/更新时间，并排除 deleted_at 非空的软删除流程；
+4. GraphMapper.selectGraphXml(tenantId, workflowId) 使用显式 @Param 读取原始 BPMN XML，并排除软删除流程；
+5. 新增 selectRuntimeWorkflowNodeMetadata(tenantId, workflowId)，同时按 node tenant_id + workflow_id 过滤，且 capability join 要求 c.tenant_id = n.tenant_id；
+6. Header、XML、节点元数据三次 MyBatis 读取被包装在同一个 REQUIRES_NEW + REPEATABLE_READ + readOnly 事务，避免并发保存期间拼接出混合版本；
+7. 编译 GraphPlan；
+8. WorkflowRunFactory 将 GraphPlan snapshot 写入 Runtime Repository。
 
 新增 Mapper 查询，不改变旧的 selectWorkflowNodes(workflowId) 等历史查询行为。
 
@@ -135,4 +135,4 @@ CI 链接：
 
 ## 8. Spring / MyBatis Smoke Test
 
-新增纯逻辑自测：labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeKernelConfigurationSelfTest.java，并加入 scripts/test-all.sh 的 PURE 列表。当前检查覆盖 Bean composition、RuntimeFacade、无 RuntimeHost、三个 Mapper 的 BoundSql 参数映射及租户/软删除 SQL 谓词。该测试不连接数据库、不启动 RuntimeHost，验证 Runtime Spring Bean composition、唯一 DataSource / PlatformTransactionManager、未提前创建 RuntimeHost，以及 GraphMapper.xml 三个关键 statement 的 MyBatis 解析绑定。最新 CI 结果以新提交对应 Actions 为准。
+新增纯逻辑自测：labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeKernelConfigurationSelfTest.java，并加入 scripts/test-all.sh 的 PURE 列表。当前检查覆盖 Bean composition、RuntimeFacade、无 RuntimeHost、三个 Mapper 的真实 ParamNameResolver 参数解析、BoundSql 参数映射及租户/软删除/capability tenant join SQL 谓词（25 个检查点）。该测试不连接数据库、不启动 RuntimeHost。最新 CI 结果以新提交对应 Actions 为准。
