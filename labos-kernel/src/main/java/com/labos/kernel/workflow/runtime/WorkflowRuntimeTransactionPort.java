@@ -19,8 +19,10 @@ public interface WorkflowRuntimeTransactionPort {
             Map<String, Object> payload
     ) {
         public Request {
+            if (runId == null) throw new IllegalArgumentException("runId required");
             if (requestId == null || requestId.isBlank()) throw new IllegalArgumentException("requestId required");
-            if (payloadHash == null || payloadHash.isBlank()) throw new IllegalArgumentException("payloadHash required");
+            if (payloadHash == null || !payloadHash.matches("[0-9a-fA-F]{64}"))
+                throw new IllegalArgumentException("payloadHash must be a 64-character SHA-256 hex string");
             if (expectedRunCommitVersion < 0 || coordinatorEpoch < 0) throw new IllegalArgumentException("negative version/epoch");
             payload = payload == null ? Map.of() : Map.copyOf(payload);
         }
