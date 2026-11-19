@@ -18,8 +18,24 @@ CREATE TABLE IF NOT EXISTS wf_workflow_definition_version (
     graph_plan_payload      jsonb NOT NULL,
     published_at            timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (tenant_id, definition_id, definition_version),
-    CONSTRAINT uq_wf_definition_hash UNIQUE (tenant_id, definition_hash)
+    CONSTRAINT uq_wf_definition_hash UNIQUE (tenant_id, definition_hash),
+    CONSTRAINT uq_wf_definition_pin UNIQUE
+      (tenant_id, definition_id, definition_version, definition_hash, compiler_version)
 );
+
+CREATE OR REPLACE FUNCTION wf_reject_definition_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $body$
+BEGIN
+  RAISE EXCEPTION 'published Workflow Definition versions are immutable';
+END;
+$body$;
+
+DROP TRIGGER IF EXISTS tr_wf_definition_immutable ON wf_workflow_definition_version;
+CREATE TRIGGER tr_wf_definition_immutable
+BEFORE UPDATE OR DELETE ON wf_workflow_definition_version
+FOR EACH ROW EXECUTE FUNCTION wf_reject_definition_mutation();
 
 CREATE TABLE IF NOT EXISTS wf_workflow_run (
     run_id                  uuid PRIMARY KEY,
@@ -45,8 +61,10 @@ CREATE TABLE IF NOT EXISTS wf_workflow_run (
     completed_at            timestamptz,
     updated_at              timestamptz NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT uq_wf_run_request UNIQUE (tenant_id, request_id),
-    CONSTRAINT fk_wf_run_definition FOREIGN KEY (tenant_id, definition_id, definition_version)
-      REFERENCES wf_workflow_definition_version(tenant_id, definition_id, definition_version),
+    CONSTRAINT fk_wf_run_definition FOREIGN KEY
+      (tenant_id, definition_id, definition_version, definition_hash, compiler_version)
+      REFERENCES wf_workflow_definition_version
+      (tenant_id, definition_id, definition_version, definition_hash, compiler_version),
     CONSTRAINT ck_wf_run_status CHECK (status IN (
       'CREATED','STARTING','RUNNING','PAUSE_REQUESTED','PAUSE_DRAINING',
       'PAUSED','RESUME_REQUESTED','STOP_REQUESTED','STOP_DRAINING',
@@ -606,6 +624,6 @@ BEGIN
       FOREIGN KEY (loop_context_id) REFERENCES wf_loop_context(loop_context_id)
       DEFERRABLE INITIALLY DEFERRED;
   END IF;
-END $;
+END $body$;
 
 COMMIT;
