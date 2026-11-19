@@ -311,3 +311,12 @@ Mock Adapter 必须模拟 ACK 与物理完成分离，支持延迟、重复事�
 - close 时停止接收新任务、尽力取消现有任务并中断线程。
 
 新增 `WorkerPoolTest` 覆盖每 Run 限额、全局队列上限、取消/注销和调度门闩。此交付尚未接入 GraphCoordinator；CI 未确认前不标记 PASS。
+
+### T24-B 第二个交付：每 Run 串行 Mailbox
+
+已新增：
+- `coordinator/SerialMailbox<T>`：每个 Run 使用有界队列；共享 Executor 执行 drain；同一 Mailbox 同时最多处理一个事件；队列满时显式拒绝；单条 handler RuntimeException 通过对应 Future 暴露，不静默吞掉。
+- `coordinator/RunCoordinatorRegistry<T>`：每个 Run 唯一 Mailbox，多个 Run 共享 Executor；只允许在 Mailbox 空闲时移除，防止旧 Mailbox 尚在处理事件时创建同 Run 的新 Mailbox。
+- 对应顺序、容量、异常和 Registry 测试。
+
+边界：这两个类提供串行事件投递基础设施，不等于 GraphCoordinator。GraphPlan 解释、Repository 状态推进、Inbox 事务处理和 Run 生命周期恢复仍未实现。
