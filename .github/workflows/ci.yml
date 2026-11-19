@@ -56,4 +56,4 @@ jobs:
         run: npm ci
 
       - name: 门禁（纯逻辑 624 + tsc）
-        run: ./scripts/ci-gate.sh
+        run: ./scripts/ci-gate.sh --fast

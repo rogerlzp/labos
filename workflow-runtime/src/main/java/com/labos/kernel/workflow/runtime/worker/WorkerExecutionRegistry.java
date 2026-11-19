@@ -60,10 +60,15 @@ public final class WorkerExecutionRegistry {
     /** Remove only the local handle; durable Attempt state is managed separately. */
     public boolean unregister(UUID attemptId, Thread expectedThread) {
         Entry current = active.get(attemptId);
-        if (current == null || current.thread != expectedThread || !active.remove(attemptId, current))
-            return false;
-        current.finish();
-        return true;
+        if (current == null || current.thread != expectedThread) return false;
+        // Serialize removal with cancel() on the same Entry. Marking the
+        // handle finished before removing it prevents a cancellation callback
+        // from racing with normal Worker completion.
+        synchronized (current) {
+            if (active.get(attemptId) != current) return false;
+            current.finish();
+            return active.remove(attemptId, current);
+        }
     }
 
     /** Best-effort local cancellation. This is not proof that a device action stopped. */

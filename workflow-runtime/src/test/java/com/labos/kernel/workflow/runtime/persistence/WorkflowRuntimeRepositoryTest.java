@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 import com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService;
 import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 
 import java.sql.Connection;
 import java.sql.Statement;
@@ -40,7 +43,18 @@ class WorkflowRuntimeRepositoryTest {
                     tenant+"','it-"+tenant+"','integration')");
         }
 
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        var sharedTransactionManager = new DataSourceTransactionManager(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,sharedTransactionManager);
+        String rollbackKey="kernel-tenant:rollback-"+UUID.randomUUID();
+        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(sharedTransactionManager).execute(status -> {
+            repo.resolveTenantId(rollbackKey,"must roll back with outer Kernel transaction");
+            throw new IllegalStateException("force outer rollback");
+        }));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.tenant WHERE tenant_key='"+rollbackKey+"'"));
+        String stableTenantKey="kernel-tenant:"+UUID.randomUUID();
+        UUID mappedTenant=repo.resolveTenantId(stableTenantKey,"Kernel integration tenant");
+        assertEquals(mappedTenant,repo.resolveTenantId(stableTenantKey,"Kernel integration tenant"));
+        assertEquals(stableTenantKey,repo.findTenantKey(mappedTenant));
         String requestId="request-"+UUID.randomUUID();
         byte[] definitionHash=new byte[32];
         var first=repo.createRun(tenant,requestId,"CREATE","{\"input\":1}",
@@ -50,12 +64,22 @@ class WorkflowRuntimeRepositoryTest {
         assertFalse(first.replayed());
         assertTrue(replay.replayed());
         assertEquals(first.runId(),replay.runId());
+        var snapshot=repo.loadRunDefinitionSnapshot(tenant,first.runId());
+        assertEquals("ci",snapshot.compilerVersion());
+        assertEquals("{}",snapshot.graphPlanJson());
+        assertTrue(repo.findNonTerminalRunSnapshots(1000).stream()
+                .anyMatch(x -> x.runId().equals(first.runId()) && x.tenantId().equals(tenant)));
 
         repo.startRun(tenant,first.runId());
         var reservation=repo.reserveCapacity(tenant,first.runId(),"it-capacity",1,
                 "node-1","DEVICE",Instant.now().plusSeconds(60));
         repo.dispatchAttempt(tenant,first.runId(),reservation.attemptId(),"worker-q",
                 "{\"attemptId\":\""+reservation.attemptId()+"\"}");
+        var workerOutbox=repo.beginOutboxSend(tenant,10).stream()
+                .filter(x -> x.dedupKey().equals("dispatch:"+reservation.attemptId())).findFirst().orElseThrow();
+        assertEquals("WORKER_DISPATCH",workerOutbox.messageKind());
+        assertEquals(first.runId(),workerOutbox.runId());
+        assertTrue(repo.markOutboxDelivered(tenant,workerOutbox.outboxId()));
 
         assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
                 repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1"));
@@ -77,6 +101,8 @@ class WorkflowRuntimeRepositoryTest {
         assertNotNull(command);
         var commandOutbox=repo.beginOutboxSend(tenant,10)
                 .stream().filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
+        assertEquals("DEVICE_COMMAND",commandOutbox.messageKind());
+        assertEquals(first.runId(),commandOutbox.runId());
         UUID dispatchId=UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
                 dispatchId,1,"dispatcher-1"));
@@ -107,7 +133,7 @@ class WorkflowRuntimeRepositoryTest {
             st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
                     tenant+"','inbox-"+tenant+"','integration')");
         } catch(Exception e) { throw new RuntimeException(e); }
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
         String msg="msg-"+UUID.randomUUID();
         var first=repo.receiveInbox(tenant,"it-adapter",msg,"DEVICE_EVENT",null,"{\"v\":1}");
         var replay=repo.receiveInbox(tenant,"it-adapter",msg,"DEVICE_EVENT",null,"{\"v\":1}");
@@ -127,7 +153,7 @@ class WorkflowRuntimeRepositoryTest {
             st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
                     tenant+"','graph-"+tenant+"','integration')");
         }
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
         String request="graph-"+UUID.randomUUID();
         var created=repo.createRun(tenant,request,"CREATE","{\"graph\":1}",
                 "graph-"+tenant,"1",new byte[32],"ci","{}","{}","start");
@@ -232,7 +258,7 @@ class WorkflowRuntimeRepositoryTest {
             st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
                     tenant+"','restart-pure-"+tenant+"','integration')");
         }
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
         var run=repo.createRun(tenant,"restart-pure-"+UUID.randomUUID(),"CREATE","{}",
                 "restart-pure-flow-"+tenant,"1",new byte[32],"ci","{}","{}","pure-node");
         repo.startRun(tenant,run.runId());
@@ -263,7 +289,7 @@ class WorkflowRuntimeRepositoryTest {
             st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
                     tenant+"','restart-unknown-"+tenant+"','integration')");
         }
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
         var run=repo.createRun(tenant,"restart-unknown-"+UUID.randomUUID(),"CREATE","{}",
                 "restart-unknown-flow-"+tenant,"1",new byte[32],"ci","{}","{}","device-node");
         repo.startRun(tenant,run.runId());
@@ -302,7 +328,7 @@ class WorkflowRuntimeRepositoryTest {
             st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
                     tenant+"','pause-"+tenant+"','integration')");
         }
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
         var created=repo.createRun(tenant,"pause-"+UUID.randomUUID(),"CREATE","{}",
                 "pause-"+tenant,"1",new byte[32],"ci","{}","{}","start");
         repo.startRun(tenant,created.runId());
@@ -336,7 +362,7 @@ class WorkflowRuntimeRepositoryTest {
             st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
                     tenant+"','drain-"+tenant+"','integration')");
         }
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
         var created=repo.createRun(tenant,"drain-"+UUID.randomUUID(),"CREATE","{}",
                 "drain-"+tenant,"1",new byte[32],"ci","{}","{}","start");
         repo.startRun(tenant,created.runId());
@@ -398,6 +424,39 @@ class WorkflowRuntimeRepositoryTest {
             try(var rs=ps.executeQuery()) { assertTrue(rs.next()); return rs.getObject(1,UUID.class); }
         } catch(Exception e) { throw new RuntimeException(e); }
     }
+
+    @Test
+    void startupRecoveryScansBeyondOneBatch() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource();
+        UUID tenant=UUID.randomUUID();
+        try(Connection connection=ds.getConnection(); Statement statement=connection.createStatement()) {
+            statement.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','recovery-"+tenant+"','integration')");
+        }
+
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        for(int i=0;i<2;i++) {
+            String requestId="recovery-request-"+i+"-"+UUID.randomUUID();
+            var run=repo.createRun(tenant,requestId,"CREATE","{\"recovery\":"+i+"}",
+                    "recovery-flow-"+i+"-"+tenant,"1",new byte[32],"ci","{}","{}","node-1");
+            repo.startRun(tenant,run.runId());
+            var reservation=repo.reserveCapacity(tenant,run.runId(),"recovery-capacity-"+i,1,
+                    "node-1","PURE",Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant,run.runId(),reservation.attemptId(),"worker-q","{}");
+            repo.acceptAttempt(tenant,run.runId(),reservation.attemptId(),
+                    reservation.dispatchId(),"worker-1");
+            repo.startAttempt(tenant,run.runId(),reservation.attemptId(),
+                    reservation.dispatchId(),"worker-1");
+        }
+
+        var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
+        var result=recovery.recoverAtStartup(1,"startup-recovery-test");
+        assertEquals(2,result.scanned(),"startup must continue until no STARTED Attempt remains");
+        assertEquals(2,result.safeToRetry());
+        assertEquals(0,result.manualRequired());
+        assertTrue(repo.findInterruptedAttempts(10).isEmpty());
+    }
     @Test
     void interruptedDispatchedAttemptIsAbandonedAndItsOutboxIsNotReplayed() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
@@ -406,7 +465,7 @@ class WorkflowRuntimeRepositoryTest {
             statement.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
                     tenant+"','restart-dispatched-"+tenant+"','integration')");
         }
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
         var run=repo.createRun(tenant,"restart-dispatched-"+UUID.randomUUID(),"CREATE","{}",
                 "restart-dispatched-flow-"+tenant,"1",new byte[32],"ci","{}","{}","dispatch-node");
         repo.startRun(tenant,run.runId());

@@ -1,7 +1,7 @@
 name: Workflow Runtime PostgreSQL 17
 on:
   push:
-    branches: [docs/workflow-runtime-architecture-v2-20261119, docs/workflow-runtime-single-instance-20261119]
+    branches: [docs/workflow-runtime-architecture-v2-20261119, docs/workflow-runtime-single-instance-20261119, 'feat/workflow-runtime-*']
     paths:
       - 'db/workflow_runtime/**'
       - 'workflow-runtime/**'
@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'db/workflow_runtime/**'
+      - 'workflow-runtime/**'
       - '.github/workflows/workflow-runtime-db.yml'
   workflow_dispatch:
 jobs:

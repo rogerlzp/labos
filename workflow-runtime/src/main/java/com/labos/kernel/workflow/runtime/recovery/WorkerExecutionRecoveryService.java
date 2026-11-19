@@ -36,8 +36,7 @@ public final class WorkerExecutionRecoveryService {
     }
 
     /**
-     * Reconcile one bounded batch of in-flight Attempts before opening dispatch.
-     * If scanned == limit, call again before starting the WorkerPool/Dispatcher.
+     * Reconcile all bounded pages of in-flight Attempts before opening dispatch. Outbox recovery runs only after all pages are safe.
      */
     public StartupResult recoverAtStartup(int limit, String recoveryActor) {
         if (limit < 1 || limit > 1000)
@@ -47,25 +46,32 @@ public final class WorkerExecutionRecoveryService {
         if (registry.activeCount() != 0)
             throw new IllegalStateException("Startup recovery must run before local Workers are started");
 
-        List<WorkflowRuntimeRepository.InterruptedAttempt> candidates =
-                repository.findInterruptedAttempts(limit);
-        List<RecoveryItem> items = new ArrayList<>(candidates.size());
-        int safe = 0, manual = 0, skipped = 0;
-        for (var candidate : candidates) {
-            var result = repository.recoverInterruptedAttempt(
-                    candidate.tenantId(), candidate.runId(), candidate.attemptId(), recoveryActor);
-            items.add(new RecoveryItem(candidate, result));
-            switch (result.outcome()) {
-                case "SAFE_TO_RETRY" -> safe++;
-                case "MANUAL_REQUIRED" -> manual++;
-                default -> skipped++;
+        List<RecoveryItem> items = new ArrayList<>();
+        int scanned = 0, safe = 0, manual = 0, skipped = 0;
+        while (true) {
+            List<WorkflowRuntimeRepository.InterruptedAttempt> candidates =
+                    repository.findInterruptedAttempts(limit);
+            if (candidates.isEmpty()) break;
+            scanned += candidates.size();
+            for (var candidate : candidates) {
+                var result = repository.recoverInterruptedAttempt(
+                        candidate.tenantId(), candidate.runId(), candidate.attemptId(), recoveryActor);
+                items.add(new RecoveryItem(candidate, result));
+                switch (result.outcome()) {
+                    case "SAFE_TO_RETRY" -> safe++;
+                    case "MANUAL_REQUIRED" -> manual++;
+                    default -> skipped++;
+                }
             }
+            // An in-flight row that cannot be reconciled must block startup;
+            // otherwise the same first page could be returned forever or unsafe work replayed.
+            if (skipped > 0)
+                throw new IllegalStateException("Startup recovery found unreconciled Attempts; Host must remain closed");
         }
 
-        // Attempt reconciliation must precede Outbox replay. In particular,
-        // a Worker_DISPATCH for an ACCEPTED/STARTED Attempt must not be replayed.
+        // Requeue Outbox only after every in-flight Attempt has been reconciled.
         var outbox = repository.recoverOutboxAfterRestart();
-        return new StartupResult(outbox, candidates.size(), safe, manual, skipped, items);
+        return new StartupResult(outbox, scanned, safe, manual, skipped, items);
     }
 
     /** Cancel a live local Worker first, then reconcile from durable facts. */

@@ -2,7 +2,7 @@ package com.labos.kernel.workflow.runtime.persistence;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -36,12 +36,13 @@ public final class WorkflowRuntimeRepository {
     private final TransactionTemplate tx;
     private final TransactionTemplate snapshotTx;
 
-    public WorkflowRuntimeRepository(DataSource dataSource) {
+    public WorkflowRuntimeRepository(DataSource dataSource, PlatformTransactionManager transactionManager) {
         Objects.requireNonNull(dataSource, "dataSource");
+        Objects.requireNonNull(transactionManager, "transactionManager");
         this.jdbc = new JdbcTemplate(dataSource);
-        this.tx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        this.tx = new TransactionTemplate(transactionManager);
         this.tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
-        this.snapshotTx = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        this.snapshotTx = new TransactionTemplate(transactionManager);
         this.snapshotTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         this.snapshotTx.setReadOnly(true);
     }
@@ -179,6 +180,70 @@ public final class WorkflowRuntimeRepository {
             """,tenantId,key);
         if(decremented!=1) throw new IllegalStateException("Capacity counter underflow/inconsistency");
         return true;
+    }
+
+    /**
+     * Resolve a stable application tenant key to its Runtime UUID.
+     * Callers must use a durable key (e.g. kernel-tenant:<legacy bigint>), never a random per-start key.
+     */
+    public UUID resolveTenantId(String tenantKey, String displayName) {
+        if(tenantKey==null || tenantKey.isBlank()) throw new IllegalArgumentException("tenantKey is required");
+        if(displayName==null || displayName.isBlank()) throw new IllegalArgumentException("displayName is required");
+        return required(() -> jdbc.queryForObject("""
+            INSERT INTO workflow_runtime.tenant(tenant_key,display_name)
+            VALUES (?,?)
+            ON CONFLICT (tenant_key) DO UPDATE SET display_name=EXCLUDED.display_name
+            RETURNING tenant_id
+            """, UUID.class, tenantKey, displayName));
+    }
+
+    /** Reverse lookup used by a Kernel DefinitionSource adapter; no bigint/UUID casting is allowed. */
+    public String findTenantKey(UUID runtimeTenantId) {
+        List<String> keys=jdbc.query("""
+            SELECT tenant_key FROM workflow_runtime.tenant WHERE tenant_id=?
+            """,(rs,n)->rs.getString(1),runtimeTenantId);
+        if(keys.size()!=1) throw new IllegalStateException("Runtime tenant not found");
+        return keys.get(0);
+    }
+
+    public record RunDefinitionSnapshot(UUID tenantId, UUID runId, String runStatus,
+                                         String controlGate, String compilerVersion,
+                                         String graphPlanJson) {}
+
+    /** Read the immutable definition snapshot referenced by one Run. */
+    public RunDefinitionSnapshot loadRunDefinitionSnapshot(UUID tenantId, UUID runId) {
+        List<RunDefinitionSnapshot> rows = snapshotTx.execute(status -> jdbc.query("""
+            SELECT r.tenant_id, r.run_id, r.status, r.control_gate,
+                   d.compiler_version, d.graph_plan::text AS graph_plan_json
+              FROM workflow_runtime.workflow_run r
+              JOIN workflow_runtime.definition_snapshot d
+                ON d.tenant_id=r.tenant_id AND d.definition_id=r.definition_id
+             WHERE r.tenant_id=? AND r.run_id=?
+            """, (rs,n) -> new RunDefinitionSnapshot(rs.getObject("tenant_id",UUID.class),
+                    rs.getObject("run_id",UUID.class),rs.getString("status"),
+                    rs.getString("control_gate"),rs.getString("compiler_version"),
+                    rs.getString("graph_plan_json")), tenantId, runId));
+        if(rows==null || rows.size()!=1) throw new IllegalStateException("Run definition snapshot not found or tenant mismatch");
+        return rows.get(0);
+    }
+
+    /** Enumerate non-terminal Runs for single-Host Coordinator restoration. */
+    public List<RunDefinitionSnapshot> findNonTerminalRunSnapshots(int limit) {
+        if(limit<1 || limit>1000) throw new IllegalArgumentException("limit must be 1..1000");
+        List<RunDefinitionSnapshot> rows = snapshotTx.execute(status -> jdbc.query("""
+            SELECT r.tenant_id, r.run_id, r.status, r.control_gate,
+                   d.compiler_version, d.graph_plan::text AS graph_plan_json
+              FROM workflow_runtime.workflow_run r
+              JOIN workflow_runtime.definition_snapshot d
+                ON d.tenant_id=r.tenant_id AND d.definition_id=r.definition_id
+             WHERE r.status NOT IN ('SUCCEEDED','FAILED','STOPPED')
+             ORDER BY r.created_at, r.tenant_id, r.run_id
+             LIMIT ?
+            """, (rs,n) -> new RunDefinitionSnapshot(rs.getObject("tenant_id",UUID.class),
+                    rs.getObject("run_id",UUID.class),rs.getString("status"),
+                    rs.getString("control_gate"),rs.getString("compiler_version"),
+                    rs.getString("graph_plan_json")), limit));
+        return rows==null ? List.of() : List.copyOf(rows);
     }
 
     /** T01: idempotently create a Run and its initial READY token. */
@@ -936,7 +1001,7 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    public record OutboxMessage(UUID outboxId, String dedupKey, String payloadJson) {}
+    public record OutboxMessage(UUID outboxId, UUID runId, String messageKind, String dedupKey, String payloadJson) {}
 
     /** Single-host dispatcher: lock and transition pending rows without distributed claims. */
     public List<OutboxMessage> beginOutboxSend(UUID tenantId, int batchSize) {
@@ -951,8 +1016,8 @@ public final class WorkflowRuntimeRepository {
             UPDATE workflow_runtime.runtime_outbox o
                SET outbox_state='SENDING',delivery_attempts=delivery_attempts+1
               FROM picked p WHERE o.tenant_id=? AND o.outbox_id=p.outbox_id
-            RETURNING o.outbox_id,o.dedup_key,o.payload::text
-            """,(rs,n)->new OutboxMessage(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3)),
+            RETURNING o.outbox_id,o.run_id,o.message_kind,o.dedup_key,o.payload::text
+            """,(rs,n)->new OutboxMessage(rs.getObject(1,UUID.class),rs.getObject(2,UUID.class),rs.getString(3),rs.getString(4),rs.getString(5)),
                 tenantId,batchSize,tenantId));
     }
 
@@ -1522,12 +1587,7 @@ public final class WorkflowRuntimeRepository {
     public record InterruptedAttempt(UUID tenantId, UUID runId, UUID attemptId) {}
     public record OutboxRestartResult(int safelyRequeued, int leftUncertain) {}
 
-    /**
-     * Recover Outbox rows after Attempt reconciliation on the sole Host.
-     * A Worker dispatch is replayable only while its Attempt is still DISPATCHED;
-     * accepted/started/terminal Attempts must never receive a second dispatch.
-     * A device command is replayable only before its SEND_STARTED boundary.
-     */
+    /** Requeue only SENDING messages whose external side-effect boundary was not crossed. */
     public OutboxRestartResult recoverOutboxAfterRestart() {
         return required(() -> {
             int workerRequeued=jdbc.update("""
