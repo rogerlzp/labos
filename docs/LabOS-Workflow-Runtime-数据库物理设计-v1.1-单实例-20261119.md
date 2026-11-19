@@ -4,8 +4,8 @@
 - 数据库：PostgreSQL 17
 - 运行模型：一个 Runtime Host 进程 + 一个 PostgreSQL 数据库
 - 状态：当前空库初始化 DDL / Schema Contract 已实现并通过 CI
-- 代码基线：40c1033a59167631c724678b1bfadbfdf7a7188a
-- CI：Run 44560926448（success）
+- 代码基线：f1e6ec0fb7a429bb894b7cd14770b85b67b44828
+- CI：Run 44562728674（success）
 
 ## 1. 设计原则
 
@@ -107,7 +107,7 @@ SchedulerCapacity 的容量预留，控制本地 WorkerPool 的全局容量和�
 - `db/workflow_runtime/tests/`：PostgreSQL 并发与原子性测试；
 - `workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/persistence/WorkflowRuntimeRepository.java`：事务边界。
 
-PostgreSQL 17 CI Run 44560926448：
+PostgreSQL 17 CI Run 44562728674：
 - 空库初始化：PASS；
 - 31 张表 Schema Contract：PASS；
 - 双会话基础并发测试：PASS；
@@ -116,4 +116,4 @@ PostgreSQL 17 CI Run 44560926448：
 - Java Repository 集成测试：8/8 PASS；
 - WorkerExecutionRegistry 测试：2/2 PASS。
 
-CI 不证明真实 WorkerPool、Coordinator、Adapter 和设备固件已完成 HIL 验证；这些属于运行时集成与硬件验收，不是数据库物理设计的通过项。
+双会话测试验证的是单 Host 内多线程可能触发的数据库事务竞争，不代表多个 Runtime Host 实例协同。CI 不证明真实 WorkerPool、Coordinator、Adapter 和设备固件已完成 HIL 验证；这些属于运行时集成与硬件验收，不是数据库物理设计的通过项。
