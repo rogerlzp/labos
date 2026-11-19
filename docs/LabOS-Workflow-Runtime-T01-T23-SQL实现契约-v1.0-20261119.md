@@ -137,3 +137,12 @@ WHERE tenant_id=:tenant_id AND resource_id=:resource_id RETURNING last_fencing_t
 - V1 一个设备 Attempt 一个 command_id；设备完成事实先写 BranchOutput，再由纯计算节点更新共享变量。
 
 本文件是 SQL 实现合同，不是 Repository 代码或测试通过证明。
+
+
+## 4. Repository 实现映射与实测（2026-11-19）
+
+独立 Java 17 模块：`workflow-runtime/`。主实现：`WorkflowRuntimeRepository`。当前 Repository primitive 已映射 T01–T23：T01 createRun；T02 startRun；T03-R reserveCapacity / T03-D dispatchAttempt；T04-A acceptAttempt / T04-S startAttempt；T05 completeAttempt；T06 scheduleRetry；T07 registerWait；T08 closeWait；T09 createSplit；T10 arriveBranch；T11 advanceLoop / completeLoop；T12 createCommand；T13 claimOutbox / markCommandSendStarted / markOutboxDelivered；T14 receiveInbox / applyCommandEvent / markInboxProcessed；T15 requestDrain；T16 advanceDrainScan；T17 releaseReservation；T18 acquireResourceLease / recordSafePointEvidence；T19 tryFinalizeDrain / markDrainManualRequired；T20 createCheckpoint；T21 markCommandUnknown / resolveUnknownCommand；T22 decideIntervention；T23 clearQuarantine。
+
+**当前 PG17 实测：** GitHub Actions Run ID `44498938264`，commit `10d99fd3ca0a22f03fdb186b6a88bef9b8dbb9d5`，全绿。包含空库初始化、Schema 合同、双连接基础竞态、CON-01..CON-14、事务原子性/Inbox 冲突测试、Java Repository 集成测试（5 tests，0 failures/errors）、最终表数核对。
+
+**实现边界：** 这证明当前 SQL schema、Repository 覆盖的事务路径及当前测试集可在 PostgreSQL 17.12 执行；不证明全部 T01–T23 崩溃矩阵已经完成，不证明 Worker/Coordinator/Adapter 已接入，更不证明设备物理 fencing 生效。T08 当前只允许将 CREATED/DISPATCHED/ACCEPTED 的旧 Attempt 安全关闭；已 STARTED 的设备任务必须先走 Command/设备核验，不允许本方法强制关闭。
