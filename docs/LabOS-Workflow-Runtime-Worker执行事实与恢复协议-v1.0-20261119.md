@@ -109,3 +109,15 @@ renewWorkerExecutionLease 使用以下条件：
 - Attempt 完成时写入 EXECUTION_RIGHT_RELEASED 并释放 Worker lease。
 
 CI 不是 Worker 多进程/Adapter/HIL 测试。Coordinator、WorkerPool、Recovery Orchestrator 服务本身尚未交付；设备 fencing 仍 UNKNOWN。
+
+
+## 8. 有界恢复批次服务
+
+新增 WorkerLeaseRecoveryService，提供 recoverExpiredBatch(limit, recoveryActor)：
+- 从 ACTIVE 且 expires_at 已过期的 Worker lease 中按过期时间扫描候选；
+- limit 限制为 1..1000；
+- 每个候选再由 Repository 在事务内重新核验并锁定；
+- SAFE_TO_RETRY / MANUAL_REQUIRED 分别计数，已被其他恢复批次处理的候选作为 skipped；
+- 重复扫描安全，不依赖进程内状态。
+
+该类是可被宿主调度器调用的批次服务，不是后台 daemon。触发频率、leader election、shutdown、监控告警和多实例部署仍由未来 Runtime Host 实现。
