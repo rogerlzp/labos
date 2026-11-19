@@ -403,7 +403,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **写集合：** Branch→ARRIVED；Branch Token→WAITING；BranchOutput；若 predicate 满足则 Split→CLOSED_SUCCESS、Join→RELEASED、全部参与 Branch Token→CONSUMED、Branch 关闭、唯一 downstream Token→READY；Events/Outbox。
 
-**锁/CAS：** Run → Split → Join → Branch（ID 排序）→ Branch Tokens（ID 排序）→ output rows。
+**锁/CAS：** Run → Split → 所有参与 Branch Token（token_id 排序）→ BranchActivation/Join（按 ID 排序）→ BranchOutput。该顺序服从 §1.4，禁止先锁 Branch/Join 再锁 Token。
 
 **步骤：**
 1. 校验 branch 属于 split、目标 Join 配对正确、内层结构已闭合。
