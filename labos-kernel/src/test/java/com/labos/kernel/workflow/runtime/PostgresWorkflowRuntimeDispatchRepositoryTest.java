@@ -248,6 +248,7 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
                 Map.entry("expiresAt", Instant.now().plusSeconds(120).toString()),
                 Map.entry("sideEffectClass", "PURE"),
                 Map.entry("attemptNo", 2),
+                Map.entry("retryOfAttemptId", sourceAttempt.toString()),
                 Map.entry("workerPayloadJson", "{}")
         );
         var request = new WorkflowRuntimeTransactionPort.Request(
@@ -261,5 +262,7 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         // RetryDue's committed effect closes the registration before the scheduler can dispatch.
         f.jdbc().update("UPDATE wf_retry_registration SET status='SATISFIED',satisfied_at=clock_timestamp() WHERE retry_id=?", retryId);
         assertEquals("DISPATCH_COMMITTED", f.repository().reserveAndCommitDispatch(request).outcome());
+        assertEquals(sourceAttempt, f.jdbc().queryForObject(
+                "SELECT retry_of_attempt_id FROM wf_node_attempt WHERE attempt_id=?", UUID.class, attempt));
     }
 }
