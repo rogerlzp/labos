@@ -91,6 +91,9 @@ done
 
 if [[ $missing -eq 1 ]]; then
   MVN="$(find_mvn)"
+  # Kernel declares workflow-runtime as a normal Maven dependency. Install this
+  # independent module first so dependency:copy-dependencies can resolve it.
+  "$MVN" -q -B -f "$ROOT/workflow-runtime/pom.xml" -DskipTests install
   "$MVN" -q -B dependency:copy-dependencies \
       -DincludeScope=runtime -DoutputDirectory=lib/spring
 fi
