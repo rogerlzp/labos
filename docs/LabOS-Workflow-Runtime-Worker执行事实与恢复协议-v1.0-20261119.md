@@ -1,14 +1,15 @@
-# Workflow Runtime Worker 执行事实与单实例恢复协议 v1.3
+# Workflow Runtime Worker 执行事实与单实例恢复协议 v1.4
 
 日期：2026-11-19  
 适用架构：LabOS Workflow Runtime V1 单实例规范  
-状态：Repository、DDL、Registry 和恢复入口已实现；代码基线 b4df784 已通过 PostgreSQL 17 CI
+代码基线：40c1033a59167631c724678b1bfadbfdf7a7188a  
+验证：PostgreSQL 17 CI Run 44560926448，成功
 
 ## 1. 设计边界
 
-V1 只部署一个 Runtime Host 进程，由部署配置保证唯一。V1 不使用数据库 Worker Lease，不使用 leaseEpoch、leaseVersion、dispatchEpoch、Coordinator epoch 或设备 fencing token。Worker 执行登记保存在进程内 WorkerExecutionRegistry 中。
+V1 只部署一个 Runtime Host 进程，由部署配置保证唯一。V1 不使用数据库 Worker Lease，不使用 leaseEpoch、leaseVersion、dispatchEpoch、Coordinator epoch 或设备 fencing token。Worker 执行登记保存在进程内 WorkerExecutionRegistry。
 
-数据库仍保存 Attempt 状态和 append-only 执行事实。进程内 Registry 用于同一 Host 内的执行登记和尽力取消；数据库事务/version 用于持久化状态转换。二者均不能撤销已发送的设备命令，也不能证明设备已停止。
+数据库保存 Attempt 状态和 append-only 执行事实。Registry 用于同一 Host 内的执行登记和尽力取消；数据库事务/version 用于持久化状态转换。两者均不能撤销已发送的设备命令，也不能证明设备已停止。
 
 ## 2. 执行事实与顺序
 
@@ -17,7 +18,7 @@ worker_execution_fact 是 append-only 证据账本，记录：
 - SIDE_EFFECT_STARTED
 - SIDE_EFFECT_COMPLETED
 - SIDE_EFFECT_UNKNOWN
-- EXECUTION_RIGHT_RELEASED
+- EXECUTION_RIGHT_RELEASED（执行结束审计事实，不是分布式执行权）
 
 事实包含 tenantId、runId、attemptId、factSeq、factKey、factType、actor、dispatchId、payload、createdAt。factSeq 在锁定 Attempt 行的事务内通过 MAX(fact_seq)+1 分配；factKey 同内容幂等、不同内容拒绝。数据库 Trigger 禁止 UPDATE/DELETE。
 
@@ -46,21 +47,23 @@ Future.cancel、线程中断、线程退出、超时都不是设备停止证据�
 
 Host 存活时：
 - 通过 Registry 请求本地取消；
+- Repository 在 Run → Token → Activation → Attempt 的锁序下重新核验 Attempt 状态；
 - 能证明没有 SIDE_EFFECT_STARTED、没有 SEND_STARTED、没有未决/不确定 Command，才可将 Attempt 标记 ABANDONED_SAFE；
 - 已越过副作用边界或证据不完整，必须转 UNKNOWN/MANUAL_REQUIRED，关闭 Run control gate；
 - 不得通过简单重试来覆盖不确定的设备动作。
 
 ## 5. Runtime 重启恢复
 
-唯一 Host 启动时调用 WorkerExecutionRecoveryService.recoverAtStartup：
-1. 对 SENDING Outbox 做恢复判断；
-2. 非设备消息及尚未越过 SEND_STARTED 的设备命令可回到 PENDING；
-3. 已越过 SEND_STARTED 的命令不自动重发；
-4. 扫描 STARTED Attempt，并在 Run/Attempt 锁下重新判断执行事实和 Command Ledger；
-5. 无副作用边界证据且无不确定命令时，Attempt→ABANDONED_SAFE，释放容量预留，Token 恢复 READY；
-6. 已有副作用证据或命令结果不确定时，Command/Attempt→UNKNOWN，Run→MANUAL_REQUIRED，controlGate=CLOSED，并创建人工介入记录。
+部署保证只有一个 Host 进程后，在启动 WorkerPool / Outbox Dispatcher 前调用 WorkerExecutionRecoveryService.recoverAtStartup：
 
-恢复服务不做多实例 Recovery 竞争、接管或 Leader 选举。
+1. 先扫描非终态派发中的 Attempt：DISPATCHED、ACCEPTED、STARTED；每批 1..1000 条；
+2. 每个候选在 Repository 事务内按 Run → Token → Activation → Attempt 顺序加锁并重新核验；
+3. 未越过副作用边界的 Attempt 转 ABANDONED_SAFE，释放 Scheduler reservation，Activation 结束，Token 恢复 READY；
+4. 已有 SIDE_EFFECT_STARTED、SEND_STARTED、ACKNOWLEDGED/RUNNING 或不确定 Command 时，Command/Attempt 转 UNKNOWN，Run 转 MANUAL_REQUIRED，controlGate=CLOSED，并创建人工介入记录；
+5. 对已恢复 Attempt 的旧 WORKER_DISPATCH Outbox 标记 DEAD_LETTER，防止旧派发再次执行；
+6. 最后恢复剩余 SENDING Outbox：内部消息可回到 PENDING；设备命令只有仍处于 CREATED/DISPATCH_PENDING、未越过 SEND_STARTED 边界时才可回到 PENDING；不确定设备命令保持不自动重发。
+
+若本批 scanned 达到 limit，Host 必须继续调用恢复服务，直到某批 scanned 小于 limit，之后才允许打开 WorkerPool 和 Dispatcher。恢复服务不是多实例 Recovery 竞争、接管或 Leader 选举。
 
 ## 6. 设备命令与人工核验
 
@@ -70,4 +73,12 @@ UNKNOWN 不能因超时自动转 FAILED，也不能自动重发。必须通过 c
 
 ## 7. 验证边界
 
-PostgreSQL 17 CI 覆盖空库 DDL、Schema Contract、并发矩阵、事务原子性、Repository 集成测试和 Registry 生命周期。它不替代真机 Adapter 的命令幂等、commandId 回显、设备状态查询、物理安全点和断电/断网故障注入验收。
+CI Run 44560926448（PostgreSQL 17）：
+- 空库 DDL 初始化、31 表 Schema Contract：PASS；
+- 双会话数据库并发基础测试：PASS；
+- CON-01..CON-14：14/14 PASS；
+- 事务原子性与 Inbox 冲突：PASS；
+- Java Repository 集成测试：8/8 PASS；
+- WorkerExecutionRegistry 测试：2/2 PASS。
+
+CI 不替代真机 Adapter 的命令幂等、commandId 回显、设备状态查询、物理安全点和断电/断网故障注入验收。完整 WorkerPool、Coordinator、Dispatcher 与设备 Adapter 端到端装配仍需单独验收。
