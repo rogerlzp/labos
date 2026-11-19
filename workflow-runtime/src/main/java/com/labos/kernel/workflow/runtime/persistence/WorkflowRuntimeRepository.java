@@ -737,7 +737,14 @@ public final class WorkflowRuntimeRepository {
                        token_version=token_version+1
                  WHERE tenant_id=? AND branch_id=? AND token_state IN ('READY','RUNNING','WAITING')
                 """,tenantId,branchId);
-            if(branchTokenChanged!=1) throw new StaleRuntimeWriteException("Branch Token is not active");
+            if(branchTokenChanged==0) {
+                String tokenState=jdbc.queryForObject("""
+                    SELECT token_state FROM workflow_runtime.execution_token
+                     WHERE tenant_id=? AND branch_id=?
+                    """,String.class,tenantId,branchId);
+                if(!"CONSUMED".equals(tokenState))
+                    throw new StaleRuntimeWriteException("Branch Token is neither active nor already consumed");
+            }
             int splitAdvanced=jdbc.update("""
                 UPDATE workflow_runtime.split_activation SET arrived_branch_count=arrived_branch_count+1,
                        version=version+1
