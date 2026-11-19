@@ -1,4 +1,4 @@
-# Workflow Runtime Worker 执行事实与单实例恢复协议 v1.1
+# Workflow Runtime Worker 执行事实与单实例恢复协议 v1.2
 
 日期：2026-11-19  
 适用架构：LabOS Workflow Runtime V1 单实例规范  
@@ -6,7 +6,7 @@
 
 ## 1. 设计边界
 
-V1 不使用数据库 Worker Lease，不使用 leaseEpoch、leaseVersion、dispatchEpoch 或设备 fencing token。Runtime 只有一个 Host 进程；Worker 执行登记保存在该进程的有界 WorkerPool 和 Attempt registry 中。
+V1 只部署一个 Runtime Host 进程，由部署配置保证唯一，不在 PostgreSQL 中实现 Host 锁、租约或选举。V1 不使用数据库 Worker Lease，不使用 leaseEpoch、leaseVersion、dispatchEpoch 或设备 fencing token。Worker 执行登记保存在该进程的有界 WorkerPool 和 Attempt registry 中。
 
 数据库仍保存 Attempt 状态和 append-only 执行事实。进程内执行登记用于取消和防止同一进程重复调度；数据库事务/version 用于持久化状态转换。二者均不宣称能够终止物理设备动作。
 
