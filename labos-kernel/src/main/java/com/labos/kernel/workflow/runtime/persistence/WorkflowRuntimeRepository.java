@@ -155,13 +155,13 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,definition_id,definition_key,definition_version,definition_hash,
                    compiler_version,graph_plan)
                 VALUES (?,?,?,?,?,?,?::jsonb)
-                ON CONFLICT (tenant_id,definition_key,definition_version) DO NOTHING
+                ON CONFLICT (tenant_id,definition_key,definition_version,definition_hash) DO NOTHING
                 """, tenantId, definitionId, definitionKey, definitionVersion, definitionHash,
                     compilerVersion, graphPlanJson);
             UUID actualDefinitionId = jdbc.queryForObject("""
                 SELECT definition_id FROM workflow_runtime.definition_snapshot
-                 WHERE tenant_id=? AND definition_key=? AND definition_version=?
-                """, UUID.class, tenantId, definitionKey, definitionVersion);
+                 WHERE tenant_id=? AND definition_key=? AND definition_version=? AND definition_hash=?
+                """, UUID.class, tenantId, definitionKey, definitionVersion, definitionHash);
             UUID runId = UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.workflow_run
@@ -350,6 +350,18 @@ public final class WorkflowRuntimeRepository {
                 SELECT activation_id FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
                 """, UUID.class, tenantId, runId, attemptId);
+            String sideEffectClass=jdbc.queryForObject("""
+                SELECT side_effect_class FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND attempt_id=?
+                """,String.class,tenantId,attemptId);
+            if("DEVICE".equals(sideEffectClass)) {
+                Integer commandSucceeded=jdbc.queryForObject("""
+                    SELECT count(*) FROM workflow_runtime.command_ledger
+                     WHERE tenant_id=? AND attempt_id=? AND command_state='SUCCEEDED'
+                    """,Integer.class,tenantId,attemptId);
+                if(commandSucceeded==null||commandSucceeded!=1)
+                    throw new IllegalStateException("Device Attempt requires a SUCCEEDED Command before output commit");
+            }
             int changed = jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='SUCCEEDED',
                        finished_at=clock_timestamp(),attempt_version=attempt_version+1,
@@ -463,11 +475,19 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,split_id,run_id,source_activation_id,split_state,expected_branch_count)
                 VALUES (?,?,?,?,'OPEN',?)
                 """,tenantId,splitId,runId,sourceActivationId,branchKeys.size());
-            for(String key:branchKeys) jdbc.update("""
-                INSERT INTO workflow_runtime.branch_activation
-                  (tenant_id,run_id,split_id,branch_key,branch_state)
-                VALUES (?,?,?,?,'ACTIVE')
-                """,tenantId,runId,splitId,key);
+            for(String key:branchKeys) {
+                UUID branchId=UUID.randomUUID();
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.branch_activation
+                      (tenant_id,branch_id,run_id,split_id,branch_key,branch_state)
+                    VALUES (?,?,?, ?,?,'ACTIVE')
+                    """,tenantId,branchId,runId,splitId,key);
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.execution_token
+                      (tenant_id,run_id,token_state,node_key,split_id,branch_id)
+                    VALUES (?,?,'READY',?,?,?)
+                    """,tenantId,runId,key,splitId,branchId);
+            }
             appendEvents(tenantId,runId,epoch,List.of(new EventDraft("SPLIT_CREATED","SPLIT",
                     splitId,0L,null,null,"{\"expectedBranches\":"+branchKeys.size()+"}")));
             return splitId;
@@ -508,11 +528,18 @@ public final class WorkflowRuntimeRepository {
                 SELECT arrived_branch_count FROM workflow_runtime.split_activation
                  WHERE tenant_id=? AND split_id=?
                 """,Integer.class,tenantId,splitId);
-            if(Objects.equals(expected,count)) jdbc.update("""
-                UPDATE workflow_runtime.join_activation SET join_state='RELEASED',
-                       released_at=clock_timestamp(),version=version+1
-                 WHERE tenant_id=? AND split_id=? AND join_key=? AND join_state='WAITING'
-                """,tenantId,splitId,joinKey);
+            if(Objects.equals(expected,count)) {
+                int released=jdbc.update("""
+                    UPDATE workflow_runtime.join_activation SET join_state='RELEASED',
+                           released_at=clock_timestamp(),version=version+1
+                     WHERE tenant_id=? AND split_id=? AND join_key=? AND join_state='WAITING'
+                    """,tenantId,splitId,joinKey);
+                if(released==1) jdbc.update("""
+                    INSERT INTO workflow_runtime.execution_token
+                      (tenant_id,run_id,token_state,node_key,split_id)
+                    VALUES (?,?,'READY',?,?)
+                    """,tenantId,runId,joinKey,splitId);
+            }
             appendEvents(tenantId,runId,epoch,List.of(new EventDraft("BRANCH_ARRIVED","SPLIT",
                     splitId,null,null,null,"{\"branchKey\":\""+jsonEscape(branchKey)+"\"}")));
             return true;
@@ -769,7 +796,7 @@ public final class WorkflowRuntimeRepository {
                   (SELECT count(*) FROM workflow_runtime.execution_token
                     WHERE tenant_id=? AND run_id=? AND token_state IN ('READY','RESERVED','RUNNING','WAITING')) +
                   (SELECT count(*) FROM workflow_runtime.drain_item
-                    WHERE tenant_id=? AND drain_id=? AND item_state NOT IN ('SAFE','MANUAL_REQUIRED'))
+                    WHERE tenant_id=? AND drain_id=? AND item_state <> 'SAFE')
                 """,Long.class,tenantId,runId,tenantId,runId,tenantId,runId,tenantId,runId,
                     tenantId,runId,tenantId,runId,tenantId,drainId);
             if(unsafe==null||unsafe>0) return false;
@@ -810,9 +837,20 @@ public final class WorkflowRuntimeRepository {
             String retries=readJsonArray("retry_registration",tenantId,runId);
             String commands=readJsonArray("command_ledger",tenantId,runId);
             String leases=readJsonArray("resource_lease",tenantId,runId);
+            String splits=readJsonArray("split_activation",tenantId,runId);
+            String branches=readJsonArray("branch_activation",tenantId,runId);
+            String joins=readJsonArray("join_activation",tenantId,runId);
+            String loops=readJsonArray("loop_context",tenantId,runId);
+            String variables=readJsonArray("flow_variable",tenantId,runId);
+            String outputs=readJsonArray("branch_output",tenantId,runId);
+            String reservations=readJsonArray("dispatch_reservation",tenantId,runId);
+            String drains=readJsonArray("drain_record",tenantId,runId);
             String snapshot="{\"run\":"+runJson+",\"tokens\":"+tokens+",\"activations\":"+activations+
                     ",\"attempts\":"+attempts+",\"waits\":"+waits+",\"retries\":"+retries+
-                    ",\"commands\":"+commands+",\"leases\":"+leases+"}";
+                    ",\"commands\":"+commands+",\"leases\":"+leases+",\"splits\":"+splits+
+                    ",\"branches\":"+branches+",\"joins\":"+joins+",\"loops\":"+loops+
+                    ",\"variables\":"+variables+",\"outputs\":"+outputs+",\"reservations\":"+reservations+
+                    ",\"drains\":"+drains+"}";
             byte[] hash=sha256(snapshot);
             UUID checkpointId=UUID.randomUUID();
             return new Checkpoint(checkpointId,head.commitVersion(),head.eventSeq(),
@@ -835,7 +873,7 @@ public final class WorkflowRuntimeRepository {
 
     private String readJsonArray(String table, UUID tenantId, UUID runId) {
         // Table names are fixed internal constants, never user input.
-        return jdbc.queryForObject("SELECT COALESCE(jsonb_agg(to_jsonb(x)),'[]'::jsonb)::text FROM workflow_runtime."
+        return jdbc.queryForObject("SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY to_jsonb(x)::text),'[]'::jsonb)::text FROM workflow_runtime."
                 + table + " x WHERE tenant_id=? AND run_id=?",String.class,tenantId,runId);
     }
 
