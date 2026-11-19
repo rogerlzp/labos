@@ -326,3 +326,28 @@ Mock Adapter 必须模拟 ACK 与物理完成分离，支持延迟、重复事�
 Repository 的 `OutboxMessage` 现在显式返回 `outboxId`、`runId`、`messageKind`、`dedupKey` 和 payload。此前只返回 dedupKey/payload，不足以让 Dispatcher 可靠地区分 `WORKER_DISPATCH` 与 `DEVICE_COMMAND`。对应 Repository 集成测试已增加两类消息的 kind 和 Run 归属断言。
 
 这只是 Dispatcher 的必要输入，不代表 Dispatcher 已实现。设备 Command 发送还需要读取不可变 Command payload/version，并在 Adapter 调用前完成 `markCommandSendStarted`；Worker dispatch 则需要将持久化消息交给 WorkerPool/Handler。两条路径不得混用。
+
+
+## 11. T24-F：BPMN / GraphPlan 编译边界首轮落地（2026-11-19）
+
+新增代码见 `docs/LabOS-Workflow-Runtime-BPMN-GraphPlan契约与实施记录-v1.0-20261119.md`。
+
+已新增：
+- 不可变 `GraphPlan` 数据契约；
+- 确定性 JSON 序列化与 SHA-256；
+- 安全 XML 编译器，保留 sequenceFlow 条件与 gateway default；
+- 只读 `WorkflowDefinitionSource` port；
+- `WorkflowRunFactory`，将当前 BPMN 编译并通过 `Repository.createRun` 固化 snapshot；
+- 编译器单测：正常路径、条件/default、节点元数据、不支持元素拒绝、悬空边拒绝。
+
+### 必须保留的边界
+
+1. 旧 Kernel 的 tenant 主键是 bigint；Runtime 的 tenant 主键是 UUID，且另有唯一 tenant_key。尚未实现显式稳定映射，不得直接把 bigint 转 UUID。
+2. Kernel DefinitionSource 的 MyBatis adapter 尚未实现；当前是接口端口，不是已接入 Kernel 的可运行读取器。
+3. Kernel Spring Boot 装配和共享 DataSource/PlatformTransactionManager 尚未实现。
+4. GraphPlan snapshot 写入已由现有 `createRun` 路径完成；按 Run 读取、反序列化和 hash/schema 校验尚未实现。
+5. GraphCoordinator、表达式求值、Outbox/Adapter/Inbox、Mock E2E、故障注入尚未完成。
+
+### CI 问题修复
+
+本轮发现前一提交的 PostgreSQL 集成测试 JSON 字符串转义错误，已修正；同时 CI workflow 的“纯逻辑门禁”误调用默认 `ci-gate.sh`（会读取未配置的 `LABOS_DB_PASS` 并启动需要外部环境的场景），已改为 `ci-gate.sh --fast`。修复后的 CI 正在重新运行，未收到结果前不标记 PASS。
