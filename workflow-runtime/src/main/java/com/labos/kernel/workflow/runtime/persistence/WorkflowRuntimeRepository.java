@@ -513,8 +513,16 @@ public final class WorkflowRuntimeRepository {
                 """, tenantId, tenantId, activationId);
             if(tokenChanged!=1) throw new StaleRuntimeWriteException("Token is not active");
             releaseReservationInTransaction(tenantId,attemptId);
+            List<String> leaseIdentity=jdbc.query("""
+                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
+                  FROM workflow_runtime.worker_execution_lease
+                 WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE' FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,attemptId);
+            if(leaseIdentity.size()!=1) throw new StaleRuntimeWriteException("Worker execution lease is not active at completion");
+            String[] leaseParts=leaseIdentity.get(0).split("\\|");
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"execution-right-released","EXECUTION_RIGHT_RELEASED",
-                    "WORKER","completion",null,0L,1L,"{\"reason\":\"attempt-succeeded\"}");
+                    "WORKER","completion",UUID.fromString(leaseParts[0]),Long.parseLong(leaseParts[1]),
+                    Long.parseLong(leaseParts[2]),"{\"reason\":\"attempt-succeeded\"}");
             jdbc.update("""
                 UPDATE workflow_runtime.worker_execution_lease SET lease_state='RELEASED',
                        lease_version=lease_version+1,ended_at=clock_timestamp()
@@ -977,14 +985,15 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND attempt_id=? FOR UPDATE
                 """,String.class,tenantId,attemptId);
             if(!"STARTED".equals(attemptState) || !"OPEN".equals(head.controlGate())) return false;
-            List<Long> leaseEpochs=jdbc.query("""
-                SELECT lease_epoch FROM workflow_runtime.worker_execution_lease
+            List<String> leaseRows=jdbc.query("""
+                SELECT dispatch_epoch::text||'|'||lease_epoch FROM workflow_runtime.worker_execution_lease
                  WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
                    AND expires_at>clock_timestamp() FOR UPDATE
-                """,(rs,n)->rs.getLong(1),tenantId,attemptId);
-            if(leaseEpochs.size()!=1)
+                """,(rs,n)->rs.getString(1),tenantId,attemptId);
+            if(leaseRows.size()!=1)
                 throw new StaleRuntimeWriteException("Worker execution right expired before Command dispatch");
-            long leaseEpoch=leaseEpochs.get(0);
+            String[] leaseParts=leaseRows.get(0).split("\\|");
+            long workerDispatchEpoch=Long.parseLong(leaseParts[0]), leaseEpoch=Long.parseLong(leaseParts[1]);
             jdbc.queryForObject("""
                 SELECT command_id FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND command_id=? FOR UPDATE
@@ -1010,7 +1019,7 @@ public final class WorkflowRuntimeRepository {
                 VALUES (?,?,?,?,'SEND_STARTED',?,?,clock_timestamp())
                 """,tenantId,dispatchId,commandId,dispatchNo,dispatcherId,fencingToken);
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-send:"+dispatchId,
-                    "SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,dispatchId,head.coordinatorEpoch(),
+                    "SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,dispatchId,workerDispatchEpoch,
                     leaseEpoch,"{\"commandId\":\""+commandId+"\",\"dispatchNo\":"+dispatchNo+"}");
             return true;
         });
@@ -1477,8 +1486,7 @@ public final class WorkflowRuntimeRepository {
     public boolean recordWorkerFact(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
                                     long dispatchEpoch, long leaseEpoch, String workerId,
                                     String factKey, String factType, String payloadJson) {
-        if(!List.of("SIDE_EFFECT_STARTED","SIDE_EFFECT_COMPLETED","SIDE_EFFECT_UNKNOWN",
-                "EXECUTION_RIGHT_RELEASED").contains(factType))
+        if(!List.of("SIDE_EFFECT_STARTED","SIDE_EFFECT_COMPLETED","SIDE_EFFECT_UNKNOWN").contains(factType))
             throw new IllegalArgumentException("Unsupported externally submitted Worker fact");
         return required(() -> {
             lockRun(tenantId,runId);
