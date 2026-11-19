@@ -19,12 +19,12 @@ class PostgresWorkflowRuntimeBootstrapRepositoryTest {
         Assumptions.assumeTrue(url != null && !url.isBlank(), "PostgreSQL test DB not configured");
         String schema = System.getenv().getOrDefault("LABOS_RUNTIME_TEST_SCHEMA", "public");
         Assumptions.assumeTrue(schema.matches("[A-Za-z_][A-Za-z0-9_]*"), "invalid test schema");
+        String jdbcUrl = url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema;
         DriverManagerDataSource ds = new DriverManagerDataSource(
-                url,
+                jdbcUrl,
                 System.getenv().getOrDefault("LABOS_RUNTIME_TEST_USER", ""),
                 System.getenv().getOrDefault("LABOS_RUNTIME_TEST_PASSWORD", ""));
         JdbcTemplate jdbc = new JdbcTemplate(ds);
-        jdbc.execute("SET search_path TO \"" + schema + "\"");
         return new Fixture(new PostgresWorkflowRuntimeBootstrapRepository(
                 jdbc, new PostgresRuntimeTransactionExecutor(new DataSourceTransactionManager(ds))), jdbc);
     }
