@@ -43,10 +43,9 @@ public final class RunCoordinatorRegistry<T> implements AutoCloseable {
     }
 
     public synchronized boolean remove(UUID runId) {
-        SerialMailbox<T> mailbox = mailboxes.remove(runId);
-        if (mailbox == null) return false;
-        mailbox.close();
-        return true;
+        SerialMailbox<T> mailbox = mailboxes.get(runId);
+        if (mailbox == null || !mailbox.closeIfIdle()) return false;
+        return mailboxes.remove(runId, mailbox);
     }
 
     public int runCount() { return mailboxes.size(); }
