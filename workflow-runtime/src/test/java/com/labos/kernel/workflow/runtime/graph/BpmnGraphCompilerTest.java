@@ -51,7 +51,7 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void rejectsDanglingEdgesAndDuplicateIds() {
-        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"e\"/></bpmn:process></bpmn:definitions>";
+        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"missing\"/></bpmn:process></bpmn:definitions>";
         assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
     }
