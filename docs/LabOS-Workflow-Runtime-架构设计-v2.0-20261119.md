@@ -1826,3 +1826,1077 @@ Runtime 不应把“能执行节点”视为无限权限。
 **Definition 静态不可变；Run 状态由 Token 表达；Coordinator 单写者；节点异步执行；等待不占 Worker；SPLIT/JOIN 和循环显式建模；状态、事件与 Outbox 原子提交；设备命令独立记账；UNKNOWN 必须隔离；恢复以持久化事实为准。**
 
 这才是 LabOS 新系统应当建立的 Workflow Runtime 内核。
+
+
+---
+
+# 23. Runtime State Machine 规范（Normative）
+
+本章是 v2.0 的规范性补充。若前文的概念性描述与本章的状态、转移条件或事务边界存在不一致，以本章为准。实现、测试和评审均必须按本章定义，不允许各模块自行解释状态含义。
+
+本章将状态拆成五个互相独立但通过事务关联的状态机：
+
+1. Run Lifecycle：Run 是否允许继续产生新工作；
+2. Token：控制流权利目前处于哪个阶段；
+3. NodeActivation / Attempt：一次节点逻辑激活及其执行尝试；
+4. Split / Branch / Join / Loop：结构化控制流上下文；
+5. Command / ResourceLease / Wait：外部副作用、资源和等待状态。
+
+**禁止用一个 status 字段同时表达以上不同维度。** 例如 NodeActivation=SUSPENDED 不代表 Token 已经完成；Command=ACKNOWLEDGED 不代表 NodeActivation=COMPLETED；Run=PAUSE_DRAINING 不代表设备已经暂停。
+
+## 23.1 身份、版本与状态所有权
+
+每个运行时对象必须有不可变身份和单调递增版本：
+
+| 对象 | 主身份 | 版本所有者 |
+|---|---|---|
+| Run | runId | RunCoordinator |
+| Token | tokenId | RunCoordinator |
+| NodeActivation | activationId | RunCoordinator |
+| NodeAttempt | attemptId | RunCoordinator 创建，Executor 回报事实 |
+| SplitActivation | splitActivationId | RunCoordinator |
+| BranchActivation | branchActivationId | RunCoordinator |
+| JoinActivation | joinActivationId | RunCoordinator |
+| LoopActivation | loopActivationId | RunCoordinator |
+| WaitRegistration | waitId | RunCoordinator |
+| DeviceCommand | commandId | Command Service / Coordinator 协议 |
+| ResourceLease | leaseId | Resource Service |
+| Inbox message | messageId | Inbox 唯一约束 |
+| Outbox message | outboxId | 创建方事务，Dispatcher 更新投递状态 |
+
+所有来自 Worker、设备、Timer、人工界面的消息必须携带对象身份及其生成时的版本/attempt 信息。接收方不得仅凭 nodeId、设备当前状态或时间接近程度猜测对象身份。
+
+### 23.1.1 版本与 fencing 的含义
+
+- objectVersion 用于拒绝基于旧状态的更新；
+- attemptId 用于拒绝旧执行尝试的迟到结果；
+- coordinatorEpoch 用于拒绝旧 Coordinator owner 的消息；
+- lease fencingToken 用于拒绝旧资源持有者的操作；
+- commandId 用于唯一关联一次逻辑设备命令。
+
+这些身份不能互相替代。单实例部署也必须校验 objectVersion 和 attemptId。多实例部署启用时，必须额外校验 coordinatorEpoch；不能把数据库 version 当成完整的分布式 fencing。
+
+## 23.2 Run Lifecycle 状态机
+
+Run 状态集合：
+
+- CREATED
+- STARTING
+- RUNNING
+- PAUSE_REQUESTED
+- PAUSE_DRAINING
+- PAUSED
+- RESUME_REQUESTED
+- STOP_REQUESTED
+- STOP_DRAINING
+- SUCCEEDED
+- FAILED
+- STOPPED
+- MANUAL_REQUIRED
+- QUARANTINED
+
+终态只有 SUCCEEDED、FAILED、STOPPED。MANUAL_REQUIRED 和 QUARANTINED 是非自动推进状态，必须经显式处置才能离开；其间不得调度新的普通节点。
+
+### 23.2.1 合法转移表
+
+| 当前状态 | 触发 | 前置条件 | 下一状态 | 原子副作用 |
+|---|---|---|---|---|
+| CREATED | StartRun | 定义版本可用；初始变量校验通过 | STARTING | 建立启动记录 |
+| STARTING | StartCommitted | 初始 Token 创建成功 | RUNNING | RunStarted Event；READY Token 可调度 |
+| STARTING | StartFailed | 初始化不可恢复 | FAILED | 记录失败原因 |
+| RUNNING | PauseRequested | 有权限；requestId 未处理 | PAUSE_REQUESTED | 关闭新 Dispatch 准入 |
+| PAUSE_REQUESTED | DrainStarted | 已停止接收新的 Dispatch | PAUSE_DRAINING | 标记待收敛对象 |
+| PAUSE_DRAINING | DrainComplete | 无 RUNNING/DISPATCHED 激活；无未确认的必须收敛动作；等待登记已持久化 | PAUSED | RunPaused Event |
+| PAUSED | ResumeRequested | 人工/系统有权恢复；恢复前检查通过 | RESUME_REQUESTED | 建立恢复请求 |
+| RESUME_REQUESTED | ResumeCommitted | 设备、租约、等待、命令状态均核验通过 | RUNNING | RunResumed Event；重新开放调度 |
+| RUNNING | StopRequested | requestId 未处理 | STOP_REQUESTED | 关闭新 Dispatch 准入 |
+| PAUSE_REQUESTED / PAUSE_DRAINING / PAUSED / RESUME_REQUESTED | StopRequested | 未终结 | STOP_REQUESTED | Stop 优先级高于 Pause |
+| STOP_REQUESTED | DrainStarted | 已停止接收新的 Dispatch | STOP_DRAINING | 建立停止收敛集合 |
+| STOP_DRAINING | DrainComplete | 所有副作用已确定且安全收敛 | STOPPED | RunStopped Event |
+| STOP_DRAINING | UnresolvedPhysicalState | 有无法核验的命令/资源 | QUARANTINED | 隔离资源和命令 |
+| STOP_DRAINING | ManualDispositionRequired | 需业务/实验人员决策 | MANUAL_REQUIRED | 创建人工工作项 |
+| RUNNING | AllWorkCompleted | 无活动 Token、未关闭 Split/Loop、未完成 Activation、未决 Wait/Command | SUCCEEDED | RunSucceeded Event |
+| RUNNING | FatalFailure | 失败策略为终止 Run | STOP_REQUESTED | 记录首个致命失败，停止新派发 |
+| 任意非终态 | SafetyViolation | 发现可能危害设备/物料安全的不变量破坏 | QUARANTINED | 关闭调度并隔离相关资源 |
+| MANUAL_REQUIRED | ManualResolutionCommitted | 决策合法、证据齐全、后置条件验证通过 | 按决策进入 RUNNING / STOP_DRAINING / FAILED | 审计人工处置 |
+| QUARANTINED | QuarantineCleared | 物理状态已核验，授权人批准 | 按明确恢复决策进入 PAUSED / STOP_DRAINING / FAILED | 记录核验依据 |
+
+任何未列出的 Run 状态转移均非法，必须拒绝并记录 RuntimeTransitionRejected，不得“尽量继续”。
+
+### 23.2.2 Run 调度闸门
+
+只有 RUNNING 状态允许创建新的普通 NodeAttempt Dispatch。
+
+以下状态一律禁止新 Dispatch：
+
+- CREATED、STARTING；
+- PAUSE_REQUESTED、PAUSE_DRAINING、PAUSED、RESUME_REQUESTED；
+- STOP_REQUESTED、STOP_DRAINING；
+- MANUAL_REQUIRED、QUARANTINED；
+- SUCCEEDED、FAILED、STOPPED。
+
+已经被 Worker 接受但尚未确认开始的 DISPATCHED 激活，必须按 23.4 的规则收敛；不能因为 Run 状态变化就假定它没有开始。
+
+### 23.2.3 Pause 与 Stop 竞争
+
+- Stop 优先于 Pause；
+- Pause 请求已提交后收到 Stop：Run 转 STOP_REQUESTED，不得再进入 PAUSED；
+- Pause 已完成后收到 Stop：PAUSED → STOP_REQUESTED；
+- Stop 已提交后收到 Pause：拒绝 Pause 请求，返回 Run 正在停止；
+- 相同 requestId 重复提交：返回第一次处理结果；
+- 不同 requestId 的重复请求：按当前状态幂等返回或拒绝，不重复创建收敛任务。
+
+## 23.3 Token 状态机：控制流权利
+
+为避免把“节点执行状态”和“Token 位置”混在一起，Token 只表达控制流权利，不表达 Worker 的物理运行状态。
+
+Token 状态集合：
+
+- READY：位于一个可执行节点，尚未被调度；
+- RESERVED：已被 Scheduler 原子预留，尚未交给 Worker；
+- IN_FLIGHT：已提交 Dispatch，等待 Worker 接受/开始/返回结果；
+- WAITING：当前控制流停在 Join、Wait 或外部条件上；
+- CONSUMED：该 Token 已被某次节点激活消费，不再可调度；
+- TERMINAL：该 Token 路径已明确结束；
+- INVALIDATED：因 Run 终止、分支取消等原因被撤销，且无未决外部副作用。
+
+### 23.3.1 Token 合法转移
+
+| 当前 | 事件 | 前置条件 | 下一状态 |
+|---|---|---|---|
+| CREATED | TokenReady | 所属 Run 允许初始化/推进 | READY |
+| READY | ReserveToken | Run=RUNNING；配额/资源准入成功 | RESERVED |
+| RESERVED | DispatchCommitted | Dispatch outbox 已同事务写入 | IN_FLIGHT |
+| RESERVED | ReservationExpired | 未写入 Dispatch outbox，且确认无 Worker 接收 | READY |
+| IN_FLIGHT | NodeStarted | activationId/attemptId 匹配当前派发 | IN_FLIGHT（Token 不变） |
+| IN_FLIGHT | NodeSuspended | WaitRegistration 已持久化 | WAITING |
+| IN_FLIGHT | NodeCompleted | 完成结果已在事务中提交 | CONSUMED；事务同时创建后继 Token 或 TERMINAL |
+| IN_FLIGHT | NodeFailed | 失败结果已提交 | 按 retry/failure policy 转 READY（新 attempt）或 TERMINAL |
+| WAITING | WaitSatisfied | waitId 有效、事件合法、尚未消费 | READY |
+| WAITING | JoinReleased | 所属 SplitActivation 已原子关闭 | CONSUMED；创建一个下游 READY Token |
+| READY / RESERVED | BranchSkipped | 分支在控制流规则中明确未激活或可跳过 | TERMINAL |
+| READY / RESERVED | CancelBeforeDispatch | 无 Dispatch、无副作用 | INVALIDATED |
+| IN_FLIGHT | CancelRequested | 不直接改变 Token，进入 activation/command 收敛 | IN_FLIGHT |
+| 任意非终态 | RunTerminalized | 无未决副作用且路径已关闭 | TERMINAL 或 INVALIDATED |
+
+**重要：** NodeStarted 不改变 Token 状态；它改变 NodeAttempt 状态。Token 在节点执行期间保持 IN_FLIGHT。NodeActivation 成功完成时 Token 被消费，并在同一事务中创建后继 Token。这样不会出现一个 Token 既处于 RUNNING 又同时 READY 的双重含义。
+
+### 23.3.2 Token 消费与后继创建
+
+节点完成时，Coordinator 必须在同一事务内完成：
+
+1. 校验 Token=IN_FLIGHT；
+2. 校验 activationId、attemptId 为当前有效身份；
+3. 校验 NodeActivation 可完成；
+4. 提交节点输出和变量变更；
+5. 将当前 Token 置为 CONSUMED；
+6. 根据 GraphPlan 创建 0..N 个后继 Token，或标记路径 TERMINAL；
+7. 更新 Split/Join/Loop 上下文；
+8. 写入 Runtime Event 和必要 Outbox；
+9. 提交事务。
+
+禁止先提交 Token=CONSUMED，之后再异步创建后继 Token。也禁止先创建后继 Token，再异步标记父 Token 已消费。
+
+## 23.4 NodeActivation 与 NodeAttempt 状态机
+
+### 23.4.1 NodeActivation 状态
+
+- CREATED
+- READY
+- ACTIVE
+- SUSPENDED
+- RETRY_WAIT
+- COMPLETED
+- FAILED
+- MANUAL_REQUIRED
+- UNKNOWN
+- CANCELLED
+- QUARANTINED
+
+状态含义：
+
+| 状态 | 精确定义 |
+|---|---|
+| CREATED | 逻辑激活已建立，尚未进入调度 |
+| READY | 满足执行前置条件，等待调度 |
+| ACTIVE | 至少一个当前 Attempt 已进入派发/执行生命周期 |
+| SUSPENDED | 等待登记已提交，当前无 Worker 持有 |
+| RETRY_WAIT | 当前 Attempt 可重试，但 retryAfter 尚未到 |
+| COMPLETED | 业务后置条件已证明满足，输出提交完成 |
+| FAILED | 按策略不再自动重试，且无未知外部副作用 |
+| MANUAL_REQUIRED | 需要人工决策，禁止自动重试 |
+| UNKNOWN | 外部副作用结果无法判定 |
+| CANCELLED | 已证明没有未决副作用且取消安全 |
+| QUARANTINED | 激活关联的设备/资源/物料处于隔离状态 |
+
+### 23.4.2 Activation 合法转移表
+
+| 当前 | 事件 | 条件 | 下一状态 |
+|---|---|---|---|
+| CREATED | ActivationReady | 输入和依赖满足 | READY |
+| READY | AttemptCreated | Run=RUNNING，资源准入通过 | ACTIVE |
+| ACTIVE | AttemptSuspended | WaitRegistration 同事务创建 | SUSPENDED |
+| SUSPENDED | WaitSatisfied | waitId 有效且事件被接受 | READY |
+| ACTIVE | AttemptRetryableFailure | 无未知副作用；retry policy 允许；次数未超 | RETRY_WAIT |
+| RETRY_WAIT | RetryDue | Run=RUNNING，资源准入重新通过 | ACTIVE |
+| ACTIVE | AttemptSucceeded | 后置条件和输出校验通过 | COMPLETED |
+| ACTIVE | AttemptPermanentFailure | 无未知副作用 | FAILED |
+| ACTIVE | AttemptManualRequired | 需要人工处置 | MANUAL_REQUIRED |
+| ACTIVE | AttemptUnknownOutcome | 可能发生外部副作用且无法证明结果 | UNKNOWN |
+| ACTIVE / UNKNOWN | SafetyIsolation | 物理资源状态不确定或违反安全约束 | QUARANTINED |
+| READY / RETRY_WAIT | CancelSafe | 无命令派发且无副作用 | CANCELLED |
+| SUSPENDED | CancelWaitSafe | Wait 可安全注销，且无未决命令 | CANCELLED |
+| MANUAL_REQUIRED | ManualRetryApproved | 证据充分，创建新 Attempt | READY |
+| UNKNOWN | OutcomeReconciledSuccess | 设备/外部事实证明动作成功 | COMPLETED |
+| UNKNOWN | OutcomeReconciledNoEffect | 证明动作未发生，可按策略重试 | RETRY_WAIT 或 READY |
+| UNKNOWN | OutcomeCannotBeReconciled | 无法证明结果 | QUARANTINED |
+
+FAILED、COMPLETED、CANCELLED 是激活终态。UNKNOWN 和 QUARANTINED 不是普通失败，不能自动套用 retry policy。
+
+### 23.4.3 Attempt 状态
+
+Attempt 状态集合：
+
+- CREATED
+- DISPATCH_PENDING
+- DISPATCHED
+- STARTED
+- SUSPENDED
+- SUCCEEDED
+- RETRYABLE_FAILED
+- PERMANENT_FAILED
+- UNKNOWN
+- ABANDONED_SAFE
+
+关键规则：
+
+1. 每个 activation 同时最多一个有效 Attempt；
+2. 新 Attempt 只能在旧 Attempt 已明确进入 SUCCEEDED、RETRYABLE_FAILED、PERMANENT_FAILED、ABANDONED_SAFE 或经核验关闭后创建；
+3. Attempt 进入 DISPATCHED 前，Dispatch outbox 必须已经在事务中提交；
+4. DISPATCHED 不代表 Worker 已开始；
+5. STARTED 只代表 Handler 已进入执行，不代表设备命令已完成；
+6. Worker 迟到的结果必须匹配 activationId + attemptId + attemptVersion；
+7. 旧 Attempt 的完成消息不得覆盖新 Attempt；
+8. 对设备副作用未知的 Attempt 不得直接标记 ABANDONED_SAFE。
+
+### 23.4.4 重试规则
+
+重试是新 Attempt，不是把旧 Attempt 状态改回 STARTED。
+
+创建新 Attempt 的事务必须：
+- 校验 Activation=RETRY_WAIT；
+- 校验 retryAfter 已到；
+- 校验次数/总时限未超；
+- 校验旧 Attempt 已确定失败且无未决副作用；
+- 生成新的 attemptId；
+- 保持 activationId 不变；
+- 记录 retryOfAttemptId；
+- 写入 AttemptCreated Event。
+
+若 Handler 有设备命令：
+- 同一逻辑命令的安全重发复用 commandId；
+- 重新开始一项新的物理操作必须新建 commandId；
+- 如果上一次命令结果 UNKNOWN，不能通过创建新 attempt 绕过 UNKNOWN。
+
+## 23.5 SPLIT / Branch / JOIN 状态机
+
+### 23.5.1 SplitActivation 状态
+
+- OPENING
+- OPEN
+- JOIN_READY
+- CLOSED_SUCCESS
+- CLOSED_FAILED
+- QUARANTINED
+
+创建 SplitActivation 和全部分支 Token 是一个事务。OPENING 只允许存在于事务内部，不得作为已提交的半初始化状态暴露给 Scheduler。
+
+### 23.5.2 BranchActivation 状态
+
+- ACTIVE
+- WAITING_JOIN
+- ARRIVED
+- SKIPPED
+- FAILED
+- CANCEL_PENDING
+- CANCELLED
+- UNKNOWN
+- QUARANTINED
+
+BranchActivation 以 branchActivationId 唯一标识。branchId 是静态定义身份；同一静态分支在不同 SplitActivation/循环迭代中必须创建不同 branchActivationId。
+
+合法转移：
+
+| 当前 | 事件 | 条件 | 下一状态 |
+|---|---|---|---|
+| ACTIVE | ArriveJoin | Token 到达匹配 Join；本分支所有内层结构已闭合 | ARRIVED |
+| ACTIVE | ExplicitSkip | 仅允许定义语义明确的跳过 | SKIPPED |
+| ACTIVE | BranchFailure | 发生不可恢复失败 | FAILED |
+| ACTIVE | CancelRequested | Run 正在停止或失败收敛 | CANCEL_PENDING |
+| CANCEL_PENDING | CancelSafeConfirmed | 无未决副作用 | CANCELLED |
+| ACTIVE / CANCEL_PENDING | UnknownEffect | 有未决物理副作用 | UNKNOWN |
+| UNKNOWN | IsolationRequired | 无法核验资源状态 | QUARANTINED |
+
+FAILED、UNKNOWN、QUARANTINED 不得伪装成 ARRIVED。
+
+### 23.5.3 Join 释放条件
+
+Join 只在以下条件全部满足时释放：
+
+1. SplitActivation.status=OPEN；
+2. 所有 expectedBranchIds 都存在唯一 BranchActivation；
+3. 每个 expected branch 状态均为 ARRIVED，或在该 Join 明确允许时为 SKIPPED；
+4. 没有 FAILED、CANCEL_PENDING、CANCELLED（除非策略明示可接受）、UNKNOWN、QUARANTINED；
+5. 所有嵌套 SplitActivation 已关闭；
+6. 所有分支输出已经提交并冻结；
+7. Join 聚合规则输入完整且通过 Schema 校验。
+
+Join 释放事务：
+
+- 锁定/版本校验 SplitActivation；
+- 校验 expected branch 集合和所有 Branch 状态；
+- 将 SplitActivation 标记 CLOSED_SUCCESS；
+- 将 JoinActivation 标记 RELEASED；
+- 固化 BranchOutput snapshot；
+- 创建唯一 downstream Token；
+- 写入 JoinReleased Event；
+- 写入必要 Outbox；
+- 一次提交。
+
+数据库必须有唯一约束保证一个 splitActivationId 最多存在一个成功释放记录/下游 Token。两个最后分支同时到达时，由 Coordinator 串行化；重复消息由 Inbox 和 branch 唯一约束双重去重。
+
+### 23.5.4 分支失败策略
+
+默认策略：任意一个并行分支不可恢复失败，Run 进入 STOP_REQUESTED；不再派发其他分支的新节点；已派发分支进入停止收敛。
+
+此时：
+- SplitActivation 不关闭为成功；
+- Join 不释放；
+- 未开始的分支可标记 INVALIDATED/CANCELLED（需证明无副作用）；
+- 已开始的分支必须等待结果或进入 UNKNOWN；
+- 所有物理状态收敛后 Run=FAILED；
+- 任意设备结果未知时 Run=QUARANTINED 或 MANUAL_REQUIRED。
+
+若未来支持容错并行，必须定义独立的 SplitFailurePolicy（ALL_REQUIRED、QUORUM、COMPENSATE、IGNORE_BRANCH 等），并在编译期验证 Join 语义。本版默认只实现 ALL_REQUIRED。
+
+## 23.6 Loop 状态机
+
+LoopActivation 状态：
+
+- ACTIVE
+- ITERATION_CLOSING
+- ITERATION_ADVANCED
+- EXITING
+- CLOSED_SUCCESS
+- FAILED
+- QUARANTINED
+
+转移规则：
+
+| 当前 | 事件 | 条件 | 下一状态 |
+|---|---|---|---|
+| 不存在 | LoopEnter | Token 到达 LOOP_ENTER | ACTIVE，iteration=1 |
+| ACTIVE | LoopBackRequested | 本轮循环体完成；无未闭合 Split/Join | ITERATION_CLOSING |
+| ITERATION_CLOSING | AdvanceCommitted | 迭代计数未超限；新 Token 创建成功 | ITERATION_ADVANCED |
+| ITERATION_ADVANCED | IterationActivated | 新一轮 Token READY | ACTIVE，iteration+1 |
+| ACTIVE | LoopExitRequested | 退出条件求值为 true；本轮结构全部闭合 | EXITING |
+| EXITING | LoopExitCommitted | 退出 Token 创建成功 | CLOSED_SUCCESS |
+| ACTIVE / ITERATION_CLOSING | LoopFailure | 循环体失败 | FAILED 或 Run 收敛 |
+| 任意非终态 | UnknownEffect | 循环体存在未决副作用 | QUARANTINED |
+
+LoopBack 不是普通边跳转。Loop iteration 更新、上一轮闭合、新一轮 Token 创建必须同事务提交。若崩溃发生在提交前，仍处于旧 iteration；提交后恢复只能看到新 iteration，不得重复增加。
+
+## 23.7 WaitRegistration 状态机
+
+Wait 状态：
+
+- CREATED
+- ACTIVE
+- SATISFIED
+- EXPIRED
+- CANCELLED
+- REJECTED
+
+转移：
+
+| 当前 | 事件 | 条件 | 下一状态 |
+|---|---|---|---|
+| CREATED | WaitCommit | 等待条件完整且与 Activation 同事务 | ACTIVE |
+| ACTIVE | MatchingEvent | 来源合法、关联字段匹配、事件未过期 | SATISFIED |
+| ACTIVE | TimerDeadline | deadline 已到，timerId 匹配 | EXPIRED |
+| ACTIVE | CancelWait | 允许取消且无未决设备动作 | CANCELLED |
+| ACTIVE | InvalidEvent | 事件不能证明满足条件 | ACTIVE，记录拒绝 |
+| ACTIVE | RunStop | 等待可安全撤销 | CANCELLED |
+| ACTIVE | RunStop | 关联命令仍未决 | 保持 ACTIVE，进入命令收敛 |
+
+Wait 满足事务必须包含：
+- Inbox 去重；
+- Wait 状态 ACTIVE→SATISFIED；
+- 事件与 waitId 的关联记录；
+- Activation SUSPENDED→READY；
+- Token WAITING→READY；
+- Runtime Event；
+- 后续调度 Outbox（如采用异步 Dispatch）。
+
+重复事件命中已 SATISFIED 的 wait 时，只记录 duplicate/late event，不重复创建 READY Token。
+
+---
+
+# 24. Runtime Message 处理协议与拒绝规则
+
+## 24.1 消息信封
+
+每条消息必须使用统一信封：
+
+    RuntimeEnvelope {
+      messageId
+      messageType
+      schemaVersion
+      source
+      runId
+      aggregateType
+      aggregateId
+      aggregateVersion
+      coordinatorEpoch
+      occurredAt
+      receivedAt
+      correlationId
+      causationId
+      payloadHash
+      payload
+    }
+
+字段要求：
+- messageId：生产者生成的稳定唯一身份；
+- source：worker/device-adapter/timer/user/system 等；
+- aggregateVersion：消息基于哪个对象版本产生；
+- coordinatorEpoch：发送方知道的当前 owner epoch；
+- occurredAt：来源时间，仅用于诊断，不用于控制流排序；
+- receivedAt：系统接收时间；
+- payloadHash：防止同一 messageId 携带不同 payload；
+- causationId：触发当前消息的上游消息/命令。
+
+同一 messageId 携带不同 payloadHash 是协议违规，进入安全告警，不得按普通重复消息忽略。
+
+## 24.2 消息处理顺序
+
+每个 Run 的 Inbox Consumer 必须按以下逻辑执行：
+
+1. 以 messageId 插入 Inbox；唯一冲突表示重复；
+2. 若重复，比较 payloadHash：
+   - 相同：返回已记录结果，不重复执行；
+   - 不同：拒绝并记录安全事件；
+3. 验证 runId、aggregateId、schemaVersion；
+4. 验证 coordinatorEpoch（启用时）；
+5. 验证 activationId/attemptId/commandId 等对象身份；
+6. 验证消息的前置状态和版本；
+7. 计算纯状态转移；
+8. 在同一事务中写状态、Runtime Event、Outbox、Inbox processed；
+9. 提交；
+10. 提交后才通知 Scheduler/Dispatcher。
+
+若事务失败，Inbox 不得标记 processed；可重试事务。若错误属于永久协议错误，则将 Inbox 标记 REJECTED 并保存原因，不能无限重试毒消息。
+
+## 24.3 消息分类
+
+| 分类 | 示例 | 处理方式 |
+|---|---|---|
+| 当前有效 | 当前 attempt 的 NodeCompleted | 执行状态转移 |
+| 幂等重复 | 相同 messageId / payloadHash | 返回既有处理结果 |
+| 语义重复 | 不同 messageId，但同一 branch 已 ARRIVED | 记录重复事实，不重复推进 |
+| 过期消息 | 旧 attempt 的 NodeCompleted | 拒绝状态变更，保留审计 |
+| 乱序可等待 | Device RUNNING 先于 ACK 到达，协议允许 | Inbox 暂存，按设备状态机重排或接受单调状态 |
+| 非法跃迁 | CREATED 直接收到 CommandCompleted | REJECTED，触发协议告警 |
+| 无法关联 | 设备事件无 commandId | UNATTRIBUTED 隔离队列 |
+| 版本冲突 | aggregateVersion 过期 | 重新加载；若身份仍有效则按当前状态判定，否则拒绝 |
+| 旧 owner | coordinatorEpoch 过期 | 拒绝图状态写入，记录 stale-owner 事件 |
+
+## 24.4 Worker Completion 的唯一接受条件
+
+NodeCompleted / NodeFailed 消息只有满足以下全部条件才可改变 Runtime 状态：
+
+- Run 当前允许处理在途结果（暂停/停止期间允许收敛，不允许产生新的普通工作）；
+- activationId 存在；
+- attemptId 是当前有效 Attempt；
+- Attempt 状态为 DISPATCHED 或 STARTED；
+- tokenId 与 Activation 绑定一致；
+- definitionHash 与 Run 固定版本一致；
+- completion payload 通过 outputSchema；
+- 必需设备命令均已达到可接受的最终状态；
+- 消息不是旧 coordinatorEpoch；
+- 幂等键未被用于不同结果。
+
+不满足时，消息只能被拒绝、隔离或作为迟到事实记录，不得推进 Token。
+
+---
+
+# 25. 数据库事务边界（精确到操作）
+
+## 25.1 总规则
+
+事务只覆盖数据库内部状态。设备网络调用、Worker 执行、外部 API、文件 IO、人工操作均不放在数据库事务内。
+
+每个事务必须有：
+- 明确的命令/消息输入；
+- 明确的读集合；
+- 明确的写集合；
+- 唯一幂等键；
+- 明确的提交后副作用；
+- 明确的失败重试规则。
+
+事务隔离级别、数据库产品和 DDL 在物理数据模型阶段确定；但以下逻辑原子边界不可更改。
+
+## 25.2 T01：创建 Run
+
+输入：CreateRun(requestId, definitionHash, initialVariables)
+
+同一事务：
+1. 校验 requestId 未使用，或返回既有 Run；
+2. 插入 workflow_run(CREATED)；
+3. 固化 definitionHash/compilerVersion；
+4. 写入初始变量及版本；
+5. 创建初始 Token；
+6. 写 RunCreated Event；
+7. 写 StartRun Outbox（若异步启动）；
+8. 记录 requestId→runId 幂等映射。
+
+提交后：Coordinator 收到 StartRun。
+
+失败：
+- 任一步失败整体回滚；
+- 相同 requestId 重试返回原 Run；
+- 相同 requestId 不同参数 hash，拒绝。
+
+## 25.3 T02：启动 Run
+
+同一事务：
+1. 校验 Run=CREATED；
+2. 校验 Definition/GraphPlan 版本；
+3. 创建起始 NodeActivation；
+4. Token CREATED→READY；
+5. Run CREATED→STARTING→RUNNING（若初始化无异步步骤）；
+6. 写 RunStarted / TokenReady Event；
+7. 写 SchedulerWakeup Outbox。
+
+若启动依赖外部初始化，Run 保持 STARTING，直到初始化结果消息提交。
+
+## 25.4 T03：预留 Token 和 Dispatch
+
+Scheduler Reservation 事务：
+1. 校验 Run=RUNNING；
+2. 校验 Token=READY；
+3. 校验 Run in-flight 配额；
+4. 校验全局/节点类型配额预留；
+5. 校验 ResourceLease 已获取或资源准入已原子完成；
+6. Token READY→RESERVED；
+7. 创建 activation/attempt（若尚不存在）；
+8. 写 Reservation Event。
+
+Dispatch Commit 事务：
+1. 校验 Token=RESERVED；
+2. 校验 Run 仍 RUNNING；
+3. 校验 reservation 未过期；
+4. Attempt CREATED→DISPATCH_PENDING；
+5. Token RESERVED→IN_FLIGHT；
+6. 写 WorkerDispatch Outbox；
+7. 写 DispatchCommitted Event。
+
+提交后 Worker Dispatcher 才可发送任务。
+
+若 Run 在 Reservation 与 Dispatch Commit 之间进入 PAUSE/STOP：
+- Dispatch Commit 必须失败；
+- Token RESERVED→READY 或按 Stop 策略 INVALIDATED；
+- 释放仅属于软件调度的容量预留；
+- 真实设备租约只能按资源协议释放。
+
+## 25.5 T04：Worker 接受与开始
+
+Worker 接收 Dispatch 后发送 DispatchAccepted / NodeStarted。
+
+事务：
+1. 校验 activationId/attemptId/dispatchId；
+2. 校验 Attempt=DISPATCH_PENDING 或 DISPATCHED；
+3. Attempt→STARTED；
+4. NodeActivation 保持 ACTIVE；
+5. 写 NodeAttemptStarted Event；
+6. 更新 Worker dispatch lease。
+
+重复 NodeStarted 幂等。若 Attempt 已完成或旧 attempt，拒绝状态变更。
+
+Worker 接受消息丢失时，不能据此直接重发设备命令；按 DispatchLease 与副作用分类恢复。
+
+## 25.6 T05：纯计算节点成功完成
+
+同一事务：
+1. 校验 completion 身份和版本；
+2. 校验 Activation=ACTIVE、Attempt=STARTED；
+3. 校验无外部副作用未决；
+4. 校验输出 Schema；
+5. 写 Node Output；
+6. 写 Run Variable（按版本/CAS）；
+7. Attempt→SUCCEEDED；
+8. Activation→COMPLETED；
+9. Token IN_FLIGHT→CONSUMED；
+10. 创建后继 Token 或终止路径；
+11. 更新 Loop/Split/Join（如相关）；
+12. 写 NodeActivationCompleted 等 Runtime Event；
+13. 写 SchedulerWakeup Outbox。
+
+任一步失败整体回滚。Worker 不得因收到超时就自行把节点标为失败。
+
+## 25.7 T06：节点失败与重试
+
+同一事务：
+1. 校验当前 Attempt；
+2. 分类错误为 retryable/permanent/unknown/manual；
+3. 保存完整错误类别、摘要和证据引用；
+4. 若 retryable 且无未决副作用：Attempt→RETRYABLE_FAILED，Activation→RETRY_WAIT；
+5. 若 permanent：Attempt→PERMANENT_FAILED，Activation→FAILED；
+6. 若 unknown：Attempt→UNKNOWN，Activation→UNKNOWN；
+7. 若 manual：Activation→MANUAL_REQUIRED；
+8. 写 Runtime Event；
+9. retryable 时创建 Timer/Retry Outbox；
+10. permanent/unknown 时创建 Run failure/stop coordination message。
+
+不得把所有异常统一映射成 FAILED。超时也必须先判定副作用是否可能已发生。
+
+## 25.8 T07：SUSPEND
+
+同一事务：
+1. 校验当前 Activation=ACTIVE；
+2. 校验 WaitRegistration 输入完整；
+3. 插入 WaitRegistration(ACTIVE)；
+4. Activation→SUSPENDED；
+5. Attempt→SUSPENDED；
+6. Token IN_FLIGHT→WAITING；
+7. 写 NodeSuspended Event；
+8. 写 WaitSubscription/Timer Outbox。
+
+事务提交前不得向外部事件源宣称等待已生效。提交后 Worker 释放。
+
+## 25.9 T08：Wait 满足
+
+同一事务：
+1. Inbox message 去重；
+2. 校验 WaitRegistration=ACTIVE；
+3. 校验事件来源、correlationKey、commandId、payload；
+4. Wait→SATISFIED；
+5. Activation SUSPENDED→READY；
+6. 创建后续 Attempt 或 continuation metadata；
+7. Token WAITING→READY；
+8. 写 WaitSatisfied Event；
+9. 标记 Inbox processed；
+10. 写 SchedulerWakeup Outbox。
+
+若事件不匹配，Inbox REJECTED 或保留待人工核验；Wait 不改变。
+
+## 25.10 T09：SPLIT 原子展开
+
+同一事务：
+1. 校验当前 Token=IN_FLIGHT 且位于 SPLIT；
+2. 计算本次实际激活的 branch 集合；
+3. 校验集合非空且符合 GatewayPlan；
+4. 创建 SplitActivation(OPEN)；
+5. 为每个 branch 创建 BranchActivation(ACTIVE)；
+6. 为每个 branch 创建独立 Token(READY)；
+7. 父 Token→CONSUMED；
+8. 写 SplitOpened / BranchActivated Event；
+9. 写 SchedulerWakeup Outbox。
+
+若任一分支创建失败，整个事务回滚，不允许半个 Split。
+
+## 25.11 T10：Branch Arrival 与 JOIN
+
+Branch Arrival 事务：
+1. 校验 branchActivationId 和 splitActivationId；
+2. 校验 Branch=ACTIVE；
+3. 校验该分支内层 Split 已闭合；
+4. 校验到达节点等于配对 Join；
+5. Branch→ARRIVED；
+6. 分支 Token→WAITING；
+7. 固化 BranchOutput；
+8. 写 BranchArrived Event；
+9. 检查是否满足 Join release predicate。
+
+若满足，必须在同一事务中继续：
+10. Split→CLOSED_SUCCESS；
+11. Join→RELEASED；
+12. 创建唯一 downstream Token(READY)；
+13. 写 JoinReleased Event；
+14. 写 SchedulerWakeup Outbox。
+
+若不满足，事务只提交 arrival，不创建下游 Token。
+
+## 25.12 T11：Loop iteration advance
+
+同一事务：
+1. 校验 Loop=ITERATION_CLOSING；
+2. 校验本轮所有 Token 已完成；
+3. 校验本轮所有 Split/Join 均已闭合；
+4. 校验 iteration+1 未超过 maxIterations；
+5. 更新 iteration；
+6. 创建下一轮 Token/Activation；
+7. Loop→ITERATION_ADVANCED；
+8. 写 LoopIterationAdvanced Event；
+9. 写 SchedulerWakeup Outbox。
+
+事务提交后恢复只会看到新 iteration。禁止通过进程内计数器推进。
+
+## 25.13 T12：设备命令创建
+
+同一事务：
+1. 校验 NodeActivation/Attempt 有权创建命令；
+2. 校验 Device Adapter capability；
+3. 校验 resource requirements；
+4. 生成 commandId；
+5. 插入 Command Ledger(CREATED)；
+6. 插入 CommandOutbox(PENDING)；
+7. 关联 ResourceLease（若需）；
+8. 写 CommandCreated Event。
+
+提交后 Dispatcher 才能发送设备请求。
+
+## 25.14 T13：设备命令派发
+
+Dispatcher 先 claim outbox，claim 具有租约和 fencing。
+
+发送前数据库事务：
+1. 校验 Command=CREATED/PREPARED；
+2. 校验 outbox 仍归当前 dispatcher claim；
+3. Command→DISPATCHING；
+4. 写 DispatchAttempt；
+5. 提交。
+
+事务外调用设备 Adapter。
+
+调用返回后：
+- 明确设备拒绝：写 REJECTED；
+- 明确 ACK：写 ACKNOWLEDGED；
+- 明确同步完成：只有协议保证结果完整时可写 SUCCEEDED；
+- 网络超时/连接断开/进程崩溃且无法证明是否送达：写 UNKNOWN；
+- 不能证明未送达时不得退回 CREATED 并创建新 commandId。
+
+## 25.15 T14：设备事件消费
+
+同一事务：
+1. 插入/去重 Device Event Inbox；
+2. 按 commandId 查找唯一命令；
+3. 验证 deviceId、operation、payloadHash/协议字段；
+4. 校验状态迁移合法且单调；
+5. 更新 Command Ledger；
+6. 更新 ResourceLease（仅在状态证据满足释放条件时）；
+7. 写 Command Event；
+8. 写 DeviceCommandUpdated Runtime Outbox；
+9. 标记 Inbox processed。
+
+无 commandId 或 commandId 不存在：
+- 进入 UNATTRIBUTED；
+- 不推进 NodeActivation；
+- 不释放 ResourceLease；
+- 不尝试按设备当前活动命令猜测归属。
+
+## 25.16 T15：Pause/Stop 请求
+
+同一事务：
+1. 校验 Run 当前状态和 requestId；
+2. Run→PAUSE_REQUESTED 或 STOP_REQUESTED；
+3. 写请求事件；
+4. 写 DisableDispatch / DrainCoordinator Outbox；
+5. 标记所有尚未 DispatchCommitted 的 reservation 待撤销；
+6. 不修改设备命令为已停止；
+7. 不释放可能对应未决物理动作的资源租约。
+
+## 25.17 T16：Pause/Stop Drain 完成
+
+同一事务：
+1. 校验 Run=PAUSE_DRAINING 或 STOP_DRAINING；
+2. 检查所有 DispatchLease；
+3. 检查所有 NodeActivation；
+4. 检查所有 Command Ledger；
+5. 检查所有 ResourceLease；
+6. 检查所有 WaitRegistration；
+7. 检查无未处理关键 Inbox；
+8. 计算安全收敛结果；
+9. 写 Run=PAUSED / STOPPED / FAILED / MANUAL_REQUIRED / QUARANTINED；
+10. 写对应 Runtime Event。
+
+若任何设备命令 UNKNOWN 或资源物理状态不明，不允许进入普通 PAUSED/STOPPED 并释放租约；必须进入 QUARANTINED 或 MANUAL_REQUIRED。
+
+## 25.18 T17：Checkpoint
+
+Checkpoint 必须在一致性快照边界创建：
+- 读取 Run.version 和 eventSeq；
+- 读取全部 Token/Activation/Split/Join/Loop/Variable/Wait/Command/Lease 状态；
+- 确保这些状态对应同一已提交游标；
+- 写 checkpoint payload/hash；
+- 写 checkpoint.eventSeq。
+
+如果无法获得一致性快照，不创建 checkpoint；不能用多次非一致读取拼成看似完整的快照。
+
+---
+
+# 26. 异常路径决策表（必须唯一处理）
+
+| 异常 | 判断依据 | 唯一处理 | 禁止行为 |
+|---|---|---|---|
+| Worker 在 Dispatch 前崩溃 | 无 DispatchCommitted | Token 可回 READY | 假定节点已执行 |
+| Dispatch 已提交但 Worker 未 ACK | DispatchLease/worker inbox | 等待/过期后按副作用分类 | 直接重发设备命令 |
+| Worker 纯计算中崩溃 | Handler sideEffectClass=PURE | 旧 Attempt 关闭后新 Attempt | 保留旧 Attempt 为有效 |
+| Worker 有副作用时崩溃 | sideEffectClass 非 PURE | 查询外部事实；未知则 UNKNOWN | 盲目 retry |
+| Worker 返回过期 Attempt 结果 | attemptId 不匹配 | 记录 STALE_COMPLETION，拒绝状态变更 | 覆盖新 Attempt |
+| NodeCompleted 重复 | messageId 或 activation result key 重复 | 返回首次处理结果 | 再创建后继 Token |
+| 节点输出 Schema 错误 | outputSchema 校验失败 | Attempt 失败；按副作用分类决定 retry/unknown | 提交部分输出 |
+| 变量 CAS 冲突 | expectedVersion 不匹配 | 整个完成事务回滚；按冲突策略重算或失败 | last-write-wins |
+| SPLIT 创建中 DB 崩溃 | 事务原子性 | 全部未提交则全部回滚；已提交则所有分支存在 | 修补半个 Split |
+| 最后两个 Branch 同时到达 | Coordinator 串行 + 唯一约束 | 一个先到，另一个触发唯一 Join release | 双重创建下游 Token |
+| Branch Arrival 重复 | branchActivationId 已 ARRIVED | 幂等记录 | 增加 arrived count |
+| Branch 失败 | FailurePolicy=ALL_REQUIRED | Run STOP_REQUESTED；不释放 Join | 把失败当 ARRIVED |
+| Branch UNKNOWN | 外部结果不明 | Run 收敛并隔离 | 继续 Join |
+| Join 到达时有嵌套 Split 未闭合 | 结构校验失败 | 拒绝 Arrival，标记协议错误 | 外层 Join 先释放 |
+| LoopBack 重复 | loop iteration/version 已推进 | 幂等拒绝第二次推进 | iteration 再加一 |
+| Timer 重复触发 | timerId 唯一 | 首次满足 Wait，后续重复忽略 | 创建多个 READY Token |
+| 设备 ACK 丢失 | 设备查询或协议无法确认 | Command UNKNOWN，查询/人工核验 | 新 commandId 重发 |
+| 设备最终事件乱序 | commandId + event sequence/state transition | 暂存或按单调状态接受；非法状态隔离 | 时间戳较新就覆盖 |
+| 设备事件无 commandId | 无法可靠关联 | UNATTRIBUTED 隔离 | 按 deviceId 猜当前命令 |
+| 设备事件重复 | sourceEventId/eventId | Inbox 去重 | 重复完成 NodeActivation |
+| 命令最终状态成功但设备回读不满足后置条件 | postcondition check | Activation 不完成，转失败/人工/隔离 | 只凭成功事件放行 |
+| ResourceLease 过期 | TTL 到期 | 进入核验，不自动释放物理资源 | TTL=空闲 |
+| Coordinator 崩溃 | owner heartbeat/epoch | 恢复持久化状态，重建 mailbox | 恢复旧线程/Future |
+| DB commit 结果未知 | 客户端断连，无法确认 commit | 用幂等 request/message ID 查询事务结果 | 盲目执行第二次非幂等操作 |
+| Outbox 发送后状态未更新 | 发送结果未知 | 按消息/命令协议核验；设备命令转 UNKNOWN | 直接重新创建命令 |
+| Inbox 消费时崩溃 | processed 未提交 | 重放同 messageId | 丢弃消息 |
+| Inbox 毒消息 | 永久 schema/身份错误 | REJECTED + DLQ/告警 | 无限快速重试 |
+| Pause 时设备仍运行 | 设备未确认停止 | PAUSE_DRAINING 持续；达到阈值告警 | 标记 PAUSED |
+| Stop 时设备状态未知 | Command/Lease UNKNOWN | QUARANTINED 或 MANUAL_REQUIRED | 标记 STOPPED 并释放资源 |
+| 人工强制跳过节点 | 有未决副作用 | 拒绝直接跳过，先核验/处置副作用 | 改 Token 状态绕过命令账本 |
+
+## 26.1 数据库提交结果未知
+
+这是必须单独处理的故障。客户端发送 COMMIT 后连接断开，不能判断事务是否提交。
+
+处理规则：
+- 所有外部请求都必须带稳定 requestId/messageId；
+- 重新连接后按幂等身份查询结果；
+- 若记录存在且 payloadHash 相同，视为已提交；
+- 若记录不存在，可重新提交；
+- 若存在同身份不同 payload，协议冲突并停止；
+- 不允许因“客户端没收到成功响应”就创建新的 commandId 或新的 Run。
+
+## 26.2 Outbox 的 at-least-once 边界
+
+Outbox Dispatcher 可能重复发送。接收方必须按 outboxId/messageId 幂等。
+
+对普通内部消息，重复投递由 Inbox 去重。
+
+对设备命令，接收方设备若不支持 commandId 幂等，则 Outbox 重发可能导致重复物理动作。因此：
+- Adapter 必须声明是否支持 commandId 幂等；
+- 不支持时，发送结果不确定必须转 UNKNOWN 并核验；
+- 不得把通用 Outbox 的 at-least-once 语义直接套在非幂等设备命令上；
+- 只有证明设备未收到命令时才允许重新派发。
+
+---
+
+# 27. 状态不变量与数据库约束映射
+
+| 不变量 | 应用层校验 | 数据库约束/机制 |
+|---|---|---|
+| 一个 Run 一个有效 Coordinator | owner/epoch 校验 | owner lease 唯一/版本 CAS |
+| 一个 Token 一个当前 Activation | Coordinator 校验 | token_id + active_activation 唯一部分索引 |
+| 一个 Activation 一个当前 Attempt | Attempt 创建事务校验 | activation_id + active_attempt 标记唯一 |
+| 一个 Split 每个 branch 一条状态 | Split Engine 校验 | (split_activation_id, branch_id) UNIQUE |
+| 一个 Split 最多释放一个 Join | Join Engine 校验 | split_activation_id UNIQUE on released join |
+| 一个 Wait 只满足一次 | Wait Engine 校验 | wait_id 唯一 + 状态 CAS |
+| 一个 commandId 一个 payloadHash | Adapter 校验 | command_id UNIQUE；payload_hash immutable |
+| 一个事件只消费一次 | Inbox 校验 | (source, message_id) UNIQUE |
+| 一个 Outbox 逻辑消息唯一 | Outbox 创建方校验 | outbox_id UNIQUE |
+| 变量无静默覆盖 | Variable Store 校验 | version CAS |
+| 一个资源只能有一个有效 owner | Resource Service 校验 | resource_id 有效租约唯一约束 |
+| 旧 Attempt 不可覆盖新 Attempt | Coordinator 校验 | attempt_id + version CAS |
+| Event 序号单 Run 单调 | Event Store 分配 | (run_id, event_seq) UNIQUE |
+
+数据库约束是最后防线，不替代状态机校验。唯一约束冲突必须被转换为确定的幂等/冲突结果，不能泄漏成未处理异常。
+
+---
+
+# 28. Coordinator 处理循环的参考算法
+
+以下是规范性伪代码，具体语言实现可不同，但处理顺序和事务边界必须保持：
+
+    handle(envelope):
+      begin transaction
+
+      inboxResult = inbox.insertIfAbsent(
+        source = envelope.source,
+        messageId = envelope.messageId,
+        payloadHash = envelope.payloadHash
+      )
+
+      if inboxResult == DUPLICATE_SAME_PAYLOAD:
+        return previouslyCommittedOutcome
+
+      if inboxResult == DUPLICATE_DIFFERENT_PAYLOAD:
+        recordProtocolViolation()
+        markRejected()
+        commit
+        return REJECTED
+
+      run = loadRunForUpdate(envelope.runId)
+
+      validateSchema(envelope)
+      validateCoordinatorEpoch(envelope, run)
+      validateAggregateIdentity(envelope)
+      validateExpectedVersion(envelope)
+
+      transition = pureStateMachine.apply(run, envelope)
+
+      if transition == REJECT:
+        persistRejectedInboxAndAudit()
+        commit
+        return REJECTED
+
+      persistAllStateChanges(transition)
+      appendRuntimeEvents(transition.events)
+      appendOutboxMessages(transition.outbox)
+      markInboxProcessed(envelope.messageId, transition.outcome)
+
+      commit
+
+      notifySchedulerIfNeeded()
+      return transition.outcome
+
+要求：
+- pureStateMachine.apply 不做 IO；
+- transaction 内不调用 Worker、设备或外部 API；
+- commit 前不通知 Scheduler；
+- 事务失败不确认消息已处理；
+- 通知丢失可由 Outbox/周期扫描恢复；
+- Coordinator 的任何重入消息都重新走 Inbox 幂等流程。
+
+---
+
+# 29. 状态机验收矩阵
+
+在 Runtime State Machine 被标记 Implemented 前，以下测试必须全部通过。
+
+## 29.1 状态转移穷举
+
+对每种状态和每种事件：
+- 合法转移必须成功；
+- 非法转移必须拒绝；
+- 重复事件必须幂等；
+- 过期版本必须拒绝或按明确定义重新判定；
+- 任何拒绝都不得产生部分状态写入。
+
+测试应自动生成状态×事件矩阵，不只依赖手工挑选 happy path。
+
+## 29.2 属性测试
+
+至少验证：
+
+1. 任意事件序列下 Token 不会同时属于两个有效 Activation；
+2. 一个 Token 最多消费一次；
+3. 一个 Activation 最多有一个有效 Attempt；
+4. 一个 Split 的 Join 最多释放一次；
+5. Join 不会在所有 expected branches 满足前释放；
+6. Branch FAILED/UNKNOWN 不会被计为 ARRIVED；
+7. Loop iteration 不回退、不重复增加；
+8. 重复 WaitSatisfied 不产生多个 READY Token；
+9. 旧 Attempt completion 不改变当前状态；
+10. Run 非 RUNNING 时不会创建新的普通 Dispatch；
+11. UNKNOWN Command 不会被自动重发；
+12. 资源租约不因 TTL 或 Worker 消失自动释放；
+13. 同一初始状态和同一有效消息序列产生相同控制流投影。
+
+## 29.3 事务故障注入
+
+在每个 T01–T17 的：
+- BEGIN 前；
+- 每个 SQL 写入后；
+- COMMIT 前；
+- COMMIT 成功但响应丢失后；
+- COMMIT 后、Outbox Dispatcher 前；
+- Outbox 发送后、投递状态更新前；
+
+注入崩溃/断连。
+
+恢复后必须证明：
+- 所有数据库事务要么完整提交，要么完整回滚；
+- 没有半个 Split；
+- 没有双 Join；
+- 没有丢失后继 Token；
+- 没有重复变量提交；
+- 没有重复创建逻辑 command；
+- 设备结果不确定时进入 UNKNOWN/QUARANTINED；
+- 所有待发送消息仍可由 Outbox 扫描发现。
+
+## 29.4 并发竞态测试
+
+必须专门覆盖：
+- 两个 Worker 同时提交同一 Activation completion；
+- 同一 Branch 两条 Arrival 并发；
+- 最后两个 Branch 同时 Arrival；
+- Pause 与 Dispatch Commit 并发；
+- Stop 与 Pause 并发；
+- WaitSatisfied 与 WaitExpired 并发；
+- RetryDue 与 StopRequested 并发；
+- Device final event 与 CancelRequested 并发；
+- Resource lease renew 与 expiry scan 并发；
+- Coordinator recovery 与新事件入 Inbox 并发。
+
+每组竞态必须定义唯一线性化结果，不允许依赖测试运行时“通常谁先执行”。
+
+## 29.5 通过标准
+
+任何核心状态机测试失败均阻止 Stage B/C 通过。不能以集成测试 happy path 通过覆盖状态转移或故障注入失败。
+
+---
+
+# 30. 本规范的实施优先级与冻结规则
+
+## 30.1 必须先冻结的语义
+
+进入 Runtime State Machine 编码前必须冻结：
+
+- Token 与 NodeActivation 分离；
+- Attempt 重试身份规则；
+- Split/Branch/Join 状态和释放条件；
+- Loop iteration 原子推进；
+- Run Pause/Stop 闸门；
+- Inbox 幂等处理；
+- Node completion 的原子事务；
+- UNKNOWN 与 QUARANTINED 规则。
+
+## 30.2 可在实现阶段选择、但不得改变语义的内容
+
+以下可在技术选型时决定：
+- Java record/class 具体结构；
+- Mailbox 使用何种库；
+- 数据库产品；
+- 事务隔离级别；
+- Outbox Polling 或 CDC；
+- Event 表分区；
+- Scheduler 的具体公平队列实现；
+- Worker Pool 的具体执行器；
+- 指标系统和 Trace 系统。
+
+技术选择必须满足本章的状态转移和事务语义，不得反过来削弱语义。
+
+## 30.3 冻结规则
+
+状态机语义变更必须：
+1. 提交 ADR；
+2. 更新状态转移表；
+3. 更新事务边界；
+4. 更新异常路径表；
+5. 增加正向、反向和故障注入测试；
+6. 说明对已有 Run 的影响。
+
+不能只修改枚举或代码分支而不更新协议文档。
+
+---
+
+## Runtime State Machine 规范结论
+
+**Run 决定是否允许产生新工作；Token 表达控制流权利；NodeActivation 表达一次逻辑节点执行；Attempt 表达一次执行尝试；Split/Join/Loop 表达结构化控制流；Wait 表达可恢复等待；Command Ledger 表达物理动作事实；ResourceLease 表达资源占用。**
+
+**每次状态转移必须由唯一消息触发、通过身份和版本校验、在明确事务中提交，并有唯一的重复、迟到、乱序、崩溃和未知结果处理路径。任何无法证明安全的外部副作用都进入 UNKNOWN / QUARANTINED，不得靠重试、超时或线程取消掩盖不确定性。**
