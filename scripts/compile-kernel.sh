@@ -37,6 +37,21 @@ CP="out:lib/postgresql-42.7.3.jar:lib/spring/*"
 # ---- ① 依赖就位（boot 依赖 Spring ⇒ 编 boot 前必须先有 jar）----
 bash "$ROOT/scripts/ensure-deps.sh"
 
+# ---- ①b 构建并安装嵌入式 Workflow Runtime 模块 ----
+# Kernel remains on its established javac/out layout; the independent module is
+# built as a JAR and copied into the existing wildcard classpath (lib/spring/*).
+MVN_BIN="$(command -v mvn || true)"
+if [[ -z "$MVN_BIN" ]]; then
+  MVN_BIN="$HOME/.cache/labos-maven/apache-maven-3.9.9/bin/mvn"
+fi
+if [[ ! -x "$MVN_BIN" ]]; then
+  echo "✗ Maven is unavailable after ensure-deps.sh" >&2
+  exit 1
+fi
+"$MVN_BIN" -q -B -f "$ROOT/workflow-runtime/pom.xml" -DskipTests install
+cp "$ROOT/workflow-runtime/target/workflow-runtime-1.0.0-SNAPSHOT.jar" lib/spring/workflow-runtime-1.0.0-SNAPSHOT.jar
+echo "✓ Workflow Runtime JAR installed into Kernel compile classpath"
+
 # ---- ② 清 stale（boot 整目录 + 两个已从源码删除的历史类）----
 # 为什么必须清：javac **不会删除源码里已经没有的 class**，
 # 删掉的方法会以旧 class 的形式继续留在 out/ 里被 classpath 命中。
