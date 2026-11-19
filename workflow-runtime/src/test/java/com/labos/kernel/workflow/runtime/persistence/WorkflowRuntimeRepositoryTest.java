@@ -281,14 +281,14 @@ class WorkflowRuntimeRepositoryTest {
                 UUID.randomUUID(),1,"dispatcher"));
         var ack=repo.receiveInbox(tenant,"restart-device","ack-"+UUID.randomUUID(),
                 "DEVICE_COMMAND_RESULT",run.runId(),
-                "{\\"commandId\\":\\""+command+"\\",\\"state\\":\\"ACKNOWLEDGED\\"}");
+                "{\"commandId\":\""+command+"\",\"state\":\"ACKNOWLEDGED\"}");
         assertTrue(repo.applyCommandEvent(tenant,run.runId(),ack.inboxId(),command,
-                "ACKNOWLEDGED","seq-ack","{\\"accepted\\":true}"));
+                "ACKNOWLEDGED","seq-ack","{\"accepted\":true}"));
         var cancel=repo.receiveInbox(tenant,"restart-device","cancel-"+UUID.randomUUID(),
                 "DEVICE_COMMAND_RESULT",run.runId(),
-                "{\\"commandId\\":\\""+command+"\\",\\"state\\":\\"CANCEL_REQUESTED\\"}");
+                "{\"commandId\":\""+command+"\",\"state\":\"CANCEL_REQUESTED\"}");
         assertTrue(repo.applyCommandEvent(tenant,run.runId(),cancel.inboxId(),command,
-                "CANCEL_REQUESTED","seq-cancel","{\\"cancelRequested\\":true}"));
+                "CANCEL_REQUESTED","seq-cancel","{\"cancelRequested\":true}"));
         var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
         var startup=recovery.recoverAtStartup(100,"startup");
         assertEquals(1,startup.outbox().leftUncertain());
