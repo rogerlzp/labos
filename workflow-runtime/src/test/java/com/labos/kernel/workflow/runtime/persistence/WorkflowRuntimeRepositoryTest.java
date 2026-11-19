@@ -213,16 +213,13 @@ class WorkflowRuntimeRepositoryTest {
         var created=repo.createRun(tenant,"drain-"+UUID.randomUUID(),"CREATE","{}",
                 "drain-"+tenant,"1",new byte[32],"ci","{}","{}","start");
         repo.startRun(tenant,created.runId(),UUID.randomUUID(),1L);
-        UUID lease=UUID.randomUUID();
-        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
-                INSERT INTO workflow_runtime.resource_lease
-                  (tenant_id,lease_id,run_id,resource_id,lease_state,owner_kind,owner_id,fencing_token)
-                VALUES (?,?,?,'drain-resource','ACTIVE','RUN',?,1)
-                """)) {
-            ps.setObject(1,tenant);ps.setObject(2,lease);ps.setObject(3,created.runId());
-            ps.setObject(4,created.runId());ps.executeUpdate();
-        }
+        var acquired=repo.acquireResourceLease(tenant,created.runId(),1L,"drain-resource",
+                "RUN",created.runId(),Instant.now().plusSeconds(120),"{\"lease\":\"integration\"}");
+        UUID lease=acquired.leaseId();
+        assertEquals(1L,acquired.fencingToken());
+        UUID pauseDrain=repo.requestDrain(tenant,created.runId(),1L,"PAUSE");
         UUID drain=repo.requestDrain(tenant,created.runId(),1L,"STOP");
+        assertEquals(pauseDrain,drain,"Stop must supersede the in-flight Pause drain");
         repo.advanceDrainScan(tenant,created.runId(),drain,0L,"{\"page\":1}",
                 java.util.List.of(new WorkflowRuntimeRepository.DrainItemRef("LEASE",lease)));
         repo.recordSafePointEvidence(tenant,created.runId(),drain,"LEASE",lease,0L,
