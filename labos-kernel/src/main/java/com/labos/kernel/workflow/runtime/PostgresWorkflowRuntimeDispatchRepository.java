@@ -252,10 +252,11 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                     WHERE attempt_id=? AND status='DISPATCHED' AND dispatch_id=? AND dispatch_epoch=?
                     """, workerId, attemptId, dispatchId, longValue(attempt, "dispatch_epoch"));
             if (changed != 1) throw new IllegalStateException("WorkerAccepted CAS failed");
-            jdbc.update("""
+            int outboxRows = jdbc.update("""
                     UPDATE wf_worker_dispatch_outbox SET status='DELIVERED'
                     WHERE dispatch_id=? AND status='SEND_STARTED'
                     """, dispatchId);
+            if (outboxRows != 1) throw new IllegalStateException("WorkerAccepted Outbox CAS failed");
 
             long[] cursor = bumpRun(request.runId());
             insertEvent(request.runId(), cursor[0], cursor[1], "WorkerAccepted",
@@ -326,15 +327,21 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
     }
 
     private void lockTokenActivationAttempt(UUID runId, UUID tokenId, UUID activationId, UUID attemptId) {
-        jdbc.queryForMap("""
+        Map<String, Object> token = jdbc.queryForMap("""
                 SELECT status FROM wf_execution_token WHERE token_id=? AND run_id=? FOR UPDATE
                 """, tokenId, runId);
-        jdbc.queryForMap("""
-                SELECT status FROM wf_node_activation WHERE activation_id=? AND run_id=? FOR UPDATE
+        Map<String, Object> activation = jdbc.queryForMap("""
+                SELECT status,current_attempt_id FROM wf_node_activation
+                WHERE activation_id=? AND run_id=? FOR UPDATE
                 """, activationId, runId);
         jdbc.queryForMap("""
                 SELECT status FROM wf_node_attempt WHERE attempt_id=? AND run_id=? FOR UPDATE
                 """, attemptId, runId);
+        if (!"IN_FLIGHT".equals(token.get("status"))
+                || !"ACTIVE".equals(activation.get("status"))
+                || !attemptId.equals(activation.get("current_attempt_id"))) {
+            throw new IllegalStateException("Worker fact does not match the current in-flight Activation");
+        }
     }
 
     private void requireDispatchIdentity(Map<String, Object> attempt, UUID dispatchId, Request request) {
