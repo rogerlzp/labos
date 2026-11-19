@@ -934,7 +934,7 @@ public final class WorkflowRuntimeRepository {
     public record OutboxMessage(UUID outboxId, String dedupKey, String payloadJson) {}
 
     /** Single-host dispatcher: lock and transition pending rows without distributed claims. */
-    public List<OutboxClaim> beginOutboxSend(UUID tenantId, int batchSize) {
+    public List<OutboxMessage> beginOutboxSend(UUID tenantId, int batchSize) {
         if(batchSize<1 || batchSize>500) throw new IllegalArgumentException("batchSize must be 1..500");
         return required(() -> jdbc.query("""
             WITH picked AS (
@@ -947,7 +947,7 @@ public final class WorkflowRuntimeRepository {
                SET outbox_state='SENDING',delivery_attempts=delivery_attempts+1
               FROM picked p WHERE o.tenant_id=? AND o.outbox_id=p.outbox_id
             RETURNING o.outbox_id,o.dedup_key,o.payload::text
-            """,(rs,n)->new OutboxClaim(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3)),
+            """,(rs,n)->new OutboxMessage(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3)),
                 tenantId,batchSize,tenantId));
     }
 
