@@ -178,3 +178,13 @@ WorkerLeaseRecoveryService 已提供有界、可重复调用的候选扫描与�
 
 
 最新 CI：Run 44503834970 SUCCESS；Java 集成测试 7/7，CON-01..14 14/14，PG17 Schema 33 张表。Worker/Recovery 代码基线 3364fa30fcb912ae6aadf86e238f8976270b60a5。
+
+## 9. 设备回执与过期 Worker 完成路径复核
+
+本轮进一步修正了 T05/T13/T14/T21 的锁序与执行权检查：
+- T05 只有 ACTIVE 且未过期的 Worker lease 可以完成 Attempt；
+- T13 Command 发送要求 Attempt STARTED + Worker lease ACTIVE；
+- T14 设备回执在 WorkerLease 锁之后再锁 Command，写入设备来源的 SideEffect 完成/不确定事实；
+- T21 UNKNOWN 标记和核验采用相同锁序，避免 Command 与 WorkerLease 的反向锁等待。
+
+最新 CI Run 44504186093 SUCCESS；CON-01..14 全部通过；Java Repository 集成测试 7/7，0 failures/errors。该轮未增加真实 Adapter/HIL 或多进程 Recovery 服务测试。
