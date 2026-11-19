@@ -55,6 +55,7 @@ public final class WorkflowRuntimeRepository {
     public record Checkpoint(UUID checkpointId, long commitVersion, long eventSeq,
                              long coordinatorEpoch, String snapshotJson, byte[] sha256) {}
     public record CapacityReservation(UUID attemptId, UUID dispatchId, UUID reservationId) {}
+    public record DrainItemRef(String itemKind, UUID itemId) {}
 
     private static final RowMapper<RunHead> RUN_HEAD = (rs, n) -> new RunHead(
             rs.getString("status"), rs.getString("control_gate"),
@@ -661,7 +662,7 @@ public final class WorkflowRuntimeRepository {
 
     /** T16: advance a bounded drain scan generation and persist its cursor. */
     public long advanceDrainScan(UUID tenantId, UUID runId, UUID drainId,
-                                 long expectedVersion, String cursorJson, String itemsJson) {
+                                 long expectedVersion, String cursorJson, List<DrainItemRef> items) {
         return required(() -> {
             lockRun(tenantId,runId);
             Long generation=jdbc.queryForObject("""
@@ -672,8 +673,14 @@ public final class WorkflowRuntimeRepository {
              RETURNING scan_generation
                 """,Long.class,cursorJson,tenantId,runId,drainId,expectedVersion);
             if(generation==null) throw new StaleRuntimeWriteException("Drain scan version stale");
-            // itemsJson is a JSON array of {itemKind,itemId}; parse/insert is intentionally
-            // delegated to the typed caller, which uses addDrainItem in the same tx API.
+            if (items != null) for (DrainItemRef item : items) {
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.drain_item
+                      (tenant_id,drain_id,item_kind,item_id,item_state)
+                    VALUES (?,?,?,?,'PENDING')
+                    ON CONFLICT (tenant_id,drain_id,item_kind,item_id) DO NOTHING
+                    """,tenantId,drainId,item.itemKind(),item.itemId());
+            }
             return generation;
         });
     }
