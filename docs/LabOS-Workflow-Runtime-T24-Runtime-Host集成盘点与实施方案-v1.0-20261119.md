@@ -278,3 +278,15 @@ Mock Adapter 必须模拟 ACK 与物理完成分离，支持延迟、重复事�
 - Runtime Host、Coordinator、WorkerPool、Outbox Dispatcher、Adapter、Event Ingress 和端到端 Mock 闭环尚未实现；
 - T24 当前完成的是源码盘点和实施方案，后续代码必须逐阶段提交并通过对应测试。
 
+
+## 10. T24 首轮实施进度（2026-11-19）
+
+源码盘点后先修复了两个与 Host 启动/执行生命周期直接相关的缺口：
+
+1. **启动恢复分页**：原 `recoverAtStartup(limit, ...)` 只读取一页 STARTED Attempt。若待恢复数量超过 limit，剩余 Attempt 会留在 STARTED 状态而 Host 可能误以为恢复扫描已完成。现改为重复读取并处理，直到没有 STARTED 候选；新增 PG 集成测试，使用 limit=1 验证两条 Attempt 都被扫描。
+2. **Worker 注销与取消竞态**：原 `unregister` 先从 Map 删除再标记 Entry finished，和并发 `requestCancellation` 的锁顺序不一致。现将 finished 标记与 Map 删除放在同一 Entry 锁内，和 `cancel()` 串行化。
+3. **PR CI 触发范围**：原 workflow 的 `push.paths` 包含 `workflow-runtime/**`，但 `pull_request.paths` 漏掉该目录，导致仅修改 Java Runtime 模块的 PR 不会触发本工作流。现补入该路径。
+
+以上代码已提交到本 T24 分支，等待 GitHub Actions 对最新提交执行验证。未通过 CI 前，不标记为 PASS。
+
+本轮尚未实现 RuntimeHost、GraphCoordinator、WorkerPool、OutboxDispatcher、Adapter 或端到端 Mock 闭环；这些仍按 §6 的顺序推进。
