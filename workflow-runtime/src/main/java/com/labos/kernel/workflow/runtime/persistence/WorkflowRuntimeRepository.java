@@ -601,24 +601,33 @@ public final class WorkflowRuntimeRepository {
                              boolean satisfied, UUID oldAttemptId) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            List<String> continuationRows=jdbc.query("""
+                SELECT continuation->>'nodeKey' FROM workflow_runtime.wait_registration
+                 WHERE tenant_id=? AND wait_id=? AND run_id=? AND wait_state='ACTIVE'
+                """,(rs,n)->rs.getString(1),tenantId,waitId,runId);
+            if(continuationRows.isEmpty()) return false;
+            String continuationNode=continuationRows.get(0);
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.wait_registration
+                 WHERE tenant_id=? AND wait_id=? AND run_id=?
+                """,UUID.class,tenantId,waitId,runId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            // Global lock order after Run: Token -> Activation -> Attempt -> Wait.
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,oldAttemptId);
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.wait_registration SET wait_state=?,
                        version=version+1,closed_at=clock_timestamp()
                  WHERE tenant_id=? AND wait_id=? AND run_id=? AND wait_state='ACTIVE'
                 """,satisfied?"SATISFIED":"EXPIRED",tenantId,waitId,runId);
             if(changed==0) return false;
-            String continuationNode=jdbc.queryForObject("""
-                SELECT continuation->>'nodeKey' FROM workflow_runtime.wait_registration
-                 WHERE tenant_id=? AND wait_id=?
-                """,String.class,tenantId,waitId);
-            UUID activationId=jdbc.queryForObject("""
-                SELECT activation_id FROM workflow_runtime.wait_registration
-                 WHERE tenant_id=? AND wait_id=?
-                """,UUID.class,tenantId,waitId);
-            UUID tokenId=jdbc.queryForObject("""
-                SELECT token_id FROM workflow_runtime.node_activation
-                 WHERE tenant_id=? AND activation_id=?
-                """,UUID.class,tenantId,activationId);
             int attempt=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='ABANDONED_SAFE',
                        attempt_version=attempt_version+1,finished_at=clock_timestamp()
@@ -890,6 +899,10 @@ public final class WorkflowRuntimeRepository {
                 """,UUID.class,tenantId,commandId);
             RunHead head=lockRun(tenantId,runId);
             if(!"OPEN".equals(head.controlGate())) return false;
+            jdbc.queryForObject("""
+                SELECT command_id FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND command_id=? FOR UPDATE
+                """,UUID.class,tenantId,commandId);
             List<String> outboxPayload=jdbc.query("""
                 SELECT payload->>'commandId' FROM workflow_runtime.runtime_outbox
                  WHERE tenant_id=? AND outbox_id=? AND outbox_state='CLAIMED'
