@@ -286,12 +286,14 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND attempt_id=? AND run_id=? AND attempt_state='CREATED'
                 """, tenantId, attemptId, runId);
             if (changed != 1) throw new StaleRuntimeWriteException("Attempt is not CREATED");
-            jdbc.update("""
+            int activationReserved=jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='RESERVED',
                        current_attempt_id=?,activation_version=activation_version+1
                  WHERE tenant_id=? AND run_id=? AND activation_id=(SELECT activation_id
                    FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=?)
+                   AND activation_state='RESERVED'
                 """, attemptId, tenantId, runId, tenantId, attemptId);
+            if(activationReserved!=1) throw new StaleRuntimeWriteException("Activation reservation lost");
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
@@ -307,7 +309,7 @@ public final class WorkflowRuntimeRepository {
     public void acceptAttempt(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
                               long dispatchEpoch, String workerId) {
         required(() -> {
-            lockRun(tenantId, runId);
+            RunHead head=lockRun(tenantId, runId);
             int changed = jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='ACCEPTED',
                        worker_id=?,attempt_version=attempt_version+1
@@ -315,7 +317,7 @@ public final class WorkflowRuntimeRepository {
                    AND dispatch_epoch=? AND attempt_state='DISPATCHED'
                 """, workerId, tenantId, runId, attemptId, dispatchId, dispatchEpoch);
             if (changed != 1) throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
-            appendEvents(tenantId, runId, dispatchEpoch, List.of(new EventDraft(
+            appendEvents(tenantId, runId, head.coordinatorEpoch(), List.of(new EventDraft(
                     "ATTEMPT_ACCEPTED","ATTEMPT",attemptId,null,null,null,"{}")));
             return null;
         });
@@ -1020,7 +1022,9 @@ public final class WorkflowRuntimeRepository {
                   (SELECT count(*) FROM workflow_runtime.node_attempt
                     WHERE tenant_id=? AND run_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')) +
                   (SELECT count(*) FROM workflow_runtime.drain_item
-                    WHERE tenant_id=? AND drain_id=? AND item_state <> 'SAFE')
+                    WHERE tenant_id=? AND drain_id=? AND item_state <> 'SAFE') +
+                  (SELECT count(*) FROM workflow_runtime.manual_intervention
+                    WHERE tenant_id=? AND run_id=? AND intervention_state='OPEN')
                 """,Long.class,
                     tenantId,runId,  // Commands
                     tenantId,runId,  // Leases
@@ -1032,7 +1036,8 @@ public final class WorkflowRuntimeRepository {
                     tenantId,runId,  // Loops
                     tenantId,runId,  // Tokens
                     tenantId,runId,  // Attempts
-                    tenantId,drainId // Drain items
+                    tenantId,drainId, // Drain items
+                    tenantId,runId   // Open manual interventions
                 );
             if(unsafe==null||unsafe>0) return false;
             int changed=jdbc.update("""
@@ -1108,12 +1113,18 @@ public final class WorkflowRuntimeRepository {
             String reservations=readJsonArray("dispatch_reservation",tenantId,runId);
             String drains=readJsonArray("drain_record",tenantId,runId);
             String interventions=readJsonArray("manual_intervention",tenantId,runId);
+            String quarantines=jdbc.queryForObject("""
+                SELECT COALESCE(jsonb_agg(to_jsonb(q) ORDER BY to_jsonb(q)::text),'[]'::jsonb)::text
+                  FROM workflow_runtime.quarantine_record q
+                 WHERE tenant_id=? AND run_id=?
+                """,String.class,tenantId,runId);
             String snapshot="{\"run\":"+runJson+",\"tokens\":"+tokens+",\"activations\":"+activations+
                     ",\"attempts\":"+attempts+",\"waits\":"+waits+",\"retries\":"+retries+
                     ",\"commands\":"+commands+",\"leases\":"+leases+",\"splits\":"+splits+
                     ",\"branches\":"+branches+",\"joins\":"+joins+",\"loops\":"+loops+
                     ",\"variables\":"+variables+",\"outputs\":"+outputs+",\"reservations\":"+reservations+
-                    ",\"drains\":"+drains+",\"interventions\":"+interventions+"}";
+                    ",\"drains\":"+drains+",\"interventions\":"+interventions+
+                    ",\"quarantines\":"+quarantines+"}";
             byte[] hash=sha256(snapshot);
             UUID checkpointId=UUID.randomUUID();
             return new Checkpoint(checkpointId,head.commitVersion(),head.eventSeq(),
