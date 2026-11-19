@@ -1093,4 +1093,23 @@ DDL 使用独立 wf_ 命名空间，不修改既有 GraphRunner 表，不承担�
 
 ## 9.5 当前实现状态
 
-本次提交包含物理 DDL、Repository Port 契约与状态机/数据库测试基建的实现切片。它不等于 23 个事务都已接通真实 SQL，更不等于 Worker/Adapter/设备外部副作用已完成 HIL 验证。每个 Txx 只有在真实 SQL、正反/重复/并发/故障测试均通过后才能标记 Implemented。
+| 范围 | 当前代码状态 | 验证状态 |
+|---|---|---|
+| PostgreSQL DDL / additive migration | 已创建 | 未在真实 PostgreSQL 执行 |
+| L0 状态机与约束 | 已创建 | 未运行 Maven |
+| L1 数据库约束、MVCC、并发与 Inbox rollback 测试 | 已创建 | 未连接真实测试数据库 |
+| T01 CreateRun | 已有 PostgreSQL Repository 实现 | 测试代码已写，未执行 |
+| T02 StartRun | 已有 PostgreSQL Repository 实现 | 测试代码已写，未执行 |
+| T03 Reserve/Dispatch Commit | 已有 PostgreSQL Repository 实现 | 测试代码已写，未执行 |
+| T03 Dispatch send boundary | 已有 PostgreSQL Repository 实现 | 与 T03/T04 集成测试已写，未执行 |
+| T04 WorkerAccepted / WorkerStarted | 已有 PostgreSQL Repository 实现 | 与 T03/T04 集成测试已写，未执行 |
+| T05–T23 | 已定义 Transaction Port 和工程测试规格；尚无完整 PostgreSQL Repository 实现 | 未实现、未执行 |
+
+当前执行环境没有可用的 Maven 与 PostgreSQL 客户端/服务，因此本轮不能声称编译通过、DDL 可执行或数据库测试 PASS。L0/L1 测试入口：
+
+- `pg_rebuild/test/run_workflow_runtime_l0.sh`
+- `pg_rebuild/test/run_workflow_runtime_l1.sh`
+
+运行 L1 前必须提供一次性 PostgreSQL 测试库连接环境变量。脚本会在指定 schema 内重复应用 DDL 两次，以验证迁移幂等性，然后运行真实 JDBC 测试。
+
+这是一份**已写入首批可执行代码、但尚未通过构建和数据库验证的实现切片**，不是 T01–T23 全部实现完成证明。T05–T23 仍需逐项实现 SQL 事务、并发线性化和故障注入；Adapter/设备外部副作用还需要 HIL。每个 Txx 只有在真实 SQL、正反/重复/并发/故障测试均通过后才能标记 Implemented。
