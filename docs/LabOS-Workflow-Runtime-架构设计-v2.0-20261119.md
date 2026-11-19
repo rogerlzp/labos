@@ -2954,7 +2954,7 @@ Attempt 的合法转移：
 | CREATED | DispatchOutboxCommitted | Dispatch 记录与 Outbox 同事务存在 | DISPATCH_PENDING |
 | DISPATCH_PENDING | DispatcherSendStarted | 当前 dispatchId/claim/fencing 有效 | DISPATCHED |
 | DISPATCHED | WorkerAccepted | Worker 身份和 dispatchId 匹配 | ACCEPTED |
-| DISPATCHED / ACCEPTED | WorkerStarted | 当前 attemptId 匹配 | STARTED |
+| ACCEPTED | WorkerStarted | 当前 attemptId/dispatchId 匹配 | STARTED |
 | ACCEPTED | WorkerStartAbandoned | 可证明 Handler 未开始且无副作用 | ABANDONED_SAFE |
 | STARTED | SuspendCommitted | WaitRegistration 与 Token/Activation 同事务提交，Worker 已释放 | SUSPENDED |
 | STARTED | AttemptSucceeded | 输出及后置条件已验证 | SUCCEEDED |
@@ -3008,7 +3008,7 @@ Suspend 事务必须原子提交 WaitRegistration(ACTIVE)、Activation=SUSPENDED
 
 WaitSatisfied 与 WaitExpired 竞争时，对 waitId 执行唯一状态 CAS；只有一个事件可将 ACTIVE 改为 SATISFIED 或 EXPIRED。另一事件作为迟到/冲突事件记录，不得再创建 Token 或 Attempt。
 
-WaitSatisfied 的恢复事务将 Wait→SATISFIED、Token WAITING→READY、Activation SUSPENDED→READY，并在同一事务将旧 Attempt SUSPENDED→ABANDONED_SAFE（reason=CONTINUATION_PERSISTED），写 continuation metadata。该关闭只表示旧 Worker 执行权已释放，不表示设备命令完成。只有在 Worker 已确认释放执行权、continuation 已持久化且不存在未跟踪的 Worker 副作用时，才允许关闭旧 Attempt。它不复活旧 Attempt。下一次 Dispatch 创建新 Attempt，记录 continuationOfAttemptId。若等待期间设备命令仍在运行，WaitSatisfied 只有在匹配 commandId 且命令事件满足定义的等待条件时才有效；不能因通用定时器或无关设备事件恢复节点。
+WaitSatisfied 的恢复事务将 Wait→SATISFIED、Token WAITING→READY、Activation SUSPENDED→READY，并在同一事务将旧 Attempt SUSPENDED→ABANDONED_SAFE（reason=CONTINUATION_PERSISTED），写 continuation metadata。该关闭只表示旧 Worker 执行权已释放，不表示设备命令完成。只有在 Worker 已确认释放执行权、continuation 已持久化且不存在未跟踪的 Worker 副作用时，才允许关闭旧 Attempt。它不复活旧 Attempt。下一次 Dispatch 创建新 Attempt，记录 continuationOfAttemptId。若等待期间设备命令仍在运行，WaitSatisfied 只有在匹配 commandId 且命令事件满足定义的等待条件时才有效；不能因通用定时器或无关设备事件恢复节点。WaitExpired 必须按编译后的 timeout edge/failure policy 形成唯一结果；若关闭当前 continuation，同一事务也必须将旧 Attempt SUSPENDED→ABANDONED_SAFE，更新 Token/Activation 并创建唯一超时后继或失败收敛消息。
 
 ### 31.2.4 UNKNOWN 核验
 
@@ -3104,8 +3104,8 @@ PauseSafePredicate 必须全部满足：
 StopSafePredicate 必须全部满足：
 1. 不存在新 Dispatch；
 2. 所有已派发 Worker 已完成或安全终止；
-3. 所有设备命令均已最终完成、取消且有物理停止确认，或其不确定性已导致 MANUAL_REQUIRED/QUARANTINED；
-4. 所有资源已安全释放，或明确隔离并使 Run 进入 QUARANTINED；
+3. 所有设备命令均已进入允许的确定最终状态；不得存在 DELIVERY_UNKNOWN、UNKNOWN、ACKNOWLEDGED、RUNNING 或 CANCEL_REQUESTED；
+4. 所有 ResourceLease 均为 RELEASED；若资源只能隔离而不能证明释放，则本谓词不成立，必须走 MANUAL_REQUIRED/QUARANTINED 分支；
 5. 无未决物料/板位/耗材副作用；
 6. 所有 Token/Activation/Split/Join/Loop/Wait 均已关闭、终结或 INVALIDATED；STOPPED/FAILED 不得保留可恢复的 READY/WAITING/RESERVED/IN_FLIGHT 路径；
 7. 无未处理关键 Inbox。
@@ -3221,7 +3221,7 @@ ManualResolution 必须是不可变记录，包含 interventionId、对象身份
 
 ## 31.9 事务目录修订
 
-原 T01–T17 保留其业务范围，但编号和边界按以下目录扩展。原 T16 仅作为最终 Drain 判定事务；新增事务不得与设备/Worker 外部调用包在数据库事务内。
+原 T01–T14 保持不变；原 T15 保持 Pause/Stop Request 语义；原 T16 的 Drain Complete 语义拆分为 T16–T19；原 T17 Checkpoint 顺延为 T20。自本章起，T01–T23 是唯一规范事务编号；新增事务不得与设备/Worker 外部调用包在数据库事务内。
 
 | 事务 | 名称 | 核心原子边界 |
 |---|---|---|
@@ -3302,7 +3302,7 @@ Checkpoint 使用 §31.7.3 的一致快照协议。Unknown Reconciliation、Manu
 | SEND_STARTED 后 Dispatcher 崩溃 | 按可能送达；只按 Adapter 幂等/查询能力决定，其他情况 UNKNOWN |
 | Command 事件乱序 | 按 commandId + sourceEventId + 设备序号/合法迁移处理；不能以时间戳覆盖 |
 | Lease TTL 到期 | EXPIRED_UNVERIFIED；资源仍禁止新 owner 获取 |
-| Coordinator epoch 变化后旧 Worker 返回 | 旧 epoch 消息不得推进 Runtime；保留审计并由新 owner 核验 |
+| Coordinator epoch 变化后旧 Worker 返回 | 若是旧 Coordinator/Dispatcher 控制命令则拒绝；若是 Worker completion，则按持久化 dispatchEpoch 与当前 attempt/dispatch 身份校验，由新 owner 决定接受或作为迟到结果拒绝 |
 | COMMIT 响应丢失 | 使用原 requestId/messageId 查询；存在则返回原结果，不存在才允许原身份重试 |
 | 同 Inbox identity 不同 payload | 保留原 Inbox；新增 ProtocolViolation，不覆盖原始消息 |
 | Checkpoint 与事件提交并发 | MVCC 同一快照和游标；无法保证则不创建 checkpoint |
@@ -3370,7 +3370,7 @@ Checkpoint 使用 §31.7.3 的一致快照协议。Unknown Reconciliation、Manu
 15. 人工处置不能只改变 Run 状态。
 16. Run 有任何未决 Command/Lease 时不能 SUCCEEDED。
 17. Run 有未知物理状态时不能 STOPPED/FAILED。
-18. 旧 coordinatorEpoch 的 completion 不能改变 Run/Token/Activation。
+18. 旧 Coordinator/Dispatcher epoch 的控制命令不能改变 Run/Token/Activation；Worker completion 即使携带旧 dispatchEpoch，只要匹配当前有效 attemptId/dispatchId/attemptVersion 且由当前 Coordinator 校验提交，仍可正常完成。
 19. Checkpoint 各对象版本必须对应同一 runCommitVersion/eventSeq 游标。
 20. Inbox identity conflict 不覆盖原消息内容。
 
@@ -3411,20 +3411,54 @@ v2.1 状态机闭合版的冻结不代表数据库、设备 Adapter 和 Worker �
 
 ---
 
-# 37. 第二轮反向评审记录（修订后执行）
+# 37. 第二轮反向评审记录（2026-11-19）
 
-本节记录 v2.1 修订后的第二轮评审。评审只针对文档内规范闭合性，不替代源码、DDL、设备协议或集成环境验收。
+本轮基于提交后回读的完整 v2.1 文件进行文档级反向检查。评审不包含源码、DDL、真实数据库隔离行为、设备 Adapter 协议实现和物理设备联调。
 
-评审重点：
-- 状态转移表是否有未定义边；
-- 跨状态机状态组合是否自洽；
-- 事务边界是否覆盖所有跨对象变化；
-- 竞争事件是否有唯一线性化结果；
-- 外部副作用未知时是否可能自动重发；
-- Run 终态是否可能隐藏未决 Token、Command 或 ResourceLease；
-- Checkpoint 与 Coordinator 恢复是否有一致性边界。
+### 37.1 评审结果
 
-**评审结果必须在完成修订提交后，根据回读的实际文件逐项填写 PASS / FAIL / UNKNOWN；不得预先把修订条款的存在视为验证通过。**
+| 检查项 | 结果 | 证据/判定 |
+|---|---|---|
+| Token / Activation / Attempt 正常执行状态组合 | PASS | §31.2.1 给出组合表；§32.1 区分 Dispatch、Accepted、Started |
+| Retry 状态闭合 | PASS | §31.2.2 明确失败、RetryRegistration、RetryDue、新 Attempt 的事务顺序 |
+| Suspend / Wait / continuation 闭合 | PASS | §31.2.3、§32.2 明确旧 Attempt 关闭、新 Attempt 创建；WaitSatisfied/WaitExpired 竞争由 waitId CAS 裁决 |
+| Join 释放和分支 Token 终结 | PASS | §31.3.3、§32.3 在同一事务关闭 Branch、消费全部分支 Token 并创建唯一下游 Token |
+| Pause/Stop 与 Dispatch 线性化 | PASS | §31.4.1 要求同一 Run 行锁/CAS；§31.4.2–§31.4.4 定义 Drain 和安全谓词 |
+| Reservation 回收与在途动作收敛 | PASS | §31.4.3 区分软件配额、物理租约、已提交 Dispatch 和安全点 |
+| Command / CommandOutbox 未知派发结果 | PASS | §31.5、§32.4 分离状态机；SEND_STARTED 后不对非幂等设备盲目重发 |
+| ResourceLease 状态与隔离 | PASS | §31.6 定义获取、释放、过期未核验、隔离和 fencing 规则 |
+| Inbox identity conflict | PASS | §31.7.1 保留原 Inbox，并将不同 payloadHash 作为独立 ProtocolViolation |
+| Event sequence / Checkpoint | PASS | §31.7.2–§31.7.3 定义 runCommitVersion、eventSeq 和一致快照要求 |
+| Coordinator epoch 与 Worker 迟到结果 | PASS | §31.7.4 区分 owner 控制命令与 Worker/设备/Wait 事实消息；有效旧 dispatchEpoch completion 可由当前 owner 核验 |
+| Run 成功/失败/停止终态条件 | PASS | §31.8.1–§31.8.2 要求无未决 Token、Command、Lease 和物理副作用 |
+| 人工处置和隔离解除 | PASS | §31.8.3、T21–T23 要求证据、授权、对象版本和审计 |
+| 事务编号及故障注入范围 | PASS | §31.9 将 T01–T23 定为唯一规范编号；§35.3 覆盖新增边界 |
+
+### 37.2 第二轮发现并已修正的问题
+
+1. **旧 Attempt 关闭缺口：** WaitSatisfied 原先只恢复 Token/Activation，未在同一事务关闭 SUSPENDED Attempt。已修订为同事务转 ABANDONED_SAFE；WaitExpired 也必须关闭旧 Attempt。
+2. **Worker Started 越级转移：** Attempt 转移表原允许 DISPATCHED 直接到 STARTED，与 WorkerAccepted 语义冲突。已收紧为仅 ACCEPTED→STARTED。
+3. **Coordinator epoch 误伤合法 Worker completion：** 旧版本规则可能拒绝由旧 epoch 派发、但仍有效的 Worker completion。已区分 owner 控制命令与外部事实消息；当前 Coordinator 根据 dispatchEpoch、attemptId、dispatchId 和版本校验后决定接受。
+4. **StopSafePredicate 混入隔离结果：** 原谓词允许隔离资源同时作为 Stop 收敛条件，容易误读为仍可进入 STOPPED。已改为只有命令确定终结、所有租约 RELEASED 才满足；否则进入 MANUAL_REQUIRED/QUARANTINED。
+5. **事务编号映射歧义：** 已明确 T01–T14 不变、T15 请求不变、原 Drain Complete 拆为 T16–T19、Checkpoint 顺延为 T20；T01–T23 为唯一规范编号。
+
+### 37.3 仍为 UNKNOWN 的外部验证项
+
+以下不是本规范内部已确认的逻辑缺陷，而是仅凭设计文档无法证明的实现/环境事实，必须在技术选型和集成验收中验证：
+
+- **UNKNOWN-01 数据库隔离能力：** 选定数据库是否能按目标方式提供跨表 MVCC 一致快照、Run 行锁/CAS 和事务内 eventSeq 分配。
+- **UNKNOWN-02 设备幂等能力：** 每个真实 Adapter 的 commandId 幂等、按 commandId 查询、事件回显和物理状态回读能力是否达到声明等级。
+- **UNKNOWN-03 fencing 落点：** 设备/网关是否实际执行 fencingToken 或等价单 owner 串行化，而不只是 Runtime 数据库保存 token。
+- **UNKNOWN-04 Worker 执行事实：** Worker 接收、Handler 开始、执行权释放和副作用分类能否可靠持久化并在崩溃后核验。
+- **UNKNOWN-05 事务读写集合：** T01–T23 的完整 SQL 读集合、写集合、索引和唯一约束尚未由物理 DDL 验证。
+
+### 37.4 第二轮判定
+
+**文档内部状态机与事务协议：PASS（本轮覆盖的 11 项问题均已落实，第二轮发现的 5 个文本/协议缺口已在本提交修正）。**
+
+**实现可验证性：UNKNOWN（上列 UNKNOWN-01 至 UNKNOWN-05 必须通过数据库、Adapter、Worker 的技术验证和故障注入关闭）。**
+
+因此，v2.1 可以作为下一阶段技术拆解和测试设计基线；不能据此宣称 Runtime 已实现，也不能在 UNKNOWN 项未关闭前宣称设备执行安全性已获实证。
 
 ---
 
