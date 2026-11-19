@@ -14,4 +14,4 @@ done
 export LABOS_RUNTIME_TEST_SCHEMA="$SCHEMA"
 export LABOS_RUNTIME_TEST_USER="${LABOS_RUNTIME_TEST_USER:-${PGUSER:-}}"
 export LABOS_RUNTIME_TEST_PASSWORD="${LABOS_RUNTIME_TEST_PASSWORD:-${PGPASSWORD:-}}"
-mvn -f "$(dirname "$0")/../../labos-kernel/pom.xml" -Dtest=WorkflowRuntimePostgresContractTest,PostgresWorkflowRuntimeBootstrapRepositoryTest test
+mvn -f "$(dirname "$0")/../../labos-kernel/pom.xml" -Dtest=WorkflowRuntimePostgresContractTest,PostgresWorkflowRuntimeBootstrapRepositoryTest,PostgresWorkflowRuntimeDispatchRepositoryTest test
