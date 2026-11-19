@@ -1731,7 +1731,7 @@ public final class WorkflowRuntimeRepository {
                 releaseReservationInTransaction(tenantId,attemptId);
                 appendEvents(tenantId,runId,List.of(new EventDraft(
                         "ATTEMPT_ABANDONED_SAFE","ATTEMPT",attemptId,null,null,null,
-                        "{\"previousState\":\""+interruptedState+"\"}")));
+                        "{"+(char)34+"previousState"+(char)34+":"+(char)34+interruptedState+(char)34+"}")));
                 return new WorkerRecoveryResult("SAFE_TO_RETRY",null);
             }
 
