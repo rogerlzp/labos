@@ -58,6 +58,8 @@ public final class WorkerPool implements AutoCloseable {
         Objects.requireNonNull(runId, "runId");
         Objects.requireNonNull(attemptId, "attemptId");
         Objects.requireNonNull(work, "work");
+        if (workerId == null || workerId.isBlank())
+            throw new IllegalArgumentException("workerId is required");
         if (!started.get() || closed.get()) throw new IllegalStateException("WorkerPool is not running");
         schedulingGate.requireOpen();
         reserveRunPermit(runId);
