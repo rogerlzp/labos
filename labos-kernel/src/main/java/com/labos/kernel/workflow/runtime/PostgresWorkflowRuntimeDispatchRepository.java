@@ -254,7 +254,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             if (changed != 1) throw new IllegalStateException("WorkerAccepted CAS failed");
             int outboxRows = jdbc.update("""
                     UPDATE wf_worker_dispatch_outbox SET status='DELIVERED'
-                    WHERE dispatch_id=? AND status='SEND_STARTED'
+                    WHERE dispatch_id=? AND status IN ('SEND_STARTED','DELIVERY_UNKNOWN')
                     """, dispatchId);
             if (outboxRows != 1) throw new IllegalStateException("WorkerAccepted Outbox CAS failed");
 
