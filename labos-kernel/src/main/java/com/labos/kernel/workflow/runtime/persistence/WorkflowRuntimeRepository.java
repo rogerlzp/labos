@@ -643,6 +643,48 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+    /** T14: attribute device evidence exclusively by command_id and process Inbox atomically. */
+    public boolean applyCommandEvent(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
+                                     String targetState, String deviceSequence, String outcomeJson) {
+        return required(() -> {
+            RunHead head=lockRun(tenantId,runId);
+            if (!List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","CANCELLED",
+                    "DELIVERY_UNKNOWN","UNKNOWN","MANUAL_REQUIRED").contains(targetState))
+                throw new IllegalArgumentException("Unsupported device Command state: "+targetState);
+            List<String> states=jdbc.query("""
+                SELECT command_state FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND run_id=? AND command_id=? FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,runId,commandId);
+            if(states.size()!=1) throw new IllegalStateException("command_id does not belong to this Run");
+            String current=states.get(0);
+            boolean allowed=switch(current) {
+                case "SEND_STARTED" -> List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","DELIVERY_UNKNOWN","UNKNOWN").contains(targetState);
+                case "ACKNOWLEDGED" -> List.of("RUNNING","SUCCEEDED","FAILED","CANCEL_REQUESTED","DELIVERY_UNKNOWN").contains(targetState);
+                case "RUNNING" -> List.of("SUCCEEDED","FAILED","CANCEL_REQUESTED","DELIVERY_UNKNOWN").contains(targetState);
+                case "CANCEL_REQUESTED" -> List.of("CANCELLED","SUCCEEDED","FAILED","DELIVERY_UNKNOWN").contains(targetState);
+                case "DELIVERY_UNKNOWN" -> List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","UNKNOWN").contains(targetState);
+                default -> false;
+            };
+            if(!allowed) throw new InvalidTransitionException("Illegal Command transition "+current+" -> "+targetState);
+            int changed=jdbc.update("""
+                UPDATE workflow_runtime.command_ledger SET command_state=?,device_sequence=?,
+                       version=version+1,updated_at=clock_timestamp(),
+                       completed_at=CASE WHEN ? IN ('SUCCEEDED','FAILED','CANCELLED') THEN clock_timestamp() ELSE completed_at END
+                 WHERE tenant_id=? AND command_id=? AND command_state=?
+                """,targetState,deviceSequence,targetState,tenantId,commandId,current);
+            if(changed!=1) throw new StaleRuntimeWriteException("Command state changed concurrently");
+            jdbc.update("""
+                UPDATE workflow_runtime.inbox_receipt SET receipt_state='PROCESSED',
+                       processed_at=clock_timestamp(),outcome=?::jsonb
+                 WHERE tenant_id=? AND inbox_id=? AND run_id=?
+                   AND receipt_state IN ('RECEIVED','PROCESSING')
+                """,outcomeJson,tenantId,inboxId,runId);
+            appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+                    "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
+            return true;
+        });
+    }
+
     /** T14b: process a receipt under Run -> domain row -> Inbox lock order. */
     public boolean markInboxProcessed(UUID tenantId, UUID runId, UUID inboxId, String outcomeJson) {
         return required(() -> {
