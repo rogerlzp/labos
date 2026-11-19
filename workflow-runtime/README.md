@@ -1,5 +1,7 @@
 # Workflow Runtime 独立模块
 
+> **架构收敛进行中（2026-11-19）：** V1 已决定只支持单 Runtime 实例。当前 DDL/Repository 仍含 Worker DB Lease、Coordinator epoch 和 fencing 字段，尚未完成删除；不得将其视为最终架构。规范以《LabOS Workflow Runtime V1 单实例架构收敛决议 v1.0》为准。此 README 和实现说明将在代码/DDL 收敛提交后同步重写。
+
 本模块是全新 Workflow Runtime 的 PostgreSQL 持久化与事务边界，不依赖旧 GraphRunner 表，也不属于 labos-kernel 的旧 Maven 编译单元。
 
 ## 运行
