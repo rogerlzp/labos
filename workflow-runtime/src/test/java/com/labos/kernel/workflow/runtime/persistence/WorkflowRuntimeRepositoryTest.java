@@ -165,7 +165,7 @@ class WorkflowRuntimeRepositoryTest {
             ps.setObject(4,splitToken);ps.executeUpdate();
         }
         UUID split=repo.createSplit(tenant,created.runId(),1L,sourceActivation,java.util.List.of("branch-a","branch-b"));
-        for(String branch:List.of("branch-a","branch-b")) {
+        for(String branch:java.util.List.of("branch-a","branch-b")) {
             UUID branchId, branchToken, arrivalActivation=UUID.randomUUID();
             try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
                     SELECT b.branch_id,t.token_id FROM workflow_runtime.branch_activation b
