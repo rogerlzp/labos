@@ -300,6 +300,8 @@ class WorkflowRuntimeRepositoryTest {
         assertNotNull(result.interventionId());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"+tenant+"' AND dedup_key='command:"+command+"' AND outbox_state='SENDING'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='UNKNOWN'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"+tenant+"' AND command_id='"+command+"' AND command_state='UNKNOWN'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='"+tenant+"' AND command_id='"+command+"' AND dispatch_state='DELIVERY_UNKNOWN'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id='"+tenant+"' AND intervention_id='"+result.interventionId()+"' AND intervention_state='OPEN'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+tenant+"' AND run_id='"+run.runId()+"' AND status='MANUAL_REQUIRED' AND recovery_state='BLOCKED'"));
     }
