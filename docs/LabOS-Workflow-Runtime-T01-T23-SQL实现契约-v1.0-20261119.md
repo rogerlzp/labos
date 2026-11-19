@@ -146,3 +146,19 @@ WHERE tenant_id=:tenant_id AND resource_id=:resource_id RETURNING last_fencing_t
 **当前 PG17 实测：** GitHub Actions Run ID `44498938264`，commit `10d99fd3ca0a22f03fdb186b6a88bef9b8dbb9d5`，全绿。包含空库初始化、Schema 合同、双连接基础竞态、CON-01..CON-14、事务原子性/Inbox 冲突测试、Java Repository 集成测试（5 tests，0 failures/errors）、最终表数核对。
 
 **实现边界：** 这证明当前 SQL schema、Repository 覆盖的事务路径及当前测试集可在 PostgreSQL 17.12 执行；不证明全部 T01–T23 崩溃矩阵已经完成，不证明 Worker/Coordinator/Adapter 已接入，更不证明设备物理 fencing 生效。T08 当前只允许将 CREATED/DISPATCHED/ACCEPTED 的旧 Attempt 安全关闭；已 STARTED 的设备任务必须先走 Command/设备核验，不允许本方法强制关闭。
+
+
+## 5. Worker 执行事实与过期恢复协议（2026-11-19）
+
+新增表：worker_execution_lease、worker_execution_fact。Worker fact 由数据库 trigger 强制 append-only；factKey 唯一，重复必须内容一致。
+
+- T04-S：Attempt STARTED、Activation/Token RUNNING、Worker lease ACTIVE、HANDLER_STARTED 在一个事务中提交。接口必须提供明确的 leaseExpiresAt。
+- Worker lease renewal：tenant/run/attempt/worker/leaseEpoch/expectedVersion 精确 CAS；只允许未过期 ACTIVE lease 续期。
+- Worker 外部副作用：先提交 SIDE_EFFECT_STARTED，再允许执行。任何外部调用不得绕过该门槛。
+- Command dispatch：T13 在 Run → Token → Activation → Attempt → WorkerLease → Command → Outbox 锁序下，验证 Attempt STARTED、Worker lease ACTIVE、Outbox claim 所有权；同事务写 Command SEND_STARTED、CommandDispatchAttempt 和 SIDE_EFFECT_STARTED。事务提交后才能调用 Adapter。
+- T05：BranchOutput/Attempt/Activation/Token 完成、EXECUTION_RIGHT_RELEASED fact、Worker lease RELEASED、Scheduler reservation 释放同事务完成。
+- Recovery：Worker lease 过期且无 SideEffect fact、无模糊 Command 时，撤销未发送 Command/Outbox，Attempt/Activation ABANDONED_SAFE、Token READY、Lease EXPIRED_SAFE、释放 reservation。若有 SideEffect fact 或模糊 Command，则 Command UNKNOWN、Attempt UNKNOWN、Lease EXPIRED_UNVERIFIED、Run MANUAL_REQUIRED/BLOCKED，并创建人工干预；禁止自动重试。
+
+**重要限制：** DB lease 不会杀死暂停后复活的旧进程；SideEffectStarted 也不代表物理动作已完成。设备/网关 fencing、commandId 幂等和物理状态回读仍须 Adapter/HIL 验证。
+
+**当前 PG17 实测：** Actions Run 44502256816，commit 18f6583ab25e687bd9b56db1d591171e52259bad，全绿。CON-01..14 全部 PASS；Java Repository 集成测试 7/7 PASS；空库 DDL、Schema 合同、事务原子性/Inbox 冲突和 33 张表核对全部 PASS。
