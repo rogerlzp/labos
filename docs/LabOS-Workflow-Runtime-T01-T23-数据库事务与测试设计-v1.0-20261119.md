@@ -153,6 +153,19 @@ T01–T23 是稳定的规范编号。为避免一个编号掩盖多个数据库�
 
 所有条件更新必须检查 affected_rows=1；为 0 时重新读取并区分重复、过期、冲突或非法状态，不可默认为成功。
 
+### 1.5.1 Inbox Receipt 与业务处理的事务分离
+
+Inbox 采用两阶段持久化，但只有第二阶段与业务投影原子提交：
+
+- **Receipt transaction：** 只负责以 `(source,messageId)` 唯一键持久化 RECEIVED、payloadHash、原始消息引用和 receivedAt。它不锁 workflow_run，不写 Runtime Event，不修改 Run/Token/Activation/Command/Lease，不得标记 PROCESSED。
+- **Processing transaction：** 先锁 Run，再按 §1.4 锁定业务对象，最后锁 Inbox 行；验证 Receipt 身份和 payloadHash，执行状态转移，并在同一事务内写业务投影、Runtime Event、Outbox、Inbox outcome。
+- **Crash recovery：** Receipt 已提交但 Processing 尚未开始/提交时，Inbox 保持 RECEIVED，可由当前 Coordinator 重新领取。Processing 事务提交响应丢失时，按 Inbox identity 查询；若已 PROCESSED/REJECTED，返回原 outcome；若仍 RECEIVED，使用原消息身份重试。
+- **同身份不同 payload：** 不覆盖原 Receipt。写独立 ProtocolViolation，保存 originalPayloadHash/newPayloadHash 和新输入引用。该冲突审计不改变原消息处理结果。
+- **并发处理：** Inbox processing claim 必须带 owner/lease/version；业务处理事务仍须验证 claim 和 Inbox version。旧 Coordinator 的 claim 失效不能提交业务状态。
+- **顺序保证：** 不允许先把 Inbox 标记 PROCESSED 再提交业务状态；不允许业务状态提交后 Inbox 仍永久停留在 RECEIVED。两者必须在 Processing transaction 同一提交。
+
+这项拆分避免先锁 Inbox 再锁 Run 造成与全局锁顺序相反的死锁，也避免将消息接收事实与业务处理事实混为一谈。
+
 ## 1.6 通用错误分类
 
 | 分类 | 例子 | 事务处理 | 重试策略 |
@@ -272,7 +285,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **输入/幂等键：** DispatchAccepted(messageId, runId, activationId, attemptId, dispatchId, dispatchEpoch)。
 
-**读集合：** Inbox、Run、Activation、Attempt、Worker dispatch lease/outbox。
+**读集合：** Inbox Receipt、Run、Activation、Attempt、Worker dispatch lease/outbox；业务处理事务锁顺序为 Run → Activation → Attempt → Inbox。
 
 **写集合：** Inbox；Attempt DISPATCHED→ACCEPTED；Worker 接收事实/租约；Runtime Event；可选 WorkerAck Outbox。
 
@@ -352,7 +365,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **输入/幂等键：** WaitEvent(source, messageId, waitId, correlationKey, payloadHash) 或 WaitExpired(timerMessageId, waitId)。
 
-**读集合：** Inbox、Run、Wait、Token、Activation、旧 Attempt。
+**读集合：** Inbox Receipt、Run、Wait、Token、Activation、旧 Attempt；业务处理事务锁顺序为 Run → Wait → Token → Activation → Attempt → Inbox。
 
 **写集合：** Wait ACTIVE→SATISFIED 或 ACTIVE→EXPIRED；Token WAITING→READY（仅满足路径）；Activation SUSPENDED→READY；旧 Attempt SUSPENDED→ABANDONED_SAFE；超时路径按编译好的 timeout edge/failure policy 写失败/后继状态；Runtime Event；Scheduler Outbox；Inbox processed。
 
@@ -456,11 +469,11 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **写集合：** Inbox；Command Ledger 状态；Command Event；ResourceLease（仅有权威物理证据时）；Runtime Event/Outbox；Inbox processed；ProtocolViolation（身份冲突时）。
 
-**锁/CAS：** Run → Lease → Command → Inbox/audit（若 Inbox 先插入用于去重，插入冲突后仍须遵循 Run/对象锁序；具体实现可用 inbox claim 的独立短事务，但不得出现半处理状态）。
+**锁/CAS：** Inbox Receipt 在独立短事务中只写 RECEIVED，不锁 Run；业务处理事务按 Run → Lease → Command → Inbox 的顺序加锁，并在业务投影、Event、Outbox 写入的同一事务中将 Inbox 标记 PROCESSED。
 
 **步骤：** 按 commandId 唯一归属；核验 deviceId/operation/sequence/payload；只接受合法单调状态迁移；物理释放必须有权威释放证据。无 commandId/未知 commandId 进入 UNATTRIBUTED，不推进 Activation、不释放 Lease。
 
-**核心测试：** DB-T14-01 合法事件；02 重复事件；03 同 messageId 不同 hash 协议冲突；04 乱序/旧序号事件不回退；05 未知 commandId 不猜归属；06 ACK 不代表完成；07 final event + cancel 并发单一裁决；08 无物理空闲证据不得 RELEASED。
+**核心测试：** DB-T14-01 合法事件；02 重复事件；03 同 messageId 不同 hash 协议冲突；04 乱序/旧序号事件不回退；05 未知 commandId 不猜归属；06 ACK 不代表完成；07 final event + cancel 并发单一裁决；08 无物理空闲证据不得 RELEASED；09 Receipt 提交后、业务处理前崩溃可重新处理；10 业务提交后响应丢失返回首次 outcome；11 不允许 Inbox 先于业务投影标记 PROCESSED。
 
 ## T15 — Pause/Stop Request
 
@@ -786,7 +799,9 @@ L0 快速且覆盖全面，但不能代替 L1–L5。任何“状态机测试通
 | T12 | Command 写后、Outbox 写前 | 全部回滚；不存在无投递记录的 Command |
 | T13 | SEND_STARTED 提交后、Adapter 调用前 | DELIVERY_UNKNOWN/核验；除非可证明未送达不得自动重发 |
 | T13 | Adapter 收到请求后、响应前 | 使用原 commandId 查询/核验；非幂等设备隔离 |
-| T14 | Inbox 写后、Command 更新前 | 同事务回滚；重放消息仍可处理 |
+| T14 | Inbox Receipt 写后、业务处理前 | Inbox 保持 RECEIVED；恢复后由当前 Coordinator 重新处理，不产生业务投影副作用 |
+| T14 | Processing 中 Inbox/Command/Event/Outbox 写入后、Commit 前 | Processing transaction 全部回滚；Receipt 仍 RECEIVED，可按原身份重试 |
+| T14 | 业务提交成功但响应丢失 | Inbox 已 PROCESSED 且业务投影完整；重放返回首次 outcome |
 | T14 | 设备事件已提交、ACK 丢失 | 重复事件幂等；不重复推进 |
 | T15 | Run gate 关闭后、Outbox 写前 | 同事务回滚；不可出现 gate 关闭但无 Drain 请求 |
 | T16 | DrainRecord 写后、DrainItem 分页中 | 通过稳定游标续扫；不漏对象 |
