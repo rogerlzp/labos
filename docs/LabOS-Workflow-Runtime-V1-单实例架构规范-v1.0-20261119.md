@@ -3,8 +3,8 @@
 - 日期：2026-11-19
 - 版本：V1 Single Instance
 - 状态：实现基线；Repository/DDL/Schema Contract/恢复服务已按单实例模型收敛
-- 已验证代码基线：40c1033a59167631c724678b1bfadbfdf7a7188a
-- PostgreSQL 17 CI：Run 44560926448（success）
+- 已验证代码基线：f1e6ec0fb7a429bb894b7cd14770b85b67b44828
+- PostgreSQL 17 CI：Run 44562728674（success）
 - PostgreSQL：17
 - 部署：一个 Runtime Host 进程，一个 PostgreSQL 数据库
 
@@ -133,4 +133,4 @@ worker_execution_fact、resource_lease、command_dispatch_attempt 本身仍有�
 
 ## 11. 实施状态声明
 
-本文件是 V1 单实例规范基线。代码基线 40c1033a59167631c724678b1bfadbfdf7a7188a 已通过 PostgreSQL 17 CI Run 44560926448，覆盖 31 表 Schema Contract、CON-01..14、原子性、Inbox 冲突、Repository 8/8 和 WorkerExecutionRegistry 2/2。完整 Coordinator/WorkerPool/Dispatcher/Adapter 装配与设备 HIL 不在该 CI 的证明范围内。
+本文件是 V1 单实例规范基线。代码基线 f1e6ec0fb7a429bb894b7cd14770b85b67b44828 已通过 PostgreSQL 17 CI Run 44562728674，覆盖 31 表 Schema Contract、CON-01..14、原子性、Inbox 冲突、Repository 8/8 和 WorkerExecutionRegistry 2/2。完整 Coordinator/WorkerPool/Dispatcher/Adapter 装配与设备 HIL 不在该 CI 的证明范围内。
