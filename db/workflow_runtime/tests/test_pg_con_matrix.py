@@ -61,7 +61,7 @@ def con02():
     with connect() as c,c.cursor() as q:
         q.execute("""INSERT INTO workflow_runtime.split_activation
           (tenant_id,split_id,run_id,source_activation_id,split_state,expected_branch_count)
-          VALUES(%s,%s,%s,%s,'OPEN',1)""",(t,split,r,uuid.uuid4()))
+          VALUES(%s,%s,%s,%s,'OPEN',1)""",(t,split,r,source))
         q.execute("""INSERT INTO workflow_runtime.branch_activation
           (tenant_id,branch_id,run_id,split_id,branch_key,branch_state) VALUES(%s,%s,%s,%s,'b','ACTIVE')""",(t,branch,r,split))
     def arrive(_):
@@ -76,7 +76,7 @@ def con03():
     with connect() as c,c.cursor() as q:
         q.execute("""INSERT INTO workflow_runtime.split_activation
           (tenant_id,split_id,run_id,source_activation_id,split_state,expected_branch_count)
-          VALUES(%s,%s,%s,%s,'OPEN',2)""",(t,split,r,uuid.uuid4()))
+          VALUES(%s,%s,%s,%s,'OPEN',2)""",(t,split,r,source))
         for i,b in enumerate(branches):
             q.execute("""INSERT INTO workflow_runtime.branch_activation
               (tenant_id,branch_id,run_id,split_id,branch_key,branch_state) VALUES(%s,%s,%s,%s,%s,'ACTIVE')""",(t,b,r,split,f"b{i}"))
