@@ -172,3 +172,6 @@ WHERE tenant_id=:tenant_id AND resource_id=:resource_id RETURNING last_fencing_t
 - 多个恢复实例重复扫描时，Run 锁与 Lease 状态 CAS 使后到者得到 NOT_RECOVERABLE / LEASE_NOT_EXPIRED，不会重复释放 Token 或 Capacity。
 
 该服务不负责定时调度、leader election 或服务生命周期；这些属于 Runtime Host。
+
+
+**最新验证：** Actions Run 44503834970 SUCCESS；Java Repository 集成测试 7/7，CON-01..14 14/14，PostgreSQL 17 空库 DDL/Schema/原子性检查通过。代码基线 3364fa30fcb912ae6aadf86e238f8976270b60a5。
