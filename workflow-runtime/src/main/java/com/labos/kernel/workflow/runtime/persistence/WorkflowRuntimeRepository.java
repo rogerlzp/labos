@@ -451,6 +451,73 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+    /** Allocate a monotonically increasing fencing token and acquire one DB Lease. */
+    public record AcquiredLease(UUID leaseId, long fencingToken) {}
+    public AcquiredLease acquireResourceLease(UUID tenantId, UUID runId, long epoch,
+                                               String resourceId, String ownerKind, UUID ownerId,
+                                               Instant expiresAt, String evidenceJson) {
+        return required(() -> {
+            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            if(!"OPEN".equals(head.controlGate()))
+                throw new InvalidTransitionException("Run gate blocks new resource Lease");
+            jdbc.update("""
+                INSERT INTO workflow_runtime.resource_fence_counter
+                  (tenant_id,resource_id,last_fencing_token)
+                VALUES (?,?,0) ON CONFLICT (tenant_id,resource_id) DO NOTHING
+                """,tenantId,resourceId);
+            jdbc.queryForObject("""
+                SELECT last_fencing_token FROM workflow_runtime.resource_fence_counter
+                 WHERE tenant_id=? AND resource_id=? FOR UPDATE
+                """,Long.class,tenantId,resourceId);
+            Long fencing=jdbc.queryForObject("""
+                UPDATE workflow_runtime.resource_fence_counter
+                   SET last_fencing_token=last_fencing_token+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND resource_id=? RETURNING last_fencing_token
+                """,Long.class,tenantId,resourceId);
+            UUID leaseId=UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO workflow_runtime.resource_lease
+                  (tenant_id,lease_id,run_id,resource_id,lease_state,owner_kind,owner_id,
+                   fencing_token,expires_at,evidence)
+                VALUES (?,?,?,?,'ACTIVE',?,?,?,?,?::jsonb)
+                """,tenantId,leaseId,runId,resourceId,ownerKind,ownerId,fencing,
+                    Timestamp.from(expiresAt),evidenceJson==null?"{}":evidenceJson);
+            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("RESOURCE_LEASE_ACQUIRED",
+                    "LEASE",leaseId,0L,null,null,"{\"resourceId\":\""+jsonEscape(resourceId)+
+                    "\",\"fencingToken\":"+fencing+"}")));
+            return new AcquiredLease(leaseId,fencing);
+        });
+    }
+
+    /** T21: reconcile an UNKNOWN Command only from explicit device/query evidence. */
+    public boolean resolveUnknownCommand(UUID tenantId, UUID commandId, String resolvedState,
+                                          String deviceSequence, String evidenceJson, String actor) {
+        return required(() -> {
+            if(!List.of("SUCCEEDED","FAILED","CANCELLED","MANUAL_REQUIRED").contains(resolvedState))
+                throw new IllegalArgumentException("T21 resolution must be terminal or manual");
+            UUID runId=jdbc.queryForObject("""
+                SELECT run_id FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND command_id=?
+                """,UUID.class,tenantId,commandId);
+            RunHead head=lockRun(tenantId,runId);
+            int changed=jdbc.update("""
+                UPDATE workflow_runtime.command_ledger SET command_state=?,device_sequence=?,
+                       version=version+1,updated_at=clock_timestamp(),
+                       completed_at=CASE WHEN ? IN ('SUCCEEDED','FAILED','CANCELLED') THEN clock_timestamp() ELSE completed_at END
+                 WHERE tenant_id=? AND command_id=? AND command_state IN ('UNKNOWN','DELIVERY_UNKNOWN')
+                """,resolvedState,deviceSequence,resolvedState,tenantId,commandId);
+            if(changed==0) return false;
+            jdbc.update("""
+                INSERT INTO workflow_runtime.runtime_audit
+                  (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
+                VALUES (?,?,'SYSTEM',?,'UNKNOWN_COMMAND_RESOLVED','COMMAND',?,?::jsonb,?)
+                """,tenantId,runId,actor,commandId,evidenceJson,"explicit external verification");
+            appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+                    "COMMAND_VERIFIED_"+resolvedState,"COMMAND",commandId,null,null,null,evidenceJson)));
+            return true;
+        });
+    }
+
     /** T06: register retry intent; timer scheduling is an Outbox effect after commit. */
     public UUID scheduleRetry(UUID tenantId, UUID runId, long epoch, UUID activationId,
                               Instant dueAt, int nextAttemptNo, String policyJson) {
