@@ -33,15 +33,6 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             long epoch = longValue(run, "coordinator_epoch");
             long version = longValue(run, "run_commit_version");
             long eventSeq = longValue(run, "event_seq");
-            if (!"RUNNING".equals(run.get("status")) || !Boolean.TRUE.equals(run.get("dispatch_gate_open"))) {
-                throw new IllegalStateException("T03 dispatch gate is closed");
-            }
-            if (epoch != request.coordinatorEpoch()) throw new IllegalStateException("T03 coordinator epoch mismatch");
-            if (version != request.expectedRunCommitVersion()) throw new IllegalStateException("T03 stale Run version");
-            if (longValue(run, "in_flight_count") >= longValue(run, "max_in_flight")) {
-                throw new IllegalStateException("T03 per-Run in-flight capacity exhausted");
-            }
-
             UUID tokenId = uuid(request, "tokenId");
             UUID activationId = uuid(request, "activationId");
             UUID attemptId = uuid(request, "attemptId");
@@ -69,11 +60,21 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                         INSERT INTO wf_protocol_violation
                           (violation_id,run_id,source,message_id,original_payload_hash,
                            conflicting_payload_hash,raw_payload)
-                        VALUES (?,?, 'T03', ?, ?, ?, jsonb_build_object('dispatchId',?::text))
+                        VALUES (?,?, 'T03', ?, ?, ?, jsonb_build_object('dispatchId',?::text,'existingRunId',?::text))
                         ON CONFLICT (source,message_id,conflicting_payload_hash) DO NOTHING
                         """, UUID.randomUUID(), request.runId(), dispatchId.toString(),
-                        String.valueOf(old.get("payload_hash")).trim(), request.payloadHash(), dispatchId);
-                return currentResult(oldRunId, "PROTOCOL_VIOLATION", true);
+                        String.valueOf(old.get("payload_hash")).trim(), request.payloadHash(),
+                        dispatchId, oldRunId);
+                return currentResult(request.runId(), "PROTOCOL_VIOLATION", true);
+            }
+
+            if (epoch != request.coordinatorEpoch()) throw new IllegalStateException("T03 coordinator epoch mismatch");
+            if (!"RUNNING".equals(run.get("status")) || !Boolean.TRUE.equals(run.get("dispatch_gate_open"))) {
+                throw new IllegalStateException("T03 dispatch gate is closed");
+            }
+            if (version != request.expectedRunCommitVersion()) throw new IllegalStateException("T03 stale Run version");
+            if (longValue(run, "in_flight_count") >= longValue(run, "max_in_flight")) {
+                throw new IllegalStateException("T03 per-Run in-flight capacity exhausted");
             }
 
             Map<String, Object> capacity = jdbc.queryForMap("""
