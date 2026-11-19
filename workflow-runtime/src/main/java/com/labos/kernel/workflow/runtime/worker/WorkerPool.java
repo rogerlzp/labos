@@ -34,6 +34,7 @@ public final class WorkerPool implements AutoCloseable {
     private final ConcurrentMap<UUID, AtomicInteger> inFlightByRun = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, FutureTask<?>> tasks = new ConcurrentHashMap<>();
     private final AtomicBoolean started = new AtomicBoolean();
+    private final AtomicBoolean closing = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     public WorkerPool(int workerThreads, int queueCapacity, int perRunLimit,
@@ -49,7 +50,7 @@ public final class WorkerPool implements AutoCloseable {
     }
 
     public void start() {
-        if (closed.get()) throw new IllegalStateException("WorkerPool is closed");
+        if (closing.get() || closed.get()) throw new IllegalStateException("WorkerPool is closing or closed");
         if (!started.compareAndSet(false, true))
             throw new IllegalStateException("WorkerPool already started");
     }
@@ -60,7 +61,8 @@ public final class WorkerPool implements AutoCloseable {
         Objects.requireNonNull(work, "work");
         if (workerId == null || workerId.isBlank())
             throw new IllegalArgumentException("workerId is required");
-        if (!started.get() || closed.get()) throw new IllegalStateException("WorkerPool is not running");
+        if (!started.get() || closing.get() || closed.get())
+            throw new IllegalStateException("WorkerPool is not running");
         schedulingGate.requireOpen();
         reserveRunPermit(runId);
 
@@ -125,7 +127,7 @@ public final class WorkerPool implements AutoCloseable {
 
     public int queuedTaskCount() { return executor.getQueue().size(); }
 
-    public boolean isRunning() { return started.get() && !closed.get(); }
+    public boolean isRunning() { return started.get() && !closing.get() && !closed.get(); }
 
     private void reserveRunPermit(UUID runId) {
         AtomicInteger count = inFlightByRun.compute(runId, (key, current) -> {
@@ -146,11 +148,21 @@ public final class WorkerPool implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        started.set(false);
-        for (UUID attemptId : List.copyOf(tasks.keySet())) cancel(attemptId);
-        for (Runnable queued : executor.shutdownNow()) {
-            if (queued instanceof Future<?> future) future.cancel(false);
+        if (closed.get()) return;
+        if (closing.compareAndSet(false, true)) {
+            started.set(false);
+            for (UUID attemptId : List.copyOf(tasks.keySet())) cancel(attemptId);
+            for (Runnable queued : executor.shutdownNow()) {
+                if (queued instanceof Future<?> future) future.cancel(false);
+            }
+        }
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS))
+                throw new IllegalStateException("WorkerPool shutdown timed out; active workers may still be running");
+            closed.set(true);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for WorkerPool shutdown", interrupted);
         }
     }
 }
