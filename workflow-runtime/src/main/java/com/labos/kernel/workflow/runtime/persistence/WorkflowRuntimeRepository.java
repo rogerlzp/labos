@@ -1520,20 +1520,47 @@ public final class WorkflowRuntimeRepository {
     public record InterruptedAttempt(UUID tenantId, UUID runId, UUID attemptId) {}
     public record OutboxRestartResult(int safelyRequeued, int leftUncertain) {}
 
-    /** Requeue only SENDING messages whose external side-effect boundary was not crossed. */
+    /**
+     * Recover Outbox rows after Attempt reconciliation on the sole Host.
+     * A Worker dispatch is replayable only while its Attempt is still DISPATCHED;
+     * accepted/started/terminal Attempts must never receive a second dispatch.
+     * A device command is replayable only before its SEND_STARTED boundary.
+     */
     public OutboxRestartResult recoverOutboxAfterRestart() {
         return required(() -> {
-            int requeued=jdbc.update("""
+            int workerRequeued=jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox o SET outbox_state='PENDING'
-                 WHERE o.outbox_state='SENDING'
-                   AND (
-                     o.message_kind <> 'DEVICE_COMMAND'
-                     OR EXISTS (
-                       SELECT 1 FROM workflow_runtime.command_ledger c
-                        WHERE c.tenant_id=o.tenant_id
-                          AND c.command_id::text=o.payload->>'commandId'
-                          AND c.command_state IN ('CREATED','DISPATCH_PENDING')
-                     )
+                 WHERE o.outbox_state='SENDING' AND o.message_kind='WORKER_DISPATCH'
+                   AND EXISTS (
+                     SELECT 1 FROM workflow_runtime.node_attempt a
+                      WHERE a.tenant_id=o.tenant_id
+                        AND a.attempt_id::text=o.payload->>'attemptId'
+                        AND a.attempt_state='DISPATCHED'
+                   )
+                """);
+            jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox o SET outbox_state='DEAD_LETTER'
+                 WHERE o.outbox_state='SENDING' AND o.message_kind='WORKER_DISPATCH'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM workflow_runtime.node_attempt a
+                      WHERE a.tenant_id=o.tenant_id
+                        AND a.attempt_id::text=o.payload->>'attemptId'
+                        AND a.attempt_state='DISPATCHED'
+                   )
+                """);
+            int otherRequeued=jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='PENDING'
+                 WHERE outbox_state='SENDING'
+                   AND message_kind NOT IN ('DEVICE_COMMAND','WORKER_DISPATCH')
+                """);
+            int commandRequeued=jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox o SET outbox_state='PENDING'
+                 WHERE o.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
+                   AND EXISTS (
+                     SELECT 1 FROM workflow_runtime.command_ledger c
+                      WHERE c.tenant_id=o.tenant_id
+                        AND c.command_id::text=o.payload->>'commandId'
+                        AND c.command_state IN ('CREATED','DISPATCH_PENDING')
                    )
                 """);
             Integer uncertain=jdbc.queryForObject("""
@@ -1547,17 +1574,18 @@ public final class WorkflowRuntimeRepository {
                                                 'DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
                    )
                 """,Integer.class);
-            return new OutboxRestartResult(requeued,uncertain==null?0:uncertain);
+            return new OutboxRestartResult(workerRequeued+otherRequeued+commandRequeued,
+                    uncertain==null?0:uncertain);
         });
     }
 
-    /** Startup candidate list; each row is revalidated under its Run lock. */
+    /** Startup candidates that were in flight when the sole Host process stopped. */
     public List<InterruptedAttempt> findInterruptedAttempts(int limit) {
         if(limit<1 || limit>1000) throw new IllegalArgumentException("Recovery batch limit must be 1..1000");
         return jdbc.query("""
             SELECT tenant_id,run_id,attempt_id FROM workflow_runtime.node_attempt
-             WHERE attempt_state='STARTED'
-             ORDER BY started_at,tenant_id,run_id,attempt_id LIMIT ?
+             WHERE attempt_state IN ('DISPATCHED','ACCEPTED','STARTED')
+             ORDER BY COALESCE(started_at,created_at),tenant_id,run_id,attempt_id LIMIT ?
             """,(rs,n)->new InterruptedAttempt(rs.getObject(1,UUID.class),
                     rs.getObject(2,UUID.class),rs.getObject(3,UUID.class)),limit);
     }
@@ -1576,7 +1604,8 @@ public final class WorkflowRuntimeRepository {
                 SELECT attempt_state FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
-            if(attemptStates.size()!=1 || !"STARTED".equals(attemptStates.get(0)))
+            String interruptedState=attemptStates.isEmpty()?null:attemptStates.get(0);
+            if(!List.of("DISPATCHED","ACCEPTED","STARTED").contains(interruptedState))
                 return new WorkerRecoveryResult("NOT_RECOVERABLE",null);
             UUID activationId=jdbc.queryForObject("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
@@ -1616,21 +1645,28 @@ public final class WorkflowRuntimeRepository {
                 jdbc.update("""
                     UPDATE workflow_runtime.node_attempt SET attempt_state='ABANDONED_SAFE',
                            attempt_version=attempt_version+1,finished_at=clock_timestamp()
-                     WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('STARTED','UNKNOWN')
+                     WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('DISPATCHED','ACCEPTED','STARTED')
                     """,tenantId,attemptId);
                 jdbc.update("""
                     UPDATE workflow_runtime.node_activation SET activation_state='ABANDONED_SAFE',
                            activation_version=activation_version+1,updated_at=clock_timestamp()
-                     WHERE tenant_id=? AND activation_id=? AND activation_state='RUNNING'
+                     WHERE tenant_id=? AND activation_id=? AND activation_state IN ('RESERVED','RUNNING')
                     """,tenantId,activationId);
                 jdbc.update("""
                     UPDATE workflow_runtime.execution_token SET token_state='READY',
                            token_version=token_version+1,updated_at=clock_timestamp()
-                     WHERE tenant_id=? AND token_id=? AND token_state='RUNNING'
+                     WHERE tenant_id=? AND token_id=? AND token_state IN ('RESERVED','RUNNING')
                     """,tenantId,tokenId);
+                jdbc.update("""
+                    UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                     WHERE tenant_id=? AND message_kind='WORKER_DISPATCH'
+                       AND outbox_state IN ('PENDING','SENDING')
+                       AND payload->>'attemptId'=?
+                    """,tenantId,attemptId.toString());
                 releaseReservationInTransaction(tenantId,attemptId);
                 appendEvents(tenantId,runId,List.of(new EventDraft(
-                        "ATTEMPT_ABANDONED_SAFE","ATTEMPT",attemptId,null,null,null,"{}")));
+                        "ATTEMPT_ABANDONED_SAFE","ATTEMPT",attemptId,null,null,null,
+                        "{\\"previousState\\":\\""+interruptedState+"\\"}")));
                 return new WorkerRecoveryResult("SAFE_TO_RETRY",null);
             }
 
@@ -1655,8 +1691,14 @@ public final class WorkflowRuntimeRepository {
             jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='UNKNOWN',
                        attempt_version=attempt_version+1
-                 WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('STARTED','UNKNOWN')
+                 WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
                 """,tenantId,attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                 WHERE tenant_id=? AND message_kind='WORKER_DISPATCH'
+                   AND outbox_state IN ('PENDING','SENDING')
+                   AND payload->>'attemptId'=?
+                """,tenantId,attemptId.toString());
             UUID interventionId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.manual_intervention
