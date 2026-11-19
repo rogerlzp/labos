@@ -2,6 +2,8 @@ package com.labos.kernel.workflow.runtime.persistence;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService;
+import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 
@@ -241,7 +243,11 @@ class WorkflowRuntimeRepositoryTest {
         repo.acceptAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
         repo.startAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
 
-        var result=repo.recoverInterruptedAttempt(tenant,run.runId(),reservation.attemptId(),"startup");
+        var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
+        var startup=recovery.recoverAtStartup(20,"startup");
+        assertEquals(1,startup.scanned());
+        assertEquals(1,startup.safeToRetry());
+        var result=startup.items().get(0).result();
         assertEquals("SAFE_TO_RETRY",result.outcome());
         assertNull(result.interventionId());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='ABANDONED_SAFE'"));
