@@ -62,10 +62,10 @@ erDiagram
 | Tenant/Definition | tenant, definition_snapshot | 租户隔离；不可变定义快照及编译产物 |
 | Run/Control flow | workflow_run, execution_token, node_activation, node_attempt | Run 线性化游标；Token、Activation、Attempt 生命周期；dispatch_id 唯一 |
 | Parallel/Loop | split_activation, branch_activation, join_activation, loop_context | 显式分叉、分支到达、Join release、循环迭代 |
-| Async | wait_registration, retry_registration, dispatch_reservation | 不占 Worker 的 Wait/Retry；容量 reservation |
+| Async | wait_registration, retry_registration, dispatch_reservation, scheduler_capacity | 不占 Worker 的 Wait/Retry；容量 reservation |
 | Data | flow_variable, branch_output | Run 共享变量版本与分支局部不可变输出分离 |
-| Event delivery | runtime_event, inbox_receipt, runtime_outbox | 每 Run event_seq；消息去重、payload hash、防丢投递 |
-| Device | command_ledger, command_dispatch_attempt, resource_lease | commandId 幂等身份、派发尝试、资源 fencing/隔离 |
+| Event delivery | runtime_event, inbox_receipt, inbox_protocol_violation, runtime_outbox | 每 Run event_seq；消息去重、payload hash、防丢投递 |
+| Device | command_ledger, command_dispatch_attempt, resource_fence_counter, resource_lease | commandId 幂等身份、派发尝试、资源 fencing/隔离 |
 | Drain/Safety | drain_record, drain_item, manual_intervention, quarantine_record | Pause/Stop 收敛、人工介入、资源隔离 |
 | Recovery/Audit | runtime_checkpoint, runtime_audit | 一致快照、不可抵赖审计轨迹 |
 
@@ -113,7 +113,7 @@ Checkpoint 不能通过多次 READ COMMITTED 查询拼接。实现选择：
 1. workflow_run（单 Run 线性化锁）
 2. Split/Join/Token/Activation/Attempt/Wait/Retry/Command 等 Run 内业务对象（按稳定表序与主键序）
 3. ResourceLease（按 resource_id 排序）
-4. dispatch_reservation / scheduler capacity（按 capacity_key 排序）
+4. scheduler_capacity / dispatch_reservation（按 capacity_key 排序）
 5. inbox_receipt（T14 最后锁 Inbox；Inbox 首次 Receipt insert 不持有 Run 锁）
 
 若一个事务同时涉及多个 Run，V1 禁止；需要时按 run_id 排序并单独设计。
@@ -124,7 +124,7 @@ Checkpoint 不能通过多次 READ COMMITTED 查询拼接。实现选择：
 |---|---|---|
 | T01 Create Run | definition_snapshot R; workflow_run, request_dedup, execution_token, runtime_event, runtime_outbox W | (tenant_id, request_id) 幂等；Run 初始化与首 Event 同事务 |
 | T02 Start Run | workflow_run, execution_token, node_activation, runtime_event | Run 行锁；状态 CAS；初始 Activation/Token 同事务 |
-| T03-R Reservation | workflow_run, execution_token, dispatch_reservation, scheduler capacity | READY→RESERVED CAS；容量不超卖 |
+| T03-R Reservation | workflow_run, execution_token, scheduler_capacity, dispatch_reservation | READY→RESERVED CAS；容量不超卖 |
 | T03-D Dispatch Commit | workflow_run, node_attempt, node_activation, runtime_outbox, runtime_event | dispatch_id 唯一；Outbox 同事务 |
 | T04-A Accepted | workflow_run, node_attempt, runtime_event | CREATED/DISPATCHED→ACCEPTED；dispatch/epoch 匹配 |
 | T04-S Started | workflow_run, node_attempt, runtime_event | 仅 ACCEPTED→STARTED |
@@ -137,14 +137,14 @@ Checkpoint 不能通过多次 READ COMMITTED 查询拼接。实现选择：
 | T11 Loop Advance | workflow_run, loop_context, execution_token, runtime_event | iteration CAS 与新 Token 同事务 |
 | T12 Command Create | workflow_run, command_ledger, runtime_outbox, runtime_event | Attempt→Command 一对零或一 |
 | T13 Command Dispatch | command_ledger, command_dispatch_attempt, runtime_outbox, runtime_event | SEND_STARTED 前置提交；未知结果不得换 commandId 重发 |
-| T14 Device Event | inbox_receipt, workflow_run, command_ledger, resource_lease, runtime_event, runtime_outbox | commandId 归属；Inbox 消费与业务投影同事务 |
+| T14 Device Event | inbox_receipt, inbox_protocol_violation, workflow_run, command_ledger, resource_lease, runtime_event, runtime_outbox | commandId 归属；Inbox 消费与业务投影同事务 |
 | T15 Pause/Stop Request | workflow_run, drain_record, runtime_event, runtime_outbox | Gate 关闭与 Drain 建立原子 |
 | T16 Drain Start | workflow_run, drain_record, drain_item, runtime_event | 稳定扫描游标 |
 | T17 Reservation Reconcile | workflow_run, dispatch_reservation, execution_token, drain_item, runtime_event | 重复扫描；Stop INVALIDATED，Pause 保留 READY |
 | T18 Safe Point | workflow_run, command_ledger, resource_lease, wait/retry/split/branch/join/loop, drain_item, runtime_event | 先物理安全核验，再关闭控制流结构 |
 | T19 Drain Complete | workflow_run, drain_record, runtime_event | StopSafePredicate 全真才终结 |
 | T20 Checkpoint | workflow_run, runtime_checkpoint | 单一 MVCC 快照游标 |
-| T21 Unknown Reconcile | workflow_run, command_ledger, resource_lease, manual_intervention, runtime_event | 保存证据；无证据不释放 |
+| T21 Unknown Reconcile | workflow_run, command_ledger, resource_fence_counter, resource_lease, manual_intervention, runtime_event | 保存证据；无证据不释放 |
 | T22 Manual Resolution | workflow_run, manual_intervention, command_ledger/resource_lease, runtime_audit, runtime_event | 人工决策与状态更改同事务 |
 | T23 Quarantine Clear | workflow_run（如有关联）, quarantine_record, resource_lease, runtime_audit, runtime_event | 证据版本 CAS 后清除隔离 |
 
@@ -154,6 +154,10 @@ Checkpoint 不能通过多次 READ COMMITTED 查询拼接。实现选择：
 
 - 租户复合外键阻止跨租户引用。
 - 同一 Attempt 最多一个逻辑 Command。
+- 同一 Token 最多一个 live Activation；同一 Activation 最多一个 live Attempt（部分唯一索引）。
+- Scheduler capacity 计数不得超过 limit；并发扣减必须锁定 capacity 行并检查余量。
+- Resource fencing token 由 resource_fence_counter 行锁定递增；Lease 唯一约束本身不证明 token 单调性。
+- Inbox 冲突 payload hash 另存 inbox_protocol_violation，不覆盖首次 receipt。
 - dispatch_id 在 Attempt 唯一；command dispatch attempt 有独立 dispatch_id。
 - 同一 Run event_seq 唯一。
 - Inbox source/message_id 唯一，payload hash 长度固定。
