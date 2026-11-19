@@ -263,13 +263,13 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T03-R: reserve global capacity with a single conditional UPDATE (no oversell). */
-    public CapacityReservation reserveCapacity(UUID tenantId, UUID runId, long epoch,
+    public CapacityReservation reserveCapacity(UUID tenantId, UUID runId,
                                                 String capacityKey, int capacityLimit,
                                                 String nodeKey, String sideEffectClass,
                                                 Instant expiresAt) {
         return required(() -> {
             RunHead head = lockRun(tenantId, runId);
-            requireCoordinator(head, epoch);
+            
             if (!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate()))
                 throw new InvalidTransitionException("Run gate does not admit dispatch");
             UUID tokenId = jdbc.queryForObject("""
@@ -315,10 +315,10 @@ public final class WorkflowRuntimeRepository {
                 """, tenantId, activationId, runId, tokenId, activationNo, nodeKey);
             jdbc.update("""
                 INSERT INTO workflow_runtime.node_attempt
-                  (tenant_id,attempt_id,run_id,activation_id,attempt_no,dispatch_id,dispatch_epoch,
+                  (tenant_id,attempt_id,run_id,activation_id,attempt_no,dispatch_id,
                    attempt_state,side_effect_class)
-                VALUES (?,?,?,?,1,?,?,'CREATED',?)
-                """, tenantId, attemptId, runId, activationId, dispatchId, epoch, sideEffectClass);
+                VALUES (?,?,?,?,1,?,'CREATED',?)
+                """, tenantId, attemptId, runId, activationId, dispatchId, sideEffectClass);
             UUID reservationId = UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.dispatch_reservation
@@ -576,10 +576,10 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T06: register retry intent; timer scheduling is an Outbox effect after commit. */
-    public UUID scheduleRetry(UUID tenantId, UUID runId, long epoch, UUID activationId,
+    public UUID scheduleRetry(UUID tenantId, UUID runId, UUID activationId,
                               Instant dueAt, int nextAttemptNo, String policyJson) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             UUID candidate=UUID.randomUUID();
             int inserted=jdbc.update("""
                 INSERT INTO workflow_runtime.retry_registration
@@ -605,11 +605,11 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T07: suspend activation and persist continuation without occupying a Worker. */
-    public UUID registerWait(UUID tenantId, UUID runId, long epoch, UUID activationId,
+    public UUID registerWait(UUID tenantId, UUID runId, UUID activationId,
                              String waitKind, String correlationKey, Instant deadline,
                              String continuationJson) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             UUID waitId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.wait_registration
@@ -630,10 +630,10 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T08: one winner closes Wait; the old Attempt is explicitly ABANDONED_SAFE. */
-    public boolean closeWait(UUID tenantId, UUID runId, long epoch, UUID waitId,
+    public boolean closeWait(UUID tenantId, UUID runId, UUID waitId,
                              boolean satisfied, UUID oldAttemptId) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             List<String> continuationRows=jdbc.query("""
                 SELECT continuation->>'nodeKey' FROM workflow_runtime.wait_registration
                  WHERE tenant_id=? AND wait_id=? AND run_id=? AND wait_state='ACTIVE'
@@ -692,10 +692,10 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T09: create Split and its full expected Branch set atomically. */
-    public UUID createSplit(UUID tenantId, UUID runId, long epoch, UUID sourceActivationId,
+    public UUID createSplit(UUID tenantId, UUID runId, UUID sourceActivationId,
                             List<String> branchKeys) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             if(branchKeys==null||branchKeys.isEmpty()) throw new IllegalArgumentException("Split needs branches");
             UUID sourceToken=jdbc.queryForObject("""
                 SELECT token_id FROM workflow_runtime.node_activation
@@ -747,10 +747,10 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T10: idempotent branch arrival; the final arrival releases Join exactly once. */
-    public boolean arriveBranch(UUID tenantId, UUID runId, long epoch, UUID splitId,
+    public boolean arriveBranch(UUID tenantId, UUID runId, UUID splitId,
                                 String branchKey, UUID arrivalActivationId, String joinKey) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             jdbc.queryForObject("""
                 SELECT split_id FROM workflow_runtime.split_activation
                  WHERE tenant_id=? AND run_id=? AND split_id=? FOR UPDATE
@@ -817,11 +817,11 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T11: compare-and-set Loop iteration and persist next iteration in the same transaction. */
-    public long advanceLoop(UUID tenantId, UUID runId, long epoch, UUID loopId,
+    public long advanceLoop(UUID tenantId, UUID runId, UUID loopId,
                             long expectedVersion, long expectedIteration, String nextNodeKey,
                             String contextJson) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             Long next=jdbc.queryForObject("""
                 UPDATE workflow_runtime.loop_context SET iteration=iteration+1,version=version+1,
                        context_data=?::jsonb
@@ -841,7 +841,7 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    public boolean completeLoop(UUID tenantId, UUID runId, long epoch, UUID loopId,
+    public boolean completeLoop(UUID tenantId, UUID runId, UUID loopId,
                                 long expectedVersion) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId);
@@ -856,11 +856,11 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T12: create one immutable Command per device Attempt and its durable dispatch Outbox. */
-    public UUID createCommand(UUID tenantId, UUID runId, long epoch, UUID activationId,
+    public UUID createCommand(UUID tenantId, UUID runId, UUID activationId,
                               UUID attemptId, String deviceId, String commandKind,
                               String idempotencyClass, String payloadJson) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             List<UUID> existing=jdbc.query("""
                 SELECT command_id FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND attempt_id=? FOR UPDATE
@@ -1023,13 +1023,6 @@ public final class WorkflowRuntimeRepository {
                     UUID.class,tenantId,activationId);
             jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
                     UUID.class,tenantId,attemptId);
-            List<String> leaseRows=jdbc.query("""
-                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
-                  FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,attemptId);
-            if(leaseRows.size()!=1) throw new IllegalStateException("Worker execution fact ledger missing for Command Attempt");
-            String[] lease=leaseRows.get(0).split("\\|");
             List<String> states=jdbc.query("""
                 SELECT command_state FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND run_id=? AND command_id=? FOR UPDATE
@@ -1092,9 +1085,9 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T15: close dispatch gate and persist Drain request atomically. */
-    public UUID requestDrain(UUID tenantId, UUID runId, long epoch, String drainKind) {
+    public UUID requestDrain(UUID tenantId, UUID runId, String drainKind) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            RunHead head=lockRun(tenantId,runId); 
             if(!List.of("PAUSE","STOP","FAILURE").contains(drainKind))
                 throw new IllegalArgumentException("Unsupported drain kind");
             String requestedGate="PAUSE".equals(drainKind)?"PAUSE":"STOP";
@@ -1457,13 +1450,6 @@ public final class WorkflowRuntimeRepository {
                     UUID.class,tenantId,activationId);
             jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
                     UUID.class,tenantId,attemptId);
-            List<String> lease=jdbc.query("""
-                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
-                  FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,attemptId);
-            if(lease.size()!=1) throw new IllegalStateException("Worker lease missing for Command");
-            String[] leaseParts=lease.get(0).split("\\|");
             jdbc.queryForObject("SELECT command_id FROM workflow_runtime.command_ledger WHERE tenant_id=? AND command_id=? FOR UPDATE",
                     UUID.class,tenantId,commandId);
             int changed=jdbc.update("""
