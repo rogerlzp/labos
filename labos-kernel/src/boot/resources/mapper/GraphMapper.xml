@@ -159,7 +159,7 @@
         SELECT n.id AS "id", n.node_key AS "nodeKey",
                c.code AS "capabilityCode"
           FROM workflow_node n
-          LEFT JOIN capability c ON c.id = n.capability_id
+          LEFT JOIN capability c ON c.id = n.capability_id AND c.tenant_id = n.tenant_id
          WHERE n.tenant_id = #{tenantId}
            AND n.workflow_id = #{workflowId}
          ORDER BY n.id
