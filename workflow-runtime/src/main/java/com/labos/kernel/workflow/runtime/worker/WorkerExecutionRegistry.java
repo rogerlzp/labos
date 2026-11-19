@@ -23,6 +23,7 @@ public final class WorkerExecutionRegistry {
         final Runnable cancellation;
         final long registeredAtNanos = System.nanoTime();
         final AtomicBoolean cancellationRequested = new AtomicBoolean();
+        private boolean finished;
 
         Entry(String workerId, Thread thread, Runnable cancellation) {
             this.workerId = workerId;
@@ -30,12 +31,16 @@ public final class WorkerExecutionRegistry {
             this.cancellation = cancellation;
         }
 
-        void cancel() {
+        synchronized boolean cancel() {
+            if (finished) return false;
             if (cancellationRequested.compareAndSet(false, true)) {
                 try { cancellation.run(); }
                 finally { thread.interrupt(); }
             }
+            return true;
         }
+
+        synchronized void finish() { finished = true; }
     }
 
     private final Map<UUID, Entry> active = new ConcurrentHashMap<>();
@@ -54,15 +59,17 @@ public final class WorkerExecutionRegistry {
     /** Remove only the local handle; durable Attempt state is managed separately. */
     public boolean unregister(UUID attemptId, Thread expectedThread) {
         Entry current = active.get(attemptId);
-        return current != null && current.thread == expectedThread && active.remove(attemptId, current);
+        if (current == null || current.thread != expectedThread || !active.remove(attemptId, current))
+            return false;
+        current.finish();
+        return true;
     }
 
     /** Best-effort local cancellation. This is not proof that a device action stopped. */
     public boolean requestCancellation(UUID attemptId) {
         Entry entry = active.get(attemptId);
         if (entry == null) return false;
-        entry.cancel();
-        return true;
+        return entry.cancel();
     }
 
     public boolean isActive(UUID attemptId) { return active.containsKey(attemptId); }
