@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${LABOS_RUNTIME_TEST_URL:?set LABOS_RUNTIME_TEST_URL to a disposable PostgreSQL database}"
+: "${LABOS_RUNTIME_TEST_URL:?set LABOS_RUNTIME_TEST_URL to a JDBC PostgreSQL URL}"
+: "${LABOS_RUNTIME_TEST_PSQL_DSN:?set LABOS_RUNTIME_TEST_PSQL_DSN to a psql connection string}"
 SCHEMA="${LABOS_RUNTIME_TEST_SCHEMA:-wf_runtime_test}"
 [[ "$SCHEMA" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "invalid schema name" >&2; exit 2; }
 
-psql "$LABOS_RUNTIME_TEST_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS \"$SCHEMA\""
+psql "$LABOS_RUNTIME_TEST_PSQL_DSN" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS \"$SCHEMA\""
 for pass in 1 2; do
   PGOPTIONS="-c search_path=$SCHEMA" psql "$LABOS_RUNTIME_TEST_URL" -v ON_ERROR_STOP=1 \
     -f "$(dirname "$0")/../schema/100_workflow_runtime_v1.sql"
