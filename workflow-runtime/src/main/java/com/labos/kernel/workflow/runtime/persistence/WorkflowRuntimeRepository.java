@@ -915,13 +915,49 @@ public final class WorkflowRuntimeRepository {
     public UUID requestDrain(UUID tenantId, UUID runId, long epoch, String drainKind) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
-            String gate="PAUSE".equals(drainKind)?"PAUSE":"STOP";
-            int changed=jdbc.update("""
+            if(!List.of("PAUSE","STOP","FAILURE").contains(drainKind))
+                throw new IllegalArgumentException("Unsupported drain kind");
+            String requestedGate="PAUSE".equals(drainKind)?"PAUSE":"STOP";
+            List<UUID> openDrains=jdbc.query("""
+                SELECT drain_id FROM workflow_runtime.drain_record
+                 WHERE tenant_id=? AND run_id=? AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT','MANUAL_REQUIRED')
+                 ORDER BY created_at DESC FOR UPDATE
+                """,(rs,n)->rs.getObject(1,UUID.class),tenantId,runId);
+
+            if("STOP".equals(requestedGate) && "PAUSE".equals(head.controlGate()) && !openDrains.isEmpty()) {
+                UUID drainId=openDrains.get(0);
+                jdbc.update("""
+                    UPDATE workflow_runtime.workflow_run SET control_gate='STOP',status='STOP_REQUESTED',
+                           updated_at=clock_timestamp()
+                     WHERE tenant_id=? AND run_id=?
+                    """,tenantId,runId);
+                jdbc.update("""
+                    UPDATE workflow_runtime.drain_record SET drain_kind='STOP',version=version+1
+                     WHERE tenant_id=? AND drain_id=? AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT')
+                    """,tenantId,drainId);
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.runtime_outbox
+                      (tenant_id,run_id,message_kind,dedup_key,payload)
+                    VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text,'kind','STOP'))
+                    ON CONFLICT (tenant_id,dedup_key) DO NOTHING
+                    """,tenantId,runId,"drain-stop:"+drainId,drainId);
+                appendEvents(tenantId,runId,epoch,List.of(new EventDraft(
+                        "STOP_SUPERSEDES_PAUSE","DRAIN",drainId,null,null,null,"{}")));
+                return drainId;
+            }
+            if(!openDrains.isEmpty()) {
+                if("STOP".equals(requestedGate) && "STOP".equals(head.controlGate()))
+                    return openDrains.get(0);
+                if("PAUSE".equals(requestedGate) && "PAUSE".equals(head.controlGate()))
+                    return openDrains.get(0);
+            }
+            if(!"OPEN".equals(head.controlGate()))
+                throw new InvalidTransitionException("Run control gate does not admit this drain request");
+            jdbc.update("""
                 UPDATE workflow_runtime.workflow_run SET control_gate=?,status=?,
                        updated_at=clock_timestamp()
                  WHERE tenant_id=? AND run_id=? AND control_gate='OPEN'
-                """,gate,"PAUSE".equals(gate)?"PAUSE_REQUESTED":"STOP_REQUESTED",tenantId,runId);
-            if(changed!=1) throw new InvalidTransitionException("Run gate is not OPEN");
+                """,requestedGate,"PAUSE".equals(requestedGate)?"PAUSE_REQUESTED":"STOP_REQUESTED",tenantId,runId);
             UUID drainId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.drain_record
@@ -931,8 +967,8 @@ public final class WorkflowRuntimeRepository {
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
-                VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text))
-                """,tenantId,runId,"drain:"+drainId,drainId);
+                VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text,'kind',?))
+                """,tenantId,runId,"drain:"+drainId,drainId,drainKind);
             appendEvents(tenantId,runId,epoch,List.of(new EventDraft("DRAIN_REQUESTED","DRAIN",
                     drainId,0L,null,null,"{}")));
             return drainId;
