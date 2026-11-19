@@ -42,6 +42,10 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/001_init.sql
       - name: Verify schema catalog and invariant constraints
         run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/002_schema_contract.sql
+      - name: Install PostgreSQL concurrency test dependency
+        run: python -m pip install "psycopg[binary]>=3.2,<4"
+      - name: Run two-session concurrency tests
+        run: python db/workflow_runtime/tests/test_pg_concurrency.py
       - name: Verify bootstrap is repeatably isolated
         run: |
           psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 31) exit 1 }'
