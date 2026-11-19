@@ -41,7 +41,7 @@ public final class WorkflowRunFactory {
                         e->new BpmnGraphCompiler.NodeMetadata(e.getValue().capabilityCode(),
                                 e.getValue().workflowNodeId())));
         GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput(
-                Long.toString(source.workflowId()),source.version(),source.bpmnXml(),metadata));
+                runtimeTenantId + ":" + source.workflowId(),source.version(),source.bpmnXml(),metadata));
         String firstNode=firstNode(plan);
         byte[] definitionHash=java.util.HexFormat.of().parseHex(plan.bpmnSha256());
         String stableInput=inputJson==null?"{}":inputJson;
