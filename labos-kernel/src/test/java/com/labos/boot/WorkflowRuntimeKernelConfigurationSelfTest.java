@@ -82,7 +82,7 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                 mapperParams(mybatis, "selectRuntimeWorkflowNodeMetadata"), 2,
                 "tenant_id", "workflow_id", "c.tenant_id", "n.tenant_id");
 
-        System.out.println("Workflow Runtime Kernel Spring composition and MyBatis binding：通过 25 / 失败 0");
+        System.out.println("Workflow Runtime Kernel Spring composition and MyBatis binding：通过 25, 失败 0");
     }
 
 
