@@ -1,5 +1,7 @@
 package com.labos.kernel.workflow.runtime.graph;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -7,7 +9,24 @@ import java.util.HexFormat;
 
 /** Small dependency-free canonical JSON writer for persisted immutable GraphPlan snapshots. */
 public final class GraphPlanCodec {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private GraphPlanCodec() {}
+
+    /** Decode the immutable snapshot stored in definition_snapshot.graph_plan. */
+    public static GraphPlan fromJson(String json) {
+        try {
+            GraphPlan plan = JSON.readValue(json, GraphPlan.class);
+            if (plan.schemaVersion() != 1) throw new IllegalArgumentException("Unsupported GraphPlan schemaVersion: " + plan.schemaVersion());
+            return plan;
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Invalid persisted GraphPlan JSON", e);
+        }
+    }
+
+    public static void verifyBpmnHash(GraphPlan plan, String expectedSha256) {
+        if (expectedSha256 == null || !expectedSha256.equalsIgnoreCase(plan.bpmnSha256()))
+            throw new IllegalArgumentException("GraphPlan BPMN hash mismatch");
+    }
 
     public static String toJson(GraphPlan plan) {
         StringBuilder b = new StringBuilder(1024);
