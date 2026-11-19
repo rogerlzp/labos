@@ -3394,6 +3394,17 @@ public class WorkflowService {
         return rm().insertRun(tenantId, runNo, wf.id(), attendance, varsJson(vars));
     }
 
+    /**
+     * 准入专用：把「建 run」暴露给 {@link RunAdmission}，让门禁检查与插入落在同一事务。
+     *
+     * <p>本方法**不做准入判断**——调用方必须先通过 {@link WorkflowRunGate#checkInTx}。
+     * 之所以不直接把 {@code createRun} 改 public：那个名字容易被误当成"随便建一个 run"，
+     * 而它已经写好了变量初始值（流程级默认值 + 运行期覆盖），绕开会得到空的 {@code input.vars}。
+     */
+    public long createRunForAdmission(WorkflowDef wf, String attendance) throws SQLException {
+        return createRun(wf, attendance);
+    }
+
     /** device_instance.id -> resource_node.id（驱动按实例 id 路由，落库要存资源节点 id）。 */
     private Map<Long, Long> loadDeviceResourceMap() throws SQLException {
         Map<Long, Long> out = new LinkedHashMap<>();

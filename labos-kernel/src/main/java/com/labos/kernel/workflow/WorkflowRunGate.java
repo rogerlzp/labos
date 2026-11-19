@@ -92,10 +92,37 @@ public final class WorkflowRunGate {
      * @param excludeRunId 排除自己（续跑/重跑同一 run 时传该 run id；新建传 null）
      */
     public static Decision check(DbConfig db, long tenantId, long workflowId, Long excludeRunId) {
+        if (db == null) {
+            return Decision.allow();
+        }
+        try (Connection c = db.open()) {
+            return checkInTx(c, tenantId, workflowId, excludeRunId);
+        } catch (SQLException e) {
+            // 查询失败也**不拦**：门禁是"防止自己人打自己人"，不该变成"库抖一下就启动不了"。
+            // 注意：这条宽松只适用于「独立连接」的旧调用；RunAdmission 走 checkInTx，
+            // 那里查询失败会抛出并回滚，不会在"没查成"的情况下把 run 插进去。
+            return Decision.allow();
+        }
+    }
+
+    /**
+     * 事务内版本：用调用方传入的连接，**不自己开关连接、不吞 SQLException**。
+     *
+     * <p>为什么必须另开一个方法而不是复用 {@link #check}：
+     * <ul>
+     *   <li>{@code check} 独立开连接 ⇒ 与后续 {@code insertRun} 不在同一事务，
+     *       两者之间有窗口（读时无活跃，写前别人插了一条）——这正是唯一索引要兜的场景，
+     *       但门禁本身也应该在同一事务里读，才能拿到一致的快照。</li>
+     *   <li>{@code check} 查询失败返回 allow；事务内不能这样——门禁没查成却把 run 插进去，
+     *       等于放行了一个可能重复的启动。</li>
+     * </ul>
+     */
+    public static Decision checkInTx(Connection c, long tenantId, long workflowId, Long excludeRunId)
+            throws SQLException {
         if (concurrentAllowed()) {
             return Decision.allow();
         }
-        if (db == null || tenantId <= 0 || workflowId <= 0) {
+        if (c == null || tenantId <= 0 || workflowId <= 0) {
             // 参数不全 ⇒ 交由下游各自校验，不在这里造拒绝（避免掩盖真正的错误）
             return Decision.allow();
         }
@@ -120,8 +147,7 @@ public final class WorkflowRunGate {
         sql.append(" ORDER BY CASE status::text WHEN 'running' THEN 0 WHEN 'paused' THEN 1"
                 + " ELSE 2 END, id DESC LIMIT 1");
 
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql.toString())) {
+        try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
             int i = 1;
             ps.setLong(i++, tenantId);
             ps.setLong(i++, workflowId);
@@ -144,9 +170,6 @@ public final class WorkflowRunGate {
                                 + "且机械臂是唯一物理资源，搬运只能串行。"
                                 + "请等它结束，或用 LABOS_WORKFLOW_CONCURRENT_RUN=allow 显式放开。");
             }
-        } catch (SQLException e) {
-            // 查询失败也**不拦**：门禁是"防止自己人打自己人"，不该变成"库抖一下就启动不了"
-            return Decision.allow();
         }
     }
 

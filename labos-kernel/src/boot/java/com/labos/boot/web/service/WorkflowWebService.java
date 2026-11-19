@@ -286,9 +286,14 @@ public class WorkflowWebService {
         // RAIL-X231-1）⇒ 搬运只能串行，实测单臂吞吐 ≈6.46 次/分钟、单 run 需求 p50 ≈3.35
         // 次/分钟 ⇒ 可并行 run 数 ≈1.9 个（run 1001411 曾等满 62.7s 后 EC-RESOURCE-BUSY）。
         // 放开开关：LABOS_WORKFLOW_CONCURRENT_RUN=allow。
-        com.labos.kernel.workflow.WorkflowRunGate.Decision gate =
-                com.labos.kernel.workflow.WorkflowRunGate.check(db, TENANT, workflowId, null);
-        if (!gate.allowed()) {
+        // 准入 + 建 run 在同一事务（RunAdmission），执行复用该 runId。
+        // 之前是 gate.check（独立连接）+ execute（内部建 run），两步之间有窗口。
+        long admittedRunId;
+        try {
+            admittedRunId = com.labos.kernel.workflow.RunAdmission.start(
+                    db, TENANT, workflowId, attendance, workflows);
+        } catch (com.labos.kernel.workflow.RunAdmission.Rejected rejected) {
+            com.labos.kernel.workflow.WorkflowRunGate.Decision gate = rejected.decision();
             return Jsons.obj(
                     "error", gate.reason(),
                     "errorCode", "EC-WORKFLOW-RUNNING",
@@ -298,7 +303,7 @@ public class WorkflowWebService {
         }
         WorkflowService.Execution e;
         try {
-            e = workflows.execute(workflowId, attendance);
+            e = workflows.execute(workflowId, attendance, admittedRunId);
         } catch (IllegalArgumentException ex) {
             return Jsons.obj("error", ex.getMessage());
         }
