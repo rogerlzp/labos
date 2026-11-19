@@ -37,9 +37,9 @@
 
 ## 当前实现基线
 
-- 最近一次已确认 Runtime PostgreSQL 17 全绿：Run #230，提交 `9d7cff5d7ff0c88dfab17196864903c9b9ea6a4e`。
-- Kernel CI 正在针对集成分支运行；评审时必须重新读取最新 PR HEAD 对应的 Actions，不得沿用历史绿灯。
-- 当前最新 HEAD 以 PR 页面为准；本评审包内容更新后，HEAD 会继续变化。
+- 最近一次 Runtime PostgreSQL 17 全绿：Run #252，提交 `4e6dbc9dedba7d453ba6d49210a5da115013ed4c`；30 tests，0 failures/errors。
+- Kernel CI #592：success，HEAD `703ff84b292ed0f6ece5d2b1b180e44ec2b00730`；Java 纯逻辑 1576/0、TypeScript 0 错误、DeviceEventApi 17/0、Sidecar 8/0。评审时仍需重新核对 PR 最新 HEAD 对应 Actions。
+- 当前评审基线 HEAD：`703ff84b292ed0f6ece5d2b1b180e44ec2b00730`。如果后续有提交，评审开始时必须重新确认。
 
 ## 审核结论格式
 
