@@ -98,6 +98,11 @@ public final class SerialMailbox<T> implements AutoCloseable {
                 next.completion().complete(null);
             } catch (RuntimeException failure) {
                 next.completion().completeExceptionally(failure);
+            } catch (Error fatal) {
+                next.completion().completeExceptionally(fatal);
+                failPending(new IllegalStateException("SerialMailbox stopped after a fatal handler error", fatal));
+                draining.set(false);
+                throw fatal;
             }
         }
     }
