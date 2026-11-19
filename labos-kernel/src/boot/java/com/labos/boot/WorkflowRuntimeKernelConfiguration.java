@@ -108,6 +108,12 @@ public class WorkflowRuntimeKernelConfiguration {
         return new WorkflowRuntimeTenantResolver(repository);
     }
 
+    @Bean
+    public WorkflowRuntimeKernelFacade workflowRuntimeKernelFacade(
+            WorkflowRuntimeTenantResolver tenants, WorkflowRunFactory runs) {
+        return new WorkflowRuntimeKernelFacade(tenants, runs);
+    }
+
     /**
      * Explicit, durable bridge from the legacy bigint tenant id to Runtime UUID.
      * The key is stable across restarts and must not be replaced with a random UUID.
