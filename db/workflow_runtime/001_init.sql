@@ -196,11 +196,11 @@ CREATE TABLE worker_execution_fact (
 );
 CREATE INDEX worker_fact_attempt_idx ON worker_execution_fact(tenant_id, attempt_id, fact_seq);
 
-CREATE FUNCTION reject_worker_fact_mutation() RETURNS trigger LANGUAGE plpgsql AS $
+CREATE FUNCTION reject_worker_fact_mutation() RETURNS trigger LANGUAGE plpgsql AS $worker_fact$
 BEGIN
   RAISE EXCEPTION 'worker_execution_fact is append-only';
 END;
-$;
+$worker_fact$;
 CREATE TRIGGER worker_execution_fact_immutable
   BEFORE UPDATE OR DELETE ON worker_execution_fact
   FOR EACH ROW EXECUTE FUNCTION reject_worker_fact_mutation();
