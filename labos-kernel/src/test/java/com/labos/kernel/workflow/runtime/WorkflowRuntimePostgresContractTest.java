@@ -60,15 +60,16 @@ class WorkflowRuntimePostgresContractTest {
         }
         try (PreparedStatement p = c.prepareStatement("""
                 INSERT INTO wf_workflow_run
-                  (run_id, tenant_id, request_id, definition_id, definition_version,
+                  (run_id, tenant_id, request_id, request_payload_hash, definition_id, definition_version,
                    definition_hash, compiler_version, status, dispatch_gate_open)
-                VALUES (?, 1, ?, ?, ?, ?, 'test-compiler', 'RUNNING', true)
+                VALUES (?, 1, ?, ?, ?, ?, ?, 'test-compiler', 'RUNNING', true)
                 """)) {
             p.setObject(1, runId);
             p.setString(2, "request-" + UUID.randomUUID());
-            p.setString(3, definitionId);
-            p.setString(4, definitionVersion);
-            p.setString(5, hash);
+            p.setString(3, UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", ""));
+            p.setString(4, definitionId);
+            p.setString(5, definitionVersion);
+            p.setString(6, hash);
             p.executeUpdate();
         }
         return runId;
@@ -89,7 +90,7 @@ class WorkflowRuntimePostgresContractTest {
                     INSERT INTO wf_workflow_run
                       (run_id, tenant_id, request_id, definition_id, definition_version,
                        definition_hash, compiler_version, status)
-                    SELECT ?, tenant_id, request_id, definition_id, definition_version,
+                    SELECT ?, tenant_id, request_id, request_payload_hash, definition_id, definition_version,
                            definition_hash, compiler_version, 'CREATED'
                     FROM wf_workflow_run WHERE run_id=?
                     """)) {
