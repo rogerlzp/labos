@@ -536,6 +536,8 @@ public final class DriverStepExecutor implements StepExecutor {
             throw new StepFailure("EC-99-0002", scopeOf("EC-99-0002"),
                     "申请资源时数据库错误：" + e.getMessage(), 0, method);
         }
+        // 锁顺序观察：位置槽位（rank 2，位于设备 1 之后、轨道 3 之前）。
+        LockOrderGuard.enter(LockOrderGuard.ResourceType.POSITION, "acquireAll");
         // 证据确认路径：acquireAll（acquirePosition 带 TTL）之后把目标位升级为永久承诺，
         // 并标记 close() 时保留——REPORTED 未确认不得被 TTL/清理/close 释放或抢占。
         if (evidenceRequired) {

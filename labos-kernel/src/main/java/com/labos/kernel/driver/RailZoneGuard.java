@@ -103,6 +103,8 @@ public final class RailZoneGuard {
                 }
             }
             if (all) {
+                // 锁顺序观察：轨道槽位（rank 3，位于设备 1 / 位置 2 之后）。
+                LockOrderGuard.enter(LockOrderGuard.ResourceType.RAIL, "RailZoneGuard");
                 rec(db, tenantId, runId, pathKey, InterlockDecision.ALLOW,
                         "已获取 " + ordered.size() + " 个分区锁", null);
                 return Acquire.ok(new Lease(runId, ordered));

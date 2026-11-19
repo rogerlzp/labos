@@ -3107,6 +3107,10 @@ public class WorkflowService {
                                 "设备被占用超过 " + (waitMs / 1000) + " 秒：" + resourceId
                                 + deviceStateHint(resNodeId));
                     }
+                    // 锁顺序观察：设备槽位（rank 1）。默认只告警，见 LockOrderGuard。
+                    com.labos.kernel.driver.LockOrderGuard.enter(
+                            com.labos.kernel.driver.LockOrderGuard.ResourceType.DEVICE,
+                            "onStepStart");
                 }
             } catch (SQLException e) {
                 throw new IllegalStateException("抢设备锁失败：" + e.getMessage(), e);
@@ -3163,6 +3167,8 @@ public class WorkflowService {
         @Override
         public void onStepDone(long nodeId, int stepSeq, String method, boolean ok,
                                String errorCode, String rawResponse, long durationMs, int attempt) {
+            // 锁顺序观察：一个 step 结束，清空本线程的槽位记录，避免线程复用时残留。
+            com.labos.kernel.driver.LockOrderGuard.reset();
             Long parentId = nodeIdMap.get(nodeId);
             Long rid = resourceByStep.get(nodeId + ":" + stepSeq + ":" + attempt);
             // 已收到最终回包；释放设备和落结果属于 FINALIZING，不再计成设备执行。
