@@ -255,6 +255,8 @@ CREATE TABLE wait_registration (
   FOREIGN KEY (tenant_id, activation_id) REFERENCES node_activation(tenant_id, activation_id)
 );
 CREATE INDEX wait_due_idx ON wait_registration(deadline_at) WHERE wait_state='ACTIVE';
+CREATE UNIQUE INDEX wait_one_active_per_activation_uq ON wait_registration(tenant_id,activation_id)
+  WHERE wait_state='ACTIVE';
 
 CREATE TABLE retry_registration (
   tenant_id uuid NOT NULL,
@@ -271,6 +273,8 @@ CREATE TABLE retry_registration (
   FOREIGN KEY (tenant_id, activation_id) REFERENCES node_activation(tenant_id, activation_id)
 );
 CREATE INDEX retry_due_idx ON retry_registration(due_at) WHERE retry_state='SCHEDULED';
+ALTER TABLE retry_registration ADD CONSTRAINT retry_activation_attempt_uq
+  UNIQUE (tenant_id,activation_id,attempt_no);
 
 CREATE TABLE flow_variable (
   tenant_id uuid NOT NULL,
@@ -316,6 +320,8 @@ CREATE TABLE runtime_event (
   FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id)
 );
 CREATE INDEX runtime_event_type_idx ON runtime_event(tenant_id, run_id, event_type, event_seq);
+CREATE UNIQUE INDEX split_one_open_per_activation_uq ON split_activation(tenant_id,source_activation_id)
+  WHERE split_state='OPEN';
 
 CREATE TABLE inbox_receipt (
   tenant_id uuid NOT NULL REFERENCES tenant,
