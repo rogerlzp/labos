@@ -9,7 +9,7 @@
 
 ## 0. 一句话
 
-**中控下发命令时带 `commandId`；设备/侧车返回时原样带回来；中控据此判断事件归属。`funcName`（设备程序名）与 `processId`（实验编排节点）都不是归属依据，只作辅助信息。**
+**中控下发命令时带 `commandId`；设备/侧车返回时原样带回来；中控据此判断事件归属。归属只认 `commandId`，不引入 `funcName` / `processId` / 弱匹配。**
 
 ---
 
@@ -28,37 +28,46 @@
 
 ## 2. 字段定义
 
-### 2.0 术语纠正（v2 新增，必须先读）
+### 2.0 术语：只有 `method` 和 `commandId`
 
-现有系统里 `processId` 这个词被用错了地方，导致两个完全不同的概念撞名：
+**中控、模拟器、侧车三边都是 `method`，没有第二个名字。**
 
-| 概念 | 现在的名字 | 应该叫 | 类型 | 谁生成 |
-|---|---|---|---|---|
-| **设备程序/功能名**（如离心机的 `P1`、`Centrifuge3000`） | `processId` ❌ | **`funcName`** | VARCHAR(64) | 设备 |
-| **实验编排节点 id**（`experiment_process.id`） | 未记录 | **`processId`** | **BIGINT** | 中控（建实验时） |
-| 命令实例 id | `commandId` | `commandId` | VARCHAR(160) | 中控 |
-| 交互步骤标识 | `interactionStep` | `interactionStep` | VARCHAR(128) | 设备（可选） |
+| 概念 | 字段 | 实例 | 谁产生 |
+|---|---|---|---|
+| 设备方法名 | **`method`** | `Centrifuge`、`Seal`、`SetProductName` | 中控（从 `device_method.method` 取） |
+| 命令实例 id | **`commandId`** | `r100-n10-s1-d5` | 中控 |
+| 设备侧事件原始 id | `sourceEventId` | 设备帧里的序号 | 设备（可选） |
 
-**为什么必须纠正**：
+**明确不引入的字段**（v3 修正）：
 
-1. `experiment_process.id` 是 `BIGINT`（identity 列），而 `device_event.process_id` 是 `VARCHAR(128)`——**类型都对不上**，说明现有列装的根本不是实验编排节点。
-2. `docs/设备事件协议契约.md:57` 原话是"后续精确工位/交互步骤匹配使用"——这描述的是设备侧的过程标识，不是实验编排节点。
-3. 两个概念混用一个名字，后面做归属和资源分配时一定会解释错。
+| 字段 | 为什么不要 |
+|---|---|
+| `funcName` | 就是 `method` 的别名，重复 |
+| `processId`（事件表） | 事件归属不需要它。原列是 `VARCHAR(128)`，语义从未定义 |
 
-### 2.1 字段表
+### 2.1 事件只有两类
+
+| 类型 | 例子 | 带 commandId | 归属 |
+|---|---|---|---|
+| **命令关联型** | `waiting_interaction`（到交换点）、`extract_done`、进度上报 | **必须** | 归到该命令所属的 run / node / branch |
+| **系统型** | 心跳、设备自检告警、人工开门 | 没有 | **不归属任何 run**，只做设备状态更新 |
+
+**关键**：原先我把"设备自发事件"单独列为第三类（E3），认为它没有命令关联——这是错的。"到交换点"本身就是某条 `Transfer` 命令执行到一半的结果，设备应当把该命令的 `commandId` 带回来。
+
+**所以不需要**：`process_id` 精匹配、设备占用者归属、弱匹配。归属链只有一条。
+
+### 2.2 字段表
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `commandId` | string，≤160 | 下发时必填；回包/事件有则必填 | 命令幂等键与**归属键** |
-| `funcName` | string，≤64 | 否 | 设备程序/功能名，用于交叉校验（不是归属依据） |
-| `processId` | **number（BIGINT）** | 否 | 实验编排节点 id（`experiment_process.id`），用于把事件关联回编排步骤 |
-| `interactionStep` | string，≤128 | 否 | 交互步骤标识（L5 守卫用，与归属无关） |
+| `commandId` | string，≤160 | 命令关联型必填；系统型不填 | 唯一归属键 |
+| `method` | string，≤64 | 命令关联型必填 | 触发该事件的设备方法名（与下发时的 `method` 一致） |
 | `sourceEventId` | string，≤128 | 否 | 设备侧事件原始 id，用于去重（已有） |
 | `device` / `deviceCode` | string，≤64 | 是 | 设备码（已有） |
 | `eventType` | string，≤48 | 是 | 事件类型（已有） |
 | `payload` | object | 否 | 原始载荷（已有） |
 
-**归属只认 `commandId`。** `funcName` 与 `processId` 都是辅助信息：前者用于发现"设备把 A 程序的事件挂到 B 命令上"，后者用于把事件归到实验编排的哪一步。
+**归属只认 `commandId`。** `method` 用于交叉校验（确认这条事件确实来自预期的方法），不作归属依据。
 
 **`commandId` 的生成规则**（中控侧，已有实现）：
 
@@ -161,49 +170,42 @@ r{runId}-n{nodeId}-s{stepSeq}-d{deviceInstanceId}[|l{loopIndex}]
 ### 4.1 数据表
 
 ```sql
--- ① 设备程序名：现有 process_id 装的就是这个，改名保留数据
-ALTER TABLE device_event RENAME COLUMN process_id TO func_name;
-COMMENT ON COLUMN device_event.func_name IS
-    '设备程序/功能名（如 P1 / Centrifuge3000）。设备侧产生，仅作交叉校验，不作归属依据。';
+-- ① 删除语义未定义的列（生产路径从不填值）
+ALTER TABLE device_event DROP COLUMN IF EXISTS process_id;
 
--- ② 真正的 processId：实验编排节点（experiment_process.id，BIGINT）
-ALTER TABLE device_event ADD COLUMN process_id BIGINT;
-COMMENT ON COLUMN device_event.process_id IS
-    'experiment_process.id，实验编排节点。由中控按 run 的编排关系回填，设备/侧车不填。';
-
--- ③ 命令归属（唯一归属键）
+-- ② 命令归属（唯一归属键）
 ALTER TABLE device_event ADD COLUMN command_id VARCHAR(160);
 COMMENT ON COLUMN device_event.command_id IS
-    '触发该事件的命令 id；由设备/侧车原样回显。NULL 表示无命令关联（自发事件）。';
+    '触发该事件的命令 id；由设备/侧车原样回显。NULL 表示系统型事件（心跳/告警/人工）。';
+
+-- ③ 方法名（交叉校验用，与下发时的 method 比对）
+ALTER TABLE device_event ADD COLUMN method VARCHAR(64);
 
 CREATE INDEX IF NOT EXISTS ix_device_event_cmd
     ON device_event (tenant_id, command_id) WHERE command_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS ix_device_event_process
-    ON device_event (tenant_id, process_id) WHERE process_id IS NOT NULL;
 ```
 
-**注意**：`RENAME COLUMN` 会让现有代码读不到 `process_id`，必须同步改：
+**注意**：`DROP COLUMN process_id` 会让现有代码读不到该字段，必须同步改：
 
 | 文件 | 改动 |
 |---|---|
-| `DeviceEventRow` | 字段 `processId` → `funcName`（String），新增 `processId`（Long） |
-| `DeviceEventMapper.xml` | `insertEvent` / `selectEventsSince` 的列名 |
-| `DeviceEventController` | 请求体读 `funcName`；`processId` 改为可选的 Long |
-| `设备事件协议契约.md` | 字段说明同步（第 45、57 行） |
-| 侧车 `Protocol.cs` | 若能把设备程序名提取出来，填 `funcName`；填不了就留空 |
+| `DeviceEventRow` | 删 `processId` 字段；新增 `commandId`、`method` |
+| `DeviceEventMapper.xml` | `insertEvent` / `selectEventsSince` 的列清单 |
+| `DeviceEventController` | 不再读 `processId`；改读 `commandId` 与 `method` |
+| `设备事件协议契约.md` | 删除 `processId` 条目（第 45、57 行） |
+| 侧车 `Protocol.cs` | 事件帧带 `commandId`（见 §3.4），不填 `processId` |
+| 模拟器 `DeviceCore` | 自发事件回填触发它的 `commandId` |
 
 ### 4.2 接收入口
 
-`DeviceEventController` 增读 `commandId` 与 `funcName`，`processId` 改为 Long：
+`DeviceEventController` 增读 `commandId` 与 `method`，不再读 `processId`：
 
 ```java
 String commandId = trimmed(ApiServer.jsonField(body, "commandId"));
-String funcName  = trimmed(ApiServer.jsonField(body, "funcName"));   // 原 processId
-Long   processId = ApiServer.jsonLong(body, "processId");            // 实验编排节点 id
+String method    = trimmed(ApiServer.jsonField(body, "method"));
 
 mapper().insertEvent(TENANT, deviceId, device, eventType, payload,
-        runId, sourceEventId, funcName, interactionStep, commandId, processId);
+        runId, sourceEventId, commandId, method);
 ```
 
 ### 4.3 认领匹配
@@ -330,8 +332,7 @@ ALTER TABLE device_event_waiter
 
 | 字段 | 处置 | 说明 |
 |---|---|---|
-| `process_id`（旧语义 = 设备程序号） | **改名为 `func_name`** | 见 §2.0 / §4.1 |
-| `process_id`（新语义 = 实验编排节点） | **重新定义为 BIGINT** | 对应 `experiment_process.id` |
+| `process_id` | **删除** | 语义从未定义，生产路径不填值；归属不需要它 |
 | `interaction_step` | 保留 | 供 L5 守卫与工位匹配，与归属无关 |
 | `interactionId` | 保留现状 | 服务于"不等事件直接搬"的前置检查 |
 | `run_id` | 保留，侧车可选补填 | 不作为归属判据，见另一份设计 |
