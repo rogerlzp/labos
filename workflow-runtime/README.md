@@ -51,7 +51,7 @@ GitHub Actions 在 PostgreSQL 17 服务容器内执行空库 DDL、Schema 合同
 
 - 所有 Repository 方法只执行数据库操作；Adapter、设备、Worker 网络调用不得放进事务回调。
 - Outbox claim 提交后才能尝试外部发送；SEND_STARTED 提交后调用 Adapter；结果再由 Inbox 按 commandId 核验。
-- Worker lease + append-only execution facts 记录执行权与外部副作用边界；过期恢复区分 SAFE_TO_RETRY 与 MANUAL_REQUIRED。它不能物理终止复活的旧 Worker。
+- Worker lease + append-only execution facts 记录执行权与外部副作用边界；WorkerLeaseRecoveryService 提供有界扫描与恢复批次，过期恢复区分 SAFE_TO_RETRY 与 MANUAL_REQUIRED。它不能物理终止复活的旧 Worker。
 - DB resource fencing token 只证明数据库单调递增，不证明设备/网关拒绝旧 token。设备侧 fencing 必须逐设备 HIL。
 - 设备 Attempt 的输出必须等关联 Command 达到 SUCCEEDED 后才能写入 BranchOutput。
 - Stop 不能把 UNKNOWN、MANUAL_REQUIRED、QUARANTINED 或未释放 Lease 视为安全完成。
@@ -59,4 +59,4 @@ GitHub Actions 在 PostgreSQL 17 服务容器内执行空库 DDL、Schema 合同
 
 ## 实现成熟度
 
-当前是可执行的事务持久化层与 Worker 执行事实/过期恢复原语，不是完整运行时。Coordinator mailbox、WorkerPool、设备 Adapter 调用器、Outbox 后台 Dispatcher、Recovery Orchestrator 服务和硬件 fencing 尚未由本模块交付。T01–T23 有 SQL Repository primitives，但并非所有崩溃/外部副作用场景均已验证；请以 CI 与反向评审状态文档为准。
+当前是可执行的事务持久化层与 Worker 执行事实/过期恢复原语，不是完整运行时。Coordinator mailbox、WorkerPool、设备 Adapter 调用器、Outbox 后台 Dispatcher、Recovery Orchestrator 的后台调度、领导权、生命周期管理和硬件 fencing 尚未由本模块交付。T01–T23 有 SQL Repository primitives，但并非所有崩溃/外部副作用场景均已验证；请以 CI 与反向评审状态文档为准。
