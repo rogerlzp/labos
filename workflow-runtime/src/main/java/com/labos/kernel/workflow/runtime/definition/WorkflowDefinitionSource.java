@@ -1,6 +1,7 @@
 package com.labos.kernel.workflow.runtime.definition;
 
 import java.util.Map;
+import java.util.UUID;
 import java.util.Objects;
 
 /**
@@ -8,13 +9,14 @@ import java.util.Objects;
  * Implementations must scope every read by tenant and workflow id and return the original BPMN XML.
  */
 public interface WorkflowDefinitionSource {
-    WorkflowDefinition load(long tenantId, long workflowId);
+    WorkflowDefinition load(UUID runtimeTenantId, long workflowId);
 
     record NodeMetadata(String capabilityCode, Long workflowNodeId) {}
-    record WorkflowDefinition(long tenantId, long workflowId, String version,
+    record WorkflowDefinition(UUID runtimeTenantId, long workflowId, String version,
                               String bpmnXml, Map<String, NodeMetadata> nodeMetadata) {
         public WorkflowDefinition {
-            if(tenantId<=0 || workflowId<=0) throw new IllegalArgumentException("tenant/workflow id must be positive");
+            Objects.requireNonNull(runtimeTenantId, "runtimeTenantId");
+            if(workflowId<=0) throw new IllegalArgumentException("workflowId must be positive");
             if(version==null || version.isBlank()) throw new IllegalArgumentException("definition version is required");
             if(bpmnXml==null || bpmnXml.isBlank()) throw new IllegalArgumentException("BPMN XML is required");
             nodeMetadata=Map.copyOf(Objects.requireNonNull(nodeMetadata,"nodeMetadata"));
