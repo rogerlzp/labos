@@ -18,7 +18,7 @@ def connect():
     return psycopg.connect(DSN)
 
 def seed():
-    tenant, definition, run, token, activation, capacity = [uuid.uuid4() for _ in range(6)]
+    tenant, definition, run, token = [uuid.uuid4() for _ in range(4)]
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES(%s,%s,'race')",
@@ -32,14 +32,10 @@ def seed():
             cur.execute("""INSERT INTO workflow_runtime.execution_token
                 (tenant_id,token_id,run_id,token_state,node_key) VALUES(%s,%s,%s,'READY','race')""",
                 (tenant, token, run))
-            cur.execute("""INSERT INTO workflow_runtime.node_activation
-                (tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
-                VALUES(%s,%s,%s,%s,1,'race','RUNNING')""",
-                (tenant, activation, run, token))
             cur.execute("""INSERT INTO workflow_runtime.scheduler_capacity
                 (tenant_id,capacity_key,capacity_limit,reserved_count) VALUES(%s,'race-capacity',1,0)""",
                 (tenant,))
-    return tenant, run, token, activation
+    return tenant, run, token
 
 def race_two(fn):
     barrier = threading.Barrier(2)
@@ -50,7 +46,7 @@ def race_two(fn):
         return list(pool.map(wrapped, (1, 2)))
 
 def main():
-    tenant, run, token, activation = seed()
+    tenant, run, token = seed()
 
     def create_live_activation(i):
         try:
