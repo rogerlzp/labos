@@ -54,6 +54,20 @@ public final class SerialMailbox<T> implements AutoCloseable {
         synchronized (lock) { return closed; }
     }
 
+    public boolean isIdle() {
+        synchronized (lock) { return queue.isEmpty() && !draining.get(); }
+    }
+
+    /** Atomically close only when no message is queued or currently executing. */
+    boolean closeIfIdle() {
+        synchronized (lock) {
+            if (closed) return true;
+            if (!queue.isEmpty() || draining.get()) return false;
+            closed = true;
+            return true;
+        }
+    }
+
     private void scheduleDrain() {
         if (!draining.compareAndSet(false, true)) return;
         try {
