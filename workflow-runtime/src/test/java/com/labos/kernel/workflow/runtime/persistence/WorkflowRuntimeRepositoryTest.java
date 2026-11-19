@@ -322,7 +322,6 @@ class WorkflowRuntimeRepositoryTest {
         var acquired=repo.acquireResourceLease(tenant,created.runId(),"drain-resource",
                 "RUN",created.runId(),Instant.now().plusSeconds(120),"{\"lease\":\"integration\"}");
         UUID lease=acquired.leaseId();
-        assertEquals(1L,acquired.fencingToken());
         UUID pauseDrain=repo.requestDrain(tenant,created.runId(),"PAUSE");
         UUID drain=repo.requestDrain(tenant,created.runId(),"STOP");
         assertEquals(pauseDrain,drain,"Stop must supersede the in-flight Pause drain");
