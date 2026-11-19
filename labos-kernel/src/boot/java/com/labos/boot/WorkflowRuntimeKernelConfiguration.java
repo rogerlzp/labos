@@ -1,0 +1,110 @@
+package com.labos.boot;
+
+import com.labos.kernel.persistence.GraphMapper;
+import com.labos.kernel.workflow.runtime.definition.LegacyKernelWorkflowDefinitionSource;
+import com.labos.kernel.workflow.runtime.definition.WorkflowDefinitionSource;
+import com.labos.kernel.workflow.runtime.definition.WorkflowRunFactory;
+import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
+import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
+
+import javax.sql.DataSource;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Spring Boot composition root for the embedded, single-process Workflow Runtime.
+ *
+ * <p>All Runtime JDBC work uses the exact Kernel DataSource and transaction manager.
+ * No Runtime-owned pool or transaction manager is created here.
+ */
+@Configuration
+public class WorkflowRuntimeKernelConfiguration {
+
+    @Bean
+    public WorkflowRuntimeRepository workflowRuntimeRepository(
+            DataSource dataSource, PlatformTransactionManager transactionManager) {
+        return new WorkflowRuntimeRepository(dataSource, transactionManager);
+    }
+
+    @Bean
+    public BpmnGraphCompiler bpmnGraphCompiler() {
+        return new BpmnGraphCompiler();
+    }
+
+    @Bean
+    public WorkflowDefinitionSource workflowDefinitionSource(
+            GraphMapper graphMapper, WorkflowRuntimeRepository repository) {
+        return new LegacyKernelWorkflowDefinitionSource(
+                repository::findTenantKey,
+                (legacyTenantId, workflowId) -> {
+                    Map<String, Object> header =
+                            graphMapper.selectWorkflowHeader(legacyTenantId, workflowId);
+                    if (header == null || header.isEmpty()) return null;
+
+                    String bpmnXml = graphMapper.selectGraphXml(legacyTenantId, workflowId);
+                    if (bpmnXml == null || bpmnXml.isBlank())
+                        throw new IllegalStateException("Workflow has no persisted BPMN XML: " + workflowId);
+
+                    Object versionValue = header.get("version");
+                    if (versionValue == null || versionValue.toString().isBlank())
+                        throw new IllegalStateException("Workflow definition version is missing: " + workflowId);
+
+                    List<Map<String, Object>> rows =
+                            graphMapper.selectRuntimeWorkflowNodeMetadata(legacyTenantId, workflowId);
+                    Map<String, WorkflowDefinitionSource.NodeMetadata> metadata = new LinkedHashMap<>();
+                    for (Map<String, Object> row : rows) {
+                        Object keyValue = row.get("nodeKey");
+                        if (keyValue == null || keyValue.toString().isBlank())
+                            throw new IllegalStateException("workflow_node row has no node_key: workflow " + workflowId);
+                        String key = keyValue.toString();
+                        Object idValue = row.get("id");
+                        Long nodeId = idValue instanceof Number n ? n.longValue()
+                                : idValue == null ? null : Long.valueOf(idValue.toString());
+                        Object capabilityValue = row.get("capabilityCode");
+                        String capability = capabilityValue == null ? null : capabilityValue.toString();
+                        if (metadata.putIfAbsent(key,
+                                new WorkflowDefinitionSource.NodeMetadata(capability, nodeId)) != null)
+                            throw new IllegalStateException("Duplicate workflow_node key in metadata: " + key);
+                    }
+                    return new LegacyKernelWorkflowDefinitionSource.LegacyDefinition(
+                            versionValue.toString(), bpmnXml, metadata);
+                });
+    }
+
+    @Bean
+    public WorkflowRunFactory workflowRunFactory(
+            WorkflowDefinitionSource definitions,
+            BpmnGraphCompiler compiler,
+            WorkflowRuntimeRepository repository) {
+        return new WorkflowRunFactory(definitions, compiler, repository);
+    }
+
+    @Bean
+    public WorkflowRuntimeTenantResolver workflowRuntimeTenantResolver(
+            WorkflowRuntimeRepository repository) {
+        return new WorkflowRuntimeTenantResolver(repository);
+    }
+
+    /**
+     * Explicit, durable bridge from the legacy bigint tenant id to Runtime UUID.
+     * The key is stable across restarts and must not be replaced with a random UUID.
+     */
+    public static final class WorkflowRuntimeTenantResolver {
+        private final WorkflowRuntimeRepository repository;
+
+        private WorkflowRuntimeTenantResolver(WorkflowRuntimeRepository repository) {
+            this.repository = repository;
+        }
+
+        public java.util.UUID resolve(long kernelTenantId) {
+            if (kernelTenantId <= 0) throw new IllegalArgumentException("Kernel tenant id must be positive");
+            return repository.resolveTenantId(
+                    LegacyKernelWorkflowDefinitionSource.TENANT_KEY_PREFIX + kernelTenantId,
+                    "Kernel tenant " + kernelTenantId);
+        }
+    }
+}
