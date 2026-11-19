@@ -1,0 +1,57 @@
+name: Workflow Runtime PostgreSQL Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'feat/workflow-runtime-v1-foundation-*'
+  workflow_dispatch:
+
+jobs:
+  workflow-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: labos_runtime
+          POSTGRES_PASSWORD: runtime_test_only
+          POSTGRES_DB: labos_runtime_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U labos_runtime -d labos_runtime_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      LABOS_RUNTIME_TEST_URL: jdbc:postgresql://127.0.0.1:5432/labos_runtime_test
+      LABOS_RUNTIME_TEST_PSQL_DSN: postgresql://labos_runtime:runtime_test_only@127.0.0.1:5432/labos_runtime_test
+      LABOS_RUNTIME_TEST_USER: labos_runtime
+      LABOS_RUNTIME_TEST_PASSWORD: runtime_test_only
+      LABOS_RUNTIME_TEST_SCHEMA: wf_runtime_test
+      PGPASSWORD: runtime_test_only
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install Maven and PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y maven postgresql-client
+
+      - name: L0 pure state-machine tests
+        run: ./pg_rebuild/test/run_workflow_runtime_l0.sh
+
+      - name: L1 PostgreSQL transaction and fault-injection tests
+        run: ./pg_rebuild/test/run_workflow_runtime_l1.sh
