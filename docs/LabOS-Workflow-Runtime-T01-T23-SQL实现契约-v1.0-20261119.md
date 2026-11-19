@@ -71,7 +71,7 @@ Outbox 不使用 claim owner/epoch/claim_until。唯一 Dispatcher 在短事务�
 - 普通内部消息可恢复为 PENDING；
 - WORKER_DISPATCH 只有在其 Attempt 仍为 DISPATCHED 时才允许重新排队；已 ACCEPTED/STARTED 或已恢复的 Attempt 对应旧消息必须 DEAD_LETTER；
 - DEVICE_COMMAND 只有在 Command 仍为 CREATED/DISPATCH_PENDING、且未越过 SEND_STARTED 边界时才允许恢复为 PENDING；
-- 已越过 SEND_STARTED 的设备命令保持不自动重发，进入 commandId 查询/UNKNOWN/MANUAL_REQUIRED 恢复路径；
+- 已越过 SEND_STARTED 的设备命令（包括 CANCEL_REQUESTED）保持不自动重发，进入 commandId 查询/UNKNOWN/MANUAL_REQUIRED 恢复路径；进入人工恢复时，同 Attempt 尚未发送的命令取消并 DEAD_LETTER；
 - dispatchAttempt 必须把 attemptId 写入 Outbox payload，供重启恢复核验消息归属。
 
 ## 6. 测试和完成标准
@@ -79,9 +79,9 @@ Outbox 不使用 claim owner/epoch/claim_until。唯一 Dispatcher 在短事务�
 CI 必须在 PostgreSQL 17 上依次通过：
 1. 空库初始化；
 2. Schema Contract（31 张表，禁止分布式字段/表）；
-3. 双会话并发矩阵 CON-01..14；
+3. 双会话数据库事务并发矩阵 CON-01..14（模拟单 Host 多线程的 DB 竞争，不是多实例 Runtime 测试）；
 4. 事务原子性和 Inbox 冲突；
 5. Java Repository 集成测试（8/8）；
 6. WorkerExecutionRegistry 生命周期测试（2/2）。
 
-当前代码基线 40c1033a59167631c724678b1bfadbfdf7a7188a 的 PostgreSQL 17 CI Run 44560926448 已通过：31 表 Schema Contract、CON-01..14、事务原子性、Inbox 冲突、Repository 8/8、Registry 2/2。CI 通过只证明上述测试覆盖范围内的正确性，不代表真机 Adapter、设备状态回读或完整 Runtime Host 装配已经验收。
+当前代码基线 f1e6ec0fb7a429bb894b7cd14770b85b67b44828 的 PostgreSQL 17 CI Run 44562728674 已通过：31 表 Schema Contract、CON-01..14、事务原子性、Inbox 冲突、Repository 8/8、Registry 2/2。CI 通过只证明上述测试覆盖范围内的正确性，不代表真机 Adapter、设备状态回读或完整 Runtime Host 装配已经验收。
