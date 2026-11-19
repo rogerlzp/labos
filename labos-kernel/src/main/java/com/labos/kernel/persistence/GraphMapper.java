@@ -129,7 +129,7 @@ public interface GraphMapper {
     int deleteEdges(long workflowId);
 
     /** 读当前图 XML。 */
-    String selectGraphXml(long tenantId, long workflowId);
+    String selectGraphXml(@Param("tenantId") long tenantId, @Param("workflowId") long workflowId);
 
     /** 单个流程的节点定义（含能力码 / protocol_name / 绑定实例，按 id 升序）。 */
     java.util.List<java.util.Map<String, Object>> selectWorkflowNodes(long workflowId);
