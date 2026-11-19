@@ -27,6 +27,7 @@ public interface WorkflowRuntimeTransactionPort {
     }
 
     record Result(
+            java.util.UUID runId,
             String outcome,
             long runCommitVersion,
             long firstEventSeq,
