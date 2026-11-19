@@ -22,6 +22,7 @@
 - Kernel 配置从既有 DataSourceConfiguration 注入唯一 Hikari DataSource 与唯一 PlatformTransactionManager。
 - Kernel 集成路径不创建新的 DataSourceTransactionManager，不创建新的连接池。
 - PostgreSQL 集成测试新增外层事务回滚验证：Repository 内部 resolveTenantId 必须加入外层事务；外层回滚后租户映射不得残留。
+- 新增 WorkflowRuntimeKernelConfigurationSelfTest：启动 AnnotationConfigApplicationContext，验证唯一 DataSource / PlatformTransactionManager 和 Runtime Bean 组合；断言未注册 RuntimeHost；解析 GraphMapper.xml 并验证 Header/XML/Runtime metadata 三个 statement 均已绑定。
 
 ### 1.3 Kernel MyBatis BPMN DefinitionSource Adapter
 
@@ -127,3 +128,8 @@ CI 链接：
 - https://github.com/rogerlzp/labos/actions/runs/44558687751
 
 注意：这证明构建链和当前自动化门禁通过；仍不等于 Spring ApplicationContext 启动测试或 Runtime 端到端设备执行闭环已经完成。
+
+
+## 8. Spring / MyBatis Smoke Test
+
+新增纯逻辑自测：labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeKernelConfigurationSelfTest.java，并加入 scripts/test-all.sh 的 PURE 列表。该测试不连接数据库、不启动 RuntimeHost，验证 Runtime Spring Bean composition、唯一 DataSource / PlatformTransactionManager、未提前创建 RuntimeHost，以及 GraphMapper.xml 三个关键 statement 的 MyBatis 解析绑定。最新 CI 结果以新提交对应 Actions 为准。
