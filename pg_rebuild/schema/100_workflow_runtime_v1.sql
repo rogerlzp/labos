@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS wf_workflow_run (
     run_id                  uuid PRIMARY KEY,
     tenant_id               bigint NOT NULL,
     request_id              text NOT NULL,
+    request_payload_hash    char(64) NOT NULL,
     definition_id           text NOT NULL,
     definition_version      text NOT NULL,
     definition_hash         char(64) NOT NULL,
