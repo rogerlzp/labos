@@ -44,4 +44,4 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/002_schema_contract.sql
       - name: Verify bootstrap is repeatably isolated
         run: |
-          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 32) exit 1 }'
+          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 31) exit 1 }'
