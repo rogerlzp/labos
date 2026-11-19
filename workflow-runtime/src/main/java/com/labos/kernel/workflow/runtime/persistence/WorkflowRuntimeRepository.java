@@ -890,7 +890,14 @@ public final class WorkflowRuntimeRepository {
                               UUID attemptId, String deviceId, String commandKind,
                               String idempotencyClass, String payloadJson) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); 
+            RunHead head=lockRun(tenantId,runId);
+            List<String> attemptRows=jdbc.query("""
+                SELECT attempt_state,activation_id::text FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
+                """,(rs,n)->rs.getString(1)+"|"+rs.getString(2),tenantId,runId,attemptId);
+            if(attemptRows.size()!=1 || !"STARTED".equals(attemptRows.get(0).split("\\|",2)[0])
+                    || !activationId.toString().equals(attemptRows.get(0).split("\\|",2)[1]))
+                throw new InvalidTransitionException("Command requires the matching STARTED Attempt");
             List<UUID> existing=jdbc.query("""
                 SELECT command_id FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND attempt_id=? FOR UPDATE
@@ -924,10 +931,10 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    public record OutboxClaim(UUID outboxId, String dedupKey, String payloadJson) {}
+    public record OutboxMessage(UUID outboxId, String dedupKey, String payloadJson) {}
 
     /** Single-host dispatcher: lock and transition pending rows without distributed claims. */
-    public List<OutboxClaim> claimOutbox(UUID tenantId, int batchSize) {
+    public List<OutboxClaim> beginOutboxSend(UUID tenantId, int batchSize) {
         if(batchSize<1 || batchSize>500) throw new IllegalArgumentException("batchSize must be 1..500");
         return required(() -> jdbc.query("""
             WITH picked AS (
@@ -966,8 +973,11 @@ public final class WorkflowRuntimeRepository {
             UUID runId=UUID.fromString(ids[0]), attemptId=UUID.fromString(ids[1]);
             RunHead head=lockRun(tenantId,runId);
             if(!"OPEN".equals(head.controlGate())) return false;
-            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
-                    UUID.class,tenantId,attemptId);
+            String attemptState=jdbc.queryForObject("""
+                SELECT attempt_state FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+                """,String.class,tenantId,attemptId);
+            if(!"STARTED".equals(attemptState)) return false;
             String payloadCommand=jdbc.queryForObject("""
                 SELECT payload->>'commandId' FROM workflow_runtime.runtime_outbox
                  WHERE tenant_id=? AND outbox_id=? AND outbox_state='SENDING' FOR UPDATE
