@@ -114,6 +114,15 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                 }
             }
 
+            List<Map<String, Object>> activeRetries = jdbc.queryForList("""
+                    SELECT retry_id FROM wf_retry_registration
+                    WHERE activation_id=? AND status='ACTIVE'
+                    FOR UPDATE
+                    """, activationId);
+            if (!activeRetries.isEmpty()) {
+                throw new IllegalStateException("T03 blocked: RetryDue has not committed for this Activation");
+            }
+
             Map<String, Object> token = jdbc.queryForMap("""
                     SELECT status,object_version FROM wf_execution_token
                     WHERE token_id=? AND run_id=? FOR UPDATE
