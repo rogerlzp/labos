@@ -191,6 +191,8 @@ public final class WorkflowRuntimeRepository {
         required(() -> {
             RunHead head = lockRun(tenantId, runId);
             if (!"CREATED".equals(head.status())) throw new InvalidTransitionException("T02 requires CREATED");
+            if (expectedEpoch <= head.coordinatorEpoch())
+                throw new StaleRuntimeWriteException("Coordinator epoch must strictly advance");
             jdbc.update("""
                 UPDATE workflow_runtime.workflow_run
                    SET status='RUNNING', coordinator_id=?, coordinator_epoch=?,
@@ -320,22 +322,24 @@ public final class WorkflowRuntimeRepository {
     }
 
     /** T04-S: Started is strictly ACCEPTED -> STARTED, never DISPATCHED -> STARTED. */
-    public void startAttempt(UUID tenantId, UUID runId, UUID attemptId, String workerId) {
+    public void startAttempt(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
+                             long dispatchEpoch, String workerId) {
         required(() -> {
             RunHead head = lockRun(tenantId, runId);
             int changed = jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='STARTED',
                        started_at=clock_timestamp(),attempt_version=attempt_version+1
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=? AND worker_id=?
-                   AND attempt_state='ACCEPTED'
-                """, tenantId, runId, attemptId, workerId);
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? AND dispatch_id=?
+                   AND dispatch_epoch=? AND worker_id=? AND attempt_state='ACCEPTED'
+                """, tenantId, runId, attemptId, dispatchId, dispatchEpoch, workerId);
             if (changed != 1) throw new StaleRuntimeWriteException("Only accepted owning Worker may start");
-            jdbc.update("""
+            int activationChanged=jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='RUNNING',
                        activation_version=activation_version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND run_id=? AND current_attempt_id=?
                    AND activation_state IN ('RESERVED','READY')
                 """,tenantId,runId,attemptId);
+            if(activationChanged!=1) throw new StaleRuntimeWriteException("Activation is not owned by this Attempt");
             appendEvents(tenantId, runId, head.coordinatorEpoch(), List.of(new EventDraft(
                     "ATTEMPT_STARTED","ATTEMPT",attemptId,null,null,null,"{}")));
             return null;
@@ -624,6 +628,18 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+    public boolean completeLoop(UUID tenantId, UUID runId, long epoch, UUID loopId,
+                                long expectedVersion) {
+        return required(() -> {
+            lockRun(tenantId,runId);
+            int changed=jdbc.update("""
+                UPDATE workflow_runtime.loop_context SET loop_state='COMPLETED',version=version+1
+                 WHERE tenant_id=? AND run_id=? AND loop_context_id=? AND version=? AND loop_state='ACTIVE'
+                """,tenantId,runId,loopId,expectedVersion);
+            return changed==1;
+        });
+    }
+
     /** T12: create one immutable Command per device Attempt and its durable dispatch Outbox. */
     public UUID createCommand(UUID tenantId, UUID runId, long epoch, UUID activationId,
                               UUID attemptId, String deviceId, String commandKind,
@@ -647,6 +663,39 @@ public final class WorkflowRuntimeRepository {
                     commandId,0L,null,null,"{}")));
             return commandId;
         });
+    }
+
+    public record OutboxClaim(UUID outboxId, String dedupKey, String payloadJson,
+                              String owner, long claimEpoch) {}
+
+    /** Claim pending/expired Outbox rows with SKIP LOCKED; the sender acts only after commit. */
+    public List<OutboxClaim> claimOutbox(UUID tenantId, String owner, int batchSize, Instant claimUntil) {
+        return required(() -> jdbc.query("""
+            WITH picked AS (
+              SELECT outbox_id FROM workflow_runtime.runtime_outbox
+               WHERE tenant_id=? AND (outbox_state='PENDING' OR
+                 (outbox_state='CLAIMED' AND claim_until<clock_timestamp()))
+               ORDER BY available_at,created_at
+               FOR UPDATE SKIP LOCKED LIMIT ?
+            )
+            UPDATE workflow_runtime.runtime_outbox o
+               SET outbox_state='CLAIMED',claim_owner=?,claim_epoch=claim_epoch+1,
+                   claim_until=?,delivery_attempts=delivery_attempts+1
+              FROM picked p WHERE o.tenant_id=? AND o.outbox_id=p.outbox_id
+            RETURNING o.outbox_id,o.dedup_key,o.payload::text,o.claim_owner,o.claim_epoch
+            """,(rs,n)->new OutboxClaim(rs.getObject(1,UUID.class),rs.getString(2),
+                    rs.getString(3),rs.getString(4),rs.getLong(5)),
+                tenantId,batchSize,owner,java.sql.Timestamp.from(claimUntil),tenantId));
+    }
+
+    /** Mark delivery only if the exact owner and fencing epoch still own the claim. */
+    public boolean markOutboxDelivered(UUID tenantId, UUID outboxId, String owner, long epoch) {
+        return required(() -> jdbc.update("""
+            UPDATE workflow_runtime.runtime_outbox SET outbox_state='DELIVERED',
+                   delivered_at=clock_timestamp(),claim_until=NULL
+             WHERE tenant_id=? AND outbox_id=? AND outbox_state='CLAIMED'
+               AND claim_owner=? AND claim_epoch=?
+            """,tenantId,outboxId,owner,epoch)==1);
     }
 
     /** T13: persist SEND_STARTED before calling an Adapter outside this repository. */
@@ -738,12 +787,13 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND command_id=? AND command_state=?
                 """,targetState,deviceSequence,targetState,tenantId,commandId,current);
             if(changed!=1) throw new StaleRuntimeWriteException("Command state changed concurrently");
-            jdbc.update("""
+            int receiptChanged=jdbc.update("""
                 UPDATE workflow_runtime.inbox_receipt SET receipt_state='PROCESSED',
                        processed_at=clock_timestamp(),outcome=?::jsonb
                  WHERE tenant_id=? AND inbox_id=? AND run_id=?
                    AND receipt_state IN ('RECEIVED','PROCESSING')
                 """,outcomeJson,tenantId,inboxId,runId);
+            if(receiptChanged!=1) throw new StaleRuntimeWriteException("Inbox receipt was already consumed");
             appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
                     "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
             return true;
@@ -901,12 +951,14 @@ public final class WorkflowRuntimeRepository {
     /** T19: terminalize only when every unsafe side effect and control-flow continuation is closed. */
     public boolean tryFinalizeDrain(UUID tenantId, UUID runId, UUID drainId, String terminalStatus) {
         return required(() -> {
+            if(!List.of("PAUSED","STOPPED","FAILED").contains(terminalStatus))
+                throw new IllegalArgumentException("T19 terminalStatus must be PAUSED, STOPPED or FAILED");
             RunHead head=lockRun(tenantId,runId);
             Long unsafe=jdbc.queryForObject("""
                 SELECT
                   (SELECT count(*) FROM workflow_runtime.command_ledger
                     WHERE tenant_id=? AND run_id=? AND command_state NOT IN
-                      ('SUCCEEDED','FAILED','CANCELLED','MANUAL_REQUIRED')) +
+                      ('SUCCEEDED','FAILED','CANCELLED')) +
                   (SELECT count(*) FROM workflow_runtime.resource_lease
                     WHERE tenant_id=? AND run_id=? AND lease_state NOT IN ('RELEASED')) +
                   (SELECT count(*) FROM workflow_runtime.wait_registration
@@ -927,8 +979,19 @@ public final class WorkflowRuntimeRepository {
                     WHERE tenant_id=? AND run_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')) +
                   (SELECT count(*) FROM workflow_runtime.drain_item
                     WHERE tenant_id=? AND drain_id=? AND item_state <> 'SAFE')
-                """,Long.class,tenantId,runId,tenantId,runId,tenantId,runId,tenantId,runId,
-                    tenantId,runId,tenantId,runId,tenantId,drainId);
+                """,Long.class,
+                    tenantId,runId,  // Commands
+                    tenantId,runId,  // Leases
+                    tenantId,runId,  // Waits
+                    tenantId,runId,  // Retries
+                    tenantId,runId,  // Splits
+                    tenantId,runId,  // Joins
+                    tenantId,runId,  // Branches
+                    tenantId,runId,  // Loops
+                    tenantId,runId,  // Tokens
+                    tenantId,runId,  // Attempts
+                    tenantId,drainId // Drain items
+                );
             if(unsafe==null||unsafe>0) return false;
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.workflow_run SET status=?,
