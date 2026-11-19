@@ -1,0 +1,47 @@
+name: Workflow Runtime PostgreSQL 17
+on:
+  push:
+    branches: [docs/workflow-runtime-architecture-v2-20261119]
+    paths:
+      - 'db/workflow_runtime/**'
+      - '.github/workflows/workflow-runtime-db.yml'
+  pull_request:
+    paths:
+      - 'db/workflow_runtime/**'
+      - '.github/workflows/workflow-runtime-db.yml'
+  workflow_dispatch:
+jobs:
+  schema-contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: runtime
+          POSTGRES_PASSWORD: runtime
+          POSTGRES_DB: runtime_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U runtime -d runtime_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: runtime
+      PGPASSWORD: runtime
+      PGDATABASE: runtime_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify PostgreSQL major version
+        run: |
+          psql -v ON_ERROR_STOP=1 -Atc "SHOW server_version_num" | awk '{ if ($1 < 170000 || $1 >= 180000) exit 1 }'
+      - name: Bootstrap empty Runtime schema
+        run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/001_init.sql
+      - name: Verify schema catalog and invariant constraints
+        run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/002_schema_contract.sql
+      - name: Verify bootstrap is repeatably isolated
+        run: |
+          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 32) exit 1 }'
