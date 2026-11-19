@@ -8,7 +8,7 @@ SCHEMA="${LABOS_RUNTIME_TEST_SCHEMA:-wf_runtime_test}"
 
 psql "$LABOS_RUNTIME_TEST_PSQL_DSN" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS \"$SCHEMA\""
 for pass in 1 2; do
-  PGOPTIONS="-c search_path=$SCHEMA" psql "$LABOS_RUNTIME_TEST_URL" -v ON_ERROR_STOP=1 \
+  PGOPTIONS="-c search_path=$SCHEMA" psql "$LABOS_RUNTIME_TEST_PSQL_DSN" -v ON_ERROR_STOP=1 \
     -f "$(dirname "$0")/../schema/100_workflow_runtime_v1.sql"
 done
 
