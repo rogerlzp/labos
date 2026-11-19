@@ -134,3 +134,39 @@ Repository 中主要锁路径已调整，但需要对 T01–T23 的完整 SQL tr
 截至 commit `10d99fd3ca0a22f03fdb186b6a88bef9b8dbb9d5`，GitHub Actions Run ID `44498938264` 为 SUCCESS。日志明确输出 CON-01 至 CON-14 全部 PASS；Java Repository 集成测试 5 tests、0 failures、0 errors、0 skipped；空库 DDL、Schema 合同、事务原子性/Inbox 冲突和最终 Schema 表数核对均通过。
 
 这关闭了本轮实现中的编译与数据库集成阻塞。它不关闭第 4 节的 Worker execution fact、Adapter/HIL、设备 fencing、全量 T01–T23 故障矩阵和第三方独立签字等 UNKNOWN。
+
+
+## 7. Worker execution fact / lease 复核（2026-11-19）
+
+原 R-01（Worker 副作用事实账本）已部分关闭，新增：
+- worker_execution_lease：Worker/dispatch 身份、leaseEpoch、expiresAt、heartbeatAt、version；
+- worker_execution_fact：append-only HANDLER_STARTED / SIDE_EFFECT_STARTED / SIDE_EFFECT_COMPLETED / SIDE_EFFECT_UNKNOWN / EXECUTION_RIGHT_RELEASED；
+- 数据库 trigger 阻止事实 UPDATE/DELETE；
+- T04-S 原子创建 lease + HANDLER_STARTED；
+- T13 在 Adapter 调用前原子提交 SEND_STARTED + SIDE_EFFECT_STARTED；
+- T05 原子释放 Worker execution right；
+- 过期恢复根据 SideEffect 事实区分 SAFE_TO_RETRY 和 MANUAL_REQUIRED。
+
+本轮 CI Run 44502256816（commit 18f6583ab25e687bd9b56db1d591171e52259bad）全绿：CON-01..14 通过，Java Repository 集成测试 7/7，无失败/异常。
+
+### R-01 剩余限制
+
+这只是 Repository 层的执行事实与恢复原语，不是已经部署的 WorkerPool/Recovery Orchestrator。数据库租约无法阻止暂停后复活的旧进程绕过 Repository 直接操作硬件；因此 Adapter 必须检查有效执行权，设备/网关必须执行 fencingToken，并支持 commandId 查询与物理状态回读。以上仍为 UNKNOWN，须 HIL 验证。
+
+### 新增审查项 REV-15
+
+| ID | 问题 | 风险 | 当前处理 |
+|---|---|---|---|
+| REV-15 | Worker lease 过期后仅按超时重试，可能重复执行外部副作用 | 设备动作重复或旧 Worker 与新 Worker 同时执行 | 新增 append-only Worker fact；无副作用证据才回 READY，有副作用或模糊 Command 则 UNKNOWN + MANUAL_REQUIRED |
+
+## 8. 最新验证基线
+
+- Commit：18f6583ab25e687bd9b56db1d591171e52259bad
+- GitHub Actions：44502256816 SUCCESS
+- PostgreSQL：17
+- Schema：33 张表
+- CON-01..CON-14：14/14 PASS
+- Java Repository integration：7 tests，0 failures，0 errors，0 skipped
+- DDL / Schema contract / atomicity / Inbox conflict：PASS
+
+此验证不覆盖真实 Worker 多进程、Coordinator takeover 服务、Recovery Orchestrator 服务或 Adapter/HIL。
