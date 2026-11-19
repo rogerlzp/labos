@@ -396,6 +396,7 @@ CREATE TABLE IF NOT EXISTS wf_worker_dispatch_outbox (
     attempt_id              uuid NOT NULL UNIQUE REFERENCES wf_node_attempt(attempt_id),
     dispatch_id             uuid NOT NULL UNIQUE,
     dispatch_epoch          bigint NOT NULL,
+    payload_hash            char(64) NOT NULL,
     status                  varchar(20) NOT NULL,
     claim_owner             text,
     claim_until             timestamptz,
