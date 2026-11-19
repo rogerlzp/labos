@@ -122,16 +122,17 @@ T01–T23 是稳定的规范编号。为避免一个编号掩盖多个数据库�
 所有涉及多个对象的写事务必须按以下全局顺序获取锁；未涉及的层级跳过：
 
 1. `workflow_run`（按 run_id 排序；跨 Run 事务原则上禁止）；
-2. `resource_acquisition_group`（按 group_id）；
-3. `resource_lease`（按 resource_id 排序）；
-4. `split_activation` / `loop_context` / `wait_registration` / `retry_registration`（按类型固定顺序，再按 ID 排序）；
-5. `execution_token`（按 token_id）；
-6. `node_activation`（按 activation_id）；
-7. `node_attempt`（按 attempt_id）；
-8. `command_ledger`（按 command_id）；
-9. `branch_activation` / `join_activation`（按 ID）；
-10. `run_variable` / `branch_output`（按 key）；
-11. `inbox_message` / `outbox` / `runtime_event` / audit rows。
+2. `scheduler_capacity`（按 capacity_key 排序；仅涉及额度分配/回收时锁定）；
+3. `resource_acquisition_group`（按 group_id）；
+4. `resource_lease`（按 resource_id 排序）；
+5. `split_activation` / `loop_context` / `wait_registration` / `retry_registration`（按类型固定顺序，再按 ID 排序）；
+6. `execution_token`（按 token_id）；
+7. `node_activation`（按 activation_id）；
+8. `node_attempt`（按 attempt_id）；
+9. `command_ledger`（按 command_id）；
+10. `branch_activation` / `join_activation`（按 ID）；
+11. `run_variable` / `branch_output`（按 key）；
+12. `inbox_message` / `outbox` / `runtime_event` / audit rows。
 
 若某事务需要先定位子对象，可先做不加锁的只读查找取得候选 ID，再按统一顺序锁定并重新验证所有关联关系。禁止先锁子对象再回头锁 Run。数据库死锁仍可能发生，必须把 deadlock victim 视为事务整体回滚并以原幂等身份重试；不得拆分已定义的原子事务来“绕过”死锁。
 
@@ -245,7 +246,7 @@ T03 包含两个独立短事务：T03-R Reservation、T03-D Dispatch Commit。�
 
 **写集合：** dispatch_reservation；Token READY→RESERVED；容量占用计数；ReservationCreated Event。
 
-**锁/CAS：** Run → ResourceLease（若本事务仅验证已有租约，不得反向锁顺序）→ Token → reservation/capacity。容量必须用原子计数/CAS 或锁定容量行，禁止 read-then-write 超卖。
+**锁/CAS：** Run → scheduler_capacity（按 capacity_key 排序）→ ResourceLease（若本事务仅验证已有租约，不得反向锁顺序）→ Token → Reservation。容量必须用原子计数/CAS 或锁定容量行，禁止 read-then-write 超卖。
 
 **步骤：**
 1. 锁 Run，必须 RUNNING 且 epoch 有效。
@@ -507,15 +508,15 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **输入/幂等键：** ReconcileReservation(drainId, reservationId, expectedVersion)。
 
-**读集合：** Run、Drain、Reservation、Token、Activation、Attempt、WorkerDispatchOutbox/DispatchLease、容量计数。
+**读集合：** Run、Drain、所有 READY/RESERVED Token、Reservation、Activation、Attempt、WorkerDispatchOutbox/DispatchLease、容量计数。
 
-**写集合：** Reservation→RELEASED/CANCELLED；未提交 Dispatch 的 Token→READY/INVALIDATED（按 Pause/Stop policy）；软件容量返还；DrainItem 状态；Event。
+**写集合：** 未提交 Dispatch 的 Reservation→RELEASED/CANCELLED；未派发 READY/RESERVED Token 按 Pause/Stop policy 保留 READY 或→INVALIDATED；对应未派发 Attempt→ABANDONED_SAFE、Activation→READY/CANCELLED；软件容量返还；DrainItem 状态；Event。
 
-**锁/CAS：** Run → Token → Activation → Attempt → Reservation/Outbox（依统一锁序）；核验无 DispatchCommitted 或 Outbox 未进入可发送 SEND_STARTED 前沿。
+**锁/CAS：** Run → scheduler_capacity（按 capacity_key 排序）→ Token → Activation → Attempt → Reservation/Outbox（依统一锁序）；核验无 DispatchCommitted 或 Outbox 未进入可发送 SEND_STARTED 前沿。
 
-**步骤：** 仅对可证明尚未 DispatchCommitted 的 Reservation 释放软件额度。若已有 DispatchCommitted/可能发送，不能按 reservation 回收路径处理，必须转入 T18。绝不在本事务释放物理 ResourceLease。
+**步骤：** T17 不只回收 RESERVED reservation，还必须重复扫描 Drain 期间新产生的、尚未 Dispatch 的 READY Token（例如在途节点完成后产生的后继 Token）。Pause 保留 READY Token 作为 Resume continuation；Stop 必须将 READY/RESERVED Token 置 INVALIDATED，并关闭其未派发 Activation/Attempt。仅对可证明尚未 DispatchCommitted 的对象释放软件额度。若已有 DispatchCommitted/可能发送，不能按 reservation 回收路径处理，必须转入 T18。绝不在本事务释放物理 ResourceLease。扫描必须可续跑，直至没有未处理 READY/RESERVED 对象。
 
-**核心测试：** DB-T17-01 未派发 reservation 回收；02 Pause 下 Token 恢复 READY 但 gate 仍阻止派发；03 Stop 下 Token INVALIDATED；04 已提交 Dispatch 不得误回收；05 重复 reconcile 幂等；06 容量返还恰好一次。
+**核心测试：** DB-T17-01 未派发 reservation 回收；02 Pause 下 Token 恢复/保留 READY 但 gate 仍阻止派发；03 Stop 下 READY 与 RESERVED Token 均 INVALIDATED；04 在途完成产生新 READY Token 后被后续扫描捕获；05 已提交 Dispatch 不得误回收；06 重复 reconcile 幂等；07 容量返还恰好一次。
 
 ## T18 — Safe Point / Device Stop Progress
 
@@ -523,13 +524,13 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **读集合：** Run、DrainItem、Activation/Attempt、Command、ResourceLease、Inbox。
 
-**写集合：** 对象已核验安全状态；Command 状态（如收到设备事实）；Lease RELEASED 或 QUARANTINED（只按证据）；Attempt/Activation 收敛状态；DrainItem；Runtime Event/Outbox。
+**写集合：** 对象已核验安全状态；Command 状态（如收到设备事实）；Lease RELEASED 或 QUARANTINED（只按证据）；Attempt/Activation 收敛状态；Stop 时的 Wait/Retry/Split/Branch/Join/Loop 关闭投影；DrainItem；Runtime Event/Outbox。
 
 **锁/CAS：** Run → Lease → Token → Activation → Attempt → Command；对象版本和 evidence identity 必须匹配。
 
-**边界：** 外部暂停/取消/停止命令在事务外调用；调用请求先由 Command Ledger/Outbox 持久化。T18 只提交 Worker/设备/资源已发生的可验证事实。ACK 不自动等于物理安全点。
+**边界：** 外部暂停/取消/停止命令在事务外调用；调用请求先由 Command Ledger/Outbox 持久化。T18 只提交 Worker/设备/资源已发生的可验证事实。ACK 不自动等于物理安全点。对 Stop，T18 还负责在所有相关物理副作用已安全收敛后，关闭持久化 Wait/RetryRegistration、Split/Branch/Join/Loop 等控制流结构并使残余 Token 进入合法终结/INVALIDATED 状态；不得在物理副作用未核验时先关闭结构以制造 StopSafePredicate。Pause 则保留可恢复的 Wait/Loop/Join continuation。
 
-**核心测试：** DB-T18-01 纯计算 Worker 安全结束；02 设备明确停止且物理回读通过；03 ACK 但物理仍运行不得安全；04 未知结果进入 MANUAL_REQUIRED/QUARANTINED；05 迟到完成只影响匹配对象；06 Release 未确认不得释放 Lease；07 重复证据幂等。
+**核心测试：** DB-T18-01 纯计算 Worker 安全结束；02 设备明确停止且物理回读通过；03 ACK 但物理仍运行不得安全；04 未知结果进入 MANUAL_REQUIRED/QUARANTINED；05 迟到完成只影响匹配对象；06 Release 未确认不得释放 Lease；07 重复证据幂等；08 Stop 物理收敛后关闭 Wait/Retry/Split/Branch/Join/Loop；09 物理未收敛时禁止提前关闭控制流结构；10 Pause 保留可恢复 continuation。
 
 ## T19 — Drain Complete
 
@@ -805,7 +806,10 @@ L0 快速且覆盖全面，但不能代替 L1–L5。任何“状态机测试通
 | T14 | 设备事件已提交、ACK 丢失 | 重复事件幂等；不重复推进 |
 | T15 | Run gate 关闭后、Outbox 写前 | 同事务回滚；不可出现 gate 关闭但无 Drain 请求 |
 | T16 | DrainRecord 写后、DrainItem 分页中 | 通过稳定游标续扫；不漏对象 |
-| T17 | 容量返还后、Reservation 状态更新前 | 全部回滚；不重复返还 |
+| T17 | 容量返还后、Reservation/Token 状态更新前 | 全部回滚；不重复返还；READY/RESERVED 扫描可继续 |
+| T17 | Drain 期间 T05 新建 READY 后继 Token | 下一轮 reconcile 捕获；Pause 保留，Stop INVALIDATED |
+| T18 | 物理收敛后、控制流结构关闭前 | 事务回滚后可重放；不提前满足 StopSafePredicate |
+| T18 | Wait/Join/Loop 结构关闭中途 | 全部回滚；不存在半关闭控制流结构 |
 | T18 | 外部停止请求已发出、结果未回写 | 命令状态 UNKNOWN/进行中；不宣称物理安全 |
 | T19 | 最终谓词检查后、Run 状态写前 | 事务回滚；重试时重新检查谓词 |
 | T20 | 多表快照期间并发提交 | checkpoint 对应单一 MVCC 游标；不拼接混合版本 |
