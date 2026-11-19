@@ -299,3 +299,15 @@ Mock Adapter 必须模拟 ACK 与物理完成分离，支持延迟、重复事�
 - `RuntimeHostTest`：覆盖恢复先于 Dispatcher/Scheduler、恢复失败不开放门闩、组件启动失败逆序清理。
 
 这只是 Host 生命周期控制器和组件端口，不是完整可执行 Host：当前还没有具体 EventIngress、Scheduler、Outbox Dispatcher、WorkerPool 或 Adapter 实现。T24-A 需待 CI 通过并补齐实际装配后才能验收完成。
+
+### T24-B 首个交付：有界 WorkerPool
+
+已新增 `worker/WorkerPool`：
+- 一个 Host 共享一个固定大小 ThreadPoolExecutor；
+- 使用有界 ArrayBlockingQueue，拒绝超出全局线程/队列容量的任务；
+- 每 Run in-flight 额度同时统计运行中与排队中任务，避免单个 Run 占满全局队列；
+- Attempt 运行时接入 WorkerExecutionRegistry；排队取消和运行中取消都可释放本地容量；
+- 所有提交都要求 SchedulingGate 已打开；
+- close 时停止接收新任务、尽力取消现有任务并中断线程。
+
+新增 `WorkerPoolTest` 覆盖每 Run 限额、全局队列上限、取消/注销和调度门闩。此交付尚未接入 GraphCoordinator；CI 未确认前不标记 PASS。
