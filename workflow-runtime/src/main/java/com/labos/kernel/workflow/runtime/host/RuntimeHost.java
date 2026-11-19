@@ -75,17 +75,22 @@ public final class RuntimeHost implements AutoCloseable {
             ingressStartAttempted = true;
             eventIngress.start();
             state = State.RECOVERING;
-            recoveryResult = recovery.recover(recoveryLimit, recoveryActor);
+            recoveryResult = Objects.requireNonNull(
+                    recovery.recover(recoveryLimit, recoveryActor), "recovery result");
             for (LifecycleComponent component : afterRecovery) {
-                component.start();
+                // Track before start so a partially initialized component is also stopped on failure.
                 startedComponents.add(component);
+                component.start();
             }
             schedulingGate.open();
             state = State.RUNNING;
         } catch (RuntimeException | Error failure) {
             schedulingGate.close();
             stopStartedComponents(failure);
-            if (ingressStartAttempted) stopOne(eventIngress, failure);
+            if (ingressStartAttempted) {
+                stopOne(eventIngress, failure);
+                ingressStartAttempted = false;
+            }
             state = State.FAILED;
             throw failure;
         }
@@ -126,6 +131,8 @@ public final class RuntimeHost implements AutoCloseable {
             catch (RuntimeException e) {
                 if (failure == null) failure = new RuntimeException("RuntimeHost shutdown failed");
                 failure.addSuppressed(e);
+            } finally {
+                ingressStartAttempted = false;
             }
         }
         state = State.STOPPED;
