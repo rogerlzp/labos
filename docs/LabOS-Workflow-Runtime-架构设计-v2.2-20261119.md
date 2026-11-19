@@ -1416,7 +1416,7 @@ MANUAL_REQUIRED 不是错误日志，而是一个可追踪的工作项。
 |---|---|---|---|
 | Worker 进程内异常，纯计算 | attempt 失败 | 记录失败 | 按策略 |
 | Worker 崩溃，无外部副作用 | DispatchLease 过期 | 重建 attempt | 可 |
-| Worker 崩溃，可能已派发设备命令 | Command Ledger | UNKNOWN/查询设备 | 不直接重发 |
+| Worker 崩溃，可能已派发设备命令 | Command Ledger | Attempt/Activation 进入 UNKNOWN；Command 按阶段进入 DELIVERY_UNKNOWN 或 QUARANTINED，并查询设备 | 不直接重发 |
 | DB 暂时不可用 | 事务失败/连接池指标 | 保留消息/重试事务 | 可幂等重试 |
 | Outbox 发送失败 | attempts/error | 指数退避 | 可 |
 | Inbox 重复消息 | messageId 唯一约束 | 返回既有结果 | 不重复执行 |
@@ -2681,7 +2681,7 @@ Checkpoint 必须在一致性快照边界创建：
 | Inbox 消费时崩溃 | processed 未提交 | 重放同 messageId | 丢弃消息 |
 | Inbox 毒消息 | 永久 schema/身份错误 | REJECTED + DLQ/告警 | 无限快速重试 |
 | Pause 时设备仍运行 | 设备未确认停止 | PAUSE_DRAINING 持续；达到阈值告警 | 标记 PAUSED |
-| Stop 时设备状态未知 | Command/Lease UNKNOWN | QUARANTINED 或 MANUAL_REQUIRED | 标记 STOPPED 并释放资源 |
+| Stop 时设备状态未知 | Command DELIVERY_UNKNOWN/QUARANTINED；Lease QUARANTINED | MANUAL_REQUIRED 或 QUARANTINED | 标记 STOPPED 并释放资源 |
 | 人工强制跳过节点 | 有未决副作用 | 拒绝直接跳过，先核验/处置副作用 | 改 Token 状态绕过命令账本 |
 
 ## 26.1 数据库提交结果未知
