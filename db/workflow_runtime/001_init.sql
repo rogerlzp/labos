@@ -40,7 +40,6 @@ CREATE TABLE workflow_run (
   commit_version bigint NOT NULL DEFAULT 0 CHECK (commit_version >= 0),
   event_seq bigint NOT NULL DEFAULT 0 CHECK (event_seq >= 0),
   coordinator_id uuid,
-  coordinator_epoch bigint NOT NULL DEFAULT 0 CHECK (coordinator_epoch >= 0),
   recovery_state text NOT NULL DEFAULT 'NOT_REQUIRED'
     CHECK (recovery_state IN ('NOT_REQUIRED','RECOVERING','RECOVERY_COMPLETED','BLOCKED')),
   input jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -121,7 +120,6 @@ CREATE TABLE node_attempt (
   activation_id uuid NOT NULL,
   attempt_no integer NOT NULL CHECK (attempt_no > 0),
   dispatch_id uuid NOT NULL,
-  dispatch_epoch bigint NOT NULL,
   attempt_state text NOT NULL CHECK (attempt_state IN
     ('CREATED','DISPATCHED','ACCEPTED','STARTED','SUCCEEDED','FAILED','CANCELLED',
      'ABANDONED_SAFE','UNKNOWN')),
@@ -146,31 +144,6 @@ CREATE INDEX attempt_active_idx ON node_attempt(tenant_id, run_id, attempt_state
 CREATE UNIQUE INDEX attempt_one_live_per_activation_uq ON node_attempt(tenant_id, activation_id)
   WHERE attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN');
 
--- Worker execution right is a DB lease; it does not imply that a process is alive.
-CREATE TABLE worker_execution_lease (
-  tenant_id uuid NOT NULL,
-  run_id uuid NOT NULL,
-  attempt_id uuid NOT NULL,
-  worker_id text NOT NULL,
-  dispatch_id uuid NOT NULL,
-  dispatch_epoch bigint NOT NULL,
-  lease_epoch bigint NOT NULL DEFAULT 1 CHECK (lease_epoch > 0),
-  lease_state text NOT NULL CHECK (lease_state IN
-    ('ACTIVE','RELEASED','EXPIRED_SAFE','EXPIRED_UNVERIFIED')),
-  expires_at timestamptz NOT NULL,
-  lease_version bigint NOT NULL DEFAULT 0,
-  last_fact_seq bigint NOT NULL DEFAULT 0,
-  started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  heartbeat_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  ended_at timestamptz,
-  PRIMARY KEY (tenant_id, attempt_id),
-  FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id),
-  FOREIGN KEY (tenant_id, attempt_id) REFERENCES node_attempt(tenant_id, attempt_id)
-);
-CREATE INDEX worker_lease_expiry_idx ON worker_execution_lease(tenant_id, expires_at)
-  WHERE lease_state='ACTIVE';
-
--- Append-only evidence. SIDE_EFFECT_STARTED must commit before any external call.
 CREATE TABLE worker_execution_fact (
   tenant_id uuid NOT NULL,
   fact_id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -184,8 +157,6 @@ CREATE TABLE worker_execution_fact (
   actor_kind text NOT NULL CHECK (actor_kind IN ('WORKER','DISPATCHER','DEVICE','RECOVERY')),
   actor_id text NOT NULL,
   dispatch_id uuid NOT NULL,
-  dispatch_epoch bigint NOT NULL,
-  lease_epoch bigint NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (tenant_id, fact_id),
@@ -369,7 +340,6 @@ CREATE TABLE runtime_event (
   aggregate_type text NOT NULL,
   aggregate_id uuid,
   aggregate_version bigint,
-  coordinator_epoch bigint NOT NULL,
   causation_id uuid,
   correlation_id uuid,
   payload jsonb NOT NULL,
@@ -424,10 +394,7 @@ CREATE TABLE runtime_outbox (
   dedup_key text NOT NULL,
   payload jsonb NOT NULL,
   outbox_state text NOT NULL DEFAULT 'PENDING'
-    CHECK (outbox_state IN ('PENDING','CLAIMED','DELIVERED','DEAD_LETTER')),
-  claim_owner text,
-  claim_epoch bigint NOT NULL DEFAULT 0,
-  claim_until timestamptz,
+    CHECK (outbox_state IN ('PENDING','SENDING','DELIVERED','DEAD_LETTER')),
   delivery_attempts integer NOT NULL DEFAULT 0,
   available_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   delivered_at timestamptz,
@@ -437,7 +404,7 @@ CREATE TABLE runtime_outbox (
   FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id)
 );
 CREATE INDEX outbox_pending_idx ON runtime_outbox(available_at, created_at)
-  WHERE outbox_state IN ('PENDING','CLAIMED');
+  WHERE outbox_state IN ('PENDING','SENDING');
 
 CREATE TABLE command_ledger (
   tenant_id uuid NOT NULL,
@@ -476,22 +443,12 @@ CREATE TABLE command_dispatch_attempt (
   dispatch_state text NOT NULL CHECK (dispatch_state IN
     ('READY','CLAIMED','SEND_STARTED','DELIVERED','DELIVERY_UNKNOWN','REJECTED')),
   dispatcher_id text,
-  fencing_token bigint NOT NULL DEFAULT 0,
   started_at timestamptz,
   finished_at timestamptz,
   result jsonb,
   PRIMARY KEY (tenant_id, dispatch_id),
   UNIQUE (tenant_id, command_id, dispatch_no),
   FOREIGN KEY (tenant_id, command_id) REFERENCES command_ledger(tenant_id, command_id)
-);
-
--- Monotonic fencing-token allocator. Increment and read under row lock before lease grant.
-CREATE TABLE resource_fence_counter (
-  tenant_id uuid NOT NULL REFERENCES tenant,
-  resource_id text NOT NULL,
-  last_fencing_token bigint NOT NULL DEFAULT 0 CHECK (last_fencing_token >= 0),
-  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  PRIMARY KEY (tenant_id, resource_id)
 );
 
 CREATE TABLE resource_lease (
@@ -502,7 +459,6 @@ CREATE TABLE resource_lease (
   lease_state text NOT NULL CHECK (lease_state IN ('ACTIVE','RELEASING','RELEASED','QUARANTINED','EXPIRED_UNVERIFIED')),
   owner_kind text NOT NULL,
   owner_id uuid NOT NULL,
-  fencing_token bigint NOT NULL,
   lease_version bigint NOT NULL DEFAULT 0,
   acquired_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   expires_at timestamptz,
@@ -510,7 +466,6 @@ CREATE TABLE resource_lease (
   evidence jsonb,
   PRIMARY KEY (tenant_id, lease_id),
   FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id),
-  UNIQUE (tenant_id, resource_id, fencing_token)
 );
 CREATE UNIQUE INDEX resource_one_live_lease_uq ON resource_lease(tenant_id, resource_id)
   WHERE lease_state IN ('ACTIVE','RELEASING','QUARANTINED','EXPIRED_UNVERIFIED');
@@ -552,7 +507,6 @@ CREATE TABLE runtime_checkpoint (
   checkpoint_kind text NOT NULL,
   run_commit_version bigint NOT NULL,
   event_seq bigint NOT NULL,
-  coordinator_epoch bigint NOT NULL,
   snapshot_payload jsonb NOT NULL,
   snapshot_hash bytea NOT NULL,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
