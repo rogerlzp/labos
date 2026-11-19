@@ -181,6 +181,30 @@ public final class WorkflowRuntimeRepository {
         return true;
     }
 
+    /**
+     * Resolve a stable application tenant key to its Runtime UUID.
+     * Callers must use a durable key (e.g. kernel-tenant:<legacy bigint>), never a random per-start key.
+     */
+    public UUID resolveTenantId(String tenantKey, String displayName) {
+        if(tenantKey==null || tenantKey.isBlank()) throw new IllegalArgumentException("tenantKey is required");
+        if(displayName==null || displayName.isBlank()) throw new IllegalArgumentException("displayName is required");
+        return required(() -> jdbc.queryForObject("""
+            INSERT INTO workflow_runtime.tenant(tenant_key,display_name)
+            VALUES (?,?)
+            ON CONFLICT (tenant_key) DO UPDATE SET display_name=EXCLUDED.display_name
+            RETURNING tenant_id
+            """, UUID.class, tenantKey, displayName));
+    }
+
+    /** Reverse lookup used by a Kernel DefinitionSource adapter; no bigint/UUID casting is allowed. */
+    public String findTenantKey(UUID runtimeTenantId) {
+        List<String> keys=jdbc.query("""
+            SELECT tenant_key FROM workflow_runtime.tenant WHERE tenant_id=?
+            """,(rs,n)->rs.getString(1),runtimeTenantId);
+        if(keys.size()!=1) throw new IllegalStateException("Runtime tenant not found");
+        return keys.get(0);
+    }
+
     public record RunDefinitionSnapshot(UUID tenantId, UUID runId, String runStatus,
                                          String controlGate, String compilerVersion,
                                          String graphPlanJson) {}
