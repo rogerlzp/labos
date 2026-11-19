@@ -121,3 +121,6 @@ CI 不是 Worker 多进程/Adapter/HIL 测试。Coordinator、WorkerPool、Recov
 - 重复扫描安全，不依赖进程内状态。
 
 该类是可被宿主调度器调用的批次服务，不是后台 daemon。触发频率、leader election、shutdown、监控告警和多实例部署仍由未来 Runtime Host 实现。
+
+
+**最新验证：** GitHub Actions Run 44503834970（workflow head 00dd157beaaa7e2a49112508475ed371f6cc04b3；Worker/Recovery 代码基线 3364fa30fcb912ae6aadf86e238f8976270b60a5）SUCCESS。Java 集成测试 7/7，CON-01..14 14/14，Schema 33 表检查通过。
