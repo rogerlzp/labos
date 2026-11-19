@@ -96,9 +96,10 @@ class WorkerPoolTest {
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch finished = new CountDownLatch(1);
         AtomicBoolean interrupted = new AtomicBoolean();
+        UUID runId = UUID.randomUUID();
 
         try {
-            Future<?> future = pool.submit(UUID.randomUUID(), attempt, "worker-cancel", () -> {
+            Future<?> future = pool.submit(runId, attempt, "worker-cancel", () -> {
                 started.countDown();
                 try {
                     new CountDownLatch(1).await();
@@ -116,6 +117,9 @@ class WorkerPoolTest {
             assertTrue(finished.await(2, TimeUnit.SECONDS));
             assertTrue(interrupted.get());
             assertThrows(CancellationException.class, future::get);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (pool.inFlightForRun(runId) != 0 && System.nanoTime() < deadline) Thread.yield();
+            assertEquals(0, pool.inFlightForRun(runId));
             assertFalse(registry.isActive(attempt));
         } finally {
             pool.close();
