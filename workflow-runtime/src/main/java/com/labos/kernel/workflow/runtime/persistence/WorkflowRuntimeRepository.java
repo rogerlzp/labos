@@ -1060,15 +1060,43 @@ public final class WorkflowRuntimeRepository {
     public boolean applyCommandEvent(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
                                      String targetState, String deviceSequence, String outcomeJson) {
         return required(() -> {
+            List<String> identity=jdbc.query("""
+                SELECT attempt_id::text||'|'||device_id FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND run_id=? AND command_id=?
+                """,(rs,n)->rs.getString(1),tenantId,runId,commandId);
+            if(identity.size()!=1) throw new IllegalStateException("command_id does not belong to this Run");
+            String[] parts=identity.get(0).split("\\|",2);
+            UUID attemptId=UUID.fromString(parts[0]); String deviceId=parts[1];
             RunHead head=lockRun(tenantId,runId);
             if (!List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","CANCELLED",
                     "DELIVERY_UNKNOWN","UNKNOWN","MANUAL_REQUIRED").contains(targetState))
                 throw new IllegalArgumentException("Unsupported device Command state: "+targetState);
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
+                """,UUID.class,tenantId,runId,attemptId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,attemptId);
+            List<String> leaseRows=jdbc.query("""
+                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
+                  FROM workflow_runtime.worker_execution_lease
+                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,attemptId);
+            if(leaseRows.size()!=1) throw new IllegalStateException("Worker execution fact ledger missing for Command Attempt");
+            String[] lease=leaseRows.get(0).split("\\|");
             List<String> states=jdbc.query("""
                 SELECT command_state FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND run_id=? AND command_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,commandId);
-            if(states.size()!=1) throw new IllegalStateException("command_id does not belong to this Run");
+            if(states.size()!=1) throw new IllegalStateException("Command disappeared while applying device event");
             String inboxCommandId=jdbc.queryForObject("""
                 SELECT message_payload->>'commandId' FROM workflow_runtime.inbox_receipt
                  WHERE tenant_id=? AND inbox_id=? AND run_id=? AND receipt_state IN ('RECEIVED','PROCESSING')
@@ -1099,6 +1127,12 @@ public final class WorkflowRuntimeRepository {
                    AND receipt_state IN ('RECEIVED','PROCESSING')
                 """,outcomeJson,tenantId,inboxId,runId);
             if(receiptChanged!=1) throw new StaleRuntimeWriteException("Inbox receipt was already consumed");
+            if("SUCCEEDED".equals(targetState) || List.of("FAILED","CANCELLED","DELIVERY_UNKNOWN","UNKNOWN","MANUAL_REQUIRED").contains(targetState)) {
+                String factType="SUCCEEDED".equals(targetState)?"SIDE_EFFECT_COMPLETED":"SIDE_EFFECT_UNKNOWN";
+                appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-result:"+inboxId,factType,
+                        "DEVICE",deviceId,UUID.fromString(lease[0]),Long.parseLong(lease[1]),
+                        Long.parseLong(lease[2]),outcomeJson);
+            }
             appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
                     "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
             return true;
