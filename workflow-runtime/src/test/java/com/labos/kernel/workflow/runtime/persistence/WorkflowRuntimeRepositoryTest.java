@@ -399,4 +399,37 @@ class WorkflowRuntimeRepositoryTest {
             try(var rs=ps.executeQuery()) { assertTrue(rs.next()); return rs.getObject(1,UUID.class); }
         } catch(Exception e) { throw new RuntimeException(e); }
     }
+
+    @Test
+    void startupRecoveryScansBeyondOneBatch() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource();
+        UUID tenant=UUID.randomUUID();
+        try(Connection connection=ds.getConnection(); Statement statement=connection.createStatement()) {
+            statement.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','recovery-"+tenant+"','integration')");
+        }
+
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        for(int i=0;i<2;i++) {
+            String requestId="recovery-request-"+i+"-"+UUID.randomUUID();
+            var run=repo.createRun(tenant,requestId,"CREATE","{\\"recovery\\":"+i+"}",
+                    "recovery-flow-"+i+"-"+tenant,"1",new byte[32],"ci","{}","{}","node-1");
+            repo.startRun(tenant,run.runId());
+            var reservation=repo.reserveCapacity(tenant,run.runId(),"recovery-capacity-"+i,1,
+                    "node-1","PURE",Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant,run.runId(),reservation.attemptId(),"worker-q","{}");
+            repo.acceptAttempt(tenant,run.runId(),reservation.attemptId(),
+                    reservation.dispatchId(),"worker-1");
+            repo.startAttempt(tenant,run.runId(),reservation.attemptId(),
+                    reservation.dispatchId(),"worker-1");
+        }
+
+        var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
+        var result=recovery.recoverAtStartup(1,"startup-recovery-test");
+        assertEquals(2,result.scanned(),"startup must continue until no STARTED Attempt remains");
+        assertEquals(2,result.safeToRetry());
+        assertEquals(0,result.manualRequired());
+        assertTrue(repo.findInterruptedAttempts(10).isEmpty());
+    }
 }
