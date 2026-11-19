@@ -1583,6 +1583,18 @@ public final class WorkflowRuntimeRepository {
     }
 
     public record WorkerRecoveryResult(String outcome, UUID interventionId) {}
+    public record ExpiredWorkerAttempt(UUID tenantId, UUID runId, UUID attemptId) {}
+
+    /** Candidate scan only; each candidate is revalidated and row-locked by recovery. */
+    public List<ExpiredWorkerAttempt> findExpiredWorkerAttempts(int limit) {
+        if(limit<1 || limit>1000) throw new IllegalArgumentException("Recovery batch limit must be 1..1000");
+        return jdbc.query("""
+            SELECT tenant_id,run_id,attempt_id FROM workflow_runtime.worker_execution_lease
+             WHERE lease_state='ACTIVE' AND expires_at<=clock_timestamp()
+             ORDER BY expires_at,tenant_id,attempt_id LIMIT ?
+            """,(rs,n)->new ExpiredWorkerAttempt(rs.getObject(1,UUID.class),
+                    rs.getObject(2,UUID.class),rs.getObject(3,UUID.class)),limit);
+    }
 
     /** Persist a Worker fact before the corresponding external side effect. */
     public boolean recordWorkerFact(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
