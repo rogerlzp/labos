@@ -8,7 +8,7 @@
 
 ## 1. 架构决议
 
-V1 只支持一个 Runtime Host 进程。它可以使用多个线程，但任何时刻只允许一个进程持有 Runtime 执行权。第二个 Host 必须启动失败，不允许双活。
+V1 只部署一个 Runtime Host 进程。它可以使用多个线程；部署配置负责保证只有一个 Host 实例，不在数据库中实现实例选举、锁竞争或接管协议。意外启动第二个进程属于部署错误，应由部署方式避免，而不是增加数据库协调子系统。
 
 V1 不设计、不实现、不预留：
 - 多 Runtime 实例、水平扩展、跨进程协调；
@@ -17,7 +17,8 @@ V1 不设计、不实现、不预留：
 - Resource fencing counter / fencing token；
 - 多实例 Dispatcher claim owner/epoch/claim lease；
 - 多节点 Recovery 竞争、抢占和接管；
-- 以未来分布式部署为由增加的身份字段、协议和扩展点。
+- 以未来分布式部署为由增加的身份字段、协议和扩展点；
+- PostgreSQL advisory lock、数据库租约或其他用于 Host 选举/互斥的机制。
 
 未来如确有多实例需求，另立架构版本，不得把 V1 普通 version/CAS 重新解释成分布式 fencing。
 
@@ -43,7 +44,7 @@ V1 不设计、不实现、不预留：
 
 每个 Run 对应一个 GraphCoordinator。Coordinator 通过串行 Mailbox 独占该 Run 的图状态推进。Worker 只执行 Handler，返回结果；不得自行推进 Token/Activation/Run 状态。
 
-Host 启动必须取得单实例启动锁。可使用本机进程锁或 PostgreSQL session advisory lock；锁只用于阻止第二个 Host 启动，不是跨节点租约，不得自动续期/接管。连接断开导致启动锁丢失时，Host 必须 fail-stop，不得继续调度设备动作。
+Host 唯一性由部署约束保证。V1 不使用 PostgreSQL advisory lock、数据库租约、Leader Election 或启动锁表；Runtime 不承担 Host 实例选举职责。
 
 ## 4. 调度与 Attempt 生命周期
 
@@ -117,7 +118,7 @@ worker_execution_fact、resource_lease、command_dispatch_attempt 本身仍有�
 
 ## 10. V1 验收
 
-1. 第二个 Runtime Host 无法启动；唯一 Host 锁丢失时 fail-stop。
+1. 部署配置保证只运行一个 Runtime Host；V1 不实现数据库启动锁或实例选举。
 2. 同一 Run 的 Coordinator Mailbox 串行推进状态。
 3. WorkerPool 全局容量和每 Run 并发额度始终不超限。
 4. 同一设备资源不能被两个 Run 同时占用。
