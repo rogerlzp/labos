@@ -127,3 +127,10 @@ Repository 中主要锁路径已调整，但需要对 T01–T23 的完整 SQL tr
 - 独立第三方评审：未完成；本文件不冒充第三方签字。
 
 **最终意见：** 可以继续在该分支实现 Coordinator、Dispatcher、Worker 与 Recovery Orchestrator；禁止在 Adapter/HIL/fencing 未验证前将设备型 Workflow Runtime 标记为生产安全可用。
+
+
+## 6. 最新 CI 复核结果
+
+截至 commit `10d99fd3ca0a22f03fdb186b6a88bef9b8dbb9d5`，GitHub Actions Run ID `44498938264` 为 SUCCESS。日志明确输出 CON-01 至 CON-14 全部 PASS；Java Repository 集成测试 5 tests、0 failures、0 errors、0 skipped；空库 DDL、Schema 合同、事务原子性/Inbox 冲突和最终 Schema 表数核对均通过。
+
+这关闭了本轮实现中的编译与数据库集成阻塞。它不关闭第 4 节的 Worker execution fact、Adapter/HIL、设备 fencing、全量 T01–T23 故障矩阵和第三方独立签字等 UNKNOWN。
