@@ -2,8 +2,8 @@
 
 日期：2026-11-19  
 适用架构：LabOS Workflow Runtime V1 单实例规范  
-代码基线：40c1033a59167631c724678b1bfadbfdf7a7188a  
-验证：PostgreSQL 17 CI Run 44560926448，成功
+代码基线：f1e6ec0fb7a429bb894b7cd14770b85b67b44828  
+验证：PostgreSQL 17 CI Run 44562728674，成功
 
 ## 1. 设计边界
 
@@ -59,9 +59,9 @@ Host 存活时：
 1. 先扫描非终态派发中的 Attempt：DISPATCHED、ACCEPTED、STARTED；每批 1..1000 条；
 2. 每个候选在 Repository 事务内按 Run → Token → Activation → Attempt 顺序加锁并重新核验；
 3. 未越过副作用边界的 Attempt 转 ABANDONED_SAFE，释放 Scheduler reservation，Activation 结束，Token 恢复 READY；
-4. 已有 SIDE_EFFECT_STARTED、SEND_STARTED、ACKNOWLEDGED/RUNNING 或不确定 Command 时，Command/Attempt 转 UNKNOWN，Run 转 MANUAL_REQUIRED，controlGate=CLOSED，并创建人工介入记录；
+4. 已有 SIDE_EFFECT_STARTED、SEND_STARTED、ACKNOWLEDGED/RUNNING 或不确定 Command 时，Command/Attempt 转 UNKNOWN，Run 转 MANUAL_REQUIRED，controlGate=CLOSED，并创建人工介入记录。CANCEL_REQUESTED 仍属于不确定命令状态，不能视为已取消；同 Attempt 尚未越过 SEND_STARTED 的 CREATED/DISPATCH_PENDING 命令则取消并将对应 Outbox 标记 DEAD_LETTER；
 5. 对已恢复 Attempt 的旧 WORKER_DISPATCH Outbox 标记 DEAD_LETTER，防止旧派发再次执行；
-6. 最后恢复剩余 SENDING Outbox：内部消息可回到 PENDING；设备命令只有仍处于 CREATED/DISPATCH_PENDING、未越过 SEND_STARTED 边界时才可回到 PENDING；不确定设备命令保持不自动重发。
+6. 最后恢复剩余 SENDING Outbox：内部消息可回到 PENDING；设备命令只有仍处于 CREATED/DISPATCH_PENDING、未越过 SEND_STARTED 边界时才可回到 PENDING；不确定设备命令（包括 CANCEL_REQUESTED）保持不自动重发；进入人工恢复时，未发送命令会被取消并 DEAD_LETTER。
 
 若本批 scanned 达到 limit，Host 必须继续调用恢复服务，直到某批 scanned 小于 limit，之后才允许打开 WorkerPool 和 Dispatcher。恢复服务不是多实例 Recovery 竞争、接管或 Leader 选举。
 
@@ -73,7 +73,7 @@ UNKNOWN 不能因超时自动转 FAILED，也不能自动重发。必须通过 c
 
 ## 7. 验证边界
 
-CI Run 44560926448（PostgreSQL 17）：
+CI Run 44562728674（PostgreSQL 17）：
 - 空库 DDL 初始化、31 表 Schema Contract：PASS；
 - 双会话数据库并发基础测试：PASS；
 - CON-01..CON-14：14/14 PASS；
