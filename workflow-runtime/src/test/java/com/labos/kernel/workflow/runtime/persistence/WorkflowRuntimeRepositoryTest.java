@@ -57,7 +57,7 @@ class WorkflowRuntimeRepositoryTest {
                 "{\"attemptId\":\""+reservation.attemptId()+"\"}");
 
         assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
-                repo.startAttempt(tenant,first.runId(),reservation.attemptId(),"worker-1"));
+                repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),1L,"worker-1"));
         repo.acceptAttempt(tenant,first.runId(),reservation.attemptId(),
                 reservation.dispatchId(),1L,"worker-1");
         repo.startAttempt(tenant,first.runId(),reservation.attemptId(),"worker-1");
