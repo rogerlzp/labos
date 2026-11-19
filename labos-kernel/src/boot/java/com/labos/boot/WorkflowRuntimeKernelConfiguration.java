@@ -9,6 +9,8 @@ import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 import java.util.LinkedHashMap;
@@ -37,12 +39,13 @@ public class WorkflowRuntimeKernelConfiguration {
 
     @Bean
     public WorkflowDefinitionSource workflowDefinitionSource(
-            GraphMapper graphMapper, WorkflowRuntimeRepository repository) {
-        return new LegacyKernelWorkflowDefinitionSource(
+            GraphMapper graphMapper, WorkflowRuntimeRepository repository,
+            PlatformTransactionManager transactionManager) {
+        LegacyKernelWorkflowDefinitionSource adapter = new LegacyKernelWorkflowDefinitionSource(
                 repository::findTenantKey,
                 (legacyTenantId, workflowId) -> {
                     Map<String, Object> header =
-                            graphMapper.selectWorkflowHeader(legacyTenantId, workflowId);
+                            graphMapper.selectRuntimeWorkflowHeader(legacyTenantId, workflowId);
                     if (header == null || header.isEmpty()) return null;
 
                     String bpmnXml = graphMapper.selectGraphXml(legacyTenantId, workflowId);
@@ -79,6 +82,16 @@ public class WorkflowRuntimeKernelConfiguration {
                     return new LegacyKernelWorkflowDefinitionSource.LegacyDefinition(
                             definitionVersion, bpmnXml, metadata);
                 });
+
+        // Header, BPMN XML and workflow_node metadata must describe one committed revision.
+        // Force a dedicated repeatable-read transaction even if the caller already has a
+        // lower-isolation transaction; otherwise three READ COMMITTED statements can mix revisions.
+        TransactionTemplate definitionRead = new TransactionTemplate(transactionManager);
+        definitionRead.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        definitionRead.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        definitionRead.setReadOnly(true);
+        return (runtimeTenantId, workflowId) ->
+                definitionRead.execute(status -> adapter.load(runtimeTenantId, workflowId));
     }
 
     @Bean
