@@ -207,3 +207,12 @@ psql -d labos_runtime_test -c "SELECT schemaname, tablename FROM pg_tables WHERE
 **验证结果：** PostgreSQL 17.12 GitHub Actions 实测通过（Run ID `44494010994`，commit `faaca0982e07cf5d377a62b46039491a1f90e818`）：空库 DDL 初始化、31 张表与关键索引目录检查、Schema 行为约束测试、两个独立连接的 live Activation 竞争、SchedulerCapacity 不超卖竞争、Run/Event/Outbox 提交前故障回滚原子性、Inbox 同身份不同 hash 冲突留证、最终表数检查均 PASS。此前三次失败分别是测试 SQL 列引用错误、并发夹具预先创建了 live Activation、列名聚合别名错误；均已修复，最终 Run 全绿。
 
 **验证边界：** 本次 PASS 覆盖初始化 DDL、schema 合同、两类并发竞态和三类数据库级原子性/Inbox 行为检查。T01–T23 Repository 事务尚未实现；CON-01 至 CON-14 全集、完整故障注入矩阵、Checkpoint MVCC 并发证明、Adapter/Worker/硬件 HIL 仍未验证，不能据此宣称 Runtime 数据库实现全部完成。
+
+
+## 10. Repository 与事务层落地状态（2026-11-19）
+
+新增独立 Java 17 模块 `workflow-runtime/`，不依赖旧 GraphRunner 表或 labos-kernel Maven 编译单元。实现 T01–T23 的 PostgreSQL Repository transaction primitives，并配置 PostgreSQL 17 CI。
+
+**最近一次全绿证据：** Actions Run `44498938264`，commit `10d99fd3ca0a22f03fdb186b6a88bef9b8dbb9d5`。PG 17.12 空库 DDL、Schema 合同、基础双连接测试、CON-01..CON-14、事务原子性与 Inbox payload 冲突测试、Java Repository 集成测试（5/5）均 PASS。
+
+当前明确不包含：Coordinator mailbox、WorkerPool、Outbox 后台 Dispatcher、Recovery Orchestrator、真实 Adapter 网络调用、硬件 fencing 验证。数据库 fencing token 是单调计数，不等价于设备执行 fencing。具体剩余风险见《Workflow Runtime 数据库与事务层反向评审 v1.0》。
