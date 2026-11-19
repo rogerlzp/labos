@@ -85,18 +85,18 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         UUID outbox = UUID.randomUUID();
         UUID reservation = UUID.randomUUID();
         String payloadHash = hash();
-        Map<String, Object> payload = Map.of(
-                "tokenId", p.tokenId().toString(),
-                "activationId", p.activationId().toString(),
-                "attemptId", attempt.toString(),
-                "dispatchId", dispatch.toString(),
-                "outboxId", outbox.toString(),
-                "reservationId", reservation.toString(),
-                "capacityKey", p.capacityKey(),
-                "expiresAt", Instant.now().plusSeconds(120).toString(),
-                "sideEffectClass", "PURE",
-                "attemptNo", 1,
-                "workerPayloadJson", "{}"
+        Map<String, Object> payload = Map.ofEntries(
+                Map.entry("tokenId", p.tokenId().toString()),
+                Map.entry("activationId", p.activationId().toString()),
+                Map.entry("attemptId", attempt.toString()),
+                Map.entry("dispatchId", dispatch.toString()),
+                Map.entry("outboxId", outbox.toString()),
+                Map.entry("reservationId", reservation.toString()),
+                Map.entry("capacityKey", p.capacityKey()),
+                Map.entry("expiresAt", Instant.now().plusSeconds(120).toString()),
+                Map.entry("sideEffectClass", "PURE"),
+                Map.entry("attemptNo", 1),
+                Map.entry("workerPayloadJson", "{}")
         );
         var dispatchRequest = new WorkflowRuntimeTransactionPort.Request(
                 p.runId(), "dispatch-" + dispatch, "dispatch-message", payloadHash, 1, 0, payload);
