@@ -204,6 +204,6 @@ psql -d labos_runtime_test -c "SELECT schemaname, tablename FROM pg_tables WHERE
 - GitHub Actions：`.github/workflows/workflow-runtime-db.yml`。在 PostgreSQL 17 服务容器中执行空库 DDL、Schema 合同和并发测试。
 - T01–T23 SQL 实现合同：`docs/LabOS-Workflow-Runtime-T01-T23-SQL实现契约-v1.0-20261119.md`。
 
-**验证结果：** PostgreSQL 17.12 GitHub Actions 实测通过（Run #7，commit `054adb263242bc516f58e6d36f1255f1fb38b49a`）：空库 DDL 初始化、31 张表与关键索引目录检查、Schema 行为约束测试、两个独立连接的 live Activation 竞争、SchedulerCapacity 不超卖竞争、最终表数检查均 PASS。此前两次失败分别是测试 SQL 列引用错误和并发夹具预先创建了 live Activation；均已修复，最终 Run 全绿。
+**验证结果：** PostgreSQL 17.12 GitHub Actions 实测通过（Run ID `44494010994`，commit `faaca0982e07cf5d377a62b46039491a1f90e818`）：空库 DDL 初始化、31 张表与关键索引目录检查、Schema 行为约束测试、两个独立连接的 live Activation 竞争、SchedulerCapacity 不超卖竞争、Run/Event/Outbox 提交前故障回滚原子性、Inbox 同身份不同 hash 冲突留证、最终表数检查均 PASS。此前三次失败分别是测试 SQL 列引用错误、并发夹具预先创建了 live Activation、列名聚合别名错误；均已修复，最终 Run 全绿。
 
-**验证边界：** 本次 PASS 只覆盖初始化 DDL、schema 合同和两类并发竞态。T01–T23 Repository 事务尚未实现；CON-01 至 CON-14 全集、完整故障注入矩阵、Checkpoint MVCC 并发证明、Adapter/Worker/硬件 HIL 仍未验证，不能据此宣称 Runtime 数据库实现全部完成。
+**验证边界：** 本次 PASS 覆盖初始化 DDL、schema 合同、两类并发竞态和三类数据库级原子性/Inbox 行为检查。T01–T23 Repository 事务尚未实现；CON-01 至 CON-14 全集、完整故障注入矩阵、Checkpoint MVCC 并发证明、Adapter/Worker/硬件 HIL 仍未验证，不能据此宣称 Runtime 数据库实现全部完成。
