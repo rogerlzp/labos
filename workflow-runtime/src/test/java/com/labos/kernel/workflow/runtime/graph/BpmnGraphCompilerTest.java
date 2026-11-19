@@ -34,6 +34,15 @@ class BpmnGraphCompilerTest {
         assertEquals(GraphPlanCodec.sha256(xml),plan.bpmnSha256());
     }
 
+    @Test void graphPlanSnapshotRoundTripsWithoutChangingItsHash() {
+        String xml="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\"><bpmn:startEvent id=\\"s\\"/><bpmn:endEvent id=\\"e\\"/><bpmn:sequenceFlow id=\\"f\\" sourceRef=\\"s\\" targetRef=\\"e\\"/></bpmn:process></bpmn:definitions>";
+        GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput("1","v1",xml,Map.of()));
+        GraphPlan decoded=GraphPlanCodec.fromJson(GraphPlanCodec.toJson(plan));
+        assertEquals(plan,decoded);
+        assertDoesNotThrow(()->GraphPlanCodec.verifyBpmnHash(decoded,plan.bpmnSha256()));
+        assertThrows(IllegalArgumentException.class,()->GraphPlanCodec.verifyBpmnHash(decoded,"00"));
+    }
+
     @Test void rejectsUnsupportedExecutableElementsInsteadOfDroppingThem() {
         String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\"><bpmn:startEvent id=\"s\"/><bpmn:subProcess id=\"sub\"/></bpmn:process></bpmn:definitions>";
         IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
