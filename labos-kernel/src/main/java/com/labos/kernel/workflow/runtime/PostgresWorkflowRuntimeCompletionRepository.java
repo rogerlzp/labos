@@ -32,10 +32,6 @@ public final class PostgresWorkflowRuntimeCompletionRepository {
                 throw new IllegalStateException("T05 stale Coordinator epoch");
             }
             String runStatus = String.valueOf(run.get("status"));
-            if (runStatus.equals("SUCCEEDED") || runStatus.equals("FAILED")
-                    || runStatus.equals("STOPPED") || runStatus.equals("QUARANTINED")) {
-                throw new IllegalStateException("T05 cannot complete an Attempt after Run terminalization");
-            }
 
             UUID tokenId = uuid(request, "tokenId");
             UUID activationId = uuid(request, "activationId");
@@ -50,6 +46,10 @@ public final class PostgresWorkflowRuntimeCompletionRepository {
             }
             if ("SUCCEEDED".equals(attemptBeforeLock.get("status"))) {
                 return currentResult(request.runId(), "REPLAYED", true);
+            }
+            if (runStatus.equals("SUCCEEDED") || runStatus.equals("FAILED")
+                    || runStatus.equals("STOPPED") || runStatus.equals("QUARANTINED")) {
+                throw new IllegalStateException("T05 cannot complete an Attempt after Run terminalization");
             }
             if (!"PURE".equals(attemptBeforeLock.get("side_effect_class"))
                     && !"IDEMPOTENT".equals(attemptBeforeLock.get("side_effect_class"))) {
