@@ -124,3 +124,12 @@ CI 不是 Worker 多进程/Adapter/HIL 测试。Coordinator、WorkerPool、Recov
 
 
 **最新验证：** GitHub Actions Run 44503834970（workflow head 00dd157beaaa7e2a49112508475ed371f6cc04b3；Worker/Recovery 代码基线 3364fa30fcb912ae6aadf86e238f8976270b60a5）SUCCESS。Java 集成测试 7/7，CON-01..14 14/14，Schema 33 表检查通过。
+
+## 9. 完成路径与设备回执的补充约束
+
+- Attempt completion 也必须持有未过期 ACTIVE Worker lease；过期 Worker 即使尚未被 Recovery 扫描，也不能提交 BranchOutput。
+- Device Inbox 回执按 Run → Token → Activation → Attempt → WorkerLease → Command → Inbox 顺序锁定，避免 Command 事件处理与 Command Dispatch 在 WorkerLease/Command 锁上形成反向等待。
+- SUCCEEDED 设备回执写入 SIDE_EFFECT_COMPLETED；FAILED/CANCELLED/DELIVERY_UNKNOWN 等非成功终态写入 SIDE_EFFECT_UNKNOWN，不能仅凭“命令终态”推断设备无副作用。
+- markCommandUnknown 与 resolveUnknownCommand 也按同一对象锁序处理，并追加 SideEffect 事实。
+
+**最新验证：** Actions Run 44504186093 SUCCESS，测试代码基线 9547f4ec4ecf5506f34b29a5bab42be4c6c235f3；PG17，CON-01..14 14/14，Java 集成测试 7/7。
