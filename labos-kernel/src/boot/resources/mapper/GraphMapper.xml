@@ -32,8 +32,9 @@
     <select id="selectGraphXml" resultType="java.lang.String">
         SELECT graph->>'xml'
           FROM workflow
-         WHERE tenant_id = #{param1}
-           AND id = #{param2}
+         WHERE tenant_id = #{tenantId}
+           AND id = #{workflowId}
+           AND deleted_at IS NULL
     </select>
 
     <!-- 注意：原实现只按 workflow_id 过滤，没有 tenant（沿用，避免改变可见性）。 -->
