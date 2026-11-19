@@ -403,19 +403,26 @@ public final class WorkflowRuntimeRepository {
                               Instant dueAt, int nextAttemptNo, String policyJson) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
-            UUID retryId=UUID.randomUUID();
-            jdbc.update("""
+            UUID candidate=UUID.randomUUID();
+            int inserted=jdbc.update("""
                 INSERT INTO workflow_runtime.retry_registration
                   (tenant_id,retry_id,run_id,activation_id,retry_state,due_at,attempt_no,retry_policy)
                 VALUES (?,?,?,?,'SCHEDULED',?,?,?::jsonb)
-                """,tenantId,retryId,runId,activationId,Timestamp.from(dueAt),nextAttemptNo,policyJson);
-            jdbc.update("""
-                INSERT INTO workflow_runtime.runtime_outbox
-                  (tenant_id,run_id,message_kind,dedup_key,payload)
-                VALUES (?,?,'RETRY_TIMER',?,jsonb_build_object('retryId',?::text))
-                """,tenantId,runId,"retry:"+retryId,retryId);
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("RETRY_SCHEDULED","RETRY",
-                    retryId,0L,null,null,"{}")));
+                ON CONFLICT (tenant_id,activation_id,attempt_no) DO NOTHING
+                """,tenantId,candidate,runId,activationId,Timestamp.from(dueAt),nextAttemptNo,policyJson);
+            UUID retryId=jdbc.queryForObject("""
+                SELECT retry_id FROM workflow_runtime.retry_registration
+                 WHERE tenant_id=? AND activation_id=? AND attempt_no=?
+                """,UUID.class,tenantId,activationId,nextAttemptNo);
+            if(inserted==1) {
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.runtime_outbox
+                      (tenant_id,run_id,message_kind,dedup_key,payload)
+                    VALUES (?,?,'RETRY_TIMER',?,jsonb_build_object('retryId',?::text))
+                    """,tenantId,runId,"retry:"+retryId,retryId);
+                appendEvents(tenantId,runId,epoch,List.of(new EventDraft("RETRY_SCHEDULED","RETRY",
+                        retryId,0L,null,null,"{}")));
+            }
             return retryId;
         });
     }
@@ -646,6 +653,20 @@ public final class WorkflowRuntimeRepository {
                               String idempotencyClass, String payloadJson) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
+            List<UUID> existing=jdbc.query("""
+                SELECT command_id FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+                """,(rs,n)->rs.getObject(1,UUID.class),tenantId,attemptId);
+            byte[] hash=sha256(payloadJson);
+            if(!existing.isEmpty()) {
+                byte[] existingHash=jdbc.queryForObject("""
+                    SELECT payload_hash FROM workflow_runtime.command_ledger
+                     WHERE tenant_id=? AND command_id=?
+                    """,byte[].class,tenantId,existing.get(0));
+                if(!MessageDigest.isEqual(existingHash,hash))
+                    throw new IdempotencyConflictException("Attempt already owns a different immutable Command payload");
+                return existing.get(0);
+            }
             UUID commandId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.command_ledger
@@ -653,7 +674,7 @@ public final class WorkflowRuntimeRepository {
                    command_state,idempotency_class,command_payload,payload_hash)
                 VALUES (?,?,?,?,?, ?,?,'CREATED',?,?::jsonb,?)
                 """,tenantId,commandId,runId,activationId,attemptId,deviceId,commandKind,
-                    idempotencyClass,payloadJson,sha256(payloadJson));
+                    idempotencyClass,payloadJson,hash);
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
