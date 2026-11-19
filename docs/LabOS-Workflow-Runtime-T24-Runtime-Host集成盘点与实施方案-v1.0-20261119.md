@@ -320,3 +320,9 @@ Mock Adapter 必须模拟 ACK 与物理完成分离，支持延迟、重复事�
 - 对应顺序、容量、异常和 Registry 测试。
 
 边界：这两个类提供串行事件投递基础设施，不等于 GraphCoordinator。GraphPlan 解释、Repository 状态推进、Inbox 事务处理和 Run 生命周期恢复仍未实现。
+
+### T24-C 前置：Outbox 路由元数据
+
+Repository 的 `OutboxMessage` 现在显式返回 `outboxId`、`runId`、`messageKind`、`dedupKey` 和 payload。此前只返回 dedupKey/payload，不足以让 Dispatcher 可靠地区分 `WORKER_DISPATCH` 与 `DEVICE_COMMAND`。对应 Repository 集成测试已增加两类消息的 kind 和 Run 归属断言。
+
+这只是 Dispatcher 的必要输入，不代表 Dispatcher 已实现。设备 Command 发送还需要读取不可变 Command payload/version，并在 Adapter 调用前完成 `markCommandSendStarted`；Worker dispatch 则需要将持久化消息交给 WorkerPool/Handler。两条路径不得混用。
