@@ -110,6 +110,9 @@ CREATE TABLE node_activation (
 );
 CREATE INDEX activation_live_idx ON node_activation(tenant_id, run_id, activation_state)
   WHERE activation_state IN ('READY','RESERVED','RUNNING','WAITING');
+-- A Token may have historical activations, but only one may be live at a time.
+CREATE UNIQUE INDEX activation_one_live_per_token_uq ON node_activation(tenant_id, token_id)
+  WHERE activation_state IN ('READY','RESERVED','RUNNING','WAITING');
 
 CREATE TABLE node_attempt (
   tenant_id uuid NOT NULL,
@@ -138,6 +141,9 @@ CREATE TABLE node_attempt (
   FOREIGN KEY (tenant_id, activation_id) REFERENCES node_activation(tenant_id, activation_id)
 );
 CREATE INDEX attempt_active_idx ON node_attempt(tenant_id, run_id, attempt_state)
+  WHERE attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN');
+-- An Activation may retain history, but may not have two simultaneously active Attempts.
+CREATE UNIQUE INDEX attempt_one_live_per_activation_uq ON node_attempt(tenant_id, activation_id)
   WHERE attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN');
 
 CREATE TABLE dispatch_reservation (
