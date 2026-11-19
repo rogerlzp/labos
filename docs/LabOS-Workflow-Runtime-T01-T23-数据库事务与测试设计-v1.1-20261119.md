@@ -560,7 +560,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **写集合：** Checkpoint payload、payloadHash、runCommitVersion、eventSeqHighWatermark、coordinatorEpoch、definitionHash。
 
-**快照协议：** V1 使用 PostgreSQL REPEATABLE READ 只读事务；Run、全部子表投影、runCommitVersion 与 eventSeqHighWatermark 必须来自同一 MVCC snapshot。V1 不实现“暂停 Run 提交”barrier。禁止多次非一致查询拼接。
+**快照协议：** V1 使用 PostgreSQL REPEATABLE READ 事务；Run、全部子表投影、runCommitVersion 与 eventSeqHighWatermark 在同一 MVCC snapshot 中读取，并在该事务内写入 Checkpoint 记录。V1 不实现“暂停 Run 提交”barrier。禁止多次非一致查询拼接。
 
 **锁/CAS：** Checkpoint metadata 唯一 requestId；记录实际 snapshot 游标，校验 eventSeqHighWatermark 不大于快照中的 Run eventSeq。
 
