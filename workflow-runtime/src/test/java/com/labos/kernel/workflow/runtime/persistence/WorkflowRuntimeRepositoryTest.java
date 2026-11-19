@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService;
 import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 
 import java.sql.Connection;
 import java.sql.Statement;
