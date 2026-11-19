@@ -74,7 +74,7 @@ class WorkflowRuntimeRepositoryTest {
                 activationForAttempt(ds,tenant,reservation.attemptId()),reservation.attemptId(),
                 "device-1","RunMethod","QUERYABLE","{\"method\":\"test\"}");
         assertNotNull(command);
-        var commandOutbox=repo.claimOutbox(tenant,10)
+        var commandOutbox=repo.beginOutboxSend(tenant,10)
                 .stream().filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
         UUID dispatchId=UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
@@ -268,7 +268,7 @@ class WorkflowRuntimeRepositoryTest {
         UUID command=repo.createCommand(tenant,run.runId(),
                 activationForAttempt(ds,tenant,reservation.attemptId()),reservation.attemptId(),
                 "device-1","RunMethod","QUERYABLE","{}");
-        var outbox=repo.claimOutbox(tenant,10).stream()
+        var outbox=repo.beginOutboxSend(tenant,10).stream()
                 .filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,outbox.outboxId(),
                 UUID.randomUUID(),1,"dispatcher"));
