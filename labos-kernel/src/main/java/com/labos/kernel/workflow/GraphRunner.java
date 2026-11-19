@@ -110,7 +110,14 @@ public final class GraphRunner {
      * <p>目前来自 run 的 input.vars（实验启动时注入）。节点输出回写变量还没做 ——
      * 那需要把 run_command 的结果解析成上下文，是独立的一块。
      */
-    private Map<String, String> variables = new java.util.LinkedHashMap<>();
+    /**
+     * 流程级变量（并行分支共享同一份）。
+     *
+     * <p>⚠ 2026-11-19：并行网关改为真并发后，多个分支线程会同时读写它
+     * ⇒ 必须线程安全。用 {@code ConcurrentHashMap}；不再保留插入顺序
+     * （没有任何逻辑依赖顺序，输出时按 key 排序即可）。
+     */
+    private Map<String, String> variables = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * **本图自己写过**的变量名（`__setVar` / `__expr` 的目标）。
@@ -123,7 +130,7 @@ public final class GraphRunner {
      * <p>刷新因此**只补本图没写过的键**：外部写入（设备回包、人工改库）照旧生效，
      * 本图自己的赋值以本图为准（赋值节点只改内存，见 {@link #executeBuiltin}）。
      */
-    private final Set<String> locallyWrittenVars = new HashSet<>();
+    private final Set<String> locallyWrittenVars = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /**
      * **已被消费**的键 → 消费时它当时的值。
@@ -139,7 +146,7 @@ public final class GraphRunner {
      *
      * <p>键 → 值的映射，值为 {@code null} 表示"没消费过"。
      */
-    private final Map<String, String> consumedValues = new java.util.LinkedHashMap<>();
+    private final Map<String, String> consumedValues = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * **外部拥有**的键：消费过之后，外部刷新对它重新生效。
@@ -153,7 +160,7 @@ public final class GraphRunner {
      * 此后本图再写它（复位成 0 之类）**不会**把它重新挡在刷新之外，
      * 外部的下一个值照样进得来。
      */
-    private final Set<String> externallyOwnedVars = new HashSet<>();
+    private final Set<String> externallyOwnedVars = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** 记一次"本图自己写过的变量"，供 {@link #withVariableRefresher} 的刷新过滤用。 */
     private String writeVar(String var, String value) {
@@ -175,16 +182,21 @@ public final class GraphRunner {
      * 是否因此<b>挡住</b>本次等待，由调用方按 {@code consume} 决定。
      */
     private boolean alreadyConsumed(String key, String current) {
-        String prev = consumedValues.get(key);
-        if (prev == null) {
-            return false;
-        }
-        if (!sameValue(prev, current)) {
-            // 标志位已经离开旧值 ⇒ 复位过，清记录（下次回到旧值算新事件）
-            consumedValues.remove(key);
-            return false;
-        }
-        return true;
+        // ⚠ 必须是**一次原子操作**：并行分支会同时判断同一个键。
+        // 原来的 get → 判断 → remove 三步在并发下会出现
+        // 「两个分支都读到旧值、都判定为已消费」或「都把记录删掉」。
+        boolean[] consumed = {false};
+        consumedValues.compute(key, (k, prev) -> {
+            if (prev == null) {
+                return null;                 // 没消费过
+            }
+            if (!sameValue(prev, current)) {
+                return null;                 // 标志位已离开旧值 ⇒ 复位过，清记录
+            }
+            consumed[0] = true;              // 仍是同一个值 ⇒ 挡住
+            return prev;
+        });
+        return consumed[0];
     }
 
     /**
@@ -414,7 +426,7 @@ public final class GraphRunner {
      * "别的类型的事件"也一并跨过去（等 process_done 的节点会漏掉先前到的
      * waiting_interaction）。分键 ⇒ 每个等待只看自己那类事件。
      */
-    private final Map<String, Long> eventCursors = new java.util.LinkedHashMap<>();
+    private final Map<String, Long> eventCursors = new java.util.concurrent.ConcurrentHashMap<>();
 
     private String eventCursorKey(String deviceCode, String eventType) {
         return (deviceCode == null ? "" : deviceCode) + "|" + (eventType == null ? "" : eventType);
@@ -426,12 +438,16 @@ public final class GraphRunner {
     }
 
     private void advanceEventCursor(String deviceCode, String eventType, long eventId) {
-        eventCursors.put(eventCursorKey(deviceCode, eventType), eventId);
+        // 取最大值而不是直接覆盖：并行分支完成顺序不定，后完成的可能带**更小**的
+        // eventId。直接 put 会把游标倒退 ⇒ 已消费的事件被当成新的，重复推进流程。
+        eventCursors.merge(eventCursorKey(deviceCode, eventType), eventId, Math::max);
     }
 
     /** 注入运行期变量。 */
     public GraphRunner withVariables(Map<String, String> vars) {
-        this.variables = new java.util.LinkedHashMap<>(vars == null ? Map.of() : vars);
+        // 必须同为并发容器：否则 withVariables 一调，又换回非线程安全的。
+        this.variables = new java.util.concurrent.ConcurrentHashMap<>(
+                vars == null ? Map.of() : vars);
         return this;
     }
 
@@ -520,7 +536,7 @@ public final class GraphRunner {
     private java.util.Set<Long> offlineInstanceIds;
 
     /** 本次推进中被激活的节点 key（预检用它判断"哪些节点永远走不到"）。 */
-    private final Set<String> activatedKeys = new LinkedHashSet<>();
+    private final Set<String> activatedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
     /** 未经条件走默认边的次数（用于验收报告）。 */
     private int defaultEdgeCount;
     /** 条件求值失败的次数。 */
