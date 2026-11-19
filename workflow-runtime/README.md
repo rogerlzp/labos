@@ -19,7 +19,7 @@ V1 只部署一个 Runtime Host 进程，由部署配置保证实例唯一。V1 
 - 新增 Host 重启 Outbox/Attempt 恢复逻辑，副作用边界后不确定时转 UNKNOWN/MANUAL_REQUIRED；
 - Java Repository 集成测试 7/7、WorkerExecutionRegistry 测试 2/2，以及 PostgreSQL 17 Schema/CON-01..14/原子性测试均已通过代码基线 b4df784 的 CI。
 
-实现边界仍需注意：当前模块提供 Repository、Registry 和 RecoveryService；完整 Runtime Host 的启动装配、WorkerPool/Coordinator/Adapter 真机集成及设备回读验收不由本模块 CI 单独证明。
+实现边界仍需注意：当前模块还新增了 RuntimeHost 生命周期骨架和 SchedulingGate，明确 EventIngress 先接收持久化 Inbox、Recovery 完成后才启动后续组件并开放调度。WorkerPool/Coordinator/Outbox Dispatcher/Adapter/EventDispatcher 尚未实现；设备回读验收也未完成。
 
 ## 验证
 
