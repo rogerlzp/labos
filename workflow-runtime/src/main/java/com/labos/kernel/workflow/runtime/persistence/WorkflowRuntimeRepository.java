@@ -47,21 +47,20 @@ public final class WorkflowRuntimeRepository {
     }
 
     public record RunHead(String status, String controlGate, long commitVersion,
-                          long eventSeq, long coordinatorEpoch, String recoveryState) {}
+                          long eventSeq, String recoveryState) {}
     public record CreatedRun(UUID runId, boolean replayed) {}
     public record InboxReceipt(UUID inboxId, boolean inserted, boolean payloadConflict) {}
     public record EventDraft(String type, String aggregateType, UUID aggregateId,
                              Long aggregateVersion, UUID causationId, UUID correlationId,
                              String payloadJson) {}
     public record Checkpoint(UUID checkpointId, long commitVersion, long eventSeq,
-                             long coordinatorEpoch, String snapshotJson, byte[] sha256) {}
+                             String snapshotJson, byte[] sha256) {}
     public record CapacityReservation(UUID attemptId, UUID dispatchId, UUID reservationId) {}
     public record DrainItemRef(String itemKind, UUID itemId) {}
 
     private static final RowMapper<RunHead> RUN_HEAD = (rs, n) -> new RunHead(
             rs.getString("status"), rs.getString("control_gate"),
-            rs.getLong("commit_version"), rs.getLong("event_seq"),
-            rs.getLong("coordinator_epoch"), rs.getString("recovery_state"));
+            rs.getLong("commit_version"), rs.getLong("event_seq"), rs.getString("recovery_state"));
 
     private <T> T required(java.util.function.Supplier<T> work) {
         return tx.execute(status -> work.get());
@@ -69,8 +68,7 @@ public final class WorkflowRuntimeRepository {
 
     private RunHead lockRun(UUID tenantId, UUID runId) {
         List<RunHead> rows = jdbc.query("""
-            SELECT status, control_gate, commit_version, event_seq,
-                   coordinator_epoch, recovery_state
+            SELECT status, control_gate, commit_version, event_seq, recovery_state
               FROM workflow_runtime.workflow_run
              WHERE tenant_id=? AND run_id=?
              FOR UPDATE
@@ -81,8 +79,7 @@ public final class WorkflowRuntimeRepository {
 
     private long appendWorkerFactInTransaction(UUID tenantId, UUID runId, UUID attemptId,
                                                 String factKey, String factType, String actorKind,
-                                                String actorId, UUID dispatchId, long dispatchEpoch,
-                                                long leaseEpoch, String payloadJson) {
+                                                String actorId, UUID dispatchId, String payloadJson) {
         List<Long> existing=jdbc.query("""
             SELECT fact_seq FROM workflow_runtime.worker_execution_fact
              WHERE tenant_id=? AND attempt_id=? AND fact_key=?
@@ -90,32 +87,36 @@ public final class WorkflowRuntimeRepository {
         if(!existing.isEmpty()) {
             Boolean same=jdbc.queryForObject("""
                 SELECT fact_type=? AND actor_kind=? AND actor_id=? AND dispatch_id IS NOT DISTINCT FROM ?::uuid
-                   AND dispatch_epoch=? AND lease_epoch=? AND payload=?::jsonb
+                   AND payload=?::jsonb
                   FROM workflow_runtime.worker_execution_fact
                  WHERE tenant_id=? AND attempt_id=? AND fact_key=?
                 """,Boolean.class,factType,actorKind,actorId,dispatchId==null?null:dispatchId.toString(),
-                    dispatchEpoch,leaseEpoch,payloadJson,tenantId,attemptId,factKey);
+                    payloadJson,tenantId,attemptId,factKey);
             if(!Boolean.TRUE.equals(same))
                 throw new IdempotencyConflictException("Worker fact key replay differs from original fact");
             return existing.get(0);
         }
+        jdbc.queryForObject("""
+            SELECT attempt_id FROM workflow_runtime.node_attempt
+             WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+            """,UUID.class,tenantId,attemptId);
         Long seq=jdbc.queryForObject("""
-            UPDATE workflow_runtime.worker_execution_lease SET last_fact_seq=last_fact_seq+1
-             WHERE tenant_id=? AND attempt_id=? RETURNING last_fact_seq
+            SELECT COALESCE(MAX(fact_seq),0)+1
+              FROM workflow_runtime.worker_execution_fact
+             WHERE tenant_id=? AND attempt_id=?
             """,Long.class,tenantId,attemptId);
-        if(seq==null) throw new IllegalStateException("Worker execution lease missing for fact");
+        if(seq==null) throw new IllegalStateException("Unable to allocate Worker fact sequence");
         jdbc.update("""
             INSERT INTO workflow_runtime.worker_execution_fact
               (tenant_id,run_id,attempt_id,fact_seq,fact_key,fact_type,actor_kind,actor_id,
-               dispatch_id,dispatch_epoch,lease_epoch,payload)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb)
+               dispatch_id,payload)
+            VALUES (?,?,?,?,?,?,?,?,?,?::jsonb)
             """,tenantId,runId,attemptId,seq,factKey,factType,actorKind,actorId,
-                dispatchId,dispatchEpoch,leaseEpoch,payloadJson==null?"{}":payloadJson);
+                dispatchId,payloadJson==null?"{}":payloadJson);
         return seq;
     }
 
-    private long appendEvents(UUID tenantId, UUID runId, long coordinatorEpoch,
-                              List<EventDraft> events) {
+    private long appendEvents(UUID tenantId, UUID runId, List<EventDraft> events) {
         if (events == null || events.isEmpty()) return currentEventSeq(tenantId, runId);
         Long last = jdbc.queryForObject("""
             UPDATE workflow_runtime.workflow_run
@@ -132,10 +133,10 @@ public final class WorkflowRuntimeRepository {
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_event
                   (tenant_id,run_id,event_seq,event_type,aggregate_type,aggregate_id,
-                   aggregate_version,coordinator_epoch,causation_id,correlation_id,payload)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?::jsonb)
+                   aggregate_version,causation_id,correlation_id,payload)
+                VALUES (?,?,?,?,?,?,?,?,?,?::jsonb)
                 """, tenantId, runId, first + i, e.type(), e.aggregateType(), e.aggregateId(),
-                    e.aggregateVersion(), coordinatorEpoch, e.causationId(), e.correlationId(),
+                    e.aggregateVersion(), e.causationId(), e.correlationId(),
                     e.payloadJson() == null ? "{}" : e.payloadJson());
         }
         return last;
@@ -147,13 +148,6 @@ public final class WorkflowRuntimeRepository {
              WHERE tenant_id=? AND run_id=?
             """, Long.class, tenantId, runId);
         return seq == null ? 0 : seq;
-    }
-
-    private void requireCoordinator(RunHead head, long expectedEpoch) {
-        if (head.coordinatorEpoch() != expectedEpoch)
-            throw new StaleRuntimeWriteException("Coordinator epoch is stale");
-        if ("RECOVERING".equals(head.recoveryState()) || "BLOCKED".equals(head.recoveryState()))
-            throw new IllegalStateException("Run recovery gate blocks mutation");
     }
 
     private boolean releaseReservationInTransaction(UUID tenantId, UUID attemptId) {
@@ -240,7 +234,7 @@ public final class WorkflowRuntimeRepository {
                 UPDATE workflow_runtime.run_request_dedup SET run_id=?
                  WHERE tenant_id=? AND request_id=?
                 """, runId, tenantId, requestId);
-            appendEvents(tenantId, runId, 0, List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "RUN_CREATED","RUN",runId,0L,null,null,
                     "{\"tokenId\":\""+tokenId+"\",\"nodeKey\":\""+jsonEscape(firstNodeKey)+"\"}")));
             return new CreatedRun(runId, false);
@@ -256,7 +250,7 @@ public final class WorkflowRuntimeRepository {
                 throw new StaleRuntimeWriteException("Coordinator epoch must strictly advance");
             jdbc.update("""
                 UPDATE workflow_runtime.workflow_run
-                   SET status='RUNNING', coordinator_id=?, coordinator_epoch=?,
+                   SET status='RUNNING', coordinator_id=?, =?,
                        started_at=clock_timestamp(), updated_at=clock_timestamp()
                  WHERE tenant_id=? AND run_id=? AND status='CREATED'
                 """, coordinatorId, expectedEpoch, tenantId, runId);
@@ -329,7 +323,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,reservation_id,run_id,attempt_id,capacity_key,reservation_state,expires_at)
                 VALUES (?,?,?, ?,?,'HELD',?)
                 """, tenantId, reservationId, runId, attemptId, capacityKey, Timestamp.from(expiresAt));
-            appendEvents(tenantId, runId, epoch, List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DISPATCH_RESERVED","ATTEMPT",attemptId,0L,null,null,
                     "{\"activationId\":\""+activationId+"\",\"dispatchId\":\""+dispatchId+"\"}")));
             return new CapacityReservation(attemptId, dispatchId, reservationId);
@@ -360,7 +354,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,run_id,message_kind,dedup_key,payload)
                 VALUES (?,?,'WORKER_DISPATCH',?,jsonb_set(?::jsonb,'{queue}',to_jsonb(?::text),true))
                 """, tenantId, runId, "dispatch:"+attemptId, payloadJson, workerQueue);
-            appendEvents(tenantId, runId, epoch, List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "ATTEMPT_DISPATCHED","ATTEMPT",attemptId,1L,null,null,"{}")));
             return null;
         });
@@ -378,7 +372,7 @@ public final class WorkflowRuntimeRepository {
                    AND dispatch_epoch=? AND attempt_state='DISPATCHED'
                 """, workerId, tenantId, runId, attemptId, dispatchId, dispatchEpoch);
             if (changed != 1) throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
-            appendEvents(tenantId, runId, head.coordinatorEpoch(), List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "ATTEMPT_ACCEPTED","ATTEMPT",attemptId,null,null,null,"{}")));
             return null;
         });
@@ -435,7 +429,7 @@ public final class WorkflowRuntimeRepository {
                 """,tenantId,runId,attemptId,workerId,dispatchId,dispatchEpoch,Timestamp.from(leaseExpiresAt));
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"handler-start","HANDLER_STARTED",
                     "WORKER",workerId,dispatchId,dispatchEpoch,1L,"{}");
-            appendEvents(tenantId, runId, head.coordinatorEpoch(), List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "ATTEMPT_STARTED","ATTEMPT",attemptId,null,null,null,"{}")));
             return null;
         });
@@ -535,7 +529,7 @@ public final class WorkflowRuntimeRepository {
                        lease_version=lease_version+1,ended_at=clock_timestamp()
                  WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
                 """,tenantId,attemptId);
-            appendEvents(tenantId, runId, head.coordinatorEpoch(), List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "ATTEMPT_SUCCEEDED","ATTEMPT",attemptId,null,null,null,
                     "{\"activationId\":\""+activationId+"\",\"outputKey\":\""+jsonEscape(outputKey)+"\"}")));
             return null;
@@ -573,7 +567,7 @@ public final class WorkflowRuntimeRepository {
                 VALUES (?,?,?,?,'ACTIVE',?,?,?,?,?::jsonb)
                 """,tenantId,leaseId,runId,resourceId,ownerKind,ownerId,fencing,
                     Timestamp.from(expiresAt),evidenceJson==null?"{}":evidenceJson);
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("RESOURCE_LEASE_ACQUIRED",
+            appendEvents(tenantId,runId,List.of(new EventDraft("RESOURCE_LEASE_ACQUIRED",
                     "LEASE",leaseId,0L,null,null,"{\"resourceId\":\""+jsonEscape(resourceId)+
                     "\",\"fencingToken\":"+fencing+"}")));
             return new AcquiredLease(leaseId,fencing);
@@ -633,7 +627,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
                 VALUES (?,?,'SYSTEM',?,'UNKNOWN_COMMAND_RESOLVED','COMMAND',?,?::jsonb,?)
                 """,tenantId,runId,actor,commandId,evidenceJson,"explicit external verification");
-            appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "COMMAND_VERIFIED_"+resolvedState,"COMMAND",commandId,null,null,null,evidenceJson)));
             return true;
         });
@@ -661,7 +655,7 @@ public final class WorkflowRuntimeRepository {
                       (tenant_id,run_id,message_kind,dedup_key,payload)
                     VALUES (?,?,'RETRY_TIMER',?,jsonb_build_object('retryId',?::text))
                     """,tenantId,runId,"retry:"+retryId,retryId);
-                appendEvents(tenantId,runId,epoch,List.of(new EventDraft("RETRY_SCHEDULED","RETRY",
+                appendEvents(tenantId,runId,List.of(new EventDraft("RETRY_SCHEDULED","RETRY",
                         retryId,0L,null,null,"{}")));
             }
             return retryId;
@@ -687,7 +681,7 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND activation_id=? AND activation_state IN ('RUNNING','RESERVED')
                 """,tenantId,activationId);
             if(changed!=1) throw new StaleRuntimeWriteException("Activation cannot enter WAITING");
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("WAIT_REGISTERED","WAIT",
+            appendEvents(tenantId,runId,List.of(new EventDraft("WAIT_REGISTERED","WAIT",
                     waitId,0L,null,null,"{}")));
             return waitId;
         });
@@ -749,7 +743,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,run_id,token_state,node_key,parent_token_id,payload)
                 VALUES (?,?,'READY',?,?,?::jsonb)
                 """,tenantId,runId,continuationNode,tokenId,"{}");
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     satisfied?"WAIT_SATISFIED":"WAIT_EXPIRED","WAIT",waitId,null,null,null,"{}")));
             return true;
         });
@@ -804,7 +798,7 @@ public final class WorkflowRuntimeRepository {
                     VALUES (?,?,'READY',?,?,?)
                     """,tenantId,runId,key,splitId,branchId);
             }
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("SPLIT_CREATED","SPLIT",
+            appendEvents(tenantId,runId,List.of(new EventDraft("SPLIT_CREATED","SPLIT",
                     splitId,0L,null,null,"{\"expectedBranches\":"+branchKeys.size()+"}")));
             return splitId;
         });
@@ -874,7 +868,7 @@ public final class WorkflowRuntimeRepository {
                     VALUES (?,?,'READY',?,?)
                     """,tenantId,runId,joinKey,splitId);
             }
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("BRANCH_ARRIVED","SPLIT",
+            appendEvents(tenantId,runId,List.of(new EventDraft("BRANCH_ARRIVED","SPLIT",
                     splitId,null,null,null,"{\"branchKey\":\""+jsonEscape(branchKey)+"\"}")));
             return true;
         });
@@ -899,7 +893,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,run_id,token_state,node_key,loop_context_id)
                 VALUES (?,?,'READY',?,?)
                 """,tenantId,runId,nextNodeKey,loopId);
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("LOOP_ADVANCED","LOOP",
+            appendEvents(tenantId,runId,List.of(new EventDraft("LOOP_ADVANCED","LOOP",
                     loopId,expectedVersion+1,null,null,"{\"iteration\":"+next+"}")));
             return next;
         });
@@ -913,7 +907,7 @@ public final class WorkflowRuntimeRepository {
                 UPDATE workflow_runtime.loop_context SET loop_state='COMPLETED',version=version+1
                  WHERE tenant_id=? AND run_id=? AND loop_context_id=? AND version=? AND loop_state='ACTIVE'
                 """,tenantId,runId,loopId,expectedVersion);
-            if(changed==1) appendEvents(tenantId,runId,epoch,List.of(new EventDraft(
+            if(changed==1) appendEvents(tenantId,runId,List.of(new EventDraft(
                     "LOOP_COMPLETED","LOOP",loopId,expectedVersion+1,null,null,"{}")));
             return changed==1;
         });
@@ -952,7 +946,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,run_id,message_kind,dedup_key,payload)
                 VALUES (?,?,'DEVICE_COMMAND',?,jsonb_build_object('commandId',?::text))
                 """,tenantId,runId,"command:"+commandId,commandId);
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("COMMAND_CREATED","COMMAND",
+            appendEvents(tenantId,runId,List.of(new EventDraft("COMMAND_CREATED","COMMAND",
                     commandId,0L,null,null,"{}")));
             return commandId;
         });
@@ -1170,7 +1164,7 @@ public final class WorkflowRuntimeRepository {
                         "DEVICE",deviceId,UUID.fromString(lease[0]),Long.parseLong(lease[1]),
                         Long.parseLong(lease[2]),outcomeJson);
             }
-            appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
             return true;
         });
@@ -1186,8 +1180,7 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND inbox_id=? AND run_id=?
                    AND receipt_state IN ('RECEIVED','PROCESSING')
                 """,outcomeJson,tenantId,inboxId,runId);
-            if(changed==1) appendEvents(tenantId,runId,head.coordinatorEpoch(),
-                    List.of(new EventDraft("INBOX_PROCESSED","INBOX",inboxId,null,null,null,"{}")));
+            if(changed==1) appendEvents(tenantId,runId,List.of(new EventDraft("INBOX_PROCESSED","INBOX",inboxId,null,null,null,"{}")));
             return changed==1;
         });
     }
@@ -1222,7 +1215,7 @@ public final class WorkflowRuntimeRepository {
                     VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text,'kind','STOP'))
                     ON CONFLICT (tenant_id,dedup_key) DO NOTHING
                     """,tenantId,runId,"drain-stop:"+drainId,drainId);
-                appendEvents(tenantId,runId,epoch,List.of(new EventDraft(
+                appendEvents(tenantId,runId,List.of(new EventDraft(
                         "STOP_SUPERSEDES_PAUSE","DRAIN",drainId,null,null,null,"{}")));
                 return drainId;
             }
@@ -1250,7 +1243,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,run_id,message_kind,dedup_key,payload)
                 VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text,'kind',?))
                 """,tenantId,runId,"drain:"+drainId,drainId,drainKind);
-            appendEvents(tenantId,runId,epoch,List.of(new EventDraft("DRAIN_REQUESTED","DRAIN",
+            appendEvents(tenantId,runId,List.of(new EventDraft("DRAIN_REQUESTED","DRAIN",
                     drainId,0L,null,null,"{}")));
             return drainId;
         });
@@ -1424,7 +1417,7 @@ public final class WorkflowRuntimeRepository {
                        completed_at=clock_timestamp(),version=version+1
                  WHERE tenant_id=? AND drain_id=? AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT')
                 """,tenantId,drainId);
-            appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DRAIN_FINALIZED","RUN",runId,null,null,null,"{\"status\":\""+jsonEscape(terminalStatus)+"\"}")));
             return changed==1;
         });
@@ -1450,7 +1443,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
                 VALUES (? ,?,'SYSTEM','runtime','DRAIN_MANUAL_REQUIRED','DRAIN',?,?::jsonb,?)
                 """,tenantId,runId,drainId,evidenceJson,reason);
-            appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DRAIN_MANUAL_REQUIRED","DRAIN",drainId,null,null,null,evidenceJson)));
             return null;
         });
@@ -1460,7 +1453,7 @@ public final class WorkflowRuntimeRepository {
     public Checkpoint createCheckpoint(UUID tenantId, UUID runId, String checkpointKind) {
         Checkpoint draft = snapshotTx.execute(status -> {
             RunHead head=jdbc.queryForObject("""
-                SELECT status,control_gate,commit_version,event_seq,coordinator_epoch,recovery_state
+                SELECT status,control_gate,commit_version,event_seq,recovery_state
                   FROM workflow_runtime.workflow_run WHERE tenant_id=? AND run_id=?
                 """,RUN_HEAD,tenantId,runId);
             if(head==null) throw new IllegalStateException("Run not found");
@@ -1499,18 +1492,18 @@ public final class WorkflowRuntimeRepository {
             byte[] hash=sha256(snapshot);
             UUID checkpointId=UUID.randomUUID();
             return new Checkpoint(checkpointId,head.commitVersion(),head.eventSeq(),
-                    head.coordinatorEpoch(),snapshot,hash);
+                    snapshot,hash);
         });
         if (draft == null) throw new IllegalStateException("Checkpoint snapshot was not produced");
         UUID persistedId=tx.execute(status -> {
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_checkpoint
                   (tenant_id,checkpoint_id,run_id,checkpoint_kind,run_commit_version,event_seq,
-                   coordinator_epoch,snapshot_payload,snapshot_hash)
-                VALUES (?,?,?,?,?,?,?,?::jsonb,?)
+                   snapshot_payload,snapshot_hash)
+                VALUES (?,?,?,?,?,?,?::jsonb,?)
                 ON CONFLICT (tenant_id,run_id,run_commit_version) DO NOTHING
                 """,tenantId,draft.checkpointId(),runId,checkpointKind,draft.commitVersion(),
-                    draft.eventSeq(),draft.coordinatorEpoch(),draft.snapshotJson(),draft.sha256());
+                    draft.eventSeq(),draft.snapshotJson(),draft.sha256());
             UUID id=jdbc.queryForObject("""
                 SELECT checkpoint_id FROM workflow_runtime.runtime_checkpoint
                  WHERE tenant_id=? AND run_id=? AND run_commit_version=?
@@ -1582,7 +1575,7 @@ public final class WorkflowRuntimeRepository {
                       (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
                     VALUES (? ,?,'SYSTEM','runtime','COMMAND_MARKED_UNKNOWN','COMMAND',?,?::jsonb,'ambiguous external side effect')
                     """,tenantId,runId,commandId,evidenceJson);
-                appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+                appendEvents(tenantId,runId,List.of(new EventDraft(
                         "COMMAND_MARKED_UNKNOWN","COMMAND",commandId,null,null,null,evidenceJson)));
             }
             return null;
@@ -1749,7 +1742,7 @@ public final class WorkflowRuntimeRepository {
                      WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
                     """,tenantId,attemptId);
                 releaseReservationInTransaction(tenantId,attemptId);
-                appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+                appendEvents(tenantId,runId,List.of(new EventDraft(
                         "WORKER_LEASE_EXPIRED_SAFE","ATTEMPT",attemptId,null,null,null,"{}")));
                 return new WorkerRecoveryResult("SAFE_TO_RETRY",null);
             }
@@ -1801,7 +1794,7 @@ public final class WorkflowRuntimeRepository {
                         'expired Worker may have performed an external side effect')
                 """,tenantId,runId,recoveryActor,attemptId,
                     "{\"leaseEpoch\":"+leaseEpoch+",\"dispatchEpoch\":"+dispatchEpoch+"}");
-            appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+            appendEvents(tenantId,runId,List.of(new EventDraft(
                     "WORKER_LEASE_EXPIRED_UNKNOWN","ATTEMPT",attemptId,null,null,null,
                     "{\"interventionId\":\""+interventionId+"\"}")));
             return new WorkerRecoveryResult("MANUAL_REQUIRED",interventionId);
@@ -1826,7 +1819,7 @@ public final class WorkflowRuntimeRepository {
                     VALUES (? ,?,'HUMAN',?,'INTERVENTION_DECIDED','INTERVENTION',?,?::jsonb)
                     """,tenantId,runId,actor,interventionId,decisionJson);
                 RunHead decidedHead=lockRun(tenantId,runId);
-                appendEvents(tenantId,runId,decidedHead.coordinatorEpoch(),List.of(new EventDraft("INTERVENTION_DECIDED",
+                appendEvents(tenantId,runId,List.of(new EventDraft("INTERVENTION_DECIDED",
                         "INTERVENTION",interventionId,expectedVersion+1,null,null,"{}")));
             }
             return changed==1;
