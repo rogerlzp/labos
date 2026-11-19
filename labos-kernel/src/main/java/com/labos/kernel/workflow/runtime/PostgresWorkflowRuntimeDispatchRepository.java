@@ -38,6 +38,9 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             }
             if (epoch != request.coordinatorEpoch()) throw new IllegalStateException("T03 coordinator epoch mismatch");
             if (version != request.expectedRunCommitVersion()) throw new IllegalStateException("T03 stale Run version");
+            if (longValue(run, "in_flight_count") >= longValue(run, "max_in_flight")) {
+                throw new IllegalStateException("T03 per-Run in-flight capacity exhausted");
+            }
 
             UUID tokenId = uuid(request, "tokenId");
             UUID activationId = uuid(request, "activationId");
@@ -57,8 +60,10 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                     """, dispatchId);
             if (!duplicate.isEmpty()) {
                 Map<String, Object> old = duplicate.get(0);
-                if (request.payloadHash().equals(String.valueOf(old.get("payload_hash")).trim())) {
-                    return currentResult((UUID) old.get("run_id"), "REPLAYED", true);
+                UUID oldRunId = (UUID) old.get("run_id");
+                if (oldRunId.equals(request.runId())
+                        && request.payloadHash().equals(String.valueOf(old.get("payload_hash")).trim())) {
+                    return currentResult(oldRunId, "REPLAYED", true);
                 }
                 jdbc.update("""
                         INSERT INTO wf_protocol_violation
@@ -68,7 +73,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                         ON CONFLICT (source,message_id,conflicting_payload_hash) DO NOTHING
                         """, UUID.randomUUID(), request.runId(), dispatchId.toString(),
                         String.valueOf(old.get("payload_hash")).trim(), request.payloadHash(), dispatchId);
-                return currentResult(request.runId(), "PROTOCOL_VIOLATION", true);
+                return currentResult(oldRunId, "PROTOCOL_VIOLATION", true);
             }
 
             Map<String, Object> capacity = jdbc.queryForMap("""
@@ -78,14 +83,21 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             int limit = ((Number) capacity.get("capacity_limit")).intValue();
             int reserved = ((Number) capacity.get("reserved_count")).intValue();
             if (reserved >= limit) throw new IllegalStateException("T03 scheduler capacity exhausted");
+            if (!Boolean.TRUE.equals(jdbc.queryForObject(
+                    "SELECT (?::timestamptz > clock_timestamp())", Boolean.class, expiresAt))) {
+                throw new IllegalArgumentException("T03 Reservation expiry must be in the future");
+            }
 
             if (leaseId != null) {
                 Map<String, Object> lease = jdbc.queryForMap("""
-                        SELECT status FROM wf_resource_lease
+                        SELECT status,owner_type,owner_id,fencing_token FROM wf_resource_lease
                         WHERE lease_id=? AND run_id=? FOR UPDATE
                         """, leaseId, request.runId());
-                if (!"ACQUIRED".equals(lease.get("status"))) {
-                    throw new IllegalStateException("T03 requires an ACQUIRED ResourceLease");
+                if (!"ACQUIRED".equals(lease.get("status"))
+                        || !"ACTIVATION".equals(lease.get("owner_type"))
+                        || !activationId.equals(lease.get("owner_id"))
+                        || longValue(lease, "fencing_token") != number(request, "fencingToken")) {
+                    throw new IllegalStateException("T03 ResourceLease owner/fencing mismatch");
                 }
             }
 
@@ -107,12 +119,13 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                 throw new IllegalArgumentException("T03 invalid sideEffectClass");
             }
 
-            jdbc.update("""
+            int capacityRows = jdbc.update("""
                     UPDATE wf_scheduler_capacity
                     SET reserved_count=reserved_count+1,object_version=object_version+1,
                         updated_at=clock_timestamp()
                     WHERE capacity_key=? AND reserved_count < capacity_limit
                     """, capacityKey);
+            if (capacityRows != 1) throw new IllegalStateException("T03 capacity CAS failed");
 
             jdbc.update("""
                     INSERT INTO wf_node_attempt
@@ -149,7 +162,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                     """, outboxId, request.runId(), activationId, attemptId, dispatchId,
                     epoch, request.payloadHash(), workerPayload);
 
-            long[] cursor = bumpRun(request.runId());
+            long[] cursor = bumpRunAndReserveInFlight(request.runId());
             insertEvent(request.runId(), cursor[0], cursor[1], "WorkerDispatchCommitted",
                     "Attempt", attemptId, request.messageId(),
                     "{\"dispatchId\":\"" + dispatchId + "\"}");
@@ -171,7 +184,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             lockTokenActivationAttempt(request.runId(), tokenId, activationId, attemptId);
 
             Map<String, Object> attempt = jdbc.queryForMap("""
-                    SELECT status,dispatch_id,dispatch_epoch FROM wf_node_attempt
+                    SELECT status,dispatch_id,dispatch_epoch,worker_id FROM wf_node_attempt
                     WHERE attempt_id=? FOR UPDATE
                     """, attemptId);
             requireDispatchIdentity(attempt, dispatchId, request);
@@ -220,7 +233,11 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                     """, attemptId);
             requireDispatchIdentity(attempt, dispatchId, request);
             String status = String.valueOf(attempt.get("status"));
+            String workerId = required(request, "workerId");
             if ("ACCEPTED".equals(status) || "STARTED".equals(status)) {
+                if (!workerId.equals(attempt.get("worker_id"))) {
+                    throw new IllegalStateException("WorkerAccepted identity conflict");
+                }
                 return currentResult(request.runId(), "REPLAYED", true);
             }
             if (!"DISPATCHED".equals(status)) {
@@ -232,8 +249,7 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                     SET status='ACCEPTED',worker_id=?,accepted_at=clock_timestamp(),
                         object_version=object_version+1
                     WHERE attempt_id=? AND status='DISPATCHED' AND dispatch_id=? AND dispatch_epoch=?
-                    """, required(request, "workerId"), attemptId, dispatchId,
-                    longValue(attempt, "dispatch_epoch"));
+                    """, workerId, attemptId, dispatchId, longValue(attempt, "dispatch_epoch"));
             if (changed != 1) throw new IllegalStateException("WorkerAccepted CAS failed");
             jdbc.update("""
                     UPDATE wf_worker_dispatch_outbox SET status='DELIVERED'
@@ -265,7 +281,19 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                     """, attemptId);
             requireDispatchIdentity(attempt, dispatchId, request);
             String status = String.valueOf(attempt.get("status"));
-            if ("STARTED".equals(status)) return currentResult(request.runId(), "REPLAYED", true);
+            String workerId = required(request, "workerId");
+            if ("STARTED".equals(status)) {
+                if (!workerId.equals(attempt.get("worker_id"))) {
+                    throw new IllegalStateException("WorkerStarted identity conflict");
+                }
+                return currentResult(request.runId(), "REPLAYED", true);
+            }
+            if (!"ACCEPTED".equals(status)) {
+                throw new IllegalStateException("WorkerStarted requires ACCEPTED Attempt");
+            }
+            if (!workerId.equals(attempt.get("worker_id"))) {
+                throw new IllegalStateException("WorkerStarted workerId mismatch");
+            }
             if (!"ACCEPTED".equals(status)) {
                 throw new IllegalStateException("WorkerStarted requires ACCEPTED Attempt");
             }
@@ -287,7 +315,8 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
 
     private Map<String, Object> lockRun(UUID runId) {
         return jdbc.queryForMap("""
-                SELECT status,dispatch_gate_open,coordinator_epoch,run_commit_version,event_seq
+                SELECT status,dispatch_gate_open,coordinator_epoch,run_commit_version,event_seq,
+                       max_in_flight,in_flight_count
                 FROM wf_workflow_run WHERE run_id=? FOR UPDATE
                 """, runId);
     }
@@ -319,6 +348,21 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
                 != longValue(attempt, "dispatch_epoch")) {
             throw new IllegalStateException("dispatchEpoch does not match persisted Attempt");
         }
+    }
+
+    private long[] bumpRunAndReserveInFlight(UUID runId) {
+        int changed = jdbc.update("""
+                UPDATE wf_workflow_run
+                SET in_flight_count=in_flight_count+1,
+                    run_commit_version=run_commit_version+1,event_seq=event_seq+1,
+                    updated_at=clock_timestamp()
+                WHERE run_id=? AND in_flight_count < max_in_flight
+                """, runId);
+        if (changed != 1) throw new IllegalStateException("T03 per-Run capacity CAS failed");
+        Map<String, Object> cursor = jdbc.queryForMap("""
+                SELECT run_commit_version,event_seq FROM wf_workflow_run WHERE run_id=?
+                """, runId);
+        return new long[]{longValue(cursor, "run_commit_version"), longValue(cursor, "event_seq")};
     }
 
     private long[] bumpRun(UUID runId) {
@@ -372,6 +416,12 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
     private static UUID optionalUuid(Request request, String key) {
         Object value = request.payload().get(key);
         return value == null ? null : UUID.fromString(String.valueOf(value));
+    }
+
+    private static long number(Request request, String key) {
+        Object value = request.payload().get(key);
+        if (!(value instanceof Number n)) throw new IllegalArgumentException("Numeric field required: " + key);
+        return n.longValue();
     }
 
     private static int integer(Request request, String key) {
