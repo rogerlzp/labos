@@ -241,6 +241,11 @@ public final class WorkflowRuntimeRepository {
             requireCoordinator(head, epoch);
             if (!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate()))
                 throw new InvalidTransitionException("Run gate does not admit dispatch");
+            UUID tokenId = jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND run_id=? AND node_key=? AND token_state='READY'
+                 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+                """, UUID.class, tenantId, runId, nodeKey);
             jdbc.update("""
                 INSERT INTO workflow_runtime.scheduler_capacity
                   (tenant_id,capacity_key,capacity_limit,reserved_count)
@@ -253,11 +258,6 @@ public final class WorkflowRuntimeRepository {
                 """, Integer.class, tenantId, capacityKey);
             if (updatedLimit == null || updatedLimit != capacityLimit)
                 throw new IllegalStateException("Capacity limit differs from configured value");
-            UUID tokenId = jdbc.queryForObject("""
-                SELECT token_id FROM workflow_runtime.execution_token
-                 WHERE tenant_id=? AND run_id=? AND node_key=? AND token_state='READY'
-                 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
-                """, UUID.class, tenantId, runId, nodeKey);
             if (tokenId == null) throw new IllegalStateException("No READY token");
             int reserved = jdbc.update("""
                 UPDATE workflow_runtime.scheduler_capacity
@@ -354,6 +354,20 @@ public final class WorkflowRuntimeRepository {
                              long dispatchEpoch, String workerId) {
         required(() -> {
             RunHead head = lockRun(tenantId, runId);
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
+                """,UUID.class,tenantId,runId,attemptId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,attemptId);
             int changed = jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='STARTED',
                        started_at=clock_timestamp(),attempt_version=attempt_version+1
@@ -389,8 +403,18 @@ public final class WorkflowRuntimeRepository {
             RunHead head = lockRun(tenantId, runId);
             UUID activationId = jdbc.queryForObject("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
                 """, UUID.class, tenantId, runId, attemptId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,attemptId);
             String sideEffectClass=jdbc.queryForObject("""
                 SELECT side_effect_class FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND attempt_id=?
@@ -633,8 +657,16 @@ public final class WorkflowRuntimeRepository {
             if(branchKeys==null||branchKeys.isEmpty()) throw new IllegalArgumentException("Split needs branches");
             UUID sourceToken=jdbc.queryForObject("""
                 SELECT token_id FROM workflow_runtime.node_activation
-                 WHERE tenant_id=? AND run_id=? AND activation_id=? FOR UPDATE
+                 WHERE tenant_id=? AND run_id=? AND activation_id=?
                 """,UUID.class,tenantId,runId,sourceActivationId);
+            jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND token_id=? FOR UPDATE
+                """,UUID.class,tenantId,sourceToken);
+            jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=? FOR UPDATE
+                """,UUID.class,tenantId,sourceActivationId);
             int sourceActivationChanged=jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='SUCCEEDED',
                        activation_version=activation_version+1
