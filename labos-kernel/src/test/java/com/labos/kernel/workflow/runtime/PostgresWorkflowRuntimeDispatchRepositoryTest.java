@@ -194,6 +194,31 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         );
         var completionRequest = new WorkflowRuntimeTransactionPort.Request(
                 p.runId(), "complete-" + dispatch, "complete-message", hash(), 5, 0, completionPayload);
+
+        // Fault injection: force the final Runtime Event insert to violate (run_id,event_seq).
+        UUID collisionEvent = UUID.randomUUID();
+        f.jdbc().update("""
+                INSERT INTO wf_runtime_event(event_id,run_id,event_seq,run_commit_version,event_type,
+                  aggregate_type,aggregate_id,payload)
+                VALUES (?,?,6,6,'InjectedCollision','Run',?,'{}'::jsonb)
+                """, collisionEvent, p.runId(), p.runId());
+        assertThrows(RuntimeException.class, () -> f.completion().completeNode(completionRequest));
+        assertEquals("STARTED", f.jdbc().queryForObject(
+                "SELECT status FROM wf_node_attempt WHERE attempt_id=?", String.class, attempt));
+        assertEquals("ACTIVE", f.jdbc().queryForObject(
+                "SELECT status FROM wf_node_activation WHERE activation_id=?", String.class, p.activationId()));
+        assertEquals("IN_FLIGHT", f.jdbc().queryForObject(
+                "SELECT status FROM wf_execution_token WHERE token_id=?", String.class, p.tokenId()));
+        assertEquals("COMMITTED", f.jdbc().queryForObject(
+                "SELECT status FROM wf_reservation WHERE attempt_id=?", String.class, attempt));
+        assertEquals(1, f.jdbc().queryForObject(
+                "SELECT in_flight_count FROM wf_workflow_run WHERE run_id=?", Integer.class, p.runId()));
+        assertEquals(1, f.jdbc().queryForObject(
+                "SELECT reserved_count FROM wf_scheduler_capacity WHERE capacity_key=?", Integer.class, p.capacityKey()));
+        assertEquals(5L, f.jdbc().queryForObject(
+                "SELECT event_seq FROM wf_workflow_run WHERE run_id=?", Long.class, p.runId()));
+        f.jdbc().update("DELETE FROM wf_runtime_event WHERE event_id=?", collisionEvent);
+
         var completed = f.completion().completeNode(completionRequest);
         assertEquals("COMPLETED", completed.outcome());
         assertEquals(6, completed.runCommitVersion());
