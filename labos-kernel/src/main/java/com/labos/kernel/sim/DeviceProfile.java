@@ -249,7 +249,7 @@ public final class DeviceProfile {
                     .timing("Wash", 60_000)
                     .timing("Dispense", 8_000)
                     .timing("Prime", 30_000)
-                    .timing("Run", 60_000)
+                    .timing("Run", 10_000)                  // 分液 10 s（客户 v2 现场标定）
                     .timing("LoadProtocol", 2_000)
                     .timing("LoadProtocolFromFlash", 2_000)
                     .timing("ValidateProtocol", 5_000)
@@ -360,10 +360,10 @@ public final class DeviceProfile {
                     .timing("RotateCarousel", 2_000)        // ★ 转盘切换
                     .timing("Mix", 60_000)                  // ★ 上下振荡混匀
                     .timing("MagnetSeparate", 30_000)       // 板式磁分离 ≈30 s（二手）
-                    .timing("BindIncubate", 480_000)        // 结合孵育 8 min（协议 PDF）
-                    .timing("Wash", 180_000)                // 洗涤 3 min（协议 PDF）
+                    .timing("BindIncubate", 200_000)        // 结合/内部裂解计时 200 s（客户 v2 现场标定）
+                    .timing("Wash", 150_000)                // 洗涤 150 s（客户 v2 现场标定）
                     .timing("Dry", 600_000)                 // 风干 10 min（协议 PDF）
-                    .timing("Elute", 300_000)                // ★ 洗脱（协议 PDF 未给，取 5 min）
+                    .timing("Elute", 600_000)                // 洗脱（含晾干）600 s（客户 v2 现场标定）
                     .durationParam("StartProcess", "duration", 60, 3_600)
                     .result("GetStatus", "state", "carousel_position", "plate_present", "temperature")
                     .result("ReadPlate", "plate_barcode", "well_count")
