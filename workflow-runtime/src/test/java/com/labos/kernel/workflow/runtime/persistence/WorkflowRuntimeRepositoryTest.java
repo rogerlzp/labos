@@ -227,7 +227,7 @@ class WorkflowRuntimeRepositoryTest {
         }
         WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
         var created=repo.createRun(tenant,"recovery-"+UUID.randomUUID(),"CREATE","{}",
-                "recovery-flow-"+tenant,"1",new byte[32],"ci","{}","{}","start");
+                "recovery-flow-"+tenant,"1",new byte[32],"ci","{}","{}","pure-node");
         repo.startRun(tenant,created.runId(),UUID.randomUUID(),1L);
         var reservation=repo.reserveCapacity(tenant,created.runId(),1L,"recovery-capacity",1,
                 "pure-node","PURE",Instant.now().plusSeconds(120));
