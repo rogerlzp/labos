@@ -579,11 +579,37 @@ public final class WorkflowRuntimeRepository {
         return required(() -> {
             if(!List.of("SUCCEEDED","FAILED","CANCELLED","MANUAL_REQUIRED").contains(resolvedState))
                 throw new IllegalArgumentException("T21 resolution must be terminal or manual");
-            UUID runId=jdbc.queryForObject("""
-                SELECT run_id FROM workflow_runtime.command_ledger
+            List<String> identity=jdbc.query("""
+                SELECT run_id::text||'|'||attempt_id::text FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND command_id=?
-                """,UUID.class,tenantId,commandId);
+                """,(rs,n)->rs.getString(1),tenantId,commandId);
+            if(identity.size()!=1) throw new IllegalStateException("Command not found");
+            String[] ids=identity.get(0).split("\\|");
+            UUID runId=UUID.fromString(ids[0]), attemptId=UUID.fromString(ids[1]);
             RunHead head=lockRun(tenantId,runId);
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND attempt_id=?
+                """,UUID.class,tenantId,attemptId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,attemptId);
+            List<String> lease=jdbc.query("""
+                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
+                  FROM workflow_runtime.worker_execution_lease
+                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,attemptId);
+            if(lease.size()!=1) throw new IllegalStateException("Worker lease missing for Command");
+            String[] leaseParts=lease.get(0).split("\\|");
+            jdbc.queryForObject("SELECT command_id FROM workflow_runtime.command_ledger WHERE tenant_id=? AND command_id=? FOR UPDATE",
+                    UUID.class,tenantId,commandId);
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state=?,device_sequence=?,
                        version=version+1,updated_at=clock_timestamp(),
@@ -591,6 +617,10 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND command_id=? AND command_state IN ('UNKNOWN','DELIVERY_UNKNOWN')
                 """,resolvedState,deviceSequence,resolvedState,tenantId,commandId);
             if(changed==0) return false;
+            String factType="MANUAL_REQUIRED".equals(resolvedState)?"SIDE_EFFECT_UNKNOWN":"SIDE_EFFECT_COMPLETED";
+            appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-resolved:"+commandId,
+                    factType,"RECOVERY",actor,UUID.fromString(leaseParts[0]),
+                    Long.parseLong(leaseParts[1]),Long.parseLong(leaseParts[2]),evidenceJson);
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_audit
                   (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
@@ -1499,17 +1529,55 @@ public final class WorkflowRuntimeRepository {
     /** T21: mark an ambiguous physical command UNKNOWN; a DB timeout is not proof of no effect. */
     public void markCommandUnknown(UUID tenantId, UUID commandId, String evidenceJson) {
         required(() -> {
+            List<String> identity=jdbc.query("""
+                SELECT run_id::text||'|'||attempt_id::text FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND command_id=?
+                """,(rs,n)->rs.getString(1),tenantId,commandId);
+            if(identity.size()!=1) throw new IllegalStateException("Command not found");
+            String[] ids=identity.get(0).split("\\|");
+            UUID runId=UUID.fromString(ids[0]), attemptId=UUID.fromString(ids[1]);
+            RunHead head=lockRun(tenantId,runId);
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND attempt_id=?
+                """,UUID.class,tenantId,attemptId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,attemptId);
+            List<String> lease=jdbc.query("""
+                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
+                  FROM workflow_runtime.worker_execution_lease
+                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,attemptId);
+            if(lease.size()!=1) throw new IllegalStateException("Worker lease missing for Command");
+            String[] leaseParts=lease.get(0).split("\\|");
+            jdbc.queryForObject("SELECT command_id FROM workflow_runtime.command_ledger WHERE tenant_id=? AND command_id=? FOR UPDATE",
+                    UUID.class,tenantId,commandId);
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state='UNKNOWN',
                        version=version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND command_id=? AND command_state IN
                    ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN')
                 """,tenantId,commandId);
-            if(changed==1) jdbc.update("""
-                INSERT INTO workflow_runtime.runtime_audit
-                  (tenant_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
-                VALUES (?,'SYSTEM','runtime','COMMAND_MARKED_UNKNOWN','COMMAND',?,?::jsonb,'ambiguous external side effect')
-                """,tenantId,commandId,evidenceJson);
+            if(changed==1) {
+                appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-unknown:"+commandId,
+                        "SIDE_EFFECT_UNKNOWN","RECOVERY","command-timeout",UUID.fromString(leaseParts[0]),
+                        Long.parseLong(leaseParts[1]),Long.parseLong(leaseParts[2]),evidenceJson);
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.runtime_audit
+                      (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
+                    VALUES (? ,?,'SYSTEM','runtime','COMMAND_MARKED_UNKNOWN','COMMAND',?,?::jsonb,'ambiguous external side effect')
+                    """,tenantId,runId,commandId,evidenceJson);
+                appendEvents(tenantId,runId,head.coordinatorEpoch(),List.of(new EventDraft(
+                        "COMMAND_MARKED_UNKNOWN","COMMAND",commandId,null,null,null,evidenceJson)));
+            }
             return null;
         });
     }
