@@ -115,7 +115,7 @@ Kernel 全量 CI 还包括前端与现有纯逻辑门禁。不要只凭 Maven Ru
 CI 结果以本分支最新 SHA 的 Actions 为准。此文档不把正在运行或历史运行写成 PASS。Runtime PostgreSQL 测试、Kernel CI、人工源码审查必须分别给结论。
 
 
-## 7. 最新 CI 验证（PR HEAD 703ff84b292ed0f6ece5d2b1b180e44ec2b00730）
+## 7. 最近一次代码验证（Kernel CI SHA 703ff84b292ed0f6ece5d2b1b180e44ec2b00730；其后为 Kernel/评审文档更新）
 
 - Kernel CI #592：success。
   - Workflow Runtime JAR 构建/安装 + Kernel main/boot javac + 资源同步：success。
