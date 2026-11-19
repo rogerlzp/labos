@@ -70,8 +70,14 @@ public class WorkflowRuntimeKernelConfiguration {
                                 new WorkflowDefinitionSource.NodeMetadata(capability, nodeId)) != null)
                             throw new IllegalStateException("Duplicate workflow_node key in metadata: " + key);
                     }
+                    Object updatedAt = header.get("updatedAt");
+                    if (updatedAt == null)
+                        throw new IllegalStateException("Workflow updated_at is missing: " + workflowId);
+                    // workflow.version is a business label and is not advanced by every graph save.
+                    // Pair it with updated_at so the compiled definition revision is content-edit aware.
+                    String definitionVersion = versionValue + "@" + updatedAt;
                     return new LegacyKernelWorkflowDefinitionSource.LegacyDefinition(
-                            versionValue.toString(), bpmnXml, metadata);
+                            definitionVersion, bpmnXml, metadata);
                 });
     }
 
