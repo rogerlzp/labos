@@ -59,7 +59,7 @@ def main():
               SET commit_version=commit_version+1,event_seq=event_seq+1
               WHERE tenant_id=%s AND run_id=%s""", (tenant, run))
             cur.execute("""INSERT INTO workflow_runtime.runtime_event
-              (tenant_id,run_id,event_seq,event_type,aggregate_type,coordinator_epoch,payload)
+              (tenant_id,run_id,event_seq,event_type,aggregate_type,payload)
               VALUES(%s,%s,1,'ATOMICITY_COMMIT','RUN','{}')""", (tenant, run))
             cur.execute("""INSERT INTO workflow_runtime.runtime_outbox
               (tenant_id,run_id,message_kind,dedup_key,payload)
