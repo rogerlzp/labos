@@ -55,6 +55,13 @@ public final class WorkerExecutionRecoveryService {
         return new StartupResult(outbox,candidates.size(),safe,manual,skipped,items);
     }
 
+    /** Cancel a live local Worker first, then reconcile from durable facts. */
+    public WorkflowRuntimeRepository.WorkerRecoveryResult handleLocalTimeout(
+            UUID tenantId, UUID runId, UUID attemptId, String recoveryActor) {
+        registry.requestCancellation(attemptId);
+        return repository.recoverInterruptedAttempt(tenantId,runId,attemptId,recoveryActor);
+    }
+
     public boolean requestLocalCancellation(UUID attemptId) {
         return registry.requestCancellation(attemptId);
     }
