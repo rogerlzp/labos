@@ -121,6 +121,32 @@ public final class WorkflowRuntimeRepository {
             throw new IllegalStateException("Run recovery gate blocks mutation");
     }
 
+    private boolean releaseReservationInTransaction(UUID tenantId, UUID attemptId) {
+        List<String> keys=jdbc.query("""
+            SELECT capacity_key FROM workflow_runtime.dispatch_reservation
+             WHERE tenant_id=? AND attempt_id=? AND reservation_state='HELD'
+            """,(rs,n)->rs.getString(1),tenantId,attemptId);
+        if(keys.isEmpty()) return false;
+        String key=keys.get(0);
+        jdbc.queryForObject("""
+            SELECT capacity_key FROM workflow_runtime.scheduler_capacity
+             WHERE tenant_id=? AND capacity_key=? FOR UPDATE
+            """,String.class,tenantId,key);
+        int released=jdbc.update("""
+            UPDATE workflow_runtime.dispatch_reservation SET reservation_state='RELEASED',
+                   version=version+1,released_at=clock_timestamp()
+             WHERE tenant_id=? AND attempt_id=? AND reservation_state='HELD'
+            """,tenantId,attemptId);
+        if(released==0) return false;
+        int decremented=jdbc.update("""
+            UPDATE workflow_runtime.scheduler_capacity SET reserved_count=reserved_count-1,
+                   capacity_version=capacity_version+1,updated_at=clock_timestamp()
+             WHERE tenant_id=? AND capacity_key=? AND reserved_count>0
+            """,tenantId,key);
+        if(decremented!=1) throw new IllegalStateException("Capacity counter underflow/inconsistency");
+        return true;
+    }
+
     /** T01: idempotently create a Run and its initial READY token. */
     public CreatedRun createRun(UUID tenantId, String requestId, String requestKind,
                                 String canonicalPayloadJson, String definitionKey,
@@ -297,8 +323,8 @@ public final class WorkflowRuntimeRepository {
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
-                VALUES (?,?,'WORKER_DISPATCH',?,?::jsonb)
-                """, tenantId, runId, "dispatch:"+attemptId, payloadJson);
+                VALUES (?,?,'WORKER_DISPATCH',?,jsonb_set(?::jsonb,'{queue}',to_jsonb(?::text),true))
+                """, tenantId, runId, "dispatch:"+attemptId, payloadJson, workerQueue);
             appendEvents(tenantId, runId, epoch, List.of(new EventDraft(
                     "ATTEMPT_DISPATCHED","ATTEMPT",attemptId,1L,null,null,"{}")));
             return null;
@@ -342,6 +368,14 @@ public final class WorkflowRuntimeRepository {
                    AND activation_state IN ('RESERVED','READY')
                 """,tenantId,runId,attemptId);
             if(activationChanged!=1) throw new StaleRuntimeWriteException("Activation is not owned by this Attempt");
+            int tokenChanged=jdbc.update("""
+                UPDATE workflow_runtime.execution_token SET token_state='RUNNING',
+                       token_version=token_version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND token_id=(SELECT token_id FROM workflow_runtime.node_activation
+                   WHERE tenant_id=? AND current_attempt_id=?)
+                   AND token_state='RESERVED'
+                """,tenantId,tenantId,attemptId);
+            if(tokenChanged!=1) throw new StaleRuntimeWriteException("Token is not RESERVED for this Attempt");
             appendEvents(tenantId, runId, head.coordinatorEpoch(), List.of(new EventDraft(
                     "ATTEMPT_STARTED","ATTEMPT",attemptId,null,null,null,"{}")));
             return null;
@@ -409,6 +443,7 @@ public final class WorkflowRuntimeRepository {
                    WHERE tenant_id=? AND activation_id=?) AND token_state IN ('RUNNING','RESERVED','WAITING')
                 """, tenantId, tenantId, activationId);
             if(tokenChanged!=1) throw new StaleRuntimeWriteException("Token is not active");
+            releaseReservationInTransaction(tenantId,attemptId);
             appendEvents(tenantId, runId, head.coordinatorEpoch(), List.of(new EventDraft(
                     "ATTEMPT_SUCCEEDED","ATTEMPT",attemptId,null,null,null,
                     "{\"activationId\":\""+activationId+"\",\"outputKey\":\""+jsonEscape(outputKey)+"\"}")));
@@ -499,6 +534,7 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED')
                 """,tenantId,oldAttemptId);
             if(attempt==0) throw new IllegalStateException("Wait closed but old Attempt was not safely abandonable");
+            releaseReservationInTransaction(tenantId,oldAttemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='ABANDONED_SAFE',
                        activation_version=activation_version+1,updated_at=clock_timestamp()
@@ -1032,7 +1068,11 @@ public final class WorkflowRuntimeRepository {
                   (SELECT count(*) FROM workflow_runtime.drain_item
                     WHERE tenant_id=? AND drain_id=? AND item_state <> 'SAFE') +
                   (SELECT count(*) FROM workflow_runtime.manual_intervention
-                    WHERE tenant_id=? AND run_id=? AND intervention_state='OPEN')
+                    WHERE tenant_id=? AND run_id=? AND intervention_state='OPEN') +
+                  (SELECT count(*) FROM workflow_runtime.dispatch_reservation
+                    WHERE tenant_id=? AND run_id=? AND reservation_state='HELD') +
+                  (SELECT count(*) FROM workflow_runtime.runtime_outbox
+                    WHERE tenant_id=? AND run_id=? AND outbox_state IN ('PENDING','CLAIMED'))
                 """,Long.class,
                     tenantId,runId,  // Commands
                     tenantId,runId,  // Leases
@@ -1045,7 +1085,9 @@ public final class WorkflowRuntimeRepository {
                     tenantId,runId,  // Tokens
                     tenantId,runId,  // Attempts
                     tenantId,drainId, // Drain items
-                    tenantId,runId   // Open manual interventions
+                    tenantId,runId,   // Open manual interventions
+                    tenantId,runId,   // Held reservations
+                    tenantId,runId    // Undelivered Outbox
                 );
             if(unsafe==null||unsafe>0) return false;
             int changed=jdbc.update("""
