@@ -60,6 +60,7 @@ class WorkflowRuntimeRepositoryTest {
         var workerOutbox=repo.beginOutboxSend(tenant,10).stream()
                 .filter(x -> x.dedupKey().equals("dispatch:"+reservation.attemptId())).findFirst().orElseThrow();
         assertEquals("WORKER_DISPATCH",workerOutbox.messageKind());
+        assertEquals(first.runId(),workerOutbox.runId());
         assertTrue(repo.markOutboxDelivered(tenant,workerOutbox.outboxId()));
 
         assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
@@ -83,6 +84,7 @@ class WorkflowRuntimeRepositoryTest {
         var commandOutbox=repo.beginOutboxSend(tenant,10)
                 .stream().filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
         assertEquals("DEVICE_COMMAND",commandOutbox.messageKind());
+        assertEquals(first.runId(),commandOutbox.runId());
         UUID dispatchId=UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
                 dispatchId,1,"dispatcher-1"));
