@@ -290,3 +290,12 @@ Mock Adapter 必须模拟 ACK 与物理完成分离，支持延迟、重复事�
 以上代码已提交到本 T24 分支，等待 GitHub Actions 对最新提交执行验证。未通过 CI 前，不标记为 PASS。
 
 本轮尚未实现 RuntimeHost、GraphCoordinator、WorkerPool、OutboxDispatcher、Adapter 或端到端 Mock 闭环；这些仍按 §6 的顺序推进。
+
+### T24-A 实际代码进度
+
+已新增：
+- `host/SchedulingGate`：默认 CLOSED，只有 Host 生命周期包内可打开/关闭；提供 `requireOpen()` 供后续调度入口强制检查。
+- `host/RuntimeHost`：NEW/STARTING/RECOVERING/RUNNING/STOPPING/STOPPED/FAILED 生命周期；EventIngress 在恢复前启动，其他组件在恢复完成后启动，最后打开调度门闩；启动失败按逆序清理已启动或部分启动的组件。
+- `RuntimeHostTest`：覆盖恢复先于 Dispatcher/Scheduler、恢复失败不开放门闩、组件启动失败逆序清理。
+
+这只是 Host 生命周期控制器和组件端口，不是完整可执行 Host：当前还没有具体 EventIngress、Scheduler、Outbox Dispatcher、WorkerPool 或 Adapter 实现。T24-A 需待 CI 通过并补齐实际装配后才能验收完成。
