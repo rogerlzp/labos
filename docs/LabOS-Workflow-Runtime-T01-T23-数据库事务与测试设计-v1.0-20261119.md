@@ -125,7 +125,7 @@ T01–T23 是稳定的规范编号。为避免一个编号掩盖多个数据库�
 2. `scheduler_capacity`（按 capacity_key 排序；仅涉及额度分配/回收时锁定）；
 3. `resource_acquisition_group`（按 group_id）；
 4. `resource_lease`（按 resource_id 排序）；
-5. `split_activation` / `loop_context` / `wait_registration` / `retry_registration`（按类型固定顺序，再按 ID 排序）；
+5. `split_activation` → `loop_context` → `wait_registration` → `retry_registration`（按此固定类型顺序，再按 ID 排序）；
 6. `execution_token`（按 token_id）；
 7. `node_activation`（按 activation_id）；
 8. `node_attempt`（按 attempt_id）；
@@ -389,7 +389,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **写集合：** SplitActivation(OPEN)；实际分支 BranchActivation；每个分支 Token(READY)；父 Token CONSUMED；Event；SchedulerWakeup Outbox。
 
-**锁/CAS：** Run → parent Token → Activation → Split/Branch/Token。Split identity 对 parent activation + split node + execution version 唯一。
+**锁/CAS：** Run → Split identity guard（新建时以唯一键争抢，不持有子表锁）→ parent Token → Activation；随后插入本次 Split 的 BranchActivation 与 branch Token。若实现需要锁定已存在的结构行，必须按 §1.4 的 Split→Token→Branch 顺序。Split identity 对 parent activation + split node + execution version 唯一。
 
 **步骤：** 计算实际激活集合并校验 GatewayPlan；集合必须非空且符合 AND/XOR/OR 编译语义；一次事务创建完整集合并消费父 Token。不得分批创建分支。
 
@@ -526,7 +526,7 @@ T04 必须拆为两个独立事实事务，不能把接收与 Handler 开始合�
 
 **写集合：** 对象已核验安全状态；Command 状态（如收到设备事实）；Lease RELEASED 或 QUARANTINED（只按证据）；Attempt/Activation 收敛状态；Stop 时的 Wait/Retry/Split/Branch/Join/Loop 关闭投影；DrainItem；Runtime Event/Outbox。
 
-**锁/CAS：** Run → Lease → Token → Activation → Attempt → Command；对象版本和 evidence identity 必须匹配。
+**锁/CAS：** Run → Lease → Split/Loop/Wait/Retry（按 §1.4 固定顺序，涉及 Stop 结构关闭时）→ Token → Activation → Attempt → Command → Branch/Join → Inbox；对象版本和 evidence identity 必须匹配。
 
 **边界：** 外部暂停/取消/停止命令在事务外调用；调用请求先由 Command Ledger/Outbox 持久化。T18 只提交 Worker/设备/资源已发生的可验证事实。ACK 不自动等于物理安全点。对 Stop，T18 还负责在所有相关物理副作用已安全收敛后，关闭持久化 Wait/RetryRegistration、Split/Branch/Join/Loop 等控制流结构并使残余 Token 进入合法终结/INVALIDATED 状态；不得在物理副作用未核验时先关闭结构以制造 StopSafePredicate。Pause 则保留可恢复的 Wait/Loop/Join continuation。
 
