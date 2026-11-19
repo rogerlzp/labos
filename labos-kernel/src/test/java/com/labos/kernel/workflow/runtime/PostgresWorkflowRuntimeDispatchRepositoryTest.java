@@ -189,4 +189,49 @@ class PostgresWorkflowRuntimeDispatchRepositoryTest {
         assertEquals(6L, f.jdbc().queryForObject(
                 "SELECT event_seq FROM wf_workflow_run WHERE run_id=?", Long.class, p.runId()));
     }
+
+    @Test
+    void activeRetryRegistrationBlocksDispatchUntilRetryDueCommits() {
+        Fixture f = fixture();
+        PreparedRun p = prepareRun(f.jdbc());
+        UUID sourceAttempt = UUID.randomUUID();
+        f.jdbc().update("""
+                INSERT INTO wf_node_attempt(attempt_id,run_id,activation_id,attempt_no,status,
+                  dispatch_id,dispatch_epoch,side_effect_class)
+                VALUES (?,?,?,1,'RETRYABLE_FAILED',?,0,'PURE')
+                """, sourceAttempt, p.runId(), p.activationId(), UUID.randomUUID());
+        UUID retryId = UUID.randomUUID();
+        f.jdbc().update("""
+                INSERT INTO wf_retry_registration(retry_id,run_id,activation_id,token_id,
+                  source_attempt_id,retry_count,retry_after,status)
+                VALUES (?,?,?,?,?,1,clock_timestamp()+interval '1 minute','ACTIVE')
+                """, retryId, p.runId(), p.activationId(), p.tokenId(), sourceAttempt);
+
+        UUID attempt = UUID.randomUUID();
+        UUID dispatch = UUID.randomUUID();
+        Map<String, Object> payload = Map.ofEntries(
+                Map.entry("tokenId", p.tokenId().toString()),
+                Map.entry("activationId", p.activationId().toString()),
+                Map.entry("attemptId", attempt.toString()),
+                Map.entry("dispatchId", dispatch.toString()),
+                Map.entry("outboxId", UUID.randomUUID().toString()),
+                Map.entry("reservationId", UUID.randomUUID().toString()),
+                Map.entry("capacityKey", p.capacityKey()),
+                Map.entry("expiresAt", Instant.now().plusSeconds(120).toString()),
+                Map.entry("sideEffectClass", "PURE"),
+                Map.entry("attemptNo", 2),
+                Map.entry("workerPayloadJson", "{}")
+        );
+        var request = new WorkflowRuntimeTransactionPort.Request(
+                p.runId(), "retry-dispatch-" + dispatch, "retry-dispatch-message", hash(), 1, 0, payload);
+        assertThrows(IllegalStateException.class, () -> f.repository().reserveAndCommitDispatch(request));
+        assertEquals(0, f.jdbc().queryForObject(
+                "SELECT reserved_count FROM wf_scheduler_capacity WHERE capacity_key=?", Integer.class, p.capacityKey()));
+        assertEquals(0, f.jdbc().queryForObject(
+                "SELECT in_flight_count FROM wf_workflow_run WHERE run_id=?", Integer.class, p.runId()));
+
+        // RetryDue's committed effect closes the registration before the scheduler can dispatch.
+        f.jdbc().update("UPDATE wf_retry_registration SET status='SATISFIED',satisfied_at=clock_timestamp() WHERE retry_id=?", retryId);
+        assertEquals("DISPATCH_COMMITTED", f.repository().reserveAndCommitDispatch(request).outcome());
+    }
 }
