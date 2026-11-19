@@ -342,9 +342,9 @@ public final class PostgresWorkflowRuntimeDispatchRepository {
             throw new IllegalStateException("dispatchId does not match current Attempt");
         }
         Object suppliedEpoch = request.payload().get("dispatchEpoch");
-        if (suppliedEpoch != null && ((Number) suppliedEpoch).longValue()
-                != longValue(attempt, "dispatch_epoch")) {
-            throw new IllegalStateException("dispatchEpoch does not match persisted Attempt");
+        if (!(suppliedEpoch instanceof Number epoch)
+                || epoch.longValue() != longValue(attempt, "dispatch_epoch")) {
+            throw new IllegalStateException("dispatchEpoch missing or does not match persisted Attempt");
         }
     }
 
