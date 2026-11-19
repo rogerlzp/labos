@@ -3082,6 +3082,7 @@ Run 状态变更与 drainId 创建、DrainStarted Event、DrainCoordinator Outbo
 
 Drain 快照中的对象按以下规则处理：
 
+- READY 且尚无 Dispatch Commit：Pause 保留 READY Token 作为 Resume continuation，Scheduler 仍受关闭的 Dispatch gate 约束；Stop 将 READY Token→INVALIDATED，并将其未派发 Activation 转 CANCELLED。该规则也适用于在 Drain 期间由已完成在途节点新产生的 READY 后继 Token，必须由 Reservation Reconcile 重复扫描捕获。
 - RESERVED 且无 Dispatch Outbox：Token RESERVED→READY（Pause）或 INVALIDATED（Stop）；若已创建 Attempt，则 Attempt CREATED→ABANDONED_SAFE，Activation 保持 READY（Pause）或转 CANCELLED（Stop）；撤销软件调度配额。仅当 ResourceLease 尚未取得物理资源所有权时才可释放该软件预留。
 - DISPATCH_PENDING 但 Dispatch Commit 尚未提交：按 RESERVED 处理。
 - Dispatch Commit 已提交（Token=IN_FLIGHT）：视为已派发，不得假定 Worker 未接收；等待 Worker/DispatchLease 核验。纯计算可按 Handler 的安全取消协议收敛；副作用节点必须核验。
@@ -3107,7 +3108,7 @@ StopSafePredicate 必须全部满足：
 3. 所有设备命令均已进入允许的确定最终状态；不得存在 DELIVERY_UNKNOWN、UNKNOWN、ACKNOWLEDGED、RUNNING 或 CANCEL_REQUESTED；
 4. 所有 ResourceLease 均为 RELEASED；若资源只能隔离而不能证明释放，则本谓词不成立，必须走 MANUAL_REQUIRED/QUARANTINED 分支；
 5. 无未决物料/板位/耗材副作用；
-6. 所有 Token/Activation/Split/Join/Loop/Wait 均已关闭、终结或 INVALIDATED；STOPPED/FAILED 不得保留可恢复的 READY/WAITING/RESERVED/IN_FLIGHT 路径；
+6. 所有 Token/Activation/Split/Join/Loop/Wait 均已关闭、终结或 INVALIDATED；STOPPED/FAILED 不得保留可恢复的 READY/WAITING/RESERVED/IN_FLIGHT 路径。Drain 必须重复扫描并处理在途节点完成后新产生的 READY Token；在物理副作用安全收敛前，不得提前关闭 Wait/Retry/Split/Branch/Join/Loop 以满足本谓词；
 7. 无未处理关键 Inbox。
 
 设备仍在运行但没有得到设备暂停确认时，不得进入 PAUSED。设备状态未知时，不得进入普通 STOPPED 或释放资源。Drain 超时只触发告警/人工介入，不改变上述谓词。
