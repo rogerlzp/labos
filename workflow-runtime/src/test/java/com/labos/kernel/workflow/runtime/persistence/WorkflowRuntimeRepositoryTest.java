@@ -247,9 +247,14 @@ class WorkflowRuntimeRepositoryTest {
                 UPDATE workflow_runtime.worker_execution_lease SET expires_at=clock_timestamp()-interval '1 second'
                  WHERE tenant_id=? AND attempt_id=?
                 """)) {ps.setObject(1,tenant);ps.setObject(2,reservation.attemptId());assertEquals(1,ps.executeUpdate());}
+        assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class,() ->
+                repo.recordWorkerFact(tenant,created.runId(),reservation.attemptId(),
+                        reservation.dispatchId(),1L,1L,"worker-unknown","late-fact",
+                        "SIDE_EFFECT_COMPLETED","{}"));
         var batch=new WorkerLeaseRecoveryService(repo).recoverExpiredBatch(10,"recovery-test");
         assertEquals(1,batch.scanned());
         assertEquals(1,batch.safeToRetry());
+        assertEquals(0,new WorkerLeaseRecoveryService(repo).recoverExpiredBatch(10,"recovery-replay").scanned());
         var recovered=batch.items().get(0).result();
         assertEquals("SAFE_TO_RETRY",recovered.outcome());
         assertNull(recovered.interventionId());
