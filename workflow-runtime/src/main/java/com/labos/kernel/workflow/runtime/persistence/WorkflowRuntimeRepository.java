@@ -12,6 +12,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -403,7 +404,7 @@ public final class WorkflowRuntimeRepository {
                 INSERT INTO workflow_runtime.retry_registration
                   (tenant_id,retry_id,run_id,activation_id,retry_state,due_at,attempt_no,retry_policy)
                 VALUES (?,?,?,?,'SCHEDULED',?,?,?::jsonb)
-                """,tenantId,retryId,runId,activationId,dueAt,nextAttemptNo,policyJson);
+                """,tenantId,retryId,runId,activationId,Timestamp.from(dueAt),nextAttemptNo,policyJson);
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
@@ -427,7 +428,7 @@ public final class WorkflowRuntimeRepository {
                   (tenant_id,wait_id,run_id,activation_id,wait_state,wait_kind,
                    correlation_key,deadline_at,continuation)
                 VALUES (?,?,?,?,'ACTIVE',?,?,?,?::jsonb)
-                """,tenantId,waitId,runId,activationId,waitKind,correlationKey,deadline,continuationJson);
+                """,tenantId,waitId,runId,activationId,waitKind,correlationKey,deadline==null?null:Timestamp.from(deadline),continuationJson);
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_activation SET activation_state='WAITING',
                        activation_version=activation_version+1
