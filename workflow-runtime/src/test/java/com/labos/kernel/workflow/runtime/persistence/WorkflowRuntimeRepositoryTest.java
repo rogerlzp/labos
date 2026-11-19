@@ -51,6 +51,11 @@ class WorkflowRuntimeRepositoryTest {
         assertFalse(first.replayed());
         assertTrue(replay.replayed());
         assertEquals(first.runId(),replay.runId());
+        var snapshot=repo.loadRunDefinitionSnapshot(tenant,first.runId());
+        assertEquals("ci",snapshot.compilerVersion());
+        assertEquals("{}",snapshot.graphPlanJson());
+        assertTrue(repo.findNonTerminalRunSnapshots(10).stream()
+                .anyMatch(x -> x.runId().equals(first.runId()) && x.tenantId().equals(tenant)));
 
         repo.startRun(tenant,first.runId());
         var reservation=repo.reserveCapacity(tenant,first.runId(),"it-capacity",1,
