@@ -424,9 +424,8 @@ class WorkflowRuntimeRepositoryTest {
                 .filter(item -> item.candidate().attemptId().equals(reservation.attemptId()))
                 .findFirst().orElseThrow();
 
-        assertEquals("DISPATCHED",scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
-                tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='ABANDONED_SAFE'")==1
-                ? "DISPATCHED" : "NOT_ABANDONED");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='ABANDONED_SAFE'"));
         assertEquals("SAFE_TO_RETRY",recovered.result().outcome());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"+
                 tenant+"' AND outbox_id='"+workerMessage.outboxId()+"' AND outbox_state='DEAD_LETTER'"));
