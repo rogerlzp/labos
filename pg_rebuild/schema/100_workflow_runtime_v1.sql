@@ -598,7 +598,7 @@ CREATE INDEX IF NOT EXISTS ix_wf_intervention_run
 
 -- Circular identity references are added after both sides exist.
 -- Guard each constraint so the additive migration can be re-applied safely.
-DO $
+DO $body$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_wf_activation_current_attempt') THEN
     ALTER TABLE wf_node_activation
