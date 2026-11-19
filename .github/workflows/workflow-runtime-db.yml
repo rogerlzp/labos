@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - 'db/workflow_runtime/**'
+      - 'workflow-runtime/**'
       - '.github/workflows/workflow-runtime-db.yml'
   workflow_dispatch:
 jobs:
