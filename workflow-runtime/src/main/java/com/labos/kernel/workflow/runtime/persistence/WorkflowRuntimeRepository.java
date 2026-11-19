@@ -1292,7 +1292,7 @@ public final class WorkflowRuntimeRepository {
                   (SELECT count(*) FROM workflow_runtime.dispatch_reservation
                     WHERE tenant_id=? AND run_id=? AND reservation_state='HELD') +
                   (SELECT count(*) FROM workflow_runtime.runtime_outbox
-                    WHERE tenant_id=? AND run_id=? AND outbox_state IN ('PENDING','CLAIMED'))
+                    WHERE tenant_id=? AND run_id=? AND outbox_state IN ('PENDING','SENDING'))
                 """,Long.class,
                     tenantId,runId,  // Commands
                     tenantId,runId,  // Leases
@@ -1423,7 +1423,7 @@ public final class WorkflowRuntimeRepository {
             return id;
         });
         return new Checkpoint(persistedId,draft.commitVersion(),draft.eventSeq(),
-                draft.coordinatorEpoch(),draft.snapshotJson(),draft.sha256());
+                draft.snapshotJson(),draft.sha256());
     }
 
     private String readJsonArray(String table, UUID tenantId, UUID runId) {
@@ -1488,118 +1488,35 @@ public final class WorkflowRuntimeRepository {
     }
 
     public record WorkerRecoveryResult(String outcome, UUID interventionId) {}
-    public record ExpiredWorkerAttempt(UUID tenantId, UUID runId, UUID attemptId) {}
-
-    /** Candidate scan only; each candidate is revalidated and row-locked by recovery. */
-    public List<ExpiredWorkerAttempt> findExpiredWorkerAttempts(int limit) {
-        if(limit<1 || limit>1000) throw new IllegalArgumentException("Recovery batch limit must be 1..1000");
-        return jdbc.query("""
-            SELECT tenant_id,run_id,attempt_id FROM workflow_runtime.worker_execution_lease
-             WHERE lease_state='ACTIVE' AND expires_at<=clock_timestamp()
-             ORDER BY expires_at,tenant_id,attempt_id LIMIT ?
-            """,(rs,n)->new ExpiredWorkerAttempt(rs.getObject(1,UUID.class),
-                    rs.getObject(2,UUID.class),rs.getObject(3,UUID.class)),limit);
-    }
-
-    /** Persist a Worker fact before the corresponding external side effect. */
-    public boolean recordWorkerFact(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
-                                    long dispatchEpoch, long leaseEpoch, String workerId,
-                                    String factKey, String factType, String payloadJson) {
-        if(!List.of("SIDE_EFFECT_STARTED","SIDE_EFFECT_COMPLETED","SIDE_EFFECT_UNKNOWN").contains(factType))
-            throw new IllegalArgumentException("Unsupported externally submitted Worker fact");
-        return required(() -> {
-            lockRun(tenantId,runId);
-            UUID activationId=jdbc.queryForObject("""
-                SELECT activation_id FROM workflow_runtime.node_attempt
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
-                """,UUID.class,tenantId,runId,attemptId);
-            UUID tokenId=jdbc.queryForObject("""
-                SELECT token_id FROM workflow_runtime.node_activation
-                 WHERE tenant_id=? AND activation_id=?
-                """,UUID.class,tenantId,activationId);
-            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
-                    UUID.class,tenantId,tokenId);
-            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
-                    UUID.class,tenantId,activationId);
-            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
-                    UUID.class,tenantId,attemptId);
-            List<Long> leases=jdbc.query("""
-                SELECT lease_epoch FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND attempt_id=? AND worker_id=? AND dispatch_id=?
-                   AND dispatch_epoch=? AND lease_epoch=? AND lease_state='ACTIVE'
-                   AND expires_at>clock_timestamp() FOR UPDATE
-                """,(rs,n)->rs.getLong(1),tenantId,attemptId,workerId,dispatchId,dispatchEpoch,leaseEpoch);
-            if(leases.size()!=1) throw new StaleRuntimeWriteException("Worker execution lease is expired or fenced");
-            if(!"SIDE_EFFECT_STARTED".equals(factType)) {
-                Integer started=jdbc.queryForObject("""
-                    SELECT count(*) FROM workflow_runtime.worker_execution_fact
-                     WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
-                    """,Integer.class,tenantId,attemptId);
-                if(started==null||started==0)
-                    throw new InvalidTransitionException("Side-effect completion/unknown requires a prior SIDE_EFFECT_STARTED fact");
-            }
-            return appendWorkerFactInTransaction(tenantId,runId,attemptId,factKey,factType,
-                    "WORKER",workerId,dispatchId,dispatchEpoch,leaseEpoch,payloadJson)>0;
-        });
-    }
-
-    /** Lease renewal is a CAS and cannot resurrect an expired execution right. */
-    public boolean renewWorkerExecutionLease(UUID tenantId, UUID runId, UUID attemptId,
-                                             String workerId, long leaseEpoch, long expectedVersion,
-                                             Instant newExpiresAt) {
-        if(newExpiresAt==null || !newExpiresAt.isAfter(Instant.now()))
-            throw new IllegalArgumentException("New Worker lease expiry must be in the future");
-        return required(() -> {
-            lockRun(tenantId,runId);
-            int changed=jdbc.update("""
-                UPDATE workflow_runtime.worker_execution_lease
-                   SET expires_at=?,heartbeat_at=clock_timestamp(),lease_version=lease_version+1
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=? AND worker_id=?
-                   AND lease_epoch=? AND lease_version=? AND lease_state='ACTIVE'
-                   AND expires_at>clock_timestamp()
-                """,Timestamp.from(newExpiresAt),tenantId,runId,attemptId,workerId,leaseEpoch,expectedVersion);
-            return changed==1;
-        });
-    }
 
     /**
-     * Recover an expired Worker. No SIDE_EFFECT_STARTED fact and no ambiguous
-     * Command means the external-call protocol proves no side effect was issued.
-     * Otherwise freeze the Run and require explicit physical reconciliation.
+     * Reconcile an interrupted Attempt during the sole Host's startup.
+     * Absence of a process-local Worker handle is not proof of absence of a
+     * device side effect; the durable command ledger is authoritative.
      */
-    public WorkerRecoveryResult recoverExpiredWorkerAttempt(UUID tenantId, UUID runId,
-                                                              UUID attemptId, String recoveryActor) {
+    public WorkerRecoveryResult recoverInterruptedAttempt(UUID tenantId, UUID runId,
+                                                            UUID attemptId, String recoveryActor) {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId);
-            UUID activationId=jdbc.queryForObject("""
-                SELECT activation_id FROM workflow_runtime.node_attempt
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
-                """,UUID.class,tenantId,runId,attemptId);
-            UUID tokenId=jdbc.queryForObject("""
-                SELECT token_id FROM workflow_runtime.node_activation
-                 WHERE tenant_id=? AND activation_id=?
-                """,UUID.class,tenantId,activationId);
-            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
-                    UUID.class,tenantId,tokenId);
-            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
-                    UUID.class,tenantId,activationId);
-            List<String> attemptRows=jdbc.query("""
+            List<String> attemptStates=jdbc.query("""
                 SELECT attempt_state FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
-            if(attemptRows.size()!=1 || !"STARTED".equals(attemptRows.get(0)))
+            if(attemptStates.size()!=1 || !List.of("STARTED","UNKNOWN").contains(attemptStates.get(0)))
                 return new WorkerRecoveryResult("NOT_RECOVERABLE",null);
-            List<String> leaseRows=jdbc.query("""
-                SELECT worker_id,dispatch_id,dispatch_epoch,lease_epoch FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=? AND lease_state='ACTIVE'
-                   AND expires_at<=clock_timestamp() FOR UPDATE
-                """,(rs,n)->rs.getString(1)+"|"+rs.getObject(2)+"|"+rs.getLong(3)+"|"+rs.getLong(4),
-                    tenantId,runId,attemptId);
-            if(leaseRows.size()!=1) return new WorkerRecoveryResult("LEASE_NOT_EXPIRED",null);
-            String[] lease=leaseRows.get(0).split("\\|");
-            String workerId=lease[0]; UUID dispatchId=UUID.fromString(lease[1]);
-            long dispatchEpoch=Long.parseLong(lease[2]), leaseEpoch=Long.parseLong(lease[3]);
-            Integer sideEffectFacts=jdbc.queryForObject("""
+            UUID activationId=jdbc.queryForObject("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND attempt_id=?
+                """,UUID.class,tenantId,attemptId);
+            UUID tokenId=jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """,UUID.class,tenantId,activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class,tenantId,tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class,tenantId,activationId);
+            Integer sideEffects=jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.worker_execution_fact
                  WHERE tenant_id=? AND attempt_id=? AND fact_type IN
                    ('SIDE_EFFECT_STARTED','SIDE_EFFECT_COMPLETED','SIDE_EFFECT_UNKNOWN')
@@ -1609,24 +1526,23 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND attempt_id=? AND command_state IN
                    ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
                 """,Integer.class,tenantId,attemptId);
-            if((sideEffectFacts==null||sideEffectFacts==0) &&
-               (ambiguousCommands==null||ambiguousCommands==0)) {
+            if((sideEffects==null||sideEffects==0) && (ambiguousCommands==null||ambiguousCommands==0)) {
                 jdbc.update("""
                     UPDATE workflow_runtime.command_ledger SET command_state='CANCELLED',
                            version=version+1,completed_at=clock_timestamp(),updated_at=clock_timestamp()
                      WHERE tenant_id=? AND attempt_id=? AND command_state IN ('CREATED','DISPATCH_PENDING')
                     """,tenantId,attemptId);
                 jdbc.update("""
-                    UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER',
-                           claim_until=NULL
-                     WHERE tenant_id=? AND outbox_state IN ('PENDING','CLAIMED')
+                    UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                     WHERE tenant_id=? AND outbox_state IN ('PENDING','SENDING')
                        AND payload->>'commandId' IN
-                         (SELECT command_id::text FROM workflow_runtime.command_ledger WHERE tenant_id=? AND attempt_id=?)
+                         (SELECT command_id::text FROM workflow_runtime.command_ledger
+                           WHERE tenant_id=? AND attempt_id=?)
                     """,tenantId,tenantId,attemptId);
                 jdbc.update("""
                     UPDATE workflow_runtime.node_attempt SET attempt_state='ABANDONED_SAFE',
                            attempt_version=attempt_version+1,finished_at=clock_timestamp()
-                     WHERE tenant_id=? AND attempt_id=? AND attempt_state='STARTED'
+                     WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('STARTED','UNKNOWN')
                     """,tenantId,attemptId);
                 jdbc.update("""
                     UPDATE workflow_runtime.node_activation SET activation_state='ABANDONED_SAFE',
@@ -1638,19 +1554,12 @@ public final class WorkflowRuntimeRepository {
                            token_version=token_version+1,updated_at=clock_timestamp()
                      WHERE tenant_id=? AND token_id=? AND token_state='RUNNING'
                     """,tenantId,tokenId);
-                appendWorkerFactInTransaction(tenantId,runId,attemptId,"execution-right-released","EXECUTION_RIGHT_RELEASED",
-                        "RECOVERY",recoveryActor,dispatchId,dispatchEpoch,leaseEpoch,
-                        "{\"reason\":\"expired-before-side-effect\"}");
-                jdbc.update("""
-                    UPDATE workflow_runtime.worker_execution_lease SET lease_state='EXPIRED_SAFE',
-                           lease_version=lease_version+1,ended_at=clock_timestamp()
-                     WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
-                    """,tenantId,attemptId);
                 releaseReservationInTransaction(tenantId,attemptId);
                 appendEvents(tenantId,runId,List.of(new EventDraft(
-                        "WORKER_LEASE_EXPIRED_SAFE","ATTEMPT",attemptId,null,null,null,"{}")));
+                        "ATTEMPT_ABANDONED_SAFE","ATTEMPT",attemptId,null,null,null,"{}")));
                 return new WorkerRecoveryResult("SAFE_TO_RETRY",null);
             }
+
             jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state='UNKNOWN',
                        version=version+1,updated_at=clock_timestamp()
@@ -1664,44 +1573,39 @@ public final class WorkflowRuntimeRepository {
                    (SELECT command_id FROM workflow_runtime.command_ledger WHERE tenant_id=? AND attempt_id=?)
                    AND dispatch_state='SEND_STARTED'
                 """,tenantId,tenantId,attemptId);
-            appendWorkerFactInTransaction(tenantId,runId,attemptId,"recovery-side-effect-unknown","SIDE_EFFECT_UNKNOWN",
-                    "RECOVERY",recoveryActor,dispatchId,dispatchEpoch,leaseEpoch,
-                    "{\"reason\":\"expired-after-side-effect-boundary\"}");
-            jdbc.update("""
-                UPDATE workflow_runtime.worker_execution_lease SET lease_state='EXPIRED_UNVERIFIED',
-                       lease_version=lease_version+1,ended_at=clock_timestamp()
-                 WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
-                """,tenantId,attemptId);
+            UUID dispatchId=commandDispatchId(tenantId,attemptId);
+            if(sideEffects==null || sideEffects==0) {
+                appendWorkerFactInTransaction(tenantId,runId,attemptId,"recovery-unknown","SIDE_EFFECT_UNKNOWN",
+                        "RECOVERY",recoveryActor,dispatchId,"{\"reason\":\"command-send-boundary-crossed\"}");
+            }
             jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='UNKNOWN',
                        attempt_version=attempt_version+1
-                 WHERE tenant_id=? AND attempt_id=? AND attempt_state='STARTED'
+                 WHERE tenant_id=? AND attempt_id=? AND attempt_state IN ('STARTED','UNKNOWN')
                 """,tenantId,attemptId);
             UUID interventionId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.manual_intervention
-                  (tenant_id,intervention_id,run_id,subject_kind,subject_id,intervention_state,
-                   reason_code,evidence)
-                VALUES (?, ?, ?, 'ATTEMPT', ?, 'OPEN','WORKER_LEASE_EXPIRED_WITH_SIDE_EFFECT',
-                        jsonb_build_object('workerId',?,'dispatchId',?,'dispatchEpoch',?,'leaseEpoch',?))
-                """,tenantId,interventionId,runId,attemptId,workerId,dispatchId.toString(),dispatchEpoch,leaseEpoch);
+                  (tenant_id,intervention_id,run_id,subject_kind,subject_id,intervention_state,reason_code,evidence)
+                VALUES (?,?,?,'ATTEMPT',?,'OPEN','INTERRUPTED_AFTER_SIDE_EFFECT_BOUNDARY',
+                        jsonb_build_object('attemptId',?::text))
+                """,tenantId,interventionId,runId,attemptId,attemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.workflow_run SET status='MANUAL_REQUIRED',
                        control_gate='CLOSED',recovery_state='BLOCKED',
-                       terminal_reason='Worker lease expired after external side-effect boundary',
+                       terminal_reason='Runtime restarted after an uncertain external side effect',
                        updated_at=clock_timestamp()
                  WHERE tenant_id=? AND run_id=?
                 """,tenantId,runId);
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_audit
                   (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
-                VALUES (?,?,'SYSTEM',?,'WORKER_RECOVERY_BLOCKED','ATTEMPT',?,?::jsonb,
-                        'expired Worker may have performed an external side effect')
+                VALUES (?,?,'SYSTEM',?,'ATTEMPT_RECOVERY_BLOCKED','ATTEMPT',?,?::jsonb,
+                        'physical side effect requires command query or operator verification')
                 """,tenantId,runId,recoveryActor,attemptId,
-                    "{\"leaseEpoch\":"+leaseEpoch+",\"dispatchEpoch\":"+dispatchEpoch+"}");
-            appendEvents(tenantId,runId,List.of(new EventDraft(
-                    "WORKER_LEASE_EXPIRED_UNKNOWN","ATTEMPT",attemptId,null,null,null,
-                    "{\"interventionId\":\""+interventionId+"\"}")));
+                    "{\"attemptId\":\""+attemptId+"\"}");
+            appendEvents(tenantId,runId,List.of(new EventDraft("ATTEMPT_RECOVERY_UNKNOWN",
+                    "ATTEMPT",attemptId,null,null,null,"{\"interventionId\":\""+interventionId+"\"}")));
             return new WorkerRecoveryResult("MANUAL_REQUIRED",interventionId);
         });
     }
