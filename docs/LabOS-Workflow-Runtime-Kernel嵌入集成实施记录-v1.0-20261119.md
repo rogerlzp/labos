@@ -112,27 +112,30 @@ Kernel 全量 CI 还包括前端与现有纯逻辑门禁。不要只凭 Maven Ru
 CI 结果以本分支最新 SHA 的 Actions 为准。此文档不把正在运行或历史运行写成 PASS。Runtime PostgreSQL 测试、Kernel CI、人工源码审查必须分别给结论。
 
 
-## 7. 最新 CI 验证（PR HEAD 0de6619c1c5791e6793734544da924b658320ba8）
+## 7. 最新 CI 验证（PR HEAD 703ff84b292ed0f6ece5d2b1b180e44ec2b00730）
 
-- Kernel CI #556：success。
-  - Workflow Runtime JAR 构建 / 安装 + Kernel main/boot javac + 资源同步：success。
-  - Java 纯逻辑单测：1551 / 0。
+- Kernel CI #592：success。
+  - Workflow Runtime JAR 构建/安装 + Kernel main/boot javac + 资源同步：success。
+  - Java 纯逻辑单测：1576 / 0。
   - 前端 TypeScript：0 错误。
-  - 设备事件入站端点：17 / 0。
+  - DeviceEventApiSelfTest：17 / 0。
   - Sidecar 设备事件全链路：8 / 0。
   - 门禁总结果：失败 0。
-- Workflow Runtime PostgreSQL 17 #227：success。
-  - Schema Contract、双会话并发、CON-01..14、事务原子性 / Inbox 冲突：success。
-  - Java Workflow Runtime Repository 集成测试：28 tests，0 failures，0 errors。
+- Workflow Runtime PostgreSQL 17 #252：success（Runtime 模块最后一次代码/POM 变更 SHA 为 `4e6dbc9dedba7d453ba6d49210a5da115013ed4c`；之后至 PR HEAD 的 diff 仅包含 Kernel、测试和文档文件，没有 workflow-runtime/** 变化）。
+  - PostgreSQL 17 schema contract、双会话并发、CON-01..14、事务原子性/Inbox 冲突：success。
+  - Java Workflow Runtime 测试：30 tests，0 failures，0 errors。
   - Bootstrap repeatable isolation：success。
 
 CI 链接：
-- https://github.com/rogerlzp/labos/actions/runs/44558687714
-- https://github.com/rogerlzp/labos/actions/runs/44558687751
+- https://github.com/rogerlzp/labos/actions/runs/44566610806
+- https://github.com/rogerlzp/labos/actions/runs/44564653730
 
-注意：这证明构建链和当前自动化门禁通过；仍不等于 Spring ApplicationContext 启动测试或 Runtime 端到端设备执行闭环已经完成。
-
+注意：Kernel CI 与 Runtime PG17 门禁均通过，但这不等于真实 LabosApplication + PostgreSQL 完整启动、RuntimeHost 启动、GraphCoordinator 执行或设备 E2E 已完成。
 
 ## 8. Spring / MyBatis Smoke Test
 
-新增纯逻辑自测：labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeKernelConfigurationSelfTest.java，并加入 scripts/test-all.sh 的 PURE 列表。当前检查覆盖 Bean composition、RuntimeFacade、无 RuntimeHost、三个 Mapper 的真实 ParamNameResolver 参数解析、BoundSql 参数映射及租户/软删除/capability tenant join SQL 谓词（25 个检查点）。该测试不连接数据库、不启动 RuntimeHost。最新 CI 结果以新提交对应 Actions 为准。
+新增纯逻辑自测：`labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeKernelConfigurationSelfTest.java`，并加入 `scripts/test-all.sh` 的 PURE 列表。它使用 `ParamNameResolver` 从真实 Mapper 方法生成参数对象，再通过 `MappedStatement.getBoundSql` 检查三个 Runtime statement 的参数映射和 SQL 谓词。测试不连接数据库、不启动 RuntimeHost，也不替代完整 `LabosApplication` 启动测试。
+
+## 9. 部署前置条件
+
+本 PR 不会在 Kernel 启动时自动创建 Runtime schema。首次启用前，部署流程必须显式应用 `db/workflow_runtime/001_init.sql`；`002_schema_contract.sql` 是 CI 验收脚本，不是生产迁移入口。若生产迁移流程尚未纳入该 DDL，应先补迁移步骤，再开放 KernelFacade 的 Run 创建调用。
