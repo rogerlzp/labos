@@ -35,8 +35,8 @@ public final class RuntimeHost implements AutoCloseable {
     private final String recoveryActor;
     private final List<LifecycleComponent> startedComponents = new ArrayList<>();
 
-    private State state = State.NEW;
-    private WorkerExecutionRecoveryService.StartupResult recoveryResult;
+    private volatile State state = State.NEW;
+    private volatile WorkerExecutionRecoveryService.StartupResult recoveryResult;
     private boolean ingressStartAttempted;
 
     public RuntimeHost(WorkerExecutionRecoveryService recovery,
@@ -96,9 +96,9 @@ public final class RuntimeHost implements AutoCloseable {
         }
     }
 
-    public synchronized State state() { return state; }
+    public State state() { return state; }
 
-    public synchronized WorkerExecutionRecoveryService.StartupResult recoveryResult() {
+    public WorkerExecutionRecoveryService.StartupResult recoveryResult() {
         return recoveryResult;
     }
 
