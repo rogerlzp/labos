@@ -1,4 +1,6 @@
-# Workflow Runtime 数据库与事务层反向评审 v1.0
+# 历史评审记录：Workflow Runtime 数据库与事务层反向评审 v1.0
+
+> 本评审基于旧的 workflow-runtime-architecture-v2-20261119 分支，检查对象包含 Coordinator epoch、Worker DB Lease、fencing token 和多实例 Outbox claim。它不代表当前单实例分支的评审结果；其中有关 fencing、Lease 和 Coordinator epoch 的结论已失效。当前实现以单实例架构规范、T01–T23 单实例 SQL 实现契约及最新 PG17 CI 为准。本文只用于历史追溯。
 
 日期：2026-11-19  
 评审基线：docs/workflow-runtime-architecture-v2-20261119 分支  
