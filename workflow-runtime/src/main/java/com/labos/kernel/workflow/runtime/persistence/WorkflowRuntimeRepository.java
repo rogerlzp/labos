@@ -150,6 +150,11 @@ public final class WorkflowRuntimeRepository {
         return seq == null ? 0 : seq;
     }
 
+    private UUID commandDispatchId(UUID tenantId, UUID attemptId) {
+        return jdbc.queryForObject("SELECT dispatch_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=?",
+                UUID.class,tenantId,attemptId);
+    }
+
     private boolean releaseReservationInTransaction(UUID tenantId, UUID attemptId) {
         List<String> keys=jdbc.query("""
             SELECT capacity_key FROM workflow_runtime.dispatch_reservation
@@ -497,41 +502,23 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    /** Allocate a monotonically increasing fencing token and acquire one DB Lease. */
-    public record AcquiredLease(UUID leaseId, long fencingToken) {}
-    public AcquiredLease acquireResourceLease(UUID tenantId, UUID runId, long epoch,
+    /** Acquire a business resource lease; uniqueness is enforced by the active-lease index. */
+    public record AcquiredLease(UUID leaseId) {}
+    public AcquiredLease acquireResourceLease(UUID tenantId, UUID runId,
                                                String resourceId, String ownerKind, UUID ownerId,
                                                Instant expiresAt, String evidenceJson) {
         return required(() -> {
-            RunHead head=lockRun(tenantId,runId); requireCoordinator(head,epoch);
-            if(!"OPEN".equals(head.controlGate()))
-                throw new InvalidTransitionException("Run gate blocks new resource Lease");
-            jdbc.update("""
-                INSERT INTO workflow_runtime.resource_fence_counter
-                  (tenant_id,resource_id,last_fencing_token)
-                VALUES (?,?,0) ON CONFLICT (tenant_id,resource_id) DO NOTHING
-                """,tenantId,resourceId);
-            jdbc.queryForObject("""
-                SELECT last_fencing_token FROM workflow_runtime.resource_fence_counter
-                 WHERE tenant_id=? AND resource_id=? FOR UPDATE
-                """,Long.class,tenantId,resourceId);
-            Long fencing=jdbc.queryForObject("""
-                UPDATE workflow_runtime.resource_fence_counter
-                   SET last_fencing_token=last_fencing_token+1,updated_at=clock_timestamp()
-                 WHERE tenant_id=? AND resource_id=? RETURNING last_fencing_token
-                """,Long.class,tenantId,resourceId);
+            lockRun(tenantId,runId);
             UUID leaseId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.resource_lease
-                  (tenant_id,lease_id,run_id,resource_id,lease_state,owner_kind,owner_id,
-                   fencing_token,expires_at,evidence)
-                VALUES (?,?,?,?,'ACTIVE',?,?,?,?,?::jsonb)
-                """,tenantId,leaseId,runId,resourceId,ownerKind,ownerId,fencing,
-                    Timestamp.from(expiresAt),evidenceJson==null?"{}":evidenceJson);
+                  (tenant_id,lease_id,run_id,resource_id,lease_state,owner_kind,owner_id,expires_at,evidence)
+                VALUES (?,?,?,?,'ACTIVE',?,?,?,?::jsonb)
+                """,tenantId,leaseId,runId,resourceId,ownerKind,ownerId,
+                    expiresAt==null?null:Timestamp.from(expiresAt),evidenceJson==null?"{}":evidenceJson);
             appendEvents(tenantId,runId,List.of(new EventDraft("RESOURCE_LEASE_ACQUIRED",
-                    "LEASE",leaseId,0L,null,null,"{\"resourceId\":\""+jsonEscape(resourceId)+
-                    "\",\"fencingToken\":"+fencing+"}")));
-            return new AcquiredLease(leaseId,fencing);
+                    "LEASE",leaseId,0L,null,null,"{\"resourceId\":\""+jsonEscape(resourceId)+"\"}")));
+            return new AcquiredLease(leaseId);
         });
     }
 
@@ -563,13 +550,8 @@ public final class WorkflowRuntimeRepository {
                     UUID.class,tenantId,activationId);
             jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
                     UUID.class,tenantId,attemptId);
-            List<String> lease=jdbc.query("""
-                SELECT dispatch_id::text||'|'||dispatch_epoch||'|'||lease_epoch
-                  FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,attemptId);
-            if(lease.size()!=1) throw new IllegalStateException("Worker lease missing for Command");
-            String[] leaseParts=lease.get(0).split("\\|");
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,attemptId);
             jdbc.queryForObject("SELECT command_id FROM workflow_runtime.command_ledger WHERE tenant_id=? AND command_id=? FOR UPDATE",
                     UUID.class,tenantId,commandId);
             int changed=jdbc.update("""
@@ -581,8 +563,7 @@ public final class WorkflowRuntimeRepository {
             if(changed==0) return false;
             String factType="MANUAL_REQUIRED".equals(resolvedState)?"SIDE_EFFECT_UNKNOWN":"SIDE_EFFECT_COMPLETED";
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-resolved:"+commandId,
-                    factType,"RECOVERY",actor,UUID.fromString(leaseParts[0]),
-                    Long.parseLong(leaseParts[1]),Long.parseLong(leaseParts[2]),evidenceJson);
+                    factType,"RECOVERY",actor,commandDispatchId(tenantId,attemptId),evidenceJson);
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_audit
                   (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
@@ -913,44 +894,38 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    public record OutboxClaim(UUID outboxId, String dedupKey, String payloadJson,
-                              String owner, long claimEpoch) {}
+    public record OutboxClaim(UUID outboxId, String dedupKey, String payloadJson) {}
 
-    /** Claim pending/expired Outbox rows with SKIP LOCKED; the sender acts only after commit. */
-    public List<OutboxClaim> claimOutbox(UUID tenantId, String owner, int batchSize, Instant claimUntil) {
+    /** Single-host dispatcher: lock and transition pending rows without distributed claims. */
+    public List<OutboxClaim> claimOutbox(UUID tenantId, int batchSize) {
+        if(batchSize<1 || batchSize>500) throw new IllegalArgumentException("batchSize must be 1..500");
         return required(() -> jdbc.query("""
             WITH picked AS (
               SELECT outbox_id FROM workflow_runtime.runtime_outbox
-               WHERE tenant_id=? AND (outbox_state='PENDING' OR
-                 (outbox_state='CLAIMED' AND claim_until<clock_timestamp()))
+               WHERE tenant_id=? AND outbox_state='PENDING' AND available_at<=clock_timestamp()
                ORDER BY available_at,created_at
                FOR UPDATE SKIP LOCKED LIMIT ?
             )
             UPDATE workflow_runtime.runtime_outbox o
-               SET outbox_state='CLAIMED',claim_owner=?,claim_epoch=claim_epoch+1,
-                   claim_until=?,delivery_attempts=delivery_attempts+1
+               SET outbox_state='SENDING',delivery_attempts=delivery_attempts+1
               FROM picked p WHERE o.tenant_id=? AND o.outbox_id=p.outbox_id
-            RETURNING o.outbox_id,o.dedup_key,o.payload::text,o.claim_owner,o.claim_epoch
-            """,(rs,n)->new OutboxClaim(rs.getObject(1,UUID.class),rs.getString(2),
-                    rs.getString(3),rs.getString(4),rs.getLong(5)),
-                tenantId,batchSize,owner,java.sql.Timestamp.from(claimUntil),tenantId));
+            RETURNING o.outbox_id,o.dedup_key,o.payload::text
+            """,(rs,n)->new OutboxClaim(rs.getObject(1,UUID.class),rs.getString(2),rs.getString(3)),
+                tenantId,batchSize,tenantId));
     }
 
-    /** Mark delivery only if the exact owner and fencing epoch still own the claim. */
-    public boolean markOutboxDelivered(UUID tenantId, UUID outboxId, String owner, long epoch) {
+    public boolean markOutboxDelivered(UUID tenantId, UUID outboxId) {
         return required(() -> jdbc.update("""
             UPDATE workflow_runtime.runtime_outbox SET outbox_state='DELIVERED',
-                   delivered_at=clock_timestamp(),claim_until=NULL
-             WHERE tenant_id=? AND outbox_id=? AND outbox_state='CLAIMED'
-               AND claim_owner=? AND claim_epoch=?
-            """,tenantId,outboxId,owner,epoch)==1);
+                   delivered_at=clock_timestamp()
+             WHERE tenant_id=? AND outbox_id=? AND outbox_state='SENDING'
+            """,tenantId,outboxId)==1);
     }
 
-    /** T13: persist SEND_STARTED before calling an Adapter outside this repository. */
+    /** Persist SEND_STARTED before invoking the Adapter outside this repository. */
     public boolean markCommandSendStarted(UUID tenantId, UUID commandId, long expectedVersion,
-                                          UUID outboxId, String outboxOwner, long outboxClaimEpoch,
-                                          UUID dispatchId, int dispatchNo, String dispatcherId,
-                                          long fencingToken) {
+                                          UUID outboxId, UUID dispatchId, int dispatchNo,
+                                          String dispatcherId) {
         return required(() -> {
             List<String> identity=jdbc.query("""
                 SELECT run_id::text||'|'||attempt_id::text FROM workflow_runtime.command_ledger
@@ -960,43 +935,15 @@ public final class WorkflowRuntimeRepository {
             String[] ids=identity.get(0).split("\\|");
             UUID runId=UUID.fromString(ids[0]), attemptId=UUID.fromString(ids[1]);
             RunHead head=lockRun(tenantId,runId);
-            UUID activationId=jdbc.queryForObject("""
-                SELECT activation_id FROM workflow_runtime.node_attempt
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
-                """,UUID.class,tenantId,runId,attemptId);
-            UUID tokenId=jdbc.queryForObject("""
-                SELECT token_id FROM workflow_runtime.node_activation
-                 WHERE tenant_id=? AND activation_id=?
-                """,UUID.class,tenantId,activationId);
-            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
-                    UUID.class,tenantId,tokenId);
-            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
-                    UUID.class,tenantId,activationId);
-            String attemptState=jdbc.queryForObject("""
-                SELECT attempt_state FROM workflow_runtime.node_attempt
-                 WHERE tenant_id=? AND attempt_id=? FOR UPDATE
-                """,String.class,tenantId,attemptId);
-            if(!"STARTED".equals(attemptState) || !"OPEN".equals(head.controlGate())) return false;
-            List<String> leaseRows=jdbc.query("""
-                SELECT dispatch_epoch::text||'|'||lease_epoch FROM workflow_runtime.worker_execution_lease
-                 WHERE tenant_id=? AND attempt_id=? AND lease_state='ACTIVE'
-                   AND expires_at>clock_timestamp() FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,attemptId);
-            if(leaseRows.size()!=1)
-                throw new StaleRuntimeWriteException("Worker execution right expired before Command dispatch");
-            String[] leaseParts=leaseRows.get(0).split("\\|");
-            long workerDispatchEpoch=Long.parseLong(leaseParts[0]), leaseEpoch=Long.parseLong(leaseParts[1]);
-            jdbc.queryForObject("""
-                SELECT command_id FROM workflow_runtime.command_ledger
-                 WHERE tenant_id=? AND command_id=? FOR UPDATE
-                """,UUID.class,tenantId,commandId);
-            List<String> outboxPayload=jdbc.query("""
+            if(!"OPEN".equals(head.controlGate())) return false;
+            jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
+                    UUID.class,tenantId,attemptId);
+            String payloadCommand=jdbc.queryForObject("""
                 SELECT payload->>'commandId' FROM workflow_runtime.runtime_outbox
-                 WHERE tenant_id=? AND outbox_id=? AND outbox_state='CLAIMED'
-                   AND claim_owner=? AND claim_epoch=? FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,outboxId,outboxOwner,outboxClaimEpoch);
-            if(outboxPayload.size()!=1 || !commandId.toString().equals(outboxPayload.get(0)))
-                throw new StaleRuntimeWriteException("Dispatcher does not own the Command Outbox claim");
+                 WHERE tenant_id=? AND outbox_id=? AND outbox_state='SENDING' FOR UPDATE
+                """,String.class,tenantId,outboxId);
+            if(!commandId.toString().equals(payloadCommand))
+                throw new StaleRuntimeWriteException("Outbox row does not identify this Command");
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state='SEND_STARTED',
                        version=version+1,updated_at=clock_timestamp()
@@ -1006,13 +953,12 @@ public final class WorkflowRuntimeRepository {
             if(changed==0) return false;
             jdbc.update("""
                 INSERT INTO workflow_runtime.command_dispatch_attempt
-                  (tenant_id,dispatch_id,command_id,dispatch_no,dispatch_state,dispatcher_id,
-                   fencing_token,started_at)
-                VALUES (?,?,?,?,'SEND_STARTED',?,?,clock_timestamp())
-                """,tenantId,dispatchId,commandId,dispatchNo,dispatcherId,fencingToken);
+                  (tenant_id,dispatch_id,command_id,dispatch_no,dispatch_state,dispatcher_id,started_at)
+                VALUES (?,?,?,?,'SEND_STARTED',?,clock_timestamp())
+                """,tenantId,dispatchId,commandId,dispatchNo,dispatcherId);
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-send:"+dispatchId,
-                    "SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,dispatchId,workerDispatchEpoch,
-                    leaseEpoch,"{\"commandId\":\""+commandId+"\",\"dispatchNo\":"+dispatchNo+"}");
+                    "SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,commandDispatchId(tenantId,attemptId),
+                    "{\"commandId\":\""+commandId+"\",\"dispatchNo\":"+dispatchNo+"}");
             return true;
         });
     }
@@ -1122,8 +1068,7 @@ public final class WorkflowRuntimeRepository {
             if("SUCCEEDED".equals(targetState) || List.of("FAILED","CANCELLED","DELIVERY_UNKNOWN","UNKNOWN","MANUAL_REQUIRED").contains(targetState)) {
                 String factType="SUCCEEDED".equals(targetState)?"SIDE_EFFECT_COMPLETED":"SIDE_EFFECT_UNKNOWN";
                 appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-result:"+inboxId,factType,
-                        "DEVICE",deviceId,UUID.fromString(lease[0]),Long.parseLong(lease[1]),
-                        Long.parseLong(lease[2]),outcomeJson);
+                        "DEVICE",deviceId,commandDispatchId(tenantId,attemptId),outcomeJson);
             }
             appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
@@ -1529,8 +1474,7 @@ public final class WorkflowRuntimeRepository {
                 """,tenantId,commandId);
             if(changed==1) {
                 appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-unknown:"+commandId,
-                        "SIDE_EFFECT_UNKNOWN","RECOVERY","command-timeout",UUID.fromString(leaseParts[0]),
-                        Long.parseLong(leaseParts[1]),Long.parseLong(leaseParts[2]),evidenceJson);
+                        "SIDE_EFFECT_UNKNOWN","RECOVERY","command-timeout",commandDispatchId(tenantId,attemptId),evidenceJson);
                 jdbc.update("""
                     INSERT INTO workflow_runtime.runtime_audit
                       (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
