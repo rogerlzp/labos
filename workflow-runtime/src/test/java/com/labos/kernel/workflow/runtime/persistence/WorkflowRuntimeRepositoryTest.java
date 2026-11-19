@@ -87,6 +87,7 @@ class WorkflowRuntimeRepositoryTest {
                 "DEVICE_COMMAND_RESULT",first.runId(),"{\"commandId\":\""+command+"\",\"state\":\"SUCCEEDED\"}");
         assertTrue(repo.applyCommandEvent(tenant,first.runId(),receipt.inboxId(),command,
                 "SUCCEEDED","seq-1","{\"verified\":true}"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='SIDE_EFFECT_COMPLETED' AND actor_kind='DEVICE'"));
 
         repo.completeAttempt(tenant,first.runId(),reservation.attemptId(),"result",
                 "{\"ok\":true}");
