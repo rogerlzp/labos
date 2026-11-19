@@ -60,7 +60,7 @@ class WorkflowRuntimeRepositoryTest {
                 repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),1L,"worker-1"));
         repo.acceptAttempt(tenant,first.runId(),reservation.attemptId(),
                 reservation.dispatchId(),1L,"worker-1");
-        repo.startAttempt(tenant,first.runId(),reservation.attemptId(),"worker-1");
+        repo.startAttempt(tenant,first.runId(),reservation.attemptId(),reservation.dispatchId(),1L,"worker-1");
 
         UUID command=repo.createCommand(tenant,first.runId(),1L,
                 activationForAttempt(ds,tenant,reservation.attemptId()),reservation.attemptId(),
