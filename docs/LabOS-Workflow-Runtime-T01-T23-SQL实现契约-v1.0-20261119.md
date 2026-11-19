@@ -162,3 +162,13 @@ WHERE tenant_id=:tenant_id AND resource_id=:resource_id RETURNING last_fencing_t
 **重要限制：** DB lease 不会杀死暂停后复活的旧进程；SideEffectStarted 也不代表物理动作已完成。设备/网关 fencing、commandId 幂等和物理状态回读仍须 Adapter/HIL 验证。
 
 **当前 PG17 实测：** Actions Run 44502256816，commit 18f6583ab25e687bd9b56db1d591171e52259bad，全绿。CON-01..14 全部 PASS；Java Repository 集成测试 7/7 PASS；空库 DDL、Schema 合同、事务原子性/Inbox 冲突和 33 张表核对全部 PASS。
+
+
+### 5.1 有界恢复批次入口
+
+新增 WorkerLeaseRecoveryService：
+- findExpiredWorkerAttempts(limit) 仅发现候选，不持有跨事务锁；
+- recoverExpiredBatch(limit, actor) 对每个候选调用 recoverExpiredWorkerAttempt，由事务内重新核验 lease 仍 ACTIVE 且已过期；
+- 多个恢复实例重复扫描时，Run 锁与 Lease 状态 CAS 使后到者得到 NOT_RECOVERABLE / LEASE_NOT_EXPIRED，不会重复释放 Token 或 Capacity。
+
+该服务不负责定时调度、leader election 或服务生命周期；这些属于 Runtime Host。
