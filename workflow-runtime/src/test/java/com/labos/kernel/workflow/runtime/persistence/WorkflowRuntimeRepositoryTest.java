@@ -42,6 +42,10 @@ class WorkflowRuntimeRepositoryTest {
         }
 
         WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        String stableTenantKey="kernel-tenant:"+UUID.randomUUID();
+        UUID mappedTenant=repo.resolveTenantId(stableTenantKey,"Kernel integration tenant");
+        assertEquals(mappedTenant,repo.resolveTenantId(stableTenantKey,"Kernel integration tenant"));
+        assertEquals(stableTenantKey,repo.findTenantKey(mappedTenant));
         String requestId="request-"+UUID.randomUUID();
         byte[] definitionHash=new byte[32];
         var first=repo.createRun(tenant,requestId,"CREATE","{\"input\":1}",
