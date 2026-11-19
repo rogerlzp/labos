@@ -1100,10 +1100,11 @@ DDL 使用独立 wf_ 命名空间，不修改既有 GraphRunner 表，不承担�
 | L1 数据库约束、MVCC、并发与 Inbox rollback 测试 | 已创建 | 未连接真实测试数据库 |
 | T01 CreateRun | 已有 PostgreSQL Repository 实现 | 测试代码已写，未执行 |
 | T02 StartRun | 已有 PostgreSQL Repository 实现 | 测试代码已写，未执行 |
-| T03 Reserve/Dispatch Commit | 已有 PostgreSQL Repository 实现 | 测试代码已写，未执行 |
-| T03 Dispatch send boundary | 已有 PostgreSQL Repository 实现 | 与 T03/T04 集成测试已写，未执行 |
-| T04 WorkerAccepted / WorkerStarted | 已有 PostgreSQL Repository 实现 | 与 T03/T04 集成测试已写，未执行 |
-| T05–T23 | 已定义 Transaction Port 和工程测试规格；尚无完整 PostgreSQL Repository 实现 | 未实现、未执行 |
+| T03 Reserve/Dispatch Commit | 已有 PostgreSQL Repository 实现，含 Run quota、全局 capacity、Lease fencing 校验 | 测试代码已写，未执行 |
+| T03 Dispatch Outbox claim/send boundary | 已有 SKIP LOCKED claim 与 SEND_STARTED 提交实现 | 测试代码已写，未执行 |
+| T04 WorkerAccepted / WorkerStarted | 已有 PostgreSQL Repository 实现，校验 dispatchId/dispatchEpoch/workerId | 测试代码已写，未执行 |
+| T05 PURE/IDEMPOTENT completion | 已有 PostgreSQL Repository 实现；同事务消费 Token、完成 Activation/Attempt、释放 Reservation 与容量、创建后继 Token | 测试代码已写，未执行 |
+| T06–T23 | 已定义 Transaction Port 和工程测试规格；尚无完整 PostgreSQL Repository 实现 | 未实现、未执行 |
 
 当前执行环境没有可用的 Maven 与 PostgreSQL 客户端/服务，因此本轮不能声称编译通过、DDL 可执行或数据库测试 PASS。L0/L1 测试入口：
 
