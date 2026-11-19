@@ -146,6 +146,17 @@ CREATE INDEX attempt_active_idx ON node_attempt(tenant_id, run_id, attempt_state
 CREATE UNIQUE INDEX attempt_one_live_per_activation_uq ON node_attempt(tenant_id, activation_id)
   WHERE attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN');
 
+CREATE TABLE scheduler_capacity (
+  tenant_id uuid NOT NULL REFERENCES tenant,
+  capacity_key text NOT NULL,
+  capacity_limit integer NOT NULL CHECK (capacity_limit >= 0),
+  reserved_count integer NOT NULL DEFAULT 0 CHECK (reserved_count >= 0),
+  capacity_version bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (tenant_id, capacity_key),
+  CHECK (reserved_count <= capacity_limit)
+);
+
 CREATE TABLE dispatch_reservation (
   tenant_id uuid NOT NULL,
   reservation_id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -326,6 +337,19 @@ CREATE TABLE inbox_receipt (
 );
 CREATE INDEX inbox_pending_idx ON inbox_receipt(tenant_id, received_at) WHERE receipt_state='RECEIVED';
 
+-- Preserve conflicting payload identities without overwriting the first receipt.
+CREATE TABLE inbox_protocol_violation (
+  tenant_id uuid NOT NULL,
+  violation_id uuid NOT NULL DEFAULT gen_random_uuid(),
+  inbox_id uuid NOT NULL,
+  conflicting_payload_hash bytea NOT NULL,
+  conflicting_payload jsonb,
+  observed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (tenant_id, violation_id),
+  FOREIGN KEY (tenant_id, inbox_id) REFERENCES inbox_receipt(tenant_id, inbox_id),
+  CHECK (octet_length(conflicting_payload_hash) = 32)
+);
+
 CREATE TABLE runtime_outbox (
   tenant_id uuid NOT NULL REFERENCES tenant,
   outbox_id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -393,6 +417,15 @@ CREATE TABLE command_dispatch_attempt (
   PRIMARY KEY (tenant_id, dispatch_id),
   UNIQUE (tenant_id, command_id, dispatch_no),
   FOREIGN KEY (tenant_id, command_id) REFERENCES command_ledger(tenant_id, command_id)
+);
+
+-- Monotonic fencing-token allocator. Increment and read under row lock before lease grant.
+CREATE TABLE resource_fence_counter (
+  tenant_id uuid NOT NULL REFERENCES tenant,
+  resource_id text NOT NULL,
+  last_fencing_token bigint NOT NULL DEFAULT 0 CHECK (last_fencing_token >= 0),
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (tenant_id, resource_id)
 );
 
 CREATE TABLE resource_lease (
