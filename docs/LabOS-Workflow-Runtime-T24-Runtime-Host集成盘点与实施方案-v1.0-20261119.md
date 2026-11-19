@@ -351,3 +351,22 @@ Repository 的 `OutboxMessage` 现在显式返回 `outboxId`、`runId`、`messag
 ### CI 问题修复
 
 本轮发现前一提交的 PostgreSQL 集成测试 JSON 字符串转义错误，已修正；同时 CI workflow 的“纯逻辑门禁”误调用默认 `ci-gate.sh`（会读取未配置的 `LABOS_DB_PASS` 并启动需要外部环境的场景），已改为 `ci-gate.sh --fast`。修复后的 CI 正在重新运行，未收到结果前不标记 PASS。
+
+
+## 12. Kernel 嵌入集成（2026-11-19 后续实施）
+
+已在本分支新增独立实施记录：
+- docs/LabOS-Workflow-Runtime-Kernel嵌入集成实施记录-v1.0-20261119.md
+- docs/评审包-WorkflowRuntime-Kernel集成-20261119/
+
+本轮完成：
+1. Kernel POM 声明 workflow-runtime 普通 Maven 依赖。
+2. ensure-deps / compile-kernel 构建链先构建 Runtime JAR，再复制到既有 lib/spring/* classpath；Kernel 仍保持 javac/out，不改成独立服务或 Maven Reactor。
+3. WorkflowRuntimeRepository 主构造函数显式要求 DataSource + PlatformTransactionManager；tx 与 snapshotTx 共用同一 manager。
+4. WorkflowRuntimeKernelConfiguration 注入 Kernel 既有唯一 DataSource / PlatformTransactionManager，注册 Repository、Compiler、DefinitionSource、RunFactory 和稳定租户解析器。
+5. GraphMapper 新增 tenant_id + workflow_id 双条件的 Runtime 节点元数据查询；XML 与 Header 读取同样 tenant-scoped。
+6. definitionKey 包含 Runtime tenant UUID；definitionVersion 使用 workflow.version@updated_at；BPMN 原文 SHA-256 仍为内容 hash。
+7. Runtime PG IT 增加共享事务外层回滚验证。
+8. 删除 Kernel src/test 下过时且依赖 JUnit/旧 Repository API 的 WorkflowRuntimeRepositoryIT.java；当前权威 Repository IT 位于 workflow-runtime 模块。
+
+本阶段仍不注册/启动 RuntimeHost：EventIngress、OutboxDispatcher、DeviceAdapter、EventDispatcher、GraphCoordinator 尚未形成可运行闭环。禁止因 Spring Bean 可装配就误判 Runtime 已经投入执行。
