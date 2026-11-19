@@ -267,7 +267,7 @@ public final class WorkflowRuntimeRepository {
                 INSERT INTO workflow_runtime.dispatch_reservation
                   (tenant_id,reservation_id,run_id,attempt_id,capacity_key,reservation_state,expires_at)
                 VALUES (?,?,?, ?,?,'HELD',?)
-                """, tenantId, reservationId, runId, attemptId, capacityKey, expiresAt);
+                """, tenantId, reservationId, runId, attemptId, capacityKey, Timestamp.from(expiresAt));
             appendEvents(tenantId, runId, epoch, List.of(new EventDraft(
                     "DISPATCH_RESERVED","ATTEMPT",attemptId,0L,null,null,
                     "{\"activationId\":\""+activationId+"\",\"dispatchId\":\""+dispatchId+"\"}")));
