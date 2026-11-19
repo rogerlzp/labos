@@ -175,3 +175,11 @@ WHERE tenant_id=:tenant_id AND resource_id=:resource_id RETURNING last_fencing_t
 
 
 **最新验证：** Actions Run 44503834970 SUCCESS；Java Repository 集成测试 7/7，CON-01..14 14/14，PostgreSQL 17 空库 DDL/Schema/原子性检查通过。代码基线 3364fa30fcb912ae6aadf86e238f8976270b60a5。
+
+### 5.2 设备回执与完成路径的锁序
+
+T14 applyCommandEvent、T21 markCommandUnknown/resolveUnknownCommand 与 T13 markCommandSendStarted 统一采用 Run → Token → Activation → Attempt → WorkerLease → Command → Inbox/Outbox。设备回执在同事务中写 SIDE_EFFECT_COMPLETED（SUCCEEDED）或 SIDE_EFFECT_UNKNOWN（失败/取消/不确定终态）。
+
+T05 completeAttempt 必须锁定并验证 Worker lease 仍为 ACTIVE 且 expires_at 晚于数据库当前时间；过期 Worker 即使 Recovery 扫描尚未发生，也不得提交 BranchOutput 或完成 Attempt。
+
+**最新 PG17 验证：** Actions Run 44504186093 SUCCESS，代码基线 9547f4ec4ecf5506f34b29a5bab42be4c6c235f3；Java 集成测试 7/7，CON-01..14 14/14。
