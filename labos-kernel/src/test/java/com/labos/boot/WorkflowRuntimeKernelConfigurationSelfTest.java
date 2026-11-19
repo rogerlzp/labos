@@ -7,6 +7,7 @@ import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 import org.apache.ibatis.builder.xml.XMLMapperBuilder;
 import org.apache.ibatis.session.Configuration;
+import org.apache.ibatis.reflection.ParamNameResolver;
 import org.apache.ibatis.io.Resources;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -72,18 +73,25 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                 "tenant-scoped Runtime metadata statement missing");
 
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowHeader",
-                Map.of("tenantId", 7L, "workflowId", 9L), 2,
+                mapperParams(mybatis, "selectRuntimeWorkflowHeader"), 2,
                 "tenant_id", "id", "deleted_at");
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectGraphXml",
-                Map.of("tenantId", 7L, "workflowId", 9L), 2,
+                mapperParams(mybatis, "selectGraphXml"), 2,
                 "tenant_id", "id", "deleted_at");
         assertBoundSql(mybatis, "com.labos.kernel.persistence.GraphMapper.selectRuntimeWorkflowNodeMetadata",
-                Map.of("tenantId", 7L, "workflowId", 9L), 2,
+                mapperParams(mybatis, "selectRuntimeWorkflowNodeMetadata"), 2,
                 "tenant_id", "workflow_id", "c.tenant_id", "n.tenant_id");
 
         System.out.println("Workflow Runtime Kernel Spring composition and MyBatis binding：通过 25 / 失败 0");
     }
 
+
+
+    private static Object mapperParams(Configuration configuration, String methodName) throws Exception {
+        var method = GraphMapper.class.getMethod(methodName, long.class, long.class);
+        var resolver = new ParamNameResolver(configuration, method);
+        return resolver.getNamedParams(new Object[]{7L, 9L});
+    }
 
     private static void assertBoundSql(Configuration configuration, String statementId,
                                         Object parameters, int expectedParameterCount,
