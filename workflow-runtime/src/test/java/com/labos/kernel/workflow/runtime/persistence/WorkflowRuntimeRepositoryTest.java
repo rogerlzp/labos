@@ -6,6 +6,7 @@ import com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService
 import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 
 import java.sql.Connection;
@@ -42,7 +43,14 @@ class WorkflowRuntimeRepositoryTest {
                     tenant+"','it-"+tenant+"','integration')");
         }
 
-        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var sharedTransactionManager = new DataSourceTransactionManager(ds);
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,sharedTransactionManager);
+        String rollbackKey="kernel-tenant:rollback-"+UUID.randomUUID();
+        assertThrows(IllegalStateException.class, () -> new TransactionTemplate(sharedTransactionManager).execute(status -> {
+            repo.resolveTenantId(rollbackKey,"must roll back with outer Kernel transaction");
+            throw new IllegalStateException("force outer rollback");
+        }));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.tenant WHERE tenant_key='"+rollbackKey+"'"));
         String stableTenantKey="kernel-tenant:"+UUID.randomUUID();
         UUID mappedTenant=repo.resolveTenantId(stableTenantKey,"Kernel integration tenant");
         assertEquals(mappedTenant,repo.resolveTenantId(stableTenantKey,"Kernel integration tenant"));
