@@ -398,4 +398,40 @@ class WorkflowRuntimeRepositoryTest {
             try(var rs=ps.executeQuery()) { assertTrue(rs.next()); return rs.getObject(1,UUID.class); }
         } catch(Exception e) { throw new RuntimeException(e); }
     }
+    @Test
+    void interruptedDispatchedAttemptIsAbandonedAndItsOutboxIsNotReplayed() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection connection=ds.getConnection(); Statement statement=connection.createStatement()) {
+            statement.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','restart-dispatched-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds);
+        var run=repo.createRun(tenant,"restart-dispatched-"+UUID.randomUUID(),"CREATE","{}",
+                "restart-dispatched-flow-"+tenant,"1",new byte[32],"ci","{}","{}","dispatch-node");
+        repo.startRun(tenant,run.runId());
+        var reservation=repo.reserveCapacity(tenant,run.runId(),"restart-dispatched-cap",1,
+                "dispatch-node","PURE",Instant.now().plusSeconds(120));
+        repo.dispatchAttempt(tenant,run.runId(),reservation.attemptId(),"worker-q",
+                "{\"attemptId\":\""+reservation.attemptId()+"\"}");
+        var workerMessage=repo.beginOutboxSend(tenant,10).stream()
+                .filter(message -> message.dedupKey().equals("dispatch:"+reservation.attemptId()))
+                .findFirst().orElseThrow();
+
+        var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
+        var startup=recovery.recoverAtStartup(20,"startup");
+        var recovered=startup.items().stream()
+                .filter(item -> item.candidate().attemptId().equals(reservation.attemptId()))
+                .findFirst().orElseThrow();
+
+        assertEquals("DISPATCHED",scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND attempt_state='ABANDONED_SAFE'")==1
+                ? "DISPATCHED" : "NOT_ABANDONED");
+        assertEquals("SAFE_TO_RETRY",recovered.result().outcome());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"+
+                tenant+"' AND outbox_id='"+workerMessage.outboxId()+"' AND outbox_state='DEAD_LETTER'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"+
+                tenant+"' AND dedup_key='dispatch:"+reservation.attemptId()+"' AND outbox_state IN ('PENDING','SENDING')"));
+    }
+
 }
