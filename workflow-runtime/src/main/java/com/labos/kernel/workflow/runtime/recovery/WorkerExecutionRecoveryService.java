@@ -11,9 +11,10 @@ import java.util.UUID;
 /**
  * Recovery coordinator for the single Runtime Host process.
  *
- * <p>It does not acquire ownership from another process. On startup it
- * reconciles durable SENDING outbox rows and interrupted Attempts. Local
- * cancellation is best-effort and never treated as proof of physical stop.
+ * <p>Run after acquiring the local host lock and before starting WorkerPool
+ * or Outbox dispatch. It does not elect a leader or acquire ownership from
+ * another process. Local cancellation is best-effort and never proves that
+ * a physical device action has stopped.
  */
 public final class WorkerExecutionRecoveryService {
     private final WorkflowRuntimeRepository repository;
@@ -27,17 +28,25 @@ public final class WorkerExecutionRecoveryService {
 
     public record RecoveryItem(WorkflowRuntimeRepository.InterruptedAttempt candidate,
                                 WorkflowRuntimeRepository.WorkerRecoveryResult result) {}
+
     public record StartupResult(WorkflowRuntimeRepository.OutboxRestartResult outbox,
                                 int scanned, int safeToRetry, int manualRequired,
                                 int skipped, List<RecoveryItem> items) {
         public StartupResult { items = List.copyOf(items); }
     }
 
-    /** Run once before the Host opens the scheduling gate. */
+    /**
+     * Reconcile one bounded batch of in-flight Attempts before opening dispatch.
+     * If scanned == limit, call again before starting the WorkerPool/Dispatcher.
+     */
     public StartupResult recoverAtStartup(int limit, String recoveryActor) {
+        if (limit < 1 || limit > 1000)
+            throw new IllegalArgumentException("Recovery batch limit must be 1..1000");
         if (recoveryActor == null || recoveryActor.isBlank())
             throw new IllegalArgumentException("recoveryActor is required");
-        var outbox = repository.recoverOutboxAfterRestart();
+        if (registry.activeCount() != 0)
+            throw new IllegalStateException("Startup recovery must run before local Workers are started");
+
         List<WorkflowRuntimeRepository.InterruptedAttempt> candidates =
                 repository.findInterruptedAttempts(limit);
         List<RecoveryItem> items = new ArrayList<>(candidates.size());
@@ -52,7 +61,11 @@ public final class WorkerExecutionRecoveryService {
                 default -> skipped++;
             }
         }
-        return new StartupResult(outbox,candidates.size(),safe,manual,skipped,items);
+
+        // Attempt reconciliation must precede Outbox replay. In particular,
+        // a Worker_DISPATCH for an ACCEPTED/STARTED Attempt must not be replayed.
+        var outbox = repository.recoverOutboxAfterRestart();
+        return new StartupResult(outbox, candidates.size(), safe, manual, skipped, items);
     }
 
     /** Cancel a live local Worker first, then reconcile from durable facts. */
