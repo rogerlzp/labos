@@ -54,6 +54,8 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                     "WorkflowRunFactory bean missing");
             require(context.getBean(WorkflowRuntimeKernelConfiguration.WorkflowRuntimeTenantResolver.class) != null,
                     "WorkflowRuntimeTenantResolver bean missing");
+            require(context.getBean(WorkflowRuntimeKernelFacade.class) != null,
+                    "WorkflowRuntimeKernelFacade bean missing");
             require(context.getBeansOfType(com.labos.kernel.workflow.runtime.host.RuntimeHost.class).isEmpty(),
                     "RuntimeHost must not start before execution adapters/coordinator are implemented");
         }
