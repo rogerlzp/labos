@@ -3207,7 +3207,7 @@ eventSeq 在同一 Run 内严格递增，但允许因事务回滚前的数据库
 
 ### 31.7.3 Checkpoint 一致快照
 
-V1 选用 PostgreSQL MVCC。Checkpoint 使用单个 REPEATABLE READ 只读事务，在同一事务快照中读取 Run 与所有子表投影；runCommitVersion、eventSeqHighWatermark 和 payload 必须来自同一 snapshot。不得以“锁住 Run 并暂停提交”作为默认实现路径，也不得在 Coordinator mailbox 中等待其他事务排空。若未来数据库不提供等价一致快照，则必须另行 ADR 设计 quiesce/barrier 协议。
+V1 选用 PostgreSQL MVCC。Checkpoint 使用单个 REPEATABLE READ 事务，在同一事务快照中读取 Run 与所有子表投影，并在同一事务内写入 Checkpoint metadata/payload；runCommitVersion、eventSeqHighWatermark 和 payload 必须来自同一 snapshot。不得以“锁住 Run 并暂停提交”作为默认实现路径，也不得在 Coordinator mailbox 中等待其他事务排空。若未来数据库不提供等价一致快照，则必须另行 ADR 设计 quiesce/barrier 协议。
 
 Checkpoint 必须在一个一致性数据库快照中读取 Run、Token、Activation、Attempt、Split/Branch/Join、Loop、Variable、Wait、Command、Lease 和 Inbox/Outbox 投影。记录 runCommitVersion、eventSeqHighWatermark、coordinatorEpoch、definitionHash、payloadHash。所有读取必须对应同一 MVCC snapshot/read timestamp；若数据库不支持跨表一致快照，必须通过 Run 锁定并暂停该 Run 的状态提交，或使用等价快照协议。禁止多次非一致读取拼接快照。Checkpoint 只加速恢复，不能取代 Event/Command Ledger 的事实记录。
 
@@ -3584,6 +3584,7 @@ V1 不支持的定义必须在 WorkflowCompiler 阶段给出稳定错误码和�
 - Mavis F8：**采纳**。设备完成不因共享变量 CAS 冲突而丢失；设备输出与 Run Variable 聚合分离。
 - Mavis F9：**登记为容量压测项**。Run 行锁热点必须与 WorkerPool/Run quota 一并压测，不改变 V1 单 Run 单写者正确性模型。
 - Mavis F10：**采纳并关闭设计歧义**。V1 使用 PostgreSQL MVCC REPEATABLE READ Checkpoint；不采用未定义的“暂停 Run 提交”。
+- 并行网关评审中关于单 Run 单写者 Coordinator、有界全局 WorkerPool、禁止 ForkJoin commonPool 和禁止 Worker 阻塞等待子任务的建议：**保留为新 Runtime 的实现约束**，这些原则已体现在 §8/§10；关于旧 GraphRunner 锁改造、渐进迁移和历史行为兼容的建议：**不纳入本新系统实施范围**。
 - Mavis 对存量 GraphRunner 迁移、历史流程扫描和旧数据映射的意见：**不纳入本新系统规范**。新 Runtime 不承担历史兼容、迁移副作用或旧代码搬迁约束；业务领域所需的物料/台账事实仍由新系统的 Domain Service/Handler 显式定义，不作为旧表兼容要求。
 
 ## 41.3 实施验证状态
