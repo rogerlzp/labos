@@ -195,3 +195,13 @@ psql -d labos_runtime_test -c "SELECT schemaname, tablename FROM pg_tables WHERE
 ```
 
 本文件不把“DDL 文件存在”写成“数据库设计全部 PASS”。数据库结构只有在目标 PG17 执行、catalog/约束核对、T01–T23 双连接竞态与故障测试完成后，才可从 UNKNOWN 升级。
+
+
+## 9. SQL 实现与 CI 验证工件（2026-11-19 补充）
+
+- PostgreSQL 17 Schema 合同检查：`db/workflow_runtime/002_schema_contract.sql`。检查 31 张核心表、关键部分唯一索引，并在事务回滚的夹具中验证一个 Attempt 不能创建两个 Command、一个 Token 不能有两个活动 Activation、一个 Activation 不能有两个活动 Attempt、隔离 Lease 不能被新 Lease 抢占、Run event_seq 不能重复。
+- 双连接并发测试：`db/workflow_runtime/tests/test_pg_concurrency.py`。真实独立连接并发竞争同 Token 的 live Activation，以及容量为 1 的 SchedulerCapacity；期望分别为单一胜者和不超卖。
+- GitHub Actions：`.github/workflows/workflow-runtime-db.yml`。在 PostgreSQL 17 服务容器中执行空库 DDL、Schema 合同和并发测试。
+- T01–T23 SQL 实现合同：`docs/LabOS-Workflow-Runtime-T01-T23-SQL实现契约-v1.0-20261119.md`。
+
+**验证边界：** 本轮环境没有可用的 PostgreSQL 客户端/服务，也没有本地 Docker/Podman，因此没有在当前会话实际执行 SQL。CI 已配置为在 GitHub Actions 上执行；在取得成功的 workflow run 结果前，DDL 语法、目录检查与并发测试仍标记为 UNKNOWN。CI 通过也只证明当前合同覆盖的数据库结构和两类竞态，不等价于 T01–T23 全部事务已实现或全量故障矩阵通过。
