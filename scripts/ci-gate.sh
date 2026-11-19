@@ -88,7 +88,7 @@ if [[ "$WANT_FAST" == "1" ]]; then
   N=${N:-0}; F=${F:-1}
   if [[ "$F" != "0" ]]; then
     fail "Java 纯逻辑单测有失败（$F 条）"
-    echo "$OUT" | grep -E '✘|✗|无法解析输出|编译失败' | head -20
+    echo "$OUT" | grep -E '✘|✗|无法解析输出|编译失败|error:|cannot find symbol|程序包|找不到符号|ClassNotFoundException|找不到或无法加载主类' | head -30
   else
     pass "Java 纯逻辑单测 $N / 0"
   fi
