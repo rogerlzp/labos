@@ -1051,7 +1051,7 @@ public final class WorkflowRuntimeRepository {
             String[] parts=identity.get(0).split("\\|",2);
             UUID attemptId=UUID.fromString(parts[0]); String deviceId=parts[1];
             RunHead head=lockRun(tenantId,runId);
-            if (!List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","CANCELLED",
+            if (!List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","CANCEL_REQUESTED","CANCELLED",
                     "DELIVERY_UNKNOWN","UNKNOWN","MANUAL_REQUIRED").contains(targetState))
                 throw new IllegalArgumentException("Unsupported device Command state: "+targetState);
             UUID activationId=jdbc.queryForObject("""
@@ -1501,7 +1501,7 @@ public final class WorkflowRuntimeRepository {
                 UPDATE workflow_runtime.command_ledger SET command_state='UNKNOWN',
                        version=version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND command_id=? AND command_state IN
-                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN')
+                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','CANCEL_REQUESTED','DELIVERY_UNKNOWN')
                 """,tenantId,commandId);
             if(changed==1) {
                 appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-unknown:"+commandId,
@@ -1632,7 +1632,7 @@ public final class WorkflowRuntimeRepository {
             Integer ambiguousCommands=jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND attempt_id=? AND command_state IN
-                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
+                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','CANCEL_REQUESTED','DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
                 """,Integer.class,tenantId,attemptId);
             if((sideEffects==null||sideEffects==0) && (ambiguousCommands==null||ambiguousCommands==0)) {
                 jdbc.update("""
@@ -1675,11 +1675,25 @@ public final class WorkflowRuntimeRepository {
                 return new WorkerRecoveryResult("SAFE_TO_RETRY",null);
             }
 
+            // Unsent commands must not remain dispatchable while the Run is blocked.
+            jdbc.update("""
+                UPDATE workflow_runtime.command_ledger SET command_state='CANCELLED',
+                       version=version+1,completed_at=clock_timestamp(),updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND attempt_id=? AND command_state IN ('CREATED','DISPATCH_PENDING')
+                """,tenantId,attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                 WHERE tenant_id=? AND message_kind='DEVICE_COMMAND'
+                   AND outbox_state IN ('PENDING','SENDING')
+                   AND payload->>'commandId' IN
+                     (SELECT command_id::text FROM workflow_runtime.command_ledger
+                       WHERE tenant_id=? AND attempt_id=? AND command_state='CANCELLED')
+                """,tenantId,tenantId,attemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state='UNKNOWN',
                        version=version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND attempt_id=? AND command_state IN
-                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN')
+                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','CANCEL_REQUESTED','DELIVERY_UNKNOWN')
                 """,tenantId,attemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.command_dispatch_attempt SET dispatch_state='DELIVERY_UNKNOWN',
