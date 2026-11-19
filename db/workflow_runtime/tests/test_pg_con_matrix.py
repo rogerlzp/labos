@@ -57,7 +57,7 @@ def con01():
     assert sorted(race(complete))==["stale","won"]
 
 def con02():
-    t,r,token=seed(); split,branch=uuid.uuid4(),uuid.uuid4()
+    t,r,token=seed(); source,_,_=attempt_fixture(t,r,token); split,branch=uuid.uuid4(),uuid.uuid4()
     with connect() as c,c.cursor() as q:
         q.execute("""INSERT INTO workflow_runtime.split_activation
           (tenant_id,split_id,run_id,source_activation_id,split_state,expected_branch_count)
@@ -72,7 +72,7 @@ def con02():
     assert sorted(race(arrive))==["stale","won"]
 
 def con03():
-    t,r,token=seed(); split=uuid.uuid4(); branches=[uuid.uuid4(),uuid.uuid4()]
+    t,r,token=seed(); source,_,_=attempt_fixture(t,r,token); split=uuid.uuid4(); branches=[uuid.uuid4(),uuid.uuid4()]
     with connect() as c,c.cursor() as q:
         q.execute("""INSERT INTO workflow_runtime.split_activation
           (tenant_id,split_id,run_id,source_activation_id,split_state,expected_branch_count)
