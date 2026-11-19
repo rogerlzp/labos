@@ -147,9 +147,15 @@ public final class WorkflowRuntimeStateMachine {
     public static boolean canTransition(CommandStatus from, CommandStatus to) { return allowed(COMMAND, from, to); }
     public static boolean canTransition(LeaseStatus from, LeaseStatus to) { return allowed(LEASE, from, to); }
 
-    /** Clearing a quarantined lease is never an ordinary state transition. */
+    /** Quarantine exits are explicit evidence-bearing decisions, never ordinary transitions. */
     public static boolean canClearQuarantinedLease(boolean authoritativeEvidence, boolean authorized) {
         return authoritativeEvidence && authorized;
+    }
+
+    public static boolean canReconcileQuarantinedJoin(
+            JoinStatus target, boolean authoritativeEvidence, boolean authorized) {
+        return authoritativeEvidence && authorized
+                && (target == JoinStatus.WAITING || target == JoinStatus.CLOSED_FAILED);
     }
 
     public static void requireTransition(RunStatus from, RunStatus to) { require(canTransition(from, to), from, to); }
