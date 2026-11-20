@@ -9,11 +9,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
-/**
- * Creates a Run from the current authoritative BPMN definition.
- * The compiled GraphPlan is persisted by createRun as an immutable definition snapshot;
- * subsequent execution/recovery must use that snapshot, never re-read the mutable BPMN row.
- */
+/** Creates a Run from the current authoritative BPMN definition. */
 public final class WorkflowRunFactory {
     private final WorkflowDefinitionSource definitions;
     private final BpmnGraphCompiler compiler;
@@ -28,12 +24,13 @@ public final class WorkflowRunFactory {
     }
 
     public WorkflowRuntimeRepository.CreatedRun create(
-            UUID runtimeTenantId, long legacyWorkflowId, String requestId,
-            String inputJson, String canonicalRequestJson) {
-        Objects.requireNonNull(runtimeTenantId,"runtimeTenantId");
+            UUID runtimeScopeId, long legacyKernelDataScopeId, long legacyWorkflowId,
+            String requestId, String inputJson, String canonicalRequestJson) {
+        Objects.requireNonNull(runtimeScopeId,"runtimeScopeId");
+        if(legacyKernelDataScopeId<=0) throw new IllegalArgumentException("legacy Kernel data scope must be positive");
         if(legacyWorkflowId<=0) throw new IllegalArgumentException("workflowId must be positive");
         WorkflowDefinitionSource.WorkflowDefinition source=definitions.load(
-                runtimeTenantId,legacyWorkflowId);
+                legacyKernelDataScopeId,legacyWorkflowId);
         if(source==null) throw new IllegalArgumentException("Workflow definition not found");
         Map<String,BpmnGraphCompiler.NodeMetadata> metadata=source.nodeMetadata().entrySet().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(
@@ -41,12 +38,12 @@ public final class WorkflowRunFactory {
                         e->new BpmnGraphCompiler.NodeMetadata(e.getValue().capabilityCode(),
                                 e.getValue().workflowNodeId())));
         GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput(
-                runtimeTenantId + ":" + source.workflowId(),source.version(),source.bpmnXml(),metadata));
+                "labos:" + source.workflowId(),source.version(),source.bpmnXml(),metadata));
         String firstNode=firstNode(plan);
         byte[] definitionHash=java.util.HexFormat.of().parseHex(plan.bpmnSha256());
         String stableInput=inputJson==null?"{}":inputJson;
         String canonical=canonicalRequestJson==null?stableInput:canonicalRequestJson;
-        return repository.createRun(runtimeTenantId,requestId,"BPMN_WORKFLOW",
+        return repository.createRun(runtimeScopeId,requestId,"BPMN_WORKFLOW",
                 canonical,plan.definitionKey(),plan.definitionVersion(),definitionHash,
                 plan.compilerVersion(),GraphPlanCodec.toJson(plan),stableInput,firstNode);
     }
@@ -59,5 +56,4 @@ public final class WorkflowRunFactory {
             throw new IllegalArgumentException("V1 startEvent must have exactly one outgoing sequenceFlow");
         return outgoing.get(0).to();
     }
-
 }

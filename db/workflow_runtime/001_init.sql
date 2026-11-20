@@ -15,6 +15,10 @@ CREATE TABLE tenant (
   created_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
+INSERT INTO tenant (tenant_id, tenant_key, display_name)
+VALUES ('00000000-0000-0000-0000-000000000001', 'labos-runtime', 'LabOS Runtime')
+ON CONFLICT (tenant_id) DO NOTHING;
+
 CREATE TABLE definition_snapshot (
   tenant_id uuid NOT NULL REFERENCES tenant,
   definition_id uuid NOT NULL DEFAULT gen_random_uuid(),

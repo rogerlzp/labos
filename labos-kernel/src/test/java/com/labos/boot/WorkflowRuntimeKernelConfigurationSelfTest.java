@@ -53,8 +53,6 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                     "WorkflowDefinitionSource bean missing");
             require(context.getBean(WorkflowRunFactory.class) != null,
                     "WorkflowRunFactory bean missing");
-            require(context.getBean(WorkflowRuntimeKernelConfiguration.WorkflowRuntimeTenantResolver.class) != null,
-                    "WorkflowRuntimeTenantResolver bean missing");
             require(context.getBean(WorkflowRuntimeKernelFacade.class) != null,
                     "WorkflowRuntimeKernelFacade bean missing");
             require(context.getBeansOfType(com.labos.kernel.workflow.runtime.host.RuntimeHost.class).isEmpty(),

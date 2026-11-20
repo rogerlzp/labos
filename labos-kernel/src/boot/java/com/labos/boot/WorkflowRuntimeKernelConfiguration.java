@@ -17,45 +17,31 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Spring Boot composition root for the embedded, single-process Workflow Runtime.
- *
- * <p>All Runtime JDBC work uses the exact Kernel DataSource and transaction manager.
- * No Runtime-owned pool or transaction manager is created here.
- */
+/** Embedded, single-process Workflow Runtime composition root. */
 @Configuration
 public class WorkflowRuntimeKernelConfiguration {
-
     @Bean
     public WorkflowRuntimeRepository workflowRuntimeRepository(
             DataSource dataSource, PlatformTransactionManager transactionManager) {
         return new WorkflowRuntimeRepository(dataSource, transactionManager);
     }
 
-    @Bean
-    public BpmnGraphCompiler bpmnGraphCompiler() {
-        return new BpmnGraphCompiler();
-    }
+    @Bean public BpmnGraphCompiler bpmnGraphCompiler() { return new BpmnGraphCompiler(); }
 
     @Bean
     public WorkflowDefinitionSource workflowDefinitionSource(
-            GraphMapper graphMapper, WorkflowRuntimeRepository repository,
-            PlatformTransactionManager transactionManager) {
+            GraphMapper graphMapper, PlatformTransactionManager transactionManager) {
         LegacyKernelWorkflowDefinitionSource adapter = new LegacyKernelWorkflowDefinitionSource(
-                repository::findTenantKey,
                 (legacyTenantId, workflowId) -> {
                     Map<String, Object> header =
                             graphMapper.selectRuntimeWorkflowHeader(legacyTenantId, workflowId);
                     if (header == null || header.isEmpty()) return null;
-
                     String bpmnXml = graphMapper.selectGraphXml(legacyTenantId, workflowId);
                     if (bpmnXml == null || bpmnXml.isBlank())
                         throw new IllegalStateException("Workflow has no persisted BPMN XML: " + workflowId);
-
                     Object versionValue = header.get("version");
                     if (versionValue == null || versionValue.toString().isBlank())
                         throw new IllegalStateException("Workflow definition version is missing: " + workflowId);
-
                     List<Map<String, Object>> rows =
                             graphMapper.selectRuntimeWorkflowNodeMetadata(legacyTenantId, workflowId);
                     Map<String, WorkflowDefinitionSource.NodeMetadata> metadata = new LinkedHashMap<>();
@@ -76,60 +62,27 @@ public class WorkflowRuntimeKernelConfiguration {
                     Object updatedAt = header.get("updatedAt");
                     if (updatedAt == null)
                         throw new IllegalStateException("Workflow updated_at is missing: " + workflowId);
-                    // workflow.version is a business label and is not advanced by every graph save.
-                    // Pair it with updated_at so the compiled definition revision is content-edit aware.
                     String definitionVersion = versionValue + "@" + updatedAt;
                     return new LegacyKernelWorkflowDefinitionSource.LegacyDefinition(
                             definitionVersion, bpmnXml, metadata);
                 });
-
-        // Header, BPMN XML and workflow_node metadata must describe one committed revision.
-        // Force a dedicated repeatable-read transaction even if the caller already has a
-        // lower-isolation transaction; otherwise three READ COMMITTED statements can mix revisions.
         TransactionTemplate definitionRead = new TransactionTemplate(transactionManager);
         definitionRead.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         definitionRead.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         definitionRead.setReadOnly(true);
-        return (runtimeTenantId, workflowId) ->
-                definitionRead.execute(status -> adapter.load(runtimeTenantId, workflowId));
+        return (legacyTenantId, workflowId) ->
+                definitionRead.execute(status -> adapter.load(legacyTenantId, workflowId));
     }
 
     @Bean
     public WorkflowRunFactory workflowRunFactory(
-            WorkflowDefinitionSource definitions,
-            BpmnGraphCompiler compiler,
+            WorkflowDefinitionSource definitions, BpmnGraphCompiler compiler,
             WorkflowRuntimeRepository repository) {
         return new WorkflowRunFactory(definitions, compiler, repository);
     }
 
     @Bean
-    public WorkflowRuntimeTenantResolver workflowRuntimeTenantResolver(
-            WorkflowRuntimeRepository repository) {
-        return new WorkflowRuntimeTenantResolver(repository);
-    }
-
-    @Bean
-    public WorkflowRuntimeKernelFacade workflowRuntimeKernelFacade(
-            WorkflowRuntimeTenantResolver tenants, WorkflowRunFactory runs) {
-        return new WorkflowRuntimeKernelFacade(tenants, runs);
-    }
-
-    /**
-     * Explicit, durable bridge from the legacy bigint tenant id to Runtime UUID.
-     * The key is stable across restarts and must not be replaced with a random UUID.
-     */
-    public static final class WorkflowRuntimeTenantResolver {
-        private final WorkflowRuntimeRepository repository;
-
-        private WorkflowRuntimeTenantResolver(WorkflowRuntimeRepository repository) {
-            this.repository = repository;
-        }
-
-        public java.util.UUID resolve(long kernelTenantId) {
-            if (kernelTenantId <= 0) throw new IllegalArgumentException("Kernel tenant id must be positive");
-            return repository.resolveTenantId(
-                    LegacyKernelWorkflowDefinitionSource.TENANT_KEY_PREFIX + kernelTenantId,
-                    "Kernel tenant " + kernelTenantId);
-        }
+    public WorkflowRuntimeKernelFacade workflowRuntimeKernelFacade(WorkflowRunFactory runs) {
+        return new WorkflowRuntimeKernelFacade(runs);
     }
 }
