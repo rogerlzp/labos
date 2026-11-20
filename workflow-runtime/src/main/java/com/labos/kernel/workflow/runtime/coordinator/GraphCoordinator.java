@@ -260,6 +260,14 @@ public final class GraphCoordinator {
         return Map.copyOf(immutable);
     }
 
+    /** Validate the full G1 execution subset before a Run is created or advanced. */
+    public static void validateGraphPlan(GraphPlan plan) {
+        Objects.requireNonNull(plan,"plan");
+        Map<String,GraphPlan.Node> nodes=indexNodes(plan);
+        Map<String,List<GraphPlan.Edge>> outgoing=indexOutgoing(plan,nodes);
+        validatePlan(plan,nodes,outgoing);
+    }
+
     static void validatePlan(GraphPlan plan, Map<String, GraphPlan.Node> nodes,
                              Map<String, List<GraphPlan.Edge>> outgoing) {
         for (GraphPlan.Node node : plan.nodes()) {
