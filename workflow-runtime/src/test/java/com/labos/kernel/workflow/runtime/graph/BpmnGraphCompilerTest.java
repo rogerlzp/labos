@@ -61,9 +61,9 @@ class BpmnGraphCompilerTest {
                 "terminateEventDefinition", "errorEventDefinition", "escalationEventDefinition",
                 "conditionalEventDefinition", "cancelEventDefinition", "compensateEventDefinition",
                 "linkEventDefinition")) {
-            String xml="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\">"+
-                    "<bpmn:startEvent id=\\"s\\"><bpmn:"+definition+"/></bpmn:startEvent>"+
-                    "<bpmn:endEvent id=\\"e\\"/><bpmn:sequenceFlow id=\\"f\\" sourceRef=\\"s\\" targetRef=\\"e\\"/>"+
+            String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                    "<bpmn:startEvent id=\"s\"><bpmn:"+definition+"/></bpmn:startEvent>"+
+                    "<bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"e\"/>"+
                     "</bpmn:process></bpmn:definitions>";
             IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                     new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())), definition);
@@ -84,14 +84,14 @@ class BpmnGraphCompilerTest {
     }
 
     private static String gatewayXml(int incoming,int outgoing) {
-        StringBuilder xml=new StringBuilder("<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\">"+
-                "<bpmn:startEvent id=\\"s\\"/><bpmn:parallelGateway id=\\"g\\"/>"+
-                "<bpmn:task id=\\"a\\"/><bpmn:task id=\\"b\\"/><bpmn:endEvent id=\\"e\\"/>");
-        if(incoming>0) xml.append("<bpmn:sequenceFlow id=\\"in0\\" sourceRef=\\"s\\" targetRef=\\"g\\"/>");
-        if(incoming>1) xml.append("<bpmn:sequenceFlow id=\\"in1\\" sourceRef=\\"a\\" targetRef=\\"g\\"/>");
-        if(outgoing>0) xml.append("<bpmn:sequenceFlow id=\\"out0\\" sourceRef=\\"g\\" targetRef=\\"a\\"/>");
-        if(outgoing>1) xml.append("<bpmn:sequenceFlow id=\\"out1\\" sourceRef=\\"g\\" targetRef=\\"b\\"/>");
-        xml.append("<bpmn:sequenceFlow id=\\"tail\\" sourceRef=\\"b\\" targetRef=\\"e\\"/>");
+        StringBuilder xml=new StringBuilder("<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"g\"/>"+
+                "<bpmn:task id=\"a\"/><bpmn:task id=\"b\"/><bpmn:endEvent id=\"e\"/>");
+        if(incoming>0) xml.append("<bpmn:sequenceFlow id=\"in0\" sourceRef=\"s\" targetRef=\"g\"/>");
+        if(incoming>1) xml.append("<bpmn:sequenceFlow id=\"in1\" sourceRef=\"a\" targetRef=\"g\"/>");
+        if(outgoing>0) xml.append("<bpmn:sequenceFlow id=\"out0\" sourceRef=\"g\" targetRef=\"a\"/>");
+        if(outgoing>1) xml.append("<bpmn:sequenceFlow id=\"out1\" sourceRef=\"g\" targetRef=\"b\"/>");
+        xml.append("<bpmn:sequenceFlow id=\"tail\" sourceRef=\"b\" targetRef=\"e\"/>");
         return xml.append("</bpmn:process></bpmn:definitions>").toString();
     }
 
