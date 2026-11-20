@@ -1091,12 +1091,12 @@ public final class WorkflowRuntimeRepository {
                         SELECT join_key FROM workflow_runtime.join_activation
                          WHERE tenant_id=? AND split_id=? FOR UPDATE
                         """,(rs,n)->rs.getString(1),tenantId,splitId);
-                    if(existingJoinKeys.stream().anyMatch(key -> !"$END".equals(key)))
+                    if(existingJoinKeys.stream().anyMatch(key -> !key.isEmpty()))
                         throw new InvalidTransitionException("A Split cannot mix terminal branches with a synchronizing Join");
                     jdbc.update("""
                         INSERT INTO workflow_runtime.join_activation
                           (tenant_id,join_id,run_id,split_id,join_key,join_state)
-                        VALUES (?,?,?,?,'$END','WAITING')
+                        VALUES (?,?,?,?,'','WAITING')
                         ON CONFLICT (tenant_id,split_id,join_key) DO NOTHING
                         """,tenantId,UUID.randomUUID(),runId,splitId);
                     int arrived=jdbc.update("""
@@ -1119,7 +1119,7 @@ public final class WorkflowRuntimeRepository {
                             jdbc.update("""
                                 UPDATE workflow_runtime.join_activation SET join_state='RELEASED',
                                        released_at=clock_timestamp(),version=version+1
-                                 WHERE tenant_id=? AND split_id=? AND join_key='$END' AND join_state='WAITING'
+                                 WHERE tenant_id=? AND split_id=? AND join_key='' AND join_state='WAITING'
                                 """,tenantId,splitId);
                             jdbc.update("""
                                 UPDATE workflow_runtime.split_activation SET split_state='CLOSED',
