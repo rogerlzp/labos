@@ -25,7 +25,7 @@ import java.util.function.BiConsumer;
  * Supports programmable command handlers, custom heartbeat handlers, {@code EVENT_ACK}/{@code EVENT_NACK}
  * recording and callbacks, forced disconnect, and raw frame injection.
  */
-final class MockTcpDeviceServer implements AutoCloseable {
+public final class MockTcpDeviceServer implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final String deviceId;
@@ -48,7 +48,7 @@ final class MockTcpDeviceServer implements AutoCloseable {
             new AtomicReference<>((frame, session) -> {});
     private final Thread acceptThread;
 
-    final class ClientSession {
+    public final class ClientSession {
         private final Socket socket;
         private final OutputStream out;
 
@@ -57,16 +57,16 @@ final class MockTcpDeviceServer implements AutoCloseable {
             this.out = socket.getOutputStream();
         }
 
-        synchronized void sendJson(ObjectNode node) throws IOException {
+        public synchronized void sendJson(ObjectNode node) throws IOException {
             sendRawLine(JSON.writeValueAsString(node));
         }
 
-        synchronized void sendRawLine(String line) throws IOException {
+        public synchronized void sendRawLine(String line) throws IOException {
             out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
             out.flush();
         }
 
-        synchronized void sendDeviceEvent(
+        public synchronized void sendDeviceEvent(
                 String claimedDeviceId, String runId, String commandId,
                 String sourceMessageId, String messageType, String targetState,
                 String deviceSequence, String outcomeJson) throws IOException {
@@ -83,11 +83,11 @@ final class MockTcpDeviceServer implements AutoCloseable {
             sendJson(node);
         }
 
-        synchronized void sendHeartbeatPong(String pingId) throws IOException {
+        public synchronized void sendHeartbeatPong(String pingId) throws IOException {
             sendHeartbeatPong(deviceId, pingId);
         }
 
-        synchronized void sendHeartbeatPong(String pongDeviceId, String pingId) throws IOException {
+        public synchronized void sendHeartbeatPong(String pongDeviceId, String pingId) throws IOException {
             ObjectNode pong = JSON.createObjectNode();
             pong.put("frameType", GatewayWireProtocol.FRAME_HEARTBEAT_PONG);
             if (pongDeviceId != null) pong.put("deviceId", pongDeviceId);
@@ -96,7 +96,7 @@ final class MockTcpDeviceServer implements AutoCloseable {
             sendJson(pong);
         }
 
-        void forceClose() {
+        public void forceClose() {
             try {
                 socket.close();
             } catch (IOException ignored) {
@@ -104,7 +104,7 @@ final class MockTcpDeviceServer implements AutoCloseable {
         }
     }
 
-    MockTcpDeviceServer(String deviceId) throws IOException {
+    public MockTcpDeviceServer(String deviceId) throws IOException {
         this.deviceId = Objects.requireNonNull(deviceId, "deviceId");
         this.serverSocket = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
         this.acceptThread = new Thread(this::acceptLoop, "mock-tcp-accept-" + deviceId);
@@ -112,63 +112,63 @@ final class MockTcpDeviceServer implements AutoCloseable {
         this.acceptThread.start();
     }
 
-    int port() {
+    public int port() {
         return serverSocket.getLocalPort();
     }
 
-    TcpDeviceConnection.Endpoint endpoint() {
+    public TcpDeviceConnection.Endpoint endpoint() {
         return new TcpDeviceConnection.Endpoint(deviceId, "127.0.0.1", port());
     }
 
-    void setCommandHandler(BiConsumer<JsonNode, ClientSession> handler) {
+    public void setCommandHandler(BiConsumer<JsonNode, ClientSession> handler) {
         this.commandHandler.set(Objects.requireNonNull(handler, "handler"));
     }
 
-    void setCustomPingHandler(BiConsumer<JsonNode, ClientSession> handler) {
+    public void setCustomPingHandler(BiConsumer<JsonNode, ClientSession> handler) {
         this.customPingHandler.set(handler);
     }
 
-    void setEventAckOrNackHandler(BiConsumer<JsonNode, ClientSession> handler) {
+    public void setEventAckOrNackHandler(BiConsumer<JsonNode, ClientSession> handler) {
         this.eventAckOrNackHandler.set(Objects.requireNonNull(handler, "handler"));
     }
 
-    void setReplyToHeartbeats(boolean enabled) {
+    public void setReplyToHeartbeats(boolean enabled) {
         this.replyToHeartbeats.set(enabled);
     }
 
-    int acceptedConnections() {
+    public int acceptedConnections() {
         return acceptedConnections.get();
     }
 
-    int heartbeatsReceived() {
+    public int heartbeatsReceived() {
         return heartbeatsReceived.get();
     }
 
-    String lastPingId() {
+    public String lastPingId() {
         return lastPingId.get();
     }
 
-    int parseErrors() {
+    public int parseErrors() {
         return parseErrors.get();
     }
 
-    List<JsonNode> receivedCommands() {
+    public List<JsonNode> receivedCommands() {
         return List.copyOf(receivedCommands);
     }
 
-    List<JsonNode> receivedEventAcks() {
+    public List<JsonNode> receivedEventAcks() {
         return List.copyOf(receivedEventAcks);
     }
 
-    List<JsonNode> receivedEventNacks() {
+    public List<JsonNode> receivedEventNacks() {
         return List.copyOf(receivedEventNacks);
     }
 
-    ClientSession activeSession() {
+    public ClientSession activeSession() {
         return activeSession.get();
     }
 
-    void dropActiveClient() {
+    public void dropActiveClient() {
         ClientSession s = activeSession.getAndSet(null);
         if (s != null) {
             s.forceClose();

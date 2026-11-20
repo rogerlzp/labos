@@ -4,18 +4,25 @@ import com.labos.kernel.persistence.GraphMapper;
 import com.labos.kernel.workflow.runtime.definition.LegacyKernelWorkflowDefinitionSource;
 import com.labos.kernel.workflow.runtime.definition.WorkflowDefinitionSource;
 import com.labos.kernel.workflow.runtime.definition.WorkflowRunFactory;
+import com.labos.kernel.workflow.runtime.dispatch.LocalTaskDispatchService;
 import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
+import com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Spring Boot composition root for the embedded, single-process Workflow Runtime.
@@ -109,9 +116,41 @@ public class WorkflowRuntimeKernelConfiguration {
     }
 
     @Bean
+    public WorkflowRuntimeHostProperties workflowRuntimeHostProperties(Environment environment) {
+        return WorkflowRuntimeHostProperties.fromEnvironment(environment);
+    }
+
+    @Bean
     public WorkflowRuntimeKernelFacade workflowRuntimeKernelFacade(
-            WorkflowRuntimeTenantResolver tenants, WorkflowRunFactory runs) {
-        return new WorkflowRuntimeKernelFacade(tenants, runs);
+            WorkflowRuntimeTenantResolver tenants,
+            WorkflowRunFactory runs,
+            WorkflowRuntimeRepository repository,
+            ObjectProvider<EmbeddedWorkflowRuntimeHost> runtimeHostProvider) {
+        return new WorkflowRuntimeKernelFacade(tenants, runs, repository, runtimeHostProvider);
+    }
+
+    /**
+     * Opt-in single-process {@link EmbeddedWorkflowRuntimeHost} (including in-process TCP
+     * {@code DeviceGateway}). Strictly disabled unless {@code labos.workflow.runtime.host.enabled=true}.
+     */
+    @Configuration
+    @ConditionalOnProperty(name = WorkflowRuntimeHostProperties.PROP_ENABLED, havingValue = "true")
+    public static class EmbeddedRuntimeHostConfiguration {
+
+        @Bean(initMethod = "start", destroyMethod = "close")
+        public EmbeddedWorkflowRuntimeHost embeddedWorkflowRuntimeHost(
+                WorkflowRuntimeHostProperties properties,
+                WorkflowRuntimeRepository repository,
+                ObjectProvider<LocalTaskDispatchService.TaskDispatchSpecResolver> specResolverProvider,
+                ObjectProvider<LocalTaskDispatchService.TaskHandlerResolver> handlerResolverProvider) {
+            LocalTaskDispatchService.TaskDispatchSpecResolver specResolver = specResolverProvider.getIfAvailable(
+                    () -> node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "node:" + node.key(), 1, "PURE", "default-q", Duration.ofSeconds(60), "{}"));
+            LocalTaskDispatchService.TaskHandlerResolver handlerResolver = handlerResolverProvider.getIfAvailable(
+                    () -> node -> Optional.empty());
+            return new EmbeddedWorkflowRuntimeHost(
+                    properties.toHostConfig(), repository, specResolver, handlerResolver);
+        }
     }
 
     /**

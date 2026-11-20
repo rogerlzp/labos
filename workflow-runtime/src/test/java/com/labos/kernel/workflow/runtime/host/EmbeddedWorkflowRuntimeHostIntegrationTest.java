@@ -1,0 +1,376 @@
+package com.labos.kernel.workflow.runtime.host;
+
+import com.labos.kernel.workflow.runtime.command.DeviceCommandExecutionService;
+import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
+import com.labos.kernel.workflow.runtime.dispatch.LocalTaskDispatchService;
+import com.labos.kernel.workflow.runtime.gateway.MockTcpDeviceServer;
+import com.labos.kernel.workflow.runtime.gateway.TcpDeviceConnection;
+import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
+import com.labos.kernel.workflow.runtime.graph.GraphPlan;
+import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
+import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
+import com.labos.kernel.workflow.runtime.worker.WorkerTaskHandler;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.time.Duration;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * G3 end-to-end integration tests for {@link EmbeddedWorkflowRuntimeHost} combining
+ * {@link SingleInstanceHostLock}, in-process TCP {@code DeviceGateway}, startup recovery,
+ * automatic {@link RuntimeDispatchLoop}, observability snapshots, and T21 manual reconciliation.
+ */
+class EmbeddedWorkflowRuntimeHostIntegrationTest {
+
+    @TempDir
+    Path tempDir;
+
+    private static String env(String key, String fallback) {
+        String value = System.getenv(key);
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private DriverManagerDataSource dataSource() {
+        String host = env("PGHOST", "localhost");
+        String port = env("PGPORT", "5432");
+        String db = env("PGDATABASE", "runtime_test");
+        DriverManagerDataSource ds = new DriverManagerDataSource(
+                "jdbc:postgresql://" + host + ":" + port + "/" + db,
+                env("PGUSER", "runtime"), env("PGPASSWORD", "runtime"));
+        ds.setDriverClassName("org.postgresql.Driver");
+        return ds;
+    }
+
+    private static long scalar(DriverManagerDataSource ds, String sql) throws Exception {
+        try (Connection c = ds.getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            assertTrue(rs.next());
+            return rs.getLong(1);
+        }
+    }
+
+    private static UUID createTenant(DriverManagerDataSource ds, String prefix) throws Exception {
+        UUID tenant = UUID.randomUUID();
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"
+                    + tenant + "','" + prefix + "-" + tenant + "','g3-it')");
+        }
+        return tenant;
+    }
+
+    private static GraphPlan compileSingleDevicePlan(String planKey) {
+        String xml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="host_dev_op" protocolName="Dispense" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="host_dev_op"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="host_dev_op" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        return new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
+    }
+
+    private static TcpDeviceConnection.Config fastGatewayConfig() {
+        return new TcpDeviceConnection.Config(
+                Duration.ofSeconds(2),
+                Duration.ofMillis(80),
+                Duration.ofMillis(400),
+                Duration.ofMillis(40),
+                Duration.ofMillis(160),
+                4096,
+                64);
+    }
+
+    private static void awaitCondition(Duration timeout, java.util.function.BooleanSupplier cond)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (!cond.getAsBoolean() && System.nanoTime() < deadline) {
+            Thread.sleep(15);
+        }
+        assertTrue(cond.getAsBoolean(), "Condition not satisfied within " + timeout);
+    }
+
+    @Test
+    void embeddedHostAcquiresSingleInstanceLockRejectsSecondHostAndReleasesCleanlyOnClose() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-lock");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Path lockFile = tempDir.resolve("labos-host.lock");
+        String deviceId = "g3-lock-dev-1";
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
+            EmbeddedWorkflowRuntimeHost.Config cfg1 = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-1", 2, 16, 4, 1, 32, 100,
+                    Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+
+            EmbeddedWorkflowRuntimeHost host1 = new EmbeddedWorkflowRuntimeHost(
+                    cfg1, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "cap-" + node.key(), 1, "PURE", "q", Duration.ofSeconds(30), "{}"),
+                    node -> Optional.empty());
+            try {
+                host1.start();
+                assertTrue(host1.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                var snap = host1.healthSnapshot();
+                assertEquals(RuntimeHost.State.RUNNING, snap.hostState());
+                assertTrue(snap.schedulingGateOpen());
+                assertTrue(snap.hostLockValid());
+                assertEquals(TcpDeviceConnection.ConnectionStatus.ONLINE, snap.devices().get(deviceId).status());
+
+                // Second host pointing at the SAME lock file MUST fail fast without starting!
+                EmbeddedWorkflowRuntimeHost.Config cfg2 = new EmbeddedWorkflowRuntimeHost.Config(
+                        lockFile, "host-2", 2, 16, 4, 1, 32, 100,
+                        Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                try (EmbeddedWorkflowRuntimeHost host2 = new EmbeddedWorkflowRuntimeHost(
+                        cfg2, repo,
+                        node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                                "cap-" + node.key(), 1, "PURE", "q", Duration.ofSeconds(30), "{}"),
+                        node -> Optional.empty())) {
+                    assertThrows(IllegalStateException.class, host2::start,
+                            "Second host instance on the same lock file must be rejected");
+                    assertEquals(RuntimeHost.State.NEW, host2.healthSnapshot().hostState());
+                    assertFalse(host2.healthSnapshot().hostLockValid());
+                }
+            } finally {
+                host1.close();
+            }
+
+            var afterClose = host1.healthSnapshot();
+            assertEquals(RuntimeHost.State.STOPPED, afterClose.hostState());
+            assertFalse(afterClose.schedulingGateOpen());
+            assertFalse(afterClose.hostLockValid());
+
+            // Verify zero lingering runtime/gateway threads for host-1 and device after close().
+            awaitCondition(Duration.ofSeconds(2), () -> Thread.getAllStackTraces().keySet().stream()
+                    .noneMatch(t -> t.isAlive()
+                            && t.getName().startsWith("labos-")
+                            && (t.getName().contains("host-1") || t.getName().contains(deviceId))));
+
+            // A third host can cleanly re-acquire the released lock!
+            EmbeddedWorkflowRuntimeHost.Config cfg3 = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-3", 1, 8, 2, 1, 16, 100,
+                    Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+            try (EmbeddedWorkflowRuntimeHost host3 = new EmbeddedWorkflowRuntimeHost(
+                    cfg3, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "cap-" + node.key(), 1, "PURE", "q", Duration.ofSeconds(30), "{}"),
+                    node -> Optional.empty())) {
+                host3.start();
+                assertEquals(RuntimeHost.State.RUNNING, host3.healthSnapshot().hostState());
+                assertTrue(host3.healthSnapshot().hostLockValid());
+            }
+        }
+    }
+
+    @Test
+    void embeddedHostRecoversInterruptedAttemptBeforeOpeningGateAndCompletesFullTcpDeviceRunAutomatically()
+            throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-auto");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Path lockFile = tempDir.resolve("labos-auto.lock");
+        String deviceId = "g3-auto-dev-1";
+        String planKey = "g3-auto-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+
+        // Simulate a prior process crash AFTER WORKER_DISPATCH outbox was DELIVERED and BEFORE WorkerPool accepted it!
+        var crashedRun = repo.createRun(tenant, "g3-auto-" + UUID.randomUUID(), "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, crashedRun.runId());
+        new GraphCoordinator(repo).advance(tenant, crashedRun.runId());
+        var preCrashRes = repo.reserveCapacity(tenant, crashedRun.runId(), "g3-cap-" + tenant, 1,
+                "host_dev_op", "DEVICE", java.time.Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, crashedRun.runId(), preCrashRes.attemptId(), "dev-q", "{}");
+        var wdOutbox = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:" + preCrashRes.attemptId())).findFirst().orElseThrow();
+        assertTrue(repo.markOutboxDelivered(tenant, wdOutbox.outboxId()));
+
+        CountDownLatch terminalApplied = new CountDownLatch(1);
+        AtomicReference<UUID> cmdIdRef = new AtomicReference<>();
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
+            server.setCommandHandler((cmdNode, session) -> {
+                try {
+                    String runId = cmdNode.get("runId").asText();
+                    String cmdId = cmdNode.get("commandId").asText();
+                    session.sendDeviceEvent(deviceId, runId, cmdId,
+                            "g3-ack-" + cmdId, "RECEIVED_ACK", "ACKNOWLEDGED", "seq-1", "{}");
+                    session.sendDeviceEvent(deviceId, runId, cmdId,
+                            "g3-prog-" + cmdId, "PROGRESS", "RUNNING", "seq-2", "{\"pct\":50}");
+                    session.sendDeviceEvent(deviceId, runId, cmdId,
+                            "g3-res-" + cmdId, "COMMAND_RESULT", "SUCCEEDED", "seq-3", "{\"dispensed\":80}");
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            EmbeddedWorkflowRuntimeHost.Config cfg = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-auto", 2, 16, 4, 2, 32, 100,
+                    Duration.ofMillis(40), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+
+            try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
+                    cfg, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g3-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"v\":80}");
+                        cmdIdRef.set(cmdId);
+                        assertTrue(terminalApplied.await(8, TimeUnit.SECONDS));
+                        return WorkerTaskHandler.TaskResult.of("out", "{\"dispensed\":80}");
+                    }),
+                    notification -> {
+                        if (notification.error() == null
+                                && notification.outcome() != null
+                                && notification.outcome().status() == DeviceCommandExecutionService.InboxStatus.APPLIED
+                                && "SUCCEEDED".equals(notification.event().targetState())) {
+                            terminalApplied.countDown();
+                        }
+                    })) {
+                host.start();
+                assertTrue(host.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+
+                // Verify startup recovery reconciled the crashed DISPATCHED attempt BEFORE opening dispatch!
+                var startupSnap = host.healthSnapshot();
+                assertNotNull(startupSnap.recoveryResult());
+                assertTrue(startupSnap.recoveryResult().safeToRetry() >= 1);
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                        + tenant + "' AND attempt_id='" + preCrashRes.attemptId() + "' AND attempt_state='ABANDONED_SAFE'"));
+
+                // Zero manual dispatch calls! RuntimeDispatchLoop + DeviceGateway + WorkerPool finish the Run automatically!
+                awaitCondition(Duration.ofSeconds(8), () -> {
+                    try {
+                        return scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                                + tenant + "' AND run_id='" + crashedRun.runId()
+                                + "' AND status='SUCCEEDED' AND control_gate='CLOSED'") == 1;
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+
+                awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventAcks().size() == 3);
+                assertNotNull(cmdIdRef.get());
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                        + tenant + "' AND command_id='" + cmdIdRef.get() + "' AND command_state='SUCCEEDED'"));
+                assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + crashedRun.runId() + "' AND outbox_state IN ('PENDING','SENDING')"));
+
+                var endSnap = host.healthSnapshot();
+                assertTrue(endSnap.dispatchStats().cyclesCompleted() >= 1);
+                assertTrue(endSnap.dispatchStats().tasksDispatched() >= 1);
+                assertTrue(endSnap.dispatchStats().workersSubmitted() >= 1);
+                assertTrue(endSnap.dispatchStats().commandsDelivered() >= 1);
+            }
+        }
+    }
+
+    @Test
+    void embeddedHostExposesUnknownCommandAndManualRequiredObservabilityAndSupportsT21Reconciliation()
+            throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-obs");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Path lockFile = tempDir.resolve("labos-obs.lock");
+        String deviceId = "g3-obs-dev-1";
+        String planKey = "g3-obs-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+
+        CountDownLatch cmdDroppedOnServer = new CountDownLatch(1);
+        CountDownLatch allowWorkerExit = new CountDownLatch(1);
+        AtomicReference<UUID> cmdIdRef = new AtomicReference<>();
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
+            server.setCommandHandler((cmdNode, session) -> {
+                // Force disconnect right after receiving command without sending result!
+                session.forceClose();
+                cmdDroppedOnServer.countDown();
+            });
+
+            EmbeddedWorkflowRuntimeHost.Config cfg = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-obs", 2, 16, 4, 2, 32, 100,
+                    Duration.ofMillis(40), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+
+            try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
+                    cfg, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g3-obs-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"v\":15}");
+                        cmdIdRef.set(cmdId);
+                        assertTrue(allowWorkerExit.await(8, TimeUnit.SECONDS));
+                        throw new RuntimeException("simulated command execution timeout after TCP drop");
+                    }))) {
+                host.start();
+                assertTrue(host.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+
+                var run = repo.createRun(tenant, "g3-obs-" + UUID.randomUUID(), "CREATE", "{}",
+                        planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                        plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+                host.startRun(tenant, run.runId()).get(5, TimeUnit.SECONDS);
+
+                // Automatic dispatch sends command over TCP -> server drops socket -> gateway reconnects without resending!
+                assertTrue(cmdDroppedOnServer.await(8, TimeUnit.SECONDS));
+                awaitCondition(Duration.ofSeconds(4), () -> {
+                    var h = host.healthSnapshot().devices().get(deviceId);
+                    return h.status() == TcpDeviceConnection.ConnectionStatus.ONLINE && h.reconnectCount() >= 1;
+                });
+                assertEquals(1, server.receivedCommands().size(), "Reconnect must never auto-resend command");
+
+                // Mark command UNKNOWN and let worker fail -> Run escalates to MANUAL_REQUIRED.
+                UUID cmdId = cmdIdRef.get();
+                assertNotNull(cmdId);
+                repo.markCommandUnknown(tenant, cmdId, "{\"reason\":\"tcp-disconnect-timeout\"}");
+                allowWorkerExit.countDown();
+
+                awaitCondition(Duration.ofSeconds(5),
+                        () -> !host.listManualRequiredRuns(tenant, 10).isEmpty());
+
+                // Verify observability lists expose BOTH the UNKNOWN command and MANUAL_REQUIRED run!
+                var unknownCommands = host.listUnknownCommands(tenant, 10);
+                assertEquals(1, unknownCommands.size());
+                assertEquals(cmdId, unknownCommands.get(0).commandId());
+                assertEquals(deviceId, unknownCommands.get(0).deviceId());
+                assertEquals("UNKNOWN", unknownCommands.get(0).commandState());
+
+                var manualRuns = host.listManualRequiredRuns(tenant, 10);
+                assertEquals(1, manualRuns.size());
+                assertEquals(run.runId(), manualRuns.get(0).runId());
+                assertEquals("MANUAL_REQUIRED", manualRuns.get(0).status());
+
+                // Operator reconciles via T21 API on EmbeddedWorkflowRuntimeHost -> UNKNOWN list clears!
+                assertTrue(host.reconcileUnknownCommand(tenant, cmdId, "FAILED", "seq-op-1",
+                        "{\"verifiedBy\":\"operator\"}", "operator-1"));
+                assertTrue(host.listUnknownCommands(tenant, 10).isEmpty());
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                        + tenant + "' AND command_id='" + cmdId + "' AND command_state='FAILED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_audit WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "' AND action='UNKNOWN_COMMAND_RESOLVED'"));
+            }
+        }
+    }
+}

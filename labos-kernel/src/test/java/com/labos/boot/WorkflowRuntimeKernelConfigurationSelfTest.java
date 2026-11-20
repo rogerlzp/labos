@@ -57,9 +57,30 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                     "WorkflowRuntimeTenantResolver bean missing");
             require(context.getBean(WorkflowRuntimeKernelFacade.class) != null,
                     "WorkflowRuntimeKernelFacade bean missing");
+            WorkflowRuntimeHostProperties props = context.getBean(WorkflowRuntimeHostProperties.class);
+            require(!props.enabled(), "Embedded RuntimeHost feature flag must default to false");
+            require(context.getBean(WorkflowRuntimeKernelFacade.class).hostHealth().isEmpty(),
+                    "Facade hostHealth() must be empty when RuntimeHost is disabled");
             require(context.getBeansOfType(com.labos.kernel.workflow.runtime.host.RuntimeHost.class).isEmpty(),
-                    "RuntimeHost must not start before execution adapters/coordinator are implemented");
+                    "RuntimeHost must not start while labos.workflow.runtime.host.enabled=false");
+            require(context.getBeansOfType(com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost.class).isEmpty(),
+                    "EmbeddedWorkflowRuntimeHost must not start while feature flag is disabled");
         }
+
+        // Verify endpoint parsing & strict validation on WorkflowRuntimeHostProperties.
+        var parsed = WorkflowRuntimeHostProperties.parseEndpoints("dev-a=127.0.0.1:9101, dev-b=192.168.1.50:9102");
+        require(parsed.size() == 2, "Expected 2 parsed LAN device endpoints");
+        require("dev-a".equals(parsed.get(0).deviceId()) && parsed.get(0).port() == 9101,
+                "First parsed endpoint mismatch");
+        require("dev-b".equals(parsed.get(1).deviceId()) && "192.168.1.50".equals(parsed.get(1).host()),
+                "Second parsed endpoint mismatch");
+        boolean rejectedBad = false;
+        try {
+            WorkflowRuntimeHostProperties.parseEndpoints("broken-endpoint");
+        } catch (IllegalArgumentException expected) {
+            rejectedBad = true;
+        }
+        require(rejectedBad, "Malformed endpoint string must be rejected");
 
         Configuration mybatis = new Configuration();
         try (InputStream xml = Resources.getResourceAsStream("mapper/GraphMapper.xml")) {

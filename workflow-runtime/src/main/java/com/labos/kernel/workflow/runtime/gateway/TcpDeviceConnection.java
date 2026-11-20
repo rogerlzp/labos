@@ -38,14 +38,18 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <li>Each device runs its own dedicated heartbeat scheduler so a stalled peer can never
  *       block heartbeat supervision of other registered devices.</li>
  *   <li>Every {@code HEARTBEAT_PONG} must carry matching non-blank {@code deviceId} and an
- *       active, unconsumed {@code pingId} issued during the current {@code connectionEpoch};
- *       unsolicited, duplicate, or cross-epoch PONGs never refresh liveness.</li>
+ *       active, unconsumed {@code pingId} issued during the current {@code connectionEpoch} that
+ *       has not expired past {@code heartbeatTimeout}; unsolicited, expired, duplicate, or
+ *       cross-epoch PONGs never refresh liveness.</li>
  *   <li>Inbound device events are buffered in a strictly bounded per-device queue and answered
  *       with explicit {@code EVENT_ACK} or {@code EVENT_NACK} (retryable on backpressure /
  *       transient DB failure, non-retryable on permanent protocol/domain rejection) so events
  *       are NEVER silently dropped.</li>
  *   <li>Reconnect ONLY restores transport liveness; this class maintains NO command retry buffer
  *       and NEVER auto-resends a previously attempted command after disconnect/reconnect.</li>
+ *   <li>Deployment trust model (V1): isolated laboratory LAN with static endpoint allowlist
+ *       ({@code deviceId -> host:port}) and connection-bound {@code authenticatedDeviceId};
+ *       TLS/mTLS is intentionally omitted for internal-LAN V1.</li>
  * </ul>
  */
 public final class TcpDeviceConnection implements AutoCloseable {
@@ -564,13 +568,9 @@ public final class TcpDeviceConnection implements AutoCloseable {
             if (pending == null) continue;
             processPendingEvent(pending);
         }
-        // Best-effort retryable NACK for any events still queued during shutdown.
-        List<PendingInboundEvent> remaining = new ArrayList<>();
-        eventQueue.drainTo(remaining);
-        for (PendingInboundEvent item : remaining) {
-            writeEventNack(item.epoch(), item.event().sourceMessageId(), item.event().commandId(),
-                    true, "GATEWAY_CLOSING");
-        }
+        // Drain any remaining queued events during shutdown; socket is already closed by close()
+        // so the peer observes disconnect without EVENT_ACK and knows those events were not persisted.
+        eventQueue.clear();
     }
 
     private void processPendingEvent(PendingInboundEvent pending) {
@@ -580,7 +580,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
             result = Objects.requireNonNull(
                     eventSink.onDeviceEvent(event),
                     "DeviceEventSink returned null DeliveryResult");
-        } catch (Throwable unhandled) {
+        } catch (RuntimeException unhandled) {
             result = DeviceEventSink.DeliveryResult.nackRetryable(
                     unhandled.getClass().getSimpleName() + ": " + safeMessage(unhandled));
         }

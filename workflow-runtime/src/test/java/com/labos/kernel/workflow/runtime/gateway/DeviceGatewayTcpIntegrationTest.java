@@ -213,7 +213,7 @@ class DeviceGatewayTcpIntegrationTest {
         TcpDeviceConnection.Config cfg = new TcpDeviceConnection.Config(
                 Duration.ofSeconds(2),
                 Duration.ofMillis(150),
-                Duration.ofMillis(500),
+                Duration.ofMillis(700),
                 Duration.ofMillis(40),
                 Duration.ofMillis(160),
                 4096,
@@ -255,8 +255,8 @@ class DeviceGatewayTcpIntegrationTest {
                     () -> gateway.health(deviceId).orElseThrow().heartbeatsReceived() == 2);
             assertEquals(0, gateway.health(deviceId).orElseThrow().invalidHeartbeatsRejected());
 
-            // Wait until held PING #1 is strictly past heartbeatTimeout (500ms + 60ms margin) while epoch 1 is STILL ONLINE.
-            long expireTargetNanos = ping1ReceivedNanos.get() + Duration.ofMillis(560).toNanos();
+            // Wait until held PING #1 is strictly past heartbeatTimeout (700ms + 60ms margin) while epoch 1 is STILL ONLINE.
+            long expireTargetNanos = ping1ReceivedNanos.get() + Duration.ofMillis(760).toNanos();
             while (System.nanoTime() < expireTargetNanos) {
                 Thread.sleep(10);
             }

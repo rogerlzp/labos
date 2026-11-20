@@ -2525,6 +2525,95 @@ public final class WorkflowRuntimeRepository {
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
+    /** Resolve the authoritative tenant owning {@code (runId, commandId)} for multi-tenant Device Gateway ingress. */
+    public Optional<UUID> findTenantIdForCommand(UUID runId, UUID commandId) {
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(commandId, "commandId");
+        List<UUID> rows = jdbc.query("""
+            SELECT tenant_id FROM workflow_runtime.command_ledger
+             WHERE run_id=? AND command_id=?
+            """, (rs, n) -> rs.getObject(1, UUID.class), runId, commandId);
+        return rows.size() == 1 ? Optional.of(rows.get(0)) : Optional.empty();
+    }
+
+    public record RunnableRunRef(UUID tenantId, UUID runId) {}
+
+    /** Single-host dispatcher discovery: active RUNNING/OPEN runs that currently have READY tokens. */
+    public List<RunnableRunRef> findRunnableWorkTargets(int limit) {
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT DISTINCT r.tenant_id, r.run_id
+              FROM workflow_runtime.workflow_run r
+              JOIN workflow_runtime.execution_token t
+                ON t.tenant_id = r.tenant_id AND t.run_id = r.run_id
+             WHERE r.status = 'RUNNING'
+               AND r.control_gate = 'OPEN'
+               AND t.token_state = 'READY'
+             LIMIT ?
+            """, (rs, n) -> new RunnableRunRef(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), limit);
+    }
+
+    /** Single-host outbox discovery: tenants with due PENDING outbox rows for a given message_kind. */
+    public List<UUID> findTenantsWithPendingOutbox(String messageKind, int limit) {
+        if (messageKind == null || messageKind.isBlank())
+            throw new IllegalArgumentException("messageKind is required");
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT DISTINCT tenant_id
+              FROM workflow_runtime.runtime_outbox
+             WHERE message_kind = ?
+               AND outbox_state = 'PENDING'
+               AND available_at <= clock_timestamp()
+             LIMIT ?
+            """, (rs, n) -> rs.getObject(1, UUID.class), messageKind, limit);
+    }
+
+    public record ManualRequiredRunSummary(UUID runId, String status, String controlGate, Instant updatedAt) {}
+
+    /** Read-only observability: list Runs awaiting operator intervention for {@code tenantId}. */
+    public List<ManualRequiredRunSummary> findManualRequiredRuns(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT run_id, status, control_gate, updated_at
+              FROM workflow_runtime.workflow_run
+             WHERE tenant_id = ?
+               AND status = 'MANUAL_REQUIRED'
+             ORDER BY updated_at DESC
+             LIMIT ?
+            """, (rs, n) -> new ManualRequiredRunSummary(
+                rs.getObject(1, UUID.class),
+                rs.getString(2),
+                rs.getString(3),
+                rs.getTimestamp(4).toInstant()), tenantId, limit);
+    }
+
+    public record UnknownCommandSummary(
+            UUID commandId, UUID runId, UUID attemptId,
+            String deviceId, String commandKind, String commandState, Instant updatedAt) {}
+
+    /** Read-only observability: list uncertain Commands eligible for T21 manual reconciliation. */
+    public List<UnknownCommandSummary> findUnknownCommands(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT command_id, run_id, attempt_id, device_id, command_kind, command_state, updated_at
+              FROM workflow_runtime.command_ledger
+             WHERE tenant_id = ?
+               AND command_state IN ('UNKNOWN', 'DELIVERY_UNKNOWN')
+             ORDER BY updated_at DESC
+             LIMIT ?
+            """, (rs, n) -> new UnknownCommandSummary(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getString(4),
+                rs.getString(5),
+                rs.getString(6),
+                rs.getTimestamp(7).toInstant()), tenantId, limit);
+    }
+
     public record OutboxMessage(UUID outboxId, UUID runId, String messageKind, String dedupKey, String payloadJson) {}
 
     /** Single-host dispatcher: lock and transition pending rows without distributed claims. */

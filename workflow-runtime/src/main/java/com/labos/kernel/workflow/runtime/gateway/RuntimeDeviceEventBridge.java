@@ -54,8 +54,8 @@ public final class RuntimeDeviceEventBridge implements DeviceEventSink {
     @Override
     public DeliveryResult onDeviceEvent(InboundDeviceEvent event) {
         Objects.requireNonNull(event, "event");
-        UUID tenantId = Objects.requireNonNull(tenantResolver.apply(event), "resolved tenantId");
         try {
+            UUID tenantId = Objects.requireNonNull(tenantResolver.apply(event), "resolved tenantId");
             DeviceCommandExecutionService.InboxIngestionOutcome outcome = commandService.ingestDeviceEvent(
                     tenantId,
                     event.runId(),
