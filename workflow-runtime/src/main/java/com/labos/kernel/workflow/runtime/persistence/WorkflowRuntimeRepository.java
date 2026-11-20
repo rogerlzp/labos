@@ -854,6 +854,12 @@ public final class WorkflowRuntimeRepository {
     public GraphAdvanceResult advanceGraphToken(UUID tenantId, UUID runId, UUID tokenId,
                                                  String expectedNodeKey, String transitionKind,
                                                  List<String> successorNodeKeys) {
+        return advanceGraphToken(tenantId,runId,tokenId,expectedNodeKey,transitionKind,successorNodeKeys,null);
+    }
+
+    public GraphAdvanceResult advanceGraphToken(UUID tenantId, UUID runId, UUID tokenId,
+                                                 String expectedNodeKey, String transitionKind,
+                                                 List<String> successorNodeKeys, String joinNodeKey) {
         return required(() -> {
             RunHead head = lockRun(tenantId,runId);
             requireGraphRunOpen(head);
@@ -887,7 +893,7 @@ public final class WorkflowRuntimeRepository {
                 """,tenantId,tokenId)!=1)
                 throw new StaleRuntimeWriteException("Graph Token was concurrently claimed");
             int created=advanceGraphSuccessorsInTransaction(tenantId,runId,token,activationId,
-                    transitionKind,successorNodeKeys);
+                    transitionKind,successorNodeKeys,joinNodeKey);
             boolean completed=maybeCompleteGraphRun(tenantId,runId,head);
             appendEvents(tenantId,runId,List.of(new EventDraft("GRAPH_NODE_ADVANCED","ACTIVATION",
                     activationId,1L,null,null,"{\"nodeKey\":\""+jsonEscape(expectedNodeKey)
@@ -925,7 +931,7 @@ public final class WorkflowRuntimeRepository {
                 return new GraphAdvanceResult("REPLAYED",activationId,0,false);
             GraphToken token=new GraphToken(source.tokenId(),source.nodeKey(),source.splitId(),source.branchId());
             int created=advanceGraphSuccessorsInTransaction(tenantId,runId,token,activationId,
-                    transitionKind,successorNodeKeys);
+                    transitionKind,successorNodeKeys,null);
             boolean completed=maybeCompleteGraphRun(tenantId,runId,head);
             appendEvents(tenantId,runId,List.of(new EventDraft("GRAPH_SUCCESSORS_CREATED","ACTIVATION",
                     activationId,null,null,null,"{\"transition\":\""+jsonEscape(transitionKind)
@@ -941,7 +947,7 @@ public final class WorkflowRuntimeRepository {
 
     private int advanceGraphSuccessorsInTransaction(UUID tenantId, UUID runId, GraphToken source,
                                                      UUID activationId, String transitionKind,
-                                                     List<String> successorNodeKeys) {
+                                                     List<String> successorNodeKeys, String joinNodeKey) {
         List<String> successors=successorNodeKeys==null?List.of():List.copyOf(successorNodeKeys);
         if (transitionKind==null) throw new IllegalArgumentException("transitionKind is required");
         int tokensCreated=0;
@@ -952,7 +958,7 @@ public final class WorkflowRuntimeRepository {
                 tokensCreated=1;
             }
             case "SPLIT" -> {
-                if(successors.size()<2) throw new IllegalArgumentException("SPLIT requires at least two selected branches");
+                if(successors.isEmpty()) throw new IllegalArgumentException("SPLIT requires at least one selected branch");
                 if(source.branchId()!=null)
                     throw new InvalidTransitionException("Nested Split inside an active branch is not supported in G1");
                 if(successors.stream().distinct().count()!=successors.size())
@@ -978,6 +984,8 @@ public final class WorkflowRuntimeRepository {
                 if(successors.size()!=1) throw new IllegalArgumentException("JOIN requires exactly one successor");
                 if(source.splitId()==null || source.branchId()==null)
                     throw new InvalidTransitionException("Synchronizing Join requires a Token from an active Split");
+                if(joinNodeKey==null || joinNodeKey.isBlank())
+                    throw new IllegalArgumentException("JOIN requires its BPMN join node key");
                 UUID splitId=source.splitId();
                 jdbc.queryForObject("""
                     SELECT split_id FROM workflow_runtime.split_activation
@@ -1004,7 +1012,7 @@ public final class WorkflowRuntimeRepository {
                     SELECT arrived_branch_count FROM workflow_runtime.split_activation
                      WHERE tenant_id=? AND split_id=?
                     """,Integer.class,tenantId,splitId);
-                String joinKey=successors.get(0);
+                String joinKey=joinNodeKey;
                 jdbc.update("""
                     INSERT INTO workflow_runtime.join_activation
                       (tenant_id,join_id,run_id,split_id,join_key,join_state)
@@ -1023,7 +1031,7 @@ public final class WorkflowRuntimeRepository {
                                closed_at=clock_timestamp(),version=version+1
                          WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
                         """,tenantId,splitId);
-                    insertGraphToken(tenantId,runId,joinKey,source.tokenId(),null,null);
+                    insertGraphToken(tenantId,runId,successors.get(0),source.tokenId(),null,null);
                     tokensCreated=1;
                 }
             }
