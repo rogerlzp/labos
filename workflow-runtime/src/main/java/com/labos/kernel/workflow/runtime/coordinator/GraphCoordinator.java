@@ -6,6 +6,7 @@ import com.labos.kernel.workflow.runtime.graph.RestrictedExpressionEvaluator;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,7 +49,7 @@ public final class GraphCoordinator {
     public AdvanceSummary advance(UUID tenantId, UUID runId, Map<String, ?> variables) {
         Objects.requireNonNull(tenantId, "tenantId");
         Objects.requireNonNull(runId, "runId");
-        Map<String, ?> context = variables == null ? Map.of() : Map.copyOf(variables);
+        Map<String, ?> context = variables == null ? Map.of() : Collections.unmodifiableMap(new HashMap<>(variables));
         WorkflowRuntimeRepository.RunDefinitionSnapshot snapshot =
                 repository.loadRunDefinitionSnapshot(tenantId, runId);
         GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson());
@@ -112,13 +113,13 @@ public final class GraphCoordinator {
         return new AdvanceSummary(controlAdvanced, completedRouted, tokensCreated, runCompleted);
     }
 
-    private record Transition(String kind, List<String> successors) {
+    record Transition(String kind, List<String> successors) {
         private Transition {
             successors = List.copyOf(successors);
         }
     }
 
-    private static Transition transitionFor(GraphPlan.Node node, List<GraphPlan.Edge> edges,
+    static Transition transitionFor(GraphPlan.Node node, List<GraphPlan.Edge> edges,
                                             Map<String, ?> variables) {
         return switch (node.kind()) {
             case TASK, BUILTIN -> null;
@@ -154,7 +155,7 @@ public final class GraphCoordinator {
         return uniqueTargets(node, edges);
     }
 
-    private static GraphPlan.Edge selectExclusive(GraphPlan.Node node, List<GraphPlan.Edge> edges,
+    static GraphPlan.Edge selectExclusive(GraphPlan.Node node, List<GraphPlan.Edge> edges,
                                                   Map<String, ?> variables) {
         if (edges.isEmpty()) throw new IllegalStateException("Exclusive Split has no outgoing edges: " + node.key());
         List<GraphPlan.Edge> matches = new ArrayList<>();
@@ -176,7 +177,7 @@ public final class GraphCoordinator {
         throw new IllegalStateException("Exclusive Split has no matching flow and no default: " + node.key());
     }
 
-    private static List<GraphPlan.Edge> selectInclusive(GraphPlan.Node node, List<GraphPlan.Edge> edges,
+    static List<GraphPlan.Edge> selectInclusive(GraphPlan.Node node, List<GraphPlan.Edge> edges,
                                                         Map<String, ?> variables) {
         if (edges.isEmpty()) throw new IllegalStateException("Inclusive Split has no outgoing edges: " + node.key());
         List<GraphPlan.Edge> matches = new ArrayList<>();
