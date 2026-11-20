@@ -76,6 +76,8 @@ public final class GraphCoordinator {
         Map<String, ?> context = variables == null ? Map.of() : Collections.unmodifiableMap(new HashMap<>(variables));
         WorkflowRuntimeRepository.RunDefinitionSnapshot snapshot =
                 repository.loadRunDefinitionSnapshot(tenantId, runId);
+        if (!"RUNNING".equals(snapshot.runStatus()) || !"OPEN".equals(snapshot.controlGate()))
+            return new AdvanceSummary(0,0,0,false);
         GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson());
         Map<String, GraphPlan.Node> nodes = indexNodes(plan);
         Map<String, List<GraphPlan.Edge>> outgoing = indexOutgoing(plan, nodes);
