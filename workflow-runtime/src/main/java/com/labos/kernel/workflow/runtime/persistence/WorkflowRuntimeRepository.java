@@ -799,8 +799,9 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND attempt_id=? AND command_state='SUCCEEDED'
                 """, Integer.class, tenantId, attemptId);
 
-            boolean unresolvedSideEffect = (startedFacts != null && startedFacts > 0
-                    && (completedFacts == null || completedFacts == 0));
+            int startedCount = startedFacts == null ? 0 : startedFacts;
+            int completedCount = completedFacts == null ? 0 : completedFacts;
+            boolean unresolvedSideEffect = startedCount > completedCount;
             boolean hasUnknownFact = (unknownFacts != null && unknownFacts > 0);
             boolean hasAmbiguousCommand = (ambiguousCommands != null && ambiguousCommands > 0);
             boolean deviceAlreadySucceeded = ("DEVICE".equals(sideEffectClass)
@@ -922,16 +923,35 @@ public final class WorkflowRuntimeRepository {
                     || !List.of("CREATED", "DISPATCHED", "ACCEPTED", "STARTED").contains(attemptStates.get(0))) {
                 throw new StaleRuntimeWriteException("Attempt cannot be cancelled in its current state");
             }
-            Integer sideEffects = jdbc.queryForObject("""
+            Integer startedFacts = jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.worker_execution_fact
-                 WHERE tenant_id=? AND attempt_id=? AND fact_type IN
-                   ('SIDE_EFFECT_STARTED','SIDE_EFFECT_COMPLETED','SIDE_EFFECT_UNKNOWN')
+                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
                 """, Integer.class, tenantId, attemptId);
-            Integer sentCommands = jdbc.queryForObject("""
+            Integer completedFacts = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'
+                """, Integer.class, tenantId, attemptId);
+            Integer unknownFacts = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_UNKNOWN'
+                """, Integer.class, tenantId, attemptId);
+            Integer ambiguousSentCommands = jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.command_ledger
-                 WHERE tenant_id=? AND attempt_id=? AND command_state NOT IN ('CREATED','DISPATCH_PENDING','CANCELLED')
+                 WHERE tenant_id=? AND attempt_id=?
+                   AND command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING','CANCEL_REQUESTED',
+                                         'DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
                 """, Integer.class, tenantId, attemptId);
-            if ((sideEffects != null && sideEffects > 0) || (sentCommands != null && sentCommands > 0)) {
+            Integer completedCommands = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND attempt_id=? AND command_state='SUCCEEDED'
+                """, Integer.class, tenantId, attemptId);
+
+            int startedCount = startedFacts == null ? 0 : startedFacts;
+            int completedCount = completedFacts == null ? 0 : completedFacts;
+            boolean hasUncertainSideEffect = (unknownFacts != null && unknownFacts > 0)
+                    || (startedCount > completedCount)
+                    || (ambiguousSentCommands != null && ambiguousSentCommands > 0);
+            if (hasUncertainSideEffect) {
                 UUID interventionId = UUID.randomUUID();
                 jdbc.update("""
                     UPDATE workflow_runtime.node_attempt SET attempt_state='UNKNOWN',
@@ -957,6 +977,10 @@ public final class WorkflowRuntimeRepository {
                 appendEvents(tenantId, runId, List.of(new EventDraft("ATTEMPT_CANCEL_UNKNOWN", "ATTEMPT",
                         attemptId, null, null, null, "{\"interventionId\":\"" + interventionId + "\"}")));
                 return new AttemptFailureResult("MANUAL_REQUIRED", interventionId);
+            }
+            if (completedCount > 0 || (completedCommands != null && completedCommands > 0)) {
+                throw new InvalidTransitionException(
+                        "Cannot cancel Attempt after external side effect has completed; commit completion or reconcile");
             }
 
             jdbc.update("""
@@ -1062,12 +1086,25 @@ public final class WorkflowRuntimeRepository {
                AND command_state IN ('CREATED','DISPATCH_PENDING')
             """, Integer.class, tenantId, runId);
         Integer activeSideEffects = jdbc.queryForObject("""
-            SELECT count(*) FROM workflow_runtime.worker_execution_fact f
-              JOIN workflow_runtime.node_attempt a
-                ON a.tenant_id=f.tenant_id AND a.attempt_id=f.attempt_id
-             WHERE f.tenant_id=? AND f.run_id=?
+            SELECT count(*) FROM workflow_runtime.node_attempt a
+             WHERE a.tenant_id=? AND a.run_id=?
                AND a.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
-               AND f.fact_type IN ('SIDE_EFFECT_STARTED','SIDE_EFFECT_UNKNOWN')
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM workflow_runtime.worker_execution_fact f
+                    WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
+                      AND f.fact_type='SIDE_EFFECT_UNKNOWN'
+                 )
+                 OR (
+                   SELECT count(*) FROM workflow_runtime.worker_execution_fact f
+                    WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
+                      AND f.fact_type='SIDE_EFFECT_STARTED'
+                 ) > (
+                   SELECT count(*) FROM workflow_runtime.worker_execution_fact f
+                    WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
+                      AND f.fact_type='SIDE_EFFECT_COMPLETED'
+                 )
+               )
             """, Integer.class, tenantId, runId);
         Integer unreleasedLeases = jdbc.queryForObject("""
             SELECT count(*) FROM workflow_runtime.resource_lease
@@ -1098,7 +1135,16 @@ public final class WorkflowRuntimeRepository {
                      EXISTS (
                        SELECT 1 FROM workflow_runtime.worker_execution_fact f
                         WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
-                          AND f.fact_type IN ('SIDE_EFFECT_STARTED','SIDE_EFFECT_UNKNOWN')
+                          AND f.fact_type='SIDE_EFFECT_UNKNOWN'
+                     )
+                     OR (
+                       SELECT count(*) FROM workflow_runtime.worker_execution_fact f
+                        WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
+                          AND f.fact_type='SIDE_EFFECT_STARTED'
+                     ) > (
+                       SELECT count(*) FROM workflow_runtime.worker_execution_fact f
+                        WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
+                          AND f.fact_type='SIDE_EFFECT_COMPLETED'
                      )
                      OR EXISTS (
                        SELECT 1 FROM workflow_runtime.command_ledger c

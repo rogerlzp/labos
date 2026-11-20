@@ -1397,6 +1397,73 @@ class WorkflowRuntimeRepositoryTest {
     }
 
     @Test
+    void sideEffectStartedWithoutCompletedIsUncertainWhileStartedPlusCompletedEntersFailureDrain() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','se-contrast-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        // Control A: SIDE_EFFECT_STARTED without SIDE_EFFECT_COMPLETED -> uncertain -> MANUAL_REQUIRED + Attempt UNKNOWN.
+        var runA=repo.createRun(tenant,"se-uncertain-"+UUID.randomUUID(),"CREATE","{}",
+                "se-uncertain-"+tenant,"1",new byte[32],"ci","{}","{}","task-a");
+        repo.startRun(tenant,runA.runId());
+        var resA=repo.reserveCapacity(tenant,runA.runId(),"se-cap-a",1,"task-a","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,runA.runId(),resA.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,runA.runId(),resA.attemptId(),resA.dispatchId(),"w1");
+        repo.startAttempt(tenant,runA.runId(),resA.attemptId(),resA.dispatchId(),"w1");
+        repo.recordSideEffectFact(tenant,runA.runId(),resA.attemptId(),"w1","step-1-start","SIDE_EFFECT_STARTED","{}");
+        var outA=repo.failGraphRun(tenant,runA.runId(),null,"IllegalArgumentException","sibling fault");
+        assertEquals("MANUAL_REQUIRED",outA.outcome());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+resA.attemptId()+"' AND attempt_state='UNKNOWN'"));
+
+        // Control B: SIDE_EFFECT_STARTED + SIDE_EFFECT_COMPLETED (before completeAttempt) -> NOT uncertain -> FAILURE drain.
+        var runB=repo.createRun(tenant,"se-completed-"+UUID.randomUUID(),"CREATE","{}",
+                "se-completed-"+tenant,"1",new byte[32],"ci","{}","{}","task-b");
+        repo.startRun(tenant,runB.runId());
+        var resB=repo.reserveCapacity(tenant,runB.runId(),"se-cap-b",1,"task-b","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,runB.runId(),resB.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,runB.runId(),resB.attemptId(),resB.dispatchId(),"w2");
+        repo.startAttempt(tenant,runB.runId(),resB.attemptId(),resB.dispatchId(),"w2");
+        repo.recordSideEffectFact(tenant,runB.runId(),resB.attemptId(),"w2","step-1-start","SIDE_EFFECT_STARTED","{}");
+        repo.recordSideEffectFact(tenant,runB.runId(),resB.attemptId(),"w2","step-1-done","SIDE_EFFECT_COMPLETED","{}");
+
+        var outB=repo.failGraphRun(tenant,runB.runId(),null,"IllegalArgumentException","sibling fault");
+        assertEquals("DRAINING_FAILURE",outB.outcome(),
+                "Attempt with matching SIDE_EFFECT_COMPLETED must enter FAILURE drain, not false MANUAL_REQUIRED");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+runB.runId()+"' AND status='STOP_REQUESTED' AND control_gate='STOP'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+resB.attemptId()+"' AND attempt_state='STARTED'"));
+        // cancelAttempt refuses to erase an already-completed side effect or mislabel it UNKNOWN.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.cancelAttempt(tenant,runB.runId(),resB.attemptId(),"cannot-cancel-completed"));
+        // Worker finishes committing the already-completed side effect to safe point during drain.
+        repo.completeAttempt(tenant,runB.runId(),resB.attemptId(),"result","{\"done\":true}");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+resB.attemptId()+"' AND attempt_state='SUCCEEDED'"));
+
+        // Control C: second SIDE_EFFECT_STARTED after first COMPLETED (started=2 > completed=1) -> uncertain -> MANUAL_REQUIRED.
+        var runC=repo.createRun(tenant,"se-multi-"+UUID.randomUUID(),"CREATE","{}",
+                "se-multi-"+tenant,"1",new byte[32],"ci","{}","{}","task-c");
+        repo.startRun(tenant,runC.runId());
+        var resC=repo.reserveCapacity(tenant,runC.runId(),"se-cap-c",1,"task-c","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,runC.runId(),resC.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,runC.runId(),resC.attemptId(),resC.dispatchId(),"w3");
+        repo.startAttempt(tenant,runC.runId(),resC.attemptId(),resC.dispatchId(),"w3");
+        repo.recordSideEffectFact(tenant,runC.runId(),resC.attemptId(),"w3","step-1-start","SIDE_EFFECT_STARTED","{}");
+        repo.recordSideEffectFact(tenant,runC.runId(),resC.attemptId(),"w3","step-1-done","SIDE_EFFECT_COMPLETED","{}");
+        repo.recordSideEffectFact(tenant,runC.runId(),resC.attemptId(),"w3","step-2-start","SIDE_EFFECT_STARTED","{}");
+        var outC=repo.failGraphRun(tenant,runC.runId(),null,"IllegalArgumentException","sibling fault");
+        assertEquals("MANUAL_REQUIRED",outC.outcome());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+resC.attemptId()+"' AND attempt_state='UNKNOWN'"));
+    }
+
+    @Test
     void corruptPersistedVariableJsonTriggersFailGraphRunAndPreventsPoisonPillLoop() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
         var ds=dataSource(); UUID tenant=UUID.randomUUID();
