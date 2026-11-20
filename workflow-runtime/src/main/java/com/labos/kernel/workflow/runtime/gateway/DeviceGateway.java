@@ -32,7 +32,9 @@ public final class DeviceGateway implements AutoCloseable {
     private final TcpDeviceConnection.Config config;
     private final DeviceEventSink eventSink;
     private final Map<String, TcpDeviceConnection> connections = new ConcurrentHashMap<>();
-    private final AtomicBoolean started = new AtomicBoolean(false);
+    private final AtomicBoolean ingressStarted = new AtomicBoolean(false);
+    private final AtomicBoolean processingStarted = new AtomicBoolean(false);
+    private final AtomicBoolean processingStopped = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public DeviceGateway(
@@ -58,20 +60,58 @@ public final class DeviceGateway implements AutoCloseable {
             conn.close();
             throw new IllegalArgumentException("Duplicate device registration: " + endpoint.deviceId());
         }
-        if (started.get() && !closed.get()) {
-            conn.start();
+        if (ingressStarted.get() && !closed.get()) {
+            conn.startIngressOnly();
+        }
+        if (processingStarted.get() && !processingStopped.get() && !closed.get()) {
+            conn.startEventProcessing();
         }
     }
 
+    /** Start both TCP transport ingress and inbound event processing (standalone convenience). */
     public void start() {
+        startIngressOnly();
+        startEventProcessing();
+    }
+
+    /**
+     * Start TCP transport ingress only (sockets, heartbeats, bounded queue buffering) without
+     * invoking {@link DeviceEventSink}. Used by {@code RuntimeHost} before startup recovery.
+     */
+    public void startIngressOnly() {
         if (closed.get()) {
             throw new IllegalStateException("DeviceGateway is already closed");
         }
-        if (!started.compareAndSet(false, true)) {
+        if (!ingressStarted.compareAndSet(false, true)) {
             return;
         }
         for (TcpDeviceConnection conn : connections.values()) {
-            conn.start();
+            conn.startIngressOnly();
+        }
+    }
+
+    /**
+     * Start inbound {@link DeviceEventSink} processing after startup recovery has completed.
+     */
+    public void startEventProcessing() {
+        if (closed.get() || processingStopped.get()) {
+            throw new IllegalStateException("DeviceGateway event processing is closed");
+        }
+        if (!processingStarted.compareAndSet(false, true)) {
+            return;
+        }
+        for (TcpDeviceConnection conn : connections.values()) {
+            conn.startEventProcessing();
+        }
+    }
+
+    /** Stop inbound event processing before closing transport sockets during reverse shutdown. */
+    public void stopEventProcessing() {
+        if (!processingStopped.compareAndSet(false, true)) {
+            return;
+        }
+        for (TcpDeviceConnection conn : connections.values()) {
+            conn.stopEventProcessing();
         }
     }
 

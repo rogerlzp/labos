@@ -154,7 +154,9 @@ public final class TcpDeviceConnection implements AutoCloseable {
 
     private final ReentrantLock writeLock = new ReentrantLock();
     private final Object stateLock = new Object();
-    private final AtomicBoolean started = new AtomicBoolean(false);
+    private final AtomicBoolean ingressStarted = new AtomicBoolean(false);
+    private final AtomicBoolean processingStarted = new AtomicBoolean(false);
+    private final AtomicBoolean processingStopped = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicLong epochSeq = new AtomicLong(0);
     private final AtomicLong pingSeq = new AtomicLong(0);
@@ -199,18 +201,29 @@ public final class TcpDeviceConnection implements AutoCloseable {
         return endpoint.deviceId();
     }
 
+    /**
+     * Start BOTH transport ingress (TCP connect/read/heartbeat) AND inbound event processing.
+     * For {@code RuntimeHost} startup recovery isolation, prefer {@link #startIngressOnly()}
+     * before recovery and {@link #startEventProcessing()} after recovery completes.
+     */
     public void start() {
+        startIngressOnly();
+        startEventProcessing();
+    }
+
+    /**
+     * Start TCP transport ingress (socket connect/reconnect, heartbeats, and bounded inbound
+     * queue buffering) WITHOUT starting the {@link DeviceEventSink} consumer thread.
+     * Inbound device events remain buffered (with backpressure NACK if full) until
+     * {@link #startEventProcessing()} is invoked after startup recovery completes.
+     */
+    public void startIngressOnly() {
         if (closed.get()) {
             throw new IllegalStateException("TcpDeviceConnection is already closed: " + endpoint.deviceId());
         }
-        if (!started.compareAndSet(false, true)) {
+        if (!ingressStarted.compareAndSet(false, true)) {
             return;
         }
-        Thread evt = new Thread(this::eventLoop, "labos-gw-event-" + endpoint.deviceId());
-        evt.setDaemon(true);
-        this.eventThread = evt;
-        evt.start();
-
         Thread io = new Thread(this::connectionLoop, "labos-gw-io-" + endpoint.deviceId());
         io.setDaemon(true);
         this.ioThread = io;
@@ -222,6 +235,33 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 intervalMs,
                 intervalMs,
                 TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Start the per-device {@link DeviceEventSink} consumer thread after startup recovery has completed.
+     */
+    public void startEventProcessing() {
+        if (closed.get() || processingStopped.get()) {
+            throw new IllegalStateException("TcpDeviceConnection event processing is closed: " + endpoint.deviceId());
+        }
+        if (!processingStarted.compareAndSet(false, true)) {
+            return;
+        }
+        Thread evt = new Thread(this::eventLoop, "labos-gw-event-" + endpoint.deviceId());
+        evt.setDaemon(true);
+        this.eventThread = evt;
+        evt.start();
+    }
+
+    /**
+     * Stop inbound event processing (e.g. during reverse {@code RuntimeHost} shutdown) before
+     * tearing down transport ingress.
+     */
+    public void stopEventProcessing() {
+        if (!processingStopped.compareAndSet(false, true)) {
+            return;
+        }
+        joinQuietly(this.eventThread);
     }
 
     /**
@@ -557,18 +597,19 @@ public final class TcpDeviceConnection implements AutoCloseable {
     }
 
     private void eventLoop() {
-        while (!closed.get()) {
+        while (!closed.get() && !processingStopped.get()) {
             PendingInboundEvent pending;
             try {
                 pending = eventQueue.poll(100L, TimeUnit.MILLISECONDS);
             } catch (InterruptedException ie) {
-                if (closed.get()) break;
+                if (closed.get() || processingStopped.get()) break;
                 continue;
             }
             if (pending == null) continue;
+            if (closed.get() || processingStopped.get()) break;
             processPendingEvent(pending);
         }
-        // Drain any remaining queued events during shutdown; socket is already closed by close()
+        // Drain any remaining queued events during shutdown; socket is closed by close()
         // so the peer observes disconnect without EVENT_ACK and knows those events were not persisted.
         eventQueue.clear();
     }

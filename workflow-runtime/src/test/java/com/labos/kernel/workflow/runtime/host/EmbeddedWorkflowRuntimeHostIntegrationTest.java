@@ -373,4 +373,116 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
             }
         }
     }
+
+    @Test
+    void deviceEventsArrivingDuringStartupRecoveryDoNotMutateStateBeforeRecoveryCompletes() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-rec-race");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Path lockFile = tempDir.resolve("labos-rec-race.lock");
+        String deviceId = "g3-rec-race-dev-1";
+        String planKey = "g3-rec-race-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+
+        // Pre-crash durable state: STARTED Attempt + SEND_STARTED Command (host crashed mid-flight).
+        var crashedRun = repo.createRun(tenant, "g3-rec-race-" + UUID.randomUUID(), "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, crashedRun.runId());
+        new GraphCoordinator(repo).advance(tenant, crashedRun.runId());
+        var res = repo.reserveCapacity(tenant, crashedRun.runId(), "g3-rr-cap-" + tenant, 1,
+                "host_dev_op", "DEVICE", java.time.Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, crashedRun.runId(), res.attemptId(), "dev-q", "{}");
+        var wd = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:" + res.attemptId())).findFirst().orElseThrow();
+        assertTrue(repo.markOutboxDelivered(tenant, wd.outboxId()));
+        repo.acceptAttempt(tenant, crashedRun.runId(), res.attemptId(), res.dispatchId(), "w-crash");
+        repo.startAttempt(tenant, crashedRun.runId(), res.attemptId(), res.dispatchId(), "w-crash");
+        UUID cmdId = repo.createCommandForAttempt(tenant, crashedRun.runId(), res.attemptId(),
+                "w-crash", deviceId, "Dispense", "QUERYABLE", "{\"v\":50}");
+        var cmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).stream()
+                .filter(m -> m.dedupKey().equals("command:" + cmdId)).findFirst().orElseThrow();
+        assertTrue(repo.markCommandSendStarted(tenant, cmdId, 0L, cmdOutbox.outboxId(),
+                UUID.randomUUID(), 1, "disp-crash"));
+
+        CountDownLatch enteredRecovery = new CountDownLatch(1);
+        CountDownLatch releaseRecovery = new CountDownLatch(1);
+        var starterExec = java.util.concurrent.Executors.newSingleThreadExecutor();
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
+            EmbeddedWorkflowRuntimeHost.Config cfg = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-rec-race", 2, 16, 4, 1, 32, 100,
+                    Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+
+            try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
+                    cfg, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g3-rr-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.empty(),
+                    n -> {},
+                    delegate -> (limit, actor) -> {
+                        enteredRecovery.countDown();
+                        try {
+                            if (!releaseRecovery.await(8, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("Timed out waiting to release recovery");
+                            }
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(ie);
+                        }
+                        return delegate.recover(limit, actor);
+                    })) {
+
+                var startFuture = starterExec.submit(() -> {
+                    host.start();
+                    return null;
+                });
+
+                // Wait until Host is actively in RECOVERING AND TCP ingress is ONLINE!
+                assertTrue(enteredRecovery.await(5, TimeUnit.SECONDS));
+                assertTrue(host.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                awaitCondition(Duration.ofSeconds(3), () -> server.activeSession() != null);
+                assertEquals(RuntimeHost.State.RECOVERING, host.runtimeHost().state());
+                assertFalse(host.healthSnapshot().schedulingGateOpen());
+
+                // Fire a real TCP COMMAND_RESULT(SUCCEEDED) for cmdId WHILE startup recovery is still running!
+                server.activeSession().sendDeviceEvent(
+                        deviceId, crashedRun.runId().toString(), cmdId.toString(),
+                        "mid-recovery-msg-" + cmdId, "COMMAND_RESULT", "SUCCEEDED", "seq-mid", "{\"ok\":true}");
+
+                // Hold recovery briefly to prove event processing does NOT run concurrently with recovery!
+                Thread.sleep(200);
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                        + tenant + "' AND command_id='" + cmdId + "' AND command_state='SEND_STARTED'"),
+                        "Device event arriving during RECOVERING must NOT mutate command_ledger before recovery completes");
+                assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + crashedRun.runId() + "'"),
+                        "Device event arriving during RECOVERING must NOT be processed into Inbox before recovery finishes");
+                assertEquals(0, server.receivedEventAcks().size());
+                assertEquals(0, server.receivedEventNacks().size());
+
+                // Now allow recovery to finish -> recovery escalates cmdId to UNKNOWN + Run MANUAL_REQUIRED!
+                releaseRecovery.countDown();
+                startFuture.get(8, TimeUnit.SECONDS);
+                assertEquals(RuntimeHost.State.RUNNING, host.runtimeHost().state());
+
+                // Post-recovery event processor now drains the buffered mid-recovery event against UNKNOWN -> permanent NACK!
+                awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventNacks().stream()
+                        .anyMatch(n -> !n.path("retryable").asBoolean(true)
+                                && ("mid-recovery-msg-" + cmdId).equals(n.path("sourceMessageId").asText())));
+                assertEquals(0, server.receivedEventAcks().size(),
+                        "Late SUCCEEDED event after recovery escalated UNKNOWN must NOT be ACKed");
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                        + tenant + "' AND command_id='" + cmdId + "' AND command_state='UNKNOWN'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + crashedRun.runId() + "' AND status='MANUAL_REQUIRED'"));
+            } finally {
+                // Dead-letter this test's uncertain SENDING outbox so shared-DB tests in other classes stay isolated.
+                repo.markOutboxDeadLetter(tenant, cmdOutbox.outboxId());
+            }
+        } finally {
+            starterExec.shutdownNow();
+        }
+    }
 }

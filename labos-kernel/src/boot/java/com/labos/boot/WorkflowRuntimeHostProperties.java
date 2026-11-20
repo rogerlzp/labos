@@ -77,7 +77,10 @@ public record WorkflowRuntimeHostProperties(
         int recoveryLimit = intProp(env, PROP_RECOVERY_LIMIT, 100);
         Duration pollInterval = Duration.ofMillis(longProp(env, PROP_POLL_MS, 250L));
         int batchSize = intProp(env, PROP_BATCH_SIZE, 32);
-        List<TcpDeviceConnection.Endpoint> endpoints = parseEndpoints(env.getProperty(PROP_ENDPOINTS, ""));
+        // Only parse gateway endpoints when host is enabled so a stale/malformed property never breaks startup while disabled.
+        List<TcpDeviceConnection.Endpoint> endpoints = enabled
+                ? parseEndpoints(env.getProperty(PROP_ENDPOINTS, ""))
+                : List.of();
         TcpDeviceConnection.Config gatewayConfig = new TcpDeviceConnection.Config(
                 Duration.ofMillis(longProp(env, PROP_CONNECT_TIMEOUT_MS, 3000L)),
                 Duration.ofMillis(longProp(env, PROP_HB_INTERVAL_MS, 5000L)),

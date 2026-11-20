@@ -40,11 +40,14 @@ import java.util.function.Predicate;
  * <p>Startup order (strictly enforced):
  * <ol>
  *   <li>Acquire local OS {@link SingleInstanceHostLock} (fails fast if another host holds it).</li>
- *   <li>Start {@link DeviceGateway} as {@code eventIngress} (TCP connections + Inbox persistence
- *       active while {@link SchedulingGate} remains {@code CLOSED}).</li>
+ *   <li>Start {@link DeviceGateway#startIngressOnly()} as {@code eventIngress} (TCP connections +
+ *       heartbeats + bounded inbound buffering active while {@link SchedulingGate} remains
+ *       {@code CLOSED} and inbound event processing is strictly paused).</li>
  *   <li>Run {@link WorkerExecutionRecoveryService#recoverAtStartup} (reconcile interrupted
- *       Attempts and safely requeue only pre-{@code SEND_STARTED} Outbox rows).</li>
- *   <li>Start {@link WorkerPool} and {@link RuntimeDispatchLoop} ({@code afterRecovery}).</li>
+ *       Attempts and safely requeue only pre-{@code SEND_STARTED} Outbox rows with zero concurrent
+ *       device-event state mutation).</li>
+ *   <li>Start {@code afterRecovery} components: {@code lifecycleCoordinator}, {@link WorkerPool},
+ *       {@link DeviceGateway#startEventProcessing()}, and {@link RuntimeDispatchLoop}.</li>
  *   <li>Open {@link SchedulingGate} -> {@link RuntimeHost.State#RUNNING}.</li>
  * </ol>
  *
@@ -139,6 +142,17 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
             LocalTaskDispatchService.TaskDispatchSpecResolver specResolver,
             LocalTaskDispatchService.TaskHandlerResolver handlerResolver,
             Consumer<RuntimeDeviceEventBridge.BridgeNotification> eventListener) {
+        this(config, repository, specResolver, handlerResolver, eventListener, null);
+    }
+
+    /** Package-private constructor allowing tests to wrap startup recovery for deterministic race verification. */
+    EmbeddedWorkflowRuntimeHost(
+            Config config,
+            WorkflowRuntimeRepository repository,
+            LocalTaskDispatchService.TaskDispatchSpecResolver specResolver,
+            LocalTaskDispatchService.TaskHandlerResolver handlerResolver,
+            Consumer<RuntimeDeviceEventBridge.BridgeNotification> eventListener,
+            java.util.function.UnaryOperator<RuntimeHost.StartupRecovery> recoveryDecorator) {
         this.config = Objects.requireNonNull(config, "config");
         this.repository = Objects.requireNonNull(repository, "repository");
         Objects.requireNonNull(specResolver, "specResolver");
@@ -205,15 +219,28 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
 
         this.recoveryService = new WorkerExecutionRecoveryService(repository, workerRegistry);
 
-        RuntimeHost.LifecycleComponent gatewayComponent = new RuntimeHost.LifecycleComponent() {
+        RuntimeHost.LifecycleComponent gatewayIngressComponent = new RuntimeHost.LifecycleComponent() {
             @Override
             public void start() {
-                deviceGateway.start();
+                // Start TCP sockets + heartbeats + bounded buffering ONLY; event processing waits for recovery.
+                deviceGateway.startIngressOnly();
             }
 
             @Override
             public void stop() {
                 deviceGateway.close();
+            }
+        };
+
+        RuntimeHost.LifecycleComponent gatewayEventProcessorComponent = new RuntimeHost.LifecycleComponent() {
+            @Override
+            public void start() {
+                deviceGateway.startEventProcessing();
+            }
+
+            @Override
+            public void stop() {
+                deviceGateway.stopEventProcessing();
             }
         };
 
@@ -241,10 +268,16 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
             }
         };
 
+        RuntimeHost.StartupRecovery effectiveRecovery = recoveryDecorator == null
+                ? recoveryService::recoverAtStartup
+                : Objects.requireNonNull(
+                        recoveryDecorator.apply(recoveryService::recoverAtStartup),
+                        "decorated recovery");
+
         this.runtimeHost = new RuntimeHost(
-                recoveryService,
-                gatewayComponent,
-                List.of(lifecycleComponent, workerPoolComponent, dispatchLoop),
+                effectiveRecovery,
+                gatewayIngressComponent,
+                List.of(lifecycleComponent, workerPoolComponent, gatewayEventProcessorComponent, dispatchLoop),
                 schedulingGate,
                 config.recoveryBatchLimit(),
                 "host-startup:" + config.hostId());
@@ -328,34 +361,44 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        RuntimeException failure = null;
+        AtomicReference<RuntimeException> failure = new AtomicReference<>();
         try {
-            runtimeHost.close();
-        } catch (RuntimeException ex) {
-            failure = ex;
-        } finally {
+            runIsolated(runtimeHost::close, failure);
             // Ensure executors/pools are cleanly shut down even if start() failed before RuntimeHost started them.
-            dispatchLoop.stop();
-            workerPool.close();
-            lifecycleCoordinator.close();
-            deviceGateway.close();
-            shutdownMailboxExecutor();
+            runIsolated(dispatchLoop::stop, failure);
+            runIsolated(deviceGateway::stopEventProcessing, failure);
+            runIsolated(workerPool::close, failure);
+            runIsolated(lifecycleCoordinator::close, failure);
+            runIsolated(deviceGateway::close, failure);
+            runIsolated(this::shutdownMailboxExecutor, failure);
+        } finally {
             SingleInstanceHostLock lock = this.hostLock;
             this.hostLock = null;
             if (lock != null) {
                 try {
                     lock.close();
                 } catch (IOException lockCloseError) {
-                    if (failure == null) {
-                        failure = new RuntimeException("Failed to release SingleInstanceHostLock", lockCloseError);
-                    } else {
-                        failure.addSuppressed(lockCloseError);
-                    }
+                    recordCloseFailure(failure,
+                            new RuntimeException("Failed to release SingleInstanceHostLock", lockCloseError));
                 }
             }
         }
-        if (failure != null) {
-            throw failure;
+        if (failure.get() != null) {
+            throw failure.get();
+        }
+    }
+
+    private static void runIsolated(Runnable action, AtomicReference<RuntimeException> failure) {
+        try {
+            action.run();
+        } catch (RuntimeException ex) {
+            recordCloseFailure(failure, ex);
+        }
+    }
+
+    private static void recordCloseFailure(AtomicReference<RuntimeException> failure, RuntimeException ex) {
+        if (!failure.compareAndSet(null, ex)) {
+            failure.get().addSuppressed(ex);
         }
     }
 

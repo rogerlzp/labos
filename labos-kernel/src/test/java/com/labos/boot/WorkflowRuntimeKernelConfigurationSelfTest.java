@@ -10,6 +10,7 @@ import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.reflection.ParamNameResolver;
 import org.apache.ibatis.io.Resources;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.core.env.MapPropertySource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -66,6 +67,40 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
             require(context.getBeansOfType(com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost.class).isEmpty(),
                     "EmbeddedWorkflowRuntimeHost must not start while feature flag is disabled");
         }
+
+        // Verify malformed endpoint string is ignored when host.enabled=false (does not break disabled startup).
+        try (AnnotationConfigApplicationContext disabledCtx = new AnnotationConfigApplicationContext()) {
+            disabledCtx.getEnvironment().getPropertySources().addFirst(new MapPropertySource("disabled-bad-ep", Map.of(
+                    WorkflowRuntimeHostProperties.PROP_ENABLED, "false",
+                    WorkflowRuntimeHostProperties.PROP_ENDPOINTS, "broken-endpoint-ignored-when-disabled")));
+            disabledCtx.registerBean("dataSource", DataSource.class, () -> ds);
+            disabledCtx.registerBean("transactionManager", PlatformTransactionManager.class, () -> tm);
+            disabledCtx.registerBean("graphMapper", GraphMapper.class, () -> mapper);
+            disabledCtx.register(WorkflowRuntimeKernelConfiguration.class);
+            disabledCtx.refresh();
+            require(!disabledCtx.getBean(WorkflowRuntimeHostProperties.class).enabled(),
+                    "Explicitly disabled host must keep enabled=false");
+            require(disabledCtx.getBeansOfType(com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost.class).isEmpty(),
+                    "Disabled host must not instantiate EmbeddedWorkflowRuntimeHost");
+        }
+
+        // Verify fail-fast when labos.workflow.runtime.host.enabled=true lacks TaskHandlerResolver bean (ChatGPT P2).
+        boolean failedFastMissingHandler = false;
+        try (AnnotationConfigApplicationContext enabledCtx = new AnnotationConfigApplicationContext()) {
+            enabledCtx.getEnvironment().getPropertySources().addFirst(new MapPropertySource("enabled-no-handler", Map.of(
+                    WorkflowRuntimeHostProperties.PROP_ENABLED, "true")));
+            enabledCtx.registerBean("dataSource", DataSource.class, () -> ds);
+            enabledCtx.registerBean("transactionManager", PlatformTransactionManager.class, () -> tm);
+            enabledCtx.registerBean("graphMapper", GraphMapper.class, () -> mapper);
+            enabledCtx.register(WorkflowRuntimeKernelConfiguration.class);
+            enabledCtx.refresh();
+        } catch (RuntimeException expected) {
+            String fullMsg = expected.toString()
+                    + (expected.getCause() == null ? "" : " | " + expected.getCause());
+            failedFastMissingHandler = fullMsg.contains("TaskHandlerResolver");
+        }
+        require(failedFastMissingHandler,
+                "Enabling RuntimeHost without a TaskHandlerResolver bean must fail fast during startup");
 
         // Verify endpoint parsing & strict validation on WorkflowRuntimeHostProperties.
         var parsed = WorkflowRuntimeHostProperties.parseEndpoints("dev-a=127.0.0.1:9101, dev-b=192.168.1.50:9102");

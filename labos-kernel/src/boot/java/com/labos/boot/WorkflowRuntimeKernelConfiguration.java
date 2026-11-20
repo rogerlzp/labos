@@ -143,11 +143,18 @@ public class WorkflowRuntimeKernelConfiguration {
                 WorkflowRuntimeRepository repository,
                 ObjectProvider<LocalTaskDispatchService.TaskDispatchSpecResolver> specResolverProvider,
                 ObjectProvider<LocalTaskDispatchService.TaskHandlerResolver> handlerResolverProvider) {
-            LocalTaskDispatchService.TaskDispatchSpecResolver specResolver = specResolverProvider.getIfAvailable(
-                    () -> node -> new LocalTaskDispatchService.TaskDispatchSpec(
-                            "node:" + node.key(), 1, "PURE", "default-q", Duration.ofSeconds(60), "{}"));
-            LocalTaskDispatchService.TaskHandlerResolver handlerResolver = handlerResolverProvider.getIfAvailable(
-                    () -> node -> Optional.empty());
+            LocalTaskDispatchService.TaskHandlerResolver handlerResolver = handlerResolverProvider.getIfAvailable();
+            if (handlerResolver == null) {
+                throw new IllegalStateException(
+                        WorkflowRuntimeHostProperties.PROP_ENABLED
+                                + "=true requires a LocalTaskDispatchService.TaskHandlerResolver bean");
+            }
+            LocalTaskDispatchService.TaskDispatchSpecResolver specResolver = specResolverProvider.getIfAvailable();
+            if (specResolver == null) {
+                throw new IllegalStateException(
+                        WorkflowRuntimeHostProperties.PROP_ENABLED
+                                + "=true requires a LocalTaskDispatchService.TaskDispatchSpecResolver bean");
+            }
             return new EmbeddedWorkflowRuntimeHost(
                     properties.toHostConfig(), repository, specResolver, handlerResolver);
         }
