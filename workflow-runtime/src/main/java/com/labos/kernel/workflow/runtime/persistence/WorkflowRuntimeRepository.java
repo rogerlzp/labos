@@ -1188,15 +1188,20 @@ public final class WorkflowRuntimeRepository {
             """,Integer.class,tenantId,runId);
         Integer openSplits=jdbc.queryForObject("""
             SELECT count(*) FROM workflow_runtime.split_activation
-             WHERE tenant_id=? AND run_id=? AND split_state='OPEN'
+             WHERE tenant_id=? AND run_id=? AND split_state<>'CLOSED'
             """,Integer.class,tenantId,runId);
         Integer waitingJoins=jdbc.queryForObject("""
             SELECT count(*) FROM workflow_runtime.join_activation
-             WHERE tenant_id=? AND run_id=? AND join_state='WAITING'
+             WHERE tenant_id=? AND run_id=? AND join_state<>'RELEASED'
+            """,Integer.class,tenantId,runId);
+        Integer cancelledBranches=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.branch_activation
+             WHERE tenant_id=? AND run_id=? AND branch_state='CANCELLED'
             """,Integer.class,tenantId,runId);
         if((activeTokens==null||activeTokens!=0)||(activeAttempts==null||activeAttempts!=0)
                 ||(failedTokens!=null&&failedTokens!=0)||(failedAttempts!=null&&failedAttempts!=0)
-                ||(openSplits!=null&&openSplits!=0)||(waitingJoins!=null&&waitingJoins!=0)) return false;
+                ||(openSplits!=null&&openSplits!=0)||(waitingJoins!=null&&waitingJoins!=0)
+                ||(cancelledBranches!=null&&cancelledBranches!=0)) return false;
         int changed=jdbc.update("""
             UPDATE workflow_runtime.workflow_run SET status='SUCCEEDED',
                    finished_at=clock_timestamp(),terminal_reason='GRAPH_COMPLETED',
