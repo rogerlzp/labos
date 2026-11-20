@@ -125,7 +125,7 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void rejectsEmptyConditionExpressionInsteadOfCompilingItAsUnconditional() {
-        for (String condition : java.util.List.of("", "   ", "\\n\\t")) {
+        for (String condition : java.util.List.of("", "   ", "\n\t")) {
             String xml="""
               <bpmn:definitions xmlns:bpmn="%s"><bpmn:process id="p">
                 <bpmn:startEvent id="s"/><bpmn:exclusiveGateway id="g"/>
