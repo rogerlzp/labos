@@ -347,6 +347,53 @@ class WorkflowRuntimeRepositoryTest {
                 tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED'"));
     }
 
+
+    @Test
+    void inclusiveSingleBranchAndMixedEndJoinAreHandledFailClosed() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','graph-inclusive-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        var single=repo.createRun(tenant,"inclusive-one-"+UUID.randomUUID(),"CREATE","{}",
+                "inclusive-one-"+tenant,"1",new byte[32],"ci","{}","{}","start");
+        repo.startRun(tenant,single.runId());
+        var start=repo.findReadyGraphTokens(tenant,single.runId(),10).get(0);
+        repo.advanceGraphToken(tenant,single.runId(),start.tokenId(),"start","SEQUENCE",java.util.List.of("inclusive"));
+        var inclusive=repo.findReadyGraphTokens(tenant,single.runId(),10).get(0);
+        assertEquals(1,repo.advanceGraphToken(tenant,single.runId(),inclusive.tokenId(),
+                "inclusive","SPLIT",java.util.List.of("end")).tokensCreated());
+        var end=repo.findReadyGraphTokens(tenant,single.runId(),10).get(0);
+        assertTrue(repo.advanceGraphToken(tenant,single.runId(),end.tokenId(),"end","END",java.util.List.of()).runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id='"+
+                tenant+"' AND join_key='$END' AND join_state='RELEASED'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.split_activation WHERE tenant_id='"+
+                tenant+"' AND run_id='"+single.runId()+"' AND split_state='CLOSED'"));
+
+        var mixed=repo.createRun(tenant,"mixed-end-join-"+UUID.randomUUID(),"CREATE","{}",
+                "mixed-end-join-"+tenant,"1",new byte[32],"ci","{}","{}","start");
+        repo.startRun(tenant,mixed.runId());
+        var mixedStart=repo.findReadyGraphTokens(tenant,mixed.runId(),10).get(0);
+        repo.advanceGraphToken(tenant,mixed.runId(),mixedStart.tokenId(),"start","SEQUENCE",java.util.List.of("split"));
+        var mixedSplit=repo.findReadyGraphTokens(tenant,mixed.runId(),10).get(0);
+        repo.advanceGraphToken(tenant,mixed.runId(),mixedSplit.tokenId(),"split","SPLIT",
+                java.util.List.of("end-branch","join-branch"));
+        var branches=repo.findReadyGraphTokens(tenant,mixed.runId(),10);
+        var endBranch=branches.stream().filter(t->t.nodeKey().equals("end-branch")).findFirst().orElseThrow();
+        var joinBranch=branches.stream().filter(t->t.nodeKey().equals("join-branch")).findFirst().orElseThrow();
+        repo.advanceGraphToken(tenant,mixed.runId(),endBranch.tokenId(),"end-branch","END",java.util.List.of());
+        repo.advanceGraphToken(tenant,mixed.runId(),joinBranch.tokenId(),"join-branch","SEQUENCE",
+                java.util.List.of("join"));
+        var joinToken=repo.findReadyGraphTokens(tenant,mixed.runId(),10).get(0);
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,()->repo.advanceGraphToken(
+                tenant,mixed.runId(),joinToken.tokenId(),"join","JOIN",java.util.List.of("after"),"join"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND token_id='"+joinToken.tokenId()+"' AND token_state='READY'"));
+    }
+
     private int scalar(DriverManagerDataSource ds, String sql) throws Exception {
         try(Connection c=ds.getConnection(); var st=c.createStatement(); var rs=st.executeQuery(sql)) {
             assertTrue(rs.next()); return rs.getInt(1);
