@@ -71,7 +71,7 @@ GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用�
 ### Parallel / Inclusive Join
 
 - 每个到达 Join 的 Token 必须携带所属 Split 与 Branch 身份。
-- Join 按 Split ID + Join Gateway node key 关联。
+- Join 按 Split ID + Join Gateway node key 关联；Repository 校验 joinNodeKey 必须等于当前 Token 的 node_key。
 - 每个 Branch 只能到达一次。
 - 只有 arrived_branch_count == expected_branch_count 时才释放一个后继 Token。
 - Join 状态 RELEASED 和后继 Token 创建在同一事务中。
@@ -85,7 +85,7 @@ GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用�
 
 - 普通 End 消费 Token。
 - Split 分支直接到 End 时记录为 \`$END\` 到达。
-- 同一 Split 不允许混合“部分分支直接 End、部分分支等待 Join”，也不允许不同分支进入不同 Join。
+- 同一 Split 不允许混合“部分分支直接 End、部分分支等待 Join”，也不允许不同分支进入不同 Join。直接 End 的分支使用空 Join key 作为终止标记，避免与 BPMN 节点 ID 冲突。
 - 全部 Token 与 Attempt 都终结后才将 Run 置为 SUCCEEDED。
 
 ## 3. G1 当前明确拒绝的情况
@@ -106,7 +106,7 @@ GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用�
 - Split、Branch、子 Token 在同一事务内完整创建。
 - Join 的 Branch arrival、计数更新、Join RELEASED、后继 Token 创建在同一事务内完成。
 - Worker Attempt 完成与图推进是两个事务；中间退出时，成功 Activation 会留在可查询状态。
-- 后续 Coordinator 扫描成功 Attempt Activation；只要源 Token 尚无子 Token，就创建后继；如果已有子 Token，返回 REPLAYED。
+- 后续 Coordinator 扫描成功 Attempt Activation；只要源 Token 尚无子 Token，就创建后继；如果已有子 Token，必须验证后继 node_key 与 Split / Branch lineage 完全一致才返回 REPLAYED；不同目标重放按幂等冲突拒绝。
 - 同一 Run 由既有串行 Mailbox 模型负责串行化；Repository 仍通过 Run 行锁和状态条件保护事务边界。
 
 ## 5. 测试覆盖
