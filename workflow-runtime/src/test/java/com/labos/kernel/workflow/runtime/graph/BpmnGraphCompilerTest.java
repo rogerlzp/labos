@@ -269,7 +269,7 @@ class BpmnGraphCompilerTest {
     private static String gatewayXml(int incoming,int outgoing) {
         StringBuilder xml=new StringBuilder("<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
                 "<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"g\"/>"+
-                "<bpmn:task id=\"a\"/><bpmn:task id=\"b\"/><bpmn:endEvent id=\"e\"/>");
+                "<bpmn:task id=\"a\" protocolName=\"__noop\"/><bpmn:task id=\"b\" protocolName=\"__noop\"/><bpmn:endEvent id=\"e\"/>");
         if(incoming>0) xml.append("<bpmn:sequenceFlow id=\"in0\" sourceRef=\"s\" targetRef=\"g\"/>");
         if(incoming>1) xml.append("<bpmn:sequenceFlow id=\"in1\" sourceRef=\"a\" targetRef=\"g\"/>");
         if(outgoing>0) xml.append("<bpmn:sequenceFlow id=\"out0\" sourceRef=\"g\" targetRef=\"a\"/>");
