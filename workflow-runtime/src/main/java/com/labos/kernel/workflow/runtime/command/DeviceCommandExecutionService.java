@@ -136,9 +136,9 @@ public final class DeviceCommandExecutionService {
             try {
                 result = Objects.requireNonNull(adapter.send(envelope), "DeviceCommandAdapter returned null SendResult");
             } catch (Throwable transportFailure) {
-                markUncertainAndDeadLetter(tenantId, commandId, msg.outboxId(),
+                CommandDeliveryStatus status = handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
                         transportFailure.getClass().getSimpleName() + ": " + safeMessage(transportFailure));
-                outcomes.put(commandId, CommandDeliveryStatus.MARKED_UNKNOWN);
+                outcomes.put(commandId, status);
                 continue;
             }
 
@@ -158,9 +158,9 @@ public final class DeviceCommandExecutionService {
                     outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
                 }
                 case DELIVERY_UNCERTAIN -> {
-                    markUncertainAndDeadLetter(tenantId, commandId, msg.outboxId(),
+                    CommandDeliveryStatus status = handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
                             result.errorMessage() == null ? "adapter-delivery-uncertain" : result.errorMessage());
-                    outcomes.put(commandId, CommandDeliveryStatus.MARKED_UNKNOWN);
+                    outcomes.put(commandId, status);
                 }
             }
         }
@@ -187,8 +187,19 @@ public final class DeviceCommandExecutionService {
         if (targetState == null || targetState.isBlank())
             throw new IllegalArgumentException("targetState is required");
 
+        Optional<WorkflowRuntimeRepository.CommandRecord> command = repository.loadCommand(tenantId, commandId);
+        if (command.isEmpty() || !runId.equals(command.get().runId())) {
+            throw new WorkflowRuntimeRepository.InvalidTransitionException(
+                    "Command does not belong to target Run: " + commandId);
+        }
+        if (!command.get().deviceId().equals(source)) {
+            throw new WorkflowRuntimeRepository.InvalidTransitionException(
+                    "Device event source mismatch: expected " + command.get().deviceId() + ", got " + source);
+        }
+
         String normalizedOutcome = (outcomeJson == null || outcomeJson.isBlank()) ? "{}" : outcomeJson;
         String inboxPayload = "{\"commandId\":\"" + commandId
+                + "\",\"deviceId\":\"" + jsonEscape(source)
                 + "\",\"state\":\"" + jsonEscape(targetState)
                 + "\",\"deviceSequence\":" + (deviceSequence == null ? "null" : "\"" + jsonEscape(deviceSequence) + "\"")
                 + ",\"outcome\":" + normalizedOutcome + "}";
@@ -222,10 +233,26 @@ public final class DeviceCommandExecutionService {
                 actor);
     }
 
-    private void markUncertainAndDeadLetter(UUID tenantId, UUID commandId, UUID outboxId, String reason) {
+    /**
+     * Handle post-{@code SEND_STARTED} uncertainty: {@code markCommandUnknown} only transitions
+     * non-terminal states ({@code SEND_STARTED/ACKNOWLEDGED/RUNNING/DELIVERY_UNKNOWN -> UNKNOWN})
+     * and never overwrites a concurrent {@code SUCCEEDED/FAILED/CANCELLED} Inbox outcome.
+     *
+     * <p>Marking the {@code DEVICE_COMMAND} outbox {@code DEAD_LETTER} ONLY halts automatic
+     * re-dispatch so the physical action is never blindly repeated; it does not assert command
+     * failure and preserves {@code command_ledger='UNKNOWN'} for T21 {@link #reconcileUnknownCommand}.
+     */
+    private CommandDeliveryStatus handlePostSendUncertainty(
+            UUID tenantId, UUID commandId, UUID outboxId, String reason) {
         String evidenceJson = "{\"reason\":\"" + jsonEscape(reason) + "\"}";
         repository.markCommandUnknown(tenantId, commandId, evidenceJson);
+        Optional<WorkflowRuntimeRepository.CommandRecord> current = repository.loadCommand(tenantId, commandId);
+        if (current.isPresent() && "SUCCEEDED".equals(current.get().commandState())) {
+            repository.markOutboxDelivered(tenantId, outboxId);
+            return CommandDeliveryStatus.COMPLETED_SYNC;
+        }
         repository.markOutboxDeadLetter(tenantId, outboxId);
+        return CommandDeliveryStatus.MARKED_UNKNOWN;
     }
 
     private static UUID extractUuidField(String json, String field) {

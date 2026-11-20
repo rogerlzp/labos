@@ -381,6 +381,16 @@ class LocalTaskDispatchAndCommandLoopTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation WHERE tenant_id='"
                     + tenant + "' AND inbox_id='" + ing1.inboxId() + "'"));
 
+            // Wrong device source spoofing the same commandId is rejected; duplicate SUCCEEDED with new msgId rejected by state machine.
+            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                    asyncCmdService.ingestDeviceEvent(tenant, runAsync.runId(), "rogue-device-9",
+                            "rogue-msg-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
+                            asyncCmdId.get(), "SUCCEEDED", "seq-2", "{\"c\":65}"));
+            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                    asyncCmdService.ingestDeviceEvent(tenant, runAsync.runId(), "mock-heater-1",
+                            "late-msg-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
+                            asyncCmdId.get(), "SUCCEEDED", "seq-3", "{\"c\":65}"));
+
             asyncInboxApplied.countDown();
             var asyncOutcome = asyncSub.submitted().values().iterator().next().get(5, TimeUnit.SECONDS);
             assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, asyncOutcome.status());
@@ -430,6 +440,14 @@ class LocalTaskDispatchAndCommandLoopTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
                     + tenant + "' AND run_id='" + runTimeout.runId() + "' AND status='MANUAL_REQUIRED'"));
 
+            // P1-03: While UNKNOWN/MANUAL_REQUIRED, late ordinary ACK cannot wash away UNKNOWN,
+            // and dispatching a new Attempt to bypass manual reconciliation is rejected (gate CLOSED).
+            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                    timeoutCmdService.ingestDeviceEvent(tenant, runTimeout.runId(), "mock-heater-2",
+                            "late-ack-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
+                            toCmdId.get(), "SUCCEEDED", "seq-late", "{\"c\":70}"));
+            assertTrue(timeoutDispatch.dispatchReadyTasks(tenant, runTimeout.runId(), 4).gateClosed());
+
             // Operator explicitly reconciles the UNKNOWN command via T21 external evidence.
             assertTrue(timeoutCmdService.reconcileUnknownCommand(tenant, toCmdId.get(),
                     "SUCCEEDED", "dev-seq-verified-77", "{\"verifiedBy\":\"operator\"}", "operator-1"));
@@ -437,6 +455,52 @@ class LocalTaskDispatchAndCommandLoopTest {
                     + tenant + "' AND command_id='" + toCmdId.get() + "' AND command_state='SUCCEEDED'"));
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_audit WHERE tenant_id='"
                     + tenant + "' AND run_id='" + runTimeout.runId() + "' AND action='UNKNOWN_COMMAND_RESOLVED'"));
+
+            // Part 3 (P1-04): Concurrent SUCCEEDED Inbox arriving inside adapter.send() is NEVER overwritten by late exception!
+            var runRace = repo.createRun(tenant, "g2b-race-" + UUID.randomUUID(), "CREATE", "{}",
+                    "g2b-cmd-" + tenant, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                    plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+            CountDownLatch raceCmdCreated = new CountDownLatch(1);
+            CountDownLatch raceSendFinished = new CountDownLatch(1);
+            AtomicReference<UUID> raceCmdId = new AtomicReference<>();
+            AtomicReference<DeviceCommandExecutionService> raceCmdServiceRef = new AtomicReference<>();
+            DeviceCommandExecutionService raceCmdService = new DeviceCommandExecutionService(repo, env -> {
+                // Simulate device executing & delivering SUCCEEDED Inbox BEFORE adapter.send() fails with late timeout!
+                raceCmdServiceRef.get().ingestDeviceEvent(tenant, runRace.runId(), env.deviceId(),
+                        "race-msg-" + env.commandId(), "DEVICE_COMMAND_RESULT",
+                        env.commandId(), "SUCCEEDED", "seq-race", "{\"c\":72}");
+                throw new java.net.SocketTimeoutException("late transport error after device SUCCEEDED");
+            });
+            raceCmdServiceRef.set(raceCmdService);
+            LocalTaskDispatchService raceDispatch = new LocalTaskDispatchService(
+                    repo, workerService,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g2b-race-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        UUID cmdId = ctx.createDeviceCommand("mock-heater-3", "Heat", "QUERYABLE", "{\"c\":72}");
+                        raceCmdId.set(cmdId);
+                        raceCmdCreated.countDown();
+                        assertTrue(raceSendFinished.await(5, TimeUnit.SECONDS));
+                        return WorkerTaskHandler.TaskResult.of("out", "{\"heated\":true}");
+                    }));
+
+            lifecycle.startRun(tenant, runRace.runId()).get(5, TimeUnit.SECONDS);
+            assertEquals(1, raceDispatch.dispatchReadyTasks(tenant, runRace.runId(), 4).dispatchedAttemptIds().size());
+            var raceSub = raceDispatch.deliverPendingWorkerDispatches(tenant, 4, "w-race");
+            assertTrue(raceCmdCreated.await(5, TimeUnit.SECONDS));
+
+            var raceSend = raceCmdService.deliverPendingCommands(tenant, 4, "disp-race");
+            assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.COMPLETED_SYNC,
+                    raceSend.outcomes().get(raceCmdId.get()),
+                    "Late adapter exception after concurrent SUCCEEDED Inbox must NOT overwrite SUCCEEDED with UNKNOWN");
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + raceCmdId.get() + "' AND command_state='SUCCEEDED'"));
+            raceSendFinished.countDown();
+            var raceOutcome = raceSub.submitted().values().iterator().next().get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, raceOutcome.status());
+            raceOutcome.graphAdvance().get(5, TimeUnit.SECONDS);
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runRace.runId() + "' AND status='SUCCEEDED'"));
         } finally {
             mailboxExec.shutdownNow();
         }
@@ -499,9 +563,14 @@ class LocalTaskDispatchAndCommandLoopTest {
             var claimed = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 4);
             assertEquals(1, claimed.size());
             var outboxRecovery = repo.recoverOutboxAfterRestart();
-            assertEquals(1, outboxRecovery.safelyRequeued(),
+            assertTrue(outboxRecovery.safelyRequeued() >= 1,
                     "Pre-send SENDING DEVICE_COMMAND (command_state=CREATED) must be safely requeued");
-            assertEquals(0, outboxRecovery.leftUncertain());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runRec.runId()
+                    + "' AND message_kind='DEVICE_COMMAND' AND outbox_state='PENDING'"));
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runRec.runId()
+                    + "' AND message_kind='DEVICE_COMMAND' AND outbox_state='SENDING'"));
 
             // Now DeviceCommandExecutionService picks up the requeued outbox and completes cleanly!
             AtomicInteger adapterCalls = new AtomicInteger();
@@ -547,6 +616,88 @@ class LocalTaskDispatchAndCommandLoopTest {
                     + tenant + "' AND run_id='" + runPause.runId() + "' AND status='PAUSED' AND control_gate='PAUSE'"));
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"
                     + tenant + "' AND run_id='" + runPause.runId() + "' AND node_key='dev_step' AND token_state='READY'"));
+
+            // 3 (P1-01): Crash between WORKER_DISPATCH DELIVERED and WorkerPool.submit() -> recovered once, no lost/duplicate task!
+            var runDeliveredCrash = repo.createRun(tenant, "g2b-delcrash-" + UUID.randomUUID(), "CREATE", "{}",
+                    "g2b-rec-" + tenant, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                    plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+            AtomicInteger deliveredCrashExecutions = new AtomicInteger();
+            LocalTaskDispatchService pureDispatch = new LocalTaskDispatchService(
+                    repo, workerService,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g2b-delcrash-cap-" + tenant, 1, "PURE", "pure-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        deliveredCrashExecutions.incrementAndGet();
+                        return WorkerTaskHandler.TaskResult.of("out", "{\"recovered\":true}");
+                    }));
+            lifecycle.startRun(tenant, runDeliveredCrash.runId()).get(5, TimeUnit.SECONDS);
+            var firstDisp = pureDispatch.dispatchReadyTasks(tenant, runDeliveredCrash.runId(), 4);
+            assertEquals(1, firstDisp.dispatchedAttemptIds().size());
+            UUID crashedAttemptId = firstDisp.dispatchedAttemptIds().get(0);
+            // Simulate marking WORKER_DISPATCH outbox DELIVERED then host crashing BEFORE WorkerPool.submit()!
+            var wdOutbox = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 4).stream()
+                    .filter(m -> m.dedupKey().equals("dispatch:" + crashedAttemptId)).findFirst().orElseThrow();
+            assertTrue(repo.markOutboxDelivered(tenant, wdOutbox.outboxId()));
+
+            // On restart, WorkerExecutionRecoveryService scans DISPATCHED Attempts regardless of DELIVERED outbox.
+            var recRes = new WorkerExecutionRecoveryService(repo, new WorkerExecutionRegistry())
+                    .recoverAtStartup(10, "restart-after-delivered-crash");
+            assertTrue(recRes.safeToRetry() >= 1);
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + crashedAttemptId + "' AND attempt_state='ABANDONED_SAFE'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runDeliveredCrash.runId() + "' AND token_state='READY'"));
+
+            // Re-dispatch executes the recovered task EXACTLY ONCE and finishes Run SUCCEEDED!
+            assertEquals(1, pureDispatch.dispatchReadyTasks(tenant, runDeliveredCrash.runId(), 4).dispatchedAttemptIds().size());
+            var redeliv = pureDispatch.deliverPendingWorkerDispatches(tenant, 4, "w-redeliv");
+            assertEquals(1, redeliv.submitted().size());
+            var redelivOut = redeliv.submitted().values().iterator().next().get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, redelivOut.status());
+            redelivOut.graphAdvance().get(5, TimeUnit.SECONDS);
+            assertEquals(1, deliveredCrashExecutions.get(), "Recovered task must execute exactly once without duplication");
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runDeliveredCrash.runId() + "' AND status='SUCCEEDED'"));
+
+            // 4 (P1-02): Crash AFTER markCommandSendStarted and BEFORE adapter.send() -> NEVER requeued, escalates MANUAL_REQUIRED!
+            var runPostSendCrash = repo.createRun(tenant, "g2b-postsend-" + UUID.randomUUID(), "CREATE", "{}",
+                    "g2b-rec-" + tenant, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                    plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+            lifecycle.startRun(tenant, runPostSendCrash.runId()).get(5, TimeUnit.SECONDS);
+            var psRes = repo.reserveCapacity(tenant, runPostSendCrash.runId(), "g2b-ps-cap-" + tenant, 1,
+                    "dev_step", "DEVICE", java.time.Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(), "dev-q", "{}");
+            var psWd = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 4).stream()
+                    .filter(m -> m.dedupKey().equals("dispatch:" + psRes.attemptId())).findFirst().orElseThrow();
+            assertTrue(repo.markOutboxDelivered(tenant, psWd.outboxId()));
+            repo.acceptAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(), psRes.dispatchId(), "w-ps");
+            repo.startAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(), psRes.dispatchId(), "w-ps");
+            UUID psCmdId = repo.createCommandForAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(),
+                    "w-ps", "mock-mixer-2", "Mix", "QUERYABLE", "{\"rpm\":400}");
+            var psCmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 4).stream()
+                    .filter(m -> m.dedupKey().equals("command:" + psCmdId)).findFirst().orElseThrow();
+            assertTrue(repo.markCommandSendStarted(tenant, psCmdId, 0L, psCmdOutbox.outboxId(),
+                    UUID.randomUUID(), 1, "disp-ps"));
+            // Host crashes RIGHT HERE after SEND_STARTED committed and BEFORE adapter.send() runs!
+            var postSendOutboxRec = repo.recoverOutboxAfterRestart();
+            assertTrue(postSendOutboxRec.leftUncertain() >= 1);
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                    + tenant + "' AND outbox_id='" + psCmdOutbox.outboxId() + "' AND outbox_state='SENDING'"),
+                    "Post-SEND_STARTED DEVICE_COMMAND outbox must NEVER be auto-requeued to PENDING");
+            var psAttemptRec = repo.recoverInterruptedAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(), "restart-ps");
+            assertEquals("MANUAL_REQUIRED", psAttemptRec.outcome());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + psCmdId + "' AND command_state='UNKNOWN'"));
+            // Subsequent DeviceCommandExecutionService poll MUST NOT re-send the command.
+            AtomicInteger postCrashAdapterCalls = new AtomicInteger();
+            DeviceCommandExecutionService postCrashCmdSvc = new DeviceCommandExecutionService(repo, env -> {
+                postCrashAdapterCalls.incrementAndGet();
+                return DeviceCommandAdapter.SendResult.acceptedAsync();
+            });
+            postCrashCmdSvc.deliverPendingCommands(tenant, 10, "disp-after-crash");
+            assertEquals(0, postCrashAdapterCalls.get(), "Post-SEND_STARTED command must never be auto-re-sent after restart");
+            // Dead-letter this test's uncertain SENDING outbox so shared-DB tests in other classes stay isolated.
+            assertTrue(repo.markOutboxDeadLetter(tenant, psCmdOutbox.outboxId()));
         } finally {
             mailboxExec.shutdownNow();
         }
