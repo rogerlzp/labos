@@ -2672,11 +2672,31 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
-    /** T14a: durable Inbox receipt; duplicate same hash is replay, different hash is a protocol violation. */
+    /**
+     * Strict protocol allowlist binding device Inbox {@code message_type} to permitted
+     * {@code command_ledger} target states. {@code HEARTBEAT} and unknown message types
+     * MUST NEVER mutate Command state.
+     */
+    public static boolean isAllowedCommandEventMessageType(String messageType, String targetState) {
+        if (messageType == null || targetState == null) return false;
+        return switch (messageType) {
+            case "RECEIVED_ACK" -> "ACKNOWLEDGED".equals(targetState);
+            case "EXECUTING", "PROGRESS" -> "RUNNING".equals(targetState);
+            case "COMMAND_RESULT", "DEVICE_COMMAND_RESULT" ->
+                    List.of("SUCCEEDED", "FAILED", "CANCELLED").contains(targetState);
+            case "DELIVERY_UNCERTAIN", "COMMAND_UNKNOWN" ->
+                    List.of("DELIVERY_UNKNOWN", "UNKNOWN").contains(targetState);
+            default -> false;
+        };
+    }
+
+    /** T14a: durable Inbox receipt; duplicate same (message_type, payload) is replay, mismatch is a protocol violation. */
     public InboxReceipt receiveInbox(UUID tenantId, String source, String messageId,
                                      String messageType, UUID runId, String payloadJson) {
+        Objects.requireNonNull(messageType, "messageType");
+        Objects.requireNonNull(payloadJson, "payloadJson");
         return required(() -> {
-            byte[] hash=sha256(payloadJson);
+            byte[] hash=sha256(messageType + "\n" + payloadJson);
             UUID inboxId=UUID.randomUUID();
             int inserted=jdbc.update("""
                 INSERT INTO workflow_runtime.inbox_receipt
@@ -2685,21 +2705,21 @@ public final class WorkflowRuntimeRepository {
                 ON CONFLICT (tenant_id,source,source_message_id) DO NOTHING
                 """,tenantId,inboxId,source,messageId,hash,messageType,payloadJson,runId);
             if(inserted==1) return new InboxReceipt(inboxId,true,false);
-            UUID originalId=jdbc.queryForObject("""
-                SELECT inbox_id FROM workflow_runtime.inbox_receipt
+            record ExistingInbox(UUID inboxId, byte[] payloadHash, String messageType) {}
+            ExistingInbox existing=jdbc.queryForObject("""
+                SELECT inbox_id, payload_hash, message_type FROM workflow_runtime.inbox_receipt
                  WHERE tenant_id=? AND source=? AND source_message_id=?
-                """,UUID.class,tenantId,source,messageId);
-            byte[] originalHash=jdbc.queryForObject("""
-                SELECT payload_hash FROM workflow_runtime.inbox_receipt
-                 WHERE tenant_id=? AND inbox_id=?
-                """,byte[].class,tenantId,originalId);
-            boolean conflict=!MessageDigest.isEqual(originalHash,hash);
+                """,(rs,n)->new ExistingInbox(
+                    rs.getObject(1,UUID.class), rs.getBytes(2), rs.getString(3)),
+                tenantId,source,messageId);
+            boolean conflict=!MessageDigest.isEqual(existing.payloadHash(),hash)
+                    || !Objects.equals(existing.messageType(),messageType);
             if(conflict) jdbc.update("""
                 INSERT INTO workflow_runtime.inbox_protocol_violation
                   (tenant_id,inbox_id,conflicting_payload_hash,conflicting_payload)
                 VALUES (?,?,?,?::jsonb)
-                """,tenantId,originalId,hash,payloadJson);
-            return new InboxReceipt(originalId,false,conflict);
+                """,tenantId,existing.inboxId(),hash,payloadJson);
+            return new InboxReceipt(existing.inboxId(),false,conflict);
         });
     }
 
@@ -2737,12 +2757,24 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND run_id=? AND command_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,commandId);
             if(states.size()!=1) throw new IllegalStateException("Command disappeared while applying device event");
-            String inboxCommandId=jdbc.queryForObject("""
-                SELECT message_payload->>'commandId' FROM workflow_runtime.inbox_receipt
+            record LockedInbox(String messageType, String commandId, String deviceId) {}
+            List<LockedInbox> inboxRows=jdbc.query("""
+                SELECT message_type, message_payload->>'commandId', message_payload->>'deviceId'
+                  FROM workflow_runtime.inbox_receipt
                  WHERE tenant_id=? AND inbox_id=? AND run_id=? AND receipt_state IN ('RECEIVED','PROCESSING')
-                """,String.class,tenantId,inboxId,runId);
-            if(!commandId.toString().equals(inboxCommandId))
+                   FOR UPDATE
+                """,(rs,n)->new LockedInbox(rs.getString(1),rs.getString(2),rs.getString(3)),
+                tenantId,inboxId,runId);
+            if(inboxRows.isEmpty())
+                throw new StaleRuntimeWriteException("Inbox receipt was already consumed or not found");
+            LockedInbox inbox=inboxRows.get(0);
+            if(!commandId.toString().equals(inbox.commandId()))
                 throw new IllegalStateException("Inbox commandId does not match command row; event attribution rejected");
+            if(inbox.deviceId()!=null && !inbox.deviceId().isBlank() && !deviceId.equals(inbox.deviceId()))
+                throw new InvalidTransitionException("Inbox deviceId does not match command row; event attribution rejected");
+            if(!isAllowedCommandEventMessageType(inbox.messageType(),targetState))
+                throw new InvalidTransitionException("Inbox message_type " + inbox.messageType()
+                        + " is not allowed to transition Command to " + targetState);
             String current=states.get(0);
             boolean allowed=switch(current) {
                 case "SEND_STARTED" -> List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","DELIVERY_UNKNOWN","UNKNOWN").contains(targetState);

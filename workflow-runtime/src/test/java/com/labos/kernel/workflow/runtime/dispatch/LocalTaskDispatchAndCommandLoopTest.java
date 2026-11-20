@@ -25,11 +25,14 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -701,5 +704,356 @@ class LocalTaskDispatchAndCommandLoopTest {
         } finally {
             mailboxExec.shutdownNow();
         }
+    }
+
+    private record StartedCommandFixture(UUID runId, UUID attemptId, UUID commandId, UUID outboxId) {}
+
+    private StartedCommandFixture createStartedDeviceCommand(
+            WorkflowRuntimeRepository repo, UUID tenant, GraphPlan plan, String planKey,
+            String deviceId, boolean markSendStarted) {
+        var run = repo.createRun(tenant, "fix-" + UUID.randomUUID(), "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, run.runId());
+        new GraphCoordinator(repo).advance(tenant, run.runId());
+        var res = repo.reserveCapacity(tenant, run.runId(), "cap-" + UUID.randomUUID(), 1,
+                "dev_step", "DEVICE", java.time.Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res.attemptId(), "dev-q", "{}");
+        var wd = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 20).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:" + res.attemptId())).findFirst().orElseThrow();
+        assertTrue(repo.markOutboxDelivered(tenant, wd.outboxId()));
+        repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-fix");
+        repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-fix");
+        UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
+                "w-fix", deviceId, "Mix", "QUERYABLE", "{\"rpm\":300}");
+        UUID outboxId = null;
+        if (markSendStarted) {
+            var cmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 20).stream()
+                    .filter(m -> m.dedupKey().equals("command:" + cmdId)).findFirst().orElseThrow();
+            outboxId = cmdOutbox.outboxId();
+            assertTrue(repo.markCommandSendStarted(tenant, cmdId, 0L, outboxId,
+                    UUID.randomUUID(), 1, "disp-fix"));
+            assertTrue(repo.markOutboxDelivered(tenant, outboxId));
+        }
+        return new StartedCommandFixture(run.runId(), res.attemptId(), cmdId, outboxId);
+    }
+
+    @Test
+    void inboxMessageTypeBindingAndProtocolIntegrityEnforcedAtServiceAndRepositoryBoundaries() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g2b-proto");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        String xml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="dev_step" protocolName="Mix" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="dev_step"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="dev_step" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        String planKey = "g2b-proto-" + tenant;
+        GraphPlan plan = new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
+        var fix = createStartedDeviceCommand(repo, tenant, plan, planKey, "mock-proto-1", true);
+        DeviceCommandExecutionService cmdSvc = new DeviceCommandExecutionService(
+                repo, env -> DeviceCommandAdapter.SendResult.acceptedAsync());
+
+        // 1. HEARTBEAT MUST NEVER mutate command_ledger — rejected at Service AND Repository boundaries.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                        "hb-svc-" + UUID.randomUUID(), "HEARTBEAT",
+                        fix.commandId(), "SUCCEEDED", "seq-hb", "{}"));
+        String sharedMsgId = "proto-msg-" + UUID.randomUUID();
+        String rawPayload = "{\"commandId\":\"" + fix.commandId()
+                + "\",\"deviceId\":\"mock-proto-1\",\"state\":\"SUCCEEDED\"}";
+        var hbReceipt = repo.receiveInbox(tenant, "mock-proto-1", sharedMsgId, "HEARTBEAT", fix.runId(), rawPayload);
+        assertTrue(hbReceipt.inserted());
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), hbReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-hb", "{}"),
+                "Repository persistence boundary must reject HEARTBEAT even if inbox_receipt exists");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
+
+        // 2. Reusing same (source, source_message_id, payload) with DIFFERENT messageType -> PROTOCOL_VIOLATION!
+        var conflictType = repo.receiveInbox(tenant, "mock-proto-1", sharedMsgId, "COMMAND_RESULT", fix.runId(), rawPayload);
+        assertFalse(conflictType.inserted());
+        assertTrue(conflictType.payloadConflict(),
+                "Same (source, messageId, payload) with changed messageType must trigger PROTOCOL_VIOLATION");
+        assertEquals(hbReceipt.inboxId(), conflictType.inboxId());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + hbReceipt.inboxId() + "'"));
+
+        var svcConflict = cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                sharedMsgId, "COMMAND_RESULT", fix.commandId(), "SUCCEEDED", "seq-hb", "{}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, svcConflict.status());
+        assertEquals(2, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + hbReceipt.inboxId() + "'"));
+
+        // 3. Mismatched messageType <-> targetState and unknown messageType rejected at BOTH layers.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                        "bad-ack-" + UUID.randomUUID(), "RECEIVED_ACK",
+                        fix.commandId(), "SUCCEEDED", "seq-1", "{}"));
+        var badAckReceipt = repo.receiveInbox(tenant, "mock-proto-1", "raw-ack-" + UUID.randomUUID(),
+                "RECEIVED_ACK", fix.runId(), rawPayload);
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), badAckReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-1", "{}"));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                        "unk-" + UUID.randomUUID(), "UNKNOWN_EVENT_KIND",
+                        fix.commandId(), "SUCCEEDED", "seq-1", "{}"));
+        // Repository boundary also rejects spoofed deviceId inside message_payload!
+        var spoofReceipt = repo.receiveInbox(tenant, "mock-proto-1", "spoof-" + UUID.randomUUID(),
+                "COMMAND_RESULT", fix.runId(),
+                "{\"commandId\":\"" + fix.commandId() + "\",\"deviceId\":\"evil-device\",\"state\":\"SUCCEEDED\"}");
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), spoofReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-evil", "{}"));
+
+        // 4. Strict allowlist happy path: RECEIVED_ACK -> ACKNOWLEDGED, EXECUTING -> RUNNING, COMMAND_RESULT -> SUCCEEDED.
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED,
+                cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                        "ack-" + UUID.randomUUID(), "RECEIVED_ACK",
+                        fix.commandId(), "ACKNOWLEDGED", "seq-1", "{}").status());
+        String execMsgId = "exec-" + UUID.randomUUID();
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED,
+                cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                        execMsgId, "EXECUTING",
+                        fix.commandId(), "RUNNING", "seq-2", "{\"pct\":50}").status());
+        // Same messageId + targetState + outcome but changed messageType (EXECUTING -> PROGRESS) => PROTOCOL_VIOLATION!
+        assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION,
+                cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                        execMsgId, "PROGRESS",
+                        fix.commandId(), "RUNNING", "seq-2", "{\"pct\":50}").status());
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED,
+                cmdSvc.ingestDeviceEvent(tenant, fix.runId(), "mock-proto-1",
+                        "res-" + UUID.randomUUID(), "COMMAND_RESULT",
+                        fix.commandId(), "SUCCEEDED", "seq-3", "{\"done\":true}").status());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SUCCEEDED'"));
+
+        // Cleanly complete attempt so shared-DB tests see zero leaked active attempts.
+        repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"done\":true}");
+    }
+
+    @Test
+    void concurrentTwoThreadInboxAndTimeoutRaceSerializesCleanlyWithoutOverwritingSuccess() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g2b-race2t");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        String xml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="dev_step" protocolName="Mix" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="dev_step"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="dev_step" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        String planKey = "g2b-race2t-" + tenant;
+        GraphPlan plan = new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
+
+        var exec = Executors.newFixedThreadPool(2);
+        try {
+            for (int iter = 0; iter < 5; iter++) {
+                final int round = iter;
+                String deviceId = "mock-race-dev-" + round;
+                var fix = createStartedDeviceCommand(repo, tenant, plan, planKey, deviceId, false);
+                CountDownLatch sendStartedCommitted = new CountDownLatch(1);
+                CyclicBarrier raceStart = new CyclicBarrier(2);
+
+                DeviceCommandExecutionService cmdSvc = new DeviceCommandExecutionService(repo, env -> {
+                    sendStartedCommitted.countDown();
+                    try {
+                        raceStart.await(5, TimeUnit.SECONDS);
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                    throw new java.net.SocketTimeoutException("concurrent transport timeout iter=" + env.commandId());
+                });
+
+                Future<DeviceCommandExecutionService.CommandDeliverySummary> deliveryFuture = exec.submit(
+                        () -> cmdSvc.deliverPendingCommands(tenant, 4, "disp-race-" + round));
+                Future<Object> inboxFuture = exec.submit(() -> {
+                    assertTrue(sendStartedCommitted.await(5, TimeUnit.SECONDS));
+                    raceStart.await(5, TimeUnit.SECONDS);
+                    try {
+                        return cmdSvc.ingestDeviceEvent(tenant, fix.runId(), deviceId,
+                                "race-inbox-" + fix.commandId(), "COMMAND_RESULT",
+                                fix.commandId(), "SUCCEEDED", "seq-race", "{\"ok\":true}");
+                    } catch (WorkflowRuntimeRepository.InvalidTransitionException rejectedAfterUnknown) {
+                        return rejectedAfterUnknown;
+                    }
+                });
+
+                var delivery = deliveryFuture.get(10, TimeUnit.SECONDS);
+                Object inboxOutcome = inboxFuture.get(10, TimeUnit.SECONDS);
+                var cmd = repo.loadCommand(tenant, fix.commandId()).orElseThrow();
+                var deliveryStatus = delivery.outcomes().get(fix.commandId());
+
+                if ("SUCCEEDED".equals(cmd.commandState())) {
+                    assertInstanceOf(DeviceCommandExecutionService.InboxIngestionOutcome.class, inboxOutcome);
+                    assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED,
+                            ((DeviceCommandExecutionService.InboxIngestionOutcome) inboxOutcome).status());
+                    assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.COMPLETED_SYNC, deliveryStatus,
+                            "Concurrent timeout MUST NOT overwrite SUCCEEDED with UNKNOWN");
+                    assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                            + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
+                    assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                            + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_UNKNOWN'"));
+                    repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
+                } else if ("UNKNOWN".equals(cmd.commandState())) {
+                    assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.MARKED_UNKNOWN, deliveryStatus);
+                    assertInstanceOf(WorkflowRuntimeRepository.InvalidTransitionException.class, inboxOutcome,
+                            "Once UNKNOWN commits first, late ordinary SUCCEEDED must be fail-closed rejected");
+                    assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                            + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_UNKNOWN'"));
+                    assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                            + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
+                    var failRes = repo.failAttempt(tenant, fix.runId(), fix.attemptId(),
+                            "{\"reason\":\"race-iter-" + iter + "\"}", true);
+                    assertEquals("MANUAL_REQUIRED", failRes.outcome());
+                } else {
+                    fail("Unexpected command state after concurrent race: " + cmd.commandState());
+                }
+                assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + fix.runId() + "' AND outbox_state IN ('PENDING','SENDING')"));
+            }
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
+    @Test
+    void concurrentTwoThreadDuplicateInboxDeliveryIsIdempotentWithoutException() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g2b-dup2t");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        String xml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="dev_step" protocolName="Mix" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="dev_step"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="dev_step" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        String planKey = "g2b-dup2t-" + tenant;
+        GraphPlan plan = new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
+        DeviceCommandExecutionService cmdSvc = new DeviceCommandExecutionService(
+                repo, env -> DeviceCommandAdapter.SendResult.acceptedAsync());
+
+        var exec = Executors.newFixedThreadPool(2);
+        try {
+            for (int iter = 0; iter < 5; iter++) {
+                String deviceId = "mock-dup-dev-" + iter;
+                var fix = createStartedDeviceCommand(repo, tenant, plan, planKey, deviceId, true);
+                String duplicateMsgId = "dup-2t-" + fix.commandId();
+                CyclicBarrier barrier = new CyclicBarrier(2);
+
+                Future<DeviceCommandExecutionService.InboxIngestionOutcome> f1 = exec.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    return cmdSvc.ingestDeviceEvent(tenant, fix.runId(), deviceId, duplicateMsgId,
+                            "COMMAND_RESULT", fix.commandId(), "SUCCEEDED", "seq-dup", "{\"ok\":true}");
+                });
+                Future<DeviceCommandExecutionService.InboxIngestionOutcome> f2 = exec.submit(() -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    return cmdSvc.ingestDeviceEvent(tenant, fix.runId(), deviceId, duplicateMsgId,
+                            "COMMAND_RESULT", fix.commandId(), "SUCCEEDED", "seq-dup", "{\"ok\":true}");
+                });
+
+                var o1 = f1.get(10, TimeUnit.SECONDS);
+                var o2 = f2.get(10, TimeUnit.SECONDS);
+                assertEquals(o1.inboxId(), o2.inboxId(), "Both concurrent deliveries must resolve to the same inboxId");
+                List<DeviceCommandExecutionService.InboxStatus> statuses = List.of(o1.status(), o2.status());
+                assertTrue(statuses.contains(DeviceCommandExecutionService.InboxStatus.APPLIED)
+                                && statuses.contains(DeviceCommandExecutionService.InboxStatus.DUPLICATE_REPLAY),
+                        "Expected exact {APPLIED, DUPLICATE_REPLAY} without exception, got: " + statuses);
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND inbox_id='" + o1.inboxId() + "' AND receipt_state='PROCESSED'"));
+                assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation WHERE tenant_id='"
+                        + tenant + "' AND inbox_id='" + o1.inboxId() + "'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                        + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SUCCEEDED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                        + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
+
+                repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
+            }
+        } finally {
+            exec.shutdownNow();
+        }
+    }
+
+    @Test
+    void deliverPendingCommandsIsolatesPerRowSyncFailureSoRemainingBatchContinues() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g2b-iso");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        String xml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="dev_step" protocolName="Mix" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="dev_step"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="dev_step" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        String planKey = "g2b-iso-" + tenant;
+        GraphPlan plan = new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
+
+        var fix1 = createStartedDeviceCommand(repo, tenant, plan, planKey, "mock-iso-1", false);
+        var fix2 = createStartedDeviceCommand(repo, tenant, plan, planKey, "mock-iso-2", false);
+
+        // Row 1 returns invalid JSON outcome in COMPLETED_IMMEDIATELY (triggers RuntimeException inside ingestDeviceEvent);
+        // Row 2 in the SAME batch MUST still be processed cleanly and not stranded in SENDING!
+        DeviceCommandExecutionService cmdSvc = new DeviceCommandExecutionService(repo, env -> {
+            if (env.commandId().equals(fix1.commandId())) {
+                return DeviceCommandAdapter.SendResult.completedImmediately(
+                        "iso-bad-" + env.commandId(), "seq-1", "{malformed-json");
+            }
+            return DeviceCommandAdapter.SendResult.completedImmediately(
+                    "iso-ok-" + env.commandId(), "seq-2", "{\"ok\":true}");
+        });
+
+        var summary = cmdSvc.deliverPendingCommands(tenant, 10, "disp-iso");
+        assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.MARKED_UNKNOWN,
+                summary.outcomes().get(fix1.commandId()));
+        assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.COMPLETED_SYNC,
+                summary.outcomes().get(fix2.commandId()),
+                "Second claimed command in batch must still succeed when first row fails sync ingestion");
+        assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                + tenant + "' AND message_kind='DEVICE_COMMAND' AND outbox_state IN ('PENDING','SENDING')"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix1.commandId() + "' AND command_state='UNKNOWN'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix2.commandId() + "' AND command_state='SUCCEEDED'"));
+
+        // Clean up both active attempts so shared-DB tests stay isolated.
+        assertEquals("MANUAL_REQUIRED", repo.failAttempt(tenant, fix1.runId(), fix1.attemptId(),
+                "{\"reason\":\"iso-cleanup\"}", true).outcome());
+        repo.completeAttempt(tenant, fix2.runId(), fix2.attemptId(), "out", "{\"ok\":true}");
     }
 }

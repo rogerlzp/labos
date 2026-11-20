@@ -151,11 +151,23 @@ public final class DeviceCommandExecutionService {
                     // Mark DEVICE_COMMAND outbox DELIVERED BEFORE applying SUCCEEDED Inbox event so
                     // downstream completeAttempt/maybeCompleteGraphRun never sees a stale SENDING row.
                     repository.markOutboxDelivered(tenantId, msg.outboxId());
-                    ingestDeviceEvent(
-                            tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
-                            "DEVICE_COMMAND_RESULT", commandId, "SUCCEEDED",
-                            result.deviceSequence(), result.outcomeJson());
-                    outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
+                    try {
+                        InboxIngestionOutcome syncOutcome = ingestDeviceEvent(
+                                tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
+                                "DEVICE_COMMAND_RESULT", commandId, "SUCCEEDED",
+                                result.deviceSequence(), result.outcomeJson());
+                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION) {
+                            outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
+                                    "sync-result-inbox-protocol-violation:" + syncOutcome.inboxId()));
+                        } else {
+                            outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
+                        }
+                    } catch (RuntimeException syncIngestFailure) {
+                        // Isolate per-row sync result failure so remaining claimed SENDING outbox rows
+                        // in this batch continue processing; never re-send after SEND_STARTED.
+                        outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
+                                syncIngestFailure.getClass().getSimpleName() + ": " + safeMessage(syncIngestFailure)));
+                    }
                 }
                 case DELIVERY_UNCERTAIN -> {
                     CommandDeliveryStatus status = handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
@@ -187,6 +199,11 @@ public final class DeviceCommandExecutionService {
         if (targetState == null || targetState.isBlank())
             throw new IllegalArgumentException("targetState is required");
 
+        if (!WorkflowRuntimeRepository.isAllowedCommandEventMessageType(messageType, targetState)) {
+            throw new WorkflowRuntimeRepository.InvalidTransitionException(
+                    "Message type " + messageType + " is not allowed to transition Command to " + targetState);
+        }
+
         Optional<WorkflowRuntimeRepository.CommandRecord> command = repository.loadCommand(tenantId, commandId);
         if (command.isEmpty() || !runId.equals(command.get().runId())) {
             throw new WorkflowRuntimeRepository.InvalidTransitionException(
@@ -200,6 +217,7 @@ public final class DeviceCommandExecutionService {
         String normalizedOutcome = (outcomeJson == null || outcomeJson.isBlank()) ? "{}" : outcomeJson;
         String inboxPayload = "{\"commandId\":\"" + commandId
                 + "\",\"deviceId\":\"" + jsonEscape(source)
+                + "\",\"messageType\":\"" + jsonEscape(messageType)
                 + "\",\"state\":\"" + jsonEscape(targetState)
                 + "\",\"deviceSequence\":" + (deviceSequence == null ? "null" : "\"" + jsonEscape(deviceSequence) + "\"")
                 + ",\"outcome\":" + normalizedOutcome + "}";
@@ -215,10 +233,18 @@ public final class DeviceCommandExecutionService {
                 return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
             }
         }
-        repository.applyCommandEvent(
-                tenantId, runId, receipt.inboxId(), commandId,
-                targetState, deviceSequence, normalizedOutcome);
-        return new InboxIngestionOutcome(InboxStatus.APPLIED, receipt.inboxId());
+        try {
+            repository.applyCommandEvent(
+                    tenantId, runId, receipt.inboxId(), commandId,
+                    targetState, deviceSequence, normalizedOutcome);
+            return new InboxIngestionOutcome(InboxStatus.APPLIED, receipt.inboxId());
+        } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException race) {
+            Optional<String> state = repository.findInboxReceiptState(tenantId, receipt.inboxId());
+            if (state.isPresent() && "PROCESSED".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
+            }
+            throw race;
+        }
     }
 
     /**
@@ -237,6 +263,11 @@ public final class DeviceCommandExecutionService {
      * Handle post-{@code SEND_STARTED} uncertainty: {@code markCommandUnknown} only transitions
      * non-terminal states ({@code SEND_STARTED/ACKNOWLEDGED/RUNNING/DELIVERY_UNKNOWN -> UNKNOWN})
      * and never overwrites a concurrent {@code SUCCEEDED/FAILED/CANCELLED} Inbox outcome.
+     *
+     * <p>Intentional fail-closed trade-off: if {@code UNKNOWN} commits before a late ordinary
+     * {@code SUCCEEDED} Inbox arrives, the state machine rejects the late Inbox (preserving
+     * {@code UNKNOWN}/{@code MANUAL_REQUIRED}) so operators reconcile explicitly via T21
+     * {@link #reconcileUnknownCommand} rather than silently bypassing manual verification.
      *
      * <p>Marking the {@code DEVICE_COMMAND} outbox {@code DEAD_LETTER} ONLY halts automatic
      * re-dispatch so the physical action is never blindly repeated; it does not assert command
