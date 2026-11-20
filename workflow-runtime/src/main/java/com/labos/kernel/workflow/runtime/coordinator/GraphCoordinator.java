@@ -212,6 +212,7 @@ public final class GraphCoordinator {
         for (GraphPlan.Edge edge : edges) {
             if (edge.defaultFlow()) {
                 if (defaultEdge != null) throw new IllegalStateException("Multiple default flows at " + node.key());
+                defaultEdge = edge;
             } else if (edge.condition() == null
                     || RestrictedExpressionEvaluator.evaluateBoolean(edge.condition(), variables)) {
                 matches.add(edge);
