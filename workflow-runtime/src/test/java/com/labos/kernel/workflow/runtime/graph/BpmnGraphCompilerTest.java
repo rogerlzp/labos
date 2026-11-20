@@ -15,17 +15,20 @@ class BpmnGraphCompilerTest {
               <bpmn:startEvent id="s"/>
               <bpmn:exclusiveGateway id="g" default="f4"/>
               <bpmn:serviceTask id="t" name="dispense" protocolName="Dispense" resource="17" methodParams="{&quot;volume&quot;:10}"/>
+              <bpmn:serviceTask id="t2" name="fallback" protocolName="Dispense" resource="18"/>
               <bpmn:endEvent id="e"/>
               <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="g"/>
-              <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="t"/>
+              <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="t"><bpmn:conditionExpression>sample.ready == true</bpmn:conditionExpression></bpmn:sequenceFlow>
               <bpmn:sequenceFlow id="f3" sourceRef="t" targetRef="e"/>
+              <bpmn:sequenceFlow id="f4" sourceRef="g" targetRef="t2"/>
+              <bpmn:sequenceFlow id="f5" sourceRef="t2" targetRef="e"/>
             </bpmn:process>
           </bpmn:definitions>
           """.formatted(NS);
         GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput("42","7",xml,
                 Map.of("t",new BpmnGraphCompiler.NodeMetadata("LIQUID_HANDLING",9L))));
-        assertEquals(4,plan.nodes().size());
-        assertEquals(3,plan.edges().size());
+        assertEquals(5,plan.nodes().size());
+        assertEquals(5,plan.edges().size());
         assertTrue(plan.edges().stream().filter(e->e.key().equals("f4")).findFirst().orElseThrow().defaultFlow());
         GraphPlan.Node task=plan.nodes().stream().filter(n->n.key().equals("t")).findFirst().orElseThrow();
         assertEquals("LIQUID_HANDLING",task.capabilityCode());
