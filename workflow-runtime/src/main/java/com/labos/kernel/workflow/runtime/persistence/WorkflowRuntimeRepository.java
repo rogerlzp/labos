@@ -1039,6 +1039,8 @@ public final class WorkflowRuntimeRepository {
                     throw new InvalidTransitionException("Synchronizing Join requires a Token from an active Split");
                 if(joinNodeKey==null || joinNodeKey.isBlank())
                     throw new IllegalArgumentException("JOIN requires its BPMN join node key");
+                if(!source.nodeKey().equals(joinNodeKey))
+                    throw new InvalidTransitionException("JOIN key must match the Token's current gateway node");
                 UUID splitId=source.splitId();
                 jdbc.queryForObject("""
                     SELECT split_id FROM workflow_runtime.split_activation
