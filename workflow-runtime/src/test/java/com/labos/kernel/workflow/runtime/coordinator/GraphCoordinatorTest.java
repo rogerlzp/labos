@@ -88,10 +88,8 @@ class GraphCoordinatorTest {
         var task=node("task",GraphPlan.Kind.TASK);
         var end=node("end",GraphPlan.Kind.END);
         var conditional=new GraphPlan.Edge("task-end","task","end","approved == true",false);
-        var nodes=Map.of("task",task,"end",end);
-        assertThrows(IllegalStateException.class,()->GraphCoordinator.validatePlan(
-                new GraphPlan(1,"ci","d","1","hash",List.of(task,end),List.of(conditional)),
-                nodes,Map.of("task",List.of(conditional))));
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.validateGraphPlan(
+                new GraphPlan(1,"ci","d","1","hash",List.of(task,end),List.of(conditional))));
     }
 
     @Test
@@ -112,11 +110,9 @@ class GraphCoordinatorTest {
         var innerA=new GraphPlan.Edge("inner-a","inner","end-a",null,false);
         var innerB=new GraphPlan.Edge("inner-b","inner","end-b",null,false);
         var joinOut=new GraphPlan.Edge("join-out","join","end-a",null,false);
-        var outgoing=Map.of("outer",List.of(outerA,outerB),"task-a",List.of(taskToInner),
-                "task-b",List.of(taskToJoin),"inner",List.of(innerA,innerB),"join",List.of(joinOut));
         var edges=List.of(outerA,outerB,taskToInner,taskToJoin,innerA,innerB,joinOut);
-        assertThrows(IllegalStateException.class,()->GraphCoordinator.validatePlan(
-                new GraphPlan(1,"ci","nested","1","hash",List.copyOf(nodes.values()),edges),nodes,outgoing));
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.validateGraphPlan(
+                new GraphPlan(1,"ci","nested","1","hash",List.copyOf(nodes.values()),edges)));
     }
 
     @Test
