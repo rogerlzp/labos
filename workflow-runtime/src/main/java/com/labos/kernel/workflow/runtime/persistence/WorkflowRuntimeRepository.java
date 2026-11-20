@@ -2536,6 +2536,23 @@ public final class WorkflowRuntimeRepository {
         return rows.size() == 1 ? Optional.of(rows.get(0)) : Optional.empty();
     }
 
+    public record CommandRouting(UUID tenantId, UUID runId) {}
+
+    /**
+     * Resolve authoritative {@code (tenantId, runId)} by {@code commandId} alone for legacy
+     * wire protocols (such as {@code #!LABSEP!#}) whose replies carry {@code message_id=commandId}
+     * without repeating {@code runId}.
+     */
+    public Optional<CommandRouting> findCommandRoutingById(UUID commandId) {
+        Objects.requireNonNull(commandId, "commandId");
+        List<CommandRouting> rows = jdbc.query("""
+            SELECT tenant_id, run_id FROM workflow_runtime.command_ledger
+             WHERE command_id=?
+            """, (rs, n) -> new CommandRouting(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), commandId);
+        return rows.size() == 1 ? Optional.of(rows.get(0)) : Optional.empty();
+    }
+
     public record RunnableRunRef(UUID tenantId, UUID runId) {}
 
     /** Single-host dispatcher discovery: active RUNNING/OPEN runs that currently have READY tokens (oldest updated first). */

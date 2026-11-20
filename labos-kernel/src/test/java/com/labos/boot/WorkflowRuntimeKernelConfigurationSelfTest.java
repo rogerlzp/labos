@@ -103,13 +103,19 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
         require(failedFastMissingHandler,
                 "Enabling RuntimeHost without a TaskHandlerResolver bean must fail fast during startup");
 
-        // Verify endpoint parsing & strict validation on WorkflowRuntimeHostProperties.
-        var parsed = WorkflowRuntimeHostProperties.parseEndpoints("dev-a=127.0.0.1:9101, dev-b=192.168.1.50:9102");
-        require(parsed.size() == 2, "Expected 2 parsed LAN device endpoints");
-        require("dev-a".equals(parsed.get(0).deviceId()) && parsed.get(0).port() == 9101,
+        // Verify endpoint parsing & strict validation on WorkflowRuntimeHostProperties (including wire codec schemes).
+        var parsed = WorkflowRuntimeHostProperties.parseEndpoints(
+                "dev-a=127.0.0.1:9101, dev-b=ndjson://192.168.1.50:9102, pipettor=labsep://127.0.0.1:19500");
+        require(parsed.size() == 3, "Expected 3 parsed LAN device endpoints");
+        require("dev-a".equals(parsed.get(0).deviceId()) && parsed.get(0).port() == 9101
+                        && "ndjson".equals(parsed.get(0).wireCodec().protocolName()),
                 "First parsed endpoint mismatch");
-        require("dev-b".equals(parsed.get(1).deviceId()) && "192.168.1.50".equals(parsed.get(1).host()),
+        require("dev-b".equals(parsed.get(1).deviceId()) && "192.168.1.50".equals(parsed.get(1).host())
+                        && "ndjson".equals(parsed.get(1).wireCodec().protocolName()),
                 "Second parsed endpoint mismatch");
+        require("pipettor".equals(parsed.get(2).deviceId()) && parsed.get(2).port() == 19500
+                        && "labsep".equals(parsed.get(2).wireCodec().protocolName()),
+                "Third parsed labsep endpoint mismatch");
         boolean rejectedBad = false;
         try {
             WorkflowRuntimeHostProperties.parseEndpoints("broken-endpoint");
@@ -117,6 +123,13 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
             rejectedBad = true;
         }
         require(rejectedBad, "Malformed endpoint string must be rejected");
+        boolean rejectedUnknownScheme = false;
+        try {
+            WorkflowRuntimeHostProperties.parseEndpoints("dev-x=unknown://127.0.0.1:9101");
+        } catch (IllegalArgumentException expected) {
+            rejectedUnknownScheme = true;
+        }
+        require(rejectedUnknownScheme, "Unknown wire codec scheme must be rejected");
 
         Configuration mybatis = new Configuration();
         try (InputStream xml = Resources.getResourceAsStream("mapper/GraphMapper.xml")) {

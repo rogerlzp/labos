@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -62,7 +63,11 @@ public final class TcpDeviceConnection implements AutoCloseable {
         CLOSED
     }
 
-    public record Endpoint(String deviceId, String host, int port) {
+    public record Endpoint(String deviceId, String host, int port, GatewayWireCodec wireCodec) {
+        public Endpoint(String deviceId, String host, int port) {
+            this(deviceId, host, port, NdjsonWireCodec.INSTANCE);
+        }
+
         public Endpoint {
             if (deviceId == null || deviceId.isBlank())
                 throw new IllegalArgumentException("deviceId is required");
@@ -70,6 +75,10 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 throw new IllegalArgumentException("host is required");
             if (port < 1 || port > 65535)
                 throw new IllegalArgumentException("port must be in 1..65535");
+            Objects.requireNonNull(wireCodec, "wireCodec");
+            byte[] delim = wireCodec.frameDelimiter();
+            if (delim == null || delim.length == 0)
+                throw new IllegalArgumentException("wireCodec.frameDelimiter() must be non-empty");
         }
     }
 
@@ -234,12 +243,14 @@ public final class TcpDeviceConnection implements AutoCloseable {
         this.ioThread = io;
         io.start();
 
-        long intervalMs = config.heartbeatInterval().toMillis();
-        heartbeatScheduler.scheduleAtFixedRate(
-                this::heartbeatTickSafe,
-                intervalMs,
-                intervalMs,
-                TimeUnit.MILLISECONDS);
+        if (endpoint.wireCodec().supportsAppHeartbeat()) {
+            long intervalMs = config.heartbeatInterval().toMillis();
+            heartbeatScheduler.scheduleAtFixedRate(
+                    this::heartbeatTickSafe,
+                    intervalMs,
+                    intervalMs,
+                    TimeUnit.MILLISECONDS);
+        }
     }
 
     /**
@@ -288,7 +299,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
         }
         byte[] frameBytes;
         try {
-            frameBytes = GatewayWireProtocol.encodeCommandSend(envelope);
+            frameBytes = endpoint.wireCodec().encodeCommandSend(envelope);
         } catch (IOException encodeError) {
             return DeviceCommandAdapter.SendResult.deliveryUncertain(
                     "Failed to encode command frame: " + encodeError.getMessage());
@@ -329,7 +340,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
      * {@code HEARTBEAT_PING} frame if {@code ONLINE}.
      */
     void heartbeatTick() {
-        if (closed.get()) return;
+        if (closed.get() || !endpoint.wireCodec().supportsAppHeartbeat()) return;
         ActiveTransport active = this.transport;
         if (status != ConnectionStatus.ONLINE || active == null) {
             return;
@@ -342,7 +353,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
         String pingId = "ping-" + active.epoch() + "-" + pingSeq.incrementAndGet();
         byte[] pingBytes;
         try {
-            pingBytes = GatewayWireProtocol.encodeHeartbeatPing(
+            pingBytes = endpoint.wireCodec().encodeHeartbeatPing(
                     endpoint.deviceId(), pingId, System.currentTimeMillis());
         } catch (IOException ignored) {
             return;
@@ -483,14 +494,24 @@ public final class TcpDeviceConnection implements AutoCloseable {
     }
 
     private void readLoop(ActiveTransport active) {
-        ByteArrayOutputStream lineBuf = new ByteArrayOutputStream(256);
+        byte[] delimiter = endpoint.wireCodec().frameDelimiter();
+        int delimLen = delimiter.length;
+        int singleDelim = delimLen == 1 ? (delimiter[0] & 0xFF) : -1;
+        boolean stripCr = singleDelim == '\n';
+        int maxWithDelim = config.maxFrameBytes() + delimLen;
+        byte[] tail = delimLen > 1 ? new byte[delimLen] : null;
+        int tailLen = 0;
+
+        ByteArrayOutputStream frameBuf = new ByteArrayOutputStream(256);
         boolean oversized = false;
         while (!closed.get() && this.transport == active) {
             try {
                 int b = active.in().read();
                 if (b == -1) {
-                    if (!oversized && lineBuf.size() > 0) {
-                        String trailing = stripTrailingCr(lineBuf.toByteArray());
+                    if (!oversized && frameBuf.size() > 0) {
+                        String trailing = stripCr
+                                ? stripTrailingCr(frameBuf.toByteArray())
+                                : new String(frameBuf.toByteArray(), StandardCharsets.UTF_8);
                         if (!trailing.isBlank()) {
                             dispatchInboundLine(active, trailing);
                         }
@@ -499,32 +520,71 @@ public final class TcpDeviceConnection implements AutoCloseable {
                     }
                     return;
                 }
-                if (b == '\n') {
-                    if (oversized) {
-                        malformedFrames.incrementAndGet();
-                        oversized = false;
-                        lineBuf.reset();
+                if (delimLen == 1) {
+                    if (b == singleDelim) {
+                        if (oversized) {
+                            malformedFrames.incrementAndGet();
+                            oversized = false;
+                            frameBuf.reset();
+                            continue;
+                        }
+                        String line = stripCr
+                                ? stripTrailingCr(frameBuf.toByteArray())
+                                : new String(frameBuf.toByteArray(), StandardCharsets.UTF_8);
+                        frameBuf.reset();
+                        if (!line.isBlank()) {
+                            dispatchInboundLine(active, line);
+                        }
                         continue;
                     }
-                    String line = stripTrailingCr(lineBuf.toByteArray());
-                    lineBuf.reset();
-                    if (!line.isBlank()) {
-                        dispatchInboundLine(active, line);
+                    if (!oversized) {
+                        if (frameBuf.size() >= config.maxFrameBytes()) {
+                            oversized = true;
+                            frameBuf.reset();
+                        } else {
+                            frameBuf.write(b);
+                        }
                     }
-                    continue;
-                }
-                if (!oversized) {
-                    if (lineBuf.size() >= config.maxFrameBytes()) {
-                        oversized = true;
-                        lineBuf.reset();
+                } else {
+                    if (tailLen < delimLen) {
+                        tail[tailLen++] = (byte) b;
                     } else {
-                        lineBuf.write(b);
+                        System.arraycopy(tail, 1, tail, 0, delimLen - 1);
+                        tail[delimLen - 1] = (byte) b;
+                    }
+                    boolean matched = (tailLen == delimLen) && Arrays.equals(tail, delimiter);
+                    if (!oversized) {
+                        frameBuf.write(b);
+                        if (matched) {
+                            byte[] raw = frameBuf.toByteArray();
+                            int payloadLen = raw.length - delimLen;
+                            frameBuf.reset();
+                            tailLen = 0;
+                            if (payloadLen > config.maxFrameBytes()) {
+                                malformedFrames.incrementAndGet();
+                            } else if (payloadLen > 0) {
+                                String frameText = new String(raw, 0, payloadLen, StandardCharsets.UTF_8);
+                                if (!frameText.isBlank()) {
+                                    dispatchInboundLine(active, frameText);
+                                }
+                            }
+                        } else if (frameBuf.size() >= maxWithDelim) {
+                            oversized = true;
+                            frameBuf.reset();
+                        }
+                    } else if (matched) {
+                        malformedFrames.incrementAndGet();
+                        oversized = false;
+                        frameBuf.reset();
+                        tailLen = 0;
                     }
                 }
             } catch (SocketTimeoutException pollWakeup) {
-                long elapsedNanos = System.nanoTime() - lastPongNanos;
-                if (elapsedNanos > config.heartbeatTimeout().toNanos()) {
-                    return;
+                if (endpoint.wireCodec().supportsAppHeartbeat()) {
+                    long elapsedNanos = System.nanoTime() - lastPongNanos;
+                    if (elapsedNanos > config.heartbeatTimeout().toNanos()) {
+                        return;
+                    }
                 }
             } catch (IOException readError) {
                 return;
@@ -535,9 +595,12 @@ public final class TcpDeviceConnection implements AutoCloseable {
     private void dispatchInboundLine(ActiveTransport active, String line) {
         GatewayWireProtocol.InboundFrame frame;
         try {
-            frame = GatewayWireProtocol.decodeInboundLine(line);
+            frame = endpoint.wireCodec().decodeInboundFrame(line);
         } catch (Exception malformed) {
             malformedFrames.incrementAndGet();
+            return;
+        }
+        if (frame == null) {
             return;
         }
 
@@ -649,9 +712,12 @@ public final class TcpDeviceConnection implements AutoCloseable {
     }
 
     private void writeEventAck(long expectedEpoch, String sourceMessageId, UUID commandId, String status) {
+        if (!endpoint.wireCodec().supportsEventAck()) {
+            return;
+        }
         byte[] bytes;
         try {
-            bytes = GatewayWireProtocol.encodeEventAck(endpoint.deviceId(), sourceMessageId, commandId, status);
+            bytes = endpoint.wireCodec().encodeEventAck(endpoint.deviceId(), sourceMessageId, commandId, status);
         } catch (IOException ignored) {
             return;
         }
@@ -660,9 +726,12 @@ public final class TcpDeviceConnection implements AutoCloseable {
 
     private void writeEventNack(
             long expectedEpoch, String sourceMessageId, UUID commandId, boolean retryable, String reason) {
+        if (!endpoint.wireCodec().supportsEventAck()) {
+            return;
+        }
         byte[] bytes;
         try {
-            bytes = GatewayWireProtocol.encodeEventNack(
+            bytes = endpoint.wireCodec().encodeEventNack(
                     endpoint.deviceId(), sourceMessageId, commandId, retryable, reason);
         } catch (IOException ignored) {
             return;

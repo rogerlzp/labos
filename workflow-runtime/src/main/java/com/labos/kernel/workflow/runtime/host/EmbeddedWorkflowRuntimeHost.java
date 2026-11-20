@@ -195,10 +195,19 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
         this.deviceGateway = new DeviceGateway(config.deviceEndpoints(), config.gatewayConfig(), sink);
         this.commandExecutionService = new DeviceCommandExecutionService(
                 repository, deviceGateway.asCommandAdapter());
-        bridgeRef.set(new RuntimeDeviceEventBridge(
-                ev -> repository.findTenantIdForCommand(ev.runId(), ev.commandId())
-                        .orElseThrow(() -> new IllegalArgumentException(
-                                "Unknown command/run for device event: " + ev.commandId())),
+        bridgeRef.set(RuntimeDeviceEventBridge.withCommandRouting(
+                ev -> {
+                    if (ev.runId() != null) {
+                        UUID tenantId = repository.findTenantIdForCommand(ev.runId(), ev.commandId())
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                        "Unknown command/run for device event: " + ev.commandId()));
+                        return new RuntimeDeviceEventBridge.EventRouting(tenantId, ev.runId());
+                    }
+                    WorkflowRuntimeRepository.CommandRouting routing = repository.findCommandRoutingById(ev.commandId())
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "Unknown command for device event: " + ev.commandId()));
+                    return new RuntimeDeviceEventBridge.EventRouting(routing.tenantId(), routing.runId());
+                },
                 commandExecutionService,
                 eventListener));
 

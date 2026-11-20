@@ -60,7 +60,6 @@ public interface DeviceEventSink {
         public InboundDeviceEvent {
             if (authenticatedDeviceId == null || authenticatedDeviceId.isBlank())
                 throw new IllegalArgumentException("authenticatedDeviceId is required");
-            Objects.requireNonNull(runId, "runId");
             Objects.requireNonNull(commandId, "commandId");
             if (sourceMessageId == null || sourceMessageId.isBlank())
                 throw new IllegalArgumentException("sourceMessageId is required");

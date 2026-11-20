@@ -66,7 +66,6 @@ public final class GatewayWireProtocol {
             String deviceSequence,
             String outcomeJson) implements InboundFrame {
         public DeviceEventFrame {
-            Objects.requireNonNull(runId, "runId");
             Objects.requireNonNull(commandId, "commandId");
             if (sourceMessageId == null || sourceMessageId.isBlank())
                 throw new IllegalArgumentException("sourceMessageId is required");

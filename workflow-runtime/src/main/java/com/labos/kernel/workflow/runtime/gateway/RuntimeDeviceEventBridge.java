@@ -13,11 +13,20 @@ import java.util.function.Function;
  * {@link DeviceCommandExecutionService#ingestDeviceEvent}.
  *
  * <p>Always attributes the Inbox {@code source} to {@link InboundDeviceEvent#authenticatedDeviceId()}
- * (the TCP connection's bound device identity) rather than any untrusted payload field, and
- * translates outcomes into explicit {@link DeviceEventSink.DeliveryResult} values so transient
- * database errors emit retryable {@code EVENT_NACK} instead of being silently dropped.
+ * (the TCP connection's bound device identity) rather than any untrusted payload field, resolves
+ * authoritative {@code (tenantId, runId)} (supporting both NDJSON frames carrying {@code runId} and
+ * legacy {@code #!LABSEP!#} frames keyed solely by {@code commandId}), and translates outcomes into
+ * explicit {@link DeviceEventSink.DeliveryResult} values so transient database errors emit retryable
+ * {@code EVENT_NACK} instead of being silently dropped.
  */
 public final class RuntimeDeviceEventBridge implements DeviceEventSink {
+
+    public record EventRouting(UUID tenantId, UUID runId) {
+        public EventRouting {
+            Objects.requireNonNull(tenantId, "tenantId");
+            Objects.requireNonNull(runId, "runId");
+        }
+    }
 
     public record BridgeNotification(
             InboundDeviceEvent event,
@@ -25,28 +34,60 @@ public final class RuntimeDeviceEventBridge implements DeviceEventSink {
             DeliveryResult deliveryResult,
             Throwable error) {}
 
-    private final Function<InboundDeviceEvent, UUID> tenantResolver;
+    private final Function<InboundDeviceEvent, EventRouting> routingResolver;
     private final DeviceCommandExecutionService commandService;
     private final Consumer<BridgeNotification> listener;
 
     public RuntimeDeviceEventBridge(
             UUID tenantId,
             DeviceCommandExecutionService commandService) {
-        this(e -> Objects.requireNonNull(tenantId, "tenantId"), commandService, n -> {});
+        this(tenantId, commandService, n -> {});
     }
 
     public RuntimeDeviceEventBridge(
             UUID tenantId,
             DeviceCommandExecutionService commandService,
             Consumer<BridgeNotification> listener) {
-        this(e -> Objects.requireNonNull(tenantId, "tenantId"), commandService, listener);
+        Objects.requireNonNull(tenantId, "tenantId");
+        this.routingResolver = ev -> {
+            if (ev.runId() == null) {
+                throw new IllegalArgumentException("Inbound device event missing runId and no routing resolver configured");
+            }
+            return new EventRouting(tenantId, ev.runId());
+        };
+        this.commandService = Objects.requireNonNull(commandService, "commandService");
+        this.listener = Objects.requireNonNull(listener, "listener");
     }
 
     public RuntimeDeviceEventBridge(
             Function<InboundDeviceEvent, UUID> tenantResolver,
             DeviceCommandExecutionService commandService,
             Consumer<BridgeNotification> listener) {
-        this.tenantResolver = Objects.requireNonNull(tenantResolver, "tenantResolver");
+        Objects.requireNonNull(tenantResolver, "tenantResolver");
+        this.routingResolver = ev -> {
+            UUID tenantId = Objects.requireNonNull(tenantResolver.apply(ev), "resolved tenantId");
+            if (ev.runId() == null) {
+                throw new IllegalArgumentException("Inbound device event missing runId");
+            }
+            return new EventRouting(tenantId, ev.runId());
+        };
+        this.commandService = Objects.requireNonNull(commandService, "commandService");
+        this.listener = Objects.requireNonNull(listener, "listener");
+    }
+
+    public static RuntimeDeviceEventBridge withCommandRouting(
+            Function<InboundDeviceEvent, EventRouting> routingResolver,
+            DeviceCommandExecutionService commandService,
+            Consumer<BridgeNotification> listener) {
+        return new RuntimeDeviceEventBridge(routingResolver, commandService, listener, true);
+    }
+
+    private RuntimeDeviceEventBridge(
+            Function<InboundDeviceEvent, EventRouting> routingResolver,
+            DeviceCommandExecutionService commandService,
+            Consumer<BridgeNotification> listener,
+            boolean routingMode) {
+        this.routingResolver = Objects.requireNonNull(routingResolver, "routingResolver");
         this.commandService = Objects.requireNonNull(commandService, "commandService");
         this.listener = Objects.requireNonNull(listener, "listener");
     }
@@ -55,10 +96,10 @@ public final class RuntimeDeviceEventBridge implements DeviceEventSink {
     public DeliveryResult onDeviceEvent(InboundDeviceEvent event) {
         Objects.requireNonNull(event, "event");
         try {
-            UUID tenantId = Objects.requireNonNull(tenantResolver.apply(event), "resolved tenantId");
+            EventRouting routing = Objects.requireNonNull(routingResolver.apply(event), "resolved EventRouting");
             DeviceCommandExecutionService.InboxIngestionOutcome outcome = commandService.ingestDeviceEvent(
-                    tenantId,
-                    event.runId(),
+                    routing.tenantId(),
+                    routing.runId(),
                     event.authenticatedDeviceId(),
                     event.sourceMessageId(),
                     event.messageType(),

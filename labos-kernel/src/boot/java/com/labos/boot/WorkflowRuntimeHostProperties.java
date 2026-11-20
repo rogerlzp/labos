@@ -1,5 +1,8 @@
 package com.labos.boot;
 
+import com.labos.kernel.workflow.runtime.gateway.GatewayWireCodec;
+import com.labos.kernel.workflow.runtime.gateway.LabSepWireCodec;
+import com.labos.kernel.workflow.runtime.gateway.NdjsonWireCodec;
 import com.labos.kernel.workflow.runtime.gateway.TcpDeviceConnection;
 import com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost;
 import org.springframework.core.env.Environment;
@@ -112,7 +115,8 @@ public record WorkflowRuntimeHostProperties(
     }
 
     /**
-     * Parse comma-separated {@code deviceId=host:port} entries (blank string yields empty list).
+     * Parse comma-separated {@code deviceId=[ndjson://|labsep://]host:port} entries
+     * (blank string yields empty list; omitting scheme defaults to {@link NdjsonWireCodec}).
      */
     public static List<TcpDeviceConnection.Endpoint> parseEndpoints(String raw) {
         if (raw == null || raw.isBlank()) {
@@ -124,10 +128,22 @@ public record WorkflowRuntimeHostProperties(
             if (trimmed.isEmpty()) continue;
             int eq = trimmed.indexOf('=');
             if (eq <= 0 || eq == trimmed.length() - 1) {
-                throw new IllegalArgumentException("Invalid gateway endpoint entry (expected deviceId=host:port): " + trimmed);
+                throw new IllegalArgumentException("Invalid gateway endpoint entry (expected deviceId=[scheme://]host:port): " + trimmed);
             }
             String deviceId = trimmed.substring(0, eq).trim();
             String addr = trimmed.substring(eq + 1).trim();
+            GatewayWireCodec codec = NdjsonWireCodec.INSTANCE;
+            int schemeIdx = addr.indexOf("://");
+            if (schemeIdx >= 0) {
+                String scheme = addr.substring(0, schemeIdx).trim().toLowerCase();
+                addr = addr.substring(schemeIdx + 3).trim();
+                codec = switch (scheme) {
+                    case "ndjson" -> NdjsonWireCodec.INSTANCE;
+                    case "labsep" -> LabSepWireCodec.INSTANCE;
+                    default -> throw new IllegalArgumentException(
+                            "Unsupported gateway wire codec scheme '" + scheme + "' in endpoint: " + trimmed);
+                };
+            }
             int colon = addr.lastIndexOf(':');
             if (colon <= 0 || colon == addr.length() - 1) {
                 throw new IllegalArgumentException("Invalid gateway endpoint host:port: " + trimmed);
@@ -139,7 +155,7 @@ public record WorkflowRuntimeHostProperties(
             } catch (NumberFormatException nfe) {
                 throw new IllegalArgumentException("Invalid gateway endpoint port: " + trimmed, nfe);
             }
-            out.add(new TcpDeviceConnection.Endpoint(deviceId, host, port));
+            out.add(new TcpDeviceConnection.Endpoint(deviceId, host, port, codec));
         }
         return List.copyOf(out);
     }
