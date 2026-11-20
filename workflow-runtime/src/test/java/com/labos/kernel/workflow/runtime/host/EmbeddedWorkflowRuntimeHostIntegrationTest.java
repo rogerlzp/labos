@@ -21,6 +21,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -699,6 +700,138 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
 
             // Cleanly complete the test's Attempt so shared-DB tests stay isolated.
             repo.completeAttempt(tenant, run.runId(), res.attemptId(), "out", "{\"dispensed\":55}");
+        }
+    }
+
+    /**
+     * 回归护栏：租户级 dispatch 发现必须在 SQL 层收窄，不能被其它租户的 RUNNING/OPEN 行挤掉。
+     *
+     * <p>事故背景（2026-11-20 远端 PG17 红灯）：原先 {@code findRunnableWorkTargets} 用
+     * {@code DISTINCT + 无序 LIMIT} 取候选行，而租户过滤是**在 SQL 之后**用内存谓词做的
+     * ⇒ 多租户共享库里目标租户的 run 会被 LIMIT 截断，且同一份数据下顺序稳定
+     * ⇒ 目标 run 被**永久饥饿**（不是变慢）⇒ 两个端到端用例 8s 超时。
+     *
+     * <p>本用例造 48 个竞争租户（{@code batchSize=32} 足以挤满限额），并把它们的
+     * {@code updated_at} 调旧，使得"先取最旧的 32 条"这种有序实现同样会排除目标 run，
+     * 然后验证两件事：
+     * <ol>
+     *   <li><b>SQL 契约（确定性）</b>：{@code findRunnableWorkTargetsForTenant} 只返回本租户的行；</li>
+     *   <li><b>端到端</b>：限定租户的 Host 仍能把本租户的 run 自动跑到 {@code SUCCEEDED}。</li>
+     * </ol>
+     *
+     * <p>护栏有效性：把 dispatch 发现改回"无租户条件 + 内存过滤"的旧语义时，
+     * 竞争租户会持续占满 LIMIT，本用例的端到端断言必然超时失败。
+     */
+    @Test
+    void scopedDispatchIsNotStarvedByCompetingTenants() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-starve");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Path lockFile = tempDir.resolve("labos-starve.lock");
+        String deviceId = "g3-starve-dev-1";
+        String planKey = "g3-starve-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+
+        // ① 造 48 个竞争租户：RUNNING/OPEN 且带 READY token + PENDING WORKER_DISPATCH/DEVICE_COMMAND Outbox
+        int competitors = 48;
+        List<UUID> competitorTenants = new ArrayList<>();
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            for (int i = 0; i < competitors; i++) {
+                UUID other = createTenant(ds, "g3-starve-c" + i);
+                competitorTenants.add(other);
+                var otherRun = repo.createRun(other, "g3-starve-req-" + i, "CREATE", "{}",
+                        planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                        plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+                repo.startRun(other, otherRun.runId());
+                // ② 把竞争 run 的 updated_at 与 outbox 的 available_at 调旧：即便实现按"最旧优先"排序，LIMIT 也会先取走它们
+                st.executeUpdate("UPDATE workflow_runtime.workflow_run SET updated_at = clock_timestamp() - interval '1 hour' "
+                        + "WHERE tenant_id = '" + other + "'");
+                st.executeUpdate("INSERT INTO workflow_runtime.runtime_outbox"
+                        + "(tenant_id,run_id,message_kind,dedup_key,payload,outbox_state,available_at) VALUES ('"
+                        + other + "','" + otherRun.runId() + "','WORKER_DISPATCH','starve-wd-" + other
+                        + "','{}'::jsonb,'PENDING',clock_timestamp() - interval '1 hour'),('"
+                        + other + "','" + otherRun.runId() + "','DEVICE_COMMAND','starve-cmd-" + other
+                        + "','{}'::jsonb,'PENDING',clock_timestamp() - interval '1 hour')");
+            }
+        }
+
+        // ③ 本租户的 run（与端到端用例同构：startRun + advance ⇒ 设备任务节点持 READY token）
+        var run = repo.createRun(tenant, "g3-starve-req-self", "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, run.runId());
+        new GraphCoordinator(repo).advance(tenant, run.runId());
+
+        // ④ 前提：竞争租户必须同时挤满无租户条件的 Run 与 Outbox LIMIT，否则本护栏证明不了饥饿
+        var unscoped = repo.findRunnableWorkTargets(32);
+        assertEquals(32, unscoped.size(), "前提失效：竞争租户未挤满 LIMIT(32)，本护栏将失去意义");
+        assertTrue(unscoped.stream().noneMatch(r -> r.runId().equals(run.runId())),
+                "前提失效：目标 run 未被无租户条件的发现排除，饥饿场景没有复现");
+        var unscopedWdOutbox = repo.findTenantsWithPendingOutbox("WORKER_DISPATCH", 32);
+        assertEquals(32, unscopedWdOutbox.size());
+        assertFalse(unscopedWdOutbox.contains(tenant));
+        var unscopedCmdOutbox = repo.findTenantsWithPendingOutbox("DEVICE_COMMAND", 32);
+        assertEquals(32, unscopedCmdOutbox.size());
+        assertFalse(unscopedCmdOutbox.contains(tenant));
+
+        // ⑤ SQL 契约：租户级发现只返回本租户的行，不受竞争租户行数影响
+        var scoped = repo.findRunnableWorkTargetsForTenant(tenant, 32);
+        assertEquals(1, scoped.size());
+        assertEquals(run.runId(), scoped.get(0).runId());
+
+        // ⑥ 端到端：限定租户的 Host 仍能自动把本租户的 run 跑到 SUCCEEDED
+        CountDownLatch terminalApplied = new CountDownLatch(1);
+        AtomicReference<UUID> cmdIdRef = new AtomicReference<>();
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
+            server.setCommandHandler((cmdNode, session) -> {
+                try {
+                    String runId = cmdNode.get("runId").asText();
+                    String cmdId = cmdNode.get("commandId").asText();
+                    session.sendDeviceEvent(deviceId, runId, cmdId,
+                            "g3-starve-ack-" + cmdId, "RECEIVED_ACK", "ACKNOWLEDGED", "seq-1", "{}");
+                    session.sendDeviceEvent(deviceId, runId, cmdId,
+                            "g3-starve-res-" + cmdId, "COMMAND_RESULT", "SUCCEEDED", "seq-2", "{\"dispensed\":80}");
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+
+            EmbeddedWorkflowRuntimeHost.Config cfg = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-starve", 2, 16, 4, 2, 32, 100,
+                    Duration.ofMillis(40), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
+
+            try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
+                    cfg, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g3-starve-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"v\":80}");
+                        cmdIdRef.set(cmdId);
+                        assertTrue(terminalApplied.await(8, TimeUnit.SECONDS));
+                        return WorkerTaskHandler.TaskResult.of("out", "{\"dispensed\":80}");
+                    }),
+                    notification -> {
+                        if (notification.error() == null
+                                && notification.outcome() != null
+                                && notification.outcome().status() == DeviceCommandExecutionService.InboxStatus.APPLIED
+                                && "SUCCEEDED".equals(notification.event().targetState())) {
+                            terminalApplied.countDown();
+                        }
+                    })) {
+                host.start();
+                assertTrue(host.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                awaitCondition(Duration.ofSeconds(20), () -> {
+                    try {
+                        return scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                                + tenant + "' AND run_id='" + run.runId()
+                                + "' AND status='SUCCEEDED' AND control_gate='CLOSED'") == 1;
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                }, () -> "scoped dispatch starved: "
+                        + diagnoseRunState(ds, tenant, run.runId(), cmdIdRef.get(), host, deviceId));
+            }
         }
     }
 }
