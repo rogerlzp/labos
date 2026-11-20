@@ -96,15 +96,25 @@ public final class LabSepWireCodec implements GatewayWireCodec {
         if (!root.isObject()) {
             throw new IllegalArgumentException("LabSep wire frame must be a JSON object");
         }
-        // Ignore non-reply peer frames (e.g. message_type=6 spontaneous events or heartbeats)
-        // even if a legacy driver attaches a UUID message_id to them.
+        // Strictly validate wire message_type:
+        //   5 = command status/result reply (only type allowed to mutate command state)
+        //   6 = known DeviceCore spontaneous event broadcast (benign, ignored safely)
+        // Missing, non-integer (e.g. "5"), or unknown types MUST be rejected as protocol errors.
         JsonNode msgTypeNode = root.get("message_type");
-        if (msgTypeNode != null && msgTypeNode.isInt() && msgTypeNode.asInt() != 5) {
+        if (msgTypeNode == null || !msgTypeNode.isInt()) {
+            throw new IllegalArgumentException("LabSep wire frame missing integer message_type");
+        }
+        int wireMessageType = msgTypeNode.asInt();
+        if (wireMessageType == 6) {
             return null;
         }
+        if (wireMessageType != 5) {
+            throw new IllegalArgumentException("Unsupported LabSep wire message_type: " + wireMessageType);
+        }
+
         JsonNode msgIdNode = root.get("message_id");
         if (msgIdNode == null || msgIdNode.isNull() || !msgIdNode.isTextual() || msgIdNode.asText().isBlank()) {
-            // Unsolicited driver heartbeat/status broadcast without message_id: ignore safely.
+            // Unsolicited driver status broadcast without message_id: ignore safely.
             return null;
         }
         String messageId = msgIdNode.asText().trim();
@@ -128,22 +138,34 @@ public final class LabSepWireCodec implements GatewayWireCodec {
 
         String messageType;
         String targetState;
-        if (methodStatus == 1 && !hasError) {
-            messageType = "PROGRESS";
-            targetState = "RUNNING";
-        } else if (methodStatus == 2 && !hasError) {
-            messageType = "COMMAND_RESULT";
-            targetState = "SUCCEEDED";
-        } else {
-            messageType = "COMMAND_RESULT";
-            targetState = "FAILED";
+        switch (methodStatus) {
+            case 1 -> {
+                if (hasError) {
+                    throw new IllegalArgumentException(
+                            "Contradictory LabSep reply: method_status=1 with non-empty error: " + messageId);
+                }
+                messageType = "PROGRESS";
+                targetState = "RUNNING";
+            }
+            case 2 -> {
+                if (hasError) {
+                    throw new IllegalArgumentException(
+                            "Contradictory LabSep reply: method_status=2 with non-empty error: " + messageId);
+                }
+                messageType = "COMMAND_RESULT";
+                targetState = "SUCCEEDED";
+            }
+            case 3 -> {
+                messageType = "COMMAND_RESULT";
+                targetState = "FAILED";
+            }
+            default -> throw new IllegalArgumentException(
+                    "Unsupported LabSep method_status=" + methodStatus + " for command " + messageId);
         }
 
         String claimedDeviceId = optionalText(root, "equipment_id");
         String deviceSequence = optionalText(root, "timestamp");
-        String sourceMessageId = hasError && (methodStatus == 1 || methodStatus == 2)
-                ? (messageId + ":status:" + methodStatus + ":error")
-                : (messageId + ":status:" + methodStatus);
+        String sourceMessageId = messageId + ":status:" + methodStatus;
 
         ObjectNode outcome = JSON.createObjectNode();
         outcome.put("methodStatus", methodStatus);

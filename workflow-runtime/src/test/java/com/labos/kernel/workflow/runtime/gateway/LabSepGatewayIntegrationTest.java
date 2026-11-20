@@ -518,6 +518,152 @@ class LabSepGatewayIntegrationTest {
         }
     }
 
+    @Test
+    void labSepInvalidMethodStatusAndMessageTypeNeverCauseFalseTerminalTransitionOrGraphAdvance() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        DriverManagerDataSource ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        UUID tenant = createTenant(ds, "labsep-strict");
+        String deviceId = "strict-dev-" + UUID.randomUUID().toString().substring(0, 8);
+
+        String twoStepXml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p_strict">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="step1" protocolName="Dispense" resource="1"/>
+                    <bpmn:task id="step2" protocolName="Mix" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="step1"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="step1" targetRef="step2"/>
+                    <bpmn:sequenceFlow id="f3" sourceRef="step2" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+
+        AtomicBoolean firstCmd = new AtomicBoolean(true);
+        AtomicReference<UUID> cmd1Ref = new AtomicReference<>();
+        CountDownLatch allowStep1Timeout = new CountDownLatch(1);
+        CountDownLatch step2RanOnRun1 = new CountDownLatch(1);
+
+        try (MockLabSepServer server = new MockLabSepServer((req, conn) -> {
+            String msgId = req.get("message_id").asText();
+            String method = req.get("method").asText();
+            String eqId = req.get("equipment_id").asText();
+            try {
+                // Fire ALL 7 invalid protocol frames + 1 benign message_type=6 spontaneous event for command #1!
+                if (firstCmd.compareAndSet(true, false)) {
+                    conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"message_type\":5,\"equipment_id\":\"" + eqId + "\",\"method_status\":0,\"error\":null}");
+                    conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"message_type\":5,\"equipment_id\":\"" + eqId + "\",\"method_status\":4,\"error\":null}");
+                    conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"message_type\":5,\"equipment_id\":\"" + eqId + "\",\"method_status\":-1,\"error\":null}");
+                    conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"message_type\":5,\"equipment_id\":\"" + eqId + "\",\"error\":null}");
+                    conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"message_type\":5,\"equipment_id\":\"" + eqId + "\",\"method_status\":\"2\",\"error\":null}");
+                    conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"equipment_id\":\"" + eqId + "\",\"method_status\":2,\"error\":null}");
+                    conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"message_type\":\"5\",\"equipment_id\":\"" + eqId + "\",\"method_status\":2,\"error\":null}");
+                    conn.sendRawJson("{\"message_type\":6,\"equipment_id\":\"" + eqId + "\",\"event_type\":\"process_done\",\"data\":{}}");
+                    return;
+                }
+                // For subsequent commands (run #2): also inject an invalid method_status=4 first, then valid 1 -> 2!
+                conn.sendRawJson("{\"message_id\":\"" + msgId + "\",\"message_type\":5,\"equipment_id\":\"" + eqId + "\",\"method_status\":4,\"error\":null}");
+                conn.sendReply(msgId, method, eqId, 1, null, Map.of("pct", 50), "2026-11-21T07:05:01Z");
+                conn.sendReply(msgId, method, eqId, 2, null, Map.of("ok", true), "2026-11-21T07:05:02Z");
+            } catch (Exception ignored) {
+            }
+        })) {
+            UUID[] run1IdHolder = new UUID[1];
+            var cfg = new EmbeddedWorkflowRuntimeHost.Config(
+                    tempDir.resolve("labsep-strict.lock"),
+                    "labsep-strict-host",
+                    2, 16, 4, 2, 32, 50,
+                    Duration.ofMillis(25), 16,
+                    List.of(new TcpDeviceConnection.Endpoint(deviceId, "127.0.0.1", server.port(), LabSepWireCodec.INSTANCE)),
+                    gatewayConfig(4096),
+                    tenant);
+
+            try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
+                    cfg, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "labsep-strict-cap-" + tenant, 2, "DEVICE", "dev-q", Duration.ofSeconds(30), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        if (req.runId().equals(run1IdHolder[0])) {
+                            if ("step2".equals(req.nodeKey())) {
+                                step2RanOnRun1.countDown();
+                            }
+                            UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"volumeUl\":100}");
+                            cmd1Ref.set(cmdId);
+                            assertTrue(allowStep1Timeout.await(8, TimeUnit.SECONDS));
+                            repo.markCommandUnknown(req.tenantId(), cmdId, "{\"reason\":\"invalid_status_no_valid_reply\"}");
+                            throw new RuntimeException("timed out waiting for valid method_status 1/2/3");
+                        }
+                        return pollingDeviceWorker(ds, deviceId, Duration.ofSeconds(8), null).execute(req, ctx);
+                    }))) {
+                host.start();
+                assertTrue(host.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+
+                GraphPlan plan1 = new BpmnGraphCompiler().compile(
+                        new BpmnGraphCompiler.CompilationInput("strict-1-" + tenant, "1", twoStepXml, Map.of()));
+                var run1 = repo.createRun(tenant, "req-strict-1-" + UUID.randomUUID(), "CREATE", "{}",
+                        plan1.definitionKey(), "1", HexFormat.of().parseHex(plan1.bpmnSha256()),
+                        plan1.compilerVersion(), GraphPlanCodec.toJson(plan1), "{}", "start");
+                run1IdHolder[0] = run1.runId();
+                host.startRun(tenant, run1.runId()).get(5, TimeUnit.SECONDS);
+
+                // Wait until all 7 malformed/unsupported frames have been rejected by LabSepWireCodec.
+                awaitCondition(Duration.ofSeconds(8), () ->
+                        host.healthSnapshot().devices().get(deviceId).malformedFrames() == 7L,
+                        "All 7 invalid frames (method_status 0/4/-1/missing/string + message_type missing/string) must be rejected");
+
+                // Critical P1 invariants: ZERO inbox writes, command stays SEND_STARTED (NEVER FAILED/SUCCEEDED), step2 NEVER starts!
+                UUID cmd1 = cmd1Ref.get();
+                assertNotNull(cmd1);
+                assertEquals(0L, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run1.runId() + "'"));
+                assertEquals("SEND_STARTED", singleText(ds,
+                        "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id='" + tenant
+                                + "' AND command_id='" + cmd1 + "'"));
+                assertEquals(0L, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run1.runId() + "' AND node_key='step2'"));
+                assertEquals(1L, step2RanOnRun1.getCount(), "step2 must NOT execute on invalid protocol frames");
+
+                // Let run1 enter timeout -> UNKNOWN + MANUAL_REQUIRED (never false FAILED/SUCCEEDED!).
+                allowStep1Timeout.countDown();
+                awaitCondition(Duration.ofSeconds(8), () -> {
+                    try {
+                        return !host.listUnknownCommands(tenant, 10).isEmpty()
+                                && !host.listManualRequiredRuns(tenant, 10).isEmpty()
+                                && host.healthSnapshot().activeLocalWorkers() == 0;
+                    } catch (Exception e) {
+                        return false;
+                    }
+                }, "Run #1 must escalate to UNKNOWN command + MANUAL_REQUIRED run");
+                assertEquals("UNKNOWN", singleText(ds,
+                        "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id='" + tenant
+                                + "' AND command_id='" + cmd1 + "'"));
+                assertEquals(0L, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run1.runId() + "' AND node_key='step2'"));
+
+                // Run #2 on the same TCP connection: invalid method_status=4 followed by valid 1 -> 2 converges cleanly!
+                GraphPlan plan2 = new BpmnGraphCompiler().compile(
+                        new BpmnGraphCompiler.CompilationInput("strict-2-" + tenant, "1", twoStepXml, Map.of()));
+                var run2 = repo.createRun(tenant, "req-strict-2-" + UUID.randomUUID(), "CREATE", "{}",
+                        plan2.definitionKey(), "1", HexFormat.of().parseHex(plan2.bpmnSha256()),
+                        plan2.compilerVersion(), GraphPlanCodec.toJson(plan2), "{}", "start");
+                host.startRun(tenant, run2.runId()).get(5, TimeUnit.SECONDS);
+
+                awaitCondition(Duration.ofSeconds(8), () -> {
+                    try {
+                        return "SUCCEEDED".equals(singleText(ds,
+                                "SELECT status FROM workflow_runtime.workflow_run WHERE tenant_id='" + tenant
+                                        + "' AND run_id='" + run2.runId() + "'"));
+                    } catch (Exception e) {
+                        return false;
+                    }
+                }, "Run #2 should still succeed when valid 1 -> 2 frames follow an invalid method_status=4 frame");
+                assertEquals(2L, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run2.runId() + "' AND command_state='SUCCEEDED'"));
+            }
+        }
+    }
+
     /** Minimal loopback mock server speaking the exact {@code #!LABSEP!#} legacy driver wire protocol. */
     private static final class MockLabSepServer implements AutoCloseable {
         private static final byte[] SEP = LabSepWireCodec.SEPARATOR.getBytes(StandardCharsets.UTF_8);
