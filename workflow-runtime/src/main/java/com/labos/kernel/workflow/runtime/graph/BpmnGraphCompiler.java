@@ -49,12 +49,17 @@ public final class BpmnGraphCompiler {
                 if(local==null) continue;
                 // Event definitions change execution semantics even when nested inside
                 // an otherwise supported Start/End Event. V1 has no event-trigger runtime.
-                if (BPMN_NS.equals(el.getNamespaceURI())
+                String namespace = el.getNamespaceURI();
+                if (BPMN_NS.equals(namespace)
                         && (local.equals("eventDefinition") || local.endsWith("EventDefinition")))
                     throw new IllegalArgumentException("Unsupported BPMN event definition: "+local);
-                if(isUnsupported(local))
+                if (local.equals("sequenceFlow") && !BPMN_NS.equals(namespace))
+                    throw new IllegalArgumentException("sequenceFlow must use the BPMN namespace");
+                if (BPMN_NS.equals(namespace) && isUnsupported(local))
                     throw new IllegalArgumentException("Unsupported BPMN element: "+local+" id="+el.getAttribute("id"));
                 if(isExecutable(local)) {
+                    if (!BPMN_NS.equals(namespace))
+                        throw new IllegalArgumentException("Executable BPMN element must use the BPMN namespace: "+local);
                     String id=el.getAttribute("id");
                     if(id.isBlank()) throw new IllegalArgumentException("BPMN executable element has no id: "+local);
                     if(elements.putIfAbsent(id,el)!=null)
@@ -107,6 +112,8 @@ public final class BpmnGraphCompiler {
             long starts=nodes.stream().filter(n->n.kind()==GraphPlan.Kind.START).count();
             if(starts!=1) throw new IllegalArgumentException("V1 requires exactly one startEvent; found "+starts);
             for(GraphPlan.Node n:nodes) {
+                if (n.kind()==GraphPlan.Kind.START && out.getOrDefault(n.key(),0)!=1)
+                    throw new IllegalArgumentException("V1 startEvent requires exactly one outgoing sequenceFlow: "+n.key());
                 if(n.kind()==GraphPlan.Kind.TASK && n.protocol()==null)
                     throw new IllegalArgumentException("Device task has no protocolName: "+n.key());
                 if(n.kind()==GraphPlan.Kind.TASK && n.resourceId()==null && n.capabilityCode()==null)
