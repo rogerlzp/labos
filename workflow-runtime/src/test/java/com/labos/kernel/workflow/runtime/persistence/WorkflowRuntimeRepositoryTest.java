@@ -242,6 +242,61 @@ class WorkflowRuntimeRepositoryTest {
         assertEquals(32,checkpoint.sha256().length);
     }
 
+    @Test
+    void graphTransitionTransactionRollsBackAndReleasesParallelJoinOnce() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','graph-tx-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        var rollbackRun=repo.createRun(tenant,"graph-rollback-"+UUID.randomUUID(),"CREATE","{}",
+                "graph-rollback-"+tenant,"1",new byte[32],"ci","{}","{}","start");
+        repo.startRun(tenant,rollbackRun.runId());
+        var rollbackToken=repo.findReadyGraphTokens(tenant,rollbackRun.runId(),10).get(0);
+        assertThrows(IllegalArgumentException.class,()->repo.advanceGraphToken(tenant,rollbackRun.runId(),
+                rollbackToken.tokenId(),"start","SPLIT",java.util.List.of("same","same")));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND token_id='"+rollbackToken.tokenId()+"' AND token_state='READY'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id='"+
+                tenant+"' AND token_id='"+rollbackToken.tokenId()+"'"));
+
+        var run=repo.createRun(tenant,"graph-join-"+UUID.randomUUID(),"CREATE","{}",
+                "graph-join-"+tenant,"1",new byte[32],"ci","{}","{}","start");
+        repo.startRun(tenant,run.runId());
+        var start=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        assertEquals("ADVANCED",repo.advanceGraphToken(tenant,run.runId(),start.tokenId(),
+                "start","SEQUENCE",java.util.List.of("split")).outcome());
+        var splitToken=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        var split=repo.advanceGraphToken(tenant,run.runId(),splitToken.tokenId(),
+                "split","SPLIT",java.util.List.of("branch-a","branch-b"));
+        assertEquals(2,split.tokensCreated());
+
+        var branches=repo.findReadyGraphTokens(tenant,run.runId(),10);
+        assertEquals(2,branches.size());
+        var branchA=branches.stream().filter(t->t.nodeKey().equals("branch-a")).findFirst().orElseThrow();
+        var branchB=branches.stream().filter(t->t.nodeKey().equals("branch-b")).findFirst().orElseThrow();
+        var firstArrival=repo.advanceGraphToken(tenant,run.runId(),branchA.tokenId(),
+                "branch-a","JOIN",java.util.List.of("end"));
+        assertEquals(0,firstArrival.tokensCreated());
+        assertFalse(firstArrival.runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id='"+
+                tenant+"' AND split_id='"+branchA.splitId()+"' AND join_state='WAITING'"));
+        var lastArrival=repo.advanceGraphToken(tenant,run.runId(),branchB.tokenId(),
+                "branch-b","JOIN",java.util.List.of("end"));
+        assertEquals(1,lastArrival.tokensCreated());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id='"+
+                tenant+"' AND split_id='"+branchA.splitId()+"' AND join_state='RELEASED'"));
+        var end=repo.findReadyGraphTokens(tenant,run.runId(),10).stream()
+                .filter(t->t.nodeKey().equals("end")).findFirst().orElseThrow();
+        var terminal=repo.advanceGraphToken(tenant,run.runId(),end.tokenId(),"end","END",java.util.List.of());
+        assertTrue(terminal.runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED'"));
+    }
+
     private int scalar(DriverManagerDataSource ds, String sql) throws Exception {
         try(Connection c=ds.getConnection(); var st=c.createStatement(); var rs=st.executeQuery(sql)) {
             assertTrue(rs.next()); return rs.getInt(1);
