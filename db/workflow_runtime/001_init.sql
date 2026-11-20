@@ -130,6 +130,7 @@ CREATE TABLE node_attempt (
   started_at timestamptz,
   finished_at timestamptz,
   result jsonb,
+  exported_variables jsonb NOT NULL DEFAULT '{}'::jsonb,
   error jsonb,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (tenant_id, attempt_id),
@@ -312,9 +313,15 @@ CREATE TABLE flow_variable (
   variable_key text NOT NULL,
   value jsonb NOT NULL,
   value_version bigint NOT NULL DEFAULT 0,
+  source_activation_id uuid,
+  source_split_id uuid,
+  source_branch_id uuid,
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (tenant_id, run_id, variable_key),
-  FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id)
+  FOREIGN KEY (tenant_id, run_id) REFERENCES workflow_run(tenant_id, run_id),
+  FOREIGN KEY (tenant_id, source_activation_id) REFERENCES node_activation(tenant_id, activation_id),
+  FOREIGN KEY (tenant_id, source_split_id) REFERENCES split_activation(tenant_id, split_id),
+  FOREIGN KEY (tenant_id, source_branch_id) REFERENCES branch_activation(tenant_id, branch_id)
 );
 
 CREATE TABLE branch_output (

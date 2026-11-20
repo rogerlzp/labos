@@ -549,7 +549,13 @@ public final class WorkflowRuntimeRepository {
     /**
      * T05: atomically commit Attempt output to immutable branch_output and export
      * declared flow variables into flow_variable under the same Run lock.
-     * Identical replay returns cleanly; differing result or exported values throw IdempotencyConflictException.
+     *
+     * <p>New completions are admitted while the Run is RUNNING or draining to a safe point
+     * (PAUSE_REQUESTED/PAUSING/STOP_REQUESTED/STOPPING) and rejected once the Run has
+     * entered a terminal or manual-blocked state (FAILED/STOPPED/SUCCEEDED/MANUAL_REQUIRED/
+     * QUARANTINED/PAUSED). Identical replays against an already-SUCCEEDED Attempt verify both
+     * the committed result and the complete exported variable set. Sibling parallel branches
+     * of the same Split may not overwrite each other's flow_variable keys.
      */
     public void completeAttempt(UUID tenantId, UUID runId, UUID attemptId,
                                 String outputKey, String outputJson,
@@ -563,6 +569,7 @@ public final class WorkflowRuntimeRepository {
                 sortedExports.put(k, v);
             }
         }
+        String exportedManifestJson = canonicalJsonObject(sortedExports);
         required(() -> {
             RunHead head=lockRun(tenantId,runId);
             UUID activationId=jdbc.queryForObject("""
@@ -573,12 +580,39 @@ public final class WorkflowRuntimeRepository {
                 SELECT token_id FROM workflow_runtime.node_activation
                  WHERE tenant_id=? AND activation_id=?
                 """,UUID.class,tenantId,activationId);
-            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
-                    UUID.class,tenantId,tokenId);
+            List<UUID[]> tokenLineageRows = jdbc.query("""
+                SELECT split_id,branch_id FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND token_id=? FOR UPDATE
+                """, (rs, n) -> new UUID[]{rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)},
+                tenantId, tokenId);
+            if (tokenLineageRows.size() != 1) throw new IllegalStateException("Token not found");
+            UUID tokenSplitId = tokenLineageRows.get(0)[0];
+            UUID tokenBranchId = tokenLineageRows.get(0)[1];
             jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
                     UUID.class,tenantId,activationId);
             jdbc.queryForObject("SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=? FOR UPDATE",
                     UUID.class,tenantId,attemptId);
+            List<String> states=jdbc.query("""
+                SELECT attempt_state FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
+                """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
+            if(states.size()!=1) throw new IllegalStateException("Attempt not found");
+            if("SUCCEEDED".equals(states.get(0))) {
+                Boolean identical = jdbc.queryForObject("""
+                    SELECT result IS NOT NULL
+                       AND result = ?::jsonb
+                       AND exported_variables = ?::jsonb
+                      FROM workflow_runtime.node_attempt
+                     WHERE tenant_id=? AND attempt_id=?
+                    """, Boolean.class, outputJson, exportedManifestJson, tenantId, attemptId);
+                if (Boolean.TRUE.equals(identical)) return null;
+                throw new IdempotencyConflictException("Attempt completion replay differs from committed result or exported variables");
+            }
+            if (!List.of("RUNNING", "PAUSE_REQUESTED", "PAUSING", "STOP_REQUESTED", "STOPPING")
+                    .contains(head.status())) {
+                throw new InvalidTransitionException(
+                        "Cannot commit Attempt completion when Run is in status=" + head.status());
+            }
             String sideEffectClass=jdbc.queryForObject("""
                 SELECT side_effect_class FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND attempt_id=?
@@ -591,32 +625,12 @@ public final class WorkflowRuntimeRepository {
                 if(commandSucceeded==null||commandSucceeded!=1)
                     throw new IllegalStateException("Device Attempt requires a SUCCEEDED Command before output commit");
             }
-            List<String> states=jdbc.query("""
-                SELECT attempt_state FROM workflow_runtime.node_attempt
-                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
-            if(states.size()!=1) throw new IllegalStateException("Attempt not found");
-            if("SUCCEEDED".equals(states.get(0))) {
-                String stored=jdbc.queryForObject("SELECT result::text FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=?",
-                        String.class,tenantId,attemptId);
-                if(stored==null || !Boolean.TRUE.equals(jdbc.queryForObject("SELECT ?::jsonb = ?::jsonb",Boolean.class,stored,outputJson)))
-                    throw new IdempotencyConflictException("Attempt completion replay differs from committed result");
-                for (Map.Entry<String, String> entry : sortedExports.entrySet()) {
-                    List<String> existingVar = jdbc.query("""
-                        SELECT value::text FROM workflow_runtime.flow_variable
-                         WHERE tenant_id=? AND run_id=? AND variable_key=?
-                        """, (rs, n) -> rs.getString(1), tenantId, runId, entry.getKey());
-                    if (existingVar.size() != 1 || !Boolean.TRUE.equals(jdbc.queryForObject(
-                            "SELECT ?::jsonb = ?::jsonb", Boolean.class, existingVar.get(0), entry.getValue())))
-                        throw new IdempotencyConflictException("Attempt completion replay differs from exported flow variable: " + entry.getKey());
-                }
-                return null;
-            }
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='SUCCEEDED',
-                       finished_at=clock_timestamp(),attempt_version=attempt_version+1,result=?::jsonb
+                       finished_at=clock_timestamp(),attempt_version=attempt_version+1,
+                       result=?::jsonb,exported_variables=?::jsonb
                  WHERE tenant_id=? AND attempt_id=? AND run_id=? AND attempt_state='STARTED'
-                """,outputJson,tenantId,attemptId,runId);
+                """,outputJson,exportedManifestJson,tenantId,attemptId,runId);
             if(changed!=1) throw new StaleRuntimeWriteException("Attempt is not STARTED");
             jdbc.update("""
                 INSERT INTO workflow_runtime.branch_output(tenant_id,run_id,activation_id,output_key,value)
@@ -625,15 +639,36 @@ public final class WorkflowRuntimeRepository {
                 """,tenantId,runId,activationId,outputKey,outputJson);
             List<EventDraft> events = new ArrayList<>();
             for (Map.Entry<String, String> entry : sortedExports.entrySet()) {
+                if (tokenSplitId != null) {
+                    List<UUID[]> existingWriters = jdbc.query("""
+                        SELECT source_split_id,source_branch_id FROM workflow_runtime.flow_variable
+                         WHERE tenant_id=? AND run_id=? AND variable_key=? FOR UPDATE
+                        """, (rs, n) -> new UUID[]{rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)},
+                        tenantId, runId, entry.getKey());
+                    if (!existingWriters.isEmpty()) {
+                        UUID existingSplit = existingWriters.get(0)[0];
+                        UUID existingBranch = existingWriters.get(0)[1];
+                        if (tokenSplitId.equals(existingSplit) && !Objects.equals(tokenBranchId, existingBranch)) {
+                            throw new InvalidTransitionException(
+                                    "Parallel branches of the same Split cannot write the same flow_variable key: "
+                                            + entry.getKey());
+                        }
+                    }
+                }
                 Long version = jdbc.queryForObject("""
                     INSERT INTO workflow_runtime.flow_variable
-                      (tenant_id,run_id,variable_key,value,value_version)
-                    VALUES (?,?,?,?::jsonb,1)
+                      (tenant_id,run_id,variable_key,value,value_version,
+                       source_activation_id,source_split_id,source_branch_id)
+                    VALUES (?,?,?,?::jsonb,1,?,?,?)
                     ON CONFLICT (tenant_id,run_id,variable_key) DO UPDATE
                        SET value=EXCLUDED.value,value_version=workflow_runtime.flow_variable.value_version+1,
+                           source_activation_id=EXCLUDED.source_activation_id,
+                           source_split_id=EXCLUDED.source_split_id,
+                           source_branch_id=EXCLUDED.source_branch_id,
                            updated_at=clock_timestamp()
                     RETURNING value_version
-                    """, Long.class, tenantId, runId, entry.getKey(), entry.getValue());
+                    """, Long.class, tenantId, runId, entry.getKey(), entry.getValue(),
+                        activationId, tokenSplitId, tokenBranchId);
                 events.add(new EventDraft("FLOW_VARIABLE_UPDATED", "RUN", runId,
                         head.commitVersion() + 1, null, null,
                         "{\"key\":\"" + jsonEscape(entry.getKey()) + "\",\"version\":" + version
@@ -658,6 +693,18 @@ public final class WorkflowRuntimeRepository {
             appendEvents(tenantId,runId,events);
             return null;
         });
+    }
+
+    private static String canonicalJsonObject(TreeMap<String, String> sortedJsonValues) {
+        if (sortedJsonValues == null || sortedJsonValues.isEmpty()) return "{}";
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, String> entry : sortedJsonValues.entrySet()) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append('"').append(jsonEscape(entry.getKey())).append("\":").append(entry.getValue());
+        }
+        return sb.append('}').toString();
     }
 
     public record AttemptFailureResult(String outcome, UUID interventionId) {}
@@ -806,18 +853,9 @@ public final class WorkflowRuntimeRepository {
                     commandDispatchId(tenantId, attemptId), "{\"reason\":\"attempt-failed\"}");
             appendEvents(tenantId, runId, List.of(new EventDraft("ATTEMPT_FAILED", "ATTEMPT", attemptId,
                     null, null, null, normalizedError)));
-            int runFailed = jdbc.update("""
-                UPDATE workflow_runtime.workflow_run SET status='FAILED',
-                       control_gate='CLOSED',finished_at=clock_timestamp(),
-                       terminal_reason='ATTEMPT_FAILED',updated_at=clock_timestamp()
-                 WHERE tenant_id=? AND run_id=?
-                   AND status NOT IN ('SUCCEEDED','FAILED','STOPPED','MANUAL_REQUIRED','QUARANTINED')
-                """, tenantId, runId);
-            if (runFailed == 1) {
-                appendEvents(tenantId, runId, List.of(new EventDraft("RUN_FAILED", "RUN", runId,
-                        head.commitVersion() + 2, null, null, "{\"reason\":\"ATTEMPT_FAILED\"}")));
-            }
-            return new AttemptFailureResult("FAILED", null);
+            GraphFailureResult runOutcome = transitionRunAfterDeterministicFailure(
+                    tenantId, runId, "ATTEMPT_FAILED", normalizedError, "ATTEMPT", attemptId);
+            return new AttemptFailureResult(runOutcome.outcome(), runOutcome.interventionId());
         });
     }
 
@@ -924,18 +962,25 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+    public record GraphFailureResult(String outcome, UUID drainId, UUID interventionId) {}
+
     /**
-     * Terminalize a Run after a deterministic graph-routing or expression-evaluation fault
-     * so repeated mailbox wakeups cannot enter an infinite poison-pill retry loop.
+     * Handle a deterministic graph-routing or expression-evaluation fault without falsely
+     * assuming in-flight Worker or physical device actions have stopped:
+     * <ul>
+     *   <li>Zero active attempts/commands/leases/waits -> terminalize Run to FAILED/CLOSED.</li>
+     *   <li>Any uncertain/device side effect or unreleased lease -> escalate to MANUAL_REQUIRED/CLOSED/BLOCKED.</li>
+     *   <li>Only non-side-effect in-flight attempts/waits -> close dispatch gate and enter FAILURE drain.</li>
+     * </ul>
      */
-    public boolean failGraphRun(UUID tenantId, UUID runId, UUID tokenId,
-                                String errorCode, String errorMessage) {
+    public GraphFailureResult failGraphRun(UUID tenantId, UUID runId, UUID tokenId,
+                                           String errorCode, String errorMessage) {
         String code = (errorCode == null || errorCode.isBlank()) ? "GRAPH_FAULT" : errorCode;
         String msg = (errorMessage == null) ? "" : errorMessage;
         return required(() -> {
             RunHead head = lockRun(tenantId, runId);
             if (!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate())) {
-                return false;
+                return new GraphFailureResult("IGNORED", null, null);
             }
             if (tokenId != null) {
                 jdbc.update("""
@@ -954,19 +999,131 @@ public final class WorkflowRuntimeRepository {
                 """, tenantId, runId, runId, payload, code);
             appendEvents(tenantId, runId, List.of(new EventDraft("GRAPH_ADVANCEMENT_FAILED", "RUN",
                     runId, head.commitVersion() + 1, null, null, payload)));
-            int changed = jdbc.update("""
-                UPDATE workflow_runtime.workflow_run SET status='FAILED',
-                       control_gate='CLOSED',finished_at=clock_timestamp(),
-                       terminal_reason=?,updated_at=clock_timestamp()
-                 WHERE tenant_id=? AND run_id=? AND status='RUNNING' AND control_gate='OPEN'
-                """, code, tenantId, runId);
-            if (changed == 1) {
-                appendEvents(tenantId, runId, List.of(new EventDraft("RUN_FAILED", "RUN",
-                        runId, head.commitVersion() + 2, null, null, payload)));
-                return true;
-            }
-            return false;
+            return transitionRunAfterDeterministicFailure(tenantId, runId, code, payload, "RUN", runId);
         });
+    }
+
+    private GraphFailureResult transitionRunAfterDeterministicFailure(
+            UUID tenantId, UUID runId, String reasonCode, String payloadJson,
+            String subjectKind, UUID subjectId) {
+        Integer activeAttempts = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.node_attempt
+             WHERE tenant_id=? AND run_id=?
+               AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
+            """, Integer.class, tenantId, runId);
+        Integer unknownAttempts = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.node_attempt
+             WHERE tenant_id=? AND run_id=? AND attempt_state='UNKNOWN'
+            """, Integer.class, tenantId, runId);
+        Integer unresolvedCommands = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.command_ledger
+             WHERE tenant_id=? AND run_id=?
+               AND command_state NOT IN ('SUCCEEDED','FAILED','CANCELLED')
+            """, Integer.class, tenantId, runId);
+        Integer activeSideEffects = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.worker_execution_fact f
+              JOIN workflow_runtime.node_attempt a
+                ON a.tenant_id=f.tenant_id AND a.attempt_id=f.attempt_id
+             WHERE f.tenant_id=? AND f.run_id=?
+               AND a.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
+               AND f.fact_type IN ('SIDE_EFFECT_STARTED','SIDE_EFFECT_UNKNOWN')
+            """, Integer.class, tenantId, runId);
+        Integer unreleasedLeases = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.resource_lease
+             WHERE tenant_id=? AND run_id=? AND lease_state <> 'RELEASED'
+            """, Integer.class, tenantId, runId);
+        Integer activeWaits = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.wait_registration
+             WHERE tenant_id=? AND run_id=? AND wait_state='ACTIVE'
+            """, Integer.class, tenantId, runId);
+
+        boolean hasActiveSideEffect = (unknownAttempts != null && unknownAttempts > 0)
+                || (unresolvedCommands != null && unresolvedCommands > 0)
+                || (activeSideEffects != null && activeSideEffects > 0)
+                || (unreleasedLeases != null && unreleasedLeases > 0);
+        if (hasActiveSideEffect) {
+            UUID interventionId = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO workflow_runtime.manual_intervention
+                  (tenant_id,intervention_id,run_id,subject_kind,subject_id,intervention_state,reason_code,evidence)
+                VALUES (?,?,?,?,?,'OPEN','FAILURE_WITH_ACTIVE_SIDE_EFFECT',?::jsonb)
+                """, tenantId, interventionId, runId, subjectKind, subjectId, payloadJson);
+            List<Long> versions = jdbc.query("""
+                UPDATE workflow_runtime.workflow_run SET status='MANUAL_REQUIRED',
+                       control_gate='CLOSED',recovery_state='BLOCKED',
+                       terminal_reason=?,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=?
+                   AND status NOT IN ('SUCCEEDED','FAILED','STOPPED')
+             RETURNING commit_version
+                """, (rs, n) -> rs.getLong(1), reasonCode, tenantId, runId);
+            jdbc.update("""
+                INSERT INTO workflow_runtime.runtime_audit
+                  (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
+                VALUES (?,?,'SYSTEM','runtime','FAILURE_ESCALATED_MANUAL_REQUIRED',?,?,?::jsonb,
+                        'active device/resource side effect prevents direct FAILED terminalization')
+                """, tenantId, runId, subjectKind, subjectId, payloadJson);
+            Long nextVer = versions.isEmpty() ? null : versions.get(0) + 1;
+            appendEvents(tenantId, runId, List.of(new EventDraft("RUN_MANUAL_REQUIRED", "RUN", runId,
+                    nextVer, null, null,
+                    "{\"reason\":\"" + jsonEscape(reasonCode) + "\",\"interventionId\":\"" + interventionId + "\"}")));
+            return new GraphFailureResult("MANUAL_REQUIRED", null, interventionId);
+        }
+
+        boolean hasInFlightWork = (activeAttempts != null && activeAttempts > 0)
+                || (activeWaits != null && activeWaits > 0);
+        if (hasInFlightWork) {
+            jdbc.update("""
+                UPDATE workflow_runtime.workflow_run SET status='STOP_REQUESTED',
+                       control_gate='STOP',terminal_reason=?,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=?
+                   AND status NOT IN ('SUCCEEDED','FAILED','STOPPED','MANUAL_REQUIRED','QUARANTINED')
+                """, reasonCode, tenantId, runId);
+            List<UUID> openDrains = jdbc.query("""
+                SELECT drain_id FROM workflow_runtime.drain_record
+                 WHERE tenant_id=? AND run_id=?
+                   AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT','MANUAL_REQUIRED')
+                 ORDER BY created_at DESC FOR UPDATE
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId);
+            UUID drainId;
+            if (!openDrains.isEmpty()) {
+                drainId = openDrains.get(0);
+                jdbc.update("""
+                    UPDATE workflow_runtime.drain_record SET drain_kind='FAILURE',version=version+1
+                     WHERE tenant_id=? AND drain_id=? AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT')
+                    """, tenantId, drainId);
+            } else {
+                drainId = UUID.randomUUID();
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.drain_record
+                      (tenant_id,drain_id,run_id,drain_kind,drain_state)
+                    VALUES (?,?,?,'FAILURE','REQUESTED')
+                    """, tenantId, drainId, runId);
+            }
+            jdbc.update("""
+                INSERT INTO workflow_runtime.runtime_outbox
+                  (tenant_id,run_id,message_kind,dedup_key,payload)
+                VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text,'kind','FAILURE'))
+                ON CONFLICT (tenant_id,dedup_key) DO NOTHING
+                """, tenantId, runId, "drain-failure:" + drainId, drainId);
+            appendEvents(tenantId, runId, List.of(new EventDraft("FAILURE_DRAIN_REQUESTED", "DRAIN", drainId,
+                    null, null, null, "{\"reason\":\"" + jsonEscape(reasonCode) + "\"}")));
+            return new GraphFailureResult("DRAINING_FAILURE", drainId, null);
+        }
+
+        List<Long> versions = jdbc.query("""
+            UPDATE workflow_runtime.workflow_run SET status='FAILED',
+                   control_gate='CLOSED',finished_at=clock_timestamp(),
+                   terminal_reason=?,updated_at=clock_timestamp()
+             WHERE tenant_id=? AND run_id=?
+               AND status NOT IN ('SUCCEEDED','FAILED','STOPPED','MANUAL_REQUIRED','QUARANTINED')
+         RETURNING commit_version
+            """, (rs, n) -> rs.getLong(1), reasonCode, tenantId, runId);
+        if (versions.size() == 1) {
+            appendEvents(tenantId, runId, List.of(new EventDraft("RUN_FAILED", "RUN",
+                    runId, versions.get(0) + 1, null, null, payloadJson)));
+            return new GraphFailureResult("FAILED", null, null);
+        }
+        return new GraphFailureResult("IGNORED", null, null);
     }
 
     /**
@@ -1220,10 +1377,12 @@ public final class WorkflowRuntimeRepository {
                 throw new InvalidTransitionException("Flow variables may only change while Run is RUNNING");
             Long version=jdbc.queryForObject("""
                 INSERT INTO workflow_runtime.flow_variable
-                  (tenant_id,run_id,variable_key,value,value_version)
-                VALUES (?,?,?,?::jsonb,1)
+                  (tenant_id,run_id,variable_key,value,value_version,
+                   source_activation_id,source_split_id,source_branch_id)
+                VALUES (?,?,?,?::jsonb,1,NULL,NULL,NULL)
                 ON CONFLICT (tenant_id,run_id,variable_key) DO UPDATE
                    SET value=EXCLUDED.value,value_version=workflow_runtime.flow_variable.value_version+1,
+                       source_activation_id=NULL,source_split_id=NULL,source_branch_id=NULL,
                        updated_at=clock_timestamp()
                 RETURNING value_version
                 """,Long.class,tenantId,runId,key,valueJson);
@@ -1691,6 +1850,13 @@ public final class WorkflowRuntimeRepository {
               (SELECT count(*) FROM workflow_runtime.drain_record
                 WHERE tenant_id=? AND run_id=?
                   AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT','MANUAL_REQUIRED')) +
+              (SELECT count(*) FROM workflow_runtime.drain_item di
+                JOIN workflow_runtime.drain_record dr
+                  ON dr.tenant_id=di.tenant_id AND dr.drain_id=di.drain_id
+                WHERE di.tenant_id=? AND dr.run_id=? AND di.item_state <> 'SAFE') +
+              (SELECT count(*) FROM workflow_runtime.quarantine_record
+                WHERE tenant_id=? AND run_id=?
+                  AND quarantine_state IN ('ACTIVE','CLEAR_PENDING')) +
               (SELECT count(*) FROM workflow_runtime.runtime_outbox
                 WHERE tenant_id=? AND run_id=? AND outbox_state IN ('PENDING','SENDING'))
             """, Long.class,
@@ -1709,6 +1875,8 @@ public final class WorkflowRuntimeRepository {
                 tenantId, runId, // dispatch_reservation
                 tenantId, runId, // manual_intervention
                 tenantId, runId, // drain_record
+                tenantId, runId, // drain_item
+                tenantId, runId, // quarantine_record
                 tenantId, runId  // runtime_outbox
         );
         if (blockers == null || blockers != 0) return false;

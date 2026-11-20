@@ -1148,4 +1148,402 @@ class WorkflowRuntimeRepositoryTest {
         }
     }
 
+    @Test
+    void graphFaultWithActivePureAttemptEntersFailureDrainAndBlocksLateTerminalCompletion() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','fault-drain-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        // Split -> taskA (active STARTED pure attempt) & taskB -> xorB (missing variable graph fault).
+        GraphPlan validPlan=new GraphPlan(1,"ci","fault-drain-valid","1","hash",
+                List.of(
+                        new GraphPlan.Node("start","Start",GraphPlan.Kind.START,"startEvent",null,null,null,null,null,null),
+                        new GraphPlan.Node("split","Split",GraphPlan.Kind.SPLIT_PARALLEL,"parallelGateway",null,null,null,null,null,null),
+                        new GraphPlan.Node("taskA","TaskA",GraphPlan.Kind.TASK,"task","P1",1L,null,null,null,null),
+                        new GraphPlan.Node("taskB","TaskB",GraphPlan.Kind.TASK,"task","P2",2L,null,null,null,null),
+                        new GraphPlan.Node("xorB","XorB",GraphPlan.Kind.SPLIT_XOR,"exclusiveGateway",null,null,null,null,null,null),
+                        new GraphPlan.Node("taskB1","TaskB1",GraphPlan.Kind.TASK,"task","P3",3L,null,null,null,null),
+                        new GraphPlan.Node("taskB2","TaskB2",GraphPlan.Kind.TASK,"task","P4",4L,null,null,null,null),
+                        new GraphPlan.Node("join","Join",GraphPlan.Kind.JOIN_PARALLEL,"parallelGateway",null,null,null,null,null,null),
+                        new GraphPlan.Node("end","End",GraphPlan.Kind.END,"endEvent",null,null,null,null,null,null)),
+                List.of(
+                        new GraphPlan.Edge("e1","start","split",null,false),
+                        new GraphPlan.Edge("e2","split","taskA",null,false),
+                        new GraphPlan.Edge("e3","split","taskB",null,false),
+                        new GraphPlan.Edge("e4","taskA","join",null,false),
+                        new GraphPlan.Edge("e5","taskB","xorB",null,false),
+                        new GraphPlan.Edge("e6","xorB","taskB1","missingFlag == true",false),
+                        new GraphPlan.Edge("e7","xorB","taskB2","missingFlag == false",false),
+                        new GraphPlan.Edge("e8","taskB1","join",null,false),
+                        new GraphPlan.Edge("e9","taskB2","join",null,false),
+                        new GraphPlan.Edge("e10","join","end",null,false)));
+        GraphCoordinator.validateGraphPlan(validPlan);
+        var run=repo.createRun(tenant,"fault-drain-"+UUID.randomUUID(),"CREATE","{}",
+                "fault-drain-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(validPlan),"{}","start");
+        repo.startRun(tenant,run.runId());
+        var coordinator=new GraphCoordinator(repo);
+        coordinator.advance(tenant,run.runId());
+
+        // Start both taskA and taskB.
+        var resA=repo.reserveCapacity(tenant,run.runId(),"fd-cap",2,"taskA","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),resA.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),resA.attemptId(),resA.dispatchId(),"w1");
+        repo.startAttempt(tenant,run.runId(),resA.attemptId(),resA.dispatchId(),"w1");
+
+        var resB=repo.reserveCapacity(tenant,run.runId(),"fd-cap",2,"taskB","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),resB.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),resB.attemptId(),resB.dispatchId(),"w2");
+        repo.startAttempt(tenant,run.runId(),resB.attemptId(),resB.dispatchId(),"w2");
+        repo.completeAttempt(tenant,run.runId(),resB.attemptId(),"out","{\"ok\":true}");
+
+        // Branch B advances to xorB and hits missingFlag while taskA is STILL STARTED (PURE).
+        assertThrows(IllegalArgumentException.class, () -> coordinator.advance(tenant,run.runId()));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='STOP_REQUESTED' AND control_gate='STOP'"),
+                "Graph fault with active PURE Attempt must enter FAILURE drain instead of jumping to FAILED");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.drain_record WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND drain_kind='FAILURE' AND drain_state='REQUESTED'"));
+
+        // During STOP_REQUESTED drain, the in-flight taskA IS allowed to complete cleanly to a safe point.
+        repo.completeAttempt(tenant,run.runId(),resA.attemptId(),"out","{\"drained\":true}");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+resA.attemptId()+"' AND attempt_state='SUCCEEDED'"));
+
+        // Now verify that once a Run IS terminal (FAILED), a late STARTED Attempt CANNOT commit completion!
+        var terminalRun=repo.createRun(tenant,"late-term-"+UUID.randomUUID(),"CREATE","{}",
+                "late-term-"+tenant,"1",new byte[32],"ci","{}","{}","late-task");
+        repo.startRun(tenant,terminalRun.runId());
+        var lateRes=repo.reserveCapacity(tenant,terminalRun.runId(),"late-cap",1,"late-task","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),lateRes.dispatchId(),"w1");
+        repo.startAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),lateRes.dispatchId(),"w1");
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement(
+                "UPDATE workflow_runtime.workflow_run SET status='FAILED',control_gate='CLOSED' WHERE tenant_id=? AND run_id=?")) {
+            ps.setObject(1,tenant);ps.setObject(2,terminalRun.runId());ps.executeUpdate();
+        }
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.completeAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),"out","{\"late\":true}",
+                        Map.of("shouldNotWrite","true")));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.branch_output WHERE tenant_id='"+
+                tenant+"' AND run_id='"+terminalRun.runId()+"'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.flow_variable WHERE tenant_id='"+
+                tenant+"' AND run_id='"+terminalRun.runId()+"'"));
+        // Terminalize synthetic STARTED attempt so shared-DB startup recovery tests stay isolated.
+        repo.cancelAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),"test-cleanup");
+    }
+
+    @Test
+    void graphFaultWithActiveDeviceSideEffectEscalatesToManualRequiredAndBlocksCompletion() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','fault-dev-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"fault-dev-"+UUID.randomUUID(),"CREATE","{}",
+                "fault-dev-"+tenant,"1",new byte[32],"ci","{}","{}","dev-task");
+        repo.startRun(tenant,run.runId());
+        var lease=repo.acquireResourceLease(tenant,run.runId(),"robot-arm-1","RUN",run.runId(),
+                Instant.now().plusSeconds(120),"{}");
+        var res=repo.reserveCapacity(tenant,run.runId(),"fault-dev-cap",1,"dev-task","DEVICE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),res.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
+        repo.startAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
+        repo.recordSideEffectFact(tenant,run.runId(),res.attemptId(),"w1","send-arm","SIDE_EFFECT_STARTED","{}");
+
+        var outcome=repo.failGraphRun(tenant,run.runId(),null,"IllegalArgumentException","missing condition var");
+        assertEquals("MANUAL_REQUIRED",outcome.outcome());
+        assertNotNull(outcome.interventionId());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='MANUAL_REQUIRED' AND control_gate='CLOSED' AND recovery_state='BLOCKED'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.resource_lease WHERE tenant_id='"+
+                tenant+"' AND lease_id='"+lease.leaseId()+"' AND lease_state='ACTIVE'"));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.completeAttempt(tenant,run.runId(),res.attemptId(),"out","{\"done\":true}"));
+        // Move the uncertain attempt to UNKNOWN so shared-DB startup recovery tests stay isolated.
+        assertEquals("MANUAL_REQUIRED",
+                repo.failAttempt(tenant,run.runId(),res.attemptId(),"{\"reason\":\"test-cleanup\"}",true).outcome());
+    }
+
+    @Test
+    void corruptPersistedVariableJsonTriggersFailGraphRunAndPreventsPoisonPillLoop() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','corrupt-json-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        String xml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan plan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "corrupt-json-"+tenant,"1",xml,Map.of()));
+        // Valid JSONB array, which fails ObjectMapper Map<String,Object> deserialization inside loadPersistedVariables().
+        var run=repo.createRun(tenant,"corrupt-json-"+UUID.randomUUID(),"CREATE","{}",
+                "corrupt-json-"+tenant,"1",java.util.HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(),GraphPlanCodec.toJson(plan),"[1,2,3]","start");
+        repo.startRun(tenant,run.runId());
+        var coordinator=new GraphCoordinator(repo);
+        assertThrows(IllegalStateException.class, () -> coordinator.advance(tenant,run.runId()));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='FAILED' AND control_gate='CLOSED'"));
+        var replay=coordinator.advance(tenant,run.runId());
+        assertEquals(0,replay.controlTokensAdvanced());
+        assertFalse(replay.runCompleted());
+    }
+
+    @Test
+    void parallelBranchesWritingSameFlowVariableAreRejectedAndReplayChecksFullExportSet() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','par-var-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"par-var-"+UUID.randomUUID(),"CREATE","{}",
+                "par-var-"+tenant,"1",new byte[32],"ci","{}","{}","split");
+        repo.startRun(tenant,run.runId());
+        var splitTok=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        repo.advanceGraphToken(tenant,run.runId(),splitTok.tokenId(),"split","SPLIT",List.of("branchA","branchB"));
+
+        var resA=repo.reserveCapacity(tenant,run.runId(),"pv-cap",2,"branchA","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),resA.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),resA.attemptId(),resA.dispatchId(),"w1");
+        repo.startAttempt(tenant,run.runId(),resA.attemptId(),resA.dispatchId(),"w1");
+
+        var resB=repo.reserveCapacity(tenant,run.runId(),"pv-cap",2,"branchB","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),resB.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),resB.attemptId(),resB.dispatchId(),"w2");
+        repo.startAttempt(tenant,run.runId(),resB.attemptId(),resB.dispatchId(),"w2");
+
+        Map<String,String> exportsA=Map.of("sharedKey","1","onlyA","\"ok\"");
+        repo.completeAttempt(tenant,run.runId(),resA.attemptId(),"out","{\"a\":1}",exportsA);
+
+        // Full-set idempotency checks: omitting keys or passing subset must fail; exact full set replays cleanly.
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,
+                () -> repo.completeAttempt(tenant,run.runId(),resA.attemptId(),"out","{\"a\":1}",Map.of()));
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,
+                () -> repo.completeAttempt(tenant,run.runId(),resA.attemptId(),"out","{\"a\":1}",Map.of("sharedKey","1")));
+        repo.completeAttempt(tenant,run.runId(),resA.attemptId(),"out","{\"a\":1}",exportsA);
+
+        // Sibling branch B writing the same variable key must be rejected atomically without overwriting sharedKey.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.completeAttempt(tenant,run.runId(),resB.attemptId(),"out","{\"b\":2}",
+                        Map.of("sharedKey","2","onlyB","\"no\"")));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+resB.attemptId()+"' AND attempt_state='STARTED'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.flow_variable WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND variable_key='sharedKey' AND value='1'::jsonb"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.flow_variable WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND variable_key='onlyB'"));
+
+        // Sibling branch B writing a distinct key succeeds cleanly.
+        repo.completeAttempt(tenant,run.runId(),resB.attemptId(),"out","{\"b\":2}",Map.of("onlyB","\"ok\""));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.flow_variable WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND variable_key='onlyB' AND value='\"ok\"'::jsonb"));
+    }
+
+    @Test
+    void terminalGuardMatrixBlocksRunSuccessForQuarantineAndPendingDrainItem() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','guard-qd-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        // 1. ACTIVE quarantine_record blocks Run SUCCEEDED.
+        var qRun=repo.createRun(tenant,"guard-q-"+UUID.randomUUID(),"CREATE","{}",
+                "guard-q-"+tenant,"1",new byte[32],"ci","{}","{}","end");
+        repo.startRun(tenant,qRun.runId());
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.quarantine_record
+                  (tenant_id,resource_id,run_id,quarantine_state,reason_code,evidence)
+                VALUES (?,?,?,'ACTIVE','TEST_BLOCK','{}')
+                """)) {
+            ps.setObject(1,tenant);ps.setString(2,"q-res-"+qRun.runId());ps.setObject(3,qRun.runId());ps.executeUpdate();
+        }
+        var qEnd=repo.findReadyGraphTokens(tenant,qRun.runId(),10).get(0);
+        assertFalse(repo.advanceGraphToken(tenant,qRun.runId(),qEnd.tokenId(),"end","END",List.of()).runCompleted());
+
+        // 2. PENDING drain_item blocks Run SUCCEEDED even if drain_record is COMPLETED.
+        var dRun=repo.createRun(tenant,"guard-d-"+UUID.randomUUID(),"CREATE","{}",
+                "guard-d-"+tenant,"1",new byte[32],"ci","{}","{}","end");
+        repo.startRun(tenant,dRun.runId());
+        UUID drainId=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.drain_record
+                  (tenant_id,drain_id,run_id,drain_kind,drain_state)
+                VALUES (?,?,?,'PAUSE','COMPLETED')
+                """)) {
+            ps.setObject(1,tenant);ps.setObject(2,drainId);ps.setObject(3,dRun.runId());ps.executeUpdate();
+        }
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.drain_item
+                  (tenant_id,drain_id,item_kind,item_id,item_state)
+                VALUES (?,?,'LEASE',?,'PENDING')
+                """)) {
+            ps.setObject(1,tenant);ps.setObject(2,drainId);ps.setObject(3,UUID.randomUUID());ps.executeUpdate();
+        }
+        var dEnd=repo.findReadyGraphTokens(tenant,dRun.runId(),10).get(0);
+        assertFalse(repo.advanceGraphToken(tenant,dRun.runId(),dEnd.tokenId(),"end","END",List.of()).runCompleted());
+    }
+
+    @Test
+    void lifecycleCoordinatorCoversWakeupAfterRejectedSignalFaultEvictionAndSameRunIdCrossTenant() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource();
+        UUID tenantA=UUID.randomUUID(), tenantB=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenantA+"','lc-a-"+tenantA+"','tenantA')");
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenantB+"','lc-b-"+tenantB+"','tenantB')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        // 1. Same run_id UUID in TWO different tenants (PK is (tenant_id, run_id)): strictly isolated!
+        String simpleXml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan simplePlan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "shared-run","1",simpleXml,Map.of()));
+        UUID sharedRunId=UUID.randomUUID();
+        UUID defA=UUID.randomUUID(), defB=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.definition_snapshot
+                  (tenant_id,definition_id,definition_key,definition_version,definition_hash,compiler_version,graph_plan)
+                VALUES (?,?,?,'1',?,?,?::jsonb)
+                """)) {
+            byte[] hash=java.util.HexFormat.of().parseHex(simplePlan.bpmnSha256());
+            String json=GraphPlanCodec.toJson(simplePlan);
+            ps.setObject(1,tenantA);ps.setObject(2,defA);ps.setString(3,"kA");ps.setBytes(4,hash);ps.setString(5,simplePlan.compilerVersion());ps.setString(6,json);ps.executeUpdate();
+            ps.setObject(1,tenantB);ps.setObject(2,defB);ps.setString(3,"kB");ps.setBytes(4,hash);ps.setString(5,simplePlan.compilerVersion());ps.setString(6,json);ps.executeUpdate();
+        }
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.workflow_run (tenant_id,run_id,definition_id,status)
+                VALUES (?,?,?,'CREATED')
+                """)) {
+            ps.setObject(1,tenantA);ps.setObject(2,sharedRunId);ps.setObject(3,defA);ps.executeUpdate();
+            ps.setObject(1,tenantB);ps.setObject(2,sharedRunId);ps.setObject(3,defB);ps.executeUpdate();
+        }
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.execution_token (tenant_id,run_id,token_state,node_key)
+                VALUES (?,?,'READY','start')
+                """)) {
+            ps.setObject(1,tenantA);ps.setObject(2,sharedRunId);ps.executeUpdate();
+            ps.setObject(1,tenantB);ps.setObject(2,sharedRunId);ps.executeUpdate();
+        }
+
+        var executor=Executors.newFixedThreadPool(2);
+        try(var lifecycle=new WorkflowRunLifecycleCoordinator(repo,new GraphCoordinator(repo),executor,4)) {
+            lifecycle.startRun(tenantA,sharedRunId).get(5,TimeUnit.SECONDS);
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                    tenantA+"' AND run_id='"+sharedRunId+"' AND status='SUCCEEDED'"));
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                    tenantB+"' AND run_id='"+sharedRunId+"' AND status='CREATED'"),
+                    "Tenant B's Run with identical run_id must remain completely untouched");
+
+            // 2. Graph fault through LifecycleCoordinator lands FAILED and evicts mailbox to 0.
+            String faultXml="""
+                    <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                      <bpmn:process id="p">
+                        <bpmn:startEvent id="start"/>
+                        <bpmn:exclusiveGateway id="g"/>
+                        <bpmn:endEvent id="e1"/>
+                        <bpmn:endEvent id="e2"/>
+                        <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="g"/>
+                        <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="e1"><bpmn:conditionExpression>missing == true</bpmn:conditionExpression></bpmn:sequenceFlow>
+                        <bpmn:sequenceFlow id="f3" sourceRef="g" targetRef="e2"><bpmn:conditionExpression>missing == false</bpmn:conditionExpression></bpmn:sequenceFlow>
+                      </bpmn:process>
+                    </bpmn:definitions>
+                    """;
+            GraphPlan faultPlan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                    "fault-lc-"+tenantA,"1",faultXml,Map.of()));
+            var faultRun=repo.createRun(tenantA,"fault-lc-"+UUID.randomUUID(),"CREATE","{}",
+                    "fault-lc-"+tenantA,"1",java.util.HexFormat.of().parseHex(faultPlan.bpmnSha256()),
+                    faultPlan.compilerVersion(),GraphPlanCodec.toJson(faultPlan),"{}","start");
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> lifecycle.startRun(tenantA,faultRun.runId()).get(5,TimeUnit.SECONDS));
+            long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+            while(lifecycle.activeMailboxCount()!=0 && System.nanoTime()<deadline) Thread.yield();
+            assertEquals(0,lifecycle.activeMailboxCount(),"Faulted Run mailbox must be reclaimed");
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                    tenantA+"' AND run_id='"+faultRun.runId()+"' AND status='FAILED' AND control_gate='CLOSED'"));
+        } finally {
+            executor.shutdownNow();
+        }
+
+        // 3. Attempt completion commits durably even when mailbox rejects signal (capacity full), then wake() finishes Run!
+        String taskXml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="t1" protocolName="Calc" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="t1"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="t1" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan taskPlan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "wake-lc-"+tenantA,"1",taskXml,Map.of()));
+        var taskRun=repo.createRun(tenantA,"wake-lc-"+UUID.randomUUID(),"CREATE","{}",
+                "wake-lc-"+tenantA,"1",java.util.HexFormat.of().parseHex(taskPlan.bpmnSha256()),
+                taskPlan.compilerVersion(),GraphPlanCodec.toJson(taskPlan),"{}","start");
+        repo.startRun(tenantA,taskRun.runId());
+        new GraphCoordinator(repo).advance(tenantA,taskRun.runId());
+        var res=repo.reserveCapacity(tenantA,taskRun.runId(),"wake-cap",1,"t1","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenantA,taskRun.runId(),res.attemptId(),"q","{}");
+        var ob=repo.beginOutboxSend(tenantA,10).stream().filter(m -> m.dedupKey().equals("dispatch:"+res.attemptId())).findFirst().orElseThrow();
+        repo.markOutboxDelivered(tenantA,ob.outboxId());
+        repo.acceptAttempt(tenantA,taskRun.runId(),res.attemptId(),res.dispatchId(),"w1");
+        repo.startAttempt(tenantA,taskRun.runId(),res.attemptId(),res.dispatchId(),"w1");
+
+        // Executor that rejects submission on first signal (simulating mailbox/executor rejection), then accepts wake().
+        var realExec=Executors.newSingleThreadExecutor();
+        var rejectFirst=new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.Executor flakyExec=command -> {
+            if(rejectFirst.compareAndSet(true,false)) throw new java.util.concurrent.RejectedExecutionException("simulated overload");
+            realExec.execute(command);
+        };
+        try(var flakyLifecycle=new WorkflowRunLifecycleCoordinator(repo,new GraphCoordinator(repo),flakyExec,1)) {
+            var failedSignal=flakyLifecycle.completeAttempt(tenantA,taskRun.runId(),res.attemptId(),"out","{\"v\":9}");
+            assertThrows(java.util.concurrent.ExecutionException.class, () -> failedSignal.get(2,TimeUnit.SECONDS));
+            // Attempt completion MUST have remained committed in PostgreSQL despite failed signal.
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                    tenantA+"' AND attempt_id='"+res.attemptId()+"' AND attempt_state='SUCCEEDED'"));
+            // Now wake() using a healthy coordinator recovers the missed signal and completes the Run!
+            try(var healthyLifecycle=new WorkflowRunLifecycleCoordinator(repo,new GraphCoordinator(repo),realExec,4)) {
+                healthyLifecycle.wake(tenantA,taskRun.runId()).get(5,TimeUnit.SECONDS);
+                long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+                while(healthyLifecycle.activeMailboxCount()!=0 && System.nanoTime()<deadline) Thread.yield();
+                assertEquals(0,healthyLifecycle.activeMailboxCount());
+                assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                        tenantA+"' AND run_id='"+taskRun.runId()+"' AND status='SUCCEEDED' AND control_gate='CLOSED'"));
+            }
+        } finally {
+            realExec.shutdownNow();
+        }
+    }
+
 }

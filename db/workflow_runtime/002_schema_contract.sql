@@ -72,6 +72,15 @@ BEGIN
       AND table_name='inbox_receipt' AND column_name='message_payload') THEN
     RAISE EXCEPTION 'Inbox original message payload is not persisted';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='workflow_runtime'
+      AND table_name='node_attempt' AND column_name='exported_variables') THEN
+    RAISE EXCEPTION 'Attempt exported_variables manifest column is missing';
+  END IF;
+  IF (SELECT count(*) FROM information_schema.columns WHERE table_schema='workflow_runtime'
+      AND table_name='flow_variable'
+      AND column_name IN ('source_activation_id','source_split_id','source_branch_id')) <> 3 THEN
+    RAISE EXCEPTION 'flow_variable branch lineage columns are missing';
+  END IF;
 END $$;
 
 BEGIN;

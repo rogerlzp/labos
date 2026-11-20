@@ -68,12 +68,12 @@ public final class GraphCoordinator {
         if (!"RUNNING".equals(snapshot.runStatus()) || !"OPEN".equals(snapshot.controlGate()))
             return new AdvanceSummary(0, 0, 0, false);
 
-        Map<String, Object> mergedVariables = loadPersistedVariables(tenantId, runId);
-        if (variables != null) mergedVariables.putAll(variables);
-        Map<String, ?> context = Collections.unmodifiableMap(mergedVariables);
-
         UUID offendingTokenId = null;
         try {
+            Map<String, Object> mergedVariables = loadPersistedVariables(tenantId, runId);
+            if (variables != null) mergedVariables.putAll(variables);
+            Map<String, ?> context = Collections.unmodifiableMap(mergedVariables);
+
             GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson());
             Map<String, GraphPlan.Node> nodes = indexNodes(plan);
             Map<String, List<GraphPlan.Edge>> outgoing = indexOutgoing(plan, nodes);
