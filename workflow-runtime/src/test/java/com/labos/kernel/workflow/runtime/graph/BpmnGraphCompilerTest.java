@@ -89,17 +89,17 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void rejectsExecutableElementsOutsideBpmnNamespaceAndForeignSequenceFlows() {
-        String wrongNodeNamespace="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\" xmlns:x=\\"urn:example\\"><bpmn:process id=\\"p\\">"+
-                "<x:startEvent id=\\"s\\"/><bpmn:endEvent id=\\"e\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f\\" sourceRef=\\"s\\" targetRef=\\"e\\"/>"+
+        String wrongNodeNamespace="<bpmn:definitions xmlns:bpmn=\""+NS+"\" xmlns:x=\"urn:example\"><bpmn:process id=\"p\">"+
+                "<x:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/>"+
+                "<bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"e\"/>"+
                 "</bpmn:process></bpmn:definitions>";
         IllegalArgumentException nodeEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",wrongNodeNamespace,Map.of())));
         assertTrue(nodeEx.getMessage().contains("Executable BPMN element must use the BPMN namespace"));
 
-        String wrongFlowNamespace="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\" xmlns:x=\\"urn:example\\"><bpmn:process id=\\"p\\">"+
-                "<bpmn:startEvent id=\\"s\\"/><bpmn:endEvent id=\\"e\\"/>"+
-                "<x:sequenceFlow id=\\"f\\" sourceRef=\\"s\\" targetRef=\\"e\\"/>"+
+        String wrongFlowNamespace="<bpmn:definitions xmlns:bpmn=\""+NS+"\" xmlns:x=\"urn:example\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/>"+
+                "<x:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"e\"/>"+
                 "</bpmn:process></bpmn:definitions>";
         IllegalArgumentException flowEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",wrongFlowNamespace,Map.of())));
@@ -107,17 +107,17 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void rejectsStartEventsWithZeroOrMultipleOutgoingFlows() {
-        String zeroOutgoing="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\">"+
-                "<bpmn:startEvent id=\\"s\\"/><bpmn:endEvent id=\\"e\\"/>"+
+        String zeroOutgoing="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e\"/>"+
                 "</bpmn:process></bpmn:definitions>";
         IllegalArgumentException zeroEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",zeroOutgoing,Map.of())));
         assertTrue(zeroEx.getMessage().contains("startEvent requires exactly one outgoing sequenceFlow"));
 
-        String multipleOutgoing="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\">"+
-                "<bpmn:startEvent id=\\"s\\"/><bpmn:endEvent id=\\"e1\\"/><bpmn:endEvent id=\\"e2\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f1\\" sourceRef=\\"s\\" targetRef=\\"e1\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f2\\" sourceRef=\\"s\\" targetRef=\\"e2\\"/>"+
+        String multipleOutgoing="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e1\"/><bpmn:endEvent id=\"e2\"/>"+
+                "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"s\" targetRef=\"e1\"/>"+
+                "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"s\" targetRef=\"e2\"/>"+
                 "</bpmn:process></bpmn:definitions>";
         IllegalArgumentException multipleEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",multipleOutgoing,Map.of())));
@@ -125,16 +125,16 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void compilesCanonicalParallelSplitAndJoinShapes() {
-        String xml="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\">"+
-                "<bpmn:startEvent id=\\"s\\"/><bpmn:parallelGateway id=\\"split\\"/>"+
-                "<bpmn:task id=\\"a\\" protocolName=\\"__noop\\"/><bpmn:task id=\\"b\\" protocolName=\\"__noop\\"/>"+
-                "<bpmn:parallelGateway id=\\"join\\"/><bpmn:endEvent id=\\"e\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f1\\" sourceRef=\\"s\\" targetRef=\\"split\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f2\\" sourceRef=\\"split\\" targetRef=\\"a\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f3\\" sourceRef=\\"split\\" targetRef=\\"b\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f4\\" sourceRef=\\"a\\" targetRef=\\"join\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f5\\" sourceRef=\\"b\\" targetRef=\\"join\\"/>"+
-                "<bpmn:sequenceFlow id=\\"f6\\" sourceRef=\\"join\\" targetRef=\\"e\\"/>"+
+        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"split\"/>"+
+                "<bpmn:task id=\"a\" protocolName=\"__noop\"/><bpmn:task id=\"b\" protocolName=\"__noop\"/>"+
+                "<bpmn:parallelGateway id=\"join\"/><bpmn:endEvent id=\"e\"/>"+
+                "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"s\" targetRef=\"split\"/>"+
+                "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"split\" targetRef=\"a\"/>"+
+                "<bpmn:sequenceFlow id=\"f3\" sourceRef=\"split\" targetRef=\"b\"/>"+
+                "<bpmn:sequenceFlow id=\"f4\" sourceRef=\"a\" targetRef=\"join\"/>"+
+                "<bpmn:sequenceFlow id=\"f5\" sourceRef=\"b\" targetRef=\"join\"/>"+
+                "<bpmn:sequenceFlow id=\"f6\" sourceRef=\"join\" targetRef=\"e\"/>"+
                 "</bpmn:process></bpmn:definitions>";
         GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of()));
         assertEquals(GraphPlan.Kind.SPLIT_PARALLEL,plan.nodes().stream().filter(n->n.key().equals("split")).findFirst().orElseThrow().kind());
