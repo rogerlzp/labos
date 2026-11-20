@@ -141,6 +141,60 @@ class BpmnGraphCompilerTest {
         assertEquals(GraphPlan.Kind.JOIN_PARALLEL,plan.nodes().stream().filter(n->n.key().equals("join")).findFirst().orElseThrow().kind());
     }
 
+    @Test void rejectsInvalidGatewayDefaultAndConditionReferences() {
+        String danglingDefault="""
+          <bpmn:definitions xmlns:bpmn="%s"><bpmn:process id="p">
+            <bpmn:startEvent id="s"/><bpmn:exclusiveGateway id="g" default="missing"/>
+            <bpmn:endEvent id="e"/>
+            <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="g"/>
+            <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="e"/>
+          </bpmn:process></bpmn:definitions>
+          """.formatted(NS);
+        IllegalArgumentException danglingEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",danglingDefault,Map.of())));
+        assertTrue(danglingEx.getMessage().contains("Gateway default references unknown sequenceFlow"));
+
+        String nonOutgoingDefault="""
+          <bpmn:definitions xmlns:bpmn="%s"><bpmn:process id="p">
+            <bpmn:startEvent id="s"/><bpmn:exclusiveGateway id="g" default="f2"/>
+            <bpmn:endEvent id="e1"/><bpmn:endEvent id="e2"/>
+            <bpmn:task id="a" protocolName="__noop"/>
+            <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="g"/>
+            <bpmn:sequenceFlow id="f3" sourceRef="g" targetRef="e1"/>
+            <bpmn:sequenceFlow id="f4" sourceRef="g" targetRef="e2"/>
+            <bpmn:sequenceFlow id="f2" sourceRef="a" targetRef="e1"/>
+          </bpmn:process></bpmn:definitions>
+          """.formatted(NS);
+        IllegalArgumentException nonOutgoingEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",nonOutgoingDefault,Map.of())));
+        assertTrue(nonOutgoingEx.getMessage().contains("Gateway default sequenceFlow is not outgoing"));
+
+        String wrongConditionNamespace="""
+          <bpmn:definitions xmlns:bpmn="%s" xmlns:x="urn:example"><bpmn:process id="p">
+            <bpmn:startEvent id="s"/><bpmn:endEvent id="e"/>
+            <bpmn:sequenceFlow id="f" sourceRef="s" targetRef="e">
+              <x:conditionExpression>approved</x:conditionExpression>
+            </bpmn:sequenceFlow>
+          </bpmn:process></bpmn:definitions>
+          """.formatted(NS);
+        IllegalArgumentException conditionNsEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",wrongConditionNamespace,Map.of())));
+        assertTrue(conditionNsEx.getMessage().contains("conditionExpression must use the BPMN namespace"));
+
+        String duplicateCondition="""
+          <bpmn:definitions xmlns:bpmn="%s"><bpmn:process id="p">
+            <bpmn:startEvent id="s"/><bpmn:endEvent id="e"/>
+            <bpmn:sequenceFlow id="f" sourceRef="s" targetRef="e">
+              <bpmn:conditionExpression>first</bpmn:conditionExpression>
+              <bpmn:conditionExpression>second</bpmn:conditionExpression>
+            </bpmn:sequenceFlow>
+          </bpmn:process></bpmn:definitions>
+          """.formatted(NS);
+        IllegalArgumentException duplicateEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",duplicateCondition,Map.of())));
+        assertTrue(duplicateEx.getMessage().contains("multiple conditionExpression"));
+    }
+
     private static String gatewayXml(int incoming,int outgoing) {
         StringBuilder xml=new StringBuilder("<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
                 "<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"g\"/>"+
