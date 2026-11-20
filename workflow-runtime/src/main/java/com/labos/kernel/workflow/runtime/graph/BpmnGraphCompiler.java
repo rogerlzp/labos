@@ -125,7 +125,8 @@ public final class BpmnGraphCompiler {
                 String id=entry.getKey(); Element el=entry.getValue(); String type=el.getLocalName();
                 String protocol=blankToNull(el.getAttribute("protocolName"));
                 String name=first(el.getAttribute("name"),protocol,id);
-                GraphPlan.Kind kind=kind(type,protocol,in.getOrDefault(id,0),out.getOrDefault(id,0));
+                GraphPlan.Kind kind=kind(type,protocol,el.getAttribute("gatewayDirection"),
+                        in.getOrDefault(id,0),out.getOrDefault(id,0));
                 NodeMetadata meta=input.nodeMetadata().get(id);
                 Long resource=parseLong(el.getAttribute("resource"));
                 String methodParams=blankToNull(el.getAttribute("methodParams"));
@@ -161,7 +162,7 @@ public final class BpmnGraphCompiler {
                 "intermediateThrowEvent","boundaryEvent","eventBasedGateway","complexGateway",
                 "transaction","adHocSubProcess").contains(t);
     }
-    private static GraphPlan.Kind kind(String t,String protocol,int in,int out) {
+    private static GraphPlan.Kind kind(String t,String protocol,String gatewayDirection,int in,int out) {
         if(t.equals("startEvent")) return GraphPlan.Kind.START;
         if(t.equals("endEvent")) return GraphPlan.Kind.END;
         if(t.endsWith("Gateway")) {
@@ -170,6 +171,19 @@ public final class BpmnGraphCompiler {
             // Mixed, pass-through, and zero-sided gateway shapes are rejected.
             if(join==split || (split && in!=1) || (join && out!=1))
                 throw new IllegalArgumentException("Unsupported gateway shape; V1 requires exactly 1-in/N-out split or N-in/1-out join: "+t+" in="+in+" out="+out);
+            String direction=blankToNull(gatewayDirection);
+            if(direction==null) direction="Unspecified";
+            switch(direction) {
+                case "Unspecified" -> { /* infer from canonical topology below */ }
+                case "Diverging" -> {
+                    if(!split) throw new IllegalArgumentException("Gateway direction Diverging conflicts with topology: "+t+" in="+in+" out="+out);
+                }
+                case "Converging" -> {
+                    if(!join) throw new IllegalArgumentException("Gateway direction Converging conflicts with topology: "+t+" in="+in+" out="+out);
+                }
+                case "Mixed" -> throw new IllegalArgumentException("Gateway direction Mixed is unsupported in V1: "+t);
+                default -> throw new IllegalArgumentException("Unsupported gatewayDirection: "+direction+" on "+t);
+            }
             return switch(t) {
                 case "parallelGateway" -> join?GraphPlan.Kind.JOIN_PARALLEL:GraphPlan.Kind.SPLIT_PARALLEL;
                 case "exclusiveGateway" -> join?GraphPlan.Kind.JOIN_XOR:GraphPlan.Kind.SPLIT_XOR;
