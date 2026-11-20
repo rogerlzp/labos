@@ -121,7 +121,7 @@ class WorkflowRuntimeRepositoryTest {
         assertThrows(RuntimeException.class, () ->
                 repo.markCommandSendStarted(tenant,command,0L,commandOutbox.outboxId(),
                         UUID.randomUUID(),2,"dispatcher-1"));
-        var receipt=repo.receiveInbox(tenant,"it-device","device-msg-"+UUID.randomUUID(),
+        var receipt=repo.receiveInbox(tenant,"device-1","device-msg-"+UUID.randomUUID(),
                 "DEVICE_COMMAND_RESULT",first.runId(),"{\"commandId\":\""+command+"\",\"state\":\"SUCCEEDED\"}");
         assertTrue(repo.applyCommandEvent(tenant,first.runId(),receipt.inboxId(),command,
                 "SUCCEEDED","seq-1","{\"verified\":true}"));

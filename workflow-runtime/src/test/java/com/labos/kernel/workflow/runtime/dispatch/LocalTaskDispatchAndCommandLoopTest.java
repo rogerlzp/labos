@@ -1056,4 +1056,84 @@ class LocalTaskDispatchAndCommandLoopTest {
                 "{\"reason\":\"iso-cleanup\"}", true).outcome());
         repo.completeAttempt(tenant, fix2.runId(), fix2.attemptId(), "out", "{\"ok\":true}");
     }
+
+    @Test
+    void repositoryApplyCommandEventEnforcesInboxSourceAndPayloadStateBinding() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g2b-repo-bind");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        String xml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="dev_step" protocolName="Mix" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="dev_step"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="dev_step" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        String planKey = "g2b-repo-bind-" + tenant;
+        GraphPlan plan = new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
+        var fix = createStartedDeviceCommand(repo, tenant, plan, planKey, "real-device-1", true);
+
+        // P1-01: Wrong inbox_receipt.source with valid commandId & deviceId in payload MUST be rejected at Repository boundary!
+        var attackerReceipt = repo.receiveInbox(tenant, "attacker-device", "atk-" + UUID.randomUUID(),
+                "COMMAND_RESULT", fix.runId(),
+                "{\"commandId\":\"" + fix.commandId() + "\",\"deviceId\":\"real-device-1\",\"state\":\"SUCCEEDED\"}");
+        assertTrue(attackerReceipt.inserted());
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), attackerReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-atk", "{\"spoofed\":true}"),
+                "Repository must reject Inbox whose source != command_ledger.device_id even when payload deviceId matches");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
+        assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                + tenant + "' AND attempt_id='" + fix.attemptId()
+                + "' AND fact_type IN ('SIDE_EFFECT_COMPLETED','SIDE_EFFECT_UNKNOWN')"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + attackerReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
+
+        // P1-02a: Contradictory Inbox payload state (FAILED) vs applyCommandEvent targetState (SUCCEEDED) MUST be rejected!
+        var mismatchStateReceipt = repo.receiveInbox(tenant, "real-device-1", "mis-" + UUID.randomUUID(),
+                "COMMAND_RESULT", fix.runId(),
+                "{\"commandId\":\"" + fix.commandId() + "\",\"deviceId\":\"real-device-1\",\"state\":\"FAILED\"}");
+        assertTrue(mismatchStateReceipt.inserted());
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), mismatchStateReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-mis", "{\"ok\":true}"),
+                "Repository must reject contradictory targetState when Inbox payload declares FAILED");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
+        assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                + tenant + "' AND attempt_id='" + fix.attemptId()
+                + "' AND fact_type IN ('SIDE_EFFECT_COMPLETED','SIDE_EFFECT_UNKNOWN')"));
+
+        // P1-02b: Missing state field in Inbox payload MUST also fail closed!
+        var missingStateReceipt = repo.receiveInbox(tenant, "real-device-1", "nostate-" + UUID.randomUUID(),
+                "COMMAND_RESULT", fix.runId(),
+                "{\"commandId\":\"" + fix.commandId() + "\",\"deviceId\":\"real-device-1\"}");
+        assertTrue(missingStateReceipt.inserted());
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), missingStateReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-nostate", "{\"ok\":true}"),
+                "Repository must reject Inbox payload missing declared state");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
+
+        // Matching source == device_id AND payload state == targetState == SUCCEEDED applies cleanly!
+        var validReceipt = repo.receiveInbox(tenant, "real-device-1", "ok-" + UUID.randomUUID(),
+                "COMMAND_RESULT", fix.runId(),
+                "{\"commandId\":\"" + fix.commandId() + "\",\"deviceId\":\"real-device-1\",\"state\":\"SUCCEEDED\"}");
+        assertTrue(repo.applyCommandEvent(tenant, fix.runId(), validReceipt.inboxId(), fix.commandId(),
+                "SUCCEEDED", "seq-ok", "{\"ok\":true}"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SUCCEEDED'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
+        repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
+    }
 }

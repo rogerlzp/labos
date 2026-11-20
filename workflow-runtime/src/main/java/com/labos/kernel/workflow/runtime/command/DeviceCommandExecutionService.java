@@ -90,68 +90,70 @@ public final class DeviceCommandExecutionService {
                 deadLetteredInvalid++;
                 continue;
             }
-            Optional<WorkflowRuntimeRepository.CommandRecord> loaded = repository.loadCommand(tenantId, commandId);
-            if (loaded.isEmpty()) {
-                repository.markOutboxDeadLetter(tenantId, msg.outboxId());
-                outcomes.put(commandId, CommandDeliveryStatus.DEAD_LETTERED_STALE);
-                continue;
-            }
-            WorkflowRuntimeRepository.CommandRecord cmd = loaded.get();
-            if (!"CREATED".equals(cmd.commandState()) && !"DISPATCH_PENDING".equals(cmd.commandState())) {
-                // Command was already cancelled, sent, or terminalized: NEVER re-send.
-                repository.markOutboxDeadLetter(tenantId, msg.outboxId());
-                outcomes.put(commandId, CommandDeliveryStatus.DEAD_LETTERED_STALE);
-                continue;
-            }
-
-            UUID dispatchId = UUID.randomUUID();
-            boolean sendStarted;
+            boolean crossedSendStarted = false;
             try {
-                sendStarted = repository.markCommandSendStarted(
-                        tenantId, commandId, cmd.version(), msg.outboxId(),
-                        dispatchId, 1, dispatcherId);
-            } catch (WorkflowRuntimeRepository.InvalidTransitionException alreadySent) {
-                repository.markOutboxDeadLetter(tenantId, msg.outboxId());
-                outcomes.put(commandId, CommandDeliveryStatus.DEAD_LETTERED_STALE);
-                continue;
-            }
-            if (!sendStarted) {
-                // Pre-send gate closed or Attempt no longer STARTED: SEND_STARTED was NOT crossed.
-                Optional<WorkflowRuntimeRepository.DispatchedAttemptRecord> attempt =
-                        repository.loadDispatchedAttempt(tenantId, cmd.attemptId());
-                if (attempt.isEmpty() || !"STARTED".equals(attempt.get().attemptState())) {
+                Optional<WorkflowRuntimeRepository.CommandRecord> loaded = repository.loadCommand(tenantId, commandId);
+                if (loaded.isEmpty()) {
                     repository.markOutboxDeadLetter(tenantId, msg.outboxId());
-                } else {
-                    repository.requeueOutboxToPending(tenantId, msg.outboxId());
+                    outcomes.put(commandId, CommandDeliveryStatus.DEAD_LETTERED_STALE);
+                    continue;
                 }
-                outcomes.put(commandId, CommandDeliveryStatus.SKIPPED_GATE_OR_STATE);
-                continue;
-            }
-
-            // SEND_STARTED + SIDE_EFFECT_STARTED(command:<id>) are now durably committed.
-            DeviceCommandAdapter.DeviceCommandEnvelope envelope = new DeviceCommandAdapter.DeviceCommandEnvelope(
-                    tenantId, cmd.runId(), cmd.attemptId(), commandId, dispatchId,
-                    cmd.deviceId(), cmd.commandKind(), cmd.idempotencyClass(), cmd.payloadJson());
-            DeviceCommandAdapter.SendResult result;
-            try {
-                result = Objects.requireNonNull(adapter.send(envelope), "DeviceCommandAdapter returned null SendResult");
-            } catch (Throwable transportFailure) {
-                CommandDeliveryStatus status = handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
-                        transportFailure.getClass().getSimpleName() + ": " + safeMessage(transportFailure));
-                outcomes.put(commandId, status);
-                continue;
-            }
-
-            switch (result.status()) {
-                case ACCEPTED_ASYNC -> {
-                    repository.markOutboxDelivered(tenantId, msg.outboxId());
-                    outcomes.put(commandId, CommandDeliveryStatus.SENT_ASYNC);
+                WorkflowRuntimeRepository.CommandRecord cmd = loaded.get();
+                if (!"CREATED".equals(cmd.commandState()) && !"DISPATCH_PENDING".equals(cmd.commandState())) {
+                    // Command was already cancelled, sent, or terminalized: NEVER re-send.
+                    repository.markOutboxDeadLetter(tenantId, msg.outboxId());
+                    outcomes.put(commandId, CommandDeliveryStatus.DEAD_LETTERED_STALE);
+                    continue;
                 }
-                case COMPLETED_IMMEDIATELY -> {
-                    // Mark DEVICE_COMMAND outbox DELIVERED BEFORE applying SUCCEEDED Inbox event so
-                    // downstream completeAttempt/maybeCompleteGraphRun never sees a stale SENDING row.
-                    repository.markOutboxDelivered(tenantId, msg.outboxId());
-                    try {
+
+                UUID dispatchId = UUID.randomUUID();
+                boolean sendStarted;
+                try {
+                    sendStarted = repository.markCommandSendStarted(
+                            tenantId, commandId, cmd.version(), msg.outboxId(),
+                            dispatchId, 1, dispatcherId);
+                } catch (WorkflowRuntimeRepository.InvalidTransitionException alreadySent) {
+                    repository.markOutboxDeadLetter(tenantId, msg.outboxId());
+                    outcomes.put(commandId, CommandDeliveryStatus.DEAD_LETTERED_STALE);
+                    continue;
+                }
+                if (!sendStarted) {
+                    // Pre-send gate closed or Attempt no longer STARTED: SEND_STARTED was NOT crossed.
+                    Optional<WorkflowRuntimeRepository.DispatchedAttemptRecord> attempt =
+                            repository.loadDispatchedAttempt(tenantId, cmd.attemptId());
+                    if (attempt.isEmpty() || !"STARTED".equals(attempt.get().attemptState())) {
+                        repository.markOutboxDeadLetter(tenantId, msg.outboxId());
+                    } else {
+                        repository.requeueOutboxToPending(tenantId, msg.outboxId());
+                    }
+                    outcomes.put(commandId, CommandDeliveryStatus.SKIPPED_GATE_OR_STATE);
+                    continue;
+                }
+
+                // SEND_STARTED + SIDE_EFFECT_STARTED(command:<id>) are now durably committed.
+                crossedSendStarted = true;
+                DeviceCommandAdapter.DeviceCommandEnvelope envelope = new DeviceCommandAdapter.DeviceCommandEnvelope(
+                        tenantId, cmd.runId(), cmd.attemptId(), commandId, dispatchId,
+                        cmd.deviceId(), cmd.commandKind(), cmd.idempotencyClass(), cmd.payloadJson());
+                DeviceCommandAdapter.SendResult result;
+                try {
+                    result = Objects.requireNonNull(adapter.send(envelope), "DeviceCommandAdapter returned null SendResult");
+                } catch (Throwable transportFailure) {
+                    CommandDeliveryStatus status = handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
+                            transportFailure.getClass().getSimpleName() + ": " + safeMessage(transportFailure));
+                    outcomes.put(commandId, status);
+                    continue;
+                }
+
+                switch (result.status()) {
+                    case ACCEPTED_ASYNC -> {
+                        repository.markOutboxDelivered(tenantId, msg.outboxId());
+                        outcomes.put(commandId, CommandDeliveryStatus.SENT_ASYNC);
+                    }
+                    case COMPLETED_IMMEDIATELY -> {
+                        // Mark DEVICE_COMMAND outbox DELIVERED BEFORE applying SUCCEEDED Inbox event so
+                        // downstream completeAttempt/maybeCompleteGraphRun never sees a stale SENDING row.
+                        repository.markOutboxDelivered(tenantId, msg.outboxId());
                         InboxIngestionOutcome syncOutcome = ingestDeviceEvent(
                                 tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
                                 "DEVICE_COMMAND_RESULT", commandId, "SUCCEEDED",
@@ -162,17 +164,30 @@ public final class DeviceCommandExecutionService {
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
                         }
-                    } catch (RuntimeException syncIngestFailure) {
-                        // Isolate per-row sync result failure so remaining claimed SENDING outbox rows
-                        // in this batch continue processing; never re-send after SEND_STARTED.
-                        outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
-                                syncIngestFailure.getClass().getSimpleName() + ": " + safeMessage(syncIngestFailure)));
+                    }
+                    case DELIVERY_UNCERTAIN -> {
+                        CommandDeliveryStatus status = handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
+                                result.errorMessage() == null ? "adapter-delivery-uncertain" : result.errorMessage());
+                        outcomes.put(commandId, status);
                     }
                 }
-                case DELIVERY_UNCERTAIN -> {
-                    CommandDeliveryStatus status = handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
-                            result.errorMessage() == null ? "adapter-delivery-uncertain" : result.errorMessage());
-                    outcomes.put(commandId, status);
+            } catch (RuntimeException rowFailure) {
+                // Isolate per-row exceptions so remaining claimed SENDING outbox rows in this batch
+                // still get processed; after SEND_STARTED never re-send, before SEND_STARTED requeue or dead-letter.
+                if (crossedSendStarted) {
+                    outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
+                            rowFailure.getClass().getSimpleName() + ": " + safeMessage(rowFailure)));
+                } else {
+                    Optional<WorkflowRuntimeRepository.CommandRecord> current = repository.loadCommand(tenantId, commandId);
+                    if (current.isPresent()
+                            && ("CREATED".equals(current.get().commandState())
+                            || "DISPATCH_PENDING".equals(current.get().commandState()))) {
+                        repository.requeueOutboxToPending(tenantId, msg.outboxId());
+                        outcomes.put(commandId, CommandDeliveryStatus.SKIPPED_GATE_OR_STATE);
+                    } else {
+                        repository.markOutboxDeadLetter(tenantId, msg.outboxId());
+                        outcomes.put(commandId, CommandDeliveryStatus.DEAD_LETTERED_STALE);
+                    }
                 }
             }
         }
@@ -269,9 +284,10 @@ public final class DeviceCommandExecutionService {
      * {@code UNKNOWN}/{@code MANUAL_REQUIRED}) so operators reconcile explicitly via T21
      * {@link #reconcileUnknownCommand} rather than silently bypassing manual verification.
      *
-     * <p>Marking the {@code DEVICE_COMMAND} outbox {@code DEAD_LETTER} ONLY halts automatic
-     * re-dispatch so the physical action is never blindly repeated; it does not assert command
-     * failure and preserves {@code command_ledger='UNKNOWN'} for T21 {@link #reconcileUnknownCommand}.
+     * <p>Marking a {@code SENDING} {@code DEVICE_COMMAND} outbox {@code DEAD_LETTER} (or leaving
+     * an already-{@code DELIVERED} sync-result outbox terminal) ONLY halts automatic re-dispatch so
+     * the physical action is never blindly repeated; it does not assert command failure and
+     * preserves {@code command_ledger='UNKNOWN'} for T21 {@link #reconcileUnknownCommand}.
      */
     private CommandDeliveryStatus handlePostSendUncertainty(
             UUID tenantId, UUID commandId, UUID outboxId, String reason) {

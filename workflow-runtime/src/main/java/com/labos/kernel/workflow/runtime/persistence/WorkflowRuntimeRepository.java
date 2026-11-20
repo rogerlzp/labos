@@ -2757,21 +2757,32 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND run_id=? AND command_id=? FOR UPDATE
                 """,(rs,n)->rs.getString(1),tenantId,runId,commandId);
             if(states.size()!=1) throw new IllegalStateException("Command disappeared while applying device event");
-            record LockedInbox(String messageType, String commandId, String deviceId) {}
+            record LockedInbox(String source, String messageType, String commandId,
+                               String deviceId, String payloadState) {}
             List<LockedInbox> inboxRows=jdbc.query("""
-                SELECT message_type, message_payload->>'commandId', message_payload->>'deviceId'
+                SELECT source, message_type,
+                       message_payload->>'commandId',
+                       message_payload->>'deviceId',
+                       message_payload->>'state'
                   FROM workflow_runtime.inbox_receipt
                  WHERE tenant_id=? AND inbox_id=? AND run_id=? AND receipt_state IN ('RECEIVED','PROCESSING')
                    FOR UPDATE
-                """,(rs,n)->new LockedInbox(rs.getString(1),rs.getString(2),rs.getString(3)),
+                """,(rs,n)->new LockedInbox(
+                    rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5)),
                 tenantId,inboxId,runId);
             if(inboxRows.isEmpty())
                 throw new StaleRuntimeWriteException("Inbox receipt was already consumed or not found");
             LockedInbox inbox=inboxRows.get(0);
+            if(!deviceId.equals(inbox.source()))
+                throw new InvalidTransitionException("Inbox source " + inbox.source()
+                        + " does not match command device " + deviceId + "; event attribution rejected");
             if(!commandId.toString().equals(inbox.commandId()))
                 throw new IllegalStateException("Inbox commandId does not match command row; event attribution rejected");
             if(inbox.deviceId()!=null && !inbox.deviceId().isBlank() && !deviceId.equals(inbox.deviceId()))
                 throw new InvalidTransitionException("Inbox deviceId does not match command row; event attribution rejected");
+            if(inbox.payloadState()==null || !targetState.equals(inbox.payloadState()))
+                throw new InvalidTransitionException("Inbox payload state " + inbox.payloadState()
+                        + " does not match target Command state " + targetState);
             if(!isAllowedCommandEventMessageType(inbox.messageType(),targetState))
                 throw new InvalidTransitionException("Inbox message_type " + inbox.messageType()
                         + " is not allowed to transition Command to " + targetState);
