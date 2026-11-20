@@ -3,6 +3,7 @@ package com.labos.kernel.workflow.runtime.definition;
 import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
 import com.labos.kernel.workflow.runtime.graph.GraphPlan;
 import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
+import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
 import java.util.Map;
@@ -42,6 +43,7 @@ public final class WorkflowRunFactory {
                                 e.getValue().workflowNodeId())));
         GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput(
                 runtimeTenantId + ":" + source.workflowId(),source.version(),source.bpmnXml(),metadata));
+        GraphCoordinator.validateGraphPlan(plan);
         String firstNode=firstNode(plan);
         byte[] definitionHash=java.util.HexFormat.of().parseHex(plan.bpmnSha256());
         String stableInput=inputJson==null?"{}":inputJson;
