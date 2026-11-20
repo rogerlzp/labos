@@ -278,17 +278,25 @@ class WorkflowRuntimeRepositoryTest {
         assertEquals(2,branches.size());
         var branchA=branches.stream().filter(t->t.nodeKey().equals("branch-a")).findFirst().orElseThrow();
         var branchB=branches.stream().filter(t->t.nodeKey().equals("branch-b")).findFirst().orElseThrow();
-        var firstArrival=repo.advanceGraphToken(tenant,run.runId(),branchA.tokenId(),
-                "branch-a","JOIN",java.util.List.of("end"));
+        repo.advanceGraphToken(tenant,run.runId(),branchA.tokenId(),
+                "branch-a","SEQUENCE",java.util.List.of("join"));
+        repo.advanceGraphToken(tenant,run.runId(),branchB.tokenId(),
+                "branch-b","SEQUENCE",java.util.List.of("join"));
+        var joinTokens=repo.findReadyGraphTokens(tenant,run.runId(),10);
+        assertEquals(2,joinTokens.size());
+        var joinA=joinTokens.get(0);
+        var joinB=joinTokens.get(1);
+        var firstArrival=repo.advanceGraphToken(tenant,run.runId(),joinA.tokenId(),
+                "join","JOIN",java.util.List.of("end"),"join");
         assertEquals(0,firstArrival.tokensCreated());
         assertFalse(firstArrival.runCompleted());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id='"+
-                tenant+"' AND split_id='"+branchA.splitId()+"' AND join_state='WAITING'"));
-        var lastArrival=repo.advanceGraphToken(tenant,run.runId(),branchB.tokenId(),
-                "branch-b","JOIN",java.util.List.of("end"));
+                tenant+"' AND split_id='"+joinA.splitId()+"' AND join_key='join' AND join_state='WAITING'"));
+        var lastArrival=repo.advanceGraphToken(tenant,run.runId(),joinB.tokenId(),
+                "join","JOIN",java.util.List.of("end"),"join");
         assertEquals(1,lastArrival.tokensCreated());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id='"+
-                tenant+"' AND split_id='"+branchA.splitId()+"' AND join_state='RELEASED'"));
+                tenant+"' AND split_id='"+joinA.splitId()+"' AND join_key='join' AND join_state='RELEASED'"));
         var end=repo.findReadyGraphTokens(tenant,run.runId(),10).stream()
                 .filter(t->t.nodeKey().equals("end")).findFirst().orElseThrow();
         var terminal=repo.advanceGraphToken(tenant,run.runId(),end.tokenId(),"end","END",java.util.List.of());
