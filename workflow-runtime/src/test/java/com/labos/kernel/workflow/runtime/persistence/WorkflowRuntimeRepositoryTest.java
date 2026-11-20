@@ -121,6 +121,16 @@ class WorkflowRuntimeRepositoryTest {
 
         repo.completeAttempt(tenant,first.runId(),reservation.attemptId(),"result",
                 "{\"ok\":true}");
+        UUID completedActivation=activationForAttempt(ds,tenant,reservation.attemptId());
+        var routed=repo.advanceCompletedGraphActivation(tenant,first.runId(),completedActivation,
+                "SEQUENCE",java.util.List.of("next-node"));
+        assertEquals(1,routed.tokensCreated());
+        var routedReplay=repo.advanceCompletedGraphActivation(tenant,first.runId(),completedActivation,
+                "SEQUENCE",java.util.List.of("next-node"));
+        assertEquals("REPLAYED",routedReplay.outcome());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+tenant+
+                "' AND run_id='"+first.runId()+"' AND parent_token_id=(SELECT token_id FROM workflow_runtime.node_activation WHERE tenant_id='"+tenant+
+                "' AND activation_id='"+completedActivation+"') AND node_key='next-node'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='EXECUTION_RIGHT_RELEASED'"));
         assertFalse(repo.releaseReservation(tenant,reservation.reservationId()));
         assertFalse(repo.releaseReservation(tenant,reservation.reservationId()));
