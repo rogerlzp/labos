@@ -2672,6 +2672,196 @@ public final class WorkflowRuntimeRepository {
                 rs.getTimestamp(7).toInstant()), tenantId, limit);
     }
 
+    public record OpenDrainRef(
+            UUID tenantId, UUID runId, UUID drainId, String drainKind, String drainState, long version) {}
+
+    /** Global discovery of open PAUSE/STOP drains awaiting local host convergence. */
+    public List<OpenDrainRef> findOpenDrains(int limit) {
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT d.tenant_id, d.run_id, d.drain_id, d.drain_kind, d.drain_state, d.version
+              FROM workflow_runtime.drain_record d
+              JOIN workflow_runtime.workflow_run r
+                ON r.tenant_id = d.tenant_id AND r.run_id = d.run_id
+             WHERE d.drain_state IN ('REQUESTED', 'DRAINING', 'SAFE_POINT')
+               AND d.drain_kind IN ('PAUSE', 'STOP')
+               AND r.status IN ('PAUSE_REQUESTED', 'PAUSING', 'STOP_REQUESTED', 'STOPPING')
+             ORDER BY d.created_at ASC, d.drain_id ASC
+             LIMIT ?
+            """, (rs, n) -> new OpenDrainRef(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getString(4),
+                rs.getString(5),
+                rs.getLong(6)), limit);
+    }
+
+    /** Tenant-scoped discovery of open PAUSE/STOP drains awaiting local host convergence. */
+    public List<OpenDrainRef> findOpenDrainsForTenant(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT d.tenant_id, d.run_id, d.drain_id, d.drain_kind, d.drain_state, d.version
+              FROM workflow_runtime.drain_record d
+              JOIN workflow_runtime.workflow_run r
+                ON r.tenant_id = d.tenant_id AND r.run_id = d.run_id
+             WHERE d.tenant_id = ?
+               AND d.drain_state IN ('REQUESTED', 'DRAINING', 'SAFE_POINT')
+               AND d.drain_kind IN ('PAUSE', 'STOP')
+               AND r.status IN ('PAUSE_REQUESTED', 'PAUSING', 'STOP_REQUESTED', 'STOPPING')
+             ORDER BY d.created_at ASC, d.drain_id ASC
+             LIMIT ?
+            """, (rs, n) -> new OpenDrainRef(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getString(4),
+                rs.getString(5),
+                rs.getLong(6)), tenantId, limit);
+    }
+
+    /** Mark local DRAIN_REQUEST outbox rows as DELIVERED once observed by the host drain loop. */
+    public int deliverDrainRequestOutbox(UUID tenantId, UUID runId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        return required(() -> jdbc.update("""
+            UPDATE workflow_runtime.runtime_outbox
+               SET outbox_state = 'DELIVERED', delivered_at = clock_timestamp()
+             WHERE tenant_id = ? AND run_id = ?
+               AND message_kind = 'DRAIN_REQUEST'
+               AND outbox_state IN ('PENDING', 'SENDING')
+            """, tenantId, runId));
+    }
+
+    /** Return currently active local attempt IDs for cooperative cancellation during STOP drain. */
+    public List<UUID> findActiveAttemptIdsForRun(UUID tenantId, UUID runId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        return jdbc.query("""
+            SELECT attempt_id
+              FROM workflow_runtime.node_attempt
+             WHERE tenant_id = ? AND run_id = ?
+               AND attempt_state IN ('CREATED', 'DISPATCHED', 'ACCEPTED', 'STARTED')
+             ORDER BY created_at ASC
+            """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId);
+    }
+
+    public record CommandOverview(
+            UUID commandId, String deviceId, String commandKind, String commandState,
+            String deviceSequence, Instant createdAt, Instant completedAt) {}
+
+    public record RunOverview(
+            UUID runId,
+            String status,
+            String controlGate,
+            long commitVersion,
+            String definitionKey,
+            String definitionVersion,
+            String terminalReason,
+            Instant createdAt,
+            Instant startedAt,
+            Instant updatedAt,
+            Instant finishedAt,
+            int activeTokens,
+            int activeAttempts,
+            int openInterventions,
+            List<String> completedNodes,
+            List<String> activeNodes,
+            Map<String, String> variables,
+            List<CommandOverview> commands) {}
+
+    /** Read-only point-in-time overview of a single Run for Kernel HTTP observability & trial runs. */
+    public Optional<RunOverview> findRunOverview(UUID tenantId, UUID runId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        return required(() -> {
+            record HeadRow(
+                    String status, String controlGate, long commitVersion,
+                    String defKey, String defVer, String terminalReason,
+                    Instant createdAt, Instant startedAt, Instant updatedAt, Instant finishedAt) {}
+            List<HeadRow> heads = jdbc.query("""
+                SELECT r.status, r.control_gate, r.commit_version,
+                       d.definition_key, d.definition_version, r.terminal_reason,
+                       r.created_at, r.started_at, r.updated_at, r.finished_at
+                  FROM workflow_runtime.workflow_run r
+                  JOIN workflow_runtime.definition_snapshot d
+                    ON d.tenant_id = r.tenant_id AND d.definition_id = r.definition_id
+                 WHERE r.tenant_id = ? AND r.run_id = ?
+                """, (rs, n) -> new HeadRow(
+                    rs.getString(1),
+                    rs.getString(2),
+                    rs.getLong(3),
+                    rs.getString(4),
+                    rs.getString(5),
+                    rs.getString(6),
+                    rs.getTimestamp(7) == null ? null : rs.getTimestamp(7).toInstant(),
+                    rs.getTimestamp(8) == null ? null : rs.getTimestamp(8).toInstant(),
+                    rs.getTimestamp(9) == null ? null : rs.getTimestamp(9).toInstant(),
+                    rs.getTimestamp(10) == null ? null : rs.getTimestamp(10).toInstant()),
+                tenantId, runId);
+            if (heads.isEmpty()) {
+                return Optional.empty();
+            }
+            HeadRow h = heads.get(0);
+            Integer activeTokens = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.execution_token
+                 WHERE tenant_id = ? AND run_id = ? AND token_state IN ('READY','RESERVED','RUNNING','WAITING')
+                """, Integer.class, tenantId, runId);
+            Integer activeAttempts = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.node_attempt
+                 WHERE tenant_id = ? AND run_id = ? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
+                """, Integer.class, tenantId, runId);
+            Integer openInterventions = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.manual_intervention
+                 WHERE tenant_id = ? AND run_id = ? AND intervention_state = 'OPEN'
+                """, Integer.class, tenantId, runId);
+            List<String> completedNodes = jdbc.query("""
+                SELECT node_key FROM workflow_runtime.node_activation
+                 WHERE tenant_id = ? AND run_id = ? AND activation_state = 'SUCCEEDED'
+                 ORDER BY updated_at ASC, activation_id ASC
+                """, (rs, n) -> rs.getString(1), tenantId, runId);
+            List<String> activeNodes = jdbc.query("""
+                SELECT node_key FROM workflow_runtime.execution_token
+                 WHERE tenant_id = ? AND run_id = ? AND token_state IN ('READY','RESERVED','RUNNING','WAITING')
+                 ORDER BY created_at ASC, token_id ASC
+                """, (rs, n) -> rs.getString(1), tenantId, runId);
+            Map<String, String> vars = new java.util.LinkedHashMap<>();
+            jdbc.query("""
+                SELECT variable_key, value::text FROM workflow_runtime.flow_variable
+                 WHERE tenant_id = ? AND run_id = ?
+                 ORDER BY variable_key ASC
+                """, rs -> {
+                vars.put(rs.getString(1), rs.getString(2));
+            }, tenantId, runId);
+            List<CommandOverview> commands = jdbc.query("""
+                SELECT command_id, device_id, command_kind, command_state, device_sequence, created_at, completed_at
+                  FROM workflow_runtime.command_ledger
+                 WHERE tenant_id = ? AND run_id = ?
+                 ORDER BY created_at ASC, command_id ASC
+                """, (rs, n) -> new CommandOverview(
+                    rs.getObject(1, UUID.class),
+                    rs.getString(2),
+                    rs.getString(3),
+                    rs.getString(4),
+                    rs.getString(5),
+                    rs.getTimestamp(6) == null ? null : rs.getTimestamp(6).toInstant(),
+                    rs.getTimestamp(7) == null ? null : rs.getTimestamp(7).toInstant()),
+                tenantId, runId);
+            return Optional.of(new RunOverview(
+                    runId, h.status(), h.controlGate(), h.commitVersion(),
+                    h.defKey(), h.defVer(), h.terminalReason(),
+                    h.createdAt(), h.startedAt(), h.updatedAt(), h.finishedAt(),
+                    activeTokens == null ? 0 : activeTokens,
+                    activeAttempts == null ? 0 : activeAttempts,
+                    openInterventions == null ? 0 : openInterventions,
+                    List.copyOf(completedNodes),
+                    List.copyOf(activeNodes),
+                    Map.copyOf(vars),
+                    List.copyOf(commands)));
+        });
+    }
+
     public record OutboxMessage(UUID outboxId, UUID runId, String messageKind, String dedupKey, String payloadJson) {}
 
     /** Single-host dispatcher: lock and transition pending rows without distributed claims. */
@@ -3182,13 +3372,13 @@ public final class WorkflowRuntimeRepository {
                   (SELECT count(*) FROM workflow_runtime.retry_registration
                     WHERE tenant_id=? AND run_id=? AND retry_state='SCHEDULED') +
                   (SELECT count(*) FROM workflow_runtime.split_activation
-                    WHERE tenant_id=? AND run_id=? AND split_state='OPEN') +
+                    WHERE tenant_id=? AND run_id=? AND ? <> 'PAUSE' AND split_state='OPEN') +
                   (SELECT count(*) FROM workflow_runtime.join_activation
-                    WHERE tenant_id=? AND run_id=? AND join_state='WAITING') +
+                    WHERE tenant_id=? AND run_id=? AND ? <> 'PAUSE' AND join_state='WAITING') +
                   (SELECT count(*) FROM workflow_runtime.branch_activation
-                    WHERE tenant_id=? AND run_id=? AND branch_state IN ('ACTIVE','WAITING')) +
+                    WHERE tenant_id=? AND run_id=? AND ? <> 'PAUSE' AND branch_state IN ('ACTIVE','WAITING')) +
                   (SELECT count(*) FROM workflow_runtime.loop_context
-                    WHERE tenant_id=? AND run_id=? AND loop_state='ACTIVE') +
+                    WHERE tenant_id=? AND run_id=? AND ? <> 'PAUSE' AND loop_state='ACTIVE') +
                   (SELECT count(*) FROM workflow_runtime.execution_token
                     WHERE tenant_id=? AND run_id=? AND
                       (token_state IN ('RESERVED','RUNNING','WAITING') OR (? <> 'PAUSE' AND token_state='READY'))) +
@@ -3207,10 +3397,10 @@ public final class WorkflowRuntimeRepository {
                     tenantId,runId,  // Leases
                     tenantId,runId,  // Waits
                     tenantId,runId,  // Retries
-                    tenantId,runId,  // Splits
-                    tenantId,runId,  // Joins
-                    tenantId,runId,  // Branches
-                    tenantId,runId,  // Loops
+                    tenantId,runId,drainKind,  // Splits (Pause preserves open parallel split for resume)
+                    tenantId,runId,drainKind,  // Joins (Pause preserves waiting join for resume)
+                    tenantId,runId,drainKind,  // Branches (Pause preserves active branches for resume)
+                    tenantId,runId,drainKind,  // Loops (Pause preserves active loop context for resume)
                     tenantId,runId,drainKind, // Tokens (Pause preserves READY; Stop invalidates)
                     tenantId,runId,  // Attempts
                     tenantId,drainId, // Drain items
@@ -3235,6 +3425,101 @@ public final class WorkflowRuntimeRepository {
             appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DRAIN_FINALIZED","RUN",runId,null,null,null,"{\"status\":\""+jsonEscape(terminalStatus)+"\"}")));
             return changed==1;
+        });
+    }
+
+    /**
+     * Resume a {@code PAUSED} Run by reopening its control gate ({@code PAUSE -> OPEN}) and
+     * transitioning {@code PAUSED -> RUNNING}. Returns {@code false} if already {@code RUNNING/OPEN}.
+     * Rejects Runs with open manual interventions or incomplete drains.
+     */
+    public boolean resumePausedRun(UUID tenantId, UUID runId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        return required(() -> {
+            RunHead head = lockRun(tenantId, runId);
+            if ("RUNNING".equals(head.status()) && "OPEN".equals(head.controlGate())) {
+                return false;
+            }
+            if (!"PAUSED".equals(head.status()) || !"PAUSE".equals(head.controlGate())) {
+                throw new InvalidTransitionException(
+                        "Cannot resume Run in status=" + head.status() + ", controlGate=" + head.controlGate());
+            }
+            Long blockers = jdbc.queryForObject("""
+                SELECT
+                  (SELECT count(*) FROM workflow_runtime.manual_intervention
+                    WHERE tenant_id=? AND run_id=? AND intervention_state='OPEN') +
+                  (SELECT count(*) FROM workflow_runtime.drain_record
+                    WHERE tenant_id=? AND run_id=? AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT','MANUAL_REQUIRED'))
+                """, Long.class, tenantId, runId, tenantId, runId);
+            if (blockers != null && blockers > 0) {
+                throw new InvalidTransitionException(
+                        "Cannot resume Run while open manual interventions or active drains remain");
+            }
+            int updated = jdbc.update("""
+                UPDATE workflow_runtime.workflow_run
+                   SET status='RUNNING', control_gate='OPEN', terminal_reason=NULL,
+                       commit_version=commit_version+1, updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=? AND status='PAUSED' AND control_gate='PAUSE'
+                """, tenantId, runId);
+            if (updated != 1) {
+                throw new StaleRuntimeWriteException("Run was modified concurrently during resume");
+            }
+            appendEvents(tenantId, runId, List.of(new EventDraft(
+                    "RUN_RESUMED", "RUN", runId, head.commitVersion() + 1, null, null, "{}")));
+            return true;
+        });
+    }
+
+    /**
+     * Invalidate pending control-flow continuations during an active {@code STOP} drain so
+     * {@link #tryFinalizeDrain} can safely converge to {@code STOPPED} once active executions drain.
+     */
+    public void invalidateStopContinuations(UUID tenantId, UUID runId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        required(() -> {
+            RunHead head = lockRun(tenantId, runId);
+            if (!"STOP".equals(head.controlGate())
+                    || !List.of("STOP_REQUESTED", "STOPPING").contains(head.status())) {
+                return null;
+            }
+            jdbc.update("""
+                UPDATE workflow_runtime.execution_token
+                   SET token_state='INVALIDATED', token_version=token_version+1, updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=? AND token_state='READY'
+                """, tenantId, runId);
+            jdbc.update("""
+                UPDATE workflow_runtime.branch_activation
+                   SET branch_state='CANCELLED'
+                 WHERE tenant_id=? AND run_id=? AND branch_state IN ('ACTIVE','WAITING')
+                """, tenantId, runId);
+            jdbc.update("""
+                UPDATE workflow_runtime.join_activation
+                   SET join_state='CANCELLED', version=version+1
+                 WHERE tenant_id=? AND run_id=? AND join_state='WAITING'
+                """, tenantId, runId);
+            jdbc.update("""
+                UPDATE workflow_runtime.split_activation
+                   SET split_state='CANCELLED', closed_at=clock_timestamp(), version=version+1
+                 WHERE tenant_id=? AND run_id=? AND split_state='OPEN'
+                """, tenantId, runId);
+            jdbc.update("""
+                UPDATE workflow_runtime.loop_context
+                   SET loop_state='CANCELLED', version=version+1
+                 WHERE tenant_id=? AND run_id=? AND loop_state='ACTIVE'
+                """, tenantId, runId);
+            jdbc.update("""
+                UPDATE workflow_runtime.wait_registration
+                   SET wait_state='CANCELLED', closed_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=? AND wait_state='ACTIVE'
+                """, tenantId, runId);
+            jdbc.update("""
+                UPDATE workflow_runtime.retry_registration
+                   SET retry_state='CANCELLED'
+                 WHERE tenant_id=? AND run_id=? AND retry_state='SCHEDULED'
+                """, tenantId, runId);
+            return null;
         });
     }
 

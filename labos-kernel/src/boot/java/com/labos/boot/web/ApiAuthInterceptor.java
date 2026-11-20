@@ -180,6 +180,7 @@ public class ApiAuthInterceptor implements HandlerInterceptor {
         return path.matches("^/api/workflows/\\d+/run$")
                 || path.matches("^/api/experiment-templates/\\d+/instantiate$")
                 || path.startsWith("/api/runs")
+                || path.startsWith("/api/runtime")
                 || path.startsWith("/api/experiment-runs")
                 || path.startsWith("/api/transfers")
                 || path.startsWith("/api/plates")

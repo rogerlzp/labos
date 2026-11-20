@@ -131,6 +131,45 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
         }
         require(rejectedUnknownScheme, "Unknown wire codec scheme must be rejected");
 
+        // Verify WorkflowRuntimeController + ApiAuthInterceptor RBAC wiring when host.enabled=false.
+        try (AnnotationConfigApplicationContext webCtx = new AnnotationConfigApplicationContext()) {
+            webCtx.registerBean("dataSource", DataSource.class, () -> ds);
+            webCtx.registerBean("transactionManager", PlatformTransactionManager.class, () -> tm);
+            webCtx.registerBean("graphMapper", GraphMapper.class, () -> mapper);
+            webCtx.register(WorkflowRuntimeKernelConfiguration.class);
+            webCtx.refresh();
+            var facade = webCtx.getBean(WorkflowRuntimeKernelFacade.class);
+            var controller = new com.labos.boot.web.controller.WorkflowRuntimeController(
+                    facade, new com.labos.boot.web.AuditRecorder(null));
+            var healthResp = controller.health();
+            require(healthResp.getStatusCode().value() == 200
+                            && healthResp.getBody() != null
+                            && healthResp.getBody().contains("\"enabled\":false"),
+                    "GET /api/runtime/health must return 200 with enabled=false when host disabled");
+            var autoStartResp = controller.createRun("{\"workflowId\":1,\"autoStart\":true}", null, null);
+            require(autoStartResp.getStatusCode().value() == 503,
+                    "POST /api/runtime/runs with autoStart=true must return 503 when host disabled");
+            var badUuidResp = controller.getRun("not-a-uuid");
+            require(badUuidResp.getStatusCode().value() == 400,
+                    "GET /api/runtime/runs/{badUuid} must return 400");
+            var badReconcileResp = controller.reconcileUnknownCommand("not-a-uuid", "{}", null);
+            require(badReconcileResp.getStatusCode().value() == 400,
+                    "POST /api/runtime/commands/{badUuid}/reconcile must return 400");
+        }
+        try {
+            var reqOp = com.labos.boot.web.ApiAuthInterceptor.class
+                    .getDeclaredMethod("requiresOperate", String.class, String.class);
+            reqOp.setAccessible(true);
+            require((Boolean) reqOp.invoke(null, "POST", "/api/runtime/runs"),
+                    "POST /api/runtime/runs must require operate role");
+            require((Boolean) reqOp.invoke(null, "POST", "/api/runtime/commands/1/reconcile"),
+                    "POST /api/runtime/commands/*/reconcile must require operate role");
+            require(!(Boolean) reqOp.invoke(null, "GET", "/api/runtime/health"),
+                    "GET /api/runtime/health must not require write operate role");
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Failed to verify ApiAuthInterceptor RBAC for /api/runtime", e);
+        }
+
         Configuration mybatis = new Configuration();
         try (InputStream xml = Resources.getResourceAsStream("mapper/GraphMapper.xml")) {
             new XMLMapperBuilder(xml, mybatis, "mapper/GraphMapper.xml", mybatis.getSqlFragments()).parse();

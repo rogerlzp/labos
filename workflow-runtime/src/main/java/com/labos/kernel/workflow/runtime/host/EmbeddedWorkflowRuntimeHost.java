@@ -222,7 +222,8 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
                 config.dispatchPollInterval(),
                 config.dispatchBatchSize(),
                 config.hostId(),
-                config.scopedTenantId());
+                config.scopedTenantId(),
+                workerExecutionService::requestCancel);
 
         this.recoveryService = new WorkerExecutionRecoveryService(repository, workerRegistry);
 
@@ -314,6 +315,26 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
             throw new IllegalStateException("RuntimeHost is not RUNNING: " + runtimeHost.state());
         }
         return lifecycleCoordinator.startRun(tenantId, runId);
+    }
+
+    public UUID requestPause(UUID tenantId, UUID runId) {
+        return repository.requestDrain(tenantId, runId, "PAUSE");
+    }
+
+    public CompletableFuture<Void> resumeRun(UUID tenantId, UUID runId) {
+        if (runtimeHost.state() != RuntimeHost.State.RUNNING) {
+            throw new IllegalStateException("RuntimeHost is not RUNNING: " + runtimeHost.state());
+        }
+        repository.resumePausedRun(tenantId, runId);
+        return lifecycleCoordinator.wake(tenantId, runId);
+    }
+
+    public UUID requestStop(UUID tenantId, UUID runId) {
+        return repository.requestDrain(tenantId, runId, "STOP");
+    }
+
+    public java.util.Optional<WorkflowRuntimeRepository.RunOverview> getRunOverview(UUID tenantId, UUID runId) {
+        return repository.findRunOverview(tenantId, runId);
     }
 
     public boolean requestWorkerCancel(UUID attemptId) {

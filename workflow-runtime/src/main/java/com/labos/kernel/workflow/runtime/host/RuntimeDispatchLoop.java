@@ -14,6 +14,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * Single-host periodic dispatch loop implementing {@link RuntimeHost.LifecycleComponent}.
@@ -42,6 +43,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final int batchSize;
     private final String dispatcherId;
     private final UUID scopedTenantId; // null = serve all tenants; non-null = SQL-level tenant isolation!
+    private final Consumer<UUID> workerCancelRequester;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -64,6 +66,20 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             int batchSize,
             String dispatcherId,
             UUID scopedTenantId) {
+        this(repository, taskDispatchService, commandExecutionService, schedulingGate,
+                pollInterval, batchSize, dispatcherId, scopedTenantId, attemptId -> {});
+    }
+
+    public RuntimeDispatchLoop(
+            WorkflowRuntimeRepository repository,
+            LocalTaskDispatchService taskDispatchService,
+            DeviceCommandExecutionService commandExecutionService,
+            SchedulingGate schedulingGate,
+            Duration pollInterval,
+            int batchSize,
+            String dispatcherId,
+            UUID scopedTenantId,
+            Consumer<UUID> workerCancelRequester) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.taskDispatchService = Objects.requireNonNull(taskDispatchService, "taskDispatchService");
         this.commandExecutionService = Objects.requireNonNull(commandExecutionService, "commandExecutionService");
@@ -78,6 +94,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         this.batchSize = batchSize;
         this.dispatcherId = dispatcherId;
         this.scopedTenantId = scopedTenantId;
+        this.workerCancelRequester = Objects.requireNonNull(workerCancelRequester, "workerCancelRequester");
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "labos-runtime-dispatch-" + dispatcherId);
             t.setDaemon(true);
@@ -159,6 +176,36 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
                 var delivered = commandExecutionService.deliverPendingCommands(
                         tenantId, batchSize, dispatcherId);
                 commandsDelivered.addAndGet(delivered.outcomes().size());
+            } catch (RuntimeException ex) {
+                recordError(ex);
+            }
+        }
+
+        // 4. Progress open PAUSE / STOP drains toward PAUSED / STOPPED safe points.
+        List<WorkflowRuntimeRepository.OpenDrainRef> openDrains = scopedTenantId != null
+                ? repository.findOpenDrainsForTenant(scopedTenantId, batchSize)
+                : repository.findOpenDrains(batchSize);
+        for (WorkflowRuntimeRepository.OpenDrainRef drain : openDrains) {
+            if (stopped.get() || !schedulingGate.isOpen()) return;
+            try {
+                repository.deliverDrainRequestOutbox(drain.tenantId(), drain.runId());
+                if ("STOP".equals(drain.drainKind())) {
+                    for (UUID activeAttempt : repository.findActiveAttemptIdsForRun(drain.tenantId(), drain.runId())) {
+                        workerCancelRequester.accept(activeAttempt);
+                    }
+                    repository.invalidateStopContinuations(drain.tenantId(), drain.runId());
+                }
+                if ("REQUESTED".equals(drain.drainState())) {
+                    try {
+                        repository.advanceDrainScan(
+                                drain.tenantId(), drain.runId(), drain.drainId(),
+                                drain.version(), "{\"phase\":\"local-host-drain\"}", List.of());
+                    } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException ignored) {
+                        // Drain record was updated concurrently (e.g. STOP superseded PAUSE); next cycle retries.
+                    }
+                }
+                String targetStatus = "PAUSE".equals(drain.drainKind()) ? "PAUSED" : "STOPPED";
+                repository.tryFinalizeDrain(drain.tenantId(), drain.runId(), drain.drainId(), targetStatus);
             } catch (RuntimeException ex) {
                 recordError(ex);
             }

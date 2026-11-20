@@ -48,6 +48,41 @@ public final class WorkflowRuntimeKernelFacade {
         return host == null ? Optional.empty() : Optional.of(host.healthSnapshot());
     }
 
+    public boolean isHostEnabled() {
+        return runtimeHostProvider.getIfAvailable() != null;
+    }
+
+    public void startRun(long kernelTenantId, UUID runId) {
+        EmbeddedWorkflowRuntimeHost host = requireRunningHost();
+        host.startRun(tenants.resolve(kernelTenantId), runId);
+    }
+
+    public UUID requestPause(long kernelTenantId, UUID runId) {
+        return repository.requestDrain(tenants.resolve(kernelTenantId), runId, "PAUSE");
+    }
+
+    public void resumeRun(long kernelTenantId, UUID runId) {
+        EmbeddedWorkflowRuntimeHost host = requireRunningHost();
+        host.resumeRun(tenants.resolve(kernelTenantId), runId);
+    }
+
+    public UUID requestStop(long kernelTenantId, UUID runId) {
+        return repository.requestDrain(tenants.resolve(kernelTenantId), runId, "STOP");
+    }
+
+    public Optional<WorkflowRuntimeRepository.RunOverview> getRunOverview(long kernelTenantId, UUID runId) {
+        return repository.findRunOverview(tenants.resolve(kernelTenantId), runId);
+    }
+
+    private EmbeddedWorkflowRuntimeHost requireRunningHost() {
+        EmbeddedWorkflowRuntimeHost host = runtimeHostProvider.getIfAvailable();
+        if (host == null) {
+            throw new IllegalStateException(
+                    "Embedded WorkflowRuntimeHost is disabled (" + WorkflowRuntimeHostProperties.PROP_ENABLED + "=false)");
+        }
+        return host;
+    }
+
     public List<WorkflowRuntimeRepository.ManualRequiredRunSummary> listManualRequiredRuns(
             long kernelTenantId, int limit) {
         return repository.findManualRequiredRuns(tenants.resolve(kernelTenantId), limit);
