@@ -505,11 +505,14 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 return;
             }
             Long sentAtNanos = pendingPings.remove(pong.pingId());
-            if (sentAtNanos == null || this.transport != active) {
+            long nowNanos = System.nanoTime();
+            if (sentAtNanos == null
+                    || this.transport != active
+                    || (nowNanos - sentAtNanos) > config.heartbeatTimeout().toNanos()) {
                 invalidHeartbeatsRejected.incrementAndGet();
                 return;
             }
-            lastPongNanos = System.nanoTime();
+            lastPongNanos = nowNanos;
             lastPongAt = Instant.now();
             heartbeatsReceived.incrementAndGet();
             return;

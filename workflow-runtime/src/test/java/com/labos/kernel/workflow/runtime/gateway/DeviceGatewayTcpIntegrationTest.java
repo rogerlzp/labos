@@ -208,6 +208,89 @@ class DeviceGatewayTcpIntegrationTest {
     }
 
     @Test
+    void expiredRealPingPongIsRejectedAndDoesNotPreventHeartbeatTimeoutReconnect() throws Exception {
+        String deviceId = "tcp-hb-expired";
+        TcpDeviceConnection.Config cfg = new TcpDeviceConnection.Config(
+                Duration.ofSeconds(2),
+                Duration.ofMillis(150),
+                Duration.ofMillis(500),
+                Duration.ofMillis(40),
+                Duration.ofMillis(160),
+                4096,
+                64);
+
+        AtomicInteger pingCount = new AtomicInteger(0);
+        AtomicReference<String> heldPing1 = new AtomicReference<>();
+        AtomicReference<Long> ping1ReceivedNanos = new AtomicReference<>();
+        CountDownLatch ping3Replied = new CountDownLatch(1);
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
+             DeviceGateway gateway = new DeviceGateway(
+                     List.of(server.endpoint()), cfg,
+                     ev -> DeviceEventSink.DeliveryResult.acked("APPLIED"))) {
+            // Hold PING #1 without replying; reply cleanly to PING #2 and #3 so the SAME epoch stays ONLINE
+            // until PING #1 is strictly older than heartbeatTimeout (500ms); then stop replying to newer PINGs.
+            server.setCustomPingHandler((pingNode, session) -> {
+                String pingId = pingNode.path("pingId").asText();
+                int n = pingCount.incrementAndGet();
+                if (n == 1) {
+                    heldPing1.set(pingId);
+                    ping1ReceivedNanos.set(System.nanoTime());
+                } else if (n == 2 || n == 3) {
+                    try {
+                        session.sendHeartbeatPong(pingId);
+                        if (n == 3) ping3Replied.countDown();
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+
+            gateway.start();
+            assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
+            long epoch1 = gateway.health(deviceId).orElseThrow().connectionEpoch();
+
+            // Wait until PING #2 and #3 have refreshed liveness (2 genuine PONGs received).
+            assertTrue(ping3Replied.await(3, TimeUnit.SECONDS));
+            awaitCondition(Duration.ofSeconds(2),
+                    () -> gateway.health(deviceId).orElseThrow().heartbeatsReceived() == 2);
+            assertEquals(0, gateway.health(deviceId).orElseThrow().invalidHeartbeatsRejected());
+
+            // Wait until held PING #1 is strictly past heartbeatTimeout (500ms + 60ms margin) while epoch 1 is STILL ONLINE.
+            long expireTargetNanos = ping1ReceivedNanos.get() + Duration.ofMillis(560).toNanos();
+            while (System.nanoTime() < expireTargetNanos) {
+                Thread.sleep(10);
+            }
+            var beforeExpiredPong = gateway.health(deviceId).orElseThrow();
+            assertEquals(TcpDeviceConnection.ConnectionStatus.ONLINE, beforeExpiredPong.status(),
+                    "Connection must still be ONLINE on epoch 1 when sending expired PONG(ping1)");
+            assertEquals(epoch1, beforeExpiredPong.connectionEpoch());
+
+            // Send the real, unconsumed, EXPIRED PONG for PING #1 on the live epoch 1 socket!
+            MockTcpDeviceServer.ClientSession session = server.activeSession();
+            assertNotNull(session);
+            session.sendHeartbeatPong(heldPing1.get());
+
+            // Expired PONG must be rejected (invalidHeartbeatsRejected == 1), MUST NOT increment heartbeatsReceived,
+            // and MUST NOT prevent the connection from timing out into RECONNECTING!
+            awaitCondition(Duration.ofSeconds(2),
+                    () -> gateway.health(deviceId).orElseThrow().invalidHeartbeatsRejected() >= 1);
+            assertEquals(2, gateway.health(deviceId).orElseThrow().heartbeatsReceived(),
+                    "Expired PONG must NOT be counted as a valid heartbeat");
+            assertTrue(gateway.awaitStatus(deviceId, TcpDeviceConnection.ConnectionStatus.RECONNECTING,
+                    Duration.ofSeconds(3)),
+                    "Expired PONG must NOT refresh liveness or prevent transition to RECONNECTING");
+
+            // Restore normal PONG replies -> clean reconnect on new epoch!
+            server.setCustomPingHandler(null);
+            awaitCondition(Duration.ofSeconds(3), () -> {
+                var h = gateway.health(deviceId).orElseThrow();
+                return h.status() == TcpDeviceConnection.ConnectionStatus.ONLINE
+                        && h.connectionEpoch() > epoch1;
+            });
+        }
+    }
+
+    @Test
     void boundedEventQueueAppliesBackpressureWithRetryableNackWhenConsumerIsSlow() throws Exception {
         String deviceId = "tcp-bp-1";
         TcpDeviceConnection.Config tinyQueueConfig = new TcpDeviceConnection.Config(
