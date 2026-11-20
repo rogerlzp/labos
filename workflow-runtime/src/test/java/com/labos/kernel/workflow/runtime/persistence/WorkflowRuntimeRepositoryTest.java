@@ -379,7 +379,7 @@ class WorkflowRuntimeRepositoryTest {
         var end=repo.findReadyGraphTokens(tenant,single.runId(),10).get(0);
         assertTrue(repo.advanceGraphToken(tenant,single.runId(),end.tokenId(),"end","END",java.util.List.of()).runCompleted());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id='"+
-                tenant+"' AND join_key='$END' AND join_state='RELEASED'"));
+                tenant+"' AND join_key='' AND join_state='RELEASED'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.split_activation WHERE tenant_id='"+
                 tenant+"' AND run_id='"+single.runId()+"' AND split_state='CLOSED'"));
 
