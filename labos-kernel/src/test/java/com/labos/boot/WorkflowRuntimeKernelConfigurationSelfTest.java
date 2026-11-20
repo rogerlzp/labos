@@ -143,6 +143,30 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
         }
         require(rejectedBadResMap, "Non-numeric resourceId in bridge resource-map must be rejected");
 
+        // Verify DeviceMapper.selectDeviceRegistry row conversion & merge precedence.
+        var discovered = WorkflowRuntimeHostProperties.fromDeviceRegistryRows(java.util.List.of(
+                Map.of("deviceId", 206L, "resourceId", 501L, "ip", "", "endpoint", "tcp://127.0.0.1:19500"),
+                Map.of("deviceId", 207L, "resourceId", 502L, "ip", "192.168.10.22", "endpoint", "tcp://127.0.0.1:19501")));
+        require(discovered.endpoints().size() == 2, "Expected 2 registry-discovered endpoints");
+        require("206".equals(discovered.endpoints().get(0).deviceId())
+                        && "127.0.0.1".equals(discovered.endpoints().get(0).host())
+                        && discovered.endpoints().get(0).port() == 19500
+                        && "labsep".equals(discovered.endpoints().get(0).wireCodec().protocolName()),
+                "Registry endpoint #1 conversion mismatch");
+        require("207".equals(discovered.endpoints().get(1).deviceId())
+                        && "192.168.10.22".equals(discovered.endpoints().get(1).host())
+                        && discovered.endpoints().get(1).port() == 19501,
+                "Registry endpoint #2 must prefer explicit device_instance.ip over endpoint host");
+        require("206".equals(discovered.resourceToDeviceMap().get(501L))
+                        && "207".equals(discovered.resourceToDeviceMap().get(502L)),
+                "Registry resourceId->deviceId map mismatch");
+        var mergedEps = WorkflowRuntimeHostProperties.mergeEndpoints(
+                discovered.endpoints(),
+                WorkflowRuntimeHostProperties.parseEndpoints("206=ndjson://127.0.0.1:19999"));
+        require(mergedEps.size() == 2 && mergedEps.get(0).port() == 19999
+                        && "ndjson".equals(mergedEps.get(0).wireCodec().protocolName()),
+                "Explicit gateway.endpoints must override registry endpoint for same deviceId");
+
         // Verify WorkflowRuntimeController + ApiAuthInterceptor RBAC wiring when host.enabled=false.
         try (AnnotationConfigApplicationContext webCtx = new AnnotationConfigApplicationContext()) {
             webCtx.registerBean("dataSource", DataSource.class, () -> ds);

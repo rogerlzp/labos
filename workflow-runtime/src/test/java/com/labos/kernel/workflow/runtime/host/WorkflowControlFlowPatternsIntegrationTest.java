@@ -427,4 +427,54 @@ class WorkflowControlFlowPatternsIntegrationTest {
             assertFalse(failRunNodes.contains("pass_followup"));
         }
     }
+
+    @Test
+    void pauseDuringPreStartDispatchedAttemptDoesNotBlockRunCompletionAfterResume() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        DriverManagerDataSource ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        UUID tenant = createTenant(ds, "flow-pause-prestart");
+
+        // Deterministically exercise abortPreStartAttemptOnGateClosed during PAUSE so attempt #1 and
+        // activation #1 are persisted as CANCELLED while the step_a token is reverted to READY.
+        var run = createCompiledRun(repo, tenant, "prestart-" + UUID.randomUUID(), SERIAL_BPMN, "{}");
+        repo.startRun(tenant, run.runId());
+        new com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator(repo).advance(tenant, run.runId());
+        var res = repo.reserveCapacity(tenant, run.runId(), "prestart-cap-" + tenant, 2,
+                "step_a", "PURE", java.time.Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res.attemptId(), "q", "{}");
+        repo.requestDrain(tenant, run.runId(), "PAUSE");
+        repo.abortPreStartAttemptOnGateClosed(tenant, run.runId(), res.attemptId(), "pause-before-start");
+
+        CopyOnWriteArrayList<String> executed = new CopyOnWriteArrayList<>();
+        try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
+                hostConfig(tempDir.resolve("prestart.lock"), "prestart-host", tenant),
+                repo,
+                node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                        "prestart-cap-" + tenant + "-" + node.key(), 2, "PURE", "q", Duration.ofSeconds(30), "{}"),
+                node -> Optional.of((req, ctx) -> {
+                    executed.add(req.nodeKey());
+                    return WorkerTaskHandler.TaskResult.of("out", "{}");
+                }))) {
+            host.start();
+
+            // Host must abort pre-start attempt #1 (CANCELLED), preserve step_a READY token, and converge to PAUSED.
+            awaitCondition(Duration.ofSeconds(8), () -> {
+                var ov = host.getRunOverview(tenant, run.runId()).orElseThrow();
+                return "PAUSED".equals(ov.status()) && "PAUSE".equals(ov.controlGate());
+            }, "Pre-start paused run must converge to PAUSED");
+            assertEquals(1L, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND attempt_state='CANCELLED'"));
+            assertTrue(executed.isEmpty(), "No task should execute while PAUSED");
+
+            // RESUME -> step_a re-dispatches as attempt #2 -> step_a, step_b, step_c complete -> Run MUST reach SUCCEEDED!
+            host.resumeRun(tenant, run.runId()).get(5, TimeUnit.SECONDS);
+            awaitCondition(Duration.ofSeconds(8), () -> {
+                var ov = host.getRunOverview(tenant, run.runId()).orElseThrow();
+                return "SUCCEEDED".equals(ov.status()) && "CLOSED".equals(ov.controlGate());
+            }, "Run with superseded pre-pause CANCELLED attempt must converge to SUCCEEDED after RESUME");
+
+            assertEquals(List.of("step_a", "step_b", "step_c"), executed);
+        }
+    }
 }

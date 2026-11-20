@@ -214,8 +214,7 @@ public class WorkflowRuntimeController {
                 | WorkflowRuntimeRepository.StaleRuntimeWriteException conflict) {
             return errorResponse(409, conflict.getMessage());
         } catch (IllegalStateException stateErr) {
-            int code = stateErr.getMessage() != null && stateErr.getMessage().contains("disabled") ? 503 : 409;
-            return errorResponse(code, stateErr.getMessage());
+            return errorResponse(classifyIllegalStateStatus(stateErr), stateErr.getMessage());
         } catch (Exception ex) {
             return errorResponse(500, "Failed to create Runtime Run: " + ex.getMessage());
         }
@@ -256,8 +255,7 @@ public class WorkflowRuntimeController {
                 | WorkflowRuntimeRepository.StaleRuntimeWriteException conflict) {
             return errorResponse(409, conflict.getMessage());
         } catch (IllegalStateException stateErr) {
-            int code = stateErr.getMessage() != null && stateErr.getMessage().contains("disabled") ? 503 : 409;
-            return errorResponse(code, stateErr.getMessage());
+            return errorResponse(classifyIllegalStateStatus(stateErr), stateErr.getMessage());
         }
     }
 
@@ -282,7 +280,7 @@ public class WorkflowRuntimeController {
                 | WorkflowRuntimeRepository.StaleRuntimeWriteException conflict) {
             return errorResponse(409, conflict.getMessage());
         } catch (IllegalStateException notFoundOrState) {
-            return errorResponse(404, notFoundOrState.getMessage());
+            return errorResponse(classifyIllegalStateStatus(notFoundOrState), notFoundOrState.getMessage());
         }
     }
 
@@ -304,8 +302,7 @@ public class WorkflowRuntimeController {
                 | WorkflowRuntimeRepository.StaleRuntimeWriteException conflict) {
             return errorResponse(409, conflict.getMessage());
         } catch (IllegalStateException stateErr) {
-            int code = stateErr.getMessage() != null && stateErr.getMessage().contains("disabled") ? 503 : 409;
-            return errorResponse(code, stateErr.getMessage());
+            return errorResponse(classifyIllegalStateStatus(stateErr), stateErr.getMessage());
         }
     }
 
@@ -330,7 +327,7 @@ public class WorkflowRuntimeController {
                 | WorkflowRuntimeRepository.StaleRuntimeWriteException conflict) {
             return errorResponse(409, conflict.getMessage());
         } catch (IllegalStateException notFoundOrState) {
-            return errorResponse(404, notFoundOrState.getMessage());
+            return errorResponse(classifyIllegalStateStatus(notFoundOrState), notFoundOrState.getMessage());
         }
     }
 
@@ -494,5 +491,14 @@ public class WorkflowRuntimeController {
 
     private static ResponseEntity<String> errorResponse(int status, String message) {
         return jsonResponse(status, Map.of("error", message == null ? "Unknown error" : message));
+    }
+
+    private static int classifyIllegalStateStatus(IllegalStateException ex) {
+        String msg = ex.getMessage();
+        if (msg == null) return 409;
+        String lower = msg.toLowerCase();
+        if (lower.contains("disabled")) return 503;
+        if (lower.contains("not found")) return 404;
+        return 409;
     }
 }

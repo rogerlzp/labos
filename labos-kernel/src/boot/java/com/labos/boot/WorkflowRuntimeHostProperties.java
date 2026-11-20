@@ -63,6 +63,7 @@ public record WorkflowRuntimeHostProperties(
     public static final String PROP_BRIDGE_ENABLED = "labos.workflow.runtime.bridge.enabled";
     public static final String PROP_BRIDGE_COMMAND_TIMEOUT_MS = "labos.workflow.runtime.bridge.command-timeout-ms";
     public static final String PROP_BRIDGE_RESOURCE_MAP = "labos.workflow.runtime.bridge.resource-map";
+    public static final String PROP_DISCOVER_FROM_REGISTRY = "labos.workflow.runtime.gateway.discover-from-registry";
 
     public WorkflowRuntimeHostProperties {
         Objects.requireNonNull(lockFile, "lockFile");
@@ -113,10 +114,14 @@ public record WorkflowRuntimeHostProperties(
     }
 
     public EmbeddedWorkflowRuntimeHost.Config toHostConfig() {
+        return toHostConfig(deviceEndpoints);
+    }
+
+    public EmbeddedWorkflowRuntimeHost.Config toHostConfig(List<TcpDeviceConnection.Endpoint> effectiveEndpoints) {
         return new EmbeddedWorkflowRuntimeHost.Config(
                 lockFile, hostId, workerThreads, workerQueueCapacity, maxConcurrentRuns,
                 mailboxThreads, mailboxQueueCapacity, recoveryBatchLimit,
-                dispatchPollInterval, dispatchBatchSize, deviceEndpoints, gatewayConfig, null);
+                dispatchPollInterval, dispatchBatchSize, effectiveEndpoints, gatewayConfig, null);
     }
 
     /**
@@ -197,6 +202,108 @@ public record WorkflowRuntimeHostProperties(
             out.put(resourceId, deviceId);
         }
         return Map.copyOf(out);
+    }
+
+    /** Resolved endpoints and {@code resourceId -> deviceId} map discovered from {@code DeviceMapper.selectDeviceRegistry}. */
+    public record RegistryEndpoints(
+            List<TcpDeviceConnection.Endpoint> endpoints,
+            Map<Long, String> resourceToDeviceMap) {
+        public RegistryEndpoints {
+            endpoints = List.copyOf(Objects.requireNonNull(endpoints, "endpoints"));
+            resourceToDeviceMap = Map.copyOf(Objects.requireNonNull(resourceToDeviceMap, "resourceToDeviceMap"));
+        }
+    }
+
+    /**
+     * Convert {@code DeviceMapper.selectDeviceRegistry} rows ({@code deviceId}, {@code resourceId},
+     * {@code ip}, {@code endpoint}) into {@link TcpDeviceConnection.Endpoint}s speaking
+     * {@link LabSepWireCodec} (or {@link NdjsonWireCodec} if endpoint explicitly uses {@code ndjson://})
+     * and the matching {@code resourceId -> deviceId} map so BPMN {@code resource="<resourceId>"}
+     * resolves directly to the driver's {@code equipment_id} ({@code device_instance.id}).
+     */
+    public static RegistryEndpoints fromDeviceRegistryRows(List<Map<String, Object>> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return new RegistryEndpoints(List.of(), Map.of());
+        }
+        List<TcpDeviceConnection.Endpoint> endpoints = new ArrayList<>();
+        Map<Long, String> resMap = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            if (row == null) continue;
+            Long devId = toLong(row.get("deviceId"));
+            if (devId == null || devId <= 0) continue;
+            String rawEndpoint = row.get("endpoint") == null ? "" : row.get("endpoint").toString().trim();
+            if (rawEndpoint.isEmpty()) continue;
+
+            GatewayWireCodec codec = LabSepWireCodec.INSTANCE;
+            String addr = rawEndpoint;
+            int schemeIdx = addr.indexOf("://");
+            if (schemeIdx >= 0) {
+                String scheme = addr.substring(0, schemeIdx).trim().toLowerCase();
+                addr = addr.substring(schemeIdx + 3).trim();
+                codec = switch (scheme) {
+                    case "ndjson" -> NdjsonWireCodec.INSTANCE;
+                    case "tcp", "labsep" -> LabSepWireCodec.INSTANCE;
+                    default -> throw new IllegalArgumentException(
+                            "Unsupported registry driver endpoint scheme '" + scheme + "': " + rawEndpoint);
+                };
+            }
+            int colon = addr.lastIndexOf(':');
+            if (colon <= 0 || colon == addr.length() - 1) continue;
+            String endpointHost = addr.substring(0, colon).trim();
+            int port;
+            try {
+                port = Integer.parseInt(addr.substring(colon + 1).trim());
+            } catch (NumberFormatException ignored) {
+                continue;
+            }
+            if (port < 1 || port > 65535) continue;
+
+            String explicitIp = row.get("ip") == null ? "" : row.get("ip").toString().trim();
+            String effectiveHost = explicitIp.isEmpty() ? endpointHost : explicitIp;
+            if (effectiveHost.isEmpty()) continue;
+
+            String deviceKey = String.valueOf(devId);
+            endpoints.add(new TcpDeviceConnection.Endpoint(deviceKey, effectiveHost, port, codec));
+            Long resourceId = toLong(row.get("resourceId"));
+            if (resourceId != null && resourceId > 0) {
+                resMap.put(resourceId, deviceKey);
+            }
+        }
+        return new RegistryEndpoints(endpoints, resMap);
+    }
+
+    /** Merge registry-discovered endpoints with explicit config (explicit entries win on duplicate deviceId). */
+    public static List<TcpDeviceConnection.Endpoint> mergeEndpoints(
+            List<TcpDeviceConnection.Endpoint> discovered,
+            List<TcpDeviceConnection.Endpoint> explicit) {
+        Map<String, TcpDeviceConnection.Endpoint> byDevice = new LinkedHashMap<>();
+        if (discovered != null) {
+            for (var ep : discovered) byDevice.put(ep.deviceId(), ep);
+        }
+        if (explicit != null) {
+            for (var ep : explicit) byDevice.put(ep.deviceId(), ep);
+        }
+        return List.copyOf(byDevice.values());
+    }
+
+    /** Merge registry-discovered resource->device map with explicit overrides (explicit wins). */
+    public static Map<Long, String> mergeResourceMaps(Map<Long, String> discovered, Map<Long, String> explicit) {
+        Map<Long, String> merged = new LinkedHashMap<>();
+        if (discovered != null) merged.putAll(discovered);
+        if (explicit != null) merged.putAll(explicit);
+        return Map.copyOf(merged);
+    }
+
+    private static Long toLong(Object v) {
+        if (v == null) return null;
+        if (v instanceof Number n) return n.longValue();
+        String s = v.toString().trim();
+        if (s.isEmpty()) return null;
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private static int intProp(Environment env, String key, int fallback) {

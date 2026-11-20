@@ -96,6 +96,12 @@ public final class LabSepWireCodec implements GatewayWireCodec {
         if (!root.isObject()) {
             throw new IllegalArgumentException("LabSep wire frame must be a JSON object");
         }
+        // Ignore non-reply peer frames (e.g. message_type=6 spontaneous events or heartbeats)
+        // even if a legacy driver attaches a UUID message_id to them.
+        JsonNode msgTypeNode = root.get("message_type");
+        if (msgTypeNode != null && msgTypeNode.isInt() && msgTypeNode.asInt() != 5) {
+            return null;
+        }
         JsonNode msgIdNode = root.get("message_id");
         if (msgIdNode == null || msgIdNode.isNull() || !msgIdNode.isTextual() || msgIdNode.asText().isBlank()) {
             // Unsolicited driver heartbeat/status broadcast without message_id: ignore safely.
@@ -168,6 +174,6 @@ public final class LabSepWireCodec implements GatewayWireCodec {
     private static String optionalText(JsonNode root, String field) {
         JsonNode node = root.get(field);
         if (node == null || node.isNull()) return null;
-        return node.isTextual() ? node.asText() : node.asText();
+        return node.asText();
     }
 }

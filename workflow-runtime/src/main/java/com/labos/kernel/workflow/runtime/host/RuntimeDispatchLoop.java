@@ -14,6 +14,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -44,6 +45,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final String dispatcherId;
     private final UUID scopedTenantId; // null = serve all tenants; non-null = SQL-level tenant isolation!
     private final Consumer<UUID> workerCancelRequester;
+    private final BiConsumer<UUID, UUID> graphWakeup;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -67,7 +69,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             String dispatcherId,
             UUID scopedTenantId) {
         this(repository, taskDispatchService, commandExecutionService, schedulingGate,
-                pollInterval, batchSize, dispatcherId, scopedTenantId, attemptId -> {});
+                pollInterval, batchSize, dispatcherId, scopedTenantId, attemptId -> {}, (t, r) -> {});
     }
 
     public RuntimeDispatchLoop(
@@ -80,6 +82,21 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             String dispatcherId,
             UUID scopedTenantId,
             Consumer<UUID> workerCancelRequester) {
+        this(repository, taskDispatchService, commandExecutionService, schedulingGate,
+                pollInterval, batchSize, dispatcherId, scopedTenantId, workerCancelRequester, (t, r) -> {});
+    }
+
+    public RuntimeDispatchLoop(
+            WorkflowRuntimeRepository repository,
+            LocalTaskDispatchService taskDispatchService,
+            DeviceCommandExecutionService commandExecutionService,
+            SchedulingGate schedulingGate,
+            Duration pollInterval,
+            int batchSize,
+            String dispatcherId,
+            UUID scopedTenantId,
+            Consumer<UUID> workerCancelRequester,
+            BiConsumer<UUID, UUID> graphWakeup) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.taskDispatchService = Objects.requireNonNull(taskDispatchService, "taskDispatchService");
         this.commandExecutionService = Objects.requireNonNull(commandExecutionService, "commandExecutionService");
@@ -95,6 +112,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         this.dispatcherId = dispatcherId;
         this.scopedTenantId = scopedTenantId;
         this.workerCancelRequester = Objects.requireNonNull(workerCancelRequester, "workerCancelRequester");
+        this.graphWakeup = Objects.requireNonNull(graphWakeup, "graphWakeup");
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "labos-runtime-dispatch-" + dispatcherId);
             t.setDaemon(true);
@@ -135,6 +153,20 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         if (stopped.get() || !schedulingGate.isOpen()) {
             return;
         }
+        // 0. Self-heal any RUNNING/OPEN runs with completed task activations awaiting graph routing
+        //    (e.g. after PAUSE -> RESUME, host crash/restart, or transient mailbox eviction race).
+        List<WorkflowRuntimeRepository.RunnableRunRef> awaitingGraph = scopedTenantId != null
+                ? repository.findRunsAwaitingGraphAdvanceForTenant(scopedTenantId, batchSize)
+                : repository.findRunsAwaitingGraphAdvance(batchSize);
+        for (WorkflowRuntimeRepository.RunnableRunRef ref : awaitingGraph) {
+            if (stopped.get() || !schedulingGate.isOpen()) return;
+            try {
+                graphWakeup.accept(ref.tenantId(), ref.runId());
+            } catch (RuntimeException ex) {
+                recordError(ex);
+            }
+        }
+
         // 1. Reserve & dispatch READY tokens for active RUNNING/OPEN runs.
         List<WorkflowRuntimeRepository.RunnableRunRef> runnableRuns = scopedTenantId != null
                 ? repository.findRunnableWorkTargetsForTenant(scopedTenantId, batchSize)
@@ -144,6 +176,10 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             try {
                 var res = taskDispatchService.dispatchReadyTasks(ref.tenantId(), ref.runId(), batchSize);
                 tasksDispatched.addAndGet(res.dispatchedAttemptIds().size());
+                if (res.dispatchedAttemptIds().isEmpty() && res.capacityDeferred() == 0 && !res.gateClosed()) {
+                    // Remaining READY token(s) are control-flow nodes (START/SPLIT/JOIN/XOR/END): wake coordinator.
+                    graphWakeup.accept(ref.tenantId(), ref.runId());
+                }
             } catch (RuntimeException ex) {
                 recordError(ex);
             }

@@ -166,7 +166,7 @@ public final class GatewayDeviceTaskBridge {
                 }
                 return WorkerTaskHandler.TaskResult.of("out", "{\"sleptMs\":" + delayMs + "}");
             });
-            case "__set_var", "__export" -> Optional.of((req, ctx) -> {
+            case "__setVar", "__set_var", "__export" -> Optional.of((req, ctx) -> {
                 Map<String, String> exported = extractFlowVariables(node.methodParams());
                 return new WorkerTaskHandler.TaskResult("out", normalizeJsonObject(node.methodParams()), exported);
             });
@@ -180,6 +180,10 @@ public final class GatewayDeviceTaskBridge {
             String deviceId,
             String commandKind,
             String payloadJson) throws Exception {
+        // Pre-side-effect cooperative cancellation gate: abort cleanly before issuing any physical command.
+        if (ctx.isCancellationRequested()) {
+            throw new InterruptedException("Device task cancelled before command dispatch: " + deviceId);
+        }
         UUID cmdId = ctx.createDeviceCommand(deviceId, commandKind, "QUERYABLE", payloadJson);
         long deadlineNanos = System.nanoTime() + commandTimeout.toNanos();
         long pollMs = Math.max(10L, pollInterval.toMillis());
@@ -202,7 +206,14 @@ public final class GatewayDeviceTaskBridge {
                 throw new RuntimeException("Device command did not succeed: commandId=" + cmdId
                         + ", deviceId=" + deviceId + ", state=" + state);
             }
-            Thread.sleep(pollMs);
+            try {
+                Thread.sleep(pollMs);
+            } catch (InterruptedException ignoredDuringInFlightDeviceCommand) {
+                // Physical device command is ALREADY in flight (SIDE_EFFECT_STARTED committed).
+                // Per dual-gate safety: do NOT abandon the in-flight command on cooperative STOP cancel;
+                // continue waiting for the physical device outcome (or commandTimeout -> UNKNOWN) so
+                // the Run converges cleanly to STOPPED instead of falsely escalating to MANUAL_REQUIRED.
+            }
         }
         repository.markCommandUnknown(req.tenantId(), cmdId,
                 "{\"reason\":\"bridge_command_timeout\",\"deviceId\":\"" + escapeJson(deviceId) + "\"}");
@@ -226,19 +237,38 @@ public final class GatewayDeviceTaskBridge {
         if (raw == null || raw.isBlank()) return 0L;
         try {
             JsonNode node = JSON.readTree(raw);
-            if (node.has("ms") && node.get("ms").isNumber()) {
-                return Math.max(0L, node.get("ms").asLong());
+            Double ms = readNumericField(node, "ms");
+            if (ms == null) ms = readNumericField(node, "delayMs");
+            if (ms != null) {
+                return Math.max(0L, Math.round(ms));
             }
-            if (node.has("delayMs") && node.get("delayMs").isNumber()) {
-                return Math.max(0L, node.get("delayMs").asLong());
-            }
-            if (node.has("seconds") && node.get("seconds").isNumber()) {
-                return Math.max(0L, Math.round(node.get("seconds").asDouble() * 1000.0));
+            Double sec = readNumericField(node, "sec");
+            if (sec == null) sec = readNumericField(node, "seconds");
+            if (sec != null) {
+                return Math.max(0L, Math.round(sec * 1000.0));
             }
             return 0L;
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             throw new IllegalArgumentException("Invalid __sleep methodParams: " + raw, e);
         }
+    }
+
+    private static Double readNumericField(JsonNode node, String field) {
+        JsonNode v = node.get(field);
+        if (v == null || v.isNull()) return null;
+        if (v.isNumber()) return v.asDouble();
+        if (v.isTextual()) {
+            String trimmed = v.asText().trim();
+            if (trimmed.isEmpty()) return null;
+            try {
+                return Double.parseDouble(trimmed);
+            } catch (NumberFormatException nfe) {
+                throw new IllegalArgumentException("Non-numeric __sleep field '" + field + "': " + trimmed, nfe);
+            }
+        }
+        throw new IllegalArgumentException("Unsupported __sleep field '" + field + "' type: " + v.getNodeType());
     }
 
     private static Map<String, String> extractFlowVariables(String raw) {
@@ -246,7 +276,15 @@ public final class GatewayDeviceTaskBridge {
         try {
             JsonNode node = JSON.readTree(raw);
             if (!node.isObject()) {
-                throw new IllegalArgumentException("__set_var methodParams must be a JSON object");
+                throw new IllegalArgumentException("__setVar methodParams must be a JSON object");
+            }
+            // Frontend Designer form format: {"var":"score","value":"92"} (or JSON typed value).
+            if (node.has("var") && node.get("var").isTextual() && node.has("value") && node.size() <= 2) {
+                String varName = node.get("var").asText().trim();
+                if (varName.isEmpty()) {
+                    throw new IllegalArgumentException("__setVar 'var' field must not be blank");
+                }
+                return Map.of(varName, coerceScalarJson(node.get("value")));
             }
             Map<String, String> out = new LinkedHashMap<>();
             Iterator<Map.Entry<String, JsonNode>> it = node.fields();
@@ -258,8 +296,30 @@ public final class GatewayDeviceTaskBridge {
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid __set_var methodParams: " + raw, e);
+            throw new IllegalArgumentException("Invalid __setVar methodParams: " + raw, e);
         }
+    }
+
+    /**
+     * Preserve native JSON scalars as-is; for string values coming from UI text inputs,
+     * coerce unambiguous booleans ("true"/"false") and strict canonical numbers (no leading
+     * zeros such as "001") so typed expressions like {@code score >= 80} evaluate naturally.
+     */
+    private static String coerceScalarJson(JsonNode valueNode) throws Exception {
+        if (valueNode == null || valueNode.isNull()) {
+            return "null";
+        }
+        if (!valueNode.isTextual()) {
+            return JSON.writeValueAsString(valueNode);
+        }
+        String text = valueNode.asText().trim();
+        if ("true".equals(text) || "false".equals(text)) {
+            return text;
+        }
+        if (text.matches("-?(0|[1-9][0-9]*)(\\.[0-9]+)?")) {
+            return text;
+        }
+        return JSON.writeValueAsString(valueNode.asText());
     }
 
     private static String escapeJson(String s) {

@@ -1,5 +1,6 @@
 package com.labos.boot;
 
+import com.labos.kernel.persistence.DeviceMapper;
 import com.labos.kernel.persistence.GraphMapper;
 import com.labos.kernel.workflow.runtime.bridge.GatewayDeviceTaskBridge;
 import com.labos.kernel.workflow.runtime.definition.LegacyKernelWorkflowDefinitionSource;
@@ -138,18 +139,43 @@ public class WorkflowRuntimeKernelConfiguration {
     @ConditionalOnProperty(name = WorkflowRuntimeHostProperties.PROP_ENABLED, havingValue = "true")
     public static class EmbeddedRuntimeHostConfiguration {
 
+        private static final long DEFAULT_KERNEL_TENANT_ID = 1L;
+
+        @Bean
+        public WorkflowRuntimeHostProperties.RegistryEndpoints runtimeDiscoveredRegistryEndpoints(
+                Environment environment, ObjectProvider<DeviceMapper> deviceMapperProvider) {
+            boolean discover = Boolean.parseBoolean(
+                    environment.getProperty(WorkflowRuntimeHostProperties.PROP_DISCOVER_FROM_REGISTRY, "false"));
+            if (!discover) {
+                return new WorkflowRuntimeHostProperties.RegistryEndpoints(List.of(), Map.of());
+            }
+            DeviceMapper deviceMapper = deviceMapperProvider.getIfAvailable();
+            if (deviceMapper == null) {
+                throw new IllegalStateException(
+                        WorkflowRuntimeHostProperties.PROP_DISCOVER_FROM_REGISTRY
+                                + "=true requires a DeviceMapper bean");
+            }
+            return WorkflowRuntimeHostProperties.fromDeviceRegistryRows(
+                    deviceMapper.selectDeviceRegistry(DEFAULT_KERNEL_TENANT_ID));
+        }
+
         @Bean
         @ConditionalOnProperty(name = WorkflowRuntimeHostProperties.PROP_BRIDGE_ENABLED, havingValue = "true")
         public GatewayDeviceTaskBridge gatewayDeviceTaskBridge(
                 WorkflowRuntimeHostProperties properties,
                 WorkflowRuntimeRepository repository,
-                Environment environment) {
+                Environment environment,
+                WorkflowRuntimeHostProperties.RegistryEndpoints discovered) {
             long timeoutMs = Long.parseLong(
                     environment.getProperty(WorkflowRuntimeHostProperties.PROP_BRIDGE_COMMAND_TIMEOUT_MS, "300000").trim());
-            Map<Long, String> resourceMap = WorkflowRuntimeHostProperties.parseResourceDeviceMap(
+            var effectiveEndpoints = WorkflowRuntimeHostProperties.mergeEndpoints(
+                    discovered.endpoints(), properties.deviceEndpoints());
+            Map<Long, String> explicitMap = WorkflowRuntimeHostProperties.parseResourceDeviceMap(
                     environment.getProperty(WorkflowRuntimeHostProperties.PROP_BRIDGE_RESOURCE_MAP, ""));
+            Map<Long, String> effectiveMap = WorkflowRuntimeHostProperties.mergeResourceMaps(
+                    discovered.resourceToDeviceMap(), explicitMap);
             return new GatewayDeviceTaskBridge(
-                    repository, properties.deviceEndpoints(), resourceMap, Duration.ofMillis(timeoutMs));
+                    repository, effectiveEndpoints, effectiveMap, Duration.ofMillis(timeoutMs));
         }
 
         @Bean
@@ -170,6 +196,7 @@ public class WorkflowRuntimeKernelConfiguration {
         public EmbeddedWorkflowRuntimeHost embeddedWorkflowRuntimeHost(
                 WorkflowRuntimeHostProperties properties,
                 WorkflowRuntimeRepository repository,
+                WorkflowRuntimeHostProperties.RegistryEndpoints discovered,
                 ObjectProvider<LocalTaskDispatchService.TaskDispatchSpecResolver> specResolverProvider,
                 ObjectProvider<LocalTaskDispatchService.TaskHandlerResolver> handlerResolverProvider) {
             LocalTaskDispatchService.TaskHandlerResolver handlerResolver = handlerResolverProvider.getIfAvailable();
@@ -184,8 +211,10 @@ public class WorkflowRuntimeKernelConfiguration {
                         WorkflowRuntimeHostProperties.PROP_ENABLED
                                 + "=true requires a LocalTaskDispatchService.TaskDispatchSpecResolver bean");
             }
+            var effectiveEndpoints = WorkflowRuntimeHostProperties.mergeEndpoints(
+                    discovered.endpoints(), properties.deviceEndpoints());
             return new EmbeddedWorkflowRuntimeHost(
-                    properties.toHostConfig(), repository, specResolver, handlerResolver);
+                    properties.toHostConfig(effectiveEndpoints), repository, specResolver, handlerResolver);
         }
     }
 

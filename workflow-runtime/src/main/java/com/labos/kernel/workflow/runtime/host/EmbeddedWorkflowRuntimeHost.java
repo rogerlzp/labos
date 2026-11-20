@@ -223,7 +223,8 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
                 config.dispatchBatchSize(),
                 config.hostId(),
                 config.scopedTenantId(),
-                workerExecutionService::requestCancel);
+                workerExecutionService::requestCancel,
+                lifecycleCoordinator::wake);
 
         this.recoveryService = new WorkerExecutionRecoveryService(repository, workerRegistry);
 

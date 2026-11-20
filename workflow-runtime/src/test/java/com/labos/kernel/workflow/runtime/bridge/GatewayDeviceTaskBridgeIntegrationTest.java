@@ -103,18 +103,20 @@ class GatewayDeviceTaskBridgeIntegrationTest {
             <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
               <bpmn:process id="lab_protocol">
                 <bpmn:startEvent id="start"/>
-                <bpmn:task id="init_vars" name="Init Vars" protocolName="__set_var" methodParams="{&quot;score&quot;:92}"/>
-                <bpmn:exclusiveGateway id="xor" default="f_skip"/>
-                <bpmn:parallelGateway id="split"/>
+                <bpmn:task id="init_vars" name="__setVar" protocolName="__setVar" methodParams="{&quot;var&quot;:&quot;score&quot;,&quot;value&quot;:&quot;92&quot;}"/>
+                <bpmn:task id="brief_wait" name="__sleep" protocolName="__sleep" methodParams="{&quot;sec&quot;:&quot;0.03&quot;}"/>
+                <bpmn:exclusiveGateway id="xor" name="XOR_SPLIT" gatewayDirection="Diverging" default="f_skip"/>
+                <bpmn:parallelGateway id="split" name="PARALLEL_SPLIT" gatewayDirection="Diverging"/>
                 <bpmn:task id="dispense" name="Dispense" protocolName="Dispense" resource="206" methodParams="{&quot;volumeUl&quot;:150}"/>
                 <bpmn:task id="spin" name="Centrifuge Spin" protocolName="Spin" resource="207" methodParams="{&quot;rpm&quot;:3000}"/>
-                <bpmn:parallelGateway id="join"/>
+                <bpmn:parallelGateway id="join" name="PARALLEL_MERGE" gatewayDirection="Converging"/>
                 <bpmn:task id="seal" name="Seal Plate" protocolName="Seal" resource="206" methodParams="{&quot;tempC&quot;:175}"/>
                 <bpmn:task id="skip_noop" name="Skip Path" protocolName="__noop"/>
-                <bpmn:exclusiveGateway id="merge"/>
+                <bpmn:exclusiveGateway id="merge" name="XOR_MERGE" gatewayDirection="Converging"/>
                 <bpmn:endEvent id="end"/>
                 <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="init_vars"/>
-                <bpmn:sequenceFlow id="f1" sourceRef="init_vars" targetRef="xor"/>
+                <bpmn:sequenceFlow id="f0b" sourceRef="init_vars" targetRef="brief_wait"/>
+                <bpmn:sequenceFlow id="f1" sourceRef="brief_wait" targetRef="xor"/>
                 <bpmn:sequenceFlow id="f_run" sourceRef="xor" targetRef="split">
                   <bpmn:conditionExpression>score &gt;= 80</bpmn:conditionExpression>
                 </bpmn:sequenceFlow>

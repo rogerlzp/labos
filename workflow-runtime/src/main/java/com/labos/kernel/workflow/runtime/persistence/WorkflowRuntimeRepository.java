@@ -2272,12 +2272,26 @@ public final class WorkflowRuntimeRepository {
             SELECT
               (SELECT count(*) FROM workflow_runtime.execution_token
                 WHERE tenant_id=? AND run_id=? AND token_state <> 'CONSUMED') +
-              (SELECT count(*) FROM workflow_runtime.node_activation
-                WHERE tenant_id=? AND run_id=?
-                  AND activation_state IN ('READY','RESERVED','RUNNING','WAITING','FAILED','CANCELLED')) +
-              (SELECT count(*) FROM workflow_runtime.node_attempt
-                WHERE tenant_id=? AND run_id=?
-                  AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','FAILED','CANCELLED','UNKNOWN')) +
+              (SELECT count(*) FROM workflow_runtime.node_activation a
+                WHERE a.tenant_id=? AND a.run_id=?
+                  AND (a.activation_state IN ('READY','RESERVED','RUNNING','WAITING','FAILED')
+                       OR (a.activation_state='CANCELLED'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM workflow_runtime.node_activation succ
+                                WHERE succ.tenant_id=a.tenant_id AND succ.token_id=a.token_id
+                                  AND succ.activation_state='SUCCEEDED'
+                           )))) +
+              (SELECT count(*) FROM workflow_runtime.node_attempt na
+                WHERE na.tenant_id=? AND na.run_id=?
+                  AND (na.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','FAILED','UNKNOWN')
+                       OR (na.attempt_state='CANCELLED'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM workflow_runtime.node_activation orig
+                                JOIN workflow_runtime.node_activation succ
+                                  ON succ.tenant_id=orig.tenant_id AND succ.token_id=orig.token_id
+                               WHERE orig.tenant_id=na.tenant_id AND orig.activation_id=na.activation_id
+                                 AND succ.activation_state='SUCCEEDED'
+                           )))) +
               (SELECT count(*) FROM workflow_runtime.node_activation a
                 WHERE a.tenant_id=? AND a.run_id=? AND a.activation_state='SUCCEEDED'
                   AND a.current_attempt_id IS NOT NULL
@@ -2586,6 +2600,78 @@ public final class WorkflowRuntimeRepository {
                AND EXISTS (
                  SELECT 1 FROM workflow_runtime.execution_token t
                   WHERE t.tenant_id = r.tenant_id AND t.run_id = r.run_id AND t.token_state = 'READY'
+               )
+             ORDER BY r.updated_at ASC, r.run_id ASC
+             LIMIT ?
+            """, (rs, n) -> new RunnableRunRef(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), tenantId, limit);
+    }
+
+    /**
+     * Global discovery of {@code RUNNING/OPEN} Runs that have at least one {@code SUCCEEDED} task
+     * activation awaiting graph successor creation (makes lost mailbox wakeups and post-restart /
+     * post-resume advancement 100% self-healing).
+     */
+    public List<RunnableRunRef> findRunsAwaitingGraphAdvance(int limit) {
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT r.tenant_id, r.run_id
+              FROM workflow_runtime.workflow_run r
+             WHERE r.status = 'RUNNING'
+               AND r.control_gate = 'OPEN'
+               AND EXISTS (
+                 SELECT 1
+                   FROM workflow_runtime.node_activation a
+                   JOIN workflow_runtime.execution_token t
+                     ON t.tenant_id = a.tenant_id AND t.token_id = a.token_id
+                  WHERE a.tenant_id = r.tenant_id AND a.run_id = r.run_id
+                    AND a.activation_state = 'SUCCEEDED' AND t.token_state = 'CONSUMED'
+                    AND a.current_attempt_id IS NOT NULL
+                    AND EXISTS (
+                      SELECT 1 FROM workflow_runtime.node_attempt ca
+                       WHERE ca.tenant_id = a.tenant_id
+                         AND ca.attempt_id = a.current_attempt_id
+                         AND ca.attempt_state = 'SUCCEEDED'
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM workflow_runtime.execution_token child
+                       WHERE child.tenant_id = t.tenant_id AND child.parent_token_id = t.token_id
+                    )
+               )
+             ORDER BY r.updated_at ASC, r.run_id ASC
+             LIMIT ?
+            """, (rs, n) -> new RunnableRunRef(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), limit);
+    }
+
+    /** Tenant-scoped discovery of {@code RUNNING/OPEN} Runs awaiting graph successor creation. */
+    public List<RunnableRunRef> findRunsAwaitingGraphAdvanceForTenant(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT r.tenant_id, r.run_id
+              FROM workflow_runtime.workflow_run r
+             WHERE r.tenant_id = ?
+               AND r.status = 'RUNNING'
+               AND r.control_gate = 'OPEN'
+               AND EXISTS (
+                 SELECT 1
+                   FROM workflow_runtime.node_activation a
+                   JOIN workflow_runtime.execution_token t
+                     ON t.tenant_id = a.tenant_id AND t.token_id = a.token_id
+                  WHERE a.tenant_id = r.tenant_id AND a.run_id = r.run_id
+                    AND a.activation_state = 'SUCCEEDED' AND t.token_state = 'CONSUMED'
+                    AND a.current_attempt_id IS NOT NULL
+                    AND EXISTS (
+                      SELECT 1 FROM workflow_runtime.node_attempt ca
+                       WHERE ca.tenant_id = a.tenant_id
+                         AND ca.attempt_id = a.current_attempt_id
+                         AND ca.attempt_state = 'SUCCEEDED'
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM workflow_runtime.execution_token child
+                       WHERE child.tenant_id = t.tenant_id AND child.parent_token_id = t.token_id
+                    )
                )
              ORDER BY r.updated_at ASC, r.run_id ASC
              LIMIT ?
