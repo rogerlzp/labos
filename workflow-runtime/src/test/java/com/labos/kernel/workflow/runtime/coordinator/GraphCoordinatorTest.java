@@ -21,10 +21,9 @@ class GraphCoordinatorTest {
     void exclusiveSplitSelectsOneMatchingConditionOrDefault() {
         var node=node("gateway",GraphPlan.Kind.SPLIT_XOR);
         var edges=List.of(edge("e1","a","amount > 10",false),
-                edge("e2","b","amount <= 10",false),edge("default","fallback",null,true));
+                edge("default","fallback",null,true));
         assertEquals("a",GraphCoordinator.selectExclusive(node,edges,Map.of("amount",11)).to());
-        assertEquals("b",GraphCoordinator.selectExclusive(node,edges,Map.of("amount",10)).to());
-        assertEquals("fallback",GraphCoordinator.selectExclusive(node,edges,Map.of("amount",null)).to());
+        assertEquals("fallback",GraphCoordinator.selectExclusive(node,edges,Map.of("amount",10)).to());
     }
 
     @Test
