@@ -1165,7 +1165,25 @@ public final class WorkflowRuntimeRepository {
             SELECT count(*) FROM workflow_runtime.node_attempt
              WHERE tenant_id=? AND run_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
             """,Integer.class,tenantId,runId);
-        if((activeTokens==null||activeTokens!=0)||(activeAttempts==null||activeAttempts!=0)) return false;
+        Integer failedTokens=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.execution_token
+             WHERE tenant_id=? AND run_id=? AND token_state IN ('FAILED','INVALIDATED')
+            """,Integer.class,tenantId,runId);
+        Integer failedAttempts=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.node_attempt
+             WHERE tenant_id=? AND run_id=? AND attempt_state IN ('FAILED','CANCELLED','UNKNOWN')
+            """,Integer.class,tenantId,runId);
+        Integer openSplits=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.split_activation
+             WHERE tenant_id=? AND run_id=? AND split_state='OPEN'
+            """,Integer.class,tenantId,runId);
+        Integer waitingJoins=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.join_activation
+             WHERE tenant_id=? AND run_id=? AND join_state='WAITING'
+            """,Integer.class,tenantId,runId);
+        if((activeTokens==null||activeTokens!=0)||(activeAttempts==null||activeAttempts!=0)
+                ||(failedTokens!=null&&failedTokens!=0)||(failedAttempts!=null&&failedAttempts!=0)
+                ||(openSplits!=null&&openSplits!=0)||(waitingJoins!=null&&waitingJoins!=0)) return false;
         int changed=jdbc.update("""
             UPDATE workflow_runtime.workflow_run SET status='SUCCEEDED',
                    finished_at=clock_timestamp(),terminal_reason='GRAPH_COMPLETED',
