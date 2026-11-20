@@ -330,8 +330,9 @@ class WorkflowRuntimeRepositoryTest {
                         new GraphPlan.Edge("choice-b","choice","end-b",null,true)));
         var run=repo.createRun(tenant,"graph-coordinator-"+UUID.randomUUID(),"CREATE","{}",
                 "graph-coordinator-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(plan),
-                "{\"takeA\":true}","start");
+                "{\"takeA\":false}","start");
         repo.startRun(tenant,run.runId());
+        assertEquals(1L,repo.putFlowVariable(tenant,run.runId(),"takeA","true"));
 
         var coordinator=new GraphCoordinator(repo);
         var summary=coordinator.advance(tenant,run.runId());
