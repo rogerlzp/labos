@@ -404,6 +404,45 @@ class WorkflowRuntimeRepositoryTest {
                 tenant+"' AND token_id='"+joinToken.tokenId()+"' AND token_state='READY'"));
     }
 
+    @Test
+    void graphCoordinatorRoutesCompletedWorkerTaskAndFinishesRun() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','graph-task-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        GraphPlan plan=new GraphPlan(1,"ci","graph-task","1","test-hash",
+                java.util.List.of(
+                        new GraphPlan.Node("start","Start",GraphPlan.Kind.START,"start",null,null,null,null,null,null),
+                        new GraphPlan.Node("task","Task",GraphPlan.Kind.TASK,"task",null,null,null,null,null,null),
+                        new GraphPlan.Node("end","End",GraphPlan.Kind.END,"end",null,null,null,null,null,null)),
+                java.util.List.of(
+                        new GraphPlan.Edge("start-task","start","task",null,false),
+                        new GraphPlan.Edge("task-end","task","end",null,false)));
+        var run=repo.createRun(tenant,"graph-task-"+UUID.randomUUID(),"CREATE","{}",
+                "graph-task-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(plan),"{}","start");
+        repo.startRun(tenant,run.runId());
+        var coordinator=new GraphCoordinator(repo);
+        var first=coordinator.advance(tenant,run.runId());
+        assertEquals(1,first.controlTokensAdvanced());
+        assertEquals(1,first.successorTokensCreated());
+        var reservation=repo.reserveCapacity(tenant,run.runId(),"graph-task-capacity",1,
+                "task","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),reservation.attemptId(),"worker-q","{}");
+        repo.acceptAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
+        repo.startAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
+        repo.completeAttempt(tenant,run.runId(),reservation.attemptId(),"result","{\"value\":42}");
+
+        var second=coordinator.advance(tenant,run.runId());
+        assertEquals(1,second.completedTasksRouted());
+        assertEquals(1,second.controlTokensAdvanced());
+        assertTrue(second.runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED'"));
+    }
+
     private int scalar(DriverManagerDataSource ds, String sql) throws Exception {
         try(Connection c=ds.getConnection(); var st=c.createStatement(); var rs=st.executeQuery(sql)) {
             assertTrue(rs.next()); return rs.getInt(1);
