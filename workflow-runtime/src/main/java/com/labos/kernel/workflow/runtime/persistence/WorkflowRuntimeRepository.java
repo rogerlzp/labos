@@ -935,7 +935,7 @@ public final class WorkflowRuntimeRepository {
                 """,tenantId,tokenId)!=1)
                 throw new StaleRuntimeWriteException("Graph Token was concurrently claimed");
             int created=advanceGraphSuccessorsInTransaction(tenantId,runId,token,activationId,
-                    transitionKind,successorNodeKeys,joinNodeKey);
+                    transitionKind,successorNodeKeys,joinNodeKey,false);
             boolean completed=maybeCompleteGraphRun(tenantId,runId,head);
             appendEvents(tenantId,runId,List.of(new EventDraft("GRAPH_NODE_ADVANCED","ACTIVATION",
                     activationId,1L,null,null,"{\"nodeKey\":\""+jsonEscape(expectedNodeKey)
@@ -973,7 +973,7 @@ public final class WorkflowRuntimeRepository {
                 return new GraphAdvanceResult("REPLAYED",activationId,0,false);
             GraphToken token=new GraphToken(source.tokenId(),source.nodeKey(),source.splitId(),source.branchId());
             int created=advanceGraphSuccessorsInTransaction(tenantId,runId,token,activationId,
-                    transitionKind,successorNodeKeys,null);
+                    transitionKind,successorNodeKeys,null,true);
             boolean completed=maybeCompleteGraphRun(tenantId,runId,head);
             appendEvents(tenantId,runId,List.of(new EventDraft("GRAPH_SUCCESSORS_CREATED","ACTIVATION",
                     activationId,null,null,null,"{\"transition\":\""+jsonEscape(transitionKind)
@@ -989,7 +989,8 @@ public final class WorkflowRuntimeRepository {
 
     private int advanceGraphSuccessorsInTransaction(UUID tenantId, UUID runId, GraphToken source,
                                                      UUID activationId, String transitionKind,
-                                                     List<String> successorNodeKeys, String joinNodeKey) {
+                                                     List<String> successorNodeKeys, String joinNodeKey,
+                                                     boolean sourceAlreadyCompleted) {
         List<String> successors=successorNodeKeys==null?List.of():List.copyOf(successorNodeKeys);
         if (transitionKind==null) throw new IllegalArgumentException("transitionKind is required");
         int tokensCreated=0;
@@ -1132,18 +1133,20 @@ public final class WorkflowRuntimeRepository {
             }
             default -> throw new IllegalArgumentException("Unsupported graph transition: "+transitionKind);
         }
-        if(jdbc.update("""
-            UPDATE workflow_runtime.node_activation SET activation_state='SUCCEEDED',
-                   activation_version=activation_version+1,updated_at=clock_timestamp()
-             WHERE tenant_id=? AND activation_id=? AND activation_state='RUNNING'
-            """,tenantId,activationId)!=1)
-            throw new StaleRuntimeWriteException("Graph Activation is not RUNNING");
-        if(jdbc.update("""
-            UPDATE workflow_runtime.execution_token SET token_state='CONSUMED',
-                   token_version=token_version+1,updated_at=clock_timestamp()
-             WHERE tenant_id=? AND token_id=? AND token_state='RUNNING'
-            """,tenantId,source.tokenId())!=1)
-            throw new StaleRuntimeWriteException("Graph Token is not RUNNING");
+        if(!sourceAlreadyCompleted) {
+            if(jdbc.update("""
+                UPDATE workflow_runtime.node_activation SET activation_state='SUCCEEDED',
+                       activation_version=activation_version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND activation_id=? AND activation_state='RUNNING'
+                """,tenantId,activationId)!=1)
+                throw new StaleRuntimeWriteException("Graph Activation is not RUNNING");
+            if(jdbc.update("""
+                UPDATE workflow_runtime.execution_token SET token_state='CONSUMED',
+                       token_version=token_version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND token_id=? AND token_state='RUNNING'
+                """,tenantId,source.tokenId())!=1)
+                throw new StaleRuntimeWriteException("Graph Token is not RUNNING");
+        }
         return tokensCreated;
     }
 
