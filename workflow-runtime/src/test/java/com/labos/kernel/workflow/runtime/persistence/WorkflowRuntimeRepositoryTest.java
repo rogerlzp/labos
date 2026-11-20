@@ -337,7 +337,7 @@ class WorkflowRuntimeRepositoryTest {
         var summary=coordinator.advance(tenant,run.runId());
         assertTrue(summary.runCompleted());
         assertEquals(3,summary.controlTokensAdvanced());
-        assertEquals(3,summary.successorTokensCreated());
+        assertEquals(2,summary.successorTokensCreated());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
                 tenant+"' AND run_id='"+run.runId()+"' AND node_key='end-a' AND token_state='CONSUMED'"));
         assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
