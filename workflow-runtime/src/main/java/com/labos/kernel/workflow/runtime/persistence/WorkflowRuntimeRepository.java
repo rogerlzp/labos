@@ -791,6 +791,312 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+
+    public record GraphToken(UUID tokenId, String nodeKey, UUID splitId, UUID branchId) {}
+    public record CompletedGraphActivation(UUID activationId, UUID tokenId, String nodeKey,
+                                           UUID splitId, UUID branchId) {}
+    public record GraphAdvanceResult(String outcome, UUID activationId, int tokensCreated,
+                                     boolean runCompleted) {}
+
+    /** Read a bounded, stable batch of READY graph-control tokens for one Run. */
+    public List<GraphToken> findReadyGraphTokens(UUID tenantId, UUID runId, int limit) {
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        List<GraphToken> rows = snapshotTx.execute(status -> jdbc.query("""
+            SELECT token_id,node_key,split_id,branch_id
+              FROM workflow_runtime.execution_token
+             WHERE tenant_id=? AND run_id=? AND token_state='READY'
+             ORDER BY created_at,token_id
+             LIMIT ?
+            """, (rs,n) -> new GraphToken(rs.getObject("token_id",UUID.class),
+                    rs.getString("node_key"),rs.getObject("split_id",UUID.class),
+                    rs.getObject("branch_id",UUID.class)), tenantId,runId,limit));
+        return rows == null ? List.of() : List.copyOf(rows);
+    }
+
+    /**
+     * Find completed task Activations whose consumed Token has not yet produced successor Tokens.
+     * Completion and graph routing are separate durable steps; this query makes the gap replayable.
+     */
+    public List<CompletedGraphActivation> findCompletedGraphActivations(UUID tenantId, UUID runId, int limit) {
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        List<CompletedGraphActivation> rows = snapshotTx.execute(status -> jdbc.query("""
+            SELECT a.activation_id,t.token_id,a.node_key,t.split_id,t.branch_id
+              FROM workflow_runtime.node_activation a
+              JOIN workflow_runtime.execution_token t
+                ON t.tenant_id=a.tenant_id AND t.token_id=a.token_id
+              JOIN workflow_runtime.workflow_run r
+                ON r.tenant_id=a.tenant_id AND r.run_id=a.run_id
+             WHERE a.tenant_id=? AND a.run_id=? AND r.status='RUNNING'
+               AND a.activation_state='SUCCEEDED' AND t.token_state='CONSUMED'
+               AND NOT EXISTS (
+                   SELECT 1 FROM workflow_runtime.execution_token child
+                    WHERE child.tenant_id=t.tenant_id AND child.parent_token_id=t.token_id
+               )
+             ORDER BY a.updated_at,a.activation_id
+             LIMIT ?
+            """, (rs,n) -> new CompletedGraphActivation(rs.getObject("activation_id",UUID.class),
+                    rs.getObject("token_id",UUID.class),rs.getString("node_key"),
+                    rs.getObject("split_id",UUID.class),rs.getObject("branch_id",UUID.class)),
+                tenantId,runId,limit));
+        return rows == null ? List.of() : List.copyOf(rows);
+    }
+
+    /**
+     * Atomically activate and advance one READY control-flow Token.
+     * transitionKind is SEQUENCE, SPLIT, JOIN, or END; JOIN is the synchronizing
+     * Parallel/Inclusive join path, not an XOR merge.
+     */
+    public GraphAdvanceResult advanceGraphToken(UUID tenantId, UUID runId, UUID tokenId,
+                                                 String expectedNodeKey, String transitionKind,
+                                                 List<String> successorNodeKeys) {
+        return required(() -> {
+            RunHead head = lockRun(tenantId,runId);
+            requireGraphRunOpen(head);
+            List<GraphToken> rows = jdbc.query("""
+                SELECT token_id,node_key,split_id,branch_id
+                  FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND run_id=? AND token_id=? AND token_state='READY'
+                 FOR UPDATE
+                """, (rs,n) -> new GraphToken(rs.getObject(1,UUID.class),rs.getString(2),
+                        rs.getObject(3,UUID.class),rs.getObject(4,UUID.class)),
+                tenantId,runId,tokenId);
+            if (rows.size()!=1) throw new StaleRuntimeWriteException("Graph Token is no longer READY");
+            GraphToken token=rows.get(0);
+            if (!token.nodeKey().equals(expectedNodeKey))
+                throw new StaleRuntimeWriteException("Graph Token nodeKey changed");
+            int activationNoValue = jdbc.queryForObject("""
+                SELECT COALESCE(MAX(activation_no),0)+1
+                  FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND token_id=?
+                """,Integer.class,tenantId,tokenId);
+            UUID activationId=UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO workflow_runtime.node_activation
+                  (tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
+                VALUES (?,?,?,?,?,?,'RUNNING')
+                """,tenantId,activationId,runId,tokenId,activationNoValue,expectedNodeKey);
+            if (jdbc.update("""
+                UPDATE workflow_runtime.execution_token SET token_state='RUNNING',
+                       token_version=token_version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND token_id=? AND token_state='READY'
+                """,tenantId,tokenId)!=1)
+                throw new StaleRuntimeWriteException("Graph Token was concurrently claimed");
+            int created=advanceGraphSuccessorsInTransaction(tenantId,runId,token,activationId,
+                    transitionKind,successorNodeKeys);
+            boolean completed=maybeCompleteGraphRun(tenantId,runId,head);
+            appendEvents(tenantId,runId,List.of(new EventDraft("GRAPH_NODE_ADVANCED","ACTIVATION",
+                    activationId,1L,null,null,"{\"nodeKey\":\""+jsonEscape(expectedNodeKey)
+                    +"\",\"transition\":\""+jsonEscape(transitionKind)+"\",\"tokensCreated\":"+created+"}")));
+            return new GraphAdvanceResult("ADVANCED",activationId,created,completed);
+        });
+    }
+
+    /** Atomically route the durable output of a successful task Attempt. Safe to replay after a crash. */
+    public GraphAdvanceResult advanceCompletedGraphActivation(UUID tenantId, UUID runId,
+                                                                UUID activationId, String transitionKind,
+                                                                List<String> successorNodeKeys) {
+        return required(() -> {
+            RunHead head=lockRun(tenantId,runId);
+            requireGraphRunOpen(head);
+            List<CompletedGraphActivation> rows=jdbc.query("""
+                SELECT a.activation_id,t.token_id,a.node_key,t.split_id,t.branch_id
+                  FROM workflow_runtime.node_activation a
+                  JOIN workflow_runtime.execution_token t
+                    ON t.tenant_id=a.tenant_id AND t.token_id=a.token_id
+                 WHERE a.tenant_id=? AND a.run_id=? AND a.activation_id=?
+                   AND a.activation_state='SUCCEEDED' AND t.token_state='CONSUMED'
+                 FOR UPDATE OF a,t
+                """,(rs,n)->new CompletedGraphActivation(rs.getObject(1,UUID.class),
+                    rs.getObject(2,UUID.class),rs.getString(3),rs.getObject(4,UUID.class),
+                    rs.getObject(5,UUID.class)),tenantId,runId,activationId);
+            if(rows.size()!=1) throw new StaleRuntimeWriteException("Completed graph Activation not found");
+            CompletedGraphActivation source=rows.get(0);
+            Integer existing=jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND parent_token_id=?
+                """,Integer.class,tenantId,source.tokenId());
+            if(existing!=null && existing>0)
+                return new GraphAdvanceResult("REPLAYED",activationId,0,false);
+            GraphToken token=new GraphToken(source.tokenId(),source.nodeKey(),source.splitId(),source.branchId());
+            int created=advanceGraphSuccessorsInTransaction(tenantId,runId,token,activationId,
+                    transitionKind,successorNodeKeys);
+            boolean completed=maybeCompleteGraphRun(tenantId,runId,head);
+            appendEvents(tenantId,runId,List.of(new EventDraft("GRAPH_SUCCESSORS_CREATED","ACTIVATION",
+                    activationId,null,null,null,"{\"transition\":\""+jsonEscape(transitionKind)
+                    +"\",\"tokensCreated\":"+created+"}")));
+            return new GraphAdvanceResult("ADVANCED",activationId,created,completed);
+        });
+    }
+
+    private static void requireGraphRunOpen(RunHead head) {
+        if (!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate()))
+            throw new InvalidTransitionException("Graph advancement requires a RUNNING Run with OPEN gate");
+    }
+
+    private int advanceGraphSuccessorsInTransaction(UUID tenantId, UUID runId, GraphToken source,
+                                                     UUID activationId, String transitionKind,
+                                                     List<String> successorNodeKeys) {
+        List<String> successors=successorNodeKeys==null?List.of():List.copyOf(successorNodeKeys);
+        if (transitionKind==null) throw new IllegalArgumentException("transitionKind is required");
+        switch (transitionKind) {
+            case "SEQUENCE" -> {
+                if(successors.size()!=1) throw new IllegalArgumentException("SEQUENCE requires exactly one successor");
+                insertGraphToken(tenantId,runId,successors.get(0),source.tokenId(),source.splitId(),source.branchId());
+            }
+            case "SPLIT" -> {
+                if(successors.size()<2) throw new IllegalArgumentException("SPLIT requires at least two selected branches");
+                if(source.branchId()!=null)
+                    throw new InvalidTransitionException("Nested Split inside an active branch is not supported in G1");
+                if(successors.stream().distinct().count()!=successors.size())
+                    throw new IllegalArgumentException("Split branch target keys must be unique");
+                UUID splitId=UUID.randomUUID();
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.split_activation
+                      (tenant_id,split_id,run_id,source_activation_id,split_state,expected_branch_count)
+                    VALUES (?,?,?,?,'OPEN',?)
+                    """,tenantId,splitId,runId,activationId,successors.size());
+                for(String key:successors) {
+                    UUID branchId=UUID.randomUUID();
+                    jdbc.update("""
+                        INSERT INTO workflow_runtime.branch_activation
+                          (tenant_id,branch_id,run_id,split_id,branch_key,branch_state)
+                        VALUES (?,?,?, ?,?,'ACTIVE')
+                        """,tenantId,branchId,runId,splitId,key);
+                    insertGraphToken(tenantId,runId,key,source.tokenId(),splitId,branchId);
+                }
+            }
+            case "JOIN" -> {
+                if(successors.size()!=1) throw new IllegalArgumentException("JOIN requires exactly one successor");
+                if(source.splitId()==null || source.branchId()==null)
+                    throw new InvalidTransitionException("Synchronizing Join requires a Token from an active Split");
+                UUID splitId=source.splitId();
+                jdbc.queryForObject("""
+                    SELECT split_id FROM workflow_runtime.split_activation
+                     WHERE tenant_id=? AND run_id=? AND split_id=? AND split_state='OPEN'
+                     FOR UPDATE
+                    """,UUID.class,tenantId,runId,splitId);
+                int arrived=jdbc.update("""
+                    UPDATE workflow_runtime.branch_activation SET branch_state='ARRIVED',
+                           arrival_activation_id=?,arrived_at=clock_timestamp()
+                     WHERE tenant_id=? AND run_id=? AND split_id=? AND branch_id=?
+                       AND branch_state IN ('ACTIVE','WAITING')
+                    """,activationId,tenantId,runId,splitId,source.branchId());
+                if(arrived!=1) throw new StaleRuntimeWriteException("Branch already arrived or is not active");
+                jdbc.update("""
+                    UPDATE workflow_runtime.split_activation SET arrived_branch_count=arrived_branch_count+1,
+                           version=version+1
+                     WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
+                    """,tenantId,splitId);
+                Integer expected=jdbc.queryForObject("""
+                    SELECT expected_branch_count FROM workflow_runtime.split_activation
+                     WHERE tenant_id=? AND split_id=?
+                    """,Integer.class,tenantId,splitId);
+                Integer count=jdbc.queryForObject("""
+                    SELECT arrived_branch_count FROM workflow_runtime.split_activation
+                     WHERE tenant_id=? AND split_id=?
+                    """,Integer.class,tenantId,splitId);
+                String joinKey=successors.get(0);
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.join_activation
+                      (tenant_id,join_id,run_id,split_id,join_key,join_state)
+                    VALUES (?,?,?, ?,?,'WAITING')
+                    ON CONFLICT (tenant_id,split_id,join_key) DO NOTHING
+                    """,tenantId,UUID.randomUUID(),runId,splitId,joinKey);
+                if(Objects.equals(expected,count)) {
+                    int released=jdbc.update("""
+                        UPDATE workflow_runtime.join_activation SET join_state='RELEASED',
+                               released_at=clock_timestamp(),version=version+1
+                         WHERE tenant_id=? AND split_id=? AND join_key=? AND join_state='WAITING'
+                        """,tenantId,splitId,joinKey);
+                    if(released!=1) throw new StaleRuntimeWriteException("Join release was not uniquely claimable");
+                    jdbc.update("""
+                        UPDATE workflow_runtime.split_activation SET split_state='CLOSED',
+                               closed_at=clock_timestamp(),version=version+1
+                         WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
+                        """,tenantId,splitId);
+                    insertGraphToken(tenantId,runId,joinKey,source.tokenId(),null,null);
+                    return 1;
+                }
+                return 0;
+            }
+            case "END" -> {
+                if(!successors.isEmpty()) throw new IllegalArgumentException("END cannot have successors");
+                if(source.branchId()!=null && source.splitId()!=null) {
+                    UUID splitId=source.splitId();
+                    int arrived=jdbc.update("""
+                        UPDATE workflow_runtime.branch_activation SET branch_state='ARRIVED',
+                               arrival_activation_id=?,arrived_at=clock_timestamp()
+                         WHERE tenant_id=? AND run_id=? AND split_id=? AND branch_id=?
+                           AND branch_state IN ('ACTIVE','WAITING')
+                        """,activationId,tenantId,runId,splitId,source.branchId());
+                    if(arrived==1) {
+                        jdbc.update("""
+                            UPDATE workflow_runtime.split_activation SET arrived_branch_count=arrived_branch_count+1,
+                                   version=version+1
+                             WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
+                            """,tenantId,splitId);
+                        Integer expected=jdbc.queryForObject("SELECT expected_branch_count FROM workflow_runtime.split_activation WHERE tenant_id=? AND split_id=?",
+                                Integer.class,tenantId,splitId);
+                        Integer count=jdbc.queryForObject("SELECT arrived_branch_count FROM workflow_runtime.split_activation WHERE tenant_id=? AND split_id=?",
+                                Integer.class,tenantId,splitId);
+                        if(Objects.equals(expected,count)) jdbc.update("""
+                            UPDATE workflow_runtime.split_activation SET split_state='CLOSED',
+                                   closed_at=clock_timestamp(),version=version+1
+                             WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
+                            """,tenantId,splitId);
+                    }
+                }
+            }
+            default -> throw new IllegalArgumentException("Unsupported graph transition: "+transitionKind);
+        }
+        if(jdbc.update("""
+            UPDATE workflow_runtime.node_activation SET activation_state='SUCCEEDED',
+                   activation_version=activation_version+1,updated_at=clock_timestamp()
+             WHERE tenant_id=? AND activation_id=? AND activation_state='RUNNING'
+            """,tenantId,activationId)!=1)
+            throw new StaleRuntimeWriteException("Graph Activation is not RUNNING");
+        if(jdbc.update("""
+            UPDATE workflow_runtime.execution_token SET token_state='CONSUMED',
+                   token_version=token_version+1,updated_at=clock_timestamp()
+             WHERE tenant_id=? AND token_id=? AND token_state='RUNNING'
+            """,tenantId,source.tokenId())!=1)
+            throw new StaleRuntimeWriteException("Graph Token is not RUNNING");
+        return transitionKind.equals("SEQUENCE") || transitionKind.equals("SPLIT") ? successors.size() : 0;
+    }
+
+    private void insertGraphToken(UUID tenantId, UUID runId, String nodeKey, UUID parentTokenId,
+                                  UUID splitId, UUID branchId) {
+        jdbc.update("""
+            INSERT INTO workflow_runtime.execution_token
+              (tenant_id,run_id,token_state,node_key,parent_token_id,split_id,branch_id)
+            VALUES (?,?,'READY',?,?,?,?)
+            """,tenantId,runId,nodeKey,parentTokenId,splitId,branchId);
+    }
+
+    private boolean maybeCompleteGraphRun(UUID tenantId, UUID runId, RunHead head) {
+        Integer activeTokens=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.execution_token
+             WHERE tenant_id=? AND run_id=? AND token_state IN ('READY','RESERVED','RUNNING','WAITING')
+            """,Integer.class,tenantId,runId);
+        Integer activeAttempts=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.node_attempt
+             WHERE tenant_id=? AND run_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
+            """,Integer.class,tenantId,runId);
+        if((activeTokens==null||activeTokens!=0)||(activeAttempts==null||activeAttempts!=0)) return false;
+        int changed=jdbc.update("""
+            UPDATE workflow_runtime.workflow_run SET status='SUCCEEDED',
+                   finished_at=clock_timestamp(),terminal_reason='GRAPH_COMPLETED',
+                   updated_at=clock_timestamp()
+             WHERE tenant_id=? AND run_id=? AND status='RUNNING'
+            """,tenantId,runId);
+        if(changed==1) {
+            appendEvents(tenantId,runId,List.of(new EventDraft("RUN_SUCCEEDED","RUN",runId,
+                    head.commitVersion()+1,null,null,"{\"reason\":\"GRAPH_COMPLETED\"}")));
+            return true;
+        }
+        return false;
+    }
+
     /** T09: create Split and its full expected Branch set atomically. */
     public UUID createSplit(UUID tenantId, UUID runId, UUID sourceActivationId,
                             List<String> branchKeys) {
