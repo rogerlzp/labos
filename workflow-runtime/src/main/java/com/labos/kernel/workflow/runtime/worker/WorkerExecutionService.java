@@ -5,6 +5,7 @@ import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -42,6 +43,16 @@ public final class WorkerExecutionService {
         SETTLEMENT_FAILED
     }
 
+    /**
+     * Durable execution outcome of one Attempt.
+     *
+     * <p><strong>Wakeup contract:</strong> when {@code status == SUCCEEDED}, {@code graphAdvance}
+     * represents actual {@code GraphCoordinator} advancement ONLY when {@code wakeupScheduled == true}.
+     * When {@code wakeupScheduled == false} (for example during active Drain or transient mailbox
+     * saturation/eviction), the Attempt completion is still durably committed in PostgreSQL,
+     * {@code wakeupError} carries the exact refusal cause, and callers may invoke
+     * {@link #retryWakeup(UUID, UUID)} when the Run is open.
+     */
     public record ExecutionOutcome(
             UUID attemptId,
             OutcomeStatus status,
@@ -49,7 +60,8 @@ public final class WorkerExecutionService {
             UUID interventionId,
             boolean wakeupScheduled,
             CompletableFuture<Void> graphAdvance,
-            Throwable error) {
+            Throwable error,
+            Throwable wakeupError) {
         public ExecutionOutcome {
             Objects.requireNonNull(attemptId, "attemptId");
             Objects.requireNonNull(status, "status");
@@ -58,13 +70,13 @@ public final class WorkerExecutionService {
 
         private static ExecutionOutcome rejectedBeforeStart(UUID attemptId, String runOutcome, Throwable error) {
             return new ExecutionOutcome(attemptId, OutcomeStatus.REJECTED_BEFORE_START, runOutcome, null,
-                    false, CompletableFuture.completedFuture(null), error);
+                    false, CompletableFuture.completedFuture(null), error, null);
         }
 
         private static ExecutionOutcome succeeded(
                 UUID attemptId, WorkflowRunLifecycleCoordinator.CompletionDispatch dispatch) {
             return new ExecutionOutcome(attemptId, OutcomeStatus.SUCCEEDED, "SUCCEEDED", null,
-                    dispatch.wakeupScheduled(), dispatch.graphAdvance(), null);
+                    dispatch.wakeupScheduled(), dispatch.graphAdvance(), null, dispatch.wakeupError());
         }
 
         private static ExecutionOutcome settledFailure(
@@ -73,7 +85,7 @@ public final class WorkerExecutionService {
                     ? OutcomeStatus.MANUAL_REQUIRED
                     : OutcomeStatus.FAILED;
             return new ExecutionOutcome(attemptId, status, result.outcome(), result.interventionId(),
-                    false, CompletableFuture.completedFuture(null), cause);
+                    false, CompletableFuture.completedFuture(null), cause, null);
         }
 
         private static ExecutionOutcome settledCancellation(
@@ -82,12 +94,12 @@ public final class WorkerExecutionService {
                     ? OutcomeStatus.MANUAL_REQUIRED
                     : OutcomeStatus.CANCELLED;
             return new ExecutionOutcome(attemptId, status, result.outcome(), result.interventionId(),
-                    false, CompletableFuture.completedFuture(null), null);
+                    false, CompletableFuture.completedFuture(null), null, null);
         }
 
         private static ExecutionOutcome settlementFailed(UUID attemptId, Throwable error) {
             return new ExecutionOutcome(attemptId, OutcomeStatus.SETTLEMENT_FAILED, null, null,
-                    false, CompletableFuture.completedFuture(null), error);
+                    false, CompletableFuture.completedFuture(null), error, null);
         }
     }
 
@@ -95,11 +107,15 @@ public final class WorkerExecutionService {
      * Two-gate completion coordinator ensuring {@code outcomeFuture} is NEVER completed until
      * BOTH (1) durable DB settlement has produced an {@link ExecutionOutcome} AND (2)
      * {@link WorkerPool} has finished releasing its registry handle, task map entry, and Run permit.
+     * If {@link WorkerPool#close()} evicts a genuinely queued task directly without going through
+     * {@link #requestCancel(UUID)}, clears {@code inFlight} and completes {@code outcomeFuture} with
+     * {@code REJECTED_BEFORE_START} (leaving durable DB {@code DISPATCHED} intact for host recovery).
      */
     private final class PendingExecution {
         final WorkerTaskHandler.TaskRequest request;
         final CompletableFuture<ExecutionOutcome> outcomeFuture = new CompletableFuture<>();
         final AtomicBoolean entered = new AtomicBoolean();
+        final AtomicBoolean cancelOwnedByService = new AtomicBoolean();
         private ExecutionOutcome settledOutcome;
         private boolean poolReleased;
         private boolean published;
@@ -129,6 +145,13 @@ public final class WorkerExecutionService {
             ExecutionOutcome toPublish = null;
             synchronized (this) {
                 this.poolReleased = true;
+                if (this.settledOutcome == null && !this.published
+                        && !cancelOwnedByService.get() && entered.compareAndSet(false, true)) {
+                    this.settledOutcome = ExecutionOutcome.rejectedBeforeStart(
+                            request.attemptId(),
+                            "POOL_CLOSED_WHILE_QUEUED",
+                            new CancellationException("WorkerPool closed while Attempt was queued"));
+                }
                 if (this.settledOutcome != null && !this.published) {
                     this.published = true;
                     toPublish = this.settledOutcome;
@@ -225,8 +248,11 @@ public final class WorkerExecutionService {
      */
     public boolean requestCancel(UUID attemptId) {
         Objects.requireNonNull(attemptId, "attemptId");
-        boolean signalled = workerPool.cancel(attemptId);
         PendingExecution pending = inFlight.get(attemptId);
+        if (pending != null) {
+            pending.cancelOwnedByService.set(true);
+        }
+        boolean signalled = workerPool.cancel(attemptId);
         if (pending != null && pending.entered.compareAndSet(false, true)) {
             ExecutionOutcome settled;
             try {
@@ -243,6 +269,14 @@ public final class WorkerExecutionService {
                     || settled.status() == OutcomeStatus.MANUAL_REQUIRED;
         }
         return signalled;
+    }
+
+    /**
+     * Explicit wakeup compensation when a committed {@link OutcomeStatus#SUCCEEDED} Attempt
+     * returned {@code wakeupScheduled == false} due to transient mailbox saturation or eviction.
+     */
+    public CompletableFuture<Void> retryWakeup(UUID tenantId, UUID runId) {
+        return lifecycleCoordinator.wake(tenantId, runId);
     }
 
     public int trackedCount() {
@@ -372,8 +406,10 @@ public final class WorkerExecutionService {
                     repository.cancelAttempt(request.tenantId(), request.runId(), request.attemptId(), reason);
             return ExecutionOutcome.settledCancellation(request.attemptId(), cancelled);
         } catch (WorkflowRuntimeRepository.InvalidTransitionException cannotCancelCompletedSideEffect) {
-            // Side effect already completed (cannot cancel/erase completed evidence) or Run no longer admits cancel.
-            if (sideEffectRecorded) {
+            // Side effect or DEVICE command already completed (cannot cancel/erase completed evidence)
+            // -> fail closed to MANUAL_REQUIRED regardless of whether the handler recorded a Worker fact.
+            if (sideEffectRecorded
+                    || repository.hasCompletedSideEffectForAttempt(request.tenantId(), request.attemptId())) {
                 return settleFailure(request, "CANCEL_AFTER_COMPLETED_SIDE_EFFECT",
                         cannotCancelCompletedSideEffect, true);
             }
@@ -499,6 +535,17 @@ public final class WorkerExecutionService {
                         request.workerId(), sideEffectKey, factKey, "SIDE_EFFECT_UNKNOWN", payloadJson));
                 if (recorded) sideEffectRecorded.set(true);
                 return recorded;
+            }
+        }
+
+        @Override
+        public UUID createDeviceCommand(String deviceId, String commandKind,
+                                        String idempotencyClass, String payloadJson) {
+            synchronized (lock) {
+                requireOwningThreadAndActiveLocked();
+                return callWithClearedInterrupt(() -> repository.createCommandForAttempt(
+                        request.tenantId(), request.runId(), request.attemptId(),
+                        request.workerId(), deviceId, commandKind, idempotencyClass, payloadJson));
             }
         }
 

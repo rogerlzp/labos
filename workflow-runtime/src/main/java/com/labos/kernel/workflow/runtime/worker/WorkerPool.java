@@ -95,6 +95,7 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
 
         AtomicInteger phase = new AtomicInteger(0); // 0=queued, 1=running, 2=finished
         AtomicBoolean released = new AtomicBoolean();
+        AtomicBoolean notifyAfterRelease = new AtomicBoolean(true);
         AtomicReference<FutureTask<?>> taskRef = new AtomicReference<>();
         Runnable release = () -> {
             if (!released.compareAndSet(false, true)) return;
@@ -103,7 +104,7 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
                 if (task != null) tasks.remove(attemptId, task);
                 releaseRunPermit(runId);
             } finally {
-                afterRelease.run();
+                if (notifyAfterRelease.get()) afterRelease.run();
             }
         };
 
@@ -140,6 +141,7 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
             executor.execute(task);
             return task;
         } catch (RejectedExecutionException rejected) {
+            notifyAfterRelease.set(false);
             task.cancel(false);
             throw rejected;
         }

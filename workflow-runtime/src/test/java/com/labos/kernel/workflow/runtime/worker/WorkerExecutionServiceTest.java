@@ -875,4 +875,190 @@ class WorkerExecutionServiceTest {
             mailboxExec.shutdownNow();
         }
     }
+
+    @Test
+    void nonDrainWakeupRejectionExposesWakeupErrorAndRetryWakeupCompletesRun() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "ws-wakeup");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var run = createSingleTaskRun(repo, tenant, "ws-wake", "task-wake");
+        repo.startRun(tenant, run.runId());
+        var res = repo.reserveCapacity(tenant, run.runId(), "ws-wake-cap-" + tenant, 1,
+                "task-wake", "PURE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res.attemptId(), "q", "{}");
+        deliverDispatchOutbox(repo, tenant, res.attemptId());
+
+        var realExec = Executors.newSingleThreadExecutor();
+        AtomicBoolean rejectFirstMailboxSubmit = new AtomicBoolean(true);
+        java.util.concurrent.Executor flakyExec = cmd -> {
+            if (rejectFirstMailboxSubmit.compareAndSet(true, false)) {
+                throw new java.util.concurrent.RejectedExecutionException("simulated mailbox saturation");
+            }
+            realExec.execute(cmd);
+        };
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), flakyExec, 4);
+             var pool = new WorkerPool(1, 4, 2, registry, gate)) {
+            pool.start();
+            WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
+            var req = new WorkerTaskHandler.TaskRequest(
+                    tenant, run.runId(), res.attemptId(), res.dispatchId(),
+                    "worker-wake", "task-wake", "PURE", "{}");
+
+            var outcome = service.submit(req, (r, ctx) ->
+                    WorkerTaskHandler.TaskResult.of("out", "{\"ok\":true}")).get(5, TimeUnit.SECONDS);
+
+            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, outcome.status());
+            assertFalse(outcome.wakeupScheduled(), "First wakeup must report not scheduled when mailbox executor rejects");
+            assertNull(outcome.error(), "Attempt commit succeeded; error must remain null");
+            assertNotNull(outcome.wakeupError(), "wakeupError must preserve the exact refusal cause for callers");
+            assertInstanceOf(java.util.concurrent.RejectedExecutionException.class, outcome.wakeupError());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + res.attemptId() + "' AND attempt_state='SUCCEEDED'"));
+
+            // Compensate via retryWakeup() -> GraphCoordinator advances to END and finishes Run SUCCEEDED!
+            service.retryWakeup(tenant, run.runId()).get(5, TimeUnit.SECONDS);
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND status='SUCCEEDED' AND control_gate='CLOSED'"));
+        } finally {
+            realExec.shutdownNow();
+        }
+    }
+
+    @Test
+    void poolCloseWhileQueuedClearsInFlightCompletesFutureAndLeavesDbDispatchedForRecovery() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "ws-pclose");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var run1 = createSingleTaskRun(repo, tenant, "ws-pc1", "task-1");
+        repo.startRun(tenant, run1.runId());
+        var res1 = repo.reserveCapacity(tenant, run1.runId(), "ws-pc1-cap-" + tenant, 1,
+                "task-1", "PURE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run1.runId(), res1.attemptId(), "q", "{}");
+        deliverDispatchOutbox(repo, tenant, res1.attemptId());
+
+        var run2 = createSingleTaskRun(repo, tenant, "ws-pc2", "task-2");
+        repo.startRun(tenant, run2.runId());
+        var res2 = repo.reserveCapacity(tenant, run2.runId(), "ws-pc2-cap-" + tenant, 1,
+                "task-2", "PURE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run2.runId(), res2.attemptId(), "q", "{}");
+        deliverDispatchOutbox(repo, tenant, res2.attemptId());
+
+        var mailboxExec = Executors.newSingleThreadExecutor();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        CountDownLatch occupied = new CountDownLatch(1);
+        AtomicBoolean queuedHandlerRan = new AtomicBoolean();
+        try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4)) {
+            var pool = new WorkerPool(1, 4, 4, registry, gate);
+            pool.start();
+            WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
+
+            var fut1 = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, run1.runId(), res1.attemptId(), res1.dispatchId(),
+                    "w1", "task-1", "PURE", "{}"), (r, ctx) -> {
+                occupied.countDown();
+                new CountDownLatch(1).await();
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            });
+            assertTrue(occupied.await(5, TimeUnit.SECONDS));
+
+            var fut2 = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, run2.runId(), res2.attemptId(), res2.dispatchId(),
+                    "w2", "task-2", "PURE", "{}"), (r, ctx) -> {
+                queuedHandlerRan.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            });
+
+            // Host shutdown directly closes WorkerPool without calling service.requestCancel().
+            pool.close();
+
+            var out2 = fut2.get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, out2.status());
+            assertEquals("POOL_CLOSED_WHILE_QUEUED", out2.runOutcome());
+            assertFalse(queuedHandlerRan.get());
+            assertEquals(WorkerExecutionService.OutcomeStatus.CANCELLED, fut1.get(5, TimeUnit.SECONDS).status());
+            assertEquals(0, service.trackedCount(), "pool.close() must not leak queued entries in inFlight");
+
+            // Queued Attempt stays DISPATCHED in DB until startup recovery reclaims it cleanly.
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + res2.attemptId() + "' AND attempt_state='DISPATCHED'"));
+            var recovered = repo.recoverInterruptedAttempt(tenant, run2.runId(), res2.attemptId(), "restart-test");
+            assertEquals("SAFE_TO_RETRY", recovered.outcome());
+        } finally {
+            mailboxExec.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellingDeviceAttemptWithSucceededCommandEscalatesManualRequiredEvenWithoutWorkerFact() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "ws-devcan");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var run = createSingleTaskRun(repo, tenant, "ws-devcan", "dev-task");
+        repo.startRun(tenant, run.runId());
+        var res = repo.reserveCapacity(tenant, run.runId(), "ws-devcan-cap-" + tenant, 1,
+                "dev-task", "DEVICE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res.attemptId(), "dev-q", "{}");
+        deliverDispatchOutbox(repo, tenant, res.attemptId());
+
+        var mailboxExec = Executors.newSingleThreadExecutor();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        CountDownLatch commandCreated = new CountDownLatch(1);
+        CountDownLatch commandSucceeded = new CountDownLatch(1);
+        AtomicReference<UUID> commandIdRef = new AtomicReference<>();
+
+        try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
+             var pool = new WorkerPool(1, 4, 2, registry, gate)) {
+            pool.start();
+            WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
+            var req = new WorkerTaskHandler.TaskRequest(
+                    tenant, run.runId(), res.attemptId(), res.dispatchId(),
+                    "w-dev", "dev-task", "DEVICE", "{}");
+
+            var fut = service.submit(req, (r, ctx) -> {
+                // Create DEVICE command WITHOUT calling ctx.recordSideEffect* directly.
+                UUID cmdId = ctx.createDeviceCommand("mock-dev-1", "RunStep", "QUERYABLE", "{\"x\":1}");
+                commandIdRef.set(cmdId);
+                commandCreated.countDown();
+                assertTrue(commandSucceeded.await(5, TimeUnit.SECONDS));
+                // Block until local cancel interrupts handler AFTER command already SUCCEEDED.
+                new CountDownLatch(1).await();
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            });
+
+            assertTrue(commandCreated.await(5, TimeUnit.SECONDS));
+            UUID cmdId = commandIdRef.get();
+            var cmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).stream()
+                    .filter(m -> m.dedupKey().equals("command:" + cmdId)).findFirst().orElseThrow();
+            assertTrue(repo.markCommandSendStarted(tenant, cmdId, 0L, cmdOutbox.outboxId(),
+                    UUID.randomUUID(), 1, "mock-disp"));
+            assertTrue(repo.markOutboxDelivered(tenant, cmdOutbox.outboxId()));
+            var receipt = repo.receiveInbox(tenant, "mock-dev-1", "msg-" + UUID.randomUUID(),
+                    "DEVICE_COMMAND_RESULT", run.runId(), "{\"commandId\":\"" + cmdId + "\",\"state\":\"SUCCEEDED\"}");
+            assertTrue(repo.applyCommandEvent(tenant, run.runId(), receipt.inboxId(), cmdId,
+                    "SUCCEEDED", "seq-1", "{\"ok\":true}"));
+            commandSucceeded.countDown();
+
+            assertTrue(service.requestCancel(res.attemptId()));
+            var outcome = fut.get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.MANUAL_REQUIRED, outcome.status(),
+                    "Cancelling DEVICE Attempt after command SUCCEEDED must escalate MANUAL_REQUIRED, not SETTLEMENT_FAILED");
+            assertNotNull(outcome.interventionId());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + res.attemptId() + "' AND attempt_state='UNKNOWN'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND status='MANUAL_REQUIRED'"));
+        } finally {
+            mailboxExec.shutdownNow();
+        }
+    }
 }

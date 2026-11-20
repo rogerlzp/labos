@@ -43,6 +43,13 @@ public interface WorkerExecutionContext {
     boolean recordSideEffectUnknown(String sideEffectKey, String factKey, String payloadJson);
 
     /**
+     * Create (or idempotently replay) the single immutable {@code command_ledger} entry and
+     * {@code DEVICE_COMMAND} Outbox row for this {@code STARTED} Attempt.
+     * Requires the Run to be {@code RUNNING + OPEN} unless replaying the identical payload.
+     */
+    UUID createDeviceCommand(String deviceId, String commandKind, String idempotencyClass, String payloadJson);
+
+    /**
      * Best-effort process-local cancellation indicator (local registry cancellation or thread interrupt).
      * Observing {@code true} does not prove that any already-started external side effect stopped.
      */

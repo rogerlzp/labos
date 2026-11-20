@@ -8,7 +8,11 @@ import java.util.UUID;
  * Application-layer SPI for executing a single Workflow Runtime Attempt on a local Worker thread.
  *
  * <p>Implementations handle pure-logic or mock side-effect work and interact with durable
- * side-effect facts exclusively through {@link WorkerExecutionContext}.
+ * side-effect facts and device command creation exclusively through {@link WorkerExecutionContext}.
+ *
+ * <p><strong>Cooperative cancellation contract:</strong> cancellation is cooperative. If a handler
+ * ignores cancellation and returns a valid {@link TaskResult} with all side effects properly closed,
+ * the real completed result takes precedence and is committed via {@code completeAttempt}.
  */
 @FunctionalInterface
 public interface WorkerTaskHandler {

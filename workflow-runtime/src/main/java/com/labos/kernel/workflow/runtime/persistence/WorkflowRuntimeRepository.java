@@ -20,6 +20,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -188,6 +189,25 @@ public final class WorkflowRuntimeRepository {
             )
             """, Boolean.class, tenantId, attemptId);
         return Boolean.TRUE.equals(unresolved);
+    }
+
+    /**
+     * True when this Attempt already has at least one durable {@code SIDE_EFFECT_COMPLETED} fact
+     * or a {@code SUCCEEDED} row in {@code command_ledger}. Used by application-layer cancellation
+     * settlement so completed DEVICE commands also fail closed to {@code MANUAL_REQUIRED} even if
+     * the handler itself never wrote a Worker-scoped side-effect fact.
+     */
+    public boolean hasCompletedSideEffectForAttempt(UUID tenantId, UUID attemptId) {
+        Boolean completed = jdbc.queryForObject("""
+            SELECT EXISTS (
+              SELECT 1 FROM workflow_runtime.worker_execution_fact
+               WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'
+            ) OR EXISTS (
+              SELECT 1 FROM workflow_runtime.command_ledger
+               WHERE tenant_id=? AND attempt_id=? AND command_state='SUCCEEDED'
+            )
+            """, Boolean.class, tenantId, attemptId, tenantId, attemptId);
+        return Boolean.TRUE.equals(completed);
     }
 
     private long appendEvents(UUID tenantId, UUID runId, List<EventDraft> events) {
@@ -984,6 +1004,15 @@ public final class WorkflowRuntimeRepository {
                 """, tenantId, attemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                 WHERE tenant_id=? AND message_kind='DEVICE_COMMAND'
+                   AND outbox_state IN ('PENDING','SENDING')
+                   AND payload->>'commandId' IN (
+                     SELECT command_id::text FROM workflow_runtime.command_ledger
+                      WHERE tenant_id=? AND attempt_id=? AND command_state='CANCELLED'
+                   )
+                """, tenantId, tenantId, attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
                  WHERE tenant_id=? AND message_kind='WORKER_DISPATCH'
                    AND outbox_state IN ('PENDING','SENDING')
                    AND payload->>'attemptId'=?
@@ -1104,6 +1133,15 @@ public final class WorkflowRuntimeRepository {
                 """, tenantId, attemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                 WHERE tenant_id=? AND message_kind='DEVICE_COMMAND'
+                   AND outbox_state IN ('PENDING','SENDING')
+                   AND payload->>'commandId' IN (
+                     SELECT command_id::text FROM workflow_runtime.command_ledger
+                      WHERE tenant_id=? AND attempt_id=? AND command_state='CANCELLED'
+                   )
+                """, tenantId, tenantId, attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
                  WHERE tenant_id=? AND message_kind='WORKER_DISPATCH'
                    AND outbox_state IN ('PENDING','SENDING')
                    AND payload->>'attemptId'=?
@@ -1199,6 +1237,15 @@ public final class WorkflowRuntimeRepository {
                        version=version+1,completed_at=clock_timestamp(),updated_at=clock_timestamp()
                  WHERE tenant_id=? AND attempt_id=? AND command_state IN ('CREATED','DISPATCH_PENDING')
                 """, tenantId, attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                 WHERE tenant_id=? AND message_kind='DEVICE_COMMAND'
+                   AND outbox_state IN ('PENDING','SENDING')
+                   AND payload->>'commandId' IN (
+                     SELECT command_id::text FROM workflow_runtime.command_ledger
+                      WHERE tenant_id=? AND attempt_id=? AND command_state='CANCELLED'
+                   )
+                """, tenantId, tenantId, attemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
                  WHERE tenant_id=? AND message_kind='WORKER_DISPATCH'
@@ -2395,6 +2442,89 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+    /**
+     * Worker-scoped T12 entry: verifies {@code workerId} owns the {@code STARTED} Attempt
+     * and creates (or idempotently replays) its single immutable Command + {@code DEVICE_COMMAND}
+     * Outbox entry without exposing raw {@code activationId} plumbing to handlers.
+     */
+    public UUID createCommandForAttempt(UUID tenantId, UUID runId, UUID attemptId,
+                                        String workerId, String deviceId, String commandKind,
+                                        String idempotencyClass, String payloadJson) {
+        if (workerId == null || workerId.isBlank())
+            throw new IllegalArgumentException("workerId is required");
+        return required(() -> {
+            RunHead head = lockRun(tenantId, runId);
+            List<String> rows = jdbc.query("""
+                SELECT attempt_state || '|' || COALESCE(worker_id,'') || '|' || activation_id::text
+                  FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
+                """, (rs, n) -> rs.getString(1), tenantId, runId, attemptId);
+            if (rows.size() != 1) throw new StaleRuntimeWriteException("Attempt not found");
+            String[] meta = rows.get(0).split("\\|", 3);
+            if (!"STARTED".equals(meta[0]) || !workerId.equals(meta[1]))
+                throw new StaleRuntimeWriteException("Only the owning local Worker may create a Command");
+            UUID activationId = UUID.fromString(meta[2]);
+            return createCommand(tenantId, runId, activationId, attemptId,
+                    deviceId, commandKind, idempotencyClass, payloadJson);
+        });
+    }
+
+    public record DispatchedAttemptRecord(
+            UUID runId, UUID activationId, UUID attemptId, UUID dispatchId,
+            String nodeKey, String sideEffectClass, String attemptState) {}
+
+    public Optional<DispatchedAttemptRecord> loadDispatchedAttempt(UUID tenantId, UUID attemptId) {
+        List<DispatchedAttemptRecord> rows = jdbc.query("""
+            SELECT a.run_id, a.activation_id, a.attempt_id, a.dispatch_id,
+                   act.node_key, a.side_effect_class, a.attempt_state
+              FROM workflow_runtime.node_attempt a
+              JOIN workflow_runtime.node_activation act
+                ON act.tenant_id=a.tenant_id AND act.activation_id=a.activation_id
+             WHERE a.tenant_id=? AND a.attempt_id=?
+            """, (rs, n) -> new DispatchedAttemptRecord(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getObject(4, UUID.class),
+                rs.getString(5),
+                rs.getString(6),
+                rs.getString(7)), tenantId, attemptId);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
+    public record CommandRecord(
+            UUID commandId, UUID runId, UUID activationId, UUID attemptId,
+            String deviceId, String commandKind, String commandState,
+            String idempotencyClass, String payloadJson, long version) {}
+
+    public Optional<CommandRecord> loadCommand(UUID tenantId, UUID commandId) {
+        List<CommandRecord> rows = jdbc.query("""
+            SELECT command_id, run_id, activation_id, attempt_id, device_id, command_kind,
+                   command_state, idempotency_class, command_payload::text, version
+              FROM workflow_runtime.command_ledger
+             WHERE tenant_id=? AND command_id=?
+            """, (rs, n) -> new CommandRecord(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getObject(4, UUID.class),
+                rs.getString(5),
+                rs.getString(6),
+                rs.getString(7),
+                rs.getString(8),
+                rs.getString(9),
+                rs.getLong(10)), tenantId, commandId);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
+    public Optional<String> findInboxReceiptState(UUID tenantId, UUID inboxId) {
+        List<String> rows = jdbc.query("""
+            SELECT receipt_state FROM workflow_runtime.inbox_receipt
+             WHERE tenant_id=? AND inbox_id=?
+            """, (rs, n) -> rs.getString(1), tenantId, inboxId);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
     public record OutboxMessage(UUID outboxId, UUID runId, String messageKind, String dedupKey, String payloadJson) {}
 
     /** Single-host dispatcher: lock and transition pending rows without distributed claims. */
@@ -2415,6 +2545,63 @@ public final class WorkflowRuntimeRepository {
                 tenantId,batchSize,tenantId));
     }
 
+    /** Single-host kind-scoped outbox claim so Worker and Command dispatchers never steal each other's rows. */
+    public List<OutboxMessage> beginOutboxSendForKind(UUID tenantId, String messageKind, int batchSize) {
+        if (messageKind == null || messageKind.isBlank())
+            throw new IllegalArgumentException("messageKind is required");
+        if (batchSize < 1 || batchSize > 500)
+            throw new IllegalArgumentException("batchSize must be 1..500");
+        return required(() -> jdbc.query("""
+            WITH picked AS (
+              SELECT outbox_id FROM workflow_runtime.runtime_outbox
+               WHERE tenant_id=? AND message_kind=? AND outbox_state='PENDING'
+                 AND available_at<=clock_timestamp()
+               ORDER BY available_at,created_at
+               FOR UPDATE SKIP LOCKED LIMIT ?
+            )
+            UPDATE workflow_runtime.runtime_outbox o
+               SET outbox_state='SENDING',delivery_attempts=delivery_attempts+1
+              FROM picked p WHERE o.tenant_id=? AND o.outbox_id=p.outbox_id
+            RETURNING o.outbox_id,o.run_id,o.message_kind,o.dedup_key,o.payload::text
+            """, (rs, n) -> new OutboxMessage(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+                rs.getString(3), rs.getString(4), rs.getString(5)),
+                tenantId, messageKind, batchSize, tenantId));
+    }
+
+    /** Safely requeue a SENDING outbox row back to PENDING ONLY before crossing any external side-effect boundary. */
+    public boolean requeueOutboxToPending(UUID tenantId, UUID outboxId) {
+        return required(() -> jdbc.update("""
+            UPDATE workflow_runtime.runtime_outbox SET outbox_state='PENDING'
+             WHERE tenant_id=? AND outbox_id=? AND outbox_state='SENDING'
+            """, tenantId, outboxId) == 1);
+    }
+
+    /**
+     * Revert a {@code WORKER_DISPATCH} outbox row from {@code DELIVERED} back to {@code PENDING}
+     * when synchronous {@code WorkerPool} submission rejected due to backpressure or closed host gate,
+     * guarded by verifying the Attempt is still {@code DISPATCHED} (never accepted or started).
+     */
+    public boolean requeueWorkerDispatchOnBackpressure(UUID tenantId, UUID outboxId, UUID attemptId) {
+        return required(() -> jdbc.update("""
+            UPDATE workflow_runtime.runtime_outbox o SET outbox_state='PENDING', delivered_at=NULL
+             WHERE o.tenant_id=? AND o.outbox_id=? AND o.message_kind='WORKER_DISPATCH'
+               AND o.outbox_state IN ('SENDING','DELIVERED')
+               AND EXISTS (
+                 SELECT 1 FROM workflow_runtime.node_attempt a
+                  WHERE a.tenant_id=o.tenant_id AND a.attempt_id=? AND a.attempt_state='DISPATCHED'
+               )
+            """, tenantId, outboxId, attemptId) == 1);
+    }
+
+    /** Terminalize a stale, cancelled, or uncertain SENDING outbox row so it is never blindly re-sent. */
+    public boolean markOutboxDeadLetter(UUID tenantId, UUID outboxId) {
+        return required(() -> jdbc.update("""
+            UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+             WHERE tenant_id=? AND outbox_id=? AND outbox_state IN ('PENDING','SENDING')
+            """, tenantId, outboxId) == 1);
+    }
+
     public boolean markOutboxDelivered(UUID tenantId, UUID outboxId) {
         return required(() -> jdbc.update("""
             UPDATE workflow_runtime.runtime_outbox SET outbox_state='DELIVERED',
@@ -2423,7 +2610,14 @@ public final class WorkflowRuntimeRepository {
             """,tenantId,outboxId)==1);
     }
 
-    /** Persist SEND_STARTED before invoking the Adapter outside this repository. */
+    /**
+     * Persist {@code SEND_STARTED} before invoking the Adapter outside this repository.
+     *
+     * <p><strong>Single-send invariant (G1.5/G2 contract):</strong> once a {@code command_id}
+     * crosses {@code SEND_STARTED}, it can never be re-dispatched under the same {@code command_id}.
+     * Any retry after an external send attempt must allocate a new {@code node_attempt} and a new
+     * {@code command_id}.
+     */
     public boolean markCommandSendStarted(UUID tenantId, UUID commandId, long expectedVersion,
                                           UUID outboxId, UUID dispatchId, int dispatchNo,
                                           String dispatcherId) {
@@ -2436,7 +2630,7 @@ public final class WorkflowRuntimeRepository {
             String[] ids=identity.get(0).split("\\|");
             UUID runId=UUID.fromString(ids[0]), attemptId=UUID.fromString(ids[1]);
             RunHead head=lockRun(tenantId,runId);
-            if(!"OPEN".equals(head.controlGate())) return false;
+            if(!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate())) return false;
             String attemptState=jdbc.queryForObject("""
                 SELECT attempt_state FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND attempt_id=? FOR UPDATE
@@ -2448,6 +2642,17 @@ public final class WorkflowRuntimeRepository {
                 """,(rs,n)->rs.getString(1),tenantId,outboxId);
             if(payloadCommands.size()!=1 || !commandId.toString().equals(payloadCommands.get(0)))
                 throw new StaleRuntimeWriteException("Outbox row is not SENDING or does not identify this Command");
+            String commandSeKey="command:"+commandId;
+            Integer priorStarts=jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
+                   AND side_effect_key=?
+                """,Integer.class,tenantId,attemptId,commandSeKey);
+            if(priorStarts!=null && priorStarts>0) {
+                throw new InvalidTransitionException(
+                        "Command already crossed SEND_STARTED; retries must allocate a new Attempt and Command: "
+                                + commandId);
+            }
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state='SEND_STARTED',
                        version=version+1,updated_at=clock_timestamp()
@@ -2461,7 +2666,7 @@ public final class WorkflowRuntimeRepository {
                 VALUES (?,?,?,?,'SEND_STARTED',?,clock_timestamp())
                 """,tenantId,dispatchId,commandId,dispatchNo,dispatcherId);
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-send:"+dispatchId,
-                    "command:"+commandId,"SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,commandDispatchId(tenantId,attemptId),
+                    commandSeKey,"SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,commandDispatchId(tenantId,attemptId),
                     "{\"commandId\":\""+commandId+"\",\"dispatchNo\":"+dispatchNo+"}");
             return true;
         });

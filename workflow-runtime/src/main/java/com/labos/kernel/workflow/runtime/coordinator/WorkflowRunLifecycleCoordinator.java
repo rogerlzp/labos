@@ -105,6 +105,20 @@ public final class WorkflowRunLifecycleCoordinator implements AutoCloseable {
         try {
             CompletableFuture<Void> advanceFuture = mailboxes.submit(tenantId, runId,
                     new Signal(tenantId, runId, SignalType.ATTEMPT_SUCCEEDED, attemptId));
+            if (advanceFuture.isCompletedExceptionally()) {
+                Throwable cause = null;
+                try {
+                    advanceFuture.join();
+                } catch (java.util.concurrent.CompletionException ce) {
+                    cause = ce.getCause() != null ? ce.getCause() : ce;
+                } catch (Throwable t) {
+                    cause = t;
+                }
+                RuntimeException wakeupErr = (cause instanceof RuntimeException re)
+                        ? re
+                        : new IllegalStateException("Run mailbox wakeup rejected", cause);
+                return new CompletionDispatch(true, false, CompletableFuture.completedFuture(null), wakeupErr);
+            }
             return new CompletionDispatch(true, true, advanceFuture, null);
         } catch (RuntimeException wakeupRejected) {
             return new CompletionDispatch(true, false, CompletableFuture.completedFuture(null), wakeupRejected);
