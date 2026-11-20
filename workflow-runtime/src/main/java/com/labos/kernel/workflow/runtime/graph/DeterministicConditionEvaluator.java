@@ -121,7 +121,10 @@ public final class DeterministicConditionEvaluator {
             Object value = variables;
             for (String part : parts) {
                 if (part.isEmpty()) fail("Invalid variable path: " + path);
-                if (!(value instanceof Map<?, ?> map) || !map.containsKey(part))
+                if (!(value instanceof Map<?, ?>))
+                    fail("Unknown variable: " + path);
+                Map<?, ?> map = (Map<?, ?>) value;
+                if (!map.containsKey(part))
                     fail("Unknown variable: " + path);
                 value = map.get(part);
             }
