@@ -5,11 +5,17 @@ on:
     paths:
       - 'db/workflow_runtime/**'
       - 'workflow-runtime/**'
+      - 'labos-kernel/src/boot/**'
+      - 'labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeIslandSimulatorSelfTest.java'
+      - 'scripts/test-workflow-runtime-island-e2e.sh'
       - '.github/workflows/workflow-runtime-db.yml'
   pull_request:
     paths:
       - 'db/workflow_runtime/**'
       - 'workflow-runtime/**'
+      - 'labos-kernel/src/boot/**'
+      - 'labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeIslandSimulatorSelfTest.java'
+      - 'scripts/test-workflow-runtime-island-e2e.sh'
       - '.github/workflows/workflow-runtime-db.yml'
   workflow_dispatch:
 jobs:
@@ -61,6 +67,10 @@ jobs:
         env:
           RUN_RUNTIME_PG_IT: '1'
         run: mvn -B -f workflow-runtime/pom.xml test
+      - name: Run Island Real DeviceCore + PG17 E2E self-test
+        env:
+          USE_EXISTING_PG: '1'
+        run: bash ./scripts/test-workflow-runtime-island-e2e.sh
       - name: Verify bootstrap is repeatably isolated
         run: |
           psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 31) exit 1 }'

@@ -6,9 +6,13 @@ import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -47,6 +51,11 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final Consumer<UUID> workerCancelRequester;
     private final BiConsumer<UUID, UUID> graphWakeup;
 
+    private static final long GRAPH_WAKEUP_BASE_BACKOFF_MS = 200L;
+    private static final long GRAPH_WAKEUP_MAX_BACKOFF_MS = 5_000L;
+
+    private record WakeupThrottle(int consecutiveCount, long nextAllowedNanos) {}
+
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final AtomicLong cyclesCompleted = new AtomicLong(0);
@@ -54,6 +63,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final AtomicLong tasksDispatched = new AtomicLong(0);
     private final AtomicLong workersSubmitted = new AtomicLong(0);
     private final AtomicLong commandsDelivered = new AtomicLong(0);
+    private final Map<UUID, WakeupThrottle> graphWakeupThrottle = new ConcurrentHashMap<>();
     private volatile Instant lastCycleAt;
     private volatile String lastError;
 
@@ -155,16 +165,39 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         }
         // 0. Self-heal any RUNNING/OPEN runs with completed task activations awaiting graph routing
         //    (e.g. after PAUSE -> RESUME, host crash/restart, or transient mailbox eviction race).
+        //    Bounded exponential backoff per run prevents a permanently unadvanceable run from busy-looping.
         List<WorkflowRuntimeRepository.RunnableRunRef> awaitingGraph = scopedTenantId != null
                 ? repository.findRunsAwaitingGraphAdvanceForTenant(scopedTenantId, batchSize)
                 : repository.findRunsAwaitingGraphAdvance(batchSize);
-        for (WorkflowRuntimeRepository.RunnableRunRef ref : awaitingGraph) {
-            if (stopped.get() || !schedulingGate.isOpen()) return;
-            try {
-                graphWakeup.accept(ref.tenantId(), ref.runId());
-            } catch (RuntimeException ex) {
-                recordError(ex);
+        if (awaitingGraph.isEmpty()) {
+            graphWakeupThrottle.clear();
+        } else {
+            Set<UUID> activeAwaiting = new HashSet<>(awaitingGraph.size());
+            long nowNanos = System.nanoTime();
+            for (WorkflowRuntimeRepository.RunnableRunRef ref : awaitingGraph) {
+                if (stopped.get() || !schedulingGate.isOpen()) return;
+                activeAwaiting.add(ref.runId());
+                WakeupThrottle prev = graphWakeupThrottle.get(ref.runId());
+                if (prev != null && nowNanos < prev.nextAllowedNanos()) {
+                    continue;
+                }
+                int count = prev == null ? 1 : prev.consecutiveCount() + 1;
+                long backoffMs = Math.min(GRAPH_WAKEUP_MAX_BACKOFF_MS,
+                        GRAPH_WAKEUP_BASE_BACKOFF_MS << Math.min(count - 1, 5));
+                graphWakeupThrottle.put(ref.runId(),
+                        new WakeupThrottle(count, nowNanos + TimeUnit.MILLISECONDS.toNanos(backoffMs)));
+                if (count == 5 || (count > 5 && count % 20 == 0)) {
+                    System.err.println("[RuntimeDispatchLoop] Run " + ref.runId()
+                            + " remained awaiting graph advance after " + count
+                            + " consecutive self-heal wakeups; backing off " + backoffMs + "ms");
+                }
+                try {
+                    graphWakeup.accept(ref.tenantId(), ref.runId());
+                } catch (RuntimeException ex) {
+                    recordError(ex);
+                }
             }
+            graphWakeupThrottle.keySet().retainAll(activeAwaiting);
         }
 
         // 1. Reserve & dispatch READY tokens for active RUNNING/OPEN runs.

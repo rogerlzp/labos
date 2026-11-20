@@ -2,6 +2,7 @@
 labos-kernel/out/
 labos-kernel/out-test/
 labos-kernel/target/
+workflow-runtime/target/
 labos-gateway/out/
 # Python 脚本的字节码缓存（scripts/ 下有多个 .py）
 __pycache__/

@@ -311,6 +311,87 @@ class GatewayDeviceTaskBridgeIntegrationTest {
         }
     }
 
+    @Test
+    void inFlightPhysicalCommandWithStopAndSilentDeviceEscalatesToUnknownAndManualRequired() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        DriverManagerDataSource ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        UUID tenant = createTenant(ds, "bridge-stop-silent");
+        String dev1 = "silent-stop-dev-" + UUID.randomUUID().toString().substring(0, 6);
+        CountDownLatch frameReceived = new CountDownLatch(1);
+
+        // Silent #!LABSEP!# server: accepts the physical command over TCP and NEVER replies.
+        try (SimLabSepServer silentServer = new SimLabSepServer((req, conn) -> frameReceived.countDown())) {
+            List<TcpDeviceConnection.Endpoint> endpoints = List.of(
+                    new TcpDeviceConnection.Endpoint(dev1, "127.0.0.1", silentServer.port(), LabSepWireCodec.INSTANCE));
+            GatewayDeviceTaskBridge bridge = new GatewayDeviceTaskBridge(
+                    repo, endpoints, Map.of(901L, dev1), Duration.ofMillis(600));
+
+            var cfg = new EmbeddedWorkflowRuntimeHost.Config(
+                    tempDir.resolve("bridge-stop-silent.lock"),
+                    "bridge-stop-silent-host",
+                    2, 16, 4, 2, 32, 50,
+                    Duration.ofMillis(25), 16,
+                    endpoints,
+                    gatewayConfig(),
+                    tenant);
+
+            try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(cfg, repo, bridge.specResolver(), bridge.handlerResolver())) {
+                host.start();
+                assertTrue(host.deviceGateway().awaitOnline(dev1, Duration.ofSeconds(3)));
+
+                String xml = """
+                        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                          <bpmn:process id="p">
+                            <bpmn:startEvent id="start"/>
+                            <bpmn:task id="silent_stop_op" protocolName="Heat" resource="901" methodParams="{&quot;tempC&quot;:95}"/>
+                            <bpmn:endEvent id="end"/>
+                            <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="silent_stop_op"/>
+                            <bpmn:sequenceFlow id="f2" sourceRef="silent_stop_op" targetRef="end"/>
+                          </bpmn:process>
+                        </bpmn:definitions>
+                        """;
+                String planKey = "bridge-stop-silent-" + UUID.randomUUID();
+                GraphPlan plan = new BpmnGraphCompiler().compile(
+                        new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
+                var run = repo.createRun(tenant, "req-" + planKey, "CREATE", "{}",
+                        planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                        plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+
+                host.startRun(tenant, run.runId()).get(5, TimeUnit.SECONDS);
+                assertTrue(frameReceived.await(5, TimeUnit.SECONDS),
+                        "Physical command frame must reach device before STOP is issued");
+
+                // Issue STOP while the physical command is in-flight past SEND_STARTED on a silent device.
+                host.requestStop(tenant, run.runId());
+
+                // Run MUST NOT falsely converge to STOPPED; after timeout it MUST escalate to UNKNOWN + MANUAL_REQUIRED!
+                awaitCondition(Duration.ofSeconds(8), () ->
+                        !host.listUnknownCommands(tenant, 10).isEmpty()
+                                && !host.listManualRequiredRuns(tenant, 10).isEmpty()
+                                && host.healthSnapshot().activeLocalWorkers() == 0,
+                        "STOP during silent in-flight physical command must escalate to UNKNOWN and MANUAL_REQUIRED");
+
+                var overview = host.getRunOverview(tenant, run.runId()).orElseThrow();
+                assertEquals("MANUAL_REQUIRED", overview.status(),
+                        "Run must never falsely converge to STOPPED while physical device outcome is unknown");
+                assertNotEquals("STOPPED", overview.status());
+
+                var unknown = host.listUnknownCommands(tenant, 10);
+                assertEquals(1, unknown.size());
+                assertEquals(dev1, unknown.get(0).deviceId());
+                assertEquals("UNKNOWN", unknown.get(0).commandState());
+                assertEquals(1, silentServer.receivedFrames().size(),
+                        "Runtime must never auto-resend a command past SEND_STARTED");
+
+                assertTrue(host.reconcileUnknownCommand(
+                        tenant, unknown.get(0).commandId(), "FAILED", "manual-stop-check-1",
+                        "{\"operator\":\"verified-halted\"}", "admin"));
+                assertTrue(host.listUnknownCommands(tenant, 10).isEmpty());
+            }
+        }
+    }
+
     private static final class SimLabSepServer implements AutoCloseable {
         private static final byte[] SEP = LabSepWireCodec.SEPARATOR.getBytes(StandardCharsets.UTF_8);
 

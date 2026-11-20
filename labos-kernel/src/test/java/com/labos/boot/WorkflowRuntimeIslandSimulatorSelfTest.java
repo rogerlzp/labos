@@ -27,6 +27,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * End-to-end PG17 + REAL {@link DeviceCore} ({@code #!LABSEP!#}) Island workflow self-test.
@@ -46,6 +47,7 @@ import java.util.UUID;
 public final class WorkflowRuntimeIslandSimulatorSelfTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final AtomicInteger PASSED_ASSERTIONS = new AtomicInteger(0);
 
     private static String env(String key, String fallback) {
         String v = System.getenv(key);
@@ -170,7 +172,8 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                 awaitCondition(Duration.ofSeconds(10), () -> {
                     JsonNode ov = getRunJson(controller, serialRunId);
                     return containsText(ov.get("completedNodes"), "step_dispense");
-                }, "Serial workflow step_dispense should complete on DeviceCore 206");
+                }, () -> "Serial workflow step_dispense should complete on DeviceCore 206 | run="
+                        + getRunJson(controller, serialRunId) + " | health=" + controller.health().getBody());
 
                 var pauseResp = controller.pauseRun(serialRunId, null);
                 require(pauseResp.getStatusCode().value() == 200, "PAUSE expected 200: " + pauseResp.getBody());
@@ -298,15 +301,19 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                 require(dev206Health.heartbeatsSent() == 0 && dev207Health.heartbeatsSent() == 0,
                         "LabSep devices must receive 0 unsolicited NDJSON heartbeats");
                 try (Connection c = ds.getConnection(); Statement st = c.createStatement();
-                     ResultSet rs = st.executeQuery("SELECT count(*) FROM workflow_runtime.inbox_protocol_violation")) {
-                    require(rs.next() && rs.getLong(1) == 0L, "Expected 0 inbox_protocol_violation rows");
+                     ResultSet rs = st.executeQuery(
+                             "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation "
+                                     + "WHERE tenant_id = (SELECT tenant_id FROM workflow_runtime.tenant "
+                                     + "WHERE tenant_key = 'kernel-tenant:1')")) {
+                    require(rs.next() && rs.getLong(1) == 0L, "Expected 0 inbox_protocol_violation rows for island tenant");
                 }
                 require(auditActions.containsAll(List.of(
                         "runtime.run.create", "runtime.run.pause", "runtime.run.resume", "runtime.run.stop")),
                         "All write actions must record audit entries, got: " + auditActions);
             }
 
-            System.out.println("Workflow Runtime Island + Real DeviceCore Simulator E2E：通过 18, 失败 0");
+            System.out.println("Workflow Runtime Island + Real DeviceCore Simulator E2E：通过 "
+                    + PASSED_ASSERTIONS.get() + ", 失败 0");
         } finally {
             pipettor.stopServer();
             centrifuge.stopServer();
@@ -351,6 +358,7 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
 
     private static void require(boolean cond, String msg) {
         if (!cond) throw new AssertionError(msg);
+        PASSED_ASSERTIONS.incrementAndGet();
     }
 
     private static void deleteRecursively(Path dir) {
@@ -451,7 +459,7 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                     <bpmn:sequenceFlow id="f0" sourceRef="Start_1" targetRef="set_score"/>
                     <bpmn:sequenceFlow id="f1" sourceRef="set_score" targetRef="Gw_Xor"/>
                     <bpmn:sequenceFlow id="f_pass" sourceRef="Gw_Xor" targetRef="xor_pass_dispense">
-                      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">score &gt;= 80</bpmn:conditionExpression>
+                      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${score} &gt;= 80</bpmn:conditionExpression>
                     </bpmn:sequenceFlow>
                     <bpmn:sequenceFlow id="f_fail" sourceRef="Gw_Xor" targetRef="xor_fail_spin"/>
                     <bpmn:sequenceFlow id="fp2" sourceRef="xor_pass_dispense" targetRef="Gw_Merge"/>
