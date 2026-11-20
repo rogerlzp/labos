@@ -47,6 +47,11 @@ class RestrictedExpressionEvaluatorTest {
         for (String e : new String[] {"", "  ", "true &&", "(true", "true)", "1..2 == 1"})
             assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.evaluateBoolean(e, Map.of()), e);
     }
+    @Test void validatesExpressionSyntaxWithoutResolvingVariables() {
+        assertDoesNotThrow(() -> RestrictedExpressionEvaluator.validateSyntax("ready && (amount >= 2 || override)"));
+        assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.validateSyntax("true &&"));
+        assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.validateSyntax("System.exit(0)"));
+    }
     @Test void booleanOperatorsShortCircuitVariableResolution() {
         assertTrue(RestrictedExpressionEvaluator.evaluateBoolean("true || missing", Map.of()));
         assertFalse(RestrictedExpressionEvaluator.evaluateBoolean("false && missing", Map.of()));
