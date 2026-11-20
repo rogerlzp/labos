@@ -32,6 +32,7 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
     private final WorkerExecutionRegistry registry;
     private final SchedulingGate schedulingGate;
     private final int perRunLimit;
+    private final Runnable afterPhaseRunningBeforeWorkHook;
     private final ConcurrentMap<UUID, AtomicInteger> inFlightByRun = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, FutureTask<?>> tasks = new ConcurrentHashMap<>();
     private final AtomicBoolean started = new AtomicBoolean();
@@ -40,12 +41,25 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
 
     public WorkerPool(int workerThreads, int queueCapacity, int perRunLimit,
                       WorkerExecutionRegistry registry, SchedulingGate schedulingGate) {
+        this(workerThreads, queueCapacity, perRunLimit, registry, schedulingGate, () -> {});
+    }
+
+    /**
+     * Package-private seam for deterministic concurrency tests that pause after
+     * {@code phase} transitions to running and {@link WorkerExecutionRegistry#register}
+     * completes, but before {@code work.call()} begins.
+     */
+    WorkerPool(int workerThreads, int queueCapacity, int perRunLimit,
+               WorkerExecutionRegistry registry, SchedulingGate schedulingGate,
+               Runnable afterPhaseRunningBeforeWorkHook) {
         if (workerThreads < 1) throw new IllegalArgumentException("workerThreads must be >= 1");
         if (queueCapacity < 1) throw new IllegalArgumentException("queueCapacity must be >= 1");
         if (perRunLimit < 1) throw new IllegalArgumentException("perRunLimit must be >= 1");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.schedulingGate = Objects.requireNonNull(schedulingGate, "schedulingGate");
         this.perRunLimit = perRunLimit;
+        this.afterPhaseRunningBeforeWorkHook = Objects.requireNonNull(
+                afterPhaseRunningBeforeWorkHook, "afterPhaseRunningBeforeWorkHook");
         this.executor = new ThreadPoolExecutor(workerThreads, workerThreads, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(queueCapacity), new ThreadPoolExecutor.AbortPolicy());
     }
@@ -61,10 +75,10 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
     }
 
     /**
-     * Submit an Attempt to the pool and run {@code afterRelease} on the worker thread strictly
-     * AFTER {@link WorkerExecutionRegistry#unregister}, task map removal, and per-Run permit release
-     * have all completed. This guarantees callers unblocked by {@code afterRelease} can safely
-     * observe zero in-flight permits or resubmit the same Attempt/Run immediately without racing.
+     * Submit an Attempt to the pool and run {@code afterRelease} exactly once strictly AFTER
+     * {@link WorkerExecutionRegistry#unregister}, task map removal, and per-Run permit release
+     * have all completed — whether the task finished normally, was cancelled while running,
+     * or was cancelled while queued.
      */
     public <T> Future<T> submit(UUID runId, UUID attemptId, String workerId,
                                 Callable<T> work, Runnable afterRelease) {
@@ -84,9 +98,13 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
         AtomicReference<FutureTask<?>> taskRef = new AtomicReference<>();
         Runnable release = () -> {
             if (!released.compareAndSet(false, true)) return;
-            FutureTask<?> task = taskRef.get();
-            if (task != null) tasks.remove(attemptId, task);
-            releaseRunPermit(runId);
+            try {
+                FutureTask<?> task = taskRef.get();
+                if (task != null) tasks.remove(attemptId, task);
+                releaseRunPermit(runId);
+            } finally {
+                afterRelease.run();
+            }
         };
 
         FutureTask<T> task = new FutureTask<>(() -> {
@@ -96,6 +114,7 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
             try {
                 registry.register(attemptId, workerId, thread, () -> {});
                 registered = true;
+                afterPhaseRunningBeforeWorkHook.run();
                 return work.call();
             } finally {
                 try {
@@ -103,7 +122,6 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
                 } finally {
                     phase.set(2);
                     release.run();
-                    afterRelease.run();
                 }
             }
         }) {
@@ -114,7 +132,8 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
         taskRef.set(task);
         if (tasks.putIfAbsent(attemptId, task) != null) {
             phase.set(2);
-            release.run();
+            released.set(true);
+            releaseRunPermit(runId);
             throw new IllegalStateException("Attempt already submitted to WorkerPool");
         }
         try {

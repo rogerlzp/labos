@@ -782,4 +782,97 @@ class WorkerExecutionServiceTest {
             mailboxExec.shutdownNow();
         }
     }
+
+    @Test
+    void cancelDuringPhaseRunningBeforeCallableWaitsForPoolReleaseAndAllowsImmediateResubmit() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "ws-phase1-can");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var run = createSingleTaskRun(repo, tenant, "ws-p1can", "task-p1");
+        repo.startRun(tenant, run.runId());
+        String capKey = "ws-p1can-cap-" + tenant;
+        var res = repo.reserveCapacity(tenant, run.runId(), capKey, 1,
+                "task-p1", "PURE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res.attemptId(), "q", "{}");
+        deliverDispatchOutbox(repo, tenant, res.attemptId());
+
+        CountDownLatch enteredPhase1BeforeCallable = new CountDownLatch(1);
+        CountDownLatch allowWorkerExitPhase1 = new CountDownLatch(1);
+        var hookInvocations = new java.util.concurrent.atomic.AtomicInteger();
+
+        var mailboxExec = Executors.newSingleThreadExecutor();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        // perRunLimit = 1: any leaked permit or tasks map entry will immediately reject resubmission.
+        try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
+             var pool = new WorkerPool(1, 2, 1, registry, gate, () -> {
+                 if (hookInvocations.getAndIncrement() == 0) {
+                     enteredPhase1BeforeCallable.countDown();
+                     // Hold worker inside phase=1 (after registry.register, before pending.entered CAS)
+                     // even after thread.interrupt() from workerPool.cancel() until the test releases it.
+                     while (true) {
+                         try {
+                             if (allowWorkerExitPhase1.await(5, TimeUnit.SECONDS)) break;
+                             throw new AssertionError("Timed out waiting for allowWorkerExitPhase1");
+                         } catch (InterruptedException ignored) {
+                             // Keep holding until test verifies outcomeFuture has NOT completed prematurely.
+                         }
+                     }
+                 }
+             })) {
+            pool.start();
+            WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
+
+            AtomicBoolean handlerInvoked = new AtomicBoolean();
+            var request = new WorkerTaskHandler.TaskRequest(
+                    tenant, run.runId(), res.attemptId(), res.dispatchId(),
+                    "worker-p1", "task-p1", "PURE", "{}");
+            var cancelFuture = service.submit(request, (req, ctx) -> {
+                handlerInvoked.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            });
+
+            // Wait until WorkerPool has switched phase=1 and registered the handle, BEFORE pending.entered CAS.
+            assertTrue(enteredPhase1BeforeCallable.await(5, TimeUnit.SECONDS));
+            assertEquals(1, pool.inFlightForRun(run.runId()));
+            assertEquals(1, registry.activeCount());
+
+            // requestCancel wins pending.entered CAS and durably settles cancelAttempt in PostgreSQL,
+            // but MUST NOT complete cancelFuture while WorkerPool still holds tasks/registry/Run permit.
+            assertTrue(service.requestCancel(res.attemptId()));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + res.attemptId() + "' AND attempt_state='CANCELLED'"));
+            assertFalse(cancelFuture.isDone(),
+                    "outcomeFuture must not complete before WorkerPool finishes releasing task/registry/permit");
+
+            // Release the worker thread so WorkerPool's finally unregisters handle, removes task, and releases permit.
+            allowWorkerExitPhase1.countDown();
+            var cancelOutcome = cancelFuture.get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.CANCELLED, cancelOutcome.status());
+            assertFalse(handlerInvoked.get(), "Cancelled handler must never execute");
+
+            // Immediately upon cancelFuture completion, ALL WorkerPool & Registry & Service state must be released.
+            assertEquals(0, pool.inFlightForRun(run.runId()), "Run permit must already be released");
+            assertEquals(0, registry.activeCount(), "WorkerExecutionRegistry handle must already be unregistered");
+            assertEquals(0, service.trackedCount(), "Service tracking map must already be cleared");
+            assertEquals(0, scalar(ds, "SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"
+                    + tenant + "' AND capacity_key='" + capKey + "'"));
+
+            // Immediately resubmitting the EXACT SAME (runId, attemptId) under perRunLimit=1 must NOT hit
+            // "Attempt already submitted to WorkerPool" or "Per-Run Worker limit reached".
+            var resubmitOutcome = service.submit(request, (req, ctx) -> {
+                handlerInvoked.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            }).get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, resubmitOutcome.status());
+            assertFalse(handlerInvoked.get());
+            assertEquals(0, pool.inFlightForRun(run.runId()));
+            assertEquals(0, registry.activeCount());
+            assertEquals(0, service.trackedCount());
+        } finally {
+            mailboxExec.shutdownNow();
+        }
+    }
 }

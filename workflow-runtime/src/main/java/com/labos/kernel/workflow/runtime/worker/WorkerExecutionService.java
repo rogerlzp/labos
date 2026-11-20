@@ -9,7 +9,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Application service owning the single-Attempt Worker execution lifecycle on the
@@ -92,13 +91,53 @@ public final class WorkerExecutionService {
         }
     }
 
-    private static final class PendingExecution {
+    /**
+     * Two-gate completion coordinator ensuring {@code outcomeFuture} is NEVER completed until
+     * BOTH (1) durable DB settlement has produced an {@link ExecutionOutcome} AND (2)
+     * {@link WorkerPool} has finished releasing its registry handle, task map entry, and Run permit.
+     */
+    private final class PendingExecution {
         final WorkerTaskHandler.TaskRequest request;
         final CompletableFuture<ExecutionOutcome> outcomeFuture = new CompletableFuture<>();
         final AtomicBoolean entered = new AtomicBoolean();
+        private ExecutionOutcome settledOutcome;
+        private boolean poolReleased;
+        private boolean published;
 
         PendingExecution(WorkerTaskHandler.TaskRequest request) {
             this.request = request;
+        }
+
+        void markOutcomeReady(ExecutionOutcome outcome) {
+            ExecutionOutcome toPublish = null;
+            synchronized (this) {
+                if (this.settledOutcome == null) {
+                    this.settledOutcome = outcome;
+                }
+                if (this.poolReleased && !this.published) {
+                    this.published = true;
+                    toPublish = this.settledOutcome;
+                }
+            }
+            if (toPublish != null) {
+                inFlight.remove(request.attemptId(), this);
+                outcomeFuture.complete(toPublish);
+            }
+        }
+
+        void markPoolReleased() {
+            ExecutionOutcome toPublish = null;
+            synchronized (this) {
+                this.poolReleased = true;
+                if (this.settledOutcome != null && !this.published) {
+                    this.published = true;
+                    toPublish = this.settledOutcome;
+                }
+            }
+            if (toPublish != null) {
+                inFlight.remove(request.attemptId(), this);
+                outcomeFuture.complete(toPublish);
+            }
         }
     }
 
@@ -147,38 +186,24 @@ public final class WorkerExecutionService {
             throw new IllegalStateException("Attempt already submitted to WorkerExecutionService: "
                     + request.attemptId());
         }
-        AtomicBoolean workerOwnsCompletion = new AtomicBoolean();
-        AtomicReference<ExecutionOutcome> outcomeRef = new AtomicReference<>();
-        Runnable publishAfterPoolRelease = () -> {
-            if (!workerOwnsCompletion.get()) return;
-            inFlight.remove(request.attemptId(), pending);
-            ExecutionOutcome outcome = outcomeRef.get();
-            if (outcome != null) {
-                pending.outcomeFuture.complete(outcome);
-            } else if (!pending.outcomeFuture.isDone()) {
-                pending.outcomeFuture.complete(ExecutionOutcome.settlementFailed(
-                        request.attemptId(),
-                        new IllegalStateException("Worker execution exited without outcome")));
-            }
-        };
         try {
             workerPool.submit(request.runId(), request.attemptId(), request.workerId(), () -> {
                 if (!pending.entered.compareAndSet(false, true)) {
                     // requestCancel won the queued->running race and owns durable cancellation settlement.
+                    // WorkerPool's finally will invoke pending.markPoolReleased() right after releasing resources.
                     return null;
                 }
-                workerOwnsCompletion.set(true);
                 try {
                     ExecutionOutcome outcome = executeAttemptLifecycle(request, handler);
-                    outcomeRef.set(outcome);
+                    pending.markOutcomeReady(outcome);
                     return outcome;
                 } catch (Throwable unexpected) {
                     ExecutionOutcome failed = ExecutionOutcome.settlementFailed(request.attemptId(), unexpected);
-                    outcomeRef.set(failed);
+                    pending.markOutcomeReady(failed);
                     if (unexpected instanceof Error err) throw err;
                     return failed;
                 }
-            }, publishAfterPoolRelease);
+            }, pending::markPoolReleased);
             return pending.outcomeFuture;
         } catch (RuntimeException | Error submissionFailure) {
             inFlight.remove(request.attemptId(), pending);
@@ -189,13 +214,14 @@ public final class WorkerExecutionService {
     /**
      * Request cancellation for a submitted Attempt.
      *
-     * <p>If the Attempt has not yet entered the Worker lifecycle (still queued in {@link WorkerPool}),
-     * this method durably settles {@code cancelAttempt} in PostgreSQL BEFORE completing the outcome
-     * future and returning; if DB settlement fails, the future completes with
-     * {@link OutcomeStatus#SETTLEMENT_FAILED} and this method returns {@code false}.
+     * <p>If the Attempt has not yet entered the Worker lifecycle (queued in {@link WorkerPool}, or
+     * in the brief window after {@code WorkerPool} switched to running but before the Callable won
+     * execution ownership), this method durably settles {@code cancelAttempt} in PostgreSQL and
+     * records the settled outcome; {@code outcomeFuture} completes only once BOTH durable DB
+     * settlement AND {@link WorkerPool} resource release have finished. If DB settlement fails,
+     * the future completes with {@link OutcomeStatus#SETTLEMENT_FAILED} and this method returns {@code false}.
      * If the Worker thread has already entered execution, local cancellation is signalled and the
-     * Worker thread performs durable {@code CANCELLED} / {@code MANUAL_REQUIRED} settlement before
-     * completing the outcome future.
+     * Worker thread performs durable {@code CANCELLED} / {@code MANUAL_REQUIRED} settlement.
      */
     public boolean requestCancel(UUID attemptId) {
         Objects.requireNonNull(attemptId, "attemptId");
@@ -206,10 +232,13 @@ public final class WorkerExecutionService {
             try {
                 settled = settleWithClearedInterrupt(() ->
                         settleCancellation(pending.request, "cancelled-while-queued", false));
-            } finally {
-                inFlight.remove(attemptId, pending);
+            } catch (Throwable unexpected) {
+                settled = ExecutionOutcome.settlementFailed(attemptId, unexpected);
+                pending.markOutcomeReady(settled);
+                if (unexpected instanceof Error err) throw err;
+                return false;
             }
-            pending.outcomeFuture.complete(settled);
+            pending.markOutcomeReady(settled);
             return settled.status() == OutcomeStatus.CANCELLED
                     || settled.status() == OutcomeStatus.MANUAL_REQUIRED;
         }
