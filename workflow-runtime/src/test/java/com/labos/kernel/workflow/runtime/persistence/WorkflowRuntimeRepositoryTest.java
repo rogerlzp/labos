@@ -1,5 +1,9 @@
 package com.labos.kernel.workflow.runtime.persistence;
 
+import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
+import com.labos.kernel.workflow.runtime.graph.GraphPlan;
+import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
+
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService;
@@ -301,6 +305,43 @@ class WorkflowRuntimeRepositoryTest {
                 .filter(t->t.nodeKey().equals("end")).findFirst().orElseThrow();
         var terminal=repo.advanceGraphToken(tenant,run.runId(),end.tokenId(),"end","END",java.util.List.of());
         assertTrue(terminal.runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED'"));
+    }
+
+    @Test
+    void graphCoordinatorAdvancesStartExclusiveGatewayAndEndFromPersistedVariables() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','graph-coordinator-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        GraphPlan plan=new GraphPlan(1,"ci","graph-coordinator","1","test-hash",
+                java.util.List.of(
+                        new GraphPlan.Node("start","Start",GraphPlan.Kind.START,"start",null,null,null,null,null,null),
+                        new GraphPlan.Node("choice","Choice",GraphPlan.Kind.SPLIT_XOR,"exclusiveGateway",null,null,null,null,null,null),
+                        new GraphPlan.Node("end-a","End A",GraphPlan.Kind.END,"end",null,null,null,null,null,null),
+                        new GraphPlan.Node("end-b","End B",GraphPlan.Kind.END,"end",null,null,null,null,null,null)),
+                java.util.List.of(
+                        new GraphPlan.Edge("start-choice","start","choice",null,false),
+                        new GraphPlan.Edge("choice-a","choice","end-a","takeA == true",false),
+                        new GraphPlan.Edge("choice-b","choice","end-b",null,true)));
+        var run=repo.createRun(tenant,"graph-coordinator-"+UUID.randomUUID(),"CREATE","{}",
+                "graph-coordinator-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(plan),
+                "{\"takeA\":true}","start");
+        repo.startRun(tenant,run.runId());
+
+        var coordinator=new GraphCoordinator(repo);
+        var summary=coordinator.advance(tenant,run.runId());
+        assertTrue(summary.runCompleted());
+        assertEquals(3,summary.controlTokensAdvanced());
+        assertEquals(3,summary.successorTokensCreated());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND node_key='end-a' AND token_state='CONSUMED'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND node_key='end-b'"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
                 tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED'"));
     }
