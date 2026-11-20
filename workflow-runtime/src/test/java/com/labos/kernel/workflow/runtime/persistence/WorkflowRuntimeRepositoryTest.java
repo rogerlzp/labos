@@ -302,6 +302,10 @@ class WorkflowRuntimeRepositoryTest {
         assertEquals(2,joinTokens.size());
         var joinA=joinTokens.get(0);
         var joinB=joinTokens.get(1);
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,()->repo.advanceGraphToken(
+                tenant,run.runId(),joinA.tokenId(),"join","JOIN",java.util.List.of("end"),"not-the-gateway"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND token_id='"+joinA.tokenId()+"' AND token_state='READY'"));
         var firstArrival=repo.advanceGraphToken(tenant,run.runId(),joinA.tokenId(),
                 "join","JOIN",java.util.List.of("end"),"join");
         assertEquals(0,firstArrival.tokensCreated());
