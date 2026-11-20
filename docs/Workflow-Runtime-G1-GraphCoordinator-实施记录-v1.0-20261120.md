@@ -44,7 +44,7 @@
 - TASK / BUILTIN Token 留给既有 Worker 执行路径，不在 Coordinator 中直接执行。
 - Run 不处于 RUNNING + OPEN 时保持不推进。
 
-GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用设备，不做分布式协调。
+GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用设备，不做分布式协调。WorkflowRunFactory 在创建 Run 前调用 `GraphCoordinator.validateGraphPlan`；Coordinator 推进时还会对持久化 snapshot 再校验一次。
 
 ## 2. 网关语义
 
