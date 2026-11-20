@@ -158,38 +158,38 @@ class BpmnGraphCompilerTest {
     }
 
     @Test void validatesExplicitGatewayDirectionAgainstTopology() {
-        String diverging=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\\"g\\"/>",
-                "<bpmn:parallelGateway id=\\"g\\" gatewayDirection=\\"Diverging\\"/>");
+        String diverging=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\"g\"/>",
+                "<bpmn:parallelGateway id=\"g\" gatewayDirection=\"Diverging\"/>");
         assertEquals(GraphPlan.Kind.SPLIT_PARALLEL,compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",diverging,Map.of())).nodes().stream()
                 .filter(n->n.key().equals("g")).findFirst().orElseThrow().kind());
 
-        String converging=gatewayXml(2,1).replace("<bpmn:parallelGateway id=\\"g\\"/>",
-                "<bpmn:parallelGateway id=\\"g\\" gatewayDirection=\\"Converging\\"/>");
+        String converging=gatewayXml(2,1).replace("<bpmn:parallelGateway id=\"g\"/>",
+                "<bpmn:parallelGateway id=\"g\" gatewayDirection=\"Converging\"/>");
         assertEquals(GraphPlan.Kind.JOIN_PARALLEL,compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",converging,Map.of())).nodes().stream()
                 .filter(n->n.key().equals("g")).findFirst().orElseThrow().kind());
 
-        String divergingOnJoin=gatewayXml(2,1).replace("<bpmn:parallelGateway id=\\"g\\"/>",
-                "<bpmn:parallelGateway id=\\"g\\" gatewayDirection=\\"Diverging\\"/>");
+        String divergingOnJoin=gatewayXml(2,1).replace("<bpmn:parallelGateway id=\"g\"/>",
+                "<bpmn:parallelGateway id=\"g\" gatewayDirection=\"Diverging\"/>");
         IllegalArgumentException divergingEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",divergingOnJoin,Map.of())));
         assertTrue(divergingEx.getMessage().contains("Gateway direction Diverging conflicts with topology"));
 
-        String convergingOnSplit=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\\"g\\"/>",
-                "<bpmn:parallelGateway id=\\"g\\" gatewayDirection=\\"Converging\\"/>");
+        String convergingOnSplit=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\"g\"/>",
+                "<bpmn:parallelGateway id=\"g\" gatewayDirection=\"Converging\"/>");
         IllegalArgumentException convergingEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",convergingOnSplit,Map.of())));
         assertTrue(convergingEx.getMessage().contains("Gateway direction Converging conflicts with topology"));
 
-        String mixed=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\\"g\\"/>",
-                "<bpmn:parallelGateway id=\\"g\\" gatewayDirection=\\"Mixed\\"/>");
+        String mixed=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\"g\"/>",
+                "<bpmn:parallelGateway id=\"g\" gatewayDirection=\"Mixed\"/>");
         IllegalArgumentException mixedEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",mixed,Map.of())));
         assertTrue(mixedEx.getMessage().contains("Gateway direction Mixed is unsupported in V1"));
 
-        String unknown=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\\"g\\"/>",
-                "<bpmn:parallelGateway id=\\"g\\" gatewayDirection=\\"Sideways\\"/>");
+        String unknown=gatewayXml(1,2).replace("<bpmn:parallelGateway id=\"g\"/>",
+                "<bpmn:parallelGateway id=\"g\" gatewayDirection=\"Sideways\"/>");
         IllegalArgumentException unknownEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",unknown,Map.of())));
         assertTrue(unknownEx.getMessage().contains("Unsupported gatewayDirection"));
