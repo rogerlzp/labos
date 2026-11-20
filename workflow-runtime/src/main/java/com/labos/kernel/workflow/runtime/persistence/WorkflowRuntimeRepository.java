@@ -828,6 +828,11 @@ public final class WorkflowRuntimeRepository {
                 ON r.tenant_id=a.tenant_id AND r.run_id=a.run_id
              WHERE a.tenant_id=? AND a.run_id=? AND r.status='RUNNING'
                AND a.activation_state='SUCCEEDED' AND t.token_state='CONSUMED'
+               AND a.current_attempt_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM workflow_runtime.node_attempt completed_attempt
+                            WHERE completed_attempt.tenant_id=a.tenant_id
+                              AND completed_attempt.attempt_id=a.current_attempt_id
+                              AND completed_attempt.attempt_state='SUCCEEDED')
                AND NOT EXISTS (
                    SELECT 1 FROM workflow_runtime.execution_token child
                     WHERE child.tenant_id=t.tenant_id AND child.parent_token_id=t.token_id
@@ -905,6 +910,7 @@ public final class WorkflowRuntimeRepository {
                     ON t.tenant_id=a.tenant_id AND t.token_id=a.token_id
                  WHERE a.tenant_id=? AND a.run_id=? AND a.activation_id=?
                    AND a.activation_state='SUCCEEDED' AND t.token_state='CONSUMED'
+                   AND a.current_attempt_id IS NOT NULL
                  FOR UPDATE OF a,t
                 """,(rs,n)->new CompletedGraphActivation(rs.getObject(1,UUID.class),
                     rs.getObject(2,UUID.class),rs.getString(3),rs.getObject(4,UUID.class),
