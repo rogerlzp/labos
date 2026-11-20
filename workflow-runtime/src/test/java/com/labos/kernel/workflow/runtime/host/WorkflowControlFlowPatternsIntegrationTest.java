@@ -477,4 +477,142 @@ class WorkflowControlFlowPatternsIntegrationTest {
             assertEquals(List.of("step_a", "step_b", "step_c"), executed);
         }
     }
+
+    @Test
+    void legacyDollarBraceMultiBranchXorRoutesSingleMatchingBranchAndRejectsUnsafeExpression() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        DriverManagerDataSource ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        UUID tenant = createTenant(ds, "flow-legacy-xor");
+
+        String multiXorBpmn = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="Proc_MultiXor" isExecutable="true">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="init_var" protocolName="InitVar" resource="10"/>
+                    <bpmn:exclusiveGateway id="gw_split" gatewayDirection="Diverging" default="f_def"/>
+                    <bpmn:task id="branch_a" protocolName="OpA" resource="10"/>
+                    <bpmn:task id="branch_b_1" protocolName="OpB1" resource="10"/>
+                    <bpmn:task id="branch_b_2" protocolName="OpB2" resource="10"/>
+                    <bpmn:task id="branch_c" protocolName="OpC" resource="10"/>
+                    <bpmn:task id="branch_default" protocolName="OpDef" resource="10"/>
+                    <bpmn:exclusiveGateway id="gw_merge" gatewayDirection="Converging"/>
+                    <bpmn:task id="after_merge" protocolName="Finish" resource="10"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f0" sourceRef="start" targetRef="init_var"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="init_var" targetRef="gw_split"/>
+                    <bpmn:sequenceFlow id="f_a" sourceRef="gw_split" targetRef="branch_a">
+                      <bpmn:conditionExpression>${mode} == 'A'</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="f_b" sourceRef="gw_split" targetRef="branch_b_1">
+                      <bpmn:conditionExpression>${mode} == 'B'</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="f_c" sourceRef="gw_split" targetRef="branch_c">
+                      <bpmn:conditionExpression>${mode} == 'C'</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="f_def" sourceRef="gw_split" targetRef="branch_default"/>
+                    <bpmn:sequenceFlow id="fb12" sourceRef="branch_b_1" targetRef="branch_b_2"/>
+                    <bpmn:sequenceFlow id="fa_m" sourceRef="branch_a" targetRef="gw_merge"/>
+                    <bpmn:sequenceFlow id="fb_m" sourceRef="branch_b_2" targetRef="gw_merge"/>
+                    <bpmn:sequenceFlow id="fc_m" sourceRef="branch_c" targetRef="gw_merge"/>
+                    <bpmn:sequenceFlow id="fd_m" sourceRef="branch_default" targetRef="gw_merge"/>
+                    <bpmn:sequenceFlow id="fm_fin" sourceRef="gw_merge" targetRef="after_merge"/>
+                    <bpmn:sequenceFlow id="ffin_end" sourceRef="after_merge" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+
+        String unsafeLegacyBpmn = multiXorBpmn.replace("${mode} == 'A'", "${1+2} == 3");
+
+        Map<Long, String> wfMap = Map.of(701L, multiXorBpmn, 702L, unsafeLegacyBpmn);
+        var legacySource = new com.labos.kernel.workflow.runtime.definition.LegacyKernelWorkflowDefinitionSource(
+                id -> com.labos.kernel.workflow.runtime.definition.LegacyKernelWorkflowDefinitionSource.TENANT_KEY_PREFIX + "77",
+                (legacyTenantId, workflowId) -> new com.labos.kernel.workflow.runtime.definition.LegacyKernelWorkflowDefinitionSource.LegacyDefinition(
+                        "v1", wfMap.get(workflowId), Map.of()));
+        var factory = new com.labos.kernel.workflow.runtime.definition.WorkflowRunFactory(
+                legacySource, new BpmnGraphCompiler(), repo);
+
+        // Unsafe ${1+2} must fail closed at run creation time!
+        assertThrows(IllegalArgumentException.class, () -> factory.create(
+                tenant, 702L, "unsafe-xor-" + UUID.randomUUID(), "{}", "{}"));
+
+        Map<UUID, String> modeByRun = new java.util.concurrent.ConcurrentHashMap<>();
+        Map<UUID, CopyOnWriteArrayList<String>> executedByRun = new java.util.concurrent.ConcurrentHashMap<>();
+        CountDownLatch b1Started = new CountDownLatch(1);
+        CountDownLatch allowB1Finish = new CountDownLatch(1);
+
+        try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
+                hostConfig(tempDir.resolve("legacy-xor.lock"), "legacy-xor-host", tenant),
+                repo,
+                node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                        "lxor-cap-" + tenant + "-" + node.key(), 4, "PURE", "q", Duration.ofSeconds(30), "{}"),
+                node -> Optional.of((req, ctx) -> {
+                    executedByRun.computeIfAbsent(req.runId(), k -> new CopyOnWriteArrayList<>()).add(req.nodeKey());
+                    if ("init_var".equals(req.nodeKey())) {
+                        String m = modeByRun.get(req.runId());
+                        String jsonVal = "\"" + m + "\"";
+                        return new WorkerTaskHandler.TaskResult("out", "{\"mode\":" + jsonVal + "}", Map.of("mode", jsonVal));
+                    }
+                    if ("branch_b_1".equals(req.nodeKey())) {
+                        b1Started.countDown();
+                        assertTrue(allowB1Finish.await(8, TimeUnit.SECONDS));
+                    }
+                    return WorkerTaskHandler.TaskResult.of("out", "{}");
+                }))) {
+            host.start();
+
+            // Run A: mode='A' -> ONLY branch_a + after_merge
+            var runA = factory.create(tenant, 701L, "lxor-a-" + UUID.randomUUID(), "{}", "{}");
+            modeByRun.put(runA.runId(), "A");
+            host.startRun(tenant, runA.runId()).get(5, TimeUnit.SECONDS);
+            awaitCondition(Duration.ofSeconds(8), () -> "SUCCEEDED".equals(
+                    host.getRunOverview(tenant, runA.runId()).orElseThrow().status()), "Run A SUCCEEDED");
+            assertEquals(List.of("init_var", "branch_a", "after_merge"), executedByRun.get(runA.runId()));
+
+            // Run B: mode='B' + mid-branch PAUSE -> RESUME -> ONLY branch_b_1 -> PAUSE -> RESUME -> branch_b_2 + after_merge
+            var runB = factory.create(tenant, 701L, "lxor-b-" + UUID.randomUUID(), "{}", "{}");
+            modeByRun.put(runB.runId(), "B");
+            host.startRun(tenant, runB.runId()).get(5, TimeUnit.SECONDS);
+            assertTrue(b1Started.await(8, TimeUnit.SECONDS), "branch_b_1 must start");
+            host.requestPause(tenant, runB.runId());
+            allowB1Finish.countDown();
+            awaitCondition(Duration.ofSeconds(8), () -> {
+                var ov = host.getRunOverview(tenant, runB.runId()).orElseThrow();
+                return "PAUSED".equals(ov.status()) && "PAUSE".equals(ov.controlGate())
+                        && host.healthSnapshot().activeLocalWorkers() == 0;
+            }, "Run B must converge to PAUSED after branch_b_1");
+            assertEquals(List.of("init_var", "branch_b_1"), executedByRun.get(runB.runId()));
+            host.resumeRun(tenant, runB.runId()).get(5, TimeUnit.SECONDS);
+            awaitCondition(Duration.ofSeconds(8), () -> "SUCCEEDED".equals(
+                    host.getRunOverview(tenant, runB.runId()).orElseThrow().status()), "Run B SUCCEEDED after RESUME");
+            assertEquals(List.of("init_var", "branch_b_1", "branch_b_2", "after_merge"), executedByRun.get(runB.runId()));
+
+            // Run D: mode='UNKNOWN' -> ONLY default branch_default + after_merge
+            var runD = factory.create(tenant, 701L, "lxor-def-" + UUID.randomUUID(), "{}", "{}");
+            modeByRun.put(runD.runId(), "OTHER");
+            host.startRun(tenant, runD.runId()).get(5, TimeUnit.SECONDS);
+            awaitCondition(Duration.ofSeconds(8), () -> "SUCCEEDED".equals(
+                    host.getRunOverview(tenant, runD.runId()).orElseThrow().status()), "Run D default SUCCEEDED");
+            assertEquals(List.of("init_var", "branch_default", "after_merge"), executedByRun.get(runD.runId()));
+
+            // Verify stored definition_hash in definition_snapshot matches exact SHA-256 of UNMODIFIED original XML!
+            String expectedShaHex = GraphPlanCodec.sha256(multiXorBpmn);
+            try (var c = ds.getConnection();
+                 var ps = c.prepareStatement(
+                         "SELECT encode(ds.definition_hash, 'hex') "
+                                 + "FROM workflow_runtime.workflow_run r "
+                                 + "JOIN workflow_runtime.definition_snapshot ds "
+                                 + "  ON ds.tenant_id = r.tenant_id AND ds.definition_id = r.definition_id "
+                                 + "WHERE r.tenant_id = ? AND r.run_id = ?")) {
+                ps.setObject(1, tenant);
+                ps.setObject(2, runA.runId());
+                try (var rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    assertEquals(expectedShaHex, rs.getString(1),
+                            "definition_hash must reflect the unmodified original BPMN XML");
+                }
+            }
+        }
+    }
 }

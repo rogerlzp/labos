@@ -54,6 +54,6 @@ public final class LegacyKernelWorkflowDefinitionSource implements WorkflowDefin
         LegacyDefinition definition=reader.load(legacyTenantId,workflowId);
         if(definition==null) return null;
         return new WorkflowDefinition(runtimeTenantId,workflowId,definition.version(),
-                definition.bpmnXml(),definition.nodeMetadata());
+                definition.bpmnXml(),definition.nodeMetadata(),true);
     }
 }

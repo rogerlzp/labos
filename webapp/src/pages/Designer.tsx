@@ -1942,6 +1942,352 @@ function WorkflowVarsCard({ wfId }: { wfId: number }) {
   );
 }
 
+type FlowCondOp = '==' | '!=' | '>' | '>=' | '<' | '<=';
+
+function parseSimpleFlowCondition(expr: string): { varName: string; op: FlowCondOp; value: string } | null {
+  const s = expr.trim();
+  if (!s || s.includes('&&') || s.includes('||')) return null;
+  const m = s.match(/^(?:\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}|([A-Za-z_][A-Za-z0-9_]*))\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+  if (!m) return null;
+  const varName = m[1] || m[2];
+  const op = m[3] as FlowCondOp;
+  let raw = m[4].trim();
+  if ((raw.startsWith("'") && raw.endsWith("'") && raw.length >= 2)
+      || (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2)) {
+    raw = raw.slice(1, -1).replace(/\\(['"\\])/g, '$1');
+  }
+  return { varName, op, value: raw };
+}
+
+function formatFlowCondition(varName: string, varType: string | undefined, op: FlowCondOp, rawValue: string): string {
+  const v = rawValue.trim();
+  if (!varName || !v) return '';
+  if (varType === 'boolean') {
+    const boolLit = v.toLowerCase() === 'false' ? 'false' : 'true';
+    return `\${${varName}} ${op} ${boolLit}`;
+  }
+  if (varType === 'number' && /^-?\d+(\.\d+)?$/.test(v)) {
+    return `\${${varName}} ${op} ${v}`;
+  }
+  const escaped = v.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return `\${${varName}} ${op} '${escaped}'`;
+}
+
+/**
+ * 连线（特别是异或网关分叉出边）的条件配置卡片：
+ * 变量严格从「当前流程已创建的变量」下拉选择，而不是手打；
+ * 若尚未创建变量，可直接在此处点击「新建变量」建完后立即选入下拉框。
+ * 生成 `${var} == ...` 表达式，同时兼容旧 GraphRunner/Preflight 与新 Workflow Runtime。
+ */
+function SequenceFlowConditionCard({
+  wfId,
+  flowCond,
+  setFlowCond,
+  flowDefault,
+  setFlowDefault,
+  flowSrcGateway,
+  saving,
+  onSave,
+}: {
+  wfId: number;
+  flowCond: string;
+  setFlowCond: (v: string) => void;
+  flowDefault: boolean;
+  setFlowDefault: (v: boolean) => void;
+  flowSrcGateway: boolean;
+  saving: boolean;
+  onSave: () => void;
+}) {
+  const t = useT();
+  const ro = useDesignOnly();
+  const qc = useQueryClient();
+
+  const varsQ = useQuery({
+    queryKey: ['workflow-vars', String(wfId)],
+    queryFn: () => apiFetch(`/api/workflows/${wfId}/variables`).then((r) => r.json()) as Promise<{
+      items: Array<{ name: string; type?: string; defaultValue?: string | null; description?: string | null }>;
+    }>,
+  });
+  const items = varsQ.data?.items ?? [];
+
+  const parsed = parseSimpleFlowCondition(flowCond);
+  const [builderVar, setBuilderVar] = useState<string>(parsed?.varName ?? '');
+  const [builderOp, setBuilderOp] = useState<FlowCondOp>(parsed?.op ?? '==');
+  const [builderVal, setBuilderVal] = useState<string>(parsed?.value ?? '');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newVarForm, setNewVarForm] = useState({
+    name: '', type: 'string', defaultValue: '', description: '',
+  });
+
+  useEffect(() => {
+    const p = parseSimpleFlowCondition(flowCond);
+    if (p) {
+      setBuilderVar(p.varName);
+      setBuilderOp(p.op);
+      setBuilderVal(p.value);
+    } else {
+      setBuilderVar('');
+      setBuilderOp('==');
+      setBuilderVal('');
+    }
+  }, [flowCond]);
+
+  const selectedVarMeta = items.find((v) => v.name === builderVar);
+  const selectedVarExists = !builderVar || Boolean(selectedVarMeta);
+
+  const applyBuilder = (nextVar: string, nextOp: FlowCondOp, nextVal: string) => {
+    setBuilderVar(nextVar);
+    setBuilderOp(nextOp);
+    setBuilderVal(nextVal);
+    if (!nextVar) {
+      return;
+    }
+    const meta = items.find((v) => v.name === nextVar);
+    const expr = formatFlowCondition(nextVar, meta?.type, nextOp, nextVal);
+    if (expr) {
+      setFlowCond(expr);
+    }
+  };
+
+  const createVariable = async () => {
+    const name = newVarForm.name.trim();
+    if (!name) {
+      message.error(t('variables.nameRequired'));
+      return;
+    }
+    setCreating(true);
+    try {
+      const r = await apiFetch(`/api/workflows/${wfId}/variables`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          type: newVarForm.type,
+          defaultValue: newVarForm.defaultValue,
+          description: newVarForm.description,
+        }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        message.error(j.error ?? t('variables.saveFailed'));
+        return;
+      }
+      message.success(t('designer.vars.saved'));
+      const createdType = newVarForm.type;
+      const initialVal = newVarForm.defaultValue.trim();
+      setCreateOpen(false);
+      setNewVarForm({ name: '', type: 'string', defaultValue: '', description: '' });
+      await qc.invalidateQueries({ queryKey: ['workflow-vars'] });
+      await qc.invalidateQueries({ queryKey: ['vars'] });
+      setBuilderVar(name);
+      const nextOp: FlowCondOp = createdType === 'boolean' && builderOp !== '==' && builderOp !== '!=' ? '==' : builderOp;
+      setBuilderOp(nextOp);
+      if (initialVal) {
+        setBuilderVal(initialVal);
+        setFlowCond(formatFlowCondition(name, createdType, nextOp, initialVal));
+      }
+    } catch (e) {
+      message.error(String(e));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const opOptions: Array<{ value: FlowCondOp; label: string }> = selectedVarMeta?.type === 'boolean'
+    ? [
+        { value: '==', label: '==' },
+        { value: '!=', label: '!=' },
+      ]
+    : [
+        { value: '==', label: '==' },
+        { value: '!=', label: '!=' },
+        { value: '>', label: '>' },
+        { value: '>=', label: '>=' },
+        { value: '<', label: '<' },
+        { value: '<=', label: '<=' },
+      ];
+
+  return (
+    <Card size="small" title={t('designer.flow.title')}
+      extra={<Button size="small" type="primary" loading={saving} {...ro} onClick={onSave}>
+        {t('designer.action.save')}
+      </Button>}>
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {t('designer.flow.condition')}
+        </Typography.Text>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+          <Typography.Text style={{ fontSize: 12, fontWeight: 500 }}>
+            {t('designer.flow.varBuilderTitle')}
+          </Typography.Text>
+          <Button size="small" type="link" style={{ padding: 0 }} disabled={ro.disabled}
+            onClick={() => setCreateOpen(true)}>
+            + {t('designer.vars.new')}
+          </Button>
+        </div>
+
+        {items.length === 0 ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={t('designer.flow.noVarsTip')}
+            action={
+              <Button size="small" type="primary" disabled={ro.disabled}
+                onClick={() => setCreateOpen(true)}>
+                {t('designer.vars.new')}
+              </Button>
+            }
+          />
+        ) : (
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            <Select
+              size="small"
+              style={{ width: '100%' }}
+              showSearch
+              allowClear
+              disabled={ro.disabled}
+              placeholder={t('designer.flow.varSelectPlaceholder')}
+              value={selectedVarMeta ? builderVar : undefined}
+              onChange={(v: string | undefined) => {
+                const nextVar = v ?? '';
+                if (!nextVar) {
+                  setBuilderVar('');
+                  setBuilderVal('');
+                  return;
+                }
+                const meta = items.find((item) => item.name === nextVar);
+                const nextOp: FlowCondOp = meta?.type === 'boolean' && builderOp !== '==' && builderOp !== '!='
+                  ? '=='
+                  : builderOp;
+                const nextVal = meta?.type === 'boolean'
+                  ? (builderVal === 'false' ? 'false' : 'true')
+                  : builderVal;
+                applyBuilder(nextVar, nextOp, nextVal);
+              }}
+              options={items.map((v) => ({
+                value: v.name,
+                label: (
+                  <span>
+                    <strong>{v.name}</strong>
+                    <Tag style={{ marginLeft: 4, fontSize: 10 }}>{v.type ?? 'number'}</Tag>
+                    {v.defaultValue != null && v.defaultValue !== '' ? (
+                      <span style={{ color: '#94a3b8', fontSize: 11 }}>
+                        {t('designer.vars.initialValue', { v: v.defaultValue })}
+                      </span>
+                    ) : null}
+                  </span>
+                ),
+              }))}
+              filterOption={(input, opt) =>
+                String(opt?.value ?? '').toLowerCase().includes(input.toLowerCase())}
+            />
+
+            {!selectedVarExists && (
+              <Typography.Text type="warning" style={{ fontSize: 11 }}>
+                {t('designer.flow.missingVarTip', { name: builderVar })}
+              </Typography.Text>
+            )}
+
+            <div style={{ display: 'flex', gap: 6 }}>
+              <Select
+                size="small"
+                style={{ width: 78, flexShrink: 0 }}
+                disabled={ro.disabled || !selectedVarMeta}
+                value={builderOp}
+                onChange={(v: FlowCondOp) => applyBuilder(builderVar, v, builderVal)}
+                options={opOptions}
+              />
+              {selectedVarMeta?.type === 'boolean' ? (
+                <Select
+                  size="small"
+                  style={{ flex: 1 }}
+                  disabled={ro.disabled || !selectedVarMeta}
+                  placeholder={t('designer.flow.valuePlaceholderBool')}
+                  value={builderVal === 'true' || builderVal === 'false' ? builderVal : undefined}
+                  onChange={(v: string) => applyBuilder(builderVar, builderOp, v)}
+                  options={[
+                    { value: 'true', label: 'true' },
+                    { value: 'false', label: 'false' },
+                  ]}
+                />
+              ) : (
+                <Input
+                  size="small"
+                  style={{ flex: 1 }}
+                  disabled={ro.disabled || !selectedVarMeta}
+                  placeholder={selectedVarMeta?.type === 'number'
+                    ? t('designer.flow.valuePlaceholderNumber')
+                    : t('designer.flow.valuePlaceholderString')}
+                  value={builderVal}
+                  onChange={(e) => applyBuilder(builderVar, builderOp, e.target.value)}
+                />
+              )}
+            </div>
+          </Space>
+        )}
+
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.flow.rawExprLabel')}
+        </Typography.Text>
+        <Input.TextArea
+          size="small" rows={2}
+          disabled={ro.disabled}
+          placeholder={'${mode} == \'A\''}
+          value={flowCond}
+          onChange={(e) => setFlowCond(e.target.value)}
+        />
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {t('designer.flow.hint')}
+        </Typography.Text>
+        <Checkbox
+          checked={flowDefault}
+          disabled={ro.disabled || !flowSrcGateway}
+          onChange={(e) => setFlowDefault(e.target.checked)}
+        >
+          {t('designer.flow.default')}
+        </Checkbox>
+        {!flowSrcGateway && (
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            {t('designer.flow.notGateway')}
+          </Typography.Text>
+        )}
+      </Space>
+
+      <Modal
+        open={createOpen} title={t('designer.vars.new')}
+        okText={t('variables.save')} cancelText={t('variables.cancel')}
+        confirmLoading={creating} onOk={createVariable} onCancel={() => setCreateOpen(false)}
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Input
+            placeholder={t('designer.vars.ph.name')} value={newVarForm.name}
+            onChange={(e) => setNewVarForm({ ...newVarForm, name: e.target.value })}
+          />
+          <Select
+            style={{ width: '100%' }} value={newVarForm.type}
+            onChange={(v: string) => setNewVarForm({ ...newVarForm, type: v })}
+            options={[
+              { value: 'string', label: 'string' },
+              { value: 'number', label: 'number' },
+              { value: 'boolean', label: 'boolean' },
+            ]}
+          />
+          <Input
+            placeholder={t('designer.vars.ph.default')} value={newVarForm.defaultValue}
+            onChange={(e) => setNewVarForm({ ...newVarForm, defaultValue: e.target.value })}
+          />
+          <Input
+            placeholder={t('designer.vars.ph.desc')} value={newVarForm.description}
+            onChange={(e) => setNewVarForm({ ...newVarForm, description: e.target.value })}
+          />
+        </Space>
+      </Modal>
+    </Card>
+  );
+}
+
 /**
  * 时间条：把每个节点画成一根按时间比例定位的条。
  *
@@ -4415,37 +4761,16 @@ export default function DesignerPage() {
             </Space>
           </Card>
         ) : selType === 'bpmn:SequenceFlow' ? (
-          <Card size="small" title={t('designer.flow.title')}
-            extra={<Button size="small" type="primary" loading={saving} {...ro} onClick={saveFlow}>
-              {t('designer.action.save')}
-            </Button>}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {t('designer.flow.condition')}
-              </Typography.Text>
-              <Input.TextArea
-                size="small" rows={2}
-                placeholder={'${counter} > 3'}
-                value={flowCond}
-                onChange={(e) => setFlowCond(e.target.value)}
-              />
-              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                {t('designer.flow.hint')}
-              </Typography.Text>
-              <Checkbox
-                checked={flowDefault}
-                disabled={!flowSrcGateway}
-                onChange={(e) => setFlowDefault(e.target.checked)}
-              >
-                {t('designer.flow.default')}
-              </Checkbox>
-              {!flowSrcGateway && (
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  {t('designer.flow.notGateway')}
-                </Typography.Text>
-              )}
-            </Space>
-          </Card>
+          <SequenceFlowConditionCard
+            wfId={wfId}
+            flowCond={flowCond}
+            setFlowCond={setFlowCond}
+            flowDefault={flowDefault}
+            setFlowDefault={setFlowDefault}
+            flowSrcGateway={flowSrcGateway}
+            saving={saving}
+            onSave={saveFlow}
+          />
         ) : !plan ? (
           <Card size="small">
             <Empty

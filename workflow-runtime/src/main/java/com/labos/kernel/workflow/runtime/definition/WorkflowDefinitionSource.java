@@ -13,13 +13,19 @@ public interface WorkflowDefinitionSource {
 
     record NodeMetadata(String capabilityCode, Long workflowNodeId) {}
     record WorkflowDefinition(UUID runtimeTenantId, long workflowId, String version,
-                              String bpmnXml, Map<String, NodeMetadata> nodeMetadata) {
+                              String bpmnXml, Map<String, NodeMetadata> nodeMetadata,
+                              boolean normalizeLegacyConditions) {
         public WorkflowDefinition {
             Objects.requireNonNull(runtimeTenantId, "runtimeTenantId");
             if(workflowId<=0) throw new IllegalArgumentException("workflowId must be positive");
             if(version==null || version.isBlank()) throw new IllegalArgumentException("definition version is required");
             if(bpmnXml==null || bpmnXml.isBlank()) throw new IllegalArgumentException("BPMN XML is required");
             nodeMetadata=Map.copyOf(Objects.requireNonNull(nodeMetadata,"nodeMetadata"));
+        }
+
+        public WorkflowDefinition(UUID runtimeTenantId, long workflowId, String version,
+                                  String bpmnXml, Map<String, NodeMetadata> nodeMetadata) {
+            this(runtimeTenantId, workflowId, version, bpmnXml, nodeMetadata, false);
         }
     }
 }
