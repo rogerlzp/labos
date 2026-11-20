@@ -23,6 +23,7 @@ import java.util.UUID;
  *
  * <p>Every state mutation is delegated to one Repository transaction. This class contains
  * no SQL, device calls, worker scheduling, thread creation or distributed coordination.
+ * Callers must serialize signals for the same Run through its existing process-local SerialMailbox.
  */
 public final class GraphCoordinator {
     private static final ObjectMapper JSON = new ObjectMapper();
