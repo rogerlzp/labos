@@ -35,7 +35,7 @@ class BpmnGraphCompilerTest {
         GraphPlan.Node task=plan.nodes().stream().filter(n->n.key().equals("t")).findFirst().orElseThrow();
         assertEquals("LIQUID_HANDLING",task.capabilityCode());
         assertEquals(9L,task.workflowNodeId());
-        assertTrue(GraphPlanCodec.toJson(plan).contains("\\"condition\\""));
+        assertTrue(GraphPlanCodec.toJson(plan).contains("\"condition\""));
         assertEquals(GraphPlanCodec.sha256(xml),plan.bpmnSha256());
     }
 
