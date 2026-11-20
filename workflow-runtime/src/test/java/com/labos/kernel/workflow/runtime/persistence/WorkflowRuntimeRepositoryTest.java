@@ -443,6 +443,31 @@ class WorkflowRuntimeRepositoryTest {
                 tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED'"));
     }
 
+    @Test
+    void graphRunCannotSucceedWhileFailedTokenRemains() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','graph-failed-token-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"failed-token-"+UUID.randomUUID(),"CREATE","{}",
+                "failed-token-"+tenant,"1",new byte[32],"ci","{}","{}","end");
+        repo.startRun(tenant,run.runId());
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.execution_token
+                  (tenant_id,run_id,token_state,node_key) VALUES (?,?,'FAILED','failed-branch')
+                """)) {
+            ps.setObject(1,tenant);ps.setObject(2,run.runId());ps.executeUpdate();
+        }
+        var end=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        var result=repo.advanceGraphToken(tenant,run.runId(),end.tokenId(),"end","END",java.util.List.of());
+        assertFalse(result.runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='RUNNING'"));
+    }
+
     private int scalar(DriverManagerDataSource ds, String sql) throws Exception {
         try(Connection c=ds.getConnection(); var st=c.createStatement(); var rs=st.executeQuery(sql)) {
             assertTrue(rs.next()); return rs.getInt(1);
