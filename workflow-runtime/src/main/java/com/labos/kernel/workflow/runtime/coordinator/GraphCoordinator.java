@@ -284,6 +284,26 @@ public final class GraphCoordinator {
                 case JOIN_PARALLEL, JOIN_INCLUSIVE, JOIN_XOR -> exactlyOne(node,edges);
             }
         }
+        for (GraphPlan.Node node : plan.nodes()) {
+            if(node.kind()!=GraphPlan.Kind.SPLIT_PARALLEL && node.kind()!=GraphPlan.Kind.SPLIT_INCLUSIVE) continue;
+            for(GraphPlan.Edge edge : outgoing.getOrDefault(node.key(),List.of())) {
+                rejectNestedSynchronizingSplit(edge.to(),nodes,outgoing,new java.util.HashSet<>());
+            }
+        }
+    }
+
+    private static void rejectNestedSynchronizingSplit(String nodeKey,
+                                                        Map<String,GraphPlan.Node> nodes,
+                                                        Map<String,List<GraphPlan.Edge>> outgoing,
+                                                        java.util.Set<String> visited) {
+        if(!visited.add(nodeKey)) return;
+        GraphPlan.Node node=requireNode(nodes,nodeKey);
+        if(node.kind()==GraphPlan.Kind.JOIN_PARALLEL || node.kind()==GraphPlan.Kind.JOIN_INCLUSIVE
+                || node.kind()==GraphPlan.Kind.END) return;
+        if(node.kind()==GraphPlan.Kind.SPLIT_PARALLEL || node.kind()==GraphPlan.Kind.SPLIT_INCLUSIVE)
+            throw new IllegalStateException("Nested synchronizing Split is not supported in G1: "+node.key());
+        for(GraphPlan.Edge edge : outgoing.getOrDefault(nodeKey,List.of()))
+            rejectNestedSynchronizingSplit(edge.to(),nodes,outgoing,visited);
     }
 
     private static GraphPlan.Node requireNode(Map<String, GraphPlan.Node> nodes, String key) {
