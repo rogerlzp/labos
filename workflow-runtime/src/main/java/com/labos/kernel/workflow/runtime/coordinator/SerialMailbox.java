@@ -25,14 +25,20 @@ public final class SerialMailbox<T> implements AutoCloseable {
     private final ArrayBlockingQueue<Envelope<T>> queue;
     private final Executor executor;
     private final Consumer<T> handler;
+    private final Runnable onIdle;
     private final AtomicBoolean draining = new AtomicBoolean();
     private boolean closed;
 
     public SerialMailbox(int capacity, Executor executor, Consumer<T> handler) {
+        this(capacity, executor, handler, null);
+    }
+
+    public SerialMailbox(int capacity, Executor executor, Consumer<T> handler, Runnable onIdle) {
         if (capacity < 1) throw new IllegalArgumentException("capacity must be >= 1");
         this.queue = new ArrayBlockingQueue<>(capacity);
         this.executor = Objects.requireNonNull(executor, "executor");
         this.handler = Objects.requireNonNull(handler, "handler");
+        this.onIdle = onIdle;
     }
 
     /** Enqueue one message or reject immediately when the bounded mailbox is full. */
@@ -71,15 +77,20 @@ public final class SerialMailbox<T> implements AutoCloseable {
         if (!draining.compareAndSet(false, true)) return;
         try {
             executor.execute(this::drain);
-        } catch (RejectedExecutionException rejected) {
+        } catch (RuntimeException rejected) {
             draining.set(false);
             failPending(rejected);
+        } catch (Error fatal) {
+            draining.set(false);
+            failPending(new IllegalStateException("SerialMailbox executor failed fatally", fatal));
+            throw fatal;
         }
     }
 
     private void drain() {
         while (true) {
             Envelope<T> next;
+            boolean notifyIdle = false;
             synchronized (lock) {
                 if (closed) {
                     draining.set(false);
@@ -89,9 +100,16 @@ public final class SerialMailbox<T> implements AutoCloseable {
                 if (next == null) {
                     draining.set(false);
                     // submit() may have enqueued immediately before draining was cleared.
-                    if (!queue.isEmpty()) scheduleDrain();
-                    return;
+                    if (!queue.isEmpty()) {
+                        scheduleDrain();
+                        return;
+                    }
+                    notifyIdle = (onIdle != null);
                 }
+            }
+            if (next == null) {
+                if (notifyIdle) onIdle.run();
+                return;
             }
             try {
                 handler.accept(next.message());

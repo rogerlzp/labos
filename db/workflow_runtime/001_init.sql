@@ -87,6 +87,7 @@ CREATE TABLE execution_token (
 );
 CREATE INDEX token_ready_idx ON execution_token(tenant_id, run_id, created_at) WHERE token_state='READY';
 CREATE INDEX token_run_state_idx ON execution_token(tenant_id, run_id, token_state);
+CREATE INDEX token_parent_idx ON execution_token(tenant_id, parent_token_id) WHERE parent_token_id IS NOT NULL;
 
 CREATE TABLE node_activation (
   tenant_id uuid NOT NULL,

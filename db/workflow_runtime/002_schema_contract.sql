@@ -52,6 +52,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='split_one_open_per_activation_uq') THEN
     RAISE EXCEPTION 'Missing one-open-Split-per-source-Activation index';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='token_parent_idx') THEN
+    RAISE EXCEPTION 'Missing parent_token_id lookup index on execution_token';
+  END IF;
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema='workflow_runtime' AND (

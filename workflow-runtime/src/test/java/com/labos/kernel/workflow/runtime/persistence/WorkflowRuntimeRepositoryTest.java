@@ -1,6 +1,7 @@
 package com.labos.kernel.workflow.runtime.persistence;
 
 import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
+import com.labos.kernel.workflow.runtime.coordinator.WorkflowRunLifecycleCoordinator;
 import com.labos.kernel.workflow.runtime.graph.GraphPlan;
 import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
 import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
@@ -15,7 +16,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -205,44 +212,29 @@ class WorkflowRuntimeRepositoryTest {
         repo.scheduleRetry(tenant,created.runId(),activation,Instant.now().plusSeconds(5),2,"{\"max\":3}");
         UUID wait=repo.registerWait(tenant,created.runId(),activation,"EVENT","corr-1",
                 Instant.now().plusSeconds(30),"{\"nodeKey\":\"after-wait\"}");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND token_id='"+token+"' AND token_state='WAITING'"));
         assertTrue(repo.closeWait(tenant,created.runId(),wait,true,attempt));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND token_id='"+token+"' AND token_state='CONSUMED'"));
 
-        UUID splitToken=UUID.randomUUID(), sourceActivation=UUID.randomUUID();
-        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
-                INSERT INTO workflow_runtime.execution_token
-                  (tenant_id,token_id,run_id,token_state,node_key) VALUES (?,?,?,'RUNNING','split-source')
-                """)) {
-            ps.setObject(1,tenant);ps.setObject(2,splitToken);ps.setObject(3,created.runId());ps.executeUpdate();
+        var splitToken=repo.findReadyGraphTokens(tenant,created.runId(),10).stream()
+                .filter(t -> t.nodeKey().equals("after-wait")).findFirst().orElseThrow();
+        var splitResult=repo.advanceGraphToken(tenant,created.runId(),splitToken.tokenId(),
+                "after-wait","SPLIT",List.of("branch-a","branch-b"));
+        assertEquals(2,splitResult.tokensCreated());
+        for(var branchToken : repo.findReadyGraphTokens(tenant,created.runId(),10)) {
+            repo.advanceGraphToken(tenant,created.runId(),branchToken.tokenId(),
+                    branchToken.nodeKey(),"SEQUENCE",List.of("join-node"));
         }
-        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
-                INSERT INTO workflow_runtime.node_activation
-                  (tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
-                VALUES (?,?,?, ?,1,'split-source','RUNNING')
-                """)) {
-            ps.setObject(1,tenant);ps.setObject(2,sourceActivation);ps.setObject(3,created.runId());
-            ps.setObject(4,splitToken);ps.executeUpdate();
+        int releasedTokens=0;
+        for(var joinToken : repo.findReadyGraphTokens(tenant,created.runId(),10)) {
+            releasedTokens += repo.advanceGraphToken(tenant,created.runId(),joinToken.tokenId(),
+                    "join-node","JOIN",List.of("after-join"),"join-node").tokensCreated();
         }
-        UUID split=repo.createSplit(tenant,created.runId(),sourceActivation,java.util.List.of("branch-a","branch-b"));
-        for(String branch:java.util.List.of("branch-a","branch-b")) {
-            UUID branchId, branchToken, arrivalActivation=UUID.randomUUID();
-            try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
-                    SELECT b.branch_id,t.token_id FROM workflow_runtime.branch_activation b
-                    JOIN workflow_runtime.execution_token t ON t.tenant_id=b.tenant_id AND t.branch_id=b.branch_id
-                    WHERE b.tenant_id=? AND b.split_id=? AND b.branch_key=?
-                    """)) {
-                ps.setObject(1,tenant);ps.setObject(2,split);ps.setString(3,branch);
-                try(var rs=ps.executeQuery()){assertTrue(rs.next());branchId=rs.getObject(1,UUID.class);branchToken=rs.getObject(2,UUID.class);}
-            }
-            try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
-                    INSERT INTO workflow_runtime.node_activation
-                      (tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
-                    VALUES (?,?,?, ?,1,?,'SUCCEEDED')
-                    """)) {
-                ps.setObject(1,tenant);ps.setObject(2,arrivalActivation);ps.setObject(3,created.runId());
-                ps.setObject(4,branchToken);ps.setString(5,branch);ps.executeUpdate();
-            }
-            assertTrue(repo.arriveBranch(tenant,created.runId(),split,branch,arrivalActivation,"join-node"));
-        }
+        assertEquals(1,releasedTokens);
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.split_activation WHERE tenant_id='"+
+                tenant+"' AND run_id='"+created.runId()+"' AND split_state='CLOSED'"));
 
         UUID loop=UUID.randomUUID();
         try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
@@ -445,6 +437,9 @@ class WorkflowRuntimeRepositoryTest {
         var reservation=repo.reserveCapacity(tenant,run.runId(),"graph-task-capacity",1,
                 "task","PURE",Instant.now().plusSeconds(60));
         repo.dispatchAttempt(tenant,run.runId(),reservation.attemptId(),"worker-q","{}");
+        var dispatchOutbox=repo.beginOutboxSend(tenant,10).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:"+reservation.attemptId())).findFirst().orElseThrow();
+        assertTrue(repo.markOutboxDelivered(tenant,dispatchOutbox.outboxId()));
         repo.acceptAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
         repo.startAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
         repo.completeAttempt(tenant,run.runId(),reservation.attemptId(),"result","{\"value\":42}");
@@ -728,6 +723,429 @@ class WorkflowRuntimeRepositoryTest {
                 tenant+"' AND outbox_id='"+workerMessage.outboxId()+"' AND outbox_state='DEAD_LETTER'"));
         assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id='"+
                 tenant+"' AND dedup_key='dispatch:"+reservation.attemptId()+"' AND outbox_state IN ('PENDING','SENDING')"));
+    }
+
+    @Test
+    void lifecycleCoordinatorHandlesStartIdempotencyTenantIsolationAndMailboxEviction() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource();
+        UUID tenant=UUID.randomUUID(), otherTenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','lc-"+tenant+"','integration')");
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    otherTenant+"','lc-other-"+otherTenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        String xml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan plan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "lc-"+tenant,"1",xml,Map.of()));
+        var run=repo.createRun(tenant,"lc-"+UUID.randomUUID(),"CREATE","{}",
+                "lc-"+tenant,"1",java.util.HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(),GraphPlanCodec.toJson(plan),"{}","start");
+
+        assertTrue(repo.startRunIfCreated(tenant,run.runId()));
+        assertFalse(repo.startRunIfCreated(tenant,run.runId()), "repeated startRunIfCreated on RUNNING+OPEN must be idempotent");
+        assertTrue(repo.isOpenRun(tenant,run.runId()));
+        assertFalse(repo.isOpenRun(otherTenant,run.runId()), "wrong tenant must never see Run as open");
+
+        var executor=Executors.newFixedThreadPool(2);
+        try(var lifecycle=new WorkflowRunLifecycleCoordinator(repo,new GraphCoordinator(repo),executor,8)) {
+            assertThrows(IllegalStateException.class, () -> lifecycle.wake(otherTenant,run.runId()));
+            lifecycle.startRun(tenant,run.runId()).get(5,TimeUnit.SECONDS);
+            long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+            while(lifecycle.activeMailboxCount()!=0 && System.nanoTime()<deadline) Thread.yield();
+            assertEquals(0,lifecycle.activeMailboxCount(),"completed Run mailbox must be reclaimed");
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                    tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED' AND control_gate='CLOSED'"));
+            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                    () -> repo.startRunIfCreated(tenant,run.runId()));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void graphCoordinatorDoesNotStarveControlTokensBehindReadyTasksWithBatchSizeOne() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','starve-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        GraphPlan plan=new GraphPlan(1,"ci","starve","1","hash",
+                List.of(
+                        new GraphPlan.Node("start","Start",GraphPlan.Kind.START,"startEvent",null,null,null,null,null,null),
+                        new GraphPlan.Node("split","Split",GraphPlan.Kind.SPLIT_PARALLEL,"parallelGateway",null,null,null,null,null,null),
+                        new GraphPlan.Node("task1","Task1",GraphPlan.Kind.TASK,"task","P1",1L,null,null,null,null),
+                        new GraphPlan.Node("task2","Task2",GraphPlan.Kind.TASK,"task","P2",2L,null,null,null,null),
+                        new GraphPlan.Node("xor","Xor",GraphPlan.Kind.SPLIT_XOR,"exclusiveGateway",null,null,null,null,null,null),
+                        new GraphPlan.Node("task3","Task3",GraphPlan.Kind.TASK,"task","P3",3L,null,null,null,null),
+                        new GraphPlan.Node("task4","Task4",GraphPlan.Kind.TASK,"task","P4",4L,null,null,null,null),
+                        new GraphPlan.Node("join","Join",GraphPlan.Kind.JOIN_PARALLEL,"parallelGateway",null,null,null,null,null,null),
+                        new GraphPlan.Node("end","End",GraphPlan.Kind.END,"endEvent",null,null,null,null,null,null)),
+                List.of(
+                        new GraphPlan.Edge("e1","start","split",null,false),
+                        new GraphPlan.Edge("e2","split","task1",null,false),
+                        new GraphPlan.Edge("e3","split","task2",null,false),
+                        new GraphPlan.Edge("e4","split","xor",null,false),
+                        new GraphPlan.Edge("e5","xor","task3","goThree == true",false),
+                        new GraphPlan.Edge("e6","xor","task4",null,true),
+                        new GraphPlan.Edge("e7","task1","join",null,false),
+                        new GraphPlan.Edge("e8","task2","join",null,false),
+                        new GraphPlan.Edge("e9","task3","join",null,false),
+                        new GraphPlan.Edge("e10","task4","join",null,false),
+                        new GraphPlan.Edge("e11","join","end",null,false)));
+        GraphCoordinator.validateGraphPlan(plan);
+        var run=repo.createRun(tenant,"starve-"+UUID.randomUUID(),"CREATE","{}",
+                "starve-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(plan),"{\"goThree\":true}","start");
+        repo.startRun(tenant,run.runId());
+
+        // batchSize=1: task1 and task2 stay READY ahead of xor, yet xor MUST still advance to task3!
+        var summary=new GraphCoordinator(repo,1,100).advance(tenant,run.runId());
+        assertEquals(3,summary.controlTokensAdvanced(),"start, split, and xor must all advance despite READY tasks");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND node_key='task3' AND token_state='READY'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND node_key='xor' AND token_state='READY'"));
+    }
+
+    @Test
+    void graphCoordinatorExplicitOverrideMergesWithPersistedInputAndFlowVariables() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','merge-vars-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        String xml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:exclusiveGateway id="choice" default="choice-b"/>
+                    <bpmn:endEvent id="end-a"/>
+                    <bpmn:endEvent id="end-b"/>
+                    <bpmn:sequenceFlow id="s1" sourceRef="start" targetRef="choice"/>
+                    <bpmn:sequenceFlow id="choice-a" sourceRef="choice" targetRef="end-a">
+                      <bpmn:conditionExpression>baseOk == true &amp;&amp; persistedCount == 20 &amp;&amp; overrideFlag == true</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="choice-b" sourceRef="choice" targetRef="end-b"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan plan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "merge-vars-"+tenant,"1",xml,Map.of()));
+        var run=repo.createRun(tenant,"merge-vars-"+UUID.randomUUID(),"CREATE","{}",
+                "merge-vars-"+tenant,"1",java.util.HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(),GraphPlanCodec.toJson(plan),
+                "{\"baseOk\":true,\"persistedCount\":10}","start");
+        repo.startRun(tenant,run.runId());
+        repo.putFlowVariable(tenant,run.runId(),"persistedCount","20");
+
+        var summary=new GraphCoordinator(repo).advance(tenant,run.runId(),Map.of("overrideFlag",true));
+        assertTrue(summary.runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND node_key='end-a' AND token_state='CONSUMED'"));
+    }
+
+    @Test
+    void endBranchDuplicateArrivalFailsClosedAndRunSucceededEventFollowsNodeAdvance() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','end-dup-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"end-dup-"+UUID.randomUUID(),"CREATE","{}",
+                "end-dup-"+tenant,"1",new byte[32],"ci","{}","{}","split");
+        repo.startRun(tenant,run.runId());
+        var splitTok=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        repo.advanceGraphToken(tenant,run.runId(),splitTok.tokenId(),"split","SPLIT",List.of("end-a","end-b"));
+        var tokens=repo.findReadyGraphTokens(tenant,run.runId(),10);
+        var tokA=tokens.stream().filter(t -> t.nodeKey().equals("end-a")).findFirst().orElseThrow();
+        var tokB=tokens.stream().filter(t -> t.nodeKey().equals("end-b")).findFirst().orElseThrow();
+
+        // First branch arrives at END.
+        assertFalse(repo.advanceGraphToken(tenant,run.runId(),tokA.tokenId(),"end-a","END",List.of()).runCompleted());
+
+        // Inject a corrupted duplicate READY token carrying the already-arrived branchId.
+        UUID dupTokenId=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement("""
+                INSERT INTO workflow_runtime.execution_token
+                  (tenant_id,token_id,run_id,token_state,node_key,split_id,branch_id)
+                VALUES (?,?,?,'READY','end-a',?,?)
+                """)) {
+            ps.setObject(1,tenant);ps.setObject(2,dupTokenId);ps.setObject(3,run.runId());
+            ps.setObject(4,tokA.splitId());ps.setObject(5,tokA.branchId());ps.executeUpdate();
+        }
+        assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class,
+                () -> repo.advanceGraphToken(tenant,run.runId(),dupTokenId,"end-a","END",List.of()));
+        // Remove the injected duplicate token so the valid second branch can cleanly complete the Run.
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement(
+                "DELETE FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=?")) {
+            ps.setObject(1,tenant);ps.setObject(2,dupTokenId);ps.executeUpdate();
+        }
+
+        var done=repo.advanceGraphToken(tenant,run.runId(),tokB.tokenId(),"end-b","END",List.of());
+        assertTrue(done.runCompleted());
+        int lastAdvanceSeq=scalar(ds,"SELECT max(event_seq) FROM workflow_runtime.runtime_event WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND event_type='GRAPH_NODE_ADVANCED'");
+        int succeededSeq=scalar(ds,"SELECT max(event_seq) FROM workflow_runtime.runtime_event WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND event_type='RUN_SUCCEEDED'");
+        assertTrue(succeededSeq > lastAdvanceSeq,
+                "RUN_SUCCEEDED event_seq ("+succeededSeq+") must strictly follow final GRAPH_NODE_ADVANCED ("+lastAdvanceSeq+")");
+    }
+
+    @Test
+    void terminalGuardMatrixBlocksRunSuccessWhileLeaseOrInterventionIsActive() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','guard-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"guard-"+UUID.randomUUID(),"CREATE","{}",
+                "guard-"+tenant,"1",new byte[32],"ci","{}","{}","end");
+        repo.startRun(tenant,run.runId());
+        repo.acquireResourceLease(tenant,run.runId(),"centrifuge-1","RUN",run.runId(),
+                Instant.now().plusSeconds(60),"{\"guard\":true}");
+        var endTok=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        var res=repo.advanceGraphToken(tenant,run.runId(),endTok.tokenId(),"end","END",List.of());
+        assertFalse(res.runCompleted(),"ACTIVE resource_lease must prevent Run from becoming SUCCEEDED");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='RUNNING'"));
+    }
+
+    @Test
+    void workerExportedFlowVariablesDriveDownstreamNestedJsonXorRouting() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','export-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        String xml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="read-plate" protocolName="ReadPlate" resource="10"/>
+                    <bpmn:exclusiveGateway id="qc" default="qc-fail"/>
+                    <bpmn:endEvent id="end-pass"/>
+                    <bpmn:endEvent id="end-fail"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="read-plate"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="read-plate" targetRef="qc"/>
+                    <bpmn:sequenceFlow id="qc-pass" sourceRef="qc" targetRef="end-pass">
+                      <bpmn:conditionExpression>readPlate.ok == true &amp;&amp; readPlate.od &gt; 1.0</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="qc-fail" sourceRef="qc" targetRef="end-fail"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan plan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "export-"+tenant,"1",xml,Map.of()));
+        GraphCoordinator.validateGraphPlan(plan);
+        var run=repo.createRun(tenant,"export-"+UUID.randomUUID(),"CREATE","{}",
+                "export-"+tenant,"1",java.util.HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(),GraphPlanCodec.toJson(plan),"{}","start");
+        repo.startRun(tenant,run.runId());
+        var coordinator=new GraphCoordinator(repo);
+        coordinator.advance(tenant,run.runId());
+
+        var res=repo.reserveCapacity(tenant,run.runId(),"export-cap",1,"read-plate","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),res.attemptId(),"worker-q","{}");
+        var outbox=repo.beginOutboxSend(tenant,10).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:"+res.attemptId())).findFirst().orElseThrow();
+        repo.markOutboxDelivered(tenant,outbox.outboxId());
+        repo.acceptAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"worker-1");
+        repo.startAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"worker-1");
+        Map<String,String> exports=Map.of("readPlate","{\"ok\":true,\"od\":1.42}");
+        repo.completeAttempt(tenant,run.runId(),res.attemptId(),"result","{\"ok\":true,\"od\":1.42}",exports);
+        // Identical replay succeeds; conflicting export value is rejected.
+        repo.completeAttempt(tenant,run.runId(),res.attemptId(),"result","{\"ok\":true,\"od\":1.42}",exports);
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,
+                () -> repo.completeAttempt(tenant,run.runId(),res.attemptId(),"result",
+                        "{\"ok\":true,\"od\":1.42}",Map.of("readPlate","{\"ok\":false,\"od\":0.1}")));
+
+        var done=coordinator.advance(tenant,run.runId());
+        assertTrue(done.runCompleted());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND node_key='end-pass' AND token_state='CONSUMED'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND node_key='end-fail'"));
+    }
+
+    @Test
+    void createdAttemptCrashRecoveryAndFailAttemptSeparatePureFromUncertainDeviceSideEffects() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','fail-rec-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        // 1. Crash between reserveCapacity (CREATED) and dispatchAttempt must recover token & release capacity.
+        var createdCrashRun=repo.createRun(tenant,"created-crash-"+UUID.randomUUID(),"CREATE","{}",
+                "created-crash-"+tenant,"1",new byte[32],"ci","{}","{}","task-1");
+        repo.startRun(tenant,createdCrashRun.runId());
+        var createdRes=repo.reserveCapacity(tenant,createdCrashRun.runId(),"created-cap",1,
+                "task-1","PURE",Instant.now().plusSeconds(60));
+        assertEquals(1,scalar(ds,"SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"+
+                tenant+"' AND capacity_key='created-cap'"));
+        var recovery=new WorkerExecutionRecoveryService(repo,new WorkerExecutionRegistry());
+        var startup=recovery.recoverAtStartup(50,"startup-created-test");
+        assertTrue(startup.items().stream().anyMatch(i -> i.candidate().attemptId().equals(createdRes.attemptId())
+                && "SAFE_TO_RETRY".equals(i.result().outcome())));
+        assertEquals(0,scalar(ds,"SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"+
+                tenant+"' AND capacity_key='created-cap'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                tenant+"' AND run_id='"+createdCrashRun.runId()+"' AND token_state='READY'"));
+
+        // 2. Deterministic PURE failAttempt marks Run FAILED and releases capacity.
+        var pureFailRun=repo.createRun(tenant,"pure-fail-"+UUID.randomUUID(),"CREATE","{}",
+                "pure-fail-"+tenant,"1",new byte[32],"ci","{}","{}","pure-task");
+        repo.startRun(tenant,pureFailRun.runId());
+        var pureRes=repo.reserveCapacity(tenant,pureFailRun.runId(),"pure-fail-cap",1,
+                "pure-task","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,pureFailRun.runId(),pureRes.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,pureFailRun.runId(),pureRes.attemptId(),pureRes.dispatchId(),"w1");
+        repo.startAttempt(tenant,pureFailRun.runId(),pureRes.attemptId(),pureRes.dispatchId(),"w1");
+        var pureOutcome=repo.failAttempt(tenant,pureFailRun.runId(),pureRes.attemptId(),"{\"code\":\"CALC_ERR\"}",false);
+        assertEquals("FAILED",pureOutcome.outcome());
+        assertNull(pureOutcome.interventionId());
+        assertEquals(0,scalar(ds,"SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"+
+                tenant+"' AND capacity_key='pure-fail-cap'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+pureFailRun.runId()+"' AND status='FAILED' AND control_gate='CLOSED'"));
+
+        // 3. Failure after SIDE_EFFECT_STARTED escalates to UNKNOWN + MANUAL_REQUIRED without releasing device lease.
+        var devFailRun=repo.createRun(tenant,"dev-fail-"+UUID.randomUUID(),"CREATE","{}",
+                "dev-fail-"+tenant,"1",new byte[32],"ci","{}","{}","dev-task");
+        repo.startRun(tenant,devFailRun.runId());
+        var lease=repo.acquireResourceLease(tenant,devFailRun.runId(),"sealer-1","RUN",devFailRun.runId(),
+                Instant.now().plusSeconds(120),"{}");
+        var devRes=repo.reserveCapacity(tenant,devFailRun.runId(),"dev-fail-cap",1,
+                "dev-task","DEVICE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,devFailRun.runId(),devRes.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,devFailRun.runId(),devRes.attemptId(),devRes.dispatchId(),"w1");
+        repo.startAttempt(tenant,devFailRun.runId(),devRes.attemptId(),devRes.dispatchId(),"w1");
+        repo.recordSideEffectFact(tenant,devFailRun.runId(),devRes.attemptId(),"w1","send-1","SIDE_EFFECT_STARTED","{}");
+        var devOutcome=repo.failAttempt(tenant,devFailRun.runId(),devRes.attemptId(),"{\"code\":\"IO_TIMEOUT\"}",false);
+        assertEquals("MANUAL_REQUIRED",devOutcome.outcome());
+        assertNotNull(devOutcome.interventionId());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+devRes.attemptId()+"' AND attempt_state='UNKNOWN'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+devFailRun.runId()+"' AND status='MANUAL_REQUIRED' AND recovery_state='BLOCKED'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.resource_lease WHERE tenant_id='"+
+                tenant+"' AND lease_id='"+lease.leaseId()+"' AND lease_state='ACTIVE'"));
+    }
+
+    @Test
+    void coordinatorPoisonPillFaultTerminalizesRunAndPreventsInfiniteReplay() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','poison-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        String xml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:exclusiveGateway id="choice"/>
+                    <bpmn:endEvent id="end-a"/>
+                    <bpmn:endEvent id="end-b"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="choice"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="choice" targetRef="end-a">
+                      <bpmn:conditionExpression>missingVar == true</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="f3" sourceRef="choice" targetRef="end-b">
+                      <bpmn:conditionExpression>missingVar == false</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan plan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "poison-"+tenant,"1",xml,Map.of()));
+        var run=repo.createRun(tenant,"poison-"+UUID.randomUUID(),"CREATE","{}",
+                "poison-"+tenant,"1",java.util.HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(),GraphPlanCodec.toJson(plan),"{}","start");
+        repo.startRun(tenant,run.runId());
+        var coordinator=new GraphCoordinator(repo);
+        assertThrows(IllegalArgumentException.class, () -> coordinator.advance(tenant,run.runId()));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='FAILED' AND control_gate='CLOSED'"));
+        // Subsequent replay sees FAILED/CLOSED and does not loop or throw.
+        var replay=coordinator.advance(tenant,run.runId());
+        assertEquals(0,replay.controlTokensAdvanced());
+        assertFalse(replay.runCompleted());
+    }
+
+    @Test
+    void concurrentJavaAdvanceGraphTokenReleasesParallelJoinExactlyOnce() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','conc-join-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"conc-join-"+UUID.randomUUID(),"CREATE","{}",
+                "conc-join-"+tenant,"1",new byte[32],"ci","{}","{}","split");
+        repo.startRun(tenant,run.runId());
+        var splitTok=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        repo.advanceGraphToken(tenant,run.runId(),splitTok.tokenId(),"split","SPLIT",List.of("b1","b2"));
+        for(var t : repo.findReadyGraphTokens(tenant,run.runId(),10)) {
+            repo.advanceGraphToken(tenant,run.runId(),t.tokenId(),t.nodeKey(),"SEQUENCE",List.of("join"));
+        }
+        var joinTokens=repo.findReadyGraphTokens(tenant,run.runId(),10);
+        assertEquals(2,joinTokens.size());
+
+        var pool=Executors.newFixedThreadPool(2);
+        CountDownLatch ready=new CountDownLatch(2);
+        CountDownLatch go=new CountDownLatch(1);
+        try {
+            Future<WorkflowRuntimeRepository.GraphAdvanceResult> f1=pool.submit(() -> {
+                ready.countDown();
+                go.await(5,TimeUnit.SECONDS);
+                return repo.advanceGraphToken(tenant,run.runId(),joinTokens.get(0).tokenId(),
+                        "join","JOIN",List.of("end"),"join");
+            });
+            Future<WorkflowRuntimeRepository.GraphAdvanceResult> f2=pool.submit(() -> {
+                ready.countDown();
+                go.await(5,TimeUnit.SECONDS);
+                return repo.advanceGraphToken(tenant,run.runId(),joinTokens.get(1).tokenId(),
+                        "join","JOIN",List.of("end"),"join");
+            });
+            assertTrue(ready.await(5,TimeUnit.SECONDS));
+            go.countDown();
+            var r1=f1.get(5,TimeUnit.SECONDS);
+            var r2=f2.get(5,TimeUnit.SECONDS);
+            assertEquals(1,r1.tokensCreated()+r2.tokensCreated(),"Parallel Join must release exactly one successor Token");
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
+                    tenant+"' AND run_id='"+run.runId()+"' AND node_key='end' AND token_state='READY'"));
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id='"+
+                    tenant+"' AND run_id='"+run.runId()+"' AND join_key='join' AND join_state='RELEASED'"));
+            assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.split_activation WHERE tenant_id='"+
+                    tenant+"' AND run_id='"+run.runId()+"' AND split_state='CLOSED'"));
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
 }

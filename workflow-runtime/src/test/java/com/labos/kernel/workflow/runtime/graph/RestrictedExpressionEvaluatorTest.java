@@ -25,8 +25,13 @@ class RestrictedExpressionEvaluatorTest {
         assertTrue(RestrictedExpressionEvaluator.evaluateBoolean("status == 'ready' && optional == null", vars));
         assertTrue(RestrictedExpressionEvaluator.evaluateBoolean("name == \"a\\\\\\\"b\"", Map.of("name", "a\\\"b")));
     }
-    @Test void resolvesDottedVariableNamesByExactMapKey() {
-        assertTrue(RestrictedExpressionEvaluator.evaluateBoolean("input.qualified == true", Map.of("input.qualified", true)));
+    @Test void resolvesDottedVariableNamesByExactKeyOrNestedMapTraversal() {
+        assertTrue(RestrictedExpressionEvaluator.evaluateBoolean("input.qualified == true",
+                Map.of("input.qualified", true)));
+        assertTrue(RestrictedExpressionEvaluator.evaluateBoolean("readPlate.ok == true && readPlate.od > 1.0",
+                Map.of("readPlate", Map.of("ok", true, "od", 1.42))));
+        assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.evaluateBoolean(
+                "readPlate.missing == true", Map.of("readPlate", Map.of("ok", true))));
     }
     @Test void rejectsUnknownVariablesAndNonBooleanRoot() {
         assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.evaluateBoolean("missing == 1", Map.of()));
@@ -44,13 +49,16 @@ class RestrictedExpressionEvaluatorTest {
         }
     }
     @Test void rejectsMalformedAndBlankExpressions() {
-        for (String e : new String[] {"", "  ", "true &&", "(true", "true)", "1..2 == 1"})
+        for (String e : new String[] {"", "  ", "true &&", "(true", "true)", "1..2 == 1", "a. == 1", "a..b == 1"})
             assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.evaluateBoolean(e, Map.of()), e);
     }
-    @Test void validatesExpressionSyntaxWithoutResolvingVariables() {
+    @Test void validatesExpressionSyntaxAndStaticTypesWithoutResolvingVariables() {
         assertDoesNotThrow(() -> RestrictedExpressionEvaluator.validateSyntax("ready && (amount >= 2 || override)"));
-        assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.validateSyntax("true &&"));
-        assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.validateSyntax("System.exit(0)"));
+        assertDoesNotThrow(() -> RestrictedExpressionEvaluator.validateSyntax("readPlate.ok == true && readPlate.od >= 1.5"));
+        for (String invalid : new String[] {"true &&", "System.exit(0)", "123", "'hello'", "null",
+                "!123", "1 && true", "1 < 2 < 3", "true == 1", "'a' < 1", "a. == 1"}) {
+            assertThrows(IllegalArgumentException.class, () -> RestrictedExpressionEvaluator.validateSyntax(invalid), invalid);
+        }
     }
     @Test void booleanOperatorsShortCircuitVariableResolution() {
         assertTrue(RestrictedExpressionEvaluator.evaluateBoolean("true || missing", Map.of()));

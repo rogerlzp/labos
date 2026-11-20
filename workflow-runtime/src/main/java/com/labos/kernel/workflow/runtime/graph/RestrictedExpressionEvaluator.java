@@ -16,40 +16,62 @@ public final class RestrictedExpressionEvaluator {
         Parser parser = new Parser(expression);
         Expr result = parser.parseExpression();
         parser.expect(TokenType.END);
+        StaticType staticType = result.staticType();
+        if (staticType != StaticType.BOOL && staticType != StaticType.UNKNOWN)
+            throw new IllegalArgumentException("Condition expression must evaluate to boolean");
         Object value = result.evaluate(variables);
         if (!(value instanceof Boolean bool)) throw new IllegalArgumentException("Condition expression must evaluate to boolean");
         return bool;
     }
 
-    /** Parse and reject unsupported syntax without resolving runtime variables. */
+    /** Parse and reject unsupported syntax or statically non-boolean expressions without resolving runtime variables. */
     public static void validateSyntax(String expression) {
         if (expression == null || expression.isBlank())
             throw new IllegalArgumentException("Condition expression is blank");
-        Parser parser=new Parser(expression);
-        parser.parseExpression();
+        Parser parser = new Parser(expression);
+        Expr root = parser.parseExpression();
         parser.expect(TokenType.END);
+        StaticType staticType = root.staticType();
+        if (staticType != StaticType.BOOL && staticType != StaticType.UNKNOWN)
+            throw new IllegalArgumentException("Condition expression must evaluate to boolean");
     }
 
-    private interface Expr { Object evaluate(Map<String, ?> variables); }
-    private record Literal(Object value) implements Expr {
-        public Object evaluate(Map<String, ?> variables) { return value; }
+    private enum StaticType { BOOL, NUMBER, STRING, NULL, UNKNOWN }
+
+    private interface Expr {
+        Object evaluate(Map<String, ?> variables);
+        StaticType staticType();
     }
+
+    private record Literal(Object value, StaticType type) implements Expr {
+        public Object evaluate(Map<String, ?> variables) { return value; }
+        public StaticType staticType() { return type; }
+    }
+
     private record Variable(String name) implements Expr {
         public Object evaluate(Map<String, ?> variables) {
-            if (!variables.containsKey(name)) throw new IllegalArgumentException("Unknown condition variable: " + name);
-            Object value = variables.get(name);
+            Object value = resolveVariable(name, variables);
             if (value != null && !(value instanceof String || value instanceof Boolean || value instanceof Number))
                 throw new IllegalArgumentException("Unsupported variable value type: " + name);
             return value;
         }
+        public StaticType staticType() { return StaticType.UNKNOWN; }
     }
+
     private record Unary(Expr operand) implements Expr {
         public Object evaluate(Map<String, ?> variables) {
             Object value = operand.evaluate(variables);
             if (!(value instanceof Boolean bool)) throw new IllegalArgumentException("Operator ! requires boolean");
             return !bool;
         }
+        public StaticType staticType() {
+            StaticType operandType = operand.staticType();
+            if (operandType != StaticType.BOOL && operandType != StaticType.UNKNOWN)
+                throw new IllegalArgumentException("Operator ! requires boolean");
+            return StaticType.BOOL;
+        }
     }
+
     private record Binary(Expr left, TokenType operator, Expr right) implements Expr {
         public Object evaluate(Map<String, ?> variables) {
             Object a = left.evaluate(variables);
@@ -72,12 +94,64 @@ public final class RestrictedExpressionEvaluator {
                 default -> throw new IllegalStateException("Unexpected operator " + operator);
             };
         }
+
+        public StaticType staticType() {
+            StaticType lt = left.staticType();
+            StaticType rt = right.staticType();
+            return switch (operator) {
+                case AND, OR -> {
+                    String op = operator == TokenType.AND ? "&&" : "||";
+                    if ((lt != StaticType.BOOL && lt != StaticType.UNKNOWN)
+                            || (rt != StaticType.BOOL && rt != StaticType.UNKNOWN))
+                        throw new IllegalArgumentException("Operator " + op + " requires boolean operands");
+                    yield StaticType.BOOL;
+                }
+                case EQ, NE -> {
+                    if (lt != StaticType.UNKNOWN && rt != StaticType.UNKNOWN
+                            && lt != StaticType.NULL && rt != StaticType.NULL
+                            && lt != rt)
+                        throw new IllegalArgumentException("Equality comparison requires operands of the same type");
+                    yield StaticType.BOOL;
+                }
+                case GT, GE, LT, LE -> {
+                    boolean leftOk = lt == StaticType.NUMBER || lt == StaticType.STRING || lt == StaticType.UNKNOWN;
+                    boolean rightOk = rt == StaticType.NUMBER || rt == StaticType.STRING || rt == StaticType.UNKNOWN;
+                    if (!leftOk || !rightOk)
+                        throw new IllegalArgumentException("Comparison requires two numbers or two strings");
+                    if (lt != StaticType.UNKNOWN && rt != StaticType.UNKNOWN && lt != rt)
+                        throw new IllegalArgumentException("Comparison requires two numbers or two strings");
+                    yield StaticType.BOOL;
+                }
+                default -> throw new IllegalStateException("Unexpected operator " + operator);
+            };
+        }
+    }
+
+    /**
+     * Resolve exact flat key first (preserving keys like "input.qualified"), then fall back
+     * to deterministic nested Map traversal for JSON objects (e.g. {"sample":{"qualified":true}}).
+     */
+    private static Object resolveVariable(String name, Map<String, ?> variables) {
+        if (variables.containsKey(name)) return variables.get(name);
+        if (!name.contains(".")) throw new IllegalArgumentException("Unknown condition variable: " + name);
+        String[] segments = name.split("\\.", -1);
+        Object current = variables;
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            if (!(current instanceof Map<?, ?> map) || !map.containsKey(segment))
+                throw new IllegalArgumentException("Unknown condition variable: " + name);
+            current = map.get(segment);
+            if (i < segments.length - 1 && !(current instanceof Map<?, ?>))
+                throw new IllegalArgumentException("Unknown condition variable: " + name);
+        }
+        return current;
     }
 
     private static boolean requireBoolean(Object value, String operator) {
         if (!(value instanceof Boolean b)) throw new IllegalArgumentException("Operator " + operator + " requires boolean operands");
         return b;
     }
+
     private static boolean equal(Object a, Object b) {
         if (a == null || b == null) return a == b;
         if (a instanceof Number an && b instanceof Number bn) return decimal(an).compareTo(decimal(bn)) == 0;
@@ -85,11 +159,13 @@ public final class RestrictedExpressionEvaluator {
             throw new IllegalArgumentException("Equality comparison requires operands of the same type");
         return Objects.equals(a, b);
     }
+
     private static int compare(Object a, Object b) {
         if (a instanceof Number an && b instanceof Number bn) return decimal(an).compareTo(decimal(bn));
         if (a instanceof String as && b instanceof String bs) return as.compareTo(bs);
         throw new IllegalArgumentException("Comparison requires two numbers or two strings");
     }
+
     private static BigDecimal decimal(Number value) {
         try { return new BigDecimal(value.toString()); }
         catch (NumberFormatException e) { throw new IllegalArgumentException("Non-finite numeric value is not supported", e); }
@@ -134,7 +210,10 @@ public final class RestrictedExpressionEvaluator {
         private Expr parsePrimary() {
             Token t = advance();
             return switch (t.type()) {
-                case TRUE, FALSE, NULL, STRING, NUMBER -> new Literal(t.value());
+                case TRUE, FALSE -> new Literal(t.value(), StaticType.BOOL);
+                case NULL -> new Literal(null, StaticType.NULL);
+                case STRING -> new Literal(t.value(), StaticType.STRING);
+                case NUMBER -> new Literal(t.value(), StaticType.NUMBER);
                 case IDENT -> new Variable(t.text());
                 case LPAREN -> {
                     Expr nested = parseExpression();
@@ -170,6 +249,8 @@ public final class RestrictedExpressionEvaluator {
                     if (Character.isLetterOrDigit(n) || n == '_' || n == '.') i++; else break;
                 }
                 String word = source.substring(start, i);
+                if (word.endsWith(".") || word.contains(".."))
+                    throw new IllegalArgumentException("Malformed identifier '" + word + "' at offset " + start);
                 TokenType type = switch (word) {
                     case "true" -> TokenType.TRUE;
                     case "false" -> TokenType.FALSE;
