@@ -1,6 +1,7 @@
 package com.labos.kernel.workflow.runtime.gateway;
 
 import com.labos.kernel.workflow.runtime.command.DeviceCommandExecutionService;
+import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
 import java.util.Objects;
 import java.util.UUID;
@@ -12,13 +13,16 @@ import java.util.function.Function;
  * {@link DeviceCommandExecutionService#ingestDeviceEvent}.
  *
  * <p>Always attributes the Inbox {@code source} to {@link InboundDeviceEvent#authenticatedDeviceId()}
- * (the TCP connection's bound device identity) rather than any untrusted payload field.
+ * (the TCP connection's bound device identity) rather than any untrusted payload field, and
+ * translates outcomes into explicit {@link DeviceEventSink.DeliveryResult} values so transient
+ * database errors emit retryable {@code EVENT_NACK} instead of being silently dropped.
  */
 public final class RuntimeDeviceEventBridge implements DeviceEventSink {
 
     public record BridgeNotification(
             InboundDeviceEvent event,
             DeviceCommandExecutionService.InboxIngestionOutcome outcome,
+            DeliveryResult deliveryResult,
             Throwable error) {}
 
     private final Function<InboundDeviceEvent, UUID> tenantResolver;
@@ -48,7 +52,7 @@ public final class RuntimeDeviceEventBridge implements DeviceEventSink {
     }
 
     @Override
-    public void onDeviceEvent(InboundDeviceEvent event) {
+    public DeliveryResult onDeviceEvent(InboundDeviceEvent event) {
         Objects.requireNonNull(event, "event");
         UUID tenantId = Objects.requireNonNull(tenantResolver.apply(event), "resolved tenantId");
         try {
@@ -62,10 +66,30 @@ public final class RuntimeDeviceEventBridge implements DeviceEventSink {
                     event.targetState(),
                     event.deviceSequence(),
                     event.outcomeJson());
-            listener.accept(new BridgeNotification(event, outcome, null));
-        } catch (RuntimeException ex) {
-            listener.accept(new BridgeNotification(event, null, ex));
-            throw ex;
+            DeliveryResult result = switch (outcome.status()) {
+                case APPLIED -> DeliveryResult.acked("APPLIED");
+                case DUPLICATE_REPLAY -> DeliveryResult.acked("DUPLICATE_REPLAY");
+                case PROTOCOL_VIOLATION -> DeliveryResult.nackPermanent("PROTOCOL_VIOLATION");
+            };
+            listener.accept(new BridgeNotification(event, outcome, result, null));
+            return result;
+        } catch (WorkflowRuntimeRepository.InvalidTransitionException
+                | IllegalArgumentException
+                | IllegalStateException permanentRejection) {
+            DeliveryResult result = DeliveryResult.nackPermanent(
+                    permanentRejection.getClass().getSimpleName() + ": " + safeMessage(permanentRejection));
+            listener.accept(new BridgeNotification(event, null, result, permanentRejection));
+            return result;
+        } catch (RuntimeException transientFailure) {
+            // Includes Spring DataAccessException / PostgreSQL connectivity glitches -> retryable EVENT_NACK!
+            DeliveryResult result = DeliveryResult.nackRetryable(
+                    transientFailure.getClass().getSimpleName() + ": " + safeMessage(transientFailure));
+            listener.accept(new BridgeNotification(event, null, result, transientFailure));
+            return result;
         }
+    }
+
+    private static String safeMessage(Throwable t) {
+        return t == null || t.getMessage() == null ? "" : t.getMessage();
     }
 }

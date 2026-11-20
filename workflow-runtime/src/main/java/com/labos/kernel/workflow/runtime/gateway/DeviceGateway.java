@@ -9,13 +9,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Single-JVM Device Gateway managing persistent TCP connections, heartbeats, liveness health,
+ * Single-JVM Device Gateway managing persistent TCP connections, per-device heartbeat liveness,
  * and automatic reconnection for registered devices.
  *
  * <p>Architectural boundary:
@@ -24,6 +21,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *       {@code GraphCoordinator}, {@code WorkerPool}, or {@code WorkflowRuntimeRepository}.</li>
  *   <li>Connects to Workflow Runtime exclusively via {@link #asCommandAdapter()} (Command SPI)
  *       and {@link DeviceEventSink} (Event SPI).</li>
+ *   <li>Each registered device runs its own isolated heartbeat scheduler, IO loop, and bounded
+ *       event queue so one stalled or misbehaving device cannot degrade other devices.</li>
  *   <li>Reconnection only restores TCP transport liveness; in-flight commands are NEVER
  *       automatically re-sent across disconnects.</li>
  * </ul>
@@ -33,7 +32,6 @@ public final class DeviceGateway implements AutoCloseable {
     private final TcpDeviceConnection.Config config;
     private final DeviceEventSink eventSink;
     private final Map<String, TcpDeviceConnection> connections = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService heartbeatScheduler;
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -44,11 +42,6 @@ public final class DeviceGateway implements AutoCloseable {
         Objects.requireNonNull(endpoints, "endpoints");
         this.config = Objects.requireNonNull(config, "config");
         this.eventSink = Objects.requireNonNull(eventSink, "eventSink");
-        this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "labos-gw-heartbeat");
-            t.setDaemon(true);
-            return t;
-        });
         for (TcpDeviceConnection.Endpoint endpoint : endpoints) {
             registerDevice(endpoint);
         }
@@ -80,12 +73,6 @@ public final class DeviceGateway implements AutoCloseable {
         for (TcpDeviceConnection conn : connections.values()) {
             conn.start();
         }
-        long intervalMs = config.heartbeatInterval().toMillis();
-        heartbeatScheduler.scheduleAtFixedRate(
-                this::runHeartbeatSweep,
-                intervalMs,
-                intervalMs,
-                TimeUnit.MILLISECONDS);
     }
 
     public DeviceCommandAdapter asCommandAdapter() {
@@ -134,28 +121,10 @@ public final class DeviceGateway implements AutoCloseable {
         return Map.copyOf(out);
     }
 
-    private void runHeartbeatSweep() {
-        if (closed.get()) return;
-        for (TcpDeviceConnection conn : connections.values()) {
-            if (closed.get()) return;
-            try {
-                conn.heartbeatTick();
-            } catch (Throwable ignored) {
-                // One device's heartbeat failure must never cancel heartbeat sweep for other devices.
-            }
-        }
-    }
-
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) {
             return;
-        }
-        heartbeatScheduler.shutdownNow();
-        try {
-            heartbeatScheduler.awaitTermination(3, TimeUnit.SECONDS);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
         }
         for (TcpDeviceConnection conn : connections.values()) {
             conn.close();

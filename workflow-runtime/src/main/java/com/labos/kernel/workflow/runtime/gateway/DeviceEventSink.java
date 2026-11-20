@@ -9,10 +9,43 @@ import java.util.UUID;
  * <p>Heartbeats are consumed inside the Gateway and NEVER delivered to this sink.
  * {@link InboundDeviceEvent#authenticatedDeviceId()} is always bound to the TCP connection's own
  * registered {@code deviceId}, never trusted from untrusted wire payloads.
+ *
+ * <p>Every call returns an explicit {@link DeliveryResult} so the Gateway can emit
+ * {@code EVENT_ACK} (durable persistence confirmed) or {@code EVENT_NACK} (retryable transient
+ * failure vs permanent protocol/domain rejection) and NEVER silently drops a device event.
  */
 @FunctionalInterface
 public interface DeviceEventSink {
-    void onDeviceEvent(InboundDeviceEvent event);
+    DeliveryResult onDeviceEvent(InboundDeviceEvent event);
+
+    enum Disposition {
+        /** Event was durably persisted (APPLIED or idempotent DUPLICATE_REPLAY). */
+        ACKED,
+        /** Transient persistence/infrastructure failure; device MUST retry with same sourceMessageId. */
+        NACK_RETRYABLE,
+        /** Permanent protocol/domain violation; device should NOT retry unchanged payload. */
+        NACK_PERMANENT
+    }
+
+    record DeliveryResult(Disposition disposition, String status, String reason) {
+        public DeliveryResult {
+            Objects.requireNonNull(disposition, "disposition");
+        }
+
+        public static DeliveryResult acked(String status) {
+            return new DeliveryResult(Disposition.ACKED, status == null ? "APPLIED" : status, null);
+        }
+
+        public static DeliveryResult nackRetryable(String reason) {
+            return new DeliveryResult(Disposition.NACK_RETRYABLE, null,
+                    reason == null || reason.isBlank() ? "TRANSIENT_FAILURE" : reason);
+        }
+
+        public static DeliveryResult nackPermanent(String reason) {
+            return new DeliveryResult(Disposition.NACK_PERMANENT, null,
+                    reason == null || reason.isBlank() ? "PERMANENT_REJECTION" : reason);
+        }
+    }
 
     record InboundDeviceEvent(
             String authenticatedDeviceId,

@@ -17,6 +17,7 @@ import com.labos.kernel.workflow.runtime.worker.WorkerPool;
 import com.labos.kernel.workflow.runtime.worker.WorkerTaskHandler;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
@@ -37,14 +38,17 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * G2-C integration tests for {@link DeviceGateway} persistent TCP client, heartbeat liveness,
- * automatic reconnect without auto-resend, protocol security, and full PG17 Runtime loop.
+ * G2-C integration tests for {@link DeviceGateway} persistent TCP client, strict epoch-bound
+ * heartbeat liveness, explicit {@code EVENT_ACK}/{@code EVENT_NACK} reliable event delivery,
+ * bounded queue backpressure, per-device isolation, automatic reconnect without auto-resend,
+ * protocol security, and full PG17 Runtime loop.
  */
 class DeviceGatewayTcpIntegrationTest {
 
@@ -89,7 +93,8 @@ class DeviceGatewayTcpIntegrationTest {
                 Duration.ofMillis(320),
                 Duration.ofMillis(40),
                 Duration.ofMillis(160),
-                4096);
+                4096,
+                64);
     }
 
     private static GraphPlan compileSingleDevicePlan(String planKey) {
@@ -123,22 +128,24 @@ class DeviceGatewayTcpIntegrationTest {
         AtomicInteger sinkEvents = new AtomicInteger();
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
              DeviceGateway gateway = new DeviceGateway(
-                     List.of(server.endpoint()), fastGatewayConfig(), ev -> sinkEvents.incrementAndGet())) {
+                     List.of(server.endpoint()), fastGatewayConfig(), ev -> {
+                         sinkEvents.incrementAndGet();
+                         return DeviceEventSink.DeliveryResult.acked("APPLIED");
+                     })) {
             gateway.start();
             assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
 
-            // Verify heartbeats flow cleanly while healthy.
             awaitCondition(Duration.ofSeconds(3),
                     () -> gateway.health(deviceId).orElseThrow().heartbeatsReceived() >= 2);
             long epochBeforeTimeout = gateway.health(deviceId).orElseThrow().connectionEpoch();
             assertEquals(0, sinkEvents.get(), "Heartbeats must NEVER enter DeviceEventSink");
 
-            // Simulate silent half-open peer by suppressing PONG replies.
+            // Suppress PONG replies -> silent half-open peer -> heartbeat timeout triggers RECONNECTING.
             server.setReplyToHeartbeats(false);
             assertTrue(gateway.awaitStatus(deviceId, TcpDeviceConnection.ConnectionStatus.RECONNECTING,
                     Duration.ofSeconds(3)), "Gateway must detect heartbeat timeout and enter RECONNECTING");
 
-            // Restore PONG replies -> Gateway automatically reconnects and returns ONLINE on a new epoch!
+            // Restore PONG replies -> Gateway automatically reconnects and returns ONLINE on a new epoch.
             server.setReplyToHeartbeats(true);
             awaitCondition(Duration.ofSeconds(3), () -> {
                 var h = gateway.health(deviceId).orElseThrow();
@@ -151,6 +158,145 @@ class DeviceGatewayTcpIntegrationTest {
     }
 
     @Test
+    void heartbeatPongRequiresMatchingDeviceIdAndUnconsumedCurrentEpochPingId() throws Exception {
+        String deviceId = "tcp-hb-strict";
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
+             DeviceGateway gateway = new DeviceGateway(
+                     List.of(server.endpoint()), fastGatewayConfig(),
+                     ev -> DeviceEventSink.DeliveryResult.acked("APPLIED"))) {
+            gateway.start();
+            assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
+
+            // Wait for 1 genuine PING/PONG so we capture an already-consumed valid pingId.
+            awaitCondition(Duration.ofSeconds(3),
+                    () -> gateway.health(deviceId).orElseThrow().heartbeatsReceived() >= 1);
+            String consumedPingId = server.lastPingId();
+            assertNotNull(consumedPingId);
+            long epoch1 = gateway.health(deviceId).orElseThrow().connectionEpoch();
+
+            // Now replace PING handling so peer ONLY responds with invalid PONGs:
+            // (1) missing pingId, (2) fabricated/wrong-epoch pingId, (3) duplicate replay of consumedPingId,
+            // (4) blank deviceId, (5) wrong deviceId. NONE of these may keep the connection ONLINE!
+            server.setCustomPingHandler((pingNode, session) -> {
+                try {
+                    session.sendHeartbeatPong(deviceId, null);
+                    session.sendHeartbeatPong(deviceId, "");
+                    session.sendHeartbeatPong(deviceId, "ping-999-fake");
+                    session.sendHeartbeatPong(deviceId, consumedPingId);
+                    session.sendHeartbeatPong("", pingNode.path("pingId").asText());
+                    session.sendHeartbeatPong("wrong-device", pingNode.path("pingId").asText());
+                } catch (Exception ignored) {
+                }
+            });
+
+            // Connection MUST still time out and transition to RECONNECTING despite continuous invalid PONGs!
+            assertTrue(gateway.awaitStatus(deviceId, TcpDeviceConnection.ConnectionStatus.RECONNECTING,
+                    Duration.ofSeconds(3)),
+                    "Invalid/stale/duplicate/blank-deviceId PONGs must NOT refresh liveness");
+            var staleHealth = gateway.health(deviceId).orElseThrow();
+            assertTrue(staleHealth.invalidHeartbeatsRejected() >= 4,
+                    "Expected rejected invalid PONGs to be counted, got " + staleHealth.invalidHeartbeatsRejected());
+
+            // Restore genuine matching PONG handling -> reconnect succeeds cleanly on new epoch!
+            server.setCustomPingHandler(null);
+            awaitCondition(Duration.ofSeconds(3), () -> {
+                var h = gateway.health(deviceId).orElseThrow();
+                return h.status() == TcpDeviceConnection.ConnectionStatus.ONLINE
+                        && h.connectionEpoch() > epoch1;
+            });
+        }
+    }
+
+    @Test
+    void boundedEventQueueAppliesBackpressureWithRetryableNackWhenConsumerIsSlow() throws Exception {
+        String deviceId = "tcp-bp-1";
+        TcpDeviceConnection.Config tinyQueueConfig = new TcpDeviceConnection.Config(
+                Duration.ofSeconds(2),
+                Duration.ofMillis(100),
+                Duration.ofMillis(500),
+                Duration.ofMillis(40),
+                Duration.ofMillis(160),
+                4096,
+                2); // Strictly bounded to 2 queued events!
+
+        CountDownLatch firstEventEntered = new CountDownLatch(1);
+        CountDownLatch releaseConsumer = new CountDownLatch(1);
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
+             DeviceGateway gateway = new DeviceGateway(
+                     List.of(server.endpoint()), tinyQueueConfig, ev -> {
+                         firstEventEntered.countDown();
+                         try {
+                             releaseConsumer.await(5, TimeUnit.SECONDS);
+                         } catch (InterruptedException ie) {
+                             Thread.currentThread().interrupt();
+                         }
+                         return DeviceEventSink.DeliveryResult.acked("APPLIED");
+                     })) {
+            gateway.start();
+            assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
+            awaitCondition(Duration.ofSeconds(2), () -> server.activeSession() != null);
+
+            MockTcpDeviceServer.ClientSession session = server.activeSession();
+            UUID runId = UUID.randomUUID();
+            UUID cmdId = UUID.randomUUID();
+            // Send first event and wait until consumer thread is actively blocked on it.
+            session.sendDeviceEvent(deviceId, runId.toString(), cmdId.toString(),
+                    "bp-msg-0", "PROGRESS", "RUNNING", "seq-0", "{\"i\":0}");
+            assertTrue(firstEventEntered.await(3, TimeUnit.SECONDS));
+
+            // Burst 8 more events while consumer is blocked -> queue holds at most 2, rest MUST receive retryable EVENT_NACK!
+            for (int i = 1; i <= 8; i++) {
+                session.sendDeviceEvent(deviceId, runId.toString(), cmdId.toString(),
+                        "bp-msg-" + i, "PROGRESS", "RUNNING", "seq-" + i, "{\"i\":" + i + "}");
+            }
+
+            awaitCondition(Duration.ofSeconds(3), () ->
+                    server.receivedEventNacks().stream().anyMatch(n ->
+                            n.path("retryable").asBoolean(false)
+                                    && "GATEWAY_BACKPRESSURE".equals(n.path("reason").asText())));
+            assertTrue(gateway.health(deviceId).orElseThrow().eventsBackpressureNacked() >= 1);
+
+            // Unblock consumer -> queued events drain cleanly and receive EVENT_ACK!
+            releaseConsumer.countDown();
+            awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventAcks().size() >= 3);
+            assertEquals(9, server.receivedEventAcks().size() + server.receivedEventNacks().size(),
+                    "Every single inbound event must receive either EVENT_ACK or EVENT_NACK (zero silent drops)");
+        }
+    }
+
+    @Test
+    void perDeviceHeartbeatIsolationPreventsStalledDeviceFromAffectingHealthyDevice() throws Exception {
+        String devA = "tcp-iso-A";
+        String devB = "tcp-iso-B";
+        try (MockTcpDeviceServer serverA = new MockTcpDeviceServer(devA);
+             MockTcpDeviceServer serverB = new MockTcpDeviceServer(devB);
+             DeviceGateway gateway = new DeviceGateway(
+                     List.of(serverA.endpoint(), serverB.endpoint()),
+                     fastGatewayConfig(),
+                     ev -> DeviceEventSink.DeliveryResult.acked("APPLIED"))) {
+            gateway.start();
+            assertTrue(gateway.awaitOnline(devA, Duration.ofSeconds(3)));
+            assertTrue(gateway.awaitOnline(devB, Duration.ofSeconds(3)));
+
+            long devBInitialPongs = gateway.health(devB).orElseThrow().heartbeatsReceived();
+            long devBInitialEpoch = gateway.health(devB).orElseThrow().connectionEpoch();
+
+            // Stall Device A completely (no PONGs) -> Device A enters RECONNECTING while Device B stays ONLINE & active!
+            serverA.setReplyToHeartbeats(false);
+            assertTrue(gateway.awaitStatus(devA, TcpDeviceConnection.ConnectionStatus.RECONNECTING,
+                    Duration.ofSeconds(3)));
+            awaitCondition(Duration.ofSeconds(3),
+                    () -> gateway.health(devB).orElseThrow().heartbeatsReceived() >= devBInitialPongs + 3);
+            var healthB = gateway.health(devB).orElseThrow();
+            assertEquals(TcpDeviceConnection.ConnectionStatus.ONLINE, healthB.status());
+            assertEquals(devBInitialEpoch, healthB.connectionEpoch(),
+                    "Device B must remain continuously ONLINE on the same epoch while Device A stalls");
+            assertEquals(0, healthB.reconnectCount());
+        }
+    }
+
+    @Test
     void concurrentMultiThreadCommandWritesDoNotInterleaveAndCloseLeavesZeroLeakedThreads() throws Exception {
         String deviceId = "tcp-conc-1";
         int threads = 4;
@@ -159,7 +305,8 @@ class DeviceGatewayTcpIntegrationTest {
 
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
              DeviceGateway gateway = new DeviceGateway(
-                     List.of(server.endpoint()), fastGatewayConfig(), ev -> {})) {
+                     List.of(server.endpoint()), fastGatewayConfig(),
+                     ev -> DeviceEventSink.DeliveryResult.acked("APPLIED"))) {
             gateway.start();
             assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
 
@@ -207,9 +354,115 @@ class DeviceGatewayTcpIntegrationTest {
                     gateway.health(deviceId).orElseThrow().status());
         }
 
-        // Verify zero lingering gateway threads for this device after close().
         awaitCondition(Duration.ofSeconds(2), () -> Thread.getAllStackTraces().keySet().stream()
                 .noneMatch(t -> t.isAlive() && t.getName().contains(deviceId)));
+    }
+
+    @Test
+    void transientDatabaseFailureSendsRetryableEventNackAndDeviceRetryConvergesIdempotently() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g2c-dbfault");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        String deviceId = "tcp-dbfault-1";
+        String planKey = "g2c-dbfault-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+        var run = repo.createRun(tenant, "g2c-dbf-" + UUID.randomUUID(), "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, run.runId());
+        new GraphCoordinator(repo).advance(tenant, run.runId());
+        var res = repo.reserveCapacity(tenant, run.runId(), "cap-dbf-" + tenant, 1,
+                "tcp_dev_op", "DEVICE", java.time.Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res.attemptId(), "dev-q", "{}");
+        var wd = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:" + res.attemptId())).findFirst().orElseThrow();
+        assertTrue(repo.markOutboxDelivered(tenant, wd.outboxId()));
+        repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-dbf");
+        repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-dbf");
+        UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
+                "w-dbf", deviceId, "Dispense", "QUERYABLE", "{\"v\":42}");
+
+        // Inject 2 consecutive transient DB outages before allowing persistence to succeed!
+        AtomicInteger remainingTransientFailures = new AtomicInteger(2);
+        AtomicReference<RuntimeDeviceEventBridge> bridgeRef = new AtomicReference<>();
+        String resultMsgId = "dbf-res-" + cmdId;
+        CountDownLatch ackAppliedLatch = new CountDownLatch(1);
+        CountDownLatch ackReplayLatch = new CountDownLatch(1);
+        CountDownLatch permNackViolationLatch = new CountDownLatch(1);
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
+             DeviceGateway gateway = new DeviceGateway(
+                     List.of(server.endpoint()),
+                     fastGatewayConfig(),
+                     ev -> {
+                         if (remainingTransientFailures.getAndDecrement() > 0) {
+                             throw new DataAccessResourceFailureException("Simulated transient PostgreSQL outage");
+                         }
+                         return bridgeRef.get().onDeviceEvent(ev);
+                     })) {
+
+            DeviceCommandExecutionService cmdSvc = new DeviceCommandExecutionService(repo, gateway.asCommandAdapter());
+            bridgeRef.set(new RuntimeDeviceEventBridge(tenant, cmdSvc));
+
+            // Device automatically retransmits SAME sourceMessageId upon receiving retryable EVENT_NACK!
+            server.setEventAckOrNackHandler((frame, session) -> {
+                String frameType = frame.path("frameType").asText();
+                if (GatewayWireProtocol.FRAME_EVENT_NACK.equals(frameType)) {
+                    boolean retryable = frame.path("retryable").asBoolean(false);
+                    if (retryable && resultMsgId.equals(frame.path("sourceMessageId").asText())) {
+                        try {
+                            session.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                                    resultMsgId, "COMMAND_RESULT", "SUCCEEDED", "seq-dbf", "{\"ok\":true}");
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    } else if (!retryable && "PROTOCOL_VIOLATION".equals(frame.path("reason").asText())) {
+                        permNackViolationLatch.countDown();
+                    }
+                } else if (GatewayWireProtocol.FRAME_EVENT_ACK.equals(frameType)) {
+                    String status = frame.path("status").asText();
+                    if ("APPLIED".equals(status)) ackAppliedLatch.countDown();
+                    if ("DUPLICATE_REPLAY".equals(status)) ackReplayLatch.countDown();
+                }
+            });
+
+            gateway.start();
+            assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
+            var del = cmdSvc.deliverPendingCommands(tenant, 4, "disp-dbf");
+            assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.SENT_ASYNC, del.outcomes().get(cmdId));
+            awaitCondition(Duration.ofSeconds(3), () -> server.receivedCommands().size() == 1);
+
+            MockTcpDeviceServer.ClientSession session = server.activeSession();
+            assertNotNull(session);
+            // Send terminal result once; first 2 attempts fail with transient DB error -> retryable NACK -> device retries!
+            session.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                    resultMsgId, "COMMAND_RESULT", "SUCCEEDED", "seq-dbf", "{\"ok\":true}");
+
+            assertTrue(ackAppliedLatch.await(5, TimeUnit.SECONDS),
+                    "After 2 retryable EVENT_NACKs, 3rd delivery must persist and emit EVENT_ACK(APPLIED)");
+            assertEquals(2, gateway.health(deviceId).orElseThrow().eventsTransientNacked());
+            assertEquals(2, server.receivedEventNacks().stream()
+                    .filter(n -> n.path("retryable").asBoolean(false)).count());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='SUCCEEDED'"));
+
+            // Duplicate retransmission after ACK -> idempotent EVENT_ACK(DUPLICATE_REPLAY).
+            session.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                    resultMsgId, "COMMAND_RESULT", "SUCCEEDED", "seq-dbf", "{\"ok\":true}");
+            assertTrue(ackReplayLatch.await(5, TimeUnit.SECONDS));
+
+            // Conflicting payload under SAME sourceMessageId -> non-retryable EVENT_NACK(PROTOCOL_VIOLATION).
+            session.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                    resultMsgId, "COMMAND_RESULT", "FAILED", "seq-dbf", "{\"tampered\":true}");
+            assertTrue(permNackViolationLatch.await(5, TimeUnit.SECONDS));
+
+            repo.completeAttempt(tenant, run.runId(), res.attemptId(), "out", "{\"ok\":true}");
+            new GraphCoordinator(repo).advance(tenant, run.runId());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND status='SUCCEEDED'"));
+        }
     }
 
     @Test
@@ -230,6 +483,7 @@ class DeviceGatewayTcpIntegrationTest {
         CountDownLatch terminalEventApplied = new CountDownLatch(1);
         AtomicReference<UUID> cmdIdRef = new AtomicReference<>();
         AtomicReference<RuntimeDeviceEventBridge> bridgeRef = new AtomicReference<>();
+
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
              DeviceGateway gateway = new DeviceGateway(
                      List.of(server.endpoint()),
@@ -249,10 +503,8 @@ class DeviceGatewayTcpIntegrationTest {
                 try {
                     String runId = cmdNode.get("runId").asText();
                     String commandId = cmdNode.get("commandId").asText();
-                    session.sendHeartbeatPong("interleaved-1");
                     session.sendDeviceEvent(deviceId, runId, commandId,
                             "tcp-ack-" + commandId, "RECEIVED_ACK", "ACKNOWLEDGED", "seq-1", "{}");
-                    session.sendHeartbeatPong("interleaved-2");
                     session.sendDeviceEvent(deviceId, runId, commandId,
                             "tcp-prog-" + commandId, "PROGRESS", "RUNNING", "seq-2", "{\"pct\":50}");
                     session.sendDeviceEvent(deviceId, runId, commandId,
@@ -264,6 +516,9 @@ class DeviceGatewayTcpIntegrationTest {
 
             gateway.start();
             assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
+            // Wait for genuine matched PING/PONG heartbeats before running command.
+            awaitCondition(Duration.ofSeconds(3),
+                    () -> gateway.health(deviceId).orElseThrow().heartbeatsReceived() >= 2);
 
             var mailboxExec = Executors.newSingleThreadExecutor();
             SchedulingGate gate = SchedulingGateTestSupport.openGate();
@@ -297,6 +552,10 @@ class DeviceGatewayTcpIntegrationTest {
                 var workerOutcome = wd.submitted().values().iterator().next().get(5, TimeUnit.SECONDS);
                 assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, workerOutcome.status());
                 workerOutcome.graphAdvance().get(5, TimeUnit.SECONDS);
+
+                // Device must have received explicit EVENT_ACK for all 3 events!
+                awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventAcks().size() == 3);
+                assertEquals(0, server.receivedEventNacks().size());
 
                 assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
                         + tenant + "' AND run_id='" + run.runId() + "' AND status='SUCCEEDED' AND control_gate='CLOSED'"));
@@ -346,7 +605,6 @@ class DeviceGatewayTcpIntegrationTest {
             server.setCommandHandler((cmdNode, session) -> {
                 int call = serverHandledCount.incrementAndGet();
                 if (call == 1) {
-                    // Simulate device/network dropping TCP right after receiving cmd1 WITHOUT sending result!
                     session.forceClose();
                     cmd1ReceivedThenDropped.countDown();
                 } else {
@@ -367,7 +625,6 @@ class DeviceGatewayTcpIntegrationTest {
             assertTrue(gateway.awaitOnline(deviceId, Duration.ofSeconds(3)));
             long initialEpoch = gateway.health(deviceId).orElseThrow().connectionEpoch();
 
-            // Run 1: send cmd1 over TCP, peer immediately drops socket -> Gateway auto-reconnects, NEVER resends cmd1!
             var run1 = repo.createRun(tenant, "g2c-r1-" + UUID.randomUUID(), "CREATE", "{}",
                     planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
                     plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
@@ -388,20 +645,17 @@ class DeviceGatewayTcpIntegrationTest {
             assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.SENT_ASYNC, del1.outcomes().get(cmd1));
             assertTrue(cmd1ReceivedThenDropped.await(5, TimeUnit.SECONDS));
 
-            // Wait for automatic reconnect to restore ONLINE on a strictly newer connection epoch.
             awaitCondition(Duration.ofSeconds(4), () -> {
                 var h = gateway.health(deviceId).orElseThrow();
                 return h.status() == TcpDeviceConnection.ConnectionStatus.ONLINE
                         && h.connectionEpoch() > initialEpoch
                         && h.reconnectCount() >= 1;
             });
-            // Allow multiple heartbeat cycles to prove cmd1 is NEVER auto-resent after reconnect!
             awaitCondition(Duration.ofSeconds(3),
                     () -> gateway.health(deviceId).orElseThrow().heartbeatsReceived() >= 2);
             assertEquals(1, server.receivedCommands().size(),
                     "Reconnect MUST NOT auto-resend in-flight command after SEND_STARTED");
 
-            // Mark cmd1 UNKNOWN on execution timeout, escalate Run 1 MANUAL_REQUIRED, and reconcile via T21.
             repo.markCommandUnknown(tenant, cmd1, "{\"reason\":\"tcp-disconnect-no-result\"}");
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                     + tenant + "' AND command_id='" + cmd1 + "' AND command_state='UNKNOWN'"));
@@ -412,7 +666,6 @@ class DeviceGatewayTcpIntegrationTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                     + tenant + "' AND command_id='" + cmd1 + "' AND command_state='FAILED'"));
 
-            // Run 2: new command seamlessly reuses the recovered persistent TCP connection and succeeds!
             var run2 = repo.createRun(tenant, "g2c-r2-" + UUID.randomUUID(), "CREATE", "{}",
                     planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
                     plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
@@ -499,7 +752,7 @@ class DeviceGatewayTcpIntegrationTest {
             MockTcpDeviceServer.ClientSession session = server.activeSession();
             assertNotNull(session);
 
-            // 1. Heartbeat trying to smuggle commandId/targetState -> isolated, never touches command_ledger.
+            // 1. Unsolicited HEARTBEAT_PONG smuggling commandId/targetState -> rejected as invalid heartbeat, never touches command_ledger.
             session.sendRawLine("{\"frameType\":\"HEARTBEAT_PONG\",\"deviceId\":\"" + deviceId
                     + "\",\"commandId\":\"" + cmdId + "\",\"targetState\":\"SUCCEEDED\"}");
             // 2. DEVICE_EVENT with messageType=HEARTBEAT -> rejected as malformed frame!
@@ -509,22 +762,24 @@ class DeviceGatewayTcpIntegrationTest {
             // 3. Corrupted JSON + oversized frame (> 4096 bytes) -> counted in malformedFrames, socket stays ONLINE!
             session.sendRawLine("{not-valid-json");
             session.sendRawLine("{\"pad\":\"" + "x".repeat(5000) + "\"}");
-            // 4. Spoofed deviceId on tcp-sec-1's socket -> rejected at Gateway boundary!
+            // 4. Spoofed deviceId on tcp-sec-1's socket -> rejected at Gateway boundary with non-retryable EVENT_NACK!
             session.sendDeviceEvent("rogue-other-device", run.runId().toString(), cmdId.toString(),
                     "spoof-1", "COMMAND_RESULT", "SUCCEEDED", "seq-spoof", "{\"ok\":true}");
 
             awaitCondition(Duration.ofSeconds(3), () -> {
                 var h = gateway.health(deviceId).orElseThrow();
-                return h.malformedFrames() >= 3 && h.spoofedFramesRejected() >= 1;
+                return h.malformedFrames() >= 3
+                        && h.spoofedFramesRejected() >= 1
+                        && h.invalidHeartbeatsRejected() >= 1;
             });
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                     + tenant + "' AND command_id='" + cmdId + "' AND command_state='SEND_STARTED'"));
             assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND run_id='" + run.runId() + "'"));
 
-            // 5. Legitimate COMMAND_RESULT -> APPLIED; duplicate -> DUPLICATE_REPLAY; conflicting payload -> PROTOCOL_VIOLATION!
+            // 5. Legitimate COMMAND_RESULT (even with deviceId omitted, relying on connection binding!) -> APPLIED!
             String msgId = "sec-msg-" + UUID.randomUUID();
-            session.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+            session.sendDeviceEvent(null, run.runId().toString(), cmdId.toString(),
                     msgId, "COMMAND_RESULT", "SUCCEEDED", "seq-1", "{\"ok\":true}");
             assertTrue(appliedLatch.await(5, TimeUnit.SECONDS));
 
@@ -571,7 +826,6 @@ class DeviceGatewayTcpIntegrationTest {
         UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
                 "w-off", deviceId, "Dispense", "QUERYABLE", "{\"v\":5}");
 
-        // Point gateway at an unreachable closed port first (guaranteed refused on 127.0.0.1).
         int closedPort;
         try (var tmp = new java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))) {
             closedPort = tmp.getLocalPort();
@@ -579,7 +833,7 @@ class DeviceGatewayTcpIntegrationTest {
         try (DeviceGateway gateway = new DeviceGateway(
                 List.of(new TcpDeviceConnection.Endpoint(deviceId, "127.0.0.1", closedPort)),
                 fastGatewayConfig(),
-                ev -> {})) {
+                ev -> DeviceEventSink.DeliveryResult.acked("APPLIED"))) {
             gateway.start();
             assertTrue(gateway.awaitStatus(deviceId, TcpDeviceConnection.ConnectionStatus.RECONNECTING,
                     Duration.ofSeconds(3)));

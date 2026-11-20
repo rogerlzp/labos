@@ -21,12 +21,18 @@ import java.util.UUID;
  *       {@code idempotencyClass}, and JSON {@code payload}.</li>
  *   <li>{@code HEARTBEAT_PING}: transport liveness probe carrying {@code deviceId},
  *       {@code pingId}, and {@code sentAtEpochMs}.</li>
+ *   <li>{@code EVENT_ACK}: explicit durable-persistence confirmation for a device event
+ *       ({@code sourceMessageId}, {@code commandId}, {@code status}).</li>
+ *   <li>{@code EVENT_NACK}: explicit rejection or retryable backpressure/transient-failure
+ *       signal ({@code sourceMessageId}, {@code commandId}, {@code retryable}, {@code reason})
+ *       so device events are NEVER silently dropped.</li>
  * </ul>
  *
  * <p>Inbound frames (Device -> Gateway):
  * <ul>
- *   <li>{@code HEARTBEAT_PONG} / {@code HEARTBEAT}: transport liveness response; consumed
- *       exclusively by the Gateway and NEVER forwarded into Command state transitions.</li>
+ *   <li>{@code HEARTBEAT_PONG} / {@code HEARTBEAT}: transport liveness response; must carry
+ *       matching {@code deviceId} and an active unconsumed {@code pingId} for the current
+ *       connection epoch; NEVER forwarded into Command state transitions.</li>
  *   <li>{@code DEVICE_EVENT}: command progress or terminal receipt carrying {@code sourceMessageId},
  *       {@code messageType}, {@code runId}, {@code commandId}, {@code deviceId}, {@code targetState},
  *       optional {@code deviceSequence}, and JSON {@code outcome}.</li>
@@ -38,6 +44,8 @@ public final class GatewayWireProtocol {
     public static final String FRAME_HEARTBEAT_PONG = "HEARTBEAT_PONG";
     public static final String FRAME_HEARTBEAT = "HEARTBEAT";
     public static final String FRAME_DEVICE_EVENT = "DEVICE_EVENT";
+    public static final String FRAME_EVENT_ACK = "EVENT_ACK";
+    public static final String FRAME_EVENT_NACK = "EVENT_NACK";
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -99,6 +107,30 @@ public final class GatewayWireProtocol {
         return (JSON.writeValueAsString(root) + "\n").getBytes(StandardCharsets.UTF_8);
     }
 
+    public static byte[] encodeEventAck(
+            String deviceId, String sourceMessageId, UUID commandId, String status) throws IOException {
+        ObjectNode root = JSON.createObjectNode();
+        root.put("frameType", FRAME_EVENT_ACK);
+        root.put("deviceId", Objects.requireNonNull(deviceId, "deviceId"));
+        root.put("sourceMessageId", Objects.requireNonNull(sourceMessageId, "sourceMessageId"));
+        if (commandId != null) root.put("commandId", commandId.toString());
+        root.put("status", status == null || status.isBlank() ? "APPLIED" : status);
+        return (JSON.writeValueAsString(root) + "\n").getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static byte[] encodeEventNack(
+            String deviceId, String sourceMessageId, UUID commandId,
+            boolean retryable, String reason) throws IOException {
+        ObjectNode root = JSON.createObjectNode();
+        root.put("frameType", FRAME_EVENT_NACK);
+        root.put("deviceId", Objects.requireNonNull(deviceId, "deviceId"));
+        if (sourceMessageId != null) root.put("sourceMessageId", sourceMessageId);
+        if (commandId != null) root.put("commandId", commandId.toString());
+        root.put("retryable", retryable);
+        root.put("reason", reason == null || reason.isBlank() ? "NACK" : reason);
+        return (JSON.writeValueAsString(root) + "\n").getBytes(StandardCharsets.UTF_8);
+    }
+
     public static InboundFrame decodeInboundLine(String line) throws IOException {
         if (line == null || line.isBlank()) {
             throw new IllegalArgumentException("Blank wire frame");
@@ -109,7 +141,6 @@ public final class GatewayWireProtocol {
         }
         String frameType = optionalText(root, "frameType");
         if (frameType == null || frameType.isBlank()) {
-            // Allow devices that put HEARTBEAT / COMMAND_RESULT directly in messageType without frameType.
             String msgType = optionalText(root, "messageType");
             if (FRAME_HEARTBEAT.equals(msgType) || FRAME_HEARTBEAT_PONG.equals(msgType)) {
                 frameType = FRAME_HEARTBEAT_PONG;

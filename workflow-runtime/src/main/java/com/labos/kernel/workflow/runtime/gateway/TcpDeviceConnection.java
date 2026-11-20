@@ -12,9 +12,16 @@ import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ExecutorService;
+import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -23,18 +30,22 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * Single managed persistent TCP connection for one registered {@code deviceId}.
  *
- * <p>Core safety and concurrency invariants:
+ * <p>Core safety and reliability invariants:
  * <ul>
- *   <li>All outbound writes ({@code COMMAND_SEND} and {@code HEARTBEAT_PING}) are serialized under
- *       {@link #writeLock} so concurrent threads never interleave NDJSON frames.</li>
- *   <li>Connection epoch gating prevents a stale transport error from tearing down a freshly
- *       reconnected socket.</li>
+ *   <li>All outbound writes ({@code COMMAND_SEND}, {@code HEARTBEAT_PING}, {@code EVENT_ACK},
+ *       {@code EVENT_NACK}) are serialized under {@link #writeLock} so concurrent threads never
+ *       interleave NDJSON frames.</li>
+ *   <li>Each device runs its own dedicated heartbeat scheduler so a stalled peer can never
+ *       block heartbeat supervision of other registered devices.</li>
+ *   <li>Every {@code HEARTBEAT_PONG} must carry matching non-blank {@code deviceId} and an
+ *       active, unconsumed {@code pingId} issued during the current {@code connectionEpoch};
+ *       unsolicited, duplicate, or cross-epoch PONGs never refresh liveness.</li>
+ *   <li>Inbound device events are buffered in a strictly bounded per-device queue and answered
+ *       with explicit {@code EVENT_ACK} or {@code EVENT_NACK} (retryable on backpressure /
+ *       transient DB failure, non-retryable on permanent protocol/domain rejection) so events
+ *       are NEVER silently dropped.</li>
  *   <li>Reconnect ONLY restores transport liveness; this class maintains NO command retry buffer
  *       and NEVER auto-resends a previously attempted command after disconnect/reconnect.</li>
- *   <li>{@code HEARTBEAT_PONG}/{@code HEARTBEAT} frames update health state only and NEVER enter
- *       {@link DeviceEventSink}.</li>
- *   <li>Inbound device events execute serially on a per-device event thread so slow persistence
- *       never stalls {@code HEARTBEAT_PONG} reads while preserving wire arrival order.</li>
  * </ul>
  */
 public final class TcpDeviceConnection implements AutoCloseable {
@@ -64,7 +75,19 @@ public final class TcpDeviceConnection implements AutoCloseable {
             Duration heartbeatTimeout,
             Duration initialReconnectDelay,
             Duration maxReconnectDelay,
-            int maxFrameBytes) {
+            int maxFrameBytes,
+            int maxEventQueueSize) {
+        public Config(
+                Duration connectTimeout,
+                Duration heartbeatInterval,
+                Duration heartbeatTimeout,
+                Duration initialReconnectDelay,
+                Duration maxReconnectDelay,
+                int maxFrameBytes) {
+            this(connectTimeout, heartbeatInterval, heartbeatTimeout,
+                    initialReconnectDelay, maxReconnectDelay, maxFrameBytes, 256);
+        }
+
         public Config {
             Objects.requireNonNull(connectTimeout, "connectTimeout");
             Objects.requireNonNull(heartbeatInterval, "heartbeatInterval");
@@ -83,6 +106,8 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 throw new IllegalArgumentException("maxReconnectDelay must be >= initialReconnectDelay");
             if (maxFrameBytes < 256 || maxFrameBytes > 4 * 1024 * 1024)
                 throw new IllegalArgumentException("maxFrameBytes must be in 256..4194304");
+            if (maxEventQueueSize < 1 || maxEventQueueSize > 65536)
+                throw new IllegalArgumentException("maxEventQueueSize must be in 1..65536");
         }
 
         public static Config defaults() {
@@ -92,7 +117,8 @@ public final class TcpDeviceConnection implements AutoCloseable {
                     Duration.ofSeconds(15),
                     Duration.ofMillis(200),
                     Duration.ofSeconds(5),
-                    65536);
+                    65536,
+                    256);
         }
     }
 
@@ -106,12 +132,17 @@ public final class TcpDeviceConnection implements AutoCloseable {
             long commandsWritten,
             long heartbeatsSent,
             long heartbeatsReceived,
+            long invalidHeartbeatsRejected,
             long eventsDelivered,
             long eventsRejected,
+            long eventsTransientNacked,
+            long eventsBackpressureNacked,
             long spoofedFramesRejected,
             long malformedFrames) {}
 
     private record ActiveTransport(long epoch, Socket socket, OutputStream out, BufferedInputStream in) {}
+
+    private record PendingInboundEvent(long epoch, DeviceEventSink.InboundDeviceEvent event) {}
 
     private final Endpoint endpoint;
     private final Config config;
@@ -123,6 +154,8 @@ public final class TcpDeviceConnection implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicLong epochSeq = new AtomicLong(0);
     private final AtomicLong pingSeq = new AtomicLong(0);
+    private final Map<String, Long> pendingPings = new ConcurrentHashMap<>();
+    private final BlockingQueue<PendingInboundEvent> eventQueue;
 
     private volatile ActiveTransport transport;
     private volatile ConnectionStatus status = ConnectionStatus.DISCONNECTED;
@@ -134,20 +167,25 @@ public final class TcpDeviceConnection implements AutoCloseable {
     private final AtomicLong commandsWritten = new AtomicLong(0);
     private final AtomicLong heartbeatsSent = new AtomicLong(0);
     private final AtomicLong heartbeatsReceived = new AtomicLong(0);
+    private final AtomicLong invalidHeartbeatsRejected = new AtomicLong(0);
     private final AtomicLong eventsDelivered = new AtomicLong(0);
     private final AtomicLong eventsRejected = new AtomicLong(0);
+    private final AtomicLong eventsTransientNacked = new AtomicLong(0);
+    private final AtomicLong eventsBackpressureNacked = new AtomicLong(0);
     private final AtomicLong spoofedFramesRejected = new AtomicLong(0);
     private final AtomicLong malformedFrames = new AtomicLong(0);
 
-    private final ExecutorService eventExecutor;
+    private final ScheduledExecutorService heartbeatScheduler;
     private volatile Thread ioThread;
+    private volatile Thread eventThread;
 
     public TcpDeviceConnection(Endpoint endpoint, Config config, DeviceEventSink eventSink) {
         this.endpoint = Objects.requireNonNull(endpoint, "endpoint");
         this.config = Objects.requireNonNull(config, "config");
         this.eventSink = Objects.requireNonNull(eventSink, "eventSink");
-        this.eventExecutor = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "labos-gw-event-" + endpoint.deviceId());
+        this.eventQueue = new ArrayBlockingQueue<>(config.maxEventQueueSize());
+        this.heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "labos-gw-hb-" + endpoint.deviceId());
             t.setDaemon(true);
             return t;
         });
@@ -164,10 +202,22 @@ public final class TcpDeviceConnection implements AutoCloseable {
         if (!started.compareAndSet(false, true)) {
             return;
         }
-        Thread t = new Thread(this::connectionLoop, "labos-gw-io-" + endpoint.deviceId());
-        t.setDaemon(true);
-        this.ioThread = t;
-        t.start();
+        Thread evt = new Thread(this::eventLoop, "labos-gw-event-" + endpoint.deviceId());
+        evt.setDaemon(true);
+        this.eventThread = evt;
+        evt.start();
+
+        Thread io = new Thread(this::connectionLoop, "labos-gw-io-" + endpoint.deviceId());
+        io.setDaemon(true);
+        this.ioThread = io;
+        io.start();
+
+        long intervalMs = config.heartbeatInterval().toMillis();
+        heartbeatScheduler.scheduleAtFixedRate(
+                this::heartbeatTickSafe,
+                intervalMs,
+                intervalMs,
+                TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -217,9 +267,17 @@ public final class TcpDeviceConnection implements AutoCloseable {
         }
     }
 
+    private void heartbeatTickSafe() {
+        try {
+            heartbeatTick();
+        } catch (Throwable ignored) {
+            // Keep per-device heartbeat scheduler alive across unexpected errors.
+        }
+    }
+
     /**
-     * Triggered periodically by {@link DeviceGateway}'s heartbeat scheduler.
-     * Checks heartbeat liveness timeout first, then writes a {@code HEARTBEAT_PING} frame if ONLINE.
+     * Checks heartbeat liveness timeout first, then issues a unique epoch-bound
+     * {@code HEARTBEAT_PING} frame if {@code ONLINE}.
      */
     void heartbeatTick() {
         if (closed.get()) return;
@@ -227,12 +285,12 @@ public final class TcpDeviceConnection implements AutoCloseable {
         if (status != ConnectionStatus.ONLINE || active == null) {
             return;
         }
-        long elapsedNanos = System.nanoTime() - lastPongNanos;
-        if (elapsedNanos > config.heartbeatTimeout().toNanos()) {
+        long nowNanos = System.nanoTime();
+        if (nowNanos - lastPongNanos > config.heartbeatTimeout().toNanos()) {
             handleTransportFailure(active.epoch());
             return;
         }
-        String pingId = "ping-" + pingSeq.incrementAndGet();
+        String pingId = "ping-" + active.epoch() + "-" + pingSeq.incrementAndGet();
         byte[] pingBytes;
         try {
             pingBytes = GatewayWireProtocol.encodeHeartbeatPing(
@@ -246,11 +304,18 @@ public final class TcpDeviceConnection implements AutoCloseable {
             if (closed.get() || status != ConnectionStatus.ONLINE || current == null || current.epoch() != active.epoch()) {
                 return;
             }
+            // Bound pendingPings against leaks on long-running connections.
+            if (pendingPings.size() > 64) {
+                long cutoffNanos = nowNanos - config.heartbeatTimeout().toNanos() * 2L;
+                pendingPings.entrySet().removeIf(e -> e.getValue() < cutoffNanos);
+            }
+            pendingPings.put(pingId, nowNanos);
             try {
                 current.out().write(pingBytes);
                 current.out().flush();
                 heartbeatsSent.incrementAndGet();
             } catch (IOException ioe) {
+                pendingPings.remove(pingId);
                 handleTransportFailure(current.epoch());
             }
         } finally {
@@ -287,8 +352,11 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 commandsWritten.get(),
                 heartbeatsSent.get(),
                 heartbeatsReceived.get(),
+                invalidHeartbeatsRejected.get(),
                 eventsDelivered.get(),
                 eventsRejected.get(),
+                eventsTransientNacked.get(),
+                eventsBackpressureNacked.get(),
                 spoofedFramesRejected.get(),
                 malformedFrames.get());
     }
@@ -310,7 +378,6 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 continue;
             }
 
-            // Reset backoff upon clean connection establishment.
             backoffMs = config.initialReconnectDelay().toMillis();
             readLoop(active);
             handleTransportFailure(active.epoch());
@@ -351,6 +418,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
                     return null;
                 }
                 Instant now = Instant.now();
+                pendingPings.clear();
                 this.transport = active;
                 this.lastConnectedAt = now;
                 this.lastPongAt = now;
@@ -375,7 +443,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
                     if (!oversized && lineBuf.size() > 0) {
                         String trailing = stripTrailingCr(lineBuf.toByteArray());
                         if (!trailing.isBlank()) {
-                            dispatchInboundLine(trailing);
+                            dispatchInboundLine(active, trailing);
                         }
                     } else if (oversized) {
                         malformedFrames.incrementAndGet();
@@ -392,7 +460,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
                     String line = stripTrailingCr(lineBuf.toByteArray());
                     lineBuf.reset();
                     if (!line.isBlank()) {
-                        dispatchInboundLine(line);
+                        dispatchInboundLine(active, line);
                     }
                     continue;
                 }
@@ -415,15 +483,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
         }
     }
 
-    private static String stripTrailingCr(byte[] raw) {
-        int len = raw.length;
-        if (len > 0 && raw[len - 1] == '\r') {
-            len--;
-        }
-        return new String(raw, 0, len, StandardCharsets.UTF_8);
-    }
-
-    private void dispatchInboundLine(String line) {
+    private void dispatchInboundLine(ActiveTransport active, String line) {
         GatewayWireProtocol.InboundFrame frame;
         try {
             frame = GatewayWireProtocol.decodeInboundLine(line);
@@ -433,9 +493,20 @@ public final class TcpDeviceConnection implements AutoCloseable {
         }
 
         if (frame instanceof GatewayWireProtocol.HeartbeatPongFrame pong) {
-            if (pong.deviceId() != null && !pong.deviceId().isBlank()
-                    && !endpoint.deviceId().equals(pong.deviceId())) {
+            // Strict P1-02 validation: non-blank matching deviceId + active unconsumed pingId for current epoch!
+            if (pong.deviceId() == null || pong.deviceId().isBlank()
+                    || !endpoint.deviceId().equals(pong.deviceId())) {
+                invalidHeartbeatsRejected.incrementAndGet();
                 spoofedFramesRejected.incrementAndGet();
+                return;
+            }
+            if (pong.pingId() == null || pong.pingId().isBlank()) {
+                invalidHeartbeatsRejected.incrementAndGet();
+                return;
+            }
+            Long sentAtNanos = pendingPings.remove(pong.pingId());
+            if (sentAtNanos == null || this.transport != active) {
+                invalidHeartbeatsRejected.incrementAndGet();
                 return;
             }
             lastPongNanos = System.nanoTime();
@@ -447,8 +518,9 @@ public final class TcpDeviceConnection implements AutoCloseable {
         GatewayWireProtocol.DeviceEventFrame evFrame = (GatewayWireProtocol.DeviceEventFrame) frame;
         if (evFrame.claimedDeviceId() != null && !evFrame.claimedDeviceId().isBlank()
                 && !endpoint.deviceId().equals(evFrame.claimedDeviceId())) {
-            // Transport-level spoofing defense: frame on device A's socket claiming to be device B is dropped.
             spoofedFramesRejected.incrementAndGet();
+            writeEventNack(active.epoch(), evFrame.sourceMessageId(), evFrame.commandId(),
+                    false, "DEVICE_ID_MISMATCH");
             return;
         }
 
@@ -463,19 +535,107 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 evFrame.deviceSequence(),
                 evFrame.outcomeJson());
 
-        if (closed.get()) return;
+        if (closed.get()) {
+            writeEventNack(active.epoch(), event.sourceMessageId(), event.commandId(),
+                    true, "GATEWAY_CLOSING");
+            return;
+        }
+
+        if (!eventQueue.offer(new PendingInboundEvent(active.epoch(), event))) {
+            // Bounded queue backpressure: explicitly NACK retryable so device retries instead of silent drop or OOM.
+            eventsBackpressureNacked.incrementAndGet();
+            writeEventNack(active.epoch(), event.sourceMessageId(), event.commandId(),
+                    true, "GATEWAY_BACKPRESSURE");
+        }
+    }
+
+    private void eventLoop() {
+        while (!closed.get()) {
+            PendingInboundEvent pending;
+            try {
+                pending = eventQueue.poll(100L, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                if (closed.get()) break;
+                continue;
+            }
+            if (pending == null) continue;
+            processPendingEvent(pending);
+        }
+        // Best-effort retryable NACK for any events still queued during shutdown.
+        List<PendingInboundEvent> remaining = new ArrayList<>();
+        eventQueue.drainTo(remaining);
+        for (PendingInboundEvent item : remaining) {
+            writeEventNack(item.epoch(), item.event().sourceMessageId(), item.event().commandId(),
+                    true, "GATEWAY_CLOSING");
+        }
+    }
+
+    private void processPendingEvent(PendingInboundEvent pending) {
+        DeviceEventSink.InboundDeviceEvent event = pending.event();
+        DeviceEventSink.DeliveryResult result;
         try {
-            eventExecutor.execute(() -> {
-                if (closed.get()) return;
-                try {
-                    eventSink.onDeviceEvent(event);
-                    eventsDelivered.incrementAndGet();
-                } catch (Throwable rejected) {
-                    eventsRejected.incrementAndGet();
-                }
-            });
-        } catch (RuntimeException executorClosed) {
-            // Ignore late frames arriving concurrently with close().
+            result = Objects.requireNonNull(
+                    eventSink.onDeviceEvent(event),
+                    "DeviceEventSink returned null DeliveryResult");
+        } catch (Throwable unhandled) {
+            result = DeviceEventSink.DeliveryResult.nackRetryable(
+                    unhandled.getClass().getSimpleName() + ": " + safeMessage(unhandled));
+        }
+        switch (result.disposition()) {
+            case ACKED -> {
+                eventsDelivered.incrementAndGet();
+                writeEventAck(pending.epoch(), event.sourceMessageId(), event.commandId(), result.status());
+            }
+            case NACK_RETRYABLE -> {
+                eventsTransientNacked.incrementAndGet();
+                writeEventNack(pending.epoch(), event.sourceMessageId(), event.commandId(),
+                        true, result.reason());
+            }
+            case NACK_PERMANENT -> {
+                eventsRejected.incrementAndGet();
+                writeEventNack(pending.epoch(), event.sourceMessageId(), event.commandId(),
+                        false, result.reason());
+            }
+        }
+    }
+
+    private void writeEventAck(long expectedEpoch, String sourceMessageId, UUID commandId, String status) {
+        byte[] bytes;
+        try {
+            bytes = GatewayWireProtocol.encodeEventAck(endpoint.deviceId(), sourceMessageId, commandId, status);
+        } catch (IOException ignored) {
+            return;
+        }
+        writeControlFrame(expectedEpoch, bytes);
+    }
+
+    private void writeEventNack(
+            long expectedEpoch, String sourceMessageId, UUID commandId, boolean retryable, String reason) {
+        byte[] bytes;
+        try {
+            bytes = GatewayWireProtocol.encodeEventNack(
+                    endpoint.deviceId(), sourceMessageId, commandId, retryable, reason);
+        } catch (IOException ignored) {
+            return;
+        }
+        writeControlFrame(expectedEpoch, bytes);
+    }
+
+    private void writeControlFrame(long expectedEpoch, byte[] bytes) {
+        writeLock.lock();
+        try {
+            ActiveTransport current = this.transport;
+            if (current == null || current.epoch() != expectedEpoch) {
+                return;
+            }
+            try {
+                current.out().write(bytes);
+                current.out().flush();
+            } catch (IOException ioe) {
+                handleTransportFailure(current.epoch());
+            }
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -485,6 +645,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
             ActiveTransport current = this.transport;
             if (current != null && current.epoch() == failedEpoch) {
                 this.transport = null;
+                pendingPings.clear();
                 toClose = current;
                 if (!closed.get()) {
                     this.status = ConnectionStatus.RECONNECTING;
@@ -531,17 +692,31 @@ public final class TcpDeviceConnection implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
+        heartbeatScheduler.shutdownNow();
         ActiveTransport active;
         synchronized (stateLock) {
             active = this.transport;
             this.transport = null;
+            pendingPings.clear();
             this.status = ConnectionStatus.CLOSED;
             stateLock.notifyAll();
         }
         if (active != null) {
             closeQuietly(active.socket());
         }
-        Thread t = this.ioThread;
+        joinQuietly(this.ioThread);
+        joinQuietly(this.eventThread);
+        try {
+            if (!heartbeatScheduler.awaitTermination(3, TimeUnit.SECONDS)) {
+                heartbeatScheduler.shutdownNow();
+            }
+        } catch (InterruptedException ie) {
+            heartbeatScheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void joinQuietly(Thread t) {
         if (t != null && t != Thread.currentThread()) {
             t.interrupt();
             try {
@@ -550,15 +725,18 @@ public final class TcpDeviceConnection implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
-        eventExecutor.shutdown();
-        try {
-            if (!eventExecutor.awaitTermination(3, TimeUnit.SECONDS)) {
-                eventExecutor.shutdownNow();
-            }
-        } catch (InterruptedException ie) {
-            eventExecutor.shutdownNow();
-            Thread.currentThread().interrupt();
+    }
+
+    private static String stripTrailingCr(byte[] raw) {
+        int len = raw.length;
+        if (len > 0 && raw[len - 1] == '\r') {
+            len--;
         }
+        return new String(raw, 0, len, StandardCharsets.UTF_8);
+    }
+
+    private static String safeMessage(Throwable t) {
+        return t == null || t.getMessage() == null ? "" : t.getMessage();
     }
 
     private static void closeQuietly(Socket socket) {

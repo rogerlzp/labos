@@ -22,8 +22,8 @@ import java.util.function.BiConsumer;
 
 /**
  * Test-only loopback ({@code 127.0.0.1:0}) Mock TCP Device Server speaking {@link GatewayWireProtocol}.
- * Supports programmable command handlers, heartbeat PONG suppression, forced disconnect,
- * raw frame injection, and frame-integrity accounting.
+ * Supports programmable command handlers, custom heartbeat handlers, {@code EVENT_ACK}/{@code EVENT_NACK}
+ * recording and callbacks, forced disconnect, and raw frame injection.
  */
 final class MockTcpDeviceServer implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -35,10 +35,17 @@ final class MockTcpDeviceServer implements AutoCloseable {
     private final AtomicInteger acceptedConnections = new AtomicInteger(0);
     private final AtomicInteger heartbeatsReceived = new AtomicInteger(0);
     private final AtomicInteger parseErrors = new AtomicInteger(0);
+    private final AtomicReference<String> lastPingId = new AtomicReference<>();
     private final List<JsonNode> receivedCommands = new CopyOnWriteArrayList<>();
+    private final List<JsonNode> receivedEventAcks = new CopyOnWriteArrayList<>();
+    private final List<JsonNode> receivedEventNacks = new CopyOnWriteArrayList<>();
     private final AtomicReference<ClientSession> activeSession = new AtomicReference<>();
     private final AtomicReference<BiConsumer<JsonNode, ClientSession>> commandHandler =
             new AtomicReference<>((cmd, session) -> {});
+    private final AtomicReference<BiConsumer<JsonNode, ClientSession>> customPingHandler =
+            new AtomicReference<>(null);
+    private final AtomicReference<BiConsumer<JsonNode, ClientSession>> eventAckOrNackHandler =
+            new AtomicReference<>((frame, session) -> {});
     private final Thread acceptThread;
 
     final class ClientSession {
@@ -77,9 +84,13 @@ final class MockTcpDeviceServer implements AutoCloseable {
         }
 
         synchronized void sendHeartbeatPong(String pingId) throws IOException {
+            sendHeartbeatPong(deviceId, pingId);
+        }
+
+        synchronized void sendHeartbeatPong(String pongDeviceId, String pingId) throws IOException {
             ObjectNode pong = JSON.createObjectNode();
             pong.put("frameType", GatewayWireProtocol.FRAME_HEARTBEAT_PONG);
-            pong.put("deviceId", deviceId);
+            if (pongDeviceId != null) pong.put("deviceId", pongDeviceId);
             if (pingId != null) pong.put("pingId", pingId);
             pong.put("deviceEpochMs", System.currentTimeMillis());
             sendJson(pong);
@@ -113,6 +124,14 @@ final class MockTcpDeviceServer implements AutoCloseable {
         this.commandHandler.set(Objects.requireNonNull(handler, "handler"));
     }
 
+    void setCustomPingHandler(BiConsumer<JsonNode, ClientSession> handler) {
+        this.customPingHandler.set(handler);
+    }
+
+    void setEventAckOrNackHandler(BiConsumer<JsonNode, ClientSession> handler) {
+        this.eventAckOrNackHandler.set(Objects.requireNonNull(handler, "handler"));
+    }
+
     void setReplyToHeartbeats(boolean enabled) {
         this.replyToHeartbeats.set(enabled);
     }
@@ -125,12 +144,24 @@ final class MockTcpDeviceServer implements AutoCloseable {
         return heartbeatsReceived.get();
     }
 
+    String lastPingId() {
+        return lastPingId.get();
+    }
+
     int parseErrors() {
         return parseErrors.get();
     }
 
     List<JsonNode> receivedCommands() {
         return List.copyOf(receivedCommands);
+    }
+
+    List<JsonNode> receivedEventAcks() {
+        return List.copyOf(receivedEventAcks);
+    }
+
+    List<JsonNode> receivedEventNacks() {
+        return List.copyOf(receivedEventNacks);
     }
 
     ClientSession activeSession() {
@@ -183,16 +214,31 @@ final class MockTcpDeviceServer implements AutoCloseable {
                     continue;
                 }
                 String frameType = node.path("frameType").asText("");
-                if (GatewayWireProtocol.FRAME_HEARTBEAT_PING.equals(frameType)) {
-                    heartbeatsReceived.incrementAndGet();
-                    if (replyToHeartbeats.get()) {
-                        session.sendHeartbeatPong(node.path("pingId").asText(""));
+                switch (frameType) {
+                    case GatewayWireProtocol.FRAME_HEARTBEAT_PING -> {
+                        heartbeatsReceived.incrementAndGet();
+                        String pingId = node.path("pingId").asText("");
+                        lastPingId.set(pingId);
+                        BiConsumer<JsonNode, ClientSession> custom = customPingHandler.get();
+                        if (custom != null) {
+                            custom.accept(node, session);
+                        } else if (replyToHeartbeats.get()) {
+                            session.sendHeartbeatPong(pingId);
+                        }
                     }
-                } else if (GatewayWireProtocol.FRAME_COMMAND_SEND.equals(frameType)) {
-                    receivedCommands.add(node);
-                    commandHandler.get().accept(node, session);
-                } else {
-                    parseErrors.incrementAndGet();
+                    case GatewayWireProtocol.FRAME_COMMAND_SEND -> {
+                        receivedCommands.add(node);
+                        commandHandler.get().accept(node, session);
+                    }
+                    case GatewayWireProtocol.FRAME_EVENT_ACK -> {
+                        receivedEventAcks.add(node);
+                        eventAckOrNackHandler.get().accept(node, session);
+                    }
+                    case GatewayWireProtocol.FRAME_EVENT_NACK -> {
+                        receivedEventNacks.add(node);
+                        eventAckOrNackHandler.get().accept(node, session);
+                    }
+                    default -> parseErrors.incrementAndGet();
                 }
             }
         } catch (IOException ignored) {
