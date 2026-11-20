@@ -160,6 +160,7 @@ public final class WorkflowRuntimeRepository {
                       AND c.fact_type='SIDE_EFFECT_COMPLETED'
                       AND c.side_effect_key IS NOT NULL
                       AND c.side_effect_key=s.side_effect_key
+                      AND c.fact_seq > s.fact_seq
                  )
             )
             """, Boolean.class, tenantId, attemptId, tenantId, attemptId);
@@ -673,6 +674,9 @@ public final class WorkflowRuntimeRepository {
                         "Attempt completion replay differs from committed outputKey, result, or exported variables");
             }
             requireRunAdmitsAttemptTermination(head, "complete");
+            if (!"STARTED".equals(states.get(0))) {
+                throw new StaleRuntimeWriteException("Attempt is not STARTED");
+            }
             String sideEffectClass=jdbc.queryForObject("""
                 SELECT side_effect_class FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND attempt_id=?
@@ -684,6 +688,10 @@ public final class WorkflowRuntimeRepository {
                     """,Integer.class,tenantId,attemptId);
                 if(commandSucceeded==null||commandSucceeded!=1)
                     throw new IllegalStateException("Device Attempt requires a SUCCEEDED Command before output commit");
+            }
+            if (hasUnresolvedSideEffectForAttempt(tenantId, attemptId)) {
+                throw new InvalidTransitionException(
+                        "Cannot complete Attempt while unresolved or unknown side-effect facts remain");
             }
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='SUCCEEDED',
@@ -1136,6 +1144,7 @@ public final class WorkflowRuntimeRepository {
                            AND c.fact_type='SIDE_EFFECT_COMPLETED'
                            AND c.side_effect_key IS NOT NULL
                            AND c.side_effect_key=s.side_effect_key
+                           AND c.fact_seq > s.fact_seq
                       )
                  )
                )
@@ -1191,6 +1200,7 @@ public final class WorkflowRuntimeRepository {
                                AND c.fact_type='SIDE_EFFECT_COMPLETED'
                                AND c.side_effect_key IS NOT NULL
                                AND c.side_effect_key=s.side_effect_key
+                               AND c.fact_seq > s.fact_seq
                           )
                      )
                      OR EXISTS (

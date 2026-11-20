@@ -127,6 +127,12 @@ class WorkflowRuntimeRepositoryTest {
                 "SUCCEEDED","seq-1","{\"verified\":true}"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='SIDE_EFFECT_COMPLETED' AND actor_kind='DEVICE'"));
 
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.completeAttempt(tenant,first.runId(),reservation.attemptId(),"result","{\"ok\":true}"),
+                "Attempt cannot succeed while worker-call-1 SIDE_EFFECT_STARTED has no matching SIDE_EFFECT_COMPLETED");
+        assertTrue(repo.recordSideEffectFact(tenant,first.runId(),reservation.attemptId(),
+                "worker-1","worker-call-1","worker-call-1-done","SIDE_EFFECT_COMPLETED","{\"phase\":\"after-adapter\"}"));
+
         repo.completeAttempt(tenant,first.runId(),reservation.attemptId(),"result",
                 "{\"ok\":true}");
         UUID completedActivation=activationForAttempt(ds,tenant,reservation.attemptId());
@@ -1887,6 +1893,91 @@ class WorkflowRuntimeRepositoryTest {
         repo.completeAttempt(tenant,run2.runId(),res2.attemptId(),"out","{\"done\":true}");
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
                 tenant+"' AND attempt_id='"+res2.attemptId()+"' AND attempt_state='SUCCEEDED'"));
+    }
+
+    @Test
+    void completeAttemptRequiresAllStartedAndUnknownSideEffectsClosedByIdentity() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','se-complete-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        // 1. SIDE_EFFECT_STARTED without SIDE_EFFECT_COMPLETED must reject completeAttempt without mutating Attempt/output.
+        var run1=repo.createRun(tenant,"se-comp-1-"+UUID.randomUUID(),"CREATE","{}",
+                "se-comp-1-"+tenant,"1",new byte[32],"ci","{}","{}","task-1");
+        repo.startRun(tenant,run1.runId());
+        var res1=repo.reserveCapacity(tenant,run1.runId(),"se-comp-cap-1",1,"task-1","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run1.runId(),res1.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run1.runId(),res1.attemptId(),res1.dispatchId(),"w1");
+        repo.startAttempt(tenant,run1.runId(),res1.attemptId(),res1.dispatchId(),"w1");
+        assertTrue(repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                "w1","op-1","op-1-start","SIDE_EFFECT_STARTED","{}"));
+
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.completeAttempt(tenant,run1.runId(),res1.attemptId(),"out","{\"ok\":true}"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res1.attemptId()+"' AND attempt_state='STARTED'"));
+        assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.branch_output WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run1.runId()+"'"));
+
+        // 2. SIDE_EFFECT_UNKNOWN without subsequent matching SIDE_EFFECT_COMPLETED must reject completeAttempt;
+        //    only after matching COMPLETED (fact_seq > unknown.fact_seq) is recorded may completeAttempt succeed.
+        assertTrue(repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                "w1","op-1","op-1-unk","SIDE_EFFECT_UNKNOWN","{\"reason\":\"timeout\"}"));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.completeAttempt(tenant,run1.runId(),res1.attemptId(),"out","{\"ok\":true}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                "w1","op-1","op-1-done","SIDE_EFFECT_COMPLETED","{\"verified\":true}"));
+        repo.completeAttempt(tenant,run1.runId(),res1.attemptId(),"out","{\"ok\":true}");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res1.attemptId()+"' AND attempt_state='SUCCEEDED'"));
+
+        // 3. Multiple side effects (op-A, op-B): partial completion rejects; both paired completions allow completeAttempt.
+        var run2=repo.createRun(tenant,"se-comp-2-"+UUID.randomUUID(),"CREATE","{}",
+                "se-comp-2-"+tenant,"1",new byte[32],"ci","{}","{}","task-2");
+        repo.startRun(tenant,run2.runId());
+        var res2=repo.reserveCapacity(tenant,run2.runId(),"se-comp-cap-2",1,"task-2","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run2.runId(),res2.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run2.runId(),res2.attemptId(),res2.dispatchId(),"w2");
+        repo.startAttempt(tenant,run2.runId(),res2.attemptId(),res2.dispatchId(),"w2");
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-A","op-A-start","SIDE_EFFECT_STARTED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-B","op-B-start","SIDE_EFFECT_STARTED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-A","op-A-done","SIDE_EFFECT_COMPLETED","{}"));
+
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.completeAttempt(tenant,run2.runId(),res2.attemptId(),"out","{\"ok\":true}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-B","op-B-done","SIDE_EFFECT_COMPLETED","{}"));
+        repo.completeAttempt(tenant,run2.runId(),res2.attemptId(),"out","{\"ok\":true}");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res2.attemptId()+"' AND attempt_state='SUCCEEDED'"));
+
+        // 4. SIDE_EFFECT_UNKNOWN appended AFTER SIDE_EFFECT_COMPLETED stays unresolved (fail-closed) and blocks completeAttempt.
+        var run3=repo.createRun(tenant,"se-comp-3-"+UUID.randomUUID(),"CREATE","{}",
+                "se-comp-3-"+tenant,"1",new byte[32],"ci","{}","{}","task-3");
+        repo.startRun(tenant,run3.runId());
+        var res3=repo.reserveCapacity(tenant,run3.runId(),"se-comp-cap-3",1,"task-3","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run3.runId(),res3.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run3.runId(),res3.attemptId(),res3.dispatchId(),"w3");
+        repo.startAttempt(tenant,run3.runId(),res3.attemptId(),res3.dispatchId(),"w3");
+        assertTrue(repo.recordSideEffectFact(tenant,run3.runId(),res3.attemptId(),
+                "w3","op-3","op-3-start","SIDE_EFFECT_STARTED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run3.runId(),res3.attemptId(),
+                "w3","op-3","op-3-done","SIDE_EFFECT_COMPLETED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run3.runId(),res3.attemptId(),
+                "w3","op-3","op-3-late-unk","SIDE_EFFECT_UNKNOWN","{\"anomaly\":true}"));
+
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.completeAttempt(tenant,run3.runId(),res3.attemptId(),"out","{\"ok\":true}"));
+        // Escalate cleanly via failAttempt so no STARTED attempt leaks into startupRecoveryScansBeyondOneBatch.
+        assertEquals("MANUAL_REQUIRED",
+                repo.failAttempt(tenant,run3.runId(),res3.attemptId(),"{\"err\":\"post-complete-unknown\"}",false).outcome());
     }
 
 }
