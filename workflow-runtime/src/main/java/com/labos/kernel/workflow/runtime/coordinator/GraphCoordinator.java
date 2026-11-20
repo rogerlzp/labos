@@ -272,15 +272,19 @@ public final class GraphCoordinator {
                              Map<String, List<GraphPlan.Edge>> outgoing) {
         for (GraphPlan.Node node : plan.nodes()) {
             List<GraphPlan.Edge> edges=outgoing.getOrDefault(node.key(),List.of());
+            for(GraphPlan.Edge edge:edges) {
+                if(edge.defaultFlow() && edge.condition()!=null)
+                    throw new IllegalStateException("Default flow cannot carry a condition: "+edge.key());
+                if(edge.condition()!=null) RestrictedExpressionEvaluator.validateSyntax(edge.condition());
+            }
             switch (node.kind()) {
-                case START -> exactlyOne(node,edges);
+                case START -> requireUnconditional(node,exactlyOne(node,edges));
                 case END -> {
                     if(!edges.isEmpty()) throw new IllegalStateException("End node has outgoing edges: "+node.key());
                 }
                 case TASK, BUILTIN -> {
                     exactlyOne(node,edges);
-                    if(edges.get(0).condition()!=null || edges.get(0).defaultFlow())
-                        throw new IllegalStateException("Conditional outgoing flows on TASK/BUILTIN are not supported in G1: "+node.key());
+                    requireUnconditional(node,edges);
                 }
                 case SPLIT_PARALLEL -> parallelTargets(node,edges);
                 case SPLIT_XOR, SPLIT_INCLUSIVE -> {
@@ -289,7 +293,7 @@ public final class GraphCoordinator {
                     long defaults=edges.stream().filter(GraphPlan.Edge::defaultFlow).count();
                     if(defaults>1) throw new IllegalStateException("Gateway has multiple default flows: "+node.key());
                 }
-                case JOIN_PARALLEL, JOIN_INCLUSIVE, JOIN_XOR -> exactlyOne(node,edges);
+                case JOIN_PARALLEL, JOIN_INCLUSIVE, JOIN_XOR -> requireUnconditional(node,exactlyOne(node,edges));
             }
         }
         for (GraphPlan.Node node : plan.nodes()) {
@@ -298,6 +302,12 @@ public final class GraphCoordinator {
                 rejectNestedSynchronizingSplit(edge.to(),nodes,outgoing,new java.util.HashSet<>());
             }
         }
+    }
+
+    private static List<GraphPlan.Edge> requireUnconditional(GraphPlan.Node node,List<GraphPlan.Edge> edges) {
+        if(edges.stream().anyMatch(edge -> edge.condition()!=null || edge.defaultFlow()))
+            throw new IllegalStateException("Conditional/default outgoing flows are not supported on "+node.kind()+": "+node.key());
+        return edges;
     }
 
     private static void rejectNestedSynchronizingSplit(String nodeKey,
