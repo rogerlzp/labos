@@ -47,6 +47,11 @@ public final class BpmnGraphCompiler {
                 Element el=(Element)all.item(i);
                 String local=el.getLocalName();
                 if(local==null) continue;
+                // Event definitions change execution semantics even when nested inside
+                // an otherwise supported Start/End Event. V1 has no event-trigger runtime.
+                if (BPMN_NS.equals(el.getNamespaceURI())
+                        && (local.equals("eventDefinition") || local.endsWith("EventDefinition")))
+                    throw new IllegalArgumentException("Unsupported BPMN event definition: "+local);
                 if(isUnsupported(local))
                     throw new IllegalArgumentException("Unsupported BPMN element: "+local+" id="+el.getAttribute("id"));
                 if(isExecutable(local)) {
@@ -127,7 +132,11 @@ public final class BpmnGraphCompiler {
         if(t.equals("startEvent")) return GraphPlan.Kind.START;
         if(t.equals("endEvent")) return GraphPlan.Kind.END;
         if(t.endsWith("Gateway")) {
-            boolean join=in>1;
+            boolean join=in>1, split=out>1;
+            // V1 supports only canonical 1-in/N-out splits and N-in/1-out joins.
+            // Mixed, pass-through, and zero-sided gateway shapes are rejected.
+            if(join==split || (split && in!=1) || (join && out!=1))
+                throw new IllegalArgumentException("Unsupported gateway shape; V1 requires exactly 1-in/N-out split or N-in/1-out join: "+t+" in="+in+" out="+out);
             return switch(t) {
                 case "parallelGateway" -> join?GraphPlan.Kind.JOIN_PARALLEL:GraphPlan.Kind.SPLIT_PARALLEL;
                 case "exclusiveGateway" -> join?GraphPlan.Kind.JOIN_XOR:GraphPlan.Kind.SPLIT_XOR;
