@@ -13,24 +13,29 @@ class BpmnGraphCompilerTest {
           <bpmn:definitions xmlns:bpmn="%s">
             <bpmn:process id="p">
               <bpmn:startEvent id="s"/>
-              <bpmn:exclusiveGateway id="g" default="f2"/>
+              <bpmn:exclusiveGateway id="g" default="f3"/>
               <bpmn:serviceTask id="t" name="dispense" protocolName="Dispense" resource="17" methodParams="{&quot;volume&quot;:10}"/>
               <bpmn:endEvent id="e"/>
+              <bpmn:endEvent id="e2"/>
               <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="g"/>
-              <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="t"/>
-              <bpmn:sequenceFlow id="f3" sourceRef="t" targetRef="e"/>
+              <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="t">
+                <bpmn:conditionExpression>${volume} &gt; 0</bpmn:conditionExpression>
+              </bpmn:sequenceFlow>
+              <bpmn:sequenceFlow id="f3" sourceRef="g" targetRef="e2"/>
+              <bpmn:sequenceFlow id="f4" sourceRef="t" targetRef="e"/>
             </bpmn:process>
           </bpmn:definitions>
           """.formatted(NS);
         GraphPlan plan=compiler.compile(new BpmnGraphCompiler.CompilationInput("42","7",xml,
                 Map.of("t",new BpmnGraphCompiler.NodeMetadata("LIQUID_HANDLING",9L))));
-        assertEquals(4,plan.nodes().size());
-        assertEquals(3,plan.edges().size());
-        assertTrue(plan.edges().stream().filter(e->e.key().equals("f2")).findFirst().orElseThrow().defaultFlow());
+        assertEquals(5,plan.nodes().size());
+        assertEquals(4,plan.edges().size());
+        assertTrue(plan.edges().stream().filter(e->e.key().equals("f3")).findFirst().orElseThrow().defaultFlow());
+        assertEquals("${volume} > 0",plan.edges().stream().filter(e->e.key().equals("f2")).findFirst().orElseThrow().condition());
         GraphPlan.Node task=plan.nodes().stream().filter(n->n.key().equals("t")).findFirst().orElseThrow();
         assertEquals("LIQUID_HANDLING",task.capabilityCode());
         assertEquals(9L,task.workflowNodeId());
-        assertTrue(GraphPlanCodec.toJson(plan).contains("\"condition\""));
+        assertTrue(GraphPlanCodec.toJson(plan).contains("\\"condition\\""));
         assertEquals(GraphPlanCodec.sha256(xml),plan.bpmnSha256());
     }
 
