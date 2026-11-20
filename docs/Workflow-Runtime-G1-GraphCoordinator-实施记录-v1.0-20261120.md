@@ -84,7 +84,7 @@ GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用�
 ### End Event
 
 - 普通 End 消费 Token。
-- Split 分支直接到 End 时记录为 \`$END\` 到达。
+- Split 分支直接到 End 时记录为 Join key 为空字符串的终止到达标记。
 - 同一 Split 不允许混合“部分分支直接 End、部分分支等待 Join”，也不允许不同分支进入不同 Join。直接 End 的分支使用空 Join key 作为终止标记，避免与 BPMN 节点 ID 冲突。
 - 全部 Token 与 Attempt 都终结后才将 Run 置为 SUCCEEDED；FAILED / CANCELLED / INVALIDATED 的 Token、Attempt、Activation，未关闭 Split、未释放 Join、仍 ACTIVE / WAITING 的 Branch 和已取消 Branch 都阻止 Run 成功。
 
