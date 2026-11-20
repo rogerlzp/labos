@@ -1,0 +1,76 @@
+package com.labos.kernel.workflow.runtime.coordinator;
+
+import com.labos.kernel.workflow.runtime.graph.GraphPlan;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class GraphCoordinatorTest {
+    private static GraphPlan.Node node(String key, GraphPlan.Kind kind) {
+        return new GraphPlan.Node(key,key,kind,kind.name(),null,null,null,null,null,null);
+    }
+
+    private static GraphPlan.Edge edge(String key,String to,String condition,boolean defaultFlow) {
+        return new GraphPlan.Edge(key,"gateway",to,condition,defaultFlow);
+    }
+
+    @Test
+    void exclusiveSplitSelectsOneMatchingConditionOrDefault() {
+        var node=node("gateway",GraphPlan.Kind.SPLIT_XOR);
+        var edges=List.of(edge("e1","a","amount > 10",false),
+                edge("e2","b","amount <= 10",false),edge("default","fallback",null,true));
+        assertEquals("a",GraphCoordinator.selectExclusive(node,edges,Map.of("amount",11)).to());
+        assertEquals("b",GraphCoordinator.selectExclusive(node,edges,Map.of("amount",10)).to());
+        assertEquals("fallback",GraphCoordinator.selectExclusive(node,edges,Map.of("amount",null)).to());
+    }
+
+    @Test
+    void exclusiveSplitRejectsAmbiguousAndMissingRoutes() {
+        var node=node("gateway",GraphPlan.Kind.SPLIT_XOR);
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.selectExclusive(node,
+                List.of(edge("e1","a","flag == true",false),edge("e2","b","count > 0",false)),
+                Map.of("flag",true,"count",1)));
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.selectExclusive(node,
+                List.of(edge("e1","a","flag == true",false)),Map.of("flag",false)));
+    }
+
+    @Test
+    void inclusiveSplitActivatesEveryMatchingBranchAndOnlyUsesDefaultAsFallback() {
+        var node=node("gateway",GraphPlan.Kind.SPLIT_INCLUSIVE);
+        var edges=List.of(edge("e1","a","left == true",false),
+                edge("e2","b","right == true",false),edge("default","fallback",null,true));
+        assertEquals(List.of("a","b"),GraphCoordinator.selectInclusive(node,edges,
+                Map.of("left",true,"right",true)).stream().map(GraphPlan.Edge::to).toList());
+        assertEquals(List.of("fallback"),GraphCoordinator.selectInclusive(node,edges,
+                Map.of("left",false,"right",false)).stream().map(GraphPlan.Edge::to).toList());
+        assertEquals(List.of("a"),GraphCoordinator.selectInclusive(node,
+                List.of(edge("e1","a",null,false),edge("default","fallback",null,true)),Map.of())
+                .stream().map(GraphPlan.Edge::to).toList());
+    }
+
+    @Test
+    void controlNodeKindsMapToExpectedAtomicTransitions() {
+        assertEquals("SEQUENCE",GraphCoordinator.transitionFor(node("start",GraphPlan.Kind.START),
+                List.of(edge("e","next",null,false)),Map.of()).kind());
+        assertEquals("END",GraphCoordinator.transitionFor(node("end",GraphPlan.Kind.END),
+                List.of(),Map.of()).kind());
+        assertEquals(List.of("a","b"),GraphCoordinator.transitionFor(node("parallel",GraphPlan.Kind.SPLIT_PARALLEL),
+                List.of(edge("a","a",null,false),edge("b","b",null,false)),Map.of()).successors());
+        assertEquals("JOIN",GraphCoordinator.transitionFor(node("join",GraphPlan.Kind.JOIN_PARALLEL),
+                List.of(edge("e","next",null,false)),Map.of()).kind());
+        assertNull(GraphCoordinator.transitionFor(node("task",GraphPlan.Kind.TASK),
+                List.of(edge("e","next",null,false)),Map.of()));
+    }
+
+    @Test
+    void parallelSplitRejectsConditionalEdgesAndDuplicateTargets() {
+        var node=node("parallel",GraphPlan.Kind.SPLIT_PARALLEL);
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.transitionFor(node,
+                List.of(edge("a","a","flag == true",false),edge("b","b",null,false)),Map.of("flag",true)));
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.transitionFor(node,
+                List.of(edge("a","same",null,false),edge("b","same",null,false)),Map.of()));
+    }
+}
