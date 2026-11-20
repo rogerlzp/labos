@@ -13,7 +13,7 @@ class BpmnGraphCompilerTest {
           <bpmn:definitions xmlns:bpmn="%s">
             <bpmn:process id="p">
               <bpmn:startEvent id="s"/>
-              <bpmn:exclusiveGateway id="g" default="f2"/>
+              <bpmn:exclusiveGateway id="g" default="f4"/>
               <bpmn:serviceTask id="t" name="dispense" protocolName="Dispense" resource="17" methodParams="{&quot;volume&quot;:10}"/>
               <bpmn:endEvent id="e"/>
               <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="g"/>
@@ -26,7 +26,7 @@ class BpmnGraphCompilerTest {
                 Map.of("t",new BpmnGraphCompiler.NodeMetadata("LIQUID_HANDLING",9L))));
         assertEquals(4,plan.nodes().size());
         assertEquals(3,plan.edges().size());
-        assertTrue(plan.edges().stream().filter(e->e.key().equals("f2")).findFirst().orElseThrow().defaultFlow());
+        assertTrue(plan.edges().stream().filter(e->e.key().equals("f4")).findFirst().orElseThrow().defaultFlow());
         GraphPlan.Node task=plan.nodes().stream().filter(n->n.key().equals("t")).findFirst().orElseThrow();
         assertEquals("LIQUID_HANDLING",task.capabilityCode());
         assertEquals(9L,task.workflowNodeId());

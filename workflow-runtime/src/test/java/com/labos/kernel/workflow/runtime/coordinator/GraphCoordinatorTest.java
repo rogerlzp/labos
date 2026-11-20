@@ -21,7 +21,7 @@ class GraphCoordinatorTest {
     }
 
     @Test void sequentialTaskAdvancesAndEndCompletes() {
-        GraphPlan plan = compile("<bpmn:startEvent id=\"s\"/><bpmn:task id=\"a\"/><bpmn:endEvent id=\"e\"/>"+
+        GraphPlan plan = compile("<bpmn:startEvent id=\"s\"/><bpmn:serviceTask id=\"a\" protocolName=\"__test\" resource=\"1\"/><bpmn:endEvent id=\"e\"/>"+
                 "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"s\" targetRef=\"a\"/>"+
                 "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"a\" targetRef=\"e\"/>");
         var next = coordinator.onActivationSucceeded(plan,"a",Map.of(),null);
@@ -33,7 +33,7 @@ class GraphCoordinatorTest {
 
     @Test void xorSelectsExactlyOneMatchOrDefault() {
         GraphPlan plan = compile("<bpmn:startEvent id=\"s\"/><bpmn:exclusiveGateway id=\"g\" default=\"f3\"/>"+
-                "<bpmn:task id=\"a\"/><bpmn:task id=\"b\"/><bpmn:task id=\"c\"/>"+
+                "<bpmn:serviceTask id=\"a\" protocolName=\"__test\" resource=\"1\"/><bpmn:serviceTask id=\"b\" protocolName=\"__test\" resource=\"1\"/><bpmn:serviceTask id=\"c\" protocolName=\"__test\" resource=\"1\"/>"+
                 "<bpmn:sequenceFlow id=\"f0\" sourceRef=\"s\" targetRef=\"g\"/>"+
                 "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"g\" targetRef=\"a\"><bpmn:conditionExpression>x == 1</bpmn:conditionExpression></bpmn:sequenceFlow>"+
                 "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"g\" targetRef=\"b\"><bpmn:conditionExpression>x == 2</bpmn:conditionExpression></bpmn:sequenceFlow>"+
@@ -45,14 +45,14 @@ class GraphCoordinatorTest {
 
     @Test void parallelAndInclusiveSplitsProduceSelectedBranchSets() {
         GraphPlan parallel = compile("<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"g\"/>"+
-                "<bpmn:task id=\"a\"/><bpmn:task id=\"b\"/>"+
+                "<bpmn:serviceTask id=\"a\" protocolName=\"__test\" resource=\"1\"/><bpmn:serviceTask id=\"b\" protocolName=\"__test\" resource=\"1\"/>"+
                 "<bpmn:sequenceFlow id=\"f0\" sourceRef=\"s\" targetRef=\"g\"/>"+
                 "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"g\" targetRef=\"a\"/>"+
                 "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"g\" targetRef=\"b\"/></bpmn:process>");
         assertEquals(Set.of("a","b"),Set.copyOf(coordinator.onActivationSucceeded(parallel,"g",Map.of(),null).nextNodeKeys()));
 
         GraphPlan inclusive = compile("<bpmn:startEvent id=\"s\"/><bpmn:inclusiveGateway id=\"g\" default=\"f3\"/>"+
-                "<bpmn:task id=\"a\"/><bpmn:task id=\"b\"/><bpmn:task id=\"c\"/>"+
+                "<bpmn:serviceTask id=\"a\" protocolName=\"__test\" resource=\"1\"/><bpmn:serviceTask id=\"b\" protocolName=\"__test\" resource=\"1\"/><bpmn:serviceTask id=\"c\" protocolName=\"__test\" resource=\"1\"/>"+
                 "<bpmn:sequenceFlow id=\"f0\" sourceRef=\"s\" targetRef=\"g\"/>"+
                 "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"g\" targetRef=\"a\"><bpmn:conditionExpression>a == true</bpmn:conditionExpression></bpmn:sequenceFlow>"+
                 "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"g\" targetRef=\"b\"><bpmn:conditionExpression>b == true</bpmn:conditionExpression></bpmn:sequenceFlow>"+
@@ -61,7 +61,7 @@ class GraphCoordinatorTest {
     }
 
     @Test void parallelJoinWaitsForEveryExpectedBranch() {
-        GraphPlan plan = compile("<bpmn:startEvent id=\"s\"/><bpmn:task id=\"a\"/><bpmn:task id=\"b\"/>"+
+        GraphPlan plan = compile("<bpmn:startEvent id=\"s\"/><bpmn:serviceTask id=\"a\" protocolName=\"__test\" resource=\"1\"/><bpmn:serviceTask id=\"b\" protocolName=\"__test\" resource=\"1\"/>"+
                 "<bpmn:parallelGateway id=\"j\"/><bpmn:endEvent id=\"e\"/>"+
                 "<bpmn:sequenceFlow id=\"f0\" sourceRef=\"s\" targetRef=\"a\"/>"+
                 "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"s\" targetRef=\"b\"/>"+
