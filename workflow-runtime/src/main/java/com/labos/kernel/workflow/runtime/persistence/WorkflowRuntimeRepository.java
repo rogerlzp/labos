@@ -1188,6 +1188,10 @@ public final class WorkflowRuntimeRepository {
             SELECT count(*) FROM workflow_runtime.node_attempt
              WHERE tenant_id=? AND run_id=? AND attempt_state IN ('FAILED','CANCELLED','UNKNOWN')
             """,Integer.class,tenantId,runId);
+        Integer failedActivations=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.node_activation
+             WHERE tenant_id=? AND run_id=? AND activation_state IN ('FAILED','CANCELLED')
+            """,Integer.class,tenantId,runId);
         Integer openSplits=jdbc.queryForObject("""
             SELECT count(*) FROM workflow_runtime.split_activation
              WHERE tenant_id=? AND run_id=? AND split_state<>'CLOSED'
@@ -1206,6 +1210,7 @@ public final class WorkflowRuntimeRepository {
             """,Integer.class,tenantId,runId);
         if((activeTokens==null||activeTokens!=0)||(activeAttempts==null||activeAttempts!=0)
                 ||(failedTokens!=null&&failedTokens!=0)||(failedAttempts!=null&&failedAttempts!=0)
+                ||(failedActivations!=null&&failedActivations!=0)
                 ||(openSplits!=null&&openSplits!=0)||(waitingJoins!=null&&waitingJoins!=0)
                 ||(activeBranches!=null&&activeBranches!=0)||(cancelledBranches!=null&&cancelledBranches!=0)) return false;
         int changed=jdbc.update("""
