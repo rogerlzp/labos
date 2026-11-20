@@ -1034,6 +1034,12 @@ public final class WorkflowRuntimeRepository {
                      WHERE tenant_id=? AND run_id=? AND split_id=? AND split_state='OPEN'
                      FOR UPDATE
                     """,UUID.class,tenantId,runId,splitId);
+                List<String> existingJoinKeys=jdbc.query("""
+                    SELECT join_key FROM workflow_runtime.join_activation
+                     WHERE tenant_id=? AND split_id=? FOR UPDATE
+                    """,(rs,n)->rs.getString(1),tenantId,splitId);
+                if(existingJoinKeys.stream().anyMatch(key -> !key.equals(joinNodeKey)))
+                    throw new InvalidTransitionException("Branches of one Split reached different Join/End nodes");
                 int arrived=jdbc.update("""
                     UPDATE workflow_runtime.branch_activation SET branch_state='ARRIVED',
                            arrival_activation_id=?,arrived_at=clock_timestamp()
@@ -1081,6 +1087,18 @@ public final class WorkflowRuntimeRepository {
                 if(!successors.isEmpty()) throw new IllegalArgumentException("END cannot have successors");
                 if(source.branchId()!=null && source.splitId()!=null) {
                     UUID splitId=source.splitId();
+                    List<String> existingJoinKeys=jdbc.query("""
+                        SELECT join_key FROM workflow_runtime.join_activation
+                         WHERE tenant_id=? AND split_id=? FOR UPDATE
+                        """,(rs,n)->rs.getString(1),tenantId,splitId);
+                    if(existingJoinKeys.stream().anyMatch(key -> !"$END".equals(key)))
+                        throw new InvalidTransitionException("A Split cannot mix terminal branches with a synchronizing Join");
+                    jdbc.update("""
+                        INSERT INTO workflow_runtime.join_activation
+                          (tenant_id,join_id,run_id,split_id,join_key,join_state)
+                        VALUES (?,?,?,?,'$END','WAITING')
+                        ON CONFLICT (tenant_id,split_id,join_key) DO NOTHING
+                        """,tenantId,UUID.randomUUID(),runId,splitId);
                     int arrived=jdbc.update("""
                         UPDATE workflow_runtime.branch_activation SET branch_state='ARRIVED',
                                arrival_activation_id=?,arrived_at=clock_timestamp()
@@ -1097,11 +1115,18 @@ public final class WorkflowRuntimeRepository {
                                 Integer.class,tenantId,splitId);
                         Integer count=jdbc.queryForObject("SELECT arrived_branch_count FROM workflow_runtime.split_activation WHERE tenant_id=? AND split_id=?",
                                 Integer.class,tenantId,splitId);
-                        if(Objects.equals(expected,count)) jdbc.update("""
-                            UPDATE workflow_runtime.split_activation SET split_state='CLOSED',
-                                   closed_at=clock_timestamp(),version=version+1
-                             WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
-                            """,tenantId,splitId);
+                        if(Objects.equals(expected,count)) {
+                            jdbc.update("""
+                                UPDATE workflow_runtime.join_activation SET join_state='RELEASED',
+                                       released_at=clock_timestamp(),version=version+1
+                                 WHERE tenant_id=? AND split_id=? AND join_key='$END' AND join_state='WAITING'
+                                """,tenantId,splitId);
+                            jdbc.update("""
+                                UPDATE workflow_runtime.split_activation SET split_state='CLOSED',
+                                       closed_at=clock_timestamp(),version=version+1
+                                 WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
+                                """,tenantId,splitId);
+                        }
                     }
                 }
             }
