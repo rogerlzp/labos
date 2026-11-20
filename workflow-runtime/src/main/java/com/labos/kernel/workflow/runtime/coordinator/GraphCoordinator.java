@@ -81,6 +81,7 @@ public final class GraphCoordinator {
         GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson());
         Map<String, GraphPlan.Node> nodes = indexNodes(plan);
         Map<String, List<GraphPlan.Edge>> outgoing = indexOutgoing(plan, nodes);
+        validatePlan(plan,nodes,outgoing);
 
         int controlAdvanced = 0;
         int completedRouted = 0;
@@ -257,6 +258,32 @@ public final class GraphCoordinator {
         Map<String, List<GraphPlan.Edge>> immutable = new HashMap<>();
         result.forEach((key, value) -> immutable.put(key, List.copyOf(value)));
         return Map.copyOf(immutable);
+    }
+
+    static void validatePlan(GraphPlan plan, Map<String, GraphPlan.Node> nodes,
+                             Map<String, List<GraphPlan.Edge>> outgoing) {
+        for (GraphPlan.Node node : plan.nodes()) {
+            List<GraphPlan.Edge> edges=outgoing.getOrDefault(node.key(),List.of());
+            switch (node.kind()) {
+                case START -> exactlyOne(node,edges);
+                case END -> {
+                    if(!edges.isEmpty()) throw new IllegalStateException("End node has outgoing edges: "+node.key());
+                }
+                case TASK, BUILTIN -> {
+                    exactlyOne(node,edges);
+                    if(edges.get(0).condition()!=null || edges.get(0).defaultFlow())
+                        throw new IllegalStateException("Conditional outgoing flows on TASK/BUILTIN are not supported in G1: "+node.key());
+                }
+                case SPLIT_PARALLEL -> parallelTargets(node,edges);
+                case SPLIT_XOR, SPLIT_INCLUSIVE -> {
+                    if(edges.size()<2) throw new IllegalStateException("Gateway Split needs at least two outgoing edges: "+node.key());
+                    uniqueTargets(node,edges);
+                    long defaults=edges.stream().filter(GraphPlan.Edge::defaultFlow).count();
+                    if(defaults>1) throw new IllegalStateException("Gateway has multiple default flows: "+node.key());
+                }
+                case JOIN_PARALLEL, JOIN_INCLUSIVE, JOIN_XOR -> exactlyOne(node,edges);
+            }
+        }
     }
 
     private static GraphPlan.Node requireNode(Map<String, GraphPlan.Node> nodes, String key) {
