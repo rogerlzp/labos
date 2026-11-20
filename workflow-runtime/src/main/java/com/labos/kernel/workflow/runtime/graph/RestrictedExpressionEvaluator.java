@@ -70,7 +70,10 @@ public final class RestrictedExpressionEvaluator {
         return b;
     }
     private static boolean equal(Object a, Object b) {
+        if (a == null || b == null) return a == b;
         if (a instanceof Number an && b instanceof Number bn) return decimal(an).compareTo(decimal(bn)) == 0;
+        if (a.getClass() != b.getClass())
+            throw new IllegalArgumentException("Equality comparison requires operands of the same type");
         return Objects.equals(a, b);
     }
     private static int compare(Object a, Object b) {
