@@ -98,7 +98,7 @@ public final class GraphCoordinator {
                 if (transition == null) continue; // TASK/BUILTIN tokens wait for their execution handler.
                 WorkflowRuntimeRepository.GraphAdvanceResult result =
                         repository.advanceGraphToken(tenantId, runId, token.tokenId(), token.nodeKey(),
-                                transition.kind(), transition.successors());
+                                transition.kind(), transition.successors(), transition.joinNodeKey());
                 controlAdvanced++;
                 tokensCreated += result.tokensCreated();
                 runCompleted |= result.runCompleted();
@@ -113,9 +113,12 @@ public final class GraphCoordinator {
         return new AdvanceSummary(controlAdvanced, completedRouted, tokensCreated, runCompleted);
     }
 
-    record Transition(String kind, List<String> successors) {
+    record Transition(String kind, List<String> successors, String joinNodeKey) {
         Transition {
             successors = List.copyOf(successors);
+        }
+        Transition(String kind, List<String> successors) {
+            this(kind,successors,null);
         }
     }
 
@@ -134,7 +137,7 @@ public final class GraphCoordinator {
                     .map(GraphPlan.Edge::to).toList());
             case JOIN_PARALLEL, JOIN_INCLUSIVE -> {
                 exactlyOne(node, edges);
-                yield new Transition("JOIN", List.of(edges.get(0).to()));
+                yield new Transition("JOIN", List.of(edges.get(0).to()), node.key());
             }
             case JOIN_XOR -> new Transition("SEQUENCE", exactlyOne(node, edges).stream()
                     .map(GraphPlan.Edge::to).toList());
