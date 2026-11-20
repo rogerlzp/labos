@@ -55,4 +55,40 @@ class BpmnGraphCompilerTest {
         assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
     }
+
+    @Test void rejectsEventDefinitionsInsteadOfSilentlyTreatingThemAsPlainEvents() {
+        String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"><bpmn:timerEventDefinition/></bpmn:startEvent>"+
+                "<bpmn:endEvent id=\"e\"/><bpmn:sequenceFlow id=\"f\" sourceRef=\"s\" targetRef=\"e\"/>"+
+                "</bpmn:process></bpmn:definitions>";
+        IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
+        assertTrue(ex.getMessage().contains("event definition"));
+    }
+
+    @Test void rejectsAmbiguousMixedGatewayAndInvalidDefaultFlow() {
+        String mixed="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"g\"/>"+
+                "<bpmn:task id=\"a\"/><bpmn:task id=\"b\"/><bpmn:endEvent id=\"e\"/>"+
+                "<bpmn:sequenceFlow id=\"f0\" sourceRef=\"s\" targetRef=\"g\"/>"+
+                "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"a\" targetRef=\"g\"/>"+
+                "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"g\" targetRef=\"a\"/>"+
+                "<bpmn:sequenceFlow id=\"f3\" sourceRef=\"g\" targetRef=\"b\"/>"+
+                "<bpmn:sequenceFlow id=\"f4\" sourceRef=\"a\" targetRef=\"e\"/>"+
+                "<bpmn:sequenceFlow id=\"f5\" sourceRef=\"b\" targetRef=\"e\"/>"+
+                "</bpmn:process></bpmn:definitions>";
+        assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",mixed,Map.of())));
+
+        String badDefault="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
+                "<bpmn:startEvent id=\"s\"/><bpmn:exclusiveGateway id=\"g\" default=\"f1\"/>"+
+                "<bpmn:task id=\"a\"/><bpmn:endEvent id=\"e\"/>"+
+                "<bpmn:sequenceFlow id=\"f0\" sourceRef=\"s\" targetRef=\"g\"/>"+
+                "<bpmn:sequenceFlow id=\"f1\" sourceRef=\"a\" targetRef=\"g\"/>"+
+                "<bpmn:sequenceFlow id=\"f2\" sourceRef=\"g\" targetRef=\"a\"/>"+
+                "<bpmn:sequenceFlow id=\"f3\" sourceRef=\"g\" targetRef=\"e\"/>"+
+                "</bpmn:process></bpmn:definitions>";
+        assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",badDefault,Map.of())));
+    }
 }

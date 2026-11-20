@@ -11,8 +11,8 @@ import java.io.StringReader;
 import java.util.*;
 
 /**
- * Compiles BPMN XML to the V1 execution subset. Unsupported executable elements fail closed;
- * no node/edge is silently dropped. Metadata maps are read-only projections from Kernel storage.
+ * Compiles BPMN XML to the deliberately bounded V1 execution subset.
+ * Unsupported event definitions and ambiguous gateway shapes fail closed.
  */
 public final class BpmnGraphCompiler {
     public static final String VERSION = "graph-compiler-v1";
@@ -42,11 +42,12 @@ public final class BpmnGraphCompiler {
             Document doc=f.newDocumentBuilder().parse(new InputSource(new StringReader(input.bpmnXml())));
 
             Map<String,Element> elements=new LinkedHashMap<>();
-            NodeList all=doc.getElementsByTagNameNS("*","*");
+            NodeList all=doc.getElementsByTagNameNS(BPMN_NS,"*");
             for(int i=0;i<all.getLength();i++) {
                 Element el=(Element)all.item(i);
                 String local=el.getLocalName();
-                if(local==null) continue;
+                if ("eventDefinition".equals(local) || local.endsWith("EventDefinition"))
+                    throw new IllegalArgumentException("Unsupported BPMN event definition: "+local);
                 if(isUnsupported(local))
                     throw new IllegalArgumentException("Unsupported BPMN element: "+local+" id="+el.getAttribute("id"));
                 if(isExecutable(local)) {
@@ -58,10 +59,14 @@ public final class BpmnGraphCompiler {
             }
             if(elements.isEmpty()) throw new IllegalArgumentException("BPMN contains no supported executable nodes");
 
-            Set<String> defaultIds=new HashSet<>();
+            Map<String,String> defaultByGateway=new HashMap<>();
             for(Element el:elements.values()) {
-                String d=el.getAttribute("default");
-                if(!d.isBlank()) defaultIds.add(d);
+                String d=blankToNull(el.getAttribute("default"));
+                if(d!=null) {
+                    if(!Set.of("exclusiveGateway","inclusiveGateway").contains(el.getLocalName()))
+                        throw new IllegalArgumentException("default flow is only supported on XOR/Inclusive gateways: "+el.getAttribute("id"));
+                    defaultByGateway.put(el.getAttribute("id"),d);
+                }
             }
             List<GraphPlan.Edge> edges=new ArrayList<>();
             Set<String> edgeIds=new HashSet<>();
@@ -78,14 +83,47 @@ public final class BpmnGraphCompiler {
                 NodeList kids=el.getChildNodes();
                 for(int k=0;k<kids.getLength();k++) {
                     Node child=kids.item(k);
-                    if(child instanceof Element ce && "conditionExpression".equals(ce.getLocalName()))
+                    if(child instanceof Element ce && "conditionExpression".equals(ce.getLocalName())
+                            && BPMN_NS.equals(ce.getNamespaceURI())) {
+                        if(condition!=null) throw new IllegalArgumentException("Multiple conditionExpression elements on "+id);
                         condition=blankToNull(ce.getTextContent());
+                    }
                 }
-                edges.add(new GraphPlan.Edge(id,from,to,condition,defaultIds.contains(id)));
+                edges.add(new GraphPlan.Edge(id,from,to,condition,false));
             }
 
             Map<String,Integer> in=new HashMap<>(), out=new HashMap<>();
-            for(GraphPlan.Edge e:edges) { out.merge(e.from(),1,Integer::sum); in.merge(e.to(),1,Integer::sum); }
+            Map<String,List<GraphPlan.Edge>> outgoing=new HashMap<>();
+            for(GraphPlan.Edge e:edges) {
+                out.merge(e.from(),1,Integer::sum);
+                in.merge(e.to(),1,Integer::sum);
+                outgoing.computeIfAbsent(e.from(),k->new ArrayList<>()).add(e);
+            }
+            Set<String> defaultIds=new HashSet<>();
+            for(Map.Entry<String,String> entry:defaultByGateway.entrySet()) {
+                String gateway=entry.getKey(), flowId=entry.getValue();
+                GraphPlan.Edge edge=edges.stream().filter(e->e.key().equals(flowId)).findFirst()
+                        .orElseThrow(()->new IllegalArgumentException("Gateway "+gateway+" references missing default flow "+flowId));
+                if(!edge.from().equals(gateway))
+                    throw new IllegalArgumentException("Default flow "+flowId+" is not outgoing from gateway "+gateway);
+                if(edge.condition()!=null)
+                    throw new IllegalArgumentException("Default flow must not have conditionExpression: "+flowId);
+                defaultIds.add(flowId);
+            }
+
+            List<GraphPlan.Edge> normalizedEdges=new ArrayList<>();
+            for(GraphPlan.Edge edge:edges) {
+                String sourceType=elements.get(edge.from()).getLocalName();
+                boolean conditionalGateway=Set.of("exclusiveGateway","inclusiveGateway").contains(sourceType)
+                        && out.getOrDefault(edge.from(),0)>1;
+                if(edge.condition()!=null && !conditionalGateway)
+                    throw new IllegalArgumentException("Condition expression is only supported on XOR/Inclusive split flows: "+edge.key());
+                if(conditionalGateway && !defaultIds.contains(edge.key()) && edge.condition()==null)
+                    throw new IllegalArgumentException("Conditional gateway flow has no conditionExpression or default: "+edge.key());
+                normalizedEdges.add(new GraphPlan.Edge(edge.key(),edge.from(),edge.to(),edge.condition(),
+                        defaultIds.contains(edge.key())));
+            }
+
             List<GraphPlan.Node> nodes=new ArrayList<>();
             for(Map.Entry<String,Element> entry:elements.entrySet()) {
                 String id=entry.getKey(); Element el=entry.getValue(); String type=el.getLocalName();
@@ -108,7 +146,7 @@ public final class BpmnGraphCompiler {
                     throw new IllegalArgumentException("Device task has neither resource binding nor capability metadata: "+n.key());
             }
             return new GraphPlan(1,VERSION,input.definitionKey(),input.definitionVersion(),
-                    GraphPlanCodec.sha256(input.bpmnXml()),nodes,edges);
+                    GraphPlanCodec.sha256(input.bpmnXml()),nodes,normalizedEdges);
         } catch(IllegalArgumentException e) { throw e; }
         catch(Exception e) { throw new IllegalArgumentException("BPMN compilation failed: "+e.getMessage(),e); }
     }
@@ -116,7 +154,7 @@ public final class BpmnGraphCompiler {
     private static boolean isExecutable(String t) {
         return Set.of("startEvent","endEvent","task","userTask","serviceTask","scriptTask",
                 "sendTask","receiveTask","customDevice","exclusiveGateway","parallelGateway",
-                "inclusiveGateway").contains(t) || t.startsWith("custom");
+                "inclusiveGateway").contains(t);
     }
     private static boolean isUnsupported(String t) {
         return Set.of("subProcess","callActivity","businessRuleTask","manualTask","intermediateCatchEvent",
@@ -127,7 +165,9 @@ public final class BpmnGraphCompiler {
         if(t.equals("startEvent")) return GraphPlan.Kind.START;
         if(t.equals("endEvent")) return GraphPlan.Kind.END;
         if(t.endsWith("Gateway")) {
-            boolean join=in>1;
+            boolean join=in>1, split=out>1;
+            if(join==split)
+                throw new IllegalArgumentException("Gateway must be exactly one of split or join (mixed/degenerate gateways are unsupported): "+t+" in="+in+" out="+out);
             return switch(t) {
                 case "parallelGateway" -> join?GraphPlan.Kind.JOIN_PARALLEL:GraphPlan.Kind.SPLIT_PARALLEL;
                 case "exclusiveGateway" -> join?GraphPlan.Kind.JOIN_XOR:GraphPlan.Kind.SPLIT_XOR;
