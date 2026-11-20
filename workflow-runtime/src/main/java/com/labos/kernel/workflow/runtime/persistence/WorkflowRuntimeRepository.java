@@ -967,13 +967,17 @@ public final class WorkflowRuntimeRepository {
             CompletedGraphActivation source=rows.get(0);
             if(!"SEQUENCE".equals(transitionKind) || successorNodeKeys==null || successorNodeKeys.size()!=1)
                 throw new IllegalArgumentException("Completed Worker Activation currently supports exactly one SEQUENCE successor");
-            List<String> existingChildren=jdbc.query("""
-                SELECT node_key FROM workflow_runtime.execution_token
+            List<GraphToken> existingChildren=jdbc.query("""
+                SELECT token_id,node_key,split_id,branch_id FROM workflow_runtime.execution_token
                  WHERE tenant_id=? AND parent_token_id=?
-                 ORDER BY node_key
-                """,(rs,n)->rs.getString(1),tenantId,source.tokenId());
+                 ORDER BY node_key,token_id
+                """,(rs,n)->new GraphToken(rs.getObject(1,UUID.class),rs.getString(2),
+                    rs.getObject(3,UUID.class),rs.getObject(4,UUID.class)),tenantId,source.tokenId());
             if(!existingChildren.isEmpty()) {
-                if(existingChildren.size()==1 && existingChildren.get(0).equals(successorNodeKeys.get(0)))
+                if(existingChildren.size()==1
+                        && existingChildren.get(0).nodeKey().equals(successorNodeKeys.get(0))
+                        && Objects.equals(existingChildren.get(0).splitId(),source.splitId())
+                        && Objects.equals(existingChildren.get(0).branchId(),source.branchId()))
                     return new GraphAdvanceResult("REPLAYED",activationId,0,false);
                 throw new IdempotencyConflictException("Completed Activation was already routed to different successor Token(s)");
             }
