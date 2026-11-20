@@ -124,6 +124,39 @@ class BpmnGraphCompilerTest {
         assertTrue(multipleEx.getMessage().contains("startEvent requires exactly one outgoing sequenceFlow"));
     }
 
+    @Test void rejectsEmptyConditionExpressionInsteadOfCompilingItAsUnconditional() {
+        for (String condition : java.util.List.of("", "   ", "\\n\\t")) {
+            String xml="""
+              <bpmn:definitions xmlns:bpmn="%s"><bpmn:process id="p">
+                <bpmn:startEvent id="s"/><bpmn:exclusiveGateway id="g"/>
+                <bpmn:endEvent id="e1"/><bpmn:endEvent id="e2"/>
+                <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="g"/>
+                <bpmn:sequenceFlow id="f2" sourceRef="g" targetRef="e1">
+                  <bpmn:conditionExpression>%s</bpmn:conditionExpression>
+                </bpmn:sequenceFlow>
+                <bpmn:sequenceFlow id="f3" sourceRef="g" targetRef="e2"/>
+              </bpmn:process></bpmn:definitions>
+              """.formatted(NS,condition);
+            IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                    new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
+            assertTrue(ex.getMessage().contains("conditionExpression must not be empty"),"condition="+condition);
+        }
+    }
+
+    @Test void rejectsStartEventWithIncomingFlow() {
+        String xml="""
+          <bpmn:definitions xmlns:bpmn="%s"><bpmn:process id="p">
+            <bpmn:startEvent id="s"/><bpmn:endEvent id="e"/>
+            <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="e"/>
+            <bpmn:sequenceFlow id="f2" sourceRef="e" targetRef="s"/>
+          </bpmn:process></bpmn:definitions>
+          """.formatted(NS);
+        IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
+        assertTrue(ex.getMessage().contains("startEvent requires zero incoming and exactly one outgoing"));
+        assertTrue(ex.getMessage().contains("in=1 out=1"));
+    }
+
     @Test void compilesCanonicalParallelSplitAndJoinShapes() {
         String xml="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
                 "<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"split\"/>"+
