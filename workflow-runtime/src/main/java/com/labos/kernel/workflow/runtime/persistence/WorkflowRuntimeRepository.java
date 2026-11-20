@@ -2538,35 +2538,76 @@ public final class WorkflowRuntimeRepository {
 
     public record RunnableRunRef(UUID tenantId, UUID runId) {}
 
-    /** Single-host dispatcher discovery: active RUNNING/OPEN runs that currently have READY tokens. */
+    /** Single-host dispatcher discovery: active RUNNING/OPEN runs that currently have READY tokens (oldest updated first). */
     public List<RunnableRunRef> findRunnableWorkTargets(int limit) {
         if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
         return jdbc.query("""
-            SELECT DISTINCT r.tenant_id, r.run_id
+            SELECT r.tenant_id, r.run_id
               FROM workflow_runtime.workflow_run r
-              JOIN workflow_runtime.execution_token t
-                ON t.tenant_id = r.tenant_id AND t.run_id = r.run_id
              WHERE r.status = 'RUNNING'
                AND r.control_gate = 'OPEN'
-               AND t.token_state = 'READY'
+               AND EXISTS (
+                 SELECT 1 FROM workflow_runtime.execution_token t
+                  WHERE t.tenant_id = r.tenant_id AND t.run_id = r.run_id AND t.token_state = 'READY'
+               )
+             ORDER BY r.updated_at ASC, r.run_id ASC
              LIMIT ?
             """, (rs, n) -> new RunnableRunRef(
                 rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), limit);
     }
 
-    /** Single-host outbox discovery: tenants with due PENDING outbox rows for a given message_kind. */
+    /** Tenant-scoped dispatcher discovery pushing {@code tenant_id} directly into SQL before {@code LIMIT}. */
+    public List<RunnableRunRef> findRunnableWorkTargetsForTenant(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        return jdbc.query("""
+            SELECT r.tenant_id, r.run_id
+              FROM workflow_runtime.workflow_run r
+             WHERE r.tenant_id = ?
+               AND r.status = 'RUNNING'
+               AND r.control_gate = 'OPEN'
+               AND EXISTS (
+                 SELECT 1 FROM workflow_runtime.execution_token t
+                  WHERE t.tenant_id = r.tenant_id AND t.run_id = r.run_id AND t.token_state = 'READY'
+               )
+             ORDER BY r.updated_at ASC, r.run_id ASC
+             LIMIT ?
+            """, (rs, n) -> new RunnableRunRef(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), tenantId, limit);
+    }
+
+    /** Single-host outbox discovery: tenants with due PENDING outbox rows (oldest available_at first). */
     public List<UUID> findTenantsWithPendingOutbox(String messageKind, int limit) {
         if (messageKind == null || messageKind.isBlank())
             throw new IllegalArgumentException("messageKind is required");
         if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
         return jdbc.query("""
-            SELECT DISTINCT tenant_id
+            SELECT tenant_id
               FROM workflow_runtime.runtime_outbox
              WHERE message_kind = ?
                AND outbox_state = 'PENDING'
                AND available_at <= clock_timestamp()
+             GROUP BY tenant_id
+             ORDER BY min(available_at) ASC, tenant_id ASC
              LIMIT ?
             """, (rs, n) -> rs.getObject(1, UUID.class), messageKind, limit);
+    }
+
+    /** Tenant-scoped check whether due PENDING outbox rows exist for {@code messageKind}. */
+    public boolean hasPendingOutboxForTenant(UUID tenantId, String messageKind) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        if (messageKind == null || messageKind.isBlank())
+            throw new IllegalArgumentException("messageKind is required");
+        Boolean found = jdbc.queryForObject("""
+            SELECT EXISTS (
+              SELECT 1 FROM workflow_runtime.runtime_outbox
+               WHERE tenant_id = ?
+                 AND message_kind = ?
+                 AND outbox_state = 'PENDING'
+                 AND available_at <= clock_timestamp()
+            )
+            """, Boolean.class, tenantId, messageKind);
+        return Boolean.TRUE.equals(found);
     }
 
     public record ManualRequiredRunSummary(UUID runId, String status, String controlGate, Instant updatedAt) {}

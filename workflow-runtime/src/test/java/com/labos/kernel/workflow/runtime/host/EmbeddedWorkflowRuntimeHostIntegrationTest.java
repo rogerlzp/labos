@@ -92,13 +92,24 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                 new BpmnGraphCompiler.CompilationInput(planKey, "1", xml, Map.of()));
     }
 
-    private static TcpDeviceConnection.Config fastGatewayConfig() {
-        // Generous heartbeatTimeout (5s) avoids spurious heartbeat disconnects under CI CPU jitter,
-        // while fast reconnect backoff (40ms..160ms) keeps explicit EOF disconnect recovery instant.
+    private static TcpDeviceConnection.Config stableGatewayConfig() {
+        // Stable config for end-to-end execution, lock, recovery, and shutdown tests.
         return new TcpDeviceConnection.Config(
                 Duration.ofSeconds(2),
-                Duration.ofMillis(500),
+                Duration.ofSeconds(1),
                 Duration.ofSeconds(5),
+                Duration.ofMillis(50),
+                Duration.ofMillis(200),
+                4096,
+                64);
+    }
+
+    private static TcpDeviceConnection.Config disconnectReconnectGatewayConfig() {
+        // Dedicated config for explicit EOF disconnect + fast reconnect + T21 observability test.
+        return new TcpDeviceConnection.Config(
+                Duration.ofSeconds(2),
+                Duration.ofMillis(250),
+                Duration.ofSeconds(2),
                 Duration.ofMillis(40),
                 Duration.ofMillis(160),
                 4096,
@@ -107,11 +118,54 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
 
     private static void awaitCondition(Duration timeout, java.util.function.BooleanSupplier cond)
             throws InterruptedException {
+        awaitCondition(timeout, cond, () -> "Condition not satisfied within " + timeout);
+    }
+
+    private static void awaitCondition(
+            Duration timeout,
+            java.util.function.BooleanSupplier cond,
+            java.util.function.Supplier<String> diagnosticOnFailure)
+            throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (!cond.getAsBoolean() && System.nanoTime() < deadline) {
             Thread.sleep(15);
         }
-        assertTrue(cond.getAsBoolean(), "Condition not satisfied within " + timeout);
+        assertTrue(cond.getAsBoolean(), () -> "Condition not satisfied within " + timeout + " | " + diagnosticOnFailure.get());
+    }
+
+    private static String diagnoseRunState(
+            DriverManagerDataSource ds, UUID tenant, UUID runId, UUID commandId,
+            EmbeddedWorkflowRuntimeHost host, String deviceId) {
+        try {
+            var snap = host.healthSnapshot();
+            var dev = snap.devices().get(deviceId);
+            String runStatus = querySingleText(ds, "SELECT status||':'||control_gate FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runId + "'");
+            String attemptStates = querySingleText(ds, "SELECT string_agg(attempt_state||'(err='||(error IS NOT NULL)||')', ',') FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runId + "'");
+            String cmdState = commandId == null ? "null" : querySingleText(ds, "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + commandId + "'");
+            String outboxStates = querySingleText(ds, "SELECT string_agg(message_kind||'='||outbox_state, ',') FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runId + "'");
+            long inboxCount = scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runId + "'");
+            return "run=" + runStatus + ", attempts=" + attemptStates + ", cmd=" + cmdState
+                    + ", outbox=" + outboxStates + ", inboxCount=" + inboxCount
+                    + ", hostState=" + snap.hostState() + ", gateOpen=" + snap.schedulingGateOpen()
+                    + ", activeWorkers=" + snap.activeLocalWorkers()
+                    + ", dispatchStats=" + snap.dispatchStats()
+                    + ", device=" + dev;
+        } catch (Exception e) {
+            return "diagnostic-error: " + e;
+        }
+    }
+
+    private static String querySingleText(DriverManagerDataSource ds, String sql) throws Exception {
+        try (Connection c = ds.getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            return rs.next() ? String.valueOf(rs.getString(1)) : "<none>";
+        }
     }
 
     @Test
@@ -126,7 +180,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
             EmbeddedWorkflowRuntimeHost.Config cfg1 = new EmbeddedWorkflowRuntimeHost.Config(
                     lockFile, "host-1", 2, 16, 4, 1, 32, 100,
-                    Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                    Duration.ofMillis(50), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
 
             EmbeddedWorkflowRuntimeHost host1 = new EmbeddedWorkflowRuntimeHost(
                     cfg1, repo,
@@ -145,7 +199,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                 // Second host pointing at the SAME lock file MUST fail fast without starting!
                 EmbeddedWorkflowRuntimeHost.Config cfg2 = new EmbeddedWorkflowRuntimeHost.Config(
                         lockFile, "host-2", 2, 16, 4, 1, 32, 100,
-                        Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                        Duration.ofMillis(50), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
                 try (EmbeddedWorkflowRuntimeHost host2 = new EmbeddedWorkflowRuntimeHost(
                         cfg2, repo,
                         node -> new LocalTaskDispatchService.TaskDispatchSpec(
@@ -174,7 +228,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
             // A third host can cleanly re-acquire the released lock!
             EmbeddedWorkflowRuntimeHost.Config cfg3 = new EmbeddedWorkflowRuntimeHost.Config(
                     lockFile, "host-3", 1, 8, 2, 1, 16, 100,
-                    Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                    Duration.ofMillis(50), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
             try (EmbeddedWorkflowRuntimeHost host3 = new EmbeddedWorkflowRuntimeHost(
                     cfg3, repo,
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
@@ -233,7 +287,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
 
             EmbeddedWorkflowRuntimeHost.Config cfg = new EmbeddedWorkflowRuntimeHost.Config(
                     lockFile, "host-auto", 2, 16, 4, 2, 32, 100,
-                    Duration.ofMillis(40), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                    Duration.ofMillis(40), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
 
             try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
                     cfg, repo,
@@ -272,7 +326,8 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
-                });
+                }, () -> "terminalApplied=" + (terminalApplied.getCount() == 0) + ", "
+                        + diagnoseRunState(ds, tenant, crashedRun.runId(), cmdIdRef.get(), host, deviceId));
 
                 awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventAcks().size() == 3);
                 assertNotNull(cmdIdRef.get());
@@ -315,7 +370,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
 
             EmbeddedWorkflowRuntimeHost.Config cfg = new EmbeddedWorkflowRuntimeHost.Config(
                     lockFile, "host-obs", 2, 16, 4, 2, 32, 100,
-                    Duration.ofMillis(40), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                    Duration.ofMillis(40), 16, List.of(server.endpoint()), disconnectReconnectGatewayConfig(), tenant);
 
             try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
                     cfg, repo,
@@ -337,11 +392,13 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                 host.startRun(tenant, run.runId()).get(5, TimeUnit.SECONDS);
 
                 // Automatic dispatch sends command over TCP -> server drops socket -> gateway reconnects without resending!
-                assertTrue(cmdDroppedOnServer.await(8, TimeUnit.SECONDS));
+                assertTrue(cmdDroppedOnServer.await(8, TimeUnit.SECONDS),
+                        () -> "Command did not reach MockTcpDeviceServer: "
+                                + diagnoseRunState(ds, tenant, run.runId(), cmdIdRef.get(), host, deviceId));
                 awaitCondition(Duration.ofSeconds(4), () -> {
                     var h = host.healthSnapshot().devices().get(deviceId);
                     return h.status() == TcpDeviceConnection.ConnectionStatus.ONLINE && h.reconnectCount() >= 1;
-                });
+                }, () -> "Gateway did not reconnect: " + host.healthSnapshot().devices().get(deviceId));
                 assertEquals(1, server.receivedCommands().size(), "Reconnect must never auto-resend command");
 
                 // Mark command UNKNOWN and let worker fail -> Run escalates to MANUAL_REQUIRED.
@@ -366,7 +423,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
-                });
+                }, () -> diagnoseRunState(ds, tenant, run.runId(), cmdId, host, deviceId));
 
                 // Verify observability lists expose BOTH the UNKNOWN command and MANUAL_REQUIRED run!
                 var unknownCommands = host.listUnknownCommands(tenant, 10);
@@ -431,7 +488,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
             EmbeddedWorkflowRuntimeHost.Config cfg = new EmbeddedWorkflowRuntimeHost.Config(
                     lockFile, "host-rec-race", 2, 16, 4, 1, 32, 100,
-                    Duration.ofMillis(50), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                    Duration.ofMillis(50), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
 
             try (EmbeddedWorkflowRuntimeHost host = new EmbeddedWorkflowRuntimeHost(
                     cfg, repo,
@@ -545,7 +602,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
             EmbeddedWorkflowRuntimeHost.Config cfg1 = new EmbeddedWorkflowRuntimeHost.Config(
                     lockFile, "host-sr-1", 1, 8, 2, 1, 16, 100,
-                    Duration.ofMillis(200), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                    Duration.ofMillis(200), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
 
             // Host 1 starts with clean recovery no-op so our prepared SEND_STARTED command stays ready for live event tests.
             try (EmbeddedWorkflowRuntimeHost host1 = new EmbeddedWorkflowRuntimeHost(
@@ -601,7 +658,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
             // 4. Reconnect with Host 2 -> device retransmits the SAME un-ACKed retryMsgId (twice to verify Inbox dedup)!
             EmbeddedWorkflowRuntimeHost.Config cfg2 = new EmbeddedWorkflowRuntimeHost.Config(
                     lockFile, "host-sr-2", 1, 8, 2, 1, 16, 100,
-                    Duration.ofMillis(200), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+                    Duration.ofMillis(200), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
 
             try (EmbeddedWorkflowRuntimeHost host2 = new EmbeddedWorkflowRuntimeHost(
                     cfg2, repo,

@@ -29,7 +29,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
 
 /**
  * Single-JVM embedded Workflow Runtime Host composing {@link SingleInstanceHostLock},
@@ -73,7 +72,7 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
             int dispatchBatchSize,
             List<TcpDeviceConnection.Endpoint> deviceEndpoints,
             TcpDeviceConnection.Config gatewayConfig,
-            Predicate<UUID> tenantFilter) {
+            UUID scopedTenantId) {
         public Config {
             Objects.requireNonNull(lockFile, "lockFile");
             if (hostId == null || hostId.isBlank()) throw new IllegalArgumentException("hostId is required");
@@ -94,7 +93,6 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
                 throw new IllegalArgumentException("dispatchBatchSize must be 1..500");
             deviceEndpoints = List.copyOf(Objects.requireNonNull(deviceEndpoints, "deviceEndpoints"));
             Objects.requireNonNull(gatewayConfig, "gatewayConfig");
-            tenantFilter = tenantFilter == null ? t -> true : tenantFilter;
         }
     }
 
@@ -215,7 +213,7 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
                 config.dispatchPollInterval(),
                 config.dispatchBatchSize(),
                 config.hostId(),
-                config.tenantFilter());
+                config.scopedTenantId());
 
         this.recoveryService = new WorkerExecutionRecoveryService(repository, workerRegistry);
 

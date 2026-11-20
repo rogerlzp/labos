@@ -14,7 +14,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Predicate;
 
 /**
  * Single-host periodic dispatch loop implementing {@link RuntimeHost.LifecycleComponent}.
@@ -42,7 +41,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final Duration pollInterval;
     private final int batchSize;
     private final String dispatcherId;
-    private final Predicate<UUID> tenantFilter;
+    private final UUID scopedTenantId; // null = serve all tenants; non-null = SQL-level tenant isolation!
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
@@ -64,7 +63,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             Duration pollInterval,
             int batchSize,
             String dispatcherId,
-            Predicate<UUID> tenantFilter) {
+            UUID scopedTenantId) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.taskDispatchService = Objects.requireNonNull(taskDispatchService, "taskDispatchService");
         this.commandExecutionService = Objects.requireNonNull(commandExecutionService, "commandExecutionService");
@@ -78,7 +77,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             throw new IllegalArgumentException("dispatcherId is required");
         this.batchSize = batchSize;
         this.dispatcherId = dispatcherId;
-        this.tenantFilter = Objects.requireNonNull(tenantFilter, "tenantFilter");
+        this.scopedTenantId = scopedTenantId;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "labos-runtime-dispatch-" + dispatcherId);
             t.setDaemon(true);
@@ -120,11 +119,11 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             return;
         }
         // 1. Reserve & dispatch READY tokens for active RUNNING/OPEN runs.
-        List<WorkflowRuntimeRepository.RunnableRunRef> runnableRuns =
-                repository.findRunnableWorkTargets(batchSize);
+        List<WorkflowRuntimeRepository.RunnableRunRef> runnableRuns = scopedTenantId != null
+                ? repository.findRunnableWorkTargetsForTenant(scopedTenantId, batchSize)
+                : repository.findRunnableWorkTargets(batchSize);
         for (WorkflowRuntimeRepository.RunnableRunRef ref : runnableRuns) {
             if (stopped.get() || !schedulingGate.isOpen()) return;
-            if (!tenantFilter.test(ref.tenantId())) continue;
             try {
                 var res = taskDispatchService.dispatchReadyTasks(ref.tenantId(), ref.runId(), batchSize);
                 tasksDispatched.addAndGet(res.dispatchedAttemptIds().size());
@@ -134,10 +133,12 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         }
 
         // 2. Deliver pending WORKER_DISPATCH outbox rows into local WorkerPool.
-        List<UUID> workerTenants = repository.findTenantsWithPendingOutbox("WORKER_DISPATCH", batchSize);
+        List<UUID> workerTenants = scopedTenantId != null
+                ? (repository.hasPendingOutboxForTenant(scopedTenantId, "WORKER_DISPATCH")
+                        ? List.of(scopedTenantId) : List.of())
+                : repository.findTenantsWithPendingOutbox("WORKER_DISPATCH", batchSize);
         for (UUID tenantId : workerTenants) {
             if (stopped.get() || !schedulingGate.isOpen()) return;
-            if (!tenantFilter.test(tenantId)) continue;
             try {
                 var delivered = taskDispatchService.deliverPendingWorkerDispatches(
                         tenantId, batchSize, dispatcherId);
@@ -148,10 +149,12 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         }
 
         // 3. Deliver pending DEVICE_COMMAND outbox rows into DeviceGateway.
-        List<UUID> commandTenants = repository.findTenantsWithPendingOutbox("DEVICE_COMMAND", batchSize);
+        List<UUID> commandTenants = scopedTenantId != null
+                ? (repository.hasPendingOutboxForTenant(scopedTenantId, "DEVICE_COMMAND")
+                        ? List.of(scopedTenantId) : List.of())
+                : repository.findTenantsWithPendingOutbox("DEVICE_COMMAND", batchSize);
         for (UUID tenantId : commandTenants) {
             if (stopped.get() || !schedulingGate.isOpen()) return;
-            if (!tenantFilter.test(tenantId)) continue;
             try {
                 var delivered = commandExecutionService.deliverPendingCommands(
                         tenantId, batchSize, dispatcherId);
