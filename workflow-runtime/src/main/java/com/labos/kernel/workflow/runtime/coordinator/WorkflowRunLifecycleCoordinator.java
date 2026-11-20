@@ -73,6 +73,45 @@ public final class WorkflowRunLifecycleCoordinator implements AutoCloseable {
     }
 
     /**
+     * Outcome of committing an Attempt completion and attempting to wake the Run mailbox.
+     * {@code attemptCommitted} is always {@code true} when returned normally; if the Run is
+     * draining or the mailbox rejects wakeup, {@code wakeupScheduled} is {@code false} while
+     * the durable Attempt completion remains safely committed in PostgreSQL.
+     */
+    public record CompletionDispatch(
+            boolean attemptCommitted,
+            boolean wakeupScheduled,
+            CompletableFuture<Void> graphAdvance,
+            RuntimeException wakeupError) {
+        public CompletionDispatch {
+            Objects.requireNonNull(graphAdvance, "graphAdvance");
+        }
+    }
+
+    /**
+     * Commit the successful Attempt and export declared flow variables first, then perform a
+     * best-effort wakeup of the Run mailbox. A wakeup refusal (for example when the Run is in
+     * active PAUSE/STOP/FAILURE Drain or the mailbox is saturated) never disguises the committed
+     * completion as a failure.
+     */
+    public CompletionDispatch completeAttemptAndNotify(
+            UUID tenantId, UUID runId, UUID attemptId,
+            String outputKey, String outputJson,
+            Map<String, String> exportedFlowVariables) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(attemptId, "attemptId");
+        repository.completeAttempt(tenantId, runId, attemptId, outputKey, outputJson, exportedFlowVariables);
+        try {
+            CompletableFuture<Void> advanceFuture = mailboxes.submit(tenantId, runId,
+                    new Signal(tenantId, runId, SignalType.ATTEMPT_SUCCEEDED, attemptId));
+            return new CompletionDispatch(true, true, advanceFuture, null);
+        } catch (RuntimeException wakeupRejected) {
+            return new CompletionDispatch(true, false, CompletableFuture.completedFuture(null), wakeupRejected);
+        }
+    }
+
+    /**
      * Commit the successful Attempt and atomically export declared flow variables
      * before notifying the Run mailbox.
      */

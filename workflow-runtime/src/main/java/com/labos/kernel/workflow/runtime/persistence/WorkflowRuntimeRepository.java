@@ -132,38 +132,61 @@ public final class WorkflowRuntimeRepository {
     }
 
     /**
-     * Exact identity-paired check: true if this Attempt has any SIDE_EFFECT_UNKNOWN without a
-     * subsequent matching SIDE_EFFECT_COMPLETED, or any SIDE_EFFECT_STARTED whose side_effect_key
-     * has no matching SIDE_EFFECT_COMPLETED (rows with NULL side_effect_key fail closed as uncertain).
+     * Single-source-of-truth SQL predicate for alias {@code a} ({@code workflow_runtime.node_attempt}):
+     * true when the Attempt has any {@code SIDE_EFFECT_UNKNOWN} without a later matching
+     * {@code SIDE_EFFECT_COMPLETED}, or any {@code SIDE_EFFECT_STARTED} without a later matching
+     * {@code SIDE_EFFECT_COMPLETED}.
+     *
+     * <p>By design, Attempt-level {@code SIDE_EFFECT_UNKNOWN} rows with {@code side_effect_key IS NULL}
+     * (written when {@code failAttempt}, {@code cancelAttempt}, or crash recovery marks an Attempt
+     * {@code UNKNOWN} and escalates the Run to {@code MANUAL_REQUIRED}) are permanently unresolved
+     * fail-closed markers: that Attempt cannot later be auto-completed and requires manual reconciliation
+     * or a new Attempt.
+     */
+    private static final String UNRESOLVED_SIDE_EFFECT_PREDICATE_FOR_ALIAS_A = """
+        EXISTS (
+          SELECT 1 FROM workflow_runtime.worker_execution_fact u
+           WHERE u.tenant_id=a.tenant_id AND u.attempt_id=a.attempt_id
+             AND u.fact_type='SIDE_EFFECT_UNKNOWN'
+             AND (
+               u.side_effect_key IS NULL
+               OR NOT EXISTS (
+                 SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                  WHERE c.tenant_id=u.tenant_id AND c.attempt_id=u.attempt_id
+                    AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                    AND c.side_effect_key=u.side_effect_key
+                    AND c.fact_seq > u.fact_seq
+               )
+             )
+        )
+        OR EXISTS (
+          SELECT 1 FROM workflow_runtime.worker_execution_fact s
+           WHERE s.tenant_id=a.tenant_id AND s.attempt_id=a.attempt_id
+             AND s.fact_type='SIDE_EFFECT_STARTED'
+             AND NOT EXISTS (
+               SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
+                  AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                  AND c.side_effect_key IS NOT NULL
+                  AND c.side_effect_key=s.side_effect_key
+                  AND c.fact_seq > s.fact_seq
+             )
+        )
+        """;
+
+    /**
+     * Exact identity-paired check sharing {@link #UNRESOLVED_SIDE_EFFECT_PREDICATE_FOR_ALIAS_A}.
      */
     private boolean hasUnresolvedSideEffectForAttempt(UUID tenantId, UUID attemptId) {
         Boolean unresolved = jdbc.queryForObject("""
             SELECT EXISTS (
-              SELECT 1 FROM workflow_runtime.worker_execution_fact u
-               WHERE u.tenant_id=? AND u.attempt_id=? AND u.fact_type='SIDE_EFFECT_UNKNOWN'
+              SELECT 1 FROM workflow_runtime.node_attempt a
+               WHERE a.tenant_id=? AND a.attempt_id=?
                  AND (
-                   u.side_effect_key IS NULL
-                   OR NOT EXISTS (
-                     SELECT 1 FROM workflow_runtime.worker_execution_fact c
-                      WHERE c.tenant_id=u.tenant_id AND c.attempt_id=u.attempt_id
-                        AND c.fact_type='SIDE_EFFECT_COMPLETED'
-                        AND c.side_effect_key=u.side_effect_key
-                        AND c.fact_seq > u.fact_seq
-                   )
-                 )
-            ) OR EXISTS (
-              SELECT 1 FROM workflow_runtime.worker_execution_fact s
-               WHERE s.tenant_id=? AND s.attempt_id=? AND s.fact_type='SIDE_EFFECT_STARTED'
-                 AND NOT EXISTS (
-                   SELECT 1 FROM workflow_runtime.worker_execution_fact c
-                    WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
-                      AND c.fact_type='SIDE_EFFECT_COMPLETED'
-                      AND c.side_effect_key IS NOT NULL
-                      AND c.side_effect_key=s.side_effect_key
-                      AND c.fact_seq > s.fact_seq
+            """ + UNRESOLVED_SIDE_EFFECT_PREDICATE_FOR_ALIAS_A + """
                  )
             )
-            """, Boolean.class, tenantId, attemptId, tenantId, attemptId);
+            """, Boolean.class, tenantId, attemptId);
         return Boolean.TRUE.equals(unresolved);
     }
 
@@ -1119,34 +1142,7 @@ public final class WorkflowRuntimeRepository {
              WHERE a.tenant_id=? AND a.run_id=?
                AND a.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
                AND (
-                 EXISTS (
-                   SELECT 1 FROM workflow_runtime.worker_execution_fact u
-                    WHERE u.tenant_id=a.tenant_id AND u.attempt_id=a.attempt_id
-                      AND u.fact_type='SIDE_EFFECT_UNKNOWN'
-                      AND (
-                        u.side_effect_key IS NULL
-                        OR NOT EXISTS (
-                          SELECT 1 FROM workflow_runtime.worker_execution_fact c
-                           WHERE c.tenant_id=u.tenant_id AND c.attempt_id=u.attempt_id
-                             AND c.fact_type='SIDE_EFFECT_COMPLETED'
-                             AND c.side_effect_key=u.side_effect_key
-                             AND c.fact_seq > u.fact_seq
-                        )
-                      )
-                 )
-                 OR EXISTS (
-                   SELECT 1 FROM workflow_runtime.worker_execution_fact s
-                    WHERE s.tenant_id=a.tenant_id AND s.attempt_id=a.attempt_id
-                      AND s.fact_type='SIDE_EFFECT_STARTED'
-                      AND NOT EXISTS (
-                        SELECT 1 FROM workflow_runtime.worker_execution_fact c
-                         WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
-                           AND c.fact_type='SIDE_EFFECT_COMPLETED'
-                           AND c.side_effect_key IS NOT NULL
-                           AND c.side_effect_key=s.side_effect_key
-                           AND c.fact_seq > s.fact_seq
-                      )
-                 )
+            """ + UNRESOLVED_SIDE_EFFECT_PREDICATE_FOR_ALIAS_A + """
                )
             """, Integer.class, tenantId, runId);
         Integer unreleasedLeases = jdbc.queryForObject("""
@@ -1175,34 +1171,7 @@ public final class WorkflowRuntimeRepository {
                  WHERE a.tenant_id=? AND a.run_id=?
                    AND a.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED')
                    AND (
-                     EXISTS (
-                       SELECT 1 FROM workflow_runtime.worker_execution_fact u
-                        WHERE u.tenant_id=a.tenant_id AND u.attempt_id=a.attempt_id
-                          AND u.fact_type='SIDE_EFFECT_UNKNOWN'
-                          AND (
-                            u.side_effect_key IS NULL
-                            OR NOT EXISTS (
-                              SELECT 1 FROM workflow_runtime.worker_execution_fact c
-                               WHERE c.tenant_id=u.tenant_id AND c.attempt_id=u.attempt_id
-                                 AND c.fact_type='SIDE_EFFECT_COMPLETED'
-                                 AND c.side_effect_key=u.side_effect_key
-                                 AND c.fact_seq > u.fact_seq
-                            )
-                          )
-                     )
-                     OR EXISTS (
-                       SELECT 1 FROM workflow_runtime.worker_execution_fact s
-                        WHERE s.tenant_id=a.tenant_id AND s.attempt_id=a.attempt_id
-                          AND s.fact_type='SIDE_EFFECT_STARTED'
-                          AND NOT EXISTS (
-                            SELECT 1 FROM workflow_runtime.worker_execution_fact c
-                             WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
-                               AND c.fact_type='SIDE_EFFECT_COMPLETED'
-                               AND c.side_effect_key IS NOT NULL
-                               AND c.side_effect_key=s.side_effect_key
-                               AND c.fact_seq > s.fact_seq
-                          )
-                     )
+                """ + UNRESOLVED_SIDE_EFFECT_PREDICATE_FOR_ALIAS_A + """
                      OR EXISTS (
                        SELECT 1 FROM workflow_runtime.command_ledger c
                         WHERE c.tenant_id=a.tenant_id AND c.attempt_id=a.attempt_id
