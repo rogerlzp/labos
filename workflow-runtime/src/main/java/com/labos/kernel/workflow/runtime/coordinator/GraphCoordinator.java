@@ -114,7 +114,7 @@ public final class GraphCoordinator {
     }
 
     record Transition(String kind, List<String> successors) {
-        private Transition {
+        Transition {
             successors = List.copyOf(successors);
         }
     }
