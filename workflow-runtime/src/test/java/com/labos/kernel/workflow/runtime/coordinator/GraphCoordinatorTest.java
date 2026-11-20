@@ -84,6 +84,17 @@ class GraphCoordinatorTest {
     }
 
     @Test
+    void validatesUnsupportedTaskRoutingBeforeAnyTokenCanAdvance() {
+        var task=node("task",GraphPlan.Kind.TASK);
+        var end=node("end",GraphPlan.Kind.END);
+        var conditional=new GraphPlan.Edge("task-end","task","end","approved == true",false);
+        var nodes=Map.of("task",task,"end",end);
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.validatePlan(
+                new GraphPlan(1,"ci","d","1","hash",List.of(task,end),List.of(conditional)),
+                nodes,Map.of("task",List.of(conditional))));
+    }
+
+    @Test
     void parallelSplitRejectsConditionalEdgesAndDuplicateTargets() {
         var node=node("parallel",GraphPlan.Kind.SPLIT_PARALLEL);
         assertThrows(IllegalStateException.class,()->GraphCoordinator.transitionFor(node,
