@@ -6,7 +6,7 @@ import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
 import com.labos.kernel.workflow.runtime.graph.GraphPlan;
 import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
 import com.labos.kernel.workflow.runtime.host.SchedulingGate;
-import com.labos.kernel.workflow.runtime.host.TestSchedulingGates;
+import com.labos.kernel.workflow.runtime.host.SchedulingGateTestSupport;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -79,6 +79,26 @@ class WorkerExecutionServiceTest {
         assertTrue(repo.markOutboxDelivered(tenant, msg.outboxId()));
     }
 
+    private static WorkflowRuntimeRepository.CreatedRun createSingleTaskRun(
+            WorkflowRuntimeRepository repo, UUID tenant, String prefix, String nodeKey) {
+        String xml = """
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:task id="%s" protocolName="Op" resource="1"/>
+                    <bpmn:endEvent id="end"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="%s"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="%s" targetRef="end"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """.formatted(nodeKey, nodeKey, nodeKey);
+        GraphPlan plan = new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput(prefix + "-" + tenant, "1", xml, Map.of()));
+        return repo.createRun(tenant, prefix + "-" + UUID.randomUUID(), "CREATE", "{}",
+                prefix + "-" + tenant, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", nodeKey);
+    }
+
     @Test
     void pureLogicTaskExportsVariablesDrivesDownstreamXorAndCompletesRun() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
@@ -112,7 +132,7 @@ class WorkerExecutionServiceTest {
                 plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
 
         var mailboxExec = Executors.newFixedThreadPool(2);
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 8);
              var pool = new WorkerPool(2, 8, 4, registry, gate)) {
@@ -180,7 +200,7 @@ class WorkerExecutionServiceTest {
         AtomicBoolean newSideEffectRejectedDuringDrain = new AtomicBoolean();
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 2, registry, gate)) {
@@ -239,7 +259,7 @@ class WorkerExecutionServiceTest {
         deliverDispatchOutbox(repo, tenant, res.attemptId());
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(1, 4, 2, registry, gate)) {
@@ -275,7 +295,7 @@ class WorkerExecutionServiceTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 2, registry, gate)) {
@@ -339,7 +359,7 @@ class WorkerExecutionServiceTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 4, registry, gate)) {
@@ -432,7 +452,7 @@ class WorkerExecutionServiceTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(1, 4, 4, registry, gate)) {
@@ -440,8 +460,7 @@ class WorkerExecutionServiceTest {
             WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
 
             // Occupy the single worker thread so subsequent submissions stay queued.
-            var runBusy = repo.createRun(tenant, "ws-qcan-busy-" + UUID.randomUUID(), "CREATE", "{}",
-                    "ws-qcan-busy-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-busy");
+            var runBusy = createSingleTaskRun(repo, tenant, "ws-qcan-busy", "task-busy");
             repo.startRun(tenant, runBusy.runId());
             var resBusy = repo.reserveCapacity(tenant, runBusy.runId(), "ws-qcan-busy-cap-" + tenant, 1,
                     "task-busy", "PURE", Instant.now().plusSeconds(60));
@@ -525,7 +544,9 @@ class WorkerExecutionServiceTest {
             assertNotNull(outTerm.error());
 
             releaseWorker.countDown();
-            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, futBusy.get(5, TimeUnit.SECONDS).status());
+            var outBusy = futBusy.get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, outBusy.status());
+            outBusy.graphAdvance().get(5, TimeUnit.SECONDS);
             assertEquals(0, service.trackedCount());
         } finally {
             mailboxExec.shutdownNow();
@@ -540,7 +561,7 @@ class WorkerExecutionServiceTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 4, registry, gate)) {
@@ -676,7 +697,7 @@ class WorkerExecutionServiceTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = TestSchedulingGates.openGate();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 4, registry, gate)) {
@@ -684,8 +705,7 @@ class WorkerExecutionServiceTest {
             WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
 
             // 1. Off-thread background invocation of WorkerExecutionContext is rejected and writes 0 facts.
-            var runCtx = repo.createRun(tenant, "ws-ctx-1-" + UUID.randomUUID(), "CREATE", "{}",
-                    "ws-ctx-1-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-ctx");
+            var runCtx = createSingleTaskRun(repo, tenant, "ws-ctx-1", "task-ctx");
             repo.startRun(tenant, runCtx.runId());
             var resCtx = repo.reserveCapacity(tenant, runCtx.runId(), "ws-ctx-cap-" + tenant, 1,
                     "task-ctx", "REVERSIBLE", Instant.now().plusSeconds(60));
@@ -711,12 +731,12 @@ class WorkerExecutionServiceTest {
             assertInstanceOf(IllegalStateException.class, offThreadError.get(),
                     "Off-thread side-effect write must be rejected synchronously by WorkerExecutionContext");
             assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, ctxOutcome.status());
+            ctxOutcome.graphAdvance().get(5, TimeUnit.SECONDS);
             assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
                     + tenant + "' AND attempt_id='" + resCtx.attemptId() + "' AND fact_type='SIDE_EFFECT_STARTED'"));
 
             // 2. TaskRequest with mismatched nodeKey or sideEffectClass is rejected at acceptance before handler runs.
-            var runBind = repo.createRun(tenant, "ws-bind-1-" + UUID.randomUUID(), "CREATE", "{}",
-                    "ws-bind-1-" + tenant, "1", new byte[32], "ci", "{}", "{}", "real-node");
+            var runBind = createSingleTaskRun(repo, tenant, "ws-bind-1", "real-node");
             repo.startRun(tenant, runBind.runId());
             var resBind = repo.reserveCapacity(tenant, runBind.runId(), "ws-bind-cap-" + tenant, 1,
                     "real-node", "PURE", Instant.now().plusSeconds(60));
@@ -733,6 +753,9 @@ class WorkerExecutionServiceTest {
             assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, wrongNodeOutcome.status());
             assertInstanceOf(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, wrongNodeOutcome.error());
             assertFalse(mismatchHandlerRan.get());
+            assertEquals(0, pool.inFlightForRun(runBind.runId()),
+                    "WorkerPool must release task and per-Run permit BEFORE outcomeFuture completes");
+            assertEquals(0, registry.activeCount());
 
             var wrongClassOutcome = service.submit(new WorkerTaskHandler.TaskRequest(
                     tenant, runBind.runId(), resBind.attemptId(), resBind.dispatchId(),
@@ -743,6 +766,8 @@ class WorkerExecutionServiceTest {
             assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, wrongClassOutcome.status());
             assertInstanceOf(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, wrongClassOutcome.error());
             assertFalse(mismatchHandlerRan.get());
+            assertEquals(0, pool.inFlightForRun(runBind.runId()));
+            assertEquals(0, registry.activeCount());
 
             // The legitimate request with matching (nodeKey, sideEffectClass) executes and completes cleanly.
             var validOutcome = service.submit(new WorkerTaskHandler.TaskRequest(
@@ -750,6 +775,9 @@ class WorkerExecutionServiceTest {
                     "worker-bind", "real-node", "PURE", "{}"), (req, ctx) ->
                     WorkerTaskHandler.TaskResult.of("out", "{\"bound\":true}")).get(5, TimeUnit.SECONDS);
             assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, validOutcome.status());
+            validOutcome.graphAdvance().get(5, TimeUnit.SECONDS);
+            assertEquals(0, pool.inFlightForRun(runBind.runId()));
+            assertEquals(0, registry.activeCount());
         } finally {
             mailboxExec.shutdownNow();
         }

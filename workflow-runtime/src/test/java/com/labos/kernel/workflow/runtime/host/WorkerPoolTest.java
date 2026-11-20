@@ -138,4 +138,30 @@ class WorkerPoolTest {
             pool.close();
         }
     }
+
+    @Test
+    void afterReleaseRunsStrictlyAfterPermitAndRegistryReleaseAllowingImmediateResubmit() throws Exception {
+        SchedulingGate gate = new SchedulingGate();
+        gate.open();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        WorkerPool pool = new WorkerPool(2, 2, 1, registry, gate);
+        pool.start();
+        UUID runId = UUID.randomUUID(), attemptId = UUID.randomUUID();
+        try {
+            for (int i = 0; i < 20; i++) {
+                var done = new java.util.concurrent.CompletableFuture<String>();
+                pool.submit(runId, attemptId, "worker-" + i, () -> "ok", () -> {
+                    assertEquals(0, pool.inFlightForRun(runId));
+                    assertFalse(registry.isActive(attemptId));
+                    done.complete("ok");
+                });
+                assertEquals("ok", done.get(2, TimeUnit.SECONDS));
+                // Immediate resubmission of the exact same (runId, attemptId) with perRunLimit=1 must never race.
+                assertEquals(0, pool.inFlightForRun(runId));
+                assertFalse(registry.isActive(attemptId));
+            }
+        } finally {
+            pool.close();
+        }
+    }
 }

@@ -9,6 +9,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Application service owning the single-Attempt Worker execution lifecycle on the
@@ -146,31 +147,38 @@ public final class WorkerExecutionService {
             throw new IllegalStateException("Attempt already submitted to WorkerExecutionService: "
                     + request.attemptId());
         }
+        AtomicBoolean workerOwnsCompletion = new AtomicBoolean();
+        AtomicReference<ExecutionOutcome> outcomeRef = new AtomicReference<>();
+        Runnable publishAfterPoolRelease = () -> {
+            if (!workerOwnsCompletion.get()) return;
+            inFlight.remove(request.attemptId(), pending);
+            ExecutionOutcome outcome = outcomeRef.get();
+            if (outcome != null) {
+                pending.outcomeFuture.complete(outcome);
+            } else if (!pending.outcomeFuture.isDone()) {
+                pending.outcomeFuture.complete(ExecutionOutcome.settlementFailed(
+                        request.attemptId(),
+                        new IllegalStateException("Worker execution exited without outcome")));
+            }
+        };
         try {
             workerPool.submit(request.runId(), request.attemptId(), request.workerId(), () -> {
                 if (!pending.entered.compareAndSet(false, true)) {
                     // requestCancel won the queued->running race and owns durable cancellation settlement.
                     return null;
                 }
-                ExecutionOutcome outcome = null;
+                workerOwnsCompletion.set(true);
                 try {
-                    outcome = executeAttemptLifecycle(request, handler);
+                    ExecutionOutcome outcome = executeAttemptLifecycle(request, handler);
+                    outcomeRef.set(outcome);
                     return outcome;
                 } catch (Throwable unexpected) {
-                    outcome = ExecutionOutcome.settlementFailed(request.attemptId(), unexpected);
+                    ExecutionOutcome failed = ExecutionOutcome.settlementFailed(request.attemptId(), unexpected);
+                    outcomeRef.set(failed);
                     if (unexpected instanceof Error err) throw err;
-                    return outcome;
-                } finally {
-                    inFlight.remove(request.attemptId(), pending);
-                    if (outcome != null) {
-                        pending.outcomeFuture.complete(outcome);
-                    } else if (!pending.outcomeFuture.isDone()) {
-                        pending.outcomeFuture.complete(ExecutionOutcome.settlementFailed(
-                                request.attemptId(),
-                                new IllegalStateException("Worker execution exited without outcome")));
-                    }
+                    return failed;
                 }
-            });
+            }, publishAfterPoolRelease);
             return pending.outcomeFuture;
         } catch (RuntimeException | Error submissionFailure) {
             inFlight.remove(request.attemptId(), pending);

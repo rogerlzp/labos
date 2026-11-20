@@ -57,9 +57,21 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
     }
 
     public <T> Future<T> submit(UUID runId, UUID attemptId, String workerId, Callable<T> work) {
+        return submit(runId, attemptId, workerId, work, () -> {});
+    }
+
+    /**
+     * Submit an Attempt to the pool and run {@code afterRelease} on the worker thread strictly
+     * AFTER {@link WorkerExecutionRegistry#unregister}, task map removal, and per-Run permit release
+     * have all completed. This guarantees callers unblocked by {@code afterRelease} can safely
+     * observe zero in-flight permits or resubmit the same Attempt/Run immediately without racing.
+     */
+    public <T> Future<T> submit(UUID runId, UUID attemptId, String workerId,
+                                Callable<T> work, Runnable afterRelease) {
         Objects.requireNonNull(runId, "runId");
         Objects.requireNonNull(attemptId, "attemptId");
         Objects.requireNonNull(work, "work");
+        Objects.requireNonNull(afterRelease, "afterRelease");
         if (workerId == null || workerId.isBlank())
             throw new IllegalArgumentException("workerId is required");
         if (!started.get() || closing.get() || closed.get())
@@ -86,9 +98,13 @@ public final class WorkerPool implements RuntimeHost.LifecycleComponent, AutoClo
                 registered = true;
                 return work.call();
             } finally {
-                if (registered) registry.unregister(attemptId, thread);
-                phase.set(2);
-                release.run();
+                try {
+                    if (registered) registry.unregister(attemptId, thread);
+                } finally {
+                    phase.set(2);
+                    release.run();
+                    afterRelease.run();
+                }
             }
         }) {
             @Override protected void done() {
