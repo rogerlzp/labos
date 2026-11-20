@@ -1227,12 +1227,24 @@ class WorkflowRuntimeRepositoryTest {
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
                 () -> repo.completeAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),"out","{\"late\":true}",
                         Map.of("shouldNotWrite","true")));
+        int eventsBeforeTerminalReject=scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"+
+                tenant+"' AND run_id='"+terminalRun.runId()+"'");
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.failAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),"{\"late\":true}",false));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.cancelAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),"late-cancel"));
+        assertEquals(eventsBeforeTerminalReject,scalar(ds,"SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"+
+                tenant+"' AND run_id='"+terminalRun.runId()+"'"),
+                "Terminal Run must not append new events on rejected failAttempt/cancelAttempt");
         assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.branch_output WHERE tenant_id='"+
                 tenant+"' AND run_id='"+terminalRun.runId()+"'"));
         assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.flow_variable WHERE tenant_id='"+
                 tenant+"' AND run_id='"+terminalRun.runId()+"'"));
-        // Terminalize synthetic STARTED attempt so shared-DB startup recovery tests stay isolated.
-        repo.cancelAttempt(tenant,terminalRun.runId(),lateRes.attemptId(),"test-cleanup");
+        // Clean synthetic STARTED test row so shared-DB startup recovery tests stay isolated.
+        try(Connection c=ds.getConnection(); var ps=c.prepareStatement(
+                "UPDATE workflow_runtime.node_attempt SET attempt_state='CANCELLED' WHERE tenant_id=? AND attempt_id=?")) {
+            ps.setObject(1,tenant);ps.setObject(2,lateRes.attemptId());ps.executeUpdate();
+        }
     }
 
     @Test
@@ -1260,13 +1272,128 @@ class WorkflowRuntimeRepositoryTest {
         assertNotNull(outcome.interventionId());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
                 tenant+"' AND run_id='"+run.runId()+"' AND status='MANUAL_REQUIRED' AND control_gate='CLOSED' AND recovery_state='BLOCKED'"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res.attemptId()+"' AND attempt_state='UNKNOWN'"),
+                "Escalation to MANUAL_REQUIRED must atomically mark side-effect-crossed Attempt UNKNOWN");
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.resource_lease WHERE tenant_id='"+
                 tenant+"' AND lease_id='"+lease.leaseId()+"' AND lease_state='ACTIVE'"));
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
                 () -> repo.completeAttempt(tenant,run.runId(),res.attemptId(),"out","{\"done\":true}"));
-        // Move the uncertain attempt to UNKNOWN so shared-DB startup recovery tests stay isolated.
-        assertEquals("MANUAL_REQUIRED",
-                repo.failAttempt(tenant,run.runId(),res.attemptId(),"{\"reason\":\"test-cleanup\"}",true).outcome());
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.failAttempt(tenant,run.runId(),res.attemptId(),"{\"err\":true}",false));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.cancelAttempt(tenant,run.runId(),res.attemptId(),"cancel-blocked"));
+    }
+
+    @Test
+    void closedControlGateBlocksDispatchAcceptStartAndNewCommandDuringDrain() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','gate-block-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"gate-block-"+UUID.randomUUID(),"CREATE","{}",
+                "gate-block-"+tenant,"1",new byte[32],"ci","{}","{}","split");
+        repo.startRun(tenant,run.runId());
+        var splitTok=repo.findReadyGraphTokens(tenant,run.runId(),10).get(0);
+        repo.advanceGraphToken(tenant,run.runId(),splitTok.tokenId(),"split","SPLIT",
+                List.of("t-created","t-dispatched","t-accepted","t-started"));
+
+        var resCreated=repo.reserveCapacity(tenant,run.runId(),"gb-cap",4,"t-created","PURE",Instant.now().plusSeconds(60));
+
+        var resDispatched=repo.reserveCapacity(tenant,run.runId(),"gb-cap",4,"t-dispatched","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),resDispatched.attemptId(),"q","{}");
+
+        var resAccepted=repo.reserveCapacity(tenant,run.runId(),"gb-cap",4,"t-accepted","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),resAccepted.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),resAccepted.attemptId(),resAccepted.dispatchId(),"w1");
+
+        var resStarted=repo.reserveCapacity(tenant,run.runId(),"gb-cap",4,"t-started","DEVICE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),resStarted.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),resStarted.attemptId(),resStarted.dispatchId(),"w2");
+        repo.startAttempt(tenant,run.runId(),resStarted.attemptId(),resStarted.dispatchId(),"w2");
+
+        // Close control gate via PAUSE drain.
+        repo.requestDrain(tenant,run.runId(),"PAUSE");
+
+        // Once gate is closed, NO new dispatch, acceptance, worker start, or new command creation is admitted.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.dispatchAttempt(tenant,run.runId(),resCreated.attemptId(),"q","{}"));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.acceptAttempt(tenant,run.runId(),resDispatched.attemptId(),resDispatched.dispatchId(),"w3"));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.startAttempt(tenant,run.runId(),resAccepted.attemptId(),resAccepted.dispatchId(),"w1"));
+        UUID startedActivation=activationForAttempt(ds,tenant,resStarted.attemptId());
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.createCommand(tenant,run.runId(),startedActivation,resStarted.attemptId(),
+                        "dev-1","Run","QUERYABLE","{}"));
+
+        // Unstarted / no-side-effect attempts CAN still be safely cancelled during drain.
+        assertEquals("CANCELLED",repo.cancelAttempt(tenant,run.runId(),resCreated.attemptId(),"drain").outcome());
+        assertEquals("CANCELLED",repo.cancelAttempt(tenant,run.runId(),resDispatched.attemptId(),"drain").outcome());
+        assertEquals("CANCELLED",repo.cancelAttempt(tenant,run.runId(),resAccepted.attemptId(),"drain").outcome());
+        assertEquals("CANCELLED",repo.cancelAttempt(tenant,run.runId(),resStarted.attemptId(),"drain").outcome());
+        assertEquals(0,scalar(ds,"SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"+
+                tenant+"' AND capacity_key='gb-cap'"));
+    }
+
+    @Test
+    void unsentCreatedCommandEntersFailureDrainInsteadOfFalseManualRequired() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','unsent-cmd-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"unsent-cmd-"+UUID.randomUUID(),"CREATE","{}",
+                "unsent-cmd-"+tenant,"1",new byte[32],"ci","{}","{}","dev-task");
+        repo.startRun(tenant,run.runId());
+        var res=repo.reserveCapacity(tenant,run.runId(),"uc-cap",1,"dev-task","DEVICE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),res.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
+        repo.startAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
+        // Command is CREATED only (never SEND_STARTED, no side-effect boundary crossed).
+        UUID cmdId=repo.createCommand(tenant,run.runId(),activationForAttempt(ds,tenant,res.attemptId()),
+                res.attemptId(),"dev-1","Heat","QUERYABLE","{\"temp\":37}");
+
+        var outcome=repo.failGraphRun(tenant,run.runId(),null,"IllegalArgumentException","sibling branch fault");
+        assertEquals("DRAINING_FAILURE",outcome.outcome(),
+                "Unsent CREATED command must enter FAILURE drain, not false MANUAL_REQUIRED");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
+                tenant+"' AND run_id='"+run.runId()+"' AND status='STOP_REQUESTED' AND control_gate='STOP'"));
+        // Cancel cleanly cancels the unsent CREATED command and releases capacity.
+        assertEquals("CANCELLED",repo.cancelAttempt(tenant,run.runId(),res.attemptId(),"failure-drain").outcome());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"+
+                tenant+"' AND command_id='"+cmdId+"' AND command_state='CANCELLED'"));
+    }
+
+    @Test
+    void completeAttemptReplayRejectsDifferentOutputKeyEvenWhenPayloadAndExportsMatch() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','outkey-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+        var run=repo.createRun(tenant,"outkey-"+UUID.randomUUID(),"CREATE","{}",
+                "outkey-"+tenant,"1",new byte[32],"ci","{}","{}","task-1");
+        repo.startRun(tenant,run.runId());
+        var res=repo.reserveCapacity(tenant,run.runId(),"ok-cap",1,"task-1","PURE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run.runId(),res.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
+        repo.startAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
+
+        Map<String,String> exports=Map.of("k","1");
+        repo.completeAttempt(tenant,run.runId(),res.attemptId(),"primary","{\"ok\":true}",exports);
+        // Same result + same exports + same outputKey -> idempotent replay succeeds.
+        repo.completeAttempt(tenant,run.runId(),res.attemptId(),"primary","{\"ok\":true}",exports);
+        // Same result + same exports + DIFFERENT outputKey -> must fail with IdempotencyConflictException.
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,
+                () -> repo.completeAttempt(tenant,run.runId(),res.attemptId(),"differentKey","{\"ok\":true}",exports));
     }
 
     @Test

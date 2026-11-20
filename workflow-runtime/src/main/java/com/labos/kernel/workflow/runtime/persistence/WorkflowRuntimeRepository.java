@@ -445,7 +445,8 @@ public final class WorkflowRuntimeRepository {
     public void dispatchAttempt(UUID tenantId, UUID runId, UUID attemptId,
                                 String workerQueue, String payloadJson) {
         required(() -> {
-            lockRun(tenantId,runId);
+            RunHead head=lockRun(tenantId,runId);
+            requireRunOpenForExecutionStart(head,"dispatch");
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='DISPATCHED',
                        attempt_version=attempt_version+1
@@ -477,7 +478,8 @@ public final class WorkflowRuntimeRepository {
     public void acceptAttempt(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
                               String workerId) {
         required(() -> {
-            lockRun(tenantId,runId);
+            RunHead head=lockRun(tenantId,runId);
+            requireRunOpenForExecutionStart(head,"worker acceptance");
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.node_attempt SET attempt_state='ACCEPTED',
                        worker_id=?,attempt_version=attempt_version+1
@@ -496,6 +498,7 @@ public final class WorkflowRuntimeRepository {
                              String workerId) {
         required(() -> {
             RunHead head=lockRun(tenantId,runId);
+            requireRunOpenForExecutionStart(head,"worker start");
             UUID activationId=jdbc.queryForObject("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=?
@@ -560,6 +563,8 @@ public final class WorkflowRuntimeRepository {
     public void completeAttempt(UUID tenantId, UUID runId, UUID attemptId,
                                 String outputKey, String outputJson,
                                 Map<String, String> exportedFlowVariables) {
+        if (outputKey == null || outputKey.isBlank())
+            throw new IllegalArgumentException("outputKey is required");
         TreeMap<String, String> sortedExports = new TreeMap<>();
         if (exportedFlowVariables != null) {
             for (Map.Entry<String, String> entry : exportedFlowVariables.entrySet()) {
@@ -599,20 +604,29 @@ public final class WorkflowRuntimeRepository {
             if(states.size()!=1) throw new IllegalStateException("Attempt not found");
             if("SUCCEEDED".equals(states.get(0))) {
                 Boolean identical = jdbc.queryForObject("""
-                    SELECT result IS NOT NULL
-                       AND result = ?::jsonb
-                       AND exported_variables = ?::jsonb
-                      FROM workflow_runtime.node_attempt
-                     WHERE tenant_id=? AND attempt_id=?
-                    """, Boolean.class, outputJson, exportedManifestJson, tenantId, attemptId);
+                    SELECT a.result IS NOT NULL
+                       AND a.result = ?::jsonb
+                       AND a.exported_variables = ?::jsonb
+                       AND EXISTS (
+                           SELECT 1 FROM workflow_runtime.branch_output o
+                            WHERE o.tenant_id = a.tenant_id
+                              AND o.activation_id = a.activation_id
+                              AND o.output_key = ?
+                              AND o.value = ?::jsonb
+                       )
+                       AND (
+                           SELECT count(*) FROM workflow_runtime.branch_output o
+                            WHERE o.tenant_id = a.tenant_id
+                              AND o.activation_id = a.activation_id
+                       ) = 1
+                      FROM workflow_runtime.node_attempt a
+                     WHERE a.tenant_id=? AND a.attempt_id=?
+                    """, Boolean.class, outputJson, exportedManifestJson, outputKey, outputJson, tenantId, attemptId);
                 if (Boolean.TRUE.equals(identical)) return null;
-                throw new IdempotencyConflictException("Attempt completion replay differs from committed result or exported variables");
+                throw new IdempotencyConflictException(
+                        "Attempt completion replay differs from committed outputKey, result, or exported variables");
             }
-            if (!List.of("RUNNING", "PAUSE_REQUESTED", "PAUSING", "STOP_REQUESTED", "STOPPING")
-                    .contains(head.status())) {
-                throw new InvalidTransitionException(
-                        "Cannot commit Attempt completion when Run is in status=" + head.status());
-            }
+            requireRunAdmitsAttemptTermination(head, "complete");
             String sideEffectClass=jdbc.queryForObject("""
                 SELECT side_effect_class FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND attempt_id=?
@@ -707,18 +721,35 @@ public final class WorkflowRuntimeRepository {
         return sb.append('}').toString();
     }
 
+    private static void requireRunOpenForExecutionStart(RunHead head, String action) {
+        if (!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate())) {
+            throw new InvalidTransitionException("Run gate does not admit " + action
+                    + " (status=" + head.status() + ", controlGate=" + head.controlGate() + ")");
+        }
+    }
+
+    private static void requireRunAdmitsAttemptTermination(RunHead head, String action) {
+        if (!List.of("RUNNING", "PAUSE_REQUESTED", "PAUSING", "STOP_REQUESTED", "STOPPING")
+                .contains(head.status())) {
+            throw new InvalidTransitionException(
+                    "Cannot " + action + " Attempt when Run is in status=" + head.status());
+        }
+    }
+
     public record AttemptFailureResult(String outcome, UUID interventionId) {}
 
     /**
      * Record a Worker Attempt failure with strict separation between deterministic
      * no-side-effect failures (FAILED) and uncertain / device side-effect failures (UNKNOWN + MANUAL_REQUIRED).
      * Uncertain failures never release physical device leases and escalate the Run to MANUAL_REQUIRED.
+     * Terminal or manually-blocked Runs reject further Attempt failure mutations.
      */
     public AttemptFailureResult failAttempt(UUID tenantId, UUID runId, UUID attemptId,
                                             String errorJson, boolean sideEffectUncertain) {
         String normalizedError = (errorJson == null || errorJson.isBlank()) ? "{}" : errorJson;
         return required(() -> {
             RunHead head = lockRun(tenantId, runId);
+            requireRunAdmitsAttemptTermination(head, "fail");
             List<UUID> activationIds = jdbc.query("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=?
@@ -862,11 +893,13 @@ public final class WorkflowRuntimeRepository {
     /**
      * Cancel an active Attempt only when no external side effect was started; otherwise
      * escalate fail-closed to UNKNOWN / MANUAL_REQUIRED without releasing device ownership.
+     * Terminal or manually-blocked Runs reject further Attempt cancellation mutations.
      */
     public AttemptFailureResult cancelAttempt(UUID tenantId, UUID runId, UUID attemptId, String reason) {
         String safeReason = (reason == null || reason.isBlank()) ? "cancelled" : reason;
         return required(() -> {
             RunHead head = lockRun(tenantId, runId);
+            requireRunAdmitsAttemptTermination(head, "cancel");
             List<UUID> activationIds = jdbc.query("""
                 SELECT activation_id FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=?
@@ -1015,10 +1048,18 @@ public final class WorkflowRuntimeRepository {
             SELECT count(*) FROM workflow_runtime.node_attempt
              WHERE tenant_id=? AND run_id=? AND attempt_state='UNKNOWN'
             """, Integer.class, tenantId, runId);
-        Integer unresolvedCommands = jdbc.queryForObject("""
+        // Only commands that crossed SEND_STARTED represent an uncertain external side effect;
+        // CREATED / DISPATCH_PENDING commands have not been sent and can be cancelled in FAILURE drain.
+        Integer sentOrUncertainCommands = jdbc.queryForObject("""
             SELECT count(*) FROM workflow_runtime.command_ledger
              WHERE tenant_id=? AND run_id=?
-               AND command_state NOT IN ('SUCCEEDED','FAILED','CANCELLED')
+               AND command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING','CANCEL_REQUESTED',
+                                     'DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
+            """, Integer.class, tenantId, runId);
+        Integer unsentCommands = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.command_ledger
+             WHERE tenant_id=? AND run_id=?
+               AND command_state IN ('CREATED','DISPATCH_PENDING')
             """, Integer.class, tenantId, runId);
         Integer activeSideEffects = jdbc.queryForObject("""
             SELECT count(*) FROM workflow_runtime.worker_execution_fact f
@@ -1038,10 +1079,35 @@ public final class WorkflowRuntimeRepository {
             """, Integer.class, tenantId, runId);
 
         boolean hasActiveSideEffect = (unknownAttempts != null && unknownAttempts > 0)
-                || (unresolvedCommands != null && unresolvedCommands > 0)
+                || (sentOrUncertainCommands != null && sentOrUncertainCommands > 0)
                 || (activeSideEffects != null && activeSideEffects > 0)
                 || (unreleasedLeases != null && unreleasedLeases > 0);
         if (hasActiveSideEffect) {
+            jdbc.update("""
+                UPDATE workflow_runtime.command_ledger SET command_state='UNKNOWN',
+                       version=version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=?
+                   AND command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN')
+                """, tenantId, runId);
+            jdbc.update("""
+                UPDATE workflow_runtime.node_attempt a SET attempt_state='UNKNOWN',
+                       attempt_version=attempt_version+1
+                 WHERE a.tenant_id=? AND a.run_id=?
+                   AND a.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED')
+                   AND (
+                     EXISTS (
+                       SELECT 1 FROM workflow_runtime.worker_execution_fact f
+                        WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
+                          AND f.fact_type IN ('SIDE_EFFECT_STARTED','SIDE_EFFECT_UNKNOWN')
+                     )
+                     OR EXISTS (
+                       SELECT 1 FROM workflow_runtime.command_ledger c
+                        WHERE c.tenant_id=a.tenant_id AND c.attempt_id=a.attempt_id
+                          AND c.command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING',
+                                                  'CANCEL_REQUESTED','DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
+                     )
+                   )
+                """, tenantId, runId);
             UUID interventionId = UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.manual_intervention
@@ -1070,6 +1136,7 @@ public final class WorkflowRuntimeRepository {
         }
 
         boolean hasInFlightWork = (activeAttempts != null && activeAttempts > 0)
+                || (unsentCommands != null && unsentCommands > 0)
                 || (activeWaits != null && activeWaits > 0);
         if (hasInFlightWork) {
             jdbc.update("""
@@ -1963,6 +2030,7 @@ public final class WorkflowRuntimeRepository {
                     throw new IdempotencyConflictException("Attempt already owns a different immutable Command payload");
                 return existing.get(0);
             }
+            requireRunOpenForExecutionStart(head,"command creation");
             UUID commandId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.command_ledger
