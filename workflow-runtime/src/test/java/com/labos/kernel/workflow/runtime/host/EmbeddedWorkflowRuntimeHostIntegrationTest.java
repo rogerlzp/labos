@@ -485,4 +485,144 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
             starterExec.shutdownNow();
         }
     }
+
+    @Test
+    void shutdownWithBufferedUnprocessedEventEmitsNoAckAndReconnectRetryConvergesOnce() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-stop-retry");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Path lockFile = tempDir.resolve("labos-stop-retry.lock");
+        String deviceId = "g3-stop-retry-dev-1";
+        String planKey = "g3-stop-retry-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+
+        // Prepare an active STARTED Attempt + SEND_STARTED Command (outbox already DELIVERED).
+        var run = repo.createRun(tenant, "g3-sr-" + UUID.randomUUID(), "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, run.runId());
+        new GraphCoordinator(repo).advance(tenant, run.runId());
+        var res = repo.reserveCapacity(tenant, run.runId(), "g3-sr-cap-" + tenant, 1,
+                "host_dev_op", "DEVICE", java.time.Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res.attemptId(), "dev-q", "{}");
+        var wd = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:" + res.attemptId())).findFirst().orElseThrow();
+        assertTrue(repo.markOutboxDelivered(tenant, wd.outboxId()));
+        repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-sr");
+        repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-sr");
+        UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
+                "w-sr", deviceId, "Dispense", "QUERYABLE", "{\"v\":55}");
+        var cmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).stream()
+                .filter(m -> m.dedupKey().equals("command:" + cmdId)).findFirst().orElseThrow();
+        assertTrue(repo.markCommandSendStarted(tenant, cmdId, 0L, cmdOutbox.outboxId(),
+                UUID.randomUUID(), 1, "disp-sr"));
+        assertTrue(repo.markOutboxDelivered(tenant, cmdOutbox.outboxId()));
+
+        String firstMsgId = "sr-ack-" + cmdId;
+        String retryMsgId = "sr-res-" + cmdId;
+        CountDownLatch enteredFirstEventListener = new CountDownLatch(1);
+        CountDownLatch releaseFirstEventListener = new CountDownLatch(1);
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
+            EmbeddedWorkflowRuntimeHost.Config cfg1 = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-sr-1", 1, 8, 2, 1, 16, 100,
+                    Duration.ofMillis(200), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+
+            // Host 1 starts with clean recovery no-op so our prepared SEND_STARTED command stays ready for live event tests.
+            try (EmbeddedWorkflowRuntimeHost host1 = new EmbeddedWorkflowRuntimeHost(
+                    cfg1, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g3-sr-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.empty(),
+                    notification -> {
+                        if (firstMsgId.equals(notification.event().sourceMessageId())) {
+                            enteredFirstEventListener.countDown();
+                            try {
+                                releaseFirstEventListener.await(5, TimeUnit.SECONDS);
+                            } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+                    },
+                    delegate -> (limit, actor) -> new com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService.StartupResult(
+                            new WorkflowRuntimeRepository.OutboxRestartResult(0, 0), 0, 0, 0, 0, List.of()))) {
+
+                host1.start();
+                assertTrue(host1.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                awaitCondition(Duration.ofSeconds(3), () -> server.activeSession() != null);
+                var session1 = server.activeSession();
+
+                // 1. Send Event #1 (RECEIVED_ACK) which blocks eventLoop inside listener; then send Event #2 (COMMAND_RESULT)
+                //    so Event #2 sits buffered and UNPROCESSED in Host 1's bounded eventQueue!
+                session1.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                        firstMsgId, "RECEIVED_ACK", "ACKNOWLEDGED", "seq-1", "{}");
+                assertTrue(enteredFirstEventListener.await(5, TimeUnit.SECONDS));
+
+                session1.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                        retryMsgId, "COMMAND_RESULT", "SUCCEEDED", "seq-2", "{\"dispensed\":55}");
+                // Give socket reader brief moment to enqueue Event #2 into bounded eventQueue.
+                Thread.sleep(100);
+
+                // 2. Stop Host 1 WHILE Event #1 is still blocked so stopEventProcessing() sets processingStopped=true
+                //    BEFORE interrupting Event #1 — guaranteeing Event #2 is NEVER polled or ACKed before shutdown!
+                host1.close();
+                releaseFirstEventListener.countDown();
+            }
+
+            // 3. Verify device NEVER received EVENT_ACK for Event #2 and DB has ZERO Inbox row for Event #2!
+            assertTrue(server.receivedEventAcks().stream()
+                            .noneMatch(a -> retryMsgId.equals(a.path("sourceMessageId").asText())),
+                    "Unprocessed buffered event discarded on Host shutdown must NEVER receive EVENT_ACK");
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND source_message_id='" + retryMsgId + "'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='ACKNOWLEDGED'"));
+
+            // 4. Reconnect with Host 2 -> device retransmits the SAME un-ACKed retryMsgId (twice to verify Inbox dedup)!
+            EmbeddedWorkflowRuntimeHost.Config cfg2 = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-sr-2", 1, 8, 2, 1, 16, 100,
+                    Duration.ofMillis(200), 16, List.of(server.endpoint()), fastGatewayConfig(), tenant::equals);
+
+            try (EmbeddedWorkflowRuntimeHost host2 = new EmbeddedWorkflowRuntimeHost(
+                    cfg2, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g3-sr-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.empty(),
+                    n -> {},
+                    delegate -> (limit, actor) -> new com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService.StartupResult(
+                            new WorkflowRuntimeRepository.OutboxRestartResult(0, 0), 0, 0, 0, 0, List.of()))) {
+
+                host2.start();
+                assertTrue(host2.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                awaitCondition(Duration.ofSeconds(3), () -> server.activeSession() != null);
+                var session2 = server.activeSession();
+
+                // Device retransmits un-ACKed Event #2 with SAME sourceMessageId -> APPLIED + EVENT_ACK(APPLIED)!
+                session2.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                        retryMsgId, "COMMAND_RESULT", "SUCCEEDED", "seq-2", "{\"dispensed\":55}");
+                awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventAcks().stream()
+                        .anyMatch(a -> retryMsgId.equals(a.path("sourceMessageId").asText())
+                                && "APPLIED".equals(a.path("status").asText())));
+
+                // Duplicate retransmission of SAME sourceMessageId -> idempotent EVENT_ACK(DUPLICATE_REPLAY)!
+                session2.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                        retryMsgId, "COMMAND_RESULT", "SUCCEEDED", "seq-2", "{\"dispensed\":55}");
+                awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventAcks().stream()
+                        .anyMatch(a -> retryMsgId.equals(a.path("sourceMessageId").asText())
+                                && "DUPLICATE_REPLAY".equals(a.path("status").asText())));
+
+                // Verify exactly ONE durable Inbox row and ONE SIDE_EFFECT_COMPLETED fact (idempotent convergence!).
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND source_message_id='" + retryMsgId + "' AND receipt_state='PROCESSED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                        + tenant + "' AND command_id='" + cmdId + "' AND command_state='SUCCEEDED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                        + tenant + "' AND attempt_id='" + res.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
+            }
+
+            // Cleanly complete the test's Attempt so shared-DB tests stay isolated.
+            repo.completeAttempt(tenant, run.runId(), res.attemptId(), "out", "{\"dispensed\":55}");
+        }
+    }
 }

@@ -10,9 +10,11 @@ import java.util.Objects;
 /**
  * Lifecycle boundary for the single-process Workflow Runtime Host.
  *
- * <p>Event ingress is started before recovery so device messages can be durably
- * recorded in Inbox. Its processor, dispatchers and scheduler belong in the
- * post-recovery component list and therefore cannot run before recovery ends.
+ * <p>Event ingress (e.g. TCP transport connection, heartbeats, and bounded in-memory buffering
+ * without emitting {@code EVENT_ACK} or mutating runtime/Inbox tables) starts before recovery.
+ * Event processing (persisting Inbox receipts and applying Command transitions), dispatchers,
+ * worker pools, and schedulers belong in {@code afterRecovery} and therefore cannot mutate
+ * runtime state before startup recovery completes.
  */
 public final class RuntimeHost implements AutoCloseable {
     public enum State { NEW, STARTING, RECOVERING, RUNNING, STOPPING, STOPPED, FAILED }

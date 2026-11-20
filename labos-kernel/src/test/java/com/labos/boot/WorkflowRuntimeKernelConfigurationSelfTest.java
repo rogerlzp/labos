@@ -68,11 +68,12 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                     "EmbeddedWorkflowRuntimeHost must not start while feature flag is disabled");
         }
 
-        // Verify malformed endpoint string is ignored when host.enabled=false (does not break disabled startup).
+        // Verify malformed endpoint & numeric gateway properties are ignored when host.enabled=false.
         try (AnnotationConfigApplicationContext disabledCtx = new AnnotationConfigApplicationContext()) {
             disabledCtx.getEnvironment().getPropertySources().addFirst(new MapPropertySource("disabled-bad-ep", Map.of(
                     WorkflowRuntimeHostProperties.PROP_ENABLED, "false",
-                    WorkflowRuntimeHostProperties.PROP_ENDPOINTS, "broken-endpoint-ignored-when-disabled")));
+                    WorkflowRuntimeHostProperties.PROP_ENDPOINTS, "broken-endpoint-ignored-when-disabled",
+                    WorkflowRuntimeHostProperties.PROP_HB_TIMEOUT_MS, "not-a-number")));
             disabledCtx.registerBean("dataSource", DataSource.class, () -> ds);
             disabledCtx.registerBean("transactionManager", PlatformTransactionManager.class, () -> tm);
             disabledCtx.registerBean("graphMapper", GraphMapper.class, () -> mapper);

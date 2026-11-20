@@ -67,6 +67,18 @@ public record WorkflowRuntimeHostProperties(
     public static WorkflowRuntimeHostProperties fromEnvironment(Environment env) {
         Objects.requireNonNull(env, "env");
         boolean enabled = Boolean.parseBoolean(env.getProperty(PROP_ENABLED, "false"));
+        if (!enabled) {
+            // When disabled, skip eager parsing of runtime/gateway properties so malformed or
+            // stale settings never break legacy Kernel startup.
+            return new WorkflowRuntimeHostProperties(
+                    false,
+                    Path.of("runtime-host.lock"),
+                    "labos-local-host",
+                    4, 64, 16, 2, 128, 100,
+                    Duration.ofMillis(250L), 32,
+                    List.of(),
+                    TcpDeviceConnection.Config.defaults());
+        }
         Path lockFile = Path.of(env.getProperty(PROP_LOCK_FILE, "runtime-host.lock"));
         String hostId = env.getProperty(PROP_HOST_ID, "labos-local-host");
         int workerThreads = intProp(env, PROP_WORKER_THREADS, 4);
@@ -77,10 +89,7 @@ public record WorkflowRuntimeHostProperties(
         int recoveryLimit = intProp(env, PROP_RECOVERY_LIMIT, 100);
         Duration pollInterval = Duration.ofMillis(longProp(env, PROP_POLL_MS, 250L));
         int batchSize = intProp(env, PROP_BATCH_SIZE, 32);
-        // Only parse gateway endpoints when host is enabled so a stale/malformed property never breaks startup while disabled.
-        List<TcpDeviceConnection.Endpoint> endpoints = enabled
-                ? parseEndpoints(env.getProperty(PROP_ENDPOINTS, ""))
-                : List.of();
+        List<TcpDeviceConnection.Endpoint> endpoints = parseEndpoints(env.getProperty(PROP_ENDPOINTS, ""));
         TcpDeviceConnection.Config gatewayConfig = new TcpDeviceConnection.Config(
                 Duration.ofMillis(longProp(env, PROP_CONNECT_TIMEOUT_MS, 3000L)),
                 Duration.ofMillis(longProp(env, PROP_HB_INTERVAL_MS, 5000L)),
@@ -90,7 +99,7 @@ public record WorkflowRuntimeHostProperties(
                 intProp(env, PROP_MAX_FRAME_BYTES, 65536),
                 intProp(env, PROP_MAX_EVENT_QUEUE, 256));
         return new WorkflowRuntimeHostProperties(
-                enabled, lockFile, hostId, workerThreads, workerQueue, maxRuns,
+                true, lockFile, hostId, workerThreads, workerQueue, maxRuns,
                 mailboxThreads, mailboxQueue, recoveryLimit, pollInterval, batchSize,
                 endpoints, gatewayConfig);
     }

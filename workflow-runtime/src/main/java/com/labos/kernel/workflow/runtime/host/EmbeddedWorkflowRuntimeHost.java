@@ -277,7 +277,7 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
         this.runtimeHost = new RuntimeHost(
                 effectiveRecovery,
                 gatewayIngressComponent,
-                List.of(lifecycleComponent, workerPoolComponent, gatewayEventProcessorComponent, dispatchLoop),
+                List.of(lifecycleComponent, gatewayEventProcessorComponent, workerPoolComponent, dispatchLoop),
                 schedulingGate,
                 config.recoveryBatchLimit(),
                 "host-startup:" + config.hostId());
