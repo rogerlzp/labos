@@ -32,6 +32,7 @@ public final class DeviceCommandExecutionService {
     public enum CommandDeliveryStatus {
         SENT_ASYNC,
         COMPLETED_SYNC,
+        COMPLETED_FAILED_SYNC,
         MARKED_UNKNOWN,
         SKIPPED_GATE_OR_STATE,
         DEAD_LETTERED_STALE
@@ -163,6 +164,19 @@ public final class DeviceCommandExecutionService {
                                     "sync-result-inbox-protocol-violation:" + syncOutcome.inboxId()));
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
+                        }
+                    }
+                    case COMPLETED_IMMEDIATELY_FAILED -> {
+                        repository.markOutboxDelivered(tenantId, msg.outboxId());
+                        InboxIngestionOutcome syncOutcome = ingestDeviceEvent(
+                                tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
+                                "DEVICE_COMMAND_RESULT", commandId, "FAILED",
+                                result.deviceSequence(), result.outcomeJson());
+                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION) {
+                            outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
+                                    "sync-failed-inbox-protocol-violation:" + syncOutcome.inboxId()));
+                        } else {
+                            outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_FAILED_SYNC);
                         }
                     }
                     case DELIVERY_UNCERTAIN -> {

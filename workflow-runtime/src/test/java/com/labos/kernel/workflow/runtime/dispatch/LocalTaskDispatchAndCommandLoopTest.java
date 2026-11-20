@@ -1124,16 +1124,43 @@ class LocalTaskDispatchAndCommandLoopTest {
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                 + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
 
-        // Matching source == device_id AND payload state == targetState == SUCCEEDED applies cleanly!
-        var validReceipt = repo.receiveInbox(tenant, "real-device-1", "ok-" + UUID.randomUUID(),
+        // G2-B P2: Contradictory deviceSequence or outcomeJson vs locked Inbox payload MUST be rejected!
+        var seqAndOutcomeReceipt = repo.receiveInbox(tenant, "real-device-1", "p2-" + UUID.randomUUID(),
                 "COMMAND_RESULT", fix.runId(),
-                "{\"commandId\":\"" + fix.commandId() + "\",\"deviceId\":\"real-device-1\",\"state\":\"SUCCEEDED\"}");
-        assertTrue(repo.applyCommandEvent(tenant, fix.runId(), validReceipt.inboxId(), fix.commandId(),
-                "SUCCEEDED", "seq-ok", "{\"ok\":true}"));
+                "{\"commandId\":\"" + fix.commandId()
+                        + "\",\"deviceId\":\"real-device-1\",\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-real\",\"outcome\":{\"temp\":65}}");
+        assertTrue(seqAndOutcomeReceipt.inserted());
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-tampered", "{\"temp\":65}"),
+                "Repository must reject mismatched deviceSequence vs persisted Inbox payload");
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
+                repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+                        "SUCCEEDED", "seq-real", "{\"temp\":99}"),
+                "Repository must reject mismatched outcomeJson vs persisted Inbox payload");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
+
+        // Matching source == device_id, payload state == targetState, deviceSequence and outcomeJson applies cleanly!
+        assertTrue(repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+                "SUCCEEDED", "seq-real", "{\"temp\":65}"));
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                 + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SUCCEEDED'"));
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
                 + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
         repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
+
+        // Synchronous immediate failure result (COMPLETED_IMMEDIATELY_FAILED) records FAILED, never SUCCEEDED!
+        var failFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "sync-fail-dev", false);
+        DeviceCommandExecutionService failSvc = new DeviceCommandExecutionService(repo, env ->
+                DeviceCommandAdapter.SendResult.completedImmediatelyFailed(
+                        "sync-fail-" + env.commandId(), "seq-fail", "{\"errorCode\":\"E_NO_TIP\"}"));
+        var failSummary = failSvc.deliverPendingCommands(tenant, 4, "disp-sync-fail");
+        assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.COMPLETED_FAILED_SYNC,
+                failSummary.outcomes().get(failFix.commandId()));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + failFix.commandId() + "' AND command_state='FAILED'"));
+        assertEquals("MANUAL_REQUIRED", repo.failAttempt(tenant, failFix.runId(), failFix.attemptId(),
+                "{\"errorCode\":\"E_NO_TIP\"}", true).outcome());
     }
 }

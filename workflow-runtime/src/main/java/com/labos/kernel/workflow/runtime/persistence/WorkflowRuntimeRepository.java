@@ -2758,18 +2758,27 @@ public final class WorkflowRuntimeRepository {
                 """,(rs,n)->rs.getString(1),tenantId,runId,commandId);
             if(states.size()!=1) throw new IllegalStateException("Command disappeared while applying device event");
             record LockedInbox(String source, String messageType, String commandId,
-                               String deviceId, String payloadState) {}
+                               String deviceId, String payloadState,
+                               boolean hasDeviceSequence, String payloadDeviceSequence,
+                               boolean hasOutcome, boolean outcomeMatches) {}
             List<LockedInbox> inboxRows=jdbc.query("""
                 SELECT source, message_type,
                        message_payload->>'commandId',
                        message_payload->>'deviceId',
-                       message_payload->>'state'
+                       message_payload->>'state',
+                       (jsonb_typeof(message_payload->'deviceSequence') IS NOT NULL),
+                       message_payload->>'deviceSequence',
+                       (jsonb_typeof(message_payload->'outcome') IS NOT NULL),
+                       CASE WHEN jsonb_typeof(message_payload->'outcome') IS NOT NULL
+                            THEN (message_payload->'outcome' = ?::jsonb)
+                            ELSE true END
                   FROM workflow_runtime.inbox_receipt
                  WHERE tenant_id=? AND inbox_id=? AND run_id=? AND receipt_state IN ('RECEIVED','PROCESSING')
                    FOR UPDATE
                 """,(rs,n)->new LockedInbox(
-                    rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5)),
-                tenantId,inboxId,runId);
+                    rs.getString(1),rs.getString(2),rs.getString(3),rs.getString(4),rs.getString(5),
+                    rs.getBoolean(6),rs.getString(7),rs.getBoolean(8),rs.getBoolean(9)),
+                outcomeJson,tenantId,inboxId,runId);
             if(inboxRows.isEmpty())
                 throw new StaleRuntimeWriteException("Inbox receipt was already consumed or not found");
             LockedInbox inbox=inboxRows.get(0);
@@ -2783,6 +2792,11 @@ public final class WorkflowRuntimeRepository {
             if(inbox.payloadState()==null || !targetState.equals(inbox.payloadState()))
                 throw new InvalidTransitionException("Inbox payload state " + inbox.payloadState()
                         + " does not match target Command state " + targetState);
+            if(inbox.hasDeviceSequence() && !Objects.equals(inbox.payloadDeviceSequence(),deviceSequence))
+                throw new InvalidTransitionException("Inbox payload deviceSequence " + inbox.payloadDeviceSequence()
+                        + " does not match applied deviceSequence " + deviceSequence);
+            if(inbox.hasOutcome() && !inbox.outcomeMatches())
+                throw new InvalidTransitionException("Inbox payload outcome does not match applied outcomeJson");
             if(!isAllowedCommandEventMessageType(inbox.messageType(),targetState))
                 throw new InvalidTransitionException("Inbox message_type " + inbox.messageType()
                         + " is not allowed to transition Command to " + targetState);

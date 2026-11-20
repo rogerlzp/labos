@@ -44,6 +44,8 @@ public interface DeviceCommandAdapter {
         ACCEPTED_ASYNC,
         /** Synchronous transport returned a verified terminal SUCCEEDED outcome immediately. */
         COMPLETED_IMMEDIATELY,
+        /** Synchronous transport returned a verified terminal FAILED outcome immediately. */
+        COMPLETED_IMMEDIATELY_FAILED,
         /** Delivery crossed the send boundary but transport could not confirm whether execution occurred. */
         DELIVERY_UNCERTAIN
     }
@@ -68,6 +70,14 @@ public interface DeviceCommandAdapter {
             if (sourceMessageId == null || sourceMessageId.isBlank())
                 throw new IllegalArgumentException("sourceMessageId is required for immediate completion");
             return new SendResult(SendStatus.COMPLETED_IMMEDIATELY, sourceMessageId, deviceSequence,
+                    outcomeJson, null);
+        }
+
+        public static SendResult completedImmediatelyFailed(
+                String sourceMessageId, String deviceSequence, String outcomeJson) {
+            if (sourceMessageId == null || sourceMessageId.isBlank())
+                throw new IllegalArgumentException("sourceMessageId is required for immediate failure");
+            return new SendResult(SendStatus.COMPLETED_IMMEDIATELY_FAILED, sourceMessageId, deviceSequence,
                     outcomeJson, null);
         }
 
