@@ -69,9 +69,15 @@ public final class BpmnGraphCompiler {
             if(elements.isEmpty()) throw new IllegalArgumentException("BPMN contains no supported executable nodes");
 
             Set<String> defaultIds=new HashSet<>();
+            Map<String,String> defaultByGateway=new LinkedHashMap<>();
             for(Element el:elements.values()) {
                 String d=el.getAttribute("default");
-                if(!d.isBlank()) defaultIds.add(d);
+                if(!d.isBlank()) {
+                    if(!el.getLocalName().endsWith("Gateway"))
+                        throw new IllegalArgumentException("BPMN default flow is only supported on gateways: "+el.getAttribute("id"));
+                    defaultIds.add(d);
+                    defaultByGateway.put(el.getAttribute("id"),d);
+                }
             }
             List<GraphPlan.Edge> edges=new ArrayList<>();
             Set<String> edgeIds=new HashSet<>();
@@ -85,13 +91,29 @@ public final class BpmnGraphCompiler {
                 if(!elements.containsKey(from) || !elements.containsKey(to))
                     throw new IllegalArgumentException("sequenceFlow "+id+" references unknown node "+from+" -> "+to);
                 String condition=null;
+                boolean conditionFound=false;
                 NodeList kids=el.getChildNodes();
                 for(int k=0;k<kids.getLength();k++) {
                     Node child=kids.item(k);
-                    if(child instanceof Element ce && "conditionExpression".equals(ce.getLocalName()))
+                    if(child instanceof Element ce && "conditionExpression".equals(ce.getLocalName())) {
+                        if(!BPMN_NS.equals(ce.getNamespaceURI()))
+                            throw new IllegalArgumentException("conditionExpression must use the BPMN namespace: "+id);
+                        if(conditionFound)
+                            throw new IllegalArgumentException("sequenceFlow has multiple conditionExpression elements: "+id);
+                        conditionFound=true;
                         condition=blankToNull(ce.getTextContent());
+                    }
                 }
                 edges.add(new GraphPlan.Edge(id,from,to,condition,defaultIds.contains(id)));
+            }
+            Map<String,GraphPlan.Edge> edgesById=new HashMap<>();
+            for(GraphPlan.Edge edge:edges) edgesById.put(edge.key(),edge);
+            for(Map.Entry<String,String> entry:defaultByGateway.entrySet()) {
+                GraphPlan.Edge defaultEdge=edgesById.get(entry.getValue());
+                if(defaultEdge==null)
+                    throw new IllegalArgumentException("Gateway default references unknown sequenceFlow: "+entry.getKey()+" -> "+entry.getValue());
+                if(!entry.getKey().equals(defaultEdge.from()))
+                    throw new IllegalArgumentException("Gateway default sequenceFlow is not outgoing from gateway: "+entry.getKey()+" -> "+entry.getValue());
             }
 
             Map<String,Integer> in=new HashMap<>(), out=new HashMap<>();
