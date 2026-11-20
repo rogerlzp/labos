@@ -102,6 +102,8 @@ public final class BpmnGraphCompiler {
                             throw new IllegalArgumentException("sequenceFlow has multiple conditionExpression elements: "+id);
                         conditionFound=true;
                         condition=blankToNull(ce.getTextContent());
+                        if(condition==null)
+                            throw new IllegalArgumentException("conditionExpression must not be empty: "+id);
                     }
                 }
                 edges.add(new GraphPlan.Edge(id,from,to,condition,defaultIds.contains(id)));
@@ -134,8 +136,10 @@ public final class BpmnGraphCompiler {
             long starts=nodes.stream().filter(n->n.kind()==GraphPlan.Kind.START).count();
             if(starts!=1) throw new IllegalArgumentException("V1 requires exactly one startEvent; found "+starts);
             for(GraphPlan.Node n:nodes) {
-                if (n.kind()==GraphPlan.Kind.START && out.getOrDefault(n.key(),0)!=1)
-                    throw new IllegalArgumentException("V1 startEvent requires exactly one outgoing sequenceFlow: "+n.key());
+                if (n.kind()==GraphPlan.Kind.START
+                        && (in.getOrDefault(n.key(),0)!=0 || out.getOrDefault(n.key(),0)!=1))
+                    throw new IllegalArgumentException("V1 startEvent requires zero incoming and exactly one outgoing sequenceFlow: "
+                            +n.key()+" in="+in.getOrDefault(n.key(),0)+" out="+out.getOrDefault(n.key(),0));
                 if(n.kind()==GraphPlan.Kind.TASK && n.protocol()==null)
                     throw new IllegalArgumentException("Device task has no protocolName: "+n.key());
                 if(n.kind()==GraphPlan.Kind.TASK && n.resourceId()==null && n.capabilityCode()==null)
