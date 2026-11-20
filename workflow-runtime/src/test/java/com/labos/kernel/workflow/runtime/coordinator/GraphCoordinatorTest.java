@@ -48,6 +48,8 @@ class GraphCoordinatorTest {
         assertEquals(List.of("a"),GraphCoordinator.selectInclusive(node,
                 List.of(edge("e1","a",null,false),edge("default","fallback",null,true)),Map.of())
                 .stream().map(GraphPlan.Edge::to).toList());
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.selectInclusive(node,
+                List.of(edge("d1","fallback-a",null,true),edge("d2","fallback-b",null,true)),Map.of()));
     }
 
     @Test
