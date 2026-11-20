@@ -201,6 +201,11 @@ public final class TcpDeviceConnection implements AutoCloseable {
         return endpoint.deviceId();
     }
 
+    /** Current number of inbound device events buffered in the bounded queue awaiting processing. */
+    public int queuedEventCount() {
+        return eventQueue.size();
+    }
+
     /**
      * Start BOTH transport ingress (TCP connect/read/heartbeat) AND inbound event processing.
      * For {@code RuntimeHost} startup recovery isolation, prefer {@link #startIngressOnly()}

@@ -93,10 +93,12 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
     }
 
     private static TcpDeviceConnection.Config fastGatewayConfig() {
+        // Generous heartbeatTimeout (5s) avoids spurious heartbeat disconnects under CI CPU jitter,
+        // while fast reconnect backoff (40ms..160ms) keeps explicit EOF disconnect recovery instant.
         return new TcpDeviceConnection.Config(
                 Duration.ofSeconds(2),
-                Duration.ofMillis(80),
-                Duration.ofMillis(400),
+                Duration.ofMillis(500),
+                Duration.ofSeconds(5),
                 Duration.ofMillis(40),
                 Duration.ofMillis(160),
                 4096,
@@ -327,6 +329,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                     }))) {
                 host.start();
                 assertTrue(host.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                awaitCondition(Duration.ofSeconds(3), () -> server.activeSession() != null);
 
                 var run = repo.createRun(tenant, "g3-obs-" + UUID.randomUUID(), "CREATE", "{}",
                         planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
@@ -347,8 +350,23 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                 repo.markCommandUnknown(tenant, cmdId, "{\"reason\":\"tcp-disconnect-timeout\"}");
                 allowWorkerExit.countDown();
 
-                awaitCondition(Duration.ofSeconds(5),
-                        () -> !host.listManualRequiredRuns(tenant, 10).isEmpty());
+                // Wait deterministically until the Worker has completely exited (activeLocalWorkers == 0),
+                // node_attempt has settled to attempt_state='UNKNOWN' with error recorded and OPEN
+                // manual_intervention row, AND Run is listed in MANUAL_REQUIRED!
+                awaitCondition(Duration.ofSeconds(5), () -> {
+                    try {
+                        return !host.listManualRequiredRuns(tenant, 10).isEmpty()
+                                && host.healthSnapshot().activeLocalWorkers() == 0
+                                && scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                                + tenant + "' AND run_id='" + run.runId()
+                                + "' AND attempt_state='UNKNOWN' AND error IS NOT NULL") == 1
+                                && scalar(ds, "SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id='"
+                                + tenant + "' AND run_id='" + run.runId()
+                                + "' AND intervention_state='OPEN'") == 1;
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
 
                 // Verify observability lists expose BOTH the UNKNOWN command and MANUAL_REQUIRED run!
                 var unknownCommands = host.listUnknownCommands(tenant, 10);
@@ -561,8 +579,9 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
 
                 session1.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
                         retryMsgId, "COMMAND_RESULT", "SUCCEEDED", "seq-2", "{\"dispensed\":55}");
-                // Give socket reader brief moment to enqueue Event #2 into bounded eventQueue.
-                Thread.sleep(100);
+                // Deterministically confirm Event #2 has been read from TCP and enqueued into the bounded queue!
+                awaitCondition(Duration.ofSeconds(3),
+                        () -> host1.deviceGateway().queuedEventCount(deviceId) == 1);
 
                 // 2. Stop Host 1 WHILE Event #1 is still blocked so stopEventProcessing() sets processingStopped=true
                 //    BEFORE interrupting Event #1 — guaranteeing Event #2 is NEVER polled or ACKed before shutdown!

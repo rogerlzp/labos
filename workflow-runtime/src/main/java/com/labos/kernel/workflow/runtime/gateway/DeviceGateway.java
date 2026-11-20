@@ -155,6 +155,15 @@ public final class DeviceGateway implements AutoCloseable {
         return conn == null ? Optional.empty() : Optional.of(conn.health());
     }
 
+    /** Current number of inbound device events buffered in {@code deviceId}'s bounded queue. */
+    public int queuedEventCount(String deviceId) {
+        TcpDeviceConnection conn = connections.get(deviceId);
+        if (conn == null) {
+            throw new IllegalArgumentException("Device not registered: " + deviceId);
+        }
+        return conn.queuedEventCount();
+    }
+
     public Map<String, TcpDeviceConnection.HealthSnapshot> allHealth() {
         Map<String, TcpDeviceConnection.HealthSnapshot> out = new LinkedHashMap<>();
         connections.forEach((id, conn) -> out.put(id, conn.health()));

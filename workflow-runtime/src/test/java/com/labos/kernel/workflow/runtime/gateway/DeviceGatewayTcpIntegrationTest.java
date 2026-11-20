@@ -340,9 +340,11 @@ class DeviceGatewayTcpIntegrationTest {
                                     && "GATEWAY_BACKPRESSURE".equals(n.path("reason").asText())));
             assertTrue(gateway.health(deviceId).orElseThrow().eventsBackpressureNacked() >= 1);
 
-            // Unblock consumer -> queued events drain cleanly and receive EVENT_ACK!
+            // Unblock consumer -> queued events drain cleanly and every single event receives ACK or NACK!
             releaseConsumer.countDown();
-            awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventAcks().size() >= 3);
+            awaitCondition(Duration.ofSeconds(3), () ->
+                    server.receivedEventAcks().size() >= 3
+                            && server.receivedEventAcks().size() + server.receivedEventNacks().size() == 9);
             assertEquals(9, server.receivedEventAcks().size() + server.receivedEventNacks().size(),
                     "Every single inbound event must receive either EVENT_ACK or EVENT_NACK (zero silent drops)");
         }
