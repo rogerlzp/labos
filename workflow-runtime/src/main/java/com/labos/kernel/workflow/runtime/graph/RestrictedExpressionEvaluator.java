@@ -21,6 +21,15 @@ public final class RestrictedExpressionEvaluator {
         return bool;
     }
 
+    /** Parse and reject unsupported syntax without resolving runtime variables. */
+    public static void validateSyntax(String expression) {
+        if (expression == null || expression.isBlank())
+            throw new IllegalArgumentException("Condition expression is blank");
+        Parser parser=new Parser(expression);
+        parser.parseExpression();
+        parser.expect(TokenType.END);
+    }
+
     private interface Expr { Object evaluate(Map<String, ?> variables); }
     private record Literal(Object value) implements Expr {
         public Object evaluate(Map<String, ?> variables) { return value; }
