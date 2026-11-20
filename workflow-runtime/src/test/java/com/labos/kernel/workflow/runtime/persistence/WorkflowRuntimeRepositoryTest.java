@@ -355,7 +355,7 @@ class WorkflowRuntimeRepositoryTest {
         GraphCoordinator.validateGraphPlan(plan);
         var run=repo.createRun(tenant,"graph-coordinator-"+UUID.randomUUID(),"CREATE","{}",
                 "graph-coordinator-"+tenant,"1",java.util.HexFormat.of().parseHex(plan.bpmnSha256()),
-                plan.compilerVersion(),GraphPlanCodec.toJson(plan),"{\\"takeA\\":false}","choice");
+                plan.compilerVersion(),GraphPlanCodec.toJson(plan),"{\"takeA\":false}","choice");
         repo.startRun(tenant,run.runId());
         assertEquals(1L,repo.putFlowVariable(tenant,run.runId(),"takeA","true"));
 
