@@ -166,8 +166,11 @@ public final class BpmnGraphCompiler {
         if(t.equals("endEvent")) return GraphPlan.Kind.END;
         if(t.endsWith("Gateway")) {
             boolean join=in>1, split=out>1;
-            if(join==split)
-                throw new IllegalArgumentException("Gateway must be exactly one of split or join (mixed/degenerate gateways are unsupported): "+t+" in="+in+" out="+out);
+            // V1 intentionally supports only canonical 1->N splits and N->1 joins.
+            // Reject zero-sided, pass-through, and mixed-direction shapes rather than
+            // guessing a single Kind that would erase BPMN execution semantics.
+            if(join==split || (split && in!=1) || (join && out!=1))
+                throw new IllegalArgumentException("Unsupported gateway shape; V1 requires exactly 1-in/N-out split or N-in/1-out join: "+t+" in="+in+" out="+out);
             return switch(t) {
                 case "parallelGateway" -> join?GraphPlan.Kind.JOIN_PARALLEL:GraphPlan.Kind.SPLIT_PARALLEL;
                 case "exclusiveGateway" -> join?GraphPlan.Kind.JOIN_XOR:GraphPlan.Kind.SPLIT_XOR;
