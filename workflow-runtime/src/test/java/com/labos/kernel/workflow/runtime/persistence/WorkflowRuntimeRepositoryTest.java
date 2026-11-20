@@ -2,6 +2,7 @@ package com.labos.kernel.workflow.runtime.persistence;
 
 import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
 import com.labos.kernel.workflow.runtime.graph.GraphPlan;
+import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
 import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
 
 import org.junit.jupiter.api.Assumptions;
@@ -326,7 +327,7 @@ class WorkflowRuntimeRepositoryTest {
     }
 
     @Test
-    void graphCoordinatorAdvancesStartExclusiveGatewayAndEndFromPersistedVariables() throws Exception {
+    void graphCoordinatorAdvancesCompiledExclusiveGatewayFromPersistedVariables() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
         var ds=dataSource(); UUID tenant=UUID.randomUUID();
         try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
@@ -334,27 +335,35 @@ class WorkflowRuntimeRepositoryTest {
                     tenant+"','graph-coordinator-"+tenant+"','integration')");
         }
         WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
-        GraphPlan plan=new GraphPlan(1,"ci","graph-coordinator","1","test-hash",
-                java.util.List.of(
-                        new GraphPlan.Node("start","Start",GraphPlan.Kind.START,"start",null,null,null,null,null,null),
-                        new GraphPlan.Node("choice","Choice",GraphPlan.Kind.SPLIT_XOR,"exclusiveGateway",null,null,null,null,null,null),
-                        new GraphPlan.Node("end-a","End A",GraphPlan.Kind.END,"end",null,null,null,null,null,null),
-                        new GraphPlan.Node("end-b","End B",GraphPlan.Kind.END,"end",null,null,null,null,null,null)),
-                java.util.List.of(
-                        new GraphPlan.Edge("start-choice","start","choice",null,false),
-                        new GraphPlan.Edge("choice-a","choice","end-a","takeA == true",false),
-                        new GraphPlan.Edge("choice-b","choice","end-b",null,true)));
+        String xml="""
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
+                  <bpmn:process id="p">
+                    <bpmn:startEvent id="start"/>
+                    <bpmn:exclusiveGateway id="choice" default="choice-b"/>
+                    <bpmn:endEvent id="end-a"/>
+                    <bpmn:endEvent id="end-b"/>
+                    <bpmn:sequenceFlow id="start-choice" sourceRef="start" targetRef="choice"/>
+                    <bpmn:sequenceFlow id="choice-a" sourceRef="choice" targetRef="end-a">
+                      <bpmn:conditionExpression>takeA == true</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="choice-b" sourceRef="choice" targetRef="end-b"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan plan=new BpmnGraphCompiler().compile(new BpmnGraphCompiler.CompilationInput(
+                "graph-coordinator-"+tenant,"1",xml,java.util.Map.of()));
+        GraphCoordinator.validateGraphPlan(plan);
         var run=repo.createRun(tenant,"graph-coordinator-"+UUID.randomUUID(),"CREATE","{}",
-                "graph-coordinator-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(plan),
-                "{\"takeA\":false}","start");
+                "graph-coordinator-"+tenant,"1",java.util.HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(),GraphPlanCodec.toJson(plan),"{\\"takeA\\":false}","choice");
         repo.startRun(tenant,run.runId());
         assertEquals(1L,repo.putFlowVariable(tenant,run.runId(),"takeA","true"));
 
         var coordinator=new GraphCoordinator(repo);
         var summary=coordinator.advance(tenant,run.runId());
         assertTrue(summary.runCompleted());
-        assertEquals(3,summary.controlTokensAdvanced());
-        assertEquals(2,summary.successorTokensCreated());
+        assertEquals(2,summary.controlTokensAdvanced());
+        assertEquals(1,summary.successorTokensCreated());
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
                 tenant+"' AND run_id='"+run.runId()+"' AND node_key='end-a' AND token_state='CONSUMED'"));
         assertEquals(0,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+
@@ -362,7 +371,6 @@ class WorkflowRuntimeRepositoryTest {
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"+
                 tenant+"' AND run_id='"+run.runId()+"' AND status='SUCCEEDED'"));
     }
-
 
     @Test
     void inclusiveSingleBranchAndMixedEndJoinAreHandledFailClosed() throws Exception {
@@ -428,12 +436,12 @@ class WorkflowRuntimeRepositoryTest {
                         new GraphPlan.Edge("start-task","start","task",null,false),
                         new GraphPlan.Edge("task-end","task","end",null,false)));
         var run=repo.createRun(tenant,"graph-task-"+UUID.randomUUID(),"CREATE","{}",
-                "graph-task-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(plan),"{}","start");
+                "graph-task-"+tenant,"1",new byte[32],"ci",GraphPlanCodec.toJson(plan),"{}","task");
         repo.startRun(tenant,run.runId());
         var coordinator=new GraphCoordinator(repo);
         var first=coordinator.advance(tenant,run.runId());
-        assertEquals(1,first.controlTokensAdvanced());
-        assertEquals(1,first.successorTokensCreated());
+        assertEquals(0,first.controlTokensAdvanced());
+        assertEquals(0,first.successorTokensCreated());
         var reservation=repo.reserveCapacity(tenant,run.runId(),"graph-task-capacity",1,
                 "task","PURE",Instant.now().plusSeconds(60));
         repo.dispatchAttempt(tenant,run.runId(),reservation.attemptId(),"worker-q","{}");
