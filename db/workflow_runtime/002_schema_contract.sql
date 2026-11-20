@@ -55,6 +55,12 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='token_parent_idx') THEN
     RAISE EXCEPTION 'Missing parent_token_id lookup index on execution_token';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='worker_fact_one_start_per_se_uq') THEN
+    RAISE EXCEPTION 'Missing one-start-per-side-effect partial unique index';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='worker_fact_one_complete_per_se_uq') THEN
+    RAISE EXCEPTION 'Missing one-completion-per-side-effect partial unique index';
+  END IF;
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema='workflow_runtime' AND (
@@ -80,6 +86,10 @@ BEGIN
       AND table_name='flow_variable'
       AND column_name IN ('source_activation_id','source_split_id','source_branch_id')) <> 3 THEN
     RAISE EXCEPTION 'flow_variable branch lineage columns are missing';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='workflow_runtime'
+      AND table_name='worker_execution_fact' AND column_name='side_effect_key') THEN
+    RAISE EXCEPTION 'worker_execution_fact.side_effect_key identity column is missing';
   END IF;
 END $$;
 

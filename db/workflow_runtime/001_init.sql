@@ -152,6 +152,7 @@ CREATE TABLE worker_execution_fact (
   attempt_id uuid NOT NULL,
   fact_seq bigint NOT NULL CHECK (fact_seq > 0),
   fact_key text NOT NULL,
+  side_effect_key text,
   fact_type text NOT NULL CHECK (fact_type IN
     ('HANDLER_STARTED','SIDE_EFFECT_STARTED','SIDE_EFFECT_COMPLETED',
      'SIDE_EFFECT_UNKNOWN','EXECUTION_RIGHT_RELEASED')),
@@ -167,6 +168,12 @@ CREATE TABLE worker_execution_fact (
   FOREIGN KEY (tenant_id, attempt_id) REFERENCES node_attempt(tenant_id, attempt_id)
 );
 CREATE INDEX worker_fact_attempt_idx ON worker_execution_fact(tenant_id, attempt_id, fact_seq);
+CREATE UNIQUE INDEX worker_fact_one_start_per_se_uq
+  ON worker_execution_fact(tenant_id, attempt_id, side_effect_key)
+  WHERE fact_type='SIDE_EFFECT_STARTED' AND side_effect_key IS NOT NULL;
+CREATE UNIQUE INDEX worker_fact_one_complete_per_se_uq
+  ON worker_execution_fact(tenant_id, attempt_id, side_effect_key)
+  WHERE fact_type='SIDE_EFFECT_COMPLETED' AND side_effect_key IS NOT NULL;
 
 CREATE FUNCTION reject_worker_fact_mutation() RETURNS trigger LANGUAGE plpgsql AS $worker_fact$
 BEGIN

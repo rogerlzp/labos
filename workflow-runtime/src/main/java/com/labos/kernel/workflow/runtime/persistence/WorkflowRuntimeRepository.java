@@ -84,6 +84,15 @@ public final class WorkflowRuntimeRepository {
     private long appendWorkerFactInTransaction(UUID tenantId, UUID runId, UUID attemptId,
                                                 String factKey, String factType, String actorKind,
                                                 String actorId, UUID dispatchId, String payloadJson) {
+        return appendWorkerFactInTransaction(tenantId, runId, attemptId, factKey, null,
+                factType, actorKind, actorId, dispatchId, payloadJson);
+    }
+
+    private long appendWorkerFactInTransaction(UUID tenantId, UUID runId, UUID attemptId,
+                                                String factKey, String sideEffectKey, String factType,
+                                                String actorKind, String actorId, UUID dispatchId,
+                                                String payloadJson) {
+        String normalizedPayload = payloadJson == null ? "{}" : payloadJson;
         jdbc.queryForObject("""
             SELECT attempt_id FROM workflow_runtime.node_attempt
              WHERE tenant_id=? AND attempt_id=? FOR UPDATE
@@ -94,12 +103,14 @@ public final class WorkflowRuntimeRepository {
             """,(rs,n)->rs.getLong(1),tenantId,attemptId,factKey);
         if(!existing.isEmpty()) {
             Boolean same=jdbc.queryForObject("""
-                SELECT fact_type=? AND actor_kind=? AND actor_id=? AND dispatch_id IS NOT DISTINCT FROM ?::uuid
+                SELECT fact_type=? AND actor_kind=? AND actor_id=?
+                   AND dispatch_id IS NOT DISTINCT FROM ?::uuid
+                   AND side_effect_key IS NOT DISTINCT FROM ?
                    AND payload=?::jsonb
                   FROM workflow_runtime.worker_execution_fact
                  WHERE tenant_id=? AND attempt_id=? AND fact_key=?
                 """,Boolean.class,factType,actorKind,actorId,dispatchId==null?null:dispatchId.toString(),
-                    payloadJson,tenantId,attemptId,factKey);
+                    sideEffectKey,normalizedPayload,tenantId,attemptId,factKey);
             if(!Boolean.TRUE.equals(same))
                 throw new IdempotencyConflictException("Worker fact key replay differs from original fact");
             return existing.get(0);
@@ -112,12 +123,47 @@ public final class WorkflowRuntimeRepository {
         if(seq==null) throw new IllegalStateException("Unable to allocate Worker fact sequence");
         jdbc.update("""
             INSERT INTO workflow_runtime.worker_execution_fact
-              (tenant_id,run_id,attempt_id,fact_seq,fact_key,fact_type,actor_kind,actor_id,
+              (tenant_id,run_id,attempt_id,fact_seq,fact_key,side_effect_key,fact_type,actor_kind,actor_id,
                dispatch_id,payload)
-            VALUES (?,?,?,?,?,?,?,?,?,?::jsonb)
-            """,tenantId,runId,attemptId,seq,factKey,factType,actorKind,actorId,
-                dispatchId,payloadJson==null?"{}":payloadJson);
+            VALUES (?,?,?,?,?,?,?,?,?,?,?::jsonb)
+            """,tenantId,runId,attemptId,seq,factKey,sideEffectKey,factType,actorKind,actorId,
+                dispatchId,normalizedPayload);
         return seq;
+    }
+
+    /**
+     * Exact identity-paired check: true if this Attempt has any SIDE_EFFECT_UNKNOWN without a
+     * subsequent matching SIDE_EFFECT_COMPLETED, or any SIDE_EFFECT_STARTED whose side_effect_key
+     * has no matching SIDE_EFFECT_COMPLETED (rows with NULL side_effect_key fail closed as uncertain).
+     */
+    private boolean hasUnresolvedSideEffectForAttempt(UUID tenantId, UUID attemptId) {
+        Boolean unresolved = jdbc.queryForObject("""
+            SELECT EXISTS (
+              SELECT 1 FROM workflow_runtime.worker_execution_fact u
+               WHERE u.tenant_id=? AND u.attempt_id=? AND u.fact_type='SIDE_EFFECT_UNKNOWN'
+                 AND (
+                   u.side_effect_key IS NULL
+                   OR NOT EXISTS (
+                     SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                      WHERE c.tenant_id=u.tenant_id AND c.attempt_id=u.attempt_id
+                        AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                        AND c.side_effect_key=u.side_effect_key
+                        AND c.fact_seq > u.fact_seq
+                   )
+                 )
+            ) OR EXISTS (
+              SELECT 1 FROM workflow_runtime.worker_execution_fact s
+               WHERE s.tenant_id=? AND s.attempt_id=? AND s.fact_type='SIDE_EFFECT_STARTED'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                    WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
+                      AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                      AND c.side_effect_key IS NOT NULL
+                      AND c.side_effect_key=s.side_effect_key
+                 )
+            )
+            """, Boolean.class, tenantId, attemptId, tenantId, attemptId);
+        return Boolean.TRUE.equals(unresolved);
     }
 
     private long appendEvents(UUID tenantId, UUID runId, List<EventDraft> events) {
@@ -776,18 +822,6 @@ public final class WorkflowRuntimeRepository {
                 throw new StaleRuntimeWriteException("Attempt is not active: " + attemptState);
             }
 
-            Integer startedFacts = jdbc.queryForObject("""
-                SELECT count(*) FROM workflow_runtime.worker_execution_fact
-                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
-                """, Integer.class, tenantId, attemptId);
-            Integer completedFacts = jdbc.queryForObject("""
-                SELECT count(*) FROM workflow_runtime.worker_execution_fact
-                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'
-                """, Integer.class, tenantId, attemptId);
-            Integer unknownFacts = jdbc.queryForObject("""
-                SELECT count(*) FROM workflow_runtime.worker_execution_fact
-                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_UNKNOWN'
-                """, Integer.class, tenantId, attemptId);
             Integer ambiguousCommands = jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND attempt_id=? AND command_state IN
@@ -799,15 +833,12 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND attempt_id=? AND command_state='SUCCEEDED'
                 """, Integer.class, tenantId, attemptId);
 
-            int startedCount = startedFacts == null ? 0 : startedFacts;
-            int completedCount = completedFacts == null ? 0 : completedFacts;
-            boolean unresolvedSideEffect = startedCount > completedCount;
-            boolean hasUnknownFact = (unknownFacts != null && unknownFacts > 0);
+            boolean unresolvedSideEffect = hasUnresolvedSideEffectForAttempt(tenantId, attemptId);
             boolean hasAmbiguousCommand = (ambiguousCommands != null && ambiguousCommands > 0);
             boolean deviceAlreadySucceeded = ("DEVICE".equals(sideEffectClass)
                     && succeededCommands != null && succeededCommands > 0);
             boolean mustEscalateManual = sideEffectUncertain || unresolvedSideEffect
-                    || hasUnknownFact || hasAmbiguousCommand || deviceAlreadySucceeded;
+                    || hasAmbiguousCommand || deviceAlreadySucceeded;
 
             if (mustEscalateManual) {
                 jdbc.update("""
@@ -923,17 +954,9 @@ public final class WorkflowRuntimeRepository {
                     || !List.of("CREATED", "DISPATCHED", "ACCEPTED", "STARTED").contains(attemptStates.get(0))) {
                 throw new StaleRuntimeWriteException("Attempt cannot be cancelled in its current state");
             }
-            Integer startedFacts = jdbc.queryForObject("""
-                SELECT count(*) FROM workflow_runtime.worker_execution_fact
-                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
-                """, Integer.class, tenantId, attemptId);
             Integer completedFacts = jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.worker_execution_fact
                  WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'
-                """, Integer.class, tenantId, attemptId);
-            Integer unknownFacts = jdbc.queryForObject("""
-                SELECT count(*) FROM workflow_runtime.worker_execution_fact
-                 WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_UNKNOWN'
                 """, Integer.class, tenantId, attemptId);
             Integer ambiguousSentCommands = jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.command_ledger
@@ -946,10 +969,8 @@ public final class WorkflowRuntimeRepository {
                  WHERE tenant_id=? AND attempt_id=? AND command_state='SUCCEEDED'
                 """, Integer.class, tenantId, attemptId);
 
-            int startedCount = startedFacts == null ? 0 : startedFacts;
             int completedCount = completedFacts == null ? 0 : completedFacts;
-            boolean hasUncertainSideEffect = (unknownFacts != null && unknownFacts > 0)
-                    || (startedCount > completedCount)
+            boolean hasUncertainSideEffect = hasUnresolvedSideEffectForAttempt(tenantId, attemptId)
                     || (ambiguousSentCommands != null && ambiguousSentCommands > 0);
             if (hasUncertainSideEffect) {
                 UUID interventionId = UUID.randomUUID();
@@ -1091,18 +1112,31 @@ public final class WorkflowRuntimeRepository {
                AND a.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')
                AND (
                  EXISTS (
-                   SELECT 1 FROM workflow_runtime.worker_execution_fact f
-                    WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
-                      AND f.fact_type='SIDE_EFFECT_UNKNOWN'
+                   SELECT 1 FROM workflow_runtime.worker_execution_fact u
+                    WHERE u.tenant_id=a.tenant_id AND u.attempt_id=a.attempt_id
+                      AND u.fact_type='SIDE_EFFECT_UNKNOWN'
+                      AND (
+                        u.side_effect_key IS NULL
+                        OR NOT EXISTS (
+                          SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                           WHERE c.tenant_id=u.tenant_id AND c.attempt_id=u.attempt_id
+                             AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                             AND c.side_effect_key=u.side_effect_key
+                             AND c.fact_seq > u.fact_seq
+                        )
+                      )
                  )
-                 OR (
-                   SELECT count(*) FROM workflow_runtime.worker_execution_fact f
-                    WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
-                      AND f.fact_type='SIDE_EFFECT_STARTED'
-                 ) > (
-                   SELECT count(*) FROM workflow_runtime.worker_execution_fact f
-                    WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
-                      AND f.fact_type='SIDE_EFFECT_COMPLETED'
+                 OR EXISTS (
+                   SELECT 1 FROM workflow_runtime.worker_execution_fact s
+                    WHERE s.tenant_id=a.tenant_id AND s.attempt_id=a.attempt_id
+                      AND s.fact_type='SIDE_EFFECT_STARTED'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                         WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
+                           AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                           AND c.side_effect_key IS NOT NULL
+                           AND c.side_effect_key=s.side_effect_key
+                      )
                  )
                )
             """, Integer.class, tenantId, runId);
@@ -1133,18 +1167,31 @@ public final class WorkflowRuntimeRepository {
                    AND a.attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED')
                    AND (
                      EXISTS (
-                       SELECT 1 FROM workflow_runtime.worker_execution_fact f
-                        WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
-                          AND f.fact_type='SIDE_EFFECT_UNKNOWN'
+                       SELECT 1 FROM workflow_runtime.worker_execution_fact u
+                        WHERE u.tenant_id=a.tenant_id AND u.attempt_id=a.attempt_id
+                          AND u.fact_type='SIDE_EFFECT_UNKNOWN'
+                          AND (
+                            u.side_effect_key IS NULL
+                            OR NOT EXISTS (
+                              SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                               WHERE c.tenant_id=u.tenant_id AND c.attempt_id=u.attempt_id
+                                 AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                                 AND c.side_effect_key=u.side_effect_key
+                                 AND c.fact_seq > u.fact_seq
+                            )
+                          )
                      )
-                     OR (
-                       SELECT count(*) FROM workflow_runtime.worker_execution_fact f
-                        WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
-                          AND f.fact_type='SIDE_EFFECT_STARTED'
-                     ) > (
-                       SELECT count(*) FROM workflow_runtime.worker_execution_fact f
-                        WHERE f.tenant_id=a.tenant_id AND f.attempt_id=a.attempt_id
-                          AND f.fact_type='SIDE_EFFECT_COMPLETED'
+                     OR EXISTS (
+                       SELECT 1 FROM workflow_runtime.worker_execution_fact s
+                        WHERE s.tenant_id=a.tenant_id AND s.attempt_id=a.attempt_id
+                          AND s.fact_type='SIDE_EFFECT_STARTED'
+                          AND NOT EXISTS (
+                            SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                             WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
+                               AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                               AND c.side_effect_key IS NOT NULL
+                               AND c.side_effect_key=s.side_effect_key
+                          )
                      )
                      OR EXISTS (
                        SELECT 1 FROM workflow_runtime.command_ledger c
@@ -1241,34 +1288,138 @@ public final class WorkflowRuntimeRepository {
 
     /**
      * Persist a Worker-side effect boundary before/after the corresponding Adapter call.
-     * There is no database Worker lease: Run + Attempt locks and state checks serialize facts.
+     * For single-operation attempts, SIDE_EFFECT_STARTED binds {@code side_effect_key = factKey}
+     * and SIDE_EFFECT_COMPLETED/UNKNOWN pairs uniquely with the sole open operation.
+     * Use the 8-arg overload with an explicit {@code sideEffectKey} whenever multiple
+     * side-effect operations may overlap within one Attempt.
      */
     public boolean recordSideEffectFact(UUID tenantId, UUID runId, UUID attemptId,
                                         String workerId, String factKey, String factType,
                                         String payloadJson) {
-        if(!List.of("SIDE_EFFECT_STARTED","SIDE_EFFECT_COMPLETED","SIDE_EFFECT_UNKNOWN").contains(factType))
+        return recordSideEffectFactInternal(tenantId, runId, attemptId, workerId,
+                null, factKey, factType, payloadJson);
+    }
+
+    /**
+     * Persist a Worker-side effect fact bound to an explicit {@code sideEffectKey} operation identity.
+     *
+     * <ul>
+     *   <li>Exact replay of an existing {@code factKey} is idempotent even after the Run gate closes.</li>
+     *   <li>A new {@code SIDE_EFFECT_STARTED} requires the Run to be {@code RUNNING + OPEN}.</li>
+     *   <li>{@code SIDE_EFFECT_COMPLETED} and {@code SIDE_EFFECT_UNKNOWN} remain allowed during active
+     *       Drain so an already-started operation can record its outcome, and must match an existing
+     *       {@code SIDE_EFFECT_STARTED} with the same {@code sideEffectKey}.</li>
+     * </ul>
+     */
+    public boolean recordSideEffectFact(UUID tenantId, UUID runId, UUID attemptId,
+                                        String workerId, String sideEffectKey, String factKey,
+                                        String factType, String payloadJson) {
+        if (sideEffectKey == null || sideEffectKey.isBlank())
+            throw new IllegalArgumentException("sideEffectKey is required");
+        return recordSideEffectFactInternal(tenantId, runId, attemptId, workerId,
+                sideEffectKey, factKey, factType, payloadJson);
+    }
+
+    private boolean recordSideEffectFactInternal(UUID tenantId, UUID runId, UUID attemptId,
+                                                 String workerId, String explicitSideEffectKey,
+                                                 String factKey, String factType, String payloadJson) {
+        if (!List.of("SIDE_EFFECT_STARTED", "SIDE_EFFECT_COMPLETED", "SIDE_EFFECT_UNKNOWN").contains(factType))
             throw new IllegalArgumentException("Unsupported Worker side-effect fact type");
+        if (factKey == null || factKey.isBlank())
+            throw new IllegalArgumentException("factKey is required");
+        String normalizedPayload = payloadJson == null ? "{}" : payloadJson;
         return required(() -> {
-            lockRun(tenantId,runId);
-            List<String> states=jdbc.query("""
+            RunHead head = lockRun(tenantId, runId);
+            List<String> states = jdbc.query("""
                 SELECT attempt_state || chr(31) || COALESCE(worker_id,'')
                   FROM workflow_runtime.node_attempt
                  WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
-                """,(rs,n)->rs.getString(1),tenantId,runId,attemptId);
-            if(states.size()!=1) throw new StaleRuntimeWriteException("Attempt not found");
-            String[] owner=states.get(0).split(String.valueOf((char)31),2);
-            if(!"STARTED".equals(owner[0]) || !workerId.equals(owner[1]))
+                """, (rs, n) -> rs.getString(1), tenantId, runId, attemptId);
+            if (states.size() != 1) throw new StaleRuntimeWriteException("Attempt not found");
+            String[] owner = states.get(0).split(String.valueOf((char) 31), 2);
+            if (!"STARTED".equals(owner[0]) || !workerId.equals(owner[1]))
                 throw new StaleRuntimeWriteException("Only the owning local Worker may append side-effect facts");
-            if(!"SIDE_EFFECT_STARTED".equals(factType)) {
-                Integer started=jdbc.queryForObject("""
+
+            UUID dispatchId = commandDispatchId(tenantId, attemptId);
+
+            // Check exact idempotent replay BEFORE gate checks so replaying an already-recorded
+            // SIDE_EFFECT_STARTED after gate closure succeeds without creating any new fact.
+            List<String> existingSideEffectKeys = jdbc.query("""
+                SELECT COALESCE(side_effect_key,'') FROM workflow_runtime.worker_execution_fact
+                 WHERE tenant_id=? AND attempt_id=? AND fact_key=?
+                """, (rs, n) -> rs.getString(1), tenantId, attemptId, factKey);
+            if (!existingSideEffectKeys.isEmpty()) {
+                String expectedSeKey = explicitSideEffectKey != null
+                        ? explicitSideEffectKey
+                        : ("SIDE_EFFECT_STARTED".equals(factType) ? factKey
+                        : (existingSideEffectKeys.get(0).isEmpty() ? null : existingSideEffectKeys.get(0)));
+                return appendWorkerFactInTransaction(tenantId, runId, attemptId, factKey, expectedSeKey,
+                        factType, "WORKER", workerId, dispatchId, normalizedPayload) > 0;
+            }
+
+            String resolvedSideEffectKey;
+            if ("SIDE_EFFECT_STARTED".equals(factType)) {
+                requireRunOpenForExecutionStart(head, "side-effect start");
+                resolvedSideEffectKey = explicitSideEffectKey != null ? explicitSideEffectKey : factKey;
+                Integer alreadyStarted = jdbc.queryForObject("""
                     SELECT count(*) FROM workflow_runtime.worker_execution_fact
                      WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
-                    """,Integer.class,tenantId,attemptId);
-                if(started==null || started==0)
-                    throw new InvalidTransitionException("Side-effect completion/unknown requires SIDE_EFFECT_STARTED");
+                       AND side_effect_key=?
+                    """, Integer.class, tenantId, attemptId, resolvedSideEffectKey);
+                if (alreadyStarted != null && alreadyStarted > 0) {
+                    throw new InvalidTransitionException("Side effect already started: " + resolvedSideEffectKey);
+                }
+            } else {
+                requireRunAdmitsAttemptTermination(head, "side-effect outcome");
+                if (explicitSideEffectKey != null) {
+                    resolvedSideEffectKey = explicitSideEffectKey;
+                    Integer matchingStart = jdbc.queryForObject("""
+                        SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                         WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_STARTED'
+                           AND side_effect_key=?
+                        """, Integer.class, tenantId, attemptId, resolvedSideEffectKey);
+                    if (matchingStart == null || matchingStart == 0) {
+                        throw new InvalidTransitionException(
+                                "Side-effect completion/unknown requires matching SIDE_EFFECT_STARTED: "
+                                        + resolvedSideEffectKey);
+                    }
+                } else {
+                    List<String> openKeys = jdbc.query("""
+                        SELECT s.side_effect_key FROM workflow_runtime.worker_execution_fact s
+                         WHERE s.tenant_id=? AND s.attempt_id=? AND s.fact_type='SIDE_EFFECT_STARTED'
+                           AND s.side_effect_key IS NOT NULL
+                           AND NOT EXISTS (
+                             SELECT 1 FROM workflow_runtime.worker_execution_fact c
+                              WHERE c.tenant_id=s.tenant_id AND c.attempt_id=s.attempt_id
+                                AND c.fact_type='SIDE_EFFECT_COMPLETED'
+                                AND c.side_effect_key=s.side_effect_key
+                           )
+                         ORDER BY s.fact_seq
+                        """, (rs, n) -> rs.getString(1), tenantId, attemptId);
+                    if (openKeys.isEmpty()) {
+                        throw new InvalidTransitionException(
+                                "Side-effect completion/unknown requires an open SIDE_EFFECT_STARTED");
+                    }
+                    if (openKeys.size() > 1) {
+                        throw new InvalidTransitionException(
+                                "Multiple open SIDE_EFFECT_STARTED operations; explicit sideEffectKey is required");
+                    }
+                    resolvedSideEffectKey = openKeys.get(0);
+                }
+                if ("SIDE_EFFECT_COMPLETED".equals(factType)) {
+                    Integer alreadyCompleted = jdbc.queryForObject("""
+                        SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                         WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'
+                           AND side_effect_key=?
+                        """, Integer.class, tenantId, attemptId, resolvedSideEffectKey);
+                    if (alreadyCompleted != null && alreadyCompleted > 0) {
+                        throw new InvalidTransitionException(
+                                "Side effect already completed: " + resolvedSideEffectKey);
+                    }
+                }
             }
-            return appendWorkerFactInTransaction(tenantId,runId,attemptId,factKey,factType,
-                    "WORKER",workerId,commandDispatchId(tenantId,attemptId),payloadJson)>0;
+            return appendWorkerFactInTransaction(tenantId, runId, attemptId, factKey, resolvedSideEffectKey,
+                    factType, "WORKER", workerId, dispatchId, normalizedPayload) > 0;
         });
     }
 
@@ -1331,7 +1482,7 @@ public final class WorkflowRuntimeRepository {
             if(changed==0) return false;
             String factType="MANUAL_REQUIRED".equals(resolvedState)?"SIDE_EFFECT_UNKNOWN":"SIDE_EFFECT_COMPLETED";
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-resolved:"+commandId,
-                    factType,"RECOVERY",actor,commandDispatchId(tenantId,attemptId),evidenceJson);
+                    "command:"+commandId,factType,"RECOVERY",actor,commandDispatchId(tenantId,attemptId),evidenceJson);
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_audit
                   (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
@@ -2162,7 +2313,7 @@ public final class WorkflowRuntimeRepository {
                 VALUES (?,?,?,?,'SEND_STARTED',?,clock_timestamp())
                 """,tenantId,dispatchId,commandId,dispatchNo,dispatcherId);
             appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-send:"+dispatchId,
-                    "SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,commandDispatchId(tenantId,attemptId),
+                    "command:"+commandId,"SIDE_EFFECT_STARTED","DISPATCHER",dispatcherId,commandDispatchId(tenantId,attemptId),
                     "{\"commandId\":\""+commandId+"\",\"dispatchNo\":"+dispatchNo+"}");
             return true;
         });
@@ -2265,8 +2416,8 @@ public final class WorkflowRuntimeRepository {
             if(receiptChanged!=1) throw new StaleRuntimeWriteException("Inbox receipt was already consumed");
             if("SUCCEEDED".equals(targetState) || List.of("FAILED","CANCELLED","DELIVERY_UNKNOWN","UNKNOWN","MANUAL_REQUIRED").contains(targetState)) {
                 String factType="SUCCEEDED".equals(targetState)?"SIDE_EFFECT_COMPLETED":"SIDE_EFFECT_UNKNOWN";
-                appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-result:"+inboxId,factType,
-                        "DEVICE",deviceId,commandDispatchId(tenantId,attemptId),outcomeJson);
+                appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-result:"+inboxId,
+                        "command:"+commandId,factType,"DEVICE",deviceId,commandDispatchId(tenantId,attemptId),outcomeJson);
             }
             appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
@@ -2668,7 +2819,7 @@ public final class WorkflowRuntimeRepository {
                 """,tenantId,commandId);
             if(changed==1) {
                 appendWorkerFactInTransaction(tenantId,runId,attemptId,"command-unknown:"+commandId,
-                        "SIDE_EFFECT_UNKNOWN","RECOVERY","command-timeout",commandDispatchId(tenantId,attemptId),evidenceJson);
+                        "command:"+commandId,"SIDE_EFFECT_UNKNOWN","RECOVERY","command-timeout",commandDispatchId(tenantId,attemptId),evidenceJson);
                 jdbc.update("""
                     INSERT INTO workflow_runtime.runtime_audit
                       (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)

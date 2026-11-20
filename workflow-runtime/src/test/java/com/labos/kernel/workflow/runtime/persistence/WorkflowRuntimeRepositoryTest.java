@@ -1740,4 +1740,153 @@ class WorkflowRuntimeRepositoryTest {
         }
     }
 
+    @Test
+    void recordSideEffectFactBlocksNewStartWhenGateClosedWhileAllowingReplayAndDrainOutcome() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','se-gate-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        // 1. PAUSE Drain: block new SIDE_EFFECT_STARTED, allow exact replay of existing STARTED, allow COMPLETED for already-started op.
+        var pauseRun=repo.createRun(tenant,"se-gate-pause-"+UUID.randomUUID(),"CREATE","{}",
+                "se-gate-pause-"+tenant,"1",new byte[32],"ci","{}","{}","task-1");
+        repo.startRun(tenant,pauseRun.runId());
+        var res1=repo.reserveCapacity(tenant,pauseRun.runId(),"se-gate-cap-1",1,"task-1","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,pauseRun.runId(),res1.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,pauseRun.runId(),res1.attemptId(),res1.dispatchId(),"w1");
+        repo.startAttempt(tenant,pauseRun.runId(),res1.attemptId(),res1.dispatchId(),"w1");
+        assertTrue(repo.recordSideEffectFact(tenant,pauseRun.runId(),res1.attemptId(),
+                "w1","op-1","op-1-start","SIDE_EFFECT_STARTED","{\"step\":1}"));
+
+        repo.requestDrain(tenant,pauseRun.runId(),"PAUSE");
+
+        // Exact idempotent replay of existing SIDE_EFFECT_STARTED remains allowed and creates no new row.
+        assertTrue(repo.recordSideEffectFact(tenant,pauseRun.runId(),res1.attemptId(),
+                "w1","op-1","op-1-start","SIDE_EFFECT_STARTED","{\"step\":1}"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res1.attemptId()+"' AND fact_type='SIDE_EFFECT_STARTED'"));
+        // Conflicting replay (different payload or different sideEffectKey) must fail.
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,
+                () -> repo.recordSideEffectFact(tenant,pauseRun.runId(),res1.attemptId(),
+                        "w1","op-1","op-1-start","SIDE_EFFECT_STARTED","{\"step\":2}"));
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,
+                () -> repo.recordSideEffectFact(tenant,pauseRun.runId(),res1.attemptId(),
+                        "w1","op-other","op-1-start","SIDE_EFFECT_STARTED","{\"step\":1}"));
+
+        // New SIDE_EFFECT_STARTED must be rejected once control_gate is closed (both 8-arg and 7-arg overloads).
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.recordSideEffectFact(tenant,pauseRun.runId(),res1.attemptId(),
+                        "w1","op-2","op-2-start","SIDE_EFFECT_STARTED","{\"step\":2}"));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.recordSideEffectFact(tenant,pauseRun.runId(),res1.attemptId(),
+                        "w1","op-3-start","SIDE_EFFECT_STARTED","{\"step\":3}"));
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res1.attemptId()+"' AND fact_type='SIDE_EFFECT_STARTED'"));
+
+        // Recording outcome (COMPLETED) for the already-started op-1 during Drain succeeds.
+        assertTrue(repo.recordSideEffectFact(tenant,pauseRun.runId(),res1.attemptId(),
+                "w1","op-1","op-1-done","SIDE_EFFECT_COMPLETED","{\"ok\":true}"));
+        repo.completeAttempt(tenant,pauseRun.runId(),res1.attemptId(),"out","{\"ok\":true}");
+
+        // 2. STOP Drain: block new SIDE_EFFECT_STARTED, allow SIDE_EFFECT_UNKNOWN for already-started op.
+        var stopRun=repo.createRun(tenant,"se-gate-stop-"+UUID.randomUUID(),"CREATE","{}",
+                "se-gate-stop-"+tenant,"1",new byte[32],"ci","{}","{}","task-2");
+        repo.startRun(tenant,stopRun.runId());
+        var res2=repo.reserveCapacity(tenant,stopRun.runId(),"se-gate-cap-2",1,"task-2","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,stopRun.runId(),res2.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,stopRun.runId(),res2.attemptId(),res2.dispatchId(),"w2");
+        repo.startAttempt(tenant,stopRun.runId(),res2.attemptId(),res2.dispatchId(),"w2");
+        assertTrue(repo.recordSideEffectFact(tenant,stopRun.runId(),res2.attemptId(),
+                "w2","op-stop","op-stop-start","SIDE_EFFECT_STARTED","{}"));
+
+        repo.requestDrain(tenant,stopRun.runId(),"STOP");
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.recordSideEffectFact(tenant,stopRun.runId(),res2.attemptId(),
+                        "w2","op-stop-2","op-stop-2-start","SIDE_EFFECT_STARTED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,stopRun.runId(),res2.attemptId(),
+                "w2","op-stop","op-stop-unk","SIDE_EFFECT_UNKNOWN","{\"timeout\":true}"));
+        // Terminalize Attempt cleanly via failAttempt -> MANUAL_REQUIRED so no STARTED attempt leaks.
+        var failOut=repo.failAttempt(tenant,stopRun.runId(),res2.attemptId(),"{\"err\":\"timeout\"}",false);
+        assertEquals("MANUAL_REQUIRED",failOut.outcome());
+    }
+
+    @Test
+    void sideEffectIdentityPairingPreventsCrossOperationCancellationAndEnforcesUniqueCompletion() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds=dataSource(); UUID tenant=UUID.randomUUID();
+        try(Connection c=ds.getConnection(); Statement st=c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"+
+                    tenant+"','se-pair-"+tenant+"','integration')");
+        }
+        WorkflowRuntimeRepository repo=new WorkflowRuntimeRepository(ds,new DataSourceTransactionManager(ds));
+
+        // 1. Two overlapping operations op-A and op-B: duplicate completion of op-A must NOT cancel out open op-B.
+        var run1=repo.createRun(tenant,"se-pair-1-"+UUID.randomUUID(),"CREATE","{}",
+                "se-pair-1-"+tenant,"1",new byte[32],"ci","{}","{}","task-1");
+        repo.startRun(tenant,run1.runId());
+        var res1=repo.reserveCapacity(tenant,run1.runId(),"se-pair-cap-1",1,"task-1","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run1.runId(),res1.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run1.runId(),res1.attemptId(),res1.dispatchId(),"w1");
+        repo.startAttempt(tenant,run1.runId(),res1.attemptId(),res1.dispatchId(),"w1");
+
+        assertTrue(repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                "w1","op-A","op-A-start","SIDE_EFFECT_STARTED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                "w1","op-B","op-B-start","SIDE_EFFECT_STARTED","{}"));
+
+        // Duplicate start of op-A under a different factKey is rejected.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                        "w1","op-A","op-A-start-dup","SIDE_EFFECT_STARTED","{}"));
+        // Omitting explicit sideEffectKey when two operations are open is rejected as ambiguous.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                        "w1","ambiguous-done","SIDE_EFFECT_COMPLETED","{}"));
+        // Completing an operation that was never started is rejected.
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                        "w1","op-never","op-never-done","SIDE_EFFECT_COMPLETED","{}"));
+
+        // Complete op-A once, then reject a second completion of op-A (cannot masquerade as op-B's completion).
+        assertTrue(repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                "w1","op-A","op-A-done","SIDE_EFFECT_COMPLETED","{}"));
+        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                () -> repo.recordSideEffectFact(tenant,run1.runId(),res1.attemptId(),
+                        "w1","op-A","op-A-done-2","SIDE_EFFECT_COMPLETED","{}"));
+
+        // Because op-B is still open, sibling graph fault MUST escalate to MANUAL_REQUIRED and mark Attempt UNKNOWN.
+        var out1=repo.failGraphRun(tenant,run1.runId(),null,"IllegalArgumentException","sibling fault");
+        assertEquals("MANUAL_REQUIRED",out1.outcome());
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res1.attemptId()+"' AND attempt_state='UNKNOWN'"));
+
+        // 2. When BOTH op-A and op-B have matching SIDE_EFFECT_COMPLETED facts, sibling graph fault enters FAILURE drain cleanly.
+        var run2=repo.createRun(tenant,"se-pair-2-"+UUID.randomUUID(),"CREATE","{}",
+                "se-pair-2-"+tenant,"1",new byte[32],"ci","{}","{}","task-2");
+        repo.startRun(tenant,run2.runId());
+        var res2=repo.reserveCapacity(tenant,run2.runId(),"se-pair-cap-2",1,"task-2","REVERSIBLE",Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant,run2.runId(),res2.attemptId(),"q","{}");
+        repo.acceptAttempt(tenant,run2.runId(),res2.attemptId(),res2.dispatchId(),"w2");
+        repo.startAttempt(tenant,run2.runId(),res2.attemptId(),res2.dispatchId(),"w2");
+
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-A","op-A-start","SIDE_EFFECT_STARTED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-B","op-B-start","SIDE_EFFECT_STARTED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-A","op-A-done","SIDE_EFFECT_COMPLETED","{}"));
+        assertTrue(repo.recordSideEffectFact(tenant,run2.runId(),res2.attemptId(),
+                "w2","op-B","op-B-done","SIDE_EFFECT_COMPLETED","{}"));
+
+        var out2=repo.failGraphRun(tenant,run2.runId(),null,"IllegalArgumentException","sibling fault");
+        assertEquals("DRAINING_FAILURE",out2.outcome(),
+                "Attempt whose op-A and op-B both have matching SIDE_EFFECT_COMPLETED must enter FAILURE drain");
+        repo.completeAttempt(tenant,run2.runId(),res2.attemptId(),"out","{\"done\":true}");
+        assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"+
+                tenant+"' AND attempt_id='"+res2.attemptId()+"' AND attempt_state='SUCCEEDED'"));
+    }
+
 }
