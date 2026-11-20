@@ -112,7 +112,7 @@ class BpmnGraphCompilerTest {
                 "</bpmn:process></bpmn:definitions>";
         IllegalArgumentException zeroEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",zeroOutgoing,Map.of())));
-        assertTrue(zeroEx.getMessage().contains("startEvent requires exactly one outgoing sequenceFlow"));
+        assertTrue(zeroEx.getMessage().contains("startEvent requires zero incoming and exactly one outgoing"));
 
         String multipleOutgoing="<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
                 "<bpmn:startEvent id=\"s\"/><bpmn:endEvent id=\"e1\"/><bpmn:endEvent id=\"e2\"/>"+
@@ -121,7 +121,7 @@ class BpmnGraphCompilerTest {
                 "</bpmn:process></bpmn:definitions>";
         IllegalArgumentException multipleEx=assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",multipleOutgoing,Map.of())));
-        assertTrue(multipleEx.getMessage().contains("startEvent requires exactly one outgoing sequenceFlow"));
+        assertTrue(multipleEx.getMessage().contains("startEvent requires zero incoming and exactly one outgoing"));
     }
 
     @Test void rejectsEmptyConditionExpressionInsteadOfCompilingItAsUnconditional() {
