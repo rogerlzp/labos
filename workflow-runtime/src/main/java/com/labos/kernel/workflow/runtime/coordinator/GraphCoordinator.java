@@ -4,6 +4,10 @@ import com.labos.kernel.workflow.runtime.graph.GraphPlan;
 import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
 import com.labos.kernel.workflow.runtime.graph.RestrictedExpressionEvaluator;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -21,6 +25,7 @@ import java.util.UUID;
  * no SQL, device calls, worker scheduling, thread creation or distributed coordination.
  */
 public final class GraphCoordinator {
+    private static final ObjectMapper JSON = new ObjectMapper();
     public record AdvanceSummary(int controlTokensAdvanced, int completedTasksRouted,
                                  int successorTokensCreated, boolean runCompleted) {}
 
@@ -42,9 +47,28 @@ public final class GraphCoordinator {
         this.maxTransitionsPerSignal = maxTransitionsPerSignal;
     }
 
+    /** Advance using the Run's persisted input and flow_variable snapshot. */
+    public AdvanceSummary advance(UUID tenantId, UUID runId) {
+        WorkflowRuntimeRepository.GraphVariableSnapshot persisted =
+                repository.loadGraphVariableSnapshot(tenantId,runId);
+        Map<String,Object> variables = new HashMap<>();
+        try {
+            if (persisted.inputJson()!=null && !persisted.inputJson().isBlank()) {
+                Map<String,Object> input=JSON.readValue(persisted.inputJson(),new TypeReference<>() {});
+                if(input!=null) variables.putAll(input);
+            }
+            for (WorkflowRuntimeRepository.GraphVariable variable : persisted.variables()) {
+                variables.put(variable.key(),JSON.readValue(variable.valueJson(),Object.class));
+            }
+        } catch (IOException invalidJson) {
+            throw new IllegalStateException("Persisted Run graph variables contain invalid JSON",invalidJson);
+        }
+        return advance(tenantId,runId,variables);
+    }
+
     /**
      * Advance graph-control tokens to quiescence and route completed task Activations.
-     * Call after Run start, after task completion, and after any event that makes a Token READY.
+     * Explicit variables override the persisted Run input/flow_variable values.
      */
     public AdvanceSummary advance(UUID tenantId, UUID runId, Map<String, ?> variables) {
         Objects.requireNonNull(tenantId, "tenantId");
