@@ -227,6 +227,17 @@ public final class WorkflowRuntimeRepository {
         return rows.get(0);
     }
 
+    /** Check the active mailbox admission state for a globally unique Run UUID. */
+    public boolean isOpenRun(UUID runId) {
+        Boolean active = snapshotTx.execute(status -> jdbc.queryForObject("""
+            SELECT EXISTS (
+                SELECT 1 FROM workflow_runtime.workflow_run
+                 WHERE run_id=? AND status='RUNNING' AND control_gate='OPEN'
+            )
+            """, Boolean.class, runId));
+        return Boolean.TRUE.equals(active);
+    }
+
     /** Enumerate non-terminal Runs for single-Host Coordinator restoration. */
     public List<RunDefinitionSnapshot> findNonTerminalRunSnapshots(int limit) {
         if(limit<1 || limit>1000) throw new IllegalArgumentException("limit must be 1..1000");
