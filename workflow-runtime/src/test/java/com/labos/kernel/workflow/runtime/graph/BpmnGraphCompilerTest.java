@@ -55,4 +55,44 @@ class BpmnGraphCompilerTest {
         assertThrows(IllegalArgumentException.class,()->compiler.compile(
                 new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())));
     }
+    @Test void rejectsAllUnsupportedStandardEventDefinitions() {
+        for (String definition : java.util.List.of(
+                "timerEventDefinition", "messageEventDefinition", "signalEventDefinition",
+                "terminateEventDefinition", "errorEventDefinition", "escalationEventDefinition",
+                "conditionalEventDefinition", "cancelEventDefinition", "compensateEventDefinition",
+                "linkEventDefinition")) {
+            String xml="<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\">"+
+                    "<bpmn:startEvent id=\\"s\\"><bpmn:"+definition+"/></bpmn:startEvent>"+
+                    "<bpmn:endEvent id=\\"e\\"/><bpmn:sequenceFlow id=\\"f\\" sourceRef=\\"s\\" targetRef=\\"e\\"/>"+
+                    "</bpmn:process></bpmn:definitions>";
+            IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                    new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())), definition);
+            assertTrue(ex.getMessage().contains("event definition"), definition);
+        }
+    }
+
+    @Test void rejectsMixedPassThroughAndZeroSidedGatewayShapes() {
+        for (int[] shape : java.util.List.of(
+                new int[]{0,2}, new int[]{1,1}, new int[]{2,2}, new int[]{2,0})) {
+            String xml=gatewayXml(shape[0],shape[1]);
+            IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,()->compiler.compile(
+                    new BpmnGraphCompiler.CompilationInput("1","1",xml,Map.of())),
+                    "in="+shape[0]+" out="+shape[1]);
+            assertTrue(ex.getMessage().contains("Unsupported gateway shape"),
+                    "in="+shape[0]+" out="+shape[1]+" actual="+ex.getMessage());
+        }
+    }
+
+    private static String gatewayXml(int incoming,int outgoing) {
+        StringBuilder xml=new StringBuilder("<bpmn:definitions xmlns:bpmn=\\""+NS+"\\"><bpmn:process id=\\"p\\">"+
+                "<bpmn:startEvent id=\\"s\\"/><bpmn:parallelGateway id=\\"g\\"/>"+
+                "<bpmn:task id=\\"a\\"/><bpmn:task id=\\"b\\"/><bpmn:endEvent id=\\"e\\"/>");
+        if(incoming>0) xml.append("<bpmn:sequenceFlow id=\\"in0\\" sourceRef=\\"s\\" targetRef=\\"g\\"/>");
+        if(incoming>1) xml.append("<bpmn:sequenceFlow id=\\"in1\\" sourceRef=\\"a\\" targetRef=\\"g\\"/>");
+        if(outgoing>0) xml.append("<bpmn:sequenceFlow id=\\"out0\\" sourceRef=\\"g\\" targetRef=\\"a\\"/>");
+        if(outgoing>1) xml.append("<bpmn:sequenceFlow id=\\"out1\\" sourceRef=\\"g\\" targetRef=\\"b\\"/>");
+        xml.append("<bpmn:sequenceFlow id=\\"tail\\" sourceRef=\\"b\\" targetRef=\\"e\\"/>");
+        return xml.append("</bpmn:process></bpmn:definitions>").toString();
+    }
+
 }
