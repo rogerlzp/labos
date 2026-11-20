@@ -14,6 +14,12 @@ import java.util.UUID;
 public interface WorkerTaskHandler {
     TaskResult execute(TaskRequest request, WorkerExecutionContext context) throws Exception;
 
+    /**
+     * Dispatch envelope handed by the trusted local dispatcher to {@link WorkerExecutionService}.
+     * {@code tenantId}, {@code runId}, {@code attemptId}, {@code dispatchId}, {@code nodeKey}, and
+     * {@code sideEffectClass} are verified against the persisted {@code node_attempt} and
+     * {@code node_activation} rows during {@code acceptAttemptForExecution} before handler execution.
+     */
     record TaskRequest(
             UUID tenantId,
             UUID runId,

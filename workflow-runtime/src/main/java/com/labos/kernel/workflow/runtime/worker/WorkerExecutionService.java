@@ -16,10 +16,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Responsibilities and strict boundaries:
  * <ul>
- *   <li>Runs handler work on {@link WorkerPool} while keeping {@link WorkflowRuntimeRepository}
- *       out of handler reach (handlers receive only a scoped {@link WorkerExecutionContext}).</li>
- *   <li>Enforces durable {@code acceptAttempt -> startAttempt} admission before invoking any handler;
- *       a closed Run gate or stale dispatch aborts cleanly before handler execution.</li>
+ *   <li>Runs synchronous handlers on {@link WorkerPool} while keeping {@link WorkflowRuntimeRepository}
+ *       out of handler reach (handlers receive only an owning-thread-bound {@link WorkerExecutionContext}).</li>
+ *   <li>Enforces durable {@code acceptAttemptForExecution -> startAttempt} admission before invoking any
+ *       handler; if the Run closes its dispatch gate before or between accept and start, durably converges
+ *       the pre-start Attempt via {@code abortPreStartAttemptOnGateClosed} so Drain never stalls on an
+ *       orphaned {@code DISPATCHED} or {@code ACCEPTED} Attempt.</li>
+ *   <li>Durably settles queued cancellations via {@code cancelAttempt} BEFORE completing the outcome
+ *       future; if DB settlement fails, reports {@link OutcomeStatus#SETTLEMENT_FAILED} rather than
+ *       falsely claiming cancellation succeeded.</li>
  *   <li>Settles completed Attempts via {@link WorkflowRunLifecycleCoordinator#completeAttemptAndNotify},
  *       bridging durable completion to {@code GraphCoordinator} advancement while preserving committed
  *       completions during active Drain when the Run mailbox refuses wakeup.</li>
@@ -30,7 +35,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class WorkerExecutionService {
     public enum OutcomeStatus {
         REJECTED_BEFORE_START,
-        CANCELLED_BEFORE_START,
         SUCCEEDED,
         FAILED,
         CANCELLED,
@@ -52,14 +56,9 @@ public final class WorkerExecutionService {
             Objects.requireNonNull(graphAdvance, "graphAdvance");
         }
 
-        private static ExecutionOutcome rejectedBeforeStart(UUID attemptId, Throwable error) {
-            return new ExecutionOutcome(attemptId, OutcomeStatus.REJECTED_BEFORE_START, null, null,
+        private static ExecutionOutcome rejectedBeforeStart(UUID attemptId, String runOutcome, Throwable error) {
+            return new ExecutionOutcome(attemptId, OutcomeStatus.REJECTED_BEFORE_START, runOutcome, null,
                     false, CompletableFuture.completedFuture(null), error);
-        }
-
-        private static ExecutionOutcome cancelledBeforeStart(UUID attemptId) {
-            return new ExecutionOutcome(attemptId, OutcomeStatus.CANCELLED_BEFORE_START, null, null,
-                    false, CompletableFuture.completedFuture(null), null);
         }
 
         private static ExecutionOutcome succeeded(
@@ -93,14 +92,20 @@ public final class WorkerExecutionService {
     }
 
     private static final class PendingExecution {
+        final WorkerTaskHandler.TaskRequest request;
         final CompletableFuture<ExecutionOutcome> outcomeFuture = new CompletableFuture<>();
         final AtomicBoolean entered = new AtomicBoolean();
+
+        PendingExecution(WorkerTaskHandler.TaskRequest request) {
+            this.request = request;
+        }
     }
 
     private final WorkflowRuntimeRepository repository;
     private final WorkflowRunLifecycleCoordinator lifecycleCoordinator;
     private final WorkerPool workerPool;
     private final WorkerExecutionRegistry executionRegistry;
+    private final Runnable afterAcceptBeforeStartHook;
     private final ConcurrentMap<UUID, PendingExecution> inFlight = new ConcurrentHashMap<>();
 
     public WorkerExecutionService(
@@ -108,10 +113,22 @@ public final class WorkerExecutionService {
             WorkflowRunLifecycleCoordinator lifecycleCoordinator,
             WorkerPool workerPool,
             WorkerExecutionRegistry executionRegistry) {
+        this(repository, lifecycleCoordinator, workerPool, executionRegistry, () -> {});
+    }
+
+    /** Package-private seam for deterministic tests exercising gate closure between accept and start. */
+    WorkerExecutionService(
+            WorkflowRuntimeRepository repository,
+            WorkflowRunLifecycleCoordinator lifecycleCoordinator,
+            WorkerPool workerPool,
+            WorkerExecutionRegistry executionRegistry,
+            Runnable afterAcceptBeforeStartHook) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.lifecycleCoordinator = Objects.requireNonNull(lifecycleCoordinator, "lifecycleCoordinator");
         this.workerPool = Objects.requireNonNull(workerPool, "workerPool");
         this.executionRegistry = Objects.requireNonNull(executionRegistry, "executionRegistry");
+        this.afterAcceptBeforeStartHook = Objects.requireNonNull(
+                afterAcceptBeforeStartHook, "afterAcceptBeforeStartHook");
     }
 
     /**
@@ -124,7 +141,7 @@ public final class WorkerExecutionService {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(handler, "handler");
 
-        PendingExecution pending = new PendingExecution();
+        PendingExecution pending = new PendingExecution(request);
         if (inFlight.putIfAbsent(request.attemptId(), pending) != null) {
             throw new IllegalStateException("Attempt already submitted to WorkerExecutionService: "
                     + request.attemptId());
@@ -132,6 +149,7 @@ public final class WorkerExecutionService {
         try {
             workerPool.submit(request.runId(), request.attemptId(), request.workerId(), () -> {
                 if (!pending.entered.compareAndSet(false, true)) {
+                    // requestCancel won the queued->running race and owns durable cancellation settlement.
                     return null;
                 }
                 ExecutionOutcome outcome = null;
@@ -148,7 +166,8 @@ public final class WorkerExecutionService {
                         pending.outcomeFuture.complete(outcome);
                     } else if (!pending.outcomeFuture.isDone()) {
                         pending.outcomeFuture.complete(ExecutionOutcome.settlementFailed(
-                                request.attemptId(), new IllegalStateException("Worker execution exited without outcome")));
+                                request.attemptId(),
+                                new IllegalStateException("Worker execution exited without outcome")));
                     }
                 }
             });
@@ -160,18 +179,31 @@ public final class WorkerExecutionService {
     }
 
     /**
-     * Best-effort local cancellation for a submitted Attempt.
-     * If the Attempt was still queued before execution began, completes its future as
-     * {@link OutcomeStatus#CANCELLED_BEFORE_START}; if already executing, lets the worker
-     * thread finish durable DB settlement ({@code CANCELLED} or {@code MANUAL_REQUIRED}).
+     * Request cancellation for a submitted Attempt.
+     *
+     * <p>If the Attempt has not yet entered the Worker lifecycle (still queued in {@link WorkerPool}),
+     * this method durably settles {@code cancelAttempt} in PostgreSQL BEFORE completing the outcome
+     * future and returning; if DB settlement fails, the future completes with
+     * {@link OutcomeStatus#SETTLEMENT_FAILED} and this method returns {@code false}.
+     * If the Worker thread has already entered execution, local cancellation is signalled and the
+     * Worker thread performs durable {@code CANCELLED} / {@code MANUAL_REQUIRED} settlement before
+     * completing the outcome future.
      */
     public boolean requestCancel(UUID attemptId) {
         Objects.requireNonNull(attemptId, "attemptId");
         boolean signalled = workerPool.cancel(attemptId);
         PendingExecution pending = inFlight.get(attemptId);
         if (pending != null && pending.entered.compareAndSet(false, true)) {
-            inFlight.remove(attemptId, pending);
-            pending.outcomeFuture.complete(ExecutionOutcome.cancelledBeforeStart(attemptId));
+            ExecutionOutcome settled;
+            try {
+                settled = settleWithClearedInterrupt(() ->
+                        settleCancellation(pending.request, "cancelled-while-queued", false));
+            } finally {
+                inFlight.remove(attemptId, pending);
+            }
+            pending.outcomeFuture.complete(settled);
+            return settled.status() == OutcomeStatus.CANCELLED
+                    || settled.status() == OutcomeStatus.MANUAL_REQUIRED;
         }
         return signalled;
     }
@@ -187,30 +219,40 @@ public final class WorkerExecutionService {
         UUID attemptId = request.attemptId();
 
         if (isLocallyCancelled(attemptId)) {
-            return ExecutionOutcome.cancelledBeforeStart(attemptId);
+            return settleWithClearedInterrupt(() ->
+                    settleCancellation(request, "cancelled-before-accept", false));
         }
 
-        // 1. Durable admission: acceptAttempt -> startAttempt before invoking handler.
+        // 1. Durable admission: acceptAttemptForExecution -> startAttempt before invoking handler.
         try {
-            repository.acceptAttempt(tenantId, runId, attemptId, request.dispatchId(), request.workerId());
-        } catch (WorkflowRuntimeRepository.InvalidTransitionException
-                 | WorkflowRuntimeRepository.StaleRuntimeWriteException rejected) {
-            return ExecutionOutcome.rejectedBeforeStart(attemptId, rejected);
+            repository.acceptAttemptForExecution(
+                    tenantId, runId, attemptId, request.dispatchId(), request.workerId(),
+                    request.nodeKey(), request.sideEffectClass());
+        } catch (WorkflowRuntimeRepository.InvalidTransitionException gateClosed) {
+            return settleWithClearedInterrupt(() ->
+                    settlePreStartGateRejection(request, "gate-closed-before-accept", gateClosed));
+        } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException staleOrMismatch) {
+            return ExecutionOutcome.rejectedBeforeStart(attemptId, null, staleOrMismatch);
         }
+
+        afterAcceptBeforeStartHook.run();
 
         if (isLocallyCancelled(attemptId)) {
-            return settleWithClearedInterrupt(() -> settleCancellation(request, "cancelled-before-start", false));
+            return settleWithClearedInterrupt(() ->
+                    settleCancellation(request, "cancelled-before-start", false));
         }
 
         try {
             repository.startAttempt(tenantId, runId, attemptId, request.dispatchId(), request.workerId());
-        } catch (WorkflowRuntimeRepository.InvalidTransitionException
-                 | WorkflowRuntimeRepository.StaleRuntimeWriteException rejected) {
-            return ExecutionOutcome.rejectedBeforeStart(attemptId, rejected);
+        } catch (WorkflowRuntimeRepository.InvalidTransitionException gateClosed) {
+            return settleWithClearedInterrupt(() ->
+                    settlePreStartGateRejection(request, "gate-closed-before-start", gateClosed));
+        } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException stale) {
+            return ExecutionOutcome.rejectedBeforeStart(attemptId, null, stale);
         }
 
-        // 2. Run handler with a strictly scoped context that hides WorkflowRuntimeRepository.
-        ScopedWorkerContext context = new ScopedWorkerContext(request);
+        // 2. Run synchronous handler with an owning-thread-bound context hiding WorkflowRuntimeRepository.
+        ScopedWorkerContext context = new ScopedWorkerContext(request, Thread.currentThread());
         WorkerTaskHandler.TaskResult result;
         try {
             result = handler.execute(request, context);
@@ -268,6 +310,24 @@ public final class WorkerExecutionService {
         });
     }
 
+    private ExecutionOutcome settlePreStartGateRejection(
+            WorkerTaskHandler.TaskRequest request, String reason,
+            WorkflowRuntimeRepository.InvalidTransitionException gateRejection) {
+        try {
+            WorkflowRuntimeRepository.AttemptFailureResult aborted =
+                    repository.abortPreStartAttemptOnGateClosed(
+                            request.tenantId(), request.runId(), request.attemptId(), reason);
+            return ExecutionOutcome.rejectedBeforeStart(request.attemptId(), aborted.outcome(), gateRejection);
+        } catch (WorkflowRuntimeRepository.InvalidTransitionException
+                 | WorkflowRuntimeRepository.StaleRuntimeWriteException alreadyTerminalOrNotDrain) {
+            // Run was already terminal (e.g. FAILED/STOPPED/PAUSED/MANUAL_REQUIRED) or Attempt was
+            // already transitioned concurrently; never overwrite terminal state.
+            return ExecutionOutcome.rejectedBeforeStart(request.attemptId(), null, gateRejection);
+        } catch (RuntimeException dbFailure) {
+            return ExecutionOutcome.settlementFailed(request.attemptId(), dbFailure);
+        }
+    }
+
     private ExecutionOutcome settleCancellation(
             WorkerTaskHandler.TaskRequest request, String reason, boolean sideEffectRecorded) {
         try {
@@ -321,25 +381,39 @@ public final class WorkerExecutionService {
         return snap != null && snap.cancellationRequested();
     }
 
+    /**
+     * Synchronous, owning-thread-bound context. All side-effect recordings and {@link #deactivate()}
+     * serialize on {@code lock} and enforce {@code Thread.currentThread() == owningThread}, making
+     * it impossible for a background thread to race past deactivation into completion/failure settlement.
+     */
     private final class ScopedWorkerContext implements WorkerExecutionContext {
         private final WorkerTaskHandler.TaskRequest request;
-        private final AtomicBoolean active = new AtomicBoolean(true);
+        private final Thread owningThread;
+        private final Object lock = new Object();
+        private boolean active = true;
         private final AtomicBoolean sideEffectRecorded = new AtomicBoolean();
 
-        private ScopedWorkerContext(WorkerTaskHandler.TaskRequest request) {
+        private ScopedWorkerContext(WorkerTaskHandler.TaskRequest request, Thread owningThread) {
             this.request = request;
+            this.owningThread = owningThread;
         }
 
         void deactivate() {
-            active.set(false);
+            synchronized (lock) {
+                active = false;
+            }
         }
 
         boolean hasRecordedSideEffect() {
             return sideEffectRecorded.get();
         }
 
-        private void requireActive() {
-            if (!active.get()) {
+        private void requireOwningThreadAndActiveLocked() {
+            if (Thread.currentThread() != owningThread) {
+                throw new IllegalStateException(
+                        "WorkerExecutionContext is synchronous and bound to the owning Worker thread");
+            }
+            if (!active) {
                 throw new IllegalStateException("WorkerExecutionContext is no longer active for Attempt "
                         + request.attemptId());
             }
@@ -357,32 +431,38 @@ public final class WorkerExecutionService {
 
         @Override
         public boolean recordSideEffectStarted(String sideEffectKey, String factKey, String payloadJson) {
-            requireActive();
-            boolean recorded = callWithClearedInterrupt(() -> repository.recordSideEffectFact(
-                    request.tenantId(), request.runId(), request.attemptId(),
-                    request.workerId(), sideEffectKey, factKey, "SIDE_EFFECT_STARTED", payloadJson));
-            if (recorded) sideEffectRecorded.set(true);
-            return recorded;
+            synchronized (lock) {
+                requireOwningThreadAndActiveLocked();
+                boolean recorded = callWithClearedInterrupt(() -> repository.recordSideEffectFact(
+                        request.tenantId(), request.runId(), request.attemptId(),
+                        request.workerId(), sideEffectKey, factKey, "SIDE_EFFECT_STARTED", payloadJson));
+                if (recorded) sideEffectRecorded.set(true);
+                return recorded;
+            }
         }
 
         @Override
         public boolean recordSideEffectCompleted(String sideEffectKey, String factKey, String payloadJson) {
-            requireActive();
-            boolean recorded = callWithClearedInterrupt(() -> repository.recordSideEffectFact(
-                    request.tenantId(), request.runId(), request.attemptId(),
-                    request.workerId(), sideEffectKey, factKey, "SIDE_EFFECT_COMPLETED", payloadJson));
-            if (recorded) sideEffectRecorded.set(true);
-            return recorded;
+            synchronized (lock) {
+                requireOwningThreadAndActiveLocked();
+                boolean recorded = callWithClearedInterrupt(() -> repository.recordSideEffectFact(
+                        request.tenantId(), request.runId(), request.attemptId(),
+                        request.workerId(), sideEffectKey, factKey, "SIDE_EFFECT_COMPLETED", payloadJson));
+                if (recorded) sideEffectRecorded.set(true);
+                return recorded;
+            }
         }
 
         @Override
         public boolean recordSideEffectUnknown(String sideEffectKey, String factKey, String payloadJson) {
-            requireActive();
-            boolean recorded = callWithClearedInterrupt(() -> repository.recordSideEffectFact(
-                    request.tenantId(), request.runId(), request.attemptId(),
-                    request.workerId(), sideEffectKey, factKey, "SIDE_EFFECT_UNKNOWN", payloadJson));
-            if (recorded) sideEffectRecorded.set(true);
-            return recorded;
+            synchronized (lock) {
+                requireOwningThreadAndActiveLocked();
+                boolean recorded = callWithClearedInterrupt(() -> repository.recordSideEffectFact(
+                        request.tenantId(), request.runId(), request.attemptId(),
+                        request.workerId(), sideEffectKey, factKey, "SIDE_EFFECT_UNKNOWN", payloadJson));
+                if (recorded) sideEffectRecorded.set(true);
+                return recorded;
+            }
         }
 
         @Override

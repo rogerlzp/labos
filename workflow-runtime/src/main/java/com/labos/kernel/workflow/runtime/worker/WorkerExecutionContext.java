@@ -5,10 +5,13 @@ import java.util.UUID;
 /**
  * Controlled execution context passed to a {@link WorkerTaskHandler}.
  *
+ * <p><strong>Synchronous, owning-thread contract:</strong> this context is strictly bound to
+ * the single {@link WorkerPool} thread executing the handler and to the active duration of
+ * {@link WorkerTaskHandler#execute}. Handlers MUST NOT hand this context to background threads
+ * or use it after returning; off-thread and post-return side-effect calls throw
+ * {@link IllegalStateException} before touching persistence.
+ *
  * <p>Handlers never receive direct access to {@code WorkflowRuntimeRepository}.
- * Every side-effect fact recorded through this context is strictly bound to
- * the owning {@code (tenantId, runId, attemptId, workerId)} and is rejected
- * once the handler invocation exits its active execution scope.
  */
 public interface WorkerExecutionContext {
     UUID tenantId();

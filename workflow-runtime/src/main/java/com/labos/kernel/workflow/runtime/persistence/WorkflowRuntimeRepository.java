@@ -563,6 +563,68 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+    /**
+     * T04-A (binding-verified): accept a locally dispatched Attempt only after verifying that
+     * {@code expectedNodeKey} and {@code expectedSideEffectClass} match the persisted
+     * {@code node_activation} and {@code node_attempt} rows under global lock order
+     * {@code Run -> Token -> Activation -> Attempt}.
+     */
+    public void acceptAttemptForExecution(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
+                                          String workerId, String expectedNodeKey,
+                                          String expectedSideEffectClass) {
+        if (expectedNodeKey == null || expectedNodeKey.isBlank())
+            throw new IllegalArgumentException("expectedNodeKey is required");
+        if (expectedSideEffectClass == null || expectedSideEffectClass.isBlank())
+            throw new IllegalArgumentException("expectedSideEffectClass is required");
+        required(() -> {
+            RunHead head = lockRun(tenantId, runId);
+            requireRunOpenForExecutionStart(head, "worker acceptance");
+            List<UUID> activationIds = jdbc.query("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId, attemptId);
+            if (activationIds.size() != 1)
+                throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
+            UUID activationId = activationIds.get(0);
+            UUID tokenId = jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """, UUID.class, tenantId, activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class, tenantId, tokenId);
+            String persistedNodeKey = jdbc.queryForObject("""
+                SELECT node_key FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=? FOR UPDATE
+                """, String.class, tenantId, activationId);
+            List<String> attemptMeta = jdbc.query("""
+                SELECT attempt_state || '|' || side_effect_class || '|' || COALESCE(dispatch_id::text,'')
+                  FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
+                """, (rs, n) -> rs.getString(1), tenantId, runId, attemptId);
+            if (attemptMeta.size() != 1)
+                throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
+            String[] meta = attemptMeta.get(0).split("\\|", 3);
+            if (!"DISPATCHED".equals(meta[0]) || !dispatchId.toString().equals(meta[2]))
+                throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
+            if (!expectedNodeKey.equals(persistedNodeKey) || !expectedSideEffectClass.equals(meta[1]))
+                throw new StaleRuntimeWriteException(
+                        "TaskRequest binding mismatch (expected nodeKey=" + expectedNodeKey
+                                + ", sideEffectClass=" + expectedSideEffectClass
+                                + "; persisted nodeKey=" + persistedNodeKey
+                                + ", sideEffectClass=" + meta[1] + ")");
+            int changed = jdbc.update("""
+                UPDATE workflow_runtime.node_attempt SET attempt_state='ACCEPTED',
+                       worker_id=?,attempt_version=attempt_version+1
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? AND dispatch_id=?
+                   AND attempt_state='DISPATCHED'
+                """, workerId, tenantId, runId, attemptId, dispatchId);
+            if (changed != 1) throw new StaleRuntimeWriteException("Worker acceptance does not match dispatch");
+            appendEvents(tenantId, runId, List.of(new EventDraft(
+                    "ATTEMPT_ACCEPTED", "ATTEMPT", attemptId, null, null, null, "{}")));
+            return null;
+        });
+    }
+
     /** T04-S: ACCEPTED -> STARTED. Worker ownership is process-local, not a DB lease. */
     public void startAttempt(UUID tenantId, UUID runId, UUID attemptId, UUID dispatchId,
                              String workerId) {
@@ -1068,6 +1130,113 @@ public final class WorkflowRuntimeRepository {
             appendEvents(tenantId, runId, List.of(new EventDraft("ATTEMPT_CANCELLED", "ATTEMPT", attemptId,
                     null, null, null, "{\"reason\":\"" + jsonEscape(safeReason) + "\"}")));
             return new AttemptFailureResult("CANCELLED", null);
+        });
+    }
+
+    /**
+     * Converge a pre-start Attempt ({@code CREATED}, {@code DISPATCHED}, or {@code ACCEPTED}) whose
+     * Run closed its dispatch gate for an active {@code PAUSE}, {@code STOP}, or {@code FAILURE} Drain
+     * before handler execution began.
+     *
+     * <p>During {@code PAUSE} Drain, the reservation is released, the Attempt and Activation are
+     * cancelled, and the {@code execution_token} is restored from {@code RESERVED} back to {@code READY}
+     * so {@link #tryFinalizeDrain} can reach {@code PAUSED} without losing the paused task.
+     * During {@code STOP}/{@code FAILURE} Drain, the token is invalidated so Drain can reach
+     * {@code STOPPED}/{@code FAILED}. Never touches {@code STARTED} Attempts or any Attempt with
+     * recorded external side effects.
+     */
+    public AttemptFailureResult abortPreStartAttemptOnGateClosed(
+            UUID tenantId, UUID runId, UUID attemptId, String reason) {
+        String safeReason = (reason == null || reason.isBlank()) ? "gate-closed-before-start" : reason;
+        return required(() -> {
+            RunHead head = lockRun(tenantId, runId);
+            boolean pauseDrain = "PAUSE_REQUESTED".equals(head.status()) || "PAUSING".equals(head.status());
+            boolean stopDrain = "STOP_REQUESTED".equals(head.status()) || "STOPPING".equals(head.status());
+            if (!pauseDrain && !stopDrain) {
+                throw new InvalidTransitionException(
+                        "Pre-start gate-closed abort requires active Drain (status=" + head.status() + ")");
+            }
+            List<UUID> activationIds = jdbc.query("""
+                SELECT activation_id FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=?
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId, attemptId);
+            if (activationIds.size() != 1) throw new IllegalStateException("Attempt not found");
+            UUID activationId = activationIds.get(0);
+            UUID tokenId = jdbc.queryForObject("""
+                SELECT token_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND activation_id=?
+                """, UUID.class, tenantId, activationId);
+            jdbc.queryForObject("SELECT token_id FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=? FOR UPDATE",
+                    UUID.class, tenantId, tokenId);
+            jdbc.queryForObject("SELECT activation_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=? FOR UPDATE",
+                    UUID.class, tenantId, activationId);
+            List<String> attemptStates = jdbc.query("""
+                SELECT attempt_state FROM workflow_runtime.node_attempt
+                 WHERE tenant_id=? AND run_id=? AND attempt_id=? FOR UPDATE
+                """, (rs, n) -> rs.getString(1), tenantId, runId, attemptId);
+            if (attemptStates.size() != 1
+                    || !List.of("CREATED", "DISPATCHED", "ACCEPTED").contains(attemptStates.get(0))) {
+                throw new StaleRuntimeWriteException("Attempt is not in a pre-start state");
+            }
+            Integer anySideEffectFact = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                 WHERE tenant_id=? AND attempt_id=?
+                   AND fact_type IN ('SIDE_EFFECT_STARTED','SIDE_EFFECT_COMPLETED','SIDE_EFFECT_UNKNOWN')
+                """, Integer.class, tenantId, attemptId);
+            Integer sentCommands = jdbc.queryForObject("""
+                SELECT count(*) FROM workflow_runtime.command_ledger
+                 WHERE tenant_id=? AND attempt_id=?
+                   AND command_state NOT IN ('CREATED','DISPATCH_PENDING','CANCELLED')
+                """, Integer.class, tenantId, attemptId);
+            if ((anySideEffectFact != null && anySideEffectFact > 0)
+                    || (sentCommands != null && sentCommands > 0)) {
+                throw new InvalidTransitionException(
+                        "Cannot abort pre-start Attempt that already recorded external side-effect evidence");
+            }
+
+            jdbc.update("""
+                UPDATE workflow_runtime.command_ledger SET command_state='CANCELLED',
+                       version=version+1,completed_at=clock_timestamp(),updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND attempt_id=? AND command_state IN ('CREATED','DISPATCH_PENDING')
+                """, tenantId, attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER'
+                 WHERE tenant_id=? AND message_kind='WORKER_DISPATCH'
+                   AND outbox_state IN ('PENDING','SENDING')
+                   AND payload->>'attemptId'=?
+                """, tenantId, attemptId.toString());
+            jdbc.update("""
+                UPDATE workflow_runtime.node_attempt SET attempt_state='CANCELLED',
+                       finished_at=clock_timestamp(),attempt_version=attempt_version+1
+                 WHERE tenant_id=? AND attempt_id=?
+                """, tenantId, attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.node_activation SET activation_state='CANCELLED',
+                       activation_version=activation_version+1,updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND activation_id=? AND activation_state IN ('READY','RESERVED')
+                """, tenantId, activationId);
+            if (pauseDrain) {
+                jdbc.update("""
+                    UPDATE workflow_runtime.execution_token SET token_state='READY',
+                           token_version=token_version+1,updated_at=clock_timestamp()
+                     WHERE tenant_id=? AND token_id=? AND token_state='RESERVED'
+                    """, tenantId, tokenId);
+            } else {
+                jdbc.update("""
+                    UPDATE workflow_runtime.execution_token SET token_state='INVALIDATED',
+                           token_version=token_version+1,updated_at=clock_timestamp()
+                     WHERE tenant_id=? AND token_id=? AND token_state IN ('READY','RESERVED')
+                    """, tenantId, tokenId);
+            }
+            releaseReservationInTransaction(tenantId, attemptId);
+            appendWorkerFactInTransaction(tenantId, runId, attemptId, "execution-aborted-gate-closed",
+                    "EXECUTION_RIGHT_RELEASED", "WORKER", "gate-abort-handler",
+                    commandDispatchId(tenantId, attemptId), "{\"reason\":\"" + jsonEscape(safeReason) + "\"}");
+            appendEvents(tenantId, runId, List.of(new EventDraft("ATTEMPT_ABORTED_GATE_CLOSED", "ATTEMPT",
+                    attemptId, null, null, null,
+                    "{\"reason\":\"" + jsonEscape(safeReason) + "\",\"drainMode\":\""
+                            + (pauseDrain ? "PAUSE" : "STOP") + "\"}")));
+            return new AttemptFailureResult(pauseDrain ? "ABORTED_FOR_PAUSE" : "CANCELLED", null);
         });
     }
 

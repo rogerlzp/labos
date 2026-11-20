@@ -1,16 +1,13 @@
-package com.labos.kernel.workflow.runtime.host;
+package com.labos.kernel.workflow.runtime.worker;
 
 import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
 import com.labos.kernel.workflow.runtime.coordinator.WorkflowRunLifecycleCoordinator;
 import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
 import com.labos.kernel.workflow.runtime.graph.GraphPlan;
 import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
+import com.labos.kernel.workflow.runtime.host.SchedulingGate;
+import com.labos.kernel.workflow.runtime.host.TestSchedulingGates;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
-import com.labos.kernel.workflow.runtime.worker.WorkerExecutionContext;
-import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
-import com.labos.kernel.workflow.runtime.worker.WorkerExecutionService;
-import com.labos.kernel.workflow.runtime.worker.WorkerPool;
-import com.labos.kernel.workflow.runtime.worker.WorkerTaskHandler;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -74,6 +71,14 @@ class WorkerExecutionServiceTest {
         assertTrue(repo.markOutboxDelivered(tenant, msg.outboxId()));
     }
 
+    private static void deliverDrainOutbox(WorkflowRuntimeRepository repo, UUID tenant, UUID drainId) {
+        var msg = repo.beginOutboxSend(tenant, 20).stream()
+                .filter(m -> m.dedupKey().equals("drain:" + drainId))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing DRAIN_REQUEST outbox row for " + drainId));
+        assertTrue(repo.markOutboxDelivered(tenant, msg.outboxId()));
+    }
+
     @Test
     void pureLogicTaskExportsVariablesDrivesDownstreamXorAndCompletesRun() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
@@ -107,8 +112,7 @@ class WorkerExecutionServiceTest {
                 plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
 
         var mailboxExec = Executors.newFixedThreadPool(2);
-        SchedulingGate gate = new SchedulingGate();
-        gate.open();
+        SchedulingGate gate = TestSchedulingGates.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 8);
              var pool = new WorkerPool(2, 8, 4, registry, gate)) {
@@ -140,7 +144,6 @@ class WorkerExecutionServiceTest {
             assertTrue(outcome.wakeupScheduled());
             outcome.graphAdvance().get(5, TimeUnit.SECONDS);
 
-            // Context must reject post-return side-effect attempts (defense in depth).
             assertThrows(IllegalStateException.class, () ->
                     leakedContext.get().recordSideEffectStarted("late-op", "late-start", "{}"));
 
@@ -177,8 +180,7 @@ class WorkerExecutionServiceTest {
         AtomicBoolean newSideEffectRejectedDuringDrain = new AtomicBoolean();
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = new SchedulingGate();
-        gate.open();
+        SchedulingGate gate = TestSchedulingGates.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 2, registry, gate)) {
@@ -237,8 +239,7 @@ class WorkerExecutionServiceTest {
         deliverDispatchOutbox(repo, tenant, res.attemptId());
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = new SchedulingGate();
-        gate.open();
+        SchedulingGate gate = TestSchedulingGates.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(1, 4, 2, registry, gate)) {
@@ -250,7 +251,6 @@ class WorkerExecutionServiceTest {
 
             var outcome = service.submit(request, (req, ctx) -> {
                 assertTrue(ctx.recordSideEffectStarted("unclosed-op", "unclosed-start", "{}"));
-                // Buggy handler forgets to record SIDE_EFFECT_COMPLETED and returns success.
                 return WorkerTaskHandler.TaskResult.of("out", "{\"pretendOk\":true}");
             }).get(5, TimeUnit.SECONDS);
 
@@ -275,15 +275,13 @@ class WorkerExecutionServiceTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = new SchedulingGate();
-        gate.open();
+        SchedulingGate gate = TestSchedulingGates.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 2, registry, gate)) {
             pool.start();
             WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
 
-            // A. Pure deterministic failure (no side effect recorded) -> FAILED.
             var runA = repo.createRun(tenant, "ws-fail-a-" + UUID.randomUUID(), "CREATE", "{}",
                     "ws-fail-a-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-a");
             repo.startRun(tenant, runA.runId());
@@ -306,7 +304,6 @@ class WorkerExecutionServiceTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
                     + tenant + "' AND run_id='" + runA.runId() + "' AND status='FAILED' AND control_gate='CLOSED'"));
 
-            // B. Failure thrown AFTER a side effect was executed and completed -> fail-closed MANUAL_REQUIRED.
             var runB = repo.createRun(tenant, "ws-fail-b-" + UUID.randomUUID(), "CREATE", "{}",
                     "ws-fail-b-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-b");
             repo.startRun(tenant, runB.runId());
@@ -342,8 +339,7 @@ class WorkerExecutionServiceTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = new SchedulingGate();
-        gate.open();
+        SchedulingGate gate = TestSchedulingGates.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(2, 4, 4, registry, gate)) {
@@ -398,7 +394,7 @@ class WorkerExecutionServiceTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
                     + tenant + "' AND attempt_id='" + resB.attemptId() + "' AND attempt_state='UNKNOWN'"));
 
-            // C. Cancel Attempt after SIDE_EFFECT_STARTED + SIDE_EFFECT_COMPLETED -> never erases evidence; MANUAL_REQUIRED.
+            // C. Cancel Attempt after SIDE_EFFECT_STARTED + SIDE_EFFECT_COMPLETED -> MANUAL_REQUIRED.
             var runC = repo.createRun(tenant, "ws-can-c-" + UUID.randomUUID(), "CREATE", "{}",
                     "ws-can-c-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-c");
             repo.startRun(tenant, runC.runId());
@@ -429,93 +425,331 @@ class WorkerExecutionServiceTest {
     }
 
     @Test
-    void closedGateAndQueuedCancellationPreventHandlerExecution() throws Exception {
+    void queuedCancellationPersistsCancelInDbAndReportsSettlementFailureWhenRunIsTerminal() throws Exception {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
         var ds = dataSource();
-        UUID tenant = createTenant(ds, "ws-gate");
+        UUID tenant = createTenant(ds, "ws-qcan");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         var mailboxExec = Executors.newSingleThreadExecutor();
-        SchedulingGate gate = new SchedulingGate();
-        gate.open();
+        SchedulingGate gate = TestSchedulingGates.openGate();
         WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
         try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
              var pool = new WorkerPool(1, 4, 4, registry, gate)) {
             pool.start();
             WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
 
-            // 1. Run gate closed before worker accepts -> REJECTED_BEFORE_START, handler never invoked.
-            var runClosed = repo.createRun(tenant, "ws-closed-" + UUID.randomUUID(), "CREATE", "{}",
-                    "ws-closed-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-1");
-            repo.startRun(tenant, runClosed.runId());
-            var resClosed = repo.reserveCapacity(tenant, runClosed.runId(), "ws-closed-cap-" + tenant, 1,
-                    "task-1", "PURE", Instant.now().plusSeconds(60));
-            repo.dispatchAttempt(tenant, runClosed.runId(), resClosed.attemptId(), "q", "{}");
-            deliverDispatchOutbox(repo, tenant, resClosed.attemptId());
-            repo.requestDrain(tenant, runClosed.runId(), "STOP");
-
-            AtomicBoolean closedHandlerRan = new AtomicBoolean();
-            var closedOutcome = service.submit(new WorkerTaskHandler.TaskRequest(
-                    tenant, runClosed.runId(), resClosed.attemptId(), resClosed.dispatchId(),
-                    "worker-closed", "task-1", "PURE", "{}"), (req, ctx) -> {
-                closedHandlerRan.set(true);
-                return WorkerTaskHandler.TaskResult.of("out", "{}");
-            }).get(5, TimeUnit.SECONDS);
-
-            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, closedOutcome.status());
-            assertFalse(closedHandlerRan.get(), "Handler must never run when Run gate rejected admission");
-            // Clean up DISPATCHED attempt so shared test DB has zero leaked active attempts.
-            assertEquals("CANCELLED",
-                    repo.cancelAttempt(tenant, runClosed.runId(), resClosed.attemptId(), "test-cleanup").outcome());
-
-            // 2. Queued Attempt cancelled before entering Worker thread -> CANCELLED_BEFORE_START, handler never runs.
-            var runBusy = repo.createRun(tenant, "ws-busy-" + UUID.randomUUID(), "CREATE", "{}",
-                    "ws-busy-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-a");
+            // Occupy the single worker thread so subsequent submissions stay queued.
+            var runBusy = repo.createRun(tenant, "ws-qcan-busy-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-qcan-busy-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-busy");
             repo.startRun(tenant, runBusy.runId());
-            var res1 = repo.reserveCapacity(tenant, runBusy.runId(), "ws-busy-cap-" + tenant, 2,
-                    "task-a", "PURE", Instant.now().plusSeconds(60));
-            repo.dispatchAttempt(tenant, runBusy.runId(), res1.attemptId(), "q", "{}");
-            deliverDispatchOutbox(repo, tenant, res1.attemptId());
-
-            var runQueued = repo.createRun(tenant, "ws-queued-" + UUID.randomUUID(), "CREATE", "{}",
-                    "ws-queued-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-b");
-            repo.startRun(tenant, runQueued.runId());
-            var res2 = repo.reserveCapacity(tenant, runQueued.runId(), "ws-queued-cap-" + tenant, 1,
-                    "task-b", "PURE", Instant.now().plusSeconds(60));
-            repo.dispatchAttempt(tenant, runQueued.runId(), res2.attemptId(), "q", "{}");
-            deliverDispatchOutbox(repo, tenant, res2.attemptId());
+            var resBusy = repo.reserveCapacity(tenant, runBusy.runId(), "ws-qcan-busy-cap-" + tenant, 1,
+                    "task-busy", "PURE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runBusy.runId(), resBusy.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resBusy.attemptId());
 
             CountDownLatch workerOccupied = new CountDownLatch(1);
             CountDownLatch releaseWorker = new CountDownLatch(1);
-            var fut1 = service.submit(new WorkerTaskHandler.TaskRequest(
-                    tenant, runBusy.runId(), res1.attemptId(), res1.dispatchId(),
-                    "worker-busy", "task-a", "PURE", "{}"), (req, ctx) -> {
+            var futBusy = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runBusy.runId(), resBusy.attemptId(), resBusy.dispatchId(),
+                    "worker-busy", "task-busy", "PURE", "{}"), (req, ctx) -> {
                 workerOccupied.countDown();
                 assertTrue(releaseWorker.await(5, TimeUnit.SECONDS));
                 return WorkerTaskHandler.TaskResult.of("out", "{\"ok\":true}");
             });
             assertTrue(workerOccupied.await(5, TimeUnit.SECONDS));
 
+            // 1. Queued Attempt cancelled -> durably CANCELLED in PostgreSQL with ZERO manual caller cleanup.
+            String capKey = "ws-qcan-queued-cap-" + tenant;
+            var runQueued = repo.createRun(tenant, "ws-qcan-1-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-qcan-1-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-q1");
+            repo.startRun(tenant, runQueued.runId());
+            var resQueued = repo.reserveCapacity(tenant, runQueued.runId(), capKey, 1,
+                    "task-q1", "PURE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runQueued.runId(), resQueued.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resQueued.attemptId());
+            UUID stopDrainId = repo.requestDrain(tenant, runQueued.runId(), "STOP");
+
             AtomicBoolean queuedHandlerRan = new AtomicBoolean();
-            var fut2 = service.submit(new WorkerTaskHandler.TaskRequest(
-                    tenant, runQueued.runId(), res2.attemptId(), res2.dispatchId(),
-                    "worker-queued", "task-b", "PURE", "{}"), (req, ctx) -> {
+            var futQueued = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runQueued.runId(), resQueued.attemptId(), resQueued.dispatchId(),
+                    "worker-q1", "task-q1", "PURE", "{}"), (req, ctx) -> {
                 queuedHandlerRan.set(true);
                 return WorkerTaskHandler.TaskResult.of("out", "{}");
             });
 
-            assertTrue(service.requestCancel(res2.attemptId()));
-            var out2 = fut2.get(5, TimeUnit.SECONDS);
-            assertEquals(WorkerExecutionService.OutcomeStatus.CANCELLED_BEFORE_START, out2.status());
-            assertFalse(queuedHandlerRan.get());
+            assertTrue(service.requestCancel(resQueued.attemptId()),
+                    "Queued cancellation must return true only after durable DB cancel succeeds");
+            var outQueued = futQueued.get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.CANCELLED, outQueued.status());
+            assertFalse(queuedHandlerRan.get(), "Cancelled queued handler must never execute");
+
+            // Verify Attempt, Activation, Token, Reservation, Capacity, and Drain all converged in DB.
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
-                    + tenant + "' AND attempt_id='" + res2.attemptId() + "' AND attempt_state='DISPATCHED'"));
+                    + tenant + "' AND attempt_id='" + resQueued.attemptId() + "' AND attempt_state='CANCELLED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runQueued.runId() + "' AND activation_state='CANCELLED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runQueued.runId() + "' AND token_state='INVALIDATED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.dispatch_reservation WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + resQueued.attemptId() + "' AND reservation_state='RELEASED'"));
+            assertEquals(0, scalar(ds, "SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"
+                    + tenant + "' AND capacity_key='" + capKey + "'"));
+            deliverDrainOutbox(repo, tenant, stopDrainId);
+            assertTrue(repo.tryFinalizeDrain(tenant, runQueued.runId(), stopDrainId, "STOPPED"),
+                    "STOP Drain must finalize cleanly once queued Attempt is durably cancelled");
+
+            // 2. Queued Attempt whose DB cancel fails (Run already terminal) -> SETTLEMENT_FAILED, never false CANCELLED.
+            var runTerm = repo.createRun(tenant, "ws-qcan-term-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-qcan-term-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-term");
+            repo.startRun(tenant, runTerm.runId());
+            var resTerm = repo.reserveCapacity(tenant, runTerm.runId(), "ws-qcan-term-cap-" + tenant, 1,
+                    "task-term", "PURE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runTerm.runId(), resTerm.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resTerm.attemptId());
+            // Already cancelled out-of-band & Run finalized to STOPPED before requestCancel runs.
+            UUID termDrain = repo.requestDrain(tenant, runTerm.runId(), "STOP");
+            deliverDrainOutbox(repo, tenant, termDrain);
+            assertEquals("CANCELLED",
+                    repo.cancelAttempt(tenant, runTerm.runId(), resTerm.attemptId(), "external-stop").outcome());
+            assertTrue(repo.tryFinalizeDrain(tenant, runTerm.runId(), termDrain, "STOPPED"));
+
+            var futTerm = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runTerm.runId(), resTerm.attemptId(), resTerm.dispatchId(),
+                    "worker-term", "task-term", "PURE", "{}"), (req, ctx) ->
+                    WorkerTaskHandler.TaskResult.of("out", "{}"));
+            assertFalse(service.requestCancel(resTerm.attemptId()),
+                    "requestCancel must return false when durable cancellation settlement is rejected");
+            var outTerm = futTerm.get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.SETTLEMENT_FAILED, outTerm.status());
+            assertNotNull(outTerm.error());
 
             releaseWorker.countDown();
-            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, fut1.get(5, TimeUnit.SECONDS).status());
-            assertEquals("CANCELLED",
-                    repo.cancelAttempt(tenant, runQueued.runId(), res2.attemptId(), "test-cleanup").outcome());
+            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, futBusy.get(5, TimeUnit.SECONDS).status());
             assertEquals(0, service.trackedCount());
+        } finally {
+            mailboxExec.shutdownNow();
+        }
+    }
+
+    @Test
+    void gateClosedBetweenAcceptAndStartConvergesForBothStopAndPauseDrain() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "ws-race");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var mailboxExec = Executors.newSingleThreadExecutor();
+        SchedulingGate gate = TestSchedulingGates.openGate();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
+             var pool = new WorkerPool(2, 4, 4, registry, gate)) {
+            pool.start();
+
+            // 1. STOP Drain injected deterministically AFTER acceptAttempt commits ACCEPTED and BEFORE startAttempt.
+            var runStop = repo.createRun(tenant, "ws-race-stop-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-race-stop-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-stop");
+            repo.startRun(tenant, runStop.runId());
+            String stopCap = "ws-race-stop-cap-" + tenant;
+            var resStop = repo.reserveCapacity(tenant, runStop.runId(), stopCap, 1,
+                    "task-stop", "PURE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runStop.runId(), resStop.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resStop.attemptId());
+
+            AtomicReference<UUID> stopDrainId = new AtomicReference<>();
+            AtomicBoolean sawAcceptedBeforeStop = new AtomicBoolean();
+            WorkerExecutionService stopRaceService = new WorkerExecutionService(repo, lifecycle, pool, registry, () -> {
+                try {
+                    long accepted = scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                            + tenant + "' AND attempt_id='" + resStop.attemptId() + "' AND attempt_state='ACCEPTED'");
+                    sawAcceptedBeforeStop.set(accepted == 1);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                stopDrainId.set(repo.requestDrain(tenant, runStop.runId(), "STOP"));
+            });
+
+            AtomicBoolean stopHandlerRan = new AtomicBoolean();
+            var stopOutcome = stopRaceService.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runStop.runId(), resStop.attemptId(), resStop.dispatchId(),
+                    "worker-stop-race", "task-stop", "PURE", "{}"), (req, ctx) -> {
+                stopHandlerRan.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            }).get(5, TimeUnit.SECONDS);
+
+            assertTrue(sawAcceptedBeforeStop.get(), "Hook must have fired strictly after acceptAttempt committed ACCEPTED");
+            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, stopOutcome.status());
+            assertEquals("CANCELLED", stopOutcome.runOutcome());
+            assertFalse(stopHandlerRan.get(), "Handler must never execute after gate closed before startAttempt");
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + resStop.attemptId() + "' AND attempt_state='CANCELLED'"),
+                    "ACCEPTED Attempt must converge to CANCELLED, never remain orphaned");
+            assertEquals(0, scalar(ds, "SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"
+                    + tenant + "' AND capacity_key='" + stopCap + "'"));
+            deliverDrainOutbox(repo, tenant, stopDrainId.get());
+            assertTrue(repo.tryFinalizeDrain(tenant, runStop.runId(), stopDrainId.get(), "STOPPED"),
+                    "STOP Drain must finalize cleanly after accept/start gate race");
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runStop.runId() + "' AND status='STOPPED' AND control_gate='CLOSED'"));
+
+            // 2. PAUSE Drain injected deterministically AFTER acceptAttempt commits ACCEPTED and BEFORE startAttempt.
+            var runPause = repo.createRun(tenant, "ws-race-pause-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-race-pause-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-pause");
+            repo.startRun(tenant, runPause.runId());
+            String pauseCap = "ws-race-pause-cap-" + tenant;
+            var resPause = repo.reserveCapacity(tenant, runPause.runId(), pauseCap, 1,
+                    "task-pause", "PURE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runPause.runId(), resPause.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resPause.attemptId());
+
+            AtomicReference<UUID> pauseDrainId = new AtomicReference<>();
+            AtomicBoolean sawAcceptedBeforePause = new AtomicBoolean();
+            WorkerExecutionService pauseRaceService = new WorkerExecutionService(repo, lifecycle, pool, registry, () -> {
+                try {
+                    long accepted = scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                            + tenant + "' AND attempt_id='" + resPause.attemptId() + "' AND attempt_state='ACCEPTED'");
+                    sawAcceptedBeforePause.set(accepted == 1);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                pauseDrainId.set(repo.requestDrain(tenant, runPause.runId(), "PAUSE"));
+            });
+
+            AtomicBoolean pauseHandlerRan = new AtomicBoolean();
+            var pauseOutcome = pauseRaceService.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runPause.runId(), resPause.attemptId(), resPause.dispatchId(),
+                    "worker-pause-race", "task-pause", "PURE", "{}"), (req, ctx) -> {
+                pauseHandlerRan.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            }).get(5, TimeUnit.SECONDS);
+
+            assertTrue(sawAcceptedBeforePause.get());
+            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, pauseOutcome.status());
+            assertEquals("ABORTED_FOR_PAUSE", pauseOutcome.runOutcome());
+            assertFalse(pauseHandlerRan.get());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + resPause.attemptId() + "' AND attempt_state='CANCELLED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runPause.runId() + "' AND node_key='task-pause' AND token_state='READY'"),
+                    "PAUSE Drain must restore pre-start token back to READY so Run can resume");
+            assertEquals(0, scalar(ds, "SELECT reserved_count FROM workflow_runtime.scheduler_capacity WHERE tenant_id='"
+                    + tenant + "' AND capacity_key='" + pauseCap + "'"));
+            deliverDrainOutbox(repo, tenant, pauseDrainId.get());
+            assertTrue(repo.tryFinalizeDrain(tenant, runPause.runId(), pauseDrainId.get(), "PAUSED"),
+                    "PAUSE Drain must finalize cleanly to PAUSED while preserving READY token");
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + runPause.runId() + "' AND status='PAUSED' AND control_gate='PAUSE'"));
+
+            // 3. Gate closed BEFORE acceptAttempt also converges DISPATCHED Attempt without caller cleanup.
+            var runBeforeAccept = repo.createRun(tenant, "ws-closed-acc-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-closed-acc-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-before");
+            repo.startRun(tenant, runBeforeAccept.runId());
+            var resBefore = repo.reserveCapacity(tenant, runBeforeAccept.runId(), "ws-before-cap-" + tenant, 1,
+                    "task-before", "PURE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runBeforeAccept.runId(), resBefore.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resBefore.attemptId());
+            UUID beforeDrain = repo.requestDrain(tenant, runBeforeAccept.runId(), "STOP");
+
+            WorkerExecutionService normalService = new WorkerExecutionService(repo, lifecycle, pool, registry);
+            AtomicBoolean beforeHandlerRan = new AtomicBoolean();
+            var beforeOutcome = normalService.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runBeforeAccept.runId(), resBefore.attemptId(), resBefore.dispatchId(),
+                    "worker-before", "task-before", "PURE", "{}"), (req, ctx) -> {
+                beforeHandlerRan.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            }).get(5, TimeUnit.SECONDS);
+
+            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, beforeOutcome.status());
+            assertFalse(beforeHandlerRan.get());
+            deliverDrainOutbox(repo, tenant, beforeDrain);
+            assertTrue(repo.tryFinalizeDrain(tenant, runBeforeAccept.runId(), beforeDrain, "STOPPED"));
+        } finally {
+            mailboxExec.shutdownNow();
+        }
+    }
+
+    @Test
+    void executionContextRejectsOffThreadCallsAndTaskRequestBindingMismatchRejectsBeforeHandler() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "ws-ctx");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var mailboxExec = Executors.newSingleThreadExecutor();
+        SchedulingGate gate = TestSchedulingGates.openGate();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 4);
+             var pool = new WorkerPool(2, 4, 4, registry, gate)) {
+            pool.start();
+            WorkerExecutionService service = new WorkerExecutionService(repo, lifecycle, pool, registry);
+
+            // 1. Off-thread background invocation of WorkerExecutionContext is rejected and writes 0 facts.
+            var runCtx = repo.createRun(tenant, "ws-ctx-1-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-ctx-1-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task-ctx");
+            repo.startRun(tenant, runCtx.runId());
+            var resCtx = repo.reserveCapacity(tenant, runCtx.runId(), "ws-ctx-cap-" + tenant, 1,
+                    "task-ctx", "REVERSIBLE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runCtx.runId(), resCtx.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resCtx.attemptId());
+
+            AtomicReference<Throwable> offThreadError = new AtomicReference<>();
+            var ctxOutcome = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runCtx.runId(), resCtx.attemptId(), resCtx.dispatchId(),
+                    "worker-ctx", "task-ctx", "REVERSIBLE", "{}"), (req, ctx) -> {
+                Thread bg = new Thread(() -> {
+                    try {
+                        ctx.recordSideEffectStarted("bg-op", "bg-start", "{}");
+                    } catch (Throwable t) {
+                        offThreadError.set(t);
+                    }
+                }, "rogue-handler-bg");
+                bg.start();
+                bg.join(5000);
+                return WorkerTaskHandler.TaskResult.of("out", "{\"ok\":true}");
+            }).get(5, TimeUnit.SECONDS);
+
+            assertInstanceOf(IllegalStateException.class, offThreadError.get(),
+                    "Off-thread side-effect write must be rejected synchronously by WorkerExecutionContext");
+            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, ctxOutcome.status());
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                    + tenant + "' AND attempt_id='" + resCtx.attemptId() + "' AND fact_type='SIDE_EFFECT_STARTED'"));
+
+            // 2. TaskRequest with mismatched nodeKey or sideEffectClass is rejected at acceptance before handler runs.
+            var runBind = repo.createRun(tenant, "ws-bind-1-" + UUID.randomUUID(), "CREATE", "{}",
+                    "ws-bind-1-" + tenant, "1", new byte[32], "ci", "{}", "{}", "real-node");
+            repo.startRun(tenant, runBind.runId());
+            var resBind = repo.reserveCapacity(tenant, runBind.runId(), "ws-bind-cap-" + tenant, 1,
+                    "real-node", "PURE", Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, runBind.runId(), resBind.attemptId(), "q", "{}");
+            deliverDispatchOutbox(repo, tenant, resBind.attemptId());
+
+            AtomicBoolean mismatchHandlerRan = new AtomicBoolean();
+            var wrongNodeOutcome = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runBind.runId(), resBind.attemptId(), resBind.dispatchId(),
+                    "worker-bind", "forged-node", "PURE", "{}"), (req, ctx) -> {
+                mismatchHandlerRan.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            }).get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, wrongNodeOutcome.status());
+            assertInstanceOf(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, wrongNodeOutcome.error());
+            assertFalse(mismatchHandlerRan.get());
+
+            var wrongClassOutcome = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runBind.runId(), resBind.attemptId(), resBind.dispatchId(),
+                    "worker-bind", "real-node", "DEVICE", "{}"), (req, ctx) -> {
+                mismatchHandlerRan.set(true);
+                return WorkerTaskHandler.TaskResult.of("out", "{}");
+            }).get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.REJECTED_BEFORE_START, wrongClassOutcome.status());
+            assertInstanceOf(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, wrongClassOutcome.error());
+            assertFalse(mismatchHandlerRan.get());
+
+            // The legitimate request with matching (nodeKey, sideEffectClass) executes and completes cleanly.
+            var validOutcome = service.submit(new WorkerTaskHandler.TaskRequest(
+                    tenant, runBind.runId(), resBind.attemptId(), resBind.dispatchId(),
+                    "worker-bind", "real-node", "PURE", "{}"), (req, ctx) ->
+                    WorkerTaskHandler.TaskResult.of("out", "{\"bound\":true}")).get(5, TimeUnit.SECONDS);
+            assertEquals(WorkerExecutionService.OutcomeStatus.SUCCEEDED, validOutcome.status());
         } finally {
             mailboxExec.shutdownNow();
         }
