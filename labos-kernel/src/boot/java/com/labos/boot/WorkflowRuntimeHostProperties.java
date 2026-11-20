@@ -10,7 +10,9 @@ import org.springframework.core.env.Environment;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -58,6 +60,9 @@ public record WorkflowRuntimeHostProperties(
     public static final String PROP_RECONNECT_MAX_MS = "labos.workflow.runtime.gateway.reconnect-max-ms";
     public static final String PROP_MAX_FRAME_BYTES = "labos.workflow.runtime.gateway.max-frame-bytes";
     public static final String PROP_MAX_EVENT_QUEUE = "labos.workflow.runtime.gateway.max-event-queue-size";
+    public static final String PROP_BRIDGE_ENABLED = "labos.workflow.runtime.bridge.enabled";
+    public static final String PROP_BRIDGE_COMMAND_TIMEOUT_MS = "labos.workflow.runtime.bridge.command-timeout-ms";
+    public static final String PROP_BRIDGE_RESOURCE_MAP = "labos.workflow.runtime.bridge.resource-map";
 
     public WorkflowRuntimeHostProperties {
         Objects.requireNonNull(lockFile, "lockFile");
@@ -158,6 +163,40 @@ public record WorkflowRuntimeHostProperties(
             out.add(new TcpDeviceConnection.Endpoint(deviceId, host, port, codec));
         }
         return List.copyOf(out);
+    }
+
+    /**
+     * Parse comma-separated {@code resourceId=deviceId} mappings (e.g. {@code 206=pipettor,207=centrifuge}).
+     */
+    public static Map<Long, String> parseResourceDeviceMap(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Map.of();
+        }
+        Map<Long, String> out = new LinkedHashMap<>();
+        for (String token : raw.split(",")) {
+            String trimmed = token.trim();
+            if (trimmed.isEmpty()) continue;
+            int eq = trimmed.indexOf('=');
+            if (eq <= 0 || eq == trimmed.length() - 1) {
+                throw new IllegalArgumentException(
+                        "Invalid bridge resource-map entry (expected resourceId=deviceId): " + trimmed);
+            }
+            long resourceId;
+            try {
+                resourceId = Long.parseLong(trimmed.substring(0, eq).trim());
+            } catch (NumberFormatException nfe) {
+                throw new IllegalArgumentException("Invalid numeric resourceId in resource-map: " + trimmed, nfe);
+            }
+            if (resourceId <= 0) {
+                throw new IllegalArgumentException("resourceId must be positive: " + trimmed);
+            }
+            String deviceId = trimmed.substring(eq + 1).trim();
+            if (deviceId.isEmpty()) {
+                throw new IllegalArgumentException("deviceId must not be blank in resource-map: " + trimmed);
+            }
+            out.put(resourceId, deviceId);
+        }
+        return Map.copyOf(out);
     }
 
     private static int intProp(Environment env, String key, int fallback) {

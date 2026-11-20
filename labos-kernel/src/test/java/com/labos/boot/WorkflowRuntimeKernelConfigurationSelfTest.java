@@ -131,6 +131,18 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
         }
         require(rejectedUnknownScheme, "Unknown wire codec scheme must be rejected");
 
+        // Verify bridge resourceId->deviceId map parsing.
+        var resMap = WorkflowRuntimeHostProperties.parseResourceDeviceMap("206=pipettor, 207=centrifuge");
+        require(resMap.size() == 2 && "pipettor".equals(resMap.get(206L)) && "centrifuge".equals(resMap.get(207L)),
+                "Resource-to-device map parsing mismatch");
+        boolean rejectedBadResMap = false;
+        try {
+            WorkflowRuntimeHostProperties.parseResourceDeviceMap("not-a-number=pipettor");
+        } catch (IllegalArgumentException expected) {
+            rejectedBadResMap = true;
+        }
+        require(rejectedBadResMap, "Non-numeric resourceId in bridge resource-map must be rejected");
+
         // Verify WorkflowRuntimeController + ApiAuthInterceptor RBAC wiring when host.enabled=false.
         try (AnnotationConfigApplicationContext webCtx = new AnnotationConfigApplicationContext()) {
             webCtx.registerBean("dataSource", DataSource.class, () -> ds);

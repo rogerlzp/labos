@@ -1,6 +1,7 @@
 package com.labos.boot;
 
 import com.labos.kernel.persistence.GraphMapper;
+import com.labos.kernel.workflow.runtime.bridge.GatewayDeviceTaskBridge;
 import com.labos.kernel.workflow.runtime.definition.LegacyKernelWorkflowDefinitionSource;
 import com.labos.kernel.workflow.runtime.definition.WorkflowDefinitionSource;
 import com.labos.kernel.workflow.runtime.definition.WorkflowRunFactory;
@@ -136,6 +137,34 @@ public class WorkflowRuntimeKernelConfiguration {
     @Configuration
     @ConditionalOnProperty(name = WorkflowRuntimeHostProperties.PROP_ENABLED, havingValue = "true")
     public static class EmbeddedRuntimeHostConfiguration {
+
+        @Bean
+        @ConditionalOnProperty(name = WorkflowRuntimeHostProperties.PROP_BRIDGE_ENABLED, havingValue = "true")
+        public GatewayDeviceTaskBridge gatewayDeviceTaskBridge(
+                WorkflowRuntimeHostProperties properties,
+                WorkflowRuntimeRepository repository,
+                Environment environment) {
+            long timeoutMs = Long.parseLong(
+                    environment.getProperty(WorkflowRuntimeHostProperties.PROP_BRIDGE_COMMAND_TIMEOUT_MS, "300000").trim());
+            Map<Long, String> resourceMap = WorkflowRuntimeHostProperties.parseResourceDeviceMap(
+                    environment.getProperty(WorkflowRuntimeHostProperties.PROP_BRIDGE_RESOURCE_MAP, ""));
+            return new GatewayDeviceTaskBridge(
+                    repository, properties.deviceEndpoints(), resourceMap, Duration.ofMillis(timeoutMs));
+        }
+
+        @Bean
+        @ConditionalOnProperty(name = WorkflowRuntimeHostProperties.PROP_BRIDGE_ENABLED, havingValue = "true")
+        public LocalTaskDispatchService.TaskDispatchSpecResolver bridgeTaskDispatchSpecResolver(
+                GatewayDeviceTaskBridge bridge) {
+            return bridge.specResolver();
+        }
+
+        @Bean
+        @ConditionalOnProperty(name = WorkflowRuntimeHostProperties.PROP_BRIDGE_ENABLED, havingValue = "true")
+        public LocalTaskDispatchService.TaskHandlerResolver bridgeTaskHandlerResolver(
+                GatewayDeviceTaskBridge bridge) {
+            return bridge.handlerResolver();
+        }
 
         @Bean(initMethod = "start", destroyMethod = "close")
         public EmbeddedWorkflowRuntimeHost embeddedWorkflowRuntimeHost(
