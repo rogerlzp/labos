@@ -44,7 +44,7 @@
 - TASK / BUILTIN Token 留给既有 Worker 执行路径，不在 Coordinator 中直接执行。
 - Run 不处于 RUNNING + OPEN 时保持不推进。
 
-GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用设备，不做分布式协调。WorkflowRunFactory 在创建 Run 前调用 `GraphCoordinator.validateGraphPlan`；Coordinator 推进时还会对持久化 snapshot 再校验一次。
+GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用设备，不做分布式协调。WorkflowRunFactory 在创建 Run 前调用 `GraphCoordinator.validateGraphPlan`；Coordinator 推进时还会对持久化 snapshot 再校验一次。条件表达式语法也在创建 Run 前校验，变量是否存在及最终结果是否为 boolean 在求值时校验。
 
 ## 2. 网关语义
 
@@ -123,7 +123,7 @@ GraphCoordinator 不持有 SQL，不创建线程，不调度 Worker，不调用�
   - Worker Attempt 成功后 Coordinator 路由到 End 并完成 Run。
   - 成功 Activation 路由后重试返回 REPLAYED，不重复创建子 Token。
 
-CI 结果应以本文件对应的最新分支 HEAD 为准；CI 全绿仍不替代源码语义复核。
+截至代码提交 `67d2385d`，Workflow Runtime PostgreSQL 17 工作流通过：62 tests、0 failures、0 errors，包含 14 个 Repository PostgreSQL 集成测试。随后 `c5d1239c` 仅增加 per-Run SerialMailbox 调用契约注释；该提交的最新 CI 仍需最终确认。CI 全绿仍不替代源码语义复核。
 
 ## 6. 尚未完成 / 不属于本轮
 
