@@ -128,6 +128,8 @@ class WorkflowRuntimeRepositoryTest {
         var routedReplay=repo.advanceCompletedGraphActivation(tenant,first.runId(),completedActivation,
                 "SEQUENCE",java.util.List.of("next-node"));
         assertEquals("REPLAYED",routedReplay.outcome());
+        assertThrows(WorkflowRuntimeRepository.IdempotencyConflictException.class,()->repo.advanceCompletedGraphActivation(
+                tenant,first.runId(),completedActivation,"SEQUENCE",java.util.List.of("different-node")));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id='"+tenant+
                 "' AND run_id='"+first.runId()+"' AND parent_token_id=(SELECT token_id FROM workflow_runtime.node_activation WHERE tenant_id='"+tenant+
                 "' AND activation_id='"+completedActivation+"') AND node_key='next-node'"));
