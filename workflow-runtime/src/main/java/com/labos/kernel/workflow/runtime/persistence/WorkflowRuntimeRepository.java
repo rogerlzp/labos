@@ -1196,6 +1196,10 @@ public final class WorkflowRuntimeRepository {
             SELECT count(*) FROM workflow_runtime.join_activation
              WHERE tenant_id=? AND run_id=? AND join_state<>'RELEASED'
             """,Integer.class,tenantId,runId);
+        Integer activeBranches=jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.branch_activation
+             WHERE tenant_id=? AND run_id=? AND branch_state IN ('ACTIVE','WAITING')
+            """,Integer.class,tenantId,runId);
         Integer cancelledBranches=jdbc.queryForObject("""
             SELECT count(*) FROM workflow_runtime.branch_activation
              WHERE tenant_id=? AND run_id=? AND branch_state='CANCELLED'
@@ -1203,7 +1207,7 @@ public final class WorkflowRuntimeRepository {
         if((activeTokens==null||activeTokens!=0)||(activeAttempts==null||activeAttempts!=0)
                 ||(failedTokens!=null&&failedTokens!=0)||(failedAttempts!=null&&failedAttempts!=0)
                 ||(openSplits!=null&&openSplits!=0)||(waitingJoins!=null&&waitingJoins!=0)
-                ||(cancelledBranches!=null&&cancelledBranches!=0)) return false;
+                ||(activeBranches!=null&&activeBranches!=0)||(cancelledBranches!=null&&cancelledBranches!=0)) return false;
         int changed=jdbc.update("""
             UPDATE workflow_runtime.workflow_run SET status='SUCCEEDED',
                    finished_at=clock_timestamp(),terminal_reason='GRAPH_COMPLETED',
