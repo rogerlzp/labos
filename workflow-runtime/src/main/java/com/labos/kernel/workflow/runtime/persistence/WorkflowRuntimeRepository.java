@@ -938,10 +938,12 @@ public final class WorkflowRuntimeRepository {
                                                      List<String> successorNodeKeys) {
         List<String> successors=successorNodeKeys==null?List.of():List.copyOf(successorNodeKeys);
         if (transitionKind==null) throw new IllegalArgumentException("transitionKind is required");
+        int tokensCreated=0;
         switch (transitionKind) {
             case "SEQUENCE" -> {
                 if(successors.size()!=1) throw new IllegalArgumentException("SEQUENCE requires exactly one successor");
                 insertGraphToken(tenantId,runId,successors.get(0),source.tokenId(),source.splitId(),source.branchId());
+                tokensCreated=1;
             }
             case "SPLIT" -> {
                 if(successors.size()<2) throw new IllegalArgumentException("SPLIT requires at least two selected branches");
@@ -963,6 +965,7 @@ public final class WorkflowRuntimeRepository {
                         VALUES (?,?,?, ?,?,'ACTIVE')
                         """,tenantId,branchId,runId,splitId,key);
                     insertGraphToken(tenantId,runId,key,source.tokenId(),splitId,branchId);
+                    tokensCreated++;
                 }
             }
             case "JOIN" -> {
@@ -1015,9 +1018,8 @@ public final class WorkflowRuntimeRepository {
                          WHERE tenant_id=? AND split_id=? AND split_state='OPEN'
                         """,tenantId,splitId);
                     insertGraphToken(tenantId,runId,joinKey,source.tokenId(),null,null);
-                    return 1;
+                    tokensCreated=1;
                 }
-                return 0;
             }
             case "END" -> {
                 if(!successors.isEmpty()) throw new IllegalArgumentException("END cannot have successors");
@@ -1061,7 +1063,7 @@ public final class WorkflowRuntimeRepository {
              WHERE tenant_id=? AND token_id=? AND token_state='RUNNING'
             """,tenantId,source.tokenId())!=1)
             throw new StaleRuntimeWriteException("Graph Token is not RUNNING");
-        return transitionKind.equals("SEQUENCE") || transitionKind.equals("SPLIT") ? successors.size() : 0;
+        return tokensCreated;
     }
 
     private void insertGraphToken(UUID tenantId, UUID runId, String nodeKey, UUID parentTokenId,
