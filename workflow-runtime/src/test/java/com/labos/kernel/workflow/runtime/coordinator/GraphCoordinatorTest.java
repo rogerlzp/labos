@@ -51,6 +51,23 @@ class GraphCoordinatorTest {
     }
 
     @Test
+    void inclusiveSplitMaySelectExactlyOneBranchAndJoinRetainsItsNodeIdentity() {
+        var inclusive=node("inclusive",GraphPlan.Kind.SPLIT_INCLUSIVE);
+        var selected=GraphCoordinator.transitionFor(inclusive,
+                List.of(edge("selected","only","take == true",false),
+                        edge("default","fallback",null,true)),Map.of("take",true));
+        assertEquals("SPLIT",selected.kind());
+        assertEquals(List.of("only"),selected.successors());
+
+        var join=node("join",GraphPlan.Kind.JOIN_INCLUSIVE);
+        var joinTransition=GraphCoordinator.transitionFor(join,
+                List.of(edge("out","after",null,false)),Map.of());
+        assertEquals("JOIN",joinTransition.kind());
+        assertEquals("join",joinTransition.joinNodeKey());
+        assertEquals(List.of("after"),joinTransition.successors());
+    }
+
+    @Test
     void controlNodeKindsMapToExpectedAtomicTransitions() {
         assertEquals("SEQUENCE",GraphCoordinator.transitionFor(node("start",GraphPlan.Kind.START),
                 List.of(edge("e","next",null,false)),Map.of()).kind());
