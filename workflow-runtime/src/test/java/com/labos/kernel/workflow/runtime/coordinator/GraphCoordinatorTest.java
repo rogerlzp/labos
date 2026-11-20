@@ -95,6 +95,31 @@ class GraphCoordinatorTest {
     }
 
     @Test
+    void rejectsNestedSynchronizingSplitBeforeRunAdvancement() {
+        var outer=node("outer",GraphPlan.Kind.SPLIT_PARALLEL);
+        var taskA=node("task-a",GraphPlan.Kind.TASK);
+        var taskB=node("task-b",GraphPlan.Kind.TASK);
+        var inner=node("inner",GraphPlan.Kind.SPLIT_PARALLEL);
+        var join=node("join",GraphPlan.Kind.JOIN_PARALLEL);
+        var endA=node("end-a",GraphPlan.Kind.END);
+        var endB=node("end-b",GraphPlan.Kind.END);
+        var nodes=Map.of("outer",outer,"task-a",taskA,"task-b",taskB,"inner",inner,
+                "join",join,"end-a",endA,"end-b",endB);
+        var outerA=new GraphPlan.Edge("outer-a","outer","task-a",null,false);
+        var outerB=new GraphPlan.Edge("outer-b","outer","task-b",null,false);
+        var taskToInner=new GraphPlan.Edge("task-inner","task-a","inner",null,false);
+        var taskToJoin=new GraphPlan.Edge("task-join","task-b","join",null,false);
+        var innerA=new GraphPlan.Edge("inner-a","inner","end-a",null,false);
+        var innerB=new GraphPlan.Edge("inner-b","inner","end-b",null,false);
+        var joinOut=new GraphPlan.Edge("join-out","join","end-a",null,false);
+        var outgoing=Map.of("outer",List.of(outerA,outerB),"task-a",List.of(taskToInner),
+                "task-b",List.of(taskToJoin),"inner",List.of(innerA,innerB),"join",List.of(joinOut));
+        var edges=List.of(outerA,outerB,taskToInner,taskToJoin,innerA,innerB,joinOut);
+        assertThrows(IllegalStateException.class,()->GraphCoordinator.validatePlan(
+                new GraphPlan(1,"ci","nested","1","hash",List.copyOf(nodes.values()),edges),nodes,outgoing));
+    }
+
+    @Test
     void parallelSplitRejectsConditionalEdgesAndDuplicateTargets() {
         var node=node("parallel",GraphPlan.Kind.SPLIT_PARALLEL);
         assertThrows(IllegalStateException.class,()->GraphCoordinator.transitionFor(node,
