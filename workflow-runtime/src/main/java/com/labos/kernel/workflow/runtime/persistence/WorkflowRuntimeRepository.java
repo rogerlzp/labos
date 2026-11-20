@@ -792,6 +792,24 @@ public final class WorkflowRuntimeRepository {
     }
 
 
+    public record GraphVariable(String key, String valueJson) {}
+    public record GraphVariableSnapshot(String inputJson, List<GraphVariable> variables) {}
+
+    /** Read Run input and persisted flow variables from one repeatable-read snapshot. */
+    public GraphVariableSnapshot loadGraphVariableSnapshot(UUID tenantId, UUID runId) {
+        return snapshotTx.execute(status -> {
+            String input=jdbc.queryForObject("""
+                SELECT input::text FROM workflow_runtime.workflow_run
+                 WHERE tenant_id=? AND run_id=?
+                """,String.class,tenantId,runId);
+            List<GraphVariable> variables=jdbc.query("""
+                SELECT variable_key,value::text FROM workflow_runtime.flow_variable
+                 WHERE tenant_id=? AND run_id=? ORDER BY variable_key
+                """,(rs,n)->new GraphVariable(rs.getString(1),rs.getString(2)),tenantId,runId);
+            return new GraphVariableSnapshot(input,variables==null?List.of():List.copyOf(variables));
+        });
+    }
+
     public record GraphToken(UUID tokenId, String nodeKey, UUID splitId, UUID branchId) {}
     public record CompletedGraphActivation(UUID activationId, UUID tokenId, String nodeKey,
                                            UUID splitId, UUID branchId) {}
