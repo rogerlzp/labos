@@ -792,6 +792,30 @@ public final class WorkflowRuntimeRepository {
     }
 
 
+    /** Persist one scalar-or-JSON Run variable; Run locking serializes writers with graph advancement. */
+    public long putFlowVariable(UUID tenantId, UUID runId, String key, String valueJson) {
+        if(key==null || key.isBlank()) throw new IllegalArgumentException("flow variable key is required");
+        if(valueJson==null || valueJson.isBlank()) throw new IllegalArgumentException("flow variable value JSON is required");
+        return required(() -> {
+            RunHead head=lockRun(tenantId,runId);
+            if(!"RUNNING".equals(head.status()))
+                throw new InvalidTransitionException("Flow variables may only change while Run is RUNNING");
+            Long version=jdbc.queryForObject("""
+                INSERT INTO workflow_runtime.flow_variable
+                  (tenant_id,run_id,variable_key,value,value_version)
+                VALUES (?,?,?,?::jsonb,1)
+                ON CONFLICT (tenant_id,run_id,variable_key) DO UPDATE
+                   SET value=EXCLUDED.value,value_version=workflow_runtime.flow_variable.value_version+1,
+                       updated_at=clock_timestamp()
+                RETURNING value_version
+                """,Long.class,tenantId,runId,key,valueJson);
+            if(version==null) throw new IllegalStateException("Flow variable write returned no version");
+            appendEvents(tenantId,runId,List.of(new EventDraft("FLOW_VARIABLE_UPDATED","RUN",
+                    runId,head.commitVersion()+1,null,null,"{\"key\":\""+jsonEscape(key)+"\",\"version\":"+version+"}")));
+            return version;
+        });
+    }
+
     public record GraphVariable(String key, String valueJson) {}
     public record GraphVariableSnapshot(String inputJson, List<GraphVariable> variables) {}
 
