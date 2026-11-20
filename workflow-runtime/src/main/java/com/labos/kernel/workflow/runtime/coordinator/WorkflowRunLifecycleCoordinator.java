@@ -58,7 +58,8 @@ public final class WorkflowRunLifecycleCoordinator implements AutoCloseable {
         Objects.requireNonNull(tenantId, "tenantId");
         Objects.requireNonNull(runId, "runId");
         repository.startRunIfCreated(tenantId, runId);
-        return wake(tenantId, runId);
+        return mailboxes.submit(runId,
+                new Signal(tenantId, runId, SignalType.RUN_STARTED, null));
     }
 
     /**
