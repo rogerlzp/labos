@@ -63,11 +63,11 @@ G5 不包含 Retry/Backoff（G6）、Error Boundary、Compensation/Saga、非中
 
 ### 3.3 continuation 向后兼容（H1，硬约束）
 
-不得把既有 `{"nodeKey":"..."}` 直接替换为仅含 `successNodeKey` 的新结构。G5 新 continuation 必须保留 `nodeKey` 作为成功/普通路径的兼容字段，并新增版本和 timeout 字段，例如：
+不得把既有 `{"nodeKey":"..."}` 直接替换为仅含 `successNodeKey` 的新结构。G5 新 continuation 必须保留 `nodeKey` 作为成功/普通路径的兼容字段，并新增 `continuationVersion` 和 timeout 字段，例如：
 
 ```json
 {
-  "version": 2,
+  "continuationVersion": 2,
   "nodeKey": "successNode",
   "timeoutNodeKey": "timeoutNode"
 }
@@ -80,6 +80,7 @@ G5 不包含 Retry/Backoff（G6）、Error Boundary、Compensation/Saga、非中
 纯图 Wait Activation 可以是 SUCCEEDED + current_attempt_id=NULL，但这不能成为绕过“已路由完成”的安全网的方式：
 
 - Wait 完成、原 Token 消费、successor Token 创建必须在同一事务中提交。
+- Wait 信号入口必须由新的 `receiveWaitInbox(...)` 在同一个 `required()` 事务内完成 Inbox 落账、Wait 推进和 Inbox -> PROCESSED；**禁止复用现有 `receiveInbox` + `applyCommandEvent` 两段式事务路径**，否则会重新引入 Inbox 与业务推进之间的崩溃窗口。
 - G5 必须在 Repository 完成事务中断言恰好一个 successor Token 被创建（除非模型明确定义的终止节点；G5 Wait 节点强制恰好一条正常边，因此本版不适用终止例外）。
 - 增加等价于现有“未路由完成”守卫的纯 Wait 断言：任何已完成的纯 Wait Activation 必须能关联到已消费的 Wait Token 和唯一 successor Token；若无法证明，Run 不得被判定 SUCCEEDED。
 - 增加事务中途失败测试：Wait/Activation/Token/Event/Successor 任一步写入失败，不能残留部分提交。
@@ -159,7 +160,7 @@ Duration 必须正数、非零、无溢出；初始安全上限为 365 天（该
 `receiveWaitInbox` 采用明确的两种路径，不允许语义含混：
 
 - **RUNNING/OPEN 且匹配 ACTIVE Wait**：在当前接收 Repository 事务内，锁 Run -> Token -> Activation -> Wait -> Inbox，完成 Inbox 幂等判定、Wait ACTIVE -> SATISFIED、Activation/Token 更新、successor 创建、WAIT_SATISFIED 事件及 Inbox -> PROCESSED。即同步直达，不等待下一轮轮询。
-- **PAUSE_REQUESTED/PAUSING/PAUSED**：只持久化 Inbox 为 RECEIVED，返回 DEFERRED；不触碰 Wait/Activation/Token，不标为 REJECTED。Resume 后由 RuntimeDispatchLoop 持续重放。
+- **PAUSE_REQUESTED/PAUSING/PAUSED**：只持久化 Inbox 为 RECEIVED，返回 DEFERRED；不触碰 Wait/Activation/Token，不标为 REJECTED。Resume 后由 RuntimeDispatchLoop 持续重放。暂停态判定以 Run `status` 或 `control_gate` 任一进入暂停语义为准；两者短暂不一致时按暂停处理，不能因 Gate 仍为 OPEN 而同步推进 Wait。
 - **Run 终态、STOP/FAILURE Drain、Gate 已关闭且非暂停语义**：永久拒绝，写 REJECTED + INBOX_REJECTED。
 - **RUNNING/OPEN 但无匹配 ACTIVE Wait**：按 V1 不支持 early buffering，永久拒绝，写 REJECTED + INBOX_REJECTED。
 - **payload JSON 畸形、缺 correlationKey、字段类型错误或业务 schema 校验永久失败**：同一处理事务内 REJECTED + INBOX_REJECTED；不得保持 RECEIVED/PROCESSING 并无限重试。
