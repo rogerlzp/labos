@@ -167,7 +167,7 @@ public final class DeviceCommandExecutionService {
                                 || syncOutcome.status() == InboxStatus.REJECTED) {
                             outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
                                     "sync-result-inbox-" + syncOutcome.status().name().toLowerCase() + ":" + syncOutcome.inboxId()
-                                            + ":" + safeMessage(syncOutcome.reason())));
+                                            + ":" + (syncOutcome.reason() == null ? "unspecified" : syncOutcome.reason())));
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
                         }
@@ -182,7 +182,7 @@ public final class DeviceCommandExecutionService {
                                 || syncOutcome.status() == InboxStatus.REJECTED) {
                             outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
                                     "sync-failed-inbox-" + syncOutcome.status().name().toLowerCase() + ":" + syncOutcome.inboxId()
-                                            + ":" + safeMessage(syncOutcome.reason())));
+                                            + ":" + (syncOutcome.reason() == null ? "unspecified" : syncOutcome.reason())));
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_FAILED_SYNC);
                         }
@@ -334,9 +334,20 @@ public final class DeviceCommandExecutionService {
         String evidenceJson = "{\"reason\":\"" + jsonEscape(reason) + "\"}";
         repository.markCommandUnknown(tenantId, commandId, evidenceJson);
         Optional<WorkflowRuntimeRepository.CommandRecord> current = repository.loadCommand(tenantId, commandId);
-        if (current.isPresent() && "SUCCEEDED".equals(current.get().commandState())) {
-            repository.markOutboxDelivered(tenantId, outboxId);
-            return CommandDeliveryStatus.COMPLETED_SYNC;
+        if (current.isPresent()) {
+            String state = current.get().commandState();
+            if ("SUCCEEDED".equals(state)) {
+                repository.markOutboxDelivered(tenantId, outboxId);
+                return CommandDeliveryStatus.COMPLETED_SYNC;
+            }
+            if ("FAILED".equals(state)) {
+                repository.markOutboxDelivered(tenantId, outboxId);
+                return CommandDeliveryStatus.COMPLETED_FAILED_SYNC;
+            }
+            if ("CANCELLED".equals(state)) {
+                repository.markOutboxDelivered(tenantId, outboxId);
+                return CommandDeliveryStatus.SKIPPED_GATE_OR_STATE;
+            }
         }
         repository.markOutboxDeadLetter(tenantId, outboxId);
         return CommandDeliveryStatus.MARKED_UNKNOWN;
