@@ -392,7 +392,7 @@ class LocalTaskDispatchAndCommandLoopTest {
             var lateRejected = asyncCmdService.ingestDeviceEvent(tenant, runAsync.runId(), "mock-heater-1",
                     "late-msg-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
                     asyncCmdId.get(), "SUCCEEDED", "seq-3", "{}");
-            assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, lateRejected.status());
+            assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateRejected.status());
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND inbox_id='" + lateRejected.inboxId() + "' AND receipt_state='REJECTED'"));
 
@@ -450,7 +450,7 @@ class LocalTaskDispatchAndCommandLoopTest {
             var lateTimeoutEvent = timeoutCmdService.ingestDeviceEvent(tenant, runTimeout.runId(), "mock-heater-2",
                     "late-ack-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
                     toCmdId.get(), "SUCCEEDED", "seq-late", "{}");
-            assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, lateTimeoutEvent.status());
+            assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateTimeoutEvent.status());
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND inbox_id='" + lateTimeoutEvent.inboxId() + "' AND receipt_state='REJECTED'"));
             assertTrue(timeoutDispatch.dispatchReadyTasks(tenant, runTimeout.runId(), 4).gateClosed());
@@ -923,7 +923,7 @@ class LocalTaskDispatchAndCommandLoopTest {
                     assertInstanceOf(DeviceCommandExecutionService.InboxIngestionOutcome.class, inboxOutcome,
                             "Once UNKNOWN commits first, late ordinary SUCCEEDED must be fail-closed rejected");
                     var rejectedInbox = (DeviceCommandExecutionService.InboxIngestionOutcome) inboxOutcome;
-                    assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejectedInbox.status());
+                    assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, rejectedInbox.status());
                     assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                             + tenant + "' AND inbox_id='" + rejectedInbox.inboxId() + "' AND receipt_state='REJECTED'"));
                     assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
@@ -1150,8 +1150,9 @@ class LocalTaskDispatchAndCommandLoopTest {
                 "Caller outcomeJson mismatch must not permanently reject the persisted receipt");
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                 + tenant + "' AND inbox_id='" + seqAndOutcomeReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
-        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
-                + tenant + "' AND run_id='" + fix.runId() + "' AND event_type='INBOX_REJECTED'"));
+        assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                + tenant + "' AND run_id='" + fix.runId() + "' AND event_type='INBOX_REJECTED'"),
+                "Caller argument mismatches must not emit permanent rejection audit events");
 
         // Matching source == device_id, payload state == targetState, deviceSequence and outcomeJson applies cleanly!
         assertTrue(repo.applyCommandEventOrReject(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
