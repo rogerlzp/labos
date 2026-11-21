@@ -28,10 +28,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link AtomicReference}. There is no separate "mode" + "remaining" pair to observe
  * inconsistently: reading the reference and decrementing the ordinal is a single atomic CAS.
  */
-final class FaultInjectingTransactionManager implements PlatformTransactionManager {
+public final class FaultInjectingTransactionManager implements PlatformTransactionManager {
 
     /** How an injected fault behaves at the commit boundary. */
-    enum Mode {
+    public enum Mode {
         /** No fault. */
         NONE,
         /**
@@ -47,12 +47,12 @@ final class FaultInjectingTransactionManager implements PlatformTransactionManag
     }
 
     /** Thrown for {@link Mode#ABORT_BEFORE_COMMIT}; nothing is durable. */
-    static final class InjectedCommitAbort extends RuntimeException {
+    public static final class InjectedCommitAbort extends RuntimeException {
         InjectedCommitAbort(String message) { super(message); }
     }
 
     /** Thrown for {@link Mode#LOST_RESULT_AFTER_COMMIT}; the write IS durable. */
-    static final class InjectedLostResult extends RuntimeException {
+    public static final class InjectedLostResult extends RuntimeException {
         InjectedLostResult(String message) { super(message); }
     }
 
@@ -65,12 +65,12 @@ final class FaultInjectingTransactionManager implements PlatformTransactionManag
     private final PlatformTransactionManager delegate;
     private final AtomicReference<Armed> armed = new AtomicReference<>();
 
-    FaultInjectingTransactionManager(PlatformTransactionManager delegate) {
+    public FaultInjectingTransactionManager(PlatformTransactionManager delegate) {
         this.delegate = delegate;
     }
 
     /** Arm a one-shot fault on the next <em>write</em> commit, then self-disarm. */
-    void armOneShot(Mode mode) {
+    public void armOneShot(Mode mode) {
         armAtWrite(mode, 1);
     }
 
@@ -80,14 +80,14 @@ final class FaultInjectingTransactionManager implements PlatformTransactionManag
      * (for example {@code GraphCoordinator.advance}) while the first transaction stays durable.
      * Read-only commits are ignored and do not consume an ordinal.
      */
-    void armAtWrite(Mode mode, int writeOrdinal) {
+    public void armAtWrite(Mode mode, int writeOrdinal) {
         if (mode == Mode.NONE) throw new IllegalArgumentException("NONE is not an injectable fault");
         if (writeOrdinal < 1) throw new IllegalArgumentException("writeOrdinal must be >= 1");
         this.armed.set(new Armed(mode, writeOrdinal));
     }
 
     /** Disarm without firing, so setup calls stay clean. */
-    void disarm() {
+    public void disarm() {
         this.armed.set(null);
     }
 
