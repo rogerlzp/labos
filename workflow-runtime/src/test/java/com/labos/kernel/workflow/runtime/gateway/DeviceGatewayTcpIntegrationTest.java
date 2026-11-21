@@ -810,6 +810,7 @@ class DeviceGatewayTcpIntegrationTest {
         CountDownLatch appliedLatch = new CountDownLatch(1);
         CountDownLatch replayLatch = new CountDownLatch(1);
         CountDownLatch violationLatch = new CountDownLatch(1);
+        CountDownLatch rejectedLatch = new CountDownLatch(1);
         AtomicReference<RuntimeDeviceEventBridge> bridgeRef = new AtomicReference<>();
 
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
@@ -824,6 +825,7 @@ class DeviceGatewayTcpIntegrationTest {
                     switch (n.outcome().status()) {
                         case APPLIED -> appliedLatch.countDown();
                         case DUPLICATE_REPLAY -> replayLatch.countDown();
+                        case REJECTED -> rejectedLatch.countDown();
                         case PROTOCOL_VIOLATION -> violationLatch.countDown();
                     }
                 }
@@ -873,6 +875,8 @@ class DeviceGatewayTcpIntegrationTest {
                 duplicatePool.shutdownNow();
             }
 
+            long inboxCountBeforeUntrustedFrames = scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "'");
             // 1. Unsolicited HEARTBEAT_PONG smuggling commandId/targetState -> rejected as invalid heartbeat, never touches command_ledger.
             session.sendRawLine("{\"frameType\":\"HEARTBEAT_PONG\",\"deviceId\":\"" + deviceId
                     + "\",\"commandId\":\"" + cmdId + "\",\"targetState\":\"SUCCEEDED\"}");
@@ -895,9 +899,10 @@ class DeviceGatewayTcpIntegrationTest {
             });
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                     + tenant + "' AND command_id='" + cmdId + "' AND command_state='ACKNOWLEDGED'"));
-            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
-                    + tenant + "' AND run_id='" + run.runId() + "' AND source_message_id='" + concurrentAckId
-                    + "' AND receipt_state='PROCESSED'"));
+            assertEquals(inboxCountBeforeUntrustedFrames,
+                    scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                            + tenant + "' AND run_id='" + run.runId() + "'"),
+                    "Malformed, spoofed, and invalid-heartbeat frames must not create Inbox receipts");
 
             // 5. Legitimate COMMAND_RESULT (even with deviceId omitted, relying on connection binding!) -> APPLIED!
             String msgId = "sec-msg-" + UUID.randomUUID();
@@ -921,9 +926,15 @@ class DeviceGatewayTcpIntegrationTest {
             // A new, contradictory terminal event is a permanent domain rejection, not a retryable
             // poison receipt. The Inbox must be terminalized atomically and exact replay stays a NACK.
             String lateMessageId = "sec-late-" + UUID.randomUUID();
-            var rejected = cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
-                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{}");
-            assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejected.status());
+            session.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                    lateMessageId, "COMMAND_RESULT", "FAILED", "seq-late", "{}");
+            assertTrue(rejectedLatch.await(5, TimeUnit.SECONDS),
+                    "Permanent domain rejection must traverse the RuntimeDeviceEventBridge");
+            awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventNacks().size() == 2);
+            assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED,
+                    cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
+                            "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{}").status(),
+                    "Exact replay of a permanently rejected receipt remains REJECTED");
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
             assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
@@ -931,11 +942,13 @@ class DeviceGatewayTcpIntegrationTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
                     + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED'"));
 
-            var rejectedReplay = cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
-                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{}");
-            assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejectedReplay.status());
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED' "
+                    + "AND payload->>'rejectionReason' IS NOT NULL"));
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                     + tenant + "' AND command_id='" + cmdId + "' AND command_state='SUCCEEDED'"));
             assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
