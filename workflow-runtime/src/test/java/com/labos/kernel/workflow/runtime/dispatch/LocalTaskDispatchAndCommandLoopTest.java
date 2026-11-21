@@ -1162,6 +1162,34 @@ class LocalTaskDispatchAndCommandLoopTest {
                 + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
         repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
 
+        // G4-D: repeated PROGRESS events are valid RUNNING -> RUNNING evidence, while UNKNOWN
+        // remains fail-closed against a later ordinary success receipt.
+        var progressFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "progress-dev", false);
+        DeviceCommandExecutionService progressSvc = new DeviceCommandExecutionService(repo, env -> null);
+        var progress1 = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "progress-1-" + UUID.randomUUID(), "PROGRESS", progressFix.commandId(),
+                "RUNNING", "seq-progress-1", "{\"percent\":25}");
+        var progress2 = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "progress-2-" + UUID.randomUUID(), "EXECUTING", progressFix.commandId(),
+                "RUNNING", "seq-progress-2", "{\"percent\":50}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, progress1.status());
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, progress2.status());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + progressFix.commandId() + "' AND command_state='RUNNING'"));
+        var unknown = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "unknown-" + UUID.randomUUID(), "COMMAND_UNKNOWN", progressFix.commandId(),
+                "UNKNOWN", "seq-unknown", "{\"reason\":\"device-reported-uncertain\"}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, unknown.status());
+        var lateSuccess = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "late-success-" + UUID.randomUUID(), "COMMAND_RESULT", progressFix.commandId(),
+                "SUCCEEDED", "seq-late-success", "{\"ok\":true}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateSuccess.status());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + progressFix.commandId() + "' AND command_state='UNKNOWN'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + lateSuccess.inboxId() + "' AND receipt_state='REJECTED'"));
+        repo.failAttempt(tenant, progressFix.runId(), progressFix.attemptId(), "{\"reason\":\"unknown\"}", true);
+
         // Synchronous immediate failure result (COMPLETED_IMMEDIATELY_FAILED) records FAILED, never SUCCEEDED!
         var failFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "sync-fail-dev", false);
         DeviceCommandExecutionService failSvc = new DeviceCommandExecutionService(repo, env ->
