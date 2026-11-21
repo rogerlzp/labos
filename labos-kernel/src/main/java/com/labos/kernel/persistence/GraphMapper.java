@@ -48,6 +48,10 @@ public interface GraphMapper {
     /** 流程头（id/code/name/category）；不存在返回 null。 */
     java.util.Map<String, Object> selectWorkflowHeader(long tenantId, long workflowId);
 
+    /** Runtime-only minimal header; tenant-scoped and excludes soft-deleted workflows. */
+    java.util.Map<String, Object> selectRuntimeWorkflowHeader(
+            @Param("tenantId") long tenantId, @Param("workflowId") long workflowId);
+
     /** 全部流程头（批量验收 runAll 用）。 */
     java.util.List<java.util.Map<String, Object>> selectWorkflowHeaders(long tenantId);
 
@@ -125,10 +129,17 @@ public interface GraphMapper {
     int deleteEdges(long workflowId);
 
     /** 读当前图 XML。 */
-    String selectGraphXml(long tenantId, long workflowId);
+    String selectGraphXml(@Param("tenantId") long tenantId, @Param("workflowId") long workflowId);
 
     /** 单个流程的节点定义（含能力码 / protocol_name / 绑定实例，按 id 升序）。 */
     java.util.List<java.util.Map<String, Object>> selectWorkflowNodes(long workflowId);
+
+    /**
+     * Tenant-scoped metadata projection for the new Workflow Runtime.
+     * Unlike the legacy query above, both tenant_id and workflow_id are mandatory predicates.
+     */
+    java.util.List<java.util.Map<String, Object>> selectRuntimeWorkflowNodeMetadata(
+            @Param("tenantId") long tenantId, @Param("workflowId") long workflowId);
 
     /**
      * 节点的设计者创建顺序（workflow_node.seq）。

@@ -32,8 +32,9 @@
     <select id="selectGraphXml" resultType="java.lang.String">
         SELECT graph->>'xml'
           FROM workflow
-         WHERE tenant_id = #{param1}
-           AND id = #{param2}
+         WHERE tenant_id = #{tenantId}
+           AND id = #{workflowId}
+           AND deleted_at IS NULL
     </select>
 
     <!-- 注意：原实现只按 workflow_id 过滤，没有 tenant（沿用，避免改变可见性）。 -->
@@ -85,6 +86,15 @@
           LEFT JOIN resource_node rn
                  ON rn.id = w.island_id AND rn.kind = 'island'
          WHERE w.tenant_id = #{param1} AND w.id = #{param2}
+    </select>
+
+    <select id="selectRuntimeWorkflowHeader" resultType="java.util.Map">
+        SELECT id AS "id", version AS "version", updated_at AS "updatedAt",
+               status AS "status"
+          FROM workflow
+         WHERE tenant_id = #{tenantId}
+           AND id = #{workflowId}
+           AND deleted_at IS NULL
     </select>
 
     <select id="selectWorkflowHeaders" resultType="java.util.Map">
@@ -145,6 +155,16 @@
     </insert>
 
     <!-- ==== 执行器的图读取（RealWorkflowRunner，与 GM.java 既有区合并） ==== -->
+
+    <select id="selectRuntimeWorkflowNodeMetadata" resultType="java.util.Map">
+        SELECT n.id AS "id", n.node_key AS "nodeKey",
+               c.code AS "capabilityCode"
+          FROM workflow_node n
+          LEFT JOIN capability c ON c.id = n.capability_id AND c.tenant_id = n.tenant_id
+         WHERE n.tenant_id = #{tenantId}
+           AND n.workflow_id = #{workflowId}
+         ORDER BY n.id
+    </select>
 
     <select id="selectWorkflowNodes" resultType="java.util.Map">
         SELECT n.id AS "id", n.node_key AS "nodeKey", n.name AS "name",

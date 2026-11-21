@@ -23,6 +23,21 @@ FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ✓ $1"; }
 bad()  { FAIL=$((FAIL+1)); echo "  ✗ $1${2:+（$2）}"; }
 
+wait_for_port() {
+    local port="$1" pid="$2" timeout_seconds="$3"
+    local deadline=$((SECONDS + timeout_seconds))
+    while (( SECONDS < deadline )); do
+        if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+            return 0
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 1
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
 cleanup() {
     # 子 shell 已用 exec 启动（PID 就是真进程）；pkill -P 再兜底一层 dotnet 的子进程，
     # 否则 kill 掉父进程后子进程会被 launchd 接管、变成孤儿模拟器/sidecar（2026-11-03 实测泄漏）。
@@ -88,9 +103,9 @@ echo "════════ 1. 起模拟器 + sidecar ═══════�
        --model s100 --device "$DEVICE" --code S100T --port "$SIM_PORT" --delay 1 \
        > /tmp/sidecar-sim.log 2>&1 ) &
 SIM_PID=$!
-sleep 1.5
-if ! (echo > "/dev/tcp/127.0.0.1/$SIM_PORT") 2>/dev/null; then
-    bad "模拟器没起来（端口 $SIM_PORT 可能被占）" "见 /tmp/sidecar-sim.log"
+if ! wait_for_port "$SIM_PORT" "$SIM_PID" 10; then
+    bad "模拟器没起来（端口 $SIM_PORT）" "见 /tmp/sidecar-sim.log"
+    tail -40 /tmp/sidecar-sim.log 2>/dev/null || true
     exit 1
 fi
 ok "模拟器监听 $SIM_PORT"
@@ -105,12 +120,11 @@ ok "模拟器监听 $SIM_PORT"
        --sim-host 127.0.0.1 --sim-port "$SIM_PORT" --port "$SIDE_PORT" --device "$DEVICE" \
        > /tmp/sidecar-run.log 2>&1 ) &
 SIDE_PID=$!
-sleep 3
-
-if (echo > "/dev/tcp/127.0.0.1/$SIDE_PORT") 2>/dev/null; then
+if wait_for_port "$SIDE_PORT" "$SIDE_PID" 20; then
     ok "sidecar 监听 $SIDE_PORT"
 else
-    bad "sidecar 没起来" "见 /tmp/sidecar-run.log"
+    bad "sidecar 没起来（端口 $SIDE_PORT）" "见 /tmp/sidecar-run.log"
+    tail -60 /tmp/sidecar-run.log 2>/dev/null || true
     exit 1
 fi
 

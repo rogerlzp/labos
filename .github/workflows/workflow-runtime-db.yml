@@ -1,0 +1,92 @@
+name: Workflow Runtime PostgreSQL 17
+on:
+  push:
+    branches: [docs/workflow-runtime-architecture-v2-20261119, docs/workflow-runtime-single-instance-20261119, 'feat/workflow-runtime-*']
+    paths:
+      - 'db/workflow_runtime/**'
+      - 'workflow-runtime/**'
+      - 'labos-kernel/src/boot/**'
+      - 'labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeIslandSimulatorSelfTest.java'
+      - 'scripts/test-workflow-runtime-island-e2e.sh'
+      - '.github/workflows/workflow-runtime-db.yml'
+  pull_request:
+    paths:
+      - 'db/workflow_runtime/**'
+      - 'workflow-runtime/**'
+      - 'labos-kernel/src/boot/**'
+      - 'labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeIslandSimulatorSelfTest.java'
+      - 'scripts/test-workflow-runtime-island-e2e.sh'
+      - '.github/workflows/workflow-runtime-db.yml'
+  workflow_dispatch:
+jobs:
+  schema-contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: runtime
+          POSTGRES_PASSWORD: runtime
+          POSTGRES_DB: runtime_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U runtime -d runtime_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: runtime
+      PGPASSWORD: runtime
+      PGDATABASE: runtime_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Verify PostgreSQL major version
+        run: |
+          psql -v ON_ERROR_STOP=1 -Atc "SHOW server_version_num" | awk '{ if ($1 < 170000 || $1 >= 180000) exit 1 }'
+      - name: Bootstrap empty Runtime schema
+        run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/001_init.sql
+      - name: Apply G5 Wait correlation and Inbox migrations
+        run: |
+          psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/003_g5_wait_correlation.sql
+          psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/004_g5_wait_inbox_idx.sql
+      - name: Verify schema catalog and invariant constraints
+        run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/002_schema_contract.sql
+      - name: Install PostgreSQL concurrency test dependency
+        run: python -m pip install "psycopg[binary]>=3.2,<4"
+      - name: Run two-session concurrency tests
+        run: python db/workflow_runtime/tests/test_pg_concurrency.py
+      - name: Run CON-01 to CON-14 concurrency matrix
+        run: python db/workflow_runtime/tests/test_pg_con_matrix.py
+      - name: Run transaction atomicity and Inbox conflict tests
+        run: python db/workflow_runtime/tests/test_pg_atomicity.py
+      - name: Run Java Workflow Runtime repository integration tests
+        env:
+          RUN_RUNTIME_PG_IT: '1'
+        run: mvn -B -f workflow-runtime/pom.xml test
+      - name: Verify E2E DB recreation allowlist guard
+        run: |
+          for bad_db in runtime_test postgres labos_prod arbitrary_dev_db; do
+            if USE_EXISTING_PG=1 RECREATE_DB=1 SKIP_COMPILE=1 PGDATABASE="$bad_db" bash ./scripts/test-workflow-runtime-island-e2e.sh >/dev/null 2>&1; then
+              echo "✗ Expected allowlist guard to reject PGDATABASE=$bad_db" >&2
+              exit 1
+            fi
+          done
+          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 31) exit 1 }'
+      - name: Run Island Real DeviceCore + PG17 E2E self-test
+        env:
+          USE_EXISTING_PG: '1'
+          PGDATABASE: runtime_island_e2e
+          RECREATE_DB: '1'
+          REPEAT: '3'
+        run: bash ./scripts/test-workflow-runtime-island-e2e.sh
+      - name: Verify bootstrap is repeatably isolated
+        run: |
+          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 31) exit 1 }'

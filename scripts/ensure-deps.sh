@@ -89,8 +89,14 @@ for j in "${REQUIRED_JARS[@]}"; do
   [[ -f "lib/spring/$j" ]] || missing=1
 done
 
+# Runtime is now a first-class Kernel dependency and compile-kernel rebuilds it
+# on every invocation. Resolve Maven even when the other jars are already cached.
+MVN="$(find_mvn)"
+
 if [[ $missing -eq 1 ]]; then
-  MVN="$(find_mvn)"
+  # Kernel declares workflow-runtime as a normal Maven dependency. Install this
+  # independent module first so dependency:copy-dependencies can resolve it.
+  "$MVN" -q -B -f "$ROOT/workflow-runtime/pom.xml" -DskipTests install
   "$MVN" -q -B dependency:copy-dependencies \
       -DincludeScope=runtime -DoutputDirectory=lib/spring
 fi

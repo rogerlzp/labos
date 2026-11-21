@@ -42,7 +42,7 @@ export LABOS_DB_HOST="${LABOS_DB_HOST:-192.168.124.2}"
 export LABOS_DB_PORT="${LABOS_DB_PORT:-5432}"
 export LABOS_DB_USER="${LABOS_DB_USER:-labos}"
 export LABOS_DB_NAME="${LABOS_DB_NAME:-labdb}"
-export PGPASSWORD="$LABOS_DB_PASS"
+export PGPASSWORD="${LABOS_DB_PASS:-}"
 export LABOS_API="${LABOS_API:-http://127.0.0.1:18080}"
 export LABOS_WEB="${LABOS_WEB:-http://localhost:5173}"
 export LABOS_MANAGER_URL="${LABOS_MANAGER_URL:-http://127.0.0.1:8600}"
@@ -88,7 +88,7 @@ if [[ "$WANT_FAST" == "1" ]]; then
   N=${N:-0}; F=${F:-1}
   if [[ "$F" != "0" ]]; then
     fail "Java 纯逻辑单测有失败（$F 条）"
-    echo "$OUT" | grep -E '✘|✗|无法解析输出|编译失败' | head -20
+    echo "$OUT" | grep -E '✘|✗|无法解析输出|编译失败|error:|cannot find symbol|程序包|找不到符号|ClassNotFoundException|找不到或无法加载主类' | head -30
   else
     pass "Java 纯逻辑单测 $N / 0"
   fi
@@ -139,13 +139,20 @@ if [[ "$WANT_FAST" == "1" ]]; then
   #   而本机长期能过，是因为 out/ 里还躺着 2026-11-16 之前遗留下来的测试 class
   #   —— 典型的「靠磁盘残留兜底」。门禁红在别人机器上、红不出原因，
   #   等于没有门禁（这正是 2026-11-11 重写门禁时写下的原则）。
-  OUT=$(java -cp "labos-kernel/out-test:labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" \
-        com.labos.kernel.event.DeviceEventApiSelfTest 2>&1)
+  JAVA_RC=0
+  if OUT=$(java -cp "labos-kernel/out-test:labos-kernel/out:labos-kernel/lib/postgresql-42.7.3.jar:labos-kernel/lib/spring/*" \
+        com.labos.kernel.event.DeviceEventApiSelfTest 2>&1); then
+    JAVA_RC=0
+  else
+    JAVA_RC=$?
+  fi
   F=$(echo "$OUT" | grep -oE '失败 [0-9]+' | grep -oE '[0-9]+' | head -1)
   N=$(echo "$OUT" | grep -oE '通过 [0-9]+, 失败' | grep -oE '[0-9]+' | head -1)
-  if [[ "${F:-1}" != "0" ]]; then
-    fail "设备事件入站端点自测有失败（${F:-?} 条）"
-    echo "$OUT" | grep '✘' | head -6 | sed 's/^/      /'
+  if [[ "$JAVA_RC" != "0" || "${F:-1}" != "0" ]]; then
+    fail "设备事件入站端点自测失败（exit=$JAVA_RC, failures=${F:-unknown}）"
+    if ! echo "$OUT" | grep '✘' | head -6 | sed 's/^/      /' | grep -q .; then
+      echo "$OUT" | head -30 | sed 's/^/      /'
+    fi
   else
     pass "设备事件入站端点自测 $N / 0"
   fi

@@ -202,6 +202,8 @@ PURE=(
   "sim.DeviceProfileSelfTest"
   # 设备事件入站端点（2026-11-15）：免鉴权口径 + 载荷解析（对象/字符串/数字/脏数据）
   "event.DeviceEventApiSelfTest"
+  # Workflow Runtime 嵌入 Kernel：Spring Bean composition + MyBatis statement binding（不连库）
+  "boot.WorkflowRuntimeKernelConfigurationSelfTest"
   # 新设备类型接入（2026-11-15）：PLANNED 型号可登记 / 方法从画像派生 / 型号优先的画像路由
   "device.DeviceOnboardingSelfTest"
   # 设备接入端点的参数解析（带不带引号都认 —— 这里出过一次真事故）
