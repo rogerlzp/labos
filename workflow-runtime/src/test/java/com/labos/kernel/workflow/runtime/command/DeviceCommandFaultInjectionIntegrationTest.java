@@ -4,6 +4,8 @@ import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler;
 import com.labos.kernel.workflow.runtime.graph.GraphPlan;
 import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
+import com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService;
+import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -12,10 +14,16 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -304,35 +312,181 @@ class DeviceCommandFaultInjectionIntegrationTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Scenario 6: UNKNOWN recovery via restart must NOT requeue the in-flight command for resend.
+    // Scenario 6a: ordinary Outbox delivery must not re-select an UNKNOWN command.
+    // NOTE: this is NOT the startup-recovery path — see scenario 6b for the real recoverAtStartup().
     // ---------------------------------------------------------------------------------------------
     @Test
-    void unknownCommandRecovery_LeavesItUncertainAndDoesNotRequeue() throws Exception {
+    void unknownCommandIsNotReselectedByOrdinaryOutboxDelivery() throws Exception {
         assumePg();
         var ds = dataSource();
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
         Chain chain = newStartedChain(ds, repo);
         UUID cmdId = createCommand(repo, chain);
 
-        DeviceCommandExecutionService svc = new DeviceCommandExecutionService(repo, env -> {
-            // Send accepted but we simulate a crash before the async receipt is processed.
-            return DeviceCommandAdapter.SendResult.acceptedAsync();
-        });
-        svc.deliverPendingCommands(chain.tenant, 4, "g4c-s6");
-        // Force the command into UNKNOWN as a crash-recovery would.
+        DeviceCommandExecutionService svc = new DeviceCommandExecutionService(repo,
+                env -> DeviceCommandAdapter.SendResult.acceptedAsync());
+        svc.deliverPendingCommands(chain.tenant, 4, "g4c-s6a");
         repo.markCommandUnknown(chain.tenant, cmdId, "{\"reason\":\"host_crash_in_flight\"}");
 
-        var unknown = repo.findUnknownCommands(chain.tenant, 10);
-        assertTrue(unknown.stream().anyMatch(u -> u.commandId().equals(cmdId)));
+        assertTrue(repo.findUnknownCommands(chain.tenant, 10).stream()
+                .anyMatch(u -> u.commandId().equals(cmdId)));
 
         AtomicInteger sendCalls = new AtomicInteger();
         DeviceCommandExecutionService restartSvc = new DeviceCommandExecutionService(repo, env -> {
             sendCalls.incrementAndGet();
             return DeviceCommandAdapter.SendResult.acceptedAsync();
         });
-        restartSvc.deliverPendingCommands(chain.tenant, 4, "g4c-s6-restart");
-        assertEquals(0, sendCalls.get(), "restart must never resend an UNKNOWN command");
+        restartSvc.deliverPendingCommands(chain.tenant, 4, "g4c-s6a-restart");
+        assertEquals(0, sendCalls.get(), "ordinary delivery must not resend an UNKNOWN command");
         assertEquals("UNKNOWN", commandState(repo, chain, cmdId));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Scenario 6b (P2-1 fix): REAL startup recovery after crossing SEND_STARTED.
+    // Verifies the full recovery chain: command UNKNOWN, dispatch DELIVERY_UNKNOWN, attempt UNKNOWN,
+    // Run MANUAL_REQUIRED, one OPEN manual intervention, and outbox left non-requeueable.
+    // ---------------------------------------------------------------------------------------------
+    @Test
+    void realStartupRecoveryAfterSendStarted_ConvergesToManualRequiredWithoutRequeue() throws Exception {
+        assumePg();
+        var ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Chain chain = newStartedChain(ds, repo);
+        UUID cmdId = createCommand(repo, chain);
+
+        // Cross the SEND_STARTED boundary (markCommandSendStarted commits SIDE_EFFECT_STARTED),
+        // then simulate a Host crash before the adapter reply is ingested. Use a throw so the
+        // service marks the command UNKNOWN and dead-letters the outbox.
+        DeviceCommandExecutionService svc = new DeviceCommandExecutionService(repo, env -> {
+            throw new java.io.IOException("simulated Host crash after SEND_STARTED");
+        });
+        svc.deliverPendingCommands(chain.tenant, 4, "g4c-s6b-precrash");
+        assertEquals("UNKNOWN", commandState(repo, chain, cmdId));
+
+        // Force attempt back to STARTED to emulate an in-flight attempt observed at crash time,
+        // while keeping the durable SIDE_EFFECT_STARTED / SEND_STARTED command evidence.
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("UPDATE workflow_runtime.node_attempt SET attempt_state='STARTED' WHERE tenant_id='"
+                    + chain.tenant + "' AND attempt_id='" + chain.attemptId + "'");
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET status='RUNNING', control_gate='OPEN' WHERE tenant_id='"
+                    + chain.tenant + "' AND run_id='" + chain.runId + "'");
+        }
+
+        // Run the REAL startup recovery coordinator.
+        var recovery = new WorkerExecutionRecoveryService(repo, new WorkerExecutionRegistry(), chain.tenant);
+        WorkerExecutionRecoveryService.StartupResult result = recovery.recoverAtStartup(50, "g4c-recovery-actor");
+
+        // Full durable state assertions — not just command_state.
+        assertEquals("UNKNOWN", commandState(repo, chain, cmdId));
+        assertEquals("UNKNOWN", scalar(ds, "SELECT attempt_state FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                + chain.tenant + "' AND attempt_id='" + chain.attemptId + "'"));
+        assertEquals("MANUAL_REQUIRED", scalar(ds, "SELECT status FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                + chain.tenant + "' AND run_id='" + chain.runId + "'"));
+        assertEquals("DELIVERY_UNKNOWN", scalar(ds, "SELECT dispatch_state FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='"
+                + chain.tenant + "' AND command_id='" + cmdId + "'"));
+        assertEquals(1, count(ds, "SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id='"
+                + chain.tenant + "' AND run_id='" + chain.runId + "' AND intervention_state='OPEN'"));
+        assertEquals(1, count(ds, "SELECT count(*) FROM workflow_runtime.runtime_audit WHERE tenant_id='"
+                + chain.tenant + "' AND action='ATTEMPT_RECOVERY_BLOCKED'"));
+        assertTrue(result.manualRequired() >= 1, "recovery must report MANUAL_REQUIRED for the in-flight Attempt");
+        assertEquals(0, result.outbox().safelyRequeued(), "uncertain device outbox must never be requeued");
+
+        // Post-recovery ordinary delivery still must not resend.
+        AtomicInteger sendCalls = new AtomicInteger();
+        DeviceCommandExecutionService postSvc = new DeviceCommandExecutionService(repo, env -> {
+            sendCalls.incrementAndGet();
+            return DeviceCommandAdapter.SendResult.acceptedAsync();
+        });
+        postSvc.deliverPendingCommands(chain.tenant, 4, "g4c-s6b-post");
+        assertEquals(0, sendCalls.get(), "after real startup recovery, no physical re-send");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Scenario 6c (P2-3 fix): three DISTINCT physical-send fault points separated explicitly.
+    // Point A (pre-boundary): adapter returns DELIVERY_UNCERTAIN -> no SIDE_EFFECT_STARTED.
+    // Point B (post-boundary, before frame): SEND_STARTED committed, adapter throws -> SIDE_EFFECT_STARTED,
+    //   command UNKNOWN. Covered by scenario 6b.
+    // Point C (frame written, receipt lost): adapter ACCEPTED_ASYNC, receipt never ingested -> command
+    //   stays SEND_STARTED/ACKNOWLEDGED until timeout marks UNKNOWN; no false SUCCEEDED.
+    // ---------------------------------------------------------------------------------------------
+    @Test
+    void faultPointA_PreBoundaryOfflineHasNoSideEffectStarted() throws Exception {
+        assumePg();
+        var ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Chain chain = newStartedChain(ds, repo);
+        UUID cmdId = createCommand(repo, chain);
+
+        // The ONLY way to fail strictly BEFORE the durable boundary is markCommandSendStarted returning
+        // false (gate/state guard), which the service handles before crossing. Simulate by closing the
+        // gate: set control_gate=PAUSE so requireGraphRunOpen fails the pre-send guard.
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET control_gate='PAUSE' WHERE tenant_id='"
+                    + chain.tenant + "' AND run_id='" + chain.runId + "'");
+        }
+        AtomicInteger adapterCalls = new AtomicInteger();
+        DeviceCommandExecutionService svc = new DeviceCommandExecutionService(repo, env -> {
+            adapterCalls.incrementAndGet();
+            return DeviceCommandAdapter.SendResult.acceptedAsync();
+        });
+        svc.deliverPendingCommands(chain.tenant, 4, "g4c-6c-a");
+
+        assertEquals(0, adapterCalls.get(), "pre-boundary gate rejection must not invoke adapter at all");
+        assertEquals(0, count(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                + chain.tenant + "' AND fact_type='SIDE_EFFECT_STARTED' AND side_effect_key='command:" + cmdId + "'"),
+                "pre-boundary failure must not create any side-effect evidence");
+        assertEquals("CREATED", commandState(repo, chain, cmdId),
+                "pre-boundary failure leaves command CREATED (still retryable, nothing was sent)");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Scenario 6d (P2-4 fix): two Dispatchers racing for the SAME command.
+    // Only one may cross SEND_STARTED, call the adapter once, and create one dispatch/fact;
+    // the loser must not requeue the already-sent command back to PENDING.
+    // ---------------------------------------------------------------------------------------------
+    @Test
+    void concurrentDispatchers_OnlyOneCrossesSendStartedAndExecutesPhysically() throws Exception {
+        assumePg();
+        var ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        Chain chain = newStartedChain(ds, repo);
+        UUID cmdId = createCommand(repo, chain);
+
+        AtomicInteger adapterCalls = new AtomicInteger();
+        CountDownLatch start = new CountDownLatch(1);
+        DeviceCommandExecutionService svc = new DeviceCommandExecutionService(repo, env -> {
+            adapterCalls.incrementAndGet();
+            try { Thread.sleep(30); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            return DeviceCommandAdapter.SendResult.acceptedAsync();
+        });
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<?>> futures = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                final String dispatcher = "g4c-race-" + i;
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    svc.deliverPendingCommands(chain.tenant, 4, dispatcher);
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> f : futures) f.get(10, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(1, adapterCalls.get(), "exactly one physical adapter invocation under concurrent dispatch");
+        assertEquals(1, count(ds, "SELECT count(*) FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='"
+                + chain.tenant + "' AND command_id='" + cmdId + "' AND dispatch_state='SEND_STARTED'"),
+                "exactly one SEND_STARTED dispatch attempt");
+        assertEquals(1, count(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                + chain.tenant + "' AND fact_type='SIDE_EFFECT_STARTED' AND side_effect_key='command:" + cmdId + "'"),
+                "exactly one SIDE_EFFECT_STARTED fact");
+        assertEquals(0, count(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE payload->>'commandId'='"
+                + cmdId + "' AND outbox_state='PENDING'"),
+                "losing dispatcher must not requeue an already-sent command to PENDING");
     }
 
     // ---------------------------------------------------------------------------------------------
