@@ -49,10 +49,14 @@ public final class DeviceCommandExecutionService {
     public enum InboxStatus {
         APPLIED,
         DUPLICATE_REPLAY,
+        REJECTED,
         PROTOCOL_VIOLATION
     }
 
-    public record InboxIngestionOutcome(InboxStatus status, UUID inboxId) {
+    public record InboxIngestionOutcome(InboxStatus status, UUID inboxId, String reason) {
+        public InboxIngestionOutcome(InboxStatus status, UUID inboxId) {
+            this(status, inboxId, null);
+        }
         public InboxIngestionOutcome {
             Objects.requireNonNull(status, "status");
             Objects.requireNonNull(inboxId, "inboxId");
@@ -254,7 +258,7 @@ public final class DeviceCommandExecutionService {
         WorkflowRuntimeRepository.InboxReceipt receipt = repository.receiveInbox(
                 tenantId, source, sourceMessageId, messageType, runId, inboxPayload);
         if (receipt.payloadConflict()) {
-            return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
+            return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId(), "SOURCE_MESSAGE_ID_PAYLOAD_CONFLICT");
         }
         if (!receipt.inserted()) {
             Optional<String> state = repository.findInboxReceiptState(tenantId, receipt.inboxId());
@@ -262,22 +266,33 @@ public final class DeviceCommandExecutionService {
                 return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
             }
             if (state.isPresent() && "REJECTED".equals(state.get())) {
-                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
+                return new InboxIngestionOutcome(InboxStatus.REJECTED, receipt.inboxId(),
+                        repository.findInboxReceiptRejectionReason(tenantId, receipt.inboxId()).orElse("PERMANENT_COMMAND_EVENT_REJECTION"));
+            }
+            if (state.isPresent() && "PROTOCOL_VIOLATION".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId(), "INBOX_PROTOCOL_VIOLATION");
             }
         }
         try {
             boolean applied = repository.applyCommandEventOrReject(
                     tenantId, runId, receipt.inboxId(), commandId,
                     targetState, deviceSequence, normalizedOutcome);
-            return new InboxIngestionOutcome(
-                    applied ? InboxStatus.APPLIED : InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
+            return applied
+                    ? new InboxIngestionOutcome(InboxStatus.APPLIED, receipt.inboxId())
+                    : new InboxIngestionOutcome(InboxStatus.REJECTED, receipt.inboxId(),
+                            repository.findInboxReceiptRejectionReason(tenantId, receipt.inboxId())
+                                    .orElse("PERMANENT_COMMAND_EVENT_REJECTION"));
         } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException race) {
             Optional<String> state = repository.findInboxReceiptState(tenantId, receipt.inboxId());
             if (state.isPresent() && "PROCESSED".equals(state.get())) {
                 return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
             }
             if (state.isPresent() && "REJECTED".equals(state.get())) {
-                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
+                return new InboxIngestionOutcome(InboxStatus.REJECTED, receipt.inboxId(),
+                        repository.findInboxReceiptRejectionReason(tenantId, receipt.inboxId()).orElse("PERMANENT_COMMAND_EVENT_REJECTION"));
+            }
+            if (state.isPresent() && "PROTOCOL_VIOLATION".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId(), "INBOX_PROTOCOL_VIOLATION");
             }
             throw race;
         }
