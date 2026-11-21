@@ -61,6 +61,10 @@ public final class BpmnGraphCompiler {
                     validateLabosExtensionPlacement(el);
                     continue;
                 }
+                if (BPMN_NS.equals(namespace) && "extensionElements".equals(local)) {
+                    validateExtensionElementsChildren(el);
+                    continue;
+                }
                 if (BPMN_NS.equals(namespace)
                         && (local.equals("eventDefinition") || local.endsWith("EventDefinition"))) {
                     if (!"timerEventDefinition".equals(local) || !isAllowedTimerParent(el)) {
@@ -321,6 +325,24 @@ public final class BpmnGraphCompiler {
         }
     }
 
+    private static void validateExtensionElementsChildren(Element extEl) {
+        NodeList children = extEl.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            if (!(children.item(i) instanceof Element child)) {
+                continue;
+            }
+            if (LABOS_NS.equals(child.getNamespaceURI()) && "wait".equals(child.getLocalName())) {
+                continue;
+            }
+            String ns = child.getNamespaceURI();
+            String desc = ns == null || ns.isBlank()
+                    ? child.getLocalName()
+                    : ns + ":" + child.getLocalName();
+            throw new IllegalArgumentException(
+                    "Unsupported BPMN extension element inside extensionElements: " + desc);
+        }
+    }
+
     private static String extractWaitCorrelationKeyIfPresent(Element receiveTask, String id, NodeMetadata meta) {
         Element waitEl = findSingleLabosWaitElement(receiveTask, id);
         boolean hasTaskConfig = hasTaskExecutionConfig(receiveTask, meta);
@@ -476,11 +498,10 @@ public final class BpmnGraphCompiler {
             Map<String,NodeMetadata> nodeMetadata) {
         ensureNoTaskConfig(el, id, nodeMetadata.get(id), "boundaryEvent");
         ensureNoReceiveWaitExtension(el, id);
-        String cancelRaw = blankToNull(el.getAttribute("cancelActivity"));
-        if (cancelRaw != null && !"true".equals(cancelRaw)) {
+        String cancelRaw = el.getAttribute("cancelActivity");
+        if (!"true".equals(cancelRaw)) {
             throw new IllegalArgumentException(
-                    "Only interrupting boundaryEvent (cancelActivity=\"true\") is supported: "
-                            + id + " cancelActivity=" + cancelRaw);
+                    "BoundaryEvent requires explicit cancelActivity=\"true\": " + id);
         }
         String attachedToRef = blankToNull(el.getAttribute("attachedToRef"));
         if (attachedToRef == null) {

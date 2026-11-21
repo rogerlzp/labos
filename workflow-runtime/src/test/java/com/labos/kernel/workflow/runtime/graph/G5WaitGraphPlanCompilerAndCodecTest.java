@@ -4,6 +4,7 @@ import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler.CompilationInpu
 import com.labos.kernel.workflow.runtime.graph.BpmnGraphCompiler.NodeMetadata;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -598,5 +599,203 @@ class G5WaitGraphPlanCompilerAndCodecTest {
         assertThrows(IllegalArgumentException.class, () -> new GraphPlan.Node(
                 "t1", "t1", GraphPlan.Kind.TASK, "serviceTask", "HTTP", 1L, null, null, null, null,
                 new GraphPlan.WaitSpec(GraphPlan.WaitKind.MESSAGE, "k1", null, null)));
+    }
+
+    @Test
+    void rejectsBoundaryEventWithoutExplicitCancelActivityTrue() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> compile("""
+                <bpmn:startEvent id="s"/>
+                <bpmn:receiveTask id="w1">
+                  <bpmn:extensionElements><labos:wait correlationKey="k1"/></bpmn:extensionElements>
+                </bpmn:receiveTask>
+                <bpmn:boundaryEvent id="b1" attachedToRef="w1">
+                  <bpmn:timerEventDefinition><bpmn:timeDuration>PT10S</bpmn:timeDuration></bpmn:timerEventDefinition>
+                </bpmn:boundaryEvent>
+                <bpmn:endEvent id="e1"/><bpmn:endEvent id="e2"/>
+                <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="w1"/>
+                <bpmn:sequenceFlow id="f2" sourceRef="w1" targetRef="e1"/>
+                <bpmn:sequenceFlow id="f3" sourceRef="b1" targetRef="e2"/>
+                """));
+        assertTrue(ex.getMessage().contains("cancelActivity"), ex.getMessage());
+    }
+
+    @Test
+    void rejectsUnknownExtensionElementsWhilePreservingBpmnDiAndDocumentation() {
+        // Unknown LabOS extension element inside receiveTask extensionElements
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(new CompilationInput("wf", "1", """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                                  xmlns:labos="urn:labos:workflow-runtime:v1">
+                  <bpmn:process id="p" isExecutable="true">
+                    <bpmn:startEvent id="s"/>
+                    <bpmn:receiveTask id="w1">
+                      <bpmn:extensionElements>
+                        <labos:wait correlationKey="k1"/>
+                        <labos:retry count="3"/>
+                      </bpmn:extensionElements>
+                    </bpmn:receiveTask>
+                    <bpmn:endEvent id="e"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="w1"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="w1" targetRef="e"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """, Map.of())));
+
+        // Unknown vendor extension inside receiveTask extensionElements
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(new CompilationInput("wf", "1", """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                                  xmlns:labos="urn:labos:workflow-runtime:v1"
+                                  xmlns:vendor="urn:example:vendor">
+                  <bpmn:process id="p" isExecutable="true">
+                    <bpmn:startEvent id="s"/>
+                    <bpmn:receiveTask id="w1">
+                      <bpmn:extensionElements>
+                        <labos:wait correlationKey="k1"/>
+                        <vendor:hook name="x"/>
+                      </bpmn:extensionElements>
+                    </bpmn:receiveTask>
+                    <bpmn:endEvent id="e"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="w1"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="w1" targetRef="e"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """, Map.of())));
+
+        // Unknown vendor extension inside serviceTask extensionElements
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(new CompilationInput("wf", "1", """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn">
+                  <bpmn:process id="p" isExecutable="true">
+                    <bpmn:startEvent id="s"/>
+                    <bpmn:serviceTask id="t1" protocolName="HTTP" resource="1">
+                      <bpmn:extensionElements><camunda:executionListener event="start"/></bpmn:extensionElements>
+                    </bpmn:serviceTask>
+                    <bpmn:endEvent id="e"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="t1"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="t1" targetRef="e"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """, Map.of())));
+
+        // Standard BPMN documentation + BPMN DI elements alongside valid labos:wait must pass.
+        GraphPlan withDi = compiler.compile(new CompilationInput("wf", "1", """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                                  xmlns:labos="urn:labos:workflow-runtime:v1">
+                  <bpmn:process id="p" isExecutable="true">
+                    <bpmn:documentation>Wait for sample delivery</bpmn:documentation>
+                    <bpmn:startEvent id="s"/>
+                    <bpmn:receiveTask id="w1" name="Await Sample">
+                      <bpmn:documentation>Non-executing description</bpmn:documentation>
+                      <bpmn:extensionElements>
+                        <labos:wait correlationKey="sample-di-1"/>
+                      </bpmn:extensionElements>
+                    </bpmn:receiveTask>
+                    <bpmn:endEvent id="e"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="w1"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="w1" targetRef="e"/>
+                  </bpmn:process>
+                  <bpmndi:BPMNDiagram id="diag1">
+                    <bpmndi:BPMNPlane id="plane1" bpmnElement="p">
+                      <bpmndi:BPMNShape id="shape_w1" bpmnElement="w1">
+                        <dc:Bounds x="100" y="100" width="100" height="80"/>
+                      </bpmndi:BPMNShape>
+                      <bpmndi:BPMNEdge id="edge_f1" bpmnElement="f1">
+                        <di:waypoint x="50" y="140"/>
+                        <di:waypoint x="100" y="140"/>
+                      </bpmndi:BPMNEdge>
+                    </bpmndi:BPMNPlane>
+                  </bpmndi:BPMNDiagram>
+                </bpmn:definitions>
+                """, Map.of()));
+        assertEquals(GraphPlan.SCHEMA_VERSION_V2, withDi.schemaVersion());
+        assertEquals("sample-di-1", node(withDi, "w1").waitSpec().correlationKey());
+    }
+
+    @Test
+    void rejectsNonIntegerOrMissingSchemaVersionInCodec() {
+        String validV2 = GraphPlanCodec.toJson(compile("""
+                <bpmn:startEvent id="s"/>
+                <bpmn:receiveTask id="w1">
+                  <bpmn:extensionElements><labos:wait correlationKey="k1"/></bpmn:extensionElements>
+                </bpmn:receiveTask>
+                <bpmn:endEvent id="e"/>
+                <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="w1"/>
+                <bpmn:sequenceFlow id="f2" sourceRef="w1" targetRef="e"/>
+                """));
+
+        for (String badSchemaValue : new String[]{"\"1\"", "\"2\"", "1.5", "2.0", "null", "true", "0", "-1"}) {
+            String mutated = validV2.replace("\"schemaVersion\":2", "\"schemaVersion\":" + badSchemaValue);
+            assertThrows(IllegalArgumentException.class,
+                    () -> GraphPlanCodec.fromJson(mutated, "test"),
+                    "Should reject schemaVersion=" + badSchemaValue);
+        }
+
+        IllegalArgumentException missingEx = assertThrows(IllegalArgumentException.class,
+                () -> GraphPlanCodec.fromJson("{}", "run=x"));
+        assertInstanceOf(java.io.IOException.class, missingEx.getCause());
+    }
+
+    @Test
+    void enforcesWaitOutgoingEdgeCompletenessInGraphPlanAndCodec() {
+        GraphPlan.Node s = new GraphPlan.Node("s", "s", GraphPlan.Kind.START, "startEvent",
+                null, null, null, null, null, null);
+        GraphPlan.Node e1 = new GraphPlan.Node("e1", "e1", GraphPlan.Kind.END, "endEvent",
+                null, null, null, null, null, null);
+        GraphPlan.Node e2 = new GraphPlan.Node("e2", "e2", GraphPlan.Kind.END, "endEvent",
+                null, null, null, null, null, null);
+        GraphPlan.Edge sToW = new GraphPlan.Edge("f0", "s", "w1", null, false);
+
+        GraphPlan.Node msgWait = new GraphPlan.Node("w1", "w1", GraphPlan.Kind.WAIT, "receiveTask",
+                null, null, null, null, null, null,
+                new GraphPlan.WaitSpec(GraphPlan.WaitKind.MESSAGE, "k1", null, null));
+        // MESSAGE WAIT with 0 NORMAL edges -> rejected
+        assertThrows(IllegalArgumentException.class, () -> new GraphPlan(
+                2, "v1", "k", "1", "sha", List.of(s, msgWait, e1), List.of(sToW)));
+        // MESSAGE WAIT with 2 NORMAL edges -> rejected
+        assertThrows(IllegalArgumentException.class, () -> new GraphPlan(
+                2, "v1", "k", "1", "sha", List.of(s, msgWait, e1, e2), List.of(
+                        sToW,
+                        new GraphPlan.Edge("fn1", "w1", "e1", null, false, GraphPlan.RouteKind.NORMAL),
+                        new GraphPlan.Edge("fn2", "w1", "e2", null, false, GraphPlan.RouteKind.NORMAL))));
+
+        GraphPlan.Node timerWait = new GraphPlan.Node("w1", "w1", GraphPlan.Kind.WAIT, "intermediateCatchEvent",
+                null, null, null, null, null, null,
+                new GraphPlan.WaitSpec(GraphPlan.WaitKind.TIMER, null, "PT5S", 5000L));
+        // TIMER WAIT with 0 edges -> rejected
+        assertThrows(IllegalArgumentException.class, () -> new GraphPlan(
+                2, "v1", "k", "1", "sha", List.of(s, timerWait, e1), List.of(sToW)));
+
+        GraphPlan.Node timeoutWait = new GraphPlan.Node("w1", "w1", GraphPlan.Kind.WAIT, "receiveTask",
+                null, null, null, null, null, null,
+                new GraphPlan.WaitSpec(GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT, "k1", "PT10S", 10_000L));
+        // MESSAGE_WITH_TIMEOUT missing TIMEOUT edge -> rejected
+        assertThrows(IllegalArgumentException.class, () -> new GraphPlan(
+                2, "v1", "k", "1", "sha", List.of(s, timeoutWait, e1, e2), List.of(
+                        sToW,
+                        new GraphPlan.Edge("fn", "w1", "e1", null, false, GraphPlan.RouteKind.NORMAL))));
+        // MESSAGE_WITH_TIMEOUT missing NORMAL edge (only TIMEOUT) -> rejected
+        assertThrows(IllegalArgumentException.class, () -> new GraphPlan(
+                2, "v1", "k", "1", "sha", List.of(s, timeoutWait, e1, e2), List.of(
+                        sToW,
+                        new GraphPlan.Edge("ft", "w1", "e2", null, false, GraphPlan.RouteKind.TIMEOUT))));
+        // MESSAGE_WITH_TIMEOUT with 2 TIMEOUT edges -> rejected
+        assertThrows(IllegalArgumentException.class, () -> new GraphPlan(
+                2, "v1", "k", "1", "sha", List.of(s, timeoutWait, e1, e2), List.of(
+                        sToW,
+                        new GraphPlan.Edge("fn", "w1", "e1", null, false, GraphPlan.RouteKind.NORMAL),
+                        new GraphPlan.Edge("ft1", "w1", "e2", null, false, GraphPlan.RouteKind.TIMEOUT),
+                        new GraphPlan.Edge("ft2", "w1", "e2", null, false, GraphPlan.RouteKind.TIMEOUT))));
+        // MESSAGE_WITH_TIMEOUT sharing target between NORMAL and TIMEOUT -> rejected
+        assertThrows(IllegalArgumentException.class, () -> new GraphPlan(
+                2, "v1", "k", "1", "sha", List.of(s, timeoutWait, e1), List.of(
+                        sToW,
+                        new GraphPlan.Edge("fn", "w1", "e1", null, false, GraphPlan.RouteKind.NORMAL),
+                        new GraphPlan.Edge("ft", "w1", "e1", null, false, GraphPlan.RouteKind.TIMEOUT))));
     }
 }

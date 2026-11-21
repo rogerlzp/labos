@@ -35,17 +35,21 @@ public final class GraphPlanCodec {
                         "Invalid persisted GraphPlan JSON (expected object payload)" + suffix);
             }
             JsonNode versionNode = root.get("schemaVersion");
-            if (versionNode != null && versionNode.isIntegralNumber()) {
-                int schemaVersion = versionNode.asInt();
-                if (schemaVersion >= 1
-                        && schemaVersion != GraphPlan.SCHEMA_VERSION_V1
-                        && schemaVersion != GraphPlan.SCHEMA_VERSION_V2) {
-                    throw new IllegalArgumentException(
-                            "Unsupported GraphPlan schemaVersion: " + schemaVersion + suffix);
-                }
-                if (schemaVersion == GraphPlan.SCHEMA_VERSION_V1) {
-                    rejectV2FieldsInV1Payload(root, suffix);
-                }
+            if (versionNode == null) {
+                throw new IOException("Missing required integer field: schemaVersion");
+            }
+            if (versionNode.isNull() || !versionNode.isIntegralNumber() || !versionNode.canConvertToInt()) {
+                throw new IllegalArgumentException(
+                        "Invalid persisted GraphPlan JSON (schemaVersion must be an integer)" + suffix);
+            }
+            int schemaVersion = versionNode.intValue();
+            if (schemaVersion != GraphPlan.SCHEMA_VERSION_V1
+                    && schemaVersion != GraphPlan.SCHEMA_VERSION_V2) {
+                throw new IllegalArgumentException(
+                        "Unsupported GraphPlan schemaVersion: " + schemaVersion + suffix);
+            }
+            if (schemaVersion == GraphPlan.SCHEMA_VERSION_V1) {
+                rejectV2FieldsInV1Payload(root, suffix);
             }
             GraphPlan plan = JSON.treeToValue(root, GraphPlan.class);
             if (plan == null) {

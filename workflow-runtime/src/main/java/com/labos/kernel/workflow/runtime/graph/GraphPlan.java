@@ -2,6 +2,7 @@ package com.labos.kernel.workflow.runtime.graph;
 
 import java.time.Duration;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -186,6 +187,8 @@ public record GraphPlan(
                         "GraphPlan v1 cannot contain WAIT nodes or waitSpec: " + n.key());
             }
         }
+        Map<String, List<Edge>> normalEdgesByWaitNode = new HashMap<>();
+        Map<String, List<Edge>> timeoutEdgesByWaitNode = new HashMap<>();
         for (Edge e : edges) {
             if (schemaVersion == SCHEMA_VERSION_V1 && e.routeKind() != null) {
                 throw new IllegalArgumentException(
@@ -213,6 +216,38 @@ public record GraphPlan(
                     throw new IllegalArgumentException(
                             "TIMEOUT edge requires MESSAGE_WITH_TIMEOUT wait node: " + e.key());
                 }
+                if (e.routeKind() == RouteKind.NORMAL) {
+                    normalEdgesByWaitNode.computeIfAbsent(source.key(), k -> new ArrayList<>()).add(e);
+                } else if (e.routeKind() == RouteKind.TIMEOUT) {
+                    timeoutEdgesByWaitNode.computeIfAbsent(source.key(), k -> new ArrayList<>()).add(e);
+                }
+            }
+        }
+        for (Node n : nodes) {
+            if (n.kind() != Kind.WAIT) {
+                continue;
+            }
+            List<Edge> normalEdges = normalEdgesByWaitNode.getOrDefault(n.key(), List.of());
+            if (normalEdges.size() != 1) {
+                throw new IllegalArgumentException(
+                        "WAIT node requires exactly one NORMAL outgoing edge: "
+                                + n.key() + " (found " + normalEdges.size() + ")");
+            }
+            List<Edge> timeoutEdges = timeoutEdgesByWaitNode.getOrDefault(n.key(), List.of());
+            if (n.waitSpec().waitKind() == WaitKind.MESSAGE_WITH_TIMEOUT) {
+                if (timeoutEdges.size() != 1) {
+                    throw new IllegalArgumentException(
+                            "MESSAGE_WITH_TIMEOUT WAIT node requires exactly one TIMEOUT outgoing edge: "
+                                    + n.key() + " (found " + timeoutEdges.size() + ")");
+                }
+                if (normalEdges.get(0).to().equals(timeoutEdges.get(0).to())) {
+                    throw new IllegalArgumentException(
+                            "MESSAGE_WITH_TIMEOUT NORMAL and TIMEOUT edges cannot share target node: "
+                                    + n.key() + " -> " + normalEdges.get(0).to());
+                }
+            } else if (!timeoutEdges.isEmpty()) {
+                throw new IllegalArgumentException(
+                        n.waitSpec().waitKind() + " WAIT node cannot have TIMEOUT outgoing edge: " + n.key());
             }
         }
     }
