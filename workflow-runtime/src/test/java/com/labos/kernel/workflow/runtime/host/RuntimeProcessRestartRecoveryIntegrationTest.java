@@ -1113,4 +1113,404 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
             }
         }
     }
+
+    @Test
+    void repeatedHostRestartsAreIdempotentWithoutDuplicateInterventionsOrCommands() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g4a-reenter");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        String deviceId = "g4a-dev-reenter-" + tenant.toString().substring(0, 8);
+        String planKey = "g4a-plan-reenter-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+        Path lockFile = tempDir.resolve("reenter.lock");
+
+        var run = repo.createRun(tenant, "g4a-reenter-" + UUID.randomUUID(), "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, run.runId());
+        new GraphCoordinator(repo).advance(tenant, run.runId());
+        var res1 = repo.reserveCapacity(tenant, run.runId(), "cap-reenter-" + tenant, 1,
+                "dev_op", "DEVICE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, run.runId(), res1.attemptId(), "dev-q", "{}");
+        var wd1 = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).get(0);
+        repo.markOutboxDelivered(tenant, wd1.outboxId());
+        repo.acceptAttemptForExecution(tenant, run.runId(), res1.attemptId(),
+                res1.dispatchId(), "w-reenter", "dev_op", "DEVICE");
+        repo.startAttempt(tenant, run.runId(), res1.attemptId(), res1.dispatchId(), "w-reenter");
+        UUID cmd1 = repo.createCommandForAttempt(tenant, run.runId(), res1.attemptId(),
+                "w-reenter", deviceId, "Dispense", "QUERYABLE", "{\"v\":10}");
+        var dc1 = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).get(0);
+        UUID disp1 = UUID.randomUUID();
+        long ver1 = repo.loadCommand(tenant, cmd1).orElseThrow().version();
+        assertTrue(repo.markCommandSendStarted(tenant, cmd1, ver1, dc1.outboxId(), disp1, 1, "disp-reenter"));
+        repo.receiveInbox(tenant, deviceId, "reenter-ok-" + cmd1,
+                "DEVICE_COMMAND_RESULT", run.runId(),
+                "{\"commandId\":\"" + cmd1 + "\",\"deviceId\":\"" + deviceId
+                        + "\",\"messageType\":\"DEVICE_COMMAND_RESULT\",\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-r1\",\"outcome\":{\"v\":10}}");
+
+        try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId)) {
+            EmbeddedWorkflowRuntimeHost.Config cfg2 = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-reenter-2", 2, 16, 4, 2, 32, 100,
+                    Duration.ofMillis(35), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
+            long seqAfterHost2;
+            long cvAfterHost2;
+            long eventCountAfterHost2;
+            try (EmbeddedWorkflowRuntimeHost host2 = new EmbeddedWorkflowRuntimeHost(
+                    cfg2, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "cap-reenter-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        fail("Host 2 must not retry post-SEND_STARTED SUCCEEDED Attempt");
+                        return WorkerTaskHandler.TaskResult.of("out", "{}");
+                    }))) {
+                host2.start();
+                assertTrue(host2.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                var rec2 = host2.healthSnapshot().recoveryResult();
+                assertEquals(1, rec2.inbox().applied());
+                assertEquals(0, rec2.inbox().rejected());
+                assertEquals(1, rec2.manualRequired());
+                assertEquals(1, rec2.outbox().reconciledTerminal());
+                seqAfterHost2 = scalar(ds, "SELECT event_seq FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "'");
+                cvAfterHost2 = scalar(ds, "SELECT commit_version FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "'");
+                eventCountAfterHost2 = scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "'");
+            }
+
+            // Restart a third Host immediately on the exact same DB + lockFile: must be clean zero-op
+            EmbeddedWorkflowRuntimeHost.Config cfg3 = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockFile, "host-reenter-3", 2, 16, 4, 2, 32, 100,
+                    Duration.ofMillis(35), 16, List.of(server.endpoint()), stableGatewayConfig(), tenant);
+            try (EmbeddedWorkflowRuntimeHost host3 = new EmbeddedWorkflowRuntimeHost(
+                    cfg3, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "cap-reenter-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        fail("Host 3 must never re-execute already recovered Attempt");
+                        return WorkerTaskHandler.TaskResult.of("out", "{}");
+                    }))) {
+                host3.start();
+                assertTrue(host3.deviceGateway().awaitOnline(deviceId, Duration.ofSeconds(3)));
+                var rec3 = host3.healthSnapshot().recoveryResult();
+                assertEquals(0, rec3.inbox().applied());
+                assertEquals(0, rec3.inbox().rejected());
+                assertEquals(0, rec3.scanned());
+                assertEquals(0, rec3.safeToRetry());
+                assertEquals(0, rec3.manualRequired());
+                assertEquals(0, rec3.skipped());
+                assertEquals(0, rec3.outbox().safelyRequeued());
+                assertEquals(0, rec3.outbox().leftUncertain());
+                assertEquals(0, rec3.outbox().reconciledTerminal());
+
+                awaitCondition(Duration.ofSeconds(4),
+                        () -> host3.healthSnapshot().dispatchStats().cyclesCompleted() >= 2,
+                        () -> diagnoseRun(ds, tenant, run.runId(), host3));
+
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "' AND intervention_state='OPEN'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "'"));
+                assertEquals("SUCCEEDED", querySingleText(ds,
+                        "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                                + tenant + "' AND command_id='" + cmd1 + "'"));
+                assertEquals("DELIVERED", querySingleText(ds,
+                        "SELECT dispatch_state FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='"
+                                + tenant + "' AND dispatch_id='" + disp1 + "'"));
+                assertEquals(seqAfterHost2, scalar(ds, "SELECT event_seq FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "'"));
+                assertEquals(cvAfterHost2, scalar(ds, "SELECT commit_version FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "'"));
+                assertEquals(eventCountAfterHost2, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "'"));
+                assertTrue(server.receivedCommands().isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void cancelRequestedConfirmedCancelledMarksDispatchDeliveredAndTerminalRunLateInboxStaysImmutable() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        // Part A (P2-2): CANCEL_REQUESTED command receives confirmed CANCELLED result via Inbox before crash ->
+        // startup recovery must transition command_dispatch_attempt SEND_STARTED -> DELIVERED (never stranded).
+        UUID tenantA = createTenant(ds, "g4a-cancel-deliv");
+        String devA = "g4a-dev-cancel-" + tenantA.toString().substring(0, 8);
+        GraphPlan planA = compileSingleDevicePlan("g4a-plan-cancel-" + tenantA);
+        var runA = repo.createRun(tenantA, "g4a-cancel-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4a-plan-cancel-" + tenantA, "1", HexFormat.of().parseHex(planA.bpmnSha256()),
+                planA.compilerVersion(), GraphPlanCodec.toJson(planA), "{}", "start");
+        repo.startRun(tenantA, runA.runId());
+        new GraphCoordinator(repo).advance(tenantA, runA.runId());
+        var resA = repo.reserveCapacity(tenantA, runA.runId(), "cap-cancel-" + tenantA, 1,
+                "dev_op", "DEVICE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenantA, runA.runId(), resA.attemptId(), "dev-q", "{}");
+        var wdA = repo.beginOutboxSendForKind(tenantA, "WORKER_DISPATCH", 10).get(0);
+        repo.markOutboxDelivered(tenantA, wdA.outboxId());
+        repo.acceptAttemptForExecution(tenantA, runA.runId(), resA.attemptId(),
+                resA.dispatchId(), "w-cancel", "dev_op", "DEVICE");
+        repo.startAttempt(tenantA, runA.runId(), resA.attemptId(), resA.dispatchId(), "w-cancel");
+        UUID cmdA = repo.createCommandForAttempt(tenantA, runA.runId(), resA.attemptId(),
+                "w-cancel", devA, "Dispense", "QUERYABLE", "{\"v\":9}");
+        var dcA = repo.beginOutboxSendForKind(tenantA, "DEVICE_COMMAND", 10).get(0);
+        UUID dispA = UUID.randomUUID();
+        long verA = repo.loadCommand(tenantA, cmdA).orElseThrow().version();
+        assertTrue(repo.markCommandSendStarted(tenantA, cmdA, verA, dcA.outboxId(), dispA, 1, "disp-cancel"));
+        try (Connection c = ds.getConnection();
+             PreparedStatement ps = c.prepareStatement(
+                     "UPDATE workflow_runtime.command_ledger SET command_state='CANCEL_REQUESTED' "
+                             + "WHERE tenant_id=? AND command_id=?")) {
+            ps.setObject(1, tenantA);
+            ps.setObject(2, cmdA);
+            ps.executeUpdate();
+        }
+        var cancelInbox = repo.receiveInbox(tenantA, devA, "cancel-ok-" + cmdA,
+                "DEVICE_COMMAND_RESULT", runA.runId(),
+                "{\"commandId\":\"" + cmdA + "\",\"deviceId\":\"" + devA
+                        + "\",\"messageType\":\"DEVICE_COMMAND_RESULT\",\"state\":\"CANCELLED\",\"deviceSequence\":\"seq-cancel\",\"outcome\":{\"cancelled\":true}}");
+
+        Path lockA = tempDir.resolve("cancel-deliv.lock");
+        try (MockTcpDeviceServer serverA = new MockTcpDeviceServer(devA)) {
+            EmbeddedWorkflowRuntimeHost.Config cfgA = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockA, "host-cancel2", 2, 16, 4, 2, 32, 100,
+                    Duration.ofMillis(35), 16, List.of(serverA.endpoint()), stableGatewayConfig(), tenantA);
+            try (EmbeddedWorkflowRuntimeHost hostA = new EmbeddedWorkflowRuntimeHost(
+                    cfgA, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "cap-cancel-" + tenantA, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.of((req, ctx) -> {
+                        fail("CANCEL_REQUESTED -> CANCELLED Attempt must not auto-retry");
+                        return WorkerTaskHandler.TaskResult.of("out", "{}");
+                    }))) {
+                hostA.start();
+                assertTrue(hostA.deviceGateway().awaitOnline(devA, Duration.ofSeconds(3)));
+                var recA = hostA.healthSnapshot().recoveryResult();
+                assertEquals(1, recA.inbox().applied());
+                assertEquals(1, recA.manualRequired());
+                assertEquals(1, recA.outbox().reconciledTerminal());
+                assertEquals(0, recA.outbox().leftUncertain());
+
+                assertEquals("PROCESSED", querySingleText(ds,
+                        "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                                + tenantA + "' AND inbox_id='" + cancelInbox.inboxId() + "'"));
+                assertEquals("CANCELLED", querySingleText(ds,
+                        "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                                + tenantA + "' AND command_id='" + cmdA + "'"));
+                assertEquals("DELIVERED", querySingleText(ds,
+                        "SELECT dispatch_state FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='"
+                                + tenantA + "' AND dispatch_id='" + dispA + "'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='"
+                        + tenantA + "' AND dispatch_id='" + dispA + "' AND finished_at IS NOT NULL"));
+                assertEquals("DEAD_LETTER", querySingleText(ds,
+                        "SELECT outbox_state FROM workflow_runtime.runtime_outbox WHERE tenant_id='"
+                                + tenantA + "' AND outbox_id='" + dcA.outboxId() + "'"));
+                assertEquals("MANUAL_REQUIRED:CLOSED:BLOCKED", querySingleText(ds,
+                        "SELECT status||':'||control_gate||':'||recovery_state FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                                + tenantA + "' AND run_id='" + runA.runId() + "'"));
+            }
+        }
+
+        // Part B (P2-3): Late command inbox arriving against a terminal SUCCEEDED Run is rejected without
+        // mutating workflow_run.event_seq / commit_version or appending runtime_event rows.
+        UUID tenantB = createTenant(ds, "g4a-term-inbox");
+        String devB = "g4a-dev-term-" + tenantB.toString().substring(0, 8);
+        GraphPlan planB = compileSingleDevicePlan("g4a-plan-term-" + tenantB);
+        var runB = repo.createRun(tenantB, "g4a-term-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4a-plan-term-" + tenantB, "1", HexFormat.of().parseHex(planB.bpmnSha256()),
+                planB.compilerVersion(), GraphPlanCodec.toJson(planB), "{}", "start");
+        repo.startRun(tenantB, runB.runId());
+        new GraphCoordinator(repo).advance(tenantB, runB.runId());
+        var resB = repo.reserveCapacity(tenantB, runB.runId(), "cap-term-" + tenantB, 1,
+                "dev_op", "DEVICE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenantB, runB.runId(), resB.attemptId(), "dev-q", "{}");
+        var wdB = repo.beginOutboxSendForKind(tenantB, "WORKER_DISPATCH", 10).get(0);
+        repo.markOutboxDelivered(tenantB, wdB.outboxId());
+        repo.acceptAttemptForExecution(tenantB, runB.runId(), resB.attemptId(),
+                resB.dispatchId(), "w-term", "dev_op", "DEVICE");
+        repo.startAttempt(tenantB, runB.runId(), resB.attemptId(), resB.dispatchId(), "w-term");
+        UUID cmdB = repo.createCommandForAttempt(tenantB, runB.runId(), resB.attemptId(),
+                "w-term", devB, "Dispense", "QUERYABLE", "{\"v\":11}");
+        var dcB = repo.beginOutboxSendForKind(tenantB, "DEVICE_COMMAND", 10).get(0);
+        long verB = repo.loadCommand(tenantB, cmdB).orElseThrow().version();
+        assertTrue(repo.markCommandSendStarted(tenantB, cmdB, verB, dcB.outboxId(),
+                UUID.randomUUID(), 1, "disp-term"));
+        repo.markOutboxDelivered(tenantB, dcB.outboxId());
+        var okInboxB = repo.receiveInbox(tenantB, devB, "term-ok-" + cmdB,
+                "DEVICE_COMMAND_RESULT", runB.runId(),
+                "{\"commandId\":\"" + cmdB + "\",\"deviceId\":\"" + devB
+                        + "\",\"messageType\":\"DEVICE_COMMAND_RESULT\",\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-t\",\"outcome\":{\"ok\":1}}");
+        assertTrue(repo.applyCommandEvent(tenantB, runB.runId(), okInboxB.inboxId(), cmdB,
+                "SUCCEEDED", "seq-t", "{\"ok\":1}"));
+        repo.completeAttempt(tenantB, runB.runId(), resB.attemptId(), "out", "{\"ok\":1}");
+        new GraphCoordinator(repo).advance(tenantB, runB.runId());
+
+        assertEquals("SUCCEEDED:CLOSED", querySingleText(ds,
+                "SELECT status||':'||control_gate FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenantB + "' AND run_id='" + runB.runId() + "'"));
+        long seqBefore = scalar(ds, "SELECT event_seq FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                + tenantB + "' AND run_id='" + runB.runId() + "'");
+        long cvBefore = scalar(ds, "SELECT commit_version FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                + tenantB + "' AND run_id='" + runB.runId() + "'");
+        long eventCountBefore = scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                + tenantB + "' AND run_id='" + runB.runId() + "'");
+
+        var lateInboxB = repo.receiveInbox(tenantB, devB, "term-late-prog-" + cmdB,
+                "PROGRESS", runB.runId(),
+                "{\"commandId\":\"" + cmdB + "\",\"deviceId\":\"" + devB
+                        + "\",\"messageType\":\"PROGRESS\",\"state\":\"RUNNING\",\"deviceSequence\":\"seq-late\",\"outcome\":{\"pct\":90}}");
+
+        Path lockB = tempDir.resolve("term-inbox.lock");
+        try (MockTcpDeviceServer serverB = new MockTcpDeviceServer(devB)) {
+            EmbeddedWorkflowRuntimeHost.Config cfgB = new EmbeddedWorkflowRuntimeHost.Config(
+                    lockB, "host-termB", 2, 16, 4, 2, 32, 100,
+                    Duration.ofMillis(35), 16, List.of(serverB.endpoint()), stableGatewayConfig(), tenantB);
+            try (EmbeddedWorkflowRuntimeHost hostB = new EmbeddedWorkflowRuntimeHost(
+                    cfgB, repo,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "cap-term-" + tenantB, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.empty())) {
+                hostB.start();
+                assertTrue(hostB.deviceGateway().awaitOnline(devB, Duration.ofSeconds(3)));
+                var recB = hostB.healthSnapshot().recoveryResult();
+                assertEquals(0, recB.inbox().applied());
+                assertEquals(1, recB.inbox().rejected());
+                assertEquals(0, recB.scanned());
+
+                assertEquals("REJECTED", querySingleText(ds,
+                        "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                                + tenantB + "' AND inbox_id='" + lateInboxB.inboxId() + "'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_audit WHERE tenant_id='"
+                        + tenantB + "' AND run_id='" + runB.runId() + "' AND action='INBOX_RECEIPT_REJECTED'"));
+                assertEquals(seqBefore, scalar(ds, "SELECT event_seq FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenantB + "' AND run_id='" + runB.runId() + "'"));
+                assertEquals(cvBefore, scalar(ds, "SELECT commit_version FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenantB + "' AND run_id='" + runB.runId() + "'"));
+                assertEquals(eventCountBefore, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenantB + "' AND run_id='" + runB.runId() + "'"));
+                assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenantB + "' AND run_id='" + runB.runId() + "' AND event_type='INBOX_REJECTED'"));
+            }
+        }
+    }
+
+    @Test
+    void unscopedGlobalStartupRecoveryReconcilesMultiTenantCommandInboxAndIsIdempotent() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        UUID tenantX = createTenant(ds, "g4a-global-X");
+        UUID tenantY = createTenant(ds, "g4a-global-Y");
+        String devX = "devX-" + tenantX.toString().substring(0, 8);
+        String devY = "devY-" + tenantY.toString().substring(0, 8);
+        GraphPlan planX = compileSingleDevicePlan("g4a-plan-gX-" + tenantX);
+        GraphPlan planY = compileSingleDevicePlan("g4a-plan-gY-" + tenantY);
+
+        // Tenant X setup
+        var runX = repo.createRun(tenantX, "g4a-gX-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4a-plan-gX-" + tenantX, "1", HexFormat.of().parseHex(planX.bpmnSha256()),
+                planX.compilerVersion(), GraphPlanCodec.toJson(planX), "{}", "start");
+        repo.startRun(tenantX, runX.runId());
+        new GraphCoordinator(repo).advance(tenantX, runX.runId());
+        var resX = repo.reserveCapacity(tenantX, runX.runId(), "cap-gX-" + tenantX, 1,
+                "dev_op", "DEVICE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenantX, runX.runId(), resX.attemptId(), "q", "{}");
+        repo.markOutboxDelivered(tenantX, repo.beginOutboxSendForKind(tenantX, "WORKER_DISPATCH", 10).get(0).outboxId());
+        repo.acceptAttemptForExecution(tenantX, runX.runId(), resX.attemptId(), resX.dispatchId(), "wX", "dev_op", "DEVICE");
+        repo.startAttempt(tenantX, runX.runId(), resX.attemptId(), resX.dispatchId(), "wX");
+        UUID cmdX = repo.createCommandForAttempt(tenantX, runX.runId(), resX.attemptId(),
+                "wX", devX, "Dispense", "QUERYABLE", "{\"t\":\"X\"}");
+        var dcX = repo.beginOutboxSendForKind(tenantX, "DEVICE_COMMAND", 10).get(0);
+        UUID dispX = UUID.randomUUID();
+        assertTrue(repo.markCommandSendStarted(tenantX, cmdX, repo.loadCommand(tenantX, cmdX).orElseThrow().version(),
+                dcX.outboxId(), dispX, 1, "disp-X"));
+        var inboxX = repo.receiveInbox(tenantX, devX, "gX-ok-" + cmdX,
+                "DEVICE_COMMAND_RESULT", runX.runId(),
+                "{\"commandId\":\"" + cmdX + "\",\"deviceId\":\"" + devX
+                        + "\",\"messageType\":\"DEVICE_COMMAND_RESULT\",\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seqX\",\"outcome\":{\"t\":\"X\"}}");
+
+        // Tenant Y setup (with SUCCEEDED + trailing stale PROGRESS)
+        var runY = repo.createRun(tenantY, "g4a-gY-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4a-plan-gY-" + tenantY, "1", HexFormat.of().parseHex(planY.bpmnSha256()),
+                planY.compilerVersion(), GraphPlanCodec.toJson(planY), "{}", "start");
+        repo.startRun(tenantY, runY.runId());
+        new GraphCoordinator(repo).advance(tenantY, runY.runId());
+        var resY = repo.reserveCapacity(tenantY, runY.runId(), "cap-gY-" + tenantY, 1,
+                "dev_op", "DEVICE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenantY, runY.runId(), resY.attemptId(), "q", "{}");
+        repo.markOutboxDelivered(tenantY, repo.beginOutboxSendForKind(tenantY, "WORKER_DISPATCH", 10).get(0).outboxId());
+        repo.acceptAttemptForExecution(tenantY, runY.runId(), resY.attemptId(), resY.dispatchId(), "wY", "dev_op", "DEVICE");
+        repo.startAttempt(tenantY, runY.runId(), resY.attemptId(), resY.dispatchId(), "wY");
+        UUID cmdY = repo.createCommandForAttempt(tenantY, runY.runId(), resY.attemptId(),
+                "wY", devY, "Dispense", "QUERYABLE", "{\"t\":\"Y\"}");
+        var dcY = repo.beginOutboxSendForKind(tenantY, "DEVICE_COMMAND", 10).get(0);
+        UUID dispY = UUID.randomUUID();
+        assertTrue(repo.markCommandSendStarted(tenantY, cmdY, repo.loadCommand(tenantY, cmdY).orElseThrow().version(),
+                dcY.outboxId(), dispY, 1, "disp-Y"));
+        var inboxY = repo.receiveInbox(tenantY, devY, "gY-ok-" + cmdY,
+                "DEVICE_COMMAND_RESULT", runY.runId(),
+                "{\"commandId\":\"" + cmdY + "\",\"deviceId\":\"" + devY
+                        + "\",\"messageType\":\"DEVICE_COMMAND_RESULT\",\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seqY\",\"outcome\":{\"t\":\"Y\"}}");
+        var inboxYStale = repo.receiveInbox(tenantY, devY, "gY-late-" + cmdY,
+                "PROGRESS", runY.runId(),
+                "{\"commandId\":\"" + cmdY + "\",\"deviceId\":\"" + devY
+                        + "\",\"messageType\":\"PROGRESS\",\"state\":\"RUNNING\",\"deviceSequence\":\"seqY-late\",\"outcome\":{\"pct\":20}}");
+        try (Connection c = ds.getConnection();
+             PreparedStatement ps = c.prepareStatement(
+                     "UPDATE workflow_runtime.inbox_receipt SET received_at = received_at + interval '10 milliseconds' "
+                             + "WHERE tenant_id=? AND inbox_id=?")) {
+            ps.setObject(1, tenantY);
+            ps.setObject(2, inboxYStale.inboxId());
+            ps.executeUpdate();
+        }
+
+        // Unscoped recovery with batch limit=1 exercises bounded multi-page scanning across tenants
+        WorkerExecutionRecoveryService globalRecovery =
+                new WorkerExecutionRecoveryService(repo, new WorkerExecutionRegistry());
+        var first = globalRecovery.recoverAtStartup(1, "global-restart-1");
+        assertTrue(first.inbox().applied() >= 2);
+        assertTrue(first.inbox().rejected() >= 1);
+        assertTrue(first.manualRequired() >= 2);
+        assertTrue(first.outbox().reconciledTerminal() >= 2);
+
+        for (var entry : List.of(
+                new Object[]{tenantX, runX.runId(), resX.attemptId(), cmdX, dispX, dcX.outboxId(), inboxX.inboxId()},
+                new Object[]{tenantY, runY.runId(), resY.attemptId(), cmdY, dispY, dcY.outboxId(), inboxY.inboxId()})) {
+            UUID tId = (UUID) entry[0], rId = (UUID) entry[1], aId = (UUID) entry[2],
+                    cId = (UUID) entry[3], dId = (UUID) entry[4], oId = (UUID) entry[5], iId = (UUID) entry[6];
+            assertEquals("PROCESSED", querySingleText(ds,
+                    "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id='" + tId + "' AND inbox_id='" + iId + "'"));
+            assertEquals("SUCCEEDED", querySingleText(ds,
+                    "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id='" + tId + "' AND command_id='" + cId + "'"));
+            assertEquals("DELIVERED", querySingleText(ds,
+                    "SELECT dispatch_state FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='" + tId + "' AND dispatch_id='" + dId + "'"));
+            assertEquals("DELIVERED", querySingleText(ds,
+                    "SELECT outbox_state FROM workflow_runtime.runtime_outbox WHERE tenant_id='" + tId + "' AND outbox_id='" + oId + "'"));
+            assertEquals("UNKNOWN", querySingleText(ds,
+                    "SELECT attempt_state FROM workflow_runtime.node_attempt WHERE tenant_id='" + tId + "' AND attempt_id='" + aId + "'"));
+            assertEquals("MANUAL_REQUIRED", querySingleText(ds,
+                    "SELECT status FROM workflow_runtime.workflow_run WHERE tenant_id='" + tId + "' AND run_id='" + rId + "'"));
+        }
+        assertEquals("REJECTED", querySingleText(ds,
+                "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenantY + "' AND inbox_id='" + inboxYStale.inboxId() + "'"));
+        assertTrue(repo.findPendingCommandInboxReceipts(10).isEmpty());
+        assertTrue(repo.findInterruptedAttempts(10).isEmpty());
+        assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_outbox WHERE tenant_id IN ('"
+                + tenantX + "','" + tenantY + "') AND outbox_state IN ('PENDING','SENDING')"));
+
+        // Immediate second global startup pass is an exact no-op
+        var second = globalRecovery.recoverAtStartup(1, "global-restart-2");
+        assertEquals(0, second.inbox().applied());
+        assertEquals(0, second.inbox().rejected());
+        assertEquals(0, second.scanned());
+        assertEquals(0, second.safeToRetry());
+        assertEquals(0, second.manualRequired());
+        assertEquals(0, second.outbox().safelyRequeued());
+        assertEquals(first.outbox().leftUncertain(), second.outbox().leftUncertain());
+        assertEquals(0, second.outbox().reconciledTerminal());
+    }
 }

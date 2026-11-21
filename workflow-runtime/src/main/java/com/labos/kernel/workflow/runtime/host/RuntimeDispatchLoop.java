@@ -314,8 +314,9 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
                 }
                 String targetStatus = switch (drain.drainKind()) {
                     case "PAUSE" -> "PAUSED";
+                    case "STOP" -> "STOPPED";
                     case "FAILURE" -> "FAILED";
-                    default -> "STOPPED";
+                    default -> throw new IllegalStateException("Unsupported open drain kind: " + drain.drainKind());
                 };
                 repository.tryFinalizeDrain(drain.tenantId(), drain.runId(), drain.drainId(), targetStatus);
             } catch (RuntimeException ex) {

@@ -3381,6 +3381,13 @@ public final class WorkflowRuntimeRepository {
         return findPendingCommandInboxReceiptsInternal(tenantId, limit);
     }
 
+    /**
+     * Query un-reconciled device Command Inbox receipts across crashes.
+     *
+     * <p>Orders by authoritative ingestion timestamp ({@code received_at ASC, tenant_id ASC, inbox_id ASC})
+     * rather than protocol-optional/opaque {@code deviceSequence}; any out-of-order stale receipt is
+     * safely rejected by {@link #applyCommandEvent} state-machine CAS.
+     */
     private List<PendingCommandInboxReceipt> findPendingCommandInboxReceiptsInternal(UUID scopedTenantId, int limit) {
         if (limit < 1 || limit > 1000)
             throw new IllegalArgumentException("Inbox recovery batch limit must be 1..1000");
@@ -3426,7 +3433,7 @@ public final class WorkflowRuntimeRepository {
         String normalizedOutcome = (outcomeJson == null || outcomeJson.isBlank()) ? "{}" : outcomeJson;
         String normalizedActor = (actor == null || actor.isBlank()) ? "recovery" : actor;
         return required(() -> {
-            lockRun(tenantId, runId);
+            RunHead head = lockRun(tenantId, runId);
             int changed = jdbc.update("""
                 UPDATE workflow_runtime.inbox_receipt
                    SET receipt_state='REJECTED',
@@ -3442,8 +3449,11 @@ public final class WorkflowRuntimeRepository {
                     VALUES (?,?,'SYSTEM',?,'INBOX_RECEIPT_REJECTED','INBOX',?,?::jsonb,
                             'command inbox replay rejected during recovery')
                     """, tenantId, runId, normalizedActor, inboxId, normalizedOutcome);
-                appendEvents(tenantId, runId, List.of(new EventDraft(
-                        "INBOX_REJECTED", "INBOX", inboxId, null, null, null, normalizedOutcome)));
+                // Keep terminal Run event streams (event_seq / commit_version) immutable on late arrivals.
+                if (!List.of("SUCCEEDED", "FAILED", "STOPPED").contains(head.status())) {
+                    appendEvents(tenantId, runId, List.of(new EventDraft(
+                            "INBOX_REJECTED", "INBOX", inboxId, null, null, null, normalizedOutcome)));
+                }
             }
             return changed == 1;
         });
@@ -4160,7 +4170,7 @@ public final class WorkflowRuntimeRepository {
                        finished_at=clock_timestamp()
                  WHERE tenant_id=? AND command_id IN
                    (SELECT command_id FROM workflow_runtime.command_ledger
-                     WHERE tenant_id=? AND attempt_id=? AND command_state IN ('SUCCEEDED','FAILED'))
+                     WHERE tenant_id=? AND attempt_id=? AND command_state IN ('SUCCEEDED','FAILED','CANCELLED'))
                    AND dispatch_state='SEND_STARTED'
                 """,tenantId,tenantId,attemptId);
             jdbc.update("""
@@ -4277,7 +4287,7 @@ public final class WorkflowRuntimeRepository {
         try { return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)); }
         catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
-    private static String jsonEscape(String s) {
+    public static String jsonEscape(String s) {
         if (s == null) return "";
         StringBuilder out = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {

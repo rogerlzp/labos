@@ -100,6 +100,11 @@ public final class WorkerExecutionRecoveryService {
         return new StartupResult(inboxSummary, outbox, scanned, safe, manual, skipped, items);
     }
 
+    /**
+     * Replay bounded pages of durable {@code RECEIVED}/{@code PROCESSING} command Inbox rows before
+     * Attempt/Outbox recovery. Fails closed if any page makes zero progress or hits an unresolved
+     * stale state; operator remediation of {@code inbox_receipt} is required before Host restart.
+     */
     private InboxRecoverySummary recoverPendingCommandInbox(int limit, String recoveryActor) {
         int applied = 0;
         int rejected = 0;
@@ -165,7 +170,7 @@ public final class WorkerExecutionRecoveryService {
                     receipt.tenantId(),
                     receipt.runId(),
                     receipt.inboxId(),
-                    "{\"rejectionReason\":\"" + jsonEscape(reason) + "\"}",
+                    "{\"rejectionReason\":\"" + WorkflowRuntimeRepository.jsonEscape(reason) + "\"}",
                     recoveryActor);
             if (!marked) {
                 Optional<String> state = repository.findInboxReceiptState(receipt.tenantId(), receipt.inboxId());
@@ -182,28 +187,6 @@ public final class WorkerExecutionRecoveryService {
     private static String safeMessage(Throwable t) {
         String msg = t.getMessage();
         return (msg == null || msg.isBlank()) ? t.getClass().getSimpleName() : msg;
-    }
-
-    private static String jsonEscape(String s) {
-        if (s == null) return "";
-        StringBuilder out = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\b' -> out.append("\\b");
-                case '\f' -> out.append("\\f");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) out.append(String.format("\\u%04x", (int) c));
-                    else out.append(c);
-                }
-            }
-        }
-        return out.toString();
     }
 
     /** Cancel a live local Worker first, then reconcile from durable facts. */
