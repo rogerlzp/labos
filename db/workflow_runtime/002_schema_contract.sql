@@ -7,7 +7,8 @@ DECLARE
     'loop_context','wait_registration','retry_registration','flow_variable','branch_output',
     'runtime_event','inbox_receipt','inbox_protocol_violation','runtime_outbox',
     'command_ledger','command_dispatch_attempt','resource_lease','drain_record','drain_item',
-    'runtime_checkpoint','manual_intervention','quarantine_record','runtime_audit'
+    'runtime_checkpoint','manual_intervention','quarantine_record','runtime_audit',
+    'schema_migration'
   ];
   forbidden text[] := ARRAY['worker_execution_lease','resource_fence_counter'];
   missing text[];
@@ -100,6 +101,19 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='workflow_runtime'
       AND table_name='worker_execution_fact' AND column_name='side_effect_key') THEN
     RAISE EXCEPTION 'worker_execution_fact.side_effect_key identity column is missing';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'workflow_runtime' AND NOT i.indisvalid
+  ) THEN
+    RAISE EXCEPTION 'Invalid index found in workflow_runtime schema';
+  END IF;
+  IF (SELECT count(*) FROM information_schema.columns WHERE table_schema='workflow_runtime'
+      AND table_name='schema_migration'
+      AND column_name IN ('version','filename','sha256','mode','applied_at','applied_by')) <> 6 THEN
+    RAISE EXCEPTION 'schema_migration ledger columns are incomplete';
   END IF;
 END $$;
 
