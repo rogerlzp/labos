@@ -1225,6 +1225,25 @@ class LocalTaskDispatchAndCommandLoopTest {
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                 + tenant + "' AND source_message_id='" + earlyMessageId + "' AND receipt_state='PROCESSED'"));
 
+        // G4-D: the Schema-allowed PROTOCOL_VIOLATION receipt state is terminal and must
+        // produce a permanent outcome on replay rather than a retryable StaleRuntimeWriteException.
+        var protocolStateFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "protocol-state-dev", true);
+        DeviceCommandExecutionService protocolStateSvc = new DeviceCommandExecutionService(repo, env -> null);
+        String protocolStateMessageId = "protocol-state-" + UUID.randomUUID();
+        String protocolStatePayload = "{\"commandId\":\"" + protocolStateFix.commandId()
+                + "\",\"deviceId\":\"protocol-state-dev\",\"messageType\":\"COMMAND_RESULT\","
+                + "\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-protocol-state\",\"outcome\":{}}";
+        var protocolStateReceipt = repo.receiveInbox(tenant, "protocol-state-dev", protocolStateMessageId,
+                "COMMAND_RESULT", protocolStateFix.runId(), protocolStatePayload);
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("UPDATE workflow_runtime.inbox_receipt SET receipt_state='PROTOCOL_VIOLATION' "
+                    + "WHERE tenant_id='" + tenant + "' AND inbox_id='" + protocolStateReceipt.inboxId() + "'");
+        }
+        var protocolStateReplay = protocolStateSvc.ingestDeviceEvent(tenant, protocolStateFix.runId(),
+                "protocol-state-dev", protocolStateMessageId, "COMMAND_RESULT", protocolStateFix.commandId(),
+                "SUCCEEDED", "seq-protocol-state", "{}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, protocolStateReplay.status());
+
         // G4-D: repeated PROGRESS events are valid RUNNING -> RUNNING evidence, while UNKNOWN
         // remains fail-closed against a later ordinary success receipt.
         var progressFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "progress-dev", true);
