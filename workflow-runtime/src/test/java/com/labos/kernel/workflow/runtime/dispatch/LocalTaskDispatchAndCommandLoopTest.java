@@ -1224,6 +1224,10 @@ class LocalTaskDispatchAndCommandLoopTest {
         assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, earlyReplay.status());
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                 + tenant + "' AND source_message_id='" + earlyMessageId + "' AND receipt_state='PROCESSED'"));
+        // Keep the shared PG17 database isolated: this fixture intentionally leaves a live
+        // Attempt after proving the early receipt can be retried successfully.
+        repo.failAttempt(tenant, preSendFix.runId(), preSendFix.attemptId(),
+                "{\\"reason\\":\\"g4d-pre-send-fixture-cleanup\\"}", true);
 
         // G4-D: the Schema-allowed PROTOCOL_VIOLATION receipt state is terminal and must
         // produce a permanent outcome on replay rather than a retryable StaleRuntimeWriteException.
@@ -1243,6 +1247,10 @@ class LocalTaskDispatchAndCommandLoopTest {
                 "protocol-state-dev", protocolStateMessageId, "COMMAND_RESULT", protocolStateFix.commandId(),
                 "SUCCEEDED", "seq-protocol-state", "{}");
         assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, protocolStateReplay.status());
+        // This fixture only exercises receipt-state replay; it must not leak a STARTED Attempt
+        // into other tests sharing the same PostgreSQL database.
+        repo.failAttempt(tenant, protocolStateFix.runId(), protocolStateFix.attemptId(),
+                "{\\"reason\\":\\"g4d-protocol-state-fixture-cleanup\\"}", true);
 
         // G4-D: repeated PROGRESS events are valid RUNNING -> RUNNING evidence, while UNKNOWN
         // remains fail-closed against a later ordinary success receipt.
