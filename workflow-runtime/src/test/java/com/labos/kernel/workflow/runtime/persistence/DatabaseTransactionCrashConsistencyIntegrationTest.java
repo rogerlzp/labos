@@ -1,5 +1,8 @@
 package com.labos.kernel.workflow.runtime.persistence;
 
+import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
+import com.labos.kernel.workflow.runtime.graph.GraphPlan;
+import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
 import com.labos.kernel.workflow.runtime.persistence.FaultInjectingTransactionManager.InjectedCommitAbort;
 import com.labos.kernel.workflow.runtime.persistence.FaultInjectingTransactionManager.InjectedLostResult;
 import org.junit.jupiter.api.Assumptions;
@@ -13,6 +16,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -498,23 +502,511 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
         var branchB = startPureTaskRunAtNode(ds, repo, tenant, "g4b-t10-b", run.runId(), "branch-b");
         long seqBefore = runEventSeq(ds, tenant, run.runId());
 
-        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
-                () -> repo.completeAttempt(tenant, run.runId(), branchB.attemptId(), "res", "{\"v\":2}", Map.of("shared", "2")),
-                "a sibling parallel branch may not overwrite the same flow_variable key");
+        try {
+            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
+                    () -> repo.completeAttempt(tenant, run.runId(), branchB.attemptId(), "res", "{\"v\":2}", Map.of("shared", "2")),
+                    "a sibling parallel branch may not overwrite the same flow_variable key");
 
-        assertEquals("STARTED", attemptState(ds, tenant, branchB.attemptId()), "Attempt update must roll back");
-        assertEquals("RUNNING", tokenState(ds, tenant, branchB.tokenId()), "Token must roll back to RUNNING");
-        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.branch_output WHERE tenant_id=? AND activation_id=?",
-                tenant, branchB.activationId()), "Branch output must roll back");
-        assertEquals(1L, flowVariableVersion(ds, tenant, run.runId(), "shared"), "the first branch's value must be preserved");
-        assertEquals("1", flowVariableValue(ds, tenant, run.runId(), "shared"));
-        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id=? AND attempt_id=? AND fact_type='EXECUTION_RIGHT_RELEASED'",
-                tenant, branchB.attemptId()));
-        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='ATTEMPT_SUCCEEDED'",
-                tenant, run.runId()), "only branch-a's ATTEMPT_SUCCEEDED may survive");
+            assertEquals("STARTED", attemptState(ds, tenant, branchB.attemptId()), "Attempt update must roll back");
+            assertEquals("RUNNING", tokenState(ds, tenant, branchB.tokenId()), "Token must roll back to RUNNING");
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.branch_output WHERE tenant_id=? AND activation_id=?",
+                    tenant, branchB.activationId()), "Branch output must roll back");
+            assertEquals(1L, flowVariableVersion(ds, tenant, run.runId(), "shared"), "the first branch's value must be preserved");
+            assertEquals("1", flowVariableValue(ds, tenant, run.runId(), "shared"));
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id=? AND attempt_id=? AND fact_type='EXECUTION_RIGHT_RELEASED'",
+                    tenant, branchB.attemptId()));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='ATTEMPT_SUCCEEDED'",
+                    tenant, run.runId()), "only branch-a's ATTEMPT_SUCCEEDED may survive");
+            assertEquals(seqBefore, runEventSeq(ds, tenant, run.runId()));
+            assertEventLogContiguous(ds, tenant, run.runId());
+            System.out.println("[T10] parallel-branch rollback: branch-b Attempt STARTED, branch-a value preserved, event_seq unchanged");
+        } finally {
+            // The rolled-back branch-b Attempt is left STARTED with a HELD reservation. Abandon it so
+            // the shared runtime_test DB is not polluted for order-sensitive startup-recovery suites
+            // (WorkflowRuntimeRepositoryTest#startupRecoveryScansBeyondOneBatch counts ALL STARTED Attempts).
+            if ("STARTED".equals(attemptStateOrNull(ds, tenant, branchB.attemptId()))) {
+                repo.recoverInterruptedAttempt(tenant, run.runId(), branchB.attemptId(), "g4b-t10-cleanup");
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // T11: conditional-split variable read aborted before commit -> branch Token stays READY
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T11 advanceGraphTokenWithVariables abort-before-commit leaves the branch Token READY and nothing durable")
+    void advanceGraphTokenWithVariablesAbortBeforeCommitRollsBackFully() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        var repo = new WorkflowRuntimeRepository(ds, faults);
+
+        var run = repo.createRun(tenant, "g4b-t11-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4b-t11-flow-" + tenant, "1", new byte[32], "ci", "{}", "{}", "start");
+        repo.startRun(tenant, run.runId());
+        UUID startToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        repo.advanceGraphToken(tenant, run.runId(), startToken, "start", "SEQUENCE", List.of("choice"));
+        UUID choiceToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        long seqBefore = runEventSeq(ds, tenant, run.runId());
+        long versionBefore = runCommitVersion(ds, tenant, run.runId());
+        int advancedBefore = cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
+                tenant, run.runId());
+
+        faults.armOneShot(FaultInjectingTransactionManager.Mode.ABORT_BEFORE_COMMIT);
+        assertThrows(InjectedCommitAbort.class, () -> repo.advanceGraphTokenWithVariables(
+                tenant, run.runId(), choiceToken, "choice", snapshot -> {
+                    assertNotNull(snapshot, "the conditional split must read variables inside the same Run-locked transaction");
+                    return new WorkflowRuntimeRepository.GraphTokenTransitionDecision(
+                            "SEQUENCE", List.of("end-a"), null);
+                }));
+        faults.disarm();
+
+        assertEquals("READY", tokenState(ds, tenant, choiceToken), "conditional-split Token must roll back to READY");
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND token_id=?",
+                tenant, choiceToken), "no Activation may be durable");
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a'",
+                tenant, run.runId()), "no successor Token may be durable");
+        assertEquals(advancedBefore, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
+                tenant, run.runId()), "the aborted conditional split must not append a GRAPH_NODE_ADVANCED event");
+        assertEquals(seqBefore, runEventSeq(ds, tenant, run.runId()));
+        assertEquals(versionBefore, runCommitVersion(ds, tenant, run.runId()));
+        assertEventLogContiguous(ds, tenant, run.runId());
+        System.out.println("[T11] conditional-split abort-before-commit: choice Token READY, no Activation/successor/event");
+
+        var retry = repo.advanceGraphTokenWithVariables(tenant, run.runId(), choiceToken, "choice",
+                snapshot -> new WorkflowRuntimeRepository.GraphTokenTransitionDecision(
+                        "SEQUENCE", List.of("end-a"), null));
+        assertEquals("ADVANCED", retry.outcome());
+        assertEquals("CONSUMED", tokenState(ds, tenant, choiceToken));
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a' AND token_state='READY'",
+                tenant, run.runId()));
+        assertEventLogContiguous(ds, tenant, run.runId());
+        System.out.println("[T11] retry after abort: ADVANCED, selected successor end-a READY, event log contiguous");
+    }
+
+    // ---------------------------------------------------------------------
+    // T12: conditional-split lost-result-after-commit -> durable, replay fails closed
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T12 advanceGraphTokenWithVariables lost-result-after-commit is durable and replay fails closed")
+    void advanceGraphTokenWithVariablesLostResultAfterCommitIsDurableAndReplayFailsClosed() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        var repo = new WorkflowRuntimeRepository(ds, faults);
+
+        var run = repo.createRun(tenant, "g4b-t12-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4b-t12-flow-" + tenant, "1", new byte[32], "ci", "{}", "{}", "start");
+        repo.startRun(tenant, run.runId());
+        UUID startToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        repo.advanceGraphToken(tenant, run.runId(), startToken, "start", "SEQUENCE", List.of("choice"));
+        UUID choiceToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        long seqBefore = runEventSeq(ds, tenant, run.runId());
+        long versionBefore = runCommitVersion(ds, tenant, run.runId());
+        int advancedBefore = cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
+                tenant, run.runId());
+
+        faults.armOneShot(FaultInjectingTransactionManager.Mode.LOST_RESULT_AFTER_COMMIT);
+        assertThrows(InjectedLostResult.class, () -> repo.advanceGraphTokenWithVariables(
+                tenant, run.runId(), choiceToken, "choice",
+                snapshot -> new WorkflowRuntimeRepository.GraphTokenTransitionDecision(
+                        "SEQUENCE", List.of("end-a"), null)));
+        faults.disarm();
+
+        assertEquals("CONSUMED", tokenState(ds, tenant, choiceToken), "committed split must consume the source Token");
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND token_id=? AND activation_state='SUCCEEDED'",
+                tenant, choiceToken));
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a' AND token_state='READY' AND parent_token_id=?",
+                tenant, run.runId(), choiceToken), "the committed successor Token must be durable");
+        assertEquals(advancedBefore + 1, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
+                tenant, run.runId()));
+        assertEquals(seqBefore + 1, runEventSeq(ds, tenant, run.runId()));
+        assertEquals(versionBefore + 1, runCommitVersion(ds, tenant, run.runId()));
+        assertEquals("RUNNING", runStatus(ds, tenant, run.runId()));
+        assertEventLogContiguous(ds, tenant, run.runId());
+        System.out.println("[T12] conditional-split lost-result-after-commit: choice CONSUMED, end-a READY, event_seq=" +
+                runEventSeq(ds, tenant, run.runId()));
+
+        assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class,
+                () -> repo.advanceGraphTokenWithVariables(tenant, run.runId(), choiceToken, "choice",
+                        snapshot -> new WorkflowRuntimeRepository.GraphTokenTransitionDecision(
+                                "SEQUENCE", List.of("end-b"), null)),
+                "replaying the conditional split on a consumed Token must fail closed");
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a'",
+                tenant, run.runId()), "replay must not create a second successor");
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-b'",
+                tenant, run.runId()));
+        assertEquals(seqBefore + 1, runEventSeq(ds, tenant, run.runId()));
+        System.out.println("[T12] replay after lost result: StaleRuntimeWriteException, no duplicate successor/event");
+    }
+
+    // ---------------------------------------------------------------------
+    // T13: conditional-split resolver throws inside the tx -> the whole multi-statement tx rolls back
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T13 advanceGraphTokenWithVariables resolver exception rolls the whole conditional-split transaction back")
+    void advanceGraphTokenWithVariablesResolverExceptionRollsBackFully() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var run = repo.createRun(tenant, "g4b-t13-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4b-t13-flow-" + tenant, "1", new byte[32], "ci", "{}", "{}", "start");
+        repo.startRun(tenant, run.runId());
+        UUID startToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        repo.advanceGraphToken(tenant, run.runId(), startToken, "start", "SEQUENCE", List.of("choice"));
+        UUID choiceToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        long seqBefore = runEventSeq(ds, tenant, run.runId());
+        int advancedBefore = cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
+                tenant, run.runId());
+
+        assertThrows(IllegalStateException.class, () -> repo.advanceGraphTokenWithVariables(
+                tenant, run.runId(), choiceToken, "choice",
+                snapshot -> { throw new IllegalStateException("no matching conditional flow"); }),
+                "a resolver fault after the Activation insert must roll the whole transaction back");
+
+        assertEquals("READY", tokenState(ds, tenant, choiceToken), "Token must roll back to READY");
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND token_id=?",
+                tenant, choiceToken), "the freshly inserted Activation must roll back");
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a'",
+                tenant, run.runId()));
+        assertEquals(advancedBefore, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
+                tenant, run.runId()));
         assertEquals(seqBefore, runEventSeq(ds, tenant, run.runId()));
         assertEventLogContiguous(ds, tenant, run.runId());
-        System.out.println("[T10] parallel-branch rollback: branch-b Attempt STARTED, branch-a value preserved, event_seq unchanged");
+        System.out.println("[T13] resolver exception: choice Token READY, activation/successor/event all rolled back");
+
+        var retry = repo.advanceGraphTokenWithVariables(tenant, run.runId(), choiceToken, "choice",
+                snapshot -> new WorkflowRuntimeRepository.GraphTokenTransitionDecision(
+                        "SEQUENCE", List.of("end-a"), null));
+        assertEquals("ADVANCED", retry.outcome());
+        assertEventLogContiguous(ds, tenant, run.runId());
+        System.out.println("[T13] retry after resolver exception: ADVANCED");
+    }
+
+    // ---------------------------------------------------------------------
+    // T14: SPLIT -> JOIN -> END; abort on the Join release rolls back branch/split/join touches
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T14 SPLIT -> JOIN -> END abort on Join release rolls back branch/split/join and retry completes the Run")
+    void splitJoinEndAbortOnJoinReleaseRollsBackAndRetryCompletes() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        var run = repo.createRun(tenant, "g4b-t14-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4b-t14-flow-" + tenant, "1", new byte[32], "ci", "{}", "{}", "start");
+        repo.startRun(tenant, run.runId());
+        UUID startToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        repo.advanceGraphToken(tenant, run.runId(), startToken, "start", "SEQUENCE", List.of("split"));
+        UUID splitToken = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        repo.advanceGraphToken(tenant, run.runId(), splitToken, "split", "SPLIT", List.of("branch-a", "branch-b"));
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.split_activation WHERE tenant_id=? AND run_id=? AND split_state='OPEN'",
+                tenant, run.runId()));
+        assertEquals(2, cnt(ds, "SELECT count(*) FROM workflow_runtime.branch_activation WHERE tenant_id=? AND run_id=? AND branch_state='ACTIVE'",
+                tenant, run.runId()));
+
+        // Branch A arrives at the Join first: not all branches arrived, so the Join must NOT release yet.
+        var a = startTaskRunAtNode(ds, repo, tenant, "g4b-t14-a", run.runId(), "branch-a", "PURE");
+        repo.completeAttempt(tenant, run.runId(), a.attemptId(), "res", "{\"v\":1}");
+        repo.advanceCompletedGraphActivation(tenant, run.runId(), a.activationId(), "SEQUENCE", List.of("join"));
+        UUID joinTokenA = readyTokenAtNode(ds, tenant, run.runId(), "join");
+        assertFalse(repo.advanceGraphToken(tenant, run.runId(), joinTokenA, "join", "JOIN", List.of("end"), "join").runCompleted());
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id=? AND run_id=? AND join_state='WAITING'",
+                tenant, run.runId()));
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end'",
+                tenant, run.runId()));
+
+        var b = startTaskRunAtNode(ds, repo, tenant, "g4b-t14-b", run.runId(), "branch-b", "PURE");
+        repo.completeAttempt(tenant, run.runId(), b.attemptId(), "res", "{\"v\":2}");
+        repo.advanceCompletedGraphActivation(tenant, run.runId(), b.activationId(), "SEQUENCE", List.of("join"));
+        UUID joinTokenB = readyTokenAtNode(ds, tenant, run.runId(), "join");
+        long seqBefore = runEventSeq(ds, tenant, run.runId());
+
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        // Rebuild the Repository over a fault-injecting transaction manager only for the abort step.
+        var fRepo = new WorkflowRuntimeRepository(ds, faults);
+        faults.armOneShot(FaultInjectingTransactionManager.Mode.ABORT_BEFORE_COMMIT);
+        assertThrows(InjectedCommitAbort.class, () -> fRepo.advanceGraphToken(tenant, run.runId(),
+                joinTokenB, "join", "JOIN", List.of("end"), "join"));
+        faults.disarm();
+
+        assertEquals("READY", tokenState(ds, tenant, joinTokenB), "the Join arrival Token must roll back to READY");
+        assertEquals("ACTIVE", branchState(ds, tenant, run.runId(), "branch-b"), "branch-b must not stay ARRIVED");
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.split_activation WHERE tenant_id=? AND run_id=? AND split_state='OPEN' AND arrived_branch_count=1",
+                tenant, run.runId()), "the Split arrival counter must roll back");
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id=? AND run_id=? AND join_state='WAITING'",
+                tenant, run.runId()), "the Join must remain WAITING");
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end'",
+                tenant, run.runId()), "no successor Token may be durable");
+        assertEquals(seqBefore, runEventSeq(ds, tenant, run.runId()));
+        assertEventLogContiguous(ds, tenant, run.runId());
+        System.out.println("[T14] abort on Join release: branch-b ACTIVE, split OPEN(arrived=1), join WAITING, no end Token, event_seq unchanged");
+
+        var released = repo.advanceGraphToken(tenant, run.runId(), joinTokenB, "join", "JOIN", List.of("end"), "join");
+        assertEquals(1, released.tokensCreated());
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.split_activation WHERE tenant_id=? AND run_id=? AND split_state='CLOSED'",
+                tenant, run.runId()));
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.join_activation WHERE tenant_id=? AND run_id=? AND join_state='RELEASED'",
+                tenant, run.runId()));
+        UUID endToken = readyTokenAtNode(ds, tenant, run.runId(), "end");
+        assertTrue(repo.advanceGraphToken(tenant, run.runId(), endToken, "end", "END", List.of()).runCompleted(),
+                "reaching END with no remaining blocker must complete the Run");
+        assertEquals("SUCCEEDED", runStatus(ds, tenant, run.runId()));
+        assertEventLogContiguous(ds, tenant, run.runId());
+        System.out.println("[T14] retry after abort: Join RELEASED, Split CLOSED, end Token consumed, Run SUCCEEDED");
+    }
+
+    // ---------------------------------------------------------------------
+    // T15: GraphCoordinator.advance multi-transaction crash - never terminalizes a healthy Run
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T15 GraphCoordinator.advance aborting the 2nd transaction keeps step 1 durable, rolls step 2 back, and never calls failGraphRun")
+    void graphCoordinatorAdvanceAbortOnSecondTransactionDoesNotFailRunAndResumes() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        var repo = new WorkflowRuntimeRepository(ds, faults);
+
+        UUID runId = createConditionalRun(repo, tenant, "g4b-t15", "{\"takeA\":true}");
+        var coordinator = new GraphCoordinator(repo);
+        UUID startToken = repo.findReadyGraphTokens(tenant, runId, 10).get(0).tokenId();
+
+        faults.armAtWrite(FaultInjectingTransactionManager.Mode.ABORT_BEFORE_COMMIT, 2);
+        assertThrows(InjectedCommitAbort.class, () -> coordinator.advance(tenant, runId));
+
+        // A DB-level fault is NOT one of IllegalStateException/IllegalArgumentException/InvalidTransitionException,
+        // so the Coordinator must NOT call failGraphRun and the healthy Run must stay RUNNING / OPEN.
+        assertEquals("RUNNING", runStatus(ds, tenant, runId));
+        assertEquals("OPEN", controlGate(ds, tenant, runId));
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id=? AND run_id=? AND intervention_state='OPEN'",
+                tenant, runId));
+        // Step 1 (START SEQUENCE) is durable; step 2 (conditional split) is fully rolled back.
+        assertEquals("CONSUMED", tokenState(ds, tenant, startToken));
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND token_id=? AND activation_state='SUCCEEDED'",
+                tenant, startToken));
+        UUID choiceToken = repo.findReadyGraphTokens(tenant, runId, 10).get(0).tokenId();
+        assertEquals("choice", tokenNodeKey(ds, tenant, choiceToken));
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND token_id=?",
+                tenant, choiceToken), "the aborted step must leave no Activation behind");
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a'",
+                tenant, runId));
+        assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
+                tenant, runId), "only step 1's GRAPH_NODE_ADVANCED may survive");
+        System.out.println("[T15] 2nd-tx abort: Run RUNNING/OPEN, no failGraphRun; step 1 durable, step 2 rolled back");
+
+        var summary = coordinator.advance(tenant, runId);
+        assertTrue(summary.runCompleted(), "a subsequent advance must resume and complete the Run");
+        assertEquals("SUCCEEDED", runStatus(ds, tenant, runId));
+        assertEventLogContiguous(ds, tenant, runId);
+        System.out.println("[T15] resume after 2nd-tx abort: Run SUCCEEDED");
+    }
+
+    // ---------------------------------------------------------------------
+    // T16: GraphCoordinator.advance lost result after commit - recovery by re-discovery
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T16 GraphCoordinator.advance lost result after commit keeps the Run healthy and the next advance re-discovers and completes")
+    void graphCoordinatorAdvanceLostResultRecoversByRediscovery() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        var repo = new WorkflowRuntimeRepository(ds, faults);
+
+        UUID runId = createConditionalRun(repo, tenant, "g4b-t16", "{\"takeA\":true}");
+        var coordinator = new GraphCoordinator(repo);
+        UUID startToken = repo.findReadyGraphTokens(tenant, runId, 10).get(0).tokenId();
+
+        faults.armOneShot(FaultInjectingTransactionManager.Mode.LOST_RESULT_AFTER_COMMIT);
+        assertThrows(InjectedLostResult.class, () -> coordinator.advance(tenant, runId));
+
+        // The first transaction committed but the caller lost the summary: no failGraphRun, and the
+        // committed step must be durable and re-discoverable on the next advance.
+        assertEquals("RUNNING", runStatus(ds, tenant, runId));
+        assertEquals("OPEN", controlGate(ds, tenant, runId));
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.manual_intervention WHERE tenant_id=? AND run_id=? AND intervention_state='OPEN'",
+                tenant, runId));
+        assertEquals("CONSUMED", tokenState(ds, tenant, startToken));
+        UUID choiceToken = repo.findReadyGraphTokens(tenant, runId, 10).get(0).tokenId();
+        assertEquals("choice", tokenNodeKey(ds, tenant, choiceToken));
+        assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a'",
+                tenant, runId));
+        System.out.println("[T16] lost result after commit: Run RUNNING/OPEN, no failGraphRun, committed step re-discoverable");
+
+        var summary = coordinator.advance(tenant, runId);
+        assertTrue(summary.runCompleted(), "re-discovery must auto-advance the committed successor to completion");
+        assertEquals("SUCCEEDED", runStatus(ds, tenant, runId));
+        assertEventLogContiguous(ds, tenant, runId);
+        System.out.println("[T16] re-discovery after lost result: Run SUCCEEDED");
+    }
+
+    // ---------------------------------------------------------------------
+    // T17: reserveCapacity abort-before-commit -> capacity/token/activation/attempt/reservation/event all roll back
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T17 reserveCapacity abort-before-commit rolls back capacity/token/activation/attempt/reservation/event")
+    void reserveCapacityAbortBeforeCommitRollsBackFully() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        var repo = new WorkflowRuntimeRepository(ds, faults);
+
+        var run = repo.createRun(tenant, "g4b-t17-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4b-t17-flow-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task");
+        repo.startRun(tenant, run.runId());
+        UUID tokenId = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+        long seqBefore = runEventSeq(ds, tenant, run.runId());
+        try {
+            faults.armOneShot(FaultInjectingTransactionManager.Mode.ABORT_BEFORE_COMMIT);
+            assertThrows(InjectedCommitAbort.class, () -> repo.reserveCapacity(tenant, run.runId(),
+                    "g4b-t17-cap", 1, "task", "PURE", Instant.now().plusSeconds(300)));
+            faults.disarm();
+
+            assertEquals(0, capacityReservedCount(ds, tenant, "g4b-t17-cap"), "capacity must not stay reserved");
+            assertEquals("READY", tokenState(ds, tenant, tokenId), "Token must roll back to READY");
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND run_id=?", tenant, run.runId()));
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id=? AND run_id=?", tenant, run.runId()));
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.dispatch_reservation WHERE tenant_id=? AND run_id=?", tenant, run.runId()));
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='DISPATCH_RESERVED'",
+                    tenant, run.runId()));
+            assertEquals(seqBefore, runEventSeq(ds, tenant, run.runId()));
+            System.out.println("[T17] reserveCapacity abort: capacity=0, Token READY, no activation/attempt/reservation/event");
+
+            var retry = repo.reserveCapacity(tenant, run.runId(), "g4b-t17-cap", 1, "task", "PURE",
+                    Instant.now().plusSeconds(300));
+            assertNotNull(retry.attemptId());
+            assertEquals("RESERVED", tokenState(ds, tenant, tokenId));
+            assertEquals(1, capacityReservedCount(ds, tenant, "g4b-t17-cap"));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.dispatch_reservation WHERE tenant_id=? AND run_id=? AND reservation_state='HELD'",
+                    tenant, run.runId()));
+            assertEventLogContiguous(ds, tenant, run.runId());
+            System.out.println("[T17] retry after abort: capacity reserved, Token RESERVED, reservation HELD");
+        } finally {
+            faults.disarm();
+            abandonIfInterrupted(repo, ds, tenant, run.runId(), "g4b-t17-cleanup");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // T18: reserveCapacity lost-result-after-commit -> durable across all tables, blind retry fails closed
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T18 reserveCapacity lost-result-after-commit is durable and a blind retry fails closed")
+    void reserveCapacityLostResultAfterCommitIsDurable() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        var repo = new WorkflowRuntimeRepository(ds, faults);
+
+        var run = repo.createRun(tenant, "g4b-t18-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4b-t18-flow-" + tenant, "1", new byte[32], "ci", "{}", "{}", "task");
+        repo.startRun(tenant, run.runId());
+        try {
+            UUID tokenId = repo.findReadyGraphTokens(tenant, run.runId(), 10).get(0).tokenId();
+            long seqBefore = runEventSeq(ds, tenant, run.runId());
+            long versionBefore = runCommitVersion(ds, tenant, run.runId());
+
+            faults.armOneShot(FaultInjectingTransactionManager.Mode.LOST_RESULT_AFTER_COMMIT);
+            assertThrows(InjectedLostResult.class, () -> repo.reserveCapacity(tenant, run.runId(),
+                    "g4b-t18-cap", 1, "task", "PURE", Instant.now().plusSeconds(300)));
+            faults.disarm();
+
+            assertEquals("RESERVED", tokenState(ds, tenant, tokenId), "the committed reservation must be durable");
+            assertEquals(1, capacityReservedCount(ds, tenant, "g4b-t18-cap"));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND run_id=? AND activation_state='RESERVED'",
+                    tenant, run.runId()));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_attempt WHERE tenant_id=? AND run_id=? AND attempt_state='CREATED'",
+                    tenant, run.runId()));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.dispatch_reservation WHERE tenant_id=? AND run_id=? AND reservation_state='HELD'",
+                    tenant, run.runId()));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='DISPATCH_RESERVED'",
+                    tenant, run.runId()));
+            assertEquals(seqBefore + 1, runEventSeq(ds, tenant, run.runId()));
+            assertEquals(versionBefore + 1, runCommitVersion(ds, tenant, run.runId()));
+            assertEventLogContiguous(ds, tenant, run.runId());
+            System.out.println("[T18] reserveCapacity lost-result-after-commit: Token RESERVED, capacity=1, reservation HELD, ev=" +
+                    runEventSeq(ds, tenant, run.runId()));
+
+            // reserveCapacity carries no caller idempotency key: a blind retry must fail closed, never oversell.
+            assertThrows(IllegalStateException.class, () -> repo.reserveCapacity(tenant, run.runId(),
+                    "g4b-t18-cap", 1, "task", "PURE", Instant.now().plusSeconds(300)));
+            assertEquals(1, capacityReservedCount(ds, tenant, "g4b-t18-cap"), "a rejected retry must not double-reserve");
+            System.out.println("[T18] blind retry after lost result: fail-closed, capacity still 1");
+        } finally {
+            faults.disarm();
+            abandonIfInterrupted(repo, ds, tenant, run.runId(), "g4b-t18-cleanup");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // T19: applyCommandEvent abort-before-commit -> command_ledger/inbox_receipt/fact/event roll back together
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T19 applyCommandEvent abort-before-commit rolls back command_ledger/inbox_receipt/fact/event together")
+    void applyCommandEventAbortBeforeCommitRollsBackAllTables() throws Exception {
+        assumeEnabled();
+        var ds = dataSource();
+        UUID tenant = newTenant(ds);
+        var faults = new FaultInjectingTransactionManager(new DataSourceTransactionManager(ds));
+        var repo = new WorkflowRuntimeRepository(ds, faults);
+
+        var run = repo.createRun(tenant, "g4b-t19-" + UUID.randomUUID(), "CREATE", "{}",
+                "g4b-t19-flow-" + tenant, "1", new byte[32], "ci", "{}", "{}", "dev-task");
+        repo.startRun(tenant, run.runId());
+        try {
+            var w = startTaskRunAtNode(ds, repo, tenant, "g4b-t19", run.runId(), "dev-task", "DEVICE");
+            UUID commandId = repo.createCommand(tenant, run.runId(), w.activationId(), w.attemptId(),
+                    "device-1", "RunMethod", "QUERYABLE", "{\"method\":\"x\"}");
+            var commandOutbox = repo.beginOutboxSend(tenant, 20).stream()
+                    .filter(m -> m.dedupKey().equals("command:" + commandId)).findFirst().orElseThrow();
+            assertTrue(repo.markCommandSendStarted(tenant, commandId, 0L, commandOutbox.outboxId(),
+                    UUID.randomUUID(), 1, "dispatcher-1"));
+            var receipt = repo.receiveInbox(tenant, "device-1", "g4b-t19-msg-" + UUID.randomUUID(),
+                    "DEVICE_COMMAND_RESULT", run.runId(),
+                    "{\"commandId\":\"" + commandId + "\",\"state\":\"SUCCEEDED\"}");
+            long seqBefore = runEventSeq(ds, tenant, run.runId());
+
+            faults.armOneShot(FaultInjectingTransactionManager.Mode.ABORT_BEFORE_COMMIT);
+            assertThrows(InjectedCommitAbort.class, () -> repo.applyCommandEvent(tenant, run.runId(),
+                    receipt.inboxId(), commandId, "SUCCEEDED", "seq-1", "{\"verified\":true}"));
+            faults.disarm();
+
+            assertEquals("SEND_STARTED", str(ds, "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id=? AND command_id=?",
+                    tenant, commandId), "Command state must roll back");
+            assertEquals("RECEIVED", str(ds, "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id=? AND inbox_id=?",
+                    tenant, receipt.inboxId()), "Inbox receipt must stay unconsumed");
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'",
+                    tenant, w.attemptId()));
+            assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='DEVICE_COMMAND_SUCCEEDED'",
+                    tenant, run.runId()));
+            assertEquals(seqBefore, runEventSeq(ds, tenant, run.runId()));
+            assertEventLogContiguous(ds, tenant, run.runId());
+            System.out.println("[T19] applyCommandEvent abort: command SEND_STARTED, receipt RECEIVED, no fact/event");
+
+            assertTrue(repo.applyCommandEvent(tenant, run.runId(), receipt.inboxId(), commandId,
+                    "SUCCEEDED", "seq-1", "{\"verified\":true}"));
+            assertEquals("SUCCEEDED", str(ds, "SELECT command_state FROM workflow_runtime.command_ledger WHERE tenant_id=? AND command_id=?",
+                    tenant, commandId));
+            assertEquals("PROCESSED", str(ds, "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id=? AND inbox_id=?",
+                    tenant, receipt.inboxId()));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'",
+                    tenant, w.attemptId()));
+            assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='DEVICE_COMMAND_SUCCEEDED'",
+                    tenant, run.runId()));
+            assertEventLogContiguous(ds, tenant, run.runId());
+            System.out.println("[T19] retry after abort: command SUCCEEDED, receipt PROCESSED, fact/event durable");
+        } finally {
+            faults.disarm();
+            abandonIfInterrupted(repo, ds, tenant, run.runId(), "g4b-t19-cleanup");
+        }
     }
 
     // =====================================================================
@@ -541,6 +1033,24 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
     private WorkerRun reserveAndStart(DriverManagerDataSource ds, WorkflowRuntimeRepository repo,
                                       UUID tenant, String tag, UUID runId, String nodeKey) throws Exception {
         var reservation = repo.reserveCapacity(tenant, runId, tag + "-cap-" + tenant, 1, nodeKey, "PURE",
+                Instant.now().plusSeconds(300));
+        repo.dispatchAttempt(tenant, runId, reservation.attemptId(), "g4b-worker-q", "{}");
+        var outbox = repo.beginOutboxSend(tenant, 50).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:" + reservation.attemptId()))
+                .findFirst().orElseThrow();
+        repo.markOutboxDelivered(tenant, outbox.outboxId());
+        repo.acceptAttempt(tenant, runId, reservation.attemptId(), reservation.dispatchId(), "g4b-worker-1");
+        repo.startAttempt(tenant, runId, reservation.attemptId(), reservation.dispatchId(), "g4b-worker-1");
+        UUID activationId = activationForAttempt(ds, tenant, reservation.attemptId());
+        UUID tokenId = tokenForActivation(ds, tenant, activationId);
+        return new WorkerRun(runId, tokenId, activationId, reservation.attemptId(), reservation.dispatchId());
+    }
+
+    /** Same as {@link #reserveAndStart} but with an explicit side-effect class (PURE or DEVICE). */
+    private WorkerRun startTaskRunAtNode(DriverManagerDataSource ds, WorkflowRuntimeRepository repo,
+                                         UUID tenant, String tag, UUID runId, String nodeKey,
+                                         String sideEffectClass) throws Exception {
+        var reservation = repo.reserveCapacity(tenant, runId, tag + "-cap-" + tenant, 1, nodeKey, sideEffectClass,
                 Instant.now().plusSeconds(300));
         repo.dispatchAttempt(tenant, runId, reservation.attemptId(), "g4b-worker-q", "{}");
         var outbox = repo.beginOutboxSend(tenant, 50).stream()
@@ -622,6 +1132,126 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
 
     private UUID tokenForActivation(DriverManagerDataSource ds, UUID tenant, UUID activationId) {
         return uuid(ds, "SELECT token_id FROM workflow_runtime.node_activation WHERE tenant_id=? AND activation_id=?", tenant, activationId);
+    }
+
+    private String attemptStateOrNull(DriverManagerDataSource ds, UUID tenant, UUID attemptId) {
+        return strOrNull(ds, "SELECT attempt_state FROM workflow_runtime.node_attempt WHERE tenant_id=? AND attempt_id=?",
+                tenant, attemptId);
+    }
+
+    private UUID singleAttemptId(DriverManagerDataSource ds, UUID tenant, UUID runId) {
+        return uuid(ds, "SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND run_id=? ORDER BY created_at LIMIT 1",
+                tenant, runId);
+    }
+
+    private List<UUID> attemptIds(DriverManagerDataSource ds, UUID tenant, UUID runId) {
+        List<UUID> ids = new ArrayList<>();
+        try (Connection c = ds.getConnection();
+             PreparedStatement ps = c.prepareStatement(
+                     "SELECT attempt_id FROM workflow_runtime.node_attempt WHERE tenant_id=? AND run_id=? ORDER BY created_at,attempt_id")) {
+            ps.setObject(1, tenant);
+            ps.setObject(2, runId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) ids.add(rs.getObject(1, UUID.class));
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        return ids;
+    }
+
+    /**
+     * Best-effort test cleanup that keeps the shared {@code runtime_test} DB clean for order-sensitive
+     * suites such as {@code WorkflowRuntimeRepositoryTest#startupRecoveryScansBeyondOneBatch}, which
+     * globally counts ALL Attempts still in the startup-recovery scan set
+     * ({@code CREATED/DISPATCHED/ACCEPTED/STARTED}). Each G4-B fixture uses a fresh random tenant, so
+     * any Attempt left behind would otherwise be picked up by an unrelated suite's recovery scan.
+     *
+     * <p>A never-dispatched Attempt with no resolved side effect is abandoned safely; a DEVICE Attempt
+     * whose Command already reached {@code SUCCEEDED} (and whose side effect is resolved) is completed
+     * instead, so that recovery never escalates the Run to {@code MANUAL_REQUIRED} for a completed
+     * external side effect.
+     */
+    private void abandonIfInterrupted(WorkflowRuntimeRepository repo, DriverManagerDataSource ds,
+                                      UUID tenant, UUID runId, String actor) {
+        for (UUID attemptId : attemptIds(ds, tenant, runId)) {
+            String state = attemptStateOrNull(ds, tenant, attemptId);
+            if (state == null || !List.of("CREATED", "DISPATCHED", "ACCEPTED", "STARTED").contains(state)) continue;
+            boolean sideEffectCompleted = cnt(ds, """
+                    SELECT count(*) FROM workflow_runtime.worker_execution_fact
+                     WHERE tenant_id=? AND attempt_id=? AND fact_type='SIDE_EFFECT_COMPLETED'
+                    """, tenant, attemptId) > 0;
+            if (sideEffectCompleted) {
+                repo.completeAttempt(tenant, runId, attemptId, "cleanup-output", "{}", Map.of());
+            } else {
+                repo.recoverInterruptedAttempt(tenant, runId, attemptId, actor);
+            }
+        }
+    }
+
+    private String tokenNodeKey(DriverManagerDataSource ds, UUID tenant, UUID tokenId) {
+        return str(ds, "SELECT node_key FROM workflow_runtime.execution_token WHERE tenant_id=? AND token_id=?", tenant, tokenId);
+    }
+
+    private String controlGate(DriverManagerDataSource ds, UUID tenant, UUID runId) {
+        return str(ds, "SELECT control_gate FROM workflow_runtime.workflow_run WHERE tenant_id=? AND run_id=?", tenant, runId);
+    }
+
+    private UUID readyTokenAtNode(DriverManagerDataSource ds, UUID tenant, UUID runId, String nodeKey) {
+        return uuid(ds, """
+                SELECT token_id FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND run_id=? AND node_key=? AND token_state='READY'
+                 ORDER BY created_at,token_id LIMIT 1
+                """, tenant, runId, nodeKey);
+    }
+
+    private String branchState(DriverManagerDataSource ds, UUID tenant, UUID runId, String branchKey) {
+        return str(ds, "SELECT branch_state FROM workflow_runtime.branch_activation WHERE tenant_id=? AND run_id=? AND branch_key=?",
+                tenant, runId, branchKey);
+    }
+
+    /** Returns 0 when no scheduler_capacity row exists (an aborted reserveCapacity rolls the whole row back). */
+    private int capacityReservedCount(DriverManagerDataSource ds, UUID tenant, String capacityKey) {
+        return cnt(ds, "SELECT COALESCE(MAX(reserved_count),0) FROM workflow_runtime.scheduler_capacity WHERE tenant_id=? AND capacity_key=?",
+                tenant, capacityKey);
+    }
+
+    /**
+     * createRun(start) + startRun for a minimal XOR plan: {@code start -> choice -> {end-a (takeA == true), end-b (default)}}.
+     * The graph plan is persisted so {@link GraphCoordinator} can re-read and advance it in multiple transactions.
+     */
+    private UUID createConditionalRun(WorkflowRuntimeRepository repo, UUID tenant, String tag,
+                                      String inputJson) {
+        GraphPlan plan = new GraphPlan(1, "ci", tag + "-flow", "1", "test-hash",
+                List.of(
+                        new GraphPlan.Node("start", "Start", GraphPlan.Kind.START, "start", null, null, null, null, null, null),
+                        new GraphPlan.Node("choice", "Choice", GraphPlan.Kind.SPLIT_XOR, "choice", null, null, null, null, null, null),
+                        new GraphPlan.Node("end-a", "End A", GraphPlan.Kind.END, "end-a", null, null, null, null, null, null),
+                        new GraphPlan.Node("end-b", "End B", GraphPlan.Kind.END, "end-b", null, null, null, null, null, null)),
+                List.of(
+                        new GraphPlan.Edge("start-choice", "start", "choice", null, false),
+                        new GraphPlan.Edge("choice-a", "choice", "end-a", "takeA == true", false),
+                        new GraphPlan.Edge("choice-b", "choice", "end-b", null, true)));
+        GraphCoordinator.validateGraphPlan(plan);
+        var run = repo.createRun(tenant, tag + "-" + UUID.randomUUID(), "CREATE", "{}",
+                tag + "-flow-" + tenant, "1", new byte[32], "ci", GraphPlanCodec.toJson(plan), inputJson, "start");
+        repo.startRun(tenant, run.runId());
+        return run.runId();
+    }
+
+    private String strOrNull(DriverManagerDataSource ds, String sql, Object... args) {
+        return (String) oneOrNull(ds, sql, args);
+    }
+
+    private Object oneOrNull(DriverManagerDataSource ds, String sql, Object... args) {
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            for (int i = 0; i < args.length; i++) ps.setObject(i + 1, args[i]);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getObject(1) : null;
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**
