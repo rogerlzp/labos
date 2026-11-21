@@ -163,11 +163,13 @@ class DeviceCommandFaultInjectionIntegrationTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Scenario 1: device OFFLINE before send -> adapter returns DELIVERY_UNCERTAIN, no physical exec.
-    // This mirrors DeviceGateway.sendCommand on an unregistered/closed gateway (no TCP write happened).
+    // Scenario 1: device OFFLINE reported by adapter AFTER SEND_STARTED was committed.
+    // The runtime has already crossed the durable send boundary; the adapter judges no physical
+    // frame was written, but the runtime cannot confirm that, so the outcome stays UNKNOWN.
+    // The true pre-boundary case is scenario 6c (gate rejection, adapter never called).
     // ---------------------------------------------------------------------------------------------
     @Test
-    void deviceOfflineBeforeSend_DoesNotPhysicallyExecute() throws Exception {
+    void deviceOfflineAfterSendStarted_NoPhysicalExecutionButOutcomeUnknown() throws Exception {
         assumePg();
         var ds = dataSource();
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
@@ -347,32 +349,41 @@ class DeviceCommandFaultInjectionIntegrationTest {
     // Run MANUAL_REQUIRED, one OPEN manual intervention, and outbox left non-requeueable.
     // ---------------------------------------------------------------------------------------------
     @Test
-    void realStartupRecoveryAfterSendStarted_ConvergesToManualRequiredWithoutRequeue() throws Exception {
+    void realCrashWindowAfterSendStarted_RecoverAtStartupConvergesToManualRequired() throws Exception {
         assumePg();
         var ds = dataSource();
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
         Chain chain = newStartedChain(ds, repo);
         UUID cmdId = createCommand(repo, chain);
 
-        // Cross the SEND_STARTED boundary (markCommandSendStarted commits SIDE_EFFECT_STARTED),
-        // then simulate a Host crash before the adapter reply is ingested. Use a throw so the
-        // service marks the command UNKNOWN and dead-letters the outbox.
-        DeviceCommandExecutionService svc = new DeviceCommandExecutionService(repo, env -> {
-            throw new java.io.IOException("simulated Host crash after SEND_STARTED");
-        });
-        svc.deliverPendingCommands(chain.tenant, 4, "g4c-s6b-precrash");
-        assertEquals("UNKNOWN", commandState(repo, chain, cmdId));
+        // ---- Simulate the REAL crash window: SEND_STARTED durably committed, process dies
+        //      BEFORE adapter.send() is invoked/returns. No exception handling runs, so the
+        //      command must still be SEND_STARTED (NOT already UNKNOWN), outbox SENDING,
+        //      attempt STARTED, Run RUNNING, SIDE_EFFECT_STARTED present, no COMPLETED fact.
+        var claimed = repo.beginOutboxSendForKind(chain.tenant, "DEVICE_COMMAND", 4);
+        assertEquals(1, claimed.size());
+        var outbox = claimed.get(0);
+        long version = repo.loadCommand(chain.tenant, cmdId).orElseThrow().version();
+        boolean crossed = repo.markCommandSendStarted(
+                chain.tenant, cmdId, version, outbox.outboxId(), UUID.randomUUID(), 1, "g4c-crash-dispatcher");
+        assertTrue(crossed, "SEND_STARTED must commit before the crash");
 
-        // Force attempt back to STARTED to emulate an in-flight attempt observed at crash time,
-        // while keeping the durable SIDE_EFFECT_STARTED / SEND_STARTED command evidence.
-        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
-            st.executeUpdate("UPDATE workflow_runtime.node_attempt SET attempt_state='STARTED' WHERE tenant_id='"
-                    + chain.tenant + "' AND attempt_id='" + chain.attemptId + "'");
-            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET status='RUNNING', control_gate='OPEN' WHERE tenant_id='"
-                    + chain.tenant + "' AND run_id='" + chain.runId + "'");
-        }
+        // Assert the exact pre-crash durable snapshot the reviewer asked for.
+        assertEquals("SEND_STARTED", commandState(repo, chain, cmdId),
+                "command must remain SEND_STARTED at the crash instant, not pre-marked UNKNOWN");
+        assertEquals("SENDING", outboxState(ds, cmdId));
+        assertEquals("STARTED", scalar(ds, "SELECT attempt_state FROM workflow_runtime.node_attempt WHERE tenant_id='"
+                + chain.tenant + "' AND attempt_id='" + chain.attemptId + "'"));
+        assertEquals("RUNNING", scalar(ds, "SELECT status FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                + chain.tenant + "' AND run_id='" + chain.runId + "'"));
+        assertEquals("SEND_STARTED", scalar(ds, "SELECT dispatch_state FROM workflow_runtime.command_dispatch_attempt WHERE tenant_id='"
+                + chain.tenant + "' AND command_id='" + cmdId + "'"));
+        assertEquals(1, count(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                + chain.tenant + "' AND fact_type='SIDE_EFFECT_STARTED' AND side_effect_key='command:" + cmdId + "'"));
+        assertEquals(0, count(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
+                + chain.tenant + "' AND fact_type='SIDE_EFFECT_COMPLETED' AND side_effect_key='command:" + cmdId + "'"));
 
-        // Run the REAL startup recovery coordinator.
+        // No adapter invocation at all: the process is gone. Run the REAL startup recovery.
         var recovery = new WorkerExecutionRecoveryService(repo, new WorkerExecutionRegistry(), chain.tenant);
         WorkerExecutionRecoveryService.StartupResult result = recovery.recoverAtStartup(50, "g4c-recovery-actor");
 
@@ -398,16 +409,16 @@ class DeviceCommandFaultInjectionIntegrationTest {
             return DeviceCommandAdapter.SendResult.acceptedAsync();
         });
         postSvc.deliverPendingCommands(chain.tenant, 4, "g4c-s6b-post");
-        assertEquals(0, sendCalls.get(), "after real startup recovery, no physical re-send");
+        assertEquals(0, sendCalls.get(), "after real crash recovery, no physical re-send");
     }
 
     // ---------------------------------------------------------------------------------------------
     // Scenario 6c (P2-3 fix): three DISTINCT physical-send fault points separated explicitly.
-    // Point A (pre-boundary): adapter returns DELIVERY_UNCERTAIN -> no SIDE_EFFECT_STARTED.
-    // Point B (post-boundary, before frame): SEND_STARTED committed, adapter throws -> SIDE_EFFECT_STARTED,
-    //   command UNKNOWN. Covered by scenario 6b.
+    // Point A (pre-boundary): gate rejects -> adapter never called, no SIDE_EFFECT_STARTED (this test).
+    // Point B (post-boundary, before frame): SEND_STARTED committed, process dies before adapter
+    //   returns -> real crash window, covered by scenario 6b (recoverAtStartup).
     // Point C (frame written, receipt lost): adapter ACCEPTED_ASYNC, receipt never ingested -> command
-    //   stays SEND_STARTED/ACKNOWLEDGED until timeout marks UNKNOWN; no false SUCCEEDED.
+    //   stays SEND_STARTED until timeout marks UNKNOWN (scenario 3); no false SUCCEEDED.
     // ---------------------------------------------------------------------------------------------
     @Test
     void faultPointA_PreBoundaryOfflineHasNoSideEffectStarted() throws Exception {
