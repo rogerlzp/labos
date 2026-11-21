@@ -163,9 +163,11 @@ public final class DeviceCommandExecutionService {
                                 tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
                                 "DEVICE_COMMAND_RESULT", commandId, "SUCCEEDED",
                                 result.deviceSequence(), result.outcomeJson());
-                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION) {
+                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION
+                                || syncOutcome.status() == InboxStatus.REJECTED) {
                             outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
-                                    "sync-result-inbox-protocol-violation:" + syncOutcome.inboxId()));
+                                    "sync-result-inbox-" + syncOutcome.status().name().toLowerCase() + ":" + syncOutcome.inboxId()
+                                            + ":" + safeMessage(syncOutcome.reason())));
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
                         }
@@ -176,9 +178,11 @@ public final class DeviceCommandExecutionService {
                                 tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
                                 "DEVICE_COMMAND_RESULT", commandId, "FAILED",
                                 result.deviceSequence(), result.outcomeJson());
-                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION) {
+                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION
+                                || syncOutcome.status() == InboxStatus.REJECTED) {
                             outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
-                                    "sync-failed-inbox-protocol-violation:" + syncOutcome.inboxId()));
+                                    "sync-failed-inbox-" + syncOutcome.status().name().toLowerCase() + ":" + syncOutcome.inboxId()
+                                            + ":" + safeMessage(syncOutcome.reason())));
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_FAILED_SYNC);
                         }
