@@ -46,6 +46,11 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='wait_one_active_per_activation_uq') THEN
     RAISE EXCEPTION 'Missing one-active-Wait-per-Activation index';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='wait_active_correlation_uq'
+      AND indexdef LIKE '%(tenant_id, run_id, correlation_key)%'
+      AND indexdef LIKE '%WHERE ((wait_state = ''ACTIVE''::text) AND (correlation_key IS NOT NULL))%') THEN
+    RAISE EXCEPTION 'Missing one-active-Wait-per-Run/correlationKey partial unique index';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='retry_activation_attempt_uq') THEN
     RAISE EXCEPTION 'Missing unique Retry activation/attempt key';
   END IF;
