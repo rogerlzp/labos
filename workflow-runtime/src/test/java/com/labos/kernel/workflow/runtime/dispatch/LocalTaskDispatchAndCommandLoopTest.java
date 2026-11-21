@@ -1204,6 +1204,26 @@ class LocalTaskDispatchAndCommandLoopTest {
                 "The original RECEIVED receipt must succeed after the transient DB-side failure is removed");
         repo.completeAttempt(tenant, rollbackFix.runId(), rollbackFix.attemptId(), "out", "{\"ok\":true}");
 
+        // G4-D: an event arriving before SEND_STARTED is retryable, not permanently rejected.
+        var preSendFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "pre-send-dev", false);
+        DeviceCommandExecutionService preSendSvc = new DeviceCommandExecutionService(repo, env -> null);
+        String earlyMessageId = "early-" + UUID.randomUUID();
+        assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
+                preSendSvc.ingestDeviceEvent(tenant, preSendFix.runId(), "pre-send-dev", earlyMessageId,
+                        "RECEIVED_ACK", preSendFix.commandId(), "ACKNOWLEDGED", "seq-early", "{}"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND source_message_id='" + earlyMessageId + "' AND receipt_state='RECEIVED'"));
+        var preSendOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 20).stream()
+                .filter(m -> m.dedupKey().equals("command:" + preSendFix.commandId())).findFirst().orElseThrow();
+        assertTrue(repo.markCommandSendStarted(tenant, preSendFix.commandId(), 0L, preSendOutbox.outboxId(),
+                UUID.randomUUID(), 1, "disp-pre-send"));
+        assertTrue(repo.markOutboxDelivered(tenant, preSendOutbox.outboxId()));
+        var earlyReplay = preSendSvc.ingestDeviceEvent(tenant, preSendFix.runId(), "pre-send-dev", earlyMessageId,
+                "RECEIVED_ACK", preSendFix.commandId(), "ACKNOWLEDGED", "seq-early", "{}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, earlyReplay.status());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND source_message_id='" + earlyMessageId + "' AND receipt_state='PROCESSED'"));
+
         // G4-D: repeated PROGRESS events are valid RUNNING -> RUNNING evidence, while UNKNOWN
         // remains fail-closed against a later ordinary success receipt.
         var progressFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "progress-dev", true);
