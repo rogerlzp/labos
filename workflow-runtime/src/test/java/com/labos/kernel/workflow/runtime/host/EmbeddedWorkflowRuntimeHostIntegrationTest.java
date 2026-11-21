@@ -33,6 +33,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -892,6 +893,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
             DeviceCommandExecutionService noopCmd = new DeviceCommandExecutionService(
                     repo, env -> { throw new AssertionError("No commands expected"); });
 
+            AtomicLong fakeNanos = new AtomicLong(0L);
             RuntimeDispatchLoop loop = new RuntimeDispatchLoop(
                     repo, noopDispatch, noopCmd, gate, Duration.ofMillis(50), 2, "await-page-loop", tenant,
                     attemptId -> {}, (t, r) -> {
@@ -899,9 +901,9 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                 if (r.equals(healthy5)) {
                     coordinator.advance(t, r);
                 }
-            });
+            }, fakeNanos::get);
             try {
-                // Cycles 1..3 walk pages 1 -> 2 -> 3 without increasing batchSize=2.
+                // Cycles 1..3 walk pages 1 -> 2 -> 3 at t=0ms without increasing batchSize=2.
                 loop.runOneCycle();
                 loop.runOneCycle();
                 loop.runOneCycle();
@@ -912,9 +914,30 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
 
                 int wakeupsBeforeWrap = wakeups.size();
                 // Cycle 4 wraps back to page 1 (stuck1, stuck2) within their 200ms backoff window -> must stay throttled.
+                fakeNanos.set(TimeUnit.MILLISECONDS.toNanos(100L));
                 loop.runOneCycle();
                 assertEquals(wakeupsBeforeWrap, wakeups.size(),
                         "Wrapping back to page 1 within 200ms backoff window must not re-wake throttled stuck1/stuck2");
+
+                // Cycle 5 advances to page 2 (stuck3, stuck4) still inside 200ms window -> remains throttled.
+                loop.runOneCycle();
+                assertEquals(wakeupsBeforeWrap, wakeups.size(),
+                        "Page 2 stuck3/stuck4 within 200ms backoff window must remain throttled");
+
+                // Cycle 6 wraps past end back to page 1 after 200ms base backoff expires -> wakes stuck1/stuck2 with 400ms next backoff.
+                fakeNanos.set(TimeUnit.MILLISECONDS.toNanos(250L));
+                loop.runOneCycle();
+                assertEquals(wakeupsBeforeWrap + 2, wakeups.size(),
+                        "Page 1 stuck1/stuck2 must re-wake once after 200ms base backoff expires");
+
+                // Cycle 7 visits page 2 after 200ms expires (wakes stuck3/stuck4), and Cycle 8 wraps to page 1 at 500ms < 650ms (throttled under 2nd 400ms backoff).
+                fakeNanos.set(TimeUnit.MILLISECONDS.toNanos(500L));
+                loop.runOneCycle();
+                assertEquals(wakeupsBeforeWrap + 4, wakeups.size(),
+                        "Page 2 stuck3/stuck4 must re-wake once after 200ms base backoff expires");
+                loop.runOneCycle();
+                assertEquals(wakeupsBeforeWrap + 4, wakeups.size(),
+                        "Wrapping to page 1 at 500ms must remain throttled under doubled 400ms backoff (next allowed 650ms)");
             } finally {
                 loop.stop();
             }
@@ -1001,23 +1024,26 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
 
                 // Concurrently bump updated_at in a background writer thread during Cycles 2..3.
                 AtomicBoolean stopWriter = new AtomicBoolean(false);
+                CountDownLatch writerStarted = new CountDownLatch(1);
                 AtomicReference<Throwable> writerError = new AtomicReference<>();
                 Thread writer = new Thread(() -> {
                     try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
                         while (!stopWriter.get()) {
                             st.executeUpdate("UPDATE workflow_runtime.workflow_run "
-                                    + "SET updated_at = clock_timestamp() + interval '5 minutes', "
-                                    + "event_seq = event_seq + 1 "
+                                    + "SET updated_at = clock_timestamp() + interval '5 minutes' "
                                     + "WHERE tenant_id = '" + tenant + "' AND status = 'RUNNING' "
                                     + "AND run_id IN ('" + r0 + "','" + r1 + "','" + r2 + "','" + r3 + "','" + r5 + "')");
+                            writerStarted.countDown();
                             Thread.sleep(2);
                         }
                     } catch (Throwable err) {
+                        writerStarted.countDown();
                         writerError.set(err);
                     }
                 }, "await-concurrent-mutator");
                 writer.start();
                 try {
+                    assertTrue(writerStarted.await(5, TimeUnit.SECONDS), "Concurrent writer must start mutating before sweep resumes");
                     loop.runOneCycle();
                     loop.runOneCycle();
                 } finally {
@@ -1050,22 +1076,28 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                     + "WHERE (tenant_id = '" + tA + "' AND run_id = '" + runA + "') "
                     + "   OR (tenant_id = '" + tB + "' AND run_id = '" + runB + "')");
         }
-        var startCursor = new WorkflowRuntimeRepository.GraphAdvanceCursor(
-                Instant.parse("2098-12-31T00:00:00Z"),
-                UUID.fromString("00000000-0000-0000-0000-000000000000"),
-                UUID.fromString("00000000-0000-0000-0000-000000000000"));
-        var page1 = repo.findRunsAwaitingGraphAdvanceAfter(startCursor, 1);
-        assertEquals(1, page1.size());
-        var page2 = repo.findRunsAwaitingGraphAdvanceAfter(page1.get(0).cursor(), 1);
-        assertEquals(1, page2.size());
-        var page3 = repo.findRunsAwaitingGraphAdvanceAfter(page2.get(0).cursor(), 1);
-        assertTrue(page3.isEmpty());
+        try {
+            var startCursor = new WorkflowRuntimeRepository.GraphAdvanceCursor(
+                    Instant.parse("2098-12-31T00:00:00Z"),
+                    UUID.fromString("00000000-0000-0000-0000-000000000000"),
+                    UUID.fromString("00000000-0000-0000-0000-000000000000"));
+            var page1 = repo.findRunsAwaitingGraphAdvanceAfter(startCursor, 1);
+            assertEquals(1, page1.size());
+            var page2 = repo.findRunsAwaitingGraphAdvanceAfter(page1.get(0).cursor(), 1);
+            assertEquals(1, page2.size());
+            var page3 = repo.findRunsAwaitingGraphAdvanceAfter(page2.get(0).cursor(), 1);
+            assertTrue(page3.isEmpty());
 
-        boolean aFirst = compareUuidUnsigned(tA, tB) < 0;
-        assertEquals(aFirst ? tA : tB, page1.get(0).tenantId());
-        assertEquals(aFirst ? runA : runB, page1.get(0).runId());
-        assertEquals(aFirst ? tB : tA, page2.get(0).tenantId());
-        assertEquals(aFirst ? runB : runA, page2.get(0).runId());
+            boolean aFirst = compareUuidUnsigned(tA, tB) < 0;
+            assertEquals(aFirst ? tA : tB, page1.get(0).tenantId());
+            assertEquals(aFirst ? runA : runB, page1.get(0).runId());
+            assertEquals(aFirst ? tB : tA, page2.get(0).tenantId());
+            assertEquals(aFirst ? runB : runA, page2.get(0).runId());
+        } finally {
+            // Terminalize the future-dated test runs so repeated DB runs remain clean.
+            coordinator.advance(tA, runA);
+            coordinator.advance(tB, runB);
+        }
     }
 
     private static UUID createAwaitingGraphRun(

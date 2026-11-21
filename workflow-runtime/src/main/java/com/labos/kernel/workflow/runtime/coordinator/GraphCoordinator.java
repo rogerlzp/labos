@@ -70,9 +70,7 @@ public final class GraphCoordinator {
 
         UUID offendingTokenId = null;
         try {
-            Map<String, Object> mergedVariables = loadPersistedVariables(tenantId, runId);
-            if (variables != null) mergedVariables.putAll(variables);
-            Map<String, ?> context = Collections.unmodifiableMap(mergedVariables);
+            Map<String, ?> context = buildEvaluationContext(tenantId, runId, variables);
 
             GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson(), snapshot.diagnosticContext());
             Map<String, GraphPlan.Node> nodes = indexNodes(plan);
@@ -126,6 +124,11 @@ public final class GraphCoordinator {
                     for (WorkflowRuntimeRepository.GraphToken token : ready) {
                         offendingTokenId = token.tokenId();
                         GraphPlan.Node node = requireNode(nodes, token.nodeKey());
+                        if (node.kind() == GraphPlan.Kind.SPLIT_XOR
+                                || node.kind() == GraphPlan.Kind.SPLIT_INCLUSIVE) {
+                            // Reload committed flow variables in case another branch completed concurrently mid-advance.
+                            context = buildEvaluationContext(tenantId, runId, variables);
+                        }
                         Transition transition = transitionFor(node, outgoing.getOrDefault(node.key(), List.of()), context);
                         if (transition == null) {
                             offendingTokenId = null;
@@ -155,6 +158,14 @@ public final class GraphCoordinator {
                     fault.getClass().getSimpleName(), fault.getMessage());
             throw fault;
         }
+    }
+
+    private Map<String, ?> buildEvaluationContext(UUID tenantId, UUID runId, Map<String, ?> explicitOverrides) {
+        Map<String, Object> mergedVariables = loadPersistedVariables(tenantId, runId);
+        if (explicitOverrides != null) {
+            mergedVariables.putAll(explicitOverrides);
+        }
+        return Collections.unmodifiableMap(mergedVariables);
     }
 
     private Map<String, Object> loadPersistedVariables(UUID tenantId, UUID runId) {

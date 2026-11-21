@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
 /**
  * Single-host periodic dispatch loop implementing {@link RuntimeHost.LifecycleComponent}.
@@ -50,6 +51,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final UUID scopedTenantId; // null = serve all tenants; non-null = SQL-level tenant isolation!
     private final Consumer<UUID> workerCancelRequester;
     private final BiConsumer<UUID, UUID> graphWakeup;
+    private final LongSupplier nanoTimeSupplier;
 
     private static final long GRAPH_WAKEUP_BASE_BACKOFF_MS = 200L;
     private static final long GRAPH_WAKEUP_MAX_BACKOFF_MS = 5_000L;
@@ -109,6 +111,23 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             UUID scopedTenantId,
             Consumer<UUID> workerCancelRequester,
             BiConsumer<UUID, UUID> graphWakeup) {
+        this(repository, taskDispatchService, commandExecutionService, schedulingGate,
+                pollInterval, batchSize, dispatcherId, scopedTenantId,
+                workerCancelRequester, graphWakeup, System::nanoTime);
+    }
+
+    RuntimeDispatchLoop(
+            WorkflowRuntimeRepository repository,
+            LocalTaskDispatchService taskDispatchService,
+            DeviceCommandExecutionService commandExecutionService,
+            SchedulingGate schedulingGate,
+            Duration pollInterval,
+            int batchSize,
+            String dispatcherId,
+            UUID scopedTenantId,
+            Consumer<UUID> workerCancelRequester,
+            BiConsumer<UUID, UUID> graphWakeup,
+            LongSupplier nanoTimeSupplier) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.taskDispatchService = Objects.requireNonNull(taskDispatchService, "taskDispatchService");
         this.commandExecutionService = Objects.requireNonNull(commandExecutionService, "commandExecutionService");
@@ -125,6 +144,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         this.scopedTenantId = scopedTenantId;
         this.workerCancelRequester = Objects.requireNonNull(workerCancelRequester, "workerCancelRequester");
         this.graphWakeup = Objects.requireNonNull(graphWakeup, "graphWakeup");
+        this.nanoTimeSupplier = Objects.requireNonNull(nanoTimeSupplier, "nanoTimeSupplier");
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "labos-runtime-dispatch-" + dispatcherId);
             t.setDaemon(true);
@@ -186,7 +206,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             if (startedFromBeginning) {
                 graphAdvanceSweepSeen.clear();
             }
-            long nowNanos = System.nanoTime();
+            long nowNanos = nanoTimeSupplier.getAsLong();
             for (WorkflowRuntimeRepository.AwaitingGraphRunRef ref : awaitingGraph) {
                 if (stopped.get() || !schedulingGate.isOpen()) return;
                 graphAdvanceSweepSeen.add(ref.runId());
