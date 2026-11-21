@@ -1164,7 +1164,7 @@ class LocalTaskDispatchAndCommandLoopTest {
 
         // G4-D: a failure after command_ledger / Inbox writes but during Runtime Event append
         // must roll the entire transaction back and leave the same receipt retryable.
-        var rollbackFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "rollback-dev", false);
+        var rollbackFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "rollback-dev", true);
         String rollbackMessageId = "rollback-" + UUID.randomUUID();
         var rollbackReceipt = repo.receiveInbox(tenant, "rollback-dev", rollbackMessageId,
                 "COMMAND_RESULT", rollbackFix.runId(),
@@ -1206,7 +1206,7 @@ class LocalTaskDispatchAndCommandLoopTest {
 
         // G4-D: repeated PROGRESS events are valid RUNNING -> RUNNING evidence, while UNKNOWN
         // remains fail-closed against a later ordinary success receipt.
-        var progressFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "progress-dev", false);
+        var progressFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "progress-dev", true);
         DeviceCommandExecutionService progressSvc = new DeviceCommandExecutionService(repo, env -> null);
         var progress1 = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
                 "progress-1-" + UUID.randomUUID(), "PROGRESS", progressFix.commandId(),
