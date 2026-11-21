@@ -1162,6 +1162,48 @@ class LocalTaskDispatchAndCommandLoopTest {
                 + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
         repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
 
+        // G4-D: a failure after command_ledger / Inbox writes but during Runtime Event append
+        // must roll the entire transaction back and leave the same receipt retryable.
+        var rollbackFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "rollback-dev", false);
+        String rollbackMessageId = "rollback-" + UUID.randomUUID();
+        var rollbackReceipt = repo.receiveInbox(tenant, "rollback-dev", rollbackMessageId,
+                "COMMAND_RESULT", rollbackFix.runId(),
+                "{\"commandId\":\"" + rollbackFix.commandId()
+                        + "\",\"deviceId\":\"rollback-dev\",\"messageType\":\"COMMAND_RESULT\","
+                        + "\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-rollback\",\"outcome\":{\"ok\":true}}");
+        String faultSuffix = UUID.randomUUID().toString().replace("-", "");
+        String faultFunction = "g4d_fault_fn_" + faultSuffix;
+        String faultTrigger = "g4d_fault_trg_" + faultSuffix;
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute("CREATE FUNCTION workflow_runtime." + faultFunction + "() RETURNS trigger "
+                    + "LANGUAGE plpgsql AS $ BEGIN IF NEW.tenant_id = '" + tenant
+                    + "'::uuid AND NEW.event_type = 'DEVICE_COMMAND_SUCCEEDED' THEN "
+                    + "RAISE EXCEPTION 'g4d injected runtime_event failure'; END IF; RETURN NEW; END $");
+            st.execute("CREATE TRIGGER " + faultTrigger
+                    + " BEFORE INSERT ON workflow_runtime.runtime_event FOR EACH ROW "
+                    + "EXECUTE FUNCTION workflow_runtime." + faultFunction + "()");
+        }
+        try {
+            assertThrows(RuntimeException.class, () -> repo.applyCommandEventOrReject(
+                    tenant, rollbackFix.runId(), rollbackReceipt.inboxId(), rollbackFix.commandId(),
+                    "SUCCEEDED", "seq-rollback", "{\"ok\":true}"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + rollbackFix.commandId() + "' AND command_state='SEND_STARTED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND inbox_id='" + rollbackReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + rollbackFix.runId() + "' AND event_type='DEVICE_COMMAND_SUCCEEDED'"));
+        } finally {
+            try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+                st.execute("DROP TRIGGER IF EXISTS " + faultTrigger + " ON workflow_runtime.runtime_event");
+                st.execute("DROP FUNCTION IF EXISTS workflow_runtime." + faultFunction + "()");
+            }
+        }
+        assertTrue(repo.applyCommandEventOrReject(tenant, rollbackFix.runId(), rollbackReceipt.inboxId(),
+                rollbackFix.commandId(), "SUCCEEDED", "seq-rollback", "{\"ok\":true}"),
+                "The original RECEIVED receipt must succeed after the transient DB-side failure is removed");
+        repo.completeAttempt(tenant, rollbackFix.runId(), rollbackFix.attemptId(), "out", "{\"ok\":true}");
+
         // G4-D: repeated PROGRESS events are valid RUNNING -> RUNNING evidence, while UNKNOWN
         // remains fail-closed against a later ordinary success receipt.
         var progressFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "progress-dev", false);
