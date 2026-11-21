@@ -286,11 +286,13 @@ class DeviceCommandFaultInjectionIntegrationTest {
         repo.markCommandUnknown(chain.tenant, cmdId, "{\"reason\":\"bridge_command_timeout\"}");
         assertEquals("UNKNOWN", commandState(repo, chain, cmdId));
 
-        // A late SUCCEEDED inbox event must NOT silently flip UNKNOWN -> SUCCEEDED (fail-closed).
-        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
-                () -> svc.ingestDeviceEvent(chain.tenant, chain.runId, DEVICE, "late-ok-" + cmdId,
-                        "COMMAND_RESULT", cmdId, "SUCCEEDED", "seq-1", "{\"dispensed\":60}"),
-                "runtime must reject (not silently accept) an auto-terminalizing late receipt");
+        // A late SUCCEEDED inbox event must NOT silently flip UNKNOWN -> SUCCEEDED (fail-closed, G4-D durable REJECTED).
+        var lateOutcome = svc.ingestDeviceEvent(chain.tenant, chain.runId, DEVICE, "late-ok-" + cmdId,
+                "COMMAND_RESULT", cmdId, "SUCCEEDED", "seq-1", "{\"dispensed\":60}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateOutcome.status(),
+                "runtime must durably reject (not silently accept) an auto-terminalizing late receipt");
+        assertEquals("REJECTED", scalar(ds, "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + chain.tenant + "' AND inbox_id='" + lateOutcome.inboxId() + "'"));
         assertEquals("UNKNOWN", commandState(repo, chain, cmdId),
                 "uncertain physical outcome must not be auto-terminalized as SUCCEEDED");
 
@@ -345,11 +347,13 @@ class DeviceCommandFaultInjectionIntegrationTest {
                 "COMMAND_RESULT", cmdId, "FAILED", "seq-1", "{\"error\":\"E1\"}");
         assertEquals("FAILED", commandState(repo, chain, cmdId));
 
-        // A late success with a NEW message id must not resurrect a terminal FAILED command.
-        assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
-                () -> svc.ingestDeviceEvent(chain.tenant, chain.runId, DEVICE, "late-success-" + cmdId,
-                        "COMMAND_RESULT", cmdId, "SUCCEEDED", "seq-2", "{\"dispensed\":60}"),
-                "runtime must reject a late receipt that rewrites a terminal result");
+        // A late success with a NEW message id must not resurrect a terminal FAILED command (G4-D durable REJECTED).
+        var lateOutcome = svc.ingestDeviceEvent(chain.tenant, chain.runId, DEVICE, "late-success-" + cmdId,
+                "COMMAND_RESULT", cmdId, "SUCCEEDED", "seq-2", "{\"dispensed\":60}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateOutcome.status(),
+                "runtime must durably reject a late receipt that rewrites a terminal result");
+        assertEquals("REJECTED", scalar(ds, "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + chain.tenant + "' AND inbox_id='" + lateOutcome.inboxId() + "'"));
         assertEquals("FAILED", commandState(repo, chain, cmdId),
                 "a terminal physical result must never be rewritten by a late receipt");
     }
