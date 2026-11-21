@@ -42,9 +42,15 @@ public final class DeviceProfileSelfTest {
                 !DeviceProfile.of("robot").methods.contains("Scan"));
 
         section("3. 时间：步骤时长表（差着数量级的步骤不能共用一个耗时）");
-        ok("结合孵育 8 分钟（KingFisher 协议 PDF）",
-                ext.timingOf("BindIncubate") == 480_000L, String.valueOf(ext.timingOf("BindIncubate")));
-        ok("洗涤 3 分钟", ext.timingOf("Wash") == 180_000L);
+        // ⚠ 时长口径 2026-11-19 换过：原值取自**厂商公开规格**（KingFisher 协议 PDF：
+        //   结合孵育 8 min / 洗涤 3 min），现值取自**客户《描述 v2》现场标定**
+        //   （这台机器的真实规格，优先于公开规格）⇒ 断言同步改，并补上洗脱/分液两条。
+        ok("结合/内部裂解计时 200 秒（客户 v2 现场标定）",
+                ext.timingOf("BindIncubate") == 200_000L, String.valueOf(ext.timingOf("BindIncubate")));
+        ok("洗涤 150 秒（客户 v2 现场标定）", ext.timingOf("Wash") == 150_000L);
+        ok("洗脱（含晾干）600 秒（客户 v2 现场标定）", ext.timingOf("Elute") == 600_000L);
+        ok("分液 10 秒（客户 v2 现场标定）",
+                DeviceProfile.of("washer").timingOf("Run") == 10_000L);
         ok("风干 10 分钟", ext.timingOf("Dry") == 600_000L);
         ok("板式磁分离 30 秒", ext.timingOf("MagnetSeparate") == 30_000L);
         ok("分液器整板分液 8 秒（KX100-1 手册）",
@@ -56,7 +62,7 @@ public final class DeviceProfileSelfTest {
         ok("没登记的方法走通用规则（门 1.5 秒）",
                 ext.methodDelayMs("OpenDoor") == 1_500L);
         ok("登记了的方法走时长表，不走通用规则",
-                ext.methodDelayMs("BindIncubate") == 480_000L);
+                ext.methodDelayMs("BindIncubate") == 200_000L);
 
         section("4. 时间：时长由参数决定（离心 30 秒 vs 30 分钟是同一个方法）");
         DeviceProfile cen = DeviceProfile.of("centrifuge");

@@ -84,12 +84,24 @@ def esc(s):
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def fetch_workflow(island_code):
-    rows = psql("SELECT id, code, name FROM workflow WHERE tenant_id=1"
-                " AND island_id = (SELECT id FROM resource_node"
-                " WHERE code = '%s' AND kind = 'island')" % island_code)
-    if not rows:
-        sys.exit("✘ 找不到岛 %s 的流程" % island_code)
+def fetch_workflow(island_code, want_code=None):
+    """取流程。want_code 非空 = 按流程号取；否则取岛上的第一条。
+
+    ⚠ 2026-11-19：提取岛现在有 **3 条**流程（EXT-WORKFLOW-02 单批 57 节点 /
+      BASELINE-SERPAR-01 基准 9 节点 / EXT-WORKFLOW-SINGLE 单样品板 80 节点），
+      原来「取第一条」会把单样品板流程导成旧的 57 节点那条 ⇒ 必须能按流程号选。
+    """
+    if want_code:
+        rows = psql("SELECT id, code, name FROM workflow WHERE tenant_id=1"
+                    " AND code = '%s'" % want_code)
+        if not rows:
+            sys.exit("✘ 找不到流程 %s" % want_code)
+    else:
+        rows = psql("SELECT id, code, name FROM workflow WHERE tenant_id=1"
+                    " AND island_id = (SELECT id FROM resource_node"
+                    " WHERE code = '%s' AND kind = 'island')" % island_code)
+        if not rows:
+            sys.exit("✘ 找不到岛 %s 的流程" % island_code)
     wid, code, name = rows[0].split("|", 2)
     xml = psql_full("SELECT graph->>'xml' FROM workflow WHERE id = %s" % wid).strip()
     return wid, code, name, xml
@@ -420,9 +432,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", default=None)
     ap.add_argument("--island", default=ISLAND_CODE)
+    ap.add_argument("--workflow", default=None,
+                    help="按流程号导出（如 EXT-WORKFLOW-SINGLE）；不指定则取岛上的第一条")
     args = ap.parse_args()
     os.makedirs(OUT_DIR, exist_ok=True)
-    wid, code, name, xml = fetch_workflow(args.island)
+    wid, code, name, xml = fetch_workflow(args.island, args.workflow)
     bindings = fetch_bindings(wid)
     nodes, flows, order = parse_bpmn(xml, bindings)
     stages, stage_names = stages_of(nodes, flows, order)
@@ -437,7 +451,11 @@ def main():
                    sum(len(f) for f in flows.values()), len(stages),
                    "，标注为该次 run 的实测耗时" if args.run else ""))
     svg = render_svg(nodes, flows, stages, name, subtitle, dur_by_node, stage_names)
-    path = os.path.join(OUT_DIR, "高通量核酸提取工作站-流程图.svg")
+    # 产物按流程号分文件：同一岛有多条流程，共用文件名会互相覆盖
+    #   （实测：不带 --workflow 时导出的是旧的 57 节点那条，把单样品板流程盖了）。
+    #   旧流程 EXT-WORKFLOW-02 保持原名（客户交付物已在用），其它流程带流程号后缀。
+    suffix = "" if code == "EXT-WORKFLOW-02" else "-" + code
+    path = os.path.join(OUT_DIR, "高通量核酸提取工作站-流程图%s.svg" % suffix)
     with open(path, "w", encoding="utf-8") as f:
         f.write(svg)
     print("✔ 流程图：%s（%d 节点 / %d 阶段）" % (path, len(nodes), len(stages)))
