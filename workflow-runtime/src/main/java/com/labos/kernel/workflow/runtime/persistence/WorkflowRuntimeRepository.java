@@ -3333,7 +3333,7 @@ public final class WorkflowRuntimeRepository {
                 throw new InvalidTransitionException("Inbox source " + inbox.source()
                         + " does not match command device " + deviceId + "; event attribution rejected");
             if(!commandId.toString().equals(inbox.commandId()))
-                throw new IllegalStateException("Inbox commandId does not match command row; event attribution rejected");
+                throw new InvalidTransitionException("Inbox commandId does not match command row; event attribution rejected");
             if(inbox.deviceId()!=null && !inbox.deviceId().isBlank() && !deviceId.equals(inbox.deviceId()))
                 throw new InvalidTransitionException("Inbox deviceId does not match command row; event attribution rejected");
             if(inbox.payloadState()==null || !targetState.equals(inbox.payloadState()))
