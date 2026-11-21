@@ -1,6 +1,7 @@
 package com.labos.kernel.workflow.runtime.host;
 
 import com.labos.kernel.workflow.runtime.command.DeviceCommandExecutionService;
+import com.labos.kernel.workflow.runtime.coordinator.WaitOutcomes;
 import com.labos.kernel.workflow.runtime.dispatch.LocalTaskDispatchService;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
@@ -239,7 +240,42 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             }
         }
 
-        // 1. Reserve & dispatch READY tokens for active RUNNING/OPEN runs.
+        // 1. Replay Wait Inbox signals durably persisted during PAUSE or prior interrupted runs (G5 §6.3/§8.2).
+        List<WorkflowRuntimeRepository.PendingWaitInboxReceipt> pendingWaitInbox = scopedTenantId != null
+                ? repository.findPendingWaitInboxReceiptsForTenant(scopedTenantId, batchSize)
+                : repository.findPendingWaitInboxReceipts(batchSize);
+        for (WorkflowRuntimeRepository.PendingWaitInboxReceipt receipt : pendingWaitInbox) {
+            if (stopped.get() || !schedulingGate.isOpen()) return;
+            try {
+                WorkflowRuntimeRepository.GraphWaitResult res = repository.replayPendingWaitInbox(
+                        receipt.tenantId(), receipt.runId(), receipt.inboxId());
+                if (WaitOutcomes.COMPLETED.equals(res.outcome())) {
+                    graphWakeup.accept(receipt.tenantId(), receipt.runId());
+                }
+            } catch (RuntimeException ex) {
+                recordError(ex);
+            }
+        }
+
+        // 2. Scan and expire due pure-graph Waits with DB-clock & Run-locked Inbox arbitration (G5 §8.1/§8.2).
+        List<WorkflowRuntimeRepository.DueWaitRef> dueWaits = scopedTenantId != null
+                ? repository.findDueWaitsForTenant(scopedTenantId, batchSize)
+                : repository.findDueWaits(batchSize);
+        for (WorkflowRuntimeRepository.DueWaitRef due : dueWaits) {
+            if (stopped.get() || !schedulingGate.isOpen()) return;
+            try {
+                WorkflowRuntimeRepository.GraphWaitResult res = repository.completeGraphWait(
+                        due.tenantId(), due.runId(), due.waitId(),
+                        WaitOutcomes.OUTCOME_EXPIRED, due.version(), null);
+                if (WaitOutcomes.COMPLETED.equals(res.outcome())) {
+                    graphWakeup.accept(due.tenantId(), due.runId());
+                }
+            } catch (RuntimeException ex) {
+                recordError(ex);
+            }
+        }
+
+        // 3. Reserve & dispatch READY tokens for active RUNNING/OPEN runs.
         List<WorkflowRuntimeRepository.RunnableRunRef> runnableRuns = scopedTenantId != null
                 ? repository.findRunnableWorkTargetsForTenant(scopedTenantId, batchSize)
                 : repository.findRunnableWorkTargets(batchSize);
@@ -248,8 +284,9 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             try {
                 var res = taskDispatchService.dispatchReadyTasks(ref.tenantId(), ref.runId(), batchSize);
                 tasksDispatched.addAndGet(res.dispatchedAttemptIds().size());
-                if (res.dispatchedAttemptIds().isEmpty() && res.capacityDeferred() == 0 && !res.gateClosed()) {
-                    // Remaining READY token(s) are control-flow nodes (START/SPLIT/JOIN/XOR/END): wake coordinator.
+                if (res.hasReadyControlTokens()
+                        || (res.dispatchedAttemptIds().isEmpty() && res.capacityDeferred() == 0 && !res.gateClosed())) {
+                    // Remaining READY token(s) include control-flow/WAIT nodes: wake coordinator even when tasks dispatched/deferred.
                     graphWakeup.accept(ref.tenantId(), ref.runId());
                 }
             } catch (RuntimeException ex) {
@@ -257,7 +294,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             }
         }
 
-        // 2. Deliver pending WORKER_DISPATCH outbox rows into local WorkerPool.
+        // 4. Deliver pending WORKER_DISPATCH outbox rows into local WorkerPool.
         List<UUID> workerTenants = scopedTenantId != null
                 ? (repository.hasPendingOutboxForTenant(scopedTenantId, "WORKER_DISPATCH")
                         ? List.of(scopedTenantId) : List.of())
@@ -273,7 +310,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             }
         }
 
-        // 3. Deliver pending DEVICE_COMMAND outbox rows into DeviceGateway.
+        // 5. Deliver pending DEVICE_COMMAND outbox rows into DeviceGateway.
         List<UUID> commandTenants = scopedTenantId != null
                 ? (repository.hasPendingOutboxForTenant(scopedTenantId, "DEVICE_COMMAND")
                         ? List.of(scopedTenantId) : List.of())
@@ -289,7 +326,7 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             }
         }
 
-        // 4. Progress open PAUSE / STOP / FAILURE drains toward PAUSED / STOPPED / FAILED safe points.
+        // 6. Progress open PAUSE / STOP / FAILURE drains toward PAUSED / STOPPED / FAILED safe points.
         List<WorkflowRuntimeRepository.OpenDrainRef> openDrains = scopedTenantId != null
                 ? repository.findOpenDrainsForTenant(scopedTenantId, batchSize)
                 : repository.findOpenDrains(batchSize);

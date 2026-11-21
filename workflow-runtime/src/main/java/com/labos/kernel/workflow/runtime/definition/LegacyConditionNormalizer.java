@@ -41,7 +41,7 @@ public final class LegacyConditionNormalizer {
             if (!Objects.equals(cond, rewritten)) {
                 changed = true;
                 normalizedEdges[i] = new GraphPlan.Edge(
-                        edge.key(), edge.from(), edge.to(), rewritten, edge.defaultFlow());
+                        edge.key(), edge.from(), edge.to(), rewritten, edge.defaultFlow(), edge.routeKind());
             } else {
                 normalizedEdges[i] = edge;
             }

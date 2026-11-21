@@ -138,6 +138,31 @@ public final class GraphCoordinator {
                         GraphPlan.Node node = requireNode(nodes, token.nodeKey());
                         List<GraphPlan.Edge> nodeOutgoing = outgoing.getOrDefault(node.key(), List.of());
                         WorkflowRuntimeRepository.GraphAdvanceResult result;
+                        if (node.kind() == GraphPlan.Kind.WAIT) {
+                            WorkflowRuntimeRepository.GraphWaitResult registration = repository.registerGraphWait(
+                                    tenantId, runId, token.tokenId(), token.nodeKey(), requireWaitSpec(node));
+                            switch (registration.outcome()) {
+                                case WaitOutcomes.COMPLETED -> {
+                                    offendingTokenId = null;
+                                    controlAdvanced++;
+                                    progressed = true;
+                                    transitions++;
+                                }
+                                case WaitOutcomes.ALREADY_COMPLETED,
+                                     WaitOutcomes.STALE_VERSION,
+                                     WaitOutcomes.NOT_FOUND -> offendingTokenId = null;
+                                case WaitOutcomes.DEFERRED_RUN_NOT_OPEN -> {
+                                    offendingTokenId = null;
+                                    return new AdvanceSummary(controlAdvanced, completedRouted,
+                                            tokensCreated, runCompleted);
+                                }
+                                default -> throw new IllegalStateException(
+                                        "registerGraphWait returned unsupported outcome '" + registration.outcome()
+                                                + "' for WAIT node " + node.key());
+                            }
+                            if (transitions >= maxTransitionsPerSignal) break;
+                            continue;
+                        }
                         if (node.kind() == GraphPlan.Kind.SPLIT_XOR
                                 || node.kind() == GraphPlan.Kind.SPLIT_INCLUSIVE) {
                             if (beforeConditionalSplitTxHook != null) {
@@ -231,6 +256,9 @@ public final class GraphCoordinator {
                                     Map<String, ?> variables) {
         return switch (node.kind()) {
             case TASK, BUILTIN -> null;
+            case WAIT -> throw new IllegalStateException(
+                    "WAIT node must be advanced by the independent registration branch, not transitionFor: "
+                            + node.key());
             case START -> new Transition("SEQUENCE", exactlyOne(node, edges).stream().map(GraphPlan.Edge::to).toList());
             case END -> {
                 if (!edges.isEmpty()) throw new IllegalStateException("End node has outgoing edges: " + node.key());
@@ -379,6 +407,7 @@ public final class GraphCoordinator {
                         throw new IllegalStateException("Gateway has multiple default flows: " + node.key());
                 }
                 case JOIN_PARALLEL, JOIN_INCLUSIVE, JOIN_XOR -> requireUnconditional(node, exactlyOne(node, edges));
+                case WAIT -> validateWaitNode(node, edges);
             }
         }
         if (endCount == 0) {
@@ -445,6 +474,53 @@ public final class GraphCoordinator {
         return edges;
     }
 
+    private static GraphPlan.WaitSpec requireWaitSpec(GraphPlan.Node node) {
+        GraphPlan.WaitSpec spec = node.waitSpec();
+        if (spec == null) {
+            throw new IllegalStateException("WAIT node is missing a WaitSpec: " + node.key());
+        }
+        return spec;
+    }
+
+    private static void validateWaitNode(GraphPlan.Node node, List<GraphPlan.Edge> edges) {
+        GraphPlan.WaitSpec spec = requireWaitSpec(node);
+        requireUnconditional(node, edges);
+        int normal = 0;
+        int timeout = 0;
+        String normalTarget = null;
+        String timeoutTarget = null;
+        for (GraphPlan.Edge edge : edges) {
+            GraphPlan.RouteKind routeKind = edge.routeKind();
+            if (routeKind == null) {
+                throw new IllegalStateException(
+                        "WAIT outgoing edge must declare a routeKind (NORMAL/TIMEOUT): " + edge.key());
+            }
+            if (routeKind == GraphPlan.RouteKind.TIMEOUT) {
+                timeout++;
+                timeoutTarget = edge.to();
+            } else {
+                normal++;
+                normalTarget = edge.to();
+            }
+        }
+        if (normal != 1) {
+            throw new IllegalStateException("WAIT node must have exactly one NORMAL outgoing edge: " + node.key());
+        }
+        if (spec.waitKind() == GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT) {
+            if (timeout != 1) {
+                throw new IllegalStateException(
+                        "MESSAGE_WITH_TIMEOUT WAIT node must have exactly one TIMEOUT outgoing edge: " + node.key());
+            }
+            if (Objects.equals(normalTarget, timeoutTarget)) {
+                throw new IllegalStateException(
+                        "WAIT node NORMAL and TIMEOUT edges must target different nodes: " + node.key());
+            }
+        } else if (timeout != 0) {
+            throw new IllegalStateException(
+                    spec.waitKind() + " WAIT node cannot have a TIMEOUT outgoing edge: " + node.key());
+        }
+    }
+
     private static final class BranchReachability {
         boolean reachesEnd;
         final Set<String> joins = new HashSet<>();
@@ -471,6 +547,13 @@ public final class GraphCoordinator {
             }
             if (node.kind() == GraphPlan.Kind.SPLIT_PARALLEL || node.kind() == GraphPlan.Kind.SPLIT_INCLUSIVE) {
                 throw new IllegalStateException("Nested synchronizing Split is not supported in G1: " + node.key());
+            }
+            if (node.kind() == GraphPlan.Kind.WAIT
+                    && node.waitSpec() != null
+                    && node.waitSpec().waitKind() == GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT) {
+                throw new IllegalStateException(
+                        "MESSAGE_WITH_TIMEOUT Wait is not allowed inside parallel/inclusive gateway branch: "
+                                + node.key());
             }
             for (GraphPlan.Edge edge : outgoing.getOrDefault(currentKey, List.of())) {
                 stack.push(edge.to());

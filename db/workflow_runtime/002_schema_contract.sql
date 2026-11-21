@@ -46,6 +46,16 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='wait_one_active_per_activation_uq') THEN
     RAISE EXCEPTION 'Missing one-active-Wait-per-Activation index';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='wait_active_correlation_uq'
+      AND indexdef LIKE '%(tenant_id, run_id, correlation_key)%'
+      AND indexdef LIKE '%WHERE ((wait_state = ''ACTIVE''::text) AND (correlation_key IS NOT NULL))%') THEN
+    RAISE EXCEPTION 'Missing one-active-Wait-per-Run/correlationKey partial unique index';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='inbox_wait_signal_pending_idx'
+      AND indexdef LIKE '%(tenant_id, run_id, received_at)%'
+      AND indexdef LIKE '%WORKFLOW_WAIT_SIGNAL%') THEN
+    RAISE EXCEPTION 'Missing G5 Wait Inbox partial index inbox_wait_signal_pending_idx';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='workflow_runtime' AND indexname='retry_activation_attempt_uq') THEN
     RAISE EXCEPTION 'Missing unique Retry activation/attempt key';
   END IF;
@@ -98,8 +108,8 @@ SET LOCAL search_path=workflow_runtime,public;
 DO $$
 DECLARE
  t uuid:=gen_random_uuid(); d uuid:=gen_random_uuid(); r uuid:=gen_random_uuid();
- tok uuid:=gen_random_uuid(); act uuid:=gen_random_uuid(); att uuid:=gen_random_uuid();
- cmd uuid:=gen_random_uuid(); l1 uuid:=gen_random_uuid(); wfact uuid:=gen_random_uuid();
+ tok uuid:=gen_random_uuid(); act uuid:=gen_random_uuid(); tok2 uuid:=gen_random_uuid(); act2 uuid:=gen_random_uuid();
+ att uuid:=gen_random_uuid(); cmd uuid:=gen_random_uuid(); l1 uuid:=gen_random_uuid(); wfact uuid:=gen_random_uuid();
  dispatch uuid:=gen_random_uuid();
 BEGIN
  INSERT INTO tenant(tenant_id,tenant_key,display_name) VALUES(t,'contract-'||t::text,'contract');
@@ -109,6 +119,17 @@ BEGIN
  INSERT INTO execution_token(tenant_id,token_id,run_id,token_state,node_key) VALUES(t,tok,r,'READY','n1');
  INSERT INTO node_activation(tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
  VALUES(t,act,r,tok,1,'n1','RUNNING');
+ INSERT INTO wait_registration(tenant_id,run_id,activation_id,wait_state,wait_kind,correlation_key,continuation)
+ VALUES(t,r,act,'ACTIVE','MESSAGE','g5-correlation-contract','{"nodeKey":"next"}');
+ INSERT INTO execution_token(tenant_id,token_id,run_id,token_state,node_key)
+ VALUES(t,tok2,r,'WAITING','n2');
+ INSERT INTO node_activation(tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state)
+ VALUES(t,act2,r,tok2,1,'n2','WAITING');
+ BEGIN
+  INSERT INTO wait_registration(tenant_id,run_id,activation_id,wait_state,wait_kind,correlation_key,continuation)
+  VALUES(t,r,act2,'ACTIVE','MESSAGE','g5-correlation-contract','{"nodeKey":"next2"}');
+  RAISE EXCEPTION 'expected one ACTIVE Wait per Run/correlationKey';
+ EXCEPTION WHEN unique_violation THEN NULL; END;
  INSERT INTO node_attempt(tenant_id,attempt_id,run_id,activation_id,attempt_no,dispatch_id,attempt_state,side_effect_class)
  VALUES(t,att,r,act,1,dispatch,'STARTED','PURE');
  INSERT INTO worker_execution_fact(tenant_id,fact_id,run_id,attempt_id,fact_seq,fact_key,fact_type,actor_kind,actor_id,dispatch_id,payload)
