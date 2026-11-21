@@ -1,12 +1,19 @@
 package com.labos.kernel.workflow.runtime.persistence;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.labos.kernel.workflow.runtime.coordinator.WaitOutcomes;
+import com.labos.kernel.workflow.runtime.graph.GraphPlan;
+import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -18,6 +25,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -39,9 +47,13 @@ import java.util.function.Function;
  * enforces tenant/run scoping, lock order, CAS and atomic Event/Outbox writes.
  */
 public final class WorkflowRuntimeRepository {
+    public static final String WAIT_SIGNAL_MESSAGE_TYPE = "WORKFLOW_WAIT_SIGNAL";
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final TransactionTemplate snapshotTx;
+    private final TransactionTemplate requiresNewTx;
 
     public WorkflowRuntimeRepository(DataSource dataSource, PlatformTransactionManager transactionManager) {
         Objects.requireNonNull(dataSource, "dataSource");
@@ -52,6 +64,10 @@ public final class WorkflowRuntimeRepository {
         this.snapshotTx = new TransactionTemplate(transactionManager);
         this.snapshotTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
         this.snapshotTx.setReadOnly(true);
+        DefaultTransactionDefinition requiresNewDef = new DefaultTransactionDefinition();
+        requiresNewDef.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        requiresNewDef.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+        this.requiresNewTx = new TransactionTemplate(transactionManager, requiresNewDef);
     }
 
     public record RunHead(String status, String controlGate, long commitVersion,
@@ -65,6 +81,14 @@ public final class WorkflowRuntimeRepository {
                              String snapshotJson, byte[] sha256) {}
     public record CapacityReservation(UUID attemptId, UUID dispatchId, UUID reservationId) {}
     public record DrainItemRef(String itemKind, UUID itemId) {}
+    public record GraphWaitResult(String outcome, UUID waitId, UUID activationId,
+                                  UUID successorTokenId, UUID inboxId) {}
+    public record DueWaitRef(UUID tenantId, UUID runId, UUID waitId, Instant deadlineAt,
+                             long version, String waitKind) {}
+    public record PendingWaitInboxReceipt(UUID tenantId, UUID runId, UUID inboxId, String source,
+                                          String sourceMessageId, byte[] payloadHash,
+                                          String payloadJson, String receiptState,
+                                          Instant receivedAt) {}
 
     private static final RowMapper<RunHead> RUN_HEAD = (rs, n) -> new RunHead(
             rs.getString("status"), rs.getString("control_gate"),
@@ -72,6 +96,10 @@ public final class WorkflowRuntimeRepository {
 
     private <T> T required(java.util.function.Supplier<T> work) {
         return tx.execute(status -> work.get());
+    }
+
+    private <T> T requiresNew(java.util.function.Supplier<T> work) {
+        return requiresNewTx.execute(status -> work.get());
     }
 
     private RunHead lockRun(UUID tenantId, UUID runId) {
@@ -83,6 +111,16 @@ public final class WorkflowRuntimeRepository {
             """, RUN_HEAD, tenantId, runId);
         if (rows.size() != 1) throw new IllegalStateException("Run not found or tenant mismatch");
         return rows.get(0);
+    }
+
+    private RunHead lockRunOrNull(UUID tenantId, UUID runId) {
+        List<RunHead> rows = jdbc.query("""
+            SELECT status, control_gate, commit_version, event_seq, recovery_state
+              FROM workflow_runtime.workflow_run
+             WHERE tenant_id=? AND run_id=?
+             FOR UPDATE
+            """, RUN_HEAD, tenantId, runId);
+        return rows.size() == 1 ? rows.get(0) : null;
     }
 
     private long appendWorkerFactInTransaction(UUID tenantId, UUID runId, UUID attemptId,
@@ -1783,7 +1821,11 @@ public final class WorkflowRuntimeRepository {
         return required(() -> {
             RunHead head=lockRun(tenantId,runId); 
             List<String> continuationRows=jdbc.query("""
-                SELECT continuation->>'nodeKey' FROM workflow_runtime.wait_registration
+                SELECT COALESCE(
+                           NULLIF(continuation->>'successNodeKey', ''),
+                           NULLIF(continuation->>'nodeKey', '')
+                       )
+                  FROM workflow_runtime.wait_registration
                  WHERE tenant_id=? AND wait_id=? AND run_id=? AND wait_state='ACTIVE'
                 """,(rs,n)->rs.getString(1),tenantId,waitId,runId);
             if(continuationRows.isEmpty()) return false;
@@ -1843,6 +1885,1000 @@ public final class WorkflowRuntimeRepository {
                     satisfied?"WAIT_SATISFIED":"WAIT_EXPIRED","WAIT",waitId,null,null,null,"{}")));
             return true;
         });
+    }
+
+    /**
+     * G5 §3.1/§4.3: register a pure-graph Wait directly from a READY WAIT Token without creating
+     * any {@code node_attempt}. Enforces Run -> Token lock order and persists v2 continuation
+     * preserving {@code nodeKey} compatibility alongside {@code continuationVersion} and
+     * optional {@code timeoutNodeKey}.
+     */
+    public GraphWaitResult registerGraphWait(UUID tenantId, UUID runId, UUID tokenId,
+                                             String expectedNodeKey, GraphPlan.WaitSpec waitSpec) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(tokenId, "tokenId");
+        if (expectedNodeKey == null || expectedNodeKey.isBlank()) {
+            throw new IllegalArgumentException("expectedNodeKey is required");
+        }
+        Objects.requireNonNull(waitSpec, "waitSpec");
+        return required(() -> {
+            RunHead head = lockRunOrNull(tenantId, runId);
+            if (head == null) {
+                return new GraphWaitResult(WaitOutcomes.NOT_FOUND, null, null, null, null);
+            }
+            if (!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate())) {
+                return new GraphWaitResult(WaitOutcomes.DEFERRED_RUN_NOT_OPEN, null, null, null, null);
+            }
+            record LockedToken(String tokenState, String nodeKey) {}
+            List<LockedToken> tokens = jdbc.query("""
+                SELECT token_state, node_key
+                  FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND run_id=? AND token_id=?
+                 FOR UPDATE
+                """, (rs, n) -> new LockedToken(rs.getString(1), rs.getString(2)),
+                    tenantId, runId, tokenId);
+            if (tokens.size() != 1) {
+                return new GraphWaitResult(WaitOutcomes.NOT_FOUND, null, null, null, null);
+            }
+            LockedToken token = tokens.get(0);
+            if (!expectedNodeKey.equals(token.nodeKey())) {
+                throw new InvalidTransitionException(
+                        "Token " + tokenId + " belongs to node " + token.nodeKey() + ", expected " + expectedNodeKey);
+            }
+            if ("WAITING".equals(token.tokenState())) {
+                List<UUID[]> existingActive = jdbc.query("""
+                    SELECT w.wait_id, a.activation_id
+                      FROM workflow_runtime.node_activation a
+                      JOIN workflow_runtime.wait_registration w
+                        ON w.tenant_id=a.tenant_id AND w.run_id=a.run_id AND w.activation_id=a.activation_id
+                     WHERE a.tenant_id=? AND a.run_id=? AND a.token_id=?
+                       AND a.activation_state='WAITING' AND a.current_attempt_id IS NULL
+                       AND w.wait_state='ACTIVE'
+                    """, (rs, n) -> new UUID[]{rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)},
+                        tenantId, runId, tokenId);
+                if (existingActive.size() == 1) {
+                    return new GraphWaitResult(WaitOutcomes.ALREADY_COMPLETED,
+                            existingActive.get(0)[0], existingActive.get(0)[1], null, null);
+                }
+                return new GraphWaitResult(WaitOutcomes.STALE_VERSION, null, null, null, null);
+            }
+            if (!"READY".equals(token.tokenState())) {
+                return new GraphWaitResult(WaitOutcomes.STALE_VERSION, null, null, null, null);
+            }
+
+            GraphPlan plan = loadGraphPlanInTransaction(tenantId, runId);
+            ContinuationTargets targets = resolveWaitContinuation(plan, expectedNodeKey, waitSpec);
+            String continuationJson = buildWaitContinuationJson(targets);
+
+            Integer nextActivationNo = jdbc.queryForObject("""
+                SELECT COALESCE(MAX(activation_no), 0) + 1
+                  FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND token_id=?
+                """, Integer.class, tenantId, tokenId);
+            int activationNo = nextActivationNo == null ? 1 : nextActivationNo;
+            UUID activationId = UUID.randomUUID();
+            jdbc.update("""
+                INSERT INTO workflow_runtime.node_activation
+                  (tenant_id, activation_id, run_id, token_id, activation_no, node_key, activation_state)
+                VALUES (?, ?, ?, ?, ?, ?, 'WAITING')
+                """, tenantId, activationId, runId, tokenId, activationNo, expectedNodeKey);
+
+            UUID waitId = UUID.randomUUID();
+            Long durationMillis = waitSpec.durationMillis();
+            String corrKey = waitSpec.correlationKey();
+            jdbc.update("""
+                INSERT INTO workflow_runtime.wait_registration
+                  (tenant_id, wait_id, run_id, activation_id, wait_state, wait_kind,
+                   correlation_key, deadline_at, continuation)
+                VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?,
+                        CASE WHEN ?::bigint IS NULL THEN NULL
+                             ELSE clock_timestamp() + (?::bigint * interval '1 millisecond') END,
+                        ?::jsonb)
+                """, tenantId, waitId, runId, activationId, waitSpec.waitKind().name(),
+                    corrKey, durationMillis, durationMillis, continuationJson);
+
+            int tokenUpdated = jdbc.update("""
+                UPDATE workflow_runtime.execution_token
+                   SET token_state='WAITING', token_version=token_version+1, updated_at=clock_timestamp()
+                 WHERE tenant_id=? AND run_id=? AND token_id=? AND token_state='READY'
+                """, tenantId, runId, tokenId);
+            if (tokenUpdated != 1) {
+                throw new StaleRuntimeWriteException("WAIT Token was modified concurrently during registration");
+            }
+
+            String eventPayload = "{\"nodeKey\":\"" + jsonEscape(expectedNodeKey)
+                    + "\",\"waitKind\":\"" + jsonEscape(waitSpec.waitKind().name())
+                    + "\",\"correlationKey\":" + (corrKey == null ? "null" : "\"" + jsonEscape(corrKey) + "\"")
+                    + ",\"durationMillis\":" + (durationMillis == null ? "null" : durationMillis)
+                    + ",\"activationId\":\"" + activationId
+                    + "\",\"tokenId\":\"" + tokenId + "\"}";
+            appendEvents(tenantId, runId, List.of(new EventDraft(
+                    "WAIT_REGISTERED", "WAIT", waitId, 0L, null, tokenId, eventPayload)));
+            return new GraphWaitResult(WaitOutcomes.COMPLETED, waitId, activationId, null, null);
+        });
+    }
+
+    /**
+     * Convenience overload delegating to {@link #completeGraphWait(UUID, UUID, UUID, String, Long, UUID)}
+     * without an optimistic version check.
+     */
+    public GraphWaitResult completeGraphWait(UUID tenantId, UUID runId, UUID waitId,
+                                             String outcome, UUID inboxId) {
+        return completeGraphWait(tenantId, runId, waitId, outcome, null, inboxId);
+    }
+
+    /**
+     * G5 §3.1/§6.4/§8.1: complete an ACTIVE pure-graph Wait ({@code SATISFIED} or {@code EXPIRED})
+     * with single-winner CAS, DB-time deadline re-verification, bounded {@code WAIT_FOR_INBOX}
+     * arbitration, and atomic Token/Activation/Successor/Event/Inbox settlement in one transaction.
+     */
+    public GraphWaitResult completeGraphWait(UUID tenantId, UUID runId, UUID waitId,
+                                             String outcome, Long expectedVersion, UUID inboxId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(waitId, "waitId");
+        if (!WaitOutcomes.OUTCOME_SATISFIED.equals(outcome) && !WaitOutcomes.OUTCOME_EXPIRED.equals(outcome)) {
+            throw new IllegalArgumentException("Unsupported graph Wait outcome: " + outcome);
+        }
+        if (WaitOutcomes.OUTCOME_EXPIRED.equals(outcome) && inboxId != null) {
+            throw new IllegalArgumentException("EXPIRED Wait completion must not carry inboxId");
+        }
+        return required(() -> {
+            RunHead head = lockRunOrNull(tenantId, runId);
+            if (head == null) {
+                return new GraphWaitResult(WaitOutcomes.NOT_FOUND, waitId, null, null, inboxId);
+            }
+            if (!"RUNNING".equals(head.status()) || !"OPEN".equals(head.controlGate())) {
+                return new GraphWaitResult(WaitOutcomes.DEFERRED_RUN_NOT_OPEN, waitId, null, null, inboxId);
+            }
+            record WaitLookup(UUID activationId, UUID tokenId, UUID attemptId) {}
+            List<WaitLookup> lookups = jdbc.query("""
+                SELECT w.activation_id, a.token_id, a.current_attempt_id
+                  FROM workflow_runtime.wait_registration w
+                  JOIN workflow_runtime.node_activation a
+                    ON a.tenant_id=w.tenant_id AND a.run_id=w.run_id AND a.activation_id=w.activation_id
+                 WHERE w.tenant_id=? AND w.run_id=? AND w.wait_id=?
+                """, (rs, n) -> new WaitLookup(
+                    rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getObject(3, UUID.class)),
+                    tenantId, runId, waitId);
+            if (lookups.size() != 1) {
+                return new GraphWaitResult(WaitOutcomes.NOT_FOUND, waitId, null, null, inboxId);
+            }
+            WaitLookup lookup = lookups.get(0);
+            if (lookup.attemptId() != null) {
+                throw new InvalidTransitionException(
+                        "completeGraphWait only supports pure-graph Waits without Attempt: " + waitId);
+            }
+            return completeGraphWaitLockedInTransaction(
+                    tenantId, runId, waitId, lookup.activationId(), lookup.tokenId(),
+                    outcome, expectedVersion, inboxId);
+        });
+    }
+
+    /**
+     * Convenience overload delegating to
+     * {@link #receiveWaitInbox(UUID, UUID, String, String, String, String, byte[])} with auto-computed SHA-256.
+     */
+    public GraphWaitResult receiveWaitInbox(UUID tenantId, UUID runId, String source, String sourceMessageId,
+                                            String correlationKey, String payloadJson) {
+        return receiveWaitInbox(tenantId, runId, source, sourceMessageId, correlationKey, payloadJson, null);
+    }
+
+    /**
+     * G5 §6.1/§6.2/§7: idempotent Wait signal receiver.
+     *
+     * <p>Maintains strict lock ordering ({@code Run -> Token -> Activation -> Wait -> Inbox}), performs
+     * synchronous completion in the same transaction when {@code RUNNING/OPEN} and matching ACTIVE Wait
+     * exists, durables as {@code RECEIVED} ({@code DEFERRED_RUN_NOT_OPEN}) during PAUSE states,
+     * commits hash/identity mismatches independently in {@code REQUIRES_NEW} as
+     * {@code PROTOCOL_VIOLATION}, and terminalizes malformed/unknown-target/terminal-Run messages as
+     * {@code REJECTED + INBOX_REJECTED} in the same transaction.
+     */
+    public GraphWaitResult receiveWaitInbox(UUID tenantId, UUID runId, String source, String sourceMessageId,
+                                            String correlationKey, String payloadJson, byte[] expectedPayloadHash) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        if (source == null || source.isBlank()) throw new IllegalArgumentException("source is required");
+        if (sourceMessageId == null || sourceMessageId.isBlank()) {
+            throw new IllegalArgumentException("sourceMessageId is required");
+        }
+        if (expectedPayloadHash != null && expectedPayloadHash.length != 32) {
+            throw new IllegalArgumentException("expectedPayloadHash must be exactly 32 bytes");
+        }
+
+        String normalizedCorrelationKey = correlationKey == null || correlationKey.isBlank()
+                ? null : correlationKey.trim();
+        WaitInboxPayloadCheck payloadCheck = parseAndValidateWaitInboxPayload(normalizedCorrelationKey, payloadJson);
+        byte[] effectiveHash = expectedPayloadHash != null
+                ? expectedPayloadHash.clone()
+                : sha256(WAIT_SIGNAL_MESSAGE_TYPE + "\n"
+                        + Objects.toString(correlationKey, "") + "\n"
+                        + Objects.toString(payloadJson, ""));
+
+        try {
+            return required(() -> {
+            RunHead head = lockRunOrNull(tenantId, runId);
+            if (head == null) {
+                return new GraphWaitResult(WaitOutcomes.NOT_FOUND, null, null, null, null);
+            }
+
+            record ExistingInbox(UUID inboxId, byte[] payloadHash, String messageType,
+                                 UUID runId, String receiptState, String messagePayloadJson) {}
+            List<ExistingInbox> existingRows = jdbc.query("""
+                SELECT inbox_id, payload_hash, message_type, run_id, receipt_state, message_payload::text
+                  FROM workflow_runtime.inbox_receipt
+                 WHERE tenant_id=? AND source=? AND source_message_id=?
+                """, (rs, n) -> new ExistingInbox(
+                    rs.getObject(1, UUID.class), rs.getBytes(2), rs.getString(3),
+                    rs.getObject(4, UUID.class), rs.getString(5), rs.getString(6)),
+                    tenantId, source, sourceMessageId);
+
+            if (!existingRows.isEmpty()) {
+                ExistingInbox existing = existingRows.get(0);
+                boolean conflict = !MessageDigest.isEqual(existing.payloadHash(), effectiveHash)
+                        || !WAIT_SIGNAL_MESSAGE_TYPE.equals(existing.messageType())
+                        || !Objects.equals(existing.runId(), runId)
+                        || (payloadCheck.permanentError() == null
+                                && !storedCorrelationMatches(existing.messagePayloadJson(), normalizedCorrelationKey));
+                if (conflict) {
+                    recordProtocolViolationIndependent(tenantId, existing.inboxId(), effectiveHash,
+                            payloadCheck.storableJson());
+                    return new GraphWaitResult(WaitOutcomes.PROTOCOL_VIOLATION, null, null, null, existing.inboxId());
+                }
+                if ("PROCESSED".equals(existing.receiptState())) {
+                    return new GraphWaitResult(WaitOutcomes.ALREADY_COMPLETED, null, null, null, existing.inboxId());
+                }
+                if ("REJECTED".equals(existing.receiptState())) {
+                    return new GraphWaitResult(WaitOutcomes.REJECTED, null, null, null, existing.inboxId());
+                }
+                if ("PROTOCOL_VIOLATION".equals(existing.receiptState())) {
+                    return new GraphWaitResult(WaitOutcomes.PROTOCOL_VIOLATION, null, null, null, existing.inboxId());
+                }
+                return processExistingWaitInboxUnderRunLock(
+                        tenantId, runId, head, existing.inboxId(),
+                        normalizedCorrelationKey, payloadCheck);
+            }
+
+            if (payloadCheck.permanentError() != null) {
+                UUID inboxId = insertNewWaitInboxAndHandleRace(tenantId, runId, source, sourceMessageId,
+                        effectiveHash, payloadCheck.storableJson());
+                if (inboxId == null) {
+                    return handlePostInsertInboxConflict(tenantId, runId, source, sourceMessageId,
+                            effectiveHash, payloadCheck.storableJson());
+                }
+                return rejectWaitInboxInTransaction(tenantId, runId, inboxId,
+                        normalizedCorrelationKey, payloadCheck.permanentError());
+            }
+
+            RunGateClassification gateState = classifyRunGateForWaitInbox(head);
+            if (gateState == RunGateClassification.PAUSED) {
+                UUID inboxId = insertNewWaitInboxAndHandleRace(tenantId, runId, source, sourceMessageId,
+                        effectiveHash, payloadCheck.storableJson());
+                if (inboxId == null) {
+                    return handlePostInsertInboxConflict(tenantId, runId, source, sourceMessageId,
+                            effectiveHash, payloadCheck.storableJson());
+                }
+                return new GraphWaitResult(WaitOutcomes.DEFERRED_RUN_NOT_OPEN, null, null, null, inboxId);
+            }
+            if (gateState != RunGateClassification.RUNNING_OPEN) {
+                UUID inboxId = insertNewWaitInboxAndHandleRace(tenantId, runId, source, sourceMessageId,
+                        effectiveHash, payloadCheck.storableJson());
+                if (inboxId == null) {
+                    return handlePostInsertInboxConflict(tenantId, runId, source, sourceMessageId,
+                            effectiveHash, payloadCheck.storableJson());
+                }
+                return rejectWaitInboxInTransaction(tenantId, runId, inboxId,
+                        normalizedCorrelationKey, "RUN_NOT_ADMITTING_WAIT_SIGNAL:" + head.status() + "/" + head.controlGate());
+            }
+
+            ActiveWaitTarget target = findActivePureGraphWaitByCorrelationKey(tenantId, runId, normalizedCorrelationKey);
+            if (target == null) {
+                UUID inboxId = insertNewWaitInboxAndHandleRace(tenantId, runId, source, sourceMessageId,
+                        effectiveHash, payloadCheck.storableJson());
+                if (inboxId == null) {
+                    return handlePostInsertInboxConflict(tenantId, runId, source, sourceMessageId,
+                            effectiveHash, payloadCheck.storableJson());
+                }
+                return rejectWaitInboxInTransaction(tenantId, runId, inboxId,
+                        normalizedCorrelationKey, "NO_ACTIVE_WAIT_FOR_CORRELATION_KEY");
+            }
+
+            // G5 §7 global lock order: Run (held) -> Token -> Activation -> Wait -> Inbox.
+            // Check conflict safety BEFORE mutating Token/Activation/Wait: look up conflicting row
+            // only if ON CONFLICT hits; since wait mutations only happen after insert succeeds (or
+            // identical existing row), a hash conflict on another Run aborts cleanly before Wait writes.
+            lockWaitThreeWayTuple(tenantId, target.tokenId(), target.activationId(), target.waitId());
+            UUID inboxId = insertNewWaitInboxAndHandleRace(tenantId, runId, source, sourceMessageId,
+                    effectiveHash, payloadCheck.storableJson());
+            if (inboxId == null) {
+                return handlePostInsertInboxConflict(tenantId, runId, source, sourceMessageId,
+                        effectiveHash, payloadCheck.storableJson());
+            }
+            return completeGraphWaitLockedInTransaction(
+                    tenantId, runId, target.waitId(), target.activationId(), target.tokenId(),
+                    WaitOutcomes.OUTCOME_SATISFIED, null, inboxId);
+            });
+        } catch (WaitProtocolViolationRollbackException conflict) {
+            return new GraphWaitResult(WaitOutcomes.PROTOCOL_VIOLATION, null, null, null, conflict.existingInboxId);
+        }
+    }
+
+    /**
+     * G5 §6.3/§7: replay a previously persisted {@code WORKFLOW_WAIT_SIGNAL} Inbox receipt
+     * ({@code RECEIVED} or {@code PROCESSING}) after Pause/Resume or process restart recovery,
+     * retiring non-viable or malformed receipts as {@code REJECTED + INBOX_REJECTED} in the same tx.
+     */
+    public GraphWaitResult replayPendingWaitInbox(UUID tenantId, UUID runId, UUID inboxId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(inboxId, "inboxId");
+        return required(() -> {
+            RunHead head = lockRunOrNull(tenantId, runId);
+            if (head == null) {
+                return new GraphWaitResult(WaitOutcomes.NOT_FOUND, null, null, null, inboxId);
+            }
+            record StoredInbox(String receiptState, String messageType, String payloadJson) {}
+            List<StoredInbox> rows = jdbc.query("""
+                SELECT receipt_state, message_type, message_payload::text
+                  FROM workflow_runtime.inbox_receipt
+                 WHERE tenant_id=? AND run_id=? AND inbox_id=?
+                """, (rs, n) -> new StoredInbox(rs.getString(1), rs.getString(2), rs.getString(3)),
+                    tenantId, runId, inboxId);
+            if (rows.size() != 1) {
+                return new GraphWaitResult(WaitOutcomes.NOT_FOUND, null, null, null, inboxId);
+            }
+            StoredInbox stored = rows.get(0);
+            if (!WAIT_SIGNAL_MESSAGE_TYPE.equals(stored.messageType())) {
+                throw new InvalidTransitionException("Inbox receipt is not a WORKFLOW_WAIT_SIGNAL: " + inboxId);
+            }
+            if ("PROCESSED".equals(stored.receiptState())) {
+                return new GraphWaitResult(WaitOutcomes.ALREADY_COMPLETED, null, null, null, inboxId);
+            }
+            if ("REJECTED".equals(stored.receiptState())) {
+                return new GraphWaitResult(WaitOutcomes.REJECTED, null, null, null, inboxId);
+            }
+            if ("PROTOCOL_VIOLATION".equals(stored.receiptState())) {
+                return new GraphWaitResult(WaitOutcomes.PROTOCOL_VIOLATION, null, null, null, inboxId);
+            }
+
+            ParsedStoredEnvelope envelope = parseStoredWaitSignalEnvelope(stored.payloadJson());
+            WaitInboxPayloadCheck check = new WaitInboxPayloadCheck(
+                    envelope.permanentError(), stored.payloadJson());
+            return processExistingWaitInboxUnderRunLock(
+                    tenantId, runId, head, inboxId, envelope.correlationKey(), check);
+        });
+    }
+
+    /** G5 §8.1: read-only bounded discovery of due pure-graph ACTIVE Waits across RUNNING/OPEN Runs. */
+    public List<DueWaitRef> findDueWaits(int limit) {
+        return findDueWaitsInternal(null, limit);
+    }
+
+    /** G5 §8.1: tenant-scoped bounded discovery of due pure-graph ACTIVE Waits across RUNNING/OPEN Runs. */
+    public List<DueWaitRef> findDueWaitsForTenant(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        return findDueWaitsInternal(tenantId, limit);
+    }
+
+    private List<DueWaitRef> findDueWaitsInternal(UUID scopedTenantId, int limit) {
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        List<Object> args = new ArrayList<>();
+        String tenantClause = "";
+        if (scopedTenantId != null) {
+            tenantClause = "w.tenant_id = ? AND ";
+            args.add(scopedTenantId);
+        }
+        args.add(limit);
+        return jdbc.query("""
+            SELECT w.tenant_id, w.run_id, w.wait_id, w.deadline_at, w.version, w.wait_kind
+              FROM workflow_runtime.wait_registration w
+              JOIN workflow_runtime.workflow_run r
+                ON r.tenant_id=w.tenant_id AND r.run_id=w.run_id
+              JOIN workflow_runtime.node_activation a
+                ON a.tenant_id=w.tenant_id AND a.run_id=w.run_id AND a.activation_id=w.activation_id
+             WHERE %sw.wait_state='ACTIVE'
+               AND w.deadline_at IS NOT NULL
+               AND w.deadline_at <= clock_timestamp()
+               AND a.current_attempt_id IS NULL
+               AND r.status='RUNNING'
+               AND r.control_gate='OPEN'
+             ORDER BY w.deadline_at ASC, w.tenant_id ASC, w.run_id ASC, w.wait_id ASC
+             LIMIT ?
+            """.formatted(tenantClause), (rs, n) -> new DueWaitRef(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getObject(4, OffsetDateTime.class).toInstant(),
+                rs.getLong(5),
+                rs.getString(6)), args.toArray());
+    }
+
+    /**
+     * G5 §6.3: read-only bounded discovery of pending {@code WORKFLOW_WAIT_SIGNAL} Inbox receipts,
+     * excluding paused Runs so paused work cannot starve runnable or terminal cleanup queues.
+     */
+    public List<PendingWaitInboxReceipt> findPendingWaitInboxReceipts(int limit) {
+        return findPendingWaitInboxReceiptsInternal(null, limit);
+    }
+
+    /** G5 §6.3: tenant-scoped bounded discovery of pending {@code WORKFLOW_WAIT_SIGNAL} Inbox receipts. */
+    public List<PendingWaitInboxReceipt> findPendingWaitInboxReceiptsForTenant(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        return findPendingWaitInboxReceiptsInternal(tenantId, limit);
+    }
+
+    private List<PendingWaitInboxReceipt> findPendingWaitInboxReceiptsInternal(UUID scopedTenantId, int limit) {
+        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        List<Object> args = new ArrayList<>();
+        String tenantClause = "";
+        if (scopedTenantId != null) {
+            tenantClause = "i.tenant_id = ? AND ";
+            args.add(scopedTenantId);
+        }
+        args.add(limit);
+        return jdbc.query("""
+            SELECT i.tenant_id, i.run_id, i.inbox_id, i.source, i.source_message_id,
+                   i.payload_hash, i.message_payload::text, i.receipt_state, i.received_at
+              FROM workflow_runtime.inbox_receipt i
+              JOIN workflow_runtime.workflow_run r
+                ON r.tenant_id=i.tenant_id AND r.run_id=i.run_id
+             WHERE %si.message_type='WORKFLOW_WAIT_SIGNAL'
+               AND i.receipt_state IN ('RECEIVED','PROCESSING')
+               AND r.status NOT IN ('PAUSE_REQUESTED','PAUSING','PAUSED')
+               AND r.control_gate <> 'PAUSE'
+             ORDER BY CASE WHEN r.status='RUNNING' AND r.control_gate='OPEN' THEN 0 ELSE 1 END ASC,
+                      i.received_at ASC, i.tenant_id ASC, i.inbox_id ASC
+             LIMIT ?
+            """.formatted(tenantClause), (rs, n) -> new PendingWaitInboxReceipt(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getString(4),
+                rs.getString(5),
+                rs.getBytes(6),
+                rs.getString(7),
+                rs.getString(8),
+                rs.getObject(9, OffsetDateTime.class).toInstant()), args.toArray());
+    }
+
+    private enum RunGateClassification { RUNNING_OPEN, PAUSED, STOP_OR_CLOSED }
+
+    private record ContinuationTargets(String normalNodeKey, String timeoutNodeKey) {}
+    private record ActiveWaitTarget(UUID waitId, UUID activationId, UUID tokenId) {}
+    private record WaitInboxPayloadCheck(String permanentError, String storableJson) {}
+    private record ParsedStoredEnvelope(String correlationKey, String permanentError) {}
+
+    private static RunGateClassification classifyRunGateForWaitInbox(RunHead head) {
+        if (List.of("STOP_REQUESTED", "STOPPING", "STOPPED", "FAILED", "SUCCEEDED",
+                "MANUAL_REQUIRED", "QUARANTINED").contains(head.status())
+                || "STOP".equals(head.controlGate())
+                || "CLOSED".equals(head.controlGate())) {
+            return RunGateClassification.STOP_OR_CLOSED;
+        }
+        if (List.of("PAUSE_REQUESTED", "PAUSING", "PAUSED").contains(head.status())
+                || "PAUSE".equals(head.controlGate())) {
+            return RunGateClassification.PAUSED;
+        }
+        if ("RUNNING".equals(head.status()) && "OPEN".equals(head.controlGate())) {
+            return RunGateClassification.RUNNING_OPEN;
+        }
+        return RunGateClassification.STOP_OR_CLOSED;
+    }
+
+    private GraphWaitResult processExistingWaitInboxUnderRunLock(
+            UUID tenantId, UUID runId, RunHead head, UUID inboxId,
+            String correlationKey, WaitInboxPayloadCheck payloadCheck) {
+        RunGateClassification gateState = classifyRunGateForWaitInbox(head);
+        if (payloadCheck.permanentError() != null) {
+            return rejectWaitInboxInTransaction(tenantId, runId, inboxId,
+                    correlationKey, payloadCheck.permanentError());
+        }
+        if (gateState == RunGateClassification.PAUSED) {
+            return new GraphWaitResult(WaitOutcomes.DEFERRED_RUN_NOT_OPEN, null, null, null, inboxId);
+        }
+        if (gateState != RunGateClassification.RUNNING_OPEN) {
+            return rejectWaitInboxInTransaction(tenantId, runId, inboxId,
+                    correlationKey, "RUN_NOT_ADMITTING_WAIT_SIGNAL:" + head.status() + "/" + head.controlGate());
+        }
+        ActiveWaitTarget target = findActivePureGraphWaitByCorrelationKey(tenantId, runId, correlationKey);
+        if (target == null) {
+            return rejectWaitInboxInTransaction(tenantId, runId, inboxId,
+                    correlationKey, "NO_ACTIVE_WAIT_FOR_CORRELATION_KEY");
+        }
+        // Strict lock order: Run (held) -> Token -> Activation -> Wait -> Inbox.
+        lockWaitThreeWayTuple(tenantId, target.tokenId(), target.activationId(), target.waitId());
+        return completeGraphWaitLockedInTransaction(
+                tenantId, runId, target.waitId(), target.activationId(), target.tokenId(),
+                WaitOutcomes.OUTCOME_SATISFIED, null, inboxId);
+    }
+
+    private ActiveWaitTarget findActivePureGraphWaitByCorrelationKey(UUID tenantId, UUID runId, String correlationKey) {
+        List<ActiveWaitTarget> matches = jdbc.query("""
+            SELECT w.wait_id, w.activation_id, a.token_id
+              FROM workflow_runtime.wait_registration w
+              JOIN workflow_runtime.node_activation a
+                ON a.tenant_id=w.tenant_id AND a.run_id=w.run_id AND a.activation_id=w.activation_id
+             WHERE w.tenant_id=? AND w.run_id=?
+               AND w.wait_state='ACTIVE'
+               AND w.correlation_key=?
+               AND a.activation_state='WAITING'
+               AND a.current_attempt_id IS NULL
+            """, (rs, n) -> new ActiveWaitTarget(
+                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getObject(3, UUID.class)),
+                tenantId, runId, correlationKey);
+        if (matches.size() > 1) {
+            throw new IllegalStateException("Multiple active Waits share correlationKey=" + correlationKey);
+        }
+        return matches.isEmpty() ? null : matches.get(0);
+    }
+
+    private void lockWaitThreeWayTuple(UUID tenantId, UUID tokenId, UUID activationId, UUID waitId) {
+        jdbc.queryForObject("""
+            SELECT token_id FROM workflow_runtime.execution_token
+             WHERE tenant_id=? AND token_id=? FOR UPDATE
+            """, UUID.class, tenantId, tokenId);
+        jdbc.queryForObject("""
+            SELECT activation_id FROM workflow_runtime.node_activation
+             WHERE tenant_id=? AND activation_id=? FOR UPDATE
+            """, UUID.class, tenantId, activationId);
+        jdbc.queryForObject("""
+            SELECT wait_id FROM workflow_runtime.wait_registration
+             WHERE tenant_id=? AND wait_id=? FOR UPDATE
+            """, UUID.class, tenantId, waitId);
+    }
+
+    private GraphWaitResult completeGraphWaitLockedInTransaction(
+            UUID tenantId, UUID runId, UUID waitId, UUID activationId, UUID tokenId,
+            String outcome, Long expectedVersion, UUID inboxId) {
+        record LockedTokenContext(String tokenState, String nodeKey,
+                                  UUID splitId, UUID branchId, UUID loopContextId) {}
+        List<LockedTokenContext> tokenRows = jdbc.query("""
+            SELECT token_state, node_key, split_id, branch_id, loop_context_id
+              FROM workflow_runtime.execution_token
+             WHERE tenant_id=? AND run_id=? AND token_id=?
+             FOR UPDATE
+            """, (rs, n) -> new LockedTokenContext(
+                rs.getString(1), rs.getString(2),
+                rs.getObject(3, UUID.class), rs.getObject(4, UUID.class), rs.getObject(5, UUID.class)),
+                tenantId, runId, tokenId);
+        if (tokenRows.size() != 1) {
+            return new GraphWaitResult(WaitOutcomes.NOT_FOUND, waitId, activationId, null, inboxId);
+        }
+        LockedTokenContext token = tokenRows.get(0);
+
+        record LockedActivation(String activationState, UUID attemptId) {}
+        List<LockedActivation> actRows = jdbc.query("""
+            SELECT activation_state, current_attempt_id
+              FROM workflow_runtime.node_activation
+             WHERE tenant_id=? AND run_id=? AND activation_id=?
+             FOR UPDATE
+            """, (rs, n) -> new LockedActivation(rs.getString(1), rs.getObject(2, UUID.class)),
+                tenantId, runId, activationId);
+        if (actRows.size() != 1) {
+            return new GraphWaitResult(WaitOutcomes.NOT_FOUND, waitId, activationId, null, inboxId);
+        }
+        LockedActivation activation = actRows.get(0);
+        if (activation.attemptId() != null) {
+            throw new InvalidTransitionException("Pure-graph Wait completion encountered non-null Attempt");
+        }
+
+        record LockedWait(String waitState, String waitKind, String correlationKey,
+                          Instant deadlineAt, Instant decisionAt, long version, String continuationJson) {}
+        List<LockedWait> waitRows = jdbc.query("""
+            SELECT wait_state, wait_kind, correlation_key, deadline_at,
+                   clock_timestamp() AS decision_at, version, continuation::text
+              FROM workflow_runtime.wait_registration
+             WHERE tenant_id=? AND run_id=? AND wait_id=?
+             FOR UPDATE
+            """, (rs, n) -> new LockedWait(
+                rs.getString(1), rs.getString(2), rs.getString(3),
+                rs.getObject(4, OffsetDateTime.class) == null ? null : rs.getObject(4, OffsetDateTime.class).toInstant(),
+                rs.getObject(5, OffsetDateTime.class).toInstant(),
+                rs.getLong(6), rs.getString(7)),
+                tenantId, runId, waitId);
+        if (waitRows.size() != 1) {
+            return new GraphWaitResult(WaitOutcomes.NOT_FOUND, waitId, activationId, null, inboxId);
+        }
+        LockedWait wait = waitRows.get(0);
+
+        if (inboxId != null) {
+            List<String> inboxStates = jdbc.query("""
+                SELECT receipt_state FROM workflow_runtime.inbox_receipt
+                 WHERE tenant_id=? AND inbox_id=? AND run_id=?
+                 FOR UPDATE
+                """, (rs, n) -> rs.getString(1), tenantId, inboxId, runId);
+            if (inboxStates.size() != 1) {
+                throw new StaleRuntimeWriteException("Wait Inbox receipt disappeared under lock: " + inboxId);
+            }
+            if (!List.of("RECEIVED", "PROCESSING").contains(inboxStates.get(0))) {
+                if ("PROCESSED".equals(inboxStates.get(0))) {
+                    return new GraphWaitResult(WaitOutcomes.ALREADY_COMPLETED, waitId, activationId, null, inboxId);
+                }
+                return new GraphWaitResult(WaitOutcomes.REJECTED, waitId, activationId, null, inboxId);
+            }
+        }
+
+        if (!"ACTIVE".equals(wait.waitState())) {
+            if (inboxId != null && WaitOutcomes.OUTCOME_SATISFIED.equals(outcome)) {
+                return rejectWaitInboxInTransaction(tenantId, runId, inboxId,
+                        wait.correlationKey(), "WAIT_ALREADY_CLOSED:" + wait.waitState());
+            }
+            if (outcome.equals(wait.waitState())) {
+                return new GraphWaitResult(WaitOutcomes.ALREADY_COMPLETED, waitId, activationId, null, inboxId);
+            }
+            return new GraphWaitResult(WaitOutcomes.STALE_VERSION, waitId, activationId, null, inboxId);
+        }
+        if (expectedVersion != null && wait.version() != expectedVersion) {
+            return new GraphWaitResult(WaitOutcomes.STALE_VERSION, waitId, activationId, null, inboxId);
+        }
+        if (!"WAITING".equals(activation.activationState()) || !"WAITING".equals(token.tokenState())) {
+            throw new IllegalStateException("Inconsistent pure-graph Wait 3-way state: act="
+                    + activation.activationState() + ", token=" + token.tokenState());
+        }
+
+        if (WaitOutcomes.OUTCOME_EXPIRED.equals(outcome)) {
+            if (wait.deadlineAt() == null) {
+                return new GraphWaitResult(WaitOutcomes.REJECTED, waitId, activationId, null, null);
+            }
+            if (wait.decisionAt().isBefore(wait.deadlineAt())) {
+                return new GraphWaitResult(WaitOutcomes.STALE_VERSION, waitId, activationId, null, null);
+            }
+            if (wait.correlationKey() != null) {
+                Boolean hasEligibleInbox = jdbc.queryForObject("""
+                    SELECT EXISTS (
+                      SELECT 1 FROM workflow_runtime.inbox_receipt i
+                       WHERE i.tenant_id=? AND i.run_id=?
+                         AND i.message_type='WORKFLOW_WAIT_SIGNAL'
+                         AND i.receipt_state IN ('RECEIVED','PROCESSING')
+                         AND i.received_at < ?
+                         AND jsonb_typeof(i.message_payload)='object'
+                         AND jsonb_typeof(i.message_payload->'correlationKey')='string'
+                         AND i.message_payload->>'correlationKey'=?
+                    )
+                    """, Boolean.class, tenantId, runId,
+                        OffsetDateTime.ofInstant(wait.deadlineAt(), ZoneOffset.UTC), wait.correlationKey());
+                if (Boolean.TRUE.equals(hasEligibleInbox)) {
+                    return new GraphWaitResult(WaitOutcomes.WAIT_FOR_INBOX, waitId, activationId, null, null);
+                }
+            }
+        }
+
+        boolean timeoutRoute = WaitOutcomes.OUTCOME_EXPIRED.equals(outcome)
+                && GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT.name().equals(wait.waitKind());
+        String targetNodeKey = extractAndVerifyContinuationTargetNode(
+                tenantId, runId, token.nodeKey(), wait.continuationJson(), timeoutRoute);
+
+        int waitChanged = jdbc.update("""
+            UPDATE workflow_runtime.wait_registration
+               SET wait_state=?, version=version+1, closed_at=clock_timestamp()
+             WHERE tenant_id=? AND run_id=? AND wait_id=? AND wait_state='ACTIVE' AND version=?
+            """, outcome, tenantId, runId, waitId, wait.version());
+        if (waitChanged != 1) {
+            return new GraphWaitResult(WaitOutcomes.STALE_VERSION, waitId, activationId, null, inboxId);
+        }
+
+        int actUpdated = jdbc.update("""
+            UPDATE workflow_runtime.node_activation
+               SET activation_state='SUCCEEDED', activation_version=activation_version+1, updated_at=clock_timestamp()
+             WHERE tenant_id=? AND run_id=? AND activation_id=?
+               AND activation_state='WAITING' AND current_attempt_id IS NULL
+            """, tenantId, runId, activationId);
+        if (actUpdated != 1) {
+            throw new StaleRuntimeWriteException("Pure-graph Wait Activation was not WAITING");
+        }
+
+        int tokenUpdated = jdbc.update("""
+            UPDATE workflow_runtime.execution_token
+               SET token_state='CONSUMED', token_version=token_version+1, updated_at=clock_timestamp()
+             WHERE tenant_id=? AND run_id=? AND token_id=? AND token_state='WAITING'
+            """, tenantId, runId, tokenId);
+        if (tokenUpdated != 1) {
+            throw new StaleRuntimeWriteException("Pure-graph Wait Token was not WAITING");
+        }
+
+        UUID successorTokenId = UUID.randomUUID();
+        int succInserted = jdbc.update("""
+            INSERT INTO workflow_runtime.execution_token
+              (tenant_id, token_id, run_id, token_state, node_key, parent_token_id, split_id, branch_id, loop_context_id, payload)
+            VALUES (?, ?, ?, 'READY', ?, ?, ?, ?, ?, '{}'::jsonb)
+            """, tenantId, successorTokenId, runId, targetNodeKey, tokenId,
+                token.splitId(), token.branchId(), token.loopContextId());
+        if (succInserted != 1) {
+            throw new IllegalStateException("Failed to create successor Token for Wait " + waitId);
+        }
+        Long childCount = jdbc.queryForObject("""
+            SELECT count(*) FROM workflow_runtime.execution_token
+             WHERE tenant_id=? AND run_id=? AND parent_token_id=?
+            """, Long.class, tenantId, runId, tokenId);
+        if (childCount == null || childCount != 1L) {
+            throw new IllegalStateException(
+                    "Wait completion must produce exactly one successor Token, found " + childCount);
+        }
+
+        String eventType = WaitOutcomes.OUTCOME_SATISFIED.equals(outcome) ? "WAIT_SATISFIED" : "WAIT_EXPIRED";
+        String eventPayload = "{\"nodeKey\":\"" + jsonEscape(token.nodeKey())
+                + "\",\"targetNodeKey\":\"" + jsonEscape(targetNodeKey)
+                + "\",\"routeKind\":\"" + (timeoutRoute ? "TIMEOUT" : "NORMAL")
+                + "\",\"successorTokenId\":\"" + successorTokenId + "\"}";
+        appendEvents(tenantId, runId, List.of(new EventDraft(
+                eventType, "WAIT", waitId, wait.version() + 1L, inboxId, tokenId, eventPayload)));
+
+        if (inboxId != null) {
+            String inboxOutcome = "{\"waitId\":\"" + waitId
+                    + "\",\"successorTokenId\":\"" + successorTokenId
+                    + "\",\"targetNodeKey\":\"" + jsonEscape(targetNodeKey) + "\"}";
+            int inboxUpdated = jdbc.update("""
+                UPDATE workflow_runtime.inbox_receipt
+                   SET receipt_state='PROCESSED', processed_at=clock_timestamp(), outcome=?::jsonb
+                 WHERE tenant_id=? AND run_id=? AND inbox_id=? AND receipt_state IN ('RECEIVED','PROCESSING')
+                """, inboxOutcome, tenantId, runId, inboxId);
+            if (inboxUpdated != 1) {
+                throw new StaleRuntimeWriteException("Wait Inbox receipt could not transition to PROCESSED: " + inboxId);
+            }
+        }
+        return new GraphWaitResult(WaitOutcomes.COMPLETED, waitId, activationId, successorTokenId, inboxId);
+    }
+
+    private UUID insertNewWaitInboxAndHandleRace(UUID tenantId, UUID runId, String source, String sourceMessageId,
+                                                 byte[] hash, String payloadJson) {
+        UUID inboxId = UUID.randomUUID();
+        int inserted = jdbc.update("""
+            INSERT INTO workflow_runtime.inbox_receipt
+              (tenant_id, inbox_id, source, source_message_id, payload_hash, message_type, message_payload, run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?)
+            ON CONFLICT (tenant_id, source, source_message_id) DO NOTHING
+            """, tenantId, inboxId, source, sourceMessageId, hash, WAIT_SIGNAL_MESSAGE_TYPE, payloadJson, runId);
+        return inserted == 1 ? inboxId : null;
+    }
+
+    private GraphWaitResult handlePostInsertInboxConflict(UUID tenantId, UUID runId, String source,
+                                                          String sourceMessageId, byte[] effectiveHash,
+                                                          String storablePayloadJson) {
+        record ExistingMeta(UUID inboxId, byte[] payloadHash, String messageType, UUID runId, String state) {}
+        ExistingMeta existing = jdbc.queryForObject("""
+            SELECT inbox_id, payload_hash, message_type, run_id, receipt_state
+              FROM workflow_runtime.inbox_receipt
+             WHERE tenant_id=? AND source=? AND source_message_id=?
+            """, (rs, n) -> new ExistingMeta(
+                rs.getObject(1, UUID.class), rs.getBytes(2), rs.getString(3),
+                rs.getObject(4, UUID.class), rs.getString(5)),
+                tenantId, source, sourceMessageId);
+        boolean conflict = !MessageDigest.isEqual(existing.payloadHash(), effectiveHash)
+                || !WAIT_SIGNAL_MESSAGE_TYPE.equals(existing.messageType())
+                || !Objects.equals(existing.runId(), runId);
+        if (conflict) {
+            recordProtocolViolationIndependent(tenantId, existing.inboxId(), effectiveHash, storablePayloadJson);
+            throw new WaitProtocolViolationRollbackException(existing.inboxId());
+        }
+        if ("PROCESSED".equals(existing.state())) {
+            return new GraphWaitResult(WaitOutcomes.ALREADY_COMPLETED, null, null, null, existing.inboxId());
+        }
+        if ("REJECTED".equals(existing.state())) {
+            return new GraphWaitResult(WaitOutcomes.REJECTED, null, null, null, existing.inboxId());
+        }
+        return new GraphWaitResult(WaitOutcomes.STALE_VERSION, null, null, null, existing.inboxId());
+    }
+
+    private void recordProtocolViolationIndependent(UUID tenantId, UUID existingInboxId,
+                                                    byte[] conflictingHash, String conflictingPayloadJson) {
+        requiresNew(() -> {
+            jdbc.update("""
+                INSERT INTO workflow_runtime.inbox_protocol_violation
+                  (tenant_id, inbox_id, conflicting_payload_hash, conflicting_payload)
+                VALUES (?, ?, ?, ?::jsonb)
+                """, tenantId, existingInboxId, conflictingHash, conflictingPayloadJson);
+            return null;
+        });
+    }
+
+    private GraphWaitResult rejectWaitInboxInTransaction(UUID tenantId, UUID runId, UUID inboxId,
+                                                         String correlationKey, String reason) {
+        List<String> states = jdbc.query("""
+            SELECT receipt_state FROM workflow_runtime.inbox_receipt
+             WHERE tenant_id=? AND run_id=? AND inbox_id=?
+             FOR UPDATE
+            """, (rs, n) -> rs.getString(1), tenantId, runId, inboxId);
+        if (states.size() != 1) {
+            throw new StaleRuntimeWriteException("Inbox receipt missing during rejection: " + inboxId);
+        }
+        if ("PROCESSED".equals(states.get(0))) {
+            return new GraphWaitResult(WaitOutcomes.ALREADY_COMPLETED, null, null, null, inboxId);
+        }
+        if ("REJECTED".equals(states.get(0))) {
+            return new GraphWaitResult(WaitOutcomes.REJECTED, null, null, null, inboxId);
+        }
+        int changed = jdbc.update("""
+            UPDATE workflow_runtime.inbox_receipt
+               SET receipt_state='REJECTED', processed_at=clock_timestamp(),
+                   outcome=jsonb_build_object('rejectionReason', left(coalesce(?, 'WAIT_INBOX_REJECTED'), 512))
+             WHERE tenant_id=? AND run_id=? AND inbox_id=? AND receipt_state IN ('RECEIVED','PROCESSING')
+            """, reason, tenantId, runId, inboxId);
+        if (changed != 1) {
+            throw new StaleRuntimeWriteException("Inbox receipt could not enter REJECTED: " + inboxId);
+        }
+        String eventPayload = "{\"correlationKey\":"
+                + (correlationKey == null ? "null" : "\"" + jsonEscape(correlationKey) + "\"")
+                + ",\"rejectionReason\":\"" + jsonEscape(reason) + "\"}";
+        appendEvents(tenantId, runId, List.of(new EventDraft(
+                "INBOX_REJECTED", "INBOX", inboxId, null, inboxId, null, eventPayload)));
+        return new GraphWaitResult(WaitOutcomes.REJECTED, null, null, null, inboxId);
+    }
+
+    private GraphPlan loadGraphPlanInTransaction(UUID tenantId, UUID runId) {
+        String planJson = jdbc.queryForObject("""
+            SELECT d.graph_plan::text
+              FROM workflow_runtime.workflow_run r
+              JOIN workflow_runtime.definition_snapshot d
+                ON d.tenant_id=r.tenant_id AND d.definition_id=r.definition_id
+             WHERE r.tenant_id=? AND r.run_id=?
+            """, String.class, tenantId, runId);
+        if (planJson == null) {
+            throw new IllegalStateException("Run definition snapshot GraphPlan not found: " + runId);
+        }
+        return GraphPlanCodec.fromJson(planJson, "tenantId=" + tenantId + ", runId=" + runId);
+    }
+
+    private static ContinuationTargets resolveWaitContinuation(
+            GraphPlan plan, String nodeKey, GraphPlan.WaitSpec expectedSpec) {
+        GraphPlan.Node waitNode = plan.nodes().stream()
+                .filter(n -> nodeKey.equals(n.key()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("WAIT node missing from GraphPlan: " + nodeKey));
+        if (waitNode.kind() != GraphPlan.Kind.WAIT) {
+            throw new InvalidTransitionException("Node " + nodeKey + " is not Kind.WAIT: " + waitNode.kind());
+        }
+        if (!Objects.equals(waitNode.waitSpec(), expectedSpec)) {
+            throw new InvalidTransitionException("WaitSpec mismatch for node " + nodeKey);
+        }
+        Map<String, GraphPlan.Node> nodeByKey = new HashMap<>(plan.nodes().size());
+        for (GraphPlan.Node n : plan.nodes()) {
+            nodeByKey.put(n.key(), n);
+        }
+        String normalTarget = null;
+        String timeoutTarget = null;
+        for (GraphPlan.Edge edge : plan.edges()) {
+            if (!nodeKey.equals(edge.from())) continue;
+            if (!nodeByKey.containsKey(edge.to())) {
+                throw new IllegalStateException("WAIT edge target missing from GraphPlan: " + edge.key());
+            }
+            if (edge.routeKind() == GraphPlan.RouteKind.NORMAL) {
+                if (normalTarget != null) {
+                    throw new IllegalStateException("Multiple NORMAL edges on WAIT node: " + nodeKey);
+                }
+                normalTarget = edge.to();
+            } else if (edge.routeKind() == GraphPlan.RouteKind.TIMEOUT) {
+                if (timeoutTarget != null) {
+                    throw new IllegalStateException("Multiple TIMEOUT edges on WAIT node: " + nodeKey);
+                }
+                timeoutTarget = edge.to();
+            }
+        }
+        if (normalTarget == null) {
+            throw new IllegalStateException("WAIT node has no NORMAL outgoing edge: " + nodeKey);
+        }
+        if (expectedSpec.waitKind() == GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT) {
+            if (timeoutTarget == null || normalTarget.equals(timeoutTarget)) {
+                throw new IllegalStateException("MESSAGE_WITH_TIMEOUT WAIT edge invalid: " + nodeKey);
+            }
+        } else if (timeoutTarget != null) {
+            throw new IllegalStateException("Unexpected TIMEOUT edge on " + expectedSpec.waitKind() + ": " + nodeKey);
+        }
+        return new ContinuationTargets(normalTarget, timeoutTarget);
+    }
+
+    private static String buildWaitContinuationJson(ContinuationTargets targets) {
+        StringBuilder b = new StringBuilder("{\"continuationVersion\":2,\"nodeKey\":\"")
+                .append(jsonEscape(targets.normalNodeKey())).append('"');
+        if (targets.timeoutNodeKey() != null) {
+            b.append(",\"timeoutNodeKey\":\"").append(jsonEscape(targets.timeoutNodeKey())).append('"');
+        }
+        return b.append('}').toString();
+    }
+
+    private String extractAndVerifyContinuationTargetNode(
+            UUID tenantId, UUID runId, String waitNodeKey, String continuationJson, boolean timeoutRoute) {
+        try {
+            JsonNode cont = JSON.readTree(continuationJson);
+            String target;
+            if (timeoutRoute) {
+                JsonNode tNode = cont.get("timeoutNodeKey");
+                if (tNode == null || !tNode.isTextual() || tNode.asText().isBlank()) {
+                    throw new IllegalStateException("WAIT continuation missing timeoutNodeKey");
+                }
+                target = tNode.asText();
+            } else {
+                JsonNode sNode = cont.get("successNodeKey");
+                JsonNode nNode = cont.get("nodeKey");
+                if (sNode != null && sNode.isTextual() && !sNode.asText().isBlank()) {
+                    target = sNode.asText();
+                } else if (nNode != null && nNode.isTextual() && !nNode.asText().isBlank()) {
+                    target = nNode.asText();
+                } else {
+                    throw new IllegalStateException("WAIT continuation missing nodeKey");
+                }
+            }
+            GraphPlan plan = loadGraphPlanInTransaction(tenantId, runId);
+            GraphPlan.RouteKind expectedRoute = timeoutRoute ? GraphPlan.RouteKind.TIMEOUT : GraphPlan.RouteKind.NORMAL;
+            boolean validEdge = plan.edges().stream().anyMatch(e ->
+                    waitNodeKey.equals(e.from()) && target.equals(e.to()) && e.routeKind() == expectedRoute);
+            if (!validEdge) {
+                throw new InvalidTransitionException("Continuation target " + target
+                        + " does not match " + expectedRoute + " edge of WAIT node " + waitNodeKey);
+            }
+            return target;
+        } catch (IOException e) {
+            throw new IllegalStateException("Invalid WAIT continuation JSON", e);
+        }
+    }
+
+    private static WaitInboxPayloadCheck parseAndValidateWaitInboxPayload(String correlationKey, String payloadJson) {
+        String corrError = correlationKey == null ? "MISSING_CORRELATION_KEY" : null;
+        if (payloadJson == null || payloadJson.isBlank()) {
+            String raw = "{\"malformed\":true,\"validationError\":\"EMPTY_PAYLOAD_JSON\"}";
+            return new WaitInboxPayloadCheck(corrError != null ? corrError : "EMPTY_PAYLOAD_JSON", raw);
+        }
+        try {
+            JsonNode parsed = JSON.readTree(payloadJson);
+            if (parsed == null || parsed.isMissingNode() || parsed.isNull()) {
+                String raw = "{\"malformed\":true,\"validationError\":\"NULL_PAYLOAD_JSON\"}";
+                return new WaitInboxPayloadCheck(corrError != null ? corrError : "NULL_PAYLOAD_JSON", raw);
+            }
+            if (!parsed.isObject()) {
+                String canonical = JSON.writeValueAsString(parsed);
+                String envelope = "{\"malformed\":true,\"validationError\":\"NON_OBJECT_PAYLOAD_JSON\",\"payload\":" + canonical + "}";
+                return new WaitInboxPayloadCheck(corrError != null ? corrError : "NON_OBJECT_PAYLOAD_JSON", envelope);
+            }
+            String canonical = JSON.writeValueAsString(parsed);
+            if (corrError != null) {
+                String errJson = "{\"malformed\":true,\"validationError\":\"MISSING_CORRELATION_KEY\",\"payload\":" + canonical + "}";
+                return new WaitInboxPayloadCheck(corrError, errJson);
+            }
+            String envelope = "{\"correlationKey\":\"" + jsonEscape(correlationKey) + "\",\"payload\":" + canonical + "}";
+            return new WaitInboxPayloadCheck(null, envelope);
+        } catch (IOException e) {
+            String raw = "{\"malformed\":true,\"validationError\":\"MALFORMED_PAYLOAD_JSON\",\"rawPayload\":\""
+                    + jsonEscape(payloadJson) + "\"}";
+            return new WaitInboxPayloadCheck(corrError != null ? corrError : "MALFORMED_PAYLOAD_JSON", raw);
+        }
+    }
+
+    private static ParsedStoredEnvelope parseStoredWaitSignalEnvelope(String storedJson) {
+        if (storedJson == null || storedJson.isBlank()) {
+            return new ParsedStoredEnvelope(null, "EMPTY_STORED_INBOX_PAYLOAD");
+        }
+        try {
+            JsonNode root = JSON.readTree(storedJson);
+            if (root == null || !root.isObject()) {
+                return new ParsedStoredEnvelope(null, "MALFORMED_STORED_INBOX_PAYLOAD");
+            }
+            if (root.has("malformed") && root.get("malformed").asBoolean(false)) {
+                String reason = root.hasNonNull("validationError")
+                        ? root.get("validationError").asText("MALFORMED_PAYLOAD_JSON")
+                        : "MALFORMED_PAYLOAD_JSON";
+                return new ParsedStoredEnvelope(null, reason);
+            }
+            JsonNode corrNode = root.get("correlationKey");
+            if (corrNode == null || !corrNode.isTextual() || corrNode.asText().isBlank()) {
+                return new ParsedStoredEnvelope(null, "MISSING_CORRELATION_KEY");
+            }
+            return new ParsedStoredEnvelope(corrNode.asText().trim(), null);
+        } catch (IOException e) {
+            return new ParsedStoredEnvelope(null, "MALFORMED_STORED_INBOX_PAYLOAD");
+        }
+    }
+
+    private static boolean storedCorrelationMatches(String storedPayloadJson, String expectedCorrelationKey) {
+        ParsedStoredEnvelope stored = parseStoredWaitSignalEnvelope(storedPayloadJson);
+        return Objects.equals(stored.correlationKey(), expectedCorrelationKey);
+    }
+
+    private static final class WaitProtocolViolationRollbackException extends RuntimeException {
+        final UUID existingInboxId;
+        WaitProtocolViolationRollbackException(UUID existingInboxId) {
+            super("Wait Inbox protocol violation");
+            this.existingInboxId = existingInboxId;
+        }
     }
 
 
@@ -2360,6 +3396,16 @@ public final class WorkflowRuntimeRepository {
                       SELECT 1 FROM workflow_runtime.execution_token child
                        WHERE child.tenant_id=a.tenant_id AND child.parent_token_id=a.token_id
                   )) +
+              (SELECT count(*) FROM workflow_runtime.node_activation a
+                JOIN workflow_runtime.wait_registration w
+                  ON w.tenant_id=a.tenant_id AND w.run_id=a.run_id AND w.activation_id=a.activation_id
+                JOIN workflow_runtime.execution_token t
+                  ON t.tenant_id=a.tenant_id AND t.token_id=a.token_id
+               WHERE a.tenant_id=? AND a.run_id=? AND a.activation_state='SUCCEEDED'
+                 AND a.current_attempt_id IS NULL
+                 AND (t.token_state <> 'CONSUMED'
+                      OR (SELECT count(*) FROM workflow_runtime.execution_token child
+                           WHERE child.tenant_id=t.tenant_id AND child.parent_token_id=t.token_id) <> 1)) +
               (SELECT count(*) FROM workflow_runtime.split_activation
                 WHERE tenant_id=? AND run_id=? AND split_state <> 'CLOSED') +
               (SELECT count(*) FROM workflow_runtime.join_activation
@@ -2398,6 +3444,7 @@ public final class WorkflowRuntimeRepository {
                 tenantId, runId, // node_activation
                 tenantId, runId, // node_attempt
                 tenantId, runId, // unrouted completed Worker activation
+                tenantId, runId, // unrouted completed pure-graph Wait activation
                 tenantId, runId, // split_activation
                 tenantId, runId, // join_activation
                 tenantId, runId, // branch_activation
@@ -3543,15 +4590,15 @@ public final class WorkflowRuntimeRepository {
                      WHERE tenant_id=? AND run_id=?
                     """,tenantId,runId);
                 jdbc.update("""
-                    UPDATE workflow_runtime.drain_record SET drain_kind='STOP',version=version+1
+                    UPDATE workflow_runtime.drain_record SET drain_kind=?,version=version+1
                      WHERE tenant_id=? AND drain_id=? AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT')
-                    """,tenantId,drainId);
+                    """,drainKind,tenantId,drainId);
                 jdbc.update("""
                     INSERT INTO workflow_runtime.runtime_outbox
                       (tenant_id,run_id,message_kind,dedup_key,payload)
-                    VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text,'kind','STOP'))
+                    VALUES (?,?,'DRAIN_REQUEST',?,jsonb_build_object('drainId',?::text,'kind',?))
                     ON CONFLICT (tenant_id,dedup_key) DO NOTHING
-                    """,tenantId,runId,"drain-stop:"+drainId,drainId);
+                    """,tenantId,runId,"drain-stop:"+drainId,drainId,drainKind);
                 appendEvents(tenantId,runId,List.of(new EventDraft(
                         "STOP_SUPERSEDES_PAUSE","DRAIN",drainId,null,null,null,"{}")));
                 return drainId;
@@ -3562,12 +4609,14 @@ public final class WorkflowRuntimeRepository {
                 if("PAUSE".equals(requestedGate) && "PAUSE".equals(head.controlGate()))
                     return openDrains.get(0);
             }
-            if(!"OPEN".equals(head.controlGate()))
+            boolean admitStopFromPaused = "STOP".equals(requestedGate)
+                    && "PAUSE".equals(head.controlGate()) && "PAUSED".equals(head.status());
+            if(!"OPEN".equals(head.controlGate()) && !admitStopFromPaused)
                 throw new InvalidTransitionException("Run control gate does not admit this drain request");
             jdbc.update("""
                 UPDATE workflow_runtime.workflow_run SET control_gate=?,status=?,
                        updated_at=clock_timestamp()
-                 WHERE tenant_id=? AND run_id=? AND control_gate='OPEN'
+                 WHERE tenant_id=? AND run_id=? AND control_gate IN ('OPEN','PAUSE')
                 """,requestedGate,"PAUSE".equals(requestedGate)?"PAUSE_REQUESTED":"STOP_REQUESTED",tenantId,runId);
             UUID drainId=UUID.randomUUID();
             jdbc.update("""
@@ -3702,8 +4751,29 @@ public final class WorkflowRuntimeRepository {
                       ('SUCCEEDED','FAILED','CANCELLED')) +
                   (SELECT count(*) FROM workflow_runtime.resource_lease
                     WHERE tenant_id=? AND run_id=? AND lease_state NOT IN ('RELEASED')) +
-                  (SELECT count(*) FROM workflow_runtime.wait_registration
-                    WHERE tenant_id=? AND run_id=? AND wait_state='ACTIVE') +
+                  (SELECT count(*) FROM workflow_runtime.wait_registration w
+                    WHERE w.tenant_id=? AND w.run_id=? AND w.wait_state='ACTIVE'
+                      AND NOT (? = 'PAUSE' AND EXISTS (
+                        SELECT 1 FROM workflow_runtime.node_activation a
+                          JOIN workflow_runtime.execution_token t
+                            ON t.tenant_id=a.tenant_id AND t.token_id=a.token_id
+                         WHERE a.tenant_id=w.tenant_id AND a.run_id=w.run_id
+                           AND a.activation_id=w.activation_id
+                           AND a.activation_state='WAITING'
+                           AND a.current_attempt_id IS NULL
+                           AND t.token_state='WAITING'
+                      ))) +
+                  (SELECT count(*) FROM workflow_runtime.node_activation a
+                    WHERE a.tenant_id=? AND a.run_id=? AND a.activation_state='WAITING'
+                      AND NOT (? = 'PAUSE' AND a.current_attempt_id IS NULL AND EXISTS (
+                        SELECT 1 FROM workflow_runtime.wait_registration w
+                          JOIN workflow_runtime.execution_token t
+                            ON t.tenant_id=a.tenant_id AND t.token_id=a.token_id
+                         WHERE w.tenant_id=a.tenant_id AND w.run_id=a.run_id
+                           AND w.activation_id=a.activation_id
+                           AND w.wait_state='ACTIVE'
+                           AND t.token_state='WAITING'
+                      ))) +
                   (SELECT count(*) FROM workflow_runtime.retry_registration
                     WHERE tenant_id=? AND run_id=? AND retry_state='SCHEDULED') +
                   (SELECT count(*) FROM workflow_runtime.split_activation
@@ -3714,9 +4784,22 @@ public final class WorkflowRuntimeRepository {
                     WHERE tenant_id=? AND run_id=? AND ? <> 'PAUSE' AND branch_state IN ('ACTIVE','WAITING')) +
                   (SELECT count(*) FROM workflow_runtime.loop_context
                     WHERE tenant_id=? AND run_id=? AND ? <> 'PAUSE' AND loop_state='ACTIVE') +
-                  (SELECT count(*) FROM workflow_runtime.execution_token
-                    WHERE tenant_id=? AND run_id=? AND
-                      (token_state IN ('RESERVED','RUNNING','WAITING') OR (? <> 'PAUSE' AND token_state='READY'))) +
+                  (SELECT count(*) FROM workflow_runtime.execution_token t
+                    WHERE t.tenant_id=? AND t.run_id=? AND (
+                      t.token_state IN ('RESERVED','RUNNING')
+                      OR (? <> 'PAUSE' AND t.token_state='READY')
+                      OR (t.token_state='WAITING' AND NOT (? = 'PAUSE' AND EXISTS (
+                        SELECT 1 FROM workflow_runtime.node_activation a
+                          JOIN workflow_runtime.wait_registration w
+                            ON w.tenant_id=a.tenant_id AND w.run_id=a.run_id
+                           AND w.activation_id=a.activation_id
+                         WHERE a.tenant_id=t.tenant_id AND a.run_id=t.run_id
+                           AND a.token_id=t.token_id
+                           AND a.activation_state='WAITING'
+                           AND a.current_attempt_id IS NULL
+                           AND w.wait_state='ACTIVE'
+                      )))
+                    )) +
                   (SELECT count(*) FROM workflow_runtime.node_attempt
                     WHERE tenant_id=? AND run_id=? AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED','UNKNOWN')) +
                   (SELECT count(*) FROM workflow_runtime.drain_item
@@ -3726,22 +4809,28 @@ public final class WorkflowRuntimeRepository {
                   (SELECT count(*) FROM workflow_runtime.dispatch_reservation
                     WHERE tenant_id=? AND run_id=? AND reservation_state='HELD') +
                   (SELECT count(*) FROM workflow_runtime.runtime_outbox
-                    WHERE tenant_id=? AND run_id=? AND outbox_state IN ('PENDING','SENDING'))
+                    WHERE tenant_id=? AND run_id=? AND outbox_state IN ('PENDING','SENDING')) +
+                  (SELECT count(*) FROM workflow_runtime.inbox_receipt i
+                    WHERE i.tenant_id=? AND i.run_id=? AND ? <> 'PAUSE'
+                      AND i.message_type='WORKFLOW_WAIT_SIGNAL'
+                      AND i.receipt_state IN ('RECEIVED','PROCESSING'))
                 """,Long.class,
                     tenantId,runId,  // Commands
                     tenantId,runId,  // Leases
-                    tenantId,runId,  // Waits
+                    tenantId,runId,drainKind,  // Waits (Pause allows 3-way paired pure-graph Waits)
+                    tenantId,runId,drainKind,  // Waiting activations (Pause requires paired 3-way pure-graph Wait)
                     tenantId,runId,  // Retries
                     tenantId,runId,drainKind,  // Splits (Pause preserves open parallel split for resume)
                     tenantId,runId,drainKind,  // Joins (Pause preserves waiting join for resume)
                     tenantId,runId,drainKind,  // Branches (Pause preserves active branches for resume)
                     tenantId,runId,drainKind,  // Loops (Pause preserves active loop context for resume)
-                    tenantId,runId,drainKind, // Tokens (Pause preserves READY; Stop invalidates)
+                    tenantId,runId,drainKind,drainKind, // Tokens (Pause preserves READY & 3-way paired Wait WAITING)
                     tenantId,runId,  // Attempts
                     tenantId,drainId, // Drain items
                     tenantId,runId,   // Open manual interventions
                     tenantId,runId,   // Held reservations
-                    tenantId,runId    // Undelivered Outbox
+                    tenantId,runId,   // Undelivered Outbox
+                    tenantId,runId,drainKind // STOP/FAILURE must retire pending Wait Inbox signals
                 );
             if(unsafe==null||unsafe>0) return false;
             int changed=jdbc.update("""
@@ -3757,7 +4846,7 @@ public final class WorkflowRuntimeRepository {
                        completed_at=clock_timestamp(),version=version+1
                  WHERE tenant_id=? AND drain_id=? AND drain_state IN ('REQUESTED','DRAINING','SAFE_POINT')
                 """,tenantId,drainId);
-            appendEvents(tenantId,runId,List.of(new EventDraft(
+            if(changed==1) appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DRAIN_FINALIZED","RUN",runId,null,null,null,"{\"status\":\""+jsonEscape(terminalStatus)+"\"}")));
             return changed==1;
         });
@@ -3807,8 +4896,13 @@ public final class WorkflowRuntimeRepository {
     }
 
     /**
-     * Invalidate pending control-flow continuations during an active {@code STOP} drain so
-     * {@link #tryFinalizeDrain} can safely converge to {@code STOPPED} once active executions drain.
+     * Invalidate pending control-flow continuations and pure-graph Waits during an active
+     * {@code STOP} or {@code FAILURE} drain so {@link #tryFinalizeDrain} can safely converge.
+     *
+     * <p>G5 §9.2: strictly cancels only pure-graph Waits ({@code current_attempt_id IS NULL}) in
+     * {@code Run -> Token -> Activation -> Wait -> Inbox} lock order, emits {@code WAIT_CANCELLED}
+     * idempotently via {@code RETURNING}, leaves task-backed Waits/in-flight Attempts untouched,
+     * and retires pending {@code WORKFLOW_WAIT_SIGNAL} Inbox receipts in the same transaction.
      */
     public void invalidateStopContinuations(UUID tenantId, UUID runId) {
         Objects.requireNonNull(tenantId, "tenantId");
@@ -3819,6 +4913,29 @@ public final class WorkflowRuntimeRepository {
                     || !List.of("STOP_REQUESTED", "STOPPING").contains(head.status())) {
                 return null;
             }
+            // Global lock order: Run (held) -> Token -> Activation -> Wait -> Inbox.
+            jdbc.query("""
+                SELECT token_id FROM workflow_runtime.execution_token
+                 WHERE tenant_id=? AND run_id=? AND token_state IN ('READY','WAITING')
+                 ORDER BY token_id FOR UPDATE
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId);
+            jdbc.query("""
+                SELECT activation_id FROM workflow_runtime.node_activation
+                 WHERE tenant_id=? AND run_id=? AND activation_state='WAITING' AND current_attempt_id IS NULL
+                 ORDER BY activation_id FOR UPDATE
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId);
+            jdbc.query("""
+                SELECT wait_id FROM workflow_runtime.wait_registration
+                 WHERE tenant_id=? AND run_id=? AND wait_state='ACTIVE'
+                 ORDER BY wait_id FOR UPDATE
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId);
+            jdbc.query("""
+                SELECT inbox_id FROM workflow_runtime.inbox_receipt
+                 WHERE tenant_id=? AND run_id=? AND message_type='WORKFLOW_WAIT_SIGNAL'
+                   AND receipt_state IN ('RECEIVED','PROCESSING')
+                 ORDER BY inbox_id FOR UPDATE
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId);
+
             jdbc.update("""
                 UPDATE workflow_runtime.execution_token
                    SET token_state='INVALIDATED', token_version=token_version+1, updated_at=clock_timestamp()
@@ -3844,16 +4961,75 @@ public final class WorkflowRuntimeRepository {
                    SET loop_state='CANCELLED', version=version+1
                  WHERE tenant_id=? AND run_id=? AND loop_state='ACTIVE'
                 """, tenantId, runId);
-            jdbc.update("""
-                UPDATE workflow_runtime.wait_registration
-                   SET wait_state='CANCELLED', closed_at=clock_timestamp()
-                 WHERE tenant_id=? AND run_id=? AND wait_state='ACTIVE'
-                """, tenantId, runId);
+
+            record CancelledWait(UUID waitId, UUID activationId, UUID tokenId, long version) {}
+            List<CancelledWait> cancelledWaits = jdbc.query("""
+                UPDATE workflow_runtime.wait_registration w
+                   SET wait_state='CANCELLED', version=w.version+1, closed_at=clock_timestamp()
+                  FROM workflow_runtime.node_activation a
+                 WHERE w.tenant_id=? AND w.run_id=? AND w.wait_state='ACTIVE'
+                   AND a.tenant_id=w.tenant_id AND a.run_id=w.run_id
+                   AND a.activation_id=w.activation_id
+                   AND a.activation_state='WAITING'
+                   AND a.current_attempt_id IS NULL
+                 RETURNING w.wait_id, w.activation_id, a.token_id, w.version
+                """, (rs, n) -> new CancelledWait(
+                    rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+                    rs.getObject(3, UUID.class), rs.getLong(4)),
+                    tenantId, runId);
+
+            List<EventDraft> events = new ArrayList<>();
+            for (CancelledWait cw : cancelledWaits) {
+                int actCancelled = jdbc.update("""
+                    UPDATE workflow_runtime.node_activation
+                       SET activation_state='CANCELLED', activation_version=activation_version+1,
+                           updated_at=clock_timestamp()
+                     WHERE tenant_id=? AND run_id=? AND activation_id=?
+                       AND activation_state='WAITING' AND current_attempt_id IS NULL
+                    """, tenantId, runId, cw.activationId());
+                if (actCancelled != 1) {
+                    throw new StaleRuntimeWriteException(
+                            "Pure-graph Wait Activation could not transition WAITING -> CANCELLED: " + cw.activationId());
+                }
+                int tokenInvalidated = jdbc.update("""
+                    UPDATE workflow_runtime.execution_token
+                       SET token_state='INVALIDATED', token_version=token_version+1,
+                           updated_at=clock_timestamp()
+                     WHERE tenant_id=? AND run_id=? AND token_id=? AND token_state='WAITING'
+                    """, tenantId, runId, cw.tokenId());
+                if (tokenInvalidated != 1) {
+                    throw new StaleRuntimeWriteException(
+                            "Pure-graph Wait Token could not transition WAITING -> INVALIDATED: " + cw.tokenId());
+                }
+                events.add(new EventDraft(
+                        "WAIT_CANCELLED", "WAIT", cw.waitId(), cw.version(), null, cw.tokenId(),
+                        "{\"activationId\":\"" + cw.activationId() + "\",\"tokenId\":\"" + cw.tokenId() + "\"}"));
+            }
+
             jdbc.update("""
                 UPDATE workflow_runtime.retry_registration
                    SET retry_state='CANCELLED'
                  WHERE tenant_id=? AND run_id=? AND retry_state='SCHEDULED'
                 """, tenantId, runId);
+
+            List<UUID> retiredInboxIds = jdbc.query("""
+                UPDATE workflow_runtime.inbox_receipt
+                   SET receipt_state='REJECTED',
+                       processed_at=clock_timestamp(),
+                       outcome=jsonb_build_object('rejectionReason', 'RUN_STOPPED_OR_FAILED')
+                 WHERE tenant_id=? AND run_id=?
+                   AND message_type='WORKFLOW_WAIT_SIGNAL'
+                   AND receipt_state IN ('RECEIVED','PROCESSING')
+                 RETURNING inbox_id
+                """, (rs, n) -> rs.getObject(1, UUID.class), tenantId, runId);
+            for (UUID retiredInboxId : retiredInboxIds) {
+                events.add(new EventDraft(
+                        "INBOX_REJECTED", "INBOX", retiredInboxId, null, retiredInboxId, null,
+                        "{\"rejectionReason\":\"RUN_STOPPED_OR_FAILED\"}"));
+            }
+            if (!events.isEmpty()) {
+                appendEvents(tenantId, runId, events);
+            }
             return null;
         });
     }
