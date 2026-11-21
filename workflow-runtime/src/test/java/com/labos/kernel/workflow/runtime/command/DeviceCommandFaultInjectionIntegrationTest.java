@@ -74,6 +74,19 @@ class DeviceCommandFaultInjectionIntegrationTest {
             // MANUAL_REQUIRED runs from recovery tests are settled explicitly too.
             st.executeUpdate("UPDATE workflow_runtime.workflow_run SET status='FAILED', control_gate='CLOSED', recovery_state='RECOVERY_COMPLETED' WHERE tenant_id='"
                     + t + "' AND status='MANUAL_REQUIRED'");
+            // Global recoverAtStartup() scans node_attempt by state and does NOT look at Run status.
+            // Settle every in-flight attempt/activation/token of this tenant, otherwise a later test
+            // asserting an exact global scanned()/manualRequired() count sees our residue (order-dependent).
+            st.executeUpdate("UPDATE workflow_runtime.node_attempt SET attempt_state='FAILED', finished_at=clock_timestamp() WHERE tenant_id='"
+                    + t + "' AND attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED')");
+            st.executeUpdate("UPDATE workflow_runtime.node_activation SET activation_state='FAILED', updated_at=clock_timestamp() WHERE tenant_id='"
+                    + t + "' AND activation_state IN ('READY','RESERVED','RUNNING','WAITING')");
+            st.executeUpdate("UPDATE workflow_runtime.execution_token SET token_state='FAILED', updated_at=clock_timestamp() WHERE tenant_id='"
+                    + t + "' AND token_state IN ('READY','RESERVED','RUNNING','WAITING')");
+            // Late-receipt scenarios leave inbox_receipt=RECEIVED (applyCommandEvent rolls back after
+            // receiveInbox committed). G4-A global inbox recovery would re-drive those on a shared DB.
+            st.executeUpdate("UPDATE workflow_runtime.inbox_receipt SET receipt_state='REJECTED' WHERE tenant_id='"
+                    + t + "' AND receipt_state IN ('RECEIVED','PROCESSING')");
         }
         lastTenant = null;
     }
