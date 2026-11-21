@@ -261,16 +261,23 @@ public final class DeviceCommandExecutionService {
             if (state.isPresent() && "PROCESSED".equals(state.get())) {
                 return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
             }
+            if (state.isPresent() && "REJECTED".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
+            }
         }
         try {
-            repository.applyCommandEvent(
+            boolean applied = repository.applyCommandEventOrReject(
                     tenantId, runId, receipt.inboxId(), commandId,
                     targetState, deviceSequence, normalizedOutcome);
-            return new InboxIngestionOutcome(InboxStatus.APPLIED, receipt.inboxId());
+            return new InboxIngestionOutcome(
+                    applied ? InboxStatus.APPLIED : InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
         } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException race) {
             Optional<String> state = repository.findInboxReceiptState(tenantId, receipt.inboxId());
             if (state.isPresent() && "PROCESSED".equals(state.get())) {
                 return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
+            }
+            if (state.isPresent() && "REJECTED".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
             }
             throw race;
         }
