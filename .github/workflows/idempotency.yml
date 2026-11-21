@@ -24,6 +24,9 @@ name: Idempotency
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   schedule:
     # 每天 19:00 UTC = 次日 03:00 北京时间（错开 e2e-nightly 的 18:00 UTC）
     - cron: '0 19 * * *'
