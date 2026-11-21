@@ -1,4 +1,4 @@
--- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.4 final review).
+-- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.5 final review).
 -- NOTE: This draft sits in docs/ddl/ and is NOT executed by PR #17 CI.
 --       Real PostgreSQL 17 DDL & 002_schema_contract CI checks take effect only when
 --       promoted to db/workflow_runtime/006_device_execution_contract_v1.sql in Phase 0.
@@ -11,8 +11,9 @@
 --      - Update the 2 existing command_ledger contract test inserts (L157, L160) to seed a
 --        workstation_sidecar row and supply non-blank workstation_id & operation_name;
 --      - Add PG17 negative DDL assertions verifying rejection of command_ledger rows with
---        workstation_id IS NULL (23502), operation_name IS NULL (23502), blank workstation_id /
---        operation_name (23514), or unregistered workstation_id (23503), plus wait_early_signal_buffer
+--        workstation_id IS NULL (23502), operation_name IS NULL (23502), empty or pure-whitespace
+--        workstation_id / operation_name including '', '   ', E'\t', and E'\n' (23514 via
+--        ~ '[^[:space:]]'), or unregistered workstation_id (23503), plus wait_early_signal_buffer
 --        cross-run run_id mismatch (23503).
 --   2. .github/workflows/workflow-runtime-db.yml (update all 3 table-count checks at
 --      lines 86, 102, 111 from 32 to 35).
@@ -41,7 +42,7 @@ BEGIN;
 --    SingleInstanceHostLock to reject stale frames from closed sockets of the same host.
 CREATE TABLE IF NOT EXISTS workflow_runtime.workstation_sidecar (
   tenant_id               uuid        NOT NULL REFERENCES workflow_runtime.tenant,
-  workstation_id          text        NOT NULL,
+  workstation_id          text        NOT NULL CHECK (workstation_id ~ '[^[:space:]]'),
   endpoint_uri            text        NOT NULL,
   connection_generation   bigint      NOT NULL DEFAULT 0 CHECK (connection_generation >= 0),
   sidecar_instance_id     text,
@@ -61,8 +62,11 @@ CREATE TABLE IF NOT EXISTS workflow_runtime.workstation_sidecar (
 -- 2. Extend command_ledger with strict workstation ownership, operation metadata, timeouts & outcomes.
 --    Under the zero-legacy-compatibility contract, workflow_runtime.command_ledger carries ONLY
 --    Contract v1.x physical device commands (zero non-device ledger rows, zero legacy/mock nullable
---    bypass). Preflight fails closed if any pre-existing row lacks non-blank workstation_id or
---    operation_name, then enforces column-level NOT NULL + non-blank CHECK + FK constraints.
+--    bypass). Preflight fails closed if any pre-existing row lacks non-whitespace workstation_id
+--    or operation_name; when blocked on a historical DB, operators MUST follow CORE §6.1 (clean-DB
+--    isolation or read-only archival of verified terminal/Phase-2B drill rows — never delete
+--    drill records, never backfill dummy placeholders, and never force-close in-flight commands),
+--    before enforcing column-level NOT NULL + ~ '[^[:space:]]' CHECK + FK constraints.
 ALTER TABLE workflow_runtime.command_ledger
   ADD COLUMN IF NOT EXISTS workstation_id text,
   ADD COLUMN IF NOT EXISTS operation_name text,
@@ -79,11 +83,11 @@ BEGIN
   SELECT count(*)
     INTO invalid_count
     FROM workflow_runtime.command_ledger
-   WHERE workstation_id IS NULL OR btrim(workstation_id) = ''
-      OR operation_name IS NULL OR btrim(operation_name) = '';
+   WHERE workstation_id IS NULL OR workstation_id !~ '[^[:space:]]'
+      OR operation_name IS NULL OR operation_name !~ '[^[:space:]]';
   IF invalid_count > 0 THEN
     RAISE EXCEPTION
-      '006 migration blocked: % existing command_ledger row(s) missing non-blank workstation_id or operation_name; archive or backfill before applying Contract v1',
+      '006 migration blocked: % existing command_ledger row(s) missing non-whitespace workstation_id or operation_name; follow CORE §6.1 pre-006 verification & read-only archival policy (never delete drill data or backfill dummy placeholders)',
       invalid_count
       USING ERRCODE = '23502';
   END IF;
@@ -113,7 +117,7 @@ BEGIN
   ) THEN
     ALTER TABLE workflow_runtime.command_ledger
       ADD CONSTRAINT command_ledger_workstation_nonblank_chk
-      CHECK (btrim(workstation_id) <> '' AND btrim(operation_name) <> '');
+      CHECK (workstation_id ~ '[^[:space:]]' AND operation_name ~ '[^[:space:]]');
   END IF;
 END
 $add_command_workstation_fk_and_chk$;
