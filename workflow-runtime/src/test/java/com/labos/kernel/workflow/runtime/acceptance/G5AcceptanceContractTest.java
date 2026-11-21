@@ -15,6 +15,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -158,7 +159,7 @@ class G5AcceptanceContractTest {
     }
 
     @Test
-    @DisplayName("A5b [BEHAVIOR] baseline GraphPlanCodec v1 round-trip + rejects schemaVersion=2")
+    @DisplayName("A5b [BEHAVIOR] GraphPlanCodec v1 round-trip; v2 accepted when integrated; v3/v1-with-WAIT rejected")
     void a5b_codecV1RoundTripBehavior() {
         String xml = """
                 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
@@ -182,19 +183,106 @@ class G5AcceptanceContractTest {
         assertEquals(original.nodes().size(), restored.nodes().size(), "v1 nodes survive round-trip");
         assertEquals(original.edges().size(), restored.edges().size(), "v1 edges survive round-trip");
 
-        // Frozen §4.2/§8.1: baseline (and v2 until AI-2 implements dual-read) must reject unknown versions.
+        // Frozen §4.2 (post-integration): v2 is ACCEPTED with dual-read; v3 and v1-carrying-v2-fields are rejected.
         String v2Json = json.replace("\"schemaVersion\":1", "\"schemaVersion\":2");
-        assertThrows(IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v2Json),
-                "baseline Codec must reject unsupported schemaVersion=2");
+        GraphPlan fromV2 = GraphPlanCodec.fromJson(v2Json);
+        assertEquals(2, fromV2.schemaVersion(), "frozen §4.2: Codec accepts schemaVersion=2 after AI-2");
+        assertEquals(original.definitionKey(), fromV2.definitionKey(), "v2 dual-read keeps history fields");
+
+        String v3Json = json.replace("\"schemaVersion\":1", "\"schemaVersion\":3");
+        assertThrows(IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v3Json),
+                "frozen §4.2: unknown schemaVersion=3 must fail closed");
+
+        // v1 payload that smuggles a v2-only field must be rejected (frozen §4.1 fail-closed).
+        String v1WithRouteKind = json.replace("\"defaultFlow\":false", "\"defaultFlow\":false,\"routeKind\":\"TIMEOUT\"");
+        assertThrows(IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v1WithRouteKind),
+                "frozen §4.1: v1 payload carrying routeKind must be rejected");
     }
 
     @Test
-    @DisplayName("A6 [ENV HYGIENE] acceptance DB starts without ACTIVE waits (not a G1-G4 regression test)")
-    void a6_acceptanceDatabaseStartsWithoutActiveWaits() throws Exception {
+    @DisplayName("A6 [ENV HYGIENE] no ACTIVE waits leaked by this QA class (scoped to its own tenant)")
+    void a6_qaClassLeavesNoActiveWaits() throws Exception {
         assumePg();
-        // Schema hygiene only. Real G1-G4 behavioral regression is covered by the existing suite (198 tests).
-        long activeWaits = count("SELECT count(*) FROM workflow_runtime.wait_registration WHERE wait_state='ACTIVE'");
-        assertEquals(0, activeWaits, "acceptance DB must start with zero ACTIVE waits (fresh 001_init baseline)");
+        // Scoped to QA-created tenants only: a full suite shares the DB with producer tests whose
+        // own fixtures may legitimately remain. Checking global ACTIVE count would be a false failure.
+        long leaked = count("SELECT count(*) FROM workflow_runtime.wait_registration w "
+                + "JOIN workflow_runtime.tenant t ON t.tenant_id=w.tenant_id "
+                + "WHERE w.wait_state='ACTIVE' AND t.tenant_key LIKE 'g5qa-%'");
+        assertEquals(0, leaked, "this QA class must leak no ACTIVE waits (own tenants only)");
+    }
+
+    @Test
+    @DisplayName("A7 [INDEPENDENT QA / PG17] correlation index rejects same-key duplicate but ALLOWS different keys in one Run (frozen §11.1)")
+    void a7_correlationIndexRejectsSameKeyAllowsDifferentKeys() throws Exception {
+        assumePg();
+        // Independent cross-check of A1-1 migration: the partial unique index must be keyed by
+        // (tenant, run, correlation_key) — NOT an over-broad (tenant, run) constraint.
+        // Producer tests only assert the same-key rejection; this asserts the inverse (no false rejection).
+        UUID tenant = UUID.randomUUID();
+        UUID run = UUID.randomUUID();
+        UUID def = UUID.randomUUID();
+        UUID act1 = UUID.randomUUID();
+        UUID act2 = UUID.randomUUID();
+        UUID tok1 = UUID.randomUUID();
+        UUID tok2 = UUID.randomUUID();
+        try (Connection c = ds().getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.tenant(tenant_id,tenant_key,display_name) VALUES ('"
+                    + tenant + "','g5qa-" + tenant + "','g5qa')");
+            st.executeUpdate("INSERT INTO workflow_runtime.definition_snapshot"
+                    + "(tenant_id,definition_id,definition_key,definition_version,definition_hash,compiler_version,graph_plan) VALUES ('"
+                    + tenant + "','" + def + "','g5qa-def','1',decode(repeat('00',32),'hex'),'qa','{}')");
+            st.executeUpdate("INSERT INTO workflow_runtime.workflow_run(tenant_id,run_id,definition_id,status,control_gate) VALUES ('"
+                    + tenant + "','" + run + "','" + def + "','RUNNING','OPEN')");
+            for (UUID tok : List.of(tok1, tok2)) {
+                st.executeUpdate("INSERT INTO workflow_runtime.execution_token"
+                        + "(tenant_id,token_id,run_id,token_state,node_key) VALUES ('"
+                        + tenant + "','" + tok + "','" + run + "','WAITING','w')");
+            }
+            st.executeUpdate("INSERT INTO workflow_runtime.node_activation"
+                    + "(tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state) VALUES ('"
+                    + tenant + "','" + act1 + "','" + run + "','" + tok1 + "',1,'w1','WAITING')");
+            st.executeUpdate("INSERT INTO workflow_runtime.node_activation"
+                    + "(tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state) VALUES ('"
+                    + tenant + "','" + act2 + "','" + run + "','" + tok2 + "',1,'w2','WAITING')");
+        }
+        try (Connection c = ds().getConnection(); Statement st = c.createStatement()) {
+            // Two DIFFERENT correlation keys in one Run must coexist.
+            st.executeUpdate("INSERT INTO workflow_runtime.wait_registration"
+                    + "(tenant_id,run_id,activation_id,wait_state,wait_kind,correlation_key,continuation) VALUES ('"
+                    + tenant + "','" + run + "','" + act1 + "','ACTIVE','MESSAGE','g5qa-key-A','{\"nodeKey\":\"ok\"}')");
+            st.executeUpdate("INSERT INTO workflow_runtime.wait_registration"
+                    + "(tenant_id,run_id,activation_id,wait_state,wait_kind,correlation_key,continuation) VALUES ('"
+                    + tenant + "','" + run + "','" + act2 + "','ACTIVE','MESSAGE','g5qa-key-B','{\"nodeKey\":\"ok\"}')");
+            assertEquals(2, count("SELECT count(*) FROM workflow_runtime.wait_registration WHERE tenant_id='"
+                    + tenant + "' AND wait_state='ACTIVE'"),
+                    "frozen §11.1: different correlation_key in one Run must NOT be rejected");
+
+            // A duplicate of key A must still be rejected (same-key uniqueness).
+            UUID act3 = UUID.randomUUID();
+            UUID tok3 = UUID.randomUUID();
+            try (Connection c2 = ds().getConnection(); Statement st2 = c2.createStatement()) {
+                st2.executeUpdate("INSERT INTO workflow_runtime.execution_token"
+                        + "(tenant_id,token_id,run_id,token_state,node_key) VALUES ('"
+                        + tenant + "','" + tok3 + "','" + run + "','WAITING','w')");
+                st2.executeUpdate("INSERT INTO workflow_runtime.node_activation"
+                        + "(tenant_id,activation_id,run_id,token_id,activation_no,node_key,activation_state) VALUES ('"
+                        + tenant + "','" + act3 + "','" + run + "','" + tok3 + "',1,'w3','WAITING')");
+                assertThrows(java.sql.SQLException.class, () ->
+                        st.executeUpdate("INSERT INTO workflow_runtime.wait_registration"
+                                + "(tenant_id,run_id,activation_id,wait_state,wait_kind,correlation_key,continuation) VALUES ('"
+                                + tenant + "','" + run + "','" + act3 + "','ACTIVE','MESSAGE','g5qa-key-A','{\"nodeKey\":\"ok\"}')"),
+                        "frozen §11.1: duplicate ACTIVE same correlation_key must be rejected");
+            }
+        }
+        // QA hygiene: remove this test's fixtures so a6 (clean-DB assertion) and other tests stay isolated.
+        try (Connection c = ds().getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("DELETE FROM workflow_runtime.wait_registration WHERE tenant_id='" + tenant + "'");
+            st.executeUpdate("DELETE FROM workflow_runtime.node_activation WHERE tenant_id='" + tenant + "'");
+            st.executeUpdate("DELETE FROM workflow_runtime.execution_token WHERE tenant_id='" + tenant + "'");
+            st.executeUpdate("DELETE FROM workflow_runtime.workflow_run WHERE tenant_id='" + tenant + "'");
+            st.executeUpdate("DELETE FROM workflow_runtime.definition_snapshot WHERE tenant_id='" + tenant + "'");
+            st.executeUpdate("DELETE FROM workflow_runtime.tenant WHERE tenant_id='" + tenant + "'");
+        }
     }
 
     // =============================================================================================
