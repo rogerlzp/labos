@@ -6,7 +6,6 @@ import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -66,7 +65,8 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final AtomicLong workersSubmitted = new AtomicLong(0);
     private final AtomicLong commandsDelivered = new AtomicLong(0);
     private final Map<UUID, WakeupThrottle> graphWakeupThrottle = new ConcurrentHashMap<>();
-    private final Set<UUID> graphAdvanceSweepSeen = new HashSet<>();
+    // Owned by the single dispatch loop thread; thread-safe backing matches graphWakeupThrottle.
+    private final Set<UUID> graphAdvanceSweepSeen = ConcurrentHashMap.newKeySet();
     private volatile WorkflowRuntimeRepository.GraphAdvanceCursor graphAdvanceCursor;
     private volatile Instant lastCycleAt;
     private volatile String lastError;

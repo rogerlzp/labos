@@ -2641,9 +2641,12 @@ public final class WorkflowRuntimeRepository {
     }
 
     /**
-     * Global discovery of {@code RUNNING/OPEN} Runs that have at least one {@code SUCCEEDED} task
-     * activation awaiting graph successor creation (makes lost mailbox wakeups and post-restart /
-     * post-resume advancement 100% self-healing).
+     * First-page global discovery of {@code RUNNING/OPEN} Runs awaiting graph successor creation.
+     *
+     * <p>Compatibility/test convenience overload delegating to
+     * {@link #findRunsAwaitingGraphAdvanceAfter(GraphAdvanceCursor, int) findRunsAwaitingGraphAdvanceAfter(null, limit)};
+     * production dispatch loops should use the cursor-paginated {@code ...After} overload with
+     * {@link GraphAdvanceCursor} to avoid starvation behind stuck first-page Runs.
      */
     public List<RunnableRunRef> findRunsAwaitingGraphAdvance(int limit) {
         return findRunsAwaitingGraphAdvanceAfter(null, limit).stream()
@@ -2651,7 +2654,14 @@ public final class WorkflowRuntimeRepository {
                 .toList();
     }
 
-    /** Tenant-scoped discovery of {@code RUNNING/OPEN} Runs awaiting graph successor creation. */
+    /**
+     * First-page tenant-scoped discovery of {@code RUNNING/OPEN} Runs awaiting graph successor creation.
+     *
+     * <p>Compatibility/test convenience overload delegating to
+     * {@link #findRunsAwaitingGraphAdvanceForTenantAfter(UUID, GraphAdvanceCursor, int) findRunsAwaitingGraphAdvanceForTenantAfter(tenantId, null, limit)};
+     * production dispatch loops should use the cursor-paginated {@code ...After} overload with
+     * {@link GraphAdvanceCursor} to avoid starvation behind stuck first-page Runs.
+     */
     public List<RunnableRunRef> findRunsAwaitingGraphAdvanceForTenant(UUID tenantId, int limit) {
         Objects.requireNonNull(tenantId, "tenantId");
         return findRunsAwaitingGraphAdvanceForTenantAfter(tenantId, null, limit).stream()

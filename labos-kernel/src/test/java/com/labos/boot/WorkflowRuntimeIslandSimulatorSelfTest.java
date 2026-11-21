@@ -346,8 +346,6 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                 throw new AssertionError("GET /api/runtime/runs/" + runId + " returned " + resp.getStatusCode());
             }
             return JSON.readTree(resp.getBody());
-        } catch (AssertionError ae) {
-            throw ae;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
