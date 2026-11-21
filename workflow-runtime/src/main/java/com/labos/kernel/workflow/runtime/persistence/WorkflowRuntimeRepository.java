@@ -3241,7 +3241,39 @@ public final class WorkflowRuntimeRepository {
     /** T14: attribute device evidence exclusively by command_id and process Inbox atomically. */
     public boolean applyCommandEvent(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
                                      String targetState, String deviceSequence, String outcomeJson) {
+        return required(() -> applyCommandEventInTransaction(tenantId, runId, inboxId, commandId, targetState, deviceSequence, outcomeJson));
+    }
+
+    /**
+     * Apply a device event, or durably terminalize a permanent domain rejection in the same
+     * transaction. Transient/stale writes still throw and leave the receipt retryable.
+     */
+    public boolean applyCommandEventOrReject(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
+                                             String targetState, String deviceSequence, String outcomeJson) {
         return required(() -> {
+            try {
+                return applyCommandEventInTransaction(tenantId, runId, inboxId, commandId, targetState, deviceSequence, outcomeJson);
+            } catch (InvalidTransitionException rejected) {
+                int changed = jdbc.update("""
+                    UPDATE workflow_runtime.inbox_receipt
+                       SET receipt_state='REJECTED', processed_at=clock_timestamp(),
+                           outcome=jsonb_build_object('rejectionReason', left(?, 512))
+                     WHERE tenant_id=? AND inbox_id=? AND run_id=?
+                       AND receipt_state IN ('RECEIVED','PROCESSING')
+                    """, rejected.getMessage(), tenantId, inboxId, runId);
+                if (changed != 1)
+                    throw new StaleRuntimeWriteException("Inbox receipt could not be terminalized after permanent rejection");
+                appendEvents(tenantId, runId, List.of(new EventDraft(
+                        "INBOX_REJECTED", "INBOX", inboxId, null, null, null, "{}")));
+                return false;
+            }
+        });
+    }
+
+    /** T14: attribute device evidence exclusively by command_id and process Inbox atomically. */
+    private boolean applyCommandEventInTransaction(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
+                                     String targetState, String deviceSequence, String outcomeJson) {
+ {
             List<String> identity=jdbc.query("""
                 SELECT attempt_id::text||'|'||device_id FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND run_id=? AND command_id=?
@@ -3347,7 +3379,7 @@ public final class WorkflowRuntimeRepository {
             appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
             return true;
-        });
+
     }
 
     /** T14b: process a receipt under Run -> domain row -> Inbox lock order. */
