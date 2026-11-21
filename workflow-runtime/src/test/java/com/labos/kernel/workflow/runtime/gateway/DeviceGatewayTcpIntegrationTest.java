@@ -885,7 +885,7 @@ class DeviceGatewayTcpIntegrationTest {
             // poison receipt. The Inbox must be terminalized atomically and exact replay stays a NACK.
             String lateMessageId = "sec-late-" + UUID.randomUUID();
             var rejected = cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
-                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{\\"tampered\\":true}");
+                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{}");
             assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejected.status());
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
@@ -895,7 +895,7 @@ class DeviceGatewayTcpIntegrationTest {
                     + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED'"));
 
             var rejectedReplay = cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
-                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{\\"tampered\\":true}");
+                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{}");
             assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejectedReplay.status());
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
