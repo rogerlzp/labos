@@ -289,15 +289,17 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
             }
         }
 
-        // 4. Progress open PAUSE / STOP drains toward PAUSED / STOPPED safe points.
+        // 4. Progress open PAUSE / STOP / FAILURE drains toward PAUSED / STOPPED / FAILED safe points.
         List<WorkflowRuntimeRepository.OpenDrainRef> openDrains = scopedTenantId != null
                 ? repository.findOpenDrainsForTenant(scopedTenantId, batchSize)
                 : repository.findOpenDrains(batchSize);
         for (WorkflowRuntimeRepository.OpenDrainRef drain : openDrains) {
             if (stopped.get() || !schedulingGate.isOpen()) return;
             try {
+                // Validate drain_kind before any outbox delivery, scan advance, or continuation cancel.
+                String targetStatus = resolveDrainTargetStatus(drain.drainKind());
                 repository.deliverDrainRequestOutbox(drain.tenantId(), drain.runId());
-                if ("STOP".equals(drain.drainKind())) {
+                if ("STOP".equals(drain.drainKind()) || "FAILURE".equals(drain.drainKind())) {
                     for (UUID activeAttempt : repository.findActiveAttemptIdsForRun(drain.tenantId(), drain.runId())) {
                         workerCancelRequester.accept(activeAttempt);
                     }
@@ -309,10 +311,9 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
                                 drain.tenantId(), drain.runId(), drain.drainId(),
                                 drain.version(), "{\"phase\":\"local-host-drain\"}", List.of());
                     } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException ignored) {
-                        // Drain record was updated concurrently (e.g. STOP superseded PAUSE); next cycle retries.
+                        // Drain record was updated concurrently (e.g. STOP/FAILURE superseded PAUSE); next cycle retries.
                     }
                 }
-                String targetStatus = "PAUSE".equals(drain.drainKind()) ? "PAUSED" : "STOPPED";
                 repository.tryFinalizeDrain(drain.tenantId(), drain.runId(), drain.drainId(), targetStatus);
             } catch (RuntimeException ex) {
                 recordError(ex);
@@ -348,6 +349,18 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         } catch (RuntimeException ex) {
             recordError(ex);
         }
+    }
+
+    static String resolveDrainTargetStatus(String drainKind) {
+        if (drainKind == null) {
+            throw new IllegalStateException("Unsupported open drain kind: null");
+        }
+        return switch (drainKind) {
+            case "PAUSE" -> "PAUSED";
+            case "STOP" -> "STOPPED";
+            case "FAILURE" -> "FAILED";
+            default -> throw new IllegalStateException("Unsupported open drain kind: " + drainKind);
+        };
     }
 
     private void recordError(RuntimeException ex) {

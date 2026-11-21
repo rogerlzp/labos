@@ -2853,7 +2853,12 @@ public final class WorkflowRuntimeRepository {
     public record OpenDrainRef(
             UUID tenantId, UUID runId, UUID drainId, String drainKind, String drainState, long version) {}
 
-    /** Global discovery of open PAUSE/STOP drains awaiting local host convergence. */
+    /**
+     * Global discovery of open drains awaiting local host convergence.
+     *
+     * <p>Does not filter {@code d.drain_kind} in SQL so any unexpected/unknown kind surfaces to
+     * {@code RuntimeDispatchLoop} and fails closed instead of being silently ignored.
+     */
     public List<OpenDrainRef> findOpenDrains(int limit) {
         if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
         return jdbc.query("""
@@ -2862,7 +2867,6 @@ public final class WorkflowRuntimeRepository {
               JOIN workflow_runtime.workflow_run r
                 ON r.tenant_id = d.tenant_id AND r.run_id = d.run_id
              WHERE d.drain_state IN ('REQUESTED', 'DRAINING', 'SAFE_POINT')
-               AND d.drain_kind IN ('PAUSE', 'STOP')
                AND r.status IN ('PAUSE_REQUESTED', 'PAUSING', 'STOP_REQUESTED', 'STOPPING')
              ORDER BY d.created_at ASC, d.drain_id ASC
              LIMIT ?
@@ -2875,7 +2879,12 @@ public final class WorkflowRuntimeRepository {
                 rs.getLong(6)), limit);
     }
 
-    /** Tenant-scoped discovery of open PAUSE/STOP drains awaiting local host convergence. */
+    /**
+     * Tenant-scoped discovery of open drains awaiting local host convergence.
+     *
+     * <p>Does not filter {@code d.drain_kind} in SQL so any unexpected/unknown kind surfaces to
+     * {@code RuntimeDispatchLoop} and fails closed instead of being silently ignored.
+     */
     public List<OpenDrainRef> findOpenDrainsForTenant(UUID tenantId, int limit) {
         Objects.requireNonNull(tenantId, "tenantId");
         if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
@@ -2886,7 +2895,6 @@ public final class WorkflowRuntimeRepository {
                 ON r.tenant_id = d.tenant_id AND r.run_id = d.run_id
              WHERE d.tenant_id = ?
                AND d.drain_state IN ('REQUESTED', 'DRAINING', 'SAFE_POINT')
-               AND d.drain_kind IN ('PAUSE', 'STOP')
                AND r.status IN ('PAUSE_REQUESTED', 'PAUSING', 'STOP_REQUESTED', 'STOPPING')
              ORDER BY d.created_at ASC, d.drain_id ASC
              LIMIT ?
@@ -3362,6 +3370,100 @@ public final class WorkflowRuntimeRepository {
                 """,outcomeJson,tenantId,inboxId,runId);
             if(changed==1) appendEvents(tenantId,runId,List.of(new EventDraft("INBOX_PROCESSED","INBOX",inboxId,null,null,null,"{}")));
             return changed==1;
+        });
+    }
+
+    public record PendingCommandInboxReceipt(
+            UUID tenantId, UUID inboxId, UUID runId, String source, String sourceMessageId,
+            String messageType, String commandIdText, String targetState,
+            String deviceSequence, String outcomeJson) {}
+
+    /** Global bounded query of un-reconciled device Command Inbox receipts across crashes. */
+    public List<PendingCommandInboxReceipt> findPendingCommandInboxReceipts(int limit) {
+        return findPendingCommandInboxReceiptsInternal(null, limit);
+    }
+
+    /** Tenant-scoped bounded query of un-reconciled device Command Inbox receipts across crashes. */
+    public List<PendingCommandInboxReceipt> findPendingCommandInboxReceiptsForTenant(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        return findPendingCommandInboxReceiptsInternal(tenantId, limit);
+    }
+
+    /**
+     * Query un-reconciled device Command Inbox receipts across crashes.
+     *
+     * <p>Orders by authoritative ingestion timestamp ({@code received_at ASC, tenant_id ASC, inbox_id ASC})
+     * rather than protocol-optional/opaque {@code deviceSequence}; any out-of-order stale receipt is
+     * safely rejected by {@link #applyCommandEvent} state-machine CAS.
+     */
+    private List<PendingCommandInboxReceipt> findPendingCommandInboxReceiptsInternal(UUID scopedTenantId, int limit) {
+        if (limit < 1 || limit > 1000)
+            throw new IllegalArgumentException("Inbox recovery batch limit must be 1..1000");
+        String whereTenant = scopedTenantId == null ? "" : "tenant_id=? AND ";
+        Object[] args = scopedTenantId == null ? new Object[]{limit} : new Object[]{scopedTenantId, limit};
+        return jdbc.query("""
+            SELECT tenant_id, inbox_id, run_id, source, source_message_id, message_type,
+                   message_payload->>'commandId',
+                   message_payload->>'state',
+                   message_payload->>'deviceSequence',
+                   COALESCE((message_payload->'outcome')::text, '{}')
+              FROM workflow_runtime.inbox_receipt
+             WHERE %sreceipt_state IN ('RECEIVED','PROCESSING')
+               AND run_id IS NOT NULL
+               AND message_type IN (
+                     'RECEIVED_ACK','EXECUTING','PROGRESS',
+                     'COMMAND_RESULT','DEVICE_COMMAND_RESULT',
+                     'DELIVERY_UNCERTAIN','COMMAND_UNKNOWN')
+             ORDER BY received_at ASC, tenant_id ASC, inbox_id ASC
+             LIMIT ?
+            """.formatted(whereTenant), (rs, n) -> new PendingCommandInboxReceipt(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, UUID.class),
+                rs.getString(4),
+                rs.getString(5),
+                rs.getString(6),
+                rs.getString(7),
+                rs.getString(8),
+                rs.getString(9),
+                rs.getString(10)), args);
+    }
+
+    /**
+     * Permanently reject a durable {@code RECEIVED}/{@code PROCESSING} Inbox receipt under Run -> Inbox
+     * lock order when replay during recovery proves the state transition is invalid or stale.
+     */
+    public boolean markInboxRejected(UUID tenantId, UUID runId, UUID inboxId,
+                                     String outcomeJson, String actor) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(inboxId, "inboxId");
+        String normalizedOutcome = (outcomeJson == null || outcomeJson.isBlank()) ? "{}" : outcomeJson;
+        String normalizedActor = (actor == null || actor.isBlank()) ? "recovery" : actor;
+        return required(() -> {
+            RunHead head = lockRun(tenantId, runId);
+            int changed = jdbc.update("""
+                UPDATE workflow_runtime.inbox_receipt
+                   SET receipt_state='REJECTED',
+                       processed_at=clock_timestamp(),
+                       outcome=?::jsonb
+                 WHERE tenant_id=? AND inbox_id=? AND run_id=?
+                   AND receipt_state IN ('RECEIVED','PROCESSING')
+                """, normalizedOutcome, tenantId, inboxId, runId);
+            if (changed == 1) {
+                jdbc.update("""
+                    INSERT INTO workflow_runtime.runtime_audit
+                      (tenant_id,run_id,actor_kind,actor_id,action,subject_kind,subject_id,after_state,reason)
+                    VALUES (?,?,'SYSTEM',?,'INBOX_RECEIPT_REJECTED','INBOX',?,?::jsonb,
+                            'command inbox replay rejected during recovery')
+                    """, tenantId, runId, normalizedActor, inboxId, normalizedOutcome);
+                // Keep terminal Run event streams (event_seq / commit_version) immutable on late arrivals.
+                if (!List.of("SUCCEEDED", "FAILED", "STOPPED").contains(head.status())) {
+                    appendEvents(tenantId, runId, List.of(new EventDraft(
+                            "INBOX_REJECTED", "INBOX", inboxId, null, null, null, normalizedOutcome)));
+                }
+            }
+            return changed == 1;
         });
     }
 
@@ -3854,7 +3956,11 @@ public final class WorkflowRuntimeRepository {
 
     public record WorkerRecoveryResult(String outcome, UUID interventionId) {}
     public record InterruptedAttempt(UUID tenantId, UUID runId, UUID attemptId) {}
-    public record OutboxRestartResult(int safelyRequeued, int leftUncertain) {}
+    public record OutboxRestartResult(int safelyRequeued, int leftUncertain, int reconciledTerminal) {
+        public OutboxRestartResult(int safelyRequeued, int leftUncertain) {
+            this(safelyRequeued, leftUncertain, 0);
+        }
+    }
 
     /** Requeue only SENDING messages whose external side-effect boundary was not crossed. */
     public OutboxRestartResult recoverOutboxAfterRestart() {
@@ -3907,6 +4013,36 @@ public final class WorkflowRuntimeRepository {
                         AND c.command_state IN ('CREATED','DISPATCH_PENDING')
                    )
                 """.formatted(oTenant), args);
+            int commandDelivered = jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox o
+                   SET outbox_state='DELIVERED',
+                       delivered_at=COALESCE(delivered_at, clock_timestamp())
+                 WHERE %so.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
+                   AND EXISTS (
+                     SELECT 1 FROM workflow_runtime.command_ledger c
+                      WHERE c.tenant_id=o.tenant_id
+                        AND c.command_id::text=o.payload->>'commandId'
+                        AND c.command_state IN ('SUCCEEDED','FAILED')
+                   )
+                """.formatted(oTenant), args);
+            int commandDeadLettered = jdbc.update("""
+                UPDATE workflow_runtime.runtime_outbox o
+                   SET outbox_state='DEAD_LETTER'
+                 WHERE %so.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
+                   AND (
+                     EXISTS (
+                       SELECT 1 FROM workflow_runtime.command_ledger c
+                        WHERE c.tenant_id=o.tenant_id
+                          AND c.command_id::text=o.payload->>'commandId'
+                          AND c.command_state='CANCELLED'
+                     )
+                     OR NOT EXISTS (
+                       SELECT 1 FROM workflow_runtime.command_ledger c
+                        WHERE c.tenant_id=o.tenant_id
+                          AND c.command_id::text=o.payload->>'commandId'
+                     )
+                   )
+                """.formatted(oTenant), args);
             Integer uncertain = jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.runtime_outbox o
                  WHERE %so.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
@@ -3915,11 +4051,13 @@ public final class WorkflowRuntimeRepository {
                       WHERE c.tenant_id=o.tenant_id
                         AND c.command_id::text=o.payload->>'commandId'
                         AND c.command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING',
-                                                'DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
+                                                'CANCEL_REQUESTED','DELIVERY_UNKNOWN',
+                                                'UNKNOWN','MANUAL_REQUIRED')
                    )
                 """.formatted(oTenant), Integer.class, args);
             return new OutboxRestartResult(workerRequeued + otherRequeued + commandRequeued,
-                    uncertain == null ? 0 : uncertain);
+                    uncertain == null ? 0 : uncertain,
+                    commandDelivered + commandDeadLettered);
         });
     }
 
@@ -3985,8 +4123,8 @@ public final class WorkflowRuntimeRepository {
                 """,Integer.class,tenantId,attemptId);
             Integer ambiguousCommands=jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.command_ledger
-                 WHERE tenant_id=? AND attempt_id=? AND command_state IN
-                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
+                 WHERE tenant_id=? AND attempt_id=? AND command_state NOT IN
+                   ('CREATED','DISPATCH_PENDING','CANCELLED')
                 """,Integer.class,tenantId,attemptId);
             if((sideEffects==null||sideEffects==0) && (ambiguousCommands==null||ambiguousCommands==0)) {
                 jdbc.update("""
@@ -4033,13 +4171,23 @@ public final class WorkflowRuntimeRepository {
                 UPDATE workflow_runtime.command_ledger SET command_state='UNKNOWN',
                        version=version+1,updated_at=clock_timestamp()
                  WHERE tenant_id=? AND attempt_id=? AND command_state IN
-                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','DELIVERY_UNKNOWN')
+                   ('SEND_STARTED','ACKNOWLEDGED','RUNNING','CANCEL_REQUESTED','DELIVERY_UNKNOWN')
                 """,tenantId,attemptId);
+            jdbc.update("""
+                UPDATE workflow_runtime.command_dispatch_attempt SET dispatch_state='DELIVERED',
+                       finished_at=clock_timestamp()
+                 WHERE tenant_id=? AND command_id IN
+                   (SELECT command_id FROM workflow_runtime.command_ledger
+                     WHERE tenant_id=? AND attempt_id=? AND command_state IN ('SUCCEEDED','FAILED','CANCELLED'))
+                   AND dispatch_state='SEND_STARTED'
+                """,tenantId,tenantId,attemptId);
             jdbc.update("""
                 UPDATE workflow_runtime.command_dispatch_attempt SET dispatch_state='DELIVERY_UNKNOWN',
                        finished_at=clock_timestamp()
                  WHERE tenant_id=? AND command_id IN
-                   (SELECT command_id FROM workflow_runtime.command_ledger WHERE tenant_id=? AND attempt_id=?)
+                   (SELECT command_id FROM workflow_runtime.command_ledger
+                     WHERE tenant_id=? AND attempt_id=?
+                       AND command_state NOT IN ('SUCCEEDED','FAILED','CANCELLED'))
                    AND dispatch_state='SEND_STARTED'
                 """,tenantId,tenantId,attemptId);
             UUID dispatchId=commandDispatchId(tenantId,attemptId);
@@ -4147,7 +4295,7 @@ public final class WorkflowRuntimeRepository {
         try { return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)); }
         catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
-    private static String jsonEscape(String s) {
+    public static String jsonEscape(String s) {
         if (s == null) return "";
         StringBuilder out = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {
