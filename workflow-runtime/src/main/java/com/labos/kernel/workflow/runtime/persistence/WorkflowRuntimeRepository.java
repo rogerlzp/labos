@@ -2600,6 +2600,14 @@ public final class WorkflowRuntimeRepository {
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
+    public Optional<String> findInboxReceiptRejectionReason(UUID tenantId, UUID inboxId) {
+        List<String> rows = jdbc.query("""
+            SELECT outcome->>'rejectionReason' FROM workflow_runtime.inbox_receipt
+             WHERE tenant_id=? AND inbox_id=? AND receipt_state='REJECTED'
+            """, (rs, n) -> rs.getString(1), tenantId, inboxId);
+        return rows.isEmpty() ? Optional.empty() : Optional.ofNullable(rows.get(0));
+    }
+
     /** Resolve the authoritative tenant owning {@code (runId, commandId)} for multi-tenant Device Gateway ingress. */
     public Optional<UUID> findTenantIdForCommand(UUID runId, UUID commandId) {
         Objects.requireNonNull(runId, "runId");
