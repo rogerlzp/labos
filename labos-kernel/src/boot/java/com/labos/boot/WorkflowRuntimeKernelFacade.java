@@ -1,5 +1,6 @@
 package com.labos.boot;
 
+import com.labos.kernel.workflow.runtime.coordinator.WaitOutcomes;
 import com.labos.kernel.workflow.runtime.definition.WorkflowRunFactory;
 import com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
@@ -68,6 +69,32 @@ public final class WorkflowRuntimeKernelFacade {
 
     public UUID requestStop(long kernelTenantId, UUID runId) {
         return repository.requestDrain(tenants.resolve(kernelTenantId), runId, "STOP");
+    }
+
+    /**
+     * Ingest an external G5 Wait signal through the durable idempotent Inbox contract
+     * ({@link WorkflowRuntimeRepository#receiveWaitInbox}). When a signal synchronously
+     * satisfies an active Wait and the embedded host is running, triggers a best-effort
+     * immediate wakeup so the successor Token runs without waiting for the next poll tick.
+     */
+    public WorkflowRuntimeRepository.GraphWaitResult receiveWaitSignal(
+            long kernelTenantId, UUID runId, String source, String sourceMessageId,
+            String correlationKey, String payloadJson) {
+        UUID runtimeTenant = tenants.resolve(kernelTenantId);
+        WorkflowRuntimeRepository.GraphWaitResult result = repository.receiveWaitInbox(
+                runtimeTenant, runId, source, sourceMessageId, correlationKey, payloadJson);
+        if (WaitOutcomes.COMPLETED.equals(result.outcome())) {
+            EmbeddedWorkflowRuntimeHost host = runtimeHostProvider.getIfAvailable();
+            if (host != null) {
+                try {
+                    host.wakeRunIfRunning(runtimeTenant, runId);
+                } catch (RuntimeException ignored) {
+                    // Durable DB state (WAIT_SATISFIED + READY successor Token) is already committed;
+                    // the dispatch loop or subsequent startup will advance the Run safely.
+                }
+            }
+        }
+        return result;
     }
 
     public Optional<WorkflowRuntimeRepository.RunOverview> getRunOverview(long kernelTenantId, UUID runId) {

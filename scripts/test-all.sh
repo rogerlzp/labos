@@ -204,6 +204,8 @@ PURE=(
   "event.DeviceEventApiSelfTest"
   # Workflow Runtime 嵌入 Kernel：Spring Bean composition + MyBatis statement binding（不连库）
   "boot.WorkflowRuntimeKernelConfigurationSelfTest"
+  # G5 HTTP Wait Signal API：RBAC（401/403/200）/ 入参校验 / payload 规范化 / REST 状态映射（不连库）
+  "boot.WorkflowRuntimeSignalApiSelfTest"
   # 新设备类型接入（2026-11-15）：PLANNED 型号可登记 / 方法从画像派生 / 型号优先的画像路由
   "device.DeviceOnboardingSelfTest"
   # 设备接入端点的参数解析（带不带引号都认 —— 这里出过一次真事故）
