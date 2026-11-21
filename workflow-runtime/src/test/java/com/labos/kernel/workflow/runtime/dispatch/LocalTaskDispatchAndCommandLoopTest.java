@@ -447,10 +447,12 @@ class LocalTaskDispatchAndCommandLoopTest {
 
             // P1-03: While UNKNOWN/MANUAL_REQUIRED, late ordinary ACK cannot wash away UNKNOWN,
             // and dispatching a new Attempt to bypass manual reconciliation is rejected (gate CLOSED).
-            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
-                    timeoutCmdService.ingestDeviceEvent(tenant, runTimeout.runId(), "mock-heater-2",
-                            "late-ack-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
-                            toCmdId.get(), "SUCCEEDED", "seq-late", "{\"c\":70}"));
+            var lateTimeoutEvent = timeoutCmdService.ingestDeviceEvent(tenant, runTimeout.runId(), "mock-heater-2",
+                    "late-ack-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
+                    toCmdId.get(), "SUCCEEDED", "seq-late", "{}");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, lateTimeoutEvent.status());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND inbox_id='" + lateTimeoutEvent.inboxId() + "' AND receipt_state='REJECTED'"));
             assertTrue(timeoutDispatch.dispatchReadyTasks(tenant, runTimeout.runId(), 4).gateClosed());
 
             // Operator explicitly reconciles the UNKNOWN command via T21 external evidence.
