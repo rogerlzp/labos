@@ -231,6 +231,7 @@ public final class GraphCoordinator {
                                     Map<String, ?> variables) {
         return switch (node.kind()) {
             case TASK, BUILTIN -> null;
+            case WAIT -> throw new UnsupportedOperationException("WAIT execution is implemented in AI-3: " + node.key());
             case START -> new Transition("SEQUENCE", exactlyOne(node, edges).stream().map(GraphPlan.Edge::to).toList());
             case END -> {
                 if (!edges.isEmpty()) throw new IllegalStateException("End node has outgoing edges: " + node.key());

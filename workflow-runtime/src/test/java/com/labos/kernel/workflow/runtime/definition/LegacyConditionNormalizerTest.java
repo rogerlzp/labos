@@ -122,4 +122,67 @@ class LegacyConditionNormalizerTest {
         assertTrue(loaded.normalizeLegacyConditions());
         assertEquals(rawXml, loaded.bpmnXml(), "Legacy adapter must preserve original BPMN XML verbatim");
     }
+
+    @Test
+    void normalizePlanPreservesSchemaVersionV2WaitSpecAndEdgeRouteKind() {
+        String bpmnXml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                                  xmlns:labos="urn:labos:workflow-runtime:v1"
+                                  targetNamespace="http://labos/test">
+                  <bpmn:process id="p_wait" isExecutable="true">
+                    <bpmn:startEvent id="s"/>
+                    <bpmn:receiveTask id="w1" name="Await Sample">
+                      <bpmn:extensionElements>
+                        <labos:wait correlationKey="sample-1"/>
+                      </bpmn:extensionElements>
+                    </bpmn:receiveTask>
+                    <bpmn:boundaryEvent id="b1" attachedToRef="w1" cancelActivity="true">
+                      <bpmn:timerEventDefinition>
+                        <bpmn:timeDuration>PT30S</bpmn:timeDuration>
+                      </bpmn:timerEventDefinition>
+                    </bpmn:boundaryEvent>
+                    <bpmn:exclusiveGateway id="xor1"/>
+                    <bpmn:endEvent id="e_ok"/>
+                    <bpmn:endEvent id="e_to"/>
+                    <bpmn:endEvent id="e_alt"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="w1"/>
+                    <bpmn:sequenceFlow id="f_norm" sourceRef="w1" targetRef="xor1"/>
+                    <bpmn:sequenceFlow id="f_to" sourceRef="b1" targetRef="e_to"/>
+                    <bpmn:sequenceFlow id="f_x1" sourceRef="xor1" targetRef="e_ok">
+                      <bpmn:conditionExpression>${mode} == 'A'</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                    <bpmn:sequenceFlow id="f_x2" sourceRef="xor1" targetRef="e_alt">
+                      <bpmn:conditionExpression>${mode} == 'B'</bpmn:conditionExpression>
+                    </bpmn:sequenceFlow>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+        GraphPlan compiled = new BpmnGraphCompiler().compile(
+                new BpmnGraphCompiler.CompilationInput("k_wait", "v2", bpmnXml, Map.of()));
+        assertEquals(GraphPlan.SCHEMA_VERSION_V2, compiled.schemaVersion());
+
+        GraphPlan normalized = LegacyConditionNormalizer.normalizePlan(compiled);
+        assertEquals(GraphPlan.SCHEMA_VERSION_V2, normalized.schemaVersion());
+        assertEquals(compiled.bpmnSha256(), normalized.bpmnSha256());
+        assertEquals(compiled.nodes(), normalized.nodes());
+
+        GraphPlan.Edge normEdge = normalized.edges().stream()
+                .filter(e -> "f_norm".equals(e.key())).findFirst().orElseThrow();
+        assertEquals(GraphPlan.RouteKind.NORMAL, normEdge.routeKind());
+
+        GraphPlan.Edge timeoutEdge = normalized.edges().stream()
+                .filter(e -> "f_to".equals(e.key())).findFirst().orElseThrow();
+        assertEquals("w1", timeoutEdge.from());
+        assertEquals(GraphPlan.RouteKind.TIMEOUT, timeoutEdge.routeKind());
+
+        GraphPlan.Edge xorEdge = normalized.edges().stream()
+                .filter(e -> "f_x1".equals(e.key())).findFirst().orElseThrow();
+        assertEquals("mode == 'A'", xorEdge.condition());
+        assertNull(xorEdge.routeKind());
+
+        // Round-trip through GraphPlanCodec after normalization.
+        GraphPlan roundTripped = GraphPlanCodec.fromJson(GraphPlanCodec.toJson(normalized));
+        assertEquals(normalized, roundTripped);
+    }
 }

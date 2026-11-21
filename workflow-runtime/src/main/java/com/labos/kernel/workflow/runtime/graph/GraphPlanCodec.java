@@ -1,5 +1,6 @@
 package com.labos.kernel.workflow.runtime.graph;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -21,12 +22,37 @@ public final class GraphPlanCodec {
     public static GraphPlan fromJson(String json, String diagnosticContext) {
         String suffix = (diagnosticContext == null || diagnosticContext.isBlank())
                 ? "" : " [" + diagnosticContext + "]";
+        if (json == null) {
+            throw new IllegalArgumentException("Invalid persisted GraphPlan JSON (null payload)" + suffix);
+        }
         try {
-            GraphPlan plan = JSON.readValue(json, GraphPlan.class);
+            JsonNode root = JSON.readTree(json);
+            if (root == null || root.isNull() || root.isMissingNode()) {
+                throw new IllegalArgumentException("Invalid persisted GraphPlan JSON (null payload)" + suffix);
+            }
+            if (!root.isObject()) {
+                throw new IllegalArgumentException(
+                        "Invalid persisted GraphPlan JSON (expected object payload)" + suffix);
+            }
+            JsonNode versionNode = root.get("schemaVersion");
+            if (versionNode != null && versionNode.isIntegralNumber()) {
+                int schemaVersion = versionNode.asInt();
+                if (schemaVersion >= 1
+                        && schemaVersion != GraphPlan.SCHEMA_VERSION_V1
+                        && schemaVersion != GraphPlan.SCHEMA_VERSION_V2) {
+                    throw new IllegalArgumentException(
+                            "Unsupported GraphPlan schemaVersion: " + schemaVersion + suffix);
+                }
+                if (schemaVersion == GraphPlan.SCHEMA_VERSION_V1) {
+                    rejectV2FieldsInV1Payload(root, suffix);
+                }
+            }
+            GraphPlan plan = JSON.treeToValue(root, GraphPlan.class);
             if (plan == null) {
                 throw new IllegalArgumentException("Invalid persisted GraphPlan JSON (null payload)" + suffix);
             }
-            if (plan.schemaVersion() != 1) {
+            if (plan.schemaVersion() != GraphPlan.SCHEMA_VERSION_V1
+                    && plan.schemaVersion() != GraphPlan.SCHEMA_VERSION_V2) {
                 throw new IllegalArgumentException(
                         "Unsupported GraphPlan schemaVersion: " + plan.schemaVersion() + suffix);
             }
@@ -40,12 +66,36 @@ public final class GraphPlanCodec {
         }
     }
 
+    private static void rejectV2FieldsInV1Payload(JsonNode root, String suffix) {
+        JsonNode nodesNode = root.get("nodes");
+        if (nodesNode != null && nodesNode.isArray()) {
+            for (JsonNode n : nodesNode) {
+                JsonNode kindNode = n.get("kind");
+                if ((kindNode != null && "WAIT".equals(kindNode.asText(null)))
+                        || n.hasNonNull("waitSpec")) {
+                    throw new IllegalArgumentException(
+                            "GraphPlan schemaVersion 1 cannot contain WAIT nodes or waitSpec" + suffix);
+                }
+            }
+        }
+        JsonNode edgesNode = root.get("edges");
+        if (edgesNode != null && edgesNode.isArray()) {
+            for (JsonNode e : edgesNode) {
+                if (e.hasNonNull("routeKind")) {
+                    throw new IllegalArgumentException(
+                            "GraphPlan schemaVersion 1 cannot contain edge routeKind" + suffix);
+                }
+            }
+        }
+    }
+
     public static void verifyBpmnHash(GraphPlan plan, String expectedSha256) {
         if (expectedSha256 == null || !expectedSha256.equalsIgnoreCase(plan.bpmnSha256()))
             throw new IllegalArgumentException("GraphPlan BPMN hash mismatch");
     }
 
     public static String toJson(GraphPlan plan) {
+        boolean includeV2Fields = plan.schemaVersion() >= GraphPlan.SCHEMA_VERSION_V2;
         StringBuilder b = new StringBuilder(1024);
         b.append("{\"schemaVersion\":").append(plan.schemaVersion())
          .append(",\"compilerVersion\":").append(q(plan.compilerVersion()))
@@ -65,8 +115,11 @@ public final class GraphPlanCodec {
              .append(",\"methodParams\":").append(nullable(n.methodParams()))
              .append(",\"stageCode\":").append(nullable(n.stageCode()))
              .append(",\"capabilityCode\":").append(nullable(n.capabilityCode()))
-             .append(",\"workflowNodeId\":").append(n.workflowNodeId()==null?"null":n.workflowNodeId())
-             .append('}');
+             .append(",\"workflowNodeId\":").append(n.workflowNodeId()==null?"null":n.workflowNodeId());
+            if (includeV2Fields) {
+                b.append(",\"waitSpec\":").append(waitSpecJson(n.waitSpec()));
+            }
+            b.append('}');
         }
         b.append("],\"edges\":[");
         for (int i=0;i<plan.edges().size();i++) {
@@ -76,9 +129,24 @@ public final class GraphPlanCodec {
              .append(",\"from\":").append(q(e.from()))
              .append(",\"to\":").append(q(e.to()))
              .append(",\"condition\":").append(nullable(e.condition()))
-             .append(",\"defaultFlow\":").append(e.defaultFlow()).append('}');
+             .append(",\"defaultFlow\":").append(e.defaultFlow());
+            if (includeV2Fields) {
+                b.append(",\"routeKind\":").append(nullable(e.routeKind() == null ? null : e.routeKind().name()));
+            }
+            b.append('}');
         }
         return b.append("]}").toString();
+    }
+
+    private static String waitSpecJson(GraphPlan.WaitSpec waitSpec) {
+        if (waitSpec == null) {
+            return "null";
+        }
+        return "{\"waitKind\":" + q(waitSpec.waitKind().name())
+                + ",\"correlationKey\":" + nullable(waitSpec.correlationKey())
+                + ",\"durationIso\":" + nullable(waitSpec.durationIso())
+                + ",\"durationMillis\":" + (waitSpec.durationMillis() == null ? "null" : waitSpec.durationMillis())
+                + '}';
     }
 
     public static String sha256(String value) {
