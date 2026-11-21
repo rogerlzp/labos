@@ -73,7 +73,15 @@ public final class LocalTaskDispatchService {
     public record ReserveDispatchSummary(
             List<UUID> dispatchedAttemptIds,
             int capacityDeferred,
-            boolean gateClosed) {
+            boolean gateClosed,
+            boolean hasReadyControlTokens) {
+        public ReserveDispatchSummary(
+                List<UUID> dispatchedAttemptIds,
+                int capacityDeferred,
+                boolean gateClosed) {
+            this(dispatchedAttemptIds, capacityDeferred, gateClosed, false);
+        }
+
         public ReserveDispatchSummary {
             dispatchedAttemptIds = List.copyOf(Objects.requireNonNull(dispatchedAttemptIds, "dispatchedAttemptIds"));
         }
@@ -118,7 +126,7 @@ public final class LocalTaskDispatchService {
         WorkflowRuntimeRepository.RunDefinitionSnapshot snapshot =
                 repository.loadRunDefinitionSnapshot(tenantId, runId);
         if (!"RUNNING".equals(snapshot.runStatus()) || !"OPEN".equals(snapshot.controlGate())) {
-            return new ReserveDispatchSummary(List.of(), 0, true);
+            return new ReserveDispatchSummary(List.of(), 0, true, false);
         }
         GraphPlan plan;
         try {
@@ -135,13 +143,18 @@ public final class LocalTaskDispatchService {
             throw invalidPlan;
         }
         Map<String, GraphPlan.Node> taskNodes = new LinkedHashMap<>();
+        List<String> controlNodeKeys = new ArrayList<>();
         for (GraphPlan.Node node : plan.nodes()) {
             if (node.kind() == GraphPlan.Kind.TASK || node.kind() == GraphPlan.Kind.BUILTIN) {
                 taskNodes.put(node.key(), node);
+            } else {
+                controlNodeKeys.add(node.key());
             }
         }
+        boolean hasReadyControlTokens = !controlNodeKeys.isEmpty()
+                && !repository.findReadyGraphTokensForNodes(tenantId, runId, controlNodeKeys, 1).isEmpty();
         if (taskNodes.isEmpty()) {
-            return new ReserveDispatchSummary(List.of(), 0, false);
+            return new ReserveDispatchSummary(List.of(), 0, false, hasReadyControlTokens);
         }
 
         List<WorkflowRuntimeRepository.GraphToken> readyTokens = repository.findReadyGraphTokensForNodes(
@@ -163,7 +176,7 @@ public final class LocalTaskDispatchService {
                 deferred++;
                 continue;
             } catch (WorkflowRuntimeRepository.InvalidTransitionException gateClosed) {
-                return new ReserveDispatchSummary(dispatched, deferred, true);
+                return new ReserveDispatchSummary(dispatched, deferred, true, false);
             }
             try {
                 repository.dispatchAttempt(
@@ -179,10 +192,10 @@ public final class LocalTaskDispatchService {
                 } catch (RuntimeException ignored) {
                     // Run already terminal; leave untouched.
                 }
-                return new ReserveDispatchSummary(dispatched, deferred, true);
+                return new ReserveDispatchSummary(dispatched, deferred, true, false);
             }
         }
-        return new ReserveDispatchSummary(dispatched, deferred, false);
+        return new ReserveDispatchSummary(dispatched, deferred, false, hasReadyControlTokens);
     }
 
     /**
