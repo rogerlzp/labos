@@ -391,7 +391,7 @@ class LocalTaskDispatchAndCommandLoopTest {
                             asyncCmdId.get(), "SUCCEEDED", "seq-2", "{\"c\":65}"));
             var lateRejected = asyncCmdService.ingestDeviceEvent(tenant, runAsync.runId(), "mock-heater-1",
                     "late-msg-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
-                    asyncCmdId.get(), "SUCCEEDED", "seq-3", "{\\"c\\":65}");
+                    asyncCmdId.get(), "SUCCEEDED", "seq-3", "{}");
             assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, lateRejected.status());
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND inbox_id='" + lateRejected.inboxId() + "' AND receipt_state='REJECTED'"));
