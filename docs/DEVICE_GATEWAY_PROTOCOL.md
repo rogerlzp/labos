@@ -1,4 +1,4 @@
-# DEVICE_GATEWAY_PROTOCOL — 设备网关、TLS 1.3 mTLS 认证与 Sidecar 协议契约（AI-2 主责 · Draft v1.7）
+# DEVICE_GATEWAY_PROTOCOL — 设备网关、TLS 1.3 mTLS 认证与 Sidecar 协议契约（AI-2 主责 · Draft v1.8）
 
 > **所属总纲**：[PHASE3B_MASTER_CONTRACT.md](./PHASE3B_MASTER_CONTRACT.md)  
 > **核心执行对侧契约**：[DEVICE_EXECUTION_CORE_CONTRACT.md](./DEVICE_EXECUTION_CORE_CONTRACT.md)

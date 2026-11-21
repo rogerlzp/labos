@@ -1,4 +1,4 @@
--- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.7 final review).
+-- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.8 final review).
 -- NOTE: This draft sits in docs/ddl/ and is NOT executed by PR #17 CI.
 --       Real PostgreSQL 17 DDL & 002_schema_contract CI checks take effect only when
 --       promoted to db/workflow_runtime/006_device_execution_contract_v1.sql in Phase 0.
@@ -15,10 +15,10 @@
 --        workstation_id / operation_name including '', '   ', E'\t', and E'\n' (23514 via
 --        ~ '[^[:space:]]'), or unregistered workstation_id (23503), plus wait_early_signal_buffer
 --        cross-run run_id mismatch (23503).
---      - Add PG17 pg_constraint catalog assertion verifying every FK referencing
---        workflow_runtime.command_ledger belongs strictly to the registered CORE §6.1
---        dependency set {command_dispatch_attempt, quarantine_record, device_state_projection}
---        (fail closed on any unregistered referencing FK).
+--      - Add post-006 PG17 pg_constraint catalog assertion (runs in 002_schema_contract.sql
+--        ONLY after 006 completes) verifying every FK referencing workflow_runtime.command_ledger
+--        matches {command_dispatch_attempt, quarantine_record, device_state_projection}; pre-006
+--        archival follows CORE §6.1 where uncreated 006 tables/columns are N/A.
 --   2. .github/workflows/workflow-runtime-db.yml (update all 3 table-count checks at
 --      lines 86, 102, 111 from 32 to 35).
 --   3. db/workflow_runtime/tests/test_pg_con_matrix.py: update con08() (L200) to seed a

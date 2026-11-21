@@ -1,4 +1,4 @@
-# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.7）
+# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.8）
 
 > **所属总纲**：[PHASE3B_MASTER_CONTRACT.md](./PHASE3B_MASTER_CONTRACT.md)  
 > **通信与 Wire 对侧契约**：[DEVICE_GATEWAY_PROTOCOL.md](./DEVICE_GATEWAY_PROTOCOL.md)  
@@ -105,7 +105,7 @@ stateDiagram-v2
   MANUAL_REQUIRED --> CANCELLED : T21 reconcileAndSettleUnknownCommand(CANCELLED)
 ```
 
-| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.7 明确约定 | 责任方 |
+| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.8 明确约定 | 责任方 |
 | :--- | :--- | :--- | :--- |
 | `CANCEL_REQUESTED → DELIVERY_UNKNOWN` | 已允许 | **保留**（取消指令断连超时时可先转 `DELIVERY_UNKNOWN` 发起只读查证） | 阶段 0 / AI-1 对齐 |
 | `DELIVERY_UNKNOWN → RUNNING` | 已允许 | **保留**（恢复时若设备回报运行中，无缝接续 `RUNNING`） | 阶段 0 / AI-1 对齐 |
@@ -247,31 +247,42 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
 1. **环境边界（空库 CI vs 共享演练库）**：Phase 0–3D 仅在隔离 PostgreSQL 17 CI / 本地沙箱空库运行 `001→006`（并由 `test_pg_migrations.py` 专项测试脏行 preflight 阻断）；**含 Phase 2B 演练记录的共享库（例如 `192.168.124.2:5432/labdb`）在 Phase 3E/3F 独立审批前严禁执行 `006`**，**绝对禁止为跑通 `006` 而直接 `DELETE`/`TRUNCATE` 或覆盖已有 Phase 2B 演练记录**。
 2. **旧记录保留位置与审计可追溯性**：
    - **优先隔离方案（推荐用于历史演练库）**：若原库仅承接 Phase 2B 演练与历史调试数据且无需原地升级，**优先对原库整库保留只读归档快照（如 `pg_dump` 只读封存）并在全新独立库初始化 Phase 3B `workflow_runtime`（`001→006`）**，做到历史演练数据物理不改动。
-   - **原地升级只读归档方案**：若确需在存量库执行原地升库，须先在独立只读归档 Schema **`workflow_runtime_archive_pre006`**（独立于 `workflow_runtime`，不破坏 `002` 35 表契约断言）中建立同构只读归档表 `command_ledger_pre006`、`command_dispatch_attempt_pre006` 与（若目标库已含 `006+` `quarantine_record.command_id`）历史已解除隔离归档表 `quarantine_record_pre006`（归档须成对保持引用完整并外键指向 `command_ledger_pre006(tenant_id, command_id)`），每条归档行必须附带 `archived_at`、`archive_batch_id`、`archive_reason`、`operator_id`、`original_sha256`（由原关键字段算得）；同时**原样保留** `workflow_run`、`node_attempt`、`worker_execution_fact`（append-only 不可改）、`runtime_event` 与 `runtime_audit`（不删除关联父行），并在 `runtime_audit` 追加本次只读归档批次审计事件与子表映射快照以保持全链路追溯。
+   - **原地升级只读归档方案**：若确需在存量库执行原地升库，须先在独立只读归档 Schema **`workflow_runtime_archive_pre006`**（独立于 `workflow_runtime`，不破坏 `002` 35 表契约断言）中建立同构只读归档表：`pre-006` 阶段建 `command_ledger_pre006` 与 `command_dispatch_attempt_pre006`；`post-006` 阶段若目标库已含 `006+` `quarantine_record.command_id` 则同步建历史已解除隔离归档表 `quarantine_record_pre006`。**归档表约束纪律（严禁绑定活表外键）**：`workflow_runtime_archive_pre006.*` 中的归档表仅保留内聚外键指向 `command_ledger_pre006(tenant_id, command_id)`，**绝不**宣言指向活表 `workflow_runtime.workflow_run` 或 `workflow_runtime.resource_lease` 的外键（`run_id` / `lease_id` 仅作不可变历史标量值留存）；每条归档行必须附带 `archived_at`、`archive_batch_id`、`archive_reason`、`operator_id`、`original_sha256`（由原关键字段算得）；同时**原样保留**活表 `workflow_run`、`node_attempt`、`worker_execution_fact`（append-only 不可改）、`runtime_event` 与 `runtime_audit`（不删除关联父行），并在 `runtime_audit` 追加本次只读归档批次审计事件（以及适用的映射/快照）以保持全链路追溯。
 3. **允许归档 vs 必须等待人工核验的 12 态硬划分**：
-   - **仅以下已闭环终态记录允许迁入只读归档**：`command_state IN ('SUCCEEDED', 'FAILED', 'CANCELLED')` **且** 所属 `workflow_run.status IN ('COMPLETED', 'FAILED', 'CANCELLED')` **且** 不存在关联的 `ACTIVE`/`CLEAR_PENDING` `quarantine_record` 或 `ACTIVE`/`QUARANTINED` `resource_lease` **且** 不存在处于 `device_state = 'BUSY'` 且 `active_command_id` 指向该命令的 `device_state_projection` 行（含经核实已完整闭环的 Phase 2B 演练记录）。
-   - **严禁归档、必须阻断升级并等待人工核验的记录**：任何 `command_state IN ('CREATED', 'DISPATCH_PENDING', 'SEND_STARTED', 'ACKNOWLEDGED', 'RUNNING', 'CANCEL_REQUESTED', 'DELIVERY_UNKNOWN', 'UNKNOWN', 'MANUAL_REQUIRED')` 的行，或所属 `workflow_run` 未终结、或仍关联活跃租约/`ACTIVE`/`CLEAR_PENDING` 隔离单、或仍有设备投影处于 `BUSY` 指向该命令的行。
+   - **仅以下已闭环终态记录允许迁入只读归档**：`command_state IN ('SUCCEEDED', 'FAILED', 'CANCELLED')` **且** 所属 `workflow_run.status IN ('COMPLETED', 'FAILED', 'CANCELLED')` **且** 不存在关联的 `ACTIVE`/`CLEAR_PENDING` `quarantine_record`（`pre-006` 按 `run_id`/`lease_id` 核验；`post-006` 同时按 `command_id` 核验）或 `ACTIVE`/`QUARANTINED` `resource_lease` **且**（仅当处于 `post-006` 即 `device_state_projection` 表已存在时）不存在处于 `device_state = 'BUSY'` 且 `active_command_id` 指向该命令的 `device_state_projection` 行（`pre-006` 阶段该表尚未创建，标记为 `N/A` 跳过访问）。符合以上条件的已闭环 Phase 2B 演练记录允许只读归档。
+   - **严禁归档、必须阻断升级并等待人工核验的记录**：任何 `command_state IN ('CREATED', 'DISPATCH_PENDING', 'SEND_STARTED', 'ACKNOWLEDGED', 'RUNNING', 'CANCEL_REQUESTED', 'DELIVERY_UNKNOWN', 'UNKNOWN', 'MANUAL_REQUIRED')` 的行，或所属 `workflow_run` 未终结、或仍关联活跃租约/`ACTIVE`/`CLEAR_PENDING` 隔离单、或（在 `post-006` 阶段）仍有设备投影处于 `BUSY` 指向该命令的行。
 4. **新表启用前严防误判旧在途命令为安全终态**：
    - 严禁以批量 SQL 脚本将 `CREATED`/`SEND_STARTED`/`DELIVERY_UNKNOWN`/`UNKNOWN`/`RUNNING` 等旧在途或未决命令强行改写为 `CANCELLED`/`FAILED`/`SUCCEEDED`；
    - 严禁填写虚构占位符（如 `'LEGACY_DUMMY'`）批量回填 `workstation_id` / `operation_name` 以强行通过 `006` preflight；
    - 必须在 `labos.workflow.runtime.host.enabled=false` 静默前提下，由运维与实验负责人按物理设备现场逐条核对、经正式人工结算路径留痕（写入 `runtime_audit` / `manual_intervention`）确认零残余在途物理动作后，再按第 2–3 条及第 5–6 条只读归档已闭环记录（或仅对经核实具真实可追溯来源的记录按变更单显式回填真实工位与操作名），预检归零后方可应用 `006`。
-5. **完整入站外键依赖清单、未登记外键 Fail-Closed 阻断与各子表处理策略（禁止只假设 `command_dispatch_attempt`）**：
-   - **动态系统目录枚举（Fail-Closed 门禁）**：执行任何归档移除前，必须查询 PostgreSQL 系统目录枚举**全部**引用 `workflow_runtime.command_ledger` 的外键：
-     `SELECT conrelid::regclass::text AS referencing_table, conname FROM pg_constraint WHERE contype = 'f' AND confrelid = 'workflow_runtime.command_ledger'::regclass;`
-     **若返回集合中存在任何未在下表显式登记处理策略的子表或外键约束，立即 Fail-Closed 阻断归档流程**，严禁继续删除活表父行。
-   - **已登记全部 3 张引用子表的确定性处理策略（覆盖 `001`–`006` 全量外键）**：
-     - **`command_dispatch_attempt`**（`(tenant_id, command_id) → command_ledger`，[001_init.sql:465](../db/workflow_runtime/001_init.sql#L465)）：锁定并成对复制至 `workflow_runtime_archive_pre006.command_dispatch_attempt_pre006`（附元数据与 `original_sha256`），完成字段/行数/哈希核验后，在移除活表 `command_ledger` 前先移除已归档子行；
-     - **`quarantine_record`**（`(tenant_id, command_id) → command_ledger`，`006` 新增；状态集合见 [001_init.sql:559](../db/workflow_runtime/001_init.sql#L559)）：
+5. **`pre-006` 与 `post-006` 阶段分化、防 DDL 竞态表锁、动态外键清单与各子表处理策略**：
+
+   | 数据库阶段 | 应存在的 `command_ledger` 入站外键 | 未建对象标记与处理规则 |
+   | :--- | :--- | :--- |
+   | **`pre-006`**（`001`–`005`，首次执行 `006` 前） | 仅 **`command_dispatch_attempt`** `(tenant_id, command_id)`（[001_init.sql:465](../db/workflow_runtime/001_init.sql#L465)） | 仅对真实存在的 `command_dispatch_attempt` 执行锁定、成对归档与移除；**`quarantine_record.command_id` 列与 `device_state_projection` 表尚未由 `006` 创建，显式标记为 `N/A`，严禁 SQL 访问**（`quarantine_record` 本表仍按 `run_id`/`lease_id` 校验无 `ACTIVE`/`CLEAR_PENDING` 隔离单） |
+   | **`post-006`**（`006` 应用完成后） | 全部 3 张：**`command_dispatch_attempt`**、**`quarantine_record`** `(tenant_id, command_id)`、**`device_state_projection`** `(tenant_id, active_command_id)` | 3 张引用子表均真实存在，全部按登记策略执行锁定、核验、成对归档/留痕清理与子行移除 |
+
+   - **5 条强制执行规则**：
+     1. **先判定 Schema 阶段与对象存在性**：归档前必须先查目标库 `schema_migration` 实际版本与表/列存在性（`to_regclass('workflow_runtime.device_state_projection')` 与 `information_schema.columns` 检查 `quarantine_record.command_id`），确定处于 `pre-006` 还是 `post-006`（若处于半迁移或不一致中间态，立即 Fail-Closed 中止）；
+     2. **防并发 DDL 竞态的 Schema 冻结 + 表级排他锁**：不能仅依靠行锁（`FOR UPDATE`）防止目录枚举后并发 DDL 新增外键；归档必须在 **Schema 变更冻结窗口** 内执行，并在单一原子事务开头、查询 `pg_constraint` **之前**，先对父表执行 **`LOCK TABLE workflow_runtime.command_ledger IN EXCLUSIVE MODE`**（PostgreSQL 中任何 `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY REFERENCES command_ledger` 均需获取父表 `SHARE ROW EXCLUSIVE` 锁，将被 `EXCLUSIVE MODE` 彻底阻塞至归档事务结束）；
+     3. **动态目录枚举（Fail-Closed）**：持有 `EXCLUSIVE` 表锁后，查询 PostgreSQL 系统目录枚举当前数据库**实际存在**的全部入站外键：
+        `SELECT conrelid::regclass::text AS referencing_table, conname FROM pg_constraint WHERE contype = 'f' AND confrelid = 'workflow_runtime.command_ledger'::regclass;`
+        **若返回集合中存在任何未在当前阶段允许清单中显式登记的子表或外键约束，立即 Fail-Closed 报错回滚**；
+     4. **只操作当前 Schema 真实存在的对象，未建对象严格标 `N/A`**：仅对当前库中真实存在的子表/列执行加锁、复制、核验与清理；`pre-006` 阶段中尚未存在的 `quarantine_record.command_id` 与 `device_state_projection` 统一标记 **`N/A`**，严禁构造访问它们的 SQL；
+     5. **时间点严格解耦**：`002_schema_contract.sql` 对 3 张子表入站外键精确集合的 CI 断言**仅在 `006` 应用完成之后（`post-006`）** 执行；`pre-006` 迁移前归档仅见 `command_dispatch_attempt` 1 条入站外键，两者时间点互不冲突。
+   - **已登记全部 3 张引用子表的确定性处理策略（按阶段生效）**：
+     - **`command_dispatch_attempt`**（`pre-006` 与 `post-006` 均适用）：锁定并成对复制至 `workflow_runtime_archive_pre006.command_dispatch_attempt_pre006`（附元数据与 `original_sha256`），完成字段/行数/哈希核验后，在移除活表 `command_ledger` 前先移除已归档子行；
+     - **`quarantine_record`**（`pre-006` 按 `run_id`/`lease_id` 校验无 `ACTIVE`/`CLEAR_PENDING`，无 `command_id` 外键列标 **`N/A`**；**`post-006` 适用下述外键策略**）：
        - 存在 `ACTIVE` / `CLEAR_PENDING` 引用该命令 → 直接阻断归档并等待人工解锁；
-       - 历史已解除的 **`CLEARED`** 隔离记录 → **严禁为了通过父表删除而将 `command_id` 置空（`SET command_id = NULL` 既破坏历史隔离审计可追溯性，又违反 `quarantine_command_origin_chk`）**；必须锁定并成对复制至只读归档表 `workflow_runtime_archive_pre006.quarantine_record_pre006`（完整保留 `command_id`、`quarantine_origin`、`resource_id`、`run_id`、`lease_id`、`evidence`、`cleared_by`、`cleared_at` 及归档元数据与 `original_sha256`，外键指向 `command_ledger_pre006(tenant_id, command_id)`），在完成核验并将 `quarantine_id ↔ command_id` 映射写入保留的 `runtime_audit` 后，方可在移除活表 `command_ledger` 前移除已归档的 `CLEARED` 子行；
-     - **`device_state_projection`**（`(tenant_id, active_command_id) → command_ledger`，`006` 新增）：锁定全部 `active_command_id` 命中目标命令集合的投影行；仅当第 3 条已确证目标命令终结且设备投影不处于 `BUSY` 指向该命令（若仍为 `BUSY`，直接阻断归档并先做观测对账）时，先将清理前的投影快照（`device_id`、`workstation_id`、原 `active_command_id`、`device_state`、`observed_at`）写入保留的 `runtime_audit` 留存历史证据，随后在移除活表 `command_ledger` 前将其 `active_command_id` 置为 `NULL`。
-6. **原地升级只读归档操作顺序（单原子事务 / 受控维护窗口，严禁部分清除）**：
-   1. **维护窗口、目录枚举与全依赖锁定**：确认 `labos.workflow.runtime.host.enabled=false`、持有独立变更单与全量备份（`pg_dump`），先执行第 5 条 `pg_constraint` 动态外键完备性校验（发现未登记外键立即 Fail-Closed 报错中止），随后在受控维护窗口与单一原子事务内对目标 `workflow_run`、`command_ledger` 及**全部已登记引用子行**（`command_dispatch_attempt`、`quarantine_record`、`device_state_projection`）加行锁（`FOR UPDATE`），防止并发状态变化；
-   2. **锁内终态与安全复核**：在锁内逐条核验满足第 3 条全部闭环条件（`command_state IN ('SUCCEEDED','FAILED','CANCELLED')`、`workflow_run.status IN ('COMPLETED','FAILED','CANCELLED')`，无 `ACTIVE`/`CLEAR_PENDING` `quarantine_record`、无 `ACTIVE`/`QUARANTINED` `resource_lease`、且无 `BUSY` `device_state_projection` 指向目标命令）；任一行不满足即整批中止并转人工核验；
-   3. **成对只读复制**：将 `command_ledger`、`command_dispatch_attempt` 及历史 `CLEARED` `quarantine_record` 按 `(tenant_id, command_id)` 成对复制到独立归档 Schema `workflow_runtime_archive_pre006`（`command_ledger_pre006`、`command_dispatch_attempt_pre006`、`quarantine_record_pre006`，完整保留 `quarantine_record.command_id` 与 `quarantine_origin`），附加 `archived_at`、`archive_batch_id`、`archive_reason`、`operator_id`、`original_sha256`；
-   4. **字段级、行数与哈希核对**：对活动表源集合与全部归档表目标集合执行**字段级比对、精确行数核对与 `original_sha256` 哈希核对**，须 100% 一致；
-   5. **审计链留痕**：向保留在 `workflow_runtime` 的 `runtime_audit` 写入归档批次审计记录（含 `archive_batch_id`、各归档表名、记录数、校验摘要、`quarantine_id ↔ command_id` 映射摘要、`device_state_projection` 清理前快照与变更单审批标识），同时**原样保留** `workflow_run`、`node_attempt`、`worker_execution_fact`（append-only）、`runtime_event` 与 `runtime_audit`（零删除零篡改）；
-   6. **核验通过且获授权后按全子表先于父表顺序移除活表依赖**：仅当第 1–5 步全部核验通过、全部入站外键依赖处理明确且取得正式授权后，方可在同一原子事务内依次处理所有已登记子表（移除已归档 `command_dispatch_attempt` 行 → 移除已归档 `CLEARED` `quarantine_record` 行 → 将已留痕的终态非执行 `device_state_projection.active_command_id` 置 `NULL`），最后移除活表 `workflow_runtime.command_ledger` 对应父行；
+       - 历史已解除的 **`CLEARED`** 隔离记录 → **严禁为了通过父表删除而将 `command_id` 置空（`SET command_id = NULL` 既破坏历史隔离审计可追溯性，又违反 `quarantine_command_origin_chk`）**；必须锁定并成对复制至只读归档表 `workflow_runtime_archive_pre006.quarantine_record_pre006`（完整保留 `command_id`、`quarantine_origin`、`resource_id`、`run_id`、`lease_id`、`evidence`、`cleared_by`、`cleared_at` 及归档元数据与 `original_sha256`，仅外键指向 `command_ledger_pre006(tenant_id, command_id)`，不连活表外键），在完成核验并将 `quarantine_id ↔ command_id` 映射写入保留的 `runtime_audit` 后，方可在移除活表 `command_ledger` 前移除已归档的 `CLEARED` 子行；
+     - **`device_state_projection`**（**`pre-006` 表尚未存在，标 `N/A` 跳过；仅 `post-006` 适用**）：锁定全部 `active_command_id` 命中目标命令集合的投影行；仅当第 3 条已确证目标命令终结且设备投影不处于 `BUSY` 指向该命令（若仍为 `BUSY`，直接阻断归档并先做观测对账）时，先将清理前的投影快照（`device_id`、`workstation_id`、原 `active_command_id`、`device_state`、`observed_at`）写入保留的 `runtime_audit` 留存历史证据，随后在移除活表 `command_ledger` 前将其 `active_command_id` 置为 `NULL`。
+6. **原地升级只读归档操作顺序（单原子事务 / 受控维护窗口 / Schema 冻结，严禁部分清除）**：
+   1. **维护窗口、表级排他锁与真实结构枚举**：确认 `labos.workflow.runtime.host.enabled=false`、处于 **Schema 变更冻结窗口** 并持有独立变更单与全量备份（`pg_dump`）；开启单一原子事务，**最先执行 `LOCK TABLE workflow_runtime.command_ledger IN EXCLUSIVE MODE`** 彻底封堵并发 DDL；随后判定真实 Schema 阶段（`pre-006` vs `post-006`）与对象存在性，执行第 5 条 `pg_constraint` 动态外键校验（存在未登记外键立即报错回滚）；最后仅对**当前阶段真实存在**的 `workflow_run`、`command_ledger` 及实际存在的相关引用子行加行锁（`FOR UPDATE`：`pre-006` 仅锁 `command_dispatch_attempt` 及按 `run_id`/`lease_id` 相关的 `quarantine_record`；`post-006` 锁齐 `command_dispatch_attempt`、`quarantine_record`、`device_state_projection`；未建 `006` 表/列标 `N/A` 不访问）；
+   2. **锁内终态与安全复核**：在锁内逐条核验满足第 3 条全部闭环条件（`command_state IN ('SUCCEEDED','FAILED','CANCELLED')`、`workflow_run.status IN ('COMPLETED','FAILED','CANCELLED')`，无 `ACTIVE`/`CLEAR_PENDING` `quarantine_record`、无 `ACTIVE`/`QUARANTINED` `resource_lease`；若为 `post-006`，另核验无 `BUSY` `device_state_projection` 指向目标命令，否则整批中止并转人工核验）；
+   3. **成对只读复制**：按实际阶段成对复制至独立归档 Schema `workflow_runtime_archive_pre006`（`pre-006` 复制 `command_ledger_pre006` 与 `command_dispatch_attempt_pre006`；`post-006` 同步复制历史 `CLEARED` `quarantine_record_pre006` 并完整保留 `command_id` 与 `quarantine_origin`；归档表均不携带指向活表 `workflow_run`/`resource_lease` 的外键），附加 `archived_at`、`archive_batch_id`、`archive_reason`、`operator_id`、`original_sha256`；
+   4. **字段级、行数与哈希核对**：对活动表源集合与当前阶段全部已写入归档表执行**字段级比对、精确行数核对与 `original_sha256` 哈希核对**，须 100% 一致；
+   5. **审计链留痕**：向保留在 `workflow_runtime` 的 `runtime_audit` 写入归档批次审计记录（含实际阶段 `pre-006`/`post-006`、`archive_batch_id`、各归档表名、记录数、校验摘要，以及 `post-006` 时适用的 `quarantine_id ↔ command_id` 映射摘要与 `device_state_projection` 清理前快照、变更单审批标识），同时**原样保留** `workflow_run`、`node_attempt`、`worker_execution_fact`（append-only）、`runtime_event` 与 `runtime_audit`（零删除零篡改）；
+   6. **核验通过且获授权后按真实存在子表先于父表顺序移除活表依赖**：仅当第 1–5 步全部核验通过、全部入站外键依赖处理明确且取得正式授权后，方可在同一原子事务内按实际阶段处理所有存在的子表依赖（`pre-006`：先移除已归档 `command_dispatch_attempt` 子行；`post-006`：移除已归档 `command_dispatch_attempt` 行 → 移除已归档 `CLEARED` `quarantine_record` 行 → 将已留痕的终态非执行 `device_state_projection.active_command_id` 置 `NULL`），最后移除活表 `workflow_runtime.command_ledger` 对应父行；
    7. **全失败回滚底线**：上述任一步失败，整个事务立即回滚，该批次**严禁**进入“归档完成”状态，原始活动数据与历史隔离关联不得被部分清除。
 
 > **阶段 0 边界声明**：阶段 0 仅冻结上述 `§6.1` 操作规范，**不**在阶段 0 编写自动删除活表数据的归档脚本，亦**严禁**在 `192.168.124.2:5432/labdb` 试跑任何归档或删除语句；未来实库执行必须另立独立变更单、全量备份与正式人工审批。
@@ -293,4 +304,4 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
 2. 向 `workflow_runtime.command_ledger` 插入空串或纯空白 `workstation_id` / `operation_name`（必须覆盖 `''`、纯空格 `'   '`、制表符 `E'\t'`、换行符 `E'\n'` 及混合空白字符输入）→ PostgreSQL 必须直接拒绝并抛出 **`23514 (check_violation)`**（`command_ledger_workstation_nonblank_chk`，正则 `~ '[^[:space:]]'`）；
 3. 向 `workflow_runtime.command_ledger` 插入未在 `workstation_sidecar` 注册或跨租户的 `workstation_id` → PostgreSQL 必须直接拒绝并抛出 **`23503 (foreign_key_violation)`**（`command_ledger_workstation_fk`）；
 4. 向 `workflow_runtime.wait_early_signal_buffer` 插入与 `inbox_receipt.run_id` 不一致（或对应 `inbox_receipt.run_id IS NULL`）的记录 → PostgreSQL 必须直接拒绝并抛出 **`23503 (foreign_key_violation)`**（复合外键）；
-5. 通过 PostgreSQL 系统目录 `pg_constraint`（`contype = 'f' AND confrelid = 'workflow_runtime.command_ledger'::regclass`）自动核验引用 `workflow_runtime.command_ledger` 的全部入站外键集合必须精确等于 `CORE §6.1` 已登记的 3 张子表 `{command_dispatch_attempt, quarantine_record, device_state_projection}`；若后续迁移引入任何未登记外键依赖，`002_schema_contract.sql` 与归档前置检查必须立即 Fail-Closed 报错阻断。
+5. **仅在 `006` 应用完成之后（`post-006`、`apply-workflow-runtime-migrations.sh --verify` 阶段）执行**：通过 PostgreSQL 系统目录 `pg_constraint`（`contype = 'f' AND confrelid = 'workflow_runtime.command_ledger'::regclass`）自动核验引用 `workflow_runtime.command_ledger` 的全部入站外键集合必须精确等于 `CORE §6.1` 已登记的 3 张子表 `{command_dispatch_attempt, quarantine_record, device_state_projection}`；若后续迁移引入任何未登记外键依赖，`002_schema_contract.sql` 必须立即 Fail-Closed 报错阻断（迁移前 `pre-006` 归档则按 `§6.1` 仅操作实际存在的 `command_dispatch_attempt`，未创建的 `006` 表/列标记 `N/A`）。
