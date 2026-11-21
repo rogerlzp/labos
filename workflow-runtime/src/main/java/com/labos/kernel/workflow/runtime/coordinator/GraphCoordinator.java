@@ -36,6 +36,8 @@ public final class GraphCoordinator {
     private final WorkflowRuntimeRepository repository;
     private final int batchSize;
     private final int maxTransitionsPerSignal;
+    private final Runnable beforeConditionalSplitTxHook;
+    private final Runnable insideConditionalSplitTxAfterReadHook;
 
     public GraphCoordinator(WorkflowRuntimeRepository repository) {
         this(repository, 100, 1000);
@@ -43,12 +45,21 @@ public final class GraphCoordinator {
 
     public GraphCoordinator(WorkflowRuntimeRepository repository, int batchSize,
                             int maxTransitionsPerSignal) {
+        this(repository, batchSize, maxTransitionsPerSignal, null, null);
+    }
+
+    GraphCoordinator(WorkflowRuntimeRepository repository, int batchSize,
+                     int maxTransitionsPerSignal,
+                     Runnable beforeConditionalSplitTxHook,
+                     Runnable insideConditionalSplitTxAfterReadHook) {
         this.repository = Objects.requireNonNull(repository, "repository");
         if (batchSize < 1 || batchSize > 500) throw new IllegalArgumentException("batchSize must be 1..500");
         if (maxTransitionsPerSignal < 1 || maxTransitionsPerSignal > 10000)
             throw new IllegalArgumentException("maxTransitionsPerSignal must be 1..10000");
         this.batchSize = batchSize;
         this.maxTransitionsPerSignal = maxTransitionsPerSignal;
+        this.beforeConditionalSplitTxHook = beforeConditionalSplitTxHook;
+        this.insideConditionalSplitTxAfterReadHook = insideConditionalSplitTxAfterReadHook;
     }
 
     /** Advance using the Run's persisted input and flow_variable snapshot. */
@@ -70,7 +81,8 @@ public final class GraphCoordinator {
 
         UUID offendingTokenId = null;
         try {
-            Map<String, ?> context = buildEvaluationContext(tenantId, runId, variables);
+            // Fail closed on corrupt persisted variable JSON even when no conditional split executes yet.
+            parsePersistedVariables(repository.loadGraphVariableSnapshot(tenantId, runId));
 
             GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson(), snapshot.diagnosticContext());
             Map<String, GraphPlan.Node> nodes = indexNodes(plan);
@@ -124,19 +136,38 @@ public final class GraphCoordinator {
                     for (WorkflowRuntimeRepository.GraphToken token : ready) {
                         offendingTokenId = token.tokenId();
                         GraphPlan.Node node = requireNode(nodes, token.nodeKey());
+                        List<GraphPlan.Edge> nodeOutgoing = outgoing.getOrDefault(node.key(), List.of());
+                        WorkflowRuntimeRepository.GraphAdvanceResult result;
                         if (node.kind() == GraphPlan.Kind.SPLIT_XOR
                                 || node.kind() == GraphPlan.Kind.SPLIT_INCLUSIVE) {
-                            // Reload committed flow variables in case another branch completed concurrently mid-advance.
-                            context = buildEvaluationContext(tenantId, runId, variables);
+                            if (beforeConditionalSplitTxHook != null) {
+                                beforeConditionalSplitTxHook.run();
+                            }
+                            result = repository.advanceGraphTokenWithVariables(
+                                    tenantId, runId, token.tokenId(), token.nodeKey(),
+                                    persistedSnapshot -> {
+                                        Map<String, ?> lockedContext = buildEvaluationContext(persistedSnapshot, variables);
+                                        if (insideConditionalSplitTxAfterReadHook != null) {
+                                            insideConditionalSplitTxAfterReadHook.run();
+                                        }
+                                        Transition decision = transitionFor(node, nodeOutgoing, lockedContext);
+                                        if (decision == null) {
+                                            throw new IllegalStateException(
+                                                    "Conditional Split produced no transition: " + node.key());
+                                        }
+                                        return new WorkflowRuntimeRepository.GraphTokenTransitionDecision(
+                                                decision.kind(), decision.successors(), decision.joinNodeKey());
+                                    });
+                        } else {
+                            Transition transition = transitionFor(node, nodeOutgoing, Map.of());
+                            if (transition == null) {
+                                offendingTokenId = null;
+                                continue;
+                            }
+                            result = repository.advanceGraphToken(
+                                    tenantId, runId, token.tokenId(), token.nodeKey(),
+                                    transition.kind(), transition.successors(), transition.joinNodeKey());
                         }
-                        Transition transition = transitionFor(node, outgoing.getOrDefault(node.key(), List.of()), context);
-                        if (transition == null) {
-                            offendingTokenId = null;
-                            continue;
-                        }
-                        WorkflowRuntimeRepository.GraphAdvanceResult result =
-                                repository.advanceGraphToken(tenantId, runId, token.tokenId(), token.nodeKey(),
-                                        transition.kind(), transition.successors(), transition.joinNodeKey());
                         offendingTokenId = null;
                         controlAdvanced++;
                         tokensCreated += result.tokensCreated();
@@ -160,17 +191,18 @@ public final class GraphCoordinator {
         }
     }
 
-    private Map<String, ?> buildEvaluationContext(UUID tenantId, UUID runId, Map<String, ?> explicitOverrides) {
-        Map<String, Object> mergedVariables = loadPersistedVariables(tenantId, runId);
+    private static Map<String, ?> buildEvaluationContext(
+            WorkflowRuntimeRepository.GraphVariableSnapshot persisted,
+            Map<String, ?> explicitOverrides) {
+        Map<String, Object> mergedVariables = parsePersistedVariables(persisted);
         if (explicitOverrides != null) {
             mergedVariables.putAll(explicitOverrides);
         }
         return Collections.unmodifiableMap(mergedVariables);
     }
 
-    private Map<String, Object> loadPersistedVariables(UUID tenantId, UUID runId) {
-        WorkflowRuntimeRepository.GraphVariableSnapshot persisted =
-                repository.loadGraphVariableSnapshot(tenantId, runId);
+    private static Map<String, Object> parsePersistedVariables(
+            WorkflowRuntimeRepository.GraphVariableSnapshot persisted) {
         Map<String, Object> variables = new HashMap<>();
         try {
             if (persisted.inputJson() != null && !persisted.inputJson().isBlank()) {

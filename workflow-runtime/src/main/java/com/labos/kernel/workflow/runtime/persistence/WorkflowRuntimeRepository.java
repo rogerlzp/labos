@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.function.Function;
 
 /**
  * PostgreSQL-backed transaction boundary for the new Workflow Runtime.
@@ -1876,17 +1877,19 @@ public final class WorkflowRuntimeRepository {
 
     /** Read Run input and persisted flow variables from one repeatable-read snapshot. */
     public GraphVariableSnapshot loadGraphVariableSnapshot(UUID tenantId, UUID runId) {
-        return snapshotTx.execute(status -> {
-            String input=jdbc.queryForObject("""
-                SELECT input::text FROM workflow_runtime.workflow_run
-                 WHERE tenant_id=? AND run_id=?
-                """,String.class,tenantId,runId);
-            List<GraphVariable> variables=jdbc.query("""
-                SELECT variable_key,value::text FROM workflow_runtime.flow_variable
-                 WHERE tenant_id=? AND run_id=? ORDER BY variable_key
-                """,(rs,n)->new GraphVariable(rs.getString(1),rs.getString(2)),tenantId,runId);
-            return new GraphVariableSnapshot(input,variables==null?List.of():List.copyOf(variables));
-        });
+        return snapshotTx.execute(status -> loadGraphVariableSnapshotInTransaction(tenantId, runId));
+    }
+
+    private GraphVariableSnapshot loadGraphVariableSnapshotInTransaction(UUID tenantId, UUID runId) {
+        String input=jdbc.queryForObject("""
+            SELECT input::text FROM workflow_runtime.workflow_run
+             WHERE tenant_id=? AND run_id=?
+            """,String.class,tenantId,runId);
+        List<GraphVariable> variables=jdbc.query("""
+            SELECT variable_key,value::text FROM workflow_runtime.flow_variable
+             WHERE tenant_id=? AND run_id=? ORDER BY variable_key
+            """,(rs,n)->new GraphVariable(rs.getString(1),rs.getString(2)),tenantId,runId);
+        return new GraphVariableSnapshot(input,variables==null?List.of():List.copyOf(variables));
     }
 
     public record GraphToken(UUID tokenId, String nodeKey, UUID splitId, UUID branchId) {}
@@ -1894,6 +1897,17 @@ public final class WorkflowRuntimeRepository {
                                            UUID splitId, UUID branchId) {}
     public record GraphAdvanceResult(String outcome, UUID activationId, int tokensCreated,
                                      boolean runCompleted) {}
+
+    /** Pure transition decision computed inside {@link #advanceGraphTokenWithVariables} under the Run lock. */
+    public record GraphTokenTransitionDecision(
+            String transitionKind,
+            List<String> successorNodeKeys,
+            String joinNodeKey) {
+        public GraphTokenTransitionDecision {
+            Objects.requireNonNull(transitionKind, "transitionKind");
+            successorNodeKeys = successorNodeKeys == null ? List.of() : List.copyOf(successorNodeKeys);
+        }
+    }
 
     /** Read a bounded, stable batch of READY tokens for one Run. */
     public List<GraphToken> findReadyGraphTokens(UUID tenantId, UUID runId, int limit) {
@@ -1988,6 +2002,26 @@ public final class WorkflowRuntimeRepository {
     public GraphAdvanceResult advanceGraphToken(UUID tenantId, UUID runId, UUID tokenId,
                                                  String expectedNodeKey, String transitionKind,
                                                  List<String> successorNodeKeys, String joinNodeKey) {
+        return advanceGraphTokenInternal(tenantId, runId, tokenId, expectedNodeKey, false,
+                ignored -> new GraphTokenTransitionDecision(transitionKind, successorNodeKeys, joinNodeKey));
+    }
+
+    /**
+     * Atomically lock the Run and READY Token, read the persisted input and {@code flow_variable}
+     * snapshot under that Run lock, compute the transition decision from that snapshot, and apply
+     * the Token advancement in the same PostgreSQL transaction.
+     */
+    public GraphAdvanceResult advanceGraphTokenWithVariables(
+            UUID tenantId, UUID runId, UUID tokenId, String expectedNodeKey,
+            Function<GraphVariableSnapshot, GraphTokenTransitionDecision> transitionResolver) {
+        Objects.requireNonNull(transitionResolver, "transitionResolver");
+        return advanceGraphTokenInternal(tenantId, runId, tokenId, expectedNodeKey, true, transitionResolver);
+    }
+
+    private GraphAdvanceResult advanceGraphTokenInternal(
+            UUID tenantId, UUID runId, UUID tokenId, String expectedNodeKey,
+            boolean loadVariables,
+            Function<GraphVariableSnapshot, GraphTokenTransitionDecision> transitionResolver) {
         return required(() -> {
             RunHead head = lockRun(tenantId,runId);
             requireGraphRunOpen(head);
@@ -2003,6 +2037,14 @@ public final class WorkflowRuntimeRepository {
             GraphToken token=rows.get(0);
             if (!token.nodeKey().equals(expectedNodeKey))
                 throw new StaleRuntimeWriteException("Graph Token nodeKey changed");
+            GraphVariableSnapshot variableSnapshot = loadVariables
+                    ? loadGraphVariableSnapshotInTransaction(tenantId, runId)
+                    : null;
+            GraphTokenTransitionDecision decision = Objects.requireNonNull(
+                    transitionResolver.apply(variableSnapshot), "transitionResolver must return a decision");
+            String transitionKind = decision.transitionKind();
+            List<String> successorNodeKeys = decision.successorNodeKeys();
+            String joinNodeKey = decision.joinNodeKey();
             int activationNoValue = jdbc.queryForObject("""
                 SELECT COALESCE(MAX(activation_no),0)+1
                   FROM workflow_runtime.node_activation
