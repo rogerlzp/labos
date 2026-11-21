@@ -881,6 +881,29 @@ class DeviceGatewayTcpIntegrationTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation WHERE tenant_id='"
                     + tenant + "'"));
 
+            // A new, contradictory terminal event is a permanent domain rejection, not a retryable
+            // poison receipt. The Inbox must be terminalized atomically and exact replay stays a NACK.
+            String lateMessageId = "sec-late-" + UUID.randomUUID();
+            var rejected = cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
+                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{\\"tampered\\":true}");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejected.status());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='RECEIVED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED'"));
+
+            var rejectedReplay = cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
+                    "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{\\"tampered\\":true}");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejectedReplay.status());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='SUCCEEDED'"));
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='DEVICE_COMMAND_FAILED'"));
+
             repo.completeAttempt(tenant, run.runId(), res.attemptId(), "out", "{\"ok\":true}");
         }
     }
