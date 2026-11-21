@@ -22,8 +22,8 @@ import java.util.UUID;
  *       uncertainty or exception marks the Command {@code UNKNOWN} ({@code SIDE_EFFECT_UNKNOWN}) and
  *       dead-letters the outbox row until explicit external verification via {@link #reconcileUnknownCommand}.</li>
  *   <li>Every device result (whether synchronous or asynchronous) passes through durable
- *       {@code receiveInbox -> applyCommandEvent}, preserving idempotent duplicate replay and
- *       {@code inbox_protocol_violation} recording on conflicting payloads.</li>
+ *       {@code receiveInbox -> applyCommandEventOrReject}, preserving idempotent duplicate replay,
+ *       durable domain rejection, and {@code inbox_protocol_violation} recording on conflicting payloads.</li>
  * </ul>
  */
 public final class DeviceCommandExecutionService {
