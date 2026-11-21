@@ -1292,6 +1292,46 @@ class LocalTaskDispatchAndCommandLoopTest {
                 + tenant + "' AND command_id='" + failFix.commandId() + "' AND command_state='FAILED'"));
         assertEquals("MANUAL_REQUIRED", repo.failAttempt(tenant, failFix.runId(), failFix.attemptId(),
                 "{\"errorCode\":\"E_NO_TIP\"}", true).outcome());
+
+        // G4-D N1 regression: synchronous success racing with an already committed FAILED
+        // event must not be reported as COMPLETED_SYNC or overwrite the authoritative failure.
+        var failedRaceFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "sync-race-failed-dev", false);
+        DeviceCommandExecutionService failedRaceSvc = new DeviceCommandExecutionService(repo, env -> {
+            DeviceCommandExecutionService eventSvc = new DeviceCommandExecutionService(repo, ignored -> null);
+            var asyncFailure = eventSvc.ingestDeviceEvent(tenant, env.runId(), env.deviceId(),
+                    "async-failed-before-sync-" + env.commandId(), "DEVICE_COMMAND_RESULT",
+                    env.commandId(), "FAILED", "seq-async-failed", "{\"error\":\"async failure\"}");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, asyncFailure.status());
+            return DeviceCommandAdapter.SendResult.completedImmediately(
+                    "sync-success-after-failed-" + env.commandId(), "seq-sync-success", "{\"ok\":true}");
+        });
+        var failedRaceSummary = failedRaceSvc.deliverPendingCommands(tenant, 4, "disp-sync-race-failed");
+        assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.COMPLETED_FAILED_SYNC,
+                failedRaceSummary.outcomes().get(failedRaceFix.commandId()));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + failedRaceFix.commandId() + "' AND command_state='FAILED'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND run_id='" + failedRaceFix.runId() + "' AND receipt_state='REJECTED'"));
+        repo.failAttempt(tenant, failedRaceFix.runId(), failedRaceFix.attemptId(),
+                "{\"reason\":\"sync-failed-race-fixture-cleanup\"}", true);
+
+        // The opposite race: UNKNOWN wins before a synchronous FAILED result arrives.
+        // The receipt is permanently rejected, and the delivery summary must remain UNKNOWN.
+        var unknownRaceFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "sync-race-unknown-dev", false);
+        DeviceCommandExecutionService unknownRaceSvc = new DeviceCommandExecutionService(repo, env -> {
+            repo.markCommandUnknown(tenant, env.commandId(), "{\"reason\":\"concurrent timeout\"}");
+            return DeviceCommandAdapter.SendResult.completedImmediatelyFailed(
+                    "sync-failed-after-unknown-" + env.commandId(), "seq-sync-failed", "{\"error\":\"late failure\"}");
+        });
+        var unknownRaceSummary = unknownRaceSvc.deliverPendingCommands(tenant, 4, "disp-sync-race-unknown");
+        assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.MARKED_UNKNOWN,
+                unknownRaceSummary.outcomes().get(unknownRaceFix.commandId()));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + unknownRaceFix.commandId() + "' AND command_state='UNKNOWN'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND run_id='" + unknownRaceFix.runId() + "' AND receipt_state='REJECTED'"));
+        repo.failAttempt(tenant, unknownRaceFix.runId(), unknownRaceFix.attemptId(),
+                "{\"reason\":\"sync-unknown-race-fixture-cleanup\"}", true);
     }
 
     @Test
