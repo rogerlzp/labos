@@ -895,8 +895,9 @@ class DeviceGatewayTcpIntegrationTest {
             });
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                     + tenant + "' AND command_id='" + cmdId + "' AND command_state='ACKNOWLEDGED'"));
-            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
-                    + tenant + "' AND run_id='" + run.runId() + "'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND source_message_id='" + concurrentAckId
+                    + "' AND receipt_state='PROCESSED'"));
 
             // 5. Legitimate COMMAND_RESULT (even with deviceId omitted, relying on connection binding!) -> APPLIED!
             String msgId = "sec-msg-" + UUID.randomUUID();
