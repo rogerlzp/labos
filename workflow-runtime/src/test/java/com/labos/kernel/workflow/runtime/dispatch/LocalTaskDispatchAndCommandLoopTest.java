@@ -1177,9 +1177,9 @@ class LocalTaskDispatchAndCommandLoopTest {
         String faultTrigger = "g4d_fault_trg_" + faultSuffix;
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("CREATE FUNCTION workflow_runtime." + faultFunction + "() RETURNS trigger "
-                    + "LANGUAGE plpgsql AS $ BEGIN IF NEW.tenant_id = '" + tenant
+                    + "LANGUAGE plpgsql AS $g4d$ BEGIN IF NEW.tenant_id = '" + tenant
                     + "'::uuid AND NEW.event_type = 'DEVICE_COMMAND_SUCCEEDED' THEN "
-                    + "RAISE EXCEPTION 'g4d injected runtime_event failure'; END IF; RETURN NEW; END $");
+                    + "RAISE EXCEPTION 'g4d injected runtime_event failure'; END IF; RETURN NEW; END $g4d$");
             st.execute("CREATE TRIGGER " + faultTrigger
                     + " BEFORE INSERT ON workflow_runtime.runtime_event FOR EACH ROW "
                     + "EXECUTE FUNCTION workflow_runtime." + faultFunction + "()");
