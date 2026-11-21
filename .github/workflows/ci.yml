@@ -6,7 +6,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, 'feat/workflow-runtime-*' ]
+    branches: [ main, 'feat/workflow-runtime-*', 'g4c/*' ]
   pull_request:
   workflow_dispatch:
 
