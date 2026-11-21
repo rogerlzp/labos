@@ -3,12 +3,23 @@ name: CI
 # M8 门禁：把"改完有没有坏"从"记得测一下"变成必须过。
 # 这里只跑**不需要数据库**的部分（纯逻辑单测 + 前端类型），
 # 设备链路和 e2e 要模拟器/前端在跑，放在本地 ./scripts/ci-gate.sh --all。
+# main 当前未启用 required status check；纯文档变更（docs/**、**/*.md）通过 paths-ignore 直接跳过。
 
 on:
   push:
     branches: [ main, 'feat/workflow-runtime-*' ]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   gate:
