@@ -342,8 +342,12 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
     private static JsonNode getRunJson(WorkflowRuntimeController controller, String runId) {
         try {
             var resp = controller.getRun(runId);
-            require(resp.getStatusCode().value() == 200, "GET /api/runtime/runs/" + runId + " returned " + resp.getStatusCode());
+            if (resp.getStatusCode().value() != 200) {
+                throw new AssertionError("GET /api/runtime/runs/" + runId + " returned " + resp.getStatusCode());
+            }
             return JSON.readTree(resp.getBody());
+        } catch (AssertionError ae) {
+            throw ae;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

@@ -1947,7 +1947,7 @@ type FlowCondOp = '==' | '!=' | '>' | '>=' | '<' | '<=';
 function parseSimpleFlowCondition(expr: string): { varName: string; op: FlowCondOp; value: string } | null {
   const s = expr.trim();
   if (!s || s.includes('&&') || s.includes('||')) return null;
-  const m = s.match(/^(?:\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}|([A-Za-z_][A-Za-z0-9_]*))\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+  const m = s.match(/^(?:\$\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
   if (!m) return null;
   const varName = m[1] || m[2];
   const op = m[3] as FlowCondOp;
@@ -1959,6 +1959,11 @@ function parseSimpleFlowCondition(expr: string): { varName: string; op: FlowCond
   return { varName, op, value: raw };
 }
 
+/**
+ * Emits legacy `${var} op value` syntax for backward compatibility with legacy GraphRunner/Preflight.
+ * In Workflow Runtime this depends on definitions loading through LegacyKernelWorkflowDefinitionSource
+ * (`normalizeLegacyConditions=true`); any future non-legacy native definition source will reject `${...}` fail-closed.
+ */
 function formatFlowCondition(varName: string, varType: string | undefined, op: FlowCondOp, rawValue: string): string {
   const v = rawValue.trim();
   if (!varName || !v) return '';
