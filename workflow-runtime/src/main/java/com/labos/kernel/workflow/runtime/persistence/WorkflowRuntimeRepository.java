@@ -3273,7 +3273,6 @@ public final class WorkflowRuntimeRepository {
     /** T14: attribute device evidence exclusively by command_id and process Inbox atomically. */
     private boolean applyCommandEventInTransaction(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
                                      String targetState, String deviceSequence, String outcomeJson) {
- {
             List<String> identity=jdbc.query("""
                 SELECT attempt_id::text||'|'||device_id FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND run_id=? AND command_id=?
