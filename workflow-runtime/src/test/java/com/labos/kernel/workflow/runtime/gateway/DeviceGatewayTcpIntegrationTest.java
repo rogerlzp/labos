@@ -268,6 +268,41 @@ class DeviceGatewayTcpIntegrationTest {
             // Send the real, unconsumed, EXPIRED PONG for PING #1 on the live epoch 1 socket!
             MockTcpDeviceServer.ClientSession session = server.activeSession();
             assertNotNull(session);
+
+            // Concurrent delivery of the exact same event identity/payload must apply once and
+            // classify the losing delivery as an idempotent replay.
+            String concurrentAckId = "sec-concurrent-ack-" + UUID.randomUUID();
+            CountDownLatch ackReady = new CountDownLatch(2);
+            CountDownLatch ackStart = new CountDownLatch(1);
+            var duplicatePool = Executors.newFixedThreadPool(2);
+            try {
+                var delivery1 = duplicatePool.submit(() -> {
+                    ackReady.countDown();
+                    if (!ackStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("ack start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentAckId,
+                            "RECEIVED_ACK", cmdId, "ACKNOWLEDGED", "seq-ack", "{}");
+                });
+                var delivery2 = duplicatePool.submit(() -> {
+                    ackReady.countDown();
+                    if (!ackStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("ack start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentAckId,
+                            "RECEIVED_ACK", cmdId, "ACKNOWLEDGED", "seq-ack", "{}");
+                });
+                assertTrue(ackReady.await(5, TimeUnit.SECONDS));
+                ackStart.countDown();
+                var result1 = delivery1.get(5, TimeUnit.SECONDS);
+                var result2 = delivery2.get(5, TimeUnit.SECONDS);
+                List<DeviceCommandExecutionService.InboxStatus> statuses =
+                        List.of(result1.status(), result2.status());
+                assertEquals(1, statuses.stream().filter(x -> x == DeviceCommandExecutionService.InboxStatus.APPLIED).count());
+                assertEquals(1, statuses.stream().filter(x -> x == DeviceCommandExecutionService.InboxStatus.DUPLICATE_REPLAY).count());
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND source_message_id='" + concurrentAckId + "' AND receipt_state='PROCESSED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "' AND event_type='DEVICE_COMMAND_ACKNOWLEDGED'"));
+            } finally {
+                duplicatePool.shutdownNow();
+            }
             session.sendHeartbeatPong(heldPing1.get());
 
             // Expired PONG must be rejected (invalidHeartbeatsRejected == 1), MUST NOT increment heartbeatsReceived,
