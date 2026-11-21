@@ -918,8 +918,12 @@ class LocalTaskDispatchAndCommandLoopTest {
                     repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
                 } else if ("UNKNOWN".equals(cmd.commandState())) {
                     assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.MARKED_UNKNOWN, deliveryStatus);
-                    assertInstanceOf(WorkflowRuntimeRepository.InvalidTransitionException.class, inboxOutcome,
+                    assertInstanceOf(DeviceCommandExecutionService.InboxIngestionOutcome.class, inboxOutcome,
                             "Once UNKNOWN commits first, late ordinary SUCCEEDED must be fail-closed rejected");
+                    var rejectedInbox = (DeviceCommandExecutionService.InboxIngestionOutcome) inboxOutcome;
+                    assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, rejectedInbox.status());
+                    assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                            + tenant + "' AND inbox_id='" + rejectedInbox.inboxId() + "' AND receipt_state='REJECTED'"));
                     assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
                             + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_UNKNOWN'"));
                     assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
