@@ -504,7 +504,7 @@ class DeviceGatewayTcpIntegrationTest {
                         } catch (Exception e) {
                             throw new RuntimeException(e);
                         }
-                    } else if (!retryable && "PROTOCOL_VIOLATION".equals(frame.path("reason").asText())) {
+                    } else if (!retryable && "SOURCE_MESSAGE_ID_PAYLOAD_CONFLICT".equals(frame.path("reason").asText())) {
                         permNackViolationLatch.countDown();
                     }
                 } else if (GatewayWireProtocol.FRAME_EVENT_ACK.equals(frameType)) {
@@ -930,7 +930,15 @@ class DeviceGatewayTcpIntegrationTest {
                     lateMessageId, "COMMAND_RESULT", "FAILED", "seq-late", "{}");
             assertTrue(rejectedLatch.await(5, TimeUnit.SECONDS),
                     "Permanent domain rejection must traverse the RuntimeDeviceEventBridge");
-            awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventNacks().size() == 2);
+            awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventNacks().stream()
+                    .anyMatch(n -> lateMessageId.equals(n.path("sourceMessageId").asText())));
+            var lateNack = server.receivedEventNacks().stream()
+                    .filter(n -> lateMessageId.equals(n.path("sourceMessageId").asText()))
+                    .findFirst().orElseThrow();
+            assertFalse(lateNack.path("retryable").asBoolean(true),
+                    "A permanent domain rejection must be EVENT_NACK(retryable=false)");
+            assertTrue(lateNack.path("reason").asText().startsWith("INBOX_REJECTED:"),
+                    "The wire NACK must preserve the domain rejection category");
             assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED,
                     cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
                             "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{}").status(),
