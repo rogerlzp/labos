@@ -1,4 +1,4 @@
--- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.2 review).
+-- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.3 final review).
 -- NOTE: This draft sits in docs/ddl/ and is NOT executed by PR #17 CI.
 --       Real PostgreSQL 17 DDL & 002_schema_contract CI checks take effect only when
 --       promoted to db/workflow_runtime/006_device_execution_contract_v1.sql in Phase 0.
@@ -36,8 +36,8 @@ CREATE TABLE IF NOT EXISTS workflow_runtime.workstation_sidecar (
 );
 
 -- 2. Extend command_ledger with workstation FK, operation metadata, capability timeouts & outcomes.
---    Logical uniqueness already relies on existing UNIQUE(tenant_id, attempt_id) in 001_init.sql
---    plus command_id PK; no redundant key column is added.
+--    command_ledger_v1_workstation_required_chk guarantees every Contract v1 command (which sets
+--    operation_name) MUST bind a non-null workstation_id while keeping legacy/G2 mock rows valid.
 ALTER TABLE workflow_runtime.command_ledger
   ADD COLUMN IF NOT EXISTS workstation_id text,
   ADD COLUMN IF NOT EXISTS operation_name text,
@@ -47,7 +47,7 @@ ALTER TABLE workflow_runtime.command_ledger
   ADD COLUMN IF NOT EXISTS command_result jsonb NOT NULL DEFAULT '{}'::jsonb,
   ADD COLUMN IF NOT EXISTS reconciliation_evidence jsonb NOT NULL DEFAULT '{}'::jsonb;
 
-DO $add_command_workstation_fk$
+DO $add_command_workstation_fk_and_chk$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -59,8 +59,17 @@ BEGIN
       FOREIGN KEY (tenant_id, workstation_id)
       REFERENCES workflow_runtime.workstation_sidecar (tenant_id, workstation_id);
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'command_ledger_v1_workstation_required_chk'
+       AND conrelid = 'workflow_runtime.command_ledger'::regclass
+  ) THEN
+    ALTER TABLE workflow_runtime.command_ledger
+      ADD CONSTRAINT command_ledger_v1_workstation_required_chk
+      CHECK (operation_name IS NULL OR workstation_id IS NOT NULL);
+  END IF;
 END
-$add_command_workstation_fk$;
+$add_command_workstation_fk_and_chk$;
 
 -- 3. Extend command_dispatch_attempt to distinguish SEND / QUERY / CANCEL dispatches
 --    and track wire rejection / delivery error codes cleanly.
@@ -72,12 +81,14 @@ ALTER TABLE workflow_runtime.command_dispatch_attempt
 CREATE INDEX IF NOT EXISTS dispatch_attempt_command_kind_idx
   ON workflow_runtime.command_dispatch_attempt (tenant_id, command_id, dispatch_kind, dispatch_no);
 
--- 4. Bind quarantine_record to the offending UNKNOWN command_id so multi-resource
---    quarantines (e.g., ARM + srcSlot + dstSlot + carrier) settle atomically as a group.
+-- 4. Bind quarantine_record to origin & offending UNKNOWN command_id so command-induced
+--    quarantines ALWAYS carry command_id (group settle), while non-command faults remain valid.
 ALTER TABLE workflow_runtime.quarantine_record
+  ADD COLUMN IF NOT EXISTS quarantine_origin text NOT NULL DEFAULT 'MANUAL_OR_LEGACY'
+    CHECK (quarantine_origin IN ('COMMAND_UNKNOWN', 'TRANSFER_IN_FLIGHT', 'HARDWARE_FAULT', 'MANUAL_OR_LEGACY')),
   ADD COLUMN IF NOT EXISTS command_id uuid;
 
-DO $add_quarantine_command_fk$
+DO $add_quarantine_command_fk_and_chk$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -89,8 +100,20 @@ BEGIN
       FOREIGN KEY (tenant_id, command_id)
       REFERENCES workflow_runtime.command_ledger (tenant_id, command_id);
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'quarantine_command_origin_chk'
+       AND conrelid = 'workflow_runtime.quarantine_record'::regclass
+  ) THEN
+    ALTER TABLE workflow_runtime.quarantine_record
+      ADD CONSTRAINT quarantine_command_origin_chk
+      CHECK (
+        (quarantine_origin IN ('COMMAND_UNKNOWN', 'TRANSFER_IN_FLIGHT') AND command_id IS NOT NULL)
+        OR quarantine_origin IN ('HARDWARE_FAULT', 'MANUAL_OR_LEGACY')
+      );
+  END IF;
 END
-$add_quarantine_command_fk$;
+$add_quarantine_command_fk_and_chk$;
 
 CREATE INDEX IF NOT EXISTS quarantine_open_by_command_idx
   ON workflow_runtime.quarantine_record (tenant_id, command_id)
@@ -124,9 +147,23 @@ CREATE INDEX IF NOT EXISTS device_projection_workstation_idx
   ON workflow_runtime.device_state_projection (tenant_id, workstation_id, device_state);
 
 -- 6. Table #35: G5.1 Early Wait Signal Queue strictly referencing authoritative inbox_receipt 1:1.
---    All deduplication (tenant_id, source, source_message_id), 32-byte payload_hash, and message_payload
---    live solely in workflow_runtime.inbox_receipt (inserted atomically via INSERT ... ON CONFLICT DO NOTHING
---    with message_type='DEVICE_SPONTANEOUS_EARLY'). Zero duplicate dedup keys or payload copies here.
+--    Adding UNIQUE (tenant_id, inbox_id, run_id) on inbox_receipt enables a composite FK
+--    from wait_early_signal_buffer(tenant_id, inbox_id, run_id), proving at PG schema level
+--    that buffer.run_id ALWAYS equals inbox_receipt.run_id (non-null) with zero copied payload.
+DO $add_inbox_run_uq$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'inbox_receipt_tenant_inbox_run_uq'
+       AND conrelid = 'workflow_runtime.inbox_receipt'::regclass
+  ) THEN
+    ALTER TABLE workflow_runtime.inbox_receipt
+      ADD CONSTRAINT inbox_receipt_tenant_inbox_run_uq
+      UNIQUE (tenant_id, inbox_id, run_id);
+  END IF;
+END
+$add_inbox_run_uq$;
+
 CREATE TABLE IF NOT EXISTS workflow_runtime.wait_early_signal_buffer (
   tenant_id         uuid        NOT NULL,
   buffer_id         uuid        NOT NULL DEFAULT gen_random_uuid(),
@@ -140,8 +177,8 @@ CREATE TABLE IF NOT EXISTS workflow_runtime.wait_early_signal_buffer (
   created_at        timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (tenant_id, buffer_id),
   UNIQUE (tenant_id, inbox_id),
-  FOREIGN KEY (tenant_id, inbox_id)
-    REFERENCES workflow_runtime.inbox_receipt (tenant_id, inbox_id),
+  FOREIGN KEY (tenant_id, inbox_id, run_id)
+    REFERENCES workflow_runtime.inbox_receipt (tenant_id, inbox_id, run_id),
   FOREIGN KEY (tenant_id, run_id)
     REFERENCES workflow_runtime.workflow_run (tenant_id, run_id)
 );

@@ -1,6 +1,6 @@
-# PHASE3B_MASTER_CONTRACT — LabOS 设备执行体系核心契约与 4-AI 协作总纲（Draft v1.2 · 冻结前定点修订版）
+# PHASE3B_MASTER_CONTRACT — LabOS 设备执行体系核心契约与 4-AI 协作总纲（Draft v1.3 · 最终微调版）
 
-> **状态**：`Draft v1.2（For Final Freeze Sign-Off）` — 基于三方对 v1.1 的复审意见完成 P0/P1/R1–R5 定点闭环；**仅修订审阅指摘点，保留已认可主体框架。需先合入「阶段 0 契约冻结骨架 PR」后，再拉出 4 条实现分支并行开发**。  
+> **状态**：`Draft v1.3（For Final Freeze Sign-Off）` — 基于三方对 v1.2 的最后复核仅作 4 项定点微调（不扩大范围）；**需先合入「阶段 0 契约冻结骨架 PR」后，再拉出 4 条实现分支并行开发**。  
 > **统一基线**：`origin/main` @ `2e2e0eaffbb21ceadbbbe71bd201e8e22ddae692`（统一并取代此前审阅过程中出现过的 `c650e271` 与 `4b8e9d76` 历史快照引用）。  
 > **配套核心契约文件**：
 > - 核心执行与物理安全：[DEVICE_EXECUTION_CORE_CONTRACT.md](./DEVICE_EXECUTION_CORE_CONTRACT.md)（AI-1 主责）
@@ -21,8 +21,8 @@
 2. **目标部署形态：C2（工位级 Sidecar Host）**：
    - **生产唯一目标架构（C2）**：每台工控机运行一个 `.NET 10` Sidecar Host，向下统一管理该工控机挂载的多台串口 / Vendor DLL / COM / OLE 设备，向上复用单一认证 TCP 会话；
    - **临时验证形态（C1）**：单设备独立端口仅允许在自动化集成测试或纯虚拟设备调试时临时使用，不得替代生产 C2 设计。
-3. **TCP 连接方向与传输安全强制标准：方向 A + TLS 1.3 mTLS**：
-   - **连接方向（已确认实验室局域网中控可直连各工控机固定 `IP:Port`）**：锁定 **方向 A（Kernel TCP Client 主动连接先启动监听的 Sidecar TCP Server）**；
+3. **TCP 连接方向与传输安全强制标准：方向 A（`CONFIRMED_BY_OPERATIONS / PENDING_NETWORK_TEST`）+ TLS 1.3 mTLS**：
+   - **连接方向与验证边界（P1-A）**：已由现场运维确认「实验室局域网中控可直连各工控机固定 `IP:Port`」，暂锁定 **方向 A（Kernel TCP Client 主动连接先启动监听的 Sidecar TCP Server）**，当前状态诚实标注为 **`CONFIRMED_BY_OPERATIONS / PENDING_NETWORK_TEST`**；**进入 Phase 3E/预发布切入实景网络前，必须补签一份《网络可达与 Lab-CA 运维核验单》**（实测 Kernel→工控机跨网段 TCP 建连可达性、VLAN/防火墙/NAT 端口策略、工控机重启后静态 IP/DNS 解析稳定性，并写明 Lab-CA 证书签发/轮换/吊销运维责任人）。
    - **演进种子明确**：现有 [TcpDeviceConnection.java](../workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/gateway/TcpDeviceConnection.java) 已具备主动拨号 + `ndjson://` 架构基础，作为方向 A 网关的**正式演进种子**（由 AI-2 升级为工位级多设备复用 + TLS 1.3 mTLS 双向认证），而非推倒重造；
    - **传输安全模式（收口为仅两档，删除裸握手过渡层）**：
      - **`DEV_LOOPBACK_PLAINTEXT`**：仅限本机 `127.0.0.1` / `::1` 自动化单测与本地沙箱进程验证（代码层面强制拒绝绑定任何非回环网口或外部 IP）；

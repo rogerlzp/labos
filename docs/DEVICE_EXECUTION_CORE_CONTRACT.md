@@ -1,4 +1,4 @@
-# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.2）
+# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.3）
 
 > **所属总纲**：[PHASE3B_MASTER_CONTRACT.md](./PHASE3B_MASTER_CONTRACT.md)  
 > **通信与 Wire 对侧契约**：[DEVICE_GATEWAY_PROTOCOL.md](./DEVICE_GATEWAY_PROTOCOL.md)  
@@ -105,7 +105,7 @@ stateDiagram-v2
   MANUAL_REQUIRED --> CANCELLED : T21 reconcileAndSettleUnknownCommand(CANCELLED)
 ```
 
-| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.2 明确约定 | 责任方 |
+| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.3 明确约定 | 责任方 |
 | :--- | :--- | :--- | :--- |
 | `CANCEL_REQUESTED → DELIVERY_UNKNOWN` | 已允许 | **保留**（取消指令断连超时时可先转 `DELIVERY_UNKNOWN` 发起只读查证） | 阶段 0 / AI-1 对齐 |
 | `DELIVERY_UNKNOWN → RUNNING` | 已允许 | **保留**（恢复时若设备回报运行中，无缝接续 `RUNNING`） | 阶段 0 / AI-1 对齐 |
@@ -116,7 +116,9 @@ stateDiagram-v2
 1. **`FAILED_IMMEDIATELY` 边界区分**：回执必须带 `failureBoundary`：`PRE_EXECUTION` → `SEND_STARTED → FAILED`（仅当确定未触碰硬件时允许免隔离释放租约）；`POST_EXECUTION_UNKNOWN` 或缺失/非法边界 → **拒绝判为普通失败**，强制进入 `UNKNOWN` 并打开隔离。
 2. **`DUPLICATE_IN_FLIGHT` 语义**：证明 Sidecar 本地 Journal 存在该 `commandId` 正在执行的原始任务，回执**必须回传原 `deviceSequence` 与 `acceptedAtEpochMs`**；Kernel 保持或迁入 `ACKNOWLEDGED`（若原已在 `RUNNING` 则维持 `RUNNING`），严禁触发二次派发。
 3. **`ACKNOWLEDGED != COMPLETED`**：`COMMAND_RECEIPT(ACCEPTED)` 只能更新 `last_receipt_at` 与 `ACKNOWLEDGED`，绝对不能推进 `node_attempt`。
-4. **物理完成证据底线（P0-3）**：`SUCCEEDED` 迁移在代码层面**结构性校验 `ExecutionEvidence`**：仅当具备 ① `DEVICE_EVENT(SUCCEEDED)`（`evidenceStrength = STRONG_HARDWARE_FACT`）；② `COMMAND_RECEIPT(COMPLETED_IMMEDIATELY)`（`STRONG_HARDWARE_FACT`）；或 ③ `COMMAND_QUERY_RESULT(CONFIRMED_SUCCEEDED)` 且 **`evidenceStrength == STRONG_HARDWARE_FACT`**（`evidenceSource IN ('HARDWARE_NATIVE_QUERY', 'PRIOR_HARDWARE_COMPLETION_IN_JOURNAL')` 并附非空原始 `evidencePayload`）时方可通过！仅有本地 WAL 或 `WEAK_UNVERIFIED` 一律结构性拒收并转 `UNKNOWN`。
+4. **物理完成证据双通道底线与防伪边界（P0-3 / T21 闭环一致）**：`SUCCEEDED` 迁移在代码层面严格按两条互斥通道分别校验 `ExecutionEvidence`：
+   - **通道 A（自动线协议入站路径：`DEVICE_EVENT` / `COMMAND_RECEIPT(COMPLETED_IMMEDIATELY)` / `COMMAND_QUERY_RESULT`）**：**必须**同时满足 `evidenceStrength == STRONG_HARDWARE_FACT`、`evidenceSource IN ('HARDWARE_NATIVE_QUERY', 'PRIOR_HARDWARE_COMPLETION_IN_JOURNAL')` 且附非空原始 `evidencePayload`；若线协议入站违规出现 `OPERATOR_PHYSICAL_INSPECTION` 或 `STRONG_OPERATOR_ATTESTED`，Gateway/Core 必须当场永久拒收（**`ERR_WIRE_FORBIDDEN_EVIDENCE_SOURCE`**），杜绝设备端伪造人工证明；任何仅凭本地 WAL 或 `WEAK_UNVERIFIED` 一律结构性拒收并转 `UNKNOWN`。
+   - **通道 B（RBAC 授权 T21 人工裁决入口：`reconcileAndSettleUnknownCommand`，`UNKNOWN / MANUAL_REQUIRED → SUCCEEDED`）**：**仅当**通过受鉴权的 T21 人工裁决接口提交时，允许使用 **`evidenceStrength == STRONG_OPERATOR_ATTESTED`** 且仅配对 **`evidenceSource == OPERATOR_PHYSICAL_INSPECTION`**，同时强校验非空操作人 `actor`、核验时间、非空现场实体检查记录 `evidencePayload` 以及显式 `quarantineAction`——绝不把人工门槛退化为设备自动成功门槛。
 5. **`DELIVERY_UNKNOWN` 自动对账策略与 5 条硬边界（`ReconciliationPolicy`，解决 P0-4）**：
    每条命令能力声明必须携带显式对账策略 `ReconciliationPolicy(autoQueryAllowed, maxQueryAttempts, queryIntervalMs, maxReconcileWindowMs, requiredSuccessStrength, onExhaustedAction)`：
    - **① 只读禁令**：`COMMAND_QUERY` 在任何适配器下均**严格只读**，绝不向物理设备重发原动作报文，更不允许通过重发非幂等命令来“试探状态”；
@@ -196,7 +198,7 @@ stateDiagram-v2
 
 ### 5.2 全局单一权威去重：`inbox_receipt` + 1:1 `wait_early_signal_buffer`（P0-2 · P1-5 · N4）
 
-彻底消除双表并行去重的并发竞态：`workflow_runtime.inbox_receipt` 的 `(tenant_id, source, source_message_id)` 为**全系统唯一的事件去重权威**；`wait_early_signal_buffer` **不再复制 `source`/`source_message_id`/`payload_hash`/`payload` 字段**，只通过 `UNIQUE (tenant_id, inbox_id)` 与外键 `FOREIGN KEY (tenant_id, inbox_id) REFERENCES inbox_receipt(tenant_id, inbox_id)` 建立 1:1 关联。
+彻底消除双表并行去重的并发竞态：`workflow_runtime.inbox_receipt` 的 `(tenant_id, source, source_message_id)` 为**全系统唯一的事件去重权威**；`wait_early_signal_buffer` **不再复制 `source`/`source_message_id`/`payload_hash`/`payload` 字段**，只通过 `UNIQUE (tenant_id, inbox_id)` 与**复合外键 `FOREIGN KEY (tenant_id, inbox_id, run_id) REFERENCES inbox_receipt(tenant_id, inbox_id, run_id)`** 建立 1:1 且同 Run 强一致性绑定（从 PG Schema 数学保证 `wait_early_signal_buffer.run_id == inbox_receipt.run_id` 且非空，绝不依赖程序员口头检查）。
 
 且关联键 `correlationKey = "device:" + deviceId + ":" + eventName` 严格受 [003_g5_wait_correlation.sql](../db/workflow_runtime/003_g5_wait_correlation.sql) `wait_active_correlation_uq` 约束（同 Run 同 key 同时最多 1 个 `ACTIVE` Wait）。
 
@@ -210,7 +212,7 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
    - **若新插入成功**：
      - **情况 A（`RUNNING/OPEN` 且已存在匹配 `ACTIVE wait_registration`）**：写入 `message_type='WORKFLOW_WAIT_SIGNAL'`，当场满足 Wait 并将 `inbox_receipt` 置为 `PROCESSED` → 提交后返 **`EVENT_ACK(status="APPLIED")`**（完全不入 buffer）；
      - **情况 B（`PAUSE_REQUESTED`/`PAUSING`/`PAUSED` 暂停态）**：写入 `message_type='WORKFLOW_WAIT_SIGNAL'`, `receipt_state='RECEIVED'`（交由 G5 恢复时 `replayPendingWaitInbox` 消费）→ 提交后返 **`EVENT_ACK(status="BUFFERED")`**；
-     - **情况 C（`CREATED`/`RUNNING` 非终态且尚无匹配 `ACTIVE` Wait，即真早到）**：写入 **`message_type = 'DEVICE_SPONTANEOUS_EARLY'`, `receipt_state = 'RECEIVED'`**（关键隔离：避免被 [WorkflowRuntimeRepository.java:2326](../workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/persistence/WorkflowRuntimeRepository.java#L2326) 的 G5 `replayPendingWaitInbox` 误当过期信号清退成 `REJECTED`！），并校验本 Run `BUFFERED < 64` 后同事务写入 `wait_early_signal_buffer(inbox_id, run_id, correlation_key, buffer_state='BUFFERED', expires_at)` → 提交后返 **`EVENT_ACK(status="BUFFERED")`**。
+     - **情况 C（`CREATED`/`RUNNING` 非终态且尚无匹配 `ACTIVE` Wait，即真早到）**：写入 **`message_type = 'DEVICE_SPONTANEOUS_EARLY'`, `receipt_state = 'RECEIVED'`**（关键隔离：避免被 [WorkflowRuntimeRepository.java:2326](../workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/persistence/WorkflowRuntimeRepository.java#L2326) 的 `message_type='WORKFLOW_WAIT_SIGNAL'` 有界发现查询（由 `:2212` `replayPendingWaitInbox` 消费）误当过期信号清退成 `REJECTED`！），并校验本 Run `BUFFERED < 64` 后同事务写入 `wait_early_signal_buffer(inbox_id, run_id, correlation_key, buffer_state='BUFFERED', expires_at)` → 提交后返 **`EVENT_ACK(status="BUFFERED")`**。
 
 #### ② 四个生命周期阶段与顺序声明（P1-5）
 1. **入站顺序**：Gateway 按**单 `deviceId` 严格 FIFO 顺序**序列化处理 `DEVICE_EVENT` 并落库 `inbox_receipt`；
@@ -233,12 +235,12 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
 | 数据库对象 | 现有状态（`001`–`005`） | `006` 变更内容 | `002_schema_contract.sql` 与一致性约束 |
 | :--- | :--- | :--- | :--- |
 | **`workstation_sidecar`** | **新增表 #33**（建于修改其他表之前以支撑外键） | 主键 `(tenant_id, workstation_id)`；含 **`connection_generation bigint NOT NULL DEFAULT 0`**、`security_mode` (`DEV_LOOPBACK_PLAINTEXT`\|`TLS13_MTLS`)、`cert_fingerprint_sha256`、`connection_state`、`heartbeat_*`、`last_heartbeat_at` | **显式豁免说明（B3）**：在 `002_schema_contract.sql` 白名单注释中明确 `connection_generation` 是**单实例 Kernel 本地连接重连计数器，非分布式 leader/fencing token** |
-| **`command_ledger`** | 已有 `command_id`, `attempt_id (UQ)`, `command_state` (12态), `idempotency_class`, `command_payload`, `device_sequence` | 新增：`workstation_id`, `operation_name`, `timeout_ms`, `interruptible`, `last_receipt_at`, `command_result (jsonb)`, `reconciliation_evidence (jsonb)` + **外键 `(tenant_id, workstation_id) → workstation_sidecar`**（P1-3） | 100% 兼容 `001`，`command_id` 唯一防重，无冗余键 |
+| **`command_ledger`** | 已有 `command_id`, `attempt_id (UQ)`, `command_state` (12态), `idempotency_class`, `command_payload`, `device_sequence` | 新增：`workstation_id`, `operation_name`, `timeout_ms`, `interruptible`, `last_receipt_at`, `command_result (jsonb)`, `reconciliation_evidence (jsonb)` + **外键 `(tenant_id, workstation_id) → workstation_sidecar`** + **非空约束 `CHECK (operation_name IS NULL OR workstation_id IS NOT NULL)`**（P1-3 / P1-B） | 新契约命令必带 `operation_name`，从而在 DB 层强制 `workstation_id NOT NULL`，同时兼容历史/mock 行 |
 | **`command_dispatch_attempt`** | 已有 `(tenant_id, dispatch_id)` PK、**`UNIQUE(tenant_id, command_id, dispatch_no)`**（R5）、`dispatch_state` | 新增：`dispatch_kind text NOT NULL DEFAULT 'SEND' CHECK (dispatch_kind IN ('SEND','QUERY','CANCEL'))`、`error_code text`；补索引 `(tenant_id, command_id, dispatch_kind, dispatch_no)` | 确保在线态与查证态皆可追溯更新终态 |
-| **`quarantine_record`** | 已有 `quarantine_id`, `resource_id`, `run_id`, `lease_id`, `quarantine_one_active_resource_uq` | 新增：`command_id uuid`（外键关联 `command_ledger`）+ 部分索引 `(tenant_id, command_id) WHERE quarantine_state IN ('ACTIVE','CLEAR_PENDING')` | **实现整组 `UNKNOWN` 原子隔离与整组解锁** |
+| **`quarantine_record`** | 已有 `quarantine_id`, `resource_id`, `run_id`, `lease_id`, `quarantine_one_active_resource_uq` | 新增：`quarantine_origin` (`COMMAND_UNKNOWN`\|`TRANSFER_IN_FLIGHT`\|`HARDWARE_FAULT`\|`MANUAL_OR_LEGACY`) + `command_id uuid`（外键关联 `command_ledger`）+ **`quarantine_command_origin_chk`**（命令类隔离强制 `command_id NOT NULL`）+ 部分索引 | **保证所有命令引起的隔离必带 `command_id` 支撑整组 T21 解锁**，同时清晰建模硬件故障/人工隔离 |
 | **`resource_lease`** | 已有全套状态与唯一约束（零调用方） | 零结构修改，直接投入 `PhysicalSafetyGate` 生产复用 | 保持既有严格 `resource_one_live_lease_uq` |
 | **`device_state_projection`** | **新增表 #34** | 主键 `(tenant_id, device_id)` + `workstation_id NOT NULL` + **外键 `(tenant_id, workstation_id) → workstation_sidecar`** + **可选外键 `(tenant_id, active_command_id) → command_ledger`**（P1-3） | 数据库级硬锁定单设备唯一工位归属与真实命令关联 |
-| **`wait_early_signal_buffer`** | **新增表 #35** | 主键 `(tenant_id, buffer_id)` + **`inbox_id uuid NOT NULL UNIQUE(tenant_id, inbox_id)`** + **外键 `(tenant_id, inbox_id) → inbox_receipt(tenant_id, inbox_id)`** + `run_id`, `correlation_key`, `buffer_state`, `expires_at`, `consumed_wait_id` | **零独立去重键/载荷副本**，全局去重权威 100% 归属 `inbox_receipt` |
+| **`wait_early_signal_buffer`** | **新增表 #35**（及 `inbox_receipt_tenant_inbox_run_uq`） | 主键 `(tenant_id, buffer_id)` + **`inbox_id uuid NOT NULL UNIQUE(tenant_id, inbox_id)`** + **复合外键 `(tenant_id, inbox_id, run_id) → inbox_receipt(tenant_id, inbox_id, run_id)`** + `run_id`, `correlation_key`, `buffer_state`, `expires_at`, `consumed_wait_id` | **零独立去重键/载荷副本，且 DB 级硬保证两表 `run_id` 必相等且非空** |
 
 ---
 
@@ -246,8 +248,8 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
 
 阶段 0 合入前必须随骨架 PR 一起落入可执行的测试断言骨架（由 AI-1 / AI-2 / AI-3 在阶段 1–2 跑绿），把文字纪律变成编译器与单测红线：
 1. **Invariant-1（`ACKNOWLEDGED != SUCCEEDED`）**：收到 `COMMAND_RECEIPT(ACCEPTED)` 后，`command_ledger` 仅到 `ACKNOWLEDGED`，`node_attempt` 严禁结算，Token 不前移。
-2. **Invariant-2（硬件背书防伪造 · P0-3/P0-4）**：当 `COMMAND_QUERY_RESULT` 仅以 `WEAK_UNVERIFIED` / 无 `STRONG_HARDWARE_FACT` 载荷提交 `CONFIRMED_SUCCEEDED`，或 `storageState='FRESH_STORAGE'` 下本地缺失却报告 `CONFIRMED_NOT_EXECUTED` 时，Core 结构性拒绝并强制转为 `UNKNOWN` + `quarantine_record`。
+2. **Invariant-2（硬件背书防伪造 & 线协议禁人工伪证 · P0-3/P0-4）**：当 `COMMAND_QUERY_RESULT` 以 `WEAK_UNVERIFIED` / 无 `STRONG_HARDWARE_FACT` 载荷提交 `CONFIRMED_SUCCEEDED`，或 `storageState='FRESH_STORAGE'` 下报告 `CONFIRMED_NOT_EXECUTED` 时，Core 强制拒绝并转 `UNKNOWN` + `quarantine_record`；若线协议违规携带 `OPERATOR_PHYSICAL_INSPECTION`/`STRONG_OPERATOR_ATTESTED`，网关当场返 **`ERR_WIRE_FORBIDDEN_EVIDENCE_SOURCE`** 拒收。
 3. **Invariant-3（`FAILED_IMMEDIATELY` 双边界隔离）**：`PRE_EXECUTION` 直接 `FAILED` 且不生成隔离单；`POST_EXECUTION_UNKNOWN` 必须进入 `UNKNOWN` + `ACTIVE` 隔离全部影响资源。
 4. **Invariant-4（`PhysicalSafetyGate` 全局锁序 & 原子组锁 · R1）**：并发派发与 T21 解冻压测零死锁（统一先锁 `workflow_run`）；`Transfer` 入 `UNKNOWN` 必须整组锁定 `device:ARM1`、`slot:src`、`slot:dst`、`carrier:id`；`reconcileAndSettleUnknownCommand(KEEP_QUARANTINED)` 后不可只解锁单一机械臂；`CLEAR_AFTER_VERIFY` 须整组清零后方能放行下一个 Run。
-5. **Invariant-5（`recoverInterruptedAttempt` 终态不误杀 + T21 解冻恢复）**：Step 0 已把 `SUCCEEDED` 落入 `command_ledger` 时，重启恢复必须直接推进成功而非进入 `MANUAL_REQUIRED`；真实 `UNKNOWN` 经 T21 后必须闭环释放 `scheduler_capacity` 并唤醒 `workflow_run`。
+5. **Invariant-5（`recoverInterruptedAttempt` 终态不误杀 + T21 授权人工核验解冻）**：Step 0 已把 `SUCCEEDED` 落入 `command_ledger` 时，重启恢复必须直接推进成功而非进入 `MANUAL_REQUIRED`；真实 `UNKNOWN` 通过 RBAC 授权 T21 提交 `OPERATOR_PHYSICAL_INSPECTION` + `STRONG_OPERATOR_ATTESTED` + `CLEAR_AFTER_VERIFY` 后合法转为 `SUCCEEDED`、释放 `scheduler_capacity` 并唤醒 `workflow_run`。
 6. **Invariant-6（`inbox_receipt` 并发全局唯一去重 + 禁猜 Run + 提交栅栏 · P0-2/P1-1）**：两个并发线程投递同一 `sourceMessageId` 时，全局只在 `inbox_receipt` 留存 1 条权威收据且仅消费 1 次；无租赁归属的独立运行工位即使全租户只有 1 个活跃 Run 也必须拒收并返 `ERR_EVENT_UNROUTABLE`；PG 事务回滚时网关必须回传 `EVENT_NACK(retryable=true)` 且绝不发送 `EVENT_ACK`。

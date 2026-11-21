@@ -1,14 +1,14 @@
-# DEVICE_GATEWAY_PROTOCOL — 设备网关、TLS 1.3 mTLS 认证与 Sidecar 协议契约（AI-2 主责 · Draft v1.2）
+# DEVICE_GATEWAY_PROTOCOL — 设备网关、TLS 1.3 mTLS 认证与 Sidecar 协议契约（AI-2 主责 · Draft v1.3）
 
 > **所属总纲**：[PHASE3B_MASTER_CONTRACT.md](./PHASE3B_MASTER_CONTRACT.md)  
 > **核心执行对侧契约**：[DEVICE_EXECUTION_CORE_CONTRACT.md](./DEVICE_EXECUTION_CORE_CONTRACT.md)
 
 ---
 
-## 1. 连接方向 A 演进路线与 TLS 1.3 mTLS 双向认证体系（P0-1）
+## 1. 连接方向 A 演进路线与 TLS 1.3 mTLS 双向认证体系（P0-1 · P1-A）
 
 ### 1.1 方向 A 与 `TcpDeviceConnection` 演进种子定位
-按照实验室现场正式运维约束（**先启动工控机设备驱动程序监听约定 `IP:Port` 与唯一 ID，中控后启动作为 TCP Client 主动拨号**），本契约正式锁定 **方向 A**：
+按照实验室现场运维确认的组网模式（**先启动工控机设备驱动程序监听约定 `IP:Port` 与唯一 ID，中控后启动作为 TCP Client 主动拨号**），本契约锁定 **方向 A**（当前状态：`CONFIRMED_BY_OPERATIONS / PENDING_NETWORK_TEST`，须在 Phase 3E 切入实景网络前完成《网络可达与 Lab-CA 运维核验单》实测签字）：
 - 现有 [TcpDeviceConnection.java](../workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/gateway/TcpDeviceConnection.java) 与 [DeviceGateway.java](../workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/gateway/DeviceGateway.java)（已具备 `ndjson://` 拨号、心跳线程、连接代次防重入与 `EVENT_ACK`/`NACK` 骨架）作为 **方向 A 的正式演进种子**，而非推翻重做；
 - 剥离 [WorkflowRuntimeHostProperties.java](../labos-kernel/src/boot/java/com/labos/boot/WorkflowRuntimeHostProperties.java#L164-L204) 中的 `labsep://` 协议分支，将单端点 1:1 映射拓展支持 **C2 工位级多设备端点**（`workstationId=tls://host:port` 下可代理多台 `deviceId`；同时兼容 C1 临时单设备测试端点）；
 - 严禁从 [TcpDriverAdapter.java](../labos-kernel/src/main/java/com/labos/kernel/driver/tcp/TcpDriverAdapter.java) 或 [TcpPersistentDriver.java](../labos-kernel/src/main/java/com/labos/kernel/driver/tcp/TcpPersistentDriver.java) 引入任何类或代码路径。
@@ -79,12 +79,13 @@
 
 - **`supportsJournalQuery`**（Sidecar 自身能力）：可查本地 `sidecar_command_journal` 记录的精确状态；
 - **`supportsNativeHardwareQuery`**（设备本体物理能力，如 `P_AUTO` 有任务寄存器、`S100` 老式串口无任务流水表）：仅当为 `true` 时，`IProtocolAdapter.QueryHardwareAsync(commandId, deviceSequence)` 才允许在崩溃窗口后向真机发起只读状态读取；
-- **`COMMAND_QUERY_RESULT` 与终态 `DEVICE_EVENT` 强制附带完整 `ExecutionEvidence`（P0-3）**：
+- **`COMMAND_QUERY_RESULT` 与终态 `DEVICE_EVENT` 强制附带完整 `ExecutionEvidence`（与 CORE §1.1 共享跨语言完整枚举）**：
   - `deviceSequence`（仅作关联标识，不构成独立成功凭证）；
-  - `evidenceSource`：`HARDWARE_NATIVE_QUERY` \| `PRIOR_HARDWARE_COMPLETION_IN_JOURNAL` \| `PRE_SEND_ABORT_IN_JOURNAL` \| `AMBIGUOUS`；
-  - `evidenceStrength`：`STRONG_HARDWARE_FACT` \| `STRONG_PRE_SEND_ABORT` \| `WEAK_UNVERIFIED`；
+  - `evidenceSource`（5 值全集，对齐 CORE & `contract-fixtures/v1_1/`）：`HARDWARE_NATIVE_QUERY` \| `PRIOR_HARDWARE_COMPLETION_IN_JOURNAL` \| `PRE_SEND_ABORT_IN_JOURNAL` \| `OPERATOR_PHYSICAL_INSPECTION` \| `AMBIGUOUS`；
+  - `evidenceStrength`（4 档全集，对齐 CORE & `contract-fixtures/v1_1/`）：`STRONG_HARDWARE_FACT` \| `STRONG_PRE_SEND_ABORT` \| `STRONG_OPERATOR_ATTESTED` \| `WEAK_UNVERIFIED`；
   - `evidencePayload`（JSON：保存原始硬件应答报文 / 状态寄存器快照）。
-  - 规则：对于 Journal 只存在 `ACCEPTED_PENDING_SEND` / `DISPATCHED_TO_DEVICE` 且硬件无法原生自证的操作，**必须返回 `evidenceSource="AMBIGUOUS"`, `evidenceStrength="WEAK_UNVERIFIED"`, `reconciliationStatus="INDETERMINATE"`**！Core 层结构性拒收任何无 `STRONG_HARDWARE_FACT` 的 `CONFIRMED_SUCCEEDED`。
+  - **线协议防伪红线**：`OPERATOR_PHYSICAL_INSPECTION` 与 `STRONG_OPERATOR_ATTESTED` 属于 **Kernel T21 授权人工入口专用值，严禁出现在任何 TCP 线协议帧内**；Gateway/Inbox 入站一旦在 `COMMAND_RECEIPT` / `COMMAND_QUERY_RESULT` / `DEVICE_EVENT` 中检测到这两个值，必须当场拒绝并返 **`ERR_WIRE_FORBIDDEN_EVIDENCE_SOURCE`**（`NACK_PERMANENT`），杜绝设备/Sidecar 伪造人工现场证明。
+  - 对于 Journal 只存在 `ACCEPTED_PENDING_SEND` / `DISPATCHED_TO_DEVICE` 且硬件无法原生自证的操作，**必须返回 `evidenceSource="AMBIGUOUS"`, `evidenceStrength="WEAK_UNVERIFIED"`, `reconciliationStatus="INDETERMINATE"`**；Core 结构性拒收任何无 `STRONG_HARDWARE_FACT` 的自动 `CONFIRMED_SUCCEEDED`。
 
 ---
 
@@ -123,6 +124,7 @@
 | 错误码 | 层级 | `retryable` | 触发隔离 | 说明 |
 | :--- | :--- | :---: | :---: | :--- |
 | `ERR_WIRE_UNSUPPORTED_VERSION` / `ERR_WIRE_MALFORMED_FRAME` | Gateway / Sidecar | 否 | 否 | 缺版本/非 JSON/混入旧分隔协议帧 → NACK 并断开 |
+| `ERR_WIRE_FORBIDDEN_EVIDENCE_SOURCE` | Gateway / Core | 否 | 否 | 线协议帧违规出现 `OPERATOR_PHYSICAL_INSPECTION` / `STRONG_OPERATOR_ATTESTED`（仅允许 T21 授权人工入口使用） → 永久拒收 |
 | `ERR_WIRE_SPOOFED_DEVICE` / `ERR_SESSION_IDENTITY_MISMATCH` / `ERR_SESSION_DEVICE_CONFLICT` | Gateway / Sidecar | 否 | 否 | TLS 1.3 mTLS 证书/SAN/吊销校验失败、工位 ID 不符、跨工位争抢同 `deviceId` |
 | `ERR_SESSION_STALE` | Core / Gateway | 是（等上线） | 否 | 工位心跳失效或连接非 `ONLINE` 拦截派发 |
 | `ERR_CAPABILITY_MISSING_OP` / `ERR_CAPABILITY_CANCEL_UNSUPPORTED` | Core | 否 | 否 | 未声明的操作拒绝派发；不支持取消的操作拒绝取消 |
