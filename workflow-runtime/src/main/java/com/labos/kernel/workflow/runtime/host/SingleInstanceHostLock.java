@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -31,8 +32,7 @@ public final class SingleInstanceHostLock implements AutoCloseable {
     public static SingleInstanceHostLock acquire(Path lockFile) throws IOException {
         Objects.requireNonNull(lockFile, "lockFile");
         Path absolute = lockFile.toAbsolutePath().normalize();
-        Path parent = absolute.getParent();
-        if (parent != null) Files.createDirectories(parent);
+        ensureParentDirectory(absolute.getParent());
 
         FileChannel channel = FileChannel.open(absolute,
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE);
@@ -65,6 +65,21 @@ public final class SingleInstanceHostLock implements AutoCloseable {
             if (lock.isValid()) lock.release();
         } finally {
             channel.close();
+        }
+    }
+
+    /** Create missing ancestor directories while tolerating existing symlinked directory ancestors (e.g. /tmp, /var/run). */
+    private static void ensureParentDirectory(Path parent) throws IOException {
+        if (parent == null || Files.isDirectory(parent)) {
+            return;
+        }
+        ensureParentDirectory(parent.getParent());
+        try {
+            Files.createDirectory(parent);
+        } catch (FileAlreadyExistsException existing) {
+            if (!Files.isDirectory(parent)) {
+                throw existing;
+            }
         }
     }
 }
