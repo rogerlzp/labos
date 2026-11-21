@@ -3341,20 +3341,20 @@ public final class WorkflowRuntimeRepository {
                 throw new StaleRuntimeWriteException("Inbox receipt was already consumed or not found");
             LockedInbox inbox=inboxRows.get(0);
             if(!deviceId.equals(inbox.source()))
-                throw new IllegalStateException("Inbox source " + inbox.source()
+                throw new InvalidTransitionException("Inbox source " + inbox.source()
                         + " does not match command device " + deviceId + "; event attribution rejected");
             if(!commandId.toString().equals(inbox.commandId()))
-                throw new IllegalStateException("Inbox commandId does not match command row; event attribution rejected");
+                throw new InvalidTransitionException("Inbox commandId does not match command row; event attribution rejected");
             if(inbox.deviceId()!=null && !inbox.deviceId().isBlank() && !deviceId.equals(inbox.deviceId()))
-                throw new IllegalStateException("Inbox deviceId does not match command row; event attribution rejected");
+                throw new InvalidTransitionException("Inbox deviceId does not match command row; event attribution rejected");
             if(inbox.payloadState()==null || !targetState.equals(inbox.payloadState()))
-                throw new IllegalStateException("Inbox payload state " + inbox.payloadState()
+                throw new InvalidTransitionException("Inbox payload state " + inbox.payloadState()
                         + " does not match target Command state " + targetState);
             if(inbox.hasDeviceSequence() && !Objects.equals(inbox.payloadDeviceSequence(),deviceSequence))
-                throw new IllegalStateException("Inbox payload deviceSequence " + inbox.payloadDeviceSequence()
+                throw new InvalidTransitionException("Inbox payload deviceSequence " + inbox.payloadDeviceSequence()
                         + " does not match applied deviceSequence " + deviceSequence);
             if(inbox.hasOutcome() && !inbox.outcomeMatches())
-                throw new IllegalStateException("Inbox payload outcome does not match applied outcomeJson");
+                throw new InvalidTransitionException("Inbox payload outcome does not match applied outcomeJson");
             if(!isAllowedCommandEventMessageType(inbox.messageType(),targetState))
                 throw new PermanentCommandEventRejectionException("Inbox message_type " + inbox.messageType()
                         + " is not allowed to transition Command to " + targetState);
