@@ -1139,18 +1139,22 @@ class LocalTaskDispatchAndCommandLoopTest {
                         + "\",\"deviceId\":\"real-device-1\",\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-real\",\"outcome\":{\"temp\":65}}");
         assertTrue(seqAndOutcomeReceipt.inserted());
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
-                repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+                repo.applyCommandEventOrReject(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
                         "SUCCEEDED", "seq-tampered", "{\"temp\":65}"),
-                "Repository must reject mismatched deviceSequence vs persisted Inbox payload");
+                "Caller deviceSequence mismatch must not permanently reject the persisted receipt");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + seqAndOutcomeReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
-                repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+                repo.applyCommandEventOrReject(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
                         "SUCCEEDED", "seq-real", "{\"temp\":99}"),
-                "Repository must reject mismatched outcomeJson vs persisted Inbox payload");
-        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
-                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
+                "Caller outcomeJson mismatch must not permanently reject the persisted receipt");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + seqAndOutcomeReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                + tenant + "' AND run_id='" + fix.runId() + "' AND event_type='INBOX_REJECTED'"));
 
         // Matching source == device_id, payload state == targetState, deviceSequence and outcomeJson applies cleanly!
-        assertTrue(repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+        assertTrue(repo.applyCommandEventOrReject(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
                 "SUCCEEDED", "seq-real", "{\"temp\":65}"));
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                 + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SUCCEEDED'"));
