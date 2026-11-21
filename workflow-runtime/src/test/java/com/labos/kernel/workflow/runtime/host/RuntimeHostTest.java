@@ -93,4 +93,15 @@ class RuntimeHostTest {
         assertEquals(List.of("start:ingress", "start:first", "start:second",
                 "stop:second", "stop:first", "stop:ingress"), trace);
     }
+
+    @Test
+    void resolveDrainTargetStatusMapsKnownKindsAndFailsClosedOnUnknown() {
+        assertEquals("PAUSED", RuntimeDispatchLoop.resolveDrainTargetStatus("PAUSE"));
+        assertEquals("STOPPED", RuntimeDispatchLoop.resolveDrainTargetStatus("STOP"));
+        assertEquals("FAILED", RuntimeDispatchLoop.resolveDrainTargetStatus("FAILURE"));
+        assertThrows(IllegalStateException.class,
+                () -> RuntimeDispatchLoop.resolveDrainTargetStatus("MAINTENANCE"));
+        assertThrows(IllegalStateException.class,
+                () -> RuntimeDispatchLoop.resolveDrainTargetStatus(null));
+    }
 }

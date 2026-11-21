@@ -296,6 +296,8 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         for (WorkflowRuntimeRepository.OpenDrainRef drain : openDrains) {
             if (stopped.get() || !schedulingGate.isOpen()) return;
             try {
+                // Validate drain_kind before any outbox delivery, scan advance, or continuation cancel.
+                String targetStatus = resolveDrainTargetStatus(drain.drainKind());
                 repository.deliverDrainRequestOutbox(drain.tenantId(), drain.runId());
                 if ("STOP".equals(drain.drainKind()) || "FAILURE".equals(drain.drainKind())) {
                     for (UUID activeAttempt : repository.findActiveAttemptIdsForRun(drain.tenantId(), drain.runId())) {
@@ -312,12 +314,6 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
                         // Drain record was updated concurrently (e.g. STOP/FAILURE superseded PAUSE); next cycle retries.
                     }
                 }
-                String targetStatus = switch (drain.drainKind()) {
-                    case "PAUSE" -> "PAUSED";
-                    case "STOP" -> "STOPPED";
-                    case "FAILURE" -> "FAILED";
-                    default -> throw new IllegalStateException("Unsupported open drain kind: " + drain.drainKind());
-                };
                 repository.tryFinalizeDrain(drain.tenantId(), drain.runId(), drain.drainId(), targetStatus);
             } catch (RuntimeException ex) {
                 recordError(ex);
@@ -353,6 +349,18 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         } catch (RuntimeException ex) {
             recordError(ex);
         }
+    }
+
+    static String resolveDrainTargetStatus(String drainKind) {
+        if (drainKind == null) {
+            throw new IllegalStateException("Unsupported open drain kind: null");
+        }
+        return switch (drainKind) {
+            case "PAUSE" -> "PAUSED";
+            case "STOP" -> "STOPPED";
+            case "FAILURE" -> "FAILED";
+            default -> throw new IllegalStateException("Unsupported open drain kind: " + drainKind);
+        };
     }
 
     private void recordError(RuntimeException ex) {

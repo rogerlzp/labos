@@ -2853,7 +2853,12 @@ public final class WorkflowRuntimeRepository {
     public record OpenDrainRef(
             UUID tenantId, UUID runId, UUID drainId, String drainKind, String drainState, long version) {}
 
-    /** Global discovery of open PAUSE/STOP/FAILURE drains awaiting local host convergence. */
+    /**
+     * Global discovery of open drains awaiting local host convergence.
+     *
+     * <p>Does not filter {@code d.drain_kind} in SQL so any unexpected/unknown kind surfaces to
+     * {@code RuntimeDispatchLoop} and fails closed instead of being silently ignored.
+     */
     public List<OpenDrainRef> findOpenDrains(int limit) {
         if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
         return jdbc.query("""
@@ -2862,7 +2867,6 @@ public final class WorkflowRuntimeRepository {
               JOIN workflow_runtime.workflow_run r
                 ON r.tenant_id = d.tenant_id AND r.run_id = d.run_id
              WHERE d.drain_state IN ('REQUESTED', 'DRAINING', 'SAFE_POINT')
-               AND d.drain_kind IN ('PAUSE', 'STOP', 'FAILURE')
                AND r.status IN ('PAUSE_REQUESTED', 'PAUSING', 'STOP_REQUESTED', 'STOPPING')
              ORDER BY d.created_at ASC, d.drain_id ASC
              LIMIT ?
@@ -2875,7 +2879,12 @@ public final class WorkflowRuntimeRepository {
                 rs.getLong(6)), limit);
     }
 
-    /** Tenant-scoped discovery of open PAUSE/STOP/FAILURE drains awaiting local host convergence. */
+    /**
+     * Tenant-scoped discovery of open drains awaiting local host convergence.
+     *
+     * <p>Does not filter {@code d.drain_kind} in SQL so any unexpected/unknown kind surfaces to
+     * {@code RuntimeDispatchLoop} and fails closed instead of being silently ignored.
+     */
     public List<OpenDrainRef> findOpenDrainsForTenant(UUID tenantId, int limit) {
         Objects.requireNonNull(tenantId, "tenantId");
         if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
@@ -2886,7 +2895,6 @@ public final class WorkflowRuntimeRepository {
                 ON r.tenant_id = d.tenant_id AND r.run_id = d.run_id
              WHERE d.tenant_id = ?
                AND d.drain_state IN ('REQUESTED', 'DRAINING', 'SAFE_POINT')
-               AND d.drain_kind IN ('PAUSE', 'STOP', 'FAILURE')
                AND r.status IN ('PAUSE_REQUESTED', 'PAUSING', 'STOP_REQUESTED', 'STOPPING')
              ORDER BY d.created_at ASC, d.drain_id ASC
              LIMIT ?
