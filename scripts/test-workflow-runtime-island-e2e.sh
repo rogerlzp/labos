@@ -117,12 +117,7 @@ for ((i = 1; i <= REPEAT; i++)); do
     fi
     dropdb --if-exists --force --maintenance-db="$PGMAINT_DB" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" "$PGDATABASE" >/dev/null 2>&1 || true
     createdb --maintenance-db="$PGMAINT_DB" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" "$PGDATABASE"
-    psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
-      -f "$ROOT/db/workflow_runtime/001_init.sql" >/dev/null
-    psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
-      -f "$ROOT/db/workflow_runtime/003_g5_wait_correlation.sql" >/dev/null
-    psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
-      -f "$ROOT/db/workflow_runtime/004_g5_wait_inbox_idx.sql" >/dev/null
+    bash "$ROOT/scripts/apply-workflow-runtime-migrations.sh" --quiet
   fi
   echo "==> Island Real DeviceCore E2E Run ${i}/${REPEAT} (PG ${PGHOST}:${PGPORT}/${PGDATABASE})"
   java -cp "$RUN_CP" com.labos.boot.WorkflowRuntimeIslandSimulatorSelfTest
