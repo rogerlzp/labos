@@ -3249,7 +3249,14 @@ public final class WorkflowRuntimeRepository {
     /** T14: attribute device evidence exclusively by command_id and process Inbox atomically. */
     public boolean applyCommandEvent(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
                                      String targetState, String deviceSequence, String outcomeJson) {
-        return required(() -> applyCommandEventInTransaction(tenantId, runId, inboxId, commandId, targetState, deviceSequence, outcomeJson));
+        return required(() -> {
+            try {
+                return applyCommandEventInTransaction(
+                        tenantId, runId, inboxId, commandId, targetState, deviceSequence, outcomeJson);
+            } catch (PermanentCommandEventRejectionException rejected) {
+                throw new InvalidTransitionException(rejected.getMessage());
+            }
+        });
     }
 
     /**
