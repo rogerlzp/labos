@@ -21,15 +21,18 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -847,34 +850,18 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
         GraphCoordinator coordinator = new GraphCoordinator(repo);
 
         // Create 5 runs whose single task Attempt has SUCCEEDED and awaits graph successor routing.
-        // Order updated_at so stuck1..stuck4 occupy pages 1..2 (batchSize=2) ahead of healthy5 on page 3.
+        // Order immutable created_at so stuck1..stuck4 occupy pages 1..2 (batchSize=2) ahead of healthy5 on page 3.
         List<UUID> runIds = new ArrayList<>(5);
         for (int i = 0; i < 5; i++) {
-            var created = repo.createRun(tenant, "await-req-" + i, "CREATE", "{}",
-                    planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
-                    plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
-            repo.startRun(tenant, created.runId());
-            coordinator.advance(tenant, created.runId());
-            var res = repo.reserveCapacity(tenant, created.runId(), "await-cap-" + i + "-" + tenant, 1,
-                    "host_dev_op", "PURE", java.time.Instant.now().plusSeconds(60));
-            repo.dispatchAttempt(tenant, created.runId(), res.attemptId(), "pure-q", "{}");
-            var wdOutbox = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).stream()
-                    .filter(m -> m.dedupKey().equals("dispatch:" + res.attemptId()))
-                    .findFirst().orElseThrow();
-            assertTrue(repo.markOutboxDelivered(tenant, wdOutbox.outboxId()));
-            repo.acceptAttemptForExecution(tenant, created.runId(), res.attemptId(), res.dispatchId(),
-                    "w-" + i, "host_dev_op", "PURE");
-            repo.startAttempt(tenant, created.runId(), res.attemptId(), res.dispatchId(), "w-" + i);
-            repo.completeAttempt(tenant, created.runId(), res.attemptId(), "out", "{\"ok\":true}");
-            runIds.add(created.runId());
+            runIds.add(createAwaitingGraphRun(repo, tenant, planKey, plan, coordinator, "await-" + i));
         }
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             for (int i = 0; i < 4; i++) {
                 int minutesAgo = 4 - i;
-                st.executeUpdate("UPDATE workflow_runtime.workflow_run SET updated_at = clock_timestamp() - interval '"
+                st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = clock_timestamp() - interval '"
                         + minutesAgo + " minutes' WHERE tenant_id = '" + tenant + "' AND run_id = '" + runIds.get(i) + "'");
             }
-            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET updated_at = clock_timestamp() "
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = clock_timestamp() "
                     + "WHERE tenant_id = '" + tenant + "' AND run_id = '" + runIds.get(4) + "'");
         }
 
@@ -934,5 +921,181 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
         } finally {
             noopExec.shutdownNow();
         }
+    }
+
+    @Test
+    void awaitingGraphAdvanceImmutableKeysetResistsConcurrentUpdatedAtAndStateMutations() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-await-concurrent");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        String planKey = "g3-await-concurrent-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+        GraphCoordinator coordinator = new GraphCoordinator(repo);
+
+        // Part A: 6 awaiting runs on 1 tenant, batchSize=2 (3 pages). r0 & r1 share identical created_at.
+        List<UUID> runs = new ArrayList<>(6);
+        for (int i = 0; i < 6; i++) {
+            runs.add(createAwaitingGraphRun(repo, tenant, planKey, plan, coordinator, "conc-" + i));
+        }
+        UUID r0 = runs.get(0), r1 = runs.get(1), r2 = runs.get(2), r3 = runs.get(3), r4 = runs.get(4), r5 = runs.get(5);
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = timestamptz '2026-11-20 00:00:00+00' "
+                    + "WHERE tenant_id = '" + tenant + "' AND run_id IN ('" + r0 + "','" + r1 + "')");
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = timestamptz '2026-11-20 00:02:00+00' "
+                    + "WHERE tenant_id = '" + tenant + "' AND run_id = '" + r2 + "'");
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = timestamptz '2026-11-20 00:04:00+00' "
+                    + "WHERE tenant_id = '" + tenant + "' AND run_id = '" + r3 + "'");
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = timestamptz '2026-11-20 00:06:00+00' "
+                    + "WHERE tenant_id = '" + tenant + "' AND run_id = '" + r4 + "'");
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = timestamptz '2026-11-20 00:08:00+00' "
+                    + "WHERE tenant_id = '" + tenant + "' AND run_id = '" + r5 + "'");
+        }
+
+        SchedulingGate gate = new SchedulingGate();
+        gate.open();
+        List<UUID> wakeups = new CopyOnWriteArrayList<>();
+        var noopExec = java.util.concurrent.Executors.newSingleThreadExecutor();
+        var noopRegistry = new com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry();
+        try (var noopLifecycle = new com.labos.kernel.workflow.runtime.coordinator.WorkflowRunLifecycleCoordinator(
+                repo, coordinator, noopExec, 4);
+             var noopPool = new com.labos.kernel.workflow.runtime.worker.WorkerPool(
+                     1, 4, 2, noopRegistry, gate)) {
+            LocalTaskDispatchService noopDispatch = new LocalTaskDispatchService(
+                    repo,
+                    new com.labos.kernel.workflow.runtime.worker.WorkerExecutionService(
+                            repo, noopLifecycle, noopPool, noopRegistry),
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "noop-conc-" + tenant, 1, "PURE", "pure-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.empty());
+            DeviceCommandExecutionService noopCmd = new DeviceCommandExecutionService(
+                    repo, env -> { throw new AssertionError("No commands expected"); });
+
+            RuntimeDispatchLoop loop = new RuntimeDispatchLoop(
+                    repo, noopDispatch, noopCmd, gate, Duration.ofMillis(50), 2, "await-conc-loop", tenant,
+                    attemptId -> {}, (t, r) -> {
+                wakeups.add(r);
+                if (r.equals(r5)) {
+                    coordinator.advance(t, r);
+                }
+            });
+            try {
+                // Cycle 1: page 1 visits {r0, r1} (tied created_at, ordered by run_id).
+                loop.runOneCycle();
+                assertEquals(2, wakeups.size());
+                assertEquals(Set.of(r0, r1), Set.copyOf(wakeups), "Page 1 must cover tied {r0, r1}");
+
+                // Mutate updated_at forward/backward AND run real PAUSE -> PAUSED -> RESUME mid-sweep.
+                try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+                    st.executeUpdate("UPDATE workflow_runtime.workflow_run "
+                            + "SET updated_at = clock_timestamp() + interval '10 minutes', event_seq = event_seq + 1 "
+                            + "WHERE tenant_id = '" + tenant + "' AND run_id IN ('" + r0 + "','" + r1 + "')");
+                    st.executeUpdate("UPDATE workflow_runtime.workflow_run "
+                            + "SET updated_at = clock_timestamp() - interval '1 hour', event_seq = event_seq + 1 "
+                            + "WHERE tenant_id = '" + tenant + "' AND run_id = '" + r3 + "'");
+                }
+                UUID drainId = repo.requestDrain(tenant, r4, "PAUSE");
+                repo.deliverDrainRequestOutbox(tenant, r4);
+                assertTrue(repo.tryFinalizeDrain(tenant, r4, drainId, "PAUSED"));
+                assertTrue(repo.resumePausedRun(tenant, r4));
+
+                // Concurrently bump updated_at in a background writer thread during Cycles 2..3.
+                AtomicBoolean stopWriter = new AtomicBoolean(false);
+                AtomicReference<Throwable> writerError = new AtomicReference<>();
+                Thread writer = new Thread(() -> {
+                    try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+                        while (!stopWriter.get()) {
+                            st.executeUpdate("UPDATE workflow_runtime.workflow_run "
+                                    + "SET updated_at = clock_timestamp() + interval '5 minutes', "
+                                    + "event_seq = event_seq + 1 "
+                                    + "WHERE tenant_id = '" + tenant + "' AND status = 'RUNNING' "
+                                    + "AND run_id IN ('" + r0 + "','" + r1 + "','" + r2 + "','" + r3 + "','" + r5 + "')");
+                            Thread.sleep(2);
+                        }
+                    } catch (Throwable err) {
+                        writerError.set(err);
+                    }
+                }, "await-concurrent-mutator");
+                writer.start();
+                try {
+                    loop.runOneCycle();
+                    loop.runOneCycle();
+                } finally {
+                    stopWriter.set(true);
+                    writer.join(5000);
+                }
+                if (writerError.get() != null) {
+                    throw new AssertionError("Concurrent writer failed", writerError.get());
+                }
+
+                assertEquals(6, wakeups.size(),
+                        "One full 3-page sweep under concurrent updated_at/state mutations must have 0 duplicates and 0 omissions: " + wakeups);
+                assertEquals(Set.of(r0, r1, r2, r3, r4, r5), Set.copyOf(wakeups));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + r5 + "' AND status='SUCCEEDED' AND control_gate='CLOSED'"));
+            } finally {
+                loop.stop();
+            }
+        } finally {
+            noopExec.shutdownNow();
+        }
+
+        // Part B: Multi-tenant global cursor tie-breaker across identical created_at timestamps.
+        UUID tA = createTenant(ds, "g3-tie-a");
+        UUID tB = createTenant(ds, "g3-tie-b");
+        UUID runA = createAwaitingGraphRun(repo, tA, "g3-tie-a-" + tA, compileSingleDevicePlan("g3-tie-a-" + tA), coordinator, "tie-a");
+        UUID runB = createAwaitingGraphRun(repo, tB, "g3-tie-b-" + tB, compileSingleDevicePlan("g3-tie-b-" + tB), coordinator, "tie-b");
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET created_at = timestamptz '2099-01-01 00:00:00+00' "
+                    + "WHERE (tenant_id = '" + tA + "' AND run_id = '" + runA + "') "
+                    + "   OR (tenant_id = '" + tB + "' AND run_id = '" + runB + "')");
+        }
+        var startCursor = new WorkflowRuntimeRepository.GraphAdvanceCursor(
+                Instant.parse("2098-12-31T00:00:00Z"),
+                UUID.fromString("00000000-0000-0000-0000-000000000000"),
+                UUID.fromString("00000000-0000-0000-0000-000000000000"));
+        var page1 = repo.findRunsAwaitingGraphAdvanceAfter(startCursor, 1);
+        assertEquals(1, page1.size());
+        var page2 = repo.findRunsAwaitingGraphAdvanceAfter(page1.get(0).cursor(), 1);
+        assertEquals(1, page2.size());
+        var page3 = repo.findRunsAwaitingGraphAdvanceAfter(page2.get(0).cursor(), 1);
+        assertTrue(page3.isEmpty());
+
+        boolean aFirst = compareUuidUnsigned(tA, tB) < 0;
+        assertEquals(aFirst ? tA : tB, page1.get(0).tenantId());
+        assertEquals(aFirst ? runA : runB, page1.get(0).runId());
+        assertEquals(aFirst ? tB : tA, page2.get(0).tenantId());
+        assertEquals(aFirst ? runB : runA, page2.get(0).runId());
+    }
+
+    private static UUID createAwaitingGraphRun(
+            WorkflowRuntimeRepository repo,
+            UUID tenant,
+            String planKey,
+            GraphPlan plan,
+            GraphCoordinator coordinator,
+            String suffix) {
+        var created = repo.createRun(tenant, suffix + "-" + UUID.randomUUID(), "CREATE", "{}",
+                planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+        repo.startRun(tenant, created.runId());
+        coordinator.advance(tenant, created.runId());
+        var res = repo.reserveCapacity(tenant, created.runId(), "cap-" + suffix + "-" + tenant, 1,
+                "host_dev_op", "PURE", Instant.now().plusSeconds(60));
+        repo.dispatchAttempt(tenant, created.runId(), res.attemptId(), "pure-q", "{}");
+        var wdOutbox = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).stream()
+                .filter(m -> m.dedupKey().equals("dispatch:" + res.attemptId()))
+                .findFirst().orElseThrow();
+        assertTrue(repo.markOutboxDelivered(tenant, wdOutbox.outboxId()));
+        repo.acceptAttemptForExecution(tenant, created.runId(), res.attemptId(), res.dispatchId(),
+                "w-" + suffix, "host_dev_op", "PURE");
+        repo.startAttempt(tenant, created.runId(), res.attemptId(), res.dispatchId(), "w-" + suffix);
+        repo.completeAttempt(tenant, created.runId(), res.attemptId(), "out", "{\"ok\":true}");
+        return created.runId();
+    }
+
+    private static int compareUuidUnsigned(UUID a, UUID b) {
+        int hi = Long.compareUnsigned(a.getMostSignificantBits(), b.getMostSignificantBits());
+        return hi != 0 ? hi : Long.compareUnsigned(a.getLeastSignificantBits(), b.getLeastSignificantBits());
     }
 }

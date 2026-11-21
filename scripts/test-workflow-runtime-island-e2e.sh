@@ -10,7 +10,7 @@
 # Environment variables (when USE_EXISTING_PG=1):
 #   PGHOST (default: localhost), PGPORT (default: 5432),
 #   PGDATABASE (default: runtime_island_e2e), PGUSER (default: runtime), PGPASSWORD (default: runtime),
-#   RECREATE_DB (default: 1; drops/recreates PGDATABASE cleanly before each run, refuses to touch runtime_test),
+#   RECREATE_DB (default: 1; drops/recreates PGDATABASE cleanly before each run, strictly allowlists PGDATABASE=runtime_island_e2e and rejects all others),
 #   PGMAINT_DB (default: postgres)
 # ============================================================================
 set -euo pipefail
@@ -18,6 +18,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPEAT="${REPEAT:-1}"
 USE_EXISTING_PG="${USE_EXISTING_PG:-0}"
+RECREATE_DB="${RECREATE_DB:-1}"
+PGMAINT_DB="${PGMAINT_DB:-postgres}"
+ALLOWED_RECREATE_DB="runtime_island_e2e"
+
+if [[ "$USE_EXISTING_PG" == "1" ]]; then
+  export PGHOST="${PGHOST:-localhost}"
+  export PGPORT="${PGPORT:-5432}"
+  export PGDATABASE="${PGDATABASE:-$ALLOWED_RECREATE_DB}"
+  export PGUSER="${PGUSER:-runtime}"
+  export PGPASSWORD="${PGPASSWORD:-runtime}"
+  if [[ "$RECREATE_DB" == "1" && "$PGDATABASE" != "$ALLOWED_RECREATE_DB" ]]; then
+    echo "✗ Refusing to drop/recreate non-allowlisted database '${PGDATABASE}'; RECREATE_DB=1 only permits PGDATABASE=${ALLOWED_RECREATE_DB}." >&2
+    exit 1
+  fi
+fi
 
 # ---- Locate JDK 17 ----
 if [[ -x "/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home/bin/javac" ]]; then
@@ -79,19 +94,7 @@ elif [[ ! -d "$ROOT/labos-kernel/lib/spring" ]]; then
 fi
 
 # ---- 2. Prepare PostgreSQL 17 ----
-RECREATE_DB="${RECREATE_DB:-1}"
-PGMAINT_DB="${PGMAINT_DB:-postgres}"
-if [[ "$USE_EXISTING_PG" == "1" ]]; then
-  export PGHOST="${PGHOST:-localhost}"
-  export PGPORT="${PGPORT:-5432}"
-  export PGDATABASE="${PGDATABASE:-runtime_island_e2e}"
-  export PGUSER="${PGUSER:-runtime}"
-  export PGPASSWORD="${PGPASSWORD:-runtime}"
-  if [[ "$RECREATE_DB" == "1" && "$PGDATABASE" == "runtime_test" ]]; then
-    echo "✗ Refusing to drop/recreate shared database 'runtime_test'; pass an isolated PGDATABASE (e.g. runtime_island_e2e)." >&2
-    exit 1
-  fi
-else
+if [[ "$USE_EXISTING_PG" != "1" ]]; then
   PGDATA_DIR="$(mktemp -d /tmp/labos-island-e2e-pg17.XXXXXX)"
   PGPORT_LOCAL="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
   initdb -D "$PGDATA_DIR" -U runtime --auth=trust --encoding=UTF8 >/dev/null
@@ -99,7 +102,7 @@ else
     -l "$PGDATA_DIR/pg.log" start >/dev/null
   export PGHOST="127.0.0.1"
   export PGPORT="$PGPORT_LOCAL"
-  export PGDATABASE="runtime_island_e2e"
+  export PGDATABASE="$ALLOWED_RECREATE_DB"
   export PGUSER="runtime"
   export PGPASSWORD="runtime"
 fi
@@ -108,6 +111,10 @@ fi
 RUN_CP="$ROOT/labos-kernel/out:$ROOT/labos-kernel/out-test:${EXTRA_CP}$ROOT/labos-kernel/lib/postgresql-42.7.3.jar:$ROOT/labos-kernel/lib/spring/*"
 for ((i = 1; i <= REPEAT; i++)); do
   if [[ "$USE_EXISTING_PG" != "1" || "$RECREATE_DB" == "1" ]]; then
+    if [[ "$PGDATABASE" != "$ALLOWED_RECREATE_DB" ]]; then
+      echo "✗ Refusing to drop/recreate non-allowlisted database '${PGDATABASE}'; only '${ALLOWED_RECREATE_DB}' is permitted." >&2
+      exit 1
+    fi
     dropdb --if-exists --force --maintenance-db="$PGMAINT_DB" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" "$PGDATABASE" >/dev/null 2>&1 || true
     createdb --maintenance-db="$PGMAINT_DB" -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" "$PGDATABASE"
     psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \

@@ -2626,16 +2626,17 @@ public final class WorkflowRuntimeRepository {
                 rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), tenantId, limit);
     }
 
-    public record GraphAdvanceCursor(Instant updatedAt, UUID runId) {
+    public record GraphAdvanceCursor(Instant createdAt, UUID tenantId, UUID runId) {
         public GraphAdvanceCursor {
-            Objects.requireNonNull(updatedAt, "updatedAt");
+            Objects.requireNonNull(createdAt, "createdAt");
+            Objects.requireNonNull(tenantId, "tenantId");
             Objects.requireNonNull(runId, "runId");
         }
     }
 
-    public record AwaitingGraphRunRef(UUID tenantId, UUID runId, Instant updatedAt) {
+    public record AwaitingGraphRunRef(UUID tenantId, UUID runId, Instant createdAt) {
         public GraphAdvanceCursor cursor() {
-            return new GraphAdvanceCursor(updatedAt, runId);
+            return new GraphAdvanceCursor(createdAt, tenantId, runId);
         }
     }
 
@@ -2680,13 +2681,14 @@ public final class WorkflowRuntimeRepository {
             args.add(scopedTenantId);
         }
         if (after != null) {
-            where.append("(r.updated_at, r.run_id) > (?, ?) AND ");
-            args.add(OffsetDateTime.ofInstant(after.updatedAt(), ZoneOffset.UTC));
+            where.append("(r.created_at, r.tenant_id, r.run_id) > (?, ?, ?) AND ");
+            args.add(OffsetDateTime.ofInstant(after.createdAt(), ZoneOffset.UTC));
+            args.add(after.tenantId());
             args.add(after.runId());
         }
         args.add(limit);
         return jdbc.query("""
-            SELECT r.tenant_id, r.run_id, r.updated_at
+            SELECT r.tenant_id, r.run_id, r.created_at
               FROM workflow_runtime.workflow_run r
              WHERE %sr.status = 'RUNNING'
                AND r.control_gate = 'OPEN'
@@ -2709,7 +2711,7 @@ public final class WorkflowRuntimeRepository {
                        WHERE child.tenant_id = t.tenant_id AND child.parent_token_id = t.token_id
                     )
                )
-             ORDER BY r.updated_at ASC, r.run_id ASC
+             ORDER BY r.created_at ASC, r.tenant_id ASC, r.run_id ASC
              LIMIT ?
             """.formatted(where.toString()), (rs, n) -> new AwaitingGraphRunRef(
                 rs.getObject(1, UUID.class),
