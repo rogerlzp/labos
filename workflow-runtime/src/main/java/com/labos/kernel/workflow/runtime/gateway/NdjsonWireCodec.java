@@ -1,6 +1,6 @@
 package com.labos.kernel.workflow.runtime.gateway;
 
-import com.labos.kernel.workflow.runtime.command.DeviceCommandAdapter;
+import com.labos.kernel.workflow.runtime.device.contract.DeviceCommandEnvelope;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -38,7 +38,7 @@ public final class NdjsonWireCodec implements GatewayWireCodec {
     }
 
     @Override
-    public byte[] encodeCommandSend(DeviceCommandAdapter.DeviceCommandEnvelope envelope) throws IOException {
+    public byte[] encodeCommandSend(DeviceCommandEnvelope envelope) throws IOException {
         return GatewayWireProtocol.encodeCommandSend(envelope);
     }
 

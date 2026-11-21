@@ -44,19 +44,24 @@ public final class GraphPlanCodec {
             }
             int schemaVersion = versionNode.intValue();
             if (schemaVersion != GraphPlan.SCHEMA_VERSION_V1
-                    && schemaVersion != GraphPlan.SCHEMA_VERSION_V2) {
+                    && schemaVersion != GraphPlan.SCHEMA_VERSION_V2
+                    && schemaVersion != GraphPlan.SCHEMA_VERSION_V3) {
                 throw new IllegalArgumentException(
                         "Unsupported GraphPlan schemaVersion: " + schemaVersion + suffix);
             }
             if (schemaVersion == GraphPlan.SCHEMA_VERSION_V1) {
                 rejectV2FieldsInV1Payload(root, suffix);
             }
+            if (schemaVersion < GraphPlan.SCHEMA_VERSION_V3) {
+                rejectV3FieldsInPreV3Payload(root, schemaVersion, suffix);
+            }
             GraphPlan plan = JSON.treeToValue(root, GraphPlan.class);
             if (plan == null) {
                 throw new IllegalArgumentException("Invalid persisted GraphPlan JSON (null payload)" + suffix);
             }
             if (plan.schemaVersion() != GraphPlan.SCHEMA_VERSION_V1
-                    && plan.schemaVersion() != GraphPlan.SCHEMA_VERSION_V2) {
+                    && plan.schemaVersion() != GraphPlan.SCHEMA_VERSION_V2
+                    && plan.schemaVersion() != GraphPlan.SCHEMA_VERSION_V3) {
                 throw new IllegalArgumentException(
                         "Unsupported GraphPlan schemaVersion: " + plan.schemaVersion() + suffix);
             }
@@ -93,6 +98,20 @@ public final class GraphPlanCodec {
         }
     }
 
+    private static void rejectV3FieldsInPreV3Payload(JsonNode root, int schemaVersion, String suffix) {
+        JsonNode nodesNode = root.get("nodes");
+        if (nodesNode != null && nodesNode.isArray()) {
+            for (JsonNode n : nodesNode) {
+                JsonNode waitSpecNode = n.get("waitSpec");
+                if (waitSpecNode != null && waitSpecNode.hasNonNull("deadlinePolicy")) {
+                    throw new IllegalArgumentException(
+                            "GraphPlan schemaVersion " + schemaVersion
+                                    + " cannot contain waitSpec.deadlinePolicy" + suffix);
+                }
+            }
+        }
+    }
+
     public static void verifyBpmnHash(GraphPlan plan, String expectedSha256) {
         if (expectedSha256 == null || !expectedSha256.equalsIgnoreCase(plan.bpmnSha256()))
             throw new IllegalArgumentException("GraphPlan BPMN hash mismatch");
@@ -100,6 +119,7 @@ public final class GraphPlanCodec {
 
     public static String toJson(GraphPlan plan) {
         boolean includeV2Fields = plan.schemaVersion() >= GraphPlan.SCHEMA_VERSION_V2;
+        boolean includeV3Fields = plan.schemaVersion() >= GraphPlan.SCHEMA_VERSION_V3;
         StringBuilder b = new StringBuilder(1024);
         b.append("{\"schemaVersion\":").append(plan.schemaVersion())
          .append(",\"compilerVersion\":").append(q(plan.compilerVersion()))
@@ -121,7 +141,7 @@ public final class GraphPlanCodec {
              .append(",\"capabilityCode\":").append(nullable(n.capabilityCode()))
              .append(",\"workflowNodeId\":").append(n.workflowNodeId()==null?"null":n.workflowNodeId());
             if (includeV2Fields) {
-                b.append(",\"waitSpec\":").append(waitSpecJson(n.waitSpec()));
+                b.append(",\"waitSpec\":").append(waitSpecJson(n.waitSpec(), includeV3Fields));
             }
             b.append('}');
         }
@@ -142,15 +162,20 @@ public final class GraphPlanCodec {
         return b.append("]}").toString();
     }
 
-    private static String waitSpecJson(GraphPlan.WaitSpec waitSpec) {
+    private static String waitSpecJson(GraphPlan.WaitSpec waitSpec, boolean includeV3Fields) {
         if (waitSpec == null) {
             return "null";
         }
-        return "{\"waitKind\":" + q(waitSpec.waitKind().name())
-                + ",\"correlationKey\":" + nullable(waitSpec.correlationKey())
-                + ",\"durationIso\":" + nullable(waitSpec.durationIso())
-                + ",\"durationMillis\":" + (waitSpec.durationMillis() == null ? "null" : waitSpec.durationMillis())
-                + '}';
+        StringBuilder b = new StringBuilder();
+        b.append("{\"waitKind\":").append(q(waitSpec.waitKind().name()))
+         .append(",\"correlationKey\":").append(nullable(waitSpec.correlationKey()))
+         .append(",\"durationIso\":").append(nullable(waitSpec.durationIso()))
+         .append(",\"durationMillis\":").append(waitSpec.durationMillis() == null ? "null" : waitSpec.durationMillis());
+        if (includeV3Fields) {
+            b.append(",\"deadlinePolicy\":").append(
+                    nullable(waitSpec.deadlinePolicy() == null ? null : waitSpec.deadlinePolicy().name()));
+        }
+        return b.append('}').toString();
     }
 
     public static String sha256(String value) {

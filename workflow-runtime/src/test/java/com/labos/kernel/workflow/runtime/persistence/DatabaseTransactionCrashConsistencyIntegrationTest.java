@@ -975,8 +975,9 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
         repo.startRun(tenant, run.runId());
         try {
             var w = startTaskRunAtNode(ds, repo, tenant, "g4b-t19", run.runId(), "dev-task", "DEVICE");
+            repo.registerWorkstationSidecar(tenant, "ws-device-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
             UUID commandId = repo.createCommand(tenant, run.runId(), w.activationId(), w.attemptId(),
-                    "device-1", "RunMethod", "QUERYABLE", "{\"method\":\"x\"}");
+                    "ws-device-1", "device-1", "RunMethod", "RunMethod", "QUERYABLE", "{\"method\":\"x\"}");
             var commandOutbox = repo.beginOutboxSend(tenant, 20).stream()
                     .filter(m -> m.dedupKey().equals("command:" + commandId)).findFirst().orElseThrow();
             assertTrue(repo.markCommandSendStarted(tenant, commandId, 0L, commandOutbox.outboxId(),

@@ -1,0 +1,65 @@
+{
+  "fixtureId": "09_negative_forbidden_wire_evidence",
+  "protocolVersion": "1.1",
+  "negativeCases": [
+    {
+      "caseId": "neg_wire_operator_inspection_forbidden",
+      "expectedErrorCode": "ERR_WIRE_FORBIDDEN_EVIDENCE_SOURCE",
+      "expectedOutcome": "NACK_PERMANENT",
+      "frame": {
+        "protocolVersion": "1.1",
+        "frameType": "DEVICE_EVENT",
+        "sentAtEpochMs": 1763712060000,
+        "sourceMessageId": "sc-evt-spoof-01",
+        "eventScope": "COMMAND",
+        "deviceId": "S100",
+        "eventName": "COMMAND_RESULT",
+        "commandId": "11111111-1111-4111-8111-111111111199",
+        "targetState": "SUCCEEDED",
+        "evidenceSource": "OPERATOR_PHYSICAL_INSPECTION",
+        "evidenceStrength": "STRONG_OPERATOR_ATTESTED",
+        "evidencePayload": {
+          "note": "forged over wire"
+        },
+        "payload": {}
+      }
+    },
+    {
+      "caseId": "neg_weak_unverified_claiming_confirmed_succeeded",
+      "expectedErrorCode": "ERR_RECONCILE_INDETERMINATE",
+      "expectedCommandState": "UNKNOWN",
+      "frame": {
+        "protocolVersion": "1.1",
+        "frameType": "COMMAND_QUERY_RESULT",
+        "sentAtEpochMs": 1763712061000,
+        "commandId": "11111111-1111-4111-8111-111111111198",
+        "dispatchId": "22222222-2222-4222-8222-222222222298",
+        "deviceId": "S100",
+        "reconciliationStatus": "CONFIRMED_SUCCEEDED",
+        "evidenceSource": "AMBIGUOUS",
+        "evidenceStrength": "WEAK_UNVERIFIED",
+        "evidencePayload": {
+          "journalState": "DISPATCHED_TO_DEVICE"
+        }
+      }
+    },
+    {
+      "caseId": "neg_fresh_storage_cannot_confirm_not_executed",
+      "expectedErrorCode": "ERR_RECONCILE_INDETERMINATE",
+      "expectedCommandState": "UNKNOWN",
+      "storageState": "FRESH_STORAGE",
+      "frame": {
+        "protocolVersion": "1.1",
+        "frameType": "COMMAND_QUERY_RESULT",
+        "sentAtEpochMs": 1763712062000,
+        "commandId": "11111111-1111-4111-8111-111111111197",
+        "dispatchId": "22222222-2222-4222-8222-222222222297",
+        "deviceId": "S100",
+        "reconciliationStatus": "CONFIRMED_NOT_EXECUTED",
+        "evidenceSource": "AMBIGUOUS",
+        "evidenceStrength": "WEAK_UNVERIFIED",
+        "evidencePayload": {}
+      }
+    }
+  ]
+}

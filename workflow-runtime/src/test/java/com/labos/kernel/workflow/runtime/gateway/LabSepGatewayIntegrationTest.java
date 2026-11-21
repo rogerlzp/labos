@@ -149,7 +149,8 @@ class LabSepGatewayIntegrationTest {
             Duration pollTimeout,
             AtomicReference<UUID> capturedCommandId) {
         return (req, ctx) -> {
-            UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"volumeUl\":250}");
+            UUID cmdId = ctx.createDeviceCommand(
+                    "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"volumeUl\":250}");
             if (capturedCommandId != null) {
                 capturedCommandId.set(cmdId);
             }
@@ -450,7 +451,8 @@ class LabSepGatewayIntegrationTest {
                             "labsep-drop-cap-" + tenant, 2, "DEVICE", "dev-q", Duration.ofSeconds(30), "{}"),
                     node -> Optional.of((req, ctx) -> {
                         if (firstRunFlag.compareAndSet(true, false)) {
-                            UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"volumeUl\":100}");
+                            UUID cmdId = ctx.createDeviceCommand(
+                                    "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"volumeUl\":100}");
                             firstCmdRef.set(cmdId);
                             assertTrue(allowFirstWorkerExit.await(8, TimeUnit.SECONDS));
                             throw new RuntimeException("simulated timeout after LabSep EOF");
@@ -588,7 +590,8 @@ class LabSepGatewayIntegrationTest {
                             if ("step2".equals(req.nodeKey())) {
                                 step2RanOnRun1.countDown();
                             }
-                            UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"volumeUl\":100}");
+                            UUID cmdId = ctx.createDeviceCommand(
+                                    "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"volumeUl\":100}");
                             cmd1Ref.set(cmdId);
                             assertTrue(allowStep1Timeout.await(8, TimeUnit.SECONDS));
                             repo.markCommandUnknown(req.tenantId(), cmdId, "{\"reason\":\"invalid_status_no_valid_reply\"}");

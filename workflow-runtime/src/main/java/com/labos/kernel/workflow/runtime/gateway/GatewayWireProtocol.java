@@ -3,7 +3,7 @@ package com.labos.kernel.workflow.runtime.gateway;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.labos.kernel.workflow.runtime.command.DeviceCommandAdapter;
+import com.labos.kernel.workflow.runtime.device.contract.DeviceCommandEnvelope;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -77,7 +77,7 @@ public final class GatewayWireProtocol {
         }
     }
 
-    public static byte[] encodeCommandSend(DeviceCommandAdapter.DeviceCommandEnvelope envelope) throws IOException {
+    public static byte[] encodeCommandSend(DeviceCommandEnvelope envelope) throws IOException {
         Objects.requireNonNull(envelope, "envelope");
         ObjectNode root = JSON.createObjectNode();
         root.put("frameType", FRAME_COMMAND_SEND);

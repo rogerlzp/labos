@@ -1,11 +1,14 @@
 # PHASE3B_MASTER_CONTRACT — LabOS 设备执行体系核心契约与 4-AI 协作总纲（Draft v1.8 · 最终微调版）
 
-> **状态**：`Draft v1.8（For Final Freeze Sign-Off）` — 保留 v1.7 全部已过审条款，仅针对 `CORE §6.1` 与 `§7.1` 完成最后 1 处迁移时序澄清（严格区分 `pre-006` 与 `post-006` 库结构、未由 `006` 创建的表/列标 `N/A` 严禁访问、归档事务以 Schema 变更冻结 + 父表 `EXCLUSIVE` 表级锁防并发 DDL 竞态、归档表不建指向活表外键，以及 `002_schema_contract.sql` 三表外键精确断言仅在 `006` 迁移后执行；不扩大范围）；**需先合入「阶段 0 契约冻结骨架 PR」后，再拉出 4 条实现分支并行开发**。  
-> **统一基线**：`origin/main` @ `2e2e0eaffbb21ceadbbbe71bd201e8e22ddae692`（统一并取代此前审阅过程中出现过的 `c650e271` 与 `4b8e9d76` 历史快照引用；PR #18 `72febbf3` 仅追加文档提交免跑 CI 规则，代码与表结构零变更）。  
-> **配套核心契约文件**：
+> **状态**：`Stage 0 Freeze Skeleton (Contract v1.8)` — PR #17 已以 `ac77e247` 合入 `main`；Stage 0 骨架 PR 正式将 `006` 升入 `db/workflow_runtime/`、冻结共享 Java 契约与跨语言黄金夹具（含 `MANIFEST.sha256`），待 Stage 0 骨架 PR 审查合入后即拉出 4 条实现分支并行开发。  
+> **统一基线**：PR #17 合入后 `origin/main` @ `ac77e247e75615a17e1a4f94c8c4b306a0646526`。  
+> **配套核心契约与分工文件**：
+> - 四 AI 并行分工与治理（含 `OQ-1..OQ-5` 集成裁决）：[PHASE3_AI_WORK_ASSIGNMENTS.md](./PHASE3_AI_WORK_ASSIGNMENTS.md)
 > - 核心执行与物理安全：[DEVICE_EXECUTION_CORE_CONTRACT.md](./DEVICE_EXECUTION_CORE_CONTRACT.md)（AI-1 主责）
 > - 网关通信与 Sidecar 协议：[DEVICE_GATEWAY_PROTOCOL.md](./DEVICE_GATEWAY_PROTOCOL.md)（AI-2 主责）
-> - 数据库 `006` DDL 草案：[006_device_execution_contract_v1.draft.sql](./ddl/006_device_execution_contract_v1.draft.sql)（注意：**PR #17 处于 `docs/ddl/` 草案态，未被当前 CI 实际建库执行；待阶段 0 升入 `db/workflow_runtime/` 并完成 `002`/CI 35 表校验后，才首次接受真实 PG17 DDL 门禁验证**）
+> - 独立模拟与混沌验收架构：[PHASE3B_AI3_INDEPENDENT_TEST_ARCHITECTURE.md](./PHASE3B_AI3_INDEPENDENT_TEST_ARCHITECTURE.md)（AI-3 主责）
+> - 数据库 `006` 正式 DDL 与草案指针：[006_device_execution_contract_v1.sql](../db/workflow_runtime/006_device_execution_contract_v1.sql) · [006_device_execution_contract_v1.draft.sql](./ddl/006_device_execution_contract_v1.draft.sql)
+> - 跨语言黄金夹具清单：[contract-fixtures/v1_1/MANIFEST.sha256](../contract-fixtures/v1_1/MANIFEST.sha256)
 > - 历史基线审计与盘点：[DEVICE_INFRASTRUCTURE_AUDIT.md](./DEVICE_INFRASTRUCTURE_AUDIT.md) · [REAL_WORKFLOW_INVENTORY.md](./REAL_WORKFLOW_INVENTORY.md) · [DEVICE_EXECUTION_CONTRACT_V1.md](./DEVICE_EXECUTION_CONTRACT_V1.md)
 
 ---
@@ -79,12 +82,12 @@ flowchart TB
 
 ### 2.1 公共契约只读锁（阶段 0 合入后 4 条分支一律禁止擅改）
 在 4 个 AI 创建开发分支前，由集成负责人合入一次**「阶段 0 契约冻结骨架 PR」**。合入 `main` 后，以下目录与文件成为**四分支只读基线**；若 AI-1/AI-2 发现契约接口缺陷，必须提契约变更提案由集成负责人合入公共分支后再统一 rebase，**禁止任何 AI 在个人分支私自改动**：
-- 核心契约三文档及冻结 DDL：`docs/PHASE3B_MASTER_CONTRACT.md`、`docs/DEVICE_EXECUTION_CORE_CONTRACT.md`、`docs/DEVICE_GATEWAY_PROTOCOL.md`、`db/workflow_runtime/006_device_execution_contract_v1.sql`；
+- 核心契约及分工文档与冻结 DDL：`docs/PHASE3B_MASTER_CONTRACT.md`、`docs/PHASE3_AI_WORK_ASSIGNMENTS.md`、`docs/PHASE3B_AI3_INDEPENDENT_TEST_ARCHITECTURE.md`、`docs/DEVICE_EXECUTION_CORE_CONTRACT.md`、`docs/DEVICE_GATEWAY_PROTOCOL.md`、`db/workflow_runtime/006_device_execution_contract_v1.sql`；
 - 契约守卫与 CI 断言：`db/workflow_runtime/002_schema_contract.sql`（35 表声明、`workstation_sidecar.connection_generation` 白名单说明、`command_ledger` 夹具对齐，以及 PG17 负向拒插断言与目录核验：覆盖 `NULL` `23502`、空串/空格/Tab/换行 `23514` `~ '[^[:space:]]'`、未注册工位 `23503`、`wait_early_signal_buffer` 跨 Run `23503` 及 `006` 迁移完成后的 `command_ledger` 全部入站外键 `pg_constraint` 完备性核验）、`.github/workflows/workflow-runtime-db.yml`（全数更新 3 处表计数 `32 -> 35`：[L86/L102/L111](../.github/workflows/workflow-runtime-db.yml#L86-L111)）、[test_pg_con_matrix.py](../db/workflow_runtime/tests/test_pg_con_matrix.py#L200)（`con08` 工位种子与命令夹具对齐）、[apply-workflow-runtime-migrations.sh](../scripts/apply-workflow-runtime-migrations.sh#L120-L251)（第 5 处必改：`is_allowed_filename()` 注册 `006_device_execution_contract_v1.sql`、有序循环 `for ver in 001 003 004 005 006`、`case "$ver"` 追加 `006)` 分支——**仅改 Branch C，严禁改动 Branch B `--adopt-existing`**）与 [test_pg_migrations.py](../db/workflow_runtime/tests/test_pg_migrations.py#L122-L133)（账本版本集合纳入 `006` 并补齐 `006` 脏行 preflight 阻断测试）；
 - 共享 Java 契约包：`workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/device/contract/**`（含将原 [DeviceCommandAdapter.java:16](../workflow-runtime/src/main/java/com/labos/kernel/workflow/runtime/command/DeviceCommandAdapter.java#L16) 中的 `DeviceCommandEnvelope` **整体迁入替换**于此包，**禁止新旧同名 record 并存**；并同步对齐 `WorkflowRuntimeRepository.createCommand` / `createCommandForAttempt`、`WorkerExecutionService` 与 `workflow-runtime/src/test/**` 既有命令夹具，强制必填 `workstation_id` 与 `operation_name`，不设可空 mock 豁免）；
 - G5.1 增补扩展：`GraphPlan` `SCHEMA_VERSION_V3`（完整保留 V1/V2 既有校验与测试）及 `WaitSpec.deadlinePolicy` 编译支持（严格门控审批，AI-1 不可自行扩改 G1–G5 调度规则）；
 - Spring Boot 端点与配置适配：[WorkflowRuntimeHostProperties.java](../labos-kernel/src/boot/java/com/labos/boot/WorkflowRuntimeHostProperties.java#L164-L204)（移除配置级 `labsep://` 入口与补充多设备工位 TLS/endpoint 结构）与 `WorkflowRuntimeKernelConfiguration.java`（继续锁定 `host.enabled=false`）；
-- **仓库根中立目录**跨语言黄金报文与 6 条契约不变式测试骨架：**`contract-fixtures/v1_1/*.json`**（位于仓库根中立路径，Java Maven 与 `.NET 10` 测试工程双方直接读取同一组文件，杜绝双份漂移）及 6 条不变式测试断言骨架。
+- **仓库根中立目录**跨语言黄金报文与 6 条契约不变式测试骨架：**`contract-fixtures/v1_1/*.json`**（含 `MANIFEST.sha256` 校验清单，位于仓库根中立路径，Java Maven 与 `.NET 10` 测试工程双方直接读取同一组文件，杜绝双份漂移）及 6 条不变式测试断言骨架；详尽边界见 [PHASE3_AI_WORK_ASSIGNMENTS.md](./PHASE3_AI_WORK_ASSIGNMENTS.md)。
 
 ### 2.2 四 AI 严格权限与跨 AI 相互验证规则
 

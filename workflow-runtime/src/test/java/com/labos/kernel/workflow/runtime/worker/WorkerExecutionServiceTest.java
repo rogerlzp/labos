@@ -105,6 +105,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-e2e");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         String xml = """
                 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
@@ -186,6 +187,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-drain");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var run = repo.createRun(tenant, "ws-drain-" + UUID.randomUUID(), "CREATE", "{}",
                 "ws-drain-" + tenant, "1", new byte[32], "ci", "{}", "{}", "mock-task");
@@ -249,6 +251,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-unclosed");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var run = repo.createRun(tenant, "ws-unclosed-" + UUID.randomUUID(), "CREATE", "{}",
                 "ws-unclosed-" + tenant, "1", new byte[32], "ci", "{}", "{}", "mock-task");
@@ -293,6 +296,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-fail");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var mailboxExec = Executors.newSingleThreadExecutor();
         SchedulingGate gate = SchedulingGateTestSupport.openGate();
@@ -357,6 +361,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-cancel");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var mailboxExec = Executors.newSingleThreadExecutor();
         SchedulingGate gate = SchedulingGateTestSupport.openGate();
@@ -450,6 +455,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-qcan");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var mailboxExec = Executors.newSingleThreadExecutor();
         SchedulingGate gate = SchedulingGateTestSupport.openGate();
@@ -559,6 +565,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-race");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var mailboxExec = Executors.newSingleThreadExecutor();
         SchedulingGate gate = SchedulingGateTestSupport.openGate();
@@ -695,6 +702,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-ctx");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var mailboxExec = Executors.newSingleThreadExecutor();
         SchedulingGate gate = SchedulingGateTestSupport.openGate();
@@ -789,6 +797,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-phase1-can");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var run = createSingleTaskRun(repo, tenant, "ws-p1can", "task-p1");
         repo.startRun(tenant, run.runId());
@@ -882,6 +891,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-wakeup");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var run = createSingleTaskRun(repo, tenant, "ws-wake", "task-wake");
         repo.startRun(tenant, run.runId());
@@ -934,6 +944,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-pclose");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var run1 = createSingleTaskRun(repo, tenant, "ws-pc1", "task-1");
         repo.startRun(tenant, run1.runId());
@@ -1001,6 +1012,7 @@ class WorkerExecutionServiceTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "ws-devcan");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         var run = createSingleTaskRun(repo, tenant, "ws-devcan", "dev-task");
         repo.startRun(tenant, run.runId());
@@ -1026,7 +1038,8 @@ class WorkerExecutionServiceTest {
 
             var fut = service.submit(req, (r, ctx) -> {
                 // Create DEVICE command WITHOUT calling ctx.recordSideEffect* directly.
-                UUID cmdId = ctx.createDeviceCommand("mock-dev-1", "RunStep", "QUERYABLE", "{\"x\":1}");
+                UUID cmdId = ctx.createDeviceCommand(
+                        "ws-mock-dev-1", "mock-dev-1", "RunStep", "RunStep", "QUERYABLE", "{\"x\":1}");
                 commandIdRef.set(cmdId);
                 commandCreated.countDown();
                 assertTrue(commandSucceeded.await(5, TimeUnit.SECONDS));

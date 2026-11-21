@@ -105,9 +105,10 @@ class WorkflowRuntimeRepositoryTest {
                         "worker-1","worker-call-1","SIDE_EFFECT_STARTED","{\"phase\":\"different\"}"));
         assertEquals(1,scalar(ds,"SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"+tenant+"' AND attempt_id='"+reservation.attemptId()+"' AND fact_type='HANDLER_STARTED'"));
 
+        repo.registerWorkstationSidecar(tenant, "ws-device-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID command=repo.createCommand(tenant,first.runId(),
                 activationForAttempt(ds,tenant,reservation.attemptId()),reservation.attemptId(),
-                "device-1","RunMethod","QUERYABLE","{\"method\":\"test\"}");
+                "ws-device-1","device-1","RunMethod","RunMethod","QUERYABLE","{\"method\":\"test\"}");
         assertNotNull(command);
         var commandOutbox=repo.beginOutboxSend(tenant,10)
                 .stream().filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
@@ -537,9 +538,10 @@ class WorkflowRuntimeRepositoryTest {
         repo.dispatchAttempt(tenant,run.runId(),reservation.attemptId(),"worker-q","{}");
         repo.acceptAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
         repo.startAttempt(tenant,run.runId(),reservation.attemptId(),reservation.dispatchId(),"worker-1");
+        repo.registerWorkstationSidecar(tenant, "ws-device-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID command=repo.createCommand(tenant,run.runId(),
                 activationForAttempt(ds,tenant,reservation.attemptId()),reservation.attemptId(),
-                "device-1","RunMethod","QUERYABLE","{}");
+                "ws-device-1","device-1","RunMethod","RunMethod","QUERYABLE","{}");
         var outbox=repo.beginOutboxSend(tenant,10).stream()
                 .filter(x -> x.dedupKey().equals("command:"+command)).findFirst().orElseThrow();
         assertTrue(repo.markCommandSendStarted(tenant,command,0L,outbox.outboxId(),
@@ -1332,9 +1334,10 @@ class WorkflowRuntimeRepositoryTest {
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
                 () -> repo.startAttempt(tenant,run.runId(),resAccepted.attemptId(),resAccepted.dispatchId(),"w1"));
         UUID startedActivation=activationForAttempt(ds,tenant,resStarted.attemptId());
+        repo.registerWorkstationSidecar(tenant, "ws-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class,
                 () -> repo.createCommand(tenant,run.runId(),startedActivation,resStarted.attemptId(),
-                        "dev-1","Run","QUERYABLE","{}"));
+                        "ws-dev-1","dev-1","Run","Run","QUERYABLE","{}"));
 
         // Unstarted / no-side-effect attempts CAN still be safely cancelled during drain.
         assertEquals("CANCELLED",repo.cancelAttempt(tenant,run.runId(),resCreated.attemptId(),"drain").outcome());
@@ -1362,8 +1365,9 @@ class WorkflowRuntimeRepositoryTest {
         repo.acceptAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
         repo.startAttempt(tenant,run.runId(),res.attemptId(),res.dispatchId(),"w1");
         // Command is CREATED only (never SEND_STARTED, no side-effect boundary crossed).
+        repo.registerWorkstationSidecar(tenant, "ws-dev-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdId=repo.createCommand(tenant,run.runId(),activationForAttempt(ds,tenant,res.attemptId()),
-                res.attemptId(),"dev-1","Heat","QUERYABLE","{\"temp\":37}");
+                res.attemptId(),"ws-dev-1","dev-1","Heat","Heat","QUERYABLE","{\"temp\":37}");
 
         var outcome=repo.failGraphRun(tenant,run.runId(),null,"IllegalArgumentException","sibling branch fault");
         assertEquals("DRAINING_FAILURE",outcome.outcome(),

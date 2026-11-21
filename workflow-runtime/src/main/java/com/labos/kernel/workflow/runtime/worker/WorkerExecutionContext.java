@@ -45,9 +45,16 @@ public interface WorkerExecutionContext {
     /**
      * Create (or idempotently replay) the single immutable {@code command_ledger} entry and
      * {@code DEVICE_COMMAND} Outbox row for this {@code STARTED} Attempt.
-     * Requires the Run to be {@code RUNNING + OPEN} unless replaying the identical payload.
+     * Requires the Run to be {@code RUNNING + OPEN} and non-blank {@code workstationId} and
+     * {@code operationName}.
      */
-    UUID createDeviceCommand(String deviceId, String commandKind, String idempotencyClass, String payloadJson);
+    UUID createDeviceCommand(
+            String workstationId,
+            String deviceId,
+            String commandKind,
+            String operationName,
+            String idempotencyClass,
+            String payloadJson);
 
     /**
      * Best-effort process-local cancellation indicator (local registry cancellation or thread interrupt).

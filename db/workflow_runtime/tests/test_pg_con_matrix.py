@@ -197,10 +197,15 @@ def con08():
     t,r,token=seed(); activation,attempt,_=attempt_fixture(t,r,token)
     command=uuid.uuid4()
     with connect() as c,c.cursor() as q:
+        q.execute("""INSERT INTO workflow_runtime.workstation_sidecar
+          (tenant_id,workstation_id,endpoint_uri,security_mode)
+          VALUES(%s,'ws-con08','tls://127.0.0.1:20060','TLS13_MTLS')
+          ON CONFLICT (tenant_id,workstation_id) DO NOTHING""",
+          (t,))
         q.execute("""INSERT INTO workflow_runtime.command_ledger
-          (tenant_id,command_id,run_id,activation_id,attempt_id,device_id,command_kind,command_state,
+          (tenant_id,command_id,run_id,activation_id,attempt_id,workstation_id,device_id,command_kind,operation_name,command_state,
            idempotency_class,command_payload,payload_hash)
-          VALUES(%s,%s,%s,%s,%s,'dev','x','RUNNING','QUERYABLE','{}',decode(repeat('ab',32),'hex'))""",
+          VALUES(%s,%s,%s,%s,%s,'ws-con08','dev','x','con08_op','RUNNING','QUERYABLE','{}',decode(repeat('ab',32),'hex'))""",
           (t,command,r,activation,attempt))
     def final(_):
         with connect() as c,c.cursor() as q:

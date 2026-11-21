@@ -1,0 +1,70 @@
+{
+  "fixtureId": "07_device_event_and_acks",
+  "protocolVersion": "1.1",
+  "frames": [
+    {
+      "protocolVersion": "1.1",
+      "frameType": "DEVICE_EVENT",
+      "sentAtEpochMs": 1763712040000,
+      "sourceMessageId": "sc-evt-pauto1-000101",
+      "eventScope": "COMMAND",
+      "deviceId": "P_AUTO-1",
+      "eventName": "COMMAND_RESULT",
+      "commandId": "11111111-1111-4111-8111-111111111111",
+      "targetState": "SUCCEEDED",
+      "deviceSequence": "hw-seq-1001",
+      "evidenceSource": "PRIOR_HARDWARE_COMPLETION_IN_JOURNAL",
+      "evidenceStrength": "STRONG_HARDWARE_FACT",
+      "evidencePayload": {
+        "rawResponseHex": "4f4b2d3030",
+        "completedAtEpochMs": 1763712039990
+      },
+      "payload": {
+        "plateBarcode": "PLT-2026-0001"
+      }
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "DEVICE_EVENT",
+      "sentAtEpochMs": 1763712041000,
+      "sourceMessageId": "sc-evt-pauto1-000102",
+      "eventScope": "SPONTANEOUS",
+      "deviceId": "P_AUTO-1",
+      "eventName": "waiting_interaction",
+      "payload": {
+        "plateBarcode": "PLT-2026-0001",
+        "interactionType": "TIP_REFILL"
+      }
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "EVENT_ACK",
+      "sentAtEpochMs": 1763712041020,
+      "sourceMessageId": "sc-evt-pauto1-000101",
+      "status": "APPLIED"
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "EVENT_ACK",
+      "sentAtEpochMs": 1763712041025,
+      "sourceMessageId": "sc-evt-pauto1-000101",
+      "status": "DUPLICATE"
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "EVENT_ACK",
+      "sentAtEpochMs": 1763712041030,
+      "sourceMessageId": "sc-evt-pauto1-000102",
+      "status": "BUFFERED"
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "EVENT_NACK",
+      "sentAtEpochMs": 1763712042000,
+      "sourceMessageId": "sc-evt-pauto1-000103",
+      "retryable": true,
+      "errorCode": "ERR_RECONCILE_DB_TRANSIENT",
+      "reason": "PG connection pool transient timeout"
+    }
+  ]
+}

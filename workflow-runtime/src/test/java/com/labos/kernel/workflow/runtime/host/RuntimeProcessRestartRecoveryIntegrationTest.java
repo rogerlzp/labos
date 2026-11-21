@@ -187,8 +187,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenant, run.runId(), res1.attemptId(), res1.dispatchId(),
                 "host1-w1", "dev_op", "DEVICE");
         repo.startAttempt(tenant, run.runId(), res1.attemptId(), res1.dispatchId(), "host1-w1");
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmd1 = repo.createCommandForAttempt(tenant, run.runId(), res1.attemptId(),
-                "host1-w1", deviceId, "Dispense", "NON_IDEMPOTENT", "{\"vol\":25}");
+                "host1-w1", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "NON_IDEMPOTENT", "{\"vol\":25}");
         var dcOutbox1 = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).stream()
                 .filter(m -> cmd1.toString().equals(m.payloadJson().contains(cmd1.toString()) ? cmd1.toString() : ""))
                 .findFirst().orElseThrow();
@@ -218,7 +219,7 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             capKey, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmd2 = ctx.createDeviceCommand(deviceId, "Dispense", "NON_IDEMPOTENT", "{\"vol\":25}");
+                        UUID cmd2 = ctx.createDeviceCommand("ws-" + deviceId, deviceId, "Dispense", "Dispense", "NON_IDEMPOTENT", "{\"vol\":25}");
                         retryCmdRef.set(cmd2);
                         assertTrue(terminalApplied.await(8, TimeUnit.SECONDS));
                         return WorkerTaskHandler.TaskResult.of("out", "{\"vol\":25}");
@@ -323,10 +324,16 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
                 UUID cmdId = UUID.randomUUID();
                 UUID outboxId = UUID.randomUUID();
                 st.executeUpdate("""
+                    INSERT INTO workflow_runtime.workstation_sidecar
+                      (tenant_id,workstation_id,endpoint_uri,security_mode)
+                    VALUES ('%s','ws-dev-A','ndjson://127.0.0.1:20060','DEV_LOOPBACK_PLAINTEXT')
+                    ON CONFLICT (tenant_id,workstation_id) DO NOTHING
+                    """.formatted(isolatedTenant));
+                st.executeUpdate("""
                     INSERT INTO workflow_runtime.command_ledger
-                      (tenant_id,command_id,run_id,activation_id,attempt_id,device_id,command_kind,
+                      (tenant_id,command_id,run_id,activation_id,attempt_id,workstation_id,device_id,command_kind,operation_name,
                        command_state,idempotency_class,command_payload,payload_hash)
-                    VALUES ('%s','%s','%s','%s','%s','dev-A','Dispense','%s','QUERYABLE','{}'::jsonb,
+                    VALUES ('%s','%s','%s','%s','%s','ws-dev-A','dev-A','Dispense','Dispense','%s','QUERYABLE','{}'::jsonb,
                             decode(repeat('00',32),'hex'))
                     """.formatted(isolatedTenant, cmdId, syntheticRun.runId(), actId, resA.attemptId(), state));
                 st.executeUpdate("""
@@ -414,8 +421,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenantB, runB.runId(), resS1.attemptId(),
                 resS1.dispatchId(), "w-s1", "step1", "DEVICE");
         repo.startAttempt(tenantB, runB.runId(), resS1.attemptId(), resS1.dispatchId(), "w-s1");
+        repo.registerWorkstationSidecar(tenantB, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdS1 = repo.createCommandForAttempt(tenantB, runB.runId(), resS1.attemptId(),
-                "w-s1", deviceId, "Prep", "QUERYABLE", "{\"s\":1}");
+                "w-s1", "ws-" + deviceId, deviceId, "Prep", "Prep", "QUERYABLE", "{\"s\":1}");
         var dcS1 = repo.beginOutboxSendForKind(tenantB, "DEVICE_COMMAND", 10).get(0);
         long verS1 = repo.loadCommand(tenantB, cmdS1).orElseThrow().version();
         assertTrue(repo.markCommandSendStarted(tenantB, cmdS1, verS1, dcS1.outboxId(),
@@ -451,7 +459,7 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
                             "capB-" + tenantB, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
                         assertEquals("step2", req.nodeKey());
-                        ctx.createDeviceCommand(deviceId, "Finish", "QUERYABLE", "{\"s\":2}");
+                        ctx.createDeviceCommand("ws-" + deviceId, deviceId, "Finish", "Finish", "QUERYABLE", "{\"s\":2}");
                         assertTrue(step2Applied.await(8, TimeUnit.SECONDS));
                         return WorkerTaskHandler.TaskResult.of("s2", "{\"ok\":2}");
                     }),
@@ -513,8 +521,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenant, run.runId(), res1.attemptId(),
                 res1.dispatchId(), "w-inbox", "dev_op", "DEVICE");
         repo.startAttempt(tenant, run.runId(), res1.attemptId(), res1.dispatchId(), "w-inbox");
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmd1 = repo.createCommandForAttempt(tenant, run.runId(), res1.attemptId(),
-                "w-inbox", deviceId, "Dispense", "NON_IDEMPOTENT", "{\"vol\":42}");
+                "w-inbox", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "NON_IDEMPOTENT", "{\"vol\":42}");
         var dc1 = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).get(0);
         UUID dispatchId1 = UUID.randomUUID();
         long ver1 = repo.loadCommand(tenant, cmd1).orElseThrow().version();
@@ -643,8 +652,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
             repo.acceptAttemptForExecution(tenant, runA.runId(), resA.attemptId(),
                     resA.dispatchId(), "wA", "dev_op", "DEVICE");
             repo.startAttempt(tenant, runA.runId(), resA.attemptId(), resA.dispatchId(), "wA");
+            repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
             UUID cmdA = repo.createCommandForAttempt(tenant, runA.runId(), resA.attemptId(),
-                    "wA", deviceId, "Dispense", "NON_IDEMPOTENT", "{\"vol\":55}");
+                    "wA", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "NON_IDEMPOTENT", "{\"vol\":55}");
 
             try (DeviceGateway preCrashGateway = new DeviceGateway(
                     List.of(server.endpoint()), stableGatewayConfig(),
@@ -675,7 +685,7 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
                     resB.dispatchId(), "wB", "dev_op", "DEVICE");
             repo.startAttempt(tenant, runB.runId(), resB.attemptId(), resB.dispatchId(), "wB");
             UUID cmdB = repo.createCommandForAttempt(tenant, runB.runId(), resB.attemptId(),
-                    "wB", deviceId, "Dispense", "NON_IDEMPOTENT", "{\"vol\":66}");
+                    "wB", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "NON_IDEMPOTENT", "{\"vol\":66}");
             var dcB = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).get(0);
             UUID dispB = UUID.randomUUID();
             long verB = repo.loadCommand(tenant, cmdB).orElseThrow().version();
@@ -822,7 +832,7 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
                             fail("XOR must route to path_high from persisted score=95");
                         }
                         assertEquals("path_high", req.nodeKey());
-                        ctx.createDeviceCommand(deviceId, "HighOp", "QUERYABLE", "{\"high\":true}");
+                        ctx.createDeviceCommand("ws-" + deviceId, deviceId, "HighOp", "HighOp", "QUERYABLE", "{\"high\":true}");
                         assertTrue(highCmdApplied.await(8, TimeUnit.SECONDS));
                         return WorkerTaskHandler.TaskResult.of("out", "{\"high\":true}");
                     }),
@@ -887,8 +897,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenant, run.runId(), res1.attemptId(),
                 res1.dispatchId(), "w-fail", "dev_op", "DEVICE");
         repo.startAttempt(tenant, run.runId(), res1.attemptId(), res1.dispatchId(), "w-fail");
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmd1 = repo.createCommandForAttempt(tenant, run.runId(), res1.attemptId(),
-                "w-fail", deviceId, "Dispense", "QUERYABLE", "{\"v\":1}");
+                "w-fail", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":1}");
 
         var failRes = repo.failGraphRun(tenant, run.runId(), null, "UPSTREAM_FATAL", "simulated fatal graph fault");
         assertNotNull(failRes.drainId());
@@ -990,8 +1001,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenantB, runB.runId(), resB.attemptId(),
                 resB.dispatchId(), "wB", "dev_op", "DEVICE");
         repo.startAttempt(tenantB, runB.runId(), resB.attemptId(), resB.dispatchId(), "wB");
+        repo.registerWorkstationSidecar(tenantB, "ws-" + devB, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdB = repo.createCommandForAttempt(tenantB, runB.runId(), resB.attemptId(),
-                "wB", devB, "Dispense", "QUERYABLE", "{\"v\":7}");
+                "wB", "ws-" + devB, devB, "Dispense", "Dispense", "QUERYABLE", "{\"v\":7}");
         var dcB = repo.beginOutboxSendForKind(tenantB, "DEVICE_COMMAND", 10).get(0);
         UUID dispB = UUID.randomUUID();
         long verB = repo.loadCommand(tenantB, cmdB).orElseThrow().version();
@@ -1024,7 +1036,7 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             capA, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        ctx.createDeviceCommand(devA, "Dispense", "QUERYABLE", "{\"ok\":1}");
+                        ctx.createDeviceCommand("ws-" + devA, devA, "Dispense", "Dispense", "QUERYABLE", "{\"ok\":1}");
                         assertTrue(cmdAFinished.await(8, TimeUnit.SECONDS));
                         return WorkerTaskHandler.TaskResult.of("out", "{\"ok\":1}");
                     }),
@@ -1138,8 +1150,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenant, run.runId(), res1.attemptId(),
                 res1.dispatchId(), "w-reenter", "dev_op", "DEVICE");
         repo.startAttempt(tenant, run.runId(), res1.attemptId(), res1.dispatchId(), "w-reenter");
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmd1 = repo.createCommandForAttempt(tenant, run.runId(), res1.attemptId(),
-                "w-reenter", deviceId, "Dispense", "QUERYABLE", "{\"v\":10}");
+                "w-reenter", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":10}");
         var dc1 = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).get(0);
         UUID disp1 = UUID.randomUUID();
         long ver1 = repo.loadCommand(tenant, cmd1).orElseThrow().version();
@@ -1253,8 +1266,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenantA, runA.runId(), resA.attemptId(),
                 resA.dispatchId(), "w-cancel", "dev_op", "DEVICE");
         repo.startAttempt(tenantA, runA.runId(), resA.attemptId(), resA.dispatchId(), "w-cancel");
+        repo.registerWorkstationSidecar(tenantA, "ws-" + devA, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdA = repo.createCommandForAttempt(tenantA, runA.runId(), resA.attemptId(),
-                "w-cancel", devA, "Dispense", "QUERYABLE", "{\"v\":9}");
+                "w-cancel", "ws-" + devA, devA, "Dispense", "Dispense", "QUERYABLE", "{\"v\":9}");
         var dcA = repo.beginOutboxSendForKind(tenantA, "DEVICE_COMMAND", 10).get(0);
         UUID dispA = UUID.randomUUID();
         long verA = repo.loadCommand(tenantA, cmdA).orElseThrow().version();
@@ -1331,8 +1345,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.acceptAttemptForExecution(tenantB, runB.runId(), resB.attemptId(),
                 resB.dispatchId(), "w-term", "dev_op", "DEVICE");
         repo.startAttempt(tenantB, runB.runId(), resB.attemptId(), resB.dispatchId(), "w-term");
+        repo.registerWorkstationSidecar(tenantB, "ws-" + devB, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdB = repo.createCommandForAttempt(tenantB, runB.runId(), resB.attemptId(),
-                "w-term", devB, "Dispense", "QUERYABLE", "{\"v\":11}");
+                "w-term", "ws-" + devB, devB, "Dispense", "Dispense", "QUERYABLE", "{\"v\":11}");
         var dcB = repo.beginOutboxSendForKind(tenantB, "DEVICE_COMMAND", 10).get(0);
         long verB = repo.loadCommand(tenantB, cmdB).orElseThrow().version();
         assertTrue(repo.markCommandSendStarted(tenantB, cmdB, verB, dcB.outboxId(),
@@ -1421,8 +1436,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.markOutboxDelivered(tenantX, repo.beginOutboxSendForKind(tenantX, "WORKER_DISPATCH", 10).get(0).outboxId());
         repo.acceptAttemptForExecution(tenantX, runX.runId(), resX.attemptId(), resX.dispatchId(), "wX", "dev_op", "DEVICE");
         repo.startAttempt(tenantX, runX.runId(), resX.attemptId(), resX.dispatchId(), "wX");
+        repo.registerWorkstationSidecar(tenantX, "ws-" + devX, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdX = repo.createCommandForAttempt(tenantX, runX.runId(), resX.attemptId(),
-                "wX", devX, "Dispense", "QUERYABLE", "{\"t\":\"X\"}");
+                "wX", "ws-" + devX, devX, "Dispense", "Dispense", "QUERYABLE", "{\"t\":\"X\"}");
         var dcX = repo.beginOutboxSendForKind(tenantX, "DEVICE_COMMAND", 10).get(0);
         UUID dispX = UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenantX, cmdX, repo.loadCommand(tenantX, cmdX).orElseThrow().version(),
@@ -1444,8 +1460,9 @@ class RuntimeProcessRestartRecoveryIntegrationTest {
         repo.markOutboxDelivered(tenantY, repo.beginOutboxSendForKind(tenantY, "WORKER_DISPATCH", 10).get(0).outboxId());
         repo.acceptAttemptForExecution(tenantY, runY.runId(), resY.attemptId(), resY.dispatchId(), "wY", "dev_op", "DEVICE");
         repo.startAttempt(tenantY, runY.runId(), resY.attemptId(), resY.dispatchId(), "wY");
+        repo.registerWorkstationSidecar(tenantY, "ws-" + devY, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdY = repo.createCommandForAttempt(tenantY, runY.runId(), resY.attemptId(),
-                "wY", devY, "Dispense", "QUERYABLE", "{\"t\":\"Y\"}");
+                "wY", "ws-" + devY, devY, "Dispense", "Dispense", "QUERYABLE", "{\"t\":\"Y\"}");
         var dcY = repo.beginOutboxSendForKind(tenantY, "DEVICE_COMMAND", 10).get(0);
         UUID dispY = UUID.randomUUID();
         assertTrue(repo.markCommandSendStarted(tenantY, cmdY, repo.loadCommand(tenantY, cmdY).orElseThrow().version(),

@@ -67,6 +67,8 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
             WorkflowRuntimeHostProperties props = context.getBean(WorkflowRuntimeHostProperties.class);
             require(!props.enabled(), "Embedded RuntimeHost feature flag must default to false");
             require(props.scopedKernelTenantId() == null, "scopedKernelTenantId must default to null");
+            require(props.securityMode() == com.labos.kernel.workflow.runtime.device.contract.SecurityMode.TLS13_MTLS,
+                    "securityMode must default to TLS13_MTLS");
             require(context.getBean(WorkflowRuntimeKernelFacade.class).hostHealth().isEmpty(),
                     "Facade hostHealth() must be empty when RuntimeHost is disabled");
             require(context.getBeansOfType(com.labos.kernel.workflow.runtime.host.RuntimeHost.class).isEmpty(),
@@ -141,19 +143,23 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
         require(failedFastMissingHandler,
                 "Enabling RuntimeHost without a TaskHandlerResolver bean must fail fast during startup");
 
-        // Verify endpoint parsing & strict validation on WorkflowRuntimeHostProperties (including wire codec schemes).
+        // Verify endpoint parsing & strict validation on WorkflowRuntimeHostProperties (ndjson only; labsep removed).
         var parsed = WorkflowRuntimeHostProperties.parseEndpoints(
-                "dev-a=127.0.0.1:9101, dev-b=ndjson://192.168.1.50:9102, pipettor=labsep://127.0.0.1:19500");
-        require(parsed.size() == 3, "Expected 3 parsed LAN device endpoints");
+                "dev-a=127.0.0.1:9101, dev-b=ndjson://192.168.1.50:9102");
+        require(parsed.size() == 2, "Expected 2 parsed LAN device endpoints");
         require("dev-a".equals(parsed.get(0).deviceId()) && parsed.get(0).port() == 9101
                         && "ndjson".equals(parsed.get(0).wireCodec().protocolName()),
                 "First parsed endpoint mismatch");
         require("dev-b".equals(parsed.get(1).deviceId()) && "192.168.1.50".equals(parsed.get(1).host())
                         && "ndjson".equals(parsed.get(1).wireCodec().protocolName()),
                 "Second parsed endpoint mismatch");
-        require("pipettor".equals(parsed.get(2).deviceId()) && parsed.get(2).port() == 19500
-                        && "labsep".equals(parsed.get(2).wireCodec().protocolName()),
-                "Third parsed labsep endpoint mismatch");
+        boolean rejectedLabSep = false;
+        try {
+            WorkflowRuntimeHostProperties.parseEndpoints("pipettor=labsep://127.0.0.1:19500");
+        } catch (IllegalArgumentException expected) {
+            rejectedLabSep = expected.getMessage() != null && expected.getMessage().contains("labsep://");
+        }
+        require(rejectedLabSep, "labsep:// endpoint scheme must be rejected in WorkflowRuntimeHostProperties.parseEndpoints");
         boolean rejectedBad = false;
         try {
             WorkflowRuntimeHostProperties.parseEndpoints("broken-endpoint");
@@ -168,6 +174,28 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
             rejectedUnknownScheme = true;
         }
         require(rejectedUnknownScheme, "Unknown wire codec scheme must be rejected");
+
+        // Verify C2 workstation endpoints & DEV_LOOPBACK_PLAINTEXT fail-closed loopback enforcement.
+        var wsTls = WorkflowRuntimeHostProperties.parseWorkstationEndpoints(
+                "ws-bench-1=tls://192.168.10.10:20060",
+                com.labos.kernel.workflow.runtime.device.contract.SecurityMode.TLS13_MTLS);
+        require(wsTls.size() == 1 && "ws-bench-1".equals(wsTls.get(0).workstationId())
+                        && "tls".equals(wsTls.get(0).scheme()) && wsTls.get(0).port() == 20060,
+                "C2 TLS13_MTLS workstation endpoint mismatch");
+        var wsLoop = WorkflowRuntimeHostProperties.parseWorkstationEndpoints(
+                "ws-dev-1=ndjson://127.0.0.1:20061, ws-dev-2=ndjson://[::1]:20062, ws-dev-3=localhost:20063",
+                com.labos.kernel.workflow.runtime.device.contract.SecurityMode.DEV_LOOPBACK_PLAINTEXT);
+        require(wsLoop.size() == 3, "Loopback DEV_LOOPBACK_PLAINTEXT workstation endpoints must parse cleanly");
+        boolean rejectedNonLoopbackPlaintext = false;
+        try {
+            WorkflowRuntimeHostProperties.parseWorkstationEndpoints(
+                    "ws-lan=ndjson://192.168.10.20:20060",
+                    com.labos.kernel.workflow.runtime.device.contract.SecurityMode.DEV_LOOPBACK_PLAINTEXT);
+        } catch (IllegalArgumentException expected) {
+            rejectedNonLoopbackPlaintext = expected.getMessage().contains("DEV_LOOPBACK_PLAINTEXT");
+        }
+        require(rejectedNonLoopbackPlaintext,
+                "DEV_LOOPBACK_PLAINTEXT must reject non-loopback workstation host fail-closed");
 
         // Verify bridge resourceId->deviceId map parsing.
         var resMap = WorkflowRuntimeHostProperties.parseResourceDeviceMap("206=pipettor, 207=centrifuge");

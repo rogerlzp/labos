@@ -37,6 +37,7 @@ public final class GatewayDeviceTaskBridge {
 
     private final WorkflowRuntimeRepository repository;
     private final Set<String> registeredDeviceIds;
+    private final Map<String, String> deviceToWorkstationMap;
     private final Map<Long, String> resourceToDeviceMap;
     private final Duration commandTimeout;
     private final Duration pollInterval;
@@ -50,6 +51,10 @@ public final class GatewayDeviceTaskBridge {
                 Objects.requireNonNull(endpoints, "endpoints").stream()
                         .map(TcpDeviceConnection.Endpoint::deviceId)
                         .collect(Collectors.toUnmodifiableSet()),
+                endpoints.stream().collect(Collectors.toUnmodifiableMap(
+                        TcpDeviceConnection.Endpoint::deviceId,
+                        ep -> "ws-" + ep.deviceId(),
+                        (a, b) -> a)),
                 resourceToDeviceMap,
                 commandTimeout,
                 Duration.ofMillis(25));
@@ -61,8 +66,19 @@ public final class GatewayDeviceTaskBridge {
             Map<Long, String> resourceToDeviceMap,
             Duration commandTimeout,
             Duration pollInterval) {
+        this(repository, registeredDeviceIds, Map.of(), resourceToDeviceMap, commandTimeout, pollInterval);
+    }
+
+    public GatewayDeviceTaskBridge(
+            WorkflowRuntimeRepository repository,
+            Set<String> registeredDeviceIds,
+            Map<String, String> deviceToWorkstationMap,
+            Map<Long, String> resourceToDeviceMap,
+            Duration commandTimeout,
+            Duration pollInterval) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.registeredDeviceIds = Set.copyOf(Objects.requireNonNull(registeredDeviceIds, "registeredDeviceIds"));
+        this.deviceToWorkstationMap = Map.copyOf(deviceToWorkstationMap == null ? Map.of() : deviceToWorkstationMap);
         this.resourceToDeviceMap = Map.copyOf(resourceToDeviceMap == null ? Map.of() : resourceToDeviceMap);
         this.commandTimeout = Objects.requireNonNull(commandTimeout, "commandTimeout");
         this.pollInterval = Objects.requireNonNull(pollInterval, "pollInterval");
@@ -184,7 +200,8 @@ public final class GatewayDeviceTaskBridge {
         if (ctx.isCancellationRequested()) {
             throw new InterruptedException("Device task cancelled before command dispatch: " + deviceId);
         }
-        UUID cmdId = ctx.createDeviceCommand(deviceId, commandKind, "QUERYABLE", payloadJson);
+        String workstationId = deviceToWorkstationMap.getOrDefault(deviceId, "ws-" + deviceId);
+        UUID cmdId = ctx.createDeviceCommand(workstationId, deviceId, commandKind, commandKind, "QUERYABLE", payloadJson);
         long deadlineNanos = System.nanoTime() + commandTimeout.toNanos();
         long pollMs = Math.max(10L, pollInterval.toMillis());
         while (System.nanoTime() < deadlineNanos) {

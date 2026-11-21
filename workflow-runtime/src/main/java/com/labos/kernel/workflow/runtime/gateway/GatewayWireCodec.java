@@ -1,6 +1,6 @@
 package com.labos.kernel.workflow.runtime.gateway;
 
-import com.labos.kernel.workflow.runtime.command.DeviceCommandAdapter;
+import com.labos.kernel.workflow.runtime.device.contract.DeviceCommandEnvelope;
 
 import java.io.IOException;
 import java.util.UUID;
@@ -30,7 +30,7 @@ public interface GatewayWireCodec {
     /** Whether the remote peer understands Gateway {@code EVENT_ACK}/{@code EVENT_NACK} frames. */
     boolean supportsEventAck();
 
-    byte[] encodeCommandSend(DeviceCommandAdapter.DeviceCommandEnvelope envelope) throws IOException;
+    byte[] encodeCommandSend(DeviceCommandEnvelope envelope) throws IOException;
 
     byte[] encodeHeartbeatPing(String deviceId, String pingId, long sentAtEpochMs) throws IOException;
 

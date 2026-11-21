@@ -3,6 +3,7 @@ package com.labos.kernel.workflow.runtime.host;
 import com.labos.kernel.workflow.runtime.command.DeviceCommandExecutionService;
 import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
 import com.labos.kernel.workflow.runtime.coordinator.WorkflowRunLifecycleCoordinator;
+import com.labos.kernel.workflow.runtime.device.contract.SecurityMode;
 import com.labos.kernel.workflow.runtime.dispatch.LocalTaskDispatchService;
 import com.labos.kernel.workflow.runtime.gateway.DeviceEventSink;
 import com.labos.kernel.workflow.runtime.gateway.DeviceGateway;
@@ -303,6 +304,21 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
         SingleInstanceHostLock acquired = SingleInstanceHostLock.acquire(config.lockFile());
         this.hostLock = acquired;
         try {
+            if (config.scopedTenantId() != null) {
+                for (TcpDeviceConnection.Endpoint ep : config.deviceEndpoints()) {
+                    String securityMode = SecurityMode.isLoopbackHost(ep.host())
+                            ? SecurityMode.DEV_LOOPBACK_PLAINTEXT.name()
+                            : SecurityMode.TLS13_MTLS.name();
+                    String scheme = SecurityMode.isLoopbackHost(ep.host())
+                            ? ep.wireCodec().protocolName()
+                            : "tls";
+                    repository.registerWorkstationSidecar(
+                            config.scopedTenantId(),
+                            "ws-" + ep.deviceId(),
+                            scheme + "://" + ep.host() + ":" + ep.port(),
+                            securityMode);
+                }
+            }
             runtimeHost.start();
         } catch (RuntimeException | Error failure) {
             shutdownMailboxExecutor();

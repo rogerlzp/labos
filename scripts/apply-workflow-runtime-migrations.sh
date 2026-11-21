@@ -125,6 +125,7 @@ is_allowed_filename() {
     003) [[ "$fname" == "003_g5_wait_correlation.sql" ]] ;;
     004) [[ "$fname" == "004_g5_wait_inbox_idx.sql" || "$fname" == "004_g5_wait_inbox_idx_concurrently.sql" ]] ;;
     005) [[ "$fname" == "005_migration_ledger.sql" ]] ;;
+    006) [[ "$fname" == "006_device_execution_contract_v1.sql" ]] ;;
     *) return 1 ;;
   esac
 }
@@ -194,7 +195,7 @@ elif [[ "$HAS_LEDGER" == "0" ]]; then
 fi
 
 # 3. Branch C: ordered ledger verification & pending migration application
-for ver in 001 003 004 005; do
+for ver in 001 003 004 005 006; do
   row="$(query_ledger_row "$ver")"
   if [[ -n "$row" ]]; then
     IFS='|' read -r rec_fname rec_sha rec_mode <<<"$row"
@@ -246,6 +247,10 @@ for ver in 001 003 004 005; do
       ;;
     005)
       fname="005_migration_ledger.sql"
+      mode="STANDARD"
+      ;;
+    006)
+      fname="006_device_execution_contract_v1.sql"
       mode="STANDARD"
       ;;
   esac

@@ -1,6 +1,7 @@
 package com.labos.kernel.workflow.runtime.gateway;
 
 import com.labos.kernel.workflow.runtime.command.DeviceCommandAdapter;
+import com.labos.kernel.workflow.runtime.device.contract.DeviceCommandEnvelope;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -287,7 +288,7 @@ public final class TcpDeviceConnection implements AutoCloseable {
      * writing fails, returns {@link DeviceCommandAdapter.SendStatus#DELIVERY_UNCERTAIN} so
      * {@code DeviceCommandExecutionService} transitions the command to {@code UNKNOWN}.
      */
-    public DeviceCommandAdapter.SendResult sendCommand(DeviceCommandAdapter.DeviceCommandEnvelope envelope) {
+    public DeviceCommandAdapter.SendResult sendCommand(DeviceCommandEnvelope envelope) {
         Objects.requireNonNull(envelope, "envelope");
         if (!endpoint.deviceId().equals(envelope.deviceId())) {
             throw new IllegalArgumentException("Envelope deviceId " + envelope.deviceId()

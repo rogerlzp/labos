@@ -300,7 +300,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             "g3-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"v\":80}");
+                        UUID cmdId = ctx.createDeviceCommand("ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":80}");
                         cmdIdRef.set(cmdId);
                         assertTrue(terminalApplied.await(8, TimeUnit.SECONDS));
                         return WorkerTaskHandler.TaskResult.of("out", "{\"dispensed\":80}");
@@ -383,7 +383,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             "g3-obs-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"v\":15}");
+                        UUID cmdId = ctx.createDeviceCommand("ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":15}");
                         cmdIdRef.set(cmdId);
                         assertTrue(allowWorkerExit.await(8, TimeUnit.SECONDS));
                         throw new RuntimeException("simulated command execution timeout after TCP drop");
@@ -480,8 +480,9 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
         assertTrue(repo.markOutboxDelivered(tenant, wd.outboxId()));
         repo.acceptAttempt(tenant, crashedRun.runId(), res.attemptId(), res.dispatchId(), "w-crash");
         repo.startAttempt(tenant, crashedRun.runId(), res.attemptId(), res.dispatchId(), "w-crash");
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdId = repo.createCommandForAttempt(tenant, crashedRun.runId(), res.attemptId(),
-                "w-crash", deviceId, "Dispense", "QUERYABLE", "{\"v\":50}");
+                "w-crash", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":50}");
         var cmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).stream()
                 .filter(m -> m.dedupKey().equals("command:" + cmdId)).findFirst().orElseThrow();
         assertTrue(repo.markCommandSendStarted(tenant, cmdId, 0L, cmdOutbox.outboxId(),
@@ -592,8 +593,9 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
         assertTrue(repo.markOutboxDelivered(tenant, wd.outboxId()));
         repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-sr");
         repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-sr");
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
-                "w-sr", deviceId, "Dispense", "QUERYABLE", "{\"v\":55}");
+                "w-sr", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":55}");
         var cmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 10).stream()
                 .filter(m -> m.dedupKey().equals("command:" + cmdId)).findFirst().orElseThrow();
         assertTrue(repo.markCommandSendStarted(tenant, cmdId, 0L, cmdOutbox.outboxId(),
@@ -811,7 +813,7 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             "g3-starve-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"v\":80}");
+                        UUID cmdId = ctx.createDeviceCommand("ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":80}");
                         cmdIdRef.set(cmdId);
                         assertTrue(terminalApplied.await(8, TimeUnit.SECONDS));
                         return WorkerTaskHandler.TaskResult.of("out", "{\"dispensed\":80}");

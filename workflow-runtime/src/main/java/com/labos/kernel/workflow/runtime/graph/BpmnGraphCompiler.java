@@ -116,6 +116,7 @@ public final class BpmnGraphCompiler {
 
             // Classify receiveTask / intermediateCatchEvent Wait specs before attaching boundaryEvents.
             Map<String,String> waitCorrelationByNodeId=new LinkedHashMap<>();
+            Map<String,GraphPlan.DeadlinePolicy> waitDeadlinePolicyByNodeId=new LinkedHashMap<>();
             Map<String,TimerSpec> timerWaitByNodeId=new LinkedHashMap<>();
             for(Map.Entry<String,Element> entry:elements.entrySet()) {
                 String id=entry.getKey();
@@ -123,9 +124,12 @@ public final class BpmnGraphCompiler {
                 String type=el.getLocalName();
                 NodeMetadata meta=input.nodeMetadata().get(id);
                 if ("receiveTask".equals(type)) {
-                    String corr = extractWaitCorrelationKeyIfPresent(el, id, meta);
-                    if (corr != null) {
-                        waitCorrelationByNodeId.put(id, corr);
+                    WaitExtension waitExt = extractWaitExtensionIfPresent(el, id, meta);
+                    if (waitExt != null) {
+                        waitCorrelationByNodeId.put(id, waitExt.correlationKey());
+                        if (waitExt.deadlinePolicy() != null) {
+                            waitDeadlinePolicyByNodeId.put(id, waitExt.deadlinePolicy());
+                        }
                     }
                 } else if ("intermediateCatchEvent".equals(type)) {
                     ensureNoTaskConfig(el, id, meta, type);
@@ -147,6 +151,12 @@ public final class BpmnGraphCompiler {
                             "WAIT node cannot have multiple boundaryEvent timeouts: " + attachment.hostId());
                 }
                 boundaryById.put(attachment.id(), attachment);
+            }
+            for (String waitId : waitDeadlinePolicyByNodeId.keySet()) {
+                if (!boundaryByHostWaitId.containsKey(waitId)) {
+                    throw new IllegalArgumentException(
+                            "labos:wait deadlinePolicy requires a timer boundaryEvent on receiveTask: " + waitId);
+                }
             }
 
             List<GraphPlan.Edge> edges=new ArrayList<>();
@@ -199,10 +209,17 @@ public final class BpmnGraphCompiler {
             // Validate boundaryEvent outgoing degrees and host WAIT degree / route invariants.
             for (BoundaryAttachment boundary : boundaryById.values()) {
                 List<GraphPlan.Edge> bEdges = rawOutgoing.getOrDefault(boundary.id(), List.of());
-                if (bEdges.size() != 1) {
+                GraphPlan.DeadlinePolicy dp = waitDeadlinePolicyByNodeId.get(boundary.hostId());
+                if (dp == null || dp == GraphPlan.DeadlinePolicy.ROUTE_TIMEOUT_EDGE) {
+                    if (bEdges.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Timer boundaryEvent requires exactly one outgoing sequenceFlow: "
+                                        + boundary.id() + " out=" + bEdges.size());
+                    }
+                } else if (!bEdges.isEmpty()) {
                     throw new IllegalArgumentException(
-                            "Timer boundaryEvent requires exactly one outgoing sequenceFlow: "
-                                    + boundary.id() + " out=" + bEdges.size());
+                            "Timer boundaryEvent with deadlinePolicy=" + dp
+                                    + " cannot have outgoing sequenceFlow: " + boundary.id());
                 }
             }
             for (String waitId : waitCorrelationByNodeId.keySet()) {
@@ -214,7 +231,8 @@ public final class BpmnGraphCompiler {
                                     + waitId + " in=" + inDeg + " out=" + normalEdges.size());
                 }
                 BoundaryAttachment boundary = boundaryByHostWaitId.get(waitId);
-                if (boundary != null) {
+                GraphPlan.DeadlinePolicy dp = waitDeadlinePolicyByNodeId.get(waitId);
+                if (boundary != null && (dp == null || dp == GraphPlan.DeadlinePolicy.ROUTE_TIMEOUT_EDGE)) {
                     GraphPlan.Edge normalEdge = normalEdges.get(0);
                     GraphPlan.Edge timeoutEdge = rawOutgoing.get(boundary.id()).get(0);
                     if (normalEdge.to().equals(timeoutEdge.to())) {
@@ -253,7 +271,8 @@ public final class BpmnGraphCompiler {
                                     GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT,
                                     corr,
                                     boundary.timer().durationIso(),
-                                    boundary.timer().durationMillis());
+                                    boundary.timer().durationMillis(),
+                                    waitDeadlinePolicyByNodeId.get(id));
                     String name=first(el.getAttribute("name"),id);
                     nodes.add(new GraphPlan.Node(id,name,GraphPlan.Kind.WAIT,type,
                             null,null,null,stage,null,workflowNodeId,waitSpec));
@@ -293,7 +312,10 @@ public final class BpmnGraphCompiler {
             if (hasWaitNode) {
                 rejectTimeoutWaitsInParallelOrInclusiveRegions(nodes, edges);
             }
-            int schemaVersion = hasWaitNode ? GraphPlan.SCHEMA_VERSION_V2 : GraphPlan.SCHEMA_VERSION_V1;
+            boolean hasV3DeadlinePolicy = !waitDeadlinePolicyByNodeId.isEmpty();
+            int schemaVersion = hasV3DeadlinePolicy
+                    ? GraphPlan.SCHEMA_VERSION_V3
+                    : (hasWaitNode ? GraphPlan.SCHEMA_VERSION_V2 : GraphPlan.SCHEMA_VERSION_V1);
             return new GraphPlan(schemaVersion,VERSION,input.definitionKey(),input.definitionVersion(),
                     GraphPlanCodec.sha256(input.bpmnXml()),nodes,edges);
         } catch(IllegalArgumentException e) { throw e; }
@@ -343,7 +365,9 @@ public final class BpmnGraphCompiler {
         }
     }
 
-    private static String extractWaitCorrelationKeyIfPresent(Element receiveTask, String id, NodeMetadata meta) {
+    private record WaitExtension(String correlationKey, GraphPlan.DeadlinePolicy deadlinePolicy) {}
+
+    private static WaitExtension extractWaitExtensionIfPresent(Element receiveTask, String id, NodeMetadata meta) {
         Element waitEl = findSingleLabosWaitElement(receiveTask, id);
         boolean hasTaskConfig = hasTaskExecutionConfig(receiveTask, meta);
         if (waitEl == null) {
@@ -365,7 +389,29 @@ public final class BpmnGraphCompiler {
         if (corr.contains("${") || corr.contains("#{")) {
             throw new IllegalArgumentException("Dynamic correlationKey expression is not supported: " + corr);
         }
-        return corr;
+        GraphPlan.DeadlinePolicy deadlinePolicy = parseDeadlinePolicyIfPresent(waitEl, id);
+        return new WaitExtension(corr, deadlinePolicy);
+    }
+
+    private static GraphPlan.DeadlinePolicy parseDeadlinePolicyIfPresent(Element waitEl, String id) {
+        Attr attr = waitEl.getAttributeNode("deadlinePolicy");
+        if (attr == null) {
+            attr = waitEl.getAttributeNodeNS(LABOS_NS, "deadlinePolicy");
+        }
+        if (attr == null) {
+            return null;
+        }
+        String raw = blankToNull(attr.getValue());
+        if (raw == null) {
+            throw new IllegalArgumentException(
+                    "labos:wait deadlinePolicy must not be blank on receiveTask: " + id);
+        }
+        try {
+            return GraphPlan.DeadlinePolicy.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Unsupported labos:wait deadlinePolicy on receiveTask " + id + ": " + raw);
+        }
     }
 
     private static void validateLabosWaitAttributesAndChildren(Element waitEl, String ownerId) {
@@ -376,8 +422,8 @@ public final class BpmnGraphCompiler {
                 continue;
             }
             String attrName = attr.getLocalName() != null ? attr.getLocalName() : attr.getName();
-            if (!"correlationKey".equals(attrName)
-                    || (attr.getNamespaceURI() != null && !LABOS_NS.equals(attr.getNamespaceURI()))) {
+            boolean validName = "correlationKey".equals(attrName) || "deadlinePolicy".equals(attrName);
+            if (!validName || (attr.getNamespaceURI() != null && !LABOS_NS.equals(attr.getNamespaceURI()))) {
                 throw new IllegalArgumentException(
                         "Unsupported attribute on labos:wait (" + ownerId + "): " + attr.getName());
             }
@@ -563,7 +609,9 @@ public final class BpmnGraphCompiler {
                 GraphPlan.Node member = nodeByKey.get(memberKey);
                 if (member != null
                         && member.kind() == GraphPlan.Kind.WAIT
-                        && member.waitSpec().waitKind() == GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT) {
+                        && member.waitSpec().waitKind() == GraphPlan.WaitKind.MESSAGE_WITH_TIMEOUT
+                        && (member.waitSpec().deadlinePolicy() == null
+                                || member.waitSpec().deadlinePolicy() == GraphPlan.DeadlinePolicy.ROUTE_TIMEOUT_EDGE)) {
                     throw new IllegalArgumentException(
                             "MESSAGE_WITH_TIMEOUT Wait is not allowed inside parallel/inclusive gateway region ("
                                     + split.key() + "): " + member.key());
