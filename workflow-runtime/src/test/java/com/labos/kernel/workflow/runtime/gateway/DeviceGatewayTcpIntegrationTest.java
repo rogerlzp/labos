@@ -942,10 +942,6 @@ class DeviceGatewayTcpIntegrationTest {
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
                     + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED'"));
 
-            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
-                    + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
-            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
-                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED'"));
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
                     + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED' "
                     + "AND payload->>'rejectionReason' IS NOT NULL"));
