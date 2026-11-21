@@ -1,4 +1,4 @@
-# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.5）
+# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.6）
 
 > **所属总纲**：[PHASE3B_MASTER_CONTRACT.md](./PHASE3B_MASTER_CONTRACT.md)  
 > **通信与 Wire 对侧契约**：[DEVICE_GATEWAY_PROTOCOL.md](./DEVICE_GATEWAY_PROTOCOL.md)  
@@ -105,7 +105,7 @@ stateDiagram-v2
   MANUAL_REQUIRED --> CANCELLED : T21 reconcileAndSettleUnknownCommand(CANCELLED)
 ```
 
-| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.5 明确约定 | 责任方 |
+| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.6 明确约定 | 责任方 |
 | :--- | :--- | :--- | :--- |
 | `CANCEL_REQUESTED → DELIVERY_UNKNOWN` | 已允许 | **保留**（取消指令断连超时时可先转 `DELIVERY_UNKNOWN` 发起只读查证） | 阶段 0 / AI-1 对齐 |
 | `DELIVERY_UNKNOWN → RUNNING` | 已允许 | **保留**（恢复时若设备回报运行中，无缝接续 `RUNNING`） | 阶段 0 / AI-1 对齐 |
@@ -255,6 +255,16 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
    - 严禁以批量 SQL 脚本将 `CREATED`/`SEND_STARTED`/`DELIVERY_UNKNOWN`/`UNKNOWN`/`RUNNING` 等旧在途或未决命令强行改写为 `CANCELLED`/`FAILED`/`SUCCEEDED`；
    - 严禁填写虚构占位符（如 `'LEGACY_DUMMY'`）批量回填 `workstation_id` / `operation_name` 以强行通过 `006` preflight；
    - 必须在 `labos.workflow.runtime.host.enabled=false` 静默前提下，由运维与实验负责人按物理设备现场逐条核对、经正式人工结算路径留痕（写入 `runtime_audit` / `manual_intervention`）确认零残余在途物理动作后，再按第 2–3 条只读归档已闭环记录（或仅对经核实具真实可追溯来源的记录按变更单显式回填真实工位与操作名），预检归零后方可应用 `006`。
+5. **原地升级只读归档操作顺序（单原子事务 / 受控维护窗口，严禁部分清除）**：
+   1. **维护窗口与锁定**：确认 `labos.workflow.runtime.host.enabled=false`、持有独立变更单与全量备份（`pg_dump`），在受控维护窗口与单一原子事务内对目标 `workflow_run`、`command_ledger` 及关联 `command_dispatch_attempt` 加行锁（`FOR UPDATE`），防止并发状态变化；
+   2. **锁内终态与安全复核**：在锁内逐条核验满足第 3 条全部闭环条件（`command_state IN ('SUCCEEDED','FAILED','CANCELLED')`、`workflow_run.status IN ('COMPLETED','FAILED','CANCELLED')`，且无关联 `ACTIVE`/`CLEAR_PENDING` `quarantine_record` 与 `ACTIVE`/`QUARANTINED` `resource_lease`）；任一行不满足即整批中止并转人工核验；
+   3. **成对只读复制**：将 `command_ledger` 与 `command_dispatch_attempt` 按 `(tenant_id, command_id)` 成对复制到独立归档 Schema `workflow_runtime_archive_pre006`（`command_ledger_pre006` 与 `command_dispatch_attempt_pre006`），附加 `archived_at`、`archive_batch_id`、`archive_reason`、`operator_id`、`original_sha256`；
+   4. **字段级、行数与哈希核对**：对活动表源集合与归档表目标集合执行**字段级比对、精确行数核对与 `original_sha256` 哈希核对**，须 100% 一致；
+   5. **审计链留痕**：向保留在 `workflow_runtime` 的 `runtime_audit` 写入归档批次审计记录（含 `archive_batch_id`、归档表名、记录数、校验摘要与变更单审批标识），同时**原样保留** `workflow_run`、`node_attempt`、`worker_execution_fact`（append-only）、`runtime_event` 与 `runtime_audit`（零删除零篡改）；
+   6. **核验通过且获授权后按外键顺序移除活表行**：仅当第 1–5 步全部核验通过、外键依赖处理明确（按 [001_init.sql:465](../db/workflow_runtime/001_init.sql#L465) 先移除子表 `command_dispatch_attempt` 行，再移除父表 `command_ledger` 行）且取得正式授权后，方可在同一原子事务内从活动表移除已归档的对应行；
+   7. **全失败回滚底线**：上述任一步失败，整个事务立即回滚，该批次**严禁**进入“归档完成”状态，原始活动数据不得被部分清除。
+
+> **阶段 0 边界声明**：阶段 0 仅冻结上述 `§6.1` 操作规范，**不**在阶段 0 编写自动删除活表数据的归档脚本，亦**严禁**在 `192.168.124.2:5432/labdb` 试跑任何归档或删除语句；未来实库执行必须另立独立变更单、全量备份与正式人工审批。
 
 ---
 

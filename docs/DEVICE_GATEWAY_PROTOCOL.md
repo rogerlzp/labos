@@ -1,4 +1,4 @@
-# DEVICE_GATEWAY_PROTOCOL — 设备网关、TLS 1.3 mTLS 认证与 Sidecar 协议契约（AI-2 主责 · Draft v1.5）
+# DEVICE_GATEWAY_PROTOCOL — 设备网关、TLS 1.3 mTLS 认证与 Sidecar 协议契约（AI-2 主责 · Draft v1.6）
 
 > **所属总纲**：[PHASE3B_MASTER_CONTRACT.md](./PHASE3B_MASTER_CONTRACT.md)  
 > **核心执行对侧契约**：[DEVICE_EXECUTION_CORE_CONTRACT.md](./DEVICE_EXECUTION_CORE_CONTRACT.md)
@@ -20,12 +20,12 @@
 | 模式 (`security_mode`) | 适用范围 | 密码学安全保障（全由 TLS 1.3 协议层原生提供） |
 | :--- | :--- | :--- |
 | **`DEV_LOOPBACK_PLAINTEXT`** | **仅限本机 `127.0.0.1` / `::1`** 单测与本地进程沙箱 | 代码入口强制校验：若绑定或拨号地址不是 loopback，**直接拒绝启动 (`IllegalArgumentException`)** |
-| **`TLS13_MTLS`** (**唯一合法非回环模式 · 首发强制默认**) | Phase 3B/3C/3D/3E/3F 全部局域网工位与生产环境 | 1. **完整传输加密、逐帧 AEAD 完整性与单连接内 TLS 记录序列抗重放（显式禁用 `0-RTT / Early Data`）**，业务命令/参数/回执不再裸奔；<br/>2. **双向证书 + SAN 白名单密码学绑定**：<br/>　- Sidecar 校验 Kernel 证书必须由 Lab Root/Sub CA 签发、在有效期内且其 `SAN (URI: urn:labos:kernel:<kernelId>)` 命中 Sidecar 配置的 `allowedKernelIds[]` 白名单（直接阻止未授权测试 Kernel 接入工控机）；<br/>　- Kernel 校验 Sidecar 证书 `SAN (URI: urn:labos:workstation:<workstationId>)` **必须精确等于**拨号目标的 `workstationId`（防止假工位或错端口串台）；<br/>3. **应用层 `HELLO` 角色交叉锁死**：`HELLO.kernelId` 必须等于 TLS Peer SAN 提取出的 `<kernelId>`，`HELLO_ACK.workstationId` 必须等于服务端 Peer SAN 提取出的 `<workstationId>`，任何不匹配立刻断连并记 `ERR_SESSION_IDENTITY_MISMATCH`。 |
+| **`TLS13_MTLS`** (**唯一合法非回环模式 · 首发强制默认**) | Phase 3B/3C/3D/3E/3F 全部局域网工位与生产环境 | 1. **完整传输加密、逐帧 AEAD 完整性与单连接内 TLS 记录序列抗重放（不接受 `0-RTT / Early Data`）**，业务命令/参数/回执不再裸奔；<br/>2. **双向证书 + SAN 白名单密码学绑定**：<br/>　- Sidecar 校验 Kernel 证书必须由 Lab Root/Sub CA 签发、在有效期内且其 `SAN (URI: urn:labos:kernel:<kernelId>)` 命中 Sidecar 配置的 `allowedKernelIds[]` 白名单（直接阻止未授权测试 Kernel 接入工控机）；<br/>　- Kernel 校验 Sidecar 证书 `SAN (URI: urn:labos:workstation:<workstationId>)` **必须精确等于**拨号目标的 `workstationId`（防止假工位或错端口串台）；<br/>3. **应用层 `HELLO` 角色交叉锁死**：`HELLO.kernelId` 必须等于 TLS Peer SAN 提取出的 `<kernelId>`，`HELLO_ACK.workstationId` 必须等于服务端 Peer SAN 提取出的 `<workstationId>`，任何不匹配立刻断连并记 `ERR_SESSION_IDENTITY_MISMATCH`。 |
 
-**`TLS 1.3 0-RTT / Early Data` 强制禁用与分层防重红线（不可依赖运行库默认配置）**：
-1. **显式禁用 `0-RTT / Early Data`**：服务端（`.NET 10` Sidecar `SslServerAuthenticationOptions` / `SslStream`）与客户端（Java Kernel `SSLContext` / `SSLEngine`）必须在代码与配置层面显式禁用 TLS 1.3 `0-RTT / Early Data`，严禁依赖 TLS 运行库或操作系统默认开关，亦严禁接收或处理任何早发应用数据。
-2. **完整握手认证栅栏**：在完整 TLS 1.3 1-RTT 握手完成、且双方证书链、有效期、吊销名单与 `SAN (URI)` 身份核验全部通过**之前**，连接严禁读取、解析或受理任何应用层帧（包括 `HELLO`、`COMMAND_SEND`、`COMMAND_CANCEL`、`COMMAND_QUERY` 等）。
-3. **仅受认证连接发令**：所有 `COMMAND_SEND` / `COMMAND_CANCEL` / `COMMAND_QUERY` 物理控制指令必须经正常 TLS 1.3 完整握手并完成双向认证的长连接传输。
+**`TLS 1.3 0-RTT / Early Data` 能力边界与可测试握手栅栏红线**：
+1. **运行库能力边界确认（不虚构不存在的 API 开关）**：采用的 `.NET 10`（`SslStream`）与 Java 17（JSSE `SSLContext` / `SSLEngine`）TLS 1.3 实现必须确认**不支持且不接受 TLS 1.3 `0-RTT / Early Data`**；若所选运行库未暴露 Early Data 配置开关，则通过运行库能力边界与版本/配置基线审计保证不处理 Early Data（严禁在契约或代码中虚构不存在的配置开关，亦严禁引入开启 `0-RTT` 的第三方 TLS 代理或引擎）。
+2. **完整握手与身份校验栅栏**：只有在完整 TLS 1.3 1-RTT 握手完成、双向证书链/有效期/吊销名单校验及 `SAN (URI)` 身份核验全部通过**之后**，应用层协议解析器才允许接管数据流并接收帧（包括 `HELLO`、`COMMAND_SEND`、`COMMAND_CANCEL`、`COMMAND_QUERY` 等）。
+3. **可测试的握手栅栏验证**：阶段 1–2 自动化测试必须证明，握手及双向证书/SAN 认证完成前的任何应用数据或未认证字节流均会被连接层直接拒绝/断开，绝不进入命令解析或执行路径。
 4. **传输层与业务层防重严格分离**：TLS 1.3 记录层仅提供**单连接内（per-connection）**记录抗重放与逐帧 AEAD 完整性校验，**绝不等同于跨连接/跨重连的应用层命令幂等**；跨连接防重与物理副作用幂等保护严格由 `commandId` + Sidecar 本地 SQLite WAL Journal + Kernel PG `command_ledger` 共同承担。
 
 **轻量实验室内部 CA 生命周期规范（不引入重型外部 KMS，但可审计、可轮换、可吊销）**：

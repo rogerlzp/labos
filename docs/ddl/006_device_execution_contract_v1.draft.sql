@@ -1,4 +1,4 @@
--- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.5 final review).
+-- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.6 final review).
 -- NOTE: This draft sits in docs/ddl/ and is NOT executed by PR #17 CI.
 --       Real PostgreSQL 17 DDL & 002_schema_contract CI checks take effect only when
 --       promoted to db/workflow_runtime/006_device_execution_contract_v1.sql in Phase 0.
@@ -30,6 +30,8 @@
 --      - Append 006 to the ordered loop (L197): for ver in 001 003 004 005 006; do
 --      - Add the pending-apply branch in case "$ver" (L219-251):
 --          006) fname="006_device_execution_contract_v1.sql"; mode="STANDARD" ;;
+--      - Branch C ONLY: do NOT add ADOPT 006 to Branch B (--adopt-existing), so pre-existing
+--        DBs always apply 006 via Branch C and enforce $command_ledger_v1_preflight$.
 --      - Update test_pg_migrations.py (L122-133, L273, adopt tests) so expected ledger
 --        versions include "006" and add a dirty-row preflight test verifying 006 blocks
 --        existing command_ledger rows missing non-blank workstation_id/operation_name.
