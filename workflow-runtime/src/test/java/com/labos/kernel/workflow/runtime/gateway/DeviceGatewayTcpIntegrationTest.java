@@ -2,6 +2,7 @@ package com.labos.kernel.workflow.runtime.gateway;
 
 import com.labos.kernel.workflow.runtime.command.DeviceCommandAdapter;
 import com.labos.kernel.workflow.runtime.command.DeviceCommandExecutionService;
+import com.labos.kernel.workflow.runtime.device.contract.DeviceCommandEnvelope;
 import com.labos.kernel.workflow.runtime.coordinator.GraphCoordinator;
 import com.labos.kernel.workflow.runtime.coordinator.WorkflowRunLifecycleCoordinator;
 import com.labos.kernel.workflow.runtime.dispatch.LocalTaskDispatchService;
@@ -407,9 +408,9 @@ class DeviceGatewayTcpIntegrationTest {
                         List<UUID> sent = new ArrayList<>();
                         for (int i = 0; i < cmdsPerThread; i++) {
                             UUID cmdId = UUID.randomUUID();
-                            var env = new DeviceCommandAdapter.DeviceCommandEnvelope(
+                            var env = new DeviceCommandEnvelope(
                                     UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                                    cmdId, UUID.randomUUID(), deviceId, "Dispense", "QUERYABLE",
+                                    cmdId, UUID.randomUUID(), "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE",
                                     "{\"worker\":" + workerIdx + ",\"idx\":" + i + "}");
                             var res = gateway.sendCommand(env);
                             assertEquals(DeviceCommandAdapter.SendStatus.ACCEPTED_ASYNC, res.status());
@@ -452,6 +453,7 @@ class DeviceGatewayTcpIntegrationTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         String deviceId = "tcp-dbfault-1";
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         String planKey = "g2c-dbfault-" + tenant;
         GraphPlan plan = compileSingleDevicePlan(planKey);
         var run = repo.createRun(tenant, "g2c-dbf-" + UUID.randomUUID(), "CREATE", "{}",
@@ -468,7 +470,7 @@ class DeviceGatewayTcpIntegrationTest {
         repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-dbf");
         repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-dbf");
         UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
-                "w-dbf", deviceId, "Dispense", "QUERYABLE", "{\"v\":42}");
+                "w-dbf", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":42}");
 
         // Inject 2 consecutive transient DB outages before allowing persistence to succeed!
         AtomicInteger remainingTransientFailures = new AtomicInteger(2);
@@ -559,6 +561,7 @@ class DeviceGatewayTcpIntegrationTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         String deviceId = "tcp-pipettor-1";
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         String planKey = "g2c-e2e-" + tenant;
         GraphPlan plan = compileSingleDevicePlan(planKey);
         var run = repo.createRun(tenant, "g2c-e2e-" + UUID.randomUUID(), "CREATE", "{}",
@@ -618,7 +621,8 @@ class DeviceGatewayTcpIntegrationTest {
                         node -> new LocalTaskDispatchService.TaskDispatchSpec(
                                 "g2c-e2e-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                         node -> Optional.of((req, ctx) -> {
-                            UUID cmdId = ctx.createDeviceCommand(deviceId, "Dispense", "QUERYABLE", "{\"volumeUl\":75}");
+                            UUID cmdId = ctx.createDeviceCommand(
+                                    "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"volumeUl\":75}");
                             cmdIdRef.set(cmdId);
                             cmdCreated.countDown();
                             assertTrue(terminalEventApplied.await(5, TimeUnit.SECONDS));
@@ -667,6 +671,7 @@ class DeviceGatewayTcpIntegrationTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         String deviceId = "tcp-reconn-1";
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         String planKey = "g2c-reconn-" + tenant;
         GraphPlan plan = compileSingleDevicePlan(planKey);
 
@@ -725,7 +730,7 @@ class DeviceGatewayTcpIntegrationTest {
             repo.acceptAttempt(tenant, run1.runId(), res1.attemptId(), res1.dispatchId(), "w-1");
             repo.startAttempt(tenant, run1.runId(), res1.attemptId(), res1.dispatchId(), "w-1");
             UUID cmd1 = repo.createCommandForAttempt(tenant, run1.runId(), res1.attemptId(),
-                    "w-1", deviceId, "Dispense", "QUERYABLE", "{\"v\":10}");
+                    "w-1", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":10}");
 
             var del1 = cmdSvc.deliverPendingCommands(tenant, 4, "disp-r1");
             assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.SENT_ASYNC, del1.outcomes().get(cmd1));
@@ -766,7 +771,7 @@ class DeviceGatewayTcpIntegrationTest {
             repo.acceptAttempt(tenant, run2.runId(), res2.attemptId(), res2.dispatchId(), "w-2");
             repo.startAttempt(tenant, run2.runId(), res2.attemptId(), res2.dispatchId(), "w-2");
             UUID cmd2 = repo.createCommandForAttempt(tenant, run2.runId(), res2.attemptId(),
-                    "w-2", deviceId, "Dispense", "QUERYABLE", "{\"v\":20}");
+                    "w-2", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":20}");
 
             var del2 = cmdSvc.deliverPendingCommands(tenant, 4, "disp-r2");
             assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.SENT_ASYNC, del2.outcomes().get(cmd2));
@@ -789,6 +794,7 @@ class DeviceGatewayTcpIntegrationTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         String deviceId = "tcp-sec-1";
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         String planKey = "g2c-sec-" + tenant;
         GraphPlan plan = compileSingleDevicePlan(planKey);
         var run = repo.createRun(tenant, "g2c-sec-" + UUID.randomUUID(), "CREATE", "{}",
@@ -805,7 +811,7 @@ class DeviceGatewayTcpIntegrationTest {
         repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-sec");
         repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-sec");
         UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
-                "w-sec", deviceId, "Dispense", "QUERYABLE", "{\"v\":30}");
+                "w-sec", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":30}");
 
         CountDownLatch appliedLatch = new CountDownLatch(1);
         CountDownLatch replayLatch = new CountDownLatch(1);
@@ -1009,6 +1015,7 @@ class DeviceGatewayTcpIntegrationTest {
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
 
         String deviceId = "tcp-off-1";
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         String planKey = "g2c-offline-" + tenant;
         GraphPlan plan = compileSingleDevicePlan(planKey);
         var run = repo.createRun(tenant, "g2c-off-" + UUID.randomUUID(), "CREATE", "{}",
@@ -1025,7 +1032,7 @@ class DeviceGatewayTcpIntegrationTest {
         repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-off");
         repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-off");
         UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
-                "w-off", deviceId, "Dispense", "QUERYABLE", "{\"v\":5}");
+                "w-off", "ws-" + deviceId, deviceId, "Dispense", "Dispense", "QUERYABLE", "{\"v\":5}");
 
         int closedPort;
         try (var tmp = new java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))) {

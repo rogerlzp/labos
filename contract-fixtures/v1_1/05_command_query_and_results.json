@@ -1,0 +1,64 @@
+{
+  "fixtureId": "05_command_query_and_results",
+  "protocolVersion": "1.1",
+  "frames": [
+    {
+      "protocolVersion": "1.1",
+      "frameType": "COMMAND_QUERY",
+      "sentAtEpochMs": 1763712020000,
+      "commandId": "11111111-1111-4111-8111-111111111111",
+      "dispatchId": "22222222-2222-4222-8222-222222222229",
+      "deviceId": "P_AUTO-1",
+      "deviceSequence": "hw-seq-1001"
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "COMMAND_QUERY_RESULT",
+      "sentAtEpochMs": 1763712020050,
+      "commandId": "11111111-1111-4111-8111-111111111111",
+      "dispatchId": "22222222-2222-4222-8222-222222222229",
+      "deviceId": "P_AUTO-1",
+      "reconciliationStatus": "CONFIRMED_SUCCEEDED",
+      "deviceSequence": "hw-seq-1001",
+      "evidenceSource": "HARDWARE_NATIVE_QUERY",
+      "evidenceStrength": "STRONG_HARDWARE_FACT",
+      "evidencePayload": {
+        "taskRegister": "DONE",
+        "crcOk": true
+      },
+      "outcome": {
+        "status": "BOUND"
+      }
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "COMMAND_QUERY_RESULT",
+      "sentAtEpochMs": 1763712021050,
+      "commandId": "11111111-1111-4111-8111-111111111115",
+      "dispatchId": "22222222-2222-4222-8222-222222222230",
+      "deviceId": "S100",
+      "reconciliationStatus": "CONFIRMED_NOT_EXECUTED",
+      "evidenceSource": "PRE_SEND_ABORT_IN_JOURNAL",
+      "evidenceStrength": "STRONG_PRE_SEND_ABORT",
+      "evidencePayload": {
+        "journalState": "ABORTED_BEFORE_ADAPTER_SEND"
+      }
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "COMMAND_QUERY_RESULT",
+      "sentAtEpochMs": 1763712022050,
+      "commandId": "11111111-1111-4111-8111-111111111116",
+      "dispatchId": "22222222-2222-4222-8222-222222222231",
+      "deviceId": "S100",
+      "reconciliationStatus": "INDETERMINATE",
+      "evidenceSource": "AMBIGUOUS",
+      "evidenceStrength": "WEAK_UNVERIFIED",
+      "evidencePayload": {
+        "journalState": "DISPATCHED_TO_DEVICE",
+        "supportsNativeHardwareQuery": false
+      },
+      "errorCode": "ERR_RECONCILE_INDETERMINATE"
+    }
+  ]
+}

@@ -121,15 +121,17 @@ def test_fresh_install_idempotent_and_checksum_drift() -> None:
         r1 = run_migrator(db, "--verify")
         assert "APPLY 001" in r1.stdout and "APPLY 003" in r1.stdout
         assert "APPLY 004" in r1.stdout and "APPLY 005" in r1.stdout
+        assert "APPLY 006" in r1.stdout
         assert "VERIFY 002_schema_contract.sql PASSED" in r1.stdout
 
         ledger1 = fetch_ledger(db)
-        assert set(ledger1.keys()) == {"001", "003", "004", "005"}
+        assert set(ledger1.keys()) == {"001", "003", "004", "005", "006"}
         expected_files = {
             "001": "001_init.sql",
             "003": "003_g5_wait_correlation.sql",
             "004": "004_g5_wait_inbox_idx.sql",
             "005": "005_migration_ledger.sql",
+            "006": "006_device_execution_contract_v1.sql",
         }
         for ver, fname in expected_files.items():
             rec_fname, rec_sha, rec_mode, _ = ledger1[ver]
@@ -270,7 +272,8 @@ def test_003_preflight_blocks_dirty_duplicate_active_wait_data() -> None:
         # Re-run now succeeds and validates schema contract
         fixed = run_migrator(db, "--verify")
         assert "APPLY 003" in fixed.stdout and "APPLY 004" in fixed.stdout
-        assert set(fetch_ledger(db).keys()) == {"001", "003", "004", "005"}
+        assert "APPLY 006" in fixed.stdout
+        assert set(fetch_ledger(db).keys()) == {"001", "003", "004", "005", "006"}
         idx_def, idx_valid = index_info(db, "wait_active_correlation_uq")
         assert idx_def is not None and idx_valid is True
     finally:
@@ -330,12 +333,14 @@ def test_adopt_existing_pre_ledger_database() -> None:
         assert "APPLY 005" in adopted.stdout
         assert "ADOPT 003" in adopted.stdout
         assert "ADOPT 004" in adopted.stdout
+        assert "APPLY 006" in adopted.stdout
 
         ledger = fetch_ledger(db)
         assert ledger["001"][2] == "BASELINE_ADOPTED"
         assert ledger["003"][2] == "BASELINE_ADOPTED"
         assert ledger["004"][2] == "BASELINE_ADOPTED"
         assert ledger["005"][2] == "STANDARD"
+        assert ledger["006"][2] == "STANDARD"
 
         rerun = run_migrator(db, "--verify")
         assert "APPLY " not in rerun.stdout and "ADOPT " not in rerun.stdout
@@ -355,15 +360,90 @@ def test_adopt_existing_partial_missing_004() -> None:
         assert "ADOPT 003" in res.stdout
         assert "APPLY 004 (004_g5_wait_inbox_idx_concurrently.sql, mode=ONLINE_CONCURRENTLY)" in res.stdout
         assert "APPLY 005" in res.stdout
+        assert "APPLY 006" in res.stdout
 
         ledger = fetch_ledger(db)
         assert ledger["001"][2] == "BASELINE_ADOPTED"
         assert ledger["003"][2] == "BASELINE_ADOPTED"
         assert ledger["004"][2] == "ONLINE_CONCURRENTLY"
         assert ledger["005"][2] == "STANDARD"
+        assert ledger["006"][2] == "STANDARD"
     finally:
         drop_temp_db(db)
-    print("PASS: partial pre-ledger database adopts 001/003 and applies 004 CONCURRENTLY")
+    print("PASS: partial pre-ledger database adopts 001/003 and applies 004 CONCURRENTLY + 006")
+
+
+def test_006_preflight_blocks_dirty_command_ledger_rows() -> None:
+    db = create_temp_db("dirty006")
+    try:
+        psql_file(db, "001_init.sql")
+        psql_file(db, "003_g5_wait_correlation.sql")
+        psql_file(db, "004_g5_wait_inbox_idx.sql")
+        psql_file(db, "005_migration_ledger.sql")
+        with psycopg.connect(dsn(db)) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO workflow_runtime.schema_migration(version, filename, sha256, mode)
+                    VALUES ('001', '001_init.sql', %s, 'STANDARD'),
+                           ('003', '003_g5_wait_correlation.sql', %s, 'STANDARD'),
+                           ('004', '004_g5_wait_inbox_idx.sql', %s, 'STANDARD'),
+                           ('005', '005_migration_ledger.sql', %s, 'STANDARD')
+                    """,
+                    (
+                        sha256_of("001_init.sql"),
+                        sha256_of("003_g5_wait_correlation.sql"),
+                        sha256_of("004_g5_wait_inbox_idx.sql"),
+                        sha256_of("005_migration_ledger.sql"),
+                    ),
+                )
+                t, d, r = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+                tok, act, att, cmd = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+                cur.execute(
+                    "INSERT INTO workflow_runtime.tenant(tenant_id, tenant_key, display_name) VALUES (%s, %s, 'dirty006')",
+                    (t, f"dirty006-{t}"),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO workflow_runtime.definition_snapshot
+                      (tenant_id, definition_id, definition_key, definition_version, definition_hash, compiler_version, graph_plan)
+                    VALUES (%s, %s, 'dirty006-def', '1', decode(repeat('ab', 32), 'hex'), 'ci', '{}')
+                    """,
+                    (t, d),
+                )
+                cur.execute(
+                    "INSERT INTO workflow_runtime.workflow_run(tenant_id, run_id, definition_id, status) VALUES (%s, %s, %s, 'RUNNING')",
+                    (t, r, d),
+                )
+                cur.execute(
+                    "INSERT INTO workflow_runtime.execution_token(tenant_id, token_id, run_id, token_state, node_key) VALUES (%s, %s, %s, 'RUNNING', 'c1')",
+                    (t, tok, r),
+                )
+                cur.execute(
+                    "INSERT INTO workflow_runtime.node_activation(tenant_id, activation_id, run_id, token_id, activation_no, node_key, activation_state) VALUES (%s, %s, %s, %s, 1, 'c1', 'RUNNING')",
+                    (t, act, r, tok),
+                )
+                cur.execute(
+                    "INSERT INTO workflow_runtime.node_attempt(tenant_id, attempt_id, run_id, activation_id, attempt_no, dispatch_id, attempt_state, side_effect_class) VALUES (%s, %s, %s, %s, 1, %s, 'STARTED', 'PURE')",
+                    (t, att, r, act, uuid.uuid4()),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO workflow_runtime.command_ledger
+                      (tenant_id, command_id, run_id, activation_id, attempt_id, device_id, command_kind, command_state, idempotency_class, command_payload, payload_hash)
+                    VALUES (%s, %s, %s, %s, %s, 'dev-legacy', 'legacy_op', 'SUCCEEDED', 'IDEMPOTENT', '{}', decode(repeat('cd', 32), 'hex'))
+                    """,
+                    (t, cmd, r, act, att),
+                )
+
+        blocked = run_migrator(db, "--verify", check=False)
+        assert blocked.returncode != 0
+        assert "006 migration blocked" in blocked.stderr
+        assert "CORE §6.1" in blocked.stderr
+        assert "006" not in fetch_ledger(db)
+    finally:
+        drop_temp_db(db)
+    print("PASS: 006 dirty-row preflight blocks pre-006 command_ledger row without partial commit")
 
 
 def main() -> None:
@@ -372,6 +452,7 @@ def main() -> None:
     test_004_online_concurrently_non_transactional_and_equivalent()
     test_adopt_existing_pre_ledger_database()
     test_adopt_existing_partial_missing_004()
+    test_006_preflight_blocks_dirty_command_ledger_rows()
     print("ALL MIGRATION LEDGER & PREFLIGHT TESTS PASSED")
 
 

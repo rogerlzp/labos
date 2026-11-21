@@ -581,11 +581,11 @@ class G5WaitGraphPlanCompilerAndCodecTest {
                 """;
         assertThrows(IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v1WithRouteKind));
 
-        // Unsupported schemaVersion=3 -> rejected with diagnostic message
-        String v3 = v2Json.replace("\"schemaVersion\":2", "\"schemaVersion\":3");
-        IllegalArgumentException v3Ex = assertThrows(
-                IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v3, "run=1"));
-        assertTrue(v3Ex.getMessage().contains("Unsupported GraphPlan schemaVersion: 3"));
+        // Unsupported schemaVersion=4 -> rejected with diagnostic message
+        String v4 = v2Json.replace("\"schemaVersion\":2", "\"schemaVersion\":4");
+        IllegalArgumentException v4Ex = assertThrows(
+                IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v4, "run=1"));
+        assertTrue(v4Ex.getMessage().contains("Unsupported GraphPlan schemaVersion: 4"));
 
         // Mismatched durationMillis in JSON -> rejected
         String badMillis = v2Json.replace("\"durationMillis\":20000", "\"durationMillis\":19999");

@@ -1,0 +1,42 @@
+{
+  "fixtureId": "10_v3_wait_deadline_policy",
+  "schemaVersion": 3,
+  "policies": [
+    {
+      "deadlinePolicy": "ROUTE_TIMEOUT_EDGE",
+      "requiresTimeoutOutgoingEdge": true,
+      "allowedInsideParallelRegion": false,
+      "waitSpec": {
+        "waitKind": "MESSAGE_WITH_TIMEOUT",
+        "correlationKey": "plate:PLT-001:done",
+        "durationIso": "PT15M",
+        "durationMillis": 900000,
+        "deadlinePolicy": "ROUTE_TIMEOUT_EDGE"
+      }
+    },
+    {
+      "deadlinePolicy": "ESCALATE_MANUAL",
+      "requiresTimeoutOutgoingEdge": false,
+      "allowedInsideParallelRegion": true,
+      "waitSpec": {
+        "waitKind": "MESSAGE_WITH_TIMEOUT",
+        "correlationKey": "tip:refill:lane1",
+        "durationIso": "PT30M",
+        "durationMillis": 1800000,
+        "deadlinePolicy": "ESCALATE_MANUAL"
+      }
+    },
+    {
+      "deadlinePolicy": "FAIL_RUN",
+      "requiresTimeoutOutgoingEdge": false,
+      "allowedInsideParallelRegion": true,
+      "waitSpec": {
+        "waitKind": "MESSAGE_WITH_TIMEOUT",
+        "correlationKey": "qc:abort:lane1",
+        "durationIso": "PT5M",
+        "durationMillis": 300000,
+        "deadlinePolicy": "FAIL_RUN"
+      }
+    }
+  ]
+}

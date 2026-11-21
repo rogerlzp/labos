@@ -261,15 +261,15 @@ class G5AcceptanceContractTest {
         String v1Json = GraphPlanCodec.toJson(originalV1);
         assertEquals(originalV1, GraphPlanCodec.fromJson(v1Json), "v1 plan survives round-trip");
 
-        // v2 dual-read retains v1 history; v3 and v1-carrying-v2 fields fail closed.
+        // v2/v3 dual-read retains v1 history; unsupported schemaVersion=4 and v1-carrying-v2 fields fail closed.
         String promotedV2Json = v1Json.replace("\"schemaVersion\":1", "\"schemaVersion\":2");
         GraphPlan promotedV2 = GraphPlanCodec.fromJson(promotedV2Json);
         assertEquals(GraphPlan.SCHEMA_VERSION_V2, promotedV2.schemaVersion());
         assertEquals(originalV1.definitionKey(), promotedV2.definitionKey());
 
-        String v3Json = v1Json.replace("\"schemaVersion\":1", "\"schemaVersion\":3");
-        assertThrows(IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v3Json),
-                "frozen §4.2: unknown schemaVersion=3 must fail closed");
+        String v4Json = v1Json.replace("\"schemaVersion\":1", "\"schemaVersion\":4");
+        assertThrows(IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v4Json),
+                "frozen §4.2: unknown schemaVersion=4 must fail closed");
         String v1WithRouteKind = v1Json.replace("\"defaultFlow\":false", "\"defaultFlow\":false,\"routeKind\":\"TIMEOUT\"");
         assertThrows(IllegalArgumentException.class, () -> GraphPlanCodec.fromJson(v1WithRouteKind),
                 "frozen §4.1: v1 payload carrying routeKind must be rejected");

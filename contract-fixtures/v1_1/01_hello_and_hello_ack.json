@@ -1,0 +1,77 @@
+{
+  "fixtureId": "01_hello_and_hello_ack",
+  "protocolVersion": "1.1",
+  "frames": [
+    {
+      "protocolVersion": "1.1",
+      "frameType": "HELLO",
+      "sentAtEpochMs": 1763712000000,
+      "workstationId": "ws-pipetting-01",
+      "kernelId": "labos-kernel-prod-01",
+      "connectionGeneration": 7,
+      "heartbeatIntervalMs": 3000,
+      "heartbeatTimeoutMs": 10000,
+      "supportedProtocolVersions": ["1.1"]
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "HELLO_ACK",
+      "sentAtEpochMs": 1763712000025,
+      "workstationId": "ws-pipetting-01",
+      "acceptedProtocolVersion": "1.1",
+      "sidecarInstanceId": "sc-inst-ws-pipetting-01-9a81f2",
+      "storageState": "PERSISTED",
+      "devices": [
+        {
+          "descriptor": {
+            "deviceId": "P_AUTO-1",
+            "deviceModel": "LabOS AutoPipettor V4",
+            "workstationId": "ws-pipetting-01"
+          },
+          "capabilities": {
+            "operations": {
+              "Bind": {
+                "idempotencyClass": "NON_IDEMPOTENT",
+                "defaultTimeoutMs": 600000,
+                "interruptible": false,
+                "supportsCancel": false,
+                "supportsJournalQuery": true,
+                "supportsNativeHardwareQuery": true,
+                "reconciliationPolicy": {
+                  "autoQueryAllowed": true,
+                  "maxQueryAttempts": 3,
+                  "queryIntervalMs": 2000,
+                  "maxReconcileWindowMs": 15000,
+                  "requiredSuccessStrength": "STRONG_HARDWARE_FACT",
+                  "onExhaustedAction": "ESCALATE_UNKNOWN_AND_QUARANTINE"
+                },
+                "emitsWaitingEvents": ["waiting_interaction"]
+              },
+              "Seal": {
+                "idempotencyClass": "NON_IDEMPOTENT",
+                "defaultTimeoutMs": 30000,
+                "interruptible": false,
+                "supportsCancel": false,
+                "supportsJournalQuery": true,
+                "supportsNativeHardwareQuery": false,
+                "reconciliationPolicy": {
+                  "autoQueryAllowed": false,
+                  "maxQueryAttempts": 0,
+                  "queryIntervalMs": 0,
+                  "maxReconcileWindowMs": 0,
+                  "requiredSuccessStrength": "STRONG_HARDWARE_FACT",
+                  "onExhaustedAction": "ESCALATE_UNKNOWN_AND_QUARANTINE"
+                },
+                "emitsWaitingEvents": []
+              }
+            }
+          },
+          "observation": {
+            "deviceState": "IDLE",
+            "observedAtEpochMs": 1763712000020
+          }
+        }
+      ]
+    }
+  ]
+}

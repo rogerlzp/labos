@@ -2,6 +2,7 @@ package com.labos.kernel.workflow.runtime.command;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.labos.kernel.workflow.runtime.device.contract.DeviceCommandEnvelope;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 
 import java.util.LinkedHashMap;
@@ -137,9 +138,10 @@ public final class DeviceCommandExecutionService {
 
                 // SEND_STARTED + SIDE_EFFECT_STARTED(command:<id>) are now durably committed.
                 crossedSendStarted = true;
-                DeviceCommandAdapter.DeviceCommandEnvelope envelope = new DeviceCommandAdapter.DeviceCommandEnvelope(
+                DeviceCommandEnvelope envelope = new DeviceCommandEnvelope(
                         tenantId, cmd.runId(), cmd.attemptId(), commandId, dispatchId,
-                        cmd.deviceId(), cmd.commandKind(), cmd.idempotencyClass(), cmd.payloadJson());
+                        cmd.workstationId(), cmd.deviceId(), cmd.commandKind(), cmd.operationName(),
+                        cmd.idempotencyClass(), cmd.payloadJson());
                 DeviceCommandAdapter.SendResult result;
                 try {
                     result = Objects.requireNonNull(adapter.send(envelope), "DeviceCommandAdapter returned null SendResult");

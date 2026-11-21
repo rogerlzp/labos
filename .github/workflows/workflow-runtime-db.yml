@@ -4,6 +4,7 @@ on:
     branches: [docs/workflow-runtime-architecture-v2-20261119, docs/workflow-runtime-single-instance-20261119, 'feat/workflow-runtime-*']
     paths:
       - 'db/workflow_runtime/**'
+      - 'contract-fixtures/**'
       - 'workflow-runtime/**'
       - 'labos-kernel/src/boot/**'
       - 'labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeIslandSimulatorSelfTest.java'
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - 'db/workflow_runtime/**'
+      - 'contract-fixtures/**'
       - 'workflow-runtime/**'
       - 'labos-kernel/src/boot/**'
       - 'labos-kernel/src/test/java/com/labos/boot/WorkflowRuntimeIslandSimulatorSelfTest.java'
@@ -83,7 +85,7 @@ jobs:
               exit 1
             fi
           done
-          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 32) exit 1 }'
+          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 35) exit 1 }'
       - name: Run Island Real DeviceCore + PG17 E2E self-test
         env:
           USE_EXISTING_PG: '1'
@@ -99,7 +101,7 @@ jobs:
               exit 1
             fi
           done
-          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 32) exit 1 }'
+          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 35) exit 1 }'
       - name: Run Multi-JVM SIGKILL 3-round crash recovery stress test
         env:
           USE_EXISTING_PG: '1'
@@ -108,4 +110,4 @@ jobs:
         run: bash ./scripts/test-workflow-runtime-kill9.sh
       - name: Verify bootstrap is repeatably isolated
         run: |
-          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 32) exit 1 }'
+          psql -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='workflow_runtime'" | awk '{ if ($1 != 35) exit 1 }'

@@ -186,12 +186,13 @@ class DeviceCommandFaultInjectionIntegrationTest {
                     + tenant + "','" + attemptId + "','" + run.runId() + "','" + activationId
                     + "',1,'" + dispatchId + "','STARTED','DEVICE','g4c-worker')");
         }
+        repo.registerWorkstationSidecar(tenant, "ws-" + DEVICE, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         return new Chain(tenant, run.runId(), attemptId);
     }
 
     private UUID createCommand(WorkflowRuntimeRepository repo, Chain chain) {
         return repo.createCommandForAttempt(chain.tenant, chain.runId, chain.attemptId,
-                chain.workerId, DEVICE, "Dispense", "QUERYABLE", "{\"volumeUl\":60}");
+                chain.workerId, "ws-" + DEVICE, DEVICE, "Dispense", "Dispense", "QUERYABLE", "{\"volumeUl\":60}");
     }
 
     private String commandState(WorkflowRuntimeRepository repo, Chain chain, UUID cmdId) {

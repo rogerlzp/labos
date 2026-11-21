@@ -80,6 +80,7 @@ class LocalTaskDispatchAndCommandLoopTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "g2b-e2e");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-pipettor-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         String xml = """
                 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
@@ -145,7 +146,7 @@ class LocalTaskDispatchAndCommandLoopTest {
                                 WorkerTaskHandler.TaskResult.of("out", "{\"ratio\":0.85}", Map.of("ratio", "0.85")));
                         case "mock_dispense" -> Optional.of((req, ctx) -> {
                             UUID cmdId = ctx.createDeviceCommand(
-                                    "mock-pipettor-1", "Dispense", "QUERYABLE", "{\"volumeUl\":60}");
+                                    "ws-mock-pipettor-1", "mock-pipettor-1", "Dispense", "Dispense", "QUERYABLE", "{\"volumeUl\":60}");
                             deviceCommandId.set(cmdId);
                             mockCommandCreated.countDown();
                             assertTrue(mockCommandFinished.await(5, TimeUnit.SECONDS));
@@ -310,6 +311,9 @@ class LocalTaskDispatchAndCommandLoopTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "g2b-cmd");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        for (String h : List.of("mock-heater-1", "mock-heater-2", "mock-heater-3")) {
+            repo.registerWorkstationSidecar(tenant, "ws-" + h, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
+        }
 
         String xml = """
                 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
@@ -348,7 +352,7 @@ class LocalTaskDispatchAndCommandLoopTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             "g2b-async-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmdId = ctx.createDeviceCommand("mock-heater-1", "Heat", "QUERYABLE", "{\"c\":65}");
+                        UUID cmdId = ctx.createDeviceCommand("ws-mock-heater-1", "mock-heater-1", "Heat", "Heat", "QUERYABLE", "{\"c\":65}");
                         asyncCmdId.set(cmdId);
                         asyncCmdCreated.countDown();
                         assertTrue(asyncInboxApplied.await(5, TimeUnit.SECONDS));
@@ -418,7 +422,7 @@ class LocalTaskDispatchAndCommandLoopTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             "g2b-to-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmdId = ctx.createDeviceCommand("mock-heater-2", "Heat", "QUERYABLE", "{\"c\":70}");
+                        UUID cmdId = ctx.createDeviceCommand("ws-mock-heater-2", "mock-heater-2", "Heat", "Heat", "QUERYABLE", "{\"c\":70}");
                         toCmdId.set(cmdId);
                         toCmdCreated.countDown();
                         assertTrue(toMarkedUnknown.await(5, TimeUnit.SECONDS));
@@ -484,7 +488,7 @@ class LocalTaskDispatchAndCommandLoopTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             "g2b-race-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmdId = ctx.createDeviceCommand("mock-heater-3", "Heat", "QUERYABLE", "{\"c\":72}");
+                        UUID cmdId = ctx.createDeviceCommand("ws-mock-heater-3", "mock-heater-3", "Heat", "Heat", "QUERYABLE", "{\"c\":72}");
                         raceCmdId.set(cmdId);
                         raceCmdCreated.countDown();
                         assertTrue(raceSendFinished.await(5, TimeUnit.SECONDS));
@@ -519,6 +523,8 @@ class LocalTaskDispatchAndCommandLoopTest {
         var ds = dataSource();
         UUID tenant = createTenant(ds, "g2b-rec");
         WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        repo.registerWorkstationSidecar(tenant, "ws-mock-mixer-1", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
+        repo.registerWorkstationSidecar(tenant, "ws-mock-mixer-2", "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
 
         String xml = """
                 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL">
@@ -554,7 +560,7 @@ class LocalTaskDispatchAndCommandLoopTest {
                     node -> new LocalTaskDispatchService.TaskDispatchSpec(
                             "g2b-rec-cap-" + tenant, 1, "DEVICE", "dev-q", Duration.ofSeconds(60), "{}"),
                     node -> Optional.of((req, ctx) -> {
-                        UUID cmdId = ctx.createDeviceCommand("mock-mixer-1", "Mix", "QUERYABLE", "{\"rpm\":300}");
+                        UUID cmdId = ctx.createDeviceCommand("ws-mock-mixer-1", "mock-mixer-1", "Mix", "Mix", "QUERYABLE", "{\"rpm\":300}");
                         cmdIdRef.set(cmdId);
                         cmdCreated.countDown();
                         assertTrue(cmdDelivered.await(5, TimeUnit.SECONDS));
@@ -680,7 +686,7 @@ class LocalTaskDispatchAndCommandLoopTest {
             repo.acceptAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(), psRes.dispatchId(), "w-ps");
             repo.startAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(), psRes.dispatchId(), "w-ps");
             UUID psCmdId = repo.createCommandForAttempt(tenant, runPostSendCrash.runId(), psRes.attemptId(),
-                    "w-ps", "mock-mixer-2", "Mix", "QUERYABLE", "{\"rpm\":400}");
+                    "w-ps", "ws-mock-mixer-2", "mock-mixer-2", "Mix", "Mix", "QUERYABLE", "{\"rpm\":400}");
             var psCmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 4).stream()
                     .filter(m -> m.dedupKey().equals("command:" + psCmdId)).findFirst().orElseThrow();
             assertTrue(repo.markCommandSendStarted(tenant, psCmdId, 0L, psCmdOutbox.outboxId(),
@@ -728,8 +734,9 @@ class LocalTaskDispatchAndCommandLoopTest {
         assertTrue(repo.markOutboxDelivered(tenant, wd.outboxId()));
         repo.acceptAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-fix");
         repo.startAttempt(tenant, run.runId(), res.attemptId(), res.dispatchId(), "w-fix");
+        repo.registerWorkstationSidecar(tenant, "ws-" + deviceId, "ndjson://127.0.0.1:20060", "DEV_LOOPBACK_PLAINTEXT");
         UUID cmdId = repo.createCommandForAttempt(tenant, run.runId(), res.attemptId(),
-                "w-fix", deviceId, "Mix", "QUERYABLE", "{\"rpm\":300}");
+                "w-fix", "ws-" + deviceId, deviceId, "Mix", "Mix", "QUERYABLE", "{\"rpm\":300}");
         UUID outboxId = null;
         if (markSendStarted) {
             var cmdOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 20).stream()

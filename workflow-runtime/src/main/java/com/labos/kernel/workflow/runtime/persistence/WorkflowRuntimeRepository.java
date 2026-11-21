@@ -3517,10 +3517,54 @@ public final class WorkflowRuntimeRepository {
         });
     }
 
+    /** Register or refresh a Direction A Workstation Sidecar endpoint for FK & session attribution. */
+    public void registerWorkstationSidecar(
+            UUID tenantId, String workstationId, String endpointUri, String securityMode) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        if (workstationId == null || workstationId.isBlank()) {
+            throw new IllegalArgumentException("workstationId is required");
+        }
+        if (endpointUri == null || endpointUri.isBlank()) {
+            throw new IllegalArgumentException("endpointUri is required");
+        }
+        String mode = (securityMode == null || securityMode.isBlank()) ? "TLS13_MTLS" : securityMode.trim();
+        if (!"DEV_LOOPBACK_PLAINTEXT".equals(mode) && !"TLS13_MTLS".equals(mode)) {
+            throw new IllegalArgumentException("Unsupported securityMode: " + mode);
+        }
+        required(() -> {
+            jdbc.update("""
+                INSERT INTO workflow_runtime.workstation_sidecar
+                  (tenant_id, workstation_id, endpoint_uri, security_mode, updated_at)
+                VALUES (?, ?, ?, ?, clock_timestamp())
+                ON CONFLICT (tenant_id, workstation_id) DO UPDATE
+                  SET endpoint_uri = EXCLUDED.endpoint_uri,
+                      security_mode = EXCLUDED.security_mode,
+                      updated_at = clock_timestamp()
+                """, tenantId, workstationId, endpointUri, mode);
+            return null;
+        });
+    }
+
     /** T12: create one immutable Command per device Attempt and its durable dispatch Outbox. */
     public UUID createCommand(UUID tenantId, UUID runId, UUID activationId,
-                              UUID attemptId, String deviceId, String commandKind,
+                              UUID attemptId, String workstationId, String deviceId,
+                              String commandKind, String operationName,
                               String idempotencyClass, String payloadJson) {
+        if (workstationId == null || workstationId.isBlank()) {
+            throw new IllegalArgumentException("workstationId is required");
+        }
+        if (deviceId == null || deviceId.isBlank()) {
+            throw new IllegalArgumentException("deviceId is required");
+        }
+        if (commandKind == null || commandKind.isBlank()) {
+            throw new IllegalArgumentException("commandKind is required");
+        }
+        if (operationName == null || operationName.isBlank()) {
+            throw new IllegalArgumentException("operationName is required");
+        }
+        if (idempotencyClass == null || idempotencyClass.isBlank()) {
+            throw new IllegalArgumentException("idempotencyClass is required");
+        }
         return required(() -> {
             RunHead head=lockRun(tenantId,runId);
             List<String> attemptRows=jdbc.query("""
@@ -3548,11 +3592,11 @@ public final class WorkflowRuntimeRepository {
             UUID commandId=UUID.randomUUID();
             jdbc.update("""
                 INSERT INTO workflow_runtime.command_ledger
-                  (tenant_id,command_id,run_id,activation_id,attempt_id,device_id,command_kind,
-                   command_state,idempotency_class,command_payload,payload_hash)
-                VALUES (?,?,?,?,?, ?,?,'CREATED',?,?::jsonb,?)
-                """,tenantId,commandId,runId,activationId,attemptId,deviceId,commandKind,
-                    idempotencyClass,payloadJson,hash);
+                  (tenant_id,command_id,run_id,activation_id,attempt_id,workstation_id,device_id,
+                   command_kind,operation_name,command_state,idempotency_class,command_payload,payload_hash)
+                VALUES (?,?,?,?,?,?,?,?,?,'CREATED',?,?::jsonb,?)
+                """,tenantId,commandId,runId,activationId,attemptId,workstationId,deviceId,
+                    commandKind,operationName,idempotencyClass,payloadJson,hash);
             jdbc.update("""
                 INSERT INTO workflow_runtime.runtime_outbox
                   (tenant_id,run_id,message_kind,dedup_key,payload)
@@ -3570,10 +3614,15 @@ public final class WorkflowRuntimeRepository {
      * Outbox entry without exposing raw {@code activationId} plumbing to handlers.
      */
     public UUID createCommandForAttempt(UUID tenantId, UUID runId, UUID attemptId,
-                                        String workerId, String deviceId, String commandKind,
+                                        String workerId, String workstationId, String deviceId,
+                                        String commandKind, String operationName,
                                         String idempotencyClass, String payloadJson) {
         if (workerId == null || workerId.isBlank())
             throw new IllegalArgumentException("workerId is required");
+        if (workstationId == null || workstationId.isBlank())
+            throw new IllegalArgumentException("workstationId is required");
+        if (operationName == null || operationName.isBlank())
+            throw new IllegalArgumentException("operationName is required");
         return required(() -> {
             RunHead head = lockRun(tenantId, runId);
             List<String> rows = jdbc.query("""
@@ -3587,7 +3636,7 @@ public final class WorkflowRuntimeRepository {
                 throw new StaleRuntimeWriteException("Only the owning local Worker may create a Command");
             UUID activationId = UUID.fromString(meta[2]);
             return createCommand(tenantId, runId, activationId, attemptId,
-                    deviceId, commandKind, idempotencyClass, payloadJson);
+                    workstationId, deviceId, commandKind, operationName, idempotencyClass, payloadJson);
         });
     }
 
@@ -3616,13 +3665,15 @@ public final class WorkflowRuntimeRepository {
 
     public record CommandRecord(
             UUID commandId, UUID runId, UUID activationId, UUID attemptId,
-            String deviceId, String commandKind, String commandState,
-            String idempotencyClass, String payloadJson, long version) {}
+            String workstationId, String deviceId, String commandKind, String operationName,
+            String commandState, String idempotencyClass, String payloadJson,
+            int timeoutMs, boolean interruptible, long version) {}
 
     public Optional<CommandRecord> loadCommand(UUID tenantId, UUID commandId) {
         List<CommandRecord> rows = jdbc.query("""
-            SELECT command_id, run_id, activation_id, attempt_id, device_id, command_kind,
-                   command_state, idempotency_class, command_payload::text, version
+            SELECT command_id, run_id, activation_id, attempt_id, workstation_id, device_id,
+                   command_kind, operation_name, command_state, idempotency_class,
+                   command_payload::text, timeout_ms, interruptible, version
               FROM workflow_runtime.command_ledger
              WHERE tenant_id=? AND command_id=?
             """, (rs, n) -> new CommandRecord(
@@ -3635,7 +3686,11 @@ public final class WorkflowRuntimeRepository {
                 rs.getString(7),
                 rs.getString(8),
                 rs.getString(9),
-                rs.getLong(10)), tenantId, commandId);
+                rs.getString(10),
+                rs.getString(11),
+                rs.getInt(12),
+                rs.getBoolean(13),
+                rs.getLong(14)), tenantId, commandId);
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 

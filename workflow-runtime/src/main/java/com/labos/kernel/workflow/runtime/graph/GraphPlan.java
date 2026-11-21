@@ -23,11 +23,14 @@ public record GraphPlan(
 
     public static final int SCHEMA_VERSION_V1 = 1;
     public static final int SCHEMA_VERSION_V2 = 2;
+    public static final int SCHEMA_VERSION_V3 = 3;
     public static final long MAX_WAIT_DURATION_MILLIS = 365L * 24 * 60 * 60 * 1000;
 
     public GraphPlan {
         if (schemaVersion < 1) throw new IllegalArgumentException("schemaVersion must be positive");
-        if (schemaVersion != SCHEMA_VERSION_V1 && schemaVersion != SCHEMA_VERSION_V2) {
+        if (schemaVersion != SCHEMA_VERSION_V1
+                && schemaVersion != SCHEMA_VERSION_V2
+                && schemaVersion != SCHEMA_VERSION_V3) {
             throw new IllegalArgumentException("Unsupported GraphPlan schemaVersion: " + schemaVersion);
         }
         compilerVersion = required(compilerVersion, "compilerVersion");
@@ -94,9 +97,22 @@ public record GraphPlan(
             WaitKind waitKind,
             String correlationKey,
             String durationIso,
-            Long durationMillis) {
+            Long durationMillis,
+            DeadlinePolicy deadlinePolicy) {
+        public WaitSpec(
+                WaitKind waitKind,
+                String correlationKey,
+                String durationIso,
+                Long durationMillis) {
+            this(waitKind, correlationKey, durationIso, durationMillis, null);
+        }
+
         public WaitSpec {
             Objects.requireNonNull(waitKind, "waitSpec.waitKind");
+            if (deadlinePolicy != null && waitKind != WaitKind.MESSAGE_WITH_TIMEOUT) {
+                throw new IllegalArgumentException(
+                        "deadlinePolicy is only supported on MESSAGE_WITH_TIMEOUT wait nodes");
+            }
             switch (waitKind) {
                 case MESSAGE -> {
                     correlationKey = requireStaticCorrelationKey(correlationKey);
@@ -134,6 +150,12 @@ public record GraphPlan(
         MESSAGE,
         TIMER,
         MESSAGE_WITH_TIMEOUT
+    }
+
+    public enum DeadlinePolicy {
+        ROUTE_TIMEOUT_EDGE,
+        ESCALATE_MANUAL,
+        FAIL_RUN
     }
 
     public enum RouteKind {
@@ -186,6 +208,12 @@ public record GraphPlan(
                 throw new IllegalArgumentException(
                         "GraphPlan v1 cannot contain WAIT nodes or waitSpec: " + n.key());
             }
+            if (schemaVersion < SCHEMA_VERSION_V3
+                    && n.waitSpec() != null
+                    && n.waitSpec().deadlinePolicy() != null) {
+                throw new IllegalArgumentException(
+                        "GraphPlan v" + schemaVersion + " cannot carry waitSpec.deadlinePolicy: " + n.key());
+            }
         }
         Map<String, List<Edge>> normalEdgesByWaitNode = new HashMap<>();
         Map<String, List<Edge>> timeoutEdgesByWaitNode = new HashMap<>();
@@ -235,15 +263,24 @@ public record GraphPlan(
             }
             List<Edge> timeoutEdges = timeoutEdgesByWaitNode.getOrDefault(n.key(), List.of());
             if (n.waitSpec().waitKind() == WaitKind.MESSAGE_WITH_TIMEOUT) {
-                if (timeoutEdges.size() != 1) {
+                DeadlinePolicy effectivePolicy = n.waitSpec().deadlinePolicy() == null
+                        ? DeadlinePolicy.ROUTE_TIMEOUT_EDGE
+                        : n.waitSpec().deadlinePolicy();
+                if (effectivePolicy == DeadlinePolicy.ROUTE_TIMEOUT_EDGE) {
+                    if (timeoutEdges.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "MESSAGE_WITH_TIMEOUT WAIT node requires exactly one TIMEOUT outgoing edge: "
+                                        + n.key() + " (found " + timeoutEdges.size() + ")");
+                    }
+                    if (normalEdges.get(0).to().equals(timeoutEdges.get(0).to())) {
+                        throw new IllegalArgumentException(
+                                "MESSAGE_WITH_TIMEOUT NORMAL and TIMEOUT edges cannot share target node: "
+                                        + n.key() + " -> " + normalEdges.get(0).to());
+                    }
+                } else if (!timeoutEdges.isEmpty()) {
                     throw new IllegalArgumentException(
-                            "MESSAGE_WITH_TIMEOUT WAIT node requires exactly one TIMEOUT outgoing edge: "
-                                    + n.key() + " (found " + timeoutEdges.size() + ")");
-                }
-                if (normalEdges.get(0).to().equals(timeoutEdges.get(0).to())) {
-                    throw new IllegalArgumentException(
-                            "MESSAGE_WITH_TIMEOUT NORMAL and TIMEOUT edges cannot share target node: "
-                                    + n.key() + " -> " + normalEdges.get(0).to());
+                            "MESSAGE_WITH_TIMEOUT WAIT node with deadlinePolicy=" + effectivePolicy
+                                    + " cannot have TIMEOUT outgoing edge: " + n.key());
                 }
             } else if (!timeoutEdges.isEmpty()) {
                 throw new IllegalArgumentException(

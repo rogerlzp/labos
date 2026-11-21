@@ -539,13 +539,15 @@ public final class WorkerExecutionService {
         }
 
         @Override
-        public UUID createDeviceCommand(String deviceId, String commandKind,
+        public UUID createDeviceCommand(String workstationId, String deviceId,
+                                        String commandKind, String operationName,
                                         String idempotencyClass, String payloadJson) {
             synchronized (lock) {
                 requireOwningThreadAndActiveLocked();
                 return callWithClearedInterrupt(() -> repository.createCommandForAttempt(
                         request.tenantId(), request.runId(), request.attemptId(),
-                        request.workerId(), deviceId, commandKind, idempotencyClass, payloadJson));
+                        request.workerId(), workstationId, deviceId, commandKind,
+                        operationName, idempotencyClass, payloadJson));
             }
         }
 

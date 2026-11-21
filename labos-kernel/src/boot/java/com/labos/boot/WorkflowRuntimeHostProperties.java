@@ -1,7 +1,7 @@
 package com.labos.boot;
 
+import com.labos.kernel.workflow.runtime.device.contract.SecurityMode;
 import com.labos.kernel.workflow.runtime.gateway.GatewayWireCodec;
-import com.labos.kernel.workflow.runtime.gateway.LabSepWireCodec;
 import com.labos.kernel.workflow.runtime.gateway.NdjsonWireCodec;
 import com.labos.kernel.workflow.runtime.gateway.TcpDeviceConnection;
 import com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost;
@@ -24,8 +24,8 @@ import java.util.UUID;
  * When disabled, neither {@code EmbeddedWorkflowRuntimeHost} nor {@code DeviceGateway}
  * is created or started, leaving the legacy {@code GraphRunner} untouched.
  *
- * <p><b>Trust model (V1):</b> isolated laboratory LAN with static endpoint allowlist
- * ({@code deviceId=host:port,...}); TLS/mTLS is intentionally omitted for internal-LAN V1.
+ * <p><b>Trust model:</b> {@code TLS13_MTLS} is the default and sole non-loopback mode;
+ * {@code DEV_LOOPBACK_PLAINTEXT} is restricted strictly to loopback addresses ({@code 127.0.0.1}, {@code ::1}).
  */
 public record WorkflowRuntimeHostProperties(
         boolean enabled,
@@ -41,7 +41,52 @@ public record WorkflowRuntimeHostProperties(
         int dispatchBatchSize,
         List<TcpDeviceConnection.Endpoint> deviceEndpoints,
         TcpDeviceConnection.Config gatewayConfig,
-        Long scopedKernelTenantId) {
+        Long scopedKernelTenantId,
+        List<WorkstationEndpoint> workstationEndpoints,
+        SecurityMode securityMode) {
+
+    /**
+     * C2 workstation-level Direction A endpoint binding ({@code workstationId=tls://host:port} or
+     * loopback-only {@code workstationId=ndjson://127.0.0.1:port}).
+     */
+    public record WorkstationEndpoint(
+            String workstationId,
+            String scheme,
+            String host,
+            int port,
+            SecurityMode securityMode) {
+        public WorkstationEndpoint {
+            if (workstationId == null || workstationId.isBlank()) {
+                throw new IllegalArgumentException("workstationId is required");
+            }
+            if (scheme == null || scheme.isBlank()) {
+                throw new IllegalArgumentException("scheme is required");
+            }
+            if ("labsep".equalsIgnoreCase(scheme)) {
+                throw new IllegalArgumentException(
+                        "labsep:// scheme is forbidden under Contract v1.1; use tls:// or loopback ndjson://");
+            }
+            if (!"tls".equals(scheme) && !"ndjson".equals(scheme)) {
+                throw new IllegalArgumentException("Unsupported workstation endpoint scheme: " + scheme);
+            }
+            if (host == null || host.isBlank()) {
+                throw new IllegalArgumentException("host is required");
+            }
+            if (port < 1 || port > 65535) {
+                throw new IllegalArgumentException("port must be in 1..65535");
+            }
+            Objects.requireNonNull(securityMode, "securityMode");
+            securityMode.validateHost(host);
+            if ("ndjson".equals(scheme) && securityMode != SecurityMode.DEV_LOOPBACK_PLAINTEXT) {
+                throw new IllegalArgumentException(
+                        "ndjson:// plaintext scheme requires securityMode=DEV_LOOPBACK_PLAINTEXT on loopback");
+            }
+            if ("tls".equals(scheme) && securityMode != SecurityMode.TLS13_MTLS) {
+                throw new IllegalArgumentException(
+                        "tls:// scheme requires securityMode=TLS13_MTLS");
+            }
+        }
+    }
 
     public static final String PROP_ENABLED = "labos.workflow.runtime.host.enabled";
     public static final String PROP_LOCK_FILE = "labos.workflow.runtime.host.lock-file";
@@ -55,6 +100,8 @@ public record WorkflowRuntimeHostProperties(
     public static final String PROP_POLL_MS = "labos.workflow.runtime.host.dispatch-poll-ms";
     public static final String PROP_BATCH_SIZE = "labos.workflow.runtime.host.dispatch-batch-size";
     public static final String PROP_SCOPED_KERNEL_TENANT_ID = "labos.workflow.runtime.host.scoped-kernel-tenant-id";
+    public static final String PROP_WORKSTATION_ENDPOINTS = "labos.workflow.runtime.host.workstation-endpoints";
+    public static final String PROP_SECURITY_MODE = "labos.workflow.runtime.host.security-mode";
     public static final String PROP_ENDPOINTS = "labos.workflow.runtime.gateway.endpoints";
     public static final String PROP_CONNECT_TIMEOUT_MS = "labos.workflow.runtime.gateway.connect-timeout-ms";
     public static final String PROP_HB_INTERVAL_MS = "labos.workflow.runtime.gateway.heartbeat-interval-ms";
@@ -77,6 +124,29 @@ public record WorkflowRuntimeHostProperties(
         if (scopedKernelTenantId != null && scopedKernelTenantId <= 0) {
             throw new IllegalArgumentException("scopedKernelTenantId must be positive");
         }
+        workstationEndpoints = List.copyOf(workstationEndpoints == null ? List.of() : workstationEndpoints);
+        securityMode = securityMode == null ? SecurityMode.TLS13_MTLS : securityMode;
+    }
+
+    public WorkflowRuntimeHostProperties(
+            boolean enabled,
+            Path lockFile,
+            String hostId,
+            int workerThreads,
+            int workerQueueCapacity,
+            int maxConcurrentRuns,
+            int mailboxThreads,
+            int mailboxQueueCapacity,
+            int recoveryBatchLimit,
+            Duration dispatchPollInterval,
+            int dispatchBatchSize,
+            List<TcpDeviceConnection.Endpoint> deviceEndpoints,
+            TcpDeviceConnection.Config gatewayConfig,
+            Long scopedKernelTenantId) {
+        this(enabled, lockFile, hostId, workerThreads, workerQueueCapacity, maxConcurrentRuns,
+                mailboxThreads, mailboxQueueCapacity, recoveryBatchLimit, dispatchPollInterval,
+                dispatchBatchSize, deviceEndpoints, gatewayConfig, scopedKernelTenantId,
+                List.of(), SecurityMode.TLS13_MTLS);
     }
 
     public WorkflowRuntimeHostProperties(
@@ -95,7 +165,8 @@ public record WorkflowRuntimeHostProperties(
             TcpDeviceConnection.Config gatewayConfig) {
         this(enabled, lockFile, hostId, workerThreads, workerQueueCapacity, maxConcurrentRuns,
                 mailboxThreads, mailboxQueueCapacity, recoveryBatchLimit, dispatchPollInterval,
-                dispatchBatchSize, deviceEndpoints, gatewayConfig, null);
+                dispatchBatchSize, deviceEndpoints, gatewayConfig, null,
+                List.of(), SecurityMode.TLS13_MTLS);
     }
 
     public static WorkflowRuntimeHostProperties fromEnvironment(Environment env) {
@@ -112,7 +183,9 @@ public record WorkflowRuntimeHostProperties(
                     Duration.ofMillis(250L), 32,
                     List.of(),
                     TcpDeviceConnection.Config.defaults(),
-                    null);
+                    null,
+                    List.of(),
+                    SecurityMode.TLS13_MTLS);
         }
         Path lockFile = Path.of(env.getProperty(PROP_LOCK_FILE, "runtime-host.lock"));
         String hostId = env.getProperty(PROP_HOST_ID, "labos-local-host");
@@ -125,7 +198,15 @@ public record WorkflowRuntimeHostProperties(
         Duration pollInterval = Duration.ofMillis(longProp(env, PROP_POLL_MS, 250L));
         int batchSize = intProp(env, PROP_BATCH_SIZE, 32);
         Long scopedKernelTenantId = optionalPositiveLongProp(env, PROP_SCOPED_KERNEL_TENANT_ID);
+        SecurityMode securityMode = parseSecurityMode(env.getProperty(PROP_SECURITY_MODE, SecurityMode.TLS13_MTLS.name()));
+        List<WorkstationEndpoint> workstationEndpoints = parseWorkstationEndpoints(
+                env.getProperty(PROP_WORKSTATION_ENDPOINTS, ""), securityMode);
         List<TcpDeviceConnection.Endpoint> endpoints = parseEndpoints(env.getProperty(PROP_ENDPOINTS, ""));
+        if (securityMode == SecurityMode.DEV_LOOPBACK_PLAINTEXT) {
+            for (TcpDeviceConnection.Endpoint ep : endpoints) {
+                securityMode.validateHost(ep.host());
+            }
+        }
         TcpDeviceConnection.Config gatewayConfig = new TcpDeviceConnection.Config(
                 Duration.ofMillis(longProp(env, PROP_CONNECT_TIMEOUT_MS, 3000L)),
                 Duration.ofMillis(longProp(env, PROP_HB_INTERVAL_MS, 5000L)),
@@ -137,7 +218,7 @@ public record WorkflowRuntimeHostProperties(
         return new WorkflowRuntimeHostProperties(
                 true, lockFile, hostId, workerThreads, workerQueue, maxRuns,
                 mailboxThreads, mailboxQueue, recoveryLimit, pollInterval, batchSize,
-                endpoints, gatewayConfig, scopedKernelTenantId);
+                endpoints, gatewayConfig, scopedKernelTenantId, workstationEndpoints, securityMode);
     }
 
     public EmbeddedWorkflowRuntimeHost.Config toHostConfig() {
@@ -157,9 +238,64 @@ public record WorkflowRuntimeHostProperties(
                 dispatchPollInterval, dispatchBatchSize, effectiveEndpoints, gatewayConfig, scopedTenantId);
     }
 
+    public static SecurityMode parseSecurityMode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return SecurityMode.TLS13_MTLS;
+        }
+        try {
+            return SecurityMode.valueOf(raw.trim());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unsupported runtime security mode: " + raw, e);
+        }
+    }
+
     /**
-     * Parse comma-separated {@code deviceId=[ndjson://|labsep://]host:port} entries
-     * (blank string yields empty list; omitting scheme defaults to {@link NdjsonWireCodec}).
+     * Parse comma-separated C2 workstation endpoints
+     * ({@code workstationId=[tls://|ndjson://]host:port}).
+     */
+    public static List<WorkstationEndpoint> parseWorkstationEndpoints(String raw, SecurityMode securityMode) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        SecurityMode effectiveMode = securityMode == null ? SecurityMode.TLS13_MTLS : securityMode;
+        String defaultScheme = effectiveMode == SecurityMode.DEV_LOOPBACK_PLAINTEXT ? "ndjson" : "tls";
+        List<WorkstationEndpoint> out = new ArrayList<>();
+        for (String token : raw.split(",")) {
+            String trimmed = token.trim();
+            if (trimmed.isEmpty()) continue;
+            int eq = trimmed.indexOf('=');
+            if (eq <= 0 || eq == trimmed.length() - 1) {
+                throw new IllegalArgumentException(
+                        "Invalid workstation endpoint (expected workstationId=[scheme://]host:port): " + trimmed);
+            }
+            String workstationId = trimmed.substring(0, eq).trim();
+            String addr = trimmed.substring(eq + 1).trim();
+            String scheme = defaultScheme;
+            int schemeIdx = addr.indexOf("://");
+            if (schemeIdx >= 0) {
+                scheme = addr.substring(0, schemeIdx).trim().toLowerCase();
+                addr = addr.substring(schemeIdx + 3).trim();
+            }
+            int colon = addr.lastIndexOf(':');
+            if (colon <= 0 || colon == addr.length() - 1) {
+                throw new IllegalArgumentException("Invalid workstation endpoint host:port: " + trimmed);
+            }
+            String host = addr.substring(0, colon).trim();
+            int port;
+            try {
+                port = Integer.parseInt(addr.substring(colon + 1).trim());
+            } catch (NumberFormatException nfe) {
+                throw new IllegalArgumentException("Invalid workstation endpoint port: " + trimmed, nfe);
+            }
+            out.add(new WorkstationEndpoint(workstationId, scheme, host, port, effectiveMode));
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * Parse comma-separated {@code deviceId=[ndjson://]host:port} entries
+     * (blank string yields empty list; omitting scheme defaults to {@link NdjsonWireCodec};
+     * {@code labsep://} is removed under Contract v1.1).
      */
     public static List<TcpDeviceConnection.Endpoint> parseEndpoints(String raw) {
         if (raw == null || raw.isBlank()) {
@@ -182,7 +318,9 @@ public record WorkflowRuntimeHostProperties(
                 addr = addr.substring(schemeIdx + 3).trim();
                 codec = switch (scheme) {
                     case "ndjson" -> NdjsonWireCodec.INSTANCE;
-                    case "labsep" -> LabSepWireCodec.INSTANCE;
+                    case "labsep" -> throw new IllegalArgumentException(
+                            "labsep:// endpoint scheme is removed under Contract v1.1 (use ndjson:// or tls://): "
+                                    + trimmed);
                     default -> throw new IllegalArgumentException(
                             "Unsupported gateway wire codec scheme '" + scheme + "' in endpoint: " + trimmed);
                 };
@@ -248,12 +386,13 @@ public record WorkflowRuntimeHostProperties(
     }
 
     /**
-     * Convert {@code DeviceMapper.selectDeviceRegistry} rows ({@code deviceId}, {@code resourceId},
-     * {@code ip}, {@code endpoint}) into {@link TcpDeviceConnection.Endpoint}s speaking
-     * {@link LabSepWireCodec} (or {@link NdjsonWireCodec} if endpoint explicitly uses {@code ndjson://})
-     * and the matching {@code resourceId -> deviceId} map so BPMN {@code resource="<resourceId>"}
-     * resolves directly to the driver's {@code equipment_id} ({@code device_instance.id}).
+     * Deprecated temporary Stage 0 bridge converting {@code DeviceMapper.selectDeviceRegistry} rows
+     * into C1 endpoints for existing Kernel E2E self-tests; AI-2 replaces this in Stage 1 with C2
+     * workstation discovery.
+     *
+     * @deprecated Stage 0 compatibility bridge; scheduled for removal once C2 Sidecar discovery lands.
      */
+    @Deprecated(forRemoval = true)
     public static RegistryEndpoints fromDeviceRegistryRows(List<Map<String, Object>> rows) {
         if (rows == null || rows.isEmpty()) {
             return new RegistryEndpoints(List.of(), Map.of());
@@ -267,7 +406,7 @@ public record WorkflowRuntimeHostProperties(
             String rawEndpoint = row.get("endpoint") == null ? "" : row.get("endpoint").toString().trim();
             if (rawEndpoint.isEmpty()) continue;
 
-            GatewayWireCodec codec = LabSepWireCodec.INSTANCE;
+            GatewayWireCodec codec = com.labos.kernel.workflow.runtime.gateway.LabSepWireCodec.INSTANCE;
             String addr = rawEndpoint;
             int schemeIdx = addr.indexOf("://");
             if (schemeIdx >= 0) {
@@ -275,7 +414,7 @@ public record WorkflowRuntimeHostProperties(
                 addr = addr.substring(schemeIdx + 3).trim();
                 codec = switch (scheme) {
                     case "ndjson" -> NdjsonWireCodec.INSTANCE;
-                    case "tcp", "labsep" -> LabSepWireCodec.INSTANCE;
+                    case "tcp", "labsep" -> com.labos.kernel.workflow.runtime.gateway.LabSepWireCodec.INSTANCE;
                     default -> throw new IllegalArgumentException(
                             "Unsupported registry driver endpoint scheme '" + scheme + "': " + rawEndpoint);
                 };

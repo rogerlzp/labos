@@ -1,7 +1,5 @@
 -- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.8 final review).
--- NOTE: This draft sits in docs/ddl/ and is NOT executed by PR #17 CI.
---       Real PostgreSQL 17 DDL & 002_schema_contract CI checks take effect only when
---       promoted to db/workflow_runtime/006_device_execution_contract_v1.sql in Phase 0.
+-- STATUS: PROMOTED to db/workflow_runtime/006_device_execution_contract_v1.sql in Stage 0; keep this draft file intact for contract cross-links.
 --
 -- Paired Phase 0 updates required alongside promotion:
 --   1. db/workflow_runtime/002_schema_contract.sql:

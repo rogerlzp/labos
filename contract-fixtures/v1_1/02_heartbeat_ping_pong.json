@@ -1,0 +1,23 @@
+{
+  "fixtureId": "02_heartbeat_ping_pong",
+  "protocolVersion": "1.1",
+  "frames": [
+    {
+      "protocolVersion": "1.1",
+      "frameType": "HEARTBEAT_PING",
+      "sentAtEpochMs": 1763712003000,
+      "workstationId": "ws-pipetting-01",
+      "connectionGeneration": 7,
+      "pingId": "ping-000042"
+    },
+    {
+      "protocolVersion": "1.1",
+      "frameType": "HEARTBEAT_PONG",
+      "sentAtEpochMs": 1763712003008,
+      "workstationId": "ws-pipetting-01",
+      "connectionGeneration": 7,
+      "pingId": "ping-000042",
+      "sidecarEpochMs": 1763712003008
+    }
+  ]
+}

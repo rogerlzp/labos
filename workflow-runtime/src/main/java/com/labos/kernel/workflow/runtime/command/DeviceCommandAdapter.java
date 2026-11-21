@@ -1,7 +1,8 @@
 package com.labos.kernel.workflow.runtime.command;
 
+import com.labos.kernel.workflow.runtime.device.contract.DeviceCommandEnvelope;
+
 import java.util.Objects;
-import java.util.UUID;
 
 /**
  * Minimal SPI between {@link DeviceCommandExecutionService} and a device transport adapter.
@@ -12,32 +13,6 @@ import java.util.UUID;
 @FunctionalInterface
 public interface DeviceCommandAdapter {
     SendResult send(DeviceCommandEnvelope envelope) throws Exception;
-
-    record DeviceCommandEnvelope(
-            UUID tenantId,
-            UUID runId,
-            UUID attemptId,
-            UUID commandId,
-            UUID dispatchId,
-            String deviceId,
-            String commandKind,
-            String idempotencyClass,
-            String payloadJson) {
-        public DeviceCommandEnvelope {
-            Objects.requireNonNull(tenantId, "tenantId");
-            Objects.requireNonNull(runId, "runId");
-            Objects.requireNonNull(attemptId, "attemptId");
-            Objects.requireNonNull(commandId, "commandId");
-            Objects.requireNonNull(dispatchId, "dispatchId");
-            if (deviceId == null || deviceId.isBlank())
-                throw new IllegalArgumentException("deviceId is required");
-            if (commandKind == null || commandKind.isBlank())
-                throw new IllegalArgumentException("commandKind is required");
-            if (idempotencyClass == null || idempotencyClass.isBlank())
-                throw new IllegalArgumentException("idempotencyClass is required");
-            payloadJson = (payloadJson == null || payloadJson.isBlank()) ? "{}" : payloadJson;
-        }
-    }
 
     enum SendStatus {
         /** Command was accepted by the device/mock transport; terminal outcome will arrive via Inbox. */
