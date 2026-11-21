@@ -10,6 +10,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -20,6 +24,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -643,11 +650,16 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
     }
 
     // ---------------------------------------------------------------------
-    // T13: conditional-split resolver throws inside the tx -> the whole multi-statement tx rolls back
+    // T13: conditional-split resolver throws BEFORE any write -> no partial state, retry succeeds.
+    // NOTE: this is NOT a "write-then-rollback" case. The production order in
+    // advanceGraphTokenInternal() is lockRun -> lock READY token -> load variable snapshot ->
+    // transitionResolver.apply(snapshot) -> INSERT node_activation -> UPDATE execution_token ->
+    // advance successors -> appendEvents. The resolver runs before the first write, so at the
+    // moment of the fault no SQL has executed. True write-then-rollback is covered by T9/T10.
     // ---------------------------------------------------------------------
     @Test
-    @DisplayName("T13 advanceGraphTokenWithVariables resolver exception rolls the whole conditional-split transaction back")
-    void advanceGraphTokenWithVariablesResolverExceptionRollsBackFully() throws Exception {
+    @DisplayName("T13 conditional-split resolver exception before any write leaves no partial state and retry succeeds")
+    void resolverExceptionBeforeMutationLeavesNoPartialState() throws Exception {
         assumeEnabled();
         var ds = dataSource();
         UUID tenant = newTenant(ds);
@@ -666,18 +678,18 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
         assertThrows(IllegalStateException.class, () -> repo.advanceGraphTokenWithVariables(
                 tenant, run.runId(), choiceToken, "choice",
                 snapshot -> { throw new IllegalStateException("no matching conditional flow"); }),
-                "a resolver fault after the Activation insert must roll the whole transaction back");
+                "a resolver fault is raised before the first write, so no partial state may remain");
 
-        assertEquals("READY", tokenState(ds, tenant, choiceToken), "Token must roll back to READY");
+        assertEquals("READY", tokenState(ds, tenant, choiceToken), "Token must still be READY (it was never mutated)");
         assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.node_activation WHERE tenant_id=? AND token_id=?",
-                tenant, choiceToken), "the freshly inserted Activation must roll back");
+                tenant, choiceToken), "no Activation may exist after the resolver fault");
         assertEquals(0, cnt(ds, "SELECT count(*) FROM workflow_runtime.execution_token WHERE tenant_id=? AND run_id=? AND node_key='end-a'",
                 tenant, run.runId()));
         assertEquals(advancedBefore, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='GRAPH_NODE_ADVANCED'",
                 tenant, run.runId()));
         assertEquals(seqBefore, runEventSeq(ds, tenant, run.runId()));
         assertEventLogContiguous(ds, tenant, run.runId());
-        System.out.println("[T13] resolver exception: choice Token READY, activation/successor/event all rolled back");
+        System.out.println("[T13] resolver exception before any write: choice Token READY, no activation/successor/event");
 
         var retry = repo.advanceGraphTokenWithVariables(tenant, run.runId(), choiceToken, "choice",
                 snapshot -> new WorkflowRuntimeRepository.GraphTokenTransitionDecision(
@@ -969,6 +981,11 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
                     .filter(m -> m.dedupKey().equals("command:" + commandId)).findFirst().orElseThrow();
             assertTrue(repo.markCommandSendStarted(tenant, commandId, 0L, commandOutbox.outboxId(),
                     UUID.randomUUID(), 1, "dispatcher-1"));
+            // Match the real async-send path: the dispatcher marks the Outbox DELIVERED once the
+            // device accepted the send, and only then does the device result arrive. Doing this
+            // before receiveInbox() keeps T19 focused on applyCommandEvent's transaction and avoids
+            // leaving a SENDING+SUCCEEDED Outbox behind.
+            assertTrue(repo.markOutboxDelivered(tenant, commandOutbox.outboxId()));
             var receipt = repo.receiveInbox(tenant, "device-1", "g4b-t19-msg-" + UUID.randomUUID(),
                     "DEVICE_COMMAND_RESULT", run.runId(),
                     "{\"commandId\":\"" + commandId + "\",\"state\":\"SUCCEEDED\"}");
@@ -1001,12 +1018,98 @@ class DatabaseTransactionCrashConsistencyIntegrationTest {
                     tenant, w.attemptId()));
             assertEquals(1, cnt(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id=? AND run_id=? AND event_type='DEVICE_COMMAND_SUCCEEDED'",
                     tenant, run.runId()));
+            assertEquals("DELIVERED", str(ds, "SELECT outbox_state FROM workflow_runtime.runtime_outbox WHERE tenant_id=? AND outbox_id=?",
+                    tenant, commandOutbox.outboxId()), "T19 must not leave a SENDING Outbox behind");
             assertEventLogContiguous(ds, tenant, run.runId());
-            System.out.println("[T19] retry after abort: command SUCCEEDED, receipt PROCESSED, fact/event durable");
+            System.out.println("[T19] retry after abort: command SUCCEEDED, receipt PROCESSED, outbox DELIVERED, fact/event durable");
         } finally {
             faults.disarm();
             abandonIfInterrupted(repo, ds, tenant, run.runId(), "g4b-t19-cleanup");
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // T20: the test-only fault-injection decorator itself must be concurrency-safe. Arming a
+    // one-shot fault and racing many write commits must fault exactly one of them. This pins the
+    // CAS-loop fix so a future refactor cannot silently reintroduce the old
+    // get()+updateAndGet() race (two threads both observing writeOrdinal==1 and double-injecting).
+    // It needs no database: only the decorator's commit-boundary decision is exercised.
+    // ---------------------------------------------------------------------
+    @Test
+    @DisplayName("T20 armOneShot is concurrency-safe: exactly one of many racing write commits is faulted")
+    void oneShotFaultInjectionIsConcurrencySafeUnderRace() throws Exception {
+        assertExactlyOneFaultUnderRace(FaultInjectingTransactionManager.Mode.ABORT_BEFORE_COMMIT);
+        assertExactlyOneFaultUnderRace(FaultInjectingTransactionManager.Mode.LOST_RESULT_AFTER_COMMIT);
+    }
+
+    private void assertExactlyOneFaultUnderRace(FaultInjectingTransactionManager.Mode mode) throws Exception {
+        int threads = 16;
+        int iterations = 30; // repeat so a reintroduced race is caught reliably, not just by luck
+        int normalCommitTotal = 0;
+        int rollbackTotal = 0;
+        for (int iter = 0; iter < iterations; iter++) {
+            AtomicInteger commits = new AtomicInteger();
+            AtomicInteger rollbacks = new AtomicInteger();
+            AtomicInteger aborts = new AtomicInteger();
+            AtomicInteger lost = new AtomicInteger();
+            PlatformTransactionManager stub = new PlatformTransactionManager() {
+                @Override
+                public TransactionStatus getTransaction(TransactionDefinition definition) {
+                    return new SimpleTransactionStatus();
+                }
+
+                @Override
+                public void commit(TransactionStatus status) {
+                    commits.incrementAndGet();
+                }
+
+                @Override
+                public void rollback(TransactionStatus status) {
+                    rollbacks.incrementAndGet();
+                }
+            };
+            var faults = new FaultInjectingTransactionManager(stub);
+            faults.armOneShot(mode);
+
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch done = new CountDownLatch(threads);
+            for (int i = 0; i < threads; i++) {
+                new Thread(() -> {
+                    TransactionStatus status = stub.getTransaction(null);
+                    try {
+                        start.await();
+                        faults.commit(status);
+                    } catch (InjectedCommitAbort e) {
+                        aborts.incrementAndGet();
+                    } catch (InjectedLostResult e) {
+                        lost.incrementAndGet();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        done.countDown();
+                    }
+                }, "g4b-t20-race-" + i).start();
+            }
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS), "all racing commits must finish");
+
+            assertEquals(1, aborts.get() + lost.get(),
+                    mode + ": exactly one of " + threads + " racing commits may be faulted");
+            if (mode == FaultInjectingTransactionManager.Mode.ABORT_BEFORE_COMMIT) {
+                assertEquals(1, aborts.get(), "ABORT mode must abort exactly one commit");
+                assertEquals(1, rollbacks.get(), "ABORT mode must physically roll back exactly once");
+                assertEquals(threads - 1, commits.get(), "every other racing commit must commit normally");
+            } else {
+                assertEquals(1, lost.get(), "LOST_RESULT mode must lose exactly one result");
+                assertEquals(0, aborts.get(), "LOST_RESULT mode must not abort");
+                assertEquals(0, rollbacks.get(), "LOST_RESULT mode must not roll back");
+                assertEquals(threads, commits.get(), "every write is physically committed; only one caller loses the result");
+            }
+            normalCommitTotal += commits.get();
+            rollbackTotal += rollbacks.get();
+        }
+        System.out.println("[T20] " + mode + ": " + iterations + "x" + threads + " racing commits -> exactly 1 fault each, "
+                + normalCommitTotal + " normal commits, " + rollbackTotal + " rollbacks");
     }
 
     // =====================================================================

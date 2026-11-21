@@ -98,25 +98,37 @@ final class FaultInjectingTransactionManager implements PlatformTransactionManag
 
     @Override
     public void commit(TransactionStatus status) throws TransactionException {
-        Armed current = this.armed.get();
-        if (current == null || TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
+        if (TransactionSynchronizationManager.isCurrentTransactionReadOnly()) {
             delegate.commit(status);
             return;
         }
-        // Consume one write ordinal atomically; the fault fires only when the counter reaches zero.
-        Armed next = this.armed.updateAndGet(prev -> (prev == null || prev.writeOrdinal() <= 1)
-                ? null : new Armed(prev.mode(), prev.writeOrdinal() - 1));
-        if (next != null) {
+        while (true) {
+            Armed current = this.armed.get();
+            if (current == null) {
+                delegate.commit(status);
+                return;
+            }
+            if (current.writeOrdinal() > 1) {
+                // Not the target write yet: consume exactly one ordinal and commit normally.
+                if (this.armed.compareAndSet(current, new Armed(current.mode(), current.writeOrdinal() - 1))) {
+                    delegate.commit(status);
+                    return;
+                }
+                continue; // lost the race against another write commit; re-read and retry
+            }
+            // writeOrdinal == 1: ONLY the thread that wins this CAS may inject the fault, so a
+            // one-shot fault can never be injected twice by two concurrent commits.
+            if (!this.armed.compareAndSet(current, null)) {
+                continue;
+            }
+            if (current.mode() == Mode.ABORT_BEFORE_COMMIT) {
+                delegate.rollback(status);
+                throw new InjectedCommitAbort("injected abort before commit");
+            }
+            // LOST_RESULT_AFTER_COMMIT: the write is already durable when the caller gets the failure.
             delegate.commit(status);
-            return;
+            throw new InjectedLostResult("injected lost result after commit");
         }
-        if (current.mode() == Mode.ABORT_BEFORE_COMMIT) {
-            delegate.rollback(status);
-            throw new InjectedCommitAbort("injected abort before commit");
-        }
-        // LOST_RESULT_AFTER_COMMIT: the write is already durable when the caller gets the failure.
-        delegate.commit(status);
-        throw new InjectedLostResult("injected lost result after commit");
     }
 
     @Override
