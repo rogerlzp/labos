@@ -2,10 +2,13 @@ package com.labos.boot.web.controller;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.labos.boot.WorkflowRuntimeKernelFacade;
 import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.kernel.api.AuthService;
+import com.labos.kernel.workflow.runtime.coordinator.WaitOutcomes;
 import com.labos.kernel.workflow.runtime.gateway.TcpDeviceConnection;
 import com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
@@ -26,7 +29,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
@@ -44,6 +49,7 @@ import java.util.UUID;
 public class WorkflowRuntimeController {
 
     private static final long DEFAULT_KERNEL_TENANT_ID = 1L;
+    private static final String DEFAULT_SIGNAL_SOURCE = "http-api";
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final MediaType JSON_UTF8 = MediaType.parseMediaType("application/json; charset=utf-8");
 
@@ -329,6 +335,181 @@ public class WorkflowRuntimeController {
         } catch (IllegalStateException notFoundOrState) {
             return errorResponse(classifyIllegalStateStatus(notFoundOrState), notFoundOrState.getMessage());
         }
+    }
+
+    /**
+     * Authenticated G5 Wait signal ingress backed by durable Inbox idempotency
+     * ({@code workflow_runtime.inbox_receipt}).
+     *
+     * <p>Body: {@code {"source":"...","sourceMessageId":"...","correlationKey":"...","payload":{...}}}.
+     * {@code sourceMessageId} and {@code correlationKey} are strictly required (no random fallback
+     * is generated so idempotency cannot be silently bypassed). {@code source} defaults to
+     * {@code "http-api"} when omitted/null. {@code payload} defaults to {@code {}} and must be a
+     * JSON object if supplied.
+     */
+    @PostMapping(value = "/runs/{runId}/signals", produces = "application/json; charset=utf-8")
+    public ResponseEntity<String> receiveWaitSignal(
+            @PathVariable String runId,
+            @RequestBody(required = false) String body,
+            HttpServletRequest req) {
+        UUID runUuid;
+        try {
+            runUuid = UUID.fromString(runId.trim());
+        } catch (IllegalArgumentException badUuid) {
+            return errorResponse(400, "Invalid runId UUID: " + runId);
+        }
+        try {
+            JsonNode root = parseJsonObject(body);
+            String sourceMessageId = requiredText(root, "sourceMessageId");
+            String correlationKey = requiredText(root, "correlationKey");
+            String source;
+            JsonNode sourceNode = root.get("source");
+            if (sourceNode == null || sourceNode.isNull()) {
+                source = DEFAULT_SIGNAL_SOURCE;
+            } else if (!sourceNode.isTextual() || sourceNode.asText().isBlank()) {
+                throw new IllegalArgumentException("Field 'source' must be a non-blank string");
+            } else {
+                source = sourceNode.asText().trim();
+            }
+            String payloadJson;
+            JsonNode payloadNode = root.get("payload");
+            if (payloadNode == null || payloadNode.isNull()) {
+                payloadJson = "{}";
+            } else if (!payloadNode.isObject()) {
+                throw new IllegalArgumentException("Field 'payload' must be a JSON object");
+            } else {
+                payloadJson = canonicalizePayloadJson(payloadNode);
+            }
+
+            WorkflowRuntimeRepository.GraphWaitResult result = facade.receiveWaitSignal(
+                    DEFAULT_KERNEL_TENANT_ID, runUuid, source, sourceMessageId, correlationKey, payloadJson);
+
+            Map<String, Object> auditDetail = new LinkedHashMap<>();
+            auditDetail.put("source", source);
+            auditDetail.put("sourceMessageId", sourceMessageId);
+            auditDetail.put("correlationKey", correlationKey);
+            auditDetail.put("outcome", result.outcome());
+            if (result.waitId() != null) auditDetail.put("waitId", result.waitId().toString());
+            if (result.activationId() != null) auditDetail.put("activationId", result.activationId().toString());
+            if (result.successorTokenId() != null) auditDetail.put("successorTokenId", result.successorTokenId().toString());
+            if (result.inboxId() != null) auditDetail.put("inboxId", result.inboxId().toString());
+            audit.record(session(req), "runtime.wait.signal", "runtime_run", null,
+                    runUuid.toString(), JSON.writeValueAsString(auditDetail), remoteAddr(req));
+
+            return mapWaitSignalResponse(runUuid, source, sourceMessageId, correlationKey, result);
+        } catch (IllegalArgumentException bad) {
+            return errorResponse(400, bad.getMessage());
+        } catch (WorkflowRuntimeRepository.InvalidTransitionException
+                | WorkflowRuntimeRepository.StaleRuntimeWriteException conflict) {
+            return errorResponse(409, conflict.getMessage());
+        } catch (Exception ex) {
+            return errorResponse(500, "Failed to process Wait signal: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Canonicalizes a JSON object payload recursively (lexicographically sorted object keys while
+     * preserving array order) so equivalent JSON objects with reordered keys produce identical
+     * SHA-256 Inbox hashes on duplicate replays.
+     */
+    public static String canonicalizePayloadJson(JsonNode payloadNode) {
+        if (payloadNode == null || !payloadNode.isObject()) {
+            throw new IllegalArgumentException("Field 'payload' must be a JSON object");
+        }
+        try {
+            return JSON.writeValueAsString(canonicalizeJsonNode(payloadNode));
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to canonicalize payload JSON: " + e.getMessage(), e);
+        }
+    }
+
+    private static JsonNode canonicalizeJsonNode(JsonNode node) {
+        if (node.isObject()) {
+            TreeMap<String, JsonNode> sorted = new TreeMap<>();
+            var fields = node.fields();
+            while (fields.hasNext()) {
+                var entry = fields.next();
+                sorted.put(entry.getKey(), canonicalizeJsonNode(entry.getValue()));
+            }
+            ObjectNode canonical = JSON.createObjectNode();
+            for (var entry : sorted.entrySet()) {
+                canonical.set(entry.getKey(), entry.getValue());
+            }
+            return canonical;
+        }
+        if (node.isArray()) {
+            ArrayNode canonicalArr = JSON.createArrayNode();
+            for (JsonNode item : node) {
+                canonicalArr.add(canonicalizeJsonNode(item));
+            }
+            return canonicalArr;
+        }
+        return node;
+    }
+
+    /** Maps a G5 {@link WorkflowRuntimeRepository.GraphWaitResult} to the REST response contract. */
+    public static ResponseEntity<String> mapWaitSignalResponse(
+            UUID runId,
+            String source,
+            String sourceMessageId,
+            String correlationKey,
+            WorkflowRuntimeRepository.GraphWaitResult result) {
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(result, "result");
+        String outcome = result.outcome();
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("runId", runId.toString());
+        resp.put("outcome", outcome);
+        resp.put("source", source);
+        resp.put("sourceMessageId", sourceMessageId);
+        resp.put("correlationKey", correlationKey);
+        if (result.waitId() != null) resp.put("waitId", result.waitId().toString());
+        if (result.activationId() != null) resp.put("activationId", result.activationId().toString());
+        if (result.successorTokenId() != null) resp.put("successorTokenId", result.successorTokenId().toString());
+        if (result.inboxId() != null) resp.put("inboxId", result.inboxId().toString());
+
+        int status;
+        switch (outcome) {
+            case WaitOutcomes.COMPLETED -> {
+                status = 200;
+                resp.put("accepted", true);
+                resp.put("replayed", false);
+                resp.put("deferred", false);
+            }
+            case WaitOutcomes.ALREADY_COMPLETED -> {
+                status = 200;
+                resp.put("accepted", true);
+                resp.put("replayed", true);
+                resp.put("deferred", false);
+            }
+            case WaitOutcomes.DEFERRED_RUN_NOT_OPEN -> {
+                status = 202;
+                resp.put("accepted", true);
+                resp.put("replayed", false);
+                resp.put("deferred", true);
+            }
+            case WaitOutcomes.NOT_FOUND -> {
+                status = 404;
+                resp.put("accepted", false);
+                resp.put("error", "Runtime Run not found: " + runId);
+            }
+            case WaitOutcomes.PROTOCOL_VIOLATION -> {
+                status = 409;
+                resp.put("accepted", false);
+                resp.put("error", "Idempotency conflict: sourceMessageId already recorded with different payload, correlationKey, or runId");
+            }
+            case WaitOutcomes.REJECTED -> {
+                status = 409;
+                resp.put("accepted", false);
+                resp.put("error", "Signal rejected: no matching active Wait or Run is not accepting signals");
+            }
+            default -> {
+                status = 409;
+                resp.put("accepted", false);
+                resp.put("error", "Wait signal could not be applied (" + outcome + ")");
+            }
+        }
+        return jsonResponse(status, resp);
     }
 
     private static Map<String, Object> serializeHealth(EmbeddedWorkflowRuntimeHost.HealthSnapshot h) {

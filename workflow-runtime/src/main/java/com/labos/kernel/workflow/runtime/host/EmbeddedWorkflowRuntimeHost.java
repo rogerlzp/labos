@@ -331,6 +331,21 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
         return lifecycleCoordinator.wake(tenantId, runId);
     }
 
+    /**
+     * Best-effort wakeup for a Run whose durable state already advanced (for example, an
+     * external G5 Wait signal satisfied an active Wait and created a READY successor Token).
+     * Returns an already-completed future if the host is not currently {@code RUNNING}, since
+     * committed database state will be picked up automatically by the dispatch loop or startup.
+     */
+    public CompletableFuture<Void> wakeRunIfRunning(UUID tenantId, UUID runId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        Objects.requireNonNull(runId, "runId");
+        if (runtimeHost.state() != RuntimeHost.State.RUNNING) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return lifecycleCoordinator.wake(tenantId, runId);
+    }
+
     public UUID requestStop(UUID tenantId, UUID runId) {
         return repository.requestDrain(tenantId, runId, "STOP");
     }

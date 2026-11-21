@@ -2,13 +2,16 @@ package com.labos.boot;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.labos.boot.web.ApiAuthInterceptor;
 import com.labos.boot.web.AuditRecorder;
 import com.labos.boot.web.controller.WorkflowRuntimeController;
+import com.labos.kernel.api.AuthService;
 import com.labos.kernel.persistence.DeviceMapper;
 import com.labos.kernel.persistence.GraphMapper;
 import com.labos.kernel.sim.DeviceCore;
 import com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -20,6 +23,7 @@ import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Duration;
@@ -89,7 +93,9 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                     1002L, parallelIslandBpmn(),
                     1003L, xorIslandBpmn("92"),
                     1004L, xorIslandBpmn("40"),
-                    1005L, unsupportedMethodFaultBpmn());
+                    1005L, unsupportedMethodFaultBpmn(),
+                    1006L, waitMessageIslandBpmn(),
+                    1007L, waitTimeoutRaceIslandBpmn("PT0.4S"));
 
             GraphMapper graphMapper = (GraphMapper) Proxy.newProxyInstance(
                     GraphMapper.class.getClassLoader(), new Class<?>[]{GraphMapper.class},
@@ -140,13 +146,24 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
 
                 EmbeddedWorkflowRuntimeHost host = ctx.getBean(EmbeddedWorkflowRuntimeHost.class);
                 WorkflowRuntimeKernelFacade facade = ctx.getBean(WorkflowRuntimeKernelFacade.class);
-                java.util.List<String> auditActions = new java.util.concurrent.CopyOnWriteArrayList<>();
+                record CapturedAudit(
+                        AuthService.Session who,
+                        String action,
+                        String entityType,
+                        Long entityId,
+                        String entityKey,
+                        String detail,
+                        String ip) {}
+                List<String> auditActions = new java.util.concurrent.CopyOnWriteArrayList<>();
+                List<CapturedAudit> capturedAudits = new java.util.concurrent.CopyOnWriteArrayList<>();
                 AuditRecorder recordingAudit = new AuditRecorder(null) {
                     @Override
-                    public void record(com.labos.kernel.api.AuthService.Session who, String action,
+                    public void record(AuthService.Session who, String action,
                                        String entityType, Long entityId, String entityKey,
                                        String detail, String ip) {
                         auditActions.add(action);
+                        capturedAudits.add(new CapturedAudit(
+                                who, action, entityType, entityId, entityKey, detail, ip));
                     }
                 };
                 WorkflowRuntimeController controller = new WorkflowRuntimeController(facade, recordingAudit);
@@ -286,7 +303,283 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                                 && !containsText(xorFailOv.get("completedNodes"), "xor_pass_dispense"),
                         "XOR score=40 must take default fail branch only");
 
-                // ---- Scenario 5: Real DeviceCore EC-06-0004 fault -> MANUAL_REQUIRED observability ----
+                // Baseline check: Scenarios 1-4 must produce 0 inbox_protocol_violation rows prior to explicit G5 conflict tests.
+                require(scalarLong(ds,
+                                "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation "
+                                        + "WHERE tenant_id = (SELECT tenant_id FROM workflow_runtime.tenant "
+                                        + "WHERE tenant_key = 'kernel-tenant:1')") == 0L,
+                        "Expected 0 inbox_protocol_violation rows before G5 conflict scenarios");
+
+                // ---- Scenario 5: G5 HTTP Signal Ingress (404 / 409 REJECTED / 200 COMPLETED / Replay / Conflict) ----
+                HttpServletRequest opReq = fakeOperatorRequest("op-signal", "operator");
+                var badRunSigResp = controller.receiveWaitSignal(
+                        UUID.randomUUID().toString(),
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-unknown-run\",\"correlationKey\":\"qc.approved\",\"payload\":{\"ok\":true}}",
+                        opReq);
+                require(badRunSigResp.getStatusCode().value() == 404
+                                && "NOT_FOUND".equals(JSON.readTree(badRunSigResp.getBody()).get("outcome").asText()),
+                        "Unknown runId must return 404 NOT_FOUND, got: " + badRunSigResp.getBody());
+
+                var sigCreateResp = controller.createRun(
+                        "{\"workflowId\":1006,\"autoStart\":true}",
+                        "island-signal-happy-" + UUID.randomUUID(), opReq);
+                require(sigCreateResp.getStatusCode().value() == 201, "Wait workflow create expected 201");
+                String sigRunId = JSON.readTree(sigCreateResp.getBody()).get("runId").asText();
+                UUID sigRunUuid = UUID.fromString(sigRunId);
+
+                awaitCondition(Duration.ofSeconds(10), () -> {
+                    JsonNode ov = getRunJson(controller, sigRunId);
+                    return containsText(ov.get("completedNodes"), "wait_pre_dispense")
+                            && scalarLong(ds,
+                            "SELECT count(*) FROM workflow_runtime.wait_registration WHERE run_id=? AND wait_state='ACTIVE' AND correlation_key='qc.approved'",
+                            sigRunUuid) == 1L;
+                }, () -> "Signal workflow must reach ACTIVE Wait with correlation_key=qc.approved | run="
+                        + getRunJson(controller, sigRunId)
+                        + " | waits=" + scalarLong(ds,
+                        "SELECT count(*) FROM workflow_runtime.wait_registration WHERE run_id=?", sigRunUuid)
+                        + " | health=" + controller.health().getBody());
+
+                var wrongCorrResp = controller.receiveWaitSignal(
+                        sigRunId,
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-wrong-corr\",\"correlationKey\":\"wrong.key\",\"payload\":{}}",
+                        opReq);
+                JsonNode wrongCorrJson = JSON.readTree(wrongCorrResp.getBody());
+                require(wrongCorrResp.getStatusCode().value() == 409
+                                && "REJECTED".equals(wrongCorrJson.get("outcome").asText())
+                                && wrongCorrJson.hasNonNull("inboxId"),
+                        "Wrong correlationKey must return 409 REJECTED, got: " + wrongCorrResp.getBody());
+                UUID wrongCorrInboxId = UUID.fromString(wrongCorrJson.get("inboxId").asText());
+                require("REJECTED".equals(scalarString(ds,
+                                "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE inbox_id=?",
+                                wrongCorrInboxId)),
+                        "Wrong correlationKey inbox_receipt must be REJECTED");
+                require("ACTIVE".equals(scalarString(ds,
+                                "SELECT wait_state FROM workflow_runtime.wait_registration WHERE run_id=?",
+                                sigRunUuid)),
+                        "Wrong correlationKey must leave Wait ACTIVE");
+
+                var happySigResp = controller.receiveWaitSignal(
+                        sigRunId,
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-qc-1\",\"correlationKey\":\"qc.approved\",\"payload\":{\"qcPass\":true,\"plate\":\"P-01\"}}",
+                        opReq);
+                JsonNode happySigJson = JSON.readTree(happySigResp.getBody());
+                require(happySigResp.getStatusCode().value() == 200
+                                && "COMPLETED".equals(happySigJson.get("outcome").asText())
+                                && !happySigJson.get("replayed").asBoolean()
+                                && happySigJson.hasNonNull("waitId")
+                                && happySigJson.hasNonNull("successorTokenId")
+                                && happySigJson.hasNonNull("inboxId"),
+                        "Valid HTTP signal must return 200 COMPLETED, got: " + happySigResp.getBody());
+                String happyInboxId = happySigJson.get("inboxId").asText();
+
+                awaitCondition(Duration.ofSeconds(12), () ->
+                        "SUCCEEDED".equals(getRunJson(controller, sigRunId).get("status").asText()),
+                        () -> "Signal run should complete SUCCEEDED | run=" + getRunJson(controller, sigRunId));
+                require(containsText(getRunJson(controller, sigRunId).get("completedNodes"), "wait_post_spin"),
+                        "Downstream DeviceCore 207 wait_post_spin must complete after HTTP signal");
+
+                // Duplicate replay with reordered JSON keys -> 200 ALREADY_COMPLETED, same inboxId, zero duplicate execution
+                var replaySigResp = controller.receiveWaitSignal(
+                        sigRunId,
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-qc-1\",\"correlationKey\":\"qc.approved\",\"payload\":{\"plate\":\"P-01\",\"qcPass\":true}}",
+                        opReq);
+                JsonNode replaySigJson = JSON.readTree(replaySigResp.getBody());
+                require(replaySigResp.getStatusCode().value() == 200
+                                && "ALREADY_COMPLETED".equals(replaySigJson.get("outcome").asText())
+                                && replaySigJson.get("replayed").asBoolean()
+                                && happyInboxId.equals(replaySigJson.get("inboxId").asText()),
+                        "Duplicate replay with reordered JSON keys must return 200 ALREADY_COMPLETED with same inboxId, got: "
+                                + replaySigResp.getBody());
+                require(scalarLong(ds,
+                                "SELECT count(*) FROM workflow_runtime.node_activation WHERE run_id=? AND node_key='wait_post_spin'",
+                                sigRunUuid) == 1L,
+                        "Duplicate replay must not create extra downstream node_activation");
+                require(scalarLong(ds,
+                                "SELECT count(*) FROM workflow_runtime.command_ledger WHERE run_id=?",
+                                sigRunUuid) == 2L,
+                        "Duplicate replay must not dispatch extra device command (expected 2 total)");
+
+                // Conflicting payload on completed sourceMessageId -> 409 PROTOCOL_VIOLATION
+                var conflictPayloadResp = controller.receiveWaitSignal(
+                        sigRunId,
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-qc-1\",\"correlationKey\":\"qc.approved\",\"payload\":{\"qcPass\":false,\"plate\":\"P-99\"}}",
+                        opReq);
+                require(conflictPayloadResp.getStatusCode().value() == 409
+                                && "PROTOCOL_VIOLATION".equals(JSON.readTree(conflictPayloadResp.getBody()).get("outcome").asText()),
+                        "Conflicting payload must return 409 PROTOCOL_VIOLATION, got: " + conflictPayloadResp.getBody());
+                require(scalarLong(ds,
+                                "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation "
+                                        + "WHERE tenant_id = (SELECT tenant_id FROM workflow_runtime.tenant WHERE tenant_key = 'kernel-tenant:1')") == 1L,
+                        "Expected 1 inbox_protocol_violation after conflicting payload");
+
+                // Conflicting runId against a second ACTIVE Wait -> 409 PROTOCOL_VIOLATION, Wait untouched
+                var sig2CreateResp = controller.createRun(
+                        "{\"workflowId\":1006,\"autoStart\":true}",
+                        "island-signal-run2-" + UUID.randomUUID(), opReq);
+                require(sig2CreateResp.getStatusCode().value() == 201, "Second Wait workflow create expected 201");
+                String sigRun2Id = JSON.readTree(sig2CreateResp.getBody()).get("runId").asText();
+                UUID sigRun2Uuid = UUID.fromString(sigRun2Id);
+                awaitCondition(Duration.ofSeconds(10), () -> scalarLong(ds,
+                        "SELECT count(*) FROM workflow_runtime.wait_registration WHERE run_id=? AND wait_state='ACTIVE' AND correlation_key='qc.approved'",
+                        sigRun2Uuid) == 1L,
+                        "Second signal run must reach ACTIVE Wait");
+
+                var conflictRunResp = controller.receiveWaitSignal(
+                        sigRun2Id,
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-qc-1\",\"correlationKey\":\"qc.approved\",\"payload\":{\"qcPass\":true,\"plate\":\"P-01\"}}",
+                        opReq);
+                require(conflictRunResp.getStatusCode().value() == 409
+                                && "PROTOCOL_VIOLATION".equals(JSON.readTree(conflictRunResp.getBody()).get("outcome").asText()),
+                        "Reusing sourceMessageId on different runId must return 409 PROTOCOL_VIOLATION, got: "
+                                + conflictRunResp.getBody());
+                require("ACTIVE".equals(scalarString(ds,
+                                "SELECT wait_state FROM workflow_runtime.wait_registration WHERE run_id=?",
+                                sigRun2Uuid)),
+                        "Conflicting runId signal must leave Run 2 Wait ACTIVE");
+                require(scalarLong(ds,
+                                "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation "
+                                        + "WHERE tenant_id = (SELECT tenant_id FROM workflow_runtime.tenant WHERE tenant_key = 'kernel-tenant:1')") == 2L,
+                        "Expected 2 inbox_protocol_violation rows after conflicting runId");
+
+                var sig2SatisfyResp = controller.receiveWaitSignal(
+                        sigRun2Id,
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-qc-2\",\"correlationKey\":\"qc.approved\",\"payload\":{\"qcPass\":true}}",
+                        opReq);
+                require(sig2SatisfyResp.getStatusCode().value() == 200
+                                && "COMPLETED".equals(JSON.readTree(sig2SatisfyResp.getBody()).get("outcome").asText()),
+                        "Fresh sourceMessageId must satisfy Run 2 Wait");
+                awaitCondition(Duration.ofSeconds(12), () ->
+                        "SUCCEEDED".equals(getRunJson(controller, sigRun2Id).get("status").asText()),
+                        "Run 2 should reach SUCCEEDED after fresh signal");
+
+                // ---- Scenario 6: PAUSED Run Deferred Signal (202) -> RESUME Auto-Replay ----
+                var pauseSigCreateResp = controller.createRun(
+                        "{\"workflowId\":1006,\"autoStart\":true}",
+                        "island-signal-pause-" + UUID.randomUUID(), opReq);
+                require(pauseSigCreateResp.getStatusCode().value() == 201, "Paused signal run create expected 201");
+                String pauseSigRunId = JSON.readTree(pauseSigCreateResp.getBody()).get("runId").asText();
+                UUID pauseSigRunUuid = UUID.fromString(pauseSigRunId);
+                awaitCondition(Duration.ofSeconds(10), () -> scalarLong(ds,
+                        "SELECT count(*) FROM workflow_runtime.wait_registration WHERE run_id=? AND wait_state='ACTIVE' AND correlation_key='qc.approved'",
+                        pauseSigRunUuid) == 1L,
+                        () -> "Paused signal run must reach ACTIVE Wait | run=" + getRunJson(controller, pauseSigRunId));
+
+                require(controller.pauseRun(pauseSigRunId, opReq).getStatusCode().value() == 200,
+                        "PAUSE before deferred signal expected 200");
+                awaitCondition(Duration.ofSeconds(10), () ->
+                        "PAUSED".equals(getRunJson(controller, pauseSigRunId).get("status").asText())
+                                && host.healthSnapshot().activeLocalWorkers() == 0,
+                        "Run must converge to PAUSED before sending deferred signal");
+
+                var deferredResp = controller.receiveWaitSignal(
+                        pauseSigRunId,
+                        "{\"source\":\"lims\",\"sourceMessageId\":\"msg-paused-1\",\"correlationKey\":\"qc.approved\",\"payload\":{\"deferred\":true}}",
+                        opReq);
+                JsonNode deferredJson = JSON.readTree(deferredResp.getBody());
+                require(deferredResp.getStatusCode().value() == 202
+                                && "DEFERRED_RUN_NOT_OPEN".equals(deferredJson.get("outcome").asText())
+                                && deferredJson.get("accepted").asBoolean()
+                                && deferredJson.get("deferred").asBoolean()
+                                && deferredJson.hasNonNull("inboxId"),
+                        "Signal while PAUSED must return 202 DEFERRED_RUN_NOT_OPEN, got: " + deferredResp.getBody());
+                UUID deferredInboxId = UUID.fromString(deferredJson.get("inboxId").asText());
+                require("ACTIVE".equals(scalarString(ds,
+                                "SELECT wait_state FROM workflow_runtime.wait_registration WHERE run_id=?",
+                                pauseSigRunUuid)),
+                        "Deferred signal must leave Wait ACTIVE while PAUSED");
+                require("RECEIVED".equals(scalarString(ds,
+                                "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE inbox_id=?",
+                                deferredInboxId)),
+                        "Deferred signal inbox_receipt must remain RECEIVED while PAUSED");
+                require(!containsText(getRunJson(controller, pauseSigRunId).get("completedNodes"), "wait_post_spin"),
+                        "Downstream wait_post_spin must NOT execute while PAUSED");
+
+                require(controller.resumeRun(pauseSigRunId, opReq).getStatusCode().value() == 200,
+                        "RESUME after deferred signal expected 200");
+                awaitCondition(Duration.ofSeconds(12), () ->
+                        "SUCCEEDED".equals(getRunJson(controller, pauseSigRunId).get("status").asText()),
+                        () -> "Paused run with deferred signal should resume and SUCCEED | run="
+                                + getRunJson(controller, pauseSigRunId));
+                require(containsText(getRunJson(controller, pauseSigRunId).get("completedNodes"), "wait_post_spin"),
+                        "Downstream wait_post_spin must complete after RESUME auto-replay");
+                require("PROCESSED".equals(scalarString(ds,
+                                "SELECT receipt_state FROM workflow_runtime.inbox_receipt WHERE inbox_id=?",
+                                deferredInboxId)),
+                        "Deferred inbox_receipt must transition to PROCESSED after RESUME replay");
+                require("SATISFIED".equals(scalarString(ds,
+                                "SELECT wait_state FROM workflow_runtime.wait_registration WHERE run_id=?",
+                                pauseSigRunUuid)),
+                        "Wait must transition to SATISFIED after RESUME replay");
+
+                // ---- Scenario 7: Event vs Timer Timeout Race (MESSAGE_WITH_TIMEOUT PT0.4S on live PG17) ----
+                long[] offsetsMs = {-220L, -30L, 0L, 30L, 260L};
+                int satisfiedCount = 0;
+                int expiredCount = 0;
+                for (int t = 0; t < offsetsMs.length; t++) {
+                    var raceCreateResp = controller.createRun(
+                            "{\"workflowId\":1007,\"autoStart\":true}",
+                            "island-race-" + t + "-" + UUID.randomUUID(), opReq);
+                    require(raceCreateResp.getStatusCode().value() == 201, "Race trial create expected 201");
+                    String raceRunId = JSON.readTree(raceCreateResp.getBody()).get("runId").asText();
+                    UUID raceRunUuid = UUID.fromString(raceRunId);
+
+                    awaitCondition(Duration.ofSeconds(10), () -> scalarLong(ds,
+                            "SELECT count(*) FROM workflow_runtime.wait_registration WHERE run_id=? AND wait_state='ACTIVE'",
+                            raceRunUuid) == 1L,
+                            "Race trial Wait did not become ACTIVE");
+
+                    Double remainingMs = scalarDouble(ds,
+                            "SELECT EXTRACT(EPOCH FROM (deadline_at - clock_timestamp())) * 1000.0 "
+                                    + "FROM workflow_runtime.wait_registration WHERE run_id=? AND wait_state='ACTIVE'",
+                            raceRunUuid);
+                    long sleepMs = remainingMs == null ? 0L : Math.max(0L, Math.round(remainingMs) + offsetsMs[t]);
+                    if (sleepMs > 0L) {
+                        Thread.sleep(sleepMs);
+                    }
+
+                    var raceSigResp = controller.receiveWaitSignal(
+                            raceRunId,
+                            "{\"source\":\"lims\",\"sourceMessageId\":\"msg-race-" + t + "\",\"correlationKey\":\"race.go\",\"payload\":{\"trial\":" + t + "}}",
+                            opReq);
+                    int raceStatus = raceSigResp.getStatusCode().value();
+                    String raceOutcome = JSON.readTree(raceSigResp.getBody()).get("outcome").asText();
+                    require((raceStatus == 200 && "COMPLETED".equals(raceOutcome))
+                                    || (raceStatus == 409 && "REJECTED".equals(raceOutcome)),
+                            "Race trial HTTP outcome must be 200 COMPLETED or 409 REJECTED, got "
+                                    + raceStatus + " body=" + raceSigResp.getBody());
+
+                    awaitCondition(Duration.ofSeconds(12), () ->
+                            "SUCCEEDED".equals(getRunJson(controller, raceRunId).get("status").asText()),
+                            () -> "Race trial should reach SUCCEEDED | run=" + getRunJson(controller, raceRunId));
+                    JsonNode raceOv = getRunJson(controller, raceRunId);
+                    boolean hasNormal = containsText(raceOv.get("completedNodes"), "race_normal_dispense");
+                    boolean hasTimeout = containsText(raceOv.get("completedNodes"), "race_timeout_spin");
+                    require(hasNormal ^ hasTimeout,
+                            "Race trial " + t + " must execute strictly one branch (normal=" + hasNormal
+                                    + ", timeout=" + hasTimeout + ")");
+                    String expectedWaitState = hasNormal ? "SATISFIED" : "EXPIRED";
+                    String actualWaitState = scalarString(ds,
+                            "SELECT wait_state FROM workflow_runtime.wait_registration WHERE run_id=?",
+                            raceRunUuid);
+                    require(expectedWaitState.equals(actualWaitState),
+                            "Race trial " + t + " expected wait_state=" + expectedWaitState + ", got " + actualWaitState);
+                    require(scalarLong(ds,
+                                    "SELECT count(*) FROM workflow_runtime.node_activation "
+                                            + "WHERE run_id=? AND node_key IN ('race_normal_dispense', 'race_timeout_spin')",
+                                    raceRunUuid) == 1L,
+                            "Race trial " + t + " must create strictly 1 downstream node_activation");
+                    if (hasNormal) {
+                        satisfiedCount++;
+                    } else {
+                        expiredCount++;
+                    }
+                }
+                require(satisfiedCount >= 1 && expiredCount >= 1,
+                        "Staggered race trials must exercise both SATISFIED (" + satisfiedCount
+                                + ") and EXPIRED (" + expiredCount + ") paths");
+
+                // ---- Scenario 8: Real DeviceCore EC-06-0004 fault -> MANUAL_REQUIRED observability ----
+                // Kept last among workflow scenarios because failAttempt keeps device:206 capacity reserved until reconciled.
                 var faultResp = controller.createRun("{\"workflowId\":1005,\"autoStart\":true}", "island-fault-" + UUID.randomUUID(), null);
                 String faultRunId = JSON.readTree(faultResp.getBody()).get("runId").asText();
                 awaitCondition(Duration.ofSeconds(10), () -> {
@@ -304,7 +597,7 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                     }
                 }, "Unsupported method on DeviceCore 206 must surface in GET /api/runtime/runs/manual-required");
 
-                // ---- Scenario 6: Verify spontaneous message_type=6 frames caused ZERO malformed/protocol errors ----
+                // ---- Scenario 9: Final Health, Spontaneous Frames & Audit Trail Verification ----
                 Thread.sleep(120); // allow last spontaneous Dispense=process_done@30* frame to arrive
                 var dev206Health = host.healthSnapshot().devices().get("206");
                 var dev207Health = host.healthSnapshot().devices().get("207");
@@ -318,16 +611,41 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                 require(dispatchStats.cycleErrors() == 0,
                         "Expected 0 dispatch cycleErrors for isolated island tenant, got "
                                 + dispatchStats.cycleErrors() + " (lastError=" + dispatchStats.lastError() + ")");
-                try (Connection c = ds.getConnection(); Statement st = c.createStatement();
-                     ResultSet rs = st.executeQuery(
-                             "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation "
-                                     + "WHERE tenant_id = (SELECT tenant_id FROM workflow_runtime.tenant "
-                                     + "WHERE tenant_key = 'kernel-tenant:1')")) {
-                    require(rs.next() && rs.getLong(1) == 0L, "Expected 0 inbox_protocol_violation rows for island tenant");
-                }
+                require(scalarLong(ds,
+                                "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation "
+                                        + "WHERE tenant_id = (SELECT tenant_id FROM workflow_runtime.tenant "
+                                        + "WHERE tenant_key = 'kernel-tenant:1')") == 2L,
+                        "Expected strictly 2 inbox_protocol_violation rows from the explicit conflict scenarios");
                 require(auditActions.containsAll(List.of(
-                        "runtime.run.create", "runtime.run.pause", "runtime.run.resume", "runtime.run.stop")),
+                        "runtime.run.create", "runtime.run.pause", "runtime.run.resume", "runtime.run.stop",
+                        "runtime.wait.signal")),
                         "All write actions must record audit entries, got: " + auditActions);
+
+                boolean sawCompletedAudit = false;
+                boolean sawConflictAudit = false;
+                boolean sawDeferredAudit = false;
+                for (CapturedAudit entry : capturedAudits) {
+                    if (!"runtime.wait.signal".equals(entry.action()) || entry.detail() == null) {
+                        continue;
+                    }
+                    JsonNode d = JSON.readTree(entry.detail());
+                    String outcome = d.path("outcome").asText();
+                    if (sigRunId.equals(entry.entityKey())
+                            && entry.who() != null
+                            && "op-signal".equals(entry.who().username())
+                            && "lims".equals(d.path("source").asText())
+                            && "msg-qc-1".equals(d.path("sourceMessageId").asText())
+                            && "qc.approved".equals(d.path("correlationKey").asText())
+                            && "COMPLETED".equals(outcome)) {
+                        sawCompletedAudit = true;
+                    } else if ("PROTOCOL_VIOLATION".equals(outcome)) {
+                        sawConflictAudit = true;
+                    } else if ("DEFERRED_RUN_NOT_OPEN".equals(outcome)) {
+                        sawDeferredAudit = true;
+                    }
+                }
+                require(sawCompletedAudit && sawConflictAudit && sawDeferredAudit,
+                        "Audit trail must capture COMPLETED, PROTOCOL_VIOLATION, and DEFERRED_RUN_NOT_OPEN signal events");
             }
 
             System.out.println("Workflow Runtime Island + Real DeviceCore Simulator E2E：通过 "
@@ -503,6 +821,113 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                   </bpmn:process>
                 </bpmn:definitions>
                 """;
+    }
+
+    private static String waitMessageIslandBpmn() {
+        return """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                                  xmlns:labos="urn:labos:workflow-runtime:v1"
+                                  id="Defs_WaitMessage" targetNamespace="http://labos.local/bpmn">
+                  <bpmn:process id="Proc_WaitMessage" isExecutable="true">
+                    <bpmn:startEvent id="Start_1" name="START"/>
+                    <bpmn:task id="wait_pre_dispense" name="Dispense" protocolName="Dispense" resource="501" methodParams="{&quot;volume&quot;:50}"/>
+                    <bpmn:receiveTask id="wait_qc" name="WaitQC">
+                      <bpmn:extensionElements><labos:wait correlationKey="qc.approved"/></bpmn:extensionElements>
+                    </bpmn:receiveTask>
+                    <bpmn:task id="wait_post_spin" name="Load" protocolName="Load" resource="502" methodParams="{}"/>
+                    <bpmn:endEvent id="End_1" name="END"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="Start_1" targetRef="wait_pre_dispense"/>
+                    <bpmn:sequenceFlow id="f2" sourceRef="wait_pre_dispense" targetRef="wait_qc"/>
+                    <bpmn:sequenceFlow id="f3" sourceRef="wait_qc" targetRef="wait_post_spin"/>
+                    <bpmn:sequenceFlow id="f4" sourceRef="wait_post_spin" targetRef="End_1"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """;
+    }
+
+    private static String waitTimeoutRaceIslandBpmn(String durationIso) {
+        return """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                                  xmlns:labos="urn:labos:workflow-runtime:v1"
+                                  id="Defs_WaitRace" targetNamespace="http://labos.local/bpmn">
+                  <bpmn:process id="Proc_WaitRace" isExecutable="true">
+                    <bpmn:startEvent id="Start_1" name="START"/>
+                    <bpmn:receiveTask id="wait_race" name="WaitRace">
+                      <bpmn:extensionElements><labos:wait correlationKey="race.go"/></bpmn:extensionElements>
+                    </bpmn:receiveTask>
+                    <bpmn:boundaryEvent id="bd_race_timeout" attachedToRef="wait_race" cancelActivity="true">
+                      <bpmn:timerEventDefinition><bpmn:timeDuration>%s</bpmn:timeDuration></bpmn:timerEventDefinition>
+                    </bpmn:boundaryEvent>
+                    <bpmn:task id="race_normal_dispense" name="Dispense" protocolName="Dispense" resource="501" methodParams="{&quot;volume&quot;:60}"/>
+                    <bpmn:task id="race_timeout_spin" name="Load" protocolName="Load" resource="502" methodParams="{}"/>
+                    <bpmn:endEvent id="End_Normal" name="END"/>
+                    <bpmn:endEvent id="End_Timeout" name="END"/>
+                    <bpmn:sequenceFlow id="f1" sourceRef="Start_1" targetRef="wait_race"/>
+                    <bpmn:sequenceFlow id="f_ok" sourceRef="wait_race" targetRef="race_normal_dispense"/>
+                    <bpmn:sequenceFlow id="f_to" sourceRef="bd_race_timeout" targetRef="race_timeout_spin"/>
+                    <bpmn:sequenceFlow id="f_ok_end" sourceRef="race_normal_dispense" targetRef="End_Normal"/>
+                    <bpmn:sequenceFlow id="f_to_end" sourceRef="race_timeout_spin" targetRef="End_Timeout"/>
+                  </bpmn:process>
+                </bpmn:definitions>
+                """.formatted(durationIso);
+    }
+
+    private static HttpServletRequest fakeOperatorRequest(String username, String role) {
+        AuthService.Session session = new AuthService.Session(
+                "tok-" + username, 1L, username, username, role, Instant.now().plusSeconds(3600));
+        return (HttpServletRequest) Proxy.newProxyInstance(
+                WorkflowRuntimeIslandSimulatorSelfTest.class.getClassLoader(),
+                new Class<?>[]{HttpServletRequest.class},
+                (p, m, a) -> switch (m.getName()) {
+                    case "getAttribute" -> ApiAuthInterceptor.SESSION_ATTR.equals(a[0]) ? session : null;
+                    case "getRemoteAddr" -> "127.0.0.1";
+                    default -> {
+                        Class<?> rt = m.getReturnType();
+                        if (rt == boolean.class) yield false;
+                        if (rt == int.class) yield 0;
+                        if (rt == long.class) yield 0L;
+                        yield null;
+                    }
+                });
+    }
+
+    private interface ResultSetExtractor<T> {
+        T extract(ResultSet rs) throws Exception;
+    }
+
+    private static <T> T queryScalar(DataSource ds, String sql, ResultSetExtractor<T> extractor, Object... args) {
+        try (Connection c = ds.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            for (int i = 0; i < args.length; i++) {
+                ps.setObject(i + 1, args[i]);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? extractor.extract(rs) : null;
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("SQL scalar query failed: " + sql, e);
+        }
+    }
+
+    private static long scalarLong(DataSource ds, String sql, Object... args) {
+        Long value = queryScalar(ds, sql, rs -> {
+            Number n = (Number) rs.getObject(1);
+            return n == null ? 0L : n.longValue();
+        }, args);
+        return value == null ? 0L : value;
+    }
+
+    private static String scalarString(DataSource ds, String sql, Object... args) {
+        return queryScalar(ds, sql, rs -> rs.getString(1), args);
+    }
+
+    private static Double scalarDouble(DataSource ds, String sql, Object... args) {
+        return queryScalar(ds, sql, rs -> {
+            Number n = (Number) rs.getObject(1);
+            return n == null ? null : n.doubleValue();
+        }, args);
     }
 
     private WorkflowRuntimeIslandSimulatorSelfTest() {}
