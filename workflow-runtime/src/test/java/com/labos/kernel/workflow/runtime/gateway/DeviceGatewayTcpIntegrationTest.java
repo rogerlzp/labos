@@ -894,7 +894,7 @@ class DeviceGatewayTcpIntegrationTest {
                         && h.invalidHeartbeatsRejected() >= 1;
             });
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
-                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='SEND_STARTED'"));
+                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='ACKNOWLEDGED'"));
             assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
                     + tenant + "' AND run_id='" + run.runId() + "'"));
 
