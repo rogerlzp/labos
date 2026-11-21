@@ -22,8 +22,8 @@ import java.util.UUID;
  *       uncertainty or exception marks the Command {@code UNKNOWN} ({@code SIDE_EFFECT_UNKNOWN}) and
  *       dead-letters the outbox row until explicit external verification via {@link #reconcileUnknownCommand}.</li>
  *   <li>Every device result (whether synchronous or asynchronous) passes through durable
- *       {@code receiveInbox -> applyCommandEvent}, preserving idempotent duplicate replay and
- *       {@code inbox_protocol_violation} recording on conflicting payloads.</li>
+ *       {@code receiveInbox -> applyCommandEventOrReject}, preserving idempotent duplicate replay,
+ *       durable domain rejection, and {@code inbox_protocol_violation} recording on conflicting payloads.</li>
  * </ul>
  */
 public final class DeviceCommandExecutionService {
@@ -49,10 +49,14 @@ public final class DeviceCommandExecutionService {
     public enum InboxStatus {
         APPLIED,
         DUPLICATE_REPLAY,
+        REJECTED,
         PROTOCOL_VIOLATION
     }
 
-    public record InboxIngestionOutcome(InboxStatus status, UUID inboxId) {
+    public record InboxIngestionOutcome(InboxStatus status, UUID inboxId, String reason) {
+        public InboxIngestionOutcome(InboxStatus status, UUID inboxId) {
+            this(status, inboxId, null);
+        }
         public InboxIngestionOutcome {
             Objects.requireNonNull(status, "status");
             Objects.requireNonNull(inboxId, "inboxId");
@@ -159,9 +163,11 @@ public final class DeviceCommandExecutionService {
                                 tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
                                 "DEVICE_COMMAND_RESULT", commandId, "SUCCEEDED",
                                 result.deviceSequence(), result.outcomeJson());
-                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION) {
+                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION
+                                || syncOutcome.status() == InboxStatus.REJECTED) {
                             outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
-                                    "sync-result-inbox-protocol-violation:" + syncOutcome.inboxId()));
+                                    "sync-result-inbox-" + syncOutcome.status().name().toLowerCase() + ":" + syncOutcome.inboxId()
+                                            + ":" + (syncOutcome.reason() == null ? "unspecified" : syncOutcome.reason())));
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_SYNC);
                         }
@@ -172,9 +178,11 @@ public final class DeviceCommandExecutionService {
                                 tenantId, cmd.runId(), cmd.deviceId(), result.sourceMessageId(),
                                 "DEVICE_COMMAND_RESULT", commandId, "FAILED",
                                 result.deviceSequence(), result.outcomeJson());
-                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION) {
+                        if (syncOutcome.status() == InboxStatus.PROTOCOL_VIOLATION
+                                || syncOutcome.status() == InboxStatus.REJECTED) {
                             outcomes.put(commandId, handlePostSendUncertainty(tenantId, commandId, msg.outboxId(),
-                                    "sync-failed-inbox-protocol-violation:" + syncOutcome.inboxId()));
+                                    "sync-failed-inbox-" + syncOutcome.status().name().toLowerCase() + ":" + syncOutcome.inboxId()
+                                            + ":" + (syncOutcome.reason() == null ? "unspecified" : syncOutcome.reason())));
                         } else {
                             outcomes.put(commandId, CommandDeliveryStatus.COMPLETED_FAILED_SYNC);
                         }
@@ -254,23 +262,41 @@ public final class DeviceCommandExecutionService {
         WorkflowRuntimeRepository.InboxReceipt receipt = repository.receiveInbox(
                 tenantId, source, sourceMessageId, messageType, runId, inboxPayload);
         if (receipt.payloadConflict()) {
-            return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId());
+            return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId(), "SOURCE_MESSAGE_ID_PAYLOAD_CONFLICT");
         }
         if (!receipt.inserted()) {
             Optional<String> state = repository.findInboxReceiptState(tenantId, receipt.inboxId());
             if (state.isPresent() && "PROCESSED".equals(state.get())) {
                 return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
             }
+            if (state.isPresent() && "REJECTED".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.REJECTED, receipt.inboxId(),
+                        repository.findInboxReceiptRejectionReason(tenantId, receipt.inboxId()).orElse("PERMANENT_COMMAND_EVENT_REJECTION"));
+            }
+            if (state.isPresent() && "PROTOCOL_VIOLATION".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId(), "INBOX_PROTOCOL_VIOLATION");
+            }
         }
         try {
-            repository.applyCommandEvent(
+            boolean applied = repository.applyCommandEventOrReject(
                     tenantId, runId, receipt.inboxId(), commandId,
                     targetState, deviceSequence, normalizedOutcome);
-            return new InboxIngestionOutcome(InboxStatus.APPLIED, receipt.inboxId());
+            return applied
+                    ? new InboxIngestionOutcome(InboxStatus.APPLIED, receipt.inboxId())
+                    : new InboxIngestionOutcome(InboxStatus.REJECTED, receipt.inboxId(),
+                            repository.findInboxReceiptRejectionReason(tenantId, receipt.inboxId())
+                                    .orElse("PERMANENT_COMMAND_EVENT_REJECTION"));
         } catch (WorkflowRuntimeRepository.StaleRuntimeWriteException race) {
             Optional<String> state = repository.findInboxReceiptState(tenantId, receipt.inboxId());
             if (state.isPresent() && "PROCESSED".equals(state.get())) {
                 return new InboxIngestionOutcome(InboxStatus.DUPLICATE_REPLAY, receipt.inboxId());
+            }
+            if (state.isPresent() && "REJECTED".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.REJECTED, receipt.inboxId(),
+                        repository.findInboxReceiptRejectionReason(tenantId, receipt.inboxId()).orElse("PERMANENT_COMMAND_EVENT_REJECTION"));
+            }
+            if (state.isPresent() && "PROTOCOL_VIOLATION".equals(state.get())) {
+                return new InboxIngestionOutcome(InboxStatus.PROTOCOL_VIOLATION, receipt.inboxId(), "INBOX_PROTOCOL_VIOLATION");
             }
             throw race;
         }
@@ -308,9 +334,20 @@ public final class DeviceCommandExecutionService {
         String evidenceJson = "{\"reason\":\"" + jsonEscape(reason) + "\"}";
         repository.markCommandUnknown(tenantId, commandId, evidenceJson);
         Optional<WorkflowRuntimeRepository.CommandRecord> current = repository.loadCommand(tenantId, commandId);
-        if (current.isPresent() && "SUCCEEDED".equals(current.get().commandState())) {
-            repository.markOutboxDelivered(tenantId, outboxId);
-            return CommandDeliveryStatus.COMPLETED_SYNC;
+        if (current.isPresent()) {
+            String state = current.get().commandState();
+            if ("SUCCEEDED".equals(state)) {
+                repository.markOutboxDelivered(tenantId, outboxId);
+                return CommandDeliveryStatus.COMPLETED_SYNC;
+            }
+            if ("FAILED".equals(state)) {
+                repository.markOutboxDelivered(tenantId, outboxId);
+                return CommandDeliveryStatus.COMPLETED_FAILED_SYNC;
+            }
+            if ("CANCELLED".equals(state)) {
+                repository.markOutboxDelivered(tenantId, outboxId);
+                return CommandDeliveryStatus.SKIPPED_GATE_OR_STATE;
+            }
         }
         repository.markOutboxDeadLetter(tenantId, outboxId);
         return CommandDeliveryStatus.MARKED_UNKNOWN;

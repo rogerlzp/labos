@@ -268,6 +268,7 @@ class DeviceGatewayTcpIntegrationTest {
             // Send the real, unconsumed, EXPIRED PONG for PING #1 on the live epoch 1 socket!
             MockTcpDeviceServer.ClientSession session = server.activeSession();
             assertNotNull(session);
+
             session.sendHeartbeatPong(heldPing1.get());
 
             // Expired PONG must be rejected (invalidHeartbeatsRejected == 1), MUST NOT increment heartbeatsReceived,
@@ -503,7 +504,7 @@ class DeviceGatewayTcpIntegrationTest {
                         } catch (Exception e) {
                             throw new RuntimeException(e);
                         }
-                    } else if (!retryable && "PROTOCOL_VIOLATION".equals(frame.path("reason").asText())) {
+                    } else if (!retryable && "SOURCE_MESSAGE_ID_PAYLOAD_CONFLICT".equals(frame.path("reason").asText())) {
                         permNackViolationLatch.countDown();
                     }
                 } else if (GatewayWireProtocol.FRAME_EVENT_ACK.equals(frameType)) {
@@ -809,6 +810,7 @@ class DeviceGatewayTcpIntegrationTest {
         CountDownLatch appliedLatch = new CountDownLatch(1);
         CountDownLatch replayLatch = new CountDownLatch(1);
         CountDownLatch violationLatch = new CountDownLatch(1);
+        CountDownLatch rejectedLatch = new CountDownLatch(1);
         AtomicReference<RuntimeDeviceEventBridge> bridgeRef = new AtomicReference<>();
 
         try (MockTcpDeviceServer server = new MockTcpDeviceServer(deviceId);
@@ -823,6 +825,7 @@ class DeviceGatewayTcpIntegrationTest {
                     switch (n.outcome().status()) {
                         case APPLIED -> appliedLatch.countDown();
                         case DUPLICATE_REPLAY -> replayLatch.countDown();
+                        case REJECTED -> rejectedLatch.countDown();
                         case PROTOCOL_VIOLATION -> violationLatch.countDown();
                     }
                 }
@@ -837,6 +840,43 @@ class DeviceGatewayTcpIntegrationTest {
             MockTcpDeviceServer.ClientSession session = server.activeSession();
             assertNotNull(session);
 
+            // Concurrent delivery of the exact same event identity/payload must apply once and
+            // classify the losing delivery as an idempotent replay.
+            String concurrentAckId = "sec-concurrent-ack-" + UUID.randomUUID();
+            CountDownLatch ackReady = new CountDownLatch(2);
+            CountDownLatch ackStart = new CountDownLatch(1);
+            var duplicatePool = Executors.newFixedThreadPool(2);
+            try {
+                var delivery1 = duplicatePool.submit(() -> {
+                    ackReady.countDown();
+                    if (!ackStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("ack start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentAckId,
+                            "RECEIVED_ACK", cmdId, "ACKNOWLEDGED", "seq-ack", "{}");
+                });
+                var delivery2 = duplicatePool.submit(() -> {
+                    ackReady.countDown();
+                    if (!ackStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("ack start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentAckId,
+                            "RECEIVED_ACK", cmdId, "ACKNOWLEDGED", "seq-ack", "{}");
+                });
+                assertTrue(ackReady.await(5, TimeUnit.SECONDS));
+                ackStart.countDown();
+                var result1 = delivery1.get(5, TimeUnit.SECONDS);
+                var result2 = delivery2.get(5, TimeUnit.SECONDS);
+                List<DeviceCommandExecutionService.InboxStatus> statuses =
+                        List.of(result1.status(), result2.status());
+                assertEquals(1, statuses.stream().filter(x -> x == DeviceCommandExecutionService.InboxStatus.APPLIED).count());
+                assertEquals(1, statuses.stream().filter(x -> x == DeviceCommandExecutionService.InboxStatus.DUPLICATE_REPLAY).count());
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND source_message_id='" + concurrentAckId + "' AND receipt_state='PROCESSED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "' AND event_type='DEVICE_COMMAND_ACKNOWLEDGED'"));
+            } finally {
+                duplicatePool.shutdownNow();
+            }
+
+            long inboxCountBeforeUntrustedFrames = scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "'");
             // 1. Unsolicited HEARTBEAT_PONG smuggling commandId/targetState -> rejected as invalid heartbeat, never touches command_ledger.
             session.sendRawLine("{\"frameType\":\"HEARTBEAT_PONG\",\"deviceId\":\"" + deviceId
                     + "\",\"commandId\":\"" + cmdId + "\",\"targetState\":\"SUCCEEDED\"}");
@@ -858,9 +898,11 @@ class DeviceGatewayTcpIntegrationTest {
                         && h.invalidHeartbeatsRejected() >= 1;
             });
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
-                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='SEND_STARTED'"));
-            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
-                    + tenant + "' AND run_id='" + run.runId() + "'"));
+                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='ACKNOWLEDGED'"));
+            assertEquals(inboxCountBeforeUntrustedFrames,
+                    scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                            + tenant + "' AND run_id='" + run.runId() + "'"),
+                    "Malformed, spoofed, and invalid-heartbeat frames must not create Inbox receipts");
 
             // 5. Legitimate COMMAND_RESULT (even with deviceId omitted, relying on connection binding!) -> APPLIED!
             String msgId = "sec-msg-" + UUID.randomUUID();
@@ -880,6 +922,80 @@ class DeviceGatewayTcpIntegrationTest {
                     + tenant + "' AND command_id='" + cmdId + "' AND command_state='SUCCEEDED'"));
             assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation WHERE tenant_id='"
                     + tenant + "'"));
+
+            // A new, contradictory terminal event is a permanent domain rejection, not a retryable
+            // poison receipt. The Inbox must be terminalized atomically and exact replay stays a NACK.
+            String lateMessageId = "sec-late-" + UUID.randomUUID();
+            session.sendDeviceEvent(deviceId, run.runId().toString(), cmdId.toString(),
+                    lateMessageId, "COMMAND_RESULT", "FAILED", "seq-late", "{}");
+            assertTrue(rejectedLatch.await(5, TimeUnit.SECONDS),
+                    "Permanent domain rejection must traverse the RuntimeDeviceEventBridge");
+            awaitCondition(Duration.ofSeconds(3), () -> server.receivedEventNacks().stream()
+                    .anyMatch(n -> lateMessageId.equals(n.path("sourceMessageId").asText())));
+            var lateNack = server.receivedEventNacks().stream()
+                    .filter(n -> lateMessageId.equals(n.path("sourceMessageId").asText()))
+                    .findFirst().orElseThrow();
+            assertFalse(lateNack.path("retryable").asBoolean(true),
+                    "A permanent domain rejection must be EVENT_NACK(retryable=false)");
+            assertTrue(lateNack.path("reason").asText().startsWith("INBOX_REJECTED:"),
+                    "The wire NACK must preserve the domain rejection category");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED,
+                    cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, lateMessageId,
+                            "COMMAND_RESULT", cmdId, "FAILED", "seq-late", "{}").status(),
+                    "Exact replay of a permanently rejected receipt remains REJECTED");
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='REJECTED'"));
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND source_message_id='" + lateMessageId + "' AND receipt_state='RECEIVED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED'"));
+
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED' "
+                    + "AND aggregate_id=(SELECT inbox_id FROM workflow_runtime.inbox_receipt "
+                    + "WHERE tenant_id='" + tenant + "' AND source_message_id='" + lateMessageId + "') "
+                    + "AND causation_id=(SELECT inbox_id FROM workflow_runtime.inbox_receipt "
+                    + "WHERE tenant_id='" + tenant + "' AND source_message_id='" + lateMessageId + "') "
+                    + "AND correlation_id IS NULL AND payload->>'rejectionReason' IS NOT NULL"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + cmdId + "' AND command_state='SUCCEEDED'"));
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + run.runId() + "' AND event_type='DEVICE_COMMAND_FAILED'"));
+
+            // Concurrent first delivery of one permanently rejected message identity must
+            // create one terminal Inbox row and exactly one INBOX_REJECTED audit event.
+            String concurrentRejectId = "sec-concurrent-reject-" + UUID.randomUUID();
+            CountDownLatch rejectReady = new CountDownLatch(2);
+            CountDownLatch rejectStart = new CountDownLatch(1);
+            var rejectPool = Executors.newFixedThreadPool(2);
+            try {
+                var reject1 = rejectPool.submit(() -> {
+                    rejectReady.countDown();
+                    if (!rejectStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("reject start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentRejectId,
+                            "COMMAND_RESULT", cmdId, "FAILED", "seq-reject-race", "{}");
+                });
+                var reject2 = rejectPool.submit(() -> {
+                    rejectReady.countDown();
+                    if (!rejectStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("reject start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentRejectId,
+                            "COMMAND_RESULT", cmdId, "FAILED", "seq-reject-race", "{}");
+                });
+                assertTrue(rejectReady.await(5, TimeUnit.SECONDS));
+                rejectStart.countDown();
+                var rejectResult1 = reject1.get(5, TimeUnit.SECONDS);
+                var rejectResult2 = reject2.get(5, TimeUnit.SECONDS);
+                assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, rejectResult1.status());
+                assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, rejectResult2.status());
+                assertEquals(rejectResult1.inboxId(), rejectResult2.inboxId());
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND source_message_id='" + concurrentRejectId + "' AND receipt_state='REJECTED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED' "
+                        + "AND aggregate_id='" + rejectResult1.inboxId() + "'"));
+            } finally {
+                rejectPool.shutdownNow();
+            }
 
             repo.completeAttempt(tenant, run.runId(), res.attemptId(), "out", "{\"ok\":true}");
         }

@@ -2600,6 +2600,14 @@ public final class WorkflowRuntimeRepository {
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
     }
 
+    public Optional<String> findInboxReceiptRejectionReason(UUID tenantId, UUID inboxId) {
+        List<String> rows = jdbc.query("""
+            SELECT outcome->>'rejectionReason' FROM workflow_runtime.inbox_receipt
+             WHERE tenant_id=? AND inbox_id=? AND receipt_state='REJECTED'
+            """, (rs, n) -> rs.getString(1), tenantId, inboxId);
+        return rows.isEmpty() ? Optional.empty() : Optional.ofNullable(rows.get(0));
+    }
+
     /** Resolve the authoritative tenant owning {@code (runId, commandId)} for multi-tenant Device Gateway ingress. */
     public Optional<UUID> findTenantIdForCommand(UUID runId, UUID commandId) {
         Objects.requireNonNull(runId, "runId");
@@ -3250,6 +3258,48 @@ public final class WorkflowRuntimeRepository {
     public boolean applyCommandEvent(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
                                      String targetState, String deviceSequence, String outcomeJson) {
         return required(() -> {
+            try {
+                return applyCommandEventInTransaction(
+                        tenantId, runId, inboxId, commandId, targetState, deviceSequence, outcomeJson);
+            } catch (PermanentCommandEventRejectionException rejected) {
+                throw new InvalidTransitionException(rejected.getMessage());
+            }
+        });
+    }
+
+    /**
+     * Apply a device event, or durably terminalize a permanent domain rejection in the same
+     * transaction. Transient/stale writes still throw and leave the receipt retryable.
+     */
+    public boolean applyCommandEventOrReject(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
+                                             String targetState, String deviceSequence, String outcomeJson) {
+        return required(() -> {
+            try {
+                return applyCommandEventInTransaction(tenantId, runId, inboxId, commandId, targetState, deviceSequence, outcomeJson);
+            } catch (PermanentCommandEventRejectionException rejected) {
+                int changed = jdbc.update("""
+                    UPDATE workflow_runtime.inbox_receipt
+                       SET receipt_state='REJECTED', processed_at=clock_timestamp(),
+                           outcome=jsonb_build_object('rejectionReason', left(coalesce(?, 'PERMANENT_COMMAND_EVENT_REJECTION'), 512))
+                     WHERE tenant_id=? AND inbox_id=? AND run_id=?
+                       AND receipt_state IN ('RECEIVED','PROCESSING')
+                    """, rejected.getMessage(), tenantId, inboxId, runId);
+                if (changed != 1)
+                    throw new StaleRuntimeWriteException("Inbox receipt could not be terminalized after permanent rejection");
+                String rejectionReason = rejected.getMessage() == null ? "PERMANENT_COMMAND_EVENT_REJECTION" : rejected.getMessage();
+                String rejectionPayload = "{\"commandId\":\"" + commandId
+                        + "\",\"targetState\":\"" + jsonEscape(targetState)
+                        + "\",\"rejectionReason\":\"" + jsonEscape(rejectionReason) + "\"}";
+                appendEvents(tenantId, runId, List.of(new EventDraft(
+                        "INBOX_REJECTED", "INBOX", inboxId, null, inboxId, null, rejectionPayload)));
+                return false;
+            }
+        });
+    }
+
+    /** T14: attribute device evidence exclusively by command_id and process Inbox atomically. */
+    private boolean applyCommandEventInTransaction(UUID tenantId, UUID runId, UUID inboxId, UUID commandId,
+                                     String targetState, String deviceSequence, String outcomeJson) {
             List<String> identity=jdbc.query("""
                 SELECT attempt_id::text||'|'||device_id FROM workflow_runtime.command_ledger
                  WHERE tenant_id=? AND run_id=? AND command_id=?
@@ -3309,7 +3359,7 @@ public final class WorkflowRuntimeRepository {
                 throw new InvalidTransitionException("Inbox source " + inbox.source()
                         + " does not match command device " + deviceId + "; event attribution rejected");
             if(!commandId.toString().equals(inbox.commandId()))
-                throw new IllegalStateException("Inbox commandId does not match command row; event attribution rejected");
+                throw new InvalidTransitionException("Inbox commandId does not match command row; event attribution rejected");
             if(inbox.deviceId()!=null && !inbox.deviceId().isBlank() && !deviceId.equals(inbox.deviceId()))
                 throw new InvalidTransitionException("Inbox deviceId does not match command row; event attribution rejected");
             if(inbox.payloadState()==null || !targetState.equals(inbox.payloadState()))
@@ -3321,18 +3371,23 @@ public final class WorkflowRuntimeRepository {
             if(inbox.hasOutcome() && !inbox.outcomeMatches())
                 throw new InvalidTransitionException("Inbox payload outcome does not match applied outcomeJson");
             if(!isAllowedCommandEventMessageType(inbox.messageType(),targetState))
-                throw new InvalidTransitionException("Inbox message_type " + inbox.messageType()
+                throw new PermanentCommandEventRejectionException("Inbox message_type " + inbox.messageType()
                         + " is not allowed to transition Command to " + targetState);
             String current=states.get(0);
+            if ("CREATED".equals(current) || "DISPATCH_PENDING".equals(current)) {
+                throw new StaleRuntimeWriteException(
+                        "Command is not yet eligible for device evidence: " + current);
+            }
             boolean allowed=switch(current) {
                 case "SEND_STARTED" -> List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","DELIVERY_UNKNOWN","UNKNOWN").contains(targetState);
-                case "ACKNOWLEDGED" -> List.of("RUNNING","SUCCEEDED","FAILED","CANCEL_REQUESTED","DELIVERY_UNKNOWN").contains(targetState);
-                case "RUNNING" -> List.of("SUCCEEDED","FAILED","CANCEL_REQUESTED","DELIVERY_UNKNOWN").contains(targetState);
-                case "CANCEL_REQUESTED" -> List.of("CANCELLED","SUCCEEDED","FAILED","DELIVERY_UNKNOWN").contains(targetState);
+                case "ACKNOWLEDGED" -> List.of("RUNNING","SUCCEEDED","FAILED","CANCEL_REQUESTED","DELIVERY_UNKNOWN","UNKNOWN").contains(targetState);
+                case "RUNNING" -> List.of("RUNNING","SUCCEEDED","FAILED","CANCEL_REQUESTED","DELIVERY_UNKNOWN","UNKNOWN").contains(targetState);
+                case "CANCEL_REQUESTED" -> List.of("CANCELLED","SUCCEEDED","FAILED","DELIVERY_UNKNOWN","UNKNOWN").contains(targetState);
                 case "DELIVERY_UNKNOWN" -> List.of("ACKNOWLEDGED","RUNNING","SUCCEEDED","FAILED","UNKNOWN").contains(targetState);
                 default -> false;
             };
-            if(!allowed) throw new InvalidTransitionException("Illegal Command transition "+current+" -> "+targetState);
+            if(!allowed) throw new PermanentCommandEventRejectionException(
+                    "Illegal Command transition "+current+" -> "+targetState);
             int changed=jdbc.update("""
                 UPDATE workflow_runtime.command_ledger SET command_state=?,device_sequence=?,
                        version=version+1,updated_at=clock_timestamp(),
@@ -3355,7 +3410,7 @@ public final class WorkflowRuntimeRepository {
             appendEvents(tenantId,runId,List.of(new EventDraft(
                     "DEVICE_COMMAND_"+targetState,"COMMAND",commandId,null,inboxId,null,outcomeJson)));
             return true;
-        });
+
     }
 
     /** T14b: process a receipt under Run -> domain row -> Inbox lock order. */
@@ -4319,6 +4374,9 @@ public final class WorkflowRuntimeRepository {
 
     public static final class StaleRuntimeWriteException extends RuntimeException {
         public StaleRuntimeWriteException(String message) { super(message); }
+    }
+    public static final class PermanentCommandEventRejectionException extends RuntimeException {
+        public PermanentCommandEventRejectionException(String message) { super(message); }
     }
     public static final class InvalidTransitionException extends RuntimeException {
         public InvalidTransitionException(String message) { super(message); }

@@ -389,10 +389,12 @@ class LocalTaskDispatchAndCommandLoopTest {
                     asyncCmdService.ingestDeviceEvent(tenant, runAsync.runId(), "rogue-device-9",
                             "rogue-msg-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
                             asyncCmdId.get(), "SUCCEEDED", "seq-2", "{\"c\":65}"));
-            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
-                    asyncCmdService.ingestDeviceEvent(tenant, runAsync.runId(), "mock-heater-1",
-                            "late-msg-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
-                            asyncCmdId.get(), "SUCCEEDED", "seq-3", "{\"c\":65}"));
+            var lateRejected = asyncCmdService.ingestDeviceEvent(tenant, runAsync.runId(), "mock-heater-1",
+                    "late-msg-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
+                    asyncCmdId.get(), "SUCCEEDED", "seq-3", "{}");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateRejected.status());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND inbox_id='" + lateRejected.inboxId() + "' AND receipt_state='REJECTED'"));
 
             asyncInboxApplied.countDown();
             var asyncOutcome = asyncSub.submitted().values().iterator().next().get(5, TimeUnit.SECONDS);
@@ -445,10 +447,12 @@ class LocalTaskDispatchAndCommandLoopTest {
 
             // P1-03: While UNKNOWN/MANUAL_REQUIRED, late ordinary ACK cannot wash away UNKNOWN,
             // and dispatching a new Attempt to bypass manual reconciliation is rejected (gate CLOSED).
-            assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
-                    timeoutCmdService.ingestDeviceEvent(tenant, runTimeout.runId(), "mock-heater-2",
-                            "late-ack-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
-                            toCmdId.get(), "SUCCEEDED", "seq-late", "{\"c\":70}"));
+            var lateTimeoutEvent = timeoutCmdService.ingestDeviceEvent(tenant, runTimeout.runId(), "mock-heater-2",
+                    "late-ack-" + UUID.randomUUID(), "DEVICE_COMMAND_RESULT",
+                    toCmdId.get(), "SUCCEEDED", "seq-late", "{}");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateTimeoutEvent.status());
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND inbox_id='" + lateTimeoutEvent.inboxId() + "' AND receipt_state='REJECTED'"));
             assertTrue(timeoutDispatch.dispatchReadyTasks(tenant, runTimeout.runId(), 4).gateClosed());
 
             // Operator explicitly reconciles the UNKNOWN command via T21 external evidence.
@@ -916,8 +920,12 @@ class LocalTaskDispatchAndCommandLoopTest {
                     repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
                 } else if ("UNKNOWN".equals(cmd.commandState())) {
                     assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.MARKED_UNKNOWN, deliveryStatus);
-                    assertInstanceOf(WorkflowRuntimeRepository.InvalidTransitionException.class, inboxOutcome,
+                    assertInstanceOf(DeviceCommandExecutionService.InboxIngestionOutcome.class, inboxOutcome,
                             "Once UNKNOWN commits first, late ordinary SUCCEEDED must be fail-closed rejected");
+                    var rejectedInbox = (DeviceCommandExecutionService.InboxIngestionOutcome) inboxOutcome;
+                    assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, rejectedInbox.status());
+                    assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                            + tenant + "' AND inbox_id='" + rejectedInbox.inboxId() + "' AND receipt_state='REJECTED'"));
                     assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
                             + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_UNKNOWN'"));
                     assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
@@ -1131,24 +1139,144 @@ class LocalTaskDispatchAndCommandLoopTest {
                         + "\",\"deviceId\":\"real-device-1\",\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-real\",\"outcome\":{\"temp\":65}}");
         assertTrue(seqAndOutcomeReceipt.inserted());
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
-                repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+                repo.applyCommandEventOrReject(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
                         "SUCCEEDED", "seq-tampered", "{\"temp\":65}"),
-                "Repository must reject mismatched deviceSequence vs persisted Inbox payload");
+                "Caller deviceSequence mismatch must not permanently reject the persisted receipt");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + seqAndOutcomeReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
         assertThrows(WorkflowRuntimeRepository.InvalidTransitionException.class, () ->
-                repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+                repo.applyCommandEventOrReject(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
                         "SUCCEEDED", "seq-real", "{\"temp\":99}"),
-                "Repository must reject mismatched outcomeJson vs persisted Inbox payload");
-        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
-                + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SEND_STARTED'"));
+                "Caller outcomeJson mismatch must not permanently reject the persisted receipt");
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + seqAndOutcomeReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
+        assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                + tenant + "' AND run_id='" + fix.runId() + "' AND event_type='INBOX_REJECTED'"),
+                "Caller argument mismatches must not emit permanent rejection audit events");
 
         // Matching source == device_id, payload state == targetState, deviceSequence and outcomeJson applies cleanly!
-        assertTrue(repo.applyCommandEvent(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
+        assertTrue(repo.applyCommandEventOrReject(tenant, fix.runId(), seqAndOutcomeReceipt.inboxId(), fix.commandId(),
                 "SUCCEEDED", "seq-real", "{\"temp\":65}"));
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
                 + tenant + "' AND command_id='" + fix.commandId() + "' AND command_state='SUCCEEDED'"));
         assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.worker_execution_fact WHERE tenant_id='"
                 + tenant + "' AND attempt_id='" + fix.attemptId() + "' AND fact_type='SIDE_EFFECT_COMPLETED'"));
         repo.completeAttempt(tenant, fix.runId(), fix.attemptId(), "out", "{\"ok\":true}");
+
+        // G4-D: a failure after command_ledger / Inbox writes but during Runtime Event append
+        // must roll the entire transaction back and leave the same receipt retryable.
+        var rollbackFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "rollback-dev", true);
+        String rollbackMessageId = "rollback-" + UUID.randomUUID();
+        var rollbackReceipt = repo.receiveInbox(tenant, "rollback-dev", rollbackMessageId,
+                "COMMAND_RESULT", rollbackFix.runId(),
+                "{\"commandId\":\"" + rollbackFix.commandId()
+                        + "\",\"deviceId\":\"rollback-dev\",\"messageType\":\"COMMAND_RESULT\","
+                        + "\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-rollback\",\"outcome\":{\"ok\":true}}");
+        String faultSuffix = UUID.randomUUID().toString().replace("-", "");
+        String faultFunction = "g4d_fault_fn_" + faultSuffix;
+        String faultTrigger = "g4d_fault_trg_" + faultSuffix;
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute("CREATE FUNCTION workflow_runtime." + faultFunction + "() RETURNS trigger "
+                    + "LANGUAGE plpgsql AS $g4d$ BEGIN IF NEW.tenant_id = '" + tenant
+                    + "'::uuid AND NEW.event_type = 'DEVICE_COMMAND_SUCCEEDED' THEN "
+                    + "RAISE EXCEPTION 'g4d injected runtime_event failure'; END IF; RETURN NEW; END $g4d$");
+            st.execute("CREATE TRIGGER " + faultTrigger
+                    + " BEFORE INSERT ON workflow_runtime.runtime_event FOR EACH ROW "
+                    + "EXECUTE FUNCTION workflow_runtime." + faultFunction + "()");
+        }
+        try {
+            assertThrows(RuntimeException.class, () -> repo.applyCommandEventOrReject(
+                    tenant, rollbackFix.runId(), rollbackReceipt.inboxId(), rollbackFix.commandId(),
+                    "SUCCEEDED", "seq-rollback", "{\"ok\":true}"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                    + tenant + "' AND command_id='" + rollbackFix.commandId() + "' AND command_state='SEND_STARTED'"));
+            assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                    + tenant + "' AND inbox_id='" + rollbackReceipt.inboxId() + "' AND receipt_state='RECEIVED'"));
+            assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                    + tenant + "' AND run_id='" + rollbackFix.runId() + "' AND event_type='DEVICE_COMMAND_SUCCEEDED'"));
+        } finally {
+            try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+                st.execute("DROP TRIGGER IF EXISTS " + faultTrigger + " ON workflow_runtime.runtime_event");
+                st.execute("DROP FUNCTION IF EXISTS workflow_runtime." + faultFunction + "()");
+            }
+        }
+        assertTrue(repo.applyCommandEventOrReject(tenant, rollbackFix.runId(), rollbackReceipt.inboxId(),
+                rollbackFix.commandId(), "SUCCEEDED", "seq-rollback", "{\"ok\":true}"),
+                "The original RECEIVED receipt must succeed after the transient DB-side failure is removed");
+        repo.completeAttempt(tenant, rollbackFix.runId(), rollbackFix.attemptId(), "out", "{\"ok\":true}");
+
+        // G4-D: an event arriving before SEND_STARTED is retryable, not permanently rejected.
+        var preSendFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "pre-send-dev", false);
+        DeviceCommandExecutionService preSendSvc = new DeviceCommandExecutionService(repo, env -> null);
+        String earlyMessageId = "early-" + UUID.randomUUID();
+        assertThrows(WorkflowRuntimeRepository.StaleRuntimeWriteException.class, () ->
+                preSendSvc.ingestDeviceEvent(tenant, preSendFix.runId(), "pre-send-dev", earlyMessageId,
+                        "RECEIVED_ACK", preSendFix.commandId(), "ACKNOWLEDGED", "seq-early", "{}"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND source_message_id='" + earlyMessageId + "' AND receipt_state='RECEIVED'"));
+        var preSendOutbox = repo.beginOutboxSendForKind(tenant, "DEVICE_COMMAND", 20).stream()
+                .filter(m -> m.dedupKey().equals("command:" + preSendFix.commandId())).findFirst().orElseThrow();
+        assertTrue(repo.markCommandSendStarted(tenant, preSendFix.commandId(), 0L, preSendOutbox.outboxId(),
+                UUID.randomUUID(), 1, "disp-pre-send"));
+        assertTrue(repo.markOutboxDelivered(tenant, preSendOutbox.outboxId()));
+        var earlyReplay = preSendSvc.ingestDeviceEvent(tenant, preSendFix.runId(), "pre-send-dev", earlyMessageId,
+                "RECEIVED_ACK", preSendFix.commandId(), "ACKNOWLEDGED", "seq-early", "{}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, earlyReplay.status());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND source_message_id='" + earlyMessageId + "' AND receipt_state='PROCESSED'"));
+        // Keep the shared PG17 database isolated: this fixture intentionally leaves a live
+        // Attempt after proving the early receipt can be retried successfully.
+        repo.failAttempt(tenant, preSendFix.runId(), preSendFix.attemptId(), "{}", true);
+
+        // G4-D: the Schema-allowed PROTOCOL_VIOLATION receipt state is terminal and must
+        // produce a permanent outcome on replay rather than a retryable StaleRuntimeWriteException.
+        var protocolStateFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "protocol-state-dev", true);
+        DeviceCommandExecutionService protocolStateSvc = new DeviceCommandExecutionService(repo, env -> null);
+        String protocolStateMessageId = "protocol-state-" + UUID.randomUUID();
+        String protocolStatePayload = "{\"commandId\":\"" + protocolStateFix.commandId()
+                + "\",\"deviceId\":\"protocol-state-dev\",\"messageType\":\"COMMAND_RESULT\","
+                + "\"state\":\"SUCCEEDED\",\"deviceSequence\":\"seq-protocol-state\",\"outcome\":{}}";
+        var protocolStateReceipt = repo.receiveInbox(tenant, "protocol-state-dev", protocolStateMessageId,
+                "COMMAND_RESULT", protocolStateFix.runId(), protocolStatePayload);
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("UPDATE workflow_runtime.inbox_receipt SET receipt_state='PROTOCOL_VIOLATION' "
+                    + "WHERE tenant_id='" + tenant + "' AND inbox_id='" + protocolStateReceipt.inboxId() + "'");
+        }
+        var protocolStateReplay = protocolStateSvc.ingestDeviceEvent(tenant, protocolStateFix.runId(),
+                "protocol-state-dev", protocolStateMessageId, "COMMAND_RESULT", protocolStateFix.commandId(),
+                "SUCCEEDED", "seq-protocol-state", "{}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.PROTOCOL_VIOLATION, protocolStateReplay.status());
+        // This fixture only exercises receipt-state replay; it must not leak a STARTED Attempt
+        // into other tests sharing the same PostgreSQL database.
+        repo.failAttempt(tenant, protocolStateFix.runId(), protocolStateFix.attemptId(), "{}", true);
+
+        // G4-D: repeated PROGRESS events are valid RUNNING -> RUNNING evidence, while UNKNOWN
+        // remains fail-closed against a later ordinary success receipt.
+        var progressFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "progress-dev", true);
+        DeviceCommandExecutionService progressSvc = new DeviceCommandExecutionService(repo, env -> null);
+        var progress1 = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "progress-1-" + UUID.randomUUID(), "PROGRESS", progressFix.commandId(),
+                "RUNNING", "seq-progress-1", "{\"percent\":25}");
+        var progress2 = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "progress-2-" + UUID.randomUUID(), "EXECUTING", progressFix.commandId(),
+                "RUNNING", "seq-progress-2", "{\"percent\":50}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, progress1.status());
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, progress2.status());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + progressFix.commandId() + "' AND command_state='RUNNING'"));
+        var unknown = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "unknown-" + UUID.randomUUID(), "COMMAND_UNKNOWN", progressFix.commandId(),
+                "UNKNOWN", "seq-unknown", "{\"reason\":\"device-reported-uncertain\"}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, unknown.status());
+        var lateSuccess = progressSvc.ingestDeviceEvent(tenant, progressFix.runId(), "progress-dev",
+                "late-success-" + UUID.randomUUID(), "COMMAND_RESULT", progressFix.commandId(),
+                "SUCCEEDED", "seq-late-success", "{\"ok\":true}");
+        assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, lateSuccess.status());
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + progressFix.commandId() + "' AND command_state='UNKNOWN'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND inbox_id='" + lateSuccess.inboxId() + "' AND receipt_state='REJECTED'"));
+        repo.failAttempt(tenant, progressFix.runId(), progressFix.attemptId(), "{\"reason\":\"unknown\"}", true);
 
         // Synchronous immediate failure result (COMPLETED_IMMEDIATELY_FAILED) records FAILED, never SUCCEEDED!
         var failFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "sync-fail-dev", false);
@@ -1162,6 +1290,46 @@ class LocalTaskDispatchAndCommandLoopTest {
                 + tenant + "' AND command_id='" + failFix.commandId() + "' AND command_state='FAILED'"));
         assertEquals("MANUAL_REQUIRED", repo.failAttempt(tenant, failFix.runId(), failFix.attemptId(),
                 "{\"errorCode\":\"E_NO_TIP\"}", true).outcome());
+
+        // G4-D N1 regression: synchronous success racing with an already committed FAILED
+        // event must not be reported as COMPLETED_SYNC or overwrite the authoritative failure.
+        var failedRaceFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "sync-race-failed-dev", false);
+        DeviceCommandExecutionService failedRaceSvc = new DeviceCommandExecutionService(repo, env -> {
+            DeviceCommandExecutionService eventSvc = new DeviceCommandExecutionService(repo, ignored -> null);
+            var asyncFailure = eventSvc.ingestDeviceEvent(tenant, env.runId(), env.deviceId(),
+                    "async-failed-before-sync-" + env.commandId(), "DEVICE_COMMAND_RESULT",
+                    env.commandId(), "FAILED", "seq-async-failed", "{\"error\":\"async failure\"}");
+            assertEquals(DeviceCommandExecutionService.InboxStatus.APPLIED, asyncFailure.status());
+            return DeviceCommandAdapter.SendResult.completedImmediately(
+                    "sync-success-after-failed-" + env.commandId(), "seq-sync-success", "{\"ok\":true}");
+        });
+        var failedRaceSummary = failedRaceSvc.deliverPendingCommands(tenant, 4, "disp-sync-race-failed");
+        assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.COMPLETED_FAILED_SYNC,
+                failedRaceSummary.outcomes().get(failedRaceFix.commandId()));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + failedRaceFix.commandId() + "' AND command_state='FAILED'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND run_id='" + failedRaceFix.runId() + "' AND receipt_state='REJECTED'"));
+        repo.failAttempt(tenant, failedRaceFix.runId(), failedRaceFix.attemptId(),
+                "{\"reason\":\"sync-failed-race-fixture-cleanup\"}", true);
+
+        // The opposite race: UNKNOWN wins before a synchronous FAILED result arrives.
+        // The receipt is permanently rejected, and the delivery summary must remain UNKNOWN.
+        var unknownRaceFix = createStartedDeviceCommand(repo, tenant, plan, planKey, "sync-race-unknown-dev", false);
+        DeviceCommandExecutionService unknownRaceSvc = new DeviceCommandExecutionService(repo, env -> {
+            repo.markCommandUnknown(tenant, env.commandId(), "{\"reason\":\"concurrent timeout\"}");
+            return DeviceCommandAdapter.SendResult.completedImmediatelyFailed(
+                    "sync-failed-after-unknown-" + env.commandId(), "seq-sync-failed", "{\"error\":\"late failure\"}");
+        });
+        var unknownRaceSummary = unknownRaceSvc.deliverPendingCommands(tenant, 4, "disp-sync-race-unknown");
+        assertEquals(DeviceCommandExecutionService.CommandDeliveryStatus.MARKED_UNKNOWN,
+                unknownRaceSummary.outcomes().get(unknownRaceFix.commandId()));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.command_ledger WHERE tenant_id='"
+                + tenant + "' AND command_id='" + unknownRaceFix.commandId() + "' AND command_state='UNKNOWN'"));
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                + tenant + "' AND run_id='" + unknownRaceFix.runId() + "' AND receipt_state='REJECTED'"));
+        repo.failAttempt(tenant, unknownRaceFix.runId(), unknownRaceFix.attemptId(),
+                "{\"reason\":\"sync-unknown-race-fixture-cleanup\"}", true);
     }
 
     @Test

@@ -110,11 +110,15 @@ public final class RuntimeDeviceEventBridge implements DeviceEventSink {
             DeliveryResult result = switch (outcome.status()) {
                 case APPLIED -> DeliveryResult.acked("APPLIED");
                 case DUPLICATE_REPLAY -> DeliveryResult.acked("DUPLICATE_REPLAY");
-                case PROTOCOL_VIOLATION -> DeliveryResult.nackPermanent("PROTOCOL_VIOLATION");
+                case REJECTED -> DeliveryResult.nackPermanent(
+                        "INBOX_REJECTED: " + safeReason(outcome.reason()));
+                case PROTOCOL_VIOLATION -> DeliveryResult.nackPermanent(
+                        safeReason(outcome.reason() == null ? "PROTOCOL_VIOLATION" : outcome.reason()));
             };
             listener.accept(new BridgeNotification(event, outcome, result, null));
             return result;
         } catch (WorkflowRuntimeRepository.InvalidTransitionException
+                | WorkflowRuntimeRepository.PermanentCommandEventRejectionException
                 | IllegalArgumentException
                 | IllegalStateException permanentRejection) {
             DeliveryResult result = DeliveryResult.nackPermanent(
@@ -132,5 +136,10 @@ public final class RuntimeDeviceEventBridge implements DeviceEventSink {
 
     private static String safeMessage(Throwable t) {
         return t == null || t.getMessage() == null ? "" : t.getMessage();
+    }
+
+    private static String safeReason(String reason) {
+        if (reason == null || reason.isBlank()) return "UNSPECIFIED";
+        return reason.length() <= 512 ? reason : reason.substring(0, 512);
     }
 }
