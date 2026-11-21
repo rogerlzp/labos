@@ -53,6 +53,8 @@ jobs:
           psql -v ON_ERROR_STOP=1 -Atc "SHOW server_version_num" | awk '{ if ($1 < 170000 || $1 >= 180000) exit 1 }'
       - name: Bootstrap empty Runtime schema
         run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/001_init.sql
+      - name: Apply G5 Wait correlation uniqueness migration
+        run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/003_g5_wait_correlation.sql
       - name: Verify schema catalog and invariant constraints
         run: psql -v ON_ERROR_STOP=1 -f db/workflow_runtime/002_schema_contract.sql
       - name: Install PostgreSQL concurrency test dependency
