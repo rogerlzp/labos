@@ -1,4 +1,4 @@
-# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.3）
+# DEVICE_EXECUTION_CORE_CONTRACT — 设备执行核心与物理安全契约（AI-1 主责 · Draft v1.4）
 
 > **所属总纲**：[PHASE3B_MASTER_CONTRACT.md](./PHASE3B_MASTER_CONTRACT.md)  
 > **通信与 Wire 对侧契约**：[DEVICE_GATEWAY_PROTOCOL.md](./DEVICE_GATEWAY_PROTOCOL.md)  
@@ -8,7 +8,7 @@
 
 ## 1. 精简后的 4-ID 纪律与结构化执行证据模型（P0-3）
 
-对照 [001_init.sql:442-443](../db/workflow_runtime/001_init.sql#L442-L443)，既有表 `workflow_runtime.command_ledger` 已经通过 `UNIQUE (tenant_id, attempt_id)` 保证 **1 个 `node_attempt` 最多对应 1 条命令**，并通过 `payload_hash` 检查载荷冲突。
+对照 [001_init.sql:442-443](../db/workflow_runtime/001_init.sql#L442-L443)，既有表 `workflow_runtime.command_ledger` 已经通过 `UNIQUE (tenant_id, attempt_id)` 保证 **1 个 `node_attempt` 最多对应 1 条命令**，并通过 `payload_hash` 检查载荷冲突。在零历史兼容契约下，**`workflow_runtime.command_ledger` 仅承载 Contract v1.x 的物理设备命令**（不存在任何非设备账本记录类型，也不为历史/mock 数据保留 `workstation_id` 可空豁免；旧 `labos-kernel` 隔离保留在 `public.command_ledger`）。
 
 经核对，原草案引入的「Run+AttemptNo 拼接键」与 `UNIQUE(attempt_id)` 重叠、随重试变化且极易与既有 `idempotency_class` 列混用。**本版正式取消冗余键，统一收敛为严格 4-ID 纪律**：
 
@@ -105,7 +105,7 @@ stateDiagram-v2
   MANUAL_REQUIRED --> CANCELLED : T21 reconcileAndSettleUnknownCommand(CANCELLED)
 ```
 
-| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.3 明确约定 | 责任方 |
+| 差异点 | 现行代码（`WorkflowRuntimeRepository:4428-4435`） | Draft v1.4 明确约定 | 责任方 |
 | :--- | :--- | :--- | :--- |
 | `CANCEL_REQUESTED → DELIVERY_UNKNOWN` | 已允许 | **保留**（取消指令断连超时时可先转 `DELIVERY_UNKNOWN` 发起只读查证） | 阶段 0 / AI-1 对齐 |
 | `DELIVERY_UNKNOWN → RUNNING` | 已允许 | **保留**（恢复时若设备回报运行中，无缝接续 `RUNNING`） | 阶段 0 / AI-1 对齐 |
@@ -235,7 +235,7 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
 | 数据库对象 | 现有状态（`001`–`005`） | `006` 变更内容 | `002_schema_contract.sql` 与一致性约束 |
 | :--- | :--- | :--- | :--- |
 | **`workstation_sidecar`** | **新增表 #33**（建于修改其他表之前以支撑外键） | 主键 `(tenant_id, workstation_id)`；含 **`connection_generation bigint NOT NULL DEFAULT 0`**、`security_mode` (`DEV_LOOPBACK_PLAINTEXT`\|`TLS13_MTLS`)、`cert_fingerprint_sha256`、`connection_state`、`heartbeat_*`、`last_heartbeat_at` | **显式豁免说明（B3）**：在 `002_schema_contract.sql` 白名单注释中明确 `connection_generation` 是**单实例 Kernel 本地连接重连计数器，非分布式 leader/fencing token** |
-| **`command_ledger`** | 已有 `command_id`, `attempt_id (UQ)`, `command_state` (12态), `idempotency_class`, `command_payload`, `device_sequence` | 新增：`workstation_id`, `operation_name`, `timeout_ms`, `interruptible`, `last_receipt_at`, `command_result (jsonb)`, `reconciliation_evidence (jsonb)` + **外键 `(tenant_id, workstation_id) → workstation_sidecar`** + **非空约束 `CHECK (operation_name IS NULL OR workstation_id IS NOT NULL)`**（P1-3 / P1-B） | 新契约命令必带 `operation_name`，从而在 DB 层强制 `workstation_id NOT NULL`，同时兼容历史/mock 行 |
+| **`command_ledger`** | 已有 `command_id`, `attempt_id (UQ)`, `command_state` (12态), `idempotency_class`, `command_payload`, `device_sequence` | 新增 `workstation_id text NOT NULL`、`operation_name text NOT NULL`、`timeout_ms`、`interruptible`、`last_receipt_at`、`command_result (jsonb)`、`reconciliation_evidence (jsonb)` + 升级前 Fail-Closed 预检（若存在缺失行直接 `23502` 阻断升级）+ 外键 `(tenant_id, workstation_id) → workstation_sidecar` + `command_ledger_workstation_nonblank_chk`（`btrim(workstation_id) <> '' AND btrim(operation_name) <> ''`，彻底消除任何 `NULL`/历史 mock 豁免口） | `workflow_runtime.command_ledger` 仅承载契约 v1.x 物理设备命令；列级强约束 `workstation_id` / `operation_name` 非空非白并外键锁定工位；阶段 0 同步更新 `002_schema_contract.sql`、`test_pg_con_matrix.py` 与 `workflow-runtime` 既有命令夹具，并加入 PG17 负向拒插断言 |
 | **`command_dispatch_attempt`** | 已有 `(tenant_id, dispatch_id)` PK、**`UNIQUE(tenant_id, command_id, dispatch_no)`**（R5）、`dispatch_state` | 新增：`dispatch_kind text NOT NULL DEFAULT 'SEND' CHECK (dispatch_kind IN ('SEND','QUERY','CANCEL'))`、`error_code text`；补索引 `(tenant_id, command_id, dispatch_kind, dispatch_no)` | 确保在线态与查证态皆可追溯更新终态 |
 | **`quarantine_record`** | 已有 `quarantine_id`, `resource_id`, `run_id`, `lease_id`, `quarantine_one_active_resource_uq` | 新增：`quarantine_origin` (`COMMAND_UNKNOWN`\|`TRANSFER_IN_FLIGHT`\|`HARDWARE_FAULT`\|`MANUAL_OR_LEGACY`) + `command_id uuid`（外键关联 `command_ledger`）+ **`quarantine_command_origin_chk`**（命令类隔离强制 `command_id NOT NULL`）+ 部分索引 | **保证所有命令引起的隔离必带 `command_id` 支撑整组 T21 解锁**，同时清晰建模硬件故障/人工隔离 |
 | **`resource_lease`** | 已有全套状态与唯一约束（零调用方） | 零结构修改，直接投入 `PhysicalSafetyGate` 生产复用 | 保持既有严格 `resource_one_live_lease_uq` |
@@ -253,3 +253,9 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
 4. **Invariant-4（`PhysicalSafetyGate` 全局锁序 & 原子组锁 · R1）**：并发派发与 T21 解冻压测零死锁（统一先锁 `workflow_run`）；`Transfer` 入 `UNKNOWN` 必须整组锁定 `device:ARM1`、`slot:src`、`slot:dst`、`carrier:id`；`reconcileAndSettleUnknownCommand(KEEP_QUARANTINED)` 后不可只解锁单一机械臂；`CLEAR_AFTER_VERIFY` 须整组清零后方能放行下一个 Run。
 5. **Invariant-5（`recoverInterruptedAttempt` 终态不误杀 + T21 授权人工核验解冻）**：Step 0 已把 `SUCCEEDED` 落入 `command_ledger` 时，重启恢复必须直接推进成功而非进入 `MANUAL_REQUIRED`；真实 `UNKNOWN` 通过 RBAC 授权 T21 提交 `OPERATOR_PHYSICAL_INSPECTION` + `STRONG_OPERATOR_ATTESTED` + `CLEAR_AFTER_VERIFY` 后合法转为 `SUCCEEDED`、释放 `scheduler_capacity` 并唤醒 `workflow_run`。
 6. **Invariant-6（`inbox_receipt` 并发全局唯一去重 + 禁猜 Run + 提交栅栏 · P0-2/P1-1）**：两个并发线程投递同一 `sourceMessageId` 时，全局只在 `inbox_receipt` 留存 1 条权威收据且仅消费 1 次；无租赁归属的独立运行工位即使全租户只有 1 个活跃 Run 也必须拒收并返 `ERR_EVENT_UNROUTABLE`；PG 事务回滚时网关必须回传 `EVENT_NACK(retryable=true)` 且绝不发送 `EVENT_ACK`。
+
+### 7.1 配套 PG17 Schema 负向测试（阶段 0 同步写入 `002_schema_contract.sql`，CI 必跑）
+1. 向 `workflow_runtime.command_ledger` 插入 `workstation_id IS NULL` 或 `operation_name IS NULL` 的新契约记录 → PostgreSQL 必须直接拒绝并抛出 **`23502 (not_null_violation)`**；
+2. 向 `workflow_runtime.command_ledger` 插入空串或纯空白 `workstation_id` / `operation_name` → PostgreSQL 必须直接拒绝并抛出 **`23514 (check_violation)`**（`command_ledger_workstation_nonblank_chk`）；
+3. 向 `workflow_runtime.command_ledger` 插入未在 `workstation_sidecar` 注册或跨租户的 `workstation_id` → PostgreSQL 必须直接拒绝并抛出 **`23503 (foreign_key_violation)`**（`command_ledger_workstation_fk`）；
+4. 向 `workflow_runtime.wait_early_signal_buffer` 插入与 `inbox_receipt.run_id` 不一致（或对应 `inbox_receipt.run_id IS NULL`）的记录 → PostgreSQL 必须直接拒绝并抛出 **`23503 (foreign_key_violation)`**（复合外键）。

@@ -1,14 +1,28 @@
--- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.3 final review).
+-- Draft 006_device_execution_contract_v1.draft.sql (for Phase 3B contract Draft v1.4 final review).
 -- NOTE: This draft sits in docs/ddl/ and is NOT executed by PR #17 CI.
 --       Real PostgreSQL 17 DDL & 002_schema_contract CI checks take effect only when
 --       promoted to db/workflow_runtime/006_device_execution_contract_v1.sql in Phase 0.
 --
 -- Paired Phase 0 updates required alongside promotion:
---   1. db/workflow_runtime/002_schema_contract.sql (expected tables: 32 -> 35; document
---      workstation_sidecar.connection_generation as a single-Kernel TCP reconnect guard,
---      NOT a distributed lease/fencing token).
+--   1. db/workflow_runtime/002_schema_contract.sql:
+--      - Update expected table count 32 -> 35;
+--      - Document workstation_sidecar.connection_generation as a single-Kernel TCP reconnect guard
+--        (NOT a distributed lease/fencing token);
+--      - Update the 2 existing command_ledger contract test inserts (L157, L160) to seed a
+--        workstation_sidecar row and supply non-blank workstation_id & operation_name;
+--      - Add PG17 negative DDL assertions verifying rejection of command_ledger rows with
+--        workstation_id IS NULL (23502), operation_name IS NULL (23502), blank workstation_id /
+--        operation_name (23514), or unregistered workstation_id (23503), plus wait_early_signal_buffer
+--        cross-run run_id mismatch (23503).
 --   2. .github/workflows/workflow-runtime-db.yml (update all 3 table-count checks at
 --      lines 86, 102, 111 from 32 to 35).
+--   3. db/workflow_runtime/tests/test_pg_con_matrix.py: update con08() (L200) to seed a
+--      workstation_sidecar row and supply non-blank workstation_id & operation_name.
+--   4. workflow-runtime/: update WorkflowRuntimeRepository.createCommand / createCommandForAttempt
+--      (L3521, L3550, L3572), WorkerExecutionService.java (L546), and existing
+--      workflow-runtime/src/test/** command inserts (including
+--      RuntimeProcessRestartRecoveryIntegrationTest.java:326) to require non-blank
+--      workstation_id & operation_name (legacy labos-kernel public.command_ledger remains untouched).
 
 BEGIN;
 
@@ -35,9 +49,11 @@ CREATE TABLE IF NOT EXISTS workflow_runtime.workstation_sidecar (
   PRIMARY KEY (tenant_id, workstation_id)
 );
 
--- 2. Extend command_ledger with workstation FK, operation metadata, capability timeouts & outcomes.
---    command_ledger_v1_workstation_required_chk guarantees every Contract v1 command (which sets
---    operation_name) MUST bind a non-null workstation_id while keeping legacy/G2 mock rows valid.
+-- 2. Extend command_ledger with strict workstation ownership, operation metadata, timeouts & outcomes.
+--    Under the zero-legacy-compatibility contract, workflow_runtime.command_ledger carries ONLY
+--    Contract v1.x physical device commands (zero non-device ledger rows, zero legacy/mock nullable
+--    bypass). Preflight fails closed if any pre-existing row lacks non-blank workstation_id or
+--    operation_name, then enforces column-level NOT NULL + non-blank CHECK + FK constraints.
 ALTER TABLE workflow_runtime.command_ledger
   ADD COLUMN IF NOT EXISTS workstation_id text,
   ADD COLUMN IF NOT EXISTS operation_name text,
@@ -46,6 +62,28 @@ ALTER TABLE workflow_runtime.command_ledger
   ADD COLUMN IF NOT EXISTS last_receipt_at timestamptz,
   ADD COLUMN IF NOT EXISTS command_result jsonb NOT NULL DEFAULT '{}'::jsonb,
   ADD COLUMN IF NOT EXISTS reconciliation_evidence jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+DO $command_ledger_v1_preflight$
+DECLARE
+  invalid_count bigint;
+BEGIN
+  SELECT count(*)
+    INTO invalid_count
+    FROM workflow_runtime.command_ledger
+   WHERE workstation_id IS NULL OR btrim(workstation_id) = ''
+      OR operation_name IS NULL OR btrim(operation_name) = '';
+  IF invalid_count > 0 THEN
+    RAISE EXCEPTION
+      '006 migration blocked: % existing command_ledger row(s) missing non-blank workstation_id or operation_name; archive or backfill before applying Contract v1',
+      invalid_count
+      USING ERRCODE = '23502';
+  END IF;
+END
+$command_ledger_v1_preflight$;
+
+ALTER TABLE workflow_runtime.command_ledger
+  ALTER COLUMN workstation_id SET NOT NULL,
+  ALTER COLUMN operation_name SET NOT NULL;
 
 DO $add_command_workstation_fk_and_chk$
 BEGIN
@@ -61,12 +99,12 @@ BEGIN
   END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
-     WHERE conname = 'command_ledger_v1_workstation_required_chk'
+     WHERE conname = 'command_ledger_workstation_nonblank_chk'
        AND conrelid = 'workflow_runtime.command_ledger'::regclass
   ) THEN
     ALTER TABLE workflow_runtime.command_ledger
-      ADD CONSTRAINT command_ledger_v1_workstation_required_chk
-      CHECK (operation_name IS NULL OR workstation_id IS NOT NULL);
+      ADD CONSTRAINT command_ledger_workstation_nonblank_chk
+      CHECK (btrim(workstation_id) <> '' AND btrim(operation_name) <> '');
   END IF;
 END
 $add_command_workstation_fk_and_chk$;
