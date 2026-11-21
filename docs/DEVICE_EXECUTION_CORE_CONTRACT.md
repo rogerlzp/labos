@@ -230,7 +230,7 @@ Gateway 每条入站 `DEVICE_EVENT(SPONTANEOUS)` 按严格锁序 **`workflow_run
 
 ## 6. 存量 Schema (`001`/`002`) vs `006` 迁移逐项核对表（B3 · P1-3 · R5）
 
-完整目标 DDL 见 [006_device_execution_contract_v1.draft.sql](./ddl/006_device_execution_contract_v1.draft.sql)；CI 三处表数量断言（[workflow-runtime-db.yml:86,102,111](../.github/workflows/workflow-runtime-db.yml#L86-L111)）将在阶段 0 同步由 `32` 调整为 `35`。
+完整目标 DDL 见 [006_device_execution_contract_v1.draft.sql](./ddl/006_device_execution_contract_v1.draft.sql)；阶段 0 需同步在 [apply-workflow-runtime-migrations.sh](../scripts/apply-workflow-runtime-migrations.sh#L120-L251) 注册 `006_device_execution_contract_v1.sql`（`is_allowed_filename`、有序循环 `001 003 004 005 006` 与 `case "$ver"` 的 `006)` 分支）、对齐 [test_pg_migrations.py](../db/workflow_runtime/tests/test_pg_migrations.py#L122-L133)，并将 CI 三处表数量断言（[workflow-runtime-db.yml:86,102,111](../.github/workflows/workflow-runtime-db.yml#L86-L111)）同步由 `32` 调整为 `35`。
 
 | 数据库对象 | 现有状态（`001`–`005`） | `006` 变更内容 | `002_schema_contract.sql` 与一致性约束 |
 | :--- | :--- | :--- | :--- |

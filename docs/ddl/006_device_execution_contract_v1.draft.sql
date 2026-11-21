@@ -23,6 +23,15 @@
 --      workflow-runtime/src/test/** command inserts (including
 --      RuntimeProcessRestartRecoveryIntegrationTest.java:326) to require non-blank
 --      workstation_id & operation_name (legacy labos-kernel public.command_ledger remains untouched).
+--   5. scripts/apply-workflow-runtime-migrations.sh & db/workflow_runtime/tests/test_pg_migrations.py:
+--      - Register 006 in is_allowed_filename() (L120-130):
+--          006) [[ "$fname" == "006_device_execution_contract_v1.sql" ]] ;;
+--      - Append 006 to the ordered loop (L197): for ver in 001 003 004 005 006; do
+--      - Add the pending-apply branch in case "$ver" (L219-251):
+--          006) fname="006_device_execution_contract_v1.sql"; mode="STANDARD" ;;
+--      - Update test_pg_migrations.py (L122-133, L273, adopt tests) so expected ledger
+--        versions include "006" and add a dirty-row preflight test verifying 006 blocks
+--        existing command_ledger rows missing non-blank workstation_id/operation_name.
 
 BEGIN;
 
