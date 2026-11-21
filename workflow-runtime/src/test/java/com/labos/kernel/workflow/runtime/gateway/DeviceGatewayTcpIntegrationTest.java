@@ -950,6 +950,41 @@ class DeviceGatewayTcpIntegrationTest {
             assertEquals(0, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
                     + tenant + "' AND run_id='" + run.runId() + "' AND event_type='DEVICE_COMMAND_FAILED'"));
 
+            // Concurrent first delivery of one permanently rejected message identity must
+            // create one terminal Inbox row and exactly one INBOX_REJECTED audit event.
+            String concurrentRejectId = "sec-concurrent-reject-" + UUID.randomUUID();
+            CountDownLatch rejectReady = new CountDownLatch(2);
+            CountDownLatch rejectStart = new CountDownLatch(1);
+            var rejectPool = Executors.newFixedThreadPool(2);
+            try {
+                var reject1 = rejectPool.submit(() -> {
+                    rejectReady.countDown();
+                    if (!rejectStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("reject start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentRejectId,
+                            "COMMAND_RESULT", cmdId, "FAILED", "seq-reject-race", "{}");
+                });
+                var reject2 = rejectPool.submit(() -> {
+                    rejectReady.countDown();
+                    if (!rejectStart.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("reject start timeout");
+                    return cmdSvc.ingestDeviceEvent(tenant, run.runId(), deviceId, concurrentRejectId,
+                            "COMMAND_RESULT", cmdId, "FAILED", "seq-reject-race", "{}");
+                });
+                assertTrue(rejectReady.await(5, TimeUnit.SECONDS));
+                rejectStart.countDown();
+                var rejectResult1 = reject1.get(5, TimeUnit.SECONDS);
+                var rejectResult2 = reject2.get(5, TimeUnit.SECONDS);
+                assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, rejectResult1.status());
+                assertEquals(DeviceCommandExecutionService.InboxStatus.REJECTED, rejectResult2.status());
+                assertEquals(rejectResult1.inboxId(), rejectResult2.inboxId());
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.inbox_receipt WHERE tenant_id='"
+                        + tenant + "' AND source_message_id='" + concurrentRejectId + "' AND receipt_state='REJECTED'"));
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.runtime_event WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + run.runId() + "' AND event_type='INBOX_REJECTED' "
+                        + "AND aggregate_id='" + rejectResult1.inboxId() + "'"));
+            } finally {
+                rejectPool.shutdownNow();
+            }
+
             repo.completeAttempt(tenant, run.runId(), res.attemptId(), "out", "{\"ok\":true}");
         }
     }
