@@ -3283,7 +3283,7 @@ public final class WorkflowRuntimeRepository {
                         + "\",\"targetState\":\"" + jsonEscape(targetState)
                         + "\",\"rejectionReason\":\"" + jsonEscape(rejectionReason) + "\"}";
                 appendEvents(tenantId, runId, List.of(new EventDraft(
-                        "INBOX_REJECTED", "INBOX", inboxId, null, null, inboxId, rejectionPayload)));
+                        "INBOX_REJECTED", "INBOX", inboxId, null, inboxId, null, rejectionPayload)));
                 return false;
             }
         });
