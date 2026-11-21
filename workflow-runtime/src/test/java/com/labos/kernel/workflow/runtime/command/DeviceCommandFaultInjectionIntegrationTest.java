@@ -6,6 +6,7 @@ import com.labos.kernel.workflow.runtime.graph.GraphPlanCodec;
 import com.labos.kernel.workflow.runtime.persistence.WorkflowRuntimeRepository;
 import com.labos.kernel.workflow.runtime.recovery.WorkerExecutionRecoveryService;
 import com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -42,6 +43,9 @@ class DeviceCommandFaultInjectionIntegrationTest {
 
     private static final String DEVICE = "g4c-pipettor";
 
+    /** Last tenant built by newStartedChain(); cleaned in @AfterEach to avoid cross-test pollution. */
+    private UUID lastTenant;
+
     private static String env(String key, String fallback) {
         String v = System.getenv(key);
         return v == null || v.isBlank() ? fallback : v;
@@ -49,6 +53,29 @@ class DeviceCommandFaultInjectionIntegrationTest {
 
     private static void assumePg() {
         Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+    }
+
+    /**
+     * These tests intentionally leave device commands UNKNOWN / outbox SENDING / Run MANUAL_REQUIRED.
+     * Settle this test's tenant so it cannot pollute OTHER tests that run a global (non-tenant-scoped)
+     * recoverAtStartup() and assert a global leftUncertain / intervention count on a shared PG17 DB.
+     */
+    @AfterEach
+    void settleTestTenant() throws Exception {
+        if (lastTenant == null) return;
+        try (Connection c = dataSource().getConnection(); Statement st = c.createStatement()) {
+            UUID t = lastTenant;
+            st.executeUpdate("UPDATE workflow_runtime.runtime_outbox SET outbox_state='DEAD_LETTER' WHERE tenant_id='"
+                    + t + "' AND outbox_state IN ('PENDING','SENDING')");
+            st.executeUpdate("UPDATE workflow_runtime.manual_intervention SET intervention_state='CANCELLED' WHERE tenant_id='"
+                    + t + "' AND intervention_state='OPEN'");
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET status='FAILED', control_gate='CLOSED', recovery_state='RECOVERY_COMPLETED' WHERE tenant_id='"
+                    + t + "' AND status NOT IN ('SUCCEEDED','FAILED','STOPPED','MANUAL_REQUIRED')");
+            // MANUAL_REQUIRED runs from recovery tests are settled explicitly too.
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET status='FAILED', control_gate='CLOSED', recovery_state='RECOVERY_COMPLETED' WHERE tenant_id='"
+                    + t + "' AND status='MANUAL_REQUIRED'");
+        }
+        lastTenant = null;
     }
 
     private DriverManagerDataSource dataSource() {
@@ -122,6 +149,7 @@ class DeviceCommandFaultInjectionIntegrationTest {
      */
     private Chain newStartedChain(DriverManagerDataSource ds, WorkflowRuntimeRepository repo) throws Exception {
         UUID tenant = createTenant(ds);
+        this.lastTenant = tenant;
         GraphPlan p = plan();
         var run = repo.createRun(tenant, "g4c-req-" + UUID.randomUUID(), "CREATE", "{}",
                 "g4c-def-" + tenant, "1", HexFormat.of().parseHex(p.bpmnSha256()),
