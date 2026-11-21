@@ -266,6 +266,14 @@ class BpmnGraphCompilerTest {
         assertTrue(duplicateEx.getMessage().contains("multiple conditionExpression"));
     }
 
+    @Test void fromJsonIncludesDiagnosticContextAndPreservesJacksonCause() {
+        IllegalArgumentException ex=assertThrows(IllegalArgumentException.class,
+                ()->GraphPlanCodec.fromJson("{}", "runId=r1, definitionId=d1"));
+        assertTrue(ex.getMessage().contains("Invalid persisted GraphPlan JSON"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("runId=r1, definitionId=d1"), ex.getMessage());
+        assertInstanceOf(java.io.IOException.class, ex.getCause());
+    }
+
     private static String gatewayXml(int incoming,int outgoing) {
         StringBuilder xml=new StringBuilder("<bpmn:definitions xmlns:bpmn=\""+NS+"\"><bpmn:process id=\"p\">"+
                 "<bpmn:startEvent id=\"s\"/><bpmn:parallelGateway id=\"g\"/>"+

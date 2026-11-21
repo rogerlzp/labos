@@ -74,7 +74,7 @@ public final class GraphCoordinator {
             if (variables != null) mergedVariables.putAll(variables);
             Map<String, ?> context = Collections.unmodifiableMap(mergedVariables);
 
-            GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson());
+            GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson(), snapshot.diagnosticContext());
             Map<String, GraphPlan.Node> nodes = indexNodes(plan);
             Map<String, List<GraphPlan.Edge>> outgoing = indexOutgoing(plan, nodes);
             validatePlan(plan, nodes, outgoing);

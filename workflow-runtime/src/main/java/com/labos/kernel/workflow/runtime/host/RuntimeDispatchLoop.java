@@ -64,6 +64,8 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
     private final AtomicLong workersSubmitted = new AtomicLong(0);
     private final AtomicLong commandsDelivered = new AtomicLong(0);
     private final Map<UUID, WakeupThrottle> graphWakeupThrottle = new ConcurrentHashMap<>();
+    private final Set<UUID> graphAdvanceSweepSeen = new HashSet<>();
+    private volatile WorkflowRuntimeRepository.GraphAdvanceCursor graphAdvanceCursor;
     private volatile Instant lastCycleAt;
     private volatile String lastError;
 
@@ -165,18 +167,29 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
         }
         // 0. Self-heal any RUNNING/OPEN runs with completed task activations awaiting graph routing
         //    (e.g. after PAUSE -> RESUME, host crash/restart, or transient mailbox eviction race).
-        //    Bounded exponential backoff per run prevents a permanently unadvanceable run from busy-looping.
-        List<WorkflowRuntimeRepository.RunnableRunRef> awaitingGraph = scopedTenantId != null
-                ? repository.findRunsAwaitingGraphAdvanceForTenant(scopedTenantId, batchSize)
-                : repository.findRunsAwaitingGraphAdvance(batchSize);
+        //    Bounded keyset sweep rotates past stuck runs without raising batchSize, while bounded
+        //    exponential backoff per run prevents an unadvanceable run from busy-looping.
+        boolean startedFromBeginning = (graphAdvanceCursor == null);
+        List<WorkflowRuntimeRepository.AwaitingGraphRunRef> awaitingGraph = queryAwaitingGraphPage(graphAdvanceCursor);
+        if (awaitingGraph.isEmpty() && graphAdvanceCursor != null) {
+            graphWakeupThrottle.keySet().retainAll(graphAdvanceSweepSeen);
+            graphAdvanceSweepSeen.clear();
+            graphAdvanceCursor = null;
+            startedFromBeginning = true;
+            awaitingGraph = queryAwaitingGraphPage(null);
+        }
         if (awaitingGraph.isEmpty()) {
             graphWakeupThrottle.clear();
+            graphAdvanceSweepSeen.clear();
+            graphAdvanceCursor = null;
         } else {
-            Set<UUID> activeAwaiting = new HashSet<>(awaitingGraph.size());
+            if (startedFromBeginning) {
+                graphAdvanceSweepSeen.clear();
+            }
             long nowNanos = System.nanoTime();
-            for (WorkflowRuntimeRepository.RunnableRunRef ref : awaitingGraph) {
+            for (WorkflowRuntimeRepository.AwaitingGraphRunRef ref : awaitingGraph) {
                 if (stopped.get() || !schedulingGate.isOpen()) return;
-                activeAwaiting.add(ref.runId());
+                graphAdvanceSweepSeen.add(ref.runId());
                 WakeupThrottle prev = graphWakeupThrottle.get(ref.runId());
                 if (prev != null && nowNanos < prev.nextAllowedNanos()) {
                     continue;
@@ -197,7 +210,13 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
                     recordError(ex);
                 }
             }
-            graphWakeupThrottle.keySet().retainAll(activeAwaiting);
+            if (awaitingGraph.size() == batchSize) {
+                graphAdvanceCursor = awaitingGraph.get(awaitingGraph.size() - 1).cursor();
+            } else {
+                graphAdvanceCursor = null;
+                graphWakeupThrottle.keySet().retainAll(graphAdvanceSweepSeen);
+                graphAdvanceSweepSeen.clear();
+            }
         }
 
         // 1. Reserve & dispatch READY tokens for active RUNNING/OPEN runs.
@@ -294,6 +313,13 @@ public final class RuntimeDispatchLoop implements RuntimeHost.LifecycleComponent
                 commandsDelivered.get(),
                 lastCycleAt,
                 lastError);
+    }
+
+    private List<WorkflowRuntimeRepository.AwaitingGraphRunRef> queryAwaitingGraphPage(
+            WorkflowRuntimeRepository.GraphAdvanceCursor after) {
+        return scopedTenantId != null
+                ? repository.findRunsAwaitingGraphAdvanceForTenantAfter(scopedTenantId, after, batchSize)
+                : repository.findRunsAwaitingGraphAdvanceAfter(after, batchSize);
     }
 
     private void runCycleSafe() {

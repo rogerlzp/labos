@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Configuration properties for the embedded single-process Workflow Runtime Host and
@@ -39,7 +40,8 @@ public record WorkflowRuntimeHostProperties(
         Duration dispatchPollInterval,
         int dispatchBatchSize,
         List<TcpDeviceConnection.Endpoint> deviceEndpoints,
-        TcpDeviceConnection.Config gatewayConfig) {
+        TcpDeviceConnection.Config gatewayConfig,
+        Long scopedKernelTenantId) {
 
     public static final String PROP_ENABLED = "labos.workflow.runtime.host.enabled";
     public static final String PROP_LOCK_FILE = "labos.workflow.runtime.host.lock-file";
@@ -52,6 +54,7 @@ public record WorkflowRuntimeHostProperties(
     public static final String PROP_RECOVERY_LIMIT = "labos.workflow.runtime.host.recovery-batch-limit";
     public static final String PROP_POLL_MS = "labos.workflow.runtime.host.dispatch-poll-ms";
     public static final String PROP_BATCH_SIZE = "labos.workflow.runtime.host.dispatch-batch-size";
+    public static final String PROP_SCOPED_KERNEL_TENANT_ID = "labos.workflow.runtime.host.scoped-kernel-tenant-id";
     public static final String PROP_ENDPOINTS = "labos.workflow.runtime.gateway.endpoints";
     public static final String PROP_CONNECT_TIMEOUT_MS = "labos.workflow.runtime.gateway.connect-timeout-ms";
     public static final String PROP_HB_INTERVAL_MS = "labos.workflow.runtime.gateway.heartbeat-interval-ms";
@@ -71,6 +74,28 @@ public record WorkflowRuntimeHostProperties(
         Objects.requireNonNull(dispatchPollInterval, "dispatchPollInterval");
         deviceEndpoints = List.copyOf(Objects.requireNonNull(deviceEndpoints, "deviceEndpoints"));
         Objects.requireNonNull(gatewayConfig, "gatewayConfig");
+        if (scopedKernelTenantId != null && scopedKernelTenantId <= 0) {
+            throw new IllegalArgumentException("scopedKernelTenantId must be positive");
+        }
+    }
+
+    public WorkflowRuntimeHostProperties(
+            boolean enabled,
+            Path lockFile,
+            String hostId,
+            int workerThreads,
+            int workerQueueCapacity,
+            int maxConcurrentRuns,
+            int mailboxThreads,
+            int mailboxQueueCapacity,
+            int recoveryBatchLimit,
+            Duration dispatchPollInterval,
+            int dispatchBatchSize,
+            List<TcpDeviceConnection.Endpoint> deviceEndpoints,
+            TcpDeviceConnection.Config gatewayConfig) {
+        this(enabled, lockFile, hostId, workerThreads, workerQueueCapacity, maxConcurrentRuns,
+                mailboxThreads, mailboxQueueCapacity, recoveryBatchLimit, dispatchPollInterval,
+                dispatchBatchSize, deviceEndpoints, gatewayConfig, null);
     }
 
     public static WorkflowRuntimeHostProperties fromEnvironment(Environment env) {
@@ -86,7 +111,8 @@ public record WorkflowRuntimeHostProperties(
                     4, 64, 16, 2, 128, 100,
                     Duration.ofMillis(250L), 32,
                     List.of(),
-                    TcpDeviceConnection.Config.defaults());
+                    TcpDeviceConnection.Config.defaults(),
+                    null);
         }
         Path lockFile = Path.of(env.getProperty(PROP_LOCK_FILE, "runtime-host.lock"));
         String hostId = env.getProperty(PROP_HOST_ID, "labos-local-host");
@@ -98,6 +124,7 @@ public record WorkflowRuntimeHostProperties(
         int recoveryLimit = intProp(env, PROP_RECOVERY_LIMIT, 100);
         Duration pollInterval = Duration.ofMillis(longProp(env, PROP_POLL_MS, 250L));
         int batchSize = intProp(env, PROP_BATCH_SIZE, 32);
+        Long scopedKernelTenantId = optionalPositiveLongProp(env, PROP_SCOPED_KERNEL_TENANT_ID);
         List<TcpDeviceConnection.Endpoint> endpoints = parseEndpoints(env.getProperty(PROP_ENDPOINTS, ""));
         TcpDeviceConnection.Config gatewayConfig = new TcpDeviceConnection.Config(
                 Duration.ofMillis(longProp(env, PROP_CONNECT_TIMEOUT_MS, 3000L)),
@@ -110,7 +137,7 @@ public record WorkflowRuntimeHostProperties(
         return new WorkflowRuntimeHostProperties(
                 true, lockFile, hostId, workerThreads, workerQueue, maxRuns,
                 mailboxThreads, mailboxQueue, recoveryLimit, pollInterval, batchSize,
-                endpoints, gatewayConfig);
+                endpoints, gatewayConfig, scopedKernelTenantId);
     }
 
     public EmbeddedWorkflowRuntimeHost.Config toHostConfig() {
@@ -118,10 +145,16 @@ public record WorkflowRuntimeHostProperties(
     }
 
     public EmbeddedWorkflowRuntimeHost.Config toHostConfig(List<TcpDeviceConnection.Endpoint> effectiveEndpoints) {
+        return toHostConfig(effectiveEndpoints, null);
+    }
+
+    public EmbeddedWorkflowRuntimeHost.Config toHostConfig(
+            List<TcpDeviceConnection.Endpoint> effectiveEndpoints,
+            UUID scopedTenantId) {
         return new EmbeddedWorkflowRuntimeHost.Config(
                 lockFile, hostId, workerThreads, workerQueueCapacity, maxConcurrentRuns,
                 mailboxThreads, mailboxQueueCapacity, recoveryBatchLimit,
-                dispatchPollInterval, dispatchBatchSize, effectiveEndpoints, gatewayConfig, null);
+                dispatchPollInterval, dispatchBatchSize, effectiveEndpoints, gatewayConfig, scopedTenantId);
     }
 
     /**
@@ -314,5 +347,22 @@ public record WorkflowRuntimeHostProperties(
     private static long longProp(Environment env, String key, long fallback) {
         String raw = env.getProperty(key);
         return (raw == null || raw.isBlank()) ? fallback : Long.parseLong(raw.trim());
+    }
+
+    private static Long optionalPositiveLongProp(Environment env, String key) {
+        String raw = env.getProperty(key);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        long parsed;
+        try {
+            parsed = Long.parseLong(raw.trim());
+        } catch (NumberFormatException nfe) {
+            throw new IllegalArgumentException("Invalid numeric property " + key + ": " + raw, nfe);
+        }
+        if (parsed <= 0) {
+            throw new IllegalArgumentException("Property " + key + " must be positive: " + raw);
+        }
+        return parsed;
     }
 }

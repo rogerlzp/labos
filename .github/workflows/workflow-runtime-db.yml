@@ -70,6 +70,9 @@ jobs:
       - name: Run Island Real DeviceCore + PG17 E2E self-test
         env:
           USE_EXISTING_PG: '1'
+          PGDATABASE: runtime_island_e2e
+          RECREATE_DB: '1'
+          REPEAT: '3'
         run: bash ./scripts/test-workflow-runtime-island-e2e.sh
       - name: Verify bootstrap is repeatably isolated
         run: |

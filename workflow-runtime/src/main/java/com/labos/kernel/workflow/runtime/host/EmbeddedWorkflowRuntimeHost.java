@@ -226,7 +226,8 @@ public final class EmbeddedWorkflowRuntimeHost implements AutoCloseable {
                 workerExecutionService::requestCancel,
                 lifecycleCoordinator::wake);
 
-        this.recoveryService = new WorkerExecutionRecoveryService(repository, workerRegistry);
+        this.recoveryService = new WorkerExecutionRecoveryService(
+                repository, workerRegistry, config.scopedTenantId());
 
         RuntimeHost.LifecycleComponent gatewayIngressComponent = new RuntimeHost.LifecycleComponent() {
             @Override

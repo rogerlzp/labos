@@ -14,12 +14,29 @@ public final class GraphPlanCodec {
 
     /** Decode the immutable snapshot stored in definition_snapshot.graph_plan. */
     public static GraphPlan fromJson(String json) {
+        return fromJson(json, null);
+    }
+
+    /** Decode the immutable snapshot with diagnostic Run/definition context and underlying Jackson cause. */
+    public static GraphPlan fromJson(String json, String diagnosticContext) {
+        String suffix = (diagnosticContext == null || diagnosticContext.isBlank())
+                ? "" : " [" + diagnosticContext + "]";
         try {
             GraphPlan plan = JSON.readValue(json, GraphPlan.class);
-            if (plan.schemaVersion() != 1) throw new IllegalArgumentException("Unsupported GraphPlan schemaVersion: " + plan.schemaVersion());
+            if (plan == null) {
+                throw new IllegalArgumentException("Invalid persisted GraphPlan JSON (null payload)" + suffix);
+            }
+            if (plan.schemaVersion() != 1) {
+                throw new IllegalArgumentException(
+                        "Unsupported GraphPlan schemaVersion: " + plan.schemaVersion() + suffix);
+            }
             return plan;
         } catch (IOException e) {
-            throw new IllegalArgumentException("Invalid persisted GraphPlan JSON", e);
+            String causeSummary = e.getMessage() == null
+                    ? e.getClass().getSimpleName()
+                    : e.getClass().getSimpleName() + ": " + e.getMessage();
+            throw new IllegalArgumentException(
+                    "Invalid persisted GraphPlan JSON" + suffix + " (" + causeSummary + ")", e);
         }
     }
 

@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Spring Boot composition root for the embedded, single-process Workflow Runtime.
@@ -196,6 +197,7 @@ public class WorkflowRuntimeKernelConfiguration {
         public EmbeddedWorkflowRuntimeHost embeddedWorkflowRuntimeHost(
                 WorkflowRuntimeHostProperties properties,
                 WorkflowRuntimeRepository repository,
+                WorkflowRuntimeTenantResolver tenants,
                 WorkflowRuntimeHostProperties.RegistryEndpoints discovered,
                 ObjectProvider<LocalTaskDispatchService.TaskDispatchSpecResolver> specResolverProvider,
                 ObjectProvider<LocalTaskDispatchService.TaskHandlerResolver> handlerResolverProvider) {
@@ -213,8 +215,12 @@ public class WorkflowRuntimeKernelConfiguration {
             }
             var effectiveEndpoints = WorkflowRuntimeHostProperties.mergeEndpoints(
                     discovered.endpoints(), properties.deviceEndpoints());
+            UUID scopedTenantId = properties.scopedKernelTenantId() == null
+                    ? null
+                    : tenants.resolve(properties.scopedKernelTenantId());
             return new EmbeddedWorkflowRuntimeHost(
-                    properties.toHostConfig(effectiveEndpoints), repository, specResolver, handlerResolver);
+                    properties.toHostConfig(effectiveEndpoints, scopedTenantId),
+                    repository, specResolver, handlerResolver);
         }
     }
 

@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -832,6 +833,106 @@ class EmbeddedWorkflowRuntimeHostIntegrationTest {
                 }, () -> "scoped dispatch starved: "
                         + diagnoseRunState(ds, tenant, run.runId(), cmdIdRef.get(), host, deviceId));
             }
+        }
+    }
+
+    @Test
+    void awaitingGraphAdvanceKeysetPaginationDoesNotStarveBehindStuckPage() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g3-await-page");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+        String planKey = "g3-await-page-" + tenant;
+        GraphPlan plan = compileSingleDevicePlan(planKey);
+        GraphCoordinator coordinator = new GraphCoordinator(repo);
+
+        // Create 5 runs whose single task Attempt has SUCCEEDED and awaits graph successor routing.
+        // Order updated_at so stuck1..stuck4 occupy pages 1..2 (batchSize=2) ahead of healthy5 on page 3.
+        List<UUID> runIds = new ArrayList<>(5);
+        for (int i = 0; i < 5; i++) {
+            var created = repo.createRun(tenant, "await-req-" + i, "CREATE", "{}",
+                    planKey, "1", HexFormat.of().parseHex(plan.bpmnSha256()),
+                    plan.compilerVersion(), GraphPlanCodec.toJson(plan), "{}", "start");
+            repo.startRun(tenant, created.runId());
+            coordinator.advance(tenant, created.runId());
+            var res = repo.reserveCapacity(tenant, created.runId(), "await-cap-" + i + "-" + tenant, 1,
+                    "host_dev_op", "PURE", java.time.Instant.now().plusSeconds(60));
+            repo.dispatchAttempt(tenant, created.runId(), res.attemptId(), "pure-q", "{}");
+            var wdOutbox = repo.beginOutboxSendForKind(tenant, "WORKER_DISPATCH", 10).stream()
+                    .filter(m -> m.dedupKey().equals("dispatch:" + res.attemptId()))
+                    .findFirst().orElseThrow();
+            assertTrue(repo.markOutboxDelivered(tenant, wdOutbox.outboxId()));
+            repo.acceptAttemptForExecution(tenant, created.runId(), res.attemptId(), res.dispatchId(),
+                    "w-" + i, "host_dev_op", "PURE");
+            repo.startAttempt(tenant, created.runId(), res.attemptId(), res.dispatchId(), "w-" + i);
+            repo.completeAttempt(tenant, created.runId(), res.attemptId(), "out", "{\"ok\":true}");
+            runIds.add(created.runId());
+        }
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            for (int i = 0; i < 4; i++) {
+                int minutesAgo = 4 - i;
+                st.executeUpdate("UPDATE workflow_runtime.workflow_run SET updated_at = clock_timestamp() - interval '"
+                        + minutesAgo + " minutes' WHERE tenant_id = '" + tenant + "' AND run_id = '" + runIds.get(i) + "'");
+            }
+            st.executeUpdate("UPDATE workflow_runtime.workflow_run SET updated_at = clock_timestamp() "
+                    + "WHERE tenant_id = '" + tenant + "' AND run_id = '" + runIds.get(4) + "'");
+        }
+
+        UUID stuck1 = runIds.get(0);
+        UUID stuck2 = runIds.get(1);
+        UUID healthy5 = runIds.get(4);
+
+        var firstPageOnly = repo.findRunsAwaitingGraphAdvanceForTenant(tenant, 2);
+        assertEquals(List.of(stuck1, stuck2), firstPageOnly.stream().map(WorkflowRuntimeRepository.RunnableRunRef::runId).toList(),
+                "Precondition: unpaginated LIMIT 2 only surfaces stuck1/stuck2 ahead of healthy5");
+
+        SchedulingGate gate = new SchedulingGate();
+        gate.open();
+        List<UUID> wakeups = new CopyOnWriteArrayList<>();
+        var noopExec = java.util.concurrent.Executors.newSingleThreadExecutor();
+        var noopRegistry = new com.labos.kernel.workflow.runtime.worker.WorkerExecutionRegistry();
+        try (var noopLifecycle = new com.labos.kernel.workflow.runtime.coordinator.WorkflowRunLifecycleCoordinator(
+                repo, coordinator, noopExec, 4);
+             var noopPool = new com.labos.kernel.workflow.runtime.worker.WorkerPool(
+                     1, 4, 2, noopRegistry, gate)) {
+            LocalTaskDispatchService noopDispatch = new LocalTaskDispatchService(
+                    repo,
+                    new com.labos.kernel.workflow.runtime.worker.WorkerExecutionService(
+                            repo, noopLifecycle, noopPool, noopRegistry),
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "noop-cap-" + tenant, 1, "PURE", "pure-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.empty());
+            DeviceCommandExecutionService noopCmd = new DeviceCommandExecutionService(
+                    repo, env -> { throw new AssertionError("No commands expected"); });
+
+            RuntimeDispatchLoop loop = new RuntimeDispatchLoop(
+                    repo, noopDispatch, noopCmd, gate, Duration.ofMillis(50), 2, "await-page-loop", tenant,
+                    attemptId -> {}, (t, r) -> {
+                wakeups.add(r);
+                if (r.equals(healthy5)) {
+                    coordinator.advance(t, r);
+                }
+            });
+            try {
+                // Cycles 1..3 walk pages 1 -> 2 -> 3 without increasing batchSize=2.
+                loop.runOneCycle();
+                loop.runOneCycle();
+                loop.runOneCycle();
+
+                assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                        + tenant + "' AND run_id='" + healthy5 + "' AND status='SUCCEEDED' AND control_gate='CLOSED'"),
+                        "healthy5 on page 3 must advance to SUCCEEDED without starvation behind stuck pages 1..2");
+
+                int wakeupsBeforeWrap = wakeups.size();
+                // Cycle 4 wraps back to page 1 (stuck1, stuck2) within their 200ms backoff window -> must stay throttled.
+                loop.runOneCycle();
+                assertEquals(wakeupsBeforeWrap, wakeups.size(),
+                        "Wrapping back to page 1 within 200ms backoff window must not re-wake throttled stuck1/stuck2");
+            } finally {
+                loop.stop();
+            }
+        } finally {
+            noopExec.shutdownNow();
         }
     }
 }

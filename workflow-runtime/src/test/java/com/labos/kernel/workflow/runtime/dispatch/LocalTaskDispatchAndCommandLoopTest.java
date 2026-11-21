@@ -1163,4 +1163,63 @@ class LocalTaskDispatchAndCommandLoopTest {
         assertEquals("MANUAL_REQUIRED", repo.failAttempt(tenant, failFix.runId(), failFix.attemptId(),
                 "{\"errorCode\":\"E_NO_TIP\"}", true).outcome());
     }
+
+    @Test
+    void corruptPersistedGraphPlanIsTerminalizedWithoutPoisonPillLoop() throws Exception {
+        Assumptions.assumeTrue("1".equals(System.getenv("RUN_RUNTIME_PG_IT")));
+        var ds = dataSource();
+        UUID tenant = createTenant(ds, "g2b-poison");
+        WorkflowRuntimeRepository repo = new WorkflowRuntimeRepository(ds, new DataSourceTransactionManager(ds));
+
+        UUID definitionId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
+        UUID tokenId = UUID.randomUUID();
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.executeUpdate("INSERT INTO workflow_runtime.definition_snapshot"
+                    + "(tenant_id,definition_id,definition_key,definition_version,definition_hash,compiler_version,graph_plan) "
+                    + "VALUES ('" + tenant + "','" + definitionId + "','poison','1',decode(repeat('aa',32),'hex'),'ci','{}'::jsonb)");
+            st.executeUpdate("INSERT INTO workflow_runtime.workflow_run"
+                    + "(tenant_id,run_id,definition_id,status,control_gate) "
+                    + "VALUES ('" + tenant + "','" + runId + "','" + definitionId + "','RUNNING','OPEN')");
+            st.executeUpdate("INSERT INTO workflow_runtime.execution_token"
+                    + "(tenant_id,token_id,run_id,token_state,node_key) "
+                    + "VALUES ('" + tenant + "','" + tokenId + "','" + runId + "','READY','node')");
+        }
+
+        var targetsBefore = repo.findRunnableWorkTargetsForTenant(tenant, 10);
+        assertEquals(1, targetsBefore.size());
+        assertEquals(runId, targetsBefore.get(0).runId());
+
+        var mailboxExec = Executors.newSingleThreadExecutor();
+        SchedulingGate gate = SchedulingGateTestSupport.openGate();
+        WorkerExecutionRegistry registry = new WorkerExecutionRegistry();
+        try (var lifecycle = new WorkflowRunLifecycleCoordinator(repo, new GraphCoordinator(repo), mailboxExec, 8);
+             var pool = new WorkerPool(1, 4, 2, registry, gate)) {
+            pool.start();
+            WorkerExecutionService workerService = new WorkerExecutionService(repo, lifecycle, pool, registry);
+            LocalTaskDispatchService dispatch = new LocalTaskDispatchService(
+                    repo,
+                    workerService,
+                    node -> new LocalTaskDispatchService.TaskDispatchSpec(
+                            "g2b-poison-cap-" + tenant, 1, "PURE", "pure-q", Duration.ofSeconds(60), "{}"),
+                    node -> Optional.empty());
+
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> dispatch.dispatchReadyTasks(tenant, runId, 4));
+            assertTrue(ex.getMessage() != null && ex.getMessage().contains("Invalid persisted GraphPlan JSON"),
+                    "Expected Invalid persisted GraphPlan JSON, got: " + ex.getMessage());
+            assertTrue(ex.getMessage().contains(runId.toString()), "Missing runId in message: " + ex.getMessage());
+            assertTrue(ex.getMessage().contains(definitionId.toString()), "Missing definitionId in message: " + ex.getMessage());
+            assertTrue(ex.getMessage().contains("definitionKey=poison"), "Missing definitionKey in message: " + ex.getMessage());
+            assertTrue(ex.getMessage().contains("definitionVersion=1"), "Missing definitionVersion in message: " + ex.getMessage());
+            assertInstanceOf(java.io.IOException.class, ex.getCause());
+        } finally {
+            mailboxExec.shutdownNow();
+        }
+
+        assertEquals(1, scalar(ds, "SELECT count(*) FROM workflow_runtime.workflow_run WHERE tenant_id='"
+                + tenant + "' AND run_id='" + runId + "' AND status='FAILED' AND control_gate='CLOSED'"));
+        assertTrue(repo.findRunnableWorkTargetsForTenant(tenant, 10).isEmpty(),
+                "Terminalized corrupt-GraphPlan run must no longer appear in runnable discovery");
+    }
 }

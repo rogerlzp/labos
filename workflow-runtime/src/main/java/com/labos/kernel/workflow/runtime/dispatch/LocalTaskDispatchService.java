@@ -120,7 +120,20 @@ public final class LocalTaskDispatchService {
         if (!"RUNNING".equals(snapshot.runStatus()) || !"OPEN".equals(snapshot.controlGate())) {
             return new ReserveDispatchSummary(List.of(), 0, true);
         }
-        GraphPlan plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson());
+        GraphPlan plan;
+        try {
+            plan = GraphPlanCodec.fromJson(snapshot.graphPlanJson(), snapshot.diagnosticContext());
+        } catch (IllegalArgumentException invalidPlan) {
+            // Deterministic corrupt GraphPlan fault: terminalize the Run so RuntimeDispatchLoop
+            // cannot replay this poison pill on every poll cycle and starve LIMIT batches.
+            try {
+                repository.failGraphRun(tenantId, runId, null,
+                        invalidPlan.getClass().getSimpleName(), invalidPlan.getMessage());
+            } catch (RuntimeException ignored) {
+                // Run already transitioned concurrently.
+            }
+            throw invalidPlan;
+        }
         Map<String, GraphPlan.Node> taskNodes = new LinkedHashMap<>();
         for (GraphPlan.Node node : plan.nodes()) {
             if (node.kind() == GraphPlan.Kind.TASK || node.kind() == GraphPlan.Kind.BUILTIN) {
@@ -244,8 +257,10 @@ public final class LocalTaskDispatchService {
     }
 
     private GraphPlan.Node findNode(UUID tenantId, UUID runId, String nodeKey) {
+        WorkflowRuntimeRepository.RunDefinitionSnapshot snapshot =
+                repository.loadRunDefinitionSnapshot(tenantId, runId);
         GraphPlan plan = GraphPlanCodec.fromJson(
-                repository.loadRunDefinitionSnapshot(tenantId, runId).graphPlanJson());
+                snapshot.graphPlanJson(), snapshot.diagnosticContext());
         for (GraphPlan.Node node : plan.nodes()) {
             if (node.key().equals(nodeKey)) return node;
         }

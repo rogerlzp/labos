@@ -129,6 +129,7 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                         WorkflowRuntimeHostProperties.PROP_LOCK_FILE, tempDir.resolve("island-host.lock").toString(),
                         WorkflowRuntimeHostProperties.PROP_HOST_ID, "island-sim-host",
                         WorkflowRuntimeHostProperties.PROP_POLL_MS, "25",
+                        WorkflowRuntimeHostProperties.PROP_SCOPED_KERNEL_TENANT_ID, "1",
                         WorkflowRuntimeHostProperties.PROP_BRIDGE_COMMAND_TIMEOUT_MS, "15000")));
                 ctx.registerBean("dataSource", DataSource.class, () -> ds);
                 ctx.registerBean("transactionManager", PlatformTransactionManager.class, () -> tm);
@@ -153,7 +154,20 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                 require(host.deviceGateway().awaitOnline("206", Duration.ofSeconds(5)), "Device 206 did not come ONLINE");
                 require(host.deviceGateway().awaitOnline("207", Duration.ofSeconds(5)), "Device 207 did not come ONLINE");
 
-                // Health endpoint check via WorkflowRuntimeController
+                // Health endpoint check via WorkflowRuntimeController & clean-startup isolation check
+                var initialHealth = host.healthSnapshot();
+                require(initialHealth.activeMailboxes() == 0,
+                        "Expected 0 activeMailboxes on clean E2E startup, got " + initialHealth.activeMailboxes());
+                require(initialHealth.recoveryResult() != null && initialHealth.recoveryResult().scanned() == 0,
+                        "Expected 0 interrupted Attempts recovered on clean E2E startup, got "
+                                + (initialHealth.recoveryResult() == null ? null : initialHealth.recoveryResult().scanned()));
+                try (Connection c = ds.getConnection(); Statement st = c.createStatement();
+                     ResultSet rs = st.executeQuery(
+                             "SELECT count(*) FROM workflow_runtime.workflow_run "
+                                     + "WHERE status NOT IN ('SUCCEEDED','FAILED','STOPPED')")) {
+                    require(rs.next() && rs.getLong(1) == 0L,
+                            "Expected 0 pre-existing non-terminal Runs in isolated E2E DB, got " + rs.getLong(1));
+                }
                 var healthResp = controller.health();
                 require(healthResp.getStatusCode().value() == 200, "GET /api/runtime/health expected 200");
                 JsonNode healthJson = JSON.readTree(healthResp.getBody());
@@ -300,6 +314,10 @@ public final class WorkflowRuntimeIslandSimulatorSelfTest {
                         "Device 207 long-task frames must cause 0 malformedFrames, got " + dev207Health.malformedFrames());
                 require(dev206Health.heartbeatsSent() == 0 && dev207Health.heartbeatsSent() == 0,
                         "LabSep devices must receive 0 unsolicited NDJSON heartbeats");
+                var dispatchStats = host.healthSnapshot().dispatchStats();
+                require(dispatchStats.cycleErrors() == 0,
+                        "Expected 0 dispatch cycleErrors for isolated island tenant, got "
+                                + dispatchStats.cycleErrors() + " (lastError=" + dispatchStats.lastError() + ")");
                 try (Connection c = ds.getConnection(); Statement st = c.createStatement();
                      ResultSet rs = st.executeQuery(
                              "SELECT count(*) FROM workflow_runtime.inbox_protocol_violation "

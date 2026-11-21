@@ -15,6 +15,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -299,14 +301,30 @@ public final class WorkflowRuntimeRepository {
         return keys.get(0);
     }
 
-    public record RunDefinitionSnapshot(UUID tenantId, UUID runId, String runStatus,
-                                         String controlGate, String compilerVersion,
-                                         String graphPlanJson) {}
+    public record RunDefinitionSnapshot(
+            UUID tenantId, UUID runId, String runStatus, String controlGate,
+            UUID definitionId, String definitionKey, String definitionVersion,
+            String compilerVersion, String graphPlanJson) {
+        public RunDefinitionSnapshot(UUID tenantId, UUID runId, String runStatus,
+                                     String controlGate, String compilerVersion,
+                                     String graphPlanJson) {
+            this(tenantId, runId, runStatus, controlGate, null, null, null, compilerVersion, graphPlanJson);
+        }
+
+        public String diagnosticContext() {
+            return "tenantId=" + tenantId
+                    + ", runId=" + runId
+                    + ", definitionId=" + definitionId
+                    + ", definitionKey=" + definitionKey
+                    + ", definitionVersion=" + definitionVersion;
+        }
+    }
 
     /** Read the immutable definition snapshot referenced by one Run. */
     public RunDefinitionSnapshot loadRunDefinitionSnapshot(UUID tenantId, UUID runId) {
         List<RunDefinitionSnapshot> rows = snapshotTx.execute(status -> jdbc.query("""
             SELECT r.tenant_id, r.run_id, r.status, r.control_gate,
+                   d.definition_id, d.definition_key, d.definition_version,
                    d.compiler_version, d.graph_plan::text AS graph_plan_json
               FROM workflow_runtime.workflow_run r
               JOIN workflow_runtime.definition_snapshot d
@@ -314,8 +332,9 @@ public final class WorkflowRuntimeRepository {
              WHERE r.tenant_id=? AND r.run_id=?
             """, (rs,n) -> new RunDefinitionSnapshot(rs.getObject("tenant_id",UUID.class),
                     rs.getObject("run_id",UUID.class),rs.getString("status"),
-                    rs.getString("control_gate"),rs.getString("compiler_version"),
-                    rs.getString("graph_plan_json")), tenantId, runId));
+                    rs.getString("control_gate"),rs.getObject("definition_id",UUID.class),
+                    rs.getString("definition_key"),rs.getString("definition_version"),
+                    rs.getString("compiler_version"),rs.getString("graph_plan_json")), tenantId, runId));
         if(rows==null || rows.size()!=1) throw new IllegalStateException("Run definition snapshot not found or tenant mismatch");
         return rows.get(0);
     }
@@ -2607,52 +2626,69 @@ public final class WorkflowRuntimeRepository {
                 rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), tenantId, limit);
     }
 
+    public record GraphAdvanceCursor(Instant updatedAt, UUID runId) {
+        public GraphAdvanceCursor {
+            Objects.requireNonNull(updatedAt, "updatedAt");
+            Objects.requireNonNull(runId, "runId");
+        }
+    }
+
+    public record AwaitingGraphRunRef(UUID tenantId, UUID runId, Instant updatedAt) {
+        public GraphAdvanceCursor cursor() {
+            return new GraphAdvanceCursor(updatedAt, runId);
+        }
+    }
+
     /**
      * Global discovery of {@code RUNNING/OPEN} Runs that have at least one {@code SUCCEEDED} task
      * activation awaiting graph successor creation (makes lost mailbox wakeups and post-restart /
      * post-resume advancement 100% self-healing).
      */
     public List<RunnableRunRef> findRunsAwaitingGraphAdvance(int limit) {
-        if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
-        return jdbc.query("""
-            SELECT r.tenant_id, r.run_id
-              FROM workflow_runtime.workflow_run r
-             WHERE r.status = 'RUNNING'
-               AND r.control_gate = 'OPEN'
-               AND EXISTS (
-                 SELECT 1
-                   FROM workflow_runtime.node_activation a
-                   JOIN workflow_runtime.execution_token t
-                     ON t.tenant_id = a.tenant_id AND t.token_id = a.token_id
-                  WHERE a.tenant_id = r.tenant_id AND a.run_id = r.run_id
-                    AND a.activation_state = 'SUCCEEDED' AND t.token_state = 'CONSUMED'
-                    AND a.current_attempt_id IS NOT NULL
-                    AND EXISTS (
-                      SELECT 1 FROM workflow_runtime.node_attempt ca
-                       WHERE ca.tenant_id = a.tenant_id
-                         AND ca.attempt_id = a.current_attempt_id
-                         AND ca.attempt_state = 'SUCCEEDED'
-                    )
-                    AND NOT EXISTS (
-                      SELECT 1 FROM workflow_runtime.execution_token child
-                       WHERE child.tenant_id = t.tenant_id AND child.parent_token_id = t.token_id
-                    )
-               )
-             ORDER BY r.updated_at ASC, r.run_id ASC
-             LIMIT ?
-            """, (rs, n) -> new RunnableRunRef(
-                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), limit);
+        return findRunsAwaitingGraphAdvanceAfter(null, limit).stream()
+                .map(r -> new RunnableRunRef(r.tenantId(), r.runId()))
+                .toList();
     }
 
     /** Tenant-scoped discovery of {@code RUNNING/OPEN} Runs awaiting graph successor creation. */
     public List<RunnableRunRef> findRunsAwaitingGraphAdvanceForTenant(UUID tenantId, int limit) {
         Objects.requireNonNull(tenantId, "tenantId");
+        return findRunsAwaitingGraphAdvanceForTenantAfter(tenantId, null, limit).stream()
+                .map(r -> new RunnableRunRef(r.tenantId(), r.runId()))
+                .toList();
+    }
+
+    /** Keyset-paginated global discovery of Runs awaiting graph successor creation. */
+    public List<AwaitingGraphRunRef> findRunsAwaitingGraphAdvanceAfter(GraphAdvanceCursor after, int limit) {
+        return findRunsAwaitingGraphAdvanceInternal(null, after, limit);
+    }
+
+    /** Keyset-paginated tenant-scoped discovery of Runs awaiting graph successor creation. */
+    public List<AwaitingGraphRunRef> findRunsAwaitingGraphAdvanceForTenantAfter(
+            UUID tenantId, GraphAdvanceCursor after, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        return findRunsAwaitingGraphAdvanceInternal(tenantId, after, limit);
+    }
+
+    private List<AwaitingGraphRunRef> findRunsAwaitingGraphAdvanceInternal(
+            UUID scopedTenantId, GraphAdvanceCursor after, int limit) {
         if (limit < 1 || limit > 500) throw new IllegalArgumentException("limit must be 1..500");
+        StringBuilder where = new StringBuilder();
+        List<Object> args = new ArrayList<>();
+        if (scopedTenantId != null) {
+            where.append("r.tenant_id = ? AND ");
+            args.add(scopedTenantId);
+        }
+        if (after != null) {
+            where.append("(r.updated_at, r.run_id) > (?, ?) AND ");
+            args.add(OffsetDateTime.ofInstant(after.updatedAt(), ZoneOffset.UTC));
+            args.add(after.runId());
+        }
+        args.add(limit);
         return jdbc.query("""
-            SELECT r.tenant_id, r.run_id
+            SELECT r.tenant_id, r.run_id, r.updated_at
               FROM workflow_runtime.workflow_run r
-             WHERE r.tenant_id = ?
-               AND r.status = 'RUNNING'
+             WHERE %sr.status = 'RUNNING'
                AND r.control_gate = 'OPEN'
                AND EXISTS (
                  SELECT 1
@@ -2675,8 +2711,10 @@ public final class WorkflowRuntimeRepository {
                )
              ORDER BY r.updated_at ASC, r.run_id ASC
              LIMIT ?
-            """, (rs, n) -> new RunnableRunRef(
-                rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)), tenantId, limit);
+            """.formatted(where.toString()), (rs, n) -> new AwaitingGraphRunRef(
+                rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class),
+                rs.getObject(3, OffsetDateTime.class).toInstant()), args.toArray());
     }
 
     /** Single-host outbox discovery: tenants with due PENDING outbox rows (oldest available_at first). */
@@ -3766,45 +3804,58 @@ public final class WorkflowRuntimeRepository {
 
     /** Requeue only SENDING messages whose external side-effect boundary was not crossed. */
     public OutboxRestartResult recoverOutboxAfterRestart() {
+        return recoverOutboxAfterRestartInternal(null);
+    }
+
+    /** Tenant-scoped variant of {@link #recoverOutboxAfterRestart()} for single-tenant hosts. */
+    public OutboxRestartResult recoverOutboxAfterRestartForTenant(UUID tenantId) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        return recoverOutboxAfterRestartInternal(tenantId);
+    }
+
+    private OutboxRestartResult recoverOutboxAfterRestartInternal(UUID scopedTenantId) {
+        String oTenant = scopedTenantId == null ? "" : "o.tenant_id=? AND ";
+        String plainTenant = scopedTenantId == null ? "" : "tenant_id=? AND ";
+        Object[] args = scopedTenantId == null ? new Object[0] : new Object[]{scopedTenantId};
         return required(() -> {
-            int workerRequeued=jdbc.update("""
+            int workerRequeued = jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox o SET outbox_state='PENDING'
-                 WHERE o.outbox_state='SENDING' AND o.message_kind='WORKER_DISPATCH'
+                 WHERE %so.outbox_state='SENDING' AND o.message_kind='WORKER_DISPATCH'
                    AND EXISTS (
                      SELECT 1 FROM workflow_runtime.node_attempt a
                       WHERE a.tenant_id=o.tenant_id
                         AND a.attempt_id::text=o.payload->>'attemptId'
                         AND a.attempt_state='DISPATCHED'
                    )
-                """);
+                """.formatted(oTenant), args);
             jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox o SET outbox_state='DEAD_LETTER'
-                 WHERE o.outbox_state='SENDING' AND o.message_kind='WORKER_DISPATCH'
+                 WHERE %so.outbox_state='SENDING' AND o.message_kind='WORKER_DISPATCH'
                    AND NOT EXISTS (
                      SELECT 1 FROM workflow_runtime.node_attempt a
                       WHERE a.tenant_id=o.tenant_id
                         AND a.attempt_id::text=o.payload->>'attemptId'
                         AND a.attempt_state='DISPATCHED'
                    )
-                """);
-            int otherRequeued=jdbc.update("""
+                """.formatted(oTenant), args);
+            int otherRequeued = jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox SET outbox_state='PENDING'
-                 WHERE outbox_state='SENDING'
+                 WHERE %soutbox_state='SENDING'
                    AND message_kind NOT IN ('DEVICE_COMMAND','WORKER_DISPATCH')
-                """);
-            int commandRequeued=jdbc.update("""
+                """.formatted(plainTenant), args);
+            int commandRequeued = jdbc.update("""
                 UPDATE workflow_runtime.runtime_outbox o SET outbox_state='PENDING'
-                 WHERE o.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
+                 WHERE %so.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
                    AND EXISTS (
                      SELECT 1 FROM workflow_runtime.command_ledger c
                       WHERE c.tenant_id=o.tenant_id
                         AND c.command_id::text=o.payload->>'commandId'
                         AND c.command_state IN ('CREATED','DISPATCH_PENDING')
                    )
-                """);
-            Integer uncertain=jdbc.queryForObject("""
+                """.formatted(oTenant), args);
+            Integer uncertain = jdbc.queryForObject("""
                 SELECT count(*) FROM workflow_runtime.runtime_outbox o
-                 WHERE o.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
+                 WHERE %so.outbox_state='SENDING' AND o.message_kind='DEVICE_COMMAND'
                    AND EXISTS (
                      SELECT 1 FROM workflow_runtime.command_ledger c
                       WHERE c.tenant_id=o.tenant_id
@@ -3812,21 +3863,33 @@ public final class WorkflowRuntimeRepository {
                         AND c.command_state IN ('SEND_STARTED','ACKNOWLEDGED','RUNNING',
                                                 'DELIVERY_UNKNOWN','UNKNOWN','MANUAL_REQUIRED')
                    )
-                """,Integer.class);
-            return new OutboxRestartResult(workerRequeued+otherRequeued+commandRequeued,
-                    uncertain==null?0:uncertain);
+                """.formatted(oTenant), Integer.class, args);
+            return new OutboxRestartResult(workerRequeued + otherRequeued + commandRequeued,
+                    uncertain == null ? 0 : uncertain);
         });
     }
 
     /** Startup candidates that were in flight (including CREATED reservations) when the sole Host stopped. */
     public List<InterruptedAttempt> findInterruptedAttempts(int limit) {
-        if(limit<1 || limit>1000) throw new IllegalArgumentException("Recovery batch limit must be 1..1000");
+        return findInterruptedAttemptsInternal(null, limit);
+    }
+
+    /** Tenant-scoped startup recovery candidate query for single-tenant hosts. */
+    public List<InterruptedAttempt> findInterruptedAttemptsForTenant(UUID tenantId, int limit) {
+        Objects.requireNonNull(tenantId, "tenantId");
+        return findInterruptedAttemptsInternal(tenantId, limit);
+    }
+
+    private List<InterruptedAttempt> findInterruptedAttemptsInternal(UUID scopedTenantId, int limit) {
+        if (limit < 1 || limit > 1000) throw new IllegalArgumentException("Recovery batch limit must be 1..1000");
+        String whereTenant = scopedTenantId == null ? "" : "tenant_id=? AND ";
+        Object[] args = scopedTenantId == null ? new Object[]{limit} : new Object[]{scopedTenantId, limit};
         return jdbc.query("""
             SELECT tenant_id,run_id,attempt_id FROM workflow_runtime.node_attempt
-             WHERE attempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED')
+             WHERE %sattempt_state IN ('CREATED','DISPATCHED','ACCEPTED','STARTED')
              ORDER BY COALESCE(started_at,created_at),tenant_id,run_id,attempt_id LIMIT ?
-            """,(rs,n)->new InterruptedAttempt(rs.getObject(1,UUID.class),
-                    rs.getObject(2,UUID.class),rs.getObject(3,UUID.class)),limit);
+            """.formatted(whereTenant), (rs, n) -> new InterruptedAttempt(rs.getObject(1, UUID.class),
+                rs.getObject(2, UUID.class), rs.getObject(3, UUID.class)), args);
     }
 
 
@@ -4031,8 +4094,25 @@ public final class WorkflowRuntimeRepository {
         catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
     private static String jsonEscape(String s) {
-        if(s==null) return "";
-        return s.replace("\\","\\\\").replace("\"","\\\"");
+        if (s == null) return "";
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\b' -> out.append("\\b");
+                case '\f' -> out.append("\\f");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) out.append(String.format("\\u%04x", (int) c));
+                    else out.append(c);
+                }
+            }
+        }
+        return out.toString();
     }
 
     public static final class StaleRuntimeWriteException extends RuntimeException {

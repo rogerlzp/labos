@@ -11,6 +11,7 @@ import org.apache.ibatis.reflection.ParamNameResolver;
 import org.apache.ibatis.io.Resources;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.StandardEnvironment;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -18,13 +19,18 @@ import org.springframework.transaction.PlatformTransactionManager;
 import javax.sql.DataSource;
 import java.io.InputStream;
 import java.lang.reflect.Proxy;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Spring composition + MyBatis XML binding smoke test for the embedded Runtime.
  * Does not connect to PostgreSQL and does not start RuntimeHost.
  */
 public final class WorkflowRuntimeKernelConfigurationSelfTest {
+    private static final AtomicInteger PASSED = new AtomicInteger(0);
+
     public static void main(String[] args) throws Exception {
         DriverManagerDataSource ds = new DriverManagerDataSource(
                 "jdbc:postgresql://127.0.0.1:5432/not-used", "unused", "unused");
@@ -60,6 +66,7 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                     "WorkflowRuntimeKernelFacade bean missing");
             WorkflowRuntimeHostProperties props = context.getBean(WorkflowRuntimeHostProperties.class);
             require(!props.enabled(), "Embedded RuntimeHost feature flag must default to false");
+            require(props.scopedKernelTenantId() == null, "scopedKernelTenantId must default to null");
             require(context.getBean(WorkflowRuntimeKernelFacade.class).hostHealth().isEmpty(),
                     "Facade hostHealth() must be empty when RuntimeHost is disabled");
             require(context.getBeansOfType(com.labos.kernel.workflow.runtime.host.RuntimeHost.class).isEmpty(),
@@ -73,16 +80,47 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
             disabledCtx.getEnvironment().getPropertySources().addFirst(new MapPropertySource("disabled-bad-ep", Map.of(
                     WorkflowRuntimeHostProperties.PROP_ENABLED, "false",
                     WorkflowRuntimeHostProperties.PROP_ENDPOINTS, "broken-endpoint-ignored-when-disabled",
-                    WorkflowRuntimeHostProperties.PROP_HB_TIMEOUT_MS, "not-a-number")));
+                    WorkflowRuntimeHostProperties.PROP_HB_TIMEOUT_MS, "not-a-number",
+                    WorkflowRuntimeHostProperties.PROP_SCOPED_KERNEL_TENANT_ID, "not-a-number")));
             disabledCtx.registerBean("dataSource", DataSource.class, () -> ds);
             disabledCtx.registerBean("transactionManager", PlatformTransactionManager.class, () -> tm);
             disabledCtx.registerBean("graphMapper", GraphMapper.class, () -> mapper);
             disabledCtx.register(WorkflowRuntimeKernelConfiguration.class);
             disabledCtx.refresh();
-            require(!disabledCtx.getBean(WorkflowRuntimeHostProperties.class).enabled(),
+            var disabledProps = disabledCtx.getBean(WorkflowRuntimeHostProperties.class);
+            require(!disabledProps.enabled(),
                     "Explicitly disabled host must keep enabled=false");
+            require(disabledProps.scopedKernelTenantId() == null,
+                    "Disabled host must ignore malformed scoped-kernel-tenant-id");
             require(disabledCtx.getBeansOfType(com.labos.kernel.workflow.runtime.host.EmbeddedWorkflowRuntimeHost.class).isEmpty(),
                     "Disabled host must not instantiate EmbeddedWorkflowRuntimeHost");
+        }
+
+        // Verify optional scoped-kernel-tenant-id parsing, validation, and Config propagation when enabled.
+        StandardEnvironment scopedEnv = new StandardEnvironment();
+        scopedEnv.getPropertySources().addFirst(new MapPropertySource("scoped-valid", Map.of(
+                WorkflowRuntimeHostProperties.PROP_ENABLED, "true",
+                WorkflowRuntimeHostProperties.PROP_SCOPED_KERNEL_TENANT_ID, "1")));
+        WorkflowRuntimeHostProperties scopedProps = WorkflowRuntimeHostProperties.fromEnvironment(scopedEnv);
+        require(Long.valueOf(1L).equals(scopedProps.scopedKernelTenantId()),
+                "scopedKernelTenantId must parse positive integer when enabled");
+        UUID sampleTenantUuid = UUID.randomUUID();
+        require(sampleTenantUuid.equals(scopedProps.toHostConfig(List.of(), sampleTenantUuid).scopedTenantId()),
+                "toHostConfig(endpoints, scopedTenantId) must propagate scopedTenantId");
+        require(scopedProps.toHostConfig(List.of()).scopedTenantId() == null,
+                "toHostConfig(endpoints) must default scopedTenantId to null");
+        for (String badScopedTenant : List.of("0", "-5", "abc")) {
+            StandardEnvironment badEnv = new StandardEnvironment();
+            badEnv.getPropertySources().addFirst(new MapPropertySource("scoped-bad-" + badScopedTenant, Map.of(
+                    WorkflowRuntimeHostProperties.PROP_ENABLED, "true",
+                    WorkflowRuntimeHostProperties.PROP_SCOPED_KERNEL_TENANT_ID, badScopedTenant)));
+            boolean rejected = false;
+            try {
+                WorkflowRuntimeHostProperties.fromEnvironment(badEnv);
+            } catch (IllegalArgumentException expected) {
+                rejected = true;
+            }
+            require(rejected, "Invalid scoped-kernel-tenant-id '" + badScopedTenant + "' must be rejected when enabled");
         }
 
         // Verify fail-fast when labos.workflow.runtime.host.enabled=true lacks TaskHandlerResolver bean (ChatGPT P2).
@@ -227,7 +265,8 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
                 mapperParams(mybatis, "selectRuntimeWorkflowNodeMetadata"), 2,
                 "tenant_id", "workflow_id", "c.tenant_id", "n.tenant_id");
 
-        System.out.println("Workflow Runtime Kernel Spring composition and MyBatis binding：通过 25, 失败 0");
+        System.out.println("Workflow Runtime Kernel Spring composition and MyBatis binding：通过 "
+                + PASSED.get() + ", 失败 0");
     }
 
 
@@ -253,6 +292,7 @@ public final class WorkflowRuntimeKernelConfigurationSelfTest {
 
     private static void require(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
+        PASSED.incrementAndGet();
     }
 
     private WorkflowRuntimeKernelConfigurationSelfTest() {}

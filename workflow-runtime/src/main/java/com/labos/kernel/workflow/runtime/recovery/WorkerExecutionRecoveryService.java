@@ -19,11 +19,19 @@ import java.util.UUID;
 public final class WorkerExecutionRecoveryService {
     private final WorkflowRuntimeRepository repository;
     private final WorkerExecutionRegistry registry;
+    private final UUID scopedTenantId;
 
     public WorkerExecutionRecoveryService(WorkflowRuntimeRepository repository,
                                           WorkerExecutionRegistry registry) {
+        this(repository, registry, null);
+    }
+
+    public WorkerExecutionRecoveryService(WorkflowRuntimeRepository repository,
+                                          WorkerExecutionRegistry registry,
+                                          UUID scopedTenantId) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.registry = Objects.requireNonNull(registry, "registry");
+        this.scopedTenantId = scopedTenantId;
     }
 
     public record RecoveryItem(WorkflowRuntimeRepository.InterruptedAttempt candidate,
@@ -49,8 +57,9 @@ public final class WorkerExecutionRecoveryService {
         List<RecoveryItem> items = new ArrayList<>();
         int scanned = 0, safe = 0, manual = 0, skipped = 0;
         while (true) {
-            List<WorkflowRuntimeRepository.InterruptedAttempt> candidates =
-                    repository.findInterruptedAttempts(limit);
+            List<WorkflowRuntimeRepository.InterruptedAttempt> candidates = scopedTenantId != null
+                    ? repository.findInterruptedAttemptsForTenant(scopedTenantId, limit)
+                    : repository.findInterruptedAttempts(limit);
             if (candidates.isEmpty()) break;
             scanned += candidates.size();
             for (var candidate : candidates) {
@@ -70,7 +79,9 @@ public final class WorkerExecutionRecoveryService {
         }
 
         // Requeue Outbox only after every in-flight Attempt has been reconciled.
-        var outbox = repository.recoverOutboxAfterRestart();
+        var outbox = scopedTenantId != null
+                ? repository.recoverOutboxAfterRestartForTenant(scopedTenantId)
+                : repository.recoverOutboxAfterRestart();
         return new StartupResult(outbox, scanned, safe, manual, skipped, items);
     }
 
